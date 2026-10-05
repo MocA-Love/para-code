@@ -11,6 +11,7 @@
 //
 // - aivis-mcp は `aivis-mcp --ingest` と同じ探し方（ログインシェル由来の PATH の `aivis-mcp`、Windows は cmd.exe 経由）
 // - 呼ぶ前に `aivis-mcp --version` で 2.5.3 以上かを確かめる。無い・古いなら何もしない（ログだけ）
+// - ElevenLabs の声ごとの調整も同じ流れで書く。こちらは 2.5.4 以上が要り、2.5.3 では声の調整だけを飛ばす
 // - 最後に書いた値は `~/.para-code/agent-dictionary.json` に覚える。aivis-mcp の設定は読むだけで、書くのは CLI だけ
 // - 辞書の ID はログに出さない
 // - 複数のウィンドウから同時に来ても、1 本ずつ流す（毎回、覚えている値と aivis-mcp の設定を読み直して決める）
@@ -36,7 +37,18 @@ import {
 	paradisNormalizeAgentDictionaryRequest,
 	paradisPlanAgentDictionarySteps,
 } from '../common/paradisAgentDictionary.js';
+import { paradisIsSafeAivisMcpPath } from '../common/paradisVoiceGains.js';
 import { paradisAivisVersionAtLeast, paradisParseAivisVersion } from '../common/paradisVoiceIngest.js';
+import {
+	IParadisElevenLabsVoiceTuningMap,
+	PARADIS_VOICE_TUNING_MIN_VERSION,
+	ParadisVoiceTuningStep,
+	paradisApplyVoiceTuningStep,
+	paradisNormalizeVoiceTuningMap,
+	paradisPlanAllVoiceTuningSteps,
+	paradisVoiceTuningArgs,
+	paradisVoiceTuningFromConfig,
+} from '../common/paradisVoiceTuning.js';
 
 /** `--version` も `--set-dictionary` も設定を 1 つ書くだけ（ロック待ちは aivis-mcp 側で 5 秒まで）。 */
 const RUN_TIMEOUT_MS = 10_000;
@@ -50,50 +62,76 @@ export interface IParadisAivisMcpRunResult {
 
 export type ParadisAivisMcpRunner = (args: readonly string[], env: NodeJS.ProcessEnv) => Promise<IParadisAivisMcpRunResult>;
 
+/** 英数字・`-`・`_`・`.`・`:`（`--reset-gain --key` の鍵）だけの引数。 */
+const PLAIN_ARG = /^[A-Za-z0-9_.:-]+$/;
+
 export interface IParadisAgentDictionarySyncOptions {
 	readonly getEnv: () => Promise<NodeJS.ProcessEnv>;
 	readonly logService: ILogService;
 	readonly run?: ParadisAivisMcpRunner;
 	/** aivis-mcp の今の辞書。読めなければ undefined。 */
 	readonly readCurrent?: (env: NodeJS.ProcessEnv) => Promise<IParadisAgentDictionaryCurrent | undefined>;
+	/** aivis-mcp の今の声ごとの調整。読めなければ undefined。 */
+	readonly readCurrentVoiceSettings?: (env: NodeJS.ProcessEnv) => Promise<IParadisElevenLabsVoiceTuningMap | undefined>;
 	/** 最後に書いた値を覚えるファイル。 */
 	readonly statePath?: string;
 }
 
-/** 手元（または接続先）の aivis-mcp を、引数を固定して呼ぶ（shell は使わない）。 */
-export function paradisRunAivisMcp(args: readonly string[], env: NodeJS.ProcessEnv): Promise<IParadisAivisMcpRunResult> {
+/**
+ * 手元（または接続先）の aivis-mcp を、引数を固定して呼ぶ（shell は使わない）。
+ * 引数は呼ぶ側で形を確かめた英数字・`-`・`_`・`.`・`:` か、`paradisIsSafeAivisMcpPath` を通る絶対パスだけ。
+ */
+export function paradisRunAivisMcp(args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs: number = RUN_TIMEOUT_MS): Promise<IParadisAivisMcpRunResult> {
 	return new Promise(resolve => {
 		const isWindows = process.platform === 'win32';
-		// 引数は呼ぶ側で形を確かめた英数字・`-`・`_` だけ（引用符や空白を含まない）
-		if (args.some(arg => !/^[A-Za-z0-9_.-]+$/.test(arg))) {
+		if (args.some(arg => !PLAIN_ARG.test(arg) && !paradisIsSafeAivisMcpPath(arg, process.platform))) {
 			resolve({ code: undefined, stdout: '', stderr: 'unsupported argument' });
 			return;
 		}
-		// Windows の npm のグローバルは `aivis-mcp.cmd` で、cmd.exe を通さないと起動できない（--ingest と同じ）
+		// Windows の npm のグローバルは `aivis-mcp.cmd` で、cmd.exe を通さないと起動できない（--ingest と同じ）。
+		// 空白を含むパスだけを引用符で囲む（cmd.exe が特別に読む文字はパスの検査で拒んでいる）
 		const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'aivis-mcp';
-		const commandArgs = isWindows ? ['/d', '/s', '/c', `"aivis-mcp ${args.join(' ')}"`] : [...args];
-		execFile(command, commandArgs, { env, cwd: homedir(), timeout: RUN_TIMEOUT_MS, windowsHide: true, windowsVerbatimArguments: isWindows, encoding: 'utf8' }, (error, stdout, stderr) => {
+		const commandArgs = isWindows ? ['/d', '/s', '/c', `"aivis-mcp ${args.map(arg => PLAIN_ARG.test(arg) ? arg : `"${arg}"`).join(' ')}"`] : [...args];
+		execFile(command, commandArgs, { env, cwd: homedir(), timeout: timeoutMs, windowsHide: true, windowsVerbatimArguments: isWindows, encoding: 'utf8' }, (error, stdout, stderr) => {
 			const code = error ? (typeof error.code === 'number' ? error.code : undefined) : 0;
 			resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
 		});
 	});
 }
 
-/** aivis-mcp と同じ場所（`AIVIS_CONFIG_FILE`、無ければ `~/.config/aivis-mcp/config.json`）の設定から今の辞書を読む。 */
-async function readAivisMcpDictionary(env: NodeJS.ProcessEnv): Promise<IParadisAgentDictionaryCurrent | undefined> {
+/** aivis-mcp と同じ場所（`AIVIS_CONFIG_FILE`、無ければ `~/.config/aivis-mcp/config.json`）の設定を読む。読めなければ undefined。 */
+async function readAivisMcpConfig(env: NodeJS.ProcessEnv): Promise<unknown | undefined> {
 	const path = env.AIVIS_CONFIG_FILE || join(homedir(), '.config', 'aivis-mcp', 'config.json');
 	let text: string;
 	try {
 		text = await fs.readFile(path, 'utf8');
 	} catch (error) {
-		// 設定ファイルが無い＝辞書は何も入っていない
+		// 設定ファイルが無い＝何も入っていない
 		return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? {} : undefined;
 	}
 	try {
-		return paradisAgentDictionaryFromConfig(JSON.parse(text));
+		return JSON.parse(text);
 	} catch {
 		return undefined;
 	}
+}
+
+/** aivis-mcp の設定から今の辞書を読む。 */
+async function readAivisMcpDictionary(env: NodeJS.ProcessEnv): Promise<IParadisAgentDictionaryCurrent | undefined> {
+	const config = await readAivisMcpConfig(env);
+	return config === undefined ? undefined : paradisAgentDictionaryFromConfig(config);
+}
+
+/** aivis-mcp の設定から今の声ごとの調整を読む。 */
+async function readAivisMcpVoiceSettings(env: NodeJS.ProcessEnv): Promise<IParadisElevenLabsVoiceTuningMap | undefined> {
+	const config = await readAivisMcpConfig(env);
+	return config === undefined ? undefined : paradisVoiceTuningFromConfig(config);
+}
+
+/** Para Code が最後に aivis-mcp へ書いた値（辞書と声ごとの調整）。 */
+interface IParadisAgentWrittenState {
+	readonly dictionaries: IParadisAgentDictionaryWritten;
+	readonly voiceSettings: IParadisElevenLabsVoiceTuningMap;
 }
 
 export function paradisDefaultAgentDictionaryStatePath(): string {
@@ -105,11 +143,13 @@ export class ParadisAgentDictionarySyncService {
 	private queue: Promise<unknown> = Promise.resolve();
 	private readonly run: ParadisAivisMcpRunner;
 	private readonly readCurrent: (env: NodeJS.ProcessEnv) => Promise<IParadisAgentDictionaryCurrent | undefined>;
+	private readonly readCurrentVoiceSettings: (env: NodeJS.ProcessEnv) => Promise<IParadisElevenLabsVoiceTuningMap | undefined>;
 	private readonly statePath: string;
 
 	constructor(private readonly options: IParadisAgentDictionarySyncOptions) {
 		this.run = options.run ?? paradisRunAivisMcp;
 		this.readCurrent = options.readCurrent ?? readAivisMcpDictionary;
+		this.readCurrentVoiceSettings = options.readCurrentVoiceSettings ?? readAivisMcpVoiceSettings;
 		this.statePath = options.statePath ?? paradisDefaultAgentDictionaryStatePath();
 	}
 
@@ -126,10 +166,14 @@ export class ParadisAgentDictionarySyncService {
 
 	private async doApply(request: IParadisAgentDictionaryRequest): Promise<IParadisAgentDictionarySyncResult> {
 		const env = await this.options.getEnv();
-		let written = await this.readWritten();
+		const state = await this.readWritten();
+		let written = state.dictionaries;
+		let writtenVoices = state.voiceSettings;
 		const current = await this.readCurrent(env);
+		const currentVoices = await this.readCurrentVoiceSettings(env);
 		const steps = paradisPlanAgentDictionarySteps(request, written, current);
-		if (steps.length === 0) {
+		const voiceSteps = paradisPlanAllVoiceTuningSteps(request.enabled, request.voiceSettings ?? {}, writtenVoices, currentVoices);
+		if (steps.length === 0 && voiceSteps.length === 0) {
 			return { status: 'unchanged' };
 		}
 
@@ -143,8 +187,18 @@ export class ParadisAgentDictionarySyncService {
 				calls.push(step);
 			}
 		}
-		if (calls.length === 0) {
-			await this.writeWritten(written);
+		const voiceCalls: ParadisVoiceTuningStep[] = [];
+		for (const step of voiceSteps) {
+			if (step.kind === 'forget') {
+				this.options.logService.info('[ParadisAgentDictionary] voice settings: aivis-mcp has other values for a voice now; leaving them as is');
+				writtenVoices = paradisApplyVoiceTuningStep(writtenVoices, step);
+			} else {
+				voiceCalls.push(step);
+			}
+		}
+		const forgot = calls.length !== steps.length || voiceCalls.length !== voiceSteps.length;
+		if (calls.length === 0 && voiceCalls.length === 0) {
+			await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
 			return { status: 'unchanged' };
 		}
 
@@ -154,13 +208,14 @@ export class ParadisAgentDictionarySyncService {
 			this.options.logService.info(version
 				? `[ParadisAgentDictionary] aivis-mcp ${version.join('.')} cannot take a dictionary (needs ${PARADIS_AGENT_DICTIONARY_MIN_VERSION.join('.')} or later); skipped`
 				: '[ParadisAgentDictionary] aivis-mcp is not installed here; skipped');
-			if (calls.length !== steps.length) {
-				await this.writeWritten(written);
+			if (forgot) {
+				await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
 			}
 			return { status: 'unsupported' };
 		}
 
 		let failed = false;
+		let applied = false;
 		for (const step of calls) {
 			const args = paradisAgentDictionaryArgs(step);
 			if (!args) {
@@ -169,37 +224,68 @@ export class ParadisAgentDictionarySyncService {
 			const result = await this.run(args, env);
 			if (result.code === 0 && result.stdout.trim() === 'ok') {
 				written = paradisApplyAgentDictionaryStep(written, step);
+				applied = true;
 				this.options.logService.info(`[ParadisAgentDictionary] ${step.provider}: ${step.kind === 'set' ? 'set the dictionary' : 'cleared the dictionary'} in aivis-mcp`);
 			} else {
 				failed = true;
 				this.options.logService.warn(`[ParadisAgentDictionary] ${step.provider}: aivis-mcp --${step.kind}-dictionary failed (exit ${result.code ?? 'none'}): ${redact(result.stderr, step)}`);
 			}
 		}
-		await this.writeWritten(written);
-		return { status: failed ? 'failed' : 'applied' };
+
+		let voicesUnsupported = false;
+		if (voiceCalls.length > 0) {
+			if (!paradisAivisVersionAtLeast(version, PARADIS_VOICE_TUNING_MIN_VERSION)) {
+				// 2.5.3 は辞書だけ。声の調整は書かず、覚えている値もそのまま（上げたら次の同期で書く）
+				voicesUnsupported = true;
+				this.options.logService.info(`[ParadisAgentDictionary] aivis-mcp ${version!.join('.')} cannot take voice settings (needs ${PARADIS_VOICE_TUNING_MIN_VERSION.join('.')} or later); skipped`);
+			} else {
+				// 消してから書く声で、消すのに失敗したら書かない
+				const failedVoices = new Set<string>();
+				for (const step of voiceCalls) {
+					const args = paradisVoiceTuningArgs(step);
+					if (!args || failedVoices.has(step.voiceId)) {
+						continue;
+					}
+					const result = await this.run(args, env);
+					if (result.code === 0 && result.stdout.trim() === 'ok') {
+						writtenVoices = paradisApplyVoiceTuningStep(writtenVoices, step);
+						applied = true;
+						this.options.logService.info(`[ParadisAgentDictionary] ${step.kind === 'set' ? 'set' : 'cleared'} the voice settings of a voice in aivis-mcp`);
+					} else {
+						failed = true;
+						failedVoices.add(step.voiceId);
+						this.options.logService.warn(`[ParadisAgentDictionary] aivis-mcp --${step.kind}-voice-settings failed (exit ${result.code ?? 'none'}): ${redactVoice(result.stderr, step.voiceId)}`);
+					}
+				}
+			}
+		}
+		await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
+		return { status: failed ? 'failed' : applied ? 'applied' : voicesUnsupported ? 'unsupported' : 'unchanged' };
 	}
 
-	private async readWritten(): Promise<IParadisAgentDictionaryWritten> {
+	private async readWritten(): Promise<IParadisAgentWrittenState> {
 		try {
 			const parsed: unknown = JSON.parse(await fs.readFile(this.statePath, 'utf8'));
+			const record = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
 			const result: { -readonly [K in keyof IParadisAgentDictionaryWritten]: string } = {};
 			for (const provider of PARADIS_AGENT_DICTIONARY_PROVIDERS) {
-				const value = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>)[provider] : undefined;
+				const value = record[provider];
 				if (typeof value === 'string' && value) {
 					result[provider] = value;
 				}
 			}
-			return result;
+			return { dictionaries: result, voiceSettings: paradisNormalizeVoiceTuningMap(record.voiceSettings) };
 		} catch {
-			return {};
+			return { dictionaries: {}, voiceSettings: {} };
 		}
 	}
 
-	private async writeWritten(written: IParadisAgentDictionaryWritten): Promise<void> {
+	private async writeWritten(state: IParadisAgentWrittenState): Promise<void> {
 		try {
 			await fs.mkdir(dirname(this.statePath), { recursive: true });
 			const temp = `${this.statePath}.${process.pid}.tmp`;
-			await fs.writeFile(temp, JSON.stringify(written), { encoding: 'utf8', mode: 0o600 });
+			const content = Object.keys(state.voiceSettings).length > 0 ? { ...state.dictionaries, voiceSettings: state.voiceSettings } : state.dictionaries;
+			await fs.writeFile(temp, JSON.stringify(content), { encoding: 'utf8', mode: 0o600 });
 			await fs.rename(temp, this.statePath);
 		} catch (error) {
 			this.options.logService.warn(`[ParadisAgentDictionary] could not remember the dictionary written to aivis-mcp: ${error instanceof Error ? error.message : String(error)}`);
@@ -214,6 +300,11 @@ function redact(stderr: string, step: ParadisAgentDictionaryStep): string {
 		line = line.split(step.id).join('<id>');
 	}
 	return line.slice(0, 300);
+}
+
+/** aivis-mcp のエラーの 1 行目。voice_id は伏せる。 */
+function redactVoice(stderr: string, voiceId: string): string {
+	return (stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(voiceId).join('<voice>').slice(0, 300);
 }
 
 export class ParadisAgentDictionarySyncChannel<TContext> implements IServerChannel<TContext> {

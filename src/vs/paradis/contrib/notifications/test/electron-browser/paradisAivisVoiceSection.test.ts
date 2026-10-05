@@ -28,6 +28,7 @@ import { IParadisAivisModelPreset } from '../../common/paradisNotifications.js';
 import { clearAivisApiCaches } from '../../electron-browser/paradisAivisApiCache.js';
 import { ParadisAivisVoiceSection } from '../../electron-browser/paradisAivisVoiceSection.js';
 import { clearElevenLabsApiCaches } from '../../electron-browser/paradisElevenLabsApiCache.js';
+import { paradisClearVoiceTuningCaches } from '../../electron-browser/paradisVoiceGainsCache.js';
 
 class TestSettingsService extends Disposable implements IParadisNotificationsSettingsService {
 	declare readonly _serviceBrand: undefined;
@@ -55,6 +56,7 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 		elevenLabsSpeed: 1,
 		elevenLabsDictionaryId: '',
 		shareDictionaryWithAgents: true,
+		elevenLabsVoiceSettings: {},
 	};
 
 	getSelectedRingtoneId(): string { return 'default'; }
@@ -113,12 +115,14 @@ async function flush(): Promise<void> {
 suite('Paradis voice section API key fields', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	setup(() => { clearAivisApiCaches(); clearElevenLabsApiCaches(); });
-	teardown(() => { clearAivisApiCaches(); clearElevenLabsApiCaches(); });
+	setup(() => { clearAivisApiCaches(); clearElevenLabsApiCaches(); paradisClearVoiceTuningCaches(); });
+	teardown(() => { clearAivisApiCaches(); clearElevenLabsApiCaches(); paradisClearVoiceTuningCaches(); });
 
-	function createSection(settings: TestSettingsService): HTMLElement {
-		const container = mainWindow.document.implementation.createHTMLDocument('voice section').createElement('div');
-		const sharedProcess = { getChannel: () => new EmptyChannel() } as unknown as ISharedProcessService;
+	function createSection(settings: TestSettingsService, channel: IChannel = new EmptyChannel()): HTMLElement {
+		const document = mainWindow.document.implementation.createHTMLDocument('voice section');
+		// 非同期に届いた値は、画面に付いている要素にだけ反映する（isConnected）
+		const container = document.body.appendChild(document.createElement('div'));
+		const sharedProcess = { getChannel: () => channel } as unknown as ISharedProcessService;
 		const logService: ILogService = new NullLogService();
 		const instantiation = {
 			createInstance: (ctor: new (...args: unknown[]) => unknown, ...args: unknown[]) => new ctor(...args, sharedProcess, settings, logService),
@@ -176,5 +180,45 @@ suite('Paradis voice section API key fields', () => {
 			elevenLabsAfterLoad: keyInput(elevenLabsContainer).disabled,
 			patches: [settings.patches, elevenLabsSettings.patches],
 		}, { aivisWhileLoading: true, aivisAfterLoad: false, elevenLabsWhileLoading: true, elevenLabsAfterLoad: false, patches: [[], []] });
+	});
+
+	test('shows the tuning of the chosen ElevenLabs voice and saves it per voice', async () => {
+		const channel: IChannel = {
+			call<T>(command: string): Promise<T> {
+				switch (command) {
+					case 'getElevenLabsVoiceSettings': return Promise.resolve({ stability: 0.4, similarityBoost: 0.9 } as T);
+					case 'list': return Promise.resolve({ status: 'ok', value: { target: -20, learnWindow: 9, minLearnSeconds: 2.5, entries: [{ key: 'elevenlabs:voice1:eleven_v4_turbo', provider: 'elevenlabs', voice: 'voice1', model: 'eleven_v4_turbo', gainDb: -6.8, sampleCount: 4, updatedAt: 1 }] } } as T);
+				}
+				return Promise.resolve((command.startsWith('list') ? [] : null) as T);
+			},
+			listen<T>(): Event<T> { return Event.None; },
+		};
+		const settings = store.add(new TestSettingsService());
+		settings.settings = { ...settings.settings, engine: 'elevenlabs', elevenLabsVoiceId: 'voice1', elevenLabsModelId: 'eleven_v4_turbo' };
+		const container = createSection(settings, channel);
+		for (let round = 0; round < 5; round++) {
+			await flush();
+		}
+
+		const sliders = Array.from(container.querySelectorAll<HTMLInputElement>('.pns-tune-slider input'));
+		const shown = () => ({
+			title: container.querySelector('.pns-tune-title')?.textContent,
+			speedDimmed: container.querySelectorAll('.setting-row.pns-row-dimmed').length,
+			sliders: sliders.map(slider => slider.value),
+			pills: Array.from(container.querySelectorAll('.pns-pill')).map(pill => pill.textContent),
+		});
+		const before = shown();
+		sliders[1].value = '0.55';
+		dispatch(sliders[1], 'change');
+
+		assert.deepStrictEqual({ before, patches: settings.patches }, {
+			before: {
+				title: 'voice1 の調整',
+				speedDimmed: 1,
+				sliders: ['0.4', '0.9'],
+				pills: ['-6.8 dB', '学習 4/9 回'],
+			},
+			patches: [{ elevenLabsVoiceSettings: { voice1: { stability: 0.4, similarityBoost: 0.55 } } }],
+		});
 	});
 });

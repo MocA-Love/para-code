@@ -33,7 +33,8 @@ import {
 	renderParadisAivisTemplate,
 } from '../common/paradisNotifications.js';
 import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApiKeyField } from '../browser/paradisNotificationsSettings.js';
-import { ParadisVoiceEngine, PARADIS_ELEVENLABS_SPEED_MAX, PARADIS_ELEVENLABS_SPEED_MIN } from '../common/paradisElevenLabs.js';
+import { ParadisVoiceEngine, PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, PARADIS_ELEVENLABS_SPEED_MAX, PARADIS_ELEVENLABS_SPEED_MIN } from '../common/paradisElevenLabs.js';
+import { paradisElevenLabsModelIgnoresSpeed } from '../common/paradisVoiceTuning.js';
 import { IParadisElevenLabsSampleHost, ParadisElevenLabsVoiceFields } from './paradisElevenLabsVoiceFields.js';
 import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDictionaryList, setCachedAivisModelInfo } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
@@ -61,6 +62,8 @@ const STR_ENABLE_HINT = localize('paradis.notif.aivis.enableHint', "LLM の動�
 const STR_VOLUME_LABEL = localize('paradis.notif.aivis.volumeLabel', "音量");
 // allow-any-unicode-next-line
 const STR_RATE_LABEL = localize('paradis.notif.aivis.rateLabel', "話速");
+// allow-any-unicode-next-line
+const strRateIgnored = (value: string) => localize('paradis.notif.elevenlabs.rateIgnored', "{0}（選んでいるモデルでは効きません）", value);
 // allow-any-unicode-next-line
 const STR_API_KEY_LABEL = localize('paradis.notif.aivis.apiKeyLabel', "API Key");
 // allow-any-unicode-next-line
@@ -250,7 +253,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 		this._renderSlider(fields, STR_VOLUME_LABEL, settings.volume, 0, 100, 1, v => `${v}%`, v => this.settingsService.setAivisSettings({ volume: v }));
 		if (settings.engine === 'elevenlabs') {
 			// ElevenLabs の話速（voice_settings.speed）は API の範囲が 0.7〜1.2 と狭い。Aivis の話速とは別に覚える。
-			this._renderSlider(fields, STR_RATE_LABEL, settings.elevenLabsSpeed, PARADIS_ELEVENLABS_SPEED_MIN, PARADIS_ELEVENLABS_SPEED_MAX, 0.05, v => `${v.toFixed(2)}x`, v => this.settingsService.setAivisSettings({ elevenLabsSpeed: v }));
+			// v4 系は話速を送っても同じ長さで読む。値は覚えたまま、触れないようにして理由を出す。
+			const speedIgnored = paradisElevenLabsModelIgnoresSpeed(settings.elevenLabsModelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID);
+			this._renderSlider(fields, STR_RATE_LABEL, settings.elevenLabsSpeed, PARADIS_ELEVENLABS_SPEED_MIN, PARADIS_ELEVENLABS_SPEED_MAX, 0.05, v => speedIgnored ? strRateIgnored(`${v.toFixed(2)}x`) : `${v.toFixed(2)}x`, v => this.settingsService.setAivisSettings({ elevenLabsSpeed: v }), speedIgnored);
 			this._elevenLabsFields.render(fields, settings, this._renderDisposables);
 		} else {
 			this._renderAivisFields(fields, settings);
@@ -315,8 +320,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 		this._formatPermissionInput = this._renderFormatField(fields, STR_FORMAT_PERMISSION_LABEL, settings.formatPermission, 'permission', next => this.settingsService.setAivisSettings({ formatPermission: next }), btn => this._testPlay(btn, 'permission'));
 	}
 
-	private _renderSlider(parent: HTMLElement, labelText: string, value: number, min: number, max: number, step: number, format: (v: number) => string, onCommit: (v: number) => void): void {
+	private _renderSlider(parent: HTMLElement, labelText: string, value: number, min: number, max: number, step: number, format: (v: number) => string, onCommit: (v: number) => void, dimmed = false): void {
 		const field = dom.append(parent, $('.setting-row'));
+		field.classList.toggle('pns-row-dimmed', dimmed);
 		const main = dom.append(field, $('.sr-main'));
 		dom.append(main, $('.sr-label')).textContent = labelText;
 		const valueHint = dom.append(main, $('.sr-desc'));
@@ -328,6 +334,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		slider.max = String(max);
 		slider.step = String(step);
 		slider.value = String(value);
+		slider.disabled = dimmed;
 		this._renderDisposables.add(dom.addDisposableListener(slider, 'input', () => {
 			valueHint.textContent = format(Number(slider.value));
 		}));
@@ -718,6 +725,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 						speed: settings.elevenLabsSpeed,
 						dictionaryId: settings.elevenLabsDictionaryId || undefined,
 						volume: settings.volume,
+						...settings.elevenLabsVoiceSettings[settings.elevenLabsVoiceId],
 					}]);
 				} catch (error) {
 					// ElevenLabs はキーの権限・残り文字数で失敗しやすいので、理由を画面に出す。

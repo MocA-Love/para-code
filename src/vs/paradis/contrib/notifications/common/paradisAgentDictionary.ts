@@ -18,6 +18,11 @@
 //
 // aivis-mcp 側の辞書は、利用者が `tts-configure` などで別のものを選んでいることがある。Para Code が
 // 消してよいのは、Para Code が書いた値がそのまま残っているときだけ（最後に書いた値を覚えておく）。
+//
+// 同じスイッチで、ElevenLabs の声ごとの調整（stability・similarity_boost）も書く（aivis-mcp 2.5.4 以上。
+// 取り決めと判定は paradisVoiceTuning.ts）。2.5.3 では辞書だけを書き、声の調整は飛ばす。
+
+import { IParadisElevenLabsVoiceTuningMap, paradisNormalizeVoiceTuningMap } from './paradisVoiceTuning.js';
 
 export const PARADIS_AGENT_DICTIONARY_CHANNEL = 'paradisAgentDictionary';
 
@@ -36,6 +41,8 @@ export interface IParadisAgentDictionaryRequest {
 	/** 「通知と同じ辞書をエージェントの読み上げにも使う」。 */
 	readonly enabled: boolean;
 	readonly dictionaries: IParadisAgentDictionaryIds;
+	/** ElevenLabs の声ごとの調整。無い声は送らない（ElevenLabs の保存値を使う）。 */
+	readonly voiceSettings?: IParadisElevenLabsVoiceTuningMap;
 }
 
 /** Para Code が最後に aivis-mcp へ書いた辞書。書いていない（消した）エンジンは持たない。 */
@@ -73,27 +80,31 @@ export function paradisIsAgentDictionaryId(provider: ParadisAgentDictionaryProvi
 }
 
 /** 通知の読み上げの設定（`IParadisAivisSettings` の一部）から、aivis-mcp へ渡す設定を作る。 */
-export function paradisAgentDictionaryRequestFromSettings(settings: { readonly shareDictionaryWithAgents?: boolean; readonly userDictionaryUuid?: string; readonly elevenLabsDictionaryId?: string }): IParadisAgentDictionaryRequest {
+export function paradisAgentDictionaryRequestFromSettings(settings: { readonly shareDictionaryWithAgents?: boolean; readonly userDictionaryUuid?: string; readonly elevenLabsDictionaryId?: string; readonly elevenLabsVoiceSettings?: unknown }): IParadisAgentDictionaryRequest {
+	const voiceSettings = paradisNormalizeVoiceTuningMap(settings.elevenLabsVoiceSettings);
 	return {
 		enabled: settings.shareDictionaryWithAgents !== false,
 		dictionaries: {
 			elevenlabs: settings.elevenLabsDictionaryId || '',
 			aivis: settings.userDictionaryUuid || '',
 		},
+		...(Object.keys(voiceSettings).length > 0 ? { voiceSettings } : {}),
 	};
 }
 
 /** IPC 越しの値を、形の分かる要求に直す。壊れた値は「辞書なし」にする。 */
 export function paradisNormalizeAgentDictionaryRequest(raw: unknown): IParadisAgentDictionaryRequest {
-	const value = (raw && typeof raw === 'object' ? raw : {}) as { enabled?: unknown; dictionaries?: unknown };
+	const value = (raw && typeof raw === 'object' ? raw : {}) as { enabled?: unknown; dictionaries?: unknown; voiceSettings?: unknown };
 	const dictionaries = (value.dictionaries && typeof value.dictionaries === 'object' ? value.dictionaries : {}) as Record<string, unknown>;
 	const pick = (provider: ParadisAgentDictionaryProvider): string => {
 		const id = dictionaries[provider];
 		return typeof id === 'string' ? id.trim() : '';
 	};
+	const voiceSettings = paradisNormalizeVoiceTuningMap(value.voiceSettings);
 	return {
 		enabled: value.enabled === true,
 		dictionaries: { elevenlabs: pick('elevenlabs'), aivis: pick('aivis') },
+		...(Object.keys(voiceSettings).length > 0 ? { voiceSettings } : {}),
 	};
 }
 

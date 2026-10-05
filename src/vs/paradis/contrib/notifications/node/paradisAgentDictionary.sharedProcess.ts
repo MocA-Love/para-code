@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 手元の aivis-mcp へ通知の辞書を書くチャネルを shared process に足す。`paradis.sharedProcess.contribution.ts`
-// から副作用 import で読み込まれる。aivis-mcp はログインシェル由来の PATH で探す（`--ingest` と同じ）。
+// 手元の aivis-mcp へ通知の辞書（と声の調整）を書くチャネルと、音量の表を扱うチャネル（通知設定の「音量の補正」）を
+// shared process に足す。`paradis.sharedProcess.contribution.ts` から副作用 import で読み込まれる。
+// aivis-mcp はログインシェル由来の PATH で探す（`--ingest` と同じ）。
 
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -15,7 +16,9 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_AGENT_DICTIONARY_CHANNEL } from '../common/paradisAgentDictionary.js';
+import { PARADIS_VOICE_GAINS_CHANNEL } from '../common/paradisVoiceGains.js';
 import { ParadisAgentDictionarySyncChannel, ParadisAgentDictionarySyncService } from './paradisAgentDictionarySync.js';
+import { ParadisVoiceGainsChannel, ParadisVoiceGainsService } from './paradisVoiceGainsService.js';
 
 ParadisSharedProcessContributions.register(PARADIS_AGENT_DICTIONARY_CHANNEL, ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
@@ -24,4 +27,13 @@ ParadisSharedProcessContributions.register(PARADIS_AGENT_DICTIONARY_CHANNEL, ({ 
 	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisAgentDictionary', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
 	const service = new ParadisAgentDictionarySyncService({ getEnv: () => shellEnv.getEnv(), logService });
 	server.registerChannel(PARADIS_AGENT_DICTIONARY_CHANNEL, new ParadisAgentDictionarySyncChannel<string>(service));
+});
+
+ParadisSharedProcessContributions.register(PARADIS_VOICE_GAINS_CHANNEL, ({ server, accessor }) => {
+	const logService = accessor.get(ILogService);
+	const configurationService = accessor.get(IConfigurationService);
+	const environmentService = accessor.get(INativeEnvironmentService);
+	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisVoiceGains', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
+	const service = new ParadisVoiceGainsService({ getEnv: () => shellEnv.getEnv(), logService });
+	server.registerChannel(PARADIS_VOICE_GAINS_CHANNEL, new ParadisVoiceGainsChannel<string>(service));
 });
