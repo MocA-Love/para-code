@@ -25,6 +25,7 @@ import { useThemeColors } from '../ui/themeColorsStore.js';
 import { useWindowControlsInset } from '../ipad/windowControls.js';
 import { addressHost, legacyNavigateUrl } from '../browserAddress.js';
 import { displayedRoute, MIRROR_ROUTE_INFO, type MirrorRoute } from '../browserRoute.js';
+import { INITIAL_VIDEO_HEALTH, VIDEO_HEALTH_POLL_MS, nextVideoHealth, type VideoHealth } from '../browserVideoHealth.js';
 import { bookmarkLabel, bookmarkFolderView, bookmarkNavigateUrl, isCurrentBookmark } from '../browserBookmarks.js';
 import { BROWSER_KEYBOARD_CLOSED, browserFieldCaption, browserKeyboardMultiline, browserKeyboardNotice, browserKeyboardPlaceholder, browserKeyboardSubmit, nextBrowserKeyboard } from '../browserKeyboard.js';
 import { PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX } from '../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
@@ -275,13 +276,44 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 		};
 	}, []);
 
-	// WebRTC表示中はJPEGフレームの受信処理を止める（表示に使わない数百KB/フレームの
-	// フルパースがJSスレッドを飽和させ、タップ・画面切替が遅くなるのを防ぐ）。
-	// WebRTCが切断されたら自動で再開し、並走しているJPEGへ継ぎ目なく戻る。
+	// WebRTC の映像が本当に流れているか（browserVideoHealth.ts）。復号したフレーム数が増えている間だけ「流れている」。
+	// 統計が読めない実装では、最初の 1 枚が描かれた（onDimensionsChange）ことで代える（止まったことは分からない）。
+	const [videoHealth, setVideoHealth] = useState<VideoHealth>(INITIAL_VIDEO_HEALTH);
+	const [videoStatsReadable, setVideoStatsReadable] = useState(true);
+	const [videoFirstFrame, setVideoFirstFrame] = useState(false);
 	useEffect(() => {
-		setJpegFramesSuspended(webrtcUrl !== undefined);
-		return () => setJpegFramesSuspended(false);
-	}, [webrtcUrl, setJpegFramesSuspended]);
+		setVideoHealth(INITIAL_VIDEO_HEALTH);
+		setVideoStatsReadable(true);
+		setVideoFirstFrame(false);
+		if (webrtcUrl === undefined || !active) {
+			return;
+		}
+		let disposed = false;
+		const poll = () => {
+			void webrtcSessionRef.current?.framesDecoded().then(frames => {
+				if (disposed) {
+					return;
+				}
+				setVideoStatsReadable(frames !== undefined);
+				setVideoHealth(previous => nextVideoHealth(previous, frames, Date.now()));
+			});
+		};
+		poll();
+		const timer = setInterval(poll, VIDEO_HEALTH_POLL_MS);
+		return () => {
+			disposed = true;
+			clearInterval(timer);
+		};
+	}, [webrtcUrl, active]);
+	const videoFlowing = webrtcUrl !== undefined && (videoStatsReadable ? videoHealth.flowing : videoFirstFrame);
+
+	// 映像が流れている間は JPEG のフレームを止める（表示に使わない数百KB/フレームのフルパースがJSスレッドを
+	// 飽和させるのを防ぐ。browser.frame-pause.v1 の PC には送ること自体を止めてもらう）。止めるのは映像の
+	// 最初の 1 枚を確かめてから。映像が止まった・WebRTC が切れたら再開し、JPEG へ戻る。
+	useEffect(() => {
+		setJpegFramesSuspended(videoFlowing);
+	}, [videoFlowing, setJpegFramesSuspended]);
+	useEffect(() => () => setJpegFramesSuspended(false), [setJpegFramesSuspended]);
 
 	// 接続断では低遅延セッションだけ閉じ、最後のURL・target・JPEGフレームは保持する。
 	useEffect(() => {
@@ -440,11 +472,29 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 	const viewSizeRef = useRef(viewSize);
 	viewSizeRef.current = viewSize;
 
+	// 映像が止まったら JPEG を上に重ねて見せる。ただし止めていた間の古い JPEG は出さず、再開して届いた新しい 1 枚から
+	// （RTCView は下に置いたまま。映像がまた流れたら重ねるのをやめる）
+	const stallFrameRef = useRef<typeof frame | undefined>(undefined);
+	const wasFlowingRef = useRef(false);
+	if (videoFlowing) {
+		wasFlowingRef.current = true;
+		stallFrameRef.current = undefined;
+	} else if (webrtcUrl === undefined) {
+		wasFlowingRef.current = false;
+		stallFrameRef.current = undefined;
+	} else if (wasFlowingRef.current && stallFrameRef.current === undefined) {
+		stallFrameRef.current = frame;
+	}
+	const jpegOverVideo = webrtcUrl !== undefined && !videoFlowing && frameSource !== undefined
+		&& (stallFrameRef.current === undefined || frame !== stallFrameRef.current);
+	const videoShownRef = useRef(false);
+	videoShownRef.current = webrtcUrl !== undefined && !jpegOverVideo;
+
 	// 座標計算に使う「表示中コンテンツ」の寸法。WebRTC表示中は RTCView が実際に描画
 	// している映像寸法（onDimensionsChange）、JPEG表示中は表示中フレーム自身の寸法。
 	// どちらも「画面に映っているものそのもの」なので、PC側リサイズの伝搬中でもずれない。
 	const contentDims = (): { w: number; h: number } | undefined => {
-		const d = webrtcDimsRef.current ?? (frameRef.current && frameRef.current.w > 0 && frameRef.current.h > 0
+		const d = (videoShownRef.current ? webrtcDimsRef.current : undefined) ?? (frameRef.current && frameRef.current.w > 0 && frameRef.current.h > 0
 			? { w: frameRef.current.w, h: frameRef.current.h }
 			: undefined);
 		return d && d.w > 0 && d.h > 0 ? d : undefined;
@@ -685,7 +735,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 	const sendInput = (input: BrowserInput) => browserInput(input);
 	const focusForCaption = browserFocus !== undefined && browserFocus.targetId === activeTargetId && browserFocus.focused ? browserFocus : undefined;
 
-	const route = displayedRoute(webrtcUrl !== undefined && RTCViewComponent !== undefined, webrtcRoute, frameSource !== undefined);
+	const route = displayedRoute(webrtcUrl !== undefined && RTCViewComponent !== undefined && !jpegOverVideo, webrtcRoute, frameSource !== undefined);
 	const loading = pageForActive?.loading === true;
 	const bottomSpacer = keyboard.open ? 0 : phoneFullscreen ? 0 : (keyboardVisible ? 0 : stableInsets.bottom);
 	const showBookmarks = bookmarks !== undefined && bookmarks.nodes.length > 0 && !keyboardVisible && !keyboard.open;
@@ -724,8 +774,14 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 						onDimensionsChange={e => {
 							const { width, height } = e.nativeEvent;
 							webrtcDimsRef.current = width > 0 && height > 0 ? { w: width, h: height } : undefined;
+							if (width > 0 && height > 0) {
+								setVideoFirstFrame(true);
+							}
 						}}
 					/>
+					{jpegOverVideo && frameSource !== undefined ? (
+						<Image source={frameSource} style={StyleSheet.absoluteFill} resizeMode="contain" fadeDuration={0} />
+					) : null}
 				</View>
 			) : frameSource && viewSize.w > 1 ? (
 				// 枠の大きさが分かる前に描くと、iOS が 1pt の大きさで画像を読み、同じ URI の間はその粗い絵を使い回す

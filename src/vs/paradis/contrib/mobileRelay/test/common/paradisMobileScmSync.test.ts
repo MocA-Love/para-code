@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisRedactMobileCommandOutput } from '../../common/paradisMobileOutputRedaction.js';
+import { paradisRedactMobileCommandOutput, paradisRedactMobileReplyError } from '../../common/paradisMobileOutputRedaction.js';
 import {
 	paradisBuildCommitFixPrompt,
 	paradisClassifyMobileSyncFailure,
@@ -149,6 +149,21 @@ suite('ParadisMobileScmSync', () => {
 			kept: redacted.includes('error kept'),
 			url: redacted.includes('https://***@github.com/o/r.git'),
 		}, { leaked: false, kept: true, url: true });
+	});
+
+	test('redacts only the error field of a reply and keeps other fields untouched', () => {
+		const content = 'TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123';
+		const reply = paradisRedactMobileReplyError({ error: 'fatal: https://user:ghs_secretsecretsecret@github.com/o/r.git', code: 'x', content });
+		const clean = { error: 'plain failure' };
+		assert.deepStrictEqual({
+			reply,
+			cleanIsSame: paradisRedactMobileReplyError(clean) === clean,
+			noError: paradisRedactMobileReplyError({ t: 'read', content }),
+		}, {
+			reply: { error: 'fatal: https://***@github.com/o/r.git', code: 'x', content },
+			cleanIsSame: true,
+			noError: { t: 'read', content },
+		});
 	});
 
 	test('allows only fast-forward pulls and non-force pushes through the git allow list', () => {

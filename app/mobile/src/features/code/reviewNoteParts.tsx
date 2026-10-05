@@ -53,7 +53,8 @@ export function StaleNotes({ notes, onPress }: { notes: readonly ReviewNote[]; o
 
 /** メモを書く・書き直すシートに渡すもの。 */
 export type NoteComposerTarget =
-	| { readonly mode: 'add'; readonly path: string; readonly line: number; readonly lineText: string }
+	/** `noteId` はシートを開いたときに作るメモの id（保存を押し直しても同じ id を送る）。 */
+	| { readonly mode: 'add'; readonly path: string; readonly line: number; readonly lineText: string; readonly noteId: string }
 	| { readonly mode: 'edit'; readonly note: ReviewNote };
 
 /**

@@ -19,6 +19,18 @@ const LINE_TEXT_MAX = 500;
 /** メモの本文の上限（PC と同じ）。 */
 export const REVIEW_NOTE_BODY_MAX = 2_000;
 
+/**
+ * 新しいメモの id（UUID v4。`review.client-note-id.v1`）。書くシートを開くたびに 1 つ作り、保存を押し直しても同じ id を
+ * 送る。返事が届く前に切れて押し直しても、PC は同じメモを 2 件にしない（設計書 4 章の着手順 7）。
+ */
+export function newReviewNoteId(random: (bytes: Uint8Array<ArrayBuffer>) => Uint8Array = bytes => globalThis.crypto.getRandomValues(bytes)): string {
+	const bytes = random(new Uint8Array(16));
+	bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+	bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+	const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** PC から届いたメモの一覧を読む。形の違う1件は飛ばす。 */
 export function parseReviewNotes(value: unknown): ReviewNote[] {
 	if (!Array.isArray(value)) {

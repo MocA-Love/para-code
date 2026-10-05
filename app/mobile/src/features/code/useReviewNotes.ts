@@ -7,6 +7,7 @@ import {
 } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileDiffReview.js';
 import { sendPcRequest } from '../../appState.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
+import { PcCapability } from '../../pcCompat.js';
 import { useParaToast } from '../../paraToast.js';
 import { codeCacheKey, useReviewNotes } from './codeCache.js';
 import { pcReplyErrorCode } from '../../store.js';
@@ -33,7 +34,8 @@ export interface ReviewNotesController {
 	 */
 	readonly error: string | undefined;
 	clearError(): void;
-	add(path: string, line: number, lineText: string, body: string): Promise<boolean>;
+	/** `noteId` はシートを開いたときに作った id（`newReviewNoteId`）。PC が対応していれば送る。 */
+	add(path: string, line: number, lineText: string, body: string, noteId: string): Promise<boolean>;
 	edit(id: string, body: string): Promise<boolean>;
 	remove(ids: readonly string[]): Promise<boolean>;
 	/** 送信済みと、行が見つからなくなったメモを消す。消した件数（失敗なら undefined）。 */
@@ -67,6 +69,8 @@ type FailureSurface = 'sheet' | 'toast';
 export function useReviewNotesController(space: CodeSpace, review: ReviewMarksController): ReviewNotesController {
 	const enabled = usePcCapability(PARADIS_MOBILE_REVIEW_NOTES_CAPABILITY);
 	const canStage = usePcCapability(PARADIS_MOBILE_REVIEW_STAGE_CAPABILITY);
+	// 古い PC は noteId を読まずに自分で id を振る（送っても害は無いが、意味が通じる相手にだけ送る）
+	const clientNoteId = usePcCapability(PcCapability.ReviewClientNoteId);
 	const notes = useReviewNotes(codeCacheKey(space.pcId, space.spaceId));
 	/** 応答を待っている要求の数（重なっても最後の応答が返るまで busy）。 */
 	const [pending, setPending] = useState(0);
@@ -100,8 +104,8 @@ export function useReviewNotesController(space: CodeSpace, review: ReviewMarksCo
 		}
 	}, [pcId, wsId, applyReply]);
 
-	const add = useCallback(async (path: string, line: number, lineText: string, body: string) =>
-		(await run({ t: 'reviewNoteAdd', path, line, lineText, body }, 'メモを保存できませんでした', 'sheet')) !== undefined, [run]);
+	const add = useCallback(async (path: string, line: number, lineText: string, body: string, noteId: string) =>
+		(await run({ t: 'reviewNoteAdd', path, line, lineText, body, ...(clientNoteId ? { noteId } : {}) }, 'メモを保存できませんでした', 'sheet')) !== undefined, [run, clientNoteId]);
 
 	const edit = useCallback(async (id: string, body: string) =>
 		(await run({ t: 'reviewNoteEdit', noteId: id, body }, 'メモを保存できませんでした', 'sheet')) !== undefined, [run]);

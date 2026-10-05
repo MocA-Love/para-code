@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedDiff } from '../../components/diffParser.js';
-import { canAnnotateRow, clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewFailureTitle, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
+import { canAnnotateRow, clearNotesConfirmMessage, newReviewNoteId, noteAnchorOf, noteCountsByPath, noteLocationLabel, parseReviewNotes, placeReviewNotes, reviewFailureTitle, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type ReviewNote } from './reviewNotes.js';
 
 function note(id: string, line: number, lineText: string, extra: Partial<ReviewNote> = {}): ReviewNote {
 	return { id, path: 'a.ts', line, lineText, body: `note ${id}`, createdAt: 1, updatedAt: 1, ...extra };
@@ -104,5 +104,14 @@ describe('reviewFailureTitle', () => {
 	it('ステージはしたが確かめられなかったときだけ見出しを変える', () => {
 		expect([reviewFailureTitle('ステージできませんでした', 'staged-unverified'), reviewFailureTitle('ステージできませんでした', 'no-response'), reviewFailureTitle('ステージできませんでした', undefined)])
 			.toEqual(['ステージを確かめられませんでした', 'ステージできませんでした', 'ステージできませんでした']);
+	});
+});
+
+describe('newReviewNoteId', () => {
+	it('UUID v4 の形で、PC のメモの id の形（英数字とハイフン 64 文字まで）に収まる', () => {
+		const id = newReviewNoteId(bytes => bytes.fill(0xff));
+		expect(id).toBe('ffffffff-ffff-4fff-bfff-ffffffffffff');
+		expect(/^[0-9A-Za-z-]{1,64}$/.test(newReviewNoteId())).toBe(true);
+		expect(newReviewNoteId()).not.toBe(newReviewNoteId());
 	});
 });

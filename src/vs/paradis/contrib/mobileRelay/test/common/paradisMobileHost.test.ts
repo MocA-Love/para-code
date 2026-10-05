@@ -7,10 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import * as sinon from 'sinon';
 import { paradisResolveMobileWindowHost } from '../../common/paradisMobileHost.js';
-import { PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisMobileUsageErrorReply, paradisMobileUsageNoResponseMessage, paradisWithHostDeadline } from '../../common/paradisMobileHostDeadline.js';
+import { PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisMobileUsageNoResponseMessage, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../../common/paradisMobileHostDeadline.js';
 
 /**
  * モバイルの「接続先セグメント」向けに、ウィンドウの remoteAuthority からホスト識別子を決める。
@@ -70,6 +71,31 @@ suite('ParadisMobileHost', () => {
 				failed: paradisMobileUsageErrorReply(new Error('boom')),
 			}, {
 				timedOut: { error: paradisMobileUsageNoResponseMessage(), code: 'no-response' },
+				failed: { error: 'Error: boom' },
+			});
+		} finally {
+			clock.restore();
+		}
+	});
+
+	// 読み取りの打ち切りは token も取り消し（本体の読み取りを止める）、code: 'no-response' で返す。間に合えばそのまま返す。
+	test('読み取りの打ち切りは本体を取り消し、no-response として返す', async () => {
+		const clock = sinon.useFakeTimers();
+		try {
+			let cancelled = false;
+			const listeners = new DisposableStore();
+			const pending = paradisWithCancellableHostDeadline(token => new Promise<never>(() => { listeners.add(token.onCancellationRequested(() => { cancelled = true; })); }), PARADIS_MOBILE_READ_DEADLINE_MS).catch(error => error);
+			await clock.tickAsync(PARADIS_MOBILE_READ_DEADLINE_MS);
+			listeners.dispose();
+			assert.deepStrictEqual({
+				timedOut: paradisMobileHostErrorReply(await pending),
+				cancelled,
+				done: await paradisWithCancellableHostDeadline(async () => 'ok', PARADIS_MOBILE_READ_DEADLINE_MS),
+				failed: paradisMobileHostErrorReply(new Error('boom')),
+			}, {
+				timedOut: { error: PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, code: 'no-response' },
+				cancelled: true,
+				done: 'ok',
 				failed: { error: 'Error: boom' },
 			});
 		} finally {

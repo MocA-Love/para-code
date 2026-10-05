@@ -21,8 +21,13 @@ export const IMAGE_FILE_PATTERN = /\.(?:jpe?g|jpe|png|bmp|gif|ico|webp|avif|svg)
 export const AV_FILE_PATTERN = /\.(?:mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|oga)$/i;
 const MARKDOWN_PATTERN = /\.(?:md|markdown)$/i;
 const HTML_PATTERN = /\.(?:html?|xhtml)$/i;
+/**
+ * まだ開けない形式（表示の分岐が無く、テキストとして読むと文字化けする）。PC へ読みに行かず「まだ開けません」を出す
+ * （設計書 3b.5。Quick Look で開くのは後の段階）。HEIC・TIFF は WebView で描けるか確かめるまでここに置く。
+ */
+const UNSUPPORTED_FILE_PATTERN = /\.(?:pptx?|pptm|ppsx?|potx|key|numbers|pages|xlsb|xls|docm?|dot|rtf|odt|ods|odp|heic|heif|tiff?|psd|ai|sketch|zip|tar|gz|tgz|bz2|xz|7z|rar|dmg|iso|pkg|exe|dll|so|dylib|o|a|class|jar|wasm|ttf|otf|woff2?|eot|sqlite3?|mkv|avi|wmv|flac|wma)$/i;
 
-export type ViewerKind = 'spreadsheet' | 'docx' | 'pdf' | 'image' | 'av' | 'markdown' | 'html' | 'other';
+export type ViewerKind = 'spreadsheet' | 'docx' | 'pdf' | 'image' | 'av' | 'markdown' | 'html' | 'unsupported' | 'other';
 
 export function viewerKindOf(path: string): ViewerKind {
 	const name = path.split('/').pop() ?? path;
@@ -42,11 +47,14 @@ export function viewerKindOf(path: string): ViewerKind {
 	if (MARKDOWN_PATTERN.test(name)) {
 		return 'markdown';
 	}
-	return HTML_PATTERN.test(name) ? 'html' : 'other';
+	if (HTML_PATTERN.test(name)) {
+		return 'html';
+	}
+	return UNSUPPORTED_FILE_PATTERN.test(name) ? 'unsupported' : 'other';
 }
 
-/** PC からどの形で受け取るか（`fsXlsx` / `fsPdf` / `fsDocx` / `fsMedia` / `fsRead`）。 */
-export type ViewerFetch = 'xlsx' | 'pdf' | 'docx' | 'media' | 'text';
+/** PC からどの形で受け取るか（`fsXlsx` / `fsPdf` / `fsDocx` / `fsMedia` / `fsRead`）。`none` は読みに行かない。 */
+export type ViewerFetch = 'xlsx' | 'pdf' | 'docx' | 'media' | 'text' | 'none';
 
 export function viewerFetchOf(kind: ViewerKind): ViewerFetch {
 	switch (kind) {
@@ -55,8 +63,17 @@ export function viewerFetchOf(kind: ViewerKind): ViewerFetch {
 		case 'docx': return 'docx';
 		case 'image':
 		case 'av': return 'media';
+		case 'unsupported': return 'none';
 		default: return 'text';
 	}
+}
+
+/**
+ * PC にハイライトを頼むか（設計書 4 章の着手順 9）。ハイライトはコードの表示でだけ使う。Markdown・HTML の
+ * プレビューは本文だけで描くので、頼むと PC が使わない HTML を作って送るだけになる。
+ */
+export function wantsHighlight(kind: ViewerKind, mode: ViewerMode): boolean {
+	return viewerFetchOf(kind) === 'text' && (mode === 'code' || !canToggleSource(kind));
 }
 
 /** プレビューとソースを切り替えられる種類。 */
@@ -140,6 +157,54 @@ export function codeLines(result: Pick<FsReadResult, 'content' | 'html'>): strin
 	return lines;
 }
 
+/** コードの表示で一度に出す行数。超えるファイルは 1 万行ずつのページにして、下の帯で前後へ移る（設計書 3b.5）。 */
+export const CODE_LINE_WINDOW = 10_000;
+
+/**
+ * 表示する行（HTML 片。`start` 行目（0 始まり）から最大 `count` 行）と、ファイル全体の行数。PC のハイライトは
+ * ファイルの先頭（128K 文字）だけなので、ハイライトが途中で切れていれば（`highlightTruncated`）、切れた最後の行から
+ * 先は本文をエスケープした素の行で続ける。以前はハイライトの行だけを出していたので、128K 文字を超えるファイルは
+ * 本文を全部受けても先頭しか見えなかった。
+ */
+export function codeLinesWindow(result: Pick<FsReadResult, 'content' | 'html' | 'highlightTruncated'>, start: number, count: number): { readonly lines: string[]; readonly total: number } {
+	const tokenized = result.html !== undefined ? TOKENIZED_WRAPPER.exec(result.html)?.[1] : undefined;
+	const highlighted = tokenized !== undefined ? dropTrailingEmpty(tokenized.split(/<br\s*\/?>/i)) : [];
+	const end = start + count;
+	if (tokenized !== undefined && result.highlightTruncated !== true) {
+		return { lines: highlighted.slice(start, end), total: highlighted.length };
+	}
+	const plain = dropTrailingEmpty(result.content.split('\n'));
+	// ハイライトが途中で切れていれば、切れた最後の行から素の本文に切り替える。ハイライトが無ければ全部素の本文
+	const kept = Math.min(Math.max(highlighted.length - 1, 0), plain.length);
+	const lines = highlighted.slice(start, Math.min(kept, end));
+	for (let index = Math.max(start, kept); index < plain.length && index < end; index++) {
+		lines.push(escapeHtml((plain[index] ?? '').replace(/\r$/, '')));
+	}
+	return { lines, total: Math.max(plain.length, kept) };
+}
+
+/** 本文の行数（末尾の改行が作る空の最終行は数えない。{@link codeLinesWindow} の `total` と同じ）。 */
+export function codeLineTotal(content: string): number {
+	let lines = 1;
+	for (let index = content.indexOf('\n'); index !== -1; index = content.indexOf('\n', index + 1)) {
+		lines++;
+	}
+	return lines > 1 && content.endsWith('\n') ? lines - 1 : lines;
+}
+
+/** その行（1 始まり）を含むページの先頭（0 始まり）。 */
+export function codePageStartOf(line: number | undefined): number {
+	return line !== undefined && line > 0 ? Math.floor((line - 1) / CODE_LINE_WINDOW) * CODE_LINE_WINDOW : 0;
+}
+
+/** 末尾の改行が作る空の最終行を落とす（エディタの行番号と合わせる）。 */
+function dropTrailingEmpty(lines: string[]): string[] {
+	if (lines.length > 1 && lines[lines.length - 1] === '') {
+		lines.pop();
+	}
+	return lines;
+}
+
 /**
  * コードの表示（モックの `.src`）。行番号の列（幅 40）と本文を1行ずつ並べ、PC のテーマの
  * トークン色（`css`）と地の色を当てる。`focusLine`（検索の一致行）があればその行に色を敷いて
@@ -153,11 +218,14 @@ const DEFAULT_ACCENT: AccentColors = { accent: colors.accent, accentWash: colors
  * `nonce` を渡すと、`<head>` の先頭に自分のスクリプトだけを動かす CSP を置き、一致行へ送るスクリプトに nonce を付ける
  * （ビューアの中の検索のために WebView のスクリプトを有効にするため。`fileFind.ts`）。
  */
-export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: AccentColors = DEFAULT_ACCENT, nonce?: string): string {
+export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: AccentColors = DEFAULT_ACCENT, nonce?: string, pageStart = 0): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.terminalFg;
-	const rows = codeLines(result)
-		.map((line, index) => `<div class="l${index + 1 === focusLine ? ' f' : ''}"><i>${index + 1}</i><span>${line.length > 0 ? line : ' '}</span></div>`)
+	const rows = codeLinesWindow(result, pageStart, CODE_LINE_WINDOW).lines
+		.map((line, index) => {
+			const number = pageStart + index + 1;
+			return `<div class="l${number === focusLine ? ' f' : ''}"><i>${number}</i><span>${line.length > 0 ? line : ' '}</span></div>`;
+		})
 		.join('');
 	const focusScript = focusLine !== undefined && focusLine > 0
 		? `<script${nonce !== undefined ? ` nonce="${nonce}"` : ''}>(function(){var f=document.querySelector(".f");if(f){setTimeout(function(){f.scrollIntoView({block:"center"});},50);}})();</script>`

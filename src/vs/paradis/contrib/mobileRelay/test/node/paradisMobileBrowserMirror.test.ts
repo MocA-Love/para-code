@@ -75,6 +75,43 @@ suite('ParadisMobileBrowserMirror', () => {
 		assert.strictEqual(delivered.length, 2);
 	});
 
+	test('frame-pause の間は JPEG を送らず、frame-resume で dedup を捨てて撮り直す', async () => {
+		const frames = store.add(new Emitter<IParadisCdpFrameEvent>());
+		const subscription: IParadisCdpFrameSubscription = {
+			onDidFrame: frames.event,
+			startFrameSubscription: async () => true,
+			stopFrameSubscription: async () => undefined,
+			resolveTargetWindowId: async () => 1,
+			resolveTargetId: async () => null,
+			resolveUpstreamPort: async () => null,
+			armMirrorCapture: async () => undefined,
+		};
+		const delivered: Uint8Array[] = [];
+		const cdpCalls: string[] = [];
+		const logService = new NullLogService();
+		const mirror = store.add(new ParadisMobileBrowserMirror(new ParadisCdpUpstream('', logService), subscription, undefined, logService));
+		const session = {
+			socket: { close: () => undefined, readyState: 1, send: (raw: string) => cdpCalls.push(JSON.parse(raw).method) } as unknown as WebSocket,
+			targetId: 'target-a', nextId: 1, viewWidth: 0, viewHeight: 0, captureTimer: undefined, captureInFlight: false,
+			lastFrameData: undefined, handlers: new Map(), pushMode: true, pushStarted: false, lastPushFrameAt: 0, lastMetricsAt: 0,
+			send: (payload: Uint8Array) => delivered.push(payload),
+		};
+		(mirror as unknown as { sessions: Map<string, typeof session> }).sessions.set('mobile', session);
+		const request = (t: string) => mirror.handleRequest('mobile', new TextEncoder().encode(JSON.stringify({ t })), () => undefined);
+
+		frames.fire({ targetId: 'target-a', data: 'first', w: 10, h: 10 });
+		await request('frame-pause');
+		frames.fire({ targetId: 'target-a', data: 'while-paused', w: 10, h: 10 });
+		await request('frame-resume');
+
+		assert.deepStrictEqual({
+			delivered: delivered.map(payload => JSON.parse(new TextDecoder().decode(payload)).data),
+			pushAliveWhilePaused: session.lastPushFrameAt > 0,
+			dedupReset: session.lastFrameData,
+			recaptured: cdpCalls.includes('Page.getLayoutMetrics'),
+		}, { delivered: ['first'], pushAliveWhilePaused: true, dedupReset: undefined, recaptured: true });
+	});
+
 	test('明示要求したセッションだけJPEGを可逆なbinary v1で送る', async () => {
 		const frames = store.add(new Emitter<IParadisCdpFrameEvent>());
 		const subscription: IParadisCdpFrameSubscription = {

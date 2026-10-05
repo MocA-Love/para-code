@@ -57,6 +57,8 @@ type BrowserInbound =
 		windowId?: unknown; ws?: unknown;
 	}
 	| { t: 'stop'; id: string }
+	/** browser.frame-pause.v1: WebRTC の映像が届いている間は JPEG を止める / 再開する。応答は返さない。 */
+	| { t: 'frame-pause' | 'frame-resume'; id?: undefined }
 	| {
 		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate' | 'key' | 'stop' | 'open' | 'replace';
 		/** tap/scroll: 直近フレームに対する正規化座標(0..1)。 */
@@ -116,6 +118,11 @@ interface MirrorSession {
 	lastFocusSignature?: string;
 	/** 次のフォーカスの報告を、重複でも送る（置き換えを断った後の知らせ直し）。 */
 	forceNextFocus?: boolean;
+	/**
+	 * JPEG のフレームを止めている（browser.frame-pause.v1。アプリが WebRTC の映像を受け取れている間）。
+	 * 止めている間も、ページの状態・フォーカス・タップ座標用の寸法は追い続ける。
+	 */
+	framesPaused?: boolean;
 }
 
 /** ミラーへ RelayService から渡す道具。どれも無ければ従来の動き。 */
@@ -188,6 +195,10 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				continue;
 			}
 			session.lastPushFrameAt = Date.now();
+			// JPEG を止めている間は送らない（dedup 基準も進めない。再開時は撮り直して送る）
+			if (session.framesPaused === true) {
+				continue;
+			}
 			// 同じJPEGの再描画通知は表示を変えない。生存時刻だけは上で更新し、
 			// プッシュ停滞と誤認してポーリングへフォールバックしないようにする。
 			if (session.lastFrameData === e.data) {
@@ -290,6 +301,10 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			} else if (msg.t === 'stop') {
 				this.stopSession(mobileId);
 				reply({ id: msg.id, t: 'stopped' });
+			} else if (msg.t === 'frame-pause') {
+				this.setFramesPaused(mobileId, true);
+			} else if (msg.t === 'frame-resume') {
+				this.setFramesPaused(mobileId, false);
 			} else if (msg.t === 'input') {
 				this.dispatchInput(mobileId, msg);
 			}
@@ -420,8 +435,31 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		session.captureTimer = setInterval(() => this.tick(session), CAPTURE_INTERVAL_MS);
 	}
 
+	/**
+	 * JPEG のフレームを止める・再開する（browser.frame-pause.v1。設計書 4 章の着手順 8）。アプリは WebRTC の映像の
+	 * 最初の 1 枚を確かめてから止め、映像が止まった・WebRTC が切れたら再開を送る。再開したら、止めている間に
+	 * 変わった画面を見せるため、dedup の基準を捨ててすぐ 1 枚撮る。ミラーしていなければ何もしない。
+	 */
+	setFramesPaused(mobileId: string, paused: boolean): void {
+		const session = this.sessions.get(mobileId);
+		if (session === undefined || (session.framesPaused === true) === paused) {
+			return;
+		}
+		session.framesPaused = paused;
+		if (!paused) {
+			session.lastFrameData = undefined;
+			this.captureFrame(session);
+		}
+	}
+
 	private tick(session: MirrorSession): void {
-		if (session.pushMode && Date.now() - session.lastPushFrameAt < PUSH_STALE_MS) {
+		if (session.framesPaused === true) {
+			// JPEG は止めている。タップ座標の変換に使う寸法だけ約 1 秒ごとに追う
+			if (Date.now() - session.lastMetricsAt >= 1000) {
+				session.lastMetricsAt = Date.now();
+				this.refreshViewMetrics(session);
+			}
+		} else if (session.pushMode && Date.now() - session.lastPushFrameAt < PUSH_STALE_MS) {
 			// プッシュで描画は届いている。タップ座標変換用のビューポート寸法だけ、
 			// CDP往復を抑えるため約1秒間隔で追従させる
 			if (Date.now() - session.lastMetricsAt >= 1000) {
@@ -721,8 +759,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			this.cdpCall(session, 'Page.captureScreenshot', { format: 'jpeg', quality: 60 }, result => {
 				session.captureInFlight = false;
 				const data = (result as { data?: string } | undefined)?.data;
-				// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）
-				if (data && data !== session.lastFrameData) {
+				// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）。撮っている間に止められたら送らない
+				if (data && data !== session.lastFrameData && session.framesPaused !== true) {
 					session.lastFrameData = data;
 					session.send(encodeBrowserFrame(data, session.viewWidth, session.viewHeight, session.binaryFrames));
 				}

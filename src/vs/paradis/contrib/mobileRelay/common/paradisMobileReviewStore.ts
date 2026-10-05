@@ -312,6 +312,23 @@ export function paradisAddMobileReviewNote(space: IParadisMobileReviewSpace, not
 	return { ...space, notes: [...space.notes, added], updatedAt: now };
 }
 
+/**
+ * アプリが振った id でメモを足す（`review.client-note-id.v1`。設計書 4 章の着手順 7）。返事が届く前に切れて
+ * 押し直した・自動で送り直したときに、同じメモが 2 件にならないようにする。
+ * - 同じ id のメモがあり、中身（パス・行・行の中身・本文）が同じなら、足さずにそのまま返す（2 回目以降も成功）
+ * - 同じ id で中身が違えば `'conflict'`（別の操作の id を使い回した。黙って上書きも追加もしない）
+ * - 上限に達していれば `'full'`
+ */
+export function paradisAddMobileReviewNoteOnce(space: IParadisMobileReviewSpace, note: { readonly id: string; readonly path: string; readonly line: number; readonly lineText: string; readonly body: string }, now: number): IParadisMobileReviewSpace | 'conflict' | 'full' {
+	const existing = space.notes.find(candidate => candidate.id === note.id);
+	if (existing !== undefined) {
+		const same = existing.path === note.path && existing.line === note.line
+			&& existing.lineText === note.lineText.slice(0, PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX) && existing.body === note.body.trim();
+		return same ? space : 'conflict';
+	}
+	return paradisAddMobileReviewNote(space, note, now) ?? 'full';
+}
+
 /** メモの本文を書き換える。送信済みのものを書き換えたら、もう一度送れるよう未送信に戻す。見つからなければ undefined。 */
 export function paradisEditMobileReviewNote(space: IParadisMobileReviewSpace, id: string, body: string, now: number): IParadisMobileReviewSpace | undefined {
 	const index = space.notes.findIndex(note => note.id === id);

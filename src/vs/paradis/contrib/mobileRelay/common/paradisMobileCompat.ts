@@ -169,6 +169,17 @@ export const ParadisMobileCapability = {
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
 	VoiceUsage: 'usage.voice.v1',
+	/**
+	 * scm の `reviewNoteAdd` の `noteId`（アプリが振るメモの id。押し直し・送り直しで同じ id を使う）。PC は同じ id の
+	 * 同じメモなら足さずに成功を返し、中身が違えば `code: 'note-id-conflict'` で断る（設計書 4 章の着手順 7）。
+	 */
+	ReviewClientNoteId: 'review.client-note-id.v1',
+	/**
+	 * browser の `frame-pause` / `frame-resume`。アプリが WebRTC の映像を受け取れていると確かめたら JPEG のフレームを
+	 * 止めてもらい、映像が止まった・WebRTC が切れたら再開してもらう（設計書 4 章の着手順 8）。PC は再開したら
+	 * すぐ 1 枚撮って送る。`webrtc-stop` と `start` でも再開する。
+	 */
+	BrowserFramePause: 'browser.frame-pause.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -216,6 +227,8 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentCommandsV2,
 	ParadisMobileCapability.AgentPanel,
 	ParadisMobileCapability.VoiceUsage,
+	ParadisMobileCapability.ReviewClientNoteId,
+	ParadisMobileCapability.BrowserFramePause,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

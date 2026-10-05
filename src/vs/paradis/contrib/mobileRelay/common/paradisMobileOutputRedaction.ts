@@ -30,3 +30,18 @@ export function paradisRedactMobileCommandOutput(raw: string): string {
 		.replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]+/g, 'https://hooks.slack.com/***');
 	return normalized.split('\n').map(line => paradisRedactSecrets(line)).join('\n');
 }
+
+/**
+ * 応答の `error` に伏せ字を当てる（設計書 4 章の着手順 3）。scm・fs の応答の出口（`reply` の手前）で一律に通す。
+ * 例外の文や git の stderr には remote の URL の資格情報・フックの環境変数が混ざりうるため。
+ *
+ * 当てるのは文字列の `error` だけ。ファイルの本文・差分・コードなど他の項目には触らない（正当な中身を置き換えない）。
+ */
+export function paradisRedactMobileReplyError<T extends object>(body: T): T {
+	const error = (body as { readonly error?: unknown }).error;
+	if (typeof error !== 'string' || error.length === 0) {
+		return body;
+	}
+	const redacted = paradisRedactMobileCommandOutput(error);
+	return redacted === error ? body : { ...body, error: redacted };
+}

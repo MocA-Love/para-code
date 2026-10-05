@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { ancestorPaths, baseName, dirState, flattenTree, formatSize, joinPath, needsLoad, parentPath, type DirCache } from './fileTree.js';
-import { buildCodeHtml, codeLines, defaultViewerMode, filesTarget, parseFocusLine, resolveUnknownTarget, viewerBreadcrumb, viewerFetchOf, viewerKindOf } from './fileViewerModel.js';
+import { CODE_LINE_WINDOW, buildCodeHtml, codeLineTotal, codeLines, codeLinesWindow, codePageStartOf, defaultViewerMode, filesTarget, parseFocusLine, resolveUnknownTarget, viewerBreadcrumb, viewerFetchOf, viewerKindOf, wantsHighlight } from './fileViewerModel.js';
 
 const cache: DirCache = {
 	'': { entries: [{ name: 'src', dir: true }, { name: 'docs', dir: true }, { name: 'README.md', dir: false, size: 3400 }] },
@@ -119,6 +119,22 @@ describe('viewerKindOf / 表示の既定', () => {
 		expect(viewerFetchOf('markdown')).toBe('text');
 	});
 
+	it('表示の分岐が無い形式は読みに行かず、拡張子の無いファイルや未知のテキストは読む', () => {
+		expect(['deck.pptx', 'old.xls', 'memo.doc', 'photo.HEIC', 'src.zip', 'scan.tiff'].map(viewerKindOf)).toEqual(Array(6).fill('unsupported'));
+		expect(viewerFetchOf('unsupported')).toBe('none');
+		expect(['Makefile', 'main.rs', 'data.csv'].map(viewerKindOf)).toEqual(['other', 'other', 'other']);
+	});
+
+	it('ハイライトはコードの表示でだけ頼む（Markdown・HTML のプレビューでは頼まない）', () => {
+		expect([
+			wantsHighlight('markdown', 'render'),
+			wantsHighlight('markdown', 'code'),
+			wantsHighlight('html', 'render'),
+			wantsHighlight('other', 'code'),
+			wantsHighlight('image', 'render'),
+		]).toEqual([false, true, false, true, false]);
+	});
+
 	it('文書はプレビュー、コードと検索の一致行から開いたときはソース', () => {
 		expect(defaultViewerMode('markdown', undefined)).toBe('render');
 		expect(defaultViewerMode('markdown', 12)).toBe('code');
@@ -144,6 +160,17 @@ describe('codeLines / buildCodeHtml', () => {
 	it('ハイライトが無ければ本文をエスケープして使う', () => {
 		expect(codeLines({ content: 'if (a < b) {\r\n}\n', html: undefined })).toEqual(['if (a &lt; b) {', '}']);
 		expect(codeLines({ content: '', html: undefined })).toEqual(['']);
+	});
+
+	it('ハイライトが途中で切れていたら、切れた行から素の本文で続け、ページごとに切り出す', () => {
+		const html = '<div class="monaco-tokenized-source"><span class="mtk1">one</span><br/><span class="mtk1">tw</span></div>';
+		const result = { content: 'one\ntwo\n<three>\n', html, highlightTruncated: true };
+		expect(codeLinesWindow(result, 0, 10)).toEqual({ lines: ['<span class="mtk1">one</span>', 'two', '&lt;three&gt;'], total: 3 });
+		expect(codeLinesWindow(result, 1, 1)).toEqual({ lines: ['two'], total: 3 });
+		expect(codeLinesWindow({ content: 'a\nb\nc', html: undefined }, 2, 5)).toEqual({ lines: ['c'], total: 3 });
+		expect([codeLineTotal('a\nb\n'), codeLineTotal('a'), codeLineTotal('')]).toEqual([2, 1, 1]);
+		expect([codePageStartOf(undefined), codePageStartOf(CODE_LINE_WINDOW), codePageStartOf(CODE_LINE_WINDOW + 1)]).toEqual([0, 0, CODE_LINE_WINDOW]);
+		expect(buildCodeHtml({ content: 'a\nb\nc', truncated: false, size: 5 }, undefined, undefined, undefined, 2)).toContain('<i>3</i><span>c</span>');
 	});
 
 	it('行番号を付け、一致行にだけ印とスクロールを付ける', () => {
