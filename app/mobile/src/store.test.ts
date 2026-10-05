@@ -821,6 +821,77 @@ describe('MobileController', () => {
 		expect(latest?.protocolError).toContain('通信バージョン');
 	});
 
+	it('sends its known State version and accepts an unchanged reply, asking for the full State when it does not match (4 #14)', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.State, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload)) as Record<string, unknown>));
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([{ id: 1, title: 'zsh' }]), capabilities: ['state.unchanged.v1'] })));
+		await flush();
+
+		requests.length = 0;
+		controller.requestState();
+		await flush();
+		const knownSent = requests.map(request => request.known);
+		const framesBefore = controller.stateFramesReceived;
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ t: 'unchanged', desktopEpoch: 'desktop-test', revision: 1 })));
+		await flush();
+		const afterUnchanged = { frames: controller.stateFramesReceived - framesBefore, terminals: latest?.workspace?.terminals.length };
+		requests.length = 0;
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ t: 'unchanged', desktopEpoch: 'desktop-test', revision: 7 })));
+		await flush();
+
+		expect({ knownSent, afterUnchanged, refetch: requests.map(request => request.known ?? 'full') }).toEqual({
+			knownSent: [{ desktopEpoch: 'desktop-test', revision: 1 }],
+			afterUnchanged: { frames: 1, terminals: 1 },
+			refetch: ['full'],
+		});
+	});
+
+	it('tells a PC that keeps the session for voice that it went to the background, and only such a PC (4 #4)', async () => {
+		const run = async (capabilities: string[]) => {
+			const mobile = generateIdentity();
+			const pc = generateIdentity();
+			const pair = new FakePair();
+			const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+			const controller = new MobileController(mobile, () => pair.client, () => { });
+			const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+			controller.connect(creds);
+			pair.fireOpen();
+			const pcMux = await pcMuxPromise;
+			const visibility: Record<string, unknown>[] = [];
+			pcMux.on(Channels.Notify, frame => {
+				const message = JSON.parse(new TextDecoder().decode(frame.payload)) as Record<string, unknown>;
+				if (message.t === 'visibility') {
+					visibility.push(message);
+				}
+			});
+			await flush();
+			pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([]), capabilities })));
+			await flush();
+			controller.enterVoiceBackground();
+			await flush();
+			controller.leaveVoiceBackground();
+			await flush();
+			controller.dispose();
+			return visibility;
+		};
+
+		expect({ current: await run(['notify.visibility-voice.v1']), legacy: await run([]) }).toEqual({
+			current: [{ t: 'visibility', state: 'background', keep: 'voice' }, { t: 'visibility', state: 'foreground' }],
+			legacy: [],
+		});
+	});
+
 	it('reflects state snapshot and terminal output from PC', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();
