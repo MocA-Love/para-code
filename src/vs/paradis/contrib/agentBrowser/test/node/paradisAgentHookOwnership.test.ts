@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand } from '../../node/paradisAgentHookOwnership.js';
+import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand } from '../../node/paradisAgentHookOwnership.js';
 
 suite('ParadisAgentHookOwnership', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -400,13 +400,14 @@ suite('ParadisAgentHookOwnership', () => {
 			const toTree = (processes: Process[]) => new Map(processes.map(([pid, ppid, command]) => [pid, proc(pid, ppid, command)] as [number, IParadisHookProcessInfo]));
 			const tree = toTree([...base, ...before, [526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh']]);
 			const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree });
-			const origins = [(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 })).origin];
+			// ペインのシェル (100) を渡しても、tmux のサーバー配下は後継の絞り込みから外れる。
+			const origins = [(await ownership.classify({ token: 'a', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, paneShellPid: 100 })).origin];
 			// 前の所有者が終わり、同じペインで起動し直す。
 			tree.clear();
 			for (const [pid, info] of toTree([...base, ...after, [536, 530, '/bin/sh /home/user/.para-code/hooks/notify-v3.sh']])) {
 				tree.set(pid, info);
 			}
-			origins.push((await ownership.classify({ token: 'a', hookPid: 536, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 })).origin);
+			origins.push((await ownership.classify({ token: 'a', hookPid: 536, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, paneShellPid: 100 })).origin);
 			results.push([name, origins]);
 		}
 		assert.deepStrictEqual(results, cases.map(({ name }) => [name, ['owner', 'owner']]));
@@ -634,5 +635,180 @@ suite('ParadisAgentHookOwnership', () => {
 		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
 		const result = await ownership.classify({ token: 't', hookPid: 241, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 });
 		assert.deepStrictEqual(result, { origin: 'nested', agentKind: 'claude' });
+	});
+
+	/**
+	 * `claude attach <id>` のペイン（2.1.289 で実測した形。daemon は attach が起こし、attach の子になる）と、
+	 * Claude Code の Codex plugin が detached で起動した `codex app-server`（親は PID 1）:
+	 *   100 (zsh, ペインのシェル) ← 300 (`claude attach 11111111`) ← 400 (`claude daemon run`)
+	 *     ← 410 (`claude bg-pty-host`) ← 420 (`claude bg-spare`, attach が見ている会話) ← 421 (notify script)
+	 *     ← 430 (`claude bg-pty-host`) ← 440 (`claude bg-spare`, 別の会話) ← 441 (notify script)
+	 *   1 ← 600 (node broker) ← 610 (node codex) ← 620 (codex vendor app-server) ← 621 (notify script)
+	 */
+	const ATTACHED_SESSION_ID = '11111111-1111-1111-1111-111111111111';
+	function attachTree(): Map<number, IParadisHookProcessInfo> {
+		return new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[300, proc(300, 100, 'claude attach 11111111')],
+			[400, proc(400, 300, '/home/user/.local/bin/claude daemon run --origin transient --spawned-by {"label":"claude","cwd":"/repo","pid":300}')],
+			[410, proc(410, 400, 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/x/spare/a.pty.sock 200 50 -- /home/user/.local/share/claude/versions/2.1.289 --bg-spare /tmp/cc-daemon-501/x/spare/a.claim.sock')],
+			[420, proc(420, 410, 'claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/a.claim.sock')],
+			[421, proc(421, 420, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+			[430, proc(430, 400, 'claude bg-pty-host --bg-pty-host /tmp/cc-daemon-501/x/spare/b.pty.sock 200 50 -- /home/user/.local/share/claude/versions/2.1.289 --bg-spare /tmp/cc-daemon-501/x/spare/b.claim.sock')],
+			[440, proc(440, 430, 'claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/b.claim.sock')],
+			[441, proc(441, 440, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+			[600, proc(600, 1, 'node /home/user/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs serve --cwd /repo')],
+			[610, proc(610, 600, 'node /home/user/.npm-global/bin/codex app-server')],
+			[620, proc(620, 610, '/home/user/.npm-global/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/bin/codex app-server')],
+			[621, proc(621, 620, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+	}
+
+	test('reads the target of claude attach', () => {
+		assert.deepStrictEqual([
+			'claude attach d527839f',
+			'/home/user/.local/bin/claude attach D527839F-B586-4387-A89D-A3D7C5616DAB',
+			'node /x/claude attach d527839f',
+			'claude attach',
+			'claude attach abc',
+			'claude --resume d527839f',
+			'tmux new-session claude attach d527839f',
+		].map(paradisClaudeAttachTargetFromCommandLine), ['d527839f', 'd527839f-b586-4387-a89d-a3d7c5616dab', 'd527839f', undefined, undefined, undefined, undefined]);
+	});
+
+	test('claude attach owns the pane through the daemon-hosted session it shows, until it exits', async () => {
+		const tree = attachTree();
+		const ownership = ownershipWith(tree);
+		const at = (n: number) => ({ token: 't', at: n, paneShellPid: 100 });
+		const results = [
+			// attach が見ている会話の hook は所有者
+			await ownership.classify({ ...at(1), hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID }),
+			// 同じ daemon の別の会話は background のまま
+			await ownership.classify({ ...at(2), hookPid: 441, transcriptPath: CLAUDE_TRANSCRIPT_2, sessionId: '22222222-2222-2222-2222-222222222222' }),
+			// detached の codex app-server は所有者を奪えない
+			(await ownership.classify({ ...at(3), hookPid: 621, transcriptPath: CODEX_TRANSCRIPT })).origin,
+			// /clear で会話 id が変わっても、同じ daemon のプロセスからなら所有者
+			await ownership.classify({ ...at(4), hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT_2, sessionId: '22222222-2222-2222-2222-222222222222' }),
+		];
+		// attach の会話の中で起動した codex は子エージェント
+		tree.set(425, proc(425, 420, '/opt/codex/vendor/bin/codex exec'));
+		tree.set(426, proc(426, 425, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		results.push(await ownership.classify({ ...at(5), hookPid: 426, transcriptPath: CODEX_TRANSCRIPT }));
+		// attach が終わる（daemon は launchd の子になる）。会話は background に戻り、detached の codex も後継になれない。
+		tree.delete(300);
+		tree.set(400, proc(400, 1, '/home/user/.local/bin/claude daemon run --origin transient'));
+		results.push(
+			await ownership.classify({ ...at(6), hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID }),
+			(await ownership.classify({ ...at(7), hookPid: 621, transcriptPath: CODEX_TRANSCRIPT })).origin,
+		);
+		// 同じペインで claude を起動し直したら、それが所有者
+		tree.set(700, proc(700, 100, 'claude'));
+		tree.set(701, proc(701, 700, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		results.push(await ownership.classify({ ...at(8), hookPid: 701, transcriptPath: CLAUDE_TRANSCRIPT }));
+		assert.deepStrictEqual(results, [
+			{ origin: 'owner', agentKind: 'claude' },
+			{ origin: 'background', agentKind: 'claude' },
+			'invalid',
+			{ origin: 'owner', agentKind: 'claude' },
+			{ origin: 'nested', agentKind: 'codex' },
+			{ origin: 'background', agentKind: 'claude' },
+			'invalid',
+			{ origin: 'owner', agentKind: 'claude' },
+		]);
+	});
+
+	test('a claude attach in another pane does not make the daemon session the owner of this pane', async () => {
+		const tree = attachTree();
+		// attach はペイン 150 のシェルの下にいる。hook はこのペイン（シェル 100）の token で届く。
+		tree.set(150, proc(150, 1, '/bin/zsh -il'));
+		tree.set(300, proc(300, 150, 'claude attach 11111111'));
+		const ownership = ownershipWith(tree);
+		const result = await ownership.classify({ token: 't', hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID, at: 1, paneShellPid: 100 });
+		assert.deepStrictEqual(result, { origin: 'background', agentKind: 'claude' });
+	});
+
+	test('a detached codex outside the pane cannot take over a pane whose owner has no pid', async () => {
+		// Para Code の再起動直後や控えの流し直しで、所有者が transcript だけで記録された状態。
+		const tree = attachTree();
+		tree.set(200, proc(200, 100, 'claude'));
+		tree.set(206, proc(206, 200, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		const ownership = ownershipWith(tree);
+		await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const outside = await ownership.classify({ token: 't', hookPid: 621, transcriptPath: CODEX_TRANSCRIPT, at: 2, paneShellPid: 100 });
+		const inside = await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 3, paneShellPid: 100 });
+		const afterOwner = await ownership.classify({ token: 't', hookPid: 621, transcriptPath: CODEX_TRANSCRIPT, at: 4, paneShellPid: 100 });
+		// ペインのシェルが分からない（接続先・同期前）ときはこれまでどおり後継にする。
+		const fallback = ownershipWith(tree);
+		await fallback.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const withoutShell = await fallback.classify({ token: 't', hookPid: 621, transcriptPath: CODEX_TRANSCRIPT, at: 2 });
+		assert.deepStrictEqual([outside, inside, afterOwner.origin, withoutShell], [
+			{ origin: 'invalid', agentKind: 'codex', rejection: { identityLoss: undefined, ownerPinnedBy: 'transcript', ownerTranscriptPath: CLAUDE_TRANSCRIPT, ownerAt: 1, snapshotAgeMs: undefined, outsidePane: true } },
+			{ origin: 'owner', agentKind: 'claude' },
+			'invalid',
+			{ origin: 'owner', agentKind: 'codex' },
+		]);
+	});
+
+	test('codex started by hand inside claude stays nested, and codex started after claude exits owns the pane', async () => {
+		const tree = standardTree();
+		tree.set(250, proc(250, 200, '/bin/zsh -c codex'));
+		tree.set(260, proc(260, 250, '/opt/codex/vendor/bin/codex'));
+		tree.set(261, proc(261, 260, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		const ownership = ownershipWith(tree);
+		const results = [
+			await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, paneShellPid: 100 }),
+			await ownership.classify({ token: 't', hookPid: 261, transcriptPath: CODEX_TRANSCRIPT, at: 2, paneShellPid: 100 }),
+		];
+		for (const pid of [200, 205, 206, 210, 220, 230, 231, 250, 260, 261]) {
+			tree.delete(pid);
+		}
+		tree.set(270, proc(270, 100, '/opt/codex/vendor/bin/codex'));
+		tree.set(271, proc(271, 270, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		results.push(await ownership.classify({ token: 't', hookPid: 271, transcriptPath: CODEX_TRANSCRIPT, at: 3, paneShellPid: 100 }));
+		assert.deepStrictEqual(results, [
+			{ origin: 'owner', agentKind: 'claude' },
+			{ origin: 'nested', agentKind: 'codex' },
+			{ origin: 'owner', agentKind: 'codex' },
+		]);
+	});
+
+	test('the pane process itself can own the pane (exec claude, exec claude attach)', async () => {
+		// `exec claude` でシェルが置き換わった、またはペインの最初のプロセスがエージェントのとき、発信元はペインのプロセスそのもの。
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, 'claude')],
+			[106, proc(106, 100, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const exec = await ownershipWith(tree).classify({ token: 't', hookPid: 106, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, paneShellPid: 100 });
+		// `exec claude attach <id>` でも、ペインのプロセスそのものが attach になる。
+		const attach = attachTree();
+		attach.delete(100);
+		attach.set(300, proc(300, 1, 'claude attach 11111111'));
+		const execAttach = await ownershipWith(attach).classify({ token: 't', hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID, at: 1, paneShellPid: 300 });
+		assert.deepStrictEqual([exec, execAttach], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }]);
+	});
+
+	test('agents under a tmux server still succeed the pane owner when the pane shell is known', async () => {
+		// tmux のサーバーは launchd の子で、中のエージェントはペインのシェルの子孫ではない（NOTES.md の既知の制限）。
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, '/bin/zsh -il')],
+			[150, proc(150, 100, 'tmux new-session -s x claude')],
+			[500, proc(500, 1, 'tmux new-session -s x claude')],
+			[520, proc(520, 500, 'claude')],
+			[526, proc(526, 520, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+			[700, proc(700, 1, 'tmux: server (/tmp/tmux-1000/default)')],
+			[710, proc(710, 700, '-bash')],
+			[720, proc(720, 710, 'claude')],
+			[726, proc(726, 720, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const ownership = ownershipWith(tree);
+		const first = await ownership.classify({ token: 't', hookPid: 526, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, paneShellPid: 100 });
+		// 最初の claude が終わり、Linux 形の tmux サーバーの中で起動し直した
+		tree.delete(520);
+		tree.delete(526);
+		const second = await ownership.classify({ token: 't', hookPid: 726, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2, paneShellPid: 100 });
+		assert.deepStrictEqual([first, second], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }]);
 	});
 });

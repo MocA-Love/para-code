@@ -22,6 +22,9 @@
 //   - 現所有者が死亡/PID再利用                  → owner を昇格
 //   - 現所有者が生存しているのに祖先にいない     → invalid（誤配送。破棄）
 //   - 祖先に Claude Code の daemon がいる         → background（`/fork` の分岐先・`claude --bg`。後述）
+//     ただし、ペインのシェルの子孫の `claude attach <id>` が見ている会話は、その attach を所有者にする
+//   - 所有者がいない（未確定・pid 不明・死亡）のに、発信元がペインのシェルの子孫でない → invalid
+//     （detached で起動された別エージェントが、継承したトークンで所有者になるのを防ぐ。tmux 等は例外）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
 // 既知の所有者と同じtranscriptへのイベントだけを通す。
 
@@ -40,6 +43,8 @@ const SNAPSHOT_TTL_MS = 2_000;
 const MAX_ANCESTOR_DEPTH = 15;
 /** 所有者レコードの上限（ペイン数を大きく超える値。無制限な成長の防止のみが目的）。 */
 const MAX_OWNER_RECORDS = 4_096;
+/** ペインのシェルの子孫かを確かめるときに辿る深さの上限（祖先チェーンの上限より深い入れ子も拾う）。 */
+const MAX_PANE_DESCENT_DEPTH = 64;
 
 export type ParadisHookAgentKind = 'claude' | 'codex';
 
@@ -61,12 +66,22 @@ export interface IParadisHookProcessInspector {
 	lastSnapshotAt?(): number | undefined;
 }
 
+interface IProcessIdentity {
+	readonly pid: number;
+	readonly startKey: string | undefined;
+}
+
 interface IOwnerRecord {
 	pid: number | undefined;
 	startKey: string | undefined;
 	agentKind: ParadisHookAgentKind | undefined;
 	transcriptPath: string | undefined;
 	at: number;
+	/**
+	 * 所有者が `claude attach <id>` のとき、見ている会話を動かす daemon の配下のプロセス（`claude bg-spare`）。
+	 * 同じプロセスからの hook は、/clear で会話 id が変わっても所有者のものとして通す。
+	 */
+	attachedHost?: IProcessIdentity;
 }
 
 /** transcript_path からエージェント種別を判定する（mobileRelay 側の判定と同一規約）。 */
@@ -476,6 +491,44 @@ export function paradisIsClaudeBackgroundHostCommand(command: string): boolean {
 	return CLAUDE_BACKGROUND_HOST_ARGUMENTS.has(next) || (next === 'daemon' && tokens[start + 1]?.value === 'run');
 }
 
+/**
+ * `claude attach <id>` の `<id>` として受け付ける形（`claude agents` が出す 8 桁の短い id から完全な会話 id まで）。
+ * mobileRelay の `paradisIsClaudeSessionIdPrefix` と同じ規約。8 桁より短い id は無関係な会話に前方一致しやすい。
+ */
+const CLAUDE_ATTACH_ID_PATTERN = /^[0-9A-Fa-f]{8}[0-9A-Fa-f-]{0,28}$/;
+
+/**
+ * `claude attach <id>`（2.1.289 で実測。ps では `claude attach d527839f`）なら `<id>` を小文字で返す。
+ * 会話の本体は daemon の配下（`claude bg-spare`）で動き、このプロセスは表示役だけを持つ。
+ */
+export function paradisClaudeAttachTargetFromCommandLine(command: string): string | undefined {
+	const tokens = tokenizeCommandLine(command);
+	const start = claudeArgumentsStart(tokens);
+	if (start === undefined || tokens[start]?.value !== 'attach') {
+		return undefined;
+	}
+	const target = tokens[start + 1]?.value;
+	return target !== undefined && CLAUDE_ATTACH_ID_PATTERN.test(target) ? target.toLowerCase() : undefined;
+}
+
+/** hook の会話 id（無ければ transcript のファイル名）が、`claude attach` の `<id>` の会話か。 */
+function isAttachTargetSession(attachTarget: string, sessionId: string | undefined, transcriptPath: string | undefined): boolean {
+	const fromTranscript = transcriptPath !== undefined ? /(?<sessionId>[^\\/]+)\.jsonl$/i.exec(transcriptPath)?.groups?.sessionId : undefined;
+	return [sessionId, fromTranscript].some(candidate => candidate !== undefined && candidate.toLowerCase().startsWith(attachTarget));
+}
+
+/**
+ * サーバーがペインのシェルの外（launchd・init の子）に住む端末多重化ソフト。中のエージェントの祖先はペインの
+ * シェルを通らないので、所有者の後継をペインのシェルの子孫に絞る判定から外す（NOTES.md「hook 所有者判定の
+ * 既知の制限」）。Linux の tmux サーバーは `tmux: server (…)` と見えるので末尾の `:` も許す。
+ */
+const TERMINAL_MULTIPLEXER_BASENAMES = /^(?:tmux|zellij|screen|dtach|abduco)(?::)?$/;
+
+function isTerminalMultiplexerCommand(command: string): boolean {
+	const first = tokenizeCommandLine(command)[0]?.value;
+	return first !== undefined && TERMINAL_MULTIPLEXER_BASENAMES.test(normalizedBasename(first));
+}
+
 /** POSIX: `ps ax` 1回でプロセス表を取得する（LC_ALL=C で lstart を5トークン固定にする）。 */
 async function posixProcessSnapshot(): Promise<ReadonlyMap<number, IParadisHookProcessInfo> | undefined> {
 	try {
@@ -584,6 +637,23 @@ export interface IParadisHookRejectionDetail {
 	readonly ownerAt: number;
 	/** 使ったプロセス表の控えの古さ（取っていなければ undefined）。 */
 	readonly snapshotAgeMs: number | undefined;
+	/** 所有者のいないペインへ、ペインのシェルの子孫でないエージェントが送った hook だった。 */
+	readonly outsidePane?: true;
+}
+
+/** {@link ParadisAgentHookOwnership.classify} の入力。 */
+export interface IParadisHookClassifyInput {
+	readonly token: string;
+	readonly hookPid: number | undefined;
+	readonly transcriptPath: string | undefined;
+	readonly at: number;
+	/** hook の会話 id（`claude attach <id>` の会話との照合に使う）。 */
+	readonly sessionId?: string;
+	/**
+	 * ペインのシェルの pid（手元のペインで分かるときだけ）。分からないとき（SSH・WSL などの接続先、再起動直後で
+	 * ペインがまだ同期していない）・プロセス表に無いときは、ペインのシェルを使う判定をすべて飛ばして従来どおりに動く。
+	 */
+	readonly paneShellPid?: number;
 }
 
 /**
@@ -609,7 +679,7 @@ export class ParadisAgentHookOwnership {
 		this.owners.delete(token);
 	}
 
-	async classify(input: { readonly token: string; readonly hookPid: number | undefined; readonly transcriptPath: string | undefined; readonly at: number }): Promise<IParadisHookClassification> {
+	async classify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
 		try {
 			return await this.doClassify(input);
 		} catch {
@@ -618,7 +688,7 @@ export class ParadisAgentHookOwnership {
 		}
 	}
 
-	private async doClassify(input: { readonly token: string; readonly hookPid: number | undefined; readonly transcriptPath: string | undefined; readonly at: number }): Promise<IParadisHookClassification> {
+	private async doClassify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
 		const { token, hookPid, transcriptPath, at } = input;
 		const eventKind = transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined;
 		if (hookPid === undefined) {
@@ -630,9 +700,12 @@ export class ParadisAgentHookOwnership {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-snapshot', snapshotAgeMs);
 		}
 		const chain = this.chainInsidePanes(snapshot, hookPid);
+		const paneShellPid = input.paneShellPid !== undefined && snapshot.has(input.paneShellPid) ? input.paneShellPid : undefined;
 		// daemon の配下の会話は、このペインの所有者にも子エージェントにもしない（所有者の記録も触らない）。
-		if (chain.some(entry => paradisIsClaudeBackgroundHostCommand(entry.command))) {
-			return { origin: 'background', agentKind: eventKind ?? 'claude' };
+		// 例外は、このペインの `claude attach <id>` が見ている会話（とその配下の子エージェント）だけ。
+		const hostIndex = chain.findIndex(entry => paradisIsClaudeBackgroundHostCommand(entry.command));
+		if (hostIndex >= 0) {
+			return this.classifyDaemonHosted(token, snapshot, chain, hostIndex, eventKind, input, paneShellPid);
 		}
 		const emitter = this.findEmitter(chain, eventKind);
 		if (emitter === undefined) {
@@ -641,9 +714,7 @@ export class ParadisAgentHookOwnership {
 		}
 		const emitterKind = paradisHookAgentKindFromCommandLine(emitter.command);
 		let owner = this.owners.get(token);
-		const ownerProcess = owner?.pid !== undefined ? snapshot.get(owner.pid) : undefined;
-		const ownerAlive = owner?.pid !== undefined && ownerProcess !== undefined && this.startKeyMatches(owner.startKey, ownerProcess.startKey);
-		if (owner === undefined || owner.pid === undefined || !ownerAlive) {
+		if (owner === undefined || owner.pid === undefined || !this.isOwnerAlive(owner, snapshot)) {
 			// 所有者が未確定（初回・旧スクリプト由来のtranscriptのみのレコード）または死亡
 			// （PID再利用含む）→ このチェーンで「ペインのシェルに最も近い（最外側の）エージェント
 			// プロセス」を所有者にする。emitter 自身を無条件に所有者へすると、所有者の最初の
@@ -654,6 +725,19 @@ export class ParadisAgentHookOwnership {
 			// hookを送ってくる。所有者が終わった後はそれが後継になり、状態がこのペインに出る
 			// （NOTES.md の「hook 所有者判定の既知の制限」参照）。後継をペインのシェルの配下に絞ると、
 			// 同じペインで tmux のエージェントを起動し直したときに状態が出なくなるので絞らない。
+			// 後継はペインのシェルの子孫に限る。Claude Code の Codex plugin が detached で起動した `codex app-server`
+			// （親は PID 1）のように、ペインの外で動くのにトークンだけを継承したエージェントが、所有者のいない
+			// 隙（`claude attach` の会話・pid の無い所有者・Para Code の再起動直後）にペインの会話を奪わないようにする。
+			// tmux 等のサーバー配下のエージェントは上の既知の制限のとおり絞らない。
+			if (paneShellPid !== undefined && !chain.some(entry => isTerminalMultiplexerCommand(entry.command)) && !this.isDescendantOf(snapshot, emitter.pid, paneShellPid)) {
+				return {
+					origin: 'invalid', agentKind: emitterKind,
+					rejection: {
+						identityLoss: undefined, ownerPinnedBy: owner?.pid !== undefined ? 'pid' : 'transcript',
+						ownerTranscriptPath: owner?.transcriptPath, ownerAt: owner?.at ?? at, snapshotAgeMs, outsidePane: true,
+					},
+				};
+			}
 			const outermost = this.findOutermostAgent(chain) ?? emitter;
 			owner = {
 				pid: outermost.pid, startKey: outermost.startKey,
@@ -679,6 +763,102 @@ export class ParadisAgentHookOwnership {
 			origin: 'invalid', agentKind: emitterKind,
 			rejection: { identityLoss: undefined, ownerPinnedBy: 'pid', ownerTranscriptPath: owner.transcriptPath, ownerAt: owner.at, snapshotAgeMs },
 		};
+	}
+
+	/**
+	 * 祖先に Claude Code の daemon（`chain[hostIndex]`、hook に最も近い `bg-spare` 等）がいる hook の判定。
+	 *
+	 * ペインのシェルの子孫に `claude attach <id>` がいて、hook が daemon の会話そのもの（daemon のプロセスとの間に
+	 * 別のエージェントがいない）で、会話 id が `<id>` に前方一致するなら、その attach を所有者にする。以後、同じ
+	 * daemon のプロセスからの hook は /clear で会話 id が変わっても所有者のものとして通す。attach が終われば
+	 * 所有者は死んだ扱いになり、daemon の会話はまた background に戻る。
+	 * 所有者の attach が見ている会話の配下の別エージェントは nested。それ以外は従来どおり background。
+	 */
+	private classifyDaemonHosted(
+		token: string,
+		snapshot: ReadonlyMap<number, IParadisHookProcessInfo>,
+		chain: readonly IParadisHookProcessInfo[],
+		hostIndex: number,
+		eventKind: ParadisHookAgentKind | undefined,
+		input: IParadisHookClassifyInput,
+		paneShellPid: number | undefined,
+	): IParadisHookClassification {
+		const host = chain[hostIndex];
+		const inner = this.findEmitter(chain.slice(0, hostIndex), eventKind);
+		const owner = this.owners.get(token);
+		const ownerAlive = this.isOwnerAlive(owner, snapshot);
+		if (inner === undefined && paneShellPid !== undefined && (eventKind === undefined || eventKind === 'claude')) {
+			for (const attach of this.paneAttaches(snapshot, paneShellPid)) {
+				const ownerIsAttach = owner?.pid === attach.pid && this.startKeyMatches(owner.startKey, attach.startKey);
+				const sameHost = ownerIsAttach && owner?.attachedHost !== undefined
+					&& owner.attachedHost.pid === host.pid && this.startKeyMatches(owner.attachedHost.startKey, host.startKey);
+				if (!sameHost && !isAttachTargetSession(attach.target, input.sessionId, input.transcriptPath)) {
+					continue;
+				}
+				if (ownerAlive && !ownerIsAttach) {
+					// 生きている別の所有者（attach の外側の claude 等）の席は奪わない。
+					break;
+				}
+				this.setOwner(token, {
+					pid: attach.pid, startKey: attach.startKey, agentKind: 'claude',
+					transcriptPath: input.transcriptPath ?? (ownerIsAttach ? owner?.transcriptPath : undefined), at: input.at,
+					attachedHost: { pid: host.pid, startKey: host.startKey },
+				});
+				return { origin: 'owner', agentKind: 'claude' };
+			}
+		}
+		const attachedHost = owner?.attachedHost;
+		if (inner !== undefined && ownerAlive && attachedHost !== undefined && host.pid === attachedHost.pid && this.startKeyMatches(attachedHost.startKey, host.startKey)) {
+			// 所有者の attach が見ている会話の配下で動く別エージェント = 子エージェント。
+			return { origin: 'nested', agentKind: paradisHookAgentKindFromCommandLine(inner.command) };
+		}
+		return { origin: 'background', agentKind: eventKind ?? 'claude' };
+	}
+
+	/** ペインのシェルの子孫にいる `claude attach <id>` の一覧。 */
+	private paneAttaches(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, paneShellPid: number): { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] {
+		const result: { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] = [];
+		for (const entry of snapshot.values()) {
+			// daemon の配下の hook ごとにプロセス表を全部なめるので、字句解析の前に安く絞る。
+			if (!entry.command.includes('attach')) {
+				continue;
+			}
+			const target = paradisClaudeAttachTargetFromCommandLine(entry.command);
+			if (target !== undefined && this.isDescendantOf(snapshot, entry.pid, paneShellPid)) {
+				result.push({ pid: entry.pid, startKey: entry.startKey, target });
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * `pid` が `ancestorPid` 自身かその子孫か（循環・深さ上限つき）。自分自身も含めるのは、ペインのシェルが
+	 * `exec claude` で置き換わったときや、ペインの最初のプロセスがエージェント（またはそのランチャー）のときに、
+	 * ペインのプロセスそのものが発信元になるため。
+	 */
+	private isDescendantOf(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, pid: number, ancestorPid: number): boolean {
+		if (pid === ancestorPid) {
+			return true;
+		}
+		const seen = new Set<number>();
+		let current = snapshot.get(pid);
+		for (let depth = 0; current !== undefined && depth < MAX_PANE_DESCENT_DEPTH && !seen.has(current.pid); depth++) {
+			seen.add(current.pid);
+			const parent = current.ppid;
+			if (parent === undefined || parent <= 0) {
+				return false;
+			}
+			if (parent === ancestorPid) {
+				return true;
+			}
+			current = snapshot.get(parent);
+		}
+		return false;
+	}
+
+	private isOwnerAlive(owner: IOwnerRecord | undefined, snapshot: ReadonlyMap<number, IParadisHookProcessInfo>): boolean {
+		const ownerProcess = owner?.pid !== undefined ? snapshot.get(owner.pid) : undefined;
+		return ownerProcess !== undefined && this.startKeyMatches(owner?.startKey, ownerProcess.startKey);
 	}
 
 	/** チェーン内で最も祖先側（ペインのシェルに最も近い）のエージェントプロセスを返す。 */

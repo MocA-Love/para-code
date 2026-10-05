@@ -40,6 +40,8 @@ export type ParadisHookIngressCause =
 export type ParadisAgentHookDropReason =
 	/** pid で辿った発信元が、生きている所有者の配下にいない。 */
 	| 'origin-not-ancestor'
+	/** 所有者がいない（終わった・pid が分からない）ペインへ、ペインのシェルの子孫でないエージェントが hook を送った。 */
+	| 'origin-outside-pane'
 	/** pid を使わない判定で、所有者の transcript と違う transcript の hook だった。 */
 	| 'origin-transcript-mismatch'
 	/** 控えから流し直した hook が所有者の transcript と違った。 */
