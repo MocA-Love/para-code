@@ -12,16 +12,18 @@
 //
 // 何を書く・消すか（同じ値なら呼ばない、Para Code が書いた値のときだけ消す、2.5.3 未満なら何もしない）は
 // 実行する側（node/paradisAgentDictionarySync.ts）が決める。ここは設定を渡すだけで、続けて変わったときは
-// 少し待ってからまとめて 1 回渡す。
+// 少し待ってからまとめて 1 回渡す。接続先へは、再接続できたときにも渡し直す（切れている間に変えた設定を届けるため。
+// 同じ値なら接続先の側で何もしない）。
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { PersistentConnectionEventType } from '../../../../platform/remote/common/remoteAgentConnection.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
-import { IParadisAgentDictionarySyncResult, PARADIS_AGENT_DICTIONARY_CHANNEL, paradisAgentDictionaryRequestFromSettings } from '../common/paradisAgentDictionary.js';
+import { IParadisAgentDictionaryRequest, IParadisAgentDictionarySyncResult, PARADIS_AGENT_DICTIONARY_CHANNEL, paradisAgentDictionaryRequestFromSettings } from '../common/paradisAgentDictionary.js';
 
 /** 辞書を選び直す操作が続くあいだは待つ。 */
 const DEBOUNCE_MS = 1_500;
@@ -46,6 +48,15 @@ class ParadisAgentDictionarySyncContribution extends Disposable implements IWork
 				this.scheduler.schedule();
 			}
 		}));
+		// 再接続できたら接続先へ渡し直す（切れている間の変更は届いていない）
+		const connection = this.remoteAgentService.getConnection();
+		if (connection) {
+			this._register(connection.onDidStateChange(event => {
+				if (event.type === PersistentConnectionEventType.ConnectionGain && this.lastSent !== undefined) {
+					this.sendToRemote(paradisAgentDictionaryRequestFromSettings(this.settingsService.getAivisSettings()));
+				}
+			}));
+		}
 		// 起動時も渡す（Para Code が動いていない間に設定や aivis-mcp が変わっていることがある）
 		this.scheduler.schedule();
 	}
@@ -64,6 +75,10 @@ class ParadisAgentDictionarySyncContribution extends Disposable implements IWork
 		// 外部ツールの設定のために UI を待たせない（結果はそれぞれの側のログに出る）
 		void this.sharedProcessService.getChannel(PARADIS_AGENT_DICTIONARY_CHANNEL).call<IParadisAgentDictionarySyncResult>('apply', request)
 			.catch(error => this.logService.warn(`[ParadisAgentDictionary] could not reach the shared process: ${error instanceof Error ? error.message : String(error)}`));
+		this.sendToRemote(request);
+	}
+
+	private sendToRemote(request: IParadisAgentDictionaryRequest): void {
 		const connection = this.remoteAgentService.getConnection();
 		if (connection) {
 			// 接続先が古い（このチャネルを持たない）ときは何もしない
