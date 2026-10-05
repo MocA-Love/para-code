@@ -15,7 +15,7 @@
 
 import { SecureChannel } from './paradisMobileCrypto.js';
 import { ChannelId, decodeFrame, encodeFrame, Frame } from './paradisMobileProtocol.js';
-import { PARADIS_MOBILE_FRAGMENT_BYTES, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from './paradisMobileSendQueue.js';
+import { IParadisMobileSendHandle, IParadisMobileSendTransfer, PARADIS_MOBILE_FRAGMENT_BYTES, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileRejectedSend, paradisMobileSendPriorityOf } from './paradisMobileSendQueue.js';
 import type { ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
 
 export type FrameHandler = (frame: Frame) => void;
@@ -162,6 +162,25 @@ export class ParadisMobileFrameAssembler {
 	}
 }
 
+/** {@link FrameMux.submit} の送り方。 */
+export interface IParadisMobileFrameSubmitOptions {
+	/** 送信前の列の上限を守る（超えるなら列に入れず busy を返す）。 */
+	readonly bounded?: boolean;
+	/** 取消の単位（送り手の renderer の世代）。{@link ParadisMobileSendQueue.cancelTag} で nonce の予約前だけ取り下げる。 */
+	readonly cancelTag?: string;
+}
+
+/**
+ * フレームの順序ドメイン（送信の列のストリーム）。同じチャネルのフレームは積んだ順に送る。browser チャネルは中身で
+ * 音声・画面・それ以外に分かれ、互いに独立している（今の優先度の分け方と同じ境目）。
+ */
+export function paradisMobileFrameStreamOf(channel: ChannelId, priority: ParadisMobileSendPriority): string {
+	if (channel !== 'browser') {
+		return channel;
+	}
+	return priority === ParadisMobileSendPriority.Voice ? 'browser:voice' : priority === ParadisMobileSendPriority.Screen ? 'browser:screen' : 'browser';
+}
+
 export class FrameMux {
 	private readonly handlers = new Map<ChannelId, FrameHandler>();
 	private readonly seq = new Map<ChannelId, number>();
@@ -191,13 +210,40 @@ export class FrameMux {
 	}
 
 	/**
-	 * フレームを送信の列に積む（呼んだ時点で列に入るので、同じ優先度の中は呼んだ順に届く）。
+	 * フレームを送信の列に積む（呼んだ時点で列に入るので、同じストリームの中は呼んだ順に届く）。
 	 * 最後の断片を送ったら解決する。送り始める前に取り下げられた（新しい JPEG に置き換えられた・セッションを
-	 * 張り替えた）ときも解決する。
+	 * 張り替えた）ときも解決する。封緘・送出に失敗したら reject する。
 	 */
 	async send(channel: ChannelId, payload: Uint8Array, ws?: string): Promise<void> {
+		const transfer = this.prepare(channel, payload, ws, {});
+		if (transfer !== undefined) {
+			await this.sendQueue.enqueue(transfer);
+		}
+	}
+
+	/**
+	 * フレームを積み、列に入れた（accepted）ことと送り終えた（settled）ことを分けて返す（設計 2.3）。`bounded` なら
+	 * 送信前の列の上限を守り、超えるなら番号（seq・送信 ID）を進めずに busy を返す。
+	 */
+	submit(channel: ChannelId, payload: Uint8Array, ws?: string, options: IParadisMobileFrameSubmitOptions = {}): IParadisMobileSendHandle {
 		if (this.disposed) {
-			return;
+			return paradisMobileRejectedSend('closed');
+		}
+		if (options.bounded === true) {
+			const { priority } = paradisMobileSendPriorityOf(channel, payload);
+			if (!this.sendQueue.admits(this, paradisMobileFrameStreamOf(channel, priority), payload.length)) {
+				this.options.metrics?.count('pc.queue.busy');
+				return paradisMobileRejectedSend('busy');
+			}
+		}
+		const transfer = this.prepare(channel, payload, ws, options);
+		return transfer === undefined ? paradisMobileRejectedSend('closed') : this.sendQueue.submit(transfer);
+	}
+
+	/** 番号を進め、送信の列に積む形を作る。閉じた mux なら undefined。 */
+	private prepare(channel: ChannelId, payload: Uint8Array, ws: string | undefined, options: IParadisMobileFrameSubmitOptions): IParadisMobileSendTransfer | undefined {
+		if (this.disposed) {
+			return undefined;
 		}
 		const seq = this.seq.get(channel) ?? 0;
 		this.seq.set(channel, (seq + 1) % 0x100000000);
@@ -221,9 +267,11 @@ export class FrameMux {
 			const end = Math.min(start + PARADIS_MOBILE_FRAGMENT_BYTES, payload.length);
 			return { ch: channel, seq, payload: payload.subarray(start, end), ...(ws !== undefined ? { ws } : {}), frag: { id, index, last: end >= payload.length } };
 		};
-		await this.sendQueue.enqueue({
+		return {
 			owner: this,
 			priority,
+			stream: paradisMobileFrameStreamOf(channel, priority),
+			...(options.cancelTag !== undefined ? { cancelTag: options.cancelTag } : {}),
 			...(replaceKey !== undefined ? { replaceKey } : {}),
 			...(interleave ? { interleave: true } : {}),
 			fragmentCount,
@@ -250,7 +298,7 @@ export class FrameMux {
 					});
 				}
 			},
-		});
+		};
 	}
 
 	/** 封緘の失敗で暗号セッションが使えなくなった。残りを取り下げ、呼び手へ一度だけ知らせる。 */

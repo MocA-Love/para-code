@@ -17,6 +17,12 @@
 // - 画面の JPEG が先頭で 500ms 待ったら、操作・状態より先にその 1 枚を最後まで送る
 // - bufferedAmount を信用せず時間で送っている間は、積む量を 2MiB までにする
 // - 計測（F0、`paradisMobileLinkMetrics.ts`）がオンなら、各段の待ち・封緘の時間・送信バッファの深さを数える（送る順は変えない）
+// - 順序ドメイン（ストリーム、設計 2.0 / 2.1）: 同じ owner・同じ stream の送信は、優先度が違っても積んだ順に送る。
+//   各ストリームの先頭だけが候補になり、優先度は独立したストリームの間でだけ効く
+// - 送信前の列に全体・端末（owner）・ストリームのバイト上限を置く（設計 2.3）。上限を守るのは `submit` で
+//   `bounded` を付けた送信だけで、超えるなら列に入れずに busy を返す（小さな送信はいつでも受ける）
+// - 取消は 2 種類ある。`cancelOwner` は暗号セッションごと捨てるとき（封緘中・送り途中も捨てる）、`cancelTag` は
+//   renderer の世代が替わったときで、まだ 1 断片も封緘していない（nonce を予約していない）送信だけを取り下げる
 
 import type { ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
 
@@ -51,6 +57,16 @@ export interface IParadisMobileSendTransfer {
 	 * 止めない）。
 	 */
 	readonly interleave?: boolean;
+	/**
+	 * 順序ドメイン。同じ owner・同じ stream の送信は優先度が違っても積んだ順に送る（同じターミナルの出力、snapshot と
+	 * その後の delta が追い越さない）。省略すると優先度ごとに 1 本（従来の「同じ owner・同じ優先度は積んだ順」）。
+	 */
+	readonly stream?: string;
+	/**
+	 * 取消の単位（送り手の renderer の世代など）。{@link ParadisMobileSendQueue.cancelTag} で、nonce を予約する前の
+	 * 送信だけを取り下げる。暗号セッションの owner とは別のもの。
+	 */
+	readonly cancelTag?: string;
 	/** 断片の数。 */
 	readonly fragmentCount: number;
 	/** ペイロードのバイト数（詰まりの計算に使う）。 */
@@ -63,6 +79,8 @@ export interface IParadisMobileSendTransfer {
 
 interface IQueuedTransfer {
 	readonly transfer: IParadisMobileSendTransfer;
+	/** 順序ドメインの鍵（{@link IParadisMobileSendTransfer.stream}、省略時は優先度から作る）。 */
+	readonly stream: string;
 	next: number;
 	sentBytes: number;
 	/** 断片を封緘している最中（nonce を採った）。差し替えの対象にしない。 */
@@ -94,6 +112,37 @@ export const PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND = 256 * 1024;
  */
 export const PARADIS_MOBILE_PACING_MAX_BYTES = 2 * 1024 * 1024;
 
+/** 送信前の列（全端末の合計）の上限。`bounded` の送信だけがこれで断られる。 */
+export const PARADIS_MOBILE_QUEUE_GLOBAL_LIMIT_BYTES = 96 * 1024 * 1024;
+/** 送信前の列（1 台の端末＝owner）の上限。 */
+export const PARADIS_MOBILE_QUEUE_MOBILE_LIMIT_BYTES = 48 * 1024 * 1024;
+/** 送信前の列（1 本のストリーム）の上限。ファイルの応答の上限（24MiB）が 1 件は必ず入る大きさ。 */
+export const PARADIS_MOBILE_QUEUE_STREAM_LIMIT_BYTES = 32 * 1024 * 1024;
+/**
+ * これ以下の送信は上限を超えていても受ける（操作の結果・エラーの返事・端末の出力の小片を断ると、相手が待ち続けたり、
+ * ストリームに穴が開いたりする）。端末の出力はアプリの ack で、通知は件数で、別に抑えられている。
+ */
+export const PARADIS_MOBILE_QUEUE_ALWAYS_ACCEPT_BYTES = 64 * 1024;
+
+/** 積んだ送信の終わり方。 */
+export type ParadisMobileSendResult = 'sent' | 'cancelled' | 'failed';
+
+/**
+ * `submit` の返り値。列に入れた（accepted）ことと、送り終えた（settled）ことを分ける。`accepted` が false なら
+ * 列に入れておらず、`settled` は 'cancelled' で解決する。
+ */
+export interface IParadisMobileSendHandle {
+	readonly accepted: boolean;
+	/** 列に入れなかった理由。busy＝送信前の列が上限、closed＝暗号セッションが無い・閉じた。 */
+	readonly reason?: 'busy' | 'closed';
+	readonly settled: Promise<ParadisMobileSendResult>;
+}
+
+/** 列に入れなかったときの handle。 */
+export function paradisMobileRejectedSend(reason: 'busy' | 'closed'): IParadisMobileSendHandle {
+	return { accepted: false, reason, settled: Promise.resolve('cancelled') };
+}
+
 export interface IParadisMobileSendQueueOptions {
 	/** リレーへのソケットの送信バッファ（bufferedAmount）。無ければ常に空とみなす。 */
 	readonly bufferedAmount?: () => number;
@@ -108,6 +157,8 @@ export interface IParadisMobileSendQueueOptions {
 export class ParadisMobileSendQueue {
 	// 優先度ごとに、owner ごとの列。Map は owner を積んだ順を保つので、その順に 1 断片ずつ回す
 	private readonly lanes: Map<object, IQueuedTransfer[]>[] = Array.from({ length: PRIORITY_COUNT }, () => new Map());
+	// owner ごと・ストリームごとの、積んだ順の列（優先度をまたぐ）。先頭だけが送る候補になる
+	private readonly streams = new Map<object, Map<string, IQueuedTransfer[]>>();
 	// 優先度ごとの、最後に断片を送った owner（次はその次の owner から回す）
 	private readonly lastServed: (object | undefined)[] = new Array(PRIORITY_COUNT).fill(undefined);
 	// 優先度ごとの、まだ送っていないバイト数
@@ -155,41 +206,103 @@ export class ParadisMobileSendQueue {
 	 * 呼んだ時点で列に入る（同じ owner・同じ優先度の中は呼んだ順に送る）。
 	 */
 	enqueue(transfer: IParadisMobileSendTransfer): Promise<boolean> {
-		return new Promise<boolean>((resolve, reject) => {
-			const lane = this.lanes[transfer.priority]!;
-			let queue = lane.get(transfer.owner);
-			if (queue === undefined) {
-				queue = [];
-				lane.set(transfer.owner, queue);
-			}
-			let waitingSince = this.now();
-			if (transfer.replaceKey !== undefined) {
-				// まだ 1 断片も封緘していないものだけ差し替える（封緘中のものは nonce を採っているので必ず送る）
-				for (const queued of [...queue]) {
-					if (queued.next === 0 && !queued.sealing && queued.transfer.replaceKey === transfer.replaceKey) {
-						this.options.metrics?.count('pc.queue.screenReplaced');
-						// 待った時間は引き継ぐ（差し替えが続いても、繰り上げまでの 500ms が延びないように）
-						waitingSince = Math.min(waitingSince, queued.waitingSince);
-						this.settle(queued);
-						queued.resolve(false);
-					}
+		return new Promise<boolean>((resolve, reject) => this.push(transfer, resolve, reject));
+	}
+
+	/**
+	 * 送信を積み、列に入れたか（accepted）と、送り終えたか（settled）を分けて返す。`bounded` なら送信前の列の上限を
+	 * 守り、超えるなら列に入れずに busy を返す（{@link admits}）。封緘・送出の失敗は 'failed' で解決する（例外にしない）。
+	 */
+	submit(transfer: IParadisMobileSendTransfer, options: { readonly bounded?: boolean } = {}): IParadisMobileSendHandle {
+		if (options.bounded === true && !this.admits(transfer.owner, this.streamOf(transfer), transfer.bytes)) {
+			this.options.metrics?.count('pc.queue.busy');
+			return paradisMobileRejectedSend('busy');
+		}
+		const settled = new Promise<ParadisMobileSendResult>(resolve => this.push(transfer, sent => resolve(sent ? 'sent' : 'cancelled'), () => resolve('failed')));
+		return { accepted: true, settled };
+	}
+
+	/**
+	 * この大きさの送信を、上限を守って積めるか。{@link PARADIS_MOBILE_QUEUE_ALWAYS_ACCEPT_BYTES} 以下はいつでも積める。
+	 * 送り手は番号（seq・送信 ID）を進める前にこれで確かめる（断った送信で番号に穴を開けない）。
+	 */
+	admits(owner: object, stream: string, bytes: number): boolean {
+		if (bytes <= PARADIS_MOBILE_QUEUE_ALWAYS_ACCEPT_BYTES) {
+			return true;
+		}
+		if (this.pendingBytes + bytes > PARADIS_MOBILE_QUEUE_GLOBAL_LIMIT_BYTES) {
+			return false;
+		}
+		const ownerStreams = this.streams.get(owner);
+		if (ownerStreams === undefined) {
+			return bytes <= PARADIS_MOBILE_QUEUE_STREAM_LIMIT_BYTES;
+		}
+		let ownerBytes = 0;
+		let streamBytes = 0;
+		for (const [key, queue] of ownerStreams) {
+			for (const queued of queue) {
+				const unsent = queued.transfer.bytes - queued.sentBytes;
+				ownerBytes += unsent;
+				if (key === stream) {
+					streamBytes += unsent;
 				}
 			}
-			// 差し替えで列が空になると owner ごと外れているので、積み直す先を取り直す
-			queue = lane.get(transfer.owner);
-			if (queue === undefined) {
-				queue = [];
-				lane.set(transfer.owner, queue);
+		}
+		return ownerBytes + bytes <= PARADIS_MOBILE_QUEUE_MOBILE_LIMIT_BYTES && streamBytes + bytes <= PARADIS_MOBILE_QUEUE_STREAM_LIMIT_BYTES;
+	}
+
+	/** 送信の順序ドメインの鍵。 */
+	streamOf(transfer: IParadisMobileSendTransfer): string {
+		return transfer.stream ?? `priority:${transfer.priority}`;
+	}
+
+	private push(transfer: IParadisMobileSendTransfer, resolve: (sent: boolean) => void, reject: (error: unknown) => void): void {
+		const lane = this.lanes[transfer.priority]!;
+		let queue = lane.get(transfer.owner);
+		if (queue === undefined) {
+			queue = [];
+			lane.set(transfer.owner, queue);
+		}
+		let waitingSince = this.now();
+		if (transfer.replaceKey !== undefined) {
+			// まだ 1 断片も封緘していないものだけ差し替える（封緘中のものは nonce を採っているので必ず送る）
+			for (const queued of [...queue]) {
+				if (queued.next === 0 && !queued.sealing && queued.transfer.replaceKey === transfer.replaceKey) {
+					this.options.metrics?.count('pc.queue.screenReplaced');
+					// 待った時間は引き継ぐ（差し替えが続いても、繰り上げまでの 500ms が延びないように）
+					waitingSince = Math.min(waitingSince, queued.waitingSince);
+					this.settle(queued);
+					queued.resolve(false);
+				}
 			}
-			const metrics = this.options.metrics;
-			const measuring = metrics?.enabled === true;
-			if (measuring) {
-				metrics.observe('pc.queue.unsentBytesAtEnqueue', this.pendingBytes);
-			}
-			queue.push({ transfer, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince, enqueuedAt: measuring ? metrics.now() : 0, resolve, reject });
-			this.unsent[transfer.priority]! += transfer.bytes;
-			this.pump();
-		});
+		}
+		// 差し替えで列が空になると owner ごと外れているので、積み直す先を取り直す
+		queue = lane.get(transfer.owner);
+		if (queue === undefined) {
+			queue = [];
+			lane.set(transfer.owner, queue);
+		}
+		const metrics = this.options.metrics;
+		const measuring = metrics?.enabled === true;
+		if (measuring) {
+			metrics.observe('pc.queue.unsentBytesAtEnqueue', this.pendingBytes);
+		}
+		const stream = this.streamOf(transfer);
+		const queued: IQueuedTransfer = { transfer, stream, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince, enqueuedAt: measuring ? metrics.now() : 0, resolve, reject };
+		queue.push(queued);
+		let ownerStreams = this.streams.get(transfer.owner);
+		if (ownerStreams === undefined) {
+			ownerStreams = new Map();
+			this.streams.set(transfer.owner, ownerStreams);
+		}
+		let streamQueue = ownerStreams.get(stream);
+		if (streamQueue === undefined) {
+			streamQueue = [];
+			ownerStreams.set(stream, streamQueue);
+		}
+		streamQueue.push(queued);
+		this.unsent[transfer.priority]! += transfer.bytes;
+		this.pump();
 	}
 
 	/** その owner の送信を全部取り下げる（暗号セッションを張り替えた・捨てた）。送り途中・封緘中のものも捨てる。 */
@@ -209,6 +322,32 @@ export class ParadisMobileSendQueue {
 				queued.resolve(false);
 			}
 		}
+	}
+
+	/**
+	 * その印（送り手の renderer の世代など）を付けた送信のうち、まだ 1 断片も封緘していない（nonce を予約していない）
+	 * ものだけを取り下げる。封緘中・送り途中のものは順番どおり最後まで送る（途中で捨てると、同じ鍵で続く相手の厳密な
+	 * nonce の検証が永久にずれる。設計 2.3 / 2.12）。取り下げた数を返す。
+	 */
+	cancelTag(tag: string): number {
+		let cancelled = 0;
+		for (const lane of this.lanes) {
+			for (const queue of [...lane.values()]) {
+				for (const queued of [...queue]) {
+					if (queued.transfer.cancelTag !== tag || queued.next !== 0 || queued.sealing || queued.settled) {
+						continue;
+					}
+					queued.cancelled = true;
+					this.settle(queued);
+					queued.resolve(false);
+					cancelled++;
+				}
+			}
+		}
+		if (cancelled > 0) {
+			this.options.metrics?.count('pc.queue.cancelledByTag', cancelled);
+		}
+		return cancelled;
 	}
 
 	private now(): number {
@@ -246,6 +385,40 @@ export class ParadisMobileSendQueue {
 		if (queue.length === 0) {
 			lane.delete(queued.transfer.owner);
 		}
+		this.removeFromStream(queued);
+	}
+
+	private removeFromStream(queued: IQueuedTransfer): void {
+		const ownerStreams = this.streams.get(queued.transfer.owner);
+		const streamQueue = ownerStreams?.get(queued.stream);
+		if (ownerStreams === undefined || streamQueue === undefined) {
+			return;
+		}
+		const index = streamQueue.indexOf(queued);
+		if (index >= 0) {
+			streamQueue.splice(index, 1);
+		}
+		if (streamQueue.length === 0) {
+			ownerStreams.delete(queued.stream);
+			if (ownerStreams.size === 0) {
+				this.streams.delete(queued.transfer.owner);
+			}
+		}
+	}
+
+	/** そのストリームの先頭（送る候補になれる）か。 */
+	private isStreamHead(queued: IQueuedTransfer): boolean {
+		return this.streams.get(queued.transfer.owner)?.get(queued.stream)?.[0] === queued;
+	}
+
+	/** その列の中で、最初にストリームの先頭になっている送信（同じストリームの前の送信が別の優先度で待っていれば飛ばす）。 */
+	private firstSendable(queue: readonly IQueuedTransfer[]): IQueuedTransfer | undefined {
+		for (const queued of queue) {
+			if (this.isStreamHead(queued)) {
+				return queued;
+			}
+		}
+		return undefined;
 	}
 
 	/** 優先度の中で、owner を順に回して次の送信を選ぶ。 */
@@ -263,8 +436,13 @@ export class ParadisMobileSendQueue {
 				lane.delete(owner);
 				continue;
 			}
+			// ストリームの先頭だけが候補（優先度は独立したストリームの間でだけ効く）
+			const sendable = this.firstSendable(queue);
+			if (sendable === undefined) {
+				continue;
+			}
 			this.lastServed[priority] = owner;
-			return queue[0]!;
+			return sendable;
 		}
 		return undefined;
 	}
@@ -276,8 +454,11 @@ export class ParadisMobileSendQueue {
 			if (voice.transfer.interleave === true) {
 				// 救済の clip は操作・状態と 1 断片ずつ交互に（音声の列の中の順は崩さない）
 				if (this.lastWasInterleaved && this.lanes[ParadisMobileSendPriority.Control]!.size > 0) {
-					this.lastWasInterleaved = false;
-					return this.pickIn(ParadisMobileSendPriority.Control);
+					const control = this.pickIn(ParadisMobileSendPriority.Control);
+					if (control !== undefined) {
+						this.lastWasInterleaved = false;
+						return control;
+					}
 				}
 				this.lastWasInterleaved = true;
 				return voice;
@@ -292,7 +473,7 @@ export class ParadisMobileSendQueue {
 		}
 		const now = this.now();
 		for (const queue of this.lanes[ParadisMobileSendPriority.Screen]!.values()) {
-			const head = queue[0];
+			const head = this.firstSendable(queue);
 			if (head !== undefined && now - head.waitingSince >= PARADIS_MOBILE_SCREEN_MAX_WAIT_MS && this.lanes[ParadisMobileSendPriority.Control]!.size > 0) {
 				this.promotedScreen = head;
 				return head;

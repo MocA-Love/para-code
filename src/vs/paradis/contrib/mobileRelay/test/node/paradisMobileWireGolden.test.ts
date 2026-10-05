@@ -176,6 +176,7 @@ suite('ParadisMobileWireGolden', () => {
 			sessions: new Map([['mobile-a', { hasCurrentProtocol: true, sendFrame: async (_ch: string, _ws: undefined, payload: Uint8Array) => { results.push(new TextDecoder().decode(payload)); } }]]),
 			logService: new NullLogService(),
 			withCurrentRegisteredLease: async (_owner: unknown, task: () => Promise<boolean>) => task(),
+			tryWithCurrentRegisteredLease: (_owner: unknown, _key: string, task: () => Promise<boolean>) => task(),
 			_onInboundFrame: { fire: (frame: ParadisMobileInboundFrameWire) => delivered.push(frame) },
 		}) as unknown as { handleTerminalFrame(frame: IParadisMobileInboundFrame): Promise<void> };
 		try {
