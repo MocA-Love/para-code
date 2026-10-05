@@ -101,7 +101,7 @@ suite('ParadisPushOutbox', () => {
 		await settle();
 		legacy.outbox.dispose();
 
-		const acking = harness(JSON.stringify({ relayAcks: true, entries: [] }));
+		const acking = harness(JSON.stringify({ relayAcks: true, relayAcksDeviceId: 'device-1', entries: [] }));
 		await acking.outbox.submit(PUSH);
 		acking.now += PARADIS_PUSH_OUTBOX_RESEND_AFTER_MS;
 		acking.outbox.flush();
@@ -112,6 +112,18 @@ suite('ParadisPushOutbox', () => {
 			legacy: ['request-1:sealed'],
 			acking: ['request-1:sealed', 'request-1:sealed'],
 		});
+	});
+
+	test('does not resend after re-registering until the new registration\'s relay acknowledges', async () => {
+		const h = harness(JSON.stringify({ relayAcks: true, relayAcksDeviceId: 'device-1', entries: [] }));
+		h.deviceId = 'device-2';
+		await h.outbox.submit(PUSH);
+		h.now += PARADIS_PUSH_OUTBOX_RESEND_AFTER_MS;
+		h.outbox.flush();
+		await settle();
+		h.outbox.dispose();
+
+		assert.deepStrictEqual(h.sent, ['request-1:sealed']);
 	});
 
 	test('drops requests older than ten minutes or addressed to a previous registration, and keeps at most 50', async () => {
@@ -137,6 +149,7 @@ suite('ParadisPushOutbox', () => {
 	test('reads back a saved outbox and ignores malformed entries', () => {
 		const parsed = paradisParsePushOutbox(JSON.stringify({
 			relayAcks: true,
+			relayAcksDeviceId: 'd',
 			entries: [
 				{ requestId: 'request-ok', deviceId: 'd', mobileId: 'm', payload: 'x', since: 1, sends: 2, lastSentAt: 3 },
 				{ requestId: 'bad id!', deviceId: 'd', mobileId: 'm', payload: 'x', since: 1 },
@@ -145,6 +158,7 @@ suite('ParadisPushOutbox', () => {
 		}));
 		assert.deepStrictEqual(parsed, {
 			relayAcks: true,
+			relayAcksDeviceId: 'd',
 			entries: [{ requestId: 'request-ok', deviceId: 'd', mobileId: 'm', payload: 'x', since: 1, sends: 2, lastSentAt: 3 }],
 		});
 	});
