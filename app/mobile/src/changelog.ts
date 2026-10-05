@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'pulse-outline',
+				title: '通信の速さを計測できるようになりました',
+				body: '設定 →「接続の記録」の「通信の計測」をオンにすると、キー入力から画面に出るまで・PC との往復・音声の鳴り始めと途切れを時間と大きさだけで数え、結果をコピーできます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'notifications-outline',
 				title: '音声通知をオンにしたまま別のアプリへ移っても、完了や質問のバナーが出るようになりました',
 				body: 'アプリを裏へ回したことを PC へ伝えるようにしました。あわせて、PC から登録を外されたときは再接続を繰り返さず、ペアリングし直しの案内を出します（PC の Para Code も新しい版が必要です）。',

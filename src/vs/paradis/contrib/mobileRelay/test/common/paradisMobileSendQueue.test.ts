@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisMobileSendTransfer, PARADIS_MOBILE_FALLBACK_PACE_BYTES_PER_SECOND, PARADIS_MOBILE_FRAGMENT_BYTES, PARADIS_MOBILE_PACING_MAX_BYTES, PARADIS_MOBILE_SCREEN_MAX_WAIT_MS, PARADIS_MOBILE_STUCK_BUFFER_MS, ParadisMobileSendPriority, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from '../../common/paradisMobileSendQueue.js';
+import { ParadisMobileLinkMetrics } from '../../common/paradisMobileLinkMetrics.js';
 
 function transfer(owner: object, name: string, fragmentCount: number, log: string[], priority: ParadisMobileSendPriority = ParadisMobileSendPriority.Control, sealLog?: string[]): IParadisMobileSendTransfer {
 	return {
@@ -313,5 +314,38 @@ suite('ParadisMobileSendQueue', () => {
 		}
 		await sent;
 		assert.deepStrictEqual({ whileStuck, after: log.length }, { whileStuck: Math.ceil(PARADIS_MOBILE_PACING_MAX_BYTES / (PARADIS_MOBILE_FRAGMENT_BYTES + 64)), after: fragments });
+	});
+
+	test('measures the wait, sealing and socket depth of each transfer only while measuring is on', async () => {
+		const metrics = new ParadisMobileLinkMetrics();
+		const queue = new ParadisMobileSendQueue({ bufferedAmount: () => 100, metrics });
+		const log: string[] = [];
+		await queue.enqueue(transfer({}, 'off', 1, log));
+		metrics.setEnabled(true);
+		await Promise.all([
+			queue.enqueue(transfer({}, 'c', 2, log)),
+			queue.enqueue(transfer({}, 'v', 1, log, ParadisMobileSendPriority.Voice)),
+		]);
+		const snapshot = metrics.snapshot();
+		const counts: Record<string, number> = {};
+		for (const [name, summary] of Object.entries(snapshot.histograms)) {
+			counts[name] = summary.count;
+		}
+
+		assert.deepStrictEqual({ counts, bytes: snapshot.histograms['pc.queue.control.bytes']?.max, socket: snapshot.histograms['pc.socket.bufferedBytes']?.max }, {
+			counts: {
+				'pc.queue.control.bytes': 1,
+				'pc.queue.control.totalMs': 1,
+				'pc.queue.control.waitMs': 1,
+				'pc.queue.sealMs': 3,
+				'pc.queue.unsentBytesAtEnqueue': 2,
+				'pc.queue.voice.bytes': 1,
+				'pc.queue.voice.totalMs': 1,
+				'pc.queue.voice.waitMs': 1,
+				'pc.socket.bufferedBytes': 3,
+			},
+			bytes: 20,
+			socket: 100,
+		});
 	});
 });

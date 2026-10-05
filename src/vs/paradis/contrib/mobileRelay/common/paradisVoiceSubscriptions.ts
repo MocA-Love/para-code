@@ -18,6 +18,7 @@ import {
 	IParadisVoiceStreamEndMessage,
 	IParadisVoiceStreamStartMessage,
 } from './paradisMobileVoiceStream.js';
+import { paradisMobileLinkMetrics } from './paradisMobileLinkMetricsRecorder.js';
 
 /** Mobile renews every 20 seconds; three missed renewals expire the voice subscription. */
 export const PARADIS_VOICE_SUBSCRIPTION_TTL_MS = 60_000;
@@ -136,6 +137,8 @@ interface IActiveVoiceStream {
 	closed: boolean;
 	/** 最後に開始・断片を受けた時刻。 */
 	lastWriteAt: number;
+	/** 開始を受けた時刻（通信の計測の時計）。 */
+	readonly startedAt: number;
 }
 
 function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
@@ -208,6 +211,8 @@ export class ParadisMobileVoiceDelivery {
 			if (now - stream.lastWriteAt > PARADIS_VOICE_STREAM_IDLE_LIMIT_MS) {
 				this.streams.delete(streamId);
 				if (!stream.closed) {
+					// 期限切れ（長く何も来ない流れ）で捨てた
+					paradisMobileLinkMetrics.count('pc.voice.idleAborted');
 					this.abortStream(stream);
 				}
 			}
@@ -232,6 +237,7 @@ export class ParadisMobileVoiceDelivery {
 			clipBytes: 0,
 			closed: false,
 			lastWriteAt: this.now(),
+			startedAt: paradisMobileLinkMetrics.now(),
 		});
 	}
 
@@ -243,13 +249,21 @@ export class ParadisMobileVoiceDelivery {
 			return;
 		}
 		// 詰まりは端末ごとには測れない（PC からリレーへのソケットは全端末で 1 本）。全体の値で決める
-		const congested = this.options.congestionBytes() > PARADIS_VOICE_STREAM_CONGESTION_BYTES;
+		const congestionBytes = this.options.congestionBytes();
+		const congested = congestionBytes > PARADIS_VOICE_STREAM_CONGESTION_BYTES;
+		const metrics = paradisMobileLinkMetrics;
+		if (metrics.enabled) {
+			// 出どころが流れを始めてから最初の音が来るまで（合成の待ち）と、そのときの送信の詰まり
+			metrics.observeSince('pc.voice.sourceFirstAudioMs', stream.startedAt);
+			metrics.observe('pc.voice.congestionBytesAtStart', congestionBytes);
+		}
 		for (const { mobileId, sid } of recipients) {
 			const session = this.options.getSession(mobileId);
 			if (session === undefined) {
 				continue;
 			}
 			const canStream = !congested && session.capabilities?.includes(VOICE_STREAM_CAPABILITY) === true;
+			metrics.count(canStream ? 'pc.voice.mode.stream' : congested ? 'pc.voice.mode.clipCongested' : 'pc.voice.mode.clip');
 			stream.targets.set(mobileId, { sid, epoch: session.epoch, mode: canStream ? 'stream' : 'clip' });
 			if (canStream) {
 				// epoch は記録用。アプリは使わない（張り直した後の古い流れは、アプリが知らない streamId として捨てるか、
@@ -275,6 +289,7 @@ export class ParadisMobileVoiceDelivery {
 		}
 		// 流す宛先は送った分、1 本まるごとの宛先は控えた分で数える（どちらにも 8MiB の上限を効かせる）
 		if (Math.max(stream.sentBytes + stream.pendingBytes, stream.clipBytes) + chunk.byteLength > PARADIS_VOICE_STREAM_MAX_BYTES) {
+			paradisMobileLinkMetrics.count('pc.voice.limitAborted');
 			this.abortStream(stream);
 			return;
 		}

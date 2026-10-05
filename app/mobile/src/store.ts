@@ -26,6 +26,8 @@ import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities
 import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
 import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
 import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk, paradisParseVoiceStreamEnd, paradisParseVoiceStreamStart } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
+import { paradisIsMetricsPongPayload, paradisParseMetricsPong } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileLinkMetrics.js';
+import { appLinkMetrics } from './linkMetricsRuntime.js';
 import type { VoiceDelivery } from './voiceLifecycle.js';
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
@@ -1904,6 +1906,8 @@ export class MobileController {
 	/** 最後に何らかのframeを受信した時刻。presence欠落時のPC再起動検出（死活監視）に使う。 */
 	private lastFrameAt = 0;
 	private livenessTimer: ReturnType<typeof setInterval> | undefined;
+	/** 通信の計測の往復時間の ping の送り口（`linkMetrics.ts`）。計測していない間は何も送らない。 */
+	private unregisterLinkPinger: (() => void) | undefined;
 	/**
 	 * PCから受け取った有効なStateの数。通知センターの突き合わせ（notificationTray.ts）が
 	 * 「頼んだあとに届いた、いまのPCの状態」を待つための目印。
@@ -2226,8 +2230,17 @@ export class MobileController {
 				}
 				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 			},
-			onFrame: frame => { this.lastFrameAt = Date.now(); this.handleFrame(frame); },
-			onFrameChunk: chunk => this.fsTimings.chunk(chunk),
+			onFrame: frame => {
+				this.lastFrameAt = Date.now();
+				if (appLinkMetrics.enabled) {
+					appLinkMetrics.noteFrame(frame.ch, frame.payload.length);
+				}
+				this.handleFrame(frame);
+			},
+			onFrameChunk: chunk => {
+				this.fsTimings.chunk(chunk);
+				appLinkMetrics.noteChunk(chunk);
+			},
 			onAuthRejected: rejected => {
 				this.state.pairingRejected = rejected;
 				this.emit();
@@ -2235,6 +2248,15 @@ export class MobileController {
 			onConnectionEvent: event => this.onConnectionEvent?.(event),
 		});
 		this.client.connect();
+		this.unregisterLinkPinger?.();
+		this.unregisterLinkPinger = appLinkMetrics.registerPinger(text => {
+			// PC が ping を知っている（`metrics.ping.v1`）ときだけ送る。古い PC は知らない `t` を受けない
+			if (this.client === undefined || this.state.connection !== 'online' || !this.state.sessionProtocolReady || !this.hasPcCapability(PcCapability.MetricsPing)) {
+				return false;
+			}
+			this.client.send('browser', encoder.encode(text));
+			return true;
+		});
 		// presence遷移が届かないPC再起動（リレーがPC切断を検知し損ねた場合等）でも自己修復する
 		// 死活監視。'online' 表示のまま一定時間何も受信していなければ、応答が必ず返るstate要求を
 		// 送り、無応答なら接続を作り直す（フォアグラウンド復帰時のensureConnectedと同じ経路）。
@@ -2255,6 +2277,8 @@ export class MobileController {
 
 	disconnect(): void {
 		this.releaseAllWarmLeases();
+		this.unregisterLinkPinger?.();
+		this.unregisterLinkPinger = undefined;
 		if (this.livenessTimer !== undefined) {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = undefined;
@@ -3300,6 +3324,8 @@ export class MobileController {
 		}
 		const operationSeq = this.terminalOperationSeq++;
 		const operationId = `${this.requestPrefix}-term-${this.operationRun}-${operationSeq}`;
+		// 通信の計測: 入力を送ると決めてからソケットへ渡すまで（送り直し用の保存を含む）と、エコーまで
+		const inputAt = body.t === 'input' ? appLinkMetrics.noteInput() : undefined;
 		const payload = encoder.encode(JSON.stringify({
 			...body,
 			operationId,
@@ -3334,6 +3360,9 @@ export class MobileController {
 					}
 					if (this.terminalOperationOutbox.get(operationId) === operation && operation.state === 'pending' && operation.durable && this.canDispatchTerminalOperation(operation, true)) {
 						this.client?.send('term', payload);
+						if (inputAt !== undefined) {
+							appLinkMetrics.noteInputSent(inputAt);
+						}
 					}
 					return true;
 				} catch {
@@ -3350,6 +3379,9 @@ export class MobileController {
 					&& (expectedAgentInputContext === undefined || (typeof body.terminalKey === 'string' && this.agentInputContextFor(body.terminalKey) === expectedAgentInputContext))
 					&& this.canDispatchTerminalOperation({ payload })) {
 					this.client?.send('term', payload);
+					if (inputAt !== undefined) {
+						appLinkMetrics.noteInputSent(inputAt);
+					}
 					return true;
 				}
 				return false;
@@ -4752,6 +4784,14 @@ export class MobileController {
 			return;
 		}
 		if (frame.ch === 'browser') {
+			// 通信の計測の往復時間の返事（`metrics.ping.v1`）。ほかの処理へ回さない
+			if (paradisIsMetricsPongPayload(frame.payload)) {
+				const id = paradisParseMetricsPong(decodeUtf8(frame.payload));
+				if (id !== undefined) {
+					appLinkMetrics.notePong(id);
+				}
+				return;
+			}
 			// 音声の流れの 2 進の断片（`PVS\x01`）。JSON として読まない。sid を持たないので、今の受信先へ渡す
 			// （ネイティブは開始を受けていない streamId の断片を捨てる）。
 			if (paradisIsVoiceStreamChunk(frame.payload)) {
@@ -4840,12 +4880,14 @@ export class MobileController {
 			try {
 				// 新しいPCは requestState の交渉に応じて gzip で返してくる。magic を持たない
 				// 従来のJSONはそのまま通す（PCを更新していない場合の経路）。
+				const decodeStartedAt = appLinkMetrics.metrics.now();
 				const raw = isGzipJsonResponse(frame.payload) ? decodeGzipJsonResponse(frame.payload) : frame.payload;
 				if (raw === undefined) {
 					// 壊れた圧縮フレームは捨てる。stateは常に全量なので次の再送で自動的に追いつく。
 					return;
 				}
 				const incoming = JSON.parse(decodeUtf8(raw)) as WorkspaceState;
+				appLinkMetrics.noteState(frame.payload.length, decodeStartedAt);
 				const unchanged = incoming as unknown as { t?: unknown; desktopEpoch?: unknown; revision?: unknown };
 				if (unchanged.t === 'unchanged') {
 					this.applyUnchangedState(unchanged.desktopEpoch, unchanged.revision);
@@ -5050,6 +5092,7 @@ export class MobileController {
 					if (!this.handleTermSyncData({ terminalKey: msg.terminalKey, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode })) {
 						return;
 					}
+					appLinkMetrics.noteTermData(msg.data.length);
 					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.terminalKey) ?? '');
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
 					this.state.terminalOutput.set(msg.terminalKey, next);
