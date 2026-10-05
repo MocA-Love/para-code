@@ -75,7 +75,7 @@ export interface RelayClientCallbacks {
 	readonly onFrameChunk?: (chunk: FrameChunkTiming) => void;
 	readonly onError?: (error: unknown) => void;
 	/**
-	 * リレーがこの端末の資格を認めなかった（4401 / 4404 で閉じた）/ 再び繋がった。
+	 * リレーがこの端末の資格を認めなかった（4401 / 4404 / 4410 で閉じた）/ 再び繋がった。
 	 * true の間は再ペアリングが必要で、再接続は1〜15分おきの確認に落ちる。
 	 */
 	readonly onAuthRejected?: (rejected: boolean) => void;

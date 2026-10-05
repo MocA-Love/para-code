@@ -70,6 +70,47 @@ suite('ParadisMobileStateDelivery', () => {
 		assert.strictEqual(sends, 2);
 	});
 
+	test('送信中に来た State は次の 1 件として最新値で置き換え、要求への返事は置き換えても消さない（4 章 #15）', async () => {
+		const delivery = new ParadisMobileStateDelivery();
+		const sent: number[] = [];
+		const releases: (() => void)[] = [];
+		const send = (payload: Uint8Array) => new Promise<void>(resolve => { sent.push(payload[0]); releases.push(resolve); });
+
+		const first = delivery.deliver(Uint8Array.of(1), false, send);
+		const forced = delivery.deliver(Uint8Array.of(2), true, send);
+		const replaced = delivery.deliver(Uint8Array.of(3), false, send);
+		const newest = delivery.deliver(Uint8Array.of(4), false, send);
+		const whileFirstInFlight = [...sent];
+		releases.shift()!();
+		await first;
+		for (let i = 0; i < 10 && releases.length === 0; i++) {
+			await Promise.resolve();
+		}
+		releases.shift()!();
+
+		assert.deepStrictEqual({ whileFirstInFlight, sent, results: await Promise.all([first, forced, replaced, newest]) }, {
+			whileFirstInFlight: [1],
+			sent: [1, 4],
+			results: [true, true, true, true],
+		});
+	});
+
+	test('アプリが同じ版を持っていれば、要求への返事は全量の代わりに unchanged を送る（4 章 #14）', async () => {
+		const delivery = new ParadisMobileStateDelivery();
+		const sent: string[] = [];
+		const send = async (payload: Uint8Array) => { sent.push(new TextDecoder().decode(payload)); };
+		const unchanged = { identity: 'e\n5', reply: new TextEncoder().encode('unchanged') };
+
+		await delivery.deliver(new TextEncoder().encode('state-5'), false, send, { identity: 'e\n5' });
+		await delivery.deliver(new TextEncoder().encode('state-5'), true, send, { identity: 'e\n5', unchanged });
+		// 手元の版が古い・内容が変わったなら全量を送る
+		await delivery.deliver(new TextEncoder().encode('state-6'), true, send, { identity: 'e\n6', unchanged });
+		// 手元の版を添えない要求には全量を送る
+		await delivery.deliver(new TextEncoder().encode('state-6'), true, send, { identity: 'e\n6' });
+
+		assert.deepStrictEqual(sent, ['state-5', 'unchanged', 'state-6', 'state-6']);
+	});
+
 	test('reset後は同じpayloadも配送する', async () => {
 		const delivery = new ParadisMobileStateDelivery();
 		const payload = Uint8Array.of(1);

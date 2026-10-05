@@ -125,9 +125,9 @@ describe('relay retry delays', () => {
 		]).toEqual([60_000, 74_970, 120_000, 480_000, 900_000]);
 	});
 
-	it('treats only the relay close codes 4401 / 4404 as a refusal', () => {
-		expect([4401, 4404, 1006, 1000, 0, undefined].map(isRelayAuthRejection)).toEqual([true, true, false, false, false, false]);
-		expect([PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED, PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE]).toEqual([4401, 4404]);
+	it('treats only the relay close codes 4401 / 4404 / 4410 as a refusal', () => {
+		expect([4401, 4404, 4410, 1006, 1000, 0, undefined].map(isRelayAuthRejection)).toEqual([true, true, true, false, false, false, false]);
+		expect([PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED, PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, PARADIS_RELAY_CLOSE_CODE.REVOKED]).toEqual([4401, 4404, 4410]);
 	});
 });
 
