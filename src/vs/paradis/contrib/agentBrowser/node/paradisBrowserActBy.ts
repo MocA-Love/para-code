@@ -61,6 +61,8 @@ interface ILocated {
 	readonly readOnly?: boolean;
 	readonly focused?: boolean;
 	readonly value?: string;
+	/** パスワード欄。value は長さだけ。 */
+	readonly secret?: boolean;
 	readonly x?: number;
 	readonly y?: number;
 	readonly problem?: string;
@@ -295,6 +297,24 @@ export class ParadisBrowserActBy {
 				outcome = `Chose ${JSON.stringify(chosen.value.label)} in the select (the page saw input and change events)`;
 				break;
 			}
+			case 'value': {
+				// 日付・時刻・色・範囲の input。文字の選択が無く insertText では置き換わらないので、値を直接入れる
+				if (located.readOnly === true) {
+					return error(`fill_by: the field is read-only, so nothing was sent. Element: ${JSON.stringify(located.element)}`);
+				}
+				const set = await this.run(call, { mode: 'setValue', ref, value }, []);
+				if (!set.ok) {
+					return set.result;
+				}
+				if (set.value.lost === true) {
+					return error('PARA_BROWSER_RETRYABLE: the field was removed from the page before it could be filled (the page re-rendered). Retry.');
+				}
+				if (set.value.accepted !== true) {
+					return error(`fill_by: the field did not accept ${JSON.stringify(value)} (now ${JSON.stringify(set.value.value)}). Date and time fields take the HTML format, for example "2026-10-06", "2026-10-06T09:30", "2026-10", "2026-W41" or "09:30". Element: ${JSON.stringify(located.element)}`);
+				}
+				outcome = 'Set the value (the page saw input and change events)';
+				break;
+			}
 			case 'text': {
 				if (located.readOnly === true) {
 					return error(`fill_by: the field is read-only, so nothing was sent. Element: ${JSON.stringify(located.element)}`);
@@ -330,7 +350,7 @@ export class ParadisBrowserActBy {
 				break;
 			}
 			default:
-				return error(`fill_by: the element is not a text field, text area, contenteditable, select, checkbox or radio (and has none inside it). Use click_by to open it, then fill_by on the field that appears, or type_text. Element: ${JSON.stringify(located.element)}`);
+				return error(`fill_by: the element is not a text field, text area, contenteditable, date/time input, select, checkbox or radio (and has none inside it). Use click_by to open it, then fill_by on the field that appears, or type_text. Element: ${JSON.stringify(located.element)}`);
 		}
 		if (args.submit === true) {
 			const failure = await this.pressKey(call, 'Enter', 'Enter', 13, '\r');
@@ -341,7 +361,13 @@ export class ParadisBrowserActBy {
 		const read = await this.run(call, { mode: 'readField', ref }, []);
 		const after = read.ok && read.value.lost !== true ? read.value.value : undefined;
 		const lines = [`${outcome}${args.submit === true ? ', then pressed Enter' : ''}${which}.`];
-		if (typeof after === 'string') {
+		if (read.ok && read.value.secret === true) {
+			// パスワード欄の中身はエージェントへ返さない。長さだけ比べる
+			lines.push(`Value now: ${typeof after === 'string' ? after : '(hidden)'}`);
+			if (args.submit !== true && read.value.length !== value.length) {
+				lines.push('The length differs from what was given: the page may limit (maxlength) or change the input. Check the page.');
+			}
+		} else if (typeof after === 'string') {
 			lines.push(`Value now: ${JSON.stringify(after)}`);
 			if (kind === 'text' && args.submit !== true && after !== value) {
 				lines.push('The value differs from what was given: the page may format, limit (maxlength) or mask the input, or autocomplete may have changed it. Check with take_snapshot or get_text.');

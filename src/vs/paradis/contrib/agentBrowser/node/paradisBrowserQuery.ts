@@ -64,7 +64,7 @@ const DEFAULT_STYLES = ['display', 'visibility', 'opacity', 'position', 'z-index
 
 /** ページの中で使う引数（JSON にしてページの関数へ埋め込む）。 */
 export interface IParadisQuerySpec {
-	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'locate' | 'focusField' | 'selectOption' | 'readField' | 'rect';
+	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
 	readonly selector?: string;
 	readonly role?: string;
 	readonly name?: string;
@@ -334,7 +334,7 @@ export class ParadisBrowserQuery {
 				if (outcome.value.met === true) {
 					if (networkIdle()) {
 						const elapsed = ((this.now() - startedAt) / 1000).toFixed(1);
-						const network = networkIdleMs !== undefined ? { network: { inflight: lastNetwork?.inflight ?? 0, quietMs: lastNetwork?.quietMs, ...(lastNetwork?.longLived ? { longLivedIgnored: lastNetwork.longLived } : {}) } } : {};
+						const network = networkIdleMs !== undefined ? { network: { inflight: lastNetwork?.inflight ?? 0, quietMs: lastNetwork?.quietMs, ...(lastNetwork?.longLived ? { longLivedIgnored: lastNetwork.longLived } : {}), ...(lastNetwork?.quietMs === undefined ? { observed: false, note: 'Para Code has not seen any request of this tab yet (requests are counted only while the browser tools are connected), so the quiet time was measured from the start of wait_until.' } : {}) } } : {};
 						return text(`Condition met after ${elapsed}s.\n${JSON.stringify({ ...outcome.value, ...network }, null, 2)}`);
 					}
 					if (this.now() >= deadline) {

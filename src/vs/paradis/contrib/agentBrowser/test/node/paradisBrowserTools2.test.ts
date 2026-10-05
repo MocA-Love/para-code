@@ -12,7 +12,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath } from '../../node/paradisBrowserCapture.js';
-import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited } from '../../node/paradisBrowserDownloadReader.js';
+import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_FILE_TOOL_NAMES, PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 import { paradisRunSteps } from '../../node/paradisBrowserRunSteps.js';
@@ -180,6 +180,15 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		} finally {
 			await fs.rm(folder, { recursive: true, force: true });
 		}
+	});
+
+	test('the unzipped size of an xlsx is read from its central directory', async () => {
+		const ExcelJS = (await import('exceljs')).default;
+		const workbook = new ExcelJS.Workbook();
+		workbook.addWorksheet('Sheet').addRow(['x'.repeat(1000)]);
+		const data = Buffer.from(await workbook.xlsx.writeBuffer());
+		const size = paradisZipUncompressedSize(data);
+		assert.deepStrictEqual([typeof size === 'number' && size > 1000, paradisZipUncompressedSize(Buffer.from('not a zip at all, just some text'))], [true, undefined]);
 	});
 
 	test('ranges, delimited text and text encodings', () => {

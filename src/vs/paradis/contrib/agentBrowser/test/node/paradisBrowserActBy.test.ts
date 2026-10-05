@@ -138,6 +138,23 @@ suite('paradisBrowserActBy (shared process)', () => {
 		});
 	});
 
+	test('fill_by sets a date field through its value, and never returns the content of a password field', async () => {
+		const date = new FakePage({ locate: [{ ...field, kind: 'value', value: '' }], setValue: [{ value: '2026-10-06', accepted: true }], readField: [{ value: '2026-10-06' }] });
+		const badDate = new FakePage({ locate: [{ ...field, kind: 'value', value: '' }], setValue: [{ value: '', accepted: false }] });
+		const password = new FakePage({ locate: [{ ...field, secret: true, value: '(3 characters, hidden)' }], focusField: [{ focused: true, value: '(3 characters, hidden)', empty: false }], readField: [{ value: '(6 characters, hidden)', secret: true, length: 6 }] });
+		const actBy = new ParadisBrowserActBy(() => 'ref');
+		const results = [
+			await actBy.call(date.call(), 'fill_by', { selector: '#due', value: '2026-10-06' }),
+			await actBy.call(badDate.call(), 'fill_by', { selector: '#due', value: '10/06/2026' }),
+			await actBy.call(password.call(), 'fill_by', { selector: '#pw', value: 'secret' }),
+		];
+		assert.deepStrictEqual({ errors: results.map(isError), date: [date.modes, date.sent], password: textOf(results[2]).split('\n').slice(0, 2) }, {
+			errors: [false, true, false],
+			date: [['locate', 'setValue', 'readField'], []],
+			password: ['Selected the old content and inserted the text as trusted input.', 'Value now: (6 characters, hidden)'],
+		});
+	});
+
 	test('a refusal of the input path is returned as the reason', async () => {
 		const page = new FakePage({ locate: [button] });
 		page.refusal = 'the user is using this page';

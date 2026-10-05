@@ -17,6 +17,8 @@ import { promises as fs } from 'fs';
 import { basename, extname, isAbsolute, relative, sep } from '../../../../base/common/path.js';
 
 export const PARADIS_READ_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
+/** xlsx を展開した後の大きさの上限（圧縮された小さいファイルが shared process のメモリを食い尽くさないように）。 */
+export const PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES = 200 * 1024 * 1024;
 const DEFAULT_MAX_CELLS = 2000;
 const MAX_MAX_CELLS = 20_000;
 const MAX_CELL_CHARS = 500;
@@ -162,6 +164,43 @@ function renderRange(range: IRange, valueAt: (row: number, column: number) => st
 	return { lines, endRow: range.endRow, cut: false };
 }
 
+/**
+ * zip（xlsx）の中央ディレクトリから、展開後の大きさの合計を求める。読めない・ZIP64 なら undefined。
+ * exceljs に渡す前に、展開すると大きすぎるファイルを断るために使う。
+ */
+export function paradisZipUncompressedSize(data: Uint8Array): number | undefined {
+	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	// 終端レコード（22 バイト + コメント最大 65535 バイト）を後ろから探す
+	let end = -1;
+	for (let offset = data.byteLength - 22; offset >= Math.max(0, data.byteLength - 22 - 0xFFFF); offset--) {
+		if (view.getUint32(offset, true) === 0x06054B50) {
+			end = offset;
+			break;
+		}
+	}
+	if (end < 0) {
+		return undefined;
+	}
+	const entries = view.getUint16(end + 10, true);
+	let offset = view.getUint32(end + 16, true);
+	if (entries === 0xFFFF || offset === 0xFFFFFFFF) {
+		return undefined;
+	}
+	let total = 0;
+	for (let index = 0; index < entries; index++) {
+		if (offset + 46 > data.byteLength || view.getUint32(offset, true) !== 0x02014B50) {
+			return undefined;
+		}
+		const size = view.getUint32(offset + 24, true);
+		if (size === 0xFFFFFFFF) {
+			return undefined;
+		}
+		total += size;
+		offset += 46 + view.getUint16(offset + 28, true) + view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
+	}
+	return total;
+}
+
 function isInside(root: string, target: string): boolean {
 	const between = relative(root, target);
 	return between !== '' && between !== '..' && !between.startsWith(`..${sep}`) && !isAbsolute(between);
@@ -243,6 +282,13 @@ export class ParadisBrowserDownloadReader {
 	private async readWorkbook(name: string, data: Buffer, sheet: string | number | undefined, range: IRange | undefined, maxCells: number): Promise<ToolResult> {
 		if (data.length >= 4 && data[0] === 0xD0 && data[1] === 0xCF && data[2] === 0x11 && data[3] === 0xE0) {
 			return error(`${name} is password-protected (encrypted) or an old binary workbook, so it cannot be read.`);
+		}
+		const unzipped = paradisZipUncompressedSize(data);
+		if (unzipped === undefined) {
+			return error(`${name} could not be read as an Excel workbook (not a readable zip, or a ZIP64 file).`);
+		}
+		if (unzipped > PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES) {
+			return error(`${name} expands to more than ${PARADIS_READ_DOWNLOAD_MAX_UNZIPPED_BYTES / 1024 / 1024} MB, so it is not read.`);
 		}
 		let workbook: ExcelJS.Workbook;
 		try {
