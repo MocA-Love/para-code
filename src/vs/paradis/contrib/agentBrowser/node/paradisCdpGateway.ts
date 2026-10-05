@@ -24,6 +24,7 @@
 // URL上の固定credentialには依存せず、Para Codeターミナルペインの子孫プロセスであることと、
 // そのペインの現行owner lifecycleから得たopaque leaseの両方を要求する。
 
+import { IParadisNetworkActivitySnapshot, ParadisNetworkActivityRegistry } from './paradisCdpNetworkActivity.js';
 import { createHash, randomBytes } from 'crypto';
 import type * as http from 'http';
 import type { Socket } from 'net';
@@ -192,6 +193,8 @@ export class ParadisCdpGateway extends Disposable {
 	private readonly _browserWsIds = new Map<string, string>();
 	/** Token authority shared by every page/browser WebSocket for raw visible WebP capture. */
 	private readonly _rawScreenshotAuthorities = new ParadisRawScreenshotAuthorityRegistry();
+	/** wait_until の network idle 用の、ペインごとの通信の台帳。 */
+	private readonly _networkActivity = new ParadisNetworkActivityRegistry();
 
 	private _wsModulePromise: Promise<IParadisWsModule> | undefined;
 	private _wss: wsTypes.WebSocketServer | undefined;
@@ -441,6 +444,8 @@ export class ParadisCdpGateway extends Disposable {
 	/** 指定トークンのアクティブなCDP接続を強制切断する（クライアントは次のツール呼び出しで再接続する）。 */
 	closeConnectionsForToken(token: string): void {
 		this._peerResolutionEpoch++;
+		// 共有の相手が変わる。前のタブの通信は数えない
+		this._networkActivity.get(token)?.reset();
 		const peerAuthority = this._peerAuthorities.get(token);
 		if (peerAuthority) {
 			peerAuthority.generation++;
@@ -473,6 +478,15 @@ export class ParadisCdpGateway extends Disposable {
 		this._peerAuthorities.delete(token);
 		this._browserWsIds.delete(token);
 		this._rawScreenshotAuthorities.retire(token);
+		this._networkActivity.retire(token);
+	}
+
+	/**
+	 * 共有中のタブの通信の様子（wait_until の network idle）。内蔵 chrome-devtools-mcp が接続して
+	 * いる間に流れた Network.* だけを数える。`ignoreOlderThanMs` より長く続く要求は数えない。
+	 */
+	getNetworkActivity(token: string, ignoreOlderThanMs: number): IParadisNetworkActivitySnapshot | undefined {
+		return this._networkActivity.get(token)?.snapshot(ignoreOlderThanMs);
 	}
 
 	override dispose(): void {
@@ -514,6 +528,7 @@ export class ParadisCdpGateway extends Disposable {
 		this._socketTokens = new WeakMap();
 		try {
 			this._rawScreenshotAuthorities.dispose();
+			this._networkActivity.dispose();
 		} catch {
 			// Continue superclass disposal even when a nonessential coordinator fails.
 		}
@@ -577,6 +592,7 @@ export class ParadisCdpGateway extends Disposable {
 		};
 		return {
 			rawScreenshotCoordinator: this._rawScreenshotAuthorities.forAuthority(token),
+			networkActivity: this._networkActivity.forAuthority(token),
 			isCurrentLease,
 			boundTargetIds: () => {
 				if (!isCurrentLease()) {
