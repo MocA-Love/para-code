@@ -10,7 +10,7 @@ import type * as http from 'http';
 import { randomUUID } from 'crypto';
 import { closeSync, openSync, promises as fs, readSync } from 'fs';
 import { PARADIS_MCP_PAGE_OPS_TOOLS } from './paradisBrowserPageOpsTools.js';
-import { PARADIS_MCP_BROWSER_QUERY_TOOLS } from './paradisBrowserQueryTools.js';
+import { PARADIS_MCP_BROWSER_ACT_TOOLS, PARADIS_MCP_BROWSER_FILE_TOOLS, PARADIS_MCP_BROWSER_QUERY_TOOLS, PARADIS_MCP_BROWSER_RUN_STEPS_TOOLS } from './paradisBrowserQueryTools.js';
 
 export const PARADIS_MCP_CONNECT_TIMEOUT_MS = 5_000;
 export const PARADIS_MCP_HEALTH_TIMEOUT_MS = 5_000;
@@ -273,6 +273,12 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	...PARADIS_MCP_PAGE_OPS_TOOLS,
 	// Reading and waiting on the shared page with short scripts (wait_until, get_text, inspect_element, scroll_to).
 	...PARADIS_MCP_BROWSER_QUERY_TOOLS,
+	// Finding an element by role / name / text / CSS and acting on it with trusted input (click_by, fill_by).
+	...PARADIS_MCP_BROWSER_ACT_TOOLS,
+	// Several page tools in one call (run_steps).
+	...PARADIS_MCP_BROWSER_RUN_STEPS_TOOLS,
+	// Cropped and multiple screenshots saved where the agent runs, and the contents of downloads (capture_screenshot, read_download).
+	...PARADIS_MCP_BROWSER_FILE_TOOLS,
 ] as const;
 
 export interface IParadisMcpPortFileRecord {

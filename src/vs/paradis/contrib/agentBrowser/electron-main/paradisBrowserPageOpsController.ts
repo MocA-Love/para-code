@@ -197,7 +197,33 @@ export class ParadisBrowserPageOpsController {
 		private readonly now: () => number = Date.now,
 		/** 外すときに戻せなかったもの（ログに出す）。閉じたタブへのものは呼ばない。 */
 		private readonly onTeardownFailure: (step: string, error: unknown) => void = () => { },
+		/** タブに置かれたスクリプトの本数が変わった（ワークベンチにバナーを出すため）。 */
+		private readonly onDidChangeInitScripts: (target: IParadisPageOpsTarget, count: number) => void = () => { },
 	) { }
+
+	/** 台帳を書き換え、本数が変わったら知らせる。 */
+	private setInitScripts(target: IParadisPageOpsTarget, scripts: IInitScript[] | undefined): void {
+		const before = this.initScripts.get(target)?.length ?? 0;
+		if (scripts !== undefined && scripts.length > 0) {
+			this.initScripts.set(target, scripts);
+		} else {
+			this.initScripts.delete(target);
+		}
+		const after = scripts?.length ?? 0;
+		if (before !== after) {
+			this.onDidChangeInitScripts(target, after);
+		}
+	}
+
+	/** スクリプトが置かれているタブと本数（ワークベンチが開いたときの初めの状態）。 */
+	initScriptCounts(): [IParadisPageOpsTarget, number][] {
+		return [...this.initScripts].map(([target, scripts]) => [target, scripts.length]);
+	}
+
+	/** 利用者が外した。どのペインのものもすべて外す。外した数を返す。 */
+	removeAllInitScripts(target: IParadisPageOpsTarget): Promise<number> {
+		return this.removeScripts(target, () => true);
+	}
 
 	/** タブに掛かっている上書きの要約。持ち主でなければ上書きの中身は見せない。 */
 	summary(target: IParadisPageOpsTarget, ownerKey: string): IParadisPageOverridesResult {
@@ -288,7 +314,7 @@ export class ParadisBrowserPageOpsController {
 		if (entry) {
 			void this.teardown(target, entry);
 		}
-		this.initScripts.delete(target);
+		this.setInitScripts(target, undefined);
 	}
 
 	/** タブが閉じた。上書きとハイライトを外し、専用のセッションを手放す（タブと一緒に消える）。 */
@@ -310,7 +336,7 @@ export class ParadisBrowserPageOpsController {
 		if (entry) {
 			void this.teardownAndDispose(target, entry);
 		}
-		this.initScripts.delete(target);
+		this.setInitScripts(target, undefined);
 	}
 
 	/** いま上書きを掛けているタブの数（テスト用）。 */
@@ -407,9 +433,7 @@ export class ParadisBrowserPageOpsController {
 			return { ok: false, reason: 'stale' };
 		}
 		const info: IParadisInitScriptInfo = Object.freeze({ id: `s${this.nextInitScriptId++}`, label: request.label, chars: request.source.length, addedAt: this.now() });
-		const scripts = this.initScripts.get(target) ?? [];
-		scripts.push({ info, ownerKey, generation, identifier, session: entry.session });
-		this.initScripts.set(target, scripts);
+		this.setInitScripts(target, [...(this.initScripts.get(target) ?? []), { info, ownerKey, generation, identifier, session: entry.session }]);
 		return { ...this.describeScripts(target, ownerKey), added: info };
 	}
 
@@ -448,11 +472,7 @@ export class ParadisBrowserPageOpsController {
 			return 0;
 		}
 		const kept = scripts.filter(script => !predicate(script));
-		if (kept.length > 0) {
-			this.initScripts.set(target, kept);
-		} else {
-			this.initScripts.delete(target);
-		}
+		this.setInitScripts(target, kept);
 		const entry = this.targetSessions.get(target);
 		if (entry) {
 			const commands: (readonly [string, object])[] = removing
@@ -514,7 +534,7 @@ export class ParadisBrowserPageOpsController {
 				}
 				this.highlights.delete(target);
 				// セッションと一緒にスクリプトも消えた。
-				this.initScripts.delete(target);
+				this.setInitScripts(target, undefined);
 			}));
 			this.targetSessions.set(target, entry);
 			this.pendingSessions.delete(target);
@@ -558,7 +578,7 @@ export class ParadisBrowserPageOpsController {
 	private async teardown(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
 		// 置いたスクリプトは識別子ごとに外す（どのペインのものも）。
 		const scripts = (this.initScripts.get(target) ?? []).filter(script => script.session === entry.session).map(script => script.identifier);
-		this.initScripts.delete(target);
+		this.setInitScripts(target, undefined);
 		const commands = [
 			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
 			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
