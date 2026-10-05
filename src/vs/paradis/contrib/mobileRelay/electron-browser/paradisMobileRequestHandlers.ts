@@ -10,7 +10,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { paradisHasMobileCapability } from '../common/paradisMobileCompat.js';
-import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
+import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
 import { IParadisGitResult } from '../common/paradisMobileRelay.js';
 
@@ -168,7 +168,8 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		mobileId,
 		root,
 		// id は本文より後に置く（処理が本文に id を入れても応答の宛先を変えさせない）。
-		reply: body => send({ ...body, id: request.id }),
+		// error には出口で伏せ字を当てる（処理が git の stderr をそのまま返しても資格情報を出さない）
+		reply: body => send({ ...paradisRedactMobileReplyError(body), id: request.id }),
 		push: body => send(body),
 		sendBytes: payload => host.send(channel, mobileId, payload),
 		runGit: args => root !== undefined ? host.runGit(root, args) : Promise.reject(new Error(`unknown workspace: ${request.ws ?? ''}`)),
@@ -178,8 +179,8 @@ export function paradisDispatchMobileRequest(channel: ParadisMobileRequestChanne
 		pushState: () => host.pushState?.(),
 		refreshBranches: () => host.refreshBranches?.(),
 	};
-	// 例外の文には git の出力（remote の URL の資格情報など）が混ざりうるので、伏せ字を通してから返す
-	const fail = (error: unknown) => context.reply({ error: paradisRedactMobileCommandOutput(error instanceof Error ? error.message : String(error)) });
+	// 例外の文には git の出力（remote の URL の資格情報など）が混ざりうる。伏せ字は context.reply の出口で当てる
+	const fail = (error: unknown) => context.reply({ error: error instanceof Error ? error.message : String(error) });
 	try {
 		const result = host.invokeFunction(accessor => handler.handle(accessor, request, context));
 		if (result instanceof Promise) {

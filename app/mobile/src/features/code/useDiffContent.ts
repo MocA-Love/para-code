@@ -10,6 +10,8 @@ export interface DiffContent {
 	readonly source: DiffSource;
 	/** `git diff` のテキスト（テキストの差分のとき）。 */
 	readonly text: string | undefined;
+	/** 差分が大きすぎて PC が先頭だけを送った（`text` は行の境目で切れている）。 */
+	readonly truncated: boolean;
 	/** PC が作った表計算の差分（HTML）。 */
 	readonly html: string | undefined;
 	readonly error: string | undefined;
@@ -18,6 +20,7 @@ export interface DiffContent {
 interface Loaded {
 	readonly key: string;
 	readonly text?: string;
+	readonly truncated?: boolean;
 	readonly html?: string;
 	readonly error?: string;
 }
@@ -49,7 +52,7 @@ export function useDiffContent(space: CodeSpace, path: string | undefined, stage
 		const current = () => !cancelled && currentRendererTarget(wsId) === rendererTarget;
 		const request = source === 'spreadsheet'
 			? scmXlsxDiff(wsId, path).then(result => ({ key, html: result.html }))
-			: scmDiff(wsId, path, staged).then(result => ({ key, text: result.diff }));
+			: scmDiff(wsId, path, staged).then(result => ({ key, text: result.diff, truncated: result.truncated === true }));
 		request
 			.then(result => { if (current()) { setLoaded(result); } })
 			.catch((e: unknown) => { if (current()) { setLoaded({ key, error: errorMessage(e) }); } });
@@ -57,5 +60,5 @@ export function useDiffContent(space: CodeSpace, path: string | undefined, stage
 	}, [key, path, staged, source, wsId, rendererTarget, scmDiff, scmXlsxDiff]);
 
 	const mine = loaded?.key === key ? loaded : undefined;
-	return { source, text: mine?.text, html: mine?.html, error: mine?.error };
+	return { source, text: mine?.text, truncated: mine?.truncated === true, html: mine?.html, error: mine?.error };
 }

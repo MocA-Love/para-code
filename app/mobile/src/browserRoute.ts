@@ -22,6 +22,10 @@ export interface RtcStatLike {
 	readonly candidateType?: string;
 	readonly nominated?: boolean;
 	readonly state?: string;
+	/** `inbound-rtp` の種類（`video` / `audio`）と、復号した映像のフレーム数（`browserVideoHealth.ts`）。 */
+	readonly kind?: string;
+	readonly mediaType?: string;
+	readonly framesDecoded?: number;
 }
 
 /** `getStats()` の戻り値（Map と同じ形）。 */

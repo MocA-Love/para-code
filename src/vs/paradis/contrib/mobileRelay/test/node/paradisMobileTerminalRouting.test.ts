@@ -28,9 +28,10 @@ suite('ParadisMobileRelay terminal routing', () => {
 		});
 		const delivered: ParadisMobileInboundFrameWire[] = [];
 		const terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+		const terminalOperations = new ParadisMobileOperationLedger();
 		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
 			terminalRegistry: registry,
-			terminalOperations: new ParadisMobileOperationLedger(),
+			terminalOperations,
 			terminalOperationTimers,
 			sessions: new Map(),
 			logService: new NullLogService(),
@@ -38,7 +39,7 @@ suite('ParadisMobileRelay terminal routing', () => {
 			_onInboundFrame: { fire: (frame: ParadisMobileInboundFrameWire) => delivered.push(frame) },
 		}) as unknown as { handleTerminalFrame(frame: IParadisMobileInboundFrame): Promise<void> };
 		let operationSeq = 0;
-		const send = async (message: object) => {
+		const send = async (message: object, desktopEpoch = registry.desktopEpoch) => {
 			operationSeq++;
 			await service.handleTerminalFrame({
 				ch: Channels.Terminal,
@@ -46,7 +47,7 @@ suite('ParadisMobileRelay terminal routing', () => {
 				seq: operationSeq,
 				payload: VSBuffer.fromString(JSON.stringify({
 					protocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
-					desktopEpoch: registry.desktopEpoch,
+					desktopEpoch,
 					operationId: `operation-${operationSeq}`,
 					operationRun: 1,
 					operationSeq,
@@ -62,7 +63,7 @@ suite('ParadisMobileRelay terminal routing', () => {
 			}
 			terminalOperationTimers.clear();
 		};
-		return { delivered, dispose, send };
+		return { delivered, dispose, send, terminalOperations };
 	}
 
 	test('routes viewport updates to the terminal owner renderer', async () => {
@@ -75,6 +76,26 @@ suite('ParadisMobileRelay terminal routing', () => {
 				route: frame[1],
 				type: JSON.parse(frame[3].toString()).t,
 			})), [{ channel: Channels.Terminal, route: 'window:7:2:window-session', type: 'viewport' }]);
+		} finally {
+			dispose();
+		}
+	});
+
+	test('ack と viewport は操作台帳に載せずに届け、古い epoch のものは黙って捨てる', async () => {
+		const { delivered, dispose, send, terminalOperations } = createHarness();
+		try {
+			await send({ t: 'ack', epoch: 1, seq: 3 });
+			await send({ t: 'viewport', viewCols: 54, viewRows: 28 });
+			await send({ t: 'viewport', viewCols: 40, viewRows: 20 }, 'old-epoch');
+			await send({ t: 'scroll', dir: 'up', lines: 3 });
+
+			assert.deepStrictEqual({
+				delivered: delivered.map(frame => JSON.parse(frame[3].toString()).t),
+				ledger: ['operation-1', 'operation-2', 'operation-3', 'operation-4'].map(id => terminalOperations.lookup('mobile-a', id)?.kind),
+			}, {
+				delivered: ['ack', 'viewport', 'scroll'],
+				ledger: [undefined, undefined, undefined, 'pending'],
+			});
 		} finally {
 			dispose();
 		}

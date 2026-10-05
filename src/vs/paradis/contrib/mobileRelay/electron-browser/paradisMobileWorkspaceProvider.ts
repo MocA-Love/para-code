@@ -67,7 +67,7 @@ import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js'
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
 import { paradisTerminalEscapeTail } from '../common/paradisTerminalEscapeTail.js';
 import { paradisMobileTerminalViewportStatus } from '../common/paradisMobileTerminalViewportStatus.js';
-import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
+import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse, paradisLooksBinary } from '../common/paradisMobileFileResponse.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
 import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, paradisReadTerminalViewport, paradisResolveTerminalViewport } from '../common/paradisMobileTerminalViewport.js';
@@ -83,7 +83,9 @@ import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMob
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
 import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
-import { PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileUsageErrorReply, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
+import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncated, paradisLimitMobileDiff } from '../common/paradisMobileDiffLimit.js';
+import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
+import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -559,19 +561,22 @@ export function paradisIsSgrMouseEncodingActive(raw: RawXtermTerminal): boolean 
 	return core?._inputHandler?._mouseStateService?.activeEncoding === 'SGR';
 }
 
-const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
 /**
- * リサイズ再同期のスナップショットに含めるスクロールバック行数。
+ * VTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）。attach・リサイズ・
+ * フロー制御の追いつきのどれでも同じ行数を載せる。モバイルはスナップショットを受けると必ず端末をリセットしてから
+ * 書き戻すので、ここに載らなかった履歴はその場で失われる（遡れなくなる）。
  *
- * **0にしてはいけない。** モバイルはスナップショットを受けると必ず端末をリセットしてから
- * 書き戻すので、ここに載らなかった履歴はその場で失われる（遡れなくなる）。さらにこの再同期は
- * attach のたびにも走る（モバイルの申告寸法をPTYへ反映した結果リサイズが発火するため）ので、
- * 0 だと attach で送った1000行を200ms後に自分で消してしまう。
- *
- * 1000行のままだと実測16万文字に達し、TERM_HIGH_WATERMARK_CHARS を超えて送信直後に必ず
- * フロー制御のsuspendedを誘発していた。200行はその上限を下回りつつ、遡れる範囲を残す妥協点。
+ * 以前はリサイズで 200 行・追いつきで 0 行に減らしていた（1000 行は実測16万文字で、未ACKの水位を超えて suspend を
+ * 誘発するため）。スナップショットを未ACKの文字数に数えなくなったので（設計書 4 章の着手順 13）、減らす理由は無い。
  */
-const TERM_RESIZE_SNAPSHOT_SCROLLBACK_ROWS = 200;
+const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000;
+/**
+ * スナップショットの大きさの上限（文字）。1000 行でもこれを超える（長い行・色の多い出力）ときは
+ * {@link TERM_SNAPSHOT_FALLBACK_SCROLLBACK_ROWS} 行で撮り直す。未ACKの水位からは外したが、スマホが一度に受けて
+ * 書き戻す量の上限は残す。
+ */
+const TERM_SNAPSHOT_MAX_CHARS = 512 * 1024;
+const TERM_SNAPSHOT_FALLBACK_SCROLLBACK_ROWS = 200;
 // --- ターミナル同期プロトコル（epoch対応クライアント向け）の定数 ---
 const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
 // フロー制御: 未ACK文字数が HIGH を超えたら生ストリーム転送を止め（ptyは止めない）、
@@ -625,6 +630,11 @@ interface TermSyncState {
 	pendingChars: number;
 	coalesceTimer: ReturnType<typeof setTimeout> | undefined;
 	resizeTimer: ReturnType<typeof setTimeout> | undefined;
+	/**
+	 * resizeTimer が送るスナップショットの理由。attach で寸法が変わったときは attach のスナップショットをリサイズの
+	 * 再同期にまとめるので（1 回だけ送る）、続くリサイズの通知で予約し直しても `attach` のまま残す。
+	 */
+	resizeReason?: TermSnapshotReason;
 }
 
 /**
@@ -1825,14 +1835,22 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const sendReply = (replyPayload: Uint8Array) => {
 			this.sendFrame({ ch: Channels.Scm, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
 		};
-		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...body }));
+		// 応答の出口で error に伏せ字を当てる（git の stderr や例外の文に資格情報が混ざりうる）
+		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...paradisRedactMobileReplyError(body) }));
 		const reply = (body: object) => {
 			sendReply(jsonReply(body));
 		};
 		const replyCompressed = async (body: object) => {
 			const json = jsonReply(body);
 			const responseEncoding = msg.t === 'diff' || msg.t === 'xlsxDiff' ? msg.responseEncoding : undefined;
-			sendReply(await paradisEncodeJsonResponsePayload('scm', msg.t, responseEncoding, json));
+			const encoded = await paradisEncodeJsonResponsePayload('scm', msg.t, responseEncoding, json);
+			// 再結合の上限を超える応答は送れない（送るとアプリは期限まで待つ）。明示的に too-large を返す
+			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
+				// allow-any-unicode-next-line
+				sendReply(jsonReply({ error: `差分が大きすぎてスマホへ送れません（上限 ${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）。PC で開いてください。`, code: 'too-large' }));
+				return;
+			}
+			sendReply(encoded);
 		};
 		// worktree作成系は特定ワークスペースに紐づかない（wsを持たない）ため、repoPath解決より先に処理する
 		if (msg.t === 'worktreeForm' || msg.t === 'createWorktree') {
@@ -2009,16 +2027,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				if (msg.path) {
 					args.push('--', msg.path);
 				}
-				const result = await this.runGit(repoUri, args);
-				// 未追跡ファイルは diff に出ないため、空なら内容そのものを差分風に返す
+				const result = await paradisWithHostDeadline(this.runGit(repoUri, args), PARADIS_MOBILE_READ_DEADLINE_MS);
+				// 未追跡ファイルは diff に出ないため、空なら内容そのものを差分風に返す。大きいファイルは先頭だけ読む
 				let diff = result.stdout;
+				let sourceTruncated = paradisIsRunGitOutputTruncated(result.stderr);
 				if (!diff && msg.path) {
-					const read = await this.readWorkspaceFile(msg.ws, msg.path);
+					const read = await paradisWithHostDeadline(this.readWorkspaceFile(msg.ws, msg.path, PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES), PARADIS_MOBILE_READ_DEADLINE_MS);
 					if (read !== undefined) {
-						diff = read.split('\n').map(l => `+${l}`).join('\n');
+						diff = read.text.split('\n').map(l => `+${l}`).join('\n');
+						sourceTruncated = read.truncated;
 					}
 				}
-				await replyCompressed({ t: 'diff', diff });
+				// 上限を超えたら行の境目で切り、truncated を付ける（古いアプリは読まずに先頭だけを出す）
+				const limited = paradisLimitMobileDiff(diff, sourceTruncated);
+				await replyCompressed({ t: 'diff', diff: limited.diff, ...(limited.truncated ? { truncated: true } : {}) });
 			} else if (msg.t === 'commit') {
 				if (!msg.message.trim()) {
 					reply({ error: 'empty commit message' });
@@ -2056,7 +2078,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: resolvedModified.path, ref: 'HEAD' }) });
-				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
+				const html = await paradisWithHostDeadline(renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー'), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				await replyCompressed({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {
 				const limit = Math.min(Math.max(Math.trunc(msg.limit ?? 10), 1), 100);
@@ -2066,7 +2088,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 再計算するので取得時点のスナップショットが古くならない（%arだと整形済み文字列が
 				// 固定される上、author date基準のためrebaseしたコミットが実際より古く見える）。
 				// %arは旧バージョンのモバイルアプリ向けフォールバックとして当面残す。
-				const result = await this.runGit(repoUri, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ct%x09%ar%x09%s']);
+				const result = await paradisWithHostDeadline(this.runGit(repoUri, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ct%x09%ar%x09%s']), PARADIS_MOBILE_READ_DEADLINE_MS);
 				// コミット0件のリポジトリも exit 128 になるため、実エラーは「非ゼロ かつ stderr あり」で判定する
 				if (result.code !== 0 && result.stderr.trim() && !/does not have any commits yet/.test(result.stderr)) {
 					reply({ error: result.stderr.trim() });
@@ -2081,7 +2103,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const commits = hasMore ? all.slice(0, limit) : all;
 				// リモートのWeb URLが分かればモバイル側でコミットページへ飛べるようにする。
 				// remoteが無い/失敗してもログ本体の応答は返す（履歴表示を巻き添えにしない）。
-				const remote = await this.runGit(repoUri, ['remote', 'get-url', 'origin']).catch(() => undefined);
+				const remote = await paradisSettleWithin(this.runGit(repoUri, ['remote', 'get-url', 'origin']), PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS);
 				const webUrl = remote && remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
 				reply({ t: 'log', commits, hasMore, ...(webUrl ? { webUrl } : {}) });
 			} else if (msg.t === 'commitFiles') {
@@ -2091,7 +2113,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: 'invalid commit hash' });
 					return;
 				}
-				const result = await this.runGit(repoUri, ['show', '--name-status', '--pretty=format:', msg.hash]);
+				const result = await paradisWithHostDeadline(this.runGit(repoUri, ['show', '--name-status', '--pretty=format:', msg.hash]), PARADIS_MOBILE_READ_DEADLINE_MS);
 				if (result.code !== 0) {
 					reply({ error: result.stderr.trim() || 'git show failed' });
 					return;
@@ -2108,7 +2130,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ error: `unsupported request: ${(msg as { t: string }).t}` });
 			}
 		} catch (err) {
-			reply({ error: String(err) });
+			// 読み取りの打ち切り（接続先が応答しない）は code: 'no-response' を付ける
+			reply(paradisMobileHostErrorReply(err));
 		}
 	}
 
@@ -2194,14 +2217,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return raceTimeout(run, LIST_IGNORED_TIMEOUT_MS);
 	}
 
-	private async readWorkspaceFile(ws: string, relPath: string): Promise<string | undefined> {
+	private async readWorkspaceFile(ws: string, relPath: string, length = FS_READ_LIMIT): Promise<{ readonly text: string; readonly truncated: boolean } | undefined> {
 		const uri = await this.resolveWorkspacePathReal(ws, relPath);
 		if (!uri) {
 			return undefined;
 		}
 		try {
-			const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
-			return content.value.toString();
+			const content = await this.fileService.readFile(uri, { length });
+			return { text: content.value.toString(), truncated: content.size > length };
 		} catch {
 			return undefined;
 		}
@@ -2451,7 +2474,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
 			timing?.sent(replyPayload.byteLength);
 		};
-		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...body }));
+		// 応答の出口で error に伏せ字を当てる（git の stderr や例外の文に資格情報が混ざりうる）
+		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...paradisRedactMobileReplyError(body) }));
 		const reply = (body: object) => {
 			if ((body as { readonly error?: unknown }).error !== undefined) {
 				timing?.setOutcome('error');
@@ -2710,13 +2734,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (msg.t === 'xlsx') {
 				// シート単位の遅延読み込み(sheet省略時は先頭)。シート一覧はモバイルの
 				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
-				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
+				const result = await paradisWithHostDeadline(renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('xlsx_render');
 				timing?.set({ safe_html_chars: result.html.length });
 				await replyCacheable({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
 			} else if (msg.t === 'pdf') {
 				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
-				const stat = await this.fileService.stat(uri);
+				const stat = await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				timing?.mark('stat');
 				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
@@ -2724,7 +2748,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
@@ -2736,7 +2760,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// Word文書もバイナリのまま base64 で返す（レンダリングはモバイル側の WebView が
 				// PC版ビューアと同じ vendored docx-preview で行う。PC側でHTML化しないのは、
 				// docx-preview がDOM前提でタブストップ計算等が表示環境のフォント計測に依存するため）。
-				const stat = await this.fileService.stat(uri);
+				const stat = await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				timing?.mark('stat');
 				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
@@ -2744,7 +2768,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('docx', size, content.value.buffer)) {
@@ -2753,7 +2777,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'media') {
 				// 画像・動画・音声もバイナリのまま base64 で返す（表示はモバイル側。画像は data URI、
 				// 動画/音声はキャッシュファイル経由で WKWebView のネイティブ再生を使う）。
-				const stat = await this.fileService.stat(uri);
+				const stat = await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				timing?.mark('stat');
 				timing?.set({ safe_source_bytes: stat.size ?? 0 });
 				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
@@ -2761,7 +2785,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: `ファイルが大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: BINARY_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
 				const size = stat.size ?? 0;
 				if (!replyBinary('media', size, content.value.buffer)) {
@@ -2770,17 +2794,25 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'list') {
 				// 無視の印（fs.ignored.v1）は一覧と並べて調べる。遅い・失敗したときは印なしで返す（一覧を待たせない）
 				const ignored = this.listIgnoredNames(msg.ws, msg.path);
-				const stat = await this.fileService.resolve(uri);
+				const stat = await paradisWithHostDeadline(this.fileService.resolve(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				const entries = (stat.children ?? [])
 					.filter(c => !c.isSymbolicLink) // シンボリックリンク越えの読み取りを防止（設計書 §8）
 					.map(c => ({ name: c.name, dir: c.isDirectory, size: c.size }))
 					.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
 				reply({ t: 'list', entries: paradisMarkMobileIgnoredEntries(entries, await ignored) });
 			} else if (msg.t === 'read') {
-				const stat = await this.fileService.stat(uri);
+				const stat = await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				timing?.mark('stat');
-				const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
+				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: FS_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
+				// 先頭に NUL がある＝テキストではない（pptx・zip・画像など）。文字化けした本文を送らず、そう返す
+				// （古いアプリにもそのまま文が出る。新しいアプリは表示の分岐が無い形式をそもそも読まない）
+				if (paradisLooksBinary(content.value.buffer)) {
+					timing?.setOutcome('error');
+					// allow-any-unicode-next-line
+					reply({ error: 'この形式はテキストとして表示できません。PC で開いてください。', code: 'not-text', size: stat.size ?? 0 });
+					return;
+				}
 				const text = content.value.toString();
 				timing?.mark('decode');
 				timing?.set({ safe_source_bytes: stat.size ?? 0, safe_text_chars: text.length, safe_truncated: (stat.size ?? 0) > FS_READ_LIMIT });
@@ -2798,7 +2830,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await replyCacheable(body);
 			}
 		} catch (err) {
-			reply({ error: String(err) });
+			// 読み取りの打ち切り（接続先が応答しない）は code: 'no-response' を付ける
+			reply(paradisMobileHostErrorReply(err));
 		}
 	}
 
@@ -2812,7 +2845,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!paradisIsAcceptedMobileWireVersion(msg.protocolVersion) || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
 			return;
 		}
-		const complete = (status: ParadisMobileTerminalOperationStatus) => this.completeTerminalOperation(mobileId, msg.operationId, status);
+		// ack と viewport は shared process が操作台帳に通さない（結果を待つ相手がいない）ので、完了も知らせない
+		const ledgerFree = msg.t === 'ack' || msg.t === 'viewport';
+		const complete = async (status: ParadisMobileTerminalOperationStatus) => {
+			if (!ledgerFree) {
+				await this.completeTerminalOperation(mobileId, msg.operationId, status);
+			}
+		};
 		if (msg.t === 'create') {
 			// モバイルからの新規ターミナル作成。ws指定時はそのリポジトリ/worktreeをcwdにする。
 			const ws = msg.ws;
@@ -2921,8 +2960,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				if (keepDuringGrace) {
 					this.cancelTerminalViewportRelease(id);
 				}
+				const colsBefore = instance.cols;
+				const rowsBefore = instance.rows;
 				this.setTerminalViewport(instance, id, mobileId, attachViewport, { grace: keepDuringGrace });
-				this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
+				if (instance.cols !== colsBefore || instance.rows !== rowsBefore) {
+					// 寸法を変えた。直後にリサイズの再同期も走るので、attach のスナップショットはそれにまとめて 1 回だけ送る
+					// （以前は attach で送った直後にリサイズの分でもう 1 回送り、履歴を 200 行に縮めていた）。リサイズの
+					// 通知が来なくても、ここで予約したタイマーが送る
+					this.scheduleTerminalSnapshot(instance, id, mobileId, 'attach');
+				} else {
+					this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
+				}
 				if (this.attachedTerminals.has(id)) {
 					await complete('accepted');
 					return;
@@ -3464,20 +3512,31 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private scheduleResizeResync(instance: ITerminalInstance): void {
 		const id = instance.instanceId;
 		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
-			const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
-			if (!sync) {
-				continue;
-			}
-			if (sync.resizeTimer !== undefined) {
-				clearTimeout(sync.resizeTimer);
-			}
-			sync.resizeTimer = setTimeout(() => {
-				sync.resizeTimer = undefined;
-				if (this.terminalSubscribers.get(id)?.has(mobileId)) {
-					this.sendTerminalSnapshot(instance, id, mobileId, 'resize');
-				}
-			}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
+			this.scheduleTerminalSnapshot(instance, id, mobileId, 'resize');
 		}
+	}
+
+	/**
+	 * スナップショットを {@link TERM_RESIZE_SNAPSHOT_DELAY_MS} 後に送る（予約済みなら数え直す）。attach の予約は
+	 * 後から来たリサイズの予約に上書きされても `attach` のまま送る（計測の理由を取り違えない）。
+	 */
+	private scheduleTerminalSnapshot(instance: ITerminalInstance, id: number, mobileId: string, reason: TermSnapshotReason): void {
+		const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
+		if (!sync) {
+			return;
+		}
+		const scheduledReason = sync.resizeTimer !== undefined && sync.resizeReason === 'attach' ? 'attach' : reason;
+		if (sync.resizeTimer !== undefined) {
+			clearTimeout(sync.resizeTimer);
+		}
+		sync.resizeReason = scheduledReason;
+		sync.resizeTimer = setTimeout(() => {
+			sync.resizeTimer = undefined;
+			sync.resizeReason = undefined;
+			if (this.terminalSubscribers.get(id)?.has(mobileId)) {
+				this.sendTerminalSnapshot(instance, id, mobileId, scheduledReason);
+			}
+		}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
 	}
 
 	/**
@@ -3492,16 +3551,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (expectedSync === undefined) {
 			return;
 		}
-		// 送る履歴の量は理由ごとに変える。モバイルはスナップショットを受けるたびに端末を
-		// リセットして書き戻すので、**ここに載せなかった履歴はモバイル側から失われる**。
-		//  - attach: 初めて中身を受け取るので従来どおり全部（1000行）
-		//  - resize: attach 直後にも必ず走るため 0 にはできない（送ったばかりの履歴を消す）。
-		//            水位を超えない範囲に減らす
-		//  - flow:   追いつきは「スクロールバックの完全性より最新画面を優先」する経路なので 0
-		const scrollback = reason === 'attach' ? TERM_SNAPSHOT_SCROLLBACK_ROWS
-			: reason === 'resize' ? TERM_RESIZE_SNAPSHOT_SCROLLBACK_ROWS
-				: 0;
-		this.serializeTerminalSnapshot(instance, scrollback).then(snapshot => {
+		// モバイルはスナップショットを受けるたびに端末をリセットして書き戻すので、**ここに載せなかった履歴は
+		// モバイル側から失われる**。どの理由でも同じ行数を載せる（大きすぎるときだけ行数を減らして撮り直す）
+		this.serializeTerminalSnapshot(instance, TERM_SNAPSHOT_SCROLLBACK_ROWS).then(async full => {
+			const snapshot = full !== undefined && full.length > TERM_SNAPSHOT_MAX_CHARS
+				? await this.serializeTerminalSnapshot(instance, TERM_SNAPSHOT_FALLBACK_SCROLLBACK_ROWS)
+				: full;
 			// serialize解決を待つ間に detach された場合は送らない。
 			if (!this.terminalSubscribers.get(id)?.has(mobileId)) {
 				return;
@@ -3532,14 +3587,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				sync.pending.push(carry);
 				sync.pendingChars += carry.length;
 			}
+			// スナップショットは未ACKの文字数に数えない（設計書 4 章の着手順 13）。数えると 1000 行で水位を超え、
+			// 送った直後に必ず suspend して、追いつきの再スナップショットを呼んでいた。seq は消費して境目を保つ
+			// （後続の出力はこの seq より後。ACK は seq の順に inflight を外す）
 			const seq = ++sync.seq;
-			sync.inflight.push({ seq, chars: data.length });
-			sync.unackedChars += data.length;
-			if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
-				// 巨大snapshot直後も水位ルールを一貫させる（モバイルはsnapshotを即ACKするため
-				// 詰まらない。ACKが来るまでの生ストリームはdrop→追いつき時に再snapshot）。
-				sync.suspended = true;
-			}
+			sync.inflight.push({ seq, chars: 0 });
 			const dims = instance.cols > 0 && instance.rows > 0 ? { cols: instance.cols, rows: instance.rows } : {};
 			const unicode = instance.xterm?.raw.unicode.activeVersion;
 			this.recordSnapshotMetric(reason, data.length);

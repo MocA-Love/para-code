@@ -34,7 +34,7 @@ export function FileViewerPanel({ codeSpace, path, focusLine }: { codeSpace: Cod
 	const navigation = useNavigation();
 	const kind = viewerKindOf(path);
 	const [mode, setMode] = useState<ViewerMode>(defaultViewerMode(kind, focusLine));
-	const { content, selectSheet } = useFileContent(codeSpace, path);
+	const { content, selectSheet } = useFileContent(codeSpace, path, mode);
 	const crumbs = viewerBreadcrumb(codeSpace.name, path);
 	const find = useFileFind();
 	const searchable = findTargetOf(kind, mode) !== undefined;

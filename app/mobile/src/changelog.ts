@@ -40,6 +40,38 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.6',
+		date: '2026-10-06',
+		items: [
+			{
+				icon: 'document-text-outline',
+				title: '大きいテキストファイルを最後まで読めるようになりました',
+				body: '色付けの上限を超えた行も続けて出し、1 万行ごとのページを下の帯で切り替えます。Markdown と HTML のプレビューは色付けを待たずに開きます。PowerPoint・zip・HEIC など表示できない形式は、文字化けした中身の代わりに「この形式はまだ開けません」と出します。',
+			},
+			{
+				icon: 'git-compare-outline',
+				title: '大きな差分を開いても読み込み中のまま止まらなくなりました',
+				body: 'PC が先頭だけを送り、その旨を差分の上に出します。SSH の接続先が応答しないときも、待ち続けずに「接続先が応答しません」と出します。',
+			},
+			{
+				icon: 'chatbox-ellipses-outline',
+				title: '差分のメモを保存し直しても 2 件にならなくなりました',
+				body: '返事が届く前に回線が切れて保存を押し直したときに、同じメモが重なっていたのを直しました（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'globe-outline',
+				title: 'ブラウザの画面共有で、映像が止まったら画像の共有に戻るようになりました',
+				body: '映像が届いている間は PC が画像を送るのをやめるので、通信量と電池の消費が減ります（PC の Para Code も新しい版が必要です）。',
+			},
+			{
+				icon: 'terminal-outline',
+				title: 'ターミナルを開き直しても、さかのぼれる履歴が短くならなくなりました',
+				body: '開いた直後に履歴が 200 行ほどに縮んでいたのを直しました（PC の Para Code も新しい版が必要です）。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.12.5',
 		date: '2026-10-05',
 		items: [
