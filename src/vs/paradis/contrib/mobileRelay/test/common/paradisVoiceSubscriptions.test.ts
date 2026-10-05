@@ -64,44 +64,15 @@ suite('ParadisVoiceSubscriptions', () => {
 		);
 	});
 
-	test('a second clip is dropped while the first send is in flight', () => {
+	test('isSubscribed follows the current SID and the TTL', () => {
 		const subscriptions = new ParadisVoiceSubscriptions(TTL_MS);
 		subscriptions.start('mobile-1', 'sid-1', 1_000);
 
-		assert.deepStrictEqual({
-			firstStarted: subscriptions.beginSend('mobile-1') !== undefined,
-			secondStarted: subscriptions.beginSend('mobile-1') !== undefined,
-		}, { firstStarted: true, secondStarted: false });
+		assert.deepStrictEqual([
+			subscriptions.isSubscribed('mobile-1', 'sid-1', 2_000),
+			subscriptions.isSubscribed('mobile-1', 'sid-other', 2_000),
+			subscriptions.isSubscribed('mobile-1', 'sid-1', 61_001),
+			subscriptions.isSubscribed('mobile-2', 'sid-1', 2_000),
+		], [true, false, false, false]);
 	});
-
-	test('a stale completion after drop does not release the replacement send', () => {
-		const subscriptions = new ParadisVoiceSubscriptions(TTL_MS);
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		const staleSend = subscriptions.beginSend('mobile-1')!;
-
-		subscriptions.drop('mobile-1');
-		subscriptions.start('mobile-1', 'sid-2', 2_000);
-		const replacementSend = subscriptions.beginSend('mobile-1')!;
-		subscriptions.endSend(staleSend);
-
-		assert.strictEqual(subscriptions.beginSend('mobile-1'), undefined);
-		subscriptions.endSend(replacementSend);
-		assert.notStrictEqual(subscriptions.beginSend('mobile-1'), undefined);
-	});
-
-	test('a stale completion after clear does not release the replacement send', () => {
-		const subscriptions = new ParadisVoiceSubscriptions(TTL_MS);
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		const staleSend = subscriptions.beginSend('mobile-1')!;
-
-		subscriptions.clear();
-		subscriptions.start('mobile-1', 'sid-2', 2_000);
-		const replacementSend = subscriptions.beginSend('mobile-1')!;
-		subscriptions.endSend(staleSend);
-
-		assert.strictEqual(subscriptions.beginSend('mobile-1'), undefined);
-		subscriptions.endSend(replacementSend);
-		assert.notStrictEqual(subscriptions.beginSend('mobile-1'), undefined);
-	});
-
 });

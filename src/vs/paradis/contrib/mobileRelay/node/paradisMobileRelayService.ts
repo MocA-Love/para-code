@@ -31,6 +31,7 @@ import {
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
+import { ParadisMobileSendQueue } from '../common/paradisMobileSendQueue.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
@@ -104,7 +105,8 @@ import { ParadisRelayDisconnectReporter } from '../common/paradisRelayDisconnect
 import { PARADIS_RELAY_STABLE_CONNECTION_MS, paradisRelayJitteredDelayMs, paradisRelayReconnectDelayMs } from '../common/paradisRelayReconnectDelay.js';
 import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisEncodeNegotiatedGzipJsonResponse } from '../common/paradisMobileGzipJson.js';
-import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
+import { paradisCreateVoiceDelivery } from './paradisVoiceClipDelivery.js';
+import { ParadisMobileVoiceEvent } from '../common/paradisMobileVoiceStream.js';
 import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 
@@ -202,6 +204,15 @@ const HOST_RESOURCE_BROADCAST_MIN_INTERVAL_MS = 60_000;
 
 type PersistedState = IParadisRelayPersistedState;
 
+/**
+ * 版が合わないアプリへ送る State の代わり。アプリは State の `protocolVersion` と `minCompatibleMobile` だけで
+ * どちらを更新すべきか決める（`paradisEvaluateMobileCompat`）ので、それ以外は載せない。
+ */
+const PARADIS_MOBILE_PROTOCOL_GUIDANCE = new TextEncoder().encode(JSON.stringify({
+	protocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
+	minCompatibleMobile: PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE,
+}));
+
 /** 1つのモバイルとのデータ接続（ハンドシェイク進行 + 確立後のFrameMux）。 */
 export class MobileSession {
 	private channel: SecureChannel | undefined;
@@ -223,7 +234,19 @@ export class MobileSession {
 		private readonly onFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly onTraffic: ((sample: IParadisMobileFrameTrafficSample) => void) | undefined,
 		private readonly logService: ILogService,
+		/** 全端末で 1 本の送信の列（mux の版 4）。無ければこのセッションだけの列（テスト用）。 */
+		private readonly sendQueue?: ParadisMobileSendQueue,
 	) { }
+
+	private _epoch = 0;
+
+	/**
+	 * 暗号セッションの世代。確立するたびに 1 つ進む。音声の流れは始めたときの世代を控え、
+	 * 変わったら送るのをやめる（張り替えた後のアプリはその流れを知らない）。
+	 */
+	get epoch(): number {
+		return this._epoch;
+	}
 
 	get isOnline(): boolean {
 		return this.confirmed;
@@ -265,6 +288,12 @@ export class MobileSession {
 	private protocolMismatchReported = false;
 
 	/**
+	 * State の要求の版が合わなかった。このセッションへは State の代わりに版だけの案内を送る。
+	 * 版 4 の断片は版 3 のアプリが組み立てられないので、案内は必ず断片に切らない大きさ（16KiB 以下）にする。
+	 */
+	private protocolBlocked = false;
+
+	/**
 	 * このモバイルがDesktop Stateの圧縮を明示的に要求したか（旧アプリは何も送らない）。
 	 * **既定は必ず非圧縮**。gzipを無条件に送ると、旧アプリの `JSON.parse` が例外になり、
 	 * それが受信側の catch に握り潰されて「エラー表示のないままホームが空で固まる」に化ける。
@@ -290,6 +319,7 @@ export class MobileSession {
 			pcMinCompatibleMobile: PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE,
 		});
 		this.negotiatedProtocolVersion = verdict.kind === 'ok' ? verdict.wireVersion : undefined;
+		this.protocolBlocked = verdict.kind === 'blocked';
 		this.negotiatedCapabilities = verdict.kind === 'ok' ? paradisParseMobileCapabilities(request.capabilities) : undefined;
 		this.negotiatedStateEncoding = verdict.kind === 'ok' && request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
 			? PARADIS_JSON_GZIP_RESPONSE_ENCODING
@@ -362,13 +392,18 @@ export class MobileSession {
 				this.decryptedSinceConfirm = false;
 				this.staleFrameFailures = 0;
 				this.staleFrameLogged = false;
+				this.mux?.dispose();
+				this._epoch++;
 				this.mux = new FrameMux(this.channel, {
 					sendSealed: (sealed: Uint8Array) => this.sendToRelay(sealed),
+					...(this.sendQueue !== undefined ? { sendQueue: this.sendQueue } : {}),
 					// FrameMux は onError を渡すと復号失敗を握り潰して throw しない。ここで捕まえて
 					// 下の catch へ載せ直さないと、「復号できない32Bは新しい hello とみなして
 					// セッションをリセットする」自己回復も計装も、確立後は一切効かない
 					// （旧セッションに固着したモバイルが二度と接続できなくなる経路）。
 					onError: (err: unknown) => { this.lastMuxError = err; },
+					// 断片の組み立ての誤りは復号できた後の話なので、張り直しの判定（暗号層の失敗）には数えない
+					onAssemblyError: (err: Error) => this.recordAssemblyError(err),
 					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
 				});
 				this.mux.on(Channels.State, f => this.emit(f));
@@ -524,9 +559,12 @@ export class MobileSession {
 		this.consecutiveCryptoFailures = 0;
 		this.decryptedSinceConfirm = false;
 		this.channel = undefined;
+		// 列に残った古い鍵の断片を送らない（新しいセッションのアプリは開けずに張り直してしまう）
+		this.mux?.dispose();
 		this.mux = undefined;
 		this.confirmed = false;
 		this.negotiatedProtocolVersion = undefined;
+		this.protocolBlocked = false;
 		this.negotiatedCapabilities = undefined;
 		this.protocolMismatchReported = false;
 		// **必ず一緒に落とすこと。** セッションは mobileId で再接続をまたいで再利用されるため、
@@ -563,10 +601,35 @@ export class MobileSession {
 		// 圧縮は送信直前のここだけで行う。`deliver` の無変化判定は渡された非圧縮JSONのまま
 		// 動くので、gzip の出力が実行ごとに揺れても dedupe が壊れることはない
 		// （圧縮後のバイト列で比較すると、同じ内容でも別物と判定されて毎回送ってしまう）。
+		if (this.protocolBlocked) {
+			// 版が合わないアプリには、版だけの小さな案内を送る（断片に切らないので版 3 のアプリも読める）
+			await mux.send(Channels.State, PARADIS_MOBILE_PROTOCOL_GUIDANCE);
+			return true;
+		}
 		return this.stateDelivery.deliver(payload, force, async state => {
 			const encoded = await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
 			await mux.send(Channels.State, encoded);
 		});
+	}
+
+	/** 断片の組み立ての誤りの数（暗号層の失敗とは別に数える）。 */
+	private assemblyErrors = 0;
+
+	get assemblyErrorCount(): number {
+		return this.assemblyErrors;
+	}
+
+	private recordAssemblyError(error: Error): void {
+		this.assemblyErrors++;
+		// 1 回目と、その後は 100 回ごとに残す（壊れた送り手がログを埋めないように）
+		if (this.assemblyErrors === 1 || this.assemblyErrors % 100 === 0) {
+			this.logService.warn(`[paradisMobileRelay] session ${this.mobileId}: dropped a frame that could not be reassembled (${this.assemblyErrors} so far)`, error);
+		}
+	}
+
+	/** このセッションを捨てる。列に残った送信を取り下げる。 */
+	close(): void {
+		this.resetSessionState();
 	}
 
 	get idBytes(): Uint8Array {
@@ -701,6 +764,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
 	private readonly voiceSubscriptions = new ParadisVoiceSubscriptions();
+	/**
+	 * PC からリレーへのソケットは全端末で 1 本なので、送信の列も 1 本（mux の版 4）。ソケットの送信バッファが
+	 * 32KiB を超えている間は次の断片を積まない。
+	 */
+	private readonly sendQueue = new ParadisMobileSendQueue({ bufferedAmount: () => this.socket?.bufferedAmount ?? 0 });
+	/** 音声通知の配信（`voice.stream.v1` と `voice-clip`）。 */
+	private readonly voiceDelivery = paradisCreateVoiceDelivery(this.voiceSubscriptions, {
+		getSession: mobileId => this.sessions.get(mobileId),
+		congestionBytes: () => this.sendQueue.congestionBytes(),
+		warn: (message, error) => {
+			if (error === undefined) {
+				this.logService.warn(message);
+			} else {
+				this.logService.warn(message, error);
+			}
+		},
+	});
 	private rendererAuthorityChain = Promise.resolve();
 
 	// ペアリング中の状態
@@ -740,8 +820,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		private readonly logService: ILogService,
 		configurationService?: IConfigurationService,
 		_args?: NativeParsedArgs,
-		// 生成済みAivis音声（MP3）。同一 shared process の通知サービスが発火する。
-		voiceClips?: Event<VSBuffer>,
+		// 音声通知（流れの開始・断片・終わりと、1 本まるごと）。同一 shared process の通知サービスが発火する。
+		voiceClips?: Event<ParadisMobileVoiceEvent>,
 		testSeams?: IParadisMobileRelayServiceTestSeams,
 	) {
 		super();
@@ -757,7 +837,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}),
 		}));
 		if (voiceClips !== undefined) {
-			this._register(voiceClips(clip => this.broadcastVoiceClip(clip)));
+			this._register(voiceClips(event => this.voiceDelivery.handle(event)));
 		}
 		const trafficDiagnosticsSession = startParadisMobileTrafficDiagnostics(
 			process.env.PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS,
@@ -1799,6 +1879,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * （presence offline と、裏に回ったまま戻らなかったとき）。
 	 */
 	private dropMobileSession(mobileId: string): void {
+		this.sessions.get(mobileId)?.close();
 		this.sessions.delete(mobileId);
 		this.backgroundSessions.end(mobileId);
 		this.recentTrustedNotifies.forget(mobileId);
@@ -2013,6 +2094,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.updateEagerTailing();
 			// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
 			for (const m of removed) {
+				this.sessions.get(m.mobileId)?.close();
 				this.sessions.delete(m.mobileId);
 				this.webrtcRendererLeases.delete(m.mobileId);
 				this.dropVoiceSubscriber(m.mobileId);
@@ -3045,13 +3127,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
 		const mobileSessionCount = this.sessions.size;
 		this.clearStableConnectionReset();
-		for (const id of this.sessions.keys()) {
+		for (const [id, session] of this.sessions) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
+			session.close();
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
 		this.voiceSubscriptions.clear();
+		this.voiceDelivery.clear();
 		if (!this.enabled) {
 			this.setConnectionState('disabled');
 			return;
@@ -3116,13 +3200,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 「復帰できなかった」と報告してしまわないように）。
 		this.disconnectReporter.setEnabled(false);
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
-		for (const id of this.sessions.keys()) {
+		for (const [id, session] of this.sessions) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
+			session.close();
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
 		this.voiceSubscriptions.clear();
+		this.voiceDelivery.clear();
 		if (this.socket) {
 			try { this.socket.close(); } catch { /* ignore */ }
 			this.socket = undefined;
@@ -3253,6 +3339,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				},
 				trafficDiagnostics === undefined ? undefined : sample => trafficDiagnostics.record(sample),
 				this.logService,
+				this.sendQueue,
 			);
 			this.sessions.set(idStr, session);
 		}
@@ -3321,26 +3408,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 */
 	private dropVoiceSubscriber(mobileId: string): void {
 		this.voiceSubscriptions.drop(mobileId);
-	}
-
-	/**
-	 * 生成済みMP3を、音声通知を開始しているモバイルへそのまま配る。
-	 * 履歴は持たず、その時点で受信中の端末だけに届ける（未接続中の音声は再送しない）。
-	 *
-	 * モバイルは受信中 VOICE_SUBSCRIPTION_REFRESH ごとに同じsidで宣言し直すので、
-	 * 宣言が途切れた購読は期限切れとして落とす（停止のfire-and-forgetが届かなかった場合の保険）。
-	 */
-	private broadcastVoiceClip(clip: VSBuffer): void {
-		void paradisDeliverVoiceClip(this.voiceSubscriptions, clip.buffer, Date.now(), {
-			getSession: mobileId => this.sessions.get(mobileId),
-			warn: (message, error) => {
-				if (error === undefined) {
-					this.logService.warn(message);
-				} else {
-					this.logService.warn(message, error);
-				}
-			},
-		});
 	}
 
 	private async forwardWebrtcSignal(
@@ -3489,6 +3556,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.state.mobiles = this.state.mobiles.filter(m => m.mobileId !== mobileId);
 		await this.save();
+		this.sessions.get(mobileId)?.close();
 		this.sessions.delete(mobileId);
 		this.webrtcRendererLeases.delete(mobileId);
 		this.dropVoiceSubscriber(mobileId);

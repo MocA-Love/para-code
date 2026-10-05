@@ -37,9 +37,26 @@ export interface Frame {
 	readonly ws?: string;
 	readonly seq: number;
 	readonly payload: Uint8Array;
-	/** 続きのチャンクがある（分割された論理フレームの途中。FrameMuxが再結合する）。 */
+	/** 続きのチャンクがある（版 3 までの分割。受け取りだけ残す。FrameMuxが再結合する）。 */
 	readonly more?: boolean;
+	/** 版 4 の断片（送信 ID・何番目か・最後か）。FrameMux が送信 ID ごとに組み立て直す。 */
+	readonly frag?: FrameFragment;
 }
+
+/** 版 4 の断片の見出し（app/protocol/src/frames.ts と一致）。 */
+export interface FrameFragment {
+	/** 送信 ID（送り手ごとに採番。u32）。 */
+	readonly id: number;
+	/** 何番目か（0 始まり。u32）。 */
+	readonly index: number;
+	/** 最後の断片か。 */
+	readonly last: boolean;
+}
+
+/** flags の bit2: 版 4 の断片の見出しがある。bit3: 最後の断片。 */
+const FLAG_FRAGMENT = 0x04;
+const FLAG_FRAGMENT_LAST = 0x08;
+const FRAGMENT_HEADER_BYTES = 8;
 
 export function encodeFrame(frame: Frame): Uint8Array {
 	const chId = CHANNEL_TO_ID[frame.ch];
@@ -53,16 +70,25 @@ export function encodeFrame(frame: Frame): Uint8Array {
 	if (wsBytes.length > 0xffff) {
 		throw new Error('frame ws too long');
 	}
-	const header = new Uint8Array(8);
-	const view = new DataView(header.buffer);
+	const frag = frame.frag;
+	if (frag !== undefined && (!Number.isSafeInteger(frag.id) || frag.id < 0 || frag.id > 0xffffffff || !Number.isSafeInteger(frag.index) || frag.index < 0 || frag.index > 0xffffffff)) {
+		throw new Error('frame fragment out of range');
+	}
+	const fragBytes = frag !== undefined ? FRAGMENT_HEADER_BYTES : 0;
+	const out = new Uint8Array(8 + wsBytes.length + fragBytes + frame.payload.length);
+	const view = new DataView(out.buffer);
 	view.setUint8(0, chId);
-	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00));
+	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00)
+		| (frag !== undefined ? FLAG_FRAGMENT : 0x00) | (frag?.last === true ? FLAG_FRAGMENT_LAST : 0x00));
 	view.setUint32(2, frame.seq, false);
 	view.setUint16(6, wsBytes.length, false);
-	const out = new Uint8Array(header.length + wsBytes.length + frame.payload.length);
-	out.set(header, 0);
-	out.set(wsBytes, header.length);
-	out.set(frame.payload, header.length + wsBytes.length);
+	out.set(wsBytes, 8);
+	// 断片の見出しは ws の後ろに置く（版 3 の受け手が ws を読み違えないように）
+	if (frag !== undefined) {
+		view.setUint32(8 + wsBytes.length, frag.id, false);
+		view.setUint32(8 + wsBytes.length + 4, frag.index, false);
+	}
+	out.set(frame.payload, 8 + wsBytes.length + fragBytes);
 	return out;
 }
 
@@ -84,13 +110,23 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 		throw new Error('malformed frame: ws length exceeds buffer');
 	}
 	const ws = hasWs ? new TextDecoder().decode(bytes.subarray(8, 8 + wsLen)) : undefined;
-	const payload = bytes.subarray(8 + wsLen);
+	let frag: FrameFragment | undefined;
+	let payloadStart = 8 + wsLen;
+	if ((flags & FLAG_FRAGMENT) !== 0) {
+		if (payloadStart + FRAGMENT_HEADER_BYTES > bytes.length) {
+			throw new Error('malformed frame: fragment header exceeds buffer');
+		}
+		frag = { id: view.getUint32(payloadStart, false), index: view.getUint32(payloadStart + 4, false), last: (flags & FLAG_FRAGMENT_LAST) !== 0 };
+		payloadStart += FRAGMENT_HEADER_BYTES;
+	}
+	const payload = bytes.subarray(payloadStart);
 	return {
 		ch,
 		seq,
 		payload,
 		...(ws !== undefined ? { ws } : {}),
 		...(more ? { more: true } : {}),
+		...(frag !== undefined ? { frag } : {}),
 	};
 }
 

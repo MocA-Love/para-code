@@ -16,19 +16,21 @@ const summary: PcSummary = {
 
 describe('pcCompat', () => {
 	test('State の要求は版・受け入れる PC の最低版・このアプリの機能を広告する', () => {
-		expect(stateRequestFields()).toEqual({ protocolVersion: 3, minCompatiblePc: 3, capabilities: APP_CAPABILITIES });
+		expect(stateRequestFields()).toEqual({ protocolVersion: 4, minCompatiblePc: 4, capabilities: APP_CAPABILITIES });
 	});
 
-	test('PC の State から、どちらを更新すべきかを決める（旧 PC は版の完全一致だけ）', () => {
+	test('PC の State から、どちらを更新すべきかを決める（版 4 のアプリは版 3 の PC とつながらない）', () => {
 		expect([
 			{ protocolVersion: 3 },
 			{ protocolVersion: 3, minCompatibleMobile: 3 },
 			{ protocolVersion: 4 },
-			{ protocolVersion: 4, minCompatibleMobile: 3 },
 			{ protocolVersion: 4, minCompatibleMobile: 4 },
+			{ protocolVersion: 5 },
+			{ protocolVersion: 5, minCompatibleMobile: 4 },
+			{ protocolVersion: 5, minCompatibleMobile: 5 },
 			{ protocolVersion: 2 },
 			{},
-		].map(state => updateTargetOf(evaluatePcCompat(state)) ?? 'ok')).toEqual(['ok', 'ok', 'app', 'ok', 'app', 'pc', 'pc']);
+		].map(state => updateTargetOf(evaluatePcCompat(state)) ?? 'ok')).toEqual(['pc', 'pc', 'ok', 'ok', 'app', 'ok', 'app', 'pc', 'pc']);
 	});
 
 	test('広告の無い PC は何も持っていない扱い', () => {
@@ -59,7 +61,7 @@ describe('pcCompat', () => {
 
 	test('機能の広告と最低版が変わった State は、同じ参照を使い回さない', () => {
 		const base: WorkspaceState = {
-			protocolVersion: 3, minCompatibleMobile: 3, capabilities: ['term.sync.v1'], desktopEpoch: 'e', revision: 1, complete: true,
+			protocolVersion: 4, minCompatibleMobile: 4, capabilities: ['term.sync.v1'], desktopEpoch: 'e', revision: 1, complete: true,
 			renderers: [], activeWs: undefined, workspaces: [], terminals: [],
 		};
 		expect([

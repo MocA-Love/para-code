@@ -287,7 +287,7 @@ suite('ParadisMobileRelayService pairing state store', () => {
 			await service.revokeDevice('iPhone', 'm2');
 			const afterId = (await service.getStatus()).pairedMobiles;
 			const savedAfterId = paradisParseRelayState(await fs.readFile(statePath, 'utf8'))?.mobiles.map(mobile => mobile.mobileId);
-			sessions.set('m3', {});
+			sessions.set('m3', { close: () => { } });
 			failWrites = true;
 			const failed = await service.revokeDevice('iPad', 'm3').then(() => 'saved', () => 'rejected');
 			assert.deepStrictEqual({

@@ -6,7 +6,11 @@ interface NativeModuleShape {
 	isSupported(): boolean;
 	activate(): Promise<void>;
 	deactivate(): Promise<void>;
-	enqueueClip(base64: string): Promise<void>;
+	enqueueClip(base64: string, gainDb: number): void;
+	streamStart(streamId: string, gainDb: number): void;
+	streamChunk(streamId: string, base64: string): void;
+	streamEnd(streamId: string, aborted: boolean): void;
+	playbackStats?(): Record<string, unknown>;
 	addListener(eventName: 'onRemoteStop', listener: () => void): { remove(): void };
 }
 
@@ -29,9 +33,32 @@ export async function deactivateVoiceSession(): Promise<void> {
 	await native?.deactivate();
 }
 
-/** PCから届いたMP3（base64）を再生キューへ積む。到着順に1本ずつ鳴らす。 */
-export async function enqueueVoiceClip(base64: string): Promise<void> {
-	await native?.enqueueClip(base64);
+/**
+ * PCから届いた 1 本まるごとの MP3（base64）を再生の列へ積む。`gainDb` は -20 LUFS に揃える補正（上げる方向も可。
+ * -1dBFS で頭打ち）。流れと同じ列で、始まった順に鳴らす。
+ */
+export function enqueueVoiceClip(base64: string, gainDb: number): void {
+	native?.enqueueClip(base64, gainDb);
+}
+
+/** 流れを始める（voice.stream.v1）。500ms 以上溜まってから鳴らし始める。 */
+export function startVoiceStream(streamId: string, gainDb: number): void {
+	native?.streamStart(streamId, gainDb);
+}
+
+/** 流れの断片（MP3 の base64）を足す。知らない流れの断片は捨てられる。 */
+export function appendVoiceStream(streamId: string, base64: string): void {
+	native?.streamChunk(streamId, base64);
+}
+
+/** 流れを終える。鳴り始める前に `aborted` なら鳴らさない。 */
+export function endVoiceStream(streamId: string, aborted: boolean): void {
+	native?.streamEnd(streamId, aborted);
+}
+
+/** 開発ビルドの確かめ用: 溜めの閾値・途切れた回数など。 */
+export function voicePlaybackStats(): Record<string, unknown> | undefined {
+	return native?.playbackStats?.();
 }
 
 /** ロック画面またはコントロールセンターの停止操作を購読する。 */

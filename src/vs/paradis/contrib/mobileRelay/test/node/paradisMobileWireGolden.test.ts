@@ -119,7 +119,7 @@ suite('ParadisMobileWireGolden', () => {
 		assert.deepStrictEqual({ shape: shapeOf(built), values: pick(built) }, { shape: shapeOf(golden.current), values: pick(golden.current) });
 	});
 
-	test('State の要求: 今のアプリも W2-17 より前のアプリも通り、今のアプリの capability を覚える', function () {
+	test('State の要求: 今のアプリは通り、版 3 のアプリ（W2-17 より前を含む）は通さない（mux の版 4）', function () {
 		const golden = readGolden<{ current: object; preW217: object }>(this, 'state-request.json');
 		const session = new MobileSession('mobile-a', new Uint8Array(16), new Uint8Array(32), {} as MobileIdentity, () => true, () => { }, undefined, new NullLogService());
 		const negotiate = (request: object) => {
@@ -129,13 +129,31 @@ suite('ParadisMobileWireGolden', () => {
 		assert.deepStrictEqual({
 			current: negotiate(golden.current),
 			preW217: negotiate(golden.preW217),
-			newerAppWithinWindow: negotiate({ ...golden.current, protocolVersion: 4, minCompatiblePc: 3 }),
-			newerAppWithoutWindow: negotiate({ ...golden.preW217, protocolVersion: 4 }),
+			version3: negotiate({ ...golden.current, protocolVersion: 3, minCompatiblePc: 3 }),
+			newerAppWithinWindow: negotiate({ ...golden.current, protocolVersion: 5, minCompatiblePc: 4 }),
+			newerAppWithoutWindow: negotiate({ ...golden.preW217, protocolVersion: 5 }),
 		}, {
 			current: { ok: true, termSync: true, advertised: true },
-			preW217: { ok: true, termSync: false, advertised: false },
+			preW217: { ok: false, termSync: false, advertised: false },
+			version3: { ok: false, termSync: false, advertised: false },
 			newerAppWithinWindow: { ok: true, termSync: true, advertised: true },
 			newerAppWithoutWindow: { ok: false, termSync: false, advertised: false },
+		});
+	});
+
+	test('版が合わないアプリへは、断片に切らない版だけの案内を State の代わりに送る', async function () {
+		const golden = readGolden<{ preW217: object }>(this, 'state-request.json');
+		const sent: Uint8Array[] = [];
+		const session = new MobileSession('mobile-a', new Uint8Array(16), new Uint8Array(32), {} as MobileIdentity, () => true, () => { }, undefined, new NullLogService());
+		// 確立済みの mux の代わり（封緘は確かめない。送られたペイロードだけを見る）
+		Object.assign(session, { mux: { send: async (_ch: string, payload: Uint8Array) => { sent.push(payload); }, dispose: () => { } } });
+		session.negotiateProtocol(VSBuffer.fromString(JSON.stringify(golden.preW217)).buffer);
+		const delivered = await session.sendDesktopState(new Uint8Array(64 * 1024), true);
+
+		assert.deepStrictEqual({ delivered, guidance: sent.map(payload => JSON.parse(new TextDecoder().decode(payload))), small: sent.every(payload => payload.length <= 16 * 1024) }, {
+			delivered: true,
+			guidance: [{ protocolVersion: 4, minCompatibleMobile: 4 }],
+			small: true,
 		});
 	});
 

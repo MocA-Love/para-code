@@ -33,7 +33,18 @@ class FakeStream implements IParadisIngestStream {
 	readonly handoff = this.handoffGate.p;
 	readonly finished = this.finishedGate.p;
 	onDidStart(): void { }
-	async write(chunk: Uint8Array): Promise<void> { this.events.push(`write:${chunk.byteLength}`); }
+	/** 'block' なら書き込みは解かれるまで返らない（子の drain が遅い）、'fail' なら失敗する。 */
+	writeMode: 'ok' | 'block' | 'fail' = 'ok';
+	readonly writeGate = new DeferredPromise<void>();
+	async write(chunk: Uint8Array): Promise<void> {
+		this.events.push(`write:${chunk.byteLength}`);
+		if (this.writeMode === 'fail') {
+			throw new Error('stdin closed');
+		}
+		if (this.writeMode === 'block') {
+			await this.writeGate.p;
+		}
+	}
 	async end(): Promise<void> { this.events.push('end'); }
 	async abort(reason: string): Promise<void> { this.events.push(`abort:${reason}`); }
 }
@@ -58,6 +69,9 @@ async function startServer(options: {
 	readonly reserve?: (bytes: number) => boolean;
 	readonly limits?: IParadisRemoteVoiceIngressDeps['limits'];
 	readonly now?: () => number;
+	/** モバイルへの流れの口を渡す（無ければ全部受け取ってから 1 本で渡す）。 */
+	readonly mobileStream?: boolean;
+	readonly ingestWrite?: 'ok' | 'block' | 'fail';
 }): Promise<IHarness> {
 	const events: string[] = [];
 	const streams: FakeStream[] = [];
@@ -71,6 +85,7 @@ async function startServer(options: {
 			}
 			events.push(open.gainKey ? `open:${open.priority}:${open.gainKey}` : `open:${open.priority}`);
 			const stream = new FakeStream();
+			stream.writeMode = options.ingestWrite ?? 'ok';
 			streams.push(stream);
 			if (options.handoff !== undefined) {
 				stream.handoffGate.complete(options.handoff);
@@ -90,6 +105,14 @@ async function startServer(options: {
 			voiceOutput,
 			playViaPlayAudio: async audio => { events.push(`play-audio:${audio.byteLength}`); return options.playAudio ?? false; },
 			publishMobileVoiceClip: audio => events.push(`mobile:${audio.byteLength}`),
+			beginMobileVoiceStream: options.mobileStream ? gainKey => {
+				events.push(`mobile-start:${gainKey ?? '-'}`);
+				return {
+					write: chunk => events.push(`mobile-write:${chunk.byteLength}`),
+					end: () => events.push('mobile-end'),
+					abort: () => events.push('mobile-abort'),
+				};
+			} : undefined,
 			reserveBytes: options.reserve ?? (() => true),
 			onBodyReceived: () => events.push('body-received'),
 			isTicketCurrent: () => true,
@@ -163,6 +186,98 @@ suite('paradisReceiveRemoteVoice', () => {
 				stream: ['write:1000', 'write:500', 'end'],
 				outcome: 'played-locally',
 			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: streams to the mobile while receiving once the head looks like MP3, with the gain key of the voice', async () => {
+		const harness = await startServer({ localPlayback: false, mobileStream: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked', 'X-Para-Gain-Key': 'elevenlabs:voice:eleven_v4_turbo' });
+			request.write(mp3(1000));
+			const head = await response;
+			for (let i = 0; i < 50 && !harness.events.includes('mobile-write:1000'); i++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			// 本文を送り終える前に、最初の固まりはもうモバイルへ流れている
+			const beforeEnd = [...harness.events];
+			request.end(mp3(500));
+			await head.body;
+			await harness.resultReady;
+			assert.deepStrictEqual({ beforeEnd, events: harness.events }, {
+				beforeEnd: ['mobile-start:elevenlabs:voice:eleven_v4_turbo', 'mobile-write:1000'],
+				events: ['mobile-start:elevenlabs:voice:eleven_v4_turbo', 'mobile-write:1000', 'mobile-write:500', 'mobile-end', 'body-received'],
+			});
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('chunked: keeps streaming to the mobile while the local --ingest write is slow, and does not abort the mobile when it fails', async () => {
+		const outcomes: unknown[] = [];
+		for (const ingestWrite of ['block', 'fail'] as const) {
+			const harness = await startServer({ localPlayback: true, ingest: true, handoff: true, mobileStream: true, ingestWrite });
+			try {
+				const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+				request.write(mp3(1000));
+				const head = await response;
+				request.write(mp3(500));
+				for (let i = 0; i < 50 && !harness.events.includes('mobile-write:500'); i++) {
+					await new Promise(resolve => setTimeout(resolve, 10));
+				}
+				// 手元の書き込みが 1 つ目で止まっていても、2 つ目はもうモバイルへ流れている
+				const whileLocalStuck = harness.events.filter(event => event.startsWith('mobile-'));
+				request.end();
+				for (let i = 0; i < 50 && !harness.events.includes('mobile-end') && !harness.events.includes('mobile-abort'); i++) {
+					await new Promise(resolve => setTimeout(resolve, 10));
+				}
+				harness.streams[0]?.writeGate.complete();
+				await head.body;
+				await harness.resultReady;
+				outcomes.push({ ingestWrite, whileLocalStuck, mobile: harness.events.filter(event => event.startsWith('mobile-')), stream: harness.streams[0]?.events });
+			} finally {
+				await harness.close();
+			}
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ ingestWrite: 'block', whileLocalStuck: ['mobile-start:-', 'mobile-write:1000', 'mobile-write:500'], mobile: ['mobile-start:-', 'mobile-write:1000', 'mobile-write:500', 'mobile-end'], stream: ['write:1000', 'write:500', 'end'] },
+			// 手元へ渡せなくなっても、モバイルは届いた分で普通に終える（手元は鳴らし直しへ回る）
+			{ ingestWrite: 'fail', whileLocalStuck: ['mobile-start:-', 'mobile-write:1000', 'mobile-write:500'], mobile: ['mobile-start:-', 'mobile-write:1000', 'mobile-write:500', 'mobile-end'], stream: ['write:1000', 'abort:write-failed'] },
+		]);
+	});
+
+	test('chunked: a stuck local --ingest write does not keep the reader waiting after the utterance is cut off', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, mobileStream: true, ingestWrite: 'block', limits: { maxDurationMs: 300, slowArrivalMs: 60_000 } });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.on('error', () => { });
+			await new Promise<void>(resolve => request.write(mp3(1000), () => resolve()));
+			await response;
+			// 手元の列（1MiB）を超えるまで送る。読み進めは溜まりすぎの待ちで止まる
+			for (let i = 0; i < 24; i++) {
+				request.write(mp3(64 * 1024));
+			}
+			const result = await harness.resultReady;
+			assert.deepStrictEqual({ outcome: result.outcome, mobileClosed: harness.events.includes('mobile-end') || harness.events.includes('mobile-abort') }, { outcome: 'played-locally', mobileClosed: true });
+		} finally {
+			harness.streams[0]?.writeGate.complete();
+			await harness.close();
+		}
+	});
+
+	test('chunked: aborts the mobile stream when the remote side disconnects midway', async () => {
+		const harness = await startServer({ localPlayback: false, mobileStream: true });
+		try {
+			const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+			request.write(mp3(400));
+			await response;
+			for (let i = 0; i < 50 && !harness.events.includes('mobile-write:400'); i++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			request.destroy();
+			await harness.resultReady;
+			assert.deepStrictEqual(harness.events, ['mobile-start:-', 'mobile-write:400', 'body-received', 'mobile-abort']);
 		} finally {
 			await harness.close();
 		}

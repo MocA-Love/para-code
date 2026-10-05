@@ -17,7 +17,6 @@ import { randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -36,12 +35,13 @@ import {
 } from './paradisAudioScheduler.js';
 import { ParadisDictationHold } from '../common/paradisDictationHold.js';
 import { IParadisPlayElevenLabsRequest, PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, paradisStripSsmlTags } from '../common/paradisElevenLabs.js';
-import { paradisAivisGainKey, paradisCorrectedPlaybackVolume, paradisElevenLabsGainKey, paradisVolumePercentToDb } from '../common/paradisVoiceGain.js';
+import { paradisAivisGainKey, paradisCorrectedPlaybackVolume, paradisElevenLabsGainKey, paradisResolveVoiceGainDb, paradisVolumePercentToDb } from '../common/paradisVoiceGain.js';
+import { IParadisMobileVoiceStreamWriter, ParadisMobileVoiceEvent, ParadisMobileVoiceStreamWriter } from '../../mobileRelay/common/paradisMobileVoiceStream.js';
 import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisLocalVoiceOutput } from '../common/paradisVoiceIngest.js';
 import { IParadisAivisIngest, ParadisAivisIngestClient } from './paradisAivisIngestClient.js';
 import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES, ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
-import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisMobileVoiceTaskGate, ParadisSynthesisTimeouts, paradisTeeBody } from './paradisStreamingBody.js';
 import { paradisHandoffVoice } from './paradisVoiceHandoff.js';
 import {
 	CUSTOM_RINGTONE_ID,
@@ -208,9 +208,12 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	private readonly _onAivisPaused = this._register(new Emitter<string>());
 	readonly onAivisPaused: Event<string> = this._onAivisPaused.event;
 
-	/** PC再生へ渡すのと同じ合成済みMP3。モバイル用rendererは履歴を持たず、その場でだけ使う。 */
-	private readonly _onDidCreateMobileVoiceClip = this._register(new Emitter<VSBuffer>());
-	readonly onDidCreateMobileVoiceClip: Event<VSBuffer> = this._onDidCreateMobileVoiceClip.event;
+	/**
+	 * モバイルへ配る音声（流れの開始・断片・終わりと、1 本まるごとの MP3）。同じ shared process のモバイルリレーが
+	 * 購読する。履歴は持たず、その場でだけ使う。
+	 */
+	private readonly _onDidCreateMobileVoiceClip = this._register(new Emitter<ParadisMobileVoiceEvent>());
+	readonly onDidCreateMobileVoiceClip: Event<ParadisMobileVoiceEvent> = this._onDidCreateMobileVoiceClip.event;
 
 	/** notifyAudio の直近要求で鳴らすべき通知音。scheduler.playRingtone() の直前に同期でセットする。 */
 	private _currentRingtone: { readonly id: string; readonly volume: number } | undefined;
@@ -455,6 +458,15 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (volumeDb === undefined) {
 			return undefined; // 音量 0
 		}
+		// 合成を受け取りながらモバイルへも流す（voice.stream.v1。受け取れない端末には終わってから 1 本で送る）
+		// 合成の再試行をまたいでも、1 件につきモバイルへの流れは 1 本（ParadisMobileVoiceTaskGate）
+		const synthesizeDirect = synthesizeStream;
+		const mobileGainKey = gainKey;
+		const mobileGate = new ParadisMobileVoiceTaskGate(() => this.beginMobileVoiceStream(mobileGainKey));
+		synthesizeStream = async () => {
+			const synthesis = await synthesizeDirect();
+			return { ...synthesis, body: paradisTeeBody(synthesis.body, () => mobileGate.openSink()) };
+		};
 		// 感情タグ（[...]）入りの発話は、音量の覚え直しに使わない
 		const tagged = /\[[^\]]+\]/.test(text);
 		// まだ誰も鳴らしていない着信音
@@ -470,11 +482,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		const ingest = this._ingest;
 		const runner: AivisTaskRunner = {
 			synthesize: async () => ({ audio: await paradisCollectBody((await synthesizeStream()).body, PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES) }),
-			play: audio => {
-				// モバイルは副経路。購読側の不在・失敗に関係なく従来のPC再生を続ける。
-				this.publishMobileVoiceClip(audio);
-				return playLocally(audio);
-			},
+			// モバイルへは合成を受け取りながら流し終えている（synthesizeStream）
+			play: audio => playLocally(audio),
 			// Para Code が自分で鳴らす直前・列から外れたときに、預かった着信音を鳴らす
 			startRingtone: playPendingRingtone,
 			onDropped: playPendingRingtone,
@@ -499,7 +508,6 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 								pendingRingtone = undefined;
 							}
 						},
-						onComplete: audio => this.publishMobileVoiceClip(audio),
 						onPlayLocally: audio => {
 							// worker は何も鳴らさなかった。着信音も鳴っていなければ、両方 Para Code が鳴らす
 							const ringtoneToPlay = prelude && !started ? ringtone : undefined;
@@ -532,12 +540,28 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		return { runner, setRingtone: ringtone => { pendingRingtone = ringtone; } };
 	}
 
-	/** 外部aivis-mcpを含む生成済みMP3を、専有コピーとしてモバイル音声経路へ渡す。 */
-	publishMobileVoiceClip(audio: Uint8Array): void {
+	/**
+	 * 生成済みの MP3 を、専有コピーとして 1 本まるごとモバイルへ渡す（流しながら渡せない古い経路）。
+	 * `gainKey`（声とモデル）があれば、モバイルが -20 LUFS に揃える補正（gainDb）を添える。
+	 */
+	publishMobileVoiceClip(audio: Uint8Array, gainKey?: string): void {
 		if (audio.byteLength === 0 || audio.byteLength > PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES) {
 			return;
 		}
-		this._onDidCreateMobileVoiceClip.fire(VSBuffer.wrap(Uint8Array.from(audio)));
+		this._onDidCreateMobileVoiceClip.fire({ kind: 'clip', audio: Uint8Array.from(audio), gainDb: this._mobileGainDb(gainKey) });
+	}
+
+	/**
+	 * モバイルへの音声の流れを始める（通知の読み上げ・SSH 先の声・手元のエージェントの声が、受け取りながら書く）。
+	 * 流すか 1 本まるごとで送るかは、モバイルリレーが最初の音で端末ごとに決める。
+	 */
+	beginMobileVoiceStream(gainKey?: string): IParadisMobileVoiceStreamWriter {
+		return new ParadisMobileVoiceStreamWriter(event => this._onDidCreateMobileVoiceClip.fire(event), this._mobileGainDb(gainKey), PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES);
+	}
+
+	/** 声とモデルの組の補正（-20 LUFS に揃える dB）。`--ingest` から取った表があればそれ、無ければ写しの最初の値。 */
+	private _mobileGainDb(gainKey: string | undefined): number {
+		return gainKey === undefined ? 0 : paradisResolveVoiceGainDb(gainKey, this._ingest?.gainTable);
 	}
 
 	/** Aivis の一時停止状態を解除する（ユーザーが APIキー等を修正して設定を保存した時に呼ばれる）。 */

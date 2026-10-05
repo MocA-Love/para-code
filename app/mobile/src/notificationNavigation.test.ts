@@ -31,7 +31,7 @@ describe('pendingNotificationWait', () => {
 
 describe('notificationDestination', () => {
 	const workspace: WorkspaceState = {
-		protocolVersion: 3,
+		protocolVersion: 4,
 		desktopEpoch: 'epoch',
 		revision: 1,
 		complete: true,

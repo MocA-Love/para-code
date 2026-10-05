@@ -6,6 +6,7 @@ import {
 	VoiceLifecycle,
 	type MobileVoiceLifecycleHost,
 	type VoiceLifecycleSnapshot,
+	type VoiceDelivery,
 	type VoiceLifecycleTimers,
 	type VoiceNotificationState,
 } from './voiceLifecycle.js';
@@ -100,7 +101,12 @@ class FakeVoiceHost implements MobileVoiceLifecycleHost {
 		this.unsubscriptions.push(sid);
 	}
 
-	setClipHandler(_sid: string, _handler: (base64: string) => void): void { }
+	clipHandler: ((delivery: VoiceDelivery) => void) | undefined;
+	readonly delivered: VoiceDelivery[] = [];
+
+	setClipHandler(_sid: string, handler: (delivery: VoiceDelivery) => void): void {
+		this.clipHandler = handler;
+	}
 
 	clearClipHandler(sid: string): void {
 		this.clearedClipHandlers.push(sid);
@@ -111,7 +117,9 @@ class FakeVoiceHost implements MobileVoiceLifecycleHost {
 		return () => { if (this.remoteStop === handler) { this.remoteStop = undefined; } };
 	}
 
-	async enqueueClip(_base64: string): Promise<void> { }
+	deliver(delivery: VoiceDelivery): void {
+		this.delivered.push(delivery);
+	}
 
 	afterStop(): void {
 		this.afterStopCount++;
@@ -177,6 +185,24 @@ describe('mobile voice lifecycle', () => {
 });
 
 describe('mobile voice notification orchestrator', () => {
+	it('forwards clips and stream parts to the native player only while the session is current', async () => {
+		const timers = new ManualTimers();
+		const host = new FakeVoiceHost();
+		const lifecycle = new MobileVoiceLifecycle(host, timers);
+
+		lifecycle.start();
+		await flushPromises();
+		const handler = host.clipHandler!;
+		handler({ kind: 'stream-start', streamId: 'a'.repeat(32), gainDb: 4.1 });
+		handler({ kind: 'stream-chunk', streamId: 'a'.repeat(32), seq: 0, data: Uint8Array.of(0xff, 0xfb) });
+		handler({ kind: 'stream-end', streamId: 'a'.repeat(32), aborted: false });
+		handler({ kind: 'clip', base64: 'AAEC', gainDb: -7.4 });
+		lifecycle.stop();
+		handler({ kind: 'clip', base64: 'late', gainDb: 0 });
+
+		expect(host.delivered.map(delivery => delivery.kind)).toEqual(['stream-start', 'stream-chunk', 'stream-end', 'clip']);
+	});
+
 	it('ignores a delayed subscribe completion after stop instead of restoring live state', async () => {
 		const timers = new ManualTimers();
 		const host = new FakeVoiceHost();
