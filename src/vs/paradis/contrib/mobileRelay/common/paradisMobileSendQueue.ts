@@ -373,6 +373,8 @@ export class ParadisMobileSendQueue {
 			this.promotedScreen = undefined;
 		}
 		this.unsent[queued.transfer.priority]! -= queued.transfer.bytes - queued.sentBytes;
+		// ストリームの列からは必ず外す（残るとそのストリームの後ろの送信が先頭になれず止まる）
+		this.removeFromStream(queued);
 		const lane = this.lanes[queued.transfer.priority]!;
 		const queue = lane.get(queued.transfer.owner);
 		if (queue === undefined) {
@@ -385,7 +387,6 @@ export class ParadisMobileSendQueue {
 		if (queue.length === 0) {
 			lane.delete(queued.transfer.owner);
 		}
-		this.removeFromStream(queued);
 	}
 
 	private removeFromStream(queued: IQueuedTransfer): void {
