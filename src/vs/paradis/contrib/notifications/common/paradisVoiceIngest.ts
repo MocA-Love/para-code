@@ -23,6 +23,9 @@ export function paradisParseAivisVersion(text: string): readonly [number, number
 	return [Number(match.groups.major), Number(match.groups.minor), Number(match.groups.patch)];
 }
 
+/** aivis-mcp が着信音（prelude）として受け付けるファイルの上限（docs/ingest-protocol.md の `prelude.path`）。 */
+export const PARADIS_AIVIS_PRELUDE_MAX_BYTES = 10 * 1024 * 1024;
+
 /** `version` が `minimum` 以上か。 */
 export function paradisAivisVersionAtLeast(version: readonly [number, number, number] | undefined, minimum: readonly [number, number, number]): boolean {
 	if (version === undefined) {
@@ -68,10 +71,27 @@ export interface IParadisIngestStream {
 	readonly finished: Promise<IParadisIngestTerminal>;
 	/** worker が鳴らし始めた（着信音を含む）。手元に控えた音声を手放す合図。 */
 	onDidStart(listener: () => void): void;
+	/**
+	 * `accepted` に `preludeRejected` が付いていた（着信音を付けずに積んだ）。呼び出し側が着信音を鳴らす。
+	 * 無ければ知らせない（テストの代わりの実装など）。
+	 */
+	onDidRejectPrelude?(listener: (reason: string) => void): void;
+	/**
+	 * まだ worker が取り出していなければ列から外してもらう。`true` は外せた（まだ鳴っていないと aivis-mcp が保証する）、
+	 * `false` は外せなかった（worker が鳴らす・鳴らした）、`undefined` は分からない（返事が来ない・子が落ちた）。
+	 */
+	withdraw?(): Promise<boolean | undefined>;
 	/** MP3 を書く。子の標準入力の drain を待ってから解決する。閉じた流れには何もしない。 */
 	write(chunk: Uint8Array): Promise<void>;
 	end(): Promise<void>;
 	abort(reason: string): Promise<void>;
+}
+
+/** 控えの音声の枠。受け取った分だけ {@link grow} で増やし、要らなくなったら {@link release}。 */
+export interface IParadisVoiceRetention {
+	/** `bytes` 増やす。全体の上限を超えるなら false（以後は控えない）。 */
+	grow(bytes: number): boolean;
+	release(): void;
 }
 
 /** 手元で鳴らす口（SSH 先の声が使う）。 */
@@ -87,7 +107,12 @@ export interface IParadisLocalVoiceOutput {
 	 * aivis-mcp に渡せなかった声を、Para Code が自分で（afplay 等で）鳴らす。通知の読み上げと重ならないよう同じ列に入れる。
 	 * `gainKey` があれば音量の表で揃える（100 は超えない）。
 	 */
-	playFallback(audio: Uint8Array, gainKey?: string): Promise<void>;
+	playFallback(audio: Uint8Array, gainKey?: string): Promise<boolean>;
+	/**
+	 * worker が鳴らせなかったときのために控える音声の、全体の枠を押さえる（手元のメモリの上限）。押さえられなければ
+	 * undefined（控えずに手放す）。
+	 */
+	reserveFallbackCopy?(): IParadisVoiceRetention | undefined;
 	/**
 	 * モバイルへの音声の流れを始める（受け取りながら書く）。`gainKey` からモバイルで当てる音量の補正を決める。
 	 * 無ければ全部受け取ってから 1 本まるごとで渡す。

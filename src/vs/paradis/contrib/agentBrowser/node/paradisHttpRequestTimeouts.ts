@@ -12,7 +12,7 @@
 // `/paradis-mcp/mobile-voice` が 1 発話 120 秒まで続くので 130 秒にする。それ以外の経路（MCP の JSON-RPC・
 // agent-hook・Claude Code の mod・ticket の発行）は、これまでの 30 秒の守り（本文を送りきらない相手で枠を
 // 塞がせない）を {@link paradisArmRequestBodyTimeout} で経路ごとに掛ける。音声取込は自前の 120 秒・最初の音・
-// 届く速さで縛る。
+// 届く速さで縛る（実際に受理するまでは 30 秒の守りを掛け、受理したら外す）。
 
 import type * as http from 'http';
 
@@ -20,6 +20,8 @@ import type * as http from 'http';
 export const PARADIS_MCP_REQUEST_TIMEOUT_MS = 130_000;
 /** 音声取込以外の経路で、本文を受け取りきるまでの上限（以前のサーバー全体の requestTimeout と同じ）。 */
 export const PARADIS_MCP_BODY_TIMEOUT_MS = 30_000;
+/** 本文を読まずに応答した要求の、残りの本文を読み捨てる上限。過ぎたら接続を切る。 */
+export const PARADIS_MCP_UNREAD_BODY_DRAIN_MS = 1_000;
 
 /** サーバーの時間の上限を設定する。 */
 export function paradisConfigureMcpHttpServer(server: http.Server): void {
@@ -34,14 +36,21 @@ export function paradisConfigureMcpHttpServer(server: http.Server): void {
 
 /**
  * 要求の本文を `timeoutMs` までに受け取りきらなければ、408 を返して（応答のヘッダーを送る前なら）接続を切る。
- * Node の requestTimeout と同じ守りを経路ごとに掛ける。受け取りきったら何もしない。
+ * Node の requestTimeout と同じ守りを経路ごとに掛ける。本文を受け取りきった・接続が切れた要求には何もしない。
+ * 本文を読み終えないまま返す応答には Connection: close を付け、返し終えたら残りを 1 秒だけ読み捨ててから接続を閉じる
+ * （chunked の本文を送り続けさせない・接続を使い回させない・相手が応答を受け取る前に切らない。以前はここで時計を外していたので、応答だけ返す経路では 30 秒の守りが抜けていた）。応答のヘッダーを
+ * 送っても閉じない経路（SSE など）は、本文が 30 秒で届ききらなければ切る。返した口を dispose すると守りを外す
+ * （実際に受理する音声取込）。
  */
-export function paradisArmRequestBodyTimeout(req: http.IncomingMessage, res: http.ServerResponse, timeoutMs = PARADIS_MCP_BODY_TIMEOUT_MS): void {
+export function paradisArmRequestBodyTimeout(req: http.IncomingMessage, res: http.ServerResponse, timeoutMs = PARADIS_MCP_BODY_TIMEOUT_MS): { dispose(): void } {
 	if (req.complete) {
-		return;
+		return { dispose: () => { } };
 	}
+	let disposed = false;
+	// 要求の側には聞き手を足さない（読み終えた経路が聞き手の数を確かめている）。本文を受け取りきったか・接続が切れたかは
+	// 時計が鳴ったときに確かめる
 	const timer = setTimeout(() => {
-		if (req.complete || req.destroyed || res.writableEnded) {
+		if (disposed || req.complete || req.destroyed) {
 			return;
 		}
 		if (!res.headersSent && !res.writableEnded) {
@@ -51,8 +60,39 @@ export function paradisArmRequestBodyTimeout(req: http.IncomingMessage, res: htt
 		req.destroy();
 	}, timeoutMs);
 	(timer as { unref?: () => void }).unref?.();
-	// 要求の側には聞き手を足さない（読み終えた経路が聞き手の数を確かめている）。応答が終われば時計も要らない
-	const clear = () => clearTimeout(timer);
-	res.once('finish', clear);
-	res.once('close', clear);
+	// 本文を読み終えないまま応答を返すなら、その応答に Connection: close を付ける（接続を使い回させない）
+	const originalWriteHead = res.writeHead;
+	const writeHead = ((...args: Parameters<typeof res.writeHead>) => {
+		if (!disposed && !req.complete && !res.headersSent && typeof res.setHeader === 'function') {
+			res.setHeader('Connection', 'close');
+		}
+		return originalWriteHead.call(res, ...args);
+	}) as typeof res.writeHead;
+	res.writeHead = writeHead;
+	const dispose = () => {
+		if (disposed) {
+			return;
+		}
+		disposed = true;
+		clearTimeout(timer);
+		res.removeListener('finish', onFinish);
+		if (res.writeHead === writeHead) {
+			res.writeHead = originalWriteHead;
+		}
+	};
+	// 応答を返し終えた。本文を読み終えていなければ、相手が応答を受け取れるよう少しだけ読み捨ててから接続を閉じる
+	const onFinish = () => {
+		dispose();
+		if (!req.complete && !req.destroyed) {
+			req.resume();
+			const drainTimer = setTimeout(() => {
+				if (!req.complete && !req.destroyed) {
+					req.destroy();
+				}
+			}, PARADIS_MCP_UNREAD_BODY_DRAIN_MS);
+			(drainTimer as { unref?: () => void }).unref?.();
+		}
+	};
+	res.once('finish', onFinish);
+	return { dispose };
 }
