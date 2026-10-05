@@ -27,6 +27,9 @@
 // - 追加ヘッダは相手の origin を見て付ける（既定は掛けた時点のトップフレームの origin だけ）。
 // - 上書きを掛けている間はそのタブのキャッシュと Service Worker を通さない（ルールとヘッダが
 //   すり抜けないように）。
+// - 遷移・再読み込みの後も動くスクリプト（add_init_script）も同じ専用のセッションで置く。どのタブにも
+//   置ける（q.html Q240）が、持ち主の共有が入れ替わる・エージェントがタブを手放す・タブが閉じる、の
+//   どれでも外す。複数のペインが同じタブに置ける（一覧と削除は自分の分だけ）。
 
 import { raceTimeout } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
@@ -35,6 +38,9 @@ import type { CDPEvent, ICDPConnection } from '../../../../platform/browserView/
 import {
 	IParadisHighlightRect,
 	IParadisExtraHeaders,
+	IParadisInitScriptInfo,
+	IParadisInitScriptRequest,
+	IParadisInitScriptsResult,
 	IParadisHttpCredentials,
 	IParadisPageOverridesRequest,
 	IParadisPageOverridesResult,
@@ -46,6 +52,7 @@ import {
 	paradisBuildRedirectHeaders,
 	paradisBuildRespondHeaders,
 	paradisMatchUrlPattern,
+	PARADIS_INIT_SCRIPT_MAX_PER_TAB,
 } from '../common/paradisBrowserPageOps.js';
 
 /** Electron の `login` イベントの認証の情報のうち、使うもの。 */
@@ -126,6 +133,19 @@ interface ITargetSession {
 	networkEnabled: boolean;
 	fetchEnabled: boolean;
 	overlayEnabled: boolean;
+	/** add_init_script のために Page を有効にした。 */
+	pageEnabled: boolean;
+}
+
+/** タブに置いたスクリプト（add_init_script）。 */
+interface IInitScript {
+	readonly info: IParadisInitScriptInfo;
+	readonly ownerKey: string;
+	readonly generation: number;
+	/** `Page.addScriptToEvaluateOnNewDocument` が返した識別子。 */
+	readonly identifier: string;
+	/** 置いたセッション（セッションが替わったら、もう効いていない）。 */
+	readonly session: ICDPConnection;
 }
 
 interface IViewState {
@@ -170,6 +190,8 @@ export class ParadisBrowserPageOpsController {
 	private readonly targetSessions = new Map<IParadisPageOpsTarget, ITargetSession>();
 	private readonly pendingSessions = new Map<IParadisPageOpsTarget, Promise<ITargetSession>>();
 	private readonly destroyedListeners = new Map<IParadisPageOpsTarget, () => void>();
+	private readonly initScripts = new Map<IParadisPageOpsTarget, IInitScript[]>();
+	private nextInitScriptId = 1;
 
 	constructor(
 		private readonly now: () => number = Date.now,
@@ -236,6 +258,9 @@ export class ParadisBrowserPageOpsController {
 				this.clear(target);
 			}
 		}
+		for (const target of [...this.initScripts.keys()]) {
+			void this.removeScripts(target, script => script.ownerKey === ownerKey && script.generation < generation);
+		}
 	}
 
 	/**
@@ -263,6 +288,7 @@ export class ParadisBrowserPageOpsController {
 		if (entry) {
 			void this.teardown(target, entry);
 		}
+		this.initScripts.delete(target);
 	}
 
 	/** タブが閉じた。上書きとハイライトを外し、専用のセッションを手放す（タブと一緒に消える）。 */
@@ -284,6 +310,7 @@ export class ParadisBrowserPageOpsController {
 		if (entry) {
 			void this.teardownAndDispose(target, entry);
 		}
+		this.initScripts.delete(target);
 	}
 
 	/** いま上書きを掛けているタブの数（テスト用）。 */
@@ -343,6 +370,103 @@ export class ParadisBrowserPageOpsController {
 		this.highlights.set(target, { timer });
 	}
 
+	/**
+	 * 遷移・再読み込みの後も動くスクリプトを置く（`Page.addScriptToEvaluateOnNewDocument`）。持ち主の
+	 * 共有が入れ替わった後に届いた要求は断る。
+	 */
+	async addInitScript(target: IParadisPageOpsTarget, ownerKey: string, generation: number, request: IParadisInitScriptRequest): Promise<IParadisInitScriptsResult> {
+		const isStale = () => (this.ownerWatermarks.get(ownerKey) ?? 0) > generation;
+		if (isStale()) {
+			return { ok: false, reason: 'stale' };
+		}
+		if (target.webContents.isDestroyed()) {
+			return { ok: false, reason: 'unavailable' };
+		}
+		if (this.ownScripts(target, ownerKey).length >= PARADIS_INIT_SCRIPT_MAX_PER_TAB) {
+			return { ok: false, reason: 'invalid', message: `This tab already has ${PARADIS_INIT_SCRIPT_MAX_PER_TAB} scripts of yours. Remove one with remove_init_script first.` };
+		}
+		let entry: ITargetSession;
+		let identifier: unknown;
+		try {
+			entry = await this.ensureTargetSession(target);
+			if (!entry.pageEnabled) {
+				entry.pageEnabled = true;
+				await entry.session.sendCommand('Page.enable');
+			}
+			const response = await entry.session.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: request.source, ...(request.runNow ? { runImmediately: true } : {}) }) as { identifier?: unknown } | undefined;
+			identifier = response?.identifier;
+		} catch (error) {
+			return { ok: false, reason: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
+		}
+		if (typeof identifier !== 'string') {
+			return { ok: false, reason: 'failed', message: 'The browser did not accept the script.' };
+		}
+		if (isStale() || this.targetSessions.get(target) !== entry || target.webContents.isDestroyed()) {
+			// 置いている間に共有が入れ替わった・タブを手放した。置いたものを残さない。
+			void this.sendTeardown(target, entry.session, [['Page.removeScriptToEvaluateOnNewDocument', { identifier }]]);
+			return { ok: false, reason: 'stale' };
+		}
+		const info: IParadisInitScriptInfo = Object.freeze({ id: `s${this.nextInitScriptId++}`, label: request.label, chars: request.source.length, addedAt: this.now() });
+		const scripts = this.initScripts.get(target) ?? [];
+		scripts.push({ info, ownerKey, generation, identifier, session: entry.session });
+		this.initScripts.set(target, scripts);
+		return { ...this.describeScripts(target, ownerKey), added: info };
+	}
+
+	/** 持ち主が置いたスクリプトを外す（`id` が無ければすべて）。 */
+	async removeInitScripts(target: IParadisPageOpsTarget, ownerKey: string, id: string | undefined): Promise<IParadisInitScriptsResult> {
+		const own = this.ownScripts(target, ownerKey);
+		if (id !== undefined && !own.some(script => script.info.id === id)) {
+			return { ok: false, reason: 'invalid', message: `This tab has no script "${id}" of yours. Call list_init_scripts to see the ids.` };
+		}
+		const removed = await this.removeScripts(target, script => script.ownerKey === ownerKey && (id === undefined || script.info.id === id));
+		return { ...this.describeScripts(target, ownerKey), removed };
+	}
+
+	/** 持ち主がタブに置いているスクリプトの一覧。 */
+	listInitScripts(target: IParadisPageOpsTarget, ownerKey: string): IParadisInitScriptsResult {
+		return this.describeScripts(target, ownerKey);
+	}
+
+	private ownScripts(target: IParadisPageOpsTarget, ownerKey: string): IInitScript[] {
+		return (this.initScripts.get(target) ?? []).filter(script => script.ownerKey === ownerKey);
+	}
+
+	private describeScripts(target: IParadisPageOpsTarget, ownerKey: string): Extract<IParadisInitScriptsResult, { ok: true }> {
+		const all = this.initScripts.get(target) ?? [];
+		return { ok: true, scripts: all.filter(script => script.ownerKey === ownerKey).map(script => script.info), otherPanes: all.filter(script => script.ownerKey !== ownerKey).length };
+	}
+
+	/** 当てはまるスクリプトを台帳から外し、ブラウザからも外す。外した数を返す。 */
+	private async removeScripts(target: IParadisPageOpsTarget, predicate: (script: IInitScript) => boolean): Promise<number> {
+		const scripts = this.initScripts.get(target);
+		if (!scripts) {
+			return 0;
+		}
+		const removing = scripts.filter(predicate);
+		if (removing.length === 0) {
+			return 0;
+		}
+		const kept = scripts.filter(script => !predicate(script));
+		if (kept.length > 0) {
+			this.initScripts.set(target, kept);
+		} else {
+			this.initScripts.delete(target);
+		}
+		const entry = this.targetSessions.get(target);
+		if (entry) {
+			const commands: (readonly [string, object])[] = removing
+				.filter(script => script.session === entry.session)
+				.map(script => ['Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier }] as const);
+			if (kept.length === 0 && entry.pageEnabled) {
+				entry.pageEnabled = false;
+				commands.push(['Page.disable', {}]);
+			}
+			await this.sendTeardown(target, entry.session, commands);
+		}
+		return removing.length;
+	}
+
 	/** ハイライトを消す（`clear: true`・時間切れ・次のハイライト・タブを手放す）。 */
 	private clearHighlight(target: IParadisPageOpsTarget): void {
 		const highlight = this.highlights.get(target);
@@ -374,7 +498,7 @@ export class ParadisBrowserPageOpsController {
 				session.dispose();
 				throw new Error('The tab was released while attaching.');
 			}
-			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, overlayEnabled: false };
+			const entry: ITargetSession = { session, store: new DisposableStore(), networkEnabled: false, fetchEnabled: false, overlayEnabled: false, pageEnabled: false };
 			entry.store.add(session.onEvent(event => this.onEvent(target, session, event)));
 			entry.store.add(session.onClose(() => {
 				if (this.targetSessions.get(target) !== entry) {
@@ -389,6 +513,8 @@ export class ParadisBrowserPageOpsController {
 					this.clear(target);
 				}
 				this.highlights.delete(target);
+				// セッションと一緒にスクリプトも消えた。
+				this.initScripts.delete(target);
 			}));
 			this.targetSessions.set(target, entry);
 			this.pendingSessions.delete(target);
@@ -430,13 +556,19 @@ export class ParadisBrowserPageOpsController {
 
 	/** 有効にしたもの（ネットワークの上書きとハイライト）をすべて戻す。セッションは残す。 */
 	private async teardown(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
+		// 置いたスクリプトは識別子ごとに外す（どのペインのものも）。
+		const scripts = (this.initScripts.get(target) ?? []).filter(script => script.session === entry.session).map(script => script.identifier);
+		this.initScripts.delete(target);
 		const commands = [
 			...(entry.networkEnabled || entry.fetchEnabled ? NETWORK_TEARDOWN_COMMANDS : []),
 			...(entry.overlayEnabled ? OVERLAY_TEARDOWN_COMMANDS : []),
+			...scripts.map(identifier => ['Page.removeScriptToEvaluateOnNewDocument', { identifier }] as const),
+			...(entry.pageEnabled ? [['Page.disable', {}] as const] : []),
 		];
 		entry.networkEnabled = false;
 		entry.fetchEnabled = false;
 		entry.overlayEnabled = false;
+		entry.pageEnabled = false;
 		await this.sendTeardown(target, entry.session, commands);
 	}
 
