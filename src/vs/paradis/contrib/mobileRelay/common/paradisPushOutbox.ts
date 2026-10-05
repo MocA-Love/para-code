@@ -15,7 +15,8 @@
 // - リレーが push-ack を返したら外す（リレーは依頼を書き留めてから返す。同じ ID の送り直しは APNs へ送らない）
 // - まだ 1 度も送れていない依頼は、ソケットが開いたら送る
 // - 送ったのに ack が来ない依頼を送り直すのは、このリレーが push-ack を返すと分かっているときだけ
-//   （返さない旧リレーへ送り直すと、同じ通知が二重に鳴る）。分かるのは一度でも push-ack を受けた後
+//   （返さない旧リレーへ送り直すと、同じ通知が二重に鳴る）。分かるのは一度でも push-ack を受けた後。
+//   覚えるのは受けたときの登録（deviceId）についてだけ（登録し直した先のリレーが旧版でも二重に鳴らさない）
 // - 登録し直した（deviceId が変わった）後は、古い登録宛ての依頼を捨てる
 
 /** 依頼 1 件（outbox のファイルの `entries`）。 */
@@ -53,6 +54,8 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 
 interface IParadisPushOutboxFile {
 	readonly relayAcks: boolean;
+	/** push-ack を受けたときの登録。今の登録と違えば relayAcks は使わない。 */
+	readonly relayAcksDeviceId?: string;
 	readonly entries: readonly IParadisPushOutboxEntry[];
 }
 
@@ -99,7 +102,12 @@ export function paradisParsePushOutbox(raw: string | undefined): IParadisPushOut
 			lastSentAt: typeof entry.lastSentAt === 'number' && Number.isFinite(entry.lastSentAt) ? entry.lastSentAt : 0,
 		});
 	}
-	return { relayAcks: record.relayAcks === true, entries: entries.slice(-PARADIS_PUSH_OUTBOX_LIMIT) };
+	const relayAcksDeviceId = optionalString(record.relayAcksDeviceId);
+	return {
+		relayAcks: record.relayAcks === true && relayAcksDeviceId !== undefined,
+		...(relayAcksDeviceId !== undefined ? { relayAcksDeviceId } : {}),
+		entries: entries.slice(-PARADIS_PUSH_OUTBOX_LIMIT),
+	};
 }
 
 /** 期限切れ・今の登録ではない依頼を外し、件数を上限に収める（古いものから捨てる）。 */
@@ -134,7 +142,8 @@ export interface IParadisPushOutboxHost {
 /** プッシュの依頼の outbox。ファイルの読み書きと送信は host に任せる。 */
 export class ParadisPushOutbox {
 	private entries: IParadisPushOutboxEntry[] = [];
-	private relayAcks = false;
+	/** push-ack を受けた登録（deviceId）。今の登録と一致するときだけ、送り直してよいリレーとみなす。 */
+	private relayAcksDeviceId: string | undefined;
 	private readonly loaded: Promise<void>;
 	private writeChain: Promise<void> = Promise.resolve();
 	private timer: unknown;
@@ -145,7 +154,9 @@ export class ParadisPushOutbox {
 			const file = paradisParsePushOutbox(raw);
 			// 読む前に積まれた依頼（あれば）を後ろに残す
 			this.entries = [...file.entries, ...this.entries];
-			this.relayAcks = this.relayAcks || file.relayAcks;
+			if (this.relayAcksDeviceId === undefined && file.relayAcks) {
+				this.relayAcksDeviceId = file.relayAcksDeviceId;
+			}
 		}, error => this.host.warn('[paradisPushOutbox] failed to read the outbox', error));
 	}
 
@@ -182,8 +193,11 @@ export class ParadisPushOutbox {
 		await this.loaded;
 		const before = this.entries.length;
 		this.entries = this.entries.filter(entry => entry.requestId !== requestId);
-		const learned = !this.relayAcks;
-		this.relayAcks = true;
+		const deviceId = this.host.deviceId();
+		const learned = deviceId !== undefined && this.relayAcksDeviceId !== deviceId;
+		if (learned) {
+			this.relayAcksDeviceId = deviceId;
+		}
 		if (before !== this.entries.length || learned) {
 			await this.persist();
 		}
@@ -205,12 +219,13 @@ export class ParadisPushOutbox {
 		}
 		const now = this.now();
 		const before = this.entries.length;
+		const relayAcks = this.relayAcks();
 		const kept = paradisPrunePushOutbox(this.entries, this.host.deviceId(), now);
-		if (kept.length !== before && this.relayAcks) {
+		if (kept.length !== before && relayAcks) {
 			// push-ack を返さない旧リレーでは、送った依頼が毎回ここで期限切れになるので記録しない
 			this.host.warn(`[paradisPushOutbox] dropped ${before - kept.length} push request(s) the relay did not accept in time`);
 		}
-		const sendable = new Set(paradisSendablePushes(kept, this.relayAcks, now).map(entry => entry.requestId));
+		const sendable = new Set(paradisSendablePushes(kept, relayAcks, now).map(entry => entry.requestId));
 		let changed = kept.length !== before;
 		this.entries = kept.map(entry => {
 			if (!sendable.has(entry.requestId)) {
@@ -242,9 +257,10 @@ export class ParadisPushOutbox {
 			return;
 		}
 		const now = this.now();
+		const relayAcks = this.relayAcks();
 		const times = this.entries.map(entry => {
 			const expiry = entry.since + PARADIS_PUSH_OUTBOX_MAX_AGE_MS;
-			return entry.sends > 0 && this.relayAcks ? Math.min(expiry, entry.lastSentAt + PARADIS_PUSH_OUTBOX_RESEND_AFTER_MS) : expiry;
+			return entry.sends > 0 && relayAcks ? Math.min(expiry, entry.lastSentAt + PARADIS_PUSH_OUTBOX_RESEND_AFTER_MS) : expiry;
 		});
 		const delay = Math.max(1_000, Math.min(...times) - now);
 		this.timer = (this.host.setTimeout ?? setTimeout)(() => {
@@ -261,10 +277,21 @@ export class ParadisPushOutbox {
 	}
 
 	private persist(): Promise<void> {
-		const content = JSON.stringify({ relayAcks: this.relayAcks, entries: this.entries } satisfies IParadisPushOutboxFile);
+		const file: IParadisPushOutboxFile = {
+			relayAcks: this.relayAcksDeviceId !== undefined,
+			...(this.relayAcksDeviceId !== undefined ? { relayAcksDeviceId: this.relayAcksDeviceId } : {}),
+			entries: this.entries,
+		};
+		const content = JSON.stringify(file);
 		const run = this.writeChain.then(() => this.host.write(content)).catch(error => this.host.warn('[paradisPushOutbox] failed to write the outbox', error));
 		this.writeChain = run;
 		return run;
+	}
+
+	/** 今の登録のリレーが push-ack を返すと分かっているか。 */
+	private relayAcks(): boolean {
+		const deviceId = this.host.deviceId();
+		return deviceId !== undefined && this.relayAcksDeviceId === deviceId;
 	}
 
 	private now(): number {

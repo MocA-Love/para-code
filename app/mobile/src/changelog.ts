@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.6',
+		date: '2026-10-06',
+		items: [
+			{
+				icon: 'notifications-outline',
+				title: '音声通知をオンにしたまま別のアプリへ移っても、完了や質問のバナーが出るようになりました',
+				body: 'アプリを裏へ回したことを PC へ伝えるようにしました。あわせて、PC から登録を外されたときは再接続を繰り返さず、ペアリングし直しの案内を出します（PC の Para Code も新しい版が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.12.5',
 		date: '2026-10-05',
 		items: [
@@ -58,11 +69,6 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'call-outline',
 				title: '電話などで音声通知が途切れても、終わった後に続きから鳴るようになりました',
 				body: '割り込みの間に届いた音声通知を捨てていたのを直しました。続けて届いた音声通知も、5 件までは溜めて順に鳴らします。',
-			},
-			{
-				icon: 'notifications-outline',
-				title: '音声通知をオンにしたまま別のアプリへ移っても、完了や質問のバナーが出るようになりました',
-				body: 'アプリを裏へ回したことを PC へ伝えるようにしました。あわせて、PC から登録を外されたときは再接続を繰り返さず、ペアリングし直しの案内を出します（PC の Para Code も新しい版が必要です）。',
 			},
 		],
 	},
