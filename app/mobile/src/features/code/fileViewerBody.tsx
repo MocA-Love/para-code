@@ -281,11 +281,19 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
 	const searchable = find !== undefined;
-	// コードと Markdown の CSP の nonce（HTML を作り直すたびに新しくする）。
-	// コードの表示は 1 万行ずつのページ（長いファイルは下の帯で前後へ移る）。検索の一致行から開いたらその行のページ
+	// コードの表示は 1 万行ずつのページ（長いファイルは下の帯で前後へ移る）。検索の一致行から開いたらその行のページ。
+	// 同じ画面のまま別のファイル・別の一致行へ移ったら（レビューの次のファイルなど）ページを選び直し、読み直して
+	// 行数が減ったら最後のページに収める
 	const codeView = text !== undefined && !(mode === 'render' && (kind === 'markdown' || kind === 'html'));
-	const [pageStart, setPageStart] = useState(() => codePageStartOf(focusLine));
+	const pageKey = `${path}\n${focusLine ?? ''}`;
+	const [page, setPage] = useState(() => ({ key: pageKey, start: codePageStartOf(focusLine) }));
+	if (page.key !== pageKey) {
+		setPage({ key: pageKey, start: codePageStartOf(focusLine) });
+	}
 	const totalLines = useMemo(() => (codeView && text !== undefined ? codeLineTotal(text.content) : 0), [codeView, text]);
+	const requestedStart = page.key === pageKey ? page.start : codePageStartOf(focusLine);
+	const pageStart = totalLines > 0 ? Math.min(requestedStart, Math.floor((totalLines - 1) / CODE_LINE_WINDOW) * CODE_LINE_WINDOW) : requestedStart;
+	// コードと Markdown の CSP の nonce（HTML を作り直すたびに新しくする）。
 	const viewerNonce = useMemo(() => (searchable ? createMobileOfficeNonce() : undefined), [searchable, text, mode, pageStart]);
 	const built = useMemo(() => measureBuild(() => {
 		if (kind === 'spreadsheet') {
@@ -418,9 +426,9 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			{view}
 			{codeView && totalLines > CODE_LINE_WINDOW ? (
 				<View style={styles.pageBar}>
-					<Button variant="secondary" size="sm" label="前へ" disabled={pageStart === 0} onPress={() => setPageStart(start => Math.max(0, start - CODE_LINE_WINDOW))} />
+					<Button variant="secondary" size="sm" label="前へ" disabled={pageStart === 0} onPress={() => setPage({ key: pageKey, start: Math.max(0, pageStart - CODE_LINE_WINDOW) })} />
 					<Text style={styles.pageText} numberOfLines={1}>{`${(pageStart + 1).toLocaleString()}〜${Math.min(pageStart + CODE_LINE_WINDOW, totalLines).toLocaleString()} 行目 / 全 ${totalLines.toLocaleString()} 行`}</Text>
-					<Button variant="secondary" size="sm" label="続きを表示" disabled={pageStart + CODE_LINE_WINDOW >= totalLines} onPress={() => setPageStart(start => start + CODE_LINE_WINDOW)} />
+					<Button variant="secondary" size="sm" label="続きを表示" disabled={pageStart + CODE_LINE_WINDOW >= totalLines} onPress={() => setPage({ key: pageKey, start: pageStart + CODE_LINE_WINDOW })} />
 				</View>
 			) : null}
 		</View>
