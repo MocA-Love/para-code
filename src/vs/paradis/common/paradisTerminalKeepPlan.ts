@@ -39,6 +39,16 @@ export interface IParadisTerminalKeepInput {
 	 * 終わらせた作業は戻らない）。
 	 */
 	readonly isQuit: boolean;
+	/**
+	 * この終了で更新が当たり、残しても次の版からは開けないか（「終わらせて更新」を押した後、
+	 * または更新が用意できたまま終了した）。
+	 *
+	 * 残す置き場所（接続先のサーバー・版で区切られた常駐）は版ごとに別物なので、更新すると
+	 * 残したものは二度と開けず、猶予時間まで動き続けるだけになる。そのときは尋ねずに終わらせる
+	 * （確認は更新の前に済ませているか、用意できた時点で知らせてある。
+	 * `vs/paradis/contrib/updateTerminals`）。アプリの終了 (`isQuit`) のときだけ効く。
+	 */
+	readonly isUpdateQuit?: boolean;
 	readonly choice: ParadisKeepTerminalsChoice;
 	/** 残せるターミナルの本数（表示中・背面・別スペースへ待避中を合わせた数）。 */
 	readonly persistentTerminalCount: number;
@@ -49,6 +59,9 @@ export type ParadisTerminalKeepPlan = 'end' | 'keep' | 'ask';
 
 export function paradisPlanTerminalKeep(input: IParadisTerminalKeepInput): ParadisTerminalKeepPlan {
 	if (!input.canOutliveWindow || input.isReload || input.choice === 'never') {
+		return 'end';
+	}
+	if (input.isQuit && input.isUpdateQuit === true) {
 		return 'end';
 	}
 	// 残す相手が居ないなら尋ねない。数えるのは待避中も含めた全部なので、「見えている端末が

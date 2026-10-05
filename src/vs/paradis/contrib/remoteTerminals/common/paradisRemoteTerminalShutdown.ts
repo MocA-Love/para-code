@@ -24,11 +24,16 @@ import { ParadisKeepTerminalsChoice, ParadisTerminalKeepPlan, paradisParseKeepTe
  */
 export type ParadisKeepRemoteTerminalsChoice = ParadisKeepTerminalsChoice;
 
+/** 閉じたときに接続先のターミナルをどうするかの設定。更新の前の確認（`updateTerminals`）も読む。 */
+export const PARADIS_KEEP_REMOTE_TERMINALS_KEY = 'paradis.remote.keepTerminalsAliveOnClose';
+
 export interface IParadisRemoteTerminalShutdownInput {
 	/** 接続先（SSH など）を開いているウィンドウか。ローカルのウィンドウには関わらない。 */
 	readonly hasRemoteAuthority: boolean;
 	readonly isReload: boolean;
 	readonly isQuit: boolean;
+	/** 更新が当たる終了か（`IParadisTerminalKeepInput.isUpdateQuit`）。 */
+	readonly isUpdateQuit?: boolean;
 	readonly choice: ParadisKeepRemoteTerminalsChoice;
 	/** 残せるターミナルの本数（表示中・背面・別スペースへ待避中を合わせた数）。 */
 	readonly persistentTerminalCount: number;
@@ -42,6 +47,7 @@ export function paradisPlanRemoteTerminalShutdown(input: IParadisRemoteTerminalS
 		canOutliveWindow: input.hasRemoteAuthority,
 		isReload: input.isReload,
 		isQuit: input.isQuit,
+		isUpdateQuit: input.isUpdateQuit,
 		choice: input.choice,
 		persistentTerminalCount: input.persistentTerminalCount,
 	});
@@ -85,6 +91,30 @@ export function paradisParseKeepRemoteTerminalsChoice(value: unknown): ParadisKe
 // 「残したときの版」と「今の版」の2つで、どちらもクライアント側が知っている。前の版の
 // サーバーへ問い合わせる必要は無い（問い合わせられもしない）。
 
+/**
+ * 「この接続先へターミナルを残した」記録の置き場所。接続先ごとに分けるのは、別のホストへ
+ * 残したぶんで判断を汚さないため。APPLICATION スコープなのは、残したのがこの PC である一方、
+ * 次に繋ぎ直すのが同じウィンドウ・同じワークスペースとは限らないため。
+ *
+ * 書くのは閉じるときの `paradisRemoteTerminalShutdown.contribution.ts`、読むのは繋いだときの
+ * `updateTerminals/electron-browser/paradisStaleRemoteServer.contribution.ts`（古い版のサーバーが
+ * まだ動いていれば、そちらのお知らせにまとめるため）。
+ */
+export function paradisKeptTerminalsStorageKey(authority: string): string {
+	return `paradis.remote.keptTerminals.${authority}`;
+}
+
+/**
+ * この PC が接続先へ残したターミナルのペイントークンの控え。
+ *
+ * 同じ接続先を別の PC も使うことがあるので、更新の前に止めるときに「この PC が残したもの」だけを
+ * 選ぶのに使う。上の記録と違い、繋ぎ直しても消さない（同じペインをまた残すことがあるため。
+ * 上限で古いものから捨てる）。
+ */
+export function paradisKeptPaneTokensStorageKey(authority: string): string {
+	return `paradis.remote.keptPaneTokens.${authority}`;
+}
+
 /** ターミナルを残したまま閉じたときに、クライアント側へ控えておく記録。 */
 export interface IParadisKeptRemoteTerminals {
 	/** 残したときに動いていた Para Code の版（`product.commit`）。これが変わると回収できない。 */
@@ -127,4 +157,17 @@ export function paradisShouldReportStrandedTerminals(input: IParadisStrandedTerm
 	// かえって誤解させる。時計が巻き戻った場合 (now < at) も、判断できないので黙る。
 	const elapsed = now - record.at;
 	return elapsed >= 0 && elapsed <= graceTime;
+}
+
+/** 控えた記録を読む。壊れていれば undefined。 */
+export function paradisParseKeptRemoteTerminals(raw: string | undefined): IParadisKeptRemoteTerminals | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	try {
+		const parsed = JSON.parse(raw) as IParadisKeptRemoteTerminals;
+		return typeof parsed?.commit === 'string' && typeof parsed.at === 'number' && typeof parsed.count === 'number' ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
 }
