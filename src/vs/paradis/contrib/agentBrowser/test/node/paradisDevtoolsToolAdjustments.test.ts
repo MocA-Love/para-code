@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -50,12 +50,33 @@ suite('Paradis devtools tool adjustments', () => {
 			textAnyOf: waitForProperties.text.anyOf,
 			hasIncludeSnapshot: waitForProperties.includeSnapshot !== undefined,
 			hasOffset: (snapshot.inputSchema as { properties: Record<string, unknown> }).properties.offset !== undefined,
+			hasRoot: (snapshot.inputSchema as { properties: Record<string, unknown> }).properties.root !== undefined,
 			clickUnchanged: paradisAdjustDevtoolsToolDescriptor(click) === click,
 		}, {
 			textAnyOf: [{ type: 'string', minLength: 1 }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
 			hasIncludeSnapshot: true,
 			hasOffset: true,
+			hasRoot: true,
 			clickUnchanged: true,
+		});
+	});
+
+	test('take_snapshot with root returns only that element and its descendants, and says when the uid is gone', () => {
+		const snapshot = text('# take_snapshot response\n## Latest page snapshot\nuid=1_0 RootWebArea "Page"\n  uid=1_1 dialog "Settings"\n    uid=1_2 button "Save"\n      uid=1_3 StaticText "Save"\n    uid=1_4 button "Cancel"\n  uid=1_5 link "Help"\n');
+		const prepared = paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_1', verbose: true });
+		const missing = paradisAdjustDevtoolsToolResult('take_snapshot', paradisPrepareDevtoolsToolCall('take_snapshot', { root: '9_9' }), snapshot);
+		assert.deepStrictEqual({
+			args: prepared.args,
+			subtree: textOf(paradisAdjustDevtoolsToolResult('take_snapshot', prepared, snapshot)),
+			leaf: paradisSnapshotSubtree(textOf(snapshot), '1_3'),
+			missingIsError: (missing as { isError?: boolean }).isError,
+			withFilePath: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_1', filePath: '/tmp/a.txt' }).snapshotRoot,
+		}, {
+			args: { verbose: true },
+			subtree: '# take_snapshot response\n## Latest page snapshot\nuid=1_1 dialog "Settings"\n  uid=1_2 button "Save"\n    uid=1_3 StaticText "Save"\n  uid=1_4 button "Cancel"\n',
+			leaf: '# take_snapshot response\n## Latest page snapshot\nuid=1_3 StaticText "Save"\n',
+			missingIsError: true,
+			withFilePath: undefined,
 		});
 	});
 

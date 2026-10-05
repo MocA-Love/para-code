@@ -256,6 +256,30 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.deepStrictEqual(host.mainCalls[0].args.slice(1), [{ x: 40, y: 55, width: 20, height: 10 }, 2000]);
 	});
 
+	test('add_init_script passes the checked script to electron-main and reminds to remove it', async () => {
+		const host = new FakeHost();
+		const info = { id: 's4', label: 'hooks', chars: 14, addedAt: 0 };
+		host.mainResults.set('addExactViewInitScript', { ok: true, scripts: [info], otherPanes: 0, added: info });
+		host.mainResults.set('removeExactViewInitScripts', { ok: true, scripts: [], otherPanes: 0, removed: 1 });
+		const ops = new ParadisBrowserPageOps(host);
+		const added = await ops.call(createCall(), 'add_init_script', { source: 'window.__a = 1', label: 'hooks' });
+		const empty = await ops.call(createCall(), 'add_init_script', { source: '  ' });
+		const neither = await ops.call(createCall(), 'remove_init_script', {});
+		const removed = await ops.call(createCall(), 'remove_init_script', { id: 's4' });
+		assert.deepStrictEqual({
+			calls: host.mainCalls.map(call => [call.method, call.args.slice(1)]),
+			reminds: textOf(added).includes('remove_init_script'),
+			errors: [isError(empty), isError(neither), isError(removed)],
+		}, {
+			calls: [
+				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: 'window.__a = 1', label: 'hooks', runNow: false })]],
+				['removeExactViewInitScripts', [paradisPageOpsOwnerKey('pane-token'), 's4']],
+			],
+			reminds: true,
+			errors: [true, true, false],
+		});
+	});
+
 	test('save_page_as_pdf leaves the default name to electron-main (the current page title) and keeps a given one', async () => {
 		const host = new FakeHost();
 		host.mainResults.set('printExactViewToPdf', { ok: true, path: '/downloads/Example Page.pdf', fileName: 'Example Page.pdf', bytes: 10 });

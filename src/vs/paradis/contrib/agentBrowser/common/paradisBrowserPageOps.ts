@@ -627,6 +627,65 @@ export type IParadisPageOverridesResult =
 	| { readonly ok: true; readonly summary: IParadisPageOverridesSummary }
 	| { readonly ok: false; readonly reason: ParadisPageOpsFailure; readonly message?: string };
 
+// --- 遷移・再読み込みの後も動くスクリプト（add_init_script） ------------------------------------------
+
+/** 1 本のスクリプトの上限（文字数）。 */
+export const PARADIS_INIT_SCRIPT_MAX_CHARS = 100_000;
+/** 1 枚のタブに 1 つのペインが置けるスクリプトの数。 */
+export const PARADIS_INIT_SCRIPT_MAX_PER_TAB = 10;
+const PARADIS_INIT_SCRIPT_MAX_LABEL_LENGTH = 80;
+
+/** add_init_script の中身（shared process から electron-main へ JSON で渡す）。 */
+export interface IParadisInitScriptRequest {
+	readonly source: string;
+	/** 一覧に出す短い名前。 */
+	readonly label: string;
+	/** いま開いているページでもすぐ動かすか。 */
+	readonly runNow: boolean;
+}
+
+/** タブに置いたスクリプト（中身は返さない）。 */
+export interface IParadisInitScriptInfo {
+	/** remove_init_script に渡す名前（`s1` など）。 */
+	readonly id: string;
+	readonly label: string;
+	/** スクリプトの文字数。 */
+	readonly chars: number;
+	/** 置いた時刻（ミリ秒）。 */
+	readonly addedAt: number;
+}
+
+export type IParadisInitScriptsResult =
+	| {
+		readonly ok: true;
+		/** 呼んだペインがこのタブに置いているスクリプト。 */
+		readonly scripts: readonly IParadisInitScriptInfo[];
+		/** ほかのペインがこのタブに置いているスクリプトの数。 */
+		readonly otherPanes: number;
+		readonly added?: IParadisInitScriptInfo;
+		readonly removed?: number;
+	}
+	| { readonly ok: false; readonly reason: ParadisPageOpsFailure; readonly message?: string };
+
+/** add_init_script の引数を読む（shared process と electron-main の両方で使う）。 */
+export function paradisParseInitScriptRequest(value: unknown): ParadisPageOpsParseResult<IParadisInitScriptRequest> {
+	if (!isPlainRecord(value)) {
+		return fail('invalid request');
+	}
+	const { source, label, runNow } = value;
+	if (typeof source !== 'string' || source.trim().length === 0 || source.length > PARADIS_INIT_SCRIPT_MAX_CHARS) {
+		return fail(`"source" must be non-empty JavaScript of at most ${PARADIS_INIT_SCRIPT_MAX_CHARS} characters.`);
+	}
+	if (label !== undefined && (typeof label !== 'string' || label.length > PARADIS_INIT_SCRIPT_MAX_LABEL_LENGTH || /[\u0000-\u001f\u007f]/.test(label))) {
+		return fail(`"label" must be a single line of at most ${PARADIS_INIT_SCRIPT_MAX_LABEL_LENGTH} characters.`);
+	}
+	if (runNow !== undefined && typeof runNow !== 'boolean') {
+		return fail('"run_now" must be true or false.');
+	}
+	const fallbackLabel = source.trim().replace(/\s+/g, ' ').slice(0, 40);
+	return { ok: true, value: Object.freeze({ source, label: typeof label === 'string' && label.trim().length > 0 ? label.trim() : fallbackLabel, runNow: runNow === true }) };
+}
+
 /** electron-main が受け取った要求を検証し直す（shared process を信用しない）。 */
 export function paradisParsePageOverridesRequest(value: unknown): ParadisPageOpsParseResult<IParadisPageOverridesRequest> {
 	if (!isPlainRecord(value)) {
@@ -859,6 +918,15 @@ export interface IParadisCdpPageOpsService {
 	cancelExactViewDownload(expectationId: unknown): Promise<void>;
 	/** ハイライトを出す（`rect` が null なら消す）。 */
 	highlightExactView(descriptor: unknown, rect: unknown, durationMs: unknown): Promise<boolean>;
+	/**
+	 * 遷移・再読み込みの後も動くスクリプトをタブに置く。`requestJson` は {@link IParadisInitScriptRequest}。
+	 * 持ち主の共有が入れ替わる・タブを手放す・タブが閉じると外れる。
+	 */
+	addExactViewInitScript(descriptor: unknown, ownerKey: unknown, generation: unknown, requestJson: unknown): Promise<IParadisInitScriptsResult>;
+	/** 持ち主が置いたスクリプトを外す（`id` が null ならすべて）。 */
+	removeExactViewInitScripts(descriptor: unknown, ownerKey: unknown, id: unknown): Promise<IParadisInitScriptsResult>;
+	/** 持ち主がタブに置いているスクリプトの一覧。 */
+	listExactViewInitScripts(descriptor: unknown, ownerKey: unknown): Promise<IParadisInitScriptsResult>;
 }
 
 // --- 資格情報を表示に出さない -------------------------------------------------------------------
