@@ -308,6 +308,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/app.json` | `expo.version` を `0.12.5` に（2026-10-05） | 読み上げの使用量の画面の配信 |
 | `app/mobile/app.json` | `expo.version` を `0.12.6` に（2026-10-06） | 音声通知中に裏へ回ったときのバナーと、失効時の再接続停止の配信 |
 | `app/protocol/test/golden/state.json` / `state-request.json` | `state.json` の `capabilities` に `notify.visibility-voice.v1` / `state.unchanged.v1`、`state-request.json` の `capabilities` に `state.unchanged.v1` を追加（2026-10-06） | 音声通知で裏に回ったときの「裏に回った（keep: voice）」と、State の要求の `known` に対する `unchanged` の返事（設計 4 章 #4・#14） |
+| `app/protocol/test/golden/state.json` | `capabilities` に `review.client-note-id.v1` / `browser.frame-pause.v1` を追加（2026-10-06） | 差分のメモの id をアプリが振る（押し直しで二重にしない）と、WebRTC の映像が届いている間の JPEG の停止（設計 4 章 #7・#8） |
+| `app/protocol/test/golden/agent.json` | `attach` の要求に `responseEncoding: "json-gzip-v1"` を追加（2026-10-06） | トークの読み込み（snapshot・history・activity-detail）を gzip で受ける交渉（設計 4 章 #16） |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 

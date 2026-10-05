@@ -42,3 +42,20 @@ export function paradisEncodeNegotiatedBinaryFsResponse(responseEncoding: unknow
 		? paradisEncodeBinaryFsResponse(type, id, size, data)
 		: undefined;
 }
+
+/** テキストかどうかを見る先頭の長さ（git の判定と同じ 8KiB）。 */
+const BINARY_SNIFF_BYTES = 8 * 1024;
+
+/**
+ * 先頭 8KiB に NUL があればテキストではないとみなす（git と同じ見分け方。設計書 3b.5）。fs の `read` は、そういう
+ * ファイルの本文を UTF-8 として読んで U+FFFD で膨らませて送らず、`code: 'not-text'` で返す。
+ */
+export function paradisLooksBinary(bytes: Uint8Array): boolean {
+	const end = Math.min(bytes.byteLength, BINARY_SNIFF_BYTES);
+	for (let index = 0; index < end; index++) {
+		if (bytes[index] === 0) {
+			return true;
+		}
+	}
+	return false;
+}
