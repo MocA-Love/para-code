@@ -16,6 +16,9 @@
 // - まだ 1 断片も送っていない画面の JPEG は、同じ端末の新しい JPEG が来たら捨てる
 // - 画面の JPEG が先頭で 500ms 待ったら、操作・状態より先にその 1 枚を最後まで送る
 // - bufferedAmount を信用せず時間で送っている間は、積む量を 2MiB までにする
+// - 計測（F0、`paradisMobileLinkMetrics.ts`）がオンなら、各段の待ち・封緘の時間・送信バッファの深さを数える（送る順は変えない）
+
+import type { ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
 
 /** 送る順の優先度。小さいほど先に送る。 */
 export const ParadisMobileSendPriority = {
@@ -33,6 +36,8 @@ export const PARADIS_MOBILE_SOCKET_HIGH_WATER_BYTES = 32 * 1024;
 const DRAIN_POLL_MS = 5;
 
 const PRIORITY_COUNT = 3;
+/** 計測の名前に使う優先度の呼び名。 */
+const PRIORITY_NAMES = ['voice', 'control', 'screen'] as const;
 
 /** 1 つの論理フレームの送り方。 */
 export interface IParadisMobileSendTransfer {
@@ -68,6 +73,8 @@ interface IQueuedTransfer {
 	cancelled: boolean;
 	/** 列の先頭で待ち始めた時刻（画面の JPEG の繰り上げに使う）。 */
 	waitingSince: number;
+	/** 積んだ時刻（計測の時計。計測がオフなら 0）。 */
+	readonly enqueuedAt: number;
 	readonly resolve: (sent: boolean) => void;
 	readonly reject: (error: unknown) => void;
 }
@@ -93,6 +100,8 @@ export interface IParadisMobileSendQueueOptions {
 	readonly highWaterBytes?: number;
 	readonly setTimeout?: (handler: () => void, ms: number) => unknown;
 	readonly now?: () => number;
+	/** 通信の計測（F0）。オフの間は何も数えない。 */
+	readonly metrics?: ParadisMobileLinkMetrics;
 }
 
 /** 全端末で 1 本の送信の列。 */
@@ -116,6 +125,8 @@ export class ParadisMobileSendQueue {
 	private lastWasInterleaved = false;
 	/** 待ちすぎて繰り上げた画面の JPEG。最後の断片まで続けて送る。 */
 	private promotedScreen: IQueuedTransfer | undefined;
+	/** 送信バッファが閾値を超えて待ち始めた時刻（計測の時計）。 */
+	private blockedSince: number | undefined;
 
 	constructor(private readonly options: IParadisMobileSendQueueOptions = {}) {
 		this.highWater = options.highWaterBytes ?? PARADIS_MOBILE_SOCKET_HIGH_WATER_BYTES;
@@ -156,6 +167,7 @@ export class ParadisMobileSendQueue {
 				// まだ 1 断片も封緘していないものだけ差し替える（封緘中のものは nonce を採っているので必ず送る）
 				for (const queued of [...queue]) {
 					if (queued.next === 0 && !queued.sealing && queued.transfer.replaceKey === transfer.replaceKey) {
+						this.options.metrics?.count('pc.queue.screenReplaced');
 						// 待った時間は引き継ぐ（差し替えが続いても、繰り上げまでの 500ms が延びないように）
 						waitingSince = Math.min(waitingSince, queued.waitingSince);
 						this.settle(queued);
@@ -169,7 +181,12 @@ export class ParadisMobileSendQueue {
 				queue = [];
 				lane.set(transfer.owner, queue);
 			}
-			queue.push({ transfer, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince, resolve, reject });
+			const metrics = this.options.metrics;
+			const measuring = metrics?.enabled === true;
+			if (measuring) {
+				metrics.observe('pc.queue.unsentBytesAtEnqueue', this.pendingBytes);
+			}
+			queue.push({ transfer, next: 0, sentBytes: 0, sealing: false, settled: false, cancelled: false, waitingSince, enqueuedAt: measuring ? metrics.now() : 0, resolve, reject });
 			this.unsent[transfer.priority]! += transfer.bytes;
 			this.pump();
 		});
@@ -186,6 +203,7 @@ export class ParadisMobileSendQueue {
 				continue;
 			}
 			for (const queued of [...queue]) {
+				this.options.metrics?.count('pc.queue.cancelled');
 				queued.cancelled = true;
 				this.settle(queued);
 				queued.resolve(false);
@@ -298,6 +316,7 @@ export class ParadisMobileSendQueue {
 			this.pacedBytes = 0;
 		}
 		if (!this.pacing && buffered > this.highWater && now - this.observedBufferedSince >= PARADIS_MOBILE_STUCK_BUFFER_MS) {
+			this.options.metrics?.count('pc.queue.pacingEntered');
 			this.pacing = true;
 			this.paceNextAt = now;
 			this.pacedBytes = 0;
@@ -329,9 +348,19 @@ export class ParadisMobileSendQueue {
 			}
 			// 待つかは選ぶ前に決める（待つ間に順番を回さない）
 			const wait = this.waitBeforeSend();
+			const metrics = this.options.metrics;
 			if (wait > 0) {
+				if (metrics?.enabled === true && this.blockedSince === undefined) {
+					this.blockedSince = metrics.now();
+				}
 				await new Promise<void>(resolve => (this.options.setTimeout ?? setTimeout)(resolve, wait));
 				continue;
+			}
+			const measuring = metrics?.enabled === true;
+			if (this.blockedSince !== undefined) {
+				// 送信バッファ（または時間で決める速さ）のせいで次の断片を出せなかった、ひと続きの時間
+				metrics?.observeSince('pc.queue.blockedMs', this.blockedSince);
+				this.blockedSince = undefined;
 			}
 			const queued = this.pick();
 			if (queued === undefined) {
@@ -342,8 +371,17 @@ export class ParadisMobileSendQueue {
 			const index = queued.next;
 			let sealed: Uint8Array;
 			queued.sealing = true;
+			const priorityName = PRIORITY_NAMES[transfer.priority];
+			if (measuring && index === 0 && queued.enqueuedAt > 0) {
+				// 積んでから最初の断片を封緘し始めるまで（列の中の待ち）
+				metrics.observeSince(`pc.queue.${priorityName}.waitMs`, queued.enqueuedAt);
+			}
+			const sealStartedAt = measuring ? metrics.now() : 0;
 			try {
 				sealed = await transfer.sealFragment(index);
+				if (measuring) {
+					metrics.observeSince('pc.queue.sealMs', sealStartedAt);
+				}
 			} catch (error) {
 				queued.sealing = false;
 				const wasSettled = queued.settled;
@@ -373,6 +411,9 @@ export class ParadisMobileSendQueue {
 			if (last) {
 				this.settle(queued);
 			}
+			if (measuring) {
+				metrics.observe('pc.socket.bufferedBytes', this.socketBuffered());
+			}
 			try {
 				transfer.sendSealed(sealed, index);
 			} catch (error) {
@@ -381,6 +422,11 @@ export class ParadisMobileSendQueue {
 				continue;
 			}
 			if (last) {
+				if (measuring && queued.enqueuedAt > 0) {
+					// 積んでから最後の断片をソケットへ渡すまで
+					metrics.observeSince(`pc.queue.${priorityName}.totalMs`, queued.enqueuedAt);
+					metrics.observe(`pc.queue.${priorityName}.bytes`, transfer.bytes);
+				}
 				queued.resolve(true);
 			}
 		}

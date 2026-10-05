@@ -52,6 +52,7 @@ import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, p
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
+import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
 import { paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
@@ -215,6 +216,11 @@ type AgentQuestionAnswer =
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+/** 通信の計測の名前に使うトークの送信の種類（本文は見ない。種類が増えても名前を増やしすぎない）。 */
+function paradisAgentMetricKind(type: string): 'snapshot' | 'history' | 'delta' | 'other' {
+	return type === 'snapshot' || type === 'history' || type === 'delta' ? type : 'other';
+}
 
 const POLL_INTERVAL_MS = 1500;
 /** スラッシュコマンドの一覧を覚えておく時間（`/` を打つたびに求められる。デスクトップのチャット欄の COMMAND_CACHE_TTL と同じ考え方）。 */
@@ -8972,8 +8978,19 @@ export class ParadisMobileAgentChat extends Disposable {
 		const stringifyMs = performance.now() - stringifyStartedAt;
 		// attach で gzip を交渉した購読へは、大きい応答を縮めて送る（同期で縮めるので送る順は変わらない）
 		const responseEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.responseEncoding : undefined;
-		const payload = paradisEncodeAgentOutboundPayload(msg.t, json, responseEncoding, sample => this.logService.trace(
-			`[paradisAgentChat] gzip ${sample.type}: ${sample.rawBytes}B -> ${sample.wireBytes}B, stringify ${stringifyMs.toFixed(2)}ms, gzip ${sample.gzipMs.toFixed(2)}ms`));
+		const payload = paradisEncodeAgentOutboundPayload(msg.t, json, responseEncoding, sample => {
+			this.logService.trace(`[paradisAgentChat] gzip ${sample.type}: ${sample.rawBytes}B -> ${sample.wireBytes}B, stringify ${stringifyMs.toFixed(2)}ms, gzip ${sample.gzipMs.toFixed(2)}ms`);
+			if (paradisMobileLinkMetrics.enabled) {
+				paradisMobileLinkMetrics.observe(`pc.agent.${paradisAgentMetricKind(sample.type)}.gzipMs`, sample.gzipMs);
+			}
+		});
+		if (paradisMobileLinkMetrics.enabled) {
+			// トークの snapshot・履歴・差分の大きさと作る時間（設計 5 章「全体状態の大きさ」と同じ考え）
+			const kind = paradisAgentMetricKind(msg.t);
+			paradisMobileLinkMetrics.observe(`pc.agent.${kind}.stringifyMs`, stringifyMs);
+			paradisMobileLinkMetrics.observe(`pc.agent.${kind}.rawBytes`, json.length);
+			paradisMobileLinkMetrics.observe(`pc.agent.${kind}.wireBytes`, payload.length);
+		}
 		if (token === undefined) {
 			this.send(mobileId, payload);
 			return true;

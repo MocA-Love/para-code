@@ -50,7 +50,8 @@ import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveCh
 import { EMPTY_HIDDEN_MODELS, loadHiddenModels, replayHiddenModelOps, saveHiddenModels, withModelHidden, type HiddenModelOp, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
 import { isTablet } from './hooks/useSizeClass.js';
 import { MobileVoiceLifecycle, type VoiceDelivery } from './voiceLifecycle.js';
-import { activateVoiceSession, appendVoiceStream, deactivateVoiceSession, endVoiceStream, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop, startVoiceStream } from '../modules/para-voice-session/index.js';
+import { activateVoiceSession, appendVoiceStream, deactivateVoiceSession, endVoiceStream, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop, startVoiceStream, voicePlaybackStats } from '../modules/para-voice-session/index.js';
+import { appLinkMetrics } from './linkMetricsRuntime.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
 import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
 import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
@@ -1264,12 +1265,15 @@ const voiceLifecycle = new MobileVoiceLifecycle({
 				enqueueVoiceClip(delivery.base64, delivery.gainDb);
 				return;
 			case 'stream-start':
+				appLinkMetrics.noteVoiceStart(delivery.streamId);
 				startVoiceStream(delivery.streamId, delivery.gainDb);
 				return;
 			case 'stream-chunk':
+				appLinkMetrics.noteVoiceChunk(delivery.streamId);
 				appendVoiceStream(delivery.streamId, toBase64(delivery.data));
 				return;
 			case 'stream-end':
+				appLinkMetrics.noteVoiceEnd(delivery.streamId, delivery.aborted);
 				endVoiceStream(delivery.streamId, delivery.aborted);
 				return;
 		}
@@ -1290,6 +1294,9 @@ const voiceLifecycle = new MobileVoiceLifecycle({
 function endVoiceNotifications(): void {
 	voiceLifecycle.stop();
 }
+
+// 通信の計測（linkMetrics.ts）に、ネイティブの再生の数（鳴り始めまで・途切れ・溜め）の読み方を渡す
+appLinkMetrics.setVoiceStatsReader(() => voicePlaybackStats());
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',

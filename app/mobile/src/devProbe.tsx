@@ -21,6 +21,7 @@ import { nativeAesGcmModule } from '../modules/para-aes-gcm/index.js';
 import { runAesGcmSelfTest, type AesGcmSelfTestOptions } from './dev/aesGcmSelfTest.js';
 import { runVoiceStreamHarness, type VoiceStreamHarnessOptions } from './dev/voiceStreamHarness.js';
 import { voicePlaybackStats } from '../modules/para-voice-session/index.js';
+import { appLinkMetrics } from './linkMetricsRuntime.js';
 
 /**
  * 開発ビルド専用: いま開いている画面をデバッガ（Metro の CDP）から読めるようにする。
@@ -32,6 +33,7 @@ import { voicePlaybackStats } from '../modules/para-voice-session/index.js';
  *   `terminalDemo()`、ファイル・メモ・差分の見本を入れる `filesDemo()`、アプリの幅を狭めて 2列 ⇄ 1列 を確かめる `setWidth(pt | undefined)` も置く
  * - ネイティブの AES-GCM の自己検査 `aesGcmSelfTest()`（noble との一致と所要時間）も置く
  * - 音声の流れの確かめ `voiceStream(base64Mp3, options)`（MP3 を小分けに流し込み、鳴り始め・途切れ・溜めの閾値を返す）と `voiceStats()` も置く
+ * - 通信の計測 `linkMetrics.start()` / `stop()` / `snapshot()`（設定 →「接続の記録」の「通信の計測」と同じもの。linkMetrics.ts）
  *
  * `__DEV__` のときだけ描画する（リリースビルドには何も残らない）。
  */
@@ -81,6 +83,12 @@ export function DevProbe() {
 			// 合成済みの MP3（base64）を音声の流れと同じ道でネイティブの再生へ小分けに流し込む（鳴り終わるまで待って数を返す）。
 			voiceStream: (base64Mp3: string, options?: VoiceStreamHarnessOptions) => runVoiceStreamHarness(base64Mp3, options),
 			voiceStats: () => JSON.stringify(voicePlaybackStats()),
+			// 通信の計測（キー入力から描画まで・往復・音声・受信の量。時間と大きさだけ）。
+			linkMetrics: {
+				start: () => appLinkMetrics.setEnabled(true),
+				stop: () => appLinkMetrics.setEnabled(false),
+				snapshot: () => JSON.stringify(appLinkMetrics.snapshot()),
+			},
 		};
 		console.log(`[para-dev] route ${pathname} ${paramsKey}`);
 	}, [pathname, paramsKey, router, navigation]);
