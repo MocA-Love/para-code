@@ -88,6 +88,24 @@ type Failure = 'too-large' | 'not-mp3' | 'first-audio-timeout' | 'max-duration' 
 
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 
+/**
+ * ticket が通らなかった（知らない・期限切れ・使用済み・今の instance のものでない・持ち主がいなくなった）ときの状態。
+ * aivis-mcp 2.5.1 は 401・403 を受けると、手元で鳴らす前提の発話を接続先で鳴らさない（`ticket-unavailable`）。ほかの
+ * 4xx・5xx は接続先で鳴らす。
+ */
+export const PARADIS_VOICE_TICKET_REJECTED_STATUS = 401;
+
+/** 音声の取込口で ticket が通らなかったことを返す（{@link PARADIS_VOICE_TICKET_REJECTED_STATUS}）。 */
+export function paradisSendVoiceTicketRejected(res: http.ServerResponse): void {
+	if (res.writableEnded) {
+		return;
+	}
+	if (!res.headersSent) {
+		res.writeHead(PARADIS_VOICE_TICKET_REJECTED_STATUS, JSON_HEADERS);
+	}
+	res.end(JSON.stringify({ error: 'Voice ticket rejected.' }));
+}
+
 function statusFor(failure: Failure): number {
 	switch (failure) {
 		case 'too-large': return 413;
@@ -95,7 +113,8 @@ function statusFor(failure: Failure): number {
 		case 'first-audio-timeout':
 		case 'max-duration':
 		case 'slow-arrival': return 408;
-		case 'revoked': return 410;
+		// ticket が通らなかった（持ち主がいない）。接続先は鳴らさない（aivis-mcp 2.5.1 の取り決めで 401・403 は ticket-unavailable）
+		case 'revoked': return PARADIS_VOICE_TICKET_REJECTED_STATUS;
 		default: return 400;
 	}
 }
@@ -228,7 +247,7 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		}
 	};
 	/** 手元への書き込みを終える。`discard` なら溜まっている分は書かない。書き込みが止まったままなら上限で諦める。 */
-	const closeLocal = async (discard: boolean) => {
+	const closeLocal = async (discard: boolean, timeoutMs = deps.limits?.localCloseTimeoutMs ?? LOCAL_CLOSE_TIMEOUT_MS) => {
 		if (discard) {
 			localQueue.length = 0;
 			localQueuedBytes = 0;
@@ -241,7 +260,7 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			const finished = await Promise.race([
 				localPump.then(() => true),
-				new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), deps.limits?.localCloseTimeoutMs ?? LOCAL_CLOSE_TIMEOUT_MS); }),
+				new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
 			]);
 			clearTimeout(timer);
 			if (!finished) {
@@ -451,7 +470,8 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 		const deadline = now() + request.enqueueDeadlineMs;
 		startLocalPump();
 		await queueLocal(fullAudio);
-		await closeLocal(false);
+		// 接続先が答えを待つ締め切りを越えて手元への書き込みを待たない
+		await closeLocal(false, Math.max(0, deadline - now()));
 		const ingestSink = sink;
 		if (ingestSink) {
 			await ingestSink.end();

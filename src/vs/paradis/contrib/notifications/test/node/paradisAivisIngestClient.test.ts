@@ -561,7 +561,7 @@ suite('ParadisAivisIngestClient', () => {
 		});
 	});
 
-	test('does not withdraw jobs of a child it retired itself; it stops tracking the fully written ones (OM2)', async () => {
+	test('does not withdraw jobs of a child it retired itself; the new child adopts the fully written ones (OM2, aivis-mcp 2.5.1)', async () => {
 		const context = createClient();
 		const child = await startReady(context);
 		const queued = context.client.open({ priority: 'normal' })!;
@@ -575,12 +575,107 @@ suite('ParadisAivisIngestClient', () => {
 		await clock.tickAsync(0);
 		child.exit(0);
 		await clock.tickAsync(0);
-		assert.deepStrictEqual({
-			handoff: await queued.handoff,
-			finished: await queued.finished,
-			withdraws: next.controls().filter(control => control.type === 'withdraw').length,
-		}, { handoff: true, finished: { status: 'done', reason: 'untracked' }, withdraws: 0 });
+		const sent = next.controls().filter(control => control.type === 'withdraw' || control.type === 'adopt').map(control => control.type);
+		next.say({ type: 'adopted', id: queued.id, adopted: true });
+		next.say({ type: 'status', id: queued.id, status: 'done' });
+		await clock.tickAsync(0);
+		assert.deepStrictEqual({ handoff: await queued.handoff, finished: await queued.finished, sent }, { handoff: true, finished: { status: 'done' }, sent: ['adopt'] });
 	});
+
+	test('adopts written jobs of a crashed child, withdraws half-written ones, and plays only removed or not-queued ones (aivis-mcp 2.5.1)', async () => {
+		const context = createClient({ version: 'aivis-mcp v2.5.1\n' });
+		context.client.start();
+		await clock.tickAsync(0);
+		const child = context.children.at(-1)!;
+		child.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const adopted = context.client.open({ priority: 'normal' })!;
+		const missing = context.client.open({ priority: 'normal' })!;
+		const halfWritten = context.client.open({ priority: 'normal' })!;
+		await adopted.end();
+		await missing.end();
+		for (const stream of [adopted, missing, halfWritten]) {
+			child.say({ type: 'status', id: stream.id, status: 'queued' });
+		}
+		await clock.tickAsync(0);
+		child.exit(1);
+		await clock.tickAsync(1_000);
+		const next = context.children.at(-1)!;
+		next.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const name = (id: unknown) => id === adopted.id ? 'adopted' : id === missing.id ? 'missing' : id === halfWritten.id ? 'half' : 'other';
+		const sent = next.controls().filter(control => control.type === 'withdraw' || control.type === 'adopt').map(control => `${control.type}:${name(control.id)}`).sort();
+		next.say({ type: 'adopted', id: adopted.id, adopted: true });
+		next.say({ type: 'adopted', id: missing.id, adopted: false });
+		next.say({ type: 'withdrawn', id: halfWritten.id, removed: false, notQueued: true });
+		next.say({ type: 'status', id: adopted.id, status: 'playing' });
+		next.say({ type: 'status', id: adopted.id, status: 'done' });
+		await clock.tickAsync(0);
+		assert.deepStrictEqual({
+			sent,
+			adopted: await adopted.finished,
+			missing: await missing.finished,
+			half: await halfWritten.finished,
+		}, {
+			sent: ['adopt:adopted', 'adopt:missing', 'withdraw:half'],
+			adopted: { status: 'done' },
+			missing: { status: 'failed', reason: 'ingest-exited', withdrawn: true },
+			half: { status: 'failed', reason: 'ingest-exited', withdrawn: true },
+		});
+	});
+
+	test('maps the four withdraw answers: removed and notQueued may play, taken and unknown may not (aivis-mcp 2.5.1)', async () => {
+		const context = createClient();
+		const child = await startReady(context);
+		const answers: Array<boolean | undefined> = [];
+		for (const reply of [{ removed: true }, { removed: false, notQueued: true }, { removed: false, taken: true }, { removed: false }]) {
+			const stream = context.client.open({ priority: 'normal' })!;
+			const pending = stream.withdraw!();
+			await clock.tickAsync(0);
+			child.say({ type: 'withdrawn', id: stream.id, ...reply });
+			await clock.tickAsync(0);
+			answers.push(await pending);
+		}
+		assert.deepStrictEqual(answers, [true, true, false, undefined]);
+	});
+
+	test('does not open new streams on the old child while the new one is starting, and closes the old stdin only after its streams are written (M-1)', async () => {
+		const context = createClient();
+		const child = await startReady(context);
+		const writing = context.client.open({ priority: 'normal' })!;
+		await writing.write(new Uint8Array(10));
+		context.setVersion('aivis-mcp v2.5.1');
+		// 書きかけの流れがあると、入れ替えは最大 60 秒待つ
+		await clock.tickAsync(10 * 60_000 + 60_000);
+		const usableWhileSwapping = context.client.isUsable();
+		const ready = context.client.whenReady(5_000);
+		const next = context.children.at(-1)!;
+		next.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const readyAfterHello = await ready;
+		// 入れ替えの期限（60 秒）を過ぎて起こした場合でも、名乗った後に古い子の書きかけを待つ
+		const second = createClient();
+		const oldChild = await startReady(second);
+		const pending = second.client.open({ priority: 'normal' })!;
+		await pending.write(new Uint8Array(10));
+		second.setVersion('aivis-mcp v2.5.1');
+		await clock.tickAsync(10 * 60_000);
+		await clock.tickAsync(60_000);
+		const swapped = second.children.at(-1)!;
+		swapped.say({ type: 'hello', protocol: 1, version: '2.5.1' });
+		await clock.tickAsync(0);
+		const endedBeforeWriteDone = oldChild.ended;
+		await pending.end();
+		await clock.tickAsync(500);
+		assert.deepStrictEqual({ usableWhileSwapping, readyAfterHello, oldStopped: child.ended, endedBeforeWriteDone, endedAfterWriteDone: oldChild.ended }, {
+			usableWhileSwapping: false,
+			readyAfterHello: true,
+			oldStopped: true,
+			endedBeforeWriteDone: false,
+			endedAfterWriteDone: true,
+		});
+	});
+
 
 	test('withdraws on request, reports a rejected prelude, and answers whether playing directly is allowed and muted (L14, M4, H5, L11)', async () => {
 		const context = createClient({ muted: true });

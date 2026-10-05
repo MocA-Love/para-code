@@ -66,8 +66,8 @@ suite('ParadisMobileSendQueue', () => {
 		], [
 			{ priority: ParadisMobileSendPriority.Voice },
 			{ priority: ParadisMobileSendPriority.Voice },
-			// 1 本まるごとの voice-clip（詰まったときの救済）も音声の優先度。同じ端末の音声の中は積んだ順（L4）
-			{ priority: ParadisMobileSendPriority.Voice },
+			// 1 本まるごとの voice-clip（詰まったときの救済）は音声の列の中の順を守り、操作・状態と交互に送る（L4・M-5）
+			{ priority: ParadisMobileSendPriority.Voice, interleave: true },
 			{ priority: ParadisMobileSendPriority.Screen, replaceKey: 'screencast' },
 			{ priority: ParadisMobileSendPriority.Screen, replaceKey: 'screencast' },
 			{ priority: ParadisMobileSendPriority.Control },
@@ -249,10 +249,11 @@ suite('ParadisMobileSendQueue', () => {
 		const owner = {};
 		await Promise.all([
 			queue.enqueue(transfer(owner, 'stream', 2, log, ParadisMobileSendPriority.Voice)),
-			queue.enqueue(transfer(owner, 'clip', 2, log, paradisMobileSendPriorityOf('browser', new TextEncoder().encode('{"t":"voice-clip","sid":"s"}')).priority)),
-			queue.enqueue(transfer(owner, 'state', 1, log)),
+			queue.enqueue({ ...transfer(owner, 'clip', 3, log, ParadisMobileSendPriority.Voice), interleave: paradisMobileSendPriorityOf('browser', new TextEncoder().encode('{"t":"voice-clip","sid":"s"}')).interleave }),
+			queue.enqueue(transfer(owner, 'state', 2, log)),
 		]);
-		assert.deepStrictEqual(log, ['stream0', 'stream1', 'clip0', 'clip1', 'state0']);
+		// clip は先に始まった流れを追い越さず、操作・状態と 1 断片ずつ交互に送る（M-5）
+		assert.deepStrictEqual(log, ['stream0', 'stream1', 'clip0', 'state0', 'clip1', 'state1', 'clip2']);
 	});
 
 	test('sends a promoted screen JPEG to its last fragment before control frames (F3)', async () => {

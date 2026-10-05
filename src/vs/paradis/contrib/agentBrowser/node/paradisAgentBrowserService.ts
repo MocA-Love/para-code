@@ -54,7 +54,7 @@ import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBri
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
-import { paradisReceiveRemoteVoice } from './paradisRemoteVoiceIngress.js';
+import { paradisReceiveRemoteVoice, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
@@ -2519,10 +2519,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
 	 */
 	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse, bodyTimeout: { dispose(): void }): Promise<void> {
-		// 本文を読まずに断る要求は、接続ごと閉じる（chunked の本文を送り続けさせない・接続を使い回させない）
+		// 本文を読まずに断る要求は、接続を使い回させない。返し終えた後は bodyTimeout が残りを 1 秒だけ読み捨ててから閉じる
+		// （すぐ切ると、相手が応答を受け取る前に接続が切れることがある。L-2）
 		const closeAfterReply = () => {
 			res.setHeader('Connection', 'close');
-			res.once('finish', () => req.destroy());
 		};
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
@@ -2532,7 +2532,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
 			closeAfterReply();
-			this._sendIngressRejected(res);
+			// ticket が通らない（知らない・期限切れ・使用済み・今の instance のものでない）。401 を返すと、接続先の
+			// aivis-mcp 2.5.1 は手元で鳴らす前提の発話を自分では鳴らさない（ticket-unavailable）。ほかの 4xx・5xx は接続先で鳴らす
+			paradisSendVoiceTicketRejected(res);
 			return;
 		}
 		const publishMobileVoiceClip = this.publishMobileVoiceClip;

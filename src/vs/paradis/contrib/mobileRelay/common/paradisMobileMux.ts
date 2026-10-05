@@ -199,7 +199,7 @@ export class FrameMux {
 		if (fragmented) {
 			this.nextTransferId = (this.nextTransferId + 1) % 0x100000000;
 		}
-		const { priority, replaceKey } = paradisMobileSendPriorityOf(channel, payload);
+		const { priority, replaceKey, interleave } = paradisMobileSendPriorityOf(channel, payload);
 		const fragmentAt = (index: number): Frame => {
 			if (!fragmented) {
 				// 16KiB 以下は断片の見出しを付けない（版 3 と同じバイト列。古い相手への更新の案内もこの形で届く）
@@ -213,6 +213,7 @@ export class FrameMux {
 			owner: this,
 			priority,
 			...(replaceKey !== undefined ? { replaceKey } : {}),
+			...(interleave ? { interleave: true } : {}),
 			fragmentCount,
 			bytes: payload.length,
 			sealFragment: index => this.channel.seal(encodeFrame(fragmentAt(index))),
