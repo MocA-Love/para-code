@@ -27,6 +27,8 @@ import {
 	IParadisCdpInputDispatchResult,
 	IParadisCdpScreenshotOptions,
 	IParadisAgentCursorEvent,
+	IParadisAgentPageScriptsChange,
+	IParadisAgentPageScriptsSurface,
 	IParadisExactBrowserViewDescriptor,
 	PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH,
 	PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH,
@@ -197,7 +199,30 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 戻せなかった上書きは、タブの通信が止まったまま・ハイライトが残ったままになりうるので残す。
 		console.warn(`[ParadisBrowserPageOps] could not undo ${step} on a browser tab`, error);
 		reportParadisDiagnosticError('owned', 'agent-browser', 'page-ops-teardown', error, { safe_step: step }, 'warning');
+	}, (target, count) => {
+		const viewId = this.pageOpsViewIds.get(target);
+		if (viewId !== undefined) {
+			this._onDidChangeInitScripts.fire({ viewId, count });
+		}
 	});
+	/** ページ操作の相手（BrowserView）の viewId。スクリプトの本数をワークベンチへ流すときに使う。 */
+	private readonly pageOpsViewIds = new WeakMap<IParadisPageOpsTarget, string>();
+	private readonly _onDidChangeInitScripts = new Emitter<IParadisAgentPageScriptsChange>();
+	/** {@link PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL} で renderer へ出す面。 */
+	readonly pageScriptsSurface: IParadisAgentPageScriptsSurface = {
+		onDidChangeInitScripts: this._onDidChangeInitScripts.event,
+		getInitScriptCounts: async () => this.pageOps.initScriptCounts().flatMap(([target, count]) => {
+			const viewId = this.pageOpsViewIds.get(target);
+			return viewId !== undefined ? [{ viewId, count }] : [];
+		}),
+		removeAllInitScripts: async (viewIdValue: unknown) => {
+			if (typeof viewIdValue !== 'string') {
+				return 0;
+			}
+			const target = this.pageOps.initScriptCounts().map(([candidate]) => candidate).find(candidate => this.pageOpsViewIds.get(candidate) === viewIdValue);
+			return target ? this.pageOps.removeAllInitScripts(target) : 0;
+		},
+	};
 
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
@@ -945,6 +970,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		return target ? this.pageOps.listInitScripts(target, ownerKeyValue) : { ok: false, reason: 'unavailable' };
 	}
 
+	/** エージェントのダウンロード・PDF の保存先のフォルダ（read_download が読んでよい場所）。まだ決まっていなければ null。 */
+	async getAgentDownloadsDirectory(): Promise<string | null> {
+		return paradisGetAgentDownloadsTracker()?.downloadsDirectory() ?? null;
+	}
+
 	async printExactViewToPdf(descriptorValue: unknown, optionsJsonValue: unknown): Promise<IParadisPdfResult> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
@@ -1083,7 +1113,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
 		// BrowserView は IParadisPageOpsTarget の構造を持つ（webContents と debugger.attach）。
-		return view ? view as unknown as IParadisPageOpsTarget : undefined;
+		const target = view ? view as unknown as IParadisPageOpsTarget : undefined;
+		if (target && descriptor) {
+			this.pageOpsViewIds.set(target, descriptor.viewId);
+		}
+		return target;
 	}
 
 	private getOrCreateViewLease(view: BrowserView): string | undefined {

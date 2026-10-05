@@ -112,6 +112,12 @@ export function paradisDescribeToolsForRemotePane<T extends IParadisDescribedToo
 		if (pathArguments !== undefined) {
 			return withPropertyDescriptions(tool, new Map(pathArguments.map(name => [name, REMOTE_UNAVAILABLE_PATH_DESCRIPTION])));
 		}
+		if (tool.name === 'capture_screenshot') {
+			return withPropertyDescriptions(tool, new Map([['saveTo', REMOTE_OUTPUT_PATH_DESCRIPTION]]));
+		}
+		if (tool.name === 'read_download') {
+			return withPropertyDescriptions(tool, new Map([['path', 'The path that download_by_click or save_page_as_pdf returned for the machine running Para Code (not the copy on your machine). Para Code reads it there.']]));
+		}
 		if (tool.name === 'preview_file') {
 			return withPropertyDescriptions(tool, new Map([['path', REMOTE_PREVIEW_PATH_DESCRIPTION]]));
 		}

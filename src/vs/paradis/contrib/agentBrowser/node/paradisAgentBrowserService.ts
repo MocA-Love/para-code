@@ -18,11 +18,11 @@
 import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
-import { writeFileSync } from 'fs';
+import { constants as fsConstants, promises as fsPromises, writeFileSync } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isAbsolute, join } from '../../../../base/common/path.js';
+import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -72,6 +72,10 @@ import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcp
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
+import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
+import { paradisRunSteps } from './paradisBrowserRunSteps.js';
+import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
+import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -134,7 +138,7 @@ const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane. To wait for the page, use wait_until instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx or the rows of a csv.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
@@ -583,6 +587,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _pageOps: ParadisBrowserPageOps;
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
 	private readonly _browserQuery = new ParadisBrowserQuery();
+	/** 探して操作するツール（click_by・fill_by）。探すのは evaluate_script、押す・入れるのは入力の通り道。 */
+	private readonly _browserActBy = new ParadisBrowserActBy();
+	/** 切り抜き・複数の撮影とエージェント側への保存（capture_screenshot）。 */
+	private readonly _browserCapture = new ParadisBrowserCapture();
+	/** ダウンロードしたファイルの中身（read_download）。読めるのはダウンロードの保存先の中だけ。 */
+	private readonly _downloadReader = new ParadisBrowserDownloadReader({
+		downloadsDirectory: async () => {
+			const directory = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<string | null>('getAgentDownloadsDirectory').catch(() => null);
+			return typeof directory === 'string' && directory.length > 0 ? directory : undefined;
+		},
+	});
 	/** エージェントのネットワークの制限（redirect のルールの行き先を確かめる）。設定が無いテストでは undefined。 */
 	private readonly _agentNetworkFilter: AgentNetworkFilterService | undefined;
 	private readonly _devtoolsGenerationCoordinator: ParadisDevtoolsGenerationCoordinator;
@@ -3379,6 +3394,26 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
 		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。
 		// 一覧だけのツールと、ブラウザの共有そのもの（CDP ゲートウェイ）はこれまでどおり
+		if (name === 'read_download') {
+			// 手元のファイルを読んで返すので、接続元（pane か tunnel）を確かめる
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
+			}
+			const result = await this._downloadReader.call(params?.arguments);
+			this._requireIngressLease(ingressLease);
+			return result;
+		}
+
+		if (name === 'run_steps') {
+			// 手順はどれも単体で呼んだときと同じ確認を通る（_callTool をそのまま呼ぶ）
+			return paradisRunSteps({
+				signal,
+				callTool: (stepName, stepArgs) => this._callTool(ingressLease, { name: stepName, arguments: stepArgs }, signal, socket),
+			}, params?.arguments);
+		}
+
 		if (PARADIS_CALLER_VERIFIED_TOOL_NAMES.has(name)) {
 			const caller = await this._classifyCaller(token, socket);
 			this._requireIngressLease(ingressLease);
@@ -3477,6 +3512,26 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._callBrowserQueryTool(ingressLease, binding, name, params?.arguments, signal);
 		}
 
+		if (name === 'capture_screenshot') {
+			// ファイルを書くので、接続元（pane か tunnel）を確かめる
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
+			}
+			return this._callCaptureTool(ingressLease, binding, params?.arguments, signal, socket);
+		}
+
+		if (PARADIS_BROWSER_ACT_TOOL_NAME_SET.has(name)) {
+			// マウス・キーを送るので、mouse_action と同じく接続元（pane か tunnel）を確かめる
+			const caller = await this._classifyCaller(token, socket);
+			this._requireIngressLease(ingressLease);
+			if (caller === 'unverified') {
+				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
+			}
+			return this._callBrowserActTool(ingressLease, binding, name, params?.arguments, signal);
+		}
+
 		switch (name) {
 			case 'get_shared_page':
 				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId }, null, 2));
@@ -3537,6 +3592,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._requireIngressLease(ingressLease);
 				return this._bindings.get(token) === binding;
 			},
+			networkActivity: ignoreOlderThanMs => this._cdpGateway.getNetworkActivity(token, ignoreOlderThanMs),
 			evaluate: async (functionSource, uids) => {
 				try {
 					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする
@@ -3549,6 +3605,121 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			},
 		}, name, args);
+	}
+
+	/**
+	 * 探して操作するツール（paradisBrowserActBy.ts）を呼ぶ。探すのは読む・待つツールと同じ evaluate_script、
+	 * 押す・入れるのは mouse_action と同じ入力の通り道（ユーザーがそのタブを使っている間は断られる）。
+	 */
+	private async _callBrowserActTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const token = ingressLease.token;
+		return this._browserActBy.call({
+			signal,
+			isCurrent: () => {
+				this._requireIngressLease(ingressLease);
+				return this._bindings.get(token) === binding;
+			},
+			evaluate: async (functionSource, uids) => {
+				try {
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+				} catch (error) {
+					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
+						throw new ParadisIngressLeaseError();
+					}
+					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
+				}
+			},
+			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindings.get(token) === binding).response,
+		}, name, args);
+	}
+
+	/**
+	 * capture_screenshot（paradisBrowserCapture.ts）を呼ぶ。撮るのは take_screenshot と同じ electron-main の撮影。
+	 * `saveTo` は、接続先のペインなら接続先のパスへ書き戻す既存の経路（take_screenshot の filePath と同じ）、
+	 * 手元のペインならスペースのフォルダと一時フォルダの中だけに書く。
+	 */
+	private async _callCaptureTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, args: unknown, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const token = ingressLease.token;
+		return this._browserCapture.call({
+			isCurrent: () => {
+				this._requireIngressLease(ingressLease);
+				return this._bindings.get(token) === binding;
+			},
+			evaluate: async (functionSource, uids) => {
+				try {
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+				} catch (error) {
+					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
+						throw new ParadisIngressLeaseError();
+					}
+					return this._toolError('capture_screenshot could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.');
+				}
+			},
+			capture: async options => {
+				const data = await this._captureBoundPageScreenshot(token, options);
+				if (!data) {
+					throw new Error('PARA_BROWSER_RETRYABLE: the BrowserView returned no screenshot; retry.');
+				}
+				return data;
+			},
+			save: (path, data) => this._saveAgentFile(ingressLease, path, data, signal, socket),
+		}, args);
+	}
+
+	/** エージェントの機械のパスへ書く（capture_screenshot の saveTo）。 */
+	private async _saveAgentFile(ingressLease: IParadisAgentBrowserIngressLease, path: string, data: Buffer, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly message: string }> {
+		const token = ingressLease.token;
+		const remoteAuthority = this._paneRemoteAuthorityOf(token);
+		if (remoteAuthority !== undefined) {
+			const result = await this._remoteFileTransfer.callTool('capture_screenshot', 'output', { filePath: path }, this._remoteFileTransferHost(ingressLease, remoteAuthority, 'capture_screenshot', signal), async bridged => {
+				await fsPromises.writeFile(bridged.filePath as string, data);
+				return this._toolText('saved');
+			});
+			this._requireIngressLease(ingressLease);
+			const record = result as { isError?: unknown; content?: { text?: unknown }[] };
+			if (record.isError === true) {
+				const message = typeof record.content?.[0]?.text === 'string' ? record.content[0].text : 'the file could not be written.';
+				return { ok: false, message: message.replace(/^capture_screenshot (was not run|ran, but)\s*:?\s*/, '') };
+			}
+			const line = record.content?.map(part => part.text).find((value): value is string => typeof value === 'string' && value.startsWith('The file was written to '));
+			const written = line?.slice('The file was written to '.length).replace(/ on the machine this agent runs on.*$/s, '');
+			return { ok: true, path: written ?? path };
+		}
+		const caller = await this._devtoolsPathCaller(token, socket);
+		this._requireIngressLease(ingressLease);
+		if (caller.remote) {
+			return { ok: false, message: 'this request came through Para Code\'s return tunnel from a remote window, so it cannot write files on the user\'s local machine. Omit "saveTo" to get the images inline.' };
+		}
+		if (!caller.paneKnown) {
+			return { ok: false, message: 'Para Code has not registered this terminal pane yet, so it cannot tell where it may write. Retry in a few seconds, or omit "saveTo".' };
+		}
+		const roots = await this._resolveDevtoolsRoots(token);
+		this._requireIngressLease(ingressLease);
+		const temporary = this._devtoolsProxy.ensureTemporaryDirectory();
+		const refusal = await paradisCaptureLocalPathRefusal(path, [...roots.folders, ...(temporary !== undefined ? [temporary] : [])]);
+		if (refusal !== undefined) {
+			return { ok: false, message: refusal };
+		}
+		try {
+			await fsPromises.mkdir(dirname(path), { recursive: true });
+			// 確かめたのはフォルダまで。ファイル自体がシンボリックリンク（外を指しうる）なら書かない
+			const existing = await fsPromises.lstat(path).catch(() => undefined);
+			if (existing !== undefined && !existing.isFile()) {
+				return { ok: false, message: `${path} already exists and is not a regular file (for example a symbolic link), so Para Code does not overwrite it. Choose another path.` };
+			}
+			const handle = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+			try {
+				await handle.writeFile(data);
+			} finally {
+				await handle.close();
+			}
+		} catch {
+			return { ok: false, message: `Para Code could not write ${path} (permissions, a symbolic link, or the disk is full).` };
+		}
+		this._requireIngressLease(ingressLease);
+		return { ok: true, path };
 	}
 
 	/** uid の要素の中心座標などを evaluate_script で求める（upload_file_to_drop_zone と同じ関数）。 */

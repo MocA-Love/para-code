@@ -38,6 +38,7 @@
 //     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
+import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
 import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import type * as wsTypes from 'ws';
@@ -70,6 +71,8 @@ export interface IParadisBoundContext {
 	onOpen(ws: wsTypes.WebSocket): void;
 	/** Same pane authority shared by page- and browser-level WebSocket connections. */
 	readonly rawScreenshotCoordinator: ParadisRawScreenshotCoordinator;
+	/** wait_until の network idle 用の、共有中のタブの通信の台帳（ペインごと）。無ければ数えない。 */
+	readonly networkActivity?: ParadisNetworkActivity;
 	/**
 	 * バインド済みprimaryページのスクリーンショットを、electron-mainのupstream実装
 	 * `BrowserView.captureScreenshot()`（非表示時の回避策付き）へ委譲して撮る。
@@ -1642,6 +1645,8 @@ export async function paradisProxyBrowserUpgrade(
 		const sessionIdToTargetId = new Map<string, string>();
 		const allowedTargetIds = new Set<string>();
 		const childToParent = new Map<string, string>();
+		// この接続で始まった要求を network idle の台帳から外すための目印
+		const networkConnection = {};
 		let internalRequestSequence = 0;
 		// Para Code 自身の isolated world（Design Mode の要素選択、preload）をエージェントから隠す。
 		const isolatedWorlds = new ParadisCdpIsolatedWorldFilter();
@@ -1864,6 +1869,7 @@ export async function paradisProxyBrowserUpgrade(
 			closed = true;
 			resolveConnectionClosed();
 			ctx.closeInputConnection();
+			ctx.networkActivity?.forgetConnection(networkConnection);
 			pendingRequests.clear();
 			internalPending.clear();
 			outOfScopeRelease.clear();
@@ -2494,6 +2500,14 @@ export async function paradisProxyBrowserUpgrade(
 					}
 					if (verdict !== 'forward') {
 						return;
+					}
+					// 共有中のタブ（とその iframe・worker）の通信の出入りを数える。sendToClient の前で数えるので、
+					// クライアントが詰まって Network.* を捨てても数はずれない
+					if (ctx.networkActivity !== undefined && message.method.startsWith('Network.')) {
+						const rootTargetId = paradisRootTargetOfSession(message.sessionId, clientKnownSessions, sessionIdToTargetId);
+						if (rootTargetId !== undefined && ctx.boundTargetIds().has(rootTargetId)) {
+							ctx.networkActivity.onEvent(networkConnection, sessionIdToTargetId.get(message.sessionId) ?? rootTargetId, message.method, message.params);
+						}
 					}
 					// Cookie のヘッダと一覧はエージェントへ届けない（q.html Q69）
 					const sanitizedParams = paradisSanitizeCookieBearingEvent(message.method, message.params);
