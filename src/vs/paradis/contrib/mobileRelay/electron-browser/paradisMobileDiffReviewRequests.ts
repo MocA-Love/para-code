@@ -33,7 +33,7 @@ import {
 	PARADIS_MOBILE_REVIEW_MAX_NOTES,
 	PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX,
 	PARADIS_MOBILE_REVIEW_STORAGE_KEY,
-	paradisAddMobileReviewNote,
+	paradisAddMobileReviewNoteOnce,
 	paradisApplyMobileReviewMarkChanges,
 	paradisDeleteMobileReviewNotes,
 	paradisEditMobileReviewNote,
@@ -63,7 +63,7 @@ import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMob
  * - `reviewGet { ws }`: コミット・破棄されて変更の一覧から消えたファイルの印は外す
  * - `reviewSet { ws, marks: [{ path, identity | null }] }`: 印を1件ずつ付ける・外す（全体を送らないので、
  *   別の端末が同時に別のファイルへ付けた印を消さない）
- * - `reviewNoteAdd { ws, path, line, lineText, body }` / `reviewNoteEdit { ws, noteId, body }` / `reviewNoteDelete { ws, ids }`
+ * - `reviewNoteAdd { ws, path, line, lineText, body, noteId? }`（noteId はアプリが振る id。review.client-note-id.v1）/ `reviewNoteEdit { ws, noteId, body }` / `reviewNoteDelete { ws, ids }`
  * - `reviewNotesClear { ws }`: 送信済みと、行が見つからなくなった（直された）メモをまとめて消す
  * - `reviewNotesSend { ws, ids, target: { terminalKey } | { agent } }`: 保存済みのメモから依頼文を組み立てて
  *   送る（スマホから届いた文章は打ち込まない）。送れたら「送信済み」にして残す（Q120 A）
@@ -215,13 +215,29 @@ registerParadisMobileRequestHandler('scm', 'reviewNoteAdd', {
 		if (ws === undefined) {
 			return;
 		}
-		const { path, line, lineText, body } = request;
-		if (!paradisIsReviewPath(path) || !paradisIsReviewNoteLine(line) || typeof lineText !== 'string' || lineText.length > 10_000 || !paradisIsReviewNoteBody(body)) {
+		// `noteId` はアプリが振ったメモの id（review.client-note-id.v1）。押し直し・送り直しでも同じ id で届く。
+		// 古いアプリは付けないので、そのときは PC が振る（従来どおり）
+		const { path, line, lineText, body, noteId } = request;
+		if (!paradisIsReviewPath(path) || !paradisIsReviewNoteLine(line) || typeof lineText !== 'string' || lineText.length > 10_000 || !paradisIsReviewNoteBody(body)
+			|| (noteId !== undefined && !paradisIsReviewNoteId(noteId))) {
 			context.reply({ error: 'invalid note' });
 			return;
 		}
-		const id = generateUuid();
-		updateSpace(storage, ws, context, space => paradisAddMobileReviewNote(space, { id, path, line, lineText, body }, Date.now()), `メモが上限（${PARADIS_MOBILE_REVIEW_MAX_NOTES} 件）に達しています。送信済みや古いメモを消してから書いてください。`, { added: id });
+		const id = noteId ?? generateUuid();
+		const store = paradisReadMobileReviewStore(storage);
+		const current = paradisMobileReviewSpace(store, ws);
+		const next = paradisAddMobileReviewNoteOnce(current, { id, path, line, lineText, body }, Date.now());
+		if (next === 'conflict') {
+			context.reply({ error: '同じ id の別のメモが既にあります。メモの一覧を読み直してください。', code: 'note-id-conflict' });
+			return;
+		}
+		if (next === 'full') {
+			context.reply({ error: `メモが上限（${PARADIS_MOBILE_REVIEW_MAX_NOTES} 件）に達しています。送信済みや古いメモを消してから書いてください。` });
+			return;
+		}
+		// 同じ id の同じメモ（送り直し）なら保存し直さず、今の記録で応答する
+		const saved = next === current ? current : saveSpace(storage, store, ws, next);
+		context.reply({ ...paradisMobileReviewReply(ws, saved), added: id });
 	},
 });
 

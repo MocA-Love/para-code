@@ -10,6 +10,7 @@
 
 import { useAppStore } from './appState.js';
 import { routeFromStats, type MirrorRoute, type RtcStatsReportLike } from './browserRoute.js';
+import { framesDecodedFromStats } from './browserVideoHealth.js';
 
 interface WebrtcModule {
 	RTCPeerConnection: new (config: object) => RtcPeerConnectionLike;
@@ -64,6 +65,8 @@ export interface WebrtcMirrorSession {
 	onClosed: (cb: () => void) => void;
 	/** 選ばれた候補の組から決めた経路（`browserRoute.ts`）。分からなければ `undefined`。 */
 	route(): Promise<Exclude<MirrorRoute, 'relay'> | undefined>;
+	/** 受けている映像の復号済みフレーム数（`browserVideoHealth.ts`）。統計が読めなければ `undefined`。 */
+	framesDecoded(): Promise<number | undefined>;
 }
 
 const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
@@ -273,6 +276,16 @@ export async function startWebrtcMirrorWithDependencies(targetId: string, depend
 				}
 				try {
 					return routeFromStats(await peer.getStats());
+				} catch {
+					return undefined;
+				}
+			},
+			framesDecoded: async () => {
+				if (closed || peer.getStats === undefined) {
+					return undefined;
+				}
+				try {
+					return framesDecodedFromStats(await peer.getStats());
 				} catch {
 					return undefined;
 				}
