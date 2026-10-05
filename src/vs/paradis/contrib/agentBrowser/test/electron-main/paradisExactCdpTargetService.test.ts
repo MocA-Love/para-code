@@ -674,7 +674,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const current = createTestView({ automationReady: false, automationFailure: 'ack-timeout' });
 		const replacement = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
-		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 		const params = JSON.stringify({ type: 'keyDown', key: 'Escape', code: 'Escape' });
 
@@ -725,7 +725,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 			}
 		};
 		const registry = createRegistry({ 'view-1': current.view });
-		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 		const params = JSON.stringify({ type: 'keyDown', key: 'a', code: 'KeyA' });
 
@@ -751,7 +751,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const current = createTestView({ automationActivateReady: false });
 		const replacement = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
-		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, () => { });
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
 		const params = JSON.stringify({ type: 'keyDown', key: 'Escape', code: 'Escape' });
 
