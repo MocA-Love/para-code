@@ -10,6 +10,7 @@ import * as assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { ParadisMobileAuthorityLanes } from '../../common/paradisMobileAuthorityLanes.js';
 import { Channels } from '../../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame, ParadisMobileInboundFrameWire } from '../../common/paradisMobileRelay.js';
 import { ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
@@ -28,7 +29,9 @@ suite('ParadisMobileRelay warm lease routing', () => {
 		});
 		const delivered: ParadisMobileInboundFrameWire[] = [];
 		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
-			rendererAuthorityChain: Promise.resolve(),
+			authorityLanes: new ParadisMobileAuthorityLanes(),
+			validatedLeases: new Map(),
+			observedLeaseRevision: 0,
 			terminalRegistry: registry,
 			windowLeaseClient: {
 				validate: async () => ({ valid: true, manifestRevision: 1, windowRevision: 1 }),

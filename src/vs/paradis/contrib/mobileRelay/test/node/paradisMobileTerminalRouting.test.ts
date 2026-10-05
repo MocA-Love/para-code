@@ -36,6 +36,7 @@ suite('ParadisMobileRelay terminal routing', () => {
 			sessions: new Map(),
 			logService: new NullLogService(),
 			withCurrentRegisteredLease: async (_owner: unknown, task: () => Promise<boolean>) => task(),
+			tryWithCurrentRegisteredLease: (_owner: unknown, _key: string, task: () => Promise<boolean>) => task(),
 			_onInboundFrame: { fire: (frame: ParadisMobileInboundFrameWire) => delivered.push(frame) },
 		}) as unknown as { handleTerminalFrame(frame: IParadisMobileInboundFrame): Promise<void> };
 		let operationSeq = 0;
