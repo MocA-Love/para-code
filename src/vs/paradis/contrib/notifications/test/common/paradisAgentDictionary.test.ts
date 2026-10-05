@@ -78,7 +78,7 @@ suite('paradisAgentDictionary', () => {
 			offButUserPickedAnother: [{ kind: 'clear', provider: 'elevenlabs' }, { kind: 'forget', provider: 'aivis' }],
 			offNothingWritten: [],
 			dictionaryRemoved: [{ kind: 'clear', provider: 'elevenlabs' }],
-			configUnreadable: [{ kind: 'forget', provider: 'aivis' }],
+			configUnreadable: [],
 		});
 	});
 

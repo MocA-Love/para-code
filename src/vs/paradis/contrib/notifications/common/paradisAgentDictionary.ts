@@ -103,7 +103,7 @@ export function paradisNormalizeAgentDictionaryRequest(raw: unknown): IParadisAg
  * - 使う設定で辞書がある: Para Code が前回書いた値と同じ、または aivis-mcp に既に入っているなら何もしない。
  *   前回書いた値と同じなのに aivis-mcp 側で変わっていたら、利用者が変えたものとして上書きしない
  * - 使わない設定か、辞書が無い: Para Code が書いた値がそのまま残っているときだけ消す。別の値に
- *   変わっていたら消さずに、覚えている値を忘れる
+ *   変わっていたら消さずに、覚えている値を忘れる。aivis-mcp の設定が読めなければ何もしない
  */
 export function paradisPlanAgentDictionaryStep(
 	provider: ParadisAgentDictionaryProvider,
@@ -120,7 +120,8 @@ export function paradisPlanAgentDictionaryStep(
 		}
 		return { kind: 'set', provider, id: desired };
 	}
-	if (!last) {
+	// aivis-mcp の設定が読めないとき（壊れている・読み途中）は、消すか忘れるかを決められないので覚えたままにする
+	if (!last || current === undefined) {
 		return undefined;
 	}
 	return now === last ? { kind: 'clear', provider } : { kind: 'forget', provider };
