@@ -146,7 +146,7 @@ function describeAutomationKeyFailure(reason: BrowserViewAutomationKeyFailureRea
 }
 
 /** Keeps why automation key suppression failed in the log and Sentry (the reason is a fixed word). */
-function reportAutomationKeyFailure(phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined): void {
+function paradisReportAutomationKeyFailure(phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined): void {
 	try {
 		console.warn(`[ParadisCdpTargetService] automation key suppression could not be ${phase === 'register' ? 'registered' : 'activated'}: ${reason ?? 'unknown'}`);
 		reportParadisDiagnosticError('owned', 'agent-browser', 'automation-key-suppression', new Error('Automation key suppression failed'), { safe_phase: phase, safe_reason: reason ?? 'unknown' }, 'warning');
@@ -203,6 +203,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		private readonly upstreamPortPin: ParadisCdpUpstreamPortPin = new ParadisCdpUpstreamPortPin(),
 		/** エージェント操作を見せる合成カーソル演出。既定は「常に有効」（app.tsが設定を渡す）。 */
 		private readonly cursorOverlay: ParadisCursorOverlayController = new ParadisCursorOverlayController(),
+		/** キー入力の準備に失敗した理由をログと Sentry へ送る。テストでは差し替える。 */
+		private readonly reportAutomationKeyFailure: (phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined) => void = paradisReportAutomationKeyFailure,
 	) {
 		// 子タブ（target=_blank・window.open・中クリック）を開いた元のタブを覚える。エージェントのタブから
 		// 開いた子タブで始まったダウンロードも、エージェント由来として扱うため。テストの偽物には無い。
@@ -753,7 +755,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				}
 			}
 			if (!automationRegistration) {
-				reportAutomationKeyFailure('register', lastKeyFailure());
+				this.reportAutomationKeyFailure('register', lastKeyFailure());
 				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure())})` };
 			}
 		}
@@ -780,7 +782,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 					// Activation failures are definite because the debugger command has not been sent.
 				}
 				if (!activated) {
-					reportAutomationKeyFailure('activate', lastKeyFailure());
+					this.reportAutomationKeyFailure('activate', lastKeyFailure());
 					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure())})` };
 				}
 				if (this.resolveExistingExactView(descriptor) !== view) {
