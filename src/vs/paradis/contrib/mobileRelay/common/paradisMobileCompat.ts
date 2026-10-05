@@ -169,6 +169,16 @@ export const ParadisMobileCapability = {
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
 	VoiceUsage: 'usage.voice.v1',
+	/**
+	 * notify の `visibility` の `keep: 'voice'`（音声通知のために裏でもソケットを保つアプリが「裏に回った」を知らせる。
+	 * PC はプッシュへ切り替えるが、30 秒の保持の期限でセッションを捨てない。`paradisMobileVisibility.ts`）。
+	 */
+	NotifyVisibilityVoice: 'notify.visibility-voice.v1',
+	/**
+	 * State の要求の `known: { desktopEpoch, revision }` と、変わっていなければ返す `{ t: 'unchanged', desktopEpoch, revision }`
+	 * （設計 4 章 #14。state.delta.v1 の第 1 段）。アプリが広告し、要求に `known` を載せたときだけ返す。
+	 */
+	StateUnchanged: 'state.unchanged.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -216,6 +226,8 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentCommandsV2,
 	ParadisMobileCapability.AgentPanel,
 	ParadisMobileCapability.VoiceUsage,
+	ParadisMobileCapability.NotifyVisibilityVoice,
+	ParadisMobileCapability.StateUnchanged,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -231,6 +243,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentResume,
 	// PC はこれを見て、欄の中身を含む `focus` の通知を送る（古いアプリには送らない）。
 	ParadisMobileCapability.BrowserFocus,
+	// PC はこれと要求の `known` を見て、変わっていない State の代わりに `unchanged` を返す。
+	ParadisMobileCapability.StateUnchanged,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

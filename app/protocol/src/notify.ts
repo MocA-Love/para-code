@@ -200,13 +200,20 @@ export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | u
 export type NotifyVisibilityState = 'background' | 'foreground';
 
 export type NotifyVisibilityMessage =
-	| { readonly t: 'visibility'; readonly state: NotifyVisibilityState; readonly id?: string }
+	| { readonly t: 'visibility'; readonly state: NotifyVisibilityState; readonly id?: string; readonly keep?: NotifyVisibilityKeep }
 	| { readonly t: 'visibility-ack'; readonly state: NotifyVisibilityState; readonly id?: string };
 
 const VISIBILITY_ID_MAX_LENGTH = 64;
 
-export function encodeNotifyVisibility(state: NotifyVisibilityState, id?: string): Uint8Array {
-	return new TextEncoder().encode(JSON.stringify({ t: 'visibility', state, ...(id !== undefined ? { id } : {}) }));
+/**
+ * 裏に回ってもソケットを保ち続ける理由（notify.visibility-voice.v1）。`'voice'` は音声通知を受けるために保つ。
+ * PC は「前面ではない」とみなしてプッシュを送るが、30 秒の保持の期限でセッションを捨てない。
+ * 広告していない PC には付けない（旧 PC は期限でセッションを捨て、音声が止まる）。
+ */
+export type NotifyVisibilityKeep = 'voice';
+
+export function encodeNotifyVisibility(state: NotifyVisibilityState, id?: string, keep?: NotifyVisibilityKeep): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'visibility', state, ...(id !== undefined ? { id } : {}), ...(keep !== undefined ? { keep } : {}) }));
 }
 
 export function encodeNotifyVisibilityAck(state: NotifyVisibilityState, id?: string): Uint8Array {
@@ -216,11 +223,14 @@ export function encodeNotifyVisibilityAck(state: NotifyVisibilityState, id?: str
 /** notify チャネルの受信バイト列を W2-34 の知らせとして読む。違えば undefined。 */
 export function decodeNotifyVisibility(bytes: Uint8Array): NotifyVisibilityMessage | undefined {
 	try {
-		const raw = JSON.parse(decodeUtf8(bytes)) as { t?: unknown; state?: unknown; id?: unknown };
+		const raw = JSON.parse(decodeUtf8(bytes)) as { t?: unknown; state?: unknown; id?: unknown; keep?: unknown };
 		if ((raw.t !== 'visibility' && raw.t !== 'visibility-ack') || (raw.state !== 'background' && raw.state !== 'foreground')) {
 			return undefined;
 		}
 		const id = typeof raw.id === 'string' && raw.id.length > 0 && raw.id.length <= VISIBILITY_ID_MAX_LENGTH ? raw.id : undefined;
+		if (raw.t === 'visibility' && raw.keep === 'voice') {
+			return { t: raw.t, state: raw.state, ...(id !== undefined ? { id } : {}), keep: 'voice' };
+		}
 		return { t: raw.t, state: raw.state, ...(id !== undefined ? { id } : {}) };
 	} catch {
 		return undefined;

@@ -101,15 +101,48 @@ function nonceFor(counter: bigint): Uint8Array {
 	return nonce;
 }
 
+/** 封緘に一度失敗した送信方向。予約した nonce に欠番ができたので、新しい握手まで何も封緘しない。 */
+export class ParadisMobileSealBrokenError extends Error {
+	constructor(cause?: unknown) {
+		super('mobile secure channel can no longer seal (a reserved nonce was lost); a new handshake is required', cause === undefined ? undefined : { cause });
+		this.name = 'ParadisMobileSealBrokenError';
+	}
+}
+
 class Cipher {
 	private counter = 0n;
+	/** 封緘の完了を nonce の順に並べる鎖（並行に呼ばれても、解決は予約した順）。 */
+	private sealChain: Promise<unknown> = Promise.resolve();
+	/** 封緘に失敗した。受け手は nonce の完全一致を求めるので、欠番の後ろは誰も開けない。 */
+	private broken: unknown;
 	constructor(private readonly key: CryptoKey) { }
 
-	async seal(plaintext: Uint8Array): Promise<Uint8Array> {
-		const nonce = nonceFor(this.counter);
-		const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, this.key, plaintext as BufferSource));
-		this.counter++;
-		return concat(nonce, ct);
+	seal(plaintext: Uint8Array): Promise<Uint8Array> {
+		if (this.broken !== undefined) {
+			return Promise.reject(new ParadisMobileSealBrokenError(this.broken));
+		}
+		// nonce は await の前に予約する（設計 2.12）。await の後で進めると、並行した 2 つの seal が同じ
+		// nonce を使い AES-GCM の安全性が崩れる。予約した nonce は失敗しても再利用しない。
+		const nonce = nonceFor(this.counter++);
+		const previous = this.sealChain;
+		const result = (async () => {
+			let ct: Uint8Array;
+			try {
+				ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, this.key, plaintext as BufferSource));
+			} catch (error) {
+				this.broken ??= error;
+				throw new ParadisMobileSealBrokenError(error);
+			}
+			// 前の nonce の封緘が終わるまで解決しない（呼んだ順 = nonce の順に送り出せるように）
+			await previous.catch(() => undefined);
+			if (this.broken !== undefined) {
+				// 前の nonce が欠けた。この暗号文を送っても受け手は開けない
+				throw new ParadisMobileSealBrokenError(this.broken);
+			}
+			return concat(nonce, ct);
+		})();
+		this.sealChain = result;
+		return result;
 	}
 
 	async open(message: Uint8Array): Promise<Uint8Array> {
