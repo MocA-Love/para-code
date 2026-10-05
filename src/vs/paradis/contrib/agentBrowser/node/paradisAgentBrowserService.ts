@@ -71,6 +71,7 @@ import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoo
 import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
+import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -133,7 +134,7 @@ const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane. To wait for the page, use wait_until instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
@@ -580,6 +581,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _fileDropStaging = new ParadisFileDropStaging();
 	/** 追加のブラウザ操作（マウス・PDF・ヘッダ・HTTP 認証・リクエストのルール・ダウンロード・ハイライト）。 */
 	private readonly _pageOps: ParadisBrowserPageOps;
+	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
+	private readonly _browserQuery = new ParadisBrowserQuery();
 	/** エージェントのネットワークの制限（redirect のルールの行き先を確かめる）。設定が無いテストでは undefined。 */
 	private readonly _agentNetworkFilter: AgentNetworkFilterService | undefined;
 	private readonly _devtoolsGenerationCoordinator: ParadisDevtoolsGenerationCoordinator;
@@ -3470,6 +3473,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolError(NOT_BOUND_MESSAGE);
 		}
 
+		if (PARADIS_BROWSER_QUERY_TOOL_NAME_SET.has(name)) {
+			return this._callBrowserQueryTool(ingressLease, binding, name, params?.arguments, signal);
+		}
+
 		switch (name) {
 			case 'get_shared_page':
 				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId }, null, 2));
@@ -3515,6 +3522,33 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${name} failed for pane ${this._tokenFingerprint(ingressLease.token)}`));
 			return this._toolError(`PARA_BROWSER_RETRYABLE: ${name} failed inside Para Code. Retry once; if it keeps failing, call get_session_health.`);
 		}
+	}
+
+	/**
+	 * 読む・待つツール（paradisBrowserQuery.ts）を呼ぶ。ページで動かすのは内蔵 chrome-devtools-mcp の
+	 * evaluate_script と同じ経路なので、接続元の確認も evaluate_script と同じ（トークンと ingress lease）。
+	 */
+	private async _callBrowserQueryTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const token = ingressLease.token;
+		return this._browserQuery.call({
+			signal,
+			isCurrent: () => {
+				this._requireIngressLease(ingressLease);
+				return this._bindings.get(token) === binding;
+			},
+			evaluate: async (functionSource, uids) => {
+				try {
+					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+				} catch (error) {
+					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
+						throw new ParadisIngressLeaseError();
+					}
+					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
+				}
+			},
+		}, name, args);
 	}
 
 	/** uid の要素の中心座標などを evaluate_script で求める（upload_file_to_drop_zone と同じ関数）。 */

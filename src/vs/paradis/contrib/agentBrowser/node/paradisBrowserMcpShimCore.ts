@@ -10,6 +10,7 @@ import type * as http from 'http';
 import { randomUUID } from 'crypto';
 import { closeSync, openSync, promises as fs, readSync } from 'fs';
 import { PARADIS_MCP_PAGE_OPS_TOOLS } from './paradisBrowserPageOpsTools.js';
+import { PARADIS_MCP_BROWSER_QUERY_TOOLS } from './paradisBrowserQueryTools.js';
 
 export const PARADIS_MCP_CONNECT_TIMEOUT_MS = 5_000;
 export const PARADIS_MCP_HEALTH_TIMEOUT_MS = 5_000;
@@ -270,6 +271,8 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	// Extra browser operations (mouse, PDF, headers, HTTP auth, request rules, download, highlight).
 	...PARADIS_MCP_PAGE_OPS_TOOLS,
+	// Reading and waiting on the shared page with short scripts (wait_until, get_text, inspect_element, scroll_to).
+	...PARADIS_MCP_BROWSER_QUERY_TOOLS,
 ] as const;
 
 export interface IParadisMcpPortFileRecord {

@@ -17,6 +17,9 @@ export const PARADIS_PAGE_OPS_TOOL_NAMES = [
 	'get_page_network_overrides',
 	'download_by_click',
 	'highlight_element',
+	'add_init_script',
+	'remove_init_script',
+	'list_init_scripts',
 ] as const;
 
 const TARGET_PROPERTIES = {
@@ -157,5 +160,36 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 			},
 			additionalProperties: false,
 		},
+	},
+	{
+		name: 'add_init_script',
+		description: 'Add JavaScript that runs at the start of every document the page shared with this terminal pane loads from now on (navigations and reloads, in every frame, before the page\'s own scripts), for example to install window.__ hooks, record events or mask personal data for screenshots. Unlike navigate_page "initScript", it stays until removed. It works on any shared tab, including tabs the user opened, and also runs while the user browses in that tab, so keep it small and harmless. It is removed automatically when the tab is closed or is no longer shared with this pane. When you have finished checking, call remove_init_script to take it off again. Returns the script id.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				source: { type: 'string', description: 'JavaScript source to run (at most 100000 characters). It runs in the page\'s main world, so it can define window properties the page and evaluate_script can see.' },
+				label: { type: 'string', description: 'Short name shown by list_init_scripts (at most 80 characters).' },
+				run_now: { type: 'boolean', description: 'Also run it once in the document that is open now (default false: only from the next navigation or reload).' },
+			},
+			required: ['source'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'remove_init_script',
+		description: 'Remove a script added with add_init_script from the page shared with this terminal pane, by its id, or all of your scripts on that tab with all: true. Documents already loaded keep what the script did until they reload.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				id: { type: 'string', description: 'Script id from add_init_script or list_init_scripts (for example "s3").' },
+				all: { type: 'boolean', description: 'Remove all of your scripts on this tab.' },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_init_scripts',
+		description: 'List the scripts you added with add_init_script that are still active on the page shared with this terminal pane (id, label, size, when added), and how many other panes have scripts there. Use it to check that nothing is left behind after you finish.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 ] as const;
