@@ -112,3 +112,160 @@ export async function paradisCollectBody(body: AsyncIterable<Uint8Array>, maxByt
 	}
 	return Buffer.concat(chunks, size);
 }
+
+/** {@link paradisTeeBody} が流し込む先（モバイルへの音声の流れ）。 */
+export interface IParadisBodyTeeSink {
+	write(chunk: Uint8Array): void;
+	end(): void;
+	abort(): void;
+}
+
+/**
+ * 合成を受け取りながら、同じ断片を `openSink()` の先（モバイル）へも流す。読み終えたら end、途中で切れた・読むのを
+ * やめたら abort。`openSink` は最初に読み始めた時点で 1 回だけ呼ぶ（読まれなかった合成は流れを作らない）。
+ */
+export async function* paradisTeeBody(body: AsyncIterable<Uint8Array>, openSink: () => IParadisBodyTeeSink | undefined): AsyncGenerator<Uint8Array> {
+	const sink = openSink();
+	let completed = false;
+	try {
+		for await (const chunk of body) {
+			sink?.write(chunk);
+			yield chunk;
+		}
+		completed = true;
+	} finally {
+		if (completed) {
+			sink?.end();
+		} else {
+			sink?.abort();
+		}
+	}
+}
+
+/**
+ * 読み上げ 1 件（スケジューラの 1 タスク）のモバイルへの流れを 1 本に絞る。合成の再試行のたびに {@link paradisTeeBody} が
+ * 流れを開こうとしても、前の試行が音を流し始めてから切れていたら（モバイルでは頭が鳴っている）、そのタスクのモバイルへの
+ * 配信はやめる（再試行の成功分は送らない。頭が 2 回鳴るのを防ぐ）。音を流す前に切れた試行は数えない。流し終えたら以後は開かない。
+ */
+export class ParadisMobileVoiceTaskGate {
+	private done = false;
+
+	constructor(private readonly open: () => IParadisBodyTeeSink | undefined) { }
+
+	openSink(): IParadisBodyTeeSink | undefined {
+		if (this.done) {
+			return undefined;
+		}
+		const inner = this.open();
+		if (inner === undefined) {
+			return undefined;
+		}
+		let wrote = false;
+		return {
+			write: chunk => {
+				wrote = true;
+				inner.write(chunk);
+			},
+			end: () => {
+				this.done = true;
+				inner.end();
+			},
+			abort: () => {
+				if (wrote) {
+					this.done = true;
+				}
+				inner.abort();
+			},
+		};
+	}
+}
+
+/** 手元の `--ingest` へ書く前に溜めておける量（これを超えるまでは本文の読み進めを止めない）。 */
+export const PARADIS_LOCAL_WRITE_BUFFER_BYTES = 1024 * 1024;
+
+/**
+ * 有界の列を通して、子の標準入力（`--ingest`）へ順に書く。本文の読み進め（とモバイルへの流れ）を、子の drain の待ちから
+ * 切り離すためのもの。書き込みに失敗したら以後は書かず {@link failed} を立てる（読み進めは止めない）。
+ */
+export class ParadisBoundedLocalWriter {
+	private readonly queue: Uint8Array[] = [];
+	private queuedBytes = 0;
+	private closed = false;
+	private _failed = false;
+	private _written = 0;
+	private wake: (() => void) | undefined;
+	private drained: (() => void) | undefined;
+	private readonly pump: Promise<void>;
+
+	constructor(private readonly write: (chunk: Uint8Array) => Promise<void>, private readonly limitBytes = PARADIS_LOCAL_WRITE_BUFFER_BYTES) {
+		this.pump = this.run();
+	}
+
+	get failed(): boolean {
+		return this._failed;
+	}
+
+	/** 書き終えたバイト数。 */
+	get written(): number {
+		return this._written;
+	}
+
+	/** 積む。溜まりすぎていれば、減るか失敗するまで待つ。 */
+	async push(chunk: Uint8Array): Promise<void> {
+		if (this._failed || this.closed) {
+			return;
+		}
+		this.queue.push(chunk);
+		this.queuedBytes += chunk.byteLength;
+		this.wake?.();
+		this.wake = undefined;
+		while (this.queuedBytes > this.limitBytes && !this._failed) {
+			await new Promise<void>(resolve => { this.drained = resolve; });
+			this.drained = undefined;
+		}
+	}
+
+	/** 書き込みをやめる（固まった書き込みを待っている push を抜けさせる）。 */
+	fail(): void {
+		this._failed = true;
+		this.drained?.();
+	}
+
+	/** 積み終えた。`discard` なら溜まっている分は書かない。書き込みが終わるまで待つ。 */
+	async close(discard = false): Promise<void> {
+		if (discard) {
+			this.queue.length = 0;
+			this.queuedBytes = 0;
+		}
+		this.closed = true;
+		this.wake?.();
+		this.wake = undefined;
+		this.drained?.();
+		await this.pump;
+	}
+
+	private async run(): Promise<void> {
+		for (; ;) {
+			if (this.queue.length === 0) {
+				if (this.closed) {
+					return;
+				}
+				await new Promise<void>(resolve => { this.wake = resolve; });
+				continue;
+			}
+			const chunk = this.queue.shift()!;
+			this.queuedBytes -= chunk.byteLength;
+			this.drained?.();
+			if (this._failed) {
+				continue;
+			}
+			try {
+				await this.write(chunk);
+				this._written += chunk.byteLength;
+			} catch {
+				this._failed = true;
+				this.drained?.();
+			}
+		}
+	}
+}

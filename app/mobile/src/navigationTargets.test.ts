@@ -22,7 +22,7 @@ function terminal(terminalKey: string, ws: string | undefined, extra: Partial<Te
 
 function workspace(terminals: Terminal[], complete = true): WorkspaceState {
 	return {
-		protocolVersion: 3,
+		protocolVersion: 4,
 		desktopEpoch: 'epoch',
 		revision: 1,
 		complete,

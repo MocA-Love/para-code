@@ -9,6 +9,8 @@
 // 読み上げを手元の aivis-mcp の worker 1 つへ流し込む口（`aivis-mcp --ingest`、aivis-mcp 2.5.0 以上）の
 // 型。通知の読み上げ（notifications）と SSH 先の声（agentBrowser）の両方が使う。
 
+import { IParadisMobileVoiceStreamWriter } from '../../mobileRelay/common/paradisMobileVoiceStream.js';
+
 /** `--ingest` を持つ aivis-mcp の最小の版。 */
 export const PARADIS_AIVIS_INGEST_MIN_VERSION: readonly [number, number, number] = [2, 5, 0];
 
@@ -86,4 +88,9 @@ export interface IParadisLocalVoiceOutput {
 	 * `gainKey` があれば音量の表で揃える（100 は超えない）。
 	 */
 	playFallback(audio: Uint8Array, gainKey?: string): Promise<void>;
+	/**
+	 * モバイルへの音声の流れを始める（受け取りながら書く）。`gainKey` からモバイルで当てる音量の補正を決める。
+	 * 無ければ全部受け取ってから 1 本まるごとで渡す。
+	 */
+	beginMobileVoiceStream?(gainKey?: string): IParadisMobileVoiceStreamWriter;
 }

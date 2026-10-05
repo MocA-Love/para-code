@@ -7,7 +7,7 @@
 
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
-import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
+import { decodePairingUri, deriveNotifyKey, toBase64, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
 import { MobileController, MobileWarmLeaseControllerRegistry, PcUnreachableError, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import type { AgentShellOutput } from './agentShells.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
@@ -49,8 +49,8 @@ import { defaultTerminalPrefs, normalizeTerminalPrefs, type TerminalPrefs, type 
 import { DEFAULT_CHAT_FONT_SIZE, loadChatFontSize, normalizeChatFontSize, saveChatFontSize, type ChatFontSize } from './chatTextScale.js';
 import { EMPTY_HIDDEN_MODELS, loadHiddenModels, replayHiddenModelOps, saveHiddenModels, withModelHidden, type HiddenModelOp, type HiddenModels, type ModelVisibilityAgent } from './modelVisibility.js';
 import { isTablet } from './hooks/useSizeClass.js';
-import { MobileVoiceLifecycle } from './voiceLifecycle.js';
-import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
+import { MobileVoiceLifecycle, type VoiceDelivery } from './voiceLifecycle.js';
+import { activateVoiceSession, appendVoiceStream, deactivateVoiceSession, endVoiceStream, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop, startVoiceStream } from '../modules/para-voice-session/index.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
 import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
 import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
@@ -473,7 +473,7 @@ interface AppState extends StoreState {
 	/** 音声通知（PCが作ったMP3のリレー配信）の購読制御。 */
 	voiceSubscribe(sid: string): Promise<{ ok?: boolean }>;
 	voiceUnsubscribe(sid: string): void;
-	setVoiceClipHandler(sid: string, handler: (base64: string) => void): void;
+	setVoiceClipHandler(sid: string, handler: (delivery: VoiceDelivery) => void): void;
 	/** sid が現在登録中のハンドラと一致する場合のみ解除する。 */
 	clearVoiceClipHandler(sid: string): void;
 	fetchTurnIceServers(): Promise<object[]>;
@@ -1257,8 +1257,22 @@ const voiceLifecycle = new MobileVoiceLifecycle({
 	onRemoteStop(handler) {
 		return onVoiceSessionRemoteStop(handler);
 	},
-	enqueueClip(base64) {
-		return enqueueVoiceClip(base64);
+	deliver(delivery) {
+		// ネイティブの同期の関数に届いた順で渡す（デコードと再生の順はネイティブの列が守る）
+		switch (delivery.kind) {
+			case 'clip':
+				enqueueVoiceClip(delivery.base64, delivery.gainDb);
+				return;
+			case 'stream-start':
+				startVoiceStream(delivery.streamId, delivery.gainDb);
+				return;
+			case 'stream-chunk':
+				appendVoiceStream(delivery.streamId, toBase64(delivery.data));
+				return;
+			case 'stream-end':
+				endVoiceStream(delivery.streamId, delivery.aborted);
+				return;
+		}
 	},
 	afterStop() {
 		if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().manualOffline) {

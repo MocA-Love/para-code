@@ -59,7 +59,7 @@ suite('ParadisMobileWorkspaceProvider viewport take-back', () => {
 		}) as unknown as ITakebackFixture;
 		let operation = 0;
 		const inbound = (message: Record<string, unknown>, mobileId = 'phone') => provider.handleTerminalInbound(
-			VSBuffer.fromString(JSON.stringify({ protocolVersion: 3, desktopEpoch: 'epoch', operationId: `op-${++operation}`, terminalKey: 'terminal-1', ...message })),
+			VSBuffer.fromString(JSON.stringify({ protocolVersion: 4, desktopEpoch: 'epoch', operationId: `op-${++operation}`, terminalKey: 'terminal-1', ...message })),
 			mobileId,
 		);
 		// PC の restore は「無害な override を挟んでから外す」の 2 段なので、1 回の戻しは 2 行になる。

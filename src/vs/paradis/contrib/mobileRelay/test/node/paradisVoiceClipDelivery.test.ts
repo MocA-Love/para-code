@@ -9,120 +9,192 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Channels, ChannelId } from '../../common/paradisMobileProtocol.js';
+import { paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk } from '../../common/paradisMobileVoiceStream.js';
 import { PARADIS_VOICE_SUBSCRIPTION_TTL_MS, ParadisVoiceSubscriptions } from '../../common/paradisVoiceSubscriptions.js';
-import { IParadisVoiceClipSession, paradisDeliverVoiceClip } from '../../node/paradisVoiceClipDelivery.js';
+import { IParadisVoiceClipSession, paradisCreateVoiceDelivery } from '../../node/paradisVoiceClipDelivery.js';
 
-suite('ParadisVoiceClipDelivery', () => {
+const STREAM_ID = '00112233445566778899aabbccddeeff';
+
+interface ISentFrame {
+	readonly mobileId: string;
+	readonly channel: ChannelId;
+	readonly workspace: string | undefined;
+	readonly payload: Uint8Array;
+}
+
+class FakeSession implements IParadisVoiceClipSession {
+	hasCurrentProtocol = true;
+	isOnline = true;
+	epoch = 1;
+	capabilities: readonly string[] | undefined = ['voice.clips.v1', 'voice.stream.v1'];
+
+	constructor(private readonly mobileId: string, private readonly sent: ISentFrame[]) { }
+
+	readonly sendFrame = async (channel: ChannelId, workspace: string | undefined, payload: Uint8Array) => {
+		this.sent.push({ mobileId: this.mobileId, channel, workspace, payload });
+	};
+}
+
+/** 送った browser のフレームを読める形にする（JSON はそのまま、2 進の断片は印・番号・長さ）。 */
+function describeFrame(frame: ISentFrame): unknown {
+	if (paradisIsVoiceStreamChunk(frame.payload)) {
+		const chunk = paradisDecodeVoiceStreamChunk(frame.payload)!;
+		return { to: frame.mobileId, chunk: { streamId: chunk.streamId, seq: chunk.seq, bytes: chunk.data.length } };
+	}
+	return { to: frame.mobileId, ...JSON.parse(new TextDecoder().decode(frame.payload)) };
+}
+
+function setup(options: { congestion?: number } = {}) {
+	const subscriptions = new ParadisVoiceSubscriptions();
+	const sent: ISentFrame[] = [];
+	const sessions = new Map<string, FakeSession>();
+	const timers: (() => void)[] = [];
+	const warnings: string[] = [];
+	let congestion = options.congestion ?? 0;
+	const delivery = paradisCreateVoiceDelivery(subscriptions, {
+		getSession: mobileId => sessions.get(mobileId),
+		congestionBytes: () => congestion,
+		warn: message => warnings.push(message),
+	});
+	const addMobile = (mobileId: string, sid: string) => {
+		const session = new FakeSession(mobileId, sent);
+		sessions.set(mobileId, session);
+		subscriptions.start(mobileId, sid, Date.now());
+		return session;
+	};
+	return { subscriptions, sent, sessions, timers, warnings, delivery, addMobile, setCongestion: (value: number) => { congestion = value; } };
+}
+
+suite('ParadisMobileVoiceDelivery', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('sends browser voice-clip wire data as base64 MP3', async () => {
-		const subscriptions = new ParadisVoiceSubscriptions();
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		const sent: { readonly channel: ChannelId; readonly workspace: string | undefined; readonly payload: Uint8Array }[] = [];
-		const session: IParadisVoiceClipSession = {
-			hasCurrentProtocol: true,
-			isOnline: true,
-			sendFrame: async (channel, workspace, payload) => { sent.push({ channel, workspace, payload }); },
-		};
+	test('streams to a mobile that advertises voice.stream.v1 and sends one clip with gainDb to a mobile that does not', () => {
+		const { sent, delivery, addMobile } = setup();
+		addMobile('new-app', 'sid-new');
+		addMobile('old-app', 'sid-old').capabilities = ['voice.clips.v1'];
 
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(0, 1, 2, 253, 254, 255), 2_000, {
-			getSession: mobileId => mobileId === 'mobile-1' ? session : undefined,
-			warn: message => assert.fail(message),
-		});
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: 4.1 });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array([1, 2, 3]) });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(9000) });
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: false });
 
-		assert.deepStrictEqual({
-			channel: sent[0]?.channel,
-			workspace: sent[0]?.workspace,
-			wire: JSON.parse(new TextDecoder().decode(sent[0]?.payload)),
-		}, {
-			channel: Channels.Browser,
-			workspace: undefined,
-			wire: { t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'AAEC/f7/' },
+		assert.deepStrictEqual({ channels: [...new Set(sent.map(frame => `${frame.channel}:${frame.workspace}`))], frames: sent.map(describeFrame) }, {
+			channels: [`${Channels.Browser}:undefined`],
+			frames: [
+				{ to: 'new-app', t: 'voice-stream-start', sid: 'sid-new', streamId: STREAM_ID, mime: 'audio/mpeg', gainDb: 4.1, epoch: 1 },
+				// 最初の音はすぐ送る
+				{ to: 'new-app', chunk: { streamId: STREAM_ID, seq: 0, bytes: 3 } },
+				// 8KiB を超えたらまとめて送る
+				{ to: 'new-app', chunk: { streamId: STREAM_ID, seq: 1, bytes: 9000 } },
+				{ to: 'new-app', t: 'voice-stream-end', streamId: STREAM_ID, seq: 2, bytes: 9003, aborted: false },
+				{ to: 'old-app', t: 'voice-clip', sid: 'sid-old', mime: 'audio/mpeg', data: Buffer.from(new Uint8Array([1, 2, 3, ...new Uint8Array(9000)])).toString('base64'), gainDb: 4.1 },
+			],
 		});
 	});
 
-	test('drops a duplicate clip while the previous send is in flight', async () => {
-		const subscriptions = new ParadisVoiceSubscriptions();
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		let releaseSend: () => void = () => assert.fail('send did not start');
-		let sendCount = 0;
-		const warnings: string[] = [];
-		const session: IParadisVoiceClipSession = {
-			hasCurrentProtocol: true,
-			isOnline: true,
-			sendFrame: async () => {
-				sendCount++;
-				await new Promise<void>(resolve => { releaseSend = resolve; });
-			},
-		};
-		const options = {
-			getSession: () => session,
-			warn: (message: string) => { warnings.push(message); },
-		};
+	test('batches small chunks for 100 ms after the first one', async () => {
+		const { sent, delivery, addMobile } = setup();
+		addMobile('mobile-1', 'sid-1');
 
-		const firstDelivery = paradisDeliverVoiceClip(subscriptions, Uint8Array.of(1), 2_000, options);
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(2), 2_001, options);
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: 0 });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(10) });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(20) });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(30) });
+		const beforeTimer = sent.length;
+		await new Promise(resolve => setTimeout(resolve, 150));
+		const afterTimer = sent.map(describeFrame).slice(beforeTimer);
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: false });
 
-		assert.deepStrictEqual({ sendCount, warnings }, {
-			sendCount: 1,
-			warnings: ['[paradisMobileRelay] voice clip dropped while the previous clip is still in flight'],
-		});
-		releaseSend();
-		await firstDelivery;
-	});
-
-	test('logs a send failure and releases the guard for the next clip', async () => {
-		const subscriptions = new ParadisVoiceSubscriptions();
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		let sendCount = 0;
-		const warnings: { readonly message: string; readonly error: unknown }[] = [];
-		const session: IParadisVoiceClipSession = {
-			hasCurrentProtocol: true,
-			isOnline: true,
-			sendFrame: async () => {
-				sendCount++;
-				if (sendCount === 1) {
-					throw new Error('send failed');
-				}
-			},
-		};
-		const options = {
-			getSession: () => session,
-			warn: (message: string, error?: unknown) => { warnings.push({ message, error }); },
-		};
-
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(1), 2_000, options);
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(2), 2_001, options);
-
-		assert.deepStrictEqual({
-			sendCount,
-			warnings: warnings.map(({ message, error }) => ({ message, error: error instanceof Error ? error.message : error })),
-		}, {
-			sendCount: 2,
-			warnings: [{ message: '[paradisMobileRelay] voice clip send failed', error: 'send failed' }],
+		assert.deepStrictEqual({ beforeTimer, afterTimer, end: describeFrame(sent[sent.length - 1]) }, {
+			beforeTimer: 2,
+			afterTimer: [{ to: 'mobile-1', chunk: { streamId: STREAM_ID, seq: 1, bytes: 50 } }],
+			end: { to: 'mobile-1', t: 'voice-stream-end', streamId: STREAM_ID, seq: 2, bytes: 60, aborted: false },
 		});
 	});
 
-	test('excludes offline sessions without discarding them before the 60 second TTL', async () => {
-		const subscriptions = new ParadisVoiceSubscriptions();
-		subscriptions.start('mobile-1', 'sid-1', 1_000);
-		let online = false;
-		let sendCount = 0;
-		const session: IParadisVoiceClipSession = {
-			hasCurrentProtocol: true,
-			get isOnline() { return online; },
-			sendFrame: async () => { sendCount++; },
-		};
-		const options = {
-			getSession: () => session,
-			warn: (message: string) => assert.fail(message),
-		};
+	test('sends the whole utterance as one clip when the relay socket is congested at the first audio', () => {
+		const { sent, delivery, addMobile, setCongestion } = setup({ congestion: 300 * 1024 });
+		addMobile('mobile-1', 'sid-1');
 
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(1), 2_000, options);
-		online = true;
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(2), 1_000 + PARADIS_VOICE_SUBSCRIPTION_TTL_MS, options);
-		await paradisDeliverVoiceClip(subscriptions, Uint8Array.of(3), 1_000 + PARADIS_VOICE_SUBSCRIPTION_TTL_MS + 1, options);
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: -7.4 });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array([1]) });
+		// 途中で空いても、鳴り始めで決めた送り方は変えない
+		setCongestion(0);
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array([2]) });
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: false });
 
-		assert.deepStrictEqual({ ttl: PARADIS_VOICE_SUBSCRIPTION_TTL_MS, sendCount }, { ttl: 60_000, sendCount: 1 });
+		assert.deepStrictEqual(sent.map(describeFrame), [
+			{ to: 'mobile-1', t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'AQI=', gainDb: -7.4 },
+		]);
+	});
+
+	test('always ends a started stream with aborted when the source stops, and sends no clip', () => {
+		const { sent, delivery, addMobile } = setup();
+		addMobile('mobile-1', 'sid-1');
+		addMobile('old-app', 'sid-old').capabilities = undefined;
+
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: 0 });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array([1]) });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array([2]) });
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: true });
+
+		assert.deepStrictEqual(sent.map(describeFrame).filter(frame => (frame as { t?: string }).t !== 'voice-stream-start'), [
+			{ to: 'mobile-1', chunk: { streamId: STREAM_ID, seq: 0, bytes: 1 } },
+			{ to: 'mobile-1', t: 'voice-stream-end', streamId: STREAM_ID, seq: 1, bytes: 1, aborted: true },
+		]);
+	});
+
+	test('sends nothing for a stream that never produced audio', () => {
+		const { sent, delivery, addMobile } = setup();
+		addMobile('mobile-1', 'sid-1');
+
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: 0 });
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: true });
+
+		assert.deepStrictEqual(sent, []);
+	});
+
+	test('stops sending when the session epoch changes, and ends with aborted when the mobile unsubscribes', () => {
+		const { sent, delivery, addMobile, subscriptions } = setup();
+		const reconnected = addMobile('reconnected', 'sid-a');
+		addMobile('stopped', 'sid-b');
+
+		delivery.handle({ kind: 'stream-start', streamId: STREAM_ID, gainDb: 0 });
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(10_000) });
+		reconnected.epoch = 2;
+		subscriptions.stop('stopped', 'sid-b');
+		delivery.handle({ kind: 'stream-data', streamId: STREAM_ID, chunk: new Uint8Array(10_000) });
+		delivery.handle({ kind: 'stream-end', streamId: STREAM_ID, aborted: false });
+
+		assert.deepStrictEqual(sent.map(describeFrame).filter(frame => (frame as { t?: string }).t !== 'voice-stream-start'), [
+			{ to: 'reconnected', chunk: { streamId: STREAM_ID, seq: 0, bytes: 10_000 } },
+			{ to: 'stopped', chunk: { streamId: STREAM_ID, seq: 0, bytes: 10_000 } },
+			// 張り直した端末には何も送らない（新しいセッションのアプリはこの流れを知らない）
+			{ to: 'stopped', t: 'voice-stream-end', streamId: STREAM_ID, seq: 1, bytes: 10_000, aborted: true },
+		]);
+	});
+
+	test('delivers every clip in order without dropping the second one while the first is in flight', () => {
+		const { sent, delivery, addMobile } = setup();
+		addMobile('mobile-1', 'sid-1');
+
+		delivery.handle({ kind: 'clip', audio: Uint8Array.of(0, 1, 2, 253, 254, 255), gainDb: 1.4 });
+		delivery.handle({ kind: 'clip', audio: Uint8Array.of(9), gainDb: 99 });
+
+		assert.deepStrictEqual(sent.map(describeFrame), [
+			{ to: 'mobile-1', t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'AAEC/f7/', gainDb: 1.4 },
+			{ to: 'mobile-1', t: 'voice-clip', sid: 'sid-1', mime: 'audio/mpeg', data: 'CQ==', gainDb: 8 },
+		]);
+	});
+
+	test('excludes offline sessions and expired subscriptions', () => {
+		const { sent, delivery, addMobile, subscriptions } = setup();
+		addMobile('offline', 'sid-1').isOnline = false;
+		addMobile('expired', 'sid-2');
+		subscriptions.start('expired', 'sid-2', Date.now() - PARADIS_VOICE_SUBSCRIPTION_TTL_MS - 1);
+
+		delivery.handle({ kind: 'clip', audio: Uint8Array.of(1), gainDb: 0 });
+
+		assert.deepStrictEqual(sent, []);
 	});
 });

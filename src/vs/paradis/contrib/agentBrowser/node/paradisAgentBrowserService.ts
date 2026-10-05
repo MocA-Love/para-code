@@ -2569,6 +2569,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				voiceOutput: this.localVoiceOutput,
 				playViaPlayAudio: (audio, options) => this._localVoicePlayer.play(audio, options),
 				publishMobileVoiceClip,
+				// モバイルへは受け取りながら流す（通知サービスが流れを作る。モバイルへ届ける口があるときだけ）
+				beginMobileVoiceStream: publishMobileVoiceClip !== undefined && this.localVoiceOutput?.beginMobileVoiceStream !== undefined
+					? gainKey => this.localVoiceOutput!.beginMobileVoiceStream!(gainKey)
+					: undefined,
 				reserveBytes: bytes => voiceReservation.grow(bytes),
 				// 手元で積む待ちの間、音声取込の枠を握り続けない（手元の拡張機能ホストの発話が断られる）
 				onBodyReceived: () => {

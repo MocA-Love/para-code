@@ -85,6 +85,6 @@ suite('ParadisMobileCompat', () => {
 	});
 
 	test('個々の操作の版は窓の中（最低版〜自分の版）だけを受け付ける', () => {
-		assert.deepStrictEqual([2, 3, 4, '3', undefined].map(paradisIsAcceptedMobileWireVersion), [false, true, false, false, false]);
+		assert.deepStrictEqual([2, 3, 4, 5, '4', undefined].map(paradisIsAcceptedMobileWireVersion), [false, false, true, false, false, false]);
 	});
 });

@@ -5,7 +5,7 @@ import { FS_BINARY_UPLOAD_ENCODING, decodeBinaryFsUpload, encodeBinaryFsUpload, 
 
 const metadata = {
 	id: 'request-42',
-	protocolVersion: 3 as const,
+	protocolVersion: 4 as const,
 	desktopEpoch: 'desktop-epoch',
 	windowId: 7,
 	ws: 'repo:main',

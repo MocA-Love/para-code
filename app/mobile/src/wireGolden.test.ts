@@ -145,26 +145,34 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
-	it('W2-17 より前の PC の State も受け付け、機能は何も持っていない扱いにする', async () => {
+	it('版 3 の PC（W2-17 より前を含む）の State は受け付けず、PC の更新を求める（mux の版 4）', async () => {
 		const { controller, pcMux, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.preW217));
 		await flush();
 		expect({
 			ready: latest()?.sessionProtocolReady,
-			terminals: latest()?.workspace?.terminals.length,
-			capabilities: latest()?.workspace?.capabilities,
-			termSync: controller.hasPcCapability(PcCapability.TermSync),
-		}).toEqual({ ready: true, terminals: 1, capabilities: undefined, termSync: false });
+			updateRequired: latest()?.updateRequired,
+			workspace: latest()?.workspace,
+		}).toEqual({ ready: false, updateRequired: 'pc', workspace: undefined });
+		controller.disconnect();
+	});
+
+	it('版 4 の PC が版の合わないアプリへ送る、版だけの案内でもアプリの更新を言い分ける', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode({ protocolVersion: 5, minCompatibleMobile: 5 }));
+		await flush();
+		expect({ ready: latest()?.sessionProtocolReady, updateRequired: latest()?.updateRequired }).toEqual({ ready: false, updateRequired: 'app' });
 		controller.disconnect();
 	});
 
 	it('版が合わないとき、アプリと PC のどちらを更新すべきかを言い分ける', async () => {
 		const verdicts: Array<[string, unknown]> = [];
 		for (const [name, state] of [
-			['PC が新しくアプリを切った', { ...stateGolden.current, protocolVersion: 4, minCompatibleMobile: 4 }],
-			['W2-17 より前の新しい PC', { ...stateGolden.preW217, protocolVersion: 4 }],
+			['PC が新しくアプリを切った', { ...stateGolden.current, protocolVersion: 5, minCompatibleMobile: 5 }],
+			['W2-17 より前の新しい PC', { ...stateGolden.preW217, protocolVersion: 5 }],
 			['古い PC', { ...stateGolden.preW217, protocolVersion: 2 }],
-			['PC が新しいが窓の中', { ...stateGolden.current, protocolVersion: 4, minCompatibleMobile: 3 }],
+			['版 3 の PC', { ...stateGolden.current, protocolVersion: 3, minCompatibleMobile: 3 }],
+			['PC が新しいが窓の中', { ...stateGolden.current, protocolVersion: 5, minCompatibleMobile: 4 }],
 		] as const) {
 			const { controller, pcMux, latest } = await connect();
 			pcMux.send(Channels.State, encode(state));
@@ -176,6 +184,7 @@ describe('wire golden (app side)', () => {
 			['PC が新しくアプリを切った', 'app'],
 			['W2-17 より前の新しい PC', 'app'],
 			['古い PC', 'pc'],
+			['版 3 の PC', 'pc'],
 			['PC が新しいが窓の中', 'ok'],
 		]);
 	});
@@ -558,8 +567,8 @@ describe('wire golden (app side)', () => {
 			failed: await failed,
 			pushed,
 		}).toEqual({
-			request: { id: true, t: 'goldenPush', ws: 'repo', remote: 'origin', protocolVersion: 3, desktopEpoch: 'golden-desktop-epoch', windowId: 1 },
-			wsLess: { id: second?.id, t: 'goldenWsLess', protocolVersion: 3, desktopEpoch: 'golden-desktop-epoch', windowId: 1, rendererGeneration: 2 },
+			request: { id: true, t: 'goldenPush', ws: 'repo', remote: 'origin', protocolVersion: 4, desktopEpoch: 'golden-desktop-epoch', windowId: 1 },
+			wsLess: { id: second?.id, t: 'goldenWsLess', protocolVersion: 4, desktopEpoch: 'golden-desktop-epoch', windowId: 1, rendererGeneration: 2 },
 			ok: { id: first?.id, t: 'goldenPush', ok: true },
 			failed: 'rejected by PC',
 			pushed: [{ t: 'goldenProgress', step: 1 }],
@@ -623,7 +632,7 @@ describe('wire golden (app side)', () => {
 			page: browserGolden.toMobile.find(message => message.t === 'page'),
 			focus: browserGolden.toMobile.filter(message => message.t === 'focus').at(-1),
 			rejected: { ...browserGolden.toMobile.find(message => message.t === 'inputRejected'), n: 1 },
-			bookmarksRequest: shapeOf({ ...browserGolden.bookmarks.toPc, protocolVersion: 3, desktopEpoch: 'e', windowId: 1, rendererGeneration: 2 }),
+			bookmarksRequest: shapeOf({ ...browserGolden.bookmarks.toPc, protocolVersion: 4, desktopEpoch: 'e', windowId: 1, rendererGeneration: 2 }),
 			bookmarksResult: goldenBookmarks,
 			pushed: ['bookmarksChanged'],
 		});
@@ -632,7 +641,7 @@ describe('wire golden (app side)', () => {
 
 	it('browser: browser.space.v1 の無い PC には targets にスペースを付けない', async () => {
 		const { controller, pcMux, sent } = await connect();
-		pcMux.send(Channels.State, encode(stateGolden.preW217));
+		pcMux.send(Channels.State, encode({ ...stateGolden.current, capabilities: (stateGolden.current['capabilities'] as string[]).filter(name => name !== 'browser.space.v1') }));
 		await flush();
 		void controller.browserTargets({ windowId: 1, ws: 'repo' }).catch(() => undefined);
 		await flush();

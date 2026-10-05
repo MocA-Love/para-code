@@ -76,7 +76,7 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			workspaces: [{ id: 'repo', name: 'Repo' }],
 			terminals: [],
 		});
-		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo' };
+		const target = { protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, ws: 'repo' };
 		await send(Channels.Fs, { t: 'read', id: 'fs-1', path: 'README.md', ...target });
 		await send(Channels.Scm, { t: 'status', id: 'scm-1', ...target });
 
@@ -95,7 +95,7 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			workspaces: [{ id: 'repo', name: 'Repo' }],
 			terminals: [],
 		});
-		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
+		const target = { protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
 		await send(Channels.Fs, { t: 'usage', id: 'usage-1', ...target });
 
 		assert.deepStrictEqual(delivered.map(frame => [frame[0], frame[1]]), [
@@ -110,7 +110,7 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			workspaces: [{ id: 'repo', name: 'Repo' }],
 			terminals: [],
 		});
-		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 1 };
+		const target = { protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 1 };
 		await send(Channels.Fs, { t: 'usage', id: 'usage-1', ...target });
 
 		assert.deepStrictEqual(delivered, []);
@@ -126,7 +126,7 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			workspaces: [{ id: 'repo', name: 'Repo' }],
 			terminals: [],
 		});
-		const target = { protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
+		const target = { protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7, rendererGeneration: 2 };
 		await send(Channels.Fs, { t: 'upload', id: 'upload-1', name: 'a.png', data: 'AA==', ...target });
 
 		assert.deepStrictEqual(delivered, []);
@@ -139,7 +139,7 @@ suite('ParadisMobileRelay warm lease routing', () => {
 			workspaces: [{ id: 'repo', name: 'Repo' }],
 			terminals: [],
 		});
-		await send(Channels.Fs, { t: 'usage', id: 'usage-1', protocolVersion: 3, desktopEpoch: 'desktop-epoch', windowId: 7 });
+		await send(Channels.Fs, { t: 'usage', id: 'usage-1', protocolVersion: 4, desktopEpoch: 'desktop-epoch', windowId: 7 });
 
 		assert.deepStrictEqual(delivered, []);
 	});

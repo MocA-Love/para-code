@@ -7,44 +7,43 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ChannelId, Channels } from '../common/paradisMobileProtocol.js';
-import { paradisDeliverVoiceClip as deliverVoiceClip, ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
+import { ParadisMobileVoiceDelivery, ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
 
-/** The MobileSession surface needed by voice clip delivery. */
+/** The MobileSession surface needed by voice delivery. */
 export interface IParadisVoiceClipSession {
 	readonly hasCurrentProtocol: boolean;
 	readonly isOnline: boolean;
+	readonly epoch: number;
+	readonly capabilities: readonly string[] | undefined;
 	readonly sendFrame: (channel: ChannelId, workspace: string | undefined, payload: Uint8Array) => Promise<void>;
 }
 
-/** Relay service boundaries used by voice clip delivery. */
+/** Relay service boundaries used by voice delivery. */
 export interface IParadisVoiceClipDeliveryOptions {
 	readonly getSession: (mobileId: string) => IParadisVoiceClipSession | undefined;
+	/** PC からリレーへのソケット全体の送信の詰まり。 */
+	readonly congestionBytes: () => number;
 	readonly warn: (message: string, error?: unknown) => void;
 }
 
-/** Encodes and sends one MP3 clip with the production relay wire and failure handling. */
-export function paradisDeliverVoiceClip(
-	subscriptions: ParadisVoiceSubscriptions,
-	clip: Uint8Array,
-	now: number,
-	options: IParadisVoiceClipDeliveryOptions,
-): Promise<void> {
-	return deliverVoiceClip(subscriptions, clip, {
-		now,
-		isOnline: mobileId => {
+/** 本番の配信（browser チャネル・Buffer の base64）で {@link ParadisMobileVoiceDelivery} を作る。 */
+export function paradisCreateVoiceDelivery(subscriptions: ParadisVoiceSubscriptions, options: IParadisVoiceClipDeliveryOptions): ParadisMobileVoiceDelivery {
+	return new ParadisMobileVoiceDelivery(subscriptions, {
+		getSession: mobileId => {
 			const session = options.getSession(mobileId);
-			return session?.hasCurrentProtocol === true && session.isOnline;
-		},
-		encodeBase64: bytes => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64'),
-		send: async (mobileId, payload) => {
-			const session = options.getSession(mobileId);
-			if (session?.hasCurrentProtocol && session.isOnline) {
-				await session.sendFrame(Channels.Browser, undefined, payload);
+			if (session === undefined) {
+				return undefined;
 			}
+			return {
+				get hasCurrentProtocol() { return session.hasCurrentProtocol; },
+				get isOnline() { return session.isOnline; },
+				get epoch() { return session.epoch; },
+				get capabilities() { return session.capabilities; },
+				sendFrame: payload => session.sendFrame(Channels.Browser, undefined, payload),
+			};
 		},
-		onDropInFlight: () => {
-			options.warn('[paradisMobileRelay] voice clip dropped while the previous clip is still in flight');
-		},
-		onSendError: error => options.warn('[paradisMobileRelay] voice clip send failed', error),
+		congestionBytes: options.congestionBytes,
+		encodeBase64: bytes => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64'),
+		warn: options.warn,
 	});
 }
