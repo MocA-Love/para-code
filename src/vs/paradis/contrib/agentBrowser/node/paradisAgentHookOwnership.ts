@@ -23,13 +23,15 @@
 //   - 現所有者が生存しているのに祖先にいない     → invalid（誤配送。破棄）
 //   - 祖先に Claude Code の daemon がいる         → background（`/fork` の分岐先・`claude --bg`。後述）
 //     ただし、ペインのシェルの子孫の `claude attach <id>` が見ている会話は、その attach を所有者にする
-//   - 所有者がいない（未確定・pid 不明・死亡）のに、発信元がペインのシェルの子孫でない → invalid
-//     （detached で起動された別エージェントが、継承したトークンで所有者になるのを防ぐ。tmux 等は例外）
+//   - 所有者がいない（未確定・pid 不明・死亡）のに、発信元がペインのシェルの子孫でなく、Claude Code の
+//     Codex plugin が起動した codex と判定できる → invalid（plugin が detached で起動した `codex app-server` が、
+//     継承したトークンで所有者になるのを防ぐ。素の `codex` の共有 daemon や tmux 等は従来どおり後継になれる）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
 // 既知の所有者と同じtranscriptへのイベントだけを通す。
 
 import { exec } from 'child_process';
 import { statSync } from 'fs';
+import { open } from 'fs/promises';
 import { promisify } from 'util';
 import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
 import { paradisIsWithinCodexHome } from './paradisAgentHome.js';
@@ -45,6 +47,13 @@ const MAX_ANCESTOR_DEPTH = 15;
 const MAX_OWNER_RECORDS = 4_096;
 /** ペインのシェルの子孫かを確かめるときに辿る深さの上限（祖先チェーンの上限より深い入れ子も拾う）。 */
 const MAX_PANE_DESCENT_DEPTH = 64;
+/**
+ * rollout の先頭から読む量。session_meta の行は 20KB 前後あるが、`originator` は先頭 1KB 以内にある
+ * （Codex 0.157 の rollout で実測。後ろに長い base_instructions が続く）。
+ */
+const ROLLOUT_HEAD_BYTES = 16 * 1024;
+/** rollout の起動元の控えの上限。 */
+const MAX_ROLLOUT_ORIGINATOR_CACHE = 256;
 
 export type ParadisHookAgentKind = 'claude' | 'codex';
 
@@ -522,6 +531,39 @@ function isAttachTargetSession(attachTarget: string, sessionId: string | undefin
  * シェルを通らないので、所有者の後継をペインのシェルの子孫に絞る判定から外す（NOTES.md「hook 所有者判定の
  * 既知の制限」）。Linux の tmux サーバーは `tmux: server (…)` と見えるので末尾の `:` も許す。
  */
+/**
+ * Claude Code の Codex plugin（`openai-codex` marketplace の `codex`）が detached で起動するスクリプト。
+ * `app-server-broker.mjs serve …` は `codex app-server` の親に残り、`codex-companion.mjs task-worker …` は
+ * バックグラウンドの作業を動かす（plugin 1.0.6 で実測。どちらも親は PID 1 で、ペインのトークンを env に持つ）。
+ * Windows でも Win32_Process の CommandLine に同じパスが出る（自分のユーザーのプロセスなら取れる）。
+ */
+const CODEX_PLUGIN_SCRIPT = /(?:^|[\\/\s"'])(?:app-server-broker|codex-companion)\.mjs(?:$|[\s"'])/i;
+/** plugin のキャッシュ・marketplace のパス（`…/plugins/cache/openai-codex/…`・`…/plugins/marketplaces/openai-codex/…`）。 */
+const CODEX_PLUGIN_PATH = /[\\/]plugins[\\/](?:cache|marketplaces)[\\/]openai-codex[\\/]/i;
+
+/** Claude Code の Codex plugin が起動したプロセス（broker・companion）の起動行か。 */
+export function paradisIsCodexPluginCommand(command: string): boolean {
+	return CODEX_PLUGIN_SCRIPT.test(command) || CODEX_PLUGIN_PATH.test(command);
+}
+
+/** rollout の session_meta の起動元が Claude Code（Codex plugin が app-server へ名乗る `originator`）か。 */
+const CLAUDE_CODE_ROLLOUT_ORIGINATOR = /"originator"\s*:\s*"Claude Code"/;
+
+/** rollout の先頭（最初の行の session_meta）を読む。読めなければ undefined。 */
+async function readRolloutHead(transcriptPath: string): Promise<string | undefined> {
+	let handle;
+	try {
+		handle = await open(transcriptPath, 'r');
+		const buffer = Buffer.alloc(ROLLOUT_HEAD_BYTES);
+		const { bytesRead } = await handle.read(buffer, 0, ROLLOUT_HEAD_BYTES, 0);
+		return buffer.toString('utf8', 0, bytesRead);
+	} catch {
+		return undefined;
+	} finally {
+		await handle?.close().catch(() => undefined);
+	}
+}
+
 const TERMINAL_MULTIPLEXER_BASENAMES = /^(?:tmux|zellij|screen|dtach|abduco)(?::)?$/;
 
 function isTerminalMultiplexerCommand(command: string): boolean {
@@ -663,15 +705,19 @@ export interface IParadisHookClassifyInput {
 export class ParadisAgentHookOwnership {
 
 	private readonly owners = new Map<string, IOwnerRecord>();
+	/** rollout ごとの「Claude Code が起動元か」（session_meta は書き換わらないので一度読めば足りる）。 */
+	private readonly rolloutFromClaudeCode = new Map<string, boolean>();
 
 	/**
 	 * @param selfPid Para Code 自身のプロセス。これとその祖先はペインの外なので、hook の祖先チェーンから外す
 	 * （Para Code をエージェントの中から起動すると、その外側のエージェントが全ペインの所有者になり、
 	 * ペインの中のエージェントの hook がすべて nested 扱いになるため）。
+	 * @param readTranscriptHead rollout の先頭を読む（テストでは fake へ差し替える）。
 	 */
 	constructor(
 		private readonly inspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector(),
 		private readonly selfPid: number = process.pid,
+		private readonly readTranscriptHead: (transcriptPath: string) => Promise<string | undefined> = readRolloutHead,
 	) { }
 
 	/** ペイン終了時に所有権を破棄する。 */
@@ -725,11 +771,13 @@ export class ParadisAgentHookOwnership {
 			// hookを送ってくる。所有者が終わった後はそれが後継になり、状態がこのペインに出る
 			// （NOTES.md の「hook 所有者判定の既知の制限」参照）。後継をペインのシェルの配下に絞ると、
 			// 同じペインで tmux のエージェントを起動し直したときに状態が出なくなるので絞らない。
-			// 後継はペインのシェルの子孫に限る。Claude Code の Codex plugin が detached で起動した `codex app-server`
-			// （親は PID 1）のように、ペインの外で動くのにトークンだけを継承したエージェントが、所有者のいない
-			// 隙（`claude attach` の会話・pid の無い所有者・Para Code の再起動直後）にペインの会話を奪わないようにする。
-			// tmux 等のサーバー配下のエージェントは上の既知の制限のとおり絞らない。
-			if (paneShellPid !== undefined && !chain.some(entry => isTerminalMultiplexerCommand(entry.command)) && !this.isDescendantOf(snapshot, emitter.pid, paneShellPid)) {
+			// Claude Code の Codex plugin が detached で起動した `codex app-server`（親は PID 1 の broker）は、
+			// ペインの外で動くのにトークンだけを継承している。所有者のいない隙（`claude attach` の会話・pid の無い
+			// 所有者・Para Code の再起動直後）にペインの会話を奪わないよう、ペインのシェルの子孫でない発信元のうち
+			// plugin 由来と判定できるものは後継にしない。素の `codex` の共有 daemon（TUI の起動し直しの後は親を
+			// 辿ってもペインのシェルに届かない）は従来どおり後継になれる。tmux 等のサーバー配下も上の既知の制限のとおり絞らない。
+			if (paneShellPid !== undefined && !chain.some(entry => isTerminalMultiplexerCommand(entry.command)) && !this.isDescendantOf(snapshot, emitter.pid, paneShellPid)
+				&& await this.isCodexPluginOrigin(chain, emitter, eventKind, transcriptPath)) {
 				return {
 					origin: 'invalid', agentKind: emitterKind,
 					rejection: {
@@ -813,6 +861,43 @@ export class ParadisAgentHookOwnership {
 			return { origin: 'nested', agentKind: paradisHookAgentKindFromCommandLine(inner.command) };
 		}
 		return { origin: 'background', agentKind: eventKind ?? 'claude' };
+	}
+
+	/**
+	 * 発信元が Claude Code の Codex plugin の起動した codex か。祖先（発信元を含む）に plugin の broker・companion が
+	 * いるか、rollout の session_meta の `originator` が "Claude Code" なら true。起動行が取れない（Windows で
+	 * CommandLine が空になり Name だけが見える等）ときも rollout で判定できる。rollout がまだ無い（Codex は最初の
+	 * ターンで rollout を作る）ときは判定できないので false（後継にする側）に倒す。
+	 */
+	private async isCodexPluginOrigin(chain: readonly IParadisHookProcessInfo[], emitter: IParadisHookProcessInfo, eventKind: ParadisHookAgentKind | undefined, transcriptPath: string | undefined): Promise<boolean> {
+		const emitterIndex = chain.findIndex(entry => entry.pid === emitter.pid);
+		if (chain.slice(Math.max(0, emitterIndex)).some(entry => paradisIsCodexPluginCommand(entry.command))) {
+			return true;
+		}
+		if (transcriptPath === undefined || eventKind !== 'codex') {
+			return false;
+		}
+		const cached = this.rolloutFromClaudeCode.get(transcriptPath);
+		if (cached !== undefined) {
+			return cached;
+		}
+		const head = await this.readTranscriptHead(transcriptPath);
+		if (head === undefined || head.length === 0) {
+			// rollout がまだ無い・読めない。次の hook で読み直す。
+			return false;
+		}
+		const newline = head.indexOf('\n');
+		const firstLine = newline >= 0 ? head.slice(0, newline) : head;
+		if (!firstLine.includes('"session_meta"')) {
+			// 先頭の行が書きかけ。次の hook で読み直す。
+			return false;
+		}
+		const fromClaudeCode = CLAUDE_CODE_ROLLOUT_ORIGINATOR.test(firstLine);
+		if (this.rolloutFromClaudeCode.size >= MAX_ROLLOUT_ORIGINATOR_CACHE) {
+			this.rolloutFromClaudeCode.clear();
+		}
+		this.rolloutFromClaudeCode.set(transcriptPath, fromClaudeCode);
+		return fromClaudeCode;
 	}
 
 	/** ペインのシェルの子孫にいる `claude attach <id>` の一覧。 */
