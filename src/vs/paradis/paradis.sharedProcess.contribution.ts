@@ -38,6 +38,7 @@ import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/computerUse/node/paradisComputerUse.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisFileModes.sharedProcess.js';
 import './contrib/resourceMonitor/node/paradisSystemUsage.sharedProcess.js';
+import './contrib/notifications/node/paradisAgentDictionary.sharedProcess.js';
 
 /**
  * 登録済みの shared process 向け contribution をすべて呼ぶ。

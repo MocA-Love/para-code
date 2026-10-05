@@ -37,6 +37,7 @@ import { clearElevenLabsApiCaches } from './paradisElevenLabsApiCache.js';
 import { ParadisElevenLabsDictionarySection } from './paradisElevenLabsDictionarySection.js';
 import { ParadisElevenLabsUsageSection } from './paradisElevenLabsUsageSection.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
+import { ParadisAgentDictionarySection } from './paradisAgentDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
 import { ParadisAivisVoiceSection } from './paradisAivisVoiceSection.js';
 import { ParadisDoNotDisturbSection } from './paradisDoNotDisturbSection.js';
@@ -416,8 +417,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const dictSection = this._createSection(
 			'pns-sec-dict',
 			// allow-any-unicode-next-line
-			'ユーザー辞書 dictionary 単語 import export',
+			'ユーザー辞書 dictionary 単語 import export エージェント agent aivis-mcp',
 		);
+		this._register(this.instantiationService.createInstance(ParadisAgentDictionarySection, dom.append(dictSection, $('div'))));
 		this._register(this.instantiationService.createInstance(ParadisAivisDictionarySection, dom.append(dictSection, $('div'))));
 		this._register(this.instantiationService.createInstance(ParadisElevenLabsDictionarySection, dom.append(dictSection, $('div'))));
 
@@ -526,6 +528,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			elevenLabsModelId: PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 			elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
 			elevenLabsDictionaryId: '',
+			shareDictionaryWithAgents: true,
 		});
 	}
 
