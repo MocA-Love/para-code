@@ -16,6 +16,7 @@ import {
 	browserViewAutomationKeySignatureFromCdp,
 	browserViewAutomationKeySignatureFromElectron,
 	browserViewAutomationKeySignatureFromPreload,
+	browserViewAutomationNavigationDiscardsPreloadState,
 } from '../../common/browserViewAutomationInput.js';
 
 type TestAutomationListener = (_event: unknown, payload: unknown) => void;
@@ -267,5 +268,15 @@ suite('BrowserView automation input', () => {
 		assert.strictEqual(queue.size, 0);
 		assert.strictEqual(queue.register({ sequence: 100, signature }), true);
 		queue.dispose();
+	});
+
+	test('only cross-document navigations discard pending automation keys', () => {
+		assert.deepStrictEqual([
+			{ isSameDocument: true, isMainFrame: true },
+			{ isSameDocument: true, isMainFrame: false },
+			{ isSameDocument: false, isMainFrame: true },
+			{ isSameDocument: false, isMainFrame: false },
+			undefined,
+		].map(browserViewAutomationNavigationDiscardsPreloadState), [false, false, true, true, true]);
 	});
 });

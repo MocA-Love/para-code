@@ -62,7 +62,7 @@ import { createParadisMcpSetupController, ParadisMcpSetupController } from './pa
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
-import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
+import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
@@ -423,7 +423,8 @@ export class ParadisDevtoolsGenerationCoordinator {
 export class ParadisAgentBrowserService extends Disposable {
 
 	private readonly _bindings = new Map<string, IBindingEntry>();
-	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue());
+	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
+	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: event => this._onCdpInputQueueDiagnostic(event) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
 	/** 捨てた hook のペイン・理由ごとの累計（診断ログの間引き用。判定には使わない）。 */
@@ -1983,6 +1984,30 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
+	private _onCdpInputQueueDiagnostic(event: IParadisCdpInputQueueDiagnostic): void {
+		this._runNonThrowingDiagnostic(() => {
+			switch (event.kind) {
+				case 'paused':
+					this.logService.warn(`[ParadisAgentBrowser] browser input paused on a page: ${event.method} ${event.cause === 'dispatch-timeout' ? 'did not finish in time' : 'lost its connection after it was sent'}`);
+					reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-input-queue-paused', new Error('CDP input queue paused'), { safe_cause: event.cause, safe_method: event.method }, 'warning');
+					break;
+				case 'resumed':
+					if (event.how === 'settled') {
+						this.logService.info(`[ParadisAgentBrowser] browser input resumed after ${event.pausedMs}ms: the unfinished ${event.method} settled`);
+					} else {
+						// 応答が来ないまま上限に達した。その入力は捨てて、後の入力を通す
+						this.logService.warn(`[ParadisAgentBrowser] browser input resumed after ${event.pausedMs}ms: abandoned the unfinished ${event.method}`);
+						reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-input-queue-abandoned', new Error('CDP input dispatch abandoned'), { safe_cause: event.cause, safe_method: event.method, safe_paused_ms: event.pausedMs }, 'warning');
+					}
+					break;
+				case 'saturated':
+					this.logService.warn('[ParadisAgentBrowser] browser input paused on too many pages; pausing all input for one recovery period');
+					reportParadisDiagnosticError('owned', 'agent-browser', 'cdp-input-queue-saturated', new Error('CDP input queue saturated'), {}, 'warning');
+					break;
+			}
+		});
+	}
+
 	private _dispatchBoundPageInput(
 		token: string,
 		connection: object,
@@ -2009,6 +2034,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			&& binding.exactView.targetId === expectedTargetId;
 		return this._cdpInputQueue.enqueue({
 			queueKey,
+			method,
 			connection,
 			isAuthorityCurrent,
 			dispatch: async () => {

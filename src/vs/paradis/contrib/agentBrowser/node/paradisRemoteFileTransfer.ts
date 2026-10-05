@@ -24,7 +24,6 @@ import { ParadisMcpOwningWindowResult } from '../common/paradisMcpToolProvider.j
 import {
 	ParadisRemoteFileCheckResult,
 	ParadisRemoteFileFailure,
-	ParadisRemoteFileReadResult,
 	ParadisRemoteFileWriteResult,
 	PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD,
 	PARADIS_REMOTE_FILE_MAX_BYTES,
@@ -33,6 +32,7 @@ import {
 	PARADIS_REMOTE_FILE_READ_METHOD,
 	PARADIS_REMOTE_FILE_WRITE_METHOD,
 	PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD,
+	paradisDecodeRemoteFileReadResult,
 	paradisNormalizeRemoteFilePath,
 	paradisReplaceRemoteFileExtension,
 } from '../common/paradisRemoteFileBridge.js';
@@ -290,18 +290,19 @@ export class ParadisRemoteFileTransfer {
 	}
 
 	private async input(toolName: string, remotePath: string, args: Record<string, unknown>, host: IParadisRemoteFileTransferHost, callTool: (args: Record<string, unknown>) => Promise<unknown>): Promise<unknown> {
-		const read = await host.callWindow<ParadisRemoteFileReadResult>(PARADIS_REMOTE_FILE_READ_METHOD, [remotePath, this.maxBytes]);
+		const read = await host.callWindow<unknown>(PARADIS_REMOTE_FILE_READ_METHOD, [remotePath, this.maxBytes]);
 		if (!read.ok) {
 			return toolError(`${toolName} was not run: ${read.error}`);
 		}
-		if (!read.value.ok) {
-			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage(read.value.reason, remotePath)}`);
-		}
-		const bytes = toBuffer(read.value.data);
-		if (bytes === undefined) {
+		const value = paradisDecodeRemoteFileReadResult(read.value);
+		if (value === undefined) {
 			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage('ioFailed', remotePath)}`);
 		}
-		const name = paradisSanitizeFileDropName(read.value.name) ?? paradisSanitizeFileDropName(basename(remotePath.replace(/\\/g, '/'))) ?? 'upload';
+		if (!value.ok) {
+			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage(value.reason, remotePath)}`);
+		}
+		const bytes = Buffer.from(value.data.buffer, value.data.byteOffset, value.data.byteLength);
+		const name = paradisSanitizeFileDropName(value.name) ?? paradisSanitizeFileDropName(basename(remotePath.replace(/\\/g, '/'))) ?? 'upload';
 		let localPath: string;
 		try {
 			localPath = await this.uploadStaging.stage(bytes, name);
@@ -353,15 +354,4 @@ export class ParadisRemoteFileTransfer {
 		const name = names.find(candidate => candidate.startsWith('output'));
 		return name === undefined ? undefined : join(folder, name);
 	}
-}
-
-/** IPC で届いた中身（VSBuffer）を Buffer にする。 */
-function toBuffer(data: unknown): Buffer | undefined {
-	if (data instanceof VSBuffer) {
-		return Buffer.from(data.buffer.buffer, data.buffer.byteOffset, data.buffer.byteLength);
-	}
-	if (data instanceof Uint8Array) {
-		return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-	}
-	return undefined;
 }

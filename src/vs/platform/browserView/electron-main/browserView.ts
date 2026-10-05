@@ -28,14 +28,14 @@ import { URI } from '../../../base/common/uri.js';
 // PARA-PATCH: import the fork's screenshot policy helpers (route selection, pixel-budget guard, bounded scale, retry/restore) for the hardened capture pipeline (Para Browser MCP screenshot hardening)
 import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/browserViewScreenshot.js';
 // PARA-PATCH: import automation-key signature helpers and the expectation queue used to isolate injected keystrokes (Para Browser MCP automation input isolation)
-import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
+import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, browserViewAutomationNavigationDiscardsPreloadState, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 // PARA-PATCH: import the fork's load watchdog, which fails loads that stall before the response ever begins instead of spinning forever (Para Code)
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
 // PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
 import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
 
-// PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation)
-const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 1_000;
+// PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation). The ack is answered on the page's main thread, so a page busy for a moment after a click must not fail the key (1s failed about 8% of agent keystrokes)
+const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 2_500;
 
 interface IPendingAutomationKeyAck {
 	readonly phase: 'register' | 'activate';
@@ -43,6 +43,8 @@ interface IPendingAutomationKeyAck {
 	readonly acknowledged: Set<WebFrameMain>;
 	readonly resolve: (accepted: boolean) => void;
 	readonly timer: ReturnType<typeof setTimeout>;
+	/** Why the ack failed, set before resolving with false. */
+	failure?: BrowserViewAutomationKeyFailureReason;
 }
 
 
@@ -439,8 +441,12 @@ export class BrowserView extends Disposable {
 			this._lastError = error;
 			fireLoadingEvent(false);
 		}));
-		// PARA-PATCH: navigation discards the preload's isolated state, so clear any pending automation key expectations (Para Browser MCP automation input isolation)
-		webContents.on('did-start-navigation', () => this.clearAutomationKeyExpectations());
+		// PARA-PATCH: navigation discards the preload's isolated state, so clear any pending automation key expectations; same-document navigations keep it (Para Browser MCP automation input isolation)
+		webContents.on('did-start-navigation', details => {
+			if (browserViewAutomationNavigationDiscardsPreloadState(details)) {
+				this.clearAutomationKeyExpectations();
+			}
+		});
 
 		this.session.trust.installCertErrorHandler(webContents);
 
@@ -530,6 +536,7 @@ export class BrowserView extends Disposable {
 					return;
 				}
 				if (!record.accepted) {
+					pending.failure ??= 'rejected';
 					pending.resolve(false);
 					return;
 				}
@@ -651,17 +658,30 @@ export class BrowserView extends Disposable {
 		return this._automationInputFocusAuthority;
 	}
 
-	/** Register one exact automation key signature in every currently live preload before CDP dispatch. */
-	async prepareAutomationKeyInput(signature: IBrowserViewAutomationKeySignature): Promise<IBrowserViewAutomationKeyRegistration | undefined> {
+	/**
+	 * Register one exact automation key signature in every currently live preload before CDP dispatch.
+	 * `onFailure` receives why registration or the later activation failed (for diagnostics only).
+	 */
+	async prepareAutomationKeyInput(signature: IBrowserViewAutomationKeySignature, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate') => void): Promise<IBrowserViewAutomationKeyRegistration | undefined> {
+		const fail = (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate'): void => {
+			try {
+				onFailure?.(reason, phase);
+			} catch {
+				// Diagnostics must never change input delivery or suppression state.
+			}
+		};
 		if (this._isDisposed || this.webContents.isDestroyed()) {
+			fail('view-unavailable', 'register');
 			return undefined;
 		}
 		const frames = this.getLiveAutomationFrames();
 		if (frames.length === 0) {
+			fail('no-frames', 'register');
 			return undefined;
 		}
 		const sequence = this.nextAutomationKeySequence();
 		if (sequence === undefined || !this._automationKeyExpectations.register({ sequence, signature })) {
+			fail('expectation-limit', 'register');
 			return undefined;
 		}
 
@@ -672,7 +692,10 @@ export class BrowserView extends Disposable {
 			frames,
 			acknowledged: new Set(),
 			resolve: resolveAck,
-			timer: setTimeout(() => resolveAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
+			timer: setTimeout(() => {
+				pending.failure ??= 'ack-timeout';
+				resolveAck(false);
+			}, BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
 		};
 		this._pendingAutomationKeyAcks.set(sequence, pending);
 		const nativeFocused = this.isNativeFocusedForAutomation();
@@ -690,6 +713,7 @@ export class BrowserView extends Disposable {
 			this._pendingAutomationKeyAcks.delete(sequence);
 		}
 		if (!accepted || !this._automationKeyExpectations.has(sequence) || !this.hasSameLiveAutomationFrames(frames)) {
+			fail(!accepted ? pending.failure ?? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'register');
 			this._automationKeyExpectations.cancel(sequence);
 			this.cancelPreloadAutomationKey(frames, sequence);
 			return undefined;
@@ -704,13 +728,16 @@ export class BrowserView extends Disposable {
 				if (settled || activationStarted || this._isDisposed || this.webContents.isDestroyed()
 					|| !this._automationKeyExpectations.has(sequence)
 					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
+					fail(settled || activationStarted ? 'cancelled' : this._isDisposed || this.webContents.isDestroyed() ? 'view-unavailable' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'activate');
 					return false;
 				}
 				try {
 					if (this.webContents.isFocused()) {
+						fail('user-focus', 'activate');
 						return false;
 					}
 				} catch {
+					fail('view-unavailable', 'activate');
 					return false;
 				}
 				activationStarted = true;
@@ -721,7 +748,10 @@ export class BrowserView extends Disposable {
 					frames,
 					acknowledged: new Set(),
 					resolve: resolveActivationAck,
-					timer: setTimeout(() => resolveActivationAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
+					timer: setTimeout(() => {
+						activationPending.failure ??= 'ack-timeout';
+						resolveActivationAck(false);
+					}, BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
 				};
 				this._pendingAutomationKeyAcks.set(sequence, activationPending);
 				const activationNativeFocused = this.isNativeFocusedForAutomation();
@@ -739,9 +769,11 @@ export class BrowserView extends Disposable {
 				}
 				if (!accepted || settled || !this._automationKeyExpectations.has(sequence)
 					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
+					fail(!accepted ? activationPending.failure ?? 'cancelled' : settled ? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'activate');
 					return false;
 				}
 				if (!this._automationKeyExpectations.activate(sequence)) {
+					fail('cleared', 'activate');
 					return false;
 				}
 				activated = true;
@@ -821,6 +853,7 @@ export class BrowserView extends Disposable {
 	private clearAutomationKeyExpectations(): void {
 		for (const [sequence, pending] of this._pendingAutomationKeyAcks) {
 			clearTimeout(pending.timer);
+			pending.failure ??= 'cleared';
 			pending.resolve(false);
 			this.cancelPreloadAutomationKey(pending.frames, sequence);
 		}
@@ -835,6 +868,7 @@ export class BrowserView extends Disposable {
 	private invalidateAutomationKeyExpectationsForUserFocus(): void {
 		for (const [sequence, pending] of this._pendingAutomationKeyAcks) {
 			clearTimeout(pending.timer);
+			pending.failure ??= 'user-focus';
 			pending.resolve(false);
 			this.cancelPreloadAutomationKey(pending.frames, sequence);
 			this._automationKeyExpectations.invalidateForUserFocus(sequence);
