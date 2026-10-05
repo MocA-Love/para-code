@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand } from '../../node/paradisAgentHookOwnership.js';
+import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand, paradisIsCodexPluginCommand } from '../../node/paradisAgentHookOwnership.js';
 
 suite('ParadisAgentHookOwnership', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -747,6 +747,61 @@ suite('ParadisAgentHookOwnership', () => {
 			{ origin: 'owner', agentKind: 'claude' },
 			'invalid',
 			{ origin: 'owner', agentKind: 'codex' },
+		]);
+	});
+
+	test('recognizes the processes of the Claude Code Codex plugin', () => {
+		assert.deepStrictEqual([
+			paradisIsCodexPluginCommand('/usr/local/bin/node /home/user/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs serve --endpoint unix:/tmp/cxc/broker.sock --cwd /repo'),
+			paradisIsCodexPluginCommand('"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\user\\.claude\\plugins\\cache\\openai-codex\\codex\\1.0.6\\scripts\\codex-companion.mjs" task-worker --cwd C:\\repo'),
+			paradisIsCodexPluginCommand('node /opt/plugins/codex/scripts/app-server-broker.mjs serve'),
+			paradisIsCodexPluginCommand('/opt/codex/vendor/bin/codex app-server'),
+			paradisIsCodexPluginCommand('/home/user/.codex/plugins/cache/openai-curated-remote/codex-security/0.1.31/mcp/server.mjs --stdio'),
+			paradisIsCodexPluginCommand('node.exe'),
+		], [true, true, true, false, false, false]);
+	});
+
+	/**
+	 * ペインの外の codex（親は PID 1）。所有者は pid の無い記録（Para Code の再起動直後など）で、後継を決める場面。
+	 *   1 ← 800 (`launcher`) ← 810 (codex vendor app-server) ← 811 (notify script)
+	 */
+	async function successorOutsidePane(launcher: string | undefined, rolloutHead: string | undefined): Promise<string> {
+		const tree = attachTree();
+		tree.set(200, proc(200, 100, 'claude'));
+		tree.set(206, proc(206, 200, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		const codexParent = launcher !== undefined ? 800 : 1;
+		if (launcher !== undefined) {
+			tree.set(800, proc(800, 1, launcher));
+		}
+		tree.set(810, proc(810, codexParent, '/opt/codex/vendor/bin/codex app-server --listen unix:///tmp/codex/app-server.sock'));
+		tree.set(811, proc(811, 810, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		const reads: string[] = [];
+		const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree }, process.pid, async path => {
+			reads.push(path);
+			return rolloutHead;
+		});
+		await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
+		const first = await ownership.classify({ token: 't', hookPid: 811, transcriptPath: CODEX_TRANSCRIPT, at: 2, paneShellPid: 100 });
+		return `${first.origin}${first.rejection?.outsidePane === true ? ' (outside pane)' : ''}, reads ${reads.length}`;
+	}
+
+	test('only a codex started by the Claude Code Codex plugin is kept from succeeding the pane owner from outside the pane', async () => {
+		const sharedDaemonMeta = '{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta","payload":{"id":"x","originator":"codex_cli_rs","source":"cli"}}\n{"type":"event_msg"}';
+		const pluginMeta = '{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta","payload":{"id":"x","originator":"Claude Code","source":"vscode"}}\n{"type":"event_msg"}';
+		assert.deepStrictEqual([
+			// 素の codex の共有 daemon: 従来どおり後継になれる
+			await successorOutsidePane(undefined, sharedDaemonMeta),
+			// rollout がまだ無い: 判定できないので後継にする
+			await successorOutsidePane(undefined, undefined),
+			// 祖先に plugin の broker がいる: rollout を読まずに捨てる
+			await successorOutsidePane('node /home/user/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/app-server-broker.mjs serve --cwd /repo', sharedDaemonMeta),
+			// 起動行が取れない（Windows で CommandLine が空になり Name だけが見える）: rollout の originator で捨てる
+			await successorOutsidePane('node.exe', pluginMeta),
+		], [
+			'owner, reads 1',
+			'owner, reads 1',
+			'invalid (outside pane), reads 0',
+			'invalid (outside pane), reads 1',
 		]);
 	});
 
