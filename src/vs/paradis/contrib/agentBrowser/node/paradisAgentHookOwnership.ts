@@ -819,6 +819,10 @@ export class ParadisAgentHookOwnership {
 	private paneAttaches(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, paneShellPid: number): { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] {
 		const result: { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] = [];
 		for (const entry of snapshot.values()) {
+			// daemon の配下の hook ごとにプロセス表を全部なめるので、字句解析の前に安く絞る。
+			if (!entry.command.includes('attach')) {
+				continue;
+			}
 			const target = paradisClaudeAttachTargetFromCommandLine(entry.command);
 			if (target !== undefined && this.isDescendantOf(snapshot, entry.pid, paneShellPid)) {
 				result.push({ pid: entry.pid, startKey: entry.startKey, target });
@@ -827,8 +831,15 @@ export class ParadisAgentHookOwnership {
 		return result;
 	}
 
-	/** `pid` が `ancestorPid` の子孫か（循環・深さ上限つき。自分自身は含めない）。 */
+	/**
+	 * `pid` が `ancestorPid` 自身かその子孫か（循環・深さ上限つき）。自分自身も含めるのは、ペインのシェルが
+	 * `exec claude` で置き換わったときや、ペインの最初のプロセスがエージェント（またはそのランチャー）のときに、
+	 * ペインのプロセスそのものが発信元になるため。
+	 */
 	private isDescendantOf(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, pid: number, ancestorPid: number): boolean {
+		if (pid === ancestorPid) {
+			return true;
+		}
 		const seen = new Set<number>();
 		let current = snapshot.get(pid);
 		for (let depth = 0; current !== undefined && depth < MAX_PANE_DESCENT_DEPTH && !seen.has(current.pid); depth++) {

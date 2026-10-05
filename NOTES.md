@@ -429,10 +429,12 @@ tmux と同じ形の問題が Claude Code 2.1.289 の daemon にもあります�
 - ペインのシェル（`_paneShells` の `shellPid`、手元のペインだけ）の子孫に `claude attach <id>`（ps では `claude attach d527839f`。`<id>` は会話 id の先頭 8 桁以上）がいて、daemon の配下の hook が会話そのもの（`bg-spare` との間に別のエージェントがいない）で、`session_id`（無ければ transcript のファイル名）が `<id>` に前方一致するなら、その attach を所有者にする。以後は同じ `bg-spare` からの hook を /clear の後も所有者として通し、その配下の別エージェントは `nested`。attach が終われば所有者は死んだ扱いになり、daemon の会話は `background` に戻る
 - 所有者がいない（未確定・pid 不明・死亡）ときの後継は、発信元がペインのシェルの子孫のときに限る。外れたものは `invalid` で捨て、ログの理由は `origin-outside-pane`。ただし祖先に tmux・zellij・screen・dtach・abduco がいる hook は上の既知の制限のとおり絞らない（2026-09-27 に一度入れて外した絞り込みを、端末多重化ソフトを例外にして入れ直した）
 - ペインのシェルが分からない・プロセス表に無い（接続先・同期前など）ときは、どちらの判定も飛ばしてこれまでどおりに動く
+- ペインのシェルの子孫には、ペインのプロセスそのものも含める（`exec claude` でシェルが置き換わったとき、ペインの最初のプロセスがエージェントやランチャーのとき）
 
 残る制限:
 - daemon が別のペインで起きた後に `claude attach` した会話は、hook が daemon を起こしたペインのトークンで届くので、attach したペインの所有者にはならない（従来どおり `background`）。【要確認】`bg-spare` が attach 側の env を引き継ぐかは実測していない
 - `claude attach` の中で agent view から別の会話を選び直すと、起動行の `<id>` と合わなくなり、新しい会話は `background` のまま
+- Codex の共有 daemon（ランチャーを入れない Windows、ランチャーを通らない素の `codex`）の hook は daemon のプロセスから届く。daemon を起こした TUI が終わった後は親を辿ってもペインのシェルに届かないので、同じペインで `codex` を起動し直しても所有者のいない間は `origin-outside-pane` で捨てられる。【要確認】Windows の Codex が daemon をどの親の下に起こすかは実測していない
 - pid の無い hook（古いスクリプト・プロセス表が取れない）は daemon の会話と見分けられない。受け手が transcript の `sessionKind` で確かめるが、所有者の記録は先に届いた分岐先の transcript で決まりうる（その後のペインの hook は `invalid` で捨てられる）。pid の無いペインで分岐先を `--resume` し直したときは、最初のターンの行が書かれるまで分岐先として扱われる
 - daemon の会話の状態（許可待ち・完了）は、どのペインのタブにも出ない
 

@@ -773,6 +773,22 @@ suite('ParadisAgentHookOwnership', () => {
 		]);
 	});
 
+	test('the pane process itself can own the pane (exec claude, exec claude attach)', async () => {
+		// `exec claude` でシェルが置き換わった、またはペインの最初のプロセスがエージェントのとき、発信元はペインのプロセスそのもの。
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/launchd')],
+			[100, proc(100, 1, 'claude')],
+			[106, proc(106, 100, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const exec = await ownershipWith(tree).classify({ token: 't', hookPid: 106, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, paneShellPid: 100 });
+		// `exec claude attach <id>` でも、ペインのプロセスそのものが attach になる。
+		const attach = attachTree();
+		attach.delete(100);
+		attach.set(300, proc(300, 1, 'claude attach 11111111'));
+		const execAttach = await ownershipWith(attach).classify({ token: 't', hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID, at: 1, paneShellPid: 300 });
+		assert.deepStrictEqual([exec, execAttach], [{ origin: 'owner', agentKind: 'claude' }, { origin: 'owner', agentKind: 'claude' }]);
+	});
+
 	test('agents under a tmux server still succeed the pane owner when the pane shell is known', async () => {
 		// tmux のサーバーは launchd の子で、中のエージェントはペインのシェルの子孫ではない（NOTES.md の既知の制限）。
 		const tree = new Map([
