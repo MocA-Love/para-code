@@ -298,6 +298,9 @@ export interface IParadisMobileInboundFrame {
  */
 export type ParadisMobileInboundFrameWire = readonly [ch: ChannelId, ws: string | undefined, seq: number, payload: VSBuffer, mobileId: string | undefined];
 
+/** renderer 発のフレームの送り方の結果（{@link IParadisMobileRelayService.sendFrame}）。 */
+export type ParadisMobileFrameSendResult = 'sent' | 'cancelled' | 'failed' | 'busy' | 'closed' | 'stale';
+
 export type ParadisMobileTerminalOperationStatus = 'accepted' | 'stale-epoch' | 'terminal-not-found' | 'failed' | 'stale-renderer' | 'outcome-unknown';
 
 /** Renderer宛フレームをwindow IDだけでなく起動世代にも固定する。 */
@@ -374,7 +377,9 @@ export interface IParadisMobileRelayService {
 	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると
 	// serialize()のObject分岐でJSON.stringifyされ、VSBufferの中身が壊れる）。
-	sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
+	// 返り値は送り終えた結果（sent / cancelled / failed）と、送信の列へ積めなかった理由（busy＝送信前の列が上限、
+	// closed＝暗号セッションが無い、stale＝lease が今の renderer のものでない）を区別する（設計 2.3）。
+	sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<ParadisMobileFrameSendResult>;
 
 	/** renderer 一つ分の protocol v2 状態を shared process の統合 registry へ同期する。 */
 	syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void>;

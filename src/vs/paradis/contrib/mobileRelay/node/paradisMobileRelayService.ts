@@ -31,8 +31,10 @@ import {
 	respondHandshake,
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
-import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
-import { ParadisMobileSendQueue } from '../common/paradisMobileSendQueue.js';
+import { FrameMux, IParadisMobileFrameSubmitOptions, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
+import { IParadisMobileSendHandle, ParadisMobileSendQueue, paradisMobileRejectedSend } from '../common/paradisMobileSendQueue.js';
+import { ParadisMobileAuthorityLanes } from '../common/paradisMobileAuthorityLanes.js';
+import { paradisMobileResponseRequestId } from './paradisMobileResponseRequestId.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
@@ -89,6 +91,7 @@ import {
 	PARADIS_MOBILE_DEFAULT_RELAY_URL,
 	PARADIS_MOBILE_PROTOCOL_VERSION,
 	ParadisMobileConnectionState,
+	ParadisMobileFrameSendResult,
 	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
 	ParadisMobileTerminalOperationStatus,
@@ -206,6 +209,29 @@ const HOST_RESOURCE_SAMPLE_INTERVAL_MS = 10_000;
  * 10秒ごとに撃つと端末の無線を起こし続ける。ドロワーを開いたときに1分以内の値が出れば足りる。
  */
 const HOST_RESOURCE_BROADCAST_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * main で確かめた lease の結果を使い回す長さ。失効は main の変更通知で知るが、その経路が切れていても古い結果を
+ * 使い続けないよう、この時間が過ぎたら確かめ直す。
+ */
+const PARADIS_LEASE_VALIDATION_TTL_MS = 5_000;
+/** Desktop State の配信の権限の列の鍵。 */
+const PARADIS_AUTHORITY_STATE_LANE = 'state';
+/** 通知の権限の列の鍵。 */
+const PARADIS_AUTHORITY_NOTIFY_LANE = 'notify';
+/** 送信前の列が上限で応答を送れなかったときに、要求元へ返す文（ファイル・ソース管理の要求）。 */
+// allow-any-unicode-next-line
+const PARADIS_MOBILE_SEND_BUSY_MESSAGE = 'PC の送信が混み合っています。少し待ってからもう一度お試しください';
+
+/** renderer 1 つ分の権限の列の鍵（その renderer からの IPC の順を保つ）。 */
+function paradisRendererLane(lease: { readonly windowId: number }): string {
+	return `renderer:${lease.windowId}`;
+}
+
+/** renderer の世代を表す取消の印（送信の列の cancelTag）。 */
+function paradisRendererCancelTag(lease: IParadisMobileWindowLeaseRef): string {
+	return `${lease.windowId}:${lease.windowSession}:${lease.rendererGeneration}`;
+}
 
 type PersistedState = IParadisRelayPersistedState;
 
@@ -649,11 +675,19 @@ export class MobileSession {
 		this.onFrame({ ch: frame.ch, ws: frame.ws, seq: frame.seq, payload: VSBuffer.wrap(frame.payload), mobileId: this.mobileId });
 	}
 
-	/** PC→モバイルのフレームを封緘して送る。 */
+	/** PC→モバイルのフレームを封緘して送る。送り終えたら解決する。 */
 	async sendFrame(ch: ChannelId, ws: string | undefined, payload: Uint8Array): Promise<void> {
 		if (this.mux) {
 			await this.mux.send(ch, payload, ws);
 		}
+	}
+
+	/**
+	 * PC→モバイルのフレームを送信の列に積み、積めたか（accepted）と送り終えたか（settled）を分けて返す（設計 2.3）。
+	 * 暗号セッションが無ければ closed で断る。
+	 */
+	submitFrame(ch: ChannelId, ws: string | undefined, payload: Uint8Array, options?: IParadisMobileFrameSubmitOptions): IParadisMobileSendHandle {
+		return this.mux?.submit(ch, payload, ws, options) ?? paradisMobileRejectedSend('closed');
 	}
 
 	/**
@@ -774,8 +808,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly linkAckAt = new Map<string, number>();
 	/** 計測中、直前に Desktop State を作った時刻。 */
 	private linkStateAt: number | undefined;
-	/** renderer の権限の列に入っている仕事の数。 */
-	private rendererAuthorityDepth = 0;
 	private readonly linkMetricsLogTimer = this._register(new IntervalTimer());
 
 	private readonly _onPairingEvent = this._register(new Emitter<ParadisMobilePairingEvent>());
@@ -878,7 +910,21 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 		},
 	});
-	private rendererAuthorityChain = Promise.resolve();
+	/**
+	 * renderer の権限の列（設計 2.3）。以前は全 renderer・全スマホの仕事が 1 本の列に並び、renderer 発のフレームは
+	 * 送信の完了まで列を止めていた。今は対象ごとの短い列に分け、列の中では送信の完了を待たない。
+	 */
+	private readonly authorityLanes = new ParadisMobileAuthorityLanes(paradisMobileLinkMetrics);
+	/**
+	 * main で確かめた lease の結果（windowId ごと）。main の世代（windowId・windowSession・rendererGeneration）を
+	 * fencing token として使い、IPC の往復を仕事ごとに挟まない。失効は main からの manifest の変更通知（revision が
+	 * 進んだら古い結果を使わない）・リレーの切断・一定時間の経過で保証する（「同じ世代なら永遠に有効」とはしない）。
+	 */
+	private readonly validatedLeases = new Map<number, { readonly lease: IParadisMobileWindowLease; readonly revision: number; readonly at: number }>();
+	/** main から知らされた（または validate で見た）manifest の revision の最大値。 */
+	private observedLeaseRevision = 0;
+	/** renderer 発の「最新値だけ意味のある知らせ」（エージェント端末のヒント）の、まだ列で待っている値。 */
+	private readonly pendingTerminalHints = new Map<string, { readonly elapsedSeconds?: number; readonly tokenCount?: number }>();
 
 	// ペアリング中の状態
 	private pairing: {
@@ -997,14 +1043,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				const owner = { windowId, windowSession, rendererGeneration };
 				this.withCurrentRegisteredLease(owner, async () => {
 					this._onInboundFrame.fire([Channels.Agent, paradisMobileWindowRoute(windowId, windowSession, rendererGeneration), 0, VSBuffer.wrap(payload), mobileId]);
-				}).catch(error => this.logService.warn('[paradisMobileRelay] agent action routing failed', error));
+				}, `agent:${windowId}`).catch(error => this.logService.warn('[paradisMobileRelay] agent action routing failed', error));
 			},
 			// transcript に質問(AskUserQuestion等)が現れた → 質問本文入りの通知を全モバイルへ流す。
 			// hookベースの agentStatus 遷移通知(renderer側 emitNotify)は AskUserQuestion では
 			// 発火しないことがあるため、こちらが質問通知の主経路。
 			info => this.notifyAgentQuestion(info),
 			this.logService,
-			owner => this.withCurrentRegisteredLease(owner, async () => true).then(result => result === true, () => false),
+			owner => this.withCurrentRegisteredLease(owner, async () => true, `agent:${owner.windowId}`).then(result => result === true, () => false),
 			owner => this._onDidRequestAgentPaneSync.fire({
 				windowId: owner.windowId,
 				windowSession: owner.windowSession,
@@ -1032,6 +1078,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this._register(this.sharedPageBindings.onDidAcknowledgePane(token => this.dispatchAgentDismiss(token)));
 		}
 		this._register(this.windowLeaseClient.onDidChangeManifest(manifest => {
+			// 覚えている lease の結果は、これより古い revision のものを使わない（main の変更通知で失効させる）
+			this.observeLeaseRevision(manifest.revision);
 			this.observeManifest(manifest);
 			this.enqueueRendererAuthority(() => this.broadcastDesktopState(undefined, manifest)).catch(error => this.logService.warn('[paradisMobileRelay] manifest state broadcast failed', error));
 		}));
@@ -1711,7 +1759,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 */
 	private dispatchNotify(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
 		if (expectedOwner !== undefined) {
-			this.withCurrentRegisteredLease(expectedOwner, async () => this.dispatchNotifyNow(bytes, expectedOwner))
+			this.withCurrentRegisteredLease(expectedOwner, async () => this.dispatchNotifyNow(bytes, expectedOwner), PARADIS_AUTHORITY_NOTIFY_LANE)
 				.catch(error => this.logService.warn('[paradisMobileRelay] notify owner validation failed', error));
 			return;
 		}
@@ -1810,7 +1858,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// リレーが受理する（push-ack）まで outbox に残す。ソケットが閉じている間も捨てない（設計 2.6）
 			const push = { mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) };
 			if (expectedOwner !== undefined) {
-				await this.withCurrentRegisteredLease(expectedOwner, () => this.pushOutbox.submit(push));
+				await this.withCurrentRegisteredLease(expectedOwner, () => this.pushOutbox.submit(push), PARADIS_AUTHORITY_NOTIFY_LANE);
 			} else {
 				await this.pushOutbox.submit(push);
 			}
@@ -2420,7 +2468,30 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {
-		await this.withCurrentRegisteredLease(lease, async () => this.agentChat.onTerminalHint(lease.windowId, lease.windowSession, lease.rendererGeneration, terminalId, hint));
+		// 最新値だけ意味のある知らせ。同じ端末の、まだ列で待っている知らせがあれば値だけ置き換える（設計 2.3）
+		const key = `${paradisRendererCancelTag(lease)}:${terminalId}`;
+		const waiting = this.pendingTerminalHints.has(key);
+		this.pendingTerminalHints.set(key, hint);
+		if (waiting) {
+			paradisMobileLinkMetrics.count('pc.authority.hintReplaced');
+			return;
+		}
+		let ran = false;
+		try {
+			await this.withCurrentRegisteredLease(lease, async () => {
+				ran = true;
+				const latest = this.pendingTerminalHints.get(key);
+				this.pendingTerminalHints.delete(key);
+				if (latest !== undefined) {
+					this.agentChat.onTerminalHint(lease.windowId, lease.windowSession, lease.rendererGeneration, terminalId, latest);
+				}
+			});
+		} finally {
+			if (!ran) {
+				// lease が古く動かなかった。待っていた値（この呼び出しへ合流した分を含む）を捨てる
+				this.pendingTerminalHints.delete(key);
+			}
+		}
 	}
 
 	// searchFiles / searchText は paradisRemoteSearchChannel.ts（shared process と REH サーバーの
@@ -2533,46 +2604,96 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
+	/**
+	 * renderer 発のフレームを送る。権限の列（その renderer の列）では lease を確かめて送信の列へ積むところまでを行い、
+	 * 送り終えるのは列の外で待つ（設計 2.3）。返り値は送り終えた結果で、積めなかった理由（busy・stale・closed）とも
+	 * 区別する。全端末宛ては、積めた端末の分を送り終えたら 'sent'。
+	 */
+	async sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<ParadisMobileFrameSendResult> {
 		const metrics = paradisMobileLinkMetrics;
 		// 計測がオフの間は時計も読まない
 		const calledAt = metrics.enabled ? metrics.now() : 0;
-		await this.withCurrentRegisteredLease(lease, async () => {
+		const cancelTag = paradisRendererCancelTag(lease);
+		// ターミナルの出力は上限で断らない。snapshot（64KiB を超えうる）を断るとアプリは次の snapshot を待ったまま
+		// 空の画面になり、取り直す契機が無い。量はアプリの ack（未 ack 10 万文字で止まる）と snapshot の行数で抑えてある
+		const bounded = ch !== Channels.Terminal;
+		const submitted = await this.withCurrentRegisteredLease(lease, async (): Promise<{ readonly handles: readonly IParadisMobileSendHandle[]; readonly session?: MobileSession } | 'notify'> => {
 			const bytes = payload.buffer;
 			if (ch === Channels.Notify && mobileId === undefined) {
 				this.dispatchNotify(bytes, lease);
-				return;
+				return 'notify';
 			}
 			if (mobileId !== undefined) {
 				const session = this.sessions.get(mobileId);
-				if (session?.hasCurrentProtocol) {
-					if (metrics.enabled) {
-						const now = metrics.now();
-						// renderer から届いてから送信の列へ積むまで（権限の列と lease の確かめ）
-						metrics.observe(`pc.out.${ch}.authorityMs`, now - calledAt);
-						if (ch === Channels.Terminal) {
-							// 入力を renderer へ渡してから、そのアプリ宛ての次のターミナルの出力がここへ届くまで
-							const echo = this.linkEchoTracker.take(mobileId, now);
-							if (echo !== undefined) {
-								metrics.observe('pc.term.echo.inputToOutputMs', echo);
-							}
+				if (!session?.hasCurrentProtocol) {
+					return { handles: [] };
+				}
+				if (metrics.enabled) {
+					const now = metrics.now();
+					// renderer から届いてから送信の列へ積むまで（権限の列と lease の確かめ）
+					metrics.observe(`pc.out.${ch}.authorityMs`, now - calledAt);
+					if (ch === Channels.Terminal) {
+						// 入力を renderer へ渡してから、そのアプリ宛ての次のターミナルの出力がここへ届くまで
+						const echo = this.linkEchoTracker.take(mobileId, now);
+						if (echo !== undefined) {
+							metrics.observe('pc.term.echo.inputToOutputMs', echo);
 						}
 					}
-					const sendStartedAt = metrics.enabled ? metrics.now() : 0;
-					await session.sendFrame(ch, ws, bytes);
-					if (ch === Channels.Terminal && sendStartedAt > 0) {
-						// 送信の列へ積んでから最後の断片をソケットへ渡すまで（この間、権限の列は止まっている）
-						metrics.observeSince('pc.term.out.sendMs', sendStartedAt);
-					}
 				}
-				return;
+				return { handles: [session.submitFrame(ch, ws, bytes, { bounded, cancelTag })], session };
 			}
+			const handles: IParadisMobileSendHandle[] = [];
 			for (const session of this.sessions.values()) {
 				if (session.hasCurrentProtocol) {
-					await session.sendFrame(ch, ws, bytes);
+					handles.push(session.submitFrame(ch, ws, bytes, { bounded, cancelTag }));
 				}
 			}
+			return { handles };
 		});
+		if (submitted === undefined) {
+			return 'stale';
+		}
+		if (submitted === 'notify') {
+			return 'sent';
+		}
+		if (submitted.handles.length === 0) {
+			return 'closed';
+		}
+		if (mobileId !== undefined) {
+			const handle = submitted.handles[0]!;
+			if (!handle.accepted) {
+				if (handle.reason === 'busy' && submitted.session !== undefined) {
+					this.replySendBusy(submitted.session, ch, payload.buffer);
+				}
+				return handle.reason ?? 'closed';
+			}
+			const sendStartedAt = metrics.enabled && ch === Channels.Terminal ? metrics.now() : 0;
+			const result = await handle.settled;
+			if (sendStartedAt > 0) {
+				// 送信の列へ積んでから最後の断片をソケットへ渡すまで（権限の列はもう止めない）
+				metrics.observeSince('pc.term.out.sendMs', sendStartedAt);
+			}
+			return result;
+		}
+		// 全端末宛て（応答ではない知らせ）は、積めなかった端末の分を数えるだけにする
+		const results = await Promise.all(submitted.handles.map(handle => handle.settled));
+		return results.some(result => result === 'sent') ? 'sent' : results.includes('failed') ? 'failed' : 'cancelled';
+	}
+
+	/**
+	 * 送信前の列が上限で応答を積めなかった。ファイル・ソース管理の要求への応答なら、要求の ID を読み、小さな失敗の
+	 * 返事を返す（相手が応答を待ち続けないように）。読めなければ何もしない（相手は時間切れで知る）。
+	 */
+	private replySendBusy(session: MobileSession, ch: ChannelId, payload: Uint8Array): void {
+		if (ch !== Channels.Fs && ch !== Channels.Scm) {
+			return;
+		}
+		const requestId = paradisMobileResponseRequestId(payload);
+		if (requestId === undefined) {
+			return;
+		}
+		const reply = new TextEncoder().encode(JSON.stringify({ id: requestId, error: PARADIS_MOBILE_SEND_BUSY_MESSAGE }));
+		session.sendFrame(ch, undefined, reply).catch(error => this.logService.warn('[paradisMobileRelay] busy reply failed', error));
 	}
 
 	async syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void> {
@@ -2635,9 +2756,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (removed) {
 				this.agentChat.removeOwnerActions(lease.windowId, lease.windowSession, lease.rendererGeneration);
 				this.markTerminalOperationsUnknownForOwner(lease);
+				this.forgetRendererSends(lease);
 				await this.broadcastDesktopState();
 			}
-		});
+		}, paradisRendererLane(lease));
 	}
 
 	private desktopStateBroadcastChain = Promise.resolve();
@@ -2729,6 +2851,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private cleanupRemovedRenderer(lease: IParadisMobileWindowLease): void {
+		this.forgetRendererSends(lease);
 		this.agentCommandAuthority.retain(this.agentCommandOwner(lease), new Set());
 		this.agentChat.removePanes(lease.windowId, lease.windowSession, lease.rendererGeneration);
 		this.agentChat.removeOwnerActions(lease.windowId, lease.windowSession, lease.rendererGeneration);
@@ -2744,6 +2867,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	/**
+	 * 去った renderer の、まだ nonce を予約していない送信を取り下げ、覚えている lease の結果を捨てる。暗号セッション
+	 * は続くので、封緘中・送り途中のものは順番どおり送る（設計 2.3 の cancelOwner と renderer owner の分離）。
+	 */
+	private forgetRendererSends(lease: IParadisMobileWindowLease): void {
+		this.sendQueue.cancelTag(paradisRendererCancelTag(lease));
+		const cached = this.validatedLeases.get(lease.windowId);
+		if (cached !== undefined && this.sameLease(cached.lease, lease)) {
+			this.validatedLeases.delete(lease.windowId);
+		}
+	}
+
 	private sameLease(a: IParadisMobileWindowLease | undefined, b: IParadisMobileWindowLease): boolean {
 		return a?.windowId === b.windowId && a.windowSession === b.windowSession && a.rendererGeneration === b.rendererGeneration;
 	}
@@ -2752,29 +2887,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return `${lease.windowId}:${lease.windowSession}:${lease.rendererGeneration}`;
 	}
 
-	private enqueueRendererAuthority<T>(task: () => Promise<T>): Promise<T> {
-		const metrics = paradisMobileLinkMetrics;
-		let measured = task;
-		if (metrics.enabled) {
-			// 列に入ってから始まるまでの待ちと、仕事そのものの長さ（送信の完了まで待つ仕事も含む。設計 2.3）。
-			// 列の深さは計測中に積んだ仕事だけ数える（オフの間は Promise を 1 つも増やさない）
-			metrics.observe('pc.authority.depth', this.rendererAuthorityDepth);
-			this.rendererAuthorityDepth++;
-			const enqueuedAt = metrics.now();
-			measured = async () => {
-				const startedAt = metrics.now();
-				metrics.observe('pc.authority.waitMs', startedAt - enqueuedAt);
-				try {
-					return await task();
-				} finally {
-					this.rendererAuthorityDepth--;
-					metrics.observeSince('pc.authority.runMs', startedAt);
-				}
-			};
-		}
-		const run = this.rendererAuthorityChain.then(measured);
-		this.rendererAuthorityChain = run.then(() => undefined, () => undefined);
-		return run;
+	/**
+	 * 権限の列に仕事を積む。`key` が同じ仕事だけを積んだ順に 1 つずつ動かす（既定は Desktop State の配信の列）。
+	 * 列の中では送信の完了を待たないこと。
+	 */
+	private enqueueRendererAuthority<T>(task: () => Promise<T>, key = PARADIS_AUTHORITY_STATE_LANE): Promise<T> {
+		return this.authorityLanes.run(key, task);
 	}
 
 	/** 通信の計測（F0）を始める・やめる。始めると前の値は捨てる。各ウィンドウの renderer にも知らせる。 */
@@ -2817,21 +2935,83 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private withCurrentMainLease<T>(lease: IParadisMobileWindowLease, task: (validation: Awaited<ReturnType<ParadisMobileWindowLeaseClient['validate']>>) => Promise<T>): Promise<T | undefined> {
 		return this.enqueueRendererAuthority(async () => {
 			const validation = await this.windowLeaseClient.validate(lease);
+			this.rememberLeaseValidation(lease, validation);
 			return validation.valid ? task(validation) : undefined;
-		});
+		}, paradisRendererLane(lease));
 	}
 
-	private withCurrentRegisteredLease<T>(lease: IParadisMobileWindowLease, task: () => Promise<T>): Promise<T | undefined> {
-		return this.enqueueRendererAuthority(async () => {
-			if (!this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)) {
-				return undefined;
-			}
-			const validation = await this.windowLeaseClient.validate(lease);
-			if (!validation.valid || !this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)) {
-				return undefined;
-			}
+	/**
+	 * lease が今の renderer のものなら、権限の列（`key`、既定はその renderer の列）で `task` を動かす。違えば undefined。
+	 * main の結果は {@link validatedLeases} に覚え、同じ世代のうちは IPC を挟まない。`task` は確かめた直後に同期で
+	 * 始まるので、副作用（renderer へ渡す・送信の列へ積む）の直前に権限を確かめたことになる。
+	 */
+	private withCurrentRegisteredLease<T>(lease: IParadisMobileWindowLease, task: () => Promise<T>, key = paradisRendererLane(lease)): Promise<T | undefined> {
+		return this.enqueueRendererAuthority(() => this.runWithCurrentRegisteredLease(lease, task), key);
+	}
+
+	/**
+	 * {@link withCurrentRegisteredLease} と同じだが、同じ鍵の列に {@link PARADIS_MOBILE_AUTHORITY_LANE_MAX_PENDING} 件
+	 * 以上たまっていたら積まずに 'busy' を返す（スマホからの操作を、受理する前に断る）。
+	 */
+	private tryWithCurrentRegisteredLease<T>(lease: IParadisMobileWindowLease, key: string, task: () => Promise<T>): Promise<T | undefined> | 'busy' {
+		return this.authorityLanes.tryRun(key, () => this.runWithCurrentRegisteredLease(lease, task)) ?? 'busy';
+	}
+
+	private async runWithCurrentRegisteredLease<T>(lease: IParadisMobileWindowLease, task: () => Promise<T>): Promise<T | undefined> {
+		if (!this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)) {
+			return undefined;
+		}
+		const metrics = paradisMobileLinkMetrics;
+		if (this.isLeaseValidationCached(lease)) {
+			metrics.count('pc.authority.leaseCached');
 			return task();
-		});
+		}
+		metrics.count('pc.authority.leaseValidated');
+		const validation = await this.windowLeaseClient.validate(lease);
+		this.rememberLeaseValidation(lease, validation);
+		if (!validation.valid || !this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)) {
+			return undefined;
+		}
+		return task();
+	}
+
+	/** 覚えている main の結果がまだ使えるか（同じ世代・manifest が進んでいない・古すぎない）。 */
+	private isLeaseValidationCached(lease: IParadisMobileWindowLease): boolean {
+		const cached = this.validatedLeases.get(lease.windowId);
+		if (cached === undefined || !this.sameLease(cached.lease, lease)) {
+			return false;
+		}
+		if (cached.revision < this.observedLeaseRevision || Date.now() - cached.at > PARADIS_LEASE_VALIDATION_TTL_MS) {
+			this.validatedLeases.delete(lease.windowId);
+			return false;
+		}
+		return true;
+	}
+
+	private rememberLeaseValidation(lease: IParadisMobileWindowLease, validation: { readonly valid: boolean; readonly manifestRevision: number }): void {
+		if (typeof validation.manifestRevision === 'number' && validation.manifestRevision > this.observedLeaseRevision) {
+			this.observedLeaseRevision = validation.manifestRevision;
+		}
+		if (!validation.valid) {
+			this.validatedLeases.delete(lease.windowId);
+			return;
+		}
+		// main は manifest を変えると必ず通知する。通知より古い revision で確かめた結果は覚えない
+		if (typeof validation.manifestRevision === 'number' && validation.manifestRevision >= this.observedLeaseRevision) {
+			this.validatedLeases.set(lease.windowId, { lease: { windowId: lease.windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration }, revision: validation.manifestRevision, at: Date.now() });
+		}
+	}
+
+	/** main から manifest の変更が届いた。それより古い revision で確かめた結果を捨てる。 */
+	private observeLeaseRevision(revision: number): void {
+		if (revision > this.observedLeaseRevision) {
+			this.observedLeaseRevision = revision;
+		}
+		for (const [windowId, cached] of this.validatedLeases) {
+			if (cached.revision < this.observedLeaseRevision) {
+				this.validatedLeases.delete(windowId);
+			}
+		}
 	}
 
 	private async handleTerminalFrame(frame: IParadisMobileInboundFrame): Promise<void> {
@@ -2909,9 +3089,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			return;
 		}
+		// 同じターミナルへの操作は 1 本の列で順に（作成はウィンドウごと）。列が詰まっていたら受理する前に断る
+		const lane = message.t === 'create' ? `terminal-create:${owner.windowId}` : `terminal:${message.terminalKey as string}`;
 		let delivered: boolean | undefined;
 		try {
-			delivered = await this.withCurrentRegisteredLease(owner, async () => {
+			const queued = this.tryWithCurrentRegisteredLease(owner, lane, async () => {
 				if (!this.terminalOperations.bindOwner(mobileId, operationId, owner)) {
 					this.finishTerminalOperation(mobileId, operationId, 'outcome-unknown');
 					return false;
@@ -2932,6 +3114,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this._onInboundFrame.fire([Channels.Terminal, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, mobileId]);
 				return true;
 			});
+			if (queued === 'busy') {
+				// renderer へ渡していないので「実行されなかった」と確定できる（版 4 に busy の状態は無いので failed で返す）
+				this.finishTerminalOperation(mobileId, operationId, 'failed');
+				return;
+			}
+			delivered = await queued;
 		} catch (error) {
 			this.logService.warn('[paradisMobileRelay] Renderer lease validation failed during terminal delivery', error);
 			const timer = this.terminalOperationTimers.get(this.terminalOperationKey(mobileId, operationId));
@@ -2961,9 +3149,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		try {
-			await this.withCurrentRegisteredLease(owner, async () => {
+			// ack・viewport は同じターミナルの操作と同じ列で順に届ける。列が詰まっていたら捨てる（次の ack・viewport が
+			// 最新値を運ぶ。アプリはこの 2 つの結果を待たない）
+			const queued = this.tryWithCurrentRegisteredLease(owner, `terminal:${message.terminalKey}`, async () => {
 				this._onInboundFrame.fire([Channels.Terminal, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, mobileId]);
 			});
+			if (queued !== 'busy') {
+				await queued;
+			}
 		} catch (error) {
 			this.logService.warn('[paradisMobileRelay] Renderer lease validation failed during terminal ack delivery', error);
 		}
@@ -2984,7 +3177,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			await this.withCurrentRegisteredLease(owner, async () => {
 				this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
-			});
+			}, `request:${owner.windowId}:${frame.ch}`);
 			return;
 		}
 		let message: { id?: unknown; protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown; rendererGeneration?: unknown; t?: unknown };
@@ -3030,10 +3223,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		try {
-			const delivered = await this.withCurrentRegisteredLease(owner, async () => {
+			// 同じウィンドウ・同じチャネルの要求は 1 本の列で順に（アップロードの断片の順を保つ）。列が詰まっていたら
+			// 受理する前に断る
+			const queued = this.tryWithCurrentRegisteredLease(owner, `request:${owner.windowId}:${frame.ch}`, async () => {
 				this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
 				return true;
 			});
+			if (queued === 'busy') {
+				this.sendWindowFrameError(frame, message.id, PARADIS_MOBILE_SEND_BUSY_MESSAGE);
+				return;
+			}
+			const delivered = await queued;
 			if (delivered !== true) {
 				this.sendWindowFrameError(frame, message.id, 'PC画面が再接続されたため操作を中断しました');
 			}
@@ -3460,6 +3660,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.stopKeepalive();
 		this.clearConnectTimer();
 		this.clearStableConnectionReset();
+		// 覚えている lease の結果は切断で捨てる（次に繋いだら main に確かめ直す）
+		this.validatedLeases.clear();
 		// 意図した切断なので、予約済みの切断レポートは破棄する（機能を無効化しただけで
 		// 「復帰できなかった」と報告してしまわないように）。
 		this.disconnectReporter.setEnabled(false);
@@ -3720,7 +3922,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const delivered = await this.withCurrentRegisteredLease(owner, async () => {
 			this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
 			return true;
-		});
+		}, `webrtc:${owner.windowId}`);
 		if (delivered !== true) {
 			this.webrtcRendererLeases.delete(mobileId);
 			return;

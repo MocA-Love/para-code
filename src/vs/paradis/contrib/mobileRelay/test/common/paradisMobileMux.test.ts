@@ -198,6 +198,42 @@ suite('ParadisMobileMux version 4', () => {
 		await dropped;
 		assert.deepStrictEqual({ sent, congestion: queue.congestionBytes() }, { sent: [10 + 8 + 28], congestion: 0 });
 	});
+
+	test('submit returns a handle that is accepted at once and settles after the last fragment; a refused send does not advance seq', async () => {
+		const channels = await establishChannels();
+		// 上限を超える大きな送信の代わりに、列が断る状態を作る
+		class RefusingQueue extends ParadisMobileSendQueue {
+			refuse = false;
+			override admits(owner: object, stream: string, bytes: number): boolean {
+				return !this.refuse && super.admits(owner, stream, bytes);
+			}
+		}
+		const queue = new RefusingQueue();
+		const delivered: number[] = [];
+		let receive = Promise.resolve();
+		const receiver = new FrameMux(channels.receiver, { sendSealed: () => { } });
+		receiver.on(Channels.Fs, frame => delivered.push(frame.seq));
+		const sender = new FrameMux(channels.sender, { sendSealed: sealed => { receive = receive.then(() => receiver.receive(sealed)); }, sendQueue: queue });
+		const disposed = new FrameMux(channels.receiver, { sendSealed: () => { }, sendQueue: queue });
+		disposed.dispose();
+
+		const first = sender.submit(Channels.Fs, new Uint8Array(20 * 1024), undefined, { bounded: true });
+		queue.refuse = true;
+		const refused = sender.submit(Channels.Fs, new Uint8Array(10), undefined, { bounded: true });
+		queue.refuse = false;
+		const third = sender.submit(Channels.Fs, new Uint8Array(10), undefined, { bounded: true });
+		const closed = disposed.submit(Channels.Fs, new Uint8Array(10));
+		const handles = [first, refused, third, closed];
+		const settled = await Promise.all(handles.map(handle => handle.settled));
+		await receive;
+
+		assert.deepStrictEqual({ accepted: handles.map(handle => handle.accepted ? 'accepted' : handle.reason), settled, delivered }, {
+			accepted: ['accepted', 'busy', 'accepted', 'closed'],
+			settled: ['sent', 'cancelled', 'sent', 'cancelled'],
+			// 断った送信で seq に穴を開けない
+			delivered: [0, 1],
+		});
+	});
 });
 
 suite('ParadisMobileCrypto nonce reservation', () => {
