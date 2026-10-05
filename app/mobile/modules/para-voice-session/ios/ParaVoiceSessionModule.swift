@@ -215,6 +215,15 @@ public class ParaVoiceSessionModule: Module {
 			self.player.setInterrupted(false)
 			self.resumeSession()
 		})
+		observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+			guard let self, self.sessionActive else {
+				return
+			}
+			// 通話から戻ったときなど、割り込みの終わりの知らせが来ないことがある。前面に戻ったら、割り込みの終わりと同じく
+			// セッションを有効にし直してからエンジンを起こし直す
+			self.player.setInterrupted(false)
+			self.resumeSession()
+		})
 		observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
 			guard let self, self.sessionActive else {
 				return
@@ -598,6 +607,8 @@ private final class ParaVoiceStreamPlayer {
 	/// エンジンを起こせなかった（割り込み中など）。先頭の発話を捨てずに、起こせるようになるまで待つ。
 	private var suspended = false
 	private var suspendedSince: TimeInterval?
+	/// 最後のエンジンの起動が、ほかのアプリが音声を握っていたために失敗した（cannotInterruptOthers・insufficientPriority）。
+	private var lastStartBlockedByOthers = false
 	private let statsLock = NSLock()
 	private var statsCache: [String: Any] = [:]
 	private var nextToken = 0
@@ -834,7 +845,11 @@ private final class ParaVoiceStreamPlayer {
 			if current - since >= stalledEngineTimeout {
 				suspendedSince = nil
 				rebuildEngine()
-				if suspended {
+				if suspended && (lastStartBlockedByOthers || AVAudioSession.sharedInstance().isOtherAudioPlaying) {
+					// 通話など、ほかのアプリが音声を握っている（割り込みの終わりが 60 秒を過ぎても来ない長い通話を含む）。
+					// 捨てずに待ち、5 秒ごとに起こし直してみる
+					suspendedSince = current
+				} else if suspended {
 					suspended = false
 					finishHead()
 				}
@@ -845,7 +860,10 @@ private final class ParaVoiceStreamPlayer {
 			if current - since >= stalledEngineTimeout {
 				engineStoppedSince = nil
 				rebuildEngine()
-				if self.engine?.isRunning != true {
+				if suspended && (lastStartBlockedByOthers || AVAudioSession.sharedInstance().isOtherAudioPlaying) {
+					// ほかのアプリが音声を握っている。捨てずに待つ（上の suspended の扱いへ）
+					suspendedSince = current
+				} else if self.engine?.isRunning != true {
 					suspended = false
 					finishHead()
 				}
@@ -1058,8 +1076,13 @@ private final class ParaVoiceStreamPlayer {
 				try engine.start()
 			} catch {
 				NSLog("[ParaVoice] AVAudioEngine.start failed: \(error)")
+				// ほかのアプリ（通話など）が音声を握っている間の失敗。握っている間は発話を捨てずに待つ
+				let code = (error as NSError).code
+				lastStartBlockedByOthers = code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue
+					|| code == AVAudioSession.ErrorCode.insufficientPriority.rawValue
 				return false
 			}
+			lastStartBlockedByOthers = false
 		}
 		if !node.isPlaying {
 			node.play()

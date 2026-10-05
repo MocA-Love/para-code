@@ -80,6 +80,8 @@ const DICTATION_HOLD_OWNER_PREFIX = 'para-code-voice-input';
 const SOUND_HANDOFF_READY_WAIT_MS = 1_000;
 /** 着信音を鳴らしてよい古さ（worker も列で 5 秒以上待った着信音は鳴らさない）。 */
 const SOUND_FRESHNESS_MS = 5_000;
+/** Para Code が自分で鳴らす前に、worker の再生 lock が空くのを待つ上限。 */
+const PLAY_LOCK_WAIT_MS = 30_000;
 const YT_DLP_TIMEOUT_MS = 120_000;
 const FULL_DOWNLOAD_TIMEOUT_MS = 300_000;
 const MAX_FULL_DOWNLOAD_DURATION_SECONDS = 600;
@@ -283,6 +285,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				// ユーザーが `aivis --mute` している間は、Para Code が自分で鳴らす着信音も鳴らさない
 				void (async () => {
 					if (!(await this._isAivisMuted())) {
+						await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS).catch(() => undefined);
 						await this._playRingtoneFile(ringtone.id, ringtone.volume);
 					}
 				})()
@@ -521,7 +524,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		const stream = ready ? ingest?.open({ kind: 'sound', priority, prelude }) : undefined;
 		if (!stream || !(await stream.handoff)) {
-			this._playRingtoneNow(ringtone);
+			// 取り下げが遅れて分かった着信音は、古くなっていれば鳴らさない
+			if (Date.now() - since <= SOUND_FRESHNESS_MS && !this._dictationHold.held) {
+				this._playRingtoneNow(ringtone);
+			}
 			return;
 		}
 		let started = false;
@@ -1650,6 +1656,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (await this._isAivisMuted()) {
 			return;
 		}
+		// worker が鳴らしている間は空くまで待つ（重ねない）
+		await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS).catch(() => undefined);
 		await this._playAivisAudio(audio, volume);
 	}
 

@@ -20,6 +20,8 @@ import type * as http from 'http';
 export const PARADIS_MCP_REQUEST_TIMEOUT_MS = 130_000;
 /** 音声取込以外の経路で、本文を受け取りきるまでの上限（以前のサーバー全体の requestTimeout と同じ）。 */
 export const PARADIS_MCP_BODY_TIMEOUT_MS = 30_000;
+/** 本文を読まずに応答した要求の、残りの本文を読み捨てる上限。過ぎたら接続を切る。 */
+export const PARADIS_MCP_UNREAD_BODY_DRAIN_MS = 1_000;
 
 /** サーバーの時間の上限を設定する。 */
 export function paradisConfigureMcpHttpServer(server: http.Server): void {
@@ -35,8 +37,8 @@ export function paradisConfigureMcpHttpServer(server: http.Server): void {
 /**
  * 要求の本文を `timeoutMs` までに受け取りきらなければ、408 を返して（応答のヘッダーを送る前なら）接続を切る。
  * Node の requestTimeout と同じ守りを経路ごとに掛ける。本文を受け取りきった・接続が切れた要求には何もしない。
- * 応答を返し終えたときに本文を読み終えていなければ、接続ごと閉じる（chunked の本文を送り続けさせない・接続を
- * 使い回させない。以前はここで時計を外していたので、応答だけ返す経路では 30 秒の守りが抜けていた）。応答のヘッダーを
+ * 本文を読み終えないまま返す応答には Connection: close を付け、返し終えたら残りを 1 秒だけ読み捨ててから接続を閉じる
+ * （chunked の本文を送り続けさせない・接続を使い回させない・相手が応答を受け取る前に切らない。以前はここで時計を外していたので、応答だけ返す経路では 30 秒の守りが抜けていた）。応答のヘッダーを
  * 送っても閉じない経路（SSE など）は、本文が 30 秒で届ききらなければ切る。返した口を dispose すると守りを外す
  * （実際に受理する音声取込）。
  */
@@ -58,6 +60,15 @@ export function paradisArmRequestBodyTimeout(req: http.IncomingMessage, res: htt
 		req.destroy();
 	}, timeoutMs);
 	(timer as { unref?: () => void }).unref?.();
+	// 本文を読み終えないまま応答を返すなら、その応答に Connection: close を付ける（接続を使い回させない）
+	const originalWriteHead = res.writeHead;
+	const writeHead = ((...args: Parameters<typeof res.writeHead>) => {
+		if (!disposed && !req.complete && !res.headersSent && typeof res.setHeader === 'function') {
+			res.setHeader('Connection', 'close');
+		}
+		return originalWriteHead.call(res, ...args);
+	}) as typeof res.writeHead;
+	res.writeHead = writeHead;
 	const dispose = () => {
 		if (disposed) {
 			return;
@@ -65,12 +76,21 @@ export function paradisArmRequestBodyTimeout(req: http.IncomingMessage, res: htt
 		disposed = true;
 		clearTimeout(timer);
 		res.removeListener('finish', onFinish);
+		if (res.writeHead === writeHead) {
+			res.writeHead = originalWriteHead;
+		}
 	};
-	// 応答を返し終えた。本文を読み終えていなければ、残りの本文を待たずに接続を閉じる
+	// 応答を返し終えた。本文を読み終えていなければ、相手が応答を受け取れるよう少しだけ読み捨ててから接続を閉じる
 	const onFinish = () => {
 		dispose();
 		if (!req.complete && !req.destroyed) {
-			req.destroy();
+			req.resume();
+			const drainTimer = setTimeout(() => {
+				if (!req.complete && !req.destroyed) {
+					req.destroy();
+				}
+			}, PARADIS_MCP_UNREAD_BODY_DRAIN_MS);
+			(drainTimer as { unref?: () => void }).unref?.();
 		}
 	};
 	res.once('finish', onFinish);

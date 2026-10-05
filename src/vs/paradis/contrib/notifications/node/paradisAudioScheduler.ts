@@ -213,6 +213,8 @@ interface QueueEntry {
 	deferredSince?: number;
 	/** 合成済みの音声を渡し直した回数。 */
 	rehandoffs?: number;
+	/** 列に入れた順の番号。渡し直し・再試行で戻すときも、この順の位置へ戻す。 */
+	order?: number;
 }
 
 export class AudioScheduler {
@@ -220,6 +222,11 @@ export class AudioScheduler {
 	private aivisBusy = false;
 	private activeHandoffs = 0;
 	private activeTransfers = 0;
+	private nextOrder = 0;
+	/** `--ingest` の復旧を待っている件の数。待っている間は後ろの件を渡さない（順番を入れ替えない）。 */
+	private deferring = 0;
+	/** 復旧待ちが一度時間切れになった。次に worker へ渡せるまで、待たずに Para Code が鳴らす。 */
+	private deferExpired = false;
 	private queue: QueueEntry[] = [];
 	private paused = false;
 	/** 音声入力（ディクテーション）中。新しい再生を始めない（キューは捨てない）。 */
@@ -308,6 +315,7 @@ export class AudioScheduler {
 			...(options.ignorePause ? { ignorePause: true } : {}),
 			...(options.presynthesized ? { presynthesized: true } : {}),
 			...(options.reserved ? { reserved: true } : {}),
+			order: options.front === true ? Math.min(0, ...this.queue.map(e => e.order ?? 0)) - 1 : ++this.nextOrder,
 		};
 		this.insert(entry, priority, options.front === true);
 		void this.pump();
@@ -327,13 +335,23 @@ export class AudioScheduler {
 		}
 	}
 
-	/** 渡し直し・再試行・復旧待ちの件を先頭へ戻す。 */
+	/**
+	 * 渡し直し・再試行・復旧待ちの件を列へ戻す。列に入れた順（high が先）の位置へ戻し、後から入った件に追い越されたまま
+	 * にしない。
+	 */
 	private requeueFront(entry: QueueEntry): void {
 		if (this.disposed) {
 			entry.runner.onDropped?.();
 			return;
 		}
-		this.queue.unshift(entry);
+		const order = entry.order ?? Number.NEGATIVE_INFINITY;
+		const index = this.queue.findIndex(other => entry.priority === 'high' && other.priority === 'normal'
+			|| (entry.priority === other.priority && order < (other.order ?? Number.NEGATIVE_INFINITY)));
+		if (index < 0) {
+			this.queue.push(entry);
+		} else {
+			this.queue.splice(index, 0, entry);
+		}
 		void this.pump();
 	}
 
@@ -411,6 +429,8 @@ export class AudioScheduler {
 
 	private async pump(): Promise<void> {
 		if (this.disposed) { return; }
+		// `--ingest` の復旧を待っている件があれば、後ろの件を先に渡さない・鳴らさない
+		if (this.deferring > 0) { return; }
 		// worker へ渡す件は、同時に渡す上限まで先頭から順に渡す（音声入力中も渡す。止めるのは worker の hold）
 		// 合成済みの声（SSH 先の声・鳴らし直し）は一時停止中でも渡す
 		while (this.queue.length > 0 && (!this.paused || this.queue[0].ignorePause) && this.canHandoff(this.queue[0])) {
@@ -468,6 +488,7 @@ export class AudioScheduler {
 			try {
 				const result = await entry.runner.handoff!(attempt);
 				if (result.kind === 'released') {
+					this.deferExpired = false;
 					if (result.rateLimit) { this.rateLimit = result.rateLimit; }
 					return result.settled ? { transfer: result.settled.then(settled => this.onHandoffSettled(entry, attempt, settled), () => undefined) } : undefined;
 				}
@@ -530,12 +551,22 @@ export class AudioScheduler {
 	private deferHandoff(entry: QueueEntry, attempt: number): void {
 		const now = (this.deps.now ?? Date.now)();
 		const since = entry.deferredSince ?? now;
-		if (now - since >= (this.deps.maxHandoffDeferMs ?? MAX_HANDOFF_DEFER_MS)) {
-			this.deps.logWarn?.('[audio-scheduler] aivis-mcp --ingest did not come back in time; playing the voice with Para Code');
+		if (this.deferExpired) {
+			// 一度待ちきれなかった。次に worker へ渡せるまでは待たない（全部の通知を 2 分ずつ遅らせない）
 			this.fallBackToLocal(entry, undefined);
 			return;
 		}
-		void (this.deps.sleep ?? defaultSleep)(HANDOFF_DEFER_RETRY_MS).then(() => this.requeueFront({ ...entry, attempt, deferredSince: since }));
+		if (now - since >= (this.deps.maxHandoffDeferMs ?? MAX_HANDOFF_DEFER_MS)) {
+			this.deps.logWarn?.('[audio-scheduler] aivis-mcp --ingest did not come back in time; playing the voice with Para Code');
+			this.deferExpired = true;
+			this.fallBackToLocal(entry, undefined);
+			return;
+		}
+		this.deferring++;
+		void (this.deps.sleep ?? defaultSleep)(HANDOFF_DEFER_RETRY_MS).then(() => {
+			this.deferring--;
+			this.requeueFront({ ...entry, attempt, deferredSince: since });
+		});
 	}
 
 	/**
@@ -554,6 +585,7 @@ export class AudioScheduler {
 				presynthesized: true,
 				reserved: entry.reserved,
 				rehandoffs: rehandoffs + 1,
+				order: entry.order,
 			});
 			return;
 		}
@@ -565,7 +597,7 @@ export class AudioScheduler {
 			local.onDropped?.();
 			return;
 		}
-		this.requeueFront({ priority: entry.priority, runner: local, localOnly: true, ignorePause: audio !== undefined || entry.ignorePause, presynthesized: audio !== undefined || entry.presynthesized, reserved: entry.reserved });
+		this.requeueFront({ priority: entry.priority, runner: local, localOnly: true, ignorePause: audio !== undefined || entry.ignorePause, presynthesized: audio !== undefined || entry.presynthesized, reserved: entry.reserved, order: entry.order });
 	}
 
 	private async runOne(runner: AivisTaskRunner, presynthesized = false): Promise<void> {

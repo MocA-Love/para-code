@@ -41,6 +41,11 @@ export interface IParadisMobileSendTransfer {
 	readonly priority: ParadisMobileSendPriority;
 	/** 同じ owner・同じ鍵の、まだ送り始めていない送信を置き換える（画面の JPEG）。 */
 	readonly replaceKey?: string;
+	/**
+	 * 音声の列の中の順は守るが、操作・状態と 1 断片ずつ交互に送る（数 MB になりうる救済の `voice-clip`。遅い回線で操作を
+	 * 止めない）。
+	 */
+	readonly interleave?: boolean;
 	/** 断片の数。 */
 	readonly fragmentCount: number;
 	/** ペイロードのバイト数（詰まりの計算に使う）。 */
@@ -107,6 +112,8 @@ export class ParadisMobileSendQueue {
 	private paceNextAt = 0;
 	/** 時間で決める速さに切り替えてから積んだ量。 */
 	private pacedBytes = 0;
+	/** 直前に送ったのが、操作・状態と交互に送る音声（救済の clip）だった。 */
+	private lastWasInterleaved = false;
 	/** 待ちすぎて繰り上げた画面の JPEG。最後の断片まで続けて送る。 */
 	private promotedScreen: IQueuedTransfer | undefined;
 
@@ -248,8 +255,19 @@ export class ParadisMobileSendQueue {
 	private pick(): IQueuedTransfer | undefined {
 		const voice = this.pickIn(ParadisMobileSendPriority.Voice);
 		if (voice !== undefined) {
+			if (voice.transfer.interleave === true) {
+				// 救済の clip は操作・状態と 1 断片ずつ交互に（音声の列の中の順は崩さない）
+				if (this.lastWasInterleaved && this.lanes[ParadisMobileSendPriority.Control]!.size > 0) {
+					this.lastWasInterleaved = false;
+					return this.pickIn(ParadisMobileSendPriority.Control);
+				}
+				this.lastWasInterleaved = true;
+				return voice;
+			}
+			this.lastWasInterleaved = false;
 			return voice;
 		}
+		this.lastWasInterleaved = false;
 		// 繰り上げた画面の JPEG は、操作・状態より先に最後まで続けて送る（1 断片ずつだと 1 枚が届くまで何秒もかかる）
 		if (this.promotedScreen !== undefined && !this.promotedScreen.settled) {
 			return this.promotedScreen;
@@ -372,6 +390,7 @@ export class ParadisMobileSendQueue {
 const VOICE_STREAM_MAGIC = [0x50, 0x56, 0x53, 0x01]; // "PVS" + 1
 const SCREEN_JPEG_MAGIC = [0x50, 0x4a, 0x46, 0x01]; // "PJF" + 1
 const JSON_VOICE_PREFIX = '{"t":"voice-';
+const JSON_VOICE_CLIP_PREFIX = '{"t":"voice-clip"';
 const JSON_FRAME_PREFIX = '{"t":"frame"';
 
 function startsWithBytes(payload: Uint8Array, magic: readonly number[]): boolean {
@@ -402,12 +421,15 @@ function startsWithAscii(payload: Uint8Array, prefix: string): boolean {
  * browser チャネルのペイロードから優先度を決める。音声の流れ（2 進の断片 `PVS\x01`、`voice-stream-*` の JSON）は先に、
  * 画面（2 進の JPEG `PJF\x01`、`frame` の JSON）は後に送る。PC のシリアライズは常に `t` が先頭のキー。
  * それ以外のチャネル・ペイロードは操作・状態。1 本まるごとの `voice-clip`（詰まったときの救済・古いアプリ向け）も
- * 音声の優先度に置く（操作・状態の後ろで待たせない）。同じ端末の音声は積んだ順に送るので、救済の clip が後から始まった
- * 流れに追い越されることはない。
+ * 音声の列に置く（同じ端末の音声は積んだ順に送るので、救済の clip が後から始まった流れに追い越されない）。ただし数 MB に
+ * なりうるので、操作・状態と 1 断片ずつ交互に送る（`interleave`）。
  */
-export function paradisMobileSendPriorityOf(channel: string, payload: Uint8Array): { readonly priority: ParadisMobileSendPriority; readonly replaceKey?: string } {
+export function paradisMobileSendPriorityOf(channel: string, payload: Uint8Array): { readonly priority: ParadisMobileSendPriority; readonly replaceKey?: string; readonly interleave?: boolean } {
 	if (channel !== 'browser') {
 		return { priority: ParadisMobileSendPriority.Control };
+	}
+	if (startsWithAscii(payload, JSON_VOICE_CLIP_PREFIX)) {
+		return { priority: ParadisMobileSendPriority.Voice, interleave: true };
 	}
 	if (startsWithBytes(payload, VOICE_STREAM_MAGIC) || startsWithAscii(payload, JSON_VOICE_PREFIX)) {
 		return { priority: ParadisMobileSendPriority.Voice };

@@ -56,6 +56,9 @@ class FakeIngest implements IParadisAivisIngest {
 	setHold(owner: string, active: boolean): void { this.holds.push([owner, active]); }
 	mayPlayDirectly(): boolean { return this.direct; }
 	async isMuted(): Promise<boolean> { return this.muted; }
+	/** worker の再生 lock が空くのを待つ（テストでは手で解く）。 */
+	playLock: Promise<void> | undefined;
+	async whenPlayLockFree(): Promise<void> { await this.playLock; }
 }
 
 const RINGTONE = { id: 'chime', volume: 50 };
@@ -262,5 +265,37 @@ suite('ParadisNotificationsService voice handoff', () => {
 		}
 		await timeout(10);
 		assert.strictEqual(await service.playFallback(new Uint8Array([0xff, 0xfb, 0x90, 0x00])), true);
+	});
+	test('waits for the worker play lock before playing a voice itself (M-6)', async () => {
+		stubFetch();
+		const ingest = new FakeIngest();
+		ingest.usable = false;
+		const lock = new DeferredPromise<void>();
+		ingest.playLock = lock.p;
+		const { service, events } = createService(ingest);
+		service.notifyAudio(request('locked', false));
+		await timeout(20);
+		const whileLocked = [...events];
+		lock.complete();
+		await timeout(10);
+		assert.deepStrictEqual({ whileLocked, events }, { whileLocked: [], events: ['voice:6'] });
+	});
+
+	test('does not play a ringtone-only job that turned out unqueued after it went stale (L-1)', async () => {
+		const ingest = new FakeIngest();
+		const stream = new FakeStream();
+		ingest.nextStream = () => stream;
+		const { service, events } = createService(ingest);
+		const clock = sinon.useFakeTimers({ now: 0, toFake: ['Date'] });
+		try {
+			service.notifyAudio({ priority: 'normal', ringtone: RINGTONE });
+			await timeout(5);
+			clock.setSystemTime(6_000);
+			stream.handoffGate.complete(false);
+			await timeout(10);
+		} finally {
+			clock.restore();
+		}
+		assert.deepStrictEqual(events, []);
 	});
 });

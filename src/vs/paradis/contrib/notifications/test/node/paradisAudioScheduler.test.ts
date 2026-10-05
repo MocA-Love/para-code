@@ -891,5 +891,60 @@ suite('AudioScheduler', () => {
 			// 合成し直す前に、覚えたレート制限の窓が空くのを待つ
 			assert.deepStrictEqual(sleeps, [10_500]);
 		});
+		test('puts a handed-back task back at its original place instead of the front, and holds later ones while it waits (M-2)', async () => {
+			const started: string[] = [];
+			let firstCalls = 0;
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { }, maxConcurrentHandoffs: 1 }));
+			const runner = (name: string): AivisTaskRunner => ({
+				synthesize: async () => ({ audio: EMPTY_AUDIO }),
+				play: async () => { },
+				handoff: async () => {
+					started.push(name);
+					if (name === 'a' && ++firstCalls === 1) {
+						return { kind: 'defer' };
+					}
+					return { kind: 'released' };
+				},
+			});
+			scheduler.enqueueAivis(runner('a'));
+			scheduler.enqueueAivis(runner('b'));
+			scheduler.enqueueAivis(runner('c'));
+			for (let i = 0; i < 60; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(started, ['a', 'a', 'b', 'c']);
+		});
+
+		test('stops waiting for --ingest after one deferral timed out, until a handoff succeeds again (M-3)', async () => {
+			const events: string[] = [];
+			let now = 0;
+			let mode: 'defer' | 'release' = 'defer';
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { now += 1_000; }, now: () => now, maxHandoffDeferMs: 2_000 }));
+			const runner = (name: string): AivisTaskRunner => ({
+				...successfulRunner(name, events),
+				handoff: async () => { events.push(`handoff:${name}`); return mode === 'defer' ? { kind: 'defer' } : { kind: 'released' }; },
+			});
+			scheduler.enqueueAivis(runner('a'));
+			for (let i = 0; i < 80; i++) {
+				await Promise.resolve();
+			}
+			// 一度待ちきれなかった後は、待たずに Para Code が鳴らす
+			scheduler.enqueueAivis(runner('b'));
+			for (let i = 0; i < 80; i++) {
+				await Promise.resolve();
+			}
+			mode = 'release';
+			scheduler.enqueueAivis(runner('c'));
+			for (let i = 0; i < 80; i++) {
+				await Promise.resolve();
+			}
+			mode = 'defer';
+			scheduler.enqueueAivis(runner('d'));
+			for (let i = 0; i < 20; i++) {
+				await Promise.resolve();
+			}
+			// 渡せた（c）後は、また復旧を待つ（d はすぐには Para Code が鳴らさず、渡し直す）
+			assert.deepStrictEqual(events.slice(0, 11), ['handoff:a', 'handoff:a', 'handoff:a', 'synthesize:a', 'play:a', 'handoff:b', 'synthesize:b', 'play:b', 'handoff:c', 'handoff:d', 'handoff:d']);
+		});
 	});
 });

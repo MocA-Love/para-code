@@ -14,7 +14,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisIngestTerminal, IParadisLocalVoiceOutput, IParadisVoiceRetention } from '../../../notifications/common/paradisVoiceIngest.js';
 import { ParadisVoiceRetentionBudget } from '../../../notifications/common/paradisVoiceRetention.js';
 import { paradisMp3Bitrate } from '../../common/paradisRemoteVoice.js';
-import { IParadisRemoteVoiceIngressDeps, IParadisRemoteVoiceResult, paradisReceiveRemoteVoice } from '../../node/paradisRemoteVoiceIngress.js';
+import { IParadisRemoteVoiceIngressDeps, IParadisRemoteVoiceResult, paradisReceiveRemoteVoice, paradisSendVoiceTicketRejected } from '../../node/paradisRemoteVoiceIngress.js';
 import { PARADIS_MCP_REQUEST_TIMEOUT_MS, paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from '../../node/paradisHttpRequestTimeouts.js';
 import * as sinon from 'sinon';
 import { EventEmitter } from 'events';
@@ -530,11 +530,17 @@ suite('paradisReceiveRemoteVoice', () => {
 			paradisArmRequestBodyTimeout(finished.req as unknown as http.IncomingMessage, finished.res as unknown as http.ServerResponse);
 			finished.req.complete = true;
 			finished.res.emit('finish');
-			// 本文を読まずに返し終えた要求は、時計を待たずに接続ごと閉じる（M2）
+			// 本文を読まずに返す応答には Connection: close を付け、返し終えたら 1 秒だけ読み捨ててから閉じる（M2・L-2）
 			const repliedEarly = make();
+			const repliedEarlyHeaders: Record<string, string> = {};
+			Object.assign(repliedEarly.res, { setHeader: (name: string, value: string) => { repliedEarlyHeaders[name] = value; } });
+			Object.assign(repliedEarly.req, { resume: () => { } });
 			paradisArmRequestBodyTimeout(repliedEarly.req as unknown as http.IncomingMessage, repliedEarly.res as unknown as http.ServerResponse);
+			repliedEarly.res.writeHead(200);
 			repliedEarly.res.emit('finish');
-			const repliedEarlyDestroyed = repliedEarly.req.destroyed;
+			const repliedEarlyRightAfter = repliedEarly.req.destroyed;
+			clock.tick(1_000);
+			const repliedEarlyDestroyed = { rightAfter: repliedEarlyRightAfter, afterDrain: repliedEarly.req.destroyed, headers: repliedEarlyHeaders };
 			// 応答を返し終えても、本文がまだ届いている間は時計を外さない（SSE など応答を先に閉じない経路は 30 秒で切る）
 			const streaming = make();
 			paradisArmRequestBodyTimeout(streaming.req as unknown as http.IncomingMessage, streaming.res as unknown as http.ServerResponse);
@@ -546,9 +552,12 @@ suite('paradisReceiveRemoteVoice', () => {
 			const read = make();
 			paradisArmRequestBodyTimeout(read.req as unknown as http.IncomingMessage, read.res as unknown as http.ServerResponse);
 			read.req.complete = true;
-			clock.tick(29_999);
+			// 読み捨ての 1 秒を進めた分を引く
+			clock.tick(29_999 - 1_000);
 			const before = slow.req.destroyed;
 			clock.tick(1);
+			// streaming は 1 秒遅れて掛けたので、その分を進める
+			clock.tick(1_000);
 			assert.deepStrictEqual({
 				before,
 				slow: { destroyed: slow.req.destroyed, status: slow.res.status },
@@ -561,7 +570,7 @@ suite('paradisReceiveRemoteVoice', () => {
 				before: false,
 				slow: { destroyed: true, status: 408 },
 				finished: false,
-				repliedEarlyDestroyed: true,
+				repliedEarlyDestroyed: { rightAfter: false, afterDrain: true, headers: { Connection: 'close' } },
 				streaming: true,
 				accepted: false,
 				read: false,
@@ -644,6 +653,35 @@ suite('paradisReceiveRemoteVoice', () => {
 		}
 	});
 
+	test('answers 401 when the ticket owner went away before accepting, so aivis-mcp 2.5.1 does not play it remotely (ticket-unavailable)', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, ticketCurrent: () => false });
+		try {
+			const audio = mp3(300);
+			const { request, response } = openRequest(harness.url, { 'Content-Length': audio.byteLength });
+			request.on('error', () => { });
+			request.end(audio);
+			const head = await response;
+			assert.deepStrictEqual({ status: head.status, accepted: head.accepted, streams: harness.streams.length }, { status: 401, accepted: undefined, streams: 0 });
+		} finally {
+			await harness.close();
+		}
+	});
+
+	test('rejects an unknown, expired, used or stale voice ticket with 401 instead of 404 (aivis-mcp 2.5.1 ticket-unavailable)', async () => {
+		const server = httpModule.createServer((_req, res) => paradisSendVoiceTicketRejected(res));
+		await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+		try {
+			const port = (server.address() as AddressInfo).port;
+			const { request, response } = openRequest(new URL(`http://127.0.0.1:${port}/paradis-mcp/mobile-voice`), { 'Content-Length': 0 });
+			request.end();
+			const head = await response;
+			assert.deepStrictEqual({ status: head.status, body: JSON.parse(await head.body) }, { status: 401, body: { error: 'Voice ticket rejected.' } });
+		} finally {
+			server.closeAllConnections();
+			await new Promise<void>(resolve => server.close(() => resolve()));
+		}
+	});
+
 	test('chunked: gives up on a stuck local write after the close limit instead of waiting forever (H3)', async () => {
 		const harness = await startServer({ localPlayback: true, ingest: true, ingestWrite: 'block', limits: { localCloseTimeoutMs: 100 } });
 		try {
@@ -711,5 +749,22 @@ suite('paradisReceiveRemoteVoice', () => {
 			{ accepted: 'accepted', body: { localPlayback: true }, events: ['body-received', 'mobile:500'] },
 			{ accepted: undefined, body: { localPlayback: true }, events: ['body-received', 'mobile:500'] },
 		]);
+	});
+	test('Content-Length: does not wait for a stuck local write beyond the remote deadline (L-4)', async () => {
+		const harness = await startServer({ localPlayback: true, ingest: true, ingestWrite: 'block', playAudio: true });
+		try {
+			const audio = mp3(600);
+			const { request, response } = openRequest(harness.url, { 'Content-Length': audio.byteLength });
+			request.end(audio);
+			const head = await response;
+			assert.deepStrictEqual({ body: JSON.parse(await head.body), stream: harness.streams[0].events, events: harness.events }, {
+				body: { localPlayback: true },
+				stream: ['write:600', 'abort:write-failed'],
+				events: ['body-received', 'mobile:600', 'open:normal', 'play-audio:600'],
+			});
+		} finally {
+			harness.streams[0]?.writeGate.complete();
+			await harness.close();
+		}
 	});
 });
