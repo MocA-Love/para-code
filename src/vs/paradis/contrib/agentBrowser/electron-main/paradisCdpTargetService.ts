@@ -20,7 +20,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
-import { browserViewAutomationKeySignatureFromCdp } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
+import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
 	IParadisCdpFrameEvent,
@@ -129,6 +129,31 @@ export function paradisPaneStorageSessionId(ownerKey: string): string {
  */
 const PARADIS_INPUT_REFUSED_USER_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user (the user is interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.';
 const PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch (the user started interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.';
+
+/** Agent-facing reason for a failed automation key suppression (no page data). */
+function describeAutomationKeyFailure(reason: BrowserViewAutomationKeyFailureReason | undefined): string {
+	switch (reason) {
+		case 'ack-timeout': return 'the page did not answer in time, it may be busy; retry in a moment';
+		case 'cleared': return 'the page navigated while the key was being prepared; retry';
+		case 'frames-changed': return 'frames on the page changed while the key was being prepared; retry';
+		case 'user-focus': return 'the user focused the page; ask the user to click outside the page, then retry';
+		case 'rejected': return 'the user is interacting with the page; ask the user to click outside the page, then retry';
+		case 'expectation-limit': return 'too many keys are in flight; retry';
+		case 'no-frames':
+		case 'view-unavailable': return 'the page is not ready; retry after it loads';
+		default: return 'retry';
+	}
+}
+
+/** Keeps why automation key suppression failed in the log and Sentry (the reason is a fixed word). */
+function reportAutomationKeyFailure(phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined): void {
+	try {
+		console.warn(`[ParadisCdpTargetService] automation key suppression could not be ${phase === 'register' ? 'registered' : 'activated'}: ${reason ?? 'unknown'}`);
+		reportParadisDiagnosticError('owned', 'agent-browser', 'automation-key-suppression', new Error('Automation key suppression failed'), { safe_phase: phase, safe_reason: reason ?? 'unknown' }, 'warning');
+	} catch {
+		// Diagnostics must never change input delivery.
+	}
+}
 
 /** At most one input-time frame nudge per view in this window (a click is three mouse events). */
 const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
@@ -705,18 +730,31 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const keySignature = command.method === 'Input.dispatchKeyEvent'
 			? browserViewAutomationKeySignatureFromCdp(command.params)
 			: undefined;
-		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>>;
+		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>> = undefined;
+		// Why the last key preparation failed. The callback fills it in during the awaits below.
+		let keyFailure: BrowserViewAutomationKeyFailureReason | undefined;
+		const onKeyFailure = (reason: BrowserViewAutomationKeyFailureReason) => { keyFailure = reason; };
+		const lastKeyFailure = () => keyFailure;
 		if (command.method === 'Input.dispatchKeyEvent') {
 			if (!keySignature) {
 				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${command.method} does not have a suppressible exact key signature` };
 			}
-			try {
-				automationRegistration = await view.prepareAutomationKeyInput(keySignature);
-			} catch {
-				automationRegistration = undefined;
+			for (let attempt = 0; attempt < 2 && !automationRegistration; attempt++) {
+				keyFailure = undefined;
+				try {
+					automationRegistration = await view.prepareAutomationKeyInput(keySignature, onKeyFailure);
+				} catch {
+					automationRegistration = undefined;
+				}
+				// A navigation or a frame coming and going while the frames answered is over by now; one
+				// more try is safe because nothing has been sent. A busy page (ack-timeout) is not retried.
+				if (!automationRegistration && lastKeyFailure() !== 'cleared' && lastKeyFailure() !== 'frames-changed') {
+					break;
+				}
 			}
 			if (!automationRegistration) {
-				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered' };
+				reportAutomationKeyFailure('register', lastKeyFailure());
+				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure())})` };
 			}
 		}
 
@@ -735,13 +773,15 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			}
 			if (automationRegistration) {
 				let activated = false;
+				keyFailure = undefined;
 				try {
 					activated = await automationRegistration.activate();
 				} catch {
 					// Activation failures are definite because the debugger command has not been sent.
 				}
 				if (!activated) {
-					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be activated' };
+					reportAutomationKeyFailure('activate', lastKeyFailure());
+					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure())})` };
 				}
 				if (this.resolveExistingExactView(descriptor) !== view) {
 					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };

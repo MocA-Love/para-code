@@ -19,6 +19,7 @@ export type ParadisBrowserErrorReasonCode =
 	| 'authority-changed'
 	| 'key-suppression'
 	| 'dispatch-incomplete'
+	| 'input-paused'
 	| 'barrier-timeout'
 	| 'binding-changed'
 	| 'command-rejected'
@@ -33,7 +34,8 @@ const REASONS: readonly [RegExp, ParadisBrowserErrorReasonCode][] = [
 	[/focus state (?:is|became) unavailable/i, 'focus-state-unavailable'],
 	[/key suppression/i, 'key-suppression'],
 	[/input barrier timeout/i, 'barrier-timeout'],
-	[/did not complete/i, 'dispatch-incomplete'],
+	[/input (?:on this page )?is paused|input queue is poisoned/i, 'input-paused'],
+	[/did not complete|dispatch timed out/i, 'dispatch-incomplete'],
 	[/binding (?:changed|generation|state|is unavailable)|no browser page is bound|scopes? (?:changed|cannot be bound)|shared (?:page|browser tab)|page shared with this terminal pane changed/i, 'binding-changed'],
 	[/not an allowed|suppressible exact key signature|invalid exact BrowserView descriptor|could not be serialized/i, 'command-rejected'],
 	[/DevTools bridge (?:terminated|resource limit)/i, 'bridge-unavailable'],

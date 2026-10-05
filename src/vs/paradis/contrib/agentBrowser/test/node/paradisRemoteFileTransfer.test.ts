@@ -10,9 +10,10 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { dirname, extname, join } from '../../../../../base/common/path.js';
+import { BufferReader, BufferWriter, deserialize, serialize } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpOwningWindowResult } from '../../common/paradisMcpToolProvider.js';
-import { PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../../common/paradisRemoteFileBridge.js';
+import { paradisDecodeRemoteFileReadResult, paradisEncodeRemoteFileReadResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../../common/paradisRemoteFileBridge.js';
 import { ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from '../../node/paradisRemoteFileTransfer.js';
 
 interface IResult {
@@ -24,27 +25,42 @@ function texts(result: unknown): string {
 	return (result as IResult).content.map(part => part.text).join('\n');
 }
 
-/** The renderer side: a remote file system held in memory. */
+/** Sends a value through the same serialization as the window channel (`base/parts/ipc`). */
+function overIpc<T>(value: T): T {
+	const writer = new BufferWriter();
+	serialize(writer, value);
+	const result = deserialize(new BufferReader(writer.buffer)) as T;
+	writer.dispose();
+	return result;
+}
+
+/** The renderer side: a remote file system held in memory, answering over the real IPC serialization. */
 class FakeWindow {
 	readonly files = new Map<string, Uint8Array>();
 	readonly calls: string[] = [];
 	refuseWrite = false;
 
-	async call<T>(method: string, args: unknown[]): Promise<ParadisMcpOwningWindowResult<T>> {
+	async call<T>(method: string, sentArgs: unknown[]): Promise<ParadisMcpOwningWindowResult<T>> {
+		const args = overIpc(sentArgs);
+		const value = await this.answer(method, args);
+		return value.ok ? { ok: true, value: overIpc(value.value) as T } : value;
+	}
+
+	private async answer(method: string, args: unknown[]): Promise<ParadisMcpOwningWindowResult<unknown>> {
 		this.calls.push(method);
 		const path = args[0] as string;
 		switch (method) {
 			case PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD:
-				return { ok: true, value: (this.refuseWrite ? { ok: false, reason: 'outsideAllowedFolders' } : { ok: true }) as T };
+				return { ok: true, value: this.refuseWrite ? { ok: false, reason: 'outsideAllowedFolders' } : { ok: true } };
 			case PARADIS_REMOTE_FILE_WRITE_METHOD:
 				this.files.set(path, (args[1] as VSBuffer).buffer);
-				return { ok: true, value: { ok: true, path } as T };
+				return { ok: true, value: { ok: true, path } };
 			case PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD:
 				this.files.set(`/home/example/.para-code/browser-files/${path}`, (args[1] as VSBuffer).buffer);
-				return { ok: true, value: { ok: true, path: `/home/example/.para-code/browser-files/${path}`, userFolder: '/home/example/.para-code/browser-files' } as T };
+				return { ok: true, value: { ok: true, path: `/home/example/.para-code/browser-files/${path}`, userFolder: '/home/example/.para-code/browser-files' } };
 			case PARADIS_REMOTE_FILE_READ_METHOD: {
 				const data = this.files.get(path);
-				return { ok: true, value: (data === undefined ? { ok: false, reason: 'notFound' } : { ok: true, data: VSBuffer.wrap(data), name: path.split('/').pop() }) as T };
+				return { ok: true, value: paradisEncodeRemoteFileReadResult(data === undefined ? { ok: false, reason: 'notFound' } : { ok: true, data: VSBuffer.wrap(data), name: path.split('/').pop() ?? 'upload' }) };
 			}
 		}
 		return { ok: false, error: 'unknown method' };
@@ -153,6 +169,24 @@ suite('ParadisRemoteFileTransfer', () => {
 			localContent: 'a,b',
 			text: 'File uploaded from /home/example/report.csv.',
 			missing: [true, true],
+		});
+	});
+
+	test('the raw read result object loses its bytes over IPC, the encoded form keeps them', () => {
+		const bytes = new TextEncoder().encode('%PDF');
+		const raw = overIpc({ ok: true, data: VSBuffer.wrap(bytes), name: 'a.pdf' });
+		const encoded = overIpc(paradisEncodeRemoteFileReadResult({ ok: true, data: VSBuffer.wrap(bytes), name: 'a.pdf' }));
+		const decoded = paradisDecodeRemoteFileReadResult(encoded);
+		assert.deepStrictEqual({
+			rawData: raw.data instanceof VSBuffer,
+			decoded: decoded?.ok ? { name: decoded.name, text: new TextDecoder().decode(decoded.data) } : decoded,
+			rawDecoded: paradisDecodeRemoteFileReadResult(raw),
+			failure: paradisDecodeRemoteFileReadResult(overIpc(paradisEncodeRemoteFileReadResult({ ok: false, reason: 'tooLarge' }))),
+		}, {
+			rawData: false,
+			decoded: { name: 'a.pdf', text: '%PDF' },
+			rawDecoded: undefined,
+			failure: { ok: false, reason: 'tooLarge' },
 		});
 	});
 
