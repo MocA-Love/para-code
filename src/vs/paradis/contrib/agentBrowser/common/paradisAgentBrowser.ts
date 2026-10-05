@@ -162,6 +162,28 @@ export interface IParadisAgentCursorEvent {
 	readonly durationMs?: number;
 }
 
+/**
+ * エージェントが内蔵ブラウザのタブに置いたスクリプト（add_init_script）の本数を、ワークベンチへ流す
+ * チャネル（electron-main → renderer）。ワークベンチはタブにバナーを出し、利用者が「外す」を押したら
+ * そのタブのスクリプトをすべて外す。
+ */
+export const PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL = 'paradisAgentPageScripts';
+
+/** あるタブに置かれているスクリプトの本数（0 は無くなった）。 */
+export interface IParadisAgentPageScriptsChange {
+	readonly viewId: string;
+	readonly count: number;
+}
+
+/** {@link PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL} の公開面。 */
+export interface IParadisAgentPageScriptsSurface {
+	readonly onDidChangeInitScripts: Event<IParadisAgentPageScriptsChange>;
+	/** いまスクリプトが置かれているタブと本数。 */
+	getInitScriptCounts(): Promise<IParadisAgentPageScriptsChange[]>;
+	/** 利用者が外した。そのタブのスクリプトをどのペインのものもすべて外し、外した数を返す。 */
+	removeAllInitScripts(viewId: string): Promise<number>;
+}
+
 /** {@link PARADIS_AGENT_CURSOR_CHANNEL} の公開面。renderer は購読しかしない。 */
 export interface IParadisAgentCursorEvents {
 	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent>;

@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// wait_until / get_text / inspect_element / scroll_to がページの中で動かす関数（文字列）。
+// wait_until / get_text / inspect_element / scroll_to と click_by / fill_by がページの中で動かす関数（文字列）。
 // 内蔵 chrome-devtools-mcp の evaluate_script へ `function` として渡す。ビルドの変換（名前の付け替え・
 // 補助関数の差し込み）を受けないよう、TypeScript の関数ではなく文字列で持つ。ページの中では
 // Para Code の名前空間や import は使えない。
@@ -381,6 +381,188 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		if (isPageScroller(container)) { window.scrollBy(delta); } else { container.scrollBy(delta); }
 		const after = scrollPosition(container);
 		return { found: false, moved: Math.round(after - before), position: Math.round(after), container: label };
+	}
+
+	// --- click_by / fill_by --------------------------------------------------------------------
+	// The element found by "locate" is kept under a nonce (spec.ref) in a page-global map of WeakRefs, so the
+	// next evaluate of the same tool call acts on the same element without marking the DOM.
+	const REFS_KEY = Symbol.for('paradis.browser.actTargets');
+	const remember = el => {
+		const refs = window[REFS_KEY] || (window[REFS_KEY] = new Map());
+		for (const [key, value] of refs) { if (!value.deref()) { refs.delete(key); } }
+		while (refs.size >= 32) { refs.delete(refs.keys().next().value); }
+		refs.set(spec.ref, new WeakRef(el));
+	};
+	const recall = () => { const value = window[REFS_KEY] ? window[REFS_KEY].get(spec.ref) : undefined; const el = value ? value.deref() : undefined; return el && el.isConnected ? el : undefined; };
+	const deepActive = () => { let active = document.activeElement; while (active && active.shadowRoot && active.shadowRoot.activeElement) { active = active.shadowRoot.activeElement; } return active; };
+	const isDisabled = el => (typeof el.matches === 'function' && el.matches(':disabled')) || !!el.closest('[aria-disabled="true"]') || !!el.closest('[inert]');
+	const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', '']);
+	// Date and time fields have segments, not a text selection: Input.insertText does not replace their value,
+	// so they get the value through the native setter (which React's value tracker notices) and input/change.
+	const VALUE_INPUT_TYPES = new Set(['date', 'datetime-local', 'month', 'week', 'time', 'color', 'range']);
+	const kindOf = el => {
+		const tag = el.localName;
+		if (tag === 'select') { return 'select'; }
+		if (tag === 'textarea') { return 'text'; }
+		if (tag === 'input') {
+			const type = lower(el.getAttribute('type'));
+			if (type === 'checkbox' || type === 'radio') { return type; }
+			return TEXT_INPUT_TYPES.has(type) ? 'text' : VALUE_INPUT_TYPES.has(type) ? 'value' : 'other';
+		}
+		if (el.isContentEditable) { return 'text'; }
+		return 'other';
+	};
+	/** fill_by on a wrapper (an MUI TextField, a labelled group): the field inside it. */
+	const fieldOf = el => {
+		if (kindOf(el) !== 'other') { return el; }
+		const inner = selectAll(el, 'input:not([type="hidden"]), textarea, select, [contenteditable=""], [contenteditable="true"]', []);
+		return inner.find(visible) || inner[0] || el;
+	};
+	const valueOf = el => {
+		const kind = kindOf(el);
+		if (kind === 'checkbox' || kind === 'radio') { return el.checked ? 'true' : 'false'; }
+		if (kind === 'select') { return Array.from(el.selectedOptions || []).map(option => option.value).join(','); }
+		if (el.localName === 'input' || el.localName === 'textarea') { return el.value; }
+		return textOf(el);
+	};
+	/** What is shown to the agent: a password field's value is never returned, only its length. */
+	const isSecret = el => el.localName === 'input' && lower(el.getAttribute('type')) === 'password';
+	const shownValue = (el, max) => isSecret(el) ? '(' + valueOf(el).length + ' characters, hidden)' : cut(valueOf(el), max);
+	/** Where a pointer at the center of the element would land, and why it would not reach the element. */
+	const hitAt = el => {
+		const rect = el.getBoundingClientRect();
+		const x = rect.left + rect.width / 2;
+		const y = rect.top + rect.height / 2;
+		const out = { x, y, rect: { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) } };
+		if (rect.width <= 0 || rect.height <= 0) { out.problem = 'zero-size'; return out; }
+		if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) { out.problem = 'outside-viewport'; return out; }
+		let hit = document.elementFromPoint(x, y);
+		while (hit && hit.shadowRoot) { const inner = hit.shadowRoot.elementFromPoint(x, y); if (!inner || inner === hit) { break; } hit = inner; }
+		if (!hit) { out.problem = 'nothing-at-point'; return out; }
+		if (hit !== el && !el.contains(hit)) {
+			// A <label> for the element forwards the click to it.
+			const label = hit.closest ? hit.closest('label') : null;
+			if (!(label && el.labels && Array.from(el.labels).includes(label))) {
+				out.problem = 'covered';
+				out.coveredBy = describe(hit);
+			}
+		}
+		return out;
+	};
+
+	if (spec.mode === 'locate') {
+		const found = find();
+		if (found === null) { return { withinMissing: true }; }
+		if (found.length === 0) { return { matched: 0 }; }
+		let el;
+		if (spec.index !== undefined) {
+			el = found[spec.index];
+			if (!el) { return { matched: found.length, noIndex: true }; }
+		} else {
+			el = found.find(candidate => visible(candidate) && !isDisabled(candidate)) || found.find(visible) || found[0];
+		}
+		const target = spec.purpose === 'fill' ? fieldOf(el) : el;
+		if (target.ownerDocument !== document || window.top !== window) { return { matched: found.length, element: describe(target), problem: 'iframe' }; }
+		const kind = kindOf(target);
+		// A native checkbox / radio hidden behind a custom look is clicked through its visible label.
+		let pointEl = target;
+		if ((kind === 'checkbox' || kind === 'radio') && !visible(target) && target.labels) {
+			pointEl = Array.from(target.labels).find(visible) || target;
+		}
+		if (visible(pointEl)) {
+			const rect = pointEl.getBoundingClientRect();
+			if (rect.top < 0 || rect.left < 0 || rect.bottom > innerHeight || rect.right > innerWidth) {
+				pointEl.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+			}
+		}
+		remember(target);
+		const hit = hitAt(pointEl);
+		const out = {
+			matched: found.length,
+			element: describe(target),
+			kind,
+			visible: visible(pointEl),
+			enabled: !isDisabled(target),
+			readOnly: !!target.readOnly,
+			focused: deepActive() === target,
+			value: shownValue(target, 200),
+			secret: isSecret(target),
+			x: hit.x, y: hit.y,
+			viewport: { width: innerWidth, height: innerHeight },
+		};
+		if (hit.problem) { out.problem = hit.problem; }
+		if (hit.coveredBy) { out.coveredBy = hit.coveredBy; }
+		if (kind === 'select') { out.options = Array.from(target.options).slice(0, 50).map(option => ({ value: option.value, label: cut(option.label || option.text, 80) })); }
+		return out;
+	}
+
+	if (spec.mode === 'focusField') {
+		const el = recall();
+		if (!el) { return { lost: true }; }
+		if (deepActive() !== el && typeof el.focus === 'function') { el.focus({ preventScroll: true }); }
+		const focused = deepActive() === el;
+		if (focused) {
+			if (el.localName === 'input' || el.localName === 'textarea') {
+				try { el.select(); } catch { /* types without a text selection */ }
+			} else if (el.isContentEditable) {
+				const range = document.createRange();
+				range.selectNodeContents(el);
+				const selection = getSelection();
+				selection.removeAllRanges();
+				selection.addRange(range);
+			}
+		}
+		return { focused, value: shownValue(el, 200), empty: valueOf(el).length === 0 };
+	}
+
+	if (spec.mode === 'setValue') {
+		const el = recall();
+		if (!el) { return { lost: true }; }
+		el.focus({ preventScroll: true });
+		const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+		setter.call(el, spec.value);
+		el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		el.dispatchEvent(new Event('change', { bubbles: true }));
+		return { value: valueOf(el), accepted: valueOf(el) === spec.value };
+	}
+
+	if (spec.mode === 'selectOption') {
+		const el = recall();
+		if (!el) { return { lost: true }; }
+		const wanted = spec.value;
+		const option = Array.from(el.options).find(candidate => candidate.value === wanted) || Array.from(el.options).find(candidate => norm(candidate.label || candidate.text) === norm(wanted)) || Array.from(el.options).find(candidate => lower(candidate.label || candidate.text).includes(lower(wanted)));
+		if (!option) { return { noOption: true, options: Array.from(el.options).slice(0, 50).map(candidate => ({ value: candidate.value, label: cut(candidate.label || candidate.text, 80) })) }; }
+		if (!option.selected || el.multiple) {
+			// The same as a user choosing it: the framework's listeners see input and change.
+			if (el.multiple) { for (const candidate of el.options) { candidate.selected = candidate === option; } } else { el.value = option.value; }
+			el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			el.dispatchEvent(new Event('change', { bubbles: true }));
+		}
+		return { value: valueOf(el), label: cut(option.label || option.text, 80) };
+	}
+
+	// --- capture_screenshot: the document rectangle of an element ------------------------------
+	if (spec.mode === 'rect') {
+		const found = find();
+		if (found === null) { return { withinMissing: true }; }
+		if (found.length === 0) { return { matched: 0 }; }
+		const el = spec.index !== undefined ? found[spec.index] : (found.find(visible) || found[0]);
+		if (!el) { return { matched: found.length, noIndex: true }; }
+		if (el.ownerDocument !== document || window.top !== window) { return { matched: found.length, element: describe(el), problem: 'iframe' }; }
+		const rect = el.getBoundingClientRect();
+		const page = pageScroller();
+		return {
+			matched: found.length,
+			element: describe(el),
+			x: rect.left + scrollX, y: rect.top + scrollY, width: rect.width, height: rect.height,
+			documentWidth: Math.max(page.scrollWidth, innerWidth), documentHeight: Math.max(page.scrollHeight, innerHeight),
+		};
+	}
+
+	if (spec.mode === 'readField') {
+		const el = recall();
+		if (!el) { return { lost: true }; }
+		return { value: shownValue(el, 2000), secret: isSecret(el), length: valueOf(el).length, focused: deepActive() === el, element: describe(el) };
 	}
 
 	return { error: 'unknown mode' };

@@ -40,7 +40,7 @@ import { EncryptionMainService } from '../../platform/encryption/electron-main/e
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
 // PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
-import { IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL, PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
 import { ParadisCursorOverlayController } from '../../paradis/contrib/agentBrowser/electron-main/paradisCursorOverlayController.js';
 // PARA-PATCH: browser mirror WebRTC spike — capture a single WebContentsView instead of the whole screen when armed
@@ -1518,6 +1518,8 @@ export class CodeApplication extends Disposable {
 		// buffering would pile every agent mouse move up in main until someone does. Dropping
 		// them is fine — the wall only mirrors what is happening right now.
 		mainProcessElectronServer.registerChannel(PARADIS_AGENT_CURSOR_CHANNEL, ProxyChannel.fromService(paradisAgentCursorSurface, disposables, { unbufferedEvents: ['onDidChangeAgentCursor'] }));
+		// PARA-PATCH: tell the workbench which integrated browser tabs carry agent init scripts, and let the user remove them from the tab
+		mainProcessElectronServer.registerChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL, ProxyChannel.fromService(paradisCdpTargetService.pageScriptsSurface, disposables));
 
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
