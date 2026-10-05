@@ -59,6 +59,8 @@ export interface IParadisAivisSettings {
 	elevenLabsSpeed: number;
 	/** 適用する ElevenLabs の発音辞書の ID。空なら辞書なし。 */
 	elevenLabsDictionaryId: string;
+	/** 通知と同じ辞書をエージェントの読み上げ（aivis-mcp）にも使う。既定 true。 */
+	shareDictionaryWithAgents: boolean;
 }
 
 const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
@@ -76,6 +78,7 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 	elevenLabsModelId: PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 	elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
 	elevenLabsDictionaryId: '',
+	shareDictionaryWithAgents: true,
 });
 
 /** API キーを入れる設定のフィールド。secret storage のキーと対にする。 */

@@ -32,6 +32,7 @@ import './contrib/limitsMonitor/node/paradisClaudeAccounts.server.js';
 import './contrib/fileTransfer/node/paradisFileModes.server.js';
 import './contrib/agentHookTrust/node/paradisRemoteCodexHookTrust.server.js';
 import './contrib/updateTerminals/node/paradisStaleServers.server.js';
+import './contrib/notifications/node/paradisAgentDictionary.server.js';
 
 /**
  * 登録済みの REH サーバー向け contribution をすべて呼ぶ。

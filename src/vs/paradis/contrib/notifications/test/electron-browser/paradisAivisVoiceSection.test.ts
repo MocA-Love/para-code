@@ -54,6 +54,7 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 		elevenLabsModelId: 'eleven_flash_v2_5',
 		elevenLabsSpeed: 1,
 		elevenLabsDictionaryId: '',
+		shareDictionaryWithAgents: true,
 	};
 
 	getSelectedRingtoneId(): string { return 'default'; }
