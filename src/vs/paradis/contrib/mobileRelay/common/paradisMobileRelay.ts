@@ -23,6 +23,7 @@ import { IParadisMobileBrowserScopeSnapshot } from './paradisMobileBrowserScope.
 import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
+import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 // ---- 設定キー ----
@@ -458,6 +459,16 @@ export interface IParadisMobileRelayService {
 
 	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */
 	notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;
+
+	/** 通信の計測（F0。`paradisMobileLinkMetrics.ts`）が始まった・やめた。各ウィンドウの renderer も合わせる。 */
+	readonly onDidChangeLinkMetricsEnabled: Event<boolean>;
+	/** 通信の計測を始める（前の値は捨てる）・やめる（集めた値は書き出せる）。 */
+	setLinkMetricsEnabled(enabled: boolean): Promise<void>;
+	getLinkMetricsEnabled(): Promise<boolean>;
+	/** renderer が数えた生の値を足す（計測中だけ）。 */
+	mergeLinkMetrics(raw: IParadisMobileLinkMetricsRaw): Promise<void>;
+	/** 集めた値の要約（時間・大きさ・件数だけ）。 */
+	getLinkMetricsSnapshot(): Promise<IParadisMobileLinkMetricsSnapshot>;
 }
 
 /** runGit の結果。 */

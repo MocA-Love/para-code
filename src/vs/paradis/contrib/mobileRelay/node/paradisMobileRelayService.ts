@@ -100,6 +100,8 @@ import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobil
 import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisMobileTrafficDiagnostics, startParadisMobileTrafficDiagnostics } from './paradisMobileTrafficDiagnostics.js';
+import { IParadisMobileLinkMetricsSnapshot, ParadisMobileEchoTracker, paradisEncodeMetricsPong, paradisIsMetricsPingPayload, paradisParseMetricsPing } from '../common/paradisMobileLinkMetrics.js';
+import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
 import { ParadisMobileStateDelivery } from './paradisMobileStateDelivery.js';
 import { paradisRoundMobileResources } from '../common/paradisMobileHostResources.js';
 import { ParadisHostResourceSampler } from '../../resourceMonitor/node/paradisHostResources.js';
@@ -423,12 +425,17 @@ export class MobileSession {
 					// 断片の組み立ての誤りは復号できた後の話なので、張り直しの判定（暗号層の失敗）には数えない
 					onAssemblyError: (err: Error) => this.recordAssemblyError(err),
 					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
+					metrics: paradisMobileLinkMetrics,
 				});
 				this.mux.on(Channels.State, f => this.emit(f));
 				this.mux.on(Channels.Terminal, f => this.emit(f));
 				this.mux.on(Channels.Scm, f => this.emit(f));
 				this.mux.on(Channels.Fs, f => this.emit(f));
-				this.mux.on(Channels.Browser, f => this.emit(f));
+				this.mux.on(Channels.Browser, f => {
+					if (!this.answerMetricsPing(f.payload)) {
+						this.emit(f);
+					}
+				});
 				this.mux.on(Channels.Agent, f => this.emit(f));
 				this.mux.on(Channels.Notify, f => this.emit(f));
 				return;
@@ -616,6 +623,27 @@ export class MobileSession {
 		this.stateDelivery.reset();
 	}
 
+	/**
+	 * 往復時間の ping（`metrics.ping.v1`、計測している間のアプリだけが送る）に、renderer を通さずすぐ返す。
+	 * 計測中なら、アプリが測った直前の往復も数える。ping でなければ false。
+	 */
+	private answerMetricsPing(payload: Uint8Array): boolean {
+		if (!paradisIsMetricsPingPayload(payload)) {
+			return false;
+		}
+		const ping = paradisParseMetricsPing(new TextDecoder().decode(payload));
+		if (ping === undefined) {
+			return true;
+		}
+		if (ping.rttMs !== undefined) {
+			paradisMobileLinkMetrics.observe('pc.rtt.appReportedMs', ping.rttMs);
+		}
+		paradisMobileLinkMetrics.count('pc.rtt.pings');
+		this.sendFrame(Channels.Browser, undefined, new TextEncoder().encode(paradisEncodeMetricsPong(ping.id)))
+			.catch(error => this.logService.trace('[paradisMobileRelay] metrics pong failed', String(error)));
+		return true;
+	}
+
 	private emit(frame: { ch: ChannelId; ws?: string; seq: number; payload: Uint8Array }): void {
 		// 送信元モバイルのIDを付けて renderer へ渡す（要求元にのみ返すべき応答の宛先解決に使う）。
 		this.onFrame({ ch: frame.ch, ws: frame.ws, seq: frame.seq, payload: VSBuffer.wrap(frame.payload), mobileId: this.mobileId });
@@ -657,7 +685,15 @@ export class MobileSession {
 			: undefined;
 		return this.stateDelivery.deliver(payload, force, async state => {
 			// 「変わっていない」の返事は小さいので圧縮しない（アプリは magic の無い JSON をそのまま読む）
+			const metrics = paradisMobileLinkMetrics;
+			const encodeStartedAt = metrics.enabled ? metrics.now() : 0;
 			const encoded = state === unchanged?.reply ? state : await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
+			if (state === unchanged?.reply) {
+				metrics.count('pc.state.unchangedReplies');
+			} else {
+				metrics.observeSince('pc.state.encodeMs', encodeStartedAt);
+				metrics.observe('pc.state.wireBytes', encoded.length);
+			}
 			await mux.send(Channels.State, encoded);
 		}, { ...(identity !== undefined ? { identity } : {}), ...(unchanged !== undefined ? { unchanged } : {}) });
 	}
@@ -730,6 +766,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private readonly _onDidChangeStatus = this._register(new Emitter<IParadisMobileStatus>());
 	readonly onDidChangeStatus = this._onDidChangeStatus.event;
+	private readonly _onDidChangeLinkMetricsEnabled = this._register(new Emitter<boolean>());
+	readonly onDidChangeLinkMetricsEnabled = this._onDidChangeLinkMetricsEnabled.event;
+	/** 通信の計測（F0）の入力からエコーまで。鍵はアプリ（出力のフレームは本文を読まないので端末単位）。 */
+	private readonly linkEchoTracker = new ParadisMobileEchoTracker();
+	/** 計測中、アプリごとの直前のターミナルの ack を受けた時刻。 */
+	private readonly linkAckAt = new Map<string, number>();
+	/** 計測中、直前に Desktop State を作った時刻。 */
+	private linkStateAt: number | undefined;
+	/** renderer の権限の列に入っている仕事の数。 */
+	private rendererAuthorityDepth = 0;
+	private readonly linkMetricsLogTimer = this._register(new IntervalTimer());
 
 	private readonly _onPairingEvent = this._register(new Emitter<ParadisMobilePairingEvent>());
 	readonly onPairingEvent = this._onPairingEvent.event;
@@ -818,7 +865,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * PC からリレーへのソケットは全端末で 1 本なので、送信の列も 1 本（mux の版 4）。ソケットの送信バッファが
 	 * 32KiB を超えている間は次の断片を積まない。
 	 */
-	private readonly sendQueue = new ParadisMobileSendQueue({ bufferedAmount: () => this.socket?.bufferedAmount ?? 0 });
+	private readonly sendQueue = new ParadisMobileSendQueue({ bufferedAmount: () => this.socket?.bufferedAmount ?? 0, metrics: paradisMobileLinkMetrics });
 	/** 音声通知の配信（`voice.stream.v1` と `voice-clip`）。 */
 	private readonly voiceDelivery = paradisCreateVoiceDelivery(this.voiceSubscriptions, {
 		getSession: mobileId => this.sessions.get(mobileId),
@@ -2487,6 +2534,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
+		const metrics = paradisMobileLinkMetrics;
+		// 計測がオフの間は時計も読まない
+		const calledAt = metrics.enabled ? metrics.now() : 0;
 		await this.withCurrentRegisteredLease(lease, async () => {
 			const bytes = payload.buffer;
 			if (ch === Channels.Notify && mobileId === undefined) {
@@ -2496,7 +2546,24 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (mobileId !== undefined) {
 				const session = this.sessions.get(mobileId);
 				if (session?.hasCurrentProtocol) {
+					if (metrics.enabled) {
+						const now = metrics.now();
+						// renderer から届いてから送信の列へ積むまで（権限の列と lease の確かめ）
+						metrics.observe(`pc.out.${ch}.authorityMs`, now - calledAt);
+						if (ch === Channels.Terminal) {
+							// 入力を renderer へ渡してから、そのアプリ宛ての次のターミナルの出力がここへ届くまで
+							const echo = this.linkEchoTracker.take(mobileId, now);
+							if (echo !== undefined) {
+								metrics.observe('pc.term.echo.inputToOutputMs', echo);
+							}
+						}
+					}
+					const sendStartedAt = metrics.enabled ? metrics.now() : 0;
 					await session.sendFrame(ch, ws, bytes);
+					if (ch === Channels.Terminal && sendStartedAt > 0) {
+						// 送信の列へ積んでから最後の断片をソケットへ渡すまで（この間、権限の列は止まっている）
+						metrics.observeSince('pc.term.out.sendMs', sendStartedAt);
+					}
 				}
 				return;
 			}
@@ -2624,8 +2691,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (mobileId !== undefined ? !targetedSession?.isOnline : !hasOnlineSession) {
 				return;
 			}
+			const metrics = paradisMobileLinkMetrics;
+			const stringifyStartedAt = metrics.enabled ? metrics.now() : 0;
 			const state = this.terminalRegistry.desktopState();
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
+			if (metrics.enabled) {
+				const now = metrics.now();
+				metrics.observe('pc.state.stringifyMs', now - stringifyStartedAt);
+				metrics.observe('pc.state.rawBytes', bytes.length);
+				metrics.observe('pc.state.terminals', state.terminals.length);
+				if (this.linkStateAt !== undefined) {
+					metrics.observe('pc.state.intervalMs', now - this.linkStateAt);
+				}
+				this.linkStateAt = now;
+			}
 			const version = { desktopEpoch: state.desktopEpoch, revision: state.revision };
 			// 送り終わるのを待たない（設計 4 章 #15）。以前は全端末へ 1 台ずつ送り終わるまで待っていたので、遅い
 			// スマホ 1 台が他の端末への State と、この列（renderer の権限の列）全体を止めていた。端末ごとの送信は
@@ -2674,9 +2753,65 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private enqueueRendererAuthority<T>(task: () => Promise<T>): Promise<T> {
-		const run = this.rendererAuthorityChain.then(task);
+		const metrics = paradisMobileLinkMetrics;
+		let measured = task;
+		if (metrics.enabled) {
+			// 列に入ってから始まるまでの待ちと、仕事そのものの長さ（送信の完了まで待つ仕事も含む。設計 2.3）。
+			// 列の深さは計測中に積んだ仕事だけ数える（オフの間は Promise を 1 つも増やさない）
+			metrics.observe('pc.authority.depth', this.rendererAuthorityDepth);
+			this.rendererAuthorityDepth++;
+			const enqueuedAt = metrics.now();
+			measured = async () => {
+				const startedAt = metrics.now();
+				metrics.observe('pc.authority.waitMs', startedAt - enqueuedAt);
+				try {
+					return await task();
+				} finally {
+					this.rendererAuthorityDepth--;
+					metrics.observeSince('pc.authority.runMs', startedAt);
+				}
+			};
+		}
+		const run = this.rendererAuthorityChain.then(measured);
 		this.rendererAuthorityChain = run.then(() => undefined, () => undefined);
 		return run;
+	}
+
+	/** 通信の計測（F0）を始める・やめる。始めると前の値は捨てる。各ウィンドウの renderer にも知らせる。 */
+	async setLinkMetricsEnabled(enabled: boolean): Promise<void> {
+		paradisMobileLinkMetrics.setEnabled(enabled);
+		this.linkEchoTracker.clear();
+		this.linkAckAt.clear();
+		this.linkStateAt = undefined;
+		if (enabled) {
+			// 計測中は 1 分ごとに要約を trace のログへ残す（本文・識別子は入らない）
+			this.linkMetricsLogTimer.cancelAndSet(() => this.logLinkMetrics(), 60_000);
+		} else {
+			this.linkMetricsLogTimer.cancel();
+		}
+		this._onDidChangeLinkMetricsEnabled.fire(enabled);
+	}
+
+	async getLinkMetricsEnabled(): Promise<boolean> {
+		return paradisMobileLinkMetrics.enabled;
+	}
+
+	/** renderer が数えた分を足す（計測中だけ）。 */
+	async mergeLinkMetrics(raw: unknown): Promise<void> {
+		paradisMobileLinkMetrics.merge(raw);
+	}
+
+	async getLinkMetricsSnapshot(): Promise<IParadisMobileLinkMetricsSnapshot> {
+		return paradisMobileLinkMetrics.snapshot();
+	}
+
+	private logLinkMetrics(): void {
+		try {
+			const { raw: _raw, ...summary } = paradisMobileLinkMetrics.snapshot();
+			this.logService.trace(`[paradisMobileRelay][link-metrics] ${JSON.stringify(summary)}`);
+		} catch {
+			// 計測のログで送受信を止めない
+		}
 	}
 
 	private withCurrentMainLease<T>(lease: IParadisMobileWindowLease, task: (validation: Awaited<ReturnType<ParadisMobileWindowLeaseClient['validate']>>) => Promise<T>): Promise<T | undefined> {
@@ -2716,7 +2851,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// ack と viewport は数秒おき・出力のたびに届く。操作台帳に通すと結果の保持（1000 件）を追い出し、本当の操作
 		// （入力・作成・閉じる）の再送の判定を壊す。台帳と結果の返信を飛ばし、版・epoch・持ち主の検査だけ残して届ける
 		// （設計書 4 章の着手順 11。旧アプリの envelope もそのまま受ける）
+		const metrics = paradisMobileLinkMetrics;
+		const receivedAt = metrics.enabled ? metrics.now() : 0;
 		if (message.t === 'ack' || message.t === 'viewport') {
+			if (message.t === 'ack' && metrics.enabled) {
+				// ターミナルの ack の頻度（設計 5 章「ack の実態」）
+				const previous = this.linkAckAt.get(mobileId);
+				if (previous !== undefined) {
+					metrics.observe('pc.term.ack.intervalMs', receivedAt - previous);
+				}
+				this.linkAckAt.set(mobileId, receivedAt);
+				metrics.count('pc.term.ack.received');
+			}
 			await this.deliverLedgerFreeTerminalFrame(frame, mobileId, message);
 			return;
 		}
@@ -2777,6 +2923,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						this.sendTerminalOperationResult(mobileId, operationId, 'outcome-unknown');
 					}
 				}, 10_000));
+				if (message.t === 'input' && metrics.enabled && receivedAt > 0) {
+					// 受けてから renderer へ渡すまで（台帳・権限の列・lease の確かめを含む）
+					const now = metrics.now();
+					metrics.observe('pc.term.input.dispatchMs', now - receivedAt);
+					this.linkEchoTracker.mark(mobileId, now);
+				}
 				this._onInboundFrame.fire([Channels.Terminal, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, mobileId]);
 				return true;
 			});
