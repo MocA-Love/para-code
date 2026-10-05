@@ -8,10 +8,21 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_FS_BINARY_RESPONSE_ENCODING, paradisEncodeBinaryFsResponse, paradisEncodeNegotiatedBinaryFsResponse } from '../../common/paradisMobileFileResponse.js';
+import { PARADIS_FS_BINARY_RESPONSE_ENCODING, paradisEncodeBinaryFsResponse, paradisEncodeNegotiatedBinaryFsResponse, paradisLooksBinary } from '../../common/paradisMobileFileResponse.js';
 
 suite('ParadisMobileFileResponse', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('treats a NUL in the first 8KiB as binary and ignores one after it', () => {
+		const late = new Uint8Array(8 * 1024 + 1).fill(0x61);
+		late[8 * 1024] = 0;
+		assert.deepStrictEqual([
+			paradisLooksBinary(new TextEncoder().encode('const a = 1;\n')),
+			paradisLooksBinary(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00])),
+			paradisLooksBinary(late),
+			paradisLooksBinary(new Uint8Array()),
+		], [false, true, false, false]);
+	});
 
 	test('encodes negotiated file responses as reversible binary v1 for every supported kind', () => {
 		const data = new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff]);

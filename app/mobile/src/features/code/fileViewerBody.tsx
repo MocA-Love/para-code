@@ -5,7 +5,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-na
 import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { CircleAlert } from 'lucide-react-native';
+import { CircleAlert, FileQuestion } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
@@ -16,7 +16,7 @@ import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 import { CenterSpinner } from './codeParts.js';
 import { buildFindScript, findTargetOf } from './fileFind.js';
-import { buildCodeHtml, buildMarkdownHtml, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
+import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
 import { measureBuild, type FileViewerLoadTrace } from './fileViewerTiming.js';
@@ -281,8 +281,20 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
 	const searchable = find !== undefined;
+	// コードの表示は 1 万行ずつのページ（長いファイルは下の帯で前後へ移る）。検索の一致行から開いたらその行のページ。
+	// 同じ画面のまま別のファイル・別の一致行へ移ったら（レビューの次のファイルなど）ページを選び直し、読み直して
+	// 行数が減ったら最後のページに収める
+	const codeView = text !== undefined && !(mode === 'render' && (kind === 'markdown' || kind === 'html'));
+	const pageKey = `${path}\n${focusLine ?? ''}`;
+	const [page, setPage] = useState(() => ({ key: pageKey, start: codePageStartOf(focusLine) }));
+	if (page.key !== pageKey) {
+		setPage({ key: pageKey, start: codePageStartOf(focusLine) });
+	}
+	const totalLines = useMemo(() => (codeView && text !== undefined ? codeLineTotal(text.content) : 0), [codeView, text]);
+	const requestedStart = page.key === pageKey ? page.start : codePageStartOf(focusLine);
+	const pageStart = totalLines > 0 ? Math.min(requestedStart, Math.floor((totalLines - 1) / CODE_LINE_WINDOW) * CODE_LINE_WINDOW) : requestedStart;
 	// コードと Markdown の CSP の nonce（HTML を作り直すたびに新しくする）。
-	const viewerNonce = useMemo(() => (searchable ? createMobileOfficeNonce() : undefined), [searchable, text, mode]);
+	const viewerNonce = useMemo(() => (searchable ? createMobileOfficeNonce() : undefined), [searchable, text, mode, pageStart]);
 	const built = useMemo(() => measureBuild(() => {
 		if (kind === 'spreadsheet') {
 			return spreadsheetHtml !== undefined && officeNonce !== undefined ? secureMobileOfficeHtml(spreadsheetHtml, officeNonce) : undefined;
@@ -302,8 +314,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		if (mode === 'render' && kind === 'markdown') {
 			return buildMarkdownHtml(text, theme, viewerNonce);
 		}
-		return buildCodeHtml(text, focusLine, theme, viewerNonce);
-	}), [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme, viewerNonce]);
+		return buildCodeHtml(text, focusLine, theme, viewerNonce, pageStart);
+	}), [kind, mode, text, spreadsheetHtml, binary, officeNonce, focusLine, name, theme, viewerNonce, pageStart]);
 	const html = built.value;
 	useEffect(() => {
 		trace?.viewing(kind, mode);
@@ -342,6 +354,9 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		find?.onMessage(data);
 	};
 
+	if (content?.unsupported === true) {
+		return <EmptyState icon={FileQuestion} title="この形式はまだ開けません" body="スマホではまだ表示できない形式です。PC で開いてください。" />;
+	}
 	if (content?.error !== undefined) {
 		return <EmptyState icon={CircleAlert} title="ファイルを開けませんでした" body={content.error} />;
 	}
@@ -405,10 +420,17 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 					})}
 				</ScrollView>
 			) : null}
-			{text?.truncated === true || text?.highlightTruncated === true ? (
+			{text?.truncated === true ? (
 				<Text style={styles.truncated}>サイズの上限のため先頭だけを表示しています</Text>
 			) : null}
 			{view}
+			{codeView && totalLines > CODE_LINE_WINDOW ? (
+				<View style={styles.pageBar}>
+					<Button variant="secondary" size="sm" label="前へ" disabled={pageStart === 0} onPress={() => setPage({ key: pageKey, start: Math.max(0, pageStart - CODE_LINE_WINDOW) })} />
+					<Text style={styles.pageText} numberOfLines={1}>{`${(pageStart + 1).toLocaleString()}〜${Math.min(pageStart + CODE_LINE_WINDOW, totalLines).toLocaleString()} 行目 / 全 ${totalLines.toLocaleString()} 行`}</Text>
+					<Button variant="secondary" size="sm" label="続きを表示" disabled={pageStart + CODE_LINE_WINDOW >= totalLines} onPress={() => setPage({ key: pageKey, start: pageStart + CODE_LINE_WINDOW })} />
+				</View>
+			) : null}
 		</View>
 	);
 }
@@ -443,6 +465,22 @@ const styles = StyleSheet.create({
 	recoveryActions: {
 		flexDirection: 'row',
 		gap: space.md,
+	},
+	pageBar: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		paddingHorizontal: space.md,
+		paddingVertical: space.sm,
+		backgroundColor: colors.panel,
+		borderTopWidth: StyleSheet.hairlineWidth,
+		borderTopColor: colors.border,
+	},
+	pageText: {
+		flex: 1,
+		fontSize: type.caption,
+		color: colors.textDim,
+		textAlign: 'center',
 	},
 	truncated: {
 		fontSize: type.caption,

@@ -185,6 +185,24 @@ suite('ParadisMobileDiffReviewRequests', () => {
 		assert.notStrictEqual(second.id, first.id);
 	});
 
+	test('アプリが振った noteId なら、送り直しても 1 件のまま。同じ id で中身が違えば断る', async () => {
+		const sent: IReply[] = [];
+		const host = createHost(createServices(), sent, new FakeGit(' M a.ts\n'), { 'a.ts': 'one\ntwo' });
+		const noteId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+		dispatch(host, { t: 'reviewNoteAdd', id: '1', path: 'a.ts', line: 2, lineText: 'two', body: 'rename', noteId });
+		dispatch(host, { t: 'reviewNoteAdd', id: '2', path: 'a.ts', line: 2, lineText: 'two', body: 'rename', noteId });
+		dispatch(host, { t: 'reviewNoteAdd', id: '3', path: 'a.ts', line: 2, lineText: 'two', body: 'other', noteId });
+		dispatch(host, { t: 'reviewNoteAdd', id: '4', path: 'a.ts', line: 2, lineText: 'two', body: 'bad id', noteId: '../x' });
+		await flush();
+
+		assert.deepStrictEqual(sent.map(reply => ({ id: reply.id, notes: reply.notes?.map(note => note.id), revision: reply.revision, error: reply.error, code: reply.code })), [
+			{ id: '1', notes: [noteId], revision: 1, error: undefined, code: undefined },
+			{ id: '2', notes: [noteId], revision: 1, error: undefined, code: undefined },
+			{ id: '3', notes: undefined, revision: undefined, error: '同じ id の別のメモが既にあります。メモの一覧を読み直してください。', code: 'note-id-conflict' },
+			{ id: '4', notes: undefined, revision: undefined, error: 'invalid note', code: undefined },
+		]);
+	});
+
 	test('sends the stored notes to a newly launched agent and keeps them as sent', async () => {
 		const services = createServices();
 		const launched: { prompt?: string; agentId: string; stateKey: string }[] = [];
