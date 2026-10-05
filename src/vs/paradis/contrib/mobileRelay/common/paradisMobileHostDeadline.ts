@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { localize } from '../../../../nls.js';
 
 /**
@@ -38,6 +39,18 @@ export const PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS = 3_000;
  */
 export const PARADIS_MOBILE_USAGE_DEADLINE_MS = 50_000;
 
+/**
+ * 読み取りの要求（scm の `diff`・`log`・`commitFiles`、fs の `list`）の上限（設計書 4 章の着手順 18）。アプリは
+ * 既定で 30 秒待つので、それより前に「接続先が応答しません」を返す。SSH の接続先が詰まると channel は返らない。
+ */
+export const PARADIS_MOBILE_READ_DEADLINE_MS = 25_000;
+
+/**
+ * ファイルの中身の読み取り（fs の `read`・`pdf`・`docx`・`media`・`xlsx`、scm の `xlsxDiff`）の上限。アプリは
+ * 120 秒待つ（大きいファイルを携帯回線で受けるため）。PC 側で読み終えるまでをこの時間で打ち切る。
+ */
+export const PARADIS_MOBILE_FILE_READ_DEADLINE_MS = 100_000;
+
 /** 打ち切ったときの応答の `code`（アプリは見出しを「接続先が応答していません」にする）。 */
 export const PARADIS_MOBILE_HOST_NO_RESPONSE_CODE = 'no-response';
 
@@ -68,6 +81,32 @@ export function paradisWithHostDeadline<T>(promise: Promise<T>, timeoutMs: numbe
 			reject(error);
 		});
 	});
+}
+
+/**
+ * {@link paradisWithHostDeadline} と同じく `timeoutMs` で打ち切り、打ち切ったら `work` に渡した token も取り消す
+ * （fileService の読み取りなど、token を受ける処理は本体まで止まる）。書き込みには使わない（時間切れでも書けて
+ * いることがあり、「失敗」と返すと食い違う）。
+ */
+export async function paradisWithCancellableHostDeadline<T>(work: (token: CancellationToken) => Promise<T>, timeoutMs: number): Promise<T> {
+	const source = new CancellationTokenSource();
+	try {
+		return await paradisWithHostDeadline(work(source.token), timeoutMs);
+	} catch (error) {
+		if (paradisIsMobileHostNoResponse(error)) {
+			source.cancel();
+		}
+		throw error;
+	} finally {
+		source.dispose();
+	}
+}
+
+/** 失敗の応答。打ち切りは `code: 'no-response'` を付け、それ以外はエラーの文をそのまま返す（伏せ字は出口で当てる）。 */
+export function paradisMobileHostErrorReply(error: unknown): { readonly error: string; readonly code?: typeof PARADIS_MOBILE_HOST_NO_RESPONSE_CODE } {
+	return paradisIsMobileHostNoResponse(error)
+		? { error: error.message, code: PARADIS_MOBILE_HOST_NO_RESPONSE_CODE }
+		: { error: String(error) };
 }
 
 /** 任意の項目を `timeoutMs` まで待つ。間に合わない・失敗したときは undefined（その項目を省いて返すため）。 */

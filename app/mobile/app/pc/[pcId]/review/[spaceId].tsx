@@ -24,7 +24,7 @@ import { fileViewerHref } from '../../../../src/features/code/codeRoutes.js';
 import { FileViewerBody } from '../../../../src/features/code/fileViewerBody.js';
 import { canOpenWorkingFile, diffStats, nextUnreviewed, reviewQueue, reviewStateOf, reviewedCount, stageableEntries, stepReview, type ReviewFilter } from '../../../../src/features/code/diffReview.js';
 import { NoteComposer, ReviewNotesPanel, type NoteComposerTarget } from '../../../../src/features/code/reviewNoteParts.js';
-import { clearNotesConfirmMessage, noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
+import { clearNotesConfirmMessage, newReviewNoteId, noteAnchorOf, noteCountsByPath, placeReviewNotes, reviewSendTargets, selectedExistingNotes, unsentNoteIds, type PlacedNotes, type ReviewNote } from '../../../../src/features/code/reviewNotes.js';
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { MAX_RAW_LINES } from '../../../../src/features/code/officeRawDiff.js';
 import { effectiveReviewMode, reviewContentKindOf, reviewSidesOf, reviewViewPlan, type ReviewContentKind, type ReviewViewMode } from '../../../../src/features/code/reviewViewModes.js';
@@ -200,7 +200,7 @@ export default function ReviewScreen() {
 			return;
 		}
 		const saved = composer.mode === 'add'
-			? await notes.add(composer.path, composer.line, composer.lineText, body)
+			? await notes.add(composer.path, composer.line, composer.lineText, body, composer.noteId)
 			: await notes.edit(composer.note.id, body);
 		if (saved) {
 			setComposer(undefined);
@@ -355,7 +355,7 @@ export default function ReviewScreen() {
 									rows={rows}
 									unavailable={codeSpace.unavailable}
 									notes={placedNotes}
-									onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row) }) : undefined}
+									onLongPressRow={notes.enabled ? row => openComposer({ mode: 'add', path, ...noteAnchorOf(row), noteId: newReviewNoteId() }) : undefined}
 									onPressNote={note => openComposer({ mode: 'edit', note })}
 								/>
 							) : (
@@ -462,7 +462,14 @@ function DiffBody({ diff, rows, unavailable, notes, onLongPressRow, onPressNote 
 			</ScrollView>
 		);
 	}
-	return <DiffLines rows={rows} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
+	const lines = <DiffLines rows={rows} {...(notes !== undefined ? { notes, onPressNote } : {})} {...(onLongPressRow !== undefined ? { onLongPressRow } : {})} />;
+	// 大きすぎる差分は PC が先頭だけを送る（scm の diff の truncated）
+	return diff.truncated ? (
+		<View style={styles.body}>
+			<Text style={styles.capped}>差分が大きいため先頭だけを表示しています。続きは PC で確かめてください。</Text>
+			{lines}
+		</View>
+	) : lines;
 }
 
 /** 「表示」「差分」と Office の「Raw」の本文（テキストの Raw は {@link DiffBody}）。 */

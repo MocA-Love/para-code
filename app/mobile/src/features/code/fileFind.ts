@@ -37,6 +37,7 @@ export function findTargetOf(kind: ViewerKind, mode: ViewerMode): FindTarget | u
 		case 'pdf':
 		case 'image':
 		case 'av':
+		case 'unsupported':
 			return undefined;
 		case 'spreadsheet':
 			return {};

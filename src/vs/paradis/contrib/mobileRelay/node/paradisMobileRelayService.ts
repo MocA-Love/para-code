@@ -2713,6 +2713,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		const operationId = message.operationId;
+		// ack と viewport は数秒おき・出力のたびに届く。操作台帳に通すと結果の保持（1000 件）を追い出し、本当の操作
+		// （入力・作成・閉じる）の再送の判定を壊す。台帳と結果の返信を飛ばし、版・epoch・持ち主の検査だけ残して届ける
+		// （設計書 4 章の着手順 11。旧アプリの envelope もそのまま受ける）
+		if (message.t === 'ack' || message.t === 'viewport') {
+			await this.deliverLedgerFreeTerminalFrame(frame, mobileId, message);
+			return;
+		}
 		const existing = this.terminalOperations.lookup(mobileId, operationId);
 		if (existing !== undefined) {
 			if (existing.kind === 'final') {
@@ -2785,6 +2792,28 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		if (delivered === undefined) {
 			this.finishTerminalOperation(mobileId, operationId, 'stale-renderer');
+		}
+	}
+
+	/**
+	 * ターミナルの ack・viewport を操作台帳に通さずに届ける。結果（operation-result）も返さない（アプリはこの 2 つの
+	 * 結果を待たない）。古い版・古い epoch・持ち主の分からないものは黙って捨てる。
+	 */
+	private async deliverLedgerFreeTerminalFrame(frame: IParadisMobileInboundFrame, mobileId: string, message: { protocolVersion?: unknown; desktopEpoch?: unknown; terminalKey?: unknown }): Promise<void> {
+		if (!paradisIsAcceptedMobileWireVersion(message.protocolVersion) || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
+			|| typeof message.terminalKey !== 'string' || message.terminalKey.length === 0 || message.terminalKey.length > 200) {
+			return;
+		}
+		const owner = this.terminalRegistry.ownerOf(message.terminalKey);
+		if (owner === undefined) {
+			return;
+		}
+		try {
+			await this.withCurrentRegisteredLease(owner, async () => {
+				this._onInboundFrame.fire([Channels.Terminal, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, mobileId]);
+			});
+		} catch (error) {
+			this.logService.warn('[paradisMobileRelay] Renderer lease validation failed during terminal ack delivery', error);
 		}
 	}
 
@@ -3502,6 +3531,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		const sid = signal.sid;
+		// 張り直し（offer）と今のセッションを止めた（stop）ときは JPEG を再開しておく（browser.frame-pause.v1）。アプリも
+		// 再開を送るが、その前に切れても JPEG の写しが止まったままにならないように。前のセッションの遅れた stop では再開しない
+		if (signal.t === 'webrtc-offer' || (signal.t === 'webrtc-stop' && (this.webrtcRendererLeases.get(mobileId)?.sid ?? sid) === sid)) {
+			this.browserMirror.setFramesPaused(mobileId, false);
+		}
 		let owner: IParadisMobileWindowLeaseRef | undefined;
 		if (signal.t === 'webrtc-offer') {
 			if (typeof signal.id !== 'string' || signal.id.length === 0 || signal.id.length > 200

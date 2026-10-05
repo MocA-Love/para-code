@@ -374,6 +374,8 @@ export interface ScmStatusResult {
 /** scm diff 応答。 */
 export interface ScmDiffResult {
 	diff: string;
+	/** 差分が大きすぎて先頭だけ（行の境目で切ってある）。古い PC は付けない。 */
+	truncated?: boolean;
 }
 /** scm log 応答。 */
 export interface ScmLogResult {
@@ -4595,7 +4597,16 @@ export class MobileController {
 	private browserStopping = false;
 
 	setJpegFramesSuspended(suspended: boolean): void {
+		if (this.jpegFramesSuspended === suspended) {
+			return;
+		}
 		this.jpegFramesSuspended = suspended;
+		// browser.frame-pause.v1 の PC には、送ること自体を止めてもらう（WebRTC の映像が流れている間だけ。
+		// 画面が呼ぶのは最初の 1 枚を確かめてから。映像が止まった・WebRTC が切れたら再開を送る）。古い PC には
+		// 送らない（今どおり JPEG が並行して届き、ここで読み捨てる）
+		if (this.hasPcCapability(PcCapability.BrowserFramePause) && this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: suspended ? 'frame-pause' : 'frame-resume' })));
+		}
 	}
 
 	/** screencast を開始する（フレームは state.browserFrame に流れ込む）。 */
