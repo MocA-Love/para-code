@@ -2398,12 +2398,12 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 4 者レビューの 2 回目（2026-10-05、round2）で決めたこと:
 
 - **`queued` が届く前に子が落ちた件は「積まれたかもしれない」**: `open` を子の標準入力へ渡した件は、次の子に withdraw を頼み、`removed: true` のときだけ Para Code が鳴らす。外せなかった・30 秒返事が無い件は worker が鳴らすとみなして鳴らさない（二重より鳴らし損ねを選ぶ）。`open` を書けないまま落ちた件だけ、すぐ Para Code が鳴らす。子の終わりは `close`（標準出力を読み切った後）で扱う（`paradisOnIngestChildDone`）
-- **落ちた子・入れ替えた子の件は adopt で引き継ぐ**: 書き終えた件・鳴り始めた件は、新しい子へ `adopt` を送り、`adopted: true` なら追跡（`playing`・終わり）を続ける。`adopted: false`（列にも知らせにも痕跡が無い）は積まれていないので Para Code が鳴らす。書きかけの件（音声の続きは新しい子へ送れない）は withdraw で確かめる。新しい子が 2.5.0 なら adopt を送らず、鳴り始めた件・`queued` の件は追跡をやめて worker に任せる
+- **落ちた子・入れ替えた子の件は adopt で引き継ぐ**: 書き終えた件・鳴り始めた件は、新しい子へ `adopt` を送り、`adopted: true` なら追跡（`playing`・終わり）を続ける。`adopted: false`（`unknown: true` を含む）でも鳴らさず、続けて withdraw を送り、下の 4 種の答えで決める（痕跡の読み取りと worker の取り出しが行き違うことがあるため。2026-10-05 round2 の残り N-3）。書きかけの件（音声の続きは新しい子へ送れない）は withdraw で確かめる。新しい子が 2.5.0 なら adopt を送らず、鳴り始めた件・`queued` の件は追跡をやめて worker に任せる
 - **withdraw の返事の 4 種**: `removed: true` と `notQueued: true` は Para Code が鳴らす。`taken: true` と理由の無い `removed: false`（確かめられなかった）は鳴らさない。終わりの知らせを受けた件には withdraw を送らない
 - **版の入れ替えの間**（新しい子が名乗るまで）は新しい流れを開かず、`whenReady` で待たせる（待っている間は `mayPlayDirectly()` も false）。古い子は、書きかけの流れ（`end`・`abort` を渡していない）を書き終え、書き込みの列が空になってから標準入力を閉じる（上限 60 秒）。閉じた標準入力への書き込みは成功として扱わない
-- **渡し直しの順番**: スケジューラは列に入れた順の番号を持ち、渡し直し・再試行・復旧待ちの件はその番号の位置へ戻す（high が先）。復旧を待っている件があれば後ろの件を渡さない。復旧待ちが一度 2 分の時間切れになったら、次に worker へ渡せるまで待たずに Para Code が鳴らす
-- **Para Code が自分で鳴らす前に worker の再生 lock（`aivis-mcp:play-lock`）を読み**、持たれていれば空くまで待つ（上限 30 秒）
-- **worker が生きているかもしれない間は afplay に回さない**: `IParadisAivisIngest.mayPlayDirectly()` が false（`--ingest` を起こし直している・版を確かめている）の間、ハンドオフは `defer` を返し、スケジューラは 1 秒ごとに渡し直す（最大 2 分。過ぎたら Para Code が鳴らす）。`--ingest` が落ちて取り下げられた件・最初の音を待ちきれなかった件・SSH 先の声の受け皿（`playFallback`）は、合成済みの音声を **worker へ渡し直す**（1 回まで）。afplay で鳴らすのは渡せないときだけ
+- **渡し直しの順番**: スケジューラは列に入れた順の番号を持ち、渡し直し・再試行・復旧待ちの件はその番号の位置へ戻す（high が先）。復旧を待っている件があれば後ろの件を渡さない。復旧待ちが一度 2 分の時間切れになったら、次に worker へ渡せるまで（または子が名乗るまで）待たずに Para Code が鳴らす。スケジューラが worker へ渡す件とみなす（`isHandoffAvailable`）のは、使える・起こしている・版を確かめている・新しい子へ入れ替えている（`isReplacing()`）間で、このとき着信音も声の前置きに回す（N-1）
+- **Para Code が自分で鳴らす前に worker の再生 lock（`aivis-mcp:play-lock`）を読み**、持たれていれば空くまで待つ（上限 30 秒）。待つのはスケジューラの `runOne` で、再生の安全網（30 秒）の外（安全網は鳴らし始めてから数える。N-2）。Para Code が自分で鳴らす着信音は、lock が持たれていれば待たずに捨てる
+- **worker が生きているかもしれない間は afplay に回さない**: `IParadisAivisIngest.mayPlayDirectly()` が false（`--ingest` を起こし直している・版を確かめている・新しい子へ入れ替えている）の間、ハンドオフは `defer` を返し、スケジューラは 1 秒ごとに渡し直す（最大 2 分。過ぎたら Para Code が鳴らす）。`--ingest` が落ちて取り下げられた件・最初の音を待ちきれなかった件・SSH 先の声の受け皿（`playFallback`）は、合成済みの音声を **worker へ渡し直す**（1 回まで）。afplay で鳴らすのは渡せないときだけ
 - **最初の音を待ちきれなかった件（`first-audio-timeout`）は書いた量に関係なく鳴らし直す**（worker は声を鳴らしていない）。上の渡し直しの経路なので、worker の次の件とは重ならない
 - **控えと転送の上限**: 鳴らし直し用の控えは `ParadisVoiceRetentionBudget`（合計 32MiB・16 本、`common/paradisVoiceRetention.ts`）の中でだけ持ち、声が鳴り始めたら捨てる（着信音を付けた件は終わりまで）。スケジューラは手放した後も合成を流している件を「転送中」として 4 本までにする（手放しの枠 3 本とは別）
 - **標準入力が 20 秒進まない子は見限る**（`PARADIS_INGEST_WRITE_STALL_MS`）。落ちたものとして扱って SIGTERM、2 秒で SIGKILL。本文を読み終えた後の手元への書き込みも 30 秒で諦める（通知のハンドオフ・SSH 先の声の取込口の両方）
@@ -2414,6 +2414,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - **hold の持ち主**は `para-code-voice-input-<shared process ごとの UUID>`
 - **SSH 先の声の取込口**: `accepted` は MP3 らしさを確かめてから返す。Content-Length の旧方式は全部受け取り、長さと ticket の現行性を確かめてから手元へ渡す（受け取りの途中では鳴らさない）。締め切りまでに `queued` が来なければ中断ではなく withdraw を頼み、外せたときだけ「積めなかった」と返す。ticket の持ち主がいなくなったら受け取りを打ち切り、鳴らし直しもしない。音声取込の同時本数は 8（埋まっていたら 3 秒待つ）、ticket は 1 ペイン 32 枚
 - **HTTP の 30 秒の守り**: 本文を読み終えないまま返す応答には `Connection: close` を付け、返し終えたら残りを 1 秒だけ読み捨ててから接続を閉じる。音声取込は実際に受理した時点で守りを外す。旧方式の手元への書き込みは、接続先の締め切りまでしか待たない
+- **Para Code の終了中（`_serverDisposed`）に届いた音声取込（`/paradis-mcp/mobile-voice`）は 503**（`paradisSendVoiceIngressUnavailable`）。aivis-mcp 2.5.1 は手元で鳴らす ticket の 404 を ticket が通らなかったとみなして鳴らさないので、接続先で鳴らしてもらう。ほかの経路は 404 のまま
 - **ticket が通らない音声取込は 401**（知らない・期限切れ・使用済み・今の instance のものでない・持ち主がいない、受け取りの途中で持ち主がいなくなった。`paradisSendVoiceTicketRejected`。ほかの経路の 404 は変えていない）。aivis-mcp 2.5.1 は 401・403 のとき手元で鳴らす前提の発話を接続先で鳴らさない（`ticket-unavailable`）。ほかの 4xx・5xx（容量の 429 など）は接続先で鳴らす
 - **aivis-mcp 2.5.1 の取り決めに合わせた点**: `queued` の前に終わった件を Para Code が鳴らすのは `withdrawn: true` のときだけ（2.5.0 の子には今までどおり、`queued` の前の失敗＝積めていないとして鳴らす）。`withdrawn` の付かない `queued` 前の `failed` は、鳴らさずに withdraw で確かめ、`removed: true` のときだけ鳴らす。ticket の応答に `muteAware: true` を載せ、`X-Para-Muted: 1` の付いた声は引き受けて（`accepted`・本文 `localPlayback: true`）手元では鳴らさず、モバイルへだけ届ける。`queued` は遅れて届くことがあるので、ハンドオフは 15 秒待っても来なければ withdraw を頼み、`removed: true` のときだけ鳴らす（`PARADIS_HANDOFF_QUEUED_WAIT_MS`）。SSH 先の声の取込口は、引き受けないときに `X-Para-Local-Playback: rejected` を返し、`X-Para-Tagged: 1` を `--ingest` の `tagged` へ渡す。引き受けた後に鳴らせなくなったら本文で `localPlayback: false` を返す（2.5.1 の接続先は自分で鳴らす）。`accepted` は MP3 らしさを確かめてから返す（2.5.0 の接続先は本文を読まないため）
 
@@ -2422,6 +2423,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - Aivis の `/v1/tts/synthesize` が全部まとめて返す（最初の 1 バイトが 10 秒より遅い）と、`first-audio-timeout` が続く。worker の `failed` が 3 回続くと 5 分間は全部 afplay で鳴らす（`PARADIS_INGEST_MAX_FAILED_STREAK`・`DEGRADED_RETRY_MS`）。遅い Aivis だけでこの状態に入りうる
 - afplay の音量は 1.0 を上限にしている（頭打ちが無いので上げない）。上げる方向の補正は worker 経由のときだけ効く
 - 標準入力への書き込みが止まって見限った子（`PARADIS_INGEST_WRITE_STALL_MS`）に渡した `open` は、子へ届いていなくても「積まれたかもしれない」件として次の子の withdraw・adopt の答えで決める。答えが来ない・確かめられない（理由の無い `removed: false`）ときは鳴らさないので、実際には積まれていなかった件が鳴らし損ねになる（round2 L-5。二重より鳴らし損ねを選ぶ方針のまま）
+- モバイルアプリ: 音声通知が ON の間は、アプリを前面に戻すとほかのアプリの音楽が止まることがある（`ParaVoiceSessionModule.swift` が前面に戻ったときに `.playback`・`mixWithOthers` 無しで音声セッションを起こし直すため）。変更履歴には書かない
 
 ## モバイルの音声通知のストリーミングと mux の版 4（2026-10-05、voice streaming PR 3）
 

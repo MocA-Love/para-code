@@ -54,7 +54,7 @@ import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBri
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
-import { paradisReceiveRemoteVoice, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
+import { paradisReceiveRemoteVoice, paradisSendVoiceIngressUnavailable, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
@@ -2362,6 +2362,11 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		if (this._serverDisposed) {
+			if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
+				// 終了中に届いた音声取込。404 だと接続先の aivis-mcp は ticket が通らなかったとみなして鳴らさないので、503 で接続先に鳴らしてもらう
+				paradisSendVoiceIngressUnavailable(res);
+				return;
+			}
 			this._sendIngressRejected(res);
 			return;
 		}

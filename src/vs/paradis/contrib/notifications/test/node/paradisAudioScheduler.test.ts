@@ -534,6 +534,48 @@ suite('AudioScheduler', () => {
 		]);
 	});
 
+	test('waits for the worker play lock outside the playback safety timeout, so a long wait does not cut the voice short (N-2)', async () => {
+		const clock = sinon.useFakeTimers();
+		const lock = new DeferredPromise<void>();
+		const firstPlaying = new DeferredPromise<void>();
+		const firstDone = new DeferredPromise<void>();
+		const events: string[] = [];
+		const scheduler = track(createScheduler({ aivisPlaySafetyTimeoutMs: 25, waitForPlayLock: () => lock.p }));
+		scheduler.enqueueAivis({
+			...successfulRunner('first', events),
+			play: audio => {
+				events.push(`play:${audio.toString()}`);
+				void firstPlaying.complete();
+				return firstDone.p;
+			},
+		});
+		scheduler.enqueueAivis(successfulRunner('second', events));
+		for (let i = 0; i < 20; i++) {
+			await Promise.resolve();
+		}
+		// lock を待つ間に安全網の時間が過ぎても、次の声へ進まない
+		clock.tick(100);
+		for (let i = 0; i < 20; i++) {
+			await Promise.resolve();
+		}
+		const beforeLock = [...events];
+		lock.complete();
+		await firstPlaying.p;
+		// 鳴らし始めてから安全網より短い時間では、まだ次の声を鳴らさない
+		clock.tick(10);
+		for (let i = 0; i < 20; i++) {
+			await Promise.resolve();
+		}
+		const whilePlaying = [...events];
+		firstDone.complete();
+		await waitForIdle(scheduler);
+		assert.deepStrictEqual({ beforeLock, whilePlaying, events }, {
+			beforeLock: ['synthesize:first'],
+			whilePlaying: ['synthesize:first', 'play:first'],
+			events: ['synthesize:first', 'play:first', 'synthesize:second', 'play:second'],
+		});
+	});
+
 	suite('queue limit', () => {
 		test('drops normal-priority tasks when the queue is full', async () => {
 			const infos: string[] = [];
@@ -945,6 +987,27 @@ suite('AudioScheduler', () => {
 			}
 			// 渡せた（c）後は、また復旧を待つ（d はすぐには Para Code が鳴らさず、渡し直す）
 			assert.deepStrictEqual(events.slice(0, 11), ['handoff:a', 'handoff:a', 'handoff:a', 'synthesize:a', 'play:a', 'handoff:b', 'synthesize:b', 'play:b', 'handoff:c', 'handoff:d', 'handoff:d']);
+		});
+
+		test('waits for --ingest again once a child introduced itself, even before a handoff succeeded (LOW)', async () => {
+			const events: string[] = [];
+			let now = 0;
+			const scheduler = track(createScheduler({ isHandoffAvailable: () => true, sleep: async () => { now += 1_000; }, now: () => now, maxHandoffDeferMs: 2_000 }));
+			const runner = (name: string): AivisTaskRunner => ({
+				...successfulRunner(name, events),
+				handoff: async () => { events.push(`handoff:${name}`); return { kind: 'defer' }; },
+			});
+			scheduler.enqueueAivis(runner('a'));
+			for (let i = 0; i < 80; i++) {
+				await Promise.resolve();
+			}
+			// 子が名乗った（その後また起こし直しになった）。時間切れを忘れて、b はまた復旧を待つ
+			scheduler.noteHandoffReady();
+			scheduler.enqueueAivis(runner('b'));
+			for (let i = 0; i < 20; i++) {
+				await Promise.resolve();
+			}
+			assert.deepStrictEqual(events.slice(0, 7), ['handoff:a', 'handoff:a', 'handoff:a', 'synthesize:a', 'play:a', 'handoff:b', 'handoff:b']);
 		});
 	});
 });

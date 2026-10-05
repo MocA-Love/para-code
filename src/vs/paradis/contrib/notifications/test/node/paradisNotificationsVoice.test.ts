@@ -9,6 +9,7 @@
 import assert from 'assert';
 import * as sinon from 'sinon';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisNotifyAudioRequest } from '../../common/paradisNotifications.js';
@@ -39,7 +40,12 @@ class FakeStream implements IParadisIngestStream {
 class FakeIngest implements IParadisAivisIngest {
 	state: ParadisIngestClientState = 'ready';
 	readonly gainTable = undefined;
+	readonly onDidChangeState = Event.None;
 	usable = true;
+	/** 新しい子へ入れ替えている最中（新しい子が名乗る前）。 */
+	replacing = false;
+	/** worker の再生 lock がいま持たれている。 */
+	lockHeld = false;
 	/** 渡せないとき Para Code が自分で鳴らしてよいか（false は `--ingest` を起こし直している最中）。 */
 	direct = true;
 	muted = false;
@@ -47,6 +53,8 @@ class FakeIngest implements IParadisAivisIngest {
 	readonly holds: Array<[string, boolean]> = [];
 	nextStream: () => FakeStream | undefined = () => new FakeStream();
 	isUsable(): boolean { return this.usable; }
+	isReplacing(): boolean { return this.replacing; }
+	async isPlayLockHeld(): Promise<boolean> { return this.lockHeld; }
 	async whenReady(): Promise<boolean> { return this.usable; }
 	async hasLocalAivis(): Promise<boolean> { return true; }
 	open(options: IParadisIngestOpenOptions): IParadisIngestStream | undefined {
@@ -279,6 +287,42 @@ suite('ParadisNotificationsService voice handoff', () => {
 		lock.complete();
 		await timeout(10);
 		assert.deepStrictEqual({ whileLocked, events }, { whileLocked: [], events: ['voice:6'] });
+	});
+
+	test('defers the voice and keeps the ringtone as its prelude while --ingest is switching to a new child (N-1)', async () => {
+		stubFetch();
+		const ingest = new FakeIngest();
+		ingest.usable = false;
+		ingest.replacing = true;
+		ingest.direct = false;
+		const stream = new FakeStream();
+		ingest.nextStream = () => stream;
+		const { service, events } = createService(ingest);
+		service.notifyAudio(request('switching'));
+		await timeout(30);
+		const whileSwitching = [...events];
+		ingest.usable = true;
+		ingest.replacing = false;
+		await timeout(1_100);
+		stream.handoffGate.complete(true);
+		stream.finishedGate.complete({ status: 'done' });
+		await timeout(10);
+		assert.deepStrictEqual({ whileSwitching, events, preludes: ingest.opened.map(open => open.prelude?.path) }, { whileSwitching: [], events: [], preludes: ['/sounds/chime.mp3'] });
+	});
+
+	test('drops a ringtone it would play itself while the worker holds the play lock, instead of waiting (N-2)', async () => {
+		const ingest = new FakeIngest();
+		ingest.usable = false;
+		ingest.state = 'fallback';
+		ingest.lockHeld = true;
+		const { service, events } = createService(ingest);
+		service.notifyAudio({ priority: 'normal', ringtone: RINGTONE });
+		await timeout(10);
+		const whileLocked = [...events];
+		ingest.lockHeld = false;
+		service.notifyAudio({ priority: 'normal', ringtone: RINGTONE });
+		await timeout(10);
+		assert.deepStrictEqual({ whileLocked, events }, { whileLocked: [], events: ['ringtone:chime'] });
 	});
 
 	test('does not play a ringtone-only job that turned out unqueued after it went stale (L-1)', async () => {

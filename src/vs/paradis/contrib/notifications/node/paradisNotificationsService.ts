@@ -282,12 +282,17 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 					onComplete();
 					return;
 				}
-				// ユーザーが `aivis --mute` している間は、Para Code が自分で鳴らす着信音も鳴らさない
+				// ユーザーが `aivis --mute` している間は、Para Code が自分で鳴らす着信音も鳴らさない。worker が鳴らしている間
+				// （再生 lock がある間）は待たずに捨てる（待つと安全網の時間を食い、後の声と重なる。着信音は情報を持たない）
 				void (async () => {
-					if (!(await this._isAivisMuted())) {
-						await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS).catch(() => undefined);
-						await this._playRingtoneFile(ringtone.id, ringtone.volume);
+					if (await this._isAivisMuted()) {
+						return;
 					}
+					if (await this._ingest?.isPlayLockHeld().catch(() => false)) {
+						this.logService.info('[ParadisNotifications] dropped a ringtone while aivis-mcp is playing');
+						return;
+					}
+					await this._playRingtoneFile(ringtone.id, ringtone.volume);
 				})()
 					.catch(error => this.logService.warn(`[ParadisNotifications] Failed to play ringtone: ${getErrorMessage(error)}`))
 					.finally(() => onComplete());
@@ -296,9 +301,20 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			onError: err => this.logService.warn(`[ParadisNotifications] Aivis scheduler error (${err.kind}): ${err.reason}`),
 			logWarn: message => this.logService.warn(message),
 			logInfo: message => this.logService.info(message),
-			isHandoffAvailable: () => this._ingest !== undefined && (this._ingest.isUsable() || this._ingest.state === 'starting' || this._ingest.state === 'checking'),
+			isHandoffAvailable: () => this._isHandoffAvailable(),
+			// worker の再生 lock の待ちは、スケジューラが再生の安全網の外で待つ
+			waitForPlayLock: async () => { await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS); },
 		});
 		this._register({ dispose: () => this._scheduler.dispose() });
+		if (this._ingest) {
+			const ingestForReady = this._ingest;
+			// 子が名乗ったら、復旧待ちの時間切れを忘れる（次に起こし直す間はまた待つ）
+			this._register(ingestForReady.onDidChangeState(() => {
+				if (ingestForReady.isUsable()) {
+					this._scheduler.noteHandoffReady();
+				}
+			}));
+		}
 		this._sweepOrphanTempWorkDirs();
 	}
 
@@ -366,8 +382,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		// 音声入力中の着信音はマイクに拾われるだけなので今までどおり捨てる（前置きにも、着信音だけのジョブにもしない）
 		const ringtone = this._dictationHold.held ? undefined : request.ringtone;
 		const voice = this._createVoiceTask(request, priority);
-		// `--ingest` が使えるときは、着信音を声のジョブの前置き（prelude）にして worker の 1 列で鳴らす
-		const deferRingtone = this._ingest?.isUsable() === true;
+		// `--ingest` が使えるとき（起こし直し・入れ替えの最中で、復旧を待って渡すときも）は、着信音を声のジョブの前置き
+		// （prelude）にして worker の 1 列で鳴らす
+		const deferRingtone = this._isHandoffAvailable();
 		if (voice) {
 			if (ringtone) {
 				if (deferRingtone) {
@@ -452,6 +469,15 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
+	/**
+	 * worker へ渡す（渡せなければ復旧を待つ）か。使える・起こしている・版を確かめている・新しい子へ入れ替えている間は true
+	 * （worker が動いているかもしれないので、afplay で重ねない）。
+	 */
+	private _isHandoffAvailable(): boolean {
+		const ingest = this._ingest;
+		return ingest !== undefined && (ingest.isUsable() || ingest.isReplacing() || ingest.state === 'starting' || ingest.state === 'checking');
+	}
+
 	/** scheduler.playRingtone() は同期で deps.playRingtone を呼ぶため、直前セットで取り違えは起きない。 */
 	private _playRingtoneNow(ringtone: { readonly id: string; readonly volume: number }): void {
 		this._currentRingtone = ringtone;
@@ -466,7 +492,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (this._dictationHold.held) {
 			return;
 		}
-		if (this._ingest?.isUsable() === true) {
+		if (this._isHandoffAvailable()) {
 			void this._handOffRingtoneOnly(ringtone, priority);
 		} else {
 			this._playRingtoneNow(ringtone);
@@ -1656,8 +1682,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (await this._isAivisMuted()) {
 			return;
 		}
-		// worker が鳴らしている間は空くまで待つ（重ねない）
-		await this._ingest?.whenPlayLockFree(PLAY_LOCK_WAIT_MS).catch(() => undefined);
+		// worker の再生 lock の待ちは、スケジューラが再生の安全網の外で済ませている（waitForPlayLock）
 		await this._playAivisAudio(audio, volume);
 	}
 
