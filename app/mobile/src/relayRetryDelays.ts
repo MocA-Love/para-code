@@ -9,7 +9,7 @@ import { PARADIS_RELAY_CLOSE_CODE } from '@para/protocol';
  * - 通常の切断: 完全ジッタ（0〜上限の一様分布）の指数バックオフ。上限は 0.5秒×2^n を 30秒で頭打ち、
  *   下限 0.25秒。以前はジッタ無しの `500*2^n` だったので、リレーの更新やPCの再起動で全端末が
  *   同じ瞬間に繋ぎ直し、同じ間隔で揃って再試行していた
- * - 認証拒否（リレーが 4401 / 4404 で閉じた）: 1〜15分の遅い再確認。資格は待っても戻らないので
+ * - 認証拒否（リレーが 4401 / 4404 / 4410 で閉じた）: 1〜15分の遅い再確認。資格は待っても戻らないので
  *   頻繁に叩く意味は無いが、止めてしまうとリレー側の一時的な不整合から二度と戻れなくなる
  *   （Orca: "gates must slow recovery down, never end it"）
  */
@@ -53,5 +53,6 @@ export function relayAuthGateDelayMs(streak: number, random: number): number {
  * 旧リレーは upgrade 前の HTTP 401 で断るので、ここには来ない（1006 に見える）。
  */
 export function isRelayAuthRejection(code: number | undefined): boolean {
-	return code === PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED || code === PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE;
+	return code === PARADIS_RELAY_CLOSE_CODE.CREDENTIAL_REFUSED || code === PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE
+		|| code === PARADIS_RELAY_CLOSE_CODE.REVOKED;
 }
