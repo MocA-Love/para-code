@@ -2919,8 +2919,12 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 丸ごと 'invalid' で無言に落ち続ける（接続先の会話が一切出ない状態に戻る）。
 				// 素性の分からない発信元として、pid を使わない fail-closed 側の判定へ倒す。
 				// 接続先かどうかはクエリの `host=` だけでなくペインの属性でも見る（`host=` の無い古いスクリプトや偽装）
-				const hookPid = remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined ? undefined : parsedPid;
-				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
+				const paneShell = this._paneShells.get(token);
+				const hookPid = remoteHostId !== undefined || paneShell?.remoteAuthority !== undefined ? undefined : parsedPid;
+				// ペインのシェルの pid は手元のペインのときだけ渡す（所有者の後継をシェルの子孫に絞る・`claude attach` の会話を
+				// 所有者にする判定に使う。接続先の pid は手元のプロセス表と照合できない）。
+				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
+				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid });
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
@@ -2930,7 +2934,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (hookOrigin.origin === 'invalid') {
 					const rejection = hookOrigin.rejection;
 					this._noteAgentHookDrop(() => ({
-						reason: rejection !== undefined && rejection.identityLoss === undefined ? 'origin-not-ancestor' : 'origin-transcript-mismatch',
+						reason: rejection?.outsidePane === true ? 'origin-outside-pane' : rejection !== undefined && rejection.identityLoss === undefined ? 'origin-not-ancestor' : 'origin-transcript-mismatch',
 						pane: this._tokenFingerprint(token), event: eventType, ...this._agentHookDropSource(url, token),
 						identityLoss: rejection?.identityLoss, ownerPinnedBy: rejection?.ownerPinnedBy,
 						transcriptPath, ownerTranscriptPath: rejection?.ownerTranscriptPath,
