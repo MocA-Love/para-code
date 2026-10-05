@@ -17,7 +17,8 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+import { promises as fs } from 'fs';
 import { hostname } from 'os';
 import { reportParadisDiagnosticError, runInParadisSpan, setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
@@ -65,13 +66,15 @@ import {
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
 import { PARADIS_MOBILE_BUILTIN_REQUEST_KINDS } from '../common/paradisMobileRequestKinds.js';
-import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisEvaluateMobileCompat, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, ParadisMobileCapability, paradisEvaluateMobileCompat, paradisHasMobileCapability, paradisIsAcceptedMobileWireVersion, paradisParseMobileCapabilities } from '../common/paradisMobileCompat.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyIncludeContent, paradisNotifyPcFocusQuiet, paradisNotifyPrefersDetail, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
 import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
 import { ParadisNotifyDismissLedger, paradisNotifyDismissOpened, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
 import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../common/paradisMobileBackgroundGrace.js';
+import { ParadisPushOutbox } from '../common/paradisPushOutbox.js';
+import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisClassifyRevokeResponse, paradisEnqueueRevoke, paradisRevokeRetried, paradisSanitizeRevokeOutbox, type IParadisRelayRevokeEntry } from '../common/paradisRelayRevokeOutbox.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -300,8 +303,14 @@ export class MobileSession {
 	 */
 	private negotiatedStateEncoding: string | undefined;
 
+	/**
+	 * 直近の State の要求に添えられた、アプリの手元の版（state.unchanged.v1）。同じ版なら全量の代わりに
+	 * `unchanged` を返す。要求ごとに読み直す（添えていない要求で消える）。
+	 */
+	private stateRequestKnown: { readonly desktopEpoch: string; readonly revision: number } | undefined;
+
 	negotiateProtocol(payload: Uint8Array): boolean {
-		let request: { protocolVersion?: unknown; minCompatiblePc?: unknown; capabilities?: unknown; stateEncoding?: unknown } = {};
+		let request: { protocolVersion?: unknown; minCompatiblePc?: unknown; capabilities?: unknown; stateEncoding?: unknown; known?: unknown } = {};
 		try {
 			const parsed: unknown = JSON.parse(new TextDecoder().decode(payload));
 			if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -323,6 +332,12 @@ export class MobileSession {
 		this.negotiatedCapabilities = verdict.kind === 'ok' ? paradisParseMobileCapabilities(request.capabilities) : undefined;
 		this.negotiatedStateEncoding = verdict.kind === 'ok' && request.stateEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING
 			? PARADIS_JSON_GZIP_RESPONSE_ENCODING
+			: undefined;
+		const known = request.known as { desktopEpoch?: unknown; revision?: unknown } | null | undefined;
+		this.stateRequestKnown = verdict.kind === 'ok' && paradisHasMobileCapability(this.negotiatedCapabilities, ParadisMobileCapability.StateUnchanged)
+			&& typeof known === 'object' && known !== null && typeof known.desktopEpoch === 'string' && known.desktopEpoch.length > 0 && known.desktopEpoch.length <= 200
+			&& typeof known.revision === 'number' && Number.isSafeInteger(known.revision)
+			? { desktopEpoch: known.desktopEpoch, revision: known.revision }
 			: undefined;
 		if (verdict.kind === 'blocked' && !this.protocolMismatchReported) {
 			this.protocolMismatchReported = true;
@@ -402,6 +417,9 @@ export class MobileSession {
 					// セッションをリセットする」自己回復も計装も、確立後は一切効かない
 					// （旧セッションに固着したモバイルが二度と接続できなくなる経路）。
 					onError: (err: unknown) => { this.lastMuxError = err; },
+					// 封緘の失敗は nonce に欠番を作る。同じ鍵のまま続けるとアプリは以後のフレームを開けないので、
+					// セッションを畳んでアプリに張り直させる（設計 2.12）
+					onSealFailure: (err: unknown) => this.abandonSessionAfterSealFailure(err),
 					// 断片の組み立ての誤りは復号できた後の話なので、張り直しの判定（暗号層の失敗）には数えない
 					onAssemblyError: (err: Error) => this.recordAssemblyError(err),
 					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
@@ -554,6 +572,27 @@ export class MobileSession {
 		return 'sent';
 	}
 
+	/**
+	 * 封緘に失敗した（PC→モバイルの nonce に欠番ができた）。アプリはこの後のフレームを開けないので、
+	 * 復号できないバイト列で張り直しを促し、こちらもハンドシェイク前へ戻す。
+	 */
+	private abandonSessionAfterSealFailure(error: unknown): void {
+		if (this.mux === undefined) {
+			return;
+		}
+		const sent = this.sendToRelay(new Uint8Array(PARADIS_MOBILE_RESYNC_MARKER_BYTES));
+		if (sent) {
+			this.resyncRequested = true;
+		}
+		reportParadisDiagnosticError('owned', 'mobile-e2e', 'frame-seal-failed', error, {
+			phase: 'online',
+			transport: 'websocket',
+			safe_resync: sent ? 'sent' : 'not-connected',
+		});
+		this.logService.warn(`[paradisMobileRelay] session ${this.mobileId}: sealing failed; ending the session`, error);
+		this.resetSessionState();
+	}
+
 	/** ハンドシェイク前の状態へ戻す。次の hello から作り直せるようにするためだけのもの。 */
 	private resetSessionState(): void {
 		this.consecutiveCryptoFailures = 0;
@@ -572,6 +611,7 @@ export class MobileSession {
 		// が届く前のブロードキャストで gzip を送ってしまう（旧アプリはJSON.parseで例外になり、
 		// それが握り潰されてホームが空のまま固まる）。
 		this.negotiatedStateEncoding = undefined;
+		this.stateRequestKnown = undefined;
 		this.pendingVerify = undefined;
 		this.stateDelivery.reset();
 	}
@@ -593,10 +633,15 @@ export class MobileSession {
 	 * `force`はrequestStateなど応答必須の宛先指定送信で使い、完全一致でも必ず送る。
 	 * 戻り値は実際に送信した場合だけtrueになり、成功したpayloadだけが次回の比較対象になる。
 	 */
-	async sendDesktopState(payload: Uint8Array, force: boolean): Promise<boolean> {
+	async sendDesktopState(payload: Uint8Array, force: boolean, version?: { readonly desktopEpoch: string; readonly revision: number }): Promise<boolean> {
 		const mux = this.mux;
 		if (mux === undefined) {
 			return false;
+		}
+		// 要求への返事なら、その要求に添えられた手元の版を 1 回だけ使う（state.unchanged.v1）
+		const known = force ? this.stateRequestKnown : undefined;
+		if (force) {
+			this.stateRequestKnown = undefined;
 		}
 		// 圧縮は送信直前のここだけで行う。`deliver` の無変化判定は渡された非圧縮JSONのまま
 		// 動くので、gzip の出力が実行ごとに揺れても dedupe が壊れることはない
@@ -606,10 +651,15 @@ export class MobileSession {
 			await mux.send(Channels.State, PARADIS_MOBILE_PROTOCOL_GUIDANCE);
 			return true;
 		}
+		const identity = version !== undefined ? `${version.desktopEpoch}\n${version.revision}` : undefined;
+		const unchanged = known !== undefined
+			? { identity: `${known.desktopEpoch}\n${known.revision}`, reply: new TextEncoder().encode(JSON.stringify({ t: 'unchanged', desktopEpoch: known.desktopEpoch, revision: known.revision })) }
+			: undefined;
 		return this.stateDelivery.deliver(payload, force, async state => {
-			const encoded = await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
+			// 「変わっていない」の返事は小さいので圧縮しない（アプリは magic の無い JSON をそのまま読む）
+			const encoded = state === unchanged?.reply ? state : await paradisEncodeNegotiatedGzipJsonResponse(this.negotiatedStateEncoding, state) ?? state;
 			await mux.send(Channels.State, encoded);
-		});
+		}, { ...(identity !== undefined ? { identity } : {}), ...(unchanged !== undefined ? { unchanged } : {}) });
 	}
 
 	/** 断片の組み立ての誤りの数（暗号層の失敗とは別に数える）。 */
@@ -795,6 +845,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	} | undefined;
 
 	private readonly statePath: string;
+	/** リレーが受理するまでのプッシュの依頼（設計 2.6）。 */
+	private readonly pushOutbox: ParadisPushOutbox;
 	private relayUrlOverride: string | undefined;
 	/** モバイルのPC一覧に出す表示名（renderer が設定値かホスト名を解決して渡す）。 */
 	private pcName: string | undefined;
@@ -848,6 +900,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this._register(trafficDiagnosticsSession);
 		}
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
+		const pushOutboxPath = join(this.userDataPath, 'paradis-mobile-push-outbox.json');
+		this.pushOutbox = new ParadisPushOutbox({
+			read: async () => {
+				try {
+					return await fs.readFile(pushOutboxPath, 'utf8');
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+						return undefined;
+					}
+					throw error;
+				}
+			},
+			write: content => paradisWriteFileAtomic(pushOutboxPath, content, { forceMode: 0o600 }),
+			deviceId: () => this.state.device?.deviceId,
+			send: request => this.trySendControl({ type: 'push-notify', ...request }),
+			newRequestId: () => toBase64Url(randomBytes(16)),
+			warn: (message, error) => this.logService.warn(message, error),
+		});
+		this._register(toDisposable(() => this.pushOutbox.dispose()));
 		// エージェントセッション対応表の永続化先。shared process再起動（=PC再起動・アップデート）を
 		// またいで、実行中エージェントのモバイル表示を復元するために使う。
 		const agentSessionStore = new ParadisAgentSessionStore(join(this.userDataPath, 'paradis-agent-sessions.json'), this.logService);
@@ -1689,13 +1760,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			// 同じエージェントの通知はロック画面で置き換え、同じスペースの通知はまとめる（W2-08）。
 			// ID は通知鍵の HMAC なので、リレーと APNs からは中身を推測できない。旧リレーは読まずに無視する。
-			const push = { type: 'push-notify', mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) } as const;
+			// リレーが受理する（push-ack）まで outbox に残す。ソケットが閉じている間も捨てない（設計 2.6）
+			const push = { mobileId: mobile.mobileId, payload: encoded, ...paradisMobilePushIds(key, bytes) };
 			if (expectedOwner !== undefined) {
-				await this.withCurrentRegisteredLease(expectedOwner, async () => {
-					this.sendControl(push);
-				});
+				await this.withCurrentRegisteredLease(expectedOwner, () => this.pushOutbox.submit(push));
 			} else {
-				this.sendControl(push);
+				await this.pushOutbox.submit(push);
 			}
 		}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
 	}
@@ -1838,7 +1908,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 確認を返すのは印を立て終えてから（確認を受けたアプリは接続を保つので、先に返すと取りこぼす）。
 	 * 前面に戻ったら、裏にいた間の通知を鳴らさない形で流し直す（握手をやり直さないので、握手のときの流し直しが走らない）。
 	 */
-	private handleNotifyVisibility(mobileId: string, session: MobileSession, state: 'background' | 'foreground', id: string | undefined): void {
+	private handleNotifyVisibility(mobileId: string, session: MobileSession, state: 'background' | 'foreground', id: string | undefined, keep?: 'voice'): void {
 		if (this.sessions.get(mobileId) !== session) {
 			return;
 		}
@@ -1850,14 +1920,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 裏にいる間は画面が見えないので、ブラウザミラーのキャプチャはすぐ止める
 			// （アプリは前面に戻ったら張り直す）。
 			this.browserMirror.stopSession(mobileId);
-			// iOS は裏のアプリを数秒で止めるので、アプリの30秒のタイマーは当てにならない。
-			// 前面に戻らないまま期限が来たら、presence offline と同じ後始末をする。
-			this.backgroundSessions.begin(mobileId, () => {
-				if (this.sessions.get(mobileId) === session && session.backgrounded) {
-					this.logService.info('[paradisMobileRelay] backgrounded mobile did not come back; dropping its session');
-					this.dropMobileSession(mobileId);
-				}
-			});
+			if (keep === 'voice') {
+				// 音声通知のために裏でもソケットを保つアプリ（notify.visibility-voice.v1）。プッシュには切り替えるが、
+				// セッションは捨てない（捨てると音声が止まる）。アプリは心拍を続けるので、死んだら presence offline で片付く
+				this.backgroundSessions.end(mobileId);
+			} else {
+				// iOS は裏のアプリを数秒で止めるので、アプリの30秒のタイマーは当てにならない。
+				// 前面に戻らないまま期限が来たら、presence offline と同じ後始末をする。
+				this.backgroundSessions.begin(mobileId, () => {
+					if (this.sessions.get(mobileId) === session && session.backgrounded) {
+						this.logService.info('[paradisMobileRelay] backgrounded mobile did not come back; dropping its session');
+						this.dropMobileSession(mobileId);
+					}
+				});
+			}
 			// 裏に回る直前の約1往復の間に、信用してプッシュしなかった通知をプッシュし直す。
 			const mobile = this.state.mobiles.find(candidate => candidate.mobileId === mobileId);
 			// PC で確認済みにした・別の端末で開いたなど、もう片付いた通知は鳴らし直さない。
@@ -2550,21 +2626,24 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			const state = this.terminalRegistry.desktopState();
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
-			if (mobileId !== undefined) {
-				if (targetedSession?.isOnline && await targetedSession.sendDesktopState(bytes, true)) {
+			const version = { desktopEpoch: state.desktopEpoch, revision: state.revision };
+			// 送り終わるのを待たない（設計 4 章 #15）。以前は全端末へ 1 台ずつ送り終わるまで待っていたので、遅い
+			// スマホ 1 台が他の端末への State と、この列（renderer の権限の列）全体を止めていた。端末ごとの送信は
+			// ParadisMobileStateDelivery が「送信中の 1 件と次の 1 件（最新値で置き換え）」に絞るので、待たなくても
+			// 古い State が積み上がらない。並列の数は端末の数で決まる
+			const deliveries = mobileId !== undefined
+				? [targetedSession!.sendDesktopState(bytes, true, version)]
+				: [...this.sessions.values()].filter(session => session.isOnline).map(session => session.sendDesktopState(bytes, false, version));
+			void Promise.allSettled(deliveries).then(results => {
+				for (const result of results) {
+					if (result.status === 'rejected') {
+						this.logService.warn('[paradisMobileRelay] failed to deliver the desktop state', result.reason);
+					}
+				}
+				if (results.some(result => result.status === 'fulfilled' && result.value)) {
 					this.broadcastSentCount++;
 				}
-				return;
-			}
-			let sent = false;
-			for (const session of this.sessions.values()) {
-				if (session.isOnline && await session.sendDesktopState(bytes, false)) {
-					sent = true;
-				}
-			}
-			if (sent) {
-				this.broadcastSentCount++;
-			}
+			});
 		});
 		this.desktopStateBroadcastChain = run.catch(() => { });
 		return run;
@@ -2934,6 +3013,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.startKeepalive(socket);
 			// リレーへつながったら、取り消し待ちを待ちの時刻に関わらず送る（W2-35）。
 			void this.drainRevokeOutbox(true);
+			// 切れている間に積んだプッシュの依頼を送る（設計 2.6）
+			this.pushOutbox.flush();
 		};
 		// 張り替え直後は旧ソケットからもメッセージが届きうる。pongが現在の接続の死活状態を
 		// 書き換えてしまわないよう、現行ソケット以外のメッセージは捨てる。
@@ -3328,7 +3409,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						// アプリが裏に回った・前面に戻った（W2-34）。確認を返したときだけ、アプリは接続を保つ。
 						const visibility = decodeNotifyVisibility(frame.payload.buffer);
 						if (visibility?.t === 'visibility') {
-							this.handleNotifyVisibility(idStr, session!, visibility.state, visibility.id);
+							this.handleNotifyVisibility(idStr, session!, visibility.state, visibility.id, visibility.keep);
 							return;
 						}
 						// M→PC方向のnotifyチャネル: 通知設定の同期 or 既読(dismiss)メッセージ。
@@ -3568,6 +3649,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.dropMobileSession(msg.mobileId);
 		} else if (msg.type === 'mobile-revoked' && typeof msg.mobileId === 'string') {
 			await this.onMobileRevoked(msg.mobileId);
+		} else if (msg.type === 'push-ack' && typeof msg.requestId === 'string') {
+			await this.pushOutbox.ack(msg.requestId);
 		} else if (msg.type === 'pong') {
 			this.awaitingPong = false;
 			this.keepaliveAcknowledged = true;
@@ -3664,8 +3747,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private sendControl(msg: Parameters<typeof encodeRelayControl>[0]): void {
+		this.trySendControl(msg);
+	}
+
+	/** 制御メッセージを送る。ソケットが開いていて送れたら true。 */
+	private trySendControl(msg: Parameters<typeof encodeRelayControl>[0]): boolean {
 		if (this.socket && this.socket.readyState === 1) {
 			this.socket.send(encodeRelayControl(msg));
+			return true;
 		}
+		return false;
 	}
 }

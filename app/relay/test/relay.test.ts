@@ -252,6 +252,25 @@ describe('relay pairing + routing', () => {
 		await expect(pcWs.next(100)).rejects.toThrow('ws message timeout');
 	});
 
+	it('closes a connected mobile revoked by the pc with 4404 so the app stops reconnecting', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		await pcWs.next(); // pairing-msg
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		const paired = decodeRelayControl(await pairWs.next() as string);
+		if (paired.type !== 'paired') { throw new Error('unreachable'); }
+		await pcWs.next(); // paired(pc向け)
+		const mobileWs = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
+		await pcWs.next(); // presence(mobile online)
+
+		const revoke = await SELF.fetch(`https://relay/device/${deviceId}/mobile/revoke`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` }, body: JSON.stringify({ mobileId: paired.mobileId }) });
+		const event = await mobileWs.closed();
+		expect({ ok: revoke.ok, code: event.code, reason: event.reason }).toEqual({ ok: true, code: PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, reason: 'revoked' });
+	});
+
 	it('closes an unknown mobile with 4404 instead of an HTTP 401 the phone cannot see', async () => {
 		const { deviceId } = await provisionDevice();
 		const rejected = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=AAAAAAAAAAAAAAAAAAAAAA&token=wrong`);

@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'notifications-outline',
+				title: '音声通知をオンにしたまま別のアプリへ移っても、完了や質問のバナーが出るようになりました',
+				body: 'アプリを裏へ回したことを PC へ伝えるようにしました。あわせて、PC から登録を外されたときは再接続を繰り返さず、ペアリングし直しの案内を出します（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'document-text-outline',
 				title: '大きいテキストファイルを最後まで読めるようになりました',
 				body: '色付けの上限を超えた行も続けて出し、1 万行ごとのページを下の帯で切り替えます。Markdown と HTML のプレビューは色付けを待たずに開きます。PowerPoint・zip・HEIC など表示できない形式は、文字化けした中身の代わりに「この形式はまだ開けません」と出します。',
