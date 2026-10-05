@@ -12,9 +12,13 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisIngestOpenOptions, IParadisIngestStream, IParadisIngestTerminal } from '../../common/paradisVoiceIngest.js';
 import { AivisError } from '../../node/paradisAudioScheduler.js';
 import { paradisHandoffVoice } from '../../node/paradisVoiceHandoff.js';
+import { ParadisVoiceRetentionBudget } from '../../common/paradisVoiceRetention.js';
 
 class FakeStream implements IParadisIngestStream {
 	readonly id = 'job';
+	private readonly preludeListeners: Array<(reason: string) => void> = [];
+	onDidRejectPrelude(listener: (reason: string) => void): void { this.preludeListeners.push(listener); }
+	rejectPrelude(reason: string): void { this.preludeListeners.forEach(listener => listener(reason)); }
 	readonly events: string[] = [];
 	readonly handoffGate = new DeferredPromise<boolean>();
 	readonly finishedGate = new DeferredPromise<IParadisIngestTerminal>();
@@ -38,6 +42,7 @@ class FakeStream implements IParadisIngestStream {
 	}
 	async end(): Promise<void> { this.events.push('end'); }
 	async abort(reason: string): Promise<void> { this.events.push(`abort:${reason}`); }
+	withdraw?: () => Promise<boolean | undefined>;
 }
 
 async function* body(...parts: number[]): AsyncGenerator<Uint8Array> {
@@ -84,8 +89,8 @@ suite('paradisHandoffVoice', () => {
 		await flush();
 		stream.finishedGate.complete({ status: 'done' });
 		await flush();
-		assert.deepStrictEqual({ result, opened, events: stream.events, completed }, {
-			result: { kind: 'released' },
+		assert.deepStrictEqual({ result: { kind: result.kind, settled: result.kind === 'released' ? await result.settled : undefined }, opened, events: stream.events, completed }, {
+			result: { kind: 'released', settled: {} },
 			opened: [{ priority: 'high', gainKey: 'aivis:m:default', volumeDb: -3, prelude }],
 			events: ['write:100', 'write:200', 'end'],
 			completed: [300],
@@ -138,7 +143,8 @@ suite('paradisHandoffVoice', () => {
 		await run('first-audio-before-write', { status: 'failed', reason: 'first-audio-timeout' }, true);
 		await run('first-audio-after-write', { status: 'failed', reason: 'first-audio-timeout' }, false);
 		await run('lost', { status: 'failed', reason: 'lost' }, false);
-		assert.deepStrictEqual(played, ['withdrawn:40', 'first-audio-before-write:40']);
+		// 最初の音を待ちきれなかった件は、書いた量に関係なく worker は声を鳴らしていない（L2）
+		assert.deepStrictEqual(played, ['withdrawn:40', 'first-audio-before-write:40', 'first-audio-after-write:40']);
 	});
 
 	test('aborts the job and rethrows when the synthesis fails, reporting whether the worker had started', async () => {
@@ -214,6 +220,139 @@ suite('paradisHandoffVoice', () => {
 		assert.deepStrictEqual(outcomes, [
 			{ writeMode: 'block', readWhileStuck: [100, 200, 300], events: ['write:100', 'write:200', 'write:300', 'end'] },
 			{ writeMode: 'fail-second', readWhileStuck: [100, 200, 300], events: ['write:100', 'write:200', 'abort:write-failed'] },
+		]);
+	});
+	test('defers instead of falling back while the worker may still be alive (H5)', async () => {
+		const results: unknown[] = [];
+		for (const direct of [false, true]) {
+			results.push(await paradisHandoffVoice({
+				ingest: { whenReady: async () => false, open: () => undefined, mayPlayDirectly: () => direct },
+				open: { priority: 'normal' },
+				synthesize: async () => ({ body: body(1) }),
+				onPlayLocally: () => { },
+			}));
+		}
+		assert.deepStrictEqual(results, [{ kind: 'defer' }, { kind: 'fallback' }]);
+	});
+
+	test('asks the scheduler to retry when the synthesis breaks before the first audio byte after the handoff (M6)', async () => {
+		const stream = new FakeStream();
+		const pending = paradisHandoffVoice({
+			ingest: port(stream).ingest,
+			open: { priority: 'normal' },
+			synthesize: async () => ({
+				body: (async function* (): AsyncGenerator<Uint8Array> {
+					throw new AivisError('retryable', 'reset');
+				})(),
+			}),
+			onPlayLocally: () => assert.fail('nothing to play'),
+		});
+		stream.handoffGate.complete(true);
+		const result = await pending;
+		const settled = result.kind === 'released' ? await result.settled : undefined;
+		assert.deepStrictEqual({ kind: result.kind, retry: settled?.retry?.kind, events: stream.events }, { kind: 'released', retry: 'retryable', events: ['abort:synth-failed'] });
+	});
+
+	test('keeps the replay copy only within the retention budget and drops it once the worker starts (H4)', async () => {
+		const budget = new ParadisVoiceRetentionBudget(150, 4);
+		const outcomes: unknown[] = [];
+		for (const [name, sizes, startEarly] of [['over-budget', [100, 100], false], ['started', [40], true], ['kept', [60], false]] as const) {
+			const stream = new FakeStream();
+			const played: number[] = [];
+			const gate = new DeferredPromise<void>();
+			const pending = paradisHandoffVoice({
+				ingest: port(stream).ingest,
+				open: { priority: 'normal' },
+				synthesize: async () => ({
+					body: (async function* () {
+						for (const size of sizes) {
+							yield new Uint8Array(size);
+						}
+						await gate.p;
+					})(),
+				}),
+				retention: () => budget.open(),
+				onPlayLocally: clip => played.push(clip.byteLength),
+			});
+			stream.handoffGate.complete(true);
+			await pending;
+			await flush();
+			const during = budget.usage.bytes;
+			if (startEarly) {
+				stream.start();
+			}
+			gate.complete();
+			await flush();
+			stream.finishedGate.complete({ status: 'failed', reason: 'worker-unavailable', withdrawn: true });
+			await flush();
+			outcomes.push({ name, during, played, after: budget.usage });
+		}
+		assert.deepStrictEqual(outcomes, [
+			// 枠を超えたら控えずに手放す（鳴らし直しはできない）
+			{ name: 'over-budget', during: 0, played: [], after: { bytes: 0, count: 0 } },
+			{ name: 'started', during: 40, played: [], after: { bytes: 0, count: 0 } },
+			{ name: 'kept', during: 60, played: [60], after: { bytes: 0, count: 0 } },
+		]);
+	});
+
+	test('reports a rejected prelude so the caller plays the ringtone (M4)', async () => {
+		const stream = new FakeStream();
+		let rejected = 0;
+		const pending = paradisHandoffVoice({
+			ingest: port(stream).ingest,
+			open: { priority: 'normal', prelude },
+			synthesize: async () => ({ body: body(10) }),
+			onPreludeRejected: () => rejected++,
+			onPlayLocally: () => { },
+		});
+		await flush();
+		stream.rejectPrelude('too-large');
+		stream.handoffGate.complete(true);
+		await pending;
+		assert.strictEqual(rejected, 1);
+	});
+
+	test('keeps the rate limit of a synthesis that could not be handed off (M8)', async () => {
+		const stream = new FakeStream();
+		const rateLimit = { remaining: 0, resetSeconds: 30, capturedAt: 1 };
+		const pending = paradisHandoffVoice({
+			ingest: port(stream).ingest,
+			open: { priority: 'normal' },
+			synthesize: async () => ({ body: body(5), rateLimit }),
+			onPlayLocally: () => { },
+		});
+		await flush();
+		stream.handoffGate.complete(false);
+		const result = await pending;
+		assert.deepStrictEqual(result.kind === 'fallback' ? { bytes: result.audio?.byteLength, rateLimit: result.rateLimit } : undefined, { bytes: 5, rateLimit });
+	});
+	test('withdraws a job whose queued does not arrive in time and plays it only when it was removed (aivis-mcp 2.5.1)', async () => {
+		const outcomes: unknown[] = [];
+		for (const removed of [true, false, undefined]) {
+			const stream = new FakeStream();
+			if (removed !== undefined) {
+				stream.withdraw = async () => {
+					stream.events.push('withdraw');
+					if (removed) {
+						stream.handoffGate.complete(false);
+						stream.finishedGate.complete({ status: 'skipped', reason: 'withdrawn', withdrawn: true });
+					}
+					return removed;
+				};
+			}
+			const result = await paradisHandoffVoice({
+				ingest: port(stream).ingest,
+				open: { priority: 'normal' },
+				synthesize: async () => ({ body: body(7) }),
+				onPlayLocally: () => { },
+				queuedWaitMs: 10,
+			});
+			outcomes.push({ kind: result.kind, bytes: result.kind === 'fallback' ? result.audio?.byteLength : undefined, withdrew: stream.events.includes('withdraw') });
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ kind: 'fallback', bytes: 7, withdrew: true },
+			{ kind: 'released', bytes: undefined, withdrew: true },
+			{ kind: 'released', bytes: undefined, withdrew: false },
 		]);
 	});
 });
