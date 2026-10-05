@@ -34,6 +34,7 @@ import {
 	PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
 	PARADIS_ELEVENLABS_SPEED_DEFAULT,
 } from '../common/paradisElevenLabs.js';
+import { IParadisElevenLabsVoiceTuningMap, paradisNormalizeVoiceTuningMap } from '../common/paradisVoiceTuning.js';
 
 /**
  * 音声報告（読み上げ）の設定。名前は Aivis 専用だった頃のままだが、ElevenLabs の設定も同じ JSON に持つ。
@@ -59,8 +60,10 @@ export interface IParadisAivisSettings {
 	elevenLabsSpeed: number;
 	/** 適用する ElevenLabs の発音辞書の ID。空なら辞書なし。 */
 	elevenLabsDictionaryId: string;
-	/** 通知と同じ辞書をエージェントの読み上げ（aivis-mcp）にも使う。既定 true。 */
+	/** 通知と同じ辞書と声の調整をエージェントの読み上げ（aivis-mcp）にも使う。既定 true。 */
 	shareDictionaryWithAgents: boolean;
+	/** ElevenLabs の声（voice_id）ごとの調整。無い声は ElevenLabs に保存した値で読む。 */
+	elevenLabsVoiceSettings: IParadisElevenLabsVoiceTuningMap;
 }
 
 const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
@@ -79,6 +82,7 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 	elevenLabsSpeed: PARADIS_ELEVENLABS_SPEED_DEFAULT,
 	elevenLabsDictionaryId: '',
 	shareDictionaryWithAgents: true,
+	elevenLabsVoiceSettings: Object.freeze({}),
 });
 
 /** API キーを入れる設定のフィールド。secret storage のキーと対にする。 */
@@ -418,6 +422,7 @@ export class ParadisNotificationsSettingsService extends Disposable implements I
 		}
 		settings.engine = paradisNormalizeVoiceEngine(settings.engine);
 		settings.elevenLabsSpeed = paradisClampElevenLabsSpeed(settings.elevenLabsSpeed);
+		settings.elevenLabsVoiceSettings = paradisNormalizeVoiceTuningMap(settings.elevenLabsVoiceSettings);
 		return settings;
 	}
 

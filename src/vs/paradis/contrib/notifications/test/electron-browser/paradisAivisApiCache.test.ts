@@ -113,6 +113,7 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 		elevenLabsSpeed: 1,
 		elevenLabsDictionaryId: '',
 		shareDictionaryWithAgents: true,
+		elevenLabsVoiceSettings: {},
 	};
 
 	fireAivisChange(patch: Partial<IParadisAivisSettings> = {}): void {

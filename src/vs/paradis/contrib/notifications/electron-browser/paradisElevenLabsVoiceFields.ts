@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 通知設定ダイアログの「音声報告」セクションで、読み上げエンジンが ElevenLabs のときに出す項目
-// （API Key、声の一覧と検索・サンプル再生、voice_id の直接入力、モデル、適用する発音辞書）。
+// （API Key、声の一覧と検索・サンプル再生、voice_id の直接入力、モデル、選んだ声の調整、適用する発音辞書）。
 // 共通の項目（有効化・音量・話速・文面・テスト再生）は ParadisAivisVoiceSection が描く。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -27,6 +27,7 @@ import {
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApiKeyField } from '../browser/paradisNotificationsSettings.js';
 import { paradisElevenLabsDictionaryCache, paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
+import { ParadisElevenLabsVoiceTuningFields } from './paradisElevenLabsVoiceTuningFields.js';
 
 const $ = dom.$;
 
@@ -83,6 +84,7 @@ export class ParadisElevenLabsVoiceFields {
 
 	/** 検索語は描き直しをまたいで残す。 */
 	private _query = '';
+	private readonly _tuning: ParadisElevenLabsVoiceTuningFields;
 
 	constructor(
 		private readonly host: IParadisElevenLabsSampleHost,
@@ -90,7 +92,9 @@ export class ParadisElevenLabsVoiceFields {
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@ILogService private readonly logService: ILogService,
-	) { }
+	) {
+		this._tuning = new ParadisElevenLabsVoiceTuningFields(isDisposed, sharedProcessService, settingsService);
+	}
 
 	render(parent: HTMLElement, settings: IParadisAivisSettings, disposables: DisposableStore): void {
 		this.host.renderApiKeyField(parent, 'elevenLabsApiKey', settings.elevenLabsApiKey, 'sk_...', STR_API_KEY_DESC);
@@ -100,6 +104,10 @@ export class ParadisElevenLabsVoiceFields {
 		this._renderVoices(parent, settings, disposables, voices => onVoicesLoaded.forEach(listener => listener(voices)));
 		this._renderVoiceIdField(parent, settings, disposables, onVoicesLoaded);
 		this._renderModelSelect(parent, settings, disposables);
+		const onTuningVoices = this._tuning.render(parent, settings, disposables);
+		if (onTuningVoices) {
+			onVoicesLoaded.push(onTuningVoices);
+		}
 		this._renderDictionarySelect(parent, settings, disposables);
 	}
 
