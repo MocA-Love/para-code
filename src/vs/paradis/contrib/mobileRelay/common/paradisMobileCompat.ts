@@ -190,6 +190,11 @@ export const ParadisMobileCapability = {
 	 * すぐ 1 枚撮って送る。`webrtc-stop` と `start` でも再開する。
 	 */
 	BrowserFramePause: 'browser.frame-pause.v1',
+	/**
+	 * 通信の計測（F0）の往復時間の ping。計測しているアプリだけが browser チャネルで `metrics-ping` を送り、PC は shared
+	 * process ですぐ `metrics-pong` を返す（`paradisMobileLinkMetrics.ts`）。PC が広告していなければアプリは送らない。
+	 */
+	MetricsPing: 'metrics.ping.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -241,6 +246,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.StateUnchanged,
 	ParadisMobileCapability.ReviewClientNoteId,
 	ParadisMobileCapability.BrowserFramePause,
+	ParadisMobileCapability.MetricsPing,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

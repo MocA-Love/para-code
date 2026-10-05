@@ -16,6 +16,7 @@
 import { SecureChannel } from './paradisMobileCrypto.js';
 import { ChannelId, decodeFrame, encodeFrame, Frame } from './paradisMobileProtocol.js';
 import { PARADIS_MOBILE_FRAGMENT_BYTES, ParadisMobileSendQueue, paradisMobileSendPriorityOf } from './paradisMobileSendQueue.js';
+import type { ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
 
 export type FrameHandler = (frame: Frame) => void;
 
@@ -43,6 +44,8 @@ export interface FrameMuxOptions {
 	readonly onAssemblyError?: (error: Error) => void;
 	/** 全端末で 1 本の送信の列。無ければこの mux だけの列を持つ（テスト用。送信バッファは見ない）。 */
 	readonly sendQueue?: ParadisMobileSendQueue;
+	/** 通信の計測（F0）。復号の待ち・復号の時間・論理フレームの大きさを数える。オフの間は何もしない。 */
+	readonly metrics?: ParadisMobileLinkMetrics;
 }
 
 /** 再結合バッファの上限（組み立て中の合計。app/protocol 側と一致）。 */
@@ -205,6 +208,7 @@ export class FrameMux {
 			this.nextTransferId = (this.nextTransferId + 1) % 0x100000000;
 		}
 		const { priority, replaceKey, interleave } = paradisMobileSendPriorityOf(channel, payload);
+		this.options.metrics?.observe(`pc.tx.${channel}.frameBytes`, payload.length);
 		const fragmentAt = (index: number): Frame => {
 			if (!fragmented) {
 				// 16KiB 以下は断片の見出しを付けない（版 3 と同じバイト列。古い相手への更新の案内もこの形で届く）
@@ -266,10 +270,17 @@ export class FrameMux {
 	}
 
 	receive(sealed: Uint8Array): Promise<void> {
+		const metrics = this.options.metrics?.enabled === true ? this.options.metrics : undefined;
+		const receivedAt = metrics?.now() ?? 0;
 		const run = this.rxChain.then(async () => {
 			let frame: Frame;
 			try {
-				frame = decodeFrame(await this.channel.open(sealed));
+				const openStartedAt = metrics?.now() ?? 0;
+				// 前のフレームの復号を待った時間（復号は 1 本の列で順に行う）
+				metrics?.observe('pc.rx.chainWaitMs', openStartedAt - receivedAt);
+				const opened = await this.channel.open(sealed);
+				metrics?.observeSince('pc.rx.openMs', openStartedAt);
+				frame = decodeFrame(opened);
 			} catch (error) {
 				// 復号/デコード失敗はonErrorへ通知した上で必ずrethrowする（app/protocol/src/mux.tsとは
 				// ここだけ意図的に異なる）。MobileSession.handlePayloadの自己回復（復号不能な32B=

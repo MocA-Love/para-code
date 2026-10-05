@@ -95,6 +95,8 @@ import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeReq
 import { PARADIS_OFFICE_CHANNEL, marshalParadisOfficeRequest, unmarshalParadisOfficeResponse, type ParadisOfficeV1Negotiation } from '../../fileViewers/common/paradisOfficeChannel.js';
 import type { ParadisOfficeSourceDescriptor } from '../../fileViewers/common/paradisOfficeProtocol.js';
 import { paradisIsQuietReplayedPane } from '../../agentBrowser/browser/paradisQuietReplayedPanes.js';
+import { ParadisMobileEchoTracker } from '../common/paradisMobileLinkMetrics.js';
+import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
 
 /** Codex の入力欄に残った文字の印を持つ上限（PC で消した後に確かめる機会が無くても、いつまでも断り続けない）。 */
 const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
@@ -619,8 +621,10 @@ interface TermSyncState {
 	/** 直近に送信したseq（送信直前にインクリメント。snapshotも消費する）。 */
 	seq: number;
 	/** 送信済み・未ACKのフレーム（フロー制御の残量計算用）。 */
-	inflight: { seq: number; chars: number }[];
+	inflight: { seq: number; chars: number; sentAt?: number }[];
 	unackedChars: number;
+	/** まとめ送りバッファへ最初の 1 チャンクを入れた時刻（通信の計測がオンのときだけ）。 */
+	coalesceStartedAt?: number;
 	/** フロー制御で生ストリーム転送を停止中（ptyは止めない。ACKが追いつくとsnapshotで再同期）。 */
 	suspended: boolean;
 	/** suspend中に出力を破棄した（=再開時にsnapshot再同期が必要）。 */
@@ -667,6 +671,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
 	private readonly termSyncStates = new Map<string, TermSyncState>();
+	/** 通信の計測（F0）: モバイルの入力を PTY へ書いてから、そのターミナルの最初の出力まで。 */
+	private readonly linkEchoTracker = new ParadisMobileEchoTracker();
 	// ターミナルID → これまでに流れた出力の末尾で閉じていない制御シーケンス（W2-18）。snapshot の後の
 	// 最初のチャンクの前に付けて送る（snapshot には PC の xterm の解析途中の状態が載らないため）。
 	// 出力を購読している間だけ追う（購読を始める前に読まれた分は分からない）。
@@ -3019,7 +3025,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'ack') {
 				this.handleTerminalAck(instance, id, mobileId, msg);
 			} else if (msg.t === 'input') {
+				const metrics = paradisMobileLinkMetrics;
+				const inputStartedAt = metrics.now();
 				await this.handleTerminalInput(instance, msg);
+				if (metrics.enabled) {
+					// 受けてから PTY へ書き終えるまで
+					metrics.observeSince('renderer.term.input.writeMs', inputStartedAt);
+					this.linkEchoTracker.mark(String(id), metrics.now());
+				}
 			} else if (msg.t === 'scroll') {
 				await this.handleTerminalScroll(instance, msg);
 			} else if (msg.t === 'rename') {
@@ -3430,6 +3443,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * suspend中は破棄し（ptyは止めない）、ACKが追いついた時点のスナップショットで追いつく。
 	 */
 	private sendTermData(id: number, data: string): void {
+		const metrics = paradisMobileLinkMetrics;
+		if (metrics.enabled) {
+			// PTY へ書いてから、そのターミナルの最初の出力（エコー）が xterm を通って出てくるまで
+			const echo = this.linkEchoTracker.take(String(id), metrics.now());
+			if (echo !== undefined) {
+				metrics.observe('renderer.term.echo.ptyMs', echo);
+			}
+		}
 		// PC の xterm はこのチャンクを読み終えてから onData を出すので、ここで追う末尾は
 		// 次に撮る snapshot の時点の解析途中の状態と一致する（snapshot は書き込みのバリアを待ってから撮る）。
 		const previousTail = this.termEscapeTails.get(id) ?? '';
@@ -3448,6 +3469,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
 		if (!sync) {
 			return;
+		}
+		if (sync.pendingChars === 0 && paradisMobileLinkMetrics.enabled) {
+			sync.coalesceStartedAt = paradisMobileLinkMetrics.now();
 		}
 		paradisQueueTerminalRelayOutput(
 			sync,
@@ -3476,11 +3500,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		sync.pending = [];
 		sync.pendingChars = 0;
 		const seq = ++sync.seq;
-		sync.inflight.push({ seq, chars: data.length });
+		const metrics = paradisMobileLinkMetrics;
+		let sentAt: number | undefined;
+		if (metrics.enabled) {
+			sentAt = metrics.now();
+			if (sync.coalesceStartedAt !== undefined) {
+				// 最初の出力をまとめ送りバッファへ入れてから送り出すまで
+				metrics.observe('renderer.term.out.coalesceMs', sentAt - sync.coalesceStartedAt);
+			}
+			metrics.observe('renderer.term.out.flushChars', data.length);
+			metrics.observe('renderer.term.out.unackedChars', sync.unackedChars);
+		}
+		sync.coalesceStartedAt = undefined;
+		sync.inflight.push({ seq, chars: data.length, ...(sentAt !== undefined ? { sentAt } : {}) });
 		sync.unackedChars += data.length;
 		this.sendTerm(id, mobileId, { t: 'data', data, epoch: sync.epoch, seq });
 		if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
 			sync.suspended = true;
+			metrics.count('renderer.term.out.suspended');
 		}
 	}
 
@@ -3490,7 +3527,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!sync || sync.epoch !== msg.epoch) {
 			return; // 旧世代のACKは無視（再attach直後の混在で正常に起きる）
 		}
+		const metrics = paradisMobileLinkMetrics;
+		const ackedAt = metrics.now();
 		while (sync.inflight.length > 0 && sync.inflight[0].seq <= msg.seq) {
+			const sentAt = sync.inflight[0].sentAt;
+			if (sentAt !== undefined) {
+				// 送り出してから、その分の ack が戻るまで（往復 ＋ アプリが ack を返すまでの遅れ）
+				metrics.observe('renderer.term.ack.delayMs', ackedAt - sentAt);
+			}
 			sync.unackedChars -= sync.inflight[0].chars;
 			sync.inflight.shift();
 		}

@@ -49,6 +49,7 @@ import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, type TerminalL
 import { EmptyState } from './emptyState.js';
 import { createTermReadyWatchdog } from './termReadyWatchdog.js';
 import { createTermWriteCoalescer } from './termWriteCoalescer.js';
+import { appLinkMetrics } from '../linkMetricsRuntime.js';
 
 interface TermViewProps {
 	/** レガシーモード（旧PC）用: これまでに受信した出力バッファ全体（差分書き込みする）。 */
@@ -95,7 +96,9 @@ type TermViewMessage =
 	/** 長押しで選んだ文字の「コピー」。 */
 	| { t: 'copy'; text: string }
 	/** 長押しで選択に入った（触覚で知らせる）。 */
-	| { t: 'selection' };
+	| { t: 'selection' }
+	/** 通信の計測中だけ: `n` 番目の流し込みを xterm が書き終えた次のフレーム。 */
+	| { t: 'drawn'; n: number };
 
 /** 押したリンクを一瞬示してから開くまでの間（ms）。押した位置のずれに気づけるように。 */
 const LINK_FLASH_MS = 140;
@@ -514,6 +517,14 @@ function buildHtml(): string {
 			term.write(data, function () { term.scrollToBottom(); followCursor(); });
 		},
 		reset: function () { term.reset(); },
+		// 通信の計測中だけ呼ばれる: n 番目までの書き込みを xterm が終えた次の描画のフレームで知らせる。
+		drawn: function (n) {
+			term.write('', function () {
+				requestAnimationFrame(function () {
+					window.ReactNativeWebView.postMessage(JSON.stringify({ t: 'drawn', n: n }));
+				});
+			});
+		},
 	};
 	// --- 代替スクリーン（TUI）のスワイプスクロール ---
 	//
@@ -1154,9 +1165,21 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 
 	// 出力のまとめ役。流す単位 1 つが inject 1 回で、連番もこの単位で振る（WebView 側の欠落検出と対）。
 	const coalescerRef = useRef<ReturnType<typeof createTermWriteCoalescer> | undefined>(undefined);
+	// 通信の計測中だけ: 流し込んだ時刻（描画の知らせと突き合わせる。古い分は数で切る）。
+	const drawStartsRef = useRef(new Map<number, number>());
 	coalescerRef.current ??= createTermWriteCoalescer(data => {
 		const n = ++injectSeqRef.current;
-		inject(`window.__para.write(${n}, ${JSON.stringify(data)})`);
+		const injectedAt = appLinkMetrics.noteTermInjected();
+		if (injectedAt === undefined) {
+			inject(`window.__para.write(${n}, ${JSON.stringify(data)})`);
+			return;
+		}
+		const starts = drawStartsRef.current;
+		if (starts.size >= 32) {
+			starts.clear();
+		}
+		starts.set(n, injectedAt);
+		inject(`window.__para.write(${n}, ${JSON.stringify(data)}); window.__para.drawn(${n})`);
 	});
 	const coalescer = coalescerRef.current;
 
@@ -1423,6 +1446,12 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 						onScrollRef.current?.(msg.dir, msg.lines);
 					} else if (msg.t === 'warn' && __DEV__) {
 						console.warn('[termView]', msg.text);
+					} else if (msg.t === 'drawn') {
+						const injectedAt = drawStartsRef.current.get(msg.n);
+						drawStartsRef.current.delete(msg.n);
+						if (injectedAt !== undefined) {
+							appLinkMetrics.noteTermDrawn(injectedAt);
+						}
 					} else {
 						handleLinkMessage(msg);
 					}
