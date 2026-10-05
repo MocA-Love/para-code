@@ -212,7 +212,10 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 			if (predicate !== undefined) {
 				try {
 					const value = predicate();
-					const outcome = typeof value === 'function' ? await value() : await value;
+					// A promise that never settles must not keep this evaluate (and the pane's other tools) waiting past the slice.
+					let timer;
+					const late = new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('the predicate did not settle within this check')), Math.max(50, deadline - Date.now())); });
+					const outcome = await Promise.race([Promise.resolve(typeof value === 'function' ? value() : value), late]).finally(() => clearTimeout(timer));
 					result.predicateValue = outcome === undefined ? 'undefined' : cut(JSON.stringify(outcome), 200);
 					result.met = result.met && !!outcome;
 				} catch (error) {
