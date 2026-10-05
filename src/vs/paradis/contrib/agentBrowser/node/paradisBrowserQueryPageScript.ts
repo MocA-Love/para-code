@@ -396,7 +396,10 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 	const recall = () => { const value = window[REFS_KEY] ? window[REFS_KEY].get(spec.ref) : undefined; const el = value ? value.deref() : undefined; return el && el.isConnected ? el : undefined; };
 	const deepActive = () => { let active = document.activeElement; while (active && active.shadowRoot && active.shadowRoot.activeElement) { active = active.shadowRoot.activeElement; } return active; };
 	const isDisabled = el => (typeof el.matches === 'function' && el.matches(':disabled')) || !!el.closest('[aria-disabled="true"]') || !!el.closest('[inert]');
-	const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time', '']);
+	const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', '']);
+	// Date and time fields have segments, not a text selection: Input.insertText does not replace their value,
+	// so they get the value through the native setter (which React's value tracker notices) and input/change.
+	const VALUE_INPUT_TYPES = new Set(['date', 'datetime-local', 'month', 'week', 'time', 'color', 'range']);
 	const kindOf = el => {
 		const tag = el.localName;
 		if (tag === 'select') { return 'select'; }
@@ -404,7 +407,7 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		if (tag === 'input') {
 			const type = lower(el.getAttribute('type'));
 			if (type === 'checkbox' || type === 'radio') { return type; }
-			return TEXT_INPUT_TYPES.has(type) ? 'text' : 'other';
+			return TEXT_INPUT_TYPES.has(type) ? 'text' : VALUE_INPUT_TYPES.has(type) ? 'value' : 'other';
 		}
 		if (el.isContentEditable) { return 'text'; }
 		return 'other';
@@ -422,6 +425,9 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		if (el.localName === 'input' || el.localName === 'textarea') { return el.value; }
 		return textOf(el);
 	};
+	/** What is shown to the agent: a password field's value is never returned, only its length. */
+	const isSecret = el => el.localName === 'input' && lower(el.getAttribute('type')) === 'password';
+	const shownValue = (el, max) => isSecret(el) ? '(' + valueOf(el).length + ' characters, hidden)' : cut(valueOf(el), max);
 	/** Where a pointer at the center of the element would land, and why it would not reach the element. */
 	const hitAt = el => {
 		const rect = el.getBoundingClientRect();
@@ -479,7 +485,8 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 			enabled: !isDisabled(target),
 			readOnly: !!target.readOnly,
 			focused: deepActive() === target,
-			value: cut(valueOf(target), 200),
+			value: shownValue(target, 200),
+			secret: isSecret(target),
 			x: hit.x, y: hit.y,
 			viewport: { width: innerWidth, height: innerHeight },
 		};
@@ -505,7 +512,18 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 				selection.addRange(range);
 			}
 		}
-		return { focused, value: cut(valueOf(el), 200), empty: valueOf(el).length === 0 };
+		return { focused, value: shownValue(el, 200), empty: valueOf(el).length === 0 };
+	}
+
+	if (spec.mode === 'setValue') {
+		const el = recall();
+		if (!el) { return { lost: true }; }
+		el.focus({ preventScroll: true });
+		const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+		setter.call(el, spec.value);
+		el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+		el.dispatchEvent(new Event('change', { bubbles: true }));
+		return { value: valueOf(el), accepted: valueOf(el) === spec.value };
 	}
 
 	if (spec.mode === 'selectOption') {
@@ -544,7 +562,7 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 	if (spec.mode === 'readField') {
 		const el = recall();
 		if (!el) { return { lost: true }; }
-		return { value: cut(valueOf(el), 2000), focused: deepActive() === el, element: describe(el) };
+		return { value: shownValue(el, 2000), secret: isSecret(el), length: valueOf(el).length, focused: deepActive() === el, element: describe(el) };
 	}
 
 	return { error: 'unknown mode' };

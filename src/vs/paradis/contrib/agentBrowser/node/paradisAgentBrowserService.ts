@@ -18,7 +18,7 @@
 import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
-import { promises as fsPromises, writeFileSync } from 'fs';
+import { constants as fsConstants, promises as fsPromises, writeFileSync } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -3704,9 +3704,19 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		try {
 			await fsPromises.mkdir(dirname(path), { recursive: true });
-			await fsPromises.writeFile(path, data);
+			// 確かめたのはフォルダまで。ファイル自体がシンボリックリンク（外を指しうる）なら書かない
+			const existing = await fsPromises.lstat(path).catch(() => undefined);
+			if (existing !== undefined && !existing.isFile()) {
+				return { ok: false, message: `${path} already exists and is not a regular file (for example a symbolic link), so Para Code does not overwrite it. Choose another path.` };
+			}
+			const handle = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+			try {
+				await handle.writeFile(data);
+			} finally {
+				await handle.close();
+			}
 		} catch {
-			return { ok: false, message: `Para Code could not write ${path} (permissions, or the disk is full).` };
+			return { ok: false, message: `Para Code could not write ${path} (permissions, a symbolic link, or the disk is full).` };
 		}
 		this._requireIngressLease(ingressLease);
 		return { ok: true, path };
