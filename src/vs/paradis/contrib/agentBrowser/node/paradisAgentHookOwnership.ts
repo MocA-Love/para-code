@@ -546,8 +546,12 @@ export function paradisIsCodexPluginCommand(command: string): boolean {
 	return CODEX_PLUGIN_SCRIPT.test(command) || CODEX_PLUGIN_PATH.test(command);
 }
 
-/** rollout の session_meta の起動元が Claude Code（Codex plugin が app-server へ名乗る `originator`）か。 */
-const CLAUDE_CODE_ROLLOUT_ORIGINATOR = /"originator"\s*:\s*"Claude Code"/;
+/**
+ * rollout の session_meta の起動元（`originator`）。Codex plugin が app-server へ名乗る値は "Claude Code"。
+ * 手で起動した codex は `codex-tui`・`codex_exec` なので当たらない（2026-10-06 に手元の rollout で実測）。
+ */
+const ROLLOUT_ORIGINATOR = /"originator"\s*:\s*"(?<originator>[^"]*)"/;
+const CLAUDE_CODE_ORIGINATOR = 'Claude Code';
 
 /** rollout の先頭（最初の行の session_meta）を読む。読めなければ undefined。 */
 async function readRolloutHead(transcriptPath: string): Promise<string | undefined> {
@@ -892,7 +896,12 @@ export class ParadisAgentHookOwnership {
 			// 先頭の行が書きかけ。次の hook で読み直す。
 			return false;
 		}
-		const fromClaudeCode = CLAUDE_CODE_ROLLOUT_ORIGINATOR.test(firstLine);
+		const originator = ROLLOUT_ORIGINATOR.exec(firstLine)?.groups?.originator;
+		if (originator === undefined) {
+			// session_meta の行が `originator` の手前までしか書かれていない。覚えずに次の hook で読み直す。
+			return false;
+		}
+		const fromClaudeCode = originator === CLAUDE_CODE_ORIGINATOR;
 		if (this.rolloutFromClaudeCode.size >= MAX_ROLLOUT_ORIGINATOR_CACHE) {
 			this.rolloutFromClaudeCode.clear();
 		}

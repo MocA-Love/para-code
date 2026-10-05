@@ -805,6 +805,21 @@ suite('ParadisAgentHookOwnership', () => {
 		]);
 	});
 
+	test('a session_meta line cut before originator is read again on the next hook', async () => {
+		const tree = attachTree();
+		tree.set(810, proc(810, 1, '/opt/codex/vendor/bin/codex app-server --listen unix:///tmp/codex/app-server.sock'));
+		tree.set(811, proc(811, 810, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh'));
+		const heads = [
+			'{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta","payload":{"id":"x","forked_from_id":null,"times',
+			'{"timestamp":"2026-10-06T00:00:00.000Z","type":"session_meta","payload":{"id":"x","originator":"Claude Code","source":"vscode"}}\n',
+		];
+		let reads = 0;
+		const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree }, process.pid, async () => heads[reads++]);
+		const first = await ownership.classify({ token: 't', hookPid: 811, transcriptPath: CODEX_TRANSCRIPT, at: 1, paneShellPid: 100 });
+		const second = await ownership.classify({ token: 'u', hookPid: 811, transcriptPath: CODEX_TRANSCRIPT, at: 2, paneShellPid: 100 });
+		assert.deepStrictEqual([first.origin, second.origin, reads], ['owner', 'invalid', 2]);
+	});
+
 	test('codex started by hand inside claude stays nested, and codex started after claude exits owns the pane', async () => {
 		const tree = standardTree();
 		tree.set(250, proc(250, 200, '/bin/zsh -c codex'));
