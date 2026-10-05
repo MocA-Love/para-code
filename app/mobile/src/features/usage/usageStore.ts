@@ -10,6 +10,8 @@ import { openUsageRecord, pruneUsageRecord, sealUsageRecord, usageRecordSignatur
 import { onUsagePcForgotten, readUsageCacheFiles, removeUsageCacheFile, removeUsageCacheFileNamed, writeUsageCacheFile } from './usageCacheFile.js';
 import { UsageInFlight, UsageRequestLimiter, applyUsageResult, isFreshEnough, mergeLoadedRecords } from './usageFetchCore.js';
 import { buildUsageSources, type UsageSourceRoute } from './usageSources.js';
+import { carryVoiceResult } from './voiceUsageModel.js';
+import type { VoiceUsageResult } from './voiceUsageWire.js';
 
 /**
  * 使用量の値を、全 PC（と SSH の接続先）から集めて持つ場所（全 PC の合計・案 B）。
@@ -171,6 +173,11 @@ async function request(requester: PcUsageRequester, route: UsageSourceRoute, kin
 			const value = await requester.githubUsage(bypassCache);
 			return { value, at: stamp(githubFetchedAt(value)), receivedAt: receivedAt() };
 		}
+		case 'voice': {
+			// `usage.voice.v1` を広告しない PC には送らず、VoiceUsageUnsupportedError で失敗する（画面は「PC を更新すると出ます」）
+			const value = await requester.voiceUsage(bypassCache);
+			return { value, at: stamp(value.fetchedAt), receivedAt: receivedAt() };
+		}
 	}
 }
 
@@ -203,7 +210,9 @@ function fetchOne(source: UsageSourceInfo, route: UsageSourceRoute, requester: P
 				const errors = { ...state.errors };
 				delete errors[key];
 				// 取り直しと前後して届いた古い応答で、新しい値を上書きしない。
-				const records = applyUsageResult(state.records, source, kind, result);
+				// 読み上げは、片方のエンジンが失敗だけを返したら前回の日別・内訳を引き継ぐ（PC を再起動した直後の失敗でも消さない）
+				const applied = kind === 'voice' ? carryVoiceResult(state.records[source.key]?.values.voice, result as Timed<VoiceUsageResult>) : result;
+				const records = applyUsageResult(state.records, source, kind, applied);
 				return records !== undefined ? { records, errors } : { errors };
 			});
 			schedulePersist(source.key);
@@ -266,8 +275,8 @@ export const useUsageStore = create<UsageStoreState>((set, get) => ({
 				continue;
 			}
 			for (const kind of kinds) {
-				// GitHub は PC の値（接続先ごとには取れない）
-				if ((kind === 'github' && source.kind !== 'pc') || isFreshEnough(lastSuccess.get(usageStateKey(source.key, kind)), now, maxAge)) {
+				// GitHub・読み上げは PC の値（接続先ごとには取れない）
+				if (((kind === 'github' || kind === 'voice') && source.kind !== 'pc') || isFreshEnough(lastSuccess.get(usageStateKey(source.key, kind)), now, maxAge)) {
 					continue;
 				}
 				jobs.push(fetchOne(source, route, requester, kind, bypass));

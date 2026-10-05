@@ -19,6 +19,7 @@ import { paradisMobileBrowserPageMessage, paradisNormalizeMobileBrowserFocusRepo
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage } from '../../common/paradisMobileBrowserProtocol.js';
 import { paradisMobileBrowserTargetsScope } from '../../common/paradisMobileBrowserScope.js';
 import { paradisHasMobileCapability } from '../../common/paradisMobileCompat.js';
+import { IParadisMobileAivisUsage, IParadisMobileVoiceUsage, paradisBuildMobileAivisUsage, paradisBuildMobileElevenLabsUsage, paradisMobileVoiceUsageFailure } from '../../common/paradisMobileVoiceUsage.js';
 import { ParadisMobileBrowserMirror } from '../../node/paradisMobileBrowserMirror.js';
 import type { MobileIdentity } from '../../common/paradisMobileCrypto.js';
 import { Channels } from '../../common/paradisMobileProtocol.js';
@@ -316,5 +317,27 @@ suite('ParadisMobileWireGolden', () => {
 		} finally {
 			mirror.dispose();
 		}
+	});
+
+	test('voiceUsage: PC が組み立てる読み上げの使用量はゴールデンと同じ形', function () {
+		const golden = readGolden<{ current: Record<string, unknown>; failed: Record<string, unknown> }>(this, 'voice-usage.json');
+		const at = 1791000000000;
+		const aivis = paradisBuildMobileAivisUsage('0123456789ab', {
+			days: [{ date: '2026-10-05', requestCount: 96, characterCount: 3920, creditConsumed: 0.5, byApiKey: { a: { name: 'para-code', requestCount: 96, characterCount: 3920, creditConsumed: 0.5 } } }],
+			total: { requestCount: 96, characterCount: 3920, creditConsumed: 0.5 },
+		}, { handle: null, name: null, creditBalance: 1000 }, { start: '2026-10-05', end: '2026-10-05' }, at);
+		const elevenLabs = paradisBuildMobileElevenLabsUsage('ba9876543210', {
+			days: [{ date: '2026-10-05', characterCount: 3920 }],
+			totalCharacters: 3920,
+			byModel: [{ key: 'eleven_v4_turbo', characterCount: 3920 }],
+			byVoice: [{ key: 'voice-a', characterCount: 3920 }],
+			recent: { days: 7, byModel: [{ key: 'eleven_v4_turbo', characterCount: 3920 }], byVoice: [{ key: 'voice-a', characterCount: 3920 }] },
+		}, { kind: 'ok', subscription: { characterCount: 61540, characterLimit: 100000, nextResetAt: 1792540800000, tier: 'creator' } }, new Map([['eleven_v4_turbo', 'Eleven v4 Turbo']]), at);
+		const current: IParadisMobileVoiceUsage = { fetchedAt: at, engine: 'elevenlabs', aivis, elevenLabs };
+		const failed: IParadisMobileVoiceUsage = { fetchedAt: at, engine: 'aivis', aivis: paradisMobileVoiceUsageFailure<IParadisMobileAivisUsage>(undefined, '0123456789ab', 'Aivis API error 503', at) };
+		assert.deepStrictEqual(
+			{ current: shapeOf(JSON.parse(JSON.stringify(current))), failed: shapeOf(JSON.parse(JSON.stringify(failed))) },
+			{ current: shapeOf(golden.current), failed: shapeOf(golden.failed) },
+		);
 	});
 });
