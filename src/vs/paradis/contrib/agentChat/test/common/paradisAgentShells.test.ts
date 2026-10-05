@@ -232,6 +232,34 @@ suite('paradisAgentShells', () => {
 		});
 	});
 
+	test('a shell started by a subagent or a Workflow child is listed from the child transcript and closed by the parent notification, and an ended one is not revived', () => {
+		const child = (lines: readonly string[]) => {
+			const signals = newParseSignals();
+			for (const line of lines) {
+				const obj = rec(JSON.parse(line));
+				if (obj !== undefined) {
+					parseClaudeLine({ ...obj, isSidechain: true }, signals, true);
+				}
+			}
+			return signals.shellSignals;
+		};
+		const tracker = new ParadisAgentShellTracker();
+		// 子の transcript にだけ起動が書かれる
+		tracker.applyFromChild(child([bashCall('toolu_c1', { command: 'npm run dev', run_in_background: true }), started('toolu_c1', 'bchild')]), T0 + 1_000);
+		const running = tracker.snapshot().map(shell => `${shell.id}:${shell.status}:${shell.command}`);
+		// 親の transcript には queue-operation の終わりの通知だけが届く
+		tracker.apply(parse([notification('bchild', 'completed', 'Background command "npm run dev" completed (exit code 0)', 2_000, 'queue-operation')]).shellSignals, T0 + 2_000);
+		const closed = tracker.snapshot().map(shell => `${shell.id}:${shell.status}`);
+		// 終わって一覧から捨てた後に子の transcript を読み直しても、動いているシェルに戻さない
+		tracker.refresh(T0 + 2_000 + PARADIS_SHELL_LIMITS.endedRetentionMs);
+		tracker.applyFromChild(child([bashCall('toolu_c1', { command: 'npm run dev', run_in_background: true }), started('toolu_c1', 'bchild')]), T0 + 2_000 + PARADIS_SHELL_LIMITS.endedRetentionMs);
+		assert.deepStrictEqual({ running, closed, afterReread: tracker.snapshot().length }, {
+			running: ['bchild:running:npm run dev'],
+			closed: ['bchild:completed'],
+			afterReread: 0,
+		});
+	});
+
 	test('access per environment', () => {
 		assert.deepStrictEqual([paradisShellsAccess(undefined, true), paradisShellsAccess(undefined, false), paradisShellsAccess('ssh', true), paradisShellsAccess('windows', false)], [
 			{ output: true, stop: true },

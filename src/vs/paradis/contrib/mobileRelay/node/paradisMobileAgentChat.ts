@@ -69,7 +69,7 @@ import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js'
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
-import { IParadisAgentShell, paradisShellsAccess, paradisShellsForStoppedPane } from '../../agentChat/common/paradisAgentShells.js';
+import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -247,6 +247,14 @@ const HOOK_BACKGROUND_TASK_PREFIX = 'hook:';
 const BACKGROUND_TASK_SIGN_STEP_MS = 60_000;
 /** 1 回の見回りで動いている印を確かめるバックグラウンドタスクの上限（stat の数）。 */
 const BACKGROUND_TASK_PROBE_LIMIT = 64;
+/** 子が起動したシェルを探すとき、1 つの会話で読む子の transcript の数（新しい順）。 */
+const CHILD_SHELL_SCAN_FILES = 16;
+/** 子が起動したシェルを探すとき、1 回に読む 1 ファイルの上限（初回は末尾だけ。以後は追記だけを読む）。 */
+const CHILD_SHELL_SCAN_MAX_BYTES = 1024 * 1024;
+/** 1 回の見回りで子の transcript を読む回数の上限（全部の会話で。残りは次の見回りで読む）。 */
+const CHILD_SHELL_SCAN_READS_PER_SWEEP = 16;
+/** これより前に書かれたきりの子の transcript は、子が起動したシェルを探しに読まない。 */
+const CHILD_SHELL_SCAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
 const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
@@ -1126,6 +1134,18 @@ export function paradisClaudeNamedAgentFromFileId(fileId: string): string | unde
 	return /^a(?<name>[A-Za-z0-9._:-]+)-[0-9a-f]{16}$/.exec(fileId)?.groups?.name;
 }
 
+/**
+ * 子（サブエージェント・Workflow の子）の Bash の PostToolUse hook から、バックグラウンドのシェルの手がかりを作る（時刻は
+ * hook の受信時刻 = PC の時計）。`tool_response` は transcript の `toolUseResult` と同じ形（`backgroundTaskId` など）。
+ */
+export function paradisChildShellSignalsFromHook(event: Pick<IParadisAgentHookEvent, 'payload' | 'toolUseId' | 'at'>): IParadisShellSignal[] {
+	const toolUseId = event.toolUseId ?? str(event.payload?.tool_use_id);
+	const response = event.payload?.tool_response;
+	const call = paradisShellCallSignal(rec(event.payload?.tool_input), toolUseId, event.at);
+	const started = paradisShellStartedSignal(typeof response === 'string' ? response : '', rec(response), toolUseId, event.at);
+	return started === undefined ? [] : [...(call !== undefined ? [call] : []), started];
+}
+
 /** Claudeの子transcript pathに埋め込まれた所有Agent ID（Workflow の子を含む）。root transcriptならundefined。 */
 export function paradisClaudeAgentIdFromTranscriptPath(transcriptPath: string): string | undefined {
 	return paradisParseClaudeSubagentTranscriptPath(transcriptPath)?.agentId;
@@ -1937,6 +1957,8 @@ class TranscriptTailer {
 	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
 	private decoder = new TextDecoder();
 	private initialTruncated = false;
+	/** 今の epoch で最初に読んだ行の時刻（transcript の時計）。末尾だけ読んだときの、読んだ範囲の始まり。 */
+	private firstLineAt: number | undefined;
 	private watcher: FSWatcher | undefined;
 	private pollTimer: ReturnType<typeof setInterval> | undefined;
 	private chain: Promise<void> = Promise.resolve();
@@ -1983,6 +2005,17 @@ class TranscriptTailer {
 
 	get wasInitialTruncated(): boolean {
 		return this.initialTruncated;
+	}
+
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したバックグラウンドのシェルの手がかりを当てる（子の transcript と子の
+	 * hook から読む。終わりの通知は親の transcript に届くので、親の読みが閉じる）。`localClock` なら時刻は PC の時計。
+	 * 親を末尾だけ読んだときは、読んだ範囲より前の起動は当てない（その通知を読んでいないので、終わったシェルが動いたまま残る）。
+	 */
+	applyChildShellSignals(signals: readonly IParadisShellSignal[], localClock: boolean): void {
+		const windowStart = this.initialTruncated ? this.firstLineAt : undefined;
+		const accepted = windowStart === undefined || localClock ? signals : signals.filter(signal => signal.type !== 'started' || signal.at >= windowStart);
+		this.monitorWatch.applyChildShells(accepted, localClock);
 	}
 
 	dispose(): void {
@@ -2221,6 +2254,7 @@ class TranscriptTailer {
 				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
 				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
+				this.firstLineAt = undefined;
 				this.backgroundTasks.clear();
 				this.backgroundTaskKinds.clear();
 				this.backgroundWorkflowRuns.clear();
@@ -2387,6 +2421,12 @@ class TranscriptTailer {
 			}
 			if (!obj) {
 				continue;
+			}
+			if (this.firstLineAt === undefined) {
+				const lineAt = Date.parse(str(obj.timestamp) ?? '');
+				if (Number.isFinite(lineAt)) {
+					this.firstLineAt = lineAt;
+				}
 			}
 			if (this.agent === 'claude') {
 				if (emitDelta) {
@@ -3446,6 +3486,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
 	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
+	/** 子が起動したシェルを探して子の transcript をどこまで読んだか（tailer の epoch ごと。path → 読んだ位置）。 */
+	private readonly childShellReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly offsets: Map<string, number> }>();
 	/**
 	 * Codex rollout path → root thread か SubAgent か。session_meta は書き出し後に
 	 * 変わらないため、hookのたびに読み直さずここへ覚える（'unknown' は覚えない）。
@@ -7183,6 +7225,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private async sweepAgentActivity(): Promise<void> {
 		await this.probeBackgroundTaskSigns().catch(error => this.logService.trace('[paradisAgentChat] background task sign check failed', String(error)));
+		await this.scanChildShells().catch(error => this.logService.trace('[paradisAgentChat] child shell scan failed', String(error)));
 		const active = [...this.activityTrackers].filter(([, tracker]) => tracker.hasActiveWork()).map(([token]) => token);
 		await Promise.all(active.map(token => this.reconcilePersistedAgentActivity(token)
 			.catch(error => this.logService.trace('[paradisAgentChat] activity liveness check failed', String(error)))));
@@ -7226,6 +7269,112 @@ export class ParadisMobileAgentChat extends Disposable {
 					tailer.noteBackgroundTasksAlive([taskId], lastWrite);
 				}
 			}
+		}
+	}
+
+	/**
+	 * 子（サブエージェント・Workflow の子）が起動したバックグラウンドのシェルを、子の transcript から拾う。子の起動は子の
+	 * transcript にしか書かれず、親には終わりの通知だけが届く（Claude Code 2.1.289 で実測。Claude Code の下部の
+	 * 「N shells」に出るのにモバイルの一覧に出なかった）。hook が届いていれば子の PostToolUse で先に拾っている。
+	 * ここは hook の無かった間（Para Code を後から開いた・hook を切っている）の分。各会話の新しい子
+	 * {@link CHILD_SHELL_SCAN_FILES} 件を、前に読んだ位置から追記だけ読む。
+	 */
+	private async scanChildShells(): Promise<void> {
+		const now = Date.now();
+		const budget = { reads: CHILD_SHELL_SCAN_READS_PER_SWEEP };
+		for (const [token, tailer] of [...this.tailers]) {
+			if (budget.reads <= 0) {
+				return;
+			}
+			if (tailer.agent !== 'claude') {
+				continue;
+			}
+			let state = this.childShellReads.get(tailer);
+			if (state === undefined || state.epoch !== tailer.epoch) {
+				state = { epoch: tailer.epoch, offsets: new Map() };
+				this.childShellReads.set(tailer, state);
+			}
+			const files = (await paradisDiscoverClaudeSubagentFiles(tailer.transcriptPath, isAllowedTranscriptPath))
+				.filter(file => now - file.mtime <= CHILD_SHELL_SCAN_MAX_AGE_MS)
+				.slice(0, CHILD_SHELL_SCAN_FILES);
+			const signals: IParadisShellSignal[] = [];
+			for (const file of files) {
+				if (budget.reads <= 0) {
+					break;
+				}
+				signals.push(...await this.readChildShellSignals(file.path, state.offsets, budget));
+			}
+			// 一覧から外れた子の位置は忘れる（また新しい側に来たら頭から読み直す。同じ起動を当て直しても一覧は変わらない）
+			const kept = new Set(files.map(file => file.path));
+			for (const path of [...state.offsets.keys()]) {
+				if (!kept.has(path)) {
+					state.offsets.delete(path);
+				}
+			}
+			if (signals.length > 0 && this.tailers.get(token) === tailer && state.epoch === tailer.epoch) {
+				tailer.applyChildShellSignals(signals, false);
+			}
+		}
+	}
+
+	/** 子の transcript の追記から、バックグラウンドのシェルの手がかりを読む（`offsets` に読んだ位置を残す）。 */
+	private async readChildShellSignals(path: string, offsets: Map<string, number>, budget: { reads: number }): Promise<IParadisShellSignal[]> {
+		let handle: fs.FileHandle;
+		try {
+			handle = await fs.open(path, 'r');
+		} catch {
+			return [];
+		}
+		try {
+			if (!await isAllowedOpenTranscriptPath(handle, path)) {
+				return [];
+			}
+			const size = (await handle.stat()).size;
+			const previous = offsets.get(path) ?? 0;
+			// 縮んだ（作り直された）ら頭から。初回の大きいファイルと、溜まりすぎた追記は末尾だけ読む
+			let start = previous > size ? 0 : previous;
+			if (size - start > CHILD_SHELL_SCAN_MAX_BYTES) {
+				start = size - CHILD_SHELL_SCAN_MAX_BYTES;
+			}
+			if (size <= start) {
+				offsets.set(path, size);
+				return [];
+			}
+			budget.reads--;
+			const buffer = Buffer.alloc(size - start);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+			let body = buffer.subarray(0, bytesRead);
+			let skipped = 0;
+			if (start > 0 && start !== previous) {
+				// 途中から読んだので、最初の不完全な行を捨てる
+				const firstNewline = body.indexOf(0x0a);
+				skipped = firstNewline >= 0 ? firstNewline + 1 : body.length;
+				body = body.subarray(skipped);
+			}
+			// 書きかけの最後の行は次に読む
+			const lastNewline = body.lastIndexOf(0x0a);
+			offsets.set(path, start + skipped + lastNewline + 1);
+			if (lastNewline < 0) {
+				return [];
+			}
+			const signals = newParseSignals();
+			for (const line of body.subarray(0, lastNewline).toString('utf8').split('\n')) {
+				// Bash の呼び出しと、背景へ回った結果・終わりの通知の行だけを解く
+				if (!line.includes('"Bash"') && !line.includes('background') && !line.includes('<task-notification>')) {
+					continue;
+				}
+				try {
+					const obj = rec(JSON.parse(line));
+					if (obj !== undefined) {
+						parseClaudeLine(obj, signals, true);
+					}
+				} catch {
+					// 壊れた行は飛ばす
+				}
+			}
+			return signals.shellSignals;
+		} finally {
+			await handle.close();
 		}
 	}
 
@@ -8130,6 +8279,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		const aliveAgentId = str(event.payload?.agent_id) ?? claudeNestedAgentId;
 		if (info.agent === 'claude' && event.event !== 'SubagentStop' && aliveAgentId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(aliveAgentId)) {
 			this.tailers.get(event.token)?.noteBackgroundAgentAlive(aliveAgentId, event.at);
+			// 子がバックグラウンドで起動したシェル。起動は子の transcript にしか書かれない（SSH 先でも hook は届く）
+			if (event.event === 'PostToolUse' && (event.toolName ?? str(event.payload?.tool_name)) === 'Bash') {
+				const childShell = paradisChildShellSignalsFromHook(event);
+				if (childShell.length > 0) {
+					this.tailers.get(event.token)?.applyChildShellSignals(childShell, true);
+				}
+			}
 		}
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && !isHarnessNotification) {
 			// 新しいユーザーターンが始まった時点で前ターンのsubagentは全て終わっている。
