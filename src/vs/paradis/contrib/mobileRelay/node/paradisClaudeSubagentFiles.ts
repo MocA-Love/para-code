@@ -117,6 +117,27 @@ async function listWorkflowRuns(subagentsDir: string): Promise<readonly { readon
 	return runs.sort((a, b) => b.mtime - a.mtime).slice(0, MAX_WORKFLOW_RUNS);
 }
 
+/**
+ * 子の置き場（`<session>/subagents`）の中の、Workflow の実行ごとのフォルダ（`workflows/<runId>`）を全部返す（数の上限は
+ * 置かない。使用量の集計のように全部を数える側が使う）。中の子の transcript は {@link paradisIsClaudeAgentTranscriptName}
+ * で選ぶ（同じフォルダの `journal.jsonl` は子ではない）。
+ */
+export async function paradisListClaudeWorkflowRunDirs(subagentsDir: string): Promise<string[]> {
+	const workflowsDir = join(subagentsDir, 'workflows');
+	const dirs: string[] = [];
+	for (const entry of await readDirBounded(workflowsDir)) {
+		if (entry.isDirectory() && RUN_ID_PATTERN.test(entry.name)) {
+			dirs.push(join(workflowsDir, entry.name));
+		}
+	}
+	return dirs;
+}
+
+/** 子の transcript のファイル名（`agent-<id>.jsonl`）か。 */
+export function paradisIsClaudeAgentTranscriptName(name: string): boolean {
+	return AGENT_FILE_PATTERN.test(name);
+}
+
 /** 探している最中の置き場（一覧の補完・詳細・期限の確認が重なったら同じ探索を待つ。終われば忘れる）。 */
 const discoveriesInFlight = new Map<string, Promise<readonly IParadisClaudeSubagentFile[]>>();
 

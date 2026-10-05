@@ -44,7 +44,9 @@ suite('paradisAgentChatGzip', () => {
 			detail: paradisShouldGzipAgentOutbound('activity-detail', 8 * 1024),
 			history: paradisShouldGzipAgentOutbound('history', 8 * 1024),
 			actionResult: paradisShouldGzipAgentOutbound('action-result', 64 * 1024),
-		}, { smallDelta: false, largeDelta: true, tinySnapshot: false, detail: true, history: true, actionResult: false });
+			// 同期で縮めると shared process が止まる大きさは縮めない
+			hugeSnapshot: paradisShouldGzipAgentOutbound('snapshot', 4 * 1024 * 1024 + 1),
+		}, { smallDelta: false, largeDelta: true, tinySnapshot: false, detail: true, history: true, actionResult: false, hugeSnapshot: false });
 	});
 
 	test('reports the raw and wire sizes of what it compressed', () => {

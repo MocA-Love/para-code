@@ -11,7 +11,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'fs/pro
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from '../../node/paradisClaudeSubagentFiles.js';
+import { paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisIsClaudeAgentTranscriptName, paradisListClaudeWorkflowRunDirs, paradisParseClaudeSubagentTranscriptPath } from '../../node/paradisClaudeSubagentFiles.js';
 
 const allowAll = async () => true;
 
@@ -58,12 +58,17 @@ suite('paradisClaudeSubagentFiles', () => {
 				missing: await paradisFindClaudeSubagentTranscript(root, 'nobody', allowAll),
 				lastWrite: await paradisClaudeWorkflowRunLastWrite(root, 'wf_abc-123'),
 				noRun: await paradisClaudeWorkflowRunLastWrite(root, 'wf_missing'),
+				// 使用量の集計が数える Workflow の実行のフォルダと、その中の子の transcript の名前
+				runDirs: await paradisListClaudeWorkflowRunDirs(subagents),
+				names: ['agent-wfchild1.jsonl', 'journal.jsonl', 'agent-wfchild1.meta.json'].map(paradisIsClaudeAgentTranscriptName),
 			}, {
 				files: [{ id: 'wfchild1', runId: 'wf_abc-123' }, { id: 'plain1', runId: undefined }],
 				found: join(run, 'agent-wfchild1.jsonl'),
 				missing: undefined,
 				lastWrite: 3_000_000,
 				noRun: undefined,
+				runDirs: [run],
+				names: [true, false, false],
 			});
 		} finally {
 			await rm(base, { recursive: true, force: true });

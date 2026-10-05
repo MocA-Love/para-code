@@ -965,6 +965,44 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('lists background shells started by a subagent or a Workflow child, from the child hook and from the child transcript', async () => {
+		const token = 'pane-child-shells';
+		const project = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests');
+		const transcriptPath = join(project, 'child-shells.jsonl');
+		const run = join(project, 'child-shells', 'subagents', 'workflows', 'wf_child-1');
+		await mkdir(run, { recursive: true });
+		await writeFile(transcriptPath, '');
+		const at = new Date().toISOString();
+		await writeFile(join(run, 'agent-w1.jsonl'), [
+			JSON.stringify({ type: 'assistant', isSidechain: true, timestamp: at, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_file', name: 'Bash', input: { command: 'npm run watch', run_in_background: true } }] } }),
+			JSON.stringify({ type: 'user', isSidechain: true, timestamp: at, toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bfile' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_file', content: 'Command running in background with ID: bfile.' }] } }),
+			'',
+		].join('\n'));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { shells(): readonly { readonly id: string; readonly status: string; readonly command?: string }[] }>;
+			hookProcessing: Map<string, Promise<void>>;
+			scanChildShells(): Promise<void>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-child-shells', transcriptPath, cwd: '/workspace', payload: { prompt: '調べて' }, at: Date.now() });
+			await waitFor(() => !access.hookProcessing.has(token), 'UserPromptSubmit was not processed');
+			// SSH 先でも届く子の hook（tool_response は transcript の toolUseResult と同じ形）
+			fireParadisAgentHookEvent({
+				token, event: 'PostToolUse', sessionId: 'session-child-shells', transcriptPath, cwd: '/workspace', toolName: 'Bash', toolUseId: 'toolu_hook', at: Date.now(),
+				payload: { agent_id: 'a1', tool_name: 'Bash', tool_input: { command: 'npm run dev', run_in_background: true }, tool_response: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bhook' } },
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'PostToolUse was not processed');
+			await access.scanChildShells();
+			const shells = access.tailers.get(token)?.shells().map(shell => `${shell.id}:${shell.status}:${shell.command}`).sort();
+			assert.deepStrictEqual(shells, ['bfile:running:npm run watch', 'bhook:running:npm run dev']);
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('keeps the negotiated live and response encodings when the PC re-sends a snapshot to its subscribers', async () => {
 		const token = 'pane-keep-encodings';
 		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'keep-encodings.jsonl');

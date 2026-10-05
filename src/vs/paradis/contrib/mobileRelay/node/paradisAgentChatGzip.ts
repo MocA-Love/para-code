@@ -13,6 +13,8 @@
  *
  * 圧縮は zlib の同期版で行う。送る前の権限確認（直列の列）と順番を崩さないため（非同期にすると、
  * 後から作った小さい delta が先に縮み終わって snapshot を追い越す）。実測で 107KB の snapshot が 0.67ms。
+ * 同期で縮める間は shared process が止まるので、{@link MAX_SYNC_GZIP_BYTES} を超える応答は縮めずに送る
+ * （実測で文章の JSON 4MB が約 35ms、画像の base64 4MB が約 75ms。32MB の文章は約 315ms 止まる）。
  */
 
 import { gzipSync } from 'zlib';
@@ -22,6 +24,8 @@ import { PARADIS_JSON_GZIP_RESPONSE_ENCODING, paradisFrameGzipJsonResponse, para
 const ALWAYS_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['snapshot', 'history', 'activity-detail']);
 /** delta はふだん小さい（live の追記・付帯情報）。再接続の追いつきで大きいときだけ縮める（mux の断片 1 つ分）。 */
 const LARGE_DELTA_BYTES = 16 * 1024;
+/** 同期で縮める上限（これより大きい応答は今までどおりの JSON で送る）。 */
+const MAX_SYNC_GZIP_BYTES = 4 * 1024 * 1024;
 
 export interface IParadisAgentGzipMeasure {
 	readonly type: string;
@@ -32,7 +36,7 @@ export interface IParadisAgentGzipMeasure {
 
 /** その種類・大きさの応答を縮める候補にするか。 */
 export function paradisShouldGzipAgentOutbound(type: string, rawBytes: number): boolean {
-	if (!paradisIsGzipJsonCandidate(rawBytes)) {
+	if (!paradisIsGzipJsonCandidate(rawBytes) || rawBytes > MAX_SYNC_GZIP_BYTES) {
 		return false;
 	}
 	return ALWAYS_CANDIDATE_TYPES.has(type) || (type === 'delta' && rawBytes >= LARGE_DELTA_BYTES);
