@@ -29,7 +29,7 @@ class FakeAivisMcp {
 			case '--list-gains': return { code: 0, stdout: LIST, stderr: '' };
 			case '--reset-gain': return args[2] === 'elevenlabs:v1:eleven_v4_turbo' ? { code: 0, stdout: 'ok\n', stderr: '' } : { code: 1, stdout: '', stderr: 'error: no such key\n' };
 			case '--export-gains': return { code: 0, stdout: '{"ok":true,"written":1}', stderr: '' };
-			case '--import-gains': return { code: 0, stdout: '{"ok":true,"added":1,"updated":0,"skipped":2,"evicted":0}', stderr: '' };
+			case '--import-gains': return { code: 0, stdout: '{"ok":true,"added":1,"updated":0,"skipped":2,"evicted":0,"dropped":3}', stderr: '' };
 			case '--set-gain-learning': return { code: 0, stdout: 'ok\n', stderr: '' };
 		}
 		return { code: 1, stdout: '', stderr: 'error: unknown' };
@@ -96,7 +96,7 @@ suite('ParadisVoiceGainsService', () => {
 				exported: { status: 'ok', value: 1 },
 				exportNoFolder: { status: 'failed', message: 'invalid file' },
 				exportRelative: { status: 'failed', message: 'invalid file' },
-				imported: { status: 'ok', value: { added: 1, updated: 0, skipped: 2, evicted: 0 } },
+				imported: { status: 'ok', value: { added: 1, updated: 0, skipped: 2, evicted: 0, dropped: 3 } },
 				importMissing: { status: 'failed', message: 'invalid file' },
 				learning: { status: 'ok', value: true },
 				learningBad: { status: 'failed', message: 'invalid argument' },

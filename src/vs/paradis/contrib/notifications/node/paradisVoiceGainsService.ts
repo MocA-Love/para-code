@@ -13,6 +13,7 @@
 // - 呼ぶ前に `aivis-mcp --version` で 2.5.4 以上かを確かめる（結果は少しの間覚える）
 // - ファイルの引数は絶対パスだけ。読み込みはファイルが、書き出しは置き場所のフォルダがあることを確かめる
 // - 書き換える操作は 1 本ずつ流す
+// - 失敗のログには、渡した鍵（声の ID を含む）やファイルのパスを出さない
 
 import { promises as fs } from 'fs';
 import { dirname } from '../../../../base/common/path.js';
@@ -33,6 +34,7 @@ import {
 	paradisParseVoiceGainList,
 	paradisResetVoiceGainArgs,
 	paradisSetGainLearningArgs,
+	paradisSplitVoiceGainKey,
 } from '../common/paradisVoiceGains.js';
 import { paradisAivisVersionAtLeast, paradisParseAivisVersion } from '../common/paradisVoiceIngest.js';
 import { ParadisAivisMcpRunner, paradisRunAivisMcp } from './paradisAgentDictionarySync.js';
@@ -125,13 +127,13 @@ export class ParadisVoiceGainsService {
 			const value = result.code === 0 ? parse(result.stdout) : undefined;
 			if (value === undefined) {
 				const message = paradisAivisMcpErrorMessage(result.stderr) || `exit ${result.code ?? 'none'}`;
-				this.options.logService.warn(`[ParadisVoiceGains] aivis-mcp ${args[0]} failed: ${message}`);
+				this.options.logService.warn(`[ParadisVoiceGains] aivis-mcp ${args[0]} failed: ${redactArgs(message, args)}`);
 				return { status: 'failed', message };
 			}
 			return { status: 'ok', value };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.options.logService.warn(`[ParadisVoiceGains] aivis-mcp ${args[0]} failed: ${message}`);
+			this.options.logService.warn(`[ParadisVoiceGains] aivis-mcp ${args[0]} failed: ${redactArgs(message, args)}`);
 			return { status: 'failed', message };
 		}
 	}
@@ -166,6 +168,14 @@ export class ParadisVoiceGainsService {
 			return false;
 		}
 	}
+}
+
+/** ログに出すエラーから、渡した値（表の鍵＝声の ID、ファイルのパス）を伏せる。画面へ返す文はそのまま。 */
+function redactArgs(message: string, args: readonly string[]): string {
+	const values = args.filter(arg => !arg.startsWith('--'));
+	// aivis-mcp は長い鍵を途中で切って出すので、鍵の中の声の ID も伏せる
+	const voices = values.map(arg => paradisSplitVoiceGainKey(arg)?.voice).filter((voice): voice is string => !!voice && voice.length >= 4);
+	return [...values, ...voices].sort((a, b) => b.length - a.length).reduce((text, value) => text.split(value).join('<arg>'), message);
 }
 
 function okLine(stdout: string): true | undefined {

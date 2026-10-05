@@ -33,6 +33,8 @@ import {
 	PARADIS_GAIN_MIN_SECONDS_UPPER,
 	PARADIS_VOICE_GAINS_CHANNEL,
 	ParadisVoiceGainsResult,
+	paradisIsInitialVoiceGain,
+	paradisIsVoiceGainKey,
 	paradisVoiceGainProgress,
 } from '../common/paradisVoiceGains.js';
 import { paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
@@ -71,9 +73,13 @@ const STR_UNMEASURED = localize('paradis.notif.gain.unmeasured', "未測定");
 // allow-any-unicode-next-line
 const STR_LEARNING = localize('paradis.notif.gain.learning', "学習中");
 // allow-any-unicode-next-line
+const STR_INITIAL = localize('paradis.notif.gain.initial', "初期値");
+// allow-any-unicode-next-line
+const STR_INITIAL_TITLE = localize('paradis.notif.gain.initialTitle', "aivis-mcp が最初から持っている値です。この声で読み上げると測り始めます。");
+// allow-any-unicode-next-line
 const STR_RESET = localize('paradis.notif.gain.reset', "やり直す");
 // allow-any-unicode-next-line
-const STR_RESET_NOTE = localize('paradis.notif.gain.resetNote', "やり直すと、その行の測定を捨てて次の発話から測り直します（それまでは初期値）。");
+const STR_RESET_NOTE = localize('paradis.notif.gain.resetNote', "やり直すと、その行の測定を捨てて次の発話から測り直します（それまでは初期値、初期値の無い声は同じモデルの声の平均か 0 dB で鳴らします）。");
 // allow-any-unicode-next-line
 const strResetConfirm = (voice: string, model: string) => localize('paradis.notif.gain.resetConfirm', "{0}（{1}）の音量の学習をやり直しますか?", voice, model);
 // allow-any-unicode-next-line
@@ -95,13 +101,13 @@ const STR_FILE_FILTER = localize('paradis.notif.gain.fileFilter', "音量の表 
 // allow-any-unicode-next-line
 const strExported = (count: number) => localize('paradis.notif.gain.exported', "音量の表を書き出しました（{0} 行）。", count);
 // allow-any-unicode-next-line
-const strImported = (result: IParadisVoiceGainImportResult) => localize('paradis.notif.gain.imported', "音量の表を読み込みました（追加 {0}・更新 {1}・そのまま {2}・押し出し {3}）。", result.added, result.updated, result.skipped, result.evicted);
+const strImported = (result: IParadisVoiceGainImportResult) => localize('paradis.notif.gain.imported', "音量の表を読み込みました（追加 {0}・更新 {1}・そのまま {2}・押し出し {3}・上限で入らなかった行 {4}）。", result.added, result.updated, result.skipped, result.evicted, result.dropped);
 // allow-any-unicode-next-line
 const strFailed = (message: string) => localize('paradis.notif.gain.failed', "aivis-mcp で失敗しました: {0}", message);
 // allow-any-unicode-next-line
 const STR_LEARN_LABEL = localize('paradis.notif.gain.learnLabel', "学習の窓");
 // allow-any-unicode-next-line
-const STR_LEARN_DESC = localize('paradis.notif.gain.learnDesc', "中央値に使う回数と、測る発話の最短の長さです。aivis-mcp の設定に書き込みます。");
+const STR_LEARN_DESC = localize('paradis.notif.gain.learnDesc', "中央値に使う回数と、測る発話の最短の長さです。aivis-mcp の設定（config.json）に書き込みます。環境変数 AIVIS_GAIN_LEARN_WINDOW・AIVIS_GAIN_MIN_LEARN_SECONDS を設定している場合はそちらが優先されます。");
 // allow-any-unicode-next-line
 const STR_LEARN_TIMES = localize('paradis.notif.gain.learnTimes', "回");
 // allow-any-unicode-next-line
@@ -110,6 +116,8 @@ const STR_LEARN_SECONDS = localize('paradis.notif.gain.learnSeconds', "秒");
 const strLearnRange = (minWindow: number, maxWindow: number, minSeconds: number, maxSeconds: number) => localize('paradis.notif.gain.learnRange', "回数は {0}〜{1} の整数、秒は {2}〜{3} で入れてください。", minWindow, maxWindow, minSeconds, maxSeconds);
 // allow-any-unicode-next-line
 const STR_LEARN_SAVED = localize('paradis.notif.gain.learnSaved', "学習の窓を変えました。");
+// allow-any-unicode-next-line
+const STR_LEARN_OVERRIDDEN = localize('paradis.notif.gain.learnOverridden', "aivis-mcp の設定には書きましたが、環境変数 AIVIS_GAIN_LEARN_WINDOW・AIVIS_GAIN_MIN_LEARN_SECONDS の値が優先されているため、使う値は変わっていません。");
 // allow-any-unicode-next-line
 const STR_FILE_NOTE = localize('paradis.notif.gain.fileNote', "書き出したファイルには、声の ID・モデル・補正値・直近の測定が入ります。API キーや文面は入りません。別の PC や SSH 先へ持っていって「ファイルから読み込む」で足せます。");
 
@@ -229,20 +237,29 @@ export class ParadisVoiceGainSection extends Disposable {
 			const gainCell = dom.append(row, $('td.num'));
 			gainCell.textContent = entry.gainDb === undefined ? STR_UNMEASURED : paradisFormatGainDb(entry.gainDb);
 			const learnCell = dom.append(row, $('td'));
-			const progress = paradisVoiceGainProgress(entry, list.learnWindow);
-			const meter = dom.append(learnCell, $('span.pns-gain-meter'));
-			dom.append(meter, $('i')).style.width = `${Math.round(progress.done / Math.max(1, list.learnWindow) * 100)}%`;
-			dom.append(learnCell, $('span')).textContent = `${progress.done}/${list.learnWindow}`;
-			if (progress.learning) {
-				learnCell.append(' ');
-				dom.append(learnCell, $('span.pns-pill.warn')).textContent = STR_LEARNING;
+			const initial = paradisIsInitialVoiceGain(entry);
+			if (initial) {
+				// 一度も測っていない行（aivis-mcp が最初から持つ値だけ）は、進みではなく「初期値」と出す
+				const pill = dom.append(learnCell, $('span.pns-pill'));
+				pill.textContent = STR_INITIAL;
+				pill.title = STR_INITIAL_TITLE;
+			} else {
+				const progress = paradisVoiceGainProgress(entry, list.learnWindow);
+				const meter = dom.append(learnCell, $('span.pns-gain-meter'));
+				dom.append(meter, $('i')).style.width = `${Math.round(progress.done / Math.max(1, list.learnWindow) * 100)}%`;
+				dom.append(learnCell, $('span')).textContent = `${progress.done}/${list.learnWindow}`;
+				if (progress.learning) {
+					learnCell.append(' ');
+					dom.append(learnCell, $('span.pns-pill.warn')).textContent = STR_LEARNING;
+				}
 			}
 			// allow-any-unicode-next-line
 			dom.append(row, $('td')).textContent = entry.updatedAt === undefined ? '—' : fromNow(entry.updatedAt, true);
 			const actionCell = dom.append(row, $('td'));
 			const reset = dom.append(actionCell, $('button.pns-btn')) as HTMLButtonElement;
 			reset.textContent = STR_RESET;
-			reset.disabled = this._busy;
+			// 測った値の無い行は、やり直しても何も変わらない
+			reset.disabled = this._busy || initial || !paradisIsVoiceGainKey(entry.key);
 			this._renderDisposables.add(dom.addDisposableListener(reset, 'click', () => void this._reset(entry)));
 		}
 	}
@@ -315,8 +332,15 @@ export class ParadisVoiceGainSection extends Disposable {
 			}
 			const result = await this._run<true>('setLearning', [window === list.learnWindow ? undefined : window, seconds === list.minLearnSeconds ? undefined : seconds]);
 			if (result) {
-				this.notificationService.info(STR_LEARN_SAVED);
 				await this._load(true);
+				// 読み直した値が入れた値と違うなら、CLI を動かした環境の環境変数が config.json より優先されている
+				const after = this._result?.status === 'ok' ? this._result.value : undefined;
+				const overridden = after !== undefined && (after.learnWindow !== window || after.minLearnSeconds !== Math.round(seconds * 100) / 100);
+				if (overridden) {
+					this.notificationService.warn(STR_LEARN_OVERRIDDEN);
+				} else {
+					this.notificationService.info(STR_LEARN_SAVED);
+				}
 			}
 		};
 		this._renderDisposables.add(dom.addDisposableListener(windowInput, 'change', () => void commit()));
