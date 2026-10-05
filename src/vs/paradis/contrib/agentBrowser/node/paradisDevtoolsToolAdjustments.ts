@@ -9,7 +9,8 @@
 // 内蔵 chrome-devtools-mcp のツールの入口と出口を、Para Code 側で少しだけ変える（vendored は触らない）。
 //   - wait_for: `text` を文字列でも受ける（配列へ包んで渡す）。成功時のスナップショットは `includeSnapshot`
 //     を付けたときだけ返す（既定は返さない。応答の中央値が 5,889 字あり、毎回会話を圧迫していた）
-//   - take_snapshot: 本文を {@link PARADIS_SNAPSHOT_MAX_CHARS} 字で切り、続きは `offset` で取らせる
+//   - take_snapshot: 本文を {@link PARADIS_SNAPSHOT_MAX_CHARS} 字で切り、続きは `offset` で取らせる。
+//     `root`（uid）を渡されたら、その要素の部分木だけを返す（取ったスナップショットから切り出す）
 //   - click / fill などの「not interactive」に、直前にゲートウェイが入力を断った理由を書き足す
 //   - Target closed で失敗した読み取り系のツールを 1 回だけ呼び直してよいかを決める
 // 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
@@ -53,6 +54,8 @@ export interface IParadisPreparedDevtoolsCall {
 	readonly includeSnapshot?: boolean;
 	/** take_snapshot で、本文のどこから返すか。 */
 	readonly snapshotOffset?: number;
+	/** take_snapshot で、この uid の要素の部分木だけを返す。 */
+	readonly snapshotRoot?: string;
 }
 
 /** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる（他はそのまま）。 */
@@ -81,6 +84,10 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			minimum: 0,
 			description: `Character offset into the snapshot text. Snapshots longer than ${PARADIS_SNAPSHOT_MAX_CHARS} characters are returned in parts; the response says which offset to pass for the next part. Alternatively pass filePath to save the whole snapshot.`,
 		};
+		properties.root = {
+			type: 'string',
+			description: 'uid of an element from an earlier snapshot. Only that element and its descendants are returned (for example one dialog, form or table), which keeps the response short. The uids stay the same as in the full snapshot. Not combined with filePath.',
+		};
 	} else {
 		return tool;
 	}
@@ -98,9 +105,10 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown): IPa
 		return { args: { ...rest, text }, includeSnapshot: includeSnapshot === true };
 	}
 	if (name === 'take_snapshot') {
-		const { offset, ...rest } = args;
+		const { offset, root, ...rest } = args;
 		const snapshotOffset = typeof offset === 'number' && Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
-		return { args: rest, snapshotOffset };
+		const snapshotRoot = typeof root === 'string' && root.length > 0 && rest.filePath === undefined ? root : undefined;
+		return { args: rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
 }
@@ -151,9 +159,48 @@ export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadis
 		return mapTextParts(result, prepared.includeSnapshot === true ? text => limitSnapshot(text, 0) : stripSnapshot);
 	}
 	if (name === 'take_snapshot') {
+		if (prepared.snapshotRoot !== undefined) {
+			const root = prepared.snapshotRoot;
+			const missing = Array.isArray(result.content) && result.content.some(item => isRecord(item) && item.type === 'text' && typeof item.text === 'string' && item.text.includes(SNAPSHOT_HEADING) && paradisSnapshotSubtree(item.text, root) === undefined);
+			if (missing) {
+				return { content: [{ type: 'text', text: `The element uid=${root} is not in the current snapshot (uids change when the page changes). Call take_snapshot without "root" to get fresh uids.` }], isError: true };
+			}
+			return mapTextParts(result, text => limitSnapshot(paradisSnapshotSubtree(text, root) ?? text, prepared.snapshotOffset ?? 0, root));
+		}
 		return mapTextParts(result, text => limitSnapshot(text, prepared.snapshotOffset ?? 0));
 	}
 	return result;
+}
+
+/**
+ * スナップショットの本文を、`root` の uid の行とその子孫の行だけにする（字下げを詰める）。本文が無ければ
+ * そのまま、`root` の行が無ければ undefined。
+ */
+export function paradisSnapshotSubtree(text: string, root: string): string | undefined {
+	const index = text.indexOf(SNAPSHOT_HEADING);
+	if (index < 0) {
+		return text;
+	}
+	const bodyStart = index + SNAPSHOT_HEADING.length + (text[index + SNAPSHOT_HEADING.length] === '\n' ? 1 : 0);
+	const lines = text.slice(bodyStart).split('\n');
+	const marker = `uid=${root}`;
+	const start = lines.findIndex(line => {
+		const trimmed = line.trimStart();
+		return trimmed === marker || trimmed.startsWith(`${marker} `);
+	});
+	if (start < 0) {
+		return undefined;
+	}
+	const indent = lines[start].length - lines[start].trimStart().length;
+	const kept = [lines[start].slice(indent)];
+	for (let i = start + 1; i < lines.length; i++) {
+		const line = lines[i];
+		if (line.trim().length === 0 || line.length - line.trimStart().length <= indent) {
+			break;
+		}
+		kept.push(line.slice(indent));
+	}
+	return `${text.slice(0, bodyStart)}${kept.join('\n')}\n`;
 }
 
 function stripSnapshot(text: string): string {
@@ -168,7 +215,7 @@ function isHighSurrogate(code: number): boolean {
 	return code >= 0xD800 && code <= 0xDBFF;
 }
 
-function limitSnapshot(text: string, offset: number): string {
+function limitSnapshot(text: string, offset: number, root?: string): string {
 	const index = text.indexOf(SNAPSHOT_HEADING);
 	if (index < 0) {
 		return text;
@@ -195,7 +242,7 @@ function limitSnapshot(text: string, offset: number): string {
 	}
 	const part = body.slice(offset, end);
 	const note = end < body.length
-		? `\n[Para Code: snapshot truncated. Showing characters ${offset}-${end} of ${body.length}. Call take_snapshot with "offset": ${end} for the next part (uids stay the same while the page does not change), or pass "filePath" to save the whole snapshot to a file.]`
+		? `\n[Para Code: snapshot truncated. Showing characters ${offset}-${end} of ${body.length}. Call take_snapshot with "offset": ${end}${root !== undefined ? ` and the same "root"` : ''} for the next part (uids stay the same while the page does not change), or pass "filePath" to save the whole snapshot to a file.]`
 		: `\n[Para Code: end of snapshot. Showing characters ${offset}-${end} of ${body.length}.]`;
 	return `${head}${part}${note}`;
 }
