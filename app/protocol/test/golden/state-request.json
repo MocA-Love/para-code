@@ -3,7 +3,7 @@
 	"current": {
 		"protocolVersion": 4,
 		"minCompatiblePc": 4,
-		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1", "voice.stream.v1", "term.viewport.takeback.v1", "agent.approval.options.v1", "agent.history.page.v1", "agent.resume.v1", "browser.focus.v1", "state.unchanged.v1"],
+		"capabilities": ["state.gzip.v1", "term.sync.v1", "fs.upload-binary.v1", "voice.clips.v1", "voice.stream.v1", "term.viewport.takeback.v1", "agent.approval.options.v1", "agent.history.page.v1", "agent.resume.v1", "browser.focus.v1", "state.unchanged.v1", "agent.workflows.v1"],
 		"stateEncoding": "json-gzip-v1"
 	},
 	"preW217": {

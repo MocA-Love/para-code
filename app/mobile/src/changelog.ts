@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'git-network-outline',
+				title: 'Claude Code の Workflow を、トークで 1 枚のカードとして見られるようになりました',
+				body: '名前・状態・段階ごとの進み具合・子の数・経過をまとめて出し、押すと段階ごとに子を並べた画面を開きます。完了した子は畳み、失敗と実行中の子を先に出します。子が起動したシェルもカードに寄せます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'speedometer-outline',
 				title: 'claude-swap と共有している Claude のアカウントで、使用量の前の値が消えなくなりました',
 				body: 'PC がログインの更新を控えている間も、前に取れた値を薄く出し、何分前の値かと控えている理由を添えます。リセット時刻を過ぎた枠は「リセット済み（今の値は不明）」と出します（PC の Para Code も新しい版が必要です）。',

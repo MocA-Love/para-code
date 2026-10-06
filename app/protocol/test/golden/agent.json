@@ -1,5 +1,5 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。3 つ目の delta の noticeSource: compaction はコンテキストの圧縮の区切り（compaction に trigger と、取れたときだけ tokensBefore / tokensAfter）、compact-summary は圧縮で作られた要約の先頭（全文は tool-full、compaction.summaryChars は全体の文字数）で、古いアプリは灰色の知らせの行として出す。同じ delta の panel（agent.panel.v1）は PC の Claude Code で開いている画面（command はモバイルから送って開いたときだけ。閉じたら null）、toPc の action/closePanel はそれを Esc で閉じる要求。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。3 つ目の delta の noticeSource: compaction はコンテキストの圧縮の区切り（compaction に trigger と、取れたときだけ tokensBefore / tokensAfter）、compact-summary は圧縮で作られた要約の先頭（全文は tool-full、compaction.summaryChars は全体の文字数）で、古いアプリは灰色の知らせの行として出す。同じ delta の panel（agent.panel.v1）は PC の Claude Code で開いている画面（command はモバイルから送って開いたときだけ。閉じたら null）、toPc の action/closePanel はそれを Esc で閉じる要求。 4 つ目の delta の workflows・workflowsAt（agent.workflows.v1）は Claude Code の Workflow の実行で、先頭の要素と先頭の子に全項目を持たせてある（estimated はペインが止まって推定したときだけ付く）。phase は phases の添字、counts は送らなかった子も含む数、totalTokens・totalToolCalls・子の tokens などは終わってから付く。PC は workflows を変わったときだけ載せる。shells の ownerAgentId はそのシェルを起動した子で、Workflow の子のものはアプリがカードへ寄せる。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1", "responseEncoding": "json-gzip-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1", "responseEncoding": "json-gzip-v1" },
@@ -59,7 +59,7 @@
 			],
 			"monitorsAt": 1760000003000,
 			"shells": [
-				{ "id": "bgolden02", "command": "npm run dev -- --port 5173", "description": "dev サーバー", "startedAt": 1760000001200, "startUnknown": true, "status": "stopped", "stoppedBy": "mobile", "estimated": true, "endedAt": 1760000002800, "exitCode": 143, "movedToBackground": "timeout" },
+				{ "id": "bgolden02", "command": "npm run dev -- --port 5173", "description": "dev サーバー", "startedAt": 1760000001200, "startUnknown": true, "status": "stopped", "stoppedBy": "mobile", "estimated": true, "endedAt": 1760000002800, "exitCode": 143, "movedToBackground": "timeout", "ownerAgentId": "agolden03" },
 				{ "id": "bgolden03", "command": "npm test", "startedAt": 1760000001800, "status": "running" }
 			],
 			"shellsAt": 1760000003000,
@@ -78,6 +78,29 @@
 				{ "rev": 9, "role": "assistant", "kind": "text", "text": "1. Primary Request and Intent:\n   モバイルの入力欄で /model を送ったとき、PC に一覧を残さずモデルのシートを開きたい。…", "ts": 1760000003600, "truncated": true, "notice": true, "noticeSource": "compact-summary", "compaction": { "summaryChars": 4812 } }
 			],
 			"panel": { "command": "config", "since": 1760000003700 }
+		},
+		{
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 9, "messages": [],
+			"workflows": [
+				{
+					"runId": "wf_golden-1", "taskId": "wgolden1", "toolUseId": "toolu_goldenwf1", "name": "security-audit", "summary": "2 つの観点で監査する", "status": "failed",
+					"startedAt": 1760000003000, "endedAt": 1760000044000, "durationMs": 41000,
+					"phases": [{ "title": "Find", "detail": "観点ごとに並列で探す" }, { "title": "Verify" }],
+					"agents": [
+						{ "id": "agolden01", "label": "find:authz", "phase": 0, "state": "done", "startedAt": 1760000003100, "durationMs": 20000, "tokens": 30000, "toolCalls": 12, "lastTool": "Read", "cached": true },
+						{ "id": "agolden02", "label": "verify:authz", "phase": 1, "state": "failed", "startedAt": 1760000024000, "durationMs": 9000, "tokens": 12000, "toolCalls": 3 }
+					],
+					"agentCount": 2, "counts": { "running": 0, "done": 1, "failed": 1, "stopped": 0 }, "totalTokens": 4600000, "totalToolCalls": 1703,
+					"error": "Verify で 1 体が結果を返さず、台本が止まりました"
+				},
+				{
+					"runId": "wf_golden-2", "taskId": "wgolden2", "toolUseId": "toolu_goldenwf2", "name": "quick-check", "summary": "すぐ確かめる", "status": "running", "startedAt": 1760000050000,
+					"phases": [{ "title": "Find" }],
+					"agents": [{ "id": "agolden03", "label": "find:ssrf", "phase": 0, "state": "running" }],
+					"agentCount": 1, "counts": { "running": 1, "done": 0, "failed": 0, "stopped": 0 }
+				}
+			],
+			"workflowsAt": 1760000060000
 		},
 		{ "t": "action-result", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-1", "status": "accepted", "consumed": true },
 		{ "t": "approval-options", "id": 7, "token": "agent-token-1", "requestId": "golden-agent-request-5", "interactionId": "approval-1", "options": [{ "n": 1, "label": "Yes" }, { "n": 2, "label": "Yes, and don't ask again for npm test commands" }, { "n": 3, "label": "No, and tell Claude what to do differently (esc)" }], "promptHash": "0123456789abcdef0123456789abcdef01234567", "warning": "This shell -c script runs rm and could not be checked" },

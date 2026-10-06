@@ -31,6 +31,8 @@ export interface AgentShell {
 	endedAt?: number;
 	exitCode?: number;
 	movedToBackground?: 'user' | 'timeout';
+	/** 起動した子（サブエージェント・Workflow の子）の ID。親が起動したものには無い（agent.workflows.v1）。 */
+	ownerAgentId?: string;
 }
 
 /** 出力と停止をこの構成で使えるか。`where` があればその構成では使えない。 */
@@ -50,6 +52,7 @@ const MAX_SHELLS = 50;
 const STATUSES = new Set<AgentShellStatus>(['running', 'completed', 'failed', 'stopped']);
 const STOPPERS = new Set<AgentShellStopper>(['user', 'agent', 'mobile']);
 const SHELL_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const OWNER_ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 function finite(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);
@@ -82,6 +85,7 @@ export function parseAgentShells(value: unknown): AgentShell[] | undefined {
 			...(finite(item['endedAt']) ? { endedAt: item['endedAt'] } : {}),
 			...(finite(item['exitCode']) ? { exitCode: Math.trunc(item['exitCode']) } : {}),
 			...(item['movedToBackground'] === 'user' || item['movedToBackground'] === 'timeout' ? { movedToBackground: item['movedToBackground'] } : {}),
+			...(typeof item['ownerAgentId'] === 'string' && OWNER_ID.test(item['ownerAgentId']) ? { ownerAgentId: item['ownerAgentId'] } : {}),
 		});
 	}
 	return shells;

@@ -201,6 +201,13 @@ export const ParadisMobileCapability = {
 	 * アプリは広告している PC にだけ `dismiss-sync` を送り、一覧で許可・質問を開いただけでは片付けを頼まない（Q241 A）。
 	 */
 	NotifyDismissSync: 'notify.dismiss-sync.v1',
+	/**
+	 * agent の snapshot / delta の任意項目 `workflows`・`workflowsAt`（Claude Code の Workflow の実行 1 つを単位にした段階・子・
+	 * 状態・終わった後のトークン。`paradisAgentWorkflows.ts`）と、`shells` の各項目の任意項目 `ownerAgentId`（起動した子）。
+	 * PC は子が多いと大きくなる `workflows` を変わったときだけ載せる。アプリは PC が広告しているときだけ、トークの Workflow の
+	 * 行を 1 枚のカードにし、Workflow の子のシェルをペインの一覧からカードへ寄せる（古い PC・古いアプリは今の表示のまま）。
+	 */
+	AgentWorkflows: 'agent.workflows.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -254,6 +261,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserFramePause,
 	ParadisMobileCapability.MetricsPing,
 	ParadisMobileCapability.NotifyDismissSync,
+	ParadisMobileCapability.AgentWorkflows,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -271,6 +279,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserFocus,
 	// PC はこれと要求の `known` を見て、変わっていない State の代わりに `unchanged` を返す。
 	ParadisMobileCapability.StateUnchanged,
+	// Workflow のカード。PC は広告の有無に関わらず `workflows` を載せる（古いアプリは無視する）。
+	ParadisMobileCapability.AgentWorkflows,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */
