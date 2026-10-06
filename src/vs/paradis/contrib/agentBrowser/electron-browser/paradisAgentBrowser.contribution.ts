@@ -395,7 +395,7 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 		const update = () => {
 			this._updateStatusbar();
 			const model = this.editorService.activeEditor instanceof BrowserEditorInput ? this.editorService.activeEditor.model : undefined;
-			activePageShared.set(!!model && this.bindingModel.getBindingsForPage(model.id).length > 0);
+			activePageShared.set(!!model && (this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0));
 		};
 
 		this._register(this.bindingModel.onDidChange(update));
@@ -406,10 +406,19 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 		// 経由でのみ状態を知る。デスクトップ以外ではホスト未登録のままインジケータ非表示）。
 		setParadisPaneIndicatorHost({
 			getPaneIndicatorState: instanceId => {
-				return this._getBinding(instanceId) ? 'bound' : 'unbound';
+				return this._getBinding(instanceId) || this._getAgentTabCount(instanceId) > 0 ? 'bound' : 'unbound';
 			},
 			getPaneIndicatorTooltip: instanceId => {
 				const binding = this._getBinding(instanceId);
+				const agentTabs = this._getAgentTabCount(instanceId);
+				if (binding && agentTabs > 0) {
+					// allow-any-unicode-next-line
+					return localize('paradis.paneIndicator.boundWithAgentTabs', "このペインは「{0}」を共有中・エージェントのタブ {1} 枚を使用中 — クリックで管理", binding.pageInfo.title || binding.pageInfo.url, agentTabs);
+				}
+				if (agentTabs > 0) {
+					// allow-any-unicode-next-line
+					return localize('paradis.paneIndicator.agentTabsOnly', "このペインのエージェントは自分のタブ {0} 枚を使用中 — クリックで管理", agentTabs);
+				}
 				return binding
 					// allow-any-unicode-next-line
 					? localize('paradis.paneIndicator.bound', "このペインは「{0}」を共有中 — クリックで管理", binding.pageInfo.title || binding.pageInfo.url)
@@ -439,6 +448,12 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 	private _getBinding(instanceId: number): IParadisPaneBinding | undefined {
 		const token = this.paneTokenService.getTokenForInstance(instanceId);
 		return token ? this.bindingModel.getBindingForToken(token) : undefined;
+	}
+
+	/** そのペインのエージェントが自分で開いて tab_id で使っているタブの数。 */
+	private _getAgentTabCount(instanceId: number): number {
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		return token ? this.bindingModel.getAgentTabsForToken(token).length : 0;
 	}
 
 	/**

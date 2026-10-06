@@ -25,9 +25,11 @@ import { localize } from '../../../../nls.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { defaultInputBoxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { ParadisTransferSide } from '../common/paradisFileTransfer.js';
+import { paradisIsSftpResource } from '../common/paradisSftp.js';
 import { IParadisPaneEntry, paradisFilterEntries, paradisFormatSize, paradisIsHiddenName, paradisSortEntries } from '../common/paradisFileTransferListing.js';
 import { paradisClassifyTransferError, ParadisTransferErrorKind } from '../common/paradisFileTransferQueue.js';
 import { createParadisPaneDragAndDrop } from './paradisFileTransferPaneDnd.js';
@@ -47,6 +49,7 @@ export interface IParadisFileTransferPaneHost {
 
 interface IHeaderParts {
 	readonly head: HTMLElement;
+	readonly hostName: HTMLElement;
 	readonly hostDot: HTMLElement;
 	readonly hostSub: HTMLElement;
 	readonly filterBox: InputBox;
@@ -104,6 +107,7 @@ export class ParadisFileTransferPane extends Disposable {
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IThemeService private readonly themeService: IThemeService,
+		@IQuickInputService private readonly quickInputService: IQuickInputService,
 	) {
 		super();
 		this.element = $('.para-ft-pane');
@@ -144,7 +148,8 @@ export class ParadisFileTransferPane extends Disposable {
 		const head = dom.append(this.element, $('.para-ft-head'));
 		const hostIcon = dom.append(head, $('span.para-ft-hicon'));
 		hostIcon.classList.add(...ThemeIcon.asClassNameArray(this.side === 'local' ? Codicon.deviceDesktop : Codicon.server));
-		dom.append(head, $('span.para-ft-hname')).textContent = this.transferService.sideLabel(this.side);
+		const hostName = dom.append(head, $('span.para-ft-hname'));
+		hostName.textContent = this.transferService.sideLabel(this.side);
 		const hostDot = dom.append(head, $('span.para-ft-hdot'));
 		const hostSub = dom.append(head, $('span.para-ft-hsub'));
 		dom.append(head, $('span.para-ft-sp'));
@@ -158,7 +163,7 @@ export class ParadisFileTransferPane extends Disposable {
 		actionsButton.setAttribute('aria-haspopup', 'true');
 		dom.append(actionsButton, $('span')).textContent = localize('paradis.fileTransfer.actions', "操作");
 		dom.append(actionsButton, $(`span${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
-		return { head, hostDot, hostSub, filterBox, actionsButton };
+		return { head, hostName, hostDot, hostSub, filterBox, actionsButton };
 	}
 
 	private createNav(): INavParts {
@@ -206,6 +211,12 @@ export class ParadisFileTransferPane extends Disposable {
 			canCopyToOtherSide: () => !!this.host.otherPane(this.side)?.canReceive(),
 			copyToOtherSide: (entries: readonly IParadisPaneEntry[]) => this.copyToOtherSide(entries),
 			closeEditor: () => this.host.closeEditor(),
+			label: () => this.label,
+			otherLabel: () => this.host.otherPane(this.side)?.label ?? this.transferService.sideLabel(this.side === 'local' ? 'remote' : 'local'),
+			canSwitchHost: () => this.side === 'remote',
+			switchHost: () => this.pickOtherHost(),
+			canShowHostList: () => this.side === 'remote' && !this.transferService.remoteAuthority && !!this.location,
+			showHostList: () => this.showHostList(),
 		};
 	}
 
@@ -252,9 +263,66 @@ export class ParadisFileTransferPane extends Disposable {
 		return this.location;
 	}
 
+	/** 見出しの名前（右側で接続していないホストを開いていれば、その別名）。 */
+	get label(): string {
+		return this.transferService.sideLabel(this.side, this.location);
+	}
+
+	/** 右側で、接続していないホストを SSH で直接開いているか。 */
+	private get isDirect(): boolean {
+		return this.side === 'remote' && !!this.location && paradisIsSftpResource(this.location);
+	}
+
 	/** この側に転送を受けられるか（接続していない右側は受けない）。 */
 	canReceive(): boolean {
-		return !!this.location && (this.side === 'local' || (!!this.transferService.remoteAuthority && this.transferService.remoteConnected));
+		return !!this.location && (this.side === 'local' || this.isDirect || (!!this.transferService.remoteAuthority && this.transferService.remoteConnected));
+	}
+
+	// --- ホストを選ぶ -------------------------------------------------------------------------------
+
+	/** ユーザーが選んだホストを右側に開く。このウィンドウの接続先なら今の接続、それ以外は SSH を直接張る。 */
+	private async openHost(alias: string): Promise<void> {
+		const home = await this.transferService.openHost(alias);
+		await this.navigate(home);
+	}
+
+	/** 「ほかのホストを開く…」。`~/.ssh/config` のホストから選ぶ。 */
+	private async pickOtherHost(): Promise<void> {
+		const hosts = await this.transferService.listConfiguredHosts();
+		if (!hosts.length) {
+			this.notificationService.info(localize('paradis.fileTransfer.noHostsShort', "~/.ssh/config にホストがありません。"));
+			return;
+		}
+		const current = this.location && paradisIsSftpResource(this.location) ? this.location.authority : this.transferService.remoteLabel;
+		const items: IQuickPickItem[] = hosts.map(alias => ({
+			label: alias,
+			description: alias === current ? localize('paradis.fileTransfer.currentHost', "開いているホスト") : undefined,
+		}));
+		const picked = await this.quickInputService.pick(items, { placeHolder: localize('paradis.fileTransfer.pickHost', "右側に開くホストを選んでください（このウィンドウの接続先以外は SSH で直接読み書きします）") });
+		if (!picked) {
+			return;
+		}
+		try {
+			await this.openHost(picked.label);
+		} catch (error) {
+			this.notificationService.error(error);
+		}
+	}
+
+	/** 手元のウィンドウで、右側をホストの一覧に戻す。 */
+	private showHostList(): void {
+		if (this.location) {
+			this.backStack.push(this.location);
+			this.forwardStack.length = 0;
+		}
+		this.location = undefined;
+		this.loadSequence++;
+		this.allEntries = [];
+		this.listError = undefined;
+		this.element.classList.remove('loading');
+		this.updateHostState();
+		this.updateNavButtons();
+		this.render();
 	}
 
 	// --- 移動 --------------------------------------------------------------------------------------
@@ -264,9 +332,13 @@ export class ParadisFileTransferPane extends Disposable {
 			this.backStack.push(this.location);
 			this.forwardStack.length = 0;
 		}
+		const hostChanged = this.location?.scheme !== resource.scheme || this.location?.authority !== resource.authority;
 		this.location = resource;
 		this.header.filterBox.value = '';
 		this._onDidNavigate.fire(resource);
+		if (hostChanged) {
+			this.updateHostState();
+		}
 		await this.load(false);
 	}
 
@@ -335,7 +407,11 @@ export class ParadisFileTransferPane extends Disposable {
 			}
 			this.allEntries = [];
 			this.truncated = false;
-			this.listError = this.side === 'remote' && !this.transferService.remoteConnected ? 'disconnected' : paradisClassifyTransferError(error);
+			const kind = paradisClassifyTransferError(error);
+			// SSH で直接開いたホストは、このウィンドウの接続とは別。繋がらない理由（鍵・known_hosts など）をそのまま出す
+			this.listError = this.isDirect
+				? (kind === 'disconnected' ? 'other' : kind)
+				: this.side === 'remote' && !this.transferService.remoteConnected ? 'disconnected' : kind;
 			this.listErrorDetail = error instanceof Error ? error.message : String(error);
 		} finally {
 			if (sequence === this.loadSequence) {
@@ -404,11 +480,11 @@ export class ParadisFileTransferPane extends Disposable {
 		dom.hide(this.banner);
 		this.element.classList.toggle('para-ft-dimmed', false);
 
-		if (this.side === 'remote' && !this.transferService.remoteAuthority) {
+		if (this.side === 'remote' && !this.transferService.remoteAuthority && !this.isDirect) {
 			this.renderNotConnected();
 			return;
 		}
-		if (this.side === 'remote' && !this.transferService.remoteConnected) {
+		if (this.side === 'remote' && !this.isDirect && !this.transferService.remoteConnected) {
 			this.renderDisconnectedBanner();
 		}
 		if (this.listError && this.listError !== 'disconnected') {
@@ -450,7 +526,7 @@ export class ParadisFileTransferPane extends Disposable {
 		this.message.classList.add('para-ft-not-connected');
 		dom.append(this.message, $(`span.para-ft-message-icon.large${ThemeIcon.asCSSSelector(Codicon.plug)}`));
 		dom.append(this.message, $('.para-ft-message-title')).textContent = localize('paradis.fileTransfer.notConnected', "接続していません");
-		dom.append(this.message, $('.para-ft-message-text')).textContent = localize('paradis.fileTransfer.notConnectedDetail', "接続先を選ぶと、そのホストに繋いだ新しいウィンドウでこの画面が開きます。候補は ~/.ssh/config のホストです。");
+		dom.append(this.message, $('.para-ft-message-text')).textContent = localize('paradis.fileTransfer.notConnectedDetailDirect', "「接続せずに開く」は、このウィンドウのまま SSH で直接読み書きします。「接続して開く」は、そのホストに繋いだ新しいウィンドウでこの画面を開きます。候補は ~/.ssh/config のホストです。");
 		const list = dom.append(this.message, $('.para-ft-hostlist'));
 		list.textContent = localize('paradis.fileTransfer.loadingHosts', "ホストを読み込んでいます…");
 		const generation = this.messageGeneration;
@@ -461,7 +537,7 @@ export class ParadisFileTransferPane extends Disposable {
 			}
 			this.renderHostList(list, hosts);
 		});
-		dom.append(this.message, $('.para-ft-later')).textContent = localize('paradis.fileTransfer.stage2', "接続しないまま他のホストへ送る・取ってくるのは、今後の版で対応します。");
+		dom.append(this.message, $('.para-ft-later')).textContent = localize('paradis.fileTransfer.stage2Direct', "接続せずに開けるのは、鍵ファイルか ssh-agent の鍵で入れるホストです。パスワード・2 段階認証・ProxyJump が要るホストは今後の版で対応します。それまでは「接続して開く」を使ってください。");
 		this.footer.textContent = '';
 	}
 
@@ -475,9 +551,33 @@ export class ParadisFileTransferPane extends Disposable {
 			const row = dom.append(list, $('.para-ft-hostrow'));
 			dom.append(row, $(`span${ThemeIcon.asCSSSelector(Codicon.server)}`));
 			dom.append(row, $('span.para-ft-hostname')).textContent = alias;
+			const direct = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.primary'));
+			direct.type = 'button';
+			direct.textContent = localize('paradis.fileTransfer.openDirect', "接続せずに開く");
+			direct.title = localize('paradis.fileTransfer.openDirectTitle', "このウィンドウのまま、SSH で {0} のファイルを直接読み書きします", alias);
 			const connect = dom.append(row, $<HTMLButtonElement>('button.para-ft-button.secondary'));
 			connect.type = 'button';
 			connect.textContent = localize('paradis.fileTransfer.connect', "接続して開く");
+			const status = dom.append(row, $('.para-ft-hoststatus'));
+			status.setAttribute('role', 'status');
+			dom.hide(status);
+			this.messageStore.add(dom.addDisposableListener(direct, 'click', async () => {
+				direct.disabled = true;
+				row.classList.remove('error');
+				status.textContent = localize('paradis.fileTransfer.connecting', "接続しています…");
+				dom.show(status);
+				try {
+					await this.openHost(alias);
+				} catch (error) {
+					// 描き直した後なら、外れた行には書かない
+					if (row.isConnected) {
+						row.classList.add('error');
+						status.textContent = error instanceof Error ? error.message : String(error);
+					}
+				} finally {
+					direct.disabled = false;
+				}
+			}));
 			this.messageStore.add(dom.addDisposableListener(connect, 'click', () => {
 				this.transferService.connectAndOpen(alias).catch(error => this.notificationService.error(error));
 			}));
@@ -485,7 +585,7 @@ export class ParadisFileTransferPane extends Disposable {
 	}
 
 	private renderFooter(): void {
-		if (this.side === 'remote' && !this.transferService.remoteAuthority) {
+		if (this.side === 'remote' && !this.transferService.remoteAuthority && !this.isDirect) {
 			return;
 		}
 		const total = this.allEntries.filter(entry => this.showHidden || !paradisIsHiddenName(entry.name)).length;
@@ -510,16 +610,22 @@ export class ParadisFileTransferPane extends Disposable {
 
 	private updateHostState(): void {
 		const remote = this.side === 'remote';
+		const direct = this.isDirect;
 		const authority = this.transferService.remoteAuthority;
-		const connected = !remote || (!!authority && this.transferService.remoteConnected);
+		const shown = !remote || direct || !!authority;
+		const connected = !remote || direct || (!!authority && this.transferService.remoteConnected);
+		this.header.hostName.textContent = this.label;
+		this.header.filterBox.setAriaLabel(localize('paradis.fileTransfer.filterAria', "{0} の一覧を名前で絞り込む", this.label));
 		this.header.hostDot.classList.toggle('connected', remote && connected);
 		this.header.hostDot.classList.toggle('disconnected', remote && !connected && !!authority);
-		dom.setVisibility(remote && !!authority, this.header.hostDot);
+		dom.setVisibility(remote && shown, this.header.hostDot);
 		this.header.hostSub.textContent = !remote
 			? localize('paradis.fileTransfer.local', "ローカル")
-			: authority ? authority.split('+')[0].replace(/^ssh-remote$/, 'SSH') : '';
-		dom.setVisibility(!remote || !!authority, this.header.filterBox.element, this.header.actionsButton, this.navParts.nav);
-		if ((remote && !authority) || this.location) {
+			: direct
+				? localize('paradis.fileTransfer.directSsh', "SSH（直接）")
+				: authority ? authority.split('+')[0].replace(/^ssh-remote$/, 'SSH') : '';
+		dom.setVisibility(shown, this.header.filterBox.element, this.header.actionsButton, this.navParts.nav);
+		if (!shown || this.location) {
 			this.renderMessage();
 		}
 	}
@@ -567,7 +673,7 @@ export class ParadisFileTransferPane extends Disposable {
 	}
 
 	private showDropCaption(targetDirectory: URI, count: number): void {
-		const where = this.side === 'remote' ? `${this.transferService.remoteLabel}:${targetDirectory.path}` : targetDirectory.fsPath;
+		const where = this.side === 'remote' ? `${this.label}:${targetDirectory.path}` : targetDirectory.fsPath;
 		this.dropCaption.textContent = localize('paradis.fileTransfer.dropCaption', "{0} へ {1} 項目をコピー", where, count);
 		dom.show(this.dropCaption);
 		this.element.classList.add('para-ft-dropping');
