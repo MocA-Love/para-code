@@ -105,9 +105,19 @@ export function paradisSummarizeMainLoop(histogram: IParadisLoopDelayHistogram, 
 /**
  * main が混んでいたとみなすか。定期の要約をログへ残すかの判定に使う（毎分のログで溢れさせない）。
  * 100ms は人がクリックの遅れに気付き始める目安、1 秒は upstream の「応答なし」より手前の目安。
+ *
+ * **分解能を差し引いてから比べること。** `monitorEventLoopDelay` が記録するのは遅れではなく
+ * 「タイマーが前回から実際に何 ms 後に起きたか」なので、暇なときでも値は分解能そのもの
+ * （定期の 200ms なら p50 ≒ 201ms）になる。差し引かずに 100ms と比べていたため、暇な main
+ * （稼働率 0%）でもほぼ毎分「混んでいた」とログに出ていた（1 セッションで 1656 行）。
  */
-export function paradisIsMainLoopCongested(summary: IParadisMainLoopSummary): boolean {
-	return summary.p99Ms >= 100 || summary.maxMs >= 1000;
+export function paradisIsMainLoopCongested(summary: IParadisMainLoopSummary, resolutionMs: number): boolean {
+	return paradisMainLoopExcessMs(summary.p99Ms, resolutionMs) >= 100 || paradisMainLoopExcessMs(summary.maxMs, resolutionMs) >= 1000;
+}
+
+/** ヒストグラムの値から分解能を引いた「予定より遅れた時間」(ms)。0 で止める。 */
+export function paradisMainLoopExcessMs(valueMs: number, resolutionMs: number): number {
+	return Math.max(0, Math.round((valueMs - resolutionMs) * 10) / 10);
 }
 
 /** stat の往復を 3 つに割った結果 (ms)。 */

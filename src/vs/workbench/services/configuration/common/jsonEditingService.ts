@@ -22,6 +22,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IFilesConfigurationService } from '../../filesConfiguration/common/filesConfigurationService.js';
 import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js'; // PARA-PATCH: see writeToBuffer
 import { isParadisManagedWorkspaceWindow } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceSwitch.js'; // PARA-PATCH: see writeToBuffer
+import { paradisMarkFolderUpdate } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderUpdateTrace.js'; // PARA-PATCH: see doWriteConfiguration
 
 export class JSONEditingService implements IJSONEditingService {
 
@@ -44,8 +45,10 @@ export class JSONEditingService implements IJSONEditingService {
 
 	private async doWriteConfiguration(resource: URI, values: IJSONValue[]): Promise<void> {
 		const reference = await this.resolveAndValidate(resource, true);
+		paradisMarkFolderUpdate('model_resolved'); // PARA-PATCH: timing marks of a Para Code space switch; no-op unless one is being traced (paradisFolderUpdateTrace.ts)
 		try {
 			await this.writeToBuffer(reference.object.textEditorModel, values);
+			paradisMarkFolderUpdate('saved'); // PARA-PATCH: see above
 		} finally {
 			reference.dispose();
 		}

@@ -31,6 +31,8 @@ import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uri
 import { paradisRecoverWorkspaceFileAfterFailedSave } from '../common/paradisWorkspaceFileRecovery.js';
 import { IParadisMainLoadService, IParadisMainLoopWindowSummary, IParadisStatRoundTrip, paradisGetMainLoadProbe, paradisSplitStatRoundTrip } from '../../mainLoad/common/paradisMainLoad.js';
 import { IParadisLongTaskSummary, IParadisLongTaskWindow, paradisStartLongTaskWindow } from '../../mainLoad/browser/paradisLongTaskMonitor.js';
+import { IParadisLongFrameSummary, IParadisLongFrameWindow, paradisDiffLongFrames, paradisLongFrameAttributes, paradisStartLongFrameWindow } from '../../mainLoad/browser/paradisLongFrameMonitor.js';
+import { paradisBeginFolderUpdateTrace, paradisSafeSwitchAttributes } from '../common/paradisFolderUpdateTrace.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
@@ -334,7 +336,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		// 下部パネルを共通ターミナルにしている間は、パネルの開閉をスペースごとに切り替えない。
-		@IConfigurationService configurationService: IConfigurationService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 		// 切り替えの巻き戻しで、保存に失敗したワークスペースのファイルのモデルを直すために使う
 		// (`paradisRecoverWorkspaceFileAfterFailedSave`)。
 		@ITextFileService private readonly textFileService: ITextFileService,
@@ -1199,11 +1201,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 待ちだったので、その間に renderer が自分の長い処理で塞がっていたかを段階ごとに見る。
 				// 監視は下で `longTaskWindow` を始めてから入れる (同じ URI の近道では始めない)。
 				const phaseLongTaskMs: Record<string, number> = {};
-				const phaseLongTasks: { window?: IParadisLongTaskWindow } = {};
+				const phaseLongTasks: { window?: IParadisLongTaskWindow; frames?: IParadisLongFrameWindow } = {};
+				// 長いタスクが何から呼ばれた処理か (拡張ホスト・接続先・描画など) の段階ごとの内訳。
+				// 区分が 9 つあるので、待ちの伸びが問題になっている段階 (`LONG_FRAME_PHASES`) だけ。
+				const phaseLongFrames: Record<string, IParadisLongFrameSummary> = {};
 				const timePhase = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
 					const startedAt = Date.now();
 					const tracked = ParadisWorkspaceSwitchService.LONG_TASK_PHASES.has(name) ? phaseLongTasks.window : undefined;
 					const longTasksBefore = tracked?.snapshot();
+					const framesTracked = ParadisWorkspaceSwitchService.LONG_FRAME_PHASES.has(name) ? phaseLongTasks.frames : undefined;
+					const longFramesBefore = framesTracked?.snapshot();
 					try {
 						return await run();
 					} finally {
@@ -1211,6 +1218,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						const longTasksAfter = tracked?.snapshot();
 						if (longTasksBefore !== undefined && longTasksAfter !== undefined) {
 							phaseLongTaskMs[name] = Math.max(0, longTasksAfter.totalMs - longTasksBefore.totalMs);
+						}
+						const longFrames = paradisDiffLongFrames(longFramesBefore, framesTracked?.snapshot());
+						if (longFrames !== undefined) {
+							phaseLongFrames[name] = longFrames;
 						}
 					}
 				};
@@ -1277,6 +1288,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 解決する前に失敗した回で前回の値を今回の値として送ってしまう）。計測は finally から
 				// 読むので、宣言は try の外に置くこと。
 				let folderStatMs: number | undefined;
+				// `update_folders_write` の内訳 (`paradisFolderUpdateTrace.ts`)。数と時間だけ。
+				let folderUpdateAttributes: Record<string, number> | undefined;
 				// main の混雑の計測 (M1〜M4、paradis/contrib/mainLoad)。Electron のウィンドウでだけ
 				// 受け口が登録される。**切り替えを待たせないこと**: 開始も終了も投げっぱなしで、
 				// 結果は計測の送信の直前にだけ待つ (`recordSwitchPhasesWithMainLoad`)。
@@ -1284,6 +1297,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				const mainLoopWindow = mainLoadProbe?.beginWindow().catch(() => undefined);
 				const longTaskWindow = paradisStartLongTaskWindow();
 				phaseLongTasks.window = longTaskWindow;
+				const longFrameWindow = paradisStartLongFrameWindow();
+				phaseLongTasks.frames = longFrameWindow;
+				// renderer の待ちの候補を数える: 切り替えの間に届いたファイルの変更通知 (ファイル監視) と
+				// 設定の変更 (フォルダの設定の入れ替え)。中身は見ない。
+				const switchEventCounts = { fileEvents: 0, configEvents: 0 };
+				const switchEventListeners = new DisposableStore();
+				switchEventListeners.add(this.fileService.onDidFilesChange(() => { switchEventCounts.fileEvents++; }));
+				switchEventListeners.add(this.configurationService.onDidChangeConfiguration(() => { switchEventCounts.configEvents++; }));
 				const statRoundTrip = this.probeMainStat(mainLoadProbe, uri);
 				try {
 					this._onWillSwitchScope.fire(previousKey);
@@ -1474,8 +1495,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					let foldersWillChangeAt: number | undefined;
 					let foldersChangedAt: number | undefined;
 					const foldersEventListeners = new DisposableStore();
+					// 書き込み・読み直し・フォルダの設定の読み込みの境目と、その間のファイル IPC の
+					// 往復を数える。onWillChange の時点で締める (`update_folders_write` と同じ区間)。
+					const folderUpdateTrace = paradisBeginFolderUpdateTrace();
+					foldersEventListeners.add(toDisposable(() => folderUpdateTrace.end()));
 					foldersEventListeners.add(this.contextService.onWillChangeWorkspaceFolders(() => {
 						foldersWillChangeAt ??= Date.now();
+						folderUpdateAttributes ??= folderUpdateTrace.summarize(foldersWillChangeAt);
 					}));
 					foldersEventListeners.add(this.contextService.onDidChangeWorkspaceFolders(() => {
 						foldersChangedAt ??= Date.now();
@@ -1484,6 +1510,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						await timePhase('update_folders',
 							() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
 					} finally {
+						// onWillChange まで届かなかった回 (失敗・folders が変わらなかった) も、届いた境目までは送る。
+						folderUpdateAttributes ??= folderUpdateTrace.summarize(undefined);
 						foldersEventListeners.dispose();
 						// 観測できなかった区間はキーごと落とす。0 を入れると「速かった」と
 						// 区別がつかなくなり、集計が黙って歪む。
@@ -1631,6 +1659,17 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// ユーザーが感じる切り替え時間に含める。
 					// 合計と長いタスクはここで締める。main の結果を待つ間を含めないため。
 					const longTasks = longTaskWindow.stop();
+					const longFrames = longFrameWindow.stop();
+					switchEventListeners.dispose();
+					const extraAttributes: Record<string, number> = {
+						...folderUpdateAttributes,
+						...paradisLongFrameAttributes('safe_', longFrames),
+						safe_switch_file_events: switchEventCounts.fileEvents,
+						safe_switch_config_events: switchEventCounts.configEvents,
+					};
+					for (const [phase, frames] of Object.entries(phaseLongFrames)) {
+						Object.assign(extraAttributes, paradisLongFrameAttributes(`safe_${phase}_`, frames));
+					}
 					const mainLoop = mainLoopWindow?.then(id => id === undefined ? undefined : mainLoadProbe?.endWindow(id)).catch(() => undefined);
 					void this.recordSwitchPhasesWithMainLoad({
 						startedAt: switchStartedAt,
@@ -1645,6 +1684,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						previousFolders: folders.length,
 						longTasks,
 						phaseLongTaskMs,
+						extraAttributes,
 						targetRemote: uri.scheme === Schemas.vscodeRemote,
 						sourceRemote: previousUri === undefined ? undefined : previousUri.scheme === Schemas.vscodeRemote,
 					}, mainLoop, statRoundTrip);
@@ -1844,6 +1884,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		'update_folders',
 	]);
 
+	/**
+	 * 長いフレームを区分ごとに数える区間 (`paradisLongFrameMonitor.ts`)。送る名前は
+	 * `safe_<段階>_busy_<区分>_ms`。本番で renderer の待ちが伸びていた 2 つだけ。
+	 */
+	private static readonly LONG_FRAME_PHASES: ReadonlySet<string> = new Set([
+		'verify_folder_wait',
+		'update_folders',
+	]);
+
 	private recordSwitchPhases(sample: {
 		readonly startedAt: number;
 		/** 締めた時点の合計。無ければ今の時刻から出す。 */
@@ -1859,6 +1908,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		readonly longTasks?: IParadisLongTaskSummary;
 		/** 段階ごとの renderer の長いタスクの合計 (ms)。測れた段階だけ。 */
 		readonly phaseLongTaskMs?: Record<string, number>;
+		/**
+		 * `update_folders_write` の内訳・ファイル IPC の往復・長いフレームの区分・変更通知の数。
+		 * 送る直前に `paradisSafeSwitchAttributes` で `safe_` の数値だけに絞る。
+		 */
+		readonly extraAttributes?: Record<string, number>;
 		/** 切り替え先が SSH の接続先のフォルダか。 */
 		readonly targetRemote?: boolean;
 		/** 切り替え元が SSH の接続先のフォルダか。切り替え元が無い (初回) なら undefined。 */
@@ -1905,6 +1959,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			runInParadisSpan('workspaceSwitch', 'phases', {
 				safe_total_ms: sample.totalMs ?? Date.now() - sample.startedAt,
 				...mainLoad,
+				...paradisSafeSwitchAttributes(sample.extraAttributes ?? {}),
 				...durations,
 				safe_completed: sample.completed,
 				// 失敗した切り替えは分布を歪めるので、集計時に分けられるようにしておく。

@@ -2250,6 +2250,29 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 イベントの読み方: `para.browser_focus` の context に `safe_returns`（戻った回数）、`safe_origins`（出どころごとの回数）、`safe_first_return_ms`（外へ移してから最初に戻るまで）、`safe_span_ms` があります。`para.browser_input` の context は `safe_kinds`（`key-register:ack-timeout=12` のような種類ごとの回数）、`safe_hosts`、`safe_key_attempts` と `safe_key_failures`（同じ期間のキー入力の試行と失敗。ホスト別の試行は `safe_key_attempts_by_host`）です。直前の流れはパンくずの `para.browser-focus`（出どころ・直前のポインタの場所と経過ミリ秒・接続と emulation の有無）と `para.browser-input` に残ります。focus / blur のパンくずは、利用者が外へ移した時とその次の focus、エージェントが繋いでいる間だけ出します（main のパンくず枠 100 件をほかの機能と分け合うため）。10 秒に 6 件までに間引き、落とした数は次の 1 件の `safe_dropped_before` に載ります。#246 からの 1 件ずつのイベント（`para.operation:automation-key-suppression` など）はそのまま送っています（10 分 3 件の上限つき）。
 
+## Sentry でスペース切り替えの `update_folders_write` の内訳を読む（2026-10-06）
+
+`para.workspaceSwitch.phases` の span に、`update_folders_write`（`updateFolders` の呼び出し → `onWillChangeWorkspaceFolders`）を upstream の中の境目で割った値と、その間のファイル IPC の往復を足しました。境目は `workspaceSwitch/common/paradisFolderUpdateTrace.ts` が持ち、upstream には `paradisMarkFolderUpdate(...)` の 1 行ずつ（`configurationService.ts`・`jsonEditingService.ts`）と、ファイルのチャネルを包む 1 行（`remoteFileSystemProviderClient.ts`・`diskFileSystemProvider.ts`）を PARA-PATCH で置いています。送るのは数とミリ秒だけで、パス・ホスト名・ワークスペース名は送りません（`paradisSafeSwitchAttributes` が `safe_` の有限の数値以外を落とします）。SSH かどうかは既存の `safe_target_remote` / `safe_source_remote` で絞ります。
+
+| 項目（`safe_update_folders_` の後） | 中身 |
+|---|---|
+| `queue_ms` | `workspaceEditingQueue` の待ち |
+| `compose_ms` | 新しい folders の組み立て（行き先の stat を省けなかった回はここが伸びる） |
+| `resolve_ms` | `.code-workspace` のテキストモデルの用意（exists と読み込み） |
+| `save_ms` | 書き換えて保存（etag の stat・書き込み・書き込み後の stat） |
+| `reload_ms` | `.code-workspace` の読み直し |
+| `validate_ms` | `toValidWorkspaceFolders` |
+| `folder_config_ms` | 行き先の `.vscode/` の設定の読み込み。`parked_configs` が 1 なら退避分を使い回して読んでいない |
+| `will_change_ms` | 残り（ほぼ 0 のはず） |
+| `marks` | 届いた境目の数（7 で全部）。足りない回は、抜けた境目の両隣の区間を送らない |
+| `remote_*` / `local_*` | 同じ区間に renderer が投げたファイル IPC。`calls`・`stats`・`reads`・`writes`・`others` は回数、`read_bytes`・`write_bytes`、`wait_ms`（返事待ちの合計、並列は重ねて数える）、`max_ms`、`rtt_ms`（最短の stat＝1 往復の推定） |
+
+読み方: SSH の遅い回で `remote_calls` × `remote_rtt_ms` が `update_folders_write` に近ければ往復の数で遅い、`save_ms` や `reload_ms` の 1 つだけが飛び抜けていれば接続先のディスクか、その呼び出しの詰まりです。`rtt_ms` が小さいのに `wait_ms` が大きい回は、renderer が返事を処理できていない側を疑います。
+
+renderer の待ちは、Long Animation Frames で「何から呼ばれた処理か」に分けました（`mainLoad/browser/paradisLongFrameMonitor.ts`）。切り替え全体は `safe_busy_<区分>_ms` と `safe_busy_frames`、`verify_folder_wait` と `update_folders` の段階は `safe_<段階>_busy_<区分>_ms` です。区分は `port`（MessagePort、手元の拡張ホスト等）、`socket`（WebSocket、SSH の接続先）、`event`（DOM のイベント。推測: main からの IPC はここか `other` に入る）、`timer`、`frame`（requestAnimationFrame、ツリーの描き直し）、`promise`、`script`、`layout`（スタイルとレイアウト）、`other`。0 の区分は送りません。あわせて切り替えの間に届いたファイルの変更通知と設定の変更の回数を `safe_switch_file_events` / `safe_switch_config_events` に載せています。
+
+`safe_main_loop_p50_ms` などの main のイベントループの値は、遅れではなくタイマーの実際の間隔なので、分解能（切り替えの区間は 10ms）を含みます。暇でも p50 は約 10ms です。定期の計測（分解能 200ms）の「混んでいた」ログ（`[paradisMainLoad] ... congested`）は、分解能を引いてから p99 100ms・最大 1 秒と比べるように直しました（直す前は暇な main でもほぼ毎分出ていました）。
+
 ## 2 画面のファイル転送は IFileService だけで流し、権限だけを専用のチャネルで読む（fileTransfer、2026-10-02、段階 1）
 
 エディタのタブ 1 枚（`ParadisFileTransferEditor` / `ParadisFileTransferInput`、シリアライザーで左右の場所ごと復元）で、左にこのマシン（`file://`）、右にこのウィンドウの接続先（`vscode-remote://`）を並べる。見た目は案C（`dual-pane-transfer-mock.html`）で、表・選択・キーボード・ドラッグは `WorkbenchTable` に任せ、見出し・2 段の名前（名前の下に権限）・足元の件数・下の待ち行列だけを `src/vs/paradis/contrib/fileTransfer/` で描く。片側の画面は、表（`paradisFileTransferPaneTable.ts`）・操作（`paradisFileTransferPaneOperations.ts`）・ドラッグ＆ドロップ（`paradisFileTransferPaneDnd.ts`）に分けてある。狭い（760px 未満）と左右を上下に積み、待ち行列は見出しの 1 行に縮める。

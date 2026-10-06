@@ -12,6 +12,7 @@ import { DiskFileSystemProviderClient } from '../../../../platform/files/common/
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentEnvironment } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
 import { IRemoteAgentConnection, IRemoteAgentService } from './remoteAgentService.js';
+import { paradisCountFileChannel } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderUpdateTrace.js'; // PARA-PATCH: see constructor
 
 export const REMOTE_FILE_SYSTEM_CHANNEL_NAME = 'remoteFilesystem';
 
@@ -51,6 +52,7 @@ export class RemoteFileSystemProviderClient extends DiskFileSystemProviderClient
 	}
 
 	private constructor(remoteAgentEnvironment: IRemoteAgentEnvironment, connection: IRemoteAgentConnection) {
-		super(connection.getChannel(REMOTE_FILE_SYSTEM_CHANNEL_NAME), { pathCaseSensitive: remoteAgentEnvironment.os === OperatingSystem.Linux });
+		// PARA-PATCH: count the round trips of a Para Code space switch; passes through unless one is being traced (paradisFolderUpdateTrace.ts)
+		super(paradisCountFileChannel(connection.getChannel(REMOTE_FILE_SYSTEM_CHANNEL_NAME), 'remote'), { pathCaseSensitive: remoteAgentEnvironment.os === OperatingSystem.Linux });
 	}
 }
