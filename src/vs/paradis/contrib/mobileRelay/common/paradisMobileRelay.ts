@@ -26,6 +26,7 @@ import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycl
 import type { IParadisMobileDoNotDisturbState } from './paradisMobileDoNotDisturb.js';
 import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import type { IParadisRemoteShellOutputRequest } from './paradisRemoteShellOutput.js';
 
 // ---- 設定キー ----
 
@@ -426,6 +427,13 @@ export interface IParadisMobileRelayService {
 	resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
 	/** ウィンドウが閉じる・接続先が変わるときに担当を空ける。 */
 	releaseRemoteTranscriptMirrors(ownerId: string): Promise<void>;
+	/**
+	 * SSH の接続先のバックグラウンドのシェルの出力を読む頼み（agent.shells.v1）。`ownerId` が自分（写しの担当）の
+	 * ものだけに答える。取り決めは paradisRemoteShellOutput.ts。
+	 */
+	readonly onDidRequestRemoteShellOutput: Event<IParadisRemoteShellOutputRequest>;
+	/** {@link onDidRequestRemoteShellOutput} の返事（接続先の REH の `readTails` の結果。読めなかったら null）。 */
+	completeRemoteShellOutput(ownerId: string, requestId: string, result: unknown): Promise<void>;
 
 	/**
 	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（ウィンドウ単位の全置換。

@@ -19,6 +19,7 @@ import { tmpdir } from 'os';
 import { basename, join, relative, sep } from '../../../../base/common/path.js';
 import { IParadisAgentShell, IParadisAgentShellsAccess, paradisShellOutputEndMarker } from '../../agentChat/common/paradisAgentShells.js';
 import type { ParadisClaudeModStopResult } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import type { IParadisRemoteShellOutputItemRequest } from '../common/paradisRemoteShellOutput.js';
 
 /** 一度に返す行数の上限と既定（ユーザーの決定: 詳細は末尾 20 行）。 */
 export const PARADIS_SHELL_OUTPUT_LINES_MAX = 50;
@@ -39,7 +40,12 @@ export interface IParadisShellOutputTail {
 	readonly ended?: { readonly status: 'completed' | 'failed' | 'stopped'; readonly exitCode?: number };
 }
 
-export type ParadisShellOutputError = 'not-found' | 'unavailable';
+/**
+ * not-found: もう無い、unavailable: この構成では読めない、no-window: SSH の接続先のもので、その接続先に
+ * 繋いだウィンドウが無い（開けば読める）。no-window は SSH の出力を読めるアプリにしか送らない
+ * （古いアプリは `where: 'ssh'` で出力を求めない）。
+ */
+export type ParadisShellOutputError = 'not-found' | 'unavailable' | 'no-window';
 
 // 端末の制御（色・カーソル移動・OSC）を落とす。
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
@@ -123,9 +129,16 @@ export async function paradisReadShellOutputTail(outputFile: string, sessionId: 
 	if (base === undefined) {
 		return 'unavailable';
 	}
+	return readCheckedTail(realPath, base, uid, lines);
+}
+
+/**
+ * `<base>`（`claude-<uid>`）と出力ファイルの持ち主を確かめてから、末尾を読む。
+ * Claude Code はこのディレクトリを 0700 で作る（2026-10-04 に /tmp/claude-<uid> の実物で確認）。他人が書き込めるものは信じない。
+ */
+async function readCheckedTail(realPath: string, base: string, uid: number, lines: number): Promise<IParadisShellOutputTail | ParadisShellOutputError> {
 	try {
 		const baseStat = await fs.lstat(base);
-		// Claude Code はこのディレクトリを 0700 で作る（2026-10-04 に /tmp/claude-<uid> の実物で確認）。他人が書き込めるものは信じない
 		if (!baseStat.isDirectory() || baseStat.uid !== uid || (baseStat.mode & 0o002) !== 0) {
 			return 'unavailable';
 		}
@@ -137,7 +150,9 @@ export async function paradisReadShellOutputTail(outputFile: string, sessionId: 
 		// realpath の後にすり替えられても辿らない。FIFO にすり替えられても開くところで止まらない
 		handle = await fs.open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		const stat = await handle.stat();
-		if (!stat.isFile() || stat.uid !== uid) {
+		// ハードリンクは通さない（同じ uid のエージェントが、形の合う名前で自分の別のファイル（鍵など）へ張れる。
+		// Claude Code の出力ファイルはリンクを持たない）
+		if (!stat.isFile() || stat.uid !== uid || stat.nlink !== 1) {
 			return 'unavailable';
 		}
 		const start = Math.max(0, stat.size - TAIL_BYTES);
@@ -152,6 +167,69 @@ export async function paradisReadShellOutputTail(outputFile: string, sessionId: 
 	}
 }
 
+// ---- SSH の接続先（REH サーバー）で読む ---------------------------------------------------------------
+//
+// 接続先の Claude Code は、出力をプロセスの TMPDIR（例 /var/tmp/<…>）の下の `claude-<uid>/…` に置く。TMPDIR は
+// プロセスごとに変わるので、根（/tmp など）は決めず、`claude-<uid>` から後ろの形だけを見る。transcript に書かれた
+// パスが /tmp 側で実物が TMPDIR 側のこともあるので、書かれたパスに無ければ、同じ後ろの形を REH の一時ディレクトリと
+// /tmp の下でも探す。どれも realpath した後の形・`claude-<uid>` の持ち主・ファイルの持ち主を手元と同じく確かめる。
+
+/** 後ろから数えた `claude-<uid>/<スラッグ>/<sessionId>/tasks/<taskId>.output` の 5 区間。 */
+const REMOTE_TAIL_SEGMENTS = 5;
+
+/**
+ * `path`（`/` 区切りの絶対パス）が `…/claude-<uid>/<スラッグ>/<sessionId>/tasks/<taskId>.output` の形か。
+ * 当たれば `…/claude-<uid>` を返す。根はどこでもよい（接続先の TMPDIR はプロセスごとに変わる）。
+ */
+export function paradisRemoteShellOutputBase(path: string, uid: number, sessionId: string, taskId: string): string | undefined {
+	if (!path.startsWith('/') || path.includes('\0') || path.length > 4096) {
+		return undefined;
+	}
+	const parts = path.split('/');
+	const n = parts.length;
+	// 先頭の '' と、少なくとも claude-<uid> から後ろの 5 区間
+	if (n < REMOTE_TAIL_SEGMENTS + 1 || parts.slice(1).some(part => part.length === 0 || part === '.' || part === '..')) {
+		return undefined;
+	}
+	const [owner, slug, session, tasks, file] = parts.slice(n - REMOTE_TAIL_SEGMENTS);
+	if (owner !== `claude-${uid}` || slug.length === 0 || session !== sessionId || tasks !== 'tasks' || file !== `${taskId}.output`) {
+		return undefined;
+	}
+	return parts.slice(0, n - REMOTE_TAIL_SEGMENTS + 1).join('/');
+}
+
+/**
+ * 接続先（REH サーバーのプロセス）で、出力ファイルの末尾を読む。uid はこのプロセス（接続先の本人）のもの。
+ * `outputFile` は transcript に書かれたパスで、字面も realpath も {@link paradisRemoteShellOutputBase} の形に
+ * 合うものだけを読む。`fallbackRoots` はテストが渡す（既定は os.tmpdir() と /tmp）。
+ */
+export async function paradisReadRemoteShellOutputTail(outputFile: unknown, sessionId: unknown, taskId: unknown, lines: unknown, fallbackRoots: readonly string[] = DEFAULT_ROOTS): Promise<IParadisShellOutputTail | ParadisShellOutputError> {
+	if (process.platform === 'win32' || typeof process.getuid !== 'function'
+		|| typeof outputFile !== 'string' || typeof sessionId !== 'string' || typeof taskId !== 'string'
+		|| !/^[A-Za-z0-9._-]{1,200}$/.test(sessionId) || !/^[A-Za-z0-9_-]{1,64}$/.test(taskId)) {
+		return 'unavailable';
+	}
+	const uid = process.getuid();
+	const count = typeof lines === 'number' && Number.isFinite(lines) ? lines : PARADIS_SHELL_OUTPUT_LINES_DEFAULT;
+	const literalBase = paradisRemoteShellOutputBase(outputFile, uid, sessionId, taskId);
+	if (literalBase === undefined) {
+		return 'unavailable';
+	}
+	const tail = outputFile.slice(literalBase.length - `claude-${uid}`.length);
+	const candidates = [outputFile, ...fallbackRoots.map(root => `${root.replace(/\/+$/, '')}/${tail}`)];
+	for (const candidate of [...new Set(candidates)]) {
+		let realPath: string;
+		try {
+			realPath = await fs.realpath(candidate);
+		} catch {
+			continue;
+		}
+		const base = paradisRemoteShellOutputBase(realPath, uid, sessionId, taskId);
+		return base === undefined ? 'unavailable' : readCheckedTail(realPath, base, uid, count);
+	}
+	return 'not-found';
+}
+
 // ---- agent チャネルの形（agent.shells.v1） ------------------------------------------------------------
 
 /**
@@ -164,7 +242,7 @@ export type ParadisAgentShellInbound =
 	| { t: 'shell-output'; id: number; token?: string; requestId: string; epoch: string; shellIds: readonly string[]; lines?: number }
 	| { t: 'action/stopShell'; id: number; token?: string; requestId: string; epoch: string; shellId: string };
 
-/** 1 シェルぶんの出力。`error` があれば読めなかった（not-found: もう無い、unavailable: この構成では読めない）。 */
+/** 1 シェルぶんの出力。`error` があれば読めなかった（{@link ParadisShellOutputError}）。 */
 export interface IParadisAgentShellOutputItem {
 	readonly id: string;
 	readonly lines?: readonly string[];
@@ -204,22 +282,42 @@ export interface IParadisShellOutputSource {
 	/** テストが一時ディレクトリを渡す（既定は /tmp と os.tmpdir()）。 */
 	readonly roots?: readonly string[];
 	outputFile(shellId: string): string | undefined;
+	/**
+	 * SSH の接続先のペインなら、接続先で読む口（その接続先に繋いだウィンドウ経由）。渡すのは transcript で覚えた
+	 * パスだけ。繋いだウィンドウが無ければ 'no-window'。手元のペインには無い（手元のファイルを読む）。
+	 */
+	readonly readRemote?: (requests: readonly IParadisRemoteShellOutputItemRequest[], sessionId: string, lines: number) => Promise<ReadonlyMap<string, IParadisShellOutputTail | ParadisShellOutputError> | 'no-window'>;
 	/** 出力の最後の印で終わりが分かった（推定として、動いているものだけ直す）。 */
 	markOutputEnded(shellId: string, end: { readonly status: 'completed' | 'failed' | 'stopped'; readonly exitCode?: number }): void;
 	/** 最後の行が印ではなかった（印から推定した終わりがあれば取り消す）。 */
 	markOutputRunning(shellId: string): void;
 }
 
-/** `shell-output` の各シェルの出力を読む（ファイルは並べて読まず、1 つずつ）。 */
+/** `shell-output` の各シェルの出力を読む（手元はファイルを並べて読まず、1 つずつ。接続先はまとめて 1 回頼む）。 */
 export async function paradisReadShellOutputs(source: IParadisShellOutputSource, shellIds: readonly string[], lines: number | undefined): Promise<IParadisAgentShellOutputItem[]> {
-	const items: IParadisAgentShellOutputItem[] = [];
-	for (const id of [...new Set(shellIds)]) {
+	const count = lines ?? PARADIS_SHELL_OUTPUT_LINES_DEFAULT;
+	const ids = [...new Set(shellIds)];
+	const files = new Map<string, string>();
+	for (const id of ids) {
 		const file = source.outputFile(id);
+		if (file !== undefined) {
+			files.set(id, file);
+		}
+	}
+	let remote: ReadonlyMap<string, IParadisShellOutputTail | ParadisShellOutputError> | 'no-window' | undefined;
+	if (source.readRemote !== undefined && source.sessionId !== undefined && files.size > 0) {
+		remote = await source.readRemote([...files].map(([id, outputFile]) => ({ id, outputFile })), source.sessionId, count);
+	}
+	const items: IParadisAgentShellOutputItem[] = [];
+	for (const id of ids) {
+		const file = files.get(id);
 		if (file === undefined || source.sessionId === undefined) {
 			items.push({ id, error: 'not-found' });
 			continue;
 		}
-		const tail = await paradisReadShellOutputTail(file, source.sessionId, id, lines ?? PARADIS_SHELL_OUTPUT_LINES_DEFAULT, source.roots);
+		const tail = source.readRemote !== undefined
+			? (remote === 'no-window' ? 'no-window' : remote?.get(id) ?? 'unavailable')
+			: await paradisReadShellOutputTail(file, source.sessionId, id, count, source.roots);
 		if (typeof tail === 'string') {
 			items.push({ id, error: tail });
 			continue;
@@ -257,7 +355,8 @@ export type ParadisShellRequestReply =
 /**
  * バックグラウンドのシェルの出力の末尾（`shell-output`）と停止（`action/stopShell`）。agent.shells.v1。
  * context が無いのは、ペインが無い・会話が替わった・購読していないとき。
- * 出力のパスは transcript で覚えたものだけを使い、SSH・WSL・Windows では読まない・止めない（`access`）。
+ * 出力のパスは transcript で覚えたものだけを使う。SSH の接続先のものは接続先で読み（`readRemote`）、WSL・Windows では
+ * 読まない。止めるのは手元だけ（`access`）。
  * 止めるのは mod（Claude Mods）の TaskStop だけで、transcript に残らないので ack で一覧を「停止」に直す。
  */
 export async function paradisHandleShellRequest(msg: ParadisAgentShellInbound, context: IParadisShellRequestContext | undefined, reply: (body: ParadisShellRequestReply) => void): Promise<void> {

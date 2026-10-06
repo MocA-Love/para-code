@@ -15,6 +15,7 @@ import {
 	parseShellOutputReply,
 	partitionShells,
 	shellDurationLabel,
+	shellOutputErrorMessage,
 	shellOutputUnavailableReason,
 	shellStatusLabel,
 	shellStopState,
@@ -43,14 +44,21 @@ describe('agentShells', () => {
 				{ id: 'b3', startedAt: 'x', status: 'running' },
 				{ id: 'b4', startedAt: 1, status: 'exploded' },
 			]),
-			access: [parseAgentShellsAccess({ output: true, stop: true }), parseAgentShellsAccess({ output: true, stop: true, where: 'ssh' }), parseAgentShellsAccess(undefined)],
+			access: [
+				parseAgentShellsAccess({ output: true, stop: true }),
+				// SSH の接続先は、接続先で読める PC なら出力だけ読める（止めない）。古い PC は output: false を送る
+				parseAgentShellsAccess({ output: true, stop: true, where: 'ssh' }),
+				parseAgentShellsAccess({ output: false, stop: false, where: 'ssh' }),
+				parseAgentShellsAccess({ output: true, stop: true, where: 'wsl' }),
+				parseAgentShellsAccess(undefined),
+			],
 		}).toEqual({
 			old: undefined,
 			parsed: [
 				{ id: 'b1', command: 'npm run dev', startedAt: 1, status: 'running', movedToBackground: 'timeout' },
 				{ id: 'b2', startedAt: 2, status: 'stopped', stoppedBy: 'user', endedAt: 3, exitCode: 143, estimated: true },
 			],
-			access: [{ output: true, stop: true }, { output: false, stop: false, where: 'ssh' }, undefined],
+			access: [{ output: true, stop: true }, { output: true, stop: false, where: 'ssh' }, { output: false, stop: false, where: 'ssh' }, { output: false, stop: false, where: 'wsl' }, undefined],
 		});
 	});
 
@@ -117,6 +125,9 @@ describe('agentShells', () => {
 			shellStopState(running, undefined, true),
 			shellOutputUnavailableReason({ output: true, stop: false }),
 			shellOutputUnavailableReason({ output: false, stop: false, where: 'wsl' })?.startsWith('WSL'),
+			shellOutputUnavailableReason({ output: true, stop: false, where: 'ssh' }),
+			shellOutputUnavailableReason({ output: false, stop: false, where: 'ssh' })?.startsWith('SSH'),
+			shellStopState(running, { output: true, stop: false, where: 'ssh' }, true).kind,
 		]).toEqual([
 			{ kind: 'enabled' },
 			{ kind: 'hidden' },
@@ -127,17 +138,28 @@ describe('agentShells', () => {
 			{ kind: 'hidden' },
 			undefined,
 			true,
+			undefined,
+			true,
+			'disabled',
 		]);
 	});
 
 	it('reads the shell-output reply', () => {
-		const reply = parseShellOutputReply({ shells: [{ id: 'b1', lines: ['a', 7, 'b'], truncated: true }, { id: 'b2', error: 'not-found' }, { id: '../x', lines: [] }], readAt: 5 });
+		const reply = parseShellOutputReply({ shells: [{ id: 'b1', lines: ['a', 7, 'b'], truncated: true }, { id: 'b2', error: 'not-found' }, { id: 'b3', error: 'no-window' }, { id: 'b4', error: 'exploded' }, { id: '../x', lines: [] }], readAt: 5 });
 		expect({ outputs: [...(reply?.outputs.entries() ?? [])], readAt: reply?.readAt, failed: parseShellOutputReply({ error: 'busy' })?.error, broken: parseShellOutputReply({}) }).toEqual({
-			outputs: [['b1', { lines: ['a', 'b'], truncated: true }], ['b2', { lines: [], truncated: false, error: 'not-found' }]],
+			outputs: [['b1', { lines: ['a', 'b'], truncated: true }], ['b2', { lines: [], truncated: false, error: 'not-found' }], ['b3', { lines: [], truncated: false, error: 'no-window' }], ['b4', { lines: [], truncated: false }]],
 			readAt: 5,
 			failed: 'busy',
 			broken: undefined,
 		});
+	});
+
+	it('says why the output could not be read, pointing at the window of the host for SSH', () => {
+		expect((['not-found', 'unavailable', 'no-window'] as const).map(shellOutputErrorMessage)).toEqual([
+			'出力のファイルが見つかりません（消えたか、PC が再起動しました）。',
+			'この PC からは出力を読めません。',
+			'この接続先のウィンドウを PC で開くと読めます。',
+		]);
 	});
 
 	describe('ShellOutputPoller', () => {

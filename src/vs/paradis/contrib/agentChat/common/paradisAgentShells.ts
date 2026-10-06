@@ -58,7 +58,8 @@ export type ParadisAgentShellStopper = 'user' | 'agent' | 'mobile';
 
 /**
  * 出力と停止をこの構成で使えるか（snapshot / delta の任意項目 `shellsAccess`）。
- * `where` があればその構成では使えない（モバイルは理由を添えて押せなくする）。`where` が無く `stop` が false なら
+ * `where` があればその構成では止められない（モバイルは理由を添えて押せなくする）。出力は `where: 'ssh'` でも
+ * `output` が true なら読める（接続先で読む PC。古いアプリは `where` があれば読まない）。`where` が無く `stop` が false なら
  * mod がつながっていない（モバイルは停止のボタンを出さない）。
  */
 export interface IParadisAgentShellsAccess {
@@ -558,7 +559,13 @@ export function paradisShellsForStoppedPane(shells: readonly IParadisAgentShell[
 	});
 }
 
-/** 構成ごとの、出力と停止の可否。 */
-export function paradisShellsAccess(where: IParadisAgentShellsAccess['where'], modAlive: boolean): IParadisAgentShellsAccess {
+/**
+ * 構成ごとの、出力と停止の可否。SSH の接続先のものは、接続先で読める PC（`remoteOutput`）なら出力だけ読める
+ * （止めるのは手元の mod だけ）。古いアプリは `where` があれば `output` を見ないので、今までどおりの表示のまま。
+ */
+export function paradisShellsAccess(where: IParadisAgentShellsAccess['where'], modAlive: boolean, remoteOutput: boolean = false): IParadisAgentShellsAccess {
+	if (where === 'ssh' && remoteOutput) {
+		return { output: true, stop: false, where };
+	}
 	return where !== undefined ? { output: false, stop: false, where } : { output: true, stop: modAlive };
 }

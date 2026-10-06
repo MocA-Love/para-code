@@ -12,6 +12,7 @@ import {
 	nextShellPillChange,
 	partitionShells,
 	shellDurationLabel,
+	shellOutputErrorMessage,
 	shellOutputUnavailableReason,
 	shellStatusLabel,
 	shellStopState,
@@ -331,7 +332,7 @@ export function ShellDetail({ terminalKey, shell, access, now, visible }: { term
 			) : output === undefined ? (
 				<Text style={styles.reason}>{outputs.error ?? '読み込んでいます'}</Text>
 			) : output.error !== undefined ? (
-				<Text style={styles.reason}>{output.error === 'not-found' ? '出力のファイルが見つかりません（消えたか、PC が再起動しました）。' : 'この PC からは出力を読めません。'}</Text>
+				<Text style={styles.reason}>{shellOutputErrorMessage(output.error)}</Text>
 			) : output.lines.length === 0 ? (
 				<Text style={styles.reason}>まだ出力はありません</Text>
 			) : (

@@ -14,6 +14,10 @@
 //
 // 追記だけを送るので、長い会話でも毎回読み直すことにはならない。ファイルが縮んだとき
 // （別セッションに置き換わった）だけ写しを捨てて取り直す。
+//
+// 写しの担当は「接続先に繋いでいて、その transcript が実在する」ウィンドウなので、同じ会話のバックグラウンドの
+// シェルの出力も担当が読む（shared process の頼みを受けて、接続先の REH のチャネルで読む。agent.shells.v1。
+// 取り決めは common/paradisRemoteShellOutput.ts）。
 
 import { disposableWindowInterval } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -28,7 +32,9 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisMobileRelayService, PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
+import { IParadisRemoteShellOutputRequest, PARADIS_REMOTE_SHELL_OUTPUT_CHANNEL } from '../common/paradisRemoteShellOutput.js';
 
 /** 台帳を見に行く間隔。ファイル監視が効いていれば、これは取りこぼしの受け皿になる。 */
 const SYNC_INTERVAL_MS = 2000;
@@ -64,6 +70,7 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		@IFileService private readonly fileService: IFileService,
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		this.remoteAuthority = environmentService.remoteAuthority;
@@ -86,8 +93,31 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 				}
 			}
 		}));
+		this._register(this.service.onDidRequestRemoteShellOutput(request => {
+			if (request.ownerId === this.ownerId) {
+				void this.readShellOutput(request);
+			}
+		}));
 		this._register(disposableWindowInterval(mainWindow, () => this.sync(), SYNC_INTERVAL_MS));
 		void this.sync();
+	}
+
+	/**
+	 * バックグラウンドのシェルの出力の末尾を、接続先の REH で読んで返す。パスの形・持ち主の検査は REH がする
+	 * （IFileService では持ち主を確かめられない）。読めなければ null を返す（アプリには「読めない」と出る）。
+	 */
+	private async readShellOutput(request: IParadisRemoteShellOutputRequest): Promise<void> {
+		let result: unknown = null;
+		try {
+			const connection = this.remoteAgentService.getConnection();
+			if (connection !== null && connection.remoteAuthority === this.remoteAuthority) {
+				result = await connection.withChannel(PARADIS_REMOTE_SHELL_OUTPUT_CHANNEL, channel => channel.call('readTails', [request.items, request.sessionId, request.lines]));
+			}
+		} catch (error) {
+			// 古い REH（チャネルが無い）・接続切れ
+			this.logService.trace('[paradis] could not read the background shell output on the host', error);
+		}
+		await this.service.completeRemoteShellOutput(this.ownerId, request.requestId, result).catch(() => undefined);
 	}
 
 	private remoteUri(remotePath: string): URI {
