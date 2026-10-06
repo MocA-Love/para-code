@@ -282,7 +282,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		};
 	}
 
-	test('keeps the agent tabs each pane uses by tab_id for the sharing display, and treats a failed list as none', async () => {
+	test('keeps the agent tabs each pane uses by tab_id for the sharing display, and keeps the last list when it cannot be read', async () => {
 		let grants: Promise<unknown> = Promise.resolve([{ token: 'token', pageId: 'view-a' }, { token: 'token', pageId: 'view-b' }, { token: 'other', pageId: 'view-a' }]);
 		const fixture = createFixture({ listAgentTabGrants: () => grants });
 		await fixture.bindingModel.refresh();
@@ -295,7 +295,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		await fixture.bindingModel.refresh();
 		assert.deepStrictEqual({ listed, afterFailure: fixture.bindingModel.getAgentTabsForToken('token') }, {
 			listed: { byToken: ['view-a', 'view-b'], byPage: ['token', 'other'], none: [] },
-			afterFailure: [],
+			afterFailure: ['view-a', 'view-b'],
 		});
 	});
 

@@ -645,23 +645,26 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			const [bindings, seenTokens, agentTabGrants] = await Promise.all([
 				channel.call<IParadisPaneBinding[]>('listBindings'),
 				channel.call<string[]>('listSeenTokens'),
-				// 共有の表示用。取れなくても共有の判定には使わないので、空として続ける
-				channel.call<IParadisAgentTabGrant[]>('listAgentTabGrants').then(value => Array.isArray(value) ? value : [], () => []),
+				// 共有の表示用。取れなかったら前回の値のまま（共有の判定には使わない）
+				channel.call<IParadisAgentTabGrant[]>('listAgentTabGrants').then(value => Array.isArray(value) ? value : undefined, () => undefined),
 			]);
 			if (this._store.isDisposed) {
 				return undefined;
 			}
 			this._clearVerifiedPageBinds(refreshSerial);
 			if (refreshSerial > this._appliedRefreshSerial) {
-				const agentTabsByToken = new Map<string, string[]>();
-				const agentTabOwnersByPage = new Map<string, string[]>();
-				for (const grant of agentTabGrants) {
-					agentTabsByToken.set(grant.token, [...(agentTabsByToken.get(grant.token) ?? []), grant.pageId]);
-					agentTabOwnersByPage.set(grant.pageId, [...(agentTabOwnersByPage.get(grant.pageId) ?? []), grant.token]);
+				let agentTabsChanged = false;
+				if (agentTabGrants !== undefined) {
+					const agentTabsByToken = new Map<string, string[]>();
+					const agentTabOwnersByPage = new Map<string, string[]>();
+					for (const grant of agentTabGrants) {
+						agentTabsByToken.set(grant.token, [...(agentTabsByToken.get(grant.token) ?? []), grant.pageId]);
+						agentTabOwnersByPage.set(grant.pageId, [...(agentTabOwnersByPage.get(grant.pageId) ?? []), grant.token]);
+					}
+					agentTabsChanged = JSON.stringify([...agentTabsByToken]) !== JSON.stringify([...this._agentTabsByToken]);
+					this._agentTabsByToken = agentTabsByToken;
+					this._agentTabOwnersByPage = agentTabOwnersByPage;
 				}
-				const agentTabsChanged = JSON.stringify([...agentTabsByToken]) !== JSON.stringify([...this._agentTabsByToken]);
-				this._agentTabsByToken = agentTabsByToken;
-				this._agentTabOwnersByPage = agentTabOwnersByPage;
 				const changed = agentTabsChanged || JSON.stringify(bindings) !== JSON.stringify(this._bindings)
 					|| seenTokens.length !== this._seenTokens.size
 					|| seenTokens.some(token => !this._seenTokens.has(token));
