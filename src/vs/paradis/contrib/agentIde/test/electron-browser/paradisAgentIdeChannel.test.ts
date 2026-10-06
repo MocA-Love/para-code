@@ -204,6 +204,18 @@ suite('ParadisAgentIdeChannel', () => {
 		}, { results: ['ok', true, true, true], marked: true, otherSent: 0, waitingSent: 0, notified: 1 });
 	});
 
+	test('a Codex menu on screen (Plan mode "Implement this plan?") gets no keys or text, and is listed as waiting for a choice', async () => {
+		const { channel, caller, add } = setup();
+		const planning = add(4, REPOSITORY.id, 'review');
+		// 2 行目に、Plan メニューの末尾を複数行で出す（キーの案内の行は単語を連ねて組み立てる）
+		planning.screenText = ['  Implement this plan?', '\u203a 1. Yes, implement this plan', '  3. No, stay in Plan mode', `  ${['enter', 'select', '\u00b7', 'esc', 'back'].join(' ')}`].join('\n');
+		const results = await Promise.all((['enter', 'down', 'escape'] as const).map(async key => outcome(await channel.run(caller.token, { op: 'sendKey', terminal: id(planning), key })).includes('plan_implement')));
+		const typed = outcome(await channel.run(caller.token, { op: 'sendInput', terminal: id(planning), text: '1' })).includes('plan_implement');
+		const listed = await channel.run(caller.token, { op: 'listTerminals' });
+		const entry = listed.ok ? (listed.data as { terminals: { id: string; status: string; can_send: boolean }[] }).terminals.find(terminal => terminal.id === id(planning)) : undefined;
+		assert.deepStrictEqual({ results, typed, sent: planning.sent.length, status: entry?.status, canSend: entry?.can_send }, { results: [true, true, true], typed: true, sent: 0, status: 'waiting_for_choice', canSend: false });
+	});
+
 	test('Enter in a plain shell needs the shell setting; working agents do not get Enter', async () => {
 		const blocked = setup();
 		const shell = blocked.add(4, REPOSITORY.id, undefined, null);
