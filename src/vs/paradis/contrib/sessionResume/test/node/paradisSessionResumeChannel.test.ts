@@ -127,6 +127,28 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('titles Claude sessions by the /rename name over the automatic title, also when the name is past the head', async () => {
+		const title = (kind: 'custom' | 'ai', text: string, sessionId: string) => JSON.stringify(kind === 'custom'
+			? { type: 'custom-title', customTitle: text, sessionId }
+			: { type: 'ai-title', aiTitle: text, sessionId });
+		const padding = claudeMessage('assistant', 'x'.repeat(700 * 1024));
+		const renamedShort = join(claudeProject, 'renamed-short.jsonl');
+		const renamedLong = join(claudeProject, 'renamed-long.jsonl');
+		const aiOnly = join(claudeProject, 'ai-only.jsonl');
+		await Promise.all([
+			writeLines(renamedShort, [title('ai', 'Old topic', 'renamed-short'), claudeMessage('user', 'Short prompt'), title('custom', 'My name', 'renamed-short'), title('ai', 'Newer topic', 'renamed-short')]),
+			writeLines(renamedLong, [title('ai', 'Head topic', 'renamed-long'), claudeMessage('user', 'Long prompt'), padding, title('custom', 'Late name', 'renamed-long'), title('ai', 'Tail topic', 'renamed-long')]),
+			writeLines(aiOnly, [claudeMessage('user', 'Plain prompt'), padding, title('ai', 'Tail only topic', 'ai-only')]),
+		]);
+		const sessions = await listSessions(createService());
+		const byId = new Map(sessions.map(session => [session.id, { title: session.title, preview: session.preview }]));
+		assert.deepStrictEqual(Object.fromEntries(['renamed-short', 'renamed-long', 'ai-only'].map(id => [id, byId.get(id)])), {
+			'renamed-short': { title: 'My name', preview: 'Short prompt' },
+			'renamed-long': { title: 'Late name', preview: 'Long prompt' },
+			'ai-only': { title: 'Tail only topic', preview: 'Plain prompt' },
+		});
+	});
+
 	test('lists Claude and Codex transcripts with workspace metadata, agent, mtime, and opaque catalog ids', async () => {
 		const claudePath = join(claudeProject, 'claude-session.jsonl');
 		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');
