@@ -196,7 +196,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			type: 'object',
 			properties: {
 				profile: { type: 'string', description: 'Name of the profile to switch to (see list_browser_profiles).' },
-				tabId: { type: 'string', description: 'Optional tabId of your tab. Omit to switch the page currently shared with this terminal pane.' },
+				tabId: { type: 'string', description: 'Optional tabId of your tab (tab_id also works). Omit to switch this pane\'s current tab (the one you last opened or selected, otherwise the page shared with this terminal pane).' },
 			},
 			required: ['profile'],
 			additionalProperties: false,

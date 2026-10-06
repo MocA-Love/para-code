@@ -154,6 +154,11 @@ interface IParadisCdpIngressAccess {
 	/** Present only for access inferred from a peer PID. */
 	readonly peerAuthority?: IParadisCdpPeerAuthority;
 	readonly peerGeneration?: number;
+	/**
+	 * ピア PID で解決したペインの接続に `?tab=` が付いていたときの、元のペインの access。
+	 * タブの access は、これが今も有効な間だけ有効（ペインのシェルが変わったら一緒に失効させる）。
+	 */
+	readonly parent?: IParadisCdpIngressAccess;
 }
 
 interface IParadisCdpQueryToken {
@@ -466,7 +471,10 @@ export class ParadisCdpGateway extends Disposable {
 
 	/** 指定トークンのアクティブなCDP接続を強制切断する（クライアントは次のツール呼び出しで再接続する）。 */
 	closeConnectionsForToken(token: string): void {
-		this._peerResolutionEpoch++;
+		// ピア PID の解決はペインの単位。タブのスコープキーを閉じるだけなら、ほかの接続の解決を捨てない
+		if (paradisParseAgentTabScopeKey(token).tabId === undefined) {
+			this._peerResolutionEpoch++;
+		}
 		// 共有の相手が変わる。前のタブの通信は数えない
 		this._networkActivity.get(token)?.reset();
 		const peerAuthority = this._peerAuthorities.get(token);
@@ -725,6 +733,22 @@ export class ParadisCdpGateway extends Disposable {
 		if (query.present) {
 			return query.token ? this._captureIngressAccess(query.token) : undefined;
 		}
+		// `?pane=` の無い接続（外部の生 CDP クライアント）は、ピア PID でペインを決め、`?tab=` があればそのタブだけを通す。
+		// URL にトークンを載せずにタブを選べるようにするため（get_cdp_endpoint の tabWebSocketDebuggerUrl）
+		const tab = this._queryTabOf(req);
+		if (tab === null) {
+			return undefined;
+		}
+		const paneAccess = await this._resolvePeerIngress(req);
+		if (paneAccess === undefined || tab === undefined) {
+			return paneAccess;
+		}
+		const scoped = this._captureIngressAccess(paradisAgentTabScopeKey(paneAccess.token, tab));
+		return scoped === undefined ? undefined : { ...scoped, parent: paneAccess };
+	}
+
+	/** ピア PID からペインの access を決める（ソケット単位で、ペインの access だけをメモ化する）。 */
+	private async _resolvePeerIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
 		const s = req.socket as Socket;
 		const cached = this._socketTokens.get(s);
 		if (cached) {
@@ -797,6 +821,7 @@ export class ParadisCdpGateway extends Disposable {
 				&& (access.peerAuthority === undefined
 					|| (this._peerAuthorities.get(access.token) === access.peerAuthority
 						&& access.peerGeneration === access.peerAuthority.generation))
+				&& (access.parent === undefined || this._isIngressAccessCurrent(access.parent))
 				&& this.delegate.isIngressLeaseCurrent(access.lease);
 		} catch {
 			return false;
@@ -846,6 +871,24 @@ export class ParadisCdpGateway extends Disposable {
 			return { present: true, token: paradisAgentTabScopeKey(values[0], tabs[0]) };
 		} catch {
 			return { present: true };
+		}
+	}
+
+	/** `?pane=` の無い接続の `?tab=`。無ければ undefined、形が正しくなければ null。 */
+	private _queryTabOf(req: http.IncomingMessage): string | undefined | null {
+		try {
+			const rawUrl = req.url ?? '/';
+			if (rawUrl.length > MAX_INGRESS_URL_LENGTH) {
+				return null;
+			}
+			const url = new URL(rawUrl, 'http://127.0.0.1');
+			if (!url.searchParams.has('tab')) {
+				return undefined;
+			}
+			const tabs = url.searchParams.getAll('tab');
+			return tabs.length === 1 && paradisIsValidAgentTabId(tabs[0]) ? tabs[0] : null;
+		} catch {
+			return null;
 		}
 	}
 

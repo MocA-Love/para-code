@@ -108,6 +108,8 @@ suite('Paradis CDP gateway ingress authority', () => {
 				[paradisGatewayPaneQuery('pane-token'), paradisGatewayPaneQuery(paradisAgentTabScopeKey('pane token', 'tab/1'))],
 				['?pane=pane-token', '?pane=pane%20token&tab=tab%2F1'],
 			);
+			const tabState = fixture.gateway as unknown as { _queryTabOf(req: { readonly url: string }): string | undefined | null };
+			assert.deepStrictEqual(['/json/version', '/json/version?tab=tab-1', '/json/version?tab=a&tab=b', '/json/version?tab='].map(url => tabState._queryTabOf({ url })), [undefined, 'tab-1', null, null]);
 		} finally {
 			fixture.gateway.dispose();
 		}

@@ -1959,6 +1959,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 			});
 		});
 
+		test('a reloaded window (new renderer connection) and a tab moved to another space drop the grants', async () => {
+			const { fixture, connection, grant } = await grantFixture();
+			assert.strictEqual(await grant('tab-a'), true);
+			assert.strictEqual(await grant('tab-b'), true);
+			// tab-b が別のスペースへ移った（確定したスコープが変わった）
+			await fixture.service.syncBindingAuthority(connection, {
+				revision: 2,
+				complete: true,
+				panes: [{ token: 'token', scope: { kind: 'unscoped' } }, { token: 'other', scope: { kind: 'unscoped' } }],
+				browserViews: ['page-user', 'tab-a', 'tab-b'].map(viewId => ({ viewId, scope: viewId === 'tab-b' ? { kind: 'managed', stateKey: 'space-x' } : { kind: 'unscoped' } })),
+			});
+			const afterMove = (await fixture.service.listAgentTabGrants(connection)).map(entry => entry.pageId);
+			const reloaded = {};
+			fixture.service.registerRendererConnection('window:1', reloaded);
+			await fixture.service.syncBindingAuthority(reloaded, authorityManifest(3, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-a', 'tab-b']));
+			assert.deepStrictEqual({ afterMove, afterReload: await fixture.service.listAgentTabGrants(reloaded) }, { afterMove: ['tab-a'], afterReload: [] });
+		});
+
 		test('a terminal exit forgets every grant and the selected tab of that pane', async () => {
 			const { fixture, connection, grant } = await grantFixture();
 			assert.strictEqual(await grant('tab-a'), true);
