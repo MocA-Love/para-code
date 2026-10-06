@@ -75,6 +75,7 @@ import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradi
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
 import { IParadisAgentSessionStatus, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
+import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -3653,6 +3654,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly claudeModBridge: ParadisClaudeModBridge = paradisClaudeModBridge,
 		/** mod へ渡した回答の鍵（同じカードへの二度目を断る時間）に使う時計。テストは差し替える。 */
 		private readonly modAnswerNow: () => number = Date.now,
+		/**
+		 * SSH の接続先のシェルの出力を、transcript を写している担当ウィンドウへ頼む口（agent.shells.v1）。
+		 * 無ければ接続先の出力は読まない（今までどおり「読めない」）。
+		 */
+		private readonly remoteShellOutputs?: ParadisRemoteShellOutputRequests,
 	) {
 		super();
 		this.codexDirectoryWalkLedger = codexDirectoryWalkBudget ?? new ParadisDirectoryWalkLedger(PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS, PARADIS_CODEX_DIRECTORY_WALK_LIMIT);
@@ -4409,17 +4415,22 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/**
 	 * バックグラウンドのシェルの出力の末尾（`shell-output`）と停止（`action/stopShell`）。agent.shells.v1。
-	 * 出力のパスは transcript で覚えたものだけを使い、SSH・WSL・Windows では読まない・止めない（`shellsAccess`）。
-	 * 止めるのは mod（Claude Mods）の TaskStop だけで、transcript に残らないので ack で一覧を「停止」に直す。
+	 * 出力のパスは transcript で覚えたものだけを使う。SSH の接続先のものは接続先で読み、WSL・Windows では読まない。
+	 * 止めるのは手元の mod（Claude Mods）の TaskStop だけで、transcript に残らないので ack で一覧を「停止」に直す。
 	 */
 	private async handleShellRequest(mobileId: string, msg: ParadisAgentShellInbound): Promise<void> {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const valid = token !== undefined && tailer !== undefined && tailer.agent === 'claude' && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId);
+		const remoteShellOutputs = valid && this.canReadRemoteShellOutput(token) ? this.remoteShellOutputs : undefined;
 		await paradisHandleShellRequest(msg, valid ? {
 			// 出力の置き場も mod も、tailer が読んでいる transcript の会話のもの
 			key: token, access: this.shellsAccessFor(token, tailer), sessionId: paradisClaudeSessionIdFromTranscript(tailer.transcriptPath), reads: this.shellOutputReads,
 			outputFile: shellId => tailer.shellOutputFile(shellId),
+			...(remoteShellOutputs !== undefined ? {
+				// 接続先のファイルは、この transcript を写している担当ウィンドウ（接続先に繋いでいる）に読んでもらう
+				readRemote: (items, sessionId, lines) => remoteShellOutputs.request(this.remoteTranscriptMirror?.ownerForLocalPath(tailer.transcriptPath), items, sessionId, lines),
+			} : {}),
 			isRunning: shellId => tailer.isShellRunning(shellId),
 			markOutputEnded: (shellId, end) => tailer.markShellEndedFromOutput(shellId, end),
 			markOutputRunning: shellId => tailer.markShellRunningFromOutput(shellId),
@@ -4429,13 +4440,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		} : undefined, reply => this.sendTo(mobileId, { ...reply, id: msg.id, requestId: msg.requestId }, token ?? msg.token));
 	}
 
-	/** この構成でシェルの出力と停止を使えるか（SSH・WSL・Windows では使えない。停止は mod が生きているときだけ）。 */
+	/**
+	 * この構成でシェルの出力と停止を使えるか（WSL・Windows では使えない。SSH の接続先は出力だけ、接続先で読める
+	 * ときに読む。停止は手元で mod が生きているときだけ）。
+	 */
 	private shellsAccessFor(token: string, tailer: TranscriptTailer) {
 		const cwd = this.tokenToCwd.get(token);
 		const where = this.isRemoteAgentPane(token) ? 'ssh' as const
 			: cwd !== undefined && paradisResolveAgentHomes(cwd).wsl !== undefined ? 'wsl' as const
 				: process.platform === 'win32' ? 'windows' as const : undefined;
-		return paradisShellsAccess(where, this.claudeModBridge.isAlive(token, paradisClaudeSessionIdFromTranscript(tailer.transcriptPath)));
+		return paradisShellsAccess(where, this.claudeModBridge.isAlive(token, paradisClaudeSessionIdFromTranscript(tailer.transcriptPath)), where === 'ssh' && this.canReadRemoteShellOutput(token));
+	}
+
+	/** SSH の接続先のペインで、出力を接続先で読めるか（担当ウィンドウへ頼む口と、写しの台帳がある）。 */
+	private canReadRemoteShellOutput(token: string): boolean {
+		return this.remoteShellOutputs !== undefined && this.remoteTranscriptMirror !== undefined && this.isRemoteAgentPane(token);
 	}
 
 	/** mod の生き死に（`alive-changed`・`hello`・`bye`・`pending-changed`）で停止の可否が変わったら、一覧ごと送り直す。 */
