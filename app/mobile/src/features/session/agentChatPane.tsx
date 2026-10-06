@@ -191,6 +191,8 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	// 「質問に答えずに話す」で取り下げた質問は、その結果を質問の行へまとめる（questionOutcomes.ts）
 	// Workflow のカード（agent.workflows.v1）。PC が実行を追っている起動の行だけをカードにする（古い PC なら今の行のまま）
 	const workflowsSupported = usePcCapability(PcCapability.AgentWorkflows);
+	// セッションの輪（agent.session-status.v1）。広告しない PC では今の Monitor とシェルのピルのまま
+	const sessionStatusSupported = usePcCapability(PcCapability.AgentSessionStatus);
 	const workflows = workflowsSupported && chatReady ? chat?.workflows : undefined;
 	const workflowIdsKey = (workflows ?? []).map(workflow => workflow.toolUseId ?? '').join('\n');
 	const workflowToolUseIds = useMemo(() => new Set(workflowIdsKey.split('\n').filter(id => id.length > 0)), [workflowIdsKey]);
@@ -379,6 +381,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						monitors={chatReady ? chat?.monitors : undefined}
 						shells={shownShells}
 						shellsAccess={chatReady ? chat?.shellsAccess : undefined}
+						sessionStatus={chatReady ? chat?.sessionStatus : undefined}
+						sessionStatusSupported={sessionStatusSupported}
+						working={working}
 						sendText={sendText}
 						updateClaudeSetting={actions.updateClaudeSetting}
 						onAfterSubmit={scrollToLatest}

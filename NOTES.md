@@ -314,6 +314,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/state.json` | `capabilities` に `notify.dismiss-sync.v1` を追加（2026-10-06） | 端末をまたいだ通知の片付け。PC は片付けの台帳をディスクに残し、繋がったアプリの `dismiss-sync` に番号より後の片付け（`dismiss-log`）を返す。PC だけが広告する |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `agent.json` | 両方の `capabilities` に `agent.workflows.v1`、`agent.json` に `workflows`・`workflowsAt` の delta と、`shells` の先頭の要素に `ownerAgentId` を追加（2026-10-06） | トークの Workflow のカード（Claude Code の Workflow の実行を段階・子・状態・終わった後のトークンでまとめる。子のシェルはカードへ寄せる） |
 | `app/protocol/test/golden/state.json` | `capabilities` に `notify.dnd-remote.v1`、`current` に `doNotDisturb`（`enabled`・`until`）を追加（2026-10-06） | モバイルから PC のおやすみモードを切り替える。PC は今の状態を Desktop State に載せて変わったときだけ送り直し、fs の `dndSet` で切り替えを受ける。PC だけが広告する |
+| `app/protocol/test/golden/state.json` / `state-request.json` / `agent.json` | 両方の `capabilities` に `agent.session-status.v1`、`agent.json` に `sessionStatus`・`sessionStatusAt` の delta を追加（2026-10-06） | モバイルのセッションの輪（キャッシュの hit / miss と切れる時刻、コンテキストの使用率。Claude Code 2.1.291 の `cn.record` と同じ式で数える） |
+| `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.3.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。`session.measure` の `context` を `measure` として送る版）（2026-10-06） | モバイルのセッションの輪のコンテキストの使用率を statusline と同じ値にする（無い版・古い Claude Code では transcript の usage から出す） |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
