@@ -7,6 +7,7 @@ import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
+import { useAppLocked } from '../../appLock.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
 import { AGENT_QUESTION_CHAT_CAPABILITY, AGENT_QUESTION_NOTES_CAPABILITY, askQuestionFeatures, questionHasPreview } from '../../agentQuestionMod.js';
 import { agentSendIds } from '../../agentSendIds.js';
@@ -64,11 +65,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 }) {
 	const terminalKey = terminal.terminalKey;
 	const chat = useAppStore(s => s.agentChats.get(terminalKey));
-	const { attachAgent, detachAgent, refreshAgent, setViewingTerminalKey, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings } = useAppStore(useShallow(s => ({
+	const { attachAgent, detachAgent, refreshAgent, setViewingTerminalKey, markAgentNotificationsSeen, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings } = useAppStore(useShallow(s => ({
 		attachAgent: s.attachAgent,
 		detachAgent: s.detachAgent,
 		refreshAgent: s.refreshAgent,
 		setViewingTerminalKey: s.setViewingTerminalKey,
+		markAgentNotificationsSeen: s.markAgentNotificationsSeen,
 		fsUpload: s.fsUpload,
 		requestAgentModelCatalog: s.requestAgentModelCatalog,
 		requestAgentCommandCatalog: s.requestAgentCommandCatalog,
@@ -104,6 +106,16 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		setViewingTerminalKey(terminalKey);
 		return () => setViewingTerminalKey(undefined);
 	}, [active, terminalKey, setViewingTerminalKey]));
+	// トークを開いたら、このエージェントの完了・エラーの通知を見たことにし、ほかの端末からも消す（Q241 A）。
+	// 見ている間に届いた分も同じ。許可・質問は回答で消えるので触らない。ロック画面の下では数えない。
+	const locked = useAppLocked();
+	const hasUnseenSettled = useAppStore(s => s.notifications.some(n => n.terminalKey === terminalKey && (n.kind === 'agent-done' || n.kind === 'agent-error')));
+	useFocusEffect(useCallback(() => {
+		if (active && !locked) {
+			markAgentNotificationsSeen(terminalKey);
+		}
+		return undefined;
+	}, [active, locked, terminalKey, hasUnseenSettled, markAgentNotificationsSeen]));
 
 	const chatReady = chat !== undefined && chat.none !== true;
 	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;

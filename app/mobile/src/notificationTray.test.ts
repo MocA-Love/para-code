@@ -9,7 +9,7 @@ vi.mock('./platform.js', () => ({
 	presentLocalNotification: async () => undefined,
 }));
 
-import { notifyCollapseKey, readTrayData, selectHandledByPc, selectSameCollapse, selectSettledByState, trayDateMs, type TrayNotification } from './notificationTray.js';
+import { notifyCollapseKey, readTrayData, selectHandledByPc, selectSameCollapse, selectSeenOnOpen, selectSettledByState, trayDateMs, type TrayNotification } from './notificationTray.js';
 import { TrayReconcileRequests } from './notificationTraySync.js';
 
 const PC = 'pc-a';
@@ -45,6 +45,31 @@ describe('selectHandledByPc', () => {
 			tray('not-ours', {}),
 		];
 		expect(selectHandledByPc(presented, { pcId: PC, ids: ['n1'], tokens: ['tok-1'], before: T0 })).toEqual(['by-id', 'by-token', 'legacy-no-pc']);
+	});
+
+	it('keeps prompts when the PC acknowledged the agent, and clears them only by id (Q243 A)', () => {
+		const presented = [
+			tray('done', { agentToken: 'tok-1', kind: 'agent-done', pcId: PC }),
+			tray('prompt', { agentToken: 'tok-1', kind: 'agent-question', notifyId: 'q1', pcId: PC }),
+			tray('answered', { agentToken: 'tok-1', kind: 'agent-question', notifyId: 'q2', pcId: PC }),
+		];
+		expect(selectHandledByPc(presented, { pcId: PC, ids: ['q2'], tokens: ['tok-1'], before: T0 })).toEqual(['done', 'answered']);
+	});
+});
+
+describe('selectSeenOnOpen', () => {
+	it('picks the done and error notifications of the opened agent on that PC, never prompts (Q241 A)', () => {
+		const presented = [
+			tray('done', { agentToken: 'tok-1', kind: 'agent-done', notifyId: 'n1', pcId: PC }),
+			tray('error', { agentToken: 'tok-1', kind: 'agent-error', notifyId: 'n2' }),
+			tray('prompt', { agentToken: 'tok-1', kind: 'agent-question', notifyId: 'q1', pcId: PC }),
+			tray('other-agent', { agentToken: 'tok-2', kind: 'agent-done', notifyId: 'n3', pcId: PC }),
+			tray('other-pc', { agentToken: 'tok-1', kind: 'agent-done', notifyId: 'n4', pcId: 'pc-b' }),
+			tray('by-key', { terminalKey: 'terminal-1', kind: 'agent-done', notifyId: 'n5', pcId: PC }),
+			tray('by-key-unknown-pc', { terminalKey: 'terminal-1', kind: 'agent-done', notifyId: 'n6' }),
+		];
+		expect(selectSeenOnOpen(presented, { pcId: PC, terminalKey: 'terminal-1', agentToken: 'tok-1' }))
+			.toEqual({ notifyIds: ['n1', 'n2', 'n5'], identifiers: ['done', 'error', 'by-key'] });
 	});
 });
 

@@ -90,6 +90,10 @@ vi.mock('./lastKnownPcStore.js', () => ({
 	lastKnownPcStorage: { read: async () => null, write: async () => undefined, remove: async () => undefined },
 	lastKnownPcWriter: { schedule: () => undefined, flush: async () => undefined, forget: async () => undefined },
 }));
+// 片付けの預かり（Q242 A）のファイルも同じ。
+vi.mock('./notifyDismissOutboxStore.js', () => ({
+	notifyDismissOutboxStorage: { read: async () => null, write: async () => undefined, remove: async () => undefined },
+}));
 vi.mock('./connectionLogStore.js', () => ({
 	connectionLog: { append: () => undefined, load: async () => undefined, flush: async () => undefined, forget: async () => undefined, list: () => [], subscribe: () => () => undefined, revision: 0 },
 	readNetworkState: async () => undefined,

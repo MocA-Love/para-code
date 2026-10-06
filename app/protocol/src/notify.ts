@@ -188,6 +188,41 @@ export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | u
 }
 
 /**
+ * 片付けの同期（notify.dismiss-sync.v1。PC の `paradisNotifyDismissLedger.ts` と一致）。
+ * - `dismiss-sync`（M→PC）: 最後に受け取った片付けの台帳の ID と番号。繋がるたびに送る。初めてなら `after: 0`
+ * - `dismiss-log`（PC→M）: その番号より後に片付いた通知 ID（古い順）と、台帳のいまの番号。台帳の ID が違えば全部
+ * PC が広告しているときだけ送る（旧PCは `t` を知らず、通知設定としても読まずに捨てる）。
+ */
+export interface NotifyDismissLog {
+	readonly ledger: string;
+	readonly seq: number;
+	readonly ids: readonly string[];
+}
+
+const DISMISS_LEDGER_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+/** 受け取る ID の数の上限（PC の台帳は 200 件まで）。 */
+const DISMISS_LOG_MAX_IDS = 500;
+
+export function encodeNotifyDismissSync(cursor: { readonly ledger: string; readonly seq: number } | undefined): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss-sync', ...(cursor !== undefined ? { ledger: cursor.ledger } : {}), after: cursor?.seq ?? 0 }));
+}
+
+/** `dismiss-log` を読む。違う形・形の合わない値は undefined。 */
+export function decodeNotifyDismissLog(bytes: Uint8Array): NotifyDismissLog | undefined {
+	try {
+		const raw = JSON.parse(decodeUtf8(bytes)) as { t?: unknown; ledger?: unknown; seq?: unknown; ids?: unknown };
+		if (raw.t !== 'dismiss-log' || typeof raw.ledger !== 'string' || !DISMISS_LEDGER_PATTERN.test(raw.ledger)
+			|| typeof raw.seq !== 'number' || !Number.isInteger(raw.seq) || raw.seq < 0 || !Array.isArray(raw.ids)) {
+			return undefined;
+		}
+		const ids = raw.ids.slice(0, DISMISS_LOG_MAX_IDS).filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200);
+		return { ledger: raw.ledger, seq: raw.seq, ids };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * アプリが裏に回った・前面に戻ったことを PC へ伝える（W2-34。notify チャネル M→PC）と、その確認（PC→M）。
  *
  * アプリは裏に回ったとき、PC がこの知らせを受けて確認を返したときだけ、ソケットを最大30秒保つ。

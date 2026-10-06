@@ -83,7 +83,7 @@ function mayBelongTo(data: Readonly<Record<string, unknown>> | undefined, pcId: 
 	return owner === undefined || owner === pcId;
 }
 
-/** PCが処理済みと知らせてきた通知（通知ID、またはエージェントトークンで一致）。 */
+/** PCが処理済みと知らせてきた通知（通知ID、またはエージェントトークンで一致。トークンでは許可・質問を除く）。 */
 export function selectHandledByPc(presented: readonly TrayNotification[], handled: { readonly pcId: string; readonly ids: readonly string[]; readonly tokens: readonly string[]; readonly before: number }): string[] {
 	const ids = new Set(handled.ids);
 	const tokens = new Set(handled.tokens);
@@ -92,7 +92,9 @@ export function selectHandledByPc(presented: readonly TrayNotification[], handle
 		.filter(notification => {
 			const notifyId = text(notification.data, 'notifyId');
 			const agentToken = text(notification.data, 'agentToken');
-			return (notifyId !== undefined && ids.has(notifyId)) || (agentToken !== undefined && tokens.has(agentToken));
+			// エージェント単位（PC で確認済みにした）では許可・質問を消さない（Q243 A。回答で片付いたら ID で届く）。
+			return (notifyId !== undefined && ids.has(notifyId))
+				|| (agentToken !== undefined && tokens.has(agentToken) && text(notification.data, 'kind') !== 'agent-question');
 		})
 		.map(notification => notification.identifier);
 }
@@ -159,4 +161,33 @@ export function selectSameCollapse(presented: readonly TrayNotification[], colla
 
 function hashKey(input: string): string {
 	return bytesToHex(sha256(new TextEncoder().encode(input))).slice(0, 32);
+}
+
+/**
+ * トークを開いたときに「見た」ことにする、通知センターのそのエージェントの完了・エラーの通知（Q241 A）。
+ * 返すのは通知 ID（PC へ伝える）と、通知センターの識別子（この端末から消す）。許可・質問は含めない。
+ */
+export function selectSeenOnOpen(presented: readonly TrayNotification[], target: { readonly pcId: string; readonly terminalKey: string; readonly agentToken: string | undefined }): { readonly notifyIds: string[]; readonly identifiers: string[] } {
+	const notifyIds: string[] = [];
+	const identifiers: string[] = [];
+	for (const notification of presented) {
+		const data = notification.data;
+		const kind = text(data, 'kind');
+		if ((kind !== 'agent-done' && kind !== 'agent-error') || !mayBelongTo(data, target.pcId)) {
+			continue;
+		}
+		const agentToken = text(data, 'agentToken');
+		// ターミナルキーは同じ構成の 2 台で重なりうるので、送信元が書かれているときだけ使う（selectSettledByState と同じ）。
+		const matches = (target.agentToken !== undefined && agentToken === target.agentToken)
+			|| (agentToken === undefined && text(data, 'pcId') === target.pcId && text(data, 'terminalKey') === target.terminalKey);
+		if (!matches) {
+			continue;
+		}
+		identifiers.push(notification.identifier);
+		const notifyId = text(data, 'notifyId');
+		if (notifyId !== undefined) {
+			notifyIds.push(notifyId);
+		}
+	}
+	return { notifyIds, identifiers };
 }

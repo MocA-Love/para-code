@@ -996,6 +996,75 @@ describe('MobileController', () => {
 		expect(notified.map(n => n.id)).toEqual(['q1', 'qa', 'da', 'q2', 'q3']);
 	});
 
+	it('syncs dismissals with a PC that keeps a dismiss ledger (notify.dismiss-sync.v1)', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; });
+		const handled: { ids: readonly string[]; tokens: readonly string[] }[] = [];
+		controller.onNotifyHandled = h => handled.push(h);
+		const saved: string[] = [];
+		controller.onNotifyDismissOutboxChanged = () => saved.push(controller.serializedNotifyDismissOutbox());
+		// 前回のアプリが預けたまま落ちた片付けと、前に受け取った台帳の番号
+		controller.restoreNotifyDismissOutbox(JSON.stringify({ v: 1, cursor: { ledger: 'ledger-0001', seq: 4 }, entries: [{ id: 'old-done', opened: true, at: Date.now() }] }));
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+		const pcRaw: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Notify, f => pcRaw.push(JSON.parse(new TextDecoder().decode(f.payload)) as Record<string, unknown>));
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([{ id: 1, title: 'zsh', agentToken: 'agent-1' }]), capabilities: ['notify.dismiss-sync.v1'] })));
+		await flush();
+		// つながったら、預かりを送ってから同期を頼む
+		expect(pcRaw).toEqual([{ t: 'dismiss', id: 'old-done', opened: true }, { t: 'dismiss-sync', ledger: 'ledger-0001', after: 4 }]);
+
+		// 一覧で許可・質問を開いただけでは PC へ伝えない（Q241 A）。完了は伝える
+		pcRaw.length = 0;
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q1', title: 'x', body: 'y', at: 1, agentToken: 'agent-1' }));
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-done', id: 'd1', title: 'x', body: 'y', at: 1, agentToken: 'agent-1' }));
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-done', id: 'd2', title: 'x', body: 'y', at: 1, agentToken: 'agent-1' }));
+		await flush();
+		controller.dismissNotification('q1');
+		controller.dismissNotification('d1');
+		await flush();
+		expect(pcRaw).toEqual([{ t: 'dismiss', id: 'd1', opened: true }]);
+
+		// PC で確認済みにした（エージェント単位）: 完了は消え、許可・質問は残る（Q243 A）
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q2', title: 'x', body: 'y', at: 2, agentToken: 'agent-1' }));
+		await flush();
+		pcMux.send(Channels.Notify, new TextEncoder().encode(JSON.stringify({ t: 'dismissed-token', token: 'agent-1' })));
+		await flush();
+		expect(latest?.notifications.map(n => n.id)).toEqual(['q2']);
+
+		// 台帳の返事: 載った ID を一覧と通知センターから消し、自分の預かりは受け取られたので外し、番号を覚える
+		handled.length = 0;
+		pcMux.send(Channels.Notify, new TextEncoder().encode(JSON.stringify({ t: 'dismiss-log', ledger: 'ledger-0001', seq: 9, ids: ['old-done', 'd1', 'q2'] })));
+		await flush();
+		const file = JSON.parse(saved[saved.length - 1]!) as { cursor: unknown; entries: { id: string }[] };
+		expect({
+			list: latest?.notifications.map(n => n.id),
+			handled,
+			cursor: file.cursor,
+			outbox: file.entries.map(entry => entry.id),
+		}).toEqual({
+			list: [],
+			handled: [{ ids: ['old-done', 'd1', 'q2'], tokens: [] }],
+			cursor: { ledger: 'ledger-0001', seq: 9 },
+			outbox: [],
+		});
+
+		// 通知センターから開いた（一覧に無い）通知も PC へ伝え、受け取られるまで預ける
+		pcRaw.length = 0;
+		controller.markNotificationSeen('pushed-only');
+		await flush();
+		expect([pcRaw, (JSON.parse(saved[saved.length - 1]!) as { entries: { id: string; opened: boolean }[] }).entries.map(entry => [entry.id, entry.opened])])
+			.toEqual([[{ t: 'dismiss', id: 'pushed-only', opened: true }], [['pushed-only', true]]]);
+		controller.disconnect();
+	});
+
 	it('scm/fs request-response resolves and rejects by id', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

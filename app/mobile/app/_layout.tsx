@@ -26,7 +26,7 @@ import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { reportMobileDiagnosticError } from '../src/mobileDiagnostics.js';
 import { useParaToast } from '../src/paraToast.js';
-import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, readNotificationInteractionId, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
+import { notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink, readNotificationId, readNotificationInteractionId, readNotificationSeenOnTap, type NotificationDeepLinkData } from '../src/notificationNavigation.js';
 import { loadSessionViewSettings } from '../src/features/session/useSessionView.js';
 import { useQuickReplies } from '../src/features/settings/quickRepliesStore.js';
 import { loadThemeColors } from '../src/features/settings/themeColorSettings.js';
@@ -93,6 +93,8 @@ function RootLayout() {
 	const switchedForPendingRef = useRef<string | undefined>(undefined);
 	// 保留中の通知の判断を始めた時刻（解除と台帳の読み込みの後の最初の判断）。待ちすぎたら保留を捨てる（`pendingNotificationWait`）。
 	const pendingWaitSinceRef = useRef<number | undefined>(undefined);
+	/** タップで開いた完了・エラーの通知。ロックが解けたら「見た」ことにしてほかの端末からも消す（Q241 A）。 */
+	const seenOnTapRef = useRef<{ readonly pcId: string | undefined; readonly notifyId: string } | undefined>(undefined);
 
 	useEffect(() => {
 		// 失敗は initError へ記録され、ゲートが「起動に失敗しました」と再試行を出す。未処理の拒否にはせず、
@@ -114,6 +116,11 @@ function RootLayout() {
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {
+		const seen = seenOnTapRef.current;
+		if (seen !== undefined && unlockedRef.current && useAppStore.getState().ready) {
+			seenOnTapRef.current = undefined;
+			useAppStore.getState().markNotificationSeen(seen.pcId, seen.notifyId);
+		}
 		const target = pendingRef.current;
 		if (!unlockedRef.current || !target) {
 			return;
@@ -220,12 +227,19 @@ function RootLayout() {
 			const pcId = link?.pcId ?? useAppStore.getState().activePcId;
 			if (action !== undefined && link?.terminalKey !== undefined && pcId !== undefined) {
 				const interactionId = readNotificationInteractionId(response.notification.request);
+				const notifyId = readNotificationId(response.notification.request);
 				queueNotificationAction(`${response.notification.request.identifier}\n${response.actionIdentifier}`, {
 					pcId, terminalKey: link.terminalKey, request: action,
 					at: Number.isFinite(response.notification.date) ? trayDateMs(response.notification.date) : Date.now(),
 					queuedAt: Date.now(),
 					...(interactionId !== undefined ? { interactionId } : {}),
+					...(notifyId !== undefined ? { notifyId } : {}),
 				});
+			}
+			// バナー・ロック画面の通知のタップで開いた完了・エラーは、ほかの端末からも消す（Q241 A）。許可・質問は回答で消える。
+			const seenId = action === undefined ? readNotificationSeenOnTap(response.notification.request) : undefined;
+			if (seenId !== undefined) {
+				seenOnTapRef.current = { pcId: link?.pcId, notifyId: seenId };
 			}
 			// 受け取った応答は消す（次の起動で getLastNotificationResponseAsync から同じボタンの操作をもう一度送らないように）。
 			void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
