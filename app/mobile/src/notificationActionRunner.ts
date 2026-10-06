@@ -138,6 +138,10 @@ async function run(action: PendingNotificationAction): Promise<void> {
 			? await store.answerAgentApproval(action.terminalKey, decision.interactionId, decision.choice)
 			: await sendReply(action, decision.text);
 		if (result.status === 'accepted') {
+			// 答えられた通知は、ほかの端末からも消す（Q241 A。PC も回答の成立で片付けるが、hook の無い経路でも消えるように）
+			if (action.notifyId !== undefined) {
+				useAppStore.getState().markNotificationSeen(action.pcId, action.notifyId);
+			}
 			showResult(true, action.request.kind === 'approve' ? '許可しました' : action.request.kind === 'deny' ? '拒否しました' : '返信を送りました');
 			return;
 		}

@@ -195,6 +195,12 @@ export const ParadisMobileCapability = {
 	 * process ですぐ `metrics-pong` を返す（`paradisMobileLinkMetrics.ts`）。PC が広告していなければアプリは送らない。
 	 */
 	MetricsPing: 'metrics.ping.v1',
+	/**
+	 * notify の `dismiss-sync`（アプリが最後に受け取った片付けの番号）と、その後の片付けを返す `dismiss-log`
+	 * （`paradisNotifyDismissLedger.ts`。台帳はディスクに残る）。PC は許可・質問を回答の成立でも片付ける。PC だけが広告し、
+	 * アプリは広告している PC にだけ `dismiss-sync` を送り、一覧で許可・質問を開いただけでは片付けを頼まない（Q241 A）。
+	 */
+	NotifyDismissSync: 'notify.dismiss-sync.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -247,6 +253,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ReviewClientNoteId,
 	ParadisMobileCapability.BrowserFramePause,
 	ParadisMobileCapability.MetricsPing,
+	ParadisMobileCapability.NotifyDismissSync,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
