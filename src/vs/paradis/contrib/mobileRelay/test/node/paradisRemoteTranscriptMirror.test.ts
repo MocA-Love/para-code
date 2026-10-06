@@ -145,6 +145,18 @@ suite('ParadisRemoteTranscriptMirror', () => {
 		});
 	});
 
+	test('names the window that copies a transcript, so the shell output of that conversation is read through it', async () => {
+		await withStore(async store => {
+			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
+			const before = store.ownerForLocalPath(localPath);
+			await store.begin('window-a', REMOTE_PATH);
+			const owned = store.ownerForLocalPath(localPath);
+			const other = store.ownerForLocalPath(join(store.mirrorRoot, 'elsewhere.jsonl'));
+			store.release('window-a');
+			assert.deepStrictEqual({ before, owned, other, released: store.ownerForLocalPath(localPath) }, { before: undefined, owned: 'window-a', other: undefined, released: undefined });
+		});
+	});
+
 	test('resumes from the end of an existing copy after a restart', async () => {
 		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-remote-transcript-'));
 		try {

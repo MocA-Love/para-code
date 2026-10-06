@@ -119,6 +119,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '開いた直後に履歴が 200 行ほどに縮んでいたのを直しました（PC の Para Code も新しい版が必要です）。',
 				tone: 'green',
 			},
+			{
+				icon: 'terminal-outline',
+				title: 'SSH の接続先で動くエージェントの、バックグラウンドのシェルの出力を読めるようになりました',
+				body: 'シェルの詳細で末尾 20 行を読め、開いている間は追いかけます。PC でその接続先のウィンドウを開いている必要があります。止めるのは今までどおり PC の端末からです（PC の Para Code も新しい版が必要です）。',
+			},
 		],
 	},
 	{

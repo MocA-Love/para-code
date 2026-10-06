@@ -35,7 +35,10 @@ export interface AgentShell {
 	ownerAgentId?: string;
 }
 
-/** 出力と停止をこの構成で使えるか。`where` があればその構成では使えない。 */
+/**
+ * 出力と停止をこの構成で使えるか。`where` があればその構成では止められない。出力は SSH の接続先（`where: 'ssh'`）でも
+ * `output` が true なら読める（接続先で読める PC。古い PC は false を送る）。
+ */
 export interface AgentShellsAccess {
 	output: boolean;
 	stop: boolean;
@@ -98,7 +101,8 @@ export function parseAgentShellsAccess(value: unknown): AgentShellsAccess | unde
 		return undefined;
 	}
 	const where = item['where'] === 'ssh' || item['where'] === 'wsl' || item['where'] === 'windows' ? item['where'] : undefined;
-	return { output: item['output'] && where === undefined, stop: item['stop'] && where === undefined, ...(where !== undefined ? { where } : {}) };
+	// SSH の接続先は、PC が接続先で読めると言ったときだけ出力を読む。WSL・Windows は読まない。止めるのは手元だけ
+	return { output: item['output'] && (where === undefined || where === 'ssh'), stop: item['stop'] && where === undefined, ...(where !== undefined ? { where } : {}) };
 }
 
 /** PC の時計の時刻を手元の時計へ直す（Monitor の localizeAgentMonitors と同じ考え方。`shellsAt` は PC の送信時刻）。 */
@@ -260,7 +264,7 @@ export function nextShellPillChange(shells: readonly AgentShell[] | undefined, n
 /** この構成で出力を読めない理由（読めるなら undefined）。 */
 export function shellOutputUnavailableReason(access: AgentShellsAccess | undefined): string | undefined {
 	switch (access?.where) {
-		case 'ssh': return 'SSH の接続先で動いているため、出力はこのアプリへ届きません。PC の端末で /tasks を開くと読めます。';
+		case 'ssh': return access.output ? undefined : 'SSH の接続先で動いているため、出力はこのアプリへ届きません。PC の端末で /tasks を開くと読めます。';
 		case 'wsl': return 'WSL の中で動いているため、出力はこのアプリへ届きません。PC の端末で /tasks を開くと読めます。';
 		case 'windows': return 'Windows の PC では、出力をこのアプリへ届けられません。PC の端末で /tasks を開くと読めます。';
 		default: return access === undefined || !access.output ? 'この PC からは出力を読めません。' : undefined;
@@ -301,10 +305,25 @@ export function shellWhereLabel(access: AgentShellsAccess | undefined): string |
 	}
 }
 
+/**
+ * 1 シェルぶんの出力が読めなかった理由。not-found: もう無い、unavailable: この構成では読めない、
+ * no-window: SSH の接続先のもので、その接続先に繋いだウィンドウが PC に無い（開けば読める）。
+ */
+export type AgentShellOutputError = 'not-found' | 'unavailable' | 'no-window';
+
 export interface AgentShellOutput {
 	readonly lines: readonly string[];
 	readonly truncated: boolean;
-	readonly error?: 'not-found' | 'unavailable';
+	readonly error?: AgentShellOutputError;
+}
+
+/** 出力が読めなかったときに詳細へ出す文。 */
+export function shellOutputErrorMessage(error: AgentShellOutputError): string {
+	switch (error) {
+		case 'not-found': return '出力のファイルが見つかりません（消えたか、PC が再起動しました）。';
+		case 'no-window': return 'この接続先のウィンドウを PC で開くと読めます。';
+		default: return 'この PC からは出力を読めません。';
+	}
 }
 
 /** `shell-output` の返事を読む。形が合わなければ undefined。 */
@@ -321,7 +340,7 @@ export function parseShellOutputReply(value: Record<string, unknown>): { readonl
 		if (item === undefined || typeof item['id'] !== 'string' || !SHELL_ID.test(item['id'])) {
 			continue;
 		}
-		if (item['error'] === 'not-found' || item['error'] === 'unavailable') {
+		if (item['error'] === 'not-found' || item['error'] === 'unavailable' || item['error'] === 'no-window') {
 			outputs.set(item['id'], { lines: [], truncated: false, error: item['error'] });
 			continue;
 		}

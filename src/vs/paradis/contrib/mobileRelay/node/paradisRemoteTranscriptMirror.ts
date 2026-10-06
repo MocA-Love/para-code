@@ -372,6 +372,20 @@ export class ParadisRemoteTranscriptMirrorStore extends Disposable {
 		});
 	}
 
+	/**
+	 * 手元の写し（tailer が読んでいるパス）を今担当しているウィンドウ。空いている・担当が黙っていれば undefined。
+	 * 担当は接続先に繋いでいて、その transcript が実在すると確かめたウィンドウなので、同じ接続先のほかのファイル
+	 * （バックグラウンドのシェルの出力）を読むのにも使う。
+	 */
+	ownerForLocalPath(localPath: string): string | undefined {
+		for (const entry of this.entries.values()) {
+			if (entry.localPath === localPath) {
+				return entry.owner !== undefined && Date.now() - entry.ownerSeenAt < OWNER_TTL_MS ? entry.owner : undefined;
+			}
+		}
+		return undefined;
+	}
+
 	/** ウィンドウが閉じた・接続先が変わったとき、担当を空けて他のウィンドウへ渡せるようにする。 */
 	release(ownerId: string): void {
 		for (const entry of this.entries.values()) {
