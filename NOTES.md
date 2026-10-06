@@ -2265,11 +2265,11 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 | `folder_config_ms` | 行き先の `.vscode/` の設定の読み込み。`parked_configs` が 1 なら退避分を使い回して読んでいない |
 | `will_change_ms` | 残り（ほぼ 0 のはず） |
 | `marks` | 届いた境目の数（7 で全部）。足りない回は、抜けた境目の両隣の区間を送らない |
-| `remote_*` / `local_*` | 同じ区間に renderer が投げたファイル IPC。`calls`・`stats`・`reads`・`writes`・`others` は回数、`read_bytes`・`write_bytes`、`wait_ms`（返事待ちの合計、並列は重ねて数える）、`max_ms`、`rtt_ms`（最短の stat＝1 往復の推定） |
+| `remote_*` / `local_*` | 同じ区間に renderer が投げたファイル IPC（切り替え以外の呼び出しも含む）。`calls`・`stats`・`reads`・`writes`・`others` は回数、`read_bytes`・`write_bytes`、`wait_ms`（返事待ちの合計、並列は重ねて数える）、`max_ms`、`rtt_ms`（成功した最短の stat＝1 往復の推定） |
 
 読み方: SSH の遅い回で `remote_calls` × `remote_rtt_ms` が `update_folders_write` に近ければ往復の数で遅い、`save_ms` や `reload_ms` の 1 つだけが飛び抜けていれば接続先のディスクか、その呼び出しの詰まりです。`rtt_ms` が小さいのに `wait_ms` が大きい回は、renderer が返事を処理できていない側を疑います。
 
-renderer の待ちは、Long Animation Frames で「何から呼ばれた処理か」に分けました（`mainLoad/browser/paradisLongFrameMonitor.ts`）。切り替え全体は `safe_busy_<区分>_ms` と `safe_busy_frames`、`verify_folder_wait` と `update_folders` の段階は `safe_<段階>_busy_<区分>_ms` です。区分は `port`（MessagePort、手元の拡張ホスト等）、`socket`（WebSocket、SSH の接続先）、`event`（DOM のイベント。推測: main からの IPC はここか `other` に入る）、`timer`、`frame`（requestAnimationFrame、ツリーの描き直し）、`promise`、`script`、`layout`（スタイルとレイアウト）、`other`。0 の区分は送りません。あわせて切り替えの間に届いたファイルの変更通知と設定の変更の回数を `safe_switch_file_events` / `safe_switch_config_events` に載せています。
+renderer の待ちは、Long Animation Frames で「何から呼ばれた処理か」に分けました（`mainLoad/browser/paradisLongFrameMonitor.ts`）。切り替え全体は `safe_busy_<区分>_ms` と `safe_busy_frames`、`verify_folder_wait` と `update_folders` の段階は `safe_<段階>_busy_<区分>_ms` です。区分は `port`（MessagePort、手元の拡張ホスト等）、`socket`（WebSocket、SSH の接続先）、`event`（DOM のイベント。推測: main からの IPC はここか `other` に入る）、`timer`、`frame`（requestAnimationFrame、ツリーの描き直し）、`promise`、`code`（ほかのスクリプト）、`layout`（スタイルとレイアウト）、`other`。0 の区分は送りません。【要確認】`invoker` の文字列の書式は実機で確かめていません（`Window.requestAnimationFrame` 形式と `FrameRequestCallback` 形式の両方に当てています）。`frame` と `timer` が常に 0 で `code` だけが大きければ、書式が違う疑いがあります。境目は最初に来た経路の時刻を取るので、同じ区間に設定の書き込みや拡張機能のフォルダ追加が重なると、その時刻が混ざることがあります。あわせて切り替えの間に届いたファイルの変更通知と設定の変更の回数を `safe_switch_file_events` / `safe_switch_config_events` に載せています。
 
 `safe_main_loop_p50_ms` などの main のイベントループの値は、遅れではなくタイマーの実際の間隔なので、分解能（切り替えの区間は 10ms）を含みます。暇でも p50 は約 10ms です。定期の計測（分解能 200ms）の「混んでいた」ログ（`[paradisMainLoad] ... congested`）は、分解能を引いてから p99 100ms・最大 1 秒と比べるように直しました（直す前は暇な main でもほぼ毎分出ていました）。
 

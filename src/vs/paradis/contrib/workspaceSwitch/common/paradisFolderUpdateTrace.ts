@@ -15,7 +15,8 @@
  * どちらに使われた時間か分からなかった。upstream のファイルには境目ごとに
  * `paradisMarkFolderUpdate(...)` の 1 行だけを置き (PARA-PATCH)、時刻はここで持つ。
  *
- * もう 1 つ、区間の間に renderer が投げたファイル IPC（手元は main の `localFilesystem`、SSH は
+ * もう 1 つ、区間の間に renderer が投げたファイル IPC（切り替えに限らず、エクスプローラーなど
+ * この renderer のすべての呼び出しを含む）（手元は main の `localFilesystem`、SSH は
  * 接続先の `remoteFilesystem`）を数える。チャネルの包み (`paradisCountFileChannel`) は記録中で
  * なければ何もせずに素通しする。
  *
@@ -207,17 +208,18 @@ export function paradisCountFileChannel(channel: IChannel, locality: ParadisFile
 			tally.calls++;
 			tally[kind]++;
 			tally.writeBytes += writeBytesOf(command, arg);
-			const settle = (value: unknown) => {
+			const settle = (value: unknown, ok: boolean) => {
 				const ms = Math.max(0, clock() - startedAt);
 				tally.waitMs += ms;
 				tally.maxMs = Math.max(tally.maxMs, ms);
 				tally.readBytes += readBytesOf(command, value);
-				if (kind === 'stats') {
+				// 往復の推定は成功した stat だけ (切断ですぐ失敗した stat で小さく出さない)。
+				if (kind === 'stats' && ok) {
 					tally.minStatMs = tally.minStatMs === undefined ? ms : Math.min(tally.minStatMs, ms);
 				}
 			};
 			// 数えるためだけの枝。失敗は呼び出し元が受け取るので、ここでは握るだけ。
-			result.then(settle, () => settle(undefined));
+			result.then(value => settle(value, true), () => settle(undefined, false));
 			return result;
 		},
 		listen<T>(event: string, arg?: unknown): Event<T> {
@@ -274,7 +276,7 @@ function summarizeTrace(trace: ITrace, willChangeAt: number | undefined): Record
  * Sentry のサーバ側スクラブ (sensitiveFields) は**キー名の部分一致**で値を消す。ここに無い語でも、
  * 足したキーが null で届いたらまずプロジェクト設定を疑うこと（メモ para-code-sentry-instrumentation-pitfalls の 1）。
  */
-const SCRUBBED_WORDS = ['token', 'session', 'command', 'terminal', 'cwd', 'prompt', 'env', 'dsn', 'auth', 'password', 'passwd', 'secret', 'cookie', 'credential', 'bearer', 'key'];
+const SCRUBBED_WORDS = ['token', 'session', 'command', 'terminal', 'cwd', 'prompt', 'env', 'dsn', 'auth', 'password', 'passwd', 'secret', 'cookie', 'credential', 'bearer', 'key', 'ip'];
 
 /**
  * 切り替えの計測へ足す項目を絞る。通すのは `safe_` で始まる英小文字・数字・`_` だけのキーと、

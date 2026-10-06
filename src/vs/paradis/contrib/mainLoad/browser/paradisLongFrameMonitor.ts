@@ -22,12 +22,12 @@
  * | `timer` | `setTimeout` / `setInterval` / `requestIdleCallback`（スケジューラ・デバウンス） |
  * | `frame` | `requestAnimationFrame`（ツリーやリストの描き直し） |
  * | `promise` | promise の続き |
- * | `script` | それ以外のスクリプト |
+ * | `code` | それ以外のスクリプト（`script` と名付けないこと。Sentry の sensitiveFields の `ip` に部分一致しうる） |
  * | `layout` | スタイルとレイアウトの計算（DOM の作り直しの後の描画） |
  * | `other` | フレームのうち上のどれにも数えられなかった時間 |
  */
 
-export const PARADIS_LONG_FRAME_BUCKETS = ['port', 'socket', 'event', 'timer', 'frame', 'promise', 'script', 'layout', 'other'] as const;
+export const PARADIS_LONG_FRAME_BUCKETS = ['port', 'socket', 'event', 'timer', 'frame', 'promise', 'code', 'layout', 'other'] as const;
 export type ParadisLongFrameBucket = typeof PARADIS_LONG_FRAME_BUCKETS[number];
 
 /** `PerformanceLongAnimationFrameTiming` のうち使う面。 */
@@ -81,23 +81,25 @@ export function paradisClassifyLongFrameScript(invokerType: string | undefined, 
 			}
 			return 'event';
 		case 'user-callback':
-			if (name.includes('requestAnimationFrame')) {
+			// 名前の書式は実機で未確認 (`Window.requestAnimationFrame` と `FrameRequestCallback` の
+			// どちらの形でも当たるようにしてある)。どれにも当たらなければ `code` に入る。
+			if (name.includes('requestAnimationFrame') || name.includes('FrameRequestCallback')) {
 				return 'frame';
 			}
-			if (name.includes('setTimeout') || name.includes('setInterval') || name.includes('requestIdleCallback')) {
+			if (name.includes('setTimeout') || name.includes('setInterval') || name.includes('TimerHandler') || name.includes('requestIdleCallback') || name.includes('IdleRequestCallback')) {
 				return 'timer';
 			}
-			return 'script';
+			return 'code';
 		case 'resolve-promise':
 		case 'reject-promise':
 			return 'promise';
 		default:
-			return 'script';
+			return 'code';
 	}
 }
 
 function emptyBuckets(): Record<ParadisLongFrameBucket, number> {
-	return { port: 0, socket: 0, event: 0, timer: 0, frame: 0, promise: 0, script: 0, layout: 0, other: 0 };
+	return { port: 0, socket: 0, event: 0, timer: 0, frame: 0, promise: 0, code: 0, layout: 0, other: 0 };
 }
 
 export interface IParadisLongFrameWindow {
