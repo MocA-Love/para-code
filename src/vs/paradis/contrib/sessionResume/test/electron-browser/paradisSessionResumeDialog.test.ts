@@ -667,7 +667,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 				'open',
 				'assign:17:worktree:feature',
 				'active',
-				'send:claude --permission-mode default --resume session-123:true',
+				'send:claude --permission-mode manual --resume session-123:true',
 			],
 			launched: { instanceId: 17, paneToken: 'pane-token-17' },
 		});
@@ -675,7 +675,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 
 	test('uses the agent-specific dangerous flag', async () => {
 		const cases = [
-			{ agent: 'claude' as const, dangerous: false, command: 'claude --permission-mode default --resume session-123' },
+			{ agent: 'claude' as const, dangerous: false, command: 'claude --permission-mode manual --resume session-123' },
 			{ agent: 'claude' as const, dangerous: true, command: 'claude --dangerously-skip-permissions --resume session-123' },
 			{ agent: 'codex' as const, dangerous: false, command: 'codex resume session-123' },
 			{ agent: 'codex' as const, dangerous: true, command: 'codex --dangerously-bypass-approvals-and-sandbox resume session-123' },

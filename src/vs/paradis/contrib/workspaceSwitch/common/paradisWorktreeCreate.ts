@@ -384,8 +384,11 @@ export const PARADIS_CODEX_FULL_AUTO_FLAGS = '--sandbox workspace-write --ask-fo
 /**
  * Claude Code を確認ありで起動するフラグ。2.1.284 から、権限モードを指定せず設定にも書いていないと
  * auto mode（安全性の分類器が確認を代わりに判断する）で起動するため、確認を出すモードを明示する。
+ * 値は `manual`。2.1.289 から `--permission-mode` の選択肢に `default` が載らなくなった（今は受け付ける）。
+ * `manual` は準拠範囲の下限 2.1.205 から 2.1.291 まで受け付けられ、どの版でも `default` と同じモードで起動する
+ * （2026-10-06 に `-p --output-format stream-json` の init の `permissionMode` が `default` になることを実測）。
  */
-export const PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG = '--permission-mode default';
+export const PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG = '--permission-mode manual';
 
 // allow-any-unicode-next-line
 const STR_PERMISSION_DEFAULT = localize('paradis.agentPermission.default', "通常（確認あり）");

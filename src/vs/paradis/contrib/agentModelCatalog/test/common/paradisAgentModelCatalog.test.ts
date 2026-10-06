@@ -166,6 +166,7 @@ suite('ParadisAgentModelCatalog', () => {
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
+				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
 			],
 			edited: { userDefined: true, codex: 'gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5' },
 		});
@@ -266,6 +267,6 @@ suite('ParadisAgentModelCatalog', () => {
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {
 		// この指紋が変わったら、変える前の PARADIS_DEFAULT_AGENT_COMMANDS を JSON の形で
 		// PARADIS_PAST_DEFAULT_AGENT_COMMANDS へ足してから、ここの値を新しい指紋に書き換える
-		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -128953183);
+		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -630764040);
 	});
 });
