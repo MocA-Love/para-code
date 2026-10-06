@@ -14,7 +14,7 @@ import type * as SentryMain from '@sentry/electron/main';
 import type { IProductConfiguration } from '../../../../base/common/product.js';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { isParadisSentryDevelopmentBuild, PARADIS_SENTRY_DESKTOP_DSN, paradisSentryEnvironment, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticEventSink, configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
 
@@ -101,6 +101,23 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 		configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
 		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
 			captureParadisMainException(scope, feature, operation, error, safeExtra, severity);
+		});
+		configureParadisDiagnosticEventSink({
+			addBreadcrumb: (category, message, data) => Sentry.addBreadcrumb({ category, message, data, level: 'info' }),
+			captureMessage: (feature, operation, tags, context, severity) => {
+				// Same capture-hint shape as captureParadisMainException: the tags and the context belong
+				// to this one event and never reach the shared scope (see paradisSentryEvent.ts).
+				Sentry.captureMessage('Para Code diagnostic: ' + feature + '.' + operation, {
+					level: severity,
+					tags: {
+						...tags,
+						'para.scope': 'owned',
+						'para.feature': feature,
+						'para.operation': operation,
+					},
+					contexts: { [context.name]: context.data },
+				});
+			},
 		});
 		sentry = Sentry;
 	}).catch(error => {

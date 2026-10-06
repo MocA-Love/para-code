@@ -89,6 +89,8 @@ export interface IParadisBoundContext {
 	 * tool result can say why.
 	 */
 	noteInputRejection?(message: string): void;
+	/** 共有中のタブへ `Emulation.setFocusEmulationEnabled` が送られた（フォーカス診断用。転送は止めない）。 */
+	noteFocusEmulation?(enabled: boolean): void;
 	closeInputConnection(): void;
 	/**
 	 * この接続が接続先（SSH・WSL・コンテナ）のペインのものか、戻り経路から来たか。true のときは手元の
@@ -120,6 +122,18 @@ function remotePaneDeniedMessage(ctx: IParadisBoundContext, method: string, para
 		return remote ? message : undefined;
 	}
 	return resolved ? message : remote.then(() => undefined, () => undefined);
+}
+
+/**
+ * chrome-devtools-mcp はページへ繋ぐと focus emulation を入れる（McpContext）。ページが「フォーカスがある」と
+ * 思い込んで自分でフォーカスを取り直す、という疑いを Sentry で確かめるための印。転送はそのまま続ける。
+ */
+function noteFocusEmulation(ctx: IParadisBoundContext, params: Record<string, unknown> | undefined): void {
+	try {
+		ctx.noteFocusEmulation?.(params?.enabled === true);
+	} catch {
+		// 診断は転送を変えない。
+	}
 }
 
 interface IJsonRpcMsg {
@@ -1403,6 +1417,9 @@ export function paradisProxyPageUpgrade(
 				}
 				return;
 			}
+			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
+				noteFocusEmulation(ctx, msg.params);
+			}
 			if (msg.method.startsWith('Input.')) {
 				let paramsJson: string;
 				try {
@@ -2125,6 +2142,9 @@ export async function paradisProxyBrowserUpgrade(
 				}
 				const sessionTargetId = sessionIdToTargetId.get(message.sessionId);
 				const isBoundPrimary = sessionTargetId !== undefined && ctx.boundTargetIds().has(sessionTargetId);
+				if (isBoundPrimary && message.method === 'Emulation.setFocusEmulationEnabled') {
+					noteFocusEmulation(ctx, message.params);
+				}
 				if (message.method.startsWith('Input.')) {
 					if (!isBoundPrimary || sessionTargetId === undefined) {
 						rejectRequest(message, `${message.method} is permitted only on the bound primary BrowserView session.`);
