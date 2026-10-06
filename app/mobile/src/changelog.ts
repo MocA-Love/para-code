@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'notifications-off-outline',
+				title: 'ほかの iPhone・iPad や PC で見た通知が、この端末からも消えるようになりました',
+				body: '完了とエラーはバナーのタップ・通知一覧・トークを開いた時点で、許可と質問はどこかで答えた時点で、ほかの端末からも消えます。アプリを閉じていた間の分は、次に開いたときに消えます（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'pulse-outline',
 				title: '通信の速さを計測できるようになりました',
 				body: '設定 →「接続の記録」の「通信の計測」をオンにすると、キー入力から画面に出るまで・PC との往復・音声の鳴り始めと途切れを時間と大きさだけで数え、結果をコピーできます（PC の Para Code も新しい版が必要です）。',

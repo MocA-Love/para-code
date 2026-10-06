@@ -21,5 +21,5 @@ export type { BinaryTerminalData, BinaryTerminalDataMetadata } from './terminalD
 export { JSON_GZIP_RESPONSE_ENCODING, decodeGzipJsonResponse, isGzipJsonResponse } from './gzipJson.js';
 export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, PARADIS_RELAY_CLOSE_CODE, PARADIS_PUSH_ID_PATTERN, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
 export type { RelayControlMessage } from './relay.js';
-export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl, encodeNotifyVisibility, encodeNotifyVisibilityAck, decodeNotifyVisibility } from './notify.js';
-export type { NotifyCategory, NotifyKind, NotifyPayload, NotifyControlMessage, NotifyVisibilityMessage, NotifyVisibilityState } from './notify.js';
+export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl, encodeNotifyVisibility, encodeNotifyVisibilityAck, decodeNotifyVisibility, encodeNotifyDismissSync, decodeNotifyDismissLog } from './notify.js';
+export type { NotifyCategory, NotifyKind, NotifyPayload, NotifyControlMessage, NotifyDismissLog, NotifyVisibilityMessage, NotifyVisibilityState } from './notify.js';
