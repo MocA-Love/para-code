@@ -38,6 +38,7 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { paradisWasTerminalShellRestarted } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { paradisChangeDirectoryCommand } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
+import { paradisIsAtEmptyPrompt } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../browser/paradisTerminalResumeBannerView.js';
 import { IParadisResumeLedgerEntry, paradisCodexThreadIdFromTitle, paradisResumeLedgerKey, paradisParseResumeLedger, paradisRestoredShellWasRestarted, paradisResumeCommandLine, paradisResumeNeedsFolderChange, paradisChangeDirectoryBeforeResume, ParadisChangeDirectoryOutcome, paradisResumeTitleFromTab, paradisSerializeResumeLedger, paradisTrimResumeLedger } from '../common/paradisTerminalResumeBanner.js';
 
@@ -365,7 +366,8 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	}
 
 	private isAtEmptyPrompt(commandDetection: ICommandDetectionCapability): boolean {
-		return commandDetection.executingCommand === undefined && commandDetection.promptInputModel.value.trim().length === 0;
+		// 右プロンプト（zsh の RPROMPT）だけが出ている入力欄も空と読む（`paradisIsAtEmptyPrompt`）。
+		return paradisIsAtEmptyPrompt(commandDetection);
 	}
 
 	/**

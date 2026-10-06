@@ -38,6 +38,7 @@ import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagn
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisForgetSharedPanelNonce, paradisIsIdleEmptyShell, paradisIsSharedPanelShell, paradisParseSharedPanelNonces, paradisRememberSharedPanelNonce, paradisSharedPanelEnabledAtStartup, paradisShouldReviveSharedPanelOrphan } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
+import { paradisIsPromptInputEmptyFor } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { paradisForgetRestartedTerminal, paradisWasTerminalShellRestarted } from '../common/paradisTerminalLaunchPreparers.js';
 import { paradisPickRestartedShellScope, paradisRegisterRestartedShellScopeLookup, paradisRestartedShellRecordScope } from '../common/paradisTerminalSpaceFolder.js';
 
@@ -2722,7 +2723,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				hasChildProcesses: instance.hasChildProcesses,
 				commandCount: commandDetection?.commands.length ?? 0,
 				isExecuting: commandDetection?.executingCommand !== undefined,
-				hasPendingInput: (commandDetection?.promptInputModel.value.trim().length ?? 0) > 0,
+				hasPendingInput: commandDetection !== undefined && !paradisIsPromptInputEmptyFor(commandDetection),
 				title: instance.title,
 				reattachedToSameShell: !shellReplaced,
 				nonEmptyLinesBeforePrompt: buffer?.beforePrompt,
