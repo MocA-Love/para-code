@@ -701,8 +701,10 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
 		// エージェントが自分で開いて tab_id で使っているタブ（共有とは別に、ペインごとに最大 5 枚）
-		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token);
-		if (!boundHere && agentTabs.includes(this._page.id)) {
+		// 共有中のページと同じタブは数えない（同じタブが共有と許可の両方に載ることがある）
+		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token).filter(pageId => pageId !== pane.binding?.pageId);
+		// 別のページを共有中なら、そちらの説明を優先する（行のスイッチはその共有を外すため）
+		if (!boundHere && !boundElse && agentTabs.includes(this._page.id)) {
 			return STR_SUB_AGENT_TAB_HERE;
 		}
 		const sub = this._paneBindingSubText(pane, boundHere, boundElse);
