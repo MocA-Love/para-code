@@ -155,7 +155,7 @@ export class ParadisMainLoadMonitor extends Disposable {
 		while (this.recent.length > this.options.recentLimit) {
 			this.recent.shift();
 		}
-		if (paradisIsMainLoopCongested(summary)) {
+		if (paradisIsMainLoopCongested(summary, this.options.periodicResolutionMs)) {
 			this.logService.warn(`[paradisMainLoad] the main process event loop was congested: ${JSON.stringify(summary)}`);
 		}
 		return summary;
