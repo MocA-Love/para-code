@@ -43,6 +43,7 @@ import { IParadisRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdRes
 import { IParadisTerminalScopeRoot } from '../common/paradisTerminalProcessScope.js';
 import { IParadisSpaceFolder, ParadisTerminalSpaceAction, paradisChangeDirectoryCommand, paradisLookupRestartedShellScope, paradisReviewTerminalSpaces, paradisSpaceFolderForBackend, paradisUpstreamCwdConfigured } from '../common/paradisTerminalSpaceFolder.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces, paradisScopeRootPath } from '../common/paradisWorkspaceSwitch.js';
+import { paradisIsAtEmptyPrompt } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
 import { paradisGetParkedTerminalEditorStateKey } from './paradisTerminalEditorPark.js';
 import { paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 
@@ -275,7 +276,7 @@ class ParadisReviewTerminalSpaceMismatchesAction extends Action2 {
 			case 'cd': {
 				const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
 				if (picked.changeDirectory === undefined || commandDetection === undefined
-					|| commandDetection.executingCommand !== undefined || commandDetection.promptInputModel.value.trim().length > 0) {
+					|| !paradisIsAtEmptyPrompt(commandDetection)) {
 					notificationService.info(localize('paradis.terminalSpaceMismatch.notAtPrompt', "シェルが入力を待っていて入力欄が空のときに実行してください。いま動いているプログラムを終えるか、入力欄を空にしてからもう一度選びます。"));
 					return;
 				}
