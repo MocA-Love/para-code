@@ -901,9 +901,13 @@ export interface IParadisCdpPageOpsService {
 	 * {@link IParadisPageOverridesRequest}。プロファイルのタブは、renderer がそのペインのものと確かめた
 	 * `confirmedProfileId` が一致するときだけ受け付ける。
 	 */
-	applyExactViewPageOverrides(descriptor: unknown, ownerKey: unknown, generation: unknown, requestJson: unknown, confirmedProfileId: unknown): Promise<IParadisPageOverridesResult>;
+	/**
+	 * `storageOwnerKey` は、そのペイン専用の保存領域かを確かめるときの持ち主（ペインのトークンから作る）。
+	 * 上書きの持ち主（`ownerKey`）はタブごとなので、省略すると `ownerKey` を使う（これまでの呼び方）。
+	 */
+	applyExactViewPageOverrides(descriptor: unknown, ownerKey: unknown, generation: unknown, requestJson: unknown, confirmedProfileId: unknown, storageOwnerKey?: unknown): Promise<IParadisPageOverridesResult>;
 	/** タブの保存領域が、呼んだペイン専用か・エージェントのプロファイルか・それ以外か。 */
-	describeExactViewStorage(descriptor: unknown, ownerKey: unknown): Promise<IParadisPageStorageDescription>;
+	describeExactViewStorage(descriptor: unknown, ownerKey: unknown, storageOwnerKey?: unknown): Promise<IParadisPageStorageDescription>;
 	/** タブに掛かっている上書きの要約（値とパスワードは含まない）。 */
 	getExactViewPageOverrides(descriptor: unknown, ownerKey: unknown): Promise<IParadisPageOverridesResult>;
 	/** 持ち主の共有が入れ替わった。`generation` より前に掛けたものを外す。 */
