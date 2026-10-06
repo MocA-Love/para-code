@@ -45,6 +45,7 @@ import { ParadisDoNotDisturbSection } from './paradisDoNotDisturbSection.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer.js';
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
+import { openParadisMyinstantsImportDialog } from './paradisMyinstantsImportDialog.js';
 import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
 
 const $ = dom.$;
@@ -136,6 +137,8 @@ const STR_ADD_CUSTOM = localize('paradis.notif.addCustom', "カスタム音源�
 const STR_REPLACE_CUSTOM = localize('paradis.notif.replaceCustom', "カスタム音源を差し替え");
 // allow-any-unicode-next-line
 const STR_FROM_YOUTUBE = localize('paradis.notif.fromYouTube', "YouTubeから取り込み");
+// allow-any-unicode-next-line
+const STR_FROM_MYINSTANTS = localize('paradis.notif.fromMyinstants', "Myinstants から取り込み");
 // allow-any-unicode-next-line
 const STR_IMPORT_TITLE = localize('paradis.notif.importDialogTitle', "通知音を選択");
 // allow-any-unicode-next-line
@@ -761,6 +764,19 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		youtubeBtn.textContent = STR_FROM_YOUTUBE;
 		this._renderDisposables.add(dom.addDisposableListener(youtubeBtn, 'click', () => {
 			this.instantiationService.invokeFunction(accessor => openParadisYouTubeImportDialog(accessor, () => this._renderNotificationsSections()));
+		}));
+
+		const myinstantsBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
+		myinstantsBtn.textContent = STR_FROM_MYINSTANTS;
+		this._renderDisposables.add(dom.addDisposableListener(myinstantsBtn, 'click', () => {
+			this._stopPreview();
+			// ファイルからの追加と同じく、取り込んだ音をそのまま選ぶ。
+			this.instantiationService.invokeFunction(accessor => openParadisMyinstantsImportDialog(accessor, volume, () => {
+				this.settingsService.setSelectedRingtoneId(CUSTOM_RINGTONE_ID);
+				if (!this._store.isDisposed) {
+					this._renderNotificationsSections();
+				}
+			}));
 		}));
 
 		// --- 着信音カード（2列グリッド） ---

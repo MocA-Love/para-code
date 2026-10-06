@@ -46,11 +46,14 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 
 			case 'checkYtDlp': return this.service.checkYtDlp() as Promise<T>;
 			case 'installYtDlp': return this.service.installYtDlp(String(args[0])) as Promise<T>;
+			case 'updateYtDlp': return this.service.updateYtDlp(String(args[0])) as Promise<T>;
 			case 'getInstallLog': return this.service.getInstallLog(String(args[0]), Number(args[1]) || 0) as Promise<T>;
 			case 'downloadYouTubeAudio': return this.service.downloadYouTubeAudio(String(args[0])) as Promise<T>;
 			case 'readTempAudioFile': return this.service.readTempAudioFile(String(args[0])) as Promise<T>;
 			case 'cleanupTempAudio': return this.service.cleanupTempAudio(String(args[0])) as Promise<T>;
 			case 'fetchAudio': return this.service.fetchAudio(String(args[0])) as Promise<T>;
+			case 'downloadMyinstantsAudio': return this.service.downloadMyinstantsAudio(String(args[0])) as Promise<T>;
+			case 'importMyinstantsAudio': return this.service.importMyinstantsAudio(String(args[0]), String(args[1] ?? '')) as Promise<T>;
 			case 'renderClip': return this.service.renderClip(args[0] as Parameters<ParadisNotificationsService['renderClip']>[0]) as Promise<T>;
 
 			case 'getAivisModel': return this.service.getAivisModel(String(args[0]), String(args[1])) as Promise<T>;
