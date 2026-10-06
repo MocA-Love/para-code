@@ -42,7 +42,13 @@ class ParadisMobileDoNotDisturbSyncContribution extends Disposable implements IW
 			const state = paradisMobileDoNotDisturbStateOf(current);
 			if (!paradisSameMobileDoNotDisturbState(this.lastSent, state)) {
 				this.lastSent = state;
-				service.setDoNotDisturb(state).catch(error => logService.trace('[paradisMobileRelay] do-not-disturb sync failed', String(error)));
+				service.setDoNotDisturb(state).catch(error => {
+					// 届かなかった。次の変更・期限・読み直しで同じ値でも送り直す
+					if (paradisSameMobileDoNotDisturbState(this.lastSent, state)) {
+						this.lastSent = undefined;
+					}
+					logService.trace('[paradisMobileRelay] do-not-disturb sync failed', String(error));
+				});
 			}
 			return current;
 		}));

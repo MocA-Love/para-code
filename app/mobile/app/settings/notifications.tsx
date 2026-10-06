@@ -67,6 +67,8 @@ export default function NotificationSettingsScreen() {
 		voice: s.voiceNotifications,
 	})));
 	const [voiceOpen, setVoiceOpen] = useState(false);
+	// PC が無いと「PC のおやすみモード」の節が出ないので、この見出しが先頭になる
+	const hasPcs = useAppStore(s => s.pcs.length > 0);
 	const router = useRouter();
 	const voiceUsageHint = useVoiceUsageHint();
 	const [permission, setPermission] = useState<NotificationPermissionState | undefined>(undefined);
@@ -98,7 +100,7 @@ export default function NotificationSettingsScreen() {
 		<SettingsScreen title="通知と音声" footer={<VoiceNotificationDrawer visible={voiceOpen} onClose={() => setVoiceOpen(false)} />}>
 			<PcDoNotDisturbSection />
 
-			<GroupHeader title="通知の許可" />
+			<GroupHeader title="通知の許可" first={!hasPcs} />
 			<ListGroup>
 				<ListRow
 					label="通知の許可"

@@ -41,8 +41,8 @@ export function isDoNotDisturbOn(state: PcDoNotDisturb | undefined, now: number)
 
 /** 1 台ぶんの行を決める材料。 */
 export interface PcDoNotDisturbRowInput {
-	/** PC が `notify.dnd-remote.v1` を広告している（切断中は最後に届いた広告）。 */
-	readonly supported: boolean;
+	/** PC が `notify.dnd-remote.v1` を広告している（切断中は最後に届いた広告。一度も State を受けていなければ undefined）。 */
+	readonly supported: boolean | undefined;
 	/** いまその PC とつながっていて、操作を送れる。 */
 	readonly connected: boolean;
 	/** PC から届いた最新の状態（PC がまだ報告していなければ undefined）。 */
@@ -74,7 +74,7 @@ export function doNotDisturbRemainingHint(state: PcDoNotDisturb | undefined, now
 
 export function pcDoNotDisturbRow(input: PcDoNotDisturbRowInput, now: number): PcDoNotDisturbRow {
 	const on = isDoNotDisturbOn(input.state, now);
-	if (!input.supported) {
+	if (input.supported === false) {
 		return { hint: 'この PC は更新すると、ここから切り替えられます', value: undefined, showSwitch: false, on: false, disabled: true };
 	}
 	if (input.pending) {
@@ -83,7 +83,7 @@ export function pcDoNotDisturbRow(input: PcDoNotDisturbRowInput, now: number): P
 	if (!input.connected) {
 		return { hint: 'オフラインのため変えられません', value: input.state === undefined ? '不明' : on ? 'オン' : 'オフ', showSwitch: false, on, disabled: true };
 	}
-	if (input.state === undefined) {
+	if (input.state === undefined || input.supported === undefined) {
 		return { hint: 'PC の状態を確かめています', value: undefined, showSwitch: true, on: false, disabled: true };
 	}
 	return { hint: doNotDisturbRemainingHint(input.state, now), value: undefined, showSwitch: true, on, disabled: false };
