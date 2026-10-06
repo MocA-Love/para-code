@@ -37,7 +37,8 @@ suite('ParadisLongFrameMonitor', () => {
 			startTime: 1000, duration: 300, styleAndLayoutStart: 1200,
 			scripts: [
 				{ duration: 60, invokerType: 'user-callback', invoker: 'Window.requestAnimationFrame' },
-				{ duration: 50, invokerType: 'user-callback', invoker: 'Window.setTimeout' },
+				{ duration: 30, invokerType: 'user-callback', invoker: 'Window.setTimeout' },
+				{ duration: 20, invokerType: 'user-callback', invoker: 'TimerHandler:setInterval' },
 				{ duration: 30, invokerType: 'resolve-promise', invoker: 'Response.json.then' },
 				{ duration: 20, invokerType: 'event-listener', invoker: 'HTMLDivElement.onclick' },
 				{ duration: 10, invokerType: 'classic-script', invoker: 'https://example.invalid/a.js' },
@@ -60,7 +61,7 @@ suite('ParadisLongFrameMonitor', () => {
 				safe_update_folders_busy_timer_ms: 50,
 				safe_update_folders_busy_frame_ms: 60,
 				safe_update_folders_busy_promise_ms: 30,
-				safe_update_folders_busy_script_ms: 10,
+				safe_update_folders_busy_code_ms: 10,
 				safe_update_folders_busy_layout_ms: 100,
 				safe_update_folders_busy_other_ms: 30,
 			},
@@ -75,7 +76,7 @@ suite('ParadisLongFrameMonitor', () => {
 			unsupported: paradisStartLongFrameWindow(() => undefined).stop(),
 			throwing: paradisStartLongFrameWindow(() => { throw new Error('no observer'); }).snapshot(),
 			attributes: paradisLongFrameAttributes('safe_', undefined),
-			diff: paradisDiffLongFrames(undefined, { count: 1, bucketMs: { port: 0, socket: 0, event: 0, timer: 0, frame: 0, promise: 0, script: 0, layout: 0, other: 0 } }),
+			diff: paradisDiffLongFrames(undefined, { count: 1, bucketMs: { port: 0, socket: 0, event: 0, timer: 0, frame: 0, promise: 0, code: 0, layout: 0, other: 0 } }),
 		}, { unsupported: undefined, throwing: undefined, attributes: {}, diff: undefined });
 	});
 });
