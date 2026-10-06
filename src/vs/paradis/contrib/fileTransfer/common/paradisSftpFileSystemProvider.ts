@@ -61,25 +61,29 @@ export class ParadisSftpFileSystemProvider extends Disposable implements IFileSy
 	readonly onDidChangeFile = Event.None;
 
 	private readonly allowed = new Set<string>();
+	/** 開いたファイルのホスト（失敗の文言に別名を入れるため）。 */
+	private readonly handleHosts = new Map<number, string>();
 
 	constructor(private readonly channel: IChannel) {
 		super();
 	}
 
+	// URI の authority は toString() で小文字になる（タブの控え・journal を通ると戻らない）ので、小文字で比べる。
+	// OpenSSH も宛先の名前を小文字にしてから ~/.ssh/config と照らすので、小文字のまま繋いでよい
 	allowHost(alias: string): void {
-		this.allowed.add(alias.trim());
+		this.allowed.add(alias.trim().toLowerCase());
 	}
 
 	revokeHost(alias: string): void {
-		this.allowed.delete(alias.trim());
+		this.allowed.delete(alias.trim().toLowerCase());
 	}
 
 	isAllowed(alias: string): boolean {
-		return this.allowed.has(alias);
+		return this.allowed.has(alias.trim().toLowerCase());
 	}
 
 	private check(resource: URI): void {
-		if (resource.scheme !== PARADIS_SFTP_SCHEME || !this.allowed.has(resource.authority)) {
+		if (resource.scheme !== PARADIS_SFTP_SCHEME || !this.isAllowed(resource.authority)) {
 			throw createFileSystemProviderError(paradisDescribeSftpFailure('notAllowed', resource.authority), FileSystemProviderErrorCode.NoPermissions);
 		}
 	}
@@ -102,15 +106,17 @@ export class ParadisSftpFileSystemProvider extends Disposable implements IFileSy
 	}
 
 	async openHost(alias: string): Promise<IParadisSftpOpenResult> {
-		if (!this.allowed.has(alias.trim())) {
+		if (!this.isAllowed(alias)) {
 			return { ok: false, reason: 'notAllowed' };
 		}
-		return this.channel.call<IParadisSftpOpenResult>('open', [alias.trim()]);
+		return this.channel.call<IParadisSftpOpenResult>('open', [alias.trim().toLowerCase()]);
 	}
 
 	async open(resource: URI, opts: IFileOpenOptions): Promise<number> {
 		this.check(resource);
-		return this.call<number>(resource.authority, 'openFile', [resource, isFileOpenForWriteOptions(opts) ? { create: true, append: !!opts.append } : { create: false }]);
+		const fd = await this.call<number>(resource.authority, 'openFile', [resource, isFileOpenForWriteOptions(opts) ? { create: true, append: !!opts.append } : { create: false }]);
+		this.handleHosts.set(fd, resource.authority);
+		return fd;
 	}
 
 	// --- IFileSystemProvider --------------------------------------------------------------------------
@@ -151,17 +157,19 @@ export class ParadisSftpFileSystemProvider extends Disposable implements IFileSy
 	}
 
 	async close(fd: number): Promise<void> {
-		return this.channel.call<void>('close', [fd]);
+		const alias = this.handleHosts.get(fd) ?? '';
+		this.handleHosts.delete(fd);
+		return this.call<void>(alias, 'close', [fd]);
 	}
 
 	async read(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
-		const buffer = await this.call<VSBuffer>('', 'read', [fd, pos, length]);
+		const buffer = await this.call<VSBuffer>(this.handleHosts.get(fd) ?? '', 'read', [fd, pos, length]);
 		data.set(buffer.buffer.subarray(0, Math.min(buffer.byteLength, length)), offset);
 		return Math.min(buffer.byteLength, length);
 	}
 
 	async write(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
-		return this.call<number>('', 'write', [fd, pos, VSBuffer.wrap(data).slice(offset, offset + length)]);
+		return this.call<number>(this.handleHosts.get(fd) ?? '', 'write', [fd, pos, VSBuffer.wrap(data).slice(offset, offset + length)]);
 	}
 
 	// --- 転送の画面の命令 -------------------------------------------------------------------------------

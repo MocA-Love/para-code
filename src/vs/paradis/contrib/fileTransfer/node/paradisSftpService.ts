@@ -28,6 +28,8 @@ import {
 	IParadisSftpFileInfo,
 	IParadisSftpOpenResult,
 	paradisSftpFailureMessage,
+	paradisIsSafeSftpEntryName,
+	paradisSftpIdleMs,
 	PARADIS_SFTP_SCHEME,
 } from '../common/paradisSftp.js';
 import { paradisIsSafeSshHost } from '../../remoteHosts/common/paradisRemoteHosts.js';
@@ -52,6 +54,7 @@ const S_IFLNK = 0o120000;
 /** SFTP の状態番号（ssh2 のエラーの `code`）。 */
 const SFTP_NO_SUCH_FILE = 2;
 const SFTP_PERMISSION_DENIED = 3;
+const SFTP_EOF = 1;
 
 /** ssh2 の失敗を IFileService が見分けられる形に直す。ホスト名・パスは入れない。 */
 export function paradisToSftpProviderError(error: unknown): Error {
@@ -116,12 +119,54 @@ interface IRawEntry {
 	readonly mtime: number;
 }
 
+/**
+ * フォルダーを読む。ssh2 の `readdir(path)` は全件を貯めてから返すので、ハンドルで少しずつ読み、上限で打ち切る
+ * （巨大な一覧を返し続けるサーバーで shared process のメモリを食わない）。
+ * 送り先の外を指しうる名前（`/` を含む・`..` など）は捨てる。
+ */
 async function readRawDirectory(sftp: SFTPWrapper, path: string, limit: number): Promise<{ entries: IRawEntry[]; truncated: boolean }> {
-	const list = await call<{ filename: string; attrs: Stats }[]>(callback => sftp.readdir(path, callback));
-	const entries = list
-		.filter(item => item.filename !== '.' && item.filename !== '..')
-		.map(item => ({ name: item.filename, mode: item.attrs.mode ?? 0, size: item.attrs.size ?? 0, mtime: (item.attrs.mtime ?? 0) * 1000 }));
-	return entries.length > limit ? { entries: entries.slice(0, limit), truncated: true } : { entries, truncated: false };
+	const handle = await call<Buffer>(callback => sftp.opendir(path, callback));
+	const entries: IRawEntry[] = [];
+	let truncated = false;
+	try {
+		for (; ;) {
+			const list = await new Promise<{ filename: string; attrs: Stats }[] | false>((resolve, reject) => {
+				try {
+					sftp.readdir(handle, (error, items) => {
+						// ssh2 は終わりを EOF の失敗か false で知らせる
+						if (error && (error as { code?: unknown }).code === SFTP_EOF) {
+							resolve(false);
+						} else if (error) {
+							reject(error);
+						} else {
+							resolve(items as unknown as { filename: string; attrs: Stats }[] | false);
+						}
+					});
+				} catch (error) {
+					reject(error);
+				}
+			});
+			if (!list) {
+				break;
+			}
+			for (const item of list) {
+				if (!paradisIsSafeSftpEntryName(item.filename)) {
+					continue;
+				}
+				if (entries.length >= limit) {
+					truncated = true;
+					break;
+				}
+				entries.push({ name: item.filename, mode: item.attrs.mode ?? 0, size: item.attrs.size ?? 0, mtime: (item.attrs.mtime ?? 0) * 1000 });
+			}
+			if (truncated) {
+				break;
+			}
+		}
+	} finally {
+		await call<void>(callback => sftp.close(handle, callback)).catch(() => undefined);
+	}
+	return { entries, truncated };
 }
 
 async function mapLimited<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
@@ -318,6 +363,8 @@ export class ParadisSftpService extends Disposable {
 				if (typeOfMode(existing.mode) === FileType.Directory) {
 					throw createFileSystemProviderError('target is a directory', FileSystemProviderErrorCode.FileIsADirectory);
 				}
+				// 移動元が無いまま送り先だけを消さない
+				await lstat(sftp, fromPath);
 				await call<void>(callback => sftp.unlink(target.path, callback));
 			}
 			await call<void>(callback => sftp.rename(fromPath, target.path, callback));
@@ -522,7 +569,7 @@ export class ParadisSftpChannel implements IServerChannel<string> {
 			case 'configure': {
 				const ms = (args[0] as { idleMs?: unknown } | undefined)?.idleMs;
 				if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) {
-					this.service.setIdleMs(ms);
+					this.service.setIdleMs(paradisSftpIdleMs(ms / 1000));
 				}
 				return Promise.resolve(undefined as T);
 			}
