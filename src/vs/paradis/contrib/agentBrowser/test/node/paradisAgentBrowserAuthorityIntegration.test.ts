@@ -22,6 +22,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { paradisAgentHookSpoolHash } from '../../node/paradisAgentHookSpoolStore.js';
 import { paradisDevtoolsUserTemporaryFolders } from '../../node/paradisDevtoolsPathPolicy.js';
+import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface ITestBinding {
 	readonly windowCtx: string;
@@ -121,6 +122,11 @@ function createFixture(): {
 	const backgroundThrottlingCoordinator = new ParadisExactViewBackgroundThrottlingCoordinator();
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
+		_agentTabGrants: new Map(),
+		_selectedTabs: new Map<string, string>(),
+		_tabScopes: new Map(),
+		_gatewayScopedLeases: new WeakMap<object, object>(),
+		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: backgroundThrottlingCoordinator,
 		_ingressLeaseStates: new WeakMap<object, object>(),
@@ -1832,6 +1838,139 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(state._activeLeases.size, 0);
 		assert.strictEqual(state._pendingForgetGenerations.size, 0);
 		assert.deepStrictEqual(forgotten, []);
+	});
+
+	suite('agent tab grants (tab_id)', () => {
+		async function grantFixture() {
+			const fixture = createFixture();
+			Reflect.set(fixture.service, '_pendingBindPreparations', 0);
+			Reflect.set(fixture.service, 'mainProcessService', {
+				getChannel: () => ({
+					call: (command: string, args: readonly unknown[] = []) => {
+						fixture.effects.push(`main:${command}`);
+						fixture.mainCalls.push({ command, args });
+						return command === 'resolveExactViewDescriptor'
+							? Promise.resolve({ windowId: args[0], viewId: args[1], targetId: `target-${args[1]}`, viewLease: `lease-${args[1]}` })
+							: Promise.resolve(true);
+					},
+				}),
+			});
+			const connection = {};
+			fixture.service.registerRendererConnection('window:1', connection);
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-a', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']));
+			const grant = (viewId: string, token = 'token', revision = 1) => fixture.service.grantAgentTab(connection, { revision, token, viewId, pageInfo: { url: `https://${viewId}.test`, title: viewId } });
+			const bindingForKey = (key: string) => (Reflect.get(fixture.service, '_bindingForKey') as (key: string) => ITestBinding | undefined).call(fixture.service, key);
+			const scopeToolCall = (args: unknown) => (Reflect.get(fixture.service, '_scopeToolCall') as (lease: unknown, args: unknown) => { lease?: { token: string; pageKey?: string }; args?: unknown; ok: boolean; error?: { content: { text: string }[] } })
+				.call(fixture.service, fixture.service.captureIngressLease('token'), args);
+			return { fixture, connection, grant, bindingForKey, scopeToolCall };
+		}
+
+		test('a granted tab is reachable by its scope key next to the shared page, and only from its own pane', async () => {
+			const { fixture, grant, bindingForKey } = await grantFixture();
+			fixture.seedBinding('token', 'window:1', 'page-user');
+
+			assert.strictEqual(await grant('tab-a'), true);
+			assert.deepStrictEqual({
+				shared: bindingForKey('token')?.exactView.targetId,
+				sharedByTab: bindingForKey(paradisAgentTabScopeKey('token', 'page-user'))?.exactView.targetId,
+				granted: bindingForKey(paradisAgentTabScopeKey('token', 'tab-a'))?.exactView.targetId,
+				notGranted: bindingForKey(paradisAgentTabScopeKey('token', 'tab-b')),
+				otherPane: bindingForKey(paradisAgentTabScopeKey('other', 'tab-a')),
+			}, {
+				shared: 'target-page-user',
+				sharedByTab: 'target-page-user',
+				granted: 'target-tab-a',
+				notGranted: undefined,
+				otherPane: undefined,
+			});
+		});
+
+		test('tab_id picks the tab, the default follows the selected tab, and an unusable tab is refused', async () => {
+			const { fixture, grant, scopeToolCall } = await grantFixture();
+			fixture.seedBinding('token', 'window:1', 'page-user');
+			assert.strictEqual(await grant('tab-a'), true);
+
+			const explicit = scopeToolCall({ tab_id: 'tab-a', uid: 'e1' });
+			const sharedDefault = scopeToolCall({ uid: 'e1' });
+			Reflect.get(fixture.service, '_selectedTabs').set('token', 'tab-a');
+			const selectedDefault = scopeToolCall({});
+			const refused = scopeToolCall({ tab_id: 'tab-b' });
+			assert.deepStrictEqual({
+				explicit: [explicit.lease?.pageKey, explicit.args],
+				sharedDefault: sharedDefault.lease?.pageKey,
+				selectedDefault: selectedDefault.lease?.pageKey,
+				refused: refused.error?.content[0].text.startsWith('Tab tab-b is not a tab this terminal pane can use'),
+				leaseCurrent: fixture.service.isIngressLeaseCurrent(explicit.lease as { token: string }),
+			}, {
+				explicit: [paradisAgentTabScopeKey('token', 'tab-a'), { uid: 'e1' }],
+				sharedDefault: paradisAgentTabScopeKey('token', 'page-user'),
+				selectedDefault: paradisAgentTabScopeKey('token', 'tab-a'),
+				refused: true,
+				leaseCurrent: true,
+			});
+		});
+
+		test('changing the shared page retires only the shared page\'s tab scope, and revoking a grant retires only that tab', async () => {
+			const { fixture, connection, grant, scopeToolCall } = await grantFixture();
+			fixture.seedBinding('token', 'window:1', 'page-user');
+			assert.strictEqual(await grant('tab-a'), true);
+			scopeToolCall({ tab_id: 'tab-a' });
+			scopeToolCall({});
+			fixture.effects.length = 0;
+
+			assert.strictEqual(await fixture.service.unbind(connection, 'token'), true);
+			const tabKey = paradisAgentTabScopeKey('token', 'tab-a');
+			const sharedKey = paradisAgentTabScopeKey('token', 'page-user');
+			assert.deepStrictEqual({
+				sharedRetired: fixture.effects.includes(`retireGateway:${sharedKey}`),
+				tabTouched: fixture.effects.some(effect => effect.includes(tabKey)),
+			}, { sharedRetired: true, tabTouched: false });
+
+			fixture.effects.length = 0;
+			assert.strictEqual(await fixture.service.revokeAgentTab(connection, 'token', 'tab-a'), true);
+			assert.deepStrictEqual({
+				tabRetired: fixture.effects.includes(`retireGateway:${tabKey}`),
+				refusedAfterRevoke: scopeToolCall({ tab_id: 'tab-a' }).error !== undefined,
+			}, { tabRetired: true, refusedAfterRevoke: true });
+		});
+
+		test('caps grants per pane, refuses a foreign pane, and drops grants when the tab leaves the window', async () => {
+			const { fixture, connection, grant, bindingForKey } = await grantFixture();
+			const results = [];
+			for (const viewId of ['tab-a', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']) {
+				results.push(await grant(viewId));
+			}
+			const otherConnection = {};
+			fixture.service.registerRendererConnection('window:2', otherConnection);
+			await fixture.service.syncBindingAuthority(otherConnection, authorityManifest(1, true, [{ token: 'foreign' }]));
+			const foreign = await fixture.service.grantAgentTab(otherConnection, { revision: 1, token: 'foreign', viewId: 'tab-a', pageInfo: { url: 'https://x.test', title: 'x' } });
+
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(2, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']));
+			assert.deepStrictEqual({
+				results,
+				foreign,
+				listed: (await fixture.service.listAgentTabGrants(connection)).map(entry => entry.pageId),
+				retiredTab: bindingForKey(paradisAgentTabScopeKey('token', 'tab-a')),
+			}, {
+				results: [true, true, true, true, true, false],
+				foreign: false,
+				listed: ['tab-b', 'tab-c', 'tab-d', 'tab-e'],
+				retiredTab: undefined,
+			});
+		});
+
+		test('a terminal exit forgets every grant and the selected tab of that pane', async () => {
+			const { fixture, connection, grant } = await grantFixture();
+			assert.strictEqual(await grant('tab-a'), true);
+			assert.strictEqual(await grant('tab-b', 'other'), true);
+			Reflect.get(fixture.service, '_selectedTabs').set('token', 'tab-a');
+
+			assert.strictEqual(await fixture.service.notifyTerminalExit(connection, 'token'), true);
+			assert.deepStrictEqual({
+				grants: (await fixture.service.listAgentTabGrants(connection)).map(entry => `${entry.token}:${entry.pageId}`),
+				selected: Reflect.get(fixture.service, '_selectedTabs').has('token'),
+			}, { grants: ['other:tab-b'], selected: false });
+		});
 	});
 
 	test('returns false for an eligible token without an active binding and causes no mutation or cleanup', async () => {

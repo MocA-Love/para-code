@@ -7,7 +7,8 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisCdpGatewayDelegate, ParadisCdpGateway } from '../../node/paradisCdpGateway.js';
+import { IParadisCdpGatewayDelegate, ParadisCdpGateway, paradisGatewayPaneQuery } from '../../node/paradisCdpGateway.js';
+import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 import { ParadisCdpUpstream } from '../../node/paradisCdpUpstream.js';
 
 interface ITestLease {
@@ -81,6 +82,32 @@ suite('Paradis CDP gateway ingress authority', () => {
 			assert.strictEqual(state._connectionAuthorities.size, 0);
 			assert.strictEqual(state._connectionsByToken.size, 0);
 			assert.strictEqual(state._rawScreenshotAuthorities._coordinators.size, 0);
+		} finally {
+			fixture.gateway.dispose();
+		}
+	});
+
+	test('scopes a connection to one tab only through the tab query and refuses a pane value that carries a tab', () => {
+		const fixture = createHttpFixture('/json/version');
+		const state = fixture.gateway as unknown as { _queryPaneOf(req: { readonly url: string }): { readonly present: boolean; readonly token?: string } };
+		try {
+			assert.deepStrictEqual([
+				state._queryPaneOf({ url: '/json/version?pane=pane-token' }),
+				state._queryPaneOf({ url: '/json/version?pane=pane-token&tab=tab-1' }),
+				state._queryPaneOf({ url: `/json/version?pane=${encodeURIComponent(paradisAgentTabScopeKey('pane-token', 'tab-1'))}` }),
+				state._queryPaneOf({ url: '/json/version?pane=pane-token&tab=tab-1&tab=tab-2' }),
+				state._queryPaneOf({ url: '/json/version?pane=pane-token&tab=' }),
+			], [
+				{ present: true, token: 'pane-token' },
+				{ present: true, token: paradisAgentTabScopeKey('pane-token', 'tab-1') },
+				{ present: true },
+				{ present: true },
+				{ present: true },
+			]);
+			assert.deepStrictEqual(
+				[paradisGatewayPaneQuery('pane-token'), paradisGatewayPaneQuery(paradisAgentTabScopeKey('pane token', 'tab/1'))],
+				['?pane=pane-token', '?pane=pane%20token&tab=tab%2F1'],
+			);
 		} finally {
 			fixture.gateway.dispose();
 		}

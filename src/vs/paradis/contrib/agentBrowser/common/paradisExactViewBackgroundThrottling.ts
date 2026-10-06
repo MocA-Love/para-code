@@ -14,7 +14,8 @@ export const PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS = 4096;
 /** Defensive cap for independently referenced exact BrowserViews. */
 export const PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_EXACT_VIEWS = 4096;
 
-const PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_TOKEN_LENGTH = 200;
+/** Pane tokens, or pane token + agent tab scope keys (paradisAgentTabScope.ts) for agent tab grants. */
+const PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_TOKEN_LENGTH = 400;
 
 /** Stable failure categories for rejected state transitions. */
 export type ParadisExactViewBackgroundThrottlingErrorReason =

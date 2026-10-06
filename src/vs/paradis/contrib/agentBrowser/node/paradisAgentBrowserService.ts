@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -61,7 +61,8 @@ import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREA
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
-import { ParadisCdpGateway } from './paradisCdpGateway.js';
+import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.js';
+import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -129,6 +130,11 @@ interface IJsonRpcRequest {
 
 export interface IParadisAgentBrowserIngressLease {
 	readonly token: string;
+	/**
+	 * ブラウザのツールが使うタブのスコープキー（paradisAgentTabScope.ts）。tab_id を解決した lease だけが持つ。
+	 * 無ければペインのトークンそのもの（共有中のページ）。ペイン単位のこと（接続元・ファイル・状態）は常に `token` で見る。
+	 */
+	readonly pageKey?: string;
 }
 
 const MAX_BODY_BYTES = PARADIS_AGENT_HOOK_MAX_BODY_BYTES;
@@ -139,7 +145,7 @@ const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx or the rows of a csv.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane, or on the tab you pass as tab_id. A pane can use the page the user shared plus up to 5 tabs it opens itself with open_browser_tab (list_browser_tabs shows their tabIds). When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx or the rows of a csv.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
@@ -300,6 +306,21 @@ export const TOOLS = PARADIS_MCP_LOCAL_TOOLS;
 /** エージェントのタブ操作と共有の要求のツール名（paradisAgentBrowserTabs.ts の契約で renderer へ委ねる）。 */
 const PARADIS_AGENT_TAB_TOOL_NAMES: ReadonlySet<string> = new Set(['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page']);
 
+/**
+ * ページを操作する Para のツール（`tab_id` で対象のタブを選べるもの）。内蔵 chrome-devtools-mcp のツールは、
+ * これとは別にすべて `tab_id` を受ける。
+ */
+const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	...PARADIS_PAGE_OPS_TOOL_NAME_SET,
+	...PARADIS_BROWSER_QUERY_TOOL_NAME_SET,
+	...PARADIS_BROWSER_ACT_TOOL_NAME_SET,
+	'capture_screenshot',
+	'run_steps',
+	'get_shared_page',
+	'upload_file_to_drop_zone',
+	'get_cdp_endpoint',
+]);
+
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
 const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
@@ -330,7 +351,7 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
-const CDP_LIMITATIONS_NOTE = 'The gateway exposes exactly one page (the one shared with this terminal pane). new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / select_browser_tab / close_browser_tab tools of this server instead (you can only close tabs you opened). list_pages / select_page only ever see the one shared page; list_browser_tabs shows the tabs you can switch to. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
+const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes exactly one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page only ever see one page; list_browser_tabs shows the tabs you can use. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
 export class ParadisDevtoolsGenerationCoordinator {
@@ -428,6 +449,20 @@ export class ParadisDevtoolsGenerationCoordinator {
 export class ParadisAgentBrowserService extends Disposable {
 
 	private readonly _bindings = new Map<string, IBindingEntry>();
+	/**
+	 * エージェントが自分で開いたタブへの許可（token → viewId → entry）。共有（{@link _bindings}）を付け替えずに、
+	 * そのペインから tab_id で使えるようにする。1 ペイン最大 {@link PARADIS_AGENT_TAB_LIMIT} 件。
+	 */
+	private readonly _agentTabGrants = new Map<string, Map<string, IBindingEntry>>();
+	/** tab_id を省いたときに使うタブ（open_browser_tab・select_browser_tab が動かす）。無ければ共有のページ。 */
+	private readonly _selectedTabs = new Map<string, string>();
+	/**
+	 * ツールやゲートウェイが使ったタブのスコープ（token → viewId → そのとき裏にあった entry の世代）。共有の付け替えや
+	 * 許可の増減のたびに今の解決と比べ、変わったスコープの子プロセスと接続だけを切る（{@link _reconcileTabScopes}）。
+	 */
+	private readonly _tabScopes = new Map<string, Map<string, number>>();
+	/** ゲートウェイ向けにスコープキーで発行した lease → ペインの lease。 */
+	private readonly _gatewayScopedLeases = new WeakMap<IParadisAgentBrowserIngressLease, IParadisAgentBrowserIngressLease>();
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
@@ -681,9 +716,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}));
 		this._cdpGateway = this._register(new ParadisCdpGateway(
 			{
-				captureIngressLease: token => this.captureIngressLease(token),
-				isIngressLeaseCurrent: lease => this.isIngressLeaseCurrent(lease),
-				getBoundTargetId: token => this.captureIngressLease(token) === undefined ? undefined : this._bindings.get(token)?.exactView.targetId,
+				// `token` はゲートウェイの台帳のキー（ペインのトークン、または `&tab=` 付きの接続ならスコープキー）
+				captureIngressLease: key => this._captureGatewayLease(key),
+				isIngressLeaseCurrent: lease => this._isGatewayLeaseCurrent(lease),
+				getBoundTargetId: key => this.captureIngressLease(paradisPaneTokenOfScopeKey(key)) === undefined ? undefined : this._bindingForKey(key)?.exactView.targetId,
 				ensureBoundTargetId: token => this._ensureBoundTargetId(token),
 				getTokenForShellPid: pid => this._getTokenForShellPid(pid),
 				captureBoundPageScreenshot: (token, options) => this._captureBoundPageScreenshot(token, options),
@@ -694,7 +730,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
-				isRemotePane: token => this._isRemotePaneForGateway(token),
+				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
@@ -706,14 +742,14 @@ export class ParadisAgentBrowserService extends Disposable {
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService, {
-			resolveRoots: token => this._resolveDevtoolsRoots(token),
+			resolveRoots: key => this._resolveDevtoolsRoots(paradisPaneTokenOfScopeKey(key)),
 			recentInputRejection: (token, since) => this._inputRejections.recent(token, since),
 			onToolFailure: (token, failure) => this._noteBrowserDiagnostic(token, { kind: 'tool-failure', ...failure }),
 		}));
 		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
 		this._pageOps = new ParadisBrowserPageOps({
 			// ingress が止まっているペイン（終了済み・隔離中）には共有が無いものとして扱う
-			binding: token => this.captureIngressLease(token) === undefined ? undefined : this._bindings.get(token),
+			binding: key => this.captureIngressLease(paradisPaneTokenOfScopeKey(key)) === undefined ? undefined : this._bindingForKey(key),
 			notBoundMessage: NOT_BOUND_MESSAGE,
 			callMain: <T>(method: string, args: unknown[]) => this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<T>(method, args),
 			dispatchInput: (token, binding, method, paramsJson) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, paramsJson, () => true).response,
@@ -951,12 +987,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 
 		const previous = this._bindings.get(preparation.token);
-		if (previous === undefined && this._bindings.size + this._quarantinedBindings.size >= MAX_EXTERNAL_BINDINGS) {
+		if (previous === undefined && this._bindings.size + this._quarantinedBindings.size + this._agentTabGrantCount() >= MAX_EXTERNAL_BINDINGS) {
 			throw new Error('Para Browser binding capacity reached');
 		}
 		try {
 			this._backgroundThrottlingCoordinator.assertCanSetBinding(
-				Array.from(this._bindings, ([token, binding]) => [token, binding.exactView] as const),
+				this._throttlingRegistry(),
 				preparation.token,
 				preparation.descriptor.exactView,
 			);
@@ -994,6 +1030,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// bounded, and non-observably ordered before the IPC promise settles.
 		this._nextBindingGeneration = generation;
 		this._bindings.set(preparation.token, binding);
+		// 新しく共有されたページを、tab_id を省いたときの既定に戻す（エージェントが選んだタブより、ユーザーが
+		// 今共有したページを優先する。許可したタブは tab_id でそのまま使える）
+		this._selectedTabs.delete(preparation.token);
 		const throttlingEffects = this._backgroundThrottlingCoordinator.setBinding(preparation.token, binding.exactView);
 		this._activateBindingGeneration(preparation.token, generation, true);
 		this._dispatchBackgroundThrottlingEffects(throttlingEffects);
@@ -1549,6 +1588,21 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private _processOwnerRelease(release: IParadisBindingOwnerRelease<IBindingEntry>): ReadonlySet<string> {
 		const preservedTokens = new Set<string>();
+		// ウィンドウの持ち物でなくなったタブ（閉じた・別のウィンドウへ移った）の許可を外す
+		if (release.retiredViewIds.length > 0) {
+			const retiredViews = new Set(release.retiredViewIds);
+			for (const [token, grants] of [...this._agentTabGrants]) {
+				let changed = false;
+				for (const tabId of [...grants.keys()]) {
+					if (retiredViews.has(tabId)) {
+						changed = this._deleteAgentTabGrant(token, tabId) || changed;
+					}
+				}
+				if (changed) {
+					this._runNonThrowingCleanup('agent-tab-retire', () => this._reconcileTabScopes(token));
+				}
+			}
+		}
 		for (const retirement of release.bindingRetirements) {
 			const active = this._bindings.get(retirement.token);
 			if (!Object.is(active, retirement.bindingIdentity)) {
@@ -1593,6 +1647,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private _cleanupRemainingWindowState(windowCtx: string, preservedTokens: ReadonlySet<string>): void {
+		for (const [token, grants] of [...this._agentTabGrants]) {
+			let changed = false;
+			for (const [tabId, grant] of [...grants]) {
+				if (grant.windowCtx === windowCtx) {
+					changed = this._deleteAgentTabGrant(token, tabId) || changed;
+				}
+			}
+			if (changed) {
+				this._runNonThrowingCleanup('agent-tab-window', () => this._reconcileTabScopes(token));
+			}
+		}
 		for (const [token, binding] of [...this._bindings]) {
 			if (binding.windowCtx === windowCtx && !preservedTokens.has(token)) {
 				this._bindings.delete(token);
@@ -1729,6 +1794,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
+		this._runNonThrowingCleanup('agent-tabs', () => this._forgetAgentTabState(token));
 		const cleanupGeneration = generation ?? this._advanceBindingGeneration(token);
 		this._paneShells.delete(token);
 		this._paneRemoteAuthorities.delete(token);
@@ -1762,12 +1828,312 @@ export class ParadisAgentBrowserService extends Disposable {
 		return generation;
 	}
 
+	/**
+	 * `token` はペインのトークン（共有の世代）か、タブのスコープキー（そのタブの世代）。ペインのトークンのときは、
+	 * 共有が変わったのに合わせて、タブのスコープのうち裏の entry が変わったものだけを切り直す。
+	 */
 	private _activateBindingGeneration(token: string, generation: number, cancelPendingForget: boolean): void {
 		this._runNonThrowingCleanup('generation', () => this._devtoolsGenerationCoordinator.setGeneration(token, generation, cancelPendingForget));
 		this._runNonThrowingCleanup('gateway-connections', () => this._cdpGateway.closeConnectionsForToken(token));
 		this._runNonThrowingCleanup('devtools-retire', () => this._devtoolsProxy.retire(token, generation));
 		// 共有が入れ替わったら、そのペインがタブへ掛けた上書き（ヘッダ・認証・ルール）を外す
 		this._runNonThrowingCleanup('page-ops-release', () => this._pageOps.releaseOwner(token, generation));
+		if (paradisParseAgentTabScopeKey(token).tabId === undefined) {
+			this._runNonThrowingCleanup('tab-scopes', () => this._reconcileTabScopes(token));
+		}
+	}
+
+	// --- エージェントのタブの許可と、タブのスコープ ---
+
+	/** そのペインからそのタブを使うときの entry。許可を先に見る（共有が付け替わっても許可のタブは切らない）。 */
+	private _scopeBinding(token: string, tabId: string): IBindingEntry | undefined {
+		const grant = this._agentTabGrants.get(token)?.get(tabId);
+		if (grant !== undefined && this._bindingAuthority.isViewOwnedWithToken(token, tabId)) {
+			return grant;
+		}
+		const primary = this._bindings.get(token);
+		return primary?.pageId === tabId ? primary : undefined;
+	}
+
+	/** キー（ペインのトークン、またはスコープキー）の entry。トークンだけなら共有中のページ。 */
+	private _bindingForKey(key: string): IBindingEntry | undefined {
+		const { token, tabId } = paradisParseAgentTabScopeKey(key);
+		return tabId === undefined ? this._bindings.get(token) : this._scopeBinding(token, tabId);
+	}
+
+	/** tab_id を省いたときのタブ。選んだタブがまだ使えればそれ、無ければ共有のページ。 */
+	private _defaultTabId(token: string): string | undefined {
+		const selected = this._selectedTabs.get(token);
+		if (selected !== undefined && this._scopeBinding(token, selected) !== undefined) {
+			return selected;
+		}
+		return this._bindings.get(token)?.pageId;
+	}
+
+	/** lease のページのキー（tab_id を解決していなければペインのトークン）。 */
+	private _pageKeyOf(ingressLease: IParadisAgentBrowserIngressLease): string {
+		return ingressLease.pageKey ?? ingressLease.token;
+	}
+
+	/**
+	 * ツールの呼び出しの tab_id（省略可）から、使うタブのスコープを決めた lease を作る。tab_id がこのペインの
+	 * 使えるタブでなければエラーの結果を返す。tab_id が無く、共有も選んだタブも無いときはスコープ無しの lease
+	 * （これまでどおり「共有がありません」の案内になる）。
+	 */
+	private _scopeToolCall(ingressLease: IParadisAgentBrowserIngressLease, args: unknown): { readonly ok: true; readonly lease: IParadisAgentBrowserIngressLease; readonly args: unknown; readonly tabId?: string } | { readonly ok: false; readonly error: unknown } {
+		const taken = paradisTakeTabIdArgument(args);
+		if (taken.invalid) {
+			return { ok: false, error: this._toolError(`"${PARADIS_TAB_ID_ARGUMENT}" must be a tabId string from list_browser_tabs or open_browser_tab.`) };
+		}
+		const token = ingressLease.token;
+		const tabId = taken.tabId ?? this._defaultTabId(token);
+		if (tabId === undefined) {
+			return { ok: true, lease: ingressLease, args: taken.rest };
+		}
+		const binding = this._scopeBinding(token, tabId);
+		if (binding === undefined) {
+			return { ok: false, error: this._toolError(`Tab ${tabId} is not a tab this terminal pane can use (it was closed, the user stopped sharing it, or it belongs to another pane). Call list_browser_tabs for the tabs you can pass as ${PARADIS_TAB_ID_ARGUMENT}.`) };
+		}
+		const pageKey = paradisAgentTabScopeKey(token, tabId);
+		this._noteTabScope(token, tabId, binding);
+		const ownerLease = this._ingressLeaseStates.get(ingressLease);
+		if (ownerLease === undefined) {
+			throw new ParadisIngressLeaseError();
+		}
+		const scoped: IParadisAgentBrowserIngressLease = Object.freeze({ token, pageKey });
+		this._ingressLeaseStates.set(scoped, ownerLease);
+		return { ok: true, lease: scoped, args: taken.rest, tabId };
+	}
+
+	/** そのタブのスコープを使い始めた。前に使ったときと裏の entry が違えば、そのスコープだけ切り直す。 */
+	private _noteTabScope(token: string, tabId: string, binding: IBindingEntry): void {
+		let scopes = this._tabScopes.get(token);
+		if (scopes?.get(tabId) === binding.generation) {
+			return;
+		}
+		if (scopes === undefined) {
+			scopes = new Map();
+			this._tabScopes.set(token, scopes);
+		}
+		scopes.set(tabId, binding.generation);
+		this._activateBindingGeneration(paradisAgentTabScopeKey(token, tabId), binding.generation, true);
+	}
+
+	/**
+	 * 共有の付け替え・許可の増減・ペインの片付けの後に呼ぶ。使えなくなったスコープは子プロセス・接続・ページの
+	 * 上書きを片付け、裏の entry が変わったスコープだけを切り直す（ほかのタブの接続は切らない）。
+	 */
+	private _reconcileTabScopes(token: string): void {
+		const selected = this._selectedTabs.get(token);
+		if (selected !== undefined && this._scopeBinding(token, selected) === undefined) {
+			this._selectedTabs.delete(token);
+		}
+		const scopes = this._tabScopes.get(token);
+		if (scopes === undefined) {
+			return;
+		}
+		for (const [tabId, generation] of [...scopes]) {
+			const key = paradisAgentTabScopeKey(token, tabId);
+			const binding = this._scopeBinding(token, tabId);
+			if (binding === undefined) {
+				scopes.delete(tabId);
+				this._retireTabScope(key);
+			} else if (binding.generation !== generation) {
+				scopes.set(tabId, binding.generation);
+				this._activateBindingGeneration(key, binding.generation, true);
+			}
+		}
+		if (scopes.size === 0) {
+			this._tabScopes.delete(token);
+		}
+	}
+
+	private _retireTabScope(key: string): void {
+		const generation = this._advanceBindingGeneration(key);
+		this._runNonThrowingCleanup('tab-scope-devtools', () => this._devtoolsGenerationCoordinator.forgetWhenIdle(key, generation));
+		this._runNonThrowingCleanup('tab-scope-gateway', () => this._cdpGateway.retireToken(key));
+		this._inputRejections.forget(key);
+	}
+
+	/** ペインが片付いた。許可・選んだタブ・タブのスコープをすべて外す。 */
+	private _forgetAgentTabState(token: string): void {
+		this._selectedTabs.delete(token);
+		const grants = this._agentTabGrants.get(token);
+		if (grants !== undefined) {
+			this._agentTabGrants.delete(token);
+			for (const tabId of grants.keys()) {
+				this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(paradisAgentTabScopeKey(token, tabId)));
+			}
+		}
+		const scopes = this._tabScopes.get(token);
+		if (scopes !== undefined) {
+			this._tabScopes.delete(token);
+			for (const tabId of scopes.keys()) {
+				this._retireTabScope(paradisAgentTabScopeKey(token, tabId));
+			}
+		}
+	}
+
+	/** 許可を外す（ビューが消えた・ペインが閉じた・ユーザーが共有を止めた）。外したら true。 */
+	private _deleteAgentTabGrant(token: string, tabId: string): boolean {
+		const grants = this._agentTabGrants.get(token);
+		if (grants === undefined || !grants.delete(tabId)) {
+			return false;
+		}
+		if (grants.size === 0) {
+			this._agentTabGrants.delete(token);
+		}
+		this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(paradisAgentTabScopeKey(token, tabId)));
+		return true;
+	}
+
+	private _agentTabGrantCount(): number {
+		let count = 0;
+		for (const grants of this._agentTabGrants.values()) {
+			count += grants.size;
+		}
+		return count;
+	}
+
+	/** 背景の描画止めの coordinator が持っているはずの一覧（共有と許可）。 */
+	private _throttlingRegistry(): (readonly [string, IParadisExactBrowserViewDescriptor])[] {
+		const registry: (readonly [string, IParadisExactBrowserViewDescriptor])[] = Array.from(this._bindings, ([token, binding]) => [token, binding.exactView] as const);
+		for (const [token, grants] of this._agentTabGrants) {
+			for (const [tabId, grant] of grants) {
+				registry.push([paradisAgentTabScopeKey(token, tabId), grant.exactView] as const);
+			}
+		}
+		return registry;
+	}
+
+	/**
+	 * renderer から: エージェントが自分で開いたタブを、そのペインが tab_id で使えるようにする（共有は付け替えない）。
+	 * 確かめ方は prepareBind と同じ（ペインとタブが同じウィンドウ・同じスコープ、exactView を main で固定）。
+	 */
+	async grantAgentTab(connection: object, request: IParadisGrantAgentTabRequest): Promise<boolean> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const parsedWindow = parseRendererWindowContext(windowCtx);
+		const pageInfo = copySharedPageInfo(request.pageInfo);
+		const { token, viewId } = request;
+		if (parsedWindow === undefined || pageInfo === undefined || !paradisIsValidAgentTabId(viewId)
+			|| this._faultedTokens.has(token) || this._terminalExitedTokens.has(token)) {
+			return false;
+		}
+		let snapshot: IParadisBindingPrepareSnapshot;
+		try {
+			snapshot = this._bindingAuthority.capturePrepareSnapshot(connection, request.revision, token, viewId);
+		} catch {
+			return false;
+		}
+		if (this._pendingBindPreparations >= MAX_PENDING_BIND_PREPARATIONS) {
+			return false;
+		}
+		let exactView: IParadisExactBrowserViewDescriptor | undefined;
+		this._pendingBindPreparations++;
+		try {
+			const resolved = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<unknown>('resolveExactViewDescriptor', [parsedWindow.windowId, viewId]);
+			this._requireCurrentRendererConnection(connection);
+			exactView = paradisParseExactBrowserViewDescriptor(resolved);
+		} catch {
+			return false;
+		} finally {
+			this._pendingBindPreparations--;
+		}
+		if (exactView === undefined || exactView.windowId !== parsedWindow.windowId || exactView.viewId !== viewId
+			|| !this._bindingAuthority.isPrepareSnapshotCurrent(snapshot)
+			|| this._faultedTokens.has(token) || this._terminalExitedTokens.has(token)) {
+			return false;
+		}
+		const grants = this._agentTabGrants.get(token);
+		const existing = grants?.get(viewId);
+		if (existing !== undefined && JSON.stringify(existing.exactView) === JSON.stringify(exactView)) {
+			return true;
+		}
+		if (existing === undefined
+			&& ((grants?.size ?? 0) >= PARADIS_AGENT_TAB_LIMIT
+				|| this._bindings.size + this._quarantinedBindings.size + this._agentTabGrantCount() >= MAX_EXTERNAL_BINDINGS)) {
+			return false;
+		}
+		const key = paradisAgentTabScopeKey(token, viewId);
+		try {
+			this._backgroundThrottlingCoordinator.assertCanSetBinding(this._throttlingRegistry(), key, exactView);
+		} catch {
+			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] grantAgentTab: coordinator/registry mismatch for pane ${this._tokenFingerprint(token)}; not granting`));
+			return false;
+		}
+		const generation = ++this._nextBindingGeneration;
+		const grant: IBindingEntry = Object.freeze({
+			windowCtx,
+			pageId: viewId,
+			pageInfo,
+			generation,
+			boundAt: Date.now(),
+			exactView,
+			scope: snapshot.scope,
+		});
+		let tokenGrants = grants;
+		if (tokenGrants === undefined) {
+			tokenGrants = new Map();
+			this._agentTabGrants.set(token, tokenGrants);
+		}
+		tokenGrants.set(viewId, grant);
+		this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.setBinding(key, exactView));
+		this._reconcileTabScopes(token);
+		this._runNonThrowingDiagnostic(() => this.logService.debug(`[ParadisAgentBrowser] Granted an agent tab to pane ${this._tokenFingerprint(token)} generation=${generation}`));
+		return true;
+	}
+
+	/** renderer から: エージェントのタブの許可を外す（タブを閉じた・ユーザーが共有を止めた）。 */
+	async revokeAgentTab(connection: object, token: string, viewId: string): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token) || !this._deleteAgentTabGrant(token, viewId)) {
+			return false;
+		}
+		this._reconcileTabScopes(token);
+		return true;
+	}
+
+	/** renderer の共有の表示用: このウィンドウのペインに許可しているエージェントのタブ。 */
+	async listAgentTabGrants(connection: object): Promise<IParadisAgentTabGrant[]> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const eligibleTokens = this._currentEligibleTokens(connection);
+		const result: IParadisAgentTabGrant[] = [];
+		for (const [token, grants] of this._agentTabGrants) {
+			if (!eligibleTokens.has(token)) {
+				continue;
+			}
+			for (const grant of grants.values()) {
+				if (grant.windowCtx === windowCtx) {
+					result.push({ token, pageId: grant.pageId });
+				}
+			}
+		}
+		return result;
+	}
+
+	/** ゲートウェイ向けの lease。スコープキーなら、そのペインがそのタブを今使えるときだけ発行する。 */
+	private _captureGatewayLease(key: string): IParadisAgentBrowserIngressLease | undefined {
+		const { token, tabId } = paradisParseAgentTabScopeKey(key);
+		const paneLease = this.captureIngressLease(token);
+		if (paneLease === undefined || tabId === undefined) {
+			return paneLease;
+		}
+		const binding = this._scopeBinding(token, tabId);
+		if (binding === undefined) {
+			return undefined;
+		}
+		this._noteTabScope(token, tabId, binding);
+		const lease: IParadisAgentBrowserIngressLease = Object.freeze({ token: key });
+		this._gatewayScopedLeases.set(lease, paneLease);
+		return lease;
+	}
+
+	private _isGatewayLeaseCurrent(lease: IParadisAgentBrowserIngressLease): boolean {
+		const paneLease = this._gatewayScopedLeases.get(lease);
+		if (paneLease === undefined) {
+			return this.isIngressLeaseCurrent(lease);
+		}
+		return this.isIngressLeaseCurrent(paneLease) && this._bindingForKey(lease.token) !== undefined;
 	}
 
 	private _dispatchBackgroundThrottlingEffects(effects: readonly IParadisExactViewBackgroundThrottlingEffect[]): void {
@@ -1904,17 +2270,20 @@ export class ParadisAgentBrowserService extends Disposable {
 		return 'unknown-pane';
 	}
 
-	/** Returns only the target fixed by the committed exact BrowserView descriptor. */
-	private async _ensureBoundTargetId(token: string): Promise<string | undefined> {
-		const ingressLease = this.captureIngressLease(token);
+	/**
+	 * Returns only the target fixed by the committed exact BrowserView descriptor.
+	 * `key` はペインのトークン（共有中のページ）か、タブのスコープキー（そのタブ）。
+	 */
+	private async _ensureBoundTargetId(key: string): Promise<string | undefined> {
+		const ingressLease = this.captureIngressLease(paradisPaneTokenOfScopeKey(key));
 		if (ingressLease === undefined) {
 			return undefined;
 		}
-		const binding = this._bindings.get(token);
+		const binding = this._bindingForKey(key);
 		if (!binding) {
 			return undefined;
 		}
-		return this.isIngressLeaseCurrent(ingressLease) && this._bindings.get(token) === binding
+		return this.isIngressLeaseCurrent(ingressLease) && this._bindingForKey(key) === binding
 			? binding.exactView.targetId
 			: undefined;
 	}
@@ -1925,12 +2294,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * base64画像データを返す。失敗・世代変更時はretryable errorにし、生CDPへfallbackさせない。
 	 * encode-size上限だけは同じ入力の再試行で回復しないため、明示的なnon-retryable errorを保持する。
 	 */
-	private async _captureBoundPageScreenshot(token: string, options: IParadisCdpScreenshotOptions): Promise<string | undefined> {
+	private async _captureBoundPageScreenshot(key: string, options: IParadisCdpScreenshotOptions): Promise<string | undefined> {
+		const token = paradisPaneTokenOfScopeKey(key);
 		const ingressLease = this.captureIngressLease(token);
 		if (ingressLease === undefined) {
 			throw new ParadisIngressLeaseError();
 		}
-		const binding = this._bindings.get(token);
+		const binding = this._bindingForKey(key);
 		if (!binding) {
 			throw new Error('PARA_BROWSER_RETRYABLE: no browser page is bound to this pane; share the page and retry the screenshot.');
 		}
@@ -1944,7 +2314,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const data = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
 				.call<string | null>('captureExactViewScreenshot', [binding.exactView, options]);
 			this._requireIngressLease(ingressLease);
-			const current = this._bindings.get(token);
+			const current = this._bindingForKey(key);
 			if (current !== binding || current?.generation !== binding.generation) {
 				throw new Error('PARA_BROWSER_RETRYABLE: the browser binding changed while the screenshot was being captured; retry the screenshot.');
 			}
@@ -1971,12 +2341,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** Read visibility through electron-main while protecting the result with the same binding generation. */
-	private async _isBoundPageVisible(token: string): Promise<boolean> {
-		const ingressLease = this.captureIngressLease(token);
+	private async _isBoundPageVisible(key: string): Promise<boolean> {
+		const ingressLease = this.captureIngressLease(paradisPaneTokenOfScopeKey(key));
 		if (ingressLease === undefined) {
 			throw new ParadisIngressLeaseError();
 		}
-		const binding = this._bindings.get(token);
+		const binding = this._bindingForKey(key);
 		if (!binding) {
 			throw new Error('PARA_BROWSER_RETRYABLE: no browser page is bound to this pane.');
 		}
@@ -1984,7 +2354,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const visible = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
 				.call<boolean | null>('isExactViewVisible', [binding.exactView]);
 			this._requireIngressLease(ingressLease);
-			const current = this._bindings.get(token);
+			const current = this._bindingForKey(key);
 			if (current !== binding || current?.generation !== binding.generation) {
 				throw new Error('PARA_BROWSER_RETRYABLE: the browser binding changed while visibility was being checked; retry the screenshot.');
 			}
@@ -2007,8 +2377,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 診断の印を main へ渡す（Sentry のパンくずとまとめのイベントになる。paradisBrowserFocusDiagnostics.ts）。
 	 * 共有中のタブが無ければ捨てる。届かなくても何も変えない。
 	 */
-	private _noteBrowserDiagnostic(token: string, note: IParadisBrowserDiagnosticNote): void {
-		const exactView = this._bindings.get(token)?.exactView;
+	private _noteBrowserDiagnostic(key: string, note: IParadisBrowserDiagnosticNote): void {
+		// タブのスコープキーなら、そのタブ（#261 のフォーカス診断をタブごとに分ける）
+		const exactView = this._bindingForKey(key)?.exactView;
 		if (exactView) {
 			this._sendBrowserDiagnostic(exactView, note);
 		}
@@ -2058,16 +2429,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		});
 	}
 
+	/** `key` はペインのトークン（共有中のページ）か、タブのスコープキー（そのタブ）。入力キューはタブ（exactView）ごと。 */
 	private _dispatchBoundPageInput(
-		token: string,
+		key: string,
 		connection: object,
 		expectedTargetId: string,
 		method: string,
 		paramsJson: string,
 		isConnectionCurrent: () => boolean,
 	): IParadisCdpInputQueueOperation {
+		const token = paradisPaneTokenOfScopeKey(key);
 		const ingressLease = this.captureIngressLease(token);
-		const binding = ingressLease === undefined ? undefined : this._bindings.get(token);
+		const binding = ingressLease === undefined ? undefined : this._bindingForKey(key);
 		if (!ingressLease || !binding || binding.exactView.targetId !== expectedTargetId) {
 			return this._cdpInputQueue.enqueue({
 				queueKey: `unavailable:${token}`,
@@ -2079,8 +2452,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const queueKey = JSON.stringify(binding.exactView);
 		const isAuthorityCurrent = () => isConnectionCurrent()
 			&& this.isIngressLeaseCurrent(ingressLease)
-			&& this._bindings.get(token) === binding
-			&& binding.generation === this._bindings.get(token)?.generation
+			&& this._bindingForKey(key) === binding
+			&& binding.generation === this._bindingForKey(key)?.generation
 			&& binding.exactView.targetId === expectedTargetId;
 		return this._cdpInputQueue.enqueue({
 			queueKey,
@@ -3368,7 +3741,12 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._requireIngressLease(ingressLease);
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
 				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
-				const listed = [...TOOLS, ...provided, ...tools];
+				// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
+				const listed = [
+					...TOOLS.map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
+					...provided,
+					...tools.map(tool => paradisWithTabIdArgument(tool)),
+				];
 				// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
 				return { tools: this._paneRemoteAuthorityOf(ingressLease.token) !== undefined ? paradisDescribeToolsForRemotePane(listed) : listed };
 			}
@@ -3396,12 +3774,20 @@ export class ParadisAgentBrowserService extends Disposable {
 					return result;
 				}
 			}
+			// tab_id（省略可）で、どのタブの子プロセスへ回すかを決める。子プロセスへは tab_id を外して渡す
+			// （vendored は知らない引数を断る）
+			const scopedCall = this._scopeToolCall(ingressLease, params?.arguments);
+			if (!scopedCall.ok) {
+				return scopedCall.error;
+			}
+			const pageLease = scopedCall.lease;
+			const devtoolsArgs = scopedCall.args;
 			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
 			// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
 			// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
-			const pathArguments = paradisDevtoolsPathArguments(name, params?.arguments);
+			const pathArguments = paradisDevtoolsPathArguments(name, devtoolsArgs);
 			if (pathArguments.length > 0) {
-				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, params?.arguments);
+				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, devtoolsArgs);
 				this._requireIngressLease(ingressLease);
 				if (pathDecision.kind === 'refuse') {
 					// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
@@ -3409,20 +3795,44 @@ export class ParadisAgentBrowserService extends Disposable {
 					const remoteAuthority = this._paneRemoteAuthorityOf(token);
 					const direction = paradisRemoteFileToolDirection(name, pathArguments);
 					if (remoteAuthority !== undefined && direction !== undefined) {
-						return this._remoteFileTransfer.callTool(name, direction, params?.arguments as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
-							bridgedArgs => this._callDevtoolsTool(ingressLease, name, bridgedArgs, signal, false));
+						return this._remoteFileTransfer.callTool(name, direction, devtoolsArgs as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
+							bridgedArgs => this._callDevtoolsTool(pageLease, name, bridgedArgs, signal, false));
 					}
 					return this._toolError(pathDecision.message);
 				}
 				// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
-				const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, params?.arguments);
+				const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, devtoolsArgs);
 				this._requireIngressLease(ingressLease);
 				if (versionControl !== undefined) {
 					return this._toolError(versionControl);
 				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			return this._callDevtoolsTool(ingressLease, name, params?.arguments, signal);
+			return this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal);
+		}
+
+		// ページを操作する Para のツールは、tab_id（省略可）でどのタブかを決める
+		let toolArguments = params?.arguments;
+		let pageLease = ingressLease;
+		if (PARADIS_TAB_SCOPED_TOOL_NAMES.has(name)) {
+			const scopedCall = this._scopeToolCall(ingressLease, toolArguments);
+			if (!scopedCall.ok) {
+				return scopedCall.error;
+			}
+			pageLease = scopedCall.lease;
+			toolArguments = scopedCall.args;
+			if (name === 'run_steps') {
+				// 手順は外側で決めたタブで動かす（途中で既定のタブが動いても、ほかのタブへ飛ばない）。
+				// 手順ごとの tab_id があればそちらを使う
+				const pinnedTabId = scopedCall.tabId;
+				return paradisRunSteps({
+					signal,
+					callTool: (stepName, stepArgs) => this._callTool(ingressLease, {
+						name: stepName,
+						arguments: pinnedTabId !== undefined && !Object.hasOwn(stepArgs, PARADIS_TAB_ID_ARGUMENT) ? { ...stepArgs, [PARADIS_TAB_ID_ARGUMENT]: pinnedTabId } : stepArgs,
+					}, signal, socket),
+				}, toolArguments);
+			}
 		}
 
 		// 利用者に承認を求める・ページやプロファイルを開く / 切り替える / 消すツールは、トークンだけでなく
@@ -3441,14 +3851,6 @@ export class ParadisAgentBrowserService extends Disposable {
 			return result;
 		}
 
-		if (name === 'run_steps') {
-			// 手順はどれも単体で呼んだときと同じ確認を通る（_callTool をそのまま呼ぶ）
-			return paradisRunSteps({
-				signal,
-				callTool: (stepName, stepArgs) => this._callTool(ingressLease, { name: stepName, arguments: stepArgs }, signal, socket),
-			}, params?.arguments);
-		}
-
 		if (PARADIS_CALLER_VERIFIED_TOOL_NAMES.has(name)) {
 			const caller = await this._classifyCaller(token, socket);
 			this._requireIngressLease(ingressLease);
@@ -3465,7 +3867,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (caller === 'unverified') {
 				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
 			}
-			return this._callPageOpsTool(ingressLease, name, params?.arguments, signal);
+			return this._callPageOpsTool(pageLease, name, toolArguments, signal);
 		}
 
 		if (name === 'preview_file') {
@@ -3522,8 +3924,9 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		if (name === 'get_cdp_endpoint') {
 			// CDPエンドポイント自体はバインド無しでも案内する（バインド状況も添える）。
-			const boundEntry = this._bindings.get(token);
+			const boundEntry = this._bindingForKey(this._pageKeyOf(pageLease));
 			const httpBase = this._port !== undefined ? `http://127.0.0.1:${this._port}/cdp` : undefined;
+			const scopedTab = paradisParseAgentTabScopeKey(this._pageKeyOf(pageLease)).tabId;
 			if (!httpBase) {
 				// allow-any-unicode-next-line
 				return this._toolError('CDPゲートウェイのHTTPサーバーがまだ起動していません。少し待って再試行してください。');
@@ -3533,18 +3936,22 @@ export class ParadisAgentBrowserService extends Disposable {
 				// allow-any-unicode-next-line
 				note: 'browser-use など外部の生CDPクライアントのCDP URLにこの httpBase を指定してください。chrome-devtools系ツール（take_snapshot / click / navigate_page 等）はこのMCPサーバーに内蔵済みなので、通常このエンドポイントを直接使う必要はありません。操作できるのはこのターミナルペインに共有されたページのみです。',
 				limitations: CDP_LIMITATIONS_NOTE,
-				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title } : null,
+				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title, pageId: boundEntry.pageId } : null,
+				// tab_id で選んだタブだけを見せる接続（httpBase はペインの共有中のページだけを見せる）
+				...(scopedTab !== undefined && boundEntry !== undefined && this._port !== undefined
+					? { tabWebSocketDebuggerUrl: `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}${paradisGatewayPaneQuery(this._pageKeyOf(pageLease))}` }
+					: {}),
 				...(boundEntry ? {} : { hint: NOT_BOUND_MESSAGE }),
 			}, null, 2));
 		}
 
-		const binding = this._bindings.get(token);
+		const binding = this._bindingForKey(this._pageKeyOf(pageLease));
 		if (!binding) {
 			return this._toolError(NOT_BOUND_MESSAGE);
 		}
 
 		if (PARADIS_BROWSER_QUERY_TOOL_NAME_SET.has(name)) {
-			return this._callBrowserQueryTool(ingressLease, binding, name, params?.arguments, signal);
+			return this._callBrowserQueryTool(pageLease, binding, name, toolArguments, signal);
 		}
 
 		if (name === 'capture_screenshot') {
@@ -3554,7 +3961,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (caller === 'unverified') {
 				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
 			}
-			return this._callCaptureTool(ingressLease, binding, params?.arguments, signal, socket);
+			return this._callCaptureTool(pageLease, binding, toolArguments, signal, socket);
 		}
 
 		if (PARADIS_BROWSER_ACT_TOOL_NAME_SET.has(name)) {
@@ -3564,14 +3971,14 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (caller === 'unverified') {
 				return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
 			}
-			return this._callBrowserActTool(ingressLease, binding, name, params?.arguments, signal);
+			return this._callBrowserActTool(pageLease, binding, name, toolArguments, signal);
 		}
 
 		switch (name) {
 			case 'get_shared_page':
-				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId }, null, 2));
+				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId, shared: this._bindings.get(token)?.pageId === binding.pageId }, null, 2));
 			case 'upload_file_to_drop_zone':
-				return this._uploadFileToDropZone(ingressLease, binding, params?.arguments, signal);
+				return this._uploadFileToDropZone(pageLease, binding, toolArguments, signal);
 			default:
 				throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
 		}
@@ -3587,7 +3994,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
 		try {
 			return await this._pageOps.call({
-				token: ingressLease.token,
+				// タブのスコープキー: マウスの状態・上書きの持ち主・init scripts はタブごと
+				token: this._pageKeyOf(ingressLease),
 				signal,
 				requireCurrent: () => this._requireIngressLease(ingressLease),
 				resolveElement: uid => this._resolveElementForPageOps(ingressLease, uid, signal),
@@ -3620,12 +4028,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callBrowserQueryTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// タブのスコープキー（tab_id を解決していなければペインのトークン）
+		const token = this._pageKeyOf(ingressLease);
 		return this._browserQuery.call({
 			signal,
 			isCurrent: () => {
 				this._requireIngressLease(ingressLease);
-				return this._bindings.get(token) === binding;
+				return this._bindingForKey(token) === binding;
 			},
 			networkActivity: ignoreOlderThanMs => this._cdpGateway.getNetworkActivity(token, ignoreOlderThanMs),
 			evaluate: async (functionSource, uids) => {
@@ -3648,12 +4057,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callBrowserActTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// タブのスコープキー（tab_id を解決していなければペインのトークン）
+		const token = this._pageKeyOf(ingressLease);
 		return this._browserActBy.call({
 			signal,
 			isCurrent: () => {
 				this._requireIngressLease(ingressLease);
-				return this._bindings.get(token) === binding;
+				return this._bindingForKey(token) === binding;
 			},
 			evaluate: async (functionSource, uids) => {
 				try {
@@ -3665,7 +4075,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
 				}
 			},
-			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindings.get(token) === binding).response,
+			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindingForKey(token) === binding).response,
 		}, name, args);
 	}
 
@@ -3676,11 +4086,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callCaptureTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, args: unknown, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// タブのスコープキー（tab_id を解決していなければペインのトークン）
+		const token = this._pageKeyOf(ingressLease);
 		return this._browserCapture.call({
 			isCurrent: () => {
 				this._requireIngressLease(ingressLease);
-				return this._bindings.get(token) === binding;
+				return this._bindingForKey(token) === binding;
 			},
 			evaluate: async (functionSource, uids) => {
 				try {
@@ -3785,7 +4196,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _listDevtoolsTools(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<IParadisProxiedTool[]> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// 一覧は全ペイン共通で一度だけ取る。子プロセスを起こすなら、次のツール呼び出しでも使う既定のタブのものにする
+		const scoped = this._scopeToolCall(ingressLease, undefined);
+		const token = scoped.ok ? this._pageKeyOf(scoped.lease) : ingressLease.token;
+		const paneToken = ingressLease.token;
 		const wsEndpoint = this._devtoolsWsEndpoint(token);
 		if (!wsEndpoint) {
 			return [];
@@ -3793,7 +4207,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		return this._devtoolsGenerationCoordinator.runWithLease(token, async () => {
 			try {
 				this._requireIngressLease(ingressLease);
-				const generation = this._bindings.get(token)?.generation ?? this._devtoolsGenerationCoordinator.getGeneration(token) ?? 0;
+				const generation = this._bindingForKey(token)?.generation ?? this._devtoolsGenerationCoordinator.getGeneration(token) ?? 0;
 				const tools = await this._devtoolsProxy.listTools(token, generation, wsEndpoint, signal);
 				this._requireIngressLease(ingressLease);
 				return tools;
@@ -3804,9 +4218,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				const message = error instanceof Error ? error.message : String(error);
 				const safeMessage = message
 					.replaceAll(wsEndpoint, '<redacted-endpoint>')
-					.replaceAll(encodeURIComponent(token), this._tokenFingerprint(token))
-					.replaceAll(token, this._tokenFingerprint(token));
-				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] Embedded chrome-devtools-mcp is unavailable for pane ${this._tokenFingerprint(token)}; serving para-browser tools only: ${safeMessage}`));
+					.replaceAll(encodeURIComponent(paneToken), this._tokenFingerprint(paneToken))
+					.replaceAll(paneToken, this._tokenFingerprint(paneToken));
+				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] Embedded chrome-devtools-mcp is unavailable for pane ${this._tokenFingerprint(paneToken)}; serving para-browser tools only: ${safeMessage}`));
 				return [];
 			}
 		});
@@ -3908,15 +4322,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
 	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// 子プロセスと世代はタブのスコープキーごと（tab_id を解決していなければペインのトークン）。別のタブの
+		// 子プロセスは別なので、別のタブへの呼び出しは並行に走る
+		const token = this._pageKeyOf(ingressLease);
 		return this._devtoolsGenerationCoordinator.runWithLease(token, async () => {
 			this._requireIngressLease(ingressLease);
-			const binding = this._bindings.get(token);
+			const binding = this._bindingForKey(token);
 			const generation = binding?.generation ?? this._devtoolsGenerationCoordinator.getGeneration(token) ?? 0;
 			const wsEndpoint = this._devtoolsWsEndpoint(token);
 			const proxied = wsEndpoint ? await this._devtoolsProxy.isProxiedTool(token, generation, wsEndpoint, name, signal) : false;
 			this._requireIngressLease(ingressLease);
-			const currentAfterLookup = this._bindings.get(token);
+			const currentAfterLookup = this._bindingForKey(token);
 			if (currentAfterLookup !== binding || !this._devtoolsGenerationCoordinator.isCurrentGeneration(token, generation)) {
 				return this._toolError('PARA_BROWSER_RETRYABLE: binding changed while the tool was running');
 			}
@@ -3928,14 +4344,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal);
 				this._requireIngressLease(ingressLease);
-				const current = this._bindings.get(token);
+				const current = this._bindingForKey(token);
 				if (current !== binding || !this._devtoolsGenerationCoordinator.isCurrentGeneration(token, generation)) {
 					return this._toolError('PARA_BROWSER_RETRYABLE: binding changed while the tool was running');
 				}
 				if (result !== undefined) {
 					// ファイルへ落ちたスクリーンショットは、呼び出し元が別の機械に居ると見えない。
 					// 取りに来るための口を添える（保存に失敗した場合も、どこへ書こうとしたかは示す）。
-					return name === 'take_screenshot' && offerScreenshotHandoff ? this._offerScreenshotHandoff(token, result, args) : result;
+					return name === 'take_screenshot' && offerScreenshotHandoff ? this._offerScreenshotHandoff(ingressLease.token, result, args) : result;
 				}
 			}
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
@@ -3950,7 +4366,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _uploadFileToDropZone(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, args: unknown, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		// タブのスコープキー（tab_id を解決していなければペインのトークン）
+		const token = this._pageKeyOf(ingressLease);
 		const toolArgs = args && typeof args === 'object' ? args as Record<string, unknown> : undefined;
 		const uid = typeof toolArgs?.uid === 'string' && toolArgs.uid.length > 0 ? toolArgs.uid : undefined;
 		const fileName = paradisSanitizeFileDropName(toolArgs?.fileName);
@@ -4015,7 +4432,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// モーダル等に覆われている。信頼済み入力なので、無関係な要素への誤ドロップを避ける。
 			return this._toolError(`The drop zone (uid "${uid}") is currently covered by another element at its center point (for example a sticky header, overlay, or modal), so a trusted drop there would land on that element instead. Dismiss whatever is covering it, take a fresh take_snapshot, and retry.`);
 		}
-		if (this._bindings.get(token) !== binding) {
+		if (this._bindingForKey(token) !== binding) {
 			return this._toolError('PARA_BROWSER_RETRYABLE: the shared page binding changed while resolving the drop target; retry.');
 		}
 
@@ -4031,7 +4448,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		let completed = false;
 		try {
 			for (const [index, command] of commands.entries()) {
-				if (this._bindings.get(token) !== binding) {
+				if (this._bindingForKey(token) !== binding) {
 					return this._toolError('PARA_BROWSER_RETRYABLE: the shared page binding changed mid-drag; retry.');
 				}
 				const operation = this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, command.method, command.paramsJson, () => true);
@@ -4157,6 +4574,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private _buildSessionHealthReport(token: string): unknown {
 		const binding = this._bindings.get(token);
+		const currentTabId = this._defaultTabId(token);
 		const paneShell = this._paneShells.get(token);
 		const paneStatus = this._paneStatuses.get(token);
 		const wsEndpoint = this._devtoolsWsEndpoint(token);
@@ -4179,6 +4597,11 @@ export class ParadisAgentBrowserService extends Disposable {
 				pageUrl: binding.pageInfo.url,
 				pageTitle: binding.pageInfo.title,
 			} : { bound: false },
+			// エージェントが開いて tab_id で使えるタブと、tab_id を省いたときのタブ
+			agentTabs: {
+				tabIds: [...(this._agentTabGrants.get(token)?.keys() ?? [])],
+				currentTabId,
+			},
 			agent: {
 				// エージェントCLIのhook (POST /agent-hook) がこのペインで一度でも発火したか。
 				hookEverFired: this._agentHookTokens.has(token),
@@ -4189,7 +4612,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				wsEndpointConfigured: wsEndpoint !== undefined,
 				// ペイン専用のvendored chrome-devtools-mcp子プロセスが今生きているか
 				// (未起動/アイドルkill後は false。次回ツール呼び出しで透過的に再起動する)。
-				childProcessAlive: this._devtoolsProxy.hasLiveChild(token),
+				// tab_id で使うタブは、タブごとに子プロセスが分かれる。ここは tab_id を省いたときのタブのもの
+				childProcessAlive: this._devtoolsProxy.hasLiveChild(currentTabId !== undefined ? paradisAgentTabScopeKey(token, currentTabId) : token),
+				tabChildProcessesAlive: [...(this._tabScopes.get(token)?.keys() ?? [])].filter(tabId => this._devtoolsProxy.hasLiveChild(paradisAgentTabScopeKey(token, tabId))),
 			},
 			gateway: {
 				httpServerListening: this._httpServer !== undefined,
@@ -4208,11 +4633,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 内蔵chrome-devtools-mcp子プロセスが接続するCDPゲートウェイのWSエンドポイント。
 	 * `?pane=` クエリはゲートウェイのトークン解決の最優先経路（全OSで決定的）。
 	 */
-	private _devtoolsWsEndpoint(token: string): string | undefined {
+	private _devtoolsWsEndpoint(key: string): string | undefined {
 		if (this._port === undefined) {
 			return undefined;
 		}
-		return `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}?pane=${encodeURIComponent(token)}`;
+		// タブのスコープキーなら `&tab=` を付け、ゲートウェイがそのタブだけを見せる
+		return `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}${paradisGatewayPaneQuery(key)}`;
 	}
 
 	/**
@@ -4285,8 +4711,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const login = call.value.restored
 			? 'It reuses the cookies already stored in that profile, so a previous login should still be active.'
 			: 'That profile has no stored cookies yet, so the page opens logged out - ask the user to log in once, and the login will be reused from then on.';
-		const shared = call.value.bound
-			? 'The page is now shared with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it.'
+		const usable = call.value.bound && (call.value.tabId === undefined || this._selectTab(ingressLease.token, call.value.tabId));
+		const shared = usable
+			? `The page is now this pane's current tab, so the browser tools (take_snapshot, click, navigate_page, ...) act on it when you omit tab_id${call.value.tabId ? ` (or pass tab_id "${call.value.tabId}")` : ''}.`
 			: 'The page was opened but could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - ask the user to share it from Para Code.';
 		const tab = call.value.tabId ? ` The tab is one of your own tabs (tabId ${call.value.tabId}); close it with close_browser_tab when you are done.` : '';
 		return this._toolText(`Opened ${where} the "${call.value.profileName}" browser profile. ${login} ${shared}${tab}`);
@@ -4320,10 +4747,12 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!call.value.ok) {
 					return this._toolError(this._agentTabFailureMessage(call.value.reason));
 				}
-				const shared = call.value.bound
-					? 'It is now the page shared with this terminal pane, so the chrome-devtools tools act on it.'
-					: 'It could NOT be shared with this terminal pane, so the chrome-devtools tools do not target it yet - retry with select_browser_tab.';
-				return this._toolText(`Opened tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`);
+				const tabId = call.value.tab.tabId;
+				const usable = call.value.bound && this._selectTab(token, tabId);
+				const shared = usable
+					? `It is now this pane's current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${tabId}" to keep using it after other tabs are opened or selected (for example from a subagent).`
+					: 'It could NOT be made usable from this terminal pane yet, so the browser tools do not target it - retry with select_browser_tab.';
+				return this._toolText(`Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`);
 			}
 			case 'list_browser_tabs': {
 				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
@@ -4339,7 +4768,20 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!call.value.ok) {
 					return this._toolError(this._agentTabFailureMessage(call.value.reason));
 				}
-				return this._toolText(JSON.stringify({ tabs: call.value.tabs, openedByYou: call.value.openedCount, limit: PARADIS_AGENT_TAB_LIMIT }, null, 2));
+				const currentTabId = this._defaultTabId(token);
+				const tabs = call.value.tabs.map(tab => ({
+					tabId: tab.tabId,
+					url: tab.url,
+					title: tab.title,
+					openedByAgent: tab.openedByAgent,
+					// ユーザーがこのペインに共有しているページか
+					shared: tab.active,
+					// tab_id を省いたときに使うタブか
+					current: tab.tabId === currentTabId,
+					// tab_id で使えるか（ユーザーのタブは共有されている間だけ）
+					usable: this._scopeBinding(token, tab.tabId) !== undefined,
+				}));
+				return this._toolText(JSON.stringify({ tabs, openedByYou: call.value.openedCount, limit: PARADIS_AGENT_TAB_LIMIT, hint: 'Pass a usable tabId as tab_id to any browser tool to act on that tab; give each subagent its own tab_id.' }, null, 2));
 			}
 			case 'select_browser_tab':
 			case 'close_browser_tab': {
@@ -4361,9 +4803,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					if (!call.value.ok) {
 						return this._toolError(this._agentTabFailureMessage(call.value.reason));
 					}
-					return call.value.bound
-						? this._toolText(`Tab ${tabId} (${call.value.tab.url || 'about:blank'}) is now the page shared with this terminal pane.`)
-						: this._toolError(`PARA_BROWSER_RETRYABLE: Para Code could not share tab ${tabId} with this terminal pane. Retry once; if it keeps failing, ask the user to share it from Para Code.`);
+					return call.value.bound && this._selectTab(token, tabId)
+						? this._toolText(`Tab ${tabId} (${call.value.tab.url || 'about:blank'}) is now this pane's current tab: the browser tools act on it when you omit tab_id.`)
+						: this._toolError(`PARA_BROWSER_RETRYABLE: Para Code could not make tab ${tabId} usable from this terminal pane. Retry once; if it keeps failing, ask the user to share it from Para Code.`);
 				}
 				const call = await this._callOwningWindow<IParadisCloseAgentTabResult>(ingressLease, {
 					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
@@ -4404,10 +4846,19 @@ export class ParadisAgentBrowserService extends Disposable {
 						? 'The user did not answer in time, so no page was shared. Do not ask again right away; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.'
 						: 'The user declined to share a page. Do not ask again; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.');
 				}
-				return this._toolText(`The user shared tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). It is now the page shared with this terminal pane, so the chrome-devtools tools act on it. The share ends when you switch to another tab; to come back to this page you would have to ask again.`);
+				return this._toolText(`The user shared tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). It is now the page shared with this terminal pane and its current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${call.value.tab.tabId}" to use it while working in other tabs. It stays usable until the user stops sharing it or shares another page with this pane.`);
 			}
 		}
 		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	/** そのタブを、tab_id を省いたときの既定にする。そのペインが今使えるタブでなければ false。 */
+	private _selectTab(token: string, tabId: string): boolean {
+		if (this._scopeBinding(token, tabId) === undefined) {
+			return false;
+		}
+		this._selectedTabs.set(token, tabId);
+		return true;
 	}
 
 	private _agentTabFailureMessage(reason: ParadisAgentTabFailure): string {
@@ -4511,7 +4962,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(this._profileManageFailureMessage(call.value.reason, profileName));
 				}
 				const login = call.value.restored ? 'The profile has a stored login.' : 'The profile has no stored login yet, so the page may show logged out.';
-				const shared = call.value.bound ? 'It is shared with this terminal pane.' : 'It could NOT be shared with this terminal pane yet - retry with select_browser_tab.';
+				const shared = call.value.bound && this._selectTab(ingressLease.token, call.value.tabId) ? 'It is this pane\'s current tab now (pass the new tabId as tab_id to use it explicitly).' : 'It could NOT be shared with this terminal pane yet - retry with select_browser_tab.';
 				return this._toolText(`Reopened the tab in the "${call.value.profileName}" browser profile as tab ${call.value.tabId} (the old tabId is gone). ${login} ${shared}`);
 			}
 			case 'delete_browser_profile': {
@@ -5068,6 +5519,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		for (const token of this._bindings.keys()) {
 			this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(token));
 		}
+		for (const [token, grants] of this._agentTabGrants) {
+			for (const tabId of grants.keys()) {
+				this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(paradisAgentTabScopeKey(token, tabId)));
+			}
+		}
+		this._agentTabGrants.clear();
+		this._selectedTabs.clear();
+		this._tabScopes.clear();
 		this._backgroundThrottlingDispatcher?.dispose();
 		this._backgroundThrottlingDispatcher = undefined;
 		this._bindings.clear();
