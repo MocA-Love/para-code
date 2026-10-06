@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.2.0';
+const MOD_VERSION = '1.3.0';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -673,6 +673,20 @@ export const register: Register = on => {
 		}
 		return next(e);
 	});
+
+	// The context window as the status line shows it (Para Code Mobile's session ring). Older Claude Code has no
+	// session.measure; registering it must not cost the other hooks.
+	try {
+		on('session.measure', ($, e, next) => {
+			if (active && e.changed.includes('context')) {
+				const { tokens, window, percent } = e.context;
+				emit($, { type: 'measure', context: { window, ...(tokens !== undefined ? { tokens } : {}), ...(percent !== undefined ? { percent } : {}) } });
+			}
+			return next(e);
+		});
+	} catch {
+		// This Claude Code does not measure sessions: Para Code reads the transcript's usage instead.
+	}
 
 	on('turn.step', async function* ($, e, next) {
 		const stream = next(e);

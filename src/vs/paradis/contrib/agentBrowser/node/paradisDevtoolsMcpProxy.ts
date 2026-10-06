@@ -33,6 +33,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErrorReason.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
@@ -61,8 +62,8 @@ const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 256;
 /** 1子プロセスのstdinに滞留できる最大byte数。 */
 const MAX_STDIN_QUEUED_BYTES = 1024 * 1024;
-/** サービス全体で同時に保持できる子プロセス数。 */
-const MAX_CHILDREN = 32;
+/** サービス全体で同時に保持できる子プロセス数（1 ペインで共有のページと自分のタブ 5 枚ぶんまで起こしうる）。 */
+const MAX_CHILDREN = 64;
 /** generation高水位を保持できるtoken数。 */
 const MAX_GENERATION_HIGH_WATERMARKS = 4096;
 /** SIGTERMを無視する子プロセスを強制終了するまでの猶予。 */
@@ -215,6 +216,11 @@ function classifyToolErrorText(text: string): 'target-closed' | 'protocol-error'
 /**
  * ペイントークン毎の chrome-devtools-mcp 子プロセスを管理し、tools/list・tools/call を
  * 転送するプロキシ。`ParadisAgentBrowserService` が所有する。
+ *
+ * `token` と書いてある引数は子プロセスの台帳のキーで、tab_id で使うタブごとに分けるときは
+ * トークンとタブの組（paradisAgentTabScope.ts のスコープキー）になる。タブごとに子プロセスが分かれるので、
+ * 別のタブへの呼び出しは並行に走り、同じタブへの呼び出しは子プロセスの中の toolMutex で直列になる。
+ * options のコールバックには、このキーがそのまま渡る（サービスがペインのトークンへ分ける）。
  */
 export class ParadisDevtoolsMcpProxy extends Disposable {
 
@@ -548,7 +554,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1',
 				// 保険: wsEndpointクエリが使えない経路に万一落ちても、macOS/Linuxではピアプロセスの
 				// env読み取り（ゲートウェイの解決経路2）でペインへ紐付けられるようにしておく
-				[PARADIS_PANE_TOKEN_ENV_VAR]: token,
+				[PARADIS_PANE_TOKEN_ENV_VAR]: paradisPaneTokenOfScopeKey(token),
 			},
 			stdio: ['pipe', 'pipe', 'pipe'],
 		});

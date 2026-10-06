@@ -124,6 +124,8 @@ suite('ParadisBindingDialogPaneListResources', () => {
 				getPanes: () => [pane],
 				getPanesForPage: () => [pane],
 				getBindingsForPage: () => [],
+				getAgentTabsForToken: () => [],
+				getAgentTabOwnersForPage: () => [],
 				refresh: async () => { },
 				bindPageToPane: () => {
 					bindCalls++;

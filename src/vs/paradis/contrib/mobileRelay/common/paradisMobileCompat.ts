@@ -215,6 +215,13 @@ export const ParadisMobileCapability = {
 	 * 広告しない PC には「この PC は更新すると、ここから切り替えられます」と出す（Q256）。
 	 */
 	NotifyDoNotDisturbRemote: 'notify.dnd-remote.v1',
+	/**
+	 * agent の snapshot / delta の任意項目 `sessionStatus`・`sessionStatusAt`（会話 1 本分のキャッシュの hit / miss と切れる時刻、
+	 * コンテキストの使用率。`paradisAgentSessionStatus.ts`）。PC は snapshot では必ず、それ以外は変わったときだけ載せる
+	 * （キャッシュの残り時間はアプリが期限の時刻から数え下げる）。アプリは PC が広告しているときだけ、コンポーザーの
+	 * 「裏で動いているもの」のピルをセッションの輪に替え、シートにこのセッションの節を足す（古い PC・古いアプリは今の表示のまま）。
+	 */
+	AgentSessionStatus: 'agent.session-status.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -270,6 +277,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.NotifyDismissSync,
 	ParadisMobileCapability.AgentWorkflows,
 	ParadisMobileCapability.NotifyDoNotDisturbRemote,
+	ParadisMobileCapability.AgentSessionStatus,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -289,6 +297,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.StateUnchanged,
 	// Workflow のカード。PC は広告の有無に関わらず `workflows` を載せる（古いアプリは無視する）。
 	ParadisMobileCapability.AgentWorkflows,
+	// セッションの輪。PC は広告の有無に関わらず `sessionStatus` を載せる（古いアプリは無視する）。
+	ParadisMobileCapability.AgentSessionStatus,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

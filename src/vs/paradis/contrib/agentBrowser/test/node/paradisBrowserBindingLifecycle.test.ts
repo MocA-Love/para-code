@@ -722,6 +722,11 @@ function createServiceFixture(generation: number): {
 	const paneShells = new Map<string, object>();
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
+		_agentTabGrants: new Map(),
+		_selectedTabs: new Map<string, string>(),
+		_tabScopes: new Map(),
+		_gatewayScopedLeases: new WeakMap<object, object>(),
+		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: new ParadisExactViewBackgroundThrottlingCoordinator(),
 		_quarantinedBindings: new Set(),

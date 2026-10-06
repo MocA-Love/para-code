@@ -73,6 +73,7 @@ import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentCha
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
+import { IParadisAgentSessionStatus, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
@@ -182,8 +183,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField & IParadisAgentWorkflowsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField & IParadisAgentWorkflowsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -1806,6 +1807,8 @@ interface ITailerDelegate {
 	onMonitors?(): void;
 	/** Workflow の実行の一覧が変化した（起動・終わりの通知）。`live` でなければ初回読み込み・読み直し。 */
 	onWorkflows?(live: boolean): void;
+	/** キャッシュの hit / miss・コンテキストの使用率が変わった（ライブ追記のときだけ。agent.session-status.v1）。 */
+	onSessionStatus?(): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
 	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
@@ -1952,6 +1955,8 @@ class TranscriptTailer {
 	private readonly monitorWatch = new ParadisAgentMonitorWatch(() => this.delegate.onMonitors?.());
 	/** Claude Code の Workflow の実行（epoch ごと。モバイルのトークのカード。agent.workflows.v1）。 */
 	readonly workflows = new ParadisAgentWorkflowTracker();
+	/** 会話 1 本分のキャッシュ・コンテキストの状態（モバイルのセッションの輪。agent.session-status.v1）。 */
+	readonly sessionStatus: ParadisAgentSessionStatusTracker;
 	/**
 	 * PreToolUse hook でライブ注入した質問: 内容キー → 合成toolUseId。Claude Code は
 	 * AskUserQuestion の tool_use を決着（回答/中断）まで transcript へ flush しないため、
@@ -2014,6 +2019,7 @@ class TranscriptTailer {
 		 */
 		private readonly resolveCodexThreadTranscript?: (threadId: string) => Promise<string | undefined>,
 	) {
+		this.sessionStatus = new ParadisAgentSessionStatusTracker(agent);
 		this.ready = this.enqueue(() => this.initialLoad());
 		this.startWatching();
 		this.pollTimer = setInterval(() => this.enqueue(() => this.readAppended()), POLL_INTERVAL_MS);
@@ -2296,6 +2302,7 @@ class TranscriptTailer {
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
 				this.workflows.clear();
+				this.sessionStatus.clear();
 				this.approvalQueue.length = 0;
 				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
@@ -2433,6 +2440,7 @@ class TranscriptTailer {
 		const entries: { readonly obj: Record<string, unknown>; readonly lineStart: number }[] = [];
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
+		let sessionStatusChanged = false;
 		for (const line of lines) {
 			const lineStart = lineOffset;
 			lineOffset += Buffer.byteLength(line, 'utf8') + 1;
@@ -2463,6 +2471,8 @@ class TranscriptTailer {
 					this.firstLineAt = lineAt;
 				}
 			}
+			// キャッシュの hit / miss とコンテキストの使用率（進み具合の行・mod から先に受け取った行も usage は同じなので読む）
+			sessionStatusChanged = this.sessionStatus.observe(obj) || sessionStatusChanged;
 			if (this.agent === 'claude') {
 				if (emitDelta) {
 					// 書かれた直後に読んだ行の時刻で、transcript の時計と PC の時計のずれを測る（SSH の写しは接続先の時計）。
@@ -2486,6 +2496,10 @@ class TranscriptTailer {
 		}
 		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
 		this.consumeEntries(entries, signals, emitDelta, latestProgress, issueUrlsChanged);
+		// 初回読み込み・読み直し（emitDelta でない）では知らせない。その後の snapshot が運ぶ
+		if (sessionStatusChanged && emitDelta) {
+			this.delegate.onSessionStatus?.();
+		}
 	}
 
 	/**
@@ -3604,6 +3618,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly shellOutputReads = new Set<string>();
 	/** 最後に送った `shellsAccess`（mod の生き死にで変わったら送り直す）。 */
 	private readonly shellsAccessSent = new Map<string, string>();
+	/** 最後に送った会話の状態（epoch と中身。変わったときだけ delta に載せる。agent.session-status.v1）。 */
+	private readonly sessionStatusSent = new Map<string, string>();
 	/** 最後に送った Workflow の一覧（epoch と中身。変わったときだけ delta に載せる）。 */
 	private readonly workflowsSent = new Map<string, string>();
 	/** Workflow の実行のフォルダを読み直す予約（ペインごと）。 */
@@ -5674,7 +5690,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.panelField(token) }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token) }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -5683,6 +5699,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...(info !== undefined ? { info } : {}),
 					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
 					...this.monitorsField(token, tailer, true),
+					...this.sessionStatusField(token, tailer, true),
 					...this.panelField(token),
 				}, token, owner);
 			}
@@ -6106,6 +6123,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'subagent.resume':
 				this.startModSubagent(token, event.agentId, event.at, event.agentType, undefined, true);
 				return;
+			case 'measure': {
+				// Claude Mod の session.measure（statusline と同じコンテキストの値）。transcript の推し量りより優先する
+				const tailer = this.tailers.get(token);
+				if (tailer !== undefined && tailer.transcriptPath === session.transcriptPath && tailer.sessionStatus.applyMeasure({ window: event.window, ...(event.tokens !== undefined ? { tokens: event.tokens } : {}), ...(event.percent !== undefined ? { percent: event.percent } : {}) })) {
+					this.pushSessionStatusIfChanged(token);
+				}
+				return;
+			}
 			case 'pending-changed':
 				if (event.kind === 'permission') {
 					this.refreshModApprovals(token);
@@ -6885,6 +6910,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.workflowsSent.keys()]) {
 			if (!live.has(token)) {
 				this.workflowsSent.delete(token);
+			}
+		}
+		for (const token of [...this.sessionStatusSent.keys()]) {
+			if (!live.has(token)) {
+				this.sessionStatusSent.delete(token);
 			}
 		}
 		let changed = false;
@@ -8258,6 +8288,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.updateLiveFromHook(event);
 		}
 		this.cancelCliDiscovery(event.token);
+		// 同じ transcript でセッションを開き直した（resume・/clear）。キャッシュの hit / miss はここから数え直す（Claude Code の
+		// 台帳もセッションの切り替えで空になる）。時刻は PC の時計なので、接続先の会話では行の sessionId の変わり目に任せる
+		if (event.event === 'SessionStart' && event.remoteHostId === undefined && nested === undefined && (str(event.payload?.source) === 'resume' || str(event.payload?.source) === 'clear')) {
+			this.tailers.get(event.token)?.sessionStatus.markRestart(event.at);
+		}
 		// shell integrationが対話型CLIの実行中を追跡している場合、TUI内 /resume の
 		// fallback監視は維持する。強いhook証拠の時刻より前へ戻らないようwatermarkだけ進める。
 		if (this.cliReconciliationTimers.has(event.token)) {
@@ -8569,7 +8604,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.panelField(token) });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token) });
 				}
 				// 読み直したカードを mod の待ちと突き合わせ直す（変われば delta で answerVia を送り直す）
 				this.refreshModQuestions(token);
@@ -8599,6 +8634,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...this.monitorsField(token, tailer) });
 				}
 			},
+			onSessionStatus: () => this.pushSessionStatusIfChanged(token),
 			onWorkflows: live => {
 				if (live) {
 					this.pushWorkflowsIfChanged(token);
@@ -8977,6 +9013,38 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const snapshot = tailer.workflows.snapshot();
 		return { workflows: paneStopped ? paradisWorkflowsForStoppedPane(snapshot, this.sessionEndedAt.get(token)) : snapshot, workflowsAt: Date.now() };
+	}
+
+	/**
+	 * snapshot / delta に載せる会話の状態（agent.session-status.v1。キャッシュの hit / miss と残り時間の期限、コンテキストの
+	 * 使用率）。snapshot と購読の応答（`full`）では必ず載せ（前の会話の値をアプリに残さない）、それ以外は前に送ったものから
+	 * 変わったときだけ載せる。時刻は PC の時計（SSH の写しは接続先の時計）で、送信時刻 `sessionStatusAt` を添える。
+	 */
+	private sessionStatusField(token: string, tailer: TranscriptTailer, full: boolean): { sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } {
+		const status = tailer.sessionStatus.snapshot({
+			...(tailer.agent === 'claude' && tailer.promptCache !== undefined ? { promptCache: tailer.promptCache } : {}),
+			partial: tailer.wasInitialTruncated,
+			...(tailer.model !== undefined ? { model: tailer.model } : {}),
+		});
+		const signature = `${tailer.epoch}\0${JSON.stringify(status)}`;
+		if (!full && (this.sessionStatusSent.get(token) ?? `${tailer.epoch}\0${JSON.stringify({ agent: tailer.agent })}`) === signature) {
+			return {};
+		}
+		this.sessionStatusSent.set(token, signature);
+		return { sessionStatus: status, sessionStatusAt: Date.now() };
+	}
+
+	/** 会話の状態が前に送ったものから変わっていれば、空 delta で届ける。 */
+	private pushSessionStatusIfChanged(token: string): void {
+		const tailer = this.tailers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		if (tailer === undefined || terminalId === undefined) {
+			return;
+		}
+		const field = this.sessionStatusField(token, tailer, false);
+		if (field.sessionStatus !== undefined) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+		}
 	}
 
 	/** Workflow の一覧が前に送ったものから変わっていれば、空 delta で届ける。 */

@@ -431,6 +431,29 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('agent: 会話の状態（agent.session-status.v1）を全項目のまま読み、キャッシュの期限を手元の時計へ直す', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const status = latest()?.agentChats.get('terminal-key-1')?.sessionStatus;
+		const golden = agentGolden.toMobile.find(message => message.t === 'delta' && message['sessionStatus'] !== undefined);
+		const goldenStatus = golden?.['sessionStatus'] as { cache: Golden } | undefined;
+		const shift = (status?.cache?.expiresAt ?? 0) - (goldenStatus?.cache['expiresAt'] as number);
+		expect({
+			status: status !== undefined && status.cache?.expiresAt !== undefined ? { ...status, cache: { ...status.cache, expiresAt: status.cache.expiresAt - shift } } : status,
+			// 時計の差は送信時刻 sessionStatusAt との差（届いた時刻 − 送信時刻）だけ
+			shiftMatchesClock: Math.abs(shift - (Date.now() - (golden?.['sessionStatusAt'] as number))) < 60_000,
+			capability: controller.hasPcCapability(PcCapability.AgentSessionStatus),
+		}).toEqual({ status: goldenStatus, shiftMatchesClock: true, capability: true });
+		controller.disconnect();
+	});
+
 	it('agent: コマンドの一覧（agent.commands.v2）はゴールデンと同じ形で求め、重なりと出どころを読み、断りの理由を返す', async () => {
 		const { controller, pcMux, sent, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));

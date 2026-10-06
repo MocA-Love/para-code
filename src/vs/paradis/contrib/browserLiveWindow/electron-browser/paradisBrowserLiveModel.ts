@@ -322,17 +322,26 @@ export class ParadisBrowserLiveModel extends Disposable {
 			kindByToken.set(pane.token, pane.agentKind);
 		}
 		const result = new Map<string, string[]>();
-		for (const binding of this.bindingModel.bindings) {
-			const kind = kindByToken.get(binding.token);
+		const add = (token: string, pageId: string) => {
+			const kind = kindByToken.get(token);
 			if (!kind) {
-				continue;
+				return;
 			}
 			const label = agentLabel(kind);
-			const labels = result.get(binding.pageId);
+			const labels = result.get(pageId);
 			if (!labels) {
-				result.set(binding.pageId, [label]);
+				result.set(pageId, [label]);
 			} else if (!labels.includes(label)) {
 				labels.push(label);
+			}
+		};
+		for (const binding of this.bindingModel.bindings) {
+			add(binding.token, binding.pageId);
+		}
+		// エージェントが自分で開いて tab_id で使っているタブも、そのエージェントが操作中として出す
+		for (const token of kindByToken.keys()) {
+			for (const pageId of this.bindingModel.getAgentTabsForToken(token)) {
+				add(token, pageId);
 			}
 		}
 		return result;
