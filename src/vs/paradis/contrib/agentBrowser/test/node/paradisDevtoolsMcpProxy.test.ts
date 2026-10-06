@@ -16,6 +16,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { ParadisDevtoolsMcpProxy } from '../../node/paradisDevtoolsMcpProxy.js';
+import { PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
+import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
 /** A fixed temporary folder so that no test creates or removes real folders. */
@@ -590,6 +592,37 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			otherIsError: other.isError,
 			otherText: other.content?.[0]?.text,
 		}, { timedOutIsError: true, tokenAChildKillCount: 1, tokenBChildKillCount: 0, otherIsError: undefined, otherText: 'ok' });
+	});
+
+	test('runs two tabs of one pane in separate children in parallel and retires one tab without touching the other', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		const tabA = paradisAgentTabScopeKey('pane-token', 'tab-a');
+		const tabB = paradisAgentTabScopeKey('pane-token', 'tab-b');
+		await proxy.listTools(tabA, 1, 'ws://a');
+		await proxy.tryCallTool(tabA, 1, 'ws://a', 'take_snapshot', {});
+		await proxy.tryCallTool(tabB, 2, 'ws://b', 'take_snapshot', {});
+		fixture.hangNextToolCalls(1);
+
+		const pendingA = proxy.tryCallTool(tabA, 1, 'ws://a', 'take_snapshot', {});
+		const b = await proxy.tryCallTool(tabB, 2, 'ws://b', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		proxy.retire(tabA, 3);
+		const a = await pendingA as { isError?: boolean };
+		assert.deepStrictEqual({
+			children: fixture.children.length,
+			paneTokens: fixture.spawnOptions.map(options => options.env[PARADIS_PANE_TOKEN_ENV_VAR]),
+			bWhileAHangs: [b.isError, b.content?.[0]?.text],
+			aAfterRetire: a.isError,
+			killCounts: fixture.children.map(child => child.killCount),
+			liveB: proxy.hasLiveChild(tabB),
+		}, {
+			children: 2,
+			paneTokens: ['pane-token', 'pane-token'],
+			bWhileAHangs: [undefined, 'ok'],
+			aAfterRetire: true,
+			killCounts: [1, 0],
+			liveB: true,
+		});
 	});
 
 	test('removes abort listeners after success, error, and abort', async () => {

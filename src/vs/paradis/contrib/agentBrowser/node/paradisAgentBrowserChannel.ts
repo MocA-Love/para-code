@@ -89,6 +89,18 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'listBindings':
 				requireArgs(arg, 0);
 				return this.service.listBindings(this.rendererConnection) as Promise<T>;
+			// エージェントが開いたタブを、共有を付け替えずに tab_id で使う許可
+			case 'grantAgentTab': {
+				const args = requireArgs(arg, 1);
+				return this.service.grantAgentTab(this.rendererConnection, requirePrepareBindRequest(args[0])) as Promise<T>;
+			}
+			case 'revokeAgentTab': {
+				const args = requireArgs(arg, 2);
+				return this.service.revokeAgentTab(this.rendererConnection, requireToken(args[0]), requireToken(args[1])) as Promise<T>;
+			}
+			case 'listAgentTabGrants':
+				requireArgs(arg, 0);
+				return this.service.listAgentTabGrants(this.rendererConnection) as Promise<T>;
 			case 'listSeenTokens':
 				requireArgs(arg, 0);
 				return this.service.listSeenTokens(this.rendererConnection) as Promise<T>;
