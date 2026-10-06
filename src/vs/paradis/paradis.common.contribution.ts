@@ -15,6 +15,7 @@
 import './contrib/windowTransparency/browser/paradisSettings.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisWorkspaceSwitch.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisTerminalSpaceCwd.contribution.js';
+import './contrib/terminalPromptInput/browser/paradisPromptInputEmpty.contribution.js';
 import './contrib/remoteHosts/browser/paradisRemoteHosts.contribution.js';
 import './contrib/terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
 import './contrib/terminalHistorySuggest/browser/paradisTerminalSuggestDownKey.contribution.js';
