@@ -10,6 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	paradisDirectTargetFor,
+	paradisIsSafeSftpEntryName,
 	paradisSftpFailureMessage,
 	paradisSftpFailureReasonOf,
 	paradisSftpIdleMs,
@@ -131,6 +132,11 @@ suite('Paradis file transfer - direct SSH (common)', () => {
 
 	test('保持時間の設定は 30〜3600 秒に収める', () => {
 		assert.deepStrictEqual([paradisSftpIdleMs(undefined), paradisSftpIdleMs(5), paradisSftpIdleMs(120), paradisSftpIdleMs(99999)], [300_000, 30_000, 120_000, 3_600_000]);
+	});
+
+	test('接続先が返した名前のうち、送り先の外を指しうるものは受け付けない', () => {
+		assert.deepStrictEqual(['a.txt', '.env', '..', '.', '', '../../.zshrc', 'a/b', 'a\\b', 'a\0b', '..hidden'].map(paradisIsSafeSftpEntryName),
+			[true, true, false, false, false, false, false, false, false, true]);
 	});
 
 	test('URI は別名を authority、接続先の絶対パスを path にする', () => {

@@ -615,6 +615,7 @@ export class ParadisFileTransferPane extends Disposable {
 		const shown = !remote || direct || !!authority;
 		const connected = !remote || direct || (!!authority && this.transferService.remoteConnected);
 		this.header.hostName.textContent = this.label;
+		this.header.filterBox.setAriaLabel(localize('paradis.fileTransfer.filterAria', "{0} の一覧を名前で絞り込む", this.label));
 		this.header.hostDot.classList.toggle('connected', remote && connected);
 		this.header.hostDot.classList.toggle('disconnected', remote && !connected && !!authority);
 		dom.setVisibility(remote && shown, this.header.hostDot);

@@ -486,6 +486,11 @@ export async function paradisConnectSftp(
 	};
 	client.on('close', notifyClose);
 	client.on('error', () => notifyClose());
+	// ready の後に ssh2 は自前の error のリスナーを外す。壊れたパケットで shared process ごと落ちないよう受ける
+	sftp.on('error', () => {
+		client.end();
+		notifyClose();
+	});
 	sftp.on('close', () => {
 		client.end();
 		notifyClose();

@@ -65,7 +65,7 @@ import {
 	ParadisTransferQueue,
 } from '../common/paradisFileTransferQueue.js';
 import { IParadisTransferMetadata, ParadisFileServiceTransferFileSystem } from '../browser/paradisFileTransferFileSystem.js';
-import { IParadisSftpEntry, paradisDirectTargetFor, paradisIsSftpResource, paradisSftpIdleMs, paradisSftpUri, PARADIS_SFTP_CHANNEL, PARADIS_SFTP_IDLE_SETTING, PARADIS_SFTP_SCHEME } from '../common/paradisSftp.js';
+import { IParadisSftpEntry, paradisDirectTargetFor, paradisIsSafeSftpEntryName, paradisIsSftpResource, paradisSftpIdleMs, paradisSftpUri, PARADIS_SFTP_CHANNEL, PARADIS_SFTP_IDLE_SETTING, PARADIS_SFTP_SCHEME } from '../common/paradisSftp.js';
 import { paradisSftpOpenError, ParadisSftpFileSystemProvider } from '../common/paradisSftpFileSystemProvider.js';
 import { ParadisTransferTempJournal } from '../browser/paradisFileTransferTempJournal.js';
 
@@ -401,7 +401,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		if (paradisIsSftpResource(resource)) {
 			const listing = await this.sftp.list(resource);
 			return {
-				entries: listing.entries.map(entry => this.toPaneEntry(resource, entry)),
+				entries: listing.entries.filter(entry => paradisIsSafeSftpEntryName(entry.name)).map(entry => this.toPaneEntry(resource, entry)),
 				truncated: listing.truncated,
 				modes: true,
 			};
@@ -477,7 +477,8 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 				}
 				throw error;
 			}
-			return listing.entries.map(entry => ({
+			// 送り先の外を指しうる名前は、shared process でも捨てているが、ここでも写さない
+			return listing.entries.filter(entry => paradisIsSafeSftpEntryName(entry.name)).map(entry => ({
 				name: entry.name,
 				resource: joinPath(resource, entry.name),
 				isDirectory: entry.isDirectory,
@@ -609,20 +610,22 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 			}
 			return home;
 		}
-		const wasAllowed = this.sftp.isAllowed(trimmed);
-		this.sftp.allowHost(trimmed);
+		// 直接の接続は小文字の別名で扱う（URI の authority が小文字になるため。OpenSSH も小文字にしてから照らす）
+		const host = trimmed.toLowerCase();
+		const wasAllowed = this.sftp.isAllowed(host);
+		this.sftp.allowHost(host);
 		this.configureSftp();
-		const result = await this.sftp.openHost(trimmed);
+		const result = await this.sftp.openHost(host);
 		const error = paradisSftpOpenError(trimmed, result);
 		if (error || !result.ok) {
 			if (!wasAllowed) {
-				this.sftp.revokeHost(trimmed);
+				this.sftp.revokeHost(host);
 			}
 			throw error ?? new Error(trimmed);
 		}
 		// 前にこのホストへ送っていて残った書きかけを片付ける
 		void this.cleanupTemps();
-		return paradisSftpUri(trimmed, result.home);
+		return paradisSftpUri(host, result.home);
 	}
 }
 

@@ -282,6 +282,17 @@ export interface IParadisSftpFileInfo {
 	readonly isSymbolicLink: boolean;
 }
 
+// --- 名前の検証 ------------------------------------------------------------------------------------
+
+/**
+ * 接続先が返したフォルダーの中の名前として受け付けるか。SFTP のサーバーは名前を自由に返せるので、
+ * `/`・`\`・NUL を含む名前や `.`・`..` を受け付けると、取ってくるときに手元の送り先の外（`~/.ssh` など）へ
+ * 書かされる（scp の CVE-2019-6111 と同じ型）。
+ */
+export function paradisIsSafeSftpEntryName(name: string): boolean {
+	return name.length > 0 && name !== '.' && name !== '..' && !/[\/\\\0]/.test(name);
+}
+
 // --- URI と経路 ------------------------------------------------------------------------------------
 
 export function paradisIsSftpResource(resource: URI): boolean {

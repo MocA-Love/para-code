@@ -467,6 +467,14 @@ suite('Paradis file transfer - direct SSH (SFTP)', function () {
 		], [{ ok: false, reason: 'notAllowed' }, FileSystemProviderErrorCode.NoPermissions, 0]);
 	});
 
+	test('大文字を含む別名でも、控え（toString）を通った URI を同じホストとして通す', () => {
+		const service = createService(() => { throw new Error('should not resolve'); });
+		const { provider } = createFileService(service);
+		provider.allowHost('Para-Test');
+		const restored = URI.parse(paradisSftpUri('Para-Test', '/home/.paratransfer-x').toString());
+		assert.deepStrictEqual([restored.authority, provider.isAllowed(restored.authority), provider.isAllowed('other')], ['para-test', true, false]);
+	});
+
 	test('agent の場所は IdentityAgent・SSH_AUTH_SOCK・Windows の既定の順に決める', () => {
 		const base = { homedir: '/home/me', platform: 'linux' as NodeJS.Platform, env: { SSH_AUTH_SOCK: '/tmp/agent.sock', OTHER: '/tmp/other.sock' } };
 		assert.deepStrictEqual([
