@@ -99,7 +99,8 @@ export class ParadisTransferTempJournal extends Disposable implements IParadisTr
 				removed++;
 			} catch (error) {
 				// 切れている・権限が無いなどは、次の機会にもう一度試す
-				this.logService.info(`[ParadisFileTransfer] could not clean up ${uri.toString()}: ${error instanceof Error ? error.message : String(error)}`);
+				// ログにはパスとホスト名を出さない（種類だけ）
+				this.logService.info(`[ParadisFileTransfer] could not clean up a temporary file on ${uri.scheme}: ${error instanceof Error ? error.name : 'unknown'}`);
 			}
 		}
 		return removed;

@@ -10,7 +10,8 @@
 // 左下のボタンのバッジに件数が出る）、一覧の読み取り、権限のチャネル、接続の状態をまとめて持つ。
 //
 // 読み書きはすべて IFileService を通す。左の file:// も右の vscode-remote:// も同じサービスで読めるので、
-// Para ホストのビュー（remoteHosts）と同じく新しい通り道は作らない。権限だけは IStat に無いので、
+// Para ホストのビュー（remoteHosts）と同じく新しい通り道は作らない。接続していないホストは、shared process が
+// SSH（SFTP）を張り、`paradis-sftp://` のプロバイダとして同じ IFileService に見せる（paradisSftpFileSystemProvider.ts）。権限だけは IStat に無いので、
 // 手元は shared process、接続先は REH の `paradisFileModes` チャネルに聞く。古い REH には無いので、
 // そのときは権限を出さない（`modesAvailable('remote')` が false）。
 
@@ -22,9 +23,10 @@ import { Schemas } from '../../../../base/common/network.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileSystemProviderErrorCode, IFileService, toFileSystemProviderErrorCode } from '../../../../platform/files/common/files.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -63,6 +65,8 @@ import {
 	ParadisTransferQueue,
 } from '../common/paradisFileTransferQueue.js';
 import { IParadisTransferMetadata, ParadisFileServiceTransferFileSystem } from '../browser/paradisFileTransferFileSystem.js';
+import { IParadisSftpEntry, paradisDirectTargetFor, paradisIsSftpResource, paradisSftpIdleMs, paradisSftpUri, PARADIS_SFTP_CHANNEL, PARADIS_SFTP_IDLE_SETTING, PARADIS_SFTP_SCHEME } from '../common/paradisSftp.js';
+import { paradisSftpOpenError, ParadisSftpFileSystemProvider } from '../common/paradisSftpFileSystemProvider.js';
 import { ParadisTransferTempJournal } from '../browser/paradisFileTransferTempJournal.js';
 
 export interface IParadisPaneListing {
@@ -88,14 +92,15 @@ export interface IParadisFileTransferService {
 	/** 接続先と繋がっているか（手元のウィンドウでは false）。 */
 	readonly remoteConnected: boolean;
 
-	sideLabel(side: ParadisTransferSide): string;
+	/** 見出し。右側で `resource` が接続していないホスト（`paradis-sftp://`）なら、そのホストの別名。 */
+	sideLabel(side: ParadisTransferSide, resource?: URI): string;
 	/** その URI がその側のものか。 */
 	owns(side: ParadisTransferSide, resource: URI): boolean;
 	/** 既定の場所。手元はホーム（ワークスペースが手元ならそのフォルダー）、接続先は作業フォルダーかホーム。 */
 	defaultLocation(side: ParadisTransferSide, workspaceFolder: URI | undefined): Promise<URI | undefined>;
 
 	list(side: ParadisTransferSide, resource: URI): Promise<IParadisPaneListing>;
-	modesAvailable(side: ParadisTransferSide): Promise<boolean>;
+	modesAvailable(side: ParadisTransferSide, resource?: URI): Promise<boolean>;
 	chmod(side: ParadisTransferSide, resource: URI, mode: number, recursive: boolean): Promise<void>;
 
 	/** 反対側のフォルダーへ送る。同じ名前があれば確認する。積んだ件数を返す。 */
@@ -107,6 +112,11 @@ export interface IParadisFileTransferService {
 	listConfiguredHosts(): Promise<readonly string[]>;
 	/** そのホストへ繋いだ新しいウィンドウを開き、繋がったら転送画面を出させる。 */
 	connectAndOpen(alias: string): Promise<void>;
+	/**
+	 * ユーザーが画面でホストを選んだ。このウィンドウの接続先ならそのホーム（vscode-remote://）を、それ以外は
+	 * SSH を直接張ってホーム（paradis-sftp://）を返す。鍵で入れない・ホストの鍵を確かめられないなどは、理由を書いたエラーで投げる。
+	 */
+	openHost(alias: string): Promise<URI>;
 }
 
 export class ParadisFileTransferService extends Disposable implements IParadisFileTransferService {
@@ -126,6 +136,8 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 	private readonly modesSupport = new Map<ParadisTransferSide, Promise<number>>();
 	/** 書いている途中の一時ファイルの控え（閉じたり切れたりして残ったものを後で片付ける）。 */
 	private readonly journal: ParadisTransferTempJournal;
+	/** 接続していないホスト（`paradis-sftp://`）の読み書き。 */
+	private readonly sftp: ParadisSftpFileSystemProvider;
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -138,11 +150,20 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
 		@ILifecycleService lifecycleService: ILifecycleService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this.remoteAuthority = environmentService.remoteAuthority || undefined;
 		this.remoteLabel = this.remoteAuthority ? paradisHostLabelFromAuthority(this.remoteAuthority) : undefined;
 		this._remoteConnected = !!this.remoteAuthority;
+
+		this.sftp = this._register(new ParadisSftpFileSystemProvider(sharedProcessService.getChannel(PARADIS_SFTP_CHANNEL)));
+		this._register(fileService.registerProvider(PARADIS_SFTP_SCHEME, this.sftp));
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_SFTP_IDLE_SETTING)) {
+				this.configureSftp();
+			}
+		}));
 
 		this.journal = this._register(new ParadisTransferTempJournal(storageService, fileService, logService));
 		const fileSystem = new ParadisFileServiceTransferFileSystem(fileService, {
@@ -153,7 +174,8 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		this.queue = this._register(new ParadisTransferQueue({
 			fileSystem,
 			concurrency: 2,
-			isDisconnected: () => !!this.remoteAuthority && !this._remoteConnected,
+			// このウィンドウの接続が切れて止まったのは、接続先（vscode-remote://）を読み書きする項目だけ
+			isDisconnected: item => !!this.remoteAuthority && !this._remoteConnected && this.usesWindowConnection(item),
 		}));
 
 		const connection = remoteAgentService.getConnection();
@@ -172,7 +194,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 						void this.cleanupTemps();
 						// 切れて止まった転送は、繋がり直したら流し直す。書きかけは一時名なので送り先は無傷で、
 						// その間に同名ができていたら（聞く相手がいないので）衝突として失敗にする
-						this.queue.retryWhere(item => item.error?.kind === 'disconnected');
+						this.queue.retryWhere(item => item.error?.kind === 'disconnected' && this.usesWindowConnection(item));
 						break;
 				}
 			}));
@@ -214,9 +236,20 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		return false;
 	}
 
-	/** 心拍の途絶えた一時ファイルを片付ける。手元と、繋がっている接続先のものだけ。 */
+	private usesWindowConnection(item: IParadisTransferItem): boolean {
+		return item.source.scheme === Schemas.vscodeRemote || item.target.scheme === Schemas.vscodeRemote;
+	}
+
+	private configureSftp(): void {
+		this.sftp.configure(paradisSftpIdleMs(this.configurationService.getValue<number>(PARADIS_SFTP_IDLE_SETTING))).catch(() => undefined);
+	}
+
+	/**
+	 * 心拍の途絶えた一時ファイルを片付ける。手元と、繋がっている接続先と、このウィンドウでユーザーが開いた
+	 * 接続していないホストのものだけ（起動直後に勝手に SSH を張らない）。
+	 */
 	private async cleanupTemps(): Promise<void> {
-		const removed = await this.journal.cleanup(uri => this.owns('local', uri) || (this.owns('remote', uri) && this._remoteConnected));
+		const removed = await this.journal.cleanup(uri => this.owns('local', uri) || (this.owns('remote', uri) && (paradisIsSftpResource(uri) || this._remoteConnected)));
 		if (removed) {
 			this.logService.info(`[ParadisFileTransfer] removed ${removed} leftover temporary file(s)`);
 		}
@@ -229,6 +262,11 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 	private createMetadata(): IParadisTransferMetadata {
 		return {
 			fileInfo: async resource => {
+				if (paradisIsSftpResource(resource)) {
+					// SFTP（版 3）にはリンク数と inode が無い。リンク数は 1、同じファイルかの印は無しとして扱う
+					const info = await this.sftp.statFile(resource);
+					return info ? { kind: 'info', info: { mode: info.mode, ownedByMe: info.ownedByMe, linkCount: 1 } } : { kind: 'missing' };
+				}
 				const side = this.sideOf(resource);
 				if (!side || await this.modesVersion(side) < PARADIS_FILE_MODES_STAT_VERSION) {
 					return { kind: 'unsupported' };
@@ -239,6 +277,10 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 					: { kind: 'missing' };
 			},
 			chmod: async (resource, mode) => {
+				if (paradisIsSftpResource(resource)) {
+					await this.sftp.chmod(resource, mode, false);
+					return;
+				}
 				const side = this.sideOf(resource);
 				if (!side) {
 					throw new Error(`no file modes channel for ${resource.scheme}`);
@@ -246,6 +288,9 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 				await this.chmod(side, resource, mode, false);
 			},
 			rename: async (from, to) => {
+				if (paradisIsSftpResource(to)) {
+					return this.sftp.posixRename(from, to);
+				}
 				const side = this.sideOf(to);
 				if (!side || await this.modesVersion(side) < PARADIS_FILE_MODES_RENAME_VERSION) {
 					return false;
@@ -271,15 +316,23 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		}
 	}
 
-	sideLabel(side: ParadisTransferSide): string {
-		return side === 'local'
-			? localize('paradis.fileTransfer.thisMachine', "このマシン")
-			: this.remoteLabel ?? localize('paradis.fileTransfer.remote', "接続先");
+	sideLabel(side: ParadisTransferSide, resource?: URI): string {
+		if (side === 'local') {
+			return localize('paradis.fileTransfer.thisMachine', "このマシン");
+		}
+		if (resource && paradisIsSftpResource(resource)) {
+			return resource.authority;
+		}
+		return this.remoteLabel ?? localize('paradis.fileTransfer.remote', "接続先");
 	}
 
 	owns(side: ParadisTransferSide, resource: URI): boolean {
 		if (side === 'local') {
 			return resource.scheme === Schemas.file;
+		}
+		// 接続していないホストは、このウィンドウでユーザーが開いたものだけ（タブの復元で勝手に繋がない）
+		if (paradisIsSftpResource(resource)) {
+			return this.sftp.isAllowed(resource.authority);
 		}
 		return !!this.remoteAuthority && resource.scheme === Schemas.vscodeRemote && resource.authority === this.remoteAuthority;
 	}
@@ -309,7 +362,10 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		return this.remoteAgentService.getConnection()?.getChannel(PARADIS_FILE_MODES_CHANNEL);
 	}
 
-	async modesAvailable(side: ParadisTransferSide): Promise<boolean> {
+	async modesAvailable(side: ParadisTransferSide, resource?: URI): Promise<boolean> {
+		if (resource && paradisIsSftpResource(resource)) {
+			return true;
+		}
 		// 一覧と権限の表示は、一時的に聞けなければ権限なしで出す（次に読み直したときにもう一度聞く）
 		return await this.modesVersion(side).catch(() => 0) >= PARADIS_FILE_MODES_MIN_VERSION;
 	}
@@ -342,6 +398,14 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 	}
 
 	async list(side: ParadisTransferSide, resource: URI): Promise<IParadisPaneListing> {
+		if (paradisIsSftpResource(resource)) {
+			const listing = await this.sftp.list(resource);
+			return {
+				entries: listing.entries.map(entry => this.toPaneEntry(resource, entry)),
+				truncated: listing.truncated,
+				modes: true,
+			};
+		}
 		if (await this.modesAvailable(side)) {
 			const channel = this.modesChannel(side);
 			if (channel) {
@@ -378,7 +442,22 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		};
 	}
 
+	private toPaneEntry(directory: URI, entry: IParadisSftpEntry): IParadisPaneEntry {
+		return {
+			name: entry.name,
+			resource: joinPath(directory, entry.name),
+			kind: entry.kind === 'directory' ? 'directory' : entry.kind === 'symlink' ? 'symlink' : 'file',
+			isDirectory: entry.isDirectory,
+			size: entry.kind === 'directory' ? undefined : entry.size,
+			mtime: entry.mtime,
+			mode: entry.mode,
+		};
+	}
+
 	async chmod(side: ParadisTransferSide, resource: URI, mode: number, recursive: boolean): Promise<void> {
+		if (paradisIsSftpResource(resource)) {
+			return this.sftp.chmod(resource, mode, recursive);
+		}
 		const channel = await this.modesAvailable(side) ? this.modesChannel(side) : undefined;
 		if (!channel) {
 			throw new Error(localize('paradis.fileTransfer.chmodUnavailable', "この接続先では権限を変更できません（Para Code のサーバーが古い可能性があります）"));
@@ -388,6 +467,27 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 
 	/** 待ち行列の下調べ用の一覧。権限のチャネルがあれば 1 往復で読む（無ければ undefined を返して IFileService に任せる）。 */
 	private async listForTransfer(resource: URI): Promise<readonly IParadisTransferChild[] | undefined> {
+		if (paradisIsSftpResource(resource)) {
+			let listing: { entries: IParadisSftpEntry[] };
+			try {
+				listing = await this.sftp.list(resource);
+			} catch (error) {
+				if (error instanceof Error && toFileSystemProviderErrorCode(error) === FileSystemProviderErrorCode.FileNotFound) {
+					return [];
+				}
+				throw error;
+			}
+			return listing.entries.map(entry => ({
+				name: entry.name,
+				resource: joinPath(resource, entry.name),
+				isDirectory: entry.isDirectory,
+				size: entry.size,
+				mtime: entry.mtime,
+				special: entry.kind === 'other',
+				directoryLink: entry.kind === 'symlink' && entry.isDirectory,
+				isSymbolicLink: entry.kind === 'symlink',
+			}));
+		}
 		const side = this.sideOf(resource);
 		const channel = side && await this.modesAvailable(side) ? this.modesChannel(side) : undefined;
 		if (!channel) {
@@ -426,7 +526,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		return this.queue.enqueue({
 			sources,
 			targetDirectory,
-			targetLabel: this.sideLabel(targetSide),
+			targetLabel: this.sideLabel(targetSide, targetDirectory),
 			direction: targetSide === 'remote' ? 'toRemote' : 'toLocal',
 		}, conflict => this.askConflict(conflict, targetSide));
 	}
@@ -461,8 +561,8 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		const { result, checkboxChecked } = await this.dialogService.prompt<ParadisConflictAction | 'cancel'>({
 			type: Severity.Warning,
 			message: conflict.kindMismatch
-				? localize('paradis.fileTransfer.conflict.kindMessage', "{0} に同じ名前の{1}があります。{1}ごと置き換えますか?（{2} 件中 {3} 件目）", this.sideLabel(targetSide), replacedKind, conflict.total, conflict.index)
-				: localize('paradis.fileTransfer.conflict.message', "{0} に同じ名前の項目があります（{1} 件中 {2} 件目）", this.sideLabel(targetSide), conflict.total, conflict.index),
+				? localize('paradis.fileTransfer.conflict.kindMessage', "{0} に同じ名前の{1}があります。{1}ごと置き換えますか?（{2} 件中 {3} 件目）", this.sideLabel(targetSide, conflict.target), replacedKind, conflict.total, conflict.index)
+				: localize('paradis.fileTransfer.conflict.message', "{0} に同じ名前の項目があります（{1} 件中 {2} 件目）", this.sideLabel(targetSide, conflict.target), conflict.total, conflict.index),
 			detail,
 			buttons: [
 				{
@@ -494,6 +594,35 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		const authority = `ssh-remote+${alias.trim()}`;
 		this.storageService.store(PARADIS_FILE_TRANSFER_PENDING_OPEN_KEY, JSON.stringify({ authority, at: Date.now() }), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		await this.hostService.openWindow({ remoteAuthority: authority });
+	}
+
+	async openHost(alias: string): Promise<URI> {
+		const trimmed = alias.trim();
+		if (!paradisIsSafeSshHost(trimmed)) {
+			throw new Error(localize('paradis.fileTransfer.unsupportedHost', "このホスト名では接続できません: {0}", alias));
+		}
+		if (paradisDirectTargetFor(trimmed, this.remoteAuthority) === 'window') {
+			// このウィンドウが繋いでいるホストは、今の接続を使う（接続を増やさない）
+			const home = await this.defaultLocation('remote', undefined);
+			if (!home) {
+				throw new Error(localize('paradis.fileTransfer.noRemoteHome', "接続先のホームを読めませんでした"));
+			}
+			return home;
+		}
+		const wasAllowed = this.sftp.isAllowed(trimmed);
+		this.sftp.allowHost(trimmed);
+		this.configureSftp();
+		const result = await this.sftp.openHost(trimmed);
+		const error = paradisSftpOpenError(trimmed, result);
+		if (error || !result.ok) {
+			if (!wasAllowed) {
+				this.sftp.revokeHost(trimmed);
+			}
+			throw error ?? new Error(trimmed);
+		}
+		// 前にこのホストへ送っていて残った書きかけを片付ける
+		void this.cleanupTemps();
+		return paradisSftpUri(trimmed, result.home);
 	}
 }
 
