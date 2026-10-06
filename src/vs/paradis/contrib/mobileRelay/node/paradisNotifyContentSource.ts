@@ -10,6 +10,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { NotifyKind } from '../common/paradisMobileProtocol.js';
 import { ParadisNotifyCategory, paradisNormalizeNotifyErrorCode } from '../common/paradisNotifyCompose.js';
+import { IParadisNotifyPromptOrigin } from '../common/paradisNotifyDismissLedger.js';
 
 /**
  * 通知の中身（最後の発言・失敗の理由・承認の中身・質問文）の出どころ（shared process）。
@@ -43,6 +44,15 @@ export interface IParadisNotifyHookApproval {
 	readonly toolInput?: unknown;
 	/** hook の `tool_use_id`。tailer の承認の ID と一致したときだけ、この中身を通知に使う。 */
 	readonly toolUseId?: string;
+	/** 許可を求めた会話（hook の `session_id`・`agent_id`）。 */
+	readonly origin?: IParadisNotifyPromptOrigin;
+	readonly at: number;
+}
+
+/** 質問（AskUserQuestion の PreToolUse）の hook の記録。どの会話が尋ねたかだけを持つ。 */
+export interface IParadisNotifyHookQuestion {
+	readonly toolUseId?: string;
+	readonly origin?: IParadisNotifyPromptOrigin;
 	readonly at: number;
 }
 
@@ -53,8 +63,8 @@ export interface IParadisNotifyPaneContent {
 	readonly lastAssistant?: { readonly text: string; readonly isError: boolean; readonly at?: number };
 	/** transcript で見たターンの終わり（Codex の usage limit などは hook が無く、ここだけが知っている）。 */
 	readonly turnEnd?: { readonly reason: 'completed' | 'failed' | 'interrupted'; readonly errorCode?: string; readonly at: number };
-	/** いま答えを待っている承認・質問。 */
-	readonly interaction?: { readonly kind: 'approval' | 'question'; readonly id: string; readonly text?: string };
+	/** いま答えを待っている承認・質問。`agentId` は承認を求めたサブエージェント・チームメイト（本会話は undefined）。 */
+	readonly interaction?: { readonly kind: 'approval' | 'question'; readonly id: string; readonly text?: string; readonly agentId?: string };
 }
 
 /** 通知の中身の決定。 */
@@ -67,6 +77,8 @@ export interface IParadisNotifyContentResolution {
 	readonly summary?: string;
 	readonly errorCode?: string;
 	readonly interactionId?: string;
+	/** 許可・質問を出した会話（分からなければ undefined。通知の片付けの範囲に使う。本文には載せない）。 */
+	readonly origin?: IParadisNotifyPromptOrigin;
 }
 
 /** hook の記録（トークンごとに最後の 1 件）。 */
@@ -74,6 +86,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 
 	private readonly turnEnds = new Map<string, IParadisNotifyHookTurnEnd>();
 	private readonly approvals = new Map<string, IParadisNotifyHookApproval>();
+	private readonly questions = new Map<string, IParadisNotifyHookQuestion>();
 
 	constructor(subscribe = true) {
 		super();
@@ -88,6 +101,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				// 新しいターン。前のターンの終わりと承認は、もう通知の中身ではない。
 				this.turnEnds.delete(event.token);
 				this.approvals.delete(event.token);
+				this.questions.delete(event.token);
 				return;
 			case 'Stop':
 			case 'agent-turn-complete':
@@ -96,6 +110,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const lastMessage = str(payload?.last_assistant_message) ?? str(payload?.['last-assistant-message']) ?? str(payload?.last_agent_message);
 				this.remember(this.turnEnds, event.token, { failed: false, ...(lastMessage !== undefined ? { lastMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.forgetQuestionOf(event);
 				return;
 			}
 			case 'StopFailure': {
@@ -106,14 +121,30 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const errorMessage = str(payload?.error_details) ?? str(errorRecord?.message) ?? str(payload?.last_assistant_message);
 				this.remember(this.turnEnds, event.token, { failed: true, ...(errorCode !== undefined ? { errorCode } : {}), ...(errorMessage !== undefined ? { errorMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.forgetQuestionOf(event);
 				return;
 			}
+			case 'SubagentStop':
+				this.forgetQuestionOf(event);
+				return;
 			case 'PermissionRequest':
 				if (event.toolName !== 'AskUserQuestion') {
+					const origin = hookOrigin(event);
 					this.remember(this.approvals, event.token, {
 						...(event.toolName !== undefined ? { toolName: event.toolName } : {}),
 						...(event.toolInput !== undefined ? { toolInput: event.toolInput } : {}),
 						...(event.toolUseId !== undefined ? { toolUseId: event.toolUseId } : {}),
+						...(origin !== undefined ? { origin } : {}),
+						at: event.at,
+					});
+				}
+				return;
+			case 'PreToolUse':
+				if (event.toolName === 'AskUserQuestion') {
+					const origin = hookOrigin(event);
+					this.remember(this.questions, event.token, {
+						...(event.toolUseId !== undefined ? { toolUseId: event.toolUseId } : {}),
+						...(origin !== undefined ? { origin } : {}),
 						at: event.at,
 					});
 				}
@@ -121,6 +152,9 @@ export class ParadisNotifyHookLedger extends Disposable {
 			case 'PostToolUse':
 			case 'PostToolUseFailure':
 			case 'PermissionDenied':
+				if (event.toolUseId !== undefined && this.questions.get(event.token)?.toolUseId === event.toolUseId) {
+					this.questions.delete(event.token);
+				}
 				this.approvals.delete(event.token);
 				return;
 			default:
@@ -135,6 +169,18 @@ export class ParadisNotifyHookLedger extends Disposable {
 
 	approval(token: string, now: number): IParadisNotifyHookApproval | undefined {
 		const entry = this.approvals.get(token);
+		return entry !== undefined && now - entry.at <= APPROVAL_FRESH_MS ? entry : undefined;
+	}
+
+	/** ターンが終わった会話の質問の記録を忘れる（ほかの会話の質問の記録は残す）。 */
+	private forgetQuestionOf(event: IParadisAgentHookEvent): void {
+		if (this.questions.get(event.token)?.origin?.agentId === str(event.payload?.agent_id)) {
+			this.questions.delete(event.token);
+		}
+	}
+
+	question(token: string, now: number): IParadisNotifyHookQuestion | undefined {
+		const entry = this.questions.get(token);
 		return entry !== undefined && now - entry.at <= APPROVAL_FRESH_MS ? entry : undefined;
 	}
 
@@ -153,6 +199,13 @@ export class ParadisNotifyHookLedger extends Disposable {
 
 function str(value: unknown): string | undefined {
 	return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+/** hook を出した会話（`session_id`、サブエージェント・チームメイトなら `agent_id` も）。 */
+function hookOrigin(event: IParadisAgentHookEvent): IParadisNotifyPromptOrigin | undefined {
+	const sessionId = str(event.sessionId);
+	const agentId = str(event.payload?.agent_id);
+	return sessionId === undefined && agentId === undefined ? undefined : { ...(sessionId !== undefined ? { sessionId } : {}), ...(agentId !== undefined ? { agentId } : {}) };
 }
 
 /** 本文に出すコマンドの先頭 1 行の長さの上限。 */
@@ -218,6 +271,9 @@ export function paradisApprovalNotifyParts(toolName: string | undefined, toolInp
  * - 要対応（agent-question）: `presetCategory` が質問（transcript の質問。本文は質問文）ならそのまま。そうでなければ、
  *   いま待っているのが質問なら質問、それ以外は承認として hook の中身（無ければ tailer の承認の中身）を使う
  * - それ以外の種類（切断など）は対象外（undefined）
+ *
+ * 要対応では、その許可・質問を出した会話（`origin`）も決める。承認は中身と同じ hook から、無ければ tailer の承認の
+ * 送り元から採る。質問は AskUserQuestion の PreToolUse の hook から採る。分からなければ付けない（本会話として扱う）。
  */
 export function paradisResolveNotifyContent(input: {
 	readonly kind: NotifyKind;
@@ -225,6 +281,7 @@ export function paradisResolveNotifyContent(input: {
 	readonly presetContent?: string;
 	readonly hookTurnEnd?: IParadisNotifyHookTurnEnd;
 	readonly hookApproval?: IParadisNotifyHookApproval;
+	readonly hookQuestion?: IParadisNotifyHookQuestion;
 	readonly pane?: IParadisNotifyPaneContent;
 	readonly now: number;
 }): IParadisNotifyContentResolution | undefined {
@@ -251,12 +308,16 @@ export function paradisResolveNotifyContent(input: {
 		return { kind: input.kind, category: input.kind === 'agent-error' ? 'error' : 'done' };
 	}
 	if (input.kind === 'agent-question') {
+		// 質問の ID（tool_use_id）が分かっていて食い違うなら、別の質問の記録なので使わない（合成 ID は突き合わせられない）
+		const paneQuestionId = pane?.interaction?.kind === 'question' ? pane.interaction.id : undefined;
+		const hookQuestion = input.hookQuestion !== undefined && !(paneQuestionId?.startsWith('toolu_') && input.hookQuestion.toolUseId !== undefined && input.hookQuestion.toolUseId !== paneQuestionId) ? input.hookQuestion : undefined;
+		const questionOrigin = hookQuestion?.origin !== undefined ? { origin: hookQuestion.origin } : {};
 		if (input.presetCategory === 'question') {
-			return { kind: 'agent-question', category: 'question', ...(input.presetContent !== undefined ? { content: input.presetContent } : {}), ...(pane?.interaction?.kind === 'question' ? { interactionId: pane.interaction.id } : {}) };
+			return { kind: 'agent-question', category: 'question', ...(input.presetContent !== undefined ? { content: input.presetContent } : {}), ...(pane?.interaction?.kind === 'question' ? { interactionId: pane.interaction.id } : {}), ...questionOrigin };
 		}
 		const interaction = pane?.interaction;
 		if (interaction?.kind === 'question') {
-			return { kind: 'agent-question', category: 'question', ...(interaction.text !== undefined ? { content: interaction.text } : {}), interactionId: interaction.id };
+			return { kind: 'agent-question', category: 'question', ...(interaction.text !== undefined ? { content: interaction.text } : {}), interactionId: interaction.id, ...questionOrigin };
 		}
 		// 中身と ID は必ず同じ承認から採る。待っている承認があれば、その ID と hook の `tool_use_id` が一致したときだけ
 		// hook の中身（コマンドを優先した形）を使い、一致しなければその承認自身の中身を使う。待っている承認が無いときは
@@ -265,11 +326,14 @@ export function paradisResolveNotifyContent(input: {
 		const hookMatches = hookApproval !== undefined && (interaction?.kind !== 'approval' || (hookApproval.toolUseId !== undefined && hookApproval.toolUseId === interaction.id));
 		const fromHook = hookMatches ? paradisApprovalNotifyParts(hookApproval.toolName, hookApproval.toolInput) : undefined;
 		const content = fromHook?.content ?? (interaction?.kind === 'approval' ? interaction.text : undefined);
+		const origin = hookMatches && hookApproval.origin !== undefined ? hookApproval.origin
+			: interaction?.kind === 'approval' && interaction.agentId !== undefined ? { agentId: interaction.agentId } : undefined;
 		return {
 			kind: 'agent-question', category: 'approval',
 			...(content !== undefined ? { content } : {}),
 			...(fromHook?.content !== undefined && fromHook.summary !== undefined ? { summary: fromHook.summary } : {}),
 			...(interaction?.kind === 'approval' ? { interactionId: interaction.id } : {}),
+			...(origin !== undefined ? { origin } : {}),
 		};
 	}
 	return undefined;
