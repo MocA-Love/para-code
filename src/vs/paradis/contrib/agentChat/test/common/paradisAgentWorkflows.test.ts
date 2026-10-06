@@ -177,6 +177,21 @@ suite('paradisAgentWorkflows', () => {
 		});
 	});
 
+	test('the result after a resume drops children of the earlier launch that it does not list', () => {
+		const tracker = new ParadisAgentWorkflowTracker();
+		tracker.apply(parse([launched('toolu_wf1', 'wtask1', 'wf_r')]).workflowSignals);
+		tracker.applyJournal('wf_r', [{ type: 'started', agentId: 'aold' }, { type: 'failed', agentId: 'aold' }]);
+		tracker.apply(parse([launched('toolu_wf2', 'wtask2', 'wf_r', 10_000)]).workflowSignals);
+		const revision = tracker.revision;
+		tracker.applyResult('wf_r', paradisParseWorkflowResultFile({ status: 'completed', workflowProgress: [{ type: 'workflow_agent', agentId: 'anew', state: 'done' }] })!, T0 + 20_000);
+		const [workflow] = tracker.snapshot();
+		assert.deepStrictEqual({ agents: workflow.agents.map(agent => `${agent.id}:${agent.state}`), counts: workflow.counts, bumped: tracker.revision > revision }, {
+			agents: ['anew:done'],
+			counts: { running: 0, done: 1, failed: 0, stopped: 0 },
+			bumped: true,
+		});
+	});
+
 	test('sends at most the cap of children, keeping failed and running ones, and estimates a stopped pane', () => {
 		const tracker = new ParadisAgentWorkflowTracker();
 		const launch = parse([launched('toolu_wf1', 'wtask1', 'wf_many')]);

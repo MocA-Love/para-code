@@ -22,7 +22,7 @@ import { join, sep } from '../../../../base/common/path.js';
 import { IParadisWorkflowChildFile, IParadisWorkflowJournalEntry, IParadisWorkflowResultFile, paradisParseWorkflowChildMeta, paradisParseWorkflowJournalLine, paradisParseWorkflowResultFile } from '../../agentChat/common/paradisAgentWorkflows.js';
 import { paradisClaudeSubagentsDir } from './paradisClaudeSubagentFiles.js';
 
-const RUN_ID = /^[A-Za-z0-9._-]{1,200}$/;
+const RUN_ID = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
 const AGENT_FILE = /^agent-(?<id>[A-Za-z0-9._:-]{1,200})\.(?<ext>jsonl|meta\.json)$/;
 /** 1 回に読む journal の量。 */
 const JOURNAL_CHUNK_BYTES = 512 * 1024;
@@ -38,13 +38,15 @@ export interface IParadisWorkflowRunReadState {
 	journalOffset: number;
 	/** 長すぎる行の途中にいる（次の改行まで捨てる）。 */
 	skippingLine: boolean;
-	/** 見つけた子（meta.json を読んだ・読もうとした）。 */
+	/** meta.json を読んだ子（meta.json は transcript より後に書かれることがあるので、無ければ次にまた見る）。 */
 	readonly seenChildren: Set<string>;
+	/** transcript を作った時刻を見た子。 */
+	readonly bornChildren: Set<string>;
 	resultMtime?: number;
 }
 
 export function paradisNewWorkflowRunReadState(): IParadisWorkflowRunReadState {
-	return { journalOffset: 0, skippingLine: false, seenChildren: new Set() };
+	return { journalOffset: 0, skippingLine: false, seenChildren: new Set(), bornChildren: new Set() };
 }
 
 export interface IParadisWorkflowRunRead {
@@ -135,6 +137,11 @@ async function readJournal(path: string, within: string, state: IParadisWorkflow
 		const entries: IParadisWorkflowJournalEntry[] = [];
 		if (lastNewline < 0) {
 			// 1 行が読む量を超えた（子の返り値の全文）。頭だけで読み、残りは捨てる
+			if (consumed > 0) {
+				// 長い行を飛ばし終えた。残りは次の回に行の頭から読む
+				state.journalOffset += consumed;
+				return { entries, more: true };
+			}
 			if (bytesRead === JOURNAL_CHUNK_BYTES && body.length > 0) {
 				const entry = paradisParseWorkflowJournalLine(body.toString('utf8'));
 				if (entry !== undefined) {
@@ -142,9 +149,6 @@ async function readJournal(path: string, within: string, state: IParadisWorkflow
 				}
 				state.skippingLine = true;
 				state.journalOffset += bytesRead;
-			} else {
-				// 書きかけの行は次に読む（飛ばし終えた長い行の分だけ進める）
-				state.journalOffset += consumed;
 			}
 			return { entries, more: bytesRead === JOURNAL_CHUNK_BYTES && state.journalOffset < size };
 		}
@@ -185,13 +189,15 @@ async function readChildren(runDir: string, within: string, state: IParadisWorkf
 	const children: IParadisWorkflowChildFile[] = [];
 	let reads = 0;
 	for (const agentId of transcripts) {
-		if (state.seenChildren.has(agentId) || reads >= MAX_META_READS) {
+		const wantsMeta = metas.has(agentId) && !state.seenChildren.has(agentId);
+		const wantsBirth = !state.bornChildren.has(agentId);
+		if ((!wantsMeta && !wantsBirth) || reads >= MAX_META_READS) {
 			continue;
 		}
 		reads++;
-		state.seenChildren.add(agentId);
 		let child: IParadisWorkflowChildFile = { agentId };
-		if (metas.has(agentId)) {
+		if (wantsMeta) {
+			state.seenChildren.add(agentId);
 			const handle = await openPlainFile(join(runDir, `agent-${agentId}.meta.json`), within);
 			if (handle !== undefined) {
 				try {
@@ -205,6 +211,11 @@ async function readChildren(runDir: string, within: string, state: IParadisWorkf
 				}
 			}
 		}
+		if (!wantsBirth) {
+			children.push(child);
+			continue;
+		}
+		state.bornChildren.add(agentId);
 		try {
 			const stat = await fs.lstat(join(runDir, `agent-${agentId}.jsonl`));
 			const born = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs;
@@ -238,7 +249,13 @@ async function readResult(path: string, within: string, state: IParadisWorkflowR
 		return undefined;
 	}
 	try {
-		const text = (await handle.readFile()).toString('utf8');
+		const size = (await handle.stat()).size;
+		if (size > MAX_RESULT_BYTES) {
+			return undefined;
+		}
+		const buffer = Buffer.alloc(size);
+		const { bytesRead } = await handle.read(buffer, 0, size, 0);
+		const text = buffer.subarray(0, bytesRead).toString('utf8');
 		const file = paradisParseWorkflowResultFile(JSON.parse(text));
 		// 書きかけ（JSON として読めない）なら時刻を覚えず、次にもう一度読む
 		state.resultMtime = mtime;
