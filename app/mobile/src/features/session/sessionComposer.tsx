@@ -37,6 +37,8 @@ import { errorKind } from './errorKind.js';
 import { ModelPill, type ModelPillHandle } from './modelDrawer.js';
 import { SessionStatusCard } from './sessionStatusCard.js';
 import { BackgroundPill } from './backgroundPill.js';
+import { SessionRing } from './sessionRing.js';
+import type { AgentSessionStatus } from '../../agentSessionStatus.js';
 import { SlashCommandList } from './slashCommandList.js';
 import { useIsFocused } from 'expo-router';
 import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
@@ -69,6 +71,14 @@ interface SessionComposerProps {
 	shells: readonly AgentShell[] | undefined;
 	/** シェルの出力と停止をこの構成で使えるか。 */
 	shellsAccess: AgentShellsAccess | undefined;
+	/**
+	 * 会話の状態（agent.session-status.v1）。`sessionStatusSupported` のとき、Monitor とシェルのピルの代わりにセッションの輪を出す
+	 * （古い PC では今のピルのまま）。
+	 */
+	sessionStatus?: AgentSessionStatus;
+	sessionStatusSupported?: boolean;
+	/** エージェントが応答中か（輪とシートでキャッシュの残り時間を数えない）。 */
+	working?: boolean;
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
 	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onAfterSubmit: () => void;
@@ -103,7 +113,7 @@ interface SessionComposerProps {
 
 /**
  * 会話表示の入力欄（Orca の MobileNativeChatComposer。モックの `.composer`）。
- * 上段に入力、下段に 画像の添付・モデルと effort のピル・Monitor とシェルのピル（あるときだけ）・送信の白い円。
+ * 上段に入力、下段に 画像の添付・モデルと effort のピル・セッションの輪（古い PC では Monitor とシェルのピル。あるときだけ）・送信の白い円。
  *
  * 入力と送信の決まりは旧部品（`components/agentComposer.tsx`）をそのまま移している:
  *  - 入力中の文字はネイティブの TextInput が持ち（uncontrolled）、下書きはストアへ一方向に退避する。
@@ -121,7 +131,7 @@ interface SessionComposerProps {
  *    パスを本文の先頭に並べる（案 M1）。上げ終わるまで送れず、失敗した画像は確かめてから外して送る
  */
 export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionComposerProps>(function SessionComposer({
-	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors, shells, shellsAccess,
+	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors, shells, shellsAccess, sessionStatus, sessionStatusSupported = false, working = false,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, ws, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing, slashRejection, onSlashRejectionHandled, onOpenTerminal,
 	panel, panelSupported = false, onClosePanel, onOpenUsage, spaceName, branch,
@@ -704,7 +714,9 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						onRequestCodexCatalog={() => { if (terminalKey !== undefined) { requestAgentModelCatalog(terminalKey); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (terminalKey !== undefined) { updateAgentSettings(terminalKey, nextModel, nextEffort); } }}
 					/>
-					<BackgroundPill key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}`} terminalKey={terminalKey} monitors={monitors} shells={shells} shellsAccess={shellsAccess} />
+					{sessionStatusSupported
+						? <SessionRing key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}`} terminalKey={terminalKey} status={sessionStatus} working={working} monitors={monitors} shells={shells} shellsAccess={shellsAccess} />
+						: <BackgroundPill key={`${terminalKey ?? 'none'}:${sessionEpoch ?? 'none'}`} terminalKey={terminalKey} monitors={monitors} shells={shells} shellsAccess={shellsAccess} />}
 					<View style={styles.spacer} />
 					<Pressable
 						onPress={() => { haptic('commit'); submit(); }}

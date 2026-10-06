@@ -805,6 +805,18 @@ export interface IParadisPrepareBindRequest {
 	readonly pageInfo: IParadisSharedPageInfo;
 }
 
+/**
+ * Renderer → shared process: エージェントが自分で開いたタブを、共有（バインド）を付け替えずにそのペインから
+ * tab_id で使えるようにする（許可）。確かめ方は {@link IParadisPrepareBindRequest} と同じ。
+ */
+export type IParadisGrantAgentTabRequest = IParadisPrepareBindRequest;
+
+/** 許可されたエージェントのタブ1件（共有の表示用）。 */
+export interface IParadisAgentTabGrant {
+	readonly token: string;
+	readonly pageId: string;
+}
+
 /** Short-lived authority ticket. The exact BrowserView descriptor remains backend-private. */
 export interface IParadisPrepareBindResult {
 	readonly ticketId: string;

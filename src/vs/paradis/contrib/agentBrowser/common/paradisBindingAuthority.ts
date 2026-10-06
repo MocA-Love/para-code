@@ -524,6 +524,21 @@ export class ParadisBindingAuthority<TWindow, TConnection extends object, TDescr
 		return snapshot;
 	}
 
+	/**
+	 * Whether the pane/view owners, scopes and binding epoch are unchanged since the snapshot was taken.
+	 * Used by operations that do not replace the binding (agent tab grants) to revalidate after an await.
+	 */
+	isPrepareSnapshotCurrent(snapshot: IParadisBindingPrepareSnapshot): boolean {
+		const snapshotState = this.prepareSnapshots.get(snapshot);
+		return snapshotState !== undefined && this.isSnapshotCurrent(snapshot, snapshotState);
+	}
+
+	/** Whether the view is currently owned by the same window as the pane token. */
+	isViewOwnedWithToken(token: string, viewId: string): boolean {
+		const owner = this.tokenOwners.get(token);
+		return owner !== undefined && this.viewOwners.get(viewId) === owner;
+	}
+
 	issueTicket(snapshot: IParadisBindingPrepareSnapshot, descriptor: TDescriptor): IParadisBindingTicket {
 		const now = this.options.now();
 		this.cleanupExpiredTickets(now);

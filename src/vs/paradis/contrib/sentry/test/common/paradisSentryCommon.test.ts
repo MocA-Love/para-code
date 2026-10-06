@@ -41,6 +41,13 @@ suite('ParadisSentryCommon', () => {
 		assert.ok(sanitized.includes('~/projects/private/file.ts'));
 	});
 
+	test('redacts the host and path of files opened directly over SSH', () => {
+		assert.strictEqual(
+			paradisSanitizeSentryText(`Unable to read file 'paradis-sftp://prod-db/var/lib/app.db' (Unavailable)`),
+			`Unable to read file 'paradis-sftp://[Filtered]' (Unavailable)`,
+		);
+	});
+
 	test('keeps diagnostic tags and stack shape while removing private event payloads', () => {
 		const event = paradisSanitizeSentryEvent({
 			message: 'failed at /home/alice/work/private.ts with token=secret',

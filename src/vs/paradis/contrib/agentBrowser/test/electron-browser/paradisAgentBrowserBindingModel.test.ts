@@ -109,6 +109,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		commit?: (ticketId: string, request: IParadisPrepareBindRequest) => Promise<IParadisCommitBindResult>;
 		listBindings?: () => Promise<IParadisPaneBinding[]>;
 		listSeenTokens?: () => Promise<string[]>;
+		listAgentTabGrants?: () => Promise<unknown>;
 		hasPaneTokens?: boolean;
 		pollTimer?: DeterministicPollTimer;
 		tokenRefreshTimer?: DeterministicPollTimer;
@@ -160,6 +161,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 				switch (command) {
 					case 'listBindings': return [...(await (options?.listBindings?.() ?? Promise.resolve(backendBindings)))] as T;
 					case 'listSeenTokens': return await (options?.listSeenTokens?.() ?? Promise.resolve([])) as T;
+					case 'listAgentTabGrants': return await (options?.listAgentTabGrants?.() ?? Promise.resolve([])) as T;
 					case 'prepareBind': {
 						order.push('prepare');
 						const request = args[0] as IParadisPrepareBindRequest;
@@ -279,6 +281,23 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			get backendBindings() { return backendBindings; },
 		};
 	}
+
+	test('keeps the agent tabs each pane uses by tab_id for the sharing display, and keeps the last list when it cannot be read', async () => {
+		let grants: Promise<unknown> = Promise.resolve([{ token: 'token', pageId: 'view-a' }, { token: 'token', pageId: 'view-b' }, { token: 'other', pageId: 'view-a' }]);
+		const fixture = createFixture({ listAgentTabGrants: () => grants });
+		await fixture.bindingModel.refresh();
+		const listed = {
+			byToken: fixture.bindingModel.getAgentTabsForToken('token'),
+			byPage: fixture.bindingModel.getAgentTabOwnersForPage('view-a'),
+			none: fixture.bindingModel.getAgentTabsForToken('unknown'),
+		};
+		grants = Promise.reject(new Error('shared process restarting'));
+		await fixture.bindingModel.refresh();
+		assert.deepStrictEqual({ listed, afterFailure: fixture.bindingModel.getAgentTabsForToken('token') }, {
+			listed: { byToken: ['view-a', 'view-b'], byPage: ['token', 'other'], none: [] },
+			afterFailure: ['view-a', 'view-b'],
+		});
+	});
 
 	function binding(generation: number = 1): IParadisPaneBinding {
 		return {
