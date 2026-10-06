@@ -637,6 +637,11 @@
 }
 
 /* Claude のカードの値が古いときの添え書き。 */
+/* 取りに行くのを控えている間の前の値。今の値ではないので薄く出す。 */
+.paradis-limits-panel .plm-meters.previous {
+	opacity: 0.55;
+}
+
 .paradis-limits-panel .plm-card-stale {
 	margin-top: 4px;
 	color: var(--vscode-descriptionForeground);

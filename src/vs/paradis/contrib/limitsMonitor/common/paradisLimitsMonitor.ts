@@ -76,6 +76,60 @@ export function paradisLimitsNotFetchedCause(statusDetail: string | undefined): 
 	}
 }
 
+/** 値の古さ（「12分前」「3時間前」「2日前」の数と単位）。 */
+export interface IParadisLimitsAge {
+	readonly amount: number;
+	readonly unit: 'minutes' | 'hours' | 'days';
+}
+
+export function paradisLimitsAge(at: number, now: number): IParadisLimitsAge {
+	const minutes = Math.max(0, Math.floor((now - at) / 60_000));
+	if (minutes < 60) {
+		return { amount: minutes, unit: 'minutes' };
+	}
+	const hours = Math.floor(minutes / 60);
+	return hours < 24 ? { amount: hours, unit: 'hours' } : { amount: Math.floor(hours / 24), unit: 'days' };
+}
+
+/**
+ * 取りに行くのを控えている（'not_fetched'）が、前に取れた値を残しているアカウントの見せ方。
+ * 前の値が無い・控えていないときは undefined（いつもの説明文を出す）。
+ *
+ * PC は claude-swap と共有しているかもしれない控えのアカウントのトークンを更新しない。その間も前に取れた
+ * 値（枠と取得時刻）を残して送るので、カードは前の値を薄く出し、古さと控えている理由を添える。
+ * 古い PC はこの状態で値を送らないので、ここは undefined になり、前と同じ表示になる。
+ */
+export interface IParadisLimitsPreviousValue {
+	readonly age: IParadisLimitsAge;
+	readonly cause: ParadisLimitsNotFetchedCause;
+}
+
+export function paradisLimitsPreviousValue(account: Pick<IParadisLimitsAccount, 'status' | 'unavailableReason' | 'statusDetail' | 'fetchedAt' | 'fiveHour' | 'sevenDay' | 'scoped'>, now: number): IParadisLimitsPreviousValue | undefined {
+	if (account.status !== 'unavailable' || account.unavailableReason !== 'not_fetched' || account.fetchedAt === undefined || !Number.isFinite(account.fetchedAt)) {
+		return undefined;
+	}
+	if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
+		return undefined;
+	}
+	return { age: paradisLimitsAge(account.fetchedAt, now), cause: paradisLimitsNotFetchedCause(account.statusDetail) };
+}
+
+/**
+ * 枠1つの見せ方。リセット時刻を過ぎた枠は、取り直すまで今の使用率が分からないので、古い使用率を出さずに
+ * 'reset'（「リセット済み（今の値は不明）」）にする。
+ */
+export type ParadisLimitsWindowView =
+	| { readonly kind: 'value'; readonly percent: number; readonly countdown?: string }
+	| { readonly kind: 'reset' };
+
+export function paradisLimitsWindowView(window: IParadisLimitsWindow, now: number): ParadisLimitsWindowView {
+	if (window.resetsAt !== undefined && Number.isFinite(window.resetsAt) && window.resetsAt <= now) {
+		return { kind: 'reset' };
+	}
+	const countdown = paradisLimitsFormatCountdown(window.resetsAt, now);
+	return countdown !== undefined ? { kind: 'value', percent: window.usedPercent, countdown } : { kind: 'value', percent: window.usedPercent };
+}
+
 /** 再ログインで解消し得る状態か（'refreshing'・'unavailable' は再ログインしても直らない）。 */
 export function paradisLimitsNeedsRelogin(status: ParadisLimitsAccountStatus): boolean {
 	return status === 'relogin_required' || status === 'no_credentials' || status === 'error';

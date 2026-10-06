@@ -68,6 +68,35 @@ suite('ParadisNotifyDismissLedger (W2-27)', () => {
 		});
 	});
 
+	test('the end of a turn settles only the prompts of the conversation whose turn ended', () => {
+		const ledger = new ParadisNotifyDismissLedger();
+		const main = { sessionId: 'sess-main' };
+		const mate = { sessionId: 'sess-main', agentId: 'a05cdbe863549a180' };
+		ledger.record('m1', 'tok-a', 'agent-question', 100, 'tool-m1', main);
+		ledger.record('t1', 'tok-a', 'agent-question', 110, 'tool-t1', mate);
+		ledger.record('t2', 'tok-a', 'agent-question', 120, 'tool-t2', mate);
+		ledger.record('c1', 'tok-a', 'agent-question', 130, 'tool-c1', { sessionId: 'sess-codex-child' });
+		ledger.record('u1', 'tok-a', 'agent-question', 140, 'tool-u1');
+		// 本会話の Stop: 本会話と出どころの分からないものだけ。チームメイトと Codex の子のスレッドの分は残る
+		const mainStop = ledger.markAnswered('tok-a', undefined, 200, main);
+		// チームメイトの許可に ID 指定で答えた（PostToolUse）
+		const mateAnswer = ledger.markAnswered('tok-a', 'tool-t1', 210);
+		// チームメイト自身のターンの終わり（SubagentStop）
+		const mateStop = ledger.markAnswered('tok-a', undefined, 220, mate);
+		const childStop = ledger.markAnswered('tok-a', undefined, 230, { sessionId: 'sess-codex-child' });
+		const restored = new ParadisNotifyDismissLedger();
+		const before = new ParadisNotifyDismissLedger();
+		before.record('t3', 'tok-a', 'agent-question', 300, 'tool-t3', mate);
+		before.record('m2', 'tok-a', 'agent-question', 310, 'tool-m2', main);
+		restored.restore(before.serialize(400), 400);
+		const restoredMainStop = restored.markAnswered('tok-a', undefined, 500, main);
+		// セッションの終わりは、その session の子の分も片付ける
+		const sessionEnd = restored.markAnswered('tok-a', undefined, 510, main, true);
+		assert.deepStrictEqual({ mainStop, mateAnswer, mateStop, childStop, restoredMainStop, sessionEnd }, {
+			mainStop: ['m1', 'u1'], mateAnswer: ['t1'], mateStop: ['t2'], childStop: ['c1'], restoredMainStop: ['m2'], sessionEnd: ['t3'],
+		});
+	});
+
 	test('numbers each settlement once and returns the ones after a cursor', () => {
 		const ledger = new ParadisNotifyDismissLedger({ newLedgerId: () => 'ledger-0001' });
 		ledger.record('d1', 'tok-a', 'agent-done', 100);
@@ -147,12 +176,28 @@ suite('ParadisNotifyDismissLedger (W2-27)', () => {
 				paradisNotifyAnswerFromHook('UserPromptSubmit', undefined, { payload: { prompt: '/model opus' } }),
 				paradisNotifyAnswerFromHook('UserPromptSubmit', undefined, { payload: { prompt: 'next' } }),
 				paradisNotifyAnswerFromHook('PostToolUse', 'tool-2', { ownerUnverified: true }),
+				// 出した会話の範囲: 本会話のターンの終わり・子のターンの終わり・セッションの終わり
+				paradisNotifyAnswerFromHook('Stop', undefined, { sessionId: 'sess-1' }),
+				paradisNotifyAnswerFromHook('SubagentStop', undefined, { sessionId: 'sess-1', payload: { agent_id: 'a1234567890abcdef0' } }),
+				paradisNotifyAnswerFromHook('SubagentStop', undefined, { sessionId: 'sess-1' }),
+				paradisNotifyAnswerFromHook('UserPromptSubmit', undefined, { sessionId: 'sess-1', payload: { agent_id: 'a1234567890abcdef0', prompt: 'next' } }),
+				paradisNotifyAnswerFromHook('SessionEnd', undefined, { sessionId: 'sess-1' }),
+				paradisNotifyAnswerFromHook('SubagentStop', undefined, { ownerUnverified: true, payload: { agent_id: 'a1234567890abcdef0' } }),
 			],
 			interactionId: [paradisNotifyInteractionId(bytes({ kind: 'agent-question', interactionId: 'tool-1' })), paradisNotifyInteractionId(bytes({ kind: 'agent-done' })), paradisNotifyInteractionId(new Uint8Array([0xff]))],
 			sync: [paradisDecodeNotifyDismissSync(bytes({ t: 'dismiss-sync', ledger: 'ledger-0001', after: 4 })), paradisDecodeNotifyDismissSync(bytes({ t: 'dismiss-sync', ledger: 'bad id', after: -1 })), paradisDecodeNotifyDismissSync(bytes({ t: 'dismiss', id: 'x' }))],
 			log: JSON.parse(new TextDecoder().decode(paradisEncodeNotifyDismissLog({ ledger: 'ledger-0001', seq: 2, ids: ['a'] }))),
 		}, {
-			hooks: [{ interactionId: 'tool-1' }, undefined, { interactionId: undefined }, { interactionId: undefined }, undefined, undefined, { interactionId: undefined }, undefined, undefined, undefined, undefined, { interactionId: undefined }, { interactionId: 'tool-2' }],
+			hooks: [
+				{ interactionId: 'tool-1' }, undefined, { interactionId: undefined }, { interactionId: undefined }, undefined, undefined, { interactionId: undefined },
+				undefined, { interactionId: undefined, origin: { agentId: 'a1234567890abcdef0' } }, undefined, undefined, { interactionId: undefined }, { interactionId: 'tool-2' },
+				{ interactionId: undefined, origin: { sessionId: 'sess-1' } },
+				{ interactionId: undefined, origin: { sessionId: 'sess-1', agentId: 'a1234567890abcdef0' } },
+				undefined,
+				undefined,
+				{ interactionId: undefined, origin: { sessionId: 'sess-1' }, wholeSession: true },
+				undefined,
+			],
 			interactionId: ['tool-1', undefined, undefined],
 			sync: [{ ledger: 'ledger-0001', after: 4 }, { ledger: undefined, after: 0 }, undefined],
 			log: { t: 'dismiss-log', ledger: 'ledger-0001', seq: 2, ids: ['a'] },

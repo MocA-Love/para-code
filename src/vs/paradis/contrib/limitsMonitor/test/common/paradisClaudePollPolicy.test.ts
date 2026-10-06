@@ -10,7 +10,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisClaudePolicyUsage,
+	paradisClaudeCarryOverOnRoleChange,
 	paradisClaudeFailureBackoffS,
+	paradisClaudeKeepsPreviousUsage,
 	paradisClaudePlanAfterFetch,
 	paradisClaudeRecent429
 } from '../../common/paradisClaudePollPolicy.js';
@@ -144,6 +146,39 @@ suite('ParadisClaudePollPolicy', () => {
 			justNow: true,
 			old: false,
 			afterLongBackoff: true,
+		});
+	});
+
+	// 取りに行くのを控えた（'not_fetched'）ときだけ前の値を残す。今の状態と食い違う値は消す。
+	test('keeps the previous usage only while fetching is held off', () => {
+		assert.deepStrictEqual([
+			paradisClaudeKeepsPreviousUsage('unavailable', 'not_fetched'),
+			paradisClaudeKeepsPreviousUsage('unavailable', 'keychain_unavailable'),
+			paradisClaudeKeepsPreviousUsage('unavailable', 'api_key'),
+			paradisClaudeKeepsPreviousUsage('relogin_required', undefined),
+			paradisClaudeKeepsPreviousUsage('no_credentials', undefined),
+			paradisClaudeKeepsPreviousUsage('refreshing', undefined),
+		], [true, false, false, false, false, false]);
+	});
+
+	test('carries the previous usage over when the active account changes', () => {
+		const windows = usage(40);
+		const held = { status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', windows, fetchedAt: NOW - 3600_000, nextPollAt: NOW + 600_000 } as const;
+		assert.deepStrictEqual({
+			none: paradisClaudeCarryOverOnRoleChange(undefined, NOW),
+			// 180 秒以内の値はそのまま引き継ぎ、取り直さない
+			recent: paradisClaudeCarryOverOnRoleChange({ status: 'ok', windows, fetchedAt: NOW - 60_000, nextPollAt: NOW + 300_000 }, NOW),
+			// それより古い値は残してすぐ取り直す
+			old: paradisClaudeCarryOverOnRoleChange(held, NOW),
+			// 180 秒以内でも、取れていない状態（429 で待っている等）は引き継がずに取り直す
+			recentButNotOk: paradisClaudeCarryOverOnRoleChange({ status: 'unavailable', unavailableReason: 'rate_limited', windows, fetchedAt: NOW - 60_000, nextPollAt: NOW + 300_000 }, NOW),
+			noValue: paradisClaudeCarryOverOnRoleChange({ status: 'relogin_required', nextPollAt: Number.POSITIVE_INFINITY }, NOW),
+		}, {
+			none: { status: 'unavailable', unavailableReason: 'not_fetched', windows: undefined, fetchedAt: undefined, nextPollAt: 0 },
+			recent: { status: 'ok', unavailableReason: undefined, statusDetail: undefined, windows, fetchedAt: NOW - 60_000, nextPollAt: NOW + 120_000 },
+			old: { status: 'unavailable', unavailableReason: 'not_fetched', windows, fetchedAt: NOW - 3600_000, nextPollAt: 0 },
+			recentButNotOk: { status: 'unavailable', unavailableReason: 'not_fetched', windows, fetchedAt: NOW - 60_000, nextPollAt: 0 },
+			noValue: { status: 'unavailable', unavailableReason: 'not_fetched', windows: undefined, fetchedAt: undefined, nextPollAt: 0 },
 		});
 	});
 });

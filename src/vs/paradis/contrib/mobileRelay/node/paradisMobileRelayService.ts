@@ -73,7 +73,7 @@ import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNoti
 import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
 import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
-import { paradisDecodeNotifyDismissSync, paradisEncodeNotifyDismissLog, paradisNotifyDismissOpened, paradisNotifyInteractionId, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { IParadisNotifyPromptOrigin, paradisDecodeNotifyDismissSync, paradisEncodeNotifyDismissLog, paradisNotifyDismissOpened, paradisNotifyInteractionId, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
 import { ParadisNotifyDismissStore, paradisNotifyDismissFileHost } from './paradisNotifyDismissStore.js';
 import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../common/paradisMobileBackgroundGrace.js';
 import { ParadisPushOutbox } from '../common/paradisPushOutbox.js';
@@ -1794,7 +1794,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const meta = peekNotifyMeta(fullBytes);
 		const pcFocused = this.pcFocused;
 		if (meta.id !== undefined) {
-			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now, paradisNotifyInteractionId(fullBytes));
+			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now, paradisNotifyInteractionId(fullBytes), variants?.origin);
 			this.dismissStore.changed();
 		}
 		// 次のプッシュで消してもらう、片付いた通知（W2-27）。どのスマホにも同じ一覧を載せる（印は鍵ごとに作る）。
@@ -1898,7 +1898,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * （`paradisNotifyContentSource.ts`）、文言は `paradisNotifyCompose.ts`。エージェントの通知でなければ undefined。
 	 * 「通知に内容を含める」の版（withContent）と含めない版（withoutContent）を返す。
 	 */
-	private composeNotifyVariants(bytes: Uint8Array, now: number): { readonly withContent: Uint8Array; readonly withoutContent: Uint8Array } | undefined {
+	private composeNotifyVariants(bytes: Uint8Array, now: number): { readonly withContent: Uint8Array; readonly withoutContent: Uint8Array; readonly origin?: IParadisNotifyPromptOrigin } | undefined {
 		let record: Record<string, unknown>;
 		try {
 			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
@@ -1919,7 +1919,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const resolution = paradisResolveNotifyContent({
 			kind,
 			...(presetQuestion ? { presetCategory: 'question' as const, ...(typeof record.body === 'string' ? { presetContent: record.body } : {}) } : {}),
-			...(token !== undefined ? { hookTurnEnd: this.notifyHookLedger.turnEnd(token, now), hookApproval: this.notifyHookLedger.approval(token, now) } : {}),
+			...(token !== undefined ? { hookTurnEnd: this.notifyHookLedger.turnEnd(token, now), hookApproval: this.notifyHookLedger.approval(token, now), hookQuestion: this.notifyHookLedger.question(token, now) } : {}),
 			...(pane !== undefined ? { pane } : {}),
 			now,
 		});
@@ -1955,7 +1955,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			...(resolution.errorCode !== undefined ? { errorCode: resolution.errorCode } : {}),
 		});
 		const encoder = new TextEncoder();
-		return { withContent: encoder.encode(JSON.stringify(variants.withContent)), withoutContent: encoder.encode(JSON.stringify(variants.withoutContent)) };
+		return {
+			withContent: encoder.encode(JSON.stringify(variants.withContent)), withoutContent: encoder.encode(JSON.stringify(variants.withoutContent)),
+			...(resolution.origin !== undefined ? { origin: resolution.origin } : {}),
+		};
 	}
 
 	/**

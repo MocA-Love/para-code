@@ -43,6 +43,32 @@ suite('ParadisNotifyHookLedger', () => {
 		ledger.record(hook('PermissionRequest', { toolName: 'AskUserQuestion', toolInput: {} }));
 		assert.strictEqual(ledger.approval('tok', 1000), undefined);
 	});
+
+	test('許可・質問を出した会話（session_id・チームメイトの agent_id）を覚え、通知の中身に添える', () => {
+		const ledger = store.add(new ParadisNotifyHookLedger(false));
+		ledger.record(hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_m', sessionId: 'sess-1', payload: { agent_id: 'a05cdbe863549a180' } }));
+		ledger.record(hook('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_q', sessionId: 'sess-1' }));
+		const approval = ledger.approval('tok', 2000);
+		const question = ledger.question('tok', 2000);
+		const now = 2000;
+		assert.deepStrictEqual({
+			approval: approval?.origin,
+			question: question?.origin,
+			resolvedApproval: paradisResolveNotifyContent({ kind: 'agent-question', ...(approval !== undefined ? { hookApproval: approval } : {}), pane: { interaction: { kind: 'approval', id: 'toolu_m' } }, now })?.origin,
+			// hook と結べない承認は、tailer の承認の送り元を使う
+			resolvedFromPane: paradisResolveNotifyContent({ kind: 'agent-question', pane: { interaction: { kind: 'approval', id: 'toolu_x', agentId: 'a1111111111111111' } }, now })?.origin,
+			resolvedQuestion: paradisResolveNotifyContent({ kind: 'agent-question', ...(question !== undefined ? { hookQuestion: question } : {}), pane: { interaction: { kind: 'question', id: 'toolu_q' } }, now })?.origin,
+			// ID の食い違う質問の記録は使わない
+			resolvedOtherQuestion: paradisResolveNotifyContent({ kind: 'agent-question', ...(question !== undefined ? { hookQuestion: question } : {}), pane: { interaction: { kind: 'question', id: 'toolu_other' } }, now })?.origin,
+		}, {
+			approval: { sessionId: 'sess-1', agentId: 'a05cdbe863549a180' },
+			question: { sessionId: 'sess-1' },
+			resolvedApproval: { sessionId: 'sess-1', agentId: 'a05cdbe863549a180' },
+			resolvedFromPane: { agentId: 'a1111111111111111' },
+			resolvedQuestion: { sessionId: 'sess-1' },
+			resolvedOtherQuestion: undefined,
+		});
+	});
 });
 
 suite('paradisResolveNotifyContent', () => {
