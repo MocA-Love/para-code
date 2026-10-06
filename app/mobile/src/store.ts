@@ -695,6 +695,13 @@ export interface RateLimitAccount {
 	scoped?: RateLimitWindow[];
 	/** Codex の枠のリセットの残り（旧PCでは未配信）。 */
 	resetCredits?: RateLimitResetCredits;
+	/**
+	 * Claude: PC がログインの更新を控えている間（'unavailable' の 'not_fetched'）に残している前の値（旧PCでは未配信）。
+	 * 取れていないアカウントの `fiveHour` などは今までどおり空で届く（古いアプリが今の値と取り違えないように）。
+	 */
+	previousWindows?: { fiveHour?: RateLimitWindow; sevenDay?: RateLimitWindow; scoped?: RateLimitWindow[] };
+	/** `previousWindows` を取った時刻（epoch ms。旧PCでは未配信）。 */
+	previousFetchedAt?: number;
 }
 export interface RateLimitProviderSnapshot {
 	accounts: RateLimitAccount[];

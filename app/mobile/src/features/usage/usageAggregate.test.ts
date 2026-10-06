@@ -207,6 +207,17 @@ describe('aggregateAccounts', () => {
 		expect(accountFetchedAt(account({ fetchedAt: Number.NaN }), 7)).toBe(7);
 	});
 
+	it('どの PC でも取れていなければ、控えている間の前の値を持つ方を採る', () => {
+		const held = { status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap' } as const;
+		const result = entries([pc('a'), pc('b')], {
+			// 古い PC: 控えている間は値を送らない（応答は新しい）
+			'pc:a': { limits: { value: limits([account({ email: 'u@x', ...held })]), at: NOW, receivedAt: NOW } },
+			'pc:b': { limits: { value: limits([account({ email: 'u@x', ...held, previousFetchedAt: NOW - HOUR, previousWindows: { fiveHour: { usedPercent: 30 } } })]), at: NOW - 2 * HOUR, receivedAt: NOW } },
+		});
+		const [item] = aggregateAccounts(result, 'claude', NOW);
+		expect(item!.account.previousWindows?.fiveHour?.usedPercent).toBe(30);
+	});
+
 	it('Codex の枠のリセットは、リセットを添えている PC の新しい値から採る', () => {
 		const codex = (extra: Partial<RateLimitAccount>) => account({ provider: 'codex', accountId: 'acct-1', email: 'c@x', ...extra });
 		const result = entries([pc('a'), pc('b'), pc('c')], {
