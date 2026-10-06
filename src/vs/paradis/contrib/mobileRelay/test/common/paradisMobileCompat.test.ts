@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	PARADIS_MOBILE_APP_CAPABILITIES,
 	PARADIS_MOBILE_PC_CAPABILITIES,
+	ParadisMobileCapability,
 	paradisEvaluateMobileCompat,
 	paradisHasMobileCapability,
 	paradisIsAcceptedMobileWireVersion,
@@ -82,6 +83,13 @@ suite('ParadisMobileCompat', () => {
 			PARADIS_MOBILE_PR_VIEW_CAPABILITY,
 			PARADIS_MOBILE_PR_MERGE_CAPABILITY,
 		].map(name => PARADIS_MOBILE_PC_CAPABILITIES.includes(name)), [true, true, true, true, true]);
+	});
+
+	test('PC はおやすみモードの遠隔の切り替えを広告し、アプリは広告しない（PC だけの機能）', () => {
+		assert.deepStrictEqual([
+			PARADIS_MOBILE_PC_CAPABILITIES.includes(ParadisMobileCapability.NotifyDoNotDisturbRemote),
+			PARADIS_MOBILE_APP_CAPABILITIES.includes(ParadisMobileCapability.NotifyDoNotDisturbRemote),
+		], [true, false]);
 	});
 
 	test('個々の操作の版は窓の中（最低版〜自分の版）だけを受け付ける', () => {
