@@ -22,6 +22,7 @@ import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
+import { localizeAgentWorkflows, parseAgentWorkflows, type AgentWorkflow } from './agentWorkflows.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
@@ -1486,6 +1487,8 @@ export interface AgentChatState {
 	shells?: AgentShell[];
 	/** シェルの出力と停止をこの構成で使えるか（`shellsAccess`）。 */
 	shellsAccess?: AgentShellsAccess;
+	/** Claude Code の Workflow の実行（PC が `workflows` を送るときだけ。agent.workflows.v1）。 */
+	workflows?: AgentWorkflow[];
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
@@ -5387,6 +5390,9 @@ export class MobileController {
 			const rawShells = parseAgentShells((msg as { shells?: unknown }).shells);
 			const parsedShells = rawShells !== undefined ? localizeAgentShells(rawShells, (msg as { shellsAt?: unknown }).shellsAt, Date.now()) : undefined;
 			const parsedShellsAccess = rawShells !== undefined ? parseAgentShellsAccess((msg as { shellsAccess?: unknown }).shellsAccess) : undefined;
+			// Workflow の実行（agent.workflows.v1）も届いたときだけ丸ごと置き換える（PC は変わったときだけ載せる）。
+			const rawWorkflows = parseAgentWorkflows((msg as { workflows?: unknown }).workflows);
+			const parsedWorkflows = rawWorkflows !== undefined ? localizeAgentWorkflows(rawWorkflows, (msg as { workflowsAt?: unknown }).workflowsAt, Date.now()) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
 				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.activityId !== msg.activityId) { return; }
@@ -5472,6 +5478,7 @@ export class MobileController {
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
+					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
@@ -5552,6 +5559,7 @@ export class MobileController {
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
+					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),

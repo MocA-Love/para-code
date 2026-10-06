@@ -391,6 +391,32 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('agent: Workflow の実行（agent.workflows.v1）を全項目のまま読み、時刻を手元の時計へ直す', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const chat = latest()?.agentChats.get('terminal-key-1');
+		const golden = agentGolden.toMobile.find(message => message.t === 'delta' && message['workflows'] !== undefined);
+		const goldenWorkflows = golden?.['workflows'] as Golden[] | undefined;
+		const shift = (chat?.workflows?.[0]?.startedAt ?? 0) - (goldenWorkflows?.[0]?.['startedAt'] as number);
+		expect({
+			workflows: chat?.workflows?.map(workflow => ({
+				...workflow,
+				startedAt: workflow.startedAt - shift,
+				...(workflow.endedAt !== undefined ? { endedAt: workflow.endedAt - shift } : {}),
+				agents: workflow.agents.map(item => item.startedAt !== undefined ? { ...item, startedAt: item.startedAt - shift } : item),
+			})),
+			capability: controller.hasPcCapability(PcCapability.AgentWorkflows),
+		}).toEqual({ workflows: goldenWorkflows, capability: true });
+		controller.disconnect();
+	});
+
 	it('agent: コマンドの一覧（agent.commands.v2）はゴールデンと同じ形で求め、重なりと出どころを読み、断りの理由を返す', async () => {
 		const { controller, pcMux, sent, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));

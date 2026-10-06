@@ -45,6 +45,11 @@ export interface IParadisAgentShell {
 	readonly exitCode?: number;
 	/** 最初から背景で動かしたのではなく、手動（user）や時間切れ（timeout）で背景へ回った。 */
 	readonly movedToBackground?: 'user' | 'timeout';
+	/**
+	 * 起動した子（サブエージェント・Workflow の子）の ID。子の transcript・子の hook から読んだときだけ。親が起動したものには無い
+	 * （モバイルは Workflow の子のシェルを、ペインの一覧ではなく Workflow のカードへ寄せる。agent.workflows.v1）。
+	 */
+	readonly ownerAgentId?: string;
 }
 
 export type ParadisAgentShellStatus = 'running' | 'completed' | 'failed' | 'stopped';
@@ -89,7 +94,7 @@ export type IParadisShellSignal =
 	 * その呼び出しが `run_in_background: true` だったときだけシェルを作る（前景のコマンドの出力に同じ文が
 	 * 含まれていても取り違えない）。
 	 */
-	| { readonly type: 'started'; readonly toolUseId?: string; readonly taskId: string; readonly outputFile?: string; readonly movedToBackground?: 'user' | 'timeout'; readonly fromText?: 'background' | 'timeout'; readonly at: number }
+	| { readonly type: 'started'; readonly toolUseId?: string; readonly taskId: string; readonly outputFile?: string; readonly movedToBackground?: 'user' | 'timeout'; readonly fromText?: 'background' | 'timeout'; readonly ownerAgentId?: string; readonly at: number }
 	| { readonly type: 'ended'; readonly taskId: string; readonly status: 'completed' | 'failed' | 'stopped'; readonly stoppedBy?: ParadisAgentShellStopper; readonly exitCode?: number; readonly outputFile?: string; readonly description?: string; readonly at: number };
 
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -222,6 +227,7 @@ interface IMutableShell {
 	movedToBackground?: 'user' | 'timeout';
 	/** 終わりを出力ファイルの最後の印から推定した（次の読み取りで印が無ければ running に戻す）。 */
 	endedFromOutput?: boolean;
+	ownerAgentId?: string;
 }
 
 interface IExternalEnd {
@@ -428,6 +434,7 @@ export class ParadisAgentShellTracker {
 				...(shell.endedAt !== undefined ? { endedAt: this.toLocal(shell.endedAt) } : {}),
 				...(shell.exitCode !== undefined ? { exitCode: shell.exitCode } : {}),
 				...(shell.movedToBackground !== undefined ? { movedToBackground: shell.movedToBackground } : {}),
+				...(shell.ownerAgentId !== undefined ? { ownerAgentId: shell.ownerAgentId } : {}),
 			}));
 	}
 
@@ -497,6 +504,9 @@ export class ParadisAgentShellTracker {
 				}
 				if (signal.movedToBackground !== undefined) {
 					shell.movedToBackground = signal.movedToBackground;
+				}
+				if (signal.ownerAgentId !== undefined) {
+					shell.ownerAgentId = signal.ownerAgentId;
 				}
 				if (existing === undefined) {
 					this.shells.set(signal.taskId, shell);
