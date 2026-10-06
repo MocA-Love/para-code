@@ -62,6 +62,28 @@ const CLAUDE_READY_AUTO_MODE = [
 	'\u2500'.repeat(40),
 	'  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents',
 ].join('\n');
+// codex-cli 0.160.0 の Plan メニューと更新の案内（Orca、MIT License、Copyright (c) 2026 Lovecast Inc. の
+// 録画を描いた画面の末尾）
+const CODEX_PLAN_MENU = [
+	'  Implement this plan?',
+	'',
+	'\u203a 1. Yes, implement this plan          Switch to Default and start coding',
+	'  2. Yes, clear context and implement  Start a fresh thread (current context: 2% used)',
+	'  3. No, stay in Plan mode             Continue planning with the model',
+	'',
+	`  ${words('enter', 'select', '\u00b7', 'esc', 'back')}`,
+].join('\n');
+const CODEX_UPDATE_NOTICE = [
+	'\u203a Ask Codex to do anything',
+	'',
+	'  Update available \u00b7 0.159.0 \u2192 0.160.0',
+	'',
+	'\u203a 1. Update now (runs `npm install -g @openai/codex`)',
+	'  2. Skip',
+	'  3. Skip until next version',
+	'',
+	`  ${words('enter', 'continue', '\u00b7', 'esc', 'skip')}`,
+].join('\n');
 const CLAUDE_READY = [
 	'\u256d\u2500\u2500\u256e',
 	'\u2502 \u276f  \u2502',
@@ -318,6 +340,64 @@ suite('ParadisAgentIdeToolProvider', () => {
 		launched.state.launchedAt = launched.clock.time;
 		const refused = text(await launched.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: 'go', press_enter: false }, undefined, launched.context));
 		assert.deepStrictEqual({ typed: typed.isError, refused: refused.isError }, { typed: false, refused: true });
+	});
+
+	test('a Codex menu after the turn (Plan mode) or at startup (update notice) is reported as waiting for a choice, and nothing is sent to it', async () => {
+		// Plan メニューは Stop hook の後に描かれる。止まったと見えた直後にもう一度画面を見る
+		const plan = setup({ actionsEnabled: false });
+		let polls = 0;
+		plan.clock.onSleep = () => {
+			polls++;
+			if (polls === 1) {
+				plan.statuses.set(TARGET, { status: 'working', changedAt: plan.clock.time });
+			} else if (polls === 2) {
+				plan.statuses.set(TARGET, { status: 'review', changedAt: plan.clock.time });
+			} else {
+				plan.state.screen = CODEX_PLAN_MENU;
+			}
+		};
+		const stopped = JSON.parse(text(await plan.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, plan.context)).body);
+
+		const send = setup();
+		send.statuses.set(TARGET, { status: 'review', changedAt: send.clock.time });
+		send.state.screen = CODEX_PLAN_MENU;
+		const enter = text(await send.provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'enter' }, undefined, send.context));
+		const down = text(await send.provider.callTool(CALLER, 'send_terminal_key', { terminal: 't_1', key: 'down' }, undefined, send.context));
+		const digit = text(await send.provider.callTool(CALLER, 'send_terminal_input', { terminal: 't_1', text: '1', press_enter: false }, undefined, send.context));
+		const needsInput = JSON.parse(text(await send.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'needs_input' }, undefined, send.context)).body);
+
+		// 更新の案内の上に入力欄の案内が残っていても、準備完了とは言わない
+		const update = setup({ actionsEnabled: false });
+		update.hookTokens.clear();
+		update.state.launchedAt = update.clock.time;
+		update.state.launchedIdle = true;
+		update.state.screen = CODEX_UPDATE_NOTICE;
+		const startup = JSON.parse(text(await update.provider.callTool(CALLER, 'wait_for_terminal', { terminal: 't_1', until: 'agent_stopped' }, undefined, update.context)).body);
+
+		assert.deepStrictEqual({
+			stopped: { met: stopped.met, reason: stopped.reason, status: stopped.status, menu: stopped.choice_menu, asksUser: stopped.hint.includes('ask the user') },
+			refused: [enter, down, digit].map(result => ({ isError: result.isError, names: result.body.includes('Implement this plan?') })),
+			sent: ops(send.calls),
+			needsInput: { met: needsInput.met, reason: needsInput.reason, kind: needsInput.choice_menu.kind },
+			startup: { met: startup.met, reason: startup.reason, status: startup.status, kind: startup.choice_menu.kind, selected: startup.choice_menu.options[startup.choice_menu.selected] },
+		}, {
+			stopped: {
+				met: true,
+				reason: 'needs_choice',
+				status: 'waiting_for_choice',
+				menu: {
+					kind: 'plan_implement',
+					title: 'Implement this plan?',
+					options: ['Yes, implement this plan - Switch to Default and start coding', 'Yes, clear context and implement - Start a fresh thread (current context: 2% used)', 'No, stay in Plan mode - Continue planning with the model'],
+					selected: 0,
+				},
+				asksUser: true,
+			},
+			refused: [{ isError: true, names: true }, { isError: true, names: true }, { isError: true, names: true }],
+			sent: ['resolveWriteTarget', 'resolveWriteTarget', 'resolveWriteTarget', 'probeTerminal'],
+			needsInput: { met: true, reason: 'needs_choice', kind: 'plan_implement' },
+			startup: { met: true, reason: 'needs_choice', status: 'waiting_for_choice', kind: 'update', selected: 'Update now (runs `npm install -g @openai/codex`)' },
+		});
 	});
 
 	test('an agent launched without a prompt is reported ready once its input box shows', async () => {
