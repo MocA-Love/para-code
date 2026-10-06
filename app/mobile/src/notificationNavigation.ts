@@ -40,6 +40,26 @@ export function readNotificationInteractionId(request: { readonly content: { rea
 	return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
 }
 
+/**
+ * タップで開いた通知を「見た」ことにして、ほかの端末からも消してよいか（Q241 A）。完了・エラーだけで、許可・質問は
+ * 回答で消えるので undefined。通知 ID が無い（古い通知）ときも undefined。
+ */
+export function readNotificationSeenOnTap(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): string | undefined {
+	const data = readTrayData(request);
+	const kind = data?.['kind'];
+	const notifyId = data?.['notifyId'];
+	if (kind !== 'agent-done' && kind !== 'agent-error') {
+		return undefined;
+	}
+	return typeof notifyId === 'string' && notifyId.length > 0 && notifyId.length <= 200 ? notifyId : undefined;
+}
+
+/** 通知の ID（通知のボタンで答えたあと、ほかの端末から消すため）。 */
+export function readNotificationId(request: { readonly content: { readonly data?: unknown }; readonly trigger?: unknown }): string | undefined {
+	const value = readTrayData(request)?.['notifyId'];
+	return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
 export type NotificationNavigationDecision = 'wait' | 'open' | 'missing';
 
 /** 不完全なmulti-window stateでは通知先の不存在を確定しない。 */

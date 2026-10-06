@@ -35,8 +35,8 @@ import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, registerNotificationCategories, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
-import { notifyCollapseKey } from './notificationTray.js';
+import { configureNotificationHandler, registerNotificationCategories, createAgentSendOutboxStore, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, dismissPresentedNotifications, ensureNotificationPermission, getApnsDeviceToken, listPresentedNotifications, migrateLegacyTerminalOperationOutbox, persistNotifyKey, rnSocketFactory, secureKeyStore } from './platform.js';
+import { notifyCollapseKey, selectSeenOnOpen } from './notificationTray.js';
 import { TrayReconcileRequests, dismissTrayHandledByPc, presentCollapsedNotification, reconcileTrayWithState } from './notificationTraySync.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { subscribeNetworkRevival } from './networkRevival.js';
@@ -55,6 +55,7 @@ import { appLinkMetrics } from './linkMetricsRuntime.js';
 import { usePcListView } from './features/pc/pcListViewStore.js';
 import { buildLastKnownSnapshot, openLastKnownSnapshot, sameLastKnownContent, type LastKnownPcSnapshot } from './lastKnownPcs.js';
 import { lastKnownPcStorage, lastKnownPcWriter } from './lastKnownPcStore.js';
+import { notifyDismissOutboxStorage } from './notifyDismissOutboxStore.js';
 import { connectionLog } from './connectionLogStore.js';
 import { BackgroundGrace, type BackgroundGraceTarget } from './backgroundGrace.js';
 import type { DiagnosticPc } from './connectionDiagnostics.js';
@@ -292,6 +293,13 @@ interface AppState extends StoreState {
 	clearNotifications(): void;
 	/** 通知一覧から単一項目を消す（項目タップで遷移した時）。他端末の一覧にも同期される。 */
 	dismissNotification(id: string): void;
+	/**
+	 * その PC の通知を、この端末で見た（バナーのタップで開いた・通知のボタンで答えた。Q241 A）。ほかの端末からも消える。
+	 * 完了・エラーか、答えた許可・質問だけを渡すこと。`pcId` が無ければいま見ている PC。
+	 */
+	markNotificationSeen(pcId: string | undefined, id: string): void;
+	/** いま見ている PC のそのエージェントのトークを開いた。完了・エラーの通知を見たことにする（Q241 A）。 */
+	markAgentNotificationsSeen(terminalKey: string): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。成立したPCへ切り替わる。 */
@@ -897,6 +905,16 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 	// PCが「処理済み」と知らせてきた通知は、通知センター（ロック画面）からも消す（W2-02）。
 	controller.onNotifyHandled = handled => {
 		dismissTrayHandledByPc(pc.id, handled).catch(err => console.warn('[appState] failed to clear handled notifications', err));
+	};
+	// 「見た」通知の預かりと、PC の片付けの台帳の同期の印をファイルに残す（Q242 A）。読み込みの後に、書き込みを直列に並べる。
+	// 書く中身は書く時点のもの（読み込みより前に起きた変化も、取り込んだ後の全体で書く）。
+	let notifyDismissWrites = notifyDismissOutboxStorage.read(pc.id)
+		.then(raw => controller.restoreNotifyDismissOutbox(raw))
+		.catch(err => console.warn('[appState] failed to read the notification dismiss outbox', err));
+	controller.onNotifyDismissOutboxChanged = () => {
+		notifyDismissWrites = notifyDismissWrites
+			.then(() => notifyDismissOutboxStorage.write(pc.id, controller.serializedNotifyDismissOutbox()))
+			.catch(err => console.warn('[appState] failed to save the notification dismiss outbox', err));
 	};
 	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, lastKnown: undefined, started: false, drafts: {} };
 	// その PC を名指しした購読は、ペアリングし直しで作り直したコントローラへも付け直す。
@@ -1871,6 +1889,7 @@ export const useAppStore = create<AppState>(set => ({
 		// 前回の一覧（スペース名が入る）も残さない。
 		void lastKnownPcWriter.forget(id);
 		void connectionLog.forget(id);
+		void notifyDismissOutboxStorage.remove(id).catch(err => console.warn('[appState] failed to forget the notification dismiss outbox', err));
 		// 使用量の最後の値（アカウントのメール・コストが入る）も、その PC と SSH の接続先の分を消す。
 		void forgetUsagePc(id).catch(err => console.warn('[appState] failed to forget the usage values', err));
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
@@ -2268,6 +2287,34 @@ export const useAppStore = create<AppState>(set => ({
 
 	dismissNotification(id: string) {
 		controller?.dismissNotification(id);
+	},
+
+	markNotificationSeen(pcId: string | undefined, id: string) {
+		const target = pcId === undefined || pcId === activePcId ? controller : runtimes.get(pcId)?.controller;
+		target?.markNotificationSeen(id);
+	},
+
+	markAgentNotificationsSeen(terminalKey: string) {
+		const pcId = activePcId;
+		const target = controller;
+		// 裏にいる間（画面は開いたまま）に届いた通知は見ていない
+		if (pcId === undefined || target === undefined || RNAppState.currentState !== 'active') {
+			return;
+		}
+		const agentToken = useAppStore.getState().workspace?.terminals.find(terminal => terminal.terminalKey === terminalKey)?.agentToken;
+		for (const id of target.settledNotificationIdsFor(terminalKey, agentToken)) {
+			target.markNotificationSeen(id);
+		}
+		// 通知センターに残っている分（プッシュだけで届いた・アプリを落とす前の通知）も、この端末から消して PC へ伝える。
+		void listPresentedNotifications().then(async presented => {
+			const seen = selectSeenOnOpen(presented, { pcId, terminalKey, agentToken });
+			for (const id of seen.notifyIds) {
+				target.markNotificationSeen(id);
+			}
+			if (seen.identifiers.length > 0) {
+				await dismissPresentedNotifications(seen.identifiers);
+			}
+		}).catch(err => console.warn('[appState] failed to clear seen notifications', err));
 	},
 
 	scmStatus(ws: string) {

@@ -73,7 +73,8 @@ import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNoti
 import { PARADIS_NOTIFY_DETAIL_MAX_CHARS, paradisComposeNotifyVariants, paradisFitNotifyBytesForPush, paradisLegacyNotifySubtitle, paradisNotifyTabLabel } from '../common/paradisNotifyCompose.js';
 import { ParadisNotifyHookLedger, paradisResolveNotifyContent } from './paradisNotifyContentSource.js';
 import { decodeNotifyVisibility, encodeNotifyVisibilityAck } from '../common/paradisMobileVisibility.js';
-import { ParadisNotifyDismissLedger, paradisNotifyDismissOpened, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { paradisDecodeNotifyDismissSync, paradisEncodeNotifyDismissLog, paradisNotifyDismissOpened, paradisNotifyInteractionId, paradisWithNotifyDismiss } from '../common/paradisNotifyDismissLedger.js';
+import { ParadisNotifyDismissStore, paradisNotifyDismissFileHost } from './paradisNotifyDismissStore.js';
 import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../common/paradisMobileBackgroundGrace.js';
 import { ParadisPushOutbox } from '../common/paradisPushOutbox.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
@@ -1012,6 +1013,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			warn: (message, error) => this.logService.warn(message, error),
 		});
 		this._register(toDisposable(() => this.pushOutbox.dispose()));
+		this.dismissStore = this._register(new ParadisNotifyDismissStore(paradisNotifyDismissFileHost(
+			join(this.userDataPath, 'paradis-mobile-notify-dismiss.json'),
+			(message, error) => this.logService.warn(message, error),
+		)));
+		// どこかで許可・質問に答えた（PC のターミナル・スマホ・通知のボタン）。全部のスマホの一覧と通知センターから消す。
+		this._register(this.dismissStore.onDidAnswer(ids => this.broadcastNotifyDismissed(ids, undefined)));
 		// エージェントセッション対応表の永続化先。shared process再起動（=PC再起動・アップデート）を
 		// またいで、実行中エージェントのモバイル表示を復元するために使う。
 		const agentSessionStore = new ParadisAgentSessionStore(join(this.userDataPath, 'paradis-agent-sessions.json'), this.logService);
@@ -1725,8 +1732,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** 通知の中身の出どころ（hook の最後の発言・失敗の理由・承認の中身。`paradisNotifyContentSource.ts`）。 */
 	private readonly notifyHookLedger = this._register(new ParadisNotifyHookLedger());
 
-	/** 出した通知と、片付いた通知（W2-27。次のプッシュでロック画面から消してもらう）。 */
-	private readonly dismissLedger = new ParadisNotifyDismissLedger();
+	/**
+	 * 出した通知と、片付いた通知（W2-27。次のプッシュでロック画面から消してもらう）。ディスクに残し、繋がったスマホへ
+	 * 番号より後の片付けを返す（Q242 A。`paradisNotifyDismissStore.ts`）。
+	 */
+	private readonly dismissStore: ParadisNotifyDismissStore;
+	private get dismissLedger() {
+		return this.dismissStore.ledger;
+	}
 
 	/** 裏に回ったスマホの期限（W2-34）と、裏に回る直前に信用してプッシュしなかった通知。 */
 	private readonly backgroundSessions = new ParadisBackgroundSessionWatch();
@@ -1781,7 +1794,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const meta = peekNotifyMeta(fullBytes);
 		const pcFocused = this.pcFocused;
 		if (meta.id !== undefined) {
-			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now);
+			this.dismissLedger.record(meta.id, meta.agentToken, meta.kind, now, paradisNotifyInteractionId(fullBytes));
+			this.dismissStore.changed();
 		}
 		// 次のプッシュで消してもらう、片付いた通知（W2-27）。どのスマホにも同じ一覧を載せる（印は鍵ごとに作る）。
 		const dismissIds = this.dismissLedger.dismissable(now, meta.id);
@@ -2105,18 +2119,42 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private handleNotifyDismiss(fromMobileId: string, notifyId: string, opened: boolean): void {
 		// 取り置きからも外す。残すと、あとで繋がったときに処理済みの通知が未読として蘇る。
 		this.missedNotify.drop({ id: notifyId });
-		// 裏にいるスマホのロック画面からは、次のプッシュで消してもらう（W2-27）。
-		this.dismissLedger.markDismissed(notifyId, Date.now(), opened);
-		const bytes = encodeNotifyDismissed(notifyId);
+		// 裏にいるスマホのロック画面からは、次のプッシュで消してもらう（W2-27）。繋がっていないスマホは、
+		// 次に繋がったときの同期（dismiss-sync）で消す（Q242 A）。
+		if (this.dismissLedger.markDismissed(notifyId, Date.now(), opened).length > 0) {
+			this.dismissStore.changed();
+		}
+		this.broadcastNotifyDismissed([notifyId], fromMobileId);
+	}
+
+	/** 片付いた通知を、繋がっているスマホへ知らせる（`except` は知らせてきた端末）。 */
+	private broadcastNotifyDismissed(ids: readonly string[], except: string | undefined): void {
+		for (const id of ids) {
+			this.missedNotify.drop({ id });
+		}
 		for (const mobile of this.state.mobiles) {
-			if (mobile.mobileId === fromMobileId) {
+			if (mobile.mobileId === except) {
 				continue;
 			}
 			const session = this.sessions.get(mobile.mobileId);
 			if (session?.hasCurrentProtocol) {
-				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify dismiss forward failed', err));
+				for (const id of ids) {
+					session.sendFrame(Channels.Notify, undefined, encodeNotifyDismissed(id)).catch(err => this.logService.warn('[paradisMobileRelay] notify dismiss forward failed', err));
+				}
 			}
 		}
+	}
+
+	/**
+	 * 繋がったスマホが、最後に受け取った片付けの番号を送ってきた（notify.dismiss-sync.v1）。それより後の片付けを返す。
+	 * スマホが繋がっていなかった間に片付いた通知を、一覧と通知センターから消してもらう（Q242 A）。
+	 */
+	private async handleNotifyDismissSync(mobileId: string, session: MobileSession, ledger: string | undefined, after: number): Promise<void> {
+		await this.dismissStore.ready;
+		if (this.sessions.get(mobileId) !== session || !session.hasCurrentProtocol) {
+			return;
+		}
+		await session.sendFrame(Channels.Notify, undefined, paradisEncodeNotifyDismissLog(this.dismissLedger.since(ledger, after)));
 	}
 
 	/**
@@ -2129,7 +2167,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// PCで確認済みにした分は、まだ届けていない取り置きからも外す。
 		this.missedNotify.drop({ agentToken: token });
 		// 確認より前に出した同じエージェントの通知は、次のプッシュでロック画面から消してもらう（W2-27）。
-		this.dismissLedger.markAcknowledged(token, Date.now());
+		if (this.dismissLedger.markAcknowledged(token, Date.now()).length > 0) {
+			this.dismissStore.changed();
+		}
 		const bytes = encodeNotifyDismissedByToken(token);
 		for (const mobile of this.state.mobiles) {
 			const session = this.sessions.get(mobile.mobileId);
@@ -3770,6 +3810,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						const control = decodeNotifyControl(frame.payload.buffer);
 						if (control?.t === 'dismiss') {
 							this.handleNotifyDismiss(idStr, control.id, paradisNotifyDismissOpened(frame.payload.buffer));
+							return;
+						}
+						const dismissSync = paradisDecodeNotifyDismissSync(frame.payload.buffer);
+						if (dismissSync !== undefined) {
+							this.handleNotifyDismissSync(idStr, session!, dismissSync.ledger, dismissSync.after)
+								.catch(err => this.logService.warn('[paradisMobileRelay] notify dismiss sync failed', err));
 							return;
 						}
 						this.handleNotifyPrefs(idStr, frame.payload.buffer);

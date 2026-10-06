@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyDismissLog, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyDismissSync, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { FsRequestTimings } from './fsRequestTiming.js';
@@ -16,6 +16,7 @@ import { terminalViewportEquals, type TerminalViewport } from './terminalViewpor
 import { isValidPresetDef } from './presets.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type RelayConnectionEvent, type SocketFactory } from './relayClient.js';
 import { reuseWorkspaceState } from './workspaceIdentity.js';
+import { EMPTY_NOTIFY_DISMISS_OUTBOX, addNotifyDismissOutbox, parseNotifyDismissOutbox, removeNotifyDismissOutbox, serializeNotifyDismissOutbox, type NotifyDismissOutboxState } from './notifyDismissOutbox.js';
 import { ResumeFrameBuffer } from './resumeFrameBuffer.js';
 import type { RelayWindowHost } from './relayHosts.js';
 import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
@@ -1939,6 +1940,13 @@ export class MobileController {
 	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean; includeContent: boolean } | undefined;
 	private readonly pendingNotificationDismissals = new Set<string>();
 	/**
+	 * 片付けの預かり（PC が受け取ったと分かっていないもの）と、PC の片付けの台帳をどこまで受け取ったかの印
+	 * （Q241 A・Q242 A。`notifyDismissOutbox.ts`）。appState がファイルへ残す（{@link onNotifyDismissOutboxChanged}）。
+	 */
+	private notifyDismissOutbox: NotifyDismissOutboxState = EMPTY_NOTIFY_DISMISS_OUTBOX;
+	/** 片付けの預かりと同期の印が変わった（中身はファイルへそのまま書く文字列）。 */
+	onNotifyDismissOutboxChanged: (() => void) | undefined;
+	/**
 	 * 消した通知を PC へどう伝えるか（W2-27）。`opened` は ID で指定して開いた・消した（PC はほかの端末の
 	 * ロック画面からも消してよい）。`local` は「すべて消去」で消した許可・質問で、PC へは伝えない
 	 * （ほかの端末では未回答のまま残す）。無ければ `opened` を付けずに伝える。
@@ -2370,6 +2378,7 @@ export class MobileController {
 			this.state.notifications = [];
 			this.pendingNotificationDismissals.clear();
 			this.notificationDismissalModes.clear();
+			this.setNotifyDismissOutbox(EMPTY_NOTIFY_DISMISS_OUTBOX);
 			this.state.browserFrame = undefined;
 			this.state.browserPage = undefined;
 			this.state.browserFocus = undefined;
@@ -3229,6 +3238,71 @@ export class MobileController {
 		}
 		for (const id of this.pendingNotificationDismissals) {
 			this.sendNotificationDismissal(id);
+		}
+		// 預かりを送った後に同期を頼む（返事に自分の片付けが載れば、PC が受け取ったと分かる）。
+		this.sendNotifyDismissSync();
+	}
+
+	/**
+	 * PC の片付けの台帳のうち、最後に受け取った番号より後を頼む（notify.dismiss-sync.v1。持っていない PC には送らない）。
+	 * つながっていなかった間に、ほかの端末や PC で片付いた通知を一覧と通知センターから消すため（Q242 A）。
+	 */
+	private sendNotifyDismissSync(): void {
+		if (this.hasPcCapability(PcCapability.NotifyDismissSync)) {
+			this.client?.send('notify', encodeNotifyDismissSync(this.notifyDismissOutbox.cursor));
+		}
+	}
+
+	/**
+	 * ファイルから読んだ預かりと同期の印を取り込む（起動時に 1 回。appState が呼ぶ）。読み込みより前に預かったものは残す。
+	 * 取り込んだ預かりは、つながっていればすぐ送る（次につながったときにも送り直す）。
+	 */
+	restoreNotifyDismissOutbox(raw: string | null): void {
+		const restored = parseNotifyDismissOutbox(raw, Date.now());
+		let next: NotifyDismissOutboxState = { cursor: this.notifyDismissOutbox.cursor ?? restored.cursor, entries: restored.entries };
+		for (const entry of this.notifyDismissOutbox.entries) {
+			next = addNotifyDismissOutbox(next, entry);
+		}
+		this.notifyDismissOutbox = next;
+		for (const entry of restored.entries) {
+			if (this.pendingNotificationDismissals.has(entry.id)) {
+				continue;
+			}
+			this.rememberNotificationDismissal(entry.id, entry.opened ? 'opened' : undefined, { restoring: true });
+			if (this.isLiveAvailable()) {
+				this.sendNotificationDismissal(entry.id);
+			}
+		}
+		this.onNotifyDismissOutboxChanged?.();
+	}
+
+	/** 片付けの預かりと同期の印の、ファイルへ書く中身（いまの全体）。 */
+	serializedNotifyDismissOutbox(): string {
+		return serializeNotifyDismissOutbox(this.notifyDismissOutbox);
+	}
+
+	private setNotifyDismissOutbox(next: NotifyDismissOutboxState): void {
+		if (next === this.notifyDismissOutbox) {
+			return;
+		}
+		this.notifyDismissOutbox = next;
+		this.onNotifyDismissOutboxChanged?.();
+	}
+
+	/** PC の片付けを一覧と通知センターに反映する（`dismissed`・`dismiss-log` の共通部分）。 */
+	private applyPcDismissals(ids: readonly string[]): void {
+		if (ids.length === 0) {
+			return;
+		}
+		for (const id of ids) {
+			this.pendingNotificationDismissals.delete(id);
+		}
+		this.setNotifyDismissOutbox(removeNotifyDismissOutbox(this.notifyDismissOutbox, ids));
+		this.onNotifyHandled?.({ ids, tokens: [] });
+		const done = new Set(ids);
+		if (this.state.notifications.some(n => done.has(n.id))) {
+			this.state.notifications = this.state.notifications.filter(n => !done.has(n.id));
+			this.emit({ notifications: true });
 		}
 	}
 
@@ -4278,15 +4352,46 @@ export class MobileController {
 	 * 他のペアリング済み端末の一覧からも同じ項目を消す（notifyチャネル M→PC→他M）。
 	 */
 	dismissNotification(id: string): void {
-		if (!this.state.notifications.some(n => n.id === id)) {
+		const notification = this.state.notifications.find(n => n.id === id);
+		if (notification === undefined) {
 			return;
 		}
 		this.state.notifications = this.state.notifications.filter(n => n.id !== id);
 		this.emit({ notifications: true });
+		// 許可・質問は開いただけでは片付けない（Q241 A。答えずに閉じても、ほかの端末に残す）。回答が成立したら PC が片付ける。
+		// 回答で片付けられない旧 PC には、今までどおり開いたことを伝える。
+		const promptKeptElsewhere = notification.kind === 'agent-question' && this.hasPcCapability(PcCapability.NotifyDismissSync);
+		this.rememberNotificationDismissal(id, promptKeptElsewhere ? 'local' : 'opened');
+		if (this.isLiveAvailable()) {
+			this.sendNotificationDismissal(id);
+		}
+	}
+
+	/**
+	 * この端末でその通知を見た（バナー・ロック画面の通知のタップで開いた、トークを開いた、通知のボタンで答えた）ことを
+	 * PC へ伝え、ほかの端末からも消してもらう（Q241 A）。一覧に無い通知（プッシュだけで届いた・アプリを落とした後）でも
+	 * 送る。つながっていなければ預かって、つながったら送る。完了・エラーか、回答した許可・質問だけを渡すこと。
+	 */
+	markNotificationSeen(id: string): void {
+		if (this.state.notifications.some(n => n.id === id)) {
+			this.state.notifications = this.state.notifications.filter(n => n.id !== id);
+			this.emit({ notifications: true });
+		}
+		if (this.notificationDismissalModes.get(id) === 'opened' && !this.notifyDismissOutbox.entries.some(entry => entry.id === id)) {
+			return; // もう伝えて、PC が受け取ったと分かっている
+		}
 		this.rememberNotificationDismissal(id, 'opened');
 		if (this.isLiveAvailable()) {
 			this.sendNotificationDismissal(id);
 		}
+	}
+
+	/** 一覧にある、そのエージェントの完了・エラーの通知 ID（トークを開いたときに見たことにする）。 */
+	settledNotificationIdsFor(terminalKey: string, agentToken: string | undefined): string[] {
+		return this.state.notifications
+			.filter(n => (n.kind === 'agent-done' || n.kind === 'agent-error')
+				&& (n.terminalKey === terminalKey || (agentToken !== undefined && n.agentToken === agentToken)))
+			.map(n => n.id);
 	}
 
 	private sendNotificationDismissal(id: string): void {
@@ -4301,13 +4406,19 @@ export class MobileController {
 	 * PCは送信元へは `dismissed` を返さないのでこの記録は自然には減らない。再接続のたびに
 	 * 全件送り直す作りなので、際限なく増えないよう古い順に落とす。
 	 */
-	private rememberNotificationDismissal(id: string, mode?: 'opened' | 'local'): void {
+	private rememberNotificationDismissal(id: string, mode?: 'opened' | 'local', options?: { readonly restoring?: boolean }): void {
 		this.pendingNotificationDismissals.delete(id);
 		this.pendingNotificationDismissals.add(id);
 		if (mode !== undefined) {
 			this.notificationDismissalModes.set(id, mode);
 		} else {
 			this.notificationDismissalModes.delete(id);
+		}
+		// PC へ伝えるものは、受け取ったと分かるまでファイルにも預ける（アプリを落としても送り直す）。
+		if (options?.restoring !== true) {
+			this.setNotifyDismissOutbox(mode === 'local'
+				? removeNotifyDismissOutbox(this.notifyDismissOutbox, [id])
+				: addNotifyDismissOutbox(this.notifyDismissOutbox, { id, opened: mode === 'opened', at: Date.now() }));
 		}
 		while (this.pendingNotificationDismissals.size > MAX_PENDING_NOTIFICATION_DISMISSALS) {
 			const oldest = this.pendingNotificationDismissals.values().next();
@@ -5128,23 +5239,25 @@ export class MobileController {
 				}
 				return;
 			}
+			// PC の片付けの台帳の、前に受け取った番号より後（notify.dismiss-sync.v1。Q242 A）。
+			const dismissLog = decodeNotifyDismissLog(frame.payload);
+			if (dismissLog !== undefined) {
+				this.applyPcDismissals(dismissLog.ids);
+				this.setNotifyDismissOutbox({ cursor: { ledger: dismissLog.ledger, seq: dismissLog.seq }, entries: this.notifyDismissOutbox.entries });
+				return;
+			}
 			const control = decodeNotifyControl(frame.payload);
 			if (control?.t === 'dismissed') {
-				this.pendingNotificationDismissals.delete(control.id);
-				this.onNotifyHandled?.({ ids: [control.id], tokens: [] });
-				// 他端末がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
-				if (this.state.notifications.some(n => n.id === control.id)) {
-					this.state.notifications = this.state.notifications.filter(n => n.id !== control.id);
-					this.emit({ notifications: true });
-				}
+				// 他端末・PC がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
+				this.applyPcDismissals([control.id]);
 				return;
 			}
 			if (control?.t === 'dismissed-token') {
 				this.onNotifyHandled?.({ ids: [], tokens: [control.token] });
-				// PC自身がそのエージェント(agentToken)のペインを確認済みにした。
-				// 同じagentTokenを持つ通知は全てまとめて一覧から消す。
-				if (this.state.notifications.some(n => n.agentToken === control.token)) {
-					this.state.notifications = this.state.notifications.filter(n => n.agentToken !== control.token);
+				// PC自身がそのエージェント(agentToken)のペインを確認済みにした。同じagentTokenを持つ通知をまとめて一覧から消す。
+				// 許可・質問は残す（Q243 A。PC で見ただけでは片付けず、回答が成立したら PC が ID で知らせる）。
+				if (this.state.notifications.some(n => n.agentToken === control.token && n.kind !== 'agent-question')) {
+					this.state.notifications = this.state.notifications.filter(n => n.agentToken !== control.token || n.kind === 'agent-question');
 					this.emit({ notifications: true });
 				}
 				return;
