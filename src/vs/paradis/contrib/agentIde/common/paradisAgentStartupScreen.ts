@@ -18,6 +18,8 @@
 // これまでどおり hook の状態だけで判断する（誤って当たる方向には倒さない: 複数の文言がそろったとき
 // だけ当てる）。
 
+import { paradisAgentChoiceMenu } from './paradisAgentChoiceMenu.js';
+
 /** 画面から読める起動時の状態。 */
 export type ParadisAgentStartupScreenState =
 	/** フォルダを信頼するかの確認で止まっている（利用者しか答えられない）。 */
@@ -42,6 +44,11 @@ interface IParadisAgentStartupScreenRule {
 	readonly noneOf?: readonly RegExp[];
 	/** 中身の無い入力欄（横罫線のすぐ下に、`❯` だけか `❯ Try "…"` の案内だけの行）が見えているときだけ当てる。 */
 	readonly emptyPromptBox?: boolean;
+	/**
+	 * 行頭に `›` のある行のうち、画面で最後のものがこれに当たるときだけ当てる（空白を落とした形）。
+	 * Codex の更新の案内は入力欄の下に `› 1. Update now` を出すので、入力欄の案内が残っていても当てない。
+	 */
+	readonly lastPromptLine?: RegExp;
 }
 
 /** 信頼の確認の見出し（空白と罫線を落とした形）。準備完了の判定から外すために使う。 */
@@ -51,6 +58,12 @@ const TRUST_DIALOG_HEADERS: readonly RegExp[] = [
 	// codex-cli 0.159.2 の本文。信頼する画面・制限付きで開く画面・既存のタスクを開く画面の3通り
 	/Trustthisfolder\?Codexcanread|Config,hooks,andexecpoliciesfromuntrustedfoldersstaydisabled\.|Thisexistingtaskmayretainsettings/,
 ];
+
+/**
+ * Codex の起動時の選択画面の文言（空白と罫線を落とした形）。更新の案内の見出し・キーの行・選択肢と、hooks の
+ * 確認の見出し。準備完了の判定から外すために使う（codex-cli 0.158.0 / 0.160.0）。
+ */
+const CODEX_CHOICE_SCREEN_TEXT = /Updateavailable\u00b7|entercontinue\u00b7escskip|Skipuntilnextversion|Hooksneedreview/;
 
 /**
  * 判定の表。上から順に見て、最初に当たったものを返す（信頼の確認を先に置く）。
@@ -107,12 +120,15 @@ export const PARADIS_AGENT_STARTUP_SCREEN_RULES: readonly IParadisAgentStartupSc
 		emptyPromptBox: true,
 	},
 	{
-		// 空の入力欄の案内「Ask Codex to do anything」。
+		// 空の入力欄の案内「Ask Codex to do anything」。起動時の更新の案内などの選択画面が出ている間は、
+		// その上に入力欄の案内が残っていても準備完了と言わない（入力欄が画面の最後の `›` の行であること、
+		// 選択画面の文言が無いこと、paradisAgentChoiceMenu が当たらないことを条件にする）
 		agent: 'codex',
 		state: 'ready',
-		observedIn: 'codex-cli 0.155.1',
+		observedIn: 'codex-cli 0.155.1 / 0.160.0',
 		allOf: [/AskCodextodoanything/],
-		noneOf: TRUST_DIALOG_HEADERS,
+		noneOf: [...TRUST_DIALOG_HEADERS, CODEX_CHOICE_SCREEN_TEXT],
+		lastPromptLine: /^\u203aAskCodextodoanything$/,
 	},
 ];
 
@@ -147,6 +163,17 @@ function showsChoicePair(lines: readonly string[], [first, second]: readonly [Re
 	return false;
 }
 
+/** 行頭に `›`（U+203A）のある行のうち、最後のもの（空白を落とした形）。 */
+function lastPromptLine(lines: readonly string[]): string | undefined {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index].replace(/^[\s\u2500-\u257f]+/, '');
+		if (line.startsWith('\u203a')) {
+			return compactScreen(line);
+		}
+	}
+	return undefined;
+}
+
 /** 横罫線（U+2500 が 8 文字以上）のすぐ下（空行は飛ばす）に、`❯` だけ（か入力例の案内だけ）の行があるか。 */
 function showsEmptyPromptBox(lines: readonly string[]): boolean {
 	const filled = lines.map(line => line.trim()).filter(line => line.length > 0);
@@ -175,7 +202,9 @@ export function paradisAgentStartupScreenState(screen: string | undefined): Para
 		if (rule.allOf.every(pattern => pattern.test(tail))
 			&& !(rule.noneOf ?? []).some(pattern => pattern.test(tail))
 			&& (rule.choices === undefined || showsChoicePair(lines, rule.choices))
-			&& (rule.emptyPromptBox !== true || showsEmptyPromptBox(lines))) {
+			&& (rule.emptyPromptBox !== true || showsEmptyPromptBox(lines))
+			&& (rule.lastPromptLine === undefined || rule.lastPromptLine.test(lastPromptLine(lines) ?? ''))
+			&& (rule.state !== 'ready' || paradisAgentChoiceMenu(screen) === undefined)) {
 			return rule.state;
 		}
 	}

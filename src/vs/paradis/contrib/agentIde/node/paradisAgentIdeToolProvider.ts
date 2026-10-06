@@ -35,12 +35,14 @@ import {
 	ParadisAgentIdeTerminalStatus,
 	ParadisAgentIdeWaitCondition,
 	ParadisAgentStopWatcher,
+	paradisAgentIdeChoiceMenuOf,
 	paradisAgentIdeNeedsHuman,
 	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisParseAgentIdeCall,
 } from '../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS, paradisAgentIdeGuide } from '../common/paradisAgentIdeGuide.js';
+import { IParadisAgentChoiceMenu, paradisAgentChoiceMenuMessage } from '../common/paradisAgentChoiceMenu.js';
 import { PARADIS_AGENT_TRUST_DIALOG_MESSAGE, paradisAgentStartupScreenState } from '../common/paradisAgentStartupScreen.js';
 
 /** 設定の読み手（shared process の IConfigurationService を包む。テストでは差し替える）。 */
@@ -82,6 +84,11 @@ const WAIT_POLL_MS = 1_000;
 const WAIT_RESULT_TAIL_LINES = 20;
 /** 貼り付けから Enter までの間（TUI が貼り付けを確定させる時間。モバイルからの送信と同じ）。 */
 const PASTE_SETTLE_MS = 250;
+/**
+ * ターンが終わったと見えてから、もう一度画面を見るまでの間。Codex の Plan メニューは Stop hook の後に
+ * 描かれるので、終わったとすぐに返すと、メニューが出る前の画面で「止まった」と答えてしまう。
+ */
+const STOP_SETTLE_MS = 400;
 
 /** worktree の作成（命名・git worktree add・setup スクリプト）を待つ上限。 */
 const CREATE_SPACE_TIMEOUT_MS = 150_000;
@@ -216,6 +223,11 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (this._showsTrustDialog(target.internal, context)) {
 			return PARADIS_AGENT_TRUST_DIALOG_MESSAGE;
 		}
+		// Codex の選択画面（Plan メニュー・更新の案内など）では、Enter も数字も矢印も選択肢を選ぶ
+		const menu = this._choiceMenuOf(target.internal, context);
+		if (menu !== undefined) {
+			return paradisAgentChoiceMenuMessage(menu);
+		}
 		const status = this._statusOf(target.internal, context);
 		if (paradisAgentIdeNeedsHuman(status)) {
 			return NEEDS_HUMAN_MESSAGE;
@@ -307,7 +319,15 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 	 * 起動直後の信頼の確認は hook が届く前に出るので、画面に出ていれば答え待ちとする。
 	 */
 	private _statusOf(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): ParadisAgentIdeTerminalStatus {
-		return this._showsTrustDialog(internal, context) ? 'waiting_for_permission' : this._reportedStatusOf(internal, context);
+		if (this._showsTrustDialog(internal, context)) {
+			return 'waiting_for_permission';
+		}
+		return this._choiceMenuOf(internal, context) !== undefined ? 'waiting_for_choice' : this._reportedStatusOf(internal, context);
+	}
+
+	/** 前面のエージェントが出している選択画面（Codex の Plan メニュー・更新の案内など）。 */
+	private _choiceMenuOf(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): IParadisAgentChoiceMenu | undefined {
+		return paradisAgentIdeChoiceMenuOf(internal?.screen, internal?.agent, this._reportedStatusOf(internal, context));
 	}
 
 	private _reportedStatusOf(internal: IParadisAgentIdeInternal | undefined, context: IParadisMcpToolCallContext): ParadisAgentIdeTerminalStatus {
@@ -397,8 +417,16 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		let lastScreen: string | undefined;
 		let probedOnce = false;
 		let lastBlockedByTrustDialog = false;
+		let lastMenu: IParadisAgentChoiceMenu | undefined;
+		let stopSettled = false;
 		/** 信頼の確認で止まっているなら、それを返り値に載せる。 */
 		const blockedBy = () => lastBlockedByTrustDialog ? { blocked_by: 'trust_dialog', hint: PARADIS_AGENT_TRUST_DIALOG_MESSAGE } : {};
+		/** 選択画面で止まっているときの返り値。 */
+		const choiceMenu = (menu: IParadisAgentChoiceMenu) => ({
+			reason: 'needs_choice',
+			choice_menu: { kind: menu.kind, ...(menu.title !== undefined ? { title: menu.title } : {}), options: menu.options, ...(menu.selected !== undefined ? { selected: menu.selected } : {}) },
+			hint: paradisAgentChoiceMenuMessage(menu),
+		});
 
 		const report = (met: boolean, extra: object = {}) => toolText({
 			terminal,
@@ -428,11 +456,15 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			lastScreen = probe.internal?.screen;
 			lastStatus = this._statusOf(probe.internal, context);
 			lastBlockedByTrustDialog = this._showsTrustDialog(probe.internal, context);
+			lastMenu = lastBlockedByTrustDialog ? undefined : this._choiceMenuOf(probe.internal, context);
 			const hookStatus = probe.internal?.paneToken !== undefined ? context.getPaneAgentStatus(probe.internal.paneToken) : undefined;
 			const now = this.clock.now();
 
 			switch (until) {
 				case 'needs_input':
+					if (lastMenu !== undefined) {
+						return report(true, choiceMenu(lastMenu));
+					}
 					if (paradisAgentIdeNeedsHuman(lastStatus)) {
 						return report(true, { reason: 'needs_input', ...blockedBy() });
 					}
@@ -452,6 +484,15 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 						stopWatcher = new ParadisAgentStopWatcher(startedAt, grace, probe.internal?.launchedIdle === true);
 					}
 					const verdict = stopWatcher.observe(lastStatus, hookStatus?.changedAt, now, paradisAgentStartupScreenState(lastScreen));
+					if (verdict === 'needs_choice' && lastMenu !== undefined) {
+						return report(true, choiceMenu(lastMenu));
+					}
+					if (verdict === 'stopped' && !stopSettled) {
+						// Plan メニューは Stop hook の後に描かれる。一度だけ少し待って画面を見直す
+						stopSettled = true;
+						await this.clock.sleep(STOP_SETTLE_MS, signal);
+						continue;
+					}
 					if (verdict === 'stopped' || verdict === 'needs_input') {
 						return report(true, { reason: verdict, ...blockedBy() });
 					}

@@ -75,12 +75,14 @@ import {
 	paradisAgentIdeActionsAllowed,
 	paradisAgentIdeKeySequence,
 	paradisAgentIdeMessagePrefix,
+	paradisAgentIdeChoiceMenuOf,
 	paradisAgentIdeNeedsHuman,
 	paradisAgentIdeScreenShowsPrompt,
 	paradisAgentIdeStatusLabel,
 	paradisAgentIdeTailLines,
 	paradisAgentIdeUntrustedTitle,
 } from '../common/paradisAgentIde.js';
+import { IParadisAgentChoiceMenu, paradisAgentChoiceMenuMessage } from '../common/paradisAgentChoiceMenu.js';
 import { PARADIS_AGENT_TRUST_DIALOG_MESSAGE, paradisAgentStartupScreenState } from '../common/paradisAgentStartupScreen.js';
 
 /** 台帳の保存先（ワークスペースの保存領域）。中身はターミナル ID とスペースのキーだけで、トークンは入れない。 */
@@ -406,7 +408,16 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	private _status(terminal: IResolvedTerminal): ParadisAgentIdeTerminalStatus {
 		const status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId));
 		// フォルダの信頼の確認は hook が届く前に出る。利用者の答え待ちとして扱う
-		return this._showsTrustDialog(terminal, status) ? 'waiting_for_permission' : status;
+		if (this._showsTrustDialog(terminal, status)) {
+			return 'waiting_for_permission';
+		}
+		// Codex の選択画面（Plan メニューは Stop hook の後、更新の案内は hook の前に出る）は人の選択待ち
+		return this._choiceMenu(terminal, status) !== undefined ? 'waiting_for_choice' : status;
+	}
+
+	/** 前面のエージェントが出している選択画面（Codex の Plan メニュー・更新の案内など）。 */
+	private _choiceMenu(terminal: IResolvedTerminal, status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId))): IParadisAgentChoiceMenu | undefined {
+		return paradisAgentIdeChoiceMenuOf(this._screen(terminal.instance, 0), this._runsAgent(terminal), status);
 	}
 
 	/**
@@ -687,6 +698,11 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		if (this._showsTrustDialog(target)) {
 			return fail(PARADIS_AGENT_TRUST_DIALOG_MESSAGE);
 		}
+		// Codex の選択画面では、Enter・数字・矢印・Esc のどれもが答えになる
+		const menu = this._choiceMenu(target);
+		if (menu !== undefined) {
+			return fail(paradisAgentChoiceMenuMessage(menu));
+		}
 		if (paradisAgentIdeNeedsHuman(this._status(target))) {
 			return fail(NEEDS_HUMAN);
 		}
@@ -716,6 +732,11 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		// 信頼の確認では Esc も矢印も答えになる（Esc は終了を選ぶ）
 		if (this._showsTrustDialog(target)) {
 			return fail(PARADIS_AGENT_TRUST_DIALOG_MESSAGE);
+		}
+		// Codex の選択画面では、Enter・数字・矢印・Esc のどれもが答えになる
+		const menu = this._choiceMenu(target);
+		if (menu !== undefined) {
+			return fail(paradisAgentChoiceMenuMessage(menu));
 		}
 		const status = this._status(target);
 		if (paradisAgentIdeNeedsHuman(status)) {
