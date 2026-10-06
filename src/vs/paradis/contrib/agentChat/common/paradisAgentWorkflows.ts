@@ -159,7 +159,7 @@ export interface IParadisWorkflowResultAgent {
 	readonly cached?: boolean;
 }
 
-const RUN_ID = /^[A-Za-z0-9._-]{1,200}$/;
+const RUN_ID = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
 const TASK_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const AGENT_ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
@@ -556,9 +556,22 @@ export class ParadisAgentWorkflowTracker {
 	/** 起動の結果より先に見た台本（tool_use の ID → 中身）。 */
 	private readonly scripts = new Map<string, Extract<IParadisWorkflowSignal, { type: 'script' }>>();
 	private nextOrder = 0;
+	private revisionCount = 0;
 
 	get size(): number {
 		return this.runs.size;
+	}
+
+	/** 送る形が変わるたびに増える版（送り手は中身を比べずにこれで変化を知る）。 */
+	get revision(): number {
+		return this.revisionCount;
+	}
+
+	private bump(changed: boolean): boolean {
+		if (changed) {
+			this.revisionCount++;
+		}
+		return changed;
 	}
 
 	clear(): boolean {
@@ -566,7 +579,7 @@ export class ParadisAgentWorkflowTracker {
 		this.runs.clear();
 		this.runByTask.clear();
 		this.scripts.clear();
-		return changed;
+		return this.bump(changed);
 	}
 
 	/** transcript の手がかり（Workflow の起動と、終わりの通知を含むシェルの手がかり）を順に当てる。 */
@@ -600,7 +613,7 @@ export class ParadisAgentWorkflowTracker {
 			this.settleAgents(run);
 			changed = true;
 		}
-		return changed;
+		return this.bump(changed);
 	}
 
 	private launch(signal: Extract<IParadisWorkflowSignal, { type: 'launched' }>): boolean {
@@ -611,7 +624,7 @@ export class ParadisAgentWorkflowTracker {
 		}
 		const run: IMutableRun = existing ?? { runId: signal.runId, status: 'running', startedAt: signal.at, phases: [], agents: new Map(), resultApplied: false };
 		if (existing !== undefined) {
-			// resume（同じ runId・新しいタスク ID）。前の起動の結果は当て直さない。子は journal から作り直す
+			// resume（同じ runId・新しいタスク ID）。前の起動の結果は当て直さない。前の起動の子は、新しい結果を当てるときに入れ替わる
 			if (existing.taskId !== undefined) {
 				this.runByTask.delete(existing.taskId);
 			}
@@ -667,7 +680,7 @@ export class ParadisAgentWorkflowTracker {
 			}
 			changed = changed || before !== JSON.stringify(agent);
 		}
-		return changed;
+		return this.bump(changed);
 	}
 
 	/** 実行のフォルダで見つけた子（meta.json のラベル・段階、transcript を作った時刻）を当てる。 */
@@ -695,7 +708,7 @@ export class ParadisAgentWorkflowTracker {
 			}
 			changed = changed || before !== JSON.stringify(agent);
 		}
-		return changed;
+		return this.bump(changed);
 	}
 
 	/** 子の SubagentStop（hook）。SSH 先のように journal を読めない構成で、終わった子を数えるため。 */
@@ -709,7 +722,7 @@ export class ParadisAgentWorkflowTracker {
 			return false;
 		}
 		agent.state = 'done';
-		return true;
+		return this.bump(true);
 	}
 
 	/** `<runId>.json` を当てる（`writtenAt` はファイルの時刻。今の起動より前のものは前の起動の結果なので当てない）。 */
@@ -735,6 +748,15 @@ export class ParadisAgentWorkflowTracker {
 		run.totalTokens = result.totalTokens;
 		run.totalToolCalls = result.totalToolCalls;
 		run.error = result.error;
+		// resume の後の結果は、キャッシュから返った子を含めて全部の子を持つ。結果に無い子は前の起動の子なので落とす
+		if (result.agents.length > 0) {
+			const kept = new Set(result.agents.map(item => item.agentId));
+			for (const agentId of [...run.agents.keys()]) {
+				if (!kept.has(agentId)) {
+					run.agents.delete(agentId);
+				}
+			}
+		}
 		for (const item of result.agents) {
 			const agent = this.agent(run, item.agentId);
 			if (agent === undefined) {
@@ -756,7 +778,7 @@ export class ParadisAgentWorkflowTracker {
 			agent.cached = item.cached === true ? true : undefined;
 		}
 		this.settleAgents(run);
-		return true;
+		return this.bump(true);
 	}
 
 	/** 読み直しが要る実行（動いているもの・終わったが `<runId>.json` をまだ当てていないもの）。 */

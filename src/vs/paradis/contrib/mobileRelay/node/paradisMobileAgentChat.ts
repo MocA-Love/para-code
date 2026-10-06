@@ -7653,6 +7653,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.desktopExitedTokens.add(event.token);
 			this.sessionEndedAt.set(event.token, event.at);
 			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
+			// 動いていた Workflow を「中断（推定）」にして届ける（送るときに判定する。Monitor が無いと delta が出ないため）
+			this.pushWorkflowsIfChanged(event.token);
 		} else if (this.desktopExitedTokens.delete(event.token)) {
 			this.sessionEndedAt.delete(event.token);
 			this.scheduleDesktopChatCheck();
@@ -8927,14 +8929,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			return {};
 		}
 		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
-		const snapshot = tailer.workflows.snapshot();
-		const workflows = paneStopped ? paradisWorkflowsForStoppedPane(snapshot, this.sessionEndedAt.get(token)) : snapshot;
-		const signature = `${tailer.epoch}\0${JSON.stringify(workflows)}`;
+		// 中身を文字列にせず、追跡の版とペインの停止で変化を見る（子が多いと一覧が大きいため）
+		const signature = `${tailer.epoch}\0${tailer.workflows.revision}\0${paneStopped ? this.sessionEndedAt.get(token) ?? 'stopped' : ''}`;
 		if (!full && this.workflowsSent.get(token) === signature) {
 			return {};
 		}
-		this.workflowsSent.set(token, signature);
-		return { workflows, workflowsAt: Date.now() };
+		// 1 台宛ての応答（購読の開始）では覚えない。他の端末へまだ届いていない変化を、次の delta で取りこぼさないため
+		if (!full) {
+			this.workflowsSent.set(token, signature);
+		}
+		const snapshot = tailer.workflows.snapshot();
+		return { workflows: paneStopped ? paradisWorkflowsForStoppedPane(snapshot, this.sessionEndedAt.get(token)) : snapshot, workflowsAt: Date.now() };
 	}
 
 	/** Workflow の一覧が前に送ったものから変わっていれば、空 delta で届ける。 */
@@ -9010,9 +9015,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this.pushWorkflowsIfChanged(token);
 		}
+		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
 		if (more) {
 			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
-		} else if (tailer.workflows.hasRunning()) {
+		} else if (tailer.workflows.hasRunning() && !paneStopped) {
 			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_RUNNING_MS);
 		}
 	}
