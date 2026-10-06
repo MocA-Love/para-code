@@ -64,6 +64,8 @@ config.watchFolders = [
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'fileViewers', 'common'),
 	// PC とアプリの互換の窓と capability の判定（paradisMobileCompat.ts、W2-17）
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'mobileRelay', 'common'),
+	// おやすみモードの期限の選択肢と残り時間（paradisDoNotDisturbRules.ts。PC のステータスバーと同じ計算と文言）
+	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'notifications', 'common'),
 ];
 
 module.exports = config;

@@ -313,6 +313,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/state.json` | `capabilities` に `metrics.ping.v1` を追加（2026-10-06） | 通信の計測（F0）の往復時間の ping。計測中のアプリだけが browser チャネルで送り、PC は shared process ですぐ返す |
 | `app/protocol/test/golden/state.json` | `capabilities` に `notify.dismiss-sync.v1` を追加（2026-10-06） | 端末をまたいだ通知の片付け。PC は片付けの台帳をディスクに残し、繋がったアプリの `dismiss-sync` に番号より後の片付け（`dismiss-log`）を返す。PC だけが広告する |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `agent.json` | 両方の `capabilities` に `agent.workflows.v1`、`agent.json` に `workflows`・`workflowsAt` の delta と、`shells` の先頭の要素に `ownerAgentId` を追加（2026-10-06） | トークの Workflow のカード（Claude Code の Workflow の実行を段階・子・状態・終わった後のトークンでまとめる。子のシェルはカードへ寄せる） |
+| `app/protocol/test/golden/state.json` | `capabilities` に `notify.dnd-remote.v1`、`current` に `doNotDisturb`（`enabled`・`until`）を追加（2026-10-06） | モバイルから PC のおやすみモードを切り替える。PC は今の状態を Desktop State に載せて変わったときだけ送り直し、fs の `dndSet` で切り替えを受ける。PC だけが広告する |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 

@@ -25,6 +25,7 @@ import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './
 import { localizeAgentWorkflows, parseAgentWorkflows, type AgentWorkflow } from './agentWorkflows.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
+import { parsePcDoNotDisturb, type PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
 import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
 import { PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, paradisParseAgentApprovalRequest, paradisSanitizeApprovalInstruction, paradisParseApprovalSuggestionScope, type IParadisAgentApprovalRequest, type ParadisAgentApprovalSuggestionScope } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisAgentApprovalRequest.js';
 import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceStreamChunk, paradisParseVoiceStreamEnd, paradisParseVoiceStreamStart } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
@@ -93,6 +94,11 @@ export interface WorkspaceState {
 	 * ペアリング済みの PC へ SSH でも繋いでいるとき、全 PC の合計で同じ機械を二重に数えないために使う。
 	 */
 	machineIdHash?: string;
+	/**
+	 * PC のおやすみモード（`notify.dnd-remote.v1` の PC だけ。PC のどのウィンドウもまだ報告していなければ未配信）。
+	 * PC で切り替えても、スマホから切り替えても、期限が来ても、PC が送り直す。
+	 */
+	doNotDisturb?: PcDoNotDisturb;
 }
 
 /** PC が `id` を付けずに scm / fs で送ってくるメッセージ（`MobileController.onPcMessage`）。 */
@@ -5079,6 +5085,13 @@ export class MobileController {
 				// 機械のハッシュも後から足した任意項目。文字列でなければ「届いていない」にする（別の機械として扱われる）。
 				if (incoming.machineIdHash !== undefined && (typeof incoming.machineIdHash !== 'string' || incoming.machineIdHash.length === 0 || incoming.machineIdHash.length > 256)) {
 					delete (incoming as { machineIdHash?: unknown }).machineIdHash;
+				}
+				// おやすみモードも後から足した任意項目。形が合わなければ「届いていない」にする（行は「不明」になる）。
+				const doNotDisturb = parsePcDoNotDisturb((incoming as { doNotDisturb?: unknown }).doNotDisturb);
+				if (doNotDisturb !== undefined) {
+					incoming.doNotDisturb = doNotDisturb;
+				} else {
+					delete incoming.doNotDisturb;
 				}
 				this.liveFsUploadEncoding = incoming.fsUploadEncoding === FS_BINARY_UPLOAD_ENCODING ? FS_BINARY_UPLOAD_ENCODING : undefined;
 				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも

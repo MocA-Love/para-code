@@ -22,5 +22,6 @@ import './paradisMobileWordDiffRequests.js'; // 差分の画面の Word の差�
 import './paradisMobileFileIconRequests.js'; // ファイルの一覧のアイコン（fs.icon-theme.v1）
 import './paradisMobileAttachmentRequests.js'; // モバイルから上げた添付画像のサムネイルと原寸（fs.attachment.v1）
 import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenLabs）の使用量（usage.voice.v1）
+import './paradisMobileDoNotDisturbRequests.js'; // PC のおやすみモードの切り替え（notify.dnd-remote.v1）
 
 export { };

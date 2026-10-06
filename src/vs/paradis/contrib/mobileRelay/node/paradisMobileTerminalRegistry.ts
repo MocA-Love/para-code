@@ -10,6 +10,7 @@ import { IParadisMobileDesktopBattery, IParadisMobileDesktopResources, IParadisM
 import { paradisMobileResourcesEqual } from '../common/paradisMobileHostResources.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
+import { IParadisMobileDoNotDisturbState, paradisSameMobileDoNotDisturbState } from '../common/paradisMobileDoNotDisturb.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, PARADIS_MOBILE_PC_CAPABILITIES } from '../common/paradisMobileCompat.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 
@@ -47,6 +48,8 @@ export class ParadisMobileTerminalRegistry {
 	// モバイルのPC一覧に出す表示名。renderer が設定値（無ければホスト名）を解決して入れる。
 	private pcName: string | undefined;
 	private machineIdHash: string | undefined;
+	// PC のおやすみモード（notify.dnd-remote.v1）。renderer が通知設定から読んで入れる（全ウィンドウで同じ値）。
+	private doNotDisturb: IParadisMobileDoNotDisturbState | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
 	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
@@ -141,6 +144,19 @@ export class ParadisMobileTerminalRegistry {
 			return false;
 		}
 		this.pcName = next;
+		this.revision++;
+		return true;
+	}
+
+	/**
+	 * PC のおやすみモードの状態を差し替える。実際に変わったときだけ revision を進め、
+	 * true（＝再ブロードキャストが要る）を返す。
+	 */
+	setDoNotDisturb(state: IParadisMobileDoNotDisturbState | undefined): boolean {
+		if (paradisSameMobileDoNotDisturbState(this.doNotDisturb, state)) {
+			return false;
+		}
+		this.doNotDisturb = state;
 		this.revision++;
 		return true;
 	}
@@ -352,6 +368,7 @@ export class ParadisMobileTerminalRegistry {
 			...(this.hostResources !== undefined ? { resources: this.hostResources } : {}),
 			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 			...(this.machineIdHash !== undefined ? { machineIdHash: this.machineIdHash } : {}),
+			...(this.doNotDisturb !== undefined ? { doNotDisturb: this.doNotDisturb } : {}),
 		};
 	}
 

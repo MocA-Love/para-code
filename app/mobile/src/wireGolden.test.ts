@@ -145,6 +145,20 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('PC のおやすみモード（notify.dnd-remote.v1）を State から読み、壊れた値は「届いていない」にする', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		const first = { remote: controller.hasPcCapability(PcCapability.NotifyDoNotDisturbRemote), doNotDisturb: latest()?.workspace?.doNotDisturb };
+		pcMux.send(Channels.State, encode({ ...stateGolden.current, revision: (stateGolden.current.revision as number) + 1, doNotDisturb: { enabled: true, until: 'soon' } }));
+		await flush();
+		expect({ first, broken: latest()?.workspace?.doNotDisturb }).toEqual({
+			first: { remote: true, doNotDisturb: stateGolden.current.doNotDisturb },
+			broken: undefined,
+		});
+		controller.disconnect();
+	});
+
 	it('版 3 の PC（W2-17 より前を含む）の State は受け付けず、PC の更新を求める（mux の版 4）', async () => {
 		const { controller, pcMux, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.preW217));
