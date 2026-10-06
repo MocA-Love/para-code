@@ -1143,8 +1143,22 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		sectionId: 'psd-sec-remote',
 		key: 'paradis.fileTransfer.directConnectionIdleSeconds',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.fileTransferDirectIdle', "ファイル転送の直接接続を閉じるまでの秒数"),
+		label: localize('paradis.settings.fileTransferDirectIdle', "ファイル転送の直接接続を閉じるまでの時間"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.fileTransferDirectIdleDesc', "接続せずに開いたホストへの SSH 接続を、使い終わってから閉じるまでの時間です。"),
 		keywords: 'file transfer sftp ssh direct connection idle seconds close',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.settings.fileTransferDirectIdle60', "1分") },
+			// allow-any-unicode-next-line
+			{ value: 300, label: localize('paradis.settings.fileTransferDirectIdle300', "5分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 900, label: localize('paradis.settings.fileTransferDirectIdle900', "15分") },
+			// allow-any-unicode-next-line
+			{ value: 1800, label: localize('paradis.settings.fileTransferDirectIdle1800', "30分") },
+			// allow-any-unicode-next-line
+			{ value: 3600, label: localize('paradis.settings.fileTransferDirectIdle3600', "1時間") },
+		],
 	},
 
 	// --- ウィンドウ ---
