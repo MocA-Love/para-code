@@ -28,6 +28,9 @@
 // （`dismiss-sync` / `dismiss-log`。`notify.dismiss-sync.v1`）。PC を再起動しても、次のプッシュの印も続けて載る。
 // 許可・質問は、回答が成立したと PC が知ったとき（hook の PostToolUse などがその ID で来た・ターンが終わった）にも
 // 片付ける（Q241 A・Q243 A）。PC で見ただけでは片付けない。
+// ターンの終わりで片付けるのは、そのターンの会話が出した許可・質問だけ。同じペインのサブエージェント・チームメイト
+// （hook の `agent_id`。Codex の子のスレッドは別の `session_id`）の許可・質問は、本会話の Stop では残し、ID 指定の
+// 回答か、その子自身のターンの終わり（SubagentStop など）で片付ける。
 
 /** 1回のプッシュに載せる印の数の上限（APNs の 4KB に収めるため）。 */
 export const PARADIS_NOTIFY_DISMISS_MAX_IDS = 10;
@@ -50,10 +53,31 @@ interface IEmitted {
 	readonly kind: string | undefined;
 	/** 承認・質問の ID（notify.content.v1）。回答が成立したかを突き合わせる。 */
 	readonly interactionId: string | undefined;
+	/** 許可・質問を出した会話（分からなければ undefined。本会話のものとして扱う）。 */
+	readonly origin: IParadisNotifyPromptOrigin | undefined;
 	readonly at: number;
 	handledAt: number | undefined;
 	/** 片付いた出来事の番号（片付いていなければ undefined）。 */
 	seq: number | undefined;
+}
+
+/**
+ * 許可・質問を出した会話。`sessionId` は hook の `session_id`（Codex の子のスレッドは子自身の ID）、`agentId` は
+ * Claude Code のサブエージェント・チームメイトの hook の `agent_id`（本会話は undefined）。
+ */
+export interface IParadisNotifyPromptOrigin {
+	readonly sessionId?: string;
+	readonly agentId?: string;
+}
+
+/** {@link paradisNotifyAnswerFromHook} の結果。 */
+export interface IParadisNotifyAnswer {
+	/** 回答が成立した許可・質問の ID。undefined は「その時刻より前の、`origin` の会話の全部」。 */
+	readonly interactionId: string | undefined;
+	/** 全部を片付けるときの会話（`agentId` が無ければ本会話）。 */
+	readonly origin?: IParadisNotifyPromptOrigin;
+	/** その session の全部（本会話・子とも。SessionEnd）。 */
+	readonly wholeSession?: boolean;
 }
 
 /** 許可・質問（未回答かもしれない）か。種別が分からないものも、消さない側に倒してこちらに入れる。 */
@@ -98,11 +122,11 @@ export class ParadisNotifyDismissLedger {
 	}
 
 	/** 通知を出した（プッシュ・フレームのどちらでも）。 */
-	record(id: string, agentToken: string | undefined, kind: string | undefined, at: number, interactionId?: string): void {
+	record(id: string, agentToken: string | undefined, kind: string | undefined, at: number, interactionId?: string, origin?: IParadisNotifyPromptOrigin): void {
 		if (this.entries.some(entry => entry.id === id)) {
 			return;
 		}
-		this.entries.push({ id, tokenKey: agentToken !== undefined ? this.tokenKey(agentToken) : undefined, kind, interactionId, at, handledAt: undefined, seq: undefined });
+		this.entries.push({ id, tokenKey: agentToken !== undefined ? this.tokenKey(agentToken) : undefined, kind, interactionId, origin: normalizeOrigin(origin), at, handledAt: undefined, seq: undefined });
 		this.trim(at);
 	}
 
@@ -120,7 +144,7 @@ export class ParadisNotifyDismissLedger {
 			return [];
 		}
 		if (opened) {
-			const added: IEmitted = { id, tokenKey: undefined, kind: undefined, interactionId: undefined, at, handledAt: undefined, seq: undefined };
+			const added: IEmitted = { id, tokenKey: undefined, kind: undefined, interactionId: undefined, origin: undefined, at, handledAt: undefined, seq: undefined };
 			this.entries.push(added);
 			this.settle(added, at);
 			this.trim(at);
@@ -140,13 +164,15 @@ export class ParadisNotifyDismissLedger {
 
 	/**
 	 * そのエージェントの許可・質問に、どこかで回答が成立した（Q241 A）。`interactionId` があればその ID の通知だけ、
-	 * 無ければ（ターンが終わった・次の指示が来た）その時刻より前に出した許可・質問の全部が片付く。
-	 * 新しく片付いた通知 ID を返す。
+	 * 無ければ（ターンが終わった・次の指示が来た）その時刻より前に `origin` の会話が出した許可・質問の全部が片付く
+	 * （`agentId` の無い `origin` は本会話。サブエージェント・チームメイトの分は残す）。`wholeSession` はその session の
+	 * 子の分も含めて片付ける。出した会話の分からない通知は本会話のものとして扱う。新しく片付いた通知 ID を返す。
 	 */
-	markAnswered(agentToken: string, interactionId: string | undefined, at: number): string[] {
+	markAnswered(agentToken: string, interactionId: string | undefined, at: number, origin?: IParadisNotifyPromptOrigin, wholeSession = false): string[] {
 		const key = this.tokenKey(agentToken);
+		const scope = normalizeOrigin(origin);
 		return this.settleWhere(at, entry => entry.tokenKey === key && entry.kind === 'agent-question'
-			&& (interactionId !== undefined ? entry.interactionId === interactionId : entry.at < at));
+			&& (interactionId !== undefined ? entry.interactionId === interactionId : entry.at < at && sameConversation(entry.origin, scope, wholeSession)));
 	}
 
 	/** その通知がもう片付いたか（裏に回ったときのプッシュし直しで、片付いたものを送らないため）。 */
@@ -188,6 +214,8 @@ export class ParadisNotifyDismissLedger {
 				...(entry.tokenKey !== undefined ? { tk: entry.tokenKey } : {}),
 				...(entry.kind !== undefined ? { kind: entry.kind } : {}),
 				...(entry.interactionId !== undefined ? { iid: entry.interactionId } : {}),
+				...(entry.origin?.sessionId !== undefined ? { sid: entry.origin.sessionId } : {}),
+				...(entry.origin?.agentId !== undefined ? { aid: entry.origin.agentId } : {}),
 				at: entry.at,
 				...(entry.handledAt !== undefined ? { h: entry.handledAt } : {}),
 				...(entry.seq !== undefined ? { s: entry.seq } : {}),
@@ -261,6 +289,21 @@ function optionalText(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH ? value : undefined;
 }
 
+function normalizeOrigin(origin: IParadisNotifyPromptOrigin | undefined): IParadisNotifyPromptOrigin | undefined {
+	const sessionId = optionalText(origin?.sessionId);
+	const agentId = optionalText(origin?.agentId);
+	return sessionId === undefined && agentId === undefined ? undefined : { ...(sessionId !== undefined ? { sessionId } : {}), ...(agentId !== undefined ? { agentId } : {}) };
+}
+
+/**
+ * 通知を出した会話が、片付ける会話と同じか。session はどちらかが分からなければ同じとみなす（旧版の台帳・
+ * session_id の無い hook）。`wholeSession` でなければ、サブエージェント・チームメイトの別（`agentId`）も一致させる。
+ */
+function sameConversation(entry: IParadisNotifyPromptOrigin | undefined, scope: IParadisNotifyPromptOrigin | undefined, wholeSession: boolean): boolean {
+	const sameSession = entry?.sessionId === undefined || scope?.sessionId === undefined || entry.sessionId === scope.sessionId;
+	return sameSession && (wholeSession || entry?.agentId === scope?.agentId);
+}
+
 function finiteNumber(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -305,6 +348,7 @@ function parseLedgerFile(raw: string | undefined): { readonly ledger: string; re
 			tokenKey: optionalText(entry.tk),
 			kind: optionalText(entry.kind),
 			interactionId: optionalText(entry.iid),
+			origin: normalizeOrigin({ sessionId: optionalText(entry.sid), agentId: optionalText(entry.aid) }),
 			at,
 			// 片付いた時刻と番号はそろっているときだけ採る（片方だけでは同期に出せない）
 			handledAt: handledAt !== undefined && entrySeq !== undefined ? handledAt : undefined,
@@ -348,6 +392,12 @@ export function paradisWithNotifyDismiss(bytes: Uint8Array, tags: readonly strin
 const ANSWER_BY_TOOL_EVENTS = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']);
 /** そのエージェントがもう何も待っていないことを示す hook の出来事（ターンの終わり・次の指示・終了）。 */
 const ANSWER_ALL_EVENTS = new Set(['Stop', 'StopFailure', 'agent-turn-complete', 'task_complete', 'Interrupt', 'UserPromptSubmit', 'SessionEnd']);
+/**
+ * サブエージェント・チームメイト（`agent_id` 付き）のターンの終わり。Claude Code 2.1.291 の実測では、名前付きで
+ * SendMessage でやり取りする子も、ターンごとに同じ `agent_id` の SubagentStart / SubagentStop を出す（session_id は
+ * 親と同じ）。TeammateIdle は公式の記述のみ（`agent_id` が付いたときだけ使う）。
+ */
+const AGENT_TURN_END_EVENTS = new Set(['SubagentStop', 'Stop', 'StopFailure', 'TeammateIdle']);
 
 /** 「全部片付ける」出来事を、本当にそのペインの本会話のターンの区切りか確かめるための hook の付帯情報。 */
 export interface IParadisNotifyAnswerHookContext {
@@ -355,27 +405,38 @@ export interface IParadisNotifyAnswerHookContext {
 	readonly ownerUnverified?: boolean;
 	/** hook の stdin JSON（`agent_id`・`prompt` を見る）。 */
 	readonly payload?: Readonly<Record<string, unknown>>;
+	/** hook の `session_id`。 */
+	readonly sessionId?: string;
 }
 
 /**
  * hook の出来事が、そのエージェントの許可・質問への回答の成立を示すか（Q241 A・Q243 A）。PC のターミナル・スマホの
  * トーク・通知のボタンのどこで答えても、エージェントはこれらの hook を出す。`interactionId` が undefined のときは
- * 「その時刻より前の許可・質問の全部」。関係しない出来事は undefined。
+ * 「その時刻より前に `origin` の会話が出した許可・質問の全部」。関係しない出来事は undefined。
  *
- * 「全部」は同じペインのほかの会話の未回答まで消しうるので、本会話のターンの区切りと言い切れるものだけにする。
- * 発信元を確かめられなかった hook、サブエージェント・チームメイトの hook（`agent_id` 付き）、バックグラウンドの
- * 完了の知らせ（`<task-notification>`）や `/model`・`/effort` による UserPromptSubmit は、何も片付けない。
+ * 「全部」は、ターンが終わった会話の分だけにする。本会話のターンの区切り（`agent_id` の無い Stop など）は本会話の
+ * 分を、サブエージェント・チームメイトのターンの終わり（`agent_id` 付きの SubagentStop など）はその子の分を片付け、
+ * SessionEnd はその session の全部を片付ける。発信元を確かめられなかった hook、`agent_id` 付きのそれ以外の hook、
+ * バックグラウンドの完了の知らせ（`<task-notification>`）や `/model`・`/effort` による UserPromptSubmit は、何も片付けない。
  */
-export function paradisNotifyAnswerFromHook(event: string, toolUseId: string | undefined, context?: IParadisNotifyAnswerHookContext): { readonly interactionId: string | undefined } | undefined {
+export function paradisNotifyAnswerFromHook(event: string, toolUseId: string | undefined, context?: IParadisNotifyAnswerHookContext): IParadisNotifyAnswer | undefined {
 	if (ANSWER_BY_TOOL_EVENTS.has(event)) {
 		return toolUseId !== undefined && toolUseId.length > 0 ? { interactionId: toolUseId } : undefined;
 	}
-	if (!ANSWER_ALL_EVENTS.has(event) || context?.ownerUnverified === true) {
+	if (context?.ownerUnverified === true) {
 		return undefined;
 	}
-	const agentId = context?.payload?.agent_id;
-	if (typeof agentId === 'string' && agentId.length > 0) {
+	const sessionId = optionalText(context?.sessionId);
+	const agentId = optionalText(context?.payload?.agent_id);
+	if (agentId !== undefined) {
+		return AGENT_TURN_END_EVENTS.has(event) ? { interactionId: undefined, origin: { ...(sessionId !== undefined ? { sessionId } : {}), agentId } } : undefined;
+	}
+	if (!ANSWER_ALL_EVENTS.has(event)) {
 		return undefined;
+	}
+	const origin = sessionId !== undefined ? { sessionId } : undefined;
+	if (event === 'SessionEnd') {
+		return { interactionId: undefined, ...(origin !== undefined ? { origin } : {}), wholeSession: true };
 	}
 	if (event === 'UserPromptSubmit') {
 		const prompt = context?.payload?.prompt;
@@ -384,7 +445,7 @@ export function paradisNotifyAnswerFromHook(event: string, toolUseId: string | u
 			return undefined;
 		}
 	}
-	return { interactionId: undefined };
+	return { interactionId: undefined, ...(origin !== undefined ? { origin } : {}) };
 }
 
 /** 通知の本文から承認・質問の ID を読む（無ければ undefined）。 */

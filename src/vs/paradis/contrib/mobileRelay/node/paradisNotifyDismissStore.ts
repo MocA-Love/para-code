@@ -131,12 +131,12 @@ export class ParadisNotifyDismissStore extends Disposable {
 	}
 
 	/** hook の出来事で、そのエージェントの許可・質問の回答が成立したなら片付ける。 */
-	handleHookEvent(event: Pick<IParadisAgentHookEvent, 'token' | 'event' | 'toolUseId' | 'payload' | 'ownerUnverified'> & { readonly at?: number }): void {
-		const answer = paradisNotifyAnswerFromHook(event.event, event.toolUseId, { ownerUnverified: event.ownerUnverified === true, payload: event.payload });
+	handleHookEvent(event: Pick<IParadisAgentHookEvent, 'token' | 'event' | 'toolUseId' | 'payload' | 'ownerUnverified'> & { readonly sessionId?: string; readonly at?: number }): void {
+		const answer = paradisNotifyAnswerFromHook(event.event, event.toolUseId, { ownerUnverified: event.ownerUnverified === true, payload: event.payload, sessionId: event.sessionId });
 		if (answer === undefined || event.token.length === 0) {
 			return;
 		}
-		const settled = this.ledger.markAnswered(event.token, answer.interactionId, event.at ?? this.now());
+		const settled = this.ledger.markAnswered(event.token, answer.interactionId, event.at ?? this.now(), answer.origin, answer.wholeSession === true);
 		if (settled.length > 0) {
 			this.changed();
 			this._onDidAnswer.fire(settled);
