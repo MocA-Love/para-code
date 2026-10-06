@@ -79,11 +79,14 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('claude attach 52a3701d-a5b0-4252-99f9-e155af08db4d'),
 			paradisInteractiveAgentCommand('/Users/example/.local/bin/claude attach "52a3701d"'),
 			paradisInteractiveAgentCommand('claude attach'),
+			// 2.1.290 から名前でも attach できる。引用符で囲んだ空白入りの名前は 1 つの引数
+			paradisInteractiveAgentCommand('claude attach "ログイン 修正"'),
 		], [
 			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d' },
 			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d-a5b0-4252-99f9-e155af08db4d' },
 			{ agent: 'claude', mode: 'attach', sessionId: '52a3701d' },
 			{ agent: 'claude', mode: 'attach' },
+			{ agent: 'claude', mode: 'attach', sessionId: 'ログイン 修正' },
 		]);
 		for (const command of ['claude logs 52a3701d', 'claude stop 52a3701d', 'claude kill 52a3701d', 'claude rm 52a3701d', 'claude respawn --all', 'claude purge /tmp/x', 'claude attach --help']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);

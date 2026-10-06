@@ -24,8 +24,8 @@ suite('paradisTerminalResumeBanner', () => {
 			option: paradisResumeCommandLine('claude', '--dangerously-skip-permissions', 'resume'),
 			shell: paradisResumeCommandLine('codex', 'abc; rm -rf ~', 'fork'),
 		}, {
-			claudeResume: 'claude --permission-mode default --resume a1b2c3d4-0000-4000-8000-000000000001',
-			claudeFork: 'claude --permission-mode default --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
+			claudeResume: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001',
+			claudeFork: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
 			codexResume: 'codex resume 0199aaaa-0000-7000-8000-000000000002',
 			codexFork: 'codex fork 0199aaaa-0000-7000-8000-000000000002',
 			option: undefined,
