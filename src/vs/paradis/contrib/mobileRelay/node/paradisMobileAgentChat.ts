@@ -62,7 +62,8 @@ import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
-import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
+import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisIsClaudeSessionIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
+import { paradisClaudeAttachNameQuery, paradisReadClaudeJobs, paradisSelectClaudeJobByName } from '../../agentBrowser/node/paradisClaudeJobNames.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -7986,7 +7987,18 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 				return result;
 			};
-			const found = await paradisFindClaudeTranscriptByIdPrefix(projectsRoot, await paradisClaudeProjectDirForCwd(cwd, homes), requestedSessionId, scanAllProjects);
+			// `claude attach <名前>`（2.1.290 から）は、背景セッションの記録から会話 id を引き直す。
+			// 名前に当たる背景セッションが 1 つに決まらなければ何もしない（CLI も attach しない）。
+			let idPrefix = requestedSessionId;
+			if (!paradisIsClaudeSessionIdPrefix(idPrefix)) {
+				const query = paradisClaudeAttachNameQuery(idPrefix);
+				const job = query !== undefined ? paradisSelectClaudeJobByName(await paradisReadClaudeJobs(homes.claude), query) : undefined;
+				if (job?.sessionId === undefined || !paradisIsClaudeSessionIdPrefix(job.sessionId)) {
+					return;
+				}
+				idPrefix = job.sessionId;
+			}
+			const found = await paradisFindClaudeTranscriptByIdPrefix(projectsRoot, await paradisClaudeProjectDirForCwd(cwd, homes), idPrefix, scanAllProjects);
 			// ほかのペインの claim と、退避中のペイン（復活を待っている）の会話は採らない
 			const retained = [...this.retiredSessions].some(([retiredToken, entry]) => retiredToken !== token && entry.session.transcriptPath === found?.transcriptPath);
 			if (found === undefined || retained || this.transcriptClaimedByOther(found.transcriptPath, token)) {
