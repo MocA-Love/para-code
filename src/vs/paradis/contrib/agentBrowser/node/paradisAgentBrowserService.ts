@@ -60,6 +60,7 @@ import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoic
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
+import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
@@ -428,7 +429,7 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private readonly _bindings = new Map<string, IBindingEntry>();
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
-	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: event => this._onCdpInputQueueDiagnostic(event) }));
+	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
 	/** 捨てた hook のペイン・理由ごとの累計（診断ログの間引き用。判定には使わない）。 */
@@ -691,6 +692,8 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
+				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
+				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				isRemotePane: token => this._isRemotePaneForGateway(token),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 			},
@@ -705,6 +708,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService, {
 			resolveRoots: token => this._resolveDevtoolsRoots(token),
 			recentInputRejection: (token, since) => this._inputRejections.recent(token, since),
+			onToolFailure: (token, failure) => this._noteBrowserDiagnostic(token, { kind: 'tool-failure', ...failure }),
 		}));
 		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
 		this._pageOps = new ParadisBrowserPageOps({
@@ -1999,8 +2003,39 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	private _onCdpInputQueueDiagnostic(event: IParadisCdpInputQueueDiagnostic): void {
+	/**
+	 * 診断の印を main へ渡す（Sentry のパンくずとまとめのイベントになる。paradisBrowserFocusDiagnostics.ts）。
+	 * 共有中のタブが無ければ捨てる。届かなくても何も変えない。
+	 */
+	private _noteBrowserDiagnostic(token: string, note: IParadisBrowserDiagnosticNote): void {
+		const exactView = this._bindings.get(token)?.exactView;
+		if (exactView) {
+			this._sendBrowserDiagnostic(exactView, note);
+		}
+	}
+
+	private _sendBrowserDiagnostic(exactView: IParadisExactBrowserViewDescriptor | undefined, note: IParadisBrowserDiagnosticNote): void {
+		try {
+			void this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<void>('noteExactViewDiagnostic', [exactView ?? null, note])
+				.then(undefined, () => undefined);
+		} catch {
+			// 診断は入力の配送を変えない。
+		}
+	}
+
+	private _onCdpInputQueueDiagnostic(event: IParadisCdpInputQueueDiagnostic, queueKey: string | undefined): void {
 		this._runNonThrowingDiagnostic(() => {
+			// queueKey は共有中のタブの exactView を JSON にしたもの（_dispatchBoundPageInput）。
+			let exactView: IParadisExactBrowserViewDescriptor | undefined;
+			try {
+				exactView = queueKey !== undefined ? paradisParseExactBrowserViewDescriptor(JSON.parse(queueKey)) : undefined;
+			} catch {
+				exactView = undefined;
+			}
+			this._sendBrowserDiagnostic(exactView, event.kind === 'saturated'
+				? { kind: 'input-queue', queueKind: 'saturated' }
+				: { kind: 'input-queue', queueKind: event.kind === 'paused' ? 'paused' : event.how === 'settled' ? 'resumed' : 'abandoned', cause: event.cause, method: event.method });
 			switch (event.kind) {
 				case 'paused':
 					this.logService.warn(`[ParadisAgentBrowser] browser input paused on a page: ${event.method} ${event.cause === 'dispatch-timeout' ? 'did not finish in time' : 'lost its connection after it was sent'}`);

@@ -453,7 +453,7 @@ export interface IBrowserViewModel extends IDisposable {
 	reload(hard?: boolean): Promise<void>;
 	toggleDevTools(): Promise<void>;
 	captureScreenshot(options?: IBrowserViewCaptureScreenshotOptions): Promise<VSBuffer>;
-	focus(force?: boolean): Promise<void>;
+	focus(force?: boolean, paraOrigin?: string): Promise<void>; // PARA-PATCH: optional origin for Para Code browser focus diagnostics
 	findInPage(text: string, options?: IBrowserViewFindInPageOptions): Promise<void>;
 	stopFindInPage(keepSelection?: boolean): Promise<void>;
 	getSelectedText(): Promise<string>;
@@ -826,8 +826,9 @@ export class BrowserViewModel extends Disposable implements IBrowserViewModel {
 		return result;
 	}
 
-	async focus(force?: boolean): Promise<void> {
-		return this.browserViewService.focus(this.id, force);
+	// PARA-PATCH: pass the optional focus origin through (Para Code browser focus diagnostics)
+	async focus(force?: boolean, paraOrigin?: string): Promise<void> {
+		return this.browserViewService.focus(this.id, force, paraOrigin);
 	}
 
 	async findInPage(text: string, options?: IBrowserViewFindInPageOptions): Promise<void> {

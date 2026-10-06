@@ -37,8 +37,11 @@ export interface IParadisCdpInputQueueOptions {
 	readonly activeKeyLimit?: number;
 	/** How long a pause may last when the dispatch that caused it never settles. */
 	readonly poisonRecoveryMs?: number;
-	/** Receives pauses and recoveries for the log and Sentry. Must not throw. */
-	readonly onDiagnostic?: (event: IParadisCdpInputQueueDiagnostic) => void;
+	/**
+	 * Receives pauses and recoveries for the log and Sentry. Must not throw. `queueKey` names the paused
+	 * view (absent for `saturated`), so the receiver can attribute it to a page.
+	 */
+	readonly onDiagnostic?: (event: IParadisCdpInputQueueDiagnostic, queueKey?: string) => void;
 }
 
 export interface IParadisCdpInputQueueRequest {
@@ -113,7 +116,7 @@ export class ParadisCdpInputQueue implements IDisposable {
 	private readonly poisonedKeyLimit: number;
 	private readonly activeKeyLimit: number;
 	private readonly poisonRecoveryMs: number;
-	private readonly onDiagnostic: ((event: IParadisCdpInputQueueDiagnostic) => void) | undefined;
+	private readonly onDiagnostic: ((event: IParadisCdpInputQueueDiagnostic, queueKey?: string) => void) | undefined;
 	private poisonSaturated = false;
 	private saturationTimer: ReturnType<typeof setTimeout> | undefined;
 	private disposed = false;
@@ -343,7 +346,7 @@ export class ParadisCdpInputQueue implements IDisposable {
 			timer: undefined,
 		};
 		this.poisonedQueueKeys.set(queueKey, record);
-		this.emit({ kind: 'paused', cause, method: record.method });
+		this.emit({ kind: 'paused', cause, method: record.method }, queueKey);
 		record.timer = setTimeout(() => this.resume(queueKey, record, 'recovery-timeout'), this.poisonRecoveryMs);
 		// The late answer itself is ignored (the caller was already told the outcome is unknown); it only
 		// proves nothing from that input is still on its way, so later input can no longer overtake it.
@@ -360,13 +363,13 @@ export class ParadisCdpInputQueue implements IDisposable {
 		}
 		this.poisonedQueueKeys.delete(queueKey);
 		if (!this.disposed) {
-			this.emit({ kind: 'resumed', how, cause: record.cause, method: record.method, pausedMs: Math.max(0, Date.now() - record.since) });
+			this.emit({ kind: 'resumed', how, cause: record.cause, method: record.method, pausedMs: Math.max(0, Date.now() - record.since) }, queueKey);
 		}
 	}
 
-	private emit(event: IParadisCdpInputQueueDiagnostic): void {
+	private emit(event: IParadisCdpInputQueueDiagnostic, queueKey?: string): void {
 		try {
-			this.onDiagnostic?.(event);
+			this.onDiagnostic?.(event, queueKey);
 		} catch {
 			// Diagnostics must never change input ordering.
 		}

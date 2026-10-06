@@ -33,6 +33,8 @@ import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySigna
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
 // PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
 import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
+// PARA-PATCH: import the fork's focus-request marker, so focus diagnostics can tell a Para Code focus from one the page took (Para Code browser focus diagnostics)
+import { paraNoteBrowserViewFocusRequest } from './paraBrowserViewFocusRequest.js';
 
 // PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation). The ack is answered on the page's main thread, so a page busy for a moment after a click must not fail the key (1s failed about 8% of agent keystrokes)
 const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 2_500;
@@ -1493,11 +1495,13 @@ export class BrowserView extends Disposable {
 	/**
 	 * Focus this view
 	 */
-	async focus(force?: boolean): Promise<void> {
+	// PARA-PATCH: optional `paraOrigin` says which workbench path asked (Para Code browser focus diagnostics)
+	async focus(force?: boolean, paraOrigin?: string): Promise<void> {
 		// By default, only focus the view if its window is already focused.
 		if (!force && !this._currentWindow?.win?.isFocused()) {
 			return;
 		}
+		paraNoteBrowserViewFocusRequest(this, paraOrigin); // PARA-PATCH: mark the request before the focus it causes (Para Code browser focus diagnostics)
 		this._view.webContents.focus();
 	}
 

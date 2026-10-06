@@ -659,8 +659,9 @@ export interface IBrowserViewService {
 	 * Focus the browser view
 	 * @param id The browser view identifier
 	 * @param force Whether to force focus even if the view's window is not focused.
+	 * @param paraOrigin Which workbench path asked, for focus diagnostics only (`container-focus`).
 	 */
-	focus(id: string, force?: boolean): Promise<void>;
+	focus(id: string, force?: boolean, paraOrigin?: string): Promise<void>; // PARA-PATCH: optional origin for Para Code browser focus diagnostics
 
 	/**
 	 * Find text in the browser view's page
