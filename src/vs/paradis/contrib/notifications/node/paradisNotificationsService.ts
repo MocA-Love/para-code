@@ -14,7 +14,7 @@
 
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
 import { getErrorMessage } from '../../../../base/common/errors.js';
@@ -69,6 +69,8 @@ import {
 	PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES,
 	PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES,
 } from '../common/paradisNotifications.js';
+import { IParadisYtDlpCheckResult, IParadisYtDlpStatus, paradisAssessYtDlpVersion, paradisClassifyYtDlpError, paradisDetectYtDlpInstallMethod, paradisExtractYtDlpWarnings, paradisParseYtDlpVersion, paradisYtDlpUpdatePlan, ParadisYtDlpFailure } from '../common/paradisYtDlp.js';
+import { IParadisMyinstantsDownloadResult, paradisCheckMyinstantsUrl, paradisIsMp3ContentType, paradisLooksLikeMp3, paradisMyinstantsDisplayName } from '../common/paradisMyinstants.js';
 
 const AIVIS_BASE_URL = 'https://api.aivis-project.com';
 /**
@@ -88,7 +90,13 @@ const MAX_FULL_DOWNLOAD_DURATION_SECONDS = 600;
 /** 保持する yt-dlp インストール状態の上限。通常は1件しか走らない。 */
 const PARADIS_MAX_INSTALL_STATES = 4;
 const FETCH_AUDIO_TIMEOUT_MS = 15_000;
+/** Myinstants の mp3 を取るときに追うリダイレクトの上限（追う先も同じ形の URL に限る）。 */
+const MYINSTANTS_MAX_REDIRECTS = 3;
 const REQUIRED_BINARIES = ['yt-dlp', 'ffmpeg', 'ffprobe'] as const;
+/** yt-dlp が既定で使う JS ランタイム。無くても動くが、一部の形式が取れなくなる。Para Code は入れず案内だけする。 */
+const OPTIONAL_BINARIES = ['deno'] as const;
+/** `yt-dlp --version` の打ち切り。 */
+const YT_DLP_VERSION_TIMEOUT_MS = 10_000;
 
 const ALLOWED_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg']);
 const ALLOWED_SOURCE_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.opus', '.webm']);
@@ -115,6 +123,13 @@ interface IInstallState {
 	done: boolean;
 	error?: string;
 	nextSeq: number;
+}
+
+/** 子プロセスの失敗。メッセージは標準エラーの末尾、`stderr` には全文、`exitCode` には終了コードを持つ（失敗の理由と警告の見分けに使う）。 */
+class ParadisProcessError extends Error {
+	constructor(message: string, readonly stderr: string, readonly exitCode?: number) {
+		super(message);
+	}
 }
 
 class AivisApiError extends Error {
@@ -188,6 +203,8 @@ export interface IParadisNotificationsTestingOptions {
 	readonly playRingtoneFile?: (ringtoneId: string, volume: number) => Promise<void>;
 	readonly playVoiceAudio?: (audio: Buffer, volume: number) => Promise<void>;
 	readonly resolveRingtonePath?: (ringtoneId: string) => string | null;
+	/** カスタム音源の置き場所。テストが実際の `~/.para-code` に書かないよう差し替える。 */
+	readonly assetsDir?: string;
 }
 
 /**
@@ -197,7 +214,7 @@ export interface IParadisNotificationsTestingOptions {
 export class ParadisNotificationsService extends Disposable implements IParadisLocalVoiceOutput {
 
 	/** 起動時 sweep の対象となる yt-dlp / ffmpeg 作業ディレクトリのプレフィックス。 */
-	private static readonly TEMP_WORK_DIR_PREFIXES = ['paradis-ytfull-', 'paradis-ytclip-'];
+	private static readonly TEMP_WORK_DIR_PREFIXES = ['paradis-ytfull-', 'paradis-ytclip-', 'paradis-myinstants-'];
 
 	/**
 	 * この年齢より新しい作業ディレクトリは sweep しない。フルダウンロードのタイムアウト(5分)より
@@ -206,11 +223,15 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 */
 	private static readonly TEMP_WORK_DIR_MIN_AGE_MS = 30 * 60 * 1000;
 
-	private readonly _assetsDir = join(homedir(), '.para-code', 'assets', 'ringtones');
-	private readonly _metadataPath = join(this._assetsDir, `${CUSTOM_STEM}.json`);
+	/** カスタム音源の置き場所（`~/.para-code/assets/ringtones/`。テストでは差し替える）。 */
+	private readonly _assetsDir: string;
+	private readonly _metadataPath: string;
 
-	/** downloadYouTubeAudio が発行した一時音源 (tempId → { path, dir }) */
-	private readonly _tempAudio = new Map<string, { readonly path: string; readonly dir: string }>();
+	/**
+	 * downloadYouTubeAudio / downloadMyinstantsAudio が発行した一時音源 (tempId → { path, dir })。
+	 * Myinstants 由来のものだけ、取得した mp3 の URL（出典）を持つ。
+	 */
+	private readonly _tempAudio = new Map<string, { readonly path: string; readonly dir: string; readonly myinstantsSourceUrl?: string }>();
 	private readonly _installStates = new Map<string, IInstallState>();
 
 	/** fatal エラーで Aivis を一時停止した際に理由を通知する（renderer が INotificationService で提示）。 */
@@ -262,6 +283,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		private readonly testing: IParadisNotificationsTestingOptions = {},
 	) {
 		super();
+		this._assetsDir = testing.assetsDir ?? join(homedir(), '.para-code', 'assets', 'ringtones');
+		this._metadataPath = join(this._assetsDir, `${CUSTOM_STEM}.json`);
 		this.elevenLabs = new ParadisElevenLabsClient(logService);
 		if (testing.ingest) {
 			this._ingest = testing.ingest;
@@ -853,7 +876,11 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
-	private _readMetadata(): { name?: string; importedAt?: number; thumbnailUrl?: string; editState?: IParadisRingtoneEditState } {
+	/**
+	 * カスタム音源のメタ情報。`sourceUrl` は Myinstants から取り込んだ音の出典（後から足した項目。無い JSON は
+	 * 今までどおり読める）。YouTube 由来の出典は `editState.sourceUrl` にある。
+	 */
+	private _readMetadata(): { name?: string; importedAt?: number; thumbnailUrl?: string; editState?: IParadisRingtoneEditState; sourceUrl?: string } {
 		if (!existsSync(this._metadataPath)) {
 			return {};
 		}
@@ -864,9 +891,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
-	private _writeMetadata(name: string, importedAt: number, thumbnailUrl?: string, editState?: IParadisRingtoneEditState): void {
+	private _writeMetadata(name: string, importedAt: number, thumbnailUrl?: string, editState?: IParadisRingtoneEditState, sourceUrl?: string): void {
 		this._ensureAssetsDir();
-		writeFileSync(this._metadataPath, JSON.stringify({ name, importedAt, ...(thumbnailUrl ? { thumbnailUrl } : {}), ...(editState ? { editState } : {}) }), 'utf8');
+		writeFileSync(this._metadataPath, JSON.stringify({ name, importedAt, ...(thumbnailUrl ? { thumbnailUrl } : {}), ...(editState ? { editState } : {}), ...(sourceUrl ? { sourceUrl } : {}) }), 'utf8');
 		try {
 			chmodSync(this._metadataPath, 0o600);
 		} catch {
@@ -956,7 +983,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		const displayName = name.trim().slice(0, 80) || 'Custom Audio';
 		const metadata = this._readMetadata();
-		this._writeMetadata(displayName, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, metadata.editState);
+		this._writeMetadata(displayName, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, metadata.editState, metadata.sourceUrl);
 		return { ...existing, name: displayName };
 	}
 
@@ -1032,7 +1059,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	private async _resolveBinaryEnv(): Promise<NodeJS.ProcessEnv> {
 		const shellPath = await this._getShellPath();
-		const fallbackDirs = process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin', '/usr/bin', '/usr/sbin', '/bin', '/sbin'];
+		// `~/.deno/bin` は deno の公式インストーラの既定の置き場所（yt-dlp が deno を見つけられるよう PATH にも足す）。
+		const fallbackDirs = process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin', '/usr/bin', '/usr/sbin', '/bin', '/sbin', join(homedir(), '.deno', 'bin')];
 		const entries = new Set(shellPath.split(delimiter).filter(Boolean));
 		for (const dir of fallbackDirs) {
 			entries.add(dir);
@@ -1055,7 +1083,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	}
 
 	private async _resolveRequiredBinaries(env: NodeJS.ProcessEnv): Promise<Record<string, string>> {
-		const missing = await this.checkYtDlp();
+		const missing = await this._checkRequiredBinaries(env);
 		if (missing.missing.length > 0) {
 			// allow-any-unicode-next-line
 			throw new Error(`必要なツールが見つかりません: ${missing.missing.join(', ')}。\`brew install yt-dlp ffmpeg\`（macOS、ffprobeはffmpegに同梱）またはお使いのパッケージマネージャでインストールしてください。`);
@@ -1067,8 +1095,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		return resolved;
 	}
 
-	async checkYtDlp(): Promise<{ missing: string[] }> {
-		const env = await this._resolveBinaryEnv();
+	private async _checkRequiredBinaries(env: NodeJS.ProcessEnv): Promise<{ missing: string[] }> {
 		const missing: string[] = [];
 		for (const binary of REQUIRED_BINARIES) {
 			if (!(await this._resolveBinaryPath(binary, env))) {
@@ -1076,6 +1103,70 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			}
 		}
 		return { missing };
+	}
+
+	/**
+	 * 取り込みの前の確認。欠けている必須のツールに加え、無いと一部の動画が取れなくなる deno と、yt-dlp の版
+	 * （既知の壊れた版か・古すぎるか、入れ方に応じた更新の手段）を返す。
+	 */
+	async checkYtDlp(): Promise<IParadisYtDlpCheckResult> {
+		const env = await this._resolveBinaryEnv();
+		const { missing } = await this._checkRequiredBinaries(env);
+		const optionalMissing: string[] = [];
+		for (const binary of OPTIONAL_BINARIES) {
+			if (!(await this._resolveBinaryPath(binary, env))) {
+				optionalMissing.push(binary);
+			}
+		}
+		const ytDlp = await this._getYtDlpStatus(env);
+		return { missing, optionalMissing, ...(ytDlp ? { ytDlp } : {}) };
+	}
+
+	private async _getYtDlpStatus(env: NodeJS.ProcessEnv): Promise<IParadisYtDlpStatus | undefined> {
+		const binaryPath = await this._resolveBinaryPath('yt-dlp', env);
+		if (!binaryPath) {
+			return undefined;
+		}
+		let output: string;
+		try {
+			output = await this._runProcess(binaryPath, ['--version'], tmpdir(), env, YT_DLP_VERSION_TIMEOUT_MS);
+		} catch (error) {
+			this.logService.warn(`[ParadisNotifications] yt-dlp --version failed: ${getErrorMessage(error)}`);
+			return undefined;
+		}
+		const version = paradisParseYtDlpVersion(output);
+		if (!version) {
+			this.logService.warn(`[ParadisNotifications] could not read the yt-dlp version from ${JSON.stringify(output.slice(0, 80))}`);
+			return undefined;
+		}
+		const assessment = paradisAssessYtDlpVersion(version, Date.now());
+		const [realPath, head] = this._readBinaryIdentity(binaryPath);
+		const installMethod = paradisDetectYtDlpInstallMethod(realPath, head);
+		return { version: version.raw, status: assessment.status, ageDays: assessment.ageDays, installMethod, update: paradisYtDlpUpdatePlan(installMethod) };
+	}
+
+	/** 実行ファイルのシンボリックリンクを解いた実体のパスと、先頭 512 バイト（入れ方の見分けに使う）。 */
+	private _readBinaryIdentity(binaryPath: string): [string, string] {
+		let realPath = binaryPath;
+		try {
+			realPath = realpathSync(binaryPath);
+		} catch {
+			// 解けなければ見つけたパスのまま
+		}
+		let head = '';
+		try {
+			const fd = openSync(realPath, 'r');
+			try {
+				const buffer = Buffer.alloc(512);
+				const read = readSync(fd, buffer, 0, buffer.length, 0);
+				head = buffer.subarray(0, read).toString('latin1');
+			} finally {
+				closeSync(fd);
+			}
+		} catch {
+			// 読めなければパスだけで見分ける
+		}
+		return [realPath, head];
 	}
 
 	private _appendInstallLog(installId: string, level: IParadisInstallLogLine['level'], message: string): void {
@@ -1095,7 +1186,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
-	async installYtDlp(installId: string): Promise<void> {
+	private _beginInstallState(installId: string): void {
 		// 通常は同時1件だが、ダイアログを閉じるとポーリングが止まり done 済みエントリが
 		// 残り続ける（ログ最大1000行分）。少数上限に達したら done 済みのうち最も古いものを
 		// 優先して破棄し、done が一つも無ければ最も古いもの（アクティブなものも含む）を
@@ -1115,6 +1206,19 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			this._installStates.delete(victim);
 		}
 		this._installStates.set(installId, { lines: [], done: false, nextSeq: 1 });
+	}
+
+	private _finishInstallWithError(installId: string, message: string): void {
+		this._appendInstallLog(installId, 'error', message);
+		const state = this._installStates.get(installId);
+		if (state) {
+			state.done = true;
+			state.error = message;
+		}
+	}
+
+	async installYtDlp(installId: string): Promise<void> {
+		this._beginInstallState(installId);
 
 		if (process.platform !== 'darwin') {
 			// allow-any-unicode-next-line
@@ -1138,10 +1242,44 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return;
 		}
 
-		this._appendInstallLog(installId, 'info', `$ ${brewPath} install yt-dlp ffmpeg`);
+		this._spawnLoggedCommand(installId, brewPath, ['install', 'yt-dlp', 'ffmpeg'], env, 'brew install',
+			// allow-any-unicode-next-line
+			'インストールが完了しました。');
+	}
+
+	/**
+	 * yt-dlp を、入れ方に応じた手段で更新する（設定画面で利用者が「更新」を押したときだけ呼ばれる）。出力は
+	 * インストールと同じく getInstallLog で読ませる。pip で入れたものと入れ方が分からないものは実行しない。
+	 */
+	async updateYtDlp(installId: string): Promise<void> {
+		this._beginInstallState(installId);
+		const env = await this._resolveBinaryEnv();
+		const status = await this._getYtDlpStatus(env);
+		if (!status || !status.update.runnable) {
+			this._finishInstallWithError(installId, status?.installMethod === 'pip'
+				// allow-any-unicode-next-line
+				? `pip で入れた yt-dlp は Para Code から更新できません。yt-dlp を入れた Python の pip で更新してください（例: ${status.update.command}）。`
+				// allow-any-unicode-next-line
+				: 'yt-dlp の入れ方が分からないため更新できません。入れたときの方法で更新してください。');
+			return;
+		}
+		const [program, ...args] = status.update.command.split(' ');
+		const programPath = await this._resolveBinaryPath(program, env);
+		if (!programPath) {
+			// allow-any-unicode-next-line
+			this._finishInstallWithError(installId, `${program} が見つかりません。ターミナルで「${status.update.command}」を実行してください。`);
+			return;
+		}
+		this._spawnLoggedCommand(installId, programPath, args, env, status.update.command,
+			// allow-any-unicode-next-line
+			'更新が完了しました。');
+	}
+
+	private _spawnLoggedCommand(installId: string, programPath: string, args: string[], env: NodeJS.ProcessEnv, label: string, doneMessage: string): void {
+		this._appendInstallLog(installId, 'info', `$ ${programPath} ${args.join(' ')}`);
 
 		// fire-and-forget: 呼び出し元はgetInstallLogでポーリングする。
-		const proc = spawn(brewPath, ['install', 'yt-dlp', 'ffmpeg'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+		const proc = spawn(programPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
 		const timer = setTimeout(() => proc.kill('SIGKILL'), 600_000);
 		proc.stdout?.on('data', (chunk: Buffer) => this._appendInstallLog(installId, 'info', chunk.toString()));
 		proc.stderr?.on('data', (chunk: Buffer) => this._appendInstallLog(installId, 'info', chunk.toString()));
@@ -1151,7 +1289,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			if (state) {
 				state.done = true;
 				// allow-any-unicode-next-line
-				state.error = `brewの起動に失敗しました: ${error.message}`;
+				state.error = `${label} の起動に失敗しました: ${error.message}`;
 				this._appendInstallLog(installId, 'error', state.error);
 			}
 		});
@@ -1163,11 +1301,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			}
 			state.done = true;
 			if (code === 0) {
-				// allow-any-unicode-next-line
-				this._appendInstallLog(installId, 'info', 'インストールが完了しました。');
+				this._appendInstallLog(installId, 'info', doneMessage);
 			} else {
 				// allow-any-unicode-next-line
-				state.error = `brew install がコード ${code ?? '?'} で終了しました`;
+				state.error = `${label} がコード ${code ?? '?'} で終了しました`;
 				this._appendInstallLog(installId, 'error', state.error);
 			}
 		});
@@ -1187,7 +1324,12 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		return result;
 	}
 
-	private _runProcess(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string> {
+	private async _runProcess(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string> {
+		return (await this._runProcessWithStderr(binaryPath, args, cwd, env, timeoutMs)).stdout;
+	}
+
+	/** _runProcess と同じだが、標準エラーも返す。失敗したときは {@link ParadisProcessError} に標準エラーの全文を載せる。 */
+	private _runProcessWithStderr(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
 		return new Promise((resolve, reject) => {
 			const proc: ChildProcess = spawn(binaryPath, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
 			let stdout = '';
@@ -1197,7 +1339,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			const timer = setTimeout(() => {
 				proc.kill('SIGKILL');
 				// allow-any-unicode-next-line
-				reject(new Error('処理がタイムアウトしました'));
+				reject(new ParadisProcessError('処理がタイムアウトしました', stderr));
 			}, timeoutMs);
 			proc.on('error', error => {
 				clearTimeout(timer);
@@ -1207,10 +1349,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			proc.on('exit', code => {
 				clearTimeout(timer);
 				if (code === 0) {
-					resolve(stdout);
+					resolve({ stdout, stderr });
 				} else {
 					// allow-any-unicode-next-line
-					reject(new Error(stderr.trim().split('\n').slice(-3).join('\n') || `プロセスがコード ${code ?? '?'} で終了しました`));
+					reject(new ParadisProcessError(stderr.trim().split('\n').slice(-3).join('\n') || `プロセスがコード ${code ?? '?'} で終了しました`, stderr, code ?? undefined));
 				}
 			});
 		});
@@ -1251,8 +1393,11 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		const outputTemplate = join(workDir, 'audio.%(ext)s');
 
 		const args = [
-			'--no-playlist', '--no-warnings',
-			'--match-filter', `duration <= ${MAX_FULL_DOWNLOAD_DURATION_SECONDS}`,
+			// 警告は捨てずに拾う（古い版・JS ランタイムの欠け・署名の解読失敗などの壊れる前兆が出る）。
+			'--no-playlist',
+			// `--match-filter` だけだと、長すぎる動画は終了コード 0 で黙って飛ばされる（`--print-json` で理由の行も出ない）。
+			// `--break-match-filters` なら終了コード 101 で止まるので、長さの超過と見分けられる。
+			'--break-match-filters', `duration <= ${MAX_FULL_DOWNLOAD_DURATION_SECONDS}`,
 			'-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
 			'--concurrent-fragments', '5',
 			'--ffmpeg-location', ffmpegDir,
@@ -1262,31 +1407,83 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		];
 
 		let info: { title: string; thumbnailUrl: string; durationSeconds: number };
+		let stderr = '';
 		try {
-			const jsonOutput = await this._runProcess(resolved['yt-dlp'], args, workDir, spawnEnv, FULL_DOWNLOAD_TIMEOUT_MS);
+			const output = await this._runProcessWithStderr(resolved['yt-dlp'], args, workDir, spawnEnv, FULL_DOWNLOAD_TIMEOUT_MS);
+			const jsonOutput = output.stdout;
+			stderr = output.stderr;
 			const lastJsonLine = jsonOutput.split('\n').map(l => l.trim()).filter(l => l.startsWith('{') && l.endsWith('}')).pop();
 			const data = lastJsonLine ? JSON.parse(lastJsonLine) as { title?: string; duration?: number; thumbnail?: string } : {};
 			info = { title: data.title?.trim() || 'YouTube Video', thumbnailUrl: data.thumbnail || '', durationSeconds: data.duration ?? 0 };
 		} catch (error) {
 			await rm(workDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
 			const message = error instanceof Error ? error.message : String(error);
-			if (/does not pass filter|duration/i.test(message)) {
-				// allow-any-unicode-next-line
-				throw new Error(`動画が長すぎます。最大 ${MAX_FULL_DOWNLOAD_DURATION_SECONDS / 60} 分までです。`);
+			const fullStderr = error instanceof ParadisProcessError ? error.stderr : message;
+			this._logYtDlpWarnings(fullStderr);
+			const reason = paradisClassifyYtDlpError(fullStderr, error instanceof ParadisProcessError ? error.exitCode : undefined);
+			if (reason === 'unknown') {
+				throw error;
 			}
-			throw error;
+			this.logService.warn(`[ParadisNotifications] yt-dlp failed (${reason}): ${message}`);
+			const ytDlp = reason === 'forbidden' || reason === 'noFormats' ? await this._getYtDlpStatus(env).catch(() => undefined) : undefined;
+			throw new Error(this._youTubeFailureMessage(reason, ytDlp));
 		}
 
+		const { precursors } = this._logYtDlpWarnings(stderr);
 		const producedPath = this._findProducedAudio(workDir);
 		if (!producedPath) {
 			await rm(workDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
+			// 「非公開」と決めつけない。理由が分からないときは、まず yt-dlp の更新を勧める。
 			// allow-any-unicode-next-line
-			throw new Error('yt-dlpが音源を生成できませんでした。動画が非公開または制限されている可能性があります。');
+			throw new Error('yt-dlpが音源を生成できませんでした。yt-dlp を更新してから、もう一度試してください。');
 		}
 
 		const tempId = randomUUID();
 		this._tempAudio.set(tempId, { path: producedPath, dir: workDir });
-		return { tempId, info };
+		return { tempId, info, ...(precursors.length > 0 ? { precursors } : {}) };
+	}
+
+	/** yt-dlp の警告の行をログへ出し、壊れる前兆を返す。 */
+	private _logYtDlpWarnings(stderr: string): ReturnType<typeof paradisExtractYtDlpWarnings> {
+		const warnings = paradisExtractYtDlpWarnings(stderr);
+		for (const line of warnings.lines.slice(0, 20)) {
+			this.logService.warn(`[ParadisNotifications] yt-dlp: ${line}`);
+		}
+		return warnings;
+	}
+
+	/** yt-dlp の失敗の理由を、利用者に見せる文に変える。403 は非公開ではなく、版の古さを疑わせる。 */
+	private _youTubeFailureMessage(reason: Exclude<ParadisYtDlpFailure, 'unknown'>, ytDlp?: IParadisYtDlpStatus): string {
+		// 画面はこの文をそのまま文字として出すので、コマンドはバックティックではなく「」で囲む。
+		const updateHint = !ytDlp?.update.command
+			? ''
+			: ytDlp.installMethod === 'pip'
+				// allow-any-unicode-next-line
+				? `（いまの版は ${ytDlp.version}。yt-dlp を入れた Python の pip で更新してください）`
+				// allow-any-unicode-next-line
+				: `（いまの版は ${ytDlp.version}。更新は「${ytDlp.update.command}」）`;
+		switch (reason) {
+			// allow-any-unicode-next-line
+			case 'forbidden': return `YouTube が取得を拒みました (HTTP 403)。動画が非公開なのではなく、yt-dlp が YouTube の変更に追いついていないことがほとんどです。yt-dlp を更新してから、もう一度試してください${updateHint}。`;
+			// allow-any-unicode-next-line
+			case 'botCheck': return 'YouTube がロボットではない確認を求めたため取得できませんでした。時間をおいて試すか、yt-dlp を更新してください。';
+			// allow-any-unicode-next-line
+			case 'ageRestricted': return '年齢制限のある動画のため取得できませんでした。';
+			// allow-any-unicode-next-line
+			case 'membersOnly': return 'メンバー限定の動画のため取得できませんでした。';
+			// allow-any-unicode-next-line
+			case 'private': return '非公開の動画のため取得できませんでした。';
+			// allow-any-unicode-next-line
+			case 'unavailable': return 'この動画は削除されたか、見られない状態です。';
+			// allow-any-unicode-next-line
+			case 'liveNotStarted': return 'まだ始まっていないライブ配信・プレミア公開のため取得できませんでした。';
+			// allow-any-unicode-next-line
+			case 'tooLong': return `動画が長すぎます。最大 ${MAX_FULL_DOWNLOAD_DURATION_SECONDS / 60} 分までです。`;
+			// allow-any-unicode-next-line
+			case 'noFormats': return `取り込める音声の形式が見つかりませんでした。deno を入れていない場合は入れ、yt-dlp を更新してから、もう一度試してください${updateHint}。`;
+			// allow-any-unicode-next-line
+			case 'network': return 'YouTube に接続できませんでした。ネットワークの接続を確かめてください。';
+		}
 	}
 
 	async readTempAudioFile(tempId: string): Promise<{ base64: string; mimeType: string } | null> {
@@ -1360,6 +1557,145 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		} finally {
 			clearTimeout(timer);
 		}
+	}
+
+	/**
+	 * Myinstants の mp3 の直リンクを 1 回だけ取得し、一時音源として持つ（試聴は readTempAudioFile、保存は
+	 * importMyinstantsAudio）。fetchAudio と違い、取りに行く先を `paradisCheckMyinstantsUrl` の形に絞る。
+	 * リダイレクトは自分で追い、追う先も同じ形を満たすものに限る。Content-Type と先頭のバイト列で mp3 を確かめ、
+	 * ファイルからの取り込みと同じ大きさの上限と、15 秒の打ち切りを掛ける。失敗は理由つきで返す（例外にしない）。
+	 */
+	async downloadMyinstantsAudio(url: string): Promise<IParadisMyinstantsDownloadResult> {
+		const check = paradisCheckMyinstantsUrl(url);
+		if (check.kind === 'page') {
+			return { ok: false, reason: 'pageUrl' };
+		}
+		if (check.kind !== 'mp3') {
+			return { ok: false, reason: 'invalidUrl' };
+		}
+
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), FETCH_AUDIO_TIMEOUT_MS);
+		let workDir: string | undefined;
+		try {
+			let current = check;
+			let response: Response;
+			for (let redirects = 0; ; redirects++) {
+				response = await fetch(current.url, { signal: controller.signal, redirect: 'manual' });
+				if (response.status < 300 || response.status >= 400) {
+					break;
+				}
+				await response.body?.cancel().catch(() => { /* ignore */ });
+				const location = response.headers.get('location');
+				let next: string | undefined;
+				try {
+					next = location ? new URL(location, current.url).toString() : undefined;
+				} catch {
+					next = undefined;
+				}
+				const nextCheck = next !== undefined ? paradisCheckMyinstantsUrl(next) : undefined;
+				if (redirects >= MYINSTANTS_MAX_REDIRECTS || nextCheck?.kind !== 'mp3') {
+					this.logService.warn(`[ParadisNotifications] downloadMyinstantsAudio: refused a redirect from ${current.url}`);
+					return { ok: false, reason: 'redirect' };
+				}
+				current = nextCheck;
+			}
+
+			if (!response.ok) {
+				await response.body?.cancel().catch(() => { /* ignore */ });
+				this.logService.warn(`[ParadisNotifications] downloadMyinstantsAudio: HTTP ${response.status} (${current.url})`);
+				if (response.status === 404 || response.status === 410) {
+					return { ok: false, reason: 'notFound', status: response.status };
+				}
+				if (response.status === 403) {
+					return { ok: false, reason: 'blocked', status: response.status };
+				}
+				return { ok: false, reason: 'http', status: response.status };
+			}
+			if (!paradisIsMp3ContentType(response.headers.get('content-type'))) {
+				await response.body?.cancel().catch(() => { /* ignore */ });
+				return { ok: false, reason: 'notMp3' };
+			}
+			const contentLength = Number(response.headers.get('content-length') ?? '0');
+			if (contentLength > PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES) {
+				await response.body?.cancel().catch(() => { /* ignore */ });
+				return { ok: false, reason: 'tooLarge' };
+			}
+
+			const chunks: Buffer[] = [];
+			let size = 0;
+			// 先頭のバイト列は、16 バイトそろった時点で確かめる（mp3 でなければ残りを読まずにやめる）。
+			let headChecked = false;
+			const reader = response.body?.getReader();
+			while (reader) {
+				const { done, value } = await reader.read();
+				if (done) {
+					break;
+				}
+				size += value.byteLength;
+				if (size > PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES) {
+					await reader.cancel().catch(() => { /* ignore */ });
+					return { ok: false, reason: 'tooLarge' };
+				}
+				chunks.push(Buffer.from(value));
+				if (!headChecked && size >= 16) {
+					headChecked = true;
+					if (!paradisLooksLikeMp3(Buffer.concat(chunks, size).subarray(0, 16))) {
+						await reader.cancel().catch(() => { /* ignore */ });
+						return { ok: false, reason: 'notMp3' };
+					}
+				}
+			}
+			const buffer = Buffer.concat(chunks, size);
+			if (!headChecked && !paradisLooksLikeMp3(buffer)) {
+				return { ok: false, reason: 'notMp3' };
+			}
+
+			workDir = await mkdtemp(join(tmpdir(), 'paradis-myinstants-'));
+			const audioPath = join(workDir, 'audio.mp3');
+			await writeFile(audioPath, buffer, { mode: 0o600 });
+			const tempId = randomUUID();
+			this._tempAudio.set(tempId, { path: audioPath, dir: workDir, myinstantsSourceUrl: current.url });
+			workDir = undefined;
+			return {
+				ok: true,
+				tempId,
+				sourceUrl: current.url,
+				fileName: current.fileName,
+				sizeBytes: buffer.byteLength,
+				suggestedName: paradisMyinstantsDisplayName(current.fileName),
+			};
+		} catch (error) {
+			if (controller.signal.aborted) {
+				// allow-any-unicode-next-line
+				this.logService.warn(`[ParadisNotifications] downloadMyinstantsAudio: タイムアウトしました (${check.url})`);
+				return { ok: false, reason: 'timeout' };
+			}
+			this.logService.warn(`[ParadisNotifications] downloadMyinstantsAudio failed (${check.url})`, error);
+			return { ok: false, reason: 'network' };
+		} finally {
+			clearTimeout(timer);
+			if (workDir) {
+				await rm(workDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
+			}
+		}
+	}
+
+	/**
+	 * downloadMyinstantsAudio が持った一時音源を、カスタム音源の 1 枠へ上書きで保存する（ファイルからの取り込みと
+	 * 同じ importCustomAudio を通す）。出典は shared process が取得時に控えた URL を使い、renderer からは受け取らない。
+	 */
+	async importMyinstantsAudio(tempId: string, displayName: string): Promise<IParadisCustomRingtoneInfo> {
+		const entry = this._tempAudio.get(tempId);
+		if (!entry?.myinstantsSourceUrl) {
+			// allow-any-unicode-next-line
+			throw new Error('取り込む音源が見つかりません。もう一度読み込んでください。');
+		}
+		await this.importCustomAudio(entry.path);
+		const name = displayName.trim().slice(0, 80) || paradisMyinstantsDisplayName(basename(new URL(entry.myinstantsSourceUrl).pathname));
+		this._writeMetadata(name, Date.now(), undefined, undefined, entry.myinstantsSourceUrl);
+		await this.cleanupTempAudio(tempId);
+		return (await this.getCustomRingtoneInfo())!;
 	}
 
 	async renderClip(request: IParadisRenderClipRequest): Promise<IParadisCustomRingtoneInfo> {
