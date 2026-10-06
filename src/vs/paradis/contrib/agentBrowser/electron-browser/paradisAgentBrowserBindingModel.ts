@@ -738,13 +738,14 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async revokeAgentTab(token: string, viewId: string): Promise<void> {
-		if (this._agentTabGrants.get(viewId) === token) {
-			this._agentTabGrants.delete(viewId);
-		}
 		try {
 			await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<boolean>('revokeAgentTab', [token, viewId]);
+			if (this._agentTabGrants.get(viewId) === token) {
+				this._agentTabGrants.delete(viewId);
+			}
 		} catch {
-			// ビューが消えれば shared process 側でも外れる（manifest の retire）。
+			// 届かなかったら控えを残す（ネットワークの制限の見直しが次の更新でもう一度外しに行く）。ビューが消えれば
+			// shared process 側でも外れる（manifest の retire）。
 		}
 	}
 

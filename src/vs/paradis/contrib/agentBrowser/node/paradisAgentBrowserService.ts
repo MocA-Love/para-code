@@ -1030,9 +1030,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		// bounded, and non-observably ordered before the IPC promise settles.
 		this._nextBindingGeneration = generation;
 		this._bindings.set(preparation.token, binding);
-		// 新しく共有されたページを、tab_id を省いたときの既定に戻す（エージェントが選んだタブより、ユーザーが
-		// 今共有したページを優先する。許可したタブは tab_id でそのまま使える）
-		this._selectedTabs.delete(preparation.token);
 		const throttlingEffects = this._backgroundThrottlingCoordinator.setBinding(preparation.token, binding.exactView);
 		this._activateBindingGeneration(preparation.token, generation, true);
 		this._dispatchBackgroundThrottlingEffects(throttlingEffects);
@@ -1130,6 +1127,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		const previous = this._rendererConnections.get(windowCtx);
 		if (previous !== undefined && previous !== connection) {
 			this._rendererConnectionContexts.delete(previous);
+		}
+		if (previous !== connection) {
+			// エージェントのタブの台帳は renderer のメモリにだけある（再読み込みで忘れる）。新しい接続になったら、
+			// そのウィンドウの許可も外す（取り消す側が居なくなった許可を残さない）
+			this._dropAgentTabGrants(grant => grant.windowCtx === windowCtx);
 		}
 		this._rendererConnections.set(windowCtx, connection);
 		this._rendererConnectionContexts.set(connection, windowCtx);
@@ -1239,6 +1241,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				&& (existing.windowCtx !== windowCtx || existing.shellPid !== desiredShellPid || existing.remoteAuthority !== desiredRemoteAuthority)) {
 				this._paneShells.delete(pane.token);
 				this._runNonThrowingCleanup('gateway-connections', () => this._cdpGateway.closeConnectionsForToken(pane.token));
+				// tab_id のタブの接続（`?pane=&tab=`）も、ペインのシェル・接続先が変わったら閉じる
+				for (const tabId of this._tabScopes.get(pane.token)?.keys() ?? []) {
+					this._runNonThrowingCleanup('gateway-tab-connections', () => this._cdpGateway.closeConnectionsForToken(paradisAgentTabScopeKey(pane.token, tabId)));
+				}
 			}
 			if (desiredShellPid !== undefined) {
 				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid, ...(desiredRemoteAuthority !== undefined ? { remoteAuthority: desiredRemoteAuthority } : {}) });
@@ -1249,6 +1255,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		this._processOwnerRelease(acceptance);
+		this._runNonThrowingCleanup('agent-tab-scope', () => this._dropAgentTabGrantsOutOfScope(acceptedManifest));
 		// Para Code が止まっている間の hook の控えを流し直す（W2-20）。受け口はトークンが今生きている
 		// ペインのものかを確かめるので、ペインの同期が済んだこの時点で読む。
 		for (const pane of acceptedManifest.panes) {
@@ -1555,6 +1562,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (typeof token !== 'string'
 			|| token.length === 0
 			|| token.length > MAX_PANE_TOKEN_LENGTH
+			// タブのスコープキーの区切りを含むトークンは受けない（スコープキーと取り違えないため）
+			|| paradisParseAgentTabScopeKey(token).tabId !== undefined
 			|| this._serverDisposed
 			|| this._authorityFaulted
 			|| this._faultedTokens.has(token)
@@ -1591,17 +1600,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// ウィンドウの持ち物でなくなったタブ（閉じた・別のウィンドウへ移った）の許可を外す
 		if (release.retiredViewIds.length > 0) {
 			const retiredViews = new Set(release.retiredViewIds);
-			for (const [token, grants] of [...this._agentTabGrants]) {
-				let changed = false;
-				for (const tabId of [...grants.keys()]) {
-					if (retiredViews.has(tabId)) {
-						changed = this._deleteAgentTabGrant(token, tabId) || changed;
-					}
-				}
-				if (changed) {
-					this._runNonThrowingCleanup('agent-tab-retire', () => this._reconcileTabScopes(token));
-				}
-			}
+			this._dropAgentTabGrants(grant => retiredViews.has(grant.pageId));
 		}
 		for (const retirement of release.bindingRetirements) {
 			const active = this._bindings.get(retirement.token);
@@ -1647,17 +1646,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private _cleanupRemainingWindowState(windowCtx: string, preservedTokens: ReadonlySet<string>): void {
-		for (const [token, grants] of [...this._agentTabGrants]) {
-			let changed = false;
-			for (const [tabId, grant] of [...grants]) {
-				if (grant.windowCtx === windowCtx) {
-					changed = this._deleteAgentTabGrant(token, tabId) || changed;
-				}
-			}
-			if (changed) {
-				this._runNonThrowingCleanup('agent-tab-window', () => this._reconcileTabScopes(token));
-			}
-		}
+		this._dropAgentTabGrants(grant => grant.windowCtx === windowCtx);
 		for (const [token, binding] of [...this._bindings]) {
 			if (binding.windowCtx === windowCtx && !preservedTokens.has(token)) {
 				this._bindings.delete(token);
@@ -1985,6 +1974,34 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(paradisAgentTabScopeKey(token, tabId)));
 		return true;
+	}
+
+	/** 条件に合う許可を外し、外したペインのタブのスコープを片付ける。 */
+	private _dropAgentTabGrants(predicate: (grant: IBindingEntry, token: string) => boolean): void {
+		for (const [token, grants] of [...this._agentTabGrants]) {
+			let changed = false;
+			for (const [tabId, grant] of [...grants]) {
+				if (predicate(grant, token)) {
+					changed = this._deleteAgentTabGrant(token, tabId) || changed;
+				}
+			}
+			if (changed) {
+				this._runNonThrowingCleanup('agent-tab-drop', () => this._reconcileTabScopes(token));
+			}
+		}
+	}
+
+	/**
+	 * 受け取った manifest で、許可したタブかペインの（確定した）スペースが許可したときと変わっていたら外す。
+	 * 共有（バインド）で renderer がスペースの変化に合わせて解除するのと同じ扱い。切替の途中（pending）は外さない。
+	 */
+	private _dropAgentTabGrantsOutOfScope(manifest: IParadisBindingAuthorityManifest): void {
+		const paneScopes = new Map(manifest.panes.map(pane => [pane.token, pane.scope] as const));
+		const viewScopes = new Map(manifest.browserViews.map(view => [view.viewId, view.scope] as const));
+		const moved = (current: IParadisBindingAuthorityManifest['panes'][number]['scope'] | undefined, granted: ParadisBindingAuthorityStableScope) =>
+			current !== undefined && current.kind !== 'pending'
+			&& (current.kind !== granted.kind || (current.kind === 'managed' && granted.kind === 'managed' && current.stateKey !== granted.stateKey));
+		this._dropAgentTabGrants((grant, token) => moved(paneScopes.get(token), grant.scope) || moved(viewScopes.get(grant.pageId), grant.scope));
 	}
 
 	private _agentTabGrantCount(): number {
@@ -3924,9 +3941,11 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		if (name === 'get_cdp_endpoint') {
 			// CDPエンドポイント自体はバインド無しでも案内する（バインド状況も添える）。
-			const boundEntry = this._bindingForKey(this._pageKeyOf(pageLease));
+			// httpBase（接続元のプロセスでペインを決める）が見せるのは、共有中のページだけ
+			const boundEntry = this._bindings.get(token);
 			const httpBase = this._port !== undefined ? `http://127.0.0.1:${this._port}/cdp` : undefined;
 			const scopedTab = paradisParseAgentTabScopeKey(this._pageKeyOf(pageLease)).tabId;
+			const tabEntry = this._bindingForKey(this._pageKeyOf(pageLease));
 			if (!httpBase) {
 				// allow-any-unicode-next-line
 				return this._toolError('CDPゲートウェイのHTTPサーバーがまだ起動していません。少し待って再試行してください。');
@@ -3937,9 +3956,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				note: 'browser-use など外部の生CDPクライアントのCDP URLにこの httpBase を指定してください。chrome-devtools系ツール（take_snapshot / click / navigate_page 等）はこのMCPサーバーに内蔵済みなので、通常このエンドポイントを直接使う必要はありません。操作できるのはこのターミナルペインに共有されたページのみです。',
 				limitations: CDP_LIMITATIONS_NOTE,
 				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title, pageId: boundEntry.pageId } : null,
-				// tab_id で選んだタブだけを見せる接続（httpBase はペインの共有中のページだけを見せる）
-				...(scopedTab !== undefined && boundEntry !== undefined && this._port !== undefined
-					? { tabWebSocketDebuggerUrl: `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}${paradisGatewayPaneQuery(this._pageKeyOf(pageLease))}` }
+				// tab_id で選んだタブだけを見せる接続（httpBase はペインの共有中のページだけを見せる）。ペインは接続元の
+				// プロセスから決めるので、URL にペインのトークンは載せない
+				...(scopedTab !== undefined && tabEntry !== undefined && this._port !== undefined
+					? { tab: { tabId: scopedTab, url: tabEntry.pageInfo.url, title: tabEntry.pageInfo.title }, tabWebSocketDebuggerUrl: `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}?tab=${encodeURIComponent(scopedTab)}` }
 					: {}),
 				...(boundEntry ? {} : { hint: NOT_BOUND_MESSAGE }),
 			}, null, 2));
@@ -4846,6 +4866,7 @@ export class ParadisAgentBrowserService extends Disposable {
 						? 'The user did not answer in time, so no page was shared. Do not ask again right away; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.'
 						: 'The user declined to share a page. Do not ask again; continue without it, or open a tab of your own with open_browser_tab if a login is not needed.');
 				}
+				this._selectTab(token, call.value.tab.tabId);
 				return this._toolText(`The user shared tab ${call.value.tab.tabId} (${call.value.tab.url || 'about:blank'}). It is now the page shared with this terminal pane and its current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${call.value.tab.tabId}" to use it while working in other tabs. It stays usable until the user stops sharing it or shares another page with this pane.`);
 			}
 		}
@@ -4954,7 +4975,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!profileName) {
 					return this._toolError('switch_browser_profile requires the name of a browser profile (see list_browser_profiles).');
 				}
-				const call = await this._callOwningWindow<IParadisSwitchProfileResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, [profileName, text('tabId')]), signal);
+				// tabId を省いたら、このペインの既定のタブ（最後に開いた・選んだタブ、無ければ共有のページ）
+				const tabId = text('tabId') ?? text(PARADIS_TAB_ID_ARGUMENT) ?? this._defaultTabId(token);
+				const call = await this._callOwningWindow<IParadisSwitchProfileResult>(ingressLease, request(PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, [profileName, tabId]), signal);
 				if (!call.ok) {
 					return this._toolError(call.error);
 				}
