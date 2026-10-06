@@ -1285,6 +1285,7 @@
 		"--paradis-space-accent",
 		"--paradis-space-accent-unfocused",
 		"--paradis-statusbar-bg",
+		"--paradis-tce-swatch",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",
 		"--paradis-workspace-color"
