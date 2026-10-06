@@ -25,7 +25,69 @@ import {
 	paradisParseAgentIdeCall,
 } from '../../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SKILL_CONTENT, paradisAgentIdeGuide } from '../../common/paradisAgentIdeGuide.js';
+import { paradisAgentChoiceMenu } from '../../common/paradisAgentChoiceMenu.js';
 import { paradisAgentStartupScreenState } from '../../common/paradisAgentStartupScreen.js';
+
+// codex-cli 0.158.0 / 0.160.0 の選択画面（Orca、MIT License、Copyright (c) 2026 Lovecast Inc. の
+// src/main/runtime/__fixtures__ の録画を 120x40 で描いた画面の末尾）。キーの案内の行は、このソースを
+// 表示した画面で判定が当たらないよう単語を連ねて組み立てる。
+const words = (...parts: string[]) => parts.join(' ');
+const MIDDLE_DOT = '\u00b7';
+const CODEX_PLAN_MENU = [
+	'\u2022 Proposed Plan',
+	'  1. Append One line added. beneath the existing # scratch heading in notes.md, using this text as the default since',
+	'     none was specified.',
+	'  2. Check the diff confirms exactly one added line and no other changes.',
+	'',
+	'  Worked for 12s \u2022 1:45 AM',
+	'',
+	'  Implement this plan?',
+	'',
+	'\u203a 1. Yes, implement this plan          Switch to Default and start coding',
+	'  2. Yes, clear context and implement  Start a fresh thread (current context: 2% used)',
+	'  3. No, stay in Plan mode             Continue planning with the model',
+	'',
+	`  ${words('enter', 'select', MIDDLE_DOT, 'esc', 'back')}`,
+	'',
+].join('\n');
+const CODEX_UPDATE_NOTICE = [
+	'\u203a Ask Codex to do anything',
+	'',
+	'  Update available \u00b7 0.158.0 \u2192 0.159.0',
+	'  Release notes: https://github.com/openai/codex/releases/latest',
+	'',
+	'\u203a 1. Update now (runs `npm install -g @openai/codex`)',
+	'  2. Skip',
+	'  3. Skip until next version',
+	'',
+	`  ${words('enter', 'continue', MIDDLE_DOT, 'esc', 'skip')}`,
+].join('\n');
+const CODEX_MODEL_NOTICE = [
+	'  1. Unrelated numbered line in the scrollback',
+	'  Meet GPT-6 Sol',
+	'  Our latest Sol is more intelligent and more efficient so your usage limits go further.',
+	'',
+	'\u203a 1. Try new model',
+	'  2. Use existing model',
+	'',
+	`  ${words('enter/esc', 'confirm', MIDDLE_DOT, 'ctrl+c', 'quit')}`,
+].join('\n');
+const CODEX_MODEL_RETIRED = [
+	'  GPT-5.4 on Amazon Bedrock is no longer offered in Codex',
+	'  Codex now uses GPT-6 Sol on Amazon Bedrock in place of GPT-5.4 on Amazon Bedrock.',
+	'',
+	`  ${words('enter/esc', 'continue', MIDDLE_DOT, 'ctrl+c', 'quit')}`,
+].join('\n');
+const CODEX_HOOKS_REVIEW = [
+	'  Hooks need review',
+	'  8 hooks are new or changed.',
+	'',
+	'\u203a 1. Review hooks',
+	'  2. Trust all and continue',
+	'  3. Continue without trusting (hooks won\'t run)',
+	'',
+	`  ${words('enter', 'confirm', MIDDLE_DOT, 'esc', 'skip')}`,
+].join('\n');
 
 suite('paradisAgentIde (common)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -105,7 +167,8 @@ suite('paradisAgentIde (common)', () => {
 			idle: [idleWatcher.observe('idle', undefined, 3000), idleWatcher.observe('idle', undefined, 6000)],
 			launched: launchedWatcher.observe('idle', undefined, 30_000),
 			needsHuman: new ParadisAgentStopWatcher(1000).observe('asking_question', 500, 1000),
-		}, { busy: ['waiting', 'waiting', 'stopped'], idle: ['waiting', 'no_agent_status'], launched: 'waiting', needsHuman: 'needs_input' });
+			needsChoice: new ParadisAgentStopWatcher(1000).observe('waiting_for_choice', 1500, 2000),
+		}, { busy: ['waiting', 'waiting', 'stopped'], idle: ['waiting', 'no_agent_status'], launched: 'waiting', needsHuman: 'needs_input', needsChoice: 'needs_choice' });
 	});
 
 	test('stop watcher: an agent launched without a prompt is ready once its input box shows', () => {
@@ -119,8 +182,7 @@ suite('paradisAgentIde (common)', () => {
 	});
 
 	test('startup screen: the trust dialogs and empty input boxes of the installed CLIs, and nothing else', () => {
-		// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる
-		const words = (...parts: string[]) => parts.join(' ');
+		// 選択肢の文言はこのソースを表示した画面で判定が当たらないよう、単語を連ねて組み立てる（words は上の共通のもの）
 		const rule = '\u2500'.repeat(40);
 		const claudeYes = words('Yes,', 'I', 'trust', 'this', 'folder');
 		const claudeNo = words('No,', 'exit');
@@ -150,6 +212,11 @@ suite('paradisAgentIde (common)', () => {
 			// 信頼の確認の見出しが出ている間は、準備完了と言わない
 			claudeModeUnderTrust: `${claudeHeader}${rule}\n\u276f \n${rule}\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)`,
 			codexReady: '\u203a Ask Codex to do anything\n\n  100% context left',
+			// 0.160.0 の更新の案内は入力欄の案内の下に出る。案内が出ている間は準備完了と言わない
+			codexUpdateNotice: CODEX_UPDATE_NOTICE,
+			// 選択肢を選んだ後の行（カーソル付き）が入力欄より下にあるなら、入力欄が最後の入力欄ではない
+			codexComposerNotLast: '\u203a Ask Codex to do anything\n\n\u203a 1. Something else',
+			codexHooksReview: `\u203a Ask Codex to do anything\n${CODEX_HOOKS_REVIEW}`,
 			// 見出しと選択肢の文言が画面にあっても、選択肢の形（隣り合う2行・カーソル）でなければ当てない
 			mentionOnly: `${claudeHeader}The dialog offers "${claudeYes}" and "${claudeNo}".`,
 			noCursor: `${claudeHeader}  ${claudeNo}\n  ${claudeYes}`,
@@ -175,6 +242,9 @@ suite('paradisAgentIde (common)', () => {
 			claudeModeTyped: null,
 			claudeModeUnderTrust: null,
 			codexReady: 'ready',
+			codexUpdateNotice: null,
+			codexComposerNotLast: null,
+			codexHooksReview: null,
 			mentionOnly: null,
 			noCursor: null,
 			notAdjacent: null,
@@ -182,6 +252,50 @@ suite('paradisAgentIde (common)', () => {
 			codexQuestionOnly: null,
 			scrolledAway: null,
 			empty: null,
+		});
+	});
+
+	test('choice menus: Codex menus that own the keyboard are read with their options, only while the key row ends the screen', () => {
+		const answered = CODEX_PLAN_MENU.replace(/\n\s*enter select.*$/s, '\n\u203a Ask Codex to do anything\n\n  ? for shortcuts');
+		const mentioned = `${CODEX_PLAN_MENU}\n\u203a Ask Codex to do anything`;
+		assert.deepStrictEqual({
+			plan: paradisAgentChoiceMenu(CODEX_PLAN_MENU),
+			update: paradisAgentChoiceMenu(CODEX_UPDATE_NOTICE),
+			model: paradisAgentChoiceMenu(CODEX_MODEL_NOTICE),
+			retired: paradisAgentChoiceMenu(CODEX_MODEL_RETIRED)?.options,
+			hooks: paradisAgentChoiceMenu(CODEX_HOOKS_REVIEW)?.kind,
+			answered: paradisAgentChoiceMenu(answered) ?? null,
+			mentioned: paradisAgentChoiceMenu(mentioned) ?? null,
+			// Claude Code の確認画面は従来どおり PROMPT_PATTERNS で見る（選択画面としては読まない）
+			claude: paradisAgentChoiceMenu('Do you want to proceed?\n\u276f 1. Yes\n  2. No\n\nEsc to cancel') ?? null,
+			blocksEnter: [CODEX_PLAN_MENU, CODEX_UPDATE_NOTICE, CODEX_MODEL_RETIRED, answered].map(screen => paradisAgentIdeScreenShowsPrompt(screen)),
+		}, {
+			plan: {
+				kind: 'plan_implement',
+				title: 'Implement this plan?',
+				options: ['Yes, implement this plan - Switch to Default and start coding', 'Yes, clear context and implement - Start a fresh thread (current context: 2% used)', 'No, stay in Plan mode - Continue planning with the model'],
+				selected: 0,
+				enterWould: 'Enter would pick the highlighted choice, by default "Yes, implement this plan", and Codex would leave Plan mode and start changing files',
+			},
+			update: {
+				kind: 'update',
+				title: 'Update available \u00b7 0.158.0 \u2192 0.159.0',
+				options: ['Update now (runs `npm install -g @openai/codex`)', 'Skip', 'Skip until next version'],
+				selected: 0,
+				enterWould: 'Enter would pick the highlighted choice, by default "Update now", which installs a new Codex version and exits',
+			},
+			model: {
+				kind: 'model_switch',
+				options: ['Try new model', 'Use existing model'],
+				selected: 0,
+				enterWould: 'Enter would confirm the highlighted choice and switch the model Codex uses',
+			},
+			retired: [],
+			hooks: 'hooks_review',
+			answered: null,
+			mentioned: null,
+			claude: null,
+			blocksEnter: [true, true, true, false],
 		});
 	});
 
