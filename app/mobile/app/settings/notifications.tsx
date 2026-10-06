@@ -19,6 +19,7 @@ import { useUsageAutoRefresh, useUsageOverview } from '../../src/features/usage/
 import { groupVoiceUsage, voiceEmptyReason, voiceEmptyText, voiceSummaryHint } from '../../src/features/usage/voiceUsageModel.js';
 import type { UsageKind } from '../../src/features/usage/usageAggregate.js';
 import { useNow } from '../../src/time.js';
+import { PcDoNotDisturbSection } from '../../src/features/doNotDisturb/pcDoNotDisturbSection.js';
 
 const VOICE_KINDS: readonly UsageKind[] = ['voice'];
 
@@ -53,6 +54,9 @@ const PERMISSION_VALUE: Record<NotificationPermissionState, string> = {
  *
  * モックの「通知を有効にする」（全体のスイッチ）は、Para Code では OS の通知の許可そのものになる。
  * 許可はアプリから取り消せないので、スイッチではなく許可の状態を出す行にしている。
+ *
+ * 先頭の「PC のおやすみモード」は PC ごとに PC の音・デスクトップ通知・読み上げを止める（Q253 B）。この端末への
+ * プッシュは止めない（Q228 A）。
  */
 export default function NotificationSettingsScreen() {
 	const { notifyPrefs, setNotifyPref, notifyOtherPcs, setNotifyOtherPcs, voice } = useAppStore(useShallow(s => ({
@@ -92,6 +96,9 @@ export default function NotificationSettingsScreen() {
 
 	return (
 		<SettingsScreen title="通知と音声" footer={<VoiceNotificationDrawer visible={voiceOpen} onClose={() => setVoiceOpen(false)} />}>
+			<PcDoNotDisturbSection />
+
+			<GroupHeader title="通知の許可" />
 			<ListGroup>
 				<ListRow
 					label="通知の許可"

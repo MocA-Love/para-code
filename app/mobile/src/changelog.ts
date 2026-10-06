@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'moon-outline',
+				title: 'PC のおやすみモードを、スマホから PC ごとに入れたり切ったりできるようになりました',
+				body: '設定 →「通知と音声」の先頭に PC ごとの行が並びます。期限は PC と同じ 30分・1時間・朝まで（7:00）・自分でオフにするまでの 4 つで、止まるのは PC の通知音・デスクトップ通知・読み上げです。この端末へのプッシュは止まりません（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'git-network-outline',
 				title: 'Claude Code の Workflow を、トークで 1 枚のカードとして見られるようになりました',
 				body: '名前・状態・段階ごとの進み具合・子の数・経過をまとめて出し、押すと段階ごとに子を並べた画面を開きます。完了した子は畳み、失敗と実行中の子を先に出します。子が起動したシェルもカードに寄せます（PC の Para Code も新しい版が必要です）。',

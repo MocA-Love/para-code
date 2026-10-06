@@ -208,6 +208,13 @@ export const ParadisMobileCapability = {
 	 * 行を 1 枚のカードにし、Workflow の子のシェルをペインの一覧からカードへ寄せる（古い PC・古いアプリは今の表示のまま）。
 	 */
 	AgentWorkflows: 'agent.workflows.v1',
+	/**
+	 * PC のおやすみモードをモバイルから切り替える（Q253 B。`paradisMobileDoNotDisturb.ts`）。PC だけが広告する。
+	 * Desktop State の任意項目 `doNotDisturb`（PC の今の状態。変わったときだけ revision を進めて送り直す）と、
+	 * fs の `dndSet`（`opId`・`enabled`・`duration`。応答は適用後の状態）。アプリは広告している PC にだけスイッチを出し、
+	 * 広告しない PC には「この PC は更新すると、ここから切り替えられます」と出す（Q256）。
+	 */
+	NotifyDoNotDisturbRemote: 'notify.dnd-remote.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -262,6 +269,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.MetricsPing,
 	ParadisMobileCapability.NotifyDismissSync,
 	ParadisMobileCapability.AgentWorkflows,
+	ParadisMobileCapability.NotifyDoNotDisturbRemote,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

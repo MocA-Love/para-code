@@ -57,6 +57,7 @@ import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileLinkMetrics.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileViewportBanner.contribution.js';
+import './contrib/mobileRelay/electron-browser/paradisMobileDoNotDisturbSync.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/remoteHosts/electron-browser/paradisRemoteHostBrowser.js';
 // 2 画面のファイル転送（このマシン ⇄ このウィンドウの接続先）。アクティビティバー左下のボタンは

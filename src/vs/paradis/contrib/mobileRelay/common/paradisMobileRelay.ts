@@ -23,6 +23,7 @@ import { IParadisMobileBrowserScopeSnapshot } from './paradisMobileBrowserScope.
 import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
+import type { IParadisMobileDoNotDisturbState } from './paradisMobileDoNotDisturb.js';
 import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
@@ -222,6 +223,11 @@ export interface IParadisMobileDesktopStateV3 {
 	 * モバイルは「あるPCの SSH 先が、別にペアリングしたPCそのもの」を見分けて使用量を二重に数えない。
 	 */
 	readonly machineIdHash?: string;
+	/**
+	 * PC のおやすみモード（`notify.dnd-remote.v1` の PC だけ。どのウィンドウもまだ報告していなければ未配信）。
+	 * 状態が変わったときだけ revision を進めて送り直す（`paradisMobileDoNotDisturb.ts`）。
+	 */
+	readonly doNotDisturb?: IParadisMobileDoNotDisturbState;
 }
 
 /** shared process の接続状態。 */
@@ -340,6 +346,12 @@ export interface IParadisMobileRelayService {
 	 * 解決して渡す。desktop state とペアリングURIの両方に載る。
 	 */
 	setPcName(pcName: string | undefined): Promise<void>;
+
+	/**
+	 * PC のおやすみモードの今の状態を渡す（各ウィンドウの renderer が、変わったとき・期限が来たとき・起動時に呼ぶ）。
+	 * 値が変わったときだけ desktop state を送り直す（`notify.dnd-remote.v1`）。
+	 */
+	setDoNotDisturb(state: IParadisMobileDoNotDisturbState): Promise<void>;
 
 	// ペアリング
 	readonly onPairingEvent: Event<ParadisMobilePairingEvent>;
