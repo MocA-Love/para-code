@@ -131,8 +131,8 @@ export class ParadisNotifyDismissStore extends Disposable {
 	}
 
 	/** hook の出来事で、そのエージェントの許可・質問の回答が成立したなら片付ける。 */
-	handleHookEvent(event: Pick<IParadisAgentHookEvent, 'token' | 'event' | 'toolUseId'> & { readonly at?: number }): void {
-		const answer = paradisNotifyAnswerFromHook(event.event, event.toolUseId);
+	handleHookEvent(event: Pick<IParadisAgentHookEvent, 'token' | 'event' | 'toolUseId' | 'payload' | 'ownerUnverified'> & { readonly at?: number }): void {
+		const answer = paradisNotifyAnswerFromHook(event.event, event.toolUseId, { ownerUnverified: event.ownerUnverified === true, payload: event.payload });
 		if (answer === undefined || event.token.length === 0) {
 			return;
 		}

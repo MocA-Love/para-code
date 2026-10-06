@@ -1918,7 +1918,7 @@ export class MobileController {
 	 * PCが「その通知はもう処理された」と知らせてきた（`dismissed` / `dismissed-token`）。
 	 * アプリ内の一覧は store 自身が消す。これは通知センターに残ったものを消すための口。
 	 */
-	onNotifyHandled: ((handled: { readonly ids: readonly string[]; readonly tokens: readonly string[] }) => void) | undefined;
+	onNotifyHandled: ((handled: { readonly ids: readonly string[]; readonly tokens: readonly string[]; readonly keepPrompts?: boolean }) => void) | undefined;
 	/** 接続の出来事（W2-22 の「接続の記録」へ残す口。記録するだけ）。 */
 	onConnectionEvent: ((event: RelayConnectionEvent) => void) | undefined;
 	/** 「裏に回った」の確認待ち（W2-34。id → 結果を返す関数）。 */
@@ -5253,11 +5253,14 @@ export class MobileController {
 				return;
 			}
 			if (control?.t === 'dismissed-token') {
-				this.onNotifyHandled?.({ ids: [], tokens: [control.token] });
 				// PC自身がそのエージェント(agentToken)のペインを確認済みにした。同じagentTokenを持つ通知をまとめて一覧から消す。
 				// 許可・質問は残す（Q243 A。PC で見ただけでは片付けず、回答が成立したら PC が ID で知らせる）。
-				if (this.state.notifications.some(n => n.agentToken === control.token && n.kind !== 'agent-question')) {
-					this.state.notifications = this.state.notifications.filter(n => n.agentToken !== control.token || n.kind === 'agent-question');
+				// 回答で片付けを知らせない旧 PC（notify.dismiss-sync.v1 なし）では、今までどおり許可・質問も消す。
+				const keepPrompts = this.hasPcCapability(PcCapability.NotifyDismissSync);
+				this.onNotifyHandled?.({ ids: [], tokens: [control.token], ...(keepPrompts ? { keepPrompts } : {}) });
+				const handledByToken = (n: { readonly agentToken?: string; readonly kind: string }) => n.agentToken === control.token && (!keepPrompts || n.kind !== 'agent-question');
+				if (this.state.notifications.some(handledByToken)) {
+					this.state.notifications = this.state.notifications.filter(n => !handledByToken(n));
 					this.emit({ notifications: true });
 				}
 				return;

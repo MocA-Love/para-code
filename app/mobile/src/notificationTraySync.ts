@@ -9,10 +9,10 @@ import { selectHandledByPc, selectSameCollapse, selectSettledByState, type TrayT
  */
 
 /** PCが処理済みと知らせてきた通知を通知センターから消す。 */
-export async function dismissTrayHandledByPc(pcId: string, handled: { readonly ids: readonly string[]; readonly tokens: readonly string[] }): Promise<void> {
+export async function dismissTrayHandledByPc(pcId: string, handled: { readonly ids: readonly string[]; readonly tokens: readonly string[]; readonly keepPrompts?: boolean }): Promise<void> {
 	const before = Date.now();
 	const presented = await listPresentedNotifications();
-	const stale = selectHandledByPc(presented, { pcId, ids: handled.ids, tokens: handled.tokens, before });
+	const stale = selectHandledByPc(presented, { pcId, ids: handled.ids, tokens: handled.tokens, before, keepPrompts: handled.keepPrompts === true });
 	if (stale.length > 0) {
 		await dismissPresentedNotifications(stale);
 	}
