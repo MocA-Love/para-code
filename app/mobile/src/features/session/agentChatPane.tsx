@@ -34,6 +34,7 @@ import { withQuestionOutcomes } from './questionOutcomes.js';
 import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
 import { ChatList, type ChatListHandle } from './chatList.js';
 import { buildChatRows, questionRowId, splitPinnedQuestion } from './chatRows.js';
+import { paneShells } from '../../agentWorkflows.js';
 import { PermissionCard } from './permissionCard.js';
 import { QueuedSendsBanner } from './queuedSends.js';
 import { SessionComposer, type SessionComposerHandle } from './sessionComposer.js';
@@ -188,7 +189,15 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const history = useAgentHistory(terminalKey, chat);
 	const olderMessages = history.messages;
 	// 「質問に答えずに話す」で取り下げた質問は、その結果を質問の行へまとめる（questionOutcomes.ts）
-	const rows = useMemo(() => withQuestionOutcomes(buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? [])), [olderMessages, messages]);
+	// Workflow のカード（agent.workflows.v1）。PC が実行を追っている起動の行だけをカードにする（古い PC なら今の行のまま）
+	const workflowsSupported = usePcCapability(PcCapability.AgentWorkflows);
+	const workflows = workflowsSupported && chatReady ? chat?.workflows : undefined;
+	const workflowIdsKey = (workflows ?? []).map(workflow => workflow.toolUseId ?? '').join('\n');
+	const workflowToolUseIds = useMemo(() => new Set(workflowIdsKey.split('\n').filter(id => id.length > 0)), [workflowIdsKey]);
+	const rows = useMemo(() => withQuestionOutcomes(buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? [], workflowToolUseIds)), [olderMessages, messages, workflowToolUseIds]);
+	// Workflow の子が起動したシェルはカードへ寄せる（Q259 A）。ピルとシートには親と普通の子のものだけを出す
+	const chatShells = chatReady ? chat?.shells : undefined;
+	const shownShells = useMemo(() => paneShells(chatShells, workflows), [chatShells, workflows]);
 	const interactionKind = chat?.interaction?.kind;
 	const interactionId = chat?.interaction?.id;
 	const { pinned, listRows } = useMemo(
@@ -368,7 +377,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						modelLocked={chat?.info?.modelControl === 'none'}
 						commandCatalog={chat?.commandCatalog}
 						monitors={chatReady ? chat?.monitors : undefined}
-						shells={chatReady ? chat?.shells : undefined}
+						shells={shownShells}
 						shellsAccess={chatReady ? chat?.shellsAccess : undefined}
 						sendText={sendText}
 						updateClaudeSetting={actions.updateClaudeSetting}

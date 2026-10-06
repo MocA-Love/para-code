@@ -20,6 +20,7 @@ import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { BottomDrawer, Button, DrawerTitle, Icon, useThemeColors } from '../../ui/index.js';
 import type { QuestionOutcome } from '../../agentQuestionMod.js';
 import { AdvisorChatRowView } from './advisorRow.js';
+import { WorkflowCardRowView } from './workflowCard.js';
 import type { ChatRow } from './chatRows.js';
 import { questionRowOutcome } from './questionOutcomes.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
@@ -55,6 +56,8 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 			return <SubagentCardRowView row={row} terminalKey={terminalKey} />;
 		case 'advisor':
 			return <AdvisorChatRowView row={row} terminalKey={terminalKey} />;
+		case 'workflow':
+			return <WorkflowCardRowView row={row} terminalKey={terminalKey} />;
 	}
 });
 
