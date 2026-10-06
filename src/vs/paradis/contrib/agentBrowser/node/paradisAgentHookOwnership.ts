@@ -758,19 +758,25 @@ export class ParadisAgentHookOwnership {
 	) { }
 
 	/**
-	 * hook の会話（会話 id か transcript のファイル名）が、ペインの `claude attach` の名指す会話か。名前のときは
-	 * 背景セッションの記録から引き直す（一致する job が 1 つに決まらなければ当てない）。
+	 * ペインの `claude attach <名前>` のうち、hook の会話（会話 id か transcript のファイル名）を名指すものの pid。
+	 * 名前は背景セッションの記録から引き直す（一致する job が 1 つに決まらなければ当てない）。所有者の記録を
+	 * 読む前に済ませ、読んでから書くまでの間に await を挟まない（同じペインの hook の分類が並ぶため）。
 	 */
-	private async isAttachTargetSession(target: ClaudeAttachTarget, sessionId: string | undefined, transcriptPath: string | undefined): Promise<boolean> {
+	private async attachesNamingSession(attaches: readonly { readonly pid: number; readonly target: ClaudeAttachTarget }[], sessionId: string | undefined, transcriptPath: string | undefined): Promise<ReadonlySet<number>> {
+		const named = attaches.filter(attach => attach.target.kind === 'name');
 		const candidates = sessionIdOfHook(sessionId, transcriptPath);
-		if (target.kind === 'id') {
-			return candidates.some(candidate => candidate.toLowerCase().startsWith(target.idPrefix));
+		const result = new Set<number>();
+		if (named.length === 0 || candidates.length === 0) {
+			return result;
 		}
-		if (candidates.length === 0) {
-			return false;
+		const jobs = await this.readClaudeJobs().catch(() => []);
+		for (const attach of named) {
+			const job = attach.target.kind === 'name' ? paradisSelectClaudeJobByName(jobs, attach.target.query) : undefined;
+			if (job !== undefined && candidates.some(candidate => paradisClaudeJobOwnsSession(job, candidate))) {
+				result.add(attach.pid);
+			}
 		}
-		const job = paradisSelectClaudeJobByName(await this.readClaudeJobs().catch(() => []), target.query);
-		return job !== undefined && candidates.some(candidate => paradisClaudeJobOwnsSession(job, candidate));
+		return result;
 	}
 
 	/** ペイン終了時に所有権を破棄する。 */
@@ -869,8 +875,9 @@ export class ParadisAgentHookOwnership {
 	/**
 	 * 祖先に Claude Code の daemon（`chain[hostIndex]`、hook に最も近い `bg-spare` 等）がいる hook の判定。
 	 *
-	 * ペインのシェルの子孫に `claude attach <id>` がいて、hook が daemon の会話そのもの（daemon のプロセスとの間に
-	 * 別のエージェントがいない）で、会話 id が `<id>` に前方一致するなら、その attach を所有者にする。以後、同じ
+	 * ペインのシェルの子孫に `claude attach <id|名前>` がいて、hook が daemon の会話そのもの（daemon のプロセスとの間に
+	 * 別のエージェントがいない）で、会話 id が `<id>` に前方一致する（名前なら、名前で 1 つに決まる背景セッションの
+	 * 会話である）なら、その attach を所有者にする。以後、同じ
 	 * daemon のプロセスからの hook は /clear で会話 id が変わっても所有者のものとして通す。attach が終われば
 	 * 所有者は死んだ扱いになり、daemon の会話はまた background に戻る。
 	 * 所有者の attach が見ている会話の配下の別エージェントは nested。それ以外は従来どおり background。
@@ -886,14 +893,22 @@ export class ParadisAgentHookOwnership {
 	): Promise<IParadisHookClassification> {
 		const host = chain[hostIndex];
 		const inner = this.findEmitter(chain.slice(0, hostIndex), eventKind);
+		const attaches = inner === undefined && paneShellPid !== undefined && (eventKind === undefined || eventKind === 'claude')
+			? this.paneAttaches(snapshot, paneShellPid) : [];
+		const namingAttaches = await this.attachesNamingSession(attaches, input.sessionId, input.transcriptPath);
+		const hookSessionIds = sessionIdOfHook(input.sessionId, input.transcriptPath);
 		const owner = this.owners.get(token);
 		const ownerAlive = this.isOwnerAlive(owner, snapshot);
-		if (inner === undefined && paneShellPid !== undefined && (eventKind === undefined || eventKind === 'claude')) {
-			for (const attach of this.paneAttaches(snapshot, paneShellPid)) {
+		if (attaches.length > 0) {
+			for (const attach of attaches) {
 				const ownerIsAttach = owner?.pid === attach.pid && this.startKeyMatches(owner.startKey, attach.startKey);
 				const sameHost = ownerIsAttach && owner?.attachedHost !== undefined
 					&& owner.attachedHost.pid === host.pid && this.startKeyMatches(owner.attachedHost.startKey, host.startKey);
-				if (!sameHost && !await this.isAttachTargetSession(attach.target, input.sessionId, input.transcriptPath)) {
+				const target = attach.target;
+				const namesSession = target.kind === 'id'
+					? hookSessionIds.some(candidate => candidate.toLowerCase().startsWith(target.idPrefix))
+					: namingAttaches.has(attach.pid);
+				if (!sameHost && !namesSession) {
 					continue;
 				}
 				if (ownerAlive && !ownerIsAttach) {
