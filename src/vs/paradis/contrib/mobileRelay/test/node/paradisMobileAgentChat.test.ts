@@ -1803,6 +1803,13 @@ suite('ParadisMobileAgentChat', () => {
 				await writeFile(fork, transcript(FORK, 'bg'));
 				await writeFile(join(paneProject, '77777777-aaaa-4777-8777-777777777777.jsonl'), transcript('a'));
 				await writeFile(join(paneProject, '77777777-bbbb-4777-8777-777777777777.jsonl'), transcript('b'));
+				// `claude attach <名前>` は背景セッションの記録（jobs/<短い id>/state.json）から会話 id を引き直す
+				const named = join(forkProject, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc.jsonl');
+				await writeFile(named, transcript('named', 'bg'));
+				for (const [shortId, sessionId, name] of [['cccccccc', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'ログイン修正 "v2"'], ['99999999', '99999999-9999-4999-8999-999999999999', 'Fix login page'], ['aaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Fix login page']]) {
+					await mkdir(join(claudeHome, 'jobs', shortId), { recursive: true });
+					await writeFile(join(claudeHome, 'jobs', shortId, 'state.json'), JSON.stringify({ name, sessionId, state: 'working' }));
+				}
 				const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
 				const access = chat as unknown as IForkAccess;
 				try {
@@ -1810,28 +1817,36 @@ suite('ParadisMobileAgentChat', () => {
 						{ terminalId: 1, token: 'pane-attach', cwd: workspace },
 						{ terminalId: 2, token: 'pane-ambiguous', cwd: workspace },
 						{ terminalId: 3, token: 'pane-missing', cwd: workspace },
+						{ terminalId: 4, token: 'pane-named', cwd: workspace },
+						{ terminalId: 5, token: 'pane-named-twice', cwd: workspace },
 					]), true);
 					// daemon の会話として hook で見ていても、attach の決め打ちでは採る
 					fireParadisAgentNestedHookEvent({ token: 'pane-other', event: 'Stop', sessionId: FORK, transcriptPath: fork, cwd: workspace, nestedAgent: 'claude', background: true, at: Date.now() });
 					chat.onCliCommandDetected('pane-attach', 'claude', 'attach', workspace, undefined, FORK.slice(0, 8));
 					await waitFor(() => access.paneSessions.has('pane-attach'), 'attach was not pinned');
-					for (const [token, id] of [['pane-ambiguous', '77777777'], ['pane-missing', '88888888']]) {
+					for (const [token, id] of [['pane-ambiguous', '77777777'], ['pane-missing', '88888888'], ['pane-named-twice', 'fix LOGIN']]) {
 						access.cliDiscoveryGenerations.set(token, 0);
 						await access.discoverAndNotify(token, 'claude', 'attach', workspace, undefined, 0, id);
 					}
+					access.cliDiscoveryGenerations.set('pane-named', 0);
+					await access.discoverAndNotify('pane-named', 'claude', 'attach', workspace, undefined, 0, ' ログイン修正 "V2 ');
 					assert.deepStrictEqual({
 						attach: access.paneSessions.get('pane-attach'),
+						named: access.paneSessions.get('pane-named'),
+						namedTwice: access.paneSessions.get('pane-named-twice'),
 						attachReconciles: access.cliReconciliationTimers.has('pane-attach'),
 						ambiguous: access.paneSessions.get('pane-ambiguous'),
 						missing: access.paneSessions.get('pane-missing'),
 						// 全作業フォルダの走査は、一致があったときだけ同じ起動の再試行で使い回す
-						reusedScans: ['pane-attach', 'pane-ambiguous', 'pane-missing'].map(token => access.attachProjectScans.has(token)),
+						reusedScans: ['pane-attach', 'pane-ambiguous', 'pane-missing', 'pane-named'].map(token => access.attachProjectScans.has(token)),
 					}, {
 						attach: { token: 'pane-attach', agent: 'claude', transcriptPath: fork, sessionId: FORK },
+						named: { token: 'pane-named', agent: 'claude', transcriptPath: named, sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+						namedTwice: undefined,
 						attachReconciles: false,
 						ambiguous: undefined,
 						missing: undefined,
-						reusedScans: [true, false, false],
+						reusedScans: [true, false, false, true],
 					});
 				} finally {
 					chat.dispose();

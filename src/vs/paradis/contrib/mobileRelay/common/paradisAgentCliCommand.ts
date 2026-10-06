@@ -8,8 +8,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * `attach` は `claude attach <id>`。会話は daemon の配下で動いていて、このペインには表示役（client）しか
- * いないので hook が来ない。どの会話かは `<id>`（会話 id の先頭）でしか決まらない。
+ * `attach` は `claude attach <id|名前>`。会話は daemon の配下で動いていて、このペインには表示役（client）しか
+ * いないので hook が来ない。どの会話かは `<id>`（会話 id の先頭）か、2.1.290 からは背景セッションの名前（の一部）で
+ * しか決まらない。名前は sessionId にそのまま入れ、照合の側で背景セッションの記録から会話 id に引き直す。
  */
 export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork' | 'attach';
 interface IParadisInteractiveAgentCommandBase {

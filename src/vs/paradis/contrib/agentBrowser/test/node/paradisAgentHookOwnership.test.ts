@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand, paradisIsCodexPluginCommand } from '../../node/paradisAgentHookOwnership.js';
+import { IParadisClaudeJob } from '../../node/paradisClaudeJobNames.js';
+import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachNameFromCommandLine, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand, paradisIsCodexPluginCommand } from '../../node/paradisAgentHookOwnership.js';
 
 suite('ParadisAgentHookOwnership', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -726,6 +727,48 @@ suite('ParadisAgentHookOwnership', () => {
 		const ownership = ownershipWith(tree);
 		const result = await ownership.classify({ token: 't', hookPid: 421, transcriptPath: CLAUDE_TRANSCRIPT, sessionId: ATTACHED_SESSION_ID, at: 1, paneShellPid: 100 });
 		assert.deepStrictEqual(result, { origin: 'background', agentKind: 'claude' });
+	});
+
+	test('reads the name of claude attach <name>', () => {
+		assert.deepStrictEqual([
+			paradisClaudeAttachNameFromCommandLine('claude attach Fix Login', 'darwin'),
+			paradisClaudeAttachNameFromCommandLine('/home/user/.local/bin/claude attach  ログイン修正 ', 'linux'),
+			paradisClaudeAttachNameFromCommandLine('"C:\\Users\\user\\.local\\bin\\claude.exe" attach "Fix Login"', 'win32'),
+			// POSIX の ps では打った引用符は消える。残っているなら名前の一部
+			paradisClaudeAttachNameFromCommandLine('claude attach "quoted"', 'darwin'),
+			// id の形は名前としては読まない（paradisClaudeAttachTargetFromCommandLine が読む）
+			paradisClaudeAttachNameFromCommandLine('claude attach d527839f', 'darwin'),
+			paradisClaudeAttachNameFromCommandLine('claude attach cafe', 'darwin'),
+			paradisClaudeAttachNameFromCommandLine('claude attach', 'darwin'),
+			paradisClaudeAttachNameFromCommandLine('claude --resume fix', 'darwin'),
+		], ['fix login', 'ログイン修正', 'fix login', '"quoted"', undefined, undefined, undefined, undefined]);
+	});
+
+	test('claude attach <name> owns the pane only when the name picks exactly one background session of that conversation', async () => {
+		const jobs: IParadisClaudeJob[] = [
+			{ shortId: '11111111', sessionId: ATTACHED_SESSION_ID, name: 'ログイン修正 "v2"' },
+			{ shortId: '22222222', sessionId: '22222222-2222-2222-2222-222222222222', name: 'Fix login page' },
+			{ shortId: '33333333', sessionId: '33333333-3333-3333-3333-333333333333', name: 'Fix login page' },
+		];
+		const classify = async (attachCommand: string, sessionId: string, transcriptPath: string, paneOfAttach = 100) => {
+			const tree = attachTree();
+			tree.set(150, proc(150, 1, '/bin/zsh -il'));
+			tree.set(300, proc(300, paneOfAttach, attachCommand));
+			const ownership = new ParadisAgentHookOwnership({ snapshot: async () => tree }, undefined, undefined, async () => jobs);
+			return (await ownership.classify({ token: 't', hookPid: 421, transcriptPath, sessionId, at: 1, paneShellPid: 100 })).origin;
+		};
+		assert.deepStrictEqual([
+			// 名前の一部（日本語・引用符入り）で 1 つに決まる
+			await classify('claude attach ログイン修正 "v2', ATTACHED_SESSION_ID, CLAUDE_TRANSCRIPT),
+			// 決まった job と別の会話の hook は当てない
+			await classify('claude attach ログイン修正', '22222222-2222-2222-2222-222222222222', CLAUDE_TRANSCRIPT_2),
+			// 同じ名前が 2 つ（CLI も attach しない）
+			await classify('claude attach Fix login page', '22222222-2222-2222-2222-222222222222', CLAUDE_TRANSCRIPT_2),
+			// 当たる job が無い
+			await classify('claude attach nothing here', ATTACHED_SESSION_ID, CLAUDE_TRANSCRIPT),
+			// ほかのペインの attach は当てない
+			await classify('claude attach ログイン修正', ATTACHED_SESSION_ID, CLAUDE_TRANSCRIPT, 150),
+		], ['owner', 'background', 'background', 'background', 'background']);
 	});
 
 	test('a detached codex outside the pane cannot take over a pane whose owner has no pid', async () => {

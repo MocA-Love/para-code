@@ -34,7 +34,8 @@ import { statSync } from 'fs';
 import { open } from 'fs/promises';
 import { promisify } from 'util';
 import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
-import { paradisIsWithinCodexHome } from './paradisAgentHome.js';
+import { paradisClaudeConfigDir, paradisIsWithinCodexHome } from './paradisAgentHome.js';
+import { IParadisClaudeJob, paradisCachedClaudeJobsReader, paradisClaudeAttachNameQuery, paradisClaudeJobOwnsSession, paradisSelectClaudeJobByName } from './paradisClaudeJobNames.js';
 
 const execAsync = promisify(exec);
 
@@ -54,6 +55,11 @@ const MAX_PANE_DESCENT_DEPTH = 64;
 const ROLLOUT_HEAD_BYTES = 16 * 1024;
 /** rollout の起動元の控えの上限。 */
 const MAX_ROLLOUT_ORIGINATOR_CACHE = 256;
+const cachedClaudeJobsReader = paradisCachedClaudeJobsReader();
+/** `claude attach <名前>` の名前を引き直すときに読む背景セッションの記録（既定の Claude Code の設定ホーム）。 */
+function defaultClaudeJobsReader(): Promise<readonly IParadisClaudeJob[]> {
+	return cachedClaudeJobsReader(paradisClaudeConfigDir());
+}
 
 export type ParadisHookAgentKind = 'claude' | 'codex';
 
@@ -520,10 +526,36 @@ export function paradisClaudeAttachTargetFromCommandLine(command: string): strin
 	return target !== undefined && CLAUDE_ATTACH_ID_PATTERN.test(target) ? target.toLowerCase() : undefined;
 }
 
-/** hook の会話 id（無ければ transcript のファイル名）が、`claude attach` の `<id>` の会話か。 */
-function isAttachTargetSession(attachTarget: string, sessionId: string | undefined, transcriptPath: string | undefined): boolean {
+/**
+ * `claude attach <名前>`（2.1.290 から）なら、名前の照合に使う形（前後の空白を除いて小文字）を返す。id の形の引数は
+ * paradisClaudeAttachTargetFromCommandLine が読むので、ここでは undefined。
+ *
+ * プロセス表の起動行は引数を空白でつないだもので、引用符は残らない（POSIX の ps）。CLI は名前を 1 つの引数としてしか
+ * 受け付けないので、`attach` より後ろを全部（空白を含めて）名前とみなす。Windows の CommandLine には打った引用符が
+ * 残るので、全体を囲む引用符だけを外す。
+ */
+export function paradisClaudeAttachNameFromCommandLine(command: string, platform: NodeJS.Platform = process.platform): string | undefined {
+	const tokens = tokenizeCommandLine(command);
+	const start = claudeArgumentsStart(tokens);
+	if (start === undefined || tokens[start]?.value !== 'attach' || tokens.length <= start + 1) {
+		return undefined;
+	}
+	if (paradisClaudeAttachTargetFromCommandLine(command) !== undefined) {
+		return undefined;
+	}
+	let argument = command.slice(tokens[start + 1].start).trim();
+	if (platform === 'win32' && argument.length >= 2 && argument.startsWith('"') && argument.endsWith('"')) {
+		argument = argument.slice(1, -1);
+	}
+	return paradisClaudeAttachNameQuery(argument);
+}
+
+/** ペインの `claude attach` が名指しする会話。id の先頭か、背景セッションの名前。 */
+type ClaudeAttachTarget = { readonly kind: 'id'; readonly idPrefix: string } | { readonly kind: 'name'; readonly query: string };
+
+function sessionIdOfHook(sessionId: string | undefined, transcriptPath: string | undefined): readonly string[] {
 	const fromTranscript = transcriptPath !== undefined ? /(?<sessionId>[^\\/]+)\.jsonl$/i.exec(transcriptPath)?.groups?.sessionId : undefined;
-	return [sessionId, fromTranscript].some(candidate => candidate !== undefined && candidate.toLowerCase().startsWith(attachTarget));
+	return [sessionId, fromTranscript].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
 }
 
 /**
@@ -722,7 +754,30 @@ export class ParadisAgentHookOwnership {
 		private readonly inspector: IParadisHookProcessInspector = new ParadisDefaultHookProcessInspector(),
 		private readonly selfPid: number = process.pid,
 		private readonly readTranscriptHead: (transcriptPath: string) => Promise<string | undefined> = readRolloutHead,
+		private readonly readClaudeJobs: () => Promise<readonly IParadisClaudeJob[]> = defaultClaudeJobsReader,
 	) { }
+
+	/**
+	 * ペインの `claude attach <名前>` のうち、hook の会話（会話 id か transcript のファイル名）を名指すものの pid。
+	 * 名前は背景セッションの記録から引き直す（一致する job が 1 つに決まらなければ当てない）。所有者の記録を
+	 * 読む前に済ませ、読んでから書くまでの間に await を挟まない（同じペインの hook の分類が並ぶため）。
+	 */
+	private async attachesNamingSession(attaches: readonly { readonly pid: number; readonly target: ClaudeAttachTarget }[], sessionId: string | undefined, transcriptPath: string | undefined): Promise<ReadonlySet<number>> {
+		const named = attaches.filter(attach => attach.target.kind === 'name');
+		const candidates = sessionIdOfHook(sessionId, transcriptPath);
+		const result = new Set<number>();
+		if (named.length === 0 || candidates.length === 0) {
+			return result;
+		}
+		const jobs = await this.readClaudeJobs().catch(() => []);
+		for (const attach of named) {
+			const job = attach.target.kind === 'name' ? paradisSelectClaudeJobByName(jobs, attach.target.query) : undefined;
+			if (job !== undefined && candidates.some(candidate => paradisClaudeJobOwnsSession(job, candidate))) {
+				result.add(attach.pid);
+			}
+		}
+		return result;
+	}
 
 	/** ペイン終了時に所有権を破棄する。 */
 	clear(token: string): void {
@@ -820,13 +875,14 @@ export class ParadisAgentHookOwnership {
 	/**
 	 * 祖先に Claude Code の daemon（`chain[hostIndex]`、hook に最も近い `bg-spare` 等）がいる hook の判定。
 	 *
-	 * ペインのシェルの子孫に `claude attach <id>` がいて、hook が daemon の会話そのもの（daemon のプロセスとの間に
-	 * 別のエージェントがいない）で、会話 id が `<id>` に前方一致するなら、その attach を所有者にする。以後、同じ
+	 * ペインのシェルの子孫に `claude attach <id|名前>` がいて、hook が daemon の会話そのもの（daemon のプロセスとの間に
+	 * 別のエージェントがいない）で、会話 id が `<id>` に前方一致する（名前なら、名前で 1 つに決まる背景セッションの
+	 * 会話である）なら、その attach を所有者にする。以後、同じ
 	 * daemon のプロセスからの hook は /clear で会話 id が変わっても所有者のものとして通す。attach が終われば
 	 * 所有者は死んだ扱いになり、daemon の会話はまた background に戻る。
 	 * 所有者の attach が見ている会話の配下の別エージェントは nested。それ以外は従来どおり background。
 	 */
-	private classifyDaemonHosted(
+	private async classifyDaemonHosted(
 		token: string,
 		snapshot: ReadonlyMap<number, IParadisHookProcessInfo>,
 		chain: readonly IParadisHookProcessInfo[],
@@ -834,17 +890,25 @@ export class ParadisAgentHookOwnership {
 		eventKind: ParadisHookAgentKind | undefined,
 		input: IParadisHookClassifyInput,
 		paneShellPid: number | undefined,
-	): IParadisHookClassification {
+	): Promise<IParadisHookClassification> {
 		const host = chain[hostIndex];
 		const inner = this.findEmitter(chain.slice(0, hostIndex), eventKind);
+		const attaches = inner === undefined && paneShellPid !== undefined && (eventKind === undefined || eventKind === 'claude')
+			? this.paneAttaches(snapshot, paneShellPid) : [];
+		const namingAttaches = await this.attachesNamingSession(attaches, input.sessionId, input.transcriptPath);
+		const hookSessionIds = sessionIdOfHook(input.sessionId, input.transcriptPath);
 		const owner = this.owners.get(token);
 		const ownerAlive = this.isOwnerAlive(owner, snapshot);
-		if (inner === undefined && paneShellPid !== undefined && (eventKind === undefined || eventKind === 'claude')) {
-			for (const attach of this.paneAttaches(snapshot, paneShellPid)) {
+		if (attaches.length > 0) {
+			for (const attach of attaches) {
 				const ownerIsAttach = owner?.pid === attach.pid && this.startKeyMatches(owner.startKey, attach.startKey);
 				const sameHost = ownerIsAttach && owner?.attachedHost !== undefined
 					&& owner.attachedHost.pid === host.pid && this.startKeyMatches(owner.attachedHost.startKey, host.startKey);
-				if (!sameHost && !isAttachTargetSession(attach.target, input.sessionId, input.transcriptPath)) {
+				const target = attach.target;
+				const namesSession = target.kind === 'id'
+					? hookSessionIds.some(candidate => candidate.toLowerCase().startsWith(target.idPrefix))
+					: namingAttaches.has(attach.pid);
+				if (!sameHost && !namesSession) {
 					continue;
 				}
 				if (ownerAlive && !ownerIsAttach) {
@@ -909,15 +973,17 @@ export class ParadisAgentHookOwnership {
 		return fromClaudeCode;
 	}
 
-	/** ペインのシェルの子孫にいる `claude attach <id>` の一覧。 */
-	private paneAttaches(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, paneShellPid: number): { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] {
-		const result: { readonly pid: number; readonly startKey: string | undefined; readonly target: string }[] = [];
+	/** ペインのシェルの子孫にいる `claude attach <id|名前>` の一覧。 */
+	private paneAttaches(snapshot: ReadonlyMap<number, IParadisHookProcessInfo>, paneShellPid: number): { readonly pid: number; readonly startKey: string | undefined; readonly target: ClaudeAttachTarget }[] {
+		const result: { readonly pid: number; readonly startKey: string | undefined; readonly target: ClaudeAttachTarget }[] = [];
 		for (const entry of snapshot.values()) {
 			// daemon の配下の hook ごとにプロセス表を全部なめるので、字句解析の前に安く絞る。
 			if (!entry.command.includes('attach')) {
 				continue;
 			}
-			const target = paradisClaudeAttachTargetFromCommandLine(entry.command);
+			const idPrefix = paradisClaudeAttachTargetFromCommandLine(entry.command);
+			const query = idPrefix === undefined ? paradisClaudeAttachNameFromCommandLine(entry.command) : undefined;
+			const target: ClaudeAttachTarget | undefined = idPrefix !== undefined ? { kind: 'id', idPrefix } : query !== undefined ? { kind: 'name', query } : undefined;
 			if (target !== undefined && this.isDescendantOf(snapshot, entry.pid, paneShellPid)) {
 				result.push({ pid: entry.pid, startKey: entry.startKey, target });
 			}
