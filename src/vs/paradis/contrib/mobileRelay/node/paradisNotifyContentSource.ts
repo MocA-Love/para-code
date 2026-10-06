@@ -110,6 +110,7 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const lastMessage = str(payload?.last_assistant_message) ?? str(payload?.['last-assistant-message']) ?? str(payload?.last_agent_message);
 				this.remember(this.turnEnds, event.token, { failed: false, ...(lastMessage !== undefined ? { lastMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.forgetQuestionOf(event);
 				return;
 			}
 			case 'StopFailure': {
@@ -120,8 +121,12 @@ export class ParadisNotifyHookLedger extends Disposable {
 				const errorMessage = str(payload?.error_details) ?? str(errorRecord?.message) ?? str(payload?.last_assistant_message);
 				this.remember(this.turnEnds, event.token, { failed: true, ...(errorCode !== undefined ? { errorCode } : {}), ...(errorMessage !== undefined ? { errorMessage } : {}), at: event.at });
 				this.approvals.delete(event.token);
+				this.forgetQuestionOf(event);
 				return;
 			}
+			case 'SubagentStop':
+				this.forgetQuestionOf(event);
+				return;
 			case 'PermissionRequest':
 				if (event.toolName !== 'AskUserQuestion') {
 					const origin = hookOrigin(event);
@@ -147,6 +152,9 @@ export class ParadisNotifyHookLedger extends Disposable {
 			case 'PostToolUse':
 			case 'PostToolUseFailure':
 			case 'PermissionDenied':
+				if (event.toolUseId !== undefined && this.questions.get(event.token)?.toolUseId === event.toolUseId) {
+					this.questions.delete(event.token);
+				}
 				this.approvals.delete(event.token);
 				return;
 			default:
@@ -162,6 +170,13 @@ export class ParadisNotifyHookLedger extends Disposable {
 	approval(token: string, now: number): IParadisNotifyHookApproval | undefined {
 		const entry = this.approvals.get(token);
 		return entry !== undefined && now - entry.at <= APPROVAL_FRESH_MS ? entry : undefined;
+	}
+
+	/** ターンが終わった会話の質問の記録を忘れる（ほかの会話の質問の記録は残す）。 */
+	private forgetQuestionOf(event: IParadisAgentHookEvent): void {
+		if (this.questions.get(event.token)?.origin?.agentId === str(event.payload?.agent_id)) {
+			this.questions.delete(event.token);
+		}
 	}
 
 	question(token: string, now: number): IParadisNotifyHookQuestion | undefined {
@@ -293,7 +308,10 @@ export function paradisResolveNotifyContent(input: {
 		return { kind: input.kind, category: input.kind === 'agent-error' ? 'error' : 'done' };
 	}
 	if (input.kind === 'agent-question') {
-		const questionOrigin = input.hookQuestion?.origin !== undefined ? { origin: input.hookQuestion.origin } : {};
+		// 質問の ID（tool_use_id）が分かっていて食い違うなら、別の質問の記録なので使わない（合成 ID は突き合わせられない）
+		const paneQuestionId = pane?.interaction?.kind === 'question' ? pane.interaction.id : undefined;
+		const hookQuestion = input.hookQuestion !== undefined && !(paneQuestionId?.startsWith('toolu_') && input.hookQuestion.toolUseId !== undefined && input.hookQuestion.toolUseId !== paneQuestionId) ? input.hookQuestion : undefined;
+		const questionOrigin = hookQuestion?.origin !== undefined ? { origin: hookQuestion.origin } : {};
 		if (input.presetCategory === 'question') {
 			return { kind: 'agent-question', category: 'question', ...(input.presetContent !== undefined ? { content: input.presetContent } : {}), ...(pane?.interaction?.kind === 'question' ? { interactionId: pane.interaction.id } : {}), ...questionOrigin };
 		}

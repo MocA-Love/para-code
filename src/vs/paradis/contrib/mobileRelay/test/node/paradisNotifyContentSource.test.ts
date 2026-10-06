@@ -58,12 +58,15 @@ suite('ParadisNotifyHookLedger', () => {
 			// hook と結べない承認は、tailer の承認の送り元を使う
 			resolvedFromPane: paradisResolveNotifyContent({ kind: 'agent-question', pane: { interaction: { kind: 'approval', id: 'toolu_x', agentId: 'a1111111111111111' } }, now })?.origin,
 			resolvedQuestion: paradisResolveNotifyContent({ kind: 'agent-question', ...(question !== undefined ? { hookQuestion: question } : {}), pane: { interaction: { kind: 'question', id: 'toolu_q' } }, now })?.origin,
+			// ID の食い違う質問の記録は使わない
+			resolvedOtherQuestion: paradisResolveNotifyContent({ kind: 'agent-question', ...(question !== undefined ? { hookQuestion: question } : {}), pane: { interaction: { kind: 'question', id: 'toolu_other' } }, now })?.origin,
 		}, {
 			approval: { sessionId: 'sess-1', agentId: 'a05cdbe863549a180' },
 			question: { sessionId: 'sess-1' },
 			resolvedApproval: { sessionId: 'sess-1', agentId: 'a05cdbe863549a180' },
 			resolvedFromPane: { agentId: 'a1111111111111111' },
 			resolvedQuestion: { sessionId: 'sess-1' },
+			resolvedOtherQuestion: undefined,
 		});
 	});
 });
