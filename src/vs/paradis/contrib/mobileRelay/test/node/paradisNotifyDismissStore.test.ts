@@ -53,4 +53,17 @@ suite('ParadisNotifyDismissStore (Q242 A)', () => {
 			log: { ledger: true, seq: 2, ids: ['d1', 'q1'] },
 		});
 	});
+
+	test('the main conversation\'s Stop keeps a teammate\'s unanswered prompt until the teammate answers', async () => {
+		const store = createStore({ content: undefined });
+		await store.ready;
+		const answered: (readonly string[])[] = [];
+		disposables.add(store.onDidAnswer(ids => answered.push(ids)));
+		store.ledger.record('main', 'tok-a', 'agent-question', 500, 'tool-main', { sessionId: 'sess-1' });
+		store.ledger.record('mate', 'tok-a', 'agent-question', 510, 'tool-mate', { sessionId: 'sess-1', agentId: 'a05cdbe863549a180' });
+		store.handleHookEvent({ token: 'tok-a', event: 'Stop', sessionId: 'sess-1', at: 600 });
+		const afterMainStop = store.ledger.isSettled('mate');
+		store.handleHookEvent({ token: 'tok-a', event: 'PostToolUse', toolUseId: 'tool-mate', sessionId: 'sess-1', payload: { agent_id: 'a05cdbe863549a180' }, at: 700 });
+		assert.deepStrictEqual({ answered, afterMainStop }, { answered: [['main'], ['mate']], afterMainStop: false });
+	});
 });
