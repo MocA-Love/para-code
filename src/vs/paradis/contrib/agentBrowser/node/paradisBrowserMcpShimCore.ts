@@ -54,7 +54,7 @@ const PARADIS_MCP_SPACE_ARGUMENT = {
 export const PARADIS_MCP_LOCAL_TOOLS = [
 	{
 		name: 'get_shared_page',
-		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
+		description: 'Get the URL, title and pageId of a browser tab this terminal pane can use: the tab given by tab_id, otherwise this pane\'s current tab (the one you last opened or selected, or else the page the user shared). The pageId is the tab_id to pass to the other browser tools. Returns an error message if no page is shared yet.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -71,7 +71,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / select_browser_tab / close_browser_tab to work with several tabs).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes exactly one page (the page shared with this pane, or the tab given by tab_id), so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -216,7 +216,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_tab',
-		description: 'Open a new Para Code browser tab for your own work and share it with this terminal pane, so the chrome-devtools tools (take_snapshot, click, navigate_page, ...) act on it right away. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
+		description: 'Open a new Para Code browser tab for your own work. It returns the tab\'s tabId and becomes this pane\'s current tab, so the browser tools (take_snapshot, click, navigate_page, wait_until, ...) act on it when you omit tab_id; pass tab_id to act on a specific tab. The page the user shared with this pane stays shared and usable by its tab_id. To split browser work across subagents, open one tab per subagent and give each its tabId; each subagent passes it as tab_id on every browser tool call, and calls on different tabs run in parallel. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -229,12 +229,12 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'list_browser_tabs',
-		description: 'List the browser tabs this terminal pane can use: the tabs you opened with open_browser_tab or open_browser_profile, and the user tab currently shared with this pane (if any). Shows which one is currently shared ("active": the one the chrome-devtools tools act on) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools only ever see the one shared page; use this tool and select_browser_tab to move between tabs.',
+		description: 'List the browser tabs this terminal pane can use, each with its tabId (the tab_id for the browser tools), URL and title: the tabs you opened with open_browser_tab or open_browser_profile, and the user tab currently shared with this pane (if any). Shows which one the user shared ("shared"), which one is this pane\'s current tab ("current": the one the browser tools act on when tab_id is omitted) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools only ever see one tab; use tab_id, or this tool and select_browser_tab.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
 		name: 'select_browser_tab',
-		description: 'Switch the page shared with this terminal pane to one of your own tabs from list_browser_tabs, so the chrome-devtools tools act on that tab from now on. A user tab can only be used while it is shared; once you switch away from it, call request_browser_page to ask for it again.',
+		description: 'Make one of the tabs from list_browser_tabs this pane\'s current tab, so the browser tools act on it when you omit tab_id. The user\'s shared page stays shared. Subagents working on their own tab should pass tab_id instead of calling this (the current tab is shared by everyone using this pane). A user tab can only be used while it is shared; if the user stopped sharing it, call request_browser_page to ask for it again.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -258,7 +258,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'request_browser_page',
-		description: 'Ask the user to share one of their open browser tabs with this terminal pane (for example a page where they are already logged in). Para Code shows an approval dialog with your reason; the call waits up to about 50 seconds for the answer. If approved, the chosen tab becomes the page the chrome-devtools tools act on, until you switch to another tab. Do not call this again while a request is still waiting, or right after the user declined. For pages you can open yourself, prefer open_browser_tab, which needs no approval.',
+		description: 'Ask the user to share one of their open browser tabs with this terminal pane (for example a page where they are already logged in). Para Code shows an approval dialog with your reason; the call waits up to about 50 seconds for the answer. If approved, the chosen tab becomes the page shared with this pane and its current tab (the one the browser tools act on when tab_id is omitted); the answer includes its tabId. Do not call this again while a request is still waiting, or right after the user declined. For pages you can open yourself, prefer open_browser_tab, which needs no approval.',
 		inputSchema: {
 			type: 'object',
 			properties: {

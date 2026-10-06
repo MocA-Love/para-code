@@ -12,13 +12,14 @@
 // ルーティングして呼ぶ。1つのウィンドウには複数のスペースがあるので、ペイン → スペース → そのスペースが
 // 見えているエディタ領域、の順に解く（paradisAgentPreview.contribution.ts / paradisBrowserProfileMcp と同じ判断）。
 //
-// 1ペインとページの共有は 1 対 1 のまま（CDP ゲートウェイが見せるのは共有中の1枚だけ）。複数のタブは
-// 「共有するタブを切り替える」ことで扱う:
-//  - open_browser_tab: 新しいタブを Agent スコープで開き、そのままこのペインへ共有する（承認済み扱い）
-//  - select_browser_tab: 自分が開いたタブへ共有を移す。ユーザーのタブは、共有されている間しか使えない
-//    （自分のタブへ移ったら、ユーザーのタブへ戻るにはもう一度頼む。見えないまま使い続けさせない）
-//  - close_browser_tab: 自分が開いたタブだけ閉じられる
+// ユーザーのページの共有（バインド）は 1 ペイン 1 枚のまま。エージェントが自分で開いたタブは、共有を
+// 付け替えずに「許可」を張り、ペイン（とそのサブエージェント）が tab_id で使い分ける（共有 1 枚 + 自分のタブ最大 5 枚）:
+//  - open_browser_tab: 新しいタブを Agent スコープで開き、このペインへ許可を張る（承認済み扱い）。ユーザーの共有は残る
+//  - select_browser_tab: 自分が開いたタブなら許可を張り直す（既定のタブにするのは shared process）。
+//    ユーザーのタブは、共有されている間しか使えない
+//  - close_browser_tab: 自分が開いたタブだけ閉じられる（許可も外れる）
 //  - request_browser_page: ユーザーのタブを使いたいときに頼む。承認ダイアログで選ばれたら共有する
+// 承認を得て開いたユーザーのプロファイルのタブは、これまでどおり共有（バインド）で扱う（共有を止めたら使えなくなる）。
 //
 // 承認ダイアログは「拒否」を先頭（既定のフォーカス）にし、表示直後の承認は打ちかけの Enter とみなして
 // 聞き直す。ユーザーがエージェントのペインに文字を打っている最中に出ても、Enter 1回で共有されないように。
@@ -197,8 +198,9 @@ export interface IParadisAgentBrowserTabsService {
 	revokeApprovedProfileTab(pageId: string): void;
 
 	/**
-	 * そのタブへペインの共有を移す。タブのスペースが決まるのを少し待ってから共有する。
-	 * 失敗しても例外は投げず false を返す。
+	 * そのタブをペインから使えるようにする。そのペインのエージェントが自分で開いたタブ（承認済みのユーザーの
+	 * プロファイルのタブを除く）は、共有を付け替えずに許可を張る。それ以外のタブはペインの共有を移す。
+	 * タブのスペースが決まるのを少し待ってから行う。失敗しても例外は投げず false を返す。
 	 */
 	bindTab(token: string, input: BrowserEditorInput): Promise<boolean>;
 
@@ -310,7 +312,24 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		this._agentInputs.set(input.id, input);
 		const listeners = new DisposableStore();
 		listeners.add(input.onWillDispose(() => this._forgetView(input.id)));
-		if (options?.approvedProfile) {
+		if (!options?.approvedProfile) {
+			// ユーザーがブラウザの共有ボタンでこのタブの共有を止めたら、許可も外す（選び直せば張り直す）。
+			// エージェント自身がタブを動かしている最中の変化は数えない
+			const modelListener = listeners.add(new MutableDisposable());
+			const watch = (model: IBrowserViewModel) => {
+				modelListener.value = model.onDidChangeSharingState(state => {
+					if (state !== BrowserViewSharingState.Shared && !this._agentMoves.has(token) && this._ledger.isOpenedBy(token, input.id)) {
+						void this._bindingModel.revokeAgentTab(token, input.id);
+					}
+				});
+			};
+			listeners.add(input.onDidResolveModel(model => watch(model)));
+			void input.resolve().then(model => {
+				if (!listeners.isDisposed && modelListener.value === undefined) {
+					watch(model);
+				}
+			}, error => this._logService.debug('[ParadisAgentBrowserTabs] could not watch the sharing state of an agent tab', error));
+		} else {
 			// ブラウザの共有ボタン（upstream の切り替え）で止められたときも外す。エージェント自身が共有先を
 			// 動かしている最中の変化は数えない。モデルが作り直されても（onDidResolveModel）見張り続ける
 			const modelListener = listeners.add(new MutableDisposable());
@@ -344,6 +363,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	private _forgetView(viewId: string): void {
+		const owner = this._ledger.ownerOf(viewId);
+		if (owner !== undefined && !this._ledger.isApprovedProfileTab(viewId)) {
+			void this._bindingModel.revokeAgentTab(owner, viewId);
+		}
 		this._ledger.forget(viewId);
 		this._agentInputs.delete(viewId);
 		this._agentTabListeners.deleteAndDispose(viewId);
@@ -642,10 +665,11 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	async bindTabWithin(token: string, input: BrowserEditorInput, cancellation: CancellationToken): Promise<boolean | undefined> {
+		const grant = this._usesGrant(token, input.id);
 		const binding = this.bindTab(token, input);
 		const bound = await raceCancellation(binding, cancellation);
 		if (bound === undefined) {
-			void binding.then(ok => ok ? this._unbindIfCurrent(token, input) : undefined);
+			void binding.then(ok => ok ? (grant ? this._bindingModel.revokeAgentTab(token, input.id) : this._unbindIfCurrent(token, input)) : undefined);
 		}
 		return bound;
 	}
@@ -905,17 +929,25 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	// #endregion
 
 	async bindTab(token: string, input: BrowserEditorInput): Promise<boolean> {
+		const grant = this._usesGrant(token, input.id);
 		try {
 			return await this._asAgentMove(token, async () => {
 				const model = await input.resolve();
 				await this._waitForStableScope(input.id);
 				await this._shareApproved(model);
-				return await this._bindingModel.bindPageToPane(model, token);
+				return grant
+					? await this._bindingModel.grantAgentTab(model, token)
+					: await this._bindingModel.bindPageToPane(model, token);
 			});
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not share the tab with the calling pane', error);
 			return false;
 		}
+	}
+
+	/** そのペインが自分で開いたタブ（承認済みのユーザーのプロファイルのタブを除く）は、共有ではなく許可で使う。 */
+	private _usesGrant(token: string, viewId: string): boolean {
+		return this._ledger.isOpenedBy(token, viewId) && !this._ledger.isApprovedProfileTab(viewId);
 	}
 
 	/**

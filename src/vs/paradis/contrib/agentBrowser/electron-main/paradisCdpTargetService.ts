@@ -922,17 +922,20 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 
 	// --- 追加のブラウザ操作（para-browser MCP の B7） --------------------------------------------
 
-	async describeExactViewStorage(descriptorValue: unknown, ownerKeyValue: unknown): Promise<IParadisPageStorageDescription> {
+	async describeExactViewStorage(descriptorValue: unknown, ownerKeyValue: unknown, storageOwnerKeyValue?: unknown): Promise<IParadisPageStorageDescription> {
 		const target = this.resolvePageOpsTarget(descriptorValue);
-		if (!target || !paradisIsPageOpsOwnerKey(ownerKeyValue)) {
+		const storageOwnerKey = storageOwnerKeyValue === undefined || storageOwnerKeyValue === null ? ownerKeyValue : storageOwnerKeyValue;
+		if (!target || !paradisIsPageOpsOwnerKey(ownerKeyValue) || !paradisIsPageOpsOwnerKey(storageOwnerKey)) {
 			return { kind: 'user' };
 		}
-		return this.describeStorage(target, ownerKeyValue);
+		return this.describeStorage(target, storageOwnerKey);
 	}
 
-	async applyExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown, confirmedProfileIdValue?: unknown): Promise<IParadisPageOverridesResult> {
+	async applyExactViewPageOverrides(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown, confirmedProfileIdValue?: unknown, storageOwnerKeyValue?: unknown): Promise<IParadisPageOverridesResult> {
 		const target = this.resolvePageOpsTarget(descriptorValue);
-		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 8 * 1024 * 1024) {
+		// 上書きの持ち主はタブごと（tab_id）、保存領域の持ち主はペイン（private のタブはペインのトークンから作る）
+		const storageOwnerKey = storageOwnerKeyValue === undefined || storageOwnerKeyValue === null ? ownerKeyValue : storageOwnerKeyValue;
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || !paradisIsPageOpsOwnerKey(storageOwnerKey) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 8 * 1024 * 1024) {
 			return { ok: false, reason: 'invalid' };
 		}
 		if (!target) {
@@ -941,7 +944,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// ネットワークの上書きは、呼んだペインだけが使う保存領域のタブだけ。HTTP 認証と HTTP のキャッシュは
 		// 保存領域単位なので、共有の保存領域に掛けるとほかのタブ・ほかのペインへ残る。プロファイルは、
 		// renderer がそのペインが作ってほかが使っていないと確かめたもの（`confirmedProfileId`）だけ。
-		const storage = this.describeStorage(target, ownerKeyValue);
+		const storage = this.describeStorage(target, storageOwnerKey);
 		const sharedProfile = storage.kind === 'profile';
 		if (storage.kind === 'user' || (storage.kind === 'profile' && confirmedProfileIdValue !== storage.profileId)) {
 			return { ok: false, reason: 'userStorage' };

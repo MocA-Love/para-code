@@ -37,6 +37,7 @@ import {
 	paradisParseRequestRules,
 } from '../common/paradisBrowserPageOps.js';
 import { PARADIS_PAGE_OPS_TOOL_NAMES } from './paradisBrowserPageOpsTools.js';
+import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
 import { IParadisResolvedDropTarget } from './paradisFileDropUpload.js';
 
 /** 追加のブラウザ操作のツール名。 */
@@ -51,6 +52,10 @@ export interface IParadisPageOpsBinding {
 
 /** ツールの実行中にサービスから借りるもの。 */
 export interface IParadisPageOpsCall {
+	/**
+	 * ペインのトークン、または tab_id で選んだタブのスコープキー（paradisAgentTabScope.ts）。マウスの状態と、
+	 * タブへ掛けた上書き・init scripts の持ち主はこのキーごと（タブごと）に持つ。
+	 */
 	readonly token: string;
 	readonly signal?: AbortSignal;
 	/** ingress lease が古くなっていたら投げる。await の後に呼ぶ。 */
@@ -469,8 +474,10 @@ export class ParadisBrowserPageOps {
 
 	private async applyOverrides(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, request: IParadisPageOverridesRequest, label: string): Promise<IParadisPageOverridesResult | ToolResult> {
 		const ownerKey = paradisPageOpsOwnerKey(call.token);
+		// 保存領域の持ち主はペイン（`call.token` が tab_id のスコープキーでも、private のタブはペインのトークンから作る）
+		const storageOwnerKey = paradisPageOpsOwnerKey(paradisPaneTokenOfScopeKey(call.token));
 		// 呼んだペインだけが使う保存領域のタブか。main が判定し、プロファイルなら renderer の台帳でも確かめる。
-		const storage = await this.host.callMain<IParadisPageStorageDescription>('describeExactViewStorage', [binding.exactView, ownerKey]);
+		const storage = await this.host.callMain<IParadisPageStorageDescription>('describeExactViewStorage', [binding.exactView, ownerKey, storageOwnerKey]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
@@ -488,7 +495,7 @@ export class ParadisBrowserPageOps {
 			}
 			confirmedProfileId = storage.profileId;
 		}
-		const result = await this.host.callMain<IParadisPageOverridesResult>('applyExactViewPageOverrides', [binding.exactView, ownerKey, binding.generation, JSON.stringify(request), confirmedProfileId]);
+		const result = await this.host.callMain<IParadisPageOverridesResult>('applyExactViewPageOverrides', [binding.exactView, ownerKey, binding.generation, JSON.stringify(request), confirmedProfileId, storageOwnerKey]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
