@@ -1,0 +1,582 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ---- エディタ全体 ---- */
+
+.paradis-tce {
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	color: var(--vscode-foreground);
+	background: var(--vscode-editor-background);
+	font-size: 12px;
+}
+
+.paradis-tce *,
+.paradis-tce-screen-panel * {
+	box-sizing: border-box;
+}
+
+.paradis-tce-tabs {
+	display: flex;
+	gap: 2px;
+	padding: 6px 12px 0;
+	border-bottom: 1px solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+}
+
+.paradis-tce-tab {
+	border: none;
+	border-bottom: 2px solid transparent;
+	background: none;
+	color: var(--vscode-descriptionForeground);
+	padding: 4px 12px 6px;
+	font: inherit;
+	cursor: pointer;
+}
+
+.paradis-tce-tab:hover {
+	color: var(--vscode-foreground);
+}
+
+.paradis-tce-tab.on {
+	color: var(--vscode-foreground);
+	border-bottom-color: var(--vscode-focusBorder);
+}
+
+.paradis-tce-tab:focus-visible,
+.paradis-tce-chip:focus-visible,
+.paradis-tce-item:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-tce-body {
+	flex: 1;
+	display: flex;
+	min-height: 0;
+}
+
+.paradis-tce-view {
+	flex: 1;
+	display: flex;
+	min-width: 0;
+	min-height: 0;
+}
+
+.paradis-tce-view.hidden {
+	display: none;
+}
+
+/* ---- 左: 一覧 ---- */
+
+.paradis-tce-list {
+	width: 330px;
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	border-right: 1px solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+}
+
+.paradis-tce-search-row {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	padding: 8px 8px 6px;
+}
+
+.paradis-tce-input {
+	min-width: 0;
+	padding: 3px 6px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font: inherit;
+}
+
+.paradis-tce-input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-tce-search {
+	flex: 1;
+}
+
+.paradis-tce-tool {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0 8px 6px;
+}
+
+.paradis-tce-chip {
+	border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-widget-border, transparent));
+	border-radius: 4px;
+	padding: 1px 8px;
+	background: none;
+	color: var(--vscode-foreground);
+	font: inherit;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-tce-chip:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-tce-chip.on {
+	border-color: var(--vscode-focusBorder);
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-tce-items {
+	flex: 1;
+	overflow: auto;
+	padding-bottom: 8px;
+}
+
+.paradis-tce-items-empty,
+.paradis-tce-detail-empty {
+	padding: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-group {
+	padding: 8px 10px 2px;
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 3px 10px;
+	cursor: pointer;
+}
+
+.paradis-tce-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-tce-item.selected {
+	background: var(--vscode-list-inactiveSelectionBackground);
+	color: var(--vscode-list-inactiveSelectionForeground);
+}
+
+.paradis-tce-item-id {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+}
+
+.paradis-tce-item-badge {
+	display: flex;
+	gap: 4px;
+}
+
+.paradis-tce-add {
+	margin: 6px 10px;
+}
+
+/* ---- 色見本とバッジ ---- */
+
+.paradis-tce-swatch {
+	--paradis-tce-swatch: transparent;
+	display: inline-block;
+	flex-shrink: 0;
+	width: 14px;
+	height: 14px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.5));
+	background:
+		linear-gradient(var(--paradis-tce-swatch), var(--paradis-tce-swatch)),
+		repeating-conic-gradient(rgba(128, 128, 128, 0.45) 0% 25%, transparent 0% 50%) 50% / 6px 6px;
+}
+
+.paradis-tce-swatch.none {
+	background: linear-gradient(to top right, transparent calc(50% - 1px), var(--vscode-descriptionForeground) 50%, transparent calc(50% + 1px));
+}
+
+.paradis-tce-badge {
+	font-size: 9px;
+	line-height: 14px;
+	border: 1px solid var(--vscode-descriptionForeground);
+	border-radius: 8px;
+	padding: 0 5px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-tce-badge.user,
+.paradis-tce-badge.unsaved {
+	border-color: var(--vscode-editorWarning-foreground);
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-tce-badge.para,
+.paradis-tce-badge.active {
+	border-color: var(--vscode-textLink-foreground);
+	color: var(--vscode-textLink-foreground);
+}
+
+/* ---- 右: 詳細 ---- */
+
+.paradis-tce-detail {
+	flex: 1;
+	min-width: 0;
+	overflow: auto;
+	padding: 12px 16px;
+}
+
+.paradis-tce-detail-id {
+	font-family: var(--monaco-monospace-font);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.paradis-tce-detail-desc {
+	color: var(--vscode-descriptionForeground);
+	margin: 4px 0 10px;
+}
+
+.paradis-tce-detail-warning {
+	color: var(--vscode-editorWarning-foreground);
+	margin: 0 0 10px;
+}
+
+.paradis-tce-layers {
+	margin-top: 12px;
+	padding-top: 8px;
+	border-top: 1px solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+}
+
+.paradis-tce-layer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-layer.active {
+	color: var(--vscode-foreground);
+}
+
+.paradis-tce-layer-label {
+	min-width: 150px;
+}
+
+.paradis-tce-layer-value {
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+}
+
+.paradis-tce-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.paradis-tce-actions .monaco-button {
+	width: auto;
+	padding: 2px 10px;
+}
+
+.paradis-tce-save-target {
+	margin-top: 10px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+/* ---- カラーピッカー ---- */
+
+.paradis-tce-picker {
+	display: flex;
+	gap: 12px;
+	align-items: flex-start;
+}
+
+.paradis-tce-picker-sv {
+	position: relative;
+	width: 160px;
+	height: 110px;
+	border-radius: 4px;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.paradis-tce-picker-sv-white,
+.paradis-tce-picker-sv-black {
+	position: absolute;
+	inset: 0;
+	border-radius: 4px;
+}
+
+.paradis-tce-picker-sv-white {
+	background: linear-gradient(to right, #fff, rgba(255, 255, 255, 0));
+}
+
+.paradis-tce-picker-sv-black {
+	background: linear-gradient(to top, #000, rgba(0, 0, 0, 0));
+}
+
+.paradis-tce-picker-sv-handle {
+	position: absolute;
+	width: 10px;
+	height: 10px;
+	margin: -5px 0 0 -5px;
+	border: 2px solid #fff;
+	border-radius: 50%;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+	pointer-events: none;
+}
+
+.paradis-tce-picker-strip {
+	position: relative;
+	width: 14px;
+	height: 110px;
+	border-radius: 3px;
+	cursor: ns-resize;
+	touch-action: none;
+}
+
+.paradis-tce-picker-hue {
+	background: linear-gradient(to bottom, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+}
+
+.paradis-tce-picker-alpha {
+	background: repeating-conic-gradient(rgba(128, 128, 128, 0.45) 0% 25%, transparent 0% 50%) 50% / 8px 8px;
+}
+
+.paradis-tce-picker-alpha-fill {
+	position: absolute;
+	inset: 0;
+	border-radius: 3px;
+}
+
+.paradis-tce-picker-strip-handle {
+	position: absolute;
+	left: -2px;
+	right: -2px;
+	height: 4px;
+	margin-top: -2px;
+	border: 1px solid #fff;
+	border-radius: 2px;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+	pointer-events: none;
+}
+
+.paradis-tce-picker-sv:focus-visible,
+.paradis-tce-picker-strip:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.paradis-tce-picker-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.paradis-tce-picker-field {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-tce-picker-field > span:first-child {
+	min-width: 56px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-picker-field .paradis-tce-input {
+	width: 110px;
+	font-family: var(--monaco-monospace-font);
+}
+
+/* ---- 下の帯 ---- */
+
+.paradis-tce-savebar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	border-top: 1px solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+	background: var(--vscode-editorWidget-background);
+}
+
+.paradis-tce-savebar-msg {
+	flex: 1;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-savebar-msg.dirty {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-tce-savebar .monaco-button {
+	width: auto;
+	padding: 2px 14px;
+}
+
+/* ---- シンタックスの色 ---- */
+
+.paradis-tce-toggles {
+	display: flex;
+	gap: 6px;
+	margin-top: 10px;
+}
+
+.paradis-tce-toggles .paradis-tce-chip.italic {
+	font-style: italic;
+}
+
+.paradis-tce-toggles .paradis-tce-chip.bold {
+	font-weight: 700;
+}
+
+.paradis-tce-scope-input {
+	width: 100%;
+	margin: 0 0 8px;
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-tce-preview-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 14px;
+}
+
+.paradis-tce-preview-head > span {
+	flex: 1;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-tce-preview {
+	margin-top: 6px;
+	height: 200px;
+	border: 1px solid var(--vscode-editorGroup-border, var(--vscode-widget-border, transparent));
+	border-radius: 4px;
+	overflow: hidden;
+}
+
+.paradis-tce-preview .paradis-tce-preview-hit {
+	outline: 1px dashed var(--vscode-editorWarning-foreground);
+	outline-offset: 1px;
+}
+
+.paradis-tce-preview-info {
+	margin-top: 6px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-tce-preview-info code {
+	font-family: var(--monaco-monospace-font);
+}
+
+/* ---- 画面から選ぶ ---- */
+
+.paradis-tce-screen-banner {
+	position: fixed;
+	top: 0;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 100000;
+	padding: 4px 14px;
+	border-radius: 0 0 6px 6px;
+	background: var(--vscode-editorWarning-foreground);
+	color: var(--vscode-editor-background);
+	font-weight: 600;
+	font-size: 12px;
+	pointer-events: none;
+}
+
+.paradis-tce-screen-highlight {
+	position: fixed;
+	z-index: 99999;
+	outline: 2px solid var(--vscode-editorWarning-foreground);
+	outline-offset: -2px;
+	pointer-events: none;
+}
+
+.paradis-tce-screen-panel {
+	position: fixed;
+	z-index: 100001;
+	width: 320px;
+	padding: 8px 10px;
+	border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	background: var(--vscode-editorHoverWidget-background);
+	color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+	box-shadow: 0 6px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	font-size: 12px;
+	pointer-events: none;
+}
+
+.paradis-tce-screen-panel.pinned {
+	pointer-events: auto;
+}
+
+.paradis-tce-screen-title,
+.paradis-tce-screen-empty {
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 4px;
+}
+
+.paradis-tce-screen-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 4px;
+	border-radius: 3px;
+}
+
+.paradis-tce-screen-panel.pinned .paradis-tce-screen-row {
+	cursor: pointer;
+}
+
+.paradis-tce-screen-panel.pinned .paradis-tce-screen-row:hover,
+.paradis-tce-screen-row.selected {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-tce-screen-id {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+}
+
+.paradis-tce-screen-detail {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	white-space: nowrap;
+}
+
+.paradis-tce-screen-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 8px;
+}
