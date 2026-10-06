@@ -14,6 +14,7 @@
 export const PARADIS_NOTIFICATIONS_CHANNEL = 'paradisNotifications';
 
 import type { IParadisPlayElevenLabsRequest } from './paradisElevenLabs.js';
+import type { ParadisYtDlpPrecursor } from './paradisYtDlp.js';
 
 // --- 着信音（ビルトイン + カスタム） ----------------------------------------------------------
 
@@ -105,6 +106,8 @@ export interface IParadisYouTubeVideoInfo {
 export interface IParadisYouTubeDownloadResult {
 	readonly tempId: string;
 	readonly info: IParadisYouTubeVideoInfo;
+	/** 取り込みは成功したが、yt-dlp の警告に出ていた壊れる前兆（無ければ空か undefined）。 */
+	readonly precursors?: readonly ParadisYtDlpPrecursor[];
 }
 
 export interface IParadisRenderClipRequest {
