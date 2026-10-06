@@ -18,7 +18,7 @@ export function accountName(account: RateLimitAccount): string {
 }
 
 /** アカウントの枠（5時間・7日・追加の枠）を、見せる順に並べる。 */
-export function accountWindows(account: RateLimitAccount): { label: string; window: RateLimitWindow }[] {
+export function accountWindows(account: Pick<RateLimitAccount, 'fiveHour' | 'sevenDay' | 'scoped'>): { label: string; window: RateLimitWindow }[] {
 	const rows: { label: string; window: RateLimitWindow }[] = [];
 	if (account.fiveHour) {
 		rows.push({ label: '5時間', window: account.fiveHour });
@@ -30,6 +30,11 @@ export function accountWindows(account: RateLimitAccount): { label: string; wind
 		rows.push({ label: scoped.label ?? '追加枠', window: scoped });
 	}
 	return rows;
+}
+
+/** 控えている間の前の値の枠（{@link hasPreviousValue} が false なら空）。 */
+export function previousWindows(account: RateLimitAccount): { label: string; window: RateLimitWindow }[] {
+	return hasPreviousValue(account) ? accountWindows(account.previousWindows!) : [];
 }
 
 /**
@@ -84,6 +89,51 @@ export function accountStatusMessage(account: RateLimitAccount, remoteHost = fal
 }
 
 /**
+ * 取りに行くのを控えている（'not_fetched'）が、前に取れた値を PC が `previousWindows`・`previousFetchedAt` で
+ * 送っているか。PC の paradisLimitsPreviousValue と同じ決まり。古い PC はこの項目を送らないので false になり、前と同じ表示になる。
+ */
+export function hasPreviousValue(account: RateLimitAccount): boolean {
+	return account.status === 'unavailable'
+		&& account.unavailableReason === 'not_fetched'
+		&& account.previousFetchedAt !== undefined
+		&& Number.isFinite(account.previousFetchedAt)
+		&& account.previousWindows !== undefined
+		&& accountWindows(account.previousWindows).length > 0;
+}
+
+/** 「12分前の値」「3時間前の値」「2日前の値」。 */
+export function previousValueAge(fetchedAt: number, now: number): string {
+	const minutes = Math.max(0, Math.floor((now - fetchedAt) / 60_000));
+	if (minutes < 60) {
+		return `${minutes}分前の値`;
+	}
+	const hours = Math.floor(minutes / 60);
+	return hours < 24 ? `${hours}時間前の値` : `${Math.floor(hours / 24)}日前の値`;
+}
+
+/**
+ * 前の値に添える一文（「12分前の値・ログインの更新を控えています（claude-swap と共有のため）」）。
+ * 前の値が無ければ undefined（いつもの説明文を出す）。PC の使用量パネルと同じ文言。
+ */
+export function previousValueNote(account: RateLimitAccount, now: number): string | undefined {
+	if (!hasPreviousValue(account)) {
+		return undefined;
+	}
+	const age = previousValueAge(account.previousFetchedAt!, now);
+	switch (account.statusDetail) {
+		case CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP:
+			return `${age}・ログインの更新を控えています（claude-swap と共有のため）`;
+		case CLAUDE_DETAIL_SAME_LINEAGE:
+			return `${age}・ログインの更新は Claude Code に任せています`;
+		default:
+			return `${age}・取り直しています`;
+	}
+}
+
+/** リセット時刻を過ぎた枠に、使用率の代わりに出す言葉（取り直すまで今の値は分からない）。 */
+export const WINDOW_RESET_UNKNOWN_LABEL = 'リセット済み（今の値は不明）';
+
+/**
  * PC が 'not_fetched' に添える statusDetail（PC の paradisLimitsMonitor.ts の PARADIS_CLAUDE_DETAIL_* と同じ文字列）。
  * claude-swap と共有しているかもしれないので更新を控えている／いまのログインと同じ系列なので Claude Code に任せている。
  */
@@ -121,7 +171,12 @@ function remoteHostStatusMessage(account: RateLimitAccount): string | undefined 
  * アカウントの行の補足（見出しの下の一行）。状態の説明があればそれ、無ければ「使用中」やプラン。
  * 接続先のログインは「使用中」の印の代わりに、どの接続先のログインかを書く。
  */
-export function accountHint(account: RateLimitAccount, remoteHost: RateLimitProviderSnapshot['remoteHost']): string | undefined {
+export function accountHint(account: RateLimitAccount, remoteHost: RateLimitProviderSnapshot['remoteHost'], now?: number): string | undefined {
+	// 控えている間の前の値を出すときは、その古さと控えている理由を書く（`now` を渡したときだけ）。
+	const previous = now !== undefined ? previousValueNote(account, now) : undefined;
+	if (previous !== undefined) {
+		return previous;
+	}
 	const message = accountStatusMessage(account, remoteHost !== undefined);
 	if (message !== undefined) {
 		return message;

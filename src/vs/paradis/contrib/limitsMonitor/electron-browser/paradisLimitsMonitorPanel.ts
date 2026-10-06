@@ -36,11 +36,14 @@ import {
 	IParadisLimitsAccount,
 	IParadisLimitsProviderSnapshot,
 	IParadisLimitsSnapshot,
+	IParadisLimitsAge,
+	IParadisLimitsPreviousValue,
 	IParadisLimitsWindow,
-	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsNotFetchedCause,
+	paradisLimitsPreviousValue,
 	paradisLimitsSeverity,
+	paradisLimitsWindowView,
 	ParadisLimitsAccountStatus,
 	ParadisLimitsProvider
 } from '../common/paradisLimitsMonitor.js';
@@ -331,8 +334,10 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		const card = dom.append(parent, $('.plm-account'));
 		const top = dom.append(card, $('.plm-account-top'));
 		const name = account.email ?? account.homeLabel ?? account.id;
+		// 取りに行くのを控えている間も、前に取れた値があれば薄く出す（そのカードは縮めない）。
+		const previous = paradisLimitsPreviousValue(account, Date.now());
 		// 取得できていないカードは1行に縮め、理由とボタンは開いたときだけ出す（同じ説明文が何枚も並ばないように）。
-		const compact = account.status === 'unavailable' && !remoteHost;
+		const compact = account.status === 'unavailable' && !remoteHost && !previous;
 		const compactKey = `${account.provider}:${account.id}`;
 		const expanded = compact && this._expandedCompactCards.has(compactKey);
 		if (compact) {
@@ -382,7 +387,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			// 'unavailable'（読めていないだけ）と 'refreshing'（Claude Codeが自動で更新する）は
 			// 認証の問題ではないので、赤いエラーバッジも「再ログイン…」も出さない。
 			const badgeClass = paradisLimitsNeedsRelogin(account.status) ? '.plm-badge.err' : '.plm-badge';
-			dom.append(badgeGroup, $(badgeClass)).textContent = this.statusBadgeLabel(account.status);
+			dom.append(badgeGroup, $(badgeClass)).textContent = previous
+				? localize('paradis.limitsMonitor.previousValueBadge', "前回の値")
+				: this.statusBadgeLabel(account.status);
 		}
 
 		const actions = dom.append(badgeGroup, $('.plm-account-actions'));
@@ -418,7 +425,10 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (compact && !expanded) {
 			return;
 		}
-		if (account.status !== 'ok') {
+		if (previous) {
+			this.renderMeters(card, account, true);
+			dom.append(card, $('.plm-card-stale')).textContent = this.previousValueNote(previous);
+		} else if (account.status !== 'ok') {
 			const errorRow = dom.append(card, $('.plm-error-row'));
 			// Claude の登録していないログインは Para Code からは直せない（ターミナルで claude に
 			// ログインし直す）。再ログインのボタンは登録したアカウントと Codex にだけ出し、それ以外は
@@ -436,16 +446,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				this._bodyListeners.add(dom.addDisposableListener(reloginButton, 'click', () => this.options.onRelogin(account)));
 			}
 		} else {
-			const meters = dom.append(card, $('.plm-meters'));
-			if (account.fiveHour) {
-				this.renderMeter(meters, localize('paradis.limitsMonitor.window5h', "5時間"), account.fiveHour);
-			}
-			if (account.sevenDay) {
-				this.renderMeter(meters, localize('paradis.limitsMonitor.window7d', "7日"), account.sevenDay);
-			}
-			for (const scoped of account.scoped ?? []) {
-				this.renderMeter(meters, scoped.label ?? localize('paradis.limitsMonitor.windowExtra', "追加枠"), scoped);
-			}
+			this.renderMeters(card, account, false);
 			if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
 				dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
 			}
@@ -460,6 +461,45 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 		if (!remoteHost) {
 			this.renderAccountActions(card, account);
+		}
+	}
+
+	/** 5時間・7日・モデル別枠のメーター。`previous` は取りに行くのを控えている間の前の値（薄く出す）。 */
+	private renderMeters(card: HTMLElement, account: IParadisLimitsAccount, previous: boolean): void {
+		const meters = dom.append(card, $('.plm-meters'));
+		meters.classList.toggle('previous', previous);
+		if (account.fiveHour) {
+			this.renderMeter(meters, localize('paradis.limitsMonitor.window5h', "5時間"), account.fiveHour);
+		}
+		if (account.sevenDay) {
+			this.renderMeter(meters, localize('paradis.limitsMonitor.window7d', "7日"), account.sevenDay);
+		}
+		for (const scoped of account.scoped ?? []) {
+			this.renderMeter(meters, scoped.label ?? localize('paradis.limitsMonitor.windowExtra', "追加枠"), scoped);
+		}
+	}
+
+	/** 前の値に添える一文（「12分前の値・ログインの更新を控えています（claude-swap と共有のため）」）。 */
+	private previousValueNote(previous: IParadisLimitsPreviousValue): string {
+		const age = this.ageLabel(previous.age);
+		switch (previous.cause) {
+			case 'shared_with_claude_swap':
+				return localize('paradis.limitsMonitor.previousValueSharedWithClaudeSwap', "{0}・ログインの更新を控えています（claude-swap と共有のため）", age);
+			case 'same_lineage':
+				return localize('paradis.limitsMonitor.previousValueSameLineage', "{0}・ログインの更新は Claude Code に任せています", age);
+			case 'not_yet':
+				return localize('paradis.limitsMonitor.previousValueNotYet', "{0}・取り直しています", age);
+		}
+	}
+
+	private ageLabel(age: IParadisLimitsAge): string {
+		switch (age.unit) {
+			case 'minutes':
+				return localize('paradis.limitsMonitor.previousValueMinutes', "{0}分前の値", age.amount);
+			case 'hours':
+				return localize('paradis.limitsMonitor.previousValueHours', "{0}時間前の値", age.amount);
+			case 'days':
+				return localize('paradis.limitsMonitor.previousValueDays', "{0}日前の値", age.amount);
 		}
 	}
 
@@ -599,7 +639,15 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		dom.append(meter, $('.plm-meter-label')).textContent = label;
 		const track = dom.append(meter, $('.plm-meter-track'));
 		const fill = dom.append(track, $('.plm-meter-fill'));
-		const percent = Math.min(100, Math.max(0, window.usedPercent));
+		const view = paradisLimitsWindowView(window, Date.now());
+		if (view.kind === 'reset') {
+			// リセット時刻を過ぎた枠は、取り直すまで今の使用率が分からない。古い使用率は出さない。
+			fill.style.clipPath = 'inset(0 100% 0 0)';
+			dom.append(meter, $('.plm-meter-value'));
+			dom.append(meter, $('.plm-meter-reset')).textContent = localize('paradis.limitsMonitor.windowResetUnknown', "リセット済み（今の値は不明）");
+			return;
+		}
+		const percent = Math.min(100, Math.max(0, view.percent));
 		// widthではなくclip-pathで切り取る(理由はCSSの.plm-meter-fillコメント参照:
 		// グラデーションの描画自体をトラック全幅基準に保ち、塗り幅で色が変わるようにするため)。
 		fill.style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
@@ -614,9 +662,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		// 丸ごと1列ずれる(枠名の下にバー、バーの下に%が来る)。textContentだけ出し分ける。
 		const resetCell = dom.append(meter, $('.plm-meter-reset'));
 		// 絶対時刻(「9/1 03:00」のような表示)は相対のカウントダウンがあれば冗長なので出さない。
-		const countdown = paradisLimitsFormatCountdown(window.resetsAt, Date.now());
-		if (countdown !== undefined) {
-			resetCell.textContent = localize('paradis.limitsMonitor.resetIn', "{0}後", countdown);
+		if (view.countdown !== undefined) {
+			resetCell.textContent = localize('paradis.limitsMonitor.resetIn', "{0}後", view.countdown);
 		}
 	}
 }
