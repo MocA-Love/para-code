@@ -1764,6 +1764,8 @@ interface IParadisApprovalEntry {
 	readonly waitKey?: string;
 	/** デスクトップかモバイルから答え終えた（表に出さない。ツールの完了で列から外れる）。 */
 	readonly answered?: boolean;
+	/** 許可を求めたサブエージェント・チームメイト（hook の `agent_id`）。本会話の許可は undefined。 */
+	readonly agentId?: string;
 }
 
 interface ITailerDelegate {
@@ -2851,6 +2853,7 @@ class TranscriptTailer {
 				key,
 				desktopOnly,
 				...(waitKey !== undefined ? { waitKey } : {}),
+				...(extra?.agent?.id !== undefined ? { agentId: extra.agent.id } : {}),
 			});
 			const message: IParadisAgentChatMessage = {
 				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
@@ -2877,6 +2880,20 @@ class TranscriptTailer {
 				removed = true;
 			}
 			if (!removed) {
+				return;
+			}
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
+	}
+
+	/**
+	 * ターンが終わった会話の承認を外す。`agentId` が undefined なら本会話の承認だけ（同じペインのサブエージェント・
+	 * チームメイトの未回答は残す）、指定すればその子の承認だけ、`'all'`（セッションの終わり）ならすべて外す。
+	 */
+	clearTurnApprovals(agentId: string | undefined | 'all'): void {
+		this.enqueue(async () => {
+			if (!this.removeApprovals(entry => agentId === 'all' || entry.agentId === agentId)) {
 				return;
 			}
 			this.delegate.onDelta([]);
@@ -3118,7 +3135,8 @@ class TranscriptTailer {
 			// おく（currentInteraction の質問優先と合わせた二重の保険）。
 			// ただし Codex app-server 由来の承認は実際に serverRequest が応答待ちなので消さない。
 			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
-			this.removeApprovals(entry => !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
+			// サブエージェント・チームメイトの承認も、本会話の質問とは別に答えを待っているので残す。
+			this.removeApprovals(entry => entry.agentId === undefined && !paradisIsCodexDaemonApprovalInteraction(entry.interaction.id));
 			this.messages.push(...added);
 			this.trimRing();
 			this.delegate.onDelta(added, quiet ? { quiet: true } : undefined);
@@ -5823,7 +5841,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.pushActivityToSubscribers(event.token);
 		}
 		const tailer = this.tailers.get(event.token);
-		tailer?.clearApprovalRequest(undefined, true, true);
+		// 外すのはターンが終わった会話の承認だけ（本会話の Stop でチームメイトの未回答の許可を消さない）
+		tailer?.clearTurnApprovals(event.event === 'SessionEnd' ? 'all' : str(event.payload?.agent_id));
 		tailer?.clearPendingQuestions();
 		this.releaseInteractionClaimsFor(event.token);
 		this.schedulePersistedAgentActivityReconcile(event.token);
@@ -6646,7 +6665,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const current = tailer?.currentInteraction() ?? null;
 		let interaction: IParadisNotifyPaneContent['interaction'];
 		if (current?.kind === 'approval') {
-			interaction = { kind: 'approval', id: current.id, ...(current.detail !== undefined ? { text: current.detail } : {}) };
+			const agentId = current.request?.agent?.id;
+			interaction = { kind: 'approval', id: current.id, ...(current.detail !== undefined ? { text: current.detail } : {}), ...(agentId !== undefined ? { agentId } : {}) };
 		} else if (current?.kind === 'question' && tailer !== undefined) {
 			const text = tailer.pendingQuestionMessages(current.id).map(message => message.text).filter(text => text.trim().length > 0).join('\n\n');
 			interaction = { kind: 'question', id: current.id, ...(text.length > 0 ? { text } : {}) };
@@ -8254,6 +8274,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.agent_id) : undefined;
 		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
 		if (event.event === 'SubagentStop') {
+			// サブエージェント・チームメイトのターンが終わった: その子の承認はもう答えを待っていない
+			const stoppedAgentId = str(event.payload?.agent_id);
+			if (stoppedAgentId !== undefined) {
+				this.tailers.get(event.token)?.clearTurnApprovals(stoppedAgentId);
+			}
 			const agentTranscriptPath = str(event.payload?.agent_transcript_path);
 			if (subagentId !== undefined && agentTranscriptPath !== undefined && await isAllowedTranscriptPath(agentTranscriptPath)) {
 				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${subagentId}`, agentTranscriptPath);

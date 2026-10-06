@@ -774,6 +774,39 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('keeps a teammate\'s pending approval across the main conversation\'s Stop until the teammate\'s turn ends', async () => {
+		const token = 'pane-teammate-approval';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'teammate-approval.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			lastTurnEndedAt: Map<string, number>;
+			tailers: Map<string, { currentInteraction(): { readonly kind: string; readonly id: string } | null; afterQueue(work: () => void): Promise<void> }>;
+		};
+		const base = { token, sessionId: 'session-teammate', transcriptPath, cwd: '/workspace' };
+		const teammate = { agent_id: 'a05cdbe863549a180', agent_type: 'general-purpose' };
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', payload: { prompt: '手伝って' }, at: Date.now() });
+			fireParadisAgentHookEvent({
+				...base, event: 'PermissionRequest', toolName: 'Bash', toolInput: { command: 'echo hi' }, toolUseId: 'toolu_mate',
+				payload: { ...teammate, tool_name: 'Bash' }, at: Date.now(),
+			});
+			await waitFor(() => access.tailers.get(token)?.currentInteraction()?.id === 'toolu_mate', 'teammate approval was not injected');
+			// 本会話の Stop（agent_id なし）: チームメイトの許可は答えを待ったまま
+			fireParadisAgentHookEvent({ ...base, event: 'Stop', at: Date.now() });
+			await waitFor(() => access.lastTurnEndedAt.has(token), 'turn end was not applied');
+			await access.tailers.get(token)?.afterQueue(() => { });
+			const afterMainStop = access.tailers.get(token)?.currentInteraction()?.id;
+			// チームメイト自身のターンの終わり（SubagentStop）で外れる
+			fireParadisAgentHookEvent({ ...base, event: 'SubagentStop', payload: { ...teammate }, at: Date.now() });
+			await waitFor(() => access.tailers.get(token)?.currentInteraction() === null, 'teammate turn end did not clear its approval');
+			assert.deepStrictEqual({ afterMainStop }, { afterMainStop: 'toolu_mate' });
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('keeps the Codex thread ID discovered from rollout session metadata', () => {
 		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
 			type: 'session_meta',
