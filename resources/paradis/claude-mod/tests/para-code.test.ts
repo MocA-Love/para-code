@@ -498,6 +498,18 @@ describe('para-code mod', () => {
 		expect({ ran, acks: acks.map(ack => [ack.id, ack.ok, ack.reason]) }).toEqual({ ran: [], acks: [['i1', false, 'refused'], ['r1', false, 'stale']] });
 	});
 
+	test('sends the context window the status line shows, only when the fill moved', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const clock = fakeParaCode(on, {}, recorded);
+		on('session.measure', ($, e) => ({ changed: e.changed }));
+		await startSession($);
+		await $.session.measure({ context: { tokens: 142_800, window: 1_000_000, percent: 14 }, rateLimits: [], changed: ['context'] });
+		await $.session.measure({ context: { tokens: 142_800, window: 1_000_000, percent: 14 }, rateLimits: [], changed: ['rateLimits'] });
+		await clock.settle();
+		const events = recorded.filter(entry => entry.op === 'event').flatMap(entry => entry.body.events as Json[]).filter(event => event.type === 'measure');
+		expect(events.map(({ at, ...event }) => event)).toEqual([{ type: 'measure', context: { window: 1_000_000, tokens: 142_800, percent: 14 } }]);
+	});
+
 	test('keeps using fetch when it works again after reading the port file once more', async ($, on) => {
 		mock.env(on, { PARA_CODE_TERMINAL_PANE_ID: 'pane-token', PARA_CODE_MCP_PORT_FILE: PORT_FILE });
 		mock.clock(on);

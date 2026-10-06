@@ -128,9 +128,9 @@ export function BackgroundPill({ terminalKey, monitors, shells, shellsAccess }: 
 
 /**
  * 描き直しの時計。シートを開いている間は経過時間のために毎秒、閉じている間は
- * 終わったものがピルから消える時刻に1回だけ進める。
+ * 終わったものがピルから消える時刻に1回だけ進める。セッションの輪のシート（sessionRing.tsx）でも使う。
  */
-function useBackgroundClock(monitors: readonly AgentMonitor[] | undefined, shells: readonly AgentShell[] | undefined, open: boolean): number {
+export function useBackgroundClock(monitors: readonly AgentMonitor[] | undefined, shells: readonly AgentShell[] | undefined, open: boolean): number {
 	const [now, setNow] = useState(() => Date.now());
 	const monitorChange = open ? undefined : nextMonitorPillChange(monitors, now);
 	const shellChange = open ? undefined : nextShellPillChange(shells, now);
@@ -185,7 +185,7 @@ function useShellOutputs(terminalKey: string | undefined, ids: readonly string[]
 	return state;
 }
 
-function SegmentSwitch({ value, options, onChange }: { value: BackgroundTab; options: readonly { readonly value: BackgroundTab; readonly label: string }[]; onChange: (value: BackgroundTab) => void }) {
+export function SegmentSwitch({ value, options, onChange }: { value: BackgroundTab; options: readonly { readonly value: BackgroundTab; readonly label: string }[]; onChange: (value: BackgroundTab) => void }) {
 	return (
 		<View style={styles.segment} accessibilityRole="tablist">
 			{options.map(option => {
@@ -206,7 +206,7 @@ function SegmentSwitch({ value, options, onChange }: { value: BackgroundTab; opt
 	);
 }
 
-function ShellList({ terminalKey, shells, access, now, visible, onOpen }: {
+export function ShellList({ terminalKey, shells, access, now, visible, onOpen }: {
 	terminalKey: string | undefined;
 	shells: readonly AgentShell[] | undefined;
 	access: AgentShellsAccess | undefined;
@@ -269,7 +269,7 @@ function ShellRow({ shell, now, divider, lastLine, onPress }: { shell: AgentShel
 	);
 }
 
-function ShellDetail({ terminalKey, shell, access, now, visible }: { terminalKey: string; shell: AgentShell; access: AgentShellsAccess | undefined; now: number; visible: boolean }) {
+export function ShellDetail({ terminalKey, shell, access, now, visible }: { terminalKey: string; shell: AgentShell; access: AgentShellsAccess | undefined; now: number; visible: boolean }) {
 	const stopShell = useAppStore(state => state.stopAgentShell);
 	const pcConnected = useAppStore(state => state.pcOnline && state.sessionProtocolReady);
 	const [stopping, setStopping] = useState(false);
