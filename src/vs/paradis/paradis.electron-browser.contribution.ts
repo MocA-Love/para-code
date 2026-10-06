@@ -107,3 +107,4 @@ import './contrib/agentChat/electron-browser/paradisAgentChat.contribution.js';
 import './contrib/claudeMod/electron-browser/paradisClaudeModConfigDir.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';
+import './contrib/agentTabTitle/electron-browser/paradisClaudeTabTitlePin.contribution.js';

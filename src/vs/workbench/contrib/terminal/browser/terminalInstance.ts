@@ -2020,6 +2020,16 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		this.setShellType(shellType);
 	}
 
+	// PARA-PATCH: let Para Code lock in (or release) an agent CLI it identified from the agent's hooks, for
+	// agents whose OSC title never matches agentCliTitlePatterns (a resumed or renamed Claude Code session).
+	// Releasing only drops the lock; the next real shell report from the pty decides the shell type as usual.
+	paradisSetAgentShellTypeFromHooks(shellType: GeneralShellType | undefined): void {
+		this._agentShellTypeFromSequence = shellType;
+		if (shellType !== undefined) {
+			this.setShellType(shellType);
+		}
+	}
+
 	private async _trust(): Promise<boolean> {
 		if (this._configurationService.getValue(TerminalSettingId.AllowInUntrustedWorkspace)) {
 			this._logService.info(`Workspace trust check bypassed due to ${TerminalSettingId.AllowInUntrustedWorkspace}`);
