@@ -45,6 +45,8 @@ import {
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
+import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
+import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -232,6 +234,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		private readonly cursorOverlay: ParadisCursorOverlayController = new ParadisCursorOverlayController(),
 		/** キー入力の準備に失敗した理由をログと Sentry へ送る。テストでは差し替える。 */
 		private readonly reportAutomationKeyFailure: (phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined) => void = paradisReportAutomationKeyFailure,
+		/** 内蔵ブラウザのフォーカスと入力の失敗の診断（Sentry のパンくずとまとめのイベント）。テストの偽物では作らない。 */
+		private readonly browserDiagnostics: ParadisBrowserFocusDiagnosticsMain | undefined = paradisCreateBrowserFocusDiagnostics(browserViewMainService),
 	) {
 		// 子タブ（target=_blank・window.open・中クリック）を開いた元のタブを覚える。エージェントのタブから
 		// 開いた子タブで始まったダウンロードも、エージェント由来として扱うため。テストの偽物には無い。
@@ -713,6 +717,39 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
+	/**
+	 * 共有プロセスから届く診断の印（エージェントの接続数・focus emulation・入力キュー・ツールの失敗）。
+	 * どれも固定の語と数だけで、ホスト名はここで BrowserView の URL から畳む。
+	 */
+	async noteExactViewDiagnostic(descriptorValue: unknown, noteValue: unknown): Promise<void> {
+		const diagnostics = this.browserDiagnostics;
+		const note = paradisParseBrowserDiagnosticNote(noteValue);
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		if (!diagnostics || !note) {
+			return;
+		}
+		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
+		if (!view) {
+			// 入力キューの飽和はビューを持たない。ほかはビューが分からなければ捨てる。
+			if (note.kind === 'input-queue' && note.queueKind === 'saturated') {
+				diagnostics.recorder.noteInputQueue('none', 'saturated', undefined, undefined);
+			}
+			return;
+		}
+		const host = paradisBrowserViewDiagnosticHost(view);
+		switch (note.kind) {
+			case 'agent-state':
+				diagnostics.recorder.noteAgentState(view, { connections: note.connections, focusEmulation: note.focusEmulation });
+				return;
+			case 'input-queue':
+				diagnostics.recorder.noteInputQueue(host, note.queueKind, note.cause, note.method);
+				return;
+			case 'tool-failure':
+				diagnostics.recorder.noteToolFailure(host, note.tool, note.errorKind, note.gateReason);
+				return;
+		}
+	}
+
 	/** Dispatch one validated input command to the exact BrowserView debugger root without focusing it. */
 	async dispatchExactViewInput(descriptorValue: unknown, methodValue: unknown, paramsJsonValue: unknown): Promise<IParadisCdpInputDispatchResult> {
 		const command = paradisParseCdpInputCommand(methodValue, paramsJsonValue);
@@ -739,6 +776,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
 		}
 		this.nudgeFrameBeforeInput(descriptor.viewId, view);
+		// この直後のフォーカスや input-event は、利用者ではなくエージェントの入力によるもの。
+		this.browserDiagnostics?.recorder.noteAgentInput(view);
 
 		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
 		// 目標座標へ滑らせ、着いてから配送することで、ホバーやクリックが「カーソルが着いた瞬間」に
@@ -768,6 +807,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			if (!keySignature) {
 				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${command.method} does not have a suppressible exact key signature` };
 			}
+			this.browserDiagnostics?.recorder.noteKeyAttempt(paradisBrowserViewDiagnosticHost(view));
 			for (let attempt = 0; attempt < 2 && !automationRegistration; attempt++) {
 				keyFailure = undefined;
 				try {
@@ -783,6 +823,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			}
 			if (!automationRegistration) {
 				this.reportAutomationKeyFailure('register', lastKeyFailure());
+				this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'register', lastKeyFailure());
 				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure())})` };
 			}
 		}
@@ -810,6 +851,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				}
 				if (!activated) {
 					this.reportAutomationKeyFailure('activate', lastKeyFailure());
+					this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'activate', lastKeyFailure());
 					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure())})` };
 				}
 				if (this.resolveExistingExactView(descriptor) !== view) {

@@ -334,8 +334,9 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		return this._getBrowserView(id).captureScreenshot(options);
 	}
 
-	async focus(id: string, force?: boolean): Promise<void> {
-		return this._getBrowserView(id).focus(force);
+	// PARA-PATCH: pass the optional focus origin through (Para Code browser focus diagnostics)
+	async focus(id: string, force?: boolean, paraOrigin?: string): Promise<void> {
+		return this._getBrowserView(id).focus(force, paraOrigin);
 	}
 
 	async findInPage(id: string, text: string, options?: IBrowserViewFindInPageOptions): Promise<void> {

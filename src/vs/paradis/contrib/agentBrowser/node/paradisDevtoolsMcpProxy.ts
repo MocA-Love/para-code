@@ -117,6 +117,11 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	 * 「not interactive」とだけ返したときに書き足す。
 	 */
 	readonly recentInputRejection?: (token: string, since: number) => string | undefined;
+	/**
+	 * ツールが失敗した（結果が isError、時間切れ、JSON-RPC のエラー）。値はどれも固定の語で、
+	 * 共有中のタブのフォーカス診断（Sentry のパンくずとまとめのイベント）へ回す。
+	 */
+	readonly onToolFailure?: (token: string, failure: { readonly tool: string; readonly errorKind: string; readonly gateReason?: string }) => void;
 }
 
 /** {@link IParadisDevtoolsMcpProxyOptions.resolveRoots} の結果。 */
@@ -342,7 +347,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				// The CDP connection or the page's session went away under the call (a rebind sweep, a
 				// detach, a transport error). chrome-devtools-mcp reconnects on its next call when it sees
 				// the browser disconnected, so one more try of a read-only tool usually succeeds.
-				this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
 				this._debug(`[ParadisDevtoolsProxy] ${safeToolName} failed with a closed target for pane ${entry.tokenFingerprint}; retrying once`);
 				const retryEntry = this._ensureChild(token, generation, wsEndpoint);
 				await this._awaitReady(token, retryEntry, signal);
@@ -356,10 +361,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 						safe_tool_name: safeToolName,
 						safe_retry_succeeded: !(this._isRecord(result) && result.isError === true),
 					}, 'info');
-					this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+					this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
 				}
 			} else {
-				this._reportToolResultError(safeToolName, result, Date.now() - startedAt);
+				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
 			}
 			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
 				this._snapshots.remember(token, result, producer, producer.generation, snapshotEpoch);
@@ -369,13 +374,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			// vendored の validatePath に断られたときは、許された場所とパス無しで呼ぶ手を添える
 			return paradisDevtoolsExplainRootsDenial(adjusted, entry.lastRoots) ?? { content: [] };
 		} catch (error) {
-			this._reportToolCallFailure(safeToolName, error, Date.now() - startedAt, signal);
+			this._reportToolCallFailure(token, safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);
 		}
 	}
 
 	/** Transport succeeded but the tool itself failed (`result.isError`): the text stays with the agent, the bucket goes to Sentry. */
-	private _reportToolResultError(safeToolName: string, result: unknown, durationMs: number): void {
+	private _reportToolResultError(token: string, safeToolName: string, result: unknown, durationMs: number): void {
 		if (!this._isRecord(result) || result.isError !== true) {
 			return;
 		}
@@ -384,17 +389,27 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		// The kind is part of the operation so each bucket gets its own issue and rate-limit
 		// window; otherwise an agent's ordinary mis-clicks would crowd out a real transport fault.
 		const kind = first ? classifyToolErrorText(first.text) : 'other';
+		const gate = first ? paradisClassifyBrowserToolErrorText(first.text) : undefined;
 		reportParadisDiagnosticError('owned', 'agent-browser', `devtools-tool-error-${kind}`, new Error('chrome-devtools-mcp tool returned isError'), {
 			duration_ms: durationMs,
 			safe_tool_name: safeToolName,
 			safe_error_kind: kind,
 			// Whether Para Code's own input gate refused it (PARA_BROWSER_*), and which CDP method failed.
-			...(first ? paradisClassifyBrowserToolErrorText(first.text) : {}),
+			...gate,
 		}, 'info');
+		this._noteToolFailure(token, safeToolName, kind, gate?.safe_gate_reason);
 	}
 
 	/** The call never produced a result: timeout, JSON-RPC error, or a bridge we killed ourselves. */
-	private _reportToolCallFailure(safeToolName: string, error: unknown, durationMs: number, signal: AbortSignal | undefined): void {
+	private _noteToolFailure(token: string, tool: string, errorKind: string, gateReason: string | undefined): void {
+		try {
+			this.options.onToolFailure?.(token, { tool, errorKind, gateReason });
+		} catch {
+			// Diagnostics must never change the tool result.
+		}
+	}
+
+	private _reportToolCallFailure(token: string, safeToolName: string, error: unknown, durationMs: number, signal: AbortSignal | undefined): void {
 		if (signal?.aborted || error instanceof StaleParadisDevtoolsGenerationError || error instanceof ParadisDevtoolsResourceLimitError) {
 			return;
 		}
@@ -405,6 +420,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 					safe_tool_name: safeToolName,
 					safe_rpc_code: error.rpcCode,
 				}, 'warning');
+				this._noteToolFailure(token, safeToolName, 'rpc-error', undefined);
 			}
 			return;
 		}
@@ -415,6 +431,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				safe_tool_name: safeToolName,
 				safe_method: message.startsWith('tools/call') ? 'tools/call' : message.startsWith('initialize') ? 'initialize' : 'other',
 			}, 'warning');
+			this._noteToolFailure(token, safeToolName, 'call-timeout', undefined);
 		}
 	}
 

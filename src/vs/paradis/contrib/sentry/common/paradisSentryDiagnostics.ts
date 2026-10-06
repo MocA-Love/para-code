@@ -119,6 +119,60 @@ export function setParadisSpanAttributes(attributes: ParadisSpanAttributes): voi
 	spanAttributeSetter?.(attributes);
 }
 
+/** Content-free values for a breadcrumb or a message event. Counts, durations and fixed words only. */
+export type ParadisDiagnosticSafeData = Record<`safe_${string}`, string | number | boolean>;
+
+/**
+ * Breadcrumbs and message events, for diagnostics that are not an error: a state transition worth
+ * reading next to the next report (a breadcrumb), or one aggregated anomaly (a message event). Wired
+ * by the process adapter that has the SDK; until then, and in unit tests, both are no-ops.
+ */
+export interface IParadisDiagnosticEventSink {
+	addBreadcrumb(category: `para.${string}`, message: string, data: ParadisDiagnosticSafeData): void;
+	captureMessage(
+		feature: string,
+		operation: string,
+		tags: Record<`para.${string}`, string>,
+		context: { readonly name: `para.${string}`; readonly data: ParadisDiagnosticSafeData },
+		severity: ParadisDiagnosticSeverity,
+	): void;
+}
+
+let eventSink: IParadisDiagnosticEventSink | undefined;
+
+/** Connects breadcrumbs and message events to the process-specific Sentry SDK. */
+export function configureParadisDiagnosticEventSink(value: IParadisDiagnosticEventSink): void {
+	eventSink = value;
+}
+
+/** Adds a `para.` breadcrumb. Only `safe_` data keys survive `paradisPrepareSentryBreadcrumb`. */
+export function addParadisDiagnosticBreadcrumb(category: `para.${string}`, message: string, data: ParadisDiagnosticSafeData): void {
+	try {
+		eventSink?.addBreadcrumb(category, message, data);
+	} catch {
+		// Diagnostics must never change the behavior they observe.
+	}
+}
+
+/**
+ * Sends one message event (`Para Code diagnostic: <feature>.<operation>`, explicit `owned` scope).
+ * The fingerprint is keyed on the operation and shares the per-fingerprint rate limit of explicit
+ * reports, so callers should aggregate before sending rather than send each occurrence.
+ */
+export function captureParadisDiagnosticMessage(
+	feature: string,
+	operation: string,
+	tags: Record<`para.${string}`, string>,
+	context: { readonly name: `para.${string}`; readonly data: ParadisDiagnosticSafeData },
+	severity: ParadisDiagnosticSeverity = 'warning',
+): void {
+	try {
+		eventSink?.captureMessage(feature, operation, tags, context, severity);
+	} catch {
+		// Diagnostics must never change the behavior they observe.
+	}
+}
+
 export function reportParadisDiagnosticError(
 	scope: Exclude<ParadisSentryScope, 'unknown'>,
 	feature: string,
