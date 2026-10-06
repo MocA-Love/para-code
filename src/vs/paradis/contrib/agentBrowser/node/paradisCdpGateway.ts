@@ -38,8 +38,13 @@ import { IParadisBoundContext, IParadisWsModule, ParadisRawScreenshotAuthorityRe
 import { paradisResolvePaneTokenForPeerPort } from './paradisCdpPeerResolver.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
+import { PARADIS_AGENT_TAB_ID_MAX_LENGTH, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisParseAgentTabScopeKey } from '../common/paradisAgentTabScope.js';
 
-/** ゲートウェイがバインディングレジストリ（サービス本体）へ問い合わせるための契約。 */
+/**
+ * ゲートウェイがバインディングレジストリ（サービス本体）へ問い合わせるための契約。
+ * `token` と書いてある引数は台帳のキーで、`?pane=` だけの接続ならペインのトークン、`&tab=` 付きなら
+ * トークンとタブの組（paradisAgentTabScope.ts のスコープキー）。サービスはキーを分けて解決する。
+ */
 export interface IParadisCdpGatewayDelegate {
 	/** Capture an opaque, point-in-time lease for a currently serviceable pane token. */
 	captureIngressLease(token: string): IParadisCdpIngressLease | undefined;
@@ -110,6 +115,11 @@ function normalizePath(pathname: string): string {
 
 const JSON_PATHS = new Set(['/json', '/json/list', '/json/version', '/json/protocol']);
 const MAX_INGRESS_TOKEN_LENGTH = 200;
+/**
+ * 台帳のキーの最大長。`?pane=<token>&tab=<viewId>` の接続は、トークンとタブの組（スコープキー、
+ * paradisAgentTabScope.ts）をキーにして、接続・権威・通信の台帳をタブごとに分ける。
+ */
+const MAX_INGRESS_KEY_LENGTH = MAX_INGRESS_TOKEN_LENGTH + 1 + PARADIS_AGENT_TAB_ID_MAX_LENGTH;
 const MAX_INGRESS_URL_LENGTH = 4_096;
 const MAX_CDP_TARGET_ID_LENGTH = 512;
 const MAX_ACTIVE_HTTP_REQUESTS = 32;
@@ -144,10 +154,16 @@ interface IParadisCdpIngressAccess {
 	/** Present only for access inferred from a peer PID. */
 	readonly peerAuthority?: IParadisCdpPeerAuthority;
 	readonly peerGeneration?: number;
+	/**
+	 * ピア PID で解決したペインの接続に `?tab=` が付いていたときの、元のペインの access。
+	 * タブの access は、これが今も有効な間だけ有効（ペインのシェルが変わったら一緒に失効させる）。
+	 */
+	readonly parent?: IParadisCdpIngressAccess;
 }
 
 interface IParadisCdpQueryToken {
 	readonly present: boolean;
+	/** ペインのトークン。`tab` があればスコープキー（トークンとタブの組）。 */
 	readonly token?: string;
 }
 
@@ -162,6 +178,14 @@ interface IParadisCdpPeerAuthority {
 interface IParadisCdpWebSocketReservation {
 	attach(ws: wsTypes.WebSocket): boolean;
 	releaseIfUnattached(): void;
+}
+
+/** 台帳のキー（トークン、またはトークンとタブの組）を、接続の URL のクエリにする。 */
+export function paradisGatewayPaneQuery(key: string): string {
+	const { token, tabId } = paradisParseAgentTabScopeKey(key);
+	return tabId === undefined
+		? `?pane=${encodeURIComponent(token)}`
+		: `?pane=${encodeURIComponent(token)}&tab=${encodeURIComponent(tabId)}`;
 }
 
 export function paradisPageUpgradeTargetIsCurrent(
@@ -273,7 +297,7 @@ export class ParadisCdpGateway extends Disposable {
 					this._sendIngressUnavailable(res);
 					return;
 				}
-				const paneQuery = `?pane=${encodeURIComponent(token)}`;
+				const paneQuery = paradisGatewayPaneQuery(token);
 				this._sendJson(res, 200, {
 					...body,
 					webSocketDebuggerUrl: `ws://${host}/cdp/devtools/browser/${browserWsId}${paneQuery}`,
@@ -300,7 +324,7 @@ export class ParadisCdpGateway extends Disposable {
 				this._sendIngressUnavailable(res);
 				return;
 			}
-			const paneQuery = `?pane=${encodeURIComponent(token)}`;
+			const paneQuery = paradisGatewayPaneQuery(token);
 			const out = raw
 				.filter(t => typeof t.id === 'string' && t.id === targetId)
 				.map(t => ({
@@ -447,7 +471,10 @@ export class ParadisCdpGateway extends Disposable {
 
 	/** 指定トークンのアクティブなCDP接続を強制切断する（クライアントは次のツール呼び出しで再接続する）。 */
 	closeConnectionsForToken(token: string): void {
-		this._peerResolutionEpoch++;
+		// ピア PID の解決はペインの単位。タブのスコープキーを閉じるだけなら、ほかの接続の解決を捨てない
+		if (paradisParseAgentTabScopeKey(token).tabId === undefined) {
+			this._peerResolutionEpoch++;
+		}
 		// 共有の相手が変わる。前のタブの通信は数えない
 		this._networkActivity.get(token)?.reset();
 		const peerAuthority = this._peerAuthorities.get(token);
@@ -706,6 +733,22 @@ export class ParadisCdpGateway extends Disposable {
 		if (query.present) {
 			return query.token ? this._captureIngressAccess(query.token) : undefined;
 		}
+		// `?pane=` の無い接続（外部の生 CDP クライアント）は、ピア PID でペインを決め、`?tab=` があればそのタブだけを通す。
+		// URL にトークンを載せずにタブを選べるようにするため（get_cdp_endpoint の tabWebSocketDebuggerUrl）
+		const tab = this._queryTabOf(req);
+		if (tab === null) {
+			return undefined;
+		}
+		const paneAccess = await this._resolvePeerIngress(req);
+		if (paneAccess === undefined || tab === undefined) {
+			return paneAccess;
+		}
+		const scoped = this._captureIngressAccess(paradisAgentTabScopeKey(paneAccess.token, tab));
+		return scoped === undefined ? undefined : { ...scoped, parent: paneAccess };
+	}
+
+	/** ピア PID からペインの access を決める（ソケット単位で、ペインの access だけをメモ化する）。 */
+	private async _resolvePeerIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
 		const s = req.socket as Socket;
 		const cached = this._socketTokens.get(s);
 		if (cached) {
@@ -747,7 +790,7 @@ export class ParadisCdpGateway extends Disposable {
 	}
 
 	private _captureIngressAccess(token: string, peerBound = false): IParadisCdpIngressAccess | undefined {
-		if (token.length < 1 || token.length > MAX_INGRESS_TOKEN_LENGTH) {
+		if (token.length < 1 || token.length > MAX_INGRESS_KEY_LENGTH) {
 			return undefined;
 		}
 		try {
@@ -773,11 +816,12 @@ export class ParadisCdpGateway extends Disposable {
 		try {
 			return !this._disposed
 				&& access.token.length >= 1
-				&& access.token.length <= MAX_INGRESS_TOKEN_LENGTH
+				&& access.token.length <= MAX_INGRESS_KEY_LENGTH
 				&& access.lease.token === access.token
 				&& (access.peerAuthority === undefined
 					|| (this._peerAuthorities.get(access.token) === access.peerAuthority
 						&& access.peerGeneration === access.peerAuthority.generation))
+				&& (access.parent === undefined || this._isIngressAccessCurrent(access.parent))
 				&& this.delegate.isIngressLeaseCurrent(access.lease);
 		} catch {
 			return false;
@@ -812,12 +856,39 @@ export class ParadisCdpGateway extends Disposable {
 				return { present: false };
 			}
 			const values = url.searchParams.getAll('pane');
-			if (values.length !== 1 || values[0].length < 1 || values[0].length > MAX_INGRESS_TOKEN_LENGTH) {
+			// トークンにタブの区切りを混ぜたものは受けない（タブは必ず `tab` で渡す）
+			if (values.length !== 1 || values[0].length < 1 || values[0].length > MAX_INGRESS_TOKEN_LENGTH || paradisParseAgentTabScopeKey(values[0]).tabId !== undefined) {
 				return { present: true };
 			}
-			return { present: true, token: values[0] };
+			// `tab` があれば、そのペインのそのタブだけを通す接続（tab_id のツール呼び出しの子プロセス）
+			if (!url.searchParams.has('tab')) {
+				return { present: true, token: values[0] };
+			}
+			const tabs = url.searchParams.getAll('tab');
+			if (tabs.length !== 1 || !paradisIsValidAgentTabId(tabs[0])) {
+				return { present: true };
+			}
+			return { present: true, token: paradisAgentTabScopeKey(values[0], tabs[0]) };
 		} catch {
 			return { present: true };
+		}
+	}
+
+	/** `?pane=` の無い接続の `?tab=`。無ければ undefined、形が正しくなければ null。 */
+	private _queryTabOf(req: http.IncomingMessage): string | undefined | null {
+		try {
+			const rawUrl = req.url ?? '/';
+			if (rawUrl.length > MAX_INGRESS_URL_LENGTH) {
+				return null;
+			}
+			const url = new URL(rawUrl, 'http://127.0.0.1');
+			if (!url.searchParams.has('tab')) {
+				return undefined;
+			}
+			const tabs = url.searchParams.getAll('tab');
+			return tabs.length === 1 && paradisIsValidAgentTabId(tabs[0]) ? tabs[0] : null;
+		} catch {
+			return null;
 		}
 	}
 
