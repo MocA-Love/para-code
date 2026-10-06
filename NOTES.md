@@ -2237,7 +2237,7 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 ## Sentry で内蔵ブラウザのフォーカスと入力の失敗を調べる方法（2026-10-06）
 
-「スプレッドシートを開いていると、ほかへ移したフォーカスが 2、3 回戻ってくる」と「キー入力の準備の失敗がスプレッドシートで多い」を配布版で確かめるための計装です。判定は main の 1 か所（`agentBrowser/common/paradisBrowserFocusDiagnostics.ts`、配線は `electron-main/paradisBrowserFocusDiagnosticsMain.ts`）にあり、共有プロセスはエージェントの接続数・`Emulation.setFocusEmulationEnabled`・入力キュー・ツールの失敗を `noteExactViewDiagnostic` で main へ渡すだけです。送るのはホスト名・固定の語・回数・ミリ秒だけで、URL のパスとクエリ、ページの中身、入力した文字、会話は送りません。localhost・IP アドレス・ドットの無い名前・`.local` や `.corp` などは種類の語（`localhost`・`ip-address`・`single-label`・`private-name`）に置き換えます。ホスト名を止める設定は今はありません。
+「スプレッドシートを開いていると、ほかへ移したフォーカスが 2、3 回戻ってくる」と「キー入力の準備の失敗がスプレッドシートで多い」を配布版で確かめるための計装です。判定は main の 1 か所（`agentBrowser/common/paradisBrowserFocusDiagnostics.ts`、配線は `electron-main/paradisBrowserFocusDiagnosticsMain.ts`）にあり、共有プロセスはエージェントの接続数・`Emulation.setFocusEmulationEnabled`・入力キュー・ツールの失敗を `noteExactViewDiagnostic` で main へ渡すだけです。送るのはホスト名・固定の語・回数・ミリ秒だけで、URL のパスとクエリ、ページの中身、入力した文字、会話は送りません。ホスト名のまま送るのは `KNOWN_PUBLIC_DOMAINS`（google.com・github.com など）の下のホストだけで、ほかの公開ホストは `other-public`、localhost・IP アドレス・ドットの無い名前・`.local` や `.corp` などは `localhost`・`ip-address`・`single-label`・`private-name` に畳みます（トンネルやプレビューの URL、所属先の名前を送らないため）。調べたいサイトが増えたらその一覧へ足します。ホスト名を止める設定は今はありません。
 
 | 絞り込み | 中身 |
 |---|---|
@@ -2248,7 +2248,7 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 `para.focus_origin` の値は、`para-code-container-focus`（workbench の器が DOM focus を受けて `tryFocus()` が `BrowserView.focus()` を呼んだ）、`para-code-other`（それ以外の Para Code の `focus()`）、`user-pointer`（利用者がタブを押した。戻りには数えない）、`agent-input`（エージェントの入力の直後）、`window-activation`（ウィンドウが前面に戻った）、`page`（どれにも当たらない＝ページが自分で取った）です。
 
-イベントの読み方: `para.browser_focus` の context に `safe_returns`（戻った回数）、`safe_origins`（出どころごとの回数）、`safe_first_return_ms`（外へ移してから最初に戻るまで）、`safe_span_ms` があります。`para.browser_input` の context は `safe_kinds`（`key-register:ack-timeout=12` のような種類ごとの回数）、`safe_hosts`、`safe_key_attempts` と `safe_key_failures`（同じ期間のキー入力の試行と失敗。ホスト別の試行は `safe_key_attempts_by_host`）です。直前の流れはパンくずの `para.browser-focus`（focus / blur ごとに出どころ・直前のポインタの場所と経過ミリ秒・接続と emulation の有無）と `para.browser-input` に残ります。パンくずは 10 秒に 12 件までに間引き、落とした数は次の 1 件の `safe_dropped_before` に載ります。#246 からの 1 件ずつのイベント（`para.operation:automation-key-suppression` など）はそのまま送っています（10 分 3 件の上限つき）。
+イベントの読み方: `para.browser_focus` の context に `safe_returns`（戻った回数）、`safe_origins`（出どころごとの回数）、`safe_first_return_ms`（外へ移してから最初に戻るまで）、`safe_span_ms` があります。`para.browser_input` の context は `safe_kinds`（`key-register:ack-timeout=12` のような種類ごとの回数）、`safe_hosts`、`safe_key_attempts` と `safe_key_failures`（同じ期間のキー入力の試行と失敗。ホスト別の試行は `safe_key_attempts_by_host`）です。直前の流れはパンくずの `para.browser-focus`（出どころ・直前のポインタの場所と経過ミリ秒・接続と emulation の有無）と `para.browser-input` に残ります。focus / blur のパンくずは、利用者が外へ移した時とその次の focus、エージェントが繋いでいる間だけ出します（main のパンくず枠 100 件をほかの機能と分け合うため）。10 秒に 6 件までに間引き、落とした数は次の 1 件の `safe_dropped_before` に載ります。#246 からの 1 件ずつのイベント（`para.operation:automation-key-suppression` など）はそのまま送っています（10 分 3 件の上限つき）。
 
 ## 2 画面のファイル転送は IFileService だけで流し、権限だけを専用のチャネルで読む（fileTransfer、2026-10-02、段階 1）
 

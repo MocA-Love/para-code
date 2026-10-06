@@ -72,7 +72,7 @@ const MAX_REFOCUS_EVENTS_PER_RUN = 5;
 
 /** パンくずの間引き: この窓の中でこの数まで。超えた分は数えて次の 1 件に載せる。 */
 const BREADCRUMB_WINDOW_MS = 10_000;
-const BREADCRUMB_MAX_PER_WINDOW = 12;
+const BREADCRUMB_MAX_PER_WINDOW = 6;
 
 /** 失敗のまとめ: この件数か、最初の失敗からこの時間で 1 件にまとめて送る。 */
 const FAILURE_SUMMARY_COUNT = 20;
@@ -87,6 +87,17 @@ const MAX_TRACKED_KEYS = 64;
 
 const KNOWN_SCHEMES = new Set(['about', 'file', 'data', 'blob', 'chrome', 'devtools', 'chrome-extension']);
 const PRIVATE_NAME_SUFFIXES = ['.local', '.internal', '.lan', '.home', '.corp', '.intranet', '.localdomain', '.home.arpa'];
+/**
+ * 名前のまま送ってよい公開サイト。この登録ドメインの下のホスト（`docs.google.com` など）だけを
+ * ホスト名のまま送り、ほかの公開ホストは `other-public` に畳む。公開の名前でも、トンネル
+ * （`*.ngrok-free.app`）・プレビュー（`*.vercel.app`）・所属先（`<tenant>.atlassian.net`、
+ * 公開 TLD 上の社内名）は利用者を明かすため。調べたいサイトが増えたらここへ足す。
+ */
+const KNOWN_PUBLIC_DOMAINS: ReadonlySet<string> = new Set([
+	'google.com', 'youtube.com', 'github.com', 'gitlab.com', 'microsoft.com', 'live.com', 'office.com',
+	'apple.com', 'amazon.com', 'notion.so', 'figma.com', 'canva.com', 'stackoverflow.com', 'wikipedia.org',
+	'x.com', 'twitter.com', 'openai.com', 'chatgpt.com', 'claude.ai', 'anthropic.com', 'npmjs.com', 'example.com',
+]);
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 const HOST_SHAPE = /^[a-z0-9.-]{1,253}$/;
 const SAFE_WORD = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -124,7 +135,11 @@ export function paradisBrowserDiagnosticHost(url: string | undefined): string {
 	if (PRIVATE_NAME_SUFFIXES.some(suffix => host.endsWith(suffix))) {
 		return 'private-name';
 	}
-	return HOST_SHAPE.test(host) ? host : 'invalid';
+	if (!HOST_SHAPE.test(host)) {
+		return 'invalid';
+	}
+	const registrable = host.split('.').slice(-2).join('.');
+	return KNOWN_PUBLIC_DOMAINS.has(registrable) ? host : 'other-public';
 }
 
 /** 固定の語だけを通す（ツール名・理由など。形が合わなければ `other`）。 */
@@ -198,13 +213,17 @@ export class ParadisBrowserDiagnosticsRecorder {
 	private keyAttempts = 0;
 	private failures = 0;
 	private failureWindowStartedAt: number | undefined;
+	/** 前回のまとめ（無ければ起動）の時刻。キー入力の試行数はここから数えている。 */
+	private lastFlushAt: number;
 	private failureTimer: unknown;
 	private failureSummariesSent = 0;
 
 	constructor(
 		private readonly sink: IParadisBrowserDiagnosticsSink,
 		private readonly clock: IParadisBrowserDiagnosticsClock = defaultClock,
-	) { }
+	) {
+		this.lastFlushAt = clock.now();
+	}
 
 	// --- 入力の観測 ---
 
@@ -275,19 +294,25 @@ export class ParadisBrowserDiagnosticsRecorder {
 			// 利用者が workbench か別のタブを押した直後に外れた＝利用者が外へ移した。
 			const userLeft = pointer.place !== 'this-view' && pointer.place !== 'none' && pointer.sinceMs <= LEAVE_POINTER_WINDOW_MS;
 			state.leftAt = userLeft ? now : undefined;
-			this.addBreadcrumb('para.browser-focus', 'blur', { ...common, safe_user_left: userLeft });
+			// 普段の行き来はパンくずにしない（main のパンくず枠 100 件をほかの機能と分け合うため）。
+			// 残すのは、利用者が外へ移した時（戻りの判定の起点）と、エージェントが繋いでいる間だけ。
+			if (userLeft || state.agentConnections > 0) {
+				this.addBreadcrumb('para.browser-focus', 'blur', { ...common, safe_user_left: userLeft });
+			}
 			return;
 		}
 		const origin = this.originFor(view, state, now);
 		const leftAt = state.leftAt;
 		state.leftAt = undefined;
 		const returned = leftAt !== undefined && now - leftAt <= PARADIS_BROWSER_REFOCUS_WINDOW_MS && origin !== 'user-pointer';
-		this.addBreadcrumb('para.browser-focus', 'focus', {
-			...common,
-			safe_origin: origin,
-			safe_since_leave_ms: elapsed(now, leftAt),
-			safe_refocus: returned,
-		});
+		if (returned || leftAt !== undefined || state.agentConnections > 0) {
+			this.addBreadcrumb('para.browser-focus', 'focus', {
+				...common,
+				safe_origin: origin,
+				safe_since_leave_ms: elapsed(now, leftAt),
+				safe_refocus: returned,
+			});
+		}
 		if (origin === 'user-pointer' && state.episode) {
 			// 利用者が自分で戻った。続いていた戻りはここで締める。
 			this.finishEpisode(view, state);
@@ -307,6 +332,9 @@ export class ParadisBrowserDiagnosticsRecorder {
 			this.finishEpisode(view, state);
 		}
 		this.views.delete(view);
+		if (this.lastPointer?.view === view) {
+			this.lastPointer = undefined;
+		}
 	}
 
 	private originFor(view: object, state: IViewState, now: number): ParadisBrowserFocusOrigin {
@@ -457,7 +485,9 @@ export class ParadisBrowserDiagnosticsRecorder {
 			this.clock.clearTimeout(this.failureTimer);
 			this.failureTimer = undefined;
 		}
-		const startedAt = this.failureWindowStartedAt;
+		const now = this.clock.now();
+		const windowMs = Math.max(0, Math.round(now - this.lastFlushAt));
+		this.lastFlushAt = now;
 		const failures = this.failures;
 		const counts = this.failureCounts;
 		const hosts = this.failureHosts;
@@ -485,7 +515,8 @@ export class ParadisBrowserDiagnosticsRecorder {
 			safe_key_attempts: attempts,
 			safe_key_failures: keyFailures,
 			safe_key_attempts_by_host: format(top(attemptsByHost, SUMMARY_TOP_HOSTS)),
-			safe_window_ms: startedAt === undefined ? -1 : Math.max(0, Math.round(this.clock.now() - startedAt)),
+			// キー入力の試行（母数）と失敗はどちらも前回のまとめから数えている。
+			safe_window_ms: windowMs,
 			safe_summaries_this_run: this.failureSummariesSent,
 		});
 	}

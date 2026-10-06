@@ -61,6 +61,8 @@ suite('paradisBrowserFocusDiagnostics', () => {
 		assert.deepStrictEqual([
 			'https://docs.google.com/spreadsheets/d/secret-id/edit?usp=sharing#gid=0',
 			'http://user:pass@Example.COM:8080/a/b',
+			'https://my-branch-user.vercel.app/',
+			'https://jira.mycorp.com/browse/X-1',
 			'http://localhost:3000/x',
 			'http://127.0.0.1/x',
 			'http://[::1]/x',
@@ -72,7 +74,7 @@ suite('paradisBrowserFocusDiagnostics', () => {
 			'not a url',
 			undefined,
 		].map(paradisBrowserDiagnosticHost), [
-			'docs.google.com', 'example.com', 'localhost', 'ip-address', 'ip-address', 'single-label', 'private-name',
+			'docs.google.com', 'example.com', 'other-public', 'other-public', 'localhost', 'ip-address', 'ip-address', 'single-label', 'private-name',
 			'scheme:file', 'scheme:about', 'scheme:other', 'invalid', 'none',
 		]);
 	});
@@ -101,8 +103,8 @@ suite('paradisBrowserFocusDiagnostics', () => {
 			},
 		}]);
 		assert.deepStrictEqual(recorded.breadcrumbs.map(crumb => `${crumb.message}:${crumb.data.safe_origin ?? ''}:${crumb.data.safe_refocus ?? crumb.data.safe_user_left}`), [
-			'focus:user-pointer:false', 'blur::true', 'focus:page:true', 'blur::true', 'focus:page:true', 'blur::true', 'focus:page:true',
-		]);
+			'focus:user-pointer:false', 'blur::true', 'focus:page:true', 'blur::true', 'focus:page:true', 'blur::true',
+		], 'thinned to 6 per 10s');
 	});
 
 	test('tells Para Code focus, user clicks, agent input and window activation apart, and does not count them as page returns', () => {
@@ -130,7 +132,8 @@ suite('paradisBrowserFocusDiagnostics', () => {
 		focus();
 		clock.advance(2_000);
 		recorder.focusChanged(view, false, 'example.com'); // 利用者の操作の直後ではない
-		clock.advance(100);
+		clock.advance(10_000);
+		recorder.noteAgentState(view, { connections: 1 }); // 普段の focus はパンくずにしないので、ここだけ残させる
 		recorder.noteWindowActivation();
 		focus();
 		clock.advance(20_000);
@@ -168,14 +171,20 @@ suite('paradisBrowserFocusDiagnostics', () => {
 
 		const burst = setup();
 		const view = {};
+		// 普段の行き来はパンくずにしない。エージェントが繋いでいる間だけ全部残す（間引きつき）。
+		for (let index = 0; index < 4; index++) {
+			burst.recorder.focusChanged(view, index % 2 === 0, 'example.com');
+		}
+		assert.strictEqual(burst.recorded.breadcrumbs.length, 0);
+		burst.recorder.noteAgentState(view, { connections: 1 });
 		for (let index = 0; index < 20; index++) {
 			burst.recorder.focusChanged(view, index % 2 === 0, 'example.com');
 			burst.clock.advance(100);
 		}
-		assert.strictEqual(burst.recorded.breadcrumbs.length, 12);
+		assert.strictEqual(burst.recorded.breadcrumbs.length, 6);
 		burst.clock.advance(10_000);
 		burst.recorder.focusChanged(view, true, 'example.com');
-		assert.strictEqual(burst.recorded.breadcrumbs.at(-1)?.data.safe_dropped_before, 8);
+		assert.strictEqual(burst.recorded.breadcrumbs.at(-1)?.data.safe_dropped_before, 14);
 	});
 
 	test('aggregates input failures into one summary event with rates and hosts', () => {
