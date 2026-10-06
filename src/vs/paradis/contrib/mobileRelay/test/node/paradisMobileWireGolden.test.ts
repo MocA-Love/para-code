@@ -29,6 +29,7 @@ import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js'
 import { paradisNormalizeModCommandList } from '../../node/paradisAgentCommandCatalog.js';
 import { newParseSignals, paradisParseClaudeTranscriptLineForTest, parseClaudeLine } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { ParadisAgentWorkflowTracker, paradisParseWorkflowJournalLine, paradisParseWorkflowResultFile } from '../../../agentChat/common/paradisAgentWorkflows.js';
+import { ParadisAgentSessionStatusTracker } from '../../../agentChat/common/paradisAgentSessionStatus.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
@@ -274,6 +275,33 @@ suite('ParadisMobileWireGolden', () => {
 		})!, 1760000044000);
 		tracker.applyJournal('wf_golden-2', [paradisParseWorkflowJournalLine(`{"type":"started","key":"v2:${'0'.repeat(64)}","agentId":"agolden03","label":"find:ssrf","phase":"Find"}`)!]);
 		assert.deepStrictEqual(tracker.snapshot(), delta.workflows);
+	});
+
+	test('agent: PC が組み立てる会話の状態（agent.session-status.v1）はゴールデンと同じ', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const delta = golden.toMobile.find(message => message.t === 'delta' && message.sessionStatus !== undefined) as { sessionStatus: unknown };
+		const t0 = 1760000100000;
+		const at = (seconds: number) => new Date(t0 + seconds * 1000).toISOString();
+		const assistant = (id: string, seconds: number, input: number, read: number, creation: number, ttl: '5m' | '1h') => ({
+			type: 'assistant', sessionId: 'golden-session', timestamp: at(seconds),
+			message: { id, model: 'claude-opus-4-7', usage: { input_tokens: input, cache_read_input_tokens: read, cache_creation_input_tokens: creation, cache_creation: { ephemeral_5m_input_tokens: ttl === '5m' ? creation : 0, ephemeral_1h_input_tokens: ttl === '1h' ? creation : 0 } } },
+		});
+		const tracker = new ParadisAgentSessionStatusTracker('claude');
+		for (const line of [
+			assistant('msg_1', 0, 10, 0, 20000, '1h'),
+			// 同じリクエストの別のブロック（1 回として数える）
+			assistant('msg_1', 0, 10, 0, 20000, '1h'),
+			assistant('msg_2', 60, 5, 20000, 500, '1h'),
+			assistant('msg_3', 120, 3000, 0, 21000, '5m'),
+			{ type: 'system', subtype: 'compact_boundary', sessionId: 'golden-session', timestamp: at(130) },
+			assistant('msg_4', 140, 100, 2000, 5000, '5m'),
+			assistant('msg_5', 200, 50, 7100, 100, '5m'),
+		]) {
+			tracker.observe(line);
+		}
+		tracker.applyMeasure({ tokens: 7250, window: 200000, percent: 4 });
+		assert.deepStrictEqual(tracker.snapshot({ promptCache: { lastUsedAt: t0 + 190_000, ttlMs: 300_000 }, partial: true, model: 'claude-opus-4-7' }), delta.sessionStatus);
 	});
 
 	test('browser: アプリが送る形を PC が受け、PC が組み立てる形はゴールデンと同じ形', async function () {

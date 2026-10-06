@@ -139,6 +139,8 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'subagent.start'; readonly agentId: string; readonly toolUseId?: string; readonly subagentType?: string; readonly description?: string; readonly name?: string }
 	| { readonly type: 'subagent.resume'; readonly agentId: string; readonly agentType?: string }
 	| { readonly type: 'tool.check'; readonly toolUseId: string; readonly tool: string }
+	/** Claude Code の `session.measure` の `context`（statusline と同じコンテキストの値。mod 1.3.0 以降）。 */
+	| { readonly type: 'measure'; readonly window: number; readonly tokens?: number; readonly percent?: number }
 	/** 質問・承認の待ちが増えた・終わった（ParadisMobileAgentChat がカードの選択肢を直す）。 */
 	| { readonly type: 'pending-changed'; readonly kind: 'question' | 'permission' }
 	/** {@link ParadisClaudeModBridge.isAlive} の答えが変わった（来た・途絶えた・ペインが消えた）。停止の可否を送り直すのに使う。 */
@@ -245,6 +247,11 @@ function rec(value: unknown): Record<string, unknown> | undefined {
 
 function id(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH ? value : undefined;
+}
+
+/** トークンの数（0 以上の安全な整数。上限は 1 億）。 */
+function tokenCount(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 100_000_000 ? value : undefined;
 }
 
 function text(value: unknown, limit: number): string | undefined {
@@ -547,6 +554,16 @@ export class ParadisClaudeModBridge {
 					const tool = text(event.tool, 200);
 					if (toolUseId !== undefined && tool !== undefined) {
 						this.fire({ ...base, type: 'tool.check', toolUseId, tool });
+					}
+					break;
+				}
+				case 'measure': {
+					const context = rec(event.context);
+					const window = tokenCount(context?.window);
+					const tokens = tokenCount(context?.tokens);
+					const percent = typeof context?.percent === 'number' && Number.isFinite(context.percent) && context.percent >= 0 && context.percent <= 100 ? context.percent : undefined;
+					if (state !== undefined && window !== undefined && window > 0) {
+						this.fire({ ...base, type: 'measure', window, ...(tokens !== undefined ? { tokens } : {}), ...(percent !== undefined ? { percent } : {}) });
 					}
 					break;
 				}

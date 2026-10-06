@@ -119,9 +119,9 @@ function positive(value: unknown): boolean {
 /**
  * Claude の transcript 1行から「このリクエストでキャッシュをどう使ったか」を読む。
  *
- * - `message.usage.cache_creation.ephemeral_5m_input_tokens` が 1 以上 → 5分のキャッシュを書いた
- * - `message.usage.cache_creation.ephemeral_1h_input_tokens` だけが 1 以上 → 1時間のキャッシュを書いた
- *   （両方あるときは 5分。先に切れる方で次の依頼が割高になるため）
+ * - `message.usage.cache_creation.ephemeral_1h_input_tokens` が 1 以上 → 1時間のキャッシュを書いた
+ * - `message.usage.cache_creation.ephemeral_5m_input_tokens` だけが 1 以上 → 5分のキャッシュを書いた
+ *   （両方あるときは 1時間。Claude Code 2.1.291 の判定（1時間が 1 以上なら 1時間）に揃える）
  * - 読み込み（`cache_read_input_tokens`）だけ → 書いたときの長さのまま延長される。ここでは
  *   長さが分からないので `ttl: undefined` を返し、呼び出し側が直前の長さを引き継ぐ
  * - どちらも 0 → キャッシュを使っていないリクエスト。残り時間は延びないので undefined
@@ -146,11 +146,11 @@ export function paradisReadClaudePromptCacheUsage(line: Readonly<Record<string, 
 	const creation = record(usage.cache_creation);
 	const wrote5m = positive(creation?.ephemeral_5m_input_tokens);
 	const wrote1h = positive(creation?.ephemeral_1h_input_tokens);
-	if (wrote5m) {
-		return { at: timestamp, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M };
-	}
 	if (wrote1h) {
 		return { at: timestamp, ttlMs: PARADIS_PROMPT_CACHE_TTL_1H };
+	}
+	if (wrote5m) {
+		return { at: timestamp, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M };
 	}
 	// 内訳の無い古い形式。書き込み量だけがあるなら既定の5分として扱う。
 	if (positive(usage.cache_creation_input_tokens)) {

@@ -42,7 +42,7 @@ suite('ParadisAgentInsights', () => {
 			paradisReadClaudePromptCacheUsage(assistantLine({ cache_creation_input_tokens: 10, cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 0 } })),
 			// 1時間のキャッシュだけを書いた
 			paradisReadClaudePromptCacheUsage(assistantLine({ cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 900 } })),
-			// 両方あれば先に切れる5分
+			// 両方あれば 1時間（Claude Code と同じ）
 			paradisReadClaudePromptCacheUsage(assistantLine({ cache_creation: { ephemeral_5m_input_tokens: 1, ephemeral_1h_input_tokens: 900 } })),
 			// 内訳の無い古い形式
 			paradisReadClaudePromptCacheUsage(assistantLine({ cache_creation_input_tokens: 5 })),
@@ -56,7 +56,7 @@ suite('ParadisAgentInsights', () => {
 		], [
 			{ at: AT_MS, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M },
 			{ at: AT_MS, ttlMs: PARADIS_PROMPT_CACHE_TTL_1H },
-			{ at: AT_MS, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M },
+			{ at: AT_MS, ttlMs: PARADIS_PROMPT_CACHE_TTL_1H },
 			{ at: AT_MS, ttlMs: PARADIS_PROMPT_CACHE_TTL_5M },
 			{ at: AT_MS, ttlMs: undefined },
 			undefined,
