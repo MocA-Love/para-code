@@ -40,6 +40,7 @@ import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
+import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { paradisMobileDismissTags, paradisMobilePushIds } from './paradisMobilePushIds.js';
 import { IParadisRelayPairedMobile, IParadisRelayPersistedState, ParadisRelayStoreProblem, paradisMoveRelayStateAside, paradisPruneRelayStateLeftovers, paradisReadRelayState, paradisWriteRelayState } from './paradisMobileRelayStateFile.js';
@@ -822,6 +823,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
 	private readonly _onDidRequestAgentPaneSync = this._register(new Emitter<IParadisMobileWindowLease>());
 	readonly onDidRequestAgentPaneSync = this._onDidRequestAgentPaneSync.event;
+	/** SSH の接続先のシェルの出力を、transcript の写しの担当ウィンドウへ頼む（agent.shells.v1）。 */
+	private readonly remoteShellOutputs = this._register(new ParadisRemoteShellOutputRequests());
+	readonly onDidRequestRemoteShellOutput = this.remoteShellOutputs.onDidRequest;
 	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [], tokensOutsideHookReach: [] };
 	/** デスクトップ UI 向け: ペインの様子が変わった（agentInsights が購読する。モバイルとは無関係）。 */
 	private readonly _onDidChangeAgentPaneInsights = this._register(new Emitter<void>());
@@ -1066,6 +1070,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}),
 			agentSessionStore,
 			this.remoteTranscriptMirror,
+			undefined,
+			undefined,
+			undefined,
+			this.remoteShellOutputs,
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(toDisposable(() => { if (this.revokeTimer !== undefined) { clearTimeout(this.revokeTimer); } }));
@@ -2350,6 +2358,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async releaseRemoteTranscriptMirrors(ownerId: string): Promise<void> {
 		this.remoteTranscriptMirror.release(ownerId);
+	}
+
+	async completeRemoteShellOutput(ownerId: string, requestId: string, result: unknown): Promise<void> {
+		if (typeof ownerId === 'string' && typeof requestId === 'string') {
+			this.remoteShellOutputs.complete(ownerId, requestId, result);
+		}
 	}
 
 	// runGit は paradisWorktreeGitChannel.ts（shared process と REH サーバーの両方に登録）へ移した。

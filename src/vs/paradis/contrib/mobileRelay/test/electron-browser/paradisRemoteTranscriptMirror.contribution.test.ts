@@ -8,16 +8,21 @@
 
 import * as assert from 'assert';
 import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
+import { IChannel, IServerChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileChangesEvent, FileChangeType, IFileStatWithPartialMetadata, IFileStreamContent, IFileSystemWatcher, IReadFileStreamOptions, IWatchOptionsWithCorrelation } from '../../../../../platform/files/common/files.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
 import { BrowserWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/browser/environmentService.js';
+import { RemoteAgentConnectionContext } from '../../../../../platform/remote/common/remoteAgentEnvironment.js';
+import { PersistentConnectionEvent } from '../../../../../platform/remote/common/remoteAgentConnection.js';
+import { IRemoteAgentConnection } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
+import { TestRemoteAgentService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestFileService, TestProductService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { IParadisRemoteShellOutputRequest } from '../../common/paradisRemoteShellOutput.js';
 import { TestSharedProcessService } from '../../../../../workbench/test/electron-browser/workbenchTestServices.js';
 import { ParadisRemoteTranscriptMirror, registerParadisRemoteTranscriptMirrorContribution } from '../../electron-browser/paradisRemoteTranscriptMirror.contribution.js';
 
@@ -39,6 +44,7 @@ interface IRelayCall {
 	readonly ownerId: string;
 	readonly remotePath?: string;
 	readonly data?: VSBuffer;
+	readonly result?: unknown;
 }
 
 class TranscriptFileService extends TestFileService {
@@ -92,6 +98,8 @@ class TranscriptRelayChannel implements IChannel {
 	beginOffset = 0;
 	resetOffset = 0;
 	appendUnavailable = false;
+	/** shared process からのシェルの出力の頼み（`onDidRequestRemoteShellOutput`）。テストが作って渡す。 */
+	shellOutputRequests: Event<IParadisRemoteShellOutputRequest> = Event.None;
 	private offset = 0;
 	private beginPromise: Promise<number> | undefined;
 	private resolveBeginPromise: ((offset: number) => void) | undefined;
@@ -110,7 +118,7 @@ class TranscriptRelayChannel implements IChannel {
 		const ownerId = typeof parameters[0] === 'string' ? parameters[0] : '';
 		const remotePath = typeof parameters[1] === 'string' ? parameters[1] : undefined;
 		const data = parameters[2] instanceof VSBuffer ? parameters[2] : undefined;
-		this.calls.push({ command, ownerId, remotePath, data });
+		this.calls.push({ command, ownerId, remotePath, data, ...(command === 'completeRemoteShellOutput' ? { result: parameters[2] } : {}) });
 
 		switch (command) {
 			case 'listRemoteTranscriptMirrors':
@@ -127,14 +135,56 @@ class TranscriptRelayChannel implements IChannel {
 				this.offset = this.resetOffset;
 				return Promise.resolve(this.resetOffset) as Promise<T>;
 			case 'releaseRemoteTranscriptMirrors':
+			case 'completeRemoteShellOutput':
 				return Promise.resolve(undefined) as Promise<T>;
 			default:
 				throw new Error(`Unexpected relay command: ${command}`);
 		}
 	}
 
-	listen<T>(): Event<T> {
-		return Event.None;
+	listen<T>(event: string): Event<T> {
+		return (event === 'onDidRequestRemoteShellOutput' ? this.shellOutputRequests : Event.None) as Event<T>;
+	}
+}
+
+/** 接続先の REH のチャネルを呼んだ記録を残す、接続の代わり。 */
+class ShellOutputRemoteConnection implements IRemoteAgentConnection {
+	readonly remoteAuthority = REMOTE_AUTHORITY;
+	readonly onReconnecting = Event.None;
+	readonly onDidStateChange: Event<PersistentConnectionEvent> = Event.None;
+	readonly calls: Array<{ readonly channelName: string; readonly command: string; readonly arg: unknown }> = [];
+	failWith: Error | undefined;
+
+	async end(): Promise<void> { }
+	dispose(): void { }
+	getChannel<T extends IChannel>(channelName: string): T {
+		const channel: IChannel = {
+			call: async <R>(command: string, arg?: unknown): Promise<R> => {
+				this.calls.push({ channelName, command, arg });
+				if (this.failWith !== undefined) {
+					throw this.failWith;
+				}
+				return [{ id: 'b1', lines: ['ready'], truncated: false }] as R;
+			},
+			listen: <R>() => Event.None as Event<R>,
+		};
+		return channel as T;
+	}
+	withChannel<T extends IChannel, R>(channelName: string, callback: (channel: T) => Promise<R>): Promise<R> {
+		return callback(this.getChannel<T>(channelName));
+	}
+	registerChannel<T extends IServerChannel<RemoteAgentConnectionContext>>(_channelName: string, _channel: T): void { }
+	async getInitialConnectionTimeMs(): Promise<number> { return 0; }
+	updateGraceTime(_graceTime: number): void { }
+}
+
+class ShellOutputRemoteAgentService extends TestRemoteAgentService {
+	constructor(private readonly connection: IRemoteAgentConnection | null) {
+		super();
+	}
+
+	override getConnection(): IRemoteAgentConnection | null {
+		return this.connection;
 	}
 }
 
@@ -163,7 +213,7 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	const contributionId = 'paradis.remoteTranscriptMirror';
 
-	function createMirror(fileService: TranscriptFileService, channel: TranscriptRelayChannel): ParadisRemoteTranscriptMirror {
+	function createMirror(fileService: TranscriptFileService, channel: TranscriptRelayChannel, connection: IRemoteAgentConnection | null = null): ParadisRemoteTranscriptMirror {
 		const environmentService = new BrowserWorkbenchEnvironmentService(
 			'transcript-test',
 			URI.file('/logs'),
@@ -175,6 +225,7 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 			fileService,
 			new TranscriptSharedProcessService(channel),
 			new NullLogService(),
+			new ShellOutputRemoteAgentService(connection),
 		));
 	}
 
@@ -396,6 +447,40 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 				'releaseRemoteTranscriptMirrors',
 			],
 			watches: 0,
+		});
+	});
+
+	test('reads the background shell output on the host only for requests addressed to this window, and answers null when the host cannot', async () => {
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		const requests = store.add(new Emitter<IParadisRemoteShellOutputRequest>());
+		channel.shellOutputRequests = requests.event;
+		channel.wanted = [];
+		const connection = new ShellOutputRemoteConnection();
+		createMirror(fileService, channel, connection);
+		await waitUntil(() => channel.calls.some(call => call.command === 'listRemoteTranscriptMirrors'));
+		const ownerId = channel.calls[0].ownerId;
+		const items = [{ id: 'b1', outputFile: '/tmp/claude-1000/-srv-app/sess/tasks/b1.output' }];
+
+		requests.fire({ requestId: 'other', ownerId: 'another-window', sessionId: 'sess', lines: 20, items });
+		requests.fire({ requestId: 'mine', ownerId, sessionId: 'sess', lines: 20, items });
+		await waitUntil(() => channel.calls.some(call => call.command === 'completeRemoteShellOutput'));
+		connection.failWith = new Error('Unknown channel');
+		requests.fire({ requestId: 'old-server', ownerId, sessionId: 'sess', lines: 20, items });
+		await waitUntil(() => channel.calls.filter(call => call.command === 'completeRemoteShellOutput').length === 2);
+
+		assert.deepStrictEqual({
+			remote: connection.calls,
+			completed: channel.calls.filter(call => call.command === 'completeRemoteShellOutput').map(call => ({ ownerId: call.ownerId === ownerId, requestId: call.remotePath, result: call.result })),
+		}, {
+			remote: [
+				{ channelName: 'paradisRemoteShellOutput', command: 'readTails', arg: [items, 'sess', 20] },
+				{ channelName: 'paradisRemoteShellOutput', command: 'readTails', arg: [items, 'sess', 20] },
+			],
+			completed: [
+				{ ownerId: true, requestId: 'mine', result: [{ id: 'b1', lines: ['ready'], truncated: false }] },
+				{ ownerId: true, requestId: 'old-server', result: null },
+			],
 		});
 	});
 });
