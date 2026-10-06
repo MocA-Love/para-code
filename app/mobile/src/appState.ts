@@ -124,8 +124,11 @@ export interface PcSummary {
 	readonly battery: { readonly level: number; readonly charging: boolean } | undefined;
 	/** そのPCの機械を見分けるハッシュ（旧PCでは undefined）。SSH の接続先と同じ機械かを見分ける。 */
 	readonly machineIdHash?: string | undefined;
-	/** その PC がおやすみモードの遠隔の切り替えを受けられるか（`notify.dnd-remote.v1`。切断中は最後の広告）。 */
-	readonly remoteDoNotDisturb?: boolean;
+	/**
+	 * その PC がおやすみモードの遠隔の切り替えを受けられるか（`notify.dnd-remote.v1`。切断中は最後の広告）。
+	 * 起動してから一度も State を受けていなければ undefined（分からない。「更新」の案内は出さない）。
+	 */
+	readonly remoteDoNotDisturb?: boolean | undefined;
 	/** その PC のおやすみモード（PC から届いた最新値。未対応の PC・まだ届いていなければ undefined）。 */
 	readonly doNotDisturb?: PcDoNotDisturb | undefined;
 }
@@ -610,7 +613,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		battery: workspace?.battery,
 		// 機械のハッシュでの重複の排除は、それを広告する PC だけ（無い PC は別の機械として扱う）。
 		machineIdHash: pcHasCapability(workspace, USAGE_MACHINE_ID_CAPABILITY) ? workspace?.machineIdHash : undefined,
-		remoteDoNotDisturb: pcHasCapability(workspace, PcCapability.NotifyDoNotDisturbRemote),
+		remoteDoNotDisturb: workspace === undefined ? undefined : pcHasCapability(workspace, PcCapability.NotifyDoNotDisturbRemote),
 		doNotDisturb: workspace?.doNotDisturb,
 	};
 }

@@ -25,6 +25,9 @@ describe('PC のおやすみモード（スマホから切り替える）', () =
 			pending: pcDoNotDisturbRow({ supported: true, connected: true, state: { enabled: false }, pending: true }, NOW),
 			offlineOn: pcDoNotDisturbRow({ supported: true, connected: false, state: on, pending: false }, NOW),
 			offlineUnknown: pcDoNotDisturbRow({ supported: true, connected: false, state: undefined, pending: false }, NOW),
+			// 起動してから一度も State を受けていない PC は、対応か分からないので「更新」の案内を出さない
+			neverSeenOffline: pcDoNotDisturbRow({ supported: undefined, connected: false, state: undefined, pending: false }, NOW),
+			neverSeenConnecting: pcDoNotDisturbRow({ supported: undefined, connected: true, state: undefined, pending: false }, NOW),
 		};
 		expect(rows).toEqual({
 			unsupported: { hint: 'この PC は更新すると、ここから切り替えられます', value: undefined, showSwitch: false, on: false, disabled: true },
@@ -36,6 +39,8 @@ describe('PC のおやすみモード（スマホから切り替える）', () =
 			pending: { hint: '設定中…', value: undefined, showSwitch: true, on: false, disabled: true },
 			offlineOn: { hint: 'オフラインのため変えられません', value: 'オン', showSwitch: false, on: true, disabled: true },
 			offlineUnknown: { hint: 'オフラインのため変えられません', value: '不明', showSwitch: false, on: false, disabled: true },
+			neverSeenOffline: { hint: 'オフラインのため変えられません', value: '不明', showSwitch: false, on: false, disabled: true },
+			neverSeenConnecting: { hint: 'PC の状態を確かめています', value: undefined, showSwitch: true, on: false, disabled: true },
 		});
 	});
 
