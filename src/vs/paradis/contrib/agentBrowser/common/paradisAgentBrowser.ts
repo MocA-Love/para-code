@@ -351,6 +351,8 @@ export interface IParadisCdpExactViewService {
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
 	dispatchExactViewInput(descriptor: unknown, method: unknown, paramsJson: unknown): Promise<IParadisCdpInputDispatchResult>;
+	/** 診断の印（paradisBrowserDiagnosticNote.ts）。main の Sentry のパンくずとまとめのイベントへ流す。 */
+	noteExactViewDiagnostic(descriptor: unknown, note: unknown): Promise<void>;
 	/**
 	 * アプリ本体の remote-debugging ポート。electron-main が起動直後に確定させた値で、
 	 * `DevToolsActivePort` が他インスタンスに上書きされていても正しい。確定できなければ null。

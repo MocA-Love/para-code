@@ -2235,6 +2235,21 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。resume が来ないまま 1 分心拍が続いたら、取りこぼしとみなして数え直す。
 
+## Sentry で内蔵ブラウザのフォーカスと入力の失敗を調べる方法（2026-10-06）
+
+「スプレッドシートを開いていると、ほかへ移したフォーカスが 2、3 回戻ってくる」と「キー入力の準備の失敗がスプレッドシートで多い」を配布版で確かめるための計装です。判定は main の 1 か所（`agentBrowser/common/paradisBrowserFocusDiagnostics.ts`、配線は `electron-main/paradisBrowserFocusDiagnosticsMain.ts`）にあり、共有プロセスはエージェントの接続数・`Emulation.setFocusEmulationEnabled`・入力キュー・ツールの失敗を `noteExactViewDiagnostic` で main へ渡すだけです。送るのはホスト名・固定の語・回数・ミリ秒だけで、URL のパスとクエリ、ページの中身、入力した文字、会話は送りません。localhost・IP アドレス・ドットの無い名前・`.local` や `.corp` などは種類の語（`localhost`・`ip-address`・`single-label`・`private-name`）に置き換えます。ホスト名を止める設定は今はありません。
+
+| 絞り込み | 中身 |
+|---|---|
+| `para.area:browser-focus` | 「利用者が BrowserView の外へ移してから 3 秒以内に戻った」の 1 件（`para.operation:refocus-after-leave`）。同じタブで続いた戻りは 8 秒静かになるまで 1 件にまとめ、1 回の起動で 5 件まで |
+| `para.area:browser-input` | キー入力の準備の失敗・入力キューの停止と破棄・para-browser のツールの失敗を 20 件か 30 分でまとめた 1 件（`para.operation:input-failure-summary`）。1 回の起動で 6 件まで |
+| `para.browser_host:docs.google.com` | ホストで絞る。まとめのイベントでは最も多かったホスト |
+| `para.focus_origin` / `para.focus_emulation` / `para.agent_cdp` | 戻りの出どころ（下の表）、focus emulation が入っていたか、エージェントの CDP 接続があったか |
+
+`para.focus_origin` の値は、`para-code-container-focus`（workbench の器が DOM focus を受けて `tryFocus()` が `BrowserView.focus()` を呼んだ）、`para-code-other`（それ以外の Para Code の `focus()`）、`user-pointer`（利用者がタブを押した。戻りには数えない）、`agent-input`（エージェントの入力の直後）、`window-activation`（ウィンドウが前面に戻った）、`page`（どれにも当たらない＝ページが自分で取った）です。
+
+イベントの読み方: `para.browser_focus` の context に `safe_returns`（戻った回数）、`safe_origins`（出どころごとの回数）、`safe_first_return_ms`（外へ移してから最初に戻るまで）、`safe_span_ms` があります。`para.browser_input` の context は `safe_kinds`（`key-register:ack-timeout=12` のような種類ごとの回数）、`safe_hosts`、`safe_key_attempts` と `safe_key_failures`（同じ期間のキー入力の試行と失敗。ホスト別の試行は `safe_key_attempts_by_host`）です。直前の流れはパンくずの `para.browser-focus`（focus / blur ごとに出どころ・直前のポインタの場所と経過ミリ秒・接続と emulation の有無）と `para.browser-input` に残ります。パンくずは 10 秒に 12 件までに間引き、落とした数は次の 1 件の `safe_dropped_before` に載ります。#246 からの 1 件ずつのイベント（`para.operation:automation-key-suppression` など）はそのまま送っています（10 分 3 件の上限つき）。
+
 ## 2 画面のファイル転送は IFileService だけで流し、権限だけを専用のチャネルで読む（fileTransfer、2026-10-02、段階 1）
 
 エディタのタブ 1 枚（`ParadisFileTransferEditor` / `ParadisFileTransferInput`、シリアライザーで左右の場所ごと復元）で、左にこのマシン（`file://`）、右にこのウィンドウの接続先（`vscode-remote://`）を並べる。見た目は案C（`dual-pane-transfer-mock.html`）で、表・選択・キーボード・ドラッグは `WorkbenchTable` に任せ、見出し・2 段の名前（名前の下に権限）・足元の件数・下の待ち行列だけを `src/vs/paradis/contrib/fileTransfer/` で描く。片側の画面は、表（`paradisFileTransferPaneTable.ts`）・操作（`paradisFileTransferPaneOperations.ts`）・ドラッグ＆ドロップ（`paradisFileTransferPaneDnd.ts`）に分けてある。狭い（760px 未満）と左右を上下に積み、待ち行列は見出しの 1 行に縮める。

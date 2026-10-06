@@ -73,6 +73,10 @@ export interface IParadisCdpGatewayDelegate {
 	 * The agent's tool usually reports only "not interactive"; the service remembers the reason.
 	 */
 	noteInputRejection?(token: string, message: string): void;
+	/** このペインのエージェントの CDP 接続の数が変わった（フォーカス診断用。判定には使わない）。 */
+	noteAgentCdpConnections?(token: string, connections: number): void;
+	/** このペインの接続が共有中のタブへ `Emulation.setFocusEmulationEnabled` を送った（フォーカス診断用）。 */
+	noteFocusEmulation?(token: string, enabled: boolean): void;
 	/** 接続先（SSH・WSL・コンテナ）のペインか（ペインの `remoteAuthority`）。台帳に無いトークンも true。 */
 	isRemotePane(token: string): boolean;
 	/**
@@ -642,6 +646,7 @@ export class ParadisCdpGateway extends Disposable {
 				return operation;
 			},
 			noteInputRejection: message => this.delegate.noteInputRejection?.(token, message),
+			noteFocusEmulation: enabled => this._noteDiagnostic(() => this.delegate.noteFocusEmulation?.(token, enabled)),
 			closeInputConnection,
 			isRemotePane,
 			onOpen: ws => {
@@ -661,6 +666,8 @@ export class ParadisCdpGateway extends Disposable {
 					this._connectionsByToken.set(token, set);
 				}
 				set.add(ws);
+				const openCount = set.size;
+				this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, openCount));
 				ws.on('close', () => {
 					this._closingWebSockets.delete(ws);
 					this._clearWebSocketCloseTimer(ws);
@@ -670,9 +677,20 @@ export class ParadisCdpGateway extends Disposable {
 					if (current && current.size === 0) {
 						this._connectionsByToken.delete(token);
 					}
+					const remaining = current?.size ?? 0;
+					this._noteDiagnostic(() => this.delegate.noteAgentCdpConnections?.(token, remaining));
 				});
 			},
 		};
+	}
+
+	/** 診断の印を渡す。失敗しても接続には何も起こさない。 */
+	private _noteDiagnostic(note: () => void): void {
+		try {
+			note();
+		} catch {
+			// 診断は接続の扱いを変えない。
+		}
 	}
 
 	/**

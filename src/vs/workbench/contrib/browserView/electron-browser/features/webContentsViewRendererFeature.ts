@@ -174,7 +174,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 				return;
 			}
 			if (this._model?.visible) {
-				void this._model.focus();
+				void this._model.focus(undefined, 'container-focus'); // PARA-PATCH: tell focus diagnostics this came from the container's DOM focus (Para Code browser focus diagnostics)
 			} else {
 				this.editor.ensureBrowserFocus();
 			}
