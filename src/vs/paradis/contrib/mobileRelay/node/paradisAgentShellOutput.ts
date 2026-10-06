@@ -150,7 +150,9 @@ async function readCheckedTail(realPath: string, base: string, uid: number, line
 		// realpath の後にすり替えられても辿らない。FIFO にすり替えられても開くところで止まらない
 		handle = await fs.open(realPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		const stat = await handle.stat();
-		if (!stat.isFile() || stat.uid !== uid) {
+		// ハードリンクは通さない（同じ uid のエージェントが、形の合う名前で自分の別のファイル（鍵など）へ張れる。
+		// Claude Code の出力ファイルはリンクを持たない）
+		if (!stat.isFile() || stat.uid !== uid || stat.nlink !== 1) {
 			return 'unavailable';
 		}
 		const start = Math.max(0, stat.size - TAIL_BYTES);

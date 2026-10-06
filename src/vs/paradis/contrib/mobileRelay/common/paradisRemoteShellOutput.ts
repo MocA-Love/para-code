@@ -93,7 +93,7 @@ export function paradisDecodeRemoteShellOutputItems(value: unknown, requested: r
 		if (!Array.isArray(item.lines)) {
 			continue;
 		}
-		const lines = item.lines.filter((line): line is string => typeof line === 'string').slice(-LINES_MAX).map(line => line.slice(0, LINE_LENGTH));
+		const lines = item.lines.slice(-LINES_MAX).filter((line): line is string => typeof line === 'string').map(line => line.slice(0, LINE_LENGTH));
 		const ended = record(item.ended);
 		const status = ended?.status;
 		const exitCode = ended?.exitCode;
