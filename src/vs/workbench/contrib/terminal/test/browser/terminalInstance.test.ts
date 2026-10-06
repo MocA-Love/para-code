@@ -365,6 +365,40 @@ suite('Workbench - TerminalInstance', () => {
 			strictEqual(instance.shellType, PosixShellType.Zsh);
 		});
 
+		// PARA-PATCH: Para Code pins Claude Code from its hooks when the OSC title never says "Claude Code"
+		// (a resumed or /rename'd session sends `✳ <name>` from the start). See src/vs/paradis/contrib/agentTabTitle.
+		test('should keep an agent shell type pinned from hooks until the parent shell returns, and release only the lock', async () => {
+			const instance = await createTerminalInstance() as TerminalInstance;
+			const handleShellTypeChange = (shellType: GeneralShellType | PosixShellType | undefined) => (instance as unknown as Record<string, (value: GeneralShellType | PosixShellType | undefined) => void>)['_handleShellTypeChange'](shellType);
+			const onTitleChange = (title: string) => (instance as unknown as Record<string, (value: string) => void>)['_onTitleChange'](title);
+			const observed: (string | undefined)[] = [];
+			// A resumed session never sends "Claude Code", so the OSC title alone does not detect it
+			onTitleChange('\u2733 My name');
+			observed.push(instance.shellType);
+			instance.paradisSetAgentShellTypeFromHooks(GeneralShellType.Claude);
+			observed.push(instance.shellType);
+			handleShellTypeChange(undefined);
+			handleShellTypeChange(GeneralShellType.Node);
+			observed.push(instance.shellType);
+			handleShellTypeChange(PosixShellType.Zsh);
+			observed.push(instance.shellType);
+			instance.paradisSetAgentShellTypeFromHooks(GeneralShellType.Claude);
+			instance.paradisSetAgentShellTypeFromHooks(undefined);
+			observed.push(instance.shellType);
+			handleShellTypeChange(undefined);
+			observed.push(instance.shellType);
+			deepStrictEqual(observed, [undefined, GeneralShellType.Claude, GeneralShellType.Claude, PosixShellType.Zsh, GeneralShellType.Claude, undefined]);
+		});
+
+		// PARA-PATCH: a tab renamed by hand keeps its name while the agent is pinned from hooks.
+		test('should keep a manual tab name while an agent shell type is pinned from hooks', async () => {
+			const instance = await createTerminalInstance() as TerminalInstance;
+			await instance.rename('Manual name');
+			instance.paradisSetAgentShellTypeFromHooks(GeneralShellType.Claude);
+			(instance as unknown as Record<string, (value: string) => void>)['_onTitleChange']('\u2733 Topic');
+			deepStrictEqual({ shellType: instance.shellType, title: instance.title }, { shellType: GeneralShellType.Claude, title: 'Manual name' });
+		});
+
 		test('should detect Command Code agent shell type from its OSC title', async () => {
 			const instance = await createTerminalInstance() as TerminalInstance;
 			const onTitleChange = (title: string) => (instance as unknown as Record<string, (value: string) => void>)['_onTitleChange'](title);

@@ -61,6 +61,11 @@ export const LAST_MESSAGE_TAIL_BYTES = 16 * 1024;
 export const LAST_MESSAGE_CHARS = 260;
 const MAX_CONCURRENT_LAST_MESSAGE_READS = 8;
 const SUMMARY_HEAD_BYTES = 512 * 1024;
+/**
+ * Claude の記録の末尾から読む量。`/rename` の名前（`custom-title` の行）は、名前を付けた時点の末尾に足されるので、
+ * 長い会話では先頭の {@link SUMMARY_HEAD_BYTES} に入らない。名前の行は短いので、末尾はこれだけ読めば足りる。
+ */
+const SUMMARY_TAIL_BYTES = 256 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
 // tail 再読を避ける最新メッセージキャッシュの上限。catalog の最大件数に合わせる。
@@ -223,6 +228,51 @@ async function readFileHead(filePath: string, allowedRoot: string, expected: IFi
 	} finally {
 		await handle.close();
 	}
+}
+
+/**
+ * 先頭 headLimit バイトと、それに収まらなかった場合の末尾 tailLimit バイトを読む（重なる分は末尾から除く）。
+ * 末尾の先頭行は境界で切れているので捨てる。
+ */
+async function readFileHeadAndTail(filePath: string, allowedRoot: string, expected: IFileIdentity, headLimit: number, tailLimit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<{ head: string; tail: string }> {
+	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, expected, beforeOpen);
+	try {
+		const head = Buffer.alloc(Math.min(stat.size, headLimit));
+		const { bytesRead } = await handle.read(head, 0, head.length, 0);
+		const headText = head.subarray(0, bytesRead).toString('utf8');
+		if (stat.size <= headLimit) {
+			return { head: headText, tail: '' };
+		}
+		const tailLength = Math.min(stat.size - headLimit, tailLimit);
+		const tail = Buffer.alloc(tailLength);
+		const tailRead = await handle.read(tail, 0, tail.length, stat.size - tailLength);
+		const tailLines = tail.subarray(0, tailRead.bytesRead).toString('utf8').split('\n');
+		tailLines.shift();
+		return { head: headText, tail: tailLines.join('\n') };
+	} finally {
+		await handle.close();
+	}
+}
+
+/**
+ * Claude の記録の行から、一覧に出す題を選ぶ。`/rename` の名前（`custom-title`）を、自動で付く題（`ai-title`）より
+ * 優先する。どちらも後の行が勝つが、別々に持つので、名前を付けた後に足される `ai-title` に名前が上書きされない。
+ * テストから直接確かめられるよう export している。
+ */
+export function paradisClaudeTranscriptTitle(lines: Iterable<string>): string | undefined {
+	let customTitle: string | undefined;
+	let aiTitle: string | undefined;
+	for (const line of lines) {
+		if (!line.includes('Title')) {
+			continue;
+		}
+		let item: Record<string, unknown> | undefined;
+		try { item = record(JSON.parse(line)); } catch { continue; }
+		if (!item) { continue; }
+		customTitle = string(item.customTitle) ?? customTitle;
+		aiTitle = string(item.aiTitle) ?? aiTitle;
+	}
+	return customTitle ?? aiTitle;
 }
 
 function normalizePath(value: string): string {
@@ -675,15 +725,12 @@ export class ParadisSessionResumeService {
 			while (cursor < candidates.length) {
 				const candidate = candidates[cursor++];
 				try {
-					const data = await readFileHead(candidate.transcriptPath, claudeHome, candidate.identity, SUMMARY_HEAD_BYTES, this.beforeSummaryRead);
-					let title: string | undefined;
+					const data = await readFileHeadAndTail(candidate.transcriptPath, claudeHome, candidate.identity, SUMMARY_HEAD_BYTES, SUMMARY_TAIL_BYTES, this.beforeSummaryRead);
+					const headLines = data.head.split('\n');
+					const title = paradisClaudeTranscriptTitle(data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines);
 					let firstPrompt: string | undefined;
 					let createdAt: number | undefined;
-					for (const line of data.split('\n')) {
-						let item: Record<string, unknown> | undefined;
-						try { item = record(JSON.parse(line)); } catch { continue; }
-						if (!item) { continue; }
-						title = string(item.customTitle) ?? string(item.aiTitle) ?? title;
+					for (const line of headLines) {
 						const message = parseLine(line, 'claude');
 						if (message?.role === 'user' && !firstPrompt) {
 							firstPrompt = message.text;
