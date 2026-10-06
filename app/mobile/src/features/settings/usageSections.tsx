@@ -8,7 +8,7 @@ import { haptic } from '../../haptics.js';
 import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
-import { accountHint, accountName, accountWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel } from './usageSummary.js';
+import { accountHint, accountName, accountWindows, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
 import { isWindowExpired, windowPercent } from '../usage/usageAggregate.js';
 
 /**
@@ -131,14 +131,16 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 /**
  * 取得できていない（'unavailable'）アカウントを、ほかと分ける。これらは同じような説明文が何行も並ぶので、
  * {@link UnavailableAccountsGroup} の1行に畳む。接続先（SSH など）のログインは1つしか無いので畳まない。
+ * 取りに行くのを控えている間の前の値を持つアカウントは、値を見せるので畳まない。
  */
 export function splitUnavailable<T>(items: readonly T[], accountOf: (item: T) => RateLimitAccount, remoteHost: RateLimitProviderSnapshot['remoteHost']): { shown: T[]; unavailable: T[] } {
 	if (remoteHost !== undefined) {
 		return { shown: [...items], unavailable: [] };
 	}
+	const folded = (item: T) => accountOf(item).status === 'unavailable' && !hasPreviousValue(accountOf(item));
 	return {
-		shown: items.filter(item => accountOf(item).status !== 'unavailable'),
-		unavailable: items.filter(item => accountOf(item).status === 'unavailable'),
+		shown: items.filter(item => !folded(item)),
+		unavailable: items.filter(folded),
 	};
 }
 
@@ -202,9 +204,12 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 	/** メーターを1行に何個並べるか（既定は2つ。iPad で左右に並べた列が狭いときは 1）。 */
 	metersPerRow?: 1 | 2;
 }) {
-	const windows = accountWindows(account);
-	const hint = accountHint(account, remoteHost);
+	// 取りに行くのを控えている間は、前に取れた値を薄く出す（補足に古さと理由を書く）。
+	const previous = hasPreviousValue(account);
+	const windows = previous ? previousWindows(account) : accountWindows(account);
+	const hint = accountHint(account, remoteHost, now);
 	const inUse = remoteHost === undefined && account.active === true;
+	const showMeters = account.status === 'ok' || previous;
 	// メーターは2つずつ横に並べる（5時間・7日 → 追加の枠）。狭い列では1つずつ積む
 	const pairs: (typeof windows)[] = [];
 	for (let i = 0; i < windows.length; i += metersPerRow) {
@@ -215,20 +220,24 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 			<View style={[styles.accountBody, dimmed ? styles.dimmed : undefined]}>
 				<UsageRowTitle title={accountName(account)} hint={hint} />
 				{account.status === 'ok' && windows.length === 0 ? <Text style={styles.rowHint}>使用状況のデータがありません</Text> : null}
-				{account.status === 'ok' ? pairs.map(pair => (
-					<MeterRow key={pair.map(item => item.label).join('|')}>
-						{pair.map(item => (
-							<Meter
-								key={item.label}
-								label={item.label}
-								// リセット時刻を過ぎた枠（オフラインの PC の最後の値など）は、取り直すまで使用率を出さない。
-								percent={windowPercent(item.window, now)}
-								reset={isWindowExpired(item.window, now) ? 'リセット済みの可能性' : resetInLabel(item.window.resetsAt, now)}
-							/>
+				{showMeters ? (
+					<View style={[styles.meters, previous ? styles.dimmed : undefined]}>
+						{pairs.map(pair => (
+							<MeterRow key={pair.map(item => item.label).join('|')}>
+								{pair.map(item => (
+									<Meter
+										key={item.label}
+										label={item.label}
+										// リセット時刻を過ぎた枠（オフラインの PC の最後の値・控えている間の前の値など）は、取り直すまで使用率を出さない。
+										percent={windowPercent(item.window, now)}
+										reset={isWindowExpired(item.window, now) ? WINDOW_RESET_UNKNOWN_LABEL : resetInLabel(item.window.resetsAt, now)}
+									/>
+								))}
+								{pair.length < metersPerRow ? <View style={styles.meterSpacer} /> : null}
+							</MeterRow>
 						))}
-						{pair.length < metersPerRow ? <View style={styles.meterSpacer} /> : null}
-					</MeterRow>
-				)) : null}
+					</View>
+				) : null}
 				{account.status === 'ok' && account.resetCredits !== undefined ? (
 					<ResetCreditsLine resetCredits={account.resetCredits} now={now} defaultOpen={expandResets} />
 				) : null}
@@ -307,6 +316,10 @@ const styles = StyleSheet.create({
 	},
 	dimmed: {
 		opacity: alpha.strong,
+	},
+	/** メーターの行どうしの間隔（行の本文 `accountBody` と同じ）。 */
+	meters: {
+		gap: space.xs,
 	},
 	pressed: {
 		opacity: 0.7,

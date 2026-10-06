@@ -20,6 +20,7 @@ import {
 	type UsageModelSlice,
 } from '../../store.js';
 import { dayCost, localDateKey } from '../../usageFormat.js';
+import { hasPreviousValue } from '../settings/usageSummary.js';
 import type { VoiceUsageResult } from './voiceUsageWire.js';
 
 /**
@@ -258,6 +259,12 @@ function betterCandidate(a: AccountCandidate, b: AccountCandidate): AccountCandi
 	const okB = b.account.status === 'ok';
 	if (okA !== okB) {
 		return okA ? a : b;
+	}
+	// どちらも取れていなければ、控えている間の前の値を持つ方（値を見せられる）
+	const previousA = hasPreviousValue(a.account);
+	const previousB = hasPreviousValue(b.account);
+	if (previousA !== previousB) {
+		return previousA ? a : b;
 	}
 	if (a.old !== b.old) {
 		return a.old ? b : a;

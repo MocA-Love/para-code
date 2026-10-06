@@ -29,6 +29,8 @@
 //    1 時間 429 が出なければ通常の間隔に戻る
 //  - 予定時刻は窓がリセットされる時刻 + 60 秒より後にしない（リセット後の値は古いので）
 
+import type { ParadisLimitsAccountStatus, ParadisLimitsUnavailableReason } from './paradisLimitsMonitor.js';
+
 /** これより新しい取得結果はそのまま配る（API を呼ばない）。 */
 export const PARADIS_CLAUDE_SERVE_TTL_S = 180;
 /** 通常の間隔の下限。 */
@@ -239,4 +241,54 @@ export function paradisClaudeRecent429Anchor(last429At: number | undefined, back
 		return undefined;
 	}
 	return backoffUntil !== undefined && backoffUntil > last429At ? backoffUntil : last429At;
+}
+
+/**
+ * 取れなかった・取りに行くのを控えたときに、前に取れた値（枠と取得時刻）を残すか。
+ *
+ * 残すのは「控えている」（'unavailable' の 'not_fetched'。claude-swap と共有しているかもしれない系列、
+ * いまのログインと同じ系列）ときだけ。前の値はそのアカウントのものとして正しいので、表示は古さを添えて
+ * 薄く出す（paradisLimitsMonitor.ts の paradisLimitsPreviousValue）。再ログインが要る・認証情報が無い・
+ * キーチェーンが読めない・API キーで使っている、のときは前の値が今の状態と食い違うので消す。
+ */
+export function paradisClaudeKeepsPreviousUsage(status: ParadisLimitsAccountStatus, unavailableReason: ParadisLimitsUnavailableReason | undefined): boolean {
+	return status === 'unavailable' && unavailableReason === 'not_fetched';
+}
+
+/** 使用中と控えが入れ替わったときに作り直す状態の、値にかかわる部分。 */
+export interface IParadisClaudeCarriedUsage<W> {
+	readonly status: ParadisLimitsAccountStatus;
+	readonly unavailableReason?: ParadisLimitsUnavailableReason;
+	readonly statusDetail?: string;
+	readonly windows?: W;
+	readonly fetchedAt?: number;
+	readonly nextPollAt: number;
+}
+
+/**
+ * 使用中と控えが入れ替わったとき（外で `claude /login` した等）に、前の状態から何を引き継ぐか。
+ * - {@link PARADIS_CLAUDE_SERVE_TTL_S} 秒以内に取れた値（'ok'）: そのまま引き継ぎ、取り直さない
+ * - それより古い値・取れていない状態で残している値: 枠と取得時刻は残し（同じアカウントの値なので、取り直すまで古さを添えて見せる）、
+ *   状態は「まだ取っていない」にしてすぐ取り直す
+ * - 値が無い: 「まだ取っていない」にしてすぐ取り直す
+ */
+export function paradisClaudeCarryOverOnRoleChange<W>(previous: IParadisClaudeCarriedUsage<W> | undefined, now: number): IParadisClaudeCarriedUsage<W> {
+	if (previous?.status === 'ok' && previous.fetchedAt !== undefined && now - previous.fetchedAt < PARADIS_CLAUDE_SERVE_TTL_S * 1000) {
+		return {
+			status: previous.status,
+			unavailableReason: previous.unavailableReason,
+			statusDetail: previous.statusDetail,
+			windows: previous.windows,
+			fetchedAt: previous.fetchedAt,
+			nextPollAt: previous.fetchedAt + PARADIS_CLAUDE_SERVE_TTL_S * 1000,
+		};
+	}
+	const keep = previous?.windows !== undefined && previous.fetchedAt !== undefined;
+	return {
+		status: 'unavailable',
+		unavailableReason: 'not_fetched',
+		windows: keep ? previous.windows : undefined,
+		fetchedAt: keep ? previous.fetchedAt : undefined,
+		nextPollAt: 0,
+	};
 }

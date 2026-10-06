@@ -10,7 +10,9 @@ import {
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsNotFetchedCause,
+	paradisLimitsPreviousValue,
 	paradisLimitsSeverity,
+	paradisLimitsWindowView,
 	paradisLimitsWorstPercent,
 	paradisNormalizeCodexLimitWindows,
 } from '../../common/paradisLimitsMonitor.js';
@@ -133,6 +135,54 @@ suite('ParadisLimitsMonitor', () => {
 			92,
 			93,
 			94,
+		]);
+	});
+
+	// 取りに行くのを控えている間の前の値: 控えている（'not_fetched'）ときだけ、値があれば古さと理由を添えて出す。
+	test('shows the previous usage only while fetching is held off and there is a value', () => {
+		const now = 1_800_000_000_000;
+		const held: IParadisLimitsAccount = {
+			provider: 'claude', id: 'para-claude:b', status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap',
+			fetchedAt: now - 12 * 60_000, fiveHour: { usedPercent: 30 },
+		};
+		assert.deepStrictEqual({
+			shared: paradisLimitsPreviousValue(held, now),
+			sameLineageHours: paradisLimitsPreviousValue({ ...held, statusDetail: 'same lineage as the current login', fetchedAt: now - 3 * 3600_000 - 1 }, now),
+			notYetDays: paradisLimitsPreviousValue({ ...held, statusDetail: undefined, fetchedAt: now - 2 * 86_400_000 }, now),
+			scopedOnly: paradisLimitsPreviousValue({ ...held, fiveHour: undefined, scoped: [{ usedPercent: 5, label: 'model' }] }, now)?.cause,
+			// 古い PC（控えている間は値を送らない）・値の無いアカウント
+			noValue: paradisLimitsPreviousValue({ ...held, fiveHour: undefined }, now),
+			noFetchedAt: paradisLimitsPreviousValue({ ...held, fetchedAt: undefined }, now),
+			// 控えている以外の状態はいつもの説明文のまま
+			ok: paradisLimitsPreviousValue({ ...held, status: 'ok', unavailableReason: undefined }, now),
+			rateLimited: paradisLimitsPreviousValue({ ...held, unavailableReason: 'rate_limited' }, now),
+			relogin: paradisLimitsPreviousValue({ ...held, status: 'relogin_required', unavailableReason: undefined }, now),
+		}, {
+			shared: { age: { amount: 12, unit: 'minutes' }, cause: 'shared_with_claude_swap' },
+			sameLineageHours: { age: { amount: 3, unit: 'hours' }, cause: 'same_lineage' },
+			notYetDays: { age: { amount: 2, unit: 'days' }, cause: 'not_yet' },
+			scopedOnly: 'shared_with_claude_swap',
+			noValue: undefined,
+			noFetchedAt: undefined,
+			ok: undefined,
+			rateLimited: undefined,
+			relogin: undefined,
+		});
+	});
+
+	// リセット時刻を過ぎた枠は、古い使用率を出さない。
+	test('hides the usage of a window whose reset time has passed', () => {
+		const now = 1_800_000_000_000;
+		assert.deepStrictEqual([
+			paradisLimitsWindowView({ usedPercent: 80, resetsAt: now + 90 * 60_000 }, now),
+			paradisLimitsWindowView({ usedPercent: 80, resetsAt: now }, now),
+			paradisLimitsWindowView({ usedPercent: 80, resetsAt: now - 1 }, now),
+			paradisLimitsWindowView({ usedPercent: 80 }, now),
+		], [
+			{ kind: 'value', percent: 80, countdown: '1h 30m' },
+			{ kind: 'reset' },
+			{ kind: 'reset' },
+			{ kind: 'value', percent: 80 },
 		]);
 	});
 });
