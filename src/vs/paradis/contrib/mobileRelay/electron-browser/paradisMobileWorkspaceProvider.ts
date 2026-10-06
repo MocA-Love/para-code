@@ -50,7 +50,7 @@ import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/pa
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
-import { paradisMobileLimitsClaudeFromLocal } from '../common/paradisMobileLimitsScope.js';
+import { paradisMobileLimitsClaudeFromLocal, paradisMobileLimitsSnapshot } from '../common/paradisMobileLimitsScope.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 // PARA-PATCH: RTK節約データのモバイル配信
 import { localize } from '../../../../nls.js';
@@ -2585,7 +2585,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'limits') {
 			try {
 				const data = await paradisWithHostDeadline(this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg)), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'limits', data });
+				reply({ t: 'limits', data: paradisMobileLimitsSnapshot(data) });
 			} catch (err) {
 				reply(paradisMobileUsageErrorReply(err));
 			}

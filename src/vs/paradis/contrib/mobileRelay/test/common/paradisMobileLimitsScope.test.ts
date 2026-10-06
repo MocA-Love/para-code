@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisMobileLimitsClaudeFromLocal } from '../../common/paradisMobileLimitsScope.js';
+import { paradisMobileLimitsAccount, paradisMobileLimitsClaudeFromLocal } from '../../common/paradisMobileLimitsScope.js';
 
 suite('paradisMobileLimitsClaudeFromLocal', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -38,6 +38,28 @@ suite('paradisMobileLimitsClaudeFromLocal', () => {
 			notTrue: true,
 			brokenGeneration: true,
 			nothing: true,
+		});
+	});
+});
+
+suite('paradisMobileLimitsAccount', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 古いアプリはホームのカードで状態を見ずに枠を出すので、取れていないアカウントの枠は送らない。
+	// 控えている間の前の値は、新しい任意項目で送る。
+	test('sends windows only for ok accounts and the held previous value in optional fields', () => {
+		const window = { usedPercent: 30, resetsAt: 5 };
+		const base = { provider: 'claude', id: 'para-claude:b' } as const;
+		assert.deepStrictEqual({
+			ok: paradisMobileLimitsAccount({ ...base, status: 'ok', fiveHour: window, fetchedAt: 1 }),
+			held: paradisMobileLimitsAccount({ ...base, status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', fiveHour: window, scoped: [window], fetchedAt: 1 }),
+			rateLimited: paradisMobileLimitsAccount({ ...base, status: 'unavailable', unavailableReason: 'rate_limited', fiveHour: window, fetchedAt: 1 }),
+			nothing: paradisMobileLimitsAccount({ ...base, status: 'relogin_required' }),
+		}, {
+			ok: { ...base, status: 'ok', fiveHour: window, fetchedAt: 1 },
+			held: { ...base, status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', previousWindows: { fiveHour: window, scoped: [window] }, previousFetchedAt: 1 },
+			rateLimited: { ...base, status: 'unavailable', unavailableReason: 'rate_limited' },
+			nothing: { ...base, status: 'relogin_required' },
 		});
 	});
 });
