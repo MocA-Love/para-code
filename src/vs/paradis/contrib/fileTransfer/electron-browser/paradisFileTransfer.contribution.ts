@@ -22,6 +22,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
@@ -40,6 +41,7 @@ import {
 	paradisSideForResource,
 } from '../common/paradisFileTransfer.js';
 import { PARADIS_FILE_TRANSFER_EXPLORER_WHEN, PARADIS_FILE_TRANSFER_TITLE_BAR_WHEN } from '../common/paradisFileTransferEntryPoints.js';
+import { PARADIS_SFTP_IDLE_DEFAULT_SECONDS, PARADIS_SFTP_IDLE_MAX_SECONDS, PARADIS_SFTP_IDLE_MIN_SECONDS, PARADIS_SFTP_IDLE_SETTING } from '../common/paradisSftp.js';
 import { ParadisFileTransferEditor } from './paradisFileTransferEditor.js';
 import { PARADIS_FILE_TRANSFER_ICON, ParadisFileTransferInput, ParadisFileTransferInputSerializer } from './paradisFileTransferInput.js';
 import './paradisFileTransferActivity.js';
@@ -47,6 +49,26 @@ import './paradisFileTransferService.js';
 import './media/paradisFileTransfer.css';
 
 const PARADIS_CATEGORY = localize2('paradis.fileTransfer.category', "Para Code");
+
+// ---------- 設定 ----------
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'paradis',
+	order: 999,
+	title: localize('paradisConfigurationTitle', "Para Code"),
+	type: 'object',
+	properties: {
+		[PARADIS_SFTP_IDLE_SETTING]: {
+			type: 'number',
+			default: PARADIS_SFTP_IDLE_DEFAULT_SECONDS,
+			minimum: PARADIS_SFTP_IDLE_MIN_SECONDS,
+			maximum: PARADIS_SFTP_IDLE_MAX_SECONDS,
+			// 接続は shared process が全ウィンドウで共有するので、ウィンドウごとに違う値を許さない
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.fileTransfer.directConnectionIdleSeconds', "ファイル転送で、接続していないホストへ直接（SSH で）送る・取ってくるときの接続を、使い終わってから閉じるまでの秒数です。転送中・ファイルを開いている間は閉じません。"),
+		},
+	},
+});
 
 // ---------- editor pane / serializer ----------
 
