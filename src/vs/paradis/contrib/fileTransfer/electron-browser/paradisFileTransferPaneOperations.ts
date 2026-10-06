@@ -59,6 +59,16 @@ export interface IParadisPaneOperationsContext {
 	canCopyToOtherSide(): boolean;
 	copyToOtherSide(entries: readonly IParadisPaneEntry[]): Promise<void>;
 	closeEditor(): void;
+	/** この側の見出し（右側で接続していないホストを開いていれば、その別名）。 */
+	label(): string;
+	/** 反対側の見出し。 */
+	otherLabel(): string;
+	/** 「ほかのホストを開く…」を出すか（右側だけ）。 */
+	canSwitchHost(): boolean;
+	switchHost(): Promise<void>;
+	/** 「ホストの一覧に戻る」を出すか（手元のウィンドウの右側で、ホストを開いているとき）。 */
+	canShowHostList(): boolean;
+	showHostList(): void;
 }
 
 /** メニューの右に出す近道（このタブの中だけで効く）。 */
@@ -107,7 +117,7 @@ export class ParadisFileTransferPaneOperations {
 	private buildActions(): IAction[] {
 		const context = this.context;
 		const selection = context.selection();
-		const otherLabel = this.transferService.sideLabel(context.side === 'local' ? 'remote' : 'local');
+		const otherLabel = context.otherLabel();
 		const has = selection.length > 0;
 		return [
 			toAction({ id: 'paradis.fileTransfer.open', label: localize('paradis.fileTransfer.menu.open', "開く"), enabled: has, run: () => this.openEntries(selection) }),
@@ -128,6 +138,14 @@ export class ParadisFileTransferPaneOperations {
 			...(context.modes ? [
 				new Separator(),
 				toAction({ id: 'paradis.fileTransfer.permissions', label: localize('paradis.fileTransfer.menu.permissions', "権限の変更…"), enabled: paradisCanChangePermissions(selection, context.modes), run: () => this.changePermissions(selection) }),
+			] : []),
+			// 右側は、このウィンドウが繋いでいないホストも SSH で直接開ける（ユーザーが選んだときだけ繋ぐ）
+			...(context.canSwitchHost() ? [
+				new Separator(),
+				toAction({ id: 'paradis.fileTransfer.switchHost', label: localize('paradis.fileTransfer.menu.switchHost', "ほかのホストを開く…"), run: () => context.switchHost() }),
+				...(context.canShowHostList() ? [
+					toAction({ id: 'paradis.fileTransfer.hostList', label: localize('paradis.fileTransfer.menu.hostList', "ホストの一覧に戻る"), run: () => context.showHostList() }),
+				] : []),
 			] : []),
 			new Separator(),
 			toAction({ id: 'paradis.fileTransfer.close', label: localize('paradis.fileTransfer.menu.close', "閉じる"), run: () => context.closeEditor() }),
@@ -257,7 +275,7 @@ export class ParadisFileTransferPaneOperations {
 		const { confirmed } = await this.dialogService.confirm({
 			type: useTrash ? 'question' : 'warning',
 			message,
-			detail: names.slice(0, 10).join('\n') + (names.length > 10 ? '\n…' : '') + (useTrash ? '' : '\n\n' + localize('paradis.fileTransfer.deleteIrreversible', "{0} にはゴミ箱がありません。この操作は元に戻せません。", this.transferService.sideLabel(this.context.side))),
+			detail: names.slice(0, 10).join('\n') + (names.length > 10 ? '\n…' : '') + (useTrash ? '' : '\n\n' + localize('paradis.fileTransfer.deleteIrreversible', "{0} にはゴミ箱がありません。この操作は元に戻せません。", this.context.label())),
 			primaryButton: useTrash ? localize('paradis.fileTransfer.trashButton', "ゴミ箱へ移動") : localize('paradis.fileTransfer.deleteButton', "削除"),
 		});
 		if (!confirmed) {
@@ -287,7 +305,7 @@ export class ParadisFileTransferPaneOperations {
 			return;
 		}
 		const location = this.context.side === 'remote'
-			? `${this.transferService.remoteLabel}:${first.resource.path}`
+			? `${this.context.label()}:${first.resource.path}`
 			: first.resource.fsPath;
 		const result = await paradisShowPermissionsDialog(this.layoutService.activeContainer, {
 			title: entries.length === 1 ? first.name : localize('paradis.fileTransfer.permissionsMany', "{0} 項目", entries.length),

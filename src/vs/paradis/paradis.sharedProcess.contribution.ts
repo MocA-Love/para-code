@@ -37,6 +37,7 @@ import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/computerUse/node/paradisComputerUse.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisFileModes.sharedProcess.js';
+import './contrib/fileTransfer/node/paradisSftp.sharedProcess.js';
 import './contrib/resourceMonitor/node/paradisSystemUsage.sharedProcess.js';
 import './contrib/notifications/node/paradisAgentDictionary.sharedProcess.js';
 

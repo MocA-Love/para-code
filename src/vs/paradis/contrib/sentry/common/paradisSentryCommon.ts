@@ -186,7 +186,9 @@ export function paradisSanitizeSentryText(value: string): string {
 		.replace(/\/Users\/[^/\\\s]+/g, '~')
 		.replace(/\/home\/[^/\\\s]+/g, '~')
 		.replace(/[A-Za-z]:\\Users\\[^\\/\s]+/gi, '~')
-		.replace(/\b(?:https?|wss?):\/\/[^\s]+/gi, rawUrl => paradisSanitizeUrl(rawUrl));
+		.replace(/\b(?:https?|wss?):\/\/[^\s]+/gi, rawUrl => paradisSanitizeUrl(rawUrl))
+		// ファイル転送で SSH 直接開いたホストの URI は、ホスト名とパスごと伏せる
+		.replace(/\bparadis-sftp:\/\/[^\s'"]+/gi, 'paradis-sftp://[Filtered]');
 
 	return normalized.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH
 		? normalized

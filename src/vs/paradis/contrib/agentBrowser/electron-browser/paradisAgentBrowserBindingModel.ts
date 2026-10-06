@@ -28,7 +28,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../browser/paradisLivePaneInstances.js';
-import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisGatewayEndpoint, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisAgentTabGrant, IParadisGatewayEndpoint, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } from '../common/paradisBrowserBindingLifecycle.js';
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
@@ -80,6 +80,12 @@ export interface IParadisAgentBrowserBindingModel {
 
 	/** 指定ペイントークンのバインディングを返す。 */
 	getBindingForToken(token: string): IParadisPaneBinding | undefined;
+
+	/** そのペインが tab_id で使っている、エージェントが自分で開いたタブ（許可）の viewId（キャッシュ）。 */
+	getAgentTabsForToken(token: string): readonly string[];
+
+	/** そのページを、エージェントのタブとして使っているペインのトークン（キャッシュ）。 */
+	getAgentTabOwnersForPage(pageId: string): readonly string[];
 
 	/** shared processから最新状態を再取得する。 */
 	refresh(): Promise<void>;
@@ -268,6 +274,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	 * 共有が外れたページの共有の印を下ろすとき、許可の付いたタブは下ろさない（エージェントが使い続けるため）。
 	 */
 	private readonly _agentTabGrants = new Map<string, string>();
+	/** shared process から取った許可の一覧（共有の表示用）。token → viewId と viewId → token。 */
+	private _agentTabsByToken: ReadonlyMap<string, readonly string[]> = new Map();
+	private _agentTabOwnersByPage: ReadonlyMap<string, readonly string[]> = new Map();
 	private _bindingsByPageId: ReadonlyMap<string, readonly IParadisPaneBinding[]> = new Map();
 	private _seenTokens = new Set<string>();
 	private readonly _poller: ParadisAgentBrowserBindingPoller;
@@ -593,6 +602,14 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		return [...(this._bindingsByPageId.get(pageId) ?? [])];
 	}
 
+	getAgentTabsForToken(token: string): readonly string[] {
+		return this._agentTabsByToken.get(token) ?? [];
+	}
+
+	getAgentTabOwnersForPage(pageId: string): readonly string[] {
+		return this._agentTabOwnersByPage.get(pageId) ?? [];
+	}
+
 	getBindingForToken(token: string): IParadisPaneBinding | undefined {
 		return this._bindingByToken.get(token);
 	}
@@ -625,16 +642,30 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		const refreshSerial = ++this._nextRefreshSerial;
 		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
-			const [bindings, seenTokens] = await Promise.all([
+			const [bindings, seenTokens, agentTabGrants] = await Promise.all([
 				channel.call<IParadisPaneBinding[]>('listBindings'),
 				channel.call<string[]>('listSeenTokens'),
+				// 共有の表示用。取れなかったら前回の値のまま（共有の判定には使わない）
+				channel.call<IParadisAgentTabGrant[]>('listAgentTabGrants').then(value => Array.isArray(value) ? value : undefined, () => undefined),
 			]);
 			if (this._store.isDisposed) {
 				return undefined;
 			}
 			this._clearVerifiedPageBinds(refreshSerial);
 			if (refreshSerial > this._appliedRefreshSerial) {
-				const changed = JSON.stringify(bindings) !== JSON.stringify(this._bindings)
+				let agentTabsChanged = false;
+				if (agentTabGrants !== undefined) {
+					const agentTabsByToken = new Map<string, string[]>();
+					const agentTabOwnersByPage = new Map<string, string[]>();
+					for (const grant of agentTabGrants) {
+						agentTabsByToken.set(grant.token, [...(agentTabsByToken.get(grant.token) ?? []), grant.pageId]);
+						agentTabOwnersByPage.set(grant.pageId, [...(agentTabOwnersByPage.get(grant.pageId) ?? []), grant.token]);
+					}
+					agentTabsChanged = JSON.stringify([...agentTabsByToken]) !== JSON.stringify([...this._agentTabsByToken]);
+					this._agentTabsByToken = agentTabsByToken;
+					this._agentTabOwnersByPage = agentTabOwnersByPage;
+				}
+				const changed = agentTabsChanged || JSON.stringify(bindings) !== JSON.stringify(this._bindings)
 					|| seenTokens.length !== this._seenTokens.size
 					|| seenTokens.some(token => !this._seenTokens.has(token));
 				const bindingByToken = new Map<string, IParadisPaneBinding>();
@@ -728,6 +759,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				};
 				if (await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<boolean>('grantAgentTab', [request])) {
 					this._agentTabGrants.set(model.id, token);
+					void this._refreshFromBackend(true).catch(() => undefined);
 					return true;
 				}
 			} catch {
@@ -743,6 +775,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			if (this._agentTabGrants.get(viewId) === token) {
 				this._agentTabGrants.delete(viewId);
 			}
+			void this._refreshFromBackend(true).catch(() => undefined);
 		} catch {
 			// 届かなかったら控えを残す（ネットワークの制限の見直しが次の更新でもう一度外しに行く）。ビューが消えれば
 			// shared process 側でも外れる（manifest の retire）。
