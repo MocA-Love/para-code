@@ -59,6 +59,12 @@ const STR_PAGE_PILL_SHARED = localize('paradis.bindingDialog.pagePillShared', "�
 // allow-any-unicode-next-line
 const STR_PAGE_PILL_UNSHARED = localize('paradis.bindingDialog.pagePillUnshared', "未共有");
 // allow-any-unicode-next-line
+const STR_PAGE_PILL_AGENT_TAB = localize('paradis.bindingDialog.pagePillAgentTab', "エージェントのタブ");
+// allow-any-unicode-next-line
+const STR_SUB_AGENT_TAB_HERE = localize('paradis.bindingDialog.subAgentTabHere', "このペインのエージェントが開いたタブ（tab_id で使用中）");
+// allow-any-unicode-next-line
+const strSubAgentTabs = (sub: string, count: number) => localize('paradis.bindingDialog.subAgentTabs', "{0} · エージェントのタブ {1} 枚", sub, count);
+// allow-any-unicode-next-line
 const STR_SEARCH_PLACEHOLDER = localize('paradis.bindingDialog.searchPlaceholder', "ペインを検索…");
 // allow-any-unicode-next-line
 const STR_NO_PANES = localize('paradis.bindingDialog.noPanes', "共有できるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
@@ -574,10 +580,15 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(text, $('span.pbd-pb-url')).textContent = this._page.url;
 
 		const isShared = this.bindingModel.getBindingsForPage(this._page.id).length > 0;
-		const pill = dom.append(this._pageBar, $(`.pbd-page-pill.${isShared ? 'shared' : 'unshared'}`));
+		// エージェントが自分で開き、ペインが tab_id で使っているタブ（共有とは別の印）
+		const isAgentTab = this.bindingModel.getAgentTabOwnersForPage(this._page.id).length > 0;
+		const pill = dom.append(this._pageBar, $(`.pbd-page-pill.${isShared || isAgentTab ? 'shared' : 'unshared'}`));
 		if (isShared) {
 			dom.append(pill, $('.pbd-dot.green'));
 			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_SHARED;
+		} else if (isAgentTab) {
+			dom.append(pill, $('.pbd-dot.green'));
+			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_AGENT_TAB;
 		} else {
 			dom.append(pill, $('.pbd-dot.gray'));
 			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_UNSHARED;
@@ -590,7 +601,8 @@ export class ParadisBindingDialog extends Disposable {
 		// スコープ外（別スペース）のペインは一覧に出さない。ただし現在このページに共有中の行は
 		// 解除できるよう常に残す。
 		return this._panes().filter(pane =>
-			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this._page.id);
+			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this._page.id
+			|| this.bindingModel.getAgentTabsForToken(pane.token).includes(this._page.id));
 	}
 
 	private _renderPanesTab(): void {
@@ -688,6 +700,16 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
+		// エージェントが自分で開いて tab_id で使っているタブ（共有とは別に、ペインごとに最大 5 枚）
+		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token);
+		if (!boundHere && agentTabs.includes(this._page.id)) {
+			return STR_SUB_AGENT_TAB_HERE;
+		}
+		const sub = this._paneBindingSubText(pane, boundHere, boundElse);
+		return agentTabs.length > 0 ? strSubAgentTabs(sub, agentTabs.length) : sub;
+	}
+
+	private _paneBindingSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
 		if (boundHere) {
 			return strSubBoundHere(pane.binding ? formatRelativeTime(pane.binding.boundAt) : STR_JUST_NOW);
 		}
