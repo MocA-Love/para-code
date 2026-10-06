@@ -83,8 +83,11 @@ function mayBelongTo(data: Readonly<Record<string, unknown>> | undefined, pcId: 
 	return owner === undefined || owner === pcId;
 }
 
-/** PCが処理済みと知らせてきた通知（通知ID、またはエージェントトークンで一致。トークンでは許可・質問を除く）。 */
-export function selectHandledByPc(presented: readonly TrayNotification[], handled: { readonly pcId: string; readonly ids: readonly string[]; readonly tokens: readonly string[]; readonly before: number }): string[] {
+/**
+ * PCが処理済みと知らせてきた通知（通知ID、またはエージェントトークンで一致）。`keepPrompts`（notify.dismiss-sync.v1 の PC）
+ * なら、トークンでは許可・質問を除く。
+ */
+export function selectHandledByPc(presented: readonly TrayNotification[], handled: { readonly pcId: string; readonly ids: readonly string[]; readonly tokens: readonly string[]; readonly before: number; readonly keepPrompts?: boolean }): string[] {
 	const ids = new Set(handled.ids);
 	const tokens = new Set(handled.tokens);
 	return presented
@@ -94,7 +97,7 @@ export function selectHandledByPc(presented: readonly TrayNotification[], handle
 			const agentToken = text(notification.data, 'agentToken');
 			// エージェント単位（PC で確認済みにした）では許可・質問を消さない（Q243 A。回答で片付いたら ID で届く）。
 			return (notifyId !== undefined && ids.has(notifyId))
-				|| (agentToken !== undefined && tokens.has(agentToken) && text(notification.data, 'kind') !== 'agent-question');
+				|| (agentToken !== undefined && tokens.has(agentToken) && (handled.keepPrompts !== true || text(notification.data, 'kind') !== 'agent-question'));
 		})
 		.map(notification => notification.identifier);
 }

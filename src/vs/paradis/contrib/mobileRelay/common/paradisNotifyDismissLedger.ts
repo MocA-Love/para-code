@@ -64,7 +64,7 @@ function isPrompt(kind: string | undefined): boolean {
 export interface IParadisNotifyDismissLedgerOptions {
 	/**
 	 * エージェントトークンを台帳に残す形へ変える（既定はそのまま）。トークンは PC の MCP 接続に使う値なので、
-	 * PC は鍵付きのハッシュを渡し、ディスクには生のトークンを書かない。
+	 * PC は用途の接頭辞を付けた SHA-256 を渡し、ディスクには生のトークンを書かない。
 	 */
 	readonly tokenKey?: (token: string) => string;
 	/** 台帳の ID を作る（既定は UUID）。台帳を作り直したら番号を数え直したことを、スマホが ID の違いで知る。 */
@@ -347,18 +347,44 @@ export function paradisWithNotifyDismiss(bytes: Uint8Array, tags: readonly strin
 /** 回答の成立を示す hook の出来事（ID で 1 件）。 */
 const ANSWER_BY_TOOL_EVENTS = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied']);
 /** そのエージェントがもう何も待っていないことを示す hook の出来事（ターンの終わり・次の指示・終了）。 */
-const ANSWER_ALL_EVENTS = new Set(['Stop', 'StopFailure', 'agent-turn-complete', 'task_complete', 'UserPromptSubmit', 'SessionEnd']);
+const ANSWER_ALL_EVENTS = new Set(['Stop', 'StopFailure', 'agent-turn-complete', 'task_complete', 'Interrupt', 'UserPromptSubmit', 'SessionEnd']);
+
+/** 「全部片付ける」出来事を、本当にそのペインの本会話のターンの区切りか確かめるための hook の付帯情報。 */
+export interface IParadisNotifyAnswerHookContext {
+	/** 発信元のプロセスを確かめられなかった（daemon の配下の会話・`/fork` の分岐先かもしれない）。 */
+	readonly ownerUnverified?: boolean;
+	/** hook の stdin JSON（`agent_id`・`prompt` を見る）。 */
+	readonly payload?: Readonly<Record<string, unknown>>;
+}
 
 /**
  * hook の出来事が、そのエージェントの許可・質問への回答の成立を示すか（Q241 A・Q243 A）。PC のターミナル・スマホの
  * トーク・通知のボタンのどこで答えても、エージェントはこれらの hook を出す。`interactionId` が undefined のときは
  * 「その時刻より前の許可・質問の全部」。関係しない出来事は undefined。
+ *
+ * 「全部」は同じペインのほかの会話の未回答まで消しうるので、本会話のターンの区切りと言い切れるものだけにする。
+ * 発信元を確かめられなかった hook、サブエージェント・チームメイトの hook（`agent_id` 付き）、バックグラウンドの
+ * 完了の知らせ（`<task-notification>`）や `/model`・`/effort` による UserPromptSubmit は、何も片付けない。
  */
-export function paradisNotifyAnswerFromHook(event: string, toolUseId: string | undefined): { readonly interactionId: string | undefined } | undefined {
+export function paradisNotifyAnswerFromHook(event: string, toolUseId: string | undefined, context?: IParadisNotifyAnswerHookContext): { readonly interactionId: string | undefined } | undefined {
 	if (ANSWER_BY_TOOL_EVENTS.has(event)) {
 		return toolUseId !== undefined && toolUseId.length > 0 ? { interactionId: toolUseId } : undefined;
 	}
-	return ANSWER_ALL_EVENTS.has(event) ? { interactionId: undefined } : undefined;
+	if (!ANSWER_ALL_EVENTS.has(event) || context?.ownerUnverified === true) {
+		return undefined;
+	}
+	const agentId = context?.payload?.agent_id;
+	if (typeof agentId === 'string' && agentId.length > 0) {
+		return undefined;
+	}
+	if (event === 'UserPromptSubmit') {
+		const prompt = context?.payload?.prompt;
+		const submitted = typeof prompt === 'string' ? prompt.trimStart() : undefined;
+		if (submitted !== undefined && (submitted.startsWith('<task-notification>') || /^\/(?:model|effort)\s+\S/.test(submitted))) {
+			return undefined;
+		}
+	}
+	return { interactionId: undefined };
 }
 
 /** 通知の本文から承認・質問の ID を読む（無ければ undefined）。 */

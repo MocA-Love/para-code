@@ -53,7 +53,11 @@ describe('selectHandledByPc', () => {
 			tray('prompt', { agentToken: 'tok-1', kind: 'agent-question', notifyId: 'q1', pcId: PC }),
 			tray('answered', { agentToken: 'tok-1', kind: 'agent-question', notifyId: 'q2', pcId: PC }),
 		];
-		expect(selectHandledByPc(presented, { pcId: PC, ids: ['q2'], tokens: ['tok-1'], before: T0 })).toEqual(['done', 'answered']);
+		expect([
+			selectHandledByPc(presented, { pcId: PC, ids: ['q2'], tokens: ['tok-1'], before: T0, keepPrompts: true }),
+			// 回答で片付けを知らせない旧 PC では、今までどおり許可・質問もトークンで消す
+			selectHandledByPc(presented, { pcId: PC, ids: [], tokens: ['tok-1'], before: T0 }),
+		]).toEqual([['done', 'answered'], ['done', 'prompt', 'answered']]);
 	});
 });
 
