@@ -260,6 +260,14 @@ suite('paradisAgentShells', () => {
 		});
 	});
 
+	test('a shell started by a child keeps the id of that child (Workflow cards gather them)', () => {
+		const tracker = new ParadisAgentShellTracker();
+		const signals = parse([bashCall('toolu_o1', { command: 'npm test', run_in_background: true }), started('toolu_o1', 'bowned')]).shellSignals
+			.map(signal => signal.type === 'started' ? { ...signal, ownerAgentId: 'aworkflowchild1' } : signal);
+		tracker.applyFromChild(signals, T0 + 1_000);
+		assert.deepStrictEqual(tracker.snapshot().map(shell => ({ id: shell.id, ownerAgentId: shell.ownerAgentId })), [{ id: 'bowned', ownerAgentId: 'aworkflowchild1' }]);
+	});
+
 	test('access per environment', () => {
 		assert.deepStrictEqual([paradisShellsAccess(undefined, true), paradisShellsAccess(undefined, false), paradisShellsAccess('ssh', true), paradisShellsAccess('windows', false)], [
 			{ output: true, stop: true },

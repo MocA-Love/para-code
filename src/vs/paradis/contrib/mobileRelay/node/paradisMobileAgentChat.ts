@@ -53,7 +53,7 @@ import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, 
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
 import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
-import { paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
+import { PARADIS_CLAUDE_WORKFLOW_SUBAGENT_TYPE, paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
@@ -71,6 +71,8 @@ import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPr
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
+import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
+import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -179,8 +181,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField & IParadisAgentWorkflowsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null } & IParadisAgentShellsField & IParadisAgentWorkflowsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -261,6 +263,20 @@ const CHILD_SHELL_SCAN_MAX_BYTES = 1024 * 1024;
 const CHILD_SHELL_SCAN_READS_PER_SWEEP = 16;
 /** これより前に書かれたきりの子の transcript は、子が起動したシェルを探しに読まない。 */
 const CHILD_SHELL_SCAN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Workflow の起動・子の hook の後、実行のフォルダを読みに行くまでの間（同じ間に届いた印をまとめる）。 */
+const WORKFLOW_REFRESH_SOON_MS = 1_000;
+/** 初回読み込みで Workflow を見つけた後、実行のフォルダを読みに行くまでの間。 */
+const WORKFLOW_REFRESH_INITIAL_MS = 2_000;
+/** 動いている Workflow の実行のフォルダを読み直す間隔（hook の届かない間の進み具合）。 */
+const WORKFLOW_REFRESH_RUNNING_MS = 10_000;
+/** 1 回に読む実行の数（新しい順）。 */
+const WORKFLOW_REFRESH_RUNS = 5;
+
+/** snapshot / delta の任意項目（Claude のセッションだけ。agent.workflows.v1）。時刻は PC の時計で、`workflowsAt` を添える。 */
+interface IParadisAgentWorkflowsField {
+	workflows?: readonly IParadisAgentWorkflow[];
+	workflowsAt?: number;
+}
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
 const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
@@ -1144,12 +1160,17 @@ export function paradisClaudeNamedAgentFromFileId(fileId: string): string | unde
  * 子（サブエージェント・Workflow の子）の Bash の PostToolUse hook から、バックグラウンドのシェルの手がかりを作る（時刻は
  * hook の受信時刻 = PC の時計）。`tool_response` は transcript の `toolUseResult` と同じ形（`backgroundTaskId` など）。
  */
-export function paradisChildShellSignalsFromHook(event: Pick<IParadisAgentHookEvent, 'payload' | 'toolUseId' | 'at'>): IParadisShellSignal[] {
+export function paradisChildShellSignalsFromHook(event: Pick<IParadisAgentHookEvent, 'payload' | 'toolUseId' | 'at'>, ownerAgentId?: string): IParadisShellSignal[] {
 	const toolUseId = event.toolUseId ?? str(event.payload?.tool_use_id);
 	const response = event.payload?.tool_response;
 	const call = paradisShellCallSignal(rec(event.payload?.tool_input), toolUseId, event.at);
 	const started = paradisShellStartedSignal(typeof response === 'string' ? response : '', rec(response), toolUseId, event.at);
-	return started === undefined ? [] : [...(call !== undefined ? [call] : []), started];
+	return started === undefined ? [] : [...(call !== undefined ? [call] : []), paradisWithShellOwner(started, ownerAgentId)];
+}
+
+/** 子が起動したシェルの手がかりに、起動した子の ID を添える（Workflow の子のシェルをカードへ寄せるため）。 */
+function paradisWithShellOwner(signal: IParadisShellSignal, ownerAgentId: string | undefined): IParadisShellSignal {
+	return signal.type === 'started' && ownerAgentId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(ownerAgentId) ? { ...signal, ownerAgentId } : signal;
 }
 
 /** Claudeの子transcript pathに埋め込まれた所有Agent ID（Workflow の子を含む）。root transcriptならundefined。 */
@@ -1780,6 +1801,8 @@ interface ITailerDelegate {
 	onInfo(): void;
 	/** Claude Code の Monitor の一覧が変化した（起動・出力・終了・推定による時間切れ）。 */
 	onMonitors?(): void;
+	/** Workflow の実行の一覧が変化した（起動・終わりの通知）。`live` でなければ初回読み込み・読み直し。 */
+	onWorkflows?(live: boolean): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
 	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
@@ -1924,6 +1947,8 @@ class TranscriptTailer {
 	private modQuestionIds: ReadonlySet<string> = new Set<string>();
 	/** Claude Code の Monitor の一覧（epoch ごと。モバイルのコンポーザーのピルに出す）。 */
 	private readonly monitorWatch = new ParadisAgentMonitorWatch(() => this.delegate.onMonitors?.());
+	/** Claude Code の Workflow の実行（epoch ごと。モバイルのトークのカード。agent.workflows.v1）。 */
+	readonly workflows = new ParadisAgentWorkflowTracker();
 	/**
 	 * PreToolUse hook でライブ注入した質問: 内容キー → 合成toolUseId。Claude Code は
 	 * AskUserQuestion の tool_use を決着（回答/中断）まで transcript へ flush しないため、
@@ -2267,6 +2292,7 @@ class TranscriptTailer {
 				this.pendingQuestions.clear();
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
+				this.workflows.clear();
 				this.approvalQueue.length = 0;
 				this.approvalDeniedInTurn = false;
 				this.liveQuestions.clear();
@@ -3344,6 +3370,9 @@ class TranscriptTailer {
 		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline); }
 		// 初回読み込み・読み直し（live でない）では知らせない。その後の snapshot が一覧を運ぶ。
 		this.monitorWatch.apply(signals.monitorSignals, live, signals.shellSignals);
+		if ((signals.workflowSignals.length > 0 || signals.shellSignals.length > 0) && this.workflows.apply(signals.workflowSignals, signals.shellSignals)) {
+			this.delegate.onWorkflows?.(live);
+		}
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
@@ -3556,6 +3585,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly shellOutputReads = new Set<string>();
 	/** 最後に送った `shellsAccess`（mod の生き死にで変わったら送り直す）。 */
 	private readonly shellsAccessSent = new Map<string, string>();
+	/** 最後に送った Workflow の一覧（epoch と中身。変わったときだけ delta に載せる）。 */
+	private readonly workflowsSent = new Map<string, string>();
+	/** Workflow の実行のフォルダを読み直す予約（ペインごと）。 */
+	private readonly workflowRefreshTimers = new Map<string, { readonly timer: ReturnType<typeof setTimeout>; readonly at: number }>();
+	/** Workflow の実行のフォルダを読んでいる最中のペイン。 */
+	private readonly workflowRefreshing = new Set<string>();
+	/** Workflow の実行のフォルダを読んだ位置（tailer の epoch ごと）。 */
+	private readonly workflowReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly runs: Map<string, IParadisWorkflowRunReadState> }>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3646,6 +3683,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.toolImageRequests.clear();
 			for (const timer of this.persistedActivityTimers.values()) { clearTimeout(timer); }
 			this.persistedActivityTimers.clear();
+			for (const entry of this.workflowRefreshTimers.values()) { clearTimeout(entry.timer); }
+			this.workflowRefreshTimers.clear();
 			for (const timer of this.questionSettleTimers) { clearTimeout(timer); }
 			this.questionSettleTimers.clear();
 			this.questionNotifyCounts.clear();
@@ -5616,7 +5655,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer), ...this.panelField(token) }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.panelField(token) }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -5624,7 +5663,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 					...(info !== undefined ? { info } : {}),
 					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
-					...this.monitorsField(token, tailer),
+					...this.monitorsField(token, tailer, true),
 					...this.panelField(token),
 				}, token, owner);
 			}
@@ -6822,6 +6861,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.shellsAccessSent.delete(token);
 			}
 		}
+		for (const token of [...this.workflowsSent.keys()]) {
+			if (!live.has(token)) {
+				this.workflowsSent.delete(token);
+			}
+		}
 		let changed = false;
 		const seen = new Set<string>();
 		for (const insight of this.getDesktopPaneInsights([...this.paneSessions.keys()])) {
@@ -7308,7 +7352,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (budget.reads <= 0) {
 					break;
 				}
-				signals.push(...await this.readChildShellSignals(file.path, state.offsets, budget));
+				signals.push(...(await this.readChildShellSignals(file.path, state.offsets, budget)).map(signal => paradisWithShellOwner(signal, file.id)));
 			}
 			// 一覧から外れた子の位置は忘れる（また新しい側に来たら頭から読み直す。同じ起動を当て直しても一覧は変わらない）
 			const kept = new Set(files.map(file => file.path));
@@ -8259,6 +8303,18 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${subagentId}`, agentTranscriptPath);
 			}
 		}
+		// Workflow の子の始まり・終わり。実行のフォルダを読みに行き、終わった子は SubagentStop のパスから実行と結ぶ
+		// （SSH 先は journal を写さないので、ここが終わった子を数える唯一の手がかり）
+		if (subagentId !== undefined && info.agent === 'claude' && str(event.payload?.agent_type) === PARADIS_CLAUDE_WORKFLOW_SUBAGENT_TYPE) {
+			const tailer = this.tailers.get(event.token);
+			const runId = event.event === 'SubagentStop' ? paradisParseClaudeSubagentTranscriptPath(str(event.payload?.agent_transcript_path) ?? '')?.runId : undefined;
+			if (tailer !== undefined && runId !== undefined && tailer.workflows.noteChildStopped(runId, subagentId)) {
+				this.pushWorkflowsIfChanged(event.token);
+			}
+			if (tailer !== undefined && tailer.workflows.hasRunning()) {
+				this.scheduleWorkflowRefresh(event.token, WORKFLOW_REFRESH_SOON_MS);
+			}
+		}
 		// メイン待機中 (fork/general-purpose等のsubagentへ調査を委任している間) に review 化して
 		// 完了通知音が誤発火する事例があった。実行中のsubagentを backgroundTasks に見せることで、
 		// paradisAgentBrowserService.ts の既存安全弁 (paradisCountLiveBackgroundTasks 経由、
@@ -8287,7 +8343,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.tailers.get(event.token)?.noteBackgroundAgentAlive(aliveAgentId, event.at);
 			// 子がバックグラウンドで起動したシェル。起動は子の transcript にしか書かれない（SSH 先でも hook は届く）
 			if (event.event === 'PostToolUse' && (event.toolName ?? str(event.payload?.tool_name)) === 'Bash') {
-				const childShell = paradisChildShellSignalsFromHook(event);
+				const childShell = paradisChildShellSignalsFromHook(event, aliveAgentId);
 				if (childShell.length > 0) {
 					this.tailers.get(event.token)?.applyChildShellSignals(childShell, true);
 				}
@@ -8474,7 +8530,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer), ...this.panelField(token) });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.panelField(token) });
 				}
 				// 読み直したカードを mod の待ちと突き合わせ直す（変われば delta で answerVia を送り直す）
 				this.refreshModQuestions(token);
@@ -8503,6 +8559,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...this.monitorsField(token, tailer) });
 				}
+			},
+			onWorkflows: live => {
+				if (live) {
+					this.pushWorkflowsIfChanged(token);
+				}
+				this.scheduleWorkflowRefresh(token, live ? WORKFLOW_REFRESH_SOON_MS : WORKFLOW_REFRESH_INITIAL_MS);
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			onAdvisors: messages => this.applyAdvisorMessages(token, messages),
@@ -8586,6 +8648,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (recoveryTimer !== undefined) {
 			clearTimeout(recoveryTimer);
 			this.persistedActivityTimers.delete(token);
+		}
+		const workflowTimer = this.workflowRefreshTimers.get(token);
+		if (workflowTimer !== undefined) {
+			clearTimeout(workflowTimer.timer);
+			this.workflowRefreshTimers.delete(token);
 		}
 		this.modLive.delete(token);
 		const modApprovalTimer = this.modApprovalTimers.get(token);
@@ -8832,7 +8899,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「停止（推定）」にして送る。推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため、
 	 * 送るたびにここで判定する。
 	 */
-	private monitorsField(token: string, tailer: TranscriptTailer): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField {
+	private monitorsField(token: string, tailer: TranscriptTailer, full = false): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField {
 		if (tailer.agent !== 'claude') {
 			return {};
 		}
@@ -8846,7 +8913,108 @@ export class ParadisMobileAgentChat extends Disposable {
 			monitors: paneStopped ? paradisMonitorsForStoppedPane(monitors, this.sessionEndedAt.get(token)) : monitors, monitorsAt: now,
 			// バックグラウンドのシェル（agent.shells.v1）も同じ決まりで送る。出力と停止の可否を添える
 			shells: paneStopped ? paradisShellsForStoppedPane(shells, this.sessionEndedAt.get(token)) : shells, shellsAt: now, shellsAccess,
+			...this.workflowsField(token, tailer, full),
 		};
+	}
+
+	/**
+	 * snapshot / delta に載せる Workflow の実行（agent.workflows.v1）。子が多いと大きくなるので、snapshot と購読の応答
+	 * （`full`）以外は前に送ったものから変わったときだけ載せる（モバイルは届いたときだけ置き換える）。ペインが止まって
+	 * いれば、動いているものを「中断（推定）」にして送る。時刻は PC の時計で、送信時刻 `workflowsAt` を添える。
+	 */
+	private workflowsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentWorkflowsField {
+		if (tailer.agent !== 'claude' || (tailer.workflows.size === 0 && !this.workflowsSent.has(token))) {
+			return {};
+		}
+		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const snapshot = tailer.workflows.snapshot();
+		const workflows = paneStopped ? paradisWorkflowsForStoppedPane(snapshot, this.sessionEndedAt.get(token)) : snapshot;
+		const signature = `${tailer.epoch}\0${JSON.stringify(workflows)}`;
+		if (!full && this.workflowsSent.get(token) === signature) {
+			return {};
+		}
+		this.workflowsSent.set(token, signature);
+		return { workflows, workflowsAt: Date.now() };
+	}
+
+	/** Workflow の一覧が前に送ったものから変わっていれば、空 delta で届ける。 */
+	private pushWorkflowsIfChanged(token: string): void {
+		const tailer = this.tailers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		if (tailer === undefined || tailer.agent !== 'claude' || terminalId === undefined) {
+			return;
+		}
+		const field = this.workflowsField(token, tailer, false);
+		if (field.workflows !== undefined) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+		}
+	}
+
+	/** Workflow の実行のフォルダを読み直す予約（同じペインの予約は早い方に寄せる）。 */
+	private scheduleWorkflowRefresh(token: string, delay: number): void {
+		const previous = this.workflowRefreshTimers.get(token);
+		if (previous !== undefined) {
+			if (previous.at <= Date.now() + delay) {
+				return;
+			}
+			clearTimeout(previous.timer);
+		}
+		const timer = setTimeout(() => {
+			this.workflowRefreshTimers.delete(token);
+			if (this.workflowRefreshing.has(token)) {
+				// 読んでいる最中（同じ位置を二重に読まない）。終わってから読み直す
+				this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
+				return;
+			}
+			this.workflowRefreshing.add(token);
+			this.refreshWorkflows(token)
+				.catch(error => this.logService.trace('[paradisAgentChat] workflow refresh failed', String(error)))
+				.finally(() => this.workflowRefreshing.delete(token));
+		}, delay);
+		this.workflowRefreshTimers.set(token, { timer, at: Date.now() + delay });
+	}
+
+	/**
+	 * Workflow の実行のフォルダ（journal.jsonl・子の meta.json・終わった後の `<runId>.json`）を読み、一覧へ当てる。
+	 * 動いている実行があれば {@link WORKFLOW_REFRESH_RUNNING_MS} 後にまた読む（hook の届かない間も進み具合を出すため）。
+	 */
+	private async refreshWorkflows(token: string): Promise<void> {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.agent !== 'claude') {
+			return;
+		}
+		let reads = this.workflowReads.get(tailer);
+		if (reads === undefined || reads.epoch !== tailer.epoch) {
+			reads = { epoch: tailer.epoch, runs: new Map() };
+			this.workflowReads.set(tailer, reads);
+		}
+		let changed = false;
+		let more = false;
+		for (const run of tailer.workflows.runsToRefresh().slice(-WORKFLOW_REFRESH_RUNS)) {
+			let state = reads.runs.get(run.runId);
+			if (state === undefined) {
+				state = paradisNewWorkflowRunReadState();
+				reads.runs.set(run.runId, state);
+			}
+			const read = await paradisReadClaudeWorkflowRun(tailer.transcriptPath, run.runId, state, run.running, isAllowedTranscriptPath);
+			if (this.tailers.get(token) !== tailer || reads.epoch !== tailer.epoch) {
+				return;
+			}
+			changed = tailer.workflows.applyChildren(run.runId, read.children) || changed;
+			changed = tailer.workflows.applyJournal(run.runId, read.journal) || changed;
+			if (read.result !== undefined) {
+				changed = tailer.workflows.applyResult(run.runId, read.result.file, read.result.writtenAt) || changed;
+			}
+			more = more || read.more;
+		}
+		if (changed) {
+			this.pushWorkflowsIfChanged(token);
+		}
+		if (more) {
+			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
+		} else if (tailer.workflows.hasRunning()) {
+			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_RUNNING_MS);
+		}
 	}
 
 	/** {@link monitorsField} の判定をテストから確かめるため。 */

@@ -20,6 +20,7 @@ import { paradisExpandPastedContent } from '../../../common/paradisPastedContent
 import { paradisRedactMobileCommandOutput } from '../../mobileRelay/common/paradisMobileOutputRedaction.js';
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal, paradisQueueOperationSignals } from './paradisAgentMonitors.js';
 import { IParadisShellSignal, paradisShellCallSignal, paradisShellNotificationSignals, paradisShellStartedSignal, paradisShellTaskStopSignal } from './paradisAgentShells.js';
+import { IParadisWorkflowSignal, paradisWorkflowLaunchSignal, paradisWorkflowScriptSignal } from './paradisAgentWorkflows.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
 import { PARADIS_COMPACT_SUMMARY_PREVIEW_LIMIT, paradisClaudeCompactionInfo, paradisCompactionNoticeText, paradisCompactSummaryBody } from './paradisAgentCompaction.js';
 
@@ -374,6 +375,8 @@ export interface IParseSignals {
 	readonly monitorSignals: IParadisMonitorSignal[];
 	/** Claude Code のバックグラウンドの Bash の起動・終了・停止（出現順。paradisAgentShells.ts）。 */
 	readonly shellSignals: IParadisShellSignal[];
+	/** Claude Code の Workflow の台本と起動（出現順。paradisAgentWorkflows.ts）。 */
+	readonly workflowSignals: IParadisWorkflowSignal[];
 	/**
 	 * 直前に現れた Codex の view_image 呼び出しの call_id。
 	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
@@ -467,7 +470,7 @@ export function paradisBackgroundTaskLaunch(text: string, toolUseResult: Record<
 export type ParadisBackgroundTaskKind = 'agent' | 'workflow' | 'shell';
 
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], workflowSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -1092,6 +1095,10 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 				}
 				// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
 				const launched = paradisBackgroundTaskLaunch(text, singleResult ? toolUseResult : undefined);
+				const workflowLaunch = singleResult ? paradisWorkflowLaunchSignal(toolUseResult, toolUseId, ts ?? Date.now()) : undefined;
+				if (workflowLaunch !== undefined) {
+					signals.workflowSignals.push(workflowLaunch);
+				}
 				if (launched !== undefined) {
 					signals.openedTasks.set(launched.id, ts ?? Date.now());
 					signals.openedTaskKinds.set(launched.id, launched.kind);
@@ -1294,6 +1301,10 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 				const shellCall = tool === 'Bash' ? paradisShellCallSignal(input, toolUseId, ts ?? Date.now()) : undefined;
 				if (shellCall !== undefined) {
 					signals.shellSignals.push(shellCall);
+				}
+				const workflowScript = tool === 'Workflow' ? paradisWorkflowScriptSignal(input, toolUseId, ts ?? Date.now()) : undefined;
+				if (workflowScript !== undefined) {
+					signals.workflowSignals.push(workflowScript);
 				}
 				if (tool === 'Agent' || tool === 'Task') {
 					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。

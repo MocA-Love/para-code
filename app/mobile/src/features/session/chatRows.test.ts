@@ -61,4 +61,25 @@ describe('会話の行の組み立て', () => {
 		const [row] = buildChatRows([msg('text')]);
 		expect(row !== undefined ? chatRowKey(row, 'e1') : '').not.toBe(row !== undefined ? chatRowKey(row, 'e2') : '');
 	});
+	test('PC が追っている Workflow の起動だけを 1 枚のカードの行にし、起動の結果も寄せる（agent.workflows.v1）', () => {
+		const messages = [
+			msg('tool_use', { tool: 'Bash', toolUseId: 'b1' }),
+			msg('tool_use', { tool: 'Workflow', toolUseId: 'wf1' }),
+			msg('tool_result', { toolUseId: 'b1' }),
+			msg('tool_result', { toolUseId: 'wf1' }),
+			msg('tool_use', { tool: 'Workflow', toolUseId: 'wf-old' }),
+			msg('tool_result', { toolUseId: 'wf-old' }),
+		];
+		const rows = buildChatRows(messages, new Set(['wf1']));
+		const legacy = buildChatRows(messages);
+		expect({
+			types: rows.map(row => row.type),
+			card: rows[1]?.type === 'workflow' ? [rows[1].toolUseId, rows[1].result?.toolUseId, chatRowKey(rows[1], 'e')] : [],
+			legacy: legacy.map(row => row.type),
+		}).toEqual({
+			types: ['group', 'workflow', 'group'],
+			card: ['wf1', 'wf1', 'e:wf:wf1'],
+			legacy: ['group'],
+		});
+	});
 });

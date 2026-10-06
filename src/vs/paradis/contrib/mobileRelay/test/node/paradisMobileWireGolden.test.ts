@@ -27,7 +27,8 @@ import { IParadisMobileInboundFrame, ParadisMobileInboundFrameWire } from '../..
 import { paradisAdvisorReplyMessage, paradisIsValidAgentInboundForTest } from '../../node/paradisMobileAgentChat.js';
 import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
 import { paradisNormalizeModCommandList } from '../../node/paradisAgentCommandCatalog.js';
-import { paradisParseClaudeTranscriptLineForTest } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
+import { newParseSignals, paradisParseClaudeTranscriptLineForTest, parseClaudeLine } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
+import { ParadisAgentWorkflowTracker, paradisParseWorkflowJournalLine, paradisParseWorkflowResultFile } from '../../../agentChat/common/paradisAgentWorkflows.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
@@ -242,6 +243,36 @@ suite('ParadisMobileWireGolden', () => {
 			advisors: delta.activity.advisors,
 			reply: detail.messages[0],
 		});
+	});
+
+	test('agent: PC が組み立てる Workflow の実行（agent.workflows.v1）はゴールデンと同じ', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const delta = golden.toMobile.find(message => message.t === 'delta' && message.workflows !== undefined) as { workflows: unknown[] };
+		const signals = newParseSignals();
+		const script = (name: string, description: string, phases: string) => `export const meta = {\n  name: '${name}',\n  description: '${description}',\n  phases: [${phases}],\n}\nphase('Find')`;
+		const lines = [
+			{ type: 'assistant', timestamp: new Date(1760000002900).toISOString(), message: { content: [{ type: 'tool_use', id: 'toolu_goldenwf1', name: 'Workflow', input: { script: script('security-audit', '2 つの観点で監査する', `{ title: 'Find', detail: '観点ごとに並列で探す' }, { title: 'Verify' }`) } }] } },
+			{ type: 'user', timestamp: new Date(1760000003000).toISOString(), toolUseResult: { status: 'async_launched', taskId: 'wgolden1', taskType: 'local_workflow', workflowName: 'security-audit', runId: 'wf_golden-1', summary: '2 つの観点で監査する' }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_goldenwf1', content: 'Workflow launched in background. Task ID: wgolden1' }] } },
+			{ type: 'assistant', timestamp: new Date(1760000049900).toISOString(), message: { content: [{ type: 'tool_use', id: 'toolu_goldenwf2', name: 'Workflow', input: { script: script('quick-check', 'すぐ確かめる', `{ title: 'Find' }`) } }] } },
+			{ type: 'user', timestamp: new Date(1760000050000).toISOString(), toolUseResult: { status: 'async_launched', taskId: 'wgolden2', taskType: 'local_workflow', workflowName: 'quick-check', runId: 'wf_golden-2', summary: 'すぐ確かめる' }, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_goldenwf2', content: 'Workflow launched in background. Task ID: wgolden2' }] } },
+		];
+		for (const line of lines) {
+			parseClaudeLine(line, signals);
+		}
+		const tracker = new ParadisAgentWorkflowTracker();
+		tracker.apply(signals.workflowSignals, signals.shellSignals);
+		tracker.applyResult('wf_golden-1', paradisParseWorkflowResultFile({
+			status: 'failed', workflowName: 'security-audit', startTime: 1760000003000, durationMs: 41000, timestamp: new Date(1760000044000).toISOString(),
+			agentCount: 2, totalTokens: 4600000, totalToolCalls: 1703, error: 'Verify で 1 体が結果を返さず、台本が止まりました',
+			phases: [{ title: 'Find', detail: '観点ごとに並列で探す' }, { title: 'Verify' }],
+			workflowProgress: [
+				{ type: 'workflow_agent', label: 'find:authz', phaseIndex: 1, agentId: 'agolden01', state: 'done', startedAt: 1760000003100, durationMs: 20000, tokens: 30000, toolCalls: 12, lastToolName: 'Read', cached: true },
+				{ type: 'workflow_agent', label: 'verify:authz', phaseIndex: 2, agentId: 'agolden02', state: 'error', startedAt: 1760000024000, durationMs: 9000, tokens: 12000, toolCalls: 3 },
+			],
+		})!, 1760000044000);
+		tracker.applyJournal('wf_golden-2', [paradisParseWorkflowJournalLine(`{"type":"started","key":"v2:${'0'.repeat(64)}","agentId":"agolden03","label":"find:ssrf","phase":"Find"}`)!]);
+		assert.deepStrictEqual(tracker.snapshot(), delta.workflows);
 	});
 
 	test('browser: アプリが送る形を PC が受け、PC が組み立てる形はゴールデンと同じ形', async function () {

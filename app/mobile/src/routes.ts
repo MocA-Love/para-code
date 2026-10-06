@@ -15,6 +15,7 @@
  * | `/pc/[pcId]/session/[spaceId]/activity?terminal=…&epoch=…` | エージェントのサブエージェントとタスク |
  * | `/pc/[pcId]/session/[spaceId]/activity/[agentId]?terminal=…&epoch=…` | サブエージェント1つの詳細 |
  * | `/pc/[pcId]/session/[spaceId]/activity/advisor/[advisorId]?terminal=…&epoch=…` | Advisor への相談 1 回の詳細 |
+ * | `/pc/[pcId]/session/[spaceId]/activity/workflow/[runId]?terminal=…&epoch=…` | Workflow の実行 1 つ（段階ごとの子） |
  * | `/notifications` | 通知の一覧 |
  * | `/settings`・`/settings/<page>` | 設定と、その下の各ページ |
  * | `/pair`・`/onboarding` | ペアリング・はじめて |
@@ -130,6 +131,11 @@ export const routes = {
 	activityAgent: (pcId: string, spaceId: string, terminalKey: string, agentId: string, epoch?: string): RouteHref => ({
 		pathname: '/pc/[pcId]/session/[spaceId]/activity/[agentId]',
 		params: withOptional({ pcId, spaceId, agentId, terminal: terminalKey }, { epoch }),
+	}),
+	/** Workflow の実行 1 つ（段階ごとの子。`runId` は `wf_…`。agent.workflows.v1）。 */
+	activityWorkflow: (pcId: string, spaceId: string, terminalKey: string, runId: string, epoch?: string): RouteHref => ({
+		pathname: '/pc/[pcId]/session/[spaceId]/activity/workflow/[runId]',
+		params: withOptional({ pcId, spaceId, runId, terminal: terminalKey }, { epoch }),
 	}),
 	/** Advisor への相談 1 回の詳細（`advisorId` は `server_tool_use` の id）。 */
 	activityAdvisor: (pcId: string, spaceId: string, terminalKey: string, advisorId: string, epoch?: string): RouteHref => ({
