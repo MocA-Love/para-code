@@ -53,6 +53,7 @@ import { IExperimentalSettingsService } from '../common/experimentalSettings.js'
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { paradisIsVerifiedWorkspaceFolder } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceFolderVerification.js'; // PARA-PATCH: see doUpdateFolders
 import { ParadisFolderConfigurationParking } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderConfigurationParking.js'; // PARA-PATCH: see onFoldersChanged
+import { paradisMarkFolderUpdate, paradisNoteParkedFolderConfiguration } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderUpdateTrace.js'; // PARA-PATCH: timing marks of a Para Code space switch (paradisFolderUpdateTrace.ts)
 
 function getLocalUserConfigurationScopes(userDataProfile: IUserDataProfile, hasRemote: boolean): ConfigurationScope[] | undefined {
 	const isDefaultProfile = userDataProfile.isDefault || userDataProfile.useDefaultFlags?.settings;
@@ -244,6 +245,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	}
 
 	private async doUpdateFolders(foldersToAdd: IWorkspaceFolderCreationData[], foldersToRemove: URI[], index?: number): Promise<void> {
+		paradisMarkFolderUpdate('entered'); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 		if (this.getWorkbenchState() !== WorkbenchState.WORKSPACE) {
 			return Promise.resolve(undefined); // we need a workspace to begin with
 		}
@@ -325,7 +327,9 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 			throw new Error('Cannot update workspace folders because workspace service is not yet ready to accept writes.');
 		}
 
+		paradisMarkFolderUpdate('set_folders'); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 		await this.instantiationService.invokeFunction(accessor => this.workspaceConfiguration.setFolders(folders, accessor.get(IJSONEditingService)));
+		paradisMarkFolderUpdate('reloaded'); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 		return this.onWorkspaceConfigurationChanged(false);
 	}
 
@@ -860,6 +864,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 				}
 			}
 
+			paradisMarkFolderUpdate('validated'); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 			await this.updateWorkspaceConfiguration(newFolders, this.workspaceConfiguration.getConfiguration(), fromCache);
 		}
 	}
@@ -921,6 +926,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		if (changes.added.length || changes.removed.length || changes.changed.length) {
 			this.workspace.folders = workspaceFolders;
 			const change = await this.onFoldersChanged();
+			paradisMarkFolderUpdate('folder_config_loaded'); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 			await this.handleWillChangeWorkspaceFolders(changes, fromCache);
 			this.triggerConfigurationChange(change, previous, ConfigurationTarget.WORKSPACE_FOLDER);
 			this._onDidChangeWorkspaceFolders.fire(changes);
@@ -980,6 +986,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 			// PARA-PATCH: reuse a parked, unchanged folder configuration; re-derive it for the current trust and registry without reading files
 			const parked = this.paradisParkedFolderConfigs.take(folder.uri, this.getWorkbenchState());
 			if (parked) {
+				paradisNoteParkedFolderConfiguration(); // PARA-PATCH: see paradisFolderUpdateTrace.ts
 				this.cachedFolderConfigs.set(folder.uri, parked);
 				changes.push(this._configuration.compareAndUpdateFolderConfiguration(folder.uri, parked.updateWorkspaceTrust(this.isWorkspaceTrusted)));
 				return false;

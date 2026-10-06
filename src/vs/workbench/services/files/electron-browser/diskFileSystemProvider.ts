@@ -13,6 +13,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { ReadableStreamEvents } from '../../../../base/common/stream.js';
 import { URI } from '../../../../base/common/uri.js';
 import { DiskFileSystemProviderClient, LOCAL_FILE_SYSTEM_CHANNEL_NAME } from '../../../../platform/files/common/diskFileSystemProviderClient.js';
+import { paradisCountFileChannel } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderUpdateTrace.js'; // PARA-PATCH: see constructor
 import { ILogMessage, AbstractUniversalWatcherClient } from '../../../../platform/files/common/watcher.js';
 import { UniversalWatcherClient } from './watcherClient.js';
 import { ILoggerService, ILogService } from '../../../../platform/log/common/log.js';
@@ -42,7 +43,8 @@ export class DiskFileSystemProvider extends AbstractDiskFileSystemProvider imple
 	) {
 		super(logService, { watcher: { forceUniversal: true /* send all requests to universal watcher process */ } });
 
-		this.provider = this._register(new DiskFileSystemProviderClient(mainProcessService.getChannel(LOCAL_FILE_SYSTEM_CHANNEL_NAME), { pathCaseSensitive: isLinux, trash: true }));
+		// PARA-PATCH: count the round trips of a Para Code space switch; passes through unless one is being traced (paradisFolderUpdateTrace.ts)
+		this.provider = this._register(new DiskFileSystemProviderClient(paradisCountFileChannel(mainProcessService.getChannel(LOCAL_FILE_SYSTEM_CHANNEL_NAME), 'local'), { pathCaseSensitive: isLinux, trash: true }));
 
 		this.registerListeners();
 	}
