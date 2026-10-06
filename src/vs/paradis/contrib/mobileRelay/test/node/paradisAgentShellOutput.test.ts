@@ -195,12 +195,14 @@ suite('paradisAgentShellOutput', () => {
 			await fs.writeFile(join(tasks, 'bok.output'), 'one\ntwo\n[exited with code 0]\n');
 			await fs.writeFile(outside, 'secret\n');
 			await fs.symlink(outside, join(tasks, 'blink.output'));
+			await fs.link(outside, join(tasks, 'bhard.output'));
 			const read = (file: string, id: string, roots: readonly string[] = [join(root, 'nowhere')]) => paradisReadRemoteShellOutputTail(file, 'sess-1', id, 20, roots);
 			const results = {
 				ok: await read(join(tasks, 'bok.output'), 'bok'),
 				// transcript には /tmp 側が書かれていて、実物は TMPDIR 側にある
 				fallback: await read(`/nonexistent-${uid}/claude-${uid}/-home-example-app/sess-1/tasks/bok.output`, 'bok', [processTmp]),
 				link: await read(join(tasks, 'blink.output'), 'blink'),
+				hardLink: await read(join(tasks, 'bhard.output'), 'bhard'),
 				missing: await read(join(tasks, 'bnone.output'), 'bnone'),
 				wrongShape: await read(outside, 'bok'),
 				wrongSession: await paradisReadRemoteShellOutputTail(join(tasks, 'bok.output'), 'sess-2', 'bok', 20, []),
@@ -214,6 +216,7 @@ suite('paradisAgentShellOutput', () => {
 				ok: { lines: ['one', 'two', '[exited with code 0]'], truncated: false, ended: { status: 'completed', exitCode: 0 } },
 				fallback: { lines: ['one', 'two', '[exited with code 0]'], truncated: false, ended: { status: 'completed', exitCode: 0 } },
 				link: 'unavailable',
+				hardLink: 'unavailable',
 				missing: 'not-found',
 				wrongShape: 'unavailable',
 				wrongSession: 'unavailable',
