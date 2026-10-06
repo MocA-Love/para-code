@@ -417,7 +417,11 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 
 	/** 前面のエージェントが出している選択画面（Codex の Plan メニュー・更新の案内など）。 */
 	private _choiceMenu(terminal: IResolvedTerminal, status = paradisAgentIdeStatusLabel(this.agentStatusStore.getInstanceStatus(terminal.instance.instanceId))): IParadisAgentChoiceMenu | undefined {
-		return paradisAgentIdeChoiceMenuOf(this._screen(terminal.instance, 0), this._runsAgent(terminal), status);
+		// 作業中・素のシェルでは画面を読まない（一覧のたびに全ペインの画面を読まないため）
+		if (status === 'working' || !this._runsAgent(terminal)) {
+			return undefined;
+		}
+		return paradisAgentIdeChoiceMenuOf(this._screen(terminal.instance, 0), true, status);
 	}
 
 	/**
