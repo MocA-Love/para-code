@@ -11,7 +11,8 @@ import { decodePairingUri, deriveNotifyKey, toBase64, type Identity, type Notify
 import { MobileController, MobileWarmLeaseControllerRegistry, PcUnreachableError, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import type { AgentShellOutput } from './agentShells.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
-import { pcHasCapability, type UpdateTarget } from './pcCompat.js';
+import { PcCapability, pcHasCapability, type UpdateTarget } from './pcCompat.js';
+import type { PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { countAttentionAgents } from './attentionCount.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -123,6 +124,10 @@ export interface PcSummary {
 	readonly battery: { readonly level: number; readonly charging: boolean } | undefined;
 	/** そのPCの機械を見分けるハッシュ（旧PCでは undefined）。SSH の接続先と同じ機械かを見分ける。 */
 	readonly machineIdHash?: string | undefined;
+	/** その PC がおやすみモードの遠隔の切り替えを受けられるか（`notify.dnd-remote.v1`。切断中は最後の広告）。 */
+	readonly remoteDoNotDisturb?: boolean;
+	/** その PC のおやすみモード（PC から届いた最新値。未対応の PC・まだ届いていなければ undefined）。 */
+	readonly doNotDisturb?: PcDoNotDisturb | undefined;
 }
 
 /** PC の CPU・メモリ・SSD の使用率（0〜100 の整数。取れていない項目は undefined）。 */
@@ -605,6 +610,8 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		battery: workspace?.battery,
 		// 機械のハッシュでの重複の排除は、それを広告する PC だけ（無い PC は別の機械として扱う）。
 		machineIdHash: pcHasCapability(workspace, USAGE_MACHINE_ID_CAPABILITY) ? workspace?.machineIdHash : undefined,
+		remoteDoNotDisturb: pcHasCapability(workspace, PcCapability.NotifyDoNotDisturbRemote),
+		doNotDisturb: workspace?.doNotDisturb,
 	};
 }
 
@@ -667,7 +674,9 @@ function sameSummary(a: PcSummary, b: PcSummary): boolean {
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
 		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
 		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging
-		&& a.machineIdHash === b.machineIdHash;
+		&& a.machineIdHash === b.machineIdHash
+		&& a.remoteDoNotDisturb === b.remoteDoNotDisturb
+		&& a.doNotDisturb?.enabled === b.doNotDisturb?.enabled && a.doNotDisturb?.until === b.doNotDisturb?.until;
 }
 
 /**

@@ -34,6 +34,7 @@ import {
 import { FrameMux, IParadisMobileFrameSubmitOptions, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
 import { IParadisMobileSendHandle, ParadisMobileSendQueue, paradisMobileRejectedSend } from '../common/paradisMobileSendQueue.js';
 import { ParadisMobileAuthorityLanes } from '../common/paradisMobileAuthorityLanes.js';
+import { IParadisMobileDoNotDisturbState, paradisParseMobileDoNotDisturbState } from '../common/paradisMobileDoNotDisturb.js';
 import { paradisMobileResponseRequestId } from './paradisMobileResponseRequestId.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
@@ -2506,6 +2507,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.pcName = next;
 		if (this.terminalRegistry.setPcName(next)) {
+			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
+		}
+	}
+
+	async setDoNotDisturb(state: IParadisMobileDoNotDisturbState): Promise<void> {
+		// renderer は信用できる相手だが、形はここでも正規化する（壊れた値で State を壊さない）
+		const parsed = paradisParseMobileDoNotDisturbState(state);
+		if (parsed !== undefined && this.terminalRegistry.setDoNotDisturb(parsed)) {
 			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
 		}
 	}

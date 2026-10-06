@@ -160,6 +160,27 @@ suite('ParadisMobileTerminalRegistry', () => {
 		});
 	});
 
+	test('PC のおやすみモードを desktop state に載せ、変わったときだけ revision を進める', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'session-local', 1, { activeWs: undefined, workspaces: [], terminals: [] });
+		const before = registry.desktopState();
+		const turnedOn = registry.setDoNotDisturb({ enabled: true, until: 1_800_000_000_000 });
+		const sameAgain = registry.setDoNotDisturb({ enabled: true, until: 1_800_000_000_000 });
+		const on = registry.desktopState();
+		const turnedOff = registry.setDoNotDisturb({ enabled: false });
+		const off = registry.desktopState();
+
+		assert.deepStrictEqual({
+			before: before.doNotDisturb, turnedOn, sameAgain, turnedOff,
+			on: on.doNotDisturb, off: off.doNotDisturb,
+			revisions: [on.revision - before.revision, off.revision - on.revision],
+		}, {
+			before: undefined, turnedOn: true, sameAgain: false, turnedOff: true,
+			on: { enabled: true, until: 1_800_000_000_000 }, off: { enabled: false },
+			revisions: [1, 1],
+		});
+	});
+
 	test('host未配信のウィンドウ（旧PC・state未同期）はrenderersにhostを持たない', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
 		registry.syncWindow(1, 'session', 1, { activeWs: undefined, workspaces: [], terminals: [] });
