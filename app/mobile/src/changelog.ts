@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-10-06',
 		items: [
 			{
+				icon: 'speedometer-outline',
+				title: 'claude-swap と共有している Claude のアカウントで、使用量の前の値が消えなくなりました',
+				body: 'PC がログインの更新を控えている間も、前に取れた値を薄く出し、何分前の値かと控えている理由を添えます。リセット時刻を過ぎた枠は「リセット済み（今の値は不明）」と出します（PC の Para Code も新しい版が必要です）。',
+			},
+			{
 				icon: 'notifications-off-outline',
 				title: 'ほかの iPhone・iPad や PC で見た通知が、この端末からも消えるようになりました',
 				body: '完了とエラーはバナーのタップ・通知一覧・トークを開いた時点で、許可と質問はどこかで答えた時点で、ほかの端末からも消えます。アプリを閉じていた間の分は、次に開いたときに消えます（PC の Para Code も新しい版が必要です）。',

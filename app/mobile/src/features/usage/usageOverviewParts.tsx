@@ -9,7 +9,7 @@ import { formatRelativeTime } from '../../time.js';
 import { updatedAtLabel } from '../../usageFormat.js';
 import { Icon, Meter, MeterRow, iconSize } from '../../ui/index.js';
 import { AccountRow, UnavailableAccountsGroup, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
-import { accountName, providerEmptyMessage } from '../settings/usageSummary.js';
+import { accountName, hasPreviousValue, providerEmptyMessage } from '../settings/usageSummary.js';
 import { DetailMessage } from '../settings/usageDetailParts.js';
 import {
 	entryKindLabel,
@@ -96,8 +96,8 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 	/** メーターを1行に何個並べるか（iPad で左右に並べた列が狭いときは 1）。 */
 	metersPerRow?: 1 | 2;
 }) {
-	// 取得できていないアカウントは1行に畳む（接続先のログインは畳まない）
-	const folded = (item: AggregatedAccount) => item.account.status === 'unavailable' && item.remoteHost === undefined;
+	// 取得できていないアカウントは1行に畳む（接続先のログインと、控えている間の前の値を見せるものは畳まない）
+	const folded = (item: AggregatedAccount) => item.account.status === 'unavailable' && item.remoteHost === undefined && !hasPreviousValue(item.account);
 	const shown = accounts.filter(item => !folded(item));
 	const unavailable = accounts.filter(folded);
 	const row = (item: AggregatedAccount) => (

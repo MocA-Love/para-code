@@ -52,7 +52,9 @@ import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClau
 import {
 	PARADIS_CLAUDE_RECENT_429_WINDOW_S,
 	PARADIS_CLAUDE_SERVE_TTL_S,
+	paradisClaudeCarryOverOnRoleChange,
 	paradisClaudeFailureBackoffS,
+	paradisClaudeKeepsPreviousUsage,
 	paradisClaudePlanAfterFetch,
 	paradisClaudeRecent429Anchor
 } from '../common/paradisClaudePollPolicy.js';
@@ -532,7 +534,8 @@ export class ParadisClaudeAccountService extends Disposable {
 		const accounts: IParadisLimitsAccount[] = targets.map(target => {
 			const state = this.usage.get(target.key);
 			const current = state?.active === target.active ? state : undefined;
-			if (current?.fetchedAt !== undefined && (oldestFetchedAt === undefined || current.fetchedAt < oldestFetchedAt)) {
+			// 取りに行くのを控えて前の値を残しているアカウントは数えない（その古さはカードに添える。全体の取得時刻まで古く見せない）。
+			if (current?.status === 'ok' && current.fetchedAt !== undefined && (oldestFetchedAt === undefined || current.fetchedAt < oldestFetchedAt)) {
 				oldestFetchedAt = current.fetchedAt;
 			}
 			return {
@@ -604,13 +607,9 @@ export class ParadisClaudeAccountService extends Disposable {
 				// 使用中と控えが入れ替わった（外で `claude /login` した等）。控えのときに「再ログインが要る」で
 				// 止めていたアカウントも、使用中になれば取り直す。
 				// 取得の回数予算・429 の履歴・直前の値は引き継ぐ。180 秒以内に取った値があれば取り直さない。
-				const recentFetch = state?.fetchedAt !== undefined && this.now() - state.fetchedAt < PARADIS_CLAUDE_SERVE_TTL_S * 1000;
+				// それより古い値も、取り直すまで古さを添えて見せるため残す（paradisClaudeCarryOverOnRoleChange）。
 				state = {
-					status: recentFetch ? state!.status : 'unavailable',
-					unavailableReason: recentFetch ? state!.unavailableReason : 'not_fetched',
-					windows: recentFetch ? state!.windows : undefined,
-					fetchedAt: recentFetch ? state!.fetchedAt : undefined,
-					nextPollAt: recentFetch ? state!.fetchedAt! + PARADIS_CLAUDE_SERVE_TTL_S * 1000 : 0,
+					...paradisClaudeCarryOverOnRoleChange(state, this.now()),
 					failures: 0,
 					active: target.active,
 					fetchTimes: state?.fetchTimes ?? [],
@@ -653,7 +652,9 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (rateLimited) {
 			state.recent429Anchor = paradisClaudeRecent429Anchor(state.last429At, state.backoffUntil);
 		}
-		if (state.windows) {
+		// 取れている値（'ok'）があれば、それを見せ続ける。控えている間の前の値（'not_fetched'）のままにすると、
+		// 待っている理由（429・エラー）が見えなくなるので、状態は書き換える。
+		if (state.windows && state.status === 'ok') {
 			return;
 		}
 		if (rateLimited) {
@@ -671,8 +672,11 @@ export class ParadisClaudeAccountService extends Disposable {
 		state.status = status;
 		state.unavailableReason = unavailableReason;
 		state.statusDetail = statusDetail;
-		state.windows = undefined;
-		state.fetchedAt = undefined;
+		// 取りに行くのを控えているだけなら、前に取れた値を残す（recordFailure と同じ。表示は古さを添えて薄く出す）。
+		if (!paradisClaudeKeepsPreviousUsage(status, unavailableReason)) {
+			state.windows = undefined;
+			state.fetchedAt = undefined;
+		}
 		state.nextPollAt = retryS === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : this.now() + retryS * 1000;
 	}
 

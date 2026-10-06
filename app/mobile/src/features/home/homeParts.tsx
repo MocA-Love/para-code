@@ -140,8 +140,8 @@ export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, onP
 							{row.item !== undefined ? accountName(row.item.account) : !anyLimits ? '読み込み中…' : 'アカウントがありません'}
 						</Text>
 						<MeterRow>
-							<Meter label="5時間" percent={windowPercent(row.item?.account.fiveHour, now)} reset={isWindowExpired(row.item?.account.fiveHour, now) ? EXPIRED_LABEL : undefined} />
-							<Meter label="7日" percent={windowPercent(row.item?.account.sevenDay, now)} reset={isWindowExpired(row.item?.account.sevenDay, now) ? EXPIRED_LABEL : undefined} />
+							<Meter label="5時間" percent={windowPercent(currentWindows(row.item)?.fiveHour, now)} reset={isWindowExpired(currentWindows(row.item)?.fiveHour, now) ? EXPIRED_LABEL : undefined} />
+							<Meter label="7日" percent={windowPercent(currentWindows(row.item)?.sevenDay, now)} reset={isWindowExpired(currentWindows(row.item)?.sevenDay, now) ? EXPIRED_LABEL : undefined} />
 						</MeterRow>
 						{showChips && row.item !== undefined ? <SeenOnChips chips={row.item.seenOn} /> : null}
 						{row.more > 0 ? <Text style={styles.usageMore}>{`ほか ${row.more} 件`}</Text> : null}
@@ -150,6 +150,14 @@ export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, onP
 			))}
 		</Card>
 	);
+}
+
+/**
+ * ホームのカードに出す今の値。取れていない（'ok' 以外の）アカウントは値を出さない（控えている間の前の値は
+ * 使用量の画面で古さを添えて見せる。ホームには古さを書く場所が無いので、今の値と取り違えないよう出さない）。
+ */
+function currentWindows(item: AggregatedAccount | undefined): AggregatedAccount['account'] | undefined {
+	return item?.account.status === 'ok' ? item.account : undefined;
 }
 
 /** リセット時刻を過ぎた枠に添える一言（取り直すまで使用率は確かでない）。 */

@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, IParadisLimitsSnapshot, IParadisLimitsWindow, paradisLimitsPreviousValue } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
+
 /** モバイルの `limits` の問い合わせのうち、Claude の出どころを決めるのに使う項目。 */
 export interface IParadisMobileLimitsRequestTarget {
 	readonly ws?: unknown;
@@ -31,4 +33,60 @@ export function paradisMobileLimitsClaudeFromLocal(target: IParadisMobileLimitsR
 	const hasWorkspace = typeof target.ws === 'string' && target.ws.length > 0;
 	const namesWindow = !hasWorkspace && typeof target.rendererGeneration === 'number' && Number.isInteger(target.rendererGeneration);
 	return !(namesWindow && target.claudeHost === true);
+}
+
+/** モバイルへ送る、控えている間の前の値（5時間・7日・追加の枠）。 */
+export interface IParadisMobileLimitsPreviousWindows {
+	readonly fiveHour?: IParadisLimitsWindow;
+	readonly sevenDay?: IParadisLimitsWindow;
+	readonly scoped?: readonly IParadisLimitsWindow[];
+}
+
+/** モバイルへ送るアカウント。前の値は任意項目なので、古いアプリは無視する。 */
+export interface IParadisMobileLimitsAccount extends IParadisLimitsAccount {
+	readonly previousWindows?: IParadisMobileLimitsPreviousWindows;
+	readonly previousFetchedAt?: number;
+}
+
+export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex'> {
+	readonly claude: Omit<IParadisLimitsProviderSnapshot, 'accounts'> & { readonly accounts: readonly IParadisMobileLimitsAccount[] };
+	readonly codex: Omit<IParadisLimitsProviderSnapshot, 'accounts'> & { readonly accounts: readonly IParadisMobileLimitsAccount[] };
+}
+
+/**
+ * モバイルへ送るときのアカウント。取れていない（'ok' 以外の）アカウントの枠（`fiveHour`・`sevenDay`・`scoped`）と
+ * `fetchedAt` は、今までどおり空にする。古いアプリは状態を見ずに枠を今の値として出す箇所（ホームのカード）があるため。
+ *
+ * PC が控えている間に残している前の値（{@link paradisLimitsPreviousValue}）は、新しい任意項目の
+ * `previousWindows`・`previousFetchedAt` で送る。新しいアプリだけがこれを読み、古さを添えて薄く出す。
+ */
+export function paradisMobileLimitsAccount(account: IParadisLimitsAccount): IParadisMobileLimitsAccount {
+	if (account.status === 'ok') {
+		return account;
+	}
+	const { fiveHour, sevenDay, scoped, fetchedAt, ...rest } = account;
+	if (fiveHour === undefined && sevenDay === undefined && scoped === undefined && fetchedAt === undefined) {
+		return account;
+	}
+	if (!paradisLimitsPreviousValue(account, 0)) {
+		return rest;
+	}
+	return {
+		...rest,
+		previousWindows: {
+			...(fiveHour !== undefined ? { fiveHour } : {}),
+			...(sevenDay !== undefined ? { sevenDay } : {}),
+			...(scoped !== undefined ? { scoped } : {}),
+		},
+		previousFetchedAt: fetchedAt,
+	};
+}
+
+/** モバイルへ送る使用量（{@link paradisMobileLimitsAccount} を両方のプロバイダに当てる）。 */
+export function paradisMobileLimitsSnapshot(snapshot: IParadisLimitsSnapshot): IParadisMobileLimitsSnapshot {
+	return {
+		...snapshot,
+		claude: { ...snapshot.claude, accounts: snapshot.claude.accounts.map(paradisMobileLimitsAccount) },
+		codex: { ...snapshot.codex, accounts: snapshot.codex.accounts.map(paradisMobileLimitsAccount) },
+	};
 }

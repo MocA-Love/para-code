@@ -61,7 +61,7 @@ suite('ParadisClaudeAccountService usage', () => {
 		cleanup = undefined;
 	});
 
-	async function createHarness(options: { platform?: NodeJS.Platform; records?: IParadisClaudeAccountRecord[] } = {}): Promise<IHarness> {
+	async function createHarness(options: { platform?: NodeJS.Platform; records?: IParadisClaudeAccountRecord[]; legacyCswapDirs?: (home: string) => string[] } = {}): Promise<IHarness> {
 		const dirs = await paradisCreateClaudeTestHome();
 		cleanup = dirs.dispose;
 		const platform = options.platform ?? 'darwin';
@@ -80,6 +80,7 @@ suite('ParadisClaudeAccountService usage', () => {
 			logService: new NullLogService(),
 			now: () => harness.now,
 			random: () => 0.5,
+			legacyCswapDirs: options.legacyCswapDirs?.(dirs.home),
 		}));
 		return Object.assign(harness, { home: dirs.home, userData: dirs.userData, keychain, oauth, service }) as IHarness;
 	}
@@ -216,5 +217,68 @@ suite('ParadisClaudeAccountService usage', () => {
 			{ id: 'claude-live', email: 'alice@example.com', active: true, managed: false, status: 'refreshing', unavailableReason: undefined, fiveHour: undefined },
 		]);
 		assert.deepStrictEqual(harness.oauth.refreshCalls, []);
+	});
+
+	// 入れ替わりで古い値を引き継いだ（'not_fetched'）直後に 429 を受けたら、待っている理由を出す。
+	test('shows the rate limit when the carried-over value of a newly active account hits 429', async () => {
+		const harness = await createHarness({ records: [record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')] });
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-live', 'alice-r', harness.now + 10 * HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID, paradisTestCredentials('alice-live', 'alice-r', harness.now + 10 * HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-a', 'bob-r', harness.now + 10 * HOUR));
+		harness.oauth.usageByToken.set('alice-live', { kind: 'ok', usage: paradisTestUsage(10) });
+		harness.oauth.usageByToken.set('bob-a', { kind: 'ok', usage: paradisTestUsage(30) });
+		await poll(harness);
+
+		// 外で `claude /login` して Bob が使用中になった。Bob の値は 180 秒より古いので引き継いで取り直すが、429 が返る
+		harness.now += 10 * 60_000;
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-bob', 'bob@example.com') });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('bob-live', 'bob-r2', harness.now + 10 * HOUR));
+		harness.oauth.usageByToken.set('bob-live', { kind: 'http', status: 429, retryAfterS: 600 });
+		harness.oauth.usageByToken.set('alice-live', { kind: 'ok', usage: paradisTestUsage(10) });
+		const after = await poll(harness);
+
+		assert.deepStrictEqual(after.find(item => (item as { id: string }).id === `para-claude:${BOB_ID}`), {
+			id: `para-claude:${BOB_ID}`, email: 'bob@example.com', active: true, managed: true, status: 'unavailable', unavailableReason: 'rate_limited', fiveHour: 30,
+		});
+	});
+
+	// claude-swap と共有しているかもしれない控えは更新しない。その間も前に取れた値を消さずに残す。
+	test('keeps the previous usage of a stand-by account shared with claude-swap while it holds off refreshing', async () => {
+		const harness = await createHarness({
+			records: [{ ...record(BOB_ID, 'u-bob', 'bob@example.com'), copiedFromLiveLogin: true }],
+			legacyCswapDirs: home => [path.join(home, '.claude-swap-backup')],
+		});
+		const cswapDir = path.join(harness.home, '.claude-swap-backup');
+		await fs.promises.mkdir(cswapDir);
+		await fs.promises.writeFile(path.join(cswapDir, 'sequence.json'), JSON.stringify({ accounts: { '1': { email: 'bob@example.com', organizationUuid: 'org-1' } } }));
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-live', 'alice-r', harness.now + 10 * HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-a', 'bob-r', harness.now + 2 * HOUR));
+		harness.oauth.usageByToken.set('alice-live', { kind: 'ok', usage: paradisTestUsage(10) });
+		harness.oauth.usageByToken.set('bob-a', { kind: 'ok', usage: paradisTestUsage(30) });
+		const firstFetchedAt = harness.now;
+
+		const bob = async () => {
+			await poll(harness);
+			const account = (await harness.service.getState(undefined)).claude.accounts.find(item => item.id === `para-claude:${BOB_ID}`)!;
+			return { status: account.status, unavailableReason: account.unavailableReason, statusDetail: account.statusDetail, fiveHour: account.fiveHour?.usedPercent, fetchedAt: account.fetchedAt };
+		};
+		const fetched = await bob();
+		// 期限より前に失効していた（claude-swap 側が更新した）。更新はせず、前の値を残す
+		harness.now += 15 * 60_000;
+		harness.oauth.usageByToken.set('bob-a', { kind: 'http', status: 401 });
+		const rejected = await bob();
+		// 期限が近づいた。やはり更新せず、前の値を残す
+		harness.now += 2 * HOUR;
+		const expiring = await bob();
+
+		const held = { status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', fiveHour: 30, fetchedAt: firstFetchedAt };
+		assert.deepStrictEqual({ fetched, rejected, expiring, refreshCalls: harness.oauth.refreshCalls }, {
+			fetched: { status: 'ok', unavailableReason: undefined, statusDetail: undefined, fiveHour: 30, fetchedAt: firstFetchedAt },
+			rejected: held,
+			expiring: held,
+			refreshCalls: [],
+		});
 	});
 });

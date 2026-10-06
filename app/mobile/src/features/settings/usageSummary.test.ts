@@ -11,6 +11,9 @@ import {
 	accountStatusMessage,
 	accountWindows,
 	formatUsd,
+	hasPreviousValue,
+	previousValueNote,
+	previousWindows,
 	providerEmptyMessage,
 	ratioPercent,
 	recentDailyAverage,
@@ -276,5 +279,41 @@ describe('リセットの1行の決まり（PC と同じ表）', () => {
 			}, tableNow),
 		}));
 		expect(actual).toEqual(tableExpected);
+	});
+});
+
+describe('控えている間の前の値', () => {
+	const held = account({ status: 'unavailable', unavailableReason: 'not_fetched', statusDetail: 'shared with claude-swap', previousFetchedAt: NOW - 12 * MINUTE, previousWindows: { fiveHour: { usedPercent: 30 }, scoped: [{ usedPercent: 5, label: 'model' }] } });
+
+	it('控えている（not_fetched）ときだけ、値があれば古さと理由を添えて出す（PC の使用量パネルと同じ文言）', () => {
+		expect({
+			shared: previousValueNote(held, NOW),
+			sameLineage: previousValueNote({ ...held, statusDetail: 'same lineage as the current login', previousFetchedAt: NOW - 3 * 60 * MINUTE }, NOW),
+			notYet: previousValueNote({ ...held, statusDetail: undefined, previousFetchedAt: NOW - 2 * 24 * 60 * MINUTE }, NOW),
+			hint: accountHint(held, undefined, NOW),
+			// now を渡さない呼び出しは前と同じ説明文
+			hintWithoutNow: accountHint(held, undefined),
+			windows: previousWindows(held).map(row => [row.label, row.window.usedPercent]),
+			// 古い PC は前の値を送らない
+			oldPc: previousValueNote({ ...held, previousWindows: undefined, previousFetchedAt: undefined }, NOW),
+			noFetchedAt: hasPreviousValue({ ...held, previousFetchedAt: undefined }),
+			emptyWindows: hasPreviousValue({ ...held, previousWindows: {} }),
+			ok: hasPreviousValue({ ...held, status: 'ok', unavailableReason: undefined }),
+			rateLimited: hasPreviousValue({ ...held, unavailableReason: 'rate_limited' }),
+			rateLimitedWindows: previousWindows({ ...held, unavailableReason: 'rate_limited' }),
+		}).toEqual({
+			shared: '12分前の値・ログインの更新を控えています（claude-swap と共有のため）',
+			sameLineage: '3時間前の値・ログインの更新は Claude Code に任せています',
+			notYet: '2日前の値・取り直しています',
+			hint: '12分前の値・ログインの更新を控えています（claude-swap と共有のため）',
+			hintWithoutNow: 'claude-swap と同じログインを共有している可能性があるため、PC がログインの更新を控えています。PC でこのアカウントを使うと表示されます',
+			windows: [['5時間', 30], ['model', 5]],
+			oldPc: undefined,
+			noFetchedAt: false,
+			emptyWindows: false,
+			ok: false,
+			rateLimited: false,
+			rateLimitedWindows: [],
+		});
 	});
 });
