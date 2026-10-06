@@ -72,11 +72,22 @@ suite('ParadisMainLoad', () => {
 	test('summarizes nanosecond histograms into milliseconds and judges congestion', () => {
 		const calm = paradisSummarizeMainLoop({ max: 12_340_000, percentile: p => p === 50 ? 1_000_000 : 9_990_000 }, 0.1234, 60_000.4);
 		const busy = paradisSummarizeMainLoop({ max: 1_500_000_000, percentile: () => 50_000_000 }, 1.5, 10);
-		assert.deepStrictEqual({ calm, busy, calmCongested: paradisIsMainLoopCongested(calm), busyCongested: paradisIsMainLoopCongested(busy) }, {
+		// 200ms の分解能で暇な main は、値が分解能そのもの (p50 ≒ 201ms) になる。混んでいるとは言わない。
+		const idleAt200 = paradisSummarizeMainLoop({ max: 260_000_000, percentile: p => p === 50 ? 201_000_000 : 205_000_000 }, 0, 60_000);
+		const slowAt200 = paradisSummarizeMainLoop({ max: 400_000_000, percentile: p => p === 50 ? 201_000_000 : 320_000_000 }, 0.05, 60_000);
+		assert.deepStrictEqual({
+			calm, busy,
+			calmCongested: paradisIsMainLoopCongested(calm, 10),
+			busyCongested: paradisIsMainLoopCongested(busy, 10),
+			idleAt200Congested: paradisIsMainLoopCongested(idleAt200, 200),
+			slowAt200Congested: paradisIsMainLoopCongested(slowAt200, 200),
+		}, {
 			calm: { p50Ms: 1, p99Ms: 10, maxMs: 12.3, busyPct: 12.3, durationMs: 60_000 },
 			busy: { p50Ms: 50, p99Ms: 50, maxMs: 1500, busyPct: 100, durationMs: 10 },
 			calmCongested: false,
 			busyCongested: true,
+			idleAt200Congested: false,
+			slowAt200Congested: true,
 		});
 	});
 
@@ -102,6 +113,9 @@ suite('ParadisMainLoad', () => {
 		for (let i = 0; i < 12; i++) {
 			fakes.advance(60_000);
 			if (i === 11) {
+				// 分解能 200ms を引いて 120ms 遅れた。250ms (遅れ 50ms) なら出さない。
+				periodic.p99 = 320e6;
+			} else if (i === 10) {
 				periodic.p99 = 250e6;
 			}
 			summaries.push(monitor.summarizePeriod());
@@ -120,7 +134,7 @@ suite('ParadisMainLoad', () => {
 			intervalMs: PARADIS_MAIN_LOAD_DEFAULTS.periodMs,
 			resets: 12,
 			first: { p50Ms: 2, p99Ms: 30, maxMs: 40, busyPct: 25, durationMs: 60_000, endedAt: 61_000 },
-			congested: [250],
+			congested: [320],
 			enabledAfterDispose: false,
 			cleared: true,
 		});

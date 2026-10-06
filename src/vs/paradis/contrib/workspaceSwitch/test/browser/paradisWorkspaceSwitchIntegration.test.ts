@@ -3062,6 +3062,8 @@ async function createHarness(
 		// 入り、返さなければ従来どおり upstream が自分で確かめる。
 		{
 			stat: statTargetFolder,
+			// 切り替えの間に届いた変更通知を数えるだけ (計測)。
+			onDidFilesChange: Event.None,
 			readFile: async () => {
 				if (workspaceFileDiskContent === undefined) {
 					throw new FileOperationError('missing', FileOperationResult.FILE_NOT_FOUND);
