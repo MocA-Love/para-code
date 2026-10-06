@@ -1139,6 +1139,13 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			never: localize('paradis.settings.remoteKeepNever', "尋ねずに終了する"),
 		},
 	},
+	{
+		sectionId: 'psd-sec-remote',
+		key: 'paradis.fileTransfer.directConnectionIdleSeconds',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.fileTransferDirectIdle', "ファイル転送の直接接続を閉じるまでの秒数"),
+		keywords: 'file transfer sftp ssh direct connection idle seconds close',
+	},
 
 	// --- ウィンドウ ---
 	{
