@@ -298,7 +298,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 	function setup() {
 		const disposables = store.add(new DisposableStore());
 		const bindingChanges = disposables.add(new Emitter<void>());
-		const state = { bound: undefined as string | undefined, binds: [] as string[] };
+		const state = { bound: undefined as string | undefined, binds: [] as string[], grants: [] as string[], revokes: [] as string[] };
 		const views = new Map<string, BrowserEditorInput>();
 		const sharing = new Map<string, Emitter<BrowserViewSharingState>>();
 		const tab = (id: string) => {
@@ -318,6 +318,13 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 					state.bound = model.id;
 				}
 				return true;
+			},
+			grantAgentTab: async (model: IBrowserViewModel) => {
+				state.grants.push(model.id);
+				return true;
+			},
+			revokeAgentTab: async (_token: string, viewId: string) => {
+				state.revokes.push(viewId);
 			},
 		} as unknown as IParadisAgentBrowserBindingModel;
 		const service = disposables.add(new ParadisAgentBrowserTabsService(
@@ -376,18 +383,38 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 		const afterAgentMove = listed();
 		// エージェント自身のタブは、共有を止められても自分のタブのまま
 		service.revokeApprovedProfileTab('own');
-		// 「ブラウザページの共有を解除」
+		// 「ブラウザページの共有を解除」（自分のタブを選んでもユーザーの共有は残っているので、共有も外れる）
 		service.revokeApprovedProfileTab('approved');
+		state.bound = undefined;
 		// upstream の共有ボタンで止めた（共有の状態の変化で気づく）
 		await timeout(0);
 		sharing.get('toggled')!.fire(BrowserViewSharingState.Available);
 		const reselected = await service.selectTab(TOKEN, 'approved');
-		assert.deepStrictEqual({ movedToOwn: movedToOwn.ok, afterAgentMove, afterRevoke: listed(), reselected, binds: state.binds }, {
+		assert.deepStrictEqual({ movedToOwn: movedToOwn.ok, afterAgentMove, afterRevoke: listed(), reselected, binds: state.binds, grants: state.grants }, {
 			movedToOwn: true,
 			afterAgentMove: ['approved', 'own', 'toggled'],
 			afterRevoke: ['own'],
 			reselected: { ok: false, reason: 'unknownTab' },
-			binds: ['own'],
+			// 自分のタブは共有を付け替えずに許可を張る（ユーザーの共有はそのまま）
+			binds: [],
+			grants: ['own'],
+		});
+	});
+
+	test('selecting an own tab grants it without moving the user\'s share, and the user turning its sharing off revokes the grant', async () => {
+		const { service, state, tab, bind, sharing } = setup();
+		tab('user-page');
+		bind('user-page');
+		service.registerAgentTab(TOKEN, tab('own'));
+		const selected = await service.selectTab(TOKEN, 'own');
+		await timeout(0);
+		sharing.get('own')!.fire(BrowserViewSharingState.Available);
+		assert.deepStrictEqual({ selected: selected.ok && selected.bound, shared: state.bound, binds: state.binds, grants: state.grants, revokes: state.revokes }, {
+			selected: true,
+			shared: 'user-page',
+			binds: [],
+			grants: ['own'],
+			revokes: ['own'],
 		});
 	});
 

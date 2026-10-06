@@ -138,7 +138,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		const fullName = profile ? profile.name : this._scopeLabel(session?.scope);
 		this._nameElement.textContent = paradisEllipsize(fullName, MAX_NAME_LENGTH);
 
-		const agentControlled = model !== undefined && this.bindingModel.getBindingsForPage(model.id).length > 0;
+		const agentControlled = model !== undefined && (this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
 		this._element.classList.toggle('agent-controlled', agentControlled);
 		this._badgeElement.style.display = agentControlled ? '' : 'none';
 		this._badgeElement.textContent = agentControlled ? localize('paradis.browserProfiles.pill.agent', "Agent操作中") : '';
