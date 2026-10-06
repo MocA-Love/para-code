@@ -1002,6 +1002,105 @@
 	margin-top: 16px;
 }
 
+/* allow-any-unicode-next-line */
+/* ---------- Myinstants 取り込み（paradisMyinstantsImportDialog.ts） ---------- */
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-error {
+	color: var(--vscode-errorForeground);
+	font-size: 11.5px;
+	margin-top: 6px;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-error:empty {
+	display: none;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-link {
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-preview {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 10px;
+	margin-bottom: 14px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-badge {
+	width: 32px;
+	height: 32px;
+	border-radius: 4px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-name {
+	font-size: 12.5px;
+	font-weight: 500;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-duration,
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-meta {
+	font-size: 11px;
+	font-weight: normal;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	flex-shrink: 0;
+	color: var(--vscode-foreground);
+	background: transparent;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play.playing {
+	border-color: var(--vscode-focusBorder);
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-notice {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 10px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+}
+
 /* ---------- 音声報告: 読み上げエンジンの切り替え・ElevenLabs の声 ---------- */
 
 .paradis-notif-settings .pns-engine-switch {
