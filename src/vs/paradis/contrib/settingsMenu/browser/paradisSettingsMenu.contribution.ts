@@ -6,10 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { localize2 } from '../../../../nls.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { localize, localize2 } from '../../../../nls.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IPreferencesService } from '../../../../workbench/services/preferences/common/preferences.js';
+import { PARADIS_THEME_COLORS_EDIT_COMMAND_ID, PARADIS_THEME_COLORS_PICK_COMMAND_ID } from '../../themeColorEditor/common/paradisThemeColorModel.js';
 
 /**
  * `paradis.*` の設定だけに絞り込んだ状態で標準の設定エディタを開くコマンド。
@@ -40,3 +41,16 @@ class ParadisOpenSettingsAction extends Action2 {
 }
 
 registerAction2(ParadisOpenSettingsAction);
+
+// テーマの色エディタ（themeColorEditor/）の入り口。歯車メニューの「テーマ」（order 7）のすぐ下に並べる。
+// コマンド本体は themeColorEditor/browser/paradisThemeColorEditor.contribution.ts が登録する。
+MenuRegistry.appendMenuItem(MenuId.GlobalActivity, {
+	group: '2_configuration',
+	order: 7.1,
+	command: { id: PARADIS_THEME_COLORS_EDIT_COMMAND_ID, title: localize('paradis.themeColors.edit.menu', "テーマの色を編集…") },
+});
+MenuRegistry.appendMenuItem(MenuId.GlobalActivity, {
+	group: '2_configuration',
+	order: 7.2,
+	command: { id: PARADIS_THEME_COLORS_PICK_COMMAND_ID, title: localize('paradis.themeColors.pick.menu', "テーマの色: 画面から選ぶ") },
+});
