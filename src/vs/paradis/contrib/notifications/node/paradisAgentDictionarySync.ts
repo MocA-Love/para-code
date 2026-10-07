@@ -115,6 +115,9 @@ function paradisDescribeRunError(error: ExecFileException, timeoutMs: number): s
 	if (error.code === 'ENOENT') {
 		return 'not found on PATH';
 	}
+	if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+		return 'too much output';
+	}
 	if (error.killed || error.signal) {
 		return error.killed ? `timed out after ${timeoutMs / 1000}s` : `killed by ${error.signal}`;
 	}
@@ -354,6 +357,12 @@ function defaultScheduleRetry(callback: () => Promise<void>, delayMs: number): I
 	return toDisposable(() => clearTimeout(handle));
 }
 
+/** ログの文からホームのパスを `~` に伏せる（ホームが `/` などのときは何もしない）。 */
+function maskHome(text: string): string {
+	const home = homedir();
+	return home.length > 1 ? text.split(home).join('~') : text;
+}
+
 /** 失敗の理由（起動できなかった理由か終了コード）と、stderr の 1 行目（ホームのパスは `~` に伏せる）。 */
 function describeRunFailure(result: IParadisAivisMcpRunResult): string {
 	if (result.failure) {
@@ -362,13 +371,13 @@ function describeRunFailure(result: IParadisAivisMcpRunResult): string {
 	if (result.code === 0) {
 		return 'unexpected output';
 	}
-	const line = (result.stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(homedir()).join('~').slice(0, 200);
+	const line = maskHome(result.stderr.trim().split(/\r?\n/, 1)[0] ?? '').slice(0, 200);
 	return line ? `exit ${result.code ?? 'none'}: ${line}` : `exit ${result.code ?? 'none'}`;
 }
 
 /** aivis-mcp のエラーの 1 行目。辞書の ID は伏せる。 */
 function redact(stderr: string, step: ParadisAgentDictionaryStep): string {
-	let line = (stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(homedir()).join('~');
+	let line = maskHome(stderr.trim().split(/\r?\n/, 1)[0] ?? '');
 	if (step.kind === 'set') {
 		line = line.split(step.id).join('<id>');
 	}
@@ -377,7 +386,7 @@ function redact(stderr: string, step: ParadisAgentDictionaryStep): string {
 
 /** aivis-mcp のエラーの 1 行目。voice_id は伏せる。 */
 function redactVoice(stderr: string, voiceId: string): string {
-	return (stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(homedir()).join('~').split(voiceId).join('<voice>').slice(0, 300);
+	return maskHome(stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(voiceId).join('<voice>').slice(0, 300);
 }
 
 export class ParadisAgentDictionarySyncChannel<TContext> implements IServerChannel<TContext> {

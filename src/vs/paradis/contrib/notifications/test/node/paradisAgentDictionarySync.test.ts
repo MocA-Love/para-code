@@ -277,7 +277,7 @@ suite('ParadisAgentDictionarySyncService', () => {
 		const cleared = await service.apply({ enabled: false, dictionaries: { elevenlabs: '', aivis: UUID_A } });
 		const rejected = await paradisRunAivisMcp(['--id', 'a b'], env);
 		const notFound = await paradisRunAivisMcp(['--version'], { PATH: '/usr/bin:/bin' });
-		writeFileSync(script, '#!/bin/sh\nsleep 5\n');
+		writeFileSync(script, '#!/bin/sh\nexec sleep 5\n');
 		const timedOut = await paradisRunAivisMcp(['--version'], env, 200);
 		assert.deepStrictEqual({
 			statuses: [set.status, cleared.status],
