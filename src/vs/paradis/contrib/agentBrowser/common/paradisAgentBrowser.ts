@@ -350,7 +350,19 @@ export interface IParadisCdpExactViewService {
 	isExactViewVisible(descriptor: unknown): Promise<boolean | null>;
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
-	dispatchExactViewInput(descriptor: unknown, method: unknown, paramsJson: unknown): Promise<IParadisCdpInputDispatchResult>;
+	/**
+	 * `pacing`（省略可、`IParadisCursorPacing`）は、カーソルの演出のために待ってよいかの指示。
+	 * 省略すると今までどおり、移動のたびにカーソルが着くまで待つ。
+	 */
+	dispatchExactViewInput(descriptor: unknown, method: unknown, paramsJson: unknown, pacing?: unknown): Promise<IParadisCdpInputDispatchResult>;
+	/**
+	 * CDP へ素通しする撮影（WebP）の前に呼ぶ。見えているビューならカーソルの演出を隠してから true を返す。
+	 * 見えていなければ何もせず false、ビューが無ければ null（`isExactViewVisible` と同じ）。true を返したら
+	 * 撮影の成否に関わらず必ず {@link endExactViewRawCapture} を呼ぶ。
+	 */
+	beginExactViewRawCapture(descriptor: unknown): Promise<boolean | null>;
+	/** {@link beginExactViewRawCapture} で隠したカーソルを戻す。撮れたときだけ撮影の知らせを出す。 */
+	endExactViewRawCapture(descriptor: unknown, captured: unknown): Promise<void>;
 	/** 診断の印（paradisBrowserDiagnosticNote.ts）。main の Sentry のパンくずとまとめのイベントへ流す。 */
 	noteExactViewDiagnostic(descriptor: unknown, note: unknown): Promise<void>;
 	/**
@@ -384,7 +396,8 @@ export interface IParadisCdpInputCommand {
 }
 
 export type IParadisCdpInputDispatchResult =
-	| { readonly status: 'success'; readonly result: unknown }
+	/** `cursorWaitMs`: 配送の前にカーソルの演出のために待った時間（待たなければ無い）。 */
+	| { readonly status: 'success'; readonly result: unknown; readonly cursorWaitMs?: number }
 	| { readonly status: 'retryable'; readonly message: string }
 	| { readonly status: 'outcome-unknown'; readonly message: string };
 
@@ -620,14 +633,18 @@ export function paradisParseCdpInputDispatchResult(value: unknown): IParadisCdpI
 			return undefined;
 		}
 		if (value.status === 'success') {
-			if (!paradisHasExactKeys(value, ['status', 'result'])) {
+			if (!paradisHasExactKeys(value, ['status', 'result'], ['cursorWaitMs'])) {
+				return undefined;
+			}
+			const cursorWaitMs = value.cursorWaitMs;
+			if (cursorWaitMs !== undefined && (typeof cursorWaitMs !== 'number' || !Number.isFinite(cursorWaitMs) || cursorWaitMs < 0)) {
 				return undefined;
 			}
 			const json = JSON.stringify(value.result);
 			if (json === undefined || VSBuffer.fromString(json).byteLength > PARADIS_CDP_INPUT_MAX_PARAMS_BYTES) {
 				return undefined;
 			}
-			return Object.freeze({ status: 'success', result: paradisDeepFreeze(JSON.parse(json)) });
+			return Object.freeze({ status: 'success', result: paradisDeepFreeze(JSON.parse(json)), ...(cursorWaitMs !== undefined ? { cursorWaitMs } : {}) });
 		}
 		if (value.status !== 'retryable' && value.status !== 'outcome-unknown') {
 			return undefined;

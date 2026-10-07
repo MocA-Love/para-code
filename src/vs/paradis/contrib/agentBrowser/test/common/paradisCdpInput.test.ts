@@ -82,6 +82,9 @@ suite('Paradis CDP input protocol', () => {
 		assert.deepStrictEqual(paradisParseCdpInputDispatchResult({ status: 'success', result: { applied: true } }), {
 			status: 'success', result: { applied: true },
 		});
+		assert.deepStrictEqual(paradisParseCdpInputDispatchResult({ status: 'success', result: {}, cursorWaitMs: 140 }), {
+			status: 'success', result: {}, cursorWaitMs: 140,
+		});
 		assert.deepStrictEqual(paradisParseCdpInputDispatchResult({ status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: focused' }), {
 			status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: focused',
 		});
@@ -96,6 +99,8 @@ suite('Paradis CDP input protocol', () => {
 			{ status: 'retryable', message: 'wrong-prefix' },
 			{ status: 'outcome-unknown', message: 'PARA_BROWSER_RETRYABLE: wrong-kind' },
 			{ status: 'success', result: {}, extra: true },
+			{ status: 'success', result: {}, cursorWaitMs: -1 },
+			{ status: 'success', result: {}, cursorWaitMs: '140' },
 			{ status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${'x'.repeat(1024)}` },
 		]) {
 			assert.strictEqual(paradisParseCdpInputDispatchResult(value), undefined);
