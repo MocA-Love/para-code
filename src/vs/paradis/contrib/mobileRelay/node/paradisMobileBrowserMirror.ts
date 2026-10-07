@@ -22,7 +22,7 @@ import { decodeBase64 } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentCursorEvent, IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { paradisMobileBrowserKeyEvents } from '../common/paradisMobileBrowserKeys.js';
 import { paradisResolveMobileBrowserAddress } from '../common/paradisMobileBrowserAddress.js';
@@ -41,7 +41,7 @@ import {
 	paradisMobileBrowserPageMessage,
 	paradisNormalizeMobileBrowserFocusReport,
 } from '../common/paradisMobileBrowserPageState.js';
-import { IParadisMobileBrowserFocus, IParadisMobileBrowserInputRejected, PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX } from '../common/paradisMobileBrowserProtocol.js';
+import { IParadisMobileBrowserCursor, IParadisMobileBrowserFocus, IParadisMobileBrowserInputRejected, PARADIS_MOBILE_BROWSER_INPUT_TEXT_MAX } from '../common/paradisMobileBrowserProtocol.js';
 import { paradisIsMobileBrowserTargetId, paradisMobileBrowserTargetsScope } from '../common/paradisMobileBrowserScope.js';
 
 /** モバイル→PC の browser チャネル要求。 */
@@ -110,6 +110,8 @@ interface MirrorSession {
 	lastHistoryAt?: number;
 	/** フォーカスを見張るか（アプリが browser.focus.v1 を広告しているときだけ）。 */
 	focusTracking?: boolean;
+	/** エージェントのカーソルを送るか（アプリが browser.cursor.v1 を広告しているときだけ）。 */
+	cursorTracking?: boolean;
 	/** フォーカスの注入スクリプトを動かしている分離ワールドの文脈 ID（browser.focus.v1）。 */
 	focusContextId?: number;
 	focusSeq?: number;
@@ -174,6 +176,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 
 	/** mobileId → 稼働中のミラーセッション。 */
 	private readonly sessions = new Map<string, MirrorSession>();
+	/** カーソルの写しの viewId → targetId（引き直しの往復を毎回しない）。 */
+	private readonly cursorTargets = new Map<string, string>();
 
 	constructor(
 		private readonly upstream: ParadisCdpUpstream,
@@ -185,6 +189,53 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		super();
 		if (cdpFrames) {
 			this._register(cdpFrames.onDidFrame(e => this.onPushFrame(e)));
+			// テストの偽物などで無いことがある
+			if (typeof cdpFrames.onDidChangeAgentCursor === 'function') {
+				this._register(cdpFrames.onDidChangeAgentCursor(e => void this.onAgentCursor(e)));
+			}
+		}
+	}
+
+	/**
+	 * エージェントのカーソルを、そのページをミラーしているモバイルへ写す（browser.cursor.v1、q.html Q276 A）。
+	 * PC のタブが裏に回っていても送る（ページには描かなくても、モバイルの映像の上には描ける）。
+	 */
+	private async onAgentCursor(e: IParadisAgentCursorEvent): Promise<void> {
+		if (e.kind === 'captured' || ![...this.sessions.values()].some(session => session.cursorTracking === true)) {
+			return;
+		}
+		let targetId = this.cursorTargets.get(e.viewId);
+		if (targetId === undefined) {
+			try {
+				targetId = await this.cdpFrames?.resolveTargetId(e.viewId) ?? undefined;
+			} catch {
+				targetId = undefined;
+			}
+			if (targetId === undefined) {
+				return;
+			}
+			if (this.cursorTargets.size >= 64) {
+				this.cursorTargets.clear();
+			}
+			this.cursorTargets.set(e.viewId, targetId);
+		}
+		const message: IParadisMobileBrowserCursor = {
+			t: 'cursor',
+			targetId,
+			kind: e.kind,
+			...(e.ownerId !== undefined ? { ownerId: e.ownerId } : {}),
+			...(e.nx !== undefined && e.ny !== undefined ? { nx: e.nx, ny: e.ny } : {}),
+			...(e.durationMs !== undefined ? { durationMs: e.durationMs } : {}),
+			...(e.name !== undefined ? { name: e.name } : {}),
+			...(e.mark ? { mark: e.mark } : {}),
+			...(e.color !== undefined ? { color: e.color } : {}),
+			...(e.status !== undefined ? { status: e.status } : {}),
+		};
+		const payload = encoder.encode(JSON.stringify(message));
+		for (const session of this.sessions.values()) {
+			if (session.targetId === targetId && session.cursorTracking === true) {
+				session.send(payload);
+			}
 		}
 	}
 
@@ -412,6 +463,12 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			return;
 		}
 		session.focusTracking = focusTracking;
+		try {
+			session.cursorTracking = await this.options.mobileHasCapability?.(mobileId, ParadisMobileCapability.BrowserCursor) ?? false;
+		} catch { /* 分からなければ送らない */ }
+		if (this.sessions.get(mobileId) !== session) {
+			return;
+		}
 		this.startPageTracking(session);
 		// 主経路: electron-main の再描画プッシュ購読（成功すればペイントの度にフレームが届く）
 		if (this.cdpFrames) {

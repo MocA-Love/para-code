@@ -64,6 +64,80 @@ export interface IParadisMobileBrowserFocus {
 	readonly fromTap?: boolean;
 }
 
+/**
+ * エージェントのカーソル（browser チャネル、PC → モバイル、`id` なし。browser.cursor.v1、q.html Q276 A）。
+ * アプリが映像の上に描く。座標はページの CSS ビューポートに対する割合（0..1）。PC のタブが裏に回っていても届く。
+ *
+ * - `move`・`press`: 持ち主のカーソルを動かす・押した波紋。`durationMs` だけかけて滑らせる
+ * - `state`: 名札の状態（`status`。`idle` で消す）。iPhone の狭い画面では出さず、名前だけにする
+ * - `gone`: ページの全部のカーソルを消す（共有の解除・利用者が操作を始めた）
+ */
+export interface IParadisMobileBrowserCursor {
+	readonly t: 'cursor';
+	readonly targetId: string;
+	readonly kind: 'move' | 'press' | 'state' | 'gone';
+	/** 持ち主（ペイン × タブ）の鍵。同じページの 2 つのエージェントを分ける。分からなければ無い。 */
+	readonly ownerId?: string;
+	readonly nx?: number;
+	readonly ny?: number;
+	readonly durationMs?: number;
+	/** 名札の名前・CLI の印（C・X）・色（#rrggbb）。 */
+	readonly name?: string;
+	readonly mark?: string;
+	readonly color?: string;
+	/** `state` の状態（script・waiting・failed・missing・select・value・upload・scroll・idle）。 */
+	readonly status?: string;
+}
+
+const MOBILE_CURSOR_STATUSES: ReadonlySet<string> = new Set(['idle', 'script', 'waiting', 'failed', 'missing', 'select', 'value', 'upload', 'scroll']);
+
+/** 届いたカーソルの通知を確かめる（アプリ側）。形の違うものは捨てる。 */
+export function paradisParseMobileBrowserCursor(value: unknown): IParadisMobileBrowserCursor | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const v = value as Record<string, unknown>;
+	if (v.t !== 'cursor' || typeof v.targetId !== 'string' || v.targetId.length === 0 || v.targetId.length > 512) {
+		return undefined;
+	}
+	if (v.kind !== 'move' && v.kind !== 'press' && v.kind !== 'state' && v.kind !== 'gone') {
+		return undefined;
+	}
+	const ratio = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= -0.5 && n <= 1.5 ? n : undefined;
+	const nx = ratio(v.nx);
+	const ny = ratio(v.ny);
+	if ((v.kind === 'move' || v.kind === 'press') && (nx === undefined || ny === undefined)) {
+		return undefined;
+	}
+	const out: { -readonly [K in keyof IParadisMobileBrowserCursor]: IParadisMobileBrowserCursor[K] } = { t: 'cursor', targetId: v.targetId, kind: v.kind };
+	if (typeof v.ownerId === 'string' && /^[0-9a-f]{8,32}$/.test(v.ownerId)) {
+		out.ownerId = v.ownerId;
+	}
+	if (nx !== undefined && ny !== undefined) {
+		out.nx = nx;
+		out.ny = ny;
+	}
+	if (typeof v.durationMs === 'number' && Number.isFinite(v.durationMs) && v.durationMs >= 0) {
+		out.durationMs = Math.min(2000, Math.round(v.durationMs));
+	}
+	if (typeof v.name === 'string' && v.name.length > 0) {
+		out.name = v.name.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 24);
+	}
+	if (typeof v.mark === 'string' && /^[A-Z]{1,2}$/.test(v.mark)) {
+		out.mark = v.mark;
+	}
+	if (typeof v.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(v.color)) {
+		out.color = v.color;
+	}
+	if (v.kind === 'state') {
+		if (typeof v.status !== 'string' || !MOBILE_CURSOR_STATUSES.has(v.status)) {
+			return undefined;
+		}
+		out.status = v.status;
+	}
+	return out;
+}
+
 /** 入力を断った知らせ（browser チャネル、PC → モバイル、`id` なし）。 */
 export interface IParadisMobileBrowserInputRejected {
 	readonly t: 'inputRejected';

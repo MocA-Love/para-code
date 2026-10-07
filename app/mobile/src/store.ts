@@ -33,7 +33,8 @@ import { paradisClampVoiceGainDb, paradisDecodeVoiceStreamChunk, paradisIsVoiceS
 import { paradisIsMetricsPongPayload, paradisParseMetricsPong } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileLinkMetrics.js';
 import { appLinkMetrics } from './linkMetricsRuntime.js';
 import type { VoiceDelivery } from './voiceLifecycle.js';
-import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
+import { applyBrowserCursor, EMPTY_BROWSER_CURSORS, pruneBrowserCursors, type BrowserCursors } from './browserCursors.js';
+import { paradisParseMobileBookmarks, paradisParseMobileBrowserCursor, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage, type IParadisMobileBookmarks, type IParadisMobileBrowserFocus, type IParadisMobileBrowserInputRejected, type IParadisMobileBrowserPage } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileBrowserProtocol.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
 export interface WorkspacePrStatus {
@@ -1716,6 +1717,8 @@ export interface StoreState {
 	browserFocus: IParadisMobileBrowserFocus | undefined;
 	/** PC が入力を断った知らせ（`inputRejected`）。`n` は届くたびに増える（同じ中身が続いても画面が気づけるように）。 */
 	browserInputRejected: (IParadisMobileBrowserInputRejected & { readonly n: number }) | undefined;
+	/** ミラー中のページのエージェントのカーソル（`browser.cursor.v1`。持ち主ごと。張り直すと消す）。 */
+	browserCursors: BrowserCursors;
 	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
 	agentChats: Map<string, AgentChatState>;
 	/** アプリ起動処理（init）が走っている間。コールドスタート直後に誤った「未接続」を
@@ -1750,6 +1753,7 @@ export function createEmptyStoreState(): StoreState {
 		browserPage: undefined,
 		browserFocus: undefined,
 		browserInputRejected: undefined,
+		browserCursors: EMPTY_BROWSER_CURSORS,
 		agentChats: new Map(),
 	};
 }
@@ -2401,6 +2405,7 @@ export class MobileController {
 			this.state.browserFrame = undefined;
 			this.state.browserPage = undefined;
 			this.state.browserFocus = undefined;
+			this.state.browserCursors = EMPTY_BROWSER_CURSORS;
 			this.state.agentChats = new Map();
 			this.emit({ term: true, notifications: true, agentChats: true });
 		} catch (error) {
@@ -4802,9 +4807,10 @@ export class MobileController {
 
 	/** ページの状態とフォーカスを消す（ミラーを張り直す・止めるとき。PC の通知の番号もやり直しになる）。 */
 	private clearBrowserPageState(): void {
-		if (this.state.browserPage !== undefined || this.state.browserFocus !== undefined) {
+		if (this.state.browserPage !== undefined || this.state.browserFocus !== undefined || this.state.browserCursors.size > 0) {
 			this.state.browserPage = undefined;
 			this.state.browserFocus = undefined;
+			this.state.browserCursors = EMPTY_BROWSER_CURSORS;
 			this.emit();
 		}
 	}
@@ -4968,6 +4974,17 @@ export class MobileController {
 						this.state.browserFocus = focus;
 						this.emit();
 					}
+				} else if (msg.t === 'cursor' && msg.id === undefined) {
+					// エージェントのカーソル（browser.cursor.v1）。止めている間に届いた分は捨てる
+					const cursor = this.browserStopping ? undefined : paradisParseMobileBrowserCursor(msg);
+					if (cursor !== undefined) {
+						const now = Date.now();
+						const next = applyBrowserCursor(pruneBrowserCursors(this.state.browserCursors, now), cursor, now);
+						if (next !== this.state.browserCursors) {
+							this.state.browserCursors = next;
+							this.emit();
+						}
+					}
 				} else if (msg.t === 'inputRejected' && msg.id === undefined) {
 					const rejected = this.browserStopping ? undefined : paradisParseMobileBrowserInputRejected(msg);
 					if (rejected !== undefined) {
@@ -5043,6 +5060,7 @@ export class MobileController {
 					this.state.browserFrame = undefined;
 					this.state.browserPage = undefined;
 					this.state.browserFocus = undefined;
+					this.state.browserCursors = EMPTY_BROWSER_CURSORS;
 					this.state.notifications = [];
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
@@ -5782,6 +5800,7 @@ export class MobileController {
 			browserPage: this.state.browserPage,
 			browserFocus: this.state.browserFocus,
 			browserInputRejected: this.state.browserInputRejected,
+			browserCursors: this.state.browserCursors,
 			initializing: this.state.initializing,
 			initError: this.state.initError,
 			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,

@@ -5,10 +5,10 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese test names)
 
 import * as assert from 'assert';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription } from '../../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentCursorEvent, IParadisCdpFrameEvent, IParadisCdpFrameSubscription } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileBrowserMirror } from '../../node/paradisMobileBrowserMirror.js';
 
@@ -19,6 +19,7 @@ suite('ParadisMobileBrowserMirror', () => {
 		const frames = store.add(new Emitter<IParadisCdpFrameEvent>());
 		const subscription: IParadisCdpFrameSubscription = {
 			onDidFrame: frames.event,
+			onDidChangeAgentCursor: Event.None,
 			startFrameSubscription: async () => true,
 			stopFrameSubscription: async () => undefined,
 			resolveTargetWindowId: async () => 1,
@@ -79,6 +80,7 @@ suite('ParadisMobileBrowserMirror', () => {
 		const frames = store.add(new Emitter<IParadisCdpFrameEvent>());
 		const subscription: IParadisCdpFrameSubscription = {
 			onDidFrame: frames.event,
+			onDidChangeAgentCursor: Event.None,
 			startFrameSubscription: async () => true,
 			stopFrameSubscription: async () => undefined,
 			resolveTargetWindowId: async () => 1,
@@ -116,6 +118,7 @@ suite('ParadisMobileBrowserMirror', () => {
 		const frames = store.add(new Emitter<IParadisCdpFrameEvent>());
 		const subscription: IParadisCdpFrameSubscription = {
 			onDidFrame: frames.event,
+			onDidChangeAgentCursor: Event.None,
 			startFrameSubscription: async () => true,
 			stopFrameSubscription: async () => undefined,
 			resolveTargetWindowId: async () => 1,
@@ -466,5 +469,48 @@ suite('ParadisMobileBrowserMirror', () => {
 			'rejected',
 			'6:field1',
 		]);
+	});
+
+	test('エージェントのカーソルは、そのページを映していてカーソルを受けるモバイルにだけ送る', async () => {
+		const cursors = store.add(new Emitter<IParadisAgentCursorEvent>());
+		const subscription: IParadisCdpFrameSubscription = {
+			onDidFrame: Event.None,
+			onDidChangeAgentCursor: cursors.event,
+			startFrameSubscription: async () => true,
+			stopFrameSubscription: async () => undefined,
+			resolveTargetWindowId: async () => 1,
+			resolveTargetId: async viewId => viewId === 'view-a' ? 'target-a' : null,
+			resolveUpstreamPort: async () => null,
+			armMirrorCapture: async () => undefined,
+		};
+		const logService = new NullLogService();
+		const mirror = store.add(new ParadisMobileBrowserMirror(new ParadisCdpUpstream('', logService), subscription, undefined, logService));
+		const delivered: Record<string, string[]> = { tracking: [], old: [], other: [] };
+		const session = (name: string, targetId: string, cursorTracking: boolean) => ({
+			socket: { close: () => undefined, readyState: 1 } as unknown as WebSocket,
+			targetId, cursorTracking, handlers: new Map(), pushStarted: false,
+			send: (payload: Uint8Array) => delivered[name].push(new TextDecoder().decode(payload)),
+		});
+		const sessions = (mirror as unknown as { sessions: Map<string, ReturnType<typeof session>> }).sessions;
+		sessions.set('m1', session('tracking', 'target-a', true));
+		sessions.set('m2', session('old', 'target-a', false));
+		sessions.set('m3', session('other', 'target-b', true));
+		cursors.fire({ viewId: 'view-a', kind: 'move', nx: 0.25, ny: 0.5, durationMs: 200, ownerId: '0123456789abcdef', name: 'Claude', mark: 'C', color: '#d97757' });
+		cursors.fire({ viewId: 'view-a', kind: 'captured' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		cursors.fire({ viewId: 'view-a', kind: 'state', status: 'script', ownerId: '0123456789abcdef' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		sessions.clear();
+		assert.deepStrictEqual(
+			{ tracking: delivered.tracking.map(text => JSON.parse(text)), old: delivered.old.length, other: delivered.other.length },
+			{
+				tracking: [
+					{ t: 'cursor', targetId: 'target-a', kind: 'move', ownerId: '0123456789abcdef', nx: 0.25, ny: 0.5, durationMs: 200, name: 'Claude', mark: 'C', color: '#d97757' },
+					{ t: 'cursor', targetId: 'target-a', kind: 'state', ownerId: '0123456789abcdef', status: 'script' },
+				],
+				old: 0,
+				other: 0,
+			},
+		);
 	});
 });
