@@ -29,6 +29,7 @@ import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js'
 import { paradisNormalizeModCommandList } from '../../node/paradisAgentCommandCatalog.js';
 import { newParseSignals, paradisParseClaudeTranscriptLineForTest, parseClaudeLine } from '../../../agentChat/common/paradisAgentTranscriptParser.js';
 import { ParadisAgentWorkflowTracker, paradisParseWorkflowJournalLine, paradisParseWorkflowResultFile } from '../../../agentChat/common/paradisAgentWorkflows.js';
+import { ParadisAgentTeamTracker } from '../../../agentChat/common/paradisAgentTeams.js';
 import { ParadisAgentSessionStatusTracker } from '../../../agentChat/common/paradisAgentSessionStatus.js';
 import { ParadisMobileOperationLedger } from '../../node/paradisMobileOperationLedger.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
@@ -302,6 +303,35 @@ suite('ParadisMobileWireGolden', () => {
 		}
 		tracker.applyMeasure({ tokens: 7250, window: 200000, percent: 4 });
 		assert.deepStrictEqual(tracker.snapshot({ promptCache: { lastUsedAt: t0 + 190_000, ttlMs: 300_000 }, partial: true, model: 'claude-opus-4-7' }), delta.sessionStatus);
+	});
+
+	test('agent: PC が組み立てるチーム（agent.teams.v1）はゴールデンと同じ', function () {
+		type Message = Record<string, unknown>;
+		const golden = readGolden<{ toMobile: Message[] }>(this, 'agent.json');
+		const delta = golden.toMobile.find(message => message.t === 'delta' && message.teams !== undefined) as { teams: unknown[] };
+		const signals = newParseSignals();
+		const at = (ms: number) => new Date(ms).toISOString();
+		const spawned = (toolUseId: string, ms: number, result: Record<string, unknown>) => ({
+			type: 'user', timestamp: at(ms), toolUseResult: { status: 'teammate_spawned', team_name: 'session-golden', is_splitpane: false, plan_mode_required: false, ...result },
+			message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Spawned successfully.' }] },
+		});
+		const received = (ms: number, tag: string) => ({ type: 'user', timestamp: at(ms), message: { content: `Another Claude session sent a message:\n${tag}\n\nThis came from another Claude session.` } });
+		const lines = [
+			{ type: 'assistant', timestamp: at(1760000070000), message: { content: [{ type: 'tool_use', id: 'toolu_goldenteam1', name: 'Agent', input: { description: '見出しを数える', name: 'counter', subagent_type: 'Explore', prompt: 'README の見出しを数えて' } }] } },
+			{ type: 'assistant', timestamp: at(1760000070100), message: { content: [{ type: 'tool_use', id: 'toolu_goldenteam2', name: 'Agent', input: { description: 'テストを流す', name: 'tester', subagent_type: 'general-purpose', prompt: 'テストを流して' } }] } },
+			spawned('toolu_goldenteam1', 1760000071000, { name: 'counter', agent_id: 'acounter-0123456789abcdef', color: 'blue', model: 'opus', resolvedModel: 'claude-opus-5-5', agent_type: 'Explore', tmux_pane_id: 'in-process' }),
+			spawned('toolu_goldenteam2', 1760000071100, { name: 'tester', agent_id: 'atester-0123456789abcdef', color: 'yellow', model: 'sonnet', agent_type: 'general-purpose', tmux_pane_id: '%3', is_splitpane: true }),
+			received(1760000080000, '<teammate-message teammate_id="counter" color="blue" summary="見出し数の報告">見出しは 12 個です。</teammate-message>'),
+			received(1760000085000, '<teammate-message teammate_id="counter" color="blue">{"type":"plan_approval_request","from":"counter","planContent":"1. 読む\\n2. 数える","requestId":"r1"}</teammate-message>'),
+			received(1760000090000, '<teammate-message teammate_id="tester" color="yellow">{"type":"idle_notification","from":"tester","idleReason":"available"}</teammate-message>'),
+		];
+		for (const line of lines) {
+			parseClaudeLine(line, signals);
+		}
+		const tracker = new ParadisAgentTeamTracker();
+		tracker.apply(signals.teamSignals);
+		tracker.noteHook('active', { agentId: 'acounter-0123456789abcdef' }, 1760000086000, 'Bash npm test');
+		assert.deepStrictEqual(tracker.snapshot(new Map([['acounter-0123456789abcdef', { id: 'approval-golden-1', tool: 'Bash' }]])), delta.teams);
 	});
 
 	test('browser: アプリが送る形を PC が受け、PC が組み立てる形はゴールデンと同じ形', async function () {

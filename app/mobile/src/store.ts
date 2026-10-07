@@ -23,6 +23,7 @@ import { BACKGROUND_GRACE_CAPABILITY } from './backgroundGraceCapability.js';
 import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
 import { localizeAgentWorkflows, parseAgentWorkflows, type AgentWorkflow } from './agentWorkflows.js';
+import { localizeAgentTeams, parseAgentTeams, type AgentTeam } from './agentTeams.js';
 import { localizeAgentSessionStatus, parseAgentSessionStatus, type AgentSessionStatus } from './agentSessionStatus.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
@@ -1497,6 +1498,8 @@ export interface AgentChatState {
 	shellsAccess?: AgentShellsAccess;
 	/** Claude Code の Workflow の実行（PC が `workflows` を送るときだけ。agent.workflows.v1）。 */
 	workflows?: AgentWorkflow[];
+	/** Claude Code のエージェントチーム（PC が `teams` を送るときだけ。agent.teams.v1）。 */
+	teams?: AgentTeam[];
 	/** 会話のキャッシュの hit / miss と残り時間の期限、コンテキストの使用率（PC が送るときだけ。agent.session-status.v1）。 */
 	sessionStatus?: AgentSessionStatus;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
@@ -5427,6 +5430,9 @@ export class MobileController {
 			// Workflow の実行（agent.workflows.v1）も届いたときだけ丸ごと置き換える（PC は変わったときだけ載せる）。
 			const rawWorkflows = parseAgentWorkflows((msg as { workflows?: unknown }).workflows);
 			const parsedWorkflows = rawWorkflows !== undefined ? localizeAgentWorkflows(rawWorkflows, (msg as { workflowsAt?: unknown }).workflowsAt, Date.now()) : undefined;
+			// チーム（agent.teams.v1）も届いたときだけ丸ごと置き換える（PC は変わったときだけ載せる）。
+			const rawTeams = parseAgentTeams((msg as { teams?: unknown }).teams);
+			const parsedTeams = rawTeams !== undefined ? localizeAgentTeams(rawTeams, (msg as { teamsAt?: unknown }).teamsAt, Date.now()) : undefined;
 			// 会話の状態（agent.session-status.v1）も届いたときだけ置き換える（PC は snapshot では必ず、それ以外は変わったときだけ載せる）
 			const rawSessionStatus = parseAgentSessionStatus((msg as { sessionStatus?: unknown }).sessionStatus);
 			const parsedSessionStatus = rawSessionStatus !== undefined ? localizeAgentSessionStatus(rawSessionStatus, (msg as { sessionStatusAt?: unknown }).sessionStatusAt, Date.now()) : undefined;
@@ -5516,6 +5522,7 @@ export class MobileController {
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
+					...(parsedTeams !== undefined ? { teams: parsedTeams } : {}),
 					...(parsedSessionStatus !== undefined ? { sessionStatus: parsedSessionStatus } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
@@ -5598,6 +5605,7 @@ export class MobileController {
 					...(parsedMonitors !== undefined ? { monitors: parsedMonitors } : {}),
 					...(parsedShells !== undefined ? { shells: parsedShells, ...(parsedShellsAccess !== undefined ? { shellsAccess: parsedShellsAccess } : {}) } : {}),
 					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
+					...(parsedTeams !== undefined ? { teams: parsedTeams } : {}),
 					...(parsedSessionStatus !== undefined ? { sessionStatus: parsedSessionStatus } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),

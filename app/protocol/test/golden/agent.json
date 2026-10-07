@@ -1,5 +1,5 @@
 {
-	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。3 つ目の delta の noticeSource: compaction はコンテキストの圧縮の区切り（compaction に trigger と、取れたときだけ tokensBefore / tokensAfter）、compact-summary は圧縮で作られた要約の先頭（全文は tool-full、compaction.summaryChars は全体の文字数）で、古いアプリは灰色の知らせの行として出す。同じ delta の panel（agent.panel.v1）は PC の Claude Code で開いている画面（command はモバイルから送って開いたときだけ。閉じたら null）、toPc の action/closePanel はそれを Esc で閉じる要求。 4 つ目の delta の workflows・workflowsAt（agent.workflows.v1）は Claude Code の Workflow の実行で、先頭の要素と先頭の子に全項目を持たせてある（estimated はペインが止まって推定したときだけ付く）。phase は phases の添字、counts は送らなかった子も含む数、totalTokens・totalToolCalls・子の tokens などは終わってから付く。PC は workflows を変わったときだけ載せる。shells の ownerAgentId はそのシェルを起動した子で、Workflow の子のものはアプリがカードへ寄せる。 5 つ目の delta の sessionStatus・sessionStatusAt（agent.session-status.v1）は会話 1 本分の状態で、全項目を持たせてある。cache は Claude Code 2.1.291 の cn.record と同じ式で数えた hit / miss / expected（圧縮の後の予告どおりの減り）/ cold と、hitRatio（cache_read ÷ 入力の合計。0〜1）、Claude だけの expiresAt（キャッシュが切れる時刻。PC の時計で、アプリが sessionStatusAt との差で手元の時計へ直して数え下げる）と ttlMs、partial（長い会話の末尾だけを読んだ）。リクエストが無ければ cache を省く。context は使用率で、source: mod は Claude Mod の session.measure、transcript は最後のリクエストの入力の合計（Codex は rollout の token_count）。PC は snapshot では必ず、それ以外は変わったときだけ載せる。",
+	"$comment": "agent チャネルの固定形。id はターミナルの数値 ID、token はペイントークン（state.json の current の terminals[0] と揃えてある）。toPc はアプリが送る要求、toMobile は PC が送る応答。delta の monitors は任意項目（agent.monitors.v1）で、先頭の要素に全項目を持たせてある。delta の notice（Para Code からの知らせ）・advisor（Advisor の呼び出しと結果の印）・activity.advisors（Advisor への相談）も任意項目で、古いアプリは無視する。activity-detail の activityId に相談の id を渡すと、平文の返答を返す。質問の選択肢の preview・interaction の answerVia・回答の notes と kind: notes・action/clarifyQuestion は agent.question.notes.v1 / agent.question.chat.v1。delta の shells・shellsAt・shellsAccess（バックグラウンドのシェル）と、要求 shell-output・action/stopShell は agent.shells.v1 で、shells の先頭の要素に全項目を持たせてある。shell-output は ID だけを送り、パスは送らない。時刻は PC の時計で、monitorsAt・shellsAt（PC の送信時刻）との差でアプリが手元の時計へ直す。command-catalog の要求の format: 2 と応答（agent.commands.v2）は、実際に効く順の一覧で、同じ名前の重なりと出どころ plugin（plugin にプラグイン名）・mcp を含む。古いアプリ（format 無し）には、同じ名前を先の 1 件にし、plugin / mcp を user にした一覧を返す。送った発言をエージェントが「そのコマンドは無い」と断ったら action-result を code: unknown-command で返す（理由は message）。キーで送った Claude Code のスラッシュコマンドは、受け付けた後で同じ requestId へ late: true の断りを追いかけて送る。2 つ目の delta の noticeSource: command はスラッシュコマンドの出力の知らせ（読み上げの文言を分ける）。3 つ目の delta の noticeSource: compaction はコンテキストの圧縮の区切り（compaction に trigger と、取れたときだけ tokensBefore / tokensAfter）、compact-summary は圧縮で作られた要約の先頭（全文は tool-full、compaction.summaryChars は全体の文字数）で、古いアプリは灰色の知らせの行として出す。同じ delta の panel（agent.panel.v1）は PC の Claude Code で開いている画面（command はモバイルから送って開いたときだけ。閉じたら null）、toPc の action/closePanel はそれを Esc で閉じる要求。 4 つ目の delta の workflows・workflowsAt（agent.workflows.v1）は Claude Code の Workflow の実行で、先頭の要素と先頭の子に全項目を持たせてある（estimated はペインが止まって推定したときだけ付く）。phase は phases の添字、counts は送らなかった子も含む数、totalTokens・totalToolCalls・子の tokens などは終わってから付く。PC は workflows を変わったときだけ載せる。shells の ownerAgentId はそのシェルを起動した子で、Workflow の子のものはアプリがカードへ寄せる。 6 つ目の delta の sessionStatus・sessionStatusAt（agent.session-status.v1）は会話 1 本分の状態で、全項目を持たせてある。cache は Claude Code 2.1.291 の cn.record と同じ式で数えた hit / miss / expected（圧縮の後の予告どおりの減り）/ cold と、hitRatio（cache_read ÷ 入力の合計。0〜1）、Claude だけの expiresAt（キャッシュが切れる時刻。PC の時計で、アプリが sessionStatusAt との差で手元の時計へ直して数え下げる）と ttlMs、partial（長い会話の末尾だけを読んだ）。リクエストが無ければ cache を省く。context は使用率で、source: mod は Claude Mod の session.measure、transcript は最後のリクエストの入力の合計（Codex は rollout の token_count）。PC は snapshot では必ず、それ以外は変わったときだけ載せる。 5 つ目の delta の teams・teamsAt（agent.teams.v1）は Claude Code のエージェントチームで、先頭のメンバーに全項目を持たせてある（estimated はペインが止まって推定したとき、failure は idle_notification が失敗を知らせたときだけ付く）。state は running・idle・waiting（許可待ち。approvalId はトークの許可カードと同じ ID）・plan（計画の承認待ち）・completed・failed・stopped、backend は in-process・tmux・iterm2・other で、in-process 以外は agentId を持たない（別のペインで動く）。messages はやりとり（instruction はリーダーが起動時に渡した頼みごと。新しい方から 60 件、本文は 2,000 字まで）、messageCount は総数、plans は材料があるときだけ付く。PC は teams を変わったときだけ載せる。",
 	"toPc": [
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "liveEncoding": "agent-live-append-v1", "responseEncoding": "json-gzip-v1" },
 		{ "t": "attach", "id": 7, "token": "agent-token-1", "epoch": "golden-agent-epoch", "afterRev": 1, "liveEncoding": "agent-live-append-v1", "responseEncoding": "json-gzip-v1" },
@@ -101,6 +101,35 @@
 				}
 			],
 			"workflowsAt": 1760000060000
+		},
+		{
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 9, "messages": [],
+			"teams": [
+				{
+					"name": "session-golden", "leadName": "team-lead", "toolUseIds": ["toolu_goldenteam1", "toolu_goldenteam2"],
+					"members": [
+						{
+							"name": "counter", "agentId": "acounter-0123456789abcdef", "toolUseId": "toolu_goldenteam1", "color": "blue", "model": "claude-opus-5-5", "agentType": "Explore",
+							"description": "見出しを数える", "backend": "in-process", "state": "waiting", "activity": "Bash npm test", "approvalId": "approval-golden-1", "approvalTool": "Bash",
+							"startedAt": 1760000071000, "updatedAt": 1760000086000
+						},
+						{
+							"name": "tester", "toolUseId": "toolu_goldenteam2", "color": "yellow", "model": "sonnet", "agentType": "general-purpose", "description": "テストを流す",
+							"backend": "tmux", "state": "idle", "startedAt": 1760000071100, "updatedAt": 1760000090000
+						}
+					],
+					"messages": [
+						{ "id": "m1", "from": "team-lead", "to": "counter", "kind": "instruction", "summary": "見出しを数える", "text": "README の見出しを数えて", "at": 1760000070000 },
+						{ "id": "m2", "from": "team-lead", "to": "tester", "kind": "instruction", "summary": "テストを流す", "text": "テストを流して", "at": 1760000070100 },
+						{ "id": "m3", "from": "counter", "to": "team-lead", "kind": "message", "summary": "見出し数の報告", "text": "見出しは 12 個です。", "at": 1760000080000 },
+						{ "id": "m4", "from": "counter", "to": "team-lead", "kind": "plan", "text": "1. 読む\n2. 数える", "at": 1760000085000 }
+					],
+					"messageCount": 4,
+					"plans": [{ "from": "counter", "text": "1. 読む\n2. 数える", "at": 1760000085000 }],
+					"startedAt": 1760000071000, "updatedAt": 1760000090000
+				}
+			],
+			"teamsAt": 1760000095000
 		},
 		{
 			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 9, "messages": [],

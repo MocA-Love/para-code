@@ -21,6 +21,7 @@ import { paradisRedactMobileCommandOutput } from '../../mobileRelay/common/parad
 import { IParadisMonitorSignal, paradisMonitorCallSignal, paradisMonitorNotificationSignals, paradisMonitorStartedSignal, paradisMonitorTaskStopSignal, paradisQueueOperationSignals } from './paradisAgentMonitors.js';
 import { IParadisShellSignal, paradisShellCallSignal, paradisShellNotificationSignals, paradisShellStartedSignal, paradisShellTaskStopSignal } from './paradisAgentShells.js';
 import { IParadisWorkflowSignal, paradisWorkflowLaunchSignal, paradisWorkflowScriptSignal } from './paradisAgentWorkflows.js';
+import { IParadisTeamSignal, paradisParseTeammateTags, paradisTeamCallSignal, paradisTeamReceivedSignals, paradisTeamSpawnSignal } from './paradisAgentTeams.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
 import { PARADIS_COMPACT_SUMMARY_PREVIEW_LIMIT, paradisClaudeCompactionInfo, paradisCompactionNoticeText, paradisCompactSummaryBody } from './paradisAgentCompaction.js';
 
@@ -377,6 +378,8 @@ export interface IParseSignals {
 	readonly shellSignals: IParadisShellSignal[];
 	/** Claude Code の Workflow の台本と起動（出現順。paradisAgentWorkflows.ts）。 */
 	readonly workflowSignals: IParadisWorkflowSignal[];
+	/** Claude Code のエージェントチームの起動・やりとり（リーダーの記録。出現順。paradisAgentTeams.ts）。 */
+	readonly teamSignals: IParadisTeamSignal[];
 	/**
 	 * 直前に現れた Codex の view_image 呼び出しの call_id。
 	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
@@ -470,46 +473,43 @@ export function paradisBackgroundTaskLaunch(text: string, toolUseResult: Record<
 export type ParadisBackgroundTaskKind = 'agent' | 'workflow' | 'shell';
 
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], workflowSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], workflowSignals: [], teamSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
 }
 
 export function decodeXmlAttribute(value: string): string {
 	return value.replace(/&quot;/g, '"').replace(/&apos;/g, String.fromCodePoint(39)).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
-/** Claude Code Agent TeamsのMailbox配送を通常のユーザー発言から分離する。 */
-export function parseClaudePeerMessage(rawText: string, ts: number | undefined): IRawMessage | null | undefined {
+/**
+ * Claude Code Agent TeamsのMailbox配送を通常のユーザー発言から分離する。1 つの user 行に `<teammate-message>` が
+ * 複数入る（報告と idle_notification がまとめて届く。2.1.292 で実測）ので、全部を読む。配送でなければ undefined、
+ * 配送だが見せるものが無ければ空の配列。
+ */
+export function parseClaudePeerMessages(rawText: string, ts: number | undefined): IRawMessage[] | undefined {
 	// ユーザーがタグ文字列を質問に含めただけのケースを誤分類しないよう、Claude Codeが
 	// 付ける配送prefixまたはcross-session wrapperが先頭にある場合だけ内部通信として扱う。
 	if (!rawText.startsWith('Another Claude session sent a message') && !rawText.startsWith('<cross-session-message>')) {
 		return undefined;
 	}
-	const tagged = /<(teammate-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(rawText);
-	if (tagged === null) {
+	const tags = paradisParseTeammateTags(rawText);
+	if (tags.length === 0) {
 		const crossSession = /<cross-session-message>([\s\S]*?)<\/cross-session-message>/.exec(rawText);
 		const text = (crossSession?.[1] ?? rawText.replace(/^Another Claude session sent a message(?: while you were working)?:?\s*/, '')).trim();
-		return text.length > 0 ? { role: 'assistant', kind: 'peer_message', text: truncateText(text, TEXT_LIMIT), ts } : null;
+		return text.length > 0 ? [{ role: 'assistant', kind: 'peer_message', text: truncateText(text, TEXT_LIMIT), ts }] : [];
 	}
-	const attributes = tagged[2];
-	const body = tagged[3].trim();
-	try {
-		const protocol = rec(JSON.parse(body));
-		if (protocol?.type === 'idle_notification') {
-			return null;
+	const messages: IRawMessage[] = [];
+	for (const tag of tags) {
+		// 待機の知らせはやりとりではない（チームのカードの状態に使う）
+		if (tag.protocol?.type === 'idle_notification' || tag.body.length === 0) {
+			continue;
 		}
-	} catch {
-		// 通常の自然言語レポートはJSONではない。
+		messages.push({
+			role: 'assistant', kind: 'peer_message', text: truncateText(tag.body, TEXT_LIMIT), ts,
+			...(tag.name !== undefined ? { peerName: tag.name } : {}),
+			...(tag.summary !== undefined ? { peerSummary: tag.summary } : {}),
+		});
 	}
-	if (body.length === 0) {
-		return null;
-	}
-	const name = /\b(?:teammate_id|from)="([^"]+)"/.exec(attributes)?.[1];
-	const summary = /\bsummary="([^"]+)"/.exec(attributes)?.[1];
-	return {
-		role: 'assistant', kind: 'peer_message', text: truncateText(body, TEXT_LIMIT), ts,
-		...(name !== undefined ? { peerName: decodeXmlAttribute(name) } : {}),
-		...(summary !== undefined ? { peerSummary: decodeXmlAttribute(summary) } : {}),
-	};
+	return messages;
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -907,11 +907,10 @@ export function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: numb
 	if (trimmed.length === 0) {
 		return;
 	}
-	const peerMessage = parseClaudePeerMessage(trimmed, ts);
-	if (peerMessage !== undefined) {
-		if (peerMessage !== null) {
-			out.push(peerMessage);
-		}
+	const peerMessages = parseClaudePeerMessages(trimmed, ts);
+	if (peerMessages !== undefined) {
+		out.push(...peerMessages);
+		signals.teamSignals.push(...paradisTeamReceivedSignals(trimmed, ts ?? Date.now()));
 		return;
 	}
 	// ユーザーがescでツール実行（AskUserQuestion等）を中断した際にハーネスが注入する
@@ -1098,6 +1097,10 @@ function pushClaudeUserContent(out: IRawMessage[], obj: Record<string, unknown>,
 				const workflowLaunch = singleResult ? paradisWorkflowLaunchSignal(toolUseResult, toolUseId, ts ?? Date.now()) : undefined;
 				if (workflowLaunch !== undefined) {
 					signals.workflowSignals.push(workflowLaunch);
+				}
+				const teamSpawn = singleResult ? paradisTeamSpawnSignal(toolUseResult, toolUseId, ts ?? Date.now()) : undefined;
+				if (teamSpawn !== undefined) {
+					signals.teamSignals.push(teamSpawn);
 				}
 				if (launched !== undefined) {
 					signals.openedTasks.set(launched.id, ts ?? Date.now());
@@ -1305,6 +1308,10 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 				const workflowScript = tool === 'Workflow' ? paradisWorkflowScriptSignal(input, toolUseId, ts ?? Date.now()) : undefined;
 				if (workflowScript !== undefined) {
 					signals.workflowSignals.push(workflowScript);
+				}
+				const teamCall = tool === 'Agent' || tool === 'Task' || tool === 'SendMessage' ? paradisTeamCallSignal(tool, input, toolUseId, ts ?? Date.now()) : undefined;
+				if (teamCall !== undefined) {
+					signals.teamSignals.push(teamCall);
 				}
 				if (tool === 'Agent' || tool === 'Task') {
 					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。
