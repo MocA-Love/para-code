@@ -6,7 +6,7 @@
 import * as assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { BrowserViewAutomationKeyFailureReason } from '../../../../../platform/browserView/common/browserViewAutomationInput.js';
+import type { BrowserViewAutomationKeyFailureReason, IBrowserViewAutomationKeyFailureDetail } from '../../../../../platform/browserView/common/browserViewAutomationInput.js';
 import type { BrowserView } from '../../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../../platform/browserView/electron-main/browserViewMainService.js';
 import {
@@ -44,6 +44,8 @@ interface ITestViewState {
 	onPrepareAutomation?: () => void;
 	/** Reason the fake preparation reports when it fails. */
 	automationFailure?: BrowserViewAutomationKeyFailureReason;
+	/** Which frames the fake preparation reports as silent on a timeout. */
+	automationFailureDetail?: IBrowserViewAutomationKeyFailureDetail;
 	onActivateAutomation?: () => void;
 	onInput?: () => void;
 }
@@ -171,11 +173,11 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 			state.onCapture?.();
 			return state.captureResult;
 		},
-		prepareAutomationKeyInput: async (_signature: unknown, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate') => void) => {
+		prepareAutomationKeyInput: async (_signature: unknown, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail) => void) => {
 			counters.prepareAutomation++;
 			state.onPrepareAutomation?.();
 			if (!state.automationReady && state.automationFailure !== undefined) {
-				onFailure?.(state.automationFailure, 'register');
+				onFailure?.(state.automationFailure, 'register', state.automationFailureDetail);
 			}
 			return state.automationReady
 				? {
@@ -755,6 +757,24 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(current.counters.commitAutomation, 1);
 		assert.strictEqual(current.counters.completeAutomation, 0);
 		assert.strictEqual(current.counters.cancelAutomation, 3);
+	});
+
+	test('names the kinds of frames that did not answer when the key preparation timed out', async () => {
+		const current = createTestView({ automationReady: false, automationFailure: 'ack-timeout', automationFailureDetail: { unansweredFrames: 'cross-origin=1,sandbox=1', awaitedFrames: 3, framesWithoutPreload: 4 } });
+		const registry = createRegistry({ 'view-1': current.view });
+		const reports: unknown[] = [];
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, undefined, (phase, reason, detail) => reports.push({ phase, reason, detail }));
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+
+		assert.deepStrictEqual({
+			result: await service.dispatchExactViewInput(exact, 'Input.dispatchKeyEvent', JSON.stringify({ type: 'keyDown', key: 'a', code: 'KeyA' })),
+			reports,
+			sent: current.counters.input,
+		}, {
+			result: { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (the page did not answer in time (frames that did not answer: cross-origin=1,sandbox=1, of 3 waited for), it may be busy or still loading; retry in a moment)' },
+			reports: [{ phase: 'register', reason: 'ack-timeout', detail: { unansweredFrames: 'cross-origin=1,sandbox=1', awaitedFrames: 3, framesWithoutPreload: 4 } }],
+			sent: 0,
+		});
 	});
 
 	test('prepares the key once more when a navigation or a frame change cancelled the first preparation', async () => {

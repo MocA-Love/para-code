@@ -64,6 +64,66 @@ export type BrowserViewAutomationKeyFailureReason =
 export function browserViewAutomationNavigationDiscardsPreloadState(details: unknown): boolean {
 	return !(isRecord(details) && details.isSameDocument === true);
 }
+/**
+ * What kind of frame did not answer an automation key ack. A fixed word, so it can go into the
+ * agent-facing error, the log and Sentry without carrying the frame's URL.
+ */
+export type BrowserViewAutomationFrameKind = 'same-origin' | 'cross-origin' | 'about-blank' | 'sandbox';
+
+/** Classifies a frame against the top frame's origin (only the scheme and the origin are looked at). */
+export function browserViewAutomationFrameKind(url: string, origin: string, topOrigin: string): BrowserViewAutomationFrameKind {
+	if (url === '' || url.startsWith('about:')) {
+		return 'about-blank';
+	}
+	if (origin === 'null' || origin === '') {
+		// An opaque origin: a sandboxed iframe (or a data: URL, which is sandbox-like for this purpose).
+		return 'sandbox';
+	}
+	return origin === topOrigin ? 'same-origin' : 'cross-origin';
+}
+
+/** `same-origin=1,about-blank=2` in a fixed order (empty when there are none). */
+export function browserViewAutomationFormatFrameKinds(kinds: readonly BrowserViewAutomationFrameKind[]): string {
+	const order: readonly BrowserViewAutomationFrameKind[] = ['same-origin', 'cross-origin', 'about-blank', 'sandbox'];
+	return order
+		.map(kind => [kind, kinds.filter(value => value === kind).length] as const)
+		.filter(([, count]) => count > 0)
+		.map(([kind, count]) => `${kind}=${count}`)
+		.join(',');
+}
+
+/** Facts about the frames of a failed automation key ack, for diagnostics only (no page data). */
+export interface IBrowserViewAutomationKeyFailureDetail {
+	/** Frames whose answer was waited for and did not come, by kind (`same-origin=1,...`). */
+	readonly unansweredFrames: string;
+	/** How many answers were waited for. */
+	readonly awaitedFrames: number;
+	/** Frames that never loaded the preload (about:blank and the like); they were not waited for. */
+	readonly framesWithoutPreload: number;
+}
+
+/**
+ * The frames whose ack an automation key waits for, out of every live frame it is sent to.
+ *
+ * A keystroke is delivered to the focused frame only (key events do not cross frame boundaries), so
+ * only the preload of the focused frame can see it; the ancestors are waited for as well so a focus
+ * move up the tree is still covered. Frames whose preload never announced itself (about:blank
+ * iframes never run it, measured) have no keydown listener, so they cannot forward the key and are
+ * not waited for. When the focused frame is unknown, every frame with a preload is waited for.
+ *
+ * `focusPath` is the focused frame followed by its ancestors up to the top frame, or undefined when
+ * it could not be read. When nothing would be waited for, `fallback` (the top frame unless it shows
+ * about:blank) is: a view that adopted an already loaded page may have missed its announcement.
+ */
+export function browserViewAutomationAwaitedFrames<T>(frames: readonly T[], hasPreload: (frame: T) => boolean, focusPath: readonly T[] | undefined, fallback?: T): readonly T[] {
+	const withPreload = frames.filter(hasPreload);
+	const awaited = focusPath === undefined || focusPath.length === 0 ? withPreload : withPreload.filter(frame => focusPath.includes(frame));
+	if (awaited.length === 0 && fallback !== undefined && frames.includes(fallback)) {
+		return [fallback];
+	}
+	return awaited;
+}
+
 export type BrowserViewAutomationTrustedFocusPredicate = (value: unknown) => boolean;
 
 interface IExpectationState extends IBrowserViewAutomationKeyExpectation {

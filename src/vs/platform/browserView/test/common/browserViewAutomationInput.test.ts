@@ -17,6 +17,9 @@ import {
 	browserViewAutomationKeySignatureFromElectron,
 	browserViewAutomationKeySignatureFromPreload,
 	browserViewAutomationNavigationDiscardsPreloadState,
+	browserViewAutomationAwaitedFrames,
+	browserViewAutomationFrameKind,
+	browserViewAutomationFormatFrameKinds,
 } from '../../common/browserViewAutomationInput.js';
 
 type TestAutomationListener = (_event: unknown, payload: unknown) => void;
@@ -278,5 +281,42 @@ suite('BrowserView automation input', () => {
 			{ isSameDocument: false, isMainFrame: false },
 			undefined,
 		].map(browserViewAutomationNavigationDiscardsPreloadState), [false, false, true, true, true]);
+	});
+
+	test('waits only for frames with a preload on the focus path, and for every preloaded frame when the focus is unknown', () => {
+		// The page of the field report: a top frame, a focused same-origin iframe, a still loading
+		// iframe elsewhere and about:blank iframes that never run the preload.
+		const frames = ['top', 'focused', 'loading', 'blank-1', 'blank-2', 'nested'];
+		const withPreload = new Set(['top', 'focused', 'loading', 'nested']);
+		const hasPreload = (frame: string) => withPreload.has(frame);
+		assert.deepStrictEqual({
+			focusedIframe: browserViewAutomationAwaitedFrames(frames, hasPreload, ['focused', 'top'], 'top'),
+			focusedBlankEditor: browserViewAutomationAwaitedFrames(frames, hasPreload, ['blank-1', 'top'], 'top'),
+			focusUnknown: browserViewAutomationAwaitedFrames(frames, hasPreload, undefined, 'top'),
+			nothingAnnouncedYet: browserViewAutomationAwaitedFrames(frames, () => false, ['focused', 'top'], 'top'),
+			aboutBlankTop: browserViewAutomationAwaitedFrames(['blank-1'], () => false, undefined, undefined),
+		}, {
+			focusedIframe: ['top', 'focused'],
+			focusedBlankEditor: ['top'],
+			focusUnknown: ['top', 'focused', 'loading', 'nested'],
+			nothingAnnouncedYet: ['top'],
+			aboutBlankTop: [],
+		});
+	});
+
+	test('names unanswered frames by kind without their URLs', () => {
+		const top = 'https://api.example.com';
+		const kinds = [
+			browserViewAutomationFrameKind('https://api.example.com/frame', top, top),
+			browserViewAutomationFrameKind('https://ads.example.net/x?secret=1', 'https://ads.example.net', top),
+			browserViewAutomationFrameKind('about:blank', top, top),
+			browserViewAutomationFrameKind('about:srcdoc', top, top),
+			browserViewAutomationFrameKind('https://api.example.com/sandboxed', 'null', top),
+		];
+		assert.deepStrictEqual({ kinds, formatted: browserViewAutomationFormatFrameKinds(kinds), none: browserViewAutomationFormatFrameKinds([]) }, {
+			kinds: ['same-origin', 'cross-origin', 'about-blank', 'about-blank', 'sandbox'],
+			formatted: 'same-origin=1,cross-origin=1,about-blank=2,sandbox=1',
+			none: '',
+		});
 	});
 });
