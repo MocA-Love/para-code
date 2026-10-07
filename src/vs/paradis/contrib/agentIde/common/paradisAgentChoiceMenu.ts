@@ -17,7 +17,7 @@
 // src/main/runtime/agent-state-rules/codex.json の plan_implement_menu と
 // src/main/runtime/startup-dialog-blocked-signals.ts を参考にした（キーの案内の行が画面の最後の行に
 // あることを条件にする。答えた後に残った文言では当てない）。文言は codex-cli 0.158.0 / 0.160.0 の
-// 実画面と 0.160.0 のバイナリの文字列で確かめた。外れたときはこれまでどおり hook の状態だけで判断する。
+// 実画面と 0.160.0 のバイナリの文字列で確かめ、0.161.0 のキーの案内の表記の変更はソースとスナップショットで確かめた。外れたときはこれまでどおり hook の状態だけで判断する。
 
 /** 選択画面の種類。 */
 export type ParadisAgentChoiceMenuKind =
@@ -42,6 +42,12 @@ export interface IParadisAgentChoiceMenu {
 	/** Enter を押すと何が起きるか（エージェントへ返す説明）。 */
 	readonly enterWould: string;
 }
+
+/**
+ * キーの案内の Ctrl の表記（空白を落とした形の正規表現の断片）。codex-cli 0.160.0 までは「ctrl+」、
+ * 0.161.0 からは macOS が「⌃」、Linux が「^」、Windows が「ctrl+」（codex-rs/tui/src/key_hint.rs の MODIFIER_LABELS）。
+ */
+const CTRL_LABEL = '(?:ctrl\\+|\u2303|\\^)';
 
 interface IChoiceMenuRule {
 	readonly kind: ParadisAgentChoiceMenuKind;
@@ -75,10 +81,11 @@ const RULES: readonly IChoiceMenuRule[] = [
 	},
 	{
 		// 新しいモデルの案内「Meet GPT-6 Sol」/「› 1. Try new model」/「2. Use existing model」/
-		// 「enter/esc confirm · ctrl+c quit」。使えなくなったモデルの知らせは選択肢が無く「enter/esc continue · ctrl+c quit」
+		// 「enter/esc confirm · ctrl+c quit」。使えなくなったモデルの知らせは選択肢が無く「enter/esc continue · ctrl+c quit」。
+		// 0.161.0 から Ctrl の表記が OS ごとに変わった（macOS は「⌃c」、Linux は「^c」、Windows は「ctrl+c」のまま）
 		kind: 'model_switch',
-		observedIn: 'codex-cli 0.158.0 / 0.160.0',
-		keyRow: /^enter\/esc(?:confirm|continue)\u00b7ctrl\+cquit$/i,
+		observedIn: 'codex-cli 0.158.0 / 0.160.0 / 0.161.0',
+		keyRow: new RegExp(`^enter/esc(?:confirm|continue)\u00b7${CTRL_LABEL}cquit$`, 'i'),
 		enterWould: 'Enter would confirm the highlighted choice and switch the model Codex uses',
 	},
 	{
