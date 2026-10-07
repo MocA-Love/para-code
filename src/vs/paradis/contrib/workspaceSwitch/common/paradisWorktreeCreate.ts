@@ -402,12 +402,11 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{
 		id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
 		models: [
-			// 別名が指す先と既定のエフォートは Claude Code 2.1.284 のもの。CLI から一覧を取れたときは使わない
+			// 別名が指す先と既定のエフォートは Claude Code 2.1.293 のもの。CLI から一覧を取れたときは使わない
 			{ id: 'fable', label: 'fable (Fable 5.1)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
 			{ id: 'opus', label: 'opus (Opus 5.5)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'sonnet', label: 'sonnet (Sonnet 5.5)', flag: '--model sonnet', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
-			// Haiku 4.5 はエフォート非対応（efforts: [] でエフォート欄を無効化する）
-			{ id: 'haiku', label: 'haiku (Haiku 4.5)', flag: '--model haiku', efforts: [] },
+			{ id: 'haiku', label: 'haiku (Haiku 5.5)', flag: '--model haiku', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'medium' },
 		],
 		efforts: CLAUDE_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
