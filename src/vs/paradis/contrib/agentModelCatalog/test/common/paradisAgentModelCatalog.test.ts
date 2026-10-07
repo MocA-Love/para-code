@@ -26,6 +26,7 @@ import {
 	paradisParseCodexModelList,
 	paradisReadClaudeEffortSettings,
 	paradisResolveAgentTemplates,
+	paradisSelectCurrentModels,
 } from '../../common/paradisAgentModelCatalog.js';
 
 // Claude Code 2.1.283 の `list_models` の応答（ログイン無しの一時ホームで API キーを渡して取得）を縮めたもの。
@@ -95,11 +96,37 @@ suite('ParadisAgentModelCatalog', () => {
 			},
 			{
 				id: 'codex',
-				models: ['--model gpt-6-astra|low|6', '--model gpt-5.5|medium|4'],
+				models: ['--model gpt-6-astra|low|6'],
 				efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(id => `-c model_reasoning_effort=${id}`),
 			},
 			{ id: 'gemini', models: undefined, efforts: undefined },
 		]);
+	});
+
+	test('選択肢には今のモデルだけを残す: Claude は別名、Codex は最も新しい世代で後継の無いもの', () => {
+		const model = (id: string, resolvedModel?: string, upgrade?: string) => ({ id, efforts: [], ...(resolvedModel !== undefined ? { resolvedModel } : {}), ...(upgrade !== undefined ? { upgrade } : {}) });
+		const ids = (agentId: string, models: ReturnType<typeof model>[]) => paradisSelectCurrentModels(agentId, models).map(candidate => candidate.id);
+		assert.deepStrictEqual({
+			// Claude Code 2.1.293 の一覧（2026-10-08）
+			claude: ids('claude', [
+				model('opus', 'claude-opus-5-5'), model('fable', 'claude-fable-5-1'), model('sonnet', 'claude-sonnet-5-5'), model('haiku', 'claude-haiku-5-5'),
+				model('claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001'), model('claude-sonnet-5', 'claude-sonnet-5'), model('claude-opus-5', 'claude-opus-5'),
+				model('claude-fable-5', 'claude-fable-5'), model('claude-opus-4-8', 'claude-opus-4-8'), model('claude-sonnet-4-6', 'claude-sonnet-4-6'),
+			]),
+			// 2.1.283 は Fable を版付きの id でしか出さなかった
+			oldClaude: ids('claude', [model('opus', 'claude-opus-5-5'), model('claude-fable-5-1', 'claude-fable-5-1'), model('claude-fable-5', 'claude-fable-5'), model('custom-model')]),
+			// codex-cli 0.160.0 の model/list（2026-10-08）。gpt-5.6 には後継が示されない
+			codex: ids('codex', [
+				model('gpt-6.1-sol'), model('gpt-6-astra'), model('gpt-6-sol'), model('gpt-6-luna'),
+				model('gpt-5.6-sol'), model('gpt-5.6-terra'), model('gpt-5.6-luna'), model('gpt-5.5', undefined, 'gpt-6.1-sol'), model('custom'),
+			]),
+			allOld: ids('codex', [model('gpt-5.5', undefined, 'gpt-6.1-sol')]),
+		}, {
+			claude: ['opus', 'fable', 'sonnet', 'haiku'],
+			oldClaude: ['opus', 'claude-fable-5-1', 'custom-model'],
+			codex: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'custom'],
+			allOld: ['gpt-5.5'],
+		});
 	});
 
 	test('Claude の名前は正式なモデル id から作り、既定のエフォートは Claude Code の設定の順で決める', () => {
@@ -138,7 +165,7 @@ suite('ParadisAgentModelCatalog', () => {
 			custom: paradisResolveAgentTemplates(custom, catalogs).map(agent => `${agent.id}:${agent.models?.map(model => model.id).join(',')}`),
 		}, {
 			before: PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'codex')?.models?.map(model => model.id),
-			after: ['gpt-6-astra', 'gpt-5.5'],
+			after: ['gpt-6-astra'],
 			custom: ['codex:mine'],
 		});
 	});
@@ -159,15 +186,16 @@ suite('ParadisAgentModelCatalog', () => {
 			past: PARADIS_PAST_DEFAULT_AGENT_COMMANDS.map(resolve),
 			edited: resolve(edited),
 		}, {
-			current: { userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
+			current: { userDefined: false, codex: 'gpt-6-astra' },
 			past: [
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
-				{ userDefined: false, codex: 'gpt-6-astra,gpt-5.5' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
 			],
 			edited: { userDefined: true, codex: 'gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5' },
 		});
@@ -212,11 +240,11 @@ suite('ParadisAgentModelCatalog', () => {
 			modified: describe([modifiedClaude, { id: 'gemini', label: 'Gemini CLI', command: 'gemini {prompt}' }]),
 		}, {
 			reorderedWithAdded: {
-				agents: ['codex:Codex:gpt-6-astra,gpt-5.5', 'mine:Mine:-', 'claude:Claude Code:fable,opus,sonnet,haiku,opusplan'],
+				agents: ['codex:Codex:gpt-6-astra', 'mine:Mine:-', 'claude:Claude Code:fable,opus,sonnet,haiku,opusplan'],
 				fixed: true, usesCatalog: true, plan: { addedIds: ['mine'], modifiedIds: [], blockedLayers: [] },
 			},
 			deletedOnly: {
-				agents: ['codex:Codex:gpt-6-astra,gpt-5.5'],
+				agents: ['codex:Codex:gpt-6-astra'],
 				fixed: false, usesCatalog: true, plan: { addedIds: [], modifiedIds: [], blockedLayers: [] },
 			},
 			modified: {
@@ -268,6 +296,6 @@ suite('ParadisAgentModelCatalog', () => {
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {
 		// この指紋が変わったら、変える前の PARADIS_DEFAULT_AGENT_COMMANDS を JSON の形で
 		// PARADIS_PAST_DEFAULT_AGENT_COMMANDS へ足してから、ここの値を新しい指紋に書き換える
-		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -1213196926);
+		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), 1296688125);
 	});
 });
