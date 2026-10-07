@@ -21,6 +21,7 @@ import { BottomDrawer, Button, DrawerTitle, Icon, useThemeColors } from '../../u
 import type { QuestionOutcome } from '../../agentQuestionMod.js';
 import { AdvisorChatRowView } from './advisorRow.js';
 import { WorkflowCardRowView } from './workflowCard.js';
+import { TeamCardRowView } from './teamCard.js';
 import type { ChatRow } from './chatRows.js';
 import { questionRowOutcome } from './questionOutcomes.js';
 import { SubagentCardRowView, SubagentResumeLink } from './subagentCard.js';
@@ -58,6 +59,8 @@ export const ChatRowView = memo(function ChatRowView({ row, terminalKey, allTool
 			return <AdvisorChatRowView row={row} terminalKey={terminalKey} />;
 		case 'workflow':
 			return <WorkflowCardRowView row={row} terminalKey={terminalKey} />;
+		case 'team':
+			return <TeamCardRowView row={row} terminalKey={terminalKey} />;
 	}
 });
 

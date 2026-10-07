@@ -57,6 +57,23 @@ describe('会話の行の組み立て', () => {
 		expect(splitPinnedQuestion(rows, { kind: 'approval', id: 'q1' }, 'permission').pinned).toBeUndefined();
 	});
 
+	test('チームのメンバーの起動は最初の位置に 1 枚のカードにまとめ、起動の結果も畳む。チームでない Agent は今の行のまま', () => {
+		const teamIds = new Map([['t1', 'team-a'], ['t2', 'team-a']]);
+		const rows = buildChatRows([
+			msg('text'),
+			msg('tool_use', { tool: 'Agent', toolUseId: 't1' }),
+			msg('tool_use', { tool: 'Agent', toolUseId: 't2' }),
+			msg('tool_use', { tool: 'Agent', toolUseId: 'plain' }),
+			msg('tool_result', { toolUseId: 't1' }),
+			msg('tool_result', { toolUseId: 't2' }),
+			msg('tool_result', { toolUseId: 'plain' }),
+			msg('text'),
+		], undefined, teamIds);
+		expect(rows.map(row => row.type === 'team' ? `team:${row.teamName}` : row.type)).toEqual(['msg', 'team:team-a', 'agents', 'msg']);
+		// PC が追っていない（古い PC）なら今までどおりサブエージェントのカード
+		expect(buildChatRows([msg('tool_use', { tool: 'Agent', toolUseId: 't1' })]).map(row => row.type)).toEqual(['agents']);
+	});
+
 	test('行の鍵はセッションごとに変わる', () => {
 		const [row] = buildChatRows([msg('text')]);
 		expect(row !== undefined ? chatRowKey(row, 'e1') : '').not.toBe(row !== undefined ? chatRowKey(row, 'e2') : '');

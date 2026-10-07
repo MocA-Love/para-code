@@ -196,7 +196,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const workflows = workflowsSupported && chatReady ? chat?.workflows : undefined;
 	const workflowIdsKey = (workflows ?? []).map(workflow => workflow.toolUseId ?? '').join('\n');
 	const workflowToolUseIds = useMemo(() => new Set(workflowIdsKey.split('\n').filter(id => id.length > 0)), [workflowIdsKey]);
-	const rows = useMemo(() => withQuestionOutcomes(buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? [], workflowToolUseIds)), [olderMessages, messages, workflowToolUseIds]);
+	// チームのカード（agent.teams.v1）。PC が追っているチームのメンバーの起動だけをカードにする（古い PC なら今の行のまま）
+	const teamsSupported = usePcCapability(PcCapability.AgentTeams);
+	const teams = teamsSupported && chatReady ? chat?.teams : undefined;
+	const teamIdsKey = (teams ?? []).map(team => team.toolUseIds.map(id => `${id}\t${team.name}`).join('\n')).join('\n');
+	const teamToolUseIds = useMemo(() => new Map(teamIdsKey.split('\n').filter(line => line.length > 0).map(line => line.split('\t') as [string, string])), [teamIdsKey]);
+	const rows = useMemo(() => withQuestionOutcomes(buildChatRows(olderMessages.length > 0 ? [...olderMessages, ...(messages ?? [])] : messages ?? [], workflowToolUseIds, teamToolUseIds)), [olderMessages, messages, workflowToolUseIds, teamToolUseIds]);
 	// Workflow の子が起動したシェルはカードへ寄せる（Q259 A）。ピルとシートには親と普通の子のものだけを出す
 	const chatShells = chatReady ? chat?.shells : undefined;
 	const shownShells = useMemo(() => paneShells(chatShells, workflows), [chatShells, workflows]);

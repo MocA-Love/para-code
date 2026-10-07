@@ -2051,6 +2051,18 @@ suite('ParadisMobileAgentChat', () => {
 		assert.deepStrictEqual(parsed.messages, []);
 	});
 
+	test('reads every teammate message in one line even when an idle notification comes first', () => {
+		// 2.1.292 で、報告 1 + idle_notification 2 が 1 つの user 行にまとめて届いた。先頭が idle でも後ろの報告を落とさない
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: { content: 'Another Claude session sent a message:\n<teammate-message teammate_id="counter" color="blue">{"type":"idle_notification","from":"counter","idleReason":"available"}</teammate-message>\n<teammate-message teammate_id="planner" color="green" summary="計画の報告">1 行足します。</teammate-message>\n<teammate-message teammate_id="planner" color="green">{"type":"idle_notification","from":"planner"}</teammate-message>\n\nThis came from another Claude session.' },
+		}));
+		assert.deepStrictEqual({ userText: parsed.userText, messages: parsed.messages }, {
+			userText: false,
+			messages: [{ role: 'assistant', kind: 'peer_message', text: '1 行足します。', peerName: 'planner', peerSummary: '計画の報告' }],
+		});
+	});
+
 	test('keeps ordinary Claude transcript user text unchanged', () => {
 		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', message: { content: '通常の質問です' } }));
 		assert.strictEqual(parsed.userText, true);

@@ -454,6 +454,34 @@ describe('wire golden (app side)', () => {
 		controller.disconnect();
 	});
 
+	it('agent: チーム（agent.teams.v1）を全項目のまま読み、時刻を手元の時計へ直す', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		for (const message of agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta')) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		const chat = latest()?.agentChats.get('terminal-key-1');
+		const golden = agentGolden.toMobile.find(message => message.t === 'delta' && message['teams'] !== undefined);
+		const goldenTeams = golden?.['teams'] as Golden[] | undefined;
+		const shift = (chat?.teams?.[0]?.startedAt ?? 0) - (goldenTeams?.[0]?.['startedAt'] as number);
+		expect({
+			teams: chat?.teams?.map(team => ({
+				...team,
+				startedAt: team.startedAt - shift,
+				updatedAt: team.updatedAt - shift,
+				members: team.members.map(member => ({ ...member, startedAt: member.startedAt - shift, updatedAt: member.updatedAt - shift })),
+				messages: team.messages.map(message => ({ ...message, at: message.at - shift })),
+				...(team.plans !== undefined ? { plans: team.plans.map(plan => ({ ...plan, at: plan.at - shift })) } : {}),
+			})),
+			capability: controller.hasPcCapability(PcCapability.AgentTeams),
+		}).toEqual({ teams: goldenTeams, capability: true });
+		controller.disconnect();
+	});
+
 	it('agent: コマンドの一覧（agent.commands.v2）はゴールデンと同じ形で求め、重なりと出どころを読み、断りの理由を返す', async () => {
 		const { controller, pcMux, sent, latest } = await connect();
 		pcMux.send(Channels.State, encode(stateGolden.current));

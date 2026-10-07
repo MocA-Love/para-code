@@ -14,6 +14,8 @@ import { foldSubagentRows, type SubagentCardChatRow } from './subagentCards.js';
  *  - サブエージェントの呼び出しは、同じターンのものを 1 枚のカードにまとめる（`subagentCards.ts`）
  *  - Advisor への相談は、呼び出しと結果を独立した 1 行にする（ツールのまとまりに混ぜない。`advisor.ts`）
  *  - Workflow の起動は、PC が実行を追っているもの（`workflowToolUseIds`）だけ 1 枚のカードにする（agent.workflows.v1）
+ *  - チームのメンバーの起動は、PC が追っているチーム（`teamToolUseIds`）ごとに、最初の起動の位置へ 1 枚のカードにする。
+ *    後の起動と起動の結果はカードへ畳む（agent.teams.v1）
  */
 export type ChatRow =
 	| { readonly type: 'msg'; readonly m: AgentChatMessage }
@@ -23,7 +25,15 @@ export type ChatRow =
 	| { readonly type: 'group'; readonly key: string; readonly msgs: AgentChatMessage[] }
 	| AdvisorChatRow
 	| SubagentCardChatRow
-	| WorkflowChatRow;
+	| WorkflowChatRow
+	| TeamChatRow;
+
+/** エージェントチーム 1 つ（カードの行。中身は会話の状態の `teams` から引く）。 */
+export interface TeamChatRow {
+	readonly type: 'team';
+	readonly key: string;
+	readonly teamName: string;
+}
 
 /** Workflow の起動 1 回（カードの行。中身は会話の状態の `workflows` から引く）。 */
 export interface WorkflowChatRow {
@@ -44,7 +54,7 @@ export interface AdvisorChatRow {
 
 export type QuestionChatRow = Extract<ChatRow, { type: 'question' | 'questionGroup' }>;
 
-export function buildChatRows(messages: readonly AgentChatMessage[], workflowToolUseIds?: ReadonlySet<string>): ChatRow[] {
+export function buildChatRows(messages: readonly AgentChatMessage[], workflowToolUseIds?: ReadonlySet<string>, teamToolUseIds?: ReadonlyMap<string, string>): ChatRow[] {
 	// 質問の「回答済み」判定: 同じ toolUseId の tool_result が後続に存在するか。
 	const answeredIds = new Set<string>();
 	for (const m of messages) {
@@ -56,6 +66,9 @@ export function buildChatRows(messages: readonly AgentChatMessage[], workflowToo
 	const webSearches = new Map<string, AgentChatMessage>();
 	const advisorCalls = new Map<string, AdvisorChatRow>();
 	const workflowCalls = new Map<string, WorkflowChatRow>();
+	// カードを置いたチームと、カードへ畳んだメンバーの起動（その結果も畳む）
+	const teamCards = new Set<string>();
+	const teamCalls = new Set<string>();
 	let buffer: AgentChatMessage[] = [];
 	const flush = () => {
 		const first = buffer[0];
@@ -90,6 +103,16 @@ export function buildChatRows(messages: readonly AgentChatMessage[], workflowToo
 			if (m.toolUseId !== undefined) {
 				webSearches.set(m.toolUseId, m);
 			}
+		} else if (m.kind === 'tool_use' && (m.tool === 'Agent' || m.tool === 'Task') && m.toolUseId !== undefined && teamToolUseIds?.has(m.toolUseId) === true) {
+			const teamName = teamToolUseIds.get(m.toolUseId)!;
+			teamCalls.add(m.toolUseId);
+			if (!teamCards.has(teamName)) {
+				flush();
+				teamCards.add(teamName);
+				result.push({ type: 'team', key: `team:${teamName}`, teamName });
+			}
+		} else if (m.kind === 'tool_result' && m.toolUseId !== undefined && teamCalls.has(m.toolUseId)) {
+			// メンバーの起動の結果（「Spawned successfully」）はカードに畳む
 		} else if (m.kind === 'tool_use' && m.tool === 'Workflow' && m.toolUseId !== undefined && workflowToolUseIds?.has(m.toolUseId) === true) {
 			flush();
 			const row: WorkflowChatRow = { type: 'workflow', key: `wf:${m.toolUseId}`, toolUseId: m.toolUseId, use: m };
@@ -153,7 +176,7 @@ export function splitPinnedQuestion(
 
 /** 一覧の行の鍵（セッションが変わったら全行を作り直す）。 */
 export function chatRowKey(row: ChatRow, epoch: string): string {
-	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' || row.type === 'agents' || row.type === 'advisor' || row.type === 'workflow'
+	return row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' || row.type === 'agents' || row.type === 'advisor' || row.type === 'workflow' || row.type === 'team'
 		? `${epoch}:${row.key}`
 		: `${epoch}:${row.m.rev}`;
 }
