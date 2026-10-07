@@ -65,6 +65,7 @@ import type { RelayHost } from './relayHosts.js';
 import { USAGE_MACHINE_ID_CAPABILITY } from './features/usage/usageAggregate.js';
 import { forgetUsagePc } from './features/usage/usageCacheFile.js';
 import { buildUsageTargets } from './features/usage/usageSources.js';
+import { EMPTY_BROWSER_CURSORS } from './browserCursors.js';
 
 /** 保存値を読み込む前に「モデルを選ぶ」で切り替えた操作。読み込み後は undefined（以後はそのまま保存する）。 */
 let hiddenModelOpsBeforeLoad: HiddenModelOp[] | undefined = [];
@@ -1345,6 +1346,7 @@ export const useAppStore = create<AppState>(set => ({
 	browserPage: undefined,
 	browserFocus: undefined,
 	browserInputRejected: undefined,
+	browserCursors: EMPTY_BROWSER_CURSORS,
 	agentChats: new Map(),
 	// アプリ起動直後は「初期化中」。init 完了までゲートに誤った未接続画面を出さない。
 	initializing: true,

@@ -15,6 +15,8 @@ import { PcCapability } from '../pcCompat.js';
 import type { BrowserInput } from '../browserKeys.js';
 import type { BrowserTargetsScope } from '../store.js';
 import { BrowserKeyInput } from './browserKeyInput.js';
+import { BrowserCursorOverlay } from './browserCursorOverlay.js';
+import { BROWSER_CURSOR_IDLE_MS } from '../browserCursors.js';
 import { Icon } from '../ui/icon.js';
 import { BottomDrawer } from '../ui/bottomDrawer.js';
 import { DrawerCaption } from '../ui/drawerHeader.js';
@@ -87,9 +89,9 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 	const inFront = useAppInFront();
 	const active = screenActive && inFront;
 	const theme = useThemeColors();
-	const { browserTargets, browserStart, browserStop, browserInput, frame, browserPage, browserFocus, browserInputRejected, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed, activePcId } = useAppStore(useShallow(s => ({
+	const { browserTargets, browserStart, browserStop, browserInput, frame, browserPage, browserFocus, browserInputRejected, browserCursors, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection, sidebarCollapsed, setSidebarCollapsed, activePcId } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
-		browserInput: s.browserInput, frame: s.browserFrame, browserPage: s.browserPage, browserFocus: s.browserFocus, browserInputRejected: s.browserInputRejected,
+		browserInput: s.browserInput, frame: s.browserFrame, browserPage: s.browserPage, browserFocus: s.browserFocus, browserInputRejected: s.browserInputRejected, browserCursors: s.browserCursors,
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		setJpegFramesSuspended: s.setJpegFramesSuspended, workspace: s.workspace,
 		browserSelection: s.browserSelection, setBrowserSelection: s.setBrowserSelection,
@@ -742,6 +744,22 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 	// iPad の全画面では見出しが隠れるので、上の段が画面の上端に来る（セーフエリアと左上の操作ボタンを避ける）。
 	const chromeTop = fullscreen && isTablet ? rawInsets.top : 0;
 
+	// エージェントのカーソル（browser.cursor.v1）。映っているページの分だけ、映像の上に重ねる
+	const [cursorClock, setCursorClock] = useState(() => Date.now());
+	const visibleCursors = [...browserCursors.values()].filter(cursor => cursor.targetId === activeTargetId && Math.max(cursorClock, Date.now()) - cursor.at < BROWSER_CURSOR_IDLE_MS);
+	// 入力も映像も止まっても、期限を過ぎたカーソルを消せるよう、いちばん早い期限に描き直す
+	const nextCursorExpiry = visibleCursors.reduce((soonest, cursor) => Math.min(soonest, cursor.at + BROWSER_CURSOR_IDLE_MS), Number.POSITIVE_INFINITY);
+	useEffect(() => {
+		if (!Number.isFinite(nextCursorExpiry)) {
+			return;
+		}
+		const timer = setTimeout(() => setCursorClock(Date.now()), Math.max(0, nextCursorExpiry - Date.now()) + 50);
+		return () => clearTimeout(timer);
+	}, [nextCursorExpiry]);
+	const cursorOverlay = visibleCursors.length > 0
+		? <BrowserCursorOverlay cursors={visibleCursors} view={viewSize} content={contentDims()} showStatus={regular} />
+		: null;
+
 	const viewport = (
 		// ピンチで拡大縮小・ドラッグでパンできるようScrollViewズームに載せる。
 		// タップ座標は子ビューのローカル座標系（ズーム非依存）なのでマッピングはそのまま有効
@@ -782,6 +800,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 					{jpegOverVideo && frameSource !== undefined ? (
 						<Image source={frameSource} style={StyleSheet.absoluteFill} resizeMode="contain" fadeDuration={0} />
 					) : null}
+					{cursorOverlay}
 				</View>
 			) : frameSource && viewSize.w > 1 ? (
 				// 枠の大きさが分かる前に描くと、iOS が 1pt の大きさで画像を読み、同じ URI の間はその粗い絵を使い回す
@@ -793,6 +812,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 						resizeMode="contain"
 						fadeDuration={0}
 					/>
+					{cursorOverlay}
 				</View>
 			) : (
 				<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>

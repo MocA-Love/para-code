@@ -44,7 +44,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
-import { paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorOwner, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -352,7 +352,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 * 短い間だけ覚えておく (モバイルミラーが同じ間引き方をしている)。まだ寸法を知らない間は
 	 * 何も送らない —— 位置の分からないカーソルを出すより、1手ぶん遅れて出る方がよい。
 	 */
-	private async fireAgentCursorMove(viewId: string, view: BrowserView, params: Readonly<Record<string, unknown>>, durationMs: number): Promise<void> {
+	private async fireAgentCursorMove(viewId: string, view: BrowserView, params: Readonly<Record<string, unknown>>, durationMs: number, owner?: IParadisCursorOwner): Promise<void> {
 		const { type, x, y } = params;
 		if (type !== 'mousePressed' && type !== 'mouseMoved') {
 			return;
@@ -375,8 +375,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return;
 		}
 		this._onDidChangeAgentCursor.fire(type === 'mousePressed'
-			? { viewId, kind: 'press', nx, ny }
-			: { viewId, kind: 'move', nx, ny, durationMs });
+			? { viewId, kind: 'press', nx, ny, ...ownerOfEvent(owner) }
+			: { viewId, kind: 'move', nx, ny, durationMs, ...ownerOfEvent(owner) });
 	}
 
 	/**
@@ -754,7 +754,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!view) {
 			return;
 		}
-		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point);
+		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point, note.owner);
+		// 写し（モバイル）へも状態を流す。消す方（idle）は設定に関わらず流す
+		if (note.status === 'idle' || this.cursorOverlay.isOverlayEnabled()) {
+			this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'state', status: note.status, ...ownerOfEvent(note.owner) });
+		}
 	}
 
 	/** Apply background throttling only to the concrete object named by the exact descriptor. */
@@ -928,17 +932,18 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 上限つきで、演出が失敗しても0になるだけ。
 		// この後の commit 手順は毎回 authority と focus を取り直すので、ここで待つのは安全。
 		let cursorWaitMs = 0;
+		const pacing = paradisParseCursorPacing(pacingValue);
 		if (command.method === 'Input.dispatchMouseEvent') {
-			cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params, paradisParseCursorPacing(pacingValue));
-			// 一覧ウィンドウの写しは、待った時間ではなくページのカーソルが滑る時間で動かす。
-			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, this.cursorOverlay.lastGlideMs(view));
+			cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params, pacing);
+			// 一覧ウィンドウ・モバイルの写しは、待った時間ではなくページのカーソルが滑る時間で動かす。
+			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, this.cursorOverlay.lastGlideMs(view, pacing?.owner), pacing?.owner);
 			if (cursorWaitMs > 0) {
 				await timeout(cursorWaitMs);
 			}
 		} else if (command.method === 'Input.dispatchKeyEvent' || command.method === 'Input.insertText') {
 			// キー入力には座標が無いので、フォーカスされている要素へ寄せるようページ側へ頼む。
 			// 配送は待たせない。
-			this.cursorOverlay.onKeyEvent(view, command.method, command.params as Readonly<Record<string, unknown>>);
+			this.cursorOverlay.onKeyEvent(view, command.method, command.params as Readonly<Record<string, unknown>>, pacing?.owner);
 		}
 
 		const keySignature = command.method === 'Input.dispatchKeyEvent'
@@ -1440,4 +1445,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// ビューが破棄済み等。スロットリング設定はベストエフォートなので無視
 		}
 	}
+}
+
+/** カーソルの写し（一覧ウィンドウ・モバイル）に付ける持ち主。 */
+function ownerOfEvent(owner: IParadisCursorOwner | undefined): { ownerId?: string; name?: string; mark?: string; color?: string } {
+	return owner ? { ownerId: owner.id, name: owner.name, mark: owner.mark, color: owner.color } : {};
 }

@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.7',
+		date: '2026-10-07',
+		items: [
+			{
+				icon: 'navigate-outline',
+				title: 'ブラウザの画面共有で、エージェントのカーソルが見えるようになりました',
+				body: 'PC のエージェントが操作している場所に、色と名前の付いた矢印が出て、押したときは波紋が出ます。2 つのエージェントが同じページを触っていると、カーソルが分かれます。iPad の広い画面では「スクリプト実行中」「待機中」などの状態も名札に出ます（PC の Para Code も新しい版が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.12.6',
 		date: '2026-10-06',
 		items: [
