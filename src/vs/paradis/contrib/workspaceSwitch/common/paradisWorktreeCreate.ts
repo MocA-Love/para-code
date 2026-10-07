@@ -360,12 +360,10 @@ export interface IParadisAgentLaunchOptions {
 
 /** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
 const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-/** Codex のエフォート語彙（gpt-6.1-sol / gpt-6-astra / gpt-6-sol / gpt-5.6-sol / gpt-5.6-terra が選べる全部）。 */
+/** Codex のエフォート語彙（gpt-6.1-sol / gpt-6-astra / gpt-6-sol が選べる全部）。 */
 const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-/** gpt-6-luna と gpt-5.6-luna は ultra が無い。 */
+/** gpt-6-luna は ultra が無い。 */
 const CODEX_MAX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-/** gpt-5.5 は max も無い。 */
-const CODEX_XHIGH_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh'];
 
 /**
  * Codex のエフォートを渡すフラグ。codex-cli 0.155.1 には `--effort` が無く（渡すと起動しない）、
@@ -418,17 +416,13 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{
 		id: 'codex', label: 'Codex', command: 'codex {prompt}',
 		models: [
-			// codex-cli 0.159.2 の一覧（2026-09-30）。並びは priority の順で、先頭が既定。gpt-6.1-sol は
-			// CLI に同梱の表（`codex debug models --bundled`）から、ほかのエフォートの既定はサーバーから
+			// codex-cli 0.159.2 の一覧（2026-09-30）のうち、今の世代（gpt-6）だけ。並びは priority の順で、先頭が既定。
+			// gpt-6.1-sol は CLI に同梱の表（`codex debug models --bundled`）から、ほかのエフォートの既定はサーバーから
 			// 届く一覧（model/list）から取った。CLI から一覧を取れたときは使わない
 			{ id: 'gpt-6.1-sol', flag: '--model gpt-6.1-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'gpt-6-sol', flag: '--model gpt-6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'gpt-6-luna', flag: '--model gpt-6-luna', efforts: CODEX_MAX_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
-			{ id: 'gpt-5.6-terra', flag: '--model gpt-5.6-terra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: CODEX_MAX_EFFORT_IDS, defaultEffort: 'medium' },
-			{ id: 'gpt-5.5', flag: '--model gpt-5.5', efforts: CODEX_XHIGH_EFFORT_IDS, defaultEffort: 'medium' },
 		],
 		efforts: CODEX_EFFORT_IDS.map(id => ({ id, flag: paradisCodexEffortFlag(id) })),
 		permissions: [

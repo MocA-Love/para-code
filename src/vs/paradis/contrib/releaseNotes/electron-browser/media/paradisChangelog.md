@@ -7,6 +7,7 @@ Para Code が本家 VS Code に加えた変更の一覧です。新しいバー�
 ## 未リリース
 
 - エージェントを起動するときのモデルの選択肢で、Haiku が **Haiku 5.5** になり、effort も選べるようになりました（Claude Code から一覧を取れないときの候補）
+- モデルの選択肢に古い版が並ばないようにしました。Claude Code は opus・fable・sonnet・haiku・opusplan、Codex は今の世代（gpt-6）のモデルだけを出します
 
 ## paracode-162（2026-10-08）
 

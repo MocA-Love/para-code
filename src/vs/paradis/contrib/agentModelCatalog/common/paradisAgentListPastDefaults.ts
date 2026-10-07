@@ -405,4 +405,67 @@ export const PARADIS_PAST_DEFAULT_AGENT_COMMANDS: readonly (readonly object[])[]
 			],
 		},
 	],
+	// 2026-10-08（Claude Code 2.1.293 の Haiku 5.5。gpt-5.6・gpt-5.5 を含む）
+	[
+		{
+			id: 'claude',
+			label: 'Claude Code',
+			command: 'claude {prompt}',
+			models: [
+				{ id: 'fable', label: 'fable (Fable 5.1)', flag: '--model fable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'high' },
+				{ id: 'opus', label: 'opus (Opus 5.5)', flag: '--model opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'sonnet', label: 'sonnet (Sonnet 5.5)', flag: '--model sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'haiku', label: 'haiku (Haiku 5.5)', flag: '--model haiku', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+			],
+			efforts: [
+				{ id: 'low', flag: '--effort low' },
+				{ id: 'medium', flag: '--effort medium' },
+				{ id: 'high', flag: '--effort high' },
+				{ id: 'xhigh', flag: '--effort xhigh' },
+				{ id: 'max', flag: '--effort max' },
+			],
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '--permission-mode manual' },
+				{ id: 'skip-permissions', label: LABEL_SKIP_ALL, flag: '--dangerously-skip-permissions', danger: true, hint: HINT_SKIP_ALL },
+			],
+		},
+		{
+			id: 'codex',
+			label: 'Codex',
+			command: 'codex {prompt}',
+			models: [
+				{ id: 'gpt-6.1-sol', flag: '--model gpt-6.1-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'low' },
+				{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
+				{ id: 'gpt-6-sol', flag: '--model gpt-6-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
+				{ id: 'gpt-6-luna', flag: '--model gpt-6-luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'low' },
+				{ id: 'gpt-5.6-terra', flag: '--model gpt-5.6-terra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
+				{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'gpt-5.5', flag: '--model gpt-5.5', efforts: ['low', 'medium', 'high', 'xhigh'], defaultEffort: 'medium' },
+			],
+			efforts: [
+				{ id: 'low', flag: '-c model_reasoning_effort=low' },
+				{ id: 'medium', flag: '-c model_reasoning_effort=medium' },
+				{ id: 'high', flag: '-c model_reasoning_effort=high' },
+				{ id: 'xhigh', flag: '-c model_reasoning_effort=xhigh' },
+				{ id: 'max', flag: '-c model_reasoning_effort=max' },
+				{ id: 'ultra', flag: '-c model_reasoning_effort=ultra' },
+			],
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '' },
+				{ id: 'full-auto', label: 'full-auto', flag: '--sandbox workspace-write --ask-for-approval on-request', hint: HINT_FULL_AUTO_ON_REQUEST },
+				{ id: 'bypass', label: LABEL_BYPASS, flag: '--dangerously-bypass-approvals-and-sandbox', danger: true, hint: HINT_BYPASS },
+			],
+		},
+		{
+			id: 'gemini',
+			label: 'Gemini CLI',
+			command: 'gemini -i {prompt}',
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '' },
+				{ id: 'yolo', label: LABEL_SKIP_ALL, flag: '--yolo', danger: true, hint: HINT_SKIP_ALL },
+			],
+		},
+	],
 ];

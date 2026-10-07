@@ -44,6 +44,8 @@ export interface IParadisDiscoveredModel {
 	readonly efforts: readonly string[];
 	/** 「既定」を選んだときに実際に使われるエフォート。 */
 	readonly defaultEffort?: string;
+	/** CLI が示す後継のモデル（Codex の `upgrade`）。あれば選択肢に出さない。 */
+	readonly upgrade?: string;
 }
 
 export interface IParadisAgentModelCatalog {
@@ -272,6 +274,7 @@ export function paradisParseCodexModelList(result: unknown): IParadisDiscoveredM
 			id,
 			efforts,
 			...(typeof entry.defaultReasoningEffort === 'string' ? { defaultEffort: entry.defaultReasoningEffort } : {}),
+			...(typeof entry.upgrade === 'string' && entry.upgrade.length > 0 ? { upgrade: entry.upgrade } : {}),
 		});
 	}
 	return models;
@@ -283,6 +286,52 @@ export function paradisCodexModelListNextCursor(result: unknown): string | undef
 }
 
 // ---------- 既定の定義への当てはめ ----------
+
+/** Claude の版付き id の系統と版（`claude-opus-5-5-20260101` → opus・5.05）。形が違えば undefined。 */
+function claudeModelVersion(id: string): { family: string; number: number } | undefined {
+	const match = /^claude-(?<family>[a-z]+)-(?<major>\d+)(?:-(?<minor>\d{1,2}))?(?:-\d{8})?(?:\[[a-z0-9]+\])?$/i.exec(id.trim());
+	const { family, major, minor } = match?.groups ?? {};
+	return family !== undefined && major !== undefined ? { family: family.toLowerCase(), number: Number(major) + Number(minor ?? 0) / 100 } : undefined;
+}
+
+/** Codex のモデル名の世代（`gpt-6.1-sol` → 6、`gpt-5.5` → 5）。形が違えば undefined。 */
+function codexModelGeneration(id: string): number | undefined {
+	const match = /^gpt-(?<major>\d+)(?:\.\d+)?(?:-|$)/i.exec(id);
+	return match?.groups?.major !== undefined ? Number(match.groups.major) : undefined;
+}
+
+/**
+ * CLI の一覧から、選択肢に出す今のモデルだけを残す。
+ * - Claude: 別名（`opus`・`fable`・`sonnet`・`haiku` など）を出し、`claude-opus-5` のような版付きの id は出さない。
+ *   ただし別名が一覧に無い系統（Claude Code 2.1.283 の `claude-fable-5-1` など）は、版付きのうち最も新しいものを残す
+ * - Codex: 後継（`upgrade`）が示されたものと、一覧の中で最も新しい世代より古い `gpt-<世代>` を出さない
+ * 絞った結果が空になるときは絞らない。
+ */
+export function paradisSelectCurrentModels(agentId: string, models: readonly IParadisDiscoveredModel[]): readonly IParadisDiscoveredModel[] {
+	let selected: readonly IParadisDiscoveredModel[] = models;
+	if (agentId === 'claude') {
+		const aliasFamilies = new Set(models.map(model => model.id.startsWith('claude-') ? undefined : claudeModelVersion(model.resolvedModel ?? '')?.family).filter((family): family is string => family !== undefined));
+		const newestByFamily = new Map<string, number>();
+		for (const model of models) {
+			const version = claudeModelVersion(model.id);
+			if (version !== undefined && !aliasFamilies.has(version.family)) {
+				newestByFamily.set(version.family, Math.max(newestByFamily.get(version.family) ?? 0, version.number));
+			}
+		}
+		selected = models.filter(model => {
+			const version = model.id.startsWith('claude-') ? claudeModelVersion(model.id) : undefined;
+			return version === undefined || (!aliasFamilies.has(version.family) && newestByFamily.get(version.family) === version.number);
+		});
+	} else if (agentId === 'codex') {
+		const generations = models.map(model => codexModelGeneration(model.id)).filter((generation): generation is number => generation !== undefined);
+		const newest = generations.length > 0 ? Math.max(...generations) : undefined;
+		selected = models.filter(model => {
+			const generation = codexModelGeneration(model.id);
+			return model.upgrade === undefined && (generation === undefined || newest === undefined || generation >= newest);
+		});
+	}
+	return selected.length > 0 ? selected : models;
+}
 
 function toModelOption(template: IParadisAgentCommandTemplate, model: IParadisDiscoveredModel): IParadisAgentModelOption {
 	const previous = template.models?.find(option => option.id === model.id);
@@ -308,7 +357,7 @@ export function paradisApplyDiscoveredModels(templates: readonly IParadisAgentCo
 		if (catalog === undefined || catalog.models.length === 0 || template.models === undefined) {
 			return template;
 		}
-		const models = catalog.models.map(model => toModelOption(template, model));
+		const models = paradisSelectCurrentModels(template.id, catalog.models).map(model => toModelOption(template, model));
 		if (template.id === 'claude') {
 			for (const alias of CLAUDE_UNLISTED_ALIASES) {
 				const option = template.models.find(candidate => candidate.id === alias);
