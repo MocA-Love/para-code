@@ -44,7 +44,7 @@ suite('paradisMcpToolsSync', () => {
 		const names = PARADIS_AGENT_BROWSER_TOOLS.map(tool => tool.name);
 		assert.ok(names.includes('upload_file_to_drop_zone'));
 		assert.ok(names.includes('get_session_health'));
-		for (const name of ['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page', 'list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile', 'mouse_action', 'save_page_as_pdf', 'set_extra_http_headers', 'set_http_credentials', 'set_request_rules', 'get_page_network_overrides', 'download_by_click', 'highlight_element', 'add_init_script', 'remove_init_script', 'list_init_scripts', 'wait_until', 'get_text', 'inspect_element', 'scroll_to', 'click_by', 'fill_by', 'run_steps', 'capture_screenshot', 'read_download']) {
+		for (const name of ['open_browser_tab', 'list_browser_tabs', 'select_browser_tab', 'close_browser_tab', 'request_browser_page', 'list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile', 'mouse_action', 'save_page_as_pdf', 'set_extra_http_headers', 'set_http_credentials', 'set_request_rules', 'get_page_network_overrides', 'download_by_click', 'highlight_element', 'add_init_script', 'remove_init_script', 'list_init_scripts', 'wait_until', 'get_text', 'inspect_element', 'scroll_to', 'click_by', 'fill_by', 'run_steps', 'capture_screenshot', 'read_download', 'set_cursor_label']) {
 			assert.ok((names as readonly string[]).includes(name), name);
 		}
 	});

@@ -167,6 +167,16 @@ export type ParadisCursorOverlayCommand =
 	/** オーバーレイもフラッシュも完全に取り除く。 */
 	| { readonly kind: 'remove' };
 
+/** ページのコマンドに付ける持ち主（`owner` はカーソルを分ける鍵、`color`・`mark` は見た目）。 */
+export interface IParadisCursorOwnerTag {
+	readonly owner?: string;
+	readonly color?: string;
+	readonly mark?: string;
+}
+
+/** 持ち主の付いたコマンド。撮影と後始末（hide・show・captured・remove）はページの全部のカーソルに効く。 */
+export type ParadisCursorOverlayOwnedCommand = ParadisCursorOverlayCommand & IParadisCursorOwnerTag;
+
 /**
  * move・press・focus の実行結果としてページが返す事情。
  *
@@ -198,10 +208,41 @@ export function paradisParseCursorOverlayPageTraits(value: unknown): IParadisCur
 export interface IParadisCursorPacing {
 	readonly pressFollows?: boolean;
 	readonly maxWaitMs?: number;
+	/** 入力の持ち主（ペイン × タブ）。カーソルを持ち主ごとに分ける（q.html Q272 A）。 */
+	readonly owner?: IParadisCursorOwner;
+}
+
+/**
+ * カーソルの持ち主。shared process がペインのトークンとタブから決め、名前を整えて渡す
+ * （`paradisCursorOwners.ts`）。`id` はトークンを含まない鍵。
+ */
+export interface IParadisCursorOwner {
+	readonly id: string;
+	/** 名札の名前（LLM が `set_cursor_label` で決めたもの、無ければ「Claude」「Codex 2」など）。 */
+	readonly name: string;
+	/** 名前の左に Para Code が描く CLI の印（C・X）。分からなければ空。 */
+	readonly mark: string;
+	/** カーソルと名札の色（#rrggbb）。 */
+	readonly color: string;
+}
+
+/** IPC で受けた持ち主を確かめる。 */
+export function paradisParseCursorOwner(value: unknown): IParadisCursorOwner | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const { id, name, mark, color } = value as { id?: unknown; name?: unknown; mark?: unknown; color?: unknown };
+	if (typeof id !== 'string' || !/^[0-9a-f]{8,32}$/.test(id) || typeof name !== 'string' || typeof mark !== 'string' || !/^[A-Z]{0,2}$/.test(mark) || typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+		return undefined;
+	}
+	// 名前は shared process で整えてあるが、ここでも制御文字・書式文字を落として長さを抑える
+	const cleaned = name.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 24);
+	return cleaned.length > 0 ? { id, name: cleaned, mark, color } : undefined;
 }
 
 /** shared process から main へ送る道具の状態。`point` は対象の要素の中心（ビューポートの CSS ピクセル）。 */
 export interface IParadisCursorStatusNote {
+	readonly owner?: IParadisCursorOwner;
 	readonly status: ParadisCursorStatus;
 	readonly detail?: string;
 	readonly point?: { readonly x: number; readonly y: number };
@@ -214,11 +255,15 @@ export function paradisParseCursorStatusNote(value: unknown): IParadisCursorStat
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	const { status, detail, point } = value as { status?: unknown; detail?: unknown; point?: unknown };
+	const { status, detail, point, owner } = value as { status?: unknown; detail?: unknown; point?: unknown; owner?: unknown };
 	if (typeof status !== 'string' || !PARADIS_CURSOR_STATUSES.has(status)) {
 		return undefined;
 	}
-	const result: { status: ParadisCursorStatus; detail?: string; point?: { x: number; y: number } } = { status: status as ParadisCursorStatus };
+	const result: { owner?: IParadisCursorOwner; status: ParadisCursorStatus; detail?: string; point?: { x: number; y: number } } = { status: status as ParadisCursorStatus };
+	const parsedOwner = paradisParseCursorOwner(owner);
+	if (parsedOwner) {
+		result.owner = parsedOwner;
+	}
 	if (typeof detail === 'string' && detail.length > 0) {
 		result.detail = detail.slice(0, 200);
 	}
@@ -236,8 +281,12 @@ export function paradisParseCursorPacing(value: unknown): IParadisCursorPacing |
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	const { pressFollows, maxWaitMs } = value as { pressFollows?: unknown; maxWaitMs?: unknown };
-	const result: { pressFollows?: boolean; maxWaitMs?: number } = {};
+	const { pressFollows, maxWaitMs, owner } = value as { pressFollows?: unknown; maxWaitMs?: unknown; owner?: unknown };
+	const result: { pressFollows?: boolean; maxWaitMs?: number; owner?: IParadisCursorOwner } = {};
+	const parsedOwner = paradisParseCursorOwner(owner);
+	if (parsedOwner) {
+		result.owner = parsedOwner;
+	}
 	if (pressFollows === true) {
 		result.pressFollows = true;
 	}
@@ -274,7 +323,7 @@ const CURSOR_SIZE = 42;
  * 解釈されうるためエスケープしておく（渡すのは自前の値だけだが、埋め込みの安全性は
  * 入力に依存させない）。
  */
-export function paradisEncodeCursorOverlayPayload(command: ParadisCursorOverlayCommand, tuning: IParadisCursorOverlayTuning): string {
+export function paradisEncodeCursorOverlayPayload(command: ParadisCursorOverlayOwnedCommand, tuning: IParadisCursorOverlayTuning): string {
 	return JSON.stringify({ ...tuning, ...command })
 		.replace(/\u2028/g, '\\u2028')
 		.replace(/\u2029/g, '\\u2029');
@@ -365,12 +414,13 @@ export function paradisCursorGlideMs(
  * ナビゲーション後もそのまま作り直せるうえ、送り先はelectron-main→レンダラのIPCなので
  * CDPゲートウェイの帯域予算とは無関係だからである。
  */
-export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCommand, tuning: IParadisCursorOverlayTuning = PARADIS_CURSOR_OVERLAY_TUNING): string {
+export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwnedCommand, tuning: IParadisCursorOverlayTuning = PARADIS_CURSOR_OVERLAY_TUNING): string {
 	return `(function (c) {
 	'use strict';
 	try {
 		var K = ${JSON.stringify(STATE_KEY)};
-		var A = ${JSON.stringify(ACCENT_COLOR)};
+		// 色は持ち主ごと（main が決める）。形の違う値は使わずアクセントに戻す
+		var A = typeof c.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : ${JSON.stringify(ACCENT_COLOR)};
 		var SVGNS = 'http://www.w3.org/2000/svg';
 		var doc = document;
 		if (!doc) { return 0; }
@@ -383,12 +433,33 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		function root() { return doc.documentElement || doc.body; }
 		/** 状態だけを取り出す（cursorのDOMは作らない）。撮影の退避や後始末が、無かったはずの
 		 *  カーソルを作ってしまわないようにするための分離。 */
+		/** ページに 1 つの状態（撮影の隠し・フラッシュ・知らせ）と、持ち主ごとのカーソル（'cs'）。 */
+		function G(create) {
+			var g = window[K];
+			if (!g && create) { g = window[K] = { cs: {}, f: null, ts: null, tst: 0, hid: false }; }
+			return g || null;
+		}
+		/** 全部のカーソルに。 */
+		function each(fn) {
+			var g = G(false);
+			if (!g) { return; }
+			var ids = Object.keys(g.cs);
+			for (var i = 0; i < ids.length; i++) { if (g.cs[ids[i]]) { fn(g.cs[ids[i]]); } }
+		}
+		/** このコマンドの持ち主のカーソル（ペイン × タブ。持ち主の無いコマンドは '_'）。 */
 		function state(create) {
-			var s = window[K];
+			var g = G(create);
+			if (!g) { return null; }
+			var id = typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_';
+			var s = g.cs[id];
 			if (!s && create) {
-				s = window[K] = { h: null, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, f: null, ts: null, tst: 0, hid: false, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
+				s = g.cs[id] = { g: g, id: id, color: A, h: null, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
 			}
 			return s || null;
+		}
+		/** カーソルが無く、フラッシュも知らせも無ければ、ページの状態ごと畳む。 */
+		function collapse(g) {
+			if (window[K] === g && Object.keys(g.cs).length === 0 && !g.f && !g.ts) { try { delete window[K]; } catch (e) { window[K] = void 0; } }
 		}
 
 		/** いまフォーカスされている要素（shadow root の中まで辿る）。 */
@@ -557,37 +628,42 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 				padding: '2px 7px', borderRadius: '5px', whiteSpace: 'nowrap',
 				boxShadow: '0 2px 6px rgba(0,0,0,0.25)'
 			});
+			// CLI の印（C・X）。Para Code が描き、名前を決める LLM は変えられない
+			var lm = doc.createElement('span');
+			sx(lm, { display: 'none', minWidth: '13px', height: '13px', borderRadius: '50%', background: 'rgba(255,255,255,0.28)', font: '700 9px/13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', textAlign: 'center' });
 			var lt = doc.createElement('span');
 			var kb = doc.createElement('span');
 			sx(kb, {
 				display: 'none', padding: '0px 5px', borderRadius: '3px', background: 'rgba(255,255,255,0.22)',
 				border: '1px solid rgba(255,255,255,0.45)', font: '600 10px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace'
 			});
-			lb.appendChild(lt); lb.appendChild(kb);
+			lb.appendChild(lm); lb.appendChild(lt); lb.appendChild(kb);
 			mv.appendChild(rp); mv.appendChild(rg); mv.appendChild(gl); mv.appendChild(mk); mv.appendChild(lb);
 			sr.appendChild(fr); sr.appendChild(tr); sr.appendChild(mv);
 			// 撮影のために隠している最中に作ったなら、作った時から隠す
-			if (s.hid) { sx(h, { display: 'none' }); }
-			s.h = h; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl;
+			if (s.g.hid) { sx(h, { display: 'none' }); }
+			s.color = A; s.mark = ''; s.t = '';
+			s.h = h; s.lm = lm; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl;
 		}
 		function anim(el, frames, opts) { try { return el.animate(frames, opts); } catch (e) { return null; } }
 		function stop(a) { if (a) { try { a.cancel(); } catch (e) { } } }
-		function dropFlash(s) {
-			if (s.f) { if (s.f.parentNode) { s.f.parentNode.removeChild(s.f); } s.f = null; }
+		function dropFlash(g) {
+			if (g.f) { if (g.f.parentNode) { g.f.parentNode.removeChild(g.f); } g.f = null; }
 		}
-		function dropToast(s) {
-			if (s.tst) { clearTimeout(s.tst); s.tst = 0; }
-			if (s.ts) { if (s.ts.parentNode) { s.ts.parentNode.removeChild(s.ts); } s.ts = null; }
+		function dropToast(g) {
+			if (g.tst) { clearTimeout(g.tst); g.tst = 0; }
+			if (g.ts) { if (g.ts.parentNode) { g.ts.parentNode.removeChild(g.ts); } g.ts = null; }
 		}
 		function clearTimers(s) {
 			var names = ['tm', 'stt', 'kbt', 'frt', 'mkt', 'trt'];
 			for (var i = 0; i < names.length; i++) { if (s[names[i]]) { clearTimeout(s[names[i]]); s[names[i]] = 0; } }
 		}
+		/** 1 つのカーソルを取り除く（ほかの持ち主のカーソルは残す）。 */
 		function kill(s) {
 			clearTimers(s);
-			dropFlash(s); dropToast(s);
 			if (s.h && s.h.parentNode) { s.h.parentNode.removeChild(s.h); }
-			if (window[K] === s) { try { delete window[K]; } catch (e) { window[K] = void 0; } }
+			if (s.g.cs[s.id] === s) { delete s.g.cs[s.id]; }
+			collapse(s.g);
 		}
 		function arm(s, ms) {
 			if (s.tm) { clearTimeout(s.tm); }
@@ -599,6 +675,11 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			}, ms);
 		}
 		function attachCursor(s) {
+			// 持ち主の色が変わった（同じページの持ち主の並びが変わった）。作り直す
+			if (s.h && s.color !== A) {
+				if (s.h.parentNode) { s.h.parentNode.removeChild(s.h); }
+				s.h = null; s.shown = false; s.fading = false;
+			}
 			if (!s.h) { buildCursor(s); }
 			if (!s.h) { return false; }
 			if (!s.h.isConnected) {
@@ -612,7 +693,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		}
 		/** 見えるようにする（撮影のために隠している間は出さない）。 */
 		function reveal(s) {
-			if (s.hid) { return; }
+			if (s.g.hid) { return; }
 			sx(s.h, { display: '' });
 			if (s.fading) { s.fading = false; stop(s.ao); s.ao = null; }
 			if (s.shown) { return; }
@@ -659,7 +740,10 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			var text = s.st ? s.name + ' \\u00b7 ' + s.st : s.name;
 			if (s.t !== text) { s.t = text; s.lt.textContent = text; }
 		}
-		function setLabel(s, label) { s.name = label; if (!s.st && s.sticky) { s.st = s.sticky; } render(s); }
+		function setLabel(s, label) {
+			var mk = typeof c.mark === 'string' ? c.mark.slice(0, 2) : '';
+			if (s.lm && s.mark !== mk) { s.mark = mk; s.lm.textContent = mk; sx(s.lm, { display: mk ? 'inline-block' : 'none' }); }
+			s.name = label; if (!s.st && s.sticky) { s.st = s.sticky; } render(s); }
 		/** 状態を出す。'ms' があればその後に消す（長く続く状態は次の状態まで残す）。 */
 		function setStatus(s, text, ms) {
 			if (s.stt) { clearTimeout(s.stt); s.stt = 0; }
@@ -722,8 +806,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus' || c.kind === 'wheel' || c.kind === 'status') {
 			if (blockedRoot()) {
 				// ずれた位置に出すより出さない。前に描いていたものも片付ける。
-				var sb = state(false);
-				if (sb) { kill(sb); }
+				each(kill);
 				return traits(true);
 			}
 			var sm = state(true);
@@ -812,15 +895,15 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		}
 
 		if (c.kind === 'captured') {
-			var sc = state(true);
-			if (!sc) { return 0; }
-			sc.hid = false;
-			if (sc.h) { sx(sc.h, { display: '' }); }
+			var gc = G(true);
+			if (!gc) { return 0; }
+			gc.hid = false;
+			each(function (sc) { if (sc.h) { sx(sc.h, { display: '' }); if (!sc.shown && sc.x !== null) { reveal(sc); } } });
 			var p2 = root();
 			if (!p2) { return 0; }
 			// 知らせは撮影が終わってから出すので画像には写らない。動きを抑える設定でも
 			// 「撮れた」ことは伝えたいので、こちらは出したうえで動きだけ止める。
-			dropToast(sc);
+			dropToast(gc);
 			var ts = doc.createElement('div');
 			ts.setAttribute('aria-hidden', 'true');
 			sx(ts, {
@@ -838,8 +921,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			text.textContent = c.toast;
 			ts.appendChild(thumb); ts.appendChild(text);
 			p2.appendChild(ts);
-			sc.ts = ts;
-			sc.tst = setTimeout(function () { if (window[K] === sc && sc.ts === ts) { dropToast(sc); } else if (ts.parentNode) { ts.parentNode.removeChild(ts); } }, c.toastMs + 120);
+			gc.ts = ts;
+			gc.tst = setTimeout(function () { if (gc.ts === ts) { dropToast(gc); collapse(gc); } else if (ts.parentNode) { ts.parentNode.removeChild(ts); } }, c.toastMs + 120);
 			if (!calm) {
 				try {
 					ts.animate([
@@ -849,7 +932,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 						{ opacity: 0, transform: 'translateY(-6px) scale(0.98)' }
 					], { duration: c.toastMs, easing: 'ease-out' });
 				} catch (e) { }
-				dropFlash(sc);
+				dropFlash(gc);
 				var f = doc.createElement('div');
 				f.setAttribute('aria-hidden', 'true');
 				sx(f, {
@@ -858,33 +941,31 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 					opacity: '0', pointerEvents: 'none', zIndex: '2147483647'
 				});
 				p2.appendChild(f);
-				sc.f = f;
-				var gone = function () { if (sc.f === f) { dropFlash(sc); } else if (f.parentNode) { f.parentNode.removeChild(f); } };
+				gc.f = f;
+				var gone = function () { if (gc.f === f) { dropFlash(gc); collapse(gc); } else if (f.parentNode) { f.parentNode.removeChild(f); } };
 				try {
-					var an = f.animate([{ opacity: 0 }, { opacity: 0.92, offset: 0.16 }, { opacity: 0 }], { duration: c.flashMs, easing: 'ease-out' });
-					an.onfinish = gone; an.oncancel = gone;
+					var fa = f.animate([{ opacity: 0 }, { opacity: 0.92, offset: 0.16 }, { opacity: 0 }], { duration: c.flashMs, easing: 'ease-out' });
+					fa.onfinish = gone; fa.oncancel = gone;
 				} catch (e) { }
 				setTimeout(gone, c.flashMs + 500);
 			}
-			// カーソルだけが理由で state を生かし続けない。演出しか無いなら畳む。
-			if (!sc.h) { setTimeout(function () { if (window[K] === sc && !sc.h && !sc.f && !sc.ts) { kill(sc); } }, c.toastMs + 600); }
 			return 0;
 		}
 
-		// ここから先は既にあるものにしか作用しない。
-		var s = state(false);
-		if (!s) { return 0; }
-		if (c.kind === 'remove') { kill(s); return 0; }
+		// ここから先は既にあるものにしか作用しない。撮影と後始末はページの全部のカーソルに効かせる。
+		var g = G(false);
+		if (!g) { return 0; }
+		if (c.kind === 'remove') { dropFlash(g); dropToast(g); each(kill); collapse(g); return 0; }
 		if (c.kind === 'show') {
-			s.hid = false;
-			if (s.h) { sx(s.h, { display: '' }); if (!s.shown && s.x !== null) { reveal(s); } }
+			g.hid = false;
+			each(function (s) { if (s.h) { sx(s.h, { display: '' }); if (!s.shown && s.x !== null) { reveal(s); } } });
 			return 0;
 		}
 		if (c.kind === 'hide') {
 			// 撮影に入るので、進行中の演出も必ず消す（残っていると次の1枚に写る）。
-			dropFlash(s); dropToast(s);
-			s.hid = true;
-			if (s.h) { sx(s.h, { transition: 'none', display: 'none' }); }
+			dropFlash(g); dropToast(g);
+			g.hid = true;
+			each(function (s) { if (s.h) { sx(s.h, { transition: 'none', display: 'none' }); } });
 			return new Promise(function (res) {
 				var settled = false;
 				var done = function () { if (!settled) { settled = true; res(0); } };

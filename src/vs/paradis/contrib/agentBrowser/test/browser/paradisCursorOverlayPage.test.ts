@@ -8,7 +8,7 @@
 import * as assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisCursorOverlayCommand, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
+import { ParadisCursorOverlayOwnedCommand, paradisBuildCursorOverlayScript } from '../../common/paradisCursorOverlay.js';
 
 /** The generated script keeps its state on the window under this key (the isolated world in the app). */
 const STATE_KEY = '__paraCodeAgentCursorOverlay';
@@ -20,12 +20,21 @@ interface IPageState {
 }
 
 /** Runs the page-side script against this test document, the way the isolated world would. */
-function run(command: ParadisCursorOverlayCommand): unknown {
+function run(command: ParadisCursorOverlayOwnedCommand): unknown {
 	return new Function(`return ${paradisBuildCursorOverlayScript(command)};`)();
 }
 
+interface IPageGlobal {
+	readonly cs: Record<string, IPageState>;
+}
+
+/** The cursor of commands without an owner. */
 function pageState(): IPageState | undefined {
-	return (mainWindow as unknown as Record<string, IPageState | undefined>)[STATE_KEY];
+	return (mainWindow as unknown as Record<string, IPageGlobal | undefined>)[STATE_KEY]?.cs._;
+}
+
+function pageGlobal(): IPageGlobal | undefined {
+	return (mainWindow as unknown as Record<string, IPageGlobal | undefined>)[STATE_KEY];
 }
 
 suite('Paradis Cursor Overlay page script', () => {
@@ -100,5 +109,14 @@ suite('Paradis Cursor Overlay page script', () => {
 		const shown = pageState()!.t;
 		run({ kind: 'status', label: 'Claude', status: 'idle', text: '' });
 		assert.deepStrictEqual({ before, shown, after: pageState()!.t }, { before: null, shown: 'Claude \u00b7 Running a script', after: 'Claude' });
+	});
+
+	test('two owners on one page get two cursors with their own names, and remove clears both', () => {
+		run({ kind: 'move', x: 10, y: 10, label: 'Claude', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], owner: 'aaaaaaaa', color: '#d97757', mark: 'C' });
+		run({ kind: 'move', x: 90, y: 40, label: 'Codex', durationMs: 0, frames: [{ x: 90, y: 40, r: 0, o: 1 }], owner: 'bbbbbbbb', color: '#10a37f', mark: 'X' });
+		const cursors = pageGlobal()!.cs;
+		const names = Object.keys(cursors).sort().map(id => [id, cursors[id].t, cursors[id].h?.isConnected]);
+		run({ kind: 'remove' });
+		assert.deepStrictEqual({ names, after: pageGlobal() }, { names: [['aaaaaaaa', 'Claude', true], ['bbbbbbbb', 'Codex', true]], after: undefined });
 	});
 });
