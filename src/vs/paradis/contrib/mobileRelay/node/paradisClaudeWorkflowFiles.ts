@@ -57,8 +57,8 @@ export interface IParadisWorkflowRunRead {
 	readonly more: boolean;
 }
 
-/** 許可された場所の、シンボリックリンクでない普通のファイルを開く。 */
-async function openPlainFile(path: string, within: string): Promise<fs.FileHandle | undefined> {
+/** 許可された場所の、シンボリックリンクでない普通のファイルを開く（チームのファイルの読み取りでも使う）。 */
+export async function paradisOpenPlainFile(path: string, within: string): Promise<fs.FileHandle | undefined> {
 	try {
 		const link = await fs.lstat(path);
 		if (!link.isFile()) {
@@ -104,7 +104,7 @@ export async function paradisReadClaudeWorkflowRun(rootTranscriptPath: string, r
 }
 
 async function readJournal(path: string, within: string, state: IParadisWorkflowRunReadState): Promise<{ entries: IParadisWorkflowJournalEntry[]; more: boolean }> {
-	const handle = await openPlainFile(path, within);
+	const handle = await paradisOpenPlainFile(path, within);
 	if (handle === undefined) {
 		return { entries: [], more: false };
 	}
@@ -198,7 +198,7 @@ async function readChildren(runDir: string, within: string, state: IParadisWorkf
 		let child: IParadisWorkflowChildFile = { agentId };
 		if (wantsMeta) {
 			state.seenChildren.add(agentId);
-			const handle = await openPlainFile(join(runDir, `agent-${agentId}.meta.json`), within);
+			const handle = await paradisOpenPlainFile(join(runDir, `agent-${agentId}.meta.json`), within);
 			if (handle !== undefined) {
 				try {
 					const buffer = Buffer.alloc(MAX_META_BYTES);
@@ -244,7 +244,7 @@ async function readResult(path: string, within: string, state: IParadisWorkflowR
 	if (state.resultMtime === mtime) {
 		return undefined;
 	}
-	const handle = await openPlainFile(path, within);
+	const handle = await paradisOpenPlainFile(path, within);
 	if (handle === undefined) {
 		return undefined;
 	}

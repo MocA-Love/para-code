@@ -224,6 +224,12 @@ export const ParadisMobileCapability = {
 	 * 「裏で動いているもの」のピルをセッションの輪に替え、シートにこのセッションの節を足す（古い PC・古いアプリは今の表示のまま）。
 	 */
 	AgentSessionStatus: 'agent.session-status.v1',
+	/**
+	 * agent の snapshot / delta の任意項目 `teams`・`teamsAt`（Claude Code のエージェントチーム 1 つを単位にしたメンバー・状態・
+	 * 今やっていること・許可待ち・やりとりの要約と本文・計画。`paradisAgentTeams.ts`）。PC は変わったときだけ載せる。アプリは PC が
+	 * 広告しているときだけ、トークのメンバーの起動の行を 1 枚のチームのカードにする（古い PC・古いアプリは今の表示のまま）。
+	 */
+	AgentTeams: 'agent.teams.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -281,6 +287,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.NotifyDoNotDisturbRemote,
 	ParadisMobileCapability.AgentSessionStatus,
 	ParadisMobileCapability.BrowserCursor,
+	ParadisMobileCapability.AgentTeams,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -304,6 +311,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentSessionStatus,
 	// PC はこれを見て、エージェントのカーソルの写し（`t: 'cursor'`）を送る（古いアプリには送らない）。
 	ParadisMobileCapability.BrowserCursor,
+	// チームのカード。PC は広告の有無に関わらず `teams` を載せる（古いアプリは無視する）。
+	ParadisMobileCapability.AgentTeams,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

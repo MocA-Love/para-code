@@ -34,6 +34,8 @@ export interface IParadisRecoveredAgentActivity {
 	readonly lastLineAt?: number;
 	/** この子を起動した Agent / Task の呼び出しの toolUseId（会話のカードと一覧の項目を結ぶ）。 */
 	readonly toolUseIds?: readonly string[];
+	/** エージェントチームのメンバー（`.meta.json` の `taskKind: "in_process_teammate"`）。 */
+	readonly teammate?: true;
 }
 
 export interface IParadisClaudePersistedActivity {
@@ -58,6 +60,8 @@ export interface IParadisClaudeSubagentMeta {
 	readonly description?: string;
 	readonly spawnDepth?: number;
 	readonly name?: string;
+	/** `taskKind: "in_process_teammate"`（エージェントチームのメンバー）。 */
+	readonly teammate?: true;
 }
 
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
@@ -304,6 +308,7 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 		id: ownerId, label: ownerLabel, provider: 'claude' as const, ...(detail !== undefined ? { detail } : {}),
 		...(ownerDepth !== undefined ? { depth: ownerDepth } : {}),
 		...(name !== undefined ? { name } : {}),
+		...(meta?.teammate === true ? { teammate: true as const } : {}),
 		...(lastLineAt !== undefined ? { lastLineAt } : {}),
 		status: ownerStatus, startedAt: ownerStartedAt, updatedAt: ownerUpdatedAt,
 	} : undefined;
