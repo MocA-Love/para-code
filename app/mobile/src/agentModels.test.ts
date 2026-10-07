@@ -25,12 +25,12 @@ const PC_AGENTS: WorktreeAgentDef[] = [
 const summary = (options: ReturnType<typeof agentModelOptions>) => options.map(option => `${option.id}|${option.label}|${option.aliases.join(',')}|${option.efforts.length}`);
 
 describe('Claude のモデル候補', () => {
-	test('固定表は今の別名の指す先で、Haiku は effort を持たない', () => {
+	test('固定表は今の別名の指す先で、Haiku 5.5 も effort を持つ', () => {
 		expect(summary(agentModelOptions('claude'))).toEqual([
 			'fable|Fable 5.1|claude-fable-5-1|5',
 			'opus|Opus 5.5|claude-opus-5-5|5',
 			'sonnet|Sonnet 5.5|claude-sonnet-5-5|5',
-			'haiku|Haiku 4.5|claude-haiku-4-5|0',
+			'haiku|Haiku 5.5|claude-haiku-5-5|5',
 		]);
 		expect(agentModelOptions('codex')).toEqual([]);
 	});
@@ -56,11 +56,11 @@ describe('Claude のモデル候補', () => {
 		const pcOptions = claudeModelOptionsFromAgents(PC_AGENTS) ?? [];
 		const match = (model: string | undefined, options = agentModelOptions('claude')) => matchAgentModel('claude', model, options)?.label;
 		expect({
-			fixed: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-opus-5', 'claude-fable-5', 'opus', 'claude-opus-5-5[1m]', undefined].map(model => match(model)),
+			fixed: ['claude-opus-5-5', 'claude-fable-5-1', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5', 'opus', 'claude-opus-5-5[1m]', undefined].map(model => match(model)),
 			pc: ['claude-opus-5-5', 'claude-opus-5', 'claude-haiku-4-5-20251001', 'claude-fable-5-1'].map(model => match(model, pcOptions)),
 			names: ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5-20251001', 'gpt-5.5'].map(claudeModelDisplayName),
 		}).toEqual({
-			fixed: ['Opus 5.5', 'Fable 5.1', 'Haiku 4.5', undefined, undefined, 'Opus 5.5', 'Opus 5.5', undefined],
+			fixed: ['Opus 5.5', 'Fable 5.1', 'Haiku 5.5', undefined, undefined, 'Opus 5.5', 'Opus 5.5', undefined],
 			pc: ['Opus 5.5', 'Opus 5', 'Haiku 4.5', 'Fable 5.1'],
 			names: ['Opus 5.5', 'Fable 5', 'Haiku 4.5', undefined],
 		});

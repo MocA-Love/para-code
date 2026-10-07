@@ -604,7 +604,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		const model = agent.models?.find(candidate => candidate.id === this._modelSelect.value);
 		const allowedIds = model?.efforts;
 		if (allowedIds !== undefined && allowedIds.length === 0) {
-			// モデルがエフォート非対応（例: Claude Code の haiku）
+			// モデルがエフォート非対応（例: Claude Code の Haiku 4.5）
 			const unsupportedOption = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
 			unsupportedOption.value = '';
 			unsupportedOption.textContent = STR_EFFORT_UNSUPPORTED;

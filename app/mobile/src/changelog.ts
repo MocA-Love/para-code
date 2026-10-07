@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.8',
+		date: '2026-10-08',
+		items: [
+			{
+				icon: 'sparkles-outline',
+				title: 'モデルの選択肢の Haiku が Haiku 5.5 になり、effort も選べるようになりました',
+				body: 'PC の Claude Code から一覧が届かない古い PC のときに出す候補です。',
+			},
+		],
+	},
+	{
 		version: '0.12.7',
 		date: '2026-10-07',
 		items: [
