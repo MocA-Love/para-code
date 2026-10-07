@@ -21,6 +21,7 @@ import { createStyleSheet } from '../../../../base/browser/domStylesheets.js';
 import { Color } from '../../../../base/common/color.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { getColorRegistry } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import {
@@ -144,18 +145,23 @@ export class ParadisScreenColorPicker extends Disposable {
 		private readonly onPick: (result: ParadisScreenPickResult) => void,
 		private readonly onEnd: () => void,
 		@IThemeService private readonly themeService: IThemeService,
+		@ILayoutService layoutService: ILayoutService,
 	) {
 		super();
 		this.targetDocument = targetWindow.document;
+		// テーマの色の CSS 変数（--vscode-…）は `.monaco-workbench` の上で定義されていて、body には無い。
+		// 覆い・枠・候補の一覧を body に直接置くと変数が全部未定義になり、枠が消えて一覧の背景が透明になる
+		// （影だけが暗く残り、下の文字に覆いがかかって見える）。必ずそのウィンドウのワークベンチの器に置く。
+		const container = layoutService.getContainer(targetWindow);
 		this.rules = collectRules(targetWindow);
 
 		const store = this._register(new DisposableStore());
 		const stylesheet = createStyleSheet(this.targetDocument.head, undefined, store);
 		stylesheet.textContent = '* { cursor: crosshair !important; } .paradis-tce-screen-panel, .paradis-tce-screen-panel * { cursor: default !important; }';
 
-		this.banner = dom.append(this.targetDocument.body, $('.paradis-tce-screen-banner', { role: 'status' }, localize('paradis.themeColors.screen.banner', "画面の色を変えたい場所をクリックしてください（Esc でやめる）")));
-		this.highlight = dom.append(this.targetDocument.body, $('.paradis-tce-screen-highlight'));
-		this.panel = dom.append(this.targetDocument.body, $('.paradis-tce-screen-panel', { role: 'listbox' }));
+		this.banner = dom.append(container, $('.paradis-tce-screen-banner', { role: 'status' }, localize('paradis.themeColors.screen.banner', "画面の色を変えたい場所をクリックしてください（Esc でやめる）")));
+		this.highlight = dom.append(container, $('.paradis-tce-screen-highlight'));
+		this.panel = dom.append(container, $('.paradis-tce-screen-panel', { role: 'listbox' }));
 		this.panel.style.display = 'none';
 		this._register({ dispose: () => { this.banner.remove(); this.highlight.remove(); this.panel.remove(); } });
 

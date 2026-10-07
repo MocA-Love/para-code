@@ -503,8 +503,8 @@
 	z-index: 100000;
 	padding: 4px 14px;
 	border-radius: 0 0 6px 6px;
-	background: var(--vscode-editorWarning-foreground);
-	color: var(--vscode-editor-background);
+	background: var(--vscode-editorWarning-foreground, #bf8803);
+	color: var(--vscode-editor-background, #1e1e1e);
 	font-weight: 600;
 	font-size: 12px;
 	pointer-events: none;
@@ -513,7 +513,7 @@
 .paradis-tce-screen-highlight {
 	position: fixed;
 	z-index: 99999;
-	outline: 2px solid var(--vscode-editorWarning-foreground);
+	outline: 2px solid var(--vscode-editorWarning-foreground, #bf8803);
 	outline-offset: -2px;
 	pointer-events: none;
 }
@@ -525,8 +525,8 @@
 	padding: 8px 10px;
 	border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-widget-border, transparent));
 	border-radius: 6px;
-	background: var(--vscode-editorHoverWidget-background);
-	color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground));
+	background: var(--vscode-editorHoverWidget-background, #252526);
+	color: var(--vscode-editorHoverWidget-foreground, var(--vscode-foreground, #cccccc));
 	box-shadow: 0 6px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
 	font-size: 12px;
 	pointer-events: none;
