@@ -106,6 +106,8 @@ export const ParadisMobileCapability = {
 	BrowserFocus: 'browser.focus.v1',
 	/** fs の要求 `bookmarks` と通知 `bookmarksChanged`（PC の内蔵ブラウザのブックマーク）。 */
 	BrowserBookmarks: 'browser.bookmarks.v1',
+	/** browser の `t: 'cursor'`（エージェントのカーソルの写し。`paradisMobileBrowserProtocol.ts`）。PC はアプリが広告しているときだけ送る。 */
+	BrowserCursor: 'browser.cursor.v1',
 	/** fs の `list` の各項目に任意の `ignored: true`（.gitignore で無視されている。ファイルの一覧で名前を灰にする）。 */
 	FsIgnored: 'fs.ignored.v1',
 	/** fs の `iconTheme`（PC で選んでいるファイルアイコンのテーマの対応表）と `iconSvgs`（アイコンの SVG）。 */
@@ -278,6 +280,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentWorkflows,
 	ParadisMobileCapability.NotifyDoNotDisturbRemote,
 	ParadisMobileCapability.AgentSessionStatus,
+	ParadisMobileCapability.BrowserCursor,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -299,6 +302,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentWorkflows,
 	// セッションの輪。PC は広告の有無に関わらず `sessionStatus` を載せる（古いアプリは無視する）。
 	ParadisMobileCapability.AgentSessionStatus,
+	// PC はこれを見て、エージェントのカーソルの写し（`t: 'cursor'`）を送る（古いアプリには送らない）。
+	ParadisMobileCapability.BrowserCursor,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */
