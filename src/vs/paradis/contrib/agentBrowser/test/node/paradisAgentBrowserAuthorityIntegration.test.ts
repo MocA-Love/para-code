@@ -129,6 +129,7 @@ function createFixture(): {
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
 		_cursorPacing: new ParadisCursorPacingLedger(),
+		_cursorStatusRuns: new Map(),
 		_rawCaptureViews: new Map(),
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: backgroundThrottlingCoordinator,

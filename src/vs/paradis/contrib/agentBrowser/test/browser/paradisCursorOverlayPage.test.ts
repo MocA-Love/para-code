@@ -92,4 +92,13 @@ suite('Paradis Cursor Overlay page script', () => {
 			input.remove();
 		}
 	});
+
+	test('a tool state before any cursor leaves no element on the page, and comes back with the first move', () => {
+		run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running a script' });
+		const before = pageState()?.h ?? null;
+		run({ kind: 'move', x: 10, y: 10, label: 'Claude', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }] });
+		const shown = pageState()!.t;
+		run({ kind: 'status', label: 'Claude', status: 'idle', text: '' });
+		assert.deepStrictEqual({ before, shown, after: pageState()!.t }, { before: null, shown: 'Claude \u00b7 Running a script', after: 'Claude' });
+	});
 });

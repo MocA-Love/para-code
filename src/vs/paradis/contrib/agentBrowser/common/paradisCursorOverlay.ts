@@ -284,7 +284,7 @@ export function paradisEncodeCursorOverlayPayload(command: ParadisCursorOverlayC
 const PARADIS_CURSOR_NAMED_KEYS: Readonly<Record<string, string>> = {
 	Enter: 'Enter', Tab: 'Tab', Escape: 'Esc', Backspace: '\u232b', Delete: 'Del',
 	ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192',
-	PageUp: 'PgUp', PageDown: 'PgDn', Home: 'Home', End: 'End', ' ': 'Space',
+	PageUp: 'PgUp', PageDown: 'PgDn', Home: 'Home', End: 'End',
 };
 
 /**
@@ -303,7 +303,9 @@ export function paradisCursorKeyLabel(params: Readonly<Record<string, unknown>>,
 	// CDP の modifiers: Alt=1, Ctrl=2, Meta=4, Shift=8
 	const alt = (modifiers & 1) !== 0, ctrl = (modifiers & 2) !== 0, meta = (modifiers & 4) !== 0, shift = (modifiers & 8) !== 0;
 	const named = PARADIS_CURSOR_NAMED_KEYS[key] ?? (/^F\d{1,2}$/.test(key) ? key : undefined);
-	if (named === undefined && !alt && !ctrl && !meta) {
+	// 名前の無いキーは Ctrl・⌘ のショートカットだけ札にする。Option・AltGr（Ctrl+Alt）で打つ文字（@・€・é）は
+	// 文字の入力なので出さない
+	if (named === undefined && (!(ctrl || meta) || alt)) {
 		return undefined;
 	}
 	const base = named ?? ([...key].length === 1 ? key.toUpperCase() : key.slice(0, 8));
@@ -564,6 +566,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			lb.appendChild(lt); lb.appendChild(kb);
 			mv.appendChild(rp); mv.appendChild(rg); mv.appendChild(gl); mv.appendChild(mk); mv.appendChild(lb);
 			sr.appendChild(fr); sr.appendChild(tr); sr.appendChild(mv);
+			// 撮影のために隠している最中に作ったなら、作った時から隠す
+			if (s.hid) { sx(h, { display: 'none' }); }
 			s.h = h; s.mv = mv; s.gl = gl; s.sq = sq; s.rp = rp; s.rg = rg; s.mk = mk; s.lb = lb; s.lt = lt; s.kb = kb; s.fr = fr; s.tr = tr; s.tl2 = tl;
 		}
 		function anim(el, frames, opts) { try { return el.animate(frames, opts); } catch (e) { return null; } }
@@ -626,6 +630,16 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			var last = frames[frames.length - 1];
 			var fs = (calm || !(dur > 0) || frames.length < 2 || s.x === null) ? [{ x: last.x, y: last.y, r: last.r, o: 0 }, { x: last.x, y: last.y, r: last.r, o: 1 }] : frames;
 			var d = fs === frames ? dur : 1;
+			if (fs === frames && s.am) {
+				// main は寄せ（入力欄へ）や押した点の行き過ぎを知らないので、再生の頭を今いる点へ合わせる
+				try {
+					var m = new DOMMatrixReadOnly(getComputedStyle(s.mv).transform);
+					if (Math.abs(m.m41 - frames[0].x) > 2 || Math.abs(m.m42 - frames[0].y) > 2) {
+						fs = frames.slice();
+						fs[0] = { x: Math.round(m.m41 * 10) / 10, y: Math.round(m.m42 * 10) / 10, r: frames[0].r, o: 0 };
+					}
+				} catch (e) { }
+			}
 			s.x = last.x; s.y = last.y; s.r = last.r;
 			stop(s.am); stop(s.ag);
 			s.am = anim(s.mv, fs.map(function (f) { return { transform: 'translate3d(' + f.x + 'px,' + f.y + 'px,0)', offset: f.o }; }), { duration: d, fill: 'forwards', easing: 'linear' });
@@ -683,9 +697,10 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		/** 入力欄の枠。打つのが止まったら消す。 */
 		function fieldFrame(s, r) {
 			if (s.frt) { clearTimeout(s.frt); s.frt = 0; }
-			if (!r) { sx(s.fr, { opacity: '0' }); return; }
+			var done = function () { s.frt = 0; sx(s.fr, { opacity: '0' }); if (s.typing) { s.typing = false; setStatus(s, s.sticky || '', 0); } };
+			if (!r) { sx(s.fr, { opacity: '0' }); s.frt = setTimeout(done, c.typingMs); return; }
 			sx(s.fr, { left: Math.round(r.left - 3) + 'px', top: Math.round(r.top - 3) + 'px', width: Math.round(r.width + 6) + 'px', height: Math.round(r.height + 6) + 'px', opacity: '1' });
-			s.frt = setTimeout(function () { s.frt = 0; sx(s.fr, { opacity: '0' }); if (s.typing) { s.typing = false; setStatus(s, s.sticky || '', 0); } }, c.typingMs);
+			s.frt = setTimeout(done, c.typingMs);
 		}
 		/** ドラッグの軌跡（押した点から）。 */
 		function trail(s, x, y) {
@@ -713,11 +728,18 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			}
 			var sm = state(true);
 			if (!sm) { return 0; }
+			// まだカーソルを出していないページで、置き場所の無い状態・ホイールのために DOM を作らない
+			// （見えないホストがページに残り、消すタイマーも張られない）。
+			if ((c.kind === 'wheel' || (c.kind === 'status' && !(c.frames && c.frames.length))) && (sm.x === null || !sm.h)) {
+				if (c.kind === 'status') { sm.sticky = c.status === 'script' || c.status === 'waiting' ? c.text : ''; }
+				return traits(false);
+			}
 			if (!attachCursor(sm)) { return 0; }
 			setLabel(sm, c.label);
 			if (c.kind === 'focus') {
 				var tt = typingTarget();
-				if (c.key) { keyBadge(sm, c.key); }
+				// パスワード欄では、特別なキーの札も出さない（何を打ったかの手がかりになる）
+				if (c.key && tt.kind !== 'secret') { keyBadge(sm, c.key); }
 				if (!c.key || tt.kind !== 'page') {
 					sm.typing = true;
 					setStatus(sm, tt.kind === 'secret' ? c.texts.secret : tt.kind === 'page' ? c.texts.page : c.texts.typing, 0);
@@ -741,7 +763,6 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 				return traits(false);
 			}
 			if (c.kind === 'wheel') {
-				if (sm.x === null) { return traits(false); }
 				var ax = Math.abs(c.dx), ay = Math.abs(c.dy);
 				mark(sm, ay >= ax ? (c.dy > 0 ? '\\u2193' : '\\u2191') : (c.dx > 0 ? '\\u2192' : '\\u2190'), A);
 				setStatus(sm, c.text, c.markMs);
@@ -749,11 +770,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 				return traits(false);
 			}
 			if (c.kind === 'status') {
-				if (c.frames && c.frames.length) { sm.pp = null; play(sm, c.frames, c.durationMs || 0); } else if (sm.x === null) {
-					// まだどこにも出していない。置き場所が無いので、名札だけの状態は次の移動まで持つ。
-					sm.sticky = c.status === 'script' || c.status === 'waiting' ? c.text : '';
-					return traits(false);
-				} else { reveal(sm); arm(sm, c.idleMs); }
+				if (c.frames && c.frames.length) { sm.pp = null; play(sm, c.frames, c.durationMs || 0); } else { reveal(sm); arm(sm, c.idleMs); }
 				setWaiting(sm, c.status === 'waiting');
 				if (c.status === 'idle') { sm.sticky = ''; setStatus(sm, '', 0); return traits(false); }
 				if (c.status === 'script' || c.status === 'waiting') { sm.sticky = c.text; setStatus(sm, c.text, 0); return traits(false); }
@@ -858,7 +875,11 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		var s = state(false);
 		if (!s) { return 0; }
 		if (c.kind === 'remove') { kill(s); return 0; }
-		if (c.kind === 'show') { s.hid = false; if (s.h) { sx(s.h, { display: '' }); } return 0; }
+		if (c.kind === 'show') {
+			s.hid = false;
+			if (s.h) { sx(s.h, { display: '' }); if (!s.shown && s.x !== null) { reveal(s); } }
+			return 0;
+		}
 		if (c.kind === 'hide') {
 			// 撮影に入るので、進行中の演出も必ず消す（残っていると次の1枚に写る）。
 			dropFlash(s); dropToast(s);

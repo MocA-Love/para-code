@@ -156,8 +156,8 @@ suite('Paradis Cursor Overlay', () => {
 	test('key badges name special keys and shortcuts, never typed characters', () => {
 		const key = (k: string, modifiers = 0, type = 'keyDown') => [paradisCursorKeyLabel({ type, key: k, modifiers }, true), paradisCursorKeyLabel({ type, key: k, modifiers }, false)];
 		assert.deepStrictEqual(
-			{ enter: key('Enter'), cmdK: key('k', 4), shiftTab: key('Tab', 8), letter: key('a'), shiftLetter: key('A', 8), up: key('Enter', 0, 'keyUp'), meta: key('Meta', 4) },
-			{ enter: ['Enter', 'Enter'], cmdK: ['\u2318K', 'Win+K'], shiftTab: ['\u21e7Tab', 'Shift+Tab'], letter: [undefined, undefined], shiftLetter: [undefined, undefined], up: [undefined, undefined], meta: [undefined, undefined] },
+			{ enter: key('Enter'), cmdK: key('k', 4), shiftTab: key('Tab', 8), letter: key('a'), shiftLetter: key('A', 8), up: key('Enter', 0, 'keyUp'), meta: key('Meta', 4), option: key('é', 1), altGr: key('@', 3), space: key(' ') },
+			{ enter: ['Enter', 'Enter'], cmdK: ['\u2318K', 'Win+K'], shiftTab: ['\u21e7Tab', 'Shift+Tab'], letter: [undefined, undefined], shiftLetter: [undefined, undefined], up: [undefined, undefined], meta: [undefined, undefined], option: [undefined, undefined], altGr: [undefined, undefined], space: [undefined, undefined] },
 		);
 	});
 
