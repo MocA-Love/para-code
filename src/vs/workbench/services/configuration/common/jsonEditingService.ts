@@ -23,12 +23,14 @@ import { IFilesConfigurationService } from '../../filesConfiguration/common/file
 import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js'; // PARA-PATCH: see writeToBuffer
 import { isParadisManagedWorkspaceWindow } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceSwitch.js'; // PARA-PATCH: see writeToBuffer
 import { paradisMarkFolderUpdate } from '../../../../paradis/contrib/workspaceSwitch/common/paradisFolderUpdateTrace.js'; // PARA-PATCH: see doWriteConfiguration
+import { ParadisWorkspaceFileWriteCache } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceFileWriteCache.js'; // PARA-PATCH: see doWriteConfiguration
 
 export class JSONEditingService implements IJSONEditingService {
 
 	public _serviceBrand: undefined;
 
 	private queue: Queue<void>;
+	private readonly paradisWorkspaceFile: ParadisWorkspaceFileWriteCache; // PARA-PATCH: see doWriteConfiguration
 
 	constructor(
 		@IFileService private readonly fileService: IFileService,
@@ -37,6 +39,7 @@ export class JSONEditingService implements IJSONEditingService {
 		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService
 	) {
 		this.queue = new Queue<void>();
+		this.paradisWorkspaceFile = new ParadisWorkspaceFileWriteCache(fileService, textFileService); // PARA-PATCH: see doWriteConfiguration
 	}
 
 	write(resource: URI, values: IJSONValue[]): Promise<void> {
@@ -44,11 +47,18 @@ export class JSONEditingService implements IJSONEditingService {
 	}
 
 	private async doWriteConfiguration(resource: URI, values: IJSONValue[]): Promise<void> {
+		// PARA-PATCH: a Para Code window rewrites its `.code-workspace` on every space switch. Write from the
+		// content and etag remembered after the last write instead of checking and re-reading the file over
+		// IPC; falls back to the code below on a conflict or an external change (paradisWorkspaceFileWriteCache.ts)
+		if (await this.paradisWorkspaceFile.tryWrite(resource, values)) {
+			return;
+		}
 		const reference = await this.resolveAndValidate(resource, true);
 		paradisMarkFolderUpdate('model_resolved'); // PARA-PATCH: timing marks of a Para Code space switch; no-op unless one is being traced (paradisFolderUpdateTrace.ts)
 		try {
 			await this.writeToBuffer(reference.object.textEditorModel, values);
 			paradisMarkFolderUpdate('saved'); // PARA-PATCH: see above
+			this.paradisWorkspaceFile.rememberModel(resource); // PARA-PATCH: see above
 		} finally {
 			reference.dispose();
 		}

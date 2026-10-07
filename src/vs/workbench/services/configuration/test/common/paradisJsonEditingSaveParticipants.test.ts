@@ -27,7 +27,7 @@ suite('JSONEditingService (Para Code save participants)', () => {
 		const service = new JSONEditingService(
 			{ exists: async () => true } as unknown as IFileService,
 			{ createModelReference: async () => ({ object: { textEditorModel: model }, dispose: () => { } }) } as unknown as ITextModelService,
-			{ save: async (_resource: URI, options?: ITextFileSaveOptions) => { saved = options; return resource; } } as unknown as ITextFileService,
+			{ files: { get: () => undefined }, save: async (_resource: URI, options?: ITextFileSaveOptions) => { saved = options; return resource; } } as unknown as ITextFileService,
 			{ enableAutoSaveAfterShortDelay: () => Disposable.None } as unknown as IFilesConfigurationService,
 		);
 		await service.write(resource, [{ path: ['folders'], value: [{ path: '/workspace-b' }] }]);
