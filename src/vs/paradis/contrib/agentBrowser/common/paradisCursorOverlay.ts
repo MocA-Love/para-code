@@ -21,6 +21,10 @@
 // 1コマンド5秒を超えるとそのキューを恒久的にpoisonするため（`paradisCdpInputQueue.ts`）、
 // 演出のために往復を挟まないことが重要。
 //
+// move・press・focus はページの事情（動きを減らす設定・カーソルを正しい位置に描けない <html>）を
+// `IParadisCursorOverlayPageTraits` として返す。main は投げっぱなしの実行の結果からそれを覚え、
+// 次の入力から待ち時間を 0 にする（入力の配送の途中では待たない）。
+//
 // 状態はisolated worldの `window[STATE_KEY]` に保持する。ナビゲーションで自動的に消えるため
 // 「再訪時は作り直し」が自然に成立する。加えてコマンドが長く途切れたら自分でフェードアウトして
 // 消える（`idleMs`）。共有解除・ユーザーの手動操作開始・設定OFFのときは待たせる意味がないので、
@@ -54,23 +58,14 @@ export interface IParadisCursorOverlayTuning {
 	readonly flashMs: number;
 	/** 撮影完了の知らせを出しておく時間（ms）。 */
 	readonly toastMs: number;
-	/** フォーカス移動に合わせてカーソルを寄せるときの移動時間（ms）。 */
+	/**
+	 * フォーカス移動に合わせてカーソルを寄せるときの移動時間（ms）。
+	 *
+	 * 寄せるのは main がキー入力を送るとき（`focus` コマンド）だけ。ページのフォーカスを定期的に
+	 * 見に行くことはしない。ページのスクリプトが動かしたフォーカスに付いていくと、エージェントが
+	 * 触っていない場所へカーソルが動き、そこを操作したように見えるため。
+	 */
 	readonly focusMs: number;
-	/**
-	 * フォーカスの移り先を見に行く間隔（ms）。
-	 *
-	 * `focusin` を使えないため定期的に見る。エージェント操作中のビューは必ず未フォーカスで
-	 * （`dispatchExactViewInput` がフォーカス中の配送を拒む）、未フォーカスのドキュメントでは
-	 * Chromium がフォーカス系イベントの発火を抑えるため、購読しても永久に呼ばれない。
-	 */
-	readonly focusPollMs: number;
-	/**
-	 * 直前のマウス操作からこの時間（ms）はフォーカス追従を見送る。
-	 *
-	 * クリック直後はその要素にフォーカスが移るので、追従させるとカーソルが押した点から
-	 * 勝手にずれる。マウスが動かしているあいだはマウスを優先する。
-	 */
-	readonly focusHoldOffMs: number;
 	/** 非表示化してから撮影して良いと判断するまでの最大待ち時間（ms）。 */
 	readonly settleMs: number;
 }
@@ -87,8 +82,6 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	flashMs: 340,
 	toastMs: 1600,
 	focusMs: 140,
-	focusPollMs: 250,
-	focusHoldOffMs: 1_200,
 	settleMs: 250,
 });
 
@@ -104,8 +97,14 @@ export const PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS = 400;
 export type ParadisCursorOverlayCommand =
 	/** 目標座標へカーソルを滑らせる（必要なら生成する）。長さはmain側が決める。 */
 	| { readonly kind: 'move'; readonly x: number; readonly y: number; readonly label: string; readonly durationMs: number }
-	/** 押した座標へカーソルを合わせて波紋を出す（未生成ならその場に作る）。 */
-	| { readonly kind: 'press'; readonly x: number; readonly y: number; readonly label: string }
+	/**
+	 * 押した座標へカーソルを合わせて波紋を出す（未生成ならその場に作る）。
+	 *
+	 * `delayMs` は、直前の move がまだ滑っている途中のときの残り時間。押す前の move は待たずに
+	 * 配送するので、ページは先に押され、カーソルは後から着く。そのときは滑りを途中で切らず、
+	 * 着いた時に波紋を出す。
+	 */
+	| { readonly kind: 'press'; readonly x: number; readonly y: number; readonly label: string; readonly delayMs?: number }
 	/**
 	 * いまフォーカスされている要素へカーソルを寄せる。
 	 *
@@ -121,6 +120,55 @@ export type ParadisCursorOverlayCommand =
 	| { readonly kind: 'captured'; readonly toast: string }
 	/** オーバーレイもフラッシュも完全に取り除く。 */
 	| { readonly kind: 'remove' };
+
+/**
+ * move・press・focus の実行結果としてページが返す事情。
+ *
+ * - `calm`: `prefers-reduced-motion: reduce`。ページ側は瞬間移動するので、main も待たない
+ * - `blocked`: `<html>` に transform・filter・zoom などがあり、`position:fixed` の基準がずれる。
+ *   ずれた位置にカーソルを描くよりは描かない（補正はしない）。待つ意味も無い
+ */
+export interface IParadisCursorOverlayPageTraits {
+	readonly calm: boolean;
+	readonly blocked: boolean;
+}
+
+/** 実行結果からページの事情を取り出す。形が違えば undefined（古いページの戻り値・例外）。 */
+export function paradisParseCursorOverlayPageTraits(value: unknown): IParadisCursorOverlayPageTraits | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const { calm, blocked } = value as { calm?: unknown; blocked?: unknown };
+	return typeof calm === 'boolean' && typeof blocked === 'boolean' ? { calm, blocked } : undefined;
+}
+
+/**
+ * 1 回の入力の配送で、カーソルの演出のために待ってよいかの指示（shared process から main へ）。
+ *
+ * - `pressFollows`: この move の直後に press が続く（click・click_at・click_by など）。位置を測ってから
+ *   押すまでの間に待つと、その間にページが動いたとき古い座標を押すので、待たずに配送する
+ * - `maxWaitMs`: この配送で待ってよい上限。1 回のツール呼び出しで待つ合計を抑えるために使う
+ */
+export interface IParadisCursorPacing {
+	readonly pressFollows?: boolean;
+	readonly maxWaitMs?: number;
+}
+
+/** IPC で受けた指示を確かめる。知らない形は「指示なし」（今までどおり待つ）として扱う。 */
+export function paradisParseCursorPacing(value: unknown): IParadisCursorPacing | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const { pressFollows, maxWaitMs } = value as { pressFollows?: unknown; maxWaitMs?: unknown };
+	const result: { pressFollows?: boolean; maxWaitMs?: number } = {};
+	if (pressFollows === true) {
+		result.pressFollows = true;
+	}
+	if (typeof maxWaitMs === 'number' && Number.isFinite(maxWaitMs)) {
+		result.maxWaitMs = Math.max(0, Math.round(maxWaitMs));
+	}
+	return result;
+}
 
 /**
  * `window` へ状態を置くときのキー。isolated worldごとに独立しているため、
@@ -215,7 +263,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		function state(create) {
 			var s = window[K];
 			if (!s && create) {
-				s = window[K] = { h: null, rp: null, lb: null, t: '', x: null, y: null, tm: 0, f: null, ts: null, tst: 0, hid: false, fo: null, fe: null, mt: 0 };
+				s = window[K] = { h: null, rp: null, lb: null, t: '', x: null, y: null, tm: 0, f: null, ts: null, tst: 0, hid: false, pp: null, tl: null };
 			}
 			return s || null;
 		}
@@ -225,6 +273,63 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			var el = doc.activeElement, guard = 0;
 			while (el && el.shadowRoot && el.shadowRoot.activeElement && guard++ < 20) { el = el.shadowRoot.activeElement; }
 			return el;
+		}
+		/**
+		 * '<html>' に 'position:fixed' の基準を変える指定があるか。あるとカーソルがクリックの位置から
+		 * ずれるので描かない（補正はしない）。body は避けて html に置いているが、html 自身は避けられない。
+		 */
+		function blockedRoot() {
+			try {
+				var de = doc.documentElement;
+				if (!de || !window.getComputedStyle) { return false; }
+				var cs = window.getComputedStyle(de);
+				if (cs.transform && cs.transform !== 'none') { return true; }
+				if (cs.filter && cs.filter !== 'none') { return true; }
+				if (cs.backdropFilter && cs.backdropFilter !== 'none') { return true; }
+				if (cs.perspective && cs.perspective !== 'none') { return true; }
+				var z = cs.zoom;
+				if (z && z !== '1' && z !== 'normal') { return true; }
+				if (/transform|filter|perspective/.test(cs.willChange || '')) { return true; }
+				if (/paint|layout|strict|content/.test(cs.contain || '')) { return true; }
+			} catch (e) { }
+			return false;
+		}
+		/** ページの事情を main へ返す（'IParadisCursorOverlayPageTraits'）。 */
+		function traits(blocked) { return { calm: calm, blocked: !!blocked }; }
+		/**
+		 * いま top layer にあるもの（全画面・モーダルのダイアログ・開いている popover）の目印。
+		 * top layer は z-index に関係なく上に描かれるので、そこにカーソルを出すには自分も top layer の
+		 * 最後に積む必要がある。
+		 */
+		function topLayerKey(s) {
+			var n = 0, last = null;
+			try {
+				var fs = doc.fullscreenElement;
+				if (fs) { n++; last = fs; }
+				var list = doc.querySelectorAll(':modal, :popover-open');
+				for (var i = 0; i < list.length; i++) { if (list[i] !== s.h) { n++; last = list[i]; } }
+			} catch (e) { }
+			return n === 0 ? null : { n: n, last: last };
+		}
+		/** top layer に何かあれば、カーソルを popover にして top layer の最後へ積み直す。 */
+		function lift(s) {
+			var k = topLayerKey(s);
+			if (!k) { s.tl = null; return; }
+			var h = s.h;
+			var open = false;
+			try { open = h.matches(':popover-open'); } catch (e) { }
+			// 積み直すと表示が一度切れて滑りが止まるので、top layer の中身が変わったときだけ行う。
+			if (open && s.tl && s.tl.n === k.n && s.tl.last === k.last) { return; }
+			s.tl = k;
+			try {
+				if (!h.hasAttribute('popover')) { h.setAttribute('popover', 'manual'); }
+				if (open) { h.hidePopover(); }
+				h.showPopover();
+			} catch (e) {
+				// popover を使えない。UA の '[popover]:not(:popover-open)' で消えないよう属性を外す。
+				try { h.removeAttribute('popover'); } catch (e2) { }
+				s.tl = null;
+			}
 		}
 		/** 要素のどこにカーソルを置くか。画面外・大きさ0なら置かない。 */
 		function pointOf(el) {
@@ -241,8 +346,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			var h = doc.createElement('div');
 			h.setAttribute('aria-hidden', 'true');
 			sx(h, {
-				position: 'fixed', left: '0px', top: '0px', width: '0px', height: '0px',
-				margin: '0px', padding: '0px', border: '0px', background: 'none',
+				position: 'fixed', left: '0px', top: '0px', right: 'auto', bottom: 'auto', width: '0px', height: '0px',
+				margin: '0px', padding: '0px', border: '0px', background: 'none', overflow: 'visible',
 				zIndex: '2147483647', pointerEvents: 'none', opacity: '0',
 				transform: 'translate3d(-99999px,-99999px,0)'
 			});
@@ -270,25 +375,6 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 			w.appendChild(rp); w.appendChild(g); w.appendChild(lb);
 			sr.appendChild(w);
 			s.h = h; s.rp = rp; s.lb = lb;
-			// キーボードもマウスも使わない操作（fill 等）はCDPの入力を一切出さないので、
-			// フォーカスの移り先を定期的に見て寄せる。focusin を購読しないのは、エージェントが
-			// 操作しているビューは必ず未フォーカスで、そのドキュメントでは Chromium が
-			// フォーカス系イベントを発火しないため（購読しても永久に呼ばれない）。
-			try {
-				s.fo = setInterval(function () {
-					try {
-						var st = window[K];
-						if (!st || !st.h) { return; }
-						if (st.mt && Date.now() - st.mt < c.focusHoldOffMs) { return; }
-						var el = deepActive();
-						if (!el || st.fe === el) { return; }
-						var p = pointOf(el);
-						if (!p) { return; }
-						st.fe = el;
-						place(st, p.x, p.y, calm ? 0 : c.focusMs, true);
-					} catch (e) { }
-				}, c.focusPollMs);
-			} catch (e) { s.fo = null; }
 		}
 		function dropFlash(s) {
 			if (s.f) { if (s.f.parentNode) { s.f.parentNode.removeChild(s.f); } s.f = null; }
@@ -300,8 +386,6 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		function kill(s) {
 			if (s.tm) { clearTimeout(s.tm); s.tm = 0; }
 			dropFlash(s); dropToast(s);
-			if (s.fo) { try { clearInterval(s.fo); } catch (e) { } s.fo = null; }
-			s.fe = null;
 			if (s.h && s.h.parentNode) { s.h.parentNode.removeChild(s.h); }
 			if (window[K] === s) { try { delete window[K]; } catch (e) { window[K] = void 0; } }
 		}
@@ -319,14 +403,14 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 				var p = root();
 				if (!p) { return false; }
 				p.appendChild(s.h);
+				s.tl = null;
 			}
+			lift(s);
 			return true;
 		}
 		/** カーソルを座標へ置く。移動・押下・フォーカス追従で共通。 */
-		function place(s, x, y, dur, fromFocus) {
+		function place(s, x, y, dur) {
 			if (!attachCursor(s)) { return; }
-			// マウス由来の配置はフォーカス追従より優先する（クリック直後に勝手にずれない）。
-			if (!fromFocus) { s.mt = Date.now(); }
 			// 撮影のために隠している間は絶対に出さない。別のペインが同じページを操作していると
 			// ここで復活してしまい、進行中の撮影にカーソルが写る。
 			if (!s.hid) { sx(s.h, { display: '' }); }
@@ -350,35 +434,60 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		}
 
 		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus') {
+			if (blockedRoot()) {
+				// ずれた位置に出すより出さない。前に描いていたものも片付ける。
+				var sb = state(false);
+				if (sb) { kill(sb); }
+				return traits(true);
+			}
 			var sm = state(true);
 			if (!sm) { return 0; }
 			if (c.kind === 'focus') {
 				var fel = deepActive();
+				// 直前に押した点がその要素の中なら、押した点に留める（クリックした入力欄へ打つとき、
+				// カーソルが要素の左端へ滑ると、端を押したように見える）。
+				if (sm.pp && fel && fel.getBoundingClientRect && fel !== doc.body && fel !== doc.documentElement) {
+					try {
+						var fr = fel.getBoundingClientRect();
+						if (sm.pp.x >= fr.left && sm.pp.x <= fr.right && sm.pp.y >= fr.top && sm.pp.y <= fr.bottom) {
+							if (attachCursor(sm)) { setLabel(sm, c.label); arm(sm, c.idleMs); }
+							return traits(false);
+						}
+					} catch (e) { }
+				}
 				var fp = pointOf(fel);
-				if (!fp) { return 0; }
+				if (!fp) { return traits(false); }
 				if (!attachCursor(sm)) { return 0; }
 				setLabel(sm, c.label);
-				sm.fe = fel;
-				place(sm, fp.x, fp.y, calm ? 0 : c.focusMs, true);
-				return 0;
+				sm.pp = null;
+				place(sm, fp.x, fp.y, calm ? 0 : c.focusMs);
+				return traits(false);
 			}
 			if (!attachCursor(sm)) { return 0; }
 			setLabel(sm, c.label);
 			if (c.kind === 'move') {
+				sm.pp = null;
 				place(sm, c.x, c.y, c.durationMs);
-				return 0;
+				return traits(false);
 			}
 			// press: 押した点そのものへ合わせてから波紋を出す。移動のコマンドが届いて
 			// いなくてもクリックが無音にならないよう、ここでも作る。
-			place(sm, c.x, c.y, 0);
-			if (calm) { return 0; }
+			// 直前の move がまだその点へ滑っている途中なら、滑りを切らずに着いた時に波紋を出す。
+			var delay = !calm && c.delayMs > 0 && sm.x !== null && Math.abs(sm.x - c.x) < 1 && Math.abs(sm.y - c.y) < 1 ? c.delayMs : 0;
+			if (delay > 0) {
+				arm(sm, c.idleMs + delay);
+			} else {
+				place(sm, c.x, c.y, 0);
+			}
+			sm.pp = { x: c.x, y: c.y };
+			if (calm) { return traits(false); }
 			try {
 				sm.rp.animate(
 					[{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }],
-					{ duration: c.rippleMs, easing: 'cubic-bezier(0.2,0.7,0.3,1)' }
+					{ duration: c.rippleMs, delay: delay, easing: 'cubic-bezier(0.2,0.7,0.3,1)' }
 				);
 			} catch (e) { }
-			return 0;
+			return traits(false);
 		}
 
 		if (c.kind === 'captured') {

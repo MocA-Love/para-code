@@ -18,6 +18,7 @@ import {
 	paradisParseExactCdpScreenshotOptions,
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService, paradisPaneStorageSessionId } from '../../electron-main/paradisCdpTargetService.js';
+import { ParadisCursorOverlayController } from '../../electron-main/paradisCursorOverlayController.js';
 import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/paradisAgentContextMenu.js';
 
 interface ITestViewState {
@@ -573,6 +574,44 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(await service.setExactViewBackgroundThrottling(exact, false), false);
 	});
 
+	test('a move right before a press is sent without waiting, and a WebP capture hides the cursor until it ends', async () => {
+		const current = createTestView();
+		const registry = createRegistry({ 'view-1': current.view });
+		const overlayCalls: string[] = [];
+		class RecordingOverlay extends ParadisCursorOverlayController {
+			override async hideForCapture(): Promise<void> {
+				overlayCalls.push('hide');
+			}
+			override afterCapture(_view: unknown, captured: boolean): boolean {
+				overlayCalls.push(`restore:${captured}`);
+				return false;
+			}
+		}
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1', undefined, new RecordingOverlay());
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+
+		const beforePress = await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 10, y: 20 }), { pressFollows: true });
+		// 290px from the last point at 2.2px/ms.
+		const hover = await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseMoved', x: 300, y: 20 }));
+		const began = await service.beginExactViewRawCapture(exact);
+		await service.endExactViewRawCapture(exact, true);
+		// A second end without a begin must not restore a cursor another capture is hiding.
+		await service.endExactViewRawCapture(exact, true);
+		current.state.visible = false;
+		const hiddenView = await service.beginExactViewRawCapture(exact);
+
+		assert.deepStrictEqual(
+			{ beforePress, hover, began, hiddenView, overlayCalls },
+			{
+				beforePress: { status: 'success', result: {} },
+				hover: { status: 'success', result: {}, cursorWaitMs: 132 },
+				began: true,
+				hiddenView: false,
+				overlayCalls: ['hide', 'restore:true'],
+			},
+		);
+	});
+
 	test('only the context menu opened by an agent input is suppressed, not the user\'s right-click', async () => {
 		const current = createTestView();
 		Object.assign(current.view.webContents, { getZoomFactor: () => 1.25 });
@@ -642,9 +681,10 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		];
 
 		for (const [method, params] of commands) {
-			assert.deepStrictEqual(await service.dispatchExactViewInput(exact, method, JSON.stringify(params)), {
-				status: 'success', result: {},
-			});
+			// The first agent mouse move waits for the cursor to fade in, and says so.
+			assert.deepStrictEqual(await service.dispatchExactViewInput(exact, method, JSON.stringify(params)), method === 'Input.dispatchMouseEvent'
+				? { status: 'success', result: {}, cursorWaitMs: 140 }
+				: { status: 'success', result: {} });
 		}
 
 		assert.deepStrictEqual(current.inputCalls, commands.map(([method, params]) => ({ method, params, sessionId: undefined })));

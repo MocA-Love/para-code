@@ -64,6 +64,12 @@ export interface IParadisCdpGatewayDelegate {
 	captureBoundPageScreenshot(token: string, options: IParadisCdpScreenshotOptions): Promise<string | undefined>;
 	/** Whether the same generation's bound BrowserView is currently visible. */
 	isBoundPageVisible(token: string): Promise<boolean>;
+	/**
+	 * `isBoundPageVisible` と同じ判定に加えて、見えているならエージェントのカーソルの演出を隠す
+	 * （素通しの WebP の撮影に写さないため）。true を返したら必ず `endRawCapture` を 1 回呼ぶ。
+	 */
+	beginRawCapture?(token: string): Promise<boolean>;
+	endRawCapture?(token: string, captured: boolean): void;
 	dispatchBoundPageInput(
 		token: string,
 		connection: object,
@@ -650,6 +656,21 @@ export class ParadisCdpGateway extends Disposable {
 				const visible = await this.delegate.isBoundPageVisible(token);
 				return isCurrentLease() && visible;
 			},
+			...(this.delegate.beginRawCapture && this.delegate.endRawCapture ? {
+				beginRawCapture: async () => {
+					if (!isCurrentLease()) {
+						return false;
+					}
+					const hidden = await this.delegate.beginRawCapture!(token);
+					if (hidden && !isCurrentLease()) {
+						// 隠した後に接続の権限が変わった。撮らないので、ここで戻す。
+						this.delegate.endRawCapture!(token, false);
+						return false;
+					}
+					return hidden;
+				},
+				endRawCapture: (captured: boolean) => this.delegate.endRawCapture!(token, captured),
+			} : {}),
 			dispatchBoundPageInput: (expectedTargetId, method, paramsJson, isRouteCurrent = () => true) => {
 				if (!isCurrentLease()) {
 					return {

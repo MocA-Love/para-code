@@ -361,6 +361,63 @@ suite('Paradis Cursor Overlay Controller', () => {
 		assert.deepStrictEqual({ waited, commands: target.commands }, { waited: 0, commands: ['hide', 'show'] });
 	});
 
+	test('a move right before a press glides without delaying dispatch, and the ripple waits for the arrival', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const delays: string[] = [];
+		target.reply = async kind => kind;
+		const original = target.webContents.executeJavaScriptInIsolatedWorld;
+		target.webContents.executeJavaScriptInIsolatedWorld = (worldId, scripts) => {
+			const delay = /"delayMs":(\d+)/.exec(scripts[0].code);
+			if (delay) {
+				delays.push(delay[1]);
+			}
+			return original(worldId, scripts);
+		};
+
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 0, y: 0 });
+		clock += 1_000;
+		// 440px => a 200ms glide, but a press follows, so nothing waits.
+		const beforePress = await controller.onMouseEvent(target, { type: 'mouseMoved', x: 440, y: 0 }, { pressFollows: true });
+		clock += 50;
+		await controller.onMouseEvent(target, { type: 'mousePressed', x: 440, y: 0, button: 'left' });
+
+		assert.deepStrictEqual(
+			{ beforePress, commands: target.commands, durations: target.durations, delays },
+			{ beforePress: 0, commands: ['move', 'move', 'press'], durations: [PARADIS_CURSOR_OVERLAY_TUNING.appearMs, 200], delays: ['150'] },
+		);
+	});
+
+	test('the wait is capped by the caller and skipped on calm or undrawable pages and after a navigation', async () => {
+		const capped = new TestTarget();
+		const calm = new TestTarget();
+		calm.reply = async () => ({ calm: true, blocked: false });
+		const blocked = new TestTarget();
+		blocked.reply = async () => ({ calm: false, blocked: true });
+		const navigated = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+
+		for (const target of [capped, calm, blocked, navigated]) {
+			await controller.onMouseEvent(target, { type: 'mouseMoved', x: 0, y: 0 });
+		}
+		// Let the fire-and-forget scripts settle so the page traits are known.
+		await Promise.resolve();
+		await Promise.resolve();
+		controller.onNavigated(navigated);
+		clock += 1_000;
+		const waits = {
+			capped: await controller.onMouseEvent(capped, { type: 'mouseMoved', x: 880, y: 0 }, { maxWaitMs: 120 }),
+			calm: await controller.onMouseEvent(calm, { type: 'mouseMoved', x: 880, y: 0 }),
+			blocked: await controller.onMouseEvent(blocked, { type: 'mouseMoved', x: 880, y: 0 }),
+			navigated: await controller.onMouseEvent(navigated, { type: 'mouseMoved', x: 880, y: 0 }),
+			afterNavigation: await controller.onMouseEvent(navigated, { type: 'mouseMoved', x: 0, y: 0 }),
+		};
+
+		assert.deepStrictEqual(waits, { capped: 120, calm: 0, blocked: 0, navigated: 0, afterNavigation: PARADIS_CURSOR_OVERLAY_TUNING.maxMs });
+	});
+
 	test('non-finite coordinates are never forwarded to the page', async () => {
 		const target = new TestTarget();
 		const controller = new ParadisCursorOverlayController();
