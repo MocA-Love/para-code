@@ -18,12 +18,17 @@
 //  - 一度失敗したビューはしばらく演出を止める（壊れたページで毎回コストを払わない）
 
 import { raceTimeout } from '../../../../base/common/async.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { browserViewIsolatedWorldId } from '../../../../platform/browserView/common/browserView.js';
 import {
 	IParadisCursorOverlayPageTraits,
 	IParadisCursorPacing,
+	IParadisCursorTypingTexts,
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
+	PARADIS_CURSOR_OVERLAY_TUNING,
+	ParadisCursorStatus,
+	paradisCursorKeyLabel,
 	ParadisCursorOverlayCommand,
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
@@ -31,6 +36,7 @@ import {
 	paradisCursorMoveMaxMs,
 	paradisParseCursorOverlayPageTraits,
 } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorGlide, IParadisCursorPose, PARADIS_CURSOR_REST_HEADING, paradisPlanCursorGlide, paradisSampleCursorGlide } from '../common/paradisCursorMotion.js';
 
 /**
  * このコントローラが必要とするBrowserViewの最小構造。
@@ -72,6 +78,9 @@ const FLASH_MIN_INTERVAL_MS = 1_200;
 /** フォーカス追従を送る最小間隔（ms）。打鍵1回ごとに送らないための間引き。 */
 const FOCUS_NUDGE_INTERVAL_MS = 250;
 
+/** ホイールの矢印を送る最小間隔（ms）。 */
+const WHEEL_NUDGE_INTERVAL_MS = 150;
+
 /** カーソルの現在位置（ビューポート座標）と、それを置いた時刻・着く時刻。 */
 interface IParadisCursorPosition {
 	readonly x: number;
@@ -79,6 +88,8 @@ interface IParadisCursorPosition {
 	readonly at: number;
 	/** 滑り終えてその点に着く時刻。押す前の move は待たずに配送するので、押した時点ではまだ途中のことがある。 */
 	readonly arriveAt: number;
+	/** ページで再生している軌跡（次の移動を今いる点から始めるため）。 */
+	readonly glide?: IParadisCursorGlide;
 }
 
 export class ParadisCursorOverlayController {
@@ -112,6 +123,8 @@ export class ParadisCursorOverlayController {
 	private readonly failureStreak = new WeakMap<object, number>();
 	/** 最後にフォーカス追従を送った時刻（キー入力のたびに送らないための間引き）。 */
 	private readonly lastFocusNudgeAt = new WeakMap<object, number>();
+	/** 最後にホイールの矢印を送った時刻（間引き）。 */
+	private readonly lastWheelAt = new WeakMap<object, number>();
 	/**
 	 * ページが返した事情（動きを減らす設定・描けない <html>）。どちらかなら待たない。
 	 * ページの移動で中身が変わるので {@link onNavigated} で忘れる。
@@ -141,6 +154,10 @@ export class ParadisCursorOverlayController {
 	 */
 	async onMouseEvent(view: IParadisCursorOverlayTarget, params: Readonly<Record<string, unknown>>, pacing?: IParadisCursorPacing): Promise<number> {
 		const type = params.type;
+		if (type === 'mouseReleased' || type === 'mouseWheel') {
+			this.onMouseAside(view, type, params);
+			return 0;
+		}
 		if (type !== 'mouseMoved' && type !== 'mousePressed') {
 			return 0;
 		}
@@ -172,15 +189,78 @@ export class ParadisCursorOverlayController {
 		const next = { x, y, at };
 		const fresh = this.navigatedSinceMove.has(view);
 		this.navigatedSinceMove.delete(view);
-		const glideMs = fresh ? 0 : paradisCursorGlideMs(this.position.get(view), next, paradisCursorMoveMaxMs(params));
-		this.position.set(view, { ...next, arriveAt: at + glideMs });
+		const previous = this.position.get(view);
+		const glideMs = fresh ? 0 : paradisCursorGlideMs(previous, next, paradisCursorMoveMaxMs(params));
+		const drag = typeof params.buttons === 'number' && Number.isFinite(params.buttons) && params.buttons !== 0;
+		// 初めて出すときはその場に現れる（ページ側もフェードインだけ）。軌跡は前の位置があるときだけ
+		const glide = paradisPlanCursorGlide(this.poseAt(previous, at, { x, y }), { x, y }, previous ? glideMs : 0, { straight: drag });
+		this.position.set(view, { ...next, arriveAt: at + glideMs, glide });
 		// 実行の完了は待たない。待つのはカーソルが滑り終わるぶんだけで、その間に注入は済む。
-		this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glideMs });
+		this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glide.durationMs, frames: glide.frames, ...(drag ? { drag: true } : {}) });
 		const traits = this.pageTraits.get(view);
 		if (pacing?.pressFollows || traits?.calm || traits?.blocked) {
 			return 0;
 		}
 		return paradisClampCursorWaitMs(glideMs, Math.min(PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS, pacing?.maxWaitMs ?? PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS));
+	}
+
+	/** 前の移動の再生の途中なら、今いる姿勢（無ければ `fallback` に休みの向きで）。 */
+	private poseAt(previous: IParadisCursorPosition | undefined, at: number, fallback: { readonly x: number; readonly y: number }): IParadisCursorPose {
+		if (!previous) {
+			return { ...fallback, heading: PARADIS_CURSOR_REST_HEADING };
+		}
+		if (previous.glide) {
+			return paradisSampleCursorGlide(previous.glide, at - previous.at);
+		}
+		return { x: previous.x, y: previous.y, heading: PARADIS_CURSOR_REST_HEADING };
+	}
+
+	/** ボタンを離した（ドラッグの軌跡を消す）・ホイール（向きの矢印）。待たない。 */
+	private onMouseAside(view: IParadisCursorOverlayTarget, type: 'mouseReleased' | 'mouseWheel', params: Readonly<Record<string, unknown>>): void {
+		if (!this.injected.has(view) || !this.isActive(view)) {
+			return;
+		}
+		if (type === 'mouseReleased') {
+			this.run(view, { kind: 'release' });
+			return;
+		}
+		const at = this.now();
+		const previous = this.lastWheelAt.get(view);
+		if (previous !== undefined && at - previous < WHEEL_NUDGE_INTERVAL_MS) {
+			return;
+		}
+		this.lastWheelAt.set(view, at);
+		const dx = typeof params.deltaX === 'number' && Number.isFinite(params.deltaX) ? params.deltaX : 0;
+		const dy = typeof params.deltaY === 'number' && Number.isFinite(params.deltaY) ? params.deltaY : 0;
+		this.run(view, { kind: 'wheel', label: cursorLabel(), dx, dy, text: statusText('scroll') });
+	}
+
+	/**
+	 * 道具の状態を名札に出す（shared process から。スクリプト実行中・待機中・押せなかった など）。
+	 * `point` があれば対象の要素へカーソルを寄せる（入力は送らないので待たない）。
+	 */
+	noteStatus(view: IParadisCursorOverlayTarget, status: ParadisCursorStatus, detail: string | undefined, point: { readonly x: number; readonly y: number } | undefined): void {
+		if (!this.isActive(view)) {
+			this.removeIfDisabled(view);
+			return;
+		}
+		// まだカーソルを置いていないページに、名札だけの状態（idle）を送っても意味がない
+		if (status === 'idle' && !this.injected.has(view)) {
+			return;
+		}
+		let frames: IParadisCursorGlide['frames'] | undefined;
+		let durationMs: number | undefined;
+		if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+			const at = this.now();
+			const previous = this.position.get(view);
+			const next = { x: point.x, y: point.y, at };
+			const glideMs = paradisCursorGlideMs(previous, next, PARADIS_CURSOR_OVERLAY_TUNING.maxMs);
+			const glide = paradisPlanCursorGlide(this.poseAt(previous, at, point), point, glideMs);
+			this.position.set(view, { ...next, arriveAt: at + glideMs, glide });
+			frames = glide.frames;
+			durationMs = glide.durationMs;
+		}
+		this.run(view, { kind: 'status', label: cursorLabel(), status, text: statusText(status, detail), ...(frames ? { frames, durationMs } : {}) });
 	}
 
 	/**
@@ -212,18 +292,20 @@ export class ParadisCursorOverlayController {
 	 * ページのフォーカスを見張って寄せることはしない（ページのスクリプトが動かしたフォーカスに付いて
 	 * いくと、エージェントが触っていない場所を操作したように見える）。
 	 */
-	onKeyEvent(view: IParadisCursorOverlayTarget): void {
+	onKeyEvent(view: IParadisCursorOverlayTarget, method?: string, params?: Readonly<Record<string, unknown>>): void {
 		if (!this.isActive(view)) {
 			this.removeIfDisabled(view);
 			return;
 		}
+		// Enter・⌘K のような特別なキーは札を出す（押したことが見えるように）。文字そのものは出さない
+		const key = method === 'Input.dispatchKeyEvent' && params ? paradisCursorKeyLabel(params, isMacintosh) : undefined;
 		const at = this.now();
 		const previous = this.lastFocusNudgeAt.get(view);
-		if (previous !== undefined && at - previous < FOCUS_NUDGE_INTERVAL_MS) {
+		if (key === undefined && previous !== undefined && at - previous < FOCUS_NUDGE_INTERVAL_MS) {
 			return;
 		}
 		this.lastFocusNudgeAt.set(view, at);
-		this.run(view, { kind: 'focus', label: cursorLabel() });
+		this.run(view, { kind: 'focus', label: cursorLabel(), texts: typingTexts(), ...(key !== undefined ? { key } : {}) });
 	}
 
 	/**
@@ -409,7 +491,7 @@ export class ParadisCursorOverlayController {
 	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): Promise<void> {
 		try {
 			const code = paradisBuildCursorOverlayScript(command);
-			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus') {
+			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus' || command.kind === 'status' || command.kind === 'wheel') {
 				this.injected.add(view);
 			}
 			const result = await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
@@ -460,4 +542,43 @@ function cursorLabel(): string {
 	} catch {
 		return 'Agent';
 	}
+}
+
+/** キー入力の名札（行き先によってページ側が選ぶ）。 */
+function typingTexts(): IParadisCursorTypingTexts {
+	try {
+		return {
+			typing: localize('paradis.agentBrowser.cursorTyping', "入力中"),
+			secret: localize('paradis.agentBrowser.cursorTypingSecret', "入力中（伏せ字）"),
+			page: localize('paradis.agentBrowser.cursorTypingPage', "ページへ入力"),
+		};
+	} catch {
+		return { typing: 'Typing', secret: 'Typing (hidden)', page: 'Typing to the page' };
+	}
+}
+
+/** 道具の状態の名札。`detail`（選んだ項目の名前）は短く切る。 */
+function statusText(status: ParadisCursorStatus, detail?: string): string {
+	try {
+		switch (status) {
+			case 'idle': return '';
+			case 'script': return localize('paradis.agentBrowser.cursorScript', "スクリプト実行中");
+			case 'waiting': return localize('paradis.agentBrowser.cursorWaiting', "待機中");
+			case 'failed': return localize('paradis.agentBrowser.cursorFailed', "押せませんでした");
+			case 'missing': return localize('paradis.agentBrowser.cursorMissing', "見つかりません");
+			case 'select': return detail ? localize('paradis.agentBrowser.cursorSelected', "選択: {0}", shortDetail(detail)) : localize('paradis.agentBrowser.cursorSelect', "選択");
+			case 'value': return localize('paradis.agentBrowser.cursorValue', "値を入力");
+			case 'upload': return localize('paradis.agentBrowser.cursorUpload', "ファイルを渡す");
+			case 'scroll': return localize('paradis.agentBrowser.cursorScroll', "スクロール");
+		}
+	} catch {
+		return status === 'idle' ? '' : 'Working';
+	}
+}
+
+/** 名札に入れるページ由来の文字。改行・制御文字を除き、12 文字で切る。 */
+function shortDetail(detail: string): string {
+	const flat = detail.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim();
+	const chars = [...flat];
+	return chars.length > 12 ? `${chars.slice(0, 12).join('')}…` : flat;
 }
