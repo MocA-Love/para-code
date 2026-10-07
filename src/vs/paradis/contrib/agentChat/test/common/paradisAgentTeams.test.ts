@@ -152,6 +152,15 @@ suite('paradisAgentTeams', () => {
 		});
 	});
 
+	test('同じ本文を 2 回送ったものは 2 件、同じ行を読み直したものは 1 件', () => {
+		const tracker = new ParadisAgentTeamTracker();
+		tracker.apply(parse(leaderLines()).teamSignals);
+		const again = (offsetMs: number) => ({ type: 'assistant', timestamp: iso(offsetMs), message: { content: [{ type: 'tool_use', id: `toolu_again${offsetMs}`, name: 'SendMessage', input: { to: 'heading-counter', message: '続けて' } }] } });
+		tracker.apply(parse([again(90_000), again(95_000)]).teamSignals);
+		tracker.apply(parse([again(95_000)]).teamSignals);
+		assert.strictEqual(tracker.snapshot()[0].messages.filter(message => message.text === '続けて').length, 2);
+	});
+
 	test('起動を見ていない config は読まず、SendMessage でのバックグラウンドの子の再開はやりとりに数えない', () => {
 		const tracker = new ParadisAgentTeamTracker();
 		assert.strictEqual(tracker.applyConfig('session-old', { members: [{ name: 'x', backend: 'in-process' }] }), false);

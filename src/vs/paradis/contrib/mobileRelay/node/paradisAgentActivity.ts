@@ -310,8 +310,7 @@ export class ParadisAgentActivityTracker {
 					}
 					const detail = event === 'SubagentStop' ? text(payload.last_assistant_message) ?? previous?.detail : text(payload.prompt) ?? previous?.detail;
 					this.agents.set(id, {
-						// 子の記録からチームメイトと分かった項目は、hook で上書きしてもチームメイトのまま
-						id, label: text(payload.agent_type) ?? previous?.label ?? 'SubAgent', role: previous?.role ?? 'subagent', provider: 'claude',
+						id, label: text(payload.agent_type) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
 						...(detail !== undefined ? { detail } : {}),
 						...relationship(id, payload.parent_agent_id ?? payload.parent_id, payload.depth, previous),
 						status: nextStatus, startedAt: previous?.startedAt ?? at, updatedAt: at,
@@ -697,7 +696,7 @@ export class ParadisAgentActivityTracker {
 			const label = recovered.name ?? (previous?.label !== undefined && previous.label !== 'SubAgent' ? previous.label : recovered.label);
 			const detail = previous?.detail ?? recovered.detail;
 			this.agents.set(recovered.id, {
-				id: recovered.id, label, role: recovered.teammate === true || previous?.role === 'teammate' ? 'teammate' : 'subagent', provider: recovered.provider,
+				id: recovered.id, label, role: 'subagent', provider: recovered.provider,
 				...(detail !== undefined ? { detail } : {}),
 				...(previous?.parentId !== undefined ? { parentId: previous.parentId } : {}),
 				...(previous?.depth !== undefined ? { depth: previous.depth } : {}),

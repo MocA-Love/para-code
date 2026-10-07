@@ -120,6 +120,8 @@ export const PARADIS_TEAM_LIMITS = {
 
 /** 作業の印がこれより短い間に idle の後に来ても、待機のままとみなす（idle の直後に書かれる行で作業中に戻さない）。 */
 const IDLE_SETTLE_MS = 2_000;
+/** 二重に数えないために覚えておくやりとりの鍵の数（チームごと）。 */
+const MESSAGE_KEYS_LIMIT = 2_000;
 const NAME_PATTERN = /^[A-Za-z0-9._@:-]{1,100}$/;
 const AGENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const TOOL_USE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
@@ -431,7 +433,10 @@ interface ITeamRecord {
 	readonly members: Map<string, IMemberRecord>;
 	readonly toolUseIds: string[];
 	readonly messages: IParadisAgentTeamMessage[];
-	readonly messageKeys: Set<string>;
+	/** やりとりの鍵 → 送った側の記録・受けた側の記録で見た回数（同じ本文の 2 回目は数え、両側の同じものは 1 回にする）。 */
+	readonly messageKeys: Map<string, { sent: number; received: number }>;
+	/** 同じ記録の同じ行を 2 度当てない（鍵・出どころ・時刻）。 */
+	readonly messageReplays: Set<string>;
 	messageCount: number;
 	readonly plans: Map<string, IParadisAgentTeamPlan>;
 	startedAt: number;
@@ -501,7 +506,7 @@ export class ParadisAgentTeamTracker {
 	private applySpawn(signal: Extract<IParadisTeamSignal, { type: 'spawned' }>): boolean {
 		let team = this.teams.get(signal.team);
 		if (team === undefined) {
-			team = { name: signal.team, leadName: 'team-lead', members: new Map(), toolUseIds: [], messages: [], messageKeys: new Set(), messageCount: 0, plans: new Map(), startedAt: signal.at, updatedAt: signal.at };
+			team = { name: signal.team, leadName: 'team-lead', members: new Map(), toolUseIds: [], messages: [], messageKeys: new Map(), messageReplays: new Set(), messageCount: 0, plans: new Map(), startedAt: signal.at, updatedAt: signal.at };
 			this.teams.set(signal.team, team);
 			for (const oldest of [...this.teams.values()].sort((a, b) => a.startedAt - b.startedAt).slice(0, Math.max(0, this.teams.size - PARADIS_TEAM_LIMITS.teams))) {
 				this.teams.delete(oldest.name);
@@ -537,7 +542,7 @@ export class ParadisAgentTeamTracker {
 		team.members.set(signal.name, member);
 		team.updatedAt = Math.max(team.updatedAt, signal.at);
 		if (call?.prompt !== undefined && call.prompt.trim().length > 0) {
-			this.pushMessage(team, { from: team.leadName, to: signal.name, kind: 'instruction', text: call.prompt, at: call.at, ...(call.description !== undefined ? { summary: call.description } : {}) });
+			this.pushMessage(team, { from: team.leadName, to: signal.name, kind: 'instruction', text: call.prompt, at: call.at, ...(call.description !== undefined ? { summary: call.description } : {}) }, 'sent');
 		}
 		return true;
 	}
@@ -567,7 +572,7 @@ export class ParadisAgentTeamTracker {
 			if (plan !== undefined && plan.approved === undefined && signal.approved !== undefined) {
 				team.plans.set(signal.to, { ...plan, approved: signal.approved, ...(signal.text.length > 0 ? { feedback: signal.text.slice(0, PARADIS_TEAM_LIMITS.textLength) } : {}) });
 			}
-			return this.pushMessage(team, { from, to: signal.to, kind: 'plan', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) }) || plan !== undefined;
+			return this.pushMessage(team, { from, to: signal.to, kind: 'plan', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) }, 'sent') || plan !== undefined;
 		}
 		if (signal.protocol !== undefined && signal.protocol !== 'shutdown_request' && signal.protocol !== 'shutdown_response') {
 			return false;
@@ -575,7 +580,7 @@ export class ParadisAgentTeamTracker {
 		if (signal.protocol === 'shutdown_response' && signal.approved === true) {
 			this.endMember(team, from, signal.at);
 		}
-		return this.pushMessage(team, { from, to: signal.to, kind: signal.protocol !== undefined ? 'shutdown' : 'message', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) });
+		return this.pushMessage(team, { from, to: signal.to, kind: signal.protocol !== undefined ? 'shutdown' : 'message', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) }, 'sent');
 	}
 
 	private applyReceived(signal: Extract<IParadisTeamSignal, { type: 'received' }>): boolean {
@@ -605,14 +610,14 @@ export class ParadisAgentTeamTracker {
 					const plan = clip(protocol.planContent ?? '', PARADIS_TEAM_LIMITS.planLength);
 					team.plans.set(signal.from, { from: signal.from, text: plan.text, at: signal.at, ...(plan.truncated ? { truncated: true } : {}) });
 					member.updatedAt = Math.max(member.updatedAt, signal.at);
-					this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'plan', text: protocol.planContent ?? '', at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) });
+					this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'plan', text: protocol.planContent ?? '', at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) }, 'received');
 					return true;
 				}
 				case 'shutdown_response':
 					if (protocol.approve === true || protocol.approved === true) {
 						this.endMember(team, signal.from, signal.at);
 					}
-					return this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'shutdown', text: '', at: signal.at }) || true;
+					return this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'shutdown', text: '', at: signal.at }, 'received') || true;
 				case 'teammate_terminated':
 					this.endMember(team, signal.from, signal.at);
 					return true;
@@ -623,7 +628,7 @@ export class ParadisAgentTeamTracker {
 		if (signal.text.length === 0) {
 			return false;
 		}
-		return this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'message', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) });
+		return this.pushMessage(team, { from: signal.from, to: team.leadName, kind: 'message', text: signal.text, at: signal.at, ...(signal.summary !== undefined ? { summary: signal.summary } : {}) }, 'received');
 	}
 
 	private endMember(team: ITeamRecord, name: string, at: number): void {
@@ -635,12 +640,29 @@ export class ParadisAgentTeamTracker {
 		}
 	}
 
-	private pushMessage(team: ITeamRecord, message: Omit<IParadisAgentTeamMessage, 'id' | 'truncated'>): boolean {
+	/**
+	 * やりとりを足す。`source` は送った側の記録（リーダー・メンバーの SendMessage と起動の頼みごと）か、受けた側の記録
+	 * （リーダーが受けた `<teammate-message>`）か。メンバーからリーダーへのものは両側に残るので、同じ鍵の数が相手側の数を
+	 * 超えたときだけ新しいやりとりとして数える（同じ本文を 2 回送ったものは 2 件になる）。
+	 */
+	private pushMessage(team: ITeamRecord, message: Omit<IParadisAgentTeamMessage, 'id' | 'truncated'>, source: 'sent' | 'received'): boolean {
 		const key = messageKey(message.from, message.to, message.kind === 'shutdown' ? '\0shutdown' : message.text);
-		if (team.messageKeys.has(key)) {
+		const replay = `${key}\0${source}\0${message.at}`;
+		if (team.messageReplays.has(replay)) {
 			return false;
 		}
-		team.messageKeys.add(key);
+		team.messageReplays.add(replay);
+		const seen = team.messageKeys.get(key) ?? { sent: 0, received: 0 };
+		seen[source]++;
+		team.messageKeys.set(key, seen);
+		for (const table of [team.messageReplays, team.messageKeys]) {
+			for (const oldest of [...table.keys()].slice(0, Math.max(0, table.size - MESSAGE_KEYS_LIMIT))) {
+				table.delete(oldest);
+			}
+		}
+		if (seen[source] <= (source === 'sent' ? seen.received : seen.sent)) {
+			return false; // もう片側の記録で数えた
+		}
 		team.messageCount++;
 		const body = clip(message.text, PARADIS_TEAM_LIMITS.textLength);
 		const entry: IParadisAgentTeamMessage = {

@@ -36,7 +36,7 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
-import { ILogService } from '../../../../platform/log/common/log.js';
+import { ILogService, LogLevel } from '../../../../platform/log/common/log.js';
 import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
@@ -673,11 +673,8 @@ async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisC
 		const description = str(parsed?.description);
 		const spawnDepth = num(parsed?.spawnDepth);
 		const name = str(parsed?.name);
-		// チームのメンバー（in-process）。活動の一覧で「チームメイト」として出す
-		const teammate = parsed?.taskKind === 'in_process_teammate';
 		if (agentType === undefined && description === undefined && spawnDepth === undefined && name === undefined) { return undefined; }
 		return {
-			...(teammate ? { teammate: true as const } : {}),
 			...(agentType !== undefined ? { agentType } : {}),
 			...(description !== undefined ? { description } : {}),
 			...(spawnDepth !== undefined ? { spawnDepth } : {}),
@@ -6337,7 +6334,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const known = this.activityTrackers.get(token)?.agentSummary(id);
 		const name = type ?? known?.label;
-		return { id, ...(name !== undefined ? { name: name.slice(0, 200) } : {}), role: known?.role ?? 'subagent' };
+		// チームのメンバーは活動の一覧ではサブエージェントのまま（詳細を開けるように）なので、チームの追跡から見分ける
+		const teammate = this.tailers.get(token)?.teams.hasMember(id) === true;
+		return { id, ...(name !== undefined ? { name: name.slice(0, 200) } : {}), role: teammate ? 'teammate' : known?.role ?? 'subagent' };
 	}
 
 	/** 承認のカードに合う、mod の承認の待ち（tool_use_id、無ければカードの本文で突き合わせる）。 */
@@ -7758,7 +7757,9 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
 		// 届いた hook の種類と payload のキーだけを残す（値は出さない）。チームのメンバーの hook が何で届くかを確かめるため
-		this.logService.trace('[paradisAgentChat] hook received', event.event, Object.keys(event.payload ?? {}).sort().slice(0, 60).join(','));
+		if (this.logService.getLevel() === LogLevel.Trace) {
+			this.logService.trace('[paradisAgentChat] hook received', event.event, Object.keys(event.payload ?? {}).sort().slice(0, 60).join(','));
+		}
 		this.recordDesktopInteraction(event);
 		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
 		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
@@ -8483,9 +8484,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (teamTailer !== undefined && event.event !== 'TeammateIdle' && teamTailer.teams.hasMember(aliveAgentId)) {
 				const toolName = event.event === 'PreToolUse' ? event.toolName ?? str(event.payload?.tool_name) : undefined;
 				const activity = toolName !== undefined ? paradisTeamActivityText(toolName, rec(event.payload?.tool_input)) : undefined;
-				if (teamTailer.teams.noteHook('active', { agentId: aliveAgentId }, event.at, activity)) {
-					this.pushTeamsIfChanged(event.token);
-				}
+				// 今やっていることはツールごとに変わるので、すぐ送らず読み直し（1 秒後）の送信にまとめる
+				teamTailer.teams.noteHook('active', { agentId: aliveAgentId }, event.at, activity);
 				this.scheduleTeamRefresh(event.token, TEAM_REFRESH_SOON_MS);
 			}
 			// 子がバックグラウンドで起動したシェル。起動は子の transcript にしか書かれない（SSH 先でも hook は届く）
@@ -9343,9 +9343,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			changed = tailer.teams.applyMember(agentId, result.read) || changed;
 			more = more || result.more;
 		}
-		if (changed) {
-			this.pushTeamsIfChanged(token);
-		}
+		// hook の印（今やっていること）で進んだ版もここで送る（印ごとに送らない）
+		this.pushTeamsIfChanged(token);
 		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
 		if (more) {
 			this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS);
