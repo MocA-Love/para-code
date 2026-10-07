@@ -75,6 +75,8 @@ import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradi
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
 import { IParadisAgentSessionStatus, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
+import { IParadisAgentTeam, ParadisAgentTeamTracker, ParadisTeamApprovals, paradisTeamActivityText, paradisTeamsForStoppedPane } from '../../agentChat/common/paradisAgentTeams.js';
+import { IParadisTeamConfigReadState, IParadisTeamMemberReadState, paradisNewTeamMemberReadState, paradisReadClaudeTeamConfig, paradisReadClaudeTeamMember } from './paradisClaudeTeamFiles.js';
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
@@ -184,8 +186,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -279,6 +281,19 @@ const WORKFLOW_REFRESH_RUNS = 5;
 interface IParadisAgentWorkflowsField {
 	workflows?: readonly IParadisAgentWorkflow[];
 	workflowsAt?: number;
+}
+
+/** チームを読み直すまでの間（起動・メンバーの hook の後。同じ間に届いた印をまとめる）。 */
+const TEAM_REFRESH_SOON_MS = 1_000;
+/** 初回読み込みでチームを見つけた後、ファイルを読みに行くまでの間。 */
+const TEAM_REFRESH_INITIAL_MS = 2_000;
+/** 作業中のメンバーがいる間、メンバーの記録と config を読み直す間隔。 */
+const TEAM_REFRESH_RUNNING_MS = 10_000;
+
+/** snapshot / delta の任意項目（Claude のセッションだけ。agent.teams.v1）。時刻は PC の時計で、`teamsAt` を添える。 */
+interface IParadisAgentTeamsField {
+	teams?: readonly IParadisAgentTeam[];
+	teamsAt?: number;
 }
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
@@ -658,8 +673,11 @@ async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisC
 		const description = str(parsed?.description);
 		const spawnDepth = num(parsed?.spawnDepth);
 		const name = str(parsed?.name);
+		// チームのメンバー（in-process）。活動の一覧で「チームメイト」として出す
+		const teammate = parsed?.taskKind === 'in_process_teammate';
 		if (agentType === undefined && description === undefined && spawnDepth === undefined && name === undefined) { return undefined; }
 		return {
+			...(teammate ? { teammate: true as const } : {}),
 			...(agentType !== undefined ? { agentType } : {}),
 			...(description !== undefined ? { description } : {}),
 			...(spawnDepth !== undefined ? { spawnDepth } : {}),
@@ -1808,6 +1826,8 @@ interface ITailerDelegate {
 	onMonitors?(): void;
 	/** Workflow の実行の一覧が変化した（起動・終わりの通知）。`live` でなければ初回読み込み・読み直し。 */
 	onWorkflows?(live: boolean): void;
+	/** チームの起動・やりとりを読んだ。`live` でなければ初回読み込み・読み直し。 */
+	onTeams?(live: boolean): void;
 	/** キャッシュの hit / miss・コンテキストの使用率が変わった（ライブ追記のときだけ。agent.session-status.v1）。 */
 	onSessionStatus?(): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
@@ -1956,6 +1976,8 @@ class TranscriptTailer {
 	private readonly monitorWatch = new ParadisAgentMonitorWatch(() => this.delegate.onMonitors?.());
 	/** Claude Code の Workflow の実行（epoch ごと。モバイルのトークのカード。agent.workflows.v1）。 */
 	readonly workflows = new ParadisAgentWorkflowTracker();
+	/** Claude Code のエージェントチーム（epoch ごと。モバイルのトークのカード。agent.teams.v1）。 */
+	readonly teams = new ParadisAgentTeamTracker();
 	/** 会話 1 本分のキャッシュ・コンテキストの状態（モバイルのセッションの輪。agent.session-status.v1）。 */
 	readonly sessionStatus: ParadisAgentSessionStatusTracker;
 	/**
@@ -2303,6 +2325,7 @@ class TranscriptTailer {
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
 				this.workflows.clear();
+				this.teams.clear();
 				this.sessionStatus.clear();
 				this.approvalQueue.length = 0;
 				this.approvalDeniedInTurn = false;
@@ -3407,6 +3430,9 @@ class TranscriptTailer {
 		if ((signals.workflowSignals.length > 0 || signals.shellSignals.length > 0) && this.workflows.apply(signals.workflowSignals, signals.shellSignals)) {
 			this.delegate.onWorkflows?.(live);
 		}
+		if (signals.teamSignals.length > 0 && this.teams.apply(signals.teamSignals)) {
+			this.delegate.onTeams?.(live);
+		}
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
@@ -3629,6 +3655,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly workflowRefreshing = new Set<string>();
 	/** Workflow の実行のフォルダを読んだ位置（tailer の epoch ごと）。 */
 	private readonly workflowReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly runs: Map<string, IParadisWorkflowRunReadState> }>();
+	/** 最後に送ったチームの一覧の印（epoch・版・許可待ち・ペインの停止。変わったときだけ delta に載せる）。 */
+	private readonly teamsSent = new Map<string, string>();
+	/** チームのファイルを読み直す予約（ペインごと）。 */
+	private readonly teamRefreshTimers = new Map<string, { readonly timer: ReturnType<typeof setTimeout>; readonly at: number }>();
+	/** チームのファイルを読んでいる最中のペイン。 */
+	private readonly teamRefreshing = new Set<string>();
+	/** チームのファイルを読んだ位置（tailer の epoch ごと）。 */
+	private readonly teamReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly configs: Map<string, IParadisTeamConfigReadState>; readonly members: Map<string, IParadisTeamMemberReadState> }>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -3726,6 +3760,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.persistedActivityTimers.clear();
 			for (const entry of this.workflowRefreshTimers.values()) { clearTimeout(entry.timer); }
 			this.workflowRefreshTimers.clear();
+			for (const entry of this.teamRefreshTimers.values()) { clearTimeout(entry.timer); }
+			this.teamRefreshTimers.clear();
 			for (const timer of this.questionSettleTimers) { clearTimeout(timer); }
 			this.questionSettleTimers.clear();
 			this.questionNotifyCounts.clear();
@@ -6931,6 +6967,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.workflowsSent.delete(token);
 			}
 		}
+		for (const token of [...this.teamsSent.keys()]) {
+			if (!live.has(token)) {
+				this.teamsSent.delete(token);
+			}
+		}
 		for (const token of [...this.sessionStatusSent.keys()]) {
 			if (!live.has(token)) {
 				this.sessionStatusSent.delete(token);
@@ -7716,6 +7757,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
+		// 届いた hook の種類と payload のキーだけを残す（値は出さない）。チームのメンバーの hook が何で届くかを確かめるため
+		this.logService.trace('[paradisAgentChat] hook received', event.event, Object.keys(event.payload ?? {}).sort().slice(0, 60).join(','));
 		this.recordDesktopInteraction(event);
 		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
 		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
@@ -7725,6 +7768,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
 			// 動いていた Workflow を「中断（推定）」にして届ける（送るときに判定する。Monitor が無いと delta が出ないため）
 			this.pushWorkflowsIfChanged(event.token);
+			this.pushTeamsIfChanged(event.token);
 		} else if (this.desktopExitedTokens.delete(event.token)) {
 			this.sessionEndedAt.delete(event.token);
 			this.scheduleDesktopChatCheck();
@@ -8434,12 +8478,29 @@ export class ParadisMobileAgentChat extends Disposable {
 		const aliveAgentId = str(event.payload?.agent_id) ?? claudeNestedAgentId;
 		if (info.agent === 'claude' && event.event !== 'SubagentStop' && aliveAgentId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(aliveAgentId)) {
 			this.tailers.get(event.token)?.noteBackgroundAgentAlive(aliveAgentId, event.at);
+			// チームのメンバーが動いている印（今やっていること）。記録の読み直しも早める
+			const teamTailer = this.tailers.get(event.token);
+			if (teamTailer !== undefined && event.event !== 'TeammateIdle' && teamTailer.teams.hasMember(aliveAgentId)) {
+				const toolName = event.event === 'PreToolUse' ? event.toolName ?? str(event.payload?.tool_name) : undefined;
+				const activity = toolName !== undefined ? paradisTeamActivityText(toolName, rec(event.payload?.tool_input)) : undefined;
+				if (teamTailer.teams.noteHook('active', { agentId: aliveAgentId }, event.at, activity)) {
+					this.pushTeamsIfChanged(event.token);
+				}
+				this.scheduleTeamRefresh(event.token, TEAM_REFRESH_SOON_MS);
+			}
 			// 子がバックグラウンドで起動したシェル。起動は子の transcript にしか書かれない（SSH 先でも hook は届く）
 			if (event.event === 'PostToolUse' && (event.toolName ?? str(event.payload?.tool_name)) === 'Bash') {
 				const childShell = paradisChildShellSignalsFromHook(event, aliveAgentId);
 				if (childShell.length > 0) {
 					this.tailers.get(event.token)?.applyChildShellSignals(childShell, true);
 				}
+			}
+		}
+		if (event.event === 'TeammateIdle' && info.agent === 'claude') {
+			const idleName = str(event.payload?.teammate_name);
+			const teamTailer = this.tailers.get(event.token);
+			if (teamTailer !== undefined && teamTailer.teams.noteHook('idle', { ...(aliveAgentId !== undefined ? { agentId: aliveAgentId } : {}), ...(idleName !== undefined ? { name: idleName } : {}) }, event.at)) {
+				this.pushTeamsIfChanged(event.token);
 			}
 		}
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && !isHarnessNotification) {
@@ -8595,6 +8656,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, interaction: tailer.currentInteraction() });
 				}
+				this.pushTeamsIfChanged(token);
 				// 質問のカードが増えた（mod の待ちが先に来ていれば、ここで初めて突き合わせられる）
 				if (messages.some(message => message.kind === 'question')) {
 					this.refreshModQuestions(token);
@@ -8643,7 +8705,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			onIssueUrlsUpdated: issueUrls => setParadisAgentPaneIssueUrls(token, issueUrls),
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
 			// （ParadisAgentBrowserService がペイン実行状態 working/question の判定に使う）。
-			onActivity: pushActivity,
+			onActivity: () => {
+				pushActivity();
+				// 許可待ちの出入りでメンバーの状態が変わる（チームのカードの「許可待ち」。Q261 A）
+				this.pushTeamsIfChanged(token);
+			},
 			// model / effort の変化は空deltaで購読者へ届ける（メッセージ本文とは独立に変わるため）。
 			onInfo: () => this.pushInfoToSubscribers(token),
 			// Monitor の一覧は本文と独立に変わる（出力の通知・時間の経過）ので、空 delta で丸ごと届ける。
@@ -8659,6 +8725,12 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.pushWorkflowsIfChanged(token);
 				}
 				this.scheduleWorkflowRefresh(token, live ? WORKFLOW_REFRESH_SOON_MS : WORKFLOW_REFRESH_INITIAL_MS);
+			},
+			onTeams: live => {
+				if (live) {
+					this.pushTeamsIfChanged(token);
+				}
+				this.scheduleTeamRefresh(token, live ? TEAM_REFRESH_SOON_MS : TEAM_REFRESH_INITIAL_MS);
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			onAdvisors: messages => this.applyAdvisorMessages(token, messages),
@@ -8747,6 +8819,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (workflowTimer !== undefined) {
 			clearTimeout(workflowTimer.timer);
 			this.workflowRefreshTimers.delete(token);
+		}
+		const teamTimer = this.teamRefreshTimers.get(token);
+		if (teamTimer !== undefined) {
+			clearTimeout(teamTimer.timer);
+			this.teamRefreshTimers.delete(token);
 		}
 		this.modLive.delete(token);
 		const modApprovalTimer = this.modApprovalTimers.get(token);
@@ -8993,7 +9070,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「停止（推定）」にして送る。推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため、
 	 * 送るたびにここで判定する。
 	 */
-	private monitorsField(token: string, tailer: TranscriptTailer, full = false): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField {
+	private monitorsField(token: string, tailer: TranscriptTailer, full = false): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField {
 		if (tailer.agent !== 'claude') {
 			return {};
 		}
@@ -9008,6 +9085,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// バックグラウンドのシェル（agent.shells.v1）も同じ決まりで送る。出力と停止の可否を添える
 			shells: paneStopped ? paradisShellsForStoppedPane(shells, this.sessionEndedAt.get(token)) : shells, shellsAt: now, shellsAccess,
 			...this.workflowsField(token, tailer, full),
+			...this.teamsField(token, tailer, full),
 		};
 	}
 
@@ -9144,6 +9222,135 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
 		} else if (tailer.workflows.hasRunning() && !paneStopped) {
 			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_RUNNING_MS);
+		}
+	}
+
+	/** 答えていない承認のうち、チームのメンバー（子の ID）からのもの。 */
+	private teamApprovals(tailer: TranscriptTailer): Map<string, { readonly id: string; readonly tool?: string }> {
+		const approvals = new Map<string, { readonly id: string; readonly tool?: string }>();
+		for (const interaction of tailer.approvalInteractions()) {
+			const agentId = interaction.request?.agent?.id;
+			if (agentId !== undefined && !approvals.has(agentId) && tailer.teams.hasMember(agentId)) {
+				approvals.set(agentId, { id: interaction.id, ...(interaction.request?.tool !== undefined ? { tool: interaction.request.tool } : {}) });
+			}
+		}
+		return approvals;
+	}
+
+	/**
+	 * snapshot / delta に載せるチーム（agent.teams.v1）。やりとりがあると大きいので、snapshot と購読の応答（`full`）以外は
+	 * 前に送ったものから変わったときだけ載せる。許可待ちは送るときに今の承認から決める。ペインが止まっていれば、
+	 * 動いていたメンバーを「止まった（推定）」にする。時刻は PC の時計で、送信時刻 `teamsAt` を添える。
+	 */
+	private teamsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentTeamsField {
+		if (tailer.agent !== 'claude' || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
+			return {};
+		}
+		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const approvals: ParadisTeamApprovals = this.teamApprovals(tailer);
+		const signature = `${tailer.epoch}\0${tailer.teams.revision}\0${[...approvals].map(([agentId, approval]) => `${agentId}=${approval.id}`).join(',')}\0${paneStopped ? this.sessionEndedAt.get(token) ?? 'stopped' : ''}`;
+		if (!full && this.teamsSent.get(token) === signature) {
+			return {};
+		}
+		// 1 台宛ての応答（購読の開始）では覚えない。他の端末へまだ届いていない変化を、次の delta で取りこぼさないため
+		if (!full) {
+			this.teamsSent.set(token, signature);
+		}
+		const snapshot = tailer.teams.snapshot(approvals);
+		return { teams: paneStopped ? paradisTeamsForStoppedPane(snapshot) : snapshot, teamsAt: Date.now() };
+	}
+
+	/** チームの一覧が前に送ったものから変わっていれば、空 delta で届ける。 */
+	private pushTeamsIfChanged(token: string): void {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.agent !== 'claude' || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
+			return;
+		}
+		const terminalId = this.terminalIdForToken(token);
+		if (terminalId === undefined) {
+			return;
+		}
+		const field = this.teamsField(token, tailer, false);
+		if (field.teams !== undefined) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+		}
+	}
+
+	/** チームのファイルを読み直す予約（同じペインの予約は早い方に寄せる）。 */
+	private scheduleTeamRefresh(token: string, delay: number): void {
+		const previous = this.teamRefreshTimers.get(token);
+		if (previous !== undefined) {
+			if (previous.at <= Date.now() + delay) {
+				return;
+			}
+			clearTimeout(previous.timer);
+		}
+		const timer = setTimeout(() => {
+			this.teamRefreshTimers.delete(token);
+			if (this.teamRefreshing.has(token)) {
+				this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS);
+				return;
+			}
+			this.teamRefreshing.add(token);
+			this.refreshTeams(token)
+				.catch(error => this.logService.trace('[paradisAgentChat] team refresh failed', String(error)))
+				.finally(() => this.teamRefreshing.delete(token));
+		}, delay);
+		this.teamRefreshTimers.set(token, { timer, at: Date.now() + delay });
+	}
+
+	/**
+	 * チームの `config.json` と in-process のメンバーの記録を読み、チームへ当てる。作業中・許可待ちのメンバーがいれば
+	 * {@link TEAM_REFRESH_RUNNING_MS} 後にまた読む（hook の届かない間も今やっていることを出すため）。
+	 */
+	private async refreshTeams(token: string): Promise<void> {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.agent !== 'claude' || tailer.teams.size === 0) {
+			return;
+		}
+		let reads = this.teamReads.get(tailer);
+		if (reads === undefined || reads.epoch !== tailer.epoch) {
+			reads = { epoch: tailer.epoch, configs: new Map(), members: new Map() };
+			this.teamReads.set(tailer, reads);
+		}
+		const targets = tailer.teams.toRefresh();
+		let changed = false;
+		let more = false;
+		for (const teamName of targets.teams) {
+			let state = reads.configs.get(teamName);
+			if (state === undefined) {
+				state = {};
+				reads.configs.set(teamName, state);
+			}
+			const config = await paradisReadClaudeTeamConfig(tailer.transcriptPath, teamName, state, isAllowedTranscriptPath);
+			if (this.tailers.get(token) !== tailer || reads.epoch !== tailer.epoch) {
+				return;
+			}
+			if (config !== undefined) {
+				changed = tailer.teams.applyConfig(teamName, config) || changed;
+			}
+		}
+		for (const agentId of targets.agentIds) {
+			let state = reads.members.get(agentId);
+			if (state === undefined) {
+				state = paradisNewTeamMemberReadState();
+				reads.members.set(agentId, state);
+			}
+			const result = await paradisReadClaudeTeamMember(tailer.transcriptPath, agentId, state, isAllowedTranscriptPath);
+			if (this.tailers.get(token) !== tailer || reads.epoch !== tailer.epoch) {
+				return;
+			}
+			changed = tailer.teams.applyMember(agentId, result.read) || changed;
+			more = more || result.more;
+		}
+		if (changed) {
+			this.pushTeamsIfChanged(token);
+		}
+		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		if (more) {
+			this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS);
+		} else if (!paneStopped && tailer.teams.hasActive(this.teamApprovals(tailer))) {
+			this.scheduleTeamRefresh(token, TEAM_REFRESH_RUNNING_MS);
 		}
 	}
 
