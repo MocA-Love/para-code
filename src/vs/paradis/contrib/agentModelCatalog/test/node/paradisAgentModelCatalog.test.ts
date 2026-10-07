@@ -122,18 +122,18 @@ suite('ParadisAgentModelCatalogService', () => {
 		backend.probe = async agentId => {
 			state.probes.push(agentId);
 			return agentId === 'claude'
-				? [{ id: 'opus', resolvedModel: 'claude-opus-5-5', efforts: ['low', 'medium', 'high'] }, { id: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', efforts: [] }]
+				? [{ id: 'claude-opus-5', resolvedModel: 'claude-opus-5', efforts: ['low', 'medium', 'high'] }, { id: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', efforts: [] }]
 				: [{ id: 'gpt-6-astra', efforts: ['low', 'medium'], defaultEffort: 'medium' }];
 		};
 		state.claudeSettings = { effortLevel: 'high' };
 		const first = await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
-		state.claudeSettings = { effortLevel: 'high', modelEffortLevels: { 'claude-opus-5-5': 'low' } };
+		state.claudeSettings = { effortLevel: 'high', modelEffortLevels: { 'claude-opus-5': 'low' } };
 		const second = await new ParadisAgentModelCatalogService(backend, new NullLogService()).getCatalogs();
 		const efforts = (catalogs: typeof first) => catalogs.map(catalog => `${catalog.agentId}:${catalog.models.map(model => `${model.id}=${model.defaultEffort ?? '-'}`).join(',')}`);
 		const cachedClaude = (state.cache.claude as { models: { defaultEffort?: string }[] }).models.map(model => model.defaultEffort ?? '-');
 		assert.deepStrictEqual({ first: efforts(first), second: efforts(second), cachedClaude, probes: state.probes }, {
-			first: ['claude:opus=high,haiku=-', 'codex:gpt-6-astra=medium'],
-			second: ['claude:opus=low,haiku=-', 'codex:gpt-6-astra=medium'],
+			first: ['claude:claude-opus-5=high,haiku=-', 'codex:gpt-6-astra=medium'],
+			second: ['claude:claude-opus-5=low,haiku=-', 'codex:gpt-6-astra=medium'],
 			cachedClaude: ['-', '-'],
 			probes: ['claude', 'codex'],
 		});
