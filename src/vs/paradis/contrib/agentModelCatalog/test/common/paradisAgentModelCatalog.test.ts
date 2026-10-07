@@ -142,11 +142,31 @@ suite('ParadisAgentModelCatalog', () => {
 		}, {
 			names: ['Opus 5.5', 'Haiku 4.5', 'Sonnet 5', 'Opus 4.8 · 1M', undefined, undefined],
 			settings: { effortLevel: 'high', modelEffortLevels: { 'claude-fable-5-1': 'low', 'claude-haiku-4-5': 'low' } },
-			// haiku はエフォート非対応なので設定があっても添えない。opus[1m] は選べる中に high がある
-			fromSettings: ['opus=high', 'claude-fable-5-1=low', 'sonnet=high', 'opus[1m]=high', 'custom-model=-', 'haiku=-'],
-			// 環境変数の xhigh を選べない opus[1m] は、次の effortLevel（high）を使う
-			fromEnv: ['opus=xhigh', 'claude-fable-5-1=xhigh', 'sonnet=xhigh', 'opus[1m]=high', 'custom-model=-', 'haiku=-'],
+			// haiku はエフォート非対応なので設定があっても添えない。最上位の effortLevel は古いモデル（Sonnet 5）にだけ効き、
+			// 後から出た Opus 5.5 はそのモデルの既定になる
+			fromSettings: ['opus=-', 'claude-fable-5-1=low', 'sonnet=high', 'opus[1m]=-', 'custom-model=-', 'haiku=-'],
+			// 環境変数の xhigh を選べない opus[1m] は次を見るが、effortLevel は Opus 5.5 に効かない
+			fromEnv: ['opus=xhigh', 'claude-fable-5-1=xhigh', 'sonnet=xhigh', 'opus[1m]=-', 'custom-model=-', 'haiku=-'],
 			none: ['opus=-', 'claude-fable-5-1=-', 'sonnet=-', 'opus[1m]=-', 'custom-model=-', 'haiku=-'],
+		});
+	});
+
+	test('最上位の effortLevel は 2.1.251 より前からあるモデルにだけ効き、設定から読めない値は飛ばす（Claude Code 2.1.293 で実測）', () => {
+		const model = (id: string, resolvedModel: string) => ({ id, resolvedModel, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] });
+		const models = [model('haiku', 'claude-haiku-5-5'), model('sonnet', 'claude-sonnet-5-5'), model('claude-sonnet-5', 'claude-sonnet-5'), model('my-gateway-model', 'my-gateway-model')];
+		const defaults = (settings: unknown) => paradisApplyClaudeDefaultEfforts(models, paradisReadClaudeEffortSettings(settings, undefined)).map(entry => `${entry.id}=${entry.defaultEffort ?? '-'}`);
+		assert.deepStrictEqual({
+			topLevelOnly: defaults({ effortLevel: 'low' }),
+			both: defaults({ effortLevel: 'low', modelSettings: { 'claude-haiku-5-5': { effortLevel: 'high' } } }),
+			otherModelOnly: defaults({ effortLevel: 'low', modelSettings: { 'claude-sonnet-5-5': { effortLevel: 'high' } } }),
+			unreadable: defaults({ effortLevel: 'max', modelSettings: { 'claude-haiku-5-5': { effortLevel: 'max' } } }),
+		}, {
+			// 実測: Haiku 5.5・Sonnet 5.5 は medium（そのモデルの既定）、Sonnet 5 は low
+			topLevelOnly: ['haiku=-', 'sonnet=-', 'claude-sonnet-5=low', 'my-gateway-model=low'],
+			both: ['haiku=high', 'sonnet=-', 'claude-sonnet-5=low', 'my-gateway-model=low'],
+			otherModelOnly: ['haiku=-', 'sonnet=high', 'claude-sonnet-5=low', 'my-gateway-model=low'],
+			// 実測: modelSettings の max は読まれず Haiku 5.5 の既定（medium）になる
+			unreadable: ['haiku=-', 'sonnet=-', 'claude-sonnet-5=-', 'my-gateway-model=-'],
 		});
 	});
 

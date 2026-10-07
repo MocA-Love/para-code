@@ -205,7 +205,10 @@ export function paradisParseClaudeModelList(stdout: string): IParadisDiscoveredM
 export interface IParadisClaudeEffortSettings {
 	/** 環境変数 `CLAUDE_CODE_EFFORT_LEVEL`。設定より優先される。 */
 	readonly envEffortLevel?: string;
-	/** `settings.json` の `effortLevel`。 */
+	/**
+	 * `settings.json` の `effortLevel`。`/effort` がモデルごとの保存になる前（2.1.251 より前）の値として扱われ、
+	 * {@link paradisClaudeLegacyEffortApplies} が真のモデルにだけ効く。
+	 */
 	readonly effortLevel?: string;
 	/** `settings.json` の `modelSettings.<正式なモデル id>.effortLevel`。 */
 	readonly modelEffortLevels?: Readonly<Record<string, string>>;
@@ -213,11 +216,11 @@ export interface IParadisClaudeEffortSettings {
 
 /** `settings.json` の中身から {@link IParadisClaudeEffortSettings} を取り出す（読めない値は捨てる）。 */
 export function paradisReadClaudeEffortSettings(settings: unknown, envEffortLevel: string | undefined): IParadisClaudeEffortSettings {
-	const effortLevel = isRecord(settings) && typeof settings.effortLevel === 'string' ? settings.effortLevel : undefined;
+	const effortLevel = isRecord(settings) && isClaudeSettingsEffortLevel(settings.effortLevel) ? settings.effortLevel : undefined;
 	const modelEffortLevels: Record<string, string> = {};
 	if (isRecord(settings) && isRecord(settings.modelSettings)) {
 		for (const [model, value] of Object.entries(settings.modelSettings)) {
-			if (isRecord(value) && typeof value.effortLevel === 'string') {
+			if (isRecord(value) && isClaudeSettingsEffortLevel(value.effortLevel)) {
 				modelEffortLevels[paradisNormalizeClaudeModelId(model)] = value.effortLevel;
 			}
 		}
@@ -236,18 +239,45 @@ export function paradisNormalizeClaudeModelId(modelId: string): string {
 }
 
 /**
+ * Claude Code が設定ファイルの `effortLevel` として受け付ける値。`max` などはモデルが選べても設定からは読まれず、
+ * そのモデルの既定になる（2.1.293 で `modelSettings` に `max` を書いて実測、2026-10-08）。
+ */
+function isClaudeSettingsEffortLevel(value: unknown): value is string {
+	return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh';
+}
+
+/**
+ * `/effort` がモデルごとの保存になる前（2.1.251 より前）から Claude Code にあったモデル。利用者の `settings.json` の
+ * 最上位の `effortLevel` は、これらと `claude-<系統>-<版>` の形でないモデル（独自の名前など）にだけ効き、
+ * 後から出たモデルはそのモデルの既定で始まる（2.1.280）。一覧は 2.1.293 の CLI が持つものの写し。
+ */
+const CLAUDE_LEGACY_EFFORT_MODELS: ReadonlySet<string> = new Set([
+	'claude-3-5-haiku', 'claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-haiku-4-5', 'claude-sonnet-4-0', 'claude-sonnet-4-5', 'claude-sonnet-4-6', 'claude-sonnet-5',
+	'claude-opus-4-0', 'claude-opus-4-1', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5', 'claude-fable-5', 'claude-fable-5-1',
+	'claude-mythos-5', 'claude-mythos-5-1',
+]);
+
+/** 利用者の `settings.json` の最上位の `effortLevel` がそのモデル（{@link paradisNormalizeClaudeModelId} 済みの id）に効くか。 */
+export function paradisClaudeLegacyEffortApplies(normalizedModelId: string): boolean {
+	return CLAUDE_LEGACY_EFFORT_MODELS.has(normalizedModelId) || !/^claude-[a-z]+-\d{1,2}(?:-\d{1,2})?$/.test(normalizedModelId);
+}
+
+/**
  * Claude の各モデルに「既定」を選んだときのエフォートを添える。Claude Code は `--effort` が無いと
- * 環境変数 → `modelSettings` のそのモデルの値 → `effortLevel` → モデルごとの既定、の順に決める。
+ * 環境変数 → `modelSettings` のそのモデルの値 → `effortLevel`（古いモデルだけ） → モデルごとの既定、の順に決める。
  * そのモデルが選べない値は飛ばして次を見る。最後の「モデルごとの既定」は `list_models` に無いので、
  * ここでは足さない（既定の候補の値を引き継ぐ）。
  *
  * 限界: 読むのは環境変数と利用者の `settings.json` だけ。プロジェクトの設定（`.claude/settings*.json`）と
  * 組織の managed settings、`maxEffortLevel` による上限は見ないので、そこで決めている人には実際と違う値が出る。
+ * `~/.claude.json` に `firstStartVersion` が無い人では Opus 4.7・4.8・Fable 5 にも `effortLevel` が効かない
+ * （CLI のコードを読んで確かめた。実測はしていない）が、そこまでは見ない。
  */
 export function paradisApplyClaudeDefaultEfforts(models: readonly IParadisDiscoveredModel[], settings: IParadisClaudeEffortSettings): IParadisDiscoveredModel[] {
 	return models.map(model => {
 		const resolved = model.resolvedModel !== undefined ? paradisNormalizeClaudeModelId(model.resolvedModel) : undefined;
-		const candidates = [settings.envEffortLevel, resolved !== undefined ? settings.modelEffortLevels?.[resolved] : undefined, settings.effortLevel];
+		const legacy = resolved === undefined || paradisClaudeLegacyEffortApplies(resolved) ? settings.effortLevel : undefined;
+		const candidates = [settings.envEffortLevel, resolved !== undefined ? settings.modelEffortLevels?.[resolved] : undefined, legacy];
 		const effort = candidates.find(candidate => candidate !== undefined && model.efforts.includes(candidate));
 		return effort !== undefined ? { ...model, defaultEffort: effort } : model;
 	});
