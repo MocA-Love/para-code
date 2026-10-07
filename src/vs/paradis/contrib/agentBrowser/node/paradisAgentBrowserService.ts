@@ -66,7 +66,8 @@ import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTa
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCursorPacingLedger, paradisCursorStatusForTool } from './paradisCursorPacing.js';
-import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import { ParadisCursorOwners } from './paradisCursorOwners.js';
+import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
@@ -147,7 +148,7 @@ const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane, or on the tab you pass as tab_id. A pane can use the page the user shared plus up to 5 tabs it opens itself with open_browser_tab (list_browser_tabs shows their tabIds). When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx or the rows of a csv.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on the browser page the user shared with this terminal pane, or on the tab you pass as tab_id. A pane can use the page the user shared plus up to 5 tabs it opens itself with open_browser_tab (list_browser_tabs shows their tabIds). When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx or the rows of a csv. Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
@@ -321,6 +322,7 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'get_shared_page',
 	'upload_file_to_drop_zone',
 	'get_cdp_endpoint',
+	'set_cursor_label',
 ]);
 
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
@@ -627,6 +629,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _cursorPacing = new ParadisCursorPacingLedger();
 	/** 名札に長く続く状態（スクリプト実行中・待機中）を出している道具の数（タブのスコープキーごと）。 */
 	private readonly _cursorStatusRuns = new Map<string, number>();
+	/** カーソルの持ち主ごとの名前と色（paradisCursorOwners.ts）。 */
+	private readonly _cursorOwners = new ParadisCursorOwners();
 	/** 素通しの WebP の撮影でカーソルを隠したビュー（ゲートウェイのキーごと、撮り始めた順）。 */
 	private readonly _rawCaptureViews = new Map<string, IParadisExactBrowserViewDescriptor[]>();
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
@@ -2547,8 +2551,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			dispatch: async () => {
 				// 配送の順に待ちの予算を数えるので、指示はキューから出す時に決める
 				const pacing = this._cursorPacing.ticketFor(token, method, paramsJson);
+				// カーソルは持ち主（ペイン × タブ）ごとに分け、名前と色を付ける
+				const owner = this._cursorOwnerFor(token, binding);
 				const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-					.call<unknown>('dispatchExactViewInput', pacing ? [binding.exactView, method, paramsJson, pacing.pacing] : [binding.exactView, method, paramsJson]);
+					.call<unknown>('dispatchExactViewInput', [binding.exactView, method, paramsJson, { ...pacing?.pacing, owner }]);
 				const result = paradisParseCdpInputDispatchResult(raw);
 				if (!result) {
 					throw new Error('Invalid exact BrowserView input dispatch response');
@@ -3855,11 +3861,40 @@ export class ParadisAgentBrowserService extends Disposable {
 				return;
 			}
 			void this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-				.call<void>('noteExactViewCursorStatus', [binding.exactView, note])
+				.call<void>('noteExactViewCursorStatus', [binding.exactView, { ...note, owner: this._cursorOwnerFor(ingressLease.token, binding) }])
 				.then(undefined, () => undefined);
 		} catch {
 			// 演出は道具の結果を変えない。
 		}
+	}
+
+	/** カーソルの持ち主の鍵: ペインのトークン × タブ（タブはビューで表す。同じタブなら tab_id の有無で変わらない）。 */
+	private _cursorOwnerKey(token: string, binding: IBindingEntry): string {
+		return `${token}\0${binding.exactView.viewId}`;
+	}
+
+	/** この入力の持ち主の名前と色。CLI の種類は hook が報告した会話から取る（分からなければ印なし）。 */
+	private _cursorOwnerFor(key: string, binding: IBindingEntry): IParadisCursorOwner {
+		const token = paradisPaneTokenOfScopeKey(key);
+		return this._cursorOwners.resolve(this._cursorOwnerKey(token, binding), JSON.stringify(binding.exactView), this._paneSessions.get(token)?.agent);
+	}
+
+	/** `set_cursor_label` と、`open_browser_tab`・`select_browser_tab` の `label`。戻り値は道具の結果の文。 */
+	private _setCursorLabel(token: string, binding: IBindingEntry | undefined, raw: unknown): string {
+		if (typeof raw !== 'string') {
+			return '"label" must be a string.';
+		}
+		if (!binding) {
+			return NOT_BOUND_MESSAGE;
+		}
+		const result = this._cursorOwners.setLabel(this._cursorOwnerKey(token, binding), raw.slice(0, 200));
+		if (!result.ok) {
+			return `The name was refused (${result.rejected}); your cursor shows the default name. Name the task, for example "Checkout".`;
+		}
+		if (result.rateLimited) {
+			return `You can change the name up to 3 times a minute; your cursor still shows ${JSON.stringify(result.label)}.`;
+		}
+		return `Your cursor now shows ${JSON.stringify(result.label)}${result.truncated ? ' (cut to 12 characters wide)' : ''}.`;
 	}
 
 	/**
@@ -3989,6 +4024,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
 		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。
 		// 一覧だけのツールと、ブラウザの共有そのもの（CDP ゲートウェイ）はこれまでどおり
+		if (name === 'set_cursor_label') {
+			const toolArgs = toolArguments && typeof toolArguments === 'object' ? toolArguments as Record<string, unknown> : {};
+			const message = this._setCursorLabel(token, this._bindingForKey(this._pageKeyOf(pageLease)), toolArgs.label);
+			return message.startsWith('Your cursor now shows') || message.startsWith('You can change') ? this._toolText(message) : this._toolError(message);
+		}
+
 		if (name === 'read_download') {
 			// 手元のファイルを読んで返すので、接続元（pane か tunnel）を確かめる
 			const caller = await this._classifyCaller(token, socket);
@@ -4907,7 +4948,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				const shared = usable
 					? `It is now this pane's current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${tabId}" to keep using it after other tabs are opened or selected (for example from a subagent).`
 					: 'It could NOT be made usable from this terminal pane yet, so the browser tools do not target it - retry with select_browser_tab.';
-				return this._toolText(`Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`);
+				const opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
+				const openLabel = toolArgs.label;
+				return this._toolText(openLabel === undefined ? opened : `${opened} ${this._setCursorLabel(token, this._scopeBinding(token, tabId), openLabel)}`);
 			}
 			case 'list_browser_tabs': {
 				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
@@ -4958,8 +5001,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					if (!call.value.ok) {
 						return this._toolError(this._agentTabFailureMessage(call.value.reason));
 					}
+					const selectLabel = toolArgs.label;
 					return call.value.bound && this._selectTab(token, tabId)
-						? this._toolText(`Tab ${tabId} (${call.value.tab.url || 'about:blank'}) is now this pane's current tab: the browser tools act on it when you omit tab_id.`)
+						? this._toolText(`Tab ${tabId} (${call.value.tab.url || 'about:blank'}) is now this pane's current tab: the browser tools act on it when you omit tab_id.${selectLabel === undefined ? '' : ` ${this._setCursorLabel(token, this._scopeBinding(token, tabId), selectLabel)}`}`)
 						: this._toolError(`PARA_BROWSER_RETRYABLE: Para Code could not make tab ${tabId} usable from this terminal pane. Retry once; if it keeps failing, ask the user to share it from Para Code.`);
 				}
 				const call = await this._callOwningWindow<IParadisCloseAgentTabResult>(ingressLease, {

@@ -148,7 +148,7 @@ export interface IParadisAgentCursorEvent {
 	 * `move` は目標へ滑らせる、`press` はクリックの波紋、`captured` は撮影、
 	 * `gone` は演出そのものの取り下げ (共有解除・ユーザーが操作を始めた)。
 	 */
-	readonly kind: 'move' | 'press' | 'captured' | 'gone';
+	readonly kind: 'move' | 'press' | 'captured' | 'gone' | 'state';
 	/**
 	 * CSS ビューポートに対する割合 (0..1)。`captured` と `gone` では undefined。
 	 *
@@ -160,6 +160,17 @@ export interface IParadisAgentCursorEvent {
 	readonly ny?: number;
 	/** `move` を滑らせる時間 (ms)。ページ側に出るカーソルと同じ速さで動かすために使う。 */
 	readonly durationMs?: number;
+	/**
+	 * 持ち主（ペイン × タブ）。同じページを 2 つのペインが触ると、カーソルは持ち主ごとに分かれる。
+	 * 持ち主の分からない入力（エージェントが自分で繋いだ CDP）では undefined。`gone`・`captured` はページの全部に効く。
+	 */
+	readonly ownerId?: string;
+	/** 名札の名前・CLI の印（C・X）・色（#rrggbb）。 */
+	readonly name?: string;
+	readonly mark?: string;
+	readonly color?: string;
+	/** `state` の道具の状態（`ParadisCursorStatus`。`idle` は状態を消す）。 */
+	readonly status?: string;
 }
 
 /**
@@ -264,6 +275,8 @@ export interface IParadisCdpFrameEvent {
  */
 export interface IParadisCdpFrameSubscription {
 	readonly onDidFrame: Event<IParadisCdpFrameEvent>;
+	/** エージェントのカーソルの写し（モバイルの画面共有の上に描く。q.html Q276 A）。 */
+	readonly onDidChangeAgentCursor: Event<IParadisAgentCursorEvent>;
 	/** 購読開始。対象が見つからない場合は false（呼び出し側はポーリングに留まる）。 */
 	startFrameSubscription(targetId: string): Promise<boolean>;
 	stopFrameSubscription(targetId: string): Promise<void>;
