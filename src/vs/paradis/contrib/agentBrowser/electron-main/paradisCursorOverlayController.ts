@@ -491,7 +491,7 @@ export class ParadisCursorOverlayController {
 	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): Promise<void> {
 		try {
 			const code = paradisBuildCursorOverlayScript(command);
-			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus') {
+			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus' || command.kind === 'status' || command.kind === 'wheel') {
 				this.injected.add(view);
 			}
 			const result = await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
@@ -572,7 +572,7 @@ function statusText(status: ParadisCursorStatus, detail?: string): string {
 			case 'scroll': return localize('paradis.agentBrowser.cursorScroll', "スクロール");
 		}
 	} catch {
-		return status;
+		return status === 'idle' ? '' : 'Working';
 	}
 }
 

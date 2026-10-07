@@ -625,6 +625,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _pageOps: ParadisBrowserPageOps;
 	/** カーソルの演出のために入力の配送を待ってよいか（ツールの呼び出しごと。paradisCursorPacing.ts）。 */
 	private readonly _cursorPacing = new ParadisCursorPacingLedger();
+	/** 名札に長く続く状態（スクリプト実行中・待機中）を出している道具の数（タブのスコープキーごと）。 */
+	private readonly _cursorStatusRuns = new Map<string, number>();
 	/** 素通しの WebP の撮影でカーソルを隠したビュー（ゲートウェイのキーごと、撮り始めた順）。 */
 	private readonly _rawCaptureViews = new Map<string, IParadisExactBrowserViewDescriptor[]>();
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
@@ -3869,12 +3871,24 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (status === undefined) {
 			return run();
 		}
+		const sticky = status === 'script' || status === 'waiting';
+		const key = this._pageKeyOf(ingressLease);
+		if (sticky) {
+			this._cursorStatusRuns.set(key, (this._cursorStatusRuns.get(key) ?? 0) + 1);
+		}
 		this._noteCursorStatus(ingressLease, { status });
 		try {
 			return await run();
 		} finally {
-			if (status === 'script' || status === 'waiting') {
-				this._noteCursorStatus(ingressLease, { status: 'idle' });
+			if (sticky) {
+				// 同じタブで並んで走っている道具が残っていれば、その表示を消さない
+				const left = (this._cursorStatusRuns.get(key) ?? 1) - 1;
+				if (left > 0) {
+					this._cursorStatusRuns.set(key, left);
+				} else {
+					this._cursorStatusRuns.delete(key);
+					this._noteCursorStatus(ingressLease, { status: 'idle' });
+				}
 			}
 		}
 	}
