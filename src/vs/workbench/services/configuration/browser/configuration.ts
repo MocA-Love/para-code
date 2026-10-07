@@ -28,6 +28,7 @@ import { DefaultConfiguration as BaseDefaultConfiguration } from '../../../../pl
 import { IJSONEditingService } from '../common/jsonEditing.js';
 import { IUserDataProfilesService } from '../../../../platform/userDataProfile/common/userDataProfile.js';
 import { IBrowserWorkbenchEnvironmentService } from '../../environment/browser/environmentService.js';
+import { paradisTakeWrittenWorkspaceContent } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceFileWriteCache.js'; // PARA-PATCH: see FileServiceBasedWorkspaceConfiguration.resolveContent
 
 export class DefaultConfiguration extends BaseDefaultConfiguration {
 
@@ -787,6 +788,11 @@ class FileServiceBasedWorkspaceConfiguration extends Disposable {
 	}
 
 	async resolveContent(workspaceIdentifier: IWorkspaceIdentifier): Promise<string> {
+		// PARA-PATCH: right after a Para Code window wrote its `.code-workspace`, reuse what it wrote instead of reading it back (paradisWorkspaceFileWriteCache.ts)
+		const written = paradisTakeWrittenWorkspaceContent(workspaceIdentifier.configPath);
+		if (written !== undefined) {
+			return written;
+		}
 		const content = await this.fileService.readFile(workspaceIdentifier.configPath, { atomic: true });
 		return content.value.toString();
 	}
