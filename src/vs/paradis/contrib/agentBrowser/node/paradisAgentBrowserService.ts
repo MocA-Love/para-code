@@ -65,6 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
+import { ParadisCursorPacingLedger } from './paradisCursorPacing.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
@@ -621,6 +622,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _fileDropStaging = new ParadisFileDropStaging();
 	/** 追加のブラウザ操作（マウス・PDF・ヘッダ・HTTP 認証・リクエストのルール・ダウンロード・ハイライト）。 */
 	private readonly _pageOps: ParadisBrowserPageOps;
+	/** カーソルの演出のために入力の配送を待ってよいか（ツールの呼び出しごと。paradisCursorPacing.ts）。 */
+	private readonly _cursorPacing = new ParadisCursorPacingLedger();
+	/** 素通しの WebP の撮影でカーソルを隠したビュー（ゲートウェイのキーごと、撮り始めた順）。 */
+	private readonly _rawCaptureViews = new Map<string, IParadisExactBrowserViewDescriptor[]>();
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
 	private readonly _browserQuery = new ParadisBrowserQuery();
 	/** 探して操作するツール（click_by・fill_by）。探すのは evaluate_script、押す・入れるのは入力の通り道。 */
@@ -724,6 +729,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				getTokenForShellPid: pid => this._getTokenForShellPid(pid),
 				captureBoundPageScreenshot: (token, options) => this._captureBoundPageScreenshot(token, options),
 				isBoundPageVisible: token => this._isBoundPageVisible(token),
+				beginRawCapture: token => this._beginRawCapture(token),
+				endRawCapture: (token, captured) => this._endRawCapture(token, captured),
 				dispatchBoundPageInput: (token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent) =>
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
@@ -2357,8 +2364,62 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	/** Read visibility through electron-main while protecting the result with the same binding generation. */
-	private async _isBoundPageVisible(key: string): Promise<boolean> {
+	/**
+	 * 素通しの WebP の撮影の前に、見えているかを確かめ、見えていればカーソルの演出を隠す。隠したビューは
+	 * `_rawCaptureViews` に積み、`_endRawCapture` で同じビューへ戻す。
+	 */
+	private async _beginRawCapture(key: string): Promise<boolean> {
+		const shown: IParadisExactBrowserViewDescriptor[] = [];
+		let visible: boolean;
+		try {
+			visible = await this._isBoundPageVisible(key, 'beginExactViewRawCapture', exactView => shown.push(exactView));
+		} catch (error) {
+			// 隠した後に共有が変わった・ペインが止まった（撮らない）。ここで戻す。
+			if (shown.length > 0) {
+				this._endRawCaptureOf(shown[0], false);
+			}
+			throw error;
+		}
+		if (shown.length > 0) {
+			if (visible) {
+				const stack = this._rawCaptureViews.get(key) ?? [];
+				stack.push(shown[0]);
+				this._rawCaptureViews.set(key, stack);
+			} else {
+				// 隠した後に共有が変わった（撮らない）。ここで戻す。
+				this._endRawCaptureOf(shown[0], false);
+			}
+		}
+		return visible;
+	}
+
+	private _endRawCapture(key: string, captured: boolean): void {
+		const stack = this._rawCaptureViews.get(key);
+		const exactView = stack?.shift();
+		if (stack && stack.length === 0) {
+			this._rawCaptureViews.delete(key);
+		}
+		if (exactView) {
+			this._endRawCaptureOf(exactView, captured);
+		}
+	}
+
+	private _endRawCaptureOf(exactView: IParadisExactBrowserViewDescriptor, captured: boolean): void {
+		try {
+			void this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<void>('endExactViewRawCapture', [exactView, captured])
+				.then(undefined, () => undefined);
+		} catch {
+			// 戻せなくても撮影は変えない（main 側の台帳は次の撮影で整う）。
+		}
+	}
+
+	/**
+	 * Read visibility through electron-main while protecting the result with the same binding generation.
+	 * `method` を `beginExactViewRawCapture` にすると、見えているビューのカーソルを隠す。main が true を
+	 * 返したら（隠したら）、その後の確認で断るときでも `onHidden` で呼び出し側へ伝える（戻すため）。
+	 */
+	private async _isBoundPageVisible(key: string, method: 'isExactViewVisible' | 'beginExactViewRawCapture' = 'isExactViewVisible', onHidden?: (exactView: IParadisExactBrowserViewDescriptor) => void): Promise<boolean> {
 		const ingressLease = this.captureIngressLease(paradisPaneTokenOfScopeKey(key));
 		if (ingressLease === undefined) {
 			throw new ParadisIngressLeaseError();
@@ -2369,7 +2430,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		try {
 			const visible = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-				.call<boolean | null>('isExactViewVisible', [binding.exactView]);
+				.call<boolean | null>(method, [binding.exactView]);
+			if (visible === true && onHidden) {
+				onHidden(binding.exactView);
+			}
 			this._requireIngressLease(ingressLease);
 			const current = this._bindingForKey(key);
 			if (current !== binding || current?.generation !== binding.generation) {
@@ -2478,12 +2542,15 @@ export class ParadisAgentBrowserService extends Disposable {
 			connection,
 			isAuthorityCurrent,
 			dispatch: async () => {
+				// 配送の順に待ちの予算を数えるので、指示はキューから出す時に決める
+				const pacing = this._cursorPacing.ticketFor(token, method, paramsJson);
 				const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-					.call<unknown>('dispatchExactViewInput', [binding.exactView, method, paramsJson]);
+					.call<unknown>('dispatchExactViewInput', pacing ? [binding.exactView, method, paramsJson, pacing.pacing] : [binding.exactView, method, paramsJson]);
 				const result = paradisParseCdpInputDispatchResult(raw);
 				if (!result) {
 					throw new Error('Invalid exact BrowserView input dispatch response');
 				}
+				pacing?.settle(result.status === 'success' ? result.cursorWaitMs : undefined);
 				return result;
 			},
 		});
@@ -3774,7 +3841,21 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
+	/**
+	 * ツールの呼び出し。呼び出しの間に届く入力（vendored のツールならゲートウェイ経由）に、カーソルの
+	 * 演出のために待ってよいかを伝えるため、どのツールの呼び出しかを台帳に載せる。
+	 */
 	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
+		const name = typeof params?.name === 'string' ? params.name : '';
+		const pacing = this._cursorPacing.begin(ingressLease.token, name, params?.arguments);
+		try {
+			return await this._callToolInner(ingressLease, params, signal, socket);
+		} finally {
+			pacing.dispose();
+		}
+	}
+
+	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const name = typeof params?.name === 'string' ? params.name : undefined;

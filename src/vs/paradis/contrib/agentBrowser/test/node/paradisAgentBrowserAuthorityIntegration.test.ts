@@ -13,6 +13,7 @@ import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../..
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
+import { ParadisCursorPacingLedger } from '../../node/paradisCursorPacing.js';
 import { ParadisRemoteFileTransfer } from '../../node/paradisRemoteFileTransfer.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
 import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
@@ -127,6 +128,8 @@ function createFixture(): {
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
+		_cursorPacing: new ParadisCursorPacingLedger(),
+		_rawCaptureViews: new Map(),
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: backgroundThrottlingCoordinator,
 		_ingressLeaseStates: new WeakMap<object, object>(),
