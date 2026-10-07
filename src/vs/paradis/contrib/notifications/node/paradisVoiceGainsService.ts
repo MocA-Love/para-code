@@ -143,6 +143,10 @@ export class ParadisVoiceGainsService {
 		if (!this.version || this.now() - this.version.at > VERSION_TTL_MS) {
 			const output = await this.run(['--version'], env);
 			this.version = { value: output.code === 0 ? paradisParseAivisVersion(output.stdout) : undefined, at: this.now() };
+			if (output.code !== 0) {
+				// 見つからない・時間切れの理由だけを出す（パスは出さない）。未導入として扱い、次に開いたときに確かめ直す
+				this.options.logService.info(`[ParadisVoiceGains] could not run aivis-mcp --version (${output.failure ?? `exit ${output.code ?? 'none'}`})`);
+			}
 		}
 		const version = this.version.value;
 		if (paradisAivisVersionAtLeast(version, PARADIS_VOICE_GAINS_MIN_VERSION)) {

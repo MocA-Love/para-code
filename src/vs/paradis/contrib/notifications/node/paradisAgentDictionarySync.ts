@@ -15,11 +15,14 @@
 // - 最後に書いた値は `~/.para-code/agent-dictionary.json` に覚える。aivis-mcp の設定は読むだけで、書くのは CLI だけ
 // - 辞書の ID はログに出さない
 // - 複数のウィンドウから同時に来ても、1 本ずつ流す（毎回、覚えている値と aivis-mcp の設定を読み直して決める）
+// - aivis-mcp を起こせなかった（見つからない・時間切れ）・書けなかったときは、少し後に最後の設定でもう一度試す。
+//   起動直後は Para Code 自身の起動で重く、`--version` が時間切れになって一度きりの同期が抜け落ちていた
 
-import { execFile } from 'child_process';
+import { execFile, ExecFileException } from 'child_process';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { Event } from '../../../../base/common/event.js';
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -52,15 +55,21 @@ import {
 
 /** `--version` も `--set-dictionary` も設定を 1 つ書くだけ（ロック待ちは aivis-mcp 側で 5 秒まで）。 */
 const RUN_TIMEOUT_MS = 10_000;
+/** 同期は裏で流すだけなので、マシンが重いときに備えて長めに待つ。 */
+const SYNC_RUN_TIMEOUT_MS = 30_000;
+/** aivis-mcp を起こせなかった・書けなかったときに、もう一度試すまでの待ち（回数もこれで決まる）。 */
+const RETRY_DELAYS_MS: readonly number[] = [15_000, 60_000, 5 * 60_000, 15 * 60_000];
 
 export interface IParadisAivisMcpRunResult {
 	/** 終了コード。起動できなかった（未導入など）・時間切れは undefined。 */
 	readonly code: number | undefined;
 	readonly stdout: string;
 	readonly stderr: string;
+	/** 起動できなかった・止められた理由（`not found`・`timed out after 30s` など）。パスは含めない。 */
+	readonly failure?: string;
 }
 
-export type ParadisAivisMcpRunner = (args: readonly string[], env: NodeJS.ProcessEnv) => Promise<IParadisAivisMcpRunResult>;
+export type ParadisAivisMcpRunner = (args: readonly string[], env: NodeJS.ProcessEnv, timeoutMs?: number) => Promise<IParadisAivisMcpRunResult>;
 
 /** 英数字・`-`・`_`・`.`・`:`（`--reset-gain --key` の鍵）だけの引数。 */
 const PLAIN_ARG = /^[A-Za-z0-9_.:-]+$/;
@@ -75,6 +84,8 @@ export interface IParadisAgentDictionarySyncOptions {
 	readonly readCurrentVoiceSettings?: (env: NodeJS.ProcessEnv) => Promise<IParadisElevenLabsVoiceTuningMap | undefined>;
 	/** 最後に書いた値を覚えるファイル。 */
 	readonly statePath?: string;
+	/** もう一度試す予約（テスト用）。既定は setTimeout。 */
+	readonly scheduleRetry?: (callback: () => Promise<void>, delayMs: number) => IDisposable;
 }
 
 /**
@@ -94,9 +105,23 @@ export function paradisRunAivisMcp(args: readonly string[], env: NodeJS.ProcessE
 		const commandArgs = isWindows ? ['/d', '/s', '/c', `"aivis-mcp ${args.map(arg => PLAIN_ARG.test(arg) ? arg : `"${arg}"`).join(' ')}"`] : [...args];
 		execFile(command, commandArgs, { env, cwd: homedir(), timeout: timeoutMs, windowsHide: true, windowsVerbatimArguments: isWindows, encoding: 'utf8' }, (error, stdout, stderr) => {
 			const code = error ? (typeof error.code === 'number' ? error.code : undefined) : 0;
-			resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+			resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), failure: code === undefined && error ? paradisDescribeRunError(error, timeoutMs) : undefined });
 		});
 	});
+}
+
+/** execFile が起こせなかった・止めた理由。メッセージ（パスを含む）は使わない。 */
+function paradisDescribeRunError(error: ExecFileException, timeoutMs: number): string {
+	if (error.code === 'ENOENT') {
+		return 'not found on PATH';
+	}
+	if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+		return 'too much output';
+	}
+	if (error.killed || error.signal) {
+		return error.killed ? `timed out after ${timeoutMs / 1000}s` : `killed by ${error.signal}`;
+	}
+	return typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? error.code : 'could not start';
 }
 
 /** aivis-mcp と同じ場所（`AIVIS_CONFIG_FILE`、無ければ `~/.config/aivis-mcp/config.json`）の設定を読む。読めなければ undefined。 */
@@ -141,6 +166,9 @@ export function paradisDefaultAgentDictionaryStatePath(): string {
 export class ParadisAgentDictionarySyncService {
 
 	private queue: Promise<unknown> = Promise.resolve();
+	/** apply のたびに増える。もう一度試す予約は、その後に新しい設定が来ていなければだけ動かす。 */
+	private generation = 0;
+	private retryTimer: IDisposable | undefined;
 	private readonly run: ParadisAivisMcpRunner;
 	private readonly readCurrent: (env: NodeJS.ProcessEnv) => Promise<IParadisAgentDictionaryCurrent | undefined>;
 	private readonly readCurrentVoiceSettings: (env: NodeJS.ProcessEnv) => Promise<IParadisElevenLabsVoiceTuningMap | undefined>;
@@ -155,16 +183,46 @@ export class ParadisAgentDictionarySyncService {
 
 	/** 設定に合わせて aivis-mcp の辞書を書く・消す。失敗しても reject しない。 */
 	apply(raw: unknown): Promise<IParadisAgentDictionarySyncResult> {
-		const request = paradisNormalizeAgentDictionaryRequest(raw);
+		this.retryTimer?.dispose();
+		this.retryTimer = undefined;
+		return this.enqueue(paradisNormalizeAgentDictionaryRequest(raw), 0, ++this.generation);
+	}
+
+	private enqueue(request: IParadisAgentDictionaryRequest, attempt: number, generation: number): Promise<IParadisAgentDictionarySyncResult> {
 		const next = this.queue.then(() => this.doApply(request));
 		this.queue = next.catch(() => undefined);
-		return next.catch(error => {
+		return next.then(({ result, retry }) => {
+			this.scheduleRetry(retry, request, attempt, generation);
+			return result;
+		}, error => {
 			this.options.logService.warn(`[ParadisAgentDictionary] sync failed: ${error instanceof Error ? error.message : String(error)}`);
-			return { status: 'failed' };
+			this.scheduleRetry(true, request, attempt, generation);
+			return { status: 'failed' as const };
 		});
 	}
 
-	private async doApply(request: IParadisAgentDictionaryRequest): Promise<IParadisAgentDictionarySyncResult> {
+	/** aivis-mcp を起こせなかった・書けなかったときに、同じ設定でもう一度試す（その間に新しい設定が来たら取りやめる）。 */
+	private scheduleRetry(retry: boolean, request: IParadisAgentDictionaryRequest, attempt: number, generation: number): void {
+		if (!retry || generation !== this.generation) {
+			return;
+		}
+		const delay = RETRY_DELAYS_MS[attempt];
+		if (delay === undefined) {
+			this.options.logService.warn('[ParadisAgentDictionary] gave up syncing with aivis-mcp; it will be tried again when the setting changes or Para Code restarts');
+			return;
+		}
+		this.options.logService.info(`[ParadisAgentDictionary] will try aivis-mcp again in ${Math.round(delay / 1000)}s`);
+		const schedule = this.options.scheduleRetry ?? defaultScheduleRetry;
+		this.retryTimer?.dispose();
+		this.retryTimer = schedule(async () => {
+			this.retryTimer = undefined;
+			if (generation === this.generation) {
+				await this.enqueue(request, attempt + 1, generation);
+			}
+		}, delay);
+	}
+
+	private async doApply(request: IParadisAgentDictionaryRequest): Promise<{ readonly result: IParadisAgentDictionarySyncResult; readonly retry: boolean }> {
 		const env = await this.options.getEnv();
 		const state = await this.readWritten();
 		let written = state.dictionaries;
@@ -174,7 +232,7 @@ export class ParadisAgentDictionarySyncService {
 		const steps = paradisPlanAgentDictionarySteps(request, written, current);
 		const voiceSteps = paradisPlanAllVoiceTuningSteps(request.enabled, request.voiceSettings ?? {}, writtenVoices, currentVoices);
 		if (steps.length === 0 && voiceSteps.length === 0) {
-			return { status: 'unchanged' };
+			return { result: { status: 'unchanged' }, retry: false };
 		}
 
 		// aivis-mcp を呼ばない手順（覚えている値を忘れるだけ）は先に済ませる
@@ -199,19 +257,20 @@ export class ParadisAgentDictionarySyncService {
 		const forgot = calls.length !== steps.length || voiceCalls.length !== voiceSteps.length;
 		if (calls.length === 0 && voiceCalls.length === 0) {
 			await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
-			return { status: 'unchanged' };
+			return { result: { status: 'unchanged' }, retry: false };
 		}
 
-		const versionOutput = await this.run(['--version'], env);
+		const versionOutput = await this.run(['--version'], env, SYNC_RUN_TIMEOUT_MS);
 		const version = versionOutput.code === 0 ? paradisParseAivisVersion(versionOutput.stdout) : undefined;
 		if (!paradisAivisVersionAtLeast(version, PARADIS_AGENT_DICTIONARY_MIN_VERSION)) {
+			// 版が読めなかった（見つからない・時間切れ・異常終了）ときは、理由を出して後で試し直す。古い版なら試し直さない
 			this.options.logService.info(version
 				? `[ParadisAgentDictionary] aivis-mcp ${version.join('.')} cannot take a dictionary (needs ${PARADIS_AGENT_DICTIONARY_MIN_VERSION.join('.')} or later); skipped`
-				: '[ParadisAgentDictionary] aivis-mcp is not installed here; skipped');
+				: `[ParadisAgentDictionary] could not read the aivis-mcp version (${describeRunFailure(versionOutput)}); skipped`);
 			if (forgot) {
 				await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
 			}
-			return { status: 'unsupported' };
+			return { result: { status: 'unsupported' }, retry: version === undefined };
 		}
 
 		let failed = false;
@@ -221,14 +280,14 @@ export class ParadisAgentDictionarySyncService {
 			if (!args) {
 				continue;
 			}
-			const result = await this.run(args, env);
+			const result = await this.run(args, env, SYNC_RUN_TIMEOUT_MS);
 			if (result.code === 0 && result.stdout.trim() === 'ok') {
 				written = paradisApplyAgentDictionaryStep(written, step);
 				applied = true;
 				this.options.logService.info(`[ParadisAgentDictionary] ${step.provider}: ${step.kind === 'set' ? 'set the dictionary' : 'cleared the dictionary'} in aivis-mcp`);
 			} else {
 				failed = true;
-				this.options.logService.warn(`[ParadisAgentDictionary] ${step.provider}: aivis-mcp --${step.kind}-dictionary failed (exit ${result.code ?? 'none'}): ${redact(result.stderr, step)}`);
+				this.options.logService.warn(`[ParadisAgentDictionary] ${step.provider}: aivis-mcp --${step.kind}-dictionary failed (${result.failure ?? `exit ${result.code ?? 'none'}`}): ${redact(result.stderr, step)}`);
 			}
 		}
 
@@ -246,7 +305,7 @@ export class ParadisAgentDictionarySyncService {
 					if (!args || failedVoices.has(step.voiceId)) {
 						continue;
 					}
-					const result = await this.run(args, env);
+					const result = await this.run(args, env, SYNC_RUN_TIMEOUT_MS);
 					if (result.code === 0 && result.stdout.trim() === 'ok') {
 						writtenVoices = paradisApplyVoiceTuningStep(writtenVoices, step);
 						applied = true;
@@ -254,13 +313,13 @@ export class ParadisAgentDictionarySyncService {
 					} else {
 						failed = true;
 						failedVoices.add(step.voiceId);
-						this.options.logService.warn(`[ParadisAgentDictionary] aivis-mcp --${step.kind}-voice-settings failed (exit ${result.code ?? 'none'}): ${redactVoice(result.stderr, step.voiceId)}`);
+						this.options.logService.warn(`[ParadisAgentDictionary] aivis-mcp --${step.kind}-voice-settings failed (${result.failure ?? `exit ${result.code ?? 'none'}`}): ${redactVoice(result.stderr, step.voiceId)}`);
 					}
 				}
 			}
 		}
 		await this.writeWritten({ dictionaries: written, voiceSettings: writtenVoices });
-		return { status: failed ? 'failed' : applied ? 'applied' : voicesUnsupported ? 'unsupported' : 'unchanged' };
+		return { result: { status: failed ? 'failed' : applied ? 'applied' : voicesUnsupported ? 'unsupported' : 'unchanged' }, retry: failed };
 	}
 
 	private async readWritten(): Promise<IParadisAgentWrittenState> {
@@ -293,9 +352,32 @@ export class ParadisAgentDictionarySyncService {
 	}
 }
 
+function defaultScheduleRetry(callback: () => Promise<void>, delayMs: number): IDisposable {
+	const handle = setTimeout(() => void callback(), delayMs);
+	return toDisposable(() => clearTimeout(handle));
+}
+
+/** ログの文からホームのパスを `~` に伏せる（ホームが `/` などのときは何もしない）。 */
+function maskHome(text: string): string {
+	const home = homedir();
+	return home.length > 1 ? text.split(home).join('~') : text;
+}
+
+/** 失敗の理由（起動できなかった理由か終了コード）と、stderr の 1 行目（ホームのパスは `~` に伏せる）。 */
+function describeRunFailure(result: IParadisAivisMcpRunResult): string {
+	if (result.failure) {
+		return result.failure;
+	}
+	if (result.code === 0) {
+		return 'unexpected output';
+	}
+	const line = maskHome(result.stderr.trim().split(/\r?\n/, 1)[0] ?? '').slice(0, 200);
+	return line ? `exit ${result.code ?? 'none'}: ${line}` : `exit ${result.code ?? 'none'}`;
+}
+
 /** aivis-mcp のエラーの 1 行目。辞書の ID は伏せる。 */
 function redact(stderr: string, step: ParadisAgentDictionaryStep): string {
-	let line = stderr.trim().split(/\r?\n/, 1)[0] ?? '';
+	let line = maskHome(stderr.trim().split(/\r?\n/, 1)[0] ?? '');
 	if (step.kind === 'set') {
 		line = line.split(step.id).join('<id>');
 	}
@@ -304,7 +386,7 @@ function redact(stderr: string, step: ParadisAgentDictionaryStep): string {
 
 /** aivis-mcp のエラーの 1 行目。voice_id は伏せる。 */
 function redactVoice(stderr: string, voiceId: string): string {
-	return (stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(voiceId).join('<voice>').slice(0, 300);
+	return maskHome(stderr.trim().split(/\r?\n/, 1)[0] ?? '').split(voiceId).join('<voice>').slice(0, 300);
 }
 
 export class ParadisAgentDictionarySyncChannel<TContext> implements IServerChannel<TContext> {

@@ -8,17 +8,24 @@
 
 // SSH の接続先（REH）の aivis-mcp へ通知の辞書を書くチャネルを足す。`paradis.server.contribution.ts` から
 // 副作用 import で読み込まれる。接続先のエージェントは接続先の aivis-mcp で読み上げるので、そちらにも同じ辞書を書く。
-// PATH はサーバーが継承したものをそのまま使う（rtk・ccusage のサーバー版と同じ）。辞書の設定は REH からは
-// 読めないので、書くかどうか・何を書くかはウィンドウが決めて渡す。
+// aivis-mcp はログインシェル由来の PATH で探す（サーバーが ssh から継承した PATH には、npm のグローバルや
+// Homebrew が入っていないことが多い。拡張ホストと同じ解決を使い、結果はサーバーの中で共有される）。
+// 辞書の設定は REH からは読めないので、書くかどうか・何を書くかはウィンドウが決めて渡す。
 
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { RemoteAgentConnectionContext } from '../../../../platform/remote/common/remoteAgentEnvironment.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisServerContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_AGENT_DICTIONARY_CHANNEL } from '../common/paradisAgentDictionary.js';
 import { ParadisAgentDictionarySyncChannel, ParadisAgentDictionarySyncService } from './paradisAgentDictionarySync.js';
 
 ParadisServerContributions.register(PARADIS_AGENT_DICTIONARY_CHANNEL, ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
-	const service = new ParadisAgentDictionarySyncService({ getEnv: async () => process.env, logService });
+	const configurationService = accessor.get(IConfigurationService);
+	const environmentService = accessor.get(INativeEnvironmentService);
+	const shellEnv = new ParadisCachedShellEnv(logService, 'ParadisAgentDictionary', createParadisShellEnvResolver(logService, configurationService, environmentService.args));
+	const service = new ParadisAgentDictionarySyncService({ getEnv: () => shellEnv.getEnv(), logService });
 	server.registerChannel(PARADIS_AGENT_DICTIONARY_CHANNEL, new ParadisAgentDictionarySyncChannel<RemoteAgentConnectionContext>(service));
 });
