@@ -8,11 +8,13 @@
 import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { Worker } from 'worker_threads';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath } from '../../node/paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
+import { paradisParsePdfPageRange } from '../../node/paradisBrowserPdfText.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_FILE_TOOL_NAMES, PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 import { paradisRunSteps } from '../../node/paradisBrowserRunSteps.js';
@@ -33,6 +35,32 @@ function isError(result: unknown): boolean {
 
 function returned(value: unknown): unknown {
 	return { content: [{ type: 'text', text: `Script ran on page and returned:\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\`` }] };
+}
+
+/**
+ * 小さな PDF を作る（ページごとに 1 行の文字。空文字のページは文字の無いページ）。
+ * `encrypted` なら空のパスワードでは開けない暗号化の辞書を付ける。
+ */
+function makePdf(pages: readonly string[], encrypted = false): Buffer {
+	const objects = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${pages.map((_, i) => `${3 + i * 2} 0 R`).join(' ')}] /Count ${pages.length} >>`];
+	const font = 3 + pages.length * 2;
+	for (const page of pages) {
+		const stream = page ? `BT /F1 12 Tf 20 100 Td (${page}) Tj ET` : '';
+		objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${objects.length + 2} 0 R >>`);
+		objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+	}
+	objects.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+	let out = '%PDF-1.4\n';
+	const offsets: number[] = [];
+	objects.forEach((object, i) => {
+		offsets.push(out.length);
+		out += `${i + 1} 0 obj\n${object}\nendobj\n`;
+	});
+	const xref = out.length;
+	const encrypt = encrypted ? ` /Encrypt << /Filter /Standard /V 1 /R 2 /O <${'ab'.repeat(32)}> /U <${'cd'.repeat(32)}> /P -4 >> /ID [<${'01'.repeat(16)}> <${'01'.repeat(16)}>]` : '';
+	out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
+	out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R${encrypt} >>\nstartxref\n${xref}\n%%EOF\n`;
+	return Buffer.from(out, 'latin1');
 }
 
 suite('para-browser tools: network idle, run_steps, capture_screenshot, read_download', () => {
@@ -176,6 +204,65 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 				xlsx: ['Columns: A\tB', '2: Apple\t120', '3: Pear\t200'],
 				sheets: true,
 				outside: [true, true],
+			});
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
+	});
+
+	test('read_download reads the text of PDF pages with pdf.js', async function () {
+		this.timeout(30_000);
+		// Electron の renderer で動くテスト（scripts/test.sh）では worker_threads の Worker を作れない。Node で動くテスト（npm run test-node）で確かめる
+		try {
+			await new Worker('', { eval: true }).terminate();
+		} catch {
+			this.skip();
+		}
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-pdf-'));
+		try {
+			await fs.writeFile(join(folder, 'report.pdf'), makePdf(['Hello page one', '', 'Third page']));
+			await fs.writeFile(join(folder, 'scan.pdf'), makePdf(['']));
+			await fs.writeFile(join(folder, 'locked.pdf'), makePdf(['secret'], true));
+			await fs.writeFile(join(folder, 'broken.pdf'), Buffer.from('this is not a PDF'));
+			const reader = new ParadisBrowserDownloadReader({ downloadsDirectory: async () => folder });
+			const read = async (file: string, pages?: string) => {
+				const result = await reader.call({ path: join(folder, file), ...(pages !== undefined ? { pages } : {}) });
+				return { error: isError(result), text: textOf(result).split('\n') };
+			};
+			const [all, last, beyond, scan, locked, broken, badRange] = await Promise.all([
+				read('report.pdf'), read('report.pdf', '3-'), read('report.pdf', '7'), read('scan.pdf'), read('locked.pdf'), read('broken.pdf'), read('report.pdf', '5-2'),
+			]);
+			assert.deepStrictEqual({ all, last, beyond, scan, locked, broken, badRange }, {
+				all: { error: false, text: ['report.pdf: PDF, 3 page(s); text of pages 1-3 (layout, tables and images are not kept):', '--- Page 1 ---', 'Hello page one', '--- Page 2 ---', '(no text on this page; it may be a scanned image)', '--- Page 3 ---', 'Third page'] },
+				last: { error: false, text: ['report.pdf: PDF, 3 page(s); text of pages 3-3 (layout, tables and images are not kept):', '--- Page 3 ---', 'Third page'] },
+				beyond: { error: true, text: ['report.pdf has only 3 page(s).'] },
+				scan: { error: false, text: ['scan.pdf: PDF, 1 page(s); text of pages 1-1 (layout, tables and images are not kept):', 'No text was found on these pages. The PDF may be scanned images; take a screenshot of it in the browser to read it.', '--- Page 1 ---', '(no text on this page; it may be a scanned image)'] },
+				locked: { error: true, text: ['locked.pdf is password-protected (encrypted), so its text cannot be read.'] },
+				broken: { error: true, text: ['broken.pdf could not be read as a PDF (the file is damaged or not a PDF).'] },
+				badRange: { error: true, text: ['"pages" must be one page like "3" or a range like "1-5" or "10-" (page 10 to the end).'] },
+			});
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
+	});
+
+	test('PDF page limits are reported with where to continue', async () => {
+		const reader = new ParadisBrowserDownloadReader({
+			downloadsDirectory: async () => tmpdir(),
+			realpath: async path => path,
+			readFile: async () => Buffer.from('%PDF'),
+			extractPdfText: async () => ({ kind: 'ok', numPages: 80, pages: [{ page: 4, text: 'a' }, { page: 5, text: 'b' }], stopped: 'chars' }),
+		});
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-read-download-pdf-limit-'));
+		try {
+			await fs.writeFile(join(folder, 'long.pdf'), 'x');
+			const result = await reader.call({ path: join(folder, 'long.pdf'), pages: '4-' });
+			assert.deepStrictEqual({
+				ranges: ['3', '1-5', '10-', ' 2 - 4 ', '0', '5-2', 'a-b', '1,3'].map(paradisParsePdfPageRange),
+				more: textOf(result).split('\n')[1],
+			}, {
+				ranges: [{ start: 3, end: 3 }, { start: 1, end: 5 }, { start: 10 }, { start: 2, end: 4 }, undefined, undefined, undefined, undefined],
+				more: 'Stopped at 100000 characters (page 5 is cut); pass "pages": "5-" to continue from that page.',
 			});
 		} finally {
 			await fs.rm(folder, { recursive: true, force: true });
