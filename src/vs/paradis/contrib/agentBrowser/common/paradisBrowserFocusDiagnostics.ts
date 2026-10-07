@@ -211,6 +211,8 @@ export class ParadisBrowserDiagnosticsRecorder {
 	private failureHosts = new Map<string, number>();
 	private keyAttemptsByHost = new Map<string, number>();
 	private keyAttempts = 0;
+	/** キー入力の準備が時間切れになったとき、返事をしなかったフレームの種類ごとの数。 */
+	private keyUnansweredFrames = new Map<string, number>();
 	private failures = 0;
 	private failureWindowStartedAt: number | undefined;
 	/** 前回のまとめ（無ければ起動）の時刻。キー入力の試行数はここから数えている。 */
@@ -434,10 +436,22 @@ export class ParadisBrowserDiagnosticsRecorder {
 		bump(this.keyAttemptsByHost, host);
 	}
 
-	/** キー入力の準備（抑止の登録・有効化）に失敗した。`reason` は #246 の理由の語。 */
-	noteKeySuppressionFailure(host: string, phase: 'register' | 'activate', reason: string | undefined): void {
+	/**
+	 * キー入力の準備（抑止の登録・有効化）に失敗した。`reason` は #246 の理由の語。
+	 * `unansweredFrames` は時間切れのとき返事をしなかったフレームの種類と数（`cross-origin=1,about-blank=2`。URL は含まない）。
+	 */
+	noteKeySuppressionFailure(host: string, phase: 'register' | 'activate', reason: string | undefined, unansweredFrames?: string): void {
 		const safeReason = safeWord(reason ?? 'unknown');
-		this.addBreadcrumb('para.browser-input', 'key-suppression-failed', { safe_host: host, safe_phase: phase, safe_reason: safeReason });
+		const data: ParadisBrowserDiagnosticData = { safe_host: host, safe_phase: phase, safe_reason: safeReason };
+		const frames = parseFrameKinds(unansweredFrames);
+		if (frames.length > 0) {
+			data.safe_unanswered_frames = format(frames);
+			for (const [kind, count] of frames) {
+				const slot = this.keyUnansweredFrames.has(kind) || this.keyUnansweredFrames.size < MAX_TRACKED_KEYS ? kind : 'other';
+				this.keyUnansweredFrames.set(slot, (this.keyUnansweredFrames.get(slot) ?? 0) + count);
+			}
+		}
+		this.addBreadcrumb('para.browser-input', 'key-suppression-failed', data);
 		this.recordFailure(`key-${phase}:${safeReason}`, host);
 	}
 
@@ -493,6 +507,8 @@ export class ParadisBrowserDiagnosticsRecorder {
 		const hosts = this.failureHosts;
 		const attemptsByHost = this.keyAttemptsByHost;
 		const attempts = this.keyAttempts;
+		const unansweredFrames = this.keyUnansweredFrames;
+		this.keyUnansweredFrames = new Map();
 		this.failures = 0;
 		this.keyAttempts = 0;
 		this.failureCounts = new Map();
@@ -515,6 +531,8 @@ export class ParadisBrowserDiagnosticsRecorder {
 			safe_key_attempts: attempts,
 			safe_key_failures: keyFailures,
 			safe_key_attempts_by_host: format(top(attemptsByHost, SUMMARY_TOP_HOSTS)),
+			// 時間切れで返事をしなかったフレームの種類（同一 origin / 別 origin / about:blank / sandbox）と数。
+			safe_key_unanswered_frames: format(top(unansweredFrames, SUMMARY_TOP_KINDS)),
 			// キー入力の試行（母数）と失敗はどちらも前回のまとめから数えている。
 			safe_window_ms: windowMs,
 			safe_summaries_this_run: this.failureSummariesSent,
@@ -547,6 +565,22 @@ export class ParadisBrowserDiagnosticsRecorder {
 		}
 		return state;
 	}
+}
+
+/** `kind=n,kind=n` を読む。種類は固定の語に畳み、数は正の整数だけ受ける。 */
+function parseFrameKinds(value: string | undefined): [string, number][] {
+	if (value === undefined || value === '') {
+		return [];
+	}
+	const result: [string, number][] = [];
+	for (const part of value.split(',').slice(0, 8)) {
+		const match = /^(?<kind>[a-z-]{1,24})=(?<count>\d{1,4})$/.exec(part);
+		const count = match?.groups ? Number(match.groups.count) : 0;
+		if (match?.groups && count > 0) {
+			result.push([safeWord(match.groups.kind), count]);
+		}
+	}
+	return result;
 }
 
 function bump(map: Map<string, number>, key: string): void {

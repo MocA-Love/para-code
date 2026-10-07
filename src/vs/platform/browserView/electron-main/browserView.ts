@@ -28,7 +28,7 @@ import { URI } from '../../../base/common/uri.js';
 // PARA-PATCH: import the fork's screenshot policy helpers (route selection, pixel-budget guard, bounded scale, retry/restore) for the hardened capture pipeline (Para Browser MCP screenshot hardening)
 import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/browserViewScreenshot.js';
 // PARA-PATCH: import automation-key signature helpers and the expectation queue used to isolate injected keystrokes (Para Browser MCP automation input isolation)
-import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, browserViewAutomationNavigationDiscardsPreloadState, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
+import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, browserViewAutomationNavigationDiscardsPreloadState, browserViewAutomationAwaitedFrames, browserViewAutomationFrameKind, browserViewAutomationFormatFrameKinds, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 // PARA-PATCH: import the fork's load watchdog, which fails loads that stall before the response ever begins instead of spinning forever (Para Code)
 import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdog.js';
 // PARA-PATCH: import the fork's capture nudge for shown views in undrawn windows (Para Browser MCP frame keepalive)
@@ -42,6 +42,8 @@ const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 2_500;
 interface IPendingAutomationKeyAck {
 	readonly phase: 'register' | 'activate';
 	readonly frames: readonly WebFrameMain[];
+	/** The frames whose ack is waited for (see browserViewAutomationAwaitedFrames). Acks from the other frames are still counted. */
+	readonly awaited: readonly WebFrameMain[];
 	readonly acknowledged: Set<WebFrameMain>;
 	readonly resolve: (accepted: boolean) => void;
 	readonly timer: ReturnType<typeof setTimeout>;
@@ -100,6 +102,8 @@ export class BrowserView extends Disposable {
 	private readonly _automationKeyExpectations = this._register(new BrowserViewAutomationKeyExpectationQueue(sequence => this._automationKeyFrames.delete(sequence)));
 	private readonly _pendingAutomationKeyAcks = new Map<number, IPendingAutomationKeyAck>();
 	private readonly _automationKeyFrames = new Map<number, readonly WebFrameMain[]>();
+	/** Frames whose preload announced itself (`preloadReady`) or answered an automation key at least once. */
+	private readonly _automationPreloadFrames = new WeakSet<WebFrameMain>();
 	private _automationKeySequence = 0;
 	private _automationInputFocusAuthority: object = Object.freeze({});
 
@@ -523,6 +527,12 @@ export class BrowserView extends Disposable {
 		webContents.on('ipc-message', (event, channel, ...args) => {
 			const senderFrame = (event as { senderFrame?: WebFrameMain }).senderFrame;
 			const payload = args[0];
+			if (senderFrame && channel === 'vscode:browserView:preloadReady') {
+				// The preload's keydown listener is set up in the same synchronous init that sends this
+				// (its payload is the frame token, a string).
+				this._automationPreloadFrames.add(senderFrame);
+				return;
+			}
 			if (!senderFrame || typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
 				return;
 			}
@@ -543,7 +553,8 @@ export class BrowserView extends Disposable {
 					return;
 				}
 				pending.acknowledged.add(senderFrame);
-				if (pending.acknowledged.size === pending.frames.length) {
+				this._automationPreloadFrames.add(senderFrame);
+				if (pending.awaited.every(frame => pending.acknowledged.has(frame))) {
 					pending.resolve(true);
 				}
 			} else if (channel === 'vscode:browserView:automationKeyConsumed') {
@@ -664,10 +675,10 @@ export class BrowserView extends Disposable {
 	 * Register one exact automation key signature in every currently live preload before CDP dispatch.
 	 * `onFailure` receives why registration or the later activation failed (for diagnostics only).
 	 */
-	async prepareAutomationKeyInput(signature: IBrowserViewAutomationKeySignature, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate') => void): Promise<IBrowserViewAutomationKeyRegistration | undefined> {
-		const fail = (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate'): void => {
+	async prepareAutomationKeyInput(signature: IBrowserViewAutomationKeySignature, onFailure?: (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail) => void): Promise<IBrowserViewAutomationKeyRegistration | undefined> {
+		const fail = (reason: BrowserViewAutomationKeyFailureReason, phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail): void => {
 			try {
-				onFailure?.(reason, phase);
+				onFailure?.(reason, phase, detail);
 			} catch {
 				// Diagnostics must never change input delivery or suppression state.
 			}
@@ -689,9 +700,11 @@ export class BrowserView extends Disposable {
 
 		let resolveAck!: (accepted: boolean) => void;
 		const ack = new Promise<boolean>(resolve => resolveAck = resolve);
+		const awaited = this.getAwaitedAutomationFrames(frames);
 		const pending: IPendingAutomationKeyAck = {
 			phase: 'register',
 			frames,
+			awaited,
 			acknowledged: new Set(),
 			resolve: resolveAck,
 			timer: setTimeout(() => {
@@ -708,14 +721,19 @@ export class BrowserView extends Disposable {
 		} catch {
 			resolveAck(false);
 		}
+		if (awaited.length === 0) {
+			// No frame has a preload yet, so none can forward the key; the commit re-checks before sending.
+			resolveAck(true);
+		}
 
 		const accepted = await ack;
 		clearTimeout(pending.timer);
 		if (this._pendingAutomationKeyAcks.get(sequence) === pending) {
 			this._pendingAutomationKeyAcks.delete(sequence);
 		}
-		if (!accepted || !this._automationKeyExpectations.has(sequence) || !this.hasSameLiveAutomationFrames(frames)) {
-			fail(!accepted ? pending.failure ?? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'register');
+		const registered = pending.acknowledged;
+		if (!accepted || !this._automationKeyExpectations.has(sequence) || !this.isAutomationFocusPathCovered(registered)) {
+			fail(!accepted ? pending.failure ?? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'register', pending.failure === 'ack-timeout' ? this.describeUnansweredAutomationFrames(pending) : undefined);
 			this._automationKeyExpectations.cancel(sequence);
 			this.cancelPreloadAutomationKey(frames, sequence);
 			return undefined;
@@ -724,12 +742,13 @@ export class BrowserView extends Disposable {
 		let settled = false;
 		let activationStarted = false;
 		let activated = false;
+		let activatedFrames: ReadonlySet<WebFrameMain> = new Set();
 		return Object.freeze({
 			sequence,
 			activate: async () => {
 				if (settled || activationStarted || this._isDisposed || this.webContents.isDestroyed()
 					|| !this._automationKeyExpectations.has(sequence)
-					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
+					|| this._automationKeyFrames.get(sequence) !== frames || !this.isAutomationFocusPathCovered(registered)) {
 					fail(settled || activationStarted ? 'cancelled' : this._isDisposed || this.webContents.isDestroyed() ? 'view-unavailable' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'activate');
 					return false;
 				}
@@ -745,9 +764,14 @@ export class BrowserView extends Disposable {
 				activationStarted = true;
 				let resolveActivationAck!: (accepted: boolean) => void;
 				const activationAck = new Promise<boolean>(resolve => resolveActivationAck = resolve);
+				// Only the frames that registered the key can activate it; a frame that never saw the
+				// registration would refuse the activation.
+				const activationFrames = frames.filter(frame => registered.has(frame));
+				const activationAwaited = this.getAwaitedAutomationFrames(activationFrames);
 				const activationPending: IPendingAutomationKeyAck = {
 					phase: 'activate',
-					frames,
+					frames: activationFrames,
+					awaited: activationAwaited,
 					acknowledged: new Set(),
 					resolve: resolveActivationAck,
 					timer: setTimeout(() => {
@@ -758,11 +782,14 @@ export class BrowserView extends Disposable {
 				this._pendingAutomationKeyAcks.set(sequence, activationPending);
 				const activationNativeFocused = this.isNativeFocusedForAutomation();
 				try {
-					for (const frame of frames) {
+					for (const frame of activationFrames) {
 						frame.postMessage('vscode:browserView:activateAutomationKey', { sequence, nativeFocused: activationNativeFocused });
 					}
 				} catch {
 					resolveActivationAck(false);
+				}
+				if (activationAwaited.length === 0) {
+					resolveActivationAck(true);
 				}
 				const accepted = await activationAck;
 				clearTimeout(activationPending.timer);
@@ -770,10 +797,11 @@ export class BrowserView extends Disposable {
 					this._pendingAutomationKeyAcks.delete(sequence);
 				}
 				if (!accepted || settled || !this._automationKeyExpectations.has(sequence)
-					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
-					fail(!accepted ? activationPending.failure ?? 'cancelled' : settled ? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'activate');
+					|| this._automationKeyFrames.get(sequence) !== frames || !this.isAutomationFocusPathCovered(activationPending.acknowledged)) {
+					fail(!accepted ? activationPending.failure ?? 'cancelled' : settled ? 'cancelled' : !this._automationKeyExpectations.has(sequence) ? 'cleared' : 'frames-changed', 'activate', activationPending.failure === 'ack-timeout' ? this.describeUnansweredAutomationFrames(activationPending) : undefined);
 					return false;
 				}
+				activatedFrames = activationPending.acknowledged;
 				if (!this._automationKeyExpectations.activate(sequence)) {
 					fail('cleared', 'activate');
 					return false;
@@ -781,7 +809,17 @@ export class BrowserView extends Disposable {
 				activated = true;
 				return true;
 			},
-			commit: () => !settled && activated && this._automationKeyExpectations.commit(sequence),
+			commit: () => {
+				if (settled || !activated) {
+					return false;
+				}
+				// The focus may have moved to a frame that did not activate the key while it was prepared.
+				if (!this.isAutomationFocusPathCovered(activatedFrames)) {
+					fail('frames-changed', 'activate');
+					return false;
+				}
+				return this._automationKeyExpectations.commit(sequence);
+			},
 			complete: () => {
 				if (settled) {
 					return;
@@ -847,9 +885,60 @@ export class BrowserView extends Disposable {
 		}
 	}
 
-	private hasSameLiveAutomationFrames(expected: readonly WebFrameMain[]): boolean {
-		const current = this.getLiveAutomationFrames();
-		return current.length === expected.length && current.every(frame => expected.includes(frame));
+	/** The focused frame and its ancestors up to the top frame, or undefined when the focused frame is unknown. */
+	private getAutomationFocusPath(): readonly WebFrameMain[] | undefined {
+		try {
+			const path: WebFrameMain[] = [];
+			for (let frame: WebFrameMain | null = this.webContents.focusedFrame; frame && path.length < 64; frame = frame.parent) {
+				path.push(frame);
+			}
+			return path.length > 0 ? path : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private getAwaitedAutomationFrames(frames: readonly WebFrameMain[]): readonly WebFrameMain[] {
+		let top: WebFrameMain | undefined;
+		try {
+			const mainFrame = this.webContents.mainFrame;
+			top = mainFrame.url === '' || mainFrame.url.startsWith('about:') ? undefined : mainFrame;
+		} catch {
+			top = undefined;
+		}
+		return browserViewAutomationAwaitedFrames(frames, frame => this._automationPreloadFrames.has(frame), this.getAutomationFocusPath(), top);
+	}
+
+	/**
+	 * Whether every frame that must hold the key right now (see getAwaitedAutomationFrames, read
+	 * again from the live frames and the current focus) is among `acknowledged`. Replaces the
+	 * former "the same frames are still live" check: frames that come and go elsewhere on the page
+	 * (ads, about:blank iframes) cannot receive the key, but a focus move to a frame that did not
+	 * answer can.
+	 */
+	private isAutomationFocusPathCovered(acknowledged: ReadonlySet<WebFrameMain>): boolean {
+		return this.getAwaitedAutomationFrames(this.getLiveAutomationFrames()).every(frame => acknowledged.has(frame));
+	}
+
+	/** Which awaited frames did not answer, by kind, without their URLs. */
+	private describeUnansweredAutomationFrames(pending: IPendingAutomationKeyAck): IBrowserViewAutomationKeyFailureDetail | undefined {
+		try {
+			const topOrigin = this.webContents.mainFrame.origin;
+			const kindOf = (frame: WebFrameMain) => {
+				try {
+					return browserViewAutomationFrameKind(frame.url, frame.origin, topOrigin);
+				} catch {
+					return 'about-blank' as const;
+				}
+			};
+			return {
+				unansweredFrames: browserViewAutomationFormatFrameKinds(pending.awaited.filter(frame => !pending.acknowledged.has(frame)).map(kindOf)),
+				awaitedFrames: pending.awaited.length,
+				framesWithoutPreload: pending.frames.filter(frame => !this._automationPreloadFrames.has(frame)).length,
+			};
+		} catch {
+			return undefined;
+		}
 	}
 
 	private clearAutomationKeyExpectations(): void {
