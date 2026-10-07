@@ -78,6 +78,27 @@ const CODEX_MODEL_RETIRED = [
 	'',
 	`  ${words('enter/esc', 'continue', MIDDLE_DOT, 'ctrl+c', 'quit')}`,
 ].join('\n');
+// codex-cli 0.161.0 のモデルの案内（codex-rs/tui/src/snapshots/codex_tui__model_migration__tests__model_migration_prompt.snap と
+// ..._gpt5_family.snap）。Ctrl の表記は macOS が「⌃c」、Linux が「^c」（Windows は「ctrl+c」のまま）
+const CODEX_0161_MODEL_PROMPT = (ctrlC: string) => [
+	'  Codex just got an upgrade. Introducing',
+	'  gpt-5.1-codex-max.',
+	'',
+	'  Upgrade to gpt-5.2-codex for the latest and greatest',
+	'  agentic coding model.',
+	'',
+	'  You can continue using gpt-5.1-codex-mini if you prefer.',
+	'',
+	'\u203a 1. Try new model                                          ',
+	'  2. Use existing model',
+	'',
+	`  ${words('enter/esc', 'confirm', MIDDLE_DOT, ctrlC, 'quit')}`,
+].join('\n');
+const CODEX_0161_MODEL_NOTICE = (ctrlC: string) => [
+	'  Codex just got an upgrade. Introducing gpt-5.1.',
+	'',
+	`  ${words('enter/esc', 'continue', MIDDLE_DOT, ctrlC, 'quit')}`,
+].join('\n');
 const CODEX_HOOKS_REVIEW = [
 	'  Hooks need review',
 	'  8 hooks are new or changed.',
@@ -296,6 +317,25 @@ suite('paradisAgentIde (common)', () => {
 			mentioned: null,
 			claude: null,
 			blocksEnter: [true, true, true, false],
+		});
+	});
+
+	test('choice menus: the model switch notice is read whichever way Codex writes Ctrl (0.161.0 macOS / Linux, older and Windows)', () => {
+		const labels = ['\u2303c', '^c', 'ctrl+c', 'CTRL+C'];
+		assert.deepStrictEqual({
+			prompt: labels.map(label => {
+				const menu = paradisAgentChoiceMenu(CODEX_0161_MODEL_PROMPT(label));
+				return menu && { kind: menu.kind, options: menu.options, selected: menu.selected };
+			}),
+			notice: labels.map(label => paradisAgentChoiceMenu(CODEX_0161_MODEL_NOTICE(label))?.kind),
+			blocksEnter: labels.map(label => paradisAgentIdeScreenShowsPrompt(CODEX_0161_MODEL_PROMPT(label))),
+			// Ctrl 以外の修飾キーや別のキーでは当てない
+			others: ['\u2325c', '\u21e7c', '^x', 'c'].map(label => paradisAgentChoiceMenu(CODEX_0161_MODEL_NOTICE(label)) ?? null),
+		}, {
+			prompt: labels.map(() => ({ kind: 'model_switch', options: ['Try new model', 'Use existing model'], selected: 0 })),
+			notice: labels.map(() => 'model_switch'),
+			blocksEnter: labels.map(() => true),
+			others: [null, null, null, null],
 		});
 	});
 

@@ -210,7 +210,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 	},
 	{
 		name: 'read_download',
-		description: 'Read the contents of a file that download_by_click or save_page_as_pdf saved in Para Code\'s download folder, without opening it in another program: for .xlsx / .xlsm the list of sheets and the cells of a range (values as displayed), for .csv / .tsv / .txt the rows of a range (UTF-8 or Shift_JIS). Output is limited by max_cells; pass "range" for another part. PDF text is not supported yet. Only files inside the download folder can be read.',
+		description: 'Read the contents of a file that download_by_click or save_page_as_pdf saved in Para Code\'s download folder, without opening it in another program: for .xlsx / .xlsm the list of sheets and the cells of a range (values as displayed), for .csv / .tsv / .txt the rows of a range (UTF-8 or Shift_JIS), for .pdf the text of each page (up to 50 pages and 100000 characters per call; pass "pages" for another part). Output is limited by max_cells; pass "range" for another part. Encrypted PDFs and scanned pages without text cannot be read. Only files inside the download folder can be read. If you can read the saved file with your own tools, you may do that instead.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -219,6 +219,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 				sheet_number: { type: 'number', description: 'xlsx: sheet by position instead of name (1 for the first).' },
 				range: { type: 'string', description: 'Cells to read, for example "A1:H50" (also for csv: rows 1-50, columns A-H). Default: the first 100 rows and 30 columns.' },
 				max_cells: { type: 'number', description: 'Maximum number of cells returned (1-20000, default 2000).' },
+				pages: { type: 'string', description: 'pdf: pages to read, for example "3", "1-5" or "10-" (page 10 to the end). Default: from the first page up to the limit.' },
 			},
 			required: ['path'],
 			additionalProperties: false,
