@@ -34,6 +34,11 @@ suite('Paradis cursor label', () => {
 			admin: 'ADMIN',
 			empty: '   ',
 			short: 'a',
+			filler: '\u3164\u3164',
+			braille: '\u2800\u2800',
+			spacedNumber: '1 2 3 4 5 6 7',
+			arabicDigits: '\u0661\u0662\u0663\u0664\u0665\u0666\u0667',
+			homoglyph: '\u0420\u0430ra Code',
 		};
 		const result = Object.fromEntries(Object.entries(cases).map(([name, value]) => [name, paradisNormalizeCursorLabel(value)]));
 		assert.deepStrictEqual(result, {
@@ -56,6 +61,11 @@ suite('Paradis cursor label', () => {
 			admin: { ok: false, rejected: 'reserved name' },
 			empty: { ok: false, rejected: 'empty' },
 			short: { ok: false, rejected: 'too short' },
+			filler: { ok: false, rejected: 'empty' },
+			braille: { ok: false, rejected: 'empty' },
+			spacedNumber: { ok: false, rejected: 'contains a long number' },
+			arabicDigits: { ok: false, rejected: 'contains a long number' },
+			homoglyph: { ok: false, rejected: 'reserved name' },
 		});
 		assert.deepStrictEqual([paradisCursorLabelWidth('注文'), paradisCursorLabelWidth('ab')], [4, 2]);
 	});

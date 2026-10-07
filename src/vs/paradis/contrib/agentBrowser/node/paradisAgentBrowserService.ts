@@ -4025,6 +4025,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。
 		// 一覧だけのツールと、ブラウザの共有そのもの（CDP ゲートウェイ）はこれまでどおり
 		if (name === 'set_cursor_label') {
+			// 呼び出し元のプロセスは確かめない。変えられるのは名札の名前だけ（色と CLI の印は Para Code が決める）で、
+			// 同じトークンがあればマウス入力そのものを送れるので、それより強い確認は要らない
 			const toolArgs = toolArguments && typeof toolArguments === 'object' ? toolArguments as Record<string, unknown> : {};
 			const message = this._setCursorLabel(token, this._bindingForKey(this._pageKeyOf(pageLease)), toolArgs.label);
 			return message.startsWith('Your cursor now shows') || message.startsWith('You can change') ? this._toolText(message) : this._toolError(message);
