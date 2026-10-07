@@ -65,7 +65,8 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { ParadisCursorPacingLedger } from './paradisCursorPacing.js';
+import { ParadisCursorPacingLedger, paradisCursorStatusForTool } from './paradisCursorPacing.js';
+import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
@@ -624,6 +625,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _pageOps: ParadisBrowserPageOps;
 	/** カーソルの演出のために入力の配送を待ってよいか（ツールの呼び出しごと。paradisCursorPacing.ts）。 */
 	private readonly _cursorPacing = new ParadisCursorPacingLedger();
+	/** 名札に長く続く状態（スクリプト実行中・待機中）を出している道具の数（タブのスコープキーごと）。 */
+	private readonly _cursorStatusRuns = new Map<string, number>();
 	/** 素通しの WebP の撮影でカーソルを隠したビュー（ゲートウェイのキーごと、撮り始めた順）。 */
 	private readonly _rawCaptureViews = new Map<string, IParadisExactBrowserViewDescriptor[]>();
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
@@ -3842,6 +3845,55 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
+	 * 道具の状態をカーソルの名札に出す（electron-main の `noteExactViewCursorStatus`）。演出なので待たず、
+	 * 届かなくても何も変えない。
+	 */
+	private _noteCursorStatus(ingressLease: IParadisAgentBrowserIngressLease, note: IParadisCursorStatusNote): void {
+		try {
+			const binding = this._bindingForKey(this._pageKeyOf(ingressLease));
+			if (!binding) {
+				return;
+			}
+			void this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<void>('noteExactViewCursorStatus', [binding.exactView, note])
+				.then(undefined, () => undefined);
+		} catch {
+			// 演出は道具の結果を変えない。
+		}
+	}
+
+	/**
+	 * 入力を伴わない道具の間、カーソルの名札に状態を出す（スクリプト実行中・待機中など）。長く続く状態は
+	 * 道具が終わったら消す。
+	 */
+	private async _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>): Promise<T> {
+		const status = paradisCursorStatusForTool(name);
+		if (status === undefined) {
+			return run();
+		}
+		const sticky = status === 'script' || status === 'waiting';
+		const key = this._pageKeyOf(ingressLease);
+		if (sticky) {
+			this._cursorStatusRuns.set(key, (this._cursorStatusRuns.get(key) ?? 0) + 1);
+		}
+		this._noteCursorStatus(ingressLease, { status });
+		try {
+			return await run();
+		} finally {
+			if (sticky) {
+				// 同じタブで並んで走っている道具が残っていれば、その表示を消さない
+				const left = (this._cursorStatusRuns.get(key) ?? 1) - 1;
+				if (left > 0) {
+					this._cursorStatusRuns.set(key, left);
+				} else {
+					this._cursorStatusRuns.delete(key);
+					this._noteCursorStatus(ingressLease, { status: 'idle' });
+				}
+			}
+		}
+	}
+
+	/**
 	 * ツールの呼び出し。呼び出しの間に届く入力（vendored のツールならゲートウェイ経由）に、カーソルの
 	 * 演出のために待ってよいかを伝えるため、どのツールの呼び出しかを台帳に載せる。
 	 */
@@ -3906,7 +3958,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			return this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal);
+			return this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal));
 		}
 
 		// ページを操作する Para のツールは、tab_id（省略可）でどのタブかを決める
@@ -4131,7 +4183,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._requireIngressLease(ingressLease);
 		// タブのスコープキー（tab_id を解決していなければペインのトークン）
 		const token = this._pageKeyOf(ingressLease);
-		return this._browserQuery.call({
+		return this._withToolCursorStatus(ingressLease, name, () => this._browserQuery.call({
 			signal,
 			isCurrent: () => {
 				this._requireIngressLease(ingressLease);
@@ -4149,7 +4201,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
 				}
 			},
-		}, name, args);
+		}, name, args));
 	}
 
 	/**
@@ -4177,6 +4229,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			},
 			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindingForKey(token) === binding).response,
+			noteCursor: note => this._noteCursorStatus(ingressLease, note),
 		}, name, args);
 	}
 
@@ -4544,6 +4597,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolError(`Failed to stage "${fileName}" for upload: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
+		this._noteCursorStatus(ingressLease, { status: 'upload', point: { x: target.x, y: target.y } });
 		const commands = paradisBuildFileDropDragCommands(target.x, target.y, filePath);
 		let dragEntered = false;
 		let completed = false;

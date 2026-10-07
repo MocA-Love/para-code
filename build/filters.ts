@@ -141,6 +141,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**',
 	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
+	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
+	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
 	// except multiple specific files
 	'!**/package.json',
@@ -253,6 +255,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/browser/media/mermaid/**',
 	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
 	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
+	// PARA-PATCH: vendored cursor-motion (Cua, MIT) used to plan the agent cursor's path (see the folder's README.md)
+	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
@@ -276,6 +280,8 @@ export const tsFormattingFilter = Object.freeze<string[]>([
 	'!extensions/terminal-suggest/src/shell/zshBuiltinsCache.ts',
 	'!extensions/terminal-suggest/src/shell/fishBuiltinsCache.ts',
 	'!src/vs/platform/agentHost/node/codex/protocol/generated/**',
+	// PARA-PATCH: vendored cursor-motion (Cua, MIT) keeps the upstream formatting (see the folder's README.md)
+	'!src/vs/paradis/contrib/agentBrowser/common/cursorMotion/**',
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',

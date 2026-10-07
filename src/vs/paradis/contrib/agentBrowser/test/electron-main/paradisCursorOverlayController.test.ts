@@ -64,7 +64,8 @@ suite('Paradis Cursor Overlay Controller', () => {
 				first: PARADIS_CURSOR_OVERLAY_TUNING.appearMs,
 				second: 200,
 				commands: ['move', 'move'],
-				durations: [PARADIS_CURSOR_OVERLAY_TUNING.appearMs, 200],
+				// The first one appears in place; the second plays the cursor-motion arc, which settles after arriving.
+				durations: [0, target.durations[1] >= 200 ? target.durations[1] : -1],
 				worlds: [browserViewIsolatedWorldId, browserViewIsolatedWorldId],
 			},
 		);
@@ -385,7 +386,7 @@ suite('Paradis Cursor Overlay Controller', () => {
 
 		assert.deepStrictEqual(
 			{ beforePress, commands: target.commands, durations: target.durations, delays },
-			{ beforePress: 0, commands: ['move', 'move', 'press'], durations: [PARADIS_CURSOR_OVERLAY_TUNING.appearMs, 200], delays: ['150'] },
+			{ beforePress: 0, commands: ['move', 'move', 'press'], durations: [0, target.durations[1] >= 200 ? target.durations[1] : -1], delays: ['150'] },
 		);
 	});
 
@@ -429,5 +430,40 @@ suite('Paradis Cursor Overlay Controller', () => {
 		];
 
 		assert.deepStrictEqual({ waits, commands: target.commands }, { waits: [0, 0, 0], commands: [] });
+	});
+
+	test('releases, wheels, special keys and tool states reach the page without delaying input', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const keys: string[] = [];
+		const original = target.webContents.executeJavaScriptInIsolatedWorld;
+		target.webContents.executeJavaScriptInIsolatedWorld = (worldId, scripts) => {
+			const key = /"key":"([^"]+)"/.exec(scripts[0].code);
+			if (key) {
+				keys.push(key[1]);
+			}
+			return original(worldId, scripts);
+		};
+
+		// Nothing to release or scroll before the cursor exists.
+		const early = await controller.onMouseEvent(target, { type: 'mouseReleased', x: 1, y: 1, button: 'left' });
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 10, y: 10 });
+		const waits = [
+			early,
+			await controller.onMouseEvent(target, { type: 'mouseReleased', x: 10, y: 10, button: 'left' }),
+			await controller.onMouseEvent(target, { type: 'mouseWheel', x: 10, y: 10, deltaX: 0, deltaY: 120 }),
+			// Throttled: a burst of wheel events shows one arrow.
+			await controller.onMouseEvent(target, { type: 'mouseWheel', x: 10, y: 10, deltaX: 0, deltaY: 120 }),
+		];
+		controller.onKeyEvent(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter' });
+		controller.onKeyEvent(target, 'Input.insertText', { text: 'secret' });
+		clock += 1_000;
+		controller.noteStatus(target, 'failed', undefined, { x: 300, y: 40 });
+
+		assert.deepStrictEqual(
+			{ waits, commands: target.commands, keys },
+			{ waits: [0, 0, 0, 0], commands: ['move', 'release', 'wheel', 'focus', 'status'], keys: ['Enter'] },
+		);
 	});
 });

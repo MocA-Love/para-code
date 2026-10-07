@@ -363,6 +363,8 @@ export interface IParadisCdpExactViewService {
 	beginExactViewRawCapture(descriptor: unknown): Promise<boolean | null>;
 	/** {@link beginExactViewRawCapture} で隠したカーソルを戻す。撮れたときだけ撮影の知らせを出す。 */
 	endExactViewRawCapture(descriptor: unknown, captured: unknown): Promise<void>;
+	/** 道具の状態（`IParadisCursorStatusNote`）をエージェントのカーソルの名札に出す。 */
+	noteExactViewCursorStatus(descriptor: unknown, note: unknown): Promise<void>;
 	/** 診断の印（paradisBrowserDiagnosticNote.ts）。main の Sentry のパンくずとまとめのイベントへ流す。 */
 	noteExactViewDiagnostic(descriptor: unknown, note: unknown): Promise<void>;
 	/**
