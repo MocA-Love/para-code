@@ -152,7 +152,8 @@ export class ParadisScreenColorPicker extends Disposable {
 		// テーマの色の CSS 変数（--vscode-…）は `.monaco-workbench` の上で定義されていて、body には無い。
 		// 覆い・枠・候補の一覧を body に直接置くと変数が全部未定義になり、枠が消えて一覧の背景が透明になる
 		// （影だけが暗く残り、下の文字に覆いがかかって見える）。必ずそのウィンドウのワークベンチの器に置く。
-		const container = layoutService.getContainer(targetWindow);
+		// ワークベンチを持たない窓（body 自体にクラスを付ける窓など）では器が無いので body へ置く。
+		const container: HTMLElement = layoutService.getContainer(targetWindow) ?? this.targetDocument.body;
 		this.rules = collectRules(targetWindow);
 
 		const store = this._register(new DisposableStore());
