@@ -14,7 +14,8 @@
 //   いれば、後から来た方に番号を足す（Claude 2）。サブエージェントの種類は推測になるので使わない
 // - 色は同じページの持ち主ごとに必ず変える。1 つ目は CLI の色、2 つ目以降は紫・桃・青の順
 // - 同じページで名前まで同じなら、後から来た方に「 2」を足す
-// - 保存はしない。持ち主のタブの共有が無くなったら、名前は使われなくなる（{@link forgetMissing}）
+// - 保存はしない。名前は持ち主（ペイン × ビュー）の鍵で覚え、上限（{@link MAX_LABELS}）を越えたら古いものから捨てる。
+//   共有をやめたタブの名前は、その鍵で入力が来なくなるので使われなくなる
 
 import { createHash } from 'crypto';
 import { localize } from '../../../../nls.js';
@@ -76,7 +77,13 @@ export class ParadisCursorOwners {
 			}
 		}
 		if (!result.ok) {
-			this.labels.delete(ownerKey);
+			// 断った回も数える（有効な名前と断られる名前を交互に送って、回数の上限を越えさせない）
+			if (entry) {
+				entry.label = '';
+				entry.changes.push(at);
+			} else {
+				this.labels.set(ownerKey, { label: '', changes: [at] });
+			}
 			return result;
 		}
 		if (!entry && this.labels.size >= MAX_LABELS) {
@@ -91,16 +98,7 @@ export class ParadisCursorOwners {
 
 	/** 持ち主が決めた名前（無ければ undefined）。 */
 	labelOf(ownerKey: string): string | undefined {
-		return this.labels.get(ownerKey)?.label;
-	}
-
-	/** 持ち主の名前を忘れる（ペイン・タブが閉じた）。`isAlive` が false の鍵を全部捨てる。 */
-	forgetMissing(isAlive: (ownerKey: string) => boolean): void {
-		for (const ownerKey of [...this.labels.keys()]) {
-			if (!isAlive(ownerKey)) {
-				this.labels.delete(ownerKey);
-			}
-		}
+		return this.labels.get(ownerKey)?.label || undefined;
 	}
 
 	/**
@@ -137,7 +135,7 @@ export class ParadisCursorOwners {
 
 	/** 並びの `index` 番目の持ち主の名前（前の持ち主と同じ名前なら番号を足す）。 */
 	private nameAt(live: readonly IOwnerSeen[], index: number): string {
-		const base = (owner: IOwnerSeen) => this.labels.get(owner.ownerKey)?.label ?? (owner.cli ? CLI_NAME[owner.cli] : defaultName());
+		const base = (owner: IOwnerSeen) => this.labels.get(owner.ownerKey)?.label || (owner.cli ? CLI_NAME[owner.cli] : defaultName());
 		const name = base(live[index]);
 		const before = live.slice(0, index).filter(owner => base(owner) === name).length;
 		return before > 0 ? `${name} ${before + 1}` : name;

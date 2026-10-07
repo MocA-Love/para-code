@@ -70,6 +70,8 @@ export function paradisNormalizeCursorLabel(raw: string): ParadisCursorLabelResu
 	text = text.replace(/[\t\n\r\v\f\u2028\u2029]/g, ' ');
 	text = text.replace(/\p{Extended_Pictographic}|\p{Cc}|\p{Cf}|\p{Co}|[︀-️]|[\u{E0100}-\u{E01EF}]/gu, '');
 	text = text.replace(/\p{M}{2,}/gu, '');
+	// 空白に見える文字（ハングルの埋め字・点字の空白）は消し、ほかの空白は普通の空白にする
+	text = text.replace(/[\u115F\u1160\u3164\uFFA0\u2800]/g, '').replace(/\p{Zs}/gu, ' ');
 	text = text.replace(/\s+/g, ' ').trim();
 	if (text.length === 0) {
 		return { ok: false, rejected: 'empty' };
@@ -80,10 +82,15 @@ export function paradisNormalizeCursorLabel(raw: string): ParadisCursorLabelResu
 	if (/\b(?:https?|ftp|file):\/\/|\bwww\.|\b[a-z0-9-]+\.(?:com|net|org|io|dev|app|jp|co|ai)\b/i.test(text)) {
 		return { ok: false, rejected: 'contains a URL' };
 	}
-	if (/\d{6,}/.test(text)) {
+	// 数字は空白・記号を挟んでも続けて数える（注文番号・電話番号を写さない）
+	if (/\p{Nd}{6,}/u.test(text.replace(/[\s\p{P}\p{S}]/gu, ''))) {
 		return { ok: false, rejected: 'contains a long number' };
 	}
 	if (RESERVED.has(text.toLowerCase().replace(/\s+/g, ''))) {
+		return { ok: false, rejected: 'reserved name' };
+	}
+	// ラテン文字に似たキリル・ギリシャ文字を混ぜた名前（「Раra Code」など）は、予約語のすり抜けとして断る
+	if (/\p{Script=Latin}/u.test(text) && /[\p{Script=Cyrillic}\p{Script=Greek}]/u.test(text)) {
 		return { ok: false, rejected: 'reserved name' };
 	}
 	let truncated = false;
@@ -101,7 +108,7 @@ export function paradisNormalizeCursorLabel(raw: string): ParadisCursorLabelResu
 		text = cut.trim();
 		truncated = true;
 	}
-	if (paradisCursorLabelWidth(text) < PARADIS_CURSOR_LABEL_MIN_WIDTH) {
+	if (paradisCursorLabelWidth(text) < PARADIS_CURSOR_LABEL_MIN_WIDTH || [...text.replace(/\s/g, '')].length < 1) {
 		return { ok: false, rejected: 'too short' };
 	}
 	return { ok: true, label: text, truncated };

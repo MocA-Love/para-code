@@ -745,7 +745,17 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 	const chromeTop = fullscreen && isTablet ? rawInsets.top : 0;
 
 	// エージェントのカーソル（browser.cursor.v1）。映っているページの分だけ、映像の上に重ねる
-	const visibleCursors = [...browserCursors.values()].filter(cursor => cursor.targetId === activeTargetId && Date.now() - cursor.at < BROWSER_CURSOR_IDLE_MS);
+	const [cursorClock, setCursorClock] = useState(() => Date.now());
+	const visibleCursors = [...browserCursors.values()].filter(cursor => cursor.targetId === activeTargetId && Math.max(cursorClock, Date.now()) - cursor.at < BROWSER_CURSOR_IDLE_MS);
+	// 入力も映像も止まっても、期限を過ぎたカーソルを消せるよう、いちばん早い期限に描き直す
+	const nextCursorExpiry = visibleCursors.reduce((soonest, cursor) => Math.min(soonest, cursor.at + BROWSER_CURSOR_IDLE_MS), Number.POSITIVE_INFINITY);
+	useEffect(() => {
+		if (!Number.isFinite(nextCursorExpiry)) {
+			return;
+		}
+		const timer = setTimeout(() => setCursorClock(Date.now()), Math.max(0, nextCursorExpiry - Date.now()) + 50);
+		return () => clearTimeout(timer);
+	}, [nextCursorExpiry]);
 	const cursorOverlay = visibleCursors.length > 0
 		? <BrowserCursorOverlay cursors={visibleCursors} view={viewSize} content={contentDims()} showStatus={regular} />
 		: null;
