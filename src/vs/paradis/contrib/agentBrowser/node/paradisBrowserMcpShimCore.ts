@@ -223,6 +223,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 				url: { type: 'string', description: 'Optional http(s) URL to load. Omit to open a blank tab.' },
 				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
 				private: { type: 'boolean', description: 'Open the tab in browser storage used by this terminal pane only (in memory, not shared with other panes, the user or your other non-private tabs). Needed for set_extra_http_headers, set_http_credentials and set_request_rules. Default false.' },
+				label: { type: 'string', description: 'Optional short name for your task shown on your cursor in this tab (2-12 characters, full-width counts as 2), same as set_cursor_label.' },
 			},
 			additionalProperties: false,
 		},
@@ -239,8 +240,21 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			type: 'object',
 			properties: {
 				tabId: { type: 'string', description: 'The tabId from list_browser_tabs or open_browser_tab.' },
+				label: { type: 'string', description: 'Optional short name for your task shown on your cursor in this tab (2-12 characters, full-width counts as 2), same as set_cursor_label.' },
 			},
 			required: ['tabId'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'set_cursor_label',
+		description: 'Name the cursor Para Code draws for your mouse and key input on a page, so the user can tell which agent is acting and what it is doing. Call it once before your first click, key or scroll on a page. Name the task, not a person or the page title (for example "Checkout" or "注文入力"). Para Code always shows your CLI mark next to the name. Emoji, line breaks and invisible characters are removed; names with a URL, an e-mail address or a long number, and names like "user" or "Para Code", are refused and the default name is used. You can change it up to 3 times a minute. Returns the name that is shown.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				label: { type: 'string', description: '2-12 characters (full-width counts as 2). Longer names are cut.' },
+			},
+			required: ['label'],
 			additionalProperties: false,
 		},
 	},

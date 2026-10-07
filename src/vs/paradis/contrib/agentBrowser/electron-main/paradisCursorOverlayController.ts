@@ -23,13 +23,14 @@ import { localize } from '../../../../nls.js';
 import { browserViewIsolatedWorldId } from '../../../../platform/browserView/common/browserView.js';
 import {
 	IParadisCursorOverlayPageTraits,
+	IParadisCursorOwner,
 	IParadisCursorPacing,
 	IParadisCursorTypingTexts,
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
 	PARADIS_CURSOR_OVERLAY_TUNING,
 	ParadisCursorStatus,
 	paradisCursorKeyLabel,
-	ParadisCursorOverlayCommand,
+	ParadisCursorOverlayOwnedCommand,
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
 	paradisCursorGlideMs,
@@ -77,6 +78,9 @@ const FLASH_MIN_INTERVAL_MS = 1_200;
 
 /** フォーカス追従を送る最小間隔（ms）。打鍵1回ごとに送らないための間引き。 */
 const FOCUS_NUDGE_INTERVAL_MS = 250;
+
+/** 1 つのビューで別々に数える持ち主の上限（越えたら数え直す。演出の台帳なので溢れても害は無い）。 */
+const MAX_OWNERS_PER_VIEW = 16;
 
 /** ホイールの矢印を送る最小間隔（ms）。 */
 const WHEEL_NUDGE_INTERVAL_MS = 150;
@@ -132,6 +136,29 @@ export class ParadisCursorOverlayController {
 	private readonly pageTraits = new WeakMap<object, IParadisCursorOverlayPageTraits>();
 	/** ページが移動してからまだ move を送っていないビュー。最初の move はその場に現れるだけなので待たない。 */
 	private readonly navigatedSinceMove = new WeakSet<object>();
+	/**
+	 * ビュー × 持ち主（ペイン × タブ）ごとの台帳の鍵。同じページを 2 つのペインが触ると、カーソルは
+	 * 持ち主ごとに分かれ（q.html Q272 A）、位置も持ち主ごとに数える。
+	 */
+	private readonly slots = new WeakMap<object, Map<string, object>>();
+
+	private slot(view: IParadisCursorOverlayTarget, owner: IParadisCursorOwner | undefined): object {
+		let slots = this.slots.get(view);
+		if (!slots) {
+			slots = new Map();
+			this.slots.set(view, slots);
+		}
+		const id = owner?.id ?? '_';
+		let key = slots.get(id);
+		if (!key) {
+			if (slots.size >= MAX_OWNERS_PER_VIEW) {
+				slots.clear();
+			}
+			key = {};
+			slots.set(id, key);
+		}
+		return key;
+	}
 
 	constructor(
 		/** 設定 `paradis.agentBrowser.showCursorOverlay` の現在値を返す。 */
@@ -154,8 +181,9 @@ export class ParadisCursorOverlayController {
 	 */
 	async onMouseEvent(view: IParadisCursorOverlayTarget, params: Readonly<Record<string, unknown>>, pacing?: IParadisCursorPacing): Promise<number> {
 		const type = params.type;
+		const owner = pacing?.owner;
 		if (type === 'mouseReleased' || type === 'mouseWheel') {
-			this.onMouseAside(view, type, params);
+			this.onMouseAside(view, type, params, owner);
 			return 0;
 		}
 		if (type !== 'mouseMoved' && type !== 'mousePressed') {
@@ -166,7 +194,7 @@ export class ParadisCursorOverlayController {
 			// （`idleMs` に任せると「設定が効かない」と見える）。
 			this.removeIfDisabled(view);
 			// 描いていない間の位置は覚えない（一覧ウィンドウへの写しは瞬間移動になる。`lastGlideMs`）。
-			this.position.delete(view);
+			this.slots.delete(view);
 			return 0;
 		}
 		const { x, y } = params;
@@ -176,27 +204,27 @@ export class ParadisCursorOverlayController {
 		if (type === 'mousePressed') {
 			// 波紋は配送を待たせる価値がないので投げっぱなしにする。
 			const at = this.now();
-			const previous = this.position.get(view);
+			const previous = this.position.get(this.slot(view, owner));
 			// 直前の move がまだこの点へ滑っている途中なら、着いた時に波紋を出させる。
 			const delayMs = previous && previous.arriveAt > at && Math.abs(previous.x - x) < 1 && Math.abs(previous.y - y) < 1
 				? Math.round(previous.arriveAt - at)
 				: 0;
-			this.position.set(view, { x, y, at, arriveAt: delayMs > 0 ? previous!.arriveAt : at });
-			this.run(view, { kind: 'press', x, y, label: cursorLabel(), ...(delayMs > 0 ? { delayMs } : {}) });
+			this.position.set(this.slot(view, owner), { x, y, at, arriveAt: delayMs > 0 ? previous!.arriveAt : at });
+			this.run(view, { kind: 'press', x, y, label: owner?.name ?? cursorLabel(), ...ownerFields(owner), ...(delayMs > 0 ? { delayMs } : {}) });
 			return 0;
 		}
 		const at = this.now();
 		const next = { x, y, at };
 		const fresh = this.navigatedSinceMove.has(view);
 		this.navigatedSinceMove.delete(view);
-		const previous = this.position.get(view);
+		const previous = this.position.get(this.slot(view, owner));
 		const glideMs = fresh ? 0 : paradisCursorGlideMs(previous, next, paradisCursorMoveMaxMs(params));
 		const drag = typeof params.buttons === 'number' && Number.isFinite(params.buttons) && params.buttons !== 0;
 		// 初めて出すときはその場に現れる（ページ側もフェードインだけ）。軌跡は前の位置があるときだけ
 		const glide = paradisPlanCursorGlide(this.poseAt(previous, at, { x, y }), { x, y }, previous ? glideMs : 0, { straight: drag });
-		this.position.set(view, { ...next, arriveAt: at + glideMs, glide });
+		this.position.set(this.slot(view, owner), { ...next, arriveAt: at + glideMs, glide });
 		// 実行の完了は待たない。待つのはカーソルが滑り終わるぶんだけで、その間に注入は済む。
-		this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glide.durationMs, frames: glide.frames, ...(drag ? { drag: true } : {}) });
+		this.run(view, { kind: 'move', x, y, label: owner?.name ?? cursorLabel(), ...ownerFields(owner), durationMs: glide.durationMs, frames: glide.frames, ...(drag ? { drag: true } : {}) });
 		const traits = this.pageTraits.get(view);
 		if (pacing?.pressFollows || traits?.calm || traits?.blocked) {
 			return 0;
@@ -216,30 +244,30 @@ export class ParadisCursorOverlayController {
 	}
 
 	/** ボタンを離した（ドラッグの軌跡を消す）・ホイール（向きの矢印）。待たない。 */
-	private onMouseAside(view: IParadisCursorOverlayTarget, type: 'mouseReleased' | 'mouseWheel', params: Readonly<Record<string, unknown>>): void {
+	private onMouseAside(view: IParadisCursorOverlayTarget, type: 'mouseReleased' | 'mouseWheel', params: Readonly<Record<string, unknown>>, owner: IParadisCursorOwner | undefined): void {
 		if (!this.injected.has(view) || !this.isActive(view)) {
 			return;
 		}
 		if (type === 'mouseReleased') {
-			this.run(view, { kind: 'release' });
+			this.run(view, { kind: 'release', ...ownerFields(owner) });
 			return;
 		}
 		const at = this.now();
-		const previous = this.lastWheelAt.get(view);
+		const previous = this.lastWheelAt.get(this.slot(view, owner));
 		if (previous !== undefined && at - previous < WHEEL_NUDGE_INTERVAL_MS) {
 			return;
 		}
-		this.lastWheelAt.set(view, at);
+		this.lastWheelAt.set(this.slot(view, owner), at);
 		const dx = typeof params.deltaX === 'number' && Number.isFinite(params.deltaX) ? params.deltaX : 0;
 		const dy = typeof params.deltaY === 'number' && Number.isFinite(params.deltaY) ? params.deltaY : 0;
-		this.run(view, { kind: 'wheel', label: cursorLabel(), dx, dy, text: statusText('scroll') });
+		this.run(view, { kind: 'wheel', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), dx, dy, text: statusText('scroll') });
 	}
 
 	/**
 	 * 道具の状態を名札に出す（shared process から。スクリプト実行中・待機中・押せなかった など）。
 	 * `point` があれば対象の要素へカーソルを寄せる（入力は送らないので待たない）。
 	 */
-	noteStatus(view: IParadisCursorOverlayTarget, status: ParadisCursorStatus, detail: string | undefined, point: { readonly x: number; readonly y: number } | undefined): void {
+	noteStatus(view: IParadisCursorOverlayTarget, status: ParadisCursorStatus, detail: string | undefined, point: { readonly x: number; readonly y: number } | undefined, owner?: IParadisCursorOwner): void {
 		if (!this.isActive(view)) {
 			this.removeIfDisabled(view);
 			return;
@@ -252,23 +280,23 @@ export class ParadisCursorOverlayController {
 		let durationMs: number | undefined;
 		if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
 			const at = this.now();
-			const previous = this.position.get(view);
+			const previous = this.position.get(this.slot(view, owner));
 			const next = { x: point.x, y: point.y, at };
 			const glideMs = paradisCursorGlideMs(previous, next, PARADIS_CURSOR_OVERLAY_TUNING.maxMs);
 			const glide = paradisPlanCursorGlide(this.poseAt(previous, at, point), point, glideMs);
-			this.position.set(view, { ...next, arriveAt: at + glideMs, glide });
+			this.position.set(this.slot(view, owner), { ...next, arriveAt: at + glideMs, glide });
 			frames = glide.frames;
 			durationMs = glide.durationMs;
 		}
-		this.run(view, { kind: 'status', label: cursorLabel(), status, text: statusText(status, detail), ...(frames ? { frames, durationMs } : {}) });
+		this.run(view, { kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: statusText(status, detail), ...(frames ? { frames, durationMs } : {}) });
 	}
 
 	/**
 	 * 直前の move でページのカーソルが滑る時間（ms）。待った時間とは別の値で、押す前の move・動きを
 	 * 減らす設定では待たなくてもカーソルは滑る。一覧ウィンドウへの写しを同じ速さで滑らせるために使う。
 	 */
-	lastGlideMs(view: IParadisCursorOverlayTarget): number {
-		const position = this.position.get(view);
+	lastGlideMs(view: IParadisCursorOverlayTarget, owner?: IParadisCursorOwner): number {
+		const position = this.position.get(this.slot(view, owner));
 		return position ? Math.max(0, Math.round(position.arriveAt - position.at)) : 0;
 	}
 
@@ -279,7 +307,7 @@ export class ParadisCursorOverlayController {
 	 * ページ側は瞬間的に現れるのに、main は前の位置からの距離ぶん待つ。ページの事情も新しいページで測り直す。
 	 */
 	onNavigated(view: IParadisCursorOverlayTarget): void {
-		this.position.delete(view);
+		this.slots.delete(view);
 		this.pageTraits.delete(view);
 		this.navigatedSinceMove.add(view);
 	}
@@ -292,7 +320,7 @@ export class ParadisCursorOverlayController {
 	 * ページのフォーカスを見張って寄せることはしない（ページのスクリプトが動かしたフォーカスに付いて
 	 * いくと、エージェントが触っていない場所を操作したように見える）。
 	 */
-	onKeyEvent(view: IParadisCursorOverlayTarget, method?: string, params?: Readonly<Record<string, unknown>>): void {
+	onKeyEvent(view: IParadisCursorOverlayTarget, method?: string, params?: Readonly<Record<string, unknown>>, owner?: IParadisCursorOwner): void {
 		if (!this.isActive(view)) {
 			this.removeIfDisabled(view);
 			return;
@@ -300,12 +328,12 @@ export class ParadisCursorOverlayController {
 		// Enter・⌘K のような特別なキーは札を出す（押したことが見えるように）。文字そのものは出さない
 		const key = method === 'Input.dispatchKeyEvent' && params ? paradisCursorKeyLabel(params, isMacintosh) : undefined;
 		const at = this.now();
-		const previous = this.lastFocusNudgeAt.get(view);
+		const previous = this.lastFocusNudgeAt.get(this.slot(view, owner));
 		if (key === undefined && previous !== undefined && at - previous < FOCUS_NUDGE_INTERVAL_MS) {
 			return;
 		}
-		this.lastFocusNudgeAt.set(view, at);
-		this.run(view, { kind: 'focus', label: cursorLabel(), texts: typingTexts(), ...(key !== undefined ? { key } : {}) });
+		this.lastFocusNudgeAt.set(this.slot(view, owner), at);
+		this.run(view, { kind: 'focus', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), texts: typingTexts(), ...(key !== undefined ? { key } : {}) });
 	}
 
 	/**
@@ -391,7 +419,7 @@ export class ParadisCursorOverlayController {
 			return;
 		}
 		this.injected.delete(view);
-		this.position.delete(view);
+		this.slots.delete(view);
 		// `hideDepth` は「いま何枚撮っている最中か」であってカーソルの有無とは別の台帳なので、
 		// ここで消してはいけない。消すと進行中の撮影が残っていても次の `afterCapture` が
 		// 0まで落ちたと判断し、まだ撮っている最中に復帰やフラッシュを出してしまう。
@@ -476,19 +504,19 @@ export class ParadisCursorOverlayController {
 	 * 演出はどれも「届けば嬉しい」だけのものなので、完了を待たない。待たなければ
 	 * タイムアウト用のタイマーも要らず、入力配送1回ごとの費用は送信だけになる。
 	 */
-	private run(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): void {
+	private run(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayOwnedCommand): void {
 		void this.execute(view, command);
 	}
 
 	/** 撮影前の退避だけは結果を待つ。ページが黙っていても撮影は止めない。 */
-	private async runAndWait(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand, timeoutMs: number): Promise<void> {
+	private async runAndWait(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayOwnedCommand, timeoutMs: number): Promise<void> {
 		// タイムアウトは失敗として数えない。遅いだけのページで演出を丸ごと止める理由はなく、
 		// 本当に壊れているなら reject 側が連続して立つ。
 		await raceTimeout(this.execute(view, command), timeoutMs);
 	}
 
 	/** 実行本体。例外は全てここで吸収し、呼び出し元へは絶対に投げない。 */
-	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayCommand): Promise<void> {
+	private async execute(view: IParadisCursorOverlayTarget, command: ParadisCursorOverlayOwnedCommand): Promise<void> {
 		try {
 			const code = paradisBuildCursorOverlayScript(command);
 			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus' || command.kind === 'status' || command.kind === 'wheel') {
@@ -581,4 +609,9 @@ function shortDetail(detail: string): string {
 	const flat = detail.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim();
 	const chars = [...flat];
 	return chars.length > 12 ? `${chars.slice(0, 12).join('')}…` : flat;
+}
+
+/** ページのコマンドに付ける持ち主（カーソルを分ける鍵・色・CLI の印）。 */
+function ownerFields(owner: IParadisCursorOwner | undefined): { owner?: string; color?: string; mark?: string } {
+	return owner ? { owner: owner.id, color: owner.color, ...(owner.mark ? { mark: owner.mark } : {}) } : {};
 }
