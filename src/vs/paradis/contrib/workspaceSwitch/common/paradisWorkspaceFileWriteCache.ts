@@ -9,27 +9,32 @@
 /**
  * スペース切り替えのたびに `.code-workspace` を IPC で確かめて読み直す往復を省く。
  *
- * upstream の `JSONEditingService` は書き込みのたびに「存在確認 → テキストモデルの作成（読み込み）→
- * 書き込み（etag の stat・書き込み・書き込み後の stat）」を行い、`WorkspaceConfiguration.setFolders` は
- * その後でもう一度ファイルを読む。Para Code のウィンドウは切り替えのたびにこれを通るので、ファイルの
- * IPC が詰まっている Mac や SSH の接続先では、存在確認と読み込みだけで数十秒かかっていた
- * （Sentry の `safe_update_folders_resolve_ms`）。
+ * upstream の `JSONEditingService` は書き込みのたびに「存在確認 → テキストモデルの作成（バックアップの
+ * 確認・読み込み）→ 書き込み（etag の stat・書き込み・書き込み後の stat）」を行い、
+ * `WorkspaceConfiguration.setFolders` はその後でもう一度ファイルを読む。Para Code のウィンドウは切り替えの
+ * たびにこれを通るので、ファイルの IPC が詰まっている Mac や SSH の接続先では、存在確認と読み込みだけで
+ * 数十秒かかっていた（Sentry の `safe_update_folders_resolve_ms`）。
  *
  * ここでは最後に書いた（または読んだ）中身と etag（mtime・size）をメモリに覚え、次の書き込みでは
- * 覚えた中身に `folders` の変更を当てて、**覚えた etag を付けて**直接書く。
+ * **stat を 1 回だけ取って etag が覚えたものと同じことを確かめてから**、覚えた中身に `folders` の変更を
+ * 当てて直接書く。
  *
- * - 外部での変更（別のエディタ・git の切り替え・別のウィンドウ）は、ファイルの変更の通知
- *   (`IFileService.onDidFilesChange`。監視は upstream の `FileServiceBasedWorkspaceConfiguration` が
- *   同じファイルに張っているものを使う）を受けた時点で stat を 1 回取り、etag が覚えたものと違えば
- *   覚えた中身を捨てる。自分の書き込みの通知（etag が同じ）では捨てない
- * - 監視が通知を取りこぼしても、書き込みの etag の衝突検出（`FILE_MODIFIED_SINCE`）が残る。衝突したら
- *   覚えた中身を捨て、upstream の経路（読み直して書く）で書き直す。ユーザーの設定
- *   `files.saveConflictResolution` によらず、こちらの経路では常に etag を確かめる
+ * - 外部での変更（別のエディタ・git の切り替え・別のウィンドウ・削除）は、この stat で etag が違う
+ *   （または stat が失敗する）ので、覚えた中身を捨てて upstream の経路（読み直して書く）に任せる。
+ *   通知に頼らないのは、通知が遅れる・取りこぼされることがあり、書き込みの etag の衝突検出
+ *   （`FileService.validateWriteFile`）はサイズの変わらない変更を見逃すため
+ * - 書き込みにも覚えた etag を付ける（stat と書き込みの間の変更）。衝突・失敗したら覚えた中身を捨てて
+ *   upstream の経路で書き直す。`files.saveConflictResolution` によらず、こちらの経路では常に確かめる
+ * - 書き込みは atomic（一時ファイルに書いて置き換える）。ディスクが一杯で途中で失敗しても元の
+ *   ファイルを切り詰めない（upstream の経路はモデルに正しい中身が残り、`paradisWorkspaceFileRecovery.ts`
+ *   が後で直せるが、こちらはモデルを作らないため）。atomic に書けない provider では使わない
  * - テキストモデルが開いているとき（ユーザーがエディタで開いている）は使わない。開いたモデルを
  *   素通りしてディスクに書くと、未保存の編集と食い違うため
+ * - 覚えるのはこのウィンドウのワークスペースのファイルだけ（`resolveContent` が読むもの）
  *
  * 書いた直後の読み直し (`FileServiceBasedWorkspaceConfiguration.resolveContent`) には、書いた中身を
- * **1 回だけ・書いてから 10 秒以内・監視の通知を確かめ終えているときだけ** 返す。
+ * **1 回だけ・書いてから 10 秒以内・その後にファイルの変更の通知が来ていないときだけ** 返す。通知が来たら
+ * 渡さない（upstream の 50ms の読み直しが自分で読む）。
  */
 
 import { IDisposable, markAsSingleton } from '../../../../base/common/lifecycle.js';
@@ -38,7 +43,7 @@ import { FormattingOptions } from '../../../../base/common/jsonFormatter.js';
 import { parse, ParseError } from '../../../../base/common/json.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IFileService, IFileStatWithMetadata } from '../../../../platform/files/common/files.js';
+import { FileSystemProviderCapabilities, IFileService, IFileStatWithMetadata } from '../../../../platform/files/common/files.js';
 import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js';
 import { IJSONValue } from '../../../../workbench/services/configuration/common/jsonEditing.js';
 import { ITextFileService, TextFileEditorModelState } from '../../../../workbench/services/textfile/common/textfiles.js';
@@ -47,6 +52,8 @@ import { isParadisManagedWorkspaceWindow } from './paradisWorkspaceSwitch.js';
 
 /** 書いた中身を読み直しに渡してよい時間。書いた直後の `setFolders` の読み直しだけを狙う。 */
 const RELOAD_OFFER_MS = 10_000;
+
+const ATOMIC_WRITE = { postfix: '.vsctmp' } as const;
 
 /** 覚えておく `.code-workspace` の中身。 */
 export interface IParadisWorkspaceFileSnapshot {
@@ -66,11 +73,20 @@ interface IEntry extends IParadisWorkspaceFileSnapshot {
 /** ウィンドウ（renderer）の中の、今使っているもの。読み直しの側 (`configuration.ts`) から引く。 */
 let current: ParadisWorkspaceFileWriteCache | undefined;
 
+/** このウィンドウのワークスペースのファイル（`resolveContent` が最後に読んだもの）。 */
+let windowWorkspaceFile: URI | undefined;
+
 /**
- * 書いた直後の読み直しの PARA-PATCH から呼ぶ。渡せる中身が無ければ undefined（読み直す）。
+ * `FileServiceBasedWorkspaceConfiguration.resolveContent` の PARA-PATCH から呼ぶ。渡せる中身が無ければ
+ * undefined（読み直す）。
  */
 export function paradisTakeWrittenWorkspaceContent(resource: URI): string | undefined {
+	windowWorkspaceFile = resource;
 	return current?.takeWrittenContent(resource);
+}
+
+function isWindowWorkspaceFile(resource: URI): boolean {
+	return isParadisManagedWorkspaceWindow() && hasWorkspaceFileExtension(resource) && windowWorkspaceFile !== undefined && isEqual(windowWorkspaceFile, resource);
 }
 
 /**
@@ -84,19 +100,12 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 
 	/** 変更の通知の購読。Para Code のウィンドウで覚え始めてから作る。 */
 	private listener: IDisposable | undefined;
-	/** 監視の通知を確かめている stat。終わるまで覚えた中身を使わない。 */
-	private verifying: Promise<void> | undefined;
-	/** 確かめている間に次の通知が来た。 */
-	private verifyAgain = false;
-	/** 自分の書き込みの最中に通知が来た。書き終えてから確かめる。 */
-	private writing = false;
-	private verifyAfterWrite = false;
 
 	constructor(
 		private readonly fileService: IFileService,
 		private readonly textFileService: ITextFileService,
 		private readonly now: () => number = () => Date.now(),
-		private readonly applies: (resource: URI) => boolean = resource => isParadisManagedWorkspaceWindow() && hasWorkspaceFileExtension(resource),
+		private readonly applies: (resource: URI) => boolean = isWindowWorkspaceFile,
 	) { }
 
 	/**
@@ -104,21 +113,13 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 	 * 捨ててある）。
 	 */
 	async tryWrite(resource: URI, values: IJSONValue[]): Promise<boolean> {
-		if (!this.applies(resource) || !this.entry || !isEqual(this.entry.resource, resource)) {
+		const entry = this.entry;
+		if (!entry || !this.applies(resource) || !isEqual(entry.resource, resource)) {
 			return false;
 		}
 		// エディタで開いているモデルがあれば、その中身（未保存の編集を含む）が正しい。upstream に任せる。
-		if (this.textFileService.files.get(resource)) {
+		if (this.textFileService.files.get(resource) || !this.fileService.hasCapability(resource, FileSystemProviderCapabilities.FileAtomicWrite)) {
 			this.forget();
-			return false;
-		}
-		let verified = false;
-		while (this.verifying) {
-			verified = true;
-			await this.verifying;
-		}
-		const entry = this.entry;
-		if (!entry || !isEqual(entry.resource, resource)) {
 			return false;
 		}
 		const content = applyValues(entry.content, values, entry.formatting);
@@ -126,34 +127,40 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 			this.forget();
 			return false;
 		}
-		paradisNoteFolderUpdateShortcut(verified ? 'resolve_verified' : 'resolve_cached');
+		// 外部での変更を確かめる 1 往復（存在確認・バックアップの確認・読み込みの代わり）。
+		let diskEtag: string | undefined;
+		try {
+			diskEtag = (await this.fileService.stat(resource)).etag;
+		} catch {
+			diskEtag = undefined; // 消された・読めない
+		}
+		if (this.entry !== entry || diskEtag !== entry.etag) {
+			if (this.entry === entry) {
+				this.forget();
+			}
+			return false;
+		}
+		paradisNoteFolderUpdateShortcut('resolve_cached');
 		paradisMarkFolderUpdate('model_resolved');
 		if (content === entry.content) {
 			paradisMarkFolderUpdate('saved');
 			return true;
 		}
-		this.writing = true;
 		try {
-			const stat = await this.textFileService.write(resource, content, { etag: entry.etag, mtime: entry.mtime, encoding: entry.encoding });
-			if (this.entry !== entry) {
-				// 書いている間に別の経路が覚え直した・捨てた。書けたことだけを返す。
-				return true;
-			}
+			const stat = await this.textFileService.write(resource, content, { etag: entry.etag, mtime: entry.mtime, encoding: entry.encoding, atomic: ATOMIC_WRITE });
 			paradisMarkFolderUpdate('saved');
-			this.setEntry(resource, { ...entry, content, etag: stat.etag, mtime: stat.mtime });
+			if (this.entry === entry) {
+				this.setEntry(resource, { ...entry, content, etag: stat.etag, mtime: stat.mtime });
+			}
 			return true;
 		} catch {
 			// 衝突 (FILE_MODIFIED_SINCE) でも、それ以外の失敗でも、覚えた中身を捨てて upstream の経路
 			// （読み直して書く）で書き直す。失敗の知らせ（保存エラーの通知など）は upstream の経路が出す。
 			paradisNoteFolderUpdateShortcut('resolve_conflict');
-			this.forget();
-			return false;
-		} finally {
-			this.writing = false;
-			if (this.verifyAfterWrite) {
-				this.verifyAfterWrite = false;
-				this.verify();
+			if (this.entry === entry) {
+				this.forget();
 			}
+			return false;
 		}
 	}
 
@@ -195,7 +202,7 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 	/** 書いた直後の読み直しに、書いた中身を 1 回だけ渡す。 */
 	takeWrittenContent(resource: URI): string | undefined {
 		const entry = this.entry;
-		if (!entry || !isEqual(entry.resource, resource) || entry.reloadOfferUntil === undefined || this.verifying || this.writing || this.verifyAfterWrite) {
+		if (!entry || !isEqual(entry.resource, resource) || entry.reloadOfferUntil === undefined) {
 			return undefined;
 		}
 		const until = entry.reloadOfferUntil;
@@ -231,62 +238,15 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 		if (this.listener) {
 			return;
 		}
-		// 監視は足さない。覚えるのはこのウィンドウの `.code-workspace` だけで、upstream の
-		// `FileServiceBasedWorkspaceConfiguration` が同じファイルを常に監視している（その通知で読み直す）。
-		// 同じ通知を受けるので、読み直しより先に覚えた中身を捨てられる。監視を自分でも持つと、
-		// 破棄されない upstream のサービスから接続先へ 2 本目の監視を張ったままになる。
-		// 取りこぼしても、書き込みの etag の衝突検出が残る（tryWrite）。
+		// 監視は足さない。upstream の `FileServiceBasedWorkspaceConfiguration` が同じファイルを常に
+		// 監視している（その通知で 50ms 後に読み直す）。同じ通知を受けて、その読み直しに書いた中身を
+		// 渡さないようにするだけ。書き込みの正しさは通知に頼らず、tryWrite の stat で確かめる。
 		this.listener = markAsSingleton(this.fileService.onDidFilesChange(e => {
 			const entry = this.entry;
 			if (entry && e.contains(entry.resource)) {
-				this.onDidChangeOnDisk();
+				entry.reloadOfferUntil = undefined;
 			}
 		}));
-	}
-
-	private onDidChangeOnDisk(): void {
-		if (!this.entry) {
-			return;
-		}
-		// 通知を受けたら、確かめ終えても読み直しには渡さない（読み直しは upstream が自分で読む）。
-		this.entry.reloadOfferUntil = undefined;
-		if (this.writing) {
-			this.verifyAfterWrite = true;
-			return;
-		}
-		this.verify();
-	}
-
-	/** ディスクの etag を 1 回確かめ、覚えたものと違えば捨てる。自分の書き込みの通知なら残す。 */
-	private verify(): void {
-		if (this.verifying) {
-			this.verifyAgain = true;
-			return;
-		}
-		const run = async () => {
-			do {
-				this.verifyAgain = false;
-				const entry = this.entry;
-				if (!entry) {
-					return;
-				}
-				let etag: string | undefined;
-				try {
-					etag = (await this.fileService.stat(entry.resource)).etag;
-				} catch {
-					etag = undefined; // 消された・読めない
-				}
-				if (this.entry === entry && etag !== entry.etag) {
-					this.forget();
-				}
-			} while (this.verifyAgain);
-		};
-		const verifying: Promise<void> = run().finally(() => {
-			if (this.verifying === verifying) {
-				this.verifying = undefined;
-			}
-		});
-		this.verifying = verifying;
 	}
 }
 

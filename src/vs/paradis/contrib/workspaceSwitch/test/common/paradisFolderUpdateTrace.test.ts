@@ -60,7 +60,6 @@ suite('ParadisFolderUpdateTrace', () => {
 			safe_update_folders_marks: 7,
 			safe_update_folders_parked_configs: 1,
 			safe_update_folders_resolve_cached: 1,
-			safe_update_folders_resolve_verified: 0,
 			safe_update_folders_resolve_conflict: 0,
 			safe_update_folders_reload_cached: 1,
 		});
@@ -80,7 +79,6 @@ suite('ParadisFolderUpdateTrace', () => {
 			safe_update_folders_marks: 2,
 			safe_update_folders_parked_configs: 0,
 			safe_update_folders_resolve_cached: 0,
-			safe_update_folders_resolve_verified: 0,
 			safe_update_folders_resolve_conflict: 0,
 			safe_update_folders_reload_cached: 0,
 		});
@@ -123,7 +121,6 @@ suite('ParadisFolderUpdateTrace', () => {
 			safe_update_folders_marks: 0,
 			safe_update_folders_parked_configs: 0,
 			safe_update_folders_resolve_cached: 0,
-			safe_update_folders_resolve_verified: 0,
 			safe_update_folders_resolve_conflict: 0,
 			safe_update_folders_reload_cached: 0,
 			safe_update_folders_remote_calls: 7,
