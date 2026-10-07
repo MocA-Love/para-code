@@ -77,6 +77,7 @@ interface ITrace {
 	readonly startedAt: number;
 	readonly marks: Map<ParadisFolderUpdateMark, number>;
 	parkedFolderConfigs: number;
+	readonly shortcuts: Record<ParadisFolderUpdateShortcut, number>;
 	readonly io: Record<ParadisFileIoLocality, IFileIoTally>;
 }
 
@@ -103,6 +104,7 @@ export function paradisBeginFolderUpdateTrace(): IParadisFolderUpdateTrace {
 		startedAt: clock(),
 		marks: new Map(),
 		parkedFolderConfigs: 0,
+		shortcuts: emptyShortcuts(),
 		io: { remote: emptyTally(), local: emptyTally() },
 	};
 	active = trace;
@@ -139,6 +141,28 @@ export function paradisMarkFolderUpdate(mark: ParadisFolderUpdateMark): void {
 export function paradisNoteParkedFolderConfiguration(): void {
 	if (active !== undefined) {
 		active.parkedFolderConfigs++;
+	}
+}
+
+/**
+ * `.code-workspace` の往復を省いた・省けなかった印（`paradisWorkspaceFileWriteCache.ts`）。送るキーは
+ * `safe_update_folders_<名前>`（回数）。
+ *
+ * - `resolve_cached`   stat 1 回で etag を確かめ、覚えていた中身で書いた（存在確認と読み込みをしていない）
+ * - `resolve_conflict` 覚えていた etag で書いたら衝突した（または失敗した）ので、読み直して書き直した
+ * - `reload_cached`    書いた直後の読み直しを、書いた中身で済ませた
+ */
+export const PARADIS_FOLDER_UPDATE_SHORTCUTS = ['resolve_cached', 'resolve_conflict', 'reload_cached'] as const;
+export type ParadisFolderUpdateShortcut = typeof PARADIS_FOLDER_UPDATE_SHORTCUTS[number];
+
+function emptyShortcuts(): Record<ParadisFolderUpdateShortcut, number> {
+	return { resolve_cached: 0, resolve_conflict: 0, reload_cached: 0 };
+}
+
+/** 往復を省いた・省けなかったとき。記録中でなければ何もしない。 */
+export function paradisNoteFolderUpdateShortcut(shortcut: ParadisFolderUpdateShortcut): void {
+	if (active !== undefined) {
+		active.shortcuts[shortcut]++;
 	}
 }
 
@@ -250,6 +274,9 @@ function summarizeTrace(trace: ITrace, willChangeAt: number | undefined): Record
 	}
 	out.safe_update_folders_marks = trace.marks.size;
 	out.safe_update_folders_parked_configs = trace.parkedFolderConfigs;
+	for (const shortcut of PARADIS_FOLDER_UPDATE_SHORTCUTS) {
+		out[`safe_update_folders_${shortcut}`] = trace.shortcuts[shortcut];
+	}
 	for (const locality of ['remote', 'local'] as const) {
 		const tally = trace.io[locality];
 		if (tally.calls === 0) {
