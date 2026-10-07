@@ -44,7 +44,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
-import { paradisParseCursorPacing } from '../common/paradisCursorOverlay.js';
+import { paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -740,6 +740,23 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
+	/**
+	 * 道具の状態をカーソルの名札に出す（shared process から。`paradisParseCursorStatusNote`）。
+	 * 共有中のビューでなければ何もしない。演出なので結果は返さない。
+	 */
+	async noteExactViewCursorStatus(descriptorValue: unknown, noteValue: unknown): Promise<void> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const note = paradisParseCursorStatusNote(noteValue);
+		if (!descriptor || !note) {
+			return;
+		}
+		const view = this.resolveExistingExactView(descriptor);
+		if (!view) {
+			return;
+		}
+		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point);
+	}
+
 	/** Apply background throttling only to the concrete object named by the exact descriptor. */
 	async setExactViewBackgroundThrottling(descriptorValue: unknown, enabledValue: unknown): Promise<boolean> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
@@ -921,7 +938,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		} else if (command.method === 'Input.dispatchKeyEvent' || command.method === 'Input.insertText') {
 			// キー入力には座標が無いので、フォーカスされている要素へ寄せるようページ側へ頼む。
 			// 配送は待たせない。
-			this.cursorOverlay.onKeyEvent(view);
+			this.cursorOverlay.onKeyEvent(view, command.method, command.params as Readonly<Record<string, unknown>>);
 		}
 
 		const keySignature = command.method === 'Input.dispatchKeyEvent'

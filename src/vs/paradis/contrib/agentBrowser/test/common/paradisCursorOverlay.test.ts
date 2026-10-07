@@ -12,8 +12,11 @@ import {
 	paradisClampCursorWaitMs,
 	paradisCursorGlideMs,
 	paradisCursorMoveMaxMs,
+	paradisCursorKeyLabel,
 	paradisEncodeCursorOverlayPayload,
+	paradisParseCursorStatusNote,
 } from '../../common/paradisCursorOverlay.js';
+import { PARADIS_CURSOR_REST_HEADING, paradisPlanCursorGlide, paradisSampleCursorGlide } from '../../common/paradisCursorMotion.js';
 
 suite('Paradis Cursor Overlay', () => {
 
@@ -81,7 +84,7 @@ suite('Paradis Cursor Overlay', () => {
 
 	test('payload carries the tuning plus the command, with line separators escaped', () => {
 		const payload = paradisEncodeCursorOverlayPayload(
-			{ kind: 'move', x: 12, y: 34, label: 'a\u2028b\u2029c', durationMs: 200 },
+			{ kind: 'move', x: 12, y: 34, label: 'a\u2028b\u2029c', durationMs: 200, frames: [] },
 			PARADIS_CURSOR_OVERLAY_TUNING,
 		);
 		assert.deepStrictEqual(
@@ -90,14 +93,14 @@ suite('Paradis Cursor Overlay', () => {
 				hasRawSeparators: /[\u2028\u2029]/.test(payload),
 			},
 			{
-				parsed: { ...PARADIS_CURSOR_OVERLAY_TUNING, kind: 'move', x: 12, y: 34, label: 'a\u2028b\u2029c', durationMs: 200 },
+				parsed: { ...PARADIS_CURSOR_OVERLAY_TUNING, kind: 'move', x: 12, y: 34, label: 'a\u2028b\u2029c', durationMs: 200, frames: [] },
 				hasRawSeparators: false,
 			},
 		);
 	});
 
 	test('generated script is a self-contained expression that never uses HTML or CSS text sinks', () => {
-		const script = paradisBuildCursorOverlayScript({ kind: 'move', x: 5, y: 6, label: 'エージェント', durationMs: 200 });
+		const script = paradisBuildCursorOverlayScript({ kind: 'move', x: 5, y: 6, label: 'エージェント', durationMs: 200, frames: [{ x: 5, y: 6, r: 0, o: 1 }] });
 		assert.deepStrictEqual(
 			{
 				startsAsExpression: script.startsWith('(function (c) {'),
@@ -124,9 +127,12 @@ suite('Paradis Cursor Overlay', () => {
 
 	test('every command kind builds a syntactically valid script', () => {
 		const kinds = [
-			{ kind: 'move', x: 1, y: 2, label: 'x', durationMs: 200 },
+			{ kind: 'move', x: 1, y: 2, label: 'x', durationMs: 200, frames: [{ x: 1, y: 2, r: 0, o: 1 }] },
 			{ kind: 'press', x: 1, y: 2, label: 'x' },
-			{ kind: 'focus', label: 'x' },
+			{ kind: 'release' },
+			{ kind: 'focus', label: 'x', texts: { typing: 't', secret: 's', page: 'p' }, key: 'Enter' },
+			{ kind: 'wheel', label: 'x', dx: 0, dy: 10, text: 's' },
+			{ kind: 'status', label: 'x', status: 'failed', text: 'f', frames: [{ x: 1, y: 2, r: 0, o: 1 }], durationMs: 100 },
 			{ kind: 'hide' },
 			{ kind: 'show' },
 			{ kind: 'captured', toast: 'done' },
@@ -144,6 +150,59 @@ suite('Paradis Cursor Overlay', () => {
 				}
 			}),
 			kinds.map(command => ({ kind: command.kind, valid: true })),
+		);
+	});
+
+	test('key badges name special keys and shortcuts, never typed characters', () => {
+		const key = (k: string, modifiers = 0, type = 'keyDown') => [paradisCursorKeyLabel({ type, key: k, modifiers }, true), paradisCursorKeyLabel({ type, key: k, modifiers }, false)];
+		assert.deepStrictEqual(
+			{ enter: key('Enter'), cmdK: key('k', 4), shiftTab: key('Tab', 8), letter: key('a'), shiftLetter: key('A', 8), up: key('Enter', 0, 'keyUp'), meta: key('Meta', 4) },
+			{ enter: ['Enter', 'Enter'], cmdK: ['\u2318K', 'Win+K'], shiftTab: ['\u21e7Tab', 'Shift+Tab'], letter: [undefined, undefined], shiftLetter: [undefined, undefined], up: [undefined, undefined], meta: [undefined, undefined] },
+		);
+	});
+
+	test('tool status notes from the shared process are checked before they reach the page', () => {
+		assert.deepStrictEqual(
+			[
+				paradisParseCursorStatusNote({ status: 'select', detail: 'Card', point: { x: 10, y: 20 } }),
+				paradisParseCursorStatusNote({ status: 'failed', point: { x: Number.NaN, y: 1 } }),
+				paradisParseCursorStatusNote({ status: 'dance' }),
+				paradisParseCursorStatusNote(null),
+			],
+			[{ status: 'select', detail: 'Card', point: { x: 10, y: 20 } }, { status: 'failed' }, undefined, undefined],
+		);
+	});
+
+	test('a planned glide arrives when the current formula says, then settles, and can be sampled midway', () => {
+		const from = { x: 0, y: 0, heading: PARADIS_CURSOR_REST_HEADING };
+		const glide = paradisPlanCursorGlide(from, { x: 440, y: 0 }, 200);
+		const last = glide.frames[glide.frames.length - 1];
+		const snap = paradisPlanCursorGlide(from, { x: 3, y: 0 }, 0);
+		const drag = paradisPlanCursorGlide(from, { x: 90, y: 0 }, 90, { straight: true });
+		const midway = paradisSampleCursorGlide(glide, glide.arrivalMs / 2);
+		assert.deepStrictEqual(
+			{
+				arrivalMs: glide.arrivalMs,
+				settlesAfterArrival: glide.durationMs >= glide.arrivalMs,
+				framesBounded: glide.frames.length >= 2 && glide.frames.length <= 49,
+				offsetsOrdered: glide.frames.every((frame, i) => i === 0 || frame.o >= glide.frames[i - 1].o),
+				starts: { x: glide.frames[0].x, y: glide.frames[0].y, o: glide.frames[0].o },
+				ends: { x: last.x, y: last.y, r: last.r, o: last.o },
+				midwayBetween: midway.x > 0 && midway.x < 440,
+				snap: { durationMs: snap.durationMs, frames: snap.frames.map(frame => [frame.x, frame.y]) },
+				drag: { durationMs: drag.durationMs, frames: drag.frames.map(frame => [frame.x, frame.y, frame.o]) },
+			},
+			{
+				arrivalMs: 200,
+				settlesAfterArrival: true,
+				framesBounded: true,
+				offsetsOrdered: true,
+				starts: { x: 0, y: 0, o: 0 },
+				ends: { x: 440, y: 0, r: 0, o: 1 },
+				midwayBetween: true,
+				snap: { durationMs: 0, frames: [[3, 0], [3, 0]] },
+				drag: { durationMs: 90, frames: [[0, 0, 0], [90, 0, 1]] },
+			},
 		);
 	});
 });

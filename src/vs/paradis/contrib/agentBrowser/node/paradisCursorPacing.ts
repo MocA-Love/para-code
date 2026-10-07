@@ -18,7 +18,7 @@
 // get_cdp_endpoint で自分の CDP クライアントを繋いでいるとき）の入力は、今までどおり待つ。
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IParadisCursorPacing } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorPacing, ParadisCursorStatus } from '../common/paradisCursorOverlay.js';
 
 /** 1 回のツール呼び出し（run_steps なら手順の全部）で、カーソルの演出のために待ってよい合計（ms）。 */
 export const PARADIS_CURSOR_WAIT_BUDGET_MS = 600;
@@ -50,6 +50,22 @@ export function paradisIsCursorHoverTool(tool: string, args: unknown): boolean {
 		return false;
 	}
 	return typeof args === 'object' && args !== null && (args as { action?: unknown }).action === 'move';
+}
+
+/**
+ * 入力を伴わない道具の間にカーソルの名札へ出す状態（q.html Q275 A）。無ければ出さない。
+ * click_by・fill_by などの結果（押せなかった・選んだ）は道具の中から出す（paradisBrowserActBy.ts）。
+ */
+export function paradisCursorStatusForTool(tool: string): ParadisCursorStatus | undefined {
+	switch (tool) {
+		case 'evaluate_script': return 'script';
+		case 'wait_for':
+		case 'wait_until':
+		case 'navigate_page': return 'waiting';
+		case 'scroll_to': return 'scroll';
+		case 'upload_file': return 'upload';
+		default: return undefined;
+	}
 }
 
 export class ParadisCursorPacingLedger {

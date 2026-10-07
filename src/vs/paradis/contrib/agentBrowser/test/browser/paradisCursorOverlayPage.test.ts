@@ -15,6 +15,8 @@ const STATE_KEY = '__paraCodeAgentCursorOverlay';
 
 interface IPageState {
 	readonly h: HTMLElement | null;
+	readonly mv: HTMLElement | null;
+	readonly t: string;
 }
 
 /** Runs the page-side script against this test document, the way the isolated world would. */
@@ -43,7 +45,7 @@ suite('Paradis Cursor Overlay page script', () => {
 		let aboveModal: boolean;
 		let traits: unknown;
 		try {
-			traits = run({ kind: 'move', x: 10, y: 10, label: 'a', durationMs: 0 });
+			traits = run({ kind: 'move', x: 10, y: 10, label: 'a', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }] });
 			aboveModal = pageState()?.h?.matches(':popover-open') === true;
 		} finally {
 			dialog.close();
@@ -52,12 +54,42 @@ suite('Paradis Cursor Overlay page script', () => {
 		run({ kind: 'remove' });
 
 		doc.documentElement.style.transform = 'translateX(1px)';
-		const blocked = run({ kind: 'move', x: 10, y: 10, label: 'a', durationMs: 0 });
+		const blocked = run({ kind: 'move', x: 10, y: 10, label: 'a', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }] });
 		const drawn = pageState()?.h ?? null;
 
 		assert.deepStrictEqual(
 			{ aboveModal, traits: (traits as { blocked?: unknown }).blocked, blocked: (blocked as { blocked?: unknown }).blocked, drawn },
 			{ aboveModal: true, traits: false, blocked: true, drawn: null },
 		);
+	});
+
+	test('moves play keyframes without rewriting the style attribute, and the name tag shows the state', async () => {
+		const doc = mainWindow.document;
+		const input = doc.createElement('input');
+		input.type = 'password';
+		doc.body.appendChild(input);
+		try {
+			run({ kind: 'move', x: 10, y: 10, label: 'Claude', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }] });
+			const mover = pageState()!.mv!;
+			let styleWrites = 0;
+			const observer = new MutationObserver(records => { styleWrites += records.length; });
+			observer.observe(mover, { attributes: true, attributeFilter: ['style'] });
+			run({ kind: 'move', x: 200, y: 40, label: 'Claude', durationMs: 120, frames: [{ x: 10, y: 10, r: 0, o: 0 }, { x: 120, y: 20, r: 20, o: 0.5 }, { x: 200, y: 40, r: 0, o: 1 }] });
+			run({ kind: 'move', x: 300, y: 40, label: 'Claude', durationMs: 120, frames: [{ x: 200, y: 40, r: 0, o: 0 }, { x: 300, y: 40, r: 0, o: 1 }] });
+			await Promise.resolve();
+			observer.disconnect();
+			const animated = mover.getAnimations().some(animation => animation.playState === 'running');
+			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running a script' });
+			const scripted = pageState()!.t;
+			input.focus();
+			run({ kind: 'focus', label: 'Claude', texts: { typing: 'Typing', secret: 'Typing (hidden)', page: 'Typing to the page' } });
+			const typed = pageState()!.t;
+			assert.deepStrictEqual(
+				{ styleWrites, animated, scripted, typed },
+				{ styleWrites: 0, animated: true, scripted: 'Claude \u00b7 Running a script', typed: 'Claude \u00b7 Typing (hidden)' },
+			);
+		} finally {
+			input.remove();
+		}
 	});
 });

@@ -20,6 +20,7 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
+import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { IParadisQuerySpec, paradisBuildQueryFunction, paradisIsLocatorError, paradisIsTransientEvaluateFailure, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 
@@ -35,6 +36,13 @@ export interface IParadisBrowserActCall {
 	dispatch(method: string, params: Record<string, unknown>): Promise<IParadisCdpInputDispatchResult>;
 	/** ingress lease が古ければ投げる。共有が変わっていたら false。await の後に呼ぶ。 */
 	isCurrent(): boolean;
+	/** エージェントのカーソルの名札に道具の結果（押せなかった・選んだ など）を出す。演出なので待たない。 */
+	noteCursor?(note: IParadisCursorStatusNote): void;
+}
+
+/** 見つけた要素の中心（画面の中にあるときだけ）。 */
+function locatedPoint(located: { readonly x?: number; readonly y?: number }): { readonly x: number; readonly y: number } | undefined {
+	return typeof located.x === 'number' && typeof located.y === 'number' && Number.isFinite(located.x) && Number.isFinite(located.y) ? { x: located.x, y: located.y } : undefined;
 }
 
 type ToolResult = unknown;
@@ -171,6 +179,7 @@ export class ParadisBrowserActBy {
 			return { ok: false, result: error(`${tool}: nothing matches the container (${describeLocator({ within: args.within, within_uid: args.within_uid })}).`) };
 		}
 		if (located.matched === 0) {
+			call.noteCursor?.({ status: 'missing' });
 			return { ok: false, result: error(`${tool}: no element matches ${describeLocator(args)}. Check with take_snapshot or get_text, wait for it with wait_until, or bring it into view with scroll_to.`) };
 		}
 		if (located.noIndex === true) {
@@ -233,6 +242,7 @@ export class ParadisBrowserActBy {
 		const located = found.located;
 		const problem = paradisActProblem('click_by', located, true);
 		if (problem !== undefined) {
+			call.noteCursor?.({ status: 'failed', point: locatedPoint(located) });
 			return error(problem);
 		}
 		const failure = await this.click(call, located.x!, located.y!, button, args.double === true ? 2 : 1, modifiers);
@@ -260,6 +270,7 @@ export class ParadisBrowserActBy {
 		const kind = located.kind;
 		const problem = paradisActProblem('fill_by', located, kind === 'checkbox' || kind === 'radio');
 		if (problem !== undefined) {
+			call.noteCursor?.({ status: 'failed', point: locatedPoint(located) });
 			return error(problem);
 		}
 		const which = located.matched > 1 ? ` (${located.matched} elements matched${args.index === undefined ? '; used the first visible, enabled one' : `; used index ${args.index}`})` : '';
@@ -294,6 +305,7 @@ export class ParadisBrowserActBy {
 				if (chosen.value.noOption === true) {
 					return error(`fill_by: the select has no option with the value or label ${JSON.stringify(value)}. Options: ${JSON.stringify(chosen.value.options)}`);
 				}
+				call.noteCursor?.({ status: 'select', ...(typeof chosen.value.label === 'string' ? { detail: chosen.value.label } : {}), point: locatedPoint(located) });
 				outcome = `Chose ${JSON.stringify(chosen.value.label)} in the select (the page saw input and change events)`;
 				break;
 			}
@@ -312,6 +324,7 @@ export class ParadisBrowserActBy {
 				if (set.value.accepted !== true) {
 					return error(`fill_by: the field did not accept ${JSON.stringify(value)} (now ${JSON.stringify(set.value.value)}). Date and time fields take the HTML format, for example "2026-10-06", "2026-10-06T09:30", "2026-10", "2026-W41" or "09:30". Element: ${JSON.stringify(located.element)}`);
 				}
+				call.noteCursor?.({ status: 'value', point: locatedPoint(located) });
 				outcome = 'Set the value (the page saw input and change events)';
 				break;
 			}
