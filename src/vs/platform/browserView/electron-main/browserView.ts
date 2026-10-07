@@ -739,6 +739,10 @@ export class BrowserView extends Disposable {
 			return undefined;
 		}
 		this._automationKeyFrames.set(sequence, frames);
+		// Frames that were not waited for and had not answered yet may still register the key later. They
+		// are never activated, and an inactive expectation is not dropped by `complete`, so it would pile up
+		// in their preload until it refused new keys; cancel it there now (same-frame messages stay in order).
+		this.cancelPreloadAutomationKey(frames.filter(frame => !registered.has(frame)), sequence);
 		let settled = false;
 		let activationStarted = false;
 		let activated = false;
@@ -802,6 +806,8 @@ export class BrowserView extends Disposable {
 					return false;
 				}
 				activatedFrames = activationPending.acknowledged;
+				// Same as after the registration: a frame that activates late keeps no stale expectation.
+				this.cancelPreloadAutomationKey(activationFrames.filter(frame => !activatedFrames.has(frame)), sequence);
 				if (!this._automationKeyExpectations.activate(sequence)) {
 					fail('cleared', 'activate');
 					return false;
