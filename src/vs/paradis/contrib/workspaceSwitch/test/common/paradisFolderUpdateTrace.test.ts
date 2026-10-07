@@ -12,7 +12,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBeginFolderUpdateTrace, paradisCountFileChannel, paradisMarkFolderUpdate, paradisNoteParkedFolderConfiguration, paradisOverrideFolderUpdateTraceClockForTest, paradisSafeSwitchAttributes } from '../../common/paradisFolderUpdateTrace.js';
+import { paradisBeginFolderUpdateTrace, paradisCountFileChannel, paradisMarkFolderUpdate, paradisNoteFolderUpdateShortcut, paradisNoteParkedFolderConfiguration, paradisOverrideFolderUpdateTraceClockForTest, paradisSafeSwitchAttributes } from '../../common/paradisFolderUpdateTrace.js';
 
 suite('ParadisFolderUpdateTrace', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -26,15 +26,18 @@ suite('ParadisFolderUpdateTrace', () => {
 	teardown(() => restoreClock.dispose());
 
 	test('splits update_folders_write at the upstream marks, in order, and ignores marks outside a trace', () => {
-		// 記録していないときの境目は何も残さない。
+		// 記録していないときの境目と印は何も残さない。
 		paradisMarkFolderUpdate('entered');
+		paradisNoteFolderUpdateShortcut('resolve_conflict');
 		const trace = paradisBeginFolderUpdateTrace();
 		now += 3; paradisMarkFolderUpdate('entered');
 		now += 5; paradisMarkFolderUpdate('set_folders');
 		// 接続先の変更通知から走った別経路の `validated` は、`reloaded` より前なので捨てる。
 		now += 1; paradisMarkFolderUpdate('validated');
+		paradisNoteFolderUpdateShortcut('resolve_cached');
 		now += 400; paradisMarkFolderUpdate('model_resolved');
 		now += 900; paradisMarkFolderUpdate('saved');
+		paradisNoteFolderUpdateShortcut('reload_cached');
 		now += 300; paradisMarkFolderUpdate('reloaded');
 		// 2 回目は捨てる。
 		now += 10; paradisMarkFolderUpdate('reloaded');
@@ -56,6 +59,9 @@ suite('ParadisFolderUpdateTrace', () => {
 			safe_update_folders_will_change_ms: 1,
 			safe_update_folders_marks: 7,
 			safe_update_folders_parked_configs: 1,
+			safe_update_folders_resolve_cached: 1,
+			safe_update_folders_resolve_conflict: 0,
+			safe_update_folders_reload_cached: 1,
 		});
 	});
 
@@ -72,6 +78,9 @@ suite('ParadisFolderUpdateTrace', () => {
 			safe_update_folders_compose_ms: 5,
 			safe_update_folders_marks: 2,
 			safe_update_folders_parked_configs: 0,
+			safe_update_folders_resolve_cached: 0,
+			safe_update_folders_resolve_conflict: 0,
+			safe_update_folders_reload_cached: 0,
 		});
 	});
 
@@ -111,6 +120,9 @@ suite('ParadisFolderUpdateTrace', () => {
 		assert.deepStrictEqual(summary, {
 			safe_update_folders_marks: 0,
 			safe_update_folders_parked_configs: 0,
+			safe_update_folders_resolve_cached: 0,
+			safe_update_folders_resolve_conflict: 0,
+			safe_update_folders_reload_cached: 0,
 			safe_update_folders_remote_calls: 7,
 			safe_update_folders_remote_stats: 2,
 			safe_update_folders_remote_reads: 3,
