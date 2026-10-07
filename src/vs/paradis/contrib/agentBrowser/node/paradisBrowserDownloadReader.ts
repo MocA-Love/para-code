@@ -10,11 +10,12 @@
 // 読めるのは Para Code のダウンロードの保存先（download_by_click・save_page_as_pdf が書く場所）の中だけ。
 // xlsx はシートの一覧とセルの範囲、csv / tsv は行の範囲を、上限付きで文字にして返す。
 // xlsx は Excel ビューアと同じ exceljs を、使うときにだけ読み込む（shared process の起動を重くしない）。
-// PDF のテキストは、使える PDF のライブラリが shared process に無いので、今は扱わない。
+// PDF はページごとのテキストを返す。PDF ビューアと同じ pdf.js を、使うときにだけ Worker の中で読み込む（paradisBrowserPdfText.ts）。
 
 import type ExcelJS from 'exceljs';
 import { promises as fs } from 'fs';
 import { basename, extname, isAbsolute, relative, sep } from '../../../../base/common/path.js';
+import { IParadisPdfPageRange, IParadisPdfTextOptions, PARADIS_PDF_MAX_CHARS, PARADIS_PDF_MAX_PAGES, PARADIS_PDF_SOFT_TIMEOUT_MS, ParadisPdfTextResult, paradisExtractPdfText, paradisParsePdfPageRange } from './paradisBrowserPdfText.js';
 
 export const PARADIS_READ_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024;
 /** xlsx を展開した後の大きさの上限（圧縮された小さいファイルが shared process のメモリを食い尽くさないように）。 */
@@ -33,6 +34,8 @@ export interface IParadisDownloadReaderHost {
 	realpath?(path: string): Promise<string>;
 	readFile?(path: string): Promise<Buffer>;
 	loadExcel?(): Promise<typeof ExcelJS>;
+	/** PDF のテキストを取り出す（テストで差し替える）。既定は pdf.js を Worker で動かす。 */
+	extractPdfText?(data: Uint8Array, options: IParadisPdfTextOptions): Promise<ParadisPdfTextResult>;
 }
 
 type ToolResult = unknown;
@@ -208,6 +211,9 @@ function isInside(root: string, target: string): boolean {
 
 export class ParadisBrowserDownloadReader {
 
+	/** PDF は 1 つずつ読む（Worker が同時に何本も立って shared process のメモリを食わないように）。 */
+	private pdfQueue: Promise<unknown> = Promise.resolve();
+
 	constructor(private readonly host: IParadisDownloadReaderHost) { }
 
 	async call(rawArgs: unknown): Promise<ToolResult> {
@@ -234,6 +240,13 @@ export class ParadisBrowserDownloadReader {
 			return error('"sheet_number" must be an integer from 1 (the first sheet), and not given together with "sheet".');
 		}
 		const sheet = (args.sheet ?? args.sheet_number) as string | number | undefined;
+		let pages: IParadisPdfPageRange | undefined;
+		if (args.pages !== undefined) {
+			pages = typeof args.pages === 'string' ? paradisParsePdfPageRange(args.pages) : undefined;
+			if (!pages) {
+				return error('"pages" must be one page like "3" or a range like "1-5" or "10-" (page 10 to the end).');
+			}
+		}
 
 		const realpath = this.host.realpath ?? (p => fs.realpath(p));
 		const directory = await this.host.downloadsDirectory();
@@ -271,11 +284,11 @@ export class ParadisBrowserDownloadReader {
 			case '.txt':
 				return this.readDelimited(name, data, extension === '.tsv' ? '\t' : extension === '.txt' ? undefined : ',', range, maxCells);
 			case '.pdf':
-				return error('read_download cannot read the text of PDF files yet. Agents in a remote window find a copy of the file on their machine (the path in the download_by_click / save_page_as_pdf result) and can use a PDF tool there.');
+				return this.readPdf(name, data, pages);
 			case '.xls':
 				return error('Old Excel files (.xls) are not supported; only .xlsx / .xlsm.');
 			default:
-				return error(`read_download reads .xlsx, .xlsm, .csv, .tsv and .txt files, not "${extension || 'no extension'}".`);
+				return error(`read_download reads .xlsx, .xlsm, .csv, .tsv, .txt and .pdf files, not "${extension || 'no extension'}".`);
 		}
 	}
 
@@ -323,6 +336,42 @@ export class ParadisBrowserDownloadReader {
 			? `\nThe sheet has more (used area A1:${paradisColumnName(used.endColumn)}${used.endRow}); pass "range" for another part, or raise "max_cells".`
 			: '';
 		return text(`${name}: ${sheets.length} sheet(s): ${JSON.stringify(sheets)}\nSheet "${worksheet.name}", cells ${shown} (values as displayed; formulas show their last calculated result):${more}\n${rendered.lines.join('\n')}`);
+	}
+
+	private async readPdf(name: string, data: Buffer, pages: IParadisPdfPageRange | undefined): Promise<ToolResult> {
+		const extract = this.host.extractPdfText ?? paradisExtractPdfText;
+		const run = this.pdfQueue.then(() => extract(data, { range: pages }));
+		this.pdfQueue = run.catch(() => undefined);
+		let result: ParadisPdfTextResult;
+		try {
+			result = await run;
+		} catch (cause) {
+			result = { kind: 'failed', message: cause instanceof Error ? cause.message : String(cause) };
+		}
+		switch (result.kind) {
+			case 'password':
+				return error(`${name} is password-protected (encrypted), so its text cannot be read.`);
+			case 'invalid':
+				return error(`${name} could not be read as a PDF (the file is damaged or not a PDF).`);
+			case 'timeout':
+				return error(`Reading ${name} took too long and was stopped. Pass "pages" (for example "1-5") to read fewer pages at a time.`);
+			case 'failed':
+				return error(`${name} could not be read as a PDF: ${result.message}`);
+			case 'outOfRange':
+				return error(`${name} has only ${result.numPages} page(s).`);
+		}
+		const first = result.pages[0]?.page ?? pages?.start ?? 1;
+		const last = result.pages.at(-1)?.page ?? first;
+		const nextPage = result.stopped === 'chars' ? last : last + 1;
+		const more = result.stopped === 'pages' ? `\nStopped after ${PARADIS_PDF_MAX_PAGES} pages; pass "pages": "${nextPage}-" for the rest.`
+			: result.stopped === 'chars' ? `\nStopped at ${PARADIS_PDF_MAX_CHARS} characters (page ${last} is cut); pass "pages": "${nextPage}-" to continue from that page.`
+				: result.stopped === 'time' ? `\nStopped after ${PARADIS_PDF_SOFT_TIMEOUT_MS / 1000} seconds; pass "pages": "${nextPage}-" for the rest.`
+					: '';
+		const body = result.pages.map(page => `--- Page ${page.page} ---\n${page.text.length > 0 ? page.text : '(no text on this page; it may be a scanned image)'}`).join('\n');
+		const noText = result.pages.length > 0 && result.pages.every(page => page.text.length === 0)
+			? '\nNo text was found on these pages. The PDF may be scanned images; take a screenshot of it in the browser to read it.'
+			: '';
+		return text(`${name}: PDF, ${result.numPages} page(s); text of pages ${first}-${last} (layout, tables and images are not kept):${more}${noText}\n${body}`);
 	}
 
 	private readDelimited(name: string, data: Buffer, delimiter: string | undefined, range: IRange | undefined, maxCells: number): ToolResult {
