@@ -25,9 +25,15 @@ class FakeAivisMcp {
 	current: IParadisAgentDictionaryCurrent = {};
 	voices: Record<string, IParadisElevenLabsVoiceTuning> = {};
 	fail = false;
+	/** `--version` をこの回数だけ時間切れにする（起動直後の重いマシン）。 */
+	versionTimeouts = 0;
 
 	readonly run = async (args: readonly string[]): Promise<IParadisAivisMcpRunResult> => {
 		this.calls.push([...args]);
+		if (args[0] === '--version' && this.versionTimeouts > 0) {
+			this.versionTimeouts--;
+			return { code: undefined, stdout: '', stderr: '', failure: 'timed out after 30s' };
+		}
 		if (args[0] === '--version') {
 			return this.version === undefined ? { code: undefined, stdout: '', stderr: 'ENOENT' } : { code: 0, stdout: `${this.version}\n`, stderr: '' };
 		}
@@ -65,10 +71,13 @@ suite('ParadisAgentDictionarySyncService', () => {
 
 	let dir: string;
 	let statePath: string;
+	/** 予約された「もう一度試す」（待ち時間と、呼ぶと試し直す関数）。 */
+	let retries: { delayMs: number; run: () => Promise<void>; cancelled: boolean }[];
 
 	setup(() => {
 		dir = mkdtempSync(join(tmpdir(), 'paradis-agent-dict-'));
 		statePath = join(dir, 'state', 'agent-dictionary.json');
+		retries = [];
 	});
 
 	teardown(() => {
@@ -83,7 +92,17 @@ suite('ParadisAgentDictionarySyncService', () => {
 			readCurrent: async () => fake.current,
 			readCurrentVoiceSettings: async () => fake.voices,
 			statePath,
+			scheduleRetry: (run, delayMs) => {
+				const entry = { delayMs, run, cancelled: false };
+				retries.push(entry);
+				return { dispose: () => { entry.cancelled = true; } };
+			},
 		});
+	}
+
+	/** 最後に予約された試し直しを動かし、その同期が終わるまで待つ。 */
+	function runRetry(): Promise<void> {
+		return retries[retries.length - 1].run();
 	}
 
 	test('sets once, skips the same value, and clears only what it wrote when turned off', async () => {
@@ -135,6 +154,57 @@ suite('ParadisAgentDictionarySyncService', () => {
 			results: ['unsupported', 'unsupported', 'failed'],
 			calls: [[['--version']], [['--version']], [['--version'], ['--set-dictionary', '--provider', 'elevenlabs', '--id', 'el1']]],
 			stateWritten: {},
+		});
+	});
+
+	test('tries again later when aivis-mcp could not be run at startup, and stops when a new setting comes or after the last try', async () => {
+		const request = { enabled: true, dictionaries: { elevenlabs: 'el1', aivis: '' } };
+		// 起動直後: 2 つのウィンドウから同じ設定が来て、どちらも --version が時間切れ
+		const fake = new FakeAivisMcp();
+		fake.versionTimeouts = 3;
+		const service = create(fake);
+		const first = await Promise.all([service.apply(request), service.apply(request)]);
+		const scheduledAfterStartup = retries.map(entry => ({ delayMs: entry.delayMs, cancelled: entry.cancelled }));
+		await runRetry();
+		await runRetry();
+		const synced = { current: fake.current, retries: retries.length };
+
+		// 見つからないままなら、決まった回数で諦める
+		const missing = new FakeAivisMcp();
+		missing.version = undefined;
+		retries = [];
+		rmSync(statePath);
+		const missingService = create(missing);
+		await missingService.apply(request);
+		for (let i = 0; i < 4; i++) {
+			await runRetry();
+		}
+		const missingDelays = retries.map(entry => entry.delayMs);
+
+		// 試し直しを待っている間に設定が変わったら、古い設定では試さない
+		const changed = new FakeAivisMcp();
+		changed.versionTimeouts = 1;
+		retries = [];
+		rmSync(statePath, { force: true });
+		const changedService = create(changed);
+		await changedService.apply(request);
+		await changedService.apply({ enabled: false, dictionaries: request.dictionaries });
+
+		assert.deepStrictEqual({
+			first: first.map(result => result.status),
+			scheduledAfterStartup,
+			calls: fake.calls,
+			synced,
+			missing: { versionCalls: missing.calls.length, delays: missingDelays },
+			changed: { cancelled: retries[0].cancelled, calls: changed.calls },
+		}, {
+			first: ['unsupported', 'unsupported'],
+			// 先に来た分は、後から同じ設定が来たので予約しない
+			scheduledAfterStartup: [{ delayMs: 15_000, cancelled: false }],
+			calls: [['--version'], ['--version'], ['--version'], ['--version'], ['--set-dictionary', '--provider', 'elevenlabs', '--id', 'el1']],
+			synced: { current: { elevenlabs: 'el1' }, retries: 2 },
+			missing: { versionCalls: 5, delays: [15_000, 60_000, 300_000, 900_000] },
+			changed: { cancelled: true, calls: [['--version']] },
 		});
 	});
 
@@ -206,18 +276,23 @@ suite('ParadisAgentDictionarySyncService', () => {
 		const set = await service.apply({ enabled: true, dictionaries: { elevenlabs: '', aivis: UUID_A } });
 		const cleared = await service.apply({ enabled: false, dictionaries: { elevenlabs: '', aivis: UUID_A } });
 		const rejected = await paradisRunAivisMcp(['--id', 'a b'], env);
+		const notFound = await paradisRunAivisMcp(['--version'], { PATH: '/usr/bin:/bin' });
+		writeFileSync(script, '#!/bin/sh\nsleep 5\n');
+		const timedOut = await paradisRunAivisMcp(['--version'], env, 200);
 		assert.deepStrictEqual({
 			statuses: [set.status, cleared.status],
 			log: readFileSync(log, 'utf8').trim().split('\n'),
 			config: readFileSync(config, 'utf8').trim(),
 			stateExists: existsSync(statePath),
 			rejected: rejected.code,
+			failures: [notFound.failure, timedOut.failure],
 		}, {
 			statuses: ['applied', 'applied'],
 			log: [`--set-dictionary --provider aivis --id ${UUID_A}`, '--clear-dictionary --provider aivis'],
 			config: '{}',
 			stateExists: true,
 			rejected: undefined,
+			failures: ['not found on PATH', 'timed out after 0.2s'],
 		});
 	});
 });
