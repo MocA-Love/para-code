@@ -90,6 +90,9 @@ export class ParadisCursorPacingLedger {
 	/**
 	 * この入力の配送への指示。move 以外と、ツールの呼び出しの外から来た入力には指示しない
 	 * （main は今までどおり待つ）。
+	 *
+	 * 入力はペインで最後に始まった呼び出しのものとみなす。同じペインで 2 つの呼び出しが並走すると
+	 * （hover と click など）取り違えることがあるが、変わるのはカーソルの演出の待ちだけ。
 	 */
 	ticketFor(paneToken: string, method: string, paramsJson: string): IParadisCursorPacingTicket | undefined {
 		if (method !== 'Input.dispatchMouseEvent' || !paramsJson.includes('mouseMoved')) {

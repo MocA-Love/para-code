@@ -148,6 +148,8 @@ export class ParadisCursorOverlayController {
 			// 表示中に設定をOFFにされたら、既に置いてあるカーソルはここで片付ける
 			// （`idleMs` に任せると「設定が効かない」と見える）。
 			this.removeIfDisabled(view);
+			// 描いていない間の位置は覚えない（一覧ウィンドウへの写しは瞬間移動になる。`lastGlideMs`）。
+			this.position.delete(view);
 			return 0;
 		}
 		const { x, y } = params;
@@ -162,7 +164,7 @@ export class ParadisCursorOverlayController {
 			const delayMs = previous && previous.arriveAt > at && Math.abs(previous.x - x) < 1 && Math.abs(previous.y - y) < 1
 				? Math.round(previous.arriveAt - at)
 				: 0;
-			this.position.set(view, { x, y, at, arriveAt: Math.max(at, previous?.arriveAt ?? at) });
+			this.position.set(view, { x, y, at, arriveAt: delayMs > 0 ? previous!.arriveAt : at });
 			this.run(view, { kind: 'press', x, y, label: cursorLabel(), ...(delayMs > 0 ? { delayMs } : {}) });
 			return 0;
 		}
@@ -179,6 +181,15 @@ export class ParadisCursorOverlayController {
 			return 0;
 		}
 		return paradisClampCursorWaitMs(glideMs, Math.min(PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS, pacing?.maxWaitMs ?? PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS));
+	}
+
+	/**
+	 * 直前の move でページのカーソルが滑る時間（ms）。待った時間とは別の値で、押す前の move・動きを
+	 * 減らす設定では待たなくてもカーソルは滑る。一覧ウィンドウへの写しを同じ速さで滑らせるために使う。
+	 */
+	lastGlideMs(view: IParadisCursorOverlayTarget): number {
+		const position = this.position.get(view);
+		return position ? Math.max(0, Math.round(position.arriveAt - position.at)) : 0;
 	}
 
 	/**

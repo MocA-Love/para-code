@@ -287,6 +287,8 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 				if (cs.filter && cs.filter !== 'none') { return true; }
 				if (cs.backdropFilter && cs.backdropFilter !== 'none') { return true; }
 				if (cs.perspective && cs.perspective !== 'none') { return true; }
+				if ((cs.translate && cs.translate !== 'none') || (cs.rotate && cs.rotate !== 'none') || (cs.scale && cs.scale !== 'none')) { return true; }
+				if (cs.containerType && cs.containerType !== 'normal') { return true; }
 				var z = cs.zoom;
 				if (z && z !== '1' && z !== 'normal') { return true; }
 				if (/transform|filter|perspective/.test(cs.willChange || '')) { return true; }
@@ -314,8 +316,14 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayCom
 		/** top layer に何かあれば、カーソルを popover にして top layer の最後へ積み直す。 */
 		function lift(s) {
 			var k = topLayerKey(s);
-			if (!k) { s.tl = null; return; }
 			var h = s.h;
+			if (!k) {
+				s.tl = null;
+				// popover のまま閉じられていると（付け直した・ページが popover を一括で閉じた）、UA の
+				// '[popover]:not(:popover-open)' で消えたままになる。top layer が空なら普通の要素に戻す。
+				try { if (h.hasAttribute('popover') && !h.matches(':popover-open')) { h.removeAttribute('popover'); } } catch (e) { }
+				return;
+			}
 			var open = false;
 			try { open = h.matches(':popover-open'); } catch (e) { }
 			// 積み直すと表示が一度切れて滑りが止まるので、top layer の中身が変わったときだけ行う。

@@ -860,13 +860,24 @@ interface IParadisRawScreenshotEntry {
 	timer: ReturnType<typeof setTimeout> | undefined;
 	readonly startedAt: number;
 	readonly onComplete: ((durationMs: number) => void) | undefined;
+	readonly onEnd: ((completed: boolean) => void) | undefined;
 	timedOut: boolean;
 	closing: boolean;
+}
+
+/** 撮影の終わりを 1 度だけ知らせる（完了・時間切れ・接続の終了・破棄のどれでも）。 */
+function endRawScreenshot(entry: IParadisRawScreenshotEntry, completed: boolean): void {
+	try { entry.onEnd?.(completed); } catch { /* the cursor restore must not affect transport */ }
 }
 
 export interface IParadisRawScreenshotLifecycleCallbacks {
 	readonly onTimeout: (request: IParadisCaptureScreenshotRequest) => void;
 	readonly onComplete?: (durationMs: number) => void;
+	/**
+	 * 撮影が終わった（`completed` は応答が届いたか）。完了・時間切れ・接続の終了・破棄のどれでも呼ぶ。
+	 * 素通しの撮影の前に隠したエージェントのカーソルを戻すため。呼び出し側で 1 度だけに絞る。
+	 */
+	readonly onEnd?: (completed: boolean) => void;
 }
 
 /** Bounds the one deliberate raw-CDP exception (visible WebP) without allowing overlap after timeout. */
@@ -885,6 +896,7 @@ export class ParadisRawScreenshotCoordinator {
 			request,
 			startedAt: Date.now(),
 			onComplete: callbacks.onComplete,
+			onEnd: callbacks.onEnd,
 			timedOut: false,
 			closing: false,
 			timer: undefined,
@@ -895,6 +907,7 @@ export class ParadisRawScreenshotCoordinator {
 			}
 			entry.timer = undefined;
 			entry.timedOut = true;
+			endRawScreenshot(entry, false);
 			try { callbacks.onTimeout(request); } catch { /* closing transport */ }
 		}, this.timeoutMs);
 		this._active = entry;
@@ -913,6 +926,7 @@ export class ParadisRawScreenshotCoordinator {
 		this._active = undefined;
 		const durationMs = Math.max(0, Date.now() - entry.startedAt);
 		if (!entry.timedOut && !entry.closing) {
+			endRawScreenshot(entry, true);
 			try { entry.onComplete?.(durationMs); } catch { /* diagnostics must not affect transport */ }
 		}
 		return { handled: true, suppress: entry.timedOut, durationMs };
@@ -937,6 +951,7 @@ export class ParadisRawScreenshotCoordinator {
 			return;
 		}
 		entry.closing = true;
+		endRawScreenshot(entry, false);
 		if (entry.timer !== undefined) {
 			clearTimeout(entry.timer);
 			entry.timer = undefined;
@@ -948,6 +963,7 @@ export class ParadisRawScreenshotCoordinator {
 			if (this._active.timer !== undefined) {
 				clearTimeout(this._active.timer);
 			}
+			endRawScreenshot(this._active, false);
 			this._active = undefined;
 		}
 	}
@@ -958,6 +974,7 @@ export class ParadisRawScreenshotCoordinator {
 			if (this._active.timer !== undefined) {
 				clearTimeout(this._active.timer);
 			}
+			endRawScreenshot(this._active, false);
 			this._active = undefined;
 		}
 	}
@@ -1062,6 +1079,8 @@ export interface IParadisVisibleWebPCaptureCallbacks {
 	readonly onStart?: () => void;
 	readonly onComplete?: (durationMs: number) => void;
 	readonly onTimeout?: () => void;
+	/** {@link IParadisRawScreenshotLifecycleCallbacks.onEnd} と同じ。 */
+	readonly onEnd?: (completed: boolean) => void;
 }
 
 export function paradisVisibleWebPScreenshotLogMessage(
@@ -1081,6 +1100,7 @@ export function paradisStartVisibleWebPCapture(
 ): boolean {
 	const started = coordinator.begin(owner, request, {
 		onComplete: callbacks.onComplete,
+		onEnd: callbacks.onEnd,
 		onTimeout: timedOutRequest => {
 			try {
 				callbacks.respond(screenshotResponse(timedOutRequest, { error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: visible WebP capture timed out after ${coordinator.timeoutMilliseconds}ms; reconnect and retry.` } }));
@@ -1487,12 +1507,9 @@ export function paradisProxyPageUpgrade(
 								respond: sendToClient,
 								closeTransport: closeBoth,
 								onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'page')),
-								onComplete: durationMs => {
-									settle(true);
-									logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'page', durationMs));
-								},
+								onEnd: settle,
+								onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'page', durationMs)),
 								onTimeout: () => {
-									settle(false);
 									logNonThrowing(logService, 'warn', '[ParadisCdpGateway] page visible WebP capture timed out; closing CDP connection');
 								},
 							})) {
@@ -2243,12 +2260,9 @@ export async function paradisProxyBrowserUpgrade(
 									respond: response => completeLocalRequest(message.id, requestSessionId, response),
 									closeTransport: closeBoth,
 									onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'browser')),
-									onComplete: durationMs => {
-										settle(true);
-										logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'browser', durationMs));
-									},
+									onEnd: settle,
+									onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'browser', durationMs)),
 									onTimeout: () => {
-										settle(false);
 										logNonThrowing(logService, 'warn', '[ParadisCdpGateway] browser visible WebP capture timed out; closing CDP connection');
 									},
 								})) {
