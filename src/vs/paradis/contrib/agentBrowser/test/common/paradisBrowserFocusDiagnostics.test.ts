@@ -193,7 +193,7 @@ suite('paradisBrowserFocusDiagnostics', () => {
 			recorder.noteKeyAttempt(index < 30 ? 'docs.google.com' : 'example.com');
 		}
 		for (let index = 0; index < 12; index++) {
-			recorder.noteKeySuppressionFailure('docs.google.com', 'register', 'ack-timeout');
+			recorder.noteKeySuppressionFailure('docs.google.com', 'register', 'ack-timeout', index < 2 ? 'cross-origin=1,about-blank=2' : undefined);
 		}
 		recorder.noteKeySuppressionFailure('example.com', 'activate', 'user-focus');
 		recorder.noteInputQueue('docs.google.com', 'paused', 'dispatch-timeout', 'Input.dispatchMouseEvent');
@@ -212,6 +212,7 @@ suite('paradisBrowserFocusDiagnostics', () => {
 				safe_key_attempts: 40,
 				safe_key_failures: 13,
 				safe_key_attempts_by_host: 'docs.google.com=30,example.com=10',
+				safe_key_unanswered_frames: 'about-blank=4,cross-origin=2',
 				safe_window_ms: 1_800_000,
 				safe_summaries_this_run: 1,
 			},
@@ -231,7 +232,7 @@ suite('paradisBrowserFocusDiagnostics', () => {
 		leaveByUser(recorder, clock, view);
 		clock.advance(100);
 		recorder.focusChanged(view, true, host);
-		recorder.noteKeySuppressionFailure(host, 'register', 'reason with spaces /Users/example/file');
+		recorder.noteKeySuppressionFailure(host, 'register', 'reason with spaces /Users/example/file', 'https://example.com/?q=1=3,same-origin=1');
 		recorder.noteToolFailure(host, 'click /Users/example', 'Error: secret text', 'none');
 		recorder.noteInputQueue(host, 'paused', 'see https://example.com/?q=1', 'Input.dispatchKeyEvent');
 		recorder.viewClosed(view);

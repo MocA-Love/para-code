@@ -20,7 +20,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
-import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
+import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
 	IParadisCdpFrameEvent,
@@ -147,9 +147,12 @@ const PARADIS_INPUT_REFUSED_USER_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the 
 const PARADIS_INPUT_REFUSED_BECAME_FOCUSED_MESSAGE = 'PARA_BROWSER_RETRYABLE: the bound BrowserView became focused before input dispatch (the user started interacting with the page). Ask the user to click outside the page, for example on the terminal, and then retry.';
 
 /** Agent-facing reason for a failed automation key suppression (no page data). */
-function describeAutomationKeyFailure(reason: BrowserViewAutomationKeyFailureReason | undefined): string {
+function describeAutomationKeyFailure(reason: BrowserViewAutomationKeyFailureReason | undefined, detail?: IBrowserViewAutomationKeyFailureDetail): string {
 	switch (reason) {
-		case 'ack-timeout': return 'the page did not answer in time, it may be busy; retry in a moment';
+		case 'ack-timeout': return detail && detail.unansweredFrames !== ''
+			// Which kinds of frames stayed silent (counts only, never their URLs).
+			? `the page did not answer in time (frames that did not answer: ${detail.unansweredFrames}, of ${detail.awaitedFrames} waited for), it may be busy or still loading; retry in a moment`
+			: 'the page did not answer in time, it may be busy; retry in a moment';
 		case 'cleared': return 'the page navigated while the key was being prepared; retry';
 		case 'frames-changed': return 'frames on the page changed while the key was being prepared; retry';
 		case 'user-focus': return 'the user focused the page; ask the user to click outside the page, then retry';
@@ -162,10 +165,15 @@ function describeAutomationKeyFailure(reason: BrowserViewAutomationKeyFailureRea
 }
 
 /** Keeps why automation key suppression failed in the log and Sentry (the reason is a fixed word). */
-function paradisReportAutomationKeyFailure(phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined): void {
+function paradisReportAutomationKeyFailure(phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined, detail?: IBrowserViewAutomationKeyFailureDetail): void {
 	try {
-		console.warn(`[ParadisCdpTargetService] automation key suppression could not be ${phase === 'register' ? 'registered' : 'activated'}: ${reason ?? 'unknown'}`);
-		reportParadisDiagnosticError('owned', 'agent-browser', 'automation-key-suppression', new Error('Automation key suppression failed'), { safe_phase: phase, safe_reason: reason ?? 'unknown' }, 'warning');
+		const frames = detail ? ` (unanswered frames: ${detail.unansweredFrames || 'none'}, waited for ${detail.awaitedFrames}, without preload ${detail.framesWithoutPreload})` : '';
+		console.warn(`[ParadisCdpTargetService] automation key suppression could not be ${phase === 'register' ? 'registered' : 'activated'}: ${reason ?? 'unknown'}${frames}`);
+		reportParadisDiagnosticError('owned', 'agent-browser', 'automation-key-suppression', new Error('Automation key suppression failed'), {
+			safe_phase: phase,
+			safe_reason: reason ?? 'unknown',
+			...(detail ? { safe_unanswered_frames: detail.unansweredFrames || 'none', safe_awaited_frames: detail.awaitedFrames, safe_frames_without_preload: detail.framesWithoutPreload } : {}),
+		}, 'warning');
 	} catch {
 		// Diagnostics must never change input delivery.
 	}
@@ -247,7 +255,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		/** エージェント操作を見せる合成カーソル演出。既定は「常に有効」（app.tsが設定を渡す）。 */
 		private readonly cursorOverlay: ParadisCursorOverlayController = new ParadisCursorOverlayController(),
 		/** キー入力の準備に失敗した理由をログと Sentry へ送る。テストでは差し替える。 */
-		private readonly reportAutomationKeyFailure: (phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined) => void = paradisReportAutomationKeyFailure,
+		private readonly reportAutomationKeyFailure: (phase: 'register' | 'activate', reason: BrowserViewAutomationKeyFailureReason | undefined, detail?: IBrowserViewAutomationKeyFailureDetail) => void = paradisReportAutomationKeyFailure,
 		/** 内蔵ブラウザのフォーカスと入力の失敗の診断（Sentry のパンくずとまとめのイベント）。テストの偽物では作らない。 */
 		private readonly browserDiagnostics: ParadisBrowserFocusDiagnosticsMain | undefined = paradisCreateBrowserFocusDiagnostics(browserViewMainService),
 	) {
@@ -952,8 +960,14 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		let automationRegistration: Awaited<ReturnType<BrowserView['prepareAutomationKeyInput']>> = undefined;
 		// Why the last key preparation failed. The callback fills it in during the awaits below.
 		let keyFailure: BrowserViewAutomationKeyFailureReason | undefined;
-		const onKeyFailure = (reason: BrowserViewAutomationKeyFailureReason) => { keyFailure = reason; };
+		// Which frames did not answer when the failure was a timeout (kinds and counts only).
+		let keyFailureDetail: IBrowserViewAutomationKeyFailureDetail | undefined;
+		const onKeyFailure = (reason: BrowserViewAutomationKeyFailureReason, _phase: 'register' | 'activate', detail?: IBrowserViewAutomationKeyFailureDetail) => {
+			keyFailure = reason;
+			keyFailureDetail = detail;
+		};
 		const lastKeyFailure = () => keyFailure;
+		const lastKeyFailureDetail = () => keyFailureDetail;
 		if (command.method === 'Input.dispatchKeyEvent') {
 			if (!keySignature) {
 				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: ${command.method} does not have a suppressible exact key signature` };
@@ -961,6 +975,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			this.browserDiagnostics?.recorder.noteKeyAttempt(paradisBrowserViewDiagnosticHost(view));
 			for (let attempt = 0; attempt < 2 && !automationRegistration; attempt++) {
 				keyFailure = undefined;
+				keyFailureDetail = undefined;
 				try {
 					automationRegistration = await view.prepareAutomationKeyInput(keySignature, onKeyFailure);
 				} catch {
@@ -973,9 +988,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 				}
 			}
 			if (!automationRegistration) {
-				this.reportAutomationKeyFailure('register', lastKeyFailure());
-				this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'register', lastKeyFailure());
-				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure())})` };
+				this.reportAutomationKeyFailure('register', lastKeyFailure(), lastKeyFailureDetail());
+				this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'register', lastKeyFailure(), lastKeyFailureDetail()?.unansweredFrames);
+				return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be registered (${describeAutomationKeyFailure(lastKeyFailure(), lastKeyFailureDetail())})` };
 			}
 		}
 
@@ -995,15 +1010,16 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			if (automationRegistration) {
 				let activated = false;
 				keyFailure = undefined;
+				keyFailureDetail = undefined;
 				try {
 					activated = await automationRegistration.activate();
 				} catch {
 					// Activation failures are definite because the debugger command has not been sent.
 				}
 				if (!activated) {
-					this.reportAutomationKeyFailure('activate', lastKeyFailure());
-					this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'activate', lastKeyFailure());
-					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure())})` };
+					this.reportAutomationKeyFailure('activate', lastKeyFailure(), lastKeyFailureDetail());
+					this.browserDiagnostics?.recorder.noteKeySuppressionFailure(paradisBrowserViewDiagnosticHost(view), 'activate', lastKeyFailure(), lastKeyFailureDetail()?.unansweredFrames);
+					return { status: 'retryable', message: `PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(lastKeyFailure(), lastKeyFailureDetail())})` };
 				}
 				if (this.resolveExistingExactView(descriptor) !== view) {
 					return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };

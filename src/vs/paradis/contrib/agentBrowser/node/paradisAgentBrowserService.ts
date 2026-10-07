@@ -78,6 +78,7 @@ import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendS
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
+import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -3993,7 +3994,12 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			return this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal));
+			const devtoolsResult = await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal));
+			if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
+				// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
+				return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
+			}
+			return devtoolsResult;
 		}
 
 		// ページを操作する Para のツールは、tab_id（省略可）でどのタブかを決める
@@ -4245,6 +4251,25 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			},
 		}, name, args));
+	}
+
+	/**
+	 * 内蔵の `fill` がキーの抑止を用意できずに断られたとき、fill_by（uid で探す）で入れ直す。fill_by と同じく
+	 * 接続元（pane か tunnel）を確かめ、確かめられなければ元の失敗を返す。
+	 */
+	private async _refillWithInsertText(ingressLease: IParadisAgentBrowserIngressLease, pageLease: IParadisAgentBrowserIngressLease, args: unknown, originalResult: unknown, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
+		const fillArgs = paradisFillFallbackArgs(args);
+		const binding = this._bindingForKey(this._pageKeyOf(pageLease));
+		if (!fillArgs || !binding || signal?.aborted) {
+			return originalResult;
+		}
+		const caller = await this._classifyCaller(ingressLease.token, socket);
+		this._requireIngressLease(ingressLease);
+		if (caller === 'unverified' || this._bindingForKey(this._pageKeyOf(pageLease)) !== binding) {
+			return originalResult;
+		}
+		const refilled = await this._callBrowserActTool(pageLease, binding, 'fill_by', fillArgs, signal);
+		return paradisMergeFillFallbackResult(originalResult, refilled);
 	}
 
 	/**
