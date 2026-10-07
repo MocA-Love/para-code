@@ -6,13 +6,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisStripAgentInvisibleCharacters } from './paradisAgentInvisibleText.js';
+
 type SendText = (text: string, execute?: boolean, bracketedPasteMode?: boolean) => Promise<void>;
 
 function delayForTuiPaste(): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, 250));
 }
 
-/** TUIの貼付け確定とEnterを分離し、待機中に対象が変わった場合は実行しない。 */
+/**
+ * TUIの貼付け確定とEnterを分離し、待機中に対象が変わった場合は実行しない。
+ * 目に見えない文字は貼る前に落とす（Claude Code はそれがあると Enter で送らず確認を出すため）。
+ */
 export async function paradisSendAgentMessageToTui(
 	text: string,
 	sendText: SendText,
@@ -20,7 +25,7 @@ export async function paradisSendAgentMessageToTui(
 	delay: () => Promise<void> = delayForTuiPaste,
 ): Promise<{ readonly consumed: boolean; readonly executed: boolean }> {
 	if (!(await validate())) { return { consumed: false, executed: false }; }
-	await sendText(text, false, true);
+	await sendText(paradisStripAgentInvisibleCharacters(text), false, true);
 	await delay();
 	if (!(await validate())) { return { consumed: true, executed: false }; }
 	await sendText('\r', false, false);
