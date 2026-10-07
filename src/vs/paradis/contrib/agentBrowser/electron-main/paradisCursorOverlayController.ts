@@ -21,12 +21,15 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { localize } from '../../../../nls.js';
 import { browserViewIsolatedWorldId } from '../../../../platform/browserView/common/browserView.js';
 import {
+	IParadisCursorOverlayPageTraits,
+	IParadisCursorPacing,
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
 	ParadisCursorOverlayCommand,
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
 	paradisCursorGlideMs,
 	paradisCursorMoveMaxMs,
+	paradisParseCursorOverlayPageTraits,
 } from '../common/paradisCursorOverlay.js';
 
 /**
@@ -69,11 +72,13 @@ const FLASH_MIN_INTERVAL_MS = 1_200;
 /** フォーカス追従を送る最小間隔（ms）。打鍵1回ごとに送らないための間引き。 */
 const FOCUS_NUDGE_INTERVAL_MS = 250;
 
-/** カーソルの現在位置（ビューポート座標）と、それを置いた時刻。 */
+/** カーソルの現在位置（ビューポート座標）と、それを置いた時刻・着く時刻。 */
 interface IParadisCursorPosition {
 	readonly x: number;
 	readonly y: number;
 	readonly at: number;
+	/** 滑り終えてその点に着く時刻。押す前の move は待たずに配送するので、押した時点ではまだ途中のことがある。 */
+	readonly arriveAt: number;
 }
 
 export class ParadisCursorOverlayController {
@@ -107,6 +112,13 @@ export class ParadisCursorOverlayController {
 	private readonly failureStreak = new WeakMap<object, number>();
 	/** 最後にフォーカス追従を送った時刻（キー入力のたびに送らないための間引き）。 */
 	private readonly lastFocusNudgeAt = new WeakMap<object, number>();
+	/**
+	 * ページが返した事情（動きを減らす設定・描けない <html>）。どちらかなら待たない。
+	 * ページの移動で中身が変わるので {@link onNavigated} で忘れる。
+	 */
+	private readonly pageTraits = new WeakMap<object, IParadisCursorOverlayPageTraits>();
+	/** ページが移動してからまだ move を送っていないビュー。最初の move はその場に現れるだけなので待たない。 */
+	private readonly navigatedSinceMove = new WeakSet<object>();
 
 	constructor(
 		/** 設定 `paradis.agentBrowser.showCursorOverlay` の現在値を返す。 */
@@ -121,8 +133,13 @@ export class ParadisCursorOverlayController {
 	 * その分だけ遅らせることで、ホバーが「カーソルが着いた瞬間」に効くように見える）。
 	 * 移動時間はmain側で距離から決めるので、ページの応答は待たない。
 	 * `mousePressed` は波紋を出すだけで待たない。`mouseReleased` と `mouseWheel` は何もしない。
+	 *
+	 * `pacing` は shared process からの指示。`pressFollows` の move はカーソルを滑らせるだけで待たない
+	 * （位置を測ってから押すまでの間に待つと、その間にページが動いたとき古い座標を押す）。
+	 * `maxWaitMs` は 1 回のツール呼び出しで待つ合計を抑えるための上限。
+	 * ページが動きを減らす設定のとき、カーソルを描けないページのときも待たない。
 	 */
-	async onMouseEvent(view: IParadisCursorOverlayTarget, params: Readonly<Record<string, unknown>>): Promise<number> {
+	async onMouseEvent(view: IParadisCursorOverlayTarget, params: Readonly<Record<string, unknown>>, pacing?: IParadisCursorPacing): Promise<number> {
 		const type = params.type;
 		if (type !== 'mouseMoved' && type !== 'mousePressed') {
 			return 0;
@@ -131,6 +148,8 @@ export class ParadisCursorOverlayController {
 			// 表示中に設定をOFFにされたら、既に置いてあるカーソルはここで片付ける
 			// （`idleMs` に任せると「設定が効かない」と見える）。
 			this.removeIfDisabled(view);
+			// 描いていない間の位置は覚えない（一覧ウィンドウへの写しは瞬間移動になる。`lastGlideMs`）。
+			this.position.delete(view);
 			return 0;
 		}
 		const { x, y } = params;
@@ -139,17 +158,50 @@ export class ParadisCursorOverlayController {
 		}
 		if (type === 'mousePressed') {
 			// 波紋は配送を待たせる価値がないので投げっぱなしにする。
-			this.position.set(view, { x, y, at: this.now() });
-			this.run(view, { kind: 'press', x, y, label: cursorLabel() });
+			const at = this.now();
+			const previous = this.position.get(view);
+			// 直前の move がまだこの点へ滑っている途中なら、着いた時に波紋を出させる。
+			const delayMs = previous && previous.arriveAt > at && Math.abs(previous.x - x) < 1 && Math.abs(previous.y - y) < 1
+				? Math.round(previous.arriveAt - at)
+				: 0;
+			this.position.set(view, { x, y, at, arriveAt: delayMs > 0 ? previous!.arriveAt : at });
+			this.run(view, { kind: 'press', x, y, label: cursorLabel(), ...(delayMs > 0 ? { delayMs } : {}) });
 			return 0;
 		}
 		const at = this.now();
 		const next = { x, y, at };
-		const glideMs = paradisCursorGlideMs(this.position.get(view), next, paradisCursorMoveMaxMs(params));
-		this.position.set(view, next);
+		const fresh = this.navigatedSinceMove.has(view);
+		this.navigatedSinceMove.delete(view);
+		const glideMs = fresh ? 0 : paradisCursorGlideMs(this.position.get(view), next, paradisCursorMoveMaxMs(params));
+		this.position.set(view, { ...next, arriveAt: at + glideMs });
 		// 実行の完了は待たない。待つのはカーソルが滑り終わるぶんだけで、その間に注入は済む。
 		this.run(view, { kind: 'move', x, y, label: cursorLabel(), durationMs: glideMs });
-		return paradisClampCursorWaitMs(glideMs, PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS);
+		const traits = this.pageTraits.get(view);
+		if (pacing?.pressFollows || traits?.calm || traits?.blocked) {
+			return 0;
+		}
+		return paradisClampCursorWaitMs(glideMs, Math.min(PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS, pacing?.maxWaitMs ?? PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS));
+	}
+
+	/**
+	 * 直前の move でページのカーソルが滑る時間（ms）。待った時間とは別の値で、押す前の move・動きを
+	 * 減らす設定では待たなくてもカーソルは滑る。一覧ウィンドウへの写しを同じ速さで滑らせるために使う。
+	 */
+	lastGlideMs(view: IParadisCursorOverlayTarget): number {
+		const position = this.position.get(view);
+		return position ? Math.max(0, Math.round(position.arriveAt - position.at)) : 0;
+	}
+
+	/**
+	 * ページのメインフレームが移動した・読み込み直した。
+	 *
+	 * ページ側のカーソルは isolated world ごと消えているので、位置の台帳も忘れる。残すと、次の move で
+	 * ページ側は瞬間的に現れるのに、main は前の位置からの距離ぶん待つ。ページの事情も新しいページで測り直す。
+	 */
+	onNavigated(view: IParadisCursorOverlayTarget): void {
+		this.position.delete(view);
+		this.pageTraits.delete(view);
+		this.navigatedSinceMove.add(view);
 	}
 
 	/**
@@ -157,7 +209,8 @@ export class ParadisCursorOverlayController {
 	 *
 	 * キー入力は座標を持たないので、どこへ寄せるかはページ側が
 	 * `document.activeElement` から決める。打鍵のたびに送っても意味がないので間引く。
-	 * （`fill` のようにCDPの入力すら出さない操作は、ページ側の focusin 監視が拾う。）
+	 * ページのフォーカスを見張って寄せることはしない（ページのスクリプトが動かしたフォーカスに付いて
+	 * いくと、エージェントが触っていない場所を操作したように見える）。
 	 */
 	onKeyEvent(view: IParadisCursorOverlayTarget): void {
 		if (!this.isActive(view)) {
@@ -359,8 +412,12 @@ export class ParadisCursorOverlayController {
 			if (command.kind === 'move' || command.kind === 'press' || command.kind === 'focus') {
 				this.injected.add(view);
 			}
-			await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
+			const result = await view.webContents.executeJavaScriptInIsolatedWorld(browserViewIsolatedWorldId, [{ code }]);
 			this.failureStreak.delete(view);
+			const traits = paradisParseCursorOverlayPageTraits(result);
+			if (traits) {
+				this.pageTraits.set(view, traits);
+			}
 		} catch {
 			this.markFailed(view);
 		}

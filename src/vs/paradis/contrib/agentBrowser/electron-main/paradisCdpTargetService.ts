@@ -44,6 +44,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
+import { paradisParseCursorPacing } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -108,6 +109,15 @@ interface IParadisCursorViewport {
  * ずれ、短くすると入力のたびに CDP 往復が増える。
  */
 const CURSOR_VIEWPORT_TTL_MS = 2_000;
+
+/**
+ * WebP の素通しの撮影で隠したカーソルを、shared process が戻しに来なくても戻すまでの時間（ms）。
+ * 撮影の上限（30 秒）より長くする。shared process が落ちた・戻しの IPC が届かなかったときの保険。
+ */
+const RAW_CAPTURE_RESTORE_MS = 35_000;
+
+/** エージェントの入力からこの時間（ms）の内に来た BrowserView のフォーカスは、利用者の操作とみなさない。 */
+const AGENT_INPUT_FOCUS_ECHO_MS = 1_000;
 
 /** PDF の既定のファイル名に使う、いまのページのタイトル（取れなければ `page`）。 */
 function pageTitle(view: BrowserView): string {
@@ -185,6 +195,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 * 割り込むと、消したはずのカーソルが後から復活してしまう。測る前の世代と突き合わせて落とす。
 	 */
 	private readonly cursorGenerations = new WeakMap<BrowserView, number>();
+	/** WebP の素通しの撮影で隠したまま、まだ戻していない回数（exact descriptor ごと）。 */
+	/** エージェントの入力を最後に配送した時刻（その直後のフォーカスを利用者のものと取り違えないため）。 */
+	private readonly lastAgentInputAt = new WeakMap<BrowserView, number>();
+	private readonly rawCaptureViews = new Map<string, { readonly view: BrowserView; readonly timer: ReturnType<typeof setTimeout> }[]>();
 	private readonly _onDidChangeAgentCursor = new Emitter<IParadisAgentCursorEvent>();
 	/**
 	 * カーソル演出の写し。
@@ -246,6 +260,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	private onViewCreated(childViewId: string, parentViewId: string | undefined): void {
+		this.watchViewForCursor(childViewId);
 		try {
 			// プロファイルのタブへ掛けた上書きは、そのプロファイルに別のタブが開かれたら外す
 			// （利用者や別のペインがプロファイルを使い始めた）。
@@ -268,6 +283,50 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		} catch {
 			// ビューが既に閉じている。
 		}
+	}
+
+	/**
+	 * カーソルの演出の後始末に要るビューの出来事を見張る。
+	 *
+	 * - 利用者がページを押してフォーカスを取ったら、エージェントのカーソルを消す（次のエージェントの入力で
+	 *   戻る）。消す契機が入力を断ったときだけだと、最長 1 分（`idleMs`）利用者のポインタの横に残る
+	 * - メインフレームが移動したら位置の台帳を忘れる（ページ側のカーソルは isolated world ごと消えている）
+	 */
+	private watchViewForCursor(viewId: string): void {
+		let view: BrowserView | undefined;
+		try {
+			view = this.browserViewMainService.tryGetBrowserView(viewId);
+		} catch {
+			return;
+		}
+		if (!view || view.webContents.isDestroyed()) {
+			return;
+		}
+		const target = view;
+		const webContents = target.webContents;
+		const onNavigate = () => this.cursorOverlay.onNavigated(target);
+		const focusListener = target.onDidChangeFocus(({ focused }) => {
+			// エージェントの入力の直後のフォーカスは利用者のものではない（ページがエージェントの入力に
+			// 応えてフォーカスを動かした）。そのときはカーソルを残す。
+			const agentInputAt = this.lastAgentInputAt.get(target);
+			if (focused && (agentInputAt === undefined || Date.now() - agentInputAt > AGENT_INPUT_FOCUS_ECHO_MS)) {
+				this.removeCursorOverlay(viewId, target);
+			}
+		});
+		try {
+			webContents.on('did-navigate', onNavigate);
+		} catch {
+			// 見張れなくても、次の move が少し長く待つだけ。
+		}
+		const closeListener = target.onDidClose(() => {
+			focusListener.dispose();
+			closeListener.dispose();
+			try {
+				webContents.off('did-navigate', onNavigate);
+			} catch {
+				// 既に破棄済み。
+			}
+		});
 	}
 
 	/**
@@ -612,6 +671,75 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
+	/**
+	 * CDP へ素通しする撮影（WebP）の前に、カーソルの演出を隠す。見えていないビューは素通しで撮れないので
+	 * 隠さずに false を返す（呼び出し側が撮影を断る）。
+	 */
+	async beginExactViewRawCapture(descriptorValue: unknown): Promise<boolean | null> {
+		const visible = await this.isExactViewVisible(descriptorValue);
+		if (visible !== true) {
+			return visible;
+		}
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
+		if (!view) {
+			return null;
+		}
+		const key = JSON.stringify(descriptor);
+		const entries = this.rawCaptureViews.get(key) ?? [];
+		const entry = {
+			view,
+			timer: setTimeout(() => {
+				// 戻しに来なかった。隠したままにしない。
+				this.takeRawCapture(key, entry);
+				this.restoreAfterRawCapture(descriptor!, view, false);
+			}, RAW_CAPTURE_RESTORE_MS),
+		};
+		(entry.timer as unknown as { unref?(): void }).unref?.();
+		entries.push(entry);
+		this.rawCaptureViews.set(key, entries);
+		await this.cursorOverlay.hideForCapture(view);
+		return true;
+	}
+
+	/** 台帳から 1 件取り出す（`entry` を省けば古い順）。 */
+	private takeRawCapture(key: string, entry?: { readonly view: BrowserView; readonly timer: ReturnType<typeof setTimeout> }): { readonly view: BrowserView; readonly timer: ReturnType<typeof setTimeout> } | undefined {
+		const entries = this.rawCaptureViews.get(key);
+		if (!entries) {
+			return undefined;
+		}
+		const index = entry ? entries.indexOf(entry) : 0;
+		const [taken] = index >= 0 ? entries.splice(index, 1) : [];
+		if (entries.length === 0) {
+			this.rawCaptureViews.delete(key);
+		}
+		if (taken) {
+			clearTimeout(taken.timer);
+		}
+		return taken;
+	}
+
+	private restoreAfterRawCapture(descriptor: IParadisExactBrowserViewDescriptor, view: BrowserView, capturedValue: boolean): void {
+		const captured = capturedValue && this.resolveExistingExactView(descriptor) === view;
+		if (this.cursorOverlay.afterCapture(view, captured)) {
+			this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'captured' });
+		}
+	}
+
+	/** {@link beginExactViewRawCapture} で隠したカーソルを戻す。 */
+	async endExactViewRawCapture(descriptorValue: unknown, capturedValue: unknown): Promise<void> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		if (!descriptor) {
+			return;
+		}
+		// 隠した回数より多く戻さない（台帳がずれると、別の撮影の最中にカーソルを戻してしまう）。
+		// 撮影の間に targetId が変わっていても、隠したビューへ戻す（隠したままにしない）。
+		const taken = this.takeRawCapture(JSON.stringify(descriptor));
+		if (taken) {
+			this.restoreAfterRawCapture(descriptor, taken.view, capturedValue === true);
+		}
+	}
+
 	/** Apply background throttling only to the concrete object named by the exact descriptor. */
 	async setExactViewBackgroundThrottling(descriptorValue: unknown, enabledValue: unknown): Promise<boolean> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
@@ -751,7 +879,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/** Dispatch one validated input command to the exact BrowserView debugger root without focusing it. */
-	async dispatchExactViewInput(descriptorValue: unknown, methodValue: unknown, paramsJsonValue: unknown): Promise<IParadisCdpInputDispatchResult> {
+	async dispatchExactViewInput(descriptorValue: unknown, methodValue: unknown, paramsJsonValue: unknown, pacingValue?: unknown): Promise<IParadisCdpInputDispatchResult> {
 		const command = paradisParseCdpInputCommand(methodValue, paramsJsonValue);
 		if (!command) {
 			const method = typeof methodValue === 'string' && methodValue.length <= 256 ? methodValue : '<invalid method>';
@@ -776,16 +904,17 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
 		}
 		this.nudgeFrameBeforeInput(descriptor.viewId, view);
-		// この直後のフォーカスや input-event は、利用者ではなくエージェントの入力によるもの。
-		this.browserDiagnostics?.recorder.noteAgentInput(view);
 
 		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
-		// 目標座標へ滑らせ、着いてから配送することで、ホバーやクリックが「カーソルが着いた瞬間」に
-		// 効いているように見せる。待ち時間は上限つきで、演出が失敗しても0になるだけ。
+		// 目標座標へ滑らせ、着いてから配送することで、ホバーが「カーソルが着いた瞬間」に
+		// 効いているように見せる。直後に押す move（`pacing.pressFollows`）は待たない。待ち時間は
+		// 上限つきで、演出が失敗しても0になるだけ。
 		// この後の commit 手順は毎回 authority と focus を取り直すので、ここで待つのは安全。
+		let cursorWaitMs = 0;
 		if (command.method === 'Input.dispatchMouseEvent') {
-			const cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params);
-			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, cursorWaitMs);
+			cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params, paradisParseCursorPacing(pacingValue));
+			// 一覧ウィンドウの写しは、待った時間ではなくページのカーソルが滑る時間で動かす。
+			void this.fireAgentCursorMove(descriptor.viewId, view, command.params, this.cursorOverlay.lastGlideMs(view));
 			if (cursorWaitMs > 0) {
 				await timeout(cursorWaitMs);
 			}
@@ -877,6 +1006,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			if (!focusAuthorityBeforeSend) {
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus authority became unavailable before input dispatch' };
 			}
+			// この直後のフォーカスや input-event は、利用者ではなくエージェントの入力によるもの。カーソルの
+			// 待ちとキーの準備の後に記録する（前に記録すると、待ちの分だけ写しとみなす窓から外れる）。
+			this.browserDiagnostics?.recorder.noteAgentInput(view);
+			this.lastAgentInputAt.set(view, Date.now());
 			committed = true;
 			// エージェントの右クリックで Para Code の OS のメニューを出さない（ページの contextmenu は届く）。
 			// 印はこの入力（座標・キー）にだけ付き、利用者の右クリックは止めない。
@@ -910,7 +1043,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			} catch {
 				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: exact BrowserView focus state became unavailable after input dispatch' };
 			}
-			return { status: 'success', result };
+			return cursorWaitMs > 0 ? { status: 'success', result, cursorWaitMs } : { status: 'success', result };
 		} finally {
 			if (committed) {
 				automationRegistration?.complete();
