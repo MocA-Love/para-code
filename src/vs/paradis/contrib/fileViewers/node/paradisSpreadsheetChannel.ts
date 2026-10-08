@@ -12,7 +12,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
+import { PARADIS_SPREADSHEET_CHANNEL, type IParadisParseWorkbookOptions, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
 
 export class ParadisSpreadsheetChannel implements IServerChannel<string> {
 
@@ -30,7 +30,8 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string> {
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]))) as Promise<T>;
+			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]), parseWorkbookOptions(args[1]))) as Promise<T>;
+			case 'collectSemanticDiagnostics': return this.getService().then(service => service.collectSemanticDiagnostics(String(args[0]))) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -53,4 +54,12 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string> {
 export function registerParadisSpreadsheet(server: IPCServer<string>): IDisposable {
 	server.registerChannel(PARADIS_SPREADSHEET_CHANNEL, new ParadisSpreadsheetChannel());
 	return Disposable.None;
+}
+
+/** IPC で渡る任意指定は、知っている真偽値だけを通す（以前は第 2 引数を捨てていた）。 */
+function parseWorkbookOptions(value: unknown): IParadisParseWorkbookOptions | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	return (value as { semanticDiagnostics?: unknown }).semanticDiagnostics === true ? { semanticDiagnostics: true } : undefined;
 }

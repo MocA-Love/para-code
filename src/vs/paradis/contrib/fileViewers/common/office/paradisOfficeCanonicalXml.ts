@@ -414,7 +414,22 @@ class ParadisOfficeXmlParser {
 		this.consume(quote);
 		const value = new XmlValueBuilder();
 		let attributeCharacters = 0;
+		const quoteCode = quote.charCodeAt(0);
 		while (this.peek() !== quote) {
+			// Plain run: the same characters the loop below would append one by one unchanged.
+			const run = this.plainRunEnd(quoteCode, true);
+			if (run > this.index) {
+				const text = this.xml.slice(this.index, run);
+				attributeCharacters += text.length;
+				if (attributeCharacters > this.limits.attributeLength) {
+					throw new ParadisOfficePackageError('limitExceeded');
+				}
+				this.index = run;
+				this.recordCharacters(text.length);
+				value.append(text);
+				this.checkpointIfNeeded();
+				continue;
+			}
 			if (this.index >= this.xml.length || this.peek() === '<') {
 				this.malformed();
 			}
@@ -433,6 +448,17 @@ class ParadisOfficeXmlParser {
 	private parseCharacterData(cdata: boolean, countCharacters: boolean): string {
 		const value = new XmlValueBuilder();
 		while (this.index < this.xml.length && this.peek() !== '<') {
+			const run = this.plainRunEnd(-1, false);
+			if (run > this.index) {
+				const text = this.xml.slice(this.index, run);
+				this.index = run;
+				if (countCharacters) {
+					this.recordCharacters(text.length);
+				}
+				value.append(text);
+				this.checkpointIfNeeded();
+				continue;
+			}
 			if (!cdata && this.startsWith(']]>')) {
 				this.malformed();
 			}
@@ -444,6 +470,26 @@ class ParadisOfficeXmlParser {
 			}
 		}
 		return value.build();
+	}
+
+	/**
+	 * End of a run of code units that need no per-character handling: valid XML characters that are not
+	 * markup (`<`, `&`, `]`, the attribute quote), not CR (line-end normalization), not surrogates, and,
+	 * in attribute values, not TAB or LF (attribute-value normalization).
+	 */
+	private plainRunEnd(quoteCode: number, attribute: boolean): number {
+		const xml = this.xml;
+		let index = this.index;
+		while (index < xml.length) {
+			const code = xml.charCodeAt(index);
+			if (code === 0x3c || code === 0x26 || code === 0x5d || code === quoteCode || code === 0x0d
+				|| (attribute ? code < 0x20 : (code < 0x20 && code !== 0x09 && code !== 0x0a))
+				|| (code > 0xd7ff && code < 0xe000) || code > 0xfffd) {
+				break;
+			}
+			index++;
+		}
+		return index;
 	}
 
 	private parseEntity(): string {
@@ -495,6 +541,28 @@ class ParadisOfficeXmlParser {
 	}
 
 	private parseName(): string {
+		// ASCII fast path: Office names are almost always ASCII. Same acceptance as the code-point loop
+		// below (ASCII name characters are valid XML code points and never CR), without per-character
+		// string concatenation. Any non-ASCII character falls back to the general loop.
+		const xml = this.xml;
+		const start = this.index;
+		let index = start;
+		while (index < xml.length) {
+			const code = xml.charCodeAt(index);
+			if (code >= 0x80 || !(index === start ? isXmlNameStart(code) : isXmlNameCharacter(code))) {
+				break;
+			}
+			index++;
+		}
+		if (index > start && (index >= xml.length || xml.charCodeAt(index) < 0x80)) {
+			this.index = index;
+			this.checkpointIfNeeded();
+			return xml.slice(start, index);
+		}
+		return this.parseNameSlow();
+	}
+
+	private parseNameSlow(): string {
 		const first = this.peekCodePoint();
 		if (first === undefined || !isXmlNameStart(first)) {
 			this.malformed();
@@ -705,41 +773,96 @@ export interface CanonicalXmlResult {
 	readonly markupCompatibility: readonly { readonly branch: 'choice' | 'fallback'; readonly selected: boolean; readonly hash: ParadisOfficeFingerprint; readonly sourceRef: CanonicalXmlSourceRef }[];
 }
 
-/** Canonicalizes namespace-aware adapter output only. */
-export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relationshipResolver: (relationshipId: string) => string | undefined, checkpoint?: () => void): CanonicalXmlResult {
+/** A child position, materialized into a `number[]` path only when a source reference needs it. */
+interface CanonicalPathLink { readonly parent: CanonicalPathLink | undefined; readonly index: number }
+
+function materializePath(link: CanonicalPathLink): number[] {
+	const path: number[] = [];
+	for (let current: CanonicalPathLink | undefined = link; current; current = current.parent) { path.push(current.index); }
+	return path.reverse();
+}
+
+/**
+ * Canonicalizes namespace-aware adapter output only.
+ *
+ * The canonical form is appended to one fragment list instead of returning a string per node, so a
+ * deep document is no longer copied once per nesting level. A subtree string is joined only where its
+ * hash is recorded (Markup Compatibility branches and elements outside the Office namespaces). The
+ * output string, hashes, and source references are identical to the per-node string form.
+ */
+export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relationshipResolver: (relationshipId: string) => string | undefined, checkpoint?: () => void, rootHash: 'computed' | 'deferred' = 'computed'): CanonicalXmlResult {
 
 	const sourceRefs: CanonicalXmlSourceRef[] = [];
 	const markupCompatibility: CanonicalXmlResult['markupCompatibility'][number][] = [];
-	const render = (node: ParadisOfficeXmlNode, path: readonly number[], preserve: boolean, inheritedBindings: Readonly<Record<string, string>> = {}): string => {
+	const render = (node: ParadisOfficeXmlNode, link: CanonicalPathLink, preserve: boolean, inheritedBindings: Readonly<Record<string, string>>, out: string[]): void => {
 		checkpoint?.();
-		if (node.kind === 'text') { return !preserve && !node.value.trim() ? '' : `{${JSON.stringify(node.value)}}`; }
-		const nextPreserve = preserve || node.attributes.some(attribute => attribute.uri === 'http://www.w3.org/XML/1998/namespace' && attribute.local === 'space' && attribute.value === 'preserve');
-		const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: isOfficeRelationshipAttribute(attribute) ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value })).sort((left, right) => left.name.localeCompare(right.name) || left.value.localeCompare(right.value));
-		const bindings = { ...inheritedBindings, ...(node.namespaceBindings ?? {}) };
-		const mcBranches = node.children.filter((child): child is Extract<ParadisOfficeXmlNode, { kind: 'element' }> => child.kind === 'element' && child.uri === markupCompatibilityNamespace && (child.local === 'Choice' || child.local === 'Fallback'));
-		let children: string;
-		if (mcBranches.length > 0) {
-			const selected = selectMarkupCompatibilityBranch(mcBranches, bindings);
-			const hashes = mcBranches.map((branch, index) => {
-				const branchPath = [...path, node.children.indexOf(branch)];
-				const canonical = render(branch, branchPath, nextPreserve, bindings);
-				const sourceRef = { path: branchPath, hash: sha256Fingerprint(canonical) };
+		if (node.kind === 'text') {
+			if (preserve || node.value.trim()) { out.push(`{${JSON.stringify(node.value)}}`); }
+			return;
+		}
+		let nextPreserve = preserve;
+		let head = `({${node.uri}}${node.local}`;
+		if (node.attributes.length > 0) {
+			if (!nextPreserve) {
+				nextPreserve = node.attributes.some(attribute => attribute.uri === 'http://www.w3.org/XML/1998/namespace' && attribute.local === 'space' && attribute.value === 'preserve');
+			}
+			const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: isOfficeRelationshipAttribute(attribute) ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value }));
+			if (attributes.length > 1) {
+				attributes.sort((left, right) => canonicalCollator.compare(left.name, right.name) || canonicalCollator.compare(left.value, right.value));
+			}
+			for (const attribute of attributes) { head += `[${attribute.name}=${JSON.stringify(attribute.value)}]`; }
+		}
+		const bindings = node.namespaceBindings === inheritedBindings || !node.namespaceBindings || Object.keys(node.namespaceBindings).length === 0 ? inheritedBindings : { ...inheritedBindings, ...node.namespaceBindings };
+		const start = out.length;
+		let mcBranches: Extract<ParadisOfficeXmlNode, { kind: 'element' }>[] | undefined;
+		for (const child of node.children) {
+			if (child.kind === 'element' && child.uri === markupCompatibilityNamespace && (child.local === 'Choice' || child.local === 'Fallback')) {
+				(mcBranches ??= []).push(child);
+			}
+		}
+		if (mcBranches) {
+			const branches = mcBranches;
+			const selected = selectMarkupCompatibilityBranch(branches, bindings);
+			const hashes = branches.map((branch, index) => {
+				const branchLink: CanonicalPathLink = { parent: link, index: node.children.indexOf(branch) };
+				const branchOut: string[] = [];
+				render(branch, branchLink, nextPreserve, bindings, branchOut);
+				const sourceRef = { path: materializePath(branchLink), hash: sha256Fingerprint(branchOut.join('')) };
 				sourceRefs.push(sourceRef);
 				markupCompatibility.push({ branch: branch.local === 'Choice' ? 'choice' : 'fallback', selected: branch === selected, hash: sourceRef.hash, sourceRef });
 				return `${branch === selected ? 'selected' : 'opaque'}:${sourceRef.hash.value}:${index}`;
 			});
-			children = `${node.children.filter(child => !mcBranches.includes(child as Extract<ParadisOfficeXmlNode, { kind: 'element' }>)).map((child, index) => render(child, [...path, index], nextPreserve, bindings)).join('')}[MC:${hashes.join(',')}]`;
+			out.push(head);
+			// The path index of a non-branch child counts only the non-branch children (unchanged).
+			let index = 0;
+			for (const child of node.children) {
+				if (branches.includes(child as Extract<ParadisOfficeXmlNode, { kind: 'element' }>)) { continue; }
+				render(child, { parent: link, index: index++ }, nextPreserve, bindings, out);
+			}
+			out.push(`[MC:${hashes.join(',')}])`);
 		} else {
-			children = node.children.map((child, index) => render(child, [...path, index], nextPreserve, bindings)).join('');
+			out.push(head);
+			for (let index = 0; index < node.children.length; index++) {
+				render(node.children[index], { parent: link, index }, nextPreserve, bindings, out);
+			}
+			out.push(')');
 		}
-		const value = `({${node.uri}}${node.local}${attributes.map(attribute => `[${attribute.name}=${JSON.stringify(attribute.value)}]`).join('')}${children})`;
-		if (!isKnownOfficeQName(`{${node.uri}}${node.local}`)) { sourceRefs.push({ path, hash: sha256Fingerprint(value) }); }
-		return value;
+		if (!isKnownOfficeNamespace(node.uri)) { sourceRefs.push({ path: materializePath(link), hash: sha256Fingerprint(out.slice(start).join('')) }); }
 	};
-	const canonical = render(document.root, [0], false);
-	return { canonical, hash: sha256Fingerprint(canonical), sourceRefs, markupCompatibility };
+	const out: string[] = [];
+	render(document.root, { parent: undefined, index: 0 }, false, {}, out);
+	const canonical = out.join('');
+	return { canonical, hash: rootHash === 'deferred' ? deferredRootHash : sha256Fingerprint(canonical), sourceRefs, markupCompatibility };
 }
 
+/**
+ * Placeholder root hash for callers that hash `canonical` themselves with a native SHA-256 (the
+ * package inventory hashes it through its archive). Never published.
+ */
+const deferredRootHash: ParadisOfficeFingerprint = Object.freeze({ algorithm: 'sha256', value: '', byteLength: 0 });
+
+/** Same ordering as `String.prototype.localeCompare` with no arguments, without rebuilding a collator per call. */
+const canonicalCollator = new Intl.Collator();
 const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const officeRelationshipNamespaces = new Set([
 	'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
@@ -770,10 +893,11 @@ function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOffic
 	return branches.find(branch => branch.local === 'Fallback') ?? branches[0];
 }
 
-function isKnownOfficeQName(qname: string): boolean {
-
-	return qname.startsWith('{http://schemas.openxmlformats.org/') || qname.startsWith('{http://schemas.microsoft.com/office/');
+/** Elements outside the Office namespaces get their own source hash. */
+function isKnownOfficeNamespace(uri: string): boolean {
+	return uri.startsWith('http://schemas.openxmlformats.org/') || uri.startsWith('http://schemas.microsoft.com/office/');
 }
+
 
 function validateLimits(limits: ParadisOfficeXmlLimits): void {
 
@@ -785,20 +909,31 @@ function validateLimits(limits: ParadisOfficeXmlLimits): void {
 }
 
 function sha256Fingerprint(value: string): ParadisOfficeFingerprint {
-
 	const bytes = new TextEncoder().encode(value);
-	// The parser's byte and character budgets keep canonical strings far below SHA-256's 2^32-bit length-field boundary.
-	const words: number[] = [];
-	for (let index = 0; index < bytes.length; index++) {
-		words[index >> 2] = (words[index >> 2] ?? 0) | (bytes[index] << (24 - (index % 4) * 8));
-	}
-	words[bytes.length >> 2] = (words[bytes.length >> 2] ?? 0) | (0x80 << (24 - (bytes.length % 4) * 8));
-	words[(((bytes.length + 8) >> 6) + 1) * 16 - 1] = bytes.length * 8;
+	return { algorithm: 'sha256', value: sha256Hex(bytes), byteLength: bytes.length };
+}
+
+const sha256Schedule = new Uint32Array(64);
+
+/**
+ * FIPS 180-4 SHA-256 over typed arrays. `common` also runs in the Web worker, so no Node crypto here.
+ * The previous implementation grew a sparse number array per byte; this one hashes the same bytes
+ * into the same digest without per-byte allocation.
+ */
+function sha256Hex(bytes: Uint8Array): string {
+	const length = bytes.length;
+	const paddedLength = ((length + 9 + 63) >>> 6) << 6;
+	const padded = new Uint8Array(paddedLength);
+	padded.set(bytes);
+	padded[length] = 0x80;
+	const view = new DataView(padded.buffer);
+	view.setUint32(paddedLength - 8, Math.floor(length / 0x20000000), false);
+	view.setUint32(paddedLength - 4, (length << 3) >>> 0, false);
+	const w = sha256Schedule;
 	let h0 = 0x6a09e667; let h1 = 0xbb67ae85; let h2 = 0x3c6ef372; let h3 = 0xa54ff53a;
 	let h4 = 0x510e527f; let h5 = 0x9b05688c; let h6 = 0x1f83d9ab; let h7 = 0x5be0cd19;
-	for (let offset = 0; offset < words.length; offset += 16) {
-		const w = new Array<number>(64);
-		for (let index = 0; index < 16; index++) { w[index] = words[offset + index] ?? 0; }
+	for (let offset = 0; offset < paddedLength; offset += 64) {
+		for (let index = 0; index < 16; index++) { w[index] = view.getUint32(offset + index * 4, false); }
 		for (let index = 16; index < 64; index++) {
 			const a = w[index - 15]; const b = w[index - 2];
 			w[index] = (((a >>> 7 | a << 25) ^ (a >>> 18 | a << 14) ^ (a >>> 3)) + w[index - 16] + ((b >>> 17 | b << 15) ^ (b >>> 19 | b << 13) ^ (b >>> 10)) + w[index - 7]) | 0;
@@ -816,7 +951,7 @@ function sha256Fingerprint(value: string): ParadisOfficeFingerprint {
 		h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0;
 		h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
 	}
-	return { algorithm: 'sha256', value: [h0, h1, h2, h3, h4, h5, h6, h7].map(word => (word >>> 0).toString(16).padStart(8, '0')).join(''), byteLength: bytes.length };
+	return [h0, h1, h2, h3, h4, h5, h6, h7].map(word => (word >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
 const SHA256_CONSTANTS = [
