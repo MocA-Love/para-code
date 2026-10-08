@@ -37,7 +37,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWor
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
-import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwner } from './paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -231,6 +231,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private readonly _onDidRetireScope = this._register(new Emitter<string>());
 	readonly onDidRetireScope = this._onDidRetireScope.event;
+	/**
+	 * このウィンドウで削除を終えたスペース。持ち主がここに入っている端末は「持ち主のスペースが
+	 * 無い」扱いにする (`isKnownScopeKey`)。同じキーのスペースへ切り替えたら外す (worktree を
+	 * 同じ場所に作り直した等)。
+	 */
+	private readonly _retiredScopeKeys = new Set<string>();
 
 	private readonly _onWillSwitchScope = this._register(new Emitter<string | undefined>());
 	readonly onWillSwitchScope = this._onWillSwitchScope.event;
@@ -400,6 +406,66 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (this.isManagedWorkspaceWindow) {
 			this.saveRepositories();
 		}
+
+		// 生きたエディタの預け先を持ち主で決めるための口と、別のスペースの端末を今のスペースへ
+		// 出させない口。どちらも所属の答えは `paradisTerminalEditorOwnerScope` の1つだけを使う。
+		this._register(this.onDidRetireScope(stateKey => this._retiredScopeKeys.add(stateKey)));
+		this._register(this.editorScopeService.registerLiveEditorOwnerResolver(editor => this.liveEditorOwner(editor)));
+		this._register(paradisRegisterTerminalEditorRevealGuard(instance => this.shouldHoldBackTerminalEditorReveal(instance)));
+	}
+
+	/**
+	 * 生きたエディタ (子プロセスが動いているエディタのターミナル) の持ち主のスペース。
+	 * ターミナル以外・所属不明・持ち主のスペースが既に無いときは undefined (預け先は今までどおり)。
+	 */
+	private liveEditorOwner(editor: EditorInput): string | undefined {
+		const instance = this.terminalInstanceForEditor(editor);
+		if (instance === undefined) {
+			return undefined;
+		}
+		const owner = paradisTerminalEditorOwnerScope(instance);
+		return owner !== undefined && this.isKnownScopeKey(owner) ? owner : undefined;
+	}
+
+	/** エディタのターミナルの入力から、その端末を引く。 */
+	private terminalInstanceForEditor(editor: EditorInput): ITerminalInstance | undefined {
+		if (editor.typeId !== TerminalEditorInput.ID) {
+			return undefined;
+		}
+		if (editor instanceof TerminalEditorInput) {
+			const instance = editor.terminalInstance;
+			return instance === undefined || instance.isDisposed ? undefined : instance;
+		}
+		// 預けて画面から外した入力の端末も `terminalEditorService.instances` に残る (retain 中は
+		// 一覧から外さない PARA-PATCH)。入力と端末は同じ resource を持つ。
+		const resource = editor.resource?.toString();
+		return resource === undefined ? undefined : this.terminalEditorService.instances.find(instance => !instance.isDisposed && instance.resource.toString() === resource);
+	}
+
+	/** 登録済みのスペースのキーか (リポジトリの ID か worktree のキー)。削除済みのスペースは外れる。 */
+	private isKnownScopeKey(stateKey: string): boolean {
+		if (this._retiredScopeKeys.has(stateKey)) {
+			return false;
+		}
+		return this._repositories.some(repository => repository.id === stateKey) || stateKey.startsWith('worktree:');
+	}
+
+	/**
+	 * 別のスペースが持つエディタのターミナルを、今見せているスペースのエディタへ出そうとしているか。
+	 * 切り替えの最中は行き先を「今見せているスペース」とみなす (切り替え元の端末を行き先へ持ち込まない)。
+	 * 所属不明・持ち主のスペースが既に無い端末は止めない (今までどおり出す)。
+	 */
+	private shouldHoldBackTerminalEditorReveal(instance: ITerminalInstance): boolean {
+		const displayed = this._pendingSwitchKey ?? this.activeStateKey;
+		if (displayed === undefined) {
+			return false;
+		}
+		const owner = paradisTerminalEditorOwnerScope(instance);
+		if (owner === undefined || owner === displayed || !this.isKnownScopeKey(owner)) {
+			return false;
+		}
+		this.logService.warn(`[ParadisWorkspaceSwitch] Did not open terminal ${instance.instanceId} in this space because it belongs to another space; switch to that space to see it`);
+		return true;
 	}
 
 	get repositories(): readonly IParadisWorkspaceRepository[] {
@@ -1466,7 +1532,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 持ち主の振り分けが `commitSwitch` を前提にしているので、従来どおり `restore_scope` で開く。
 					// 巻き戻すときは catch の最初のフェーズで切り離し直す (`revertEarlyRestore`)。
 					// 区間名に `terminal` を入れない (Sentry の sensitiveFields に部分一致して値が消える)。
-					await timePhase('restore_live_early', () => this.editorScopeService.restoreScopeEarly(stateKey, editor => editor.typeId === TerminalEditorInput.ID));
+					// その前に、退避の後から適用までに開かれて行き先へ持ち越された別のスペースの生きた端末を、
+					// 持ち主の預け先へ戻す (適用は確認が要るエディタを閉じずに残すため)。
+					await timePhase('restore_live_early', () => {
+						this.editorScopeService.depositForeignLiveEditors(stateKey);
+						return this.editorScopeService.restoreScopeEarly(stateKey, editor => editor.typeId === TerminalEditorInput.ID);
+					});
 
 					await timePhase('trust_uris', () => this.trustUris(uri));
 					// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
@@ -2015,6 +2086,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private setActiveEntry(stateKey: string, uri: URI): void {
+		this._retiredScopeKeys.delete(stateKey);
 		this._activeEntry = { stateKey, uri: uri.toString() };
 		this.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify(this._activeEntry), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
@@ -2165,7 +2237,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * 作られたときのスペース（切り替え中は切り替え元）へ入れる。
 	 */
 	private lateParkScope(instance: ITerminalInstance, previousKey: string): string {
-		return paradisTerminalEditorOpening(instance)?.stateKey ?? paradisTerminalEditorOwner(instance) ?? previousKey;
+		return paradisTerminalEditorOwnerScope(instance) ?? previousKey;
 	}
 
 	private async applyWorkingSetFor(stateKey: string): Promise<void> {

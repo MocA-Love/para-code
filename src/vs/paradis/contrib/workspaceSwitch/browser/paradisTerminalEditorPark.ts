@@ -189,6 +189,51 @@ export function paradisTerminalEditorOpening(instance: ITerminalInstance): { rea
 }
 
 /**
+ * エディタターミナルの持ち主のスペース。開いている途中ならその行き先、そうでなければ明示的な所属。
+ * どちらも無ければ undefined（所属不明。呼び出し側は今までどおりの扱いにする）。
+ *
+ * 切り替えの park（`lateParkScope`）・生きたエディタの預け先（`ParadisEditorScopeService`）・
+ * 今のスペースへ出してよいかの判定（`paradisShouldHoldBackTerminalEditorReveal`）が同じ答えを
+ * 使うための単一の口。ここを通さずに所属を引くと、場所ごとに持ち主が食い違う。
+ */
+export function paradisTerminalEditorOwnerScope(instance: ITerminalInstance): string | undefined {
+	return paradisTerminalEditorOpening(instance)?.stateKey ?? paradisTerminalEditorOwner(instance);
+}
+
+/**
+ * 「今のスペースのエディタへ出してよいか」の判定口。実体は切り替えサービスが持つ（今どのスペースを
+ * 見せているかを知っているのはそちら）。upstream の `terminalEditorService` から DI を介さずに
+ * 引くため、ここへ関数を預けてもらう。
+ */
+let editorRevealGuard: ((instance: ITerminalInstance) => boolean) | undefined;
+
+export function paradisRegisterTerminalEditorRevealGuard(guard: (instance: ITerminalInstance) => boolean): IDisposable {
+	editorRevealGuard = guard;
+	return toDisposable(() => {
+		if (editorRevealGuard === guard) {
+			editorRevealGuard = undefined;
+		}
+	});
+}
+
+/**
+ * 別のスペースが持つエディタターミナルを、今のスペースのエディタへ出そうとしているなら true（出さない）。
+ *
+ * Focus Terminal・選択範囲の実行・拡張機能の `terminal.show()` は、アクティブなターミナルを
+ * `terminalEditorService` の `_revealEditor` で今のアクティブなグループに開く。預け先や park に
+ * 入って画面から外れた端末もアクティブなまま残るので、そのまま開くと別のスペースの端末が今の
+ * スペースのタブになり、次の切り替えで今のスペースの預け先へ紛れ込む。
+ * 判定が投げたら出す側へ倒す（ターミナルを出せなくなる方が困る）。
+ */
+export function paradisShouldHoldBackTerminalEditorReveal(instance: ITerminalInstance): boolean {
+	try {
+		return editorRevealGuard?.(instance) ?? false;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * 指定スコープにパーク中のエディタターミナルがあるか（台帳は変更しない）。
  * パーク中の端末は working set にも可視エディタ配置にも現れないので、
  * 「このスコープを捨ててよいか」を判断する側はここも見ないと PTY を巻き添えにする。

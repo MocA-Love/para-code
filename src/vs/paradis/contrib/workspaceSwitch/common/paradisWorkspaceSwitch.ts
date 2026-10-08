@@ -801,6 +801,19 @@ export interface IParadisWorkspaceSwitchService {
 	recoverInterruptedSwitch(): Promise<void>;
 }
 
+/**
+ * 「スペースの切り替えを待ってから、そのスペースのものを開く」処理が、開く直前に確かめる条件。
+ * 今そのスペースに居て、別のスペースへの切り替えも始まっていないときだけ true。
+ *
+ * 切り替えは順番に並ぶので、待っている間に別の切り替え (利用者のクリック・ほかの通知) が
+ * 割り込むことがある。確かめずに開くと、待っていたスペースのターミナルやページが今のスペースの
+ * タブになり、次の切り替えで今のスペースの預け先へ紛れ込む。false のときは開かずに戻ること。
+ */
+export function paradisIsSettledOnSpace(service: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'pendingSwitchTargetKey'>, stateKey: string): boolean {
+	const pending = service.pendingSwitchTargetKey;
+	return service.activeStateKey === stateKey && (pending === undefined || pending === stateKey);
+}
+
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------
 //
 // upstream の WorkspaceChangeExtHostRelauncher (relauncher.contribution.ts) は folders[0] の
