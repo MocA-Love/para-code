@@ -268,48 +268,60 @@ final class ParadisAgentServer {
 	private func serve(_ connection: Int32) -> Never {
 		var buffer = ParadisLineBuffer(maxLineBytes: paradisMaxRequestBytes)
 		var chunk = [UInt8](repeating: 0, count: 64 * 1024)
-		while true {
-			let timeout = handler.authenticated ? paradisIdleTimeoutMs : paradisHandshakeTimeoutMs
-			guard paradisWaitReadable(connection, timeoutMs: timeout) else {
-				if handler.authenticated {
-					paradisExit(.normal, "idle timeout")
+		let requests = ParadisRequestQueue()
+		var closed = false
+		func receive() throws {
+			guard !closed else { throw ParadisHelperError(code: "cancelled", message: "the input connection closed") }
+			// 上限を設け、入力を送り続ける相手に操作スレッドを占有させない。
+			for _ in 0..<4 {
+				let count = recv(connection, &chunk, chunk.count, MSG_DONTWAIT)
+				if count < 0 && errno == EINTR { continue }
+				if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { return }
+				guard count > 0 else {
+					closed = true
+					throw ParadisHelperError(code: "cancelled", message: "the input connection closed")
 				}
-				paradisExit(.authenticationFailed, "handshake did not arrive")
-			}
-			let count = read(connection, &chunk, chunk.count)
-			if count < 0 && errno == EINTR {
-				continue
-			}
-			guard count > 0 else {
-				// 相手が切った（Para Code が終わった・作り直した）
-				paradisExit(handler.authenticated ? .normal : .authenticationFailed, handler.authenticated ? nil : "connection closed before handshake")
-			}
-			let lines: [Data]
-			do {
-				lines = try buffer.append(Data(chunk[0..<count]))
-			} catch {
-				paradisExit(handler.authenticated ? .normal : .authenticationFailed, "request line too long")
-			}
-			for line in lines {
-				// 受け入れた後に inspector を開かれていないか、要求のたびに見る（レビュー N2）
-				if handler.authenticated, let processes = peerProcesses, let reason = inspectorProblem(processes) {
-					paradisExit(.peerRejected, "peer changed: \(reason)")
-				}
-				switch handler.handle(line: line) {
-				case .reply(let data):
-					guard paradisWriteAll(data, to: connection) else {
-						paradisExit(.normal)
-					}
-				case .replyAndTerminate(let data):
-					if let data {
-						_ = paradisWriteAll(data, to: connection)
-						paradisExit(.normal)
-					}
-					paradisExit(.authenticationFailed, "authentication failed")
+				let lines = try buffer.append(Data(chunk[0..<count]))
+				for reply in try requests.append(lines, authenticated: handler.authenticated) {
+					guard paradisWriteAll(reply, to: connection) else { closed = true; throw ParadisHelperError(code: "cancelled", message: "the input connection closed") }
 				}
 			}
 		}
+		ParadisRequestCancellation.poll = {
+			try receive()
+			try requests.check()
+		}
+		while true {
+			if let line = requests.next() {
+				if handler.authenticated, let processes = peerProcesses, let reason = inspectorProblem(processes) { paradisExit(.peerRejected, "peer changed: \(reason)") }
+				let outcome: ParadisHandlerOutcome
+				do {
+					try requests.check()
+					outcome = handler.handle(line: line)
+				} catch var error as ParadisHelperError {
+					let request = try? paradisParseRequest(line).get()
+					if request?.method == "typeText" { error.sent = 0 }
+					outcome = .reply(paradisEncodeFailure(id: request?.id, error: error))
+				} catch { paradisExit(.normal, "invalid queued request") }
+				requests.finish()
+				switch outcome {
+				case .reply(let data):
+					guard paradisWriteAll(data, to: connection) else { paradisExit(.normal) }
+				case .replyAndTerminate(let data):
+					if let data { _ = paradisWriteAll(data, to: connection); paradisExit(.normal) }
+					paradisExit(.authenticationFailed, "authentication failed")
+				}
+				continue
+			}
+			let timeout = handler.authenticated ? paradisIdleTimeoutMs : paradisHandshakeTimeoutMs
+			guard paradisWaitReadable(connection, timeoutMs: timeout) else {
+				paradisExit(handler.authenticated ? .normal : .authenticationFailed, "request timeout")
+			}
+			do { try receive() }
+			catch { paradisExit(handler.authenticated ? .normal : .authenticationFailed, "input connection closed") }
+		}
 	}
+
 }
 
 private func paradisWaitReadable(_ fd: Int32, timeoutMs: Int32) -> Bool {

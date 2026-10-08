@@ -675,10 +675,69 @@ suite('ParadisComputerUseToolProvider', () => {
 			secondError: undefined,
 			inputs: [
 				{ method: 'click', params: { elementIndex: 3, button: 'right', clickCount: 2, modifiers: ['cmd'], pid: 200, bundleId: 'com.apple.Notes', windowId: 72 } },
-				{ method: 'typeText', params: { text: 'hello', pid: 200, bundleId: 'com.apple.Notes' } },
+				{ method: 'typeText', params: { text: 'hello', pid: 200, bundleId: 'com.apple.Notes', backgroundWindowId: 72 } },
 			],
 			grants: [{ bundleId: 'com.apple.Notes', grant: 'operate' }],
 		});
+	});
+
+	test('reports a fully sent chunk before stopping for a changed focus', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => ({ typed: 400, method: 'keys', route: 'background', verified: true, focusPreserved: false });
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(403), includeState: false }, undefined, context);
+		assert.deepStrictEqual({ calls: helper.inputs.length, sent: text(result).includes('first 400 of 403'), remaining: text(result).includes('character 401'), confirmed: text(result).includes('confirmed') }, { calls: 1, sent: true, remaining: true, confirmed: true });
+	});
+
+	test('does not suggest replaying a completed final chunk when focus changes', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => ({ typed: 5, method: 'keys', route: 'background', verified: null, focusPreserved: false });
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context);
+		assert.deepStrictEqual({ sent: text(result).includes('first 5 of 5'), remaining: text(result).includes('no characters remain'), unconfirmed: text(result).includes('could not be confirmed') }, { sent: true, remaining: true, unconfirmed: true });
+	});
+
+	test('preserves a background refusal reason and unconfirmed sent prefix', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => {
+			const error = new ParadisComputerUseHelperError('user_active', 'typing started');
+			error.sent = 2;
+			throw error;
+		};
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context);
+		assert.deepStrictEqual({ reason: text(result).includes('Wait a few seconds'), sent: text(result).includes('first 2 of 5'), unconfirmed: text(result).includes('unconfirmed'), next: text(result).includes('character 3') }, { reason: true, sent: true, unconfirmed: true, next: true });
+	});
+
+	test('reports zero sent input without suggesting the chunk might have arrived', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => {
+			const error = new ParadisComputerUseHelperError('cancelled', 'cancelled before sending');
+			error.sent = 0;
+			throw error;
+		};
+		const typed = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context));
+		const clicked = text(await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 2, y: 2, includeState: false }, undefined, context));
+		assert.deepStrictEqual({ typed: typed.includes('No input was sent for the current chunk.'), clicked: clicked.includes('No input was sent for this request.'), uncertain: (typed + clicked).includes('unconfirmed') }, { typed: true, clicked: true, uncertain: false });
+	});
+
+	test('keeps menu cleanup advice alongside the original error code', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => {
+			const error = new ParadisComputerUseHelperError('user_active', 'typing');
+			error.sent = 1;
+			error.note = 'Para Code tried AXCancel, but the menu is still open.';
+			throw error;
+		};
+		const result = text(await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 2, y: 2, includeState: false }, undefined, context));
+		assert.deepStrictEqual({ reason: result.includes('Wait a few seconds'), cleanup: result.includes('tried AXCancel'), sent: result.includes('1 input units were sent') }, { reason: true, cleanup: true, sent: true });
 	});
 
 	test('never sends input to an app the user allowed only to read', async () => {

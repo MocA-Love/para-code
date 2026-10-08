@@ -76,7 +76,7 @@ const POINT_OBJECT = {
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false };
 const OPERATE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
 
-const OPERATE_NOTE = 'Acts as the user, outside your sandbox and permission settings. The first time this pane operates an app, Para Code asks the user to approve it. The result\'s "route" says how the input was sent: "accessibility" (through the accessibility API: the mouse pointer does not move and the app is not brought forward; refused only while the user is typing) or "foreground" (real pointer and keyboard input: sent only while the app is in front and the user is not typing or moving the mouse; the user may have to approve it first).';
+const OPERATE_NOTE = 'Acts as the user, outside your sandbox and permission settings. The first time this pane operates an app, Para Code asks the user to approve it. The result\'s "route" says how the input was sent: "accessibility" (through the accessibility API: the mouse pointer does not move and the app is not brought forward; refused only while the user is typing), "background" (window-targeted input without moving the real pointer; unsupported actions use the foreground route; inspect verified and focusPreserved), or "foreground" (real pointer and keyboard input: sent only while the app is in front and the user is not typing or moving the mouse; the user may have to approve it first).';
 
 export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
@@ -115,13 +115,13 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_activate_app',
-		description: `Bring an app (and optionally one of its windows) to the front. Only needed for input that cannot go through accessibility (keys, shortcuts, paste, drag, scroll, double clicks, clicks with modifier keys or on areas without an accessible control); clicking buttons and fields, computer_set_value and typing into a field that accepts it work without bringing the app forward. ${OPERATE_NOTE}`,
+		description: `Bring an app (and optionally one of its windows) to the front. Only needed for input that cannot use accessibility or background delivery (such as paste, drag, context menus or ambiguous keyboard targets); clicking buttons and fields, computer_set_value and typing into a field that accepts it work without bringing the app forward. ${OPERATE_NOTE}`,
 		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app'] },
 		annotations: OPERATE,
 	},
 	{
 		name: 'computer_click',
-		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link or menu item presses it through accessibility (AXPress), and a single left click on a text field focuses it with the caret at the end: the mouse pointer does not move and the app stays where it is. Clicks that open a menu (a pop-up or menu button, or a right click on an element with a context menu) go through accessibility only while the app is in front, because an open menu takes the keyboard focus; otherwise they need the app in front like other clicks. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other clicks need the app in front (computer_activate_app) and move the real pointer. ${OPERATE_NOTE}`,
+		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link or menu item presses it through accessibility (AXPress), and a single left click on a text field focuses it with the caret at the end: the mouse pointer does not move and the app stays where it is. Clicks that open a menu (a pop-up or menu button, or a right click on an element with a context menu) go through accessibility only while the app is in front, because an open menu takes the keyboard focus; otherwise those menu controls need the foreground route. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other left clicks try window-targeted background delivery first. Unsupported input uses the foreground route. A sent event is not proof that the control acted; inspect the returned state before retrying. ${OPERATE_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -172,26 +172,26 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_type_text',
-		description: `Type text into the focused field of an app (up to 4000 characters). Newlines are always inserted as line breaks and never press Return; tabs are not allowed. To submit, or to move to the next field, use computer_press_key with return or tab. Para Code inserts the text through accessibility when the field allows it, without bringing the app forward (to pick the field first, computer_click it); otherwise it needs the app in front and pastes the text through the clipboard (when an input method such as Japanese input is active, or the text has line breaks) or sends keys. It reads the field back and reports whether the text arrived, whether the app changed it (autocorrect, smart quotes, formatting), or that it could not confirm. ${OPERATE_NOTE}`,
-		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
+		description: `Type text into the focused field of an app (up to 4000 characters). Newlines are always inserted as line breaks and never press Return; tabs are not allowed. To submit, or to move to the next field, use computer_press_key with return or tab. Para Code inserts the text through accessibility when the field allows it, without bringing the app forward (to pick the field first, computer_click it); otherwise it tries background keys in a single, exactly identified focused window, or uses foreground input and pastes the text through the clipboard (when an input method such as Japanese input is active, or the text has line breaks) or sends keys. It reads the field back and reports whether the text arrived, whether the app changed it (autocorrect, smart quotes, formatting), or that it could not confirm. ${OPERATE_NOTE}`,
+		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
 		annotations: OPERATE,
 	},
 	{
 		name: 'computer_paste_text',
 		description: `Paste text into the focused field of an app through the clipboard (up to 20000 characters). Para Code puts the user's clipboard back afterwards, unless something else changed the clipboard in the meantime. ${OPERATE_NOTE}`,
-		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
+		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
 		annotations: OPERATE,
 	},
 	{
 		name: 'computer_press_key',
 		description: `Press one key in an app, such as return, escape, tab, delete, up, down, left, right, pageup, pagedown, home, end, space or f1 to f12. ${OPERATE_NOTE}`,
-		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, key: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'key'] },
+		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, key: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'key'] },
 		annotations: OPERATE,
 	},
 	{
 		name: 'computer_hotkey',
 		description: `Press a keyboard shortcut in an app: modifiers (cmd, shift, option, control) and one key, such as ["cmd", "s"]. Shortcuts that switch apps or Spaces, open Spotlight, reach the menu bar or Dock by keyboard, toggle accessibility features, lock the screen, log out, force quit, take screenshots or paste (use computer_paste_text) are never sent. ${OPERATE_NOTE}`,
-		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, keys: { type: 'array', items: { type: 'string' } }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'keys'] },
+		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, keys: { type: 'array', items: { type: 'string' } }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'keys'] },
 		annotations: OPERATE,
 	},
 	{
@@ -409,7 +409,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			}
 			return errorResult(`Unhandled Computer Use tool: ${name}`);
 		} catch (error) {
-			return errorResult(describeHelperError(error));
+			const sent = error instanceof ParadisComputerUseHelperError && error.sent !== undefined
+				? error.sent === 0 ? ' No input was sent for this request.' : ` ${error.sent} input units were sent; receipt is unconfirmed. Read the app state before retrying; do not replay sent input.`
+				: '';
+			return errorResult(describeHelperError(error) + sent);
 		}
 	}
 
@@ -577,6 +580,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const typing: ITypingProgress = { typed: 0, unconfirmed: false, rewritten: false, clipboardNotes: new Set(), methods: new Set(), routes: new Set(), sentForeground: false };
 		for (let attempt = 0; ; attempt++) {
 			const extra = {
+				...((name === 'computer_type_text' || name === 'computer_press_key' || name === 'computer_hotkey') && window.ok ? { backgroundWindowId: window.window.windowId } : {}),
 				...(allowForeground ? {} : { allowForeground: false }),
 				...(justApproved ? { activateFirst: true } : {}),
 				...(cursor ? { cursor } : {}),
@@ -740,6 +744,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				: `The first ${typed} characters had arrived.`;
 			try {
 				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId, ...chunkExtra }, signal);
+				const delivery = result && typeof result === 'object' ? result as Record<string, unknown> : undefined;
 				const check = paradisParseTypeCheck(result);
 				if (check.method) {
 					progress.methods.add(check.method);
@@ -769,6 +774,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				progress.unconfirmed = progress.unconfirmed || check.verified !== true;
 				progress.rewritten = progress.rewritten || check.rewritten === true;
 				progress.typed += chunk.length;
+				if (delivery?.focusPreserved === false) {
+					return { ok: false, error: errorResult(`The foreground focus changed after sending the first ${progress.typed} of ${graphemes.length} characters. ${progress.unconfirmed ? 'Receipt could not be confirmed.' : 'These characters were confirmed.'} Do not resend them. Read the app state before continuing${progress.typed < graphemes.length ? ` with character ${progress.typed + 1}` : '; no characters remain to send'}.`) };
+				}
 			} catch (error) {
 				if (!(error instanceof ParadisComputerUseHelperError)) {
 					throw error;
@@ -778,6 +786,13 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					return 'needsForeground';
 				}
 				const total = graphemes.length;
+				if (error.sent !== undefined) {
+					if (error.sent === 0) {
+						return { ok: false, error: errorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`) };
+					}
+					const done = typed + Math.min(error.sent, chunk.length);
+					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`) };
+				}
 				if (error.progress !== undefined) {
 					const done = typed + error.progress;
 					return {
@@ -1213,6 +1228,11 @@ function describeApp(app: IRunningApp): object {
 
 /** 補助アプリの失敗を、エージェントが次に何をすればよいか分かる英文にする。 */
 function describeHelperError(error: unknown): string {
+	const message = formatHelperError(error);
+	return error instanceof ParadisComputerUseHelperError && error.note ? `${message} ${error.note}` : message;
+}
+
+function formatHelperError(error: unknown): string {
 	if (error instanceof ParadisComputerUseHelperError) {
 		switch (error.code) {
 			case 'accessibility_not_granted':
@@ -1220,7 +1240,9 @@ function describeHelperError(error: unknown): string {
 			case 'screen_recording_not_granted':
 				return 'macOS has not granted Screen Recording to "Para Code Computer Use". Ask the user to allow it in System Settings > Privacy & Security > Screen Recording (for Para Code Computer Use, not Para Code itself).';
 			case 'user_active':
-				return `The user is using the keyboard or mouse right now, so Para Code did not send input. Wait a few seconds before trying again, and do not retry in a tight loop.${progressOf(error)}`;
+				return `The user is using the keyboard or mouse right now, so Para Code ${error.sent !== undefined && error.sent > 0 ? 'stopped input' : 'did not send input'}. Wait a few seconds before trying again, and do not retry in a tight loop.${progressOf(error)}`;
+			case 'focus_changed':
+				return `The foreground app changed, so Para Code stopped background input. Read the app state before continuing.${progressOf(error)}`;
 			case 'window_not_focused':
 				return `The app is not in front (or another app took focus), so Para Code stopped before sending input. Call computer_activate_app, then try again.${progressOf(error)}`;
 			case 'point_obscured':
@@ -1242,11 +1264,13 @@ function describeHelperError(error: unknown): string {
 			case 'input_unsupported':
 				return `Para Code could not send this action to that element (${error.message}). For a value, click the element and type instead.`;
 			case 'menu_open':
-				return 'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close. Para Code did not send input and left the menu open. Ask the user in the conversation to close the menu (Escape or a click elsewhere), then try again.';
+				return 'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close. Para Code stopped input and left the menu open. Ask the user in the conversation to close the menu (Escape or a click elsewhere), then try again.';
 			case 'screen_locked':
 				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':
 				return 'This action needs the app in front and the real mouse pointer or keyboard, and the user has not approved that.';
+			case 'queue_full':
+				return 'The helper request queue is full. This request was not started; wait before retrying it.';
 			case 'invalid_argument':
 				return error.message;
 			case 'cancelled':

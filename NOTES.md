@@ -936,7 +936,7 @@ upstream 取り込み時に確認すること:
 | 段 | `route` | 中身 | 確かめること |
 |---|---|---|---|
 | 1 | `accessibility` | 修飾キーの無い 1 回の左クリックは押せる部品の `AXPress`（ボタン・チェックボックス・ラジオ・リンク・メニュー項目・ポップアップなど。当たった要素が文字や絵なら親を 3 つまでたどる）、文字の欄なら `AXFocused` を書いてキャレットを末尾に置く。右クリックは `AXShowMenu`。`computer_set_value`（新しいツール）は `kAXValueAttribute` の書き込みと `AXIncrement`/`AXDecrement`。`computer_type_text` は今までの `kAXSelectedTextAttribute` の経路 | 目的のウィンドウ（文字入力ではフォーカスのある欄のウィンドウ）があって、今の画面に出ていて（別の操作スペースでない）、しまわれておらず、アプリを隠していない（どれかに当たれば 3 段目へ）。画面のロック中・ほかのユーザーへの切り替え中でない（`CGSessionCopyCurrentDictionary` の `kCGSessionOnConsoleKey` と `CGSSessionScreenIsLocked`。3 段目でも見る）。直前 1 秒に物理的なキー入力が無い（マウスの動きでは止めない）、認証・同意のダイアログが無い。前面のアプリが目的の pid であることは求めない。ただしメニューを開く操作（`AXShowMenu`、ポップアップ・メニューボタンの `AXPress`）は目的のアプリが前面のときだけで、背面なら 3 段目へ。操作の前後で前面のアプリ・キーボードのフォーカスのあるアプリ・その手前のウィンドウを比べて `focusPreserved` を返す。背面のアプリでフォーカスが変わったら、開いたメニューを `AXCancel` で閉じる（`menuClosed`） |
-| 2 | `background` | 差し込み口だけ。`ParadisUnavailableBackgroundRoute`（常に使えない） | なし |
+| 2 | `background` | `ParadisBackgroundRoute`。左クリック・スクロール・単一ウィンドウのキーと改行なしの文字入力 | 実行時のシンボル解決、厳密なウィンドウ照合、打鍵・修飾キー・ロック・認証ダイアログ、前面状態の比較 |
 | 3 | `foreground` | 今までの経路（`ParadisInput.swift` の `foreground*`）。前面に出し、実カーソルを動かして HID のタップへ送る | 今までどおり（前面のアプリ・点を覆うウィンドウ・利用者の入力） |
 
 番号での操作は、直前に読んだツリーの要素そのものに行う。座標での操作は、アプリに聞いた当たり判定（`AXUIElementCopyElementAtPosition` をアプリの要素に対して呼ぶ。ほかのアプリのウィンドウが重なっていても目的のアプリの要素が返る）で要素を取り、目的のウィンドウの要素でなければ譲る。AX で確かめられる値は読み戻す: チェックボックスとラジオは値が変わったか、値の書き込みは書いた値と同じか（数は丸めて比べる。範囲に収められたら `verified: false` と実際の値）、増減は向き。ボタンのように状態を持たない部品は `verified: null`。`AXPress` などが「何もしていないと言い切れない」失敗（締め切りなど）を返したときは、次の段へ譲らず `axError` を添えて `verified: null` にする（送ったかもしれないため）。パスワード欄には値を書かない。メニューの「ペースト」は AX でも押さない。
@@ -953,13 +953,47 @@ Electron 製のアプリ（`Contents/Frameworks/Electron Framework.framework` �
 
 1 段目では、要素の中心へ軌跡つきで動かし、着いてから（最長 0.5 秒待ち、待つ間に打鍵が始まれば止める）操作して波紋を出す。3 段目では実カーソルが動くので、矢印は出さず、名前の札と波紋だけを実カーソルの位置に合わせる（矢印が 2 つ重なると、どちらが本物か分からなくなるため。札が出ていれば、ポインタを動かしているのがエージェントだと分かる）。キーだけの操作ではカーソルを動かさない。3 段目の「点を覆うウィンドウ」の確かめは、補助アプリ自身のウィンドウ（このパネル）を除くようにした。
 
-#### 2 段目をはめ込む手順
+#### 2 段目の背面送信
 
-1. `src/vs/paradis/contrib/computerUse/native/macos/Sources/ParadisComputerUse/` に、Core の `ParadisInputRoute` に準拠したクラスを新しいファイルで作る（`kind` は `.background`、`requiresForeground` は `false`）
-2. `availability(of:pid:)` で送れる操作（`ParadisInputAction` の種類と引数）を返し、送れないものは `.unavailable(理由)` にする
-3. `perform` で送る。利用者の入力・認証のダイアログで止めるときは `ParadisHelperError` を投げる。何も送らずにやめたときだけ `.fellThrough(理由)` を返す（3 段目へ落ちる）。送ったかもしれないときは `.done` にして、確かめられないことを結果に書く
-4. `ParadisInputRoutes.swift` の `paradisMakeBackgroundRoute()` から新しいクラスを返す。`ParadisDesktop.backgroundRoute` に入り、`perform` の段の並び（AX、背面、前面）の 2 番目で使われる
-5. 結果の `route` は `background` になる。shared process とツールの説明は `route` の値をそのまま返すので変えなくてよいが、`OPERATE_NOTE`（`paradisComputerUseToolProvider.ts`）に背面の説明を足す。Core のテスト（`Tests/ParadisComputerUseCoreTests/main.swift` の「送り方の段の選び方」）に、使えるときは 3 段目より先に使われ、前面の承認が要らないことの確認がある
+`paradisMakeBackgroundRoute(desktop:)` は `ParadisBackgroundRoute` を返す。必要な SkyLight シンボルは実行時に解決し、無い場合は未送信で次の段へ譲る。動的呼び出しは `ParadisBackgroundTransport.swift` に隔離する。Cua の入力配送フィールドとシンボルの出典・MIT 告知は `native/macos/THIRD_PARTY_NOTICES.md` にあり、補助アプリにも同梱する。
+
+- 左クリック（複数回・修飾キーを含む）とスクロールは PID とウィンドウ ID を指定して配送する。`CGEvent.location` は画面座標、`CGEventSetWindowLocation` はウィンドウ左上からの相対座標を渡す。実カーソルは動かさず、既存の独自カーソルへ位置を知らせる。
+- キーと改行なしの文字入力には shared process から `backgroundWindowId` をヒントとして渡す。背面経路だけが、AX ウィンドウが1枚でフォーカスウィンドウと一致することを確かめる。一致しない・非表示・最小化・別 Space・背面 API が無い場合も、既存の AX・前面経路をこの条件で止めない。`computer_activate_app` に自動選択した ID は追加しない。
+- 右クリック・ドラッグ・クリップボード貼り付け・改行を含む文字入力・IME 使用中の文字入力は既存経路へ譲る。非公開のキーボード認証メッセージを CGEvent の固定メモリオフセットから取り出す処理は入れていない。すべての Chromium 系アプリで届く保証はない。
+- メニュー部品の判定は当たった要素だけでなく親3つまでを AX 経路と共通でたどる。背面入力後にメニューが開いたら、成功・中断のどちらでも `AXCancel` を試し、再読して閉じたかを確認する。開始前からあったメニューは閉じない。結果は `menuCancelAttempted`（試行）、`menuCancelAccepted`（API の受理）、`menuClosed` / `menuOpen`（観測）を分ける。エラー時も元のコードと `sent` を残し、後始末の結果を `note` に付ける。
+- 前面アプリへ defocus レコードを送る処理と、その復元処理は削除した。この層からアプリを前面化したり、フォーカスを書き換えたり、利用者の入力を抑止したりしない。キー／ボタンの解放だけを同じ宛先へ送り、利用者が別アプリへ移った場合は入力を止める。`focusPreserved` は操作前後の比較であり、操作中の物理打鍵が一度も失われない保証ではない。
+- プロトコル8では `cancel` の `requestId` で中断する。サーバーはイベント間でソケットを読み、通常要求を順番どおり保持しながら、対象の要求だけに中断を記録する。TS は接続を切らず、元の要求の応答を待つ。既に完了した入力の応答は破棄しない。待ち行列の128件を超えた要求には、その要求 ID へ `queue_full` を返し、処理中の入力は止めない。前面化前に入力の停止を待つ処理も、中断なら3秒を待たずに抜ける。
+- `user_active`・`menu_open`・`screen_locked`・`cancelled` などのエラーコードを維持する。背面入力の途中なら、送った単位数を `sent` で返す。確認済みの `progress` と混同せず、自動で別経路へ送り直さない。`sent: 0` のときは未送信と案内し、到達した可能性があるという文は付けない。文字列の塊を全部送った後にフォーカスが変わった場合も、その塊を送信数に含めて次の位置を案内する。
+- 打鍵・修飾キー・中断はイベントごとに調べる。ウィンドウ・AX の再検査は既存の前面経路と同じ10文字または50 msごとに行い、ウィンドウ一覧は対象・認証ダイアログ・メニューで共有する。画面に出ていないウィンドウは認証ダイアログの判定へ渡さない。
+
+#### 背面経路の実機確認（2026-10-09）
+
+macOS 27.0.1 / Apple Silicon の専用 AppKit アプリと Electron 43.6.0 で確認した。接続相手の確認を外したテスト用 ad-hoc ビルドで、Accessibility・Screen Recording・Input Monitoring は granted（権限の責任元は起動元プロセス）。配布版の署名・権限帰属は未確認。
+
+| 確認 | AppKit | Electron |
+|---|---|---|
+| 背面ダブルクリック | 2回受信 | 2回受信 |
+| 背面スクロール（0.2ページ） | wheel イベント受信 | wheel イベント受信 |
+| 背面キー a | a を受信 | a を受信 |
+| ABC 入力方式で英数字・日本語・絵文字を含む9文字 | 完全一致 | 完全一致 |
+| 前面アプリ・実カーソル | 操作前後で維持 | 操作前後で維持 |
+| 要求 ID 指定の中断 | sent: 0 で cancelled。別要求は同じ接続で成功 | sent: 2 で cancelled。別要求は同じ接続で成功 |
+| 背面文字入力中に前面の確認アプリへ HID キー z を送信 | z を受信し、背面は user_active / sent: 4 で停止 | z を受信し、背面は user_active / sent: 4 で停止 |
+
+追加の AppKit 実機確認（同じ環境、現行の背面経路）:
+
+| 確認 | 結果 |
+|---|---|
+| 背面クリックで非同期に開くメニュー | `menuCancelAttempted: true`、`menuCancelAccepted: true`、`menuClosed: true`、`menuOpen: false`。確認アプリ自身の `menuDidClose` も記録 |
+| 最初のクリック直後に中断し、そのクリックでメニューが開く | `cancelled` / `sent: 1` を保持し、メニューが閉じたことを `note` と `menuDidClose` で確認 |
+| 同じアプリに2ウィンドウ | マウスの押下・解放と wheel の全受信イベントで指定した window ID が一致。キーは未送信で前面経路の承認待ち |
+| 利用者の入力停止を待つ前面化要求を中断 | 中断通知から `cancelled` 応答まで 0.05163712500143447 秒。前面アプリと実カーソルを維持 |
+
+HID キーの確認はテストプログラムが合成したイベントであり、人が物理キーボードで打鍵した試験ではない。確認後は専用ウィンドウを終了し、一時変更した入力方式も元へ戻した。
+
+最初の実機確認では画面座標をウィンドウ内の位置として渡していたため、イベントがウィンドウ外へ届いた。画面上の原点が (100, 1628) のウィンドウで、画面座標 (280, 1788) をそのまま刻むと AppKit の受信座標は (280, -1436) になった。相対座標 (180, 160) へ修正して意図した位置への受信を確認した。参照元の screen-space というコメントは、この環境の受信イベントと一致しなかった。
+
+受信は確認アプリ自身のイベント記録で調べた。汎用の操作結果はアプリの状態を読み戻せなければ `verified: null` のままとする。Intel の実機、他の macOS、第三者アプリ全般、SIGTERM／クラッシュ中のキー解放は未確認。以下の既存 AppKit 検証結果は AX 経路を指す。
 
 #### 確認用のアプリで確かめた結果（2026-10-08、macOS 27.0、Apple Silicon）
 

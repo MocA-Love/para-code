@@ -44,7 +44,7 @@ extension ParadisDesktop {
 	// MARK: - 段の振り分け
 
 	/**
-	 * 入力を送る。1 段目（AX）・2 段目（背面。今は空）・3 段目（前面。下の foreground* ）の順に試す（ParadisInputRoute.swift）。
+	 * 入力を送る。1 段目（AX）・2 段目（背面）・3 段目（前面。下の foreground* ）の順に試す（ParadisInputRoute.swift）。
 	 * 独自のカーソルを出さない要求（設定でオフ）が来たら、出ているカーソルを消す。
 	 */
 	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any] {
@@ -352,6 +352,7 @@ extension ParadisDesktop {
 	// MARK: - 確かめ
 
 	func requireInputPermission() throws {
+		try ParadisRequestCancellation.check()
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
@@ -359,6 +360,7 @@ extension ParadisDesktop {
 	}
 
 	func userActivityFailure() -> ParadisHelperError? {
+		if let failure = ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is using the keyboard or mouse")
 		}
@@ -373,7 +375,7 @@ extension ParadisDesktop {
 	func prepareForeground(pid: Int32, windowId: UInt32?) throws {
 		let deadline = Date().addingTimeInterval(paradisActivateFirstWaitSeconds)
 		while let failure = userActivityFailure() {
-			if Date() >= deadline {
+			if failure.code != "user_active" || Date() >= deadline {
 				throw failure
 			}
 			usleep(100_000)
@@ -382,12 +384,14 @@ extension ParadisDesktop {
 		// 前面になったと OS が知らせるまで少し待つ（前面でなければ、続く確かめが window_not_focused で止める）
 		let shown = Date().addingTimeInterval(1.0)
 		while paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier }) != pid && Date() < shown {
+			try ParadisRequestCancellation.check()
 			usleep(50_000)
 		}
 	}
 
 	/** 利用者が打鍵中か（1 段目の確かめ。マウスの動きでは止めない）。 */
 	func keyboardActivityFailure() -> ParadisHelperError? {
+		if let failure = ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalKeyboardInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is typing")
 		}
@@ -682,8 +686,8 @@ func paradisEventSource() -> CGEventSource? {
 }
 
 /** キーを押してから離すまでと、文字と文字の間。 */
-private let paradisKeyHoldMicroseconds: UInt32 = 12_000
-private let paradisInterCharacterMicroseconds: UInt32 = 20_000
+let paradisKeyHoldMicroseconds: UInt32 = 12_000
+let paradisInterCharacterMicroseconds: UInt32 = 20_000
 
 /** 文字入力の結果。 */
 func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCheck, count: Int) -> [String: Any] {
@@ -792,7 +796,7 @@ func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisAXInsert 
 }
 
 /** 今の入力ソースが IME か（main スレッドで呼ぶ）。 */
-private func paradisInputMethodIsActive() -> Bool {
+func paradisInputMethodIsActive() -> Bool {
 	guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
 		return false
 	}
@@ -811,7 +815,7 @@ func paradisMouseEvent(_ type: CGEventType, at point: CGPoint, button: CGMouseBu
 	return event
 }
 
-private func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
+func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
 	var flags: CGEventFlags = []
 	if modifiers.contains(.command) {
 		flags.insert(.maskCommand)
@@ -847,11 +851,11 @@ private let paradisScreenWindowCacheSeconds: TimeInterval = 0.05
 private var paradisScreenWindowCache: (at: Date, windows: [ParadisScreenWindow])?
 
 /** 画面に出ているウィンドウを手前から順に（持ち主の bundle id 付き）。 */
-func paradisScreenWindows() -> [ParadisScreenWindow] {
-	if let cache = paradisScreenWindowCache, Date().timeIntervalSince(cache.at) < paradisScreenWindowCacheSeconds {
+func paradisScreenWindows(entries: [[String: Any]]? = nil) -> [ParadisScreenWindow] {
+	if entries == nil, let cache = paradisScreenWindowCache, Date().timeIntervalSince(cache.at) < paradisScreenWindowCacheSeconds {
 		return cache.windows
 	}
-	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+	let list = ((entries ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]])) ?? []).filter { ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true }
 	let owners = Set(list.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
 	let bundleIds: [Int32: String] = paradisOnMain {
 		var result: [Int32: String] = [:]

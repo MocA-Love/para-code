@@ -8,7 +8,7 @@
 // 入力の送り方の段の実体（段の並びと選び方は Core の ParadisInputRoute.swift）。
 //
 //  - 1 段目 `ParadisAccessibilityRoute`: AX の操作。マウスもカーソルも動かさず、前面に出さない
-//  - 2 段目 `paradisMakeBackgroundRoute()`: 背面への入力の差し込み口。今は Core の空の実装（常に使えない）を返す
+//  - 2 段目 `paradisMakeBackgroundRoute(desktop:)`: 背面への入力の差し込み口。指定ウィンドウへ送る実装を返す
 //  - 3 段目 `ParadisForegroundRoute`: 今までの経路（ParadisInput.swift の foreground*）
 //
 // 1 段目で確かめること（3 段目と違い、前面のアプリが目的の pid であることは求めない）:
@@ -27,11 +27,11 @@ import ApplicationServices
 import Foundation
 
 /**
- * 2 段目（背面への入力）の実装を返す。今は常に使えない空の実装。
- * 実装をはめ込むときは、`ParadisInputRoute` に準拠したクラスをこのフォルダに新しく作り、ここから返す。
+ * 2 段目（背面への入力）の実装を返す。
+ * 背面経路自身が対応可否を判定し、未送信のときだけ次の段へ譲る。
  */
-func paradisMakeBackgroundRoute() -> ParadisInputRoute {
-	return ParadisUnavailableBackgroundRoute()
+func paradisMakeBackgroundRoute(desktop: ParadisDesktop) -> ParadisInputRoute {
+	return ParadisBackgroundRoute(desktop: desktop)
 }
 
 // MARK: - 3 段目
@@ -151,10 +151,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		case .failure(let reason):
 			return .fellThrough(reason.message)
 		}
-		var chain: [AXUIElement] = [hit]
-		while chain.count < paradisAXClickChainLimit, let parent = paradisElement(chain[chain.count - 1], kAXParentAttribute), !paradisIsWindow(parent) {
-			chain.append(parent)
-		}
+		let chain = paradisAXClickAncestors(hit)
 		let targetIsFrontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier } == pid
 		let plan = paradisAccessibilityClickPlan(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain.map(paradisAXFacts), targetIsFrontmost: targetIsFrontmost)
 		let element: AXUIElement
@@ -507,7 +504,7 @@ private struct ParadisAXTargetWindow {
 }
 
 /** アプリを隠しているか（⌘H）。 */
-private func paradisAppIsHidden(_ pid: Int32) -> Bool {
+func paradisAppIsHidden(_ pid: Int32) -> Bool {
 	return paradisOnMain { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
 }
 
@@ -516,10 +513,10 @@ private func paradisAppIsHidden(_ pid: Int32) -> Bool {
  * ポップアップボタンのメニューのように AX のどこに出るか決まらないものも、ウィンドウの層で見分けられる
  * （確認用のアプリで確かめた）。無ければ nil。
  */
-private func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
+func paradisAppMenuWindow(pid: Int32, entries: [[String: Any]]? = nil) -> ParadisMenuWindowFacts? {
 	let menuLayer = Int(CGWindowLevelForKey(.popUpMenuWindow))
-	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
-	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid {
+	let list = entries ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true {
 		guard let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary, let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
 			continue
 		}
@@ -541,7 +538,7 @@ private func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
  * （ボタンの処理の中で出したメニューはそのボタンの子になる。確認用のアプリで確かめた）、アプリの直下、
  * キーボードのフォーカスのある要素から親をたどった先。
  */
-private func paradisOpenMenu(pid: Int32, near element: AXUIElement? = nil) -> AXUIElement? {
+func paradisOpenMenu(pid: Int32, near element: AXUIElement? = nil) -> AXUIElement? {
 	let application = AXUIElementCreateApplication(pid)
 	AXUIElementSetMessagingTimeout(application, 0.5)
 	let isMenu = { (candidate: AXUIElement) in (paradisCopy(candidate, kAXRoleAttribute) as? String) == "AXMenu" }
@@ -612,4 +609,13 @@ func paradisFocusSnapshot() -> ParadisFocusSnapshot {
 	let applicationPid = application.flatMap { AXUIElementGetPid($0, &pid) == .success ? pid : nil }
 	let window = application.flatMap { paradisElement($0, kAXFocusedWindowAttribute) }
 	return ParadisFocusSnapshot(frontmostPid: frontmost, focusedApplicationPid: applicationPid, focusedWindowId: window.flatMap(paradisAXWindowNumber))
+}
+
+/** AX 操作と背面クリックが同じ深さで親要素を調べる。ウィンドウの外へは出ない。 */
+func paradisAXClickAncestors(_ hit: AXUIElement) -> [AXUIElement] {
+	var chain = [hit]
+	while chain.count < paradisAXClickChainLimit, let parent = paradisElement(chain[chain.count - 1], kAXParentAttribute), !paradisIsWindow(parent), !chain.contains(where: { CFEqual($0, parent) }) {
+		chain.append(parent)
+	}
+	return chain
 }

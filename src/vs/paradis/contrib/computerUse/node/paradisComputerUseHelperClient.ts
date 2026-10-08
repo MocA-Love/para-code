@@ -53,6 +53,10 @@ const MAX_CONSECUTIVE_CRASHES = 2;
 export class ParadisComputerUseHelperError extends Error {
 	/** 長い入力を途中で止めたとき、送り終えた数（補助アプリが返す）。 */
 	progress?: number;
+	/** Sent through the background route; receipt has not been confirmed. */
+	sent?: number;
+	/** Cleanup outcome, separate from the original refusal reason. */
+	note?: string;
 
 	constructor(readonly code: string, message: string) {
 		super(message);
@@ -221,9 +225,8 @@ class ParadisHelperConnection {
 				this._onTimeout();
 			}, timeoutMs);
 			const onAbort = () => {
-				this._pending.delete(id);
-				cleanup();
-				reject(new ParadisComputerUseHelperError('cancelled', 'The request was cancelled.'));
+				// 元の応答を待ち、既に終えた入力と途中で止めた入力を区別する。共有接続は切らない。
+				this._socket.write(`${JSON.stringify({ id: this._nextId++, method: 'cancel', params: { requestId: id } })}\n`);
 			};
 			const cleanup = () => {
 				clearTimeout(timer);
@@ -284,6 +287,10 @@ class ParadisHelperConnection {
 		if (typeof error.progress === 'number' && Number.isInteger(error.progress) && error.progress >= 0) {
 			failure.progress = error.progress;
 		}
+		if (typeof error.sent === 'number' && Number.isInteger(error.sent) && error.sent >= 0) {
+			failure.sent = error.sent;
+		}
+		if (typeof error.note === 'string') { failure.note = error.note; }
 		pending.reject(failure);
 	}
 

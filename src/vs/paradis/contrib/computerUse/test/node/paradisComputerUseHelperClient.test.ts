@@ -39,6 +39,8 @@ class FakeHelper {
 	readonly requests: string[] = [];
 	readonly staleTerminated: number[] = [];
 	private readonly _servers: Server[] = [];
+	private readonly _held = new Set<number>();
+	readonly cancelledIds: number[] = [];
 	private readonly _sockets: Socket[] = [];
 
 	constructor(private readonly _options: IFakeHelperOptions = {}) { }
@@ -116,8 +118,18 @@ class FakeHelper {
 			socket.write(`${JSON.stringify({ id: request.id, ok: true, result: this._status() })}\n`);
 			return;
 		}
+		if (request.method === 'cancel') {
+			const cancelledId = request.params.requestId as number;
+			this.cancelledIds.push(cancelledId);
+			if (this._held.delete(cancelledId)) {
+				socket.write(`${JSON.stringify({ id: cancelledId, ok: false, error: { code: 'cancelled', message: 'cancelled only this request', sent: 2 } })}\n`);
+			}
+			socket.write(`${JSON.stringify({ id: request.id, ok: true, result: {} })}\n`);
+			return;
+		}
 		const reply = this._options.reply?.(request.method, request.params) ?? { ok: true, result: request.method === 'status' ? this._status() : {} };
 		if (reply === 'hang') {
+			this._held.add(request.id);
 			return;
 		}
 		if (reply === 'crash') {
@@ -245,6 +257,18 @@ suite('ParadisComputerUseHelperClient', () => {
 		await client.check();
 		await assert.rejects(client.request('accessibilityTree', { pid: 1 }), (error: ParadisComputerUseHelperError) => error.code === 'accessibility_not_granted');
 		assert.strictEqual(client.availability, 'ok');
+	});
+
+	test('cancels only the addressed request and preserves the shared connection and progress', async () => {
+		const { client, fake } = createClient({ reply: method => method === 'typeText' ? 'hang' : { ok: true, result: { alive: true } } });
+		await client.check();
+		const controller = new AbortController();
+		const typing = client.request('typeText', { text: 'hello' }, controller.signal);
+		const rejection = assert.rejects(typing, (error: ParadisComputerUseHelperError) => error.code === 'cancelled' && error.sent === 2);
+		await client.request('permissions');
+		controller.abort();
+		await rejection;
+		assert.deepStrictEqual({ reply: await client.request('permissions'), launches: fake.launches, cancellations: fake.cancelledIds.length, availability: client.availability }, { reply: { alive: true }, launches: 1, cancellations: 1, availability: 'ok' });
 	});
 
 	test('gives up on a request that does not answer and starts a new helper for the next one', async () => {
