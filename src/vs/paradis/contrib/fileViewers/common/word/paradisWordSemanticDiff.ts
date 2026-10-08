@@ -557,16 +557,31 @@ function changeValue(value: string | boolean | null | ParadisOfficeFingerprint |
 		return Object.freeze({ kind: 'fingerprint', algorithm: 'sha256', value: String(value.value), byteLength: value.byteLength });
 	}
 	if (typeof value === 'string') {
-		runtime.valueCharacters += value.length;
-		if (value.length > scalarLimit || runtime.valueCharacters > runtime.options.limits.valueCharacters) {
+		// 表示用の値なので、長い段落・文書パーツ全体の文字は切り詰める（比べるのは切り詰める前の値）。
+		// 1 つの長い値で比較全体を「大きすぎる」にしない。
+		const bounded = truncateChangeText(value);
+		runtime.valueCharacters += bounded.length;
+		if (runtime.valueCharacters > runtime.options.limits.valueCharacters) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
-		return Object.freeze({ kind: 'scalar', valueType: 'text', value: String(value) });
+		return Object.freeze({ kind: 'scalar', valueType: 'text', value: bounded });
 	}
 	if (typeof value === 'boolean') {
 		return Object.freeze({ kind: 'scalar', valueType: 'boolean', value });
 	}
 	return Object.freeze({ kind: 'scalar', valueType: 'null', value: null });
+}
+
+function truncateChangeText(value: string): string {
+	if (value.length <= scalarLimit) {
+		return String(value);
+	}
+	let end = scalarLimit - 1;
+	const last = value.charCodeAt(end - 1);
+	if (last >= 0xd800 && last <= 0xdbff) {
+		end--;
+	}
+	return `${value.slice(0, end)}\u2026`;
 }
 
 function ownSnapshot(input: ParadisWordDocument | ParadisWordSemanticSnapshot, runtime: Runtime): OwnedSnapshot {

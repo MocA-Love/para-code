@@ -64,6 +64,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - セッション履歴の行メニューの結果（コピーした・見つからない・失敗した）はモーダルの中に出す。通知の層（2545）はモーダル（2700）の下にあって見えないため。作業フォルダを開く前にディレクトリか確かめ、macOS のバンドル（`.app` など）は Finder で場所を見せるだけにする
 - 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
 
+## Word の詳しい解析は shared process の worker で動かす（fileViewers、2026-10-09、段階 3）
+
+- 入口は `node/word/paradisWordSemanticWorkerMain.ts`。`build/next/index.ts` の `desktopEntryPoints` に載せてある（どこからも import されないため）。ヒープの上限は Office の worker と同じ 384 MiB。worker へは 1 件ずつ送り、実行の締め切りは走り始めた時点で張る。待ち行列には別の締め切り（過ぎたらその依頼だけを取り消す）と長さの上限がある。worker が落ちたら走っていた依頼は失敗にし、shared process の中では解析しない（表示は解析に頼らない）
+- renderer は表示（docx-preview）を出した後に解析を頼み、結果はリボン・変更点パネル・検索・差分にだけ使う。表示の経路（サニタイザと docx-preview）は解析の結果を使わない
+- Web 版の Worker（`browser/paradisOfficeWebWorker.ts`）の Word の比較は、本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。デスクトップとの差として残している
+- 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
+
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
 Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）です。upstream 側は `sharedProcessMain.ts` の既存の PARA-PATCH コメント1行の文言を直しただけです。SSH の接続先（REH）にも同じサービスを動かし、接続先のログインを切り替えます（下の「SSH の接続先での切り替え」）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。

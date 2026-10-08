@@ -151,6 +151,54 @@ suite('ParadisWordSecurity', () => {
 		const traversal = fixtureParts();
 		traversal[3] = part('/word/_rels/document.xml.rels', relationships(`<Relationship Id="rOle" Type="${officeRelationships}/oleObject" Target="../../../private.bin"/>`));
 		invalid(() => parseParadisWordSecurity({ parts: traversal }), 'unsafe');
+		// サニタイザ・部品一覧と同じ規則: network-path と、根より上へ出る絶対パスも拒む。
+		for (const target of ['//host/x', '/../x']) {
+			const shared = fixtureParts();
+			shared[3] = part('/word/_rels/document.xml.rels', relationships(`<Relationship Id="rOle" Type="${officeRelationships}/oleObject" Target="${target}"/>`));
+			invalid(() => parseParadisWordSecurity({ parts: shared }), 'unsafe');
+		}
+	});
+
+	test('accepts legacy binary OLE embeddings and skips a missing target only for metadata relationships', () => {
+		const legacyOle = parseParadisWordSecurity({ parts: fixtureParts({ oleContentType: 'application/vnd.ms-excel' }) });
+		const withMissingMetadata = fixtureParts();
+		withMissingMetadata[1] = part('/_rels/.rels', relationships([
+			`<Relationship Id="rDocument" Type="${officeRelationships}/officeDocument" Target="word/document.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+		].join('')));
+		const missingImage = fixtureParts();
+		missingImage.splice(missingImage.length - 1, 1);
+		deepStrictEqual({
+			legacyOle: legacyOle.unsafeNodes.filter(node => node.kind === 'ole').length,
+			missingMetadata: parseParadisWordSecurity({ parts: withMissingMetadata }).unsafeNodes.length,
+		}, { legacyOle: 1, missingMetadata: 9 });
+		invalid(() => parseParadisWordSecurity({ parts: missingImage }), 'unsafe');
+	});
+
+	test('validates the Microsoft-namespace macro and ActiveX binary relationships that Word writes', () => {
+		const microsoft = 'http://schemas.microsoft.com/office/2006/relationships';
+		const withMicrosoftTypes = (vbaTarget: string) => {
+			const parts = fixtureParts();
+			parts[2] = part('/word/document.xml', `<w:document xmlns:w="${word}"><w:body><w:p/></w:body></w:document>`);
+			parts[3] = part('/word/_rels/document.xml.rels', relationships([
+				`<Relationship Id="rVba" Type="${microsoft}/vbaProject" Target="${vbaTarget}"/>`,
+				`<Relationship Id="rActiveX" Type="${officeRelationships}/control" Target="activeX/activeX1.bin"/>`,
+			].join('')));
+			return parts;
+		};
+		// 正しい型の先なら、マクロとして数える。先が無い・型が違うなら、安全の判断に関わる関係なので拒否する。
+		const kinds = parseParadisWordSecurity({ parts: withMicrosoftTypes('vbaProject.bin') }).unsafeNodes.map(node => node.kind);
+		const duplicate = fixtureParts();
+		duplicate[1] = part('/_rels/.rels', relationships([
+			`<Relationship Id="rDocument" Type="${officeRelationships}/officeDocument" Target="word/document.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+		].join('')));
+		deepStrictEqual(kinds.filter(kind => kind === 'vba' || kind === 'activeX'), ['vba', 'activeX']);
+		invalid(() => parseParadisWordSecurity({ parts: withMicrosoftTypes('missing.bin') }), 'unsafe');
+		invalid(() => parseParadisWordSecurity({ parts: withMicrosoftTypes('embeddings/oleObject1.bin') }), 'unsafe');
+		// 読み飛ばした関係の Id も重複として拒否する。
+		invalid(() => parseParadisWordSecurity({ parts: duplicate }), 'malformed');
 	});
 
 	test('rejects ContentType parameters before classification or preview metadata projection', () => {
