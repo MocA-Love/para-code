@@ -15,6 +15,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	let requiresForeground = false
 	private unowned let desktop: ParadisDesktop
 	private let transport = ParadisBackgroundTransport()
+	private lazy var modifierState = ParadisBackgroundModifiers(monitor: desktop.inputMonitor)
 
 	init(desktop: ParadisDesktop) { self.desktop = desktop }
 
@@ -42,6 +43,10 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 
 	private func performBackground(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
 		try desktop.requireInputPermission()
+		try modifierState.release()
+		let flags = CGEventSource.flagsState(.hidSystemState)
+		let leftover = desktop.ownLeftoverModifiers(systemBefore: flags)
+		if !leftover.isEmpty { try paradisPostModifierRelease(ParadisModifierPress(flags: paradisNeutralEventFlags(systemBefore: flags), added: leftover)) }
 		try fence(pid)
 		if case .typeText = action, paradisOnMain({ paradisInputMethodIsActive() }) {
 			return .fellThrough("an input method is active; use accessibility or foreground paste")
@@ -75,15 +80,25 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 		let point = try resolvePoint(pid: pid, windowId: windowId, bounds: info.bounds, target: pointer)
 		var hit: AXUIElement?
-		AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit)
+		if !keyboard {
+			if case .element(let index, _) = pointer, let snapshot = desktop.lastSnapshot {
+				hit = snapshot.elements[index]
+			} else {
+				AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit)
+			}
+			if let element = hit, !CFEqual(element, window), paradisElement(element, kAXWindowAttribute).flatMap(paradisBackgroundWindowId) != windowId {
+				return .fellThrough("the hit element does not belong to the requested window")
+			}
+		}
 		if let hit, paradisIsPasteMenuElement(hit) { throw ParadisHelperError(code: "key_blocked", message: "use pasteText for pasting") }
 		if !keyboard, let hit, paradisBackgroundClickOpensMenu(roles: paradisAXClickAncestors(hit).map { paradisCopy($0, kAXRoleAttribute) as? String ?? "AXUnknown" }) {
 			return .fellThrough("menu controls need foreground input")
 		}
-		let textTarget = keyboard ? paradisFocusedTextTarget(pid: pid) : nil
-		if keyboard, let element = paradisFocusedElement(pid: pid), paradisElementLooksSecret(element) {
-			throw ParadisHelperError(code: "key_blocked", message: "background input does not target password fields")
+		if keyboard, let failure = keyboardTargetFailure(pid: pid, windowId: windowId) {
+			if failure.code == "key_blocked" { throw failure }
+			return .fellThrough(failure.message)
 		}
+		let textTarget = keyboard ? paradisFocusedTextTarget(pid: pid) : nil
 		if !keyboard, let cursor = options.cursor {
 			let duration = min(0.5, ParadisCursorOverlay.shared.glide(cursor, to: point))
 			let deadline = Date().addingTimeInterval(duration)
@@ -91,11 +106,16 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 		try fence(pid)
 		// 既に開いていたメニューはこの操作の後始末として閉じない。
-		let menuWasOpen = paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: hit) != nil
+		let checkMenuAfterClick = paradisBackgroundChecksMenuAfter(action)
+		let menuWasOpen = checkMenuAfterClick && (paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: hit) != nil)
 		if menuWasOpen { throw ParadisHelperError(code: "menu_open", message: "the target already has an open menu") }
 		let before = paradisFocusSnapshot()
 		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
-		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid)
+		if case .click(_, _, _, let count, _) = action,
+			!paradisBackgroundSingleClickSupported(clickCount: count, isElectron: paradisIsElectronApp(pid: pid), targetIsFrontmost: originalPid == pid && before.focusedWindowId == windowId) {
+			return .fellThrough("Electron can discard the first background click; use accessibility or foreground input")
+		}
+		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid, modifiers: modifierState)
 		ParadisBackgroundCleanup.shared.install { transaction.finish() }
 		defer { ParadisBackgroundCleanup.shared.run() }
 		var result: [String: Any] = ["verified": NSNull()]
@@ -104,12 +124,12 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			let group = Int64.random(in: 1...Int64.max)
 			switch action {
 			case .click(_, _, _, let count, let modifiers):
-				guard let move = paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: []) else { throw failed() }
+				guard let move = paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState))) else { throw failed() }
 				try transaction.send(move, point: point, group: group)
 				usleep(20_000)
 				for index in 1...count {
 					try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: false)
-					let flags = paradisEventFlags(modifiers)
+					let flags = paradisEventFlags(modifiers).union(paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState)))
 					guard let down = paradisMouseEvent(.leftMouseDown, at: point, button: .left, flags: flags),
 						let up = paradisMouseEvent(.leftMouseUp, at: point, button: .left, flags: flags) else { throw failed() }
 					down.setIntegerValueField(.mouseEventClickState, value: Int64(index))
@@ -126,6 +146,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 					try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: false)
 					guard let event = CGEvent(scrollWheelEvent2Source: paradisEventSource(), units: .pixel, wheelCount: 2, wheel1: step.dy, wheel2: step.dx, wheel3: 0) else { throw failed() }
 					event.location = point
+					event.flags = paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState))
 					try transaction.send(event, point: point, group: group)
 					usleep(16_000)
 				}
@@ -155,15 +176,17 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			var failure = (error as? ParadisHelperError) ?? ParadisHelperError(code: "input_failed", message: "background input failed")
 			transaction.finish()
 			failure.sent = transaction.sentUnits
-			let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
-			if let note = menu["note"] as? String { failure.note = note }
+			let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: checkMenuAfterClick && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+			let notes = [menu["note"] as? String, transaction.modifierReleaseError].compactMap { $0 }
+			if !notes.isEmpty { failure.note = notes.joined(separator: " ") }
 			throw failure
 		}
 		transaction.finish()
-		let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+		let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: checkMenuAfterClick && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
 		result.merge(menu) { _, value in value }
 		let preserved = paradisFocusPreserved(before: before, after: paradisFocusSnapshot())
 		result["focusPreserved"] = preserved
+		if let note = transaction.modifierReleaseError { result["note"] = [result["note"] as? String, note].compactMap { $0 }.joined(separator: " ") }
 		if !preserved { result["note"] = "The foreground focus changed during input. " + (result["note"] as? String ?? "Read the target state before retrying.") }
 		if !keyboard {
 			result["point"] = paradisWindowPointJson(point, info.bounds)
@@ -175,15 +198,9 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	/** 成功・中断のどちらでも呼ぶ。利用者のフォーカスは動かさず、操作が開いたメニューだけを閉じる。 */
 	private func closeMenuAfterInput(pid: Int32, started: Double, near element: AXUIElement?, shouldCheck: Bool) -> [String: Any] {
 		guard shouldCheck, paradisProcessStart(pid) == started else { return [:] }
-		var menu: AXUIElement?
-		var visible = false
-		let appearanceDeadline = Date().addingTimeInterval(0.12)
-		repeat {
-			menu = paradisOpenMenu(pid: pid, near: element)
-			visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
-			if visible { break }
-			usleep(20_000)
-		} while Date() < appearanceDeadline
+		// 通常クリックは1回だけ観測する。メニューが無い間の繰り返し AX 問い合わせはしない。
+		var menu = paradisOpenMenu(pid: pid, near: element)
+		var visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
 		guard visible else { return [:] }
 		var attempted = false
 		var accepted = false
@@ -206,7 +223,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		guard let down = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: code, keyDown: true),
 			let up = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: code, keyDown: false) else { throw failed() }
 		for event in [down, up] {
-			event.flags = flags
+			event.flags = flags.union(paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState)))
 			if let text { let units = Array(text.utf16); event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units) }
 		}
 		try transaction.send(down, point: nil, group: 0, release: up)
@@ -218,7 +235,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		if let failure = paradisCurrentSessionFailure() ?? desktop.keyboardActivityFailure() { throw failure }
 		// 修飾キーが押しっぱなしでも利用者の操作を優先する。
 		let flags = CGEventSource.flagsState(.hidSystemState)
-		if !flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty {
+		if !flags.subtracting(modifierState.ownFlags(system: flags)).intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty {
 			throw ParadisHelperError(code: "user_active", message: "the user is holding a modifier key")
 		}
 	}
@@ -238,9 +255,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			throw ParadisHelperError(code: "window_not_found", message: "the background target changed")
 		}
 		if keyboard {
-			if let field = paradisFocusedElement(pid: pid), paradisElementLooksSecret(field) {
-				throw ParadisHelperError(code: "key_blocked", message: "the focused field is protected")
-			}
+			if let failure = keyboardTargetFailure(pid: pid, windowId: windowId) { throw failure }
 			let app = AXUIElementCreateApplication(pid)
 			AXUIElementSetMessagingTimeout(app, 0.3)
 			guard paradisElements(app, kAXWindowsAttribute).count == 1,
@@ -248,6 +263,15 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 				throw ParadisHelperError(code: "window_not_focused", message: "the exact keyboard target changed")
 			}
 		}
+	}
+
+	private func keyboardTargetFailure(pid: Int32, windowId: UInt32) -> ParadisHelperError? {
+		let field = paradisFocusedElement(pid: pid)
+		return paradisBackgroundKeyboardFailure(
+			role: field.flatMap { paradisCopy($0, kAXRoleAttribute) as? String },
+			belongsToWindow: field.flatMap { paradisElement($0, kAXWindowAttribute) }.flatMap(paradisBackgroundWindowId) == windowId,
+			isSecret: field.map(paradisElementLooksSecret) ?? false
+		)
 	}
 
 	private func resolvePoint(pid: Int32, windowId: UInt32, bounds: CGRect, target: ParadisPointerTarget?) throws -> CGPoint {
@@ -279,16 +303,19 @@ private final class ParadisBackgroundTransaction {
 	private let bounds: CGRect
 	private let originalPid: Int32
 	private var pending: (CGEvent, CGPoint?, Int64)?
+	private let modifiers: ParadisBackgroundModifiers
+	private(set) var modifierReleaseError: String?
 	private var closed = false
 	private(set) var sentUnits = 0
 
-	init(transport: ParadisBackgroundTransport, pid: Int32, windowId: UInt32, started: Double, bounds: CGRect, originalPid: Int32) {
+	init(transport: ParadisBackgroundTransport, pid: Int32, windowId: UInt32, started: Double, bounds: CGRect, originalPid: Int32, modifiers: ParadisBackgroundModifiers) {
 		self.transport = transport
 		self.pid = pid
 		self.windowId = windowId
 		self.started = started
 		self.bounds = bounds
 		self.originalPid = originalPid
+		self.modifiers = modifiers
 	}
 
 	func send(_ event: CGEvent, point: CGPoint?, group: Int64, release: CGEvent? = nil) throws {
@@ -301,6 +328,7 @@ private final class ParadisBackgroundTransaction {
 		// CGEvent.location は画面座標、CGEventSetWindowLocation はウィンドウ左上からの座標。
 		let localPoint = point.map { CGPoint(x: $0.x - bounds.minX, y: $0.y - bounds.minY) }
 		if let release { pending = (release, localPoint, group) }
+		modifiers.record(event)
 		transport.send(event, pid: pid, windowId: windowId, point: localPoint, group: group)
 		if event.type == .keyDown || event.type == .leftMouseDown || event.type == .scrollWheel { sentUnits += 1 }
 	}
@@ -320,5 +348,7 @@ private final class ParadisBackgroundTransaction {
 		guard !closed else { return }
 		closed = true
 		release()
+		do { try modifiers.release() }
+		catch { modifierReleaseError = "The helper could not release its modifier state." }
 	}
 }
