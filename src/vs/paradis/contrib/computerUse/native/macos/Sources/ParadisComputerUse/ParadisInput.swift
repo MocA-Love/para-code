@@ -53,6 +53,17 @@ extension ParadisDesktop {
 			ParadisCursorOverlay.shared.hideAll()
 		}
 		paradisManualAccessibility.touch(pid)
+		if let windowId = options.windowId {
+			switch action {
+			case .typeText, .pasteText, .pressChord:
+				let application = AXUIElementCreateApplication(pid)
+				AXUIElementSetMessagingTimeout(application, 0.3)
+				guard paradisElement(application, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId) == windowId else {
+					throw ParadisHelperError(code: "window_not_focused", message: "the requested keyboard window is not the app's focused window; select that window first")
+				}
+			default: break
+			}
+		}
 		let routes: [ParadisInputRoute] = [ParadisAccessibilityRoute(desktop: self), backgroundRoute, ParadisForegroundRoute(desktop: self)]
 		return try paradisRouteInput(action, pid: pid, routes: routes, options: options)
 	}
@@ -682,8 +693,8 @@ func paradisEventSource() -> CGEventSource? {
 }
 
 /** キーを押してから離すまでと、文字と文字の間。 */
-private let paradisKeyHoldMicroseconds: UInt32 = 12_000
-private let paradisInterCharacterMicroseconds: UInt32 = 20_000
+let paradisKeyHoldMicroseconds: UInt32 = 12_000
+let paradisInterCharacterMicroseconds: UInt32 = 20_000
 
 /** 文字入力の結果。 */
 func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCheck, count: Int) -> [String: Any] {
@@ -792,7 +803,7 @@ func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisAXInsert 
 }
 
 /** 今の入力ソースが IME か（main スレッドで呼ぶ）。 */
-private func paradisInputMethodIsActive() -> Bool {
+func paradisInputMethodIsActive() -> Bool {
 	guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
 		return false
 	}
@@ -811,7 +822,7 @@ func paradisMouseEvent(_ type: CGEventType, at point: CGPoint, button: CGMouseBu
 	return event
 }
 
-private func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
+func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
 	var flags: CGEventFlags = []
 	if modifiers.contains(.command) {
 		flags.insert(.maskCommand)

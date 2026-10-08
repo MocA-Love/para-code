@@ -10,9 +10,8 @@
 // 操作は次の段の順に試し、最初に送れた段で送る。どの段で送ったかは結果の `route` に書く。
 //  1. accessibility: AX の操作（AXPress・AXShowMenu・AXIncrement/AXDecrement・値の設定・選択範囲への文字の挿入）。
 //     マウスもカーソルも動かさず、アプリを前面に出さない。公開 API の AX だけを使う
-//  2. background: 背面のアプリへ入力を送る段の差し込み口。今は実装が無く、常に「使えない」を返す
-//     （`ParadisUnavailableBackgroundRoute`）。実装をはめ込むときは `ParadisInputRoute` に準拠したクラスを作り、
-//     補助アプリの `paradisMakeBackgroundRoute()` から返す
+//  2. background: 指定ウィンドウへの入力。補助アプリの `paradisMakeBackgroundRoute(desktop:)` で作る。
+//     `ParadisUnavailableBackgroundRoute` は代替実装・Core のテスト用に残す。
 //  3. foreground: 今までの経路。アプリを前面に出し、実カーソルを動かして HID のタップへ送る
 //
 // 前面に出す段（`requiresForeground`）は、shared process が利用者の承認を取ってからにできる（設定
@@ -79,6 +78,8 @@ struct ParadisCursorOwnerSpec: Equatable {
 
 /** 要求ごとの送り方の指定。 */
 struct ParadisInputOptions: Equatable {
+	/** キーの背面配送に使う厳密な宛先。 */
+	var windowId: UInt32? = nil
 	/** 前面に出す段（実カーソルを動かす）で送ってよいか。省略時は今までどおり true。 */
 	var allowForeground: Bool = true
 	/**
@@ -643,6 +644,12 @@ func paradisParseCursorOwner(_ value: Any?) -> ParadisCursorOwnerSpec? {
 /** 要求の引数から送り方の指定を読む。`allowForeground` が無ければ今までどおり true。 */
 func paradisParseInputOptions(_ params: [String: Any]) throws -> ParadisInputOptions {
 	var options = ParadisInputOptions()
+	if let raw = params["windowId"] {
+		guard let value = paradisExactInt(raw), value > 0, value <= Int(UInt32.max) else {
+			throw ParadisHelperError.invalidArgument("windowId must be a positive window identifier")
+		}
+		options.windowId = UInt32(value)
+	}
 	if let raw = params["allowForeground"] {
 		guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
 			throw ParadisHelperError.invalidArgument("\"allowForeground\" must be true or false")

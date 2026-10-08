@@ -39,7 +39,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
 	/** 2 段目（背面への入力）。今は常に使えない空の実装（ParadisInputRoutes.swift）。 */
-	let backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute()
+	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）

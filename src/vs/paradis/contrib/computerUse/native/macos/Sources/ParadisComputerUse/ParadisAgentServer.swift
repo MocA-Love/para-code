@@ -96,6 +96,7 @@ final class ParadisAgentServer {
 	func run() -> Never {
 		let listener = listen()
 		let connection = acceptVerified(listener)
+		ParadisBackgroundConnection.socket = connection
 		serve(connection)
 	}
 
