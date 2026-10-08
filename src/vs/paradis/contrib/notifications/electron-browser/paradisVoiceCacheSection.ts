@@ -27,7 +27,7 @@ const PERIOD_DAYS = 30;
 // allow-any-unicode-next-line
 const STR_LABEL = localize('paradis.notif.voiceCache.label', "同じ文の読み上げを使い回す");
 // allow-any-unicode-next-line
-const STR_DESC = localize('paradis.notif.voiceCache.desc', "一度 ElevenLabs で合成した通知の声をこの PC に置き、同じ声・同じ設定・同じ文なら合成し直さずに鳴らします。SSH 先のペインの通知も、この PC で合成するので同じように使い回します。声・モデル・声の調整・辞書を変えると別の音として合成します。");
+const STR_DESC = localize('paradis.notif.voiceCache.desc', "一度 ElevenLabs で合成した通知の声をこの PC に 10 日まで置き、同じ声・同じ設定・同じ文なら合成し直さずに鳴らします。SSH 先のペインの通知も、この PC で合成するので同じように使い回します。声・モデル・声の調整・辞書を変えると別の音として合成します。辞書を直した直後の 1 回は、前の発音のまま鳴ることがあります。ElevenLabs 側で声を直したときは、キャッシュを消してください。テスト再生は毎回合成し直し、置いてある音を置き換えます。");
 // allow-any-unicode-next-line
 const STR_FROM_CACHE = localize('paradis.notif.voiceCache.fromCache', "キャッシュから");
 // allow-any-unicode-next-line
@@ -42,6 +42,7 @@ const strSaved = (chars: string, days: number) => localize('paradis.notif.voiceC
 const strSent = (chars: string, days: number) => localize('paradis.notif.voiceCache.sent', "{0} 文字（{1}日）", chars, days);
 // allow-any-unicode-next-line
 const strEntries = (n: string) => localize('paradis.notif.voiceCache.entries', "{0} 件", n);
+const strMegabytes = (n: string) => localize('paradis.notif.voiceCache.megabytes', "{0} MB", n);
 // allow-any-unicode-next-line
 const STR_CLEAR = localize('paradis.notif.voiceCache.clear', "キャッシュを消す");
 // allow-any-unicode-next-line
@@ -121,7 +122,7 @@ export class ParadisVoiceCacheSection extends Disposable {
 		const grid = dom.append(container, $('.pns-stat-grid'));
 		this._statCard(grid, STR_FROM_CACHE, strTimes(totals.hits.toLocaleString()), strSaved(totals.hitCharacters.toLocaleString(), PERIOD_DAYS));
 		this._statCard(grid, STR_FROM_API, strTimes(totals.calls.toLocaleString()), strSent(totals.callCharacters.toLocaleString(), PERIOD_DAYS));
-		this._statCard(grid, STR_STORED, strEntries(info.entries.toLocaleString()), `${(info.bytes / (1024 * 1024)).toFixed(1)} MB`);
+		this._statCard(grid, STR_STORED, strEntries(info.entries.toLocaleString()), strMegabytes((info.bytes / (1024 * 1024)).toFixed(1)));
 
 		const actions = dom.append(container, $('.pns-row'));
 		const clearBtn = dom.append(actions, $('button.pns-btn.pns-btn-danger')) as HTMLButtonElement;
