@@ -19,7 +19,7 @@ import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/p
 import { homedir, tmpdir } from 'os';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { basename, delimiter, dirname, extname, join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -770,6 +770,26 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 */
 	beginMobileVoiceStream(gainKey?: string): IParadisMobileVoiceStreamWriter {
 		return new ParadisMobileVoiceStreamWriter(event => this._onDidCreateMobileVoiceClip.fire(event), this._mobileGainDb(gainKey), PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES);
+	}
+
+	private _mobileVoiceListenerProbe: (() => number) | undefined;
+
+	/** モバイルリレーが、声を聞いているモバイルの数を数える口を置く（同じ shared process の中だけ）。 */
+	setMobileVoiceListenerProbe(probe: () => number): IDisposable {
+		this._mobileVoiceListenerProbe = probe;
+		return toDisposable(() => {
+			if (this._mobileVoiceListenerProbe === probe) {
+				this._mobileVoiceListenerProbe = undefined;
+			}
+		});
+	}
+
+	mobileVoiceListenerCount(): number | undefined {
+		try {
+			return this._mobileVoiceListenerProbe?.();
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** 声とモデルの組の補正（-20 LUFS に揃える dB）。`--ingest` から取った表があればそれ、無ければ写しの最初の値。 */

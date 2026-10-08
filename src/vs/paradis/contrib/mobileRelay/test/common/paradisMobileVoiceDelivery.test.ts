@@ -73,4 +73,19 @@ suite('ParadisMobileVoiceDelivery limits', () => {
 
 		assert.deepStrictEqual(sent, ['voice-clip']);
 	});
+
+	test('counts only the subscribed mobiles that are online, for the voice ticket (Q309)', () => {
+		const subscriptions = new ParadisVoiceSubscriptions(60_000);
+		const online = new Map([['mobile-1', true], ['mobile-2', false], ['mobile-3', true]]);
+		subscriptions.start('mobile-1', 'sid-1', Date.now());
+		subscriptions.start('mobile-2', 'sid-2', Date.now());
+		subscriptions.start('mobile-3', 'sid-3', Date.now() - 120_000);
+		const delivery = new ParadisMobileVoiceDelivery(subscriptions, {
+			getSession: mobileId => ({ hasCurrentProtocol: true, isOnline: online.get(mobileId) ?? false, epoch: 1, capabilities: undefined, sendFrame: async () => undefined }),
+			congestionBytes: () => 0,
+			encodeBase64: bytes => `b64:${bytes.length}`,
+			warn: () => { },
+		});
+		assert.strictEqual(delivery.listenerCount(), 1);
+	});
 });
