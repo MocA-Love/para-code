@@ -409,4 +409,29 @@ suite('ParadisOfficeCorpus', () => {
 		});
 		deepStrictEqual((await sanitize(bytes)).ignoredParts.map(part => part.partName), ['customXml/item\ufffd1.xml']);
 	});
+	test('drops an external link element inside other run containers and keeps nested content valid', async () => {
+		const link = (body: string) => wordPackage({
+			body,
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdA', type: `${R}/hyperlink`, target: 'https://example.invalid/a', targetMode: 'External' },
+				{ source: '/word/document.xml', id: 'rIdB', type: `${R}/hyperlink`, target: 'https://example.invalid/b', targetMode: 'External' },
+			],
+		});
+		const text = async (body: string) => {
+			const result = await sanitize(await link(body));
+			strictEqual(result.placeholders.length, 0);
+			const xml = new TextDecoder().decode(result.bytes);
+			ok(!xml.includes('r:id="rId'), body);
+			ok(!xml.includes('example.invalid'), body);
+			return xml;
+		};
+		// Inside w:dir (bidirectional run container): the element is dropped, the run stays in w:dir.
+		ok((await text('<w:p><w:dir w:val="rtl"><w:hyperlink r:id="rIdA"><w:r><w:t>dir</w:t></w:r></w:hyperlink></w:dir></w:p>')).includes('<w:dir w:val="rtl"><w:r><w:t>dir</w:t></w:r></w:dir>'));
+		// A nested link that declares its own namespace keeps both elements and loses only the links.
+		const nested = await text('<w:p><w:hyperlink r:id="rIdA"><w:hyperlink xmlns:x="urn:example:x" r:id="rIdB"><w:r><w:t>nested</w:t></w:r></w:hyperlink></w:hyperlink></w:p>');
+		ok(nested.includes('<w:t>nested</w:t>'));
+		strictEqual((nested.match(/<w:hyperlink\b/g) ?? []).length, 2);
+		// A simple field inside a link moves up into the paragraph unchanged.
+		ok((await text('<w:p><w:hyperlink r:id="rIdA"><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:hyperlink></w:p>')).includes('<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>'));
+	});
 });

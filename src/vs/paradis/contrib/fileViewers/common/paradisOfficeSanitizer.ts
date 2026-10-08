@@ -659,7 +659,8 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name))));
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	// Retained XML that no story parse covered (document properties, comment threading ...) is parsed and
-	// written again, so DOCTYPE, processing instructions, and comments never reach the renderer.
+	// written again; in these rewritten parts, DOCTYPE, processing instructions, and comments do not
+	// reach the renderer. Story parts keep their source bytes apart from the patched consumers.
 	for (const name of retainedParts) {
 		await advanceOpcAnalysis(input, state);
 		if (rewrittenXml.has(name) || storyDocuments.has(name) || name.endsWith('.rels') || !isXmlContentType(name, contentType(name))) { continue; }
@@ -846,7 +847,7 @@ function compareText(left: string, right: string): number {
 
 /** Replaces C0/C1 controls and bidi embedding/isolate controls so a listed name cannot reorder UI text. */
 function displaySafePartName(name: string): string {
-	return name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '\ufffd');
+	return name.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, '\ufffd');
 }
 
 /** Scheme of an external Target, never the URL itself. */
@@ -1009,7 +1010,7 @@ function officeConsumerKind(element: OfficeXmlElement, attributeLocal: string, p
 	if (WORD_NAMESPACES.has(element.uri)) {
 		if (element.local === 'headerReference' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'sectPr') { return 'headerReference'; }
 		if (element.local === 'footerReference' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'sectPr') { return 'footerReference'; }
-		if (element.local === 'hyperlink' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'p') { return 'hyperlink'; }
+		if (element.local === 'hyperlink' && canInsertOfficeRun(parent)) { return 'hyperlink'; }
 		if (element.local === 'altChunk' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'body') { return 'altChunk'; }
 		if (/^embed(?:Regular|Bold|Italic|BoldItalic)$/.test(element.local)) { return 'font'; }
 		if (element.local === 'control') { return 'control'; }
@@ -1027,7 +1028,7 @@ function officeConsumerAnchor(element: OfficeXmlElement, parent: OfficeXmlElemen
 	if (!isOfficeStoryKind(sourceKind)) { return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: consumerKind === 'image' ? 'preservedElement' : 'removedElement' }; }
 	if (WORD_NAMESPACES.has(element.uri) && element.local === 'altChunk' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'body') { return { anchor: element, anchorParent: parent, anchorKind: 'block' }; }
 	if (WORD_NAMESPACES.has(element.uri) && (element.local === 'headerReference' || element.local === 'footerReference')) { return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: 'fallback' }; }
-	if (WORD_NAMESPACES.has(element.uri) && element.local === 'hyperlink' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'p') { return { anchor: element, anchorParent: parent, anchorKind: 'run' }; }
+	if (WORD_NAMESPACES.has(element.uri) && element.local === 'hyperlink' && parent && canInsertOfficeRun(parent)) { return { anchor: element, anchorParent: parent, anchorKind: 'run' }; }
 	for (let index = ancestors.length - 1; index >= 0; index--) {
 		const candidate = ancestors[index];
 		if (WORD_NAMESPACES.has(candidate.element.uri) && candidate.element.local === 'r') {
@@ -1153,7 +1154,7 @@ const MAX_OFFICE_LEXICAL_PATCHES = 131_072;
 const MAX_OFFICE_PLACEHOLDER_OCCURRENCES = 65_536;
 const MAX_OFFICE_PATCH_OUTPUT_BYTES = 8 * 1024 * 1024;
 const OFFICE_PATCH_RADIX = 4_096;
-const OFFICE_WORD_RUN_CONTAINERS = new Set(['p', 'hyperlink', 'smartTag', 'sdtContent', 'customXml', 'ins', 'del', 'moveFrom', 'moveTo', 'fldSimple']);
+const OFFICE_WORD_RUN_CONTAINERS = new Set(['p', 'hyperlink', 'smartTag', 'sdtContent', 'customXml', 'ins', 'del', 'moveFrom', 'moveTo', 'fldSimple', 'dir', 'bdo']);
 const OFFICE_WORD_BLOCK_CONTAINERS = new Set(['body', 'hdr', 'ftr', 'footnote', 'endnote', 'comment', 'tc']);
 
 interface OfficeOutputBudget {
@@ -1233,6 +1234,7 @@ async function patchStoryRelationshipConsumers(story: OfficeStoryDocument, repla
 		patches.push(patch);
 	};
 	const roots = await buildOfficeAnchorTree(anchors.values(), story, input, state);
+	settleUnwrappedOfficeAnchors(roots);
 	for (const entry of roots) {
 		const lexicalAnchor = entry.lexical!;
 		addPatch({ start: lexicalAnchor.start, end: lexicalAnchor.end, fragments: await planOfficeAnchorFragments(entry, entry.parent ?? story.root, fallback, planning), affinity: 'replace' });
@@ -1379,9 +1381,28 @@ function promotedOfficeNamespaceBindings(entry: OfficeAnchorPatchPlan, insertion
 	return declarations;
 }
 
+function canInsertOfficeRun(parent: OfficeXmlElement | undefined): boolean {
+	if (!parent) { return false; }
+	if (parent.uri === MARKUP_COMPATIBILITY_NAMESPACE && (parent.local === 'Choice' || parent.local === 'Fallback')) { return true; }
+	return WORD_NAMESPACES.has(parent.uri) && OFFICE_WORD_RUN_CONTAINERS.has(parent.local);
+}
+
 function validateOfficeRunInsertion(parent: OfficeXmlElement): void {
-	if (parent.uri === MARKUP_COMPATIBILITY_NAMESPACE && (parent.local === 'Choice' || parent.local === 'Fallback')) { return; }
-	if (!WORD_NAMESPACES.has(parent.uri) || !OFFICE_WORD_RUN_CONTAINERS.has(parent.local)) { throw new ParadisOfficePackageError('malformed'); }
+	if (!canInsertOfficeRun(parent)) { throw new ParadisOfficePackageError('malformed'); }
+}
+
+/**
+ * Decides bottom-up whether each unlinked hyperlink can drop its element. It can when its parent accepts
+ * runs and every nested anchor is itself a run, an unwrapped hyperlink, or a removed element; otherwise
+ * it keeps the element and loses only its relationship attribute, as before.
+ */
+function settleUnwrappedOfficeAnchors(entries: readonly OfficeAnchorPatchPlan[]): void {
+	for (const entry of entries) {
+		settleUnwrappedOfficeAnchors(entry.children);
+		if (entry.kind === 'unwrappedElement' && (!canInsertOfficeRun(entry.parent) || entry.children.some(child => child.kind !== 'run' && child.kind !== 'unwrappedElement' && child.kind !== 'removedElement'))) {
+			entry.kind = 'preservedElement';
+		}
+	}
 }
 
 function validateOfficeBlockInsertion(parent: OfficeXmlElement): void {
@@ -1669,7 +1690,8 @@ function serializeRetainedOfficeXml(root: OfficeXmlElement): string {
 		if (allowDefault && Object.hasOwn(bindings, '') && bindings[''] === uri) { return ''; }
 		for (const prefix of Object.keys(bindings)) { if (prefix && bindings[prefix] === uri) { return prefix; } }
 		for (const prefix of Object.keys(extra)) { if (extra[prefix] === uri) { return prefix; } }
-		const prefix = `ns${generated++}`;
+		let prefix = `ns${generated++}`;
+		while (Object.hasOwn(bindings, prefix) || Object.hasOwn(extra, prefix)) { prefix = `ns${generated++}`; }
 		extra[prefix] = uri;
 		declarations.push(` xmlns:${prefix}="${escapeXmlAttribute(uri)}"`);
 		return prefix;
