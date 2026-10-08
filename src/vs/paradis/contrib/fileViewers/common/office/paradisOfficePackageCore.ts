@@ -26,6 +26,7 @@ import {
 	type ParadisOfficeXmlNode,
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
+	resolveParadisOfficeRelationshipTarget,
 } from './paradisOfficeArchive.js';
 
 interface ReadPart {
@@ -330,14 +331,35 @@ function isRequiredRelationship(relationship: ParsedRelationship, mainPart: stri
 	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
 }
 
-function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () => void): ReadonlyMap<string, string> {
+interface ContentTypeTable {
+	/**
+	 * The Override for the part, else the Default for its extension (ECMA-376 Part 2 §7.2.3.4). The
+	 * media-type stream itself and relationship parts are never typed through a Default.
+	 */
+	get(partName: string): string | undefined;
+}
+
+function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () => void): ContentTypeTable {
 	if (document.root.local !== 'Types' || document.root.uri !== 'http://schemas.openxmlformats.org/package/2006/content-types') {
 		throw new ParadisOfficePackageError('malformed');
 	}
-	const result = new Map<string, string>();
+	const overrides = new Map<string, string>();
+	const defaults = new Map<string, string>();
 	for (const node of document.root.children) {
 		checkpoint?.();
-		if (node.kind !== 'element' || node.local !== 'Override') {
+		if (node.kind !== 'element') {
+			continue;
+		}
+		if (node.local === 'Default') {
+			const extension = attribute(node, 'Extension');
+			const type = attribute(node, 'ContentType');
+			if (!extension || !type) {
+				throw new ParadisOfficePackageError('malformed');
+			}
+			defaults.set(extension.toLowerCase(), type);
+			continue;
+		}
+		if (node.local !== 'Override') {
 			continue;
 		}
 		const name = attribute(node, 'PartName');
@@ -345,9 +367,18 @@ function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () =
 		if (!name || !type || !name.startsWith('/')) {
 			throw new ParadisOfficePackageError('malformed');
 		}
-		result.set(name, type);
+		overrides.set(name, type);
 	}
-	return result;
+	return {
+		get: partName => {
+			const override = overrides.get(partName);
+			if (override !== undefined || partName === contentTypesName || partName.endsWith('.rels')) {
+				return override;
+			}
+			const dot = partName.lastIndexOf('.');
+			return dot > partName.lastIndexOf('/') ? defaults.get(partName.slice(dot + 1).toLowerCase()) : undefined;
+		},
+	};
 }
 
 interface ParsedRelationship {
@@ -409,27 +440,7 @@ function relationshipSource(name: string): string {
 }
 
 function resolveTarget(source: string, target: string): string {
-	if (!target || target.includes('\\') || target.includes('%')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	// ECMA-376 Part 2 §6.5.3: Target is a URI reference resolved against the source part. A leading `/`
-	// is an absolute part name (Open XML SDK and openpyxl write `/word/document.xml`).
-	const absolute = target.startsWith('/');
-	const base = absolute || source === '/' ? [] : source.slice(1).split('/').slice(0, -1);
-	for (const segment of (absolute ? target.slice(1) : target).split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (base.length === 0) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			base.pop();
-		} else {
-			base.push(segment);
-		}
-	}
-	return `/${base.join('/')}`;
+	return resolveParadisOfficeRelationshipTarget(source, target);
 }
 
 function findCyclicRelationships(relationships: readonly RelationshipCycleEdge[], completePartNames: ReadonlySet<string>, checkpoint: () => void): readonly boolean[] {
@@ -589,7 +600,8 @@ function detectFormat(mainPart: string, hasMacros: boolean): ParadisOfficeFormat
 }
 
 function isXmlPart(name: string, contentType: string): boolean {
-	return name.endsWith('.xml') || name.endsWith('.rels') || /(?:xml|\+xml)/i.test(contentType);
+	// Media keep their opaque all-byte identity even when a Default gives them an `image/svg+xml` type.
+	return name.endsWith('.xml') || name.endsWith('.rels') || (!isMediaPart(name) && !/^image\//i.test(contentType) && /(?:xml|\+xml)/i.test(contentType));
 }
 function isMediaPart(name: string): boolean {
 	return /\/(?:media|embeddings)\//i.test(name) || /\.(?:png|jpe?g|gif|bmp|tiff?|wmf|emf)$/i.test(name);

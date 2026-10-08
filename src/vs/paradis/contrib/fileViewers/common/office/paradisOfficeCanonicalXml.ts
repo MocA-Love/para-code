@@ -24,7 +24,12 @@ interface XmlFrame {
 	readonly name: XmlQName;
 	readonly node: XmlElement;
 	readonly namespaces: Readonly<Record<string, string>>;
+	/** In-scope bindings without `xml`, shared by every descendant that declares no namespace. */
+	readonly bindings: Readonly<Record<string, string>>;
 }
+
+const rootNamespaces: Readonly<Record<string, string>> = Object.freeze({ xml: xmlNamespace });
+const rootBindings: Readonly<Record<string, string>> = Object.freeze({});
 
 interface XmlQName {
 	readonly prefix: string;
@@ -151,19 +156,36 @@ class ParadisOfficeXmlParser {
 			attributes.push({ name: attributeName, value: this.parseAttributeValue() });
 		}
 
-		const namespaces: Record<string, string> = { ...(this.stack[this.stack.length - 1]?.namespaces ?? { xml: xmlNamespace }) };
+		// An element without xmlns attributes shares its parent's scope by reference. Copying the whole
+		// scope per element made memory grow with (elements × in-scope namespaces).
+		const parent = this.stack[this.stack.length - 1];
+		let namespaces: Readonly<Record<string, string>> = parent?.namespaces ?? rootNamespaces;
+		let declared: Record<string, string> | undefined;
 		for (const attribute of attributes) {
 			if (attribute.name.prefix === '' && attribute.name.local === 'xmlns') {
 				if (attribute.value === xmlNamespace || attribute.value === xmlnsNamespace) {
 					this.malformed();
 				}
-				namespaces[''] = attribute.value;
+				declared ??= { ...namespaces };
+				declared[''] = attribute.value;
 			} else if (attribute.name.prefix === 'xmlns') {
 				this.validateNamespaceBinding(attribute.name.local, attribute.value);
-				namespaces[attribute.name.local] = attribute.value;
+				declared ??= { ...namespaces };
+				declared[attribute.name.local] = attribute.value;
 			}
 		}
-		const element = this.createElement(name, attributes, namespaces);
+		let bindings = parent?.bindings ?? rootBindings;
+		if (declared) {
+			namespaces = Object.freeze(declared);
+			const own: Record<string, string> = {};
+			for (const [prefix, value] of Object.entries(declared)) {
+				if (prefix !== 'xml') {
+					own[prefix] = value;
+				}
+			}
+			bindings = Object.freeze(own);
+		}
+		const element = this.createElement(name, attributes, namespaces, bindings);
 		if (++this.nodes > this.limits.nodes || this.stack.length + 1 > this.limits.depth) {
 			throw new ParadisOfficePackageError('limitExceeded');
 		}
@@ -176,11 +198,11 @@ class ParadisOfficeXmlParser {
 		}
 		this.recordEvent();
 		if (!selfClosing) {
-			this.stack.push({ name, node: element, namespaces });
+			this.stack.push({ name, node: element, namespaces, bindings });
 		}
 	}
 
-	private createElement(name: XmlQName, attributes: readonly RawXmlAttribute[], namespaces: Readonly<Record<string, string>>): XmlElement {
+	private createElement(name: XmlQName, attributes: readonly RawXmlAttribute[], namespaces: Readonly<Record<string, string>>, namespaceBindings: Readonly<Record<string, string>>): XmlElement {
 		const uri = this.resolveElementUri(name, namespaces);
 		const expandedAttributes: { uri: string; local: string; value: string }[] = [];
 		const expandedNames = new Set<string>();
@@ -196,12 +218,6 @@ class ParadisOfficeXmlParser {
 			}
 			expandedNames.add(expandedName);
 			expandedAttributes.push({ uri: attributeUri, local: attribute.name.local, value: attribute.value });
-		}
-		const namespaceBindings: Record<string, string> = {};
-		for (const [prefix, value] of Object.entries(namespaces)) {
-			if (prefix !== 'xml') {
-				namespaceBindings[prefix] = value;
-			}
 		}
 		return { kind: 'element', uri, local: name.local, attributes: expandedAttributes, children: [], namespaceBindings };
 	}

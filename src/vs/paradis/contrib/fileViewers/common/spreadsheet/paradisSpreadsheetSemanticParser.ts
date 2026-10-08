@@ -21,6 +21,7 @@ import {
 	type ParadisOfficeXmlNode,
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
+	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisCellStyle, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
 import { formatPreparedSpreadsheetValue, formatSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext, type ParadisSpreadsheetPreparedNumberFormat } from './paradisSpreadsheetNumberFormat.js';
@@ -2113,27 +2114,7 @@ function validateRelationshipAuthority(
 }
 
 function resolveRelationshipTarget(sourcePartId: string | undefined, target: string): string {
-	if (!target || target.includes('\\') || target.includes('%')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	// ECMA-376 Part 2 §6.5.3: Target is a URI reference resolved against the source part. A leading `/`
-	// is an absolute part name (Open XML SDK and openpyxl write `/word/document.xml`).
-	const absolute = target.startsWith('/');
-	const base = !absolute && sourcePartId ? sourcePartId.slice(1).split('/').slice(0, -1) : [];
-	for (const segment of (absolute ? target.slice(1) : target).split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (base.length === 0) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			base.pop();
-		} else {
-			base.push(segment);
-		}
-	}
-	return `/${base.join('/')}`;
+	return resolveParadisOfficeRelationshipTarget(sourcePartId, target);
 }
 
 async function indexSemanticArchive(

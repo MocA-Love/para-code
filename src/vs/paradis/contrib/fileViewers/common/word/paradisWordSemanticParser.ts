@@ -22,6 +22,7 @@ import {
 	type ParadisOfficeXmlNode,
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
+	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
 import type {
 	ParadisWordAltChunkNode,
@@ -1109,27 +1110,7 @@ function relationshipPartUri(sourcePartUri: string | undefined): string {
 }
 
 function resolveRelationshipTarget(sourcePartUri: string | undefined, target: string): string {
-	if (!target || target.includes('\\') || target.includes('%')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	// ECMA-376 Part 2 §6.5.3: Target is a URI reference resolved against the source part. A leading `/`
-	// is an absolute part name (Open XML SDK and openpyxl write `/word/document.xml`).
-	const absolute = target.startsWith('/');
-	const segments = !absolute && sourcePartUri ? sourcePartUri.slice(1).split('/').slice(0, -1) : [];
-	for (const segment of (absolute ? target.slice(1) : target).split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (segments.length === 0) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			segments.pop();
-		} else {
-			segments.push(segment);
-		}
-	}
-	return `/${segments.join('/')}`;
+	return resolveParadisOfficeRelationshipTarget(sourcePartUri, target);
 }
 
 class WordNodeFactory {

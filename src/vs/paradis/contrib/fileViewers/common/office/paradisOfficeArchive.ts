@@ -77,3 +77,35 @@ export function canonicalizeParadisOfficeArchiveName(name: string): string {
 	}
 	return `/${segments.join('/')}`;
 }
+
+/**
+ * Resolves an internal relationship Target against its source part (ECMA-376 Part 2 §6.5.3; the Target
+ * is a URI reference). `source` is `/` or undefined for the package root. A leading `/` is an
+ * absolute part name, which Open XML SDK and openpyxl write. A leading `//` is a network-path
+ * reference (RFC 3986 §4.2), never a part, and like `\\`, `%`, and a `..` that leaves the package it is
+ * rejected as malformed. Returns a part name with a leading `/`.
+ */
+export function resolveParadisOfficeRelationshipTarget(source: string | undefined, target: string): string {
+	if (!target || target.startsWith('//') || target.includes('\\') || target.includes('%') || target.includes('\0')) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	const absolute = target.startsWith('/');
+	const segments = absolute || !source || source === '/' ? [] : source.replace(/^\//, '').split('/').slice(0, -1);
+	for (const segment of (absolute ? target.slice(1) : target).split('/')) {
+		if (!segment || segment === '.') {
+			continue;
+		}
+		if (segment === '..') {
+			if (segments.length === 0) {
+				throw new ParadisOfficePackageError('malformed');
+			}
+			segments.pop();
+		} else {
+			segments.push(segment);
+		}
+	}
+	if (segments.length === 0) {
+		throw new ParadisOfficePackageError('malformed');
+	}
+	return `/${segments.join('/')}`;
+}
