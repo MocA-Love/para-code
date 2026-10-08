@@ -78,8 +78,14 @@ export interface IParadisAgentBrowserBindingModel {
 	/** 指定ページにバインドされているバインディング一覧を返す。 */
 	getBindingsForPage(pageId: string): IParadisPaneBinding[];
 
-	/** 指定ペイントークンのバインディングを返す。 */
+	/** 指定ペイントークンの current のバインディング（tab_id を省いたときに使うページ）を返す。 */
 	getBindingForToken(token: string): IParadisPaneBinding | undefined;
+
+	/**
+	 * そのペインへ共有しているページすべて（1 つのペインは複数のページを共有できる）。current が先頭で、
+	 * 残りは新しく共有した順。
+	 */
+	getBindingsForToken(token: string): readonly IParadisPaneBinding[];
 
 	/** そのペインが tab_id で使っている、エージェントが自分で開いたタブ（許可）の viewId（キャッシュ）。 */
 	getAgentTabsForToken(token: string): readonly string[];
@@ -97,6 +103,12 @@ export interface IParadisAgentBrowserBindingModel {
 	bindPageToPane(model: IBrowserViewModel, token: string): Promise<boolean>;
 
 	/**
+	 * {@link bindPageToPane} と同じ。実際に共有したページの ID を返す（upstream が共有用のタブを開き直したときは
+	 * そのタブの ID）。ユーザーが確認を拒否したら undefined。
+	 */
+	sharePageWithPane(model: IBrowserViewModel, token: string): Promise<string | undefined>;
+
+	/**
 	 * エージェントが自分で開いたタブを、共有（バインド）を付け替えずに、そのペインから tab_id で使えるようにする
 	 * （許可）。ペインとタブが同じスペースにあるときだけ。成功したら true。
 	 */
@@ -106,12 +118,16 @@ export interface IParadisAgentBrowserBindingModel {
 	revokeAgentTab(token: string, viewId: string): Promise<void>;
 
 	/**
-	 * 指定ペインのバインドを解除する。ページがどのペインにもバインドされなくなったら
+	 * 指定ペインから、そのページの共有だけを外す（ほかに共有しているページは残す）。current を外したら、
+	 * 残りのうち最後に共有したものが current になる。ページがどのペインにもバインドされなくなったら
 	 * エージェント共有自体も解除する。
 	 */
 	unbindPane(model: IBrowserViewModel, token: string): Promise<void>;
 
-	/** Unbind an existing row even when its page is outside the current scope. */
+	/** {@link unbindPane} のページの ID 版（ページのモデルが無くても外せる）。 */
+	unbindPageFromToken(pageId: string, token: string): Promise<void>;
+
+	/** そのペインの共有をすべて外す。Unbind existing rows even when their pages are outside the current scope. */
 	unbindToken(token: string): Promise<void>;
 
 	/**
@@ -269,6 +285,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	private _bindings: readonly IParadisPaneBinding[] = [];
 	private _bindingByToken: ReadonlyMap<string, IParadisPaneBinding> = new Map();
+	/** ペインごとの共有すべて（current が先頭）。 */
+	private _bindingsByToken: ReadonlyMap<string, readonly IParadisPaneBinding[]> = new Map();
 	/**
 	 * このウィンドウから許可したエージェントのタブ（viewId → ペインのトークン）。共有（バインド）とは別。
 	 * 共有が外れたページの共有の印を下ろすとき、許可の付いたタブは下ろさない（エージェントが使い続けるため）。
@@ -377,8 +395,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		this._register(this.terminalScopeService.onDidChangeStableScope(event => {
 			this.scheduleFire();
 			const token = this.paneTokenService.getTokenForInstance(event.instanceId);
-			const binding = token ? this.getBindingForToken(token) : undefined;
-			if (binding) {
+			for (const binding of token ? this.getBindingsForToken(token) : []) {
 				void this._runSerializedForPageAndTokens(binding.pageId, [binding.token], () => this._reconcileStableScopeChange(binding)).catch(() => undefined);
 			}
 		}));
@@ -614,6 +631,10 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		return this._bindingByToken.get(token);
 	}
 
+	getBindingsForToken(token: string): readonly IParadisPaneBinding[] {
+		return this._bindingsByToken.get(token) ?? [];
+	}
+
 	/** このウィンドウのターミナルペインにトークンが1本でも割り当てられているか（renderer内で同期判定）。 */
 	private hasAnyPaneToken(): boolean {
 		return this.paneTokenService.listPaneTokens().length > 0;
@@ -669,10 +690,15 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 					|| seenTokens.length !== this._seenTokens.size
 					|| seenTokens.some(token => !this._seenTokens.has(token));
 				const bindingByToken = new Map<string, IParadisPaneBinding>();
+				const bindingsByToken = new Map<string, IParadisPaneBinding[]>();
 				const bindingsByPageId = new Map<string, IParadisPaneBinding[]>();
 				for (const binding of bindings) {
-					if (!bindingByToken.has(binding.token)) {
+					// current（印の無い行）を先頭に、2 枚目以降は shared process の並び（新しい順）のまま
+					if (!binding.additional && !bindingByToken.has(binding.token)) {
 						bindingByToken.set(binding.token, binding);
+						bindingsByToken.set(binding.token, [binding, ...(bindingsByToken.get(binding.token) ?? [])]);
+					} else {
+						bindingsByToken.set(binding.token, [...(bindingsByToken.get(binding.token) ?? []), binding]);
 					}
 					const pageBindings = bindingsByPageId.get(binding.pageId);
 					if (pageBindings) {
@@ -684,6 +710,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				this._appliedRefreshSerial = refreshSerial;
 				this._bindings = bindings;
 				this._bindingByToken = bindingByToken;
+				this._bindingsByToken = bindingsByToken;
 				this._bindingsByPageId = bindingsByPageId;
 				this._seenTokens = new Set(seenTokens);
 				if (refreshSerial === this._nextRefreshSerial) {
@@ -707,6 +734,10 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async bindPageToPane(model: IBrowserViewModel, token: string): Promise<boolean> {
+		return (await this.sharePageWithPane(model, token)) !== undefined;
+	}
+
+	async sharePageWithPane(model: IBrowserViewModel, token: string): Promise<string | undefined> {
 		// PARA-PATCH: upstream 1.137 may satisfy the share request by opening a *new* shareable tab
 		// and returning that model instead of the requested one (see _bindPageToPane). Loop so the
 		// synchronous bookkeeping and the per-page reservation below are always taken against the
@@ -727,7 +758,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				this._removeActivePageBind(current.id, token);
 			}
 			if (typeof outcome === 'boolean') {
-				return outcome;
+				return outcome ? current.id : undefined;
 			}
 			current = outcome;
 			isReplacement = true;
@@ -952,22 +983,77 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			return;
 		}
 
-		await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-			.call<boolean>('unbindIfCurrent', [binding.token, binding.generation]);
+		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+		// 1 つのペインは複数のページを共有でき、current を外すと残りが新しい世代で繰り上がる。捕まえた世代は古いことが
+		// あるので、外す直前の一覧から (ペイン, ページ) で引き直す
+		const fresh = await this._refreshFromBackend(true);
+		const affectedPageIds = new Set([binding.pageId]);
+		if (!paradisBindingScopesEqual(binding.scope, terminalScope)) {
+			// ペインのスペースが変わった: そのペインの共有のうち、今のペインのスペースと違うものを世代を指定して外す
+			// （後から今のスペースで共有し直したものは残す）。2 枚目以降を先に、current を最後に外す（current を
+			// 先に外すと、外すはずのページが新しい世代で繰り上がる）
+			const stale = fresh
+				? fresh.filter(candidate => candidate.token === binding.token && !paradisBindingScopesEqual(candidate.scope, terminalScope))
+					.sort((a, b) => Number(!a.additional) - Number(!b.additional))
+				: [binding];
+			for (const candidate of stale) {
+				affectedPageIds.add(candidate.pageId);
+				await channel.call<boolean>('unbindIfCurrent', [candidate.token, candidate.generation]);
+			}
+		} else {
+			const current = fresh?.find(candidate => candidate.token === binding.token && candidate.pageId === binding.pageId);
+			await channel.call<boolean>('unbindIfCurrent', [binding.token, current?.generation ?? binding.generation]);
+		}
 		// The authority manifest writer may have retired this exact generation first. Refresh even
 		// when conditional unbind returns false so stale page sharing can still be released safely.
 		const bindings = await this._refreshFromBackend();
-		if (!bindings || bindings.some(candidate => candidate.pageId === binding.pageId)) {
+		if (!bindings) {
 			return;
 		}
-		const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(binding.pageId)?.model;
-		if (model) {
-			await model.setSharedWithAgent(false);
+		for (const pageId of affectedPageIds) {
+			if (bindings.some(candidate => candidate.pageId === pageId)) {
+				continue;
+			}
+			const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model;
+			if (model) {
+				await model.setSharedWithAgent(false);
+			}
 		}
 	}
 
-	async unbindPane(_model: IBrowserViewModel, token: string): Promise<void> {
-		await this.unbindToken(token);
+	async unbindPane(model: IBrowserViewModel, token: string): Promise<void> {
+		await this.unbindPageFromToken(model.id, token);
+	}
+
+	async unbindPageFromToken(pageId: string, token: string): Promise<void> {
+		await this._runSerializedForPageAndTokens(pageId, [token], async () => {
+			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+			// 世代で外す（同じペインのほかのページの共有・後から張り直した共有は外さない）
+			const fresh = await this._refreshFromBackend(true);
+			if (!fresh) {
+				throw new Error('PARA_BROWSER_RETRYABLE: binding state could not be verified before unsharing');
+			}
+			const binding = fresh.find(candidate => candidate.token === token && candidate.pageId === pageId);
+			let bindings: readonly IParadisPaneBinding[] | undefined;
+			if (binding && !await channel.call<boolean>('unbindIfCurrent', [token, binding.generation])) {
+				// 読んだ直後に世代が変わった（manifest の同期で 2 枚目以降が current へ繰り上がった等）。一覧を取り直し、
+				// 同じ (ペイン, ページ) がまだあれば 1 回だけやり直す
+				const retry = await this._refreshFromBackend(true);
+				const again = retry?.find(candidate => candidate.token === token && candidate.pageId === pageId);
+				if (again && again.generation !== binding.generation) {
+					await channel.call<boolean>('unbindIfCurrent', [token, again.generation]);
+				} else {
+					bindings = retry;
+				}
+			}
+			bindings ??= await this._refreshFromBackend(true);
+			if (!bindings) {
+				this._pendingUnsharePageIds.add(pageId);
+				this._poller.stateChanged();
+				return;
+			}
+			await this._unsharePagesWithoutBindings([pageId], bindings);
+		});
 	}
 
 	async unbindToken(token: string): Promise<void> {
@@ -981,8 +1067,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	private async _unbindToken(token: string): Promise<void> {
 		const candidatePageIds = new Set<string>();
-		const binding = this.getBindingForToken(token);
-		if (binding) {
+		for (const binding of this.getBindingsForToken(token)) {
 			candidatePageIds.add(binding.pageId);
 		}
 		for (const [pageId, tokens] of this._activePageBindTokens) {

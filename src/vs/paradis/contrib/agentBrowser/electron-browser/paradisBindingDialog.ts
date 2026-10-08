@@ -33,6 +33,7 @@ import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/p
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
+import { PARADIS_USER_SHARED_PAGE_LIMIT, paradisIsSharedPageLimitError } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
@@ -73,7 +74,13 @@ const STR_SCOPE_NOTE = localize('paradis.bindingDialog.scopeNote', "別のスペ
 // allow-any-unicode-next-line
 const strSubBoundHere = (since: string) => localize('paradis.bindingDialog.subBoundHere', "このページを共有中 · {0}から", since);
 // allow-any-unicode-next-line
-const strSubBoundElse = (title: string) => localize('paradis.bindingDialog.subBoundElse', "別のページを共有中: {0}", title);
+const strSubSharedOtherOne = (title: string) => localize('paradis.bindingDialog.subSharedOtherOne', "ほかに 1 ページを共有中: {0}", title);
+// allow-any-unicode-next-line
+const strSubSharedOtherMany = (count: number, title: string) => localize('paradis.bindingDialog.subSharedOtherMany', "ほかに {0} ページを共有中: {1} ほか", count, title);
+// allow-any-unicode-next-line
+const strSubAlsoSharedOther = (sub: string, count: number) => localize('paradis.bindingDialog.subAlsoSharedOther', "{0} · ほかに {1} ページを共有中", sub, count);
+// allow-any-unicode-next-line
+const strSharedPageLimit = (limit: number) => localize('paradis.bindingDialog.sharedPageLimit', "1 つのペインへ共有できるページは {0} ページまでです。使わないページの共有を外してから共有してください。", limit);
 // allow-any-unicode-next-line
 const STR_SUB_READY = localize('paradis.bindingDialog.subReady', "接続済み・空き");
 // allow-any-unicode-next-line
@@ -83,7 +90,7 @@ const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', 
 // allow-any-unicode-next-line
 const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
 // allow-any-unicode-next-line
-const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したこのページだけを読み取り・操作できます");
+const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したページだけを読み取り・操作できます");
 // allow-any-unicode-next-line
 const STR_BTN_CLOSE = localize('paradis.bindingDialog.btnClose', "閉じる");
 // allow-any-unicode-next-line
@@ -601,8 +608,18 @@ export class ParadisBindingDialog extends Disposable {
 		// スコープ外（別スペース）のペインは一覧に出さない。ただし現在このページに共有中の行は
 		// 解除できるよう常に残す。
 		return this._panes().filter(pane =>
-			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this._page.id
+			pane.bindEligibility?.eligible === true || this._isSharedHere(pane)
 			|| this.bindingModel.getAgentTabsForToken(pane.token).includes(this._page.id));
+	}
+
+	/** このペインがこのページを共有しているか（1 つのペインは複数のページを共有できる）。 */
+	private _isSharedHere(pane: IParadisPaneDescriptor): boolean {
+		return this.bindingModel.getBindingsForToken(pane.token).some(binding => binding.pageId === this._page.id);
+	}
+
+	/** このペインが共有している、このページ以外のページ（current が先頭、残りは新しい順）。 */
+	private _sharedElsewhere(pane: IParadisPaneDescriptor) {
+		return this.bindingModel.getBindingsForToken(pane.token).filter(binding => binding.pageId !== this._page.id);
 	}
 
 	private _renderPanesTab(): void {
@@ -644,20 +661,19 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderPaneRow(pane: IParadisPaneDescriptor): HTMLElement {
 		const row = $('.pbd-pane-row');
-		const boundHere = pane.binding?.pageId === this._page.id;
-		const boundElse = !!pane.binding && !boundHere;
+		const boundHere = this._isSharedHere(pane);
 
 		const dotClass = (pane.binding || pane.mcpConnected) ? 'green' : 'amber';
 		dom.append(row, $(`.pbd-dot.${dotClass}`));
 
 		const main = dom.append(row, $('.pbd-row-main'));
 		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
-		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere, boundElse);
+		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere);
 
-		// 行内アクションは共有/解除を表す switch。eligibility 対象外の行は disabled のまま維持する。
-		// 「解除」の動詞になる行（このページに共有中 / 別ページ共有中でスコープ外）は ON 表示にし、
-		// OFF への切替で解除が走る。
-		const action = paradisGetPaneBindingAction(pane.binding?.pageId, this._page.id, pane.bindEligibility);
+		// 行内アクションは、このページの共有/解除を表す switch（ページごとに独立。ほかのページの共有は
+		// 付け替えずに残す）。eligibility 対象外の行は disabled のまま維持する。このページに共有中の行は
+		// ON 表示にし、OFF への切替でこのページの共有だけが外れる。
+		const action = paradisGetPaneBindingAction(boundHere ? this._page.id : undefined, this._page.id, pane.bindEligibility);
 		const isUnshareVerb = action === 'unbind';
 		const switchEl = dom.append(row, $('input.pbd-switch')) as HTMLInputElement;
 		switchEl.type = 'checkbox';
@@ -677,21 +693,20 @@ export class ParadisBindingDialog extends Disposable {
 	/** 行の switch 操作を受ける。成功/失敗どちらでも描画し直して switch の見た目を実状態へ戻す。 */
 	private async _runRowToggle(pane: IParadisPaneDescriptor, wantShared: boolean): Promise<void> {
 		if (wantShared) {
+			if (!this._isSharedHere(pane) && this.bindingModel.getBindingsForToken(pane.token).length >= PARADIS_USER_SHARED_PAGE_LIMIT) {
+				this._bindError = strSharedPageLimit(PARADIS_USER_SHARED_PAGE_LIMIT);
+				this._render();
+				return;
+			}
 			await this._bindPane(pane.token);
 			return;
 		}
 		// 止める共有先が、承認を得て開いたユーザーのプロファイルのタブなら、エージェントの台帳から外す
 		// （エージェントが選び直しても承認なしでは共有し直されないように）
-		const unsharedPageId = pane.binding?.pageId;
-		if (unsharedPageId !== undefined) {
-			this.agentTabsService.revokeApprovedProfileTab(unsharedPageId);
-		}
+		this.agentTabsService.revokeApprovedProfileTab(this._page.id);
 		try {
-			if (pane.binding?.pageId === this._page.id) {
-				await this.bindingModel.unbindPane(this._page, pane.token);
-			} else {
-				await this.bindingModel.unbindToken(pane.token);
-			}
+			// このページの共有だけを外す（ほかに共有しているページは残る）
+			await this.bindingModel.unbindPane(this._page, pane.token);
 			this._bindError = undefined;
 		} catch (error) {
 			this._bindError = strBindFailed(error instanceof Error ? error.message : String(error));
@@ -699,24 +714,28 @@ export class ParadisBindingDialog extends Disposable {
 		this._render();
 	}
 
-	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
+	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean): string {
 		// エージェントが自分で開いて tab_id で使っているタブ（共有とは別に、ペインごとに最大 5 枚）
 		// 共有中のページと同じタブは数えない（同じタブが共有と許可の両方に載ることがある）
-		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token).filter(pageId => pageId !== pane.binding?.pageId);
-		// 別のページを共有中なら、そちらの説明を優先する（行のスイッチはその共有を外すため）
-		if (!boundHere && !boundElse && agentTabs.includes(this._page.id)) {
+		const sharedPageIds = new Set(this.bindingModel.getBindingsForToken(pane.token).map(binding => binding.pageId));
+		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token).filter(pageId => !sharedPageIds.has(pageId));
+		if (!boundHere && agentTabs.includes(this._page.id)) {
 			return STR_SUB_AGENT_TAB_HERE;
 		}
-		const sub = this._paneBindingSubText(pane, boundHere, boundElse);
+		const sub = this._paneBindingSubText(pane, boundHere);
 		return agentTabs.length > 0 ? strSubAgentTabs(sub, agentTabs.length) : sub;
 	}
 
-	private _paneBindingSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
+	private _paneBindingSubText(pane: IParadisPaneDescriptor, boundHere: boolean): string {
+		const elsewhere = this._sharedElsewhere(pane);
 		if (boundHere) {
-			return strSubBoundHere(pane.binding ? formatRelativeTime(pane.binding.boundAt) : STR_JUST_NOW);
+			const here = this.bindingModel.getBindingsForToken(pane.token).find(binding => binding.pageId === this._page.id);
+			const sub = strSubBoundHere(here ? formatRelativeTime(here.boundAt) : STR_JUST_NOW);
+			return elsewhere.length > 0 ? strSubAlsoSharedOther(sub, elsewhere.length) : sub;
 		}
-		if (boundElse && pane.binding) {
-			return strSubBoundElse(pane.binding.pageInfo.title || pane.binding.pageInfo.url);
+		if (elsewhere.length > 0) {
+			const title = elsewhere[0].pageInfo.title || elsewhere[0].pageInfo.url;
+			return elsewhere.length === 1 ? strSubSharedOtherOne(title) : strSubSharedOtherMany(elsewhere.length, title);
 		}
 		if (pane.mcpConnected) {
 			return STR_SUB_READY;
@@ -1052,7 +1071,7 @@ export class ParadisBindingDialog extends Disposable {
 	private async _bindPane(token: string): Promise<void> {
 		const bound = await paradisRunDialogBind(
 			() => this.bindingModel.bindPageToPane(this._page, token),
-			error => this._bindError = paradisGetBindingErrorMessage(error, {
+			error => this._bindError = paradisIsSharedPageLimitError(error) ? strSharedPageLimit(PARADIS_USER_SHARED_PAGE_LIMIT) : paradisGetBindingErrorMessage(error, {
 				pending: STR_META_SCOPE_PENDING,
 				differentScope: STR_META_SCOPE_MISMATCH,
 				generic: strBindFailed,
