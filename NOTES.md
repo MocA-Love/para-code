@@ -66,7 +66,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 ## Word の詳しい解析は shared process の worker で動かす（fileViewers、2026-10-09、段階 3）
 
-- 入口は `node/word/paradisWordSemanticWorkerMain.ts`。`build/next/index.ts` の `desktopEntryPoints` に載せてある（どこからも import されないため）。ヒープの上限は Office の worker と同じ 384 MiB で、依頼ごとに締め切りがある。worker が落ちたら依頼は失敗にし、shared process の中で解析し直すのは worker が起動の合図（ready）を送れなかったときだけ
+- 入口は `node/word/paradisWordSemanticWorkerMain.ts`。`build/next/index.ts` の `desktopEntryPoints` に載せてある（どこからも import されないため）。ヒープの上限は Office の worker と同じ 384 MiB。worker へは 1 件ずつ送り、実行の締め切りは走り始めた時点で張る。待ち行列には別の締め切り（過ぎたらその依頼だけを取り消す）と長さの上限がある。worker が落ちたら走っていた依頼は失敗にし、shared process の中では解析しない（表示は解析に頼らない）
 - renderer は表示（docx-preview）を出した後に解析を頼み、結果はリボン・変更点パネル・検索・差分にだけ使う。表示の経路（サニタイザと docx-preview）は解析の結果を使わない
 - Web 版の Worker（`browser/paradisOfficeWebWorker.ts`）の Word の比較は、本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。デスクトップとの差として残している
 - 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
