@@ -234,7 +234,14 @@ export function paradisTakeSnapshotRootRect(name: string, result: unknown): { re
 		});
 		return { ...item, text: kept.join('\n') };
 	});
-	return found ? { result: { ...result, content }, ...(rect ? { rect } : {}) } : { result };
+	if (!found) {
+		return { result };
+	}
+	// structuredContent（vendored の --experimental-structured-content。Para Code は付けないが念のため）からも取り除く
+	const structured = isRecord(result.structuredContent) && typeof result.structuredContent.message === 'string'
+		? { structuredContent: { ...result.structuredContent, message: result.structuredContent.message.split('\n').filter(line => !line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)).join('\n') } }
+		: {};
+	return { result: { ...result, content, ...structured }, ...(rect ? { rect } : {}) };
 }
 
 /**
