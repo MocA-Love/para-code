@@ -290,7 +290,8 @@ export class ParadisBrowserObserver {
 			lines.push(`Your tabs: ${tabs.map(tab => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url}`).join('; ')}`);
 		}
 		const beforeIndexes = new Set((before.pages?.pages ?? []).map(page => page.index));
-		const opened = before.pages === undefined ? [] : (pages?.pages ?? []).filter(page => !beforeIndexes.has(page.index));
+		// 操作の前の一覧が取れなかった（ダイアログが開いていると空になる）ときは、開いたページを数えない
+		const opened = before.pages === undefined || before.pages.pages.length === 0 ? [] : (pages?.pages ?? []).filter(page => !beforeIndexes.has(page.index));
 		if ((pages?.pages.length ?? 0) > 1 || opened.length > 0) {
 			lines.push(`Pages in this tab's browser: ${(pages?.pages ?? []).map(page => `pageId ${page.index}${page.selected ? ' (selected)' : ''}${opened.includes(page) ? ' (opened by this action)' : ''} ${JSON.stringify(page.title.slice(0, 80))} ${page.url}`).join('; ')}`);
 		}

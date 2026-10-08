@@ -137,6 +137,15 @@ suite('Paradis browser observe', () => {
 		});
 	});
 
+	test('pages are not reported as opened when the list before the action was empty', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const onlyDialog = text('# Open dialog\nconfirm: Delete?.\nCall handle_dialog to handle it before continuing.');
+		const { host } = fakeHost({ pages: [onlyDialog, PAGES_ONE] });
+		const before = await observer.before(host, options, 'changes', 2000);
+		assert.strictEqual(await observer.after(host, 'pane', options, before, 'changes', 2000), '[Browser state]\nYour tabs: t1 (current) "Orders" http://127.0.0.1/orders');
+	});
+
 	test('the page is not evaluated while a JavaScript dialog is open', async () => {
 		const observer = new ParadisBrowserObserver();
 		const options = { settle: true, state: false };
