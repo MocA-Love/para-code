@@ -72,38 +72,3 @@ func paradisBackgroundWindowId(_ element: AXUIElement) -> UInt32? {
 	var id: UInt32 = 0
 	return lookup(element, &id) == .success && id != 0 ? id : nil
 }
-
-/** 背面入力が追加した修飾キーだけを記録し、利用者が状態を変えた場合は触れない。 */
-final class ParadisBackgroundModifiers {
-	private let monitor: ParadisInputMonitor
-	private let lock = NSLock()
-	private var held: (press: ParadisModifierPress, at: Date)?
-
-	init(monitor: ParadisInputMonitor) { self.monitor = monitor }
-
-	func record(_ event: CGEvent) {
-		guard event.type == .keyDown || event.type == .leftMouseDown else { return }
-		lock.lock()
-		defer { lock.unlock() }
-		guard held == nil else { return }
-		let press = paradisModifierPress(chord: event.flags, systemBefore: CGEventSource.flagsState(.hidSystemState))
-		if !press.added.isEmpty { held = (press, Date()) }
-	}
-
-	func ownFlags(system: CGEventFlags) -> CGEventFlags {
-		lock.lock()
-		let current = held
-		lock.unlock()
-		guard let current else { return [] }
-		return paradisOwnLeftoverModifiers(lastReleased: current.press.added, systemBefore: system, physicalModifierChangeSinceRelease: monitor.physicalModifierChange(since: current.at))
-	}
-
-	func release() throws {
-		lock.lock()
-		defer { lock.unlock() }
-		guard let current = held else { return }
-		guard monitor.physicalModifierChange(since: current.at) == false else { held = nil; return }
-		try paradisPostModifierRelease(current.press)
-		held = nil
-	}
-}

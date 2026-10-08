@@ -15,9 +15,13 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	let requiresForeground = false
 	private unowned let desktop: ParadisDesktop
 	private let transport = ParadisBackgroundTransport()
-	private lazy var modifierState = ParadisBackgroundModifiers(monitor: desktop.inputMonitor)
+	private let modifierState: ParadisBackgroundModifiers
 
-	init(desktop: ParadisDesktop) { self.desktop = desktop }
+	init(desktop: ParadisDesktop) {
+		self.desktop = desktop
+		let monitor = desktop.inputMonitor
+		modifierState = ParadisBackgroundModifiers(physicalChange: { monitor.physicalModifierChange(since: $0) }, currentFlags: { CGEventSource.flagsState(.hidSystemState) }, postRelease: { try paradisPostModifierRelease($0) })
+	}
 
 	func availability(of action: ParadisInputAction, pid: Int32) -> ParadisRouteAvailability {
 		guard transport.available else { return .unavailable("background delivery symbols are unavailable") }
@@ -43,10 +47,18 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 
 	private func performBackground(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
 		try desktop.requireInputPermission()
-		try modifierState.release()
+		try modifierState.recoverLeftover()
 		let flags = CGEventSource.flagsState(.hidSystemState)
 		let leftover = desktop.ownLeftoverModifiers(systemBefore: flags)
 		if !leftover.isEmpty { try paradisPostModifierRelease(ParadisModifierPress(flags: paradisNeutralEventFlags(systemBefore: flags), added: leftover)) }
+		let restrictedSingleClick: Bool
+		if case .click(let id, _, _, let count, _) = action, count == 1, paradisUsesChromium(pid: pid) {
+			restrictedSingleClick = true
+			let foreground = paradisFocusSnapshot()
+			if foreground.frontmostPid != pid || foreground.focusedWindowId != id {
+				return .fellThrough("Chromium can discard the first background click; use accessibility or foreground input")
+			}
+		} else { restrictedSingleClick = false }
 		try fence(pid)
 		if case .typeText = action, paradisOnMain({ paradisInputMethodIsActive() }) {
 			return .fellThrough("an input method is active; use accessibility or foreground paste")
@@ -86,8 +98,8 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			} else {
 				AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit)
 			}
-			if let element = hit, !CFEqual(element, window), paradisElement(element, kAXWindowAttribute).flatMap(paradisBackgroundWindowId) != windowId {
-				return .fellThrough("the hit element does not belong to the requested window")
+			if let element = hit, let reason = paradisAXHitSkipReason(element, window: window) {
+				return .fellThrough(reason)
 			}
 		}
 		if let hit, paradisIsPasteMenuElement(hit) { throw ParadisHelperError(code: "key_blocked", message: "use pasteText for pasting") }
@@ -99,6 +111,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			return .fellThrough(failure.message)
 		}
 		let textTarget = keyboard ? paradisFocusedTextTarget(pid: pid) : nil
+		let menuElement = hit ?? textTarget?.element
 		if !keyboard, let cursor = options.cursor {
 			let duration = min(0.5, ParadisCursorOverlay.shared.glide(cursor, to: point))
 			let deadline = Date().addingTimeInterval(duration)
@@ -106,14 +119,14 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 		try fence(pid)
 		// 既に開いていたメニューはこの操作の後始末として閉じない。
-		let checkMenuAfterClick = paradisBackgroundChecksMenuAfter(action)
-		let menuWasOpen = checkMenuAfterClick && (paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: hit) != nil)
+		let checkMenuAfterInput = paradisBackgroundChecksMenuAfter(action)
+		let menuWasOpen = checkMenuAfterInput && (paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: menuElement) != nil)
 		if menuWasOpen { throw ParadisHelperError(code: "menu_open", message: "the target already has an open menu") }
 		let before = paradisFocusSnapshot()
 		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
 		if case .click(_, _, _, let count, _) = action,
-			!paradisBackgroundSingleClickSupported(clickCount: count, isElectron: paradisIsElectronApp(pid: pid), targetIsFrontmost: originalPid == pid && before.focusedWindowId == windowId) {
-			return .fellThrough("Electron can discard the first background click; use accessibility or foreground input")
+			!paradisBackgroundSingleClickSupported(clickCount: count, usesChromium: restrictedSingleClick, targetIsFrontmost: originalPid == pid && before.focusedWindowId == windowId) {
+			return .fellThrough("Chromium can discard the first background click; use accessibility or foreground input")
 		}
 		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid, modifiers: modifierState)
 		ParadisBackgroundCleanup.shared.install { transaction.finish() }
@@ -176,15 +189,15 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			var failure = (error as? ParadisHelperError) ?? ParadisHelperError(code: "input_failed", message: "background input failed")
 			transaction.finish()
 			failure.sent = transaction.sentUnits
-			let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: checkMenuAfterClick && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+			let (menu, _) = closeMenuAfterInput(pid: pid, started: started, near: menuElement, focusBefore: before, shouldCheck: checkMenuAfterInput && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
 			let notes = [menu["note"] as? String, transaction.modifierReleaseError].compactMap { $0 }
 			if !notes.isEmpty { failure.note = notes.joined(separator: " ") }
 			throw failure
 		}
 		transaction.finish()
-		let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: checkMenuAfterClick && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+		let (menu, focusAfter) = closeMenuAfterInput(pid: pid, started: started, near: menuElement, focusBefore: before, shouldCheck: checkMenuAfterInput && originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
 		result.merge(menu) { _, value in value }
-		let preserved = paradisFocusPreserved(before: before, after: paradisFocusSnapshot())
+		let preserved = paradisFocusPreserved(before: before, after: focusAfter)
 		result["focusPreserved"] = preserved
 		if let note = transaction.modifierReleaseError { result["note"] = [result["note"] as? String, note].compactMap { $0 }.joined(separator: " ") }
 		if !preserved { result["note"] = "The foreground focus changed during input. " + (result["note"] as? String ?? "Read the target state before retrying.") }
@@ -196,17 +209,28 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	}
 
 	/** 成功・中断のどちらでも呼ぶ。利用者のフォーカスは動かさず、操作が開いたメニューだけを閉じる。 */
-	private func closeMenuAfterInput(pid: Int32, started: Double, near element: AXUIElement?, shouldCheck: Bool) -> [String: Any] {
-		guard shouldCheck, paradisProcessStart(pid) == started else { return [:] }
-		// 通常クリックは1回だけ観測する。メニューが無い間の繰り返し AX 問い合わせはしない。
-		var menu = paradisOpenMenu(pid: pid, near: element)
-		var visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
-		guard visible else { return [:] }
+	private func closeMenuAfterInput(pid: Int32, started: Double, near element: AXUIElement?, focusBefore: ParadisFocusSnapshot, shouldCheck: Bool) -> ([String: Any], ParadisFocusSnapshot) {
+		guard shouldCheck, paradisProcessStart(pid) == started else { return ([:], paradisFocusSnapshot()) }
+		// 遅れて開くメニューを軽いウィンドウ一覧だけで待つ。空の間に AX は繰り返し読まない。
+		let appearanceDeadline = Date().addingTimeInterval(0.12)
+		var visible = false
+		repeat {
+			guard paradisProcessStart(pid) == started else { return ([:], paradisFocusSnapshot()) }
+			visible = paradisAppMenuWindow(pid: pid) != nil
+			if visible { break }
+			usleep(20_000)
+		} while Date() < appearanceDeadline
+		let focusAfter = paradisFocusSnapshot()
+		// NSMenu は一覧に載る前にキーのフォーカスを取る場合がある。操作後に必要な比較を再利用し、
+		// フォーカスが変わったときだけ対象アプリの AX を一度読む（利用者の別アプリは操作しない）。
+		var menu = visible || !paradisFocusPreserved(before: focusBefore, after: focusAfter) ? paradisOpenMenu(pid: pid, near: element) : nil
+		visible = visible || menu != nil
+		guard visible else { return ([:], focusAfter) }
 		var attempted = false
 		var accepted = false
 		let closingDeadline = Date().addingTimeInterval(0.3)
 		repeat {
-			guard paradisProcessStart(pid) == started else { return paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: false) }
+			guard paradisProcessStart(pid) == started else { return (paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: false), paradisFocusSnapshot()) }
 			if !attempted, let menu {
 				attempted = true
 				AXUIElementSetMessagingTimeout(menu, 0.2)
@@ -216,7 +240,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			menu = paradisOpenMenu(pid: pid, near: element)
 			visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
 		} while visible && Date() < closingDeadline
-		return paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: visible)
+		return (paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: visible), paradisFocusSnapshot())
 	}
 
 	private func key(_ transaction: ParadisBackgroundTransaction, code: UInt16, flags: CGEventFlags, text: String? = nil) throws {
@@ -348,7 +372,7 @@ private final class ParadisBackgroundTransaction {
 		guard !closed else { return }
 		closed = true
 		release()
-		do { try modifiers.release() }
+		do { try modifiers.releaseCurrent() }
 		catch { modifierReleaseError = "The helper could not release its modifier state." }
 	}
 }
