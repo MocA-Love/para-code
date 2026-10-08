@@ -96,7 +96,7 @@ suite('ParadisWordSemanticService', () => {
 		}, {
 			format: 'docx',
 			stories: { body: 1, header: 1, footer: 1, footnote: 1, comment: 1, textbox: 1 },
-			unknown: [{ name: 'proofErr', count: 2, disposition: 'ignorable' }],
+			unknown: [{ name: 'pict', count: 1, disposition: 'unrendered' }, { name: 'proofErr', count: 2, disposition: 'ignorable' }],
 			changes: [
 				['revision', 'revision.deleted', 'strictly', 'revisionKind=deleted author=Clerk date=2026-09-30T10:12:00Z'],
 				['revision', 'revision.inserted', undefined, 'text=and tell the office revisionKind=inserted author=Clerk date=2026-09-30T10:12:00Z'],
