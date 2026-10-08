@@ -122,8 +122,10 @@ class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
 					await workspaceSwitchService.switchToStateKey(scope.stateKey);
 				}
 				// 待っている間に別の切り替えが割り込んだら、今のスペースへは混ぜない (ウィンドウは開いたまま)。
+				// 失敗ではなく見送りなので、「戻せませんでした」とは言わない。
 				if (!paradisIsSettledOnSpace(workspaceSwitchService, scope.stateKey)) {
-					throw new Error('The space switched again before the window could be merged back');
+					notificationService.info(localize('paradis.auxiliaryWindow.restoreSuperseded', "別のスペースへ切り替わったため、ウィンドウを元のスペースへ戻すのを見送りました。内容は別ウィンドウで開いたままです。"));
+					return true;
 				}
 				if (!part.mergeAllGroups(editorGroupsService.mainPart.activeGroup)) {
 					throw new Error('Failed to merge the auxiliary editor groups');

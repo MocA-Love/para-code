@@ -57,7 +57,7 @@ import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js
 import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
 import { TerminalEditorInput } from '../../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { ITextFileEditorModel, ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisRegisterWorktreePresenceLookup, paradisSetManagedWorkspaceWindowForTest, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
 import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
 import { paradisLookupRestartedShellScope } from '../../common/paradisTerminalSpaceFolder.js';
@@ -1377,17 +1377,147 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				}
 			});
 			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(candidate => candidate === instance ? owner : undefined));
-			const inA = { other: held('space-b'), own: held('space-a'), unknown: held(undefined), gone: held('space-removed') };
+			// worktree は一覧にあって消えていないものだけ「ある」。Para Code の外で消したものは無い扱い。
+			testDisposables.add(paradisRegisterWorktreePresenceLookup(stateKey => stateKey === 'worktree:file:///present'));
+			const inA = {
+				other: held('space-b'),
+				own: held('space-a'),
+				unknown: held(undefined),
+				gone: held('space-removed'),
+				presentWorktree: held('worktree:file:///present'),
+				missingWorktree: held('worktree:file:///gone'),
+			};
+			const previousManaged = paradisSetManagedWorkspaceWindowForTest(false);
+			const unmanagedWindow = held('space-b');
+			paradisSetManagedWorkspaceWindowForTest(previousManaged);
 			await harness.workspaceSwitchService.switchRepository('space-b');
 
-			assert.deepStrictEqual({ inA, duringSwitch, inB: { own: held('space-b'), other: held('space-a') } }, {
-				inA: { other: true, own: false, unknown: false, gone: false },
+			assert.deepStrictEqual({ inA, unmanagedWindow, duringSwitch, inB: { own: held('space-b'), other: held('space-a') } }, {
+				inA: { other: true, own: false, unknown: false, gone: false, presentWorktree: true, missingWorktree: false },
+				unmanagedWindow: false,
 				duringSwitch: true,
 				inB: { own: false, other: true },
 			});
 		} finally {
 			instance.dispose();
 			testDisposables.dispose();
+		}
+	});
+
+	test('brings forward a terminal of another space that is already open somewhere, and the source terminals after a rolled back switch', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		let failSwitch = false;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'end' && uri.path === '/workspace-b' && failSwitch) {
+					failSwitch = false;
+					throw new Error('switch failed');
+				}
+			});
+			// space-b の端末が、別のグループ (本番ではスペースに固定した補助ウィンドウも同じ一覧に入る) で開いている。
+			const input = harness.createEditor('/workspace-b/pinned-terminal', false);
+			const instance = harness.addTerminal(input, 905, undefined, 'nonce-open-905');
+			const owners = new Map<ITerminalInstance, string>([[instance, 'space-b']]);
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(candidate => owners.get(candidate)));
+			const right = harness.parts.addGroup(harness.parts.activeGroup, GroupDirection.RIGHT);
+			await right.openEditor(input, { pinned: true });
+			const openSomewhere = paradisShouldHoldBackTerminalEditorReveal(instance);
+			await right.closeAllEditors();
+			const closed = paradisShouldHoldBackTerminalEditorReveal(instance);
+
+			// 切り替えに失敗して space-a へ戻った後の完了処理の間は、space-a の端末を前に出せる。
+			owners.set(instance, 'space-a');
+			const duringRolledBackCompletion: boolean[] = [];
+			testDisposables.add(harness.workspaceSwitchService.registerSwitchCompletionParticipant(() => {
+				duringRolledBackCompletion.push(paradisShouldHoldBackTerminalEditorReveal(instance));
+			}));
+			failSwitch = true;
+			const result = await Promise.allSettled([harness.workspaceSwitchService.switchRepository('space-b')]);
+
+			assert.deepStrictEqual({ openSomewhere, closed, status: result[0].status, activeStateKey: harness.workspaceSwitchService.activeStateKey, duringRolledBackCompletion }, {
+				openSomewhere: false,
+				closed: true,
+				status: 'rejected',
+				activeStateKey: 'space-a',
+				duringRolledBackCompletion: [false],
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('parks a terminal without a running process into the space that owns it, like a live one', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables);
+			const ids = createUniqueTerminalIds();
+			const input = harness.createCleanTerminalEditor('/workspace-c/shell');
+			const instance = harness.addTerminal(input, ids.instanceId, ids.persistentProcessId, ids.shellIntegrationNonce);
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(candidate => candidate === instance ? 'space-c' : undefined));
+			await harness.parts.activeGroup.openEditor(input, { pinned: true });
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const parkedScope = paradisGetParkedTerminalEditorStateKey(ids.instanceId);
+			const restoreTerminalsOfA = (harness.workspaceSwitchService as unknown as { _workingSetTerminals: Map<string, number> })._workingSetTerminals.get('space-a');
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
+
+			assert.deepStrictEqual({ parkedScope, restoreTerminalsOfA }, {
+				// 切り替え元 (space-a) ではなく持ち主の space-c へ。切り替え元の working set にも載せない。
+				parkedScope: 'space-c',
+				restoreTerminalsOfA: 0,
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('keeps a live terminal of a worktree deleted outside Para Code in the space being left', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const live = harness.createLiveTerminalEditor('/gone-worktree/claude');
+			harness.addTerminal(live, 906, 9006, 'nonce-gone-906');
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(instance => instance.instanceId === 906 ? 'worktree:file:///gone-worktree' : undefined));
+			testDisposables.add(paradisRegisterWorktreePresenceLookup(() => false));
+			await harness.parts.activeGroup.openEditor(live, { pinned: true });
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const deposits = ['space-a', 'worktree:file:///gone-worktree'].filter(stateKey => harness!.editorScopeService.hasLiveState(stateKey));
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({
+				deposits,
+				backInA: harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+				disposed: live.isDisposed(),
+			}, {
+				// 行けない worktree の預け先へ入れると二度と届かないので、今までどおり切り替え元に預ける。
+				deposits: ['space-a'],
+				backInA: ['/gone-worktree/claude'],
+				disposed: false,
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
 		}
 	});
 
@@ -2881,6 +3011,8 @@ interface IWorkspaceSwitchIntegrationHarness {
 	 * 生きたまま預けられる。作業コピーは持たない。
 	 */
 	createLiveTerminalEditor(path: string): TestFileEditorInput;
+	/** 子プロセスの無い (閉じるときに確認の要らない) エディタのターミナルに見立てた入力。 */
+	createCleanTerminalEditor(path: string): TestFileEditorInput;
 	/**
 	 * `.code-workspace` の保存の失敗を再現する。true を返した行き先への `updateFolders` は、
 	 * upstream と同じく folders を変えないまま成功として返る。
@@ -3345,6 +3477,11 @@ async function createHarness(
 		createEditor,
 		createLiveTerminalEditor(path: string): TestFileEditorInput {
 			const editor = testDisposables.add(new ParadisLiveTerminalTestEditorInput(URI.file(path), TerminalEditorInput.ID));
+			inputs.set(editor.resource.toString(), editor);
+			return editor;
+		},
+		createCleanTerminalEditor(path: string): TestFileEditorInput {
+			const editor = testDisposables.add(new TestFileEditorInput(URI.file(path), TerminalEditorInput.ID));
 			inputs.set(editor.resource.toString(), editor);
 			return editor;
 		},

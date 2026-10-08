@@ -234,6 +234,25 @@ export function paradisShouldHoldBackTerminalEditorReveal(instance: ITerminalIns
 }
 
 /**
+ * `terminalEditorService` の `_revealEditor` の PARA-PATCH から呼ぶ。開かないと決めたら、その端末が
+ * アクティブのままにならないよう外してから true を返す（呼び出し元は開かずに戻る）。
+ *
+ * `focusInstance` は `_revealEditor` の前に `setActiveInstance` を済ませている。外さないと、
+ * 見えない別のスペースの端末がアクティブとして残り、「選択範囲をアクティブなターミナルで実行」が
+ * 本文と Enter をそこへ送り、「アクティブなターミナルを終了」がそれを殺す。エディタ側のアクティブを
+ * 外すと `terminalService` は残りのホスト（パネル）のアクティブへ戻る（`_evaluateActiveInstance`）。
+ */
+export function paradisHoldBackTerminalEditorReveal(instance: ITerminalInstance, host: { readonly activeInstance: ITerminalInstance | undefined; setActiveInstance(instance: ITerminalInstance | undefined): void }): boolean {
+	if (!paradisShouldHoldBackTerminalEditorReveal(instance)) {
+		return false;
+	}
+	if (host.activeInstance === instance) {
+		host.setActiveInstance(undefined);
+	}
+	return true;
+}
+
+/**
  * 指定スコープにパーク中のエディタターミナルがあるか（台帳は変更しない）。
  * パーク中の端末は working set にも可視エディタ配置にも現れないので、
  * 「このスコープを捨ててよいか」を判断する側はここも見ないと PTY を巻き添えにする。

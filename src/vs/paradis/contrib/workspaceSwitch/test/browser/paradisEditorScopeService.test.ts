@@ -336,6 +336,55 @@ suite('ParadisEditorScopeService', () => {
 		});
 	});
 
+	test('keeps an editor deposited with a space while that space is being restored, and opens it too', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerRestoreRaceTest');
+		const first = live('/workspace/first-claude');
+		const second = live('/workspace/second-claude');
+		await parts.activeGroup.openEditor(first, { pinned: true });
+		service.captureScope('space-a', () => { });
+		await parts.activeGroup.openEditor(second, { pinned: true });
+		service.captureScope('space-b', () => { });
+		// 預けた後で、second の持ち主が space-a だと分かった。
+		testDisposables.add(service.registerLiveEditorOwnerResolver(editor => editor === second ? 'space-a' : undefined));
+
+		// space-a を開いている途中に、space-b の後片付けが second を space-a の預け先へ回す。
+		const restoringA = service.restoreScope('space-a');
+		const restoringB = service.restoreScope('space-b');
+		await Promise.all([restoringA, restoringB]);
+
+		assert.deepStrictEqual({
+			visible: visible().sort(),
+			deposits: ['space-a', 'space-b'].filter(stateKey => service.hasLiveState(stateKey)),
+			disposed: [first.isDisposed(), second.isDisposed()],
+		}, {
+			visible: ['/workspace/first-claude', '/workspace/second-claude'],
+			// 預け先を入れ物ごと捨てると second の握りが 0 になって破棄される。
+			deposits: [],
+			disposed: [false, false],
+		});
+	});
+
+	test('opens the deposit of a space whose key is corrected while it is shown', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerCorrectTest');
+		const terminal = live('/workspace/claude');
+		await parts.activeGroup.openEditor(terminal, { pinned: true });
+		// 一度も離れていない space-b にも、持ち主の預け先として預け先ができうる。
+		service.captureScope('space-b', () => { });
+
+		await service.correctActiveScope(undefined, 'space-b', URI.file('/workspace'));
+		const afterCorrection = { visible: visible(), deposit: service.hasLiveState('space-b') };
+		// 預け先が残っていると、ここで "already exists" が投げられてスペースから離れられない。
+		service.captureScope('space-b', () => { });
+
+		assert.deepStrictEqual({ afterCorrection, depositAfterLeaving: service.hasLiveState('space-b'), disposed: terminal.isDisposed() }, {
+			afterCorrection: { visible: ['/workspace/claude'], deposit: false },
+			depositAfterLeaving: true,
+			disposed: false,
+		});
+	});
+
 	test('preflights visible dirty editors when retiring the active scope', async () => {
 		const testDisposables = disposables.add(new DisposableStore());
 		const editorId = 'paradisActiveRetirementEditorTest';

@@ -17,7 +17,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisResolveExternalPath, paradisWorktreePathFromGitdir } from '../../../common/paradisPathUri.js';
 import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorPark.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisRegisterWorktreePresenceLookup, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
 
 /**
@@ -133,6 +133,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		this.installWatchers();
 		this.initializationBarrier = this.refresh();
+		// 切り替えサービスが「持ち主の worktree が今もあるか」を引く口 (DI では循環するため)。
+		this._register(paradisRegisterWorktreePresenceLookup(stateKey => this.workspaceSwitchService.repositories.some(repository =>
+			this.getWorktrees(repository.id).some(worktree => !worktree.missing && paradisWorktreeStateKey(worktree.uri) === stateKey))));
 	}
 
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[] {
