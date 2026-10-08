@@ -12,7 +12,7 @@ import type { ParadisOfficeChange, ParadisOfficeChangeValue } from '../../common
 import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
 import { ParadisWordSemanticChannel } from '../../node/word/paradisWordSemanticChannel.js';
 import { ParadisWordSemanticService } from '../../node/word/paradisWordSemanticService.js';
-import { ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
+import { PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_LIMIT, ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
 import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest } from '../../node/word/paradisWordSemanticWorkerProtocol.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
@@ -152,70 +152,94 @@ suite('ParadisWordSemanticService', () => {
 		deepStrictEqual(codes.map(result => result.ok ? 'ok' : result.code), ['unsupported', 'invalid', 'cancelled']);
 	});
 
-	test('worker backend: answers through the worker, runs in-process only when the worker never starts, and fails (not retries in-process) on a crash or deadline', async () => {
-		const log: string[] = [];
-		type Behavior = 'answer' | 'neverReady' | 'crash' | 'hang';
+	test('worker backend: one request at a time, run deadlines only for the running request, queue deadlines and limits for waiting ones, and no in-process retry', async () => {
 		class FakeWorker implements IParadisWordSemanticWorker {
+			readonly posted: ParadisWordSemanticWorkerRequest[] = [];
+			terminated = false;
 			private readonly listeners = new Map<string, ((value: never) => void)[]>();
-			constructor(private readonly behavior: Behavior) {
-				queueMicrotask(() => behavior === 'neverReady' ? this.emit('exit', 1 as never) : this.emit('message', { kind: 'ready' } as never));
-			}
-			postMessage(message: ParadisWordSemanticWorkerRequest): void {
-				log.push(`${this.behavior}:${message.op}`);
-				if (message.op === 'cancel' || this.behavior === 'hang' || this.behavior === 'neverReady') {
-					return;
-				}
-				queueMicrotask(() => this.behavior === 'crash'
-					? this.emit('exit', 1 as never)
-					: this.emit('message', { kind: 'result', id: message.id, result: { ok: false, code: 'unsupported' } } satisfies ParadisWordSemanticWorkerMessage as never));
-			}
+			postMessage(message: ParadisWordSemanticWorkerRequest): void { this.posted.push(message); }
 			on(event: string, listener: (value: never) => void): unknown {
 				this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
 				return this;
 			}
-			async terminate(): Promise<number> { log.push(`terminate:${this.behavior}`); return 0; }
+			async terminate(): Promise<number> { this.terminated = true; return 0; }
+			reply(code: 'unsupported' | 'invalid'): void {
+				const last = this.posted.filter(message => message.op !== 'cancel').at(-1)!;
+				this.emit('message', { kind: 'result', id: last.id, result: { ok: false, code } } satisfies ParadisWordSemanticWorkerMessage as never);
+			}
+			crash(error?: Error): void {
+				if (error) { this.emit('error', error as never); }
+				this.emit('exit', 1 as never);
+			}
 			private emit(event: string, value: never): void {
 				for (const listener of this.listeners.get(event) ?? []) { listener(value); }
 			}
 		}
-		const fallback = async () => ({
-			analyze: async () => { log.push('inProcess:analyze'); return { ok: false, code: 'failed' } satisfies IParadisWordAnalysisResult; },
-			compare: async () => { log.push('inProcess:compare'); return { ok: false, code: 'failed' } satisfies IParadisWordComparisonResult; },
-		});
-		// 締め切りは、テストから進められる時計で張る。
-		const deadlines: (() => void)[] = [];
-		const timers = { setTimeout: (handler: () => void, delay: number) => { if (delay > 60_000) { deadlines.push(handler); } return handler; }, clearTimeout: () => { } };
-		const run = async (behaviors: Behavior[], call: (backend: ParadisWordSemanticWorkerBackend) => Promise<unknown>) => {
-			const queue = [...behaviors];
-			const backend = new ParadisWordSemanticWorkerBackend(() => new FakeWorker(queue.shift() ?? 'answer'), fallback, 60_000, timers);
-			try {
-				return await call(backend);
-			} finally {
-				backend.dispose();
-			}
+		const scheduled: { readonly handler: () => void; readonly delay: number; cleared: boolean }[] = [];
+		const timers = {
+			setTimeout: (handler: () => void, delay: number) => { const entry = { handler, delay, cleared: false }; scheduled.push(entry); return entry; },
+			clearTimeout: (handle: unknown) => { if (handle) { (handle as { cleared: boolean }).cleared = true; } },
 		};
+		const fire = (delay: number) => {
+			const entry = scheduled.find(candidate => candidate.delay === delay && !candidate.cleared)!;
+			entry.cleared = true;
+			entry.handler();
+		};
+		const workers: FakeWorker[] = [];
+		let createFailures = 1;
+		const backend = new ParadisWordSemanticWorkerBackend(() => {
+			if (createFailures-- > 0) { throw new Error('missing entry'); }
+			const worker = new FakeWorker();
+			workers.push(worker);
+			return worker;
+		}, 45_000, timers);
 		const bytes = new Uint8Array([1]);
-		const answered = await run(['answer'], backend => backend.analyze(bytes, CancellationToken.None));
-		const neverReady = await run(['neverReady'], async backend => [await backend.analyze(bytes, CancellationToken.None), await backend.compare(bytes, bytes, CancellationToken.None)]);
-		const crashed = await run(['crash', 'answer'], async backend => [await backend.analyze(bytes, CancellationToken.None), await backend.analyze(bytes, CancellationToken.None)]);
-		const expired = await run(['hang', 'answer'], async backend => {
-			const pending = backend.analyze(bytes, CancellationToken.None);
-			await Promise.resolve();
-			deadlines.pop()!();
-			return [await pending, await backend.analyze(bytes, CancellationToken.None)];
-		});
-		deepStrictEqual({ answered, neverReady, crashed, expired, log }, {
-			answered: { ok: false, code: 'unsupported' },
-			neverReady: [{ ok: false, code: 'failed' }, { ok: false, code: 'failed' }],
-			crashed: [{ ok: false, code: 'limitExceeded' }, { ok: false, code: 'unsupported' }],
-			expired: [{ ok: false, code: 'limitExceeded' }, { ok: false, code: 'unsupported' }],
-			log: [
-				'answer:analyze', 'terminate:answer',
-				'neverReady:analyze', 'terminate:neverReady', 'inProcess:analyze', 'inProcess:compare',
-				'crash:analyze', 'terminate:crash', 'answer:analyze', 'terminate:answer',
-				'hang:analyze', 'terminate:hang', 'answer:analyze', 'terminate:answer',
-			],
-		});
+		const code = async (promise: Promise<IParadisWordAnalysisResult | IParadisWordComparisonResult>) => { const result = await promise; return result.ok ? 'ok' : result.code; };
+		try {
+			// 起動できなければ失敗を返し、次の依頼でもう一度起動を試す（本体では解析しない）。
+			const notStarted = await code(backend.analyze(bytes, CancellationToken.None));
+
+			// 比較を走らせている間に、待っている解析が待ち行列の締め切りを過ぎても、比較は止めずに最後まで終わる。
+			const comparing = code(backend.compare(bytes, bytes, CancellationToken.None));
+			const waiting = code(backend.analyze(bytes, CancellationToken.None));
+			fire(PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS);
+			const waitingResult = await waiting;
+			workers[0].reply('unsupported');
+			const compareResult = await comparing;
+
+			// 走っている依頼の締め切りは、その依頼だけを失敗にし、待っていた依頼は新しい worker で続ける。
+			const hung = code(backend.analyze(bytes, CancellationToken.None));
+			const next = code(backend.analyze(bytes, CancellationToken.None));
+			fire(PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS);
+			const hungResult = await hung;
+			workers[1].reply('invalid');
+			const nextResult = await next;
+
+			// worker が落ちたら、走っていた依頼は失敗（メモリ不足なら大きすぎる扱い）。本体で解析し直さない。
+			const outOfMemory = code(backend.analyze(bytes, CancellationToken.None));
+			workers[1].crash(Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
+			const crashed = code(backend.analyze(bytes, CancellationToken.None));
+			workers[2].crash();
+
+			// 待ち行列の長さには上限がある。
+			const running = backend.analyze(bytes, CancellationToken.None);
+			const queued = Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT }, () => backend.analyze(bytes, CancellationToken.None));
+			const overflow = await code(backend.analyze(bytes, CancellationToken.None));
+
+			deepStrictEqual({
+				notStarted, waitingResult, compareResult, comparisonWorkerTerminated: workers[0].terminated, hungResult, nextResult,
+				outOfMemory: await outOfMemory, crashed: await crashed, overflow,
+				posted: workers.map(worker => worker.posted.map(message => message.op)),
+			}, {
+				notStarted: 'failed', waitingResult: 'cancelled', compareResult: 'unsupported', comparisonWorkerTerminated: true, hungResult: 'limitExceeded', nextResult: 'invalid',
+				outOfMemory: 'limitExceeded', crashed: 'failed', overflow: 'limitExceeded',
+				posted: [['compare', 'analyze'], ['analyze', 'analyze'], ['analyze'], ['analyze']],
+			});
+			backend.dispose();
+			deepStrictEqual(await Promise.all([running, ...queued].map(code)), Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT + 1 }, () => 'cancelled'));
+		} finally {
+			backend.dispose();
+		}
 	});
 
 	test('channel passes VSBuffer bytes and the cancellation token to the backend', async () => {

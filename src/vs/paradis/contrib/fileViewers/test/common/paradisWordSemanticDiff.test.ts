@@ -212,6 +212,16 @@ suite('Paradis Word Semantic Diff', () => {
 		deepStrictEqual({ outcome: result.outcome, noChanges: result.noChanges, changes: result.changes.map(change => change.subject.kind) }, { outcome: 'complete', noChanges: true, changes: [] });
 	});
 
+	test('shortens a very long changed value instead of failing the whole comparison', () => {
+		const build = (text: string) => document([story('body', [section('s0', [paragraphText('p', text, [0, 0], 'same')])])]);
+		const result = compareWordSemantics(completeSnapshot(build('a'.repeat(5_000))), completeSnapshot(build('b'.repeat(5_000))));
+		const change = changesOf(result, 'paragraph.text')[0];
+		deepStrictEqual({
+			length: change.after.kind === 'scalar' && typeof change.after.value === 'string' ? change.after.value.length : -1,
+			ellipsis: change.after.kind === 'scalar' && typeof change.after.value === 'string' && change.after.value.endsWith('\u2026'),
+		}, { length: 4_096, ellipsis: true });
+	});
+
 	test('never aligns paragraphs across a table or between same-depth cells in different tables', () => {
 		const original = document([story('body', [section('s0', [
 			paragraphText('outside-o', 'outside', [0, 0]),

@@ -14,7 +14,7 @@
 
 import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
-import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from './paradisWordSemanticWorkerProtocol.js';
+import type { ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from './paradisWordSemanticWorkerProtocol.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
@@ -44,6 +44,3 @@ parentPort?.on('message', (request: ParadisWordSemanticWorkerRequest) => {
 	}
 	void handle(request);
 });
-
-// 入口を読み込めた合図。これが来ないうちに落ちた worker は、shared process 側で「起動できない」と扱われる。
-parentPort?.postMessage({ kind: 'ready' } satisfies ParadisWordSemanticWorkerMessage);

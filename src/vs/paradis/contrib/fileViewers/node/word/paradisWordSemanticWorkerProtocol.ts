@@ -21,5 +21,5 @@ export interface ParadisWordSemanticWorkerReply {
 	readonly result: IParadisWordAnalysisResult | IParadisWordComparisonResult;
 }
 
-/** worker → shared process。`ready` は入口を読み込めた合図で、起動の直後に 1 回だけ送る。 */
-export type ParadisWordSemanticWorkerMessage = ParadisWordSemanticWorkerReply | { readonly kind: 'ready' };
+/** worker → shared process。 */
+export type ParadisWordSemanticWorkerMessage = ParadisWordSemanticWorkerReply;
