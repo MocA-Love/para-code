@@ -12,7 +12,7 @@ const NOW = new Date(2026, 8, 26, 12, 0, 0).getTime();
 function pc(overrides: Partial<PcSummary> = {}): PcSummary {
 	return {
 		id: 'pc-1', name: 'PC', hue: 0, connection: 'online', pcOnline: true, pairingRejected: false,
-		workspaces: 0, terminals: 0, waiting: 0, lastOnlineAt: undefined, battery: undefined,
+		workspaces: 0, terminals: 0, waiting: 0, running: 0, lastOnlineAt: undefined, battery: undefined,
 		...overrides,
 	};
 }
