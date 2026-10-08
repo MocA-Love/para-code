@@ -499,10 +499,10 @@ do {
 }
 
 do {
-	check(!paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: true, targetIsFrontmost: false), "an Electron background single click is declined before sending")
-	check(paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: true, targetIsFrontmost: true), "a foreground Electron window can receive the single click")
-	check(paradisBackgroundSingleClickSupported(clickCount: 2, isElectron: true, targetIsFrontmost: false), "double clicks retain their existing route")
-	check(paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: false, targetIsFrontmost: false), "native background single clicks keep their route")
+	check(!paradisBackgroundSingleClickSupported(clickCount: 1, usesChromium: true, targetIsFrontmost: false), "an Electron background single click is declined before sending")
+	check(paradisBackgroundSingleClickSupported(clickCount: 1, usesChromium: true, targetIsFrontmost: true), "a foreground Electron window can receive the single click")
+	check(paradisBackgroundSingleClickSupported(clickCount: 2, usesChromium: true, targetIsFrontmost: false), "double clicks retain their existing route")
+	check(paradisBackgroundSingleClickSupported(clickCount: 1, usesChromium: false, targetIsFrontmost: false), "native background single clicks keep their route")
 }
 
 do {
@@ -511,8 +511,31 @@ do {
 	check(paradisBackgroundKeyboardFailure(role: "AXTextField", belongsToWindow: true, isSecret: true)?.code == "key_blocked", "secure fields reject background input")
 	check(paradisBackgroundKeyboardFailure(role: "AXTextField", belongsToWindow: true, isSecret: false) == nil, "inspectable non-secret target can receive input")
 	check(!paradisBackgroundChecksMenuAfter(.typeText(text: "a", units: [.text("a")])), "typing never closes completion menus")
-	check(!paradisBackgroundChecksMenuAfter(.scroll(windowId: 7, target: nil, direction: .down, pages: 1)), "scrolling has no click-menu settling delay")
+	check(paradisBackgroundChecksMenuAfter(.scroll(windowId: 7, target: nil, direction: .down, pages: 1)), "non-text actions observe native menu windows without polling AX")
+	check(paradisBackgroundChecksMenuAfter(.pressChord(ParadisKeyChord(keyCode: 49, modifiers: []))), "space can open a menu and must be checked")
 	check(paradisBackgroundChecksMenuAfter(.click(windowId: 7, target: .point(x: 1, y: 1), button: .left, clickCount: 1, modifiers: [])), "clicks still inspect menus once")
+}
+
+// 監視が無い配布環境でも、この要求が送った修飾キーは直後に解放する。
+do {
+	var releases: [ParadisModifierPress] = []
+	let state = ParadisBackgroundModifiers(physicalChange: { _ in nil }, currentFlags: { [] }, postRelease: { releases.append($0) })
+	let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+	event.flags = .maskCommand
+	state.record(event)
+	check(state.ownFlags(system: .maskCommand) == .maskCommand, "current command remains owned without input monitoring")
+	try? state.releaseCurrent()
+	check(releases.count == 1 && releases[0].added == .maskCommand, "immediate modifier release does not require input monitoring")
+	state.record(event)
+	try? state.recoverLeftover()
+	check(releases.count == 1, "later recovery remains conservative without input monitoring")
+}
+
+do {
+	for framework in ["Google Chrome Framework.framework", "Microsoft Edge Framework.framework", "Brave Browser Framework.framework", "Arc Framework.framework", "Chromium Framework.framework", "Electron Framework.framework"] {
+		check(paradisHasChromiumFramework([framework]), "recognizes Chromium framework: \(framework)")
+	}
+	check(!paradisHasChromiumFramework(["AppKit.framework", "WebKit.framework"]), "does not classify ordinary native or WebKit applications as Chromium")
 }
 
 // MARK: - 1 段目: クリックの代わりの AX の操作

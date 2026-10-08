@@ -535,6 +535,13 @@ func paradisIsElectronApp(pid: Int32) -> Bool {
 	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
 }
 
+/** Chrome・Electron・Chromium 系ブラウザ／埋め込みアプリの入力互換性判定。 */
+func paradisUsesChromium(pid: Int32) -> Bool {
+	guard let bundleURL = paradisOnMain({ paradisRunningApplication(pid)?.bundleURL }) else { return false }
+	let names = (try? FileManager.default.contentsOfDirectory(atPath: bundleURL.appendingPathComponent("Contents/Frameworks").path)) ?? []
+	return paradisHasChromiumFramework(names)
+}
+
 // MARK: - ウィンドウの一覧（CGWindowList）
 
 struct ParadisWindowInfo {
