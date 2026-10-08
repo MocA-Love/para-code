@@ -351,11 +351,12 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 
 ### vendored chrome-devtools-mcp への変更（2026-10-04）
 
-vendored の中身は原則そのまま同梱するが、1 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
+vendored の中身は原則そのまま同梱するが、2 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
 
 | ファイル | 変更 | 理由 |
 |---|---|---|
 | `build/src/McpContext.js` の `waitForTextOnPage` | `locator.wait()` に `AbortController` の signal を渡し、勝ち負けが決まったら（成功・時間切れとも）`abort()` する | `wait_for` は全フレーム × 全テキストで `aria/` と `text/` の Locator を race させる。rxjs の race は負け側の購読を外すだけで、負け側の `waitForSelector`（`Runtime.callFunctionOn` の awaitPromise）は上流に既定 5 秒残り、直後の click がゲートウェイの入力の関所でそれを待って not interactive になっていた |
+| `build/src/tools/snapshot.js` の `take_snapshot`（2026-10-08） | 内部用の引数 `paraCodeRootRect`（uid）を足し、その要素の `boundingBox()` を `[Para Code root rect] {...}` の 1 行で結果に書く。引数は Para Code の `paradisPrepareDevtoolsToolCall` が `root` から付け（エージェントが渡しても捨てる。tools/list には出さない）、行は `paradisTakeSnapshotRootRect` がエージェントへ返す前に取り除く | `root` の要素にエージェントのカーソルの枠を出すため（q.html Q297 の 3）。別の `evaluate_script` で測ると、同じタブの道具の順番（toolMutex）を握り、ナビゲーション待ちと DOM の安定待ちのぶん次の道具を待たせ、既定の `dialogAction` で confirm を承認してしまう |
 
 上流で `waitForTextOnPage` が signal を渡すようになったら、この変更は外してよい。ツールの入口と出口の調整（`wait_for` の `text` を文字列でも受ける、スナップショットを既定で返さない、`take_snapshot` の文字数の上限と `offset`、not interactive への拒否理由の追記、Target closed の 1 回の再試行）は vendored を触らず `node/paradisDevtoolsToolAdjustments.ts` で行っている。
 

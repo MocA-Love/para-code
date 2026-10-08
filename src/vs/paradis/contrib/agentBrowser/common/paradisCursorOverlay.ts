@@ -86,6 +86,11 @@ export interface IParadisCursorOverlayTuning {
 	readonly lookGlideMs: number;
 	/** evaluate_script の中のクリックへ続けて寄せるときの間隔（ms）。 */
 	readonly scriptClickGapMs: number;
+	/**
+	 * スクリプトの実行中としてクリックを拾い続ける上限（ms）。終わりの知らせが届かなくても、これを過ぎたら
+	 * ページ自身のクリックへ寄せない。
+	 */
+	readonly watchMs: number;
 }
 
 export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object.freeze({
@@ -109,6 +114,7 @@ export const PARADIS_CURSOR_OVERLAY_TUNING: IParadisCursorOverlayTuning = Object
 	lookMs: 1000,
 	lookGlideMs: 260,
 	scriptClickGapMs: 450,
+	watchMs: 30_000,
 });
 
 /**
@@ -228,8 +234,11 @@ export type ParadisCursorOverlayCommand =
 	 * - `box`: 読み取り系の道具が見ている要素。薄い枠を少し出し、カーソルをそこへ寄せる（Q297 の 3）
 	 * - `transient`: 長く続く状態でも少し出して消す（ページ移動の後に出し直したときの「読み込み中」）
 	 * - `clickText`: evaluate_script の中のクリックへ寄せたときの名札（`script` のときだけ。Q297 の 4）
+	 * - `since`: スクリプトを始めた時刻（ms、`Date.now()`）。これより前のクリックへは寄せない
 	 */
-	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string }
+	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string; readonly since?: number }
+	/** 読み取り系の道具が見ている要素に枠を出し、カーソルを寄せるだけ（名札の状態とスクリプトの見張りは変えない）。 */
+	| { readonly kind: 'look'; readonly label: string; readonly box: IParadisCursorRect }
 	/** 撮影のため即座に隠す（進行中のフラッシュも消す）。描画が反映されるまで待ってから解決する。 */
 	| { readonly kind: 'hide' }
 	/** 隠していたカーソルを元に戻すだけ（フラッシュは出さない）。 */
@@ -317,12 +326,15 @@ export function paradisParseCursorOwner(value: unknown): IParadisCursorOwner | u
 /**
  * shared process から main へ送る道具の状態。`point` は対象の要素の中心（ビューポートの CSS ピクセル）。
  *
+ * - `status`: 名札の状態。省くと状態は変えず、`rect`・`flash` だけを出す（並んで走る別の道具の名札を消さない）
  * - `rect`: 読み取り系の道具が見ている要素（ビューポートの CSS ピクセル）。枠を出してカーソルを寄せる
  * - `flash`: 撮影を伴わない読み取り（take_snapshot）が済んだ。`rect`（無ければ全体）を光らせる
+ * - `since`: 道具を始めた時刻（ms）。evaluate_script の中のクリックを、これより後のものに限る
  */
 export interface IParadisCursorStatusNote {
 	readonly owner?: IParadisCursorOwner;
-	readonly status: ParadisCursorStatus;
+	readonly status?: ParadisCursorStatus;
+	readonly since?: number;
 	readonly detail?: string;
 	readonly point?: { readonly x: number; readonly y: number };
 	readonly rect?: IParadisCursorRect;
@@ -346,17 +358,20 @@ export function paradisParseCursorStatusNote(value: unknown): IParadisCursorStat
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	const { status, detail, point, owner, rect, flash } = value as { status?: unknown; detail?: unknown; point?: unknown; owner?: unknown; rect?: unknown; flash?: unknown };
-	if (typeof status !== 'string' || !PARADIS_CURSOR_STATUSES.has(status)) {
+	const { status, detail, point, owner, rect, flash, since } = value as { status?: unknown; detail?: unknown; point?: unknown; owner?: unknown; rect?: unknown; flash?: unknown; since?: unknown };
+	const parsedRect = paradisParseCursorRect(rect);
+	if (status === undefined ? !parsedRect && flash !== true : typeof status !== 'string' || !PARADIS_CURSOR_STATUSES.has(status)) {
 		return undefined;
 	}
-	const result: { owner?: IParadisCursorOwner; status: ParadisCursorStatus; detail?: string; point?: { x: number; y: number }; rect?: IParadisCursorRect; flash?: boolean } = { status: status as ParadisCursorStatus };
-	const parsedRect = paradisParseCursorRect(rect);
+	const result: { owner?: IParadisCursorOwner; status?: ParadisCursorStatus; since?: number; detail?: string; point?: { x: number; y: number }; rect?: IParadisCursorRect; flash?: boolean } = status === undefined ? {} : { status: status as ParadisCursorStatus };
 	if (parsedRect) {
 		result.rect = parsedRect;
 	}
 	if (flash === true) {
 		result.flash = true;
+	}
+	if (typeof since === 'number' && Number.isFinite(since) && since > 0) {
+		result.since = since;
 	}
 	const parsedOwner = paradisParseCursorOwner(owner);
 	if (parsedOwner) {
@@ -540,7 +555,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		/** ページに 1 つの状態（撮影の隠し・フラッシュ・知らせ）と、持ち主ごとのカーソル（'cs'）。 */
 		function G(create) {
 			var g = window[K];
-			if (!g && create) { g = window[K] = { cs: {}, f: null, ts: null, tst: 0, hid: false, ct: '' }; watchClicks(); }
+			if (!g && create) { g = window[K] = { cs: {}, f: null, ts: null, tst: 0, hid: false, fh: null, fs: null }; watchClicks(); }
 			return g || null;
 		}
 		/** 全部のカーソルに。 */
@@ -557,13 +572,37 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			var id = typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_';
 			var s = g.cs[id];
 			if (!s && create) {
-				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
+				s = g.cs[id] = { g: g, id: id, color: A, h: null, lf: null, lft: 0, alf: null, watch: false, wat: 0, since: 0, ct: '', cq: null, cqt: 0, mv: null, gl: null, sq: null, rp: null, rg: null, mk: null, lb: null, lm: null, lt: null, kb: null, fr: null, tr: null, tl2: null, t: '', name: '', mark: '', st: '', sticky: '', x: null, y: null, r: 0, tm: 0, stt: 0, kbt: 0, frt: 0, mkt: 0, trt: 0, am: null, ag: null, ao: null, aw: null, awo: null, atr: null, shown: false, fading: false, typing: false, wt: false, pp: null, tl: null, tp: null };
 			}
 			return s || null;
 		}
 		/** カーソルが無く、フラッシュも知らせも無ければ、ページの状態ごと畳む。 */
 		function collapse(g) {
-			if (window[K] === g && Object.keys(g.cs).length === 0 && !g.f && !g.ts) { try { delete window[K]; } catch (e) { window[K] = void 0; } }
+			if (window[K] === g && Object.keys(g.cs).length === 0 && !g.f && !g.ts) {
+				if (g.fh && g.fh.parentNode) { g.fh.parentNode.removeChild(g.fh); }
+				try { delete window[K]; } catch (e) { window[K] = void 0; }
+			}
+		}
+		/**
+		 * フラッシュと知らせを入れる closed shadow root（カーソルと同じく、ページのスクリプトから読めず、
+		 * アクセシビリティのツリー・スナップショットにも出さない）。
+		 */
+		function effects(g) {
+			if (!g.fh || !g.fh.isConnected) {
+				var p = root();
+				if (!p) { return null; }
+				var h = doc.createElement('div');
+				h.setAttribute('aria-hidden', 'true');
+				sx(h, { position: 'fixed', left: '0px', top: '0px', width: '0px', height: '0px', margin: '0px', padding: '0px', border: '0px', overflow: 'visible', zIndex: '2147483647', pointerEvents: 'none' });
+				g.fs = h.attachShadow ? h.attachShadow({ mode: 'closed' }) : h;
+				g.fh = h;
+				p.appendChild(h);
+			}
+			return g.fs;
+		}
+		/** スクリプトの実行中としてクリックを拾ってよいカーソルか（終わりの知らせが届かなくても上限で止める）。 */
+		function watching(s) {
+			return !!(s && s.watch && s.h && Date.now() - s.wat < c.watchMs);
 		}
 
 		/**
@@ -586,23 +625,26 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 						if (rec.q.length > 8) { rec.q.shift(); }
 						var g = window[K];
 						if (!g) { return; }
-						var ids = Object.keys(g.cs);
+						// 誰のスクリプトのクリックかはイベントから分からない。見張っているカーソルが 1 つのときだけ寄せる
+						var ids = Object.keys(g.cs), only = null, count = 0;
 						for (var i = 0; i < ids.length; i++) {
-							var s = g.cs[ids[i]];
-							if (s && s.watch && s.h) { item.done = true; follow(s, el); }
+							if (watching(g.cs[ids[i]])) { only = g.cs[ids[i]]; count++; }
 						}
+						if (count === 1 && item.at >= only.since) { item.done = true; follow(only, el); }
 					} catch (err) { }
 				}, true);
 			} catch (e) { }
 		}
-		/** スクリプトの実行が始まる少し前に来たクリック（状態の知らせより先にスクリプトが走った）へも寄せる。 */
+		/**
+		 * スクリプトを始めた後、状態の知らせより先に来たクリックへも寄せる（'s.since' はスクリプトを始めた時刻。
+		 * それより前のページ自身のクリックは拾わない）。
+		 */
 		function replay(s) {
 			var rec = window[K2];
-			if (!rec) { return; }
-			var since = Date.now() - 600;
+			if (!rec || !(s.since > 0)) { return; }
 			for (var i = 0; i < rec.q.length; i++) {
 				var it = rec.q[i];
-				if (it.done || it.at < since) { continue; }
+				if (it.done || it.at < s.since) { continue; }
 				it.done = true;
 				var el = it.r.deref();
 				if (el && el.isConnected) { follow(s, el); }
@@ -625,7 +667,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 				slide(s, p.x, p.y, d);
 				reveal(s);
 				arm(s, c.idleMs);
-				if (s.g.ct) { setStatus(s, s.g.ct, c.markMs); }
+				if (s.ct) { setStatus(s, s.ct, c.markMs); }
 				if (!calm) {
 					anim(s.rp, [{ transform: 'scale(0.35)', opacity: 0.75 }, { transform: 'scale(1.6)', opacity: 0 }], { duration: c.rippleMs, delay: d, easing: 'cubic-bezier(0.2,0.7,0.3,1)' });
 					anim(s.sq, [{ transform: 'scale(1)' }, { transform: 'scale(0.82)', offset: 0.35 }, { transform: 'scale(1)' }], { duration: c.squishMs, delay: d, easing: 'ease-out' });
@@ -1016,7 +1058,14 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			s.trt = setTimeout(function () { s.trt = 0; stop(s.atr); s.atr = null; sx(s.tr, { opacity: '0' }); s.tl2.setAttribute('points', ''); }, c.trailFadeMs);
 		}
 
-		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus' || c.kind === 'wheel' || c.kind === 'status') {
+		/** 枠が画面に見えるか（見えない枠のためにカーソルを作らない）。 */
+		function boxVisible(b) {
+			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+			return !!b && Math.min(vw, b.x + b.width) - Math.max(0, b.x) > 0 && Math.min(vh, b.y + b.height) - Math.max(0, b.y) > 0;
+		}
+
+		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus' || c.kind === 'wheel' || c.kind === 'status' || c.kind === 'look') {
+			if (c.kind === 'look' && !boxVisible(c.box)) { return traits(false); }
 			if (blockedRoot()) {
 				// ずれた位置に出すより出さない。前に描いていたものも片付ける。
 				each(kill);
@@ -1033,6 +1082,12 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 			}
 			if (!attachCursor(sm)) { return 0; }
 			setLabel(sm, c.label);
+			if (c.kind === 'look') {
+				// 名札の状態とスクリプトの見張りには触らない（並んで走る別の道具のもの）
+				var ll = look(sm, c.box);
+				if (ll) { sm.pp = null; glideTo(sm, ll.x, ll.y, calm ? 0 : c.lookGlideMs); } else if (sm.x !== null) { reveal(sm); arm(sm, c.idleMs); }
+				return traits(false);
+			}
 			if (c.kind === 'focus') {
 				var tt = typingTarget();
 				// パスワード欄では、特別なキーの札も出さない（何を打ったかの手がかりになる）
@@ -1074,7 +1129,13 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 				else { reveal(sm); arm(sm, c.idleMs); }
 				setWaiting(sm, !c.transient && (c.status === 'waiting' || c.status === 'loading'));
 				// スクリプトの実行中だけ、その中のクリックへ寄せる
-				if (c.status === 'script') { sm.g.ct = typeof c.clickText === 'string' ? c.clickText : ''; if (!sm.watch) { sm.watch = true; replay(sm); } } else { sm.watch = false; }
+				if (c.status === 'script') {
+					sm.ct = typeof c.clickText === 'string' ? c.clickText : '';
+					sm.wat = Date.now();
+					var was = sm.watch;
+					sm.watch = true;
+					if (!was) { sm.since = c.since > 0 ? c.since : sm.wat; replay(sm); }
+				} else { sm.watch = false; }
 				if (c.status === 'idle') { sm.sticky = ''; setStatus(sm, '', 0); return traits(false); }
 				if (STICKY[c.status] && !c.transient) { sm.sticky = c.text; setStatus(sm, c.text, 0); return traits(false); }
 				if (c.status === 'failed') { mark(sm, '\\u2715', ${JSON.stringify(DANGER_COLOR)}); }
@@ -1120,7 +1181,7 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		 * 'rect' は撮った範囲（'doc' ならドキュメント座標）。画面の外なら光らせない。
 		 */
 		function flashRange(gc, toast, rect) {
-			var p2 = root();
+			var p2 = effects(gc);
 			if (!p2) { return; }
 			dropToast(gc);
 			var ts = doc.createElement('div');

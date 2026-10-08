@@ -83,7 +83,7 @@ suite('paradisBrowserActBy (shared process)', () => {
 		const page = new FakePage({ locate: [{ ...button, element: { ...button.element, rect } }] });
 		const notes: unknown[] = [];
 		await new ParadisBrowserActBy(() => 'ref').call({ ...page.call(), noteCursor: note => notes.push(note) }, 'click_by', { role: 'button', name: 'Save' });
-		assert.deepStrictEqual({ notes, sent: page.sent[0] }, { notes: [{ status: 'idle', rect }], sent: 'mouseMoved@50,20' });
+		assert.deepStrictEqual({ notes, sent: page.sent[0] }, { notes: [{ rect }], sent: 'mouseMoved@50,20' });
 	});
 
 	test('click_by sends nothing and explains why when the element is covered, disabled or missing', async () => {

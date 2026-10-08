@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisParseElementRect, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
+import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisLookedAtRect, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES, PARADIS_MCP_BROWSER_QUERY_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
@@ -193,7 +193,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 		});
 	});
 
-	test('the element a tool looks at is shown to the cursor, and the snapshot root is measured only in the main frame', async () => {
+	test('the element a tool looks at is shown to the cursor, but not one inside an iframe', async () => {
 		const rect = { x: 10, y: 20, width: 30, height: 40 };
 		const text = new FakePage([returned({ matched: 1, returned: 1, total: 2, part: 'hi', element: { tag: 'p', rect } })]);
 		await text.query().call(text.call(), 'get_text', { selector: 'p' });
@@ -205,9 +205,10 @@ suite('paradisBrowserQuery (shared process)', () => {
 		await empty.query().call(empty.call(), 'inspect_element', { selector: 'i' });
 		assert.deepStrictEqual({
 			text: text.looks, whole: whole.looks, inspect: inspect.looks, empty: empty.looks,
-			root: paradisParseElementRect(returned({ rect, inMainFrame: true })),
-			inFrame: paradisParseElementRect(returned({ rect, inMainFrame: false })),
-		}, { text: [rect], whole: [], inspect: [rect], empty: [], root: rect, inFrame: undefined });
+			inspectInFrame: paradisLookedAtRect({ rect, inMainFrame: false }),
+			elementInFrame: paradisLookedAtRect({ element: { rect, inIframe: true } }),
+			locatedInFrame: paradisLookedAtRect({ element: { rect }, problem: 'iframe' }),
+		}, { text: [rect], whole: [], inspect: [rect], empty: [], inspectInFrame: undefined, elementInFrame: undefined, locatedInFrame: undefined });
 	});
 
 	test('wait_until with network_idle_ms waits until the shared tab has been quiet for long enough', async () => {

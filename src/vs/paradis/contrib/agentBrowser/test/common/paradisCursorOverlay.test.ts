@@ -143,7 +143,8 @@ suite('Paradis Cursor Overlay', () => {
 			{ kind: 'captured', toast: 'done', rect: { x: 1, y: 2, width: 3, height: 4, doc: true } },
 			{ kind: 'flash', toast: 'done', rect: { x: 1, y: 2, width: 3, height: 4 } },
 			{ kind: 'status', label: 'x', status: 'reading', text: 'r', park: true, box: { x: 1, y: 2, width: 3, height: 4 }, transient: true },
-			{ kind: 'status', label: 'x', status: 'script', text: 's', park: true, clickText: 'c' },
+			{ kind: 'status', label: 'x', status: 'script', text: 's', park: true, clickText: 'c', since: 1 },
+			{ kind: 'look', label: 'x', box: { x: 1, y: 2, width: 3, height: 4 } },
 			{ kind: 'remove' },
 		] as const;
 		assert.deepStrictEqual(
@@ -178,10 +179,16 @@ suite('Paradis Cursor Overlay', () => {
 				paradisParseCursorStatusNote(null),
 				paradisParseCursorStatusNote({ status: 'reading', rect: { x: -4, y: 20, width: 30, height: 8 }, flash: true }),
 				paradisParseCursorStatusNote({ status: 'loading', rect: { x: 1, y: 2, width: -3, height: 4 }, flash: 'yes' }),
+				// Without a state: only a frame or a flash, which must be there.
+				paradisParseCursorStatusNote({ rect: { x: 1, y: 2, width: 3, height: 4 } }),
+				paradisParseCursorStatusNote({ flash: true }),
+				paradisParseCursorStatusNote({ since: 5 }),
+				paradisParseCursorStatusNote({ status: 'script', since: 1234 }),
 			],
 			[
 				{ status: 'select', detail: 'Card', point: { x: 10, y: 20 } }, { status: 'failed' }, undefined, undefined,
 				{ status: 'reading', rect: { x: -4, y: 20, width: 30, height: 8 }, flash: true }, { status: 'loading' },
+				{ rect: { x: 1, y: 2, width: 3, height: 4 } }, { flash: true }, undefined, { status: 'script', since: 1234 },
 			],
 		);
 	});

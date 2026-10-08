@@ -7,7 +7,8 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool } from '../../node/paradisCursorPacing.js';
+import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool, paradisWithToolCursorStatus } from '../../node/paradisCursorPacing.js';
+import { PARADIS_SNAPSHOT_ROOT_RECT_MARKER } from '../../node/paradisDevtoolsToolAdjustments.js';
 
 const MOVE = JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 });
 const PRESS = JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'left', clickCount: 1 });
@@ -55,6 +56,48 @@ suite('Paradis cursor pacing', () => {
 		assert.deepStrictEqual(Object.fromEntries(tools.map(tool => [tool, paradisCursorStatusForTool(tool)])), {
 			evaluate_script: 'script', navigate_page: 'loading', wait_until: 'waiting', take_snapshot: 'reading', get_text: 'reading', inspect_element: 'reading',
 			list_console_messages: 'reading', list_network_requests: 'reading', scroll_to: 'scroll', take_screenshot: undefined, list_pages: undefined, click: undefined,
+		});
+	});
+
+	test('a tool states its work at the start and clears it at the end, once the last one on the page ends', async () => {
+		const runs = new Map<string, number>();
+		const first: unknown[] = [];
+		const second: unknown[] = [];
+		let finishFirst!: () => void;
+		const running = paradisWithToolCursorStatus('evaluate_script', runs, 'page', note => first.push(note), () => new Promise<string>(resolve => { finishFirst = () => resolve('done'); }), () => 42);
+		await paradisWithToolCursorStatus('wait_until', runs, 'page', note => second.push(note), async () => 'waited');
+		finishFirst();
+		const result = await running;
+		// The end of a failed tool still clears the state.
+		const failed: unknown[] = [];
+		await assert.rejects(paradisWithToolCursorStatus('get_text', runs, 'other', note => failed.push(note), async () => { throw new Error('boom'); }));
+		const plain: unknown[] = [];
+		await paradisWithToolCursorStatus('click', runs, 'page', note => plain.push(note), async () => 'clicked');
+		assert.deepStrictEqual({ result, first, second, failed, plain, runs: [...runs] }, {
+			result: 'done',
+			first: [{ status: 'script', since: 42 }, { status: 'idle' }],
+			second: [{ status: 'waiting' }],
+			failed: [{ status: 'reading' }, { status: 'idle' }],
+			plain: [],
+			runs: [],
+		});
+	});
+
+	test('take_snapshot hides the measured root from the agent and lights that range, but lights nothing when it failed', async () => {
+		const runs = new Map<string, number>();
+		const rect = { x: 1, y: 2, width: 30, height: 40 };
+		const taken = { content: [{ type: 'text', text: `${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}${JSON.stringify(rect)}\n## Latest page snapshot\nuid=1_3 dialog` }] };
+		const notes: unknown[] = [];
+		const result = await paradisWithToolCursorStatus('take_snapshot', runs, 'page', note => notes.push(note), async () => taken);
+		const plainNotes: unknown[] = [];
+		await paradisWithToolCursorStatus('take_snapshot', runs, 'page', note => plainNotes.push(note), async () => ({ content: [{ type: 'text', text: '## Latest page snapshot\nuid=1_0 page' }] }));
+		const failedNotes: unknown[] = [];
+		await paradisWithToolCursorStatus('take_snapshot', runs, 'page', note => failedNotes.push(note), async () => ({ content: [{ type: 'text', text: 'No page' }], isError: true }));
+		assert.deepStrictEqual({ result, notes, plainNotes, failedNotes }, {
+			result: { content: [{ type: 'text', text: '## Latest page snapshot\nuid=1_3 dialog' }] },
+			notes: [{ status: 'reading' }, { flash: true, rect }, { status: 'idle' }],
+			plainNotes: [{ status: 'reading' }, { flash: true }, { status: 'idle' }],
+			failedNotes: [{ status: 'reading' }, { status: 'idle' }],
 		});
 	});
 

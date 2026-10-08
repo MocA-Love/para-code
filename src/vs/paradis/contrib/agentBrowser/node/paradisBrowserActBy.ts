@@ -188,7 +188,7 @@ export class ParadisBrowserActBy {
 		// 見つけた要素を枠で示す（q.html Q297 の 3。押す・入れる前のカーソルの移動はこの後の入力が行う）
 		const rect = located.problem === 'iframe' ? undefined : paradisLookedAtRect(located.element);
 		if (rect) {
-			call.noteCursor?.({ status: 'idle', rect });
+			call.noteCursor?.({ rect });
 		}
 		return { ok: true, located, uids: locator.uids };
 	}

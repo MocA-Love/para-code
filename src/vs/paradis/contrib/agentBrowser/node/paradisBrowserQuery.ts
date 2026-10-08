@@ -50,10 +50,11 @@ export interface IParadisBrowserQueryCall {
 
 /**
  * ページの関数が返した値から、見ている要素の矩形を取り出す（inspect_element の `rect`、ほかのツールの
- * `element.rect`）。大きさの無いもの・形の違うものは undefined。
+ * `element.rect`）。大きさの無いもの・形の違うもの・iframe の中の要素（矩形がその枠の中の座標で、
+ * ページの画面とずれる）は undefined。
  */
 export function paradisLookedAtRect(value: unknown): IParadisCursorRect | undefined {
-	if (!isRecord(value)) {
+	if (!isRecord(value) || value.inMainFrame === false || value.problem === 'iframe' || value.inIframe === true || (isRecord(value.element) && value.element.inIframe === true)) {
 		return undefined;
 	}
 	const rect = isRecord(value.rect) ? value.rect : isRecord(value.element) && isRecord(value.element.rect) ? value.element.rect : undefined;
@@ -65,18 +66,6 @@ export function paradisLookedAtRect(value: unknown): IParadisCursorRect | undefi
 		return undefined;
 	}
 	return { x, y, width, height };
-}
-
-/** take_snapshot の `root` の要素の矩形を測る evaluate_script の関数（スクロールしない）。 */
-export const PARADIS_ELEMENT_RECT_FUNCTION = '(el) => { const r = el.getBoundingClientRect(); return { rect: { x: r.left, y: r.top, width: r.width, height: r.height }, inMainFrame: window.top === window }; }';
-
-/** {@link PARADIS_ELEMENT_RECT_FUNCTION} の結果から矩形を取り出す。iframe の中の要素は位置が合わないので使わない。 */
-export function paradisParseElementRect(result: unknown): IParadisCursorRect | undefined {
-	const parsed = paradisParseEvaluateValue(result);
-	if (!parsed || !isRecord(parsed.value) || parsed.value.inMainFrame !== true) {
-		return undefined;
-	}
-	return paradisLookedAtRect(parsed.value);
 }
 
 type ToolResult = unknown;

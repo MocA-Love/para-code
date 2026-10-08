@@ -65,9 +65,9 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { ParadisCursorPacingLedger, paradisCursorStatusForTool } from './paradisCursorPacing.js';
+import { ParadisCursorPacingLedger, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
-import { paradisIsStickyCursorStatus, type IParadisCursorOwner, type IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
@@ -77,7 +77,7 @@ import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcp
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
-import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, PARADIS_ELEMENT_RECT_FUNCTION, ParadisBrowserQuery, paradisParseElementRect } from './paradisBrowserQuery.js';
+import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
@@ -4170,11 +4170,12 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/**
 	 * 道具の状態をカーソルの名札に出す（electron-main の `noteExactViewCursorStatus`）。演出なので待たず、
-	 * 届かなくても何も変えない。
+	 * 届かなくても何も変えない。`target` を渡せばそのページへ（道具の始まりのページ。途中で今のタブが替わっても
+	 * 終わりの知らせを同じページへ届ける）、無ければ今のタブへ送る。
 	 */
-	private _noteCursorStatus(ingressLease: IParadisAgentBrowserIngressLease, note: IParadisCursorStatusNote): void {
+	private _noteCursorStatus(ingressLease: IParadisAgentBrowserIngressLease, note: IParadisCursorStatusNote, target?: IBindingEntry): void {
 		try {
-			const binding = this._bindingForKey(this._pageKeyOf(ingressLease));
+			const binding = target ?? this._bindingForKey(this._pageKeyOf(ingressLease));
 			if (!binding) {
 				return;
 			}
@@ -4216,68 +4217,17 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * 入力を伴わない道具の間、カーソルの名札に状態を出す（スクリプト実行中・待機中など）。長く続く状態は
-	 * 道具が終わったら消す。
+	 * 入力を伴わない道具の間、カーソルの名札に状態を出す（`paradisWithToolCursorStatus`）。知らせは道具の始まりの
+	 * ページへ送る（途中で利用者が別のページを共有して今のタブが替わっても、終わりの idle が元のページへ届く）。
 	 */
-	private async _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>, args?: unknown): Promise<T> {
-		const status = paradisCursorStatusForTool(name);
-		if (status === undefined) {
-			return run();
-		}
-		const sticky = paradisIsStickyCursorStatus(status);
+	private _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>, binding?: IBindingEntry): Promise<T> {
 		const key = this._pageKeyOf(ingressLease);
-		if (sticky) {
-			this._cursorStatusRuns.set(key, (this._cursorStatusRuns.get(key) ?? 0) + 1);
-		}
-		this._noteCursorStatus(ingressLease, { status });
-		try {
-			const result = await run();
-			if (name === 'take_snapshot') {
-				this._noteSnapshotTaken(ingressLease, args, result);
+		const target = binding ?? this._bindingForKey(key);
+		return paradisWithToolCursorStatus(name, this._cursorStatusRuns, key, note => {
+			if (target) {
+				this._noteCursorStatus(ingressLease, note, target);
 			}
-			return result;
-		} finally {
-			if (sticky) {
-				// 同じタブで並んで走っている道具が残っていれば、その表示を消さない
-				const left = (this._cursorStatusRuns.get(key) ?? 1) - 1;
-				if (left > 0) {
-					this._cursorStatusRuns.set(key, left);
-				} else {
-					this._cursorStatusRuns.delete(key);
-					this._noteCursorStatus(ingressLease, { status: 'idle' });
-				}
-			}
-		}
-	}
-
-	/**
-	 * take_snapshot が済んだら、撮った範囲を光らせる（q.html Q297 の 5）。`root` を指定していれば、その要素の
-	 * 位置を測って枠を出し、そこを光らせる（Q297 の 3）。測るのは結果を返した後で、結果は待たせない。
-	 * 途中で切れたスナップショットは測らない（測る evaluate_script で、続きを切り出す控えが捨てられるため）。
-	 */
-	private _noteSnapshotTaken(ingressLease: IParadisAgentBrowserIngressLease, args: unknown, result: unknown): void {
-		if ((result as { isError?: unknown } | undefined)?.isError === true) {
-			return;
-		}
-		const root = typeof args === 'object' && args !== null ? (args as { root?: unknown }).root : undefined;
-		// 測る evaluate_script は控えたスナップショットを捨てさせる。続き（offset）を読むはずの長いスナップショットでは測らない
-		const truncated = JSON.stringify((result as { content?: unknown } | undefined)?.content ?? '').includes('[Para Code: snapshot truncated.');
-		if (typeof root !== 'string' || root.length === 0 || root.length > 200 || truncated) {
-			this._noteCursorStatus(ingressLease, { status: 'reading', flash: true });
-			return;
-		}
-		void (async () => {
-			try {
-				const measured = await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: PARADIS_ELEMENT_RECT_FUNCTION, args: [root] });
-				if (!this.isIngressLeaseCurrent(ingressLease)) {
-					return;
-				}
-				const rect = (measured as { isError?: unknown } | undefined)?.isError === true ? undefined : paradisParseElementRect(measured);
-				this._noteCursorStatus(ingressLease, rect ? { status: 'idle', rect, flash: true } : { status: 'idle', flash: true });
-			} catch {
-				// 演出は道具の結果を変えない。
-			}
-		})();
+		}, run);
 	}
 
 	/**
@@ -4345,7 +4295,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			}
 			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal), devtoolsArgs));
+			const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
 			if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
 				// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
 				return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
@@ -4590,12 +4540,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return this._bindingForKey(token) === binding;
 			},
 			networkActivity: ignoreOlderThanMs => this._cdpGateway.getNetworkActivity(token, ignoreOlderThanMs),
-			noteLook: rect => {
-				const status = paradisCursorStatusForTool(name);
-				if (status !== undefined) {
-					this._noteCursorStatus(ingressLease, { status, rect });
-				}
-			},
+			// 枠だけを出す（名札の状態は道具の始まりと終わりの知らせが持つ）
+			noteLook: rect => this._noteCursorStatus(ingressLease, { rect }, binding),
 			evaluate: async (functionSource, uids) => {
 				try {
 					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする
@@ -4607,7 +4553,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(`${name} could not run because the embedded DevTools bridge is unavailable right now. Call get_session_health to check its status, then retry.`);
 				}
 			},
-		}, name, args));
+		}, name, args), binding);
 	}
 
 	/**
@@ -4654,7 +4600,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 			},
 			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindingForKey(token) === binding).response,
-			noteCursor: note => this._noteCursorStatus(ingressLease, note),
+			noteCursor: note => this._noteCursorStatus(ingressLease, note, binding),
 		}, name, args);
 	}
 
