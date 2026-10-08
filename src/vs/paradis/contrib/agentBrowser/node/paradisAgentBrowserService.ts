@@ -4408,6 +4408,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			isCurrent: () => this.isIngressLeaseCurrent(ingressLease),
 			sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+			now: () => Date.now(),
 		};
 	}
 

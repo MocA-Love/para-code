@@ -66,22 +66,19 @@ export function paradisObserveInstallFunction(name: string): string {
 }
 
 /**
- * DOM の変化が `quietMs` 止まり、文書の読み込みが終わるまで（`maxMs` まで）待つ。記録が無ければ（別の文書へ
- * 移った）その文書で記録を始め直し、`navigated: true` を返す。
+ * 記録の様子をすぐに返す（ページの中では待たない。待つのは呼び出し側で、その間にダイアログが開いていないかを
+ * 確かめるため。ページの中で待つと、待っている間に開いた confirm を内蔵 chrome-devtools-mcp が閉じてしまう）。
+ * 記録が無ければ（別の文書へ移った）その文書で記録を始め直し、`navigated: true` を返す。
  */
-export function paradisObserveSettleFunction(name: string, quietMs: number, maxMs: number): string {
-	return `async () => {
+export function paradisObserveReadFunction(name: string): string {
+	return `() => {
 	const N = ${JSON.stringify(name)};
 	let navigated = false;
 	if (!window[N]) { navigated = true; const NAV = true; ${INSTALL_BODY} }
 	const rec = window[N];
-	const start = performance.now();
-	for (;;) {
-		const now = performance.now();
-		if (document.readyState === 'complete' && now - rec.last >= ${quietMs}) { return { quiet: true, waited: Math.round(now - start), navigated: navigated || rec.navigated }; }
-		if (now - start >= ${maxMs}) { return { quiet: false, waited: Math.round(now - start), navigated: navigated || rec.navigated }; }
-		await new Promise(resolve => setTimeout(resolve, 40));
-	}
+	// 読み込み中の印（スピナー・aria-busy など）が見えている間は落ち着いたとみなさない
+	const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], .spinner, .loading, [class*="spinner"], [class*="loading"]')).some(el => !el.closest('[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+	return { age: Math.round(performance.now() - rec.last), ready: document.readyState === 'complete', busy, navigated: navigated || rec.navigated };
 }`;
 }
 
