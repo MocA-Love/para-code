@@ -281,7 +281,9 @@ async function buildInventory(
 			}
 			: { coverage: part.coverage, required: part.required },
 	);
-	const missingRequired = relationships.some(relationship => relationship.missing && (relationship.sourcePartId === undefined || relationship.sourcePartId === rootOfficeDocument.target));
+	// Only an absent part the document needs to render blocks it. A dangling relationship to metadata
+	// (docProps/custom.xml, a thumbnail, customXml) is dropped by the renderer and only degrades.
+	const missingRequired = relationshipRecords.some((record, index) => relationships[index].missing && isRequiredRelationship(record, rootOfficeDocument.target));
 	const baseOutcome = aggregateOfficeOutcome(statuses);
 	const outcome = missingRequired ? 'blocked' : relationships.some(relationship => relationship.missing) && baseOutcome === 'complete' ? 'degraded' : baseOutcome;
 	const parsedParts = inventoryParts.filter(part => part.coverage === 'parsed').length;
