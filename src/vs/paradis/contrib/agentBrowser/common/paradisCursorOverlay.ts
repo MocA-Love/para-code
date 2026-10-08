@@ -235,8 +235,10 @@ export type ParadisCursorOverlayCommand =
 	 * - `transient`: 長く続く状態でも少し出して消す（ページ移動の後に出し直したときの「読み込み中」）
 	 * - `clickText`: evaluate_script の中のクリックへ寄せたときの名札（`script` のときだけ。Q297 の 4）
 	 * - `since`: スクリプトを始めた時刻（ms、`Date.now()`）。これより前のクリックへは寄せない
+	 * - `settle`: 片付けだけ（見えていないタブへの終わりの idle）。既にあるカーソルの状態・見張り・待機の輪を
+	 *   落とすだけで、カーソルを付け直したり見せたりせず、無ければ何も作らない
 	 */
-	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string; readonly since?: number }
+	| { readonly kind: 'status'; readonly label: string; readonly status: ParadisCursorStatus; readonly text: string; readonly frames?: readonly IParadisCursorKeyframe[]; readonly durationMs?: number; readonly park?: boolean; readonly box?: IParadisCursorRect; readonly transient?: boolean; readonly clickText?: string; readonly since?: number; readonly settle?: boolean }
 	/** 読み取り系の道具が見ている要素に枠を出し、カーソルを寄せるだけ（名札の状態とスクリプトの見張りは変えない）。 */
 	| { readonly kind: 'look'; readonly label: string; readonly box: IParadisCursorRect }
 	/** 撮影のため即座に隠す（進行中のフラッシュも消す）。描画が反映されるまで待ってから解決する。 */
@@ -1062,6 +1064,15 @@ export function paradisBuildCursorOverlayScript(command: ParadisCursorOverlayOwn
 		function boxVisible(b) {
 			var vw = window.innerWidth || 0, vh = window.innerHeight || 0;
 			return !!b && Math.min(vw, b.x + b.width) - Math.max(0, b.x) > 0 && Math.min(vh, b.y + b.height) - Math.max(0, b.y) > 0;
+		}
+
+		if (c.kind === 'status' && c.settle) {
+			var gs = G(false);
+			var ss = gs ? gs.cs[typeof c.owner === 'string' && c.owner.length > 0 ? c.owner : '_'] : null;
+			if (!ss) { return 0; }
+			ss.sticky = ''; ss.watch = false;
+			if (ss.h) { setWaiting(ss, false); setStatus(ss, '', 0); }
+			return 0;
 		}
 
 		if (c.kind === 'move' || c.kind === 'press' || c.kind === 'focus' || c.kind === 'wheel' || c.kind === 'status' || c.kind === 'look') {
