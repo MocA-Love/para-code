@@ -8,7 +8,7 @@
 
 import { timeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { Disposable, DisposableMap, DisposableStore, dispose, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -29,6 +29,7 @@ import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/
 import { IParadisEditorScopeService, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
 import { paradisHasParkedTerminals } from './paradisTerminalEditorPark.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 interface IParadisLiveEditorPlacement {
 	readonly editor: EditorInput;
@@ -48,6 +49,15 @@ interface IParadisLiveWorkingSet {
 	readonly workingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>;
 	readonly retentions: DisposableStore;
 }
+
+/**
+ * 預け先へ入れた経路。二重に握られていたのを見つけたときの記録 (ログ・Sentry) に載せる。
+ * `capture` = 切り替え元を預けるとき、`carry-over` = 預けた後に開かれて行き先へ持ち越された入力を回したとき、
+ * `restore` / `restore-early` = 開き直す前に持ち主違いを回したとき、
+ * `aux-close` = 補助ウィンドウを閉じたとき、`retirement-cancel` = 削除の取り消しで預け直したとき、
+ * `correct` = 今のスペースのキーを付け直したとき。
+ */
+type ParadisLiveDepositPhase = 'capture' | 'carry-over' | 'restore' | 'restore-early' | 'aux-close' | 'retirement-cancel' | 'correct';
 
 interface IParadisPreparedEditorRevert {
 	readonly editor: EditorInput;
@@ -145,6 +155,14 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	 */
 	private readonly earlyRestoredPlacements = new WeakSet<IParadisLiveEditorPlacement>();
 	private readonly preparedRetirements = new Map<string, IParadisPreparedRetirement>();
+	/**
+	 * 入力ごとの retain の握りと、その握りを今持っている入れ物 (預け先の `retentions` など)。
+	 * 入力を別の預け先へ移すとき、元の預け先が持つ握りだけを放すために引く。入れ物ごと捨てた
+	 * 握りは `store.isDisposed` で見分けて読み飛ばす。
+	 */
+	private readonly retentionHandles = new WeakMap<EditorInput, { readonly handle: IDisposable; store: DisposableStore }[]>();
+	/** 生きた入力の持ち主を引く口 (`registerLiveEditorOwnerResolver`)。 */
+	private liveEditorOwnerResolver: ((editor: EditorInput) => string | undefined) | undefined;
 	private readonly pendingBackupDiscards = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly pendingBackupDiscardJournal = new Map<string, { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }>();
 	private readonly pendingOwnerReleases = this._register(new DisposableMap<string, DisposableStore>());
@@ -242,40 +260,63 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			throw new Error('Editor input retention is not available');
 		}
 
+		// メインのエディタ領域の生きた入力を全部拾う。どのスペースのものかは下で入力ごとに決める。
 		const { modifiedEditorOwners, placements } = this.collectVisibleLiveEditorState(true, stateKey, true);
 		const excludedEditors = new Set(placements.map(placement => placement.editor));
-
+		// 入力ごとの預け先。持ち主が別のスペースだと分かっている入力 (ほかのスペースのエディタの
+		// ターミナルが今の画面に紛れ込んでいたもの) は、切り替え元ではなく持ち主の預け先へ回す。
+		// 切り替え元へ入れると、切り替え元へ戻るたびに開き直されて二度と持ち主へ帰らない。
+		const destinations = new Map<EditorInput, string>();
 		for (const editor of excludedEditors) {
-			for (const workingCopy of modifiedEditorOwners.get(editor) ?? []) {
-				this.claimWorkingCopy(workingCopy, stateKey);
+			destinations.set(editor, this.depositKeyFor(editor, stateKey));
+		}
+		// 子プロセスの無い (確認の要らない) 端末でも、持ち主が別のスペースなら切り替え元の working set に
+		// 載せない。その端末は切り替えサービスの park が持ち主のスペースへ入れる (`ownerParkScope`) ので、
+		// 載せると切り替え元へ戻ったときに同じ端末をもう一度繋ぎに行く。生きている端末と行き先を揃える。
+		const foreignCleanEditors = new Set<EditorInput>();
+		for (const { editor } of this.collectVisibleLiveEditorState(false, stateKey, true, undefined, true).placements) {
+			if (!excludedEditors.has(editor) && this.liveEditorOwner(editor) !== undefined && this.liveEditorOwner(editor) !== stateKey) {
+				foreignCleanEditors.add(editor);
 			}
 		}
 
-		const retentions = new DisposableStore();
+		for (const editor of excludedEditors) {
+			for (const workingCopy of modifiedEditorOwners.get(editor) ?? []) {
+				this.claimWorkingCopy(workingCopy, destinations.get(editor) ?? stateKey);
+			}
+		}
+
+		// 預け先が自分の握りを持つまでの仮の握り。保存の途中で投げても、入力はグループに残っているので失われない。
+		const pending = new DisposableStore();
 		try {
 			for (const editor of excludedEditors) {
-				retentions.add(this.editorGroupsService.retainEditor(editor));
+				pending.add(this.editorGroupsService.retainEditor(editor));
 			}
 
-			saveSerializedState([...excludedEditors]);
+			saveSerializedState([...excludedEditors, ...foreignCleanEditors]);
 			if (placements.length === 0) {
-				retentions.dispose();
 				return;
 			}
 
-			this.liveWorkingSets.set(stateKey, {
-				placements,
-				workingCopiesByEditor: this.selectWorkingCopyOwners(modifiedEditorOwners, excludedEditors),
-				retentions
-			});
+			const byDestination = new Map<string, IParadisLiveEditorPlacement[]>();
+			for (const placement of placements) {
+				const destination = destinations.get(placement.editor) ?? stateKey;
+				const entries = byDestination.get(destination) ?? [];
+				entries.push(placement);
+				byDestination.set(destination, entries);
+			}
+			for (const [destination, destinationPlacements] of byDestination) {
+				if (destination !== stateKey) {
+					this.logService.info(`[ParadisEditorScope] Deposited ${destinationPlacements.length} live editor(s) owned by another space with that space instead of the one being left`);
+				}
+				const editors = new Set(destinationPlacements.map(placement => placement.editor));
+				this.addToDeposit(destination, destinationPlacements, this.selectWorkingCopyOwners(modifiedEditorOwners, editors), 'capture');
+			}
 			for (const placement of placements) {
 				this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
 			}
-		} catch (error) {
-			if (!this.liveWorkingSets.has(stateKey)) {
-				retentions.dispose();
-			}
-			throw error;
+		} finally {
+			pending.dispose();
 		}
 	}
 
@@ -295,39 +336,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 		}
 
-		const retentions = new DisposableStore();
-		try {
-			for (const editor of editors) {
-				retentions.add(this.editorGroupsService.retainEditor(editor));
-			}
-
-			const existing = this.liveWorkingSets.get(stateKey);
-			if (existing) {
-				existing.retentions.add(retentions);
-				this.liveWorkingSets.set(stateKey, {
-					placements: [...existing.placements, ...placements],
-					workingCopiesByEditor: this.mergeWorkingCopyOwners(
-						existing.workingCopiesByEditor,
-						this.selectWorkingCopyOwners(modifiedEditorOwners, editors)
-					),
-					retentions: existing.retentions
-				});
-			} else {
-				this.liveWorkingSets.set(stateKey, {
-					placements,
-					workingCopiesByEditor: this.selectWorkingCopyOwners(modifiedEditorOwners, editors),
-					retentions
-				});
-			}
-
-			for (const placement of placements) {
-				this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
-			}
-		} catch (error) {
-			if (!this.liveWorkingSets.has(stateKey)) {
-				retentions.dispose();
-			}
-			throw error;
+		this.addToDeposit(stateKey, placements, this.selectWorkingCopyOwners(modifiedEditorOwners, editors), 'aux-close');
+		for (const placement of placements) {
+			this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
 		}
 	}
 
@@ -342,11 +353,21 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		// restoreEditorPlacements' own per-placement recovery) would keep the
 		// same dead entry around forever and repeat the same failure on every
 		// subsequent switch into this scope.
+		// ここで開く (または開くのを諦める) 配置。後片付けはこの配置の分だけにする。
+		let restoring: ReadonlySet<IParadisLiveEditorPlacement> = new Set(liveWorkingSet.placements);
+		let leftover = false;
 		try {
+			// 持ち主が別のスペースの入力は開かずに持ち主の預け先へ回す。前倒しで開いた配置は既に
+			// 画面にあるので触らない (次に預けるときに持ち主へ回る)。
+			const diverted = this.divertForeignPlacements(stateKey, liveWorkingSet.placements.filter(placement => !this.earlyRestoredPlacements.has(placement)), liveWorkingSet.workingCopiesByEditor, 'restore');
+			restoring = new Set(liveWorkingSet.placements.filter(placement => !diverted.has(placement)));
 			// 先に開いた配置は開き直さない。選択の復元にだけ含める。
 			const earlyRestored: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
 			const remaining: IParadisLiveEditorPlacement[] = [];
 			for (const placement of liveWorkingSet.placements) {
+				if (diverted.has(placement)) {
+					continue;
+				}
 				if (this.earlyRestoredPlacements.has(placement)) {
 					this.earlyRestoredPlacements.delete(placement);
 					// 開いた後に利用者が別のグループ (補助ウィンドウを含む) へ動かしていることがある。
@@ -361,12 +382,61 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 			await this.restoreEditorPlacements(remaining, earlyRestored);
 		} finally {
-			this.liveWorkingSets.delete(stateKey);
-			liveWorkingSet.retentions.dispose();
+			leftover = this.settleRestoredDeposit(stateKey, liveWorkingSet.retentions, restoring);
+		}
+		// 開くのを待つ間に、このスペース宛ての入力が新しく預けられていた。今見せているスペースに
+		// 預け先が残ると、次に離れるときの `captureScope` が投げてスペースから離れられなくなるので開く。
+		if (leftover) {
+			await this.restoreScope(stateKey);
 		}
 	}
 
+	/**
+	 * `restoreScope` の後片付け。開き始めた時点で控えた配置 (`restoring`) の分の握りだけを放し、預け先から外す。
+	 *
+	 * 預け先ごと捨ててはいけない。開くのを待っている間に、補助ウィンドウを閉じた・持ち主違いが回って
+	 * きた等で同じ預け先へ別の入力が入ることがあり、入れ物ごと捨てるとその入力の握りが 0 になって
+	 * (グループにも無いので) 破棄される。端末なら PTY ごと止まる。
+	 */
+	private settleRestoredDeposit(stateKey: string, retentions: DisposableStore, restoring: ReadonlySet<IParadisLiveEditorPlacement>): boolean {
+		const current = this.liveWorkingSets.get(stateKey);
+		if (current === undefined || current.retentions !== retentions) {
+			// 持ち主違いを全部回して預け先が空になり、既に消えている (その後に作り直された預け先は
+			// 別の入れ物を持つ)。元の入れ物に残っているのはここで開いた入力の握りだけなので、まとめて放してよい。
+			retentions.dispose();
+			return current !== undefined;
+		}
+		const kept = current.placements.filter(placement => !restoring.has(placement));
+		const keptEditors = new Set(kept.map(placement => placement.editor));
+		const released = new Set<EditorInput>();
+		for (const placement of restoring) {
+			if (!keptEditors.has(placement.editor)) {
+				released.add(placement.editor);
+			}
+		}
+		if (kept.length === 0) {
+			this.liveWorkingSets.delete(stateKey);
+			retentions.dispose();
+			return false;
+		}
+		for (const editor of released) {
+			this.releaseRetention(retentions, editor);
+		}
+		this.liveWorkingSets.set(stateKey, {
+			placements: kept,
+			workingCopiesByEditor: this.withoutEditors(current.workingCopiesByEditor, released),
+			retentions
+		});
+		return true;
+	}
+
 	async restoreScopeEarly(stateKey: string, filter: (editor: EditorInput) => boolean): Promise<void> {
+		const deposited = this.liveWorkingSets.get(stateKey);
+		if (!deposited) {
+			return;
+		}
+		// 持ち主が別のスペースの入力は開かない。持ち主の預け先へ回してから残りを見る。
+		this.divertForeignPlacements(stateKey, deposited.placements.filter(placement => !this.earlyRestoredPlacements.has(placement)), deposited.workingCopiesByEditor, 'restore-early');
 		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
 		if (!liveWorkingSet) {
 			return;
@@ -415,6 +485,35 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			const active = groupPlacements.find(placement => placement.active)?.editor;
 			if (active) {
 				await group.setSelection(active, groupPlacements.filter(placement => placement.selected && placement.editor !== active).map(placement => placement.editor));
+			}
+		}
+	}
+
+	depositForeignLiveEditors(stateKey: string): void {
+		if (!this.editorGroupsService.retainEditor) {
+			return;
+		}
+		const { placements } = this.collectVisibleLiveEditorState(false, undefined, true);
+		const byOwner = new Map<string, IParadisLiveEditorPlacement[]>();
+		for (const placement of placements) {
+			const owner = this.liveEditorOwner(placement.editor);
+			if (owner === undefined || owner === stateKey || !this.editorGroupsService.getGroup(placement.groupId)?.detachEditor) {
+				continue;
+			}
+			const entries = byOwner.get(owner) ?? [];
+			entries.push(placement);
+			byOwner.set(owner, entries);
+		}
+		for (const [owner, ownerPlacements] of byOwner) {
+			try {
+				// 作業コピーを持つ入力 (未保存のファイル) には持ち主の引き口が答えないので、ここに来るのは端末だけ。
+				this.addToDeposit(owner, ownerPlacements, new Map(), 'carry-over');
+				for (const placement of ownerPlacements) {
+					this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
+				}
+				this.logService.warn(`[ParadisEditorScope] ${ownerPlacements.length} live editor(s) of another space were carried over into this space by the switch; moved them back to their own space`);
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to move carried-over live editors to the space that owns them; leaving them open here', error);
 			}
 		}
 	}
@@ -550,12 +649,30 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			const previousLiveState = this.liveWorkingSets.get(previousStateKey);
 			if (previousLiveState && previousStateKey !== stateKey) {
 				this.liveWorkingSets.delete(previousStateKey);
-				this.liveWorkingSets.set(stateKey, previousLiveState);
+				if (this.liveWorkingSets.has(stateKey)) {
+					// 新しいキーにも預け先がある (持ち主の預け先へ回ってきた入力)。上書きすると片方の握りを
+					// 失うので、1 つにまとめてから元の入れ物を捨てる (先にまとめた側が握るので破棄されない)。
+					this.addToDeposit(stateKey, previousLiveState.placements, previousLiveState.workingCopiesByEditor, 'correct');
+					previousLiveState.retentions.dispose();
+				} else {
+					this.liveWorkingSets.set(stateKey, previousLiveState);
+				}
 			}
 			this.saveOwnerLedger();
 		}
 
 		await this.commitSwitch(stateKey, uri);
+		// このスペースは一度も離れていなくても、持ち主の預け先へ回ってきた入力の預け先を持ちうる
+		// (別のスペースを離れるときに、このスペースの端末が見つかった)。今見せているスペースに預け先が
+		// 残ると、端末が見えないうえ、次に離れるときの `captureScope` が投げてスペースから離れられない。
+		// 開けなくてもバックアップの復元は必ず続ける。
+		if (this.liveWorkingSets.has(stateKey)) {
+			try {
+				await this.restoreScope(stateKey);
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to open the live editors deposited with the corrected space', error);
+			}
+		}
 		await this.restoreBackups();
 	}
 
@@ -833,6 +950,208 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this.retirementFences.delete(stateKey);
 	}
 
+	registerLiveEditorOwnerResolver(resolver: (editor: EditorInput) => string | undefined): IDisposable {
+		this.liveEditorOwnerResolver = resolver;
+		return toDisposable(() => {
+			if (this.liveEditorOwnerResolver === resolver) {
+				this.liveEditorOwnerResolver = undefined;
+			}
+		});
+	}
+
+	isRetiringScope(stateKey: string): boolean {
+		return this.retirementFences.has(stateKey);
+	}
+
+	/**
+	 * 入力の明示的な持ち主のスペース。分からない・持ち主のスペースが既に無い・削除の途中なら undefined
+	 * (判定は引く口が持つ。切り替えサービスの `availableOwnerScope` で、park 先と同じ判定)。undefined の
+	 * 入力は今までどおり呼び出し元のスペースの持ち物として扱う (二度と開かれない預け先へ入れて、生きたまま
+	 * 見えなくなるのを防ぐ)。
+	 */
+	private liveEditorOwner(editor: EditorInput): string | undefined {
+		try {
+			return this.liveEditorOwnerResolver?.(editor);
+		} catch (error) {
+			this.logService.error('[ParadisEditorScope] Failed to resolve the owner space of a live editor; keeping it where it is', error);
+			return undefined;
+		}
+	}
+
+	/** スペース `stateKey` を預けるときの、この入力の預け先。持ち主が別のスペースならそちら。 */
+	private depositKeyFor(editor: EditorInput, stateKey: string): string {
+		return this.liveEditorOwner(editor) ?? stateKey;
+	}
+
+	/**
+	 * 預け先 `stateKey` の配置のうち、持ち主が別のスペースのものを持ち主の預け先へ移す。
+	 * 移した配置を返す (呼び出し元はそれを開かない)。
+	 */
+	private divertForeignPlacements(stateKey: string, placements: readonly IParadisLiveEditorPlacement[], workingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, phase: ParadisLiveDepositPhase): ReadonlySet<IParadisLiveEditorPlacement> {
+		const byOwner = new Map<string, IParadisLiveEditorPlacement[]>();
+		for (const placement of placements) {
+			if (placement.editor.isDisposed()) {
+				continue;
+			}
+			const owner = this.liveEditorOwner(placement.editor);
+			if (owner === undefined || owner === stateKey) {
+				continue;
+			}
+			const entries = byOwner.get(owner) ?? [];
+			entries.push(placement);
+			byOwner.set(owner, entries);
+		}
+		const diverted = new Set<IParadisLiveEditorPlacement>();
+		for (const [owner, ownerPlacements] of byOwner) {
+			try {
+				const editors = new Set(ownerPlacements.map(placement => placement.editor));
+				this.addToDeposit(owner, ownerPlacements, this.selectWorkingCopyOwners(workingCopiesByEditor, editors), phase, stateKey);
+				for (const placement of ownerPlacements) {
+					diverted.add(placement);
+				}
+				this.logService.warn(`[ParadisEditorScope] ${ownerPlacements.length} live editor(s) deposited with one space belong to another; moved them to their own space instead of opening them here`);
+			} catch (error) {
+				// 回せなければ今までどおり開く。見えなくなるより、違うスペースに出る方がまし。
+				this.logService.error('[ParadisEditorScope] Failed to move live editors to the space that owns them; restoring them here', error);
+			}
+		}
+		return diverted;
+	}
+
+	/**
+	 * 生きた入力を預け先 `stateKey` へ入れる。**1 つの入力は 1 つの預け先にしか置かない。**
+	 * 他の預け先が同じ入力を握っていれば、そちらからは外す。二重に握ると、どちらのスペースへ
+	 * 戻っても同じタブが開き直され、往復のたびに再生産されて自然には直らない。
+	 *
+	 * 先にこの預け先で握ってから、他の預け先の握りを放す。逆にすると、どこにも握られていない
+	 * 一瞬に入力が破棄される (`retainEditor` の握りが 0 になり、グループにも無い入力は dispose される)。
+	 *
+	 * @param movingFrom 持ち主違いを回すときの元の預け先。そこから外すのは想定どおりなので、二重に
+	 * 握っていた記録には数えない。
+	 */
+	private addToDeposit(stateKey: string, placements: readonly IParadisLiveEditorPlacement[], workingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, phase: ParadisLiveDepositPhase, movingFrom?: string): void {
+		if (!this.editorGroupsService.retainEditor) {
+			throw new Error('Editor input retention is not available');
+		}
+		const editors = new Set(placements.map(placement => placement.editor));
+		const existing = this.liveWorkingSets.get(stateKey);
+		const retentions = existing?.retentions ?? new DisposableStore();
+		try {
+			for (const editor of editors) {
+				if (!this.holdsRetention(retentions, editor)) {
+					this.retainInto(retentions, editor);
+				}
+			}
+		} catch (error) {
+			if (!existing) {
+				retentions.dispose();
+			}
+			throw error;
+		}
+		// 同じ預け先の中でも入力は 1 か所。古い配置は新しい配置で置き換える。
+		const kept = existing?.placements.filter(placement => !editors.has(placement.editor)) ?? [];
+		this.liveWorkingSets.set(stateKey, {
+			placements: [...kept, ...placements],
+			workingCopiesByEditor: this.mergeWorkingCopyOwners(
+				existing ? this.withoutEditors(existing.workingCopiesByEditor, editors) : new Map(),
+				workingCopiesByEditor
+			),
+			retentions
+		});
+
+		const holders = this.removeFromOtherDeposits(editors, stateKey);
+		const doubleHolders = holders.filter(holder => holder !== movingFrom);
+		if (doubleHolders.length > 0) {
+			this.reportDoubleDeposit(phase, doubleHolders.length);
+		}
+	}
+
+	/**
+	 * `editors` を `exceptStateKey` 以外の預け先から外し、その預け先が持っていた握りを放す。
+	 * 外した入力を握っていた預け先のキーを返す (入力 1 つにつき 1 件)。
+	 */
+	private removeFromOtherDeposits(editors: ReadonlySet<EditorInput>, exceptStateKey: string): string[] {
+		const holders: string[] = [];
+		for (const [stateKey, liveWorkingSet] of [...this.liveWorkingSets]) {
+			if (stateKey === exceptStateKey) {
+				continue;
+			}
+			const removed = new Set(liveWorkingSet.placements.filter(placement => editors.has(placement.editor)).map(placement => placement.editor));
+			if (removed.size === 0) {
+				continue;
+			}
+			for (const editor of removed) {
+				holders.push(stateKey);
+				this.releaseRetention(liveWorkingSet.retentions, editor);
+			}
+			const placements = liveWorkingSet.placements.filter(placement => !removed.has(placement.editor));
+			if (placements.length === 0) {
+				this.liveWorkingSets.delete(stateKey);
+				liveWorkingSet.retentions.dispose();
+				continue;
+			}
+			this.liveWorkingSets.set(stateKey, {
+				placements,
+				workingCopiesByEditor: this.withoutEditors(liveWorkingSet.workingCopiesByEditor, removed),
+				retentions: liveWorkingSet.retentions
+			});
+		}
+		return holders;
+	}
+
+	/**
+	 * 同じ入力を 2 つの預け先が握っていたのを見つけた。ここで 1 つに直したが、どこかの経路が
+	 * 二重に入れたことを意味するので、ログと Sentry に残す (中身は載せない。件数と経路だけ)。
+	 */
+	private reportDoubleDeposit(phase: ParadisLiveDepositPhase, count: number): void {
+		this.logService.warn(`[ParadisEditorScope] ${count} live editor(s) were held by more than one space at once (${phase}); kept them only in the space they belong to`);
+		reportParadisDiagnosticError('owned', 'workspace-switch', 'live-editor-double-deposit', new Error('A live editor was deposited with more than one space'), {
+			safe_phase: phase,
+			safe_count: count,
+		}, 'warning');
+	}
+
+	private retainInto(store: DisposableStore, editor: EditorInput): void {
+		const handle = store.add(this.editorGroupsService.retainEditor!(editor));
+		const entries = (this.retentionHandles.get(editor) ?? []).filter(entry => !entry.store.isDisposed);
+		entries.push({ handle, store });
+		this.retentionHandles.set(editor, entries);
+	}
+
+	private holdsRetention(store: DisposableStore, editor: EditorInput): boolean {
+		return !store.isDisposed && (this.retentionHandles.get(editor) ?? []).some(entry => entry.store === store);
+	}
+
+	/** `store` が持つ `editor` の握りだけを放す。他の入れ物の握りには触らない。 */
+	private releaseRetention(store: DisposableStore, editor: EditorInput): void {
+		const entries = this.retentionHandles.get(editor);
+		if (!entries) {
+			return;
+		}
+		const remaining: { readonly handle: IDisposable; store: DisposableStore }[] = [];
+		for (const entry of entries) {
+			if (entry.store.isDisposed) {
+				continue;
+			}
+			if (entry.store === store) {
+				store.delete(entry.handle);
+			} else {
+				remaining.push(entry);
+			}
+		}
+		this.retentionHandles.set(editor, remaining);
+	}
+
+	private withoutEditors(owners: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, editors: ReadonlySet<EditorInput>): ReadonlyMap<EditorInput, readonly IWorkingCopy[]> {
+		const result = new Map<EditorInput, readonly IWorkingCopy[]>();
+		for (const [editor, workingCopies] of owners) {
+			if (!editors.has(editor)) {
+				result.set(editor, workingCopies);
+			}
+		}
+		return result;
+	}
+
 	private freezeRetiringScope(stateKey: string, retirement: IParadisPreparedRetirement): void {
 		if (this.retirementFences.has(stateKey)) {
 			return;
@@ -1106,7 +1425,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 		}
 
-		retentions.add(this.editorGroupsService.retainEditor(editor));
+		this.retainInto(retentions, editor);
 		frozenEditors.add(editor);
 		frozenPlacements.push(...placements);
 		for (const placement of placements) {
@@ -1141,20 +1460,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			return;
 		}
 		const deferredEditors = new Set(deferred.map(placement => placement.editor));
-		const existing = this.liveWorkingSets.get(stateKey);
-		if (existing) {
-			existing.retentions.add(retentions);
-			this.liveWorkingSets.set(stateKey, {
-				placements: [...existing.placements, ...deferred],
-				workingCopiesByEditor: this.mergeWorkingCopyOwners(existing.workingCopiesByEditor, this.selectWorkingCopyOwners(workingCopiesByEditor, deferredEditors)),
-				retentions: existing.retentions
-			});
-		} else {
-			this.liveWorkingSets.set(stateKey, {
-				placements: deferred,
-				workingCopiesByEditor: this.selectWorkingCopyOwners(workingCopiesByEditor, deferredEditors),
-				retentions
-			});
+		try {
+			// 預け先が自分で握ってから、凍結の握りを放す (`addToDeposit` の説明参照)。
+			this.addToDeposit(stateKey, deferred, this.selectWorkingCopyOwners(workingCopiesByEditor, deferredEditors), 'retirement-cancel');
+		} finally {
+			retentions.dispose();
 		}
 	}
 

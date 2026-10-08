@@ -16,7 +16,7 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { FocusMode } from '../../../../platform/native/common/native.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 export interface IParadisNotificationRevealServices {
 	readonly hostService: Pick<IHostService, 'focus'>;
@@ -38,6 +38,9 @@ function windowOf(instance: ITerminalInstance | undefined): Window {
  * 2. ペインが別スペースにあるならそのスペースへ切り替える（`stateKey` が無い = スペース外のペイン）
  * 3. ターミナルを開いてフォーカスする。切り替えでペインが補助ウィンドウへ移ることもあるので、
  *    最後にもう一度そのウィンドウを前面に出す
+ *
+ * 切り替えを待っている間に別の切り替えが割り込んで、ペインのスペースに居ないまま戻ってくることが
+ * ある。そのときは開かない（開くと、ペインが今のスペースのタブになって紛れ込む）。
  */
 export async function paradisRevealNotifiedPane(services: IParadisNotificationRevealServices, stateKey: string | undefined, instanceId: number): Promise<void> {
 	const { hostService, terminalService, workspaceSwitchService } = services;
@@ -50,6 +53,10 @@ export async function paradisRevealNotifiedPane(services: IParadisNotificationRe
 	const pendingTarget = workspaceSwitchService.pendingSwitchTargetKey;
 	if (stateKey !== undefined && (stateKey !== workspaceSwitchService.activeStateKey || (pendingTarget !== undefined && pendingTarget !== stateKey))) {
 		await workspaceSwitchService.switchToStateKey(stateKey);
+	}
+
+	if (stateKey !== undefined && !paradisIsSettledOnSpace(workspaceSwitchService, stateKey)) {
+		return;
 	}
 
 	// スペースの切り替えでターミナルは退避所から戻ってくるので、切り替えの後で引き直す。

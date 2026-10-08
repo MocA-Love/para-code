@@ -35,7 +35,7 @@ import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/co
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
-import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneBinding, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
@@ -468,6 +468,10 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 	private async _revealBinding(binding: IParadisPaneBinding): Promise<void> {
 		if (binding.scope.kind === 'managed' && this.workspaceSwitchService.activeStateKey !== binding.scope.stateKey) {
 			await this.workspaceSwitchService.switchToStateKey(binding.scope.stateKey);
+		}
+		// 待っている間に別の切り替えが割り込んだら開かない。開くとページが今のスペースのタブになる。
+		if (binding.scope.kind === 'managed' && !paradisIsSettledOnSpace(this.workspaceSwitchService, binding.scope.stateKey)) {
+			return;
 		}
 		const input = this.browserViewWorkbenchService.getKnownBrowserViews().get(binding.pageId);
 		if (input) {
