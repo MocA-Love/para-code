@@ -302,11 +302,80 @@ private let paradisManualAccessibilityExcludedPatterns: [String] = [
 	"com.microsoft.vscode", "com.microsoft.vscodeinsiders", "com.vscodium", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf",
 ]
 
-func paradisManualAccessibilityExcluded(bundleId: String?) -> Bool {
+/**
+ * `hasVSCodeProductJson` は `Contents/Resources/app/product.json` があるか（VS Code の派生は全部これを持つので、
+ * 一覧に無い新しい派生（Positron・Kiro・Trae など）もこれで外す）。
+ */
+func paradisManualAccessibilityExcluded(bundleId: String?, hasVSCodeProductJson: Bool) -> Bool {
+	if hasVSCodeProductJson {
+		return true
+	}
 	guard let lower = bundleId?.lowercased() else {
 		return true
 	}
 	return paradisManualAccessibilityExcludedPatterns.contains { lower == $0 || lower.hasPrefix($0 + ".") }
+}
+
+/** 立てたアプリの記録 1 件。pid と、そのプロセスが始まった時刻（秒。pid の使い回しを見分ける）。 */
+struct ParadisManualAccessibilityEntry: Codable, Equatable {
+	let pid: Int32
+	let started: Double
+}
+
+/** 同じプロセスか（始まった時刻が 1 秒以内で一致する）。今のプロセスが無ければ false。 */
+func paradisSameProcess(recordedStart: Double, currentStart: Double?) -> Bool {
+	guard let currentStart else {
+		return false
+	}
+	return abs(recordedStart - currentStart) < 1
+}
+
+/** 記録したアプリをどうするか。 */
+enum ParadisManualAccessibilityRestore: Equatable {
+	/** false へ戻す。 */
+	case restore
+	/** 戻さずに記録から外す（もう居ない・pid が別のアプリに使い回された・支援技術が動いている）。 */
+	case forget
+}
+
+/**
+ * 戻すか。VoiceOver やスイッチコントロールが動いていれば、こちらの false がそれらのための支援も止めうるので戻さない。
+ */
+func paradisManualAccessibilityRestoreDecision(recordedStart: Double, currentStart: Double?, assistiveTechnologyRunning: Bool) -> ParadisManualAccessibilityRestore {
+	guard paradisSameProcess(recordedStart: recordedStart, currentStart: currentStart), !assistiveTechnologyRunning else {
+		return .forget
+	}
+	return .restore
+}
+
+/** 記録のファイルを読む（読めない・壊れていれば空）。 */
+func paradisDecodeManualAccessibilityEntries(_ data: Data?) -> [ParadisManualAccessibilityEntry] {
+	guard let data, let entries = try? JSONDecoder().decode([ParadisManualAccessibilityEntry].self, from: data) else {
+		return []
+	}
+	return entries
+}
+
+/**
+ * 1 段目で操作を断る、目的のアプリで開いているメニュー。背面のアプリでメニューが開いているなら、利用者が
+ * そのアプリで右クリックして使っている最中なので、送らずに止める（エージェントは背面ではメニューを開かない）。
+ * 前面のアプリでは、エージェント自身が開いたメニューの項目を押す流れがあるので止めない。
+ */
+func paradisMenuOpenFailure(menuOpen: Bool, targetIsFrontmost: Bool) -> ParadisHelperError? {
+	guard menuOpen && !targetIsFrontmost else {
+		return nil
+	}
+	return ParadisHelperError(code: "menu_open", message: "a menu is open in the app; the user may be using it")
+}
+
+/**
+ * 操作の後にメニューを閉じるか。閉じるのは、背面のアプリで、操作の前には開いておらず、操作の後に開いているとき
+ * だけ（操作が開いたメニュー）。フォーカスが変わったかは条件にしない: ボタンの処理の中でメニューを出すアプリでは、
+ * メニューが開いている間、画面全体へのフォーカスの問い合わせが答えを返さず（確認用のアプリで確かめた）、
+ * 変わったと分からないため。
+ */
+func paradisShouldCloseMenu(targetIsFrontmost: Bool, menuOpenBefore: Bool, menuOpenAfter: Bool) -> Bool {
+	return !targetIsFrontmost && !menuOpenBefore && menuOpenAfter
 }
 
 /** 立てた `AXManualAccessibility` を、操作が無いまま戻すまでの時間。 */

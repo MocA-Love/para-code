@@ -21,7 +21,8 @@ import Foundation
 
 enum ParadisHelperMode: Equatable {
 	/** shared process から `open -n` で起動された。ソケットで 1 本だけ接続を受ける。 */
-	case agent(socketPath: String, tokenFile: String)
+	/** `stateDirectory` は、補助アプリが終わった後も残す記録の置き場所（`--state-dir`。古い shared process は渡さない）。 */
+	case agent(socketPath: String, tokenFile: String, stateDirectory: String? = nil)
 	/** 許可の状態を標準出力へ 1 行の JSON で出して終わる（手元の確認用）。 */
 	case permissionStatus
 	case usage
@@ -35,6 +36,7 @@ func paradisParseArguments(_ arguments: [String]) -> ParadisHelperMode {
 	case "--agent":
 		var socketPath: String?
 		var tokenFile: String?
+		var stateDirectory: String?
 		var index = 1
 		while index < arguments.count {
 			let name = arguments[index]
@@ -46,6 +48,9 @@ func paradisParseArguments(_ arguments: [String]) -> ParadisHelperMode {
 			case "--token-file":
 				tokenFile = value
 				index += 2
+			case "--state-dir":
+				stateDirectory = value
+				index += 2
 			default:
 				// LaunchServices が `-psn_...` を足すことがあるので、知らない引数は飛ばす
 				index += 1
@@ -54,7 +59,7 @@ func paradisParseArguments(_ arguments: [String]) -> ParadisHelperMode {
 		guard let socketPath, !socketPath.isEmpty, let tokenFile, !tokenFile.isEmpty else {
 			return .usage
 		}
-		return .agent(socketPath: socketPath, tokenFile: tokenFile)
+		return .agent(socketPath: socketPath, tokenFile: tokenFile, stateDirectory: stateDirectory.flatMap { $0.isEmpty ? nil : $0 })
 	case "--permission-status":
 		return .permissionStatus
 	default:
