@@ -258,7 +258,8 @@ class WordSummaryBuilder {
 		this.checkpoint();
 		increment(this.counts.nodeKinds, node.kind);
 		let currentParagraph = paragraphLocator;
-		if (node.kind === 'paragraph') {
+		if (node.kind === 'paragraph' && !paragraphLocator) {
+			// 変更履歴やフィールドの中にも段落の形の節点が入るが、文字は外側の段落がまとめて持つ。
 			currentParagraph = `${context.locator}/node:${node.id}`;
 			this.addParagraph(context, currentParagraph, node);
 		} else if (node.kind === 'unknownBlock') {

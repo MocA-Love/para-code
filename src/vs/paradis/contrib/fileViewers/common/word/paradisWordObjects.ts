@@ -5,7 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from '../office/paradisOfficeCanonicalXml.js';
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
 import { ParadisWordModelGuard, sanitizeModelError, validateAuthority, type ParadisWordModelOptions, type ParadisWordPartAuthority } from './paradisWordStyles.js';
@@ -583,32 +583,7 @@ function relationshipPartUri(ownerPartUri: string): string {
 
 /** 関係の参照先を正規化する。package の外へ出るものは拒否し、`/word/` の外を指すものは undefined を返す。 */
 function resolveRelationshipTarget(ownerPartUri: string, target: string): string | undefined {
-	if (!target || target.includes('\\') || target.includes('\0') || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(target);
-	} catch {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	const combined = decoded.startsWith('/') ? decoded : `${ownerPartUri.slice(0, ownerPartUri.lastIndexOf('/') + 1)}${decoded}`;
-	const segments = combined.split('/');
-	const normalized: string[] = [];
-	for (const segment of segments) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (normalized.length === 0) {
-				throw new ParadisOfficePackageError('unsafe');
-			}
-			normalized.pop();
-		} else {
-			normalized.push(segment);
-		}
-	}
-	const result = `/${normalized.join('/')}`;
+	const result = resolveSharedRelationshipTarget(ownerPartUri, target);
 	if (!result.startsWith('/word/')) {
 		return undefined;
 	}
@@ -789,4 +764,19 @@ function sha256Bytes(bytes: Uint8Array): ParadisOfficeFingerprint {
 
 function rotateRight(value: number, bits: number): number {
 	return value >>> bits | value << 32 - bits;
+}
+
+/**
+ * 関係の Target を、サニタイザ・部品一覧と同じ規則（resolveParadisOfficeRelationshipTarget）で解決する。
+ * スキーム付き・クエリ・断片は Word の部品を指さないので拒む。拒むときの理由はこのファイルの他の拒否と同じ unsafe にする。
+ */
+function resolveSharedRelationshipTarget(ownerPartUri: string, target: string): string {
+	if (!target || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	try {
+		return resolveParadisOfficeRelationshipTarget(ownerPartUri, target);
+	} catch {
+		throw new ParadisOfficePackageError('unsafe');
+	}
 }
