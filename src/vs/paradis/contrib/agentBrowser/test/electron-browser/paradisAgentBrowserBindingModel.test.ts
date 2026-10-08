@@ -299,6 +299,29 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		});
 	});
 
+	// 読んだ世代で外す直前に、そのページが current へ繰り上がって世代が変わっても、取り直した世代で 1 回だけやり直す
+	test('retries unsharing a page once with its new generation when it was promoted right after the read', async () => {
+		const scope = { kind: 'managed' as const, stateKey: 'space-a' };
+		const row = (generation: number, additional?: true): IParadisPaneBinding => ({ token: 'token', pageId: 'view-a', pageInfo: { url: 'https://a.test', title: 'A' }, generation, boundAt: 3, scope, ...(additional ? { additional } : {}) });
+		// 外す前の読みは繰り上げ前の世代 3 を返す。shared process ではその直後に view-a が current へ繰り上がって
+		// 世代 8 になっている
+		const fixture = createFixture({
+			listBindings: async () => fixture.commands.some(call => call.command === 'unbindIfCurrent') ? fixture.backendBindings : [row(3, true)],
+		});
+		fixture.backendBindings = [row(8)];
+		await fixture.bindingModel.refresh();
+		await fixture.bindingModel.unbindPane(fixture.model, 'token');
+		assert.deepStrictEqual({
+			unbinds: fixture.commands.filter(call => call.command === 'unbindIfCurrent').map(call => call.args),
+			left: fixture.backendBindings.map(binding => binding.pageId),
+			sharingCalls: fixture.sharingCalls,
+		}, {
+			unbinds: [['token', 3], ['token', 8]],
+			left: [],
+			sharingCalls: [false],
+		});
+	});
+
 	// 1 つのペインは複数のページを共有できる。current を先頭に全部を持ち、外すのはそのページの共有だけ
 	test('keeps every page shared with a pane (current first) and unshares only the chosen page', async () => {
 		const fixture = createFixture();
