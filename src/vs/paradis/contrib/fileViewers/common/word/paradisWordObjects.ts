@@ -294,7 +294,10 @@ export function parseParadisWordRelationships(part: ParadisWordOwnedObjectPart, 
 				id, type, targetMode: 'external', ...(scheme ? { targetScheme: scheme } : {}), targetFingerprint: fingerprintText(target),
 			});
 		} else {
-			result.set(id, { id, type, targetMode: 'internal', targetPartUri: resolveRelationshipTarget(ownerPartUri, target) });
+			// 本文の外（customXml など）を指す関係は、図形や画像の参照先にはならない。読み飛ばすだけで、
+			// 文書全体を読めない扱いにはしない（customXml は Word で保存した文書の多くにある）。
+			const targetPartUri = resolveRelationshipTarget(ownerPartUri, target);
+			result.set(id, { id, type, targetMode: 'internal', ...(targetPartUri ? { targetPartUri } : {}) });
 		}
 	}
 	return result;
@@ -578,7 +581,8 @@ function relationshipPartUri(ownerPartUri: string): string {
 	return `${ownerPartUri.slice(0, separator)}/_rels/${ownerPartUri.slice(separator + 1)}.rels`;
 }
 
-function resolveRelationshipTarget(ownerPartUri: string, target: string): string {
+/** 関係の参照先を正規化する。package の外へ出るものは拒否し、`/word/` の外を指すものは undefined を返す。 */
+function resolveRelationshipTarget(ownerPartUri: string, target: string): string | undefined {
 	if (!target || target.includes('\\') || target.includes('\0') || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
@@ -605,6 +609,9 @@ function resolveRelationshipTarget(ownerPartUri: string, target: string): string
 		}
 	}
 	const result = `/${normalized.join('/')}`;
+	if (!result.startsWith('/word/')) {
+		return undefined;
+	}
 	if (!isCanonicalWordPartUri(result)) {
 		throw new ParadisOfficePackageError('unsafe');
 	}

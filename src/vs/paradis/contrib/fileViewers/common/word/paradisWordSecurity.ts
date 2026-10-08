@@ -59,6 +59,10 @@ const signatureContentTypes = new Set([
 const oleContentTypes = new Set([
 	'application/vnd.openxmlformats-officedocument.oleobject',
 	'application/vnd.ms-office.oleobject',
+	// Word は古い形式の埋め込み（Excel 97-2003 など）を、その形式の content type のまま oleObject の関係で持つ。
+	'application/vnd.ms-excel',
+	'application/msword',
+	'application/vnd.ms-powerpoint',
 ]);
 const activeXContentTypes = new Set([
 	'application/vnd.ms-office.activex',
@@ -540,6 +544,11 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			} else {
 				const targetPartUri = resolveRelationshipTarget(ownerPartUri, target);
 				if (!parts.has(targetPartUri)) {
+					// 先の部品が無い関係でも、文書情報（custom-properties など）のように安全の判断に関わらない型なら
+					// 読み飛ばす（実際の作成元が書くことがある）。判断に関わる型で先が無ければ、これまでどおり拒否する。
+					if (!isSecurityRelevantRelationship(type)) {
+						continue;
+					}
 					throw new ParadisOfficePackageError('unsafe');
 				}
 				relationships.set(id, { id, type, relationshipPartFingerprint: part.source.partFingerprint, external: false, targetPartUri });
@@ -548,6 +557,11 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 		result.set(ownerPartUri, relationships);
 	}
 	return result;
+}
+
+function isSecurityRelevantRelationship(type: string): boolean {
+	return officeDocumentRelationshipTypes.has(type) || vbaRelationshipTypes.has(type) || oleRelationshipTypes.has(type)
+		|| activeXRelationshipTypes.has(type) || packageRelationshipTypes.has(type) || imageRelationshipTypes.has(type);
 }
 
 function validatePackageRoot(parts: ReadonlyMap<string, OwnedPart>, relationships: ReadonlyMap<string, ReadonlyMap<string, Relationship>>): void {
