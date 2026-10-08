@@ -280,6 +280,20 @@ func paradisAccessibilityWindowSkipReason(onScreen: Bool, minimized: Bool, appHi
 }
 
 /**
+ * 座標で当たった要素を 1 段目で使えるか。使えなければ次の段へ譲る理由。当たった要素が目的のウィンドウそのもの
+ * （ボタンなどの無いところ）なら、ウィンドウの要素は `AXWindow` を持たないので、別のウィンドウとは書かない（実機の報告）。
+ */
+func paradisHitElementSkipReason(hitIsTargetWindow: Bool, ownerIsTargetWindow: Bool) -> String? {
+	if hitIsTargetWindow {
+		return "the point is on the window itself, not on a control"
+	}
+	if !ownerIsTargetWindow {
+		return "the element at the point belongs to another window"
+	}
+	return nil
+}
+
+/**
  * 画面のロック中・ほかのユーザーへの切り替え中か（`CGSessionCopyCurrentDictionary` の `kCGSessionOnConsoleKey` と
  * `CGSSessionScreenIsLocked`）。読めない値（nil）では止めない。
  */
@@ -315,6 +329,43 @@ func paradisManualAccessibilityExcluded(bundleId: String?, hasVSCodeProductJson:
 		return true
 	}
 	return paradisManualAccessibilityExcludedPatterns.contains { lower == $0 || lower.hasPrefix($0 + ".") }
+}
+
+/** ウェブの中身を探すときにたどる深さと要素の数の上限。 */
+let paradisWebAreaSearchMaxDepth = 8
+let paradisWebAreaSearchMaxNodes = 400
+
+/**
+ * Electron のウィンドウに `AXManualAccessibility` が要るか（ウェブの中身がまだ AX に出ていないか）。
+ * Electron のウィンドウには、AX のツリーを作る前から閉じる・しまう・広げるのボタンなどの子があるので、
+ * 「ウィンドウの子が空」では判断できない（実機の報告）。ウィンドウから幅優先でたどり、`AXWebArea` が無いか、
+ * あっても子が空なら要る。ウィンドウが無いときも要る。上限までたどっても決まらなければ要らないとする
+ * （中身の大きいウィンドウで、すでに立っている設定を台帳に載せて後で戻してしまわないため）。
+ */
+func paradisWindowNeedsManualAccessibility<Node>(_ window: Node?, children: (Node) -> [Node], role: (Node) -> String?,
+	maxDepth: Int = paradisWebAreaSearchMaxDepth, maxNodes: Int = paradisWebAreaSearchMaxNodes) -> Bool {
+	guard let window else {
+		return true
+	}
+	var queue: [(Node, Int)] = [(window, 0)]
+	var visited = 0
+	var index = 0
+	while index < queue.count {
+		let (node, depth) = queue[index]
+		index += 1
+		visited += 1
+		if visited > maxNodes {
+			return false
+		}
+		let nodeChildren = children(node)
+		if role(node) == "AXWebArea" {
+			return nodeChildren.isEmpty
+		}
+		if depth < maxDepth {
+			queue.append(contentsOf: nodeChildren.map { ($0, depth + 1) })
+		}
+	}
+	return true
 }
 
 /** 立てたアプリの記録 1 件。pid と、そのプロセスが始まった時刻（秒。pid の使い回しを見分ける）。 */

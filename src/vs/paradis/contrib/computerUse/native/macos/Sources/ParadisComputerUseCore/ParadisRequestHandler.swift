@@ -113,6 +113,18 @@ protocol ParadisDesktopBackend: AnyObject {
 	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any]
 }
 
+/**
+ * pid から動いているアプリを引く。`NSRunningApplication(processIdentifier:)` は、別のアプリが起動・終了した直後に
+ * 関係の無い pid でも一時的に nil を返す（2026-10-09 の実機、macOS 27.0.1。直後に同じ問い合わせをすると返り、
+ * `NSWorkspace.runningApplications` には載ったまま）。nil なら一覧から探し直す。
+ */
+func paradisLookUpRunningApplication<App>(pid: Int32, direct: (Int32) -> App?, all: () -> [App], pidOf: (App) -> Int32) -> App? {
+	if let app = direct(pid) {
+		return app
+	}
+	return all().first { pidOf($0) == pid }
+}
+
 // MARK: - 振り分け
 
 enum ParadisHandlerOutcome {

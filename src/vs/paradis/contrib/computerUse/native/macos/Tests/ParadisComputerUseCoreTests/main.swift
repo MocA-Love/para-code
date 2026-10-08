@@ -538,6 +538,11 @@ do {
 	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: true, appHidden: false) == "the window is minimized", "leaves minimized windows to the foreground route")
 	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: false, appHidden: true) == "the app is hidden", "leaves hidden apps to the foreground route")
 
+	// 座標で当たった要素が目的のウィンドウそのものなら、別のウィンドウとは書かない（実機の報告、2026-10-09）
+	check(paradisHitElementSkipReason(hitIsTargetWindow: false, ownerIsTargetWindow: true) == nil, "uses an element of the target window")
+	check(paradisHitElementSkipReason(hitIsTargetWindow: true, ownerIsTargetWindow: false) == "the point is on the window itself, not on a control", "says the point is on the window itself")
+	check(paradisHitElementSkipReason(hitIsTargetWindow: false, ownerIsTargetWindow: false) == "the element at the point belongs to another window", "says another window only for another window")
+
 	// 画面のロック中・ほかのユーザーへの切り替え中は止める（レビュー 中 6）
 	check(paradisSessionFailure(onConsole: true, screenLocked: false) == nil, "runs on an unlocked console session")
 	check(paradisSessionFailure(onConsole: true, screenLocked: true)?.code == "screen_locked", "stops while the screen is locked")
@@ -548,6 +553,24 @@ do {
 	check(paradisManualAccessibilityExcluded(bundleId: "com.microsoft.VSCode", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: "com.todesktop.230313mzl4w4u92", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: nil, hasVSCodeProductJson: false), "never sets AXManualAccessibility on VS Code family apps")
 	check(!paradisManualAccessibilityExcluded(bundleId: "com.tinyspeck.slackmacgap", hasVSCodeProductJson: false), "may set AXManualAccessibility on other Electron apps")
 	check(paradisManualAccessibilityExcluded(bundleId: "co.posit.positron", hasVSCodeProductJson: true), "never sets AXManualAccessibility on a VS Code fork that is not in the list")
+
+	// Electron のウィンドウには AX のツリーを作る前から閉じるボタンなどがあるので、ウェブの中身で見る（実機の報告、2026-10-09）
+	struct FakeNode {
+		let role: String
+		let children: [FakeNode]
+	}
+	func needsManual(_ window: FakeNode?, maxNodes: Int = paradisWebAreaSearchMaxNodes) -> Bool {
+		return paradisWindowNeedsManualAccessibility(window, children: { $0.children }, role: { $0.role }, maxNodes: maxNodes)
+	}
+	let buttons = [FakeNode(role: "AXButton", children: []), FakeNode(role: "AXButton", children: []), FakeNode(role: "AXButton", children: [])]
+	let closedElectron = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [])])
+	let emptyWebArea = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [])])])
+	let openElectron = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [FakeNode(role: "AXStaticText", children: [])])])])])
+	check(needsManual(closedElectron), "sets AXManualAccessibility when the window only has its title bar buttons")
+	check(needsManual(emptyWebArea), "sets AXManualAccessibility when the web area is empty")
+	check(!needsManual(openElectron), "leaves a window that already shows its web content")
+	check(needsManual(nil), "sets AXManualAccessibility when there is no window")
+	check(!needsManual(FakeNode(role: "AXWindow", children: Array(repeating: FakeNode(role: "AXButton", children: []), count: 20)), maxNodes: 5), "does not decide on a window larger than the search limit")
 
 	// 立てたアプリを戻すか（レビュー 2 回目 中 2）: 同じプロセスで、支援技術が動いていないときだけ
 	check(paradisSameProcess(recordedStart: 100.2, currentStart: 100.5) && !paradisSameProcess(recordedStart: 100, currentStart: 250) && !paradisSameProcess(recordedStart: 100, currentStart: nil), "tells a reused pid apart by the process start time")
@@ -721,10 +744,28 @@ do {
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 9)?.code == "point_obscured", "a covering window stops input")
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: nil, ownerAtTarget: nil)?.code == "window_not_focused", "unknown front app stops input")
 
-	let down = paradisScrollSteps(direction: .down, pages: 1, extent: 500)
+	// WindowServer はナチュラルなスクロールがオンなら縦の符号を反転して届ける（実機の報告と計測、2026-10-09）
+	let down = paradisScrollSteps(direction: .down, pages: 1, extent: 500, naturalScrolling: false)
 	check(down.count == 5 && down.allSatisfy { $0.dx == 0 && $0.dy == -80 }, "scrolls a page down in steps")
-	check(paradisScrollSteps(direction: .left, pages: 0.1, extent: 100).first.map { $0.dx > 0 && $0.dy == 0 } == true, "scrolls left")
-	check(paradisScrollSteps(direction: .up, pages: 10, extent: 5000).count == 100, "caps the scroll steps")
+	let naturalDown = paradisScrollSteps(direction: .down, pages: 1, extent: 500, naturalScrolling: true)
+	check(naturalDown.count == 5 && naturalDown.allSatisfy { $0.dx == 0 && $0.dy == 80 }, "flips the vertical value with natural scrolling so down still goes down")
+	check(paradisScrollSteps(direction: .up, pages: 0.1, extent: 100, naturalScrolling: true).first.map { $0.dy < 0 } == true && paradisScrollSteps(direction: .up, pages: 0.1, extent: 100, naturalScrolling: false).first.map { $0.dy > 0 } == true, "scrolls up with either setting")
+	for natural in [false, true] {
+		check(paradisScrollSteps(direction: .left, pages: 0.1, extent: 100, naturalScrolling: natural).first.map { $0.dx > 0 && $0.dy == 0 } == true, "scrolls left (natural \(natural))")
+		check(paradisScrollSteps(direction: .right, pages: 0.1, extent: 100, naturalScrolling: natural).first.map { $0.dx < 0 && $0.dy == 0 } == true, "scrolls right (natural \(natural))")
+	}
+	check(paradisScrollSteps(direction: .up, pages: 10, extent: 5000, naturalScrolling: false).count == 100, "caps the scroll steps")
+	check(paradisNaturalScrolling(preference: nil) && paradisNaturalScrolling(preference: true) && !paradisNaturalScrolling(preference: false) && !paradisNaturalScrolling(preference: NSNumber(value: 0)) && paradisNaturalScrolling(preference: "x"), "reads the natural scrolling setting with the OS default on")
+
+	// 離すイベントに修飾キーを付けたまま HID へ送ると、OS の修飾キーの状態が残る（実機の報告、2026-10-09）
+	let nonCoalesced = CGEventFlags.maskNonCoalesced
+	check(paradisModifierEventFlags(chord: .maskCommand, systemBefore: nonCoalesced) == ParadisModifierEventFlags(press: .maskCommand, release: nonCoalesced), "presses with cmd and releases back to no modifier")
+	check(paradisModifierEventFlags(chord: [.maskCommand, .maskShift], systemBefore: []).release == [], "releases every modifier of the chord")
+	let heldShift = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x02 | CGEventFlags.maskAlphaShift.rawValue)
+	check(paradisModifierEventFlags(chord: .maskCommand, systemBefore: heldShift).release == heldShift, "keeps a modifier the user holds and caps lock")
+	let stuckCommand = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x08 | nonCoalesced.rawValue)
+	check(paradisModifierEventFlags(chord: .maskCommand, systemBefore: stuckCommand).release == nonCoalesced, "clears cmd and its left and right key bits after a cmd chord")
+	check(paradisModifierEventFlags(chord: [], systemBefore: nonCoalesced) == ParadisModifierEventFlags(press: [], release: nonCoalesced), "a plain key keeps the state as it was")
 	let path = paradisDragPath(from: (0, 0), to: (10, 20), steps: 2)
 	check(path.count == 2 && path[0].x == 5 && path[0].y == 10 && path[1].x == 10 && path[1].y == 20, "interpolates the drag path")
 
@@ -750,6 +791,16 @@ do {
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 5) == nil, "keys go to the focused app")
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 52)?.code == "window_not_focused", "a panel holding the focused element stops keys")
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 9, focusedElementPid: 5) != nil && paradisFocusFailure(targetPid: 5, focusedApplicationPid: nil, focusedElementPid: nil) != nil, "keys need keyboard focus in the app")
+}
+
+// MARK: - 動いているアプリの引き方
+
+do {
+	// NSRunningApplication(processIdentifier:) は別のアプリの起動・終了の直後に一時的に nil を返す（実機、2026-10-09）
+	let apps: [(pid: Int32, name: String)] = [(10, "Finder"), (20, "Notes")]
+	check(paradisLookUpRunningApplication(pid: 20, direct: { _ in nil }, all: { apps }, pidOf: { $0.pid })?.name == "Notes", "finds the app in the list when the direct lookup misses")
+	check(paradisLookUpRunningApplication(pid: 20, direct: { _ in (pid: Int32(20), name: "Direct") }, all: { apps }, pidOf: { $0.pid })?.name == "Direct", "uses the direct lookup first")
+	check(paradisLookUpRunningApplication(pid: 30, direct: { _ in nil }, all: { apps }, pidOf: { $0.pid }) == nil, "an app that is not running is not found")
 }
 
 // MARK: - 引数
