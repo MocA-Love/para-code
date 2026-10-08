@@ -25,10 +25,33 @@ in the DevTools Elements panel (if any).`,
             .string()
             .optional()
             .describe('The absolute path, or a path relative to the current working directory, to save the snapshot to instead of attaching it to the response.'),
+        // PARA-PATCH (Para Code): internal argument set only by Para Code (never published in tools/list).
+        // The uid of the "root" the agent asked for; its box is measured here, inside this tool call, so
+        // the agent's cursor can frame it without another evaluate_script holding the tab.
+        // See NOTES.md "vendored chrome-devtools-mcp への変更".
+        paraCodeRootRect: zod.string().optional(),
     },
     blockedByDialog: true,
     verifyFilesSchema: ['filePath'],
     handler: async (request, response) => {
+        // PARA-PATCH (Para Code): measure the root element (see the schema above). Failure is ignored.
+        if (typeof request.params.paraCodeRootRect === 'string') {
+            try {
+                const handle = await request.page.getElementByUid(request.params.paraCodeRootRect);
+                try {
+                    const box = await handle.boundingBox();
+                    if (box) {
+                        response.appendResponseLine(`[Para Code root rect] ${JSON.stringify({ x: box.x, y: box.y, width: box.width, height: box.height })}`);
+                    }
+                }
+                finally {
+                    void handle.dispose();
+                }
+            }
+            catch {
+                // The cursor frame is decoration; the snapshot is returned as usual.
+            }
+        }
         response.includeSnapshot({
             verbose: request.params.verbose ?? false,
             filePath: request.params.filePath,

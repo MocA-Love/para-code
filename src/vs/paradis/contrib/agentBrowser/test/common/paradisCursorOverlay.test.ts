@@ -10,11 +10,15 @@ import {
 	PARADIS_CURSOR_OVERLAY_TUNING,
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
+	paradisCursorCaptureRange,
 	paradisCursorGlideMs,
 	paradisCursorMoveMaxMs,
 	paradisCursorKeyLabel,
+	paradisCursorStatusForMirror,
 	paradisEncodeCursorOverlayPayload,
+	paradisIsStickyCursorStatus,
 	paradisParseCursorStatusNote,
+	paradisShouldShowCursorLook,
 } from '../../common/paradisCursorOverlay.js';
 import { PARADIS_CURSOR_REST_HEADING, paradisPlanCursorGlide, paradisSampleCursorGlide } from '../../common/paradisCursorMotion.js';
 
@@ -136,6 +140,11 @@ suite('Paradis Cursor Overlay', () => {
 			{ kind: 'hide' },
 			{ kind: 'show' },
 			{ kind: 'captured', toast: 'done' },
+			{ kind: 'captured', toast: 'done', rect: { x: 1, y: 2, width: 3, height: 4, doc: true } },
+			{ kind: 'flash', toast: 'done', rect: { x: 1, y: 2, width: 3, height: 4 } },
+			{ kind: 'status', label: 'x', status: 'reading', text: 'r', park: true, box: { x: 1, y: 2, width: 3, height: 4 }, transient: true },
+			{ kind: 'status', label: 'x', status: 'script', text: 's', park: true, clickText: 'c', since: 1 },
+			{ kind: 'look', label: 'x', box: { x: 1, y: 2, width: 3, height: 4 } },
 			{ kind: 'remove' },
 		] as const;
 		assert.deepStrictEqual(
@@ -168,8 +177,48 @@ suite('Paradis Cursor Overlay', () => {
 				paradisParseCursorStatusNote({ status: 'failed', point: { x: Number.NaN, y: 1 } }),
 				paradisParseCursorStatusNote({ status: 'dance' }),
 				paradisParseCursorStatusNote(null),
+				paradisParseCursorStatusNote({ status: 'reading', rect: { x: -4, y: 20, width: 30, height: 8 }, flash: true }),
+				paradisParseCursorStatusNote({ status: 'loading', rect: { x: 1, y: 2, width: -3, height: 4 }, flash: 'yes' }),
+				// Without a state: only a frame or a flash, which must be there.
+				paradisParseCursorStatusNote({ rect: { x: 1, y: 2, width: 3, height: 4 } }),
+				paradisParseCursorStatusNote({ flash: true }),
+				paradisParseCursorStatusNote({ since: 5 }),
+				paradisParseCursorStatusNote({ status: 'script', since: 1234 }),
 			],
-			[{ status: 'select', detail: 'Card', point: { x: 10, y: 20 } }, { status: 'failed' }, undefined, undefined],
+			[
+				{ status: 'select', detail: 'Card', point: { x: 10, y: 20 } }, { status: 'failed' }, undefined, undefined,
+				{ status: 'reading', rect: { x: -4, y: 20, width: 30, height: 8 }, flash: true }, { status: 'loading' },
+				{ rect: { x: 1, y: 2, width: 3, height: 4 } }, { flash: true }, undefined, { status: 'script', since: 1234 },
+			],
+		);
+	});
+
+	test('the reading frame skips the same element and anything within a second, and the states map for the mirror and the name tag', () => {
+		const rect = { x: 10, y: 20, width: 100, height: 30 };
+		const other = { x: 10, y: 80, width: 100, height: 30 };
+		const shown = { key: '10,20,100,30', at: 1_000 };
+		assert.deepStrictEqual(
+			{
+				first: paradisShouldShowCursorLook(undefined, rect, 1_000),
+				sameLater: paradisShouldShowCursorLook(shown, rect, 9_000),
+				otherSoon: paradisShouldShowCursorLook(shown, other, 1_500),
+				otherLater: paradisShouldShowCursorLook(shown, other, 2_000),
+				empty: paradisShouldShowCursorLook(undefined, { x: 0, y: 0, width: 0, height: 10 }, 1_000),
+				sticky: (['script', 'waiting', 'loading', 'reading', 'scroll', 'failed', 'idle'] as const).filter(paradisIsStickyCursorStatus),
+				mirror: (['loading', 'reading', 'script', 'idle'] as const).map(paradisCursorStatusForMirror),
+				ranges: [
+					paradisCursorCaptureRange(undefined),
+					paradisCursorCaptureRange({ fullPage: true }),
+					paradisCursorCaptureRange({ pageRect: { x: 1, y: 2, width: 3, height: 4 } }),
+					paradisCursorCaptureRange({ pageRect: { x: 1, y: 2, width: 3, height: 4 }, captureBeyondViewport: true }),
+				],
+			},
+			{
+				first: true, sameLater: false, otherSoon: false, otherLater: true, empty: false,
+				sticky: ['script', 'waiting', 'loading', 'reading'],
+				mirror: ['waiting', undefined, 'script', 'idle'],
+				ranges: [undefined, undefined, { x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4, doc: true }],
+			},
 		);
 	});
 
