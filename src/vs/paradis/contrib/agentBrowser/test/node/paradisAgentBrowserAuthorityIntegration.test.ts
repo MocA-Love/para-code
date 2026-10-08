@@ -1009,7 +1009,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const logs: string[] = [];
 		Reflect.set(fixture.service, '_voiceIngressToken', 'voice-token');
 		Reflect.set(fixture.service, 'localVoiceOutput', { mobileVoiceListenerCount: () => 2 });
-		Reflect.set(fixture.service, 'logService', { ...Reflect.get(fixture.service, 'logService'), info: (message: string) => logs.push(message) });
+		Reflect.set(fixture.service, 'logService', { ...Reflect.get(fixture.service, 'logService'), info: (message: string) => logs.push(message), debug: (message: string) => logs.push(`debug ${message}`) });
 		const tickets = Reflect.get(fixture.service, '_mobileVoiceTickets') as Map<string, unknown>;
 		const issue = new TestRequest('POST', '/paradis-mcp/mobile-voice-ticket');
 		issue.headers.authorization = 'Bearer voice-token';
@@ -1033,7 +1033,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			logs: [
 				'[ParadisVoice] ticket issued (owner=extension-host, local=false, listeners=2, outstanding=1)',
 				'[ParadisVoice] ticket released (found=true, outstanding=0)',
-				'[ParadisVoice] ticket released (found=false, outstanding=0)',
+				'debug [ParadisVoice] ticket released (found=false, outstanding=0)',
 			],
 		});
 	});

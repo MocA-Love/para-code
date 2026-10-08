@@ -2707,11 +2707,11 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 案 3〜5:
 
-- **SSH の声が手元の再生待ちで期限切れになったら、鳴らし直さず記録だけ残す**（`followIngest`）。期限切れは「PC では古い声を鳴らさない」という aivis-mcp の決まりで、手元の声と同じ扱いにした。鳴らし直すと混んでいる再生待ちの後ろへさらに古い声を積む。取り下げ・最初の音の待ちきれは今までどおり鳴らし直す
+- **SSH の声が手元の再生待ちで期限切れになったときに、記録を残すようにした**（`followIngest`）。鳴らし直さないのは main からの動きのままで、今回足したのは記録だけ。鳴らし直しを足さなかった理由は、期限切れが「PC では古い声を鳴らさない」という aivis-mcp の決まりで手元の声も同じ扱いであることと、鳴らし直すと混んでいる再生待ちの後ろへさらに古い声を積むこと。取り下げ・最初の音の待ちきれは今までどおり鳴らし直す
 - 手元の `aivis` コマンドの ticket の待ちは 300ms → 1 秒（aivis-mcp 側）。1 ペインの ticket の上限は 32 → 64 枚（サブエージェントは親と同じペインのトークンで、`aivis` コマンドは積む時に 1 枚取って再生待ちの間持つ）
 - sharedprocess.log に `[ParadisVoice]` の行を足した: ticket の発行（持ち主はトークンの指紋、モバイルの宛先の数、そのペインの持ち枚数）・拒否（理由）・返却、受け取りの結果、SSH の声を鳴らし直したか。aivis-mcp は `~/.config/aivis-mcp/logs/voice-route.log` に worker・MCP サーバー・`aivis` コマンドの判断を残す（1 MiB で回す）。どちらも音声の本文・ticket・トークンは書かない
 
-更新の順番: Para Code を先に更新しても、aivis-mcp 2.5.4 とは今までどおり動く。aivis-mcp 2.6.0 を入れたら手元と接続先の両方で `aivis-mcp --reboot`。先送りは手元の worker でだけ効く（SSH 先の声は接続先の worker が合成し、受け取った Para Code が受け取りながらモバイルへ流す）。
+更新の順番: Para Code を先に更新しても、aivis-mcp 2.5.4 とは今までどおり動く。aivis-mcp 2.6.0 を入れたら手元と接続先の両方で `aivis-mcp --reboot`。先送りは、ticket が「モバイルへ送るだけ」の worker で効く。手元の worker と、設定 `paradis.voice.playRemoteLocally` がオフのときの接続先の worker が当たる（接続先で鳴らし、モバイルへは先に送る）。設定がオン（手元で鳴らす ticket）のときは接続先の worker は先送りせず、受け取った Para Code が受け取りながらモバイルへ流す。SSH のペインの ticket にも `mobileListeners` は載せたままにした。
 
 レビューで直した点: Para Code への送り出しは合成の番が来てからつなぐ（番を待つ間につなぐと、Para Code の最初の音の 10 秒で切られて ticket を失う）。先送りの印は `SET NX` で取り、ほかの worker の印がある件は合成し直さない。PC の順番が来た先送りの件は合成の番を PC の番に上げる。
 
