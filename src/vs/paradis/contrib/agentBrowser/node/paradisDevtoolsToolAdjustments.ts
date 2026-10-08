@@ -172,6 +172,27 @@ export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadis
 	return result;
 }
 
+/** evaluate_script の中の `.click()` を見分ける（文字列やコメントの中も拾うが、足すのは 1 行の案内だけ）。 */
+const SCRIPT_CLICK_PATTERN = /\.click\s*\(/;
+
+/** evaluate_script の中で `.click()` を使ったときに結果へ足す案内（q.html Q299 A の 1 段目）。 */
+export const PARADIS_SCRIPT_CLICK_HINT = 'Tip: use click_by (role + name, text or selector) instead of .click() in evaluate_script; it shows the user your cursor moving to the element, works with React/MUI, and explains why an element cannot be clicked.';
+
+/**
+ * エージェントの evaluate_script の結果に、中で `.click()` を使っていたら案内を 1 行足す。それ以外の道具・
+ * 失敗した結果・形の違う結果はそのまま返す。Para Code が中で使う evaluate_script には使わない（結果を読むため）。
+ */
+export function paradisWithScriptClickHint(name: string, args: unknown, result: unknown): unknown {
+	if (name !== 'evaluate_script' || !isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
+		return result;
+	}
+	const source = isRecord(args) && typeof args.function === 'string' ? args.function : undefined;
+	if (source === undefined || !SCRIPT_CLICK_PATTERN.test(source)) {
+		return result;
+	}
+	return { ...result, content: [...result.content, { type: 'text', text: PARADIS_SCRIPT_CLICK_HINT }] };
+}
+
 /**
  * スナップショットの本文を、`root` の uid の行とその子孫の行だけにする（字下げを詰める）。本文が無ければ
  * そのまま、`root` の行が無ければ undefined。

@@ -22,8 +22,10 @@ import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { browserViewIsolatedWorldId } from '../../../../platform/browserView/common/browserView.js';
 import {
+	IParadisCursorCaptureRange,
 	IParadisCursorOverlayPageTraits,
 	IParadisCursorOwner,
+	IParadisCursorRect,
 	IParadisCursorPacing,
 	IParadisCursorTypingTexts,
 	PARADIS_CURSOR_OVERLAY_MAX_WAIT_MS,
@@ -34,8 +36,11 @@ import {
 	paradisBuildCursorOverlayScript,
 	paradisClampCursorWaitMs,
 	paradisCursorGlideMs,
+	paradisCursorLookKey,
 	paradisCursorMoveMaxMs,
+	paradisIsStickyCursorStatus,
 	paradisParseCursorOverlayPageTraits,
+	paradisShouldShowCursorLook,
 } from '../common/paradisCursorOverlay.js';
 import { IParadisCursorGlide, IParadisCursorPose, PARADIS_CURSOR_REST_HEADING, paradisPlanCursorGlide, paradisSampleCursorGlide } from '../common/paradisCursorMotion.js';
 
@@ -96,6 +101,28 @@ interface IParadisCursorPosition {
 	readonly glide?: IParadisCursorGlide;
 }
 
+/**
+ * ビュー × 持ち主の台帳の鍵（WeakMap の鍵にもする）。ページ移動の後に出し直すために、持ち主・最後に
+ * 描いた時刻・名札に残している状態を覚える。
+ */
+interface IParadisCursorSlot {
+	owner?: IParadisCursorOwner;
+	/** 最後にこの持ち主のカーソルへ何かを描いた時刻。 */
+	drawnAt?: number;
+	/** 名札に残している長く続く状態（道具が終わったら消える）。 */
+	sticky?: ParadisCursorStatus;
+	/** 最後に出した枠（同じ要素へ続けて出さない・1 秒以内の連続は間引く）。 */
+	look?: { readonly key: string; readonly at: number };
+}
+
+/** 道具の状態に添える、見ている要素と撮った範囲。 */
+export interface IParadisCursorStatusExtras {
+	/** 読み取り系の道具が見ている要素（ビューポートの CSS ピクセル）。 */
+	readonly rect?: IParadisCursorRect;
+	/** take_snapshot が済んだ。`rect`（無ければ全体）を光らせる。 */
+	readonly flash?: boolean;
+}
+
 export class ParadisCursorOverlayController {
 
 	/** 失敗したビューを演出対象から一時的に外すための期限（ビュー→再開時刻）。 */
@@ -140,9 +167,11 @@ export class ParadisCursorOverlayController {
 	 * ビュー × 持ち主（ペイン × タブ）ごとの台帳の鍵。同じページを 2 つのペインが触ると、カーソルは
 	 * 持ち主ごとに分かれ（q.html Q272 A）、位置も持ち主ごとに数える。
 	 */
-	private readonly slots = new WeakMap<object, Map<string, object>>();
+	private readonly slots = new WeakMap<object, Map<string, IParadisCursorSlot>>();
+	/** ページが移動して、まだ新しい文書へカーソルを出し直していないビュー（dom-ready でもう一度試す）。 */
+	private readonly restorePending = new WeakSet<object>();
 
-	private slot(view: IParadisCursorOverlayTarget, owner: IParadisCursorOwner | undefined): object {
+	private slot(view: IParadisCursorOverlayTarget, owner: IParadisCursorOwner | undefined): IParadisCursorSlot {
 		let slots = this.slots.get(view);
 		if (!slots) {
 			slots = new Map();
@@ -157,7 +186,18 @@ export class ParadisCursorOverlayController {
 			key = {};
 			slots.set(id, key);
 		}
+		if (owner) {
+			key.owner = owner;
+		}
 		return key;
+	}
+
+	/** この持ち主のカーソルへ描いた（ページ移動の後に出し直す対象になる）。出し直しの予定は取り消す。 */
+	private touch(view: IParadisCursorOverlayTarget, owner: IParadisCursorOwner | undefined): IParadisCursorSlot {
+		const slot = this.slot(view, owner);
+		slot.drawnAt = this.now();
+		this.restorePending.delete(view);
+		return slot;
 	}
 
 	constructor(
@@ -200,6 +240,11 @@ export class ParadisCursorOverlayController {
 		const { x, y } = params;
 		if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
 			return 0;
+		}
+		const touched = this.touch(view, owner);
+		// 入力でカーソルが別の要素へ行ったので、次の読み取りの枠は同じ要素でも出す
+		if (touched.look) {
+			touched.look = { key: '', at: touched.look.at };
 		}
 		if (type === 'mousePressed') {
 			// 波紋は配送を待たせる価値がないので投げっぱなしにする。
@@ -257,7 +302,7 @@ export class ParadisCursorOverlayController {
 		if (previous !== undefined && at - previous < WHEEL_NUDGE_INTERVAL_MS) {
 			return;
 		}
-		this.lastWheelAt.set(this.slot(view, owner), at);
+		this.lastWheelAt.set(this.touch(view, owner), at);
 		const dx = typeof params.deltaX === 'number' && Number.isFinite(params.deltaX) ? params.deltaX : 0;
 		const dy = typeof params.deltaY === 'number' && Number.isFinite(params.deltaY) ? params.deltaY : 0;
 		this.run(view, { kind: 'wheel', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), dx, dy, text: statusText('scroll') });
@@ -266,29 +311,65 @@ export class ParadisCursorOverlayController {
 	/**
 	 * 道具の状態を名札に出す（shared process から。スクリプト実行中・待機中・押せなかった など）。
 	 * `point` があれば対象の要素へカーソルを寄せる（入力は送らないので待たない）。
+	 *
+	 * カーソルがまだ無いページでも、状態があれば右下の端に名札ごと出す（q.html Q297 の 1）。
+	 * `extras.rect` は読み取り系の道具が見ている要素で、薄い枠を出してカーソルを寄せる（Q297 の 3。
+	 * 同じ要素へ続けて出さない・1 秒以内の連続は間引く）。`extras.flash` は take_snapshot の範囲を光らせる（Q297 の 5）。
 	 */
-	noteStatus(view: IParadisCursorOverlayTarget, status: ParadisCursorStatus, detail: string | undefined, point: { readonly x: number; readonly y: number } | undefined, owner?: IParadisCursorOwner): void {
+	noteStatus(view: IParadisCursorOverlayTarget, status: ParadisCursorStatus, detail: string | undefined, point: { readonly x: number; readonly y: number } | undefined, owner?: IParadisCursorOwner, extras?: IParadisCursorStatusExtras): void {
 		if (!this.isActive(view)) {
 			this.removeIfDisabled(view);
 			return;
 		}
+		if (extras?.flash) {
+			this.flashRange(view, extras.rect, snapshotToastLabel());
+		}
+		const at = this.now();
+		const existing = this.slot(view, owner);
+		let box: IParadisCursorRect | undefined;
+		if (extras?.rect && paradisShouldShowCursorLook(existing.look, extras.rect, at)) {
+			existing.look = { key: paradisCursorLookKey(extras.rect), at };
+			box = extras.rect;
+		}
 		// まだカーソルを置いていないページに、名札だけの状態（idle）を送っても意味がない
-		if (status === 'idle' && !this.injected.has(view)) {
+		if (status === 'idle' && !box && !this.injected.has(view)) {
 			return;
+		}
+		const slot = this.touch(view, owner);
+		if (paradisIsStickyCursorStatus(status)) {
+			slot.sticky = status;
+		} else if (status === 'idle') {
+			slot.sticky = undefined;
 		}
 		let frames: IParadisCursorGlide['frames'] | undefined;
 		let durationMs: number | undefined;
 		if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
-			const at = this.now();
-			const previous = this.position.get(this.slot(view, owner));
+			const previous = this.position.get(slot);
 			const next = { x: point.x, y: point.y, at };
 			const glideMs = paradisCursorGlideMs(previous, next, PARADIS_CURSOR_OVERLAY_TUNING.maxMs);
 			const glide = paradisPlanCursorGlide(this.poseAt(previous, at, point), point, glideMs);
-			this.position.set(this.slot(view, owner), { ...next, arriveAt: at + glideMs, glide });
+			this.position.set(slot, { ...next, arriveAt: at + glideMs, glide });
 			frames = glide.frames;
 			durationMs = glide.durationMs;
 		}
-		this.run(view, { kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: statusText(status, detail), ...(frames ? { frames, durationMs } : {}) });
+		this.run(view, {
+			kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: statusText(status, detail),
+			...(frames ? { frames, durationMs } : {}),
+			...(status !== 'idle' || box ? { park: true } : {}),
+			...(box ? { box } : {}),
+			...(status === 'script' ? { clickText: scriptClickLabel() } : {}),
+		});
+	}
+
+	/**
+	 * 撮影を伴わない読み取り（take_snapshot）の範囲を光らせる。撮影のために隠している最中は光らせない
+	 * （その 1 枚に写る）。連続した撮影と同じ間隔で間引く。
+	 */
+	private flashRange(view: IParadisCursorOverlayTarget, rect: IParadisCursorRect | undefined, toast: string): void {
+		if ((this.hideDepth.get(view) ?? 0) > 0 || !this.shouldFlash(view)) {
+			return;
+		}
+		this.run(view, { kind: 'flash', toast, ...(rect ? { rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } } : {}) });
 	}
 
 	/**
@@ -307,9 +388,52 @@ export class ParadisCursorOverlayController {
 	 * ページ側は瞬間的に現れるのに、main は前の位置からの距離ぶん待つ。ページの事情も新しいページで測り直す。
 	 */
 	onNavigated(view: IParadisCursorOverlayTarget): void {
-		this.slots.delete(view);
 		this.pageTraits.delete(view);
 		this.navigatedSinceMove.add(view);
+		// 直前の位置に出し直す（q.html Q297 の 2）。新しい文書の準備がまだなら dom-ready でもう一度試す
+		if (!this.injected.has(view) || !this.slots.get(view)?.size) {
+			this.slots.delete(view);
+			return;
+		}
+		this.restorePending.add(view);
+		this.restore(view);
+	}
+
+	/** ページの DOM ができた。移動の直後に出し直せていなければ、ここで出し直す。 */
+	onDomReady(view: IParadisCursorOverlayTarget): void {
+		if (this.restorePending.has(view)) {
+			this.restorePending.delete(view);
+			this.restore(view);
+		}
+	}
+
+	/**
+	 * ページ移動の後、少し前まで出ていたカーソルを直前の位置（分からなければ右下の端）に出し直す。
+	 * 名札には残していた状態（道具の途中なら「読み込み中」など）を、無ければ「読み込み中」を少しだけ出す。
+	 * 撮影のために隠している最中・見えていないタブ・設定オフでは出さない。
+	 */
+	private restore(view: IParadisCursorOverlayTarget): void {
+		const slots = this.slots.get(view);
+		if (!slots || !this.isActive(view) || (this.hideDepth.get(view) ?? 0) > 0) {
+			return;
+		}
+		const at = this.now();
+		for (const slot of slots.values()) {
+			if (slot.drawnAt === undefined || at - slot.drawnAt > PARADIS_CURSOR_OVERLAY_TUNING.idleMs) {
+				continue;
+			}
+			const position = this.position.get(slot);
+			const pose = position ? this.poseAt(position, at, position) : undefined;
+			const status = slot.sticky ?? 'loading';
+			const owner = slot.owner;
+			this.run(view, {
+				kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: statusText(status),
+				park: true,
+				...(slot.sticky === undefined ? { transient: true } : {}),
+				...(pose ? { frames: [{ x: pose.x, y: pose.y, r: 0, o: 1 }], durationMs: 0 } : {}),
+				...(status === 'script' ? { clickText: scriptClickLabel() } : {}),
+			});
+		}
 	}
 
 	/**
@@ -332,7 +456,7 @@ export class ParadisCursorOverlayController {
 		if (key === undefined && previous !== undefined && at - previous < FOCUS_NUDGE_INTERVAL_MS) {
 			return;
 		}
-		this.lastFocusNudgeAt.set(this.slot(view, owner), at);
+		this.lastFocusNudgeAt.set(this.touch(view, owner), at);
 		this.run(view, { kind: 'focus', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), texts: typingTexts(), ...(key !== undefined ? { key } : {}) });
 	}
 
@@ -365,7 +489,7 @@ export class ParadisCursorOverlayController {
 	 * 光らせると、いま自分で操作しているページが理由もなく光ることになる。
 	 * 復帰は撮影の成否に関わらず必ず行う（隠したままにしない）。
 	 */
-	afterCapture(view: IParadisCursorOverlayTarget, captured: boolean): boolean {
+	afterCapture(view: IParadisCursorOverlayTarget, captured: boolean, range?: IParadisCursorCaptureRange): boolean {
 		const depth = Math.max(0, (this.hideDepth.get(view) ?? 0) - 1);
 		this.hideDepth.set(view, depth);
 		// 復帰は「描く」ではなく「片付ける」側の操作なので、失敗バックオフでは止めない。
@@ -382,7 +506,7 @@ export class ParadisCursorOverlayController {
 		// 撮り始めてから手放していないときだけ光らせる。
 		const stillOurs = (this.captureGeneration.get(view) ?? 0) === (this.detachGeneration.get(view) ?? 0);
 		if (captured && stillOurs && this.enabled() && this.shouldFlash(view)) {
-			this.run(view, { kind: 'captured', toast: captureToastLabel() });
+			this.run(view, { kind: 'captured', toast: captureToastLabel(), ...(range ? { rect: range } : {}) });
 			return true;
 		}
 		this.run(view, { kind: 'show' });
@@ -420,6 +544,7 @@ export class ParadisCursorOverlayController {
 		}
 		this.injected.delete(view);
 		this.slots.delete(view);
+		this.restorePending.delete(view);
 		// `hideDepth` は「いま何枚撮っている最中か」であってカーソルの有無とは別の台帳なので、
 		// ここで消してはいけない。消すと進行中の撮影が残っていても次の `afterCapture` が
 		// 0まで落ちたと判断し、まだ撮っている最中に復帰やフラッシュを出してしまう。
@@ -572,6 +697,24 @@ function cursorLabel(): string {
 	}
 }
 
+/** take_snapshot の範囲を光らせたときの知らせ。 */
+function snapshotToastLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.snapshotToast', "スナップショット完了");
+	} catch {
+		return 'Snapshot taken';
+	}
+}
+
+/** evaluate_script の中のクリックへカーソルを寄せたときの名札。 */
+function scriptClickLabel(): string {
+	try {
+		return localize('paradis.agentBrowser.cursorScriptClick', "スクリプトでクリック");
+	} catch {
+		return 'Clicked by script';
+	}
+}
+
 /** キー入力の名札（行き先によってページ側が選ぶ）。 */
 function typingTexts(): IParadisCursorTypingTexts {
 	try {
@@ -592,6 +735,8 @@ function statusText(status: ParadisCursorStatus, detail?: string): string {
 			case 'idle': return '';
 			case 'script': return localize('paradis.agentBrowser.cursorScript', "スクリプト実行中");
 			case 'waiting': return localize('paradis.agentBrowser.cursorWaiting', "待機中");
+			case 'loading': return localize('paradis.agentBrowser.cursorLoading', "読み込み中");
+			case 'reading': return localize('paradis.agentBrowser.cursorReading', "読み取り中");
 			case 'failed': return localize('paradis.agentBrowser.cursorFailed', "押せませんでした");
 			case 'missing': return localize('paradis.agentBrowser.cursorMissing', "見つかりません");
 			case 'select': return detail ? localize('paradis.agentBrowser.cursorSelected', "選択: {0}", shortDetail(detail)) : localize('paradis.agentBrowser.cursorSelect', "選択");

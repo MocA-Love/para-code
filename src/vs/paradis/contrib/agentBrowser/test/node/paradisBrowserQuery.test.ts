@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
+import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisParseElementRect, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES, PARADIS_MCP_BROWSER_QUERY_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
@@ -37,6 +37,7 @@ class FakePage {
 	now = 0;
 	readonly calls: { readonly spec: Record<string, unknown>; readonly uids: readonly string[] }[] = [];
 	current = true;
+	readonly looks: unknown[] = [];
 
 	constructor(private readonly answers: unknown[], private readonly stepMs = 1000) { }
 
@@ -50,6 +51,7 @@ class FakePage {
 				return this.answers.length > 1 ? this.answers.shift() : this.answers[0];
 			},
 			isCurrent: () => this.current,
+			noteLook: rect => { this.looks.push(rect); },
 		};
 	}
 
@@ -189,6 +191,23 @@ suite('paradisBrowserQuery (shared process)', () => {
 			found: [false, 'Found after 2 scroll step(s) (800px) in div.list, and scrolled it into view.'],
 			missing: [true, true, [false, true]],
 		});
+	});
+
+	test('the element a tool looks at is shown to the cursor, and the snapshot root is measured only in the main frame', async () => {
+		const rect = { x: 10, y: 20, width: 30, height: 40 };
+		const text = new FakePage([returned({ matched: 1, returned: 1, total: 2, part: 'hi', element: { tag: 'p', rect } })]);
+		await text.query().call(text.call(), 'get_text', { selector: 'p' });
+		const whole = new FakePage([returned({ matched: 1, returned: 1, total: 2, part: 'hi', element: { tag: 'body', rect } })]);
+		await whole.query().call(whole.call(), 'get_text', {});
+		const inspect = new FakePage([returned({ matched: 1, element: { tag: 'button' }, rect: { ...rect, right: 40, bottom: 60 } })]);
+		await inspect.query().call(inspect.call(), 'inspect_element', { selector: 'button' });
+		const empty = new FakePage([returned({ matched: 1, element: { tag: 'i', rect: { x: 0, y: 0, width: 0, height: 0 } }, rect: { x: 0, y: 0, width: 0, height: 0 } })]);
+		await empty.query().call(empty.call(), 'inspect_element', { selector: 'i' });
+		assert.deepStrictEqual({
+			text: text.looks, whole: whole.looks, inspect: inspect.looks, empty: empty.looks,
+			root: paradisParseElementRect(returned({ rect, inMainFrame: true })),
+			inFrame: paradisParseElementRect(returned({ rect, inMainFrame: false })),
+		}, { text: [rect], whole: [], inspect: [rect], empty: [], root: rect, inFrame: undefined });
 	});
 
 	test('wait_until with network_idle_ms waits until the shared tab has been quiet for long enough', async () => {
