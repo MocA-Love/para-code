@@ -434,12 +434,45 @@ do {
 	let partial = FakeRoute(.background) { .done(["completed": false, "verified": NSNull(), "sentUnits": 1]) }
 	let partialResult = try? paradisRouteInput(click, pid: 100, routes: [partial, foregroundAfterPartial], options: ParadisInputOptions())
 	check(partialResult?["completed"] as? Bool == false && foregroundAfterPartial.performed.isEmpty, "partial background delivery is never replayed through foreground")
-	let windowOptions = try? paradisParseInputOptions(["windowId": 42])
-	check(windowOptions?.windowId == 42, "preserves the exact background keyboard window")
+	let windowOptions = try? paradisParseInputOptions(["backgroundWindowId": 42])
+	check(windowOptions?.backgroundWindowId == 42, "preserves the exact background keyboard window")
 	for invalid: Any in [true, 0, -1, 1.5, UInt64(UInt32.max) + 1, "42"] {
-		check((try? paradisParseInputOptions(["windowId": invalid])) == nil, "rejects malformed window identifiers before routing")
+		check((try? paradisParseInputOptions(["backgroundWindowId": invalid])) == nil, "rejects malformed window identifiers before routing")
 	}
 	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the background route is not available yet")
+}
+
+// MARK: - 要求 ID ごとの中断
+
+do {
+	func line(_ id: Int, _ method: String, _ params: [String: Any] = [:]) -> Data {
+		return try! JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
+	}
+	let queue = ParadisRequestQueue()
+	_ = try? queue.append([line(1, "typeText"), line(2, "pressKey")], authenticated: true)
+	_ = queue.next()
+	_ = try? queue.append([line(3, "cancel", ["requestId": 2])], authenticated: true)
+	check((try? queue.check()) != nil, "cancelling a queued request does not cancel the active request")
+	queue.finish()
+	_ = queue.next()
+	do { try queue.check(); check(false, "queued cancellation must be remembered") }
+	catch let error as ParadisHelperError { check(error.code == "cancelled", "queued request keeps the cancellation code") }
+	catch { check(false, "expected cancellation") }
+	queue.finish()
+	_ = try? queue.append([line(4, "typeText")], authenticated: true)
+	_ = queue.next()
+	_ = try? queue.append([line(5, "cancel", ["requestId": 4]), line(6, "permissions")], authenticated: true)
+	do { try queue.check(); check(false, "active cancellation must stop") }
+	catch let error as ParadisHelperError { check(error.code == "cancelled", "active request keeps the cancellation code") }
+	catch { check(false, "expected cancellation") }
+	queue.finish()
+	let next = queue.next().flatMap { try? paradisParseRequest($0).get() }
+	check(next?.id == 6 && (try? queue.check()) != nil, "other requests remain queued and usable after cancellation")
+	queue.finish()
+	let data = paradisEncodeFailure(id: 7, error: ParadisHelperError(code: "user_active", message: "stopped", sent: 3))
+	let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+	let payload = error?["error"] as? [String: Any]
+	check(payload?["sent"] as? Int == 3 && payload?["code"] as? String == "user_active" && payload?["progress"] == nil, "sent input is not reported as confirmed progress")
 }
 
 // MARK: - 1 段目: クリックの代わりの AX の操作

@@ -14,14 +14,10 @@ final class ParadisBackgroundTransport {
 	typealias Post = @convention(c) (Int32, CGEvent) -> Void
 	typealias SetLocation = @convention(c) (CGEvent, CGPoint) -> Void
 	typealias SetField = @convention(c) (CGEvent, UInt32, Int64) -> Void
-	typealias GetPSN = @convention(c) (Int32, UnsafeMutableRawPointer) -> Int32
-	typealias PostRecord = @convention(c) (UnsafeRawPointer, UnsafeRawPointer) -> Int32
 	private let handle: UnsafeMutableRawPointer?
 	private let postEvent: Post?
 	private let setLocation: SetLocation?
 	private let setField: SetField?
-	private let getPSN: GetPSN?
-	private let postRecord: PostRecord?
 
 	init() {
 		let library = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW | RTLD_LOCAL)
@@ -33,32 +29,11 @@ final class ParadisBackgroundTransport {
 		postEvent = symbol("SLEventPostToPid", Post.self)
 		setLocation = symbol("CGEventSetWindowLocation", SetLocation.self)
 		setField = symbol("SLEventSetIntegerValueField", SetField.self)
-		getPSN = symbol("GetProcessForPID", GetPSN.self)
-		postRecord = symbol("SLPSPostEventRecordTo", PostRecord.self)
 	}
 
 	deinit { if let handle { dlclose(handle) } }
 
-	var available: Bool { postEvent != nil && setLocation != nil && setField != nil && getPSN != nil && postRecord != nil }
-
-	func processSerialNumber(_ pid: Int32) -> [UInt32]? {
-		guard let getPSN else { return nil }
-		var psn: [UInt32] = [0, 0]
-		return psn.withUnsafeMutableBytes { getPSN(pid, $0.baseAddress!) } == 0 ? psn : nil
-	}
-
-	/** Cua / yabai の no-raise レコード形式。出典・ライセンスは THIRD_PARTY_NOTICES.md。 */
-	func focus(_ psn: [UInt32], windowId: UInt32, focused: Bool) -> Bool {
-		guard let postRecord else { return false }
-		var record = [UInt8](repeating: 0, count: 0xf8)
-		record[4] = 0xf8
-		record[8] = 0x0d
-		for index in 0..<4 { record[0x3c + index] = UInt8(truncatingIfNeeded: windowId >> (index * 8)) }
-		record[0x8a] = focused ? 1 : 2
-		return psn.withUnsafeBytes { process in
-			record.withUnsafeBytes { bytes in postRecord(process.baseAddress!, bytes.baseAddress!) == 0 }
-		}
-	}
+	var available: Bool { postEvent != nil && setLocation != nil && setField != nil }
 
 	func send(_ event: CGEvent, pid: Int32, windowId: UInt32, point: CGPoint?, group: Int64) {
 		event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
@@ -73,7 +48,7 @@ final class ParadisBackgroundTransport {
 	}
 }
 
-/** キー解放・フォーカス復元を通常終了と SIGTERM の両方で共有する。 */
+/** キー／ボタンの解放を通常終了と SIGTERM の両方で共有する。 */
 final class ParadisBackgroundCleanup {
 	static let shared = ParadisBackgroundCleanup()
 	private let lock = NSLock()
@@ -96,15 +71,4 @@ func paradisBackgroundWindowId(_ element: AXUIElement) -> UInt32? {
 	guard let lookup = paradisAXWindowIdFunction() else { return nil }
 	var id: UInt32 = 0
 	return lookup(element, &id) == .success && id != 0 ? id : nil
-}
-
-/** 同じサーバースレッドからだけ読む。要求のキャンセルで接続が切れたら次のイベントを送らない。 */
-enum ParadisBackgroundConnection {
-	static var socket: Int32?
-	static var disconnected: Bool {
-		guard let socket else { return false }
-		var byte: UInt8 = 0
-		let count = recv(socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
-		return count == 0 || (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-	}
 }

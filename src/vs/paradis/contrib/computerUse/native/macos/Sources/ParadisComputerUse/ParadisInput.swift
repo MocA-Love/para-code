@@ -53,17 +53,6 @@ extension ParadisDesktop {
 			ParadisCursorOverlay.shared.hideAll()
 		}
 		paradisManualAccessibility.touch(pid)
-		if let windowId = options.windowId {
-			switch action {
-			case .typeText, .pasteText, .pressChord:
-				let application = AXUIElementCreateApplication(pid)
-				AXUIElementSetMessagingTimeout(application, 0.3)
-				guard paradisElement(application, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId) == windowId else {
-					throw ParadisHelperError(code: "window_not_focused", message: "the requested keyboard window is not the app's focused window; select that window first")
-				}
-			default: break
-			}
-		}
 		let routes: [ParadisInputRoute] = [ParadisAccessibilityRoute(desktop: self), backgroundRoute, ParadisForegroundRoute(desktop: self)]
 		return try paradisRouteInput(action, pid: pid, routes: routes, options: options)
 	}
@@ -363,6 +352,7 @@ extension ParadisDesktop {
 	// MARK: - 確かめ
 
 	func requireInputPermission() throws {
+		try ParadisRequestCancellation.check()
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
@@ -370,6 +360,7 @@ extension ParadisDesktop {
 	}
 
 	func userActivityFailure() -> ParadisHelperError? {
+		if let failure = ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is using the keyboard or mouse")
 		}
@@ -399,6 +390,7 @@ extension ParadisDesktop {
 
 	/** 利用者が打鍵中か（1 段目の確かめ。マウスの動きでは止めない）。 */
 	func keyboardActivityFailure() -> ParadisHelperError? {
+		if let failure = ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalKeyboardInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is typing")
 		}
@@ -858,11 +850,11 @@ private let paradisScreenWindowCacheSeconds: TimeInterval = 0.05
 private var paradisScreenWindowCache: (at: Date, windows: [ParadisScreenWindow])?
 
 /** 画面に出ているウィンドウを手前から順に（持ち主の bundle id 付き）。 */
-func paradisScreenWindows() -> [ParadisScreenWindow] {
-	if let cache = paradisScreenWindowCache, Date().timeIntervalSince(cache.at) < paradisScreenWindowCacheSeconds {
+func paradisScreenWindows(entries: [[String: Any]]? = nil) -> [ParadisScreenWindow] {
+	if entries == nil, let cache = paradisScreenWindowCache, Date().timeIntervalSince(cache.at) < paradisScreenWindowCacheSeconds {
 		return cache.windows
 	}
-	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+	let list = ((entries ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]])) ?? []).filter { ($0[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true }
 	let owners = Set(list.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
 	let bundleIds: [Int32: String] = paradisOnMain {
 		var result: [Int32: String] = [:]
