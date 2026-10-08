@@ -54,7 +54,7 @@ const PARADIS_MCP_SPACE_ARGUMENT = {
 export const PARADIS_MCP_LOCAL_TOOLS = [
 	{
 		name: 'get_shared_page',
-		description: 'Get the URL, title and pageId of a browser tab this terminal pane can use: the tab given by tab_id, otherwise this pane\'s current tab (the one you last opened or selected, or else the page the user shared). The pageId is the tab_id to pass to the other browser tools. Returns an error message if no page is shared yet.',
+		description: 'Get the URL, title and pageId of a browser tab this terminal pane can use: the tab given by tab_id, otherwise this pane\'s current tab (the one you last opened or selected, or else the page the user shared most recently). The pageId is the tab_id to pass to the other browser tools. Returns an error message if no page is shared yet.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -216,7 +216,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_tab',
-		description: 'Open a new Para Code browser tab for your own work. It returns the tab\'s tabId and becomes this pane\'s current tab, so the browser tools (take_snapshot, click, navigate_page, wait_until, ...) act on it when you omit tab_id; pass tab_id to act on a specific tab. The page the user shared with this pane stays shared and usable by its tab_id. To split browser work across subagents, open one tab per subagent and give each its tabId; each subagent passes it as tab_id on every browser tool call, and calls on different tabs run in parallel. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
+		description: 'Open a new Para Code browser tab for your own work. It returns the tab\'s tabId and becomes this pane\'s current tab, so the browser tools (take_snapshot, click, navigate_page, wait_until, ...) act on it when you omit tab_id; pass tab_id to act on a specific tab. The pages the user shared with this pane stay shared and usable by their tab_id. To split browser work across subagents, open one tab per subagent and give each its tabId; each subagent passes it as tab_id on every browser tool call, and calls on different tabs run in parallel. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -235,7 +235,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'select_browser_tab',
-		description: 'Make one of the tabs from list_browser_tabs this pane\'s current tab, so the browser tools act on it when you omit tab_id. The user\'s shared page stays shared. Subagents working on their own tab should pass tab_id instead of calling this (the current tab is shared by everyone using this pane). A user tab can only be used while it is shared; if the user stopped sharing it, call request_browser_page to ask for it again.',
+		description: 'Make one of the tabs from list_browser_tabs this pane\'s current tab, so the browser tools act on it when you omit tab_id. The pages the user shared stay shared. When the user shares another page later, that page becomes the current tab, except while the current tab is one you opened yourself (it stays current; list_browser_tabs shows the new page as shared). Subagents working on their own tab should pass tab_id instead of calling this (the current tab is shared by everyone using this pane). A user tab can only be used while it is shared; if the user stopped sharing it, call request_browser_page to ask for it again.',
 		inputSchema: {
 			type: 'object',
 			properties: {

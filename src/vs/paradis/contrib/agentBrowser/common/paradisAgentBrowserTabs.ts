@@ -34,6 +34,21 @@ export const ParadisAgentTabMethod = {
 /** 1ペインのエージェントが同時に開いておけるタブの上限。 */
 export const PARADIS_AGENT_TAB_LIMIT = 5;
 
+/**
+ * 1ペインへユーザーが同時に共有しておけるページの上限（current の 1 枚を含む）。エージェントが自分で開くタブ
+ * （{@link PARADIS_AGENT_TAB_LIMIT}）とは別枠。共有したページは裏にあっても描画を止めない（背景の描画止めを外す）
+ * ので、その数を 1 ペインあたりで抑える。
+ */
+export const PARADIS_USER_SHARED_PAGE_LIMIT = 10;
+
+/** 共有が {@link PARADIS_USER_SHARED_PAGE_LIMIT} に達して断られたときのエラーの先頭の印（shared process → renderer）。 */
+export const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK = 'PARA_BROWSER_SHARED_PAGE_LIMIT';
+
+/** 共有の上限で断られたエラーか（IPC を越えるとエラーの型は失われるので、文の印で見分ける）。 */
+export function paradisIsSharedPageLimitError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK);
+}
+
 /** 要求の理由（エージェントが書く文）を承認ダイアログへ出すときの最大文字数。 */
 export const PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH = 300;
 
@@ -283,14 +298,14 @@ export class ParadisAgentTabLedger {
 	 * エージェント自身が共有先を動かしている最中（`isAgentMoving`: 別のタブを開いた・選んだ）に外れたぶんは
 	 * 外さない。
 	 */
-	reconcileApprovedProfileTabs(boundPageOf: (token: string) => string | undefined, isAgentMoving: (token: string) => boolean): string[] {
+	reconcileApprovedProfileTabs(isSharedWith: (token: string, viewId: string) => boolean, isAgentMoving: (token: string) => boolean): string[] {
 		const dropped: string[] = [];
 		for (const [viewId, wasShared] of this._approvedProfileTabs) {
 			const token = this._agentTabs.get(viewId);
 			if (token === undefined) {
 				continue;
 			}
-			const shared = boundPageOf(token) === viewId;
+			const shared = isSharedWith(token, viewId);
 			if (shared || !wasShared || isAgentMoving(token)) {
 				this._approvedProfileTabs.set(viewId, shared);
 			} else {

@@ -74,6 +74,8 @@ export class ParadisAgentBrowserBindingRestoreContribution extends Disposable im
 				: this.storageService.store(LEDGER_STORAGE_KEY, value, StorageScope.WORKSPACE, StorageTarget.MACHINE),
 			listPaneTokens: () => this.paneTokenService.listPaneTokens().map(pane => pane.token),
 			boundPageForToken: token => this.bindingModel.getBindingForToken(token)?.pageId,
+			// current 以外の共有（2 枚目以降は新しい順で並ぶので、古い順へ直す）
+			morePagesForToken: token => this.bindingModel.getBindingsForToken(token).filter(binding => binding.additional).map(binding => binding.pageId).reverse(),
 			knownPageIds: () => new Set(this.browserViewWorkbenchService.getKnownBrowserViews().keys()),
 			readiness: (pageId, token) => this._readiness(pageId, token),
 			describe: (pageId, token) => this._describe(pageId, token),

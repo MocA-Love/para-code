@@ -20,6 +20,7 @@ import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from '../../
 import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from '../../electron-browser/paradisBindingDialog.js';
 import { ParadisBindingDialogDevicePollLease, ParadisBindingDialogPaneListResources, ParadisBindingDialogTabController } from '../../electron-browser/paradisBindingDialogResources.js';
+import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 
 suite('ParadisBindingDialogDevicePollLease', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -124,6 +125,7 @@ suite('ParadisBindingDialogPaneListResources', () => {
 				getPanes: () => [pane],
 				getPanesForPage: () => [pane],
 				getBindingsForPage: () => [],
+				getBindingsForToken: () => [],
 				getAgentTabsForToken: () => [],
 				getAgentTabOwnersForPage: () => [],
 				refresh: async () => { },
@@ -195,6 +197,81 @@ suite('ParadisBindingDialogPaneListResources', () => {
 			bindingChanges.dispose();
 			root.remove();
 			setParadisHoveredPaneInstanceId(undefined);
+		}
+	});
+});
+
+suite('ParadisBindingDialog several pages shared with one pane', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// ページ B のダイアログで、ページ A を共有中のペインの行は「付け替え」ではなく「追加」として出す。
+	// 左の「ページ」一覧の数字は、そのページを共有しているペインの数
+	test('a pane sharing another page offers to add this page, and the page list counts every pane sharing each page', () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const binding = (token: string, pageId: string, title: string, additional?: true): IParadisPaneBinding => ({
+			token, pageId, pageInfo: { url: `https://${pageId}.test`, title }, generation: 1, boundAt: Date.now(), scope: { kind: 'unscoped' }, ...(additional ? { additional } : {}),
+		});
+		// pane-one は A と C を共有中（A が current）。pane-two は A と B を共有中（B が current）
+		const bindings = [
+			binding('pane-one', 'page-a', 'Page A'), binding('pane-two', 'page-b', 'Page B'),
+			binding('pane-one', 'page-c', 'Page C', true), binding('pane-two', 'page-a', 'Page A', true),
+		];
+		const pane = (instanceId: number, token: string): IParadisPaneDescriptor => ({
+			instanceId, token, title: token, agentKind: 'claude', mcpConnected: true,
+			binding: bindings.find(candidate => candidate.token === token && !candidate.additional), bindEligibility: { eligible: true },
+		});
+		const panes = [pane(1, 'pane-one'), pane(2, 'pane-two')];
+		const calls: string[] = [];
+		const dialog = new ParadisBindingDialog(
+			upcastPartial<IBrowserViewModel>({ id: 'page-b', title: 'Page B', url: 'https://page-b.test', favicon: undefined, onDidChangeTitle: VSCodeEvent.None, onDidChangeSharingState: VSCodeEvent.None }),
+			undefined,
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: VSCodeEvent.None,
+				bindings,
+				getPanes: () => panes,
+				getPanesForPage: () => panes,
+				getBindingsForPage: (pageId: string) => bindings.filter(candidate => candidate.pageId === pageId),
+				getBindingsForToken: (token: string) => bindings.filter(candidate => candidate.token === token),
+				getAgentTabsForToken: () => [],
+				getAgentTabOwnersForPage: () => [],
+				refresh: async () => { },
+				bindPageToPane: async (_model: IBrowserViewModel, token: string) => { calls.push(`bind:${token}`); return true; },
+				unbindPane: async (_model: IBrowserViewModel, token: string) => { calls.push(`unbindPage:${token}`); },
+				unbindToken: async (token: string) => { calls.push(`unbindAll:${token}`); },
+				getMcpConfigStatus: () => new Promise<never>(() => { }),
+			}),
+			upcastPartial<ILayoutService>({ activeContainer: root }),
+			upcastPartial<IClipboardService>({ writeText: async () => { } }),
+			upcastPartial<IParadisMobileCanvasModel>({ onDidChange: VSCodeEvent.None, snapshot: { devices: [], attachments: [] }, loading: false, beginPolling: () => toDisposable(() => { }) }),
+			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
+			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+		);
+		try {
+			const rows = [...root.querySelectorAll<HTMLElement>('.pbd-pane-row')].map(row => ({
+				sub: row.querySelector('.pbd-row-sub')?.textContent,
+				checked: row.querySelector<HTMLInputElement>('.pbd-switch')!.checked,
+				disabled: row.querySelector<HTMLInputElement>('.pbd-switch')!.disabled,
+			}));
+			const pages = [...root.querySelectorAll<HTMLElement>('.pbd-nav-item')]
+				.filter(item => item.querySelector('.pbd-nav-label')?.textContent?.startsWith('Page'))
+				.map(item => `${item.querySelector('.pbd-nav-label')?.textContent}:${item.querySelector('.pbd-nav-count')?.textContent ?? '0'}`);
+			const firstSwitch = root.querySelector<HTMLInputElement>('.pbd-pane-row .pbd-switch')!;
+			firstSwitch.checked = true;
+			firstSwitch.dispatchEvent(new Event('change'));
+			assert.deepStrictEqual({ rows, pages: pages.sort(), calls }, {
+				rows: [
+					{ sub: 'ほかに 2 ページを共有中: Page A ほか', checked: false, disabled: false },
+					{ sub: rows[1].sub, checked: true, disabled: false },
+				],
+				pages: ['Page A:2', 'Page B:1', 'Page C:1'],
+				// 付け替え（ペインの共有を全部外す）ではなく、このページの共有を足す
+				calls: ['bind:pane-one'],
+			});
+			assert.ok(rows[1].sub?.endsWith('ほかに 1 ページを共有中'), rows[1].sub);
+		} finally {
+			dialog.dispose();
+			root.remove();
 		}
 	});
 });

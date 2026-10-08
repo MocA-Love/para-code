@@ -379,7 +379,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 */
 	private _reconcileApprovedProfileTabs(): void {
 		const dropped = this._ledger.reconcileApprovedProfileTabs(
-			token => this._bindingModel.getBindingForToken(token)?.pageId,
+			(token, viewId) => this._isSharedWith(token, viewId),
 			token => this._agentMoves.has(token),
 		);
 		for (const viewId of dropped) {
@@ -550,8 +550,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			}
 		};
 		const known = this._browserViewWorkbenchService.getKnownBrowserViews();
-		const boundPage = this._bindingModel.getBindingForToken(token)?.pageId;
-		add(boundPage ? known.get(boundPage) : undefined);
+		// ユーザーがこのペインへ共有しているページすべて（current が先頭）
+		for (const binding of this._bindingModel.getBindingsForToken(token)) {
+			add(known.get(binding.pageId));
+		}
 		for (const viewId of this._ledger.agentTabsOf(token)) {
 			add(this._agentInputs.get(viewId));
 		}
@@ -563,13 +565,13 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return { ok: false, reason: 'paneUnresolved' };
 		}
 		this._reconcileApprovedProfileTabs();
-		// 選べるのは自分が開いたタブと、今このペインに共有されているタブ（選び直しても何も変わらない）だけ。
+		// 選べるのは自分が開いたタブと、今このペインに共有されているタブ（共有し直さずに current にする）だけ。
 		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
-		const isCurrent = this._bindingModel.getBindingForToken(token)?.pageId === tabId;
-		if (!input || !(this.isOpenedBy(token, tabId) || isCurrent)) {
+		const isShared = this._isSharedWith(token, tabId);
+		if (!input || !(this.isOpenedBy(token, tabId) || isShared)) {
 			return { ok: false, reason: 'unknownTab' };
 		}
-		if (isCurrent) {
+		if (isShared) {
 			return { ok: true, tab: this._describe(token, input), bound: true };
 		}
 		const bound = await this.bindTab(token, input);
@@ -638,21 +640,23 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				return { ok: true, approved: false, timedOut: answer !== 'denied' };
 			}
 			const chosen = answer;
-			const binding = this.bindTab(token, chosen);
+			// 前からこのペインへ共有していたページなら、締め切りを過ぎても共有ごとは外さない（承認の前からある共有）
+			const sharedBefore = this._isSharedWith(token, chosen.id);
+			const binding = this._bindTabForPageId(token, chosen);
 			const bound = await raceCancellation(binding, deadline.token);
 			if (bound === undefined) {
 				// 締め切りを過ぎた。エージェントには時間切れと返したので、後から共有が成立しても外す。
 				// 外し終えるまでこのペインの次の求めを受け付けない（新しい求めの共有を、古い共有が
-				// 上書きしてから外してしまうのを防ぐ）。
-				lateBinding = binding.then(ok => ok ? this._unbindIfCurrent(token, chosen) : undefined);
+				// 上書きしてから外してしまうのを防ぐ）。外すのは実際に共有したページ（upstream が共有用に開き直した
+				// タブを含む）だけ
+				lateBinding = binding.then(pageId => pageId !== false && !(sharedBefore && pageId === chosen.id) ? this._withdrawLateShare(token, pageId) : undefined);
 				return { ok: true, approved: false, timedOut: true };
 			}
-			if (!bound) {
+			if (bound === false) {
 				return { ok: false, reason: 'shareFailed' };
 			}
 			// upstream が共有用に別タブを開き直した場合は、実際に共有されたタブを返す。
-			const boundPage = this._bindingModel.getBindingForToken(token)?.pageId;
-			const shared = (boundPage && this._browserViewWorkbenchService.getKnownBrowserViews().get(boundPage)) || chosen;
+			const shared = this._browserViewWorkbenchService.getKnownBrowserViews().get(bound) || chosen;
 			return { ok: true, approved: true, tab: this._describe(token, shared) };
 		} finally {
 			deadline.dispose();
@@ -666,22 +670,28 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	async bindTabWithin(token: string, input: BrowserEditorInput, cancellation: CancellationToken): Promise<boolean | undefined> {
 		const grant = this._usesGrant(token, input.id);
-		const binding = this.bindTab(token, input);
+		const sharedBefore = this._isSharedWith(token, input.id);
+		const binding = this._bindTabForPageId(token, input);
 		const bound = await raceCancellation(binding, cancellation);
 		if (bound === undefined) {
-			void binding.then(ok => ok ? (grant ? this._bindingModel.revokeAgentTab(token, input.id) : this._unbindIfCurrent(token, input)) : undefined);
+			void binding.then(pageId => pageId === false || (sharedBefore && pageId === input.id)
+				? undefined
+				: grant ? this._bindingModel.revokeAgentTab(token, input.id) : this._withdrawLateShare(token, pageId));
+			return undefined;
 		}
-		return bound;
+		return bound !== false;
 	}
 
-	/** 締め切り後に成立した共有を外す。その間にほかのタブへ移っていたら触らない。 */
-	private async _unbindIfCurrent(token: string, input: BrowserEditorInput): Promise<void> {
-		const pageId = this._bindingModel.getBindingForToken(token)?.pageId;
-		if (pageId === undefined || (pageId !== input.id && this._ledger.isAgentTab(pageId))) {
+	/**
+	 * 締め切り後に成立した共有を外す。外すのはそのページの共有だけ（共有は付け替えではなく追加なので、
+	 * そのペインがほかに共有しているページは残す）。
+	 */
+	private async _withdrawLateShare(token: string, pageId: string): Promise<void> {
+		if (!this._isSharedWith(token, pageId)) {
 			return;
 		}
 		try {
-			await this._asAgentMove(token, () => this._bindingModel.unbindToken(token));
+			await this._asAgentMove(token, () => this._bindingModel.unbindPageFromToken(pageId, token));
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not withdraw a share that completed after the deadline', error);
 		}
@@ -929,20 +939,32 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	// #endregion
 
 	async bindTab(token: string, input: BrowserEditorInput): Promise<boolean> {
+		return (await this._bindTabForPageId(token, input)) !== false;
+	}
+
+	/** {@link bindTab} の本体。実際に共有（または許可）したページの ID を返す。できなければ false。 */
+	private async _bindTabForPageId(token: string, input: BrowserEditorInput): Promise<string | false> {
 		const grant = this._usesGrant(token, input.id);
 		try {
 			return await this._asAgentMove(token, async () => {
 				const model = await input.resolve();
 				await this._waitForStableScope(input.id);
 				await this._shareApproved(model);
-				return grant
-					? await this._bindingModel.grantAgentTab(model, token)
-					: await this._bindingModel.bindPageToPane(model, token);
+				if (grant) {
+					return await this._bindingModel.grantAgentTab(model, token) ? input.id : false;
+				}
+				// upstream が共有用のタブを開き直したときは、そのタブの ID が返る
+				return await this._bindingModel.sharePageWithPane(model, token) ?? false;
 			});
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not share the tab with the calling pane', error);
 			return false;
 		}
+	}
+
+	/** ユーザーがそのページをそのペインへ共有しているか（1 つのペインは複数のページを共有できる）。 */
+	private _isSharedWith(token: string, viewId: string): boolean {
+		return this._bindingModel.getBindingsForToken(token).some(binding => binding.pageId === viewId);
 	}
 
 	/** そのペインが自分で開いたタブ（承認済みのユーザーのプロファイルのタブを除く）は、共有ではなく許可で使う。 */
@@ -991,7 +1013,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	private _describe(token: string, input: BrowserEditorInput): IParadisAgentTabInfo {
 		const openedByAgent = this.isOpenedBy(token, input.id);
-		const active = this._bindingModel.getBindingForToken(token)?.pageId === input.id;
+		const active = this._isSharedWith(token, input.id);
 		return {
 			tabId: input.id,
 			// 共有していないユーザーのタブは、どこのサイトかだけを見せる（パスやクエリに個人の情報が載りうる）。
