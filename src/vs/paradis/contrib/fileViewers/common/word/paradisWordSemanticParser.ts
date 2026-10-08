@@ -22,6 +22,7 @@ import {
 	type ParadisOfficeXmlNode,
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
+	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
 import type {
 	ParadisWordAltChunkNode,
@@ -1109,24 +1110,7 @@ function relationshipPartUri(sourcePartUri: string | undefined): string {
 }
 
 function resolveRelationshipTarget(sourcePartUri: string | undefined, target: string): string {
-	if (!target || target.startsWith('/') || target.includes('\\') || target.includes('%')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	const segments = sourcePartUri ? sourcePartUri.slice(1).split('/').slice(0, -1) : [];
-	for (const segment of target.split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (segments.length === 0) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			segments.pop();
-		} else {
-			segments.push(segment);
-		}
-	}
-	return `/${segments.join('/')}`;
+	return resolveParadisOfficeRelationshipTarget(sourcePartUri, target);
 }
 
 class WordNodeFactory {

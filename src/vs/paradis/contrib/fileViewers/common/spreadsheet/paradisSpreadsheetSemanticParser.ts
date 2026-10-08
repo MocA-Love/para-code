@@ -21,6 +21,7 @@ import {
 	type ParadisOfficeXmlNode,
 	ParadisOfficePackageError,
 	throwIfParadisOfficeCancelled,
+	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisCellStyle, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
 import { formatPreparedSpreadsheetValue, formatSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext, type ParadisSpreadsheetPreparedNumberFormat } from './paradisSpreadsheetNumberFormat.js';
@@ -2113,24 +2114,7 @@ function validateRelationshipAuthority(
 }
 
 function resolveRelationshipTarget(sourcePartId: string | undefined, target: string): string {
-	if (!target || target.startsWith('/') || target.includes('\\') || target.includes('%')) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	const base = sourcePartId ? sourcePartId.slice(1).split('/').slice(0, -1) : [];
-	for (const segment of target.split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (base.length === 0) {
-				throw new ParadisOfficePackageError('malformed');
-			}
-			base.pop();
-		} else {
-			base.push(segment);
-		}
-	}
-	return `/${base.join('/')}`;
+	return resolveParadisOfficeRelationshipTarget(sourcePartId, target);
 }
 
 async function indexSemanticArchive(
