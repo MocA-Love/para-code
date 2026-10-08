@@ -7,8 +7,8 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool, paradisWithToolCursorStatus } from '../../node/paradisCursorPacing.js';
-import { PARADIS_SNAPSHOT_ROOT_RECT_MARKER } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool, paradisToolCursorRunKey, paradisWithToolCursorStatus } from '../../node/paradisCursorPacing.js';
+import { paradisAttachSnapshotRootRect } from '../../node/paradisDevtoolsToolAdjustments.js';
 
 const MOVE = JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 });
 const PRESS = JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'left', clickCount: 1 });
@@ -83,10 +83,11 @@ suite('Paradis cursor pacing', () => {
 		});
 	});
 
-	test('take_snapshot hides the measured root from the agent and lights that range, but lights nothing when it failed', async () => {
+	test('take_snapshot lights the root the proxy measured, or the whole page, but nothing when it failed', async () => {
 		const runs = new Map<string, number>();
 		const rect = { x: 1, y: 2, width: 30, height: 40 };
-		const taken = { content: [{ type: 'text', text: `${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}${JSON.stringify(rect)}\n## Latest page snapshot\nuid=1_3 dialog` }] };
+		const taken = { content: [{ type: 'text', text: '## Latest page snapshot\nuid=1_3 dialog' }] };
+		paradisAttachSnapshotRootRect(taken, rect);
 		const notes: unknown[] = [];
 		const result = await paradisWithToolCursorStatus('take_snapshot', runs, 'page', note => notes.push(note), async () => taken);
 		const plainNotes: unknown[] = [];
@@ -99,6 +100,19 @@ suite('Paradis cursor pacing', () => {
 			plainNotes: [{ status: 'reading' }, { flash: true }, { status: 'idle' }],
 			failedNotes: [{ status: 'reading' }, { status: 'idle' }],
 		});
+	});
+
+	test('a tool that moved to another tab mid-way still sends its end to the page it started on', async () => {
+		const runs = new Map<string, number>();
+		const onA: unknown[] = [];
+		const onB: unknown[] = [];
+		let finishA!: () => void;
+		// evaluate_script starts on tab A; the pane's current tab changes to B, where wait_until starts and ends.
+		const onTabA = paradisWithToolCursorStatus('evaluate_script', runs, paradisToolCursorRunKey('pane', 'view-a'), note => onA.push(note), () => new Promise<void>(resolve => { finishA = resolve; }), () => 7);
+		const onTabB = paradisWithToolCursorStatus('wait_until', runs, paradisToolCursorRunKey('pane', 'view-b'), note => onB.push(note), () => new Promise<void>(resolve => setTimeout(resolve, 0)));
+		finishA();
+		await Promise.all([onTabA, onTabB]);
+		assert.deepStrictEqual({ onA, onB, runs: [...runs] }, { onA: [{ status: 'script', since: 7 }, { status: 'idle' }], onB: [{ status: 'waiting' }, { status: 'idle' }], runs: [] });
 	});
 
 	test('run_steps shares one wait budget across its steps', () => {

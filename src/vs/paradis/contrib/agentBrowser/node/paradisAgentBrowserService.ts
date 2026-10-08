@@ -65,7 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { ParadisCursorPacingLedger, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
+import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -4223,7 +4223,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _withToolCursorStatus<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, run: () => Promise<T>, binding?: IBindingEntry): Promise<T> {
 		const key = this._pageKeyOf(ingressLease);
 		const target = binding ?? this._bindingForKey(key);
-		return paradisWithToolCursorStatus(name, this._cursorStatusRuns, key, note => {
+		return paradisWithToolCursorStatus(name, this._cursorStatusRuns, target ? paradisToolCursorRunKey(key, target.exactView.viewId) : key, note => {
 			if (target) {
 				this._noteCursorStatus(ingressLease, note, target);
 			}

@@ -327,7 +327,7 @@ export class ParadisCursorOverlayController {
 			if (status === 'idle' && this.enabled() && this.injected.has(view) && this.isAlive(view)) {
 				const slot = this.slot(view, owner);
 				slot.sticky = undefined;
-				this.run(view, { kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: '' });
+				this.run(view, { kind: 'status', label: owner?.name ?? cursorLabel(), ...ownerFields(owner), status, text: '', settle: true });
 			}
 			return;
 		}

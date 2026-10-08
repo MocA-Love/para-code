@@ -22,6 +22,7 @@ interface IPageState {
 	readonly y: number | null;
 	readonly sticky: string;
 	readonly wt: boolean;
+	readonly watch: boolean;
 	wat: number;
 }
 
@@ -188,6 +189,20 @@ suite('Paradis Cursor Overlay page script', () => {
 		} finally {
 			button.remove();
 		}
+	});
+
+	test('settling a page in the background only drops the state, and creates nothing on a page without the cursor', () => {
+		run({ kind: 'status', label: 'Claude', status: 'idle', text: '', settle: true });
+		const nothing = pageGlobal();
+		run({ kind: 'status', label: 'Claude', status: 'waiting', text: 'Waiting', park: true });
+		const s = pageState()!;
+		const host = s.h;
+		const at = [s.x, s.y];
+		run({ kind: 'status', label: 'Claude', status: 'idle', text: '', settle: true });
+		assert.deepStrictEqual(
+			{ nothing, t: s.t, sticky: s.sticky, watch: s.watch, spinning: s.wt, sameHost: s.h === host, at: [s.x, s.y] },
+			{ nothing: undefined, t: 'Claude', sticky: '', watch: false, spinning: false, sameHost: true, at },
+		);
 	});
 
 	test('a look frames the element without touching the state on the name tag', () => {

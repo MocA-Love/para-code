@@ -16,6 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { ParadisDevtoolsMcpProxy } from '../../node/paradisDevtoolsMcpProxy.js';
+import { PARADIS_SNAPSHOT_ROOT_RECT_MARKER, paradisSnapshotRootRectOf } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
@@ -406,6 +407,30 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			afterClick,
 			afterVerbose: toolCalls(),
 		}, { afterCachedPart: 1, cachedNote: true, afterClick: 3, afterVerbose: 5 });
+	});
+
+	test('asks to measure the snapshot root only when the vendored take_snapshot knows the argument, and keeps the measurement out of the text', async () => {
+		const rect = { x: 5, y: 6, width: 70, height: 80 };
+		const body = '## Latest page snapshot\nuid=1_0 RootWebArea\n  uid=1_1 dialog\n    uid=1_2 textbox\n';
+		const answer = { content: [{ type: 'text', text: `${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}${JSON.stringify(rect)}\n${body}` }] };
+		const run = async (properties: object, args: object) => {
+			const fixture = createFakeDevtoolsChildren({
+				toolsListResult: { tools: [{ name: 'take_snapshot', inputSchema: { type: 'object', properties } }] },
+				toolCallResults: [answer],
+			});
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+			const result = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', args) as { content: { text: string }[] };
+			const sent = fixture.children[0].requests.find(request => request.method === 'tools/call')?.params as { arguments: object };
+			return { sent: sent.arguments, marker: result.content[0].text.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER), rect: paradisSnapshotRootRectOf(result) };
+		};
+		assert.deepStrictEqual({
+			patched: await run({ paraCodeRootRect: { type: 'string' } }, { root: '1_1' }),
+			unpatched: await run({}, { root: '1_1' }),
+		}, {
+			patched: { sent: { paraCodeRootRect: '1_1' }, marker: false, rect },
+			// Without the PARA-PATCH the vendored tool would refuse the unknown argument, so it is not sent (and nothing is read).
+			unpatched: { sent: {}, marker: true, rect: undefined },
+		});
 	});
 
 	test('reports a failed tool result to Sentry as a bucket, never the text, and retries a read-only tool once after Target closed', async () => {
