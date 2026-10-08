@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -76,9 +76,10 @@ import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoo
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
-import { paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
+import { paradisAdjustDevtoolsToolResult, paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
+import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
@@ -717,6 +718,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** SSH の接続先から届いた読み上げを手元で鳴らす口（Q190〜Q193）。 */
 	private readonly _localVoicePlayer: ParadisLocalVoicePlayer;
 	private readonly _remoteVoiceLocalPlaybackEnabled: () => boolean;
+	/** 操作の後に待って変化を添えるか（E1）・ブラウザの状態を添えるか（I1）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
+	private readonly _observeSettings: (() => IParadisObserveOptions) | undefined;
+	/** 操作の結果に添える、操作の後のページとブラウザの状態（paradisBrowserObserve.ts）。 */
+	private readonly _browserObserver = new ParadisBrowserObserver();
 	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
@@ -828,6 +833,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 手元の aivis-mcp もログインシェルの PATH（npm・bun のグローバル）で探す
 		this._localVoicePlayer = new ParadisLocalVoicePlayer(() => cachedShellEnv.getEnv());
 		this._remoteVoiceLocalPlaybackEnabled = () => paradisRemoteVoiceLocalPlaybackEnabled(configurationService?.getValue(PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING));
+		this._observeSettings = () => ({
+			settle: configurationService?.getValue(PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING) === true,
+			state: configurationService?.getValue(PARADIS_BROWSER_REPORT_STATE_SETTING) === true,
+		});
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -4218,7 +4227,10 @@ export class ParadisAgentBrowserService extends Disposable {
 					...tools.map(tool => paradisWithTabIdArgument(tool)),
 				];
 				// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
-				return { tools: this._paneRemoteAuthorityOf(ingressLease.token) !== undefined ? paradisDescribeToolsForRemotePane(listed) : listed };
+				// 操作の後に待つ・状態を添える設定（既定は無効）が有効なら、その引数と説明を足す
+				const observeSettings = this._observeSettings?.();
+				const observed = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
+				return { tools: this._paneRemoteAuthorityOf(ingressLease.token) !== undefined ? paradisDescribeToolsForRemotePane(observed) : observed };
 			}
 			case 'tools/call':
 				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, socket);
@@ -4301,14 +4313,102 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ツールの呼び出し。呼び出しの間に届く入力（vendored のツールならゲートウェイ経由）に、カーソルの
 	 * 演出のために待ってよいかを伝えるため、どのツールの呼び出しかを台帳に載せる。
 	 */
-	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
+	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket, nested?: boolean): Promise<unknown> {
 		const name = typeof params?.name === 'string' ? params.name : '';
 		const pacing = this._cursorPacing.begin(ingressLease.token, name, params?.arguments);
 		try {
+			// run_steps の中の手順には添えない（run_steps 全体の後に 1 回だけ）
+			const observeSettings = this._observeSettings?.();
+			const observeOptions = nested || observeSettings === undefined ? undefined : paradisObserveOptionsFor(name, observeSettings);
+			if (observeOptions !== undefined) {
+				return await this._callToolObserved(ingressLease, name, params, observeOptions, signal, socket);
+			}
 			return await this._callToolInner(ingressLease, params, signal, socket);
 		} finally {
 			pacing.dispose();
 		}
+	}
+
+	/**
+	 * 入力・遷移の道具を呼び、成功したら操作の後のページ（E1）とブラウザの状態（I1）を結果の末尾に添える
+	 * （paradisBrowserObserve.ts）。観測そのものの失敗は、道具の結果を変えない。
+	 */
+	private async _callToolObserved(ingressLease: IParadisAgentBrowserIngressLease, name: string, params: { name?: unknown; arguments?: unknown } | undefined, options: IParadisObserveOptions, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
+		const taken = paradisTakeObserveArguments(params?.arguments);
+		const call = { name, arguments: taken.rest };
+		const scoped = this._scopeToolCall(ingressLease, taken.rest);
+		if (!scoped.ok || this._bindingForKey(this._pageKeyOf(scoped.lease)) === undefined) {
+			return this._callToolInner(ingressLease, call, signal, socket);
+		}
+		const tabLease = scoped.lease;
+		const host = this._observeHost(ingressLease, tabLease, signal);
+		let before;
+		try {
+			before = await this._browserObserver.before(host, options, taken.observe, taken.settleMs);
+		} catch {
+			before = undefined;
+		}
+		const result = await this._callToolInner(ingressLease, call, signal, socket);
+		this._requireIngressLease(ingressLease);
+		if (before === undefined || typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
+			return result;
+		}
+		let note: string | undefined;
+		try {
+			note = await this._browserObserver.after(host, this._pageKeyOf(tabLease), options, before, taken.observe, taken.settleMs);
+		} catch {
+			note = undefined;
+		}
+		this._requireIngressLease(ingressLease);
+		if (note === undefined) {
+			return result;
+		}
+		const typed = result as { content: unknown[] };
+		return { ...typed, content: [...typed.content, { type: 'text', text: note }] };
+	}
+
+	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
+	private _observeHost(ingressLease: IParadisAgentBrowserIngressLease, tabLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): IParadisObserveHost {
+		const token = ingressLease.token;
+		return {
+			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, dialogAction: 'dismiss' }, signal),
+			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal),
+			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal)),
+			network: () => this._cdpGateway.getNetworkActivity(token, 30_000),
+			tabs: async () => {
+				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
+					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+					method: ParadisAgentTabMethod.List,
+					args: [token],
+					failureLabel: 'list_browser_tabs',
+					failureMessage: 'Failed to list the browser tabs in Para Code.',
+				}, signal);
+				if (!call.ok || !call.value.ok) {
+					return undefined;
+				}
+				const currentTabId = this._defaultTabId(token);
+				return call.value.tabs.map(tab => ({ tabId: tab.tabId, url: tab.url, title: tab.title, current: tab.tabId === currentTabId, shared: this._isUserSharedPage(token, tab.tabId) }));
+			},
+			downloads: async () => {
+				const directory = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<string | null>('getAgentDownloadsDirectory').catch(() => null);
+				if (typeof directory !== 'string' || directory.length === 0) {
+					return undefined;
+				}
+				const files = new Map<string, number>();
+				const entries = await fsPromises.readdir(directory, { withFileTypes: true }).catch(() => []);
+				for (const entry of entries.slice(0, 500)) {
+					if (entry.isFile()) {
+						const stat = await fsPromises.stat(join(directory, entry.name)).catch(() => undefined);
+						if (stat) {
+							files.set(entry.name, stat.size);
+						}
+					}
+				}
+				return files;
+			},
+			isCurrent: () => this.isIngressLeaseCurrent(ingressLease),
+			sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+		};
 	}
 
 	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
@@ -4389,7 +4489,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					callTool: (stepName, stepArgs) => this._callTool(ingressLease, {
 						name: stepName,
 						arguments: pinnedTabId !== undefined && !Object.hasOwn(stepArgs, PARADIS_TAB_ID_ARGUMENT) ? { ...stepArgs, [PARADIS_TAB_ID_ARGUMENT]: pinnedTabId } : stepArgs,
-					}, signal, socket),
+					}, signal, socket, true),
 				}, toolArguments);
 			}
 		}
