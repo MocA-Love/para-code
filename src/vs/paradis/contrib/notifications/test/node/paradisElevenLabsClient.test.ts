@@ -7,10 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mkdtempSync, readdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { AivisError } from '../../node/paradisAudioScheduler.js';
 import { ParadisElevenLabsClient } from '../../node/paradisElevenLabsClient.js';
+import { ParadisVoiceSynthesisCache } from '../../node/paradisVoiceSynthesisCache.js';
 
 interface IRecordedRequest {
 	readonly method: string;
@@ -55,7 +59,7 @@ function json(value: unknown, status: number = 200): Response {
 const TEST_KEY = 'test-key-not-real';
 
 suite('ParadisElevenLabsClient', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function createClient(fake: FakeFetch, now: () => number = () => Date.UTC(2026, 9, 4, 12)): ParadisElevenLabsClient {
 		return new ParadisElevenLabsClient(new NullLogService(), fake.fetch, now);
@@ -273,5 +277,131 @@ suite('ParadisElevenLabsClient', () => {
 		await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId: 'd1' });
 
 		assert.deepStrictEqual(fake.requests[1].body, { text: 'x', model_id: 'm', voice_settings: { speed: 1 } });
+	});
+
+	suite('voice cache', () => {
+		let cacheDir: string;
+		setup(() => { cacheDir = mkdtempSync(join(tmpdir(), 'paradis-elevenlabs-cache-test-')); });
+		teardown(() => rmSync(cacheDir, { recursive: true, force: true }));
+
+		/** 文字数に応じた下限を超える、MP3 に見える音声。 */
+		function audio(tag: number): Response {
+			const bytes = new Uint8Array(4000).fill(tag);
+			bytes.set([0xff, 0xfb, 0x90, 0x00]);
+			return new Response(bytes, { headers: { 'content-type': 'audio/mpeg' } });
+		}
+
+		async function waitForFiles(count: number): Promise<void> {
+			for (let i = 0; i < 200 && readdirSync(cacheDir).filter(name => name.endsWith('.mp3')).length < count; i++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			await new Promise(resolve => setTimeout(resolve, 20));
+		}
+
+		test('plays the same request from the cache, and synthesizes again when the voice, tuning, dictionary version or text differ or the cache is off', async () => {
+			let version = 'ver1';
+			const fake = new FakeFetch()
+				.on('GET', '/v1/pronunciation-dictionaries/dict1', () => json({ id: 'dict1', name: 'D', latest_version_id: version }))
+				.on('POST', '/v1/text-to-speech/voice1/stream', () => audio(5));
+			let now = Date.UTC(2026, 9, 9, 12);
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService(), { now: () => now }));
+			const client = new ParadisElevenLabsClient(new NullLogService(), fake.fetch, () => now, cache);
+			const base = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'eleven_v4_turbo', text: 'Para Codeです', dictionaryId: 'dict1', volume: 80, stability: 0.5 };
+			const synthesized = () => fake.requests.filter(request => request.method === 'POST').length;
+			const counts: number[] = [];
+
+			await client.synthesize(base);
+			await waitForFiles(1);
+			const hit = await client.synthesize({ ...base, volume: 30 }); // 音量は鳴らすときの補正なので同じ音
+			counts.push(synthesized());
+			await client.synthesize({ ...base, stability: 0.6 });
+			counts.push(synthesized());
+			await client.synthesize({ ...base, text: 'mainです' });
+			counts.push(synthesized());
+			await client.synthesize({ ...base, cache: false });
+			counts.push(synthesized());
+			// 辞書を直した（版が変わった）。覚えた版の期限が切れていて、古い版の鍵で外れたら、今の版を取り直して合成する
+			version = 'ver2';
+			now += 61_000;
+			await client.synthesize({ ...base, text: '新しい文です' });
+			counts.push(synthesized());
+
+			const info = await cache.getInfo();
+			assert.deepStrictEqual({ hit: hit.audio[10], counts, lastBody: fake.requests.at(-1)?.body, days: info.days }, {
+				hit: 5,
+				counts: [1, 2, 3, 4, 5],
+				lastBody: { text: '新しい文です', model_id: 'eleven_v4_turbo', voice_settings: { speed: 1, stability: 0.5 }, pronunciation_dictionary_locators: [{ pronunciation_dictionary_id: 'dict1', version_id: 'ver2' }] },
+				days: [{ date: '2026-10-09', hits: 1, hitCharacters: 11, calls: 5, callCharacters: 45 }],
+			});
+		});
+
+		test('plays a hit at once with the expired dictionary version and refreshes the version in the background', async () => {
+			let version = 'ver1';
+			let release: () => void = () => { };
+			const fake = new FakeFetch()
+				.on('GET', '/v1/pronunciation-dictionaries/dict1', () => json({ id: 'dict1', name: 'D', latest_version_id: version }))
+				.on('POST', '/v1/text-to-speech/voice1/stream', () => audio(6));
+			let now = Date.UTC(2026, 9, 9, 12);
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService(), { now: () => now }));
+			// 辞書の取得だけ、手で解くまで返さない（当たりがそれを待たないことを見る）
+			const slowFetch = async (input: URL, init: RequestInit): Promise<Response> => {
+				if (input.pathname.startsWith('/v1/pronunciation-dictionaries/') && fake.requests.length > 0) {
+					await new Promise<void>(resolve => { release = resolve; });
+				}
+				return fake.fetch(input, init);
+			};
+			const client = new ParadisElevenLabsClient(new NullLogService(), slowFetch, () => now, cache);
+			const request = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'eleven_v4_turbo', text: 'Para Codeです', dictionaryId: 'dict1' };
+			await client.synthesize(request);
+			await waitForFiles(1);
+
+			version = 'ver2';
+			now += 61_000;
+			const hit = await client.synthesize(request); // 辞書の取得は止まったまま
+			release();
+			await new Promise(resolve => setTimeout(resolve, 20));
+			await client.synthesize(request); // 今の版（ver2）の鍵では外れるので合成する
+
+			assert.deepStrictEqual({
+				hit: hit.audio[10],
+				requests: fake.requests.map(request => [request.method, request.path, (request.body as { pronunciation_dictionary_locators?: { version_id: string }[] } | undefined)?.pronunciation_dictionary_locators?.[0].version_id]),
+			}, {
+				hit: 6,
+				requests: [
+					['GET', '/v1/pronunciation-dictionaries/dict1', undefined],
+					['POST', '/v1/text-to-speech/voice1/stream', 'ver1'],
+					['GET', '/v1/pronunciation-dictionaries/dict1', undefined],
+					['POST', '/v1/text-to-speech/voice1/stream', 'ver2'],
+				],
+			});
+		});
+
+		test('re-synthesizes the test playback and replaces the stored voice', async () => {
+			let tag = 1;
+			const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1/stream', () => audio(tag++));
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService()));
+			const client = new ParadisElevenLabsClient(new NullLogService(), fake.fetch, Date.now, cache);
+			const request = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' };
+			await client.synthesize(request);
+			await waitForFiles(1);
+			const refreshed = await client.synthesize(request, { refreshCache: true });
+			await waitForFiles(1);
+			const next = await client.synthesize(request);
+
+			assert.deepStrictEqual({ refreshed: refreshed.audio[10], next: next.audio[10], posts: fake.requests.length }, { refreshed: 2, next: 2, posts: 2 });
+		});
+
+		test('does not cache a failed synthesis', async () => {
+			let status = 500;
+			const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1/stream', () => status === 200 ? audio(1) : new Response('{}', { status }));
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService()));
+			const client = new ParadisElevenLabsClient(new NullLogService(), fake.fetch, Date.now, cache);
+			const request = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' };
+			await assert.rejects(client.synthesize(request));
+			status = 200;
+			await client.synthesize(request);
+
+			assert.strictEqual(fake.requests.length, 2);
+		});
 	});
 });

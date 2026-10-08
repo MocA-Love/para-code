@@ -42,7 +42,8 @@ import {
 } from '../common/paradisElevenLabs.js';
 import { IParadisElevenLabsVoiceTuning, paradisElevenLabsVoiceSettingsBody, paradisToElevenLabsSavedVoiceTuning } from '../common/paradisVoiceTuning.js';
 import { AivisError, AivisStreamingSynthesis, AivisSynthesizeResult } from './paradisAudioScheduler.js';
-import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisBufferBody, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { IParadisVoiceCacheLease, paradisVoiceCacheKey, paradisVoiceCacheMinBytes, ParadisVoiceSynthesisCache } from './paradisVoiceSynthesisCache.js';
 
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
 /** 合成した音声 1 本の上限（読み上げ 1 回分としては十分に大きい）。 */
@@ -65,6 +66,12 @@ export class ParadisElevenLabsApiError extends Error {
 
 type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
 
+/** 合成の呼び出しごとの指定。 */
+export interface IParadisElevenLabsSynthesizeOptions {
+	/** キャッシュを読まずに合成し、置いてある音を置き換える（設定のテスト再生。外れの音を引き直せるように）。 */
+	readonly refreshCache?: boolean;
+}
+
 interface IRequestInit {
 	readonly method?: string;
 	readonly query?: Record<string, string | number | boolean | undefined>;
@@ -76,11 +83,15 @@ export class ParadisElevenLabsClient {
 
 	/** 辞書ごとの最新版 ID。undefined は「アーカイブ済み・取得失敗で使わない」を短い間覚えたもの。 */
 	private readonly _dictionaryVersions = new Map<string, { readonly versionId: string | undefined; readonly at: number }>();
+	/** キャッシュから鳴らした後に裏で取り直している辞書の版（同じ辞書を重ねて取りに行かない）。 */
+	private readonly _dictionaryRefreshes = new Map<string, Promise<unknown>>();
 
 	constructor(
 		private readonly logService: ILogService,
 		private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
 		private readonly now: () => number = Date.now,
+		/** 合成した音声の置き場所。無ければ使い回さない（数も数えない）。 */
+		private readonly cache?: ParadisVoiceSynthesisCache,
 	) { }
 
 	/**
@@ -168,8 +179,8 @@ export class ParadisElevenLabsClient {
 	 * 合成して MP3 を返す（全部受け取ってから）。失敗は AivisError（retryable / fatal / item-specific）にして投げる。
 	 * 文面の SSML 風タグは取り除いてから送る。
 	 */
-	async synthesize(request: IParadisPlayElevenLabsRequest): Promise<AivisSynthesizeResult> {
-		const { body } = await this.synthesizeStream(request);
+	async synthesize(request: IParadisPlayElevenLabsRequest, options: IParadisElevenLabsSynthesizeOptions = {}): Promise<AivisSynthesizeResult> {
+		const { body } = await this.synthesizeStream(request, options);
 		return { audio: await paradisCollectBody(body, PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES) };
 	}
 
@@ -177,22 +188,63 @@ export class ParadisElevenLabsClient {
 	 * 合成を少しずつ受け取る（`/stream`）。応答のヘッダーまでを待って返し、失敗の状態は AivisError にして投げる。
 	 * 最初の 1 バイトまで 8 秒、途切れ 8 秒で打ち切る。
 	 */
-	async synthesizeStream(request: IParadisPlayElevenLabsRequest): Promise<AivisStreamingSynthesis> {
+	async synthesizeStream(request: IParadisPlayElevenLabsRequest, options: IParadisElevenLabsSynthesizeOptions = {}): Promise<AivisStreamingSynthesis> {
 		const text = paradisStripSsmlTags(request.text);
 		if (!text) {
 			// allow-any-unicode-next-line
 			throw new AivisError('item-specific', 'ElevenLabs に送る文面が空です');
 		}
-		const body: Record<string, unknown> = {
+		const modelId = request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID;
+		const buildBody = (versionId: string | undefined): Record<string, unknown> => ({
 			text,
-			model_id: request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID,
-			voice_settings: paradisElevenLabsVoiceSettingsBody(request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, paradisClampElevenLabsSpeed(request.speed), { stability: request.stability, similarityBoost: request.similarityBoost }),
-		};
-		if (request.dictionaryId) {
-			const versionId = await this._resolveDictionaryVersion(request.apiKey, request.dictionaryId);
-			if (versionId) {
-				body.pronunciation_dictionary_locators = [{ pronunciation_dictionary_id: request.dictionaryId, version_id: versionId }];
+			model_id: modelId,
+			voice_settings: paradisElevenLabsVoiceSettingsBody(modelId, paradisClampElevenLabsSpeed(request.speed), { stability: request.stability, similarityBoost: request.similarityBoost }),
+			...(request.dictionaryId && versionId ? { pronunciation_dictionary_locators: [{ pronunciation_dictionary_id: request.dictionaryId, version_id: versionId }] } : {}),
+		});
+		const cache = request.cache !== false ? this.cache : undefined;
+		const dictionaryId = request.dictionaryId;
+		let versionId: string | undefined;
+		// 覚えた辞書の版が古い（期限切れ）とき、キャッシュを使うならまず古い版の鍵で探す。当たればすぐ鳴らし、版は裏で取り直す
+		// （辞書を直した直後の 1 回だけ、古い発音のまま鳴りうる）
+		let staleVersion = false;
+		if (dictionaryId) {
+			const known = this._dictionaryVersions.get(dictionaryId);
+			if (cache && !options.refreshCache && known && !this._isDictionaryVersionFresh(known)) {
+				versionId = known.versionId;
+				staleVersion = true;
+			} else {
+				versionId = await this._resolveDictionaryVersion(request.apiKey, dictionaryId);
 			}
+		}
+		let body = buildBody(versionId);
+
+		// 同じ要求（声・出力形式・本文 = 文・モデル・声の調整・辞書の版）なら同じ音になるので、合成済みの音を使い回す。
+		// 本文に前の発話の文脈（previous_*）は入れていない。音量の補正は鳴らすときにかけるので鍵に入らない
+		let lease: IParadisVoiceCacheLease | undefined;
+		if (cache) {
+			const keyOf = (requestBody: Record<string, unknown>) => paradisVoiceCacheKey({ provider: 'elevenlabs', voiceId: request.voiceId, outputFormat: ELEVENLABS_OUTPUT_FORMAT, body: requestBody });
+			const minBytes = paradisVoiceCacheMinBytes(text.length);
+			let found = await cache.lookup(keyOf(body), { minBytes, refresh: options.refreshCache });
+			if (found.kind === 'miss' && staleVersion && dictionaryId) {
+				// 古い版では外れた。合成する前に今の版を取り直し、変わっていたら今の版の鍵で探し直す
+				staleVersion = false;
+				const fresh = await this._resolveDictionaryVersion(request.apiKey, dictionaryId);
+				if (fresh !== versionId) {
+					found.lease.release();
+					versionId = fresh;
+					body = buildBody(fresh);
+					found = await cache.lookup(keyOf(body), { minBytes });
+				}
+			}
+			if (found.kind === 'hit') {
+				if (staleVersion && dictionaryId) {
+					this._refreshDictionaryVersionInBackground(request.apiKey, dictionaryId);
+				}
+				cache.recordHit(text.length);
+				this.logService.info(`[ParadisNotifications] played an ElevenLabs voice from the cache (${text.length} characters not sent)`);
+				return { body: paradisBufferBody(found.audio) };
+			}
+			lease = found.lease;
 		}
 
 		const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}/stream`, ELEVENLABS_BASE_URL);
@@ -208,6 +260,7 @@ export class ParadisElevenLabsClient {
 			});
 		} catch (error) {
 			timeouts.dispose();
+			lease?.release();
 			if (error instanceof Error && error.name === 'AbortError') {
 				// allow-any-unicode-next-line
 				throw new AivisError('retryable', 'ElevenLabs API のリクエストがタイムアウトしました', undefined, undefined, error);
@@ -217,18 +270,37 @@ export class ParadisElevenLabsClient {
 		if (!response.ok) {
 			const bodyText = await response.text().catch(() => '');
 			timeouts.dispose();
+			lease?.release();
 			const { kind, reason } = paradisClassifyElevenLabsError(response.status, bodyText);
 			const retryAfter = response.status === 429 ? paradisElevenLabsRetryAfter(response.headers.get('retry-after')) : undefined;
 			throw new AivisError(kind, reason, response.status, retryAfter);
 		}
-		return { body: paradisReadSynthesisBody(response, timeouts, 'ElevenLabs') };
+		this.cache?.recordCall(text.length);
+		const audio = paradisReadSynthesisBody(response, timeouts, 'ElevenLabs');
+		return { body: lease ? lease.capture(audio) : audio };
+	}
+
+	/** 覚えた辞書の版がまだ使えるか（版は短め、「使わない」は長めに覚える）。 */
+	private _isDictionaryVersionFresh(known: { readonly versionId: string | undefined; readonly at: number }): boolean {
+		const ttl = known.versionId ? DICTIONARY_VERSION_TTL_MS : DICTIONARY_UNUSABLE_TTL_MS;
+		return this.now() - known.at < ttl;
+	}
+
+	/** キャッシュから鳴らした後、期限切れの辞書の版を裏で取り直す（変わっていれば次から新しい鍵になる）。 */
+	private _refreshDictionaryVersionInBackground(apiKey: string, dictionaryId: string): void {
+		if (this._dictionaryRefreshes.has(dictionaryId)) {
+			return;
+		}
+		const refresh = this._resolveDictionaryVersion(apiKey, dictionaryId)
+			.catch(() => undefined)
+			.finally(() => this._dictionaryRefreshes.delete(dictionaryId));
+		this._dictionaryRefreshes.set(dictionaryId, refresh);
 	}
 
 	/** 辞書の最新版 ID。取れなければ undefined（その回は辞書なしで読み上げる）。 */
 	private async _resolveDictionaryVersion(apiKey: string, dictionaryId: string): Promise<string | undefined> {
 		const cached = this._dictionaryVersions.get(dictionaryId);
-		const ttl = cached?.versionId ? DICTIONARY_VERSION_TTL_MS : DICTIONARY_UNUSABLE_TTL_MS;
-		if (cached && this.now() - cached.at < ttl) {
+		if (cached && this._isDictionaryVersionFresh(cached)) {
 			return cached.versionId;
 		}
 		try {

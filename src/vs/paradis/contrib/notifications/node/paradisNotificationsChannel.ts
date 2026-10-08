@@ -80,6 +80,8 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'setElevenLabsDictionaryRules': return this.service.elevenLabs.setDictionaryRules(String(args[0]), String(args[1]), paradisNormalizeElevenLabsRules(args[2])) as Promise<T>;
 			case 'archiveElevenLabsDictionary': return this.service.elevenLabs.archiveDictionary(String(args[0]), String(args[1])) as Promise<T>;
 			case 'downloadElevenLabsDictionary': return this.service.elevenLabs.downloadDictionary(String(args[0]), String(args[1])) as Promise<T>;
+			case 'getVoiceCacheInfo': return this.service.getVoiceCacheInfo() as Promise<T>;
+			case 'clearVoiceCache': return this.service.clearVoiceCache() as Promise<T>;
 			case 'notifyAudio': { this.service.notifyAudio(args[0] as Parameters<ParadisNotificationsService['notifyAudio']>[0]); return Promise.resolve(undefined as T); }
 			case 'resumeAivis': { this.service.resumeAivis(); return Promise.resolve(undefined as T); }
 			// 音声入力中は読み上げを止める。止めるかどうかはウィンドウ（接続）ごとに持つ。
