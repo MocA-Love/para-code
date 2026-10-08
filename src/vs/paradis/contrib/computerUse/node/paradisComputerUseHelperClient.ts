@@ -55,6 +55,8 @@ export class ParadisComputerUseHelperError extends Error {
 	progress?: number;
 	/** Sent through the background route; receipt has not been confirmed. */
 	sent?: number;
+	/** Cleanup outcome, separate from the original refusal reason. */
+	note?: string;
 
 	constructor(readonly code: string, message: string) {
 		super(message);
@@ -288,6 +290,7 @@ class ParadisHelperConnection {
 		if (typeof error.sent === 'number' && Number.isInteger(error.sent) && error.sent >= 0) {
 			failure.sent = error.sent;
 		}
+		if (typeof error.note === 'string') { failure.note = error.note; }
 		pending.reject(failure);
 	}
 

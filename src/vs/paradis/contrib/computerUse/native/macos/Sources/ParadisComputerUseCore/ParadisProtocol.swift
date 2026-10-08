@@ -31,6 +31,8 @@ struct ParadisHelperError: Error, Equatable {
 	var progress: Int? = nil
 	/** 背面経路で送った単位数。アプリが受信したことは保証しない。 */
 	var sent: Int? = nil
+	/** 後始末の結果。元の停止理由は code/message に残す。 */
+	var note: String? = nil
 
 	static func invalidArgument(_ message: String) -> ParadisHelperError {
 		return ParadisHelperError(code: "invalid_argument", message: message)
@@ -85,6 +87,7 @@ func paradisEncodeFailure(id: Int?, error: ParadisHelperError) -> Data {
 	let idValue: Any = id.map { $0 as Any } ?? NSNull()
 	var errorJson: [String: Any] = ["code": error.code, "message": error.message]
 	if let sent = error.sent { errorJson["sent"] = sent }
+	if let note = error.note { errorJson["note"] = note }
 	if let progress = error.progress {
 		errorJson["progress"] = progress
 	}
