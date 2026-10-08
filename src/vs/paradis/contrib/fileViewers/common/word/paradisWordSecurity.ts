@@ -79,9 +79,11 @@ const embeddedPackageContentTypes = new Set([
 ]);
 
 const officeDocumentRelationshipTypes = relationshipTypes('officeDocument');
-const vbaRelationshipTypes = relationshipTypes('vbaProject');
+// 実際の Word は、マクロと ActiveX の本体を Microsoft の名前空間の関係で書く（MS-OFFMACRO2・MS-OI29500）。
+const microsoftRelationships = 'http://schemas.microsoft.com/office/2006/relationships';
+const vbaRelationshipTypes = new Set([...relationshipTypes('vbaProject'), `${microsoftRelationships}/vbaProject`, `${microsoftRelationships}/wordVbaData`]);
 const oleRelationshipTypes = relationshipTypes('oleObject');
-const activeXRelationshipTypes = relationshipTypes('control');
+const activeXRelationshipTypes = new Set([...relationshipTypes('control'), `${microsoftRelationships}/activeXControlBinary`]);
 const packageRelationshipTypes = relationshipTypes('package');
 const imageRelationshipTypes = relationshipTypes('image');
 
@@ -523,6 +525,8 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			throw new ParadisOfficePackageError('malformed');
 		}
 		const relationships = new Map<string, Relationship>();
+		// 先が無いので読み飛ばした関係の Id も覚え、同じ Id の重複を見逃さない。
+		const skippedIds = new Set<string>();
 		for (const child of elementChildren(root)) {
 			guard.checkpoint();
 			if (child.uri !== root.uri || child.local !== 'Relationship') {
@@ -532,7 +536,7 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			const type = requiredAttribute(child, '', 'Type');
 			const target = requiredAttribute(child, '', 'Target');
 			const mode = optionalAttribute(child, '', 'TargetMode');
-			if (relationships.has(id) || !validRelationshipType(type) || mode !== undefined && mode !== 'External') {
+			if (relationships.has(id) || skippedIds.has(id) || !validRelationshipType(type) || mode !== undefined && mode !== 'External') {
 				throw new ParadisOfficePackageError('malformed');
 			}
 			if (mode === 'External') {
@@ -547,6 +551,7 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 					// 先の部品が無い関係でも、文書情報（custom-properties など）のように安全の判断に関わらない型なら
 					// 読み飛ばす（実際の作成元が書くことがある）。判断に関わる型で先が無ければ、これまでどおり拒否する。
 					if (!isSecurityRelevantRelationship(type)) {
+						skippedIds.add(id);
 						continue;
 					}
 					throw new ParadisOfficePackageError('unsafe');

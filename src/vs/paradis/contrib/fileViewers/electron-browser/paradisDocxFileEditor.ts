@@ -93,6 +93,8 @@ export interface ParadisWordRevealRequest {
 	/** context のうち focus より前の文字。同じ文字が段落に何度も出るときの取り違えを防ぐ。 */
 	readonly prefix?: string;
 	readonly matchCase: boolean;
+	/** 表示の中に見つからなかったときに出す文。 */
+	readonly notFound?: string;
 }
 
 /** 検索結果から、webview で位置を探すための手がかりを作る。 */
@@ -235,6 +237,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
 	/** 詳しい解析（shared process）。表示を出した後に裏で走らせ、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** リボンのボタンのリスナー。描き直すたびに外す。 */
+	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticBytes: Uint8Array | undefined;
 	private _semanticResult: IParadisWordAnalysisResult | undefined;
 	private _semanticSearch: ParadisOfficeSemanticSearch | undefined;
@@ -841,7 +845,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._webviewContainer.style.top = '36px';
 		}
 		if (this._diagnosticsElement) {
-			renderWordSemanticRibbon(this._diagnosticsElement, this._semanticRibbonState(), () => this._setInspectorVisible(true));
+			renderWordSemanticRibbon(this._diagnosticsElement, this._semanticRibbonState(), () => this._setInspectorVisible(true), this._ribbonDisposables);
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
@@ -989,8 +993,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	private _postReveal(request: ParadisWordRevealRequest): void {
-		void this._webview?.postMessage(request);
+		void this._webview?.postMessage({ ...request, notFound: localize('paradis.word.revealNotFound', "表示の中で見つかりません。") });
 	}
+
 
 	private _buildRejectedFileHtml(): string {
 		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
@@ -1124,6 +1129,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		#content table td, #content table th { overflow-wrap: break-word; }
 		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
 		::highlight(paradis-word-reveal) { background-color: #ffd33d; color: #000000; }
+		#paradis-reveal-toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); padding: 4px 10px; background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 4px; font: 12px var(--vscode-font-family, sans-serif); z-index: 100; }
 	</style>
 </head>
 <body class="paradis-word-${displayMode}">
@@ -1156,17 +1162,18 @@ export class ParadisDocxFileEditor extends EditorPane {
 				}
 				return out;
 			};
-			const revealParadisWord = message => {
-				if (!paradisDocumentRendered) {
-					pendingParadisWordReveal = message;
-					return;
-				}
-				const matchCase = message.matchCase !== false;
+			// 見えている文字（隠れた削除・挿入を除く）の索引。描き直すまで使い回す（webview は描くたびに作り直される）。
+			let paradisRevealIndex;
+			const buildParadisRevealIndex = matchCase => {
 				const nodes = [];
 				const offsets = [];
 				let flat = '';
 				const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
 				for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+					const parent = node.parentElement;
+					if (!parent || parent.getClientRects().length === 0) {
+						continue;
+					}
 					const data = node.data;
 					for (let index = 0; index < data.length; index++) {
 						const ch = data[index];
@@ -1179,21 +1186,45 @@ export class ParadisDocxFileEditor extends EditorPane {
 						offsets.push(index);
 					}
 				}
+				return { flat, nodes, offsets };
+			};
+			const showParadisRevealMessage = text => {
+				let toast = document.getElementById('paradis-reveal-toast');
+				if (!toast) {
+					toast = document.createElement('div');
+					toast.id = 'paradis-reveal-toast';
+					toast.setAttribute('role', 'status');
+					document.body.appendChild(toast);
+				}
+				toast.textContent = text;
+				toast.style.display = '';
+				clearTimeout(toast.paradisTimer);
+				toast.paradisTimer = setTimeout(() => { toast.style.display = 'none'; }, 2500);
+			};
+			const revealParadisWord = message => {
+				if (!paradisDocumentRendered) {
+					pendingParadisWordReveal = message;
+					return;
+				}
+				const matchCase = message.matchCase !== false;
+				if (!paradisRevealIndex || paradisRevealIndex.matchCase !== matchCase) {
+					paradisRevealIndex = { matchCase, ...buildParadisRevealIndex(matchCase) };
+				}
+				const { flat, nodes, offsets } = paradisRevealIndex;
 				const context = compactParadisWordText(message.context, matchCase);
 				const focus = compactParadisWordText(message.focus, matchCase);
-				let start = -1;
-				let end = -1;
+				// 段落の文字（前後の文脈つき）が表示の中にあるときだけ移る。焦点の文字だけで文書全体を探すと、
+				// 別の場所の同じ文字へ飛んでしまうので、見つからなければ移らずにそう伝える。
 				const contextAt = context ? flat.indexOf(context) : -1;
-				if (contextAt >= 0) {
-					const prefix = typeof message.prefix === 'string' ? compactParadisWordText(message.prefix, matchCase).length : -1;
-					const inner = prefix >= 0 && context.startsWith(focus, prefix) ? prefix : context.indexOf(focus);
-					start = contextAt + (inner >= 0 ? inner : 0);
-					end = inner >= 0 && focus ? start + focus.length : contextAt + context.length;
-				} else if (focus) {
-					start = flat.indexOf(focus);
-					end = start >= 0 ? start + focus.length : -1;
+				if (contextAt < 0) {
+					showParadisRevealMessage(message.notFound || '');
+					return;
 				}
-				if (start < 0 || end <= start) {
+				const prefix = typeof message.prefix === 'string' ? compactParadisWordText(message.prefix, matchCase).length : -1;
+				const inner = prefix >= 0 && context.startsWith(focus, prefix) ? prefix : context.indexOf(focus);
+				const start = contextAt + (inner >= 0 ? inner : 0);
+				const end = inner >= 0 && focus ? start + focus.length : contextAt + context.length;
+				if (end <= start) {
 					return;
 				}
 				const range = document.createRange();
@@ -1425,6 +1456,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	override dispose(): void {
 		this._assetSanitization.value?.cancel();
+		// 解析・比較の依頼も取り消す（MutableDisposable の dispose は取り消しを伝えない）。
+		this._semanticRequest.value?.cancel();
 		this._disposed = true;
 		this._inputEpoch++;
 		this._currentResource = undefined;

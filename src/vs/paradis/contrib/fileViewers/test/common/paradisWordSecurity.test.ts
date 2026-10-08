@@ -175,6 +175,32 @@ suite('ParadisWordSecurity', () => {
 		invalid(() => parseParadisWordSecurity({ parts: missingImage }), 'unsafe');
 	});
 
+	test('validates the Microsoft-namespace macro and ActiveX binary relationships that Word writes', () => {
+		const microsoft = 'http://schemas.microsoft.com/office/2006/relationships';
+		const withMicrosoftTypes = (vbaTarget: string) => {
+			const parts = fixtureParts();
+			parts[2] = part('/word/document.xml', `<w:document xmlns:w="${word}"><w:body><w:p/></w:body></w:document>`);
+			parts[3] = part('/word/_rels/document.xml.rels', relationships([
+				`<Relationship Id="rVba" Type="${microsoft}/vbaProject" Target="${vbaTarget}"/>`,
+				`<Relationship Id="rActiveX" Type="${officeRelationships}/control" Target="activeX/activeX1.bin"/>`,
+			].join('')));
+			return parts;
+		};
+		// 正しい型の先なら、マクロとして数える。先が無い・型が違うなら、安全の判断に関わる関係なので拒否する。
+		const kinds = parseParadisWordSecurity({ parts: withMicrosoftTypes('vbaProject.bin') }).unsafeNodes.map(node => node.kind);
+		const duplicate = fixtureParts();
+		duplicate[1] = part('/_rels/.rels', relationships([
+			`<Relationship Id="rDocument" Type="${officeRelationships}/officeDocument" Target="word/document.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+		].join('')));
+		deepStrictEqual(kinds.filter(kind => kind === 'vba' || kind === 'activeX'), ['vba', 'activeX']);
+		invalid(() => parseParadisWordSecurity({ parts: withMicrosoftTypes('missing.bin') }), 'unsafe');
+		invalid(() => parseParadisWordSecurity({ parts: withMicrosoftTypes('embeddings/oleObject1.bin') }), 'unsafe');
+		// 読み飛ばした関係の Id も重複として拒否する。
+		invalid(() => parseParadisWordSecurity({ parts: duplicate }), 'malformed');
+	});
+
 	test('rejects ContentType parameters before classification or preview metadata projection', () => {
 		const parameterized = fixtureParts();
 		parameterized[0] = part('/[Content_Types].xml', contentTypes().replace('image/png', 'image/png; token=private'));

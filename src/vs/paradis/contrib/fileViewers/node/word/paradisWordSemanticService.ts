@@ -71,7 +71,7 @@ function failure(code: ParadisWordSemanticFailureCode): IParadisWordSemanticFail
 	return { ok: false, code };
 }
 
-async function readAllParts(archive: IParadisOfficeArchive, token: CancellationToken): Promise<Map<string, Uint8Array>> {
+async function readAllParts(archive: IParadisOfficeArchive, token: CancellationToken, checkpoint: () => void): Promise<Map<string, Uint8Array>> {
 	const parts = new Map<string, Uint8Array>();
 	let total = 0;
 	try {
@@ -85,6 +85,7 @@ async function readAllParts(archive: IParadisOfficeArchive, token: CancellationT
 			} catch {
 				continue;
 			}
+			checkpoint();
 			const chunks: Uint8Array[] = [];
 			let length = 0;
 			for await (const chunk of archive.read(entry, token)) {
@@ -148,20 +149,31 @@ export class ParadisWordSemanticService {
 		}
 		return this.serialized(async () => {
 			try {
-				const parseWatch = StopWatch.create(true);
-				const [left, right] = [await this.parse(original, token), await this.parse(modified, token)];
+				// 比較全体で締め切りを 1 つにする。読み直し・補助モデル・比較のそれぞれに、残り時間だけを渡す。
+				const total = StopWatch.create(true);
+				const remaining = (): number => {
+					const value = Math.floor(COMPARISON_DEADLINE_MS - total.elapsed());
+					if (value <= 0) {
+						throw new ParadisOfficePackageError('limitExceeded');
+					}
+					return value;
+				};
+				const checkpoint = () => {
+					throwIfParadisOfficeCancelled(token);
+					remaining();
+				};
+				const left = await this.parse(original, token, remaining());
+				const right = await this.parse(modified, token, remaining());
 				const xmlLimits = { depth: profile.xmlDepth, nodes: profile.xmlNodesPerPart, attributeLength: profile.attributeLength, characters: profile.xmlPartBytes };
-				const [leftParts, rightParts] = [
-					await readAllParts(await createParadisOfficeNodeArchive(original), token),
-					await readAllParts(await createParadisOfficeNodeArchive(modified), token),
-				];
-				const leftSnapshot = buildParadisWordSemanticSnapshot(left.document, leftParts, { token, xmlLimits });
-				const rightSnapshot = buildParadisWordSemanticSnapshot(right.document, rightParts, { token, xmlLimits });
-				const parseMs = parseWatch.elapsed();
+				const leftParts = await readAllParts(await createParadisOfficeNodeArchive(original), token, checkpoint);
+				const rightParts = await readAllParts(await createParadisOfficeNodeArchive(modified), token, checkpoint);
+				const leftSnapshot = buildParadisWordSemanticSnapshot(left.document, leftParts, { token, xmlLimits, deadlineMilliseconds: remaining() });
+				const rightSnapshot = buildParadisWordSemanticSnapshot(right.document, rightParts, { token, xmlLimits, deadlineMilliseconds: remaining() });
+				const parseMs = total.elapsed();
 				const compareWatch = StopWatch.create(true);
 				const page = compareWordSemantics(leftSnapshot.snapshot, rightSnapshot.snapshot, {
 					cancellationToken: token,
-					deadlineMilliseconds: COMPARISON_DEADLINE_MS,
+					deadlineMilliseconds: remaining(),
 					pageSize: COMPARISON_CHANGE_LIMIT,
 				});
 				const counts = (parsed: ParsedWord): IParadisWordAnalysisCounts => summarizeParadisWordDocument(parsed.document, parsed.inventory, {
@@ -177,6 +189,7 @@ export class ParadisWordSemanticService {
 					original: counts(left),
 					modified: counts(right),
 					omittedModels: [...new Set([...leftSnapshot.omittedModels, ...rightSnapshot.omittedModels])].sort(),
+					securityUnreadable: leftSnapshot.securityUnreadable || rightSnapshot.securityUnreadable,
 					timings: { parseMs: Math.round(parseMs), compareMs: Math.round(compareWatch.elapsed()) },
 				};
 			} catch (error) {
@@ -195,7 +208,7 @@ export class ParadisWordSemanticService {
 		return result;
 	}
 
-	private parse(bytes: Uint8Array, token: CancellationToken): Promise<ParsedWord> {
+	private parse(bytes: Uint8Array, token: CancellationToken, deadlineMilliseconds = profile.semanticParseMilliseconds): Promise<ParsedWord> {
 		const key = createHash('sha256').update(bytes).digest('hex');
 		const cached = this.cache.get(key);
 		if (cached) {
@@ -204,7 +217,7 @@ export class ParadisWordSemanticService {
 			this.cache.set(key, cached);
 			return cached;
 		}
-		const parsed = this.parseUncached(bytes, token);
+		const parsed = this.parseUncached(bytes, token, deadlineMilliseconds);
 		this.cache.set(key, parsed);
 		// 失敗・取り消しは覚えない（次に開いたときにもう一度試す）。
 		parsed.catch(() => {
@@ -218,7 +231,7 @@ export class ParadisWordSemanticService {
 		return parsed;
 	}
 
-	private async parseUncached(bytes: Uint8Array, token: CancellationToken): Promise<ParsedWord> {
+	private async parseUncached(bytes: Uint8Array, token: CancellationToken, deadlineMilliseconds: number): Promise<ParsedWord> {
 		const inspectWatch = StopWatch.create(true);
 		const inspected = await inspectOfficePackage(await createParadisOfficeNodeArchive(bytes.slice()), profile, token);
 		const inventory = resolveParadisWordInventory(inspected);
@@ -227,7 +240,7 @@ export class ParadisWordSemanticService {
 		}
 		const inspectMs = inspectWatch.elapsed();
 		const parseWatch = StopWatch.create(true);
-		const document = await parseWordSemanticNode(bytes, inventory, token, { deadlineMilliseconds: profile.semanticParseMilliseconds }, 'desktopLocal');
+		const document = await parseWordSemanticNode(bytes, inventory, token, { deadlineMilliseconds: Math.min(deadlineMilliseconds, profile.semanticParseMilliseconds) }, 'desktopLocal');
 		return { inventory, document, inspectMs, parseMs: parseWatch.elapsed() };
 	}
 }

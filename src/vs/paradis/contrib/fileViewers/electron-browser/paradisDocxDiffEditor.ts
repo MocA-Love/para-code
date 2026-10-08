@@ -95,6 +95,22 @@ export interface ParadisWordLegacyChangeSet {
 	readonly truncated: boolean;
 }
 
+/** 比較で比べられなかったものを、黙らずにリボンへ出す文。 */
+function comparisonWarnings(result: Extract<IParadisWordComparisonResult, { readonly ok: true }>): string[] {
+	const warnings: string[] = [];
+	if (result.securityUnreadable) {
+		warnings.push(localize('paradis.word.compare.securityUnreadable', "安全に読めない部品があります（マクロ・埋め込みの変更は比べていません）"));
+	}
+	const others = result.omittedModels.filter(model => model !== 'security' || !result.securityUnreadable);
+	if (others.length > 0) {
+		warnings.push(localize('paradis.word.compare.modelsOmitted', "一部の情報（{0}）は比べていません", others.join(', ')));
+	}
+	return warnings;
+}
+
+/** 詳しい比較の変更を、段落単位の比較の変更へ文字で当てるときの、最低限の文字数（空白を除く）。 */
+const PARADIS_WORD_LEGACY_MATCH_MINIMUM = 4;
+
 /** A bounded compatibility projection. It intentionally never claims Kernel completeness. */
 export function adaptLegacyWordInspectorChangeSet(result: IParadisDocxDiffResult): ParadisWordLegacyChangeSet {
 	const selected = result.changes.slice(0, PARADIS_WORD_LEGACY_CHANGE_LIMIT);
@@ -194,6 +210,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _documentSnapshot: { readonly original: Uint8Array; readonly modified: Uint8Array; readonly placeholders: readonly ParadisOfficePlaceholder[] } | undefined;
 	/** 詳しい比較（shared process）。読み込んだ元のバイト列で頼み、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** リボンのボタンのリスナー。描き直すたびに外す。 */
+	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticSources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
 	private _semanticResult: IParadisWordComparisonResult | undefined;
 	private _legacyResult: IParadisDocxDiffResult | undefined;
@@ -858,7 +876,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._changes = result.changes;
 		this._modifiedOutline = modified;
 		this._currentIndex = -1;
-		this._setCount(result.changes.length);
+		this._setCount(this._semanticResult?.ok ? this._semanticResult.changes.length : result.changes.length);
 		this._setNotice(this._degradedNotice(result));
 		this._updateNav();
 		this._legacyResult = result;
@@ -927,7 +945,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		const completeness = semantic ? semantic.completeness : adapted.completeness;
 		const outcome = semantic ? semantic.outcome : adapted.outcome;
 		if (this._diagnosticsEl) {
-			renderWordSemanticRibbon(this._diagnosticsEl, this._semanticRibbonState(), () => this._setInspectorVisible(true));
+			renderWordSemanticRibbon(this._diagnosticsEl, this._semanticRibbonState(), () => this._setInspectorVisible(true), this._ribbonDisposables);
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
@@ -984,7 +1002,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return { kind: 'comparing', alternatives, ignoredParts };
 		}
 		return result.ok
-			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts }
+			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts, warnings: comparisonWarnings(result) }
 			: { kind: 'failed', code: result.code, alternatives, ignoredParts };
 	}
 
@@ -999,14 +1017,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	/** 詳しい比較の変更に対応する、表示中の（段落単位の）変更を探す。文字が重なるものを選ぶ。 */
 	private _legacyChangeFor(change: ParadisOfficeChange | undefined): number | undefined {
 		const text = change ? wordChangeText(change)?.replace(/\s+/g, '') : undefined;
-		if (!text) {
+		// 短い文字は別の段落にも出やすいので、取り違えるくらいなら移らない。
+		if (!text || text.length < PARADIS_WORD_LEGACY_MATCH_MINIMUM) {
 			return undefined;
 		}
-		const match = this._changes.find(candidate => {
+		const matches = this._changes.filter(candidate => {
 			const excerpt = candidate.excerpt.replace(/\s+/g, '');
-			return excerpt.length > 0 && (excerpt.includes(text) || text.includes(excerpt));
+			return excerpt.length >= PARADIS_WORD_LEGACY_MATCH_MINIMUM && (excerpt.includes(text) || text.includes(excerpt));
 		});
-		return match?.id;
+		// 当てはまる段落がちょうど 1 つのときだけ移る。複数あれば、どれか決められない。
+		return matches.length === 1 ? matches[0].id : undefined;
 	}
 
 	private _resetSemanticComparison(): void {
@@ -1050,6 +1070,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._semanticResult = result;
 			if (this._legacyResult) {
 				this._renderSemanticUi(this._legacyResult);
+			}
+			// ツールバーの件数も、変更点パネルと同じ出どころ（詳しい比較）にそろえる。
+			if (result.ok) {
+				this._setCount(result.changes.length);
 			}
 		})();
 	}
@@ -1228,6 +1252,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	override dispose(): void {
 		this._assetSanitization.value?.cancel();
+		// 解析・比較の依頼も取り消す（MutableDisposable の dispose は取り消しを伝えない）。
+		this._semanticRequest.value?.cancel();
 		this._disposed = true;
 		this._loadGeneration++;
 		super.dispose();

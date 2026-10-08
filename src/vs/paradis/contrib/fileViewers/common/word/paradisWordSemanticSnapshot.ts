@@ -12,7 +12,7 @@
 // 補助モデルは 1 つずつ作り、作れなかったものは外して名前だけ返す（比較そのものは止めない）。
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { throwIfParadisOfficeCancelled } from '../office/paradisOfficeArchive.js';
+import { ParadisOfficePackageError, throwIfParadisOfficeCancelled } from '../office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../office/paradisOfficeCanonicalXml.js';
 import { parseParadisWordNumbering, type ParadisWordNumberingModel } from './paradisWordNumbering.js';
 import { fingerprintParadisWordObjectBytes, parseParadisWordObjects, type ParadisWordObjectModel, type ParadisWordObjectPartInput } from './paradisWordObjects.js';
@@ -27,6 +27,8 @@ export type ParadisWordSnapshotModel = 'styles' | 'numbering' | 'objects' | 'sec
 export interface ParadisWordSnapshotBuildResult {
 	readonly snapshot: ParadisWordSemanticSnapshot;
 	readonly omittedModels: readonly ParadisWordSnapshotModel[];
+	/** セキュリティの解析が「安全に読めない」と判断した（マクロ・埋め込みなどの部品の形が正しくない）。 */
+	readonly securityUnreadable: boolean;
 }
 
 export interface ParadisWordSnapshotBuildOptions {
@@ -96,8 +98,19 @@ export function buildParadisWordSemanticSnapshot(
 	options: ParadisWordSnapshotBuildOptions,
 ): ParadisWordSnapshotBuildResult {
 	const omitted: ParadisWordSnapshotModel[] = [];
+	let securityUnreadable = false;
 	const token = options.token;
-	const modelOptions = { token, ...(options.deadlineMilliseconds !== undefined ? { deadlineMilliseconds: options.deadlineMilliseconds } : {}) };
+	// 補助モデルは全部で 1 つの締め切りを分け合う（1 つずつに全部の時間を渡すと、合計で締め切りを超える）。
+	const started = Date.now();
+	const remaining = (): number | undefined => options.deadlineMilliseconds === undefined ? undefined : options.deadlineMilliseconds - (Date.now() - started);
+	const deadlineOption = (): { readonly deadlineMilliseconds?: number } => {
+		const value = remaining();
+		if (value !== undefined && value <= 0) {
+			throw new ParadisOfficePackageError('limitExceeded');
+		}
+		return value === undefined ? {} : { deadlineMilliseconds: Math.floor(value) };
+	};
+	const modelOptions = () => ({ token, ...deadlineOption() });
 	const stylePart = (partUri: string): ParadisWordStylePart | undefined => {
 		const bytes = parts.get(partUri);
 		if (!bytes) {
@@ -112,9 +125,17 @@ export function buildParadisWordSemanticSnapshot(
 		throwIfParadisOfficeCancelled(token);
 		try {
 			return build();
-		} catch {
+		} catch (error) {
 			throwIfParadisOfficeCancelled(token);
+			const left = remaining();
+			if (left !== undefined && left <= 0) {
+				// 締め切りを使い切ったら、比較全体を止める（残りの補助モデルも作れないため）。
+				throw new ParadisOfficePackageError('limitExceeded');
+			}
 			omitted.push(model);
+			if (model === 'security' && error instanceof ParadisOfficePackageError && error.code === 'unsafe') {
+				securityUnreadable = true;
+			}
 			return undefined;
 		}
 	};
@@ -127,12 +148,12 @@ export function buildParadisWordSemanticSnapshot(
 		const themeUri = [...parts.keys()].filter(uri => /^\/word\/theme\/[^/]+\.xml$/.test(uri)).sort()[0];
 		const theme = themeUri ? stylePart(themeUri) : undefined;
 		const fontTable = stylePart('/word/fontTable.xml');
-		return parseParadisWordStyles({ styles: stylesPart, ...(theme ? { theme } : {}), ...(fontTable ? { fontTable } : {}) }, modelOptions);
+		return parseParadisWordStyles({ styles: stylesPart, ...(theme ? { theme } : {}), ...(fontTable ? { fontTable } : {}) }, modelOptions());
 	});
 
 	const numbering = attempt<ParadisWordNumberingModel>('numbering', () => {
 		const part = stylePart('/word/numbering.xml');
-		return part ? parseParadisWordNumbering(part, modelOptions) : undefined;
+		return part ? parseParadisWordNumbering(part, modelOptions()) : undefined;
 	});
 
 	const objectModel = attempt<ParadisWordObjectModel>('objects', () => {
@@ -147,7 +168,7 @@ export function buildParadisWordSemanticSnapshot(
 		for (const partUri of [...parts.keys()].filter(uri => storyPartPattern.test(uri)).sort()) {
 			const part = objectPart(partUri)!;
 			const relationshipPart = objectPart(relationshipPartUri(partUri));
-			const model = parseParadisWordObjects({ document: part, ...(relationshipPart ? { relationshipPart } : {}), relatedParts, token }, modelOptions);
+			const model = parseParadisWordObjects({ document: part, ...(relationshipPart ? { relationshipPart } : {}), relatedParts, token }, modelOptions());
 			merged.images.push(...model.images);
 			merged.lines.push(...model.lines);
 			merged.math.push(...model.math);
@@ -158,7 +179,7 @@ export function buildParadisWordSemanticSnapshot(
 	const securityModel = attempt<ParadisWordSecurityModel>('security', () => parseParadisWordSecurity({
 		parts: [...parts].map(([partUri, bytes]) => ({ bytes, source: { partUri, partFingerprint: fingerprintParadisWordObjectBytes(bytes) } })),
 		token,
-	}, options.deadlineMilliseconds !== undefined ? { deadlineMilliseconds: options.deadlineMilliseconds } : {}));
+	}, deadlineOption()));
 
 	// 本文の木と補助モデルが比べない部品は、中身のハッシュだけで比べる（何が変わったかは言えないが、
 	// 変わったことは伝える）。これで「比べていない部品は無い」と言えるので、比較を完了として扱える。
@@ -187,5 +208,6 @@ export function buildParadisWordSemanticSnapshot(
 			...(securityModel ? { securityModel } : {}),
 		},
 		omittedModels: omitted,
+		securityUnreadable,
 	};
 }

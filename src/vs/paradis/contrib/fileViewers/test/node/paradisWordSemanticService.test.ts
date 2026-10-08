@@ -13,7 +13,7 @@ import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '.
 import { ParadisWordSemanticChannel } from '../../node/word/paradisWordSemanticChannel.js';
 import { ParadisWordSemanticService } from '../../node/word/paradisWordSemanticService.js';
 import { ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
-import type { ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from '../../node/word/paradisWordSemanticWorkerProtocol.js';
+import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest } from '../../node/word/paradisWordSemanticWorkerProtocol.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
 const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -152,42 +152,69 @@ suite('ParadisWordSemanticService', () => {
 		deepStrictEqual(codes.map(result => result.ok ? 'ok' : result.code), ['unsupported', 'invalid', 'cancelled']);
 	});
 
-	test('worker backend answers through the worker and falls back in-process when the worker never starts', async () => {
+	test('worker backend: answers through the worker, runs in-process only when the worker never starts, and fails (not retries in-process) on a crash or deadline', async () => {
 		const log: string[] = [];
+		type Behavior = 'answer' | 'neverReady' | 'crash' | 'hang';
 		class FakeWorker implements IParadisWordSemanticWorker {
 			private readonly listeners = new Map<string, ((value: never) => void)[]>();
-			constructor(private readonly broken: boolean) { }
+			constructor(private readonly behavior: Behavior) {
+				queueMicrotask(() => behavior === 'neverReady' ? this.emit('exit', 1 as never) : this.emit('message', { kind: 'ready' } as never));
+			}
 			postMessage(message: ParadisWordSemanticWorkerRequest): void {
-				log.push(`${this.broken ? 'broken' : 'worker'}:${message.op}`);
-				queueMicrotask(() => this.broken
+				log.push(`${this.behavior}:${message.op}`);
+				if (message.op === 'cancel' || this.behavior === 'hang' || this.behavior === 'neverReady') {
+					return;
+				}
+				queueMicrotask(() => this.behavior === 'crash'
 					? this.emit('exit', 1 as never)
-					: message.op !== 'cancel' && this.emit('message', { id: message.id, result: { ok: false, code: 'unsupported' } } satisfies ParadisWordSemanticWorkerReply as never));
+					: this.emit('message', { kind: 'result', id: message.id, result: { ok: false, code: 'unsupported' } } satisfies ParadisWordSemanticWorkerMessage as never));
 			}
 			on(event: string, listener: (value: never) => void): unknown {
 				this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
 				return this;
 			}
-			async terminate(): Promise<number> { log.push('terminate'); return 0; }
+			async terminate(): Promise<number> { log.push(`terminate:${this.behavior}`); return 0; }
 			private emit(event: string, value: never): void {
 				for (const listener of this.listeners.get(event) ?? []) { listener(value); }
 			}
 		}
 		const fallback = async () => ({
-			analyze: async () => { log.push('fallback:analyze'); return { ok: false, code: 'failed' } satisfies IParadisWordAnalysisResult; },
-			compare: async () => { log.push('fallback:compare'); return { ok: false, code: 'failed' } satisfies IParadisWordComparisonResult; },
+			analyze: async () => { log.push('inProcess:analyze'); return { ok: false, code: 'failed' } satisfies IParadisWordAnalysisResult; },
+			compare: async () => { log.push('inProcess:compare'); return { ok: false, code: 'failed' } satisfies IParadisWordComparisonResult; },
 		});
-		const working = new ParadisWordSemanticWorkerBackend(() => new FakeWorker(false), fallback, 60_000);
-		const viaWorker = await working.analyze(new Uint8Array([1]), CancellationToken.None);
-		working.dispose();
-		const broken = new ParadisWordSemanticWorkerBackend(() => new FakeWorker(true), fallback, 60_000);
-		const first = await broken.analyze(new Uint8Array([1]), CancellationToken.None);
-		const second = await broken.compare(new Uint8Array([1]), new Uint8Array([2]), CancellationToken.None);
-		broken.dispose();
-		deepStrictEqual({ viaWorker, first, second, log }, {
-			viaWorker: { ok: false, code: 'unsupported' },
-			first: { ok: false, code: 'failed' },
-			second: { ok: false, code: 'failed' },
-			log: ['worker:analyze', 'terminate', 'broken:analyze', 'fallback:analyze', 'fallback:compare'],
+		// 締め切りは、テストから進められる時計で張る。
+		const deadlines: (() => void)[] = [];
+		const timers = { setTimeout: (handler: () => void, delay: number) => { if (delay > 60_000) { deadlines.push(handler); } return handler; }, clearTimeout: () => { } };
+		const run = async (behaviors: Behavior[], call: (backend: ParadisWordSemanticWorkerBackend) => Promise<unknown>) => {
+			const queue = [...behaviors];
+			const backend = new ParadisWordSemanticWorkerBackend(() => new FakeWorker(queue.shift() ?? 'answer'), fallback, 60_000, timers);
+			try {
+				return await call(backend);
+			} finally {
+				backend.dispose();
+			}
+		};
+		const bytes = new Uint8Array([1]);
+		const answered = await run(['answer'], backend => backend.analyze(bytes, CancellationToken.None));
+		const neverReady = await run(['neverReady'], async backend => [await backend.analyze(bytes, CancellationToken.None), await backend.compare(bytes, bytes, CancellationToken.None)]);
+		const crashed = await run(['crash', 'answer'], async backend => [await backend.analyze(bytes, CancellationToken.None), await backend.analyze(bytes, CancellationToken.None)]);
+		const expired = await run(['hang', 'answer'], async backend => {
+			const pending = backend.analyze(bytes, CancellationToken.None);
+			await Promise.resolve();
+			deadlines.pop()!();
+			return [await pending, await backend.analyze(bytes, CancellationToken.None)];
+		});
+		deepStrictEqual({ answered, neverReady, crashed, expired, log }, {
+			answered: { ok: false, code: 'unsupported' },
+			neverReady: [{ ok: false, code: 'failed' }, { ok: false, code: 'failed' }],
+			crashed: [{ ok: false, code: 'limitExceeded' }, { ok: false, code: 'unsupported' }],
+			expired: [{ ok: false, code: 'limitExceeded' }, { ok: false, code: 'unsupported' }],
+			log: [
+				'answer:analyze', 'terminate:answer',
+				'neverReady:analyze', 'terminate:neverReady', 'inProcess:analyze', 'inProcess:compare',
+				'crash:analyze', 'terminate:crash', 'answer:analyze', 'terminate:answer',
+				'hang:analyze', 'terminate:hang', 'answer:analyze', 'terminate:answer',
+			],
 		});
 	});
 
