@@ -23,6 +23,8 @@ const PAGES_TWO = text('## Pages\n1: Orders (http://127.0.0.1/orders) [selected]
 
 interface IFakeHostOptions {
 	readonly pages: readonly unknown[];
+	/** read の答え（既定は落ち着いた記録）。 */
+	readonly read?: unknown;
 	readonly collect?: unknown;
 	readonly downloads?: readonly ReadonlyMap<string, number>[];
 }
@@ -40,7 +42,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 				return evaluateResult({ url: 'http://127.0.0.1/orders', title: 'Orders' });
 			}
 			if (kind === 'read') {
-				return evaluateResult({ age: 500, ready: true, busy: false, navigated: false });
+				return options.read ?? evaluateResult({ age: 500, ready: true, busy: false, navigated: false });
 			}
 			return evaluateResult(options.collect);
 		},
@@ -155,8 +157,21 @@ suite('Paradis browser observe', () => {
 		const before = await observer.before(host, options, 'changes', 2000);
 		const report = await observer.after(host, 'pane', options, before, 'changes', 2000);
 		assert.deepStrictEqual({ calls, report }, {
-			calls: ['list_pages', 'install', 'list_pages', 'list_pages', 'read', 'list_pages', 'read', 'list_pages', 'read', 'list_pages', 'collect'],
+			calls: ['list_pages', 'install', 'list_pages', 'read', 'read', 'read', 'list_pages', 'collect'],
 			report: '[Page after the action] Settled after 200 ms.\nAppeared:\n- text "Report ID: RPT-1"',
+		});
+	});
+
+	test('a dialog that opens while settling stops the wait and is reported instead of the changes', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: true, state: false };
+		const dialog = text('## Pages\n1: A (http://a/) [selected]\n# Open dialog\nconfirm: Delete?.\nCall handle_dialog to handle it before continuing.');
+		const { host, calls } = fakeHost({ pages: [PAGES_ONE, PAGES_ONE, dialog], read: { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: a JavaScript dialog is open on the page.' }], isError: true } });
+		const before = await observer.before(host, options, 'changes', 2000);
+		const report = await observer.after(host, 'pane', options, before, 'changes', 2000);
+		assert.deepStrictEqual({ calls, report }, {
+			calls: ['list_pages', 'install', 'list_pages', 'read', 'list_pages'],
+			report: 'A JavaScript dialog is open (confirm: Delete?). Handle it with handle_dialog before anything else on this page.',
 		});
 	});
 

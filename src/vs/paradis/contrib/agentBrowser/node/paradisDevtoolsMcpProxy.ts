@@ -38,7 +38,7 @@ import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErr
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
-import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect } from './paradisDevtoolsToolAdjustments.js';
+import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -238,6 +238,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	private _toolsCache: readonly IParadisProxiedTool[] | undefined;
 	/** vendored の take_snapshot が root の測り（`paraCodeRootRect`、PARA-PATCH）を知っているか。tools/list で控える。 */
 	private _measuresSnapshotRoot = false;
+	private _evaluateObserves = false;
 	/** 作成・後始末まで受け持つ一時フォルダ（`options.temporaryDirectory` で固定したときは無い）。 */
 	private readonly _temporaryDirectory: ParadisDevtoolsTemporaryDirectory | undefined;
 
@@ -288,6 +289,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			// vendored の take_snapshot が root の測りを知っているか（PARA-PATCH が当たっているか）を控える
 			this._measuresSnapshotRoot = paradisSnapshotMeasuresRoot(result.tools);
+			// vendored の evaluate_script が待たずに評価する引数を知っているか（操作の後の観測。paradisBrowserObserve.ts）
+			this._evaluateObserves = paradisEvaluateObserves(result.tools);
 			// wait_for / take_snapshot の引数は Para Code 側で足す・広げる（paradisDevtoolsToolAdjustments.ts）
 			this._toolsCache = Object.freeze(result.tools.map(tool => this._deepFreeze(paradisAdjustDevtoolsToolDescriptor(tool))));
 		}
@@ -331,7 +334,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const now = this.options.now ?? Date.now;
 		const budgetStartedAt = now();
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
-		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot });
+		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot, evaluateObserve: this._evaluateObserves });
 		const measuresRoot = this._isRecord(prepared.args) && prepared.args.paraCodeRootRect !== undefined;
 		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
 		const snapshotEpoch = this._snapshots.epoch(token);
