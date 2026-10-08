@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { statusBucket, type HomeStatusBucket } from '../../homeSort.js';
+import { countRunningAgents } from '../../attentionCount.js';
 import { pinKeyForTerminal } from '../../store.js';
 import { formatRelativeTime } from '../../time.js';
 import type { ConnectionKind } from '../../ui/statusColors.js';
@@ -33,6 +34,35 @@ export interface HomePcLike {
 	readonly waiting: number;
 	/** 実行中の数（アーカイブを除く。数え方は `attentionCount.ts` の `countRunningAgents`）。 */
 	readonly running: number;
+	/** 版が合わない（どちらかの更新が必要）。この間は State を捨てるので件数は 0 のまま。 */
+	readonly updateRequired?: UpdateTarget | undefined;
+	/** リレーがこの端末の資格を拒んだ（再ペアリングが必要。待ってもつながらない）。 */
+	readonly pairingRejected?: boolean;
+}
+
+/**
+ * 合計から見た PC の状態。
+ *  - `counted`: 合計に足す（リレーにつながり、向こうで Para Code が動いていて、版が合う）
+ *  - `connecting`: つなごうとしている（起動直後・つなぎ直し）
+ *  - `updateRequired`: つながっていても版が合わず、State を受け取らない
+ *  - `unconnected`: それ以外（オフライン・PC の Para Code が止まっている・資格を拒まれた）
+ */
+export type PcCountState = 'counted' | 'connecting' | 'updateRequired' | 'unconnected';
+
+type CountStateInput = Pick<HomePcLike, 'connection' | 'pcOnline' | 'updateRequired' | 'pairingRejected'>;
+
+export function pcCountState(pc: CountStateInput): PcCountState {
+	if (pc.updateRequired !== undefined) {
+		return 'updateRequired';
+	}
+	if (pc.connection === 'online' && pc.pcOnline) {
+		return 'counted';
+	}
+	// 資格を拒まれた PC は 1〜15 分おきの確認の間だけ「接続しています」になるので、つなぎ中には数えない。
+	if (pc.pairingRejected !== true && (pc.connection === 'connecting' || pc.connection === 'handshaking')) {
+		return 'connecting';
+	}
+	return 'unconnected';
 }
 
 /** 件数の元になるターミナル（実体は `workspace.terminals`）。 */
@@ -43,12 +73,12 @@ export interface HomeTerminalLike {
 }
 
 /**
- * 合計に足す PC か（リレーにつながり、向こうで Para Code が動いている）。切れた PC の件数は最後に見えた値で
- * しかなく、その間に答えられている・終わっているかもしれない（PC のカードでも切れた PC には件数を出さない）。
- * 全 PC 横断の一覧（`agentsAcrossPcs.ts`）も同じ判定で行を出すので、押した数と行の数が揃う。
+ * 合計に足す PC か（`pcCountState` が `counted`）。切れた PC の件数は最後に見えた値でしかなく、その間に答えられて
+ * いる・終わっているかもしれない（PC のカードでも切れた PC には件数を出さない）。版が合わない PC は State を
+ * 受け取らないので数えない。全 PC 横断の一覧（`agentsAcrossPcs.ts`）も同じ判定で行を出すので、押した数と行の数が揃う。
  */
-export function isCountedPc(pc: Pick<HomePcLike, 'connection' | 'pcOnline'>): boolean {
-	return pc.connection === 'online' && pc.pcOnline;
+export function isCountedPc(pc: CountStateInput): boolean {
+	return pcCountState(pc) === 'counted';
 }
 
 /** 要対応の合計。**つながっている PC だけ**を足す（`isCountedPc`）。 */
@@ -62,18 +92,27 @@ export function totalRunning(pcs: readonly HomePcLike[]): number {
 }
 
 /**
- * 統計カードの下の1行（合計の範囲）。「3 台の合計」「2 台の合計 · 1 台は未接続」「1 台は未接続」。
- * PC が1台でつながっていれば、範囲を言うまでもないので undefined（行を出さない）。
+ * 統計カードの下の1行（合計の範囲）。「2 台の合計 · 1 台は未接続」「1 台の合計 · 1 台は接続しています」。
+ * PC があれば必ず何か言う（起動直後に行が出たり消えたりして、下の PC のカードがずれないように）。
+ * つなごうとしている PC は「未接続」と言わずに分けて数える。PC が無ければ undefined。
  */
-export function statScopeNote(pcs: readonly Pick<HomePcLike, 'connection' | 'pcOnline'>[]): string | undefined {
-	const counted = pcs.filter(isCountedPc).length;
-	const unconnected = pcs.length - counted;
-	const parts: string[] = [];
-	if (counted >= 2) {
-		parts.push(`${counted} 台の合計`);
+export function statScopeNote(pcs: readonly CountStateInput[]): string | undefined {
+	const tally: Record<PcCountState, number> = { counted: 0, connecting: 0, updateRequired: 0, unconnected: 0 };
+	for (const pc of pcs) {
+		tally[pcCountState(pc)]++;
 	}
-	if (unconnected > 0) {
-		parts.push(`${unconnected} 台は未接続`);
+	const parts: string[] = [];
+	if (tally.counted > 0) {
+		parts.push(`${tally.counted} 台の合計`);
+	}
+	if (tally.connecting > 0) {
+		parts.push(`${tally.connecting} 台は接続しています`);
+	}
+	if (tally.updateRequired > 0) {
+		parts.push(`${tally.updateRequired} 台は更新が必要`);
+	}
+	if (tally.unconnected > 0) {
+		parts.push(`${tally.unconnected} 台は未接続`);
 	}
 	return parts.length > 0 ? parts.join(' · ') : undefined;
 }
@@ -121,8 +160,12 @@ export function pcCardCounts(
 		}
 		agents++;
 		const bucket = statusBucket(terminal.agentStatus);
-		counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+		// 実行中はホームのカード・見ていない PC のチップと同じ関数で数える（下で上書きする）。
+		if (bucket !== 'working') {
+			counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+		}
 	}
+	counts.set('working', countRunningAgents(activeTerminals, archivedKeys));
 	return {
 		spaces: pc.workspaces,
 		agents,

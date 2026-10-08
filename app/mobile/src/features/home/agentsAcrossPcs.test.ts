@@ -4,9 +4,14 @@ import { describe, expect, test, vi } from 'vitest';
 
 // time.ts はフック（useNow）のために react-native を読む。使うのは純粋な formatRelativeTime だけなので差し替える。
 vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
-import { buildAgentsAcrossPcs, parseAgentsAcrossState, unconnectedNote, type AgentsAcrossPc, type AgentsAcrossSource } from './agentsAcrossPcs.js';
+import {
+	buildAgentsAcrossPcs, createAgentsAcrossBuilder, idleHeaderLabel, parseAgentsAcrossState, unconnectedNote,
+	type AgentsAcrossPc, type AgentsAcrossSource,
+} from './agentsAcrossPcs.js';
 import { totalAttention, totalRunning } from './homeSummary.js';
 import type { LastKnownPcSnapshot } from '../../lastKnownPcs.js';
+import { summarizeAgentCounts } from '../../pcAgentSources.js';
+import type { UpdateTarget } from '../../pcCompat.js';
 
 interface Terminal {
 	readonly terminalKey: string;
@@ -29,11 +34,6 @@ const lastKnown = (pcId: string, waiting: number, working: number): LastKnownPcS
 	spaces: [{ name: 'repo', terminals: waiting + working, waiting, working, review: 0, idle: 0 }],
 });
 
-const pc = (id: string, online: boolean, waiting: number, running: number, snapshot?: LastKnownPcSnapshot): AgentsAcrossPc => ({
-	id, name: `PC ${id}`, connection: online ? 'online' : 'offline', pcOnline: online, workspaces: 1, waiting, running,
-	...(snapshot !== undefined ? { lastKnown: snapshot } : {}),
-});
-
 const spaces = [{ id: 'w1', name: 'api' }, { id: 'w2', name: 'docs', branch: 'main' }];
 
 const sources: Record<string, AgentsAcrossSource<Terminal>> = {
@@ -50,7 +50,34 @@ const sources: Record<string, AgentsAcrossSource<Terminal>> = {
 	c: { terminals: [term('c1', 'working', 'w1')], spaces, activeWs: 'w1', archived: [] },
 };
 
-const pcs = [pc('a', true, 1, 2), pc('b', true, 1, 0), pc('c', false, 0, 1, lastKnown('c', 0, 1)), pc('d', false, 0, 0)];
+interface PcOptions {
+	readonly connection?: string;
+	readonly pcOnline?: boolean;
+	readonly snapshot?: LastKnownPcSnapshot;
+	readonly updateRequired?: UpdateTarget;
+}
+
+/** PC の要約。件数は `PcSummary` と同じ関数（summarizeRuntime の件数の部分）で行の元から数える。 */
+function pc(id: string, options: PcOptions = {}): AgentsAcrossPc {
+	const source = sources[id];
+	const counts = summarizeAgentCounts(source?.terminals, source?.archived ?? []);
+	return {
+		id, name: `PC ${id}`, connection: options.connection ?? 'online', pcOnline: options.pcOnline ?? true, workspaces: 1,
+		waiting: counts.waiting, running: counts.running,
+		...(options.snapshot !== undefined ? { lastKnown: options.snapshot } : {}),
+		...(options.updateRequired !== undefined ? { updateRequired: options.updateRequired } : {}),
+	};
+}
+
+const pcs = [
+	pc('a'),
+	pc('b'),
+	pc('c', { connection: 'offline', pcOnline: false, snapshot: lastKnown('c', 0, 1) }),
+	pc('d', { connection: 'connecting', pcOnline: false }),
+	pc('e', { updateRequired: 'pc' }),
+	// つながっているが State をまだ受けていない（行の元が無い）。
+	pc('f'),
+];
 
 function shape(state: 'waiting' | 'running', activePcId: string | undefined) {
 	const list = buildAgentsAcrossPcs({ pcs, sources, activePcId, state });
@@ -58,7 +85,7 @@ function shape(state: 'waiting' | 'running', activePcId: string | undefined) {
 		counts: list.counts,
 		sections: list.sections.map(section => (section.kind === 'live'
 			? { pc: section.pcId, active: section.active, rows: section.rows.map(row => `${row.terminal.terminalKey}@${row.space?.name}`) }
-			: { pc: section.pcId, unconnected: section.lastKnown?.count ?? null })),
+			: { pc: section.pcId, idle: idleHeaderLabel(section), last: section.lastKnown?.count ?? null })),
 	};
 }
 
@@ -68,42 +95,61 @@ describe('全 PC 横断の一覧', () => {
 			counts: { waiting: 2, running: 2 },
 			sections: [
 				{ pc: 'a', active: false, rows: ['a3@api', 'a1@docs'] },
-				{ pc: 'c', unconnected: 1 },
-				{ pc: 'd', unconnected: null },
+				{ pc: 'c', idle: '未接続', last: 1 },
+				{ pc: 'd', idle: '接続しています…', last: null },
+				{ pc: 'e', idle: 'PC の更新が必要', last: null },
+				{ pc: 'f', idle: '受け取っています', last: null },
 			],
 		});
 	});
 
-	test('要対応: 見ている PC を先頭に台帳の順。つながっていない PC は末尾に前回の件数だけ', () => {
+	test('要対応: 見ている PC を先頭に台帳の順。行を出せない PC は末尾に理由と前回の件数だけ', () => {
 		expect(shape('waiting', 'b')).toEqual({
 			counts: { waiting: 2, running: 2 },
 			sections: [
 				{ pc: 'b', active: true, rows: ['b1@api'] },
 				{ pc: 'a', active: false, rows: ['a2@api'] },
-				{ pc: 'c', unconnected: 0 },
-				{ pc: 'd', unconnected: null },
+				{ pc: 'c', idle: '未接続', last: 0 },
+				{ pc: 'd', idle: '接続しています…', last: null },
+				{ pc: 'e', idle: 'PC の更新が必要', last: null },
+				{ pc: 'f', idle: '受け取っています', last: null },
 			],
 		});
 	});
 
-	test('切り替えの件数はホームのカードの合計と同じ（つながっている PC だけ）', () => {
+	test('切り替えの件数は、PcSummary と同じ数え方で作ったホームのカードの合計と同じ（つながっている PC だけ）', () => {
 		const list = buildAgentsAcrossPcs({ pcs, sources, activePcId: 'a', state: 'waiting' });
-		expect(list.counts).toEqual({ waiting: totalAttention(pcs), running: totalRunning(pcs) });
+		// c（未接続）は State が残っていて数えれば実行中 1 だが、合計にも一覧にも入らない。
+		expect({ list: list.counts, cards: { waiting: totalAttention(pcs), running: totalRunning(pcs) }, offlineRunning: pcs[2]?.running })
+			.toEqual({ list: { waiting: 2, running: 2 }, cards: { waiting: 2, running: 2 }, offlineRunning: 1 });
 	});
 
-	test('State をまだ受けていない PC は行を出さない', () => {
-		const list = buildAgentsAcrossPcs({ pcs: [pc('x', true, 0, 0)], sources: {}, activePcId: 'x', state: 'running' });
-		expect(list).toEqual({ sections: [], counts: { waiting: 0, running: 0 } });
+	test('組み立て器は、行の元の参照が同じ PC には前回の段を返し、変わった PC だけ作り直す', () => {
+		const build = createAgentsAcrossBuilder<Terminal>();
+		const first = build({ pcs, sources, activePcId: 'a', state: 'waiting' });
+		const changed = { ...sources, b: { spaces, activeWs: 'w1', archived: [], terminals: [term('b1', 'question', 'w1'), term('b3', 'permission', 'w2')] } };
+		const second = build({ pcs, sources: changed, activePcId: 'a', state: 'waiting' });
+		const live = (list: typeof first, id: string) => list.sections.find(section => section.kind === 'live' && section.pcId === id);
+		expect({
+			sameA: live(first, 'a') === live(second, 'a'),
+			sameB: live(first, 'b') === live(second, 'b'),
+			rowsB: second.counts.waiting,
+		}).toEqual({ sameA: true, sameB: false, rowsB: 3 });
 	});
 
-	test('未接続の段の1文と、クエリの読み戻し', () => {
+	test('段の1文と、クエリの読み戻し', () => {
 		const list = buildAgentsAcrossPcs({ pcs, sources, activePcId: 'a', state: 'running' });
 		const notes = list.sections.flatMap(section => (section.kind === 'unconnected' ? [unconnectedNote(section, 'running', NOW)] : []));
 		expect({
 			notes,
 			states: [parseAgentsAcrossState('running'), parseAgentsAcrossState('waiting'), parseAgentsAcrossState('other'), parseAgentsAcrossState(undefined)],
 		}).toEqual({
-			notes: ['最終確認 2時間前の時点で実行中 1', 'まだ一覧を受け取っていません。つながると数えます'],
+			notes: [
+				'最終確認 2時間前の時点で実行中 1',
+				'まだ一覧を受け取っていません。つながると数えます',
+				'版が合わないため数えていません。更新すると数えます',
+				'PC から一覧を受け取っています',
+			],
 			states: ['running', 'waiting', 'waiting', 'waiting'],
 		});
 	});

@@ -4,7 +4,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 // time.ts はフック（useNow）のために react-native を読む。使うのは純粋な formatRelativeTime だけなので差し替える。
 vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
-import { batteryLine, formatCost, pcCardCounts, pcConnectionLine, statScopeNote, totalAttention, totalRunning } from './homeSummary.js';
+import { batteryLine, formatCost, pcCardCounts, pcConnectionLine, pcCountState, statScopeNote, totalAttention, totalRunning } from './homeSummary.js';
 import { lastSessionSubtitle, parseLastSession } from './lastSession.js';
 
 const pc = (id: string, waiting: number, online = true, running = 0) => ({ id, connection: online ? 'online' : 'offline', pcOnline: online, workspaces: 3, waiting, running });
@@ -20,15 +20,36 @@ describe('統計カード', () => {
 		expect(totalRunning([{ ...pc('a', 0, true, 2), pcOnline: false }])).toBe(0);
 	});
 
-	test('カードの下の1行は、つながっている台数（2台以上）と未接続の台数を言う', () => {
+	test('合計に足すのは、つながっていて版が合う PC だけ。つなぎ中・更新が必要・未接続を分ける', () => {
+		expect([
+			pcCountState(pc('a', 0)),
+			pcCountState({ ...pc('a', 0), connection: 'connecting', pcOnline: false }),
+			pcCountState({ ...pc('a', 0), connection: 'handshaking', pcOnline: false }),
+			pcCountState({ ...pc('a', 0), updateRequired: 'app' }),
+			pcCountState(pc('a', 0, false)),
+			pcCountState({ ...pc('a', 0), pcOnline: false }),
+			// 資格を拒まれた PC は確認の間だけ「接続しています」になるが、つなぎ中には数えない。
+			pcCountState({ ...pc('a', 0), connection: 'connecting', pcOnline: false, pairingRejected: true }),
+		]).toEqual(['counted', 'connecting', 'connecting', 'updateRequired', 'unconnected', 'unconnected', 'unconnected']);
+		expect(totalAttention([pc('a', 2), { ...pc('b', 3), updateRequired: 'pc' }])).toBe(2);
+	});
+
+	test('カードの下の1行は、PC があれば必ず範囲を言い、つなぎ中を「未接続」と言わない', () => {
 		expect([
 			statScopeNote([pc('a', 0)]),
 			statScopeNote([pc('a', 0), pc('b', 0)]),
 			statScopeNote([pc('a', 0), pc('b', 0), pc('c', 0, false)]),
-			statScopeNote([pc('a', 0), pc('c', 0, false)]),
-			statScopeNote([pc('c', 0, false), pc('d', 0, false)]),
+			statScopeNote([pc('a', 0), { ...pc('b', 0), connection: 'connecting', pcOnline: false }]),
+			statScopeNote([{ ...pc('a', 0), updateRequired: 'pc' }, pc('c', 0, false), pc('d', 0, false)]),
 			statScopeNote([]),
-		]).toEqual([undefined, '2 台の合計', '2 台の合計 · 1 台は未接続', '1 台は未接続', '2 台は未接続', undefined]);
+		]).toEqual([
+			'1 台の合計',
+			'2 台の合計',
+			'2 台の合計 · 1 台は未接続',
+			'1 台の合計 · 1 台は接続しています',
+			'1 台は更新が必要 · 2 台は未接続',
+			undefined,
+		]);
 	});
 
 	test('コストは小数2桁、取れていなければダッシュ', () => {

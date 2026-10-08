@@ -14,7 +14,7 @@ import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { PcCapability, pcHasCapability, type UpdateTarget } from './pcCompat.js';
 import type { PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
-import { countAttentionAgents, countRunningAgents } from './attentionCount.js';
+import { nextPcAgentSources, summarizeAgentCounts, type PcAgentSource } from './pcAgentSources.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
 import {
@@ -603,7 +603,8 @@ let currentOperationRun = 1;
 
 function summarizeRuntime(runtime: PcRuntime): PcSummary {
 	const workspace = runtime.state.workspace;
-	const terminals = workspace?.terminals ?? [];
+	// 件数の数え方（要対応・実行中）は pcAgentSources.ts の純関数に置く（単体テストのため）。
+	const counts = summarizeAgentCounts(workspace?.terminals, archivedRecord[runtime.pc.id] ?? NO_KEYS);
 	return {
 		id: runtime.pc.id,
 		name: runtime.pc.name,
@@ -613,10 +614,10 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		pairingRejected: runtime.state.pairingRejected,
 		updateRequired: runtime.state.updateRequired,
 		workspaces: workspace?.workspaces.length ?? 0,
-		terminals: terminals.length,
+		terminals: counts.terminals,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
-		waiting: countAttentionAgents(terminals),
-		running: countRunningAgents(terminals, archivedRecord[runtime.pc.id] ?? NO_KEYS),
+		waiting: counts.waiting,
+		running: counts.running,
 		// 起動直後でまだ繋がっていなければ、前回の一覧を受け取った時刻を最後の接続として出す。
 		lastOnlineAt: runtime.lastOnlineAt ?? runtime.lastKnown?.savedAt,
 		lastKnown: runtime.lastKnown,
@@ -670,52 +671,25 @@ function publishPcResources(): void {
 	}
 }
 
-type StoreTerminals = NonNullable<StoreState['workspace']>['terminals'];
-type StoreSpaces = NonNullable<StoreState['workspace']>['workspaces'];
-
-/**
- * PC 1台ぶんの、エージェントの行を組み立てる元（全 PC 横断の一覧 `/agents` が読む）。
- * 中身は PC から届いた State の部分の参照のまま（`workspaceIdentity.ts` が中身の同じ配列の参照を据え置く）。
- */
-export interface PcAgentSource {
-	readonly terminals: StoreTerminals;
-	readonly spaces: StoreSpaces;
-	readonly activeWs: string | undefined;
-	/** その PC のアーカイブの印（保存形のキーの配列）。 */
-	readonly archived: readonly string[];
-}
+export type { PcAgentSource } from './pcAgentSources.js';
 
 /**
  * PC ごとのターミナルとスペース。**いま見ていない PC のぶんも入る**（接続を保っている間）。
  * 画面の状態（`useAppStore` の `workspace`）は見ている PC だけなので、PC をまたいで行を出す画面はここを読む。
  * `PcSummary` に載せると一覧を購読するすべての画面が State のたびに配り直されるため、別の入れ物にしている。
- * PC の一覧を作り直すたび（{@link pcSummaries}）に、どれかの参照が変わったときだけ更新する。
+ * PC の一覧を作り直すたび（{@link pcSummaries}）に、どれかの参照が変わったときだけ更新する（`nextPcAgentSources`）。
  * State（workspace）を受けていない PC は入らない。
  */
 export const usePcAgentSources = create<{ readonly byPc: Readonly<Record<string, PcAgentSource>> }>(() => ({ byPc: {} }));
 
 function publishPcAgentSources(): void {
 	const current = usePcAgentSources.getState().byPc;
-	const next: Record<string, PcAgentSource> = {};
-	let changed = false;
-	let count = 0;
-	for (const id of pcOrder) {
-		const workspace = runtimes.get(id)?.state.workspace;
-		if (workspace === undefined) {
-			continue;
-		}
-		count++;
-		const archived = archivedRecord[id] ?? NO_KEYS;
-		const before = current[id];
-		if (before !== undefined && before.terminals === workspace.terminals && before.spaces === workspace.workspaces
-			&& before.activeWs === workspace.activeWs && before.archived === archived) {
-			next[id] = before;
-			continue;
-		}
-		changed = true;
-		next[id] = { terminals: workspace.terminals, spaces: workspace.workspaces, activeWs: workspace.activeWs, archived };
-	}
-	if (changed || count !== Object.keys(current).length) {
+	const next = nextPcAgentSources(current, pcOrder.map(id => ({
+		id,
+		workspace: runtimes.get(id)?.state.workspace,
+		archived: archivedRecord[id] ?? NO_KEYS,
+	})));
+	if (next !== current) {
 		usePcAgentSources.setState({ byPc: next });
 	}
 }
@@ -1028,6 +1002,9 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	// PCが名乗った名前を台帳へ取り込む（ユーザーが自分で付けた名前は上書きしない）。
 	adoptReportedPcName(runtime, next.workspace?.pcName);
 	rememberLastKnown(runtime, next);
+	// 見ていない PC ではアーカイブの印の点検（下の releaseArchivedOnAttention）をしない。印はその PC へ切り替えた
+	// ときに点検される。そのため、見ていない間に「要対応になって戻るはずだった」エージェントがまた作業を始めると、
+	// 印が残ったまま実行中の数（PcSummary.running）と横断の一覧から外れる（要対応はアーカイブを見ないので影響しない）。
 	if (runtime.pc.id !== activePcId) {
 		useAppStore.setState({ pcs: pcSummaries() });
 		return;
