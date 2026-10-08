@@ -6,7 +6,8 @@ import { Bell, ChevronRight, Plus, QrCode, Settings, SquareTerminal } from 'luci
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useWindowControlsInset } from '../../ipad/windowControls.js';
-import { alpha, colors, radius, space, type } from '../../theme.js';
+import { haptic } from '../../haptics.js';
+import { alpha, colors, radius, space, status, type } from '../../theme.js';
 import { Card, HeaderButton, Icon, Meter, MeterRow, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
 import { ParaLogo } from '../pairing/paraLogo.js';
 import { accountName } from '../settings/usageSummary.js';
@@ -43,16 +44,46 @@ export function HomeTopBar({ unread, onNotifications, onSettings, showBell = tru
 	);
 }
 
-/** 統計カード3枚（モックの `.stats`）。 */
-export function StatCards({ items }: { items: readonly { readonly label: string; readonly value: string }[] }) {
+/** 統計カード1枚。 */
+export interface StatCardItem {
+	readonly label: string;
+	readonly value: string;
+	/** 数を目立たせる（要対応が1件以上のとき。数字を要対応の色にする）。 */
+	readonly hot?: boolean;
+	/** VoiceOver が読む押した先（「全 PC の一覧を開きます」など）。 */
+	readonly hint: string;
+	readonly onPress: () => void;
+}
+
+/**
+ * 統計カード3枚（モックの `.stats`）。押すと内訳の画面を開く（右上の ›）。カードは幅が 1/3 しか無いので、
+ * 合計の範囲（「2 台の合計 · 1 台は未接続」）はカードの中ではなく下の1行（`note`）で言う。
+ */
+export function StatCards({ items, note }: { items: readonly StatCardItem[]; note?: string | undefined }) {
 	return (
-		<View style={styles.stats}>
-			{items.map(item => (
-				<View key={item.label} style={styles.stat} accessible accessibilityLabel={`${item.label} ${item.value}`}>
-					<Text style={styles.statValue} numberOfLines={1}>{item.value}</Text>
-					<Text style={styles.statLabel} numberOfLines={1}>{item.label}</Text>
-				</View>
-			))}
+		<View style={styles.statsBlock}>
+			<View style={styles.stats}>
+				{items.map(item => (
+					<Pressable
+						key={item.label}
+						style={({ pressed }) => [styles.stat, pressed ? styles.statPressed : undefined]}
+						onPress={() => {
+							haptic('move');
+							item.onPress();
+						}}
+						accessibilityRole="button"
+						accessibilityLabel={`${item.label} ${item.value}`}
+						accessibilityHint={item.hint}
+					>
+						<Text style={[styles.statValue, item.hot === true ? { color: status.attention.color } : undefined]} numberOfLines={1}>{item.value}</Text>
+						<Text style={styles.statLabel} numberOfLines={1}>{item.label}</Text>
+						<View style={styles.statChevron} pointerEvents="none">
+							<Icon icon={ChevronRight} size={iconSize.xs} color={colors.textMuted} />
+						</View>
+					</Pressable>
+				))}
+			</View>
+			{note !== undefined ? <Text style={styles.statNote} numberOfLines={1}>{note}</Text> : null}
 		</View>
 	);
 }
@@ -233,10 +264,12 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		gap: 2,
 	},
+	statsBlock: {
+		marginBottom: space.lg,
+	},
 	stats: {
 		flexDirection: 'row',
 		gap: space.sm + 2,
-		marginBottom: space.lg,
 	},
 	stat: {
 		flex: 1,
@@ -259,6 +292,21 @@ const styles = StyleSheet.create({
 		fontWeight: '500',
 		color: colors.textMuted,
 		marginTop: 2,
+	},
+	statPressed: {
+		backgroundColor: colors.raised,
+	},
+	statChevron: {
+		position: 'absolute',
+		top: space.sm,
+		right: space.sm,
+	},
+	statNote: {
+		fontSize: type.meta,
+		color: colors.textMuted,
+		marginTop: space.sm,
+		marginBottom: -space.xs,
+		marginHorizontal: space.xs,
 	},
 	tile: {
 		width: TILE_SIZE,

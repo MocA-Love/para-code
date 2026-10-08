@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useAppStore } from '../appState.js';
+import { useAppStore, usePcAgentSources } from '../appState.js';
+import { countRunningAgents } from '../attentionCount.js';
 import type { AgentChatState, WorkspaceState } from '../store.js';
 
 /**
@@ -112,19 +113,22 @@ export function installDemoData(): void {
 		return;
 	}
 	const now = Date.now();
+	const workspace = demoWorkspace();
+	// 全 PC 横断の一覧（`/agents`）が読む PC ごとの元も、いま見ている PC のぶんだけ入れる。
+	usePcAgentSources.setState({ byPc: { [MBP]: { terminals: workspace.terminals, spaces: workspace.workspaces, activeWs: workspace.activeWs, archived: [] } } });
 	useAppStore.setState({
 		ready: true,
 		paired: true,
 		initializing: false,
 		pcs: [
-			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, pairingRejected: false, workspaces: 3, terminals: 8, waiting: 2, lastOnlineAt: now, battery: { level: 82, charging: true } },
-			{ id: MINI, name: 'Mac mini', hue: 30, connection: 'offline', pcOnline: false, pairingRejected: false, workspaces: 0, terminals: 0, waiting: 0, lastOnlineAt: now - 2 * 3_600_000, battery: undefined },
+			{ id: MBP, name: 'MacBook Pro', hue: 210, connection: 'online', pcOnline: true, pairingRejected: false, workspaces: 3, terminals: 8, waiting: 2, running: countRunningAgents(workspace.terminals, []), lastOnlineAt: now, battery: { level: 82, charging: true } },
+			{ id: MINI, name: 'Mac mini', hue: 30, connection: 'offline', pcOnline: false, pairingRejected: false, workspaces: 0, terminals: 0, waiting: 0, running: 0, lastOnlineAt: now - 2 * 3_600_000, battery: undefined },
 		],
 		activePcId: MBP,
 		connection: 'online',
 		pcOnline: true,
 		sessionProtocolReady: true,
-		workspace: demoWorkspace(),
+		workspace,
 		agentChats: demoChats(),
 		selectedWs: 'ws-para',
 		pinnedKeys: new Set(['demo-notes']),

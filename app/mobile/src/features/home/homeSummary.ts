@@ -12,10 +12,15 @@ import { lastKnownTotals, type LastKnownPcSnapshot } from '../../lastKnownPcs.js
  * ホーム（`/`）の数字を決める純関数。統計カード3枚と、PC のカードの件数・接続の一文。
  *
  * **統計カードの中身（Orca は「起動回数・稼働時間・作成した PR」）**: PC 側がこれらを集計して
- * 送っていないので、いまある値で代える（作り直し計画の【要確認】）。
- *  - 要対応: 答えを待っているエージェントの数。ホームで一番先に知りたいもの。全 PC ぶん
- *  - 実行中: いま見ている PC で動いているエージェントの数（他の PC は件数の内訳が届かない）
- *  - 今日のコスト: いま見ている PC の ccusage の今日の合計（使用量の画面と同じ `todayCost`）
+ * 送っていないので、いまある値で代える。3枚とも全 PC の合計で、押すと内訳の画面を開く。
+ *  - 要対応: 答えを待っているエージェントの数。ホームで一番先に知りたいもの。つながっている全 PC ぶん
+ *    （押すと全 PC 横断の一覧 `/agents?state=waiting`）
+ *  - 実行中: 動いているエージェントの数。見ていない PC も、接続を保っていれば（既定）その PC の状態から数える
+ *    （押すと `/agents?state=running`）
+ *  - 今日のコスト: 全 PC と SSH の接続先の ccusage の今日の合計（`useHomeUsage` の `todayCostTotal`。
+ *    押すとコストの画面）
+ *
+ * つながっていない PC は要対応・実行中に足さず、カードの下の1行（`statScopeNote`）で台数だけを言う。
  */
 
 /** 件数の元になる PC の要約（実体は `appState.ts` の `PcSummary`）。 */
@@ -26,6 +31,8 @@ export interface HomePcLike {
 	readonly workspaces: number;
 	/** 要対応の数（数え方は `attentionCount.ts`）。 */
 	readonly waiting: number;
+	/** 実行中の数（アーカイブを除く。数え方は `attentionCount.ts` の `countRunningAgents`）。 */
+	readonly running: number;
 }
 
 /** 件数の元になるターミナル（実体は `workspace.terminals`）。 */
@@ -36,22 +43,39 @@ export interface HomeTerminalLike {
 }
 
 /**
- * 要対応の合計。**つながっている PC だけ**を足す。切れた PC の件数は最後に見えた値でしかなく、
- * その間に答えられているかもしれない（PC のカードでも切れた PC には件数を出さない）。
+ * 合計に足す PC か（リレーにつながり、向こうで Para Code が動いている）。切れた PC の件数は最後に見えた値で
+ * しかなく、その間に答えられている・終わっているかもしれない（PC のカードでも切れた PC には件数を出さない）。
+ * 全 PC 横断の一覧（`agentsAcrossPcs.ts`）も同じ判定で行を出すので、押した数と行の数が揃う。
  */
-export function totalAttention(pcs: readonly HomePcLike[]): number {
-	return pcs.reduce((sum, pc) => (pc.connection === 'online' && pc.pcOnline ? sum + pc.waiting : sum), 0);
+export function isCountedPc(pc: Pick<HomePcLike, 'connection' | 'pcOnline'>): boolean {
+	return pc.connection === 'online' && pc.pcOnline;
 }
 
-/** いま見ている PC で実行中のエージェントの数（アーカイブしたものは数えない）。 */
-export function runningAgents(terminals: readonly HomeTerminalLike[] | undefined, archivedKeys: ReadonlySet<string>): number {
-	let count = 0;
-	for (const terminal of terminals ?? []) {
-		if (terminal.agent === true && terminal.agentStatus === 'working' && !archivedKeys.has(pinKeyForTerminal(terminal))) {
-			count++;
-		}
+/** 要対応の合計。**つながっている PC だけ**を足す（`isCountedPc`）。 */
+export function totalAttention(pcs: readonly HomePcLike[]): number {
+	return pcs.reduce((sum, pc) => (isCountedPc(pc) ? sum + pc.waiting : sum), 0);
+}
+
+/** 実行中の合計。要対応と同じく**つながっている PC だけ**を足す（`isCountedPc`）。 */
+export function totalRunning(pcs: readonly HomePcLike[]): number {
+	return pcs.reduce((sum, pc) => (isCountedPc(pc) ? sum + pc.running : sum), 0);
+}
+
+/**
+ * 統計カードの下の1行（合計の範囲）。「3 台の合計」「2 台の合計 · 1 台は未接続」「1 台は未接続」。
+ * PC が1台でつながっていれば、範囲を言うまでもないので undefined（行を出さない）。
+ */
+export function statScopeNote(pcs: readonly Pick<HomePcLike, 'connection' | 'pcOnline'>[]): string | undefined {
+	const counted = pcs.filter(isCountedPc).length;
+	const unconnected = pcs.length - counted;
+	const parts: string[] = [];
+	if (counted >= 2) {
+		parts.push(`${counted} 台の合計`);
 	}
-	return count;
+	if (unconnected > 0) {
+		parts.push(`${unconnected} 台は未接続`);
+	}
+	return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 /** 今日のコストの表示（小数2桁のドル）。取れていなければダッシュ。 */
@@ -62,7 +86,7 @@ export function formatCost(cost: number | undefined): string {
 /** PC のカードの3・4行目（「3 スペース · 7 エージェント」と状態ごとの件数）。 */
 export interface PcCardCounts {
 	readonly spaces: number;
-	/** エージェントの数。いま見ていない PC は内訳が届かないので undefined。 */
+	/** エージェントの数。いま見ていない PC は台帳の要約（要対応と実行中の数）しか使わないので undefined。 */
 	readonly agents: number | undefined;
 	/** 状態ごとの件数（0 の状態は含めない。並びは要対応 → 実行中 → 未確認 → 待機）。 */
 	readonly buckets: readonly { readonly bucket: HomeStatusBucket; readonly count: number }[];
@@ -72,7 +96,7 @@ const BUCKET_ORDER: readonly HomeStatusBucket[] = ['waiting', 'working', 'review
 
 /**
  * PC のカードの件数。いま見ている PC はターミナルの一覧から状態ごとに数え、
- * それ以外の PC は台帳の要約（スペース数と要対応の数）だけを使う。
+ * それ以外の PC は台帳の要約（スペース数・要対応と実行中の数）だけを使う。
  */
 export function pcCardCounts(
 	pc: HomePcLike,
@@ -83,7 +107,10 @@ export function pcCardCounts(
 		return {
 			spaces: pc.workspaces,
 			agents: undefined,
-			buckets: pc.waiting > 0 ? [{ bucket: 'waiting', count: pc.waiting }] : [],
+			buckets: [
+				{ bucket: 'waiting' as const, count: pc.waiting },
+				{ bucket: 'working' as const, count: pc.running },
+			].filter(entry => entry.count > 0),
 		};
 	}
 	const counts = new Map<HomeStatusBucket, number>();

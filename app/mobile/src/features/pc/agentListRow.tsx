@@ -27,9 +27,14 @@ import { PointerHover } from '../../ipad/pointerHover.js';
  *
  * 受け取るのはスカラと安定したコールバックだけにして、行ごとに memo で止める（PC からの再送は
  * 最大 10Hz）。最後の一言と経過時間は行の中で必要な値だけを購読する。
+ *
+ * 全 PC 横断の一覧（`/agents`）では、いま見ていない PC の行も並ぶ。会話（`agentChats`）と経過時間の記録は
+ * 見ている PC のぶんしか手元に無く、`terminalKey` は PC をまたぐと重なりうるので、`otherPc` の行はそれらを
+ * 読まない（3段目は状態の言葉だけになる）。`onMenu` を渡さなければ ⋯ と長押しの操作を出さない
+ * （行の操作は見ている PC にしか届かない）。
  */
 export const AgentListRow = memo(function AgentListRow({
-	terminalKey, title, agent, agentStatus, spaceName, spaceColor, branch, hideSpace, pinned, current, now, onOpen, onMenu,
+	terminalKey, title, agent, agentStatus, spaceName, spaceColor, branch, hideSpace, pinned, current, now, onOpen, onMenu, otherPc = false,
 }: {
 	terminalKey: string;
 	title: string;
@@ -45,15 +50,18 @@ export const AgentListRow = memo(function AgentListRow({
 	current: boolean;
 	now: number;
 	onOpen: (terminalKey: string) => void;
-	onMenu: (terminalKey: string) => void;
+	/** 省くと ⋯ と長押しの操作を出さない。 */
+	onMenu?: (terminalKey: string) => void;
+	/** いま見ていない PC の行（会話の一言と経過時間を読まない）。 */
+	otherPc?: boolean;
 }) {
 	const kind = agentKindFromStatus(agent ? agentStatus : undefined);
 	const line = useAppStore(useShallow(s => {
-		const chat = s.agentChats.get(terminalKey);
+		const chat = otherPc ? undefined : s.agentChats.get(terminalKey);
 		const result = agentRowLine({ agent, agentStatus }, chat);
 		return { text: result.text, emphasized: result.emphasized, at: result.at, logo: agentLogoKind({ agent, title }, chat?.agent) };
 	}));
-	const since = useStatusSince(s => s.map.get(terminalKey)?.since);
+	const since = useStatusSince(s => (otherPc ? undefined : s.map.get(terminalKey)?.since));
 	const at = line.at !== undefined && since !== undefined ? Math.max(line.at, since) : line.at ?? since;
 	// 未読のベル: 答えを待っているもの（要対応）と、作業を終えてまだ見ていないもの（未確認）。
 	const unread = kind === 'attention' || kind === 'review';
@@ -64,13 +72,13 @@ export const AgentListRow = memo(function AgentListRow({
 			style={({ pressed }) => [styles.row, current ? styles.rowCurrent : undefined, pressed ? styles.rowPressed : undefined]}
 			onPress={() => onOpen(terminalKey)}
 			delayLongPress={400}
-			onLongPress={() => {
+			onLongPress={onMenu !== undefined ? () => {
 				haptic('lift');
 				onMenu(terminalKey);
-			}}
+			} : undefined}
 			accessibilityRole="button"
 			accessibilityLabel={`${title}、${line.text}${spaceName !== undefined ? `、${spaceName}` : ''}`}
-			accessibilityHint="長押しで操作を開きます"
+			accessibilityHint={onMenu !== undefined ? '長押しで操作を開きます' : undefined}
 		>
 			<View style={styles.indicator}>
 				<AgentSpinner kind={kind} />
@@ -98,20 +106,22 @@ export const AgentListRow = memo(function AgentListRow({
 					{at !== undefined ? <Text style={styles.time}>{formatElapsedShort(at, now)}</Text> : null}
 				</View>
 			</View>
-			<PointerHover effect="highlight" cornerRadius={radius.button}>
-			<Pressable
-				style={({ pressed }) => [styles.more, pressed ? styles.morePressed : undefined]}
-				hitSlop={hitSlopToMinimum(MORE_SIZE, MORE_SIZE)}
-				onPress={() => {
-					haptic('move');
-					onMenu(terminalKey);
-				}}
-				accessibilityRole="button"
-				accessibilityLabel={`${title} の操作`}
-			>
-				<Icon icon={Ellipsis} size={iconSize.md} color={colors.textMuted} />
-			</Pressable>
-			</PointerHover>
+			{onMenu !== undefined ? (
+				<PointerHover effect="highlight" cornerRadius={radius.button}>
+				<Pressable
+					style={({ pressed }) => [styles.more, pressed ? styles.morePressed : undefined]}
+					hitSlop={hitSlopToMinimum(MORE_SIZE, MORE_SIZE)}
+					onPress={() => {
+						haptic('move');
+						onMenu(terminalKey);
+					}}
+					accessibilityRole="button"
+					accessibilityLabel={`${title} の操作`}
+				>
+					<Icon icon={Ellipsis} size={iconSize.md} color={colors.textMuted} />
+				</Pressable>
+				</PointerHover>
+			) : null}
 		</Pressable>
 		</PointerHover>
 	);
