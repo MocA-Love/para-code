@@ -13,6 +13,7 @@ import {
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
+import { PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
 
 interface IPreparedDescriptor {
 	readonly exactView: IParadisExactBrowserViewDescriptor;
@@ -54,7 +55,7 @@ function createFixture(): {
 	readonly authority: ParadisBindingAuthority<string, object, IPreparedDescriptor, ITestBinding>;
 	readonly mainCalls: { readonly command: string; readonly args: readonly unknown[] }[];
 	readonly gatewayCalls: { readonly command: string; readonly token: string }[];
-	setResolveExact(operation: () => Promise<IParadisExactBrowserViewDescriptor | null>): void;
+	setResolveExact(operation: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null>): void;
 	setThrottlingOperation(operation: (descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean) => Promise<boolean>): void;
 } {
 	let ticket = 0;
@@ -71,7 +72,7 @@ function createFixture(): {
 	const coordinator = new ParadisExactViewBackgroundThrottlingCoordinator();
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const gatewayCalls: { command: string; token: string }[] = [];
-	let resolveExact: () => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
+	let resolveExact: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
@@ -132,7 +133,7 @@ function createFixture(): {
 				call: async (command: string, args: readonly unknown[]) => {
 					mainCalls.push({ command, args });
 					switch (command) {
-						case 'resolveExactViewDescriptor': return resolveExact();
+						case 'resolveExactViewDescriptor': return resolveExact(args);
 						case 'setExactViewBackgroundThrottling': return throttlingOperation(args[0] as IParadisExactBrowserViewDescriptor, args[1] as boolean);
 						case 'captureExactViewScreenshot': return 'image-data';
 						case 'isExactViewVisible': return false;
@@ -464,3 +465,110 @@ suite('Paradis binding transaction service', () => {
 		]);
 	});
 });
+
+suite('Paradis binding transaction service: several pages shared with one pane', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab'];
+	const viewOf = (viewId: string) => Object.freeze({ windowId: 1, viewId, targetId: `target-${viewId}`, viewLease: `lease-${viewId}` });
+
+	async function setup() {
+		const fixture = createFixture();
+		fixture.setResolveExact(async args => viewOf(args[1] as string));
+		const connection = {};
+		assert.strictEqual(fixture.service.registerRendererConnection('window:1', connection), true);
+		let revision = 1;
+		const sync = async (target: object) => fixture.service.syncBindingAuthority(target, {
+			revision: revision++,
+			complete: true,
+			panes: [{ token: 'token', scope: { kind: 'unscoped' } }],
+			browserViews: views.map(viewId => ({ viewId, scope: { kind: 'unscoped' } })),
+		});
+		await sync(connection);
+		const share = async (viewId: string, target: object = connection) => {
+			const prepared = await fixture.service.prepareBind(target, { revision: revision - 1, token: 'token', viewId, pageInfo: { url: `https://${viewId}.test`, title: viewId } });
+			return fixture.service.commitBind(target, { ticketId: prepared.ticketId });
+		};
+		const listed = async (target: object = connection) => (await fixture.service.listBindings(target)).map(binding => `${binding.pageId}${binding.additional ? '+' : ''}`);
+		const generationOf = async (viewId: string) => (await fixture.service.listBindings(connection)).find(binding => binding.pageId === viewId)!.generation;
+		const defaultTab = () => (Reflect.get(fixture.service, '_defaultTabId') as (token: string) => string | undefined).call(fixture.service, 'token');
+		const usable = (viewId: string) => (Reflect.get(fixture.service, '_scopeBinding') as (token: string, tabId: string) => unknown).call(fixture.service, 'token', viewId) !== undefined;
+		return { fixture, connection, sync, share, listed, generationOf, defaultTab, usable };
+	}
+
+	test('sharing a second page keeps the first one, and the newest page becomes the current tab', async () => {
+		const { fixture, share, listed, defaultTab, usable } = await setup();
+		await share('view-a');
+		Reflect.get(fixture.service, '_selectedTabs').set('token', 'view-a');
+		await share('view-b');
+		assert.deepStrictEqual({
+			listed: await listed(),
+			current: defaultTab(),
+			usable: [usable('view-a'), usable('view-b'), usable('view-c')],
+			// 2 枚とも裏で描画を止めない
+			throttled: fixture.coordinator.bindingCount,
+		}, {
+			listed: ['view-b', 'view-a+'],
+			current: 'view-b',
+			usable: [true, true, false],
+			throttled: 2,
+		});
+	});
+
+	test('unsharing the current page promotes the page shared most recently among the rest; unsharing another page keeps the current one', async () => {
+		const { fixture, connection, share, listed, generationOf, defaultTab } = await setup();
+		await share('view-a');
+		await share('view-b');
+		await share('view-c');
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-c')), true);
+		const afterCurrent = { listed: await listed(), current: defaultTab() };
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-a')), true);
+		assert.deepStrictEqual({ afterCurrent, afterOther: await listed(), current: defaultTab(), throttled: fixture.coordinator.bindingCount }, {
+			afterCurrent: { listed: ['view-b', 'view-a+'], current: 'view-b' },
+			afterOther: ['view-b'],
+			current: 'view-b',
+			throttled: 1,
+		});
+	});
+
+	test('sharing an already shared page again makes it current without a second entry', async () => {
+		const { share, listed, defaultTab } = await setup();
+		await share('view-a');
+		await share('view-b');
+		await share('view-a');
+		assert.deepStrictEqual({ listed: await listed(), current: defaultTab() }, { listed: ['view-a', 'view-b+'], current: 'view-a' });
+	});
+
+	test('a pane holds up to the user share limit apart from its own tabs, and unbinding the pane removes every shared page', async () => {
+		const { fixture, connection, share, listed } = await setup();
+		for (const viewId of views.slice(0, PARADIS_USER_SHARED_PAGE_LIMIT)) {
+			await share(viewId);
+		}
+		await assert.rejects(share(views[PARADIS_USER_SHARED_PAGE_LIMIT]), /maximum number of shared pages/);
+		// エージェントが自分で開くタブは別枠
+		const granted = await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } });
+		const countBefore = (await listed()).length;
+		assert.strictEqual(await fixture.service.unbind(connection, 'token'), true);
+		assert.deepStrictEqual({ granted, countBefore, after: await listed(), agentTabs: (await fixture.service.listAgentTabGrants(connection)).map(grant => grant.pageId) }, {
+			granted: true,
+			countBefore: PARADIS_USER_SHARED_PAGE_LIMIT,
+			after: [],
+			agentTabs: ['agent-tab'],
+		});
+	});
+
+	test('a reloaded window keeps every shared page but drops the agent\'s own tabs', async () => {
+		const { fixture, connection, sync, share, listed } = await setup();
+		await share('view-a');
+		await share('view-b');
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		const reloaded = {};
+		assert.strictEqual(fixture.service.registerRendererConnection('window:1', reloaded), true);
+		await sync(reloaded);
+		assert.deepStrictEqual({ listed: await listed(reloaded), agentTabs: await fixture.service.listAgentTabGrants(reloaded) }, {
+			listed: ['view-b', 'view-a+'],
+			agentTabs: [],
+		});
+	});
+});
+

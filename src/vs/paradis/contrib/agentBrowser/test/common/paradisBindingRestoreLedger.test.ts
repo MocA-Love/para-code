@@ -121,9 +121,27 @@ suite('paradisBindingRestoreLedger', () => {
 			paneMissing: paradisBindingRestoreCandidates(ledger, new Set([keyA]), new Map(), new Set(), new Set(['page-1'])),
 			alreadyTried: paradisBindingRestoreCandidates(ledger, new Set(), live, new Set(), new Set(['page-1'])),
 		}, {
-			ready: [{ key: keyA, token: 'token-a', pageId: 'page-1' }],
+			ready: [{ key: keyA, token: 'token-a', pageId: 'page-1', morePageIds: [] }],
 			paneMissing: [],
 			alreadyTried: [],
+		});
+	});
+
+	// 1 つのペインへ複数のページを共有していたら、current のほかのページも古い順に控える
+	test('keeps the other pages a pane shares, oldest first, and offers the ones that are back', () => {
+		const next = paradisNextBindingRestoreLedger(new Map(), new Set(), new Map([[keyA, 'page-3']]), now, new Map([[keyA, ['page-1', 'page-2', 'page-3', 'page-1']]]));
+		const parsed = paradisParseBindingRestoreLedger(paradisSerializeBindingRestoreLedger(next), now);
+		// 前の版の Para Code が書いた台帳（more 無し）と、壊れた more も読める
+		const legacy = paradisParseBindingRestoreLedger(JSON.stringify({ [keyB]: { pageId: 'page-5', at: now }, [keyC]: { pageId: 'page-6', at: now, more: [1, '', 'page-7'] } }), now);
+		const live = new Map([[keyA, 'token-a']]);
+		assert.deepStrictEqual({
+			entry: parsed.get(keyA),
+			legacy: [...legacy.values()],
+			candidates: paradisBindingRestoreCandidates(parsed, new Set([keyA]), live, new Set(), new Set(['page-2', 'page-3'])),
+		}, {
+			entry: { pageId: 'page-3', at: now, more: ['page-2', 'page-1'] },
+			legacy: [{ pageId: 'page-5', at: now }, { pageId: 'page-6', at: now, more: ['page-7'] }],
+			candidates: [{ key: keyA, token: 'token-a', pageId: 'page-3', morePageIds: ['page-2'] }],
 		});
 	});
 });

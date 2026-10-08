@@ -12,10 +12,14 @@
 // 決まる）とブラウザのページの ID（エディタの復元で同じ値に戻る）は再起動の後も同じなので、その組を
 // WORKSPACE の storage に控え、起動後に同じ組だけを既存の共有の経路で張り直す。
 //
+// 1 つのペインは複数のページを共有できる。current のページを `pageId` に、2 枚目以降を `more`（古い順）に控え、
+// 張り直すときは `more` を古い順に共有してから `pageId` を共有する（最後に共有したものが current になる）。
+//
 // トークンはそのまま保存しない（ペインの識別子で、MCP の Bearer にもなる）。ハッシュにして、生きている
 // ペインのトークンから同じハッシュを作って突き合わせる。
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
+import { PARADIS_USER_SHARED_PAGE_LIMIT } from './paradisAgentBrowserTabs.js';
 
 /** 台帳の1件。キーはトークンのハッシュ。 */
 export interface IParadisBindingRestoreEntry {
@@ -23,6 +27,8 @@ export interface IParadisBindingRestoreEntry {
 	readonly pageId: string;
 	/** 最後に紐づいているのを見た時刻（古いものを捨てるため）。 */
 	readonly at: number;
+	/** そのペインへ 2 枚目以降に共有していたページ（古い順。current の `pageId` は含まない）。 */
+	readonly more?: readonly string[];
 }
 
 /** 台帳に残す件数の上限。 */
@@ -60,15 +66,31 @@ export function paradisParseBindingRestoreLedger(raw: string | undefined, now: n
 		return result;
 	}
 	for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-		const entry = value as { pageId?: unknown; at?: unknown } | null;
+		const entry = value as { pageId?: unknown; at?: unknown; more?: unknown } | null;
 		if (!KEY_PATTERN.test(key) || !entry || typeof entry !== 'object'
-			|| typeof entry.pageId !== 'string' || entry.pageId.length === 0 || entry.pageId.length > MAX_PAGE_ID_LENGTH
+			|| !isPageId(entry.pageId)
 			|| typeof entry.at !== 'number' || !Number.isFinite(entry.at) || now - entry.at > PARADIS_BINDING_RESTORE_MAX_AGE_MS) {
 			continue;
 		}
-		result.set(key, { pageId: entry.pageId, at: entry.at });
+		const more = paradisNormalizeMorePages(entry.pageId, Array.isArray(entry.more) ? entry.more.filter(isPageId) : []);
+		result.set(key, more.length > 0 ? { pageId: entry.pageId, at: entry.at, more } : { pageId: entry.pageId, at: entry.at });
 	}
 	return paradisTrimBindingRestoreLedger(result);
+}
+
+function isPageId(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= MAX_PAGE_ID_LENGTH;
+}
+
+/** 2 枚目以降のページを、重複と current を除き、新しい方から共有の上限に収まるだけ残す（古い順のまま）。 */
+function paradisNormalizeMorePages(pageId: string, more: readonly string[]): string[] {
+	const result: string[] = [];
+	for (const candidate of [...more].reverse()) {
+		if (candidate !== pageId && !result.includes(candidate) && result.length < PARADIS_USER_SHARED_PAGE_LIMIT - 1) {
+			result.unshift(candidate);
+		}
+	}
+	return result;
 }
 
 /** 新しいものから上限まで残す。 */
@@ -88,19 +110,23 @@ export function paradisSerializeBindingRestoreLedger(ledger: ReadonlyMap<string,
  * - まだ張り直しを決めていない起動時の記録（`pendingKeys`）は消さない（起動直後は紐づけが空なので、
  *   そのまま書くと張り直す前に台帳が消える。ペインやページが別のスペースにあって今回は試せなかったものも残す）
  *
- * @param boundPageByKey このウィンドウの生きているペインのうち、紐づいているもの（キー → ページの ID）
+ * @param boundPageByKey このウィンドウの生きているペインのうち、紐づいているもの（キー → current のページの ID）
+ * @param morePagesByKey そのペインが 2 枚目以降に共有しているページ（キー → 古い順のページの ID）
  */
 export function paradisNextBindingRestoreLedger(
 	previous: ReadonlyMap<string, IParadisBindingRestoreEntry>,
 	pendingKeys: ReadonlySet<string>,
 	boundPageByKey: ReadonlyMap<string, string>,
 	now: number,
+	morePagesByKey: ReadonlyMap<string, readonly string[]> = new Map(),
 ): Map<string, IParadisBindingRestoreEntry> {
 	const next = new Map<string, IParadisBindingRestoreEntry>();
 	for (const [key, pageId] of boundPageByKey) {
+		const more = paradisNormalizeMorePages(pageId, morePagesByKey.get(key) ?? []);
 		// 同じ組の時刻は、古くなるまで書き直さない（評価のたびに storage へ書かないため）
 		const kept = previous.get(key);
-		next.set(key, kept !== undefined && kept.pageId === pageId && now - kept.at < PARADIS_BINDING_RESTORE_REFRESH_MS ? kept : { pageId, at: now });
+		const same = kept !== undefined && kept.pageId === pageId && (kept.more ?? []).join('\n') === more.join('\n');
+		next.set(key, same && now - kept.at < PARADIS_BINDING_RESTORE_REFRESH_MS ? kept : more.length > 0 ? { pageId, at: now, more } : { pageId, at: now });
 	}
 	for (const key of pendingKeys) {
 		const entry = previous.get(key);
@@ -115,7 +141,10 @@ export function paradisNextBindingRestoreLedger(
 export interface IParadisBindingRestoreCandidate {
 	readonly key: string;
 	readonly token: string;
+	/** current として戻すページ（最後に共有する）。 */
 	readonly pageId: string;
+	/** 先に共有する 2 枚目以降のページ（古い順。このウィンドウにあるものだけ）。 */
+	readonly morePageIds: readonly string[];
 }
 
 /**
@@ -140,7 +169,7 @@ export function paradisBindingRestoreCandidates(
 		if (entry === undefined || token === undefined || boundKeys.has(key) || !knownPageIds.has(entry.pageId)) {
 			continue;
 		}
-		candidates.push({ key, token, pageId: entry.pageId });
+		candidates.push({ key, token, pageId: entry.pageId, morePageIds: (entry.more ?? []).filter(pageId => knownPageIds.has(pageId)) });
 	}
 	return candidates;
 }

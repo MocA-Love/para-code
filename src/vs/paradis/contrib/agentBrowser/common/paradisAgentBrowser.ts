@@ -827,6 +827,11 @@ export interface IParadisPaneBinding {
 	readonly boundAt: number;
 	/** Stable scope authenticated by the prepare/commit authority transaction. */
 	readonly scope: ParadisBindingAuthorityStableScope;
+	/**
+	 * そのペインの current（tab_id を省いたときの既定）ではない、2 枚目以降に共有しているページ。1 つのペインは
+	 * 複数のページを共有できる。current の行は 1 ペインに 1 つで、印が無い。
+	 */
+	readonly additional?: true;
 }
 
 /** Renderer → shared process bind preparation. All fields are copied and bounded at the IPC edge. */

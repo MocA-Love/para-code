@@ -62,7 +62,7 @@ suite('ParadisAgentBrowserTabs', () => {
 		ledger.registerAgentTab('a', 'own');
 		let boundPage: string | undefined;
 		let agentMoving = false;
-		const reconcile = () => ledger.reconcileApprovedProfileTabs(() => boundPage, () => agentMoving);
+		const reconcile = () => ledger.reconcileApprovedProfileTabs((_token, viewId) => boundPage === viewId, () => agentMoving);
 
 		// まだ共有されていない間に外れても、止めたことにはならない
 		const beforeShared = reconcile();
@@ -101,8 +101,8 @@ suite('ParadisAgentBrowserTabs', () => {
 		ledger.registerAgentTab('a', 'approved', { approvedProfile: true });
 		ledger.registerAgentTab('a', 'own');
 		// 共有していたが、エージェントが自分のタブへ移った（共有先の変化では外れない）
-		ledger.reconcileApprovedProfileTabs(() => 'approved', () => false);
-		ledger.reconcileApprovedProfileTabs(() => 'own', () => true);
+		ledger.reconcileApprovedProfileTabs((_token, viewId) => viewId === 'approved', () => false);
+		ledger.reconcileApprovedProfileTabs((_token, viewId) => viewId === 'own', () => true);
 		assert.deepStrictEqual({
 			revoked: [ledger.revokeApprovedProfileTab('approved'), ledger.revokeApprovedProfileTab('own'), ledger.revokeApprovedProfileTab('unknown')],
 			tabs: ledger.agentTabsOf('a'),

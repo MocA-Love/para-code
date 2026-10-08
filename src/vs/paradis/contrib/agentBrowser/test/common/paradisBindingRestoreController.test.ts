@@ -31,6 +31,8 @@ class FakeHost implements IParadisBindingRestoreHost {
 	tokens = ['token-a', 'token-b'];
 	pages = new Set(['page-1', 'page-2']);
 	bound = new Map<string, string>();
+	/** current のほかに共有しているページ（古い順）。共有は付け替えではなく追加。 */
+	more = new Map<string, string[]>();
 	readinessOf: (pageId: string) => ParadisBindingRestoreReadiness = () => 'ready';
 	answer: ParadisBindingRestoreAnswer = 'restore';
 	outcomeOf: (pageId: string) => ParadisBindingRestoreOutcome = () => 'restored';
@@ -45,6 +47,7 @@ class FakeHost implements IParadisBindingRestoreHost {
 	writeStorage(value: string | undefined): void { this.stored = value; this.writes++; }
 	listPaneTokens(): readonly string[] { return this.tokens; }
 	boundPageForToken(token: string): string | undefined { return this.bound.get(token); }
+	morePagesForToken(token: string): readonly string[] { return this.more.get(token) ?? []; }
 	knownPageIds(): ReadonlySet<string> { return this.pages; }
 	readiness(pageId: string): ParadisBindingRestoreReadiness { return this.readinessOf(pageId); }
 	describe(pageId: string, token: string): IParadisBindingRestoreDescription { return { page: pageId, pane: token }; }
@@ -78,6 +81,10 @@ class FakeHost implements IParadisBindingRestoreHost {
 		const outcome = this.outcomeOf(pageId);
 		this.restored.push(`${token}->${pageId}:${outcome}`);
 		if (outcome === 'restored') {
+			const previous = this.bound.get(token);
+			if (previous !== undefined && previous !== pageId) {
+				this.more.set(token, [...(this.more.get(token) ?? []), previous]);
+			}
 			this.bound.set(token, pageId);
 		}
 		return outcome;
@@ -119,6 +126,27 @@ suite('ParadisBindingRestoreController', () => {
 			restored: ['token-a->page-1:restored', 'token-b->page-2:restored'],
 			stored: ['token-a', 'token-b'],
 			undecided: 0,
+		});
+	});
+
+	// 1 つのペインへ複数のページを共有していたら、全部を 1 回の確認で尋ね、古いものから戻して current を最後に戻す
+	test('restores every page a pane shared, the older ones first so that its current page is shared last', async () => {
+		const host = new FakeHost({});
+		host.pages = new Set(['page-1', 'page-2', 'page-3']);
+		host.stored = paradisSerializeBindingRestoreLedger(new Map([[paradisBindingRestoreKey('token-a'), { pageId: 'page-3', at: NOW - 1000, more: ['page-1', 'page-2'] }]]));
+		const controller = create(host);
+		await controller.evaluate();
+		await controller.evaluate();
+		assert.deepStrictEqual({
+			asked: host.asked,
+			restored: host.restored,
+			current: host.bound.get('token-a'),
+			stored: JSON.parse(host.stored ?? '{}')[paradisBindingRestoreKey('token-a')]?.more,
+		}, {
+			asked: [[{ page: 'page-1', pane: 'token-a' }, { page: 'page-2', pane: 'token-a' }, { page: 'page-3', pane: 'token-a' }]],
+			restored: ['token-a->page-1:restored', 'token-a->page-2:restored', 'token-a->page-3:restored'],
+			current: 'page-3',
+			stored: ['page-1', 'page-2'],
 		});
 	});
 
