@@ -941,7 +941,7 @@ upstream 取り込み時に確認すること:
 
 番号での操作は、直前に読んだツリーの要素そのものに行う。座標での操作は、アプリに聞いた当たり判定（`AXUIElementCopyElementAtPosition` をアプリの要素に対して呼ぶ。ほかのアプリのウィンドウが重なっていても目的のアプリの要素が返る）で要素を取り、目的のウィンドウの要素でなければ譲る。AX で確かめられる値は読み戻す: チェックボックスとラジオは値が変わったか、値の書き込みは書いた値と同じか（数は丸めて比べる。範囲に収められたら `verified: false` と実際の値）、増減は向き。ボタンのように状態を持たない部品は `verified: null`。`AXPress` などが「何もしていないと言い切れない」失敗（締め切りなど）を返したときは、次の段へ譲らず `axError` を添えて `verified: null` にする（送ったかもしれないため）。パスワード欄には値を書かない。メニューの「ペースト」は AX でも押さない。
 
-Electron 製のアプリ（`Contents/Frameworks/Electron Framework.framework` がある）で、ツリーを読んだときにウィンドウが無いか中身が空なら、公開されている `AXManualAccessibility` を立てて 0.4 秒後に読み直す（立てたときはツリーの結果に `manualAccessibility: true`）。利用者のアプリの状態を変える（Chromium は立っている間 AX のツリーを作り続け、打鍵が遅くなりうる）ので、立てるのはそのペインに操作の許可があるときだけ（shared process が `enableManualAccessibility: true` を添える）。VS Code 系（VS Code・Insiders・VSCodium・Cursor・Windsurf）は、立てるとスクリーンリーダー向けの動きに切り替わるので立てない。立てたアプリは補助アプリが覚え、10 分読み取りも操作も無ければ、また補助アプリが終わるとき（`atexit`。shutdown・切断・締め切りの SIGTERM のどれでも）に false へ戻す（`ParadisManualAccessibilityLedger`）。`AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない。
+Electron 製のアプリ（`Contents/Frameworks/Electron Framework.framework` がある）で、ツリーを読んだときにウィンドウが無いか、ウィンドウの下に子のあるウェブの中身（`AXWebArea`）が 1 つも無ければ（たどる範囲の上限で打ち切ったときは立てない）、公開されている `AXManualAccessibility` を立てて、ウェブの中身が出るまで最長 3 秒待って読み直す。すでに true なら立てず台帳にも載せない（立てたときはツリーの結果に `manualAccessibility: true`）。利用者のアプリの状態を変える（Chromium は立っている間 AX のツリーを作り続け、打鍵が遅くなりうる）ので、立てるのはそのペインに操作の許可があるときだけ（shared process が `enableManualAccessibility: true` を添える）。VS Code 系（VS Code・Insiders・VSCodium・Cursor・Windsurf）は、立てるとスクリーンリーダー向けの動きに切り替わるので立てない。立てたアプリは補助アプリが覚え、10 分読み取りも操作も無ければ、また補助アプリが終わるとき（`atexit`。shutdown・切断・締め切りの SIGTERM のどれでも）に false へ戻す（`ParadisManualAccessibilityLedger`）。`AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない。
 
 設定 `paradis.computerUse.confirmForegroundInput`（既定オフ。オフなら今までどおり）がオンなら、shared process は `allowForeground: false` を添えて送る。補助アプリは 3 段目に来たら何も送らずに `foreground_needs_approval` を返し、shared process は入力の列の外で承認ダイアログ（`requestForeground`。「拒否」「今回だけ許可」「このターミナルでは今後も許可」、自動の断りの鍵は `computer-foreground:<bundle id>`）を出してから同じ要求を送り直す。`computer_type_text` は塊の途中で前面が要るようになっても、送り終えた塊から続ける。「このターミナルでは今後も許可」は許可の台帳にペインとアプリの組で覚える（Para Code の終了か Computer Use をオフにするまで）。自動の断りの鍵は、`askApproval` がペインのトークンを前に付けるので、操作の許可の `computer:<bundle id>` と同じくペインごと。
 
@@ -1028,7 +1028,7 @@ HID キーの確認はテストプログラムが合成したイベントであ�
 | このターミナル（Para Code）が前面のまま、承認の直後と同じ要求を `activateFirst` 無しで送る（`pressKey`） | `window_not_focused`（レビューの指摘どおり） |
 | 同じ要求を `activateFirst: true` で送る | 補助アプリが確認用のアプリを前面に出し、3 段目の確かめを通って `pressed: true`。前面のアプリが確認用のアプリになった |
 
-確かめていないこと: Electron 製のアプリでの `AXManualAccessibility`（利用者のアプリの状態を変えるため試していない）、承認ダイアログそのものの実機での見え方（ユニットテストだけ。送り直しの `activateFirst` は確認用のアプリで確かめた）、3 段目での札の追従（実カーソルを動かすため試していない）、別の操作スペース・隠したアプリでの 1 段目の譲り（利用者の画面の状態を変えるため試していない。判定は Core のテスト）、画面のロック中（同じ理由。判定は Core のテスト）、複数の画面・フルスクリーンのアプリの上でのカーソル、前面のアプリでの `AXShowMenu` の後にメニューの項目を押す流れ、Developer ID で署名した補助アプリでの動き。
+確かめていないこと: Electron 製のアプリでの `AXManualAccessibility`（利用者のアプリの状態を変えるため試していない。2026-10-09 に確認用の Electron で確かめた。下の「実機確認の報告で直したもの」）、承認ダイアログそのものの実機での見え方（ユニットテストだけ。送り直しの `activateFirst` は確認用のアプリで確かめた）、3 段目での札の追従（実カーソルを動かすため試していない）、別の操作スペース・隠したアプリでの 1 段目の譲り（利用者の画面の状態を変えるため試していない。判定は Core のテスト）、画面のロック中（同じ理由。判定は Core のテスト）、複数の画面・フルスクリーンのアプリの上でのカーソル、前面のアプリでの `AXShowMenu` の後にメニューの項目を押す流れ、Developer ID で署名した補助アプリでの動き。
 
 #### 2 回目のレビューの残り（中 2 件・軽微 2 件、2026-10-08）
 
@@ -1062,6 +1062,29 @@ VS Code の派生（軽微）: bundle id の一覧に加えて、`Contents/Resou
 - `menu_open` のエージェントへの文を「利用者が使っているか、Para Code が開いて閉じられなかったメニュー」の意味にし、利用者にメニューを閉じてもらうよう促す
 
 実機での確かめが要るもの（残課題）: AX に出ないメニュー・非同期に開くメニューでの `menuOpen` の報告、`AXCancel` の後もウィンドウが残る場合の判定、操作の間の打鍵の検出、ポップオーバー・ツールチップのウィンドウの層と透明度、2 つの補助アプリが同時に動くときの記録のファイル。
+
+#### 実機確認の報告で直したもの（2026-10-09、macOS 27.0.1、Apple Silicon、PR #298 とそのレビュー）
+
+確認は、自作の AppKit の確認用アプリ（スクロールする欄と文字の欄だけ、bundle id は仮のもの）と、開発用の Electron（43.6.0）を複製して bundle id を仮のものに替え、見出し・ボタン・入力欄だけのページを出す確認用アプリに対して、テスト用のビルド（`--allow-any-peer-for-testing`）の補助アプリへソケットから要求を送って行った。利用者のアプリには送っていない。
+
+| 報告 | 原因 | 直し方 | 確かめた結果 |
+|---|---|---|---|
+| 前面のキーの組み合わせ（`hotkey`・`pasteText` の ⌘V）の後、OS の修飾キーが ⌘ のまま残り、以後の要求が `user_active`（`the user is holding a modifier key`）で止まる | 3 段目が押す・離すのイベントに ⌘ の印を付けて HID のタップへ送り、その後に何も送っていなかった（`sendChord`・`releaseAll`、⌘ 付きのクリックも同じ）。HID へ送ったイベントの印が `CGEventSource.flagsState(.hidSystemState)` になる | 実際のキーボードと同じ順にした。押す・離すのイベントは組み合わせの修飾キー付きのまま（Blink・WebKit はクリックの metaKey などを mouseup から作るので、離すイベントから外さない）、離した直後に修飾キーの解放の flagsChanged を 1 つ送る（keyCode は解放する修飾キー、⌘・⌃・⌥・⇧ の順で 1 つ）。印は離す直前に読み直した今の状態から、写してよい印（4 つの修飾キーとその左右の印・Caps Lock・NonCoalesced）だけを残し、組み合わせの修飾キーのうち押す前に無かったものとその左右の印を除く（Core の `paradisModifierPress`・`paradisModifierRelease`）。送った後、OS の状態から消えるまで最長 0.2 秒待ち、残っていれば 1 回だけ送り直す。解放した修飾キーと時刻を補助アプリが覚え、次の要求で押す前の状態にその印が残っていて、入力の監視（タップ）がその後に物理的な flagsChanged を見ていなければ、自分のものとして `added` に入れて解放する（`paradisOwnLeftoverModifiers`。監視が動いていなければ利用者のものと見て触らない）。⌘ 付きのダブル・トリプルクリックの解放は全部のクリックの後に 1 回だけ（クリックごとに送ると ⌘ の 2 度押しを拾う Alfred・Raycast などが反応しうる。途中で止めるときは止める前に送る）。締め切りの SIGTERM で離すときも、まだ解放を送っていない修飾キーを解放する。修飾キーそのものの押下は送らない | ⌘A・⌘⇧← で、確認用アプリには「keyDown ⌘ → keyUp ⌘ → flagsChanged（⌘ のキー、印なし）」の順で届き、後の状態に ⌘・⇧ は無かった。解放を待つ前の版では、続けて送った要求が背面の段の確かめで `holding a modifier key` になった（送った直後に読むと、まだ ⌘ が残って見えた）。直す前と同じ送り方（離すイベントにも ⌘、解放なし）では状態が ⌘ のまま残り、続く要求が `user_active` になった（報告の再現） |
+| スクロールの `down` で上へ動く（前面・背面とも） | WindowServer が、送った縦の値の符号をナチュラルなスクロール（オン）で反転して届ける。送った -80 が受け取ったアプリの CGEvent では +80 だった。横は反転しなかった。作った直後の CGEvent（`NSEvent(cgEvent:)`）では反転しておらず、`isDirectionInvertedFromDevice` は届いた後も false | Core の `paradisScrollSteps` は `naturalScrolling` を必ず受け取り、オンなら縦の符号を逆にする。設定（`com.apple.swipescrolldirection`、無ければ OS の既定のオン）は補助アプリ側（`ParadisInput.swift` の `paradisNaturalScrollingIsOn`）が要求ごとに読む。背面の段が呼ぶ引数 3 つの形も補助アプリ側に置き、背面の段のコードは変えていない | ナチュラルなスクロールがオン（既定）で、背面の段の `down` で欄が下へ、`up` で上へ動いた。前面の段の送り方（`postToPid`）でも同じ反転を確かめた |
+| Electron のアプリで `AXManualAccessibility` が立たない | 条件が「ウィンドウの子が空」だったが、Electron のウィンドウには立てる前から閉じる・しまう・全画面のボタンと空の `AXGroup` の入れ子がある | ウィンドウから幅優先で 8 段・400 要素までたどり、範囲の中の `AXWebArea` を全部見る。子のあるものが 1 つでもあれば立てない。無いか全部空で、最後までたどれたときだけ立てる（深さか数の上限で打ち切ったら立てない。Core の `paradisWindowNeedsManualAccessibility`）。立てる前に今の値を読み、すでに true なら立てず台帳にも載せない（別のツールが立てた設定を 10 分後に false へ戻さない）。立ててからウェブの中身が出るまで最長 3 秒待つ（待つ間も中断を見る） | 確認用の Electron で、直す前の補助アプリは立てず（12 要素、中身なし）、直した補助アプリは立てて `AXWebArea` の下の見出し・ボタン・入力欄まで読んだ（18 要素）。立ててから中身が出るまで約 2 秒かかった（背面のウィンドウ）。補助アプリが終わった後、そのアプリの `AXManualAccessibility` は false に戻っていた |
+| 別の AppKit のプロセスが起動・終了した直後の要求が一時的に `app_not_found` | `NSRunningApplication(processIdentifier:)` が、別のアプリの起動・終了の直後に、関係の無い pid でも 1 回だけ nil を返す。直後に同じ問い合わせをすると返り、`NSWorkspace.runningApplications` には載ったまま | pid からアプリを引く処理を `paradisRunningApplication` に集め、nil なら一覧から探し直す。一覧から拾ったものは、終わっておらず、実行ファイルのパス（読めなければ起動した時刻を 2 秒まで）が今その pid のプロセスと合うときだけ使う。画面のウィンドウの持ち主を引くときは一覧を 1 回だけ辞書に写す | 確かめのプログラム（補助アプリと同じく main の run loop で引く）で、Finder の pid を 1〜5 ms ごとに引きながら別のアプリを 3 回起動・終了して、2 回の試行で 2 回・4 回 nil になった。補助アプリ経由では直す前も直した後も 1500 回の `listWindows` で失敗は出なかった（間隔が粗いため。再現は API の段まで） |
+| 当たった要素が目的のウィンドウ自身のとき、`routeNotes` に「別のウィンドウ」と書かれる | ウィンドウの要素は `AXWindow` を持たない | 当たった要素がウィンドウそのものなら `the point is on the window itself, not on a control` と書く（Core の `paradisHitElementSkipReason`） | 確認用アプリの何も無いところを座標でクリックし、`routeNotes` がその文になった |
+
+修飾キーの扱いの方針（前面と背面）: 送るイベントには組み合わせの修飾キーだけを付け、利用者が押している修飾キーは混ぜない。前面の段は HID のタップへ送るので OS の修飾キーの状態が変わる。このため、押す前に無かった修飾キーだけを離した後に解放し、利用者が押していた修飾キーは解放しない（止めはしない）。組み合わせに無い利用者の修飾キー（⇧ など）は、押す・離すのイベントの印に入れないので、HID へ送ったイベントの印が OS の状態になる以上、状態から消えて戻さない（ドラッグと同じ。利用者が次にそのキーを押すか離すと戻る）。main と比べて悪化はしていない（main は押す・離すの両方を組み合わせの印だけで送っていた）。実機では要確認。背面の段は修飾キーを押していれば `user_active` で止め、イベントは pid へ送るので解放の flagsChanged は送らない（HID のタップを通らないので状態は残らないと見ている。確かめていない）。背面の段のコードは今回変えていない。ポインタの移動とドラッグは修飾キーを付けず、押す前の状態の Caps Lock と NonCoalesced だけを写す（今までは印なしで送っていたので、利用者の Caps Lock の印も消えうった）。印は、こちらがイベントを送る前（関数の先頭）に読む。ドラッグは修飾キーを付けないので、利用者が押していた ⇧ などは状態から消えたまま戻さない（直す前と同じ。戻すと、その間に利用者が離した修飾キーを付け直しうる）。
+
+確かめていないこと・既知の問題:
+
+- Electron の背面の 1 回クリックがページに届かないのに `clicked: true` を返す（実機確認の報告）。背面の段（`ParadisBackgroundRoute.swift`）の話なので、ここでは直していない
+- ナチュラルなスクロールがオフのときの向き。WindowServer はこの設定を `SLSSetSwipeScrollDirection` で受け取り、読む関数は公開されていない。オフでは反転しないと見て符号を戻しているが、利用者の設定を変えるため試していない【要確認】。`defaults write -g com.apple.swipescrolldirection` で書き換えて WindowServer に知らせていないときは、設定の値と WindowServer の動きがずれて逆になる。Scroll Reverser などスクロールの向きを変える常駐ソフトが動いていると、その分も逆になりうる
+- 矢印キーなどでは、OS が押す・離すのイベントに fn と NumericPad の印を足す（確認用アプリには ⌘⇧← が `0x920000` で届いた）。解放の flagsChanged はこれらを写さない。実機の確認の後、状態に説明の無い印 `0x20000000` が残っていた（解放の flagsChanged では消えなかった）。どのイベントで付いたかは分けて確かめていない
+- ⌘ 付きのクリック（右クリック）を確認用アプリで送ったが、点が別のウィンドウに覆われていて（`point_obscured`）送られなかった。キーと同じ `paradisPostModifierRelease` を通る。⌘ 付きのクリックの mouseup に ⌘ が付くことは実機では確かめていない
+- `pasteText` は利用者のクリップボードを書き換えるので実機では送っていない（`hotkey` と同じ `sendChord` を通る）
+- 解放の送り直し・自分の残りの解放（`paradisOwnLeftoverModifiers`）・ダブルクリックの解放を 1 回にした変更は、単体テストだけで実機では確かめていない。⌘ が残った後の次の要求が背面の段に行くと、背面の段の確かめ（`holding a modifier key`）が先に止めるので、残りを消すのは前面の段のキーかクリックが来たときになる
 
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 

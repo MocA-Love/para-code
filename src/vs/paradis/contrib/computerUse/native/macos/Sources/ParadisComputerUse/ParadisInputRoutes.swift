@@ -468,8 +468,10 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			guard AXUIElementCopyElementAtPosition(window.application, Float(point.x), Float(point.y), &element) == .success, let element else {
 				return .failure(ParadisAXRouteSkip("no accessibility element at the point"))
 			}
-			guard let owner = paradisElement(element, kAXWindowAttribute), CFEqual(owner, window.element) else {
-				return .failure(ParadisAXRouteSkip("the element at the point belongs to another window"))
+			let hitIsWindow = CFEqual(element, window.element)
+			let ownerIsWindow = paradisElement(element, kAXWindowAttribute).map { CFEqual($0, window.element) } ?? false
+			if let reason = paradisHitElementSkipReason(hitIsTargetWindow: hitIsWindow, ownerIsTargetWindow: ownerIsWindow) {
+				return .failure(ParadisAXRouteSkip(reason))
 			}
 			return .success(element)
 		}
@@ -505,7 +507,7 @@ private struct ParadisAXTargetWindow {
 
 /** アプリを隠しているか（⌘H）。 */
 func paradisAppIsHidden(_ pid: Int32) -> Bool {
-	return paradisOnMain { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
+	return paradisOnMain { paradisRunningApplication(pid)?.isHidden ?? false }
 }
 
 /**
