@@ -448,7 +448,8 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 		try {
 			await fs.writeFile(tokenPath, token, { mode: 0o600, flag: 'wx' });
 			try {
-				await this._host.launch(appPath, ['--agent', '--socket', socketPath, '--token-file', tokenPath], join(runtimeDirectory, 'helper.log'));
+				// `--state-dir`: 補助アプリがクラッシュしても次の起動で戻せるよう、AXManualAccessibility を立てたアプリの記録を置く
+				await this._host.launch(appPath, ['--agent', '--socket', socketPath, '--token-file', tokenPath, '--state-dir', runtimeDirectory], join(runtimeDirectory, 'helper.log'));
 			} catch (error) {
 				fail('launch-failed', `open failed: ${toMessage(error)}`);
 			}

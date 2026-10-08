@@ -326,6 +326,8 @@ interface ITypingProgress {
 	readonly clipboardNotes: Set<string>;
 	readonly methods: Set<string>;
 	readonly routes: Set<string>;
+	/** 3 段目（前面）で送れた塊があったか（それ以降は前面化を頼まない）。 */
+	sentForeground: boolean;
 }
 
 export interface IParadisComputerUseToolOptions {
@@ -572,7 +574,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		// 番号での操作に添えるツリーの id は、最初に 1 回だけ取る（承認を待つ間にほかの呼び出しが読み直しても、エージェントが
 		// 見た番号のツリーで送る。古ければ補助アプリが stale_element で断る）
 		const snapshotId = window.ok && usesElementNumbers(args) ? this._snapshots.get(snapshotKey(paneToken, app.pid, window.window.windowId)) : undefined;
-		const typing: ITypingProgress = { typed: 0, unconfirmed: false, rewritten: false, clipboardNotes: new Set(), methods: new Set(), routes: new Set() };
+		const typing: ITypingProgress = { typed: 0, unconfirmed: false, rewritten: false, clipboardNotes: new Set(), methods: new Set(), routes: new Set(), sentForeground: false };
 		for (let attempt = 0; ; attempt++) {
 			const extra = {
 				...(allowForeground ? {} : { allowForeground: false }),
@@ -726,12 +728,12 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		if (graphemes.length > TYPE_TEXT_MAX_LENGTH) {
 			throw new ParadisComputerUseHelperError('invalid_argument', `"text" is longer than ${TYPE_TEXT_MAX_LENGTH} characters; use computer_paste_text for long text.`);
 		}
-		const firstChunk = progress.typed;
 		for (let start = progress.typed; start < graphemes.length; start += TYPE_TEXT_CHUNK) {
 			const chunk = graphemes.slice(start, start + TYPE_TEXT_CHUNK);
-			// 承認の直後に前面に出すのは最初の塊だけ（2 つ目からは前面のまま続ける）
+			// 承認の直後の前面化（`activateFirst`）は、塊が 3 段目（前面）で送られるまで付け続ける。送り直しの塊が 1 段目（AX）で
+			// 通ると前面化は起きないので、そこで外すと次の塊が前面の段に落ちて window_not_focused で止まる
 			const { activateFirst: _activateFirst, ...rest } = extra as { activateFirst?: boolean };
-			const chunkExtra = start === firstChunk ? extra : rest;
+			const chunkExtra = progress.sentForeground ? rest : extra;
 			const typed = progress.typed;
 			const sentBefore = progress.unconfirmed
 				? `The first ${typed} characters were sent, but not all of them could be confirmed.`
@@ -744,6 +746,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				}
 				if (check.route) {
 					progress.routes.add(check.route);
+				}
+				if (check.route === 'foreground') {
+					progress.sentForeground = true;
 				}
 				// IME が有効で貼り付けに寄せたときは、クリップボードの戻し方も塊ごとに集めて全部伝える（ベータ 3 のレビュー L5）
 				if (check.clipboard && check.clipboard !== 'restored') {
@@ -1236,6 +1241,8 @@ function describeHelperError(error: unknown): string {
 				return 'Computer Use cannot use this app.';
 			case 'input_unsupported':
 				return `Para Code could not send this action to that element (${error.message}). For a value, click the element and type instead.`;
+			case 'menu_open':
+				return 'A menu is open in the app while it is not in front, so the user is probably using it. Para Code did not send input and left the menu open. Wait, or ask the user in the conversation.';
 			case 'screen_locked':
 				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':

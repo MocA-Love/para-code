@@ -169,7 +169,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		var enabledManualAccessibility = false
 		paradisManualAccessibility.touch(pid)
 		if enableManualAccessibility && (window.map { paradisElements($0, kAXChildrenAttribute).isEmpty } ?? true) && paradisIsElectronApp(pid: pid)
-			&& !paradisManualAccessibilityExcluded(bundleId: bundleIdentifier(pid: pid)) && paradisManualAccessibility.enable(pid: pid) {
+			&& !paradisManualAccessibilityExcluded(bundleId: bundleIdentifier(pid: pid), hasVSCodeProductJson: paradisHasVSCodeProductJson(pid: pid)) && paradisManualAccessibility.enable(pid: pid) {
 			enabledManualAccessibility = true
 			usleep(400_000)
 			windows = paradisElements(application, kAXWindowsAttribute)
@@ -287,24 +287,57 @@ final class ParadisDesktop: ParadisDesktopBackend {
 }
 
 /**
- * 補助アプリが `AXManualAccessibility` を立てたアプリと、最後に使った時刻。10 分使わなければ・補助アプリが終わるときに
- * false へ戻す（Chromium は立っている間 AX のツリーを作り続けるので、打鍵が遅くなりうる）。
+ * 補助アプリが `AXManualAccessibility` を立てたアプリ（pid とプロセスが始まった時刻の組）と、最後に使った時刻。
+ * 10 分使わなければ・補助アプリが終わるときに false へ戻す（Chromium は立っている間 AX のツリーを作り続けるので、
+ * 打鍵が遅くなりうる）。
+ *
+ *  - pid は使い回されるので、立てる・使う・戻す前に、同じプロセス（始まった時刻が同じ）かを確かめる
+ *  - 戻す前に VoiceOver・スイッチコントロールが動いていれば、こちらの false がそれらの支援も止めうるので、戻さずに外すだけ
+ *  - クラッシュ・SIGKILL では `atexit` が走らないので、記録を実行時フォルダのファイル（`--state-dir`）にも書き、
+ *    次に起動したときに、同じプロセスがまだ動いていれば戻す
  */
 final class ParadisManualAccessibilityLedger {
 	private let lock = NSLock()
-	private var lastUsed: [Int32: Date] = [:]
+	private var entries: [Int32: (started: Double, lastUsed: Date)] = [:]
 	private var timer: DispatchSourceTimer?
+	private var stateFile: URL?
+
+	/**
+	 * 記録のファイルを決め、前の起動が戻せずに残した分を戻す（補助アプリの起動時に 1 回）。
+	 */
+	func configure(stateDirectory: String?) {
+		guard let stateDirectory else {
+			return
+		}
+		try? FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+		let file = URL(fileURLWithPath: stateDirectory).appendingPathComponent("manual-accessibility.json")
+		let leftovers = paradisDecodeManualAccessibilityEntries(try? Data(contentsOf: file))
+		lock.lock()
+		stateFile = file
+		lock.unlock()
+		for entry in leftovers {
+			restore(pid: entry.pid, started: entry.started)
+		}
+		persist()
+	}
 
 	/** 立てる。立てられたら true（すでに立てていれば false。読み直す必要が無い）。 */
 	func enable(pid: Int32) -> Bool {
+		guard let started = paradisProcessStart(pid) else {
+			return false
+		}
 		lock.lock()
-		let already = lastUsed[pid] != nil
+		let already = entries[pid].map { paradisSameProcess(recordedStart: $0.started, currentStart: started) } ?? false
+		if !already {
+			// 前に同じ pid で記録した別のプロセスは、もう居ない
+			entries.removeValue(forKey: pid)
+		}
 		lock.unlock()
 		guard !already, AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
 			return false
 		}
 		lock.lock()
-		lastUsed[pid] = Date()
+		entries[pid] = (started, Date())
 		if timer == nil {
 			let source = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
 			source.schedule(deadline: .now() + 60, repeating: 60)
@@ -315,43 +348,108 @@ final class ParadisManualAccessibilityLedger {
 			timer = source
 		}
 		lock.unlock()
+		persist()
 		return true
 	}
 
-	/** そのアプリを使った（読み取り・操作）。立てていなければ何もしない。 */
+	/** そのアプリを使った（読み取り・操作）。立てていない・別のプロセスに替わっていれば、時刻を進めない。 */
 	func touch(_ pid: Int32) {
 		lock.lock()
-		if lastUsed[pid] != nil {
-			lastUsed[pid] = Date()
+		let recorded = entries[pid]
+		lock.unlock()
+		guard let recorded else {
+			return
+		}
+		let same = paradisSameProcess(recordedStart: recorded.started, currentStart: paradisProcessStart(pid))
+		lock.lock()
+		if same {
+			entries[pid] = (recorded.started, Date())
+		} else {
+			entries.removeValue(forKey: pid)
 		}
 		lock.unlock()
+		if !same {
+			persist()
+		}
 	}
 
 	func restoreExpired(now: Date) {
 		lock.lock()
-		let expired = lastUsed.filter { paradisManualAccessibilityExpired(lastUsed: $0.value, now: now) }.map { $0.key }
-		expired.forEach { lastUsed.removeValue(forKey: $0) }
+		let expired = entries.filter { paradisManualAccessibilityExpired(lastUsed: $0.value.lastUsed, now: now) }
+		expired.keys.forEach { entries.removeValue(forKey: $0) }
 		lock.unlock()
-		expired.forEach(paradisClearManualAccessibility)
+		guard !expired.isEmpty else {
+			return
+		}
+		for (pid, entry) in expired {
+			restore(pid: pid, started: entry.started)
+		}
+		persist()
 	}
 
 	/** 全部戻す（補助アプリが終わるとき）。 */
 	func restoreAll() {
 		lock.lock()
-		let pids = Array(lastUsed.keys)
-		lastUsed.removeAll()
+		let all = entries
+		entries.removeAll()
 		lock.unlock()
-		pids.forEach(paradisClearManualAccessibility)
+		for (pid, entry) in all {
+			restore(pid: pid, started: entry.started)
+		}
+		persist()
+	}
+
+	/** 同じプロセスで、支援技術が動いていなければ false へ戻す。 */
+	private func restore(pid: Int32, started: Double) {
+		let assistive = paradisOnMain { NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled }
+		guard paradisManualAccessibilityRestoreDecision(recordedStart: started, currentStart: paradisProcessStart(pid), assistiveTechnologyRunning: assistive) == .restore else {
+			return
+		}
+		let application = AXUIElementCreateApplication(pid)
+		AXUIElementSetMessagingTimeout(application, 0.5)
+		AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+	}
+
+	/** 今の記録をファイルへ書く（記録が無ければ消す）。 */
+	private func persist() {
+		lock.lock()
+		let file = stateFile
+		let list = entries.map { ParadisManualAccessibilityEntry(pid: $0.key, started: $0.value.started) }
+		lock.unlock()
+		guard let file else {
+			return
+		}
+		if list.isEmpty {
+			try? FileManager.default.removeItem(at: file)
+			return
+		}
+		guard let data = try? JSONEncoder().encode(list) else {
+			return
+		}
+		try? data.write(to: file, options: [.atomic])
+		chmod(file.path, 0o600)
 	}
 }
 
-private func paradisClearManualAccessibility(_ pid: Int32) {
-	let application = AXUIElementCreateApplication(pid)
-	AXUIElementSetMessagingTimeout(application, 0.5)
-	AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+/** プロセスが始まった時刻（秒）。LaunchServices を通さずに起動したアプリでも取れるよう、カーネルの値を読む。 */
+func paradisProcessStart(_ pid: Int32) -> Double? {
+	var info = proc_bsdinfo()
+	let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+	guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else {
+		return nil
+	}
+	return Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000
 }
 
 let paradisManualAccessibility = ParadisManualAccessibilityLedger()
+
+/** VS Code の派生か（`Contents/Resources/app/product.json` があるか）。 */
+private func paradisHasVSCodeProductJson(pid: Int32) -> Bool {
+	guard let bundleURL = paradisOnMain({ NSRunningApplication(processIdentifier: pid)?.bundleURL }) else {
+		return false
+	}
+	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Resources/app/product.json").path)
+}
 
 /** Electron 製のアプリか（`Contents/Frameworks/Electron Framework.framework` があるか）。 */
 private func paradisIsElectronApp(pid: Int32) -> Bool {
