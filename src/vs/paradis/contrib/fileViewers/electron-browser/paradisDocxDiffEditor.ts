@@ -68,11 +68,12 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
-import { createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
+import { acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { renderWordSemanticRibbon, wordSemanticFailureMessage, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { compareParadisWordDocuments } from './word/paradisWordSemanticClient.js';
+import { alignParadisWordParagraphs } from '../common/word/paradisWordRenderOutline.js';
 import type { IParadisWordComparisonResult } from '../common/word/paradisWordSemanticSummary.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import './media/paradisDocxDiff.css';
@@ -215,6 +216,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _semanticSources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
 	private _semanticResult: IParadisWordComparisonResult | undefined;
 	private _legacyResult: IParadisDocxDiffResult | undefined;
+	/** いま表示している両側の docx-preview の段落ごとの文字（webview が描いた後に報告する）。 */
+	private _renderedParagraphs: { readonly original: unknown; readonly modified: unknown } | undefined;
 	private _recreatingForRecovery = false;
 	/**
 	 * 表示の見張りと観測。
@@ -775,6 +778,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				}
 				this._updateNav();
 				return;
+			case 'paragraphs':
+				if (message.generation === this._loadGeneration) {
+					this._renderedParagraphs = { original: message.original, modified: message.modified };
+				}
+				return;
 			case 'activeChange': {
 				const index = this._changes.findIndex(change => change.id === message.changeId);
 				if (index >= 0 && index !== this._currentIndex) {
@@ -962,7 +970,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onNavigate: target => {
 				const legacy = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
-				const changeId = legacy ? Number(legacy[1]) : this._legacyChangeFor(semantic?.changes.find(change => change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? '')));
+				const semanticChange = legacy ? undefined : semantic?.changes.find(change => change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? ''));
+				if (semanticChange && semantic && this._revealSemanticChange(semantic, semanticChange)) {
+					return;
+				}
+				const changeId = legacy ? Number(legacy[1]) : this._legacyChangeFor(semanticChange);
 				if (changeId === undefined) {
 					return;
 				}
@@ -1014,6 +1026,26 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._inspectorToggle.setAttribute('aria-expanded', String(visible));
 	}
 
+	/**
+	 * 詳しい比較の変更を、表示の段落へ移す。変更が属する段落（どちらの側か）を解析側で決めてあるので、
+	 * 書式・構造・フィールドのように文字で探せない変更にも移れる。段落の対応が取れなければ false。
+	 */
+	private _revealSemanticChange(semantic: Extract<IParadisWordComparisonResult, { readonly ok: true }>, change: ParadisOfficeChange): boolean {
+		const target = semantic.navigation[change.id];
+		const rendered = this._renderedParagraphs;
+		if (!target || !rendered || !this._webview) {
+			return false;
+		}
+		const outline = target.side === 'original' ? semantic.originalOutline : semantic.modifiedOutline;
+		const paragraphs = acceptRenderedParagraphs(target.side === 'original' ? rendered.original : rendered.modified);
+		const marker = paragraphs ? alignParadisWordParagraphs(outline, paragraphs).get(target.paragraph) : undefined;
+		if (!marker) {
+			return false;
+		}
+		void this._webview.postMessage({ type: 'revealAnchor', side: target.side, marker, focus: wordChangeText(change) ?? '' });
+		return true;
+	}
+
 	/** 詳しい比較の変更に対応する、表示中の（段落単位の）変更を探す。文字が重なるものを選ぶ。 */
 	private _legacyChangeFor(change: ParadisOfficeChange | undefined): number | undefined {
 		const text = change ? wordChangeText(change)?.replace(/\s+/g, '') : undefined;
@@ -1035,6 +1067,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._semanticSources = undefined;
 		this._semanticResult = undefined;
 		this._legacyResult = undefined;
+		this._renderedParagraphs = undefined;
 	}
 
 	/**
