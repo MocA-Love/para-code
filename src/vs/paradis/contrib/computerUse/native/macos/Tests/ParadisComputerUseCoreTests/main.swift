@@ -498,6 +498,23 @@ do {
 	check(queue.next().flatMap { try? paradisParseRequest($0).get() }?.id == 2, "overflow preserves accepted request order")
 }
 
+do {
+	check(!paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: true, targetIsFrontmost: false), "an Electron background single click is declined before sending")
+	check(paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: true, targetIsFrontmost: true), "a foreground Electron window can receive the single click")
+	check(paradisBackgroundSingleClickSupported(clickCount: 2, isElectron: true, targetIsFrontmost: false), "double clicks retain their existing route")
+	check(paradisBackgroundSingleClickSupported(clickCount: 1, isElectron: false, targetIsFrontmost: false), "native background single clicks keep their route")
+}
+
+do {
+	check(paradisBackgroundKeyboardFailure(role: nil, belongsToWindow: true, isSecret: false)?.code == "window_not_focused", "unreadable focus does not allow background typing")
+	check(paradisBackgroundKeyboardFailure(role: "AXTextField", belongsToWindow: false, isSecret: false)?.code == "window_not_focused", "a field from another window is not a typing target")
+	check(paradisBackgroundKeyboardFailure(role: "AXTextField", belongsToWindow: true, isSecret: true)?.code == "key_blocked", "secure fields reject background input")
+	check(paradisBackgroundKeyboardFailure(role: "AXTextField", belongsToWindow: true, isSecret: false) == nil, "inspectable non-secret target can receive input")
+	check(!paradisBackgroundChecksMenuAfter(.typeText(text: "a", units: [.text("a")])), "typing never closes completion menus")
+	check(!paradisBackgroundChecksMenuAfter(.scroll(windowId: 7, target: nil, direction: .down, pages: 1)), "scrolling has no click-menu settling delay")
+	check(paradisBackgroundChecksMenuAfter(.click(windowId: 7, target: .point(x: 1, y: 1), button: .left, clickCount: 1, modifiers: [])), "clicks still inspect menus once")
+}
+
 // MARK: - 1 段目: クリックの代わりの AX の操作
 
 do {

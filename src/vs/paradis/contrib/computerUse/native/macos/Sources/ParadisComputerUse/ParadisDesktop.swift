@@ -528,7 +528,7 @@ private func paradisHasVSCodeProductJson(pid: Int32) -> Bool {
 }
 
 /** Electron 製のアプリか（`Contents/Frameworks/Electron Framework.framework` があるか）。 */
-private func paradisIsElectronApp(pid: Int32) -> Bool {
+func paradisIsElectronApp(pid: Int32) -> Bool {
 	guard let bundleURL = paradisOnMain({ paradisRunningApplication(pid)?.bundleURL }) else {
 		return false
 	}

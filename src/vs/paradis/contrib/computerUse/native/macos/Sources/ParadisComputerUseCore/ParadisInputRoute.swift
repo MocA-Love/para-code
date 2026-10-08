@@ -796,3 +796,22 @@ func paradisBackgroundMenuResult(opened: Bool, attempted: Bool, accepted: Bool, 
 	}
 	return ["menuCancelAttempted": attempted, "menuCancelAccepted": accepted, "menuClosed": !stillOpen, "menuOpen": stillOpen, "note": note]
 }
+
+/** Electron の背面単一クリックはページで捨てられる場合がある。送信前に前面経路へ譲る。 */
+func paradisBackgroundSingleClickSupported(clickCount: Int, isElectron: Bool, targetIsFrontmost: Bool) -> Bool {
+	return clickCount != 1 || !isElectron || targetIsFrontmost
+}
+
+/** 入力先を検査できない場合も、背面キーの許可として扱わない。 */
+func paradisBackgroundKeyboardFailure(role: String?, belongsToWindow: Bool, isSecret: Bool) -> ParadisHelperError? {
+	guard let role, !role.isEmpty, belongsToWindow else {
+		return ParadisHelperError(code: "window_not_focused", message: "the focused element cannot be inspected in the requested window")
+	}
+	return isSecret ? ParadisHelperError(code: "key_blocked", message: "background input does not target password fields") : nil
+}
+
+/** 文字入力による補完候補は、クリックで開いたメニューの後始末に含めない。 */
+func paradisBackgroundChecksMenuAfter(_ action: ParadisInputAction) -> Bool {
+	if case .click = action { return true }
+	return false
+}
