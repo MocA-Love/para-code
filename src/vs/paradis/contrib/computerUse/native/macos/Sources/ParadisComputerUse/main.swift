@@ -39,6 +39,7 @@ private final class ParadisAgentDelegate: NSObject, NSApplicationDelegate {
 		signal(SIGTERM, SIG_IGN)
 		let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 		source.setEventHandler {
+			ParadisBackgroundCleanup.shared.run()
 			paradisPressedInput.releaseAll()
 			exit(0)
 		}

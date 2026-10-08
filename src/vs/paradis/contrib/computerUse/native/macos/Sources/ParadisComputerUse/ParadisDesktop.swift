@@ -38,8 +38,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
-	/** 2 段目（背面への入力）。今は常に使えない空の実装（ParadisInputRoutes.swift）。 */
-	let backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute()
+	/** 2 段目（背面への入力）。未送信で対応できない操作は前面経路へ譲る（ParadisInputRoutes.swift）。 */
+	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
@@ -491,8 +491,8 @@ struct ParadisWindowInfo {
 }
 
 /** その pid の通常のウィンドウ（layer 0）を手前から順に。 */
-func paradisWindowInfos(pid: Int32) -> [ParadisWindowInfo] {
-	guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+func paradisWindowInfos(pid: Int32, entries: [[String: Any]]? = nil) -> [ParadisWindowInfo] {
+	guard let list = entries ?? (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) else {
 		return []
 	}
 	return list.compactMap { entry in

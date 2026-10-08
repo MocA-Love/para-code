@@ -429,7 +429,73 @@ do {
 	let foreground6 = foreground()
 	let viaBackground = try? paradisRouteInput(click, pid: 100, routes: [FakeRoute(.accessibility) { .fellThrough("no element") }, plugged, foreground6], options: ParadisInputOptions(allowForeground: false))
 	check(viaBackground?["route"] as? String == "background" && foreground6.performed.isEmpty, "a background route plugs in before the foreground route")
-	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the background route is not available yet")
+	// 送信後の不明な結果で前面経路へ落ちると二重入力になる。
+	let foregroundAfterPartial = foreground()
+	let partial = FakeRoute(.background) { .done(["completed": false, "verified": NSNull(), "sentUnits": 1]) }
+	let partialResult = try? paradisRouteInput(click, pid: 100, routes: [partial, foregroundAfterPartial], options: ParadisInputOptions())
+	check(partialResult?["completed"] as? Bool == false && foregroundAfterPartial.performed.isEmpty, "partial background delivery is never replayed through foreground")
+	let windowOptions = try? paradisParseInputOptions(["backgroundWindowId": 42])
+	check(windowOptions?.backgroundWindowId == 42, "preserves the exact background keyboard window")
+	for invalid: Any in [true, 0, -1, 1.5, UInt64(UInt32.max) + 1, "42"] {
+		check((try? paradisParseInputOptions(["backgroundWindowId": invalid])) == nil, "rejects malformed window identifiers before routing")
+	}
+	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the unavailable background fallback declines input")
+}
+
+// MARK: - 要求 ID ごとの中断
+
+do {
+	func line(_ id: Int, _ method: String, _ params: [String: Any] = [:]) -> Data {
+		return try! JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
+	}
+	let queue = ParadisRequestQueue()
+	_ = try? queue.append([line(1, "typeText"), line(2, "pressKey")], authenticated: true)
+	_ = queue.next()
+	_ = try? queue.append([line(3, "cancel", ["requestId": 2])], authenticated: true)
+	check((try? queue.check()) != nil, "cancelling a queued request does not cancel the active request")
+	queue.finish()
+	_ = queue.next()
+	do { try queue.check(); check(false, "queued cancellation must be remembered") }
+	catch let error as ParadisHelperError { check(error.code == "cancelled", "queued request keeps the cancellation code") }
+	catch { check(false, "expected cancellation") }
+	queue.finish()
+	_ = try? queue.append([line(4, "typeText")], authenticated: true)
+	_ = queue.next()
+	_ = try? queue.append([line(5, "cancel", ["requestId": 4]), line(6, "permissions")], authenticated: true)
+	do { try queue.check(); check(false, "active cancellation must stop") }
+	catch let error as ParadisHelperError { check(error.code == "cancelled", "active request keeps the cancellation code") }
+	catch { check(false, "expected cancellation") }
+	queue.finish()
+	let next = queue.next().flatMap { try? paradisParseRequest($0).get() }
+	check(next?.id == 6 && (try? queue.check()) != nil, "other requests remain queued and usable after cancellation")
+	queue.finish()
+	let data = paradisEncodeFailure(id: 7, error: ParadisHelperError(code: "user_active", message: "stopped", sent: 3))
+	let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+	let payload = error?["error"] as? [String: Any]
+	check(payload?["sent"] as? Int == 3 && payload?["code"] as? String == "user_active" && payload?["progress"] == nil, "sent input is not reported as confirmed progress")
+}
+
+// MARK: - 背面メニューと要求待ち上限
+
+do {
+	check(paradisBackgroundClickOpensMenu(roles: ["AXImage", "AXGroup", "AXGroup", "AXPopUpButton"]), "menu opening ancestor three levels above the image blocks background input")
+	check(!paradisBackgroundClickOpensMenu(roles: ["AXStaticText", "AXButton"]), "plain button labels remain eligible for background input")
+	let closed = paradisBackgroundMenuResult(opened: true, attempted: true, accepted: true, stillOpen: false)
+	check(closed["menuClosed"] as? Bool == true && closed["menuCancelAttempted"] as? Bool == true, "reports attempted and observed closed separately")
+	let remains = paradisBackgroundMenuResult(opened: true, attempted: true, accepted: true, stillOpen: true)
+	check(remains["menuClosed"] as? Bool == false && remains["menuOpen"] as? Bool == true, "AXCancel success alone does not prove the menu closed")
+	let unavailable = paradisBackgroundMenuResult(opened: true, attempted: false, accepted: false, stillOpen: true)
+	check(unavailable["menuCancelAttempted"] as? Bool == false && (unavailable["note"] as? String)?.contains("no accessible menu") == true, "does not claim an unattempted cancellation failed")
+	func request(_ id: Int) -> Data { try! JSONSerialization.data(withJSONObject: ["id": id, "method": "typeText", "params": [:]]) }
+	let queue = ParadisRequestQueue()
+	_ = try? queue.append([request(1)], authenticated: true)
+	_ = queue.next()
+	let replies = try? queue.append((2...130).map(request), authenticated: true)
+	let overflow = replies?.first.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+	check(overflow?["id"] as? Int == 130 && (overflow?["error"] as? [String: Any])?["code"] as? String == "queue_full", "overflow is returned to the rejected request")
+	check((try? queue.check()) != nil, "overflow does not stop a different active request")
+	queue.finish()
+	check(queue.next().flatMap { try? paradisParseRequest($0).get() }?.id == 2, "overflow preserves accepted request order")
 }
 
 // MARK: - 1 段目: クリックの代わりの AX の操作
@@ -442,7 +508,7 @@ do {
 	let row = ParadisAXElementFacts(role: "AXRow", actions: ["AXShowMenu"])
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 0), "presses a button")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 1), "presses the button around its label")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, button], targetIsFrontmost: true) == .none("no element near the target accepts AXPress"), "does not climb past three elements")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, group, button], targetIsFrontmost: true) == .none("no element near the target accepts AXPress"), "does not climb past three parents")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [row, button], targetIsFrontmost: true) == .none("AXRow does not accept AXPress"), "does not climb out of a row")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [button], targetIsFrontmost: true) == .none("double and triple clicks need real input"), "double clicks need real input")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: .command, chain: [button], targetIsFrontmost: true) == .none("clicks with modifier keys need real input"), "modified clicks need real input")
