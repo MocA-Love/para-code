@@ -29,6 +29,12 @@ export class ParadisComputerUseGrantLedger {
 	 */
 	private readonly _entries = new Map<string, { readonly bundleId: string; readonly grant: ParadisComputerUseGrant; readonly operateRefused: boolean }>();
 
+	/**
+	 * 前面に出して実カーソルとキーボードを使う送り方を、このペインのこのアプリについて「このターミナルでは聞かない」と
+	 * 答えた組（設定 `paradis.computerUse.confirmForegroundInput` がオンのときだけ使う）。挿入順を古い順として使う。
+	 */
+	private readonly _foreground = new Set<string>();
+
 	constructor(private readonly _maxEntries: number = DEFAULT_MAX_ENTRIES) { }
 
 	get(paneToken: string, bundleId: string): ParadisComputerUseGrant | undefined {
@@ -53,6 +59,24 @@ export class ParadisComputerUseGrantLedger {
 		}
 	}
 
+	/** 前面の送り方を、このペインのこのアプリについて聞かずに使ってよいか。 */
+	foregroundAllowed(paneToken: string, bundleId: string): boolean {
+		return this._foreground.has(keyOf(paneToken, bundleId));
+	}
+
+	allowForeground(paneToken: string, bundleId: string): void {
+		const key = keyOf(paneToken, bundleId);
+		this._foreground.delete(key);
+		this._foreground.add(key);
+		while (this._foreground.size > this._maxEntries) {
+			const oldest = this._foreground.values().next();
+			if (oldest.done) {
+				break;
+			}
+			this._foreground.delete(oldest.value);
+		}
+	}
+
 	/** そのペインの決定の一覧（決めた順）。 */
 	listForPane(paneToken: string): IParadisComputerUseGrantEntry[] {
 		const prefix = `${paneToken}\n`;
@@ -72,10 +96,16 @@ export class ParadisComputerUseGrantLedger {
 				this._entries.delete(key);
 			}
 		}
+		for (const key of [...this._foreground]) {
+			if (key.startsWith(prefix)) {
+				this._foreground.delete(key);
+			}
+		}
 	}
 
 	clear(): void {
 		this._entries.clear();
+		this._foreground.clear();
 	}
 }
 

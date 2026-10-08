@@ -844,9 +844,9 @@ upstream 取り込み時に確認すること:
 
 | 層 | 置き場所 | 中身 |
 |---|---|---|
-| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal、約束の版 2）。読み取りの命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`、操作の命令は `activateApp`・`click`・`drag`・`scroll`・`typeText`・`pasteText`・`pressKey`・`hotkey` |
+| 補助アプリ（Swift） | `src/vs/paradis/contrib/computerUse/native/macos/` | `Para Code Computer Use.app`（bundle id `ltd.paradis.paracode.computeruse`、`LSUIElement`、macOS 14 以上、universal、約束の版 2）。読み取りの命令は `handshake`・`status`・`permissions`・`listApps`・`listWindows`・`screenshotWindow`（ScreenCaptureKit の単一ウィンドウ）・`accessibilityTree`、操作の命令は `activateApp`・`click`・`drag`・`scroll`・`typeText`・`pasteText`・`pressKey`・`hotkey`・`setValue`（2026-10-08 追加） |
 | ビルド | `build/paradis/computerUse/buildHelper.ts`・`embedHelper.ts` | swiftc で arm64 と x86_64 を作って `lipo`、`.app` に包んで ad-hoc 署名。`--test` で Swift のテスト、`--if-stale` で古いときだけ作る |
-| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 12 件（読み取り 4 件と、`computer_activate_app`・`computer_click`（右・ダブル・トリプルも）・`computer_drag`・`computer_scroll`・`computer_type_text`・`computer_paste_text`・`computer_press_key`・`computer_hotkey`）、状態のチャネル |
+| shared process | `contrib/computerUse/node/` | 補助アプリの起動と接続（`paradisComputerUseHelperClient.ts`）、ペインとアプリの組ごとの許可の台帳（メモリだけ）、MCP ツール 13 件（読み取り 4 件と、`computer_activate_app`・`computer_click`（右・ダブル・トリプルも）・`computer_drag`・`computer_scroll`・`computer_type_text`・`computer_paste_text`・`computer_press_key`・`computer_hotkey`・`computer_set_value`（2026-10-08 追加））、状態のチャネル |
 | 画面 | `contrib/computerUse/electron-browser/`・`browser/` | 承認ダイアログ（ページ共有と同じ `askApproval`、`cooldownKey` は `computer:<bundle id>`）、状態を見るコマンド `paradis.computerUse.showStatus`、設定 `paradis.computerUse.enabled`（既定オフ、APPLICATION）、設定画面の「Computer Use」節 |
 
 補助アプリは shared process から `open -n -g -j` で起動する。Para Code の子として exec すると TCC の許可が Para Code 本体で評価されうるため。手元（macOS 27、ad-hoc 署名）で `open -n` から起動した補助アプリは `responsibility_get_pid_responsible_for_pid` が自分自身を返した（Developer ID 署名と公証の後も同じかは未確認）。この関数が見つからない OS では確認を飛ばし、自分以外が返ったら `misattributed` で機能を止める。
@@ -928,6 +928,61 @@ upstream 取り込み時に確認すること:
 | L12 の後半（公証を片方のジョブだけで行う） | x64 と arm64 のジョブの間で成果物を受け渡す段が要り、ワークフローの形が変わる。ベータのワークフローへまとめる担当に任せる |
 | H1 の直し方 4（接続中にメニューバーへ項目を出す） | 指示の範囲外。拡張機能ホスト・pty host・renderer からの接続は断る。普通に起動した 2 つ目のインスタンスの shared process は通る（上の「2 つ目の Para Code」） |
 | 再レビュー N14 の候補の実在 | AuthenticationServicesAgent・AuthKitUI・PassKit・BluetoothUIServer・CoreLocationAgent の名前と bundle id を止める側の一覧に足したが、実機での確認はしていない（【要確認】） |
+
+### 入力の送り方を段に分け、AX で送れる操作は前面に出さない（2026-10-08、約束の版 7）
+
+操作の命令は補助アプリの `perform` に集め、送り方の段を順に試す（並びと選び方は Core の `ParadisInputRoute.swift`、実体は `ParadisInputRoutes.swift`）。どの段で送ったかは結果の `route` に書き、3 段目まで落ちたときは前の段を飛ばした理由を `routeNotes` に残す。段は「何も起きていないと言い切れる」ときだけ次へ譲り、利用者の打鍵・認証のダイアログなどの断りは次へ譲らずに止める。
+
+| 段 | `route` | 中身 | 確かめること |
+|---|---|---|---|
+| 1 | `accessibility` | 修飾キーの無い 1 回の左クリックは押せる部品の `AXPress`（ボタン・チェックボックス・ラジオ・リンク・メニュー項目・ポップアップなど。当たった要素が文字や絵なら親を 3 つまでたどる）、文字の欄なら `AXFocused` を書いてキャレットを末尾に置く。右クリックは `AXShowMenu`。`computer_set_value`（新しいツール）は `kAXValueAttribute` の書き込みと `AXIncrement`/`AXDecrement`。`computer_type_text` は今までの `kAXSelectedTextAttribute` の経路 | 目的のウィンドウがあってしまわれていない（しまわれていれば 3 段目へ）、直前 1 秒に物理的なキー入力が無い（マウスの動きでは止めない）、認証・同意のダイアログが無い。前面のアプリが目的の pid であることは求めない。操作の前後で前面のアプリ・キーボードのフォーカスのあるアプリ・その手前のウィンドウを比べて `focusPreserved` を返す（変わっても戻さない） |
+| 2 | `background` | 差し込み口だけ。`ParadisUnavailableBackgroundRoute`（常に使えない） | なし |
+| 3 | `foreground` | 今までの経路（`ParadisInput.swift` の `foreground*`）。前面に出し、実カーソルを動かして HID のタップへ送る | 今までどおり（前面のアプリ・点を覆うウィンドウ・利用者の入力） |
+
+番号での操作は、直前に読んだツリーの要素そのものに行う。座標での操作は、アプリに聞いた当たり判定（`AXUIElementCopyElementAtPosition` をアプリの要素に対して呼ぶ。ほかのアプリのウィンドウが重なっていても目的のアプリの要素が返る）で要素を取り、目的のウィンドウの要素でなければ譲る。AX で確かめられる値は読み戻す: チェックボックスとラジオは値が変わったか、値の書き込みは書いた値と同じか（数は丸めて比べる。範囲に収められたら `verified: false` と実際の値）、増減は向き。ボタンのように状態を持たない部品は `verified: null`。パスワード欄には値を書かない。メニューの「ペースト」は AX でも押さない。
+
+Electron 製のアプリ（`Contents/Frameworks/Electron Framework.framework` がある）で、ツリーを読んだときにウィンドウが無いか中身が空なら、公開されている `AXManualAccessibility` を立てて 0.4 秒後に読み直す（アプリごとに 1 回。立てたときはツリーの結果に `manualAccessibility: true`）。`AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない。
+
+設定 `paradis.computerUse.confirmForegroundInput`（既定オフ。オフなら今までどおり）がオンなら、shared process は `allowForeground: false` を添えて送る。補助アプリは 3 段目に来たら何も送らずに `foreground_needs_approval` を返し、shared process は入力の列の外で承認ダイアログ（`requestForeground`。「拒否」「今回だけ許可」「このターミナルでは今後も許可」、自動の断りの鍵は `computer-foreground:<bundle id>`）を出してから同じ要求を送り直す。`computer_type_text` は塊の途中で前面が要るようになっても、送り終えた塊から続ける。「このターミナルでは今後も許可」は許可の台帳にペインとアプリの組で覚える（Para Code の終了か Computer Use をオフにするまで）。
+
+#### 独自のカーソル
+
+補助アプリが画面ごとに透明でクリックが素通りする（`ignoresMouseEvents`）パネルを置き、全部の操作スペースとフルスクリーンの上に出す（`canJoinAllSpaces`・`fullScreenAuxiliary`、層は `assistiveTechHighWindow`、`nonactivatingPanel` でキーにならない）。見た目は内蔵ブラウザのエージェントのカーソルと同じ（矢印の形 `CURSOR_PATH`・大きさ 42・持ち主の色の光・名前の札・波紋 460 ms・軌跡 0.6 秒で消える）。名前と色は shared process が `ParadisCursorOwners` で決めて要求ごとに `cursor` で渡す（画面全体を 1 つのページとして並べるので、2 つ目のペインは紫・桃・青になり、同じ名前には番号が付く）。名前は `set_cursor_label` で最後に決めたもの（ブラウザのページが無いペインでも受けるようにした）、無ければ CLI の名前。軌跡は cursor-motion のコードを写さず、同じ時間の式（距離 ÷ 2.2 pt/ms、90〜380 ms）と上へふくらむ 2 次の Bézier を Swift で書いた（`ParadisCursorMotion.swift`）。15 秒操作が無ければ消える。設定 `paradis.computerUse.showCursorOverlay`（既定オン）でオフにでき、オフの要求が来たら出ているカーソルを消す。
+
+1 段目では、要素の中心へ軌跡つきで動かし、着いてから（最長 0.5 秒待ち、待つ間に打鍵が始まれば止める）操作して波紋を出す。3 段目では実カーソルが動くので、矢印は出さず、名前の札と波紋だけを実カーソルの位置に合わせる（矢印が 2 つ重なると、どちらが本物か分からなくなるため。札が出ていれば、ポインタを動かしているのがエージェントだと分かる）。キーだけの操作ではカーソルを動かさない。3 段目の「点を覆うウィンドウ」の確かめは、補助アプリ自身のウィンドウ（このパネル）を除くようにした。
+
+#### 2 段目をはめ込む手順
+
+1. `src/vs/paradis/contrib/computerUse/native/macos/Sources/ParadisComputerUse/` に、Core の `ParadisInputRoute` に準拠したクラスを新しいファイルで作る（`kind` は `.background`、`requiresForeground` は `false`）
+2. `availability(of:pid:)` で送れる操作（`ParadisInputAction` の種類と引数）を返し、送れないものは `.unavailable(理由)` にする
+3. `perform` で送る。利用者の入力・認証のダイアログで止めるときは `ParadisHelperError` を投げる。何も送らずにやめたときだけ `.fellThrough(理由)` を返す（3 段目へ落ちる）。送ったかもしれないときは `.done` にして、確かめられないことを結果に書く
+4. `ParadisInputRoutes.swift` の `paradisMakeBackgroundRoute()` から新しいクラスを返す。`ParadisDesktop.backgroundRoute` に入り、`perform` の段の並び（AX、背面、前面）の 2 番目で使われる
+5. 結果の `route` は `background` になる。shared process とツールの説明は `route` の値をそのまま返すので変えなくてよいが、`OPERATE_NOTE`（`paradisComputerUseToolProvider.ts`）に背面の説明を足す。Core のテスト（`Tests/ParadisComputerUseCoreTests/main.swift` の「送り方の段の選び方」）に、使えるときは 3 段目より先に使われ、前面の承認が要らないことの確認がある
+
+#### 確認用のアプリで確かめた結果（2026-10-08、macOS 27.0、Apple Silicon）
+
+ボタン・チェックボックス・スライダー・文字の欄・ポップアップだけの AppKit のアプリ（自作、bundle id は仮のもの）を背面に置き、テスト用のビルド（`--allow-any-peer-for-testing`）の補助アプリへソケットから要求を送った。どの操作でも前面のアプリは変わらず（`focusPreserved: true`）、マウスポインタは動かなかった。
+
+| 操作 | 送り方 | 結果 |
+|---|---|---|
+| ボタンを番号で左クリック | `AXPress` | 押された（`verified: null`） |
+| ボタンを座標で左クリック | 当たり判定 + `AXPress` | 押された |
+| チェックボックスを左クリック | `AXPress` | 入った（`verified: true`） |
+| スライダーへ 80 を書く | `AXValue` | 80（`verified: true`） |
+| スライダーへ 150 を書く | `AXValue` | 100 に収められた（`verified: false`、`value: "100"`） |
+| スライダーを 2 段下げる | `AXDecrement` × 2 | 100 → 90 |
+| 文字の欄を左クリック | `AXFocused` | フォーカスが移った（`verified: true`） |
+| 文字の欄へ `hello` を入れる | `kAXSelectedTextAttribute` | 入った（`verified: true`） |
+| 文字の欄へ `replaced` を書く | `AXValue` | 置き換わった |
+| 文字のラベルへ値を書く | なし | `input_unsupported`（3 段目にも値の書き込みは無い） |
+| タイトルの文字を座標でクリック・ダブルクリック・スクロール（`allowForeground: false`） | 3 段目が要る | 何も送らずに `foreground_needs_approval` |
+| 利用者が打鍵中に AX のクリック | なし | `user_active`（`the user is typing`） |
+
+独自のカーソルは要素の中心に矢印と「C Checkout」の札（Claude の色）で出て、同じ時に撮った ScreenCaptureKit の単一ウィンドウのスクショには写らなかった。カーソルが出ている間も、画面全体への AX の当たり判定はその下のアプリの要素を返した（3 段目の確かめを妨げない）。
+
+別に、AX の小さな確認のプログラムで、背面のアプリの文字の欄へ `AXShowMenu` を送ると、メニューが開いている間はキーボードのフォーカスのあるアプリが目的のアプリになった（前面のアプリは変わらない）。結果の `focusPreserved` が false になり、`note` で伝える。開いたメニューは窓のツリーに出ないので、エージェントはメニューの項目を番号で押せない。
+
+確かめていないこと: Electron 製のアプリでの `AXManualAccessibility`（利用者のアプリの状態を変えるため試していない）、3 段目の前の承認ダイアログの実機での見え方（ユニットテストだけ）、3 段目での札の追従（実カーソルを動かすため試していない）、複数の画面・フルスクリーンのアプリの上でのカーソル、`AXShowMenu` の後にメニューの項目を押す流れ、Developer ID で署名した補助アプリでの動き。
 
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 

@@ -32,7 +32,7 @@ import { ParadisModalFocus } from '../browser/paradisModalFocus.js';
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
-import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
+import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 const $ = dom.$;
@@ -802,6 +802,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。あなたがキーボードやマウスを使っている間は入力を送りません。オンにした後は、エージェント側で MCP の再接続が必要です。"),
 		keywords: 'computer use macos accessibility screen recording screenshot app',
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		key: PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseConfirmForeground', "マウスとキーボードを動かす前に確認する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseConfirmForegroundDesc', "アプリを前面に出してマウスポインタとキーボードを実際に動かす操作の前に、毎回承認を求めます。ボタンを押す・値を変える・欄へ文字を入れるなど、アクセシビリティで送れる操作はポインタを動かさず前面にも出さないので、確認は出ません。"),
+		keywords: 'computer use confirm foreground mouse pointer keyboard approval accessibility',
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		key: PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseShowCursor', "エージェントのカーソルを出す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseShowCursorDesc', "エージェントが操作した場所に、名前の札つきのカーソルを出します。クリックを妨げず、スクリーンショットにも写りません。"),
+		keywords: 'computer use cursor overlay label agent',
 	},
 	{
 		sectionId: 'psd-sec-computeruse',

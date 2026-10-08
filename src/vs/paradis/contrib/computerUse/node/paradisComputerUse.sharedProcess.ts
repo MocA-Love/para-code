@@ -21,11 +21,15 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	IParadisComputerUseStatus,
+	PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING,
 	PARADIS_COMPUTER_USE_ENABLED_SETTING,
 	PARADIS_COMPUTER_USE_REFRESH_METHOD,
+	PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING,
 	PARADIS_COMPUTER_USE_STATUS_CHANNEL,
 	PARADIS_COMPUTER_USE_STATUS_METHOD,
+	paradisComputerUseConfirmForeground,
 	paradisComputerUseEnabled,
+	paradisComputerUseShowCursor,
 } from '../common/paradisComputerUse.js';
 import { ParadisComputerUseGrantLedger } from './paradisComputerUseGrantLedger.js';
 import { createParadisComputerUseHelperHost, ParadisComputerUseHelperClient } from './paradisComputerUseHelperClient.js';
@@ -77,7 +81,11 @@ ParadisSharedProcessContributions.register('computerUse', ({ server, accessor })
 	const ledger = new ParadisComputerUseGrantLedger();
 	// 設定のスキーマは画面側でしか登録されないので、ここでは生の値を読んで既定（オフ）へ倒す
 	const enabled = () => paradisComputerUseEnabled(configurationService.getValue(PARADIS_COMPUTER_USE_ENABLED_SETTING));
-	store.add(paradisRegisterMcpToolProvider(new ParadisComputerUseToolProvider(helper, ledger, { enabled }, logService)));
+	store.add(paradisRegisterMcpToolProvider(new ParadisComputerUseToolProvider(helper, ledger, {
+		enabled,
+		confirmForeground: () => paradisComputerUseConfirmForeground(configurationService.getValue(PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING)),
+		showCursor: () => paradisComputerUseShowCursor(configurationService.getValue(PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING)),
+	}, logService)));
 	server.registerChannel(PARADIS_COMPUTER_USE_STATUS_CHANNEL, new ParadisComputerUseStatusChannel(helper, enabled));
 
 	const sync = () => {

@@ -8,7 +8,7 @@
 // 起動の引数と、1 本の接続で受けた要求の振り分け。
 //
 // 読み取り（状態・許可の確認・アプリとウィンドウの一覧・単一ウィンドウのスクショ・アクセシビリティのツリー）と、
-// 操作（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー）を受ける。
+// 操作（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー・値の変更）を受ける。
 // 引数の形と、送らないキーの組み合わせはここで確かめ、OS に触れる前に断る。
 // どのアプリを操作してよいか（承認）は shared process が決める。ただし常に操作させないアプリ・Para Code の main と
 // shared process・補助アプリ自身は、ここでも断る（レビュー M1。shared process の判定と二重にする）。
@@ -100,13 +100,11 @@ protocol ParadisDesktopBackend: AnyObject {
 	func listWindows(pid: Int32) throws -> [[String: Any]]
 	func screenshotWindow(pid: Int32, windowId: UInt32, maxLongEdge: Int) throws -> [String: Any]
 	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int) throws -> [String: Any]
-	func activateApp(pid: Int32, windowId: UInt32?) throws -> [String: Any]
-	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any]
-	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any]
-	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any]
-	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any]
-	func pasteText(pid: Int32, text: String) throws -> [String: Any]
-	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any]
+	/**
+	 * 入力を送る（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・値の変更）。
+	 * 送り方の段（ParadisInputRoute.swift）を順に試し、結果の `route` に送った段を書く。
+	 */
+	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any]
 }
 
 // MARK: - 振り分け
@@ -196,28 +194,34 @@ final class ParadisRequestHandler {
 			let longEdge = try optionalIntParam(params, "maxLongEdge", minimum: 64, maximum: paradisMaxScreenshotLongEdge) ?? paradisDefaultScreenshotLongEdge
 			return try backend.screenshotWindow(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, maxLongEdge: longEdge)
 		case "activateApp":
-			return try backend.activateApp(pid: try pidParam(params), windowId: try windowIdParam(params, required: false))
+			return try backend.perform(pid: try pidParam(params), action: .activate(windowId: try windowIdParam(params, required: false)), options: try paradisParseInputOptions(params))
 		case "click":
 			let button = try enumParam(params, "button", ParadisMouseButton.init(rawValue:)) ?? .left
 			let clickCount = try optionalIntParam(params, "clickCount", minimum: 1, maximum: 3) ?? 1
-			return try backend.click(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: try targetParam(params, snapshot: params), button: button, clickCount: clickCount, modifiers: try modifiersParam(params))
+			let pid = try pidParam(params)
+			let action = ParadisInputAction.click(windowId: try windowIdParam(params, required: true)!, target: try targetParam(params, snapshot: params), button: button, clickCount: clickCount, modifiers: try modifiersParam(params))
+			return try backend.perform(pid: pid, action: action, options: try paradisParseInputOptions(params))
 		case "drag":
 			guard let from = params["from"] as? [String: Any], let to = params["to"] as? [String: Any] else {
 				throw ParadisHelperError.invalidArgument("\"from\" and \"to\" must be objects with elementIndex or x and y")
 			}
-			return try backend.drag(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, from: try targetParam(from, snapshot: params), to: try targetParam(to, snapshot: params))
+			let pid = try pidParam(params)
+			let action = ParadisInputAction.drag(windowId: try windowIdParam(params, required: true)!, from: try targetParam(from, snapshot: params), to: try targetParam(to, snapshot: params))
+			return try backend.perform(pid: pid, action: action, options: try paradisParseInputOptions(params))
 		case "scroll":
 			guard let direction = try enumParam(params, "direction", ParadisScrollDirection.init(rawValue:)) else {
 				throw ParadisHelperError.invalidArgument("\"direction\" must be up, down, left or right")
 			}
 			let pages = try optionalNumberParam(params, "pages", minimum: 0.1, maximum: 10) ?? 1
 			let target = params["elementIndex"] != nil || params["x"] != nil || params["y"] != nil ? try targetParam(params, snapshot: params) : nil
-			return try backend.scroll(pid: try pidParam(params), windowId: try windowIdParam(params, required: true)!, target: target, direction: direction, pages: pages)
+			let pid = try pidParam(params)
+			let action = ParadisInputAction.scroll(windowId: try windowIdParam(params, required: true)!, target: target, direction: direction, pages: pages)
+			return try backend.perform(pid: pid, action: action, options: try paradisParseInputOptions(params))
 		case "typeText":
 			guard let text = params["text"] as? String else {
 				throw ParadisHelperError.invalidArgument("\"text\" must be a string")
 			}
-			return try backend.typeText(pid: try pidParam(params), text: text, units: try paradisTypedUnits(text))
+			return try backend.perform(pid: try pidParam(params), action: .typeText(text: text, units: try paradisTypedUnits(text)), options: try paradisParseInputOptions(params))
 		case "pasteText":
 			guard let text = params["text"] as? String, !text.isEmpty else {
 				throw ParadisHelperError.invalidArgument("\"text\" must be a non-empty string")
@@ -225,12 +229,12 @@ final class ParadisRequestHandler {
 			guard text.count <= paradisMaxPasteTextLength else {
 				throw ParadisHelperError.invalidArgument("\"text\" is longer than \(paradisMaxPasteTextLength) characters")
 			}
-			return try backend.pasteText(pid: try pidParam(params), text: text)
+			return try backend.perform(pid: try pidParam(params), action: .pasteText(text: text), options: try paradisParseInputOptions(params))
 		case "pressKey":
 			guard let key = params["key"] as? String, paradisModifier(named: key) == nil, let keyCode = paradisKeyCode(named: key) else {
 				throw ParadisHelperError.invalidArgument("\"key\" must be one key name such as return, escape, tab, up or a")
 			}
-			return try backend.pressChord(pid: try pidParam(params), chord: try allowedChord(ParadisKeyChord(keyCode: keyCode, modifiers: [])))
+			return try backend.perform(pid: try pidParam(params), action: .pressChord(try allowedChord(ParadisKeyChord(keyCode: keyCode, modifiers: []))), options: try paradisParseInputOptions(params))
 		case "hotkey":
 			guard let keys = params["keys"] as? [String], keys.count >= 2, keys.count <= 5 else {
 				throw ParadisHelperError.invalidArgument("\"keys\" must list one to four modifiers and one key, such as [\"cmd\", \"s\"]")
@@ -239,7 +243,11 @@ final class ParadisRequestHandler {
 			guard !chord.modifiers.isEmpty else {
 				throw ParadisHelperError.invalidArgument("a hotkey needs at least one modifier; use pressKey for a single key")
 			}
-			return try backend.pressChord(pid: try pidParam(params), chord: try allowedChord(chord))
+			return try backend.perform(pid: try pidParam(params), action: .pressChord(try allowedChord(chord)), options: try paradisParseInputOptions(params))
+		case "setValue":
+			let pid = try pidParam(params)
+			let action = ParadisInputAction.setValue(windowId: try windowIdParam(params, required: true)!, target: try targetParam(params, snapshot: params), change: try paradisParseValueChange(params))
+			return try backend.perform(pid: pid, action: action, options: try paradisParseInputOptions(params))
 		case "accessibilityTree":
 			let maxNodes = try optionalIntParam(params, "maxNodes", minimum: 1, maximum: paradisMaxAXMaxNodes) ?? paradisDefaultAXMaxNodes
 			let maxDepth = try optionalIntParam(params, "maxDepth", minimum: 1, maximum: paradisMaxAXMaxDepth) ?? paradisDefaultAXMaxDepth

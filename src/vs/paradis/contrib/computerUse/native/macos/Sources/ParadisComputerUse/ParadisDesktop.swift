@@ -38,6 +38,10 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
+	/** 2 段目（背面への入力）。今は常に使えない空の実装（ParadisInputRoutes.swift）。 */
+	let backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute()
+	/** `AXManualAccessibility` を立てたアプリ（同じアプリに何度も書かない）。 */
+	private var manualAccessibilityPids: Set<Int32> = []
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
@@ -157,11 +161,24 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		try requireRunningApp(pid)
 		let application = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(application, 2.0)
-		let windows = paradisElements(application, kAXWindowsAttribute)
-		guard !windows.isEmpty else {
+		var windows = paradisElements(application, kAXWindowsAttribute)
+		var window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+		// Electron 製のアプリは、支援技術が来たと知らせるまで AX のツリーを作らない。ウィンドウが無いか中身が空なら、
+		// 公開されている `AXManualAccessibility` を立てて読み直す（Electron が案内している方法。VoiceOver の
+		// `AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない）
+		var enabledManualAccessibility = false
+		if (window.map { paradisElements($0, kAXChildrenAttribute).isEmpty } ?? true) && paradisIsElectronApp(pid: pid) && !manualAccessibilityPids.contains(pid) {
+			manualAccessibilityPids.insert(pid)
+			if AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success {
+				enabledManualAccessibility = true
+				usleep(400_000)
+				windows = paradisElements(application, kAXWindowsAttribute)
+				window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+			}
+		}
+		guard let window else {
 			throw ParadisHelperError(code: "window_not_found", message: "the application has no accessible window")
 		}
-		let window = try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
 		let windowFrame = paradisFrame(window) ?? .zero
 		var nodes: [ParadisAXNode] = []
 		var elements: [AXUIElement] = []
@@ -193,13 +210,17 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		let snapshotId = nextSnapshotId
 		nextSnapshotId += 1
 		lastSnapshot = ParadisElementSnapshot(id: snapshotId, pid: pid, windowId: windowId, elements: elements)
-		return [
+		var result: [String: Any] = [
 			"snapshotId": snapshotId,
 			"text": paradisRenderAXTree(nodes, truncated: truncated),
 			"nodeCount": nodes.count,
 			"truncated": truncated,
 			"window": paradisRectJson(windowFrame),
 		]
+		if enabledManualAccessibility {
+			result["manualAccessibility"] = true
+		}
+		return result
 	}
 
 	func paradisPickWindow(_ windows: [AXUIElement], application: AXUIElement, windowId: UInt32?, pid: Int32) throws -> AXUIElement {
@@ -264,6 +285,14 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			redacted: secure && rawValue != nil
 		)
 	}
+}
+
+/** Electron 製のアプリか（`Contents/Frameworks/Electron Framework.framework` があるか）。 */
+private func paradisIsElectronApp(pid: Int32) -> Bool {
+	guard let bundleURL = paradisOnMain({ NSRunningApplication(processIdentifier: pid)?.bundleURL }) else {
+		return false
+	}
+	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
 }
 
 // MARK: - ウィンドウの一覧（CGWindowList）

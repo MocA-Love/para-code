@@ -122,32 +122,27 @@ final class FakeDesktop: ParadisDesktopBackend {
 		treeCalls.append((pid, windowId, maxNodes, maxDepth))
 		throw ParadisHelperError(code: "accessibility_not_granted", message: "no")
 	}
-	func activateApp(pid: Int32, windowId: UInt32?) throws -> [String: Any] {
-		inputCalls.append("activate \(pid) \(windowId.map(String.init) ?? "-")")
-		return [:]
-	}
-	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any] {
-		inputCalls.append("click \(pid) \(windowId) \(target) \(button.rawValue) \(clickCount) \(modifiers.rawValue)")
-		return [:]
-	}
-	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any] {
-		inputCalls.append("drag \(from) \(to)")
-		return [:]
-	}
-	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any] {
-		inputCalls.append("scroll \(target.map { "\($0)" } ?? "center") \(direction.rawValue) \(pages)")
-		return [:]
-	}
-	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
-		inputCalls.append("type \(units.count)")
-		return [:]
-	}
-	func pasteText(pid: Int32, text: String) throws -> [String: Any] {
-		inputCalls.append("paste \(text.count)")
-		return [:]
-	}
-	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any] {
-		inputCalls.append("chord \(chord.keyCode) \(chord.modifiers.rawValue)")
+	var optionCalls: [ParadisInputOptions] = []
+	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any] {
+		optionCalls.append(options)
+		switch action {
+		case .activate(let windowId):
+			inputCalls.append("activate \(pid) \(windowId.map(String.init) ?? "-")")
+		case .click(let windowId, let target, let button, let clickCount, let modifiers):
+			inputCalls.append("click \(pid) \(windowId) \(target) \(button.rawValue) \(clickCount) \(modifiers.rawValue)")
+		case .drag(_, let from, let to):
+			inputCalls.append("drag \(from) \(to)")
+		case .scroll(_, let target, let direction, let pages):
+			inputCalls.append("scroll \(target.map { "\($0)" } ?? "center") \(direction.rawValue) \(pages)")
+		case .typeText(_, let units):
+			inputCalls.append("type \(units.count)")
+		case .pasteText(let text):
+			inputCalls.append("paste \(text.count)")
+		case .pressChord(let chord):
+			inputCalls.append("chord \(chord.keyCode) \(chord.modifiers.rawValue)")
+		case .setValue(let windowId, let target, let change):
+			inputCalls.append("setValue \(windowId) \(target) \(change)")
+		}
 		return [:]
 	}
 }
@@ -225,7 +220,7 @@ do {
 	check((tree?["error"] as? [String: Any])?["code"] as? String == "accessibility_not_granted", "passes the backend error code through")
 	check(desktop.treeCalls.first?.1 == nil && desktop.treeCalls.first?.2 == paradisDefaultAXMaxNodes, "tree uses the defaults")
 
-	let unknown = reply(handler.handle(line: Data(#"{"id":10,"method":"setValue","params":{}}"#.utf8)))
+	let unknown = reply(handler.handle(line: Data(#"{"id":10,"method":"setWallpaper","params":{}}"#.utf8)))
 	check((unknown?["error"] as? [String: Any])?["code"] as? String == "unknown_method", "rejects unknown methods")
 
 	if case .replyAndTerminate(let data) = handler.handle(line: Data(#"{"id":11,"method":"shutdown"}"#.utf8)) {
@@ -291,6 +286,219 @@ do {
 		"chord 1 1",
 		"activate 100 -",
 	], "only valid requests reach the desktop")
+}
+
+// MARK: - 送り方の指定と値の変更の振り分け
+
+do {
+	let desktop = FakeDesktop()
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: goodToken, selfPid: 42)
+	_ = handler.handle(line: Data(#"{"id":1,"method":"handshake","params":{"token":"\#(goodToken)"}}"#.utf8))
+	func code(_ json: String) -> String? {
+		let result = reply(handler.handle(line: Data(json.utf8)))
+		return result?["ok"] as? Bool == true ? "ok" : (result?["error"] as? [String: Any])?["code"] as? String
+	}
+	let owner = ##"{"id":"0123456789abcdef","name":"Checkout","mark":"C","color":"#d97757"}"##
+	check(code(#"{"id":2,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1}}"#) == "ok", "a request without options keeps the old behavior")
+	check(code(#"{"id":3,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"allowForeground":false,"cursor":\#(owner)}}"#) == "ok", "takes allowForeground and the cursor owner")
+	check(code(#"{"id":4,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"allowForeground":"no"}}"#) == "invalid_argument", "allowForeground must be a boolean")
+	check(code(#"{"id":5,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"cursor":{"id":"x","name":"a","mark":"","color":"red"}}}"#) == "ok", "a malformed cursor owner only hides the cursor")
+	check(code(#"{"id":6,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"value":"hello"}}"#) == "ok", "sets a text value")
+	check(code(#"{"id":7,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":3,"y":4,"value":42.5}}"#) == "ok", "sets a number at a point")
+	check(code(#"{"id":8,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"value":true}}"#) == "ok", "sets a boolean")
+	check(code(#"{"id":9,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"adjust":"increment","steps":3}}"#) == "ok", "increments")
+	check(code(#"{"id":10,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"adjust":"decrement","value":1}}"#) == "invalid_argument", "takes either a value or an adjustment")
+	check(code(#"{"id":11,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"adjust":"up"}}"#) == "invalid_argument", "knows only increment and decrement")
+	check(code(#"{"id":12,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"adjust":"increment","steps":51}}"#) == "invalid_argument", "caps the steps")
+	check(code(#"{"id":13,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"value":"a\tb"}}"#) == "invalid_argument", "refuses tabs in a value")
+	check(code(#"{"id":14,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","elementIndex":2,"snapshotId":9,"value":"a"}}"#) == "invalid_argument", "setValue needs a window")
+	check(code(#"{"id":15,"method":"setValue","params":{"pid":300,"bundleId":"com.1password.1password","windowId":7,"elementIndex":2,"snapshotId":9,"value":"a"}}"#) == "app_blocked", "setValue refuses blocked apps")
+	check(desktop.inputCalls == [
+		"click 100 7 point(x: 1.0, y: 1.0) left 1 0",
+		"click 100 7 point(x: 1.0, y: 1.0) left 1 0",
+		"click 100 7 point(x: 1.0, y: 1.0) left 1 0",
+		"setValue 7 element(2, snapshotId: 9) text(\"hello\")",
+		"setValue 7 point(x: 3.0, y: 4.0) number(42.5)",
+		"setValue 7 element(2, snapshotId: 9) boolean(true)",
+		"setValue 7 element(2, snapshotId: 9) increment(3)",
+	], "only valid setValue requests reach the desktop")
+	check(desktop.optionCalls.map { $0.allowForeground } == [true, false, true, true, true, true, true], "allowForeground defaults to true")
+	check(desktop.optionCalls[1].cursor == ParadisCursorOwnerSpec(id: "0123456789abcdef", name: "Checkout", mark: "C", color: 0xd97757), "reads the cursor owner")
+	check(desktop.optionCalls[0].cursor == nil && desktop.optionCalls[2].cursor == nil, "no cursor without a valid owner")
+}
+
+do {
+	check(paradisParseCursorOwner(["id": "0123456789abcdef", "name": "a\u{202E}b\u{0007}c", "mark": "X", "color": "#10a37f"])?.name == "abc", "strips control and format characters from the cursor name")
+	check(paradisParseCursorOwner(["id": "0123456789abcdef", "name": String(repeating: "x", count: 40), "mark": "", "color": "#10a37f"])?.name.count == 24, "cuts long cursor names")
+	check(paradisParseCursorOwner(["id": "0123456789abcdef", "name": "Claude", "mark": "c", "color": "#10a37f"]) == nil, "refuses a lowercase mark")
+	check(paradisParseCursorOwner(["id": "0123456789ABCDEF", "name": "Claude", "mark": "C", "color": "#10a37f"]) == nil, "refuses an uppercase id")
+	check(paradisParseCursorOwner(["id": "0123456789abcdef", "name": "  ", "mark": "C", "color": "#10a37f"]) == nil, "refuses a blank name")
+	check(paradisParseHexColor("#0969da") == 0x0969da && paradisParseHexColor("0969da") == nil && paradisParseHexColor("#09g9da") == nil, "reads #rrggbb colors")
+}
+
+// MARK: - 送り方の段の選び方
+
+/** 段の代わり。何を返すかと、呼ばれた操作を覚える。 */
+final class FakeRoute: ParadisInputRoute {
+	let kind: ParadisInputRouteKind
+	let requiresForeground: Bool
+	var availability: ParadisRouteAvailability
+	var outcome: () throws -> ParadisRouteOutcome
+	var performed: [String] = []
+
+	init(_ kind: ParadisInputRouteKind, requiresForeground: Bool = false, availability: ParadisRouteAvailability = .available, outcome: @escaping () throws -> ParadisRouteOutcome) {
+		self.kind = kind
+		self.requiresForeground = requiresForeground
+		self.availability = availability
+		self.outcome = outcome
+	}
+
+	func availability(of action: ParadisInputAction, pid: Int32) -> ParadisRouteAvailability {
+		return availability
+	}
+
+	func perform(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
+		performed.append(action.name)
+		return try outcome()
+	}
+}
+
+func routeErrorCode(_ body: () throws -> Any) -> String? {
+	do {
+		_ = try body()
+		return nil
+	} catch let error as ParadisHelperError {
+		return error.code
+	} catch {
+		return "other"
+	}
+}
+
+do {
+	let click = ParadisInputAction.click(windowId: 7, target: .element(3, snapshotId: 1), button: .left, clickCount: 1, modifiers: [])
+	func foreground() -> FakeRoute {
+		return FakeRoute(.foreground, requiresForeground: true) { .done(["clicked": true]) }
+	}
+	let background = ParadisUnavailableBackgroundRoute()
+
+	// 1 段目で送れたら、そこで終わる
+	let ax1 = FakeRoute(.accessibility) { .done(["clicked": true, "axAction": "AXPress"]) }
+	let foreground1 = foreground()
+	let viaAx = try? paradisRouteInput(click, pid: 100, routes: [ax1, background, foreground1], options: ParadisInputOptions())
+	check(viaAx?["route"] as? String == "accessibility" && viaAx?["routeNotes"] == nil && foreground1.performed.isEmpty, "uses the accessibility route when it can")
+
+	// 1 段目が譲ったら、2 段目（空）を飛ばして 3 段目
+	let ax2 = FakeRoute(.accessibility) { .fellThrough("AXGroup does not accept AXPress") }
+	let foreground2 = foreground()
+	let viaForeground = try? paradisRouteInput(click, pid: 100, routes: [ax2, background, foreground2], options: ParadisInputOptions())
+	check(viaForeground?["route"] as? String == "foreground" && foreground2.performed == ["click"], "falls through to the foreground route")
+	check((viaForeground?["routeNotes"] as? [String]) == ["accessibility: AXGroup does not accept AXPress", "background: background input is not available in this version"], "says why the earlier routes were skipped")
+
+	// 3 段目に来ても、前面に出してよいと言われていなければ何も送らない
+	let ax3 = FakeRoute(.accessibility, availability: .unavailable("drag needs real input")) { .done([:]) }
+	let foreground3 = foreground()
+	check(routeErrorCode { try paradisRouteInput(click, pid: 100, routes: [ax3, background, foreground3], options: ParadisInputOptions(allowForeground: false)) } == "foreground_needs_approval", "asks before taking over the real pointer")
+	check(ax3.performed.isEmpty && foreground3.performed.isEmpty, "sends nothing while approval is pending")
+
+	// 1 段目で送れるなら、前面の承認は要らない
+	let ax4 = FakeRoute(.accessibility) { .done([:]) }
+	check((try? paradisRouteInput(click, pid: 100, routes: [ax4, background, foreground()], options: ParadisInputOptions(allowForeground: false)))?["route"] as? String == "accessibility", "the accessibility route needs no foreground approval")
+
+	// 止める理由（利用者の打鍵など）は次の段へ譲らない
+	let ax5 = FakeRoute(.accessibility) { throw ParadisHelperError(code: "user_active", message: "typing") }
+	let foreground5 = foreground()
+	check(routeErrorCode { try paradisRouteInput(click, pid: 100, routes: [ax5, background, foreground5], options: ParadisInputOptions()) } == "user_active" && foreground5.performed.isEmpty, "a refusal stops instead of falling through")
+
+	// どの段でも送れない
+	let unsupported = FakeRoute(.foreground, requiresForeground: true, availability: .unavailable("setting a value needs accessibility")) { .done([:]) }
+	let setValue = ParadisInputAction.setValue(windowId: 7, target: .element(1, snapshotId: 1), change: .text("a"))
+	check(routeErrorCode { try paradisRouteInput(setValue, pid: 100, routes: [FakeRoute(.accessibility) { .fellThrough("not settable") }, background, unsupported], options: ParadisInputOptions()) } == "input_unsupported", "reports when no route can send the action")
+
+	// 2 段目の差し込み口: 使えるなら 3 段目より先に使う（前面の承認も要らない）
+	let plugged = FakeRoute(.background) { .done(["clicked": true]) }
+	let foreground6 = foreground()
+	let viaBackground = try? paradisRouteInput(click, pid: 100, routes: [FakeRoute(.accessibility) { .fellThrough("no element") }, plugged, foreground6], options: ParadisInputOptions(allowForeground: false))
+	check(viaBackground?["route"] as? String == "background" && foreground6.performed.isEmpty, "a background route plugs in before the foreground route")
+	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the background route is not available yet")
+}
+
+// MARK: - 1 段目: クリックの代わりの AX の操作
+
+do {
+	let button = ParadisAXElementFacts(role: "AXButton", actions: ["AXPress"])
+	let text = ParadisAXElementFacts(role: "AXStaticText")
+	let group = ParadisAXElementFacts(role: "AXGroup")
+	let field = ParadisAXElementFacts(role: "AXTextField", actions: ["AXShowMenu", "AXConfirm"], focusSettable: true)
+	let row = ParadisAXElementFacts(role: "AXRow", actions: ["AXShowMenu"])
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button]) == .perform(action: "AXPress", depth: 0), "presses a button")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, button]) == .perform(action: "AXPress", depth: 1), "presses the button around its label")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, button]) == .none("no element near the target accepts AXPress"), "does not climb past three elements")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [row, button]) == .none("AXRow does not accept AXPress"), "does not climb out of a row")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [button]) == .none("double and triple clicks need real input"), "double clicks need real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: .command, chain: [button]) == .none("clicks with modifier keys need real input"), "modified clicks need real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXButton", actions: ["AXPress"], enabled: false)]) == .none("the element is disabled"), "leaves disabled buttons to real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [field]) == .focus(depth: 0), "focuses a text field instead of clicking it")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXTextField")]) == .none("the text field does not accept focus through accessibility"), "falls through when focus cannot be set")
+	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [field]) == .perform(action: "AXShowMenu", depth: 0), "opens the context menu of a field")
+	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [button]) == .none("AXButton does not accept AXShowMenu"), "right clicks need AXShowMenu")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: []) == .none("no accessibility element at the target"), "needs an element")
+	check(paradisPressableRoles.isSuperset(of: ["AXButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXMenuItem", "AXPopUpButton"]), "knows the usual pressable controls")
+
+	let slider = ParadisAXElementFacts(role: "AXSlider", actions: ["AXIncrement", "AXDecrement"])
+	check(paradisAccessibilityValuePlan(.increment(2), facts: slider, valueSettable: true, secret: false) == .perform(action: "AXIncrement", count: 2), "increments a slider")
+	check(paradisAccessibilityValuePlan(.decrement(1), facts: slider, valueSettable: true, secret: false) == .perform(action: "AXDecrement", count: 1), "decrements a slider")
+	check(paradisAccessibilityValuePlan(.number(80), facts: slider, valueSettable: true, secret: false) == .setValue, "sets a slider value")
+	check(paradisAccessibilityValuePlan(.text("a"), facts: ParadisAXElementFacts(role: "AXStaticText"), valueSettable: false, secret: false) == .none("AXStaticText does not accept a new value through accessibility"), "refuses read-only values")
+	check(paradisAccessibilityValuePlan(.increment(1), facts: ParadisAXElementFacts(role: "AXTextField"), valueSettable: true, secret: false) == .none("AXTextField does not accept AXIncrement"), "refuses increments on text fields")
+	if case .none = paradisAccessibilityValuePlan(.text("hunter2"), facts: ParadisAXElementFacts(role: "AXTextField"), valueSettable: true, secret: true) {
+		check(true, "never sets a password field through accessibility")
+	} else {
+		check(false, "never sets a password field through accessibility")
+	}
+
+	check(paradisAXPressCheck(role: "AXCheckBox", before: "0", after: "1") == ParadisAXCheck(verified: true, value: "1"), "a toggled checkbox is verified")
+	check(paradisAXPressCheck(role: "AXCheckBox", before: "0", after: "0").verified == false, "an unchanged checkbox is not verified")
+	check(paradisAXPressCheck(role: "AXRadioButton", before: "1", after: "1").verified == true, "a selected radio button stays selected")
+	check(paradisAXPressCheck(role: "AXButton", before: nil, after: nil).verified == nil, "a plain button cannot be verified")
+	check(paradisAXValueCheck(change: .text("hello"), before: "", after: "hello").verified == true, "verifies a text value")
+	check(paradisAXValueCheck(change: .number(80), before: "50", after: "80").verified == true, "verifies a number value")
+	check(paradisAXValueCheck(change: .number(150), before: "50", after: "100") == ParadisAXCheck(verified: false, value: "100"), "reports a clamped number")
+	check(paradisAXValueCheck(change: .boolean(true), before: "0", after: "1").verified == true, "verifies a boolean value")
+	check(paradisAXValueCheck(change: .increment(1), before: "50", after: "55").verified == true, "verifies an increment")
+	check(paradisAXValueCheck(change: .decrement(1), before: "50", after: "55").verified == false, "notices a wrong direction")
+	check(paradisAXValueCheck(change: .text("a"), before: "", after: nil).verified == nil, "cannot verify an unreadable value")
+	check(paradisAXValueText(NSNumber(value: 55.0)) == "55" && paradisAXValueText(NSNumber(value: 0.25)) == "0.25" && paradisAXValueText(kCFBooleanTrue) == "1", "formats values for comparison")
+
+	let before = ParadisFocusSnapshot(frontmostPid: 10, focusedApplicationPid: 10, focusedWindowId: 5)
+	check(paradisFocusPreserved(before: before, after: before), "the same focus is preserved")
+	check(!paradisFocusPreserved(before: before, after: ParadisFocusSnapshot(frontmostPid: 20, focusedApplicationPid: 10, focusedWindowId: 5)), "a new front app is a focus change")
+	check(!paradisFocusPreserved(before: before, after: ParadisFocusSnapshot(frontmostPid: 10, focusedApplicationPid: 20, focusedWindowId: 5)), "a menu taking keyboard focus is a focus change")
+	check(!paradisFocusPreserved(before: before, after: ParadisFocusSnapshot(frontmostPid: 10, focusedApplicationPid: 10, focusedWindowId: 6)), "a new key window is a focus change")
+	check(paradisFocusPreserved(before: before, after: ParadisFocusSnapshot(frontmostPid: 10, focusedApplicationPid: nil, focusedWindowId: nil)), "unreadable values are not compared")
+
+	// 1 段目は打鍵だけを見る。タップにキーが届く構成ならタップの値、届かなければ HID の値
+	check(paradisPhysicalKeyboardAge(tapKeyboard: 5, hidKeyboard: 0.1, tapSawKeyboard: true, secondsSinceTapStarted: 10) == 5, "uses the tap once it has seen keys")
+	check(paradisPhysicalKeyboardAge(tapKeyboard: nil, hidKeyboard: 0.2, tapSawKeyboard: false, secondsSinceTapStarted: 10) == 0.2, "uses the HID age until the tap sees keys")
+	check(paradisPhysicalKeyboardAge(tapKeyboard: nil, hidKeyboard: 3, tapSawKeyboard: false, secondsSinceTapStarted: nil) == 3, "uses the HID age without a tap")
+}
+
+// MARK: - 独自のカーソルの軌跡
+
+do {
+	let start = CGPoint(x: 100, y: 100)
+	let end = CGPoint(x: 500, y: 400)
+	let glide = paradisPlanCursorGlide(from: start, to: end)
+	check(glide.points.first == start && glide.points.last == end, "the glide starts and ends at the points")
+	check(glide.durationMs == min(paradisCursorGlideMaxMs, 500 / paradisCursorGlidePointsPerMs), "the glide takes distance over speed, up to the cap")
+	check(glide.points.dropFirst().dropLast().contains { point in
+		// 始点と終点を結ぶ線より上（画面の座標で y が小さい側）を通る
+		let lineY = Double(start.y) + (Double(point.x) - Double(start.x)) * 300 / 400
+		return Double(point.y) < lineY - 1
+	}, "the glide bows instead of moving in a straight line")
+	check(paradisPlanCursorGlide(from: start, to: CGPoint(x: 103, y: 102)) == ParadisCursorGlide(points: [CGPoint(x: 103, y: 102)], durationMs: 0), "a short move snaps")
+	check(paradisPlanCursorGlide(from: nil, to: end).durationMs == 0, "the first move only places the cursor")
+	check(paradisCursorGlideDuration(distance: 50) == paradisCursorGlideMinMs, "short glides take the minimum time")
+	check(paradisCursorEase(0) == 0 && paradisCursorEase(1) == 1 && paradisCursorEase(0.25) < 0.25, "the glide eases in and out")
 }
 
 // MARK: - 入力の決まり
