@@ -44,7 +44,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
-import { IParadisCursorOwner, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -313,6 +313,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const target = view;
 		const webContents = target.webContents;
 		const onNavigate = () => this.cursorOverlay.onNavigated(target);
+		const onDomReady = () => this.cursorOverlay.onDomReady(target);
 		const focusListener = target.onDidChangeFocus(({ focused }) => {
 			// エージェントの入力の直後のフォーカスは利用者のものではない（ページがエージェントの入力に
 			// 応えてフォーカスを動かした）。そのときはカーソルを残す。
@@ -323,6 +324,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		});
 		try {
 			webContents.on('did-navigate', onNavigate);
+			webContents.on('dom-ready', onDomReady);
 		} catch {
 			// 見張れなくても、次の move が少し長く待つだけ。
 		}
@@ -331,6 +333,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			closeListener.dispose();
 			try {
 				webContents.off('did-navigate', onNavigate);
+				webContents.off('dom-ready', onDomReady);
 			} catch {
 				// 既に破棄済み。
 			}
@@ -673,7 +676,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			// (FLASH_MIN_INTERVAL_MS) の判断を2箇所に複製しないため、戻り値をそのまま使う。
 			// 返るのは「光らせるコマンドを投げた」時点なので、ページ側の eval が失敗しても
 			// 一覧は光る。判断を複製しない方を採った結果で、承知のうえの非対称。
-			if (this.cursorOverlay.afterCapture(view, captured)) {
+			if (this.cursorOverlay.afterCapture(view, captured, paradisCursorCaptureRange(options))) {
 				this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'captured' });
 			}
 		}
@@ -762,10 +765,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!view) {
 			return;
 		}
-		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point, note.owner);
-		// 写し（モバイル）へも状態を流す。消す方（idle）は設定に関わらず流す
-		if (note.status === 'idle' || this.cursorOverlay.isOverlayEnabled()) {
-			this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'state', status: note.status, ...ownerOfEvent(note.owner) });
+		this.cursorOverlay.noteStatus(view, note.status, note.detail, note.point, note.owner, { rect: note.rect, flash: note.flash });
+		// 写し（モバイル）へも状態を流す。消す方（idle）は設定に関わらず流す。アプリが知らない状態は流さない
+		const mirrored = paradisCursorStatusForMirror(note.status);
+		if (mirrored !== undefined && (mirrored === 'idle' || this.cursorOverlay.isOverlayEnabled())) {
+			this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'state', status: mirrored, ...ownerOfEvent(note.owner) });
 		}
 	}
 

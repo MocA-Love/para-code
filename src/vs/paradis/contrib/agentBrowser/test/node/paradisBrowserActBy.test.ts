@@ -78,6 +78,14 @@ suite('paradisBrowserActBy (shared process)', () => {
 		});
 	});
 
+	test('click_by frames the element it found before the cursor moves there to click', async () => {
+		const rect = { x: 30, y: 10, width: 40, height: 20 };
+		const page = new FakePage({ locate: [{ ...button, element: { ...button.element, rect } }] });
+		const notes: unknown[] = [];
+		await new ParadisBrowserActBy(() => 'ref').call({ ...page.call(), noteCursor: note => notes.push(note) }, 'click_by', { role: 'button', name: 'Save' });
+		assert.deepStrictEqual({ notes, sent: page.sent[0] }, { notes: [{ status: 'idle', rect }], sent: 'mouseMoved@50,20' });
+	});
+
 	test('click_by sends nothing and explains why when the element is covered, disabled or missing', async () => {
 		const covered = new FakePage({ locate: [{ ...button, problem: 'covered', coveredBy: { tag: 'div', classes: ['modal'] } }] });
 		const disabled = new FakePage({ locate: [{ ...button, enabled: false }] });

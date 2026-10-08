@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger } from '../../node/paradisCursorPacing.js';
+import { PARADIS_CURSOR_WAIT_BUDGET_MS, ParadisCursorPacingLedger, paradisCursorStatusForTool } from '../../node/paradisCursorPacing.js';
 
 const MOVE = JSON.stringify({ type: 'mouseMoved', x: 1, y: 2 });
 const PRESS = JSON.stringify({ type: 'mousePressed', x: 1, y: 2, button: 'left', clickCount: 1 });
@@ -48,6 +48,14 @@ suite('Paradis cursor pacing', () => {
 				after: undefined,
 			},
 		);
+	});
+
+	test('tools without input name what they do on the cursor', () => {
+		const tools = ['evaluate_script', 'navigate_page', 'wait_until', 'take_snapshot', 'get_text', 'inspect_element', 'list_console_messages', 'list_network_requests', 'scroll_to', 'take_screenshot', 'list_pages', 'click'];
+		assert.deepStrictEqual(Object.fromEntries(tools.map(tool => [tool, paradisCursorStatusForTool(tool)])), {
+			evaluate_script: 'script', navigate_page: 'loading', wait_until: 'waiting', take_snapshot: 'reading', get_text: 'reading', inspect_element: 'reading',
+			list_console_messages: 'reading', list_network_requests: 'reading', scroll_to: 'scroll', take_screenshot: undefined, list_pages: undefined, click: undefined,
+		});
 	});
 
 	test('run_steps shares one wait budget across its steps', () => {

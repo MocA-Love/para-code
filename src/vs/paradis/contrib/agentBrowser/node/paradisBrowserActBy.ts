@@ -21,7 +21,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
 import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
-import { IParadisQuerySpec, paradisBuildQueryFunction, paradisIsLocatorError, paradisIsTransientEvaluateFailure, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisBuildQueryFunction, paradisIsLocatorError, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 
 /** 「探して操作する」ツールの名前。 */
@@ -184,6 +184,11 @@ export class ParadisBrowserActBy {
 		}
 		if (located.noIndex === true) {
 			return { ok: false, result: error(`${tool}: only ${located.matched} element(s) match ${describeLocator(args)}, so there is no index ${index}.`) };
+		}
+		// 見つけた要素を枠で示す（q.html Q297 の 3。押す・入れる前のカーソルの移動はこの後の入力が行う）
+		const rect = located.problem === 'iframe' ? undefined : paradisLookedAtRect(located.element);
+		if (rect) {
+			call.noteCursor?.({ status: 'idle', rect });
 		}
 		return { ok: true, located, uids: locator.uids };
 	}

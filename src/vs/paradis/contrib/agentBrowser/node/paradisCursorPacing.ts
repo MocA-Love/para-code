@@ -53,15 +53,22 @@ export function paradisIsCursorHoverTool(tool: string, args: unknown): boolean {
 }
 
 /**
- * 入力を伴わない道具の間にカーソルの名札へ出す状態（q.html Q275 A）。無ければ出さない。
+ * 入力を伴わない道具の間にカーソルの名札へ出す状態（q.html Q275 A・Q297 の 1）。無ければ出さない。
  * click_by・fill_by などの結果（押せなかった・選んだ）は道具の中から出す（paradisBrowserActBy.ts）。
  */
 export function paradisCursorStatusForTool(tool: string): ParadisCursorStatus | undefined {
 	switch (tool) {
 		case 'evaluate_script': return 'script';
 		case 'wait_for':
-		case 'wait_until':
-		case 'navigate_page': return 'waiting';
+		case 'wait_until': return 'waiting';
+		case 'navigate_page': return 'loading';
+		case 'take_snapshot':
+		case 'get_text':
+		case 'inspect_element':
+		case 'list_console_messages':
+		case 'get_console_message':
+		case 'list_network_requests':
+		case 'get_network_request': return 'reading';
 		case 'scroll_to': return 'scroll';
 		case 'upload_file': return 'upload';
 		default: return undefined;

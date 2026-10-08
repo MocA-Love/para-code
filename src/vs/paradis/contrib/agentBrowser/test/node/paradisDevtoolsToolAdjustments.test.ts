@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -113,6 +113,18 @@ suite('Paradis devtools tool adjustments', () => {
 			evaluateRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('evaluate_script', closed),
 			successRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('take_snapshot', text('ok')),
 		}, { click: true, snapshotRetry: true, clickRetry: false, evaluateRetry: false, successRetry: false });
+	});
+
+	test('an evaluate_script that clicks with .click() gets one line pointing to click_by', () => {
+		const ok = text('Script ran on page and returned:\n```json\n1\n```');
+		const lines = (result: unknown) => (result as { content: { text: string }[] }).content.map(item => item.text === PARADIS_SCRIPT_CLICK_HINT ? 'hint' : 'result');
+		assert.deepStrictEqual({
+			clicked: lines(paradisWithScriptClickHint('evaluate_script', { function: '() => document.querySelector("button").click()' }, ok)),
+			spaced: lines(paradisWithScriptClickHint('evaluate_script', { function: '() => el.click ()' }, ok)),
+			noClick: lines(paradisWithScriptClickHint('evaluate_script', { function: '() => document.title' }, ok)),
+			failed: lines(paradisWithScriptClickHint('evaluate_script', { function: '() => el.click()' }, text('boom', true))),
+			otherTool: lines(paradisWithScriptClickHint('take_snapshot', { function: '() => el.click()' }, ok)),
+		}, { clicked: ['result', 'hint'], spaced: ['result', 'hint'], noClick: ['result'], failed: ['result'], otherTool: ['result'] });
 	});
 
 	test('limits a wait_for snapshot too, never splits a surrogate pair, and keeps a long snapshot per pane for a short while', () => {
