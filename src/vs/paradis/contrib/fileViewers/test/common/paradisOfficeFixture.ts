@@ -19,6 +19,15 @@ export interface IParadisOfficeFixtureRelationship {
 export interface IParadisOfficeFixtureOptions {
 	readonly parts: readonly ParadisOfficeFixturePart[];
 	readonly relationships?: readonly IParadisOfficeFixtureRelationship[];
+	/** ZIP folder items such as `word/` that some producers write ahead of the parts. They are not OPC parts. */
+	readonly folders?: readonly string[];
+	/** Replaces the generated `[Content_Types].xml`, for producer variants (Default-only typing, lowercase encoding). */
+	readonly contentTypesXml?: string;
+	/**
+	 * Renames ZIP entries after writing, for names JSZip would normalize (`../`, `word//`). Each pair must
+	 * have the same UTF-8 length and the `from` name must appear exactly in the local and central headers.
+	 */
+	readonly renameEntries?: readonly (readonly [from: string, to: string])[];
 }
 
 const FIXED_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
@@ -48,17 +57,51 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 	}
 
 	parts.set('/[Content_Types].xml', {
-		content: buildContentTypesXml(parts),
+		content: options.contentTypesXml ?? buildContentTypesXml(parts),
 		contentType: 'application/xml',
 	});
 
 	const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
 	const zip = new JSZip();
+	for (const folder of options.folders ?? []) {
+		if (!folder.endsWith('/') || folder.startsWith('/')) {
+			throw new Error(`ZIP folder items are written as 'name/': ${folder}`);
+		}
+		zip.file(folder, null, { dir: true, createFolders: false, date: FIXED_TIMESTAMP });
+	}
 	for (const [name, part] of [...parts.entries()].sort(([left], [right]) => compareCodeUnits(left, right))) {
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
 	}
 
-	return zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+	const bytes = await zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+	for (const [from, to] of options.renameEntries ?? []) {
+		renameZipEntry(bytes, from, to);
+	}
+	return bytes;
+}
+
+function renameZipEntry(bytes: Uint8Array, from: string, to: string): void {
+	const encoder = new TextEncoder();
+	const source = encoder.encode(from);
+	const target = encoder.encode(to);
+	if (source.length !== target.length) {
+		throw new Error(`Renamed ZIP entries must keep their byte length: ${from} -> ${to}`);
+	}
+	let replaced = 0;
+	for (let offset = 0; offset + source.length <= bytes.length; offset++) {
+		let match = true;
+		for (let index = 0; index < source.length && match; index++) {
+			match = bytes[offset + index] === source[index];
+		}
+		if (match) {
+			bytes.set(target, offset);
+			replaced++;
+			offset += source.length - 1;
+		}
+	}
+	if (replaced !== 2) {
+		throw new Error(`Expected one local and one central header for ${from}, found ${replaced}`);
+	}
 }
 
 function canonicalPartName(name: string): string {

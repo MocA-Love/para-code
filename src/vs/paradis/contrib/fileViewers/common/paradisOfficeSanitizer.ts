@@ -6,8 +6,8 @@
 
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
-import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
-import { parseParadisOfficeXml } from './office/paradisOfficeCanonicalXml.js';
+import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
+import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
@@ -109,7 +109,16 @@ export interface ParadisOfficePackageSanitizerInput {
 	readonly deadline?: number;
 	readonly scheduler?: () => Promise<void>;
 	readonly allocationObserver?: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder', characters: number, bytes?: number) => void;
+	/** Tighter element budgets for tests; values above the defaults are ignored. */
+	readonly xmlElementLimits?: { readonly part?: number; readonly package?: number };
 }
+
+/**
+ * Element budgets for the renderer preprocessor, which parses on the renderer main thread. The real
+ * documents that hit the old 65,536 cap had at most about 77,000 elements in one part and about
+ * 79,000 in the whole package; these caps keep roughly 2.5x headroom.
+ */
+export const PARADIS_OFFICE_SANITIZER_XML_ELEMENTS = Object.freeze({ part: 200_000, package: 400_000 });
 
 /** Builds the isolated Word webview policy from already-resolved, exact origins only. */
 export function buildParadisOfficeWordCsp(nonce: string, source: ParadisOfficeWordCspSource): string {
@@ -271,13 +280,22 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 	const names = new Set<string>();
 	const assets: ParadisOfficeRenderableAsset[] = [];
 	const placeholders: ParadisOfficePlaceholder[] = [];
-	let compressedTotal = 0; let expandedTotal = 0;
+	let compressedTotal = 0; let expandedTotal = 0; let entryCount = 0;
 	try {
 		for await (const entry of input.archive.entries(input.token)) {
 			checkPackageWork(input);
-			const canonical = canonicalizeParadisOfficeArchiveName(entry.name).slice(1);
-			if (metadata.length >= 4_096 || entry.name.length > 2_048 || canonical !== entry.name || names.has(canonical) || entry.encrypted || entry.symlink) { throw new ParadisOfficePackageError('unsafe'); }
-			names.add(canonical); metadata.push(entry);
+			// ZIP folder items (`word/`) are not OPC parts (ECMA-376 Part 2 §7.3). Python's zipfile and some
+			// generators write them; validate the name like a part name, then leave them out of the package.
+			const folder = entry.directory && entry.name.endsWith('/');
+			const partName = folder ? entry.name.slice(0, -1) : entry.name;
+			const canonical = canonicalizeParadisOfficeArchiveName(partName).slice(1);
+			if (++entryCount > 4_096 || entry.name.length > 2_048 || canonical !== partName || names.has(canonical) || entry.encrypted || entry.symlink) { throw new ParadisOfficePackageError('unsafe'); }
+			names.add(canonical);
+			if (folder) {
+				if (entry.declaredExpandedBytes !== 0) { throw new ParadisOfficePackageError('malformed'); }
+				continue;
+			}
+			metadata.push(entry);
 			compressedTotal += entry.compressedBytes; expandedTotal += entry.declaredExpandedBytes;
 			if (entry.compressedBytes < 0 || entry.declaredExpandedBytes < 0 || entry.declaredExpandedBytes > 8 * 1024 * 1024
 				|| entry.declaredExpandedBytes > Math.max(1, entry.compressedBytes) * 100 || compressedTotal > 16 * 1024 * 1024
@@ -287,7 +305,6 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		const values = new Map<string, Uint8Array>();
 		for (const entry of metadata) {
 			checkPackageWork(input);
-			if (entry.directory) { values.set(entry.name, new Uint8Array()); continue; }
 			const raw = await readPackageEntry(input.archive, entry, input);
 			if (entry.crc32 === undefined || crc32(raw, input.token, input.checkpoint) !== entry.crc32) { throw new ParadisOfficePackageError('malformed'); }
 			values.set(entry.name, raw); await yieldPackageWork(input);
@@ -308,7 +325,7 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 			values.set(name, processed.bytes); pushPackageAsset(assets, placeholders, processed.asset); pushPackagePlaceholder(placeholders, processed.placeholder, assets.length);
 		}
 		if (assets.length + placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
-		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: entry.directory }));
+		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: false }));
 		const bytes = await writeStoreZip(entries, input);
 		if (bytes.byteLength > 32 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
 		return { bytes, assets, placeholders };
@@ -335,10 +352,14 @@ interface OpcPolicy {
 	readonly placeholders: ParadisOfficePlaceholder[];
 }
 
-interface OpcAnalysisState { work: number }
+interface OpcAnalysisState {
+	work: number;
+	/** Elements parsed so far across all story documents, against the package element budget. */
+	storyElements: number;
+}
 
 async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input: ParadisOfficePackageSanitizerInput): Promise<OpcPolicy> {
-	const state: OpcAnalysisState = { work: 0 };
+	const state: OpcAnalysisState = { work: 0, storyElements: 0 };
 	const contentBytes = values.get('[Content_Types].xml');
 	if (!contentBytes) { throw new ParadisOfficePackageError('malformed'); }
 	const contentDocument = parsePackageXml(contentBytes, input);
@@ -350,7 +371,9 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		if (child.local === 'Default') { const extension = xmlAttribute(child, 'Extension')?.toLowerCase(); const type = xmlAttribute(child, 'ContentType'); if (!extension || !type || defaults.has(extension)) { throw new ParadisOfficePackageError('malformed'); } defaults.set(extension, type); }
 		if (child.local === 'Override') { const part = xmlAttribute(child, 'PartName'); const type = xmlAttribute(child, 'ContentType'); if (!part || !type) { throw new ParadisOfficePackageError('malformed'); } const canonical = canonicalPartName(part); const folded = canonical.toLowerCase(); if (overrideNames.has(folded)) { throw new ParadisOfficePackageError('malformed'); } overrideNames.add(folded); overrides.set(canonical, type); }
 	}
-	const contentType = (name: string): string => overrides.get(name) ?? defaults.get(name.slice(name.lastIndexOf('.') + 1).toLowerCase()) ?? '';
+	// `[Content_Types].xml` is the media-type stream, not a part (Part 2 §7.2.3), so a `Default Extension="xml"`
+	// must never give it a story content type.
+	const contentType = (name: string): string => name === '[Content_Types].xml' ? '' : overrides.get(name) ?? defaults.get(name.slice(name.lastIndexOf('.') + 1).toLowerCase()) ?? '';
 	const removedParts = new Set<string>(); const svgParts = new Set<string>(); const imageParts = new Set<string>();
 	const rewrittenXml = new Map<string, Uint8Array>(); const placeholders: ParadisOfficePlaceholder[] = [];
 	const storyDocuments = new Map<string, OfficeStoryDocument>();
@@ -361,6 +384,27 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	let rootOfficeDocumentCount = 0;
 	let mainDocumentPart: string | undefined;
 	if (!values.has('_rels/.rels')) { throw new ParadisOfficePackageError('malformed'); }
+	// A part is read as a story only when a relationship of the matching kind targets it. A `Default
+	// Extension="xml"` can give every XML part (customXml items, metadata) the main-document type; those
+	// parts are not stories and must not be parsed as one.
+	const storyRelationshipTargets = new Map<string, Set<OfficeRelationshipKind>>();
+	for (const [name, bytes] of values) {
+		await advanceOpcAnalysis(input, state);
+		if (!name.endsWith('.rels') || (name !== '_rels/.rels' && !relationshipSourcePart(name))) { continue; }
+		const relationshipDocument = parsePackageXml(bytes, input);
+		for (const child of relationshipDocument.root.children) {
+			if (child.kind !== 'element' || child.uri !== RELATIONSHIPS_NAMESPACE || child.local !== 'Relationship' || xmlAttribute(child, 'TargetMode') === 'External') { continue; }
+			const kind = OFFICE_RELATIONSHIP_KINDS.get(xmlAttribute(child, 'Type') ?? '');
+			const resolved = kind ? resolveRelationshipTarget(name, xmlAttribute(child, 'Target') ?? '') : undefined;
+			if (kind && resolved) { const kinds = storyRelationshipTargets.get(resolved) ?? new Set<OfficeRelationshipKind>(); kinds.add(kind); storyRelationshipTargets.set(resolved, kinds); }
+		}
+	}
+	const storyType = (name: string): string => {
+		const type = contentType(name);
+		const kind = officeSourceKind(type);
+		const targets = storyRelationshipTargets.get(name);
+		return kind && targets && [...targets].some(relationshipKind => STORY_SOURCE_RELATIONSHIP_KINDS[kind].includes(relationshipKind)) ? type : '';
+	};
 	await advanceOpcAnalysis(input, state, true);
 	for (const [name, bytes] of values) {
 		await advanceOpcAnalysis(input, state);
@@ -373,7 +417,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		}
 		const relationshipDocument = parsePackageXml(bytes, input);
 		if (relationshipDocument.root.uri !== RELATIONSHIPS_NAMESPACE || relationshipDocument.root.local !== 'Relationships') { throw new ParadisOfficePackageError('malformed'); }
-		const sourceStory = sourcePart ? await loadOfficeStory(values, storyDocuments, sourcePart, contentType(sourcePart), input, state) : undefined;
+		const sourceStory = sourcePart ? await loadOfficeStory(values, storyDocuments, sourcePart, storyType(sourcePart), input, state) : undefined;
 		const kept: ParadisOfficeXmlNode[] = [];
 		const relationshipIds = new Set<string>();
 		for (const child of relationshipDocument.root.children) {
@@ -387,8 +431,20 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 			if (targetMode !== undefined && targetMode !== 'Internal' && targetMode !== 'External') { throw new ParadisOfficePackageError('malformed'); }
 			const external = targetMode === 'External';
 			const resolved = external ? undefined : resolveRelationshipTarget(name, target);
-			if (!external && (!resolved || !values.has(resolved))) { throw new ParadisOfficePackageError('malformed'); }
+			if (!external && !resolved) { throw new ParadisOfficePackageError('malformed'); }
 			const consumers = sourceStory?.consumersById.get(id) ?? [];
+			if (!external && !values.has(resolved!)) {
+				// A relationship whose target part is absent. Only the package's main document is required;
+				// any other relationship is dropped (ECMA-376 Part 1 §9.1.7 keeps a load from failing on a
+				// relationship it cannot use). Story content that pointed at it gets a placeholder.
+				if (name === '_rels/.rels' && relationshipKind === 'officeDocument') { throw new ParadisOfficePackageError('malformed'); }
+				if (sourceStory && consumers.length > 0) {
+					const placeholderValue = packagePlaceholder(input.nodeId, `${name}:${id}`, 'missingRelationship', fingerprint(new TextEncoder().encode(`${type}|${target}`), input.token, () => checkPackageWork(input)).value);
+					pushPackagePlaceholder(placeholders, placeholderValue);
+					const list = storyReplacements.get(sourcePart!) ?? []; list.push({ id, placeholder: placeholderValue }); storyReplacements.set(sourcePart!, list);
+				}
+				continue;
+			}
 			const targetType = resolved ? contentType(resolved) : '';
 			const compatible = relationshipKind !== undefined
 				&& relationshipSourceIsCompatible(relationshipKind, sourceStory?.kind, sourcePart)
@@ -421,8 +477,8 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	if (rootOfficeDocumentCount !== 1 || !mainDocumentPart) { throw new ParadisOfficePackageError('malformed'); }
 	for (const [name] of values) {
 		await advanceOpcAnalysis(input, state);
-		if (!officeSourceKind(contentType(name))) { continue; }
-		const story = await loadOfficeStory(values, storyDocuments, name, contentType(name), input, state);
+		if (!storyType(name)) { continue; }
+		const story = await loadOfficeStory(values, storyDocuments, name, storyType(name), input, state);
 		if (!story) { continue; }
 		const relationshipIds = relationshipIdsBySource.get(name) ?? new Set<string>();
 		const missingIds = new Set<string>();
@@ -484,7 +540,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	for (const [storyName, replacements] of storyReplacements) {
 		await advanceOpcAnalysis(input, state);
-		const story = storyDocuments.get(storyName) ?? await loadOfficeStory(values, storyDocuments, storyName, contentType(storyName), input, state);
+		const story = storyDocuments.get(storyName) ?? await loadOfficeStory(values, storyDocuments, storyName, storyType(storyName), input, state);
 		if (!story) { continue; }
 		const rewritten = await patchStoryRelationshipConsumers(story, replacements, input, state);
 		input.allocationObserver?.('textEncoder', rewritten.length);
@@ -501,13 +557,23 @@ async function advanceOpcAnalysis(input: ParadisOfficePackageSanitizerInput, sta
 	if (force || ++state.work % 256 === 0) { await yieldPackageWork(input); }
 }
 
+function sanitizerElementLimit(input: ParadisOfficePackageSanitizerInput | undefined, scope: 'part' | 'package'): number {
+	const requested = input?.xmlElementLimits?.[scope];
+	const fallback = PARADIS_OFFICE_SANITIZER_XML_ELEMENTS[scope];
+	return requested !== undefined && Number.isSafeInteger(requested) && requested > 0 ? Math.min(requested, fallback) : fallback;
+}
+
+function packageXmlLimits(elements: number): ParadisOfficeXmlLimits {
+	return { depth: 64, nodes: elements, attributeLength: 4_096, characters: 8 * 1024 * 1024 };
+}
+
 const CONTENT_TYPES_NAMESPACE = 'http://schemas.openxmlformats.org/package/2006/content-types';
 const RELATIONSHIPS_NAMESPACE = 'http://schemas.openxmlformats.org/package/2006/relationships';
 const WORD_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
 function parsePackageXml(bytes: Uint8Array, input?: ParadisOfficePackageSanitizerInput): { readonly root: OfficeXmlElement } {
 	const text = decodePackageXml(bytes);
-	return parseParadisOfficeXml(text, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 }, input?.token, input ? () => checkPackageWork(input) : undefined);
+	return parseParadisOfficeXml(text, packageXmlLimits(sanitizerElementLimit(input, 'part')), input?.token, input ? () => checkPackageWork(input) : undefined);
 }
 
 function decodePackageXml(bytes: Uint8Array): string {
@@ -518,15 +584,12 @@ function xmlAttribute(element: OfficeXmlElement, local: string): string | undefi
 function canonicalPartName(value: string): string { return canonicalizeParadisOfficeArchiveName(value.startsWith('/') ? value.slice(1) : value).slice(1); }
 
 function resolveRelationshipTarget(relsName: string, target: string): string | undefined {
-	if (!target || target.includes('\\') || target.includes('%') || target.includes('\0')) { return undefined; }
-	let base = '';
+	let source: string | undefined;
 	if (relsName !== '_rels/.rels') {
 		const match = /^(.*\/)?_rels\/([^/]+)\.rels$/.exec(relsName); if (!match) { return undefined; }
-		base = match[1] ?? '';
+		source = `/${match[1] ?? ''}${match[2]}`;
 	}
-	const segments = (target.startsWith('/') ? target.slice(1) : base + target).split('/'); const resolved: string[] = [];
-	for (const segment of segments) { if (!segment || segment === '.') { continue; } if (segment === '..') { if (!resolved.pop()) { return undefined; } } else { resolved.push(segment); } }
-	try { return canonicalizeParadisOfficeArchiveName(resolved.join('/')).slice(1); } catch { return undefined; }
+	try { return canonicalizeParadisOfficeArchiveName(resolveParadisOfficeRelationshipTarget(source, target).slice(1)).slice(1); } catch { return undefined; }
 }
 
 function relationshipSourcePart(relsName: string): string | undefined {
@@ -602,6 +665,12 @@ OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relation
 OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relationships/activeXControl', 'activeX');
 OFFICE_RELATIONSHIP_KINDS.set('http://schemas.microsoft.com/office/2006/relationships/activeXControlBinary', 'activeX');
 
+/** Relationship kinds that may make a part of each source kind be read as a story or story-like part. */
+const STORY_SOURCE_RELATIONSHIP_KINDS: Readonly<Record<OfficeSourceKind, readonly OfficeRelationshipKind[]>> = {
+	document: ['officeDocument'], header: ['header'], footer: ['footer'], footnotes: ['footnotes'], endnotes: ['endnotes'], comments: ['comments'],
+	numbering: ['numbering'], fontTable: ['fontTable'], settings: ['settings'], webSettings: ['webSettings'], styles: ['styles', 'stylesWithEffects'], theme: ['theme'],
+};
+
 const UNSAFE_RELATIONSHIP_KINDS = new Set<OfficeRelationshipKind>(['hyperlink', 'altChunk', 'font', 'oleObject', 'package', 'control', 'activeX', 'vbaProject', 'attachedTemplate']);
 const KNOWN_IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff', 'image/x-emf', 'image/x-wmf', 'image/emf', 'image/wmf']);
 const RELATIONSHIP_TARGET_CONTENT_TYPES: Readonly<Partial<Record<OfficeRelationshipKind, ReadonlySet<string>>>> = {
@@ -672,7 +741,10 @@ async function loadOfficeStory(values: ReadonlyMap<string, Uint8Array>, cache: M
 	const kind = officeSourceKind(type); if (!kind) { return undefined; }
 	const bytes = values.get(sourcePart); if (!bytes) { return undefined; }
 	const source = decodePackageXml(bytes);
-	const document = parseParadisOfficeXml(source, { depth: 64, nodes: 65_536, attributeLength: 4_096, characters: 8 * 1024 * 1024 }, input.token, () => checkPackageWork(input));
+	// Each story parse may use at most what is left of the package budget, so the sum stays bounded.
+	const remaining = sanitizerElementLimit(input, 'package') - state.storyElements;
+	if (remaining <= 0) { throw new ParadisOfficePackageError('limitExceeded'); }
+	const document = parseParadisOfficeXml(source, packageXmlLimits(Math.min(sanitizerElementLimit(input, 'part'), remaining)), input.token, () => checkPackageWork(input));
 	const expectedRoot = kind === 'document' ? 'document' : kind === 'header' ? 'hdr' : kind === 'footer' ? 'ftr' : kind === 'fontTable' ? 'fonts' : kind;
 	const expectedNamespaces = kind === 'theme' ? DRAWING_NAMESPACES : WORD_NAMESPACES;
 	if (!expectedNamespaces.has(document.root.uri) || document.root.local !== expectedRoot) { throw new ParadisOfficePackageError('malformed'); }
@@ -712,6 +784,7 @@ async function collectOfficeStoryConsumers(root: OfficeXmlElement, sourceKind: O
 	while (pending.length > 0) {
 		await advanceOpcAnalysis(input, state);
 		const { element, parent, ancestors } = pending.pop()!;
+		state.storyElements++;
 		for (let attributeIndex = 0; attributeIndex < element.attributes.length; attributeIndex++) {
 			const attribute = element.attributes[attributeIndex];
 			if (!RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) || attribute.local !== 'id' && attribute.local !== 'embed' && attribute.local !== 'link') { continue; }
