@@ -171,7 +171,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 
 		// 設定「Para Code を見ている間も通知する」が有効なら、フォーカス由来の抑制を行わない
 		const notifyWhileFocused = this.settingsService.getNotifyWhileFocused();
-		const isVisibleAndFocused = paradisIsWorkbenchWindowFocused();
+		const isVisibleAndFocused = this._isWindowFocused();
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
 
 		// 抑制ルール: 対象スコープが見えていて (アクティブ) かつウィンドウがフォーカスされている場合は鳴らさない。
@@ -199,6 +199,10 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		// 音と読み上げは発言を待たずにすぐ出す（発言は OS 通知の本文と受信箱にしか使わない）。
 		if (audible) {
 			void this._playAudio(status, placeholders);
+		} else if (doNotDisturb) {
+			// おやすみモード中は PC では鳴らさず、読み上げをモバイルへだけ流す（Q310 A。`aivis --mute` 中の Q209 B と同じ）。
+			// 聞いているモバイルが無ければ shared process が合成しない
+			void this._playAudio(status, placeholders, true);
 		}
 
 		// 発言は OS 通知に載せるときだけ取り直しまで待つ。それ以外は受信箱用に1回だけ引く。
@@ -213,6 +217,11 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		if (osEnabled) {
 			this._showOsNotification(stateKey, instanceId, status, placeholders, includeMessage ? message : undefined);
 		}
+	}
+
+	/** このウィンドウが見えていてフォーカスされているか（テストで差し替える）。 */
+	protected _isWindowFocused(): boolean {
+		return paradisIsWorkbenchWindowFocused();
 	}
 
 	/**
@@ -272,16 +281,18 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 	}
 
 	/** 通知音 + Aivis を鳴らす。 */
-	private async _playAudio(status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
+	private async _playAudio(status: ParadisAgentNotifyStatus, placeholders: IParadisAivisPlaceholders, mobileOnly = false): Promise<void> {
 		const needsAction = status === 'permission' || status === 'question';
 		// 通知音と Aivis は shared process の AudioScheduler で調停する
 		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO。ただし待機キューには
 		// 上限があり、超過した発話は捨てられる）。
 		const muted = this.settingsService.getSoundsMuted();
-		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; elevenLabs?: IParadisNotifyAudioRequest['elevenLabs']; priority: IParadisNotifyAudioRequest['priority'] } = {
+		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; elevenLabs?: IParadisNotifyAudioRequest['elevenLabs']; priority: IParadisNotifyAudioRequest['priority']; mobileOnly?: true } = {
 			priority: needsAction ? 'high' : 'normal',
+			...(mobileOnly ? { mobileOnly: true } : {}),
 		};
-		if (!muted) {
+		// モバイルへだけ流すときは着信音を付けない（PC で鳴らさない）
+		if (!muted && !mobileOnly) {
 			request.ringtone = { id: this.settingsService.getSelectedRingtoneId(), volume: this.settingsService.getVolume() };
 		}
 
@@ -334,7 +345,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		}
 
 		if (!request.ringtone && !request.aivis && !request.elevenLabs) {
-			return; // ミュート かつ Aivis 無効なら何もしない
+			return; // ミュート かつ Aivis 無効なら何もしない（モバイルへだけ流すときは、読み上げが無ければ何もしない）
 		}
 		await this._sendAudio(channel, request);
 	}
