@@ -25,7 +25,7 @@
 
 import { createHash } from 'crypto';
 import { mkdirSync, writeFileSync } from 'fs';
-import { mkdir, readdir, readFile, rename, stat, unlink, utimes, writeFile } from 'fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, stat, unlink, utimes, writeFile } from 'fs/promises';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -69,6 +69,10 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 const ENTRY_PATTERN = /^(?<key>[0-9a-f]{64})\.(?<created>\d{1,15})\.mp3$/;
+/** 作った時刻を名前に持たなかった頃（最初の版）のファイル。読まずに掃除で消す。 */
+const LEGACY_ENTRY_PATTERN = /^[0-9a-f]{64}\.mp3$/;
+/** 作った時刻がこれより先（時計が戻った）なら期限切れとみなす。少しの時計の揺れでは消さない。 */
+const FUTURE_TOLERANCE_MS = 60_000;
 const TEMP_PATTERN = /^(?:[0-9a-f]{64}|stats\.json)\.[0-9a-f-]+\.tmp$/;
 const KEY_PATTERN = /^[0-9a-f]{64}$/;
 const STATS_FILE = 'stats.json';
@@ -126,6 +130,11 @@ export function paradisVoiceCacheMinBytes(characters: number): number {
 	return Math.max(PARADIS_VOICE_CACHE_MIN_ENTRY_BYTES, Math.floor(characters) * 256);
 }
 
+/** 作った時刻から見て期限切れか。時計が戻って作った時刻が先になったものも期限切れにする（いつまでも期限を迎えないため）。 */
+function isExpired(createdMs: number, now: number, maxAgeMs: number): boolean {
+	return createdMs > now + FUTURE_TOLERANCE_MS || now - createdMs > maxAgeMs;
+}
+
 function parseEntryName(name: string): { readonly key: string; readonly createdMs: number } | undefined {
 	const match = ENTRY_PATTERN.exec(name);
 	return match?.groups ? { key: match.groups.key, createdMs: Number(match.groups.created) } : undefined;
@@ -143,6 +152,10 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 	private readonly _inFlight = new Map<string, IInFlight>();
 	/** clear() のたびに増やす。消す前に始めた合成は、消した後に残さない。 */
 	private _generation = 0;
+	/** 鍵ごとの世代。テスト再生（refresh）のたびに増やし、それより前に始めた同じ鍵の合成には書かせない。 */
+	private readonly _keyGenerations = new Map<string, number>();
+	/** 前からあったディレクトリの権限を確かめたか。 */
+	private _dirModeChecked = false;
 	private _pruning: Promise<void> | undefined;
 	private _prunePending = false;
 	private _startupPruneTimer: ReturnType<typeof setTimeout> | undefined;
@@ -228,6 +241,9 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 				}
 			}
 		}
+		if (options.refresh) {
+			this._keyGenerations.set(key, (this._keyGenerations.get(key) ?? 0) + 1);
+		}
 		return { kind: 'miss', lease: this._claim(key, minBytes) };
 	}
 
@@ -251,7 +267,7 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 			return; // まだ何も置いていない
 		}
 		await Promise.all(names
-			.filter(name => ENTRY_PATTERN.test(name) || (TEMP_PATTERN.test(name) && !name.startsWith(STATS_FILE)))
+			.filter(name => ENTRY_PATTERN.test(name) || LEGACY_ENTRY_PATTERN.test(name) || (TEMP_PATTERN.test(name) && !name.startsWith(STATS_FILE)))
 			.map(name => unlink(join(this.dir, name)).catch(() => undefined)));
 	}
 
@@ -287,7 +303,7 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 			.sort((a, b) => b.parsed!.createdMs - a.parsed!.createdMs);
 		for (const { name, parsed } of candidates) {
 			const path = join(this.dir, name);
-			if (this.now() - parsed!.createdMs > this.maxAgeMs) {
+			if (isExpired(parsed!.createdMs, this.now(), this.maxAgeMs)) {
 				await unlink(path).catch(() => undefined);
 				continue;
 			}
@@ -353,7 +369,8 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 		};
 		this._inFlight.set(key, inFlight);
 		const generation = this._generation;
-		const store = (audio: Buffer) => this._write(key, audio, generation);
+		const keyGeneration = this._keyGenerations.get(key) ?? 0;
+		const store = (audio: Buffer) => this._write(key, audio, generation, keyGeneration);
 		const maxEntryBytes = this.maxEntryBytes;
 		return {
 			release: () => settle(undefined),
@@ -383,17 +400,20 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 		};
 	}
 
-	private async _write(key: string, audio: Buffer, generation: number): Promise<void> {
-		if (generation !== this._generation || this._store.isDisposed) {
+	private async _write(key: string, audio: Buffer, generation: number, keyGeneration: number): Promise<void> {
+		// 消した後・後から始めたテスト再生があるなら書かない（引き直した音を古い合成で戻さない）
+		const current = () => generation === this._generation && keyGeneration === (this._keyGenerations.get(key) ?? 0);
+		if (!current() || this._store.isDisposed) {
 			return;
 		}
-		const name = `${key}.${Math.floor(this.now())}.mp3`;
+		const createdMs = Math.floor(this.now());
+		const name = `${key}.${createdMs}.mp3`;
 		const path = join(this.dir, name);
 		const temp = join(this.dir, `${key}.${generateUuid()}.tmp`);
 		try {
-			await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+			await this._ensureDir();
 			await writeFile(temp, audio, { mode: FILE_MODE });
-			if (generation !== this._generation) {
+			if (!current()) {
 				await unlink(temp).catch(() => undefined);
 				return;
 			}
@@ -403,17 +423,40 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 			await unlink(temp).catch(() => undefined);
 			return;
 		}
-		if (generation !== this._generation) {
-			// rename の間に clear() された。消した後に 1 件だけ残らないよう、書いたものを片付ける
+		if (!current()) {
+			// rename の間に clear() された・テスト再生が始まった。書いたものを片付ける
 			await unlink(path).catch(() => undefined);
 			return;
 		}
-		// 同じ鍵の古い音（テスト再生で引き直した前の音など）を外す
+		// 同じ鍵の、自分より前に作った音（テスト再生で引き直した前の音など）を外す。自分より後に作った音は消さない
+		// （同じ鍵の書き込みがほぼ同時に終わっても、互いに消し合って両方消えないように）
 		const names = await readdir(this.dir).catch(() => [] as string[]);
 		await Promise.all(names
-			.filter(other => other !== name && parseEntryName(other)?.key === key)
+			.filter(other => {
+				if (other === name) {
+					return false;
+				}
+				if (LEGACY_ENTRY_PATTERN.test(other)) {
+					return other.startsWith(`${key}.`);
+				}
+				const parsed = parseEntryName(other);
+				return parsed?.key === key && parsed.createdMs < createdMs;
+			})
 			.map(other => unlink(join(this.dir, other)).catch(() => undefined)));
 		this._schedulePrune();
+	}
+
+	/** ディレクトリを作る。前の版が 0755 で作っていたら 0700 に直す（初回だけ確かめる）。 */
+	private async _ensureDir(): Promise<void> {
+		await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+		if (this._dirModeChecked) {
+			return;
+		}
+		this._dirModeChecked = true;
+		const info = await stat(this.dir).catch(() => undefined);
+		if (info && (info.mode & 0o777) !== DIR_MODE) {
+			await chmod(this.dir, DIR_MODE).catch(error => this.logService.warn(`[ParadisNotifications] could not restrict the voice cache folder: ${getErrorMessage(error)}`));
+		}
 	}
 
 	private _schedulePrune(): void {
@@ -444,6 +487,8 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 		} catch {
 			return;
 		}
+		// 作った時刻を名前に持たない最初の版のファイルは、読めないので消す
+		await Promise.all(names.filter(candidate => LEGACY_ENTRY_PATTERN.test(candidate)).map(candidate => unlink(join(this.dir, candidate)).catch(() => undefined)));
 		for (const name of names.filter(candidate => TEMP_PATTERN.test(candidate))) {
 			const path = join(this.dir, name);
 			const info = await stat(path).catch(() => undefined);
@@ -460,7 +505,7 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 		let kept = 0;
 		let bytes = 0;
 		for (const entry of [...entries].sort((a, b) => b.mtimeMs - a.mtimeMs)) {
-			if (now - entry.createdMs > this.maxAgeMs || entry.createdMs !== newestByKey.get(entry.key) || kept >= this.maxEntries || bytes + entry.size > this.maxBytes) {
+			if (isExpired(entry.createdMs, now, this.maxAgeMs) || entry.createdMs !== newestByKey.get(entry.key) || kept >= this.maxEntries || bytes + entry.size > this.maxBytes) {
 				remove.push(entry);
 			} else {
 				kept++;
@@ -542,7 +587,7 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 			this._statsDirty = false;
 			const temp = join(this.dir, `${STATS_FILE}.${generateUuid()}.tmp`);
 			try {
-				await mkdir(this.dir, { recursive: true, mode: DIR_MODE });
+				await this._ensureDir();
 				await writeFile(temp, JSON.stringify({ version: 1, days }), { mode: FILE_MODE });
 				await rename(temp, join(this.dir, STATS_FILE));
 			} catch (error) {
