@@ -220,6 +220,20 @@ suite('ParadisWordObjects', () => {
 		strictEqual(model.sections.length, 1);
 	});
 
+	test('resolves relationship targets with the shared package rules and skips targets outside the Word parts', () => {
+		const withRelationships = (entries: string) => parseParadisWordObjects({
+			document: part('/word/document.xml', pictureXml(), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'),
+			relationshipPart: relationshipPart(entries),
+			relatedParts: [part('/word/media/image1.png', new Uint8Array([137, 80, 78, 71, 1]), 'image/png')],
+		});
+		const image = `<Relationship Id="rImage" Type="${relationships}/image" Target="/word/media/image1.png"/>`;
+		const customXml = `<Relationship Id="rCustom" Type="${relationships}/customXml" Target="../customXml/item1.xml"/>`;
+		deepStrictEqual(withRelationships(image + customXml).images.map(value => value.content.kind === 'embedded' ? value.content.source.partUri : value.content.kind), ['/word/media/image1.png']);
+		for (const target of ['//host/x', '/../x', '..', 'media/image1.png?x']) {
+			throws(() => withRelationships(image + `<Relationship Id="rBad" Type="${relationships}/customXml" Target="${target}"/>`), error => error instanceof ParadisOfficePackageError && error.code === 'unsafe', target);
+		}
+	});
+
 	test('rejects forged all-byte authority before parsing', () => {
 		const document = part('/word/document.xml', pictureXml());
 		const forged = { ...document, source: { ...document.source, partFingerprint: { ...document.source.partFingerprint, value: '0'.repeat(64) } } };

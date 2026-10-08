@@ -5,7 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from '../office/paradisOfficeCanonicalXml.js';
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
 import { fingerprintParadisWordObjectBytes } from './paradisWordObjects.js';
@@ -768,32 +768,7 @@ function relationshipOwner(partUri: string): string {
 }
 
 function resolveRelationshipTarget(ownerPartUri: string, target: string): string {
-	if (!target || target.includes('\\') || target.includes('\0') || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(target);
-	} catch {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	const ownerDirectory = ownerPartUri === '/' ? '/' : ownerPartUri.slice(0, ownerPartUri.lastIndexOf('/') + 1);
-	const combined = decoded.startsWith('/') ? decoded : `${ownerDirectory}${decoded}`;
-	const normalized: string[] = [];
-	for (const segment of combined.split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (normalized.length === 0) {
-				throw new ParadisOfficePackageError('unsafe');
-			}
-			normalized.pop();
-		} else {
-			normalized.push(segment);
-		}
-	}
-	const resolved = `/${normalized.join('/')}`;
+	const resolved = resolveSharedRelationshipTarget(ownerPartUri, target);
 	if (canonicalPartUri(resolved) !== resolved) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
@@ -1001,4 +976,19 @@ function sanitizeSecurityError(error: unknown): ParadisOfficePackageError {
 		code = 'unsafe';
 	}
 	return new ParadisOfficePackageError(code);
+}
+
+/**
+ * 関係の Target を、サニタイザ・部品一覧と同じ規則（resolveParadisOfficeRelationshipTarget）で解決する。
+ * スキーム付き・クエリ・断片は Word の部品を指さないので拒む。拒むときの理由はこのファイルの他の拒否と同じ unsafe にする。
+ */
+function resolveSharedRelationshipTarget(ownerPartUri: string, target: string): string {
+	if (!target || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	try {
+		return resolveParadisOfficeRelationshipTarget(ownerPartUri, target);
+	} catch {
+		throw new ParadisOfficePackageError('unsafe');
+	}
 }

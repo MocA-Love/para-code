@@ -151,6 +151,12 @@ suite('ParadisWordSecurity', () => {
 		const traversal = fixtureParts();
 		traversal[3] = part('/word/_rels/document.xml.rels', relationships(`<Relationship Id="rOle" Type="${officeRelationships}/oleObject" Target="../../../private.bin"/>`));
 		invalid(() => parseParadisWordSecurity({ parts: traversal }), 'unsafe');
+		// サニタイザ・部品一覧と同じ規則: network-path と、根より上へ出る絶対パスも拒む。
+		for (const target of ['//host/x', '/../x']) {
+			const shared = fixtureParts();
+			shared[3] = part('/word/_rels/document.xml.rels', relationships(`<Relationship Id="rOle" Type="${officeRelationships}/oleObject" Target="${target}"/>`));
+			invalid(() => parseParadisWordSecurity({ parts: shared }), 'unsafe');
+		}
 	});
 
 	test('accepts legacy binary OLE embeddings and skips a missing target only for metadata relationships', () => {
