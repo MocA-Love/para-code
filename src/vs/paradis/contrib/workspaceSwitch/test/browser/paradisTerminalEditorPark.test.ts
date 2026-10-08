@@ -226,7 +226,12 @@ suite('paradisTerminalEditorPark', () => {
 	test('does not leave a terminal it holds back as the active one, and leaves others alone', () => {
 		const foreign = createFakeInstance(21, 210).instance;
 		const other = createFakeInstance(22, 220).instance;
-		store.add(paradisRegisterTerminalEditorRevealGuard(instance => instance === foreign));
+		const recent = createFakeInstance(23, 230).instance;
+		let replacement: ITerminalInstance | undefined = undefined;
+		store.add(paradisRegisterTerminalEditorRevealGuard({
+			shouldHoldBack: instance => instance === foreign,
+			replacementFor: () => replacement,
+		}));
 		let activeInstance: ITerminalInstance | undefined;
 		const host = {
 			get activeInstance() { return activeInstance; },
@@ -236,16 +241,29 @@ suite('paradisTerminalEditorPark', () => {
 		// focusInstance は開く前にアクティブにしている。開かないなら外す (見えない端末へ送らせない)。
 		activeInstance = foreign;
 		const heldWhileActive = paradisHoldBackTerminalEditorReveal(foreign, host);
-		const activeAfterHold = activeInstance;
+		const activeWithoutReplacement = activeInstance;
+		// 今のアクティブなグループに直前まで使っていたエディタの端末があれば、そちらへ戻す。
+		replacement = recent;
+		activeInstance = foreign;
+		paradisHoldBackTerminalEditorReveal(foreign, host);
+		const activeWithReplacement = activeInstance;
 		// 別の端末がアクティブなら触らない。
 		activeInstance = other;
 		const heldWhileOtherActive = paradisHoldBackTerminalEditorReveal(foreign, host);
 		const activeAfterOther = activeInstance;
 		const opensOwn = paradisHoldBackTerminalEditorReveal(other, host);
 
-		assert.deepStrictEqual({ heldWhileActive, activeAfterHold, heldWhileOtherActive, activeAfterOther: activeAfterOther?.instanceId, opensOwn }, {
+		assert.deepStrictEqual({
+			heldWhileActive,
+			activeWithoutReplacement,
+			activeWithReplacement: activeWithReplacement?.instanceId,
+			heldWhileOtherActive,
+			activeAfterOther: activeAfterOther?.instanceId,
+			opensOwn,
+		}, {
 			heldWhileActive: true,
-			activeAfterHold: undefined,
+			activeWithoutReplacement: undefined,
+			activeWithReplacement: 23,
 			heldWhileOtherActive: true,
 			activeAfterOther: 22,
 			opensOwn: false,

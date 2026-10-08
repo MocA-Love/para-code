@@ -192,7 +192,7 @@ export function paradisTerminalEditorOpening(instance: ITerminalInstance): { rea
  * エディタターミナルの持ち主のスペース。開いている途中ならその行き先、そうでなければ明示的な所属。
  * どちらも無ければ undefined（所属不明。呼び出し側は今までどおりの扱いにする）。
  *
- * 切り替えの park（`lateParkScope`）・生きたエディタの預け先（`ParadisEditorScopeService`）・
+ * 切り替えの park（`ownerParkScope`）・生きたエディタの預け先（`ParadisEditorScopeService`）・
  * 今のスペースへ出してよいかの判定（`paradisShouldHoldBackTerminalEditorReveal`）が同じ答えを
  * 使うための単一の口。ここを通さずに所属を引くと、場所ごとに持ち主が食い違う。
  */
@@ -205,9 +205,16 @@ export function paradisTerminalEditorOwnerScope(instance: ITerminalInstance): st
  * 見せているかを知っているのはそちら）。upstream の `terminalEditorService` から DI を介さずに
  * 引くため、ここへ関数を預けてもらう。
  */
-let editorRevealGuard: ((instance: ITerminalInstance) => boolean) | undefined;
+export interface IParadisTerminalEditorRevealGuard {
+	/** 今のスペースのエディタへ出さない端末なら true。 */
+	shouldHoldBack(instance: ITerminalInstance): boolean;
+	/** 出さないと決めた端末の代わりにアクティブにする端末 (今のアクティブなグループで開いているエディタの端末)。無ければ undefined。 */
+	replacementFor(heldBack: ITerminalInstance): ITerminalInstance | undefined;
+}
 
-export function paradisRegisterTerminalEditorRevealGuard(guard: (instance: ITerminalInstance) => boolean): IDisposable {
+let editorRevealGuard: IParadisTerminalEditorRevealGuard | undefined;
+
+export function paradisRegisterTerminalEditorRevealGuard(guard: IParadisTerminalEditorRevealGuard): IDisposable {
 	editorRevealGuard = guard;
 	return toDisposable(() => {
 		if (editorRevealGuard === guard) {
@@ -227,7 +234,7 @@ export function paradisRegisterTerminalEditorRevealGuard(guard: (instance: ITerm
  */
 export function paradisShouldHoldBackTerminalEditorReveal(instance: ITerminalInstance): boolean {
 	try {
-		return editorRevealGuard?.(instance) ?? false;
+		return editorRevealGuard?.shouldHoldBack(instance) ?? false;
 	} catch {
 		return false;
 	}
@@ -239,15 +246,24 @@ export function paradisShouldHoldBackTerminalEditorReveal(instance: ITerminalIns
  *
  * `focusInstance` は `_revealEditor` の前に `setActiveInstance` を済ませている。外さないと、
  * 見えない別のスペースの端末がアクティブとして残り、「選択範囲をアクティブなターミナルで実行」が
- * 本文と Enter をそこへ送り、「アクティブなターミナルを終了」がそれを殺す。エディタ側のアクティブを
- * 外すと `terminalService` は残りのホスト（パネル）のアクティブへ戻る（`_evaluateActiveInstance`）。
+ * 本文と Enter をそこへ送り、「アクティブなターミナルを終了」がそれを殺す。
+ *
+ * 代わりには、今のアクティブなグループで開いているエディタの端末（直前まで使っていたもの）を
+ * アクティブにする。単に外すと `terminalService` は残りのホスト（パネル）のアクティブを選び直し
+ * （`_evaluateActiveInstance`）、今のスペースのエディタの端末へは戻らない。無ければ外すだけ。
  */
 export function paradisHoldBackTerminalEditorReveal(instance: ITerminalInstance, host: { readonly activeInstance: ITerminalInstance | undefined; setActiveInstance(instance: ITerminalInstance | undefined): void }): boolean {
 	if (!paradisShouldHoldBackTerminalEditorReveal(instance)) {
 		return false;
 	}
 	if (host.activeInstance === instance) {
-		host.setActiveInstance(undefined);
+		let replacement: ITerminalInstance | undefined;
+		try {
+			replacement = editorRevealGuard?.replacementFor(instance);
+		} catch {
+			replacement = undefined;
+		}
+		host.setActiveInstance(replacement);
 	}
 	return true;
 }

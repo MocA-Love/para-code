@@ -39,6 +39,24 @@ interface ISerializedKnownWorktree {
 	readonly name: string;
 }
 
+/**
+ * worktree のスペースが今もあるか (`ParadisWorktreeService.isPresentWorktreeStateKey` の中身)。登録中の
+ * リポジトリの一覧 (`listed`) に載っていれば missing でないこと、載っていなければ既知 (`known`) に
+ * あること。一覧は refresh でしか作り直されないので、作った直後の worktree は既知にだけ載っている。
+ */
+export function paradisIsPresentWorktree(stateKey: string, repositoryIds: readonly string[], listed: (repositoryId: string) => readonly IParadisWorktree[], known: readonly { readonly repositoryId: string; readonly path: string }[]): boolean {
+	for (const repositoryId of repositoryIds) {
+		const worktree = listed(repositoryId).find(candidate => paradisWorktreeStateKey(candidate.uri) === stateKey);
+		if (worktree !== undefined) {
+			return !worktree.missing;
+		}
+		if (known.some(entry => entry.repositoryId === repositoryId && paradisWorktreeStateKey(URI.parse(entry.path)) === stateKey)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Auto-removal is safe only for an inactive missing worktree with no retained scope data. */
 export function paradisShouldAutoRetireMissingWorktree(autoRemove: boolean, hasRetirementData: boolean, isActive: boolean): boolean {
 	return autoRemove && !hasRetirementData && !isActive;
@@ -134,8 +152,17 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this.installWatchers();
 		this.initializationBarrier = this.refresh();
 		// 切り替えサービスが「持ち主の worktree が今もあるか」を引く口 (DI では循環するため)。
-		this._register(paradisRegisterWorktreePresenceLookup(stateKey => this.workspaceSwitchService.repositories.some(repository =>
-			this.getWorktrees(repository.id).some(worktree => !worktree.missing && paradisWorktreeStateKey(worktree.uri) === stateKey))));
+		this._register(paradisRegisterWorktreePresenceLookup(stateKey => this.isPresentWorktreeStateKey(stateKey)));
+	}
+
+	/**
+	 * その worktree のスペースが今もあるか。一覧 (`_worktrees`) にあって missing でなければある。一覧は
+	 * refresh のときしか作り直されないので、一覧にまだ載っていなくても、既知の worktree (`_known`。
+	 * `addKnownWorktree` で作った直後のものを含む) で missing と確定していなければあるとみなす。
+	 * 一覧で missing と確定したもの、登録が外れたリポジトリのものは無い。
+	 */
+	private isPresentWorktreeStateKey(stateKey: string): boolean {
+		return paradisIsPresentWorktree(stateKey, this.workspaceSwitchService.repositories.map(repository => repository.id), repositoryId => this.getWorktrees(repositoryId), this._known);
 	}
 
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[] {
