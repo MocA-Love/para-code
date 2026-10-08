@@ -82,9 +82,8 @@ class FakeHost implements IParadisBindingRestoreHost {
 		this.restored.push(`${token}->${pageId}:${outcome}`);
 		if (outcome === 'restored') {
 			const previous = this.bound.get(token);
-			if (previous !== undefined && previous !== pageId) {
-				this.more.set(token, [...(this.more.get(token) ?? []), previous]);
-			}
+			const more = (this.more.get(token) ?? []).filter(candidate => candidate !== pageId);
+			this.more.set(token, previous !== undefined && previous !== pageId ? [...more, previous] : more);
 			this.bound.set(token, pageId);
 		}
 		return outcome;
@@ -130,7 +129,7 @@ suite('ParadisBindingRestoreController', () => {
 	});
 
 	// 1 つのペインへ複数のページを共有していたら、全部を 1 回の確認で尋ね、古いものから戻して current を最後に戻す
-	test('restores every page a pane shared, the older ones first so that its current page is shared last', async () => {
+	test('restores the current page first, then the other pages oldest first, and shares the current page again last', async () => {
 		const host = new FakeHost({});
 		host.pages = new Set(['page-1', 'page-2', 'page-3']);
 		host.stored = paradisSerializeBindingRestoreLedger(new Map([[paradisBindingRestoreKey('token-a'), { pageId: 'page-3', at: NOW - 1000, more: ['page-1', 'page-2'] }]]));
@@ -144,9 +143,29 @@ suite('ParadisBindingRestoreController', () => {
 			stored: JSON.parse(host.stored ?? '{}')[paradisBindingRestoreKey('token-a')]?.more,
 		}, {
 			asked: [[{ page: 'page-1', pane: 'token-a' }, { page: 'page-2', pane: 'token-a' }, { page: 'page-3', pane: 'token-a' }]],
-			restored: ['token-a->page-1:restored', 'token-a->page-2:restored', 'token-a->page-3:restored'],
+			restored: ['token-a->page-3:restored', 'token-a->page-1:restored', 'token-a->page-2:restored', 'token-a->page-3:restored'],
 			current: 'page-3',
 			stored: ['page-1', 'page-2'],
+		});
+	});
+
+	// current が戻らないとき（後でもう一度）は 2 枚目以降も戻さず、台帳も元のまま残す
+	test('keeps the whole ledger row and restores nothing else when the current page has to wait', async () => {
+		const host = new FakeHost({});
+		host.pages = new Set(['page-1', 'page-3']);
+		const row = { pageId: 'page-3', at: NOW - 1000, more: ['page-1'] };
+		host.stored = paradisSerializeBindingRestoreLedger(new Map([[paradisBindingRestoreKey('token-a'), row]]));
+		host.outcomeOf = pageId => pageId === 'page-3' ? 'retry' : 'restored';
+		const controller = create(host);
+		await controller.evaluate();
+		assert.deepStrictEqual({
+			restored: host.restored,
+			stored: JSON.parse(host.stored ?? '{}')[paradisBindingRestoreKey('token-a')],
+			undecided: controller.undecidedCount,
+		}, {
+			restored: ['token-a->page-3:retry'],
+			stored: row,
+			undecided: 1,
 		});
 	});
 

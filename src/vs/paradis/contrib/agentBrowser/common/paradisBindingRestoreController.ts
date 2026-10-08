@@ -129,6 +129,8 @@ export class ParadisBindingRestoreController extends Disposable {
 	/** 出している確認の通知を閉じるため。 */
 	private _confirmation: CancellationTokenSource | undefined;
 	private _shuttingDown = false;
+	/** 1 つのペインへ複数のページを戻している最中（途中の状態で台帳を書かない）。 */
+	private _ledgerHeld = false;
 	private readonly _now: () => number;
 	private readonly _windowMs: number;
 	private readonly _retryDelayMs: number;
@@ -274,24 +276,32 @@ export class ParadisBindingRestoreController extends Disposable {
 					retry = true;
 					continue;
 				}
-				// 2 枚目以降を古い順に戻してから current を戻す（最後に共有したものが current になる）。2 枚目以降は
-				// できる範囲で戻す（失敗しても current は戻す）
-				for (const pageId of candidate.morePageIds) {
-					if (this._shuttingDown || this._store.isDisposed || this.host.readiness(pageId, candidate.token) !== 'ready') {
-						continue;
-					}
-					try {
-						await this.host.restore(pageId, candidate.token);
-					} catch (error) {
-						this.host.log('failed to restore a browser share after restart', error);
-					}
-				}
+				// current を先に戻す（戻らなければ 2 枚目以降も戻さず、記録は今までどおり残す・捨てる）。戻ったら
+				// 2 枚目以降を古い順に戻し、最後に current をもう一度共有して current に戻す（共有は最後のものが current）。
+				// その間は台帳を書かない（途中の状態で台帳を上書きしない）
+				this._ledgerHeld = true;
 				let outcome: ParadisBindingRestoreOutcome;
 				try {
-					outcome = await this.host.restore(candidate.pageId, candidate.token);
-				} catch (error) {
-					this.host.log('failed to restore a browser share after restart', error);
-					outcome = 'skipped';
+					outcome = await this._restoreOne(candidate.pageId, candidate.token);
+					if (outcome === 'restored' && candidate.morePageIds.length > 0) {
+						let restoredMore = false;
+						for (const pageId of candidate.morePageIds) {
+							if (this._shuttingDown || this._store.isDisposed) {
+								break;
+							}
+							const readiness = this.host.readiness(pageId, candidate.token);
+							if (readiness !== 'ready') {
+								this.host.log(`did not restore one of the other pages a pane shared (${readiness === 'never' ? 'it moved to another space' : 'its space is not on screen'})`);
+								continue;
+							}
+							restoredMore = (await this._restoreOne(pageId, candidate.token)) === 'restored' || restoredMore;
+						}
+						if (restoredMore && !this._shuttingDown && !this._store.isDisposed) {
+							await this._restoreOne(candidate.pageId, candidate.token);
+						}
+					}
+				} finally {
+					this._ledgerHeld = false;
 				}
 				if (outcome === 'retry') {
 					retry = true;
@@ -313,6 +323,15 @@ export class ParadisBindingRestoreController extends Disposable {
 		}
 	}
 
+	private async _restoreOne(pageId: string, token: string): Promise<ParadisBindingRestoreOutcome> {
+		try {
+			return await this.host.restore(pageId, token);
+		} catch (error) {
+			this.host.log('failed to restore a browser share after restart', error);
+			return 'skipped';
+		}
+	}
+
 	private _updateLedger(): { liveTokenByKey: Map<string, string>; boundKeys: Set<string> } {
 		const liveTokenByKey = new Map<string, string>();
 		for (const token of this.host.listPaneTokens()) {
@@ -329,7 +348,7 @@ export class ParadisBindingRestoreController extends Disposable {
 				this._undecided.delete(key);
 			}
 		}
-		if (!this._shuttingDown) {
+		if (!this._shuttingDown && !this._ledgerHeld) {
 			this._ledger = paradisNextBindingRestoreLedger(this._ledger, this._undecided, boundPageByKey, this._now(), morePagesByKey);
 			this._persist();
 		}

@@ -143,5 +143,9 @@ suite('paradisBindingRestoreLedger', () => {
 			legacy: [{ pageId: 'page-5', at: now }, { pageId: 'page-6', at: now, more: ['page-7'] }],
 			candidates: [{ key: keyA, token: 'token-a', pageId: 'page-3', morePageIds: ['page-2'] }],
 		});
+		// current のページが無くなっていたら、2 枚目以降のうち最後に共有した生きているページを current として戻す
+		assert.deepStrictEqual(paradisBindingRestoreCandidates(parsed, new Set([keyA]), live, new Set(), new Set(['page-1', 'page-2'])), [
+			{ key: keyA, token: 'token-a', pageId: 'page-1', morePageIds: ['page-2'] },
+		]);
 	});
 });

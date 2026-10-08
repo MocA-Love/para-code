@@ -633,12 +633,15 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
 1 つのペインへユーザーは複数のページを共有できる（2026-10-08、Q296）。それまでは 1 対 1 で、別のページを共有すると前の共有が外れた（付け替え）。実装は、エージェントが自分で開いたタブの許可（#263・#265 の `_agentTabGrants` と tab_id）に乗せている:
 
 - `_bindings`（token → 1 枚）は「current」の共有のまま残す。binding authority（`recordBindingMutation`・owner の retire）、モバイルの画面共有（`listBoundCdpTargets`）、`tab_id` を省いたときのタブ（`_defaultTabId`）、ペインの印は current だけを見る。authority を token → 複数に変えると retire・隔離・ticket の世代の検証が全部変わるので、そうしなかった
-- 2 枚目以降は `_agentTabGrants` の entry に `userShared: true` を付けて持つ。新しいページを共有すると（`commitBind`）前の current が世代を変えずにこの印付きで許可へ移り、新しいページが current になる（選んでいたタブも外す）。すでに 2 枚目以降として共有していたページを共有し直すと、許可から外して current にする
-- current を外すと（`unbindIfCurrent`・ビューの消滅）、2 枚目以降のうち世代の一番大きいもの（最後に共有したもの）を current へ戻す（`_promoteLatestUserSharedPage`、`recordBindingMutation` で authority にも記録）。2 枚目以降は世代を指定した `unbindIfCurrent` でページごとに外す。`unbind(token)` はペインの共有を全部外す
+- 2 枚目以降は `_agentTabGrants` の entry に `userShared: true` を付けて持つ。新しいページを共有すると（`commitBind`）前の current が世代を変えずにこの印付きで許可へ移り、新しいページが current になる。エージェントが自分のタブを選んでいるときは、その選択を保つ（ユーザーの共有で tab_id 無しの操作先が黙って移らないように）。すでに 2 枚目以降として共有していたページを共有し直すと、許可から外して current にする
+- エージェントが open_browser_tab で開いたタブをユーザーが共有し、その後で別のページが current になると、entry に `agentTab: true` も付く。そのタブの共有を外したら許可へ戻す（エージェントは自分のタブを使い続けられる）。再読み込みでは `agentTab` の印だけ外す
+- current を外すと（`unbindIfCurrent`・ビューの消滅）、2 枚目以降のうち世代の一番大きいもの（最後に共有したもの）を current へ戻す（`_promoteLatestUserSharedPage`、`recordBindingMutation` で authority にも記録）。繰り上げる前に、受理済みの最新の manifest でペインとページが同じウィンドウにあり、どちらの確定したスペースも共有したときと同じかを確かめ、通らないものは外して次を見る。繰り上げは同じビューのまま世代だけが変わるので、そのタブを tab_id で使っているスコープの世代を書き換えてから切り替え、接続・子プロセス・ページの上書きを切らない（current から外れるときも切らない）
+- 繰り上げで世代が変わるので、renderer がスペースの変化で外すときは捕まえた世代ではなく、外す直前の `listBindings` から (ペイン, ページ) で世代を引き直す。ペインのスペースが変わったときは、そのペインの共有を全部外す（`unbind(token)`）。繰り上げた後でそのビューが manifest から消えたら、shared process 側で current を外して繰り上げ直す（renderer の片付けは繰り上げ前の世代しか知らない）
+- 2 枚目以降は世代を指定した `unbindIfCurrent` でページごとに外す。`unbind(token)` はペインの共有を全部外す
 - `listBindings` は current の後ろに 2 枚目以降（`additional: true`、新しい順）を返す。renderer はこれでページごとのペイン数・ダイアログの行・ページ単位の解除・ネットワークの制限による解除・消えたビューの片付けをそのまま扱える。`listAgentTabGrants` はエージェントのタブだけを返す
 - 上限はユーザーの共有が 1 ペイン 10 枚（`PARADIS_USER_SHARED_PAGE_LIMIT`、current を含む）、エージェントが開くタブ 5 枚とは別枠。共有したページは裏でも描画を止めない（`setBinding`）ので、その数を抑える
-- ウィンドウの再読み込みでは、エージェントのタブの許可は外すが 2 枚目以降の共有は残す（current と同じ扱い）。再起動からの復元（`paradisBindingRestoreLedger.ts`）は current を `pageId`、2 枚目以降を `more`（古い順）に控え、古いものから共有して current を最後に共有する
-- `request_browser_page` で承認されたタブや承認済みプロファイルのタブも `bindPageToPane` を通るので、付け替えではなく追加になる。締め切り後に成立した共有は、そのページの共有だけを外す
+- ウィンドウの再読み込みでは、エージェントのタブの許可は外すが 2 枚目以降の共有は残す（current と同じ扱い）。再起動からの復元（`paradisBindingRestoreLedger.ts`）は current を `pageId`、2 枚目以降を `more`（古い順）に控える。戻すときは current を先に共有し（戻らなければ 2 枚目以降も戻さない）、2 枚目以降を古い順に共有してから current をもう一度共有して current に戻す。その間は台帳を書かない。current のページが無くなっていたら、`more` のうち最後に共有した生きているページを current として戻す
+- `request_browser_page` で承認されたタブや承認済みプロファイルのタブも `bindPageToPane` を通るので、付け替えではなく追加になる。締め切り後に成立した共有は、実際に共有したページ（`sharePageWithPane` が返す ID。upstream が共有用に開き直したタブを含む）の共有だけを外す。承認の前からそのペインへ共有していたページは外さない
 - CDP ゲートウェイは、ペインの URL（tab を付けない接続）では current の 1 枚だけを見せる。2 枚目以降は tab_id（`?tab=`）で使う
 
 - エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
