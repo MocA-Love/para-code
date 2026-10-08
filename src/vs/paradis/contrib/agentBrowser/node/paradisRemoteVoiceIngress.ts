@@ -64,6 +64,8 @@ export interface IParadisRemoteVoiceIngressDeps {
 	/** 本文を受け取り終えた（枠を手放してよい）。 */
 	readonly onBodyReceived: () => void;
 	readonly isTicketCurrent: () => boolean;
+	/** 声の行き先の判断を 1 行残す（sharedprocess.log。音声の本文・ticket は渡さない）。 */
+	readonly log?: (message: string) => void;
 	readonly now?: () => number;
 	/** 打ち切りの時間（テストで縮める）。 */
 	readonly limits?: { readonly maxDurationMs?: number; readonly firstAudioTimeoutMs?: number; readonly slowArrivalMs?: number; readonly acceptDecisionWaitMs?: number; readonly localCloseTimeoutMs?: number };
@@ -525,6 +527,11 @@ async function receiveRemoteVoice(req: http.IncomingMessage, res: http.ServerRes
 /**
  * 手元の worker へ渡した声の行方を見届ける。worker が声を鳴らせなかった（取り下げられた・最初の音を待ちきれなかった）
  * 件と、渡せなかった件だけ Para Code が鳴らす。控えは全体の枠の中でだけ持ち、worker が鳴らし始めたら捨てる。
+ *
+ * 再生待ちで期限切れ（`skipped`・`expired`、normal 120 秒）になった声は、以前から鳴らし直していない。Q309 案 3 で
+ * 足したのは、その記録だけ。鳴らし直しを足さないのは、期限切れが「PC では古い声を鳴らさない」という aivis-mcp の決まりで
+ * 手元のエージェントの声も同じ扱いであり（モバイルへは受け取りながら流し終えている）、鳴らし直すと混んでいる再生待ちの
+ * 後ろへさらに古い声を積むことになるため。
  */
 async function followIngest(sink: IParadisIngestStream | undefined, audio: Buffer | undefined, deps: IParadisRemoteVoiceIngressDeps, playLocalChain: (audio: Buffer) => Promise<void>): Promise<void> {
 	let pending = audio;
@@ -545,13 +552,20 @@ async function followIngest(sink: IParadisIngestStream | undefined, audio: Buffe
 			const terminal = await sink.finished;
 			const nothingPlayed = terminal.status === 'failed' && (terminal.withdrawn === true || terminal.reason === 'first-audio-timeout');
 			if (!nothingPlayed) {
+				if (terminal.status !== 'done') {
+					// 期限切れ・hold・ミュート・鳴らし始めた後の失敗など。worker が鳴らしたかもしれない件・鳴らさない決まりの件は鳴らし直さない
+					deps.log?.(`remote voice not played locally and not replayed (status=${terminal.status}, reason=${terminal.reason ?? 'none'})`);
+				}
 				return;
 			}
+			deps.log?.(`remote voice replayed by Para Code (reason=${terminal.withdrawn === true ? 'withdrawn' : terminal.reason ?? 'none'})`);
 		}
 		const replay = pending;
 		pending = undefined;
 		if (replay) {
 			await playLocalChain(replay);
+		} else if (sink) {
+			deps.log?.('remote voice could not be replayed (no retained copy)');
 		}
 	} finally {
 		retention?.release();

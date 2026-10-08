@@ -97,6 +97,27 @@ suite('ParadisNotificationsService voice handoff', () => {
 			: new Response('nope', { status }));
 	}
 
+	test('reads the number of listening mobiles through the probe the mobile relay sets, until it is disposed (Q309)', () => {
+		const { service } = createService(new FakeIngest());
+		const counts: (number | undefined)[] = [service.mobileVoiceListenerCount()];
+		let listeners = 2;
+		const probe = service.setMobileVoiceListenerProbe(() => listeners);
+		counts.push(service.mobileVoiceListenerCount());
+		listeners = 0;
+		counts.push(service.mobileVoiceListenerCount());
+		// 古い口を外しても、後から置いた口は残る
+		const replacement = service.setMobileVoiceListenerProbe(() => 5);
+		probe.dispose();
+		counts.push(service.mobileVoiceListenerCount());
+		replacement.dispose();
+		counts.push(service.mobileVoiceListenerCount());
+		// 数えられない（リレーが閉じた）ときは分からない扱い
+		const broken = service.setMobileVoiceListenerProbe(() => { throw new Error('relay closed'); });
+		counts.push(service.mobileVoiceListenerCount());
+		broken.dispose();
+		assert.deepStrictEqual(counts, [undefined, 2, 0, 5, undefined, undefined]);
+	});
+
 	test('hands the ringtone to the worker as the prelude and lets go at queued', async () => {
 		stubFetch();
 		const ingest = new FakeIngest();
@@ -227,6 +248,46 @@ suite('ParadisNotificationsService voice handoff', () => {
 		const queued = await service.playFallback(new Uint8Array([0xff, 0xfb, 0x90, 0x00]));
 		await timeout(20);
 		assert.deepStrictEqual({ events, queued }, { events: [], queued: true });
+	});
+
+	test('sends a do-not-disturb voice only to the listening mobiles, and does not synthesize without one (Q310 A)', async () => {
+		const outcomes: unknown[] = [];
+		for (const listeners of [0, 1]) {
+			const fetchStub = stubFetch();
+			const ingest = new FakeIngest();
+			const { service, events } = createService(ingest);
+			const mobile: string[] = [];
+			const subscription = service.onDidCreateMobileVoiceClip(event => mobile.push(event.kind));
+			const probe = service.setMobileVoiceListenerProbe(() => listeners);
+			service.notifyAudio({ ...request('おやすみ中'), mobileOnly: true });
+			await timeout(30);
+			outcomes.push({ listeners, fetched: fetchStub.callCount, mobile, events, opened: ingest.opened.length });
+			probe.dispose();
+			subscription.dispose();
+			sinon.restore();
+		}
+		// 着信音も PC の読み上げも鳴らさず、worker にも渡さない。モバイルへは受け取りながら流す
+		assert.deepStrictEqual(outcomes, [
+			{ listeners: 0, fetched: 0, mobile: [], events: [], opened: 0 },
+			{ listeners: 1, fetched: 1, mobile: ['stream-start', 'stream-data', 'stream-end'], events: [], opened: 0 },
+		]);
+	});
+
+	test('does not synthesize a do-not-disturb voice when the mobile left while it waited in the queue (Q310 A)', async () => {
+		const fetchStub = stubFetch();
+		const ingest = new FakeIngest();
+		const { service, events } = createService(ingest);
+		const mobile: string[] = [];
+		const subscription = service.onDidCreateMobileVoiceClip(event => mobile.push(event.kind));
+		let listeners = 1;
+		const probe = service.setMobileVoiceListenerProbe(() => listeners);
+		service.notifyAudio({ ...request('おやすみ中'), mobileOnly: true });
+		// 積んだ後、合成の前にモバイルが離れた
+		listeners = 0;
+		await timeout(30);
+		probe.dispose();
+		subscription.dispose();
+		assert.deepStrictEqual({ fetched: fetchStub.callCount, mobile, events }, { fetched: 0, mobile: [], events: [] });
 	});
 
 	test('waits for --ingest to come back instead of playing locally while the worker may be alive (H5)', async () => {
