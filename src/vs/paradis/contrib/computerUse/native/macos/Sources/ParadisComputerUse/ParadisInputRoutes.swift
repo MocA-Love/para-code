@@ -468,9 +468,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			guard AXUIElementCopyElementAtPosition(window.application, Float(point.x), Float(point.y), &element) == .success, let element else {
 				return .failure(ParadisAXRouteSkip("no accessibility element at the point"))
 			}
-			let hitIsWindow = CFEqual(element, window.element)
-			let ownerIsWindow = paradisElement(element, kAXWindowAttribute).map { CFEqual($0, window.element) } ?? false
-			if let reason = paradisHitElementSkipReason(hitIsTargetWindow: hitIsWindow, ownerIsTargetWindow: ownerIsWindow) {
+			if let reason = paradisAXHitSkipReason(element, window: window.element) {
 				return .failure(ParadisAXRouteSkip(reason))
 			}
 			return .success(element)
@@ -620,4 +618,12 @@ func paradisAXClickAncestors(_ hit: AXUIElement) -> [AXUIElement] {
 		chain.append(parent)
 	}
 	return chain
+}
+
+/** AX 経路と背面経路で、当たった要素が指定ウィンドウに属するかを同じ基準で判定する。 */
+func paradisAXHitSkipReason(_ element: AXUIElement, window: AXUIElement) -> String? {
+	return paradisHitElementSkipReason(
+		hitIsTargetWindow: CFEqual(element, window),
+		ownerIsTargetWindow: paradisElement(element, kAXWindowAttribute).map { CFEqual($0, window) } ?? false
+	)
 }
