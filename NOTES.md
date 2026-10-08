@@ -628,7 +628,21 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
 | `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)`（`browserDownloads/electron-main/paradisBrowserDownloadsMain.ts`） |
 | `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` | 1行 | `paradis-browser-downloads-popover` を QuickInput 扱いで登録（ネイティブビューの裏に隠れないように） |
 
-エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
+エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。
+
+1 つのペインへユーザーは複数のページを共有できる（2026-10-08、Q296）。それまでは 1 対 1 で、別のページを共有すると前の共有が外れた（付け替え）。実装は、エージェントが自分で開いたタブの許可（#263・#265 の `_agentTabGrants` と tab_id）に乗せている:
+
+- `_bindings`（token → 1 枚）は「current」の共有のまま残す。binding authority（`recordBindingMutation`・owner の retire）、モバイルの画面共有（`listBoundCdpTargets`）、`tab_id` を省いたときのタブ（`_defaultTabId`）、ペインの印は current だけを見る。authority を token → 複数に変えると retire・隔離・ticket の世代の検証が全部変わるので、そうしなかった
+- 2 枚目以降は `_agentTabGrants` の entry に `userShared: true` を付けて持つ。新しいページを共有すると（`commitBind`）前の current が世代を変えずにこの印付きで許可へ移り、新しいページが current になる。エージェントが自分のタブを選んでいるときは、その選択を保つ（ユーザーの共有で tab_id 無しの操作先が黙って移らないように）。すでに 2 枚目以降として共有していたページを共有し直すと、許可から外して current にする
+- エージェントが open_browser_tab で開いたタブをユーザーが共有し、その後で別のページが current になると、entry に `agentTab: true` も付く。そのタブの共有を外したら許可へ戻す（エージェントは自分のタブを使い続けられる）。再読み込みでは `agentTab` の印だけ外す
+- current を外すと（`unbindIfCurrent`・ビューの消滅）、2 枚目以降のうち世代の一番大きいもの（最後に共有したもの）を current へ戻す（`_promoteLatestUserSharedPage`、`recordBindingMutation` で authority にも記録）。繰り上げる前に、受理済みの最新の manifest でペインとページが同じウィンドウにあり、どちらの確定したスペースも共有したときと同じかを確かめる。スペースが変わった・ビューが無いと確定したものは外して次を見る。確かめられない（再読み込みの途中で接続や manifest が無い、不完全な manifest に載っていない）ときは何も消さずに繰り上げを見送り、manifest を受け取ったとき（`syncBindingAuthority`）に見直す。繰り上げと再共有は同じビューのまま世代だけが変わるので、そのタブを tab_id で使っているスコープの世代（`_tabScopes` と devtools の世代）を進めたうえで、ゲートウェイの接続とエージェントが掛けたヘッダ・認証・ルールは切らない（current から外れるときも切らない）。devtools の子プロセスは世代に結びつくので作り直す
+- 繰り上げで世代が変わるので、renderer がスペースの変化で外すときは捕まえた世代ではなく、外す直前の `listBindings` から (ペイン, ページ) で世代を引き直す。ペインのスペースが変わったときは、その一覧のうちペインの今のスペースと違う行だけを、2 枚目以降を先に・current を最後に、世代を指定して外す（ペイン単位の `unbind` は使わない。片付けが共有の数だけ走っても、今のスペースで共有し直したものを外さない）。繰り上げた後でそのビューが manifest から消えたら、shared process 側で current を外して繰り上げ直す（renderer の片付けは繰り上げ前の世代しか知らない）
+- 2 枚目以降は世代を指定した `unbindIfCurrent` でページごとに外す。`unbind(token)` はペインの共有を全部外す
+- `listBindings` は current の後ろに 2 枚目以降（`additional: true`、新しい順）を返す。renderer はこれでページごとのペイン数・ダイアログの行・ページ単位の解除・ネットワークの制限による解除・消えたビューの片付けをそのまま扱える。`listAgentTabGrants` はエージェントのタブだけを返す
+- 上限はユーザーの共有が 1 ペイン 10 枚（`PARADIS_USER_SHARED_PAGE_LIMIT`、current を含む）、エージェントが開くタブ 5 枚とは別枠。共有したページは裏でも描画を止めない（`setBinding`）ので、その数を抑える
+- ウィンドウの再読み込みでは、エージェントのタブの許可は外すが 2 枚目以降の共有は残す（current と同じ扱い）。再起動からの復元（`paradisBindingRestoreLedger.ts`）は current を `pageId`、2 枚目以降を `more`（古い順）に控える。戻すときは current を先に共有し（戻らなければ 2 枚目以降も戻さない）、2 枚目以降を古い順に共有してから current をもう一度共有して current に戻す。その間は台帳を書かない。current のページが無くなっていたら、`more` のうち最後に共有した生きているページを current として戻す
+- `request_browser_page` で承認されたタブや承認済みプロファイルのタブも `bindPageToPane` を通るので、付け替えではなく追加になる。締め切り後に成立した共有は、実際に共有したページ（`sharePageWithPane` が返す ID。upstream が共有用に開き直したタブを含む）の共有だけを外す。承認の前からそのペインへ共有していたページは外さない
+- CDP ゲートウェイは、ペインの URL（tab を付けない接続）では current の 1 枚だけを見せる。2 枚目以降は tab_id（`?tab=`）で使う
 
 - エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
 - upstream の共有確認（「Share this browser page with the agent?」、既定のフォーカスが Allow）は、fork 側で承認済みの共有では出さない。`bindTab` は共有の前に、main のブラウザビューへ直接エージェントを共有相手として加え（`IBrowserViewService.setAudience`、main がネットワークの制限を確かめる）、モデルが共有済みになるのを待ってからバインドする。upstream の `setSharedWithAgent` は共有済みなら確認を出さないので、upstream のファイルは触らずに済む。`bindTab` を通るのは、エージェント自身のタブ・承認ダイアログで許可されたタブとプロファイル・そのペインが作ったプロファイルだけ。ネットワークの制限でそのまま共有できないタブは何もせず、upstream の流れ（共有用のタブを開き直す確認）に任せる。ユーザーが共有ボタンから共有するときは、これまでどおり upstream の確認が出る

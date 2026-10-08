@@ -90,8 +90,10 @@ export interface IParadisBindingRestoreHost {
 	writeStorage(value: string | undefined): void;
 	/** このウィンドウの生きているペインのトークン。 */
 	listPaneTokens(): readonly string[];
-	/** そのペインが今共有されているページ。 */
+	/** そのペインが今共有されているページ（current）。 */
 	boundPageForToken(token: string): string | undefined;
+	/** そのペインが current のほかに共有しているページ（古い順）。1 つのペインは複数のページを共有できる。 */
+	morePagesForToken?(token: string): readonly string[];
 	/** このウィンドウにあるページの ID。 */
 	knownPageIds(): ReadonlySet<string>;
 	/** ページを開かずに（ID だけで）判定する。 */
@@ -127,6 +129,8 @@ export class ParadisBindingRestoreController extends Disposable {
 	/** 出している確認の通知を閉じるため。 */
 	private _confirmation: CancellationTokenSource | undefined;
 	private _shuttingDown = false;
+	/** 1 つのペインへ複数のページを戻している最中（途中の状態で台帳を書かない）。 */
+	private _ledgerHeld = false;
 	private readonly _now: () => number;
 	private readonly _windowMs: number;
 	private readonly _retryDelayMs: number;
@@ -235,7 +239,8 @@ export class ParadisBindingRestoreController extends Disposable {
 				let answer: ParadisBindingRestoreAnswer;
 				let cancelled = false;
 				try {
-					answer = await this.host.confirm(toAsk.map(candidate => this.host.describe(candidate.pageId, candidate.token)), confirmation.token);
+					// 1 つのペインへ複数のページを戻すときは、ページごとに並べる（何への同意かが分かるように）
+					answer = await this.host.confirm(toAsk.flatMap(candidate => [...candidate.morePageIds, candidate.pageId].map(pageId => this.host.describe(pageId, candidate.token))), confirmation.token);
 				} finally {
 					cancelled = confirmation.token.isCancellationRequested;
 					this._confirmation = undefined;
@@ -271,12 +276,32 @@ export class ParadisBindingRestoreController extends Disposable {
 					retry = true;
 					continue;
 				}
+				// current を先に戻す（戻らなければ 2 枚目以降も戻さず、記録は今までどおり残す・捨てる）。戻ったら
+				// 2 枚目以降を古い順に戻し、最後に current をもう一度共有して current に戻す（共有は最後のものが current）。
+				// その間は台帳を書かない（途中の状態で台帳を上書きしない）
+				this._ledgerHeld = true;
 				let outcome: ParadisBindingRestoreOutcome;
 				try {
-					outcome = await this.host.restore(candidate.pageId, candidate.token);
-				} catch (error) {
-					this.host.log('failed to restore a browser share after restart', error);
-					outcome = 'skipped';
+					outcome = await this._restoreOne(candidate.pageId, candidate.token);
+					if (outcome === 'restored' && candidate.morePageIds.length > 0) {
+						let restoredMore = false;
+						for (const pageId of candidate.morePageIds) {
+							if (this._shuttingDown || this._store.isDisposed) {
+								break;
+							}
+							const readiness = this.host.readiness(pageId, candidate.token);
+							if (readiness !== 'ready') {
+								this.host.log(`did not restore one of the other pages a pane shared (${readiness === 'never' ? 'it moved to another space' : 'its space is not on screen'})`);
+								continue;
+							}
+							restoredMore = (await this._restoreOne(pageId, candidate.token)) === 'restored' || restoredMore;
+						}
+						if (restoredMore && !this._shuttingDown && !this._store.isDisposed) {
+							await this._restoreOne(candidate.pageId, candidate.token);
+						}
+					}
+				} finally {
+					this._ledgerHeld = false;
 				}
 				if (outcome === 'retry') {
 					retry = true;
@@ -298,22 +323,33 @@ export class ParadisBindingRestoreController extends Disposable {
 		}
 	}
 
+	private async _restoreOne(pageId: string, token: string): Promise<ParadisBindingRestoreOutcome> {
+		try {
+			return await this.host.restore(pageId, token);
+		} catch (error) {
+			this.host.log('failed to restore a browser share after restart', error);
+			return 'skipped';
+		}
+	}
+
 	private _updateLedger(): { liveTokenByKey: Map<string, string>; boundKeys: Set<string> } {
 		const liveTokenByKey = new Map<string, string>();
 		for (const token of this.host.listPaneTokens()) {
 			liveTokenByKey.set(paradisBindingRestoreKey(token), token);
 		}
 		const boundPageByKey = new Map<string, string>();
+		const morePagesByKey = new Map<string, readonly string[]>();
 		for (const [key, token] of liveTokenByKey) {
 			const pageId = this.host.boundPageForToken(token);
 			if (pageId !== undefined) {
 				boundPageByKey.set(key, pageId);
+				morePagesByKey.set(key, this.host.morePagesForToken?.(token) ?? []);
 				// 既に紐づいている（ウィンドウの再読み込みで shared process に残っていた・張り直した）
 				this._undecided.delete(key);
 			}
 		}
-		if (!this._shuttingDown) {
-			this._ledger = paradisNextBindingRestoreLedger(this._ledger, this._undecided, boundPageByKey, this._now());
+		if (!this._shuttingDown && !this._ledgerHeld) {
+			this._ledger = paradisNextBindingRestoreLedger(this._ledger, this._undecided, boundPageByKey, this._now(), morePagesByKey);
 			this._persist();
 		}
 		return { liveTokenByKey, boundKeys: new Set(boundPageByKey.keys()) };
