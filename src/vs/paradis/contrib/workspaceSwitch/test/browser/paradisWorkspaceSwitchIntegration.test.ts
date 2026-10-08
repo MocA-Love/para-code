@@ -42,7 +42,7 @@ import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/ed
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisResetOrphanTerminalRevivalForTest, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
@@ -1274,6 +1274,120 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			} finally {
 				testDisposables.dispose();
 			}
+		}
+	});
+
+	test('keeps a live terminal of another space out of both the space being left and the one being entered', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables);
+			// space-c の端末 (生きている) が、space-a の画面に紛れ込んでいる。
+			const live = harness.createLiveTerminalEditor('/workspace-c/claude');
+			harness.addTerminal(live, 901, 9001, 'nonce-owner-901');
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(instance => instance.instanceId === 901 ? 'space-c' : undefined));
+			const own = harness.createLiveTerminalEditor('/workspace-a/claude');
+			await harness.parts.activeGroup.openEditor(own, { pinned: true });
+			await harness.parts.activeGroup.openEditor(live, { pinned: true });
+			const visible = () => harness!.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inB = visible();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInA = visible();
+			await harness.workspaceSwitchService.switchRepository('space-c');
+
+			assert.deepStrictEqual({
+				inB,
+				backInA,
+				inC: visible(),
+				disposed: [own.isDisposed(), live.isDisposed()],
+			}, {
+				inB: [],
+				// 往復しても切り替え元に戻ってこない。持ち主のスペースでだけ開く。
+				backInA: ['/workspace-a/claude'],
+				inC: ['/workspace-c/claude'],
+				disposed: [false, false],
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('sends a live terminal opened in the space being left after it was captured back to that space', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			// PTY の ID がまだ無いので park できず、適用でも閉じられない (確認が要る) 生きた端末。
+			const late = harness.createLiveTerminalEditor('/workspace-a/late-claude');
+			harness.addTerminal(late, 903, undefined, 'nonce-late-903');
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(instance => instance.instanceId === 903 ? 'space-a' : undefined));
+			// 退避の後、適用の前に開かれる (切り替えを待たずに開いた通知の表示など)。
+			let opened = false;
+			harness.addTerminal(harness.createEditor('/workspace-a/helper', false), 904, undefined, 'nonce-helper-904', async () => {
+				if (!opened) {
+					opened = true;
+					await harness!.parts.activeGroup.openEditor(late, { pinned: true });
+				}
+			});
+			const visible = () => harness!.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inB = visible();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({ opened, inB, backInA: visible(), disposed: late.isDisposed() }, {
+				opened: true,
+				inB: [],
+				backInA: ['/workspace-a/late-claude'],
+				disposed: false,
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('does not reveal an editor terminal of another space in the space being shown', async () => {
+		const testDisposables = new DisposableStore();
+		const { instance } = createFakeTerminalInstance(createUniqueTerminalIds());
+		let owner: string | undefined;
+		let duringSwitch: boolean | undefined;
+		const held = (candidate: string | undefined) => {
+			owner = candidate;
+			return paradisShouldHoldBackTerminalEditorReveal(instance);
+		};
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables, async (phase, uri) => {
+				if (phase === 'start' && uri.path === '/workspace-b') {
+					// 切り替えの最中は行き先を見せているとみなす。切り替え元の端末は行き先へ出さない。
+					duringSwitch = held('space-a');
+				}
+			});
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(candidate => candidate === instance ? owner : undefined));
+			const inA = { other: held('space-b'), own: held('space-a'), unknown: held(undefined), gone: held('space-removed') };
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({ inA, duringSwitch, inB: { own: held('space-b'), other: held('space-a') } }, {
+				inA: { other: true, own: false, unknown: false, gone: false },
+				duringSwitch: true,
+				inB: { own: false, other: true },
+			});
+		} finally {
+			instance.dispose();
+			testDisposables.dispose();
 		}
 	});
 

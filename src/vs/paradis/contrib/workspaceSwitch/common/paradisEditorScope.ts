@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -27,6 +28,13 @@ export interface IParadisEditorScopeService {
 	 * 残りは従来どおり `restoreScope` が開く。巻き戻すときは `revertEarlyRestore` で預け直す。
 	 */
 	restoreScopeEarly(stateKey: string, filter: (editor: EditorInput) => boolean): Promise<void>;
+	/**
+	 * メインのエディタ領域に残っている生きた入力のうち、持ち主が `stateKey` 以外のスペースだと
+	 * 分かっているものを持ち主の預け先へ移す。working set を当てた直後に呼ぶ。upstream の
+	 * `closeAllEditors({ excludeConfirming: true })` は確認が要るエディタを閉じずに残すので、
+	 * 預けた後から当てるまでに開かれた生きた端末は、これをしないと行き先のスペースへ持ち越される。
+	 */
+	depositForeignLiveEditors(stateKey: string): void;
 	/** `restoreScopeEarly` で開いた入力をエディタから切り離し、預けた状態へ戻す。 */
 	revertEarlyRestore(stateKey: string): void;
 	beginSwitch(): void;
@@ -42,6 +50,12 @@ export interface IParadisEditorScopeService {
 	retireScope(stateKey: string): Promise<boolean>;
 	retireScopes(stateKeys: readonly string[], onWillCommit?: () => void): Promise<boolean>;
 	completeScopeRetirement(stateKey: string): void;
+	/**
+	 * 生きた入力の持ち主のスペースを引く口を登録する。預けるとき (`captureScope`) と開き直すとき
+	 * (`restoreScope` / `restoreScopeEarly`) に、持ち主が別のスペースの入力をそのスペースの預け先へ
+	 * 回すために使う。持ち主が分からない入力は undefined を返す (今までどおり切り替え元に預ける)。
+	 */
+	registerLiveEditorOwnerResolver(resolver: (editor: EditorInput) => string | undefined): IDisposable;
 }
 
 interface ISerializedWorkingCopyOwnerEntry {

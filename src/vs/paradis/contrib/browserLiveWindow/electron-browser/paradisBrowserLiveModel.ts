@@ -24,6 +24,7 @@ import {
 	IParadisSpaceInfo,
 	IParadisWorkspaceSwitchService,
 	IParadisWorktreeService,
+	paradisIsSettledOnSpace,
 	paradisResolveSpaceInfo,
 	paradisSpaceInfoLabel,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -164,6 +165,10 @@ export class ParadisBrowserLiveModel extends Disposable {
 			}
 		} else if (!isLocal) {
 			// 所属が確定していないページ。手元のスペースへ勝手に引き出さない。
+			return;
+		}
+		// 待っている間に別の切り替えが割り込んだら開かない。開くとページが今のスペースのタブになる。
+		if (entry.stateKey !== undefined && !paradisIsSettledOnSpace(this.workspaceSwitchService, entry.stateKey)) {
 			return;
 		}
 		// 切り替えを挟むと台帳が入れ替わりうるので、開く直前に引き直す。
