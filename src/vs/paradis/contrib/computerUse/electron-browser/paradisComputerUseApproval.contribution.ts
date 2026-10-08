@@ -19,6 +19,11 @@
 // ボタンは「拒否」「読み取りのみ許可」「操作も許可」の 3 つ。読み取りを許可済みのアプリの格上げでは
 // 「拒否」「操作も許可」の 2 つにする。ターミナル類とスクリプトエディタには、コマンドを打てる旨の一文を足す（Q98 の回答 A）。
 // Computer Use はエージェントの作業フォルダ・サンドボックス・許可設定の外で動くので、本文に必ず書く（設計書 6.6）。
+//
+// 設定 `paradis.computerUse.confirmForegroundInput` がオンのときは、アプリを前面に出して実際のマウスポインタと
+// キーボードを使う前の確認（`requestForeground`）もここで受ける。ボタンは「拒否」「今回だけ許可」「このターミナルでは
+// 今後も許可」。⌘D の位置（2 番目）には狭い方の「今回だけ許可」を置く。拒否の後 3 分の自動の断りは、操作の許可とは
+// 別の鍵（`computer-foreground:<bundle id>`）で数える。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
@@ -34,7 +39,9 @@ import {
 	PARADIS_COMPUTER_USE_APPROVAL_CHANNEL,
 	PARADIS_COMPUTER_USE_APPROVAL_METHOD,
 	PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS,
+	PARADIS_COMPUTER_USE_FOREGROUND_METHOD,
 	ParadisComputerUseApprovalOutcome,
+	ParadisComputerUseForegroundOutcome,
 	paradisComputerUseRunsCommands,
 } from '../common/paradisComputerUse.js';
 
@@ -59,14 +66,65 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 	}
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
+		const args = Array.isArray(arg) ? arg : [];
+		const prompt = args[1] && typeof args[1] === 'object' ? args[1] as Record<string, unknown> : {};
+		if (command === PARADIS_COMPUTER_USE_FOREGROUND_METHOD) {
+			const answer: { readonly outcome: ParadisComputerUseForegroundOutcome } = { outcome: await this._requestForeground(args[0], prompt, cancellationToken ?? CancellationToken.None) };
+			return answer as T;
+		}
 		if (command !== PARADIS_COMPUTER_USE_APPROVAL_METHOD) {
 			throw new Error(`Method not found: ${command}`);
 		}
-		const args = Array.isArray(arg) ? arg : [];
-		const prompt = args[1] && typeof args[1] === 'object' ? args[1] as Record<string, unknown> : {};
 		const outcome = await this._requestAccess(args[0], prompt, cancellationToken ?? CancellationToken.None);
 		const answer: { readonly outcome: ParadisComputerUseApprovalOutcome } = { outcome };
 		return answer as T;
+	}
+
+	/** アプリを前面に出して実際のマウスポインタとキーボードを使ってよいか（設定 `paradis.computerUse.confirmForegroundInput`）。 */
+	private async _requestForeground(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<ParadisComputerUseForegroundOutcome> {
+		if (typeof token !== 'string' || this._paneTokens.getInstanceForToken(token) === undefined) {
+			return 'paneUnresolved';
+		}
+		const bundleId = typeof prompt.bundleId === 'string' && BUNDLE_ID_PATTERN.test(prompt.bundleId) ? paradisSanitizeDisplayText(prompt.bundleId, BUNDLE_ID_MAX_LENGTH) : undefined;
+		if (!bundleId) {
+			return 'cancelled';
+		}
+		const appName = paradisSanitizeDisplayText(typeof prompt.appName === 'string' ? prompt.appName : undefined, APP_NAME_MAX_LENGTH) ?? bundleId;
+		// 操作の名前はツール名から作る短い英字だけを出す
+		const action = typeof prompt.action === 'string' && /^[a-z_]{1,32}$/.test(prompt.action) ? prompt.action : undefined;
+		const detail = [
+			localize('paradis.computerUse.foreground.app', "アプリ: {0}（{1}）", appName, bundleId),
+			...(action ? [localize('paradis.computerUse.foreground.action', "操作: {0}", action)] : []),
+			localize('paradis.computerUse.foreground.pointer', "このアプリを前面に出し、実際のマウスポインタを動かしてクリックやキー入力を送ります。その間にあなたがマウスやキーボードを使うと、エージェントの操作は止まります。"),
+			localize('paradis.computerUse.foreground.scope', "「このターミナルでは今後も許可」を選ぶと、Para Code を終了するまで、このターミナルからのこのアプリへの操作では聞きません。ボタンを押す・値を変える・欄へ文字を入れるなど、ポインタを動かさずに送れる操作では、この確認は出ません。"),
+		];
+		const request: IParadisAgentApprovalRequest = {
+			messageTemplate: pane => localize('paradis.computerUse.foreground.message', "{0} のエージェントが、「{1}」でマウスとキーボードを使おうとしています", pane, appName),
+			detail,
+			alternativeLabel: localize('paradis.computerUse.foreground.once', "今回だけ許可"),
+			approveLabel: localize('paradis.computerUse.foreground.pane', "このターミナルでは今後も許可"),
+			cooldownKey: `computer-foreground:${bundleId}`,
+		};
+		const deadline = new ParadisApprovalDeadline(cancellation, this._deadlineMs);
+		try {
+			const outcome = await this._approvals.askApproval(token, request, deadline.token);
+			if (outcome === 'cancelled' && deadline.timedOut) {
+				return 'timedOut';
+			}
+			if ((outcome === 'approve' || outcome === 'alternative') && this._paneTokens.getInstanceForToken(token) === undefined) {
+				return 'paneUnresolved';
+			}
+			switch (outcome) {
+				case 'approve':
+					return 'pane';
+				case 'alternative':
+					return 'once';
+				default:
+					return outcome;
+			}
+		} finally {
+			deadline.dispose();
+		}
 	}
 
 	private async _requestAccess(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<ParadisComputerUseApprovalOutcome> {

@@ -9,7 +9,7 @@ import assert from 'assert';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
-import { ParadisComputerUseApprovalOutcome } from '../../common/paradisComputerUse.js';
+import { ParadisComputerUseApprovalOutcome, ParadisComputerUseForegroundOutcome } from '../../common/paradisComputerUse.js';
 import { ParadisComputerUseApprovalChannel } from '../../electron-browser/paradisComputerUseApproval.contribution.js';
 
 /** 双方向制御の文字。ソースに生のまま置かない（表示と中身がずれるため）。 */
@@ -32,7 +32,8 @@ suite('ParadisComputerUseApprovalChannel', () => {
 			{ getInstanceForToken: token => panes.get(token) },
 		);
 		const call = async (token: unknown, prompt: object) => (await channel.call<{ outcome: ParadisComputerUseApprovalOutcome }>(undefined, 'requestAccess', [token, prompt])).outcome;
-		return { asked, call };
+		const callForeground = async (token: unknown, prompt: object) => (await channel.call<{ outcome: ParadisComputerUseForegroundOutcome }>(undefined, 'requestForeground', [token, prompt])).outcome;
+		return { asked, call, callForeground };
 	}
 
 	test('asks to read an app with sanitised text, a per-app cooldown and no operate choice while there are no operate tools', async () => {
@@ -105,6 +106,37 @@ suite('ParadisComputerUseApprovalChannel', () => {
 			closedDuringDialog: await closedDuringDialog.call('pane-a', { appName: 'Finder', bundleId: 'com.apple.finder', requested: 'read' }),
 			askedUnknown: unknown.asked.length,
 		}, { denied: 'denied', busy: 'busy', unknownPane: 'paneUnresolved', badBundle: 'cancelled', closedDuringDialog: 'paneUnresolved', askedUnknown: 0 });
+	});
+
+	test('asks before taking over the real pointer, with "once" in the safer second position and its own cooldown', async () => {
+		const once = setup('alternative');
+		const pane = setup('approve');
+		const denied = setup('denied');
+		const ask = async (target: ReturnType<typeof setup>, prompt: object) => target.callForeground('pane-a', prompt);
+		const prompt = { appName: `Fin${RIGHT_TO_LEFT_OVERRIDE}der`, bundleId: 'com.apple.finder', action: 'drag' };
+		assert.deepStrictEqual({
+			once: await ask(once, prompt),
+			pane: await ask(pane, prompt),
+			denied: await ask(denied, prompt),
+			unknownPane: await pane.callForeground('pane-z', prompt),
+			badAction: await ask(setup('approve'), { ...prompt, action: 'drag\nnow' }),
+			message: once.asked[0].message,
+			buttons: [once.asked[0].alternative, once.asked[0].approve],
+			cooldownKey: once.asked[0].cooldownKey,
+			lines: once.asked[0].detail.length,
+			sanitised: [once.asked[0].message, ...once.asked[0].detail].every(line => !line.includes(RIGHT_TO_LEFT_OVERRIDE)),
+		}, {
+			once: 'once',
+			pane: 'pane',
+			denied: 'denied',
+			unknownPane: 'paneUnresolved',
+			badAction: 'pane',
+			message: 'PANE のエージェントが、「Fin der」でマウスとキーボードを使おうとしています',
+			buttons: ['今回だけ許可', 'このターミナルでは今後も許可'],
+			cooldownKey: 'computer-foreground:com.apple.finder',
+			lines: 4,
+			sanitised: true,
+		});
 	});
 
 	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {

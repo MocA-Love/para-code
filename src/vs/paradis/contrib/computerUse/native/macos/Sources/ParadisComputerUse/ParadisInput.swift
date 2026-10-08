@@ -7,6 +7,10 @@
 
 // 操作の命令の実体（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー）。設計書 6.3。
 //
+// `perform` が送り方の段（Core の ParadisInputRoute.swift、実体は ParadisInputRoutes.swift）を順に試す。このファイルの
+// foreground* は 3 段目（前面に出して実カーソルとキーボードで送る）で、下の確かめはこの段のもの。1 段目（AX）の確かめは
+// ParadisInputRoutes.swift にある。
+//
 //  - どの命令も、アクセシビリティの許可が無ければ OS に触れる前に断る
 //  - 送る直前と各イベントの間に確かめる（フェンス）:
 //    - 利用者の物理的な入力が直前 1 秒以内にあれば止める（Q101）。見張りはイベントタップで、補助アプリが送る
@@ -37,9 +41,24 @@ private let paradisConcealedPasteboardTypes: Set<String> = ["org.nspasteboard.Co
 
 extension ParadisDesktop {
 
-	// MARK: - 前面に出す
+	// MARK: - 段の振り分け
 
-	func activateApp(pid: Int32, windowId: UInt32?) throws -> [String: Any] {
+	/**
+	 * 入力を送る。1 段目（AX）・2 段目（背面。今は空）・3 段目（前面。下の foreground* ）の順に試す（ParadisInputRoute.swift）。
+	 * 独自のカーソルを出さない要求（設定でオフ）が来たら、出ているカーソルを消す。
+	 */
+	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any] {
+		try requireInputPermission()
+		if options.cursor == nil {
+			ParadisCursorOverlay.shared.hideAll()
+		}
+		let routes: [ParadisInputRoute] = [ParadisAccessibilityRoute(desktop: self), backgroundRoute, ParadisForegroundRoute(desktop: self)]
+		return try paradisRouteInput(action, pid: pid, routes: routes, options: options)
+	}
+
+	// MARK: - 前面に出す（3 段目）
+
+	func foregroundActivate(pid: Int32, windowId: UInt32?) throws -> [String: Any] {
 		try requireInputPermission()
 		if let failure = userActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) {
 			throw failure
@@ -67,7 +86,7 @@ extension ParadisDesktop {
 
 	// MARK: - マウス
 
-	func click(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers) throws -> [String: Any] {
+	func foregroundClick(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers, cursor: ParadisCursorOwnerSpec?) throws -> [String: Any] {
 		try requireInputPermission()
 		let (point, window) = try resolvePoint(pid: pid, windowId: windowId, target: target)
 		try pointerFence(pid: pid, point: point)
@@ -97,12 +116,16 @@ extension ParadisDesktop {
 			if let failure {
 				throw failure
 			}
+			// 実カーソルが動くので、独自のカーソルは名前の札と波紋だけをそこに合わせる
+			if let cursor {
+				ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: true)
+			}
 			usleep(60_000)
 		}
 		return ["clicked": true, "point": paradisWindowPointJson(point, window)]
 	}
 
-	func drag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget) throws -> [String: Any] {
+	func foregroundDrag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget, cursor: ParadisCursorOwnerSpec?) throws -> [String: Any] {
 		try requireInputPermission()
 		let (start, window) = try resolvePoint(pid: pid, windowId: windowId, target: from)
 		let (end, _) = try resolvePoint(pid: pid, windowId: windowId, target: to)
@@ -129,16 +152,22 @@ extension ParadisDesktop {
 			try post(paradisMouseEvent(.leftMouseDragged, at: point, button: .left, flags: []))
 			current = point
 			paradisPressedInput.pressMouse(upType: .leftMouseUp, point: point, button: .left)
+			if let cursor {
+				ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: false)
+			}
 		}
 		return ["dragged": true, "from": paradisWindowPointJson(start, window), "to": paradisWindowPointJson(end, window)]
 	}
 
-	func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double) throws -> [String: Any] {
+	func foregroundScroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double, cursor: ParadisCursorOwnerSpec?) throws -> [String: Any] {
 		try requireInputPermission()
 		let window = try windowInfo(pid: pid, windowId: windowId)
 		let point = try target.map { try resolvePoint(pid: pid, windowId: windowId, target: $0).0 } ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
 		try pointerFence(pid: pid, point: point)
 		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: []))
+		if let cursor {
+			ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: false)
+		}
 		usleep(30_000)
 		let extent = direction == .up || direction == .down ? Double(window.bounds.height) : Double(window.bounds.width)
 		for step in paradisScrollSteps(direction: direction, pages: pages, extent: extent) {
@@ -165,7 +194,7 @@ extension ParadisDesktop {
 	 *  3. それ以外はキーを送る。1 つのイベントの元を使い回し、押すと離すの間と文字の間に間を置く
 	 * どの経路でも、入れる前にフォーカスのあった同じ要素を読み戻して、入ったかを返す（読めなければ確かめられない）。
 	 */
-	func typeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
+	func foregroundTypeText(pid: Int32, text: String, units: [ParadisTypedUnit]) throws -> [String: Any] {
 		try requireInputPermission()
 		try keyFence(pid: pid)
 		let normalized = paradisNormalizeTypedText(text)
@@ -218,13 +247,13 @@ extension ParadisDesktop {
 		}
 	}
 
-	func pressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any] {
+	func foregroundPressChord(pid: Int32, chord: ParadisKeyChord) throws -> [String: Any] {
 		try requireInputPermission()
 		try sendChord(pid: pid, chord: chord, allowPaste: false)
 		return ["pressed": true]
 	}
 
-	func pasteText(pid: Int32, text: String) throws -> [String: Any] {
+	func foregroundPasteText(pid: Int32, text: String) throws -> [String: Any] {
 		try requireInputPermission()
 		let (plan, check) = try pasteAndCheck(pid: pid, text: paradisNormalizeTypedText(text))
 		var result: [String: Any] = ["pasted": true, "pasteVerified": check.verified.map { $0 as Any } ?? NSNull(), "clipboardRestored": plan == .restore, "clipboard": plan.rawValue]
@@ -321,16 +350,24 @@ extension ParadisDesktop {
 
 	// MARK: - 確かめ
 
-	private func requireInputPermission() throws {
+	func requireInputPermission() throws {
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
 		inputMonitor.ensureStarted()
 	}
 
-	private func userActivityFailure() -> ParadisHelperError? {
+	func userActivityFailure() -> ParadisHelperError? {
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is using the keyboard or mouse")
+		}
+		return nil
+	}
+
+	/** 利用者が打鍵中か（1 段目の確かめ。マウスの動きでは止めない）。 */
+	func keyboardActivityFailure() -> ParadisHelperError? {
+		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalKeyboardInput()) {
+			return ParadisHelperError(code: "user_active", message: "the user is typing")
 		}
 		return nil
 	}
@@ -353,7 +390,9 @@ extension ParadisDesktop {
 		// 点を覆う一番手前のウィンドウ。透明なものも含める（レビュー L8）が、Dock と WindowServer の層は除く。
 		// macOS 27 の Dock は画面全体を覆う layer 20 のウィンドウを出し、共有の状態も alpha も普通のウィンドウと
 		// 変わらないので、ウィンドウの属性では入力を受けるか見分けられない（レビュー N3）。その分は AX の当たり判定で見る
-		let covering = windows.first(where: { $0.layer >= 0 && $0.bounds.contains(point) && !paradisIsSystemShell($0) })?.pid
+		// 補助アプリ自身のウィンドウ（独自のカーソルの、クリックが素通りするパネル）も除く
+		let selfPid = getpid()
+		let covering = windows.first(where: { $0.layer >= 0 && $0.bounds.contains(point) && $0.pid != selfPid && !paradisIsSystemShell($0) })?.pid
 		if let failure = paradisFenceFailure(targetPid: pid, frontmostPid: frontmost, ownerAtTarget: covering) {
 			return failure
 		}
@@ -387,7 +426,7 @@ extension ParadisDesktop {
 		return paradisFocusFailure(targetPid: pid, focusedApplicationPid: applicationPid, focusedElementPid: elementPid)
 	}
 
-	private func windowInfo(pid: Int32, windowId: UInt32) throws -> ParadisWindowInfo {
+	func windowInfo(pid: Int32, windowId: UInt32) throws -> ParadisWindowInfo {
 		guard let info = paradisWindowInfos(pid: pid).first(where: { $0.windowId == windowId }) else {
 			throw ParadisHelperError(code: "window_not_found", message: "the application has no window \(windowId)")
 		}
@@ -494,6 +533,22 @@ final class ParadisInputMonitor {
 		if let port {
 			CGEvent.tapEnable(tap: port, enable: true)
 		}
+	}
+
+	/** 最後の物理的なキー入力からの秒数（マウスは数えない）。まだ無ければ nil。 */
+	func secondsSincePhysicalKeyboardInput() -> Double? {
+		lock.lock()
+		let started = startedAt
+		let keyboard = lastKeyboard
+		let saw = sawKeyboard
+		lock.unlock()
+		let now = Date()
+		return paradisPhysicalKeyboardAge(
+			tapKeyboard: keyboard.map { now.timeIntervalSince($0) },
+			hidKeyboard: paradisKeyboardEventTypes.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min(),
+			tapSawKeyboard: saw,
+			secondsSinceTapStarted: started.map { now.timeIntervalSince($0) }
+		)
 	}
 
 	/** 最後の物理的な入力からの秒数。まだ無ければ nil。 */
@@ -609,7 +664,7 @@ private let paradisKeyHoldMicroseconds: UInt32 = 12_000
 private let paradisInterCharacterMicroseconds: UInt32 = 20_000
 
 /** 文字入力の結果。 */
-private func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCheck, count: Int) -> [String: Any] {
+func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCheck, count: Int) -> [String: Any] {
 	var result: [String: Any] = ["typed": count, "method": method.rawValue, "verified": check.verified.map { $0 as Any } ?? NSNull()]
 	if let inserted = check.inserted {
 		result["inserted"] = inserted
@@ -621,27 +676,27 @@ private func paradisTypeResult(method: ParadisTypeMethod, check: ParadisTypingCh
 }
 
 /** 目的のアプリのフォーカスのある要素。 */
-private func paradisFocusedElement(pid: Int32) -> AXUIElement? {
+func paradisFocusedElement(pid: Int32) -> AXUIElement? {
 	let application = AXUIElementCreateApplication(pid)
 	AXUIElementSetMessagingTimeout(application, 0.5)
 	return paradisElement(application, kAXFocusedUIElementAttribute)
 }
 
 /** 入れる前にフォーカスのあった欄と、その値と選択範囲（UTF-16）。パスワード欄らしければ読まない。 */
-private struct ParadisTextTarget {
+struct ParadisTextTarget {
 	let element: AXUIElement?
 	let value: String?
 	let selection: (location: Int, length: Int)?
 }
 
-private func paradisFocusedTextTarget(pid: Int32) -> ParadisTextTarget {
+func paradisFocusedTextTarget(pid: Int32) -> ParadisTextTarget {
 	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
 		return ParadisTextTarget(element: nil, value: nil, selection: nil)
 	}
 	return ParadisTextTarget(element: element, value: paradisCopy(element, kAXValueAttribute) as? String, selection: paradisSelectedRange(element))
 }
 
-private func paradisSelectedRange(_ element: AXUIElement) -> (location: Int, length: Int)? {
+func paradisSelectedRange(_ element: AXUIElement) -> (location: Int, length: Int)? {
 	guard let value = paradisCopy(element, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else {
 		return nil
 	}
@@ -652,7 +707,7 @@ private func paradisSelectedRange(_ element: AXUIElement) -> (location: Int, len
 	return (range.location, range.length)
 }
 
-private func paradisElementLooksSecret(_ element: AXUIElement) -> Bool {
+func paradisElementLooksSecret(_ element: AXUIElement) -> Bool {
 	return paradisIsSecureLike(
 		role: paradisCopy(element, kAXRoleAttribute) as? String ?? "",
 		subrole: paradisCopy(element, kAXSubroleAttribute) as? String,
@@ -663,7 +718,7 @@ private func paradisElementLooksSecret(_ element: AXUIElement) -> Bool {
 }
 
 /** AX で入れた結果。 */
-private enum ParadisAXInsert {
+enum ParadisAXInsert {
 	/** 書き込みが起きていないと言い切れる。貼り付けかキーで入れてよい。 */
 	case fallBack
 	/** 書き込んだ（か、書き込んだかもしれない）。入れ直してはいけない。 */
@@ -675,7 +730,7 @@ private enum ParadisAXInsert {
  * 入れ直してよいのは、欄が置き換えを受け付けない・値や選択範囲を読めない（書く前にやめる）・書き込みが起きていないと
  * 言い切れる失敗のときだけ。成功・締め切り・一般の失敗のときは最長 1 秒読み直し、変わらなければ「確かめられない」。
  */
-private func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisAXInsert {
+func paradisInsertViaAccessibility(pid: Int32, text: String) -> ParadisAXInsert {
 	guard let element = paradisFocusedElement(pid: pid), !paradisElementLooksSecret(element) else {
 		return .fallBack
 	}
@@ -756,7 +811,7 @@ private let paradisScreenWindowCacheSeconds: TimeInterval = 0.05
 private var paradisScreenWindowCache: (at: Date, windows: [ParadisScreenWindow])?
 
 /** 画面に出ているウィンドウを手前から順に（持ち主の bundle id 付き）。 */
-private func paradisScreenWindows() -> [ParadisScreenWindow] {
+func paradisScreenWindows() -> [ParadisScreenWindow] {
 	if let cache = paradisScreenWindowCache, Date().timeIntervalSince(cache.at) < paradisScreenWindowCacheSeconds {
 		return cache.windows
 	}
@@ -825,6 +880,11 @@ private func paradisPasteMenuItemAt(_ point: CGPoint) -> Bool {
 	guard let element = paradisHitTestElement(point) else {
 		return false
 	}
+	return paradisIsPasteMenuElement(element)
+}
+
+/** その要素がメニューの「ペースト」か（1 段目の AXPress でも押さない）。 */
+func paradisIsPasteMenuElement(_ element: AXUIElement) -> Bool {
 	return paradisIsPasteMenuItem(
 		role: paradisCopy(element, kAXRoleAttribute) as? String,
 		commandCharacter: paradisCopy(element, kAXMenuItemCmdCharAttribute) as? String,
@@ -847,7 +907,7 @@ private func paradisFocusedPids() -> (application: Int32?, element: Int32?) {
 }
 
 
-private func paradisWindowPointJson(_ point: CGPoint, _ window: CGRect) -> [String: Double] {
+func paradisWindowPointJson(_ point: CGPoint, _ window: CGRect) -> [String: Double] {
 	return ["x": Double(point.x - window.minX), "y": Double(point.y - window.minY)]
 }
 

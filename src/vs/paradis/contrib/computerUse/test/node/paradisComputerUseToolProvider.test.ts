@@ -8,8 +8,8 @@
 import assert from 'assert';
 import { safeIntl } from '../../../../../base/common/date.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisComputerUseApprovalPrompt, ParadisComputerUseApprovalOutcome, ParadisComputerUseAvailability } from '../../common/paradisComputerUse.js';
+import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisComputerUseApprovalPrompt, ParadisComputerUseApprovalOutcome, ParadisComputerUseAvailability, ParadisComputerUseForegroundOutcome } from '../../common/paradisComputerUse.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 import { IParadisComputerUseHelper, IParadisComputerUseHelperStatus, ParadisComputerUseHelperError } from '../../node/paradisComputerUseHelperClient.js';
 import { PARADIS_COMPUTER_USE_TOOLS, ParadisComputerUseToolProvider, paradisRankWindows, paradisScreenDataBlock } from '../../node/paradisComputerUseToolProvider.js';
@@ -22,7 +22,7 @@ interface IResult {
 const FINDER = { pid: 100, name: 'Finder', bundleId: 'com.apple.finder', active: false, hidden: false };
 const NOTES = { pid: 200, name: 'Notes', bundleId: 'com.apple.Notes', active: true, hidden: false };
 
-const INPUT_METHODS = new Set(['activateApp', 'click', 'drag', 'scroll', 'typeText', 'pasteText', 'pressKey', 'hotkey']);
+const INPUT_METHODS = new Set(['activateApp', 'click', 'drag', 'scroll', 'typeText', 'pasteText', 'pressKey', 'hotkey', 'setValue']);
 
 /** 補助アプリの代わり。 */
 class FakeHelper implements IParadisComputerUseHelper {
@@ -63,7 +63,7 @@ class FakeHelper implements IParadisComputerUseHelper {
 	}
 }
 
-function createContext(caller: ParadisMcpCallerKind, answers: ParadisComputerUseApprovalOutcome[], onAsk?: () => void) {
+function createContext(caller: ParadisMcpCallerKind, answers: (ParadisComputerUseApprovalOutcome | ParadisComputerUseForegroundOutcome)[], onAsk?: () => void, identity?: (paneToken: string) => IParadisMcpCursorIdentity) {
 	const prompts: { method: string; token: unknown; prompt: IParadisComputerUseApprovalPrompt; timeoutMs: number | undefined }[] = [];
 	const context: IParadisMcpToolCallContext = {
 		async callOwningWindow<T>(request: IParadisMcpOwningWindowRequest): Promise<ParadisMcpOwningWindowResult<T>> {
@@ -76,6 +76,7 @@ function createContext(caller: ParadisMcpCallerKind, answers: ParadisComputerUse
 		getUnconfirmedRelease: () => undefined,
 		hasAgentHookHistory: () => false,
 		classifyCaller: async () => caller,
+		...(identity ? { getCursorIdentity: identity } : {}),
 	};
 	return { context, prompts };
 }
@@ -95,12 +96,18 @@ function text(result: unknown): string {
 suite('ParadisComputerUseToolProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean } = {}) {
+	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean; confirmForeground?: boolean; showCursor?: boolean } = {}) {
 		const helper = new FakeHelper();
 		const ledger = new ParadisComputerUseGrantLedger();
-		const state = { enabled: options.enabled ?? true };
+		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor };
 		const blockOptions = options.blockSystemSurfaces === undefined ? undefined : { blockSystemSurfaces: options.blockSystemSurfaces };
-		const provider = new ParadisComputerUseToolProvider(helper, ledger, { enabled: () => state.enabled, blockOptions, settleMs: 0 }, undefined);
+		const provider = new ParadisComputerUseToolProvider(helper, ledger, {
+			enabled: () => state.enabled,
+			...(options.confirmForeground !== undefined ? { confirmForeground: () => state.confirmForeground === true } : {}),
+			...(options.showCursor !== undefined ? { showCursor: () => state.showCursor === true } : {}),
+			blockOptions,
+			settleMs: 0,
+		}, undefined);
 		return { helper, ledger, state, provider };
 	}
 
@@ -113,7 +120,7 @@ suite('ParadisComputerUseToolProvider', () => {
 		helper.availability = 'ok';
 		state.enabled = false;
 		assert.deepStrictEqual({ shown, readOnly, failed, off: provider.listTools().length, instructions: provider.instructions() }, {
-			shown: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state', 'computer_activate_app', 'computer_click', 'computer_drag', 'computer_scroll', 'computer_type_text', 'computer_paste_text', 'computer_press_key', 'computer_hotkey'],
+			shown: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state', 'computer_activate_app', 'computer_click', 'computer_drag', 'computer_scroll', 'computer_type_text', 'computer_paste_text', 'computer_press_key', 'computer_hotkey', 'computer_set_value'],
 			readOnly: ['computer_status', 'computer_list_apps', 'computer_list_windows', 'computer_get_app_state'],
 			failed: 0,
 			off: 0,
@@ -446,7 +453,139 @@ suite('ParadisComputerUseToolProvider', () => {
 	});
 
 	test('keeps the tool list in sync with the handler', () => {
-		assert.strictEqual(PARADIS_COMPUTER_USE_TOOLS.length, 12);
+		assert.strictEqual(PARADIS_COMPUTER_USE_TOOLS.length, 13);
+	});
+
+	test('sets a value in the chosen window and refuses malformed values before asking the user', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context, prompts } = createContext('pane', []);
+		helper.onInput = async () => ({ set: true, axAction: 'AXValue', verified: true, value: 'hello', route: 'accessibility' });
+		const set = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20, value: 'hello', includeState: false }, undefined, context) as IResult;
+		const adjust = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20, adjust: 'increment', steps: 2, includeState: false }, undefined, context) as IResult;
+		const both = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20, value: 1, adjust: 'increment' }, undefined, context);
+		const neither = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20 }, undefined, context);
+		const object = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20, value: { a: 1 } }, undefined, context);
+		const noTarget = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', value: 'a' }, undefined, context);
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('input_unsupported', 'accessibility: AXStaticText does not accept a new value through accessibility'); };
+		const unsupported = await provider.callTool('pane-a', 'computer_set_value', { app: 'Notes', x: 10, y: 20, value: 'a', includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			set: JSON.parse((set.content[0] as { text: string }).text),
+			adjustError: adjust.isError,
+			refusals: [both, neither, object, noTarget].map(result => text(result)),
+			unsupported: text(unsupported),
+			inputs: helper.inputs,
+			prompts: prompts.length,
+		}, {
+			set: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'set_value', set: true, axAction: 'AXValue', verified: true, value: 'hello', route: 'accessibility' },
+			adjustError: undefined,
+			refusals: [
+				'Give either "value" (text, a number or true/false) or "adjust" (increment or decrement).',
+				'Give either "value" (text, a number or true/false) or "adjust" (increment or decrement).',
+				'"value" must be text, a number or true/false.',
+				'Give "elementIndex" from computer_get_app_state, or "x" and "y".',
+			],
+			unsupported: 'Para Code could not send this action to that element (accessibility: AXStaticText does not accept a new value through accessibility). For a value, click the element and type instead.',
+			inputs: [
+				{ method: 'setValue', params: { x: 10, y: 20, value: 'hello', pid: 200, bundleId: 'com.apple.Notes', windowId: 72 } },
+				{ method: 'setValue', params: { x: 10, y: 20, adjust: 'increment', steps: 2, pid: 200, bundleId: 'com.apple.Notes', windowId: 72 } },
+				{ method: 'setValue', params: { x: 10, y: 20, value: 'a', pid: 200, bundleId: 'com.apple.Notes', windowId: 72 } },
+			],
+			prompts: 0,
+		});
+	});
+
+	test('asks before the real pointer and keyboard are used when the setting is on, then sends the same request again', async () => {
+		const { helper, ledger, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		// 補助アプリの代わり: 前面の承認が無ければ何も送らずに断る。AX で送れるものはそのまま送る
+		helper.onInput = async (method, params) => {
+			if (method === 'click' && params.elementIndex === 1) {
+				return { clicked: true, axAction: 'AXPress', route: 'accessibility' };
+			}
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'drag needs real input');
+			}
+			return { ok: true, route: 'foreground' };
+		};
+		const { context, prompts } = createContext('pane', ['once', 'pane', 'denied']);
+		const viaAccessibility = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 1, includeState: false }, undefined, context) as IResult;
+		const once = await provider.callTool('pane-a', 'computer_drag', { app: 'Notes', from: { x: 1, y: 1 }, to: { x: 5, y: 5 }, includeState: false }, undefined, context) as IResult;
+		const pane = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return', includeState: false }, undefined, context) as IResult;
+		const remembered = await provider.callTool('pane-a', 'computer_hotkey', { app: 'Notes', keys: ['cmd', 's'], includeState: false }, undefined, context) as IResult;
+		ledger.set('pane-b', 'com.apple.Notes', 'operate');
+		const denied = await provider.callTool('pane-b', 'computer_scroll', { app: 'Notes', direction: 'down', includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			routes: [viaAccessibility, once, pane, remembered].map(result => JSON.parse((result.content[0] as { text: string }).text).route),
+			denied: text(denied).split('.')[0],
+			prompts: prompts.map(entry => ({ method: entry.method, prompt: entry.prompt })),
+			sent: helper.inputs.map(input => `${input.method}${input.params.allowForeground === false ? ' (ask first)' : ''}`),
+			foreground: [ledger.foregroundAllowed('pane-a', 'com.apple.Notes'), ledger.foregroundAllowed('pane-b', 'com.apple.Notes')],
+		}, {
+			routes: ['accessibility', 'foreground', 'foreground', 'foreground'],
+			denied: 'The user declined to let Para Code bring Notes forward and use the real mouse pointer and keyboard for this action',
+			prompts: [
+				{ method: 'requestForeground', prompt: { appName: 'Notes', bundleId: 'com.apple.Notes', action: 'drag' } },
+				{ method: 'requestForeground', prompt: { appName: 'Notes', bundleId: 'com.apple.Notes', action: 'press_key' } },
+				{ method: 'requestForeground', prompt: { appName: 'Notes', bundleId: 'com.apple.Notes', action: 'scroll' } },
+			],
+			sent: ['click (ask first)', 'drag (ask first)', 'drag', 'pressKey (ask first)', 'pressKey', 'hotkey', 'scroll (ask first)'],
+			foreground: [true, false],
+		});
+	});
+
+	test('types the rest of the text after the user approves when accessibility stops working mid-text', async () => {
+		const { helper, ledger, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		let chunks = 0;
+		helper.onInput = async (_method, params) => {
+			chunks++;
+			if (chunks === 1) {
+				return { typed: 400, method: 'accessibility', verified: true, route: 'accessibility' };
+			}
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'the focused field does not accept text through accessibility');
+			}
+			return { typed: 5, method: 'keys', verified: true, route: 'foreground' };
+		};
+		const { context, prompts } = createContext('pane', ['once']);
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'a'.repeat(405), includeState: false }, undefined, context) as IResult;
+		assert.deepStrictEqual({
+			summary: JSON.parse((result.content[0] as { text: string }).text),
+			sent: helper.inputs.map(input => `${(input.params.text as string).length}${input.params.allowForeground === false ? ' (ask first)' : ''}`),
+			prompts: prompts.length,
+		}, {
+			summary: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'type_text', typed: 405, verified: true, method: 'accessibility+keys', route: 'accessibility+foreground' },
+			sent: ['400 (ask first)', '5 (ask first)', '5'],
+			prompts: 1,
+		});
+	});
+
+	test('adds the agent cursor with the pane\'s label and CLI only while the setting is on', async () => {
+		const { helper, ledger, state, provider } = setup({ showCursor: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.Notes', 'operate');
+		const identities: Record<string, IParadisMcpCursorIdentity> = { 'pane-a': { cli: 'claude', label: 'Checkout' }, 'pane-b': { cli: 'codex' } };
+		const { context } = createContext('pane', [], undefined, token => identities[token] ?? {});
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		await provider.callTool('pane-b', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		identities['pane-a'] = { cli: 'claude' };
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		state.showCursor = false;
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		const cursors = helper.inputs.map(input => input.params.cursor as { id: string; name: string; mark: string; color: string } | undefined);
+		assert.deepStrictEqual({
+			cursors: cursors.map(cursor => cursor && { name: cursor.name, mark: cursor.mark, color: cursor.color }),
+			ids: [/^[0-9a-f]{16}$/.test(cursors[0]!.id), cursors[0]!.id === cursors[2]!.id, cursors[0]!.id !== cursors[1]!.id],
+		}, {
+			cursors: [
+				{ name: 'Checkout', mark: 'C', color: '#d97757' },
+				{ name: 'Codex', mark: 'X', color: '#8250df' },
+				{ name: 'Claude', mark: 'C', color: '#d97757' },
+				undefined,
+			],
+			ids: [true, true, true],
+		});
 	});
 
 	test('asks to operate on first use, then clicks in the chosen window without asking again', async () => {
