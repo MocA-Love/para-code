@@ -36,6 +36,7 @@ import { clearAivisApiCaches } from './paradisAivisApiCache.js';
 import { clearElevenLabsApiCaches } from './paradisElevenLabsApiCache.js';
 import { ParadisElevenLabsDictionarySection } from './paradisElevenLabsDictionarySection.js';
 import { ParadisElevenLabsUsageSection } from './paradisElevenLabsUsageSection.js';
+import { ParadisVoiceCacheSection } from './paradisVoiceCacheSection.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAgentDictionarySection } from './paradisAgentDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
@@ -440,10 +441,11 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		const usageSection = this._createSection(
 			'pns-sec-usage',
 			// allow-any-unicode-next-line
-			'使用量 usage requests characters credits 日別 文字数 上限',
+			'使用量 usage requests characters credits 日別 文字数 上限 キャッシュ cache 使い回す',
 		);
 		this._register(this.instantiationService.createInstance(ParadisAivisUsageSection, dom.append(usageSection, $('div'))));
 		this._register(this.instantiationService.createInstance(ParadisElevenLabsUsageSection, dom.append(usageSection, $('div'))));
+		this._register(this.instantiationService.createInstance(ParadisVoiceCacheSection, dom.append(usageSection, $('div'))));
 
 		// 検索でどのセクションも残らなかったときの受け皿。セクションと違い再描画で作り直されないため
 		// コンテンツ末尾に一度だけ置き、表示切替だけをフィルタから行う。
@@ -544,6 +546,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			elevenLabsDictionaryId: '',
 			shareDictionaryWithAgents: true,
 			elevenLabsVoiceSettings: {},
+			elevenLabsVoiceCache: true,
 		});
 	}
 

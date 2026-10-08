@@ -726,6 +726,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 						dictionaryId: settings.elevenLabsDictionaryId || undefined,
 						volume: settings.volume,
 						...settings.elevenLabsVoiceSettings[settings.elevenLabsVoiceId],
+						cache: settings.elevenLabsVoiceCache,
 					}]);
 				} catch (error) {
 					// ElevenLabs はキーの権限・残り文字数で失敗しやすいので、理由を画面に出す。

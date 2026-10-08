@@ -57,6 +57,7 @@ class TestSettingsService extends Disposable implements IParadisNotificationsSet
 		elevenLabsDictionaryId: '',
 		shareDictionaryWithAgents: true,
 		elevenLabsVoiceSettings: {},
+		elevenLabsVoiceCache: true,
 	};
 
 	getSelectedRingtoneId(): string { return 'default'; }

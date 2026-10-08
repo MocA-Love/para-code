@@ -42,7 +42,8 @@ import {
 } from '../common/paradisElevenLabs.js';
 import { IParadisElevenLabsVoiceTuning, paradisElevenLabsVoiceSettingsBody, paradisToElevenLabsSavedVoiceTuning } from '../common/paradisVoiceTuning.js';
 import { AivisError, AivisStreamingSynthesis, AivisSynthesizeResult } from './paradisAudioScheduler.js';
-import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS, paradisBufferBody, paradisCollectBody, paradisReadSynthesisBody, ParadisSynthesisTimeouts } from './paradisStreamingBody.js';
+import { IParadisVoiceCacheLease, paradisVoiceCacheKey, ParadisVoiceSynthesisCache } from './paradisVoiceSynthesisCache.js';
 
 const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io';
 /** 合成した音声 1 本の上限（読み上げ 1 回分としては十分に大きい）。 */
@@ -81,6 +82,8 @@ export class ParadisElevenLabsClient {
 		private readonly logService: ILogService,
 		private readonly fetchImpl: FetchLike = (input, init) => fetch(input, init),
 		private readonly now: () => number = Date.now,
+		/** 合成した音声の置き場所。無ければ使い回さない（数も数えない）。 */
+		private readonly cache?: ParadisVoiceSynthesisCache,
 	) { }
 
 	/**
@@ -195,6 +198,19 @@ export class ParadisElevenLabsClient {
 			}
 		}
 
+		// 同じ要求（声・出力形式・本文 = 文・モデル・声の調整・辞書の版）なら同じ音になるので、合成済みの音を使い回す。
+		// 本文に前の発話の文脈（previous_*）は入れていない。音量の補正は鳴らすときにかけるので鍵に入らない
+		let lease: IParadisVoiceCacheLease | undefined;
+		if (this.cache && request.cache !== false) {
+			const found = await this.cache.lookup(paradisVoiceCacheKey({ provider: 'elevenlabs', voiceId: request.voiceId, outputFormat: ELEVENLABS_OUTPUT_FORMAT, body }));
+			if (found.kind === 'hit') {
+				this.cache.recordHit(text.length);
+				this.logService.info(`[ParadisNotifications] played an ElevenLabs voice from the cache (${text.length} characters not sent)`);
+				return { body: paradisBufferBody(found.audio) };
+			}
+			lease = found.lease;
+		}
+
 		const url = new URL(`/v1/text-to-speech/${encodeURIComponent(request.voiceId)}/stream`, ELEVENLABS_BASE_URL);
 		url.searchParams.set('output_format', ELEVENLABS_OUTPUT_FORMAT);
 		const timeouts = new ParadisSynthesisTimeouts(PARADIS_ELEVENLABS_FIRST_BYTE_TIMEOUT_MS);
@@ -208,6 +224,7 @@ export class ParadisElevenLabsClient {
 			});
 		} catch (error) {
 			timeouts.dispose();
+			lease?.release();
 			if (error instanceof Error && error.name === 'AbortError') {
 				// allow-any-unicode-next-line
 				throw new AivisError('retryable', 'ElevenLabs API のリクエストがタイムアウトしました', undefined, undefined, error);
@@ -217,11 +234,14 @@ export class ParadisElevenLabsClient {
 		if (!response.ok) {
 			const bodyText = await response.text().catch(() => '');
 			timeouts.dispose();
+			lease?.release();
 			const { kind, reason } = paradisClassifyElevenLabsError(response.status, bodyText);
 			const retryAfter = response.status === 429 ? paradisElevenLabsRetryAfter(response.headers.get('retry-after')) : undefined;
 			throw new AivisError(kind, reason, response.status, retryAfter);
 		}
-		return { body: paradisReadSynthesisBody(response, timeouts, 'ElevenLabs') };
+		this.cache?.recordCall(text.length);
+		const audio = paradisReadSynthesisBody(response, timeouts, 'ElevenLabs');
+		return { body: lease ? lease.capture(audio) : audio };
 	}
 
 	/** 辞書の最新版 ID。取れなければ undefined（その回は辞書なしで読み上げる）。 */
