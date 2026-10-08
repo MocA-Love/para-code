@@ -1966,7 +1966,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (!request.apiKey || !request.voiceId || !paradisStripSsmlTags(request.text)) {
 			return;
 		}
-		const { audio } = await this.elevenLabs.synthesize(request);
+		// テスト再生はキャッシュを読まずに合成し直して置き換える（崩れた音を引き直せるように）
+		const { audio } = await this.elevenLabs.synthesize(request, { refreshCache: true });
 		await this._playAivisAudio(audio, paradisCorrectedPlaybackVolume(request.volume ?? 100, paradisElevenLabsGainKey(request.voiceId, request.modelId || PARADIS_ELEVENLABS_DEFAULT_MODEL_ID), this._ingest?.gainTable));
 	}
 
