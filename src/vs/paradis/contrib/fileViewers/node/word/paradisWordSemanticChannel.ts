@@ -32,18 +32,14 @@ function bytesArgument(value: unknown): Uint8Array | undefined {
 	return value instanceof Uint8Array ? value : undefined;
 }
 
-/** shared process の中で解析する（worker を起動できないときの代わり）。 */
-async function createInProcessBackend(): Promise<IParadisWordSemanticBackend> {
-	const { ParadisWordSemanticService } = await import('./paradisWordSemanticService.js');
-	return new ParadisWordSemanticService();
-}
-
-/** 解析は worker（別スレッド）で行う。shared process 本体を数秒止めないため。 */
+/**
+ * 解析は worker（別スレッド・ヒープの上限つき）で行う。shared process 本体を止めず、壊れた文書で本体ごと
+ * 落ちないようにするため。worker で解析できないときは、本体では解析せずに失敗を返す（表示は解析に頼らない）。
+ */
 async function createWorkerBackend(): Promise<IParadisWordSemanticBackend & IDisposable> {
 	const { ParadisWordSemanticWorkerBackend } = await import('./paradisWordSemanticWorkerBackend.js');
 	const workerPath = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain.js').fsPath;
-	let inProcess: Promise<IParadisWordSemanticBackend> | undefined;
-	return new ParadisWordSemanticWorkerBackend(ParadisWordSemanticWorkerBackend.workerFactory(workerPath), () => inProcess ??= createInProcessBackend());
+	return new ParadisWordSemanticWorkerBackend(ParadisWordSemanticWorkerBackend.workerFactory(workerPath));
 }
 
 export class ParadisWordSemanticChannel implements IServerChannel<string>, IDisposable {
