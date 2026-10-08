@@ -2695,6 +2695,30 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 覚えた辞書の版（60 秒）が切れていても、まず古い版の鍵で探し、当たればすぐ鳴らして版は裏で取り直す。辞書を直した直後の 1 回だけ、前の発音のまま鳴ることがある
 - 日別の数（`stats.json`）は Para Code を 2 つ同時に動かすと、後から書いた方の数で上書きされる（音声のファイルは中身で名前が決まるので共有しても壊れない）
 
+## 手元のエージェントの声をモバイルへ先に送る（2026-10-09、Q309 A＋案 3〜5、aivis-mcp 2.6.0）
+
+調べた原因: 手元のエージェントの声は、aivis-mcp の worker が再生の lock を取ってから合成し、その合成を Para Code（モバイル）へも流していた。PC の再生待ちが混むとモバイルへの到着も遅れ、待ちで期限切れ（normal 120 秒）になった声はモバイルにも届かなかった。SSH の声と通知の読み上げは受け取りながらモバイルへ流すので、この遅れが無い。
+
+取り決め（能力の交渉。どちらかが古ければ今までどおり）:
+
+- ticket の応答（`/paradis-mcp/mobile-voice-ticket`）に `mobileListeners`（声を聞いているモバイルの数。モバイルリレーの `ParadisMobileVoiceDelivery.listenerCount()` を通知サービス経由で読む。リレーが無ければ載せない）と `release: true` を足した。古い aivis-mcp はどちらも読まない
+- `POST /paradis-mcp/mobile-voice-ticket/release`（`Authorization: Bearer <ticket>`）で、使わなかった ticket 1 枚を消す。知らない ticket にも同じ 204 を返す
+- aivis-mcp 2.6.0 の worker は、PC で鳴らしている間と hold の間、積む時の ticket が「モバイルへ送るだけ」で `mobileListeners` が 1 以上の声を、列の順に 1 本ずつ先に合成する。合成は Redis の Stream に書きながら Para Code へ送り、PC では順番が来たらその Stream から鳴らす（合成は 1 回）。合成は worker 全体で 1 本ずつで PC の番を先に通す。ElevenLabs の文脈は聞こえる順で直前の声を最後に合成していたときだけつなぐ。期限切れの声も、モバイルが聞いていれば PC では鳴らさずモバイルへだけ送る。詳細は aivis-mcp の `docs/ingest-protocol.md` の「モバイルへの先送り」
+
+案 3〜5:
+
+- **SSH の声が手元の再生待ちで期限切れになったら、鳴らし直さず記録だけ残す**（`followIngest`）。期限切れは「PC では古い声を鳴らさない」という aivis-mcp の決まりで、手元の声と同じ扱いにした。鳴らし直すと混んでいる再生待ちの後ろへさらに古い声を積む。取り下げ・最初の音の待ちきれは今までどおり鳴らし直す
+- 手元の `aivis` コマンドの ticket の待ちは 300ms → 1 秒（aivis-mcp 側）。1 ペインの ticket の上限は 32 → 64 枚（サブエージェントは親と同じペインのトークンで、`aivis` コマンドは積む時に 1 枚取って再生待ちの間持つ）
+- sharedprocess.log に `[ParadisVoice]` の行を足した: ticket の発行（持ち主はトークンの指紋、モバイルの宛先の数、そのペインの持ち枚数）・拒否（理由）・返却、受け取りの結果、SSH の声を鳴らし直したか。aivis-mcp は `~/.config/aivis-mcp/logs/voice-route.log` に worker・MCP サーバー・`aivis` コマンドの判断を残す（1 MiB で回す）。どちらも音声の本文・ticket・トークンは書かない
+
+更新の順番: Para Code を先に更新しても、aivis-mcp 2.5.4 とは今までどおり動く。aivis-mcp 2.6.0 を入れたら手元と接続先の両方で `aivis-mcp --reboot`。先送りは手元の worker でだけ効く（SSH 先の声は接続先の worker が合成し、受け取った Para Code が受け取りながらモバイルへ流す）。
+
+レビューで直した点: Para Code への送り出しは合成の番が来てからつなぐ（番を待つ間につなぐと、Para Code の最初の音の 10 秒で切られて ticket を失う）。先送りの印は `SET NX` で取り、ほかの worker の印がある件は合成し直さない。PC の順番が来た先送りの件は合成の番を PC の番に上げる。
+
+既知の制約: `mobileListeners` は ticket を取った時点（多くは積んだ時点）の数。ミュート中の送り出しは数を見ずに今どおり送る。遅れて届いた ticket が控えと同じだと使用済みの ticket が次の件に回る件（aivis-mcp 2.5 からの既存の問題）は直していない。
+
+確かめていないこと: 実機での合成と再生（ElevenLabs を呼ぶ確認はしていない）、モバイルでの到着の速さ。
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）

@@ -57,7 +57,7 @@ import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
 import { paradisReceiveRemoteVoice, paradisSendVoiceIngressUnavailable, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
-import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
+import { PARADIS_MOBILE_VOICE_TICKET_RELEASE_PATH, PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -177,8 +177,12 @@ const MOBILE_VOICE_SLOT_POLL_MS = 100;
 const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
 const MOBILE_VOICE_TICKET_TTL_MS = 10 * 60_000;
 const MAX_MOBILE_VOICE_TICKETS = 256;
-/** 接続先の aivis-mcp 2.5.1 は鳴らし始めるときに ticket を取るので、1 ペインで同時に持つ枚数は少ない。余裕を持たせる。 */
-const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 32;
+/**
+ * 1 ペインで同時に持てる枚数。`aivis` コマンド（サブエージェントが使う）は積む時に 1 枚取り、PC の再生待ちの間ずっと
+ * 持つので、サブエージェントが一斉に話すと 32 枚では足りなかった。aivis-mcp 2.6 からは使わなかった ticket を返す
+ * （`/paradis-mcp/mobile-voice-ticket/release`）。サブエージェントは親と同じペインのトークンを使うので、余裕を持たせる。
+ */
+const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 64;
 /** 接続先の aivis-mcp が答えを待つ 15 秒より短く。本文を読み終えてから数える。 */
 const LOCAL_VOICE_ENQUEUE_DEADLINE_MS = 10_000;
 
@@ -3302,6 +3306,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice-ticket') {
 			return this._handleMobileVoiceTicket(req, res);
 		}
+		if (req.method === 'POST' && req.url === PARADIS_MOBILE_VOICE_TICKET_RELEASE_PATH) {
+			return this._handleMobileVoiceTicketRelease(req, res);
+		}
 
 		if (req.method !== 'POST') {
 			res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
@@ -3460,7 +3467,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			activeRequest = this._trackActiveRequest(req, res);
 			// 受理した。ここからは自前の 120 秒・最初の音・届く速さで縛る
 			bodyTimeout.dispose();
-			await paradisReceiveRemoteVoice(req, res, {
+			const result = await paradisReceiveRemoteVoice(req, res, {
 				localPlayback: ticket.localPlayback,
 				signal: activeRequest.controller.signal,
 				// 接続先の待ち（Content-Length の旧方式は 30 秒）を過ぎてから積むと二重に鳴るので、締め切りを短めに切る
@@ -3480,7 +3487,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					reservation.dispose();
 				},
 				isTicketCurrent: () => this._isMobileVoiceTicketCurrent(ticket),
+				log: message => this._logVoice(message),
 			});
+			this._logVoice(`voice received (outcome=${result.outcome}, local=${ticket.localPlayback}, chunked=${req.headers['content-length'] === undefined}, listeners=${this._mobileVoiceListenerCount() ?? 'unknown'})`);
 		} finally {
 			activeRequest?.dispose();
 			voiceReservation.dispose();
@@ -3518,6 +3527,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const isVoiceToken = requestedToken !== undefined && this._isVoiceIngressToken(requestedToken);
 		const ingressLease = requestedToken === undefined || isVoiceToken ? undefined : this.captureIngressLease(requestedToken);
 		if (ingressLease === undefined && !isVoiceToken) {
+			this._logVoice('ticket rejected (unknown or stale pane token)');
 			this._sendIngressRejected(res);
 			return;
 		}
@@ -3540,6 +3550,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		if (this._mobileVoiceTickets.size >= MAX_MOBILE_VOICE_TICKETS || paneTicketCount >= MAX_MOBILE_VOICE_TICKETS_PER_PANE) {
+			this._logVoice(`ticket rejected (capacity: owner=${ingressLease === undefined ? 'extension-host' : this._tokenFingerprint(ingressLease.token)}, pane=${paneTicketCount}, total=${this._mobileVoiceTickets.size})`);
 			this._sendIngressCapacityRejected(res);
 			return;
 		}
@@ -3551,15 +3562,49 @@ export class ParadisAgentBrowserService extends Disposable {
 		// `ingress: "stream-v1"` を名乗ると、接続先の aivis-mcp 2.5.0 は合成を受け取りながら chunked で送る
 		// `muteAware: true` を名乗ると、接続先の aivis-mcp 2.5.1 はミュート中の発話に `X-Para-Muted: 1` を付けて送る
 		// （Para Code は手元で鳴らさず、モバイルへだけ届ける）
-		const body = JSON.stringify(localPlayback
-			? { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, localPlayback, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS, muteAware: true }
-			: { ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId, ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS, muteAware: true });
+		// `mobileListeners`（声を聞いているモバイルの数）を名乗ると、aivis-mcp 2.6 は 1 以上のとき PC の再生待ちを待たずに
+		// 合成してモバイルへ送る。`release: true` を名乗ると、使わなかった ticket を返してくる。古い aivis-mcp はどちらも読まない
+		const mobileListeners = this._mobileVoiceListenerCount();
+		const body = JSON.stringify({
+			ticket: voiceTicket,
+			expiresAt,
+			instanceId: this._mcpInstanceId,
+			...(localPlayback ? { localPlayback } : {}),
+			ingress: PARADIS_REMOTE_VOICE_STREAM_INGRESS,
+			muteAware: true,
+			...(mobileListeners === undefined ? {} : { mobileListeners }),
+			release: true,
+		});
+		this._logVoice(`ticket issued (owner=${ingressLease === undefined ? 'extension-host' : this._tokenFingerprint(ingressLease.token)}, local=${localPlayback}, listeners=${mobileListeners ?? 'unknown'}, outstanding=${paneTicketCount + 1})`);
 		res.writeHead(201, {
 			'Content-Type': 'application/json',
 			'Content-Length': Buffer.byteLength(body),
 			'Cache-Control': 'no-store',
 		});
 		res.end(body);
+	}
+
+	/**
+	 * 使わなかった音声 ticket を返す（aivis-mcp 2.6。期限切れで送らなかった件など）。ticket そのもので認証し、その 1 枚だけを
+	 * 消す。知らない ticket でも同じ応答を返す（どの ticket が生きているかを漏らさない）。
+	 */
+	private _handleMobileVoiceTicketRelease(req: http.IncomingMessage, res: http.ServerResponse): void {
+		const requestedTicket = this._extractToken(req);
+		const found = requestedTicket !== undefined && this._mobileVoiceTickets.delete(requestedTicket);
+		this._logVoice(`ticket released (found=${found}, outstanding=${this._mobileVoiceTickets.size})`);
+		res.writeHead(204, { 'Cache-Control': 'no-store', 'Connection': 'close' });
+		res.end();
+	}
+
+	/** 声を聞いているモバイルの数（モバイルリレーが動いていなければ undefined）。 */
+	private _mobileVoiceListenerCount(): number | undefined {
+		const count = this.localVoiceOutput?.mobileVoiceListenerCount?.();
+		return count !== undefined && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+	}
+
+	/** 声の行き先の判断を sharedprocess.log に 1 行残す（音声の本文・ticket・トークンは書かない）。 */
+	private _logVoice(message: string): void {
+		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisVoice] ${message}`));
 	}
 
 	/**

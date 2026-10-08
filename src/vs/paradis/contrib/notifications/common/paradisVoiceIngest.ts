@@ -118,4 +118,9 @@ export interface IParadisLocalVoiceOutput {
 	 * 無ければ全部受け取ってから 1 本まるごとで渡す。
 	 */
 	beginMobileVoiceStream?(gainKey?: string): IParadisMobileVoiceStreamWriter;
+	/**
+	 * いま Para Code の声を聞いているモバイルの数（音声通知を購読していて、つながっている端末）。モバイルリレーが
+	 * 起動していなければ undefined。aivis-mcp へ ticket と一緒に知らせ、PC の再生待ちを待たずにモバイルへ送るかを決めさせる。
+	 */
+	mobileVoiceListenerCount?(): number | undefined;
 }

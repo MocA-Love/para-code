@@ -91,6 +91,8 @@ async function startServer(options: {
 	readonly terminal?: IParadisIngestTerminal;
 	/** 控えの枠（無ければ上限なし）。 */
 	readonly retention?: () => IParadisVoiceRetention | undefined;
+	/** 行き先の判断の記録を受ける（無ければ記録しない）。 */
+	readonly logs?: string[];
 }): Promise<IHarness> {
 	const events: string[] = [];
 	const streams: FakeStream[] = [];
@@ -137,6 +139,7 @@ async function startServer(options: {
 			reserveBytes: options.reserve ?? (() => true),
 			onBodyReceived: () => events.push('body-received'),
 			isTicketCurrent: options.ticketCurrent ?? (() => true),
+			log: options.logs ? message => options.logs!.push(message) : undefined,
 			limits: options.limits,
 			now: options.now,
 		}).then(async result => {
@@ -717,6 +720,27 @@ suite('paradisReceiveRemoteVoice', () => {
 			{ events: ['open:normal', 'body-received', 'mobile:700'], held: { bytes: 0, count: 0 } },
 		]);
 	});
+	test('chunked: does not replay a voice that expired in the local queue, and logs why (Q309 3)', async () => {
+		const outcomes: unknown[] = [];
+		for (const terminal of [{ status: 'skipped', reason: 'expired' }, { status: 'failed', reason: 'first-audio-timeout' }] as const) {
+			const logs: string[] = [];
+			const harness = await startServer({ localPlayback: true, ingest: true, handoff: true, terminal, playAudio: true, logs });
+			try {
+				const { request, response } = openRequest(harness.url, { 'Transfer-Encoding': 'chunked' });
+				request.end(mp3(700));
+				await (await response).body;
+				await harness.resultReady;
+				outcomes.push({ events: harness.events, logs });
+			} finally {
+				await harness.close();
+			}
+		}
+		assert.deepStrictEqual(outcomes, [
+			{ events: ['open:normal', 'body-received', 'mobile:700'], logs: ['remote voice not played locally and not replayed (status=skipped, reason=expired)'] },
+			{ events: ['open:normal', 'body-received', 'mobile:700', 'play-audio:700'], logs: ['remote voice replayed by Para Code (reason=first-audio-timeout)'] },
+		]);
+	});
+
 	test('chunked: passes X-Para-Tagged to --ingest as a tagged job', async () => {
 		const harness = await startServer({ localPlayback: true, ingest: true, handoff: true });
 		try {
