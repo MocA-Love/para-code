@@ -538,6 +538,11 @@ do {
 	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: true, appHidden: false) == "the window is minimized", "leaves minimized windows to the foreground route")
 	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: false, appHidden: true) == "the app is hidden", "leaves hidden apps to the foreground route")
 
+	// 座標で当たった要素が目的のウィンドウそのものなら、別のウィンドウとは書かない（実機の報告、2026-10-09）
+	check(paradisHitElementSkipReason(hitIsTargetWindow: false, ownerIsTargetWindow: true) == nil, "uses an element of the target window")
+	check(paradisHitElementSkipReason(hitIsTargetWindow: true, ownerIsTargetWindow: false) == "the point is on the window itself, not on a control", "says the point is on the window itself")
+	check(paradisHitElementSkipReason(hitIsTargetWindow: false, ownerIsTargetWindow: false) == "the element at the point belongs to another window", "says another window only for another window")
+
 	// 画面のロック中・ほかのユーザーへの切り替え中は止める（レビュー 中 6）
 	check(paradisSessionFailure(onConsole: true, screenLocked: false) == nil, "runs on an unlocked console session")
 	check(paradisSessionFailure(onConsole: true, screenLocked: true)?.code == "screen_locked", "stops while the screen is locked")
@@ -548,6 +553,33 @@ do {
 	check(paradisManualAccessibilityExcluded(bundleId: "com.microsoft.VSCode", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: "com.todesktop.230313mzl4w4u92", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: nil, hasVSCodeProductJson: false), "never sets AXManualAccessibility on VS Code family apps")
 	check(!paradisManualAccessibilityExcluded(bundleId: "com.tinyspeck.slackmacgap", hasVSCodeProductJson: false), "may set AXManualAccessibility on other Electron apps")
 	check(paradisManualAccessibilityExcluded(bundleId: "co.posit.positron", hasVSCodeProductJson: true), "never sets AXManualAccessibility on a VS Code fork that is not in the list")
+
+	// Electron のウィンドウには AX のツリーを作る前から閉じるボタンなどがあるので、ウェブの中身で見る（実機の報告、2026-10-09）
+	struct FakeNode {
+		let role: String
+		let children: [FakeNode]
+	}
+	func needsManual(_ window: FakeNode?, maxNodes: Int = paradisWebAreaSearchMaxNodes) -> Bool {
+		return paradisWindowNeedsManualAccessibility(window, children: { $0.children }, role: { $0.role }, maxNodes: maxNodes)
+	}
+	let buttons = [FakeNode(role: "AXButton", children: []), FakeNode(role: "AXButton", children: []), FakeNode(role: "AXButton", children: [])]
+	let closedElectron = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [])])
+	let emptyWebArea = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [])])])
+	let openElectron = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [FakeNode(role: "AXStaticText", children: [])])])])])
+	check(needsManual(closedElectron), "sets AXManualAccessibility when the window only has its title bar buttons")
+	check(needsManual(emptyWebArea), "sets AXManualAccessibility when the web area is empty")
+	check(!needsManual(openElectron), "leaves a window that already shows its web content")
+	check(needsManual(nil), "sets AXManualAccessibility when there is no window")
+	check(!needsManual(FakeNode(role: "AXWindow", children: Array(repeating: FakeNode(role: "AXButton", children: []), count: 20)), maxNodes: 5), "does not decide on a window larger than the search limit")
+	// PR #298 のレビュー: 深さで打ち切ったら決めない。範囲の中の AXWebArea を全部見る
+	var deep = FakeNode(role: "AXGroup", children: [FakeNode(role: "AXGroup", children: [])])
+	for _ in 0..<(paradisWebAreaSearchMaxDepth + 1) {
+		deep = FakeNode(role: "AXGroup", children: [deep])
+	}
+	check(!needsManual(FakeNode(role: "AXWindow", children: buttons + [deep])), "does not decide when the tree is deeper than the search limit")
+	let emptyAndFull = FakeNode(role: "AXWindow", children: buttons + [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [])]), FakeNode(role: "AXGroup", children: [FakeNode(role: "AXGroup", children: [FakeNode(role: "AXWebArea", children: [FakeNode(role: "AXButton", children: [])])])])])
+	check(!needsManual(emptyAndFull), "an empty webview next to one with content does not need AXManualAccessibility")
+	check(paradisShouldEnableManualAccessibility(currentValue: false) && paradisShouldEnableManualAccessibility(currentValue: nil) && !paradisShouldEnableManualAccessibility(currentValue: true), "never takes over an AXManualAccessibility another tool already set")
 
 	// 立てたアプリを戻すか（レビュー 2 回目 中 2）: 同じプロセスで、支援技術が動いていないときだけ
 	check(paradisSameProcess(recordedStart: 100.2, currentStart: 100.5) && !paradisSameProcess(recordedStart: 100, currentStart: 250) && !paradisSameProcess(recordedStart: 100, currentStart: nil), "tells a reused pid apart by the process start time")
@@ -721,10 +753,67 @@ do {
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: 5, ownerAtTarget: 9)?.code == "point_obscured", "a covering window stops input")
 	check(paradisFenceFailure(targetPid: 5, frontmostPid: nil, ownerAtTarget: nil)?.code == "window_not_focused", "unknown front app stops input")
 
-	let down = paradisScrollSteps(direction: .down, pages: 1, extent: 500)
+	// WindowServer はナチュラルなスクロールがオンなら縦の符号を反転して届ける（実機の報告と計測、2026-10-09）
+	let down = paradisScrollSteps(direction: .down, pages: 1, extent: 500, naturalScrolling: false)
 	check(down.count == 5 && down.allSatisfy { $0.dx == 0 && $0.dy == -80 }, "scrolls a page down in steps")
-	check(paradisScrollSteps(direction: .left, pages: 0.1, extent: 100).first.map { $0.dx > 0 && $0.dy == 0 } == true, "scrolls left")
-	check(paradisScrollSteps(direction: .up, pages: 10, extent: 5000).count == 100, "caps the scroll steps")
+	let naturalDown = paradisScrollSteps(direction: .down, pages: 1, extent: 500, naturalScrolling: true)
+	check(naturalDown.count == 5 && naturalDown.allSatisfy { $0.dx == 0 && $0.dy == 80 }, "flips the vertical value with natural scrolling so down still goes down")
+	check(paradisScrollSteps(direction: .up, pages: 0.1, extent: 100, naturalScrolling: true).first.map { $0.dy < 0 } == true && paradisScrollSteps(direction: .up, pages: 0.1, extent: 100, naturalScrolling: false).first.map { $0.dy > 0 } == true, "scrolls up with either setting")
+	for natural in [false, true] {
+		check(paradisScrollSteps(direction: .left, pages: 0.1, extent: 100, naturalScrolling: natural).first.map { $0.dx > 0 && $0.dy == 0 } == true, "scrolls left (natural \(natural))")
+		check(paradisScrollSteps(direction: .right, pages: 0.1, extent: 100, naturalScrolling: natural).first.map { $0.dx < 0 && $0.dy == 0 } == true, "scrolls right (natural \(natural))")
+	}
+	check(paradisScrollSteps(direction: .up, pages: 10, extent: 5000, naturalScrolling: false).count == 100, "caps the scroll steps")
+	check(paradisNaturalScrolling(preference: nil) && paradisNaturalScrolling(preference: true) && !paradisNaturalScrolling(preference: false) && !paradisNaturalScrolling(preference: NSNumber(value: 0)) && paradisNaturalScrolling(preference: "x"), "reads the natural scrolling setting with the OS default on")
+
+	// 修飾キー付きのキー・クリック（実機の報告と PR #298 のレビュー、2026-10-09）: 押す・離すは組み合わせの修飾キー付き、
+	// 離した直後に解放の flagsChanged。解放の印は離す直前の今の状態から、押す前に無かった組み合わせの修飾キーだけを引く
+	let nonCoalesced = CGEventFlags.maskNonCoalesced
+	let cmdPress = paradisModifierPress(chord: .maskCommand, systemBefore: nonCoalesced)
+	check(cmdPress == ParadisModifierPress(flags: [.maskCommand, .maskNonCoalesced], added: .maskCommand), "presses and releases the key with cmd and plans to release cmd")
+	check(paradisModifierRelease(cmdPress, current: [.maskCommand, .maskNonCoalesced]) == ParadisModifierRelease(keyCode: 55, flags: nonCoalesced), "sends a command-key flagsChanged back to no modifier")
+	let rightCommand = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x10)
+	check(paradisModifierRelease(cmdPress, current: rightCommand)?.flags == [], "clears the right command key bit")
+	let ctrlPress = paradisModifierPress(chord: .maskControl, systemBefore: [])
+	let rightControl = CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x2000)
+	check(paradisModifierRelease(ctrlPress, current: rightControl) == ParadisModifierRelease(keyCode: 59, flags: []), "clears the right control key bit with a control-key flagsChanged")
+	let withFn = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue | CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskNumericPad.rawValue | 0x2000_0000)
+	let cmdShiftPress = paradisModifierPress(chord: [.maskCommand, .maskShift], systemBefore: [])
+	check(paradisModifierRelease(cmdShiftPress, current: withFn) == ParadisModifierRelease(keyCode: 55, flags: []), "does not copy fn, the numeric pad or unknown bits the OS added for an arrow key")
+	// 押す前に押していた ⇧ を、確かめの間に利用者が離した: 付け直さない
+	let heldShift = CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x02 | CGEventFlags.maskAlphaShift.rawValue)
+	let pressWhileShift = paradisModifierPress(chord: .maskCommand, systemBefore: heldShift)
+	check(pressWhileShift.flags == [.maskCommand, .maskAlphaShift], "does not mix the user's shift into the chord but keeps caps lock")
+	check(paradisModifierRelease(pressWhileShift, current: [.maskCommand, .maskAlphaShift])?.flags == .maskAlphaShift, "does not put back a shift the user released meanwhile")
+	// 組み合わせに無い利用者の修飾キーは、押す・離すのイベントで OS の状態から消えると戻さない（ドラッグと同じ。利用者が次に
+	// 押すか離すと戻る）。離す直前の状態に残っていれば消さない、ということだけを確かめる（実機では要確認）
+	check(paradisModifierRelease(pressWhileShift, current: [.maskCommand, .maskShift, .maskAlphaShift])?.flags == [.maskShift, .maskAlphaShift], "does not remove a shift that is still in the state just before the release")
+	check(paradisModifierRelease(pressWhileShift, current: [.maskCommand, .maskAlphaShift])?.flags.contains(.maskShift) == false, "does not restore a shift the press events removed from the state")
+	// 物理的に押している ⌘ は解放しない
+	let heldCommand = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x08)
+	let pressWhileCommand = paradisModifierPress(chord: .maskCommand, systemBefore: heldCommand)
+	check(pressWhileCommand.added == [] && paradisModifierRelease(pressWhileCommand, current: heldCommand) == nil, "never releases a command key the user is holding")
+	check(paradisModifierRelease(paradisModifierPress(chord: [], systemBefore: nonCoalesced), current: nonCoalesced) == nil, "a plain key sends no modifier release")
+	// PR #298 の再レビュー: 解放が OS の状態に届かず残った自分の ⌘ は、次の要求で解放する。物理的な修飾キーの変化を見たら利用者のもの
+	let leftoverCommand = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x08)
+	check(paradisOwnLeftoverModifiers(lastReleased: .maskCommand, systemBefore: leftoverCommand, physicalModifierChangeSinceRelease: false) == .maskCommand, "claims a command key our release did not clear")
+	check(paradisOwnLeftoverModifiers(lastReleased: .maskCommand, systemBefore: leftoverCommand, physicalModifierChangeSinceRelease: true) == [], "a physical modifier change since then means the user holds it")
+	check(paradisOwnLeftoverModifiers(lastReleased: .maskCommand, systemBefore: leftoverCommand, physicalModifierChangeSinceRelease: nil) == [] && paradisOwnLeftoverModifiers(lastReleased: nil, systemBefore: leftoverCommand, physicalModifierChangeSinceRelease: false) == [], "does not claim without the input monitor or an earlier release")
+	check(paradisOwnLeftoverModifiers(lastReleased: [.maskCommand, .maskShift], systemBefore: [.maskShift], physicalModifierChangeSinceRelease: false) == .maskShift, "claims only what is still in the state")
+	let claimed = paradisModifierPress(chord: .maskCommand, systemBefore: leftoverCommand, ownLeftover: .maskCommand)
+	check(claimed.added == .maskCommand && paradisModifierRelease(claimed, current: leftoverCommand) == ParadisModifierRelease(keyCode: 55, flags: []), "releases a leftover command key even though it was in the state before the press")
+	let plainWithLeftover = paradisModifierPress(chord: [], systemBefore: leftoverCommand, ownLeftover: .maskCommand)
+	check(plainWithLeftover.flags == [] && plainWithLeftover.added == .maskCommand, "a plain key does not carry the leftover command key but releases it")
+	let since = Date(timeIntervalSince1970: 1000)
+	check(paradisPhysicalModifierChange(tapStartedAt: Date(timeIntervalSince1970: 900), lastPhysicalFlagsChanged: nil, since: since) == false, "no physical modifier change seen")
+	check(paradisPhysicalModifierChange(tapStartedAt: Date(timeIntervalSince1970: 900), lastPhysicalFlagsChanged: Date(timeIntervalSince1970: 1001), since: since) == true, "a physical modifier change after the release")
+	check(paradisPhysicalModifierChange(tapStartedAt: Date(timeIntervalSince1970: 900), lastPhysicalFlagsChanged: Date(timeIntervalSince1970: 999), since: since) == false, "an older physical change does not count")
+	check(paradisPhysicalModifierChange(tapStartedAt: nil, lastPhysicalFlagsChanged: nil, since: since) == nil && paradisPhysicalModifierChange(tapStartedAt: Date(timeIntervalSince1970: 1100), lastPhysicalFlagsChanged: nil, since: since) == nil, "unknown without a tap running since the release")
+	// ⌘ 付きのダブルクリックは解放を最後に 1 回だけ（⌘ の 2 度押しに見せない）
+	check(paradisClickModifierReleases(clicksPressed: 2, added: .maskCommand) == 1 && paradisClickModifierReleases(clicksPressed: 3, added: .maskCommand) == 1, "releases the command key once after a double or triple click")
+	check(paradisClickModifierReleases(clicksPressed: 1, added: .maskCommand) == 1, "releases once when a double click stops after the first click")
+	check(paradisClickModifierReleases(clicksPressed: 0, added: .maskCommand) == 0 && paradisClickModifierReleases(clicksPressed: 2, added: []) == 0, "sends nothing when nothing was pressed or nothing needs releasing")
+	check(paradisNeutralEventFlags(systemBefore: [.maskShift, .maskAlphaShift, .maskNonCoalesced, .maskSecondaryFn]) == [.maskAlphaShift, .maskNonCoalesced], "pointer moves and drags keep caps lock but add no modifier")
 	let path = paradisDragPath(from: (0, 0), to: (10, 20), steps: 2)
 	check(path.count == 2 && path[0].x == 5 && path[0].y == 10 && path[1].x == 10 && path[1].y == 20, "interpolates the drag path")
 
@@ -750,6 +839,28 @@ do {
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 5) == nil, "keys go to the focused app")
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 5, focusedElementPid: 52)?.code == "window_not_focused", "a panel holding the focused element stops keys")
 	check(paradisFocusFailure(targetPid: 5, focusedApplicationPid: 9, focusedElementPid: 5) != nil && paradisFocusFailure(targetPid: 5, focusedApplicationPid: nil, focusedElementPid: nil) != nil, "keys need keyboard focus in the app")
+}
+
+// MARK: - 動いているアプリの引き方
+
+do {
+	// NSRunningApplication(processIdentifier:) は別のアプリの起動・終了の直後に一時的に nil を返す（実機、2026-10-09）
+	struct FakeApp {
+		let name: String
+		let terminated: Bool
+		let same: Bool
+	}
+	let list: [Int32: FakeApp] = [20: FakeApp(name: "Notes", terminated: false, same: true), 30: FakeApp(name: "Gone", terminated: true, same: true), 40: FakeApp(name: "Reused", terminated: false, same: false)]
+	func lookUp(_ pid: Int32, direct: FakeApp? = nil) -> String? {
+		return paradisLookUpRunningApplication(pid: pid, direct: { _ in direct }, fallback: { list[$0] }, isTerminated: { $0.terminated }, sameProcess: { $0.same })?.name
+	}
+	check(lookUp(20) == "Notes", "finds the app in the list when the direct lookup misses")
+	check(lookUp(20, direct: FakeApp(name: "Direct", terminated: false, same: true)) == "Direct", "uses the direct lookup first")
+	check(lookUp(30) == nil && lookUp(40) == nil && lookUp(50) == nil, "skips a terminated app, a reused pid and an app that is not running")
+	check(paradisSameRunningProcess(appExecutablePath: "/Applications/A.app/Contents/MacOS/A", processExecutablePath: "/Applications/A.app/Contents/MacOS/A", appLaunchDate: nil, processStart: nil), "matches the executable path")
+	check(!paradisSameRunningProcess(appExecutablePath: "/Applications/A.app/Contents/MacOS/A", processExecutablePath: "/Applications/B.app/Contents/MacOS/B", appLaunchDate: 100, processStart: 100), "a different executable is another process")
+	check(paradisSameRunningProcess(appExecutablePath: nil, processExecutablePath: nil, appLaunchDate: 100.5, processStart: 101) && !paradisSameRunningProcess(appExecutablePath: nil, processExecutablePath: nil, appLaunchDate: 100, processStart: 200), "falls back to the launch time")
+	check(!paradisSameRunningProcess(appExecutablePath: nil, processExecutablePath: nil, appLaunchDate: nil, processStart: 100), "cannot tell without a path or a time")
 }
 
 // MARK: - 引数

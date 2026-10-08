@@ -280,6 +280,20 @@ func paradisAccessibilityWindowSkipReason(onScreen: Bool, minimized: Bool, appHi
 }
 
 /**
+ * 座標で当たった要素を 1 段目で使えるか。使えなければ次の段へ譲る理由。当たった要素が目的のウィンドウそのもの
+ * （ボタンなどの無いところ）なら、ウィンドウの要素は `AXWindow` を持たないので、別のウィンドウとは書かない（実機の報告）。
+ */
+func paradisHitElementSkipReason(hitIsTargetWindow: Bool, ownerIsTargetWindow: Bool) -> String? {
+	if hitIsTargetWindow {
+		return "the point is on the window itself, not on a control"
+	}
+	if !ownerIsTargetWindow {
+		return "the element at the point belongs to another window"
+	}
+	return nil
+}
+
+/**
  * 画面のロック中・ほかのユーザーへの切り替え中か（`CGSessionCopyCurrentDictionary` の `kCGSessionOnConsoleKey` と
  * `CGSSessionScreenIsLocked`）。読めない値（nil）では止めない。
  */
@@ -315,6 +329,58 @@ func paradisManualAccessibilityExcluded(bundleId: String?, hasVSCodeProductJson:
 		return true
 	}
 	return paradisManualAccessibilityExcludedPatterns.contains { lower == $0 || lower.hasPrefix($0 + ".") }
+}
+
+/** ウェブの中身を探すときにたどる深さと要素の数の上限。 */
+let paradisWebAreaSearchMaxDepth = 8
+let paradisWebAreaSearchMaxNodes = 400
+
+/**
+ * Electron のウィンドウに `AXManualAccessibility` が要るか（ウェブの中身がまだ AX に出ていないか）。
+ * Electron のウィンドウには、AX のツリーを作る前から閉じる・しまう・広げるのボタンなどの子があるので、
+ * 「ウィンドウの子が空」では判断できない（実機の報告）。ウィンドウから幅優先でたどり、範囲の中の `AXWebArea` を
+ * 全部見る。子のある `AXWebArea` が 1 つでもあれば要らない（空の webview が別にあっても）。`AXWebArea` が無いか全部
+ * 空で、最後までたどれたときだけ要る。深さか要素の数の上限で打ち切ったら要らないとする（決まらないときに立てると、
+ * 別のツールが立てた設定を台帳に載せて後で false へ戻しうるため）。ウィンドウが無いときは要る。
+ * `AXWebArea` の下はたどらない（子の有無だけを見る）。
+ */
+func paradisWindowNeedsManualAccessibility<Node>(_ window: Node?, children: (Node) -> [Node], role: (Node) -> String?,
+	maxDepth: Int = paradisWebAreaSearchMaxDepth, maxNodes: Int = paradisWebAreaSearchMaxNodes) -> Bool {
+	guard let window else {
+		return true
+	}
+	var queue: [(Node, Int)] = [(window, 0)]
+	var index = 0
+	while index < queue.count {
+		if index >= maxNodes {
+			return false
+		}
+		let (node, depth) = queue[index]
+		index += 1
+		let nodeChildren = children(node)
+		if role(node) == "AXWebArea" {
+			if !nodeChildren.isEmpty {
+				return false
+			}
+			continue
+		}
+		if nodeChildren.isEmpty {
+			continue
+		}
+		if depth >= maxDepth {
+			return false
+		}
+		queue.append(contentsOf: nodeChildren.map { ($0, depth + 1) })
+	}
+	return true
+}
+
+/**
+ * `AXManualAccessibility` を立てて台帳に載せてよいか。立てる前に読んだ今の値がすでに true なら、別のツール（または
+ * アプリ自身）が立てたものなので、立てず台帳にも載せない（10 分後に false へ戻さないため）。読めない値は立ててよい。
+ */
+func paradisShouldEnableManualAccessibility(currentValue: Bool?) -> Bool {
+	return currentValue != true
 }
 
 /** 立てたアプリの記録 1 件。pid と、そのプロセスが始まった時刻（秒。pid の使い回しを見分ける）。 */

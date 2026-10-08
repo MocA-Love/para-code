@@ -30,6 +30,8 @@ struct ParadisElementSnapshot {
 
 /** ツリーを読む全体の締め切り。 */
 private let paradisTreeDeadlineSeconds: TimeInterval = 20
+/** `AXManualAccessibility` を立てた後、ウェブの中身が AX に出るまで待つ上限。 */
+private let paradisManualAccessibilityWaitSeconds: TimeInterval = 3
 
 final class ParadisDesktop: ParadisDesktopBackend {
 
@@ -48,7 +50,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 
 	func bundleIdentifier(pid: Int32) -> String? {
 		return paradisOnMain {
-			guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+			guard let app = paradisRunningApplication(pid), !app.isTerminated else {
 				return nil
 			}
 			return app.bundleIdentifier
@@ -119,7 +121,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	}
 
 	func requireRunningApp(_ pid: Int32) throws {
-		let running = paradisOnMain { NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } ?? false }
+		let running = paradisOnMain { paradisRunningApplication(pid).map { !$0.isTerminated } ?? false }
 		guard running else {
 			throw ParadisHelperError(code: "app_not_found", message: "no running application has pid \(pid)")
 		}
@@ -161,19 +163,29 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		AXUIElementSetMessagingTimeout(application, 2.0)
 		var windows = paradisElements(application, kAXWindowsAttribute)
 		var window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
-		// Electron 製のアプリは、支援技術が来たと知らせるまで AX のツリーを作らない。ウィンドウが無いか中身が空なら、
+		// Electron 製のアプリは、支援技術が来たと知らせるまで AX のツリーを作らない。ウィンドウが無いかウェブの中身
+		// （`AXWebArea`）が無い・空なら（閉じるボタンなどの子は AX のツリーを作る前からあるので、子の有無では見ない）、
 		// 公開されている `AXManualAccessibility` を立てて読み直す（Electron が案内している方法。VoiceOver の
 		// `AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない）。利用者のアプリの状態を変えるので、
 		// 操作の許可があるときだけ立て（`enableManualAccessibility`）、VS Code 系には立てず、10 分使わなければ・
 		// 補助アプリが終わるときに false へ戻す（`ParadisManualAccessibilityLedger`）
 		var enabledManualAccessibility = false
 		paradisManualAccessibility.touch(pid)
-		if enableManualAccessibility && (window.map { paradisElements($0, kAXChildrenAttribute).isEmpty } ?? true) && paradisIsElectronApp(pid: pid)
-			&& !paradisManualAccessibilityExcluded(bundleId: bundleIdentifier(pid: pid), hasVSCodeProductJson: paradisHasVSCodeProductJson(pid: pid)) && paradisManualAccessibility.enable(pid: pid) {
+		let needsManualAccessibility = { (window: AXUIElement?) in
+			paradisWindowNeedsManualAccessibility(window, children: { paradisElements($0, kAXChildrenAttribute) }, role: { paradisCopy($0, kAXRoleAttribute) as? String })
+		}
+		if enableManualAccessibility && paradisIsElectronApp(pid: pid)
+			&& !paradisManualAccessibilityExcluded(bundleId: bundleIdentifier(pid: pid), hasVSCodeProductJson: paradisHasVSCodeProductJson(pid: pid))
+			&& needsManualAccessibility(window) && paradisManualAccessibility.enable(pid: pid) {
 			enabledManualAccessibility = true
-			usleep(400_000)
-			windows = paradisElements(application, kAXWindowsAttribute)
-			window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+			// ウェブの中身が出るまで待つ（実機の Electron 43.6.0 の背面のウィンドウでは、立ててから約 2 秒かかった）
+			let shown = Date().addingTimeInterval(paradisManualAccessibilityWaitSeconds)
+			repeat {
+				try ParadisRequestCancellation.check()
+				usleep(250_000)
+				windows = paradisElements(application, kAXWindowsAttribute)
+				window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+			} while needsManualAccessibility(window) && Date() < shown
 		}
 		guard let window else {
 			throw ParadisHelperError(code: "window_not_found", message: "the application has no accessible window")
@@ -345,7 +357,13 @@ final class ParadisManualAccessibilityLedger {
 			entries.removeValue(forKey: pid)
 		}
 		lock.unlock()
-		guard !already, AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
+		guard !already else {
+			return false
+		}
+		// すでに立っていれば、別のツール（かアプリ自身）が立てたもの。立てず、台帳にも載せない（後で false へ戻さない）
+		let application = AXUIElementCreateApplication(pid)
+		guard paradisShouldEnableManualAccessibility(currentValue: (paradisCopy(application, "AXManualAccessibility") as? NSNumber)?.boolValue),
+			AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
 			return false
 		}
 		lock.lock()
@@ -465,9 +483,45 @@ func paradisProcessStart(_ pid: Int32) -> Double? {
 
 let paradisManualAccessibility = ParadisManualAccessibilityLedger()
 
+/**
+ * pid の動いているアプリ（main スレッドで呼ぶ）。`NSRunningApplication(processIdentifier:)` が別のアプリの起動・終了の
+ * 直後に一時的に nil を返すので、一覧からも探す（`paradisLookUpRunningApplication`）。多くの pid を続けて引くときは
+ * `running` に一覧を 1 回だけ写した辞書を渡す。
+ */
+func paradisRunningApplication(_ pid: Int32, running: [Int32: NSRunningApplication]? = nil) -> NSRunningApplication? {
+	return paradisLookUpRunningApplication(
+		pid: pid,
+		direct: { NSRunningApplication(processIdentifier: $0) },
+		fallback: { pid in running.map { $0[pid] } ?? NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid } },
+		isTerminated: { $0.isTerminated },
+		sameProcess: { app in
+			paradisSameRunningProcess(
+				appExecutablePath: app.executableURL?.resolvingSymlinksInPath().path,
+				processExecutablePath: paradisProcessExecutablePath(pid),
+				appLaunchDate: app.launchDate?.timeIntervalSince1970,
+				processStart: paradisProcessStart(pid)
+			)
+		}
+	)
+}
+
+/** 動いているアプリを pid で引く辞書（一覧を 1 回だけ写す。main スレッドで呼ぶ）。 */
+func paradisRunningApplicationsByPid() -> [Int32: NSRunningApplication] {
+	return Dictionary(NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
+}
+
+/** そのプロセスの実行ファイルのパス（シンボリックリンクを解いたもの）。読めなければ nil。 */
+func paradisProcessExecutablePath(_ pid: Int32) -> String? {
+	var buffer = [CChar](repeating: 0, count: Int(4 * MAXPATHLEN))
+	guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else {
+		return nil
+	}
+	return URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
+}
+
 /** VS Code の派生か（`Contents/Resources/app/product.json` があるか）。 */
 private func paradisHasVSCodeProductJson(pid: Int32) -> Bool {
-	guard let bundleURL = paradisOnMain({ NSRunningApplication(processIdentifier: pid)?.bundleURL }) else {
+	guard let bundleURL = paradisOnMain({ paradisRunningApplication(pid)?.bundleURL }) else {
 		return false
 	}
 	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Resources/app/product.json").path)
@@ -475,7 +529,7 @@ private func paradisHasVSCodeProductJson(pid: Int32) -> Bool {
 
 /** Electron 製のアプリか（`Contents/Frameworks/Electron Framework.framework` があるか）。 */
 private func paradisIsElectronApp(pid: Int32) -> Bool {
-	guard let bundleURL = paradisOnMain({ NSRunningApplication(processIdentifier: pid)?.bundleURL }) else {
+	guard let bundleURL = paradisOnMain({ paradisRunningApplication(pid)?.bundleURL }) else {
 		return false
 	}
 	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
