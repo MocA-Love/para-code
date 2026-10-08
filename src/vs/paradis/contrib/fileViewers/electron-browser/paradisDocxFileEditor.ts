@@ -15,7 +15,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisPdfFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -76,6 +76,10 @@ const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freez
 	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
 	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
 });
+
+/** 混み合っていて解析できなかったときに、頼み直すまでの時間と回数。 */
+export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
+export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
 
 /** 解析が最後まで通った文書の、文書内の変更履歴とコメントの一覧の完全さ。 */
 function analyzedWordManifest(analysis: IParadisWordAnalysis): ParadisOfficeCompletenessManifest {
@@ -269,6 +273,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _packageExclusions: ParadisWordPackageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 	/** 詳しい解析（shared process）。表示を出した後に裏で走らせ、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 混み合っていて解析できなかったときの、頼み直しの予約。 */
+	private readonly _semanticRetry = this._register(new MutableDisposable());
+	private _semanticRetries = 0;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticBytes: Uint8Array | undefined;
@@ -967,6 +974,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._semanticResult = undefined;
 		this._semanticSearch = undefined;
 		this._markerByLocator = undefined;
+		this._semanticRetry.clear();
+		this._semanticRetries = 0;
 	}
 
 	/**
@@ -1000,6 +1009,17 @@ export class ParadisDocxFileEditor extends EditorPane {
 				return;
 			}
 			this._semanticResult = result;
+			if (!result.ok && result.code === 'busy') {
+				// 混み合っていただけなので、覚えた中身を捨てて、次の描き直しか少し後に頼み直す。
+				this._semanticBytes = undefined;
+				if (this._semanticRetries++ < PARADIS_WORD_SEMANTIC_BUSY_RETRIES) {
+					this._semanticRetry.value = disposableTimeout(() => {
+						if (isEqual(this._currentResource, resource) && inputEpoch === this._inputEpoch && !this._semanticBytes) {
+							this._requestSemanticAnalysis(resource, bytes, inputEpoch);
+						}
+					}, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS);
+				}
+			}
 			if (result.ok) {
 				this._semanticSearch = new ParadisOfficeSemanticSearch({
 					ownerId: 'paradis-word-view',
