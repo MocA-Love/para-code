@@ -796,3 +796,28 @@ func paradisBackgroundMenuResult(opened: Bool, attempted: Bool, accepted: Bool, 
 	}
 	return ["menuCancelAttempted": attempted, "menuCancelAccepted": accepted, "menuClosed": !stillOpen, "menuOpen": stillOpen, "note": note]
 }
+
+/** Chromium 系の背面単一クリックはページで捨てられる場合がある。送信前に前面経路へ譲る。 */
+func paradisBackgroundSingleClickSupported(clickCount: Int, usesChromium: Bool, targetIsFrontmost: Bool) -> Bool {
+	return clickCount != 1 || !usesChromium || targetIsFrontmost
+}
+
+/** 入力先を検査できない場合も、背面キーの許可として扱わない。 */
+func paradisBackgroundKeyboardFailure(role: String?, belongsToWindow: Bool, isSecret: Bool) -> ParadisHelperError? {
+	guard let role, !role.isEmpty, belongsToWindow else {
+		return ParadisHelperError(code: "window_not_focused", message: "the focused element cannot be inspected in the requested window")
+	}
+	return isSecret ? ParadisHelperError(code: "key_blocked", message: "background input does not target password fields") : nil
+}
+
+/** 文字入力による補完候補だけを後始末から除く。キーで開くメニューは確認する。 */
+func paradisBackgroundChecksMenuAfter(_ action: ParadisInputAction) -> Bool {
+	if case .typeText = action { return false }
+	return true
+}
+
+/** 単一クリックを捨てうる Chromium の同梱フレームワーク。AX 有効化の Electron 判定とは別に使う。 */
+func paradisHasChromiumFramework(_ names: [String]) -> Bool {
+	let known: Set<String> = ["Electron Framework.framework", "Google Chrome Framework.framework", "Chromium Framework.framework", "Microsoft Edge Framework.framework", "Brave Browser Framework.framework", "Arc Framework.framework", "Chromium Embedded Framework.framework"]
+	return names.contains { known.contains($0) }
+}
