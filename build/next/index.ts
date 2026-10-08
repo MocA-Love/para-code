@@ -129,6 +129,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
 	// PARA-PATCH: worker thread the shared process starts to read agent transcripts (usage per space, full-text index)
 	'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts for the Word semantic analysis (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain',
 ];
 
 const codeEntryPoints = [

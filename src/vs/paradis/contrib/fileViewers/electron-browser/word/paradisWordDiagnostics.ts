@@ -13,6 +13,7 @@ import {
 	type ParadisOfficePrintModel,
 	type ParadisOfficeRenderCoverage,
 } from '../../common/paradisOfficeProtocol.js';
+import type { IParadisWordAnalysisCounts, ParadisWordSemanticFailureCode } from '../../common/word/paradisWordSemanticSummary.js';
 
 /** Theme variables keep diagnostics legible when ordinary colors collapse in high-contrast themes. */
 export const PARADIS_WORD_HIGH_CONTRAST_TOKENS = Object.freeze({
@@ -93,6 +94,123 @@ export function renderWordDiagnosticsRibbon(container: HTMLElement, input: Parad
 		const warningElement = dom.append(ribbon, dom.$('span.paradis-word-diagnostic-warning'));
 		warningElement.dataset.code = warning.code;
 		warningElement.textContent = warning.message;
+	}
+	return ribbon;
+}
+
+/**
+ * 詳しい解析の状態。リボンは固定の値ではなく、この状態から作る。
+ * `alternatives` は画面で箱に置き換えた数、`ignoredParts` は表示に関係しないので黙って外した部品の数。
+ */
+export type ParadisWordSemanticRibbonState =
+	| { readonly kind: 'analyzing'; readonly alternatives: number; readonly ignoredParts: number }
+	| { readonly kind: 'failed'; readonly code: ParadisWordSemanticFailureCode; readonly alternatives: number; readonly ignoredParts: number }
+	| { readonly kind: 'analyzed'; readonly counts: IParadisWordAnalysisCounts; readonly alternatives: number; readonly ignoredParts: number }
+	| { readonly kind: 'comparing'; readonly alternatives: number; readonly ignoredParts: number }
+	| { readonly kind: 'compared'; readonly changes: number; readonly truncated: boolean; readonly outcome: ParadisOfficeOutcome; readonly alternatives: number; readonly ignoredParts: number };
+
+/** 解析できなかった理由を利用者向けの短い文にする。中身やパスは含めない。 */
+export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode): string {
+	switch (code) {
+		case 'encrypted': return localize('paradis.word.semantic.failure.encrypted', "暗号化されています");
+		case 'zipBomb':
+		case 'limitExceeded':
+		case 'tooLarge': return localize('paradis.word.semantic.failure.limit', "大きすぎるか時間がかかりすぎます");
+		case 'cancelled': return localize('paradis.word.semantic.failure.cancelled', "取り消しました");
+		case 'unsafe': return localize('paradis.word.semantic.failure.unsafe', "安全に読めない部品があります");
+		case 'unsupported': return localize('paradis.word.semantic.failure.unsupported', "Word 文書の本文が見つかりません");
+		case 'invalid':
+		case 'malformed': return localize('paradis.word.semantic.failure.malformed', "ファイルの形式が正しくありません");
+		case 'failed': return localize('paradis.word.semantic.failure.failed', "内部エラーが起きました");
+	}
+}
+
+/** 描くべきなのに描けていない未知の要素の数。 */
+export function countUnrenderedWordElements(counts: IParadisWordAnalysisCounts): number {
+	return counts.unknownElements.reduce((total, element) => element.disposition === 'unrendered' ? total + element.count : total, 0);
+}
+
+function appendRibbonAction(parent: HTMLElement, text: string, kind: string, onActivate: (() => void) | undefined): HTMLElement {
+	if (!onActivate) {
+		const item = dom.append(parent, dom.$('span.paradis-word-diagnostic-item'));
+		styleRibbonItem(item, kind, text);
+		return item;
+	}
+	const button = dom.append(parent, dom.$('button.paradis-word-diagnostic-item')) as HTMLButtonElement;
+	button.type = 'button';
+	styleRibbonItem(button, kind, text);
+	button.style.background = 'transparent';
+	button.style.color = 'inherit';
+	button.style.font = 'inherit';
+	button.style.cursor = 'pointer';
+	button.addEventListener('click', onActivate);
+	return button;
+}
+
+function styleRibbonItem(item: HTMLElement, kind: string, text: string): void {
+	item.dataset.kind = kind;
+	item.style.display = 'inline-flex';
+	item.style.alignItems = 'center';
+	item.style.padding = '1px 6px';
+	item.style.border = `1px solid ${PARADIS_WORD_HIGH_CONTRAST_TOKENS.border}`;
+	item.style.borderRadius = '2px';
+	item.textContent = text;
+}
+
+/**
+ * 詳しい解析の結果をリボンに出す。数はすべて解析の実数で、固定の値は出さない。
+ * 表示は従来どおり docx-preview なので「表示: 従来の表示（近似）」と正直に添える。
+ */
+export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisWordSemanticRibbonState, onActivate?: () => void): HTMLElement {
+	dom.clearNode(container);
+	const ribbon = dom.append(container, dom.$('.paradis-word-diagnostics'));
+	ribbon.setAttribute('role', 'status');
+	ribbon.setAttribute('aria-live', 'polite');
+	ribbon.setAttribute('aria-atomic', 'true');
+	ribbon.style.display = 'flex';
+	ribbon.style.flexWrap = 'wrap';
+	ribbon.style.alignItems = 'center';
+	ribbon.style.gap = '4px';
+	ribbon.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.foreground;
+	ribbon.dataset.state = state.kind;
+	switch (state.kind) {
+		case 'analyzing':
+			appendRibbonAction(ribbon, localize('paradis.word.semantic.analyzing', "解析中…"), 'analysis', undefined);
+			break;
+		case 'comparing':
+			appendRibbonAction(ribbon, localize('paradis.word.semantic.comparing', "比較中…"), 'analysis', undefined);
+			break;
+		case 'failed': {
+			const item = appendRibbonAction(ribbon, localize('paradis.word.semantic.failed', "解析できませんでした: {0}", wordSemanticFailureMessage(state.code)), 'analysis', onActivate);
+			item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+			item.dataset.code = state.code;
+			break;
+		}
+		case 'analyzed': {
+			appendRibbonAction(ribbon, localize('paradis.word.semantic.complete', "解析 完了"), 'analysis', onActivate);
+			appendRibbonAction(ribbon, localize('paradis.word.semantic.parts', "部品 {0}/{1}", state.counts.parts.parsed, state.counts.parts.expected), 'parts', onActivate);
+			appendRibbonAction(ribbon, localize('paradis.word.semantic.nodes', "要素 {0}", state.counts.nodes), 'nodes', onActivate);
+			const unrendered = countUnrenderedWordElements(state.counts);
+			if (unrendered > 0) {
+				const item = appendRibbonAction(ribbon, localize('paradis.word.semantic.unrendered', "未対応の要素 {0}", unrendered), 'unrendered', onActivate);
+				item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+			}
+			break;
+		}
+		case 'compared': {
+			appendRibbonAction(ribbon, state.outcome === 'complete'
+				? localize('paradis.word.semantic.compareComplete', "比較 完了")
+				: localize('paradis.word.semantic.compareDegraded', "比較 一部のみ"), 'analysis', onActivate);
+			appendRibbonAction(ribbon, state.truncated
+				? localize('paradis.word.semantic.changesTruncated', "変更 {0} 以上", state.changes)
+				: localize('paradis.word.semantic.changes', "変更 {0}", state.changes), 'changes', onActivate);
+			break;
+		}
+	}
+	appendRibbonAction(ribbon, localize('paradis.word.semantic.legacyView', "表示: 従来の表示（近似）"), 'view', undefined);
+	appendRibbonAction(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", state.alternatives), 'alternatives', onActivate);
+	if (state.ignoredParts > 0) {
+		appendRibbonAction(ribbon, localize('paradis.word.semantic.ignoredParts', "無視した部品 {0}", state.ignoredParts), 'ignored', onActivate);
 	}
 	return ribbon;
 }
