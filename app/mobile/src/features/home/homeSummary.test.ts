@@ -4,10 +4,10 @@ import { describe, expect, test, vi } from 'vitest';
 
 // time.ts はフック（useNow）のために react-native を読む。使うのは純粋な formatRelativeTime だけなので差し替える。
 vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
-import { batteryLine, formatCost, pcCardCounts, pcConnectionLine, runningAgents, totalAttention } from './homeSummary.js';
+import { batteryLine, formatCost, pcCardCounts, pcConnectionLine, statScopeNote, totalAttention, totalRunning } from './homeSummary.js';
 import { lastSessionSubtitle, parseLastSession } from './lastSession.js';
 
-const pc = (id: string, waiting: number, online = true) => ({ id, connection: online ? 'online' : 'offline', pcOnline: online, workspaces: 3, waiting });
+const pc = (id: string, waiting: number, online = true, running = 0) => ({ id, connection: online ? 'online' : 'offline', pcOnline: online, workspaces: 3, waiting, running });
 
 describe('統計カード', () => {
 	test('要対応はつながっている PC だけを足す', () => {
@@ -15,15 +15,20 @@ describe('統計カード', () => {
 		expect(totalAttention([{ ...pc('a', 2), pcOnline: false }])).toBe(0);
 	});
 
-	test('実行中はエージェントの working だけで、アーカイブは数えない', () => {
-		const terminals = [
-			{ terminalKey: 'a', agent: true, agentStatus: 'working' },
-			{ terminalKey: 'b', agent: true, agentStatus: 'working' },
-			{ terminalKey: 'c', agent: false, agentStatus: 'working' },
-			{ terminalKey: 'd', agent: true, agentStatus: 'review' },
-		];
-		expect(runningAgents(terminals, new Set(['b']))).toBe(1);
-		expect(runningAgents(undefined, new Set())).toBe(0);
+	test('実行中も全 PC の合計で、つながっている PC だけを足す（見ていない PC も含む）', () => {
+		expect(totalRunning([pc('a', 0, true, 2), pc('b', 1, true, 3), pc('c', 0, false, 4)])).toBe(5);
+		expect(totalRunning([{ ...pc('a', 0, true, 2), pcOnline: false }])).toBe(0);
+	});
+
+	test('カードの下の1行は、つながっている台数（2台以上）と未接続の台数を言う', () => {
+		expect([
+			statScopeNote([pc('a', 0)]),
+			statScopeNote([pc('a', 0), pc('b', 0)]),
+			statScopeNote([pc('a', 0), pc('b', 0), pc('c', 0, false)]),
+			statScopeNote([pc('a', 0), pc('c', 0, false)]),
+			statScopeNote([pc('c', 0, false), pc('d', 0, false)]),
+			statScopeNote([]),
+		]).toEqual([undefined, '2 台の合計', '2 台の合計 · 1 台は未接続', '1 台は未接続', '2 台は未接続', undefined]);
 	});
 
 	test('コストは小数2桁、取れていなければダッシュ', () => {
@@ -50,8 +55,8 @@ describe('PC のカード', () => {
 		});
 	});
 
-	test('見ていない PC は台帳の要約だけ（エージェント数は出さない）', () => {
-		expect(pcCardCounts(pc('b', 2), undefined, new Set())).toEqual({ spaces: 3, agents: undefined, buckets: [{ bucket: 'waiting', count: 2 }] });
+	test('見ていない PC は台帳の要約だけ（要対応と実行中。エージェント数は出さない）', () => {
+		expect(pcCardCounts(pc('b', 2, true, 3), undefined, new Set())).toEqual({ spaces: 3, agents: undefined, buckets: [{ bucket: 'waiting', count: 2 }, { bucket: 'working', count: 3 }] });
 		expect(pcCardCounts(pc('b', 0), undefined, new Set()).buckets).toEqual([]);
 	});
 

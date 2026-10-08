@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { countAttentionAgents, isAttentionAgent } from './attentionCount.js';
+import { countAttentionAgents, countRunningAgents, isAttentionAgent } from './attentionCount.js';
 
 describe('countAttentionAgents', () => {
 	test('許可待ちと質問のエージェントだけを数える', () => {
@@ -41,5 +41,24 @@ describe('countAttentionAgents', () => {
 			{ agent: true, agentStatus: 'working' },
 		];
 		expect(terminals.filter(isAttentionAgent)).toHaveLength(countAttentionAgents(terminals));
+	});
+});
+
+describe('countRunningAgents', () => {
+	const terminals = [
+		{ terminalKey: 'a', agent: true, agentStatus: 'working' },
+		{ terminalKey: 'b', agent: true, agentStatus: 'working' },
+		{ terminalKey: 'c', agent: false, agentStatus: 'working' },
+		{ terminalKey: 'd', agent: true, agentStatus: 'review' },
+		{ terminalKey: 'e', agent: true, agentStatus: 'permission' },
+	];
+
+	test('エージェントの working だけを数え、アーカイブしたものは数えない（保存形の配列と Set のどちらでも）', () => {
+		expect([
+			countRunningAgents(terminals, []),
+			countRunningAgents(terminals, ['b']),
+			countRunningAgents(terminals, new Set(['a', 'b'])),
+			countRunningAgents(undefined, []),
+		]).toEqual([2, 1, 0, 0]);
 	});
 });

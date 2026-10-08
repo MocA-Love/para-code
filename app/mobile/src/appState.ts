@@ -14,7 +14,7 @@ import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { PcCapability, pcHasCapability, type UpdateTarget } from './pcCompat.js';
 import type { PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
-import { countAttentionAgents } from './attentionCount.js';
+import { countAttentionAgents, countRunningAgents } from './attentionCount.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
 import {
@@ -111,6 +111,11 @@ export interface PcSummary {
 	readonly terminals: number;
 	/** 応答待ち（質問・承認）のエージェント数。 */
 	readonly waiting: number;
+	/**
+	 * 実行中のエージェント数（アーカイブしたものは除く。数え方は `attentionCount.ts` の `countRunningAgents`）。
+	 * 見ていない PC も、接続を保っていれば（`keepBackgroundPcs`）その PC の状態から数える。
+	 */
+	readonly running: number;
 	/** 最後にPCがオンラインだと確認できた時刻（一度も繋がっていなければ undefined）。 */
 	readonly lastOnlineAt: number | undefined;
 	/**
@@ -580,6 +585,9 @@ function replaceActiveController(next: MobileController | undefined): number {
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
 let pinnedRecord: ScopedKeyRecord = {};
 let archivedRecord: ScopedKeyRecord = {};
+/** アーカイブの印が無い PC の値（毎回新しい配列を作らない）。 */
+const NO_KEYS: readonly string[] = [];
+
 /**
  * コマンドプリセットの「一覧に出さないもの」と「実行を承認済みのもの」のPC別記録。
  * プリセットの定義はPCごとに違うので、ピン留めと同じくPC IDで分ける。
@@ -608,6 +616,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		terminals: terminals.length,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
 		waiting: countAttentionAgents(terminals),
+		running: countRunningAgents(terminals, archivedRecord[runtime.pc.id] ?? NO_KEYS),
 		// 起動直後でまだ繋がっていなければ、前回の一覧を受け取った時刻を最後の接続として出す。
 		lastOnlineAt: runtime.lastOnlineAt ?? runtime.lastKnown?.savedAt,
 		lastKnown: runtime.lastKnown,
@@ -661,6 +670,56 @@ function publishPcResources(): void {
 	}
 }
 
+type StoreTerminals = NonNullable<StoreState['workspace']>['terminals'];
+type StoreSpaces = NonNullable<StoreState['workspace']>['workspaces'];
+
+/**
+ * PC 1台ぶんの、エージェントの行を組み立てる元（全 PC 横断の一覧 `/agents` が読む）。
+ * 中身は PC から届いた State の部分の参照のまま（`workspaceIdentity.ts` が中身の同じ配列の参照を据え置く）。
+ */
+export interface PcAgentSource {
+	readonly terminals: StoreTerminals;
+	readonly spaces: StoreSpaces;
+	readonly activeWs: string | undefined;
+	/** その PC のアーカイブの印（保存形のキーの配列）。 */
+	readonly archived: readonly string[];
+}
+
+/**
+ * PC ごとのターミナルとスペース。**いま見ていない PC のぶんも入る**（接続を保っている間）。
+ * 画面の状態（`useAppStore` の `workspace`）は見ている PC だけなので、PC をまたいで行を出す画面はここを読む。
+ * `PcSummary` に載せると一覧を購読するすべての画面が State のたびに配り直されるため、別の入れ物にしている。
+ * PC の一覧を作り直すたび（{@link pcSummaries}）に、どれかの参照が変わったときだけ更新する。
+ * State（workspace）を受けていない PC は入らない。
+ */
+export const usePcAgentSources = create<{ readonly byPc: Readonly<Record<string, PcAgentSource>> }>(() => ({ byPc: {} }));
+
+function publishPcAgentSources(): void {
+	const current = usePcAgentSources.getState().byPc;
+	const next: Record<string, PcAgentSource> = {};
+	let changed = false;
+	let count = 0;
+	for (const id of pcOrder) {
+		const workspace = runtimes.get(id)?.state.workspace;
+		if (workspace === undefined) {
+			continue;
+		}
+		count++;
+		const archived = archivedRecord[id] ?? NO_KEYS;
+		const before = current[id];
+		if (before !== undefined && before.terminals === workspace.terminals && before.spaces === workspace.workspaces
+			&& before.activeWs === workspace.activeWs && before.archived === archived) {
+			next[id] = before;
+			continue;
+		}
+		changed = true;
+		next[id] = { terminals: workspace.terminals, spaces: workspace.workspaces, activeWs: workspace.activeWs, archived };
+	}
+	if (changed || count !== Object.keys(current).length) {
+		usePcAgentSources.setState({ byPc: next });
+	}
+}
+
 /** PCの長期公開鍵から色を決める（並び順に依存しない、そのPC固有の値）。 */
 function pcHue(pc: PairedPc): number {
 	let hash = 0;
@@ -673,7 +732,7 @@ function pcHue(pc: PairedPc): number {
 function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
 		&& a.pairingRejected === b.pairingRejected && a.updateRequired === b.updateRequired
-		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
+		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting && a.running === b.running
 		&& a.lastOnlineAt === b.lastOnlineAt && a.lastKnown === b.lastKnown
 		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
 		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
@@ -692,6 +751,7 @@ let lastSummaries: PcSummary[] = [];
 
 function pcSummaries(): PcSummary[] {
 	publishPcResources();
+	publishPcAgentSources();
 	const next = pcOrder
 		.map(id => runtimes.get(id))
 		.filter((runtime): runtime is PcRuntime => runtime !== undefined)
@@ -2013,8 +2073,9 @@ export const useAppStore = create<AppState>(set => ({
 		} else {
 			next.delete(key);
 		}
-		set({ archivedKeys: next });
 		persistArchivedKeys(activePcId, next);
+		// 実行中の数（PcSummary.running）と横断の一覧（usePcAgentSources）はアーカイブの印を引くので、配り直す。
+		set({ archivedKeys: next, pcs: pcSummaries() });
 	},
 
 	setPresetHidden(key: string, hidden: boolean) {

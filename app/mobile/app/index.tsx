@@ -8,7 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { unreadQuestionNotificationCount } from '../src/components/notificationCount.js';
 import { AccountUsageCard, HomeEmptyState, HomeTopBar, QuickActions, ResumeCard, StatCards } from '../src/features/home/homeParts.js';
-import { batteryLine, formatCost, lastKnownCardCounts, pcCardCounts, pcConnectionLine, runningAgents, totalAttention } from '../src/features/home/homeSummary.js';
+import { batteryLine, formatCost, lastKnownCardCounts, pcCardCounts, pcConnectionLine, statScopeNote, totalAttention, totalRunning } from '../src/features/home/homeSummary.js';
 import { lastKnownLabel } from '../src/features/pc/lastKnownPcList.js';
 import { lastSessionSubtitle } from '../src/features/home/lastSession.js';
 import { useLastSession } from '../src/features/home/lastSessionStore.js';
@@ -21,6 +21,7 @@ import { startStatusSinceTracking } from '../src/features/pc/statusSinceStore.js
 import { haptic } from '../src/haptics.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { useShortcutSlot } from '../src/ipad/shortcutRegistry.js';
+import { settingsRoutes } from '../src/features/settings/settingsRoutes.js';
 import { isPairingRejected, shouldShowBattery } from '../src/pcStatus.js';
 import { routes } from '../src/routes.js';
 import { colors, space, type } from '../src/theme.js';
@@ -38,7 +39,8 @@ startStatusSinceTracking();
  * PC が1台も無いときは「デスクトップをつなぐ」の空の状態だけを出す。
  *
  * 統計カードの中身は、PC 側に起動回数などの集計が無いので「要対応・実行中・今日のコスト」で代えている
- * （理由は `src/features/home/homeSummary.ts`）。
+ * （理由は `src/features/home/homeSummary.ts`）。3枚とも全 PC の合計で、押すと内訳を開く: 要対応・実行中は
+ * 全 PC 横断の一覧（`/agents`。件数が 0 でも開く）、今日のコストはコストの画面（全 PC）。
  */
 export default function HomeScreen() {
 	const router = useRouter();
@@ -61,6 +63,7 @@ export default function HomeScreen() {
 	}, [loadLastSession]);
 
 	const unread = unreadQuestionNotificationCount(notifications);
+	const attention = totalAttention(pcs);
 	// ペアリングが無い（切れた）ときは、PC の一覧があってもペアリングの案内を出す（旧来のホームと接続ガードの代わり）。
 	const pairingRequired = usePairingRequired();
 	const empty = (ready && pcs.length === 0) || pairingRequired;
@@ -86,10 +89,11 @@ export default function HomeScreen() {
 					<Text style={styles.hero} accessibilityRole="header">おかえりなさい</Text>
 					<StatCards
 						items={[
-							{ label: '要対応', value: String(totalAttention(pcs)) },
-							{ label: '実行中', value: String(runningAgents(terminals, archivedKeys)) },
-							{ label: '今日のコスト', value: formatCost(usage.cost) },
+							{ label: '要対応', value: String(attention), hot: attention > 0, hint: '全 PC の要対応のエージェントの一覧を開きます', onPress: () => router.push(routes.agents('waiting')) },
+							{ label: '実行中', value: String(totalRunning(pcs)), hint: '全 PC の実行中のエージェントの一覧を開きます', onPress: () => router.push(routes.agents('running')) },
+							{ label: '今日のコスト', value: formatCost(usage.cost), hint: 'コストの画面を開きます', onPress: () => router.push(settingsRoutes.usageDetail('cost')) },
 						]}
+						note={statScopeNote(pcs)}
 					/>
 					<SectionHeader title="デスクトップ" />
 					{pcs.map(pc => {
@@ -103,7 +107,7 @@ export default function HomeScreen() {
 								connectionText={pcConnectionLine(kind, pc.lastOnlineAt, now, isPairingRejected(pc), pc.updateRequired)}
 								pairingRejected={isPairingRejected(pc)}
 								detail={shouldShowBattery(pc) && pc.battery !== undefined ? batteryLine(pc.battery) : undefined}
-								// 見ていない PC のターミナルは届かないので、件数は台帳の要約から出す。
+								// 見ていない PC は台帳の要約（要対応と実行中の数）から出す（全部の状態の内訳は見ている PC だけ）。
 								counts={pcCardCounts(pc, pc.id === activePcId ? terminals : undefined, archivedKeys)}
 								// つながるまでは前回の一覧を目安として出す（W2-25。版が合わない PC には出さない）。
 								lastKnown={kind !== 'connected' && pc.lastKnown !== undefined && pc.updateRequired === undefined

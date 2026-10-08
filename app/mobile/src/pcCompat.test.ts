@@ -11,7 +11,7 @@ import type { WorkspaceState } from './store.js';
 
 const summary: PcSummary = {
 	id: 'pc1', name: 'Para Code', hue: 0, connection: 'online', pcOnline: true, pairingRejected: false,
-	workspaces: 1, terminals: 1, waiting: 0, lastOnlineAt: 1, battery: undefined,
+	workspaces: 1, terminals: 1, waiting: 0, running: 0, lastOnlineAt: 1, battery: undefined,
 };
 
 describe('pcCompat', () => {

@@ -8,7 +8,7 @@ function pc(overrides: Partial<PcSummary> = {}): PcSummary {
 	return {
 		id: 'pc1', name: 'Para Code', hue: 0,
 		connection: 'online', pcOnline: true, pairingRejected: false,
-		workspaces: 3, terminals: 5, waiting: 0, lastOnlineAt: 1,
+		workspaces: 3, terminals: 5, waiting: 0, running: 0, lastOnlineAt: 1,
 		battery: { level: 62, charging: false },
 		...overrides,
 	};
