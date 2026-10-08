@@ -319,7 +319,19 @@ suite('ParadisOfficePackageReader', () => {
 		);
 		const missingInventory = await inspectOfficePackage(missingTarget, profile({}), CancellationToken.None);
 		strictEqual(missingInventory.relationships.find(relationship => relationship.id === 'rId2')?.missing, true);
-		strictEqual(missingInventory.outcome, 'blocked');
+		// A dangling relationship the document does not need to render only degrades the inventory.
+		strictEqual(missingInventory.outcome, 'degraded');
+
+		const missingStyles = await createParadisOfficeNodeArchive(
+			await buildOpcFixture({
+				parts: [['/word/document.xml', '<document/>']],
+				relationships: [
+					{ id: 'rId1', type: officeDocumentRelationship, target: 'word/document.xml' },
+					{ source: '/word/document.xml', id: 'rId2', type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles', target: 'styles.xml' },
+				],
+			}),
+		);
+		strictEqual((await inspectOfficePackage(missingStyles, profile({}), CancellationToken.None)).outcome, 'blocked');
 	});
 
 	test('rejects ContentTypes and Relationships with the right local names but wrong namespaces', async () => {

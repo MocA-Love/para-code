@@ -108,7 +108,9 @@ suite('ParadisDocxFileEditor', () => {
 		strictEqual(serialized.includes('RAW-FONT'), false);
 		strictEqual(serialized.includes('ALTCHUNK'), false);
 		ok(serialized.includes('Office asset unavailable'));
-		strictEqual(result.placeholders.length, 3);
+		// Only the drawn SVG becomes a box; the unconsumed font and altChunk are left out and listed.
+		strictEqual(result.placeholders.length, 1);
+		strictEqual(result.ignoredParts.length, 2);
 		ok(reopened.bytes.byteLength > 0);
 	});
 

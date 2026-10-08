@@ -358,6 +358,11 @@ function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () =
 			if (!extension || !type) {
 				throw new ParadisOfficePackageError('malformed');
 			}
+			// Extensions compare case-insensitively (Part 2 §7.2.3.2); a second Default for one is malformed,
+			// as the sanitizer and both semantic parsers already treat it.
+			if (defaults.has(extension.toLowerCase())) {
+				throw new ParadisOfficePackageError('malformed');
+			}
 			defaults.set(extension.toLowerCase(), type);
 			continue;
 		}
