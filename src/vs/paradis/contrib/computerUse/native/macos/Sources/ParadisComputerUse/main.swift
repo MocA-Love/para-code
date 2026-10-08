@@ -56,11 +56,13 @@ private final class ParadisAgentDelegate: NSObject, NSApplicationDelegate {
 }
 
 switch paradisParseArguments(Array(CommandLine.arguments.dropFirst())) {
-case .agent(let socketPath, let tokenFile):
+case .agent(let socketPath, let tokenFile, let stateDirectory):
 	guard let token = paradisConsumeTokenFile(tokenFile) else {
 		paradisExit(.badArguments, "token file is missing or malformed")
 	}
 	let desktop = ParadisDesktop()
+	// 前の起動がクラッシュ・SIGKILL で戻せなかった AXManualAccessibility を戻し、以後の記録の置き場所を決める
+	paradisManualAccessibility.configure(stateDirectory: stateDirectory)
 	// どの終わり方（shutdown・切断・締め切りの SIGTERM）でも、立てた AXManualAccessibility を戻す
 	atexit {
 		paradisManualAccessibility.restoreAll()

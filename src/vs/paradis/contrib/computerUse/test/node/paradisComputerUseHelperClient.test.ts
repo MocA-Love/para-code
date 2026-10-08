@@ -32,6 +32,8 @@ interface IFakeHelperOptions {
  */
 class FakeHelper {
 	launches = 0;
+	/** 起動の引数の `--state-dir`。 */
+	readonly stateDirectories: (string | undefined)[] = [];
 	readonly handshakeTokens: string[] = [];
 	readonly tokenFileModes: number[] = [];
 	readonly requests: string[] = [];
@@ -70,6 +72,7 @@ class FakeHelper {
 
 	private async _launch(args: readonly string[]): Promise<void> {
 		this.launches++;
+		this.stateDirectories.push(args.includes('--state-dir') ? args[args.indexOf('--state-dir') + 1] : undefined);
 		if (this._options.launchFails) {
 			throw new Error('open exited with 1');
 		}
@@ -178,6 +181,7 @@ suite('ParadisComputerUseHelperClient', () => {
 			requests: fake.requests,
 			staleTerminated: fake.staleTerminated,
 			runtimeMode: (await fs.stat(join(root, 'runtime'))).mode & 0o777,
+			stateDirectories: fake.stateDirectories,
 			runtimeEntries,
 			pidFile: await fs.readFile(join(root, 'runtime', 'helper.pid'), 'utf8'),
 		}, {
@@ -198,6 +202,8 @@ suite('ParadisComputerUseHelperClient', () => {
 			requests: ['handshake', 'status', 'listApps'],
 			staleTerminated: [777],
 			runtimeMode: 0o700,
+			// 補助アプリがクラッシュしても次の起動で AXManualAccessibility を戻せるよう、記録の置き場所を渡す
+			stateDirectories: [join(root, 'runtime')],
 			// ソケットとトークンを置いたその起動だけのフォルダは残さない
 			runtimeEntries: ['helper.pid'],
 			pidFile: '4321',

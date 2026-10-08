@@ -996,6 +996,30 @@ Electron 製のアプリ（`Contents/Frameworks/Electron Framework.framework` �
 
 確かめていないこと: Electron 製のアプリでの `AXManualAccessibility`（利用者のアプリの状態を変えるため試していない）、承認ダイアログそのものの実機での見え方（ユニットテストだけ。送り直しの `activateFirst` は確認用のアプリで確かめた）、3 段目での札の追従（実カーソルを動かすため試していない）、別の操作スペース・隠したアプリでの 1 段目の譲り（利用者の画面の状態を変えるため試していない。判定は Core のテスト）、画面のロック中（同じ理由。判定は Core のテスト）、複数の画面・フルスクリーンのアプリの上でのカーソル、前面のアプリでの `AXShowMenu` の後にメニューの項目を押す流れ、Developer ID で署名した補助アプリでの動き。
 
+#### 2 回目のレビューの残り（中 2 件・軽微 2 件、2026-10-08）
+
+背面のアプリのメニュー（中 1）: 利用者が背面のアプリで右クリックして開いたメニューを、エージェントの操作の後の `AXCancel` で閉じうるため、1 段目の確かめで、背面のアプリにメニューが開いていれば `menu_open` で止める（送らず、閉じもしない）。開いているかは、そのアプリがポップアップメニューの層（`CGWindowLevelForKey(.popUpMenuWindow)`）のウィンドウを画面に出しているかと、AX の `AXMenu`（操作した要素の子・アプリの直下・フォーカスのある要素の親）で見る。閉じるのは、背面のアプリで、操作の前には開いておらず、操作の後に開いているメニューだけ（`paradisShouldCloseMenu`）。前面のアプリでは止めない（エージェント自身が開いたメニューの項目を押す流れのため）。
+
+確認用のアプリ（処理の中で `NSMenu.popUp` でメニューを出すボタンと、ポップアップボタン）で確かめたこと:
+
+| 確かめたこと | 結果 |
+|---|---|
+| 背面のアプリで、メニューを出すボタンを補助アプリから押す | `AXPress` は約 1 秒で `kAXErrorCannotComplete`（-25204）を返した（アプリがボタンの処理の中でメニューを開いたまま返らないため）。結果は `axError` 付きで `verified: null`。メニューは押したボタンの子の `AXMenu` に出て、補助アプリが `AXCancel` を送ると閉じた（`menuClosed: true`、アプリの記録は「開いた → 閉じた → popUp から戻った」） |
+| 同じとき、画面全体へのフォーカスの問い合わせ | メニューが開いている間は `kAXErrorCannotComplete` で答えが無く、`focusPreserved` は true のままだった。このため閉じる条件からフォーカスの変化を外した |
+| 確認用のプログラムでポップアップのメニューを開いた（利用者が開いたのと同じ状態）直後に、補助アプリからボタンを押す | `menu_open` で止まり、ボタンは押されず、補助アプリはメニューを閉じなかった |
+
+背面のアプリのメニューは、開いてから 1 秒ほどで閉じることがあった（利用者がほかのアプリを使っていたためと思われるが、原因は確かめていない【要確認】）。メニューの確かめと操作の間に利用者がメニューを開いた場合は見分けられない。
+
+`AXManualAccessibility` の台帳（中 2）:
+
+- 鍵を pid とプロセスが始まった時刻の組にした。始まった時刻は `proc_pidinfo` の `PROC_PIDTBSDINFO` で読む（`NSRunningApplication.launchDate` は LaunchServices を通さずに起動したアプリでは取れないため）。立てる・使う・戻す前に同じプロセスかを確かめ、pid が別のアプリに使い回されていれば書かずに台帳から外す
+- 戻す前に `NSWorkspace.isVoiceOverEnabled`・`isSwitchControlEnabled` を見て、どちらかが動いていれば戻さずに台帳から外すだけにする（こちらの false がそれらのための支援も止めうるため）
+- 台帳を shared process の実行時フォルダ（`<userData>/paradis-computer-use/manual-accessibility.json`、0600。補助アプリへ `--state-dir` で渡す）にも書き、次に補助アプリが起動したとき、同じプロセスがまだ動いていれば戻す。限界: 補助アプリがクラッシュ・SIGKILL で終わってから次に起動するまでの間は立ったまま。Computer Use をオフにしたまま次の起動が無ければ、そのアプリが終わるまで立ったまま。古い shared process は `--state-dir` を渡さないので、その組み合わせではファイルに書かない
+
+VS Code の派生（軽微）: bundle id の一覧に加えて、`Contents/Resources/app/product.json` があるアプリには立てない（Positron・Kiro・Trae など一覧に無い派生も外れる）。
+
+文字入力の前面化（軽微）: 承認の直後の `activateFirst` を、塊が 3 段目（前面）で送られるまで付け続ける。送り直しの塊が 1 段目で通ると前面化は起きないので、そこで外すと次の塊が前面の段に落ちて `window_not_focused` で止まっていた。
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:

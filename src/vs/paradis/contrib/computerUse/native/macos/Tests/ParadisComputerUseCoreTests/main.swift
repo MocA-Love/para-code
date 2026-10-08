@@ -479,8 +479,28 @@ do {
 	check(paradisSessionFailure(onConsole: nil, screenLocked: nil) == nil, "does not stop on unreadable session values")
 
 	// AXManualAccessibility は VS Code 系に立てず、10 分使わなければ戻す（レビュー 中 4）
-	check(paradisManualAccessibilityExcluded(bundleId: "com.microsoft.VSCode") && paradisManualAccessibilityExcluded(bundleId: "com.todesktop.230313mzl4w4u92") && paradisManualAccessibilityExcluded(bundleId: nil), "never sets AXManualAccessibility on VS Code family apps")
-	check(!paradisManualAccessibilityExcluded(bundleId: "com.tinyspeck.slackmacgap"), "may set AXManualAccessibility on other Electron apps")
+	check(paradisManualAccessibilityExcluded(bundleId: "com.microsoft.VSCode", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: "com.todesktop.230313mzl4w4u92", hasVSCodeProductJson: false) && paradisManualAccessibilityExcluded(bundleId: nil, hasVSCodeProductJson: false), "never sets AXManualAccessibility on VS Code family apps")
+	check(!paradisManualAccessibilityExcluded(bundleId: "com.tinyspeck.slackmacgap", hasVSCodeProductJson: false), "may set AXManualAccessibility on other Electron apps")
+	check(paradisManualAccessibilityExcluded(bundleId: "co.posit.positron", hasVSCodeProductJson: true), "never sets AXManualAccessibility on a VS Code fork that is not in the list")
+
+	// 立てたアプリを戻すか（レビュー 2 回目 中 2）: 同じプロセスで、支援技術が動いていないときだけ
+	check(paradisSameProcess(recordedStart: 100.2, currentStart: 100.5) && !paradisSameProcess(recordedStart: 100, currentStart: 250) && !paradisSameProcess(recordedStart: 100, currentStart: nil), "tells a reused pid apart by the process start time")
+	check(paradisManualAccessibilityRestoreDecision(recordedStart: 100, currentStart: 100, assistiveTechnologyRunning: false) == .restore, "restores the same process")
+	check(paradisManualAccessibilityRestoreDecision(recordedStart: 100, currentStart: 250, assistiveTechnologyRunning: false) == .forget, "never writes to another app that reused the pid")
+	check(paradisManualAccessibilityRestoreDecision(recordedStart: 100, currentStart: nil, assistiveTechnologyRunning: false) == .forget, "forgets an app that quit")
+	check(paradisManualAccessibilityRestoreDecision(recordedStart: 100, currentStart: 100, assistiveTechnologyRunning: true) == .forget, "leaves it on while VoiceOver or Switch Control runs")
+	let saved = try! JSONEncoder().encode([ParadisManualAccessibilityEntry(pid: 42, started: 1_700_000_000.5)])
+	check(paradisDecodeManualAccessibilityEntries(saved) == [ParadisManualAccessibilityEntry(pid: 42, started: 1_700_000_000.5)], "reads the leftover record of a crashed helper")
+	check(paradisDecodeManualAccessibilityEntries(Data("broken".utf8)).isEmpty && paradisDecodeManualAccessibilityEntries(nil).isEmpty, "treats a broken or missing record as empty")
+
+	// 背面のアプリで開いているメニューは利用者のもの: 止めて、閉じない（レビュー 2 回目 中 1）
+	check(paradisMenuOpenFailure(menuOpen: true, targetIsFrontmost: false)?.code == "menu_open", "stops while the user has a menu open in a background app")
+	check(paradisMenuOpenFailure(menuOpen: true, targetIsFrontmost: true) == nil, "lets the agent press items of a menu in the front app")
+	check(paradisMenuOpenFailure(menuOpen: false, targetIsFrontmost: false) == nil, "runs when no menu is open")
+	check(paradisShouldCloseMenu(targetIsFrontmost: false, menuOpenBefore: false, menuOpenAfter: true), "closes a menu the action opened in a background app")
+	check(!paradisShouldCloseMenu(targetIsFrontmost: false, menuOpenBefore: true, menuOpenAfter: true), "never closes a menu that was open before the action")
+	check(!paradisShouldCloseMenu(targetIsFrontmost: true, menuOpenBefore: false, menuOpenAfter: true), "never closes a menu in the front app")
+	check(!paradisShouldCloseMenu(targetIsFrontmost: false, menuOpenBefore: false, menuOpenAfter: false), "has nothing to close without a menu")
 	let now = Date()
 	check(paradisManualAccessibilityExpired(lastUsed: now.addingTimeInterval(-paradisManualAccessibilityIdleSeconds), now: now) && !paradisManualAccessibilityExpired(lastUsed: now.addingTimeInterval(-60), now: now), "restores AXManualAccessibility after ten idle minutes")
 
@@ -644,6 +664,8 @@ do {
 	check(paradisParseArguments(["--agent", "--socket", "/tmp/a", "--token-file", "/tmp/b"]) == .agent(socketPath: "/tmp/a", tokenFile: "/tmp/b"), "parses agent mode")
 	check(paradisParseArguments(["--agent", "-psn_0_123", "--socket", "/tmp/a", "--token-file", "/tmp/b"]) == .agent(socketPath: "/tmp/a", tokenFile: "/tmp/b"), "ignores the process serial number")
 	check(paradisParseArguments(["--agent", "--socket", "/tmp/a"]) == .usage, "agent mode needs a token file")
+	check(paradisParseArguments(["--agent", "--socket", "/tmp/a", "--token-file", "/tmp/b", "--state-dir", "/tmp/c"]) == .agent(socketPath: "/tmp/a", tokenFile: "/tmp/b", stateDirectory: "/tmp/c"), "parses the state directory")
+	check(paradisParseArguments(["--agent", "--socket", "/tmp/a", "--token-file", "/tmp/b", "--state-dir", ""]) == .agent(socketPath: "/tmp/a", tokenFile: "/tmp/b", stateDirectory: nil), "ignores an empty state directory")
 	check(paradisParseArguments([]) == .usage, "no arguments is usage")
 	check(paradisParseArguments(["--permission-status"]) == .permissionStatus, "parses the permission status mode")
 }
