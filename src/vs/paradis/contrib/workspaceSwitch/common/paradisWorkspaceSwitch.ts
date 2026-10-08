@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -799,6 +799,48 @@ export interface IParadisWorkspaceSwitchService {
 	replayCommittedScopeRetirements(): Promise<void>;
 	/** Reconciles a switch transaction that was interrupted after editor state and folders diverged. */
 	recoverInterruptedSwitch(): Promise<void>;
+}
+
+/**
+ * worktree のスペースが今もあるかを引く口。一覧を持つのは worktree サービスで、切り替えサービスから
+ * DI で掴むと循環する (worktree サービスが切り替えサービスに依存している) ため、ここへ関数を預けてもらう。
+ */
+let worktreePresenceLookup: ((stateKey: string) => boolean) | undefined;
+
+export function paradisRegisterWorktreePresenceLookup(lookup: (stateKey: string) => boolean): IDisposable {
+	worktreePresenceLookup = lookup;
+	return toDisposable(() => {
+		if (worktreePresenceLookup === lookup) {
+			worktreePresenceLookup = undefined;
+		}
+	});
+}
+
+/**
+ * worktree のキー (`worktree:<uri>`) のスペースが今もあるか (一覧にあって missing でない、または
+ * 既知の worktree で missing と確定していない)。引く口が無い (worktree サービスがまだ無い) ときは false。
+ * 呼び出し側は false を「持ち主のスペースが分からない」として今までどおりに扱うこと
+ * (無い預け先へ入れると二度と届かない)。
+ */
+export function paradisIsPresentWorktreeKey(stateKey: string): boolean {
+	try {
+		return worktreePresenceLookup?.(stateKey) ?? false;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 「スペースの切り替えを待ってから、そのスペースのものを開く」処理が、開く直前に確かめる条件。
+ * 今そのスペースに居て、別のスペースへの切り替えも始まっていないときだけ true。
+ *
+ * 切り替えは順番に並ぶので、待っている間に別の切り替え (利用者のクリック・ほかの通知) が
+ * 割り込むことがある。確かめずに開くと、待っていたスペースのターミナルやページが今のスペースの
+ * タブになり、次の切り替えで今のスペースの預け先へ紛れ込む。false のときは開かずに戻ること。
+ */
+export function paradisIsSettledOnSpace(service: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'pendingSwitchTargetKey'>, stateKey: string): boolean {
+	const pending = service.pendingSwitchTargetKey;
+	return service.activeStateKey === stateKey && (pending === undefined || pending === stateKey);
 }
 
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------

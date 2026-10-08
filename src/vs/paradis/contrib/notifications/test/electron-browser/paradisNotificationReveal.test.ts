@@ -11,7 +11,20 @@ import { FocusMode } from '../../../../../platform/native/common/native.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisNotificationRevealServices, paradisRevealNotifiedPane } from '../../electron-browser/paradisNotificationReveal.js';
 
-function createServices(activeStateKey: string | undefined, instances: Map<number, ITerminalInstance>, calls: string[], pendingSwitchTargetKey?: string): IParadisNotificationRevealServices {
+/**
+ * `landOn` を渡すと、切り替えはそのスペースに着いて終わる (待っている間に別の切り替えが割り込んだ)。
+ * 渡さなければ頼まれたスペースに着く。
+ */
+function createServices(activeStateKey: string | undefined, instances: Map<number, ITerminalInstance>, calls: string[], pendingSwitchTargetKey?: string, landOn?: string): IParadisNotificationRevealServices {
+	const workspaceSwitchService = {
+		activeStateKey,
+		pendingSwitchTargetKey,
+		switchToStateKey: async (stateKey: string) => {
+			calls.push(`switch:${stateKey}`);
+			workspaceSwitchService.activeStateKey = landOn ?? stateKey;
+			workspaceSwitchService.pendingSwitchTargetKey = undefined;
+		},
+	};
 	return {
 		hostService: {
 			focus: async (targetWindow: Window, options?: { mode?: FocusMode }) => {
@@ -24,13 +37,7 @@ function createServices(activeStateKey: string | undefined, instances: Map<numbe
 				calls.push(`focusInstance:${instance.instanceId}`);
 			},
 		},
-		workspaceSwitchService: {
-			activeStateKey,
-			pendingSwitchTargetKey,
-			switchToStateKey: async (stateKey: string) => {
-				calls.push(`switch:${stateKey}`);
-			},
-		},
+		workspaceSwitchService,
 	};
 }
 
@@ -71,5 +78,15 @@ suite('ParadisNotificationReveal', () => {
 			'focus:main:force', 'switch:repo-a', 'focusInstance:7',
 			'focus:main:force', 'switch:repo-b', 'focusInstance:7',
 		]);
+	});
+
+	test('does not open the pane when another switch took over while waiting', async () => {
+		const calls: string[] = [];
+		const instances = new Map([[7, fakeInstance(7)]]);
+
+		// repo-b のペインへ向かう間に、利用者が repo-c へ切り替えた。開くと repo-c のタブに紛れ込む。
+		await paradisRevealNotifiedPane(createServices('repo-a', instances, calls, undefined, 'repo-c'), 'repo-b', 7);
+
+		assert.deepStrictEqual(calls, ['focus:main:force', 'switch:repo-b']);
 	});
 });
