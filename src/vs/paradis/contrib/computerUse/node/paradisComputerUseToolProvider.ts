@@ -1242,7 +1242,7 @@ function describeHelperError(error: unknown): string {
 			case 'input_unsupported':
 				return `Para Code could not send this action to that element (${error.message}). For a value, click the element and type instead.`;
 			case 'menu_open':
-				return 'A menu is open in the app while it is not in front, so the user is probably using it. Para Code did not send input and left the menu open. Wait, or ask the user in the conversation.';
+				return 'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close. Para Code did not send input and left the menu open. Ask the user in the conversation to close the menu (Escape or a click elsewhere), then try again.';
 			case 'screen_locked':
 				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':

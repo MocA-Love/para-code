@@ -179,8 +179,11 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		let before = paradisAXValueText(paradisCopy(element, kAXValueAttribute))
 		let focusBefore = paradisFocusSnapshot()
 		// 操作の前にメニューが開いていたか（開いていれば上の確かめで止めているが、閉じるのは操作が開いたものだけに限る）
-		let menuOpenBefore = !targetIsFrontmost && (paradisAppShowsMenu(pid: pid) || paradisOpenMenu(pid: pid, near: element) != nil)
+		let menuOpenBefore = !targetIsFrontmost && (paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: element) != nil)
 		var verified: Bool?
+		// 操作が戻るまでの時間（ボタンの処理の中でメニューを出すアプリでは約 1 秒戻らない。その間の打鍵を見る）
+		let actionStarted = Date()
+		var actionSeconds: Double = 0
 		// 「何もしていないと言い切れない」失敗（締め切りなど）。送ったかもしれないので次の段へは譲らず、確かめられないと返す
 		var uncertainError: AXError?
 		if actionName == "AXFocused" {
@@ -204,6 +207,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			if error != .success && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
 				return .fellThrough("the element refused \(actionName) (AXError \(error.rawValue))")
 			}
+			actionSeconds = Date().timeIntervalSince(actionStarted)
 			uncertainError = error == .success ? nil : error
 			usleep(paradisAXSettleMicroseconds)
 			verified = actionName == "AXPress" && uncertainError == nil ? paradisAXPressCheck(role: role, before: before, after: paradisAXValueText(paradisCopy(element, kAXValueAttribute))).verified : nil
@@ -213,9 +217,23 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		}
 		let focusPreserved = paradisFocusPreserved(before: focusBefore, after: paradisFocusSnapshot())
 		// 背面のアプリでメニューが開いてしまったら（押したボタンがメニューを出したなど）、利用者の打鍵が項目を選ばないよう閉じる
+		// AX に出ないメニューや非同期に開くメニューもあるので、メニューのウィンドウの層も見る。閉じられなければ黙って残さず伝える
 		let menuAfter = targetIsFrontmost ? nil : paradisOpenMenu(pid: pid, near: element)
-		let menuClosed = paradisShouldCloseMenu(targetIsFrontmost: targetIsFrontmost, menuOpenBefore: menuOpenBefore, menuOpenAfter: menuAfter != nil)
-			&& menuAfter.map { AXUIElementPerformAction($0, kAXCancelAction as CFString) == .success } == true
+		let menuWindowAfter = targetIsFrontmost ? nil : paradisAppMenuWindow(pid: pid)
+		let menuOpened = paradisShouldCloseMenu(targetIsFrontmost: targetIsFrontmost, menuOpenBefore: menuOpenBefore, menuOpenAfter: menuAfter != nil || menuWindowAfter != nil)
+		var cancelled = false
+		var stillVisible = false
+		if menuOpened {
+			cancelled = menuAfter.map { AXUIElementPerformAction($0, kAXCancelAction as CFString) == .success } == true
+			usleep(100_000)
+			stillVisible = paradisAppMenuWindow(pid: pid) != nil
+		}
+		let menuReport = paradisMenuAfterAction(
+			opened: menuOpened,
+			closed: cancelled,
+			stillVisible: stillVisible,
+			userTypedDuringAction: menuOpened && paradisUserTypedDuringAction(secondsSinceKeyboard: desktop.inputMonitor.secondsSincePhysicalKeyboardInput(), actionSeconds: actionSeconds + 0.1)
+		)
 		if let cursor, let center {
 			ParadisCursorOverlay.shared.ripple(cursor, at: center)
 		}
@@ -232,9 +250,14 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		if let uncertainError {
 			result["axError"] = Int(uncertainError.rawValue)
 		}
-		if menuClosed {
+		if menuReport.closed {
 			result["menuClosed"] = true
-			result["note"] = "A menu opened in the app while it was not in front, so Para Code closed it. Bring the app forward with computer_activate_app to use the menu."
+		}
+		if menuReport.stillOpen {
+			result["menuOpen"] = true
+		}
+		if let note = menuReport.note {
+			result["note"] = note
 		} else if !focusPreserved {
 			result["note"] = targetIsFrontmost && actionName == "AXShowMenu"
 				? "The context menu took the keyboard focus while it is open."
@@ -408,7 +431,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		}
 		// 背面のアプリでメニューが開いていれば、利用者がそのアプリで右クリックして使っている最中。送らない（閉じもしない）
 		let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier } == pid
-		if !frontmost, let failure = paradisMenuOpenFailure(menuOpen: paradisAppShowsMenu(pid: pid) || paradisOpenMenu(pid: pid) != nil, targetIsFrontmost: false) {
+		if !frontmost, let failure = paradisMenuOpenFailure(menuWindow: paradisAppMenuWindow(pid: pid), axMenuOpen: paradisOpenMenu(pid: pid) != nil, targetIsFrontmost: false) {
 			throw failure
 		}
 	}
@@ -489,15 +512,28 @@ private func paradisAppIsHidden(_ pid: Int32) -> Bool {
 }
 
 /**
- * 目的のアプリがメニューのウィンドウ（ポップアップメニューの層）を画面に出しているか。ポップアップボタンの
- * メニューのように AX のどこに出るか決まらないものも、ウィンドウの層で見分けられる（確認用のアプリで確かめた）。
+ * 目的のアプリが画面に出しているメニューのウィンドウ（ポップアップメニューの層で、透明でなく大きさがあるもの）。
+ * ポップアップボタンのメニューのように AX のどこに出るか決まらないものも、ウィンドウの層で見分けられる
+ * （確認用のアプリで確かめた）。無ければ nil。
  */
-private func paradisAppShowsMenu(pid: Int32) -> Bool {
+private func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
 	let menuLayer = Int(CGWindowLevelForKey(.popUpMenuWindow))
 	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
-	return list.contains { entry in
-		(entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == menuLayer
+	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid {
+		guard let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary, let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
+			continue
+		}
+		let facts = ParadisMenuWindowFacts(
+			layer: (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+			alpha: (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0,
+			width: Double(bounds.width),
+			height: Double(bounds.height)
+		)
+		if paradisIsMenuWindow(facts, menuLayer: menuLayer) {
+			return facts
+		}
 	}
+	return nil
 }
 
 /**

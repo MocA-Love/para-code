@@ -361,11 +361,97 @@ func paradisDecodeManualAccessibilityEntries(_ data: Data?) -> [ParadisManualAcc
  * そのアプリで右クリックして使っている最中なので、送らずに止める（エージェントは背面ではメニューを開かない）。
  * 前面のアプリでは、エージェント自身が開いたメニューの項目を押す流れがあるので止めない。
  */
-func paradisMenuOpenFailure(menuOpen: Bool, targetIsFrontmost: Bool) -> ParadisHelperError? {
-	guard menuOpen && !targetIsFrontmost else {
+func paradisMenuOpenFailure(menuWindow: ParadisMenuWindowFacts?, axMenuOpen: Bool, targetIsFrontmost: Bool) -> ParadisHelperError? {
+	guard (menuWindow != nil || axMenuOpen) && !targetIsFrontmost else {
 		return nil
 	}
-	return ParadisHelperError(code: "menu_open", message: "a menu is open in the app; the user may be using it")
+	let seen = menuWindow.map { "a window at layer \($0.layer), \(Int($0.width))x\(Int($0.height))" } ?? "an accessibility menu"
+	return ParadisHelperError(code: "menu_open", message: "a menu is open in the app (\(seen)); the user may be using it, or it is a menu that could not be closed")
+}
+
+/** アプリが画面に出しているウィンドウ 1 つの、メニューかを見分けるための値。 */
+struct ParadisMenuWindowFacts: Equatable {
+	let layer: Int
+	let alpha: Double
+	let width: Double
+	let height: Double
+}
+
+/**
+ * メニューのウィンドウか。ポップアップメニューの層にあって、透明でなく、大きさがあるもの。同じ層に出る透明な
+ * ウィンドウ・大きさの無いウィンドウは数えない（ポップオーバーやツールチップの名残で止めないため）。
+ */
+func paradisIsMenuWindow(_ window: ParadisMenuWindowFacts, menuLayer: Int) -> Bool {
+	return window.layer == menuLayer && window.alpha > 0 && window.width > 0 && window.height > 0
+}
+
+/** 操作の後のメニューの扱いの報告。 */
+struct ParadisMenuAfterAction: Equatable {
+	/** 操作が開いたメニューを閉じた。 */
+	let closed: Bool
+	/** 操作が開いたメニューが閉じられずに残っている（AX に出ない・非同期に開いたなど）。 */
+	let stillOpen: Bool
+	let note: String?
+}
+
+/**
+ * 操作の後のメニューの報告（背面のアプリで、操作が開いたメニューについてだけ）。`opened` は操作の後にメニューが
+ * 開いていた（AX の `AXMenu` かメニューのウィンドウ）、`closed` は `AXCancel` が通った、`stillVisible` は閉じた後も
+ * メニューのウィンドウが残っている、`userTypedDuringAction` は操作が戻るまでの間に利用者がキーを打った。
+ */
+func paradisMenuAfterAction(opened: Bool, closed: Bool, stillVisible: Bool, userTypedDuringAction: Bool) -> ParadisMenuAfterAction {
+	guard opened else {
+		return ParadisMenuAfterAction(closed: false, stillOpen: false, note: nil)
+	}
+	let stillOpen = !closed || stillVisible
+	var notes: [String] = []
+	if stillOpen {
+		notes.append("A menu opened in the app while it was not in front, and Para Code could not close it. Tell the user that a menu is open in this app and ask them to close it (Escape or a click elsewhere); do not send more input to the app until then.")
+	} else {
+		notes.append("A menu opened in the app while it was not in front, so Para Code closed it. Bring the app forward with computer_activate_app to use the menu.")
+	}
+	if userTypedDuringAction {
+		notes.append("The user typed while the menu was open, so their keys may have gone to the menu; ask the user to check the app.")
+	}
+	return ParadisMenuAfterAction(closed: closed && !stillVisible, stillOpen: stillOpen, note: notes.joined(separator: " "))
+}
+
+/**
+ * 操作が戻るまでの間に利用者がキーを打ったか。`secondsSinceKeyboard` は最後の物理的なキー入力からの秒数、
+ * `actionSeconds` は操作を始めてからの秒数。
+ */
+func paradisUserTypedDuringAction(secondsSinceKeyboard: Double?, actionSeconds: Double) -> Bool {
+	guard let secondsSinceKeyboard else {
+		return false
+	}
+	return secondsSinceKeyboard < actionSeconds
+}
+
+// MARK: - AXManualAccessibility の記録のファイル
+
+/** 補助アプリごとの記録のファイル名（2 つの Para Code が同じ userData を使っても、互いの記録を消さないため）。 */
+func paradisManualAccessibilityStateFileName(helperPid: Int32) -> String {
+	return "manual-accessibility-\(helperPid).json"
+}
+
+/** 記録のファイル名から、書いた補助アプリの pid を読む。前の版の名前（pid 無し）は 0。記録のファイルでなければ nil。 */
+func paradisManualAccessibilityStateFileOwner(_ name: String) -> Int32? {
+	if name == "manual-accessibility.json" {
+		return 0
+	}
+	guard name.hasPrefix("manual-accessibility-"), name.hasSuffix(".json") else {
+		return nil
+	}
+	let digits = name.dropFirst("manual-accessibility-".count).dropLast(".json".count)
+	guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+		return nil
+	}
+	return Int32(digits)
+}
+
+/** 起動時に、そのファイルの記録を戻して消すか。自分のものと、まだ動いているほかの補助アプリのものは触らない。 */
+func paradisShouldRecoverStateFile(ownerPid: Int32, selfPid: Int32, ownerIsRunningHelper: Bool) -> Bool {
+	return ownerPid != selfPid && !ownerIsRunningHelper
 }
 
 /**
