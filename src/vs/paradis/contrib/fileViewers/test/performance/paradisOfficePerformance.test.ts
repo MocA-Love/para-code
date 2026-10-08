@@ -375,6 +375,10 @@ suite('ParadisOfficePerformance', () => {
 		});
 		const text = new TextDecoder().decode(assets.bytes);
 		for (const unsafe of ['attacker.invalid', 'RAW-FONT', 'RAW-OLE', 'RAW-MACRO', '<script>']) { strictEqual(text.includes(unsafe), false, unsafe); }
+		deepStrictEqual({ ignored: assets.ignoredParts, blocked: assets.blockedParts }, {
+			ignored: [{ partName: 'word/fonts/font.bin', kind: 'font', reason: 'notRendered' }],
+			blocked: [{ feature: 'macro', kind: 'unsafeContent', partName: 'word/vbaProject.bin', count: 1 }],
+		});
 		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'malicious-name', source: Uint8Array.of(1), archive: new FixtureArchive({ '../../private.xml': '<x/>' }) }));
 		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'traversal', source: Uint8Array.of(1), archive: new FixtureArchive({ ...common, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="bad" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="..%2Fprivate.svg"/></Relationships>' }) }));
 		// A header relationship that no headerReference uses is left out, so its back edge to the document never

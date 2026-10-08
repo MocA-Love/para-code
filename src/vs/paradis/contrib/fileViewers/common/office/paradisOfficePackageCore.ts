@@ -330,7 +330,9 @@ function isRequiredRelationship(relationship: ParsedRelationship, mainPart: stri
 	if (relationship.source !== mainPart) {
 		return false;
 	}
-	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
+	// What the renderers cannot draw without: Word styles and numbering, the workbook's sheets, shared
+	// strings, and styles. Settings and theme are optional to docx-preview and exceljs.
+	return /\/(?:styles|numbering|sharedStrings|workbook|worksheet)$/i.test(relationship.type);
 }
 
 interface ContentTypeTable {

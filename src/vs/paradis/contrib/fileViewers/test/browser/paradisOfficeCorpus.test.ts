@@ -9,7 +9,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisOfficeWebArchive } from '../../browser/office/paradisOfficeWebArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
-import { PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
+import { PARADIS_OFFICE_LISTED_PARTS_LIMIT, PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
 import { resolveParadisOfficeRelationshipTarget } from '../../common/office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
@@ -286,7 +286,7 @@ suite('ParadisOfficeCorpus', () => {
 		ok(zipNames(result.bytes).includes('word/commentsExtended.xml'));
 	});
 
-	test('keeps the text of an external hyperlink and removes only the link', async () => {
+	test('keeps the runs of an external hyperlink, drops the link element, and reports only the scheme', async () => {
 		const bytes = await wordPackage({
 			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>link text</w:t></w:r></w:hyperlink></w:p>',
 			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
@@ -294,8 +294,10 @@ suite('ParadisOfficeCorpus', () => {
 		const result = await sanitize(bytes);
 		strictEqual(result.placeholders.length, 0);
 		const text = new TextDecoder().decode(result.bytes);
-		ok(/<w:hyperlink\s*><w:r><w:t>link text<\/w:t><\/w:r><\/w:hyperlink>/.test(text));
+		ok(text.includes('<w:p><w:r><w:t>link text</w:t></w:r></w:p>'));
+		ok(!text.includes('w:hyperlink'));
 		ok(!text.includes('example.invalid'));
+		deepStrictEqual(result.blockedParts, [{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 1 }]);
 	});
 
 	test('counts an OLE object once even though its preview picture is also blocked', async () => {
@@ -346,5 +348,65 @@ suite('ParadisOfficeCorpus', () => {
 			contentTypesXml: `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="XML" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${CT.document}"/><Override PartName="/word/styles.xml" ContentType="${CT.styles}"/></Types>`,
 		});
 		await rejects(inventoryOf(bytes), /malformed/);
+	});
+	test('reports macros, embedded objects, unknown types, and external targets as blocked, without URLs', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/word/vbaProject.bin', Uint8Array.of(1, 2, 3), 'application/vnd.ms-office.vbaProject'],
+				['/word/embeddings/object1.bin', Uint8Array.of(4, 5, 6), 'application/vnd.openxmlformats-officedocument.oleObject'],
+				['/word/unknown.bin', Uint8Array.of(7), 'application/octet-stream'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdVba', type: `${MS}/2006/relationships/vbaProject`, target: 'vbaProject.bin' },
+				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
+				{ source: '/word/document.xml', id: 'rIdUnknown', type: 'urn:example:unknown', target: 'unknown.bin' },
+				{ source: '/word/document.xml', id: 'rIdTemplate', type: `${R}/attachedTemplate`, target: 'file:///C:/private/template.dotm', targetMode: 'External' },
+				{ id: 'rIdUnc', type: `${R}/hyperlink`, target: '\\\\server\\share\\x.docx', targetMode: 'External' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.blockedParts, [
+			{ feature: 'embeddedObject', kind: 'oleObject', partName: 'word/embeddings/object1.bin', count: 1 },
+			{ feature: 'externalRelationship', kind: 'attachedTemplate', scheme: 'file', count: 1 },
+			{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'unc', count: 1 },
+			{ feature: 'macro', kind: 'vbaProject', partName: 'word/vbaProject.bin', count: 1 },
+			{ feature: 'unknownRelationship', kind: 'unknown', partName: 'word/unknown.bin', count: 1 },
+		]);
+		const text = new TextDecoder().decode(result.bytes);
+		for (const forbidden of ['private', 'server', 'vbaProject', 'object1', 'unknown.bin']) {
+			ok(!text.includes(forbidden), forbidden);
+		}
+	});
+
+	test('caps the listed parts and counts the rest', async () => {
+		const parts: ParadisOfficeFixturePart[] = [];
+		const relationships: IParadisOfficeFixtureRelationship[] = [];
+		for (let index = 0; index < 260; index++) {
+			parts.push([`/customXml/item${index}.xml`, '<root/>', 'application/xml']);
+			relationships.push({ source: '/word/document.xml', id: `rIdItem${index}`, type: `${R}/customXml`, target: `../customXml/item${index}.xml` });
+		}
+		const result = await sanitize(await wordPackage({ extraParts: parts, extraRelationships: relationships }));
+		strictEqual(result.ignoredParts.length, PARADIS_OFFICE_LISTED_PARTS_LIMIT);
+		strictEqual(result.ignoredPartsOmitted, 4);
+	});
+
+	test('re-serializes retained metadata XML so DOCTYPE-free comments and processing instructions are dropped', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/docProps/core.xml', '<?xml version="1.0" encoding="UTF-8"?><!-- note --><?pi data?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></cp:coreProperties>', 'application/vnd.openxmlformats-package.core-properties+xml']],
+			extraRelationships: [{ id: 'rIdCore', type: 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties', target: 'docProps/core.xml' }],
+		});
+		const text = new TextDecoder().decode((await sanitize(bytes)).bytes);
+		ok(text.includes('<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></cp:coreProperties>'));
+		ok(!text.includes('<!-- note -->'));
+		ok(!text.includes('<?pi'));
+	});
+
+	test('replaces control and bidi characters in listed part names', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/customXml/item\u202e1.xml', '<root/>', 'application/xml']],
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdItem', type: `${R}/customXml`, target: '../customXml/item\u202e1.xml' }],
+		});
+		deepStrictEqual((await sanitize(bytes)).ignoredParts.map(part => part.partName), ['customXml/item\ufffd1.xml']);
 	});
 });
