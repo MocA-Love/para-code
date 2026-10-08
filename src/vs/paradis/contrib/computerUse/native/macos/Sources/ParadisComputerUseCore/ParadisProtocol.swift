@@ -18,9 +18,9 @@ import Foundation
 
 enum ParadisComputerUseVersion {
 	/** shared process との約束の版。handshake で突き合わせる。 */
-	static let protocolVersion = 6
+	static let protocolVersion = 7
 	/** 補助アプリ自身の版（報告用）。 */
-	static let helperVersion = "0.6.0"
+	static let helperVersion = "0.7.0"
 }
 
 /** 補助アプリが返す失敗。code は TS 側がそのまま読む英字の識別子。 */

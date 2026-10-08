@@ -38,6 +38,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
+	/** 2 段目（背面への入力）。今は常に使えない空の実装（ParadisInputRoutes.swift）。 */
+	let backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute()
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
@@ -150,18 +152,32 @@ final class ParadisDesktop: ParadisDesktopBackend {
 
 	// MARK: - アクセシビリティのツリー
 
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int) throws -> [String: Any] {
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any] {
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
 		try requireRunningApp(pid)
 		let application = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(application, 2.0)
-		let windows = paradisElements(application, kAXWindowsAttribute)
-		guard !windows.isEmpty else {
+		var windows = paradisElements(application, kAXWindowsAttribute)
+		var window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+		// Electron 製のアプリは、支援技術が来たと知らせるまで AX のツリーを作らない。ウィンドウが無いか中身が空なら、
+		// 公開されている `AXManualAccessibility` を立てて読み直す（Electron が案内している方法。VoiceOver の
+		// `AXEnhancedUserInterface` はウィンドウの動きを変えるので使わない）。利用者のアプリの状態を変えるので、
+		// 操作の許可があるときだけ立て（`enableManualAccessibility`）、VS Code 系には立てず、10 分使わなければ・
+		// 補助アプリが終わるときに false へ戻す（`ParadisManualAccessibilityLedger`）
+		var enabledManualAccessibility = false
+		paradisManualAccessibility.touch(pid)
+		if enableManualAccessibility && (window.map { paradisElements($0, kAXChildrenAttribute).isEmpty } ?? true) && paradisIsElectronApp(pid: pid)
+			&& !paradisManualAccessibilityExcluded(bundleId: bundleIdentifier(pid: pid)) && paradisManualAccessibility.enable(pid: pid) {
+			enabledManualAccessibility = true
+			usleep(400_000)
+			windows = paradisElements(application, kAXWindowsAttribute)
+			window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
+		}
+		guard let window else {
 			throw ParadisHelperError(code: "window_not_found", message: "the application has no accessible window")
 		}
-		let window = try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
 		let windowFrame = paradisFrame(window) ?? .zero
 		var nodes: [ParadisAXNode] = []
 		var elements: [AXUIElement] = []
@@ -193,13 +209,17 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		let snapshotId = nextSnapshotId
 		nextSnapshotId += 1
 		lastSnapshot = ParadisElementSnapshot(id: snapshotId, pid: pid, windowId: windowId, elements: elements)
-		return [
+		var result: [String: Any] = [
 			"snapshotId": snapshotId,
 			"text": paradisRenderAXTree(nodes, truncated: truncated),
 			"nodeCount": nodes.count,
 			"truncated": truncated,
 			"window": paradisRectJson(windowFrame),
 		]
+		if enabledManualAccessibility {
+			result["manualAccessibility"] = true
+		}
+		return result
 	}
 
 	func paradisPickWindow(_ windows: [AXUIElement], application: AXUIElement, windowId: UInt32?, pid: Int32) throws -> AXUIElement {
@@ -264,6 +284,81 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			redacted: secure && rawValue != nil
 		)
 	}
+}
+
+/**
+ * 補助アプリが `AXManualAccessibility` を立てたアプリと、最後に使った時刻。10 分使わなければ・補助アプリが終わるときに
+ * false へ戻す（Chromium は立っている間 AX のツリーを作り続けるので、打鍵が遅くなりうる）。
+ */
+final class ParadisManualAccessibilityLedger {
+	private let lock = NSLock()
+	private var lastUsed: [Int32: Date] = [:]
+	private var timer: DispatchSourceTimer?
+
+	/** 立てる。立てられたら true（すでに立てていれば false。読み直す必要が無い）。 */
+	func enable(pid: Int32) -> Bool {
+		lock.lock()
+		let already = lastUsed[pid] != nil
+		lock.unlock()
+		guard !already, AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
+			return false
+		}
+		lock.lock()
+		lastUsed[pid] = Date()
+		if timer == nil {
+			let source = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+			source.schedule(deadline: .now() + 60, repeating: 60)
+			source.setEventHandler { [weak self] in
+				self?.restoreExpired(now: Date())
+			}
+			source.resume()
+			timer = source
+		}
+		lock.unlock()
+		return true
+	}
+
+	/** そのアプリを使った（読み取り・操作）。立てていなければ何もしない。 */
+	func touch(_ pid: Int32) {
+		lock.lock()
+		if lastUsed[pid] != nil {
+			lastUsed[pid] = Date()
+		}
+		lock.unlock()
+	}
+
+	func restoreExpired(now: Date) {
+		lock.lock()
+		let expired = lastUsed.filter { paradisManualAccessibilityExpired(lastUsed: $0.value, now: now) }.map { $0.key }
+		expired.forEach { lastUsed.removeValue(forKey: $0) }
+		lock.unlock()
+		expired.forEach(paradisClearManualAccessibility)
+	}
+
+	/** 全部戻す（補助アプリが終わるとき）。 */
+	func restoreAll() {
+		lock.lock()
+		let pids = Array(lastUsed.keys)
+		lastUsed.removeAll()
+		lock.unlock()
+		pids.forEach(paradisClearManualAccessibility)
+	}
+}
+
+private func paradisClearManualAccessibility(_ pid: Int32) {
+	let application = AXUIElementCreateApplication(pid)
+	AXUIElementSetMessagingTimeout(application, 0.5)
+	AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanFalse)
+}
+
+let paradisManualAccessibility = ParadisManualAccessibilityLedger()
+
+/** Electron 製のアプリか（`Contents/Frameworks/Electron Framework.framework` があるか）。 */
+private func paradisIsElectronApp(pid: Int32) -> Bool {
+	guard let bundleURL = paradisOnMain({ NSRunningApplication(processIdentifier: pid)?.bundleURL }) else {
+		return false
+	}
+	return FileManager.default.fileExists(atPath: bundleURL.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
 }
 
 // MARK: - ウィンドウの一覧（CGWindowList）

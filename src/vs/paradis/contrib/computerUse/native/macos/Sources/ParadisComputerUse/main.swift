@@ -61,6 +61,10 @@ case .agent(let socketPath, let tokenFile):
 		paradisExit(.badArguments, "token file is missing or malformed")
 	}
 	let desktop = ParadisDesktop()
+	// どの終わり方（shutdown・切断・締め切りの SIGTERM）でも、立てた AXManualAccessibility を戻す
+	atexit {
+		paradisManualAccessibility.restoreAll()
+	}
 	let handler = ParadisRequestHandler(backend: desktop, expectedToken: token, selfPid: getpid())
 	let server = ParadisAgentServer(socketPath: socketPath, handler: handler, helperIdentity: paradisSelfSigningIdentity(), mainBundleIdentifier: paradisMainBundleIdentifier(), dataFolderName: paradisDataFolderName())
 	let application = NSApplication.shared

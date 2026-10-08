@@ -135,6 +135,18 @@ export interface IParadisMcpToolCallContext {
 	 * 端末の要求・アプリのインストール・起動・権限の付与は `pane` のときだけ（mobileCanvas）。
 	 */
 	classifyCaller(): Promise<ParadisMcpCallerKind>;
+	/**
+	 * そのペインのエージェントのカーソルの名前の元: hook が報告した CLI と、`set_cursor_label` で最後に決めた名前
+	 * （整えた後のもの。どのタブで決めたかは問わない）。Computer Use の独自のカーソルの名札に使う。
+	 * 古い呼び出し側（テストの代わりなど）は持たないので省略できる。
+	 */
+	getCursorIdentity?(paneToken: string): IParadisMcpCursorIdentity;
+}
+
+/** ペインのエージェントのカーソルの名前の元。 */
+export interface IParadisMcpCursorIdentity {
+	readonly cli?: 'claude' | 'codex';
+	readonly label?: string;
 }
 
 // --- 登録口 ----------------------------------------------------------------------------------

@@ -73,7 +73,7 @@ import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMc
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
-import { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
@@ -315,6 +315,10 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 }
 
 // allow-any-unicode-next-line
+/** ブラウザのページが無いペインの `set_cursor_label` を覚える持ち主の鍵の後半（Computer Use のカーソル用）。 */
+const PARADIS_DESKTOP_CURSOR_VIEW = 'desktop';
+/** `set_cursor_label` を最後に呼んだ持ち主を覚えるペインの数の上限（溢れたら古いものから捨てる）。 */
+const MAX_PANE_CURSOR_LABEL_KEYS = 256;
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。Para Code を再起動（自動アップデートの適用を含む）すると、起動後に Para Code が同じペインと同じページの共有を戻すかユーザーに尋ね、承認されれば張り直します（ユーザーがそのスペースを開いたときに尋ねます）。戻らない場合（ページやペインを閉じた、ユーザーが共有を外した、戻さないと答えた）は、ユーザーにもう一度共有してもらってください。それでも届かない場合は、このCLIをペインで起動し直してから再共有してください。';
 
 /**
@@ -652,6 +656,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _cursorStatusRuns = new Map<string, number>();
 	/** カーソルの持ち主ごとの名前と色（paradisCursorOwners.ts）。 */
 	private readonly _cursorOwners = new ParadisCursorOwners();
+	/** ペインごとに、`set_cursor_label` で最後に名前を決めた持ち主の鍵（Computer Use のカーソルが同じ名前を使う）。 */
+	private readonly _paneCursorLabelKeys = new Map<string, string>();
 	/** 素通しの WebP の撮影でカーソルを隠したビュー（ゲートウェイのキーごと、撮り始めた順）。 */
 	private readonly _rawCaptureViews = new Map<string, IParadisExactBrowserViewDescriptor[]>();
 	/** 読む・待つツール（wait_until・get_text・inspect_element・scroll_to）。evaluate_script を短く何度も呼ぶ。 */
@@ -2928,6 +2934,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			// 状態の項目は既読（acknowledgePaneStatus）や idle で消えるので、印は状態とは別に引けるようにする
 			getUnconfirmedRelease: (paneToken: string) => this._unconfirmedReleaseOf(paneToken),
+			getCursorIdentity: (paneToken: string): IParadisMcpCursorIdentity => {
+				const labelKey = this._paneCursorLabelKeys.get(paneToken);
+				const label = labelKey !== undefined ? this._cursorOwners.labelOf(labelKey) : undefined;
+				const cli = this._paneSessions.get(paneToken)?.agent;
+				return { ...(cli ? { cli } : {}), ...(label ? { label } : {}) };
+			},
 		};
 	}
 
@@ -4203,10 +4215,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (typeof raw !== 'string') {
 			return '"label" must be a string.';
 		}
-		if (!binding) {
-			return NOT_BOUND_MESSAGE;
+		// ブラウザのページが無くても、Computer Use のカーソルの名前としてペインに覚える
+		const ownerKey = binding ? this._cursorOwnerKey(token, binding) : `${token}\0${PARADIS_DESKTOP_CURSOR_VIEW}`;
+		const result = this._cursorOwners.setLabel(ownerKey, raw.slice(0, 200));
+		this._paneCursorLabelKeys.delete(token);
+		this._paneCursorLabelKeys.set(token, ownerKey);
+		while (this._paneCursorLabelKeys.size > MAX_PANE_CURSOR_LABEL_KEYS) {
+			const oldest = this._paneCursorLabelKeys.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			this._paneCursorLabelKeys.delete(oldest.value);
 		}
-		const result = this._cursorOwners.setLabel(this._cursorOwnerKey(token, binding), raw.slice(0, 200));
 		if (!result.ok) {
 			return `The name was refused (${result.rejected}); your cursor shows the default name. Name the task, for example "Checkout".`;
 		}
