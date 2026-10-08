@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.9',
+		date: '2026-10-09',
+		items: [
+			{
+				icon: 'stats-chart-outline',
+				title: 'ホームの「要対応」「実行中」「今日のコスト」を押して、中身を開けるようになりました',
+				body: '実行中も全 PC の合計になりました。要対応と実行中を押すと PC ごとにエージェントを並べた一覧が開き、そのままセッションへ進めます。今日のコストを押すとコストの画面が開きます。つながっていない PC は合計に入れず、カードの下に台数を出します。見ていない PC のカードにも「実行中」の数が出るようになりました。',
+			},
+		],
+	},
+	{
 		version: '0.12.8',
 		date: '2026-10-08',
 		items: [

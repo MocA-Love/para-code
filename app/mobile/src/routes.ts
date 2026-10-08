@@ -17,6 +17,7 @@
  * | `/pc/[pcId]/session/[spaceId]/activity/advisor/[advisorId]?terminal=…&epoch=…` | Advisor への相談 1 回の詳細 |
  * | `/pc/[pcId]/session/[spaceId]/activity/workflow/[runId]?terminal=…&epoch=…` | Workflow の実行 1 つ（段階ごとの子） |
  * | `/pc/[pcId]/session/[spaceId]/activity/team/[teamName]?terminal=…&epoch=…` | エージェントチーム 1 つ（メンバー・やりとり・計画） |
+ * | `/agents?state=waiting\|running` | 全 PC 横断のエージェントの一覧（ホームの「要対応」「実行中」のカードから） |
  * | `/notifications` | 通知の一覧 |
  * | `/settings`・`/settings/<page>` | 設定と、その下の各ページ |
  * | `/pair`・`/onboarding` | ペアリング・はじめて |
@@ -158,6 +159,8 @@ export const routes = {
 		pathname: '/pc/[pcId]/session/[spaceId]/history/[key]',
 		params: { pcId, spaceId, key },
 	}),
+	/** 全 PC 横断のエージェントの一覧。`state` は最初に開く切り替え（要対応か実行中）。 */
+	agents: (state: 'waiting' | 'running'): RouteHref => ({ pathname: '/agents', params: { state } }),
 	notifications: (): RouteHref => '/notifications',
 	settings: (page?: SettingsPage): RouteHref => (page === undefined ? '/settings' : `/settings/${page}`),
 	pair: (): RouteHref => '/pair',

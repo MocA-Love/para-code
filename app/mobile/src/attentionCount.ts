@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { isAgentWaiting } from './store.js';
+import { isAgentWaiting, pinKeyForTerminal } from './store.js';
 
 /**
  * 「要対応」の件数の数え方。タブのバッジ（iPhone のタブバー・iPad のサイドバーとレール）、
@@ -37,4 +37,50 @@ export function countAttentionAgents(terminals: readonly AttentionCandidate[] | 
 		}
 	}
 	return count;
+}
+
+/** 実行中として数える候補（アーカイブの印を引くので `terminalKey` が要る）。 */
+export interface RunningCandidate extends AttentionCandidate {
+	readonly terminalKey: string;
+}
+
+/**
+ * 実行中として数える1件か。ホームの「実行中」のカード（`PcSummary.running`）・PC のカードの「実行中」
+ * （見ている PC は `pcCardCounts` が `countRunningAgents` で、見ていない PC は `PcSummary.running`）・
+ * 全 PC 横断の一覧（`/agents?state=running`）は**すべてここを通す**。
+ *
+ *  - 数えるのはエージェント（`agent === true`）の `working` だけ（要対応と同じく、プレーンなターミナルは数えない）
+ *  - 要対応と違い、**アーカイブしたものは数えない**。実行中のものはアーカイブしても一覧へ戻らない
+ *    （戻るのは要対応になったときだけ。archivedAgents.ts）ので、数えると押した先に見つからない
+ */
+export function isRunningAgent(terminal: RunningCandidate, isArchived: (key: string) => boolean): boolean {
+	return terminal.agent === true && terminal.agentStatus === 'working' && !isArchived(pinKeyForTerminal(terminal));
+}
+
+/** 実行中の件数。`archived` はその PC のアーカイブの印（`pinKeyForTerminal` のキー）。 */
+export function countRunningAgents(terminals: readonly RunningCandidate[] | undefined, archived: ReadonlySet<string> | readonly string[]): number {
+	const isArchived = archivedLookup(archived);
+	let count = 0;
+	for (const terminal of terminals ?? []) {
+		if (isRunningAgent(terminal, isArchived)) {
+			count++;
+		}
+	}
+	return count;
+}
+
+/** アーカイブの印を引く関数（保存形の配列と、画面が持つ Set のどちらでも受ける）。 */
+export function archivedLookup(archived: ReadonlySet<string> | readonly string[]): (key: string) => boolean {
+	if (isReadonlyArray(archived)) {
+		if (archived.length === 0) {
+			return () => false;
+		}
+		const set = new Set(archived);
+		return key => set.has(key);
+	}
+	return key => archived.has(key);
+}
+
+function isReadonlyArray(value: ReadonlySet<string> | readonly string[]): value is readonly string[] {
+	return Array.isArray(value);
 }

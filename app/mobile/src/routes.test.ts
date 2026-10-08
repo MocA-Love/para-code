@@ -80,4 +80,11 @@ describe('routes', () => {
 		expect(routes.pair()).toBe('/pair');
 		expect(routes.onboarding()).toBe('/onboarding');
 	});
+
+	test('全 PC 横断の一覧は、最初に開く切り替えをクエリで受ける', () => {
+		expect([routes.agents('waiting'), routes.agents('running')]).toEqual([
+			{ pathname: '/agents', params: { state: 'waiting' } },
+			{ pathname: '/agents', params: { state: 'running' } },
+		]);
+	});
 });
