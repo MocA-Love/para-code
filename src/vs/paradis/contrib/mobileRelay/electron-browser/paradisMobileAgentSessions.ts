@@ -36,7 +36,7 @@ import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-
 import { paradisAgentStartupScreenState } from '../../agentIde/common/paradisAgentStartupScreen.js';
 import { IParadisResumeSession } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisResumeSpaceWithUri, ParadisSessionResumeClient } from '../../sessionResume/electron-browser/paradisSessionResumeClient.js';
-import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisIsSettledOnSpace, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
@@ -406,6 +406,10 @@ function notifyResumed(tools: IAgentSessionTools, space: IParadisResumeSpaceWith
 				run: async () => {
 					if (tools.switchService.activeStateKey !== space.stateKey) {
 						await tools.switchService.switchToStateKey(space.stateKey);
+					}
+					// 待っている間に別の切り替えが割り込んだら開かない（今のスペースのタブに紛れ込む）。
+					if (!paradisIsSettledOnSpace(tools.switchService, space.stateKey)) {
+						return;
 					}
 					if (instance !== undefined && !instance.isDisposed) {
 						tools.terminalService.setActiveInstance(instance);
