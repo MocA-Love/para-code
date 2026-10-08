@@ -3593,6 +3593,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	/** いま声を届けられるモバイルの数（音声 ticket の発行で aivis-mcp へ知らせる。Q309 A）。 */
+	mobileVoiceListenerCount(): number {
+		return this.voiceDelivery.listenerCount();
+	}
+
 	/**
 	 * OS のスリープ復帰。リレーへの接続を今すぐ確かめ、死んでいれば張り直す。
 	 *

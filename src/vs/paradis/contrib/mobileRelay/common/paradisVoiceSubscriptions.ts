@@ -185,6 +185,11 @@ export class ParadisMobileVoiceDelivery {
 		}
 	}
 
+	/** いま声を届けられるモバイルの数（購読していて、つながっている端末）。 */
+	listenerCount(): number {
+		return this.liveRecipients().length;
+	}
+
 	/** 追っている流れを捨てる（リレーへの接続を畳んだ）。 */
 	clear(): void {
 		for (const stream of this.streams.values()) {
