@@ -21,7 +21,7 @@ export const PARADIS_AGENT_TAB_ID_MAX_LENGTH = 128;
 export const PARADIS_TAB_ID_ARGUMENT = 'tab_id';
 
 /** ツールの入力スキーマに足す `tab_id` の説明（LLM 向け・英語）。 */
-export const PARADIS_TAB_ID_ARGUMENT_DESCRIPTION = 'Optional. The tab to act on: a tabId from list_browser_tabs / open_browser_tab (the same value as get_shared_page\'s pageId). Omit it to use this pane\'s current tab (the one you last opened or selected, otherwise the page the user shared). When you split browser work across subagents, give each subagent its own tab_id and have it pass that tab_id on every browser tool call; calls on different tabs run in parallel.';
+export const PARADIS_TAB_ID_ARGUMENT_DESCRIPTION = 'Optional. The tab to act on: a tabId from list_browser_tabs / open_browser_tab (the same value as get_shared_page\'s pageId). Omit it to use this pane\'s current tab (the one you last opened or selected, otherwise the page the user shared most recently). When you split browser work across subagents, give each subagent its own tab_id and have it pass that tab_id on every browser tool call; calls on different tabs run in parallel.';
 
 /** 入力スキーマの `properties` に足す 1 項目。 */
 export const PARADIS_TAB_ID_PROPERTY_SCHEMA: Readonly<{ type: 'string'; description: string }> = Object.freeze({

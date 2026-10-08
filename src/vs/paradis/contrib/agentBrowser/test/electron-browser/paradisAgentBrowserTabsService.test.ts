@@ -44,7 +44,12 @@ interface IAnswer {
 
 interface IFakeBinding {
 	pageId: string | undefined;
+	/** 同じペインへ current のほかに共有しているページ。 */
+	more?: string[];
 	unbinds: number;
+	unboundPages?: string[];
+	/** upstream が共有用に開き直したタブ（共有が成立したとき、こちらの ID が返る）。 */
+	replacementPageId?: string;
 	resolveBind?: (bound: boolean) => void;
 	sharingAtBind?: string;
 }
@@ -88,8 +93,21 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		onDidChange: Event.None,
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
 		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
-		bindPageToPane: (model: { sharingState?: string }) => { binding.sharingAtBind = model.sharingState; return new Promise<boolean>(resolve => binding.resolveBind = resolve); },
-		unbindToken: async () => { binding.unbinds++; binding.pageId = undefined; },
+		getBindingsForToken: () => [...(binding.pageId === undefined ? [] : [binding.pageId]), ...(binding.more ?? [])].map(pageId => ({ pageId })),
+		sharePageWithPane: (model: { id: string; sharingState?: string }) => {
+			binding.sharingAtBind = model.sharingState;
+			return new Promise<string | undefined>(resolve => binding.resolveBind = bound => resolve(bound ? binding.replacementPageId ?? model.id : undefined));
+		},
+		// そのページの共有だけを外す（current を外したら、残りの先頭を current にする）
+		unbindPageFromToken: async (pageId: string) => {
+			binding.unbinds++;
+			binding.unboundPages = [...(binding.unboundPages ?? []), pageId];
+			if (binding.pageId === pageId) {
+				binding.pageId = binding.more?.shift();
+			} else {
+				binding.more = binding.more?.filter(candidate => candidate !== pageId);
+			}
+		},
 	} as unknown as IParadisAgentBrowserBindingModel;
 	const paneTokenService = { getInstanceForToken: () => 7 } as unknown as IParadisPaneTokenService;
 	const terminalScopeService = { getStateKeyForInstance: () => 'repo-1' } as unknown as IParadisTerminalScopeService;
@@ -267,6 +285,65 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		assert.deepStrictEqual([bound, binding.unbinds, binding.pageId], [undefined, 1, undefined]);
 	}));
 
+	// 共有は付け替えではなく追加なので、締め切り後に成立した共有を外すときも、そのペインのほかの共有は残す
+	test('withdrawing a share that completes after the deadline keeps the pane\'s other shared pages', () => runWithFakedTimers(fakedTimers, async () => {
+		const binding: IFakeBinding = { pageId: undefined, more: [], unbinds: 0 };
+		const { service } = createService([], binding);
+		store.add(service);
+		const input = { id: 'view-late', resolve: async () => ({ id: 'view-late' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		const bound = await result;
+		// 遅れて成立した共有が current になり、前から共有していたページは 2 枚目以降に残っている
+		binding.pageId = 'view-late';
+		binding.more = ['view-earlier'];
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual({ bound, unboundPages: binding.unboundPages, current: binding.pageId, more: binding.more }, {
+			bound: undefined,
+			unboundPages: ['view-late'],
+			current: 'view-earlier',
+			more: [],
+		});
+	}));
+
+	// ネットワークの制限で upstream が共有用のタブを開き直したら、締め切り後に外すのはそのタブ
+	test('withdraws the replacement tab upstream opened for a share that completes after the deadline', () => runWithFakedTimers(fakedTimers, async () => {
+		const binding: IFakeBinding = { pageId: undefined, more: [], unbinds: 0, replacementPageId: 'view-replacement' };
+		const { service } = createService([], binding);
+		store.add(service);
+		const input = { id: 'view-1', resolve: async () => ({ id: 'view-1' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		await result;
+		binding.pageId = 'view-replacement';
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual({ unboundPages: binding.unboundPages, current: binding.pageId }, { unboundPages: ['view-replacement'], current: undefined });
+	}));
+
+	// 前からこのペインへ共有していたページを選び直して締め切りを過ぎても、その共有は外さない
+	test('keeps a page that was already shared with the pane when a share of it completes after the deadline', () => runWithFakedTimers(fakedTimers, async () => {
+		const binding: IFakeBinding = { pageId: 'view-current', more: ['view-1'], unbinds: 0 };
+		const { service } = createService([], binding);
+		store.add(service);
+		const input = { id: 'view-1', resolve: async () => ({ id: 'view-1' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		await result;
+		binding.pageId = 'view-1';
+		binding.more = ['view-current'];
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual({ unbinds: binding.unbinds, current: binding.pageId, more: binding.more }, { unbinds: 0, current: 'view-1', more: ['view-current'] });
+	}));
+
 	test('marks an approved page as shared before binding, so the upstream share confirmation does not appear again', () => runWithFakedTimers(fakedTimers, async () => {
 		const onDidChangeSharingState = new Emitter<string>();
 		const model = {
@@ -298,7 +375,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 	function setup() {
 		const disposables = store.add(new DisposableStore());
 		const bindingChanges = disposables.add(new Emitter<void>());
-		const state = { bound: undefined as string | undefined, binds: [] as string[], grants: [] as string[], revokes: [] as string[] };
+		const state = { bound: undefined as string | undefined, more: [] as string[], binds: [] as string[], grants: [] as string[], revokes: [] as string[] };
 		const views = new Map<string, BrowserEditorInput>();
 		const sharing = new Map<string, Emitter<BrowserViewSharingState>>();
 		const tab = (id: string) => {
@@ -312,12 +389,17 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 		const bindingModel = {
 			onDidChange: bindingChanges.event,
 			getBindingForToken: (token: string) => token === TOKEN && state.bound !== undefined ? { token, pageId: state.bound } : undefined,
-			bindPageToPane: async (model: IBrowserViewModel, token: string) => {
+			getBindingsForToken: (token: string) => token === TOKEN ? [...(state.bound !== undefined ? [state.bound] : []), ...state.more].map(pageId => ({ token, pageId })) : [],
+			// 共有は追加: 前の current は 2 枚目以降に残る
+			sharePageWithPane: async (model: IBrowserViewModel, token: string) => {
 				state.binds.push(model.id);
 				if (token === TOKEN) {
+					if (state.bound !== undefined && state.bound !== model.id) {
+						state.more = [state.bound, ...state.more.filter(pageId => pageId !== model.id)];
+					}
 					state.bound = model.id;
 				}
-				return true;
+				return model.id;
 			},
 			grantAgentTab: async (model: IBrowserViewModel) => {
 				state.grants.push(model.id);
@@ -415,6 +497,29 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			binds: [],
 			grants: ['own'],
 			revokes: ['own'],
+		});
+	});
+
+	// 1 つのペインへ複数のページを共有できる。list_browser_tabs には全部が載り、2 枚目以降も共有し直さずに選べる
+	test('lists every page shared with the pane and selects a second shared page without sharing it again', async () => {
+		const { service, state, tab, bind } = setup();
+		tab('page-a');
+		tab('page-b');
+		bind('page-a');
+		state.more = [];
+		// ユーザーがもう 1 枚共有した（page-a は 2 枚目以降に残る）
+		state.bound = 'page-b';
+		state.more = ['page-a'];
+		const listed = service.listTabs(TOKEN);
+		const selected = await service.selectTab(TOKEN, 'page-a');
+		assert.deepStrictEqual({
+			tabs: listed.ok ? listed.tabs.map(entry => [entry.tabId, entry.active, entry.url]) : [],
+			selected: selected.ok && selected.bound,
+			binds: state.binds,
+		}, {
+			tabs: [['page-b', true, 'https://page-b.example'], ['page-a', true, 'https://page-a.example']],
+			selected: true,
+			binds: [],
 		});
 	});
 

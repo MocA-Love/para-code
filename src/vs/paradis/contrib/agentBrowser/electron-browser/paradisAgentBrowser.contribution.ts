@@ -482,7 +482,8 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 	}
 
 	private _updateStatusbar(): void {
-		const count = this.bindingModel.bindings.length;
+		// 共有しているペインの数（1 つのペインは複数のページを共有できるので、行の数ではない）
+		const count = new Set(this.bindingModel.bindings.map(binding => binding.token)).size;
 		if (count === 0) {
 			this._statusbarEntry.clear();
 			return;
