@@ -20,6 +20,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { EditorsOrder } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
@@ -408,10 +409,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 
 		// 生きたエディタの預け先を持ち主で決めるための口と、別のスペースの端末を今のスペースへ
-		// 出させない口。どちらも所属の答えは `paradisTerminalEditorOwnerScope` の1つだけを使う。
+		// 出させない口。どちらも所属の答えは `availableOwnerScope` の1つだけを使う。
 		this._register(this.onDidRetireScope(stateKey => this._retiredScopeKeys.add(stateKey)));
 		this._register(this.editorScopeService.registerLiveEditorOwnerResolver(editor => this.liveEditorOwner(editor)));
-		this._register(paradisRegisterTerminalEditorRevealGuard(instance => this.shouldHoldBackTerminalEditorReveal(instance)));
+		this._register(paradisRegisterTerminalEditorRevealGuard({
+			shouldHoldBack: instance => this.shouldHoldBackTerminalEditorReveal(instance),
+			replacementFor: heldBack => this.terminalEditorToActivateInstead(heldBack),
+		}));
 	}
 
 	/**
@@ -420,11 +424,18 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 */
 	private liveEditorOwner(editor: EditorInput): string | undefined {
 		const instance = this.terminalInstanceForEditor(editor);
-		if (instance === undefined) {
-			return undefined;
-		}
+		return instance === undefined ? undefined : this.availableOwnerScope(instance);
+	}
+
+	/**
+	 * 端末の持ち主のスペースのうち、預けたり park したりしてよいもの。今もある (`isKnownScopeKey`) うえ、
+	 * 削除の途中でない (`IParadisEditorScopeService.isRetiringScope`) こと。どれかを満たさなければ undefined
+	 * (持ち主が分からない端末と同じく、今までどおりに扱う)。預け先・park 先・前に出してよいかの判定は
+	 * すべてこの 1 つを使う。
+	 */
+	private availableOwnerScope(instance: ITerminalInstance): string | undefined {
 		const owner = paradisTerminalEditorOwnerScope(instance);
-		return owner !== undefined && this.isKnownScopeKey(owner) ? owner : undefined;
+		return owner !== undefined && this.isKnownScopeKey(owner) && !this.editorScopeService.isRetiringScope(owner) ? owner : undefined;
 	}
 
 	/** エディタのターミナルの入力から、その端末を引く。 */
@@ -471,8 +482,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (displayed === undefined) {
 			return false;
 		}
-		const owner = paradisTerminalEditorOwnerScope(instance);
-		if (owner === undefined || owner === displayed || !this.isKnownScopeKey(owner)) {
+		const owner = this.availableOwnerScope(instance);
+		if (owner === undefined || owner === displayed) {
 			return false;
 		}
 		// 既にどこかのグループ (スペースに固定した補助ウィンドウを含む) で開いている端末は、前に出すだけで
@@ -494,6 +505,17 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			return this.activeStateKey;
 		}
 		return pending ?? this.activeStateKey;
+	}
+
+	/** 今のアクティブなグループで開いているエディタの端末のうち、最後に使っていたもの。 */
+	private terminalEditorToActivateInstead(heldBack: ITerminalInstance): ITerminalInstance | undefined {
+		for (const editor of this.editorGroupsService.activeGroup.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
+			const instance = this.terminalInstanceForEditor(editor);
+			if (instance !== undefined && instance !== heldBack) {
+				return instance;
+			}
+		}
+		return undefined;
 	}
 
 	private isTerminalEditorOpenInAnyGroup(instance: ITerminalInstance): boolean {
@@ -1558,7 +1580,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					});
 					// 索引の待ち（最大 500ms）の間に開かれた端末を、適用の直前にもう一度拾う。ここでは待たない。
 					if (previousKey !== undefined) {
-						timeSyncPhase('park_last_terminals', () => this.parkTerminalEditorsFor(previousKey, undefined, instance => this.lateParkScope(instance, previousKey)));
+						timeSyncPhase('park_last_terminals', () => this.parkTerminalEditorsFor(previousKey, undefined, instance => this.ownerParkScope(instance, previousKey)));
 					}
 					try {
 						await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
@@ -2268,27 +2290,21 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (waits.length > 0) {
 			await raceTimeout(Promise.allSettled(waits), ParadisWorkspaceSwitchService.LATE_TERMINAL_PTY_ID_TIMEOUT_MS);
 		}
-		this.parkTerminalEditorsFor(previousKey, undefined, instance => this.lateParkScope(instance, previousKey));
+		this.parkTerminalEditorsFor(previousKey, undefined, instance => this.ownerParkScope(instance, previousKey));
 	}
 
 	/**
-	 * 最初のループの後で拾う端末の park 先。切り替えの最中に作られて別のスペースへ開いている途中の
-	 * 端末や、別のスペースへ割り当て済みの端末を切り替え元へ入れると、タブが行き先のスペースに
-	 * 出ず、切り替え元を削除したときに巻き添えで閉じられる。行き先が分かればそちらへ、分からなければ
-	 * 作られたときのスペース（切り替え中は切り替え元）へ入れる。
-	 */
-	/**
-	 * 最初の park ループの park 先。持ち主が今もあるスペースだと分かっていればそちら、そうでなければ
-	 * 切り替え元。`captureScope` が切り替え元の working set から外す端末 (`liveEditorOwner`) と同じ判定に
-	 * しておくこと。食い違うと、working set に載らないのに切り替え元へ park される端末や、その逆が出る。
+	 * 切り替え元のエディタの端末の park 先 (3 回の park ループすべて)。切り替えの最中に作られて別のスペースへ
+	 * 開いている途中の端末や、別のスペースへ割り当て済みの端末を切り替え元へ入れると、タブが行き先の
+	 * スペースに出ず、切り替え元を削除したときに巻き添えで閉じられる。持ち主が今もあるスペースだと
+	 * 分かればそちらへ、分からなければ切り替え元へ入れる。
+	 *
+	 * 判定は `captureScope` が切り替え元の working set から外す端末 (`liveEditorOwner`) と同じ
+	 * `availableOwnerScope` に揃えること。食い違うと、working set に載らないのに切り替え元へ park される
+	 * 端末 (戻っても出ない) や、working set に載ったまま別のスペースへ park される端末 (戻ると余分なタブが出る) ができる。
 	 */
 	private ownerParkScope(instance: ITerminalInstance, previousKey: string): string {
-		const owner = paradisTerminalEditorOwnerScope(instance);
-		return owner !== undefined && this.isKnownScopeKey(owner) ? owner : previousKey;
-	}
-
-	private lateParkScope(instance: ITerminalInstance, previousKey: string): string {
-		return paradisTerminalEditorOwnerScope(instance) ?? previousKey;
+		return this.availableOwnerScope(instance) ?? previousKey;
 	}
 
 	private async applyWorkingSetFor(stateKey: string): Promise<void> {

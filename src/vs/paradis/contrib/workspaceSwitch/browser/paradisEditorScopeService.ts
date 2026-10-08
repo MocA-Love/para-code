@@ -271,7 +271,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			destinations.set(editor, this.depositKeyFor(editor, stateKey));
 		}
 		// 子プロセスの無い (確認の要らない) 端末でも、持ち主が別のスペースなら切り替え元の working set に
-		// 載せない。その端末は切り替えサービスの park が持ち主のスペースへ入れる (`lateParkScope`) ので、
+		// 載せない。その端末は切り替えサービスの park が持ち主のスペースへ入れる (`ownerParkScope`) ので、
 		// 載せると切り替え元へ戻ったときに同じ端末をもう一度繋ぎに行く。生きている端末と行き先を揃える。
 		const foreignCleanEditors = new Set<EditorInput>();
 		for (const { editor } of this.collectVisibleLiveEditorState(false, stateKey, true, undefined, true).placements) {
@@ -665,8 +665,13 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		// このスペースは一度も離れていなくても、持ち主の預け先へ回ってきた入力の預け先を持ちうる
 		// (別のスペースを離れるときに、このスペースの端末が見つかった)。今見せているスペースに預け先が
 		// 残ると、端末が見えないうえ、次に離れるときの `captureScope` が投げてスペースから離れられない。
+		// 開けなくてもバックアップの復元は必ず続ける。
 		if (this.liveWorkingSets.has(stateKey)) {
-			await this.restoreScope(stateKey);
+			try {
+				await this.restoreScope(stateKey);
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to open the live editors deposited with the corrected space', error);
+			}
 		}
 		await this.restoreBackups();
 	}
@@ -954,23 +959,23 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		});
 	}
 
+	isRetiringScope(stateKey: string): boolean {
+		return this.retirementFences.has(stateKey);
+	}
+
 	/**
-	 * 入力の明示的な持ち主のスペース。分からない・持ち主のスペースが既に無い (引く口が答えない)・
-	 * 削除の途中なら undefined。undefined の入力は今までどおり呼び出し元のスペースの持ち物として扱う
-	 * (二度と開かれない預け先へ入れて、生きたまま見えなくなるのを防ぐ)。
+	 * 入力の明示的な持ち主のスペース。分からない・持ち主のスペースが既に無い・削除の途中なら undefined
+	 * (判定は引く口が持つ。切り替えサービスの `availableOwnerScope` で、park 先と同じ判定)。undefined の
+	 * 入力は今までどおり呼び出し元のスペースの持ち物として扱う (二度と開かれない預け先へ入れて、生きたまま
+	 * 見えなくなるのを防ぐ)。
 	 */
 	private liveEditorOwner(editor: EditorInput): string | undefined {
-		let owner: string | undefined;
 		try {
-			owner = this.liveEditorOwnerResolver?.(editor);
+			return this.liveEditorOwnerResolver?.(editor);
 		} catch (error) {
 			this.logService.error('[ParadisEditorScope] Failed to resolve the owner space of a live editor; keeping it where it is', error);
 			return undefined;
 		}
-		if (owner === undefined || this.retirementFences.has(owner)) {
-			return undefined;
-		}
-		return owner;
 	}
 
 	/** スペース `stateKey` を預けるときの、この入力の預け先。持ち主が別のスペースならそちら。 */

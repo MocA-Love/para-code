@@ -56,6 +56,8 @@ export interface IParadisEditorScopeService {
 	 * 回すために使う。持ち主が分からない入力は undefined を返す (今までどおり切り替え元に預ける)。
 	 */
 	registerLiveEditorOwnerResolver(resolver: (editor: EditorInput) => string | undefined): IDisposable;
+	/** スペースの削除の途中か (削除が確定してエディタの出入りを止めている間)。その預け先へは入れられない。 */
+	isRetiringScope(stateKey: string): boolean;
 }
 
 interface ISerializedWorkingCopyOwnerEntry {

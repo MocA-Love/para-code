@@ -42,7 +42,7 @@ import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/ed
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisHoldBackTerminalEditorReveal, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
@@ -1474,6 +1474,79 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				parkedScope: 'space-c',
 				restoreTerminalsOfA: 0,
 			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('parks a terminal being opened for a just-created worktree there, and leaves it out of the space being left', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		const worktreeKey = 'worktree:file:///new-worktree';
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			// 作った直後の worktree は一覧 (refresh) にはまだ無いが、既知には載っている (= ある)。
+			testDisposables.add(paradisRegisterWorktreePresenceLookup(stateKey => stateKey === worktreeKey));
+			const ids = createUniqueTerminalIds();
+			const input = harness.createCleanTerminalEditor('/new-worktree/claude');
+			const instance = harness.addTerminal(input, ids.instanceId, ids.persistentProcessId, ids.shellIntegrationNonce);
+			// MCP・スマホが worktree を作って、その worktree へ端末を開いている途中。
+			testDisposables.add(paradisMarkTerminalEditorOpeningForScope(instance, worktreeKey, Promise.resolve()));
+			const own = harness.createLiveTerminalEditor('/workspace-a/claude');
+			await harness.parts.activeGroup.openEditor(own, { pinned: true });
+			await harness.parts.activeGroup.openEditor(input, { pinned: true });
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const parkedScope = paradisGetParkedTerminalEditorStateKey(ids.instanceId);
+			const restoreTerminalsOfA = (harness.workspaceSwitchService as unknown as { _workingSetTerminals: Map<string, number> })._workingSetTerminals.get('space-a');
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInA = harness.parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path);
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
+
+			assert.deepStrictEqual({ parkedScope, restoreTerminalsOfA, backInA }, {
+				parkedScope: worktreeKey,
+				// 切り替え元の working set にも載せない (載せると A に戻ったとき余分なタブが出る)。
+				restoreTerminalsOfA: 0,
+				backInA: ['/workspace-a/claude'],
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('makes the terminal last used in the active group active instead of one it holds back', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const ownInput = harness.createCleanTerminalEditor('/workspace-a/shell');
+			const own = harness.addTerminal(ownInput, 907, undefined, 'nonce-own-907');
+			const foreign = harness.addTerminal(harness.createCleanTerminalEditor('/workspace-b/claude'), 908, undefined, 'nonce-foreign-908');
+			testDisposables.add(paradisRegisterTerminalEditorOwnerProbe(instance => instance === foreign ? 'space-b' : instance === own ? 'space-a' : undefined));
+			await harness.parts.activeGroup.openEditor(harness.createEditor('/workspace-a/readme.txt', false), { pinned: true });
+			await harness.parts.activeGroup.openEditor(ownInput, { pinned: true });
+			await harness.parts.activeGroup.openEditor(harness.createEditor('/workspace-a/notes.txt', false), { pinned: true });
+			let activeInstance: ITerminalInstance | undefined = foreign;
+			const host = {
+				get activeInstance() { return activeInstance; },
+				setActiveInstance: (instance: ITerminalInstance | undefined) => { activeInstance = instance; },
+			};
+
+			const held = paradisHoldBackTerminalEditorReveal(foreign, host);
+
+			assert.deepStrictEqual({ held, active: activeInstance?.instanceId }, { held: true, active: 907 });
 		} finally {
 			try {
 				for (const group of harness?.parts.groups ?? []) {
