@@ -20,7 +20,9 @@
 //      フォーカスのあるアプリと要素の持ち主が目的の pid か（重なるだけのパネルでは止めない。レビュー N4）
 //    - 認証・同意のダイアログが出ていれば止める（レビュー M3）
 //    - 長い入力では、利用者の入力は毎回、画面とフォーカスは 10 文字か 50 ms ごとに確かめる（レビュー N5）
-//  - 修飾キーはイベントのフラグで付け、修飾キーそのものの押下は送らない。押したボタンとキーは、止めるときも必ず離す
+//  - 修飾キーはイベントのフラグで付け、修飾キーそのものの押下は送らない。離すイベントには押す前の OS の修飾キーの状態
+//    （組み合わせの修飾キーを除く）を付け、OS に ⌘ などが押されたままの状態を残さない（`paradisModifierEventFlags`）。
+//    押したボタンとキーは、止めるときも必ず離す
 //  - クリックとキーは HID のタップへ送る（`postToPid` では AppKit に届かないアプリがあるため。Orca と同じ）。
 //    スクロールだけは目的のプロセスへ直接送る
 //  - 貼り付け（Q100、レビュー M6）: クリップボードを退避し、空にしてから文字を入れて ⌘V を送る。貼り付け先の値に
@@ -66,7 +68,7 @@ extension ParadisDesktop {
 		}
 		try requireRunningApp(pid)
 		paradisOnMain {
-			_ = NSRunningApplication(processIdentifier: pid)?.unhide()
+			_ = paradisRunningApplication(pid)?.unhide()
 		}
 		let application = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(application, 1.0)
@@ -78,7 +80,7 @@ extension ParadisDesktop {
 			AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
 		}
 		paradisOnMain {
-			_ = NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+			_ = paradisRunningApplication(pid)?.activate(options: [])
 		}
 		usleep(250_000)
 		let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
@@ -100,17 +102,17 @@ extension ParadisDesktop {
 		let (downType, upType, cgButton): (CGEventType, CGEventType, CGMouseButton) = button == .left
 			? (.leftMouseDown, .leftMouseUp, .left)
 			: (.rightMouseDown, .rightMouseUp, .right)
-		let flags = paradisEventFlags(modifiers)
+		let flags = paradisModifierEventFlags(chord: paradisEventFlags(modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
 		for click in 1...clickCount {
 			try pointerFence(pid: pid, point: point)
-			let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: flags)
+			let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: flags.press)
 			down?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
 			try post(down)
-			paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton)
+			paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton, releaseFlags: flags.release)
 			usleep(25_000)
 			// 押したボタンは、確かめに失敗しても必ず離す
 			let failure = pointerFenceFailure(pid: pid, point: point)
-			let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: flags)
+			let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: flags.release)
 			up?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
 			try post(up)
 			paradisPressedInput.releaseMouse()
@@ -331,17 +333,18 @@ extension ParadisDesktop {
 		if let reason = paradisBlockedChordReason(chord, allowPaste: allowPaste) {
 			throw ParadisHelperError(code: "key_blocked", message: reason)
 		}
-		let flags = paradisEventFlags(chord.modifiers)
 		try keyFence(pid: pid)
+		// 離すイベントに ⌘ などを付けたまま送ると、OS の修飾キーの状態が押されたままで残る（実機の報告）
+		let flags = paradisModifierEventFlags(chord: paradisEventFlags(chord.modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
 		let down = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: chord.keyCode, keyDown: true)
-		down?.flags = flags
+		down?.flags = flags.press
 		try post(down)
-		paradisPressedInput.pressKey(chord.keyCode, flags: flags)
+		paradisPressedInput.pressKey(chord.keyCode, releaseFlags: flags.release)
 		usleep(20_000)
 		// 押したキーは、確かめに失敗しても必ず離す
 		let failure = keyFenceFailure(pid: pid, full: true)
 		let up = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: chord.keyCode, keyDown: false)
-		up?.flags = flags
+		up?.flags = flags.release
 		try post(up)
 		paradisPressedInput.releaseKey()
 		if let failure {
@@ -621,15 +624,16 @@ private let paradisInputTapCallback: CGEventTapCallBack = { _, type, event, user
 
 /**
  * 押して、まだ離していないボタンとキー。締め切りで SIGTERM を受けたときに離してから終わるため。
+ * 離すときの印（`releaseFlags`）は、押したときに決めたもの（`paradisModifierEventFlags` の `release`）。
  */
 final class ParadisPressedInput {
 	private let lock = NSLock()
-	private var mouse: (upType: CGEventType, point: CGPoint, button: CGMouseButton)?
-	private var key: (code: UInt16, flags: CGEventFlags)?
+	private var mouse: (upType: CGEventType, point: CGPoint, button: CGMouseButton, releaseFlags: CGEventFlags)?
+	private var key: (code: UInt16, releaseFlags: CGEventFlags)?
 
-	func pressMouse(upType: CGEventType, point: CGPoint, button: CGMouseButton) {
+	func pressMouse(upType: CGEventType, point: CGPoint, button: CGMouseButton, releaseFlags: CGEventFlags = []) {
 		lock.lock()
-		mouse = (upType, point, button)
+		mouse = (upType, point, button, releaseFlags)
 		lock.unlock()
 	}
 
@@ -639,9 +643,9 @@ final class ParadisPressedInput {
 		lock.unlock()
 	}
 
-	func pressKey(_ code: UInt16, flags: CGEventFlags) {
+	func pressKey(_ code: UInt16, releaseFlags: CGEventFlags) {
 		lock.lock()
-		key = (code, flags)
+		key = (code, releaseFlags)
 		lock.unlock()
 	}
 
@@ -659,12 +663,12 @@ final class ParadisPressedInput {
 		mouse = nil
 		key = nil
 		lock.unlock()
-		if let pendingMouse, let event = paradisMouseEvent(pendingMouse.upType, at: pendingMouse.point, button: pendingMouse.button, flags: []) {
+		if let pendingMouse, let event = paradisMouseEvent(pendingMouse.upType, at: pendingMouse.point, button: pendingMouse.button, flags: pendingMouse.releaseFlags) {
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
 		}
 		if let pendingKey, let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: pendingKey.code, keyDown: false) {
-			event.flags = pendingKey.flags
+			event.flags = pendingKey.releaseFlags
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
 		}
@@ -860,7 +864,7 @@ func paradisScreenWindows(entries: [[String: Any]]? = nil) -> [ParadisScreenWind
 	let bundleIds: [Int32: String] = paradisOnMain {
 		var result: [Int32: String] = [:]
 		for pid in owners {
-			if let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier {
+			if let id = paradisRunningApplication(pid)?.bundleIdentifier {
 				result[pid] = id
 			}
 		}

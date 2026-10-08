@@ -364,23 +364,91 @@ enum ParadisScrollDirection: String {
 private let paradisScrollStepPixels = 80.0
 
 /**
- * スクロールのイベントの並び（ピクセル、正は上・左へ戻す向き）。`extent` はウィンドウの高さか幅（ポイント）。
- * 1 ページはその 8 割。
+ * スクロールのイベントの並び（ピクセル。`CGEvent(scrollWheelEvent2Source:)` の `wheel1`・`wheel2` へそのまま渡す値）。
+ * `extent` はウィンドウの高さか幅（ポイント）。1 ページはその 8 割。前面の段と背面の段の両方がこの値を使う。
+ *
+ * 受け取ったアプリでは、縦も横も正が上・左へ戻す向き（AppKit の `scrollingDeltaY` が正なら上の内容が見える）。
+ * ただし WindowServer は、送った縦の値の符号をナチュラルなスクロールの設定（オン）で反転して届ける（2026-10-09 の実機、
+ * macOS 27.0.1。送った -80 が受け取り側の CGEvent で +80、横の -80 は -80 のまま）。このため縦だけ、
+ * ナチュラルなスクロールがオンなら符号を逆にして送る。`naturalScrolling` は `paradisNaturalScrollingIsOn()`。
  */
-func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double) -> [(dx: Int32, dy: Int32)] {
+func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double, naturalScrolling: Bool) -> [(dx: Int32, dy: Int32)] {
 	let total = max(1, pages * max(extent, 100) * 0.8)
 	let count = min(100, max(1, Int((total / paradisScrollStepPixels).rounded(.up))))
 	let step = Int32((total / Double(count)).rounded())
+	// 受け取ったアプリに届けたい縦の値（正で上へ）を、WindowServer の反転の分だけ逆にしておく
+	let vertical: Int32 = naturalScrolling ? -1 : 1
 	switch direction {
 	case .up:
-		return Array(repeating: (0, step), count: count)
+		return Array(repeating: (0, vertical * step), count: count)
 	case .down:
-		return Array(repeating: (0, -step), count: count)
+		return Array(repeating: (0, -vertical * step), count: count)
 	case .left:
 		return Array(repeating: (step, 0), count: count)
 	case .right:
 		return Array(repeating: (-step, 0), count: count)
 	}
+}
+
+/** 今のナチュラルなスクロールの設定で、スクロールのイベントの並びを作る（上の関数を参照）。 */
+func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double) -> [(dx: Int32, dy: Int32)] {
+	return paradisScrollSteps(direction: direction, pages: pages, extent: extent, naturalScrolling: paradisNaturalScrollingIsOn())
+}
+
+/**
+ * ナチュラルなスクロールがオンか（全体の設定 `com.apple.swipescrolldirection`。項目が無ければ OS の既定のオン）。
+ * システム設定はこの値を書くのと同時に WindowServer へ伝える（`SLSSetSwipeScrollDirection`。読む関数は無い）ので、
+ * 要求のたびに読み直す。
+ */
+func paradisNaturalScrollingIsOn() -> Bool {
+	let key = "com.apple.swipescrolldirection" as CFString
+	CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+	return paradisNaturalScrolling(preference: CFPreferencesCopyAppValue(key, kCFPreferencesAnyApplication))
+}
+
+/** 設定の値からナチュラルなスクロールかを決める。無い・読めない値は OS の既定のオン。 */
+func paradisNaturalScrolling(preference: Any?) -> Bool {
+	if let flag = preference as? Bool {
+		return flag
+	}
+	if let number = preference as? NSNumber {
+		return number.boolValue
+	}
+	return true
+}
+
+// MARK: - 修飾キーの印
+
+/** 修飾キーごとの、左右のキーを表す印（IOKit の NX_DEVICE*KEYMASK）。押した状態の OS の印には、これも付いている。 */
+private let paradisDeviceModifierBits: [(flag: CGEventFlags, device: UInt64)] = [
+	(.maskControl, 0x0000_0001 | 0x0000_2000),
+	(.maskShift, 0x0000_0002 | 0x0000_0004),
+	(.maskCommand, 0x0000_0008 | 0x0000_0010),
+	(.maskAlternate, 0x0000_0020 | 0x0000_0040),
+]
+
+/** 修飾キー付きのキー・クリックで、押す・離すのイベントに付ける印。 */
+struct ParadisModifierEventFlags: Equatable {
+	/** 押すイベントの印。組み合わせの修飾キーだけ。 */
+	let press: CGEventFlags
+	/** 離すイベントの印。押す前の OS の状態から、組み合わせの修飾キーを除いたもの。 */
+	let release: CGEventFlags
+}
+
+/**
+ * 修飾キー付きのキーとクリックの印（実機の報告: 離すイベントにも ⌘ を付けて HID へ送ると、OS の修飾キーの状態
+ * （`CGEventSource.flagsState(.hidSystemState)`）が ⌘ のまま残り、利用者の次のキーが ⌘ 付きになる）。
+ * 修飾キーそのものの押下・解放のイベントは今までどおり送らず、印だけで付ける。HID へ送ったイベントの印が OS の
+ * 修飾キーの状態になるので、離すイベントには押す前の状態（`systemBefore`）から組み合わせの修飾キーとその左右の印を
+ * 除いたものを付け、送り終えた後の状態を元へ戻す。組み合わせに無い修飾キー（利用者が押している Shift など）と
+ * Caps Lock などの印は残す。
+ */
+func paradisModifierEventFlags(chord: CGEventFlags, systemBefore: CGEventFlags) -> ParadisModifierEventFlags {
+	var release = systemBefore.rawValue
+	for entry in paradisDeviceModifierBits where chord.contains(entry.flag) {
+		release &= ~(entry.flag.rawValue | entry.device)
+	}
+	return ParadisModifierEventFlags(press: chord, release: CGEventFlags(rawValue: release))
 }
 
 /** ドラッグの途中の点（始点を除き終点を含む）。 */
