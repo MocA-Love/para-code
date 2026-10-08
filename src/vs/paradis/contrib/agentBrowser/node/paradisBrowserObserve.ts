@@ -21,7 +21,7 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisIsTransientEvaluateFailure, paradisParseEvaluateValue } from './paradisBrowserQuery.js';
-import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveSettleFunction } from './paradisBrowserObservePageScript.js';
+import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
 
 /** 変化を添える道具（E1）。 */
 const SETTLE_TOOLS: ReadonlySet<string> = new Set([
@@ -35,8 +35,8 @@ const QUIET_MS = 150;
 /** 待ちの上限の既定と最大。 */
 export const PARADIS_SETTLE_DEFAULT_MS = 2000;
 const SETTLE_MAX_MS = 10_000;
-/** 1 回の evaluate_script で待つ長さ（ほかの道具を長く待たせない）。 */
-const SETTLE_SLICE_MS = 1000;
+/** 記録を読む間隔。 */
+const POLL_MS = 100;
 /** 返す行の上限。 */
 const MAX_LINES = 30;
 
@@ -102,6 +102,7 @@ export interface IParadisObserveHost {
 	downloads(): Promise<ReadonlyMap<string, number> | undefined>;
 	isCurrent(): boolean;
 	sleep(ms: number): Promise<void>;
+	now(): number;
 }
 
 interface IPageEntry {
@@ -192,7 +193,9 @@ export class ParadisBrowserObserver {
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
 		if (options.settle && observe !== 'none' && pages?.dialog === undefined) {
 			const settled = await this._settle(host, before.name, settleMs);
-			if (observe === 'snapshot') {
+			if (settled.dialog !== undefined) {
+				pages = { pages: pages?.pages ?? [], dialog: settled.dialog };
+			} else if (observe === 'snapshot') {
 				parts.push(`${settleHead(settled)} Page snapshot:`);
 				const snapshot = await host.snapshot().catch(() => undefined);
 				const text = isRecord(snapshot) && Array.isArray(snapshot.content) ? snapshot.content.filter(item => isRecord(item) && item.type === 'text').map(item => (item as { text: string }).text).join('\n') : '';
@@ -200,11 +203,15 @@ export class ParadisBrowserObserver {
 					parts.push(text);
 				}
 			} else if (before.installed) {
-				const collected = evaluated<ICollected>(await host.evaluate(paradisObserveCollectFunction(before.name, MAX_LINES)).catch(() => undefined));
-				parts.push(paradisFormatChanges(before, collected, settled));
-			}
-			if (options.state) {
-				pages = paradisParseListPages(await host.listPages().catch(() => undefined)) ?? pages;
+				// 読む直前にもダイアログを確かめる（開いていれば変化は読まず、ダイアログだけを伝える）
+				const latest = paradisParseListPages(await host.listPages().catch(() => undefined));
+				if (latest?.dialog !== undefined) {
+					pages = latest;
+				} else {
+					const collected = evaluated<ICollected>(await host.evaluate(paradisObserveCollectFunction(before.name, MAX_LINES)).catch(() => undefined));
+					parts.push(paradisFormatChanges(before, collected, settled));
+					pages = latest ?? pages;
+				}
 			}
 		}
 		if (options.state) {
@@ -226,46 +233,46 @@ export class ParadisBrowserObserver {
 		}
 	}
 
-	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<{ readonly quiet: boolean; readonly waited: number; readonly navigated: boolean }> {
-		// 待った長さはページの中で測った分と、こちらで寝た分の合計（評価の往復の時間は含めない）
-		let waited = 0;
+	/**
+	 * 操作の後、DOM の変化が {@link QUIET_MS} 止まり、読み込み中の印が消え、通信が落ち着くまで（`settleMs` まで）待つ。
+	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読む前に毎回ダイアログが開いていないかを確かめる
+	 * （開いているときに evaluate_script を呼ぶと止まり、読んでいる間に開いたものは閉じられてしまうため）。
+	 */
+	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<{ readonly quiet: boolean; readonly waited: number; readonly navigated: boolean; readonly dialog?: string }> {
+		const start = host.now();
 		let navigated = false;
 		let quiet = settleMs === 0;
-		const deadline = Date.now() + settleMs;
-		const pause = async (ms: number) => {
-			waited += ms;
-			await host.sleep(ms);
-		};
+		let dialog: string | undefined;
 		while (settleMs > 0 && host.isCurrent()) {
-			const remaining = deadline - Date.now();
-			if (remaining <= 0) {
+			dialog = paradisParseListPages(await host.listPages().catch(() => undefined))?.dialog;
+			if (dialog !== undefined) {
 				break;
 			}
-			const result = await host.evaluate(paradisObserveSettleFunction(name, QUIET_MS, Math.min(SETTLE_SLICE_MS, remaining))).catch(() => undefined);
-			const value = evaluated<{ quiet?: unknown; waited?: unknown; navigated?: unknown }>(result);
+			const result = await host.evaluate(paradisObserveReadFunction(name)).catch(() => undefined);
+			const value = evaluated<{ age?: unknown; ready?: unknown; busy?: unknown; navigated?: unknown }>(result);
 			if (value === undefined) {
-				// 遷移の途中（文書が入れ替わった）なら少し待ってやり直す。それ以外の失敗は待つのをやめる
+				// 遷移の途中（文書が入れ替わった）ならやり直す。それ以外の失敗は待つのをやめる
 				if (result !== undefined && !paradisIsTransientEvaluateFailure(result)) {
 					break;
 				}
 				navigated = true;
-				await pause(100);
-				continue;
+			} else {
+				navigated = navigated || value.navigated === true;
+				const network = host.network();
+				const networkIdle = network === undefined || (network.inflight === 0 && (network.quietMs === undefined || network.quietMs >= QUIET_MS));
+				if (value.ready === true && typeof value.age === 'number' && value.age >= QUIET_MS && host.now() - start >= QUIET_MS && value.busy !== true && networkIdle) {
+					quiet = true;
+					break;
+				}
 			}
-			waited += typeof value.waited === 'number' ? value.waited : 0;
-			navigated = navigated || value.navigated === true;
-			if (value.quiet !== true) {
-				continue;
-			}
-			const network = host.network();
-			if (network === undefined || (network.inflight === 0 && (network.quietMs === undefined || network.quietMs >= QUIET_MS))) {
-				quiet = true;
+			if (host.now() - start >= settleMs) {
 				break;
 			}
-			await pause(50);
+			await host.sleep(POLL_MS);
 		}
-		return { quiet, waited, navigated };
+		return { quiet, waited: host.now() - start, navigated, ...(dialog !== undefined ? { dialog } : {}) };
 	}
+
 
 
 	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined): Promise<string | undefined> {

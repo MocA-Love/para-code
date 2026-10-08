@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisObserveHost, ParadisBrowserObserver, paradisFormatChanges, paradisObserveOptionsFor, paradisParseListPages, paradisTakeObserveArguments, paradisWithObserveArguments } from '../../node/paradisBrowserObserve.js';
-import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveSettleFunction } from '../../node/paradisBrowserObservePageScript.js';
+import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from '../../node/paradisBrowserObservePageScript.js';
 
 function text(value: string): unknown {
 	return { content: [{ type: 'text', text: value }] };
@@ -31,15 +31,16 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 	const calls: string[] = [];
 	let pageCall = 0;
 	let downloadCall = 0;
+	let clock = 0;
 	const host: IParadisObserveHost = {
 		evaluate: async source => {
-			const kind = source.includes('mo.disconnect();\n\tdelete') ? 'collect' : source.startsWith('async') ? 'settle' : 'install';
+			const kind = source.includes('delete window[N]') ? 'collect' : source.includes('const busy') ? 'read' : 'install';
 			calls.push(kind);
 			if (kind === 'install') {
 				return evaluateResult({ url: 'http://127.0.0.1/orders', title: 'Orders' });
 			}
-			if (kind === 'settle') {
-				return evaluateResult({ quiet: true, waited: 20, navigated: false });
+			if (kind === 'read') {
+				return evaluateResult({ age: 500, ready: true, busy: false, navigated: false });
 			}
 			return evaluateResult(options.collect);
 		},
@@ -52,7 +53,8 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 		tabs: async () => [{ tabId: 't1', url: 'http://127.0.0.1/orders', title: 'Orders', current: true, shared: false }],
 		downloads: async () => options.downloads?.[Math.min(downloadCall++, (options.downloads?.length ?? 1) - 1)],
 		isCurrent: () => true,
-		sleep: async () => { },
+		sleep: async ms => { clock += ms; },
+		now: () => clock,
 	};
 	return { host, calls };
 }
@@ -153,13 +155,13 @@ suite('Paradis browser observe', () => {
 		const before = await observer.before(host, options, 'changes', 2000);
 		const report = await observer.after(host, 'pane', options, before, 'changes', 2000);
 		assert.deepStrictEqual({ calls, report }, {
-			calls: ['list_pages', 'install', 'list_pages', 'settle', 'collect'],
-			report: '[Page after the action] Settled after 20 ms.\nAppeared:\n- text "Report ID: RPT-1"',
+			calls: ['list_pages', 'install', 'list_pages', 'list_pages', 'read', 'list_pages', 'read', 'list_pages', 'read', 'list_pages', 'collect'],
+			report: '[Page after the action] Settled after 200 ms.\nAppeared:\n- text "Report ID: RPT-1"',
 		});
 	});
 
 	test('the page scripts are valid JavaScript', () => {
-		const sources = [paradisObserveInstallFunction('__x'), paradisObserveSettleFunction('__x', 150, 1000), paradisObserveCollectFunction('__x', 30)];
+		const sources = [paradisObserveInstallFunction('__x'), paradisObserveReadFunction('__x'), paradisObserveCollectFunction('__x', 30)];
 		assert.deepStrictEqual(sources.map(source => typeof new Function(`return (${source});`)()), ['function', 'function', 'function']);
 	});
 });
