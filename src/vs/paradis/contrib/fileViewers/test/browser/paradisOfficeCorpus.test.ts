@@ -29,6 +29,8 @@ const S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
 const MS = 'http://schemas.microsoft.com/office';
+const V = 'urn:schemas-microsoft-com:vml';
+const O = 'urn:schemas-microsoft-com:office:office';
 const CT = {
 	document: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
 	styles: 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml',
@@ -37,7 +39,7 @@ const CT = {
 } as const;
 
 function wordDocument(body: string, declaration = ''): string {
-	return `${declaration}<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:wp="${WP}" xmlns:a="${A}"><w:body>${body}<w:sectPr/></w:body></w:document>`;
+	return `${declaration}<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:wp="${WP}" xmlns:a="${A}" xmlns:v="${V}" xmlns:o="${O}"><w:body>${body}<w:sectPr/></w:body></w:document>`;
 }
 
 function wordPackage(overrides: Partial<IParadisOfficeFixtureOptions> & { readonly body?: string; readonly declaration?: string; readonly extraParts?: readonly ParadisOfficeFixturePart[]; readonly extraRelationships?: readonly IParadisOfficeFixtureRelationship[]; readonly documentTarget?: string } = {}): Promise<Uint8Array> {
@@ -126,6 +128,7 @@ suite('ParadisOfficeCorpus', () => {
 		const bytes = await wordPackage({ extraRelationships: [{ id: 'rIdCustom', type: `${R}/custom-properties`, target: 'docProps/custom.xml' }] });
 		const result = await sanitize(bytes);
 		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [{ partName: 'docProps/custom.xml', kind: 'custom-properties', reason: 'missingTarget' }]);
 		ok(!new TextDecoder().decode(result.bytes).includes('custom-properties'));
 	});
 
@@ -189,6 +192,7 @@ suite('ParadisOfficeCorpus', () => {
 		const snapshot = await parseSpreadsheet(workbook);
 		strictEqual(snapshot.sheets[0].cells.size, 1);
 	});
+
 	test('keeps rejecting Targets that leave the package or name a network path (RFC 3986 §4.2)', async () => {
 		// The inventory and both semantic parsers resolve through this one function.
 		for (const target of ['/../word/document.xml', '../../x', '//host/word/document.xml', 'a\\b', 'a%2Fb']) {
@@ -211,14 +215,6 @@ suite('ParadisOfficeCorpus', () => {
 		for (const testCase of cases) {
 			await rejects(sanitize(await wordPackage(testCase.options)), testCase.error, testCase.name);
 		}
-	});
-
-	test('still shows an external relationship consumed by a story as a placeholder', async () => {
-		const bytes = await wordPackage({
-			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>',
-			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
-		});
-		deepStrictEqual((await sanitize(bytes)).placeholders.map(placeholder => placeholder.feature), ['externalRelationship']);
 	});
 
 	test('drops absent OLE, macro, and ActiveX targets from the relationships and the output', async () => {
@@ -246,5 +242,92 @@ suite('ParadisOfficeCorpus', () => {
 		await rejects(sanitize(bytes, { part: 12 }), /limitExceeded/);
 		await sanitize(bytes, { package: 14 });
 		await rejects(sanitize(bytes, { package: 13 }), /limitExceeded/);
+	});
+
+	test('leaves out parts that nothing draws and lists them instead of counting placeholders (Part 1 §9.1.4)', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/customXml/item1.xml', '<root/>', 'application/xml'],
+				['/customXml/itemProps1.xml', '<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{00000000-0000-0000-0000-000000000001}"/>', 'application/vnd.openxmlformats-officedocument.customXmlProperties+xml'],
+				['/word/people.xml', `<w15:people xmlns:w15="${MS}/word/2012/wordml"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml'],
+				['/word/commentsIds.xml', `<w16cid:commentsIds xmlns:w16cid="${MS}/word/2016/wordml/cid"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml'],
+				['/word/header9.xml', `<w:hdr xmlns:w="${W}"><w:p/></w:hdr>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdItem', type: `${R}/customXml`, target: '../customXml/item1.xml' },
+				{ source: '/customXml/item1.xml', id: 'rIdProps', type: `${R}/customXmlProps`, target: 'itemProps1.xml' },
+				{ source: '/word/document.xml', id: 'rIdPeople', type: `${MS}/2011/relationships/people`, target: 'people.xml' },
+				{ source: '/word/document.xml', id: 'rIdIds', type: `${MS}/2016/09/relationships/commentsIds`, target: 'commentsIds.xml' },
+				{ source: '/word/document.xml', id: 'rIdOrphanHeader', type: `${R}/header`, target: 'header9.xml' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [
+			{ partName: 'customXml/item1.xml', kind: 'customXml', reason: 'notRendered' },
+			{ partName: 'customXml/itemProps1.xml', kind: 'customXmlProps', reason: 'notRendered' },
+			{ partName: 'word/commentsIds.xml', kind: 'commentsIds', reason: 'notRendered' },
+			{ partName: 'word/header9.xml', kind: 'header', reason: 'unreferenced' },
+			{ partName: 'word/people.xml', kind: 'people', reason: 'notRendered' },
+		]);
+		const text = new TextDecoder().decode(result.bytes);
+		ok(!text.includes('Office asset unavailable'));
+		strictEqual((await parseWord(bytes)).completeness.terminal, true);
+	});
+
+	test('keeps comment threading written with the wordprocessingml content type (MS-DOCX §2.1.2)', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/word/commentsExtended.xml', `<w15:commentsEx xmlns:w15="${MS}/word/2012/wordml"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml']],
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdEx', type: `${MS}/2011/relationships/commentsExtended`, target: 'commentsExtended.xml' }],
+		});
+		const result = await sanitize(bytes);
+		deepStrictEqual([result.placeholders.length, result.ignoredParts.length], [0, 0]);
+		ok(zipNames(result.bytes).includes('word/commentsExtended.xml'));
+	});
+
+	test('keeps the text of an external hyperlink and removes only the link', async () => {
+		const bytes = await wordPackage({
+			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>link text</w:t></w:r></w:hyperlink></w:p>',
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		const text = new TextDecoder().decode(result.bytes);
+		ok(/<w:hyperlink\s*><w:r><w:t>link text<\/w:t><\/w:r><\/w:hyperlink>/.test(text));
+		ok(!text.includes('example.invalid'));
+	});
+
+	test('counts an OLE object once even though its preview picture is also blocked', async () => {
+		const object = '<w:p><w:r><w:object><v:shape id="s1"><v:imagedata r:id="rIdPreview"/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s1" r:id="rIdOle"/></w:object></w:r></w:p>';
+		const bytes = await wordPackage({
+			body: object,
+			extraParts: [
+				['/word/media/image1.emf', Uint8Array.of(1, 0, 0, 0), 'image/x-emf'],
+				['/word/embeddings/object1.bin', Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdPreview', type: `${R}/image`, target: 'media/image1.emf' },
+				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
+			],
+		});
+		const result = await sanitize(bytes);
+		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['embeddedObject']);
+	});
+
+	test('falls back from an embedded font without a placeholder', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/word/fontTable.xml', `<w:fonts xmlns:w="${W}" xmlns:r="${R}"><w:font w:name="Sample"><w:embedRegular r:id="rIdFont" w:fontKey="{00000000-0000-0000-0000-000000000002}"/></w:font></w:fonts>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml'],
+				['/word/fonts/font1.odttf', Uint8Array.of(0, 1, 0, 0), 'application/vnd.openxmlformats-officedocument.obfuscatedFont'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdFonts', type: `${R}/fontTable`, target: 'fontTable.xml' },
+				{ source: '/word/fontTable.xml', id: 'rIdFont', type: `${R}/font`, target: 'fonts/font1.odttf' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [{ partName: 'word/fonts/font1.odttf', kind: 'font', reason: 'notRendered' }]);
+		ok(!zipNames(result.bytes).includes('word/fonts/font1.odttf'));
 	});
 });
