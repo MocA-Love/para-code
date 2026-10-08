@@ -232,7 +232,14 @@ suite('ParadisOfficeSanitizer', () => {
 			result.assets.some((asset) => asset.kind === 'placeholderPreview'),
 			true,
 		);
-		strictEqual(result.placeholders.length, 4);
+		// The drawn unsafe SVG and the drawn image with a non-image content type become boxes. The font and
+		// altChunk relationships have no consumer in any story, so nothing is drawn for them: they are left
+		// out and listed instead (Q313 A).
+		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['mismatchedRelationship', 'unsafeMedia']);
+		deepStrictEqual(result.ignoredParts.map(part => `${part.partName}|${part.kind}|${part.reason}`), [
+			'word/afchunk/chunk1.html|aFChunk|notRendered',
+			'word/fonts/font1.odttf|font|notRendered',
+		]);
 	});
 
 	test('classifies custom-path assets from OPC content types and relationships and rewrites visible anchors', async () => {
@@ -256,11 +263,14 @@ suite('ParadisOfficeSanitizer', () => {
 		const serialized = new TextDecoder().decode(result.bytes);
 
 		ok(serialized.includes('<path d="M 0 0 L 1 1"/>'));
-		ok(serialized.includes('Office asset unavailable'));
 		for (const forbidden of ['ALT-CHUNK', 'RAW-CUSTOM-FONT', 'RAW-OLE', 'RAW-MACRO', 'attacker.example', 'oleObject', 'aFChunk']) {
 			strictEqual(serialized.includes(forbidden), false, forbidden);
 		}
-		ok(result.placeholders.length >= 5);
+		// None of the blocked relationships is consumed by a story, so no box is drawn; every blocked part
+		// is still removed and listed.
+		deepStrictEqual(result.placeholders, []);
+		strictEqual(serialized.includes('Office asset unavailable'), false);
+		ok(result.ignoredParts.length >= 4);
 		strictEqual(
 			result.assets.some((asset) => asset.kind === 'sanitizedSvg'),
 			true,
@@ -351,7 +361,11 @@ suite('ParadisOfficeSanitizer', () => {
 		const dangling = await sanitizeOfficeDocxPackageForRenderer({
 			nodeId: 'dangling-opc', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ ...base, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>' }),
 		});
-		strictEqual(dangling.placeholders.some(placeholder => placeholder.feature === 'missingRelationship'), false);
+		deepStrictEqual(dangling.placeholders.map(placeholder => placeholder.feature), []);
+		deepStrictEqual(dangling.ignoredParts, [
+			{ partName: 'custom/payload.bin', kind: 'unsafeContent', reason: 'unreferenced' },
+			{ partName: 'missing.bin', kind: 'image', reason: 'missingTarget' },
+		]);
 		strictEqual(textOf(readStoreZipEntries(dangling.bytes), 'word/_rels/document.xml.rels').includes('missing.bin'), false);
 		for (const [index, rels] of invalidRels.slice(1).entries()) {
 			await rejects(
@@ -398,7 +412,9 @@ suite('ParadisOfficeSanitizer', () => {
 		strictEqual(serialized.includes('r:id="ole"'), false);
 		ok(serialized.includes('Office asset unavailable'));
 
+		// 257 consumed relationships that each need a substitute box (unconsumed ones are only listed).
 		const externalRelationships = Array.from({ length: 257 }, (_, index) => `<Relationship Id="e${index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/${index}" TargetMode="External"/>`).join('');
+		const externalConsumers = Array.from({ length: 257 }, (_, index) => `<w:r><w:drawing r:id="e${index}"/></w:r>`).join('');
 		await rejects(
 			sanitizeOfficeDocxPackageForRenderer({
 				nodeId: 'too-many-placeholders',
@@ -406,7 +422,7 @@ suite('ParadisOfficeSanitizer', () => {
 				archive: new MemoryOfficeArchive({
 					'[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
 					'_rels/.rels': packageRootRelationships(),
-					'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+					'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p>${externalConsumers}</w:p></w:body></w:document>`,
 					'word/_rels/document.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${externalRelationships}</Relationships>`,
 				}),
 			}),
@@ -598,13 +614,16 @@ suite('ParadisOfficeSanitizer', () => {
 		files['word/document.xml'] = '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="blocked"><w:r><w:t>Main</w:t></w:r></w:hyperlink></w:p><w:sectPr><w:headerReference w:type="default" r:id="header"/><w:footerReference w:type="default" r:id="footer"/></w:sectPr></w:body></w:document>';
 		files['word/_rels/document.xml.rels'] = relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid" TargetMode="External"/><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="footer" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/><Relationship Id="footnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="endnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/><Relationship Id="comments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml"/>');
 
-		const entries = readStoreZipEntries((await sanitizeMemoryPackage('story-anchors', files)).bytes);
+		const result = await sanitizeMemoryPackage('story-anchors', files);
+		const entries = readStoreZipEntries(result.bytes);
+		// An external hyperlink keeps its text in its own story and loses only the link.
 		for (const story of stories) {
 			const xml = textOf(entries, story.name);
 			strictEqual(xml.includes('r:id="blocked"'), false, story.name);
-			strictEqual(countOccurrences(xml, 'Office asset unavailable:'), 1, story.name);
+			strictEqual(countOccurrences(xml, 'Office asset unavailable:'), 0, story.name);
+			ok(/<w:hyperlink\s*><w:r><w:t>[A-Za-z]+<\/w:t><\/w:r><\/w:hyperlink>/.test(xml), story.name);
 		}
-		strictEqual(countOccurrences(textOf(entries, 'word/document.xml'), 'Office asset unavailable:'), 1);
+		deepStrictEqual(result.placeholders, []);
 	});
 
 	test('removes media referenced only by a story that was itself removed', async () => {
@@ -817,7 +836,9 @@ suite('ParadisOfficeSanitizer', () => {
 				'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
 				'_rels/.rels': packageRootRelationships(),
 				'word/document.xml': sourceAt(bytes),
-				'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.invalid/blocked" TargetMode="External"/>'),
+				// An unknown relationship type consumed by the hyperlink needs a substitute box.
+				'word/_rels/document.xml.rels': relationships('<Relationship Id="blocked" Type="urn:example:blocked" Target="blocked.bin"/>'),
+				'word/blocked.bin': 'BLOCKED',
 			}),
 			allocationObserver: kind => allocations.push(kind),
 			scheduler: () => Promise.resolve(),
@@ -934,14 +955,16 @@ suite('ParadisOfficeSanitizer', () => {
 			archive: new MemoryOfficeArchive({
 				'[Content_Types].xml': contentTypes([['/word/document.xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml']]),
 				'_rels/.rels': packageRootRelationships(),
-				'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+				// The first 300 relationships are drawn, so each needs a box; the cap is reached among them.
+				'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p>${Array.from({ length: 300 }, (_, index) => `<w:r><w:drawing r:id="external${index}"/></w:r>`).join('')}</w:p></w:body></w:document>`,
 				'word/_rels/document.xml.rels': relationships(externalRelationships),
 			}),
 			scheduler: () => new Promise<void>(resolve => setTimeout(() => { schedulerYields++; resolve(); }, 0)),
 		}), (error: unknown) => error instanceof Error && error.message === 'limitExceeded');
 
 		ok(schedulerYields > 12, 'relationship analysis yielded before rejecting');
-		ok(schedulerYields < 20, `stopped at the cap instead of scanning 1,000 relationships: ${schedulerYields}`);
+		// The story-target pre-pass and the consumer walk add a fixed number of yields before the cap.
+		ok(schedulerYields < 30, `stopped at the cap instead of scanning 1,000 relationships: ${schedulerYields}`);
 	});
 
 	test('observes cancellation and an absolute deadline during chunked OPC analysis', async () => {

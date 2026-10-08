@@ -11,6 +11,7 @@ import { createParadisOfficeWebArchive } from '../../browser/office/paradisOffic
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
 import { resolveParadisOfficeRelationshipTarget } from '../../common/office/paradisOfficeArchive.js';
+import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
@@ -329,5 +330,21 @@ suite('ParadisOfficeCorpus', () => {
 		strictEqual(result.placeholders.length, 0);
 		deepStrictEqual(result.ignoredParts, [{ partName: 'word/fonts/font1.odttf', kind: 'font', reason: 'notRendered' }]);
 		ok(!zipNames(result.bytes).includes('word/fonts/font1.odttf'));
+	});
+	test('never resolves a namespace prefix through Object.prototype', () => {
+		const limits = { depth: 8, nodes: 8, attributeLength: 64, characters: 1024 };
+		for (const prefix of ['constructor', 'toString', '__proto__']) {
+			throws(() => parseParadisOfficeXml(`<${prefix}:a/>`, limits), /malformed/, `element ${prefix}`);
+			throws(() => parseParadisOfficeXml(`<a ${prefix}:b="1"/>`, limits), /malformed/, `attribute ${prefix}`);
+		}
+		// Declaring such a prefix is valid XML and binds it like any other prefix.
+		strictEqual(parseParadisOfficeXml('<__proto__:a xmlns:__proto__="urn:example:p"/>', limits).root.uri, 'urn:example:p');
+	});
+
+	test('rejects a second Default for the same extension in the package inventory (Part 2 §7.2.3.2)', async () => {
+		const bytes = await wordPackage({
+			contentTypesXml: `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="XML" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${CT.document}"/><Override PartName="/word/styles.xml" ContentType="${CT.styles}"/></Types>`,
+		});
+		await rejects(inventoryOf(bytes), /malformed/);
 	});
 });

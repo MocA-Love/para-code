@@ -414,8 +414,9 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	const markReplaced = (consumers: readonly OfficeStoryConsumer[]): void => {
 		for (const consumer of consumers) { if (consumer.anchorKind === 'run' || consumer.anchorKind === 'block') { replacedAnchors.add(consumer.anchor); } }
 	};
-	const ignorePart = (partName: string, kind: string, reason: ParadisOfficeIgnoredPart['reason']): void => {
-		if (!ignoredParts.has(partName)) { ignoredParts.set(partName, Object.freeze({ partName, kind, reason })); }
+	const missingTargetSources = new Map<string, string | undefined>();
+	const ignorePart = (partName: string, kind: string, reason: ParadisOfficeIgnoredPart['reason'], sourcePart?: string): void => {
+		if (!ignoredParts.has(partName)) { ignoredParts.set(partName, Object.freeze({ partName, kind, reason })); if (reason === 'missingTarget') { missingTargetSources.set(partName, sourcePart); } }
 	};
 	const relationshipPlaceholderTargets = new Set<string>();
 	const retainedRelationships: { readonly relationshipPart: string; readonly sourcePart?: string; readonly target: string }[] = [];
@@ -483,7 +484,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 					markReplaced(consumers);
 					const list = storyReplacements.get(sourcePart!) ?? []; list.push({ id, placeholder: placeholderValue, mode: 'placeholder' }); storyReplacements.set(sourcePart!, list);
 				} else {
-					ignorePart(resolved!, relationshipTypeName(type), 'missingTarget');
+					ignorePart(resolved!, relationshipTypeName(type), 'missingTarget', sourcePart);
 				}
 				continue;
 			}
@@ -616,7 +617,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	for (const [target, uses] of imageConsumersByTarget) {
 		if (uses.length > 0 && uses.every(use => replacedAnchors.has(use.anchor))) { hiddenImageParts.add(target); }
 	}
-	return { removedParts, svgParts, imageParts, hiddenImageParts, rewrittenXml, placeholders, ignoredParts: Object.freeze([...ignoredParts.values()].sort((left, right) => left.partName < right.partName ? -1 : left.partName > right.partName ? 1 : 0)) };
+	return { removedParts, svgParts, imageParts, hiddenImageParts, rewrittenXml, placeholders, ignoredParts: Object.freeze([...ignoredParts.values()].filter(part => part.reason === 'missingTarget' ? !removedParts.has(missingTargetSources.get(part.partName) ?? '') : removedParts.has(part.partName)).sort((left, right) => left.partName < right.partName ? -1 : left.partName > right.partName ? 1 : 0)) };
 }
 
 async function advanceOpcAnalysis(input: ParadisOfficePackageSanitizerInput, state: OpcAnalysisState, force = false): Promise<void> {
@@ -1480,9 +1481,6 @@ function relationshipPartForSource(sourcePart: string): string {
 	return `${slash < 0 ? '' : `${sourcePart.slice(0, slash + 1)}`}_rels/${sourcePart.slice(slash + 1)}.rels`;
 }
 
-function isBinaryPackagePart(name: string, type: string): boolean {
-	return KNOWN_IMAGE_CONTENT_TYPES.has(type) || isUnsafeContentType(type) || !(/\+xml$/i.test(type) || type === 'application/xml' || name.endsWith('.xml'));
-}
 
 function isSvgContentType(type: string): boolean { return type.toLowerCase() === 'image/svg+xml'; }
 function isUnsafeContentType(type: string): boolean {
