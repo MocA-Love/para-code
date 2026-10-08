@@ -20,7 +20,7 @@ import {
 } from '../../common/paradisOfficeProtocol.js';
 import type { ParadisWordStoryKind } from '../../common/word/paradisWordSemantic.js';
 import { truncateParadisWordText, type IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
-import { PARADIS_WORD_HIGH_CONTRAST_TOKENS, canShowWordNoChanges, wordPrintWarning } from './paradisWordDiagnostics.js';
+import { PARADIS_WORD_HIGH_CONTRAST_TOKENS, canShowWordNoChanges, paradisWordBlockedFeatureLabel, paradisWordIgnoredReasonLabel, wordPrintWarning, type ParadisWordPackageExclusions } from './paradisWordDiagnostics.js';
 
 export const PARADIS_WORD_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -402,10 +402,29 @@ export function wordChangeSummary(change: ParadisOfficeChange): string {
 /** 解析の内訳（変更点パネルの下の節）に出す材料。 */
 export interface ParadisWordInspectorAnalysis {
 	readonly counts?: IParadisWordAnalysisCounts;
-	/** 表示に関係しないので黙って外した部品（Q313 A）。 */
+	/** 表示に関係しないので黙って外した部品（Q313 A）。一覧は上限の件数まで。 */
 	readonly ignoredParts: readonly { readonly title: string; readonly detail?: string }[];
+	/** 一覧に載せきれなかった、黙って外した部品の数。 */
+	readonly ignoredOmitted?: number;
+	/** 安全のために外したもの（マクロ・埋め込み・外部参照など）。一覧は上限の件数まで。 */
+	readonly blockedParts?: readonly { readonly title: string; readonly detail?: string }[];
+	readonly blockedOmitted?: number;
 	/** 解析できなかったときの理由（利用者向けの文）。 */
 	readonly failure?: string;
+}
+
+/** 描画用のパッケージから外した部品を、変更点パネルの一覧の項目にする。 */
+export function paradisWordExclusionItems(exclusions: ParadisWordPackageExclusions): Pick<ParadisWordInspectorAnalysis, 'ignoredParts' | 'ignoredOmitted' | 'blockedParts' | 'blockedOmitted'> {
+	return {
+		ignoredParts: exclusions.ignored.map(part => ({ title: part.partName, detail: `${part.kind}: ${paradisWordIgnoredReasonLabel(part.reason)}` })),
+		ignoredOmitted: exclusions.ignoredOmitted,
+		blockedParts: exclusions.blocked.map(part => {
+			const label = paradisWordBlockedFeatureLabel(part.feature);
+			const title = part.partName ?? (part.scheme ? `${part.kind} (${part.scheme})` : part.kind);
+			return { title, detail: part.count > 1 ? localize('paradis.word.blockedPartCount', "{0}・{1} 件", label, part.count) : label };
+		}),
+		blockedOmitted: exclusions.blockedOmitted,
+	};
 }
 
 function nodeKindLabel(kind: string): string {
@@ -657,18 +676,35 @@ export class ParadisWordChangeInspector extends Disposable {
 				}
 			}
 		}
-		if (analysis.ignoredParts.length > 0) {
-			const ignored = dom.append(section, dom.$('.paradis-word-ignored-parts'));
-			ignored.setAttribute('role', 'list');
-			ignored.style.marginTop = '4px';
-			const title = dom.append(ignored, dom.$('span'));
-			title.textContent = localize('paradis.word.ignoredParts', "無視した部品 {0}", analysis.ignoredParts.length);
-			for (const part of analysis.ignoredParts) {
-				const item = dom.append(ignored, dom.$('.paradis-word-ignored-part'));
+		const appendPartList = (className: string, itemClassName: string, title: string, parts: readonly { readonly title: string; readonly detail?: string }[], omitted: number, warning: boolean) => {
+			if (parts.length === 0 && omitted === 0) {
+				return;
+			}
+			const list = dom.append(section, dom.$(`.${className}`));
+			list.setAttribute('role', 'list');
+			list.style.marginTop = '4px';
+			const heading = dom.append(list, dom.$('span'));
+			heading.textContent = title;
+			if (warning) {
+				heading.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+			}
+			// 一覧の DOM は上限の件数までしか作らない（部品の数は文書しだいで大きくなる）。
+			for (const part of parts) {
+				const item = dom.append(list, dom.$(`.${itemClassName}`));
 				item.setAttribute('role', 'listitem');
 				item.textContent = part.detail ? `${part.title} — ${part.detail}` : part.title;
 			}
-		}
+			if (omitted > 0) {
+				const more = dom.append(list, dom.$(`.${itemClassName}`));
+				more.setAttribute('role', 'listitem');
+				more.textContent = localize('paradis.word.partsOmitted', "他 {0} 件", omitted);
+			}
+		};
+		const blockedParts = analysis.blockedParts ?? [];
+		const blockedOmitted = analysis.blockedOmitted ?? 0;
+		appendPartList('paradis-word-blocked-parts', 'paradis-word-blocked-part', localize('paradis.word.blockedParts', "安全のために外したもの {0}", blockedParts.length + blockedOmitted), blockedParts, blockedOmitted, true);
+		const ignoredOmitted = analysis.ignoredOmitted ?? 0;
+		appendPartList('paradis-word-ignored-parts', 'paradis-word-ignored-part', localize('paradis.word.ignoredParts', "無視した部品 {0}", analysis.ignoredParts.length + ignoredOmitted), analysis.ignoredParts, ignoredOmitted, false);
 	}
 
 	private render(): void {
