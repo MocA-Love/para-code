@@ -19,7 +19,7 @@ import {
 	type ParadisOfficeSourceDescriptor,
 } from '../../common/paradisOfficeProtocol.js';
 import type { ParadisWordStoryKind } from '../../common/word/paradisWordSemantic.js';
-import type { IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
+import { truncateParadisWordText, type IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 import { PARADIS_WORD_HIGH_CONTRAST_TOKENS, canShowWordNoChanges, wordPrintWarning } from './paradisWordDiagnostics.js';
 
 export const PARADIS_WORD_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
@@ -395,7 +395,7 @@ export function wordChangeText(change: ParadisOfficeChange): string | undefined 
 export function wordChangeSummary(change: ParadisOfficeChange): string {
 	const text = wordChangeText(change);
 	const author = recordText(change.after, 'author');
-	const detail = text ? (text.length > 80 ? `${text.slice(0, 79)}…` : text) : change.subject.locator;
+	const detail = text ? truncateParadisWordText(text, 80) : change.subject.locator;
 	return author ? localize('paradis.word.changeSummaryAuthor', "{0}（{1}）", detail, author) : detail;
 }
 
@@ -651,6 +651,9 @@ export class ParadisWordChangeInspector extends Disposable {
 					appendKeyValue(unknown, element.name, element.disposition === 'ignorable'
 						? localize('paradis.word.analysis.unknownIgnorable', "{0} 件・表示に関係しない", element.count)
 						: localize('paradis.word.analysis.unknownUnrendered', "{0} 件・まだ描けない", element.count));
+				}
+				if (counts.unknownElementsOther.kinds > 0) {
+					appendKeyValue(unknown, localize('paradis.word.analysis.unknownOtherKinds', "他 {0} 種", counts.unknownElementsOther.kinds), localize('paradis.word.analysis.unknownOtherCount', "{0} 件", counts.unknownElementsOther.count));
 				}
 			}
 		}

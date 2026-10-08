@@ -47,7 +47,9 @@ export interface IParadisWordAnalysisCounts {
 	readonly nodeKinds: Readonly<Record<string, number>>;
 	/** 文書パーツ（本文・ヘッダー・脚注など）の種類ごとの数。 */
 	readonly storyKinds: Readonly<Record<string, number>>;
+	/** 未知の要素の多いものから最大 PARADIS_WORD_UNKNOWN_ELEMENT_LIMIT 種。残りは unknownElementsOther にまとめる。 */
 	readonly unknownElements: readonly IParadisWordUnknownElementSummary[];
+	readonly unknownElementsOther: { readonly kinds: number; readonly count: number; readonly unrendered: number };
 	readonly unresolvedRelationships: number;
 	readonly externalRelationships: number;
 }
@@ -91,6 +93,8 @@ export interface IParadisWordComparison {
 	readonly modified: IParadisWordAnalysisCounts;
 	/** 比較のときに作れなかった補助モデル（スタイル・セキュリティなど）。その種類の変更は出ない。 */
 	readonly omittedModels: readonly string[];
+	/** マクロ・埋め込みなどの部品の形が正しくなく、セキュリティの解析が「安全に読めない」と判断した。 */
+	readonly securityUnreadable: boolean;
 	readonly timings: { readonly parseMs: number; readonly compareMs: number };
 }
 
@@ -116,16 +120,21 @@ const wordMainContentTypes: Readonly<Record<string, ParadisWordSemanticFormat>> 
  * inventory を調べる関数は形式を知らないので、本文の content type から決める（Web 版の Worker と同じ規則）。
  */
 export function resolveParadisWordInventory<T extends ParadisOfficeInventory>(inventory: T): (T & { readonly format: ParadisWordSemanticFormat }) | undefined {
+	const mainPart = findParadisOfficeMainDocumentPart(inventory);
+	const format = mainPart ? wordMainContentTypes[mainPart.contentType] : undefined;
+	return format ? { ...inventory, format } : undefined;
+}
+
+/**
+ * パッケージの本文の部品（`_rels/.rels` の officeDocument が指す 1 つの部品）。1 つに決まらなければ undefined。
+ * Word・Excel の形式の判定（デスクトップの解析と Web 版の Worker）で共通に使う。
+ */
+export function findParadisOfficeMainDocumentPart(inventory: ParadisOfficeInventory): ParadisOfficeInventory['parts'][number] | undefined {
 	const roots = inventory.relationships.filter(relationship => relationship.sourcePartId === undefined
 		&& (relationship.type === officeDocumentRelationship || relationship.type === strictOfficeDocumentRelationship)
 		&& relationship.targetMode === 'internal'
 		&& !relationship.missing);
-	if (roots.length !== 1) {
-		return undefined;
-	}
-	const mainPart = inventory.parts.find(part => part.canonicalUri === roots[0].target);
-	const format = mainPart ? wordMainContentTypes[mainPart.contentType] : undefined;
-	return format ? { ...inventory, format } : undefined;
+	return roots.length === 1 ? inventory.parts.find(part => part.canonicalUri === roots[0].target) : undefined;
 }
 
 /**
@@ -185,9 +194,21 @@ function increment(map: Map<string, number>, key: string): void {
 	map.set(key, (map.get(key) ?? 0) + 1);
 }
 
+/** 長い文字を limit 文字（UTF-16 の単位）以内に切り、省略記号を付ける。サロゲートペアの途中では切らない。 */
+export function truncateParadisWordText(text: string, limit: number): string {
+	if (text.length <= limit) {
+		return text;
+	}
+	let end = Math.max(0, limit - 1);
+	const last = text.charCodeAt(end - 1);
+	if (end > 0 && last >= 0xd800 && last <= 0xdbff) {
+		end--;
+	}
+	return `${text.slice(0, end)}…`;
+}
+
 function excerpt(text: string, limit: number): string {
-	const normalized = text.replace(/\s+/g, ' ').trim();
-	return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+	return truncateParadisWordText(text.replace(/\s+/g, ' ').trim(), limit);
 }
 
 function textValue(text: string, limit: number): ParadisOfficeChangeValue {
@@ -399,9 +420,7 @@ export function summarizeParadisWordDocument(
 			nodes: document.completeness.nodes,
 			nodeKinds: Object.fromEntries([...builder.counts.nodeKinds].sort((left, right) => left[0].localeCompare(right[0]))),
 			storyKinds: Object.fromEntries([...storyKinds].sort((left, right) => storyOrder(left[0]) - storyOrder(right[0]))),
-			unknownElements: [...builder.counts.unknown]
-				.map(([name, count]) => ({ name, count, disposition: classifyParadisWordUnknownElement(name) }))
-				.sort((left, right) => (left.disposition === right.disposition ? 0 : left.disposition === 'unrendered' ? -1 : 1) || right.count - left.count || left.name.localeCompare(right.name)),
+			...unknownElementSummary(builder.counts.unknown),
 			unresolvedRelationships: document.completeness.unresolvedRelationships,
 			externalRelationships: inventory.relationships.filter(relationship => relationship.targetMode === 'external').length,
 		},
@@ -409,6 +428,24 @@ export function summarizeParadisWordDocument(
 		changesTruncated: builder.changesTruncated,
 		searchItems: builder.searchItems,
 		searchTruncated: builder.searchTruncated,
+	};
+}
+
+/** 吹き出し・一覧に並べる未知の要素の種類の上限。 */
+export const PARADIS_WORD_UNKNOWN_ELEMENT_LIMIT = 20;
+
+function unknownElementSummary(unknown: ReadonlyMap<string, number>): Pick<IParadisWordAnalysisCounts, 'unknownElements' | 'unknownElementsOther'> {
+	const all = [...unknown]
+		.map(([name, count]) => ({ name: truncateParadisWordText(name, 128), count, disposition: classifyParadisWordUnknownElement(name) }))
+		.sort((left, right) => (left.disposition === right.disposition ? 0 : left.disposition === 'unrendered' ? -1 : 1) || right.count - left.count || left.name.localeCompare(right.name));
+	const rest = all.slice(PARADIS_WORD_UNKNOWN_ELEMENT_LIMIT);
+	return {
+		unknownElements: all.slice(0, PARADIS_WORD_UNKNOWN_ELEMENT_LIMIT),
+		unknownElementsOther: {
+			kinds: rest.length,
+			count: rest.reduce((total, element) => total + element.count, 0),
+			unrendered: rest.reduce((total, element) => element.disposition === 'unrendered' ? total + element.count : total, 0),
+		},
 	};
 }
 

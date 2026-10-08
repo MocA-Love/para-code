@@ -14,7 +14,7 @@
 
 import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
-import type { ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from './paradisWordSemanticWorkerProtocol.js';
+import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from './paradisWordSemanticWorkerProtocol.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
@@ -26,10 +26,10 @@ async function handle(request: Exclude<ParadisWordSemanticWorkerRequest, { reado
 	let reply: ParadisWordSemanticWorkerReply;
 	try {
 		reply = request.op === 'analyze'
-			? { id: request.id, result: await service.analyze(request.bytes, cancellation.token) }
-			: { id: request.id, result: await service.compare(request.original, request.modified, cancellation.token) };
+			? { kind: 'result', id: request.id, result: await service.analyze(request.bytes, cancellation.token) }
+			: { kind: 'result', id: request.id, result: await service.compare(request.original, request.modified, cancellation.token) };
 	} catch {
-		reply = { id: request.id, result: { ok: false, code: 'failed' } };
+		reply = { kind: 'result', id: request.id, result: { ok: false, code: 'failed' } };
 	} finally {
 		active.delete(request.id);
 		cancellation.dispose();
@@ -44,3 +44,6 @@ parentPort?.on('message', (request: ParadisWordSemanticWorkerRequest) => {
 	}
 	void handle(request);
 });
+
+// 入口を読み込めた合図。これが来ないうちに落ちた worker は、shared process 側で「起動できない」と扱われる。
+parentPort?.postMessage({ kind: 'ready' } satisfies ParadisWordSemanticWorkerMessage);
