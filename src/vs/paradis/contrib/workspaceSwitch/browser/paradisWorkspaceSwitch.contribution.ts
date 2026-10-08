@@ -38,7 +38,7 @@ import { IParadisEditorSplitTerminalService } from '../../../../workbench/servic
 import { paradisRegisterAuxiliaryWindowCloseHandler, paradisRegisterAuxiliaryWindowRestoreHandler } from '../../../../workbench/services/editor/common/paradisAuxiliaryWindowRestore.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisIsSettledOnSpace } from '../common/paradisWorkspaceSwitch.js';
 import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from './paradisPickLocalRepositories.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { IParadisSpaceNotesService } from '../common/paradisSpaceNotes.js';
@@ -120,6 +120,12 @@ class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
 			try {
 				if (workspaceSwitchService.activeStateKey !== scope.stateKey) {
 					await workspaceSwitchService.switchToStateKey(scope.stateKey);
+				}
+				// 待っている間に別の切り替えが割り込んだら、今のスペースへは混ぜない (ウィンドウは開いたまま)。
+				// 失敗ではなく見送りなので、「戻せませんでした」とは言わない。
+				if (!paradisIsSettledOnSpace(workspaceSwitchService, scope.stateKey)) {
+					notificationService.info(localize('paradis.auxiliaryWindow.restoreSuperseded', "別のスペースへ切り替わったため、ウィンドウを元のスペースへ戻すのを見送りました。内容は別ウィンドウで開いたままです。"));
+					return true;
 				}
 				if (!part.mergeAllGroups(editorGroupsService.mainPart.activeGroup)) {
 					throw new Error('Failed to merge the auxiliary editor groups');

@@ -9,8 +9,9 @@ import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { EditorExtensions, EditorInputCapabilities, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
+import { EditorExtensions, EditorInputCapabilities, EditorsOrder, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { SideBySideEditorInput } from '../../../../../workbench/common/editor/sideBySideEditorInput.js';
+import { EditorInput, IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
@@ -29,6 +30,15 @@ import { TestWorkingCopy } from '../../../../../workbench/test/common/workbenchT
 import { paradisEditorRequiresScopedLiveState, paradisOwnerReleaseRetryDelay, ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
 import { ParadisWorkingCopyOwnerLedger } from '../../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../common/paradisWorkspaceSwitch.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+
+/** 子プロセスが動いているエディタのターミナルの代わり。閉じるときに確認が要るので生きたまま預けられる。 */
+class ParadisLiveTestEditorInput extends TestFileEditorInput {
+	override readonly closeHandler: IEditorCloseHandler = {
+		showConfirm: () => true,
+		confirm: async () => ConfirmResult.DONT_SAVE,
+	};
+}
 
 suite('ParadisEditorScopeService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -177,6 +187,202 @@ suite('ParadisEditorScopeService', () => {
 		}, { lostVisible: false, survivorVisible: true });
 		// The scope must not keep re-attempting the same dead editor forever.
 		assert.strictEqual(service.hasLiveState('space-a'), false);
+	});
+
+	async function createOwnerHarness(testDisposables: DisposableStore, name: string): Promise<{ readonly parts: IEditorGroupsService; readonly service: ParadisEditorScopeService; live(path: string): TestFileEditorInput; visible(): (string | undefined)[] }> {
+		const typeId = `${name}Input`;
+		testDisposables.add(registerTestEditor(name, [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		return {
+			parts,
+			service,
+			live: path => testDisposables.add(new ParadisLiveTestEditorInput(URI.file(path), typeId)),
+			visible: () => parts.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+		};
+	}
+
+	test('deposits a live editor owned by another space with that space instead of the one being left', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerDepositTest');
+		const own = live('/workspace/own-claude');
+		const foreign = live('/workspace/foreign-claude');
+		await parts.activeGroup.openEditor(own, { pinned: true });
+		await parts.activeGroup.openEditor(foreign, { pinned: true });
+		const owners = new Map<EditorInput, string>([[foreign, 'space-b']]);
+		testDisposables.add(service.registerLiveEditorOwnerResolver(editor => owners.get(editor)));
+
+		let excluded: readonly EditorInput[] = [];
+		service.captureScope('space-a', editors => excluded = editors);
+		const afterLeavingA = {
+			excluded: excluded.map(editor => editor.resource?.path),
+			deposits: ['space-a', 'space-b'].filter(stateKey => service.hasLiveState(stateKey)),
+			visible: visible(),
+		};
+		await service.restoreScope('space-a');
+		const backInA = visible();
+		service.captureScope('space-a', () => { });
+		await service.restoreScope('space-b');
+
+		assert.deepStrictEqual({
+			afterLeavingA,
+			backInA,
+			inB: visible(),
+			deposits: ['space-a', 'space-b'].filter(stateKey => service.hasLiveState(stateKey)),
+			disposed: [own.isDisposed(), foreign.isDisposed()],
+		}, {
+			// 両方とも切り替え元の working set からは外す。預け先は持ち主ごとに分かれる。
+			afterLeavingA: { excluded: ['/workspace/own-claude', '/workspace/foreign-claude'], deposits: ['space-a', 'space-b'], visible: [] },
+			// 切り替え元へ戻っても、別のスペースの端末は出ない。
+			backInA: ['/workspace/own-claude'],
+			inB: ['/workspace/foreign-claude'],
+			deposits: ['space-a'],
+			disposed: [false, false],
+		});
+	});
+
+	test('moves an editor that turns out to belong to another space to that space instead of opening it', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerDivertTest');
+		const own = live('/workspace/own-claude');
+		const early = live('/workspace/early-claude');
+		const late = live('/workspace/late-claude');
+		for (const editor of [own, early, late]) {
+			await parts.activeGroup.openEditor(editor, { pinned: true });
+		}
+		// 持ち主が分からないまま切り替え元へ預けられた (修正前に紛れ込んだ状態)。
+		service.captureScope('space-a', () => { });
+		const owners = new Map<EditorInput, string>([[early, 'space-b']]);
+		testDisposables.add(service.registerLiveEditorOwnerResolver(editor => owners.get(editor)));
+
+		await service.restoreScopeEarly('space-a', editor => editor !== late);
+		const afterEarly = visible();
+		owners.set(late, 'space-c');
+		await service.restoreScope('space-a');
+		const inA = visible();
+		service.captureScope('space-a', () => { });
+		await service.restoreScope('space-b');
+		const inB = visible();
+		service.captureScope('space-b', () => { });
+		await service.restoreScope('space-c');
+
+		assert.deepStrictEqual({
+			afterEarly,
+			inA,
+			inB,
+			inC: visible(),
+			retained: [own, early, late].map(editor => parts.isEditorInputRetained?.(editor)),
+			disposed: [own, early, late].map(editor => editor.isDisposed()),
+		}, {
+			afterEarly: ['/workspace/own-claude'],
+			inA: ['/workspace/own-claude'],
+			inB: ['/workspace/early-claude'],
+			inC: ['/workspace/late-claude'],
+			// 預け先 a の握りは移すときに放している。残ると閉じても破棄されない。
+			retained: [true, true, false],
+			disposed: [false, false, false],
+		});
+	});
+
+	test('keeps a live editor in one deposit and repairs one already held by two spaces', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const reports: { readonly operation: string; readonly safeExtra: Record<string, unknown> | undefined }[] = [];
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, safeExtra) => reports.push({ operation, safeExtra }));
+		testDisposables.add({ dispose: () => configureParadisDiagnosticReporter(() => { }) });
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerDoubleTest');
+		const terminal = live('/workspace/claude');
+		await parts.activeGroup.openEditor(terminal, { pinned: true });
+		service.captureScope('space-a', () => { });
+		// 預け先 a に入ったまま、同じ入力が今の画面にも出てしまった (外から今のスペースに開かれた)。
+		await parts.activeGroup.openEditor(terminal, { pinned: true });
+		testDisposables.add(service.registerLiveEditorOwnerResolver(editor => editor === terminal ? 'space-c' : undefined));
+
+		service.captureScope('space-b', () => { });
+		const afterLeavingB = {
+			deposits: ['space-a', 'space-b', 'space-c'].filter(stateKey => service.hasLiveState(stateKey)),
+			reports: [...reports],
+		};
+		await service.restoreScope('space-a');
+		const inA = visible();
+		service.captureScope('space-a', () => { });
+		await service.restoreScope('space-c');
+
+		assert.deepStrictEqual({
+			afterLeavingB,
+			inA,
+			inC: visible(),
+			retained: parts.isEditorInputRetained?.(terminal),
+			disposed: terminal.isDisposed(),
+		}, {
+			afterLeavingB: {
+				deposits: ['space-c'],
+				reports: [{ operation: 'live-editor-double-deposit', safeExtra: { safe_phase: 'capture', safe_count: 1 } }],
+			},
+			inA: [],
+			inC: ['/workspace/claude'],
+			retained: false,
+			disposed: false,
+		});
+	});
+
+	test('keeps an editor deposited with a space while that space is being restored, and opens it too', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerRestoreRaceTest');
+		const first = live('/workspace/first-claude');
+		const second = live('/workspace/second-claude');
+		await parts.activeGroup.openEditor(first, { pinned: true });
+		service.captureScope('space-a', () => { });
+		await parts.activeGroup.openEditor(second, { pinned: true });
+		service.captureScope('space-b', () => { });
+		// 預けた後で、second の持ち主が space-a だと分かった。
+		testDisposables.add(service.registerLiveEditorOwnerResolver(editor => editor === second ? 'space-a' : undefined));
+
+		// space-a を開いている途中に、space-b の後片付けが second を space-a の預け先へ回す。
+		const restoringA = service.restoreScope('space-a');
+		const restoringB = service.restoreScope('space-b');
+		await Promise.all([restoringA, restoringB]);
+
+		assert.deepStrictEqual({
+			visible: visible().sort(),
+			deposits: ['space-a', 'space-b'].filter(stateKey => service.hasLiveState(stateKey)),
+			disposed: [first.isDisposed(), second.isDisposed()],
+		}, {
+			visible: ['/workspace/first-claude', '/workspace/second-claude'],
+			// 預け先を入れ物ごと捨てると second の握りが 0 になって破棄される。
+			deposits: [],
+			disposed: [false, false],
+		});
+	});
+
+	test('opens the deposit of a space whose key is corrected while it is shown', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const { parts, service, live, visible } = await createOwnerHarness(testDisposables, 'paradisOwnerCorrectTest');
+		const terminal = live('/workspace/claude');
+		await parts.activeGroup.openEditor(terminal, { pinned: true });
+		// 一度も離れていない space-b にも、持ち主の預け先として預け先ができうる。
+		service.captureScope('space-b', () => { });
+
+		await service.correctActiveScope(undefined, 'space-b', URI.file('/workspace'));
+		const afterCorrection = { visible: visible(), deposit: service.hasLiveState('space-b') };
+		// 預け先が残っていると、ここで "already exists" が投げられてスペースから離れられない。
+		service.captureScope('space-b', () => { });
+
+		assert.deepStrictEqual({ afterCorrection, depositAfterLeaving: service.hasLiveState('space-b'), disposed: terminal.isDisposed() }, {
+			afterCorrection: { visible: ['/workspace/claude'], deposit: false },
+			depositAfterLeaving: true,
+			disposed: false,
+		});
 	});
 
 	test('preflights visible dirty editors when retiring the active scope', async () => {

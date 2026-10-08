@@ -6,7 +6,9 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisApplySameUriScopeCorrection, paradisCancelRetirementAfterScopeRollback, paradisCommitPreparedScopeRetirement, paradisRunBestEffortPhases } from '../../browser/paradisWorkspaceSwitchService.js';
-import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
+import { paradisDiscardScopeBeforeRemovingKnownWorktree, paradisIsPresentWorktree, paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { IParadisWorktree } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisWorkspaceSwitchService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -154,5 +156,24 @@ suite('ParadisWorkspaceSwitchService', () => {
 
 		assert.strictEqual(removed, true);
 		assert.deepStrictEqual(calls, ['discard', 'remove']);
+	});
+
+	test('treats a worktree created since the last refresh as present, and one confirmed missing as gone', () => {
+		const worktree = (path: string, missing?: boolean): IParadisWorktree => ({ repositoryId: 'repo', name: path, uri: URI.file(path), ...(missing ? { missing } : {}) });
+		const listed = [worktree('/listed'), worktree('/missing', true)];
+		const known = [
+			{ repositoryId: 'repo', path: URI.file('/listed').toString() },
+			{ repositoryId: 'repo', path: URI.file('/missing').toString() },
+			// `addKnownWorktree` で作ったばかり。一覧はまだ作り直されていない。
+			{ repositoryId: 'repo', path: URI.file('/created').toString() },
+			// 登録が外れたリポジトリのもの。
+			{ repositoryId: 'removed-repo', path: URI.file('/orphan').toString() },
+		];
+		const present = (path: string) => paradisIsPresentWorktree(`worktree:${URI.file(path).toString()}`, ['repo'], () => listed, known);
+
+		assert.deepStrictEqual(
+			{ listed: present('/listed'), created: present('/created'), missing: present('/missing'), orphan: present('/orphan'), unknown: present('/unknown') },
+			{ listed: true, created: true, missing: false, orphan: false, unknown: false },
+		);
 	});
 });
