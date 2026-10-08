@@ -1034,10 +1034,19 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				throw new Error('PARA_BROWSER_RETRYABLE: binding state could not be verified before unsharing');
 			}
 			const binding = fresh.find(candidate => candidate.token === token && candidate.pageId === pageId);
-			if (binding) {
-				await channel.call<boolean>('unbindIfCurrent', [token, binding.generation]);
+			let bindings: readonly IParadisPaneBinding[] | undefined;
+			if (binding && !await channel.call<boolean>('unbindIfCurrent', [token, binding.generation])) {
+				// 読んだ直後に世代が変わった（manifest の同期で 2 枚目以降が current へ繰り上がった等）。一覧を取り直し、
+				// 同じ (ペイン, ページ) がまだあれば 1 回だけやり直す
+				const retry = await this._refreshFromBackend(true);
+				const again = retry?.find(candidate => candidate.token === token && candidate.pageId === pageId);
+				if (again && again.generation !== binding.generation) {
+					await channel.call<boolean>('unbindIfCurrent', [token, again.generation]);
+				} else {
+					bindings = retry;
+				}
 			}
-			const bindings = await this._refreshFromBackend(true);
+			bindings ??= await this._refreshFromBackend(true);
 			if (!bindings) {
 				this._pendingUnsharePageIds.add(pageId);
 				this._poller.stateChanged();
