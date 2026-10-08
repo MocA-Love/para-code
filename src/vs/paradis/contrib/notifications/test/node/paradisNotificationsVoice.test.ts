@@ -97,6 +97,27 @@ suite('ParadisNotificationsService voice handoff', () => {
 			: new Response('nope', { status }));
 	}
 
+	test('reads the number of listening mobiles through the probe the mobile relay sets, until it is disposed (Q309)', () => {
+		const { service } = createService(new FakeIngest());
+		const counts: (number | undefined)[] = [service.mobileVoiceListenerCount()];
+		let listeners = 2;
+		const probe = service.setMobileVoiceListenerProbe(() => listeners);
+		counts.push(service.mobileVoiceListenerCount());
+		listeners = 0;
+		counts.push(service.mobileVoiceListenerCount());
+		// 古い口を外しても、後から置いた口は残る
+		const replacement = service.setMobileVoiceListenerProbe(() => 5);
+		probe.dispose();
+		counts.push(service.mobileVoiceListenerCount());
+		replacement.dispose();
+		counts.push(service.mobileVoiceListenerCount());
+		// 数えられない（リレーが閉じた）ときは分からない扱い
+		const broken = service.setMobileVoiceListenerProbe(() => { throw new Error('relay closed'); });
+		counts.push(service.mobileVoiceListenerCount());
+		broken.dispose();
+		assert.deepStrictEqual(counts, [undefined, 2, 0, 5, undefined, undefined]);
+	});
+
 	test('hands the ringtone to the worker as the prelude and lets go at queued', async () => {
 		stubFetch();
 		const ingest = new FakeIngest();

@@ -34,13 +34,17 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * 1 本まるごとの MP3）で、音声通知を開始しているモバイルへ配るために注入する。
  * OS のスリープ復帰は main の 'nativeHost' チャネルから受け、リレーの接続を即座に確かめさせる。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>, voiceListenerProbe?: (probe: () => number) => IDisposable): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
 	const windowLeaseClient = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL));
 	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, windowLeaseClient, logService, configurationService, args, voiceClips));
+	// 声を聞いているモバイルの数を、音声 ticket の発行（agentBrowser）へ知らせる口（通知サービス経由。同じ shared process の中だけ）
+	if (voiceListenerProbe !== undefined) {
+		store.add(voiceListenerProbe(() => service.mobileVoiceListenerCount()));
+	}
 	// OS のスリープ復帰（electron-main の powerMonitor）。shared process は眠っていた間に経路が
 	// 死んだことを保活の ping（45秒ごと）でしか知れないので、復帰したら今すぐ確かめさせる。
 	const nativeHostService = new NativeHostService(-1 /* shared process は window ではない */, mainProcessService) as INativeHostService;

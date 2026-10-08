@@ -201,7 +201,7 @@ function createFixture(): {
 				},
 			}),
 		},
-		logService: { trace: () => undefined, debug: () => undefined, warn: () => undefined, error: () => undefined },
+		logService: { trace: () => undefined, debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
 		_mcpInstanceId: 'test-instance',
 		_mcpServiceStartedAt: 1,
 		_serverStartPromise: Promise.resolve(),
@@ -1001,6 +1001,41 @@ suite('ParadisAgentBrowser authority integration', () => {
 			Reflect.set(fixture.service, '_serverDisposed', false);
 		}
 		assert.deepStrictEqual(statuses, [503, 404, 404]);
+	});
+
+	test('issues a voice ticket with the number of listening mobiles and takes back an unused one (Q309)', async () => {
+		const fixture = createFixture();
+		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
+		const logs: string[] = [];
+		Reflect.set(fixture.service, '_voiceIngressToken', 'voice-token');
+		Reflect.set(fixture.service, 'localVoiceOutput', { mobileVoiceListenerCount: () => 2 });
+		Reflect.set(fixture.service, 'logService', { ...Reflect.get(fixture.service, 'logService'), info: (message: string) => logs.push(message), debug: (message: string) => logs.push(`debug ${message}`) });
+		const tickets = Reflect.get(fixture.service, '_mobileVoiceTickets') as Map<string, unknown>;
+		const issue = new TestRequest('POST', '/paradis-mcp/mobile-voice-ticket');
+		issue.headers.authorization = 'Bearer voice-token';
+		const issued = new TestResponse();
+		await handleRequest(issue, issued);
+		const body = JSON.parse(issued.body) as { ticket: string; mobileListeners?: number; release?: boolean; localPlayback?: boolean };
+		const outcome: unknown[] = [{ status: issued.statusCode, mobileListeners: body.mobileListeners, release: body.release, localPlayback: body.localPlayback, outstanding: tickets.size }];
+		for (let i = 0; i < 2; i++) {
+			const release = new TestRequest('POST', '/paradis-mcp/mobile-voice-ticket/release');
+			release.headers.authorization = `Bearer ${body.ticket}`;
+			const released = new TestResponse();
+			await handleRequest(release, released);
+			outcome.push({ status: released.statusCode, outstanding: tickets.size });
+		}
+		assert.deepStrictEqual({ outcome, logs }, {
+			outcome: [
+				{ status: 201, mobileListeners: 2, release: true, localPlayback: undefined, outstanding: 1 },
+				{ status: 204, outstanding: 0 },
+				{ status: 204, outstanding: 0 },
+			],
+			logs: [
+				'[ParadisVoice] ticket issued (owner=extension-host, local=false, listeners=2, outstanding=1)',
+				'[ParadisVoice] ticket released (found=true, outstanding=0)',
+				'debug [ParadisVoice] ticket released (found=false, outstanding=0)',
+			],
+		});
 	});
 
 	test('reserves MCP ingress before body listeners, caps it per token, and keeps hooks on a separate cap', async () => {
