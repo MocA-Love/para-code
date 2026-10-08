@@ -91,6 +91,9 @@ export default function HomeScreen() {
 						items={[
 							{ label: '要対応', value: String(attention), hot: attention > 0, hint: '全 PC の要対応のエージェントの一覧を開きます', onPress: () => router.push(routes.agents('waiting')) },
 							{ label: '実行中', value: String(totalRunning(pcs)), hint: '全 PC の実行中のエージェントの一覧を開きます', onPress: () => router.push(routes.agents('running')) },
+							// ホームは SSH の接続先から取り直さず保存済みの値を足す（useHomeUsage の includeSsh: false。開くたびに
+							// SSH 先まで取りに行かないため）。コストの画面は取り直すので、SSH 先の値が古いと押した先の合計と
+							// 食い違いうる。押した先で取り直した値は保存され、次にホームへ戻ったときの合計に入る（想定どおり）。
 							{ label: '今日のコスト', value: formatCost(usage.cost), hint: 'コストの画面を開きます', onPress: () => router.push(settingsRoutes.usageDetail('cost')) },
 						]}
 						note={statScopeNote(pcs)}

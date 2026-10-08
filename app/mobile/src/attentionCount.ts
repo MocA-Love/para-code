@@ -45,8 +45,9 @@ export interface RunningCandidate extends AttentionCandidate {
 }
 
 /**
- * 実行中として数える1件か。ホームの「実行中」のカード・PC のカードの「実行中」・全 PC 横断の一覧
- * （`/agents?state=running`）は**すべてここを通す**。
+ * 実行中として数える1件か。ホームの「実行中」のカード（`PcSummary.running`）・PC のカードの「実行中」
+ * （見ている PC は `pcCardCounts` が `countRunningAgents` で、見ていない PC は `PcSummary.running`）・
+ * 全 PC 横断の一覧（`/agents?state=running`）は**すべてここを通す**。
  *
  *  - 数えるのはエージェント（`agent === true`）の `working` だけ（要対応と同じく、プレーンなターミナルは数えない）
  *  - 要対応と違い、**アーカイブしたものは数えない**。実行中のものはアーカイブしても一覧へ戻らない

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Fragment, memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleCheck } from 'lucide-react-native';
@@ -8,7 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, usePcAgentSources, type PcAgentSource } from '../src/appState.js';
 import { Segments } from '../src/features/code/codeParts.js';
 import {
-	AGENTS_ACROSS_STATES, agentsAcrossStateLabel, buildAgentsAcrossPcs, parseAgentsAcrossState, unconnectedNote,
+	AGENTS_ACROSS_STATES, agentsAcrossStateLabel, createAgentsAcrossBuilder, idleHeaderLabel, parseAgentsAcrossState, unconnectedNote,
 	type AgentsAcrossLiveSection, type AgentsAcrossState, type AgentsAcrossUnconnectedSection,
 } from '../src/features/home/agentsAcrossPcs.js';
 import { useLastSession } from '../src/features/home/lastSessionStore.js';
@@ -54,14 +54,19 @@ export default function AgentsScreen() {
 	const insets = useStableInsets();
 	const column = useContentColumnStyle();
 
-	const list = buildAgentsAcrossPcs<SourceTerminal>({ pcs, sources, activePcId, state });
+	// 段は PC ごとに使い回す（変わっていない PC の段は同じオブジェクトになり、LiveSection の memo が効く）。
+	const build = useMemo(() => createAgentsAcrossBuilder<SourceTerminal>(), []);
+	const list = useMemo(() => build({ pcs, sources, activePcId, state }), [build, pcs, sources, activePcId, state]);
 	const hasRows = list.sections.some(section => section.kind === 'live');
 	const segments = AGENTS_ACROSS_STATES.map(key => ({ key, label: `${agentsAcrossStateLabel(key)} ${list.counts[key]}` }));
 
 	return (
 		<Screen>
-			<ScreenHeader title="エージェント" variant="settings">
-				<Segments items={segments} value={state} onChange={setState} />
+			<ScreenHeader title="エージェント" variant="settings" surface="panel">
+				{/* iPad の広い幅では、切り替えも本文と同じ列の幅に収める（iPhone では column は undefined）。 */}
+				<View style={column}>
+					<Segments items={segments} value={state} onChange={setState} />
+				</View>
 			</ScreenHeader>
 			<ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + space.xl + space.lg }, column]}>
 				{hasRows ? null : (
@@ -151,15 +156,16 @@ const LiveSection = memo(function LiveSection({ section, currentKey, now }: {
 	);
 });
 
-/** つながっていない PC の段（薄い見出しと、前回の件数の1文）。 */
+/** 行を出せない PC の段（薄い見出しと、理由・前回の件数の1文）。 */
 function UnconnectedSection({ section, state, now }: { section: AgentsAcrossUnconnectedSection; state: AgentsAcrossState; now: number }) {
 	const note = unconnectedNote(section, state, now);
+	const label = idleHeaderLabel(section);
 	return (
-		<View style={styles.faded} accessible accessibilityLabel={`${section.name}、未接続。${note}`}>
+		<View style={styles.faded} accessible accessibilityLabel={`${section.name}、${label}。${note}`}>
 			<View style={styles.header}>
-				<View style={[styles.dot, { backgroundColor: connectionColor('offline') }]} />
+				<View style={[styles.dot, { backgroundColor: connectionColor(section.reason === 'connecting' ? 'connecting' : section.reason === 'loading' ? 'connected' : 'offline') }]} />
 				<Text style={styles.headerTitle} numberOfLines={1}>{section.name}</Text>
-				<Text style={styles.headerCount}>未接続</Text>
+				<Text style={styles.headerCount} numberOfLines={1}>{label}</Text>
 			</View>
 			<Text style={styles.note}>{note}</Text>
 		</View>

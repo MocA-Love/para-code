@@ -83,7 +83,8 @@ export function StatCards({ items, note }: { items: readonly StatCardItem[]; not
 					</Pressable>
 				))}
 			</View>
-			{note !== undefined ? <Text style={styles.statNote} numberOfLines={1}>{note}</Text> : null}
+			{/* 行の高さは常に取っておく（起動直後に行が出たり消えたりして、下の PC のカードがずれないように）。 */}
+			<Text style={styles.statNote} numberOfLines={1}>{note ?? ' '}</Text>
 		</View>
 	);
 }
@@ -282,6 +283,8 @@ const styles = StyleSheet.create({
 		paddingHorizontal: space.md,
 	},
 	statValue: {
+		// 右上の › と重ならないよう、その幅ぶん空ける（金額の桁が多いとき）。
+		paddingRight: space.md,
 		fontSize: type.title,
 		fontWeight: '700',
 		letterSpacing: -0.3,
