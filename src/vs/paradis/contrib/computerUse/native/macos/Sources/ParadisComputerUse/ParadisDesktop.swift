@@ -303,22 +303,34 @@ final class ParadisManualAccessibilityLedger {
 	private var stateFile: URL?
 
 	/**
-	 * 記録のファイルを決め、前の起動が戻せずに残した分を戻す（補助アプリの起動時に 1 回）。
+	 * 記録のファイルを決め、もう動いていない補助アプリが戻せずに残した分を戻して、そのファイルを消す（補助アプリの
+	 * 起動時に 1 回）。ファイル名に補助アプリの pid を入れる: 2 つの Para Code が同じ userData を使うと、前の補助アプリの
+	 * 終わり（終了を待たずに次を起動する）が新しい補助アプリの記録を上書きして消すため。まだ動いている補助アプリの
+	 * ファイルには触らない。
 	 */
 	func configure(stateDirectory: String?) {
 		guard let stateDirectory else {
 			return
 		}
 		try? FileManager.default.createDirectory(atPath: stateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-		let file = URL(fileURLWithPath: stateDirectory).appendingPathComponent("manual-accessibility.json")
-		let leftovers = paradisDecodeManualAccessibilityEntries(try? Data(contentsOf: file))
+		let directory = URL(fileURLWithPath: stateDirectory)
+		let selfPid = getpid()
 		lock.lock()
-		stateFile = file
+		stateFile = directory.appendingPathComponent(paradisManualAccessibilityStateFileName(helperPid: selfPid))
 		lock.unlock()
-		for entry in leftovers {
-			restore(pid: entry.pid, started: entry.started)
+		let names = (try? FileManager.default.contentsOfDirectory(atPath: stateDirectory)) ?? []
+		for name in names {
+			guard let owner = paradisManualAccessibilityStateFileOwner(name),
+				paradisShouldRecoverStateFile(ownerPid: owner, selfPid: selfPid, ownerIsRunningHelper: owner > 0 && paradisIsRunningHelper(owner))
+			else {
+				continue
+			}
+			let file = directory.appendingPathComponent(name)
+			for entry in paradisDecodeManualAccessibilityEntries(try? Data(contentsOf: file)) {
+				restore(pid: entry.pid, started: entry.started)
+			}
+			try? FileManager.default.removeItem(at: file)
 		}
-		persist()
 	}
 
 	/** 立てる。立てられたら true（すでに立てていれば false。読み直す必要が無い）。 */
@@ -429,6 +441,16 @@ final class ParadisManualAccessibilityLedger {
 		try? data.write(to: file, options: [.atomic])
 		chmod(file.path, 0o600)
 	}
+}
+
+/** その pid が今動いている補助アプリ（自分と同じ実行ファイル）か。 */
+private func paradisIsRunningHelper(_ pid: Int32) -> Bool {
+	var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+	guard kill(pid, 0) == 0 || errno == EPERM, proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else {
+		return false
+	}
+	let path = (String(cString: buffer) as NSString).resolvingSymlinksInPath
+	return path == (Bundle.main.executablePath.map { ($0 as NSString).resolvingSymlinksInPath } ?? "")
 }
 
 /** プロセスが始まった時刻（秒）。LaunchServices を通さずに起動したアプリでも取れるよう、カーネルの値を読む。 */
