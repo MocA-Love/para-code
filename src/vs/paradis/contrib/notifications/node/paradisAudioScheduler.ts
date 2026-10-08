@@ -108,8 +108,8 @@ export interface AivisTaskRunner {
 	/** 列に入らなかった・追い出された・一時停止で捨てられた。預かった着信音を今鳴らす。 */
 	onDropped?(): void;
 	/**
-	 * PC では鳴らさない（合成の中でモバイルへ流して終わる。おやすみモード中の読み上げ）。合成が済んだらすぐ次へ進み、
-	 * 着信音・音声入力・worker の再生 lock を待たない。
+	 * PC では鳴らさない（合成の中でモバイルへ流して終わる。おやすみモード中の読み上げ）。始めるのは音声入力が終わってから
+	 * （ほかの件と同じ列の決まり）。合成した後は、鳴り終わりも再生の lock も待たない。
 	 */
 	readonly mobileOnly?: boolean;
 }
@@ -630,7 +630,7 @@ export class AudioScheduler {
 				const { audio, rateLimit } = await runner.synthesize();
 				if (rateLimit) { this.rateLimit = rateLimit; }
 				if (runner.mobileOnly) {
-					// モバイルへは合成の中で流し終えた。PC では鳴らさない
+					// モバイルへは合成の中で流し終えた。PC では鳴らさないので、鳴り終わりも再生の lock も待たない
 					return;
 				}
 				// 合成は通知音と並行してよい（単なるネットワーク呼び出し）が、再生は2つの音声が
