@@ -57,8 +57,8 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
-import { renderWordSemanticRibbon, wordSemanticFailureMessage, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { analyzeParadisWordDocument } from './word/paradisWordSemanticClient.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
 import { alignParadisWordParagraphs, type IParadisWordParagraphOutline } from '../common/word/paradisWordRenderOutline.js';
@@ -265,6 +265,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
+	/** 描画用のパッケージから外した部品（無視したもの・安全のために外したもの）。 */
+	private _packageExclusions: ParadisWordPackageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 	/** 詳しい解析（shared process）。表示を出した後に裏で走らせ、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
@@ -733,6 +735,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	protected _renderResource(resource: URI, recoveryGeneration = this._recoveryState.generation): void {
 		this._assetPlaceholders = [];
+		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 		this._renderedParagraphs = undefined;
 		this._markerByLocator = undefined;
 		const generation = ++this._renderGeneration;
@@ -773,6 +776,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 				this._assetPlaceholders = sanitized.placeholders;
+				this._packageExclusions = paradisWordPackageExclusions(sanitized);
 				overlaySource = sanitized.bytes;
 			} catch (error) {
 				// 理由を覚えておく。この先 `rejected` として画面に出るときに、これが原因欄になる
@@ -924,10 +928,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 			inspector.setComparison([], INCOMPLETE_WORD_MANIFEST, 'degraded');
 		}
 		inspector.setPlaceholders(this._assetPlaceholders);
-		inspector.setAnalysis(this._semanticResult === undefined ? undefined : {
+		inspector.setAnalysis({
 			...(analysis ? { counts: analysis.counts } : {}),
-			ignoredParts: [],
-			...(this._semanticResult.ok ? {} : { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code)) }),
+			...paradisWordExclusionItems(this._packageExclusions),
+			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code)) } : {}),
 		});
 		if (wasVisible) {
 			this._setInspectorVisible(true);
@@ -936,14 +940,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _semanticRibbonState(): ParadisWordSemanticRibbonState {
 		const alternatives = this._assetPlaceholders.length;
-		const ignoredParts = 0;
+		const ignoredParts = this._packageExclusions.ignored.length + this._packageExclusions.ignoredOmitted;
+		const blocked = summarizeParadisWordBlockedParts(this._packageExclusions);
+		const extra = blocked ? { blocked } : {};
 		const result = this._semanticResult;
 		if (!result) {
-			return { kind: 'analyzing', alternatives, ignoredParts };
+			return { kind: 'analyzing', alternatives, ignoredParts, ...extra };
 		}
 		return result.ok
-			? { kind: 'analyzed', counts: result.counts, alternatives, ignoredParts }
-			: { kind: 'failed', code: result.code, alternatives, ignoredParts };
+			? { kind: 'analyzed', counts: result.counts, alternatives, ignoredParts, ...extra }
+			: { kind: 'failed', code: result.code, alternatives, ignoredParts, ...extra };
 	}
 
 	private _setInspectorVisible(visible: boolean): void {
