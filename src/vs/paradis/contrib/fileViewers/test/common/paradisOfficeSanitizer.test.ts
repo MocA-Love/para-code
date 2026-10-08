@@ -237,9 +237,9 @@ suite('ParadisOfficeSanitizer', () => {
 		// out and listed instead (Q313 A).
 		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['mismatchedRelationship', 'unsafeMedia']);
 		deepStrictEqual(result.ignoredParts.map(part => `${part.partName}|${part.kind}|${part.reason}`), [
-			'word/afchunk/chunk1.html|aFChunk|notRendered',
 			'word/fonts/font1.odttf|font|notRendered',
 		]);
+		deepStrictEqual(result.blockedParts, [{ feature: 'altChunk', kind: 'aFChunk', partName: 'word/afchunk/chunk1.html', count: 1 }]);
 	});
 
 	test('classifies custom-path assets from OPC content types and relationships and rewrites visible anchors', async () => {
@@ -270,7 +270,15 @@ suite('ParadisOfficeSanitizer', () => {
 		// is still removed and listed.
 		deepStrictEqual(result.placeholders, []);
 		strictEqual(serialized.includes('Office asset unavailable'), false);
-		ok(result.ignoredParts.length >= 4);
+		deepStrictEqual({ ignored: result.ignoredParts, blocked: result.blockedParts }, {
+			ignored: [{ partName: 'custom/font.bin', kind: 'font', reason: 'notRendered' }],
+			blocked: [
+				{ feature: 'altChunk', kind: 'aFChunk', partName: 'custom/chunk.bin', count: 1 },
+				{ feature: 'embeddedObject', kind: 'oleObject', partName: 'custom/ole.bin', count: 1 },
+				{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 1 },
+				{ feature: 'macro', kind: 'unsafeContent', partName: 'word/vbaProject.bin', count: 1 },
+			],
+		});
 		strictEqual(
 			result.assets.some((asset) => asset.kind === 'sanitizedSvg'),
 			true,
@@ -363,7 +371,7 @@ suite('ParadisOfficeSanitizer', () => {
 		});
 		deepStrictEqual(dangling.placeholders.map(placeholder => placeholder.feature), []);
 		deepStrictEqual(dangling.ignoredParts, [
-			{ partName: 'custom/payload.bin', kind: 'unsafeContent', reason: 'unreferenced' },
+			{ partName: 'custom/payload.bin', kind: 'image', reason: 'unreferenced' },
 			{ partName: 'missing.bin', kind: 'image', reason: 'missingTarget' },
 		]);
 		strictEqual(textOf(readStoreZipEntries(dangling.bytes), 'word/_rels/document.xml.rels').includes('missing.bin'), false);
@@ -616,14 +624,16 @@ suite('ParadisOfficeSanitizer', () => {
 
 		const result = await sanitizeMemoryPackage('story-anchors', files);
 		const entries = readStoreZipEntries(result.bytes);
-		// An external hyperlink keeps its text in its own story and loses only the link.
+		// An external hyperlink keeps its runs in its own story and loses the link element.
 		for (const story of stories) {
 			const xml = textOf(entries, story.name);
 			strictEqual(xml.includes('r:id="blocked"'), false, story.name);
+			strictEqual(xml.includes('w:hyperlink'), false, story.name);
 			strictEqual(countOccurrences(xml, 'Office asset unavailable:'), 0, story.name);
-			ok(/<w:hyperlink\s*><w:r><w:t>[A-Za-z]+<\/w:t><\/w:r><\/w:hyperlink>/.test(xml), story.name);
+			ok(/<w:p><w:r><w:t>[A-Za-z]+<\/w:t><\/w:r><\/w:p>/.test(xml), story.name);
 		}
 		deepStrictEqual(result.placeholders, []);
+		deepStrictEqual(result.blockedParts, [{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 6 }]);
 	});
 
 	test('removes media referenced only by a story that was itself removed', async () => {

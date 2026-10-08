@@ -110,7 +110,10 @@ suite('ParadisDocxFileEditor', () => {
 		ok(serialized.includes('Office asset unavailable'));
 		// Only the drawn SVG becomes a box; the unconsumed font and altChunk are left out and listed.
 		strictEqual(result.placeholders.length, 1);
-		strictEqual(result.ignoredParts.length, 2);
+		deepStrictEqual({ ignored: result.ignoredParts, blocked: result.blockedParts }, {
+			ignored: [{ partName: 'word/fonts/font.odttf', kind: 'font', reason: 'notRendered' }],
+			blocked: [{ feature: 'altChunk', kind: 'aFChunk', partName: 'word/afchunk/chunk.html', count: 1 }],
+		});
 		ok(reopened.bytes.byteLength > 0);
 	});
 
