@@ -64,6 +64,8 @@ export interface IParadisAivisSettings {
 	shareDictionaryWithAgents: boolean;
 	/** ElevenLabs の声（voice_id）ごとの調整。無い声は ElevenLabs に保存した値で読む。 */
 	elevenLabsVoiceSettings: IParadisElevenLabsVoiceTuningMap;
+	/** ElevenLabs で同じ文の通知の音声を使い回す（合成した音声を手元に置く）。既定 true。 */
+	elevenLabsVoiceCache: boolean;
 }
 
 const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
@@ -83,6 +85,7 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 	elevenLabsDictionaryId: '',
 	shareDictionaryWithAgents: true,
 	elevenLabsVoiceSettings: Object.freeze({}),
+	elevenLabsVoiceCache: true,
 });
 
 /** API キーを入れる設定のフィールド。secret storage のキーと対にする。 */
@@ -423,6 +426,7 @@ export class ParadisNotificationsSettingsService extends Disposable implements I
 		settings.engine = paradisNormalizeVoiceEngine(settings.engine);
 		settings.elevenLabsSpeed = paradisClampElevenLabsSpeed(settings.elevenLabsSpeed);
 		settings.elevenLabsVoiceSettings = paradisNormalizeVoiceTuningMap(settings.elevenLabsVoiceSettings);
+		settings.elevenLabsVoiceCache = settings.elevenLabsVoiceCache !== false;
 		return settings;
 	}
 

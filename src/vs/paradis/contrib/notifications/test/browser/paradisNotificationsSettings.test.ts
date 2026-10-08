@@ -361,6 +361,15 @@ suite('Paradis notifications voice API keys', () => {
 		}, { settings: ['aivis_plain', 'el_key'], json: ['aivis_plain', 'el_key'], secrets: [] });
 	});
 
+	test('reuses voices by default and keeps the voice cache switch only when it is turned off', () => {
+		const read = (value: object) => {
+			const storage = store.add(new InMemoryStorageService());
+			seed(storage, value);
+			return store.add(new ParadisNotificationsSettingsService(storage, store.add(new PersistedSecretStorage()))).getAivisSettings().elevenLabsVoiceCache;
+		};
+		assert.deepStrictEqual([read({}), read({ elevenLabsVoiceCache: false }), read({ elevenLabsVoiceCache: true }), read({ elevenLabsVoiceCache: 'no' })], [true, false, true, true]);
+	});
+
 	test('stores each engine key separately and keeps the other when switching engines', async () => {
 		const storage = store.add(new InMemoryStorageService());
 		const secrets = store.add(new PersistedSecretStorage());
