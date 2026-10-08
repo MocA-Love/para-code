@@ -800,7 +800,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.computerUseEnabled', "Computer Use を使う"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。あなたがキーボードやマウスを使っている間は入力を送りません。オンにした後は、エージェント側で MCP の再接続が必要です。"),
+		description: localize('paradis.settings.computerUseEnabledDesc', "Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。マウスポインタとキーボードを実際に動かす操作は、あなたがキーボードやマウスを使っている間は送りません。ボタンを押す・値を変える・欄へ文字を入れるなどアクセシビリティで送る操作は、あなたがキーを打っている間だけ止まります。オンにした後は、エージェント側で MCP の再接続が必要です。"),
 		keywords: 'computer use macos accessibility screen recording screenshot app',
 	},
 	{
@@ -818,7 +818,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.computerUseShowCursor', "エージェントのカーソルを出す"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.computerUseShowCursorDesc', "エージェントが操作した場所に、名前の札つきのカーソルを出します。クリックを妨げず、スクリーンショットにも写りません。"),
+		description: localize('paradis.settings.computerUseShowCursorDesc', "エージェントが操作した場所に、名前の札つきのカーソルを出します。クリックを妨げず、エージェントに渡るウィンドウの撮影には写りません（あなた自身の画面収録・画面共有・スクリーンショットには写ります）。"),
 		keywords: 'computer use cursor overlay label agent',
 	},
 	{

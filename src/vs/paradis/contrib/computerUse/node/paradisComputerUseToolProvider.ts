@@ -121,7 +121,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_click',
-		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link, menu item or pop-up button presses it through accessibility (AXPress), a single left click on a text field focuses it with the caret at the end, and a single right click on an element with a context menu opens it (AXShowMenu): the mouse pointer does not move and the app stays where it is. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other clicks need the app in front (computer_activate_app) and move the real pointer. ${OPERATE_NOTE}`,
+		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link or menu item presses it through accessibility (AXPress), and a single left click on a text field focuses it with the caret at the end: the mouse pointer does not move and the app stays where it is. Clicks that open a menu (a pop-up or menu button, or a right click on an element with a context menu) go through accessibility only while the app is in front, because an open menu takes the keyboard focus; otherwise they need the app in front like other clicks. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other clicks need the app in front (computer_activate_app) and move the real pointer. ${OPERATE_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -496,7 +496,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		let tree: string | undefined;
 		if (permissions.accessibility) {
 			try {
-				const result = await this._helper.request('accessibilityTree', { pid: app.pid, bundleId: app.bundleId, windowId: window.windowId, ...(maxNodes !== undefined ? { maxNodes } : {}) }, signal);
+				// Electron 製のアプリに AXManualAccessibility を立てる（利用者のアプリの状態を変える）のは、操作の許可があるときだけ
+				const enableManualAccessibility = this._ledger.get(paneToken, app.bundleId) === 'operate';
+				const result = await this._helper.request('accessibilityTree', { pid: app.pid, bundleId: app.bundleId, windowId: window.windowId, ...(maxNodes !== undefined ? { maxNodes } : {}), ...(enableManualAccessibility ? { enableManualAccessibility: true } : {}) }, signal);
 				const record = result && typeof result === 'object' ? result as Record<string, unknown> : {};
 				tree = typeof record.text === 'string' ? record.text : undefined;
 				// 番号でのクリックは、このペインが最後に読んだツリーの番号だけを使わせる（レビュー L6）
@@ -564,10 +566,17 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const cursor = this._cursorFor(paneToken, context);
 		// 前面の送り方の承認を取る設定なら、聞くまでは前面に出さないよう補助アプリへ伝える
 		let allowForeground = this._options.confirmForeground?.() !== true || this._ledger.foregroundAllowed(paneToken, app.bundleId);
+		// 承認の直後の送り直しか。ダイアログのボタンを押したので Para Code が前面で、そのクリックが直前の物理的な入力に入る。
+		// 補助アプリに、入力が止むのを待って目的のアプリを前面に出してから送らせる（`activateFirst`）
+		let justApproved = false;
+		// 番号での操作に添えるツリーの id は、最初に 1 回だけ取る（承認を待つ間にほかの呼び出しが読み直しても、エージェントが
+		// 見た番号のツリーで送る。古ければ補助アプリが stale_element で断る）
+		const snapshotId = window.ok && usesElementNumbers(args) ? this._snapshots.get(snapshotKey(paneToken, app.pid, window.window.windowId)) : undefined;
 		const typing: ITypingProgress = { typed: 0, unconfirmed: false, rewritten: false, clipboardNotes: new Set(), methods: new Set(), routes: new Set() };
 		for (let attempt = 0; ; attempt++) {
 			const extra = {
 				...(allowForeground ? {} : { allowForeground: false }),
+				...(justApproved ? { activateFirst: true } : {}),
 				...(cursor ? { cursor } : {}),
 			};
 			// 入力は全ペインで 1 本の列に並べる。状態の読み取りまで列の中で行い、次の入力と混ざらないようにする
@@ -583,7 +592,6 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					}
 					typedSummary = typed.summary;
 				}
-				const snapshotId = window.ok && usesElementNumbers(args) ? this._snapshots.get(snapshotKey(paneToken, app.pid, window.window.windowId)) : undefined;
 				let result: unknown = typedSummary;
 				if (!result) {
 					try {
@@ -631,7 +639,12 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			if (answer !== true) {
 				return typing.typed > 0 ? errorResult(`${resultText(answer)} The first ${typing.typed} characters were already typed through accessibility; do not retype them.`) : answer;
 			}
+			// 待つ間に設定がオフになっていたら送らない
+			if (!this._options.enabled()) {
+				return errorResult(DISABLED_MESSAGE);
+			}
 			allowForeground = true;
+			justApproved = true;
 		}
 	}
 
@@ -713,14 +726,18 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		if (graphemes.length > TYPE_TEXT_MAX_LENGTH) {
 			throw new ParadisComputerUseHelperError('invalid_argument', `"text" is longer than ${TYPE_TEXT_MAX_LENGTH} characters; use computer_paste_text for long text.`);
 		}
+		const firstChunk = progress.typed;
 		for (let start = progress.typed; start < graphemes.length; start += TYPE_TEXT_CHUNK) {
 			const chunk = graphemes.slice(start, start + TYPE_TEXT_CHUNK);
+			// 承認の直後に前面に出すのは最初の塊だけ（2 つ目からは前面のまま続ける）
+			const { activateFirst: _activateFirst, ...rest } = extra as { activateFirst?: boolean };
+			const chunkExtra = start === firstChunk ? extra : rest;
 			const typed = progress.typed;
 			const sentBefore = progress.unconfirmed
 				? `The first ${typed} characters were sent, but not all of them could be confirmed.`
 				: `The first ${typed} characters had arrived.`;
 			try {
-				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId, ...extra }, signal);
+				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId, ...chunkExtra }, signal);
 				const check = paradisParseTypeCheck(result);
 				if (check.method) {
 					progress.methods.add(check.method);
@@ -1219,6 +1236,8 @@ function describeHelperError(error: unknown): string {
 				return 'Computer Use cannot use this app.';
 			case 'input_unsupported':
 				return `Para Code could not send this action to that element (${error.message}). For a value, click the element and type instead.`;
+			case 'screen_locked':
+				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':
 				return 'This action needs the app in front and the real mouse pointer or keyboard, and the user has not approved that.';
 			case 'invalid_argument':

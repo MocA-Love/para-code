@@ -13,7 +13,10 @@
 //
 // 画面ごとに透明でクリックが素通りする（`ignoresMouseEvents`）パネルを 1 枚置き、全部の操作スペースとフルスクリーンの
 // アプリの上にも出す（`canJoinAllSpaces`・`fullScreenAuxiliary`）。アプリにならない（`nonactivatingPanel`、キーにならない）。
-// ウィンドウの撮影は ScreenCaptureKit の単一ウィンドウ（`desktopIndependentWindow`）なので、このパネルは写らない。
+// 見えているカーソルが無くなったパネルは画面から外す（`orderOut`。全画面の動画やゲームの上に透明なウィンドウを残さない）。
+// エージェントに渡すウィンドウの撮影は ScreenCaptureKit の単一ウィンドウ（`desktopIndependentWindow`）なので、このパネルは
+// 写らない。利用者自身の画面収録・画面共有・スクリーンショットには写る（`sharingType` は既定のまま。だれが操作しているかを、
+// 録画や共有を見る人にも見せるため）。
 //
 //  - 1 段目（AX）: 操作した要素の位置へ軌跡つきで動かしてから操作し、波紋を出す
 //  - 3 段目（前面）: 実カーソルが動くので矢印は出さず、名前の札と波紋だけを実カーソルの位置に合わせる（矢印が 2 つ
@@ -107,6 +110,13 @@ final class ParadisCursorOverlay {
 		lock.unlock()
 	}
 
+	/** カーソルが消え終わった。そのパネルで見えているカーソルが無ければ、パネルを画面から外す（main スレッド）。 */
+	fileprivate func spriteDidHide(on panel: ParadisCursorPanel) {
+		if !sprites.values.contains(where: { $0.panel === panel && $0.isVisible }) {
+			panel.orderOut(nil)
+		}
+	}
+
 	// MARK: - main スレッド
 
 	/** 持ち主のカーソル。点のある画面のパネルへ移す（画面をまたいだら作り直す）。 */
@@ -118,9 +128,14 @@ final class ParadisCursorOverlay {
 			existing.update(owner)
 			return existing
 		}
-		sprites[owner.id]?.remove()
 		let sprite = ParadisCursorSprite(owner: owner, panel: panel, overlay: self)
+		let previous = sprites[owner.id]
 		sprites[owner.id] = sprite
+		if let previous {
+			// 別の画面へ移った。前の画面のパネルに見えているカーソルが無ければ外す
+			previous.remove()
+			spriteDidHide(on: previous.panel)
+		}
 		return sprite
 	}
 
@@ -205,6 +220,10 @@ private final class ParadisCursorSprite {
 	private let nameText = CATextLayer()
 	private var idleTimer: Timer?
 	private var visible = false
+
+	var isVisible: Bool {
+		return visible
+	}
 
 	init(owner: ParadisCursorOwnerSpec, panel: ParadisCursorPanel, overlay: ParadisCursorOverlay) {
 		self.owner = owner
@@ -353,8 +372,17 @@ private final class ParadisCursorSprite {
 		fade.fromValue = container.presentation()?.opacity ?? 1
 		fade.toValue = 0
 		fade.duration = paradisCursorFadeSeconds * 2
+		CATransaction.begin()
+		CATransaction.setCompletionBlock { [weak self] in
+			// 消え終わるまでにまた出ていたら外さない
+			guard let self, !self.visible else {
+				return
+			}
+			self.overlay?.spriteDidHide(on: self.panel)
+		}
 		container.opacity = 0
 		container.add(fade, forKey: "fade")
+		CATransaction.commit()
 	}
 
 	func remove() {

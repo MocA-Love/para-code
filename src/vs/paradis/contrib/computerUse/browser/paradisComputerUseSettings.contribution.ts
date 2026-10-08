@@ -25,7 +25,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// リポジトリの .vscode/settings.json から勝手にオンにされないよう、利用者の設定でだけ変えられる
 			scope: ConfigurationScope.APPLICATION,
 			restricted: true,
-			markdownDescription: localize('paradis.computerUse.enabled', "エージェントが Para Code の MCP ツールで、この Mac のほかのアプリの画面を読み、クリック・文字入力・貼り付け・キー操作で操作できるようにします（macOS 14 以降）。アプリごとに、初めて使うときに「読み取りのみ」か「操作も」かの承認を求めます。パスワードマネージャー・2 段階認証のアプリ・キーチェーンアクセス・Para Code 自身・システム設定・認証のダイアログは使わせません。SSH 接続先のターミナルからは使えません。\n\n**Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。** 操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。あなたがキーボードやマウスを使っている間は入力を送りません。\n\nオンにした後は、エージェント側で MCP の再接続（Claude Code の `/mcp` など）が必要です。"),
+			markdownDescription: localize('paradis.computerUse.enabled', "エージェントが Para Code の MCP ツールで、この Mac のほかのアプリの画面を読み、クリック・文字入力・貼り付け・キー操作で操作できるようにします（macOS 14 以降）。アプリごとに、初めて使うときに「読み取りのみ」か「操作も」かの承認を求めます。パスワードマネージャー・2 段階認証のアプリ・キーチェーンアクセス・Para Code 自身・システム設定・認証のダイアログは使わせません。SSH 接続先のターミナルからは使えません。\n\n**Computer Use は、エージェントの作業フォルダやサンドボックス、許可設定の制限の外で、あなたの権限で動きます。** 操作を許可したアプリでは、ファイルの移動や削除、ログイン済みのサイトの操作、ターミナルへのコマンド入力もできます。読み取りを許可したアプリの画面（メール本文やチャットなど）はエージェントへ渡り、エージェントの提供元へ送られます。画面に表示された Web ページやメールに仕込まれた指示をエージェントが読む危険もあります。マウスポインタとキーボードを実際に動かす操作は、あなたがキーボードやマウスを使っている間は送りません。ボタンを押す・値を変える・欄へ文字を入れるなどアクセシビリティで送る操作は、あなたがキーを打っている間だけ止まります。\n\nオンにした後は、エージェント側で MCP の再接続（Claude Code の `/mcp` など）が必要です。"),
 		},
 		[PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING]: {
 			type: 'boolean',
@@ -38,7 +38,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.computerUse.showCursorOverlay', "Computer Use でエージェントがほかのアプリを操作するとき、操作した場所へエージェントのカーソルと名前の札（内蔵ブラウザのエージェントのカーソルと同じもの）を出します。マウスポインタを動かす操作では、札だけをポインタの位置に出します。カーソルはクリックを妨げず、ウィンドウのスクリーンショットにも写りません。"),
+			markdownDescription: localize('paradis.computerUse.showCursorOverlay', "Computer Use でエージェントがほかのアプリを操作するとき、操作した場所へエージェントのカーソルと名前の札（内蔵ブラウザのエージェントのカーソルと同じもの）を出します。マウスポインタを動かす操作では、札だけをポインタの位置に出します。カーソルはクリックを妨げず、エージェントに渡るウィンドウの撮影には写りません（あなた自身の画面収録・画面共有・スクリーンショットには写ります）。"),
 		},
 	},
 });

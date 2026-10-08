@@ -35,6 +35,10 @@ class FakeHelper implements IParadisComputerUseHelper {
 	/** 入力の命令と、渡した引数。 */
 	readonly inputs: { method: string; params: Record<string, unknown> }[] = [];
 	failTree: string | undefined;
+	/** 設定するとツリーの答えに snapshotId を付け、読むたびに 1 つ進める。 */
+	nextSnapshotId: number | undefined;
+	/** ツリーを読んだときの引数。 */
+	readonly treeParams: Record<string, unknown>[] = [];
 	/** 入力の命令の答え（既定は成功）。 */
 	onInput: (method: string, params: Record<string, unknown>) => Promise<unknown> = async () => ({ ok: true });
 
@@ -52,10 +56,11 @@ class FakeHelper implements IParadisComputerUseHelper {
 			case 'listWindows':
 				return { windows: [{ windowId: 71, index: 0, title: 'Hidden', bounds: { x: 0, y: 0, width: 10, height: 10 }, onScreen: false }, { windowId: 72, index: 1, title: 'Desktop', bounds: { x: 5, y: 6, width: 800, height: 600 }, onScreen: true }] };
 			case 'accessibilityTree':
+				this.treeParams.push(params);
 				if (this.failTree) {
 					throw new ParadisComputerUseHelperError(this.failTree, 'no');
 				}
-				return { text: '[0] AXWindow "Desktop"', nodeCount: 1, truncated: false };
+				return { text: '[0] AXWindow "Desktop"', nodeCount: 1, truncated: false, ...(this.nextSnapshotId !== undefined ? { snapshotId: this.nextSnapshotId++ } : {}) };
 			case 'screenshotWindow':
 				return { mimeType: 'image/png', data: 'UE5H', width: 1600, height: 1200, scale: 2 };
 		}
@@ -63,12 +68,12 @@ class FakeHelper implements IParadisComputerUseHelper {
 	}
 }
 
-function createContext(caller: ParadisMcpCallerKind, answers: (ParadisComputerUseApprovalOutcome | ParadisComputerUseForegroundOutcome)[], onAsk?: () => void, identity?: (paneToken: string) => IParadisMcpCursorIdentity) {
+function createContext(caller: ParadisMcpCallerKind, answers: (ParadisComputerUseApprovalOutcome | ParadisComputerUseForegroundOutcome)[], onAsk?: () => unknown, identity?: (paneToken: string) => IParadisMcpCursorIdentity) {
 	const prompts: { method: string; token: unknown; prompt: IParadisComputerUseApprovalPrompt; timeoutMs: number | undefined }[] = [];
 	const context: IParadisMcpToolCallContext = {
 		async callOwningWindow<T>(request: IParadisMcpOwningWindowRequest): Promise<ParadisMcpOwningWindowResult<T>> {
 			prompts.push({ method: request.method, token: request.args[0], prompt: request.args[1] as IParadisComputerUseApprovalPrompt, timeoutMs: request.timeoutMs });
-			onAsk?.();
+			await onAsk?.();
 			const outcome = answers.shift() ?? 'cancelled';
 			return { ok: true, value: { outcome } as T };
 		},
@@ -519,7 +524,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			routes: [viaAccessibility, once, pane, remembered].map(result => JSON.parse((result.content[0] as { text: string }).text).route),
 			denied: text(denied).split('.')[0],
 			prompts: prompts.map(entry => ({ method: entry.method, prompt: entry.prompt })),
-			sent: helper.inputs.map(input => `${input.method}${input.params.allowForeground === false ? ' (ask first)' : ''}`),
+			sent: helper.inputs.map(input => `${input.method}${input.params.allowForeground === false ? ' (ask first)' : ''}${input.params.activateFirst === true ? ' (activate first)' : ''}`),
 			foreground: [ledger.foregroundAllowed('pane-a', 'com.apple.Notes'), ledger.foregroundAllowed('pane-b', 'com.apple.Notes')],
 		}, {
 			routes: ['accessibility', 'foreground', 'foreground', 'foreground'],
@@ -529,7 +534,8 @@ suite('ParadisComputerUseToolProvider', () => {
 				{ method: 'requestForeground', prompt: { appName: 'Notes', bundleId: 'com.apple.Notes', action: 'press_key' } },
 				{ method: 'requestForeground', prompt: { appName: 'Notes', bundleId: 'com.apple.Notes', action: 'scroll' } },
 			],
-			sent: ['click (ask first)', 'drag (ask first)', 'drag', 'pressKey (ask first)', 'pressKey', 'hotkey', 'scroll (ask first)'],
+			// 承認の直後の送り直しだけ、補助アプリに前面へ出してから送らせる（承認のクリックで Para Code が前面のため）
+			sent: ['click (ask first)', 'drag (ask first)', 'drag (activate first)', 'pressKey (ask first)', 'pressKey (activate first)', 'hotkey', 'scroll (ask first)'],
 			foreground: [true, false],
 		});
 	});
@@ -549,16 +555,55 @@ suite('ParadisComputerUseToolProvider', () => {
 			return { typed: 5, method: 'keys', verified: true, route: 'foreground' };
 		};
 		const { context, prompts } = createContext('pane', ['once']);
-		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'a'.repeat(405), includeState: false }, undefined, context) as IResult;
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'a'.repeat(805), includeState: false }, undefined, context) as IResult;
 		assert.deepStrictEqual({
 			summary: JSON.parse((result.content[0] as { text: string }).text),
-			sent: helper.inputs.map(input => `${(input.params.text as string).length}${input.params.allowForeground === false ? ' (ask first)' : ''}`),
+			sent: helper.inputs.map(input => `${(input.params.text as string).length}${input.params.allowForeground === false ? ' (ask first)' : ''}${input.params.activateFirst === true ? ' (activate first)' : ''}`),
 			prompts: prompts.length,
 		}, {
-			summary: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'type_text', typed: 405, verified: true, method: 'accessibility+keys', route: 'accessibility+foreground' },
-			sent: ['400 (ask first)', '5 (ask first)', '5'],
+			summary: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'type_text', typed: 805, verified: true, method: 'accessibility+keys', route: 'accessibility+foreground' },
+			// 前面に出すのは承認の直後の塊だけ
+			sent: ['400 (ask first)', '400 (ask first)', '400 (activate first)', '5'],
 			prompts: 1,
 		});
+	});
+
+	test('does not resend after the approval when Computer Use was turned off meanwhile, and keeps the element numbers the agent saw', async () => {
+		const { helper, ledger, state, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.nextSnapshotId = 7;
+		helper.onInput = async (_method, params) => {
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'double and triple clicks need real input');
+			}
+			return { clicked: true, route: 'foreground' };
+		};
+		const plain = createContext('pane', []).context;
+		await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, plain);
+		// 承認を待つ間に、同じペインがツリーを読み直す（番号は 8 のツリーのものになる）
+		const reread = createContext('pane', ['once'], () => provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, plain));
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 2, clickCount: 2, includeState: false }, undefined, reread.context);
+		const off = createContext('pane', ['once'], () => { state.enabled = false; });
+		const disabled = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, clickCount: 2, includeState: false }, undefined, off.context);
+		assert.deepStrictEqual({
+			snapshots: helper.inputs.slice(0, 2).map(input => input.params.snapshotId),
+			disabled: text(disabled),
+			sentAfterOff: helper.inputs.slice(2).map(input => input.params.allowForeground === false ? 'ask first' : 'sent'),
+		}, {
+			snapshots: [7, 7],
+			disabled: 'Computer Use is turned off in Para Code settings. Ask the user to turn it on if they want you to use other apps.',
+			sentAfterOff: ['ask first'],
+		});
+	});
+
+	test('lets the helper set AXManualAccessibility on Electron apps only for panes allowed to operate them', async () => {
+		const { helper, ledger, provider } = setup();
+		const context = createContext('pane', []).context;
+		ledger.set('pane-a', 'com.apple.Notes', 'read');
+		await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, context);
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, context);
+		assert.deepStrictEqual(helper.treeParams.map(params => params.enableManualAccessibility === true), [false, true]);
 	});
 
 	test('adds the agent cursor with the pane\'s label and CLI only while the setting is on', async () => {
