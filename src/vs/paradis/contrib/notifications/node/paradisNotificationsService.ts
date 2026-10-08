@@ -444,7 +444,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	/**
 	 * おやすみモード中の読み上げ（Q310 A）。PC では鳴らさず、合成を受け取りながらモバイルへだけ流す（`aivis --mute` 中に
 	 * モバイルへ届ける Q209 B と同じ扱い）。声を聞いているモバイルが無ければ合成しない（読み上げの利用料を使わない）。
-	 * 合成は通常の読み上げと同じ口を通るので、音声のキャッシュにも乗る。
+	 * 数えるのは列に積むときと、合成する直前の 2 回。合成は通常の読み上げと同じ口を通るので、音声のキャッシュにも乗る。
+	 * PC の音量が 0 の読み上げは、通常の読み上げと同じく作らない（モバイルへも送らない）。
 	 */
 	private _notifyMobileOnly(request: IParadisNotifyAudioRequest, priority: AivisPriority): void {
 		const listeners = this.mobileVoiceListenerCount() ?? 0;
@@ -456,7 +457,13 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return;
 		}
 		const runner: AivisTaskRunner = {
-			synthesize: voice.runner.synthesize,
+			synthesize: async () => {
+				// 列で待つ間にモバイルが離れたら、合成しない（数え直す）
+				if ((this.mobileVoiceListenerCount() ?? 0) <= 0) {
+					return { audio: Buffer.alloc(0) };
+				}
+				return voice.runner.synthesize();
+			},
 			play: async () => undefined,
 			mobileOnly: true,
 		};

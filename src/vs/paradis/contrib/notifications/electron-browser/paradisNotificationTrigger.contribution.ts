@@ -171,7 +171,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 
 		// 設定「Para Code を見ている間も通知する」が有効なら、フォーカス由来の抑制を行わない
 		const notifyWhileFocused = this.settingsService.getNotifyWhileFocused();
-		const isVisibleAndFocused = paradisIsWorkbenchWindowFocused();
+		const isVisibleAndFocused = this._isWindowFocused();
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
 
 		// 抑制ルール: 対象スコープが見えていて (アクティブ) かつウィンドウがフォーカスされている場合は鳴らさない。
@@ -217,6 +217,11 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 		if (osEnabled) {
 			this._showOsNotification(stateKey, instanceId, status, placeholders, includeMessage ? message : undefined);
 		}
+	}
+
+	/** このウィンドウが見えていてフォーカスされているか（テストで差し替える）。 */
+	protected _isWindowFocused(): boolean {
+		return paradisIsWorkbenchWindowFocused();
 	}
 
 	/**

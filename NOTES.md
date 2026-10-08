@@ -2727,7 +2727,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 ## おやすみモード中の通知の読み上げはモバイルへだけ（2026-10-09、Q310 A）
 
-おやすみモードの間、通知のトリガー（`paradisNotificationTrigger.contribution.ts`）は着信音と PC の読み上げを止めたまま、読み上げを `mobileOnly: true` の `notifyAudio` で shared process へ渡す（手元・SSH のペインとも同じトリガーを通る）。shared process は、声を聞いているモバイル（`mobileVoiceListenerCount()`）が 0 台なら合成せず、1 台以上なら通常の読み上げと同じ合成の口（音声のキャッシュに乗る）で合成し、受け取りながらモバイルへだけ流す。スケジューラは `mobileOnly` の件を合成し終えたら終わり、着信音・音声入力・worker の再生 lock を待たず、PC では鳴らさない。`aivis --mute` 中に声をモバイルへ届ける Q209 B と同じ扱い。通知の抑制・受信箱（`doNotDisturb` の記録）・OS 通知は変えていない。フォーカス中の抑制ではモバイルへも流さない（PC の前にいるため）。
+おやすみモードの間、通知のトリガー（`paradisNotificationTrigger.contribution.ts`）は着信音と PC の読み上げを止めたまま、読み上げを `mobileOnly: true` の `notifyAudio` で shared process へ渡す（手元・SSH のペインとも同じトリガーを通る）。shared process は、声を聞いているモバイル（`mobileVoiceListenerCount()`）を列に積むときと合成する直前の 2 回数え、0 台なら合成しない。1 台以上なら通常の読み上げと同じ合成の口（音声のキャッシュに乗る）で合成し、受け取りながらモバイルへだけ流す。スケジューラは `mobileOnly` の件を、ほかの件と同じく音声入力が終わってから始め、合成した後は鳴り終わりも worker の再生 lock も待たずに終える（PC では鳴らさない）。PC の読み上げの音量が 0 のときは、通常の読み上げと同じく作らないので、モバイルへも送らない。`aivis --mute` 中に声をモバイルへ届ける Q209 B と同じ扱い。通知の抑制・受信箱（`doNotDisturb` の記録）・OS 通知は変えていない。フォーカス中の抑制ではモバイルへも流さない（PC の前にいるため）。
 
 ## 今後の方針候補（未確定、要議論）
 

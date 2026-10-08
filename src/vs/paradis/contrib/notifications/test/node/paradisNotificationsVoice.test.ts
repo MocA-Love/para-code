@@ -273,6 +273,23 @@ suite('ParadisNotificationsService voice handoff', () => {
 		]);
 	});
 
+	test('does not synthesize a do-not-disturb voice when the mobile left while it waited in the queue (Q310 A)', async () => {
+		const fetchStub = stubFetch();
+		const ingest = new FakeIngest();
+		const { service, events } = createService(ingest);
+		const mobile: string[] = [];
+		const subscription = service.onDidCreateMobileVoiceClip(event => mobile.push(event.kind));
+		let listeners = 1;
+		const probe = service.setMobileVoiceListenerProbe(() => listeners);
+		service.notifyAudio({ ...request('おやすみ中'), mobileOnly: true });
+		// 積んだ後、合成の前にモバイルが離れた
+		listeners = 0;
+		await timeout(30);
+		probe.dispose();
+		subscription.dispose();
+		assert.deepStrictEqual({ fetched: fetchStub.callCount, mobile, events }, { fetched: 0, mobile: [], events: [] });
+	});
+
 	test('waits for --ingest to come back instead of playing locally while the worker may be alive (H5)', async () => {
 		stubFetch();
 		const ingest = new FakeIngest();
