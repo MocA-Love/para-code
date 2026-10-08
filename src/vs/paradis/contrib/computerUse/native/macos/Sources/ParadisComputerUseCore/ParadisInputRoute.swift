@@ -338,9 +338,11 @@ let paradisWebAreaSearchMaxNodes = 400
 /**
  * Electron のウィンドウに `AXManualAccessibility` が要るか（ウェブの中身がまだ AX に出ていないか）。
  * Electron のウィンドウには、AX のツリーを作る前から閉じる・しまう・広げるのボタンなどの子があるので、
- * 「ウィンドウの子が空」では判断できない（実機の報告）。ウィンドウから幅優先でたどり、`AXWebArea` が無いか、
- * あっても子が空なら要る。ウィンドウが無いときも要る。上限までたどっても決まらなければ要らないとする
- * （中身の大きいウィンドウで、すでに立っている設定を台帳に載せて後で戻してしまわないため）。
+ * 「ウィンドウの子が空」では判断できない（実機の報告）。ウィンドウから幅優先でたどり、範囲の中の `AXWebArea` を
+ * 全部見る。子のある `AXWebArea` が 1 つでもあれば要らない（空の webview が別にあっても）。`AXWebArea` が無いか全部
+ * 空で、最後までたどれたときだけ要る。深さか要素の数の上限で打ち切ったら要らないとする（決まらないときに立てると、
+ * 別のツールが立てた設定を台帳に載せて後で false へ戻しうるため）。ウィンドウが無いときは要る。
+ * `AXWebArea` の下はたどらない（子の有無だけを見る）。
  */
 func paradisWindowNeedsManualAccessibility<Node>(_ window: Node?, children: (Node) -> [Node], role: (Node) -> String?,
 	maxDepth: Int = paradisWebAreaSearchMaxDepth, maxNodes: Int = paradisWebAreaSearchMaxNodes) -> Bool {
@@ -348,24 +350,37 @@ func paradisWindowNeedsManualAccessibility<Node>(_ window: Node?, children: (Nod
 		return true
 	}
 	var queue: [(Node, Int)] = [(window, 0)]
-	var visited = 0
 	var index = 0
 	while index < queue.count {
-		let (node, depth) = queue[index]
-		index += 1
-		visited += 1
-		if visited > maxNodes {
+		if index >= maxNodes {
 			return false
 		}
+		let (node, depth) = queue[index]
+		index += 1
 		let nodeChildren = children(node)
 		if role(node) == "AXWebArea" {
-			return nodeChildren.isEmpty
+			if !nodeChildren.isEmpty {
+				return false
+			}
+			continue
 		}
-		if depth < maxDepth {
-			queue.append(contentsOf: nodeChildren.map { ($0, depth + 1) })
+		if nodeChildren.isEmpty {
+			continue
 		}
+		if depth >= maxDepth {
+			return false
+		}
+		queue.append(contentsOf: nodeChildren.map { ($0, depth + 1) })
 	}
 	return true
+}
+
+/**
+ * `AXManualAccessibility` を立てて台帳に載せてよいか。立てる前に読んだ今の値がすでに true なら、別のツール（または
+ * アプリ自身）が立てたものなので、立てず台帳にも載せない（10 分後に false へ戻さないため）。読めない値は立ててよい。
+ */
+func paradisShouldEnableManualAccessibility(currentValue: Bool?) -> Bool {
+	return currentValue != true
 }
 
 /** 立てたアプリの記録 1 件。pid と、そのプロセスが始まった時刻（秒。pid の使い回しを見分ける）。 */

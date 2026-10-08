@@ -181,6 +181,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 			// ウェブの中身が出るまで待つ（実機の Electron 43.6.0 の背面のウィンドウでは、立ててから約 2 秒かかった）
 			let shown = Date().addingTimeInterval(paradisManualAccessibilityWaitSeconds)
 			repeat {
+				try ParadisRequestCancellation.check()
 				usleep(250_000)
 				windows = paradisElements(application, kAXWindowsAttribute)
 				window = windows.isEmpty ? nil : try paradisPickWindow(windows, application: application, windowId: windowId, pid: pid)
@@ -356,7 +357,13 @@ final class ParadisManualAccessibilityLedger {
 			entries.removeValue(forKey: pid)
 		}
 		lock.unlock()
-		guard !already, AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
+		guard !already else {
+			return false
+		}
+		// すでに立っていれば、別のツール（かアプリ自身）が立てたもの。立てず、台帳にも載せない（後で false へ戻さない）
+		let application = AXUIElementCreateApplication(pid)
+		guard paradisShouldEnableManualAccessibility(currentValue: (paradisCopy(application, "AXManualAccessibility") as? NSNumber)?.boolValue),
+			AXUIElementSetAttributeValue(application, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success else {
 			return false
 		}
 		lock.lock()
@@ -478,10 +485,38 @@ let paradisManualAccessibility = ParadisManualAccessibilityLedger()
 
 /**
  * pid の動いているアプリ（main スレッドで呼ぶ）。`NSRunningApplication(processIdentifier:)` が別のアプリの起動・終了の
- * 直後に一時的に nil を返すので、一覧からも探す（`paradisLookUpRunningApplication`）。
+ * 直後に一時的に nil を返すので、一覧からも探す（`paradisLookUpRunningApplication`）。多くの pid を続けて引くときは
+ * `running` に一覧を 1 回だけ写した辞書を渡す。
  */
-func paradisRunningApplication(_ pid: Int32) -> NSRunningApplication? {
-	return paradisLookUpRunningApplication(pid: pid, direct: { NSRunningApplication(processIdentifier: $0) }, all: { NSWorkspace.shared.runningApplications }, pidOf: { $0.processIdentifier })
+func paradisRunningApplication(_ pid: Int32, running: [Int32: NSRunningApplication]? = nil) -> NSRunningApplication? {
+	return paradisLookUpRunningApplication(
+		pid: pid,
+		direct: { NSRunningApplication(processIdentifier: $0) },
+		fallback: { pid in running.map { $0[pid] } ?? NSWorkspace.shared.runningApplications.first { $0.processIdentifier == pid } },
+		isTerminated: { $0.isTerminated },
+		sameProcess: { app in
+			paradisSameRunningProcess(
+				appExecutablePath: app.executableURL?.resolvingSymlinksInPath().path,
+				processExecutablePath: paradisProcessExecutablePath(pid),
+				appLaunchDate: app.launchDate?.timeIntervalSince1970,
+				processStart: paradisProcessStart(pid)
+			)
+		}
+	)
+}
+
+/** 動いているアプリを pid で引く辞書（一覧を 1 回だけ写す。main スレッドで呼ぶ）。 */
+func paradisRunningApplicationsByPid() -> [Int32: NSRunningApplication] {
+	return Dictionary(NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) }, uniquingKeysWith: { first, _ in first })
+}
+
+/** そのプロセスの実行ファイルのパス（シンボリックリンクを解いたもの）。読めなければ nil。 */
+func paradisProcessExecutablePath(_ pid: Int32) -> String? {
+	var buffer = [CChar](repeating: 0, count: Int(4 * MAXPATHLEN))
+	guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else {
+		return nil
+	}
+	return URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
 }
 
 /** VS Code の派生か（`Contents/Resources/app/product.json` があるか）。 */
