@@ -14,6 +14,7 @@ import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 import { PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
+import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface IPreparedDescriptor {
 	readonly exactView: IParadisExactBrowserViewDescriptor;
@@ -478,11 +479,12 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		const connection = {};
 		assert.strictEqual(fixture.service.registerRendererConnection('window:1', connection), true);
 		let revision = 1;
-		const sync = async (target: object) => fixture.service.syncBindingAuthority(target, {
+		const space = (stateKey: string | undefined) => stateKey === undefined ? { kind: 'unscoped' } : { kind: 'managed', stateKey };
+		const sync = async (target: object, options: { paneSpace?: string; viewSpace?: string; views?: readonly string[] } = {}) => fixture.service.syncBindingAuthority(target, {
 			revision: revision++,
 			complete: true,
-			panes: [{ token: 'token', scope: { kind: 'unscoped' } }],
-			browserViews: views.map(viewId => ({ viewId, scope: { kind: 'unscoped' } })),
+			panes: [{ token: 'token', scope: space(options.paneSpace) }],
+			browserViews: (options.views ?? views).map(viewId => ({ viewId, scope: space(options.viewSpace) })),
 		});
 		await sync(connection);
 		const share = async (viewId: string, target: object = connection) => {
@@ -495,6 +497,71 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		const usable = (viewId: string) => (Reflect.get(fixture.service, '_scopeBinding') as (token: string, tabId: string) => unknown).call(fixture.service, 'token', viewId) !== undefined;
 		return { fixture, connection, sync, share, listed, generationOf, defaultTab, usable };
 	}
+
+	test('a page the pane can no longer use (its space changed, or its view is gone) is never promoted to current', async () => {
+		const { fixture, connection, sync, share, listed, generationOf } = await setup();
+		await sync(connection, { paneSpace: 'space-a', viewSpace: 'space-a' });
+		await share('view-a');
+		await share('view-b');
+		// ペインだけが別のスペースへ移った manifest が先に届き、その後で current が外れた
+		await sync(connection, { paneSpace: 'space-b', viewSpace: 'space-a' });
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-b')), true);
+		const afterPaneMoved = await listed();
+
+		// 繰り上がった後でそのビューが消えた（renderer の片付けは繰り上げ前の世代しか知らない）
+		await sync(connection, { paneSpace: 'space-a', viewSpace: 'space-a' });
+		await share('view-c');
+		await share('view-d');
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-d')), true);
+		const promoted = await listed();
+		await sync(connection, { paneSpace: 'space-a', viewSpace: 'space-a', views: views.filter(viewId => viewId !== 'view-c') });
+		assert.deepStrictEqual({ afterPaneMoved, promoted, afterViewGone: await listed(), throttled: fixture.coordinator.bindingCount }, {
+			afterPaneMoved: [],
+			promoted: ['view-c'],
+			afterViewGone: [],
+			throttled: 0,
+		});
+	});
+
+	test('a tab the agent opened keeps working by tab_id after the user shares it, shares another page, and stops sharing it', async () => {
+		const { fixture, connection, share, listed, generationOf, usable } = await setup();
+		const grant = () => fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } });
+		assert.strictEqual(await grant(), true);
+		await share('agent-tab');
+		await share('view-b');
+		const whileShared = { listed: await listed(), agentTabs: (await fixture.service.listAgentTabGrants(connection)).map(entry => entry.pageId) };
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('agent-tab')), true);
+		assert.deepStrictEqual({
+			whileShared,
+			listed: await listed(),
+			agentTabs: (await fixture.service.listAgentTabGrants(connection)).map(entry => entry.pageId),
+			usable: usable('agent-tab'),
+		}, {
+			whileShared: { listed: ['view-b', 'agent-tab+'], agentTabs: ['agent-tab'] },
+			listed: ['view-b'],
+			agentTabs: ['agent-tab'],
+			usable: true,
+		});
+	});
+
+	test('promoting a shared page keeps the connections that use it by tab_id, and a share does not take over a tab the agent selected', async () => {
+		const { fixture, connection, share, generationOf, defaultTab } = await setup();
+		await share('view-a');
+		await share('view-b');
+		const scopeToolCall = (args: unknown) => (Reflect.get(fixture.service, '_scopeToolCall') as (lease: unknown, args: unknown) => { ok: boolean })
+			.call(fixture.service, fixture.service.captureIngressLease('token'), args);
+		assert.strictEqual(scopeToolCall({ tab_id: 'view-a' }).ok, true);
+		fixture.gatewayCalls.length = 0;
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-b')), true);
+		const tabKey = paradisAgentTabScopeKey('token', 'view-a');
+		const closedAfterPromotion = fixture.gatewayCalls.filter(call => call.token === tabKey);
+
+		// エージェントが自分のタブを選んでいる間に、ユーザーが別のページを共有した
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		Reflect.get(fixture.service, '_selectedTabs').set('token', 'agent-tab');
+		await share('view-c');
+		assert.deepStrictEqual({ closedAfterPromotion, current: defaultTab() }, { closedAfterPromotion: [], current: 'agent-tab' });
+	});
 
 	test('sharing a second page keeps the first one, and the newest page becomes the current tab', async () => {
 		const { fixture, share, listed, defaultTab, usable } = await setup();

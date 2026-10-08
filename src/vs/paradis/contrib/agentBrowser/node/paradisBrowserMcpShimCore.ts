@@ -235,7 +235,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'select_browser_tab',
-		description: 'Make one of the tabs from list_browser_tabs this pane\'s current tab, so the browser tools act on it when you omit tab_id. The pages the user shared stay shared. Subagents working on their own tab should pass tab_id instead of calling this (the current tab is shared by everyone using this pane). A user tab can only be used while it is shared; if the user stopped sharing it, call request_browser_page to ask for it again.',
+		description: 'Make one of the tabs from list_browser_tabs this pane\'s current tab, so the browser tools act on it when you omit tab_id. The pages the user shared stay shared. When the user shares another page later, that page becomes the current tab, except while the current tab is one you opened yourself (it stays current; list_browser_tabs shows the new page as shared). Subagents working on their own tab should pass tab_id instead of calling this (the current tab is shared by everyone using this pane). A user tab can only be used while it is shared; if the user stopped sharing it, call request_browser_page to ask for it again.',
 		inputSchema: {
 			type: 'object',
 			properties: {

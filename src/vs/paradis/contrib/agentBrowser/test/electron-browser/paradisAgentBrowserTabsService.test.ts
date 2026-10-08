@@ -48,6 +48,8 @@ interface IFakeBinding {
 	more?: string[];
 	unbinds: number;
 	unboundPages?: string[];
+	/** upstream が共有用に開き直したタブ（共有が成立したとき、こちらの ID が返る）。 */
+	replacementPageId?: string;
 	resolveBind?: (bound: boolean) => void;
 	sharingAtBind?: string;
 }
@@ -92,7 +94,10 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
 		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
 		getBindingsForToken: () => [...(binding.pageId === undefined ? [] : [binding.pageId]), ...(binding.more ?? [])].map(pageId => ({ pageId })),
-		bindPageToPane: (model: { sharingState?: string }) => { binding.sharingAtBind = model.sharingState; return new Promise<boolean>(resolve => binding.resolveBind = resolve); },
+		sharePageWithPane: (model: { id: string; sharingState?: string }) => {
+			binding.sharingAtBind = model.sharingState;
+			return new Promise<string | undefined>(resolve => binding.resolveBind = bound => resolve(bound ? binding.replacementPageId ?? model.id : undefined));
+		},
 		// そのページの共有だけを外す（current を外したら、残りの先頭を current にする）
 		unbindPageFromToken: async (pageId: string) => {
 			binding.unbinds++;
@@ -304,6 +309,41 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		});
 	}));
 
+	// ネットワークの制限で upstream が共有用のタブを開き直したら、締め切り後に外すのはそのタブ
+	test('withdraws the replacement tab upstream opened for a share that completes after the deadline', () => runWithFakedTimers(fakedTimers, async () => {
+		const binding: IFakeBinding = { pageId: undefined, more: [], unbinds: 0, replacementPageId: 'view-replacement' };
+		const { service } = createService([], binding);
+		store.add(service);
+		const input = { id: 'view-1', resolve: async () => ({ id: 'view-1' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		await result;
+		binding.pageId = 'view-replacement';
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual({ unboundPages: binding.unboundPages, current: binding.pageId }, { unboundPages: ['view-replacement'], current: undefined });
+	}));
+
+	// 前からこのペインへ共有していたページを選び直して締め切りを過ぎても、その共有は外さない
+	test('keeps a page that was already shared with the pane when a share of it completes after the deadline', () => runWithFakedTimers(fakedTimers, async () => {
+		const binding: IFakeBinding = { pageId: 'view-current', more: ['view-1'], unbinds: 0 };
+		const { service } = createService([], binding);
+		store.add(service);
+		const input = { id: 'view-1', resolve: async () => ({ id: 'view-1' }) } as unknown as BrowserEditorInput;
+		const cts = store.add(new CancellationTokenSource());
+		const result = service.bindTabWithin('pane-token', input, cts.token);
+		await timeout(0);
+		cts.cancel();
+		await result;
+		binding.pageId = 'view-1';
+		binding.more = ['view-current'];
+		binding.resolveBind?.(true);
+		await timeout(0);
+		assert.deepStrictEqual({ unbinds: binding.unbinds, current: binding.pageId, more: binding.more }, { unbinds: 0, current: 'view-1', more: ['view-current'] });
+	}));
+
 	test('marks an approved page as shared before binding, so the upstream share confirmation does not appear again', () => runWithFakedTimers(fakedTimers, async () => {
 		const onDidChangeSharingState = new Emitter<string>();
 		const model = {
@@ -351,7 +391,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			getBindingForToken: (token: string) => token === TOKEN && state.bound !== undefined ? { token, pageId: state.bound } : undefined,
 			getBindingsForToken: (token: string) => token === TOKEN ? [...(state.bound !== undefined ? [state.bound] : []), ...state.more].map(pageId => ({ token, pageId })) : [],
 			// 共有は追加: 前の current は 2 枚目以降に残る
-			bindPageToPane: async (model: IBrowserViewModel, token: string) => {
+			sharePageWithPane: async (model: IBrowserViewModel, token: string) => {
 				state.binds.push(model.id);
 				if (token === TOKEN) {
 					if (state.bound !== undefined && state.bound !== model.id) {
@@ -359,7 +399,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 					}
 					state.bound = model.id;
 				}
-				return true;
+				return model.id;
 			},
 			grantAgentTab: async (model: IBrowserViewModel) => {
 				state.grants.push(model.id);

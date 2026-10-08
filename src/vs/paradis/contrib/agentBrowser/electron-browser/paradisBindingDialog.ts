@@ -33,7 +33,7 @@ import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/p
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { PARADIS_USER_SHARED_PAGE_LIMIT } from '../common/paradisAgentBrowserTabs.js';
+import { PARADIS_USER_SHARED_PAGE_LIMIT, paradisIsSharedPageLimitError } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, ParadisBindingDialogTabController } from './paradisBindingDialogResources.js';
@@ -1071,7 +1071,7 @@ export class ParadisBindingDialog extends Disposable {
 	private async _bindPane(token: string): Promise<void> {
 		const bound = await paradisRunDialogBind(
 			() => this.bindingModel.bindPageToPane(this._page, token),
-			error => this._bindError = paradisGetBindingErrorMessage(error, {
+			error => this._bindError = paradisIsSharedPageLimitError(error) ? strSharedPageLimit(PARADIS_USER_SHARED_PAGE_LIMIT) : paradisGetBindingErrorMessage(error, {
 				pending: STR_META_SCOPE_PENDING,
 				differentScope: STR_META_SCOPE_MISMATCH,
 				generic: strBindFailed,

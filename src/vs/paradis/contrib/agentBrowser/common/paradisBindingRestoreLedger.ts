@@ -166,10 +166,16 @@ export function paradisBindingRestoreCandidates(
 	for (const key of pendingKeys) {
 		const entry = ledger.get(key);
 		const token = liveTokenByKey.get(key);
-		if (entry === undefined || token === undefined || boundKeys.has(key) || !knownPageIds.has(entry.pageId)) {
+		if (entry === undefined || token === undefined || boundKeys.has(key)) {
 			continue;
 		}
-		candidates.push({ key, token, pageId: entry.pageId, morePageIds: (entry.more ?? []).filter(pageId => knownPageIds.has(pageId)) });
+		// current のページが無くなっていたら、2 枚目以降のうち最後に共有した生きているページを current にする
+		const alive = [...(entry.more ?? []), entry.pageId].filter(pageId => knownPageIds.has(pageId));
+		const pageId = alive.pop();
+		if (pageId === undefined) {
+			continue;
+		}
+		candidates.push({ key, token, pageId, morePageIds: alive });
 	}
 	return candidates;
 }

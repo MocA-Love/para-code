@@ -1485,7 +1485,9 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		assert.deepStrictEqual(fixture.sharingCalls, [true, false]);
 	});
 
-	test('conditionally unbinds only a saved generation on real terminal or browser stable scope drift', async () => {
+	// ペインのスペースが変わったら、そのペインの共有はどれも外す（1 つのペインは複数のページを共有できる）。
+	// ページのスペースが変わったら、そのページの共有だけを、外す直前の一覧の世代で外す
+	test('unbinds the whole pane on terminal stable scope drift and only the page generation on browser drift', async () => {
 		const fixture = createFixture();
 		fixture.backendBindings = [binding(7)];
 		await fixture.bindingModel.refresh();
@@ -1494,12 +1496,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.terminalScope = { kind: 'pending' };
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
-		assert.strictEqual(fixture.commands.some(call => call.command === 'unbindIfCurrent'), false);
+		assert.strictEqual(fixture.commands.some(call => call.command === 'unbindIfCurrent' || call.command === 'unbind'), false);
 
 		fixture.terminalScope = { kind: 'managed', stateKey: 'space-b' };
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
-		await eventually(() => fixture.commands.some(call => call.command === 'unbindIfCurrent'));
-		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 7]);
+		await eventually(() => fixture.commands.some(call => call.command === 'unbind'));
+		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbind')?.args, ['token']);
 
 		fixture.backendBindings = [binding(8)];
 		await fixture.bindingModel.refresh();
@@ -1509,6 +1511,20 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.browserScopeChanged.fire({ viewId: 'view-a' });
 		await eventually(() => fixture.commands.some(call => call.command === 'unbindIfCurrent'));
 		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 8]);
+	});
+
+	// current が外れて残りが新しい世代で繰り上がった後でも、ページのスペースの変化で外せる（捕まえた世代は古い）
+	test('unshares a page whose space changed using the generation it has right before unsharing', async () => {
+		const fixture = createFixture();
+		fixture.backendBindings = [binding(7)];
+		await fixture.bindingModel.refresh();
+		// 繰り上げで世代が変わった（キャッシュはまだ古い世代）
+		fixture.backendBindings = [binding(12)];
+		fixture.commands.length = 0;
+		fixture.browserScope = { kind: 'managed', stateKey: 'space-b' };
+		fixture.browserScopeChanged.fire({ viewId: 'view-a' });
+		await eventually(() => fixture.commands.some(call => call.command === 'unbindIfCurrent'));
+		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 12]);
 	});
 
 	test('refreshes and releases stale page sharing when authority retired the generation first', async () => {
@@ -1522,7 +1538,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
 		await eventually(() => fixture.sharingCalls.includes(false));
 
-		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 9]);
+		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbind')?.args, ['token']);
 		assert.deepStrictEqual(fixture.sharingCalls, [false]);
 	});
 

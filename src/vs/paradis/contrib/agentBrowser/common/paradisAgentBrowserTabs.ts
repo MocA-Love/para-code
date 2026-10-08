@@ -41,6 +41,14 @@ export const PARADIS_AGENT_TAB_LIMIT = 5;
  */
 export const PARADIS_USER_SHARED_PAGE_LIMIT = 10;
 
+/** 共有が {@link PARADIS_USER_SHARED_PAGE_LIMIT} に達して断られたときのエラーの先頭の印（shared process → renderer）。 */
+export const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK = 'PARA_BROWSER_SHARED_PAGE_LIMIT';
+
+/** 共有の上限で断られたエラーか（IPC を越えるとエラーの型は失われるので、文の印で見分ける）。 */
+export function paradisIsSharedPageLimitError(error: unknown): boolean {
+	return error instanceof Error && error.message.includes(PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK);
+}
+
 /** 要求の理由（エージェントが書く文）を承認ダイアログへ出すときの最大文字数。 */
 export const PARADIS_AGENT_PAGE_REQUEST_REASON_MAX_LENGTH = 300;
 
