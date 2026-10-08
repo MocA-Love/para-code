@@ -248,7 +248,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'set_cursor_label',
-		description: 'Name the cursor Para Code draws for your mouse and key input on a page, so the user can tell which agent is acting and what it is doing. Call it once before your first click, key or scroll on a page. Name the task, not a person or the page title (for example "Checkout" or "注文入力"). Para Code always shows your CLI mark next to the name. Emoji, line breaks and invisible characters are removed; names with a URL, an e-mail address or a long number, and names like "user" or "Para Code", are refused and the default name is used. You can change it up to 3 times a minute. Returns the name that is shown.',
+		description: 'Name the cursor Para Code draws for your mouse and key input on a page (and for Computer Use in other apps), so the user can tell which agent is acting and what it is doing. Call it once before your first click, key or scroll on a page or in another app. Name the task, not a person or the page title (for example "Checkout" or "注文入力"). Para Code always shows your CLI mark next to the name. Emoji, line breaks and invisible characters are removed; names with a URL, an e-mail address or a long number, and names like "user" or "Para Code", are refused and the default name is used. You can change it up to 3 times a minute. Returns the name that is shown.',
 		inputSchema: {
 			type: 'object',
 			properties: {

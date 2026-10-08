@@ -14,7 +14,9 @@
 // 設計: phase7-b3/design.md（リポジトリ外）。安全の決め事は同 6 章。
 //
 // 読み取り（状態・アプリとウィンドウの一覧・スクショ・アクセシビリティのツリー）と、操作（前面に出す・クリック・
-// ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー）を持つ。設定画面での許可の取り消しは後の段で足す。
+// ドラッグ・スクロール・文字入力・貼り付け・キー・ホットキー・値の変更）を持つ。設定画面での許可の取り消しは後の段で足す。
+// 操作は、アクセシビリティで送れるもの（ボタンを押す・値を変える・欄へ文字を入れる）をマウスもカーソルも動かさず
+// 前面にも出さずに送り、それ以外は前面に出して実カーソルとキーボードで送る（補助アプリの ParadisInputRoute.swift）。
 // 回答済みの設問: Q97〜Q101 はすべて案 A（2026-09-28）。
 
 // --- 設定 ---
@@ -27,6 +29,23 @@ export function paradisComputerUseEnabled(value: unknown): boolean {
 	return value === true;
 }
 
+/**
+ * 前面に出して実カーソルとキーボードを使う送り方（3 段目）の前に、利用者の承認を取るか（既定オフ = 今までどおり
+ * 承認済みのアプリにはそのまま送る）。アクセシビリティで送れる操作（1 段目）には効かない。
+ */
+export const PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING = 'paradis.computerUse.confirmForegroundInput';
+
+export function paradisComputerUseConfirmForeground(value: unknown): boolean {
+	return value === true;
+}
+
+/** エージェントの独自のカーソル（名前の札つき）を画面に出すか（既定オン）。 */
+export const PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING = 'paradis.computerUse.showCursorOverlay';
+
+export function paradisComputerUseShowCursor(value: unknown): boolean {
+	return value !== false;
+}
+
 // --- 補助アプリ ---
 
 export const PARADIS_COMPUTER_USE_APP_NAME = 'Para Code Computer Use.app';
@@ -35,7 +54,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 6;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 7;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -105,6 +124,8 @@ export const PARADIS_COMPUTER_USE_REFRESH_METHOD = 'refresh';
 /** ウィンドウ側が持つ、承認ダイアログのチャネル（shared process が呼び出し元ペインのウィンドウへだけ送る）。 */
 export const PARADIS_COMPUTER_USE_APPROVAL_CHANNEL = 'paradisComputerUseApproval';
 export const PARADIS_COMPUTER_USE_APPROVAL_METHOD = 'requestAccess';
+/** 前面に出して実カーソルとキーボードを使う前の承認（設定 {@link PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING}）。 */
+export const PARADIS_COMPUTER_USE_FOREGROUND_METHOD = 'requestForeground';
 /** 承認を待つ上限（設計書 3.5: 2 分）。 */
 export const PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS = 2 * 60_000;
 
@@ -143,6 +164,27 @@ const APPROVAL_OUTCOMES: readonly ParadisComputerUseApprovalOutcome[] = ['read',
 export function paradisParseComputerUseApprovalOutcome(value: unknown): ParadisComputerUseApprovalOutcome | undefined {
 	const outcome = value && typeof value === 'object' ? (value as Record<string, unknown>).outcome : undefined;
 	return APPROVAL_OUTCOMES.find(candidate => candidate === outcome);
+}
+
+/** 前面の承認ダイアログへ渡す中身。 */
+export interface IParadisComputerUseForegroundPrompt {
+	readonly appName: string;
+	readonly bundleId: string;
+	/** 求めている操作（`click`・`type_text` など、ツール名から `computer_` を外したもの）。 */
+	readonly action: string;
+}
+
+/**
+ * 前面の承認の結果。`once` はこの 1 回だけ、`pane` はこのターミナルからのこのアプリへの操作を Para Code を終了するまで
+ * 聞かない。ほかは {@link ParadisComputerUseApprovalOutcome} と同じ意味（`read`・`operate` は来ない）。
+ */
+export type ParadisComputerUseForegroundOutcome = 'once' | 'pane' | Exclude<ParadisComputerUseApprovalOutcome, 'read' | 'operate'>;
+
+const FOREGROUND_OUTCOMES: readonly ParadisComputerUseForegroundOutcome[] = ['once', 'pane', 'denied', 'cancelled', 'timedOut', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved'];
+
+export function paradisParseComputerUseForegroundOutcome(value: unknown): ParadisComputerUseForegroundOutcome | undefined {
+	const outcome = value && typeof value === 'object' ? (value as Record<string, unknown>).outcome : undefined;
+	return FOREGROUND_OUTCOMES.find(candidate => candidate === outcome);
 }
 
 // --- 常に操作させないアプリ（設計書 6.2） ---
