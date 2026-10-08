@@ -628,7 +628,18 @@ grep -rn "BrowserDeviceType\|deviceType ===\|deviceType:\|case 'bluetooth'" src/
 | `src/vs/code/electron-main/app.ts` | import 1行 + 登録 1行 | `paradisRegisterBrowserDownloads(mainProcessElectronServer, this.configurationService)`（`browserDownloads/electron-main/paradisBrowserDownloadsMain.ts`） |
 | `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` | 1行 | `paradis-browser-downloads-popover` を QuickInput 扱いで登録（ネイティブビューの裏に隠れないように） |
 
-エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。ペインとページの共有は 1 対 1 のまま変えていない（CDP ゲートウェイとフィルタは共有中の1枚しか見せない）。複数のタブは「共有するタブを移す」ことで扱う。
+エージェントのタブと、ページ共有の「エージェントが要求 → ユーザーが承認」は `agentBrowser/electron-browser/paradisAgentBrowserTabsService.ts`。
+
+1 つのペインへユーザーは複数のページを共有できる（2026-10-08、Q296）。それまでは 1 対 1 で、別のページを共有すると前の共有が外れた（付け替え）。実装は、エージェントが自分で開いたタブの許可（#263・#265 の `_agentTabGrants` と tab_id）に乗せている:
+
+- `_bindings`（token → 1 枚）は「current」の共有のまま残す。binding authority（`recordBindingMutation`・owner の retire）、モバイルの画面共有（`listBoundCdpTargets`）、`tab_id` を省いたときのタブ（`_defaultTabId`）、ペインの印は current だけを見る。authority を token → 複数に変えると retire・隔離・ticket の世代の検証が全部変わるので、そうしなかった
+- 2 枚目以降は `_agentTabGrants` の entry に `userShared: true` を付けて持つ。新しいページを共有すると（`commitBind`）前の current が世代を変えずにこの印付きで許可へ移り、新しいページが current になる（選んでいたタブも外す）。すでに 2 枚目以降として共有していたページを共有し直すと、許可から外して current にする
+- current を外すと（`unbindIfCurrent`・ビューの消滅）、2 枚目以降のうち世代の一番大きいもの（最後に共有したもの）を current へ戻す（`_promoteLatestUserSharedPage`、`recordBindingMutation` で authority にも記録）。2 枚目以降は世代を指定した `unbindIfCurrent` でページごとに外す。`unbind(token)` はペインの共有を全部外す
+- `listBindings` は current の後ろに 2 枚目以降（`additional: true`、新しい順）を返す。renderer はこれでページごとのペイン数・ダイアログの行・ページ単位の解除・ネットワークの制限による解除・消えたビューの片付けをそのまま扱える。`listAgentTabGrants` はエージェントのタブだけを返す
+- 上限はユーザーの共有が 1 ペイン 10 枚（`PARADIS_USER_SHARED_PAGE_LIMIT`、current を含む）、エージェントが開くタブ 5 枚とは別枠。共有したページは裏でも描画を止めない（`setBinding`）ので、その数を抑える
+- ウィンドウの再読み込みでは、エージェントのタブの許可は外すが 2 枚目以降の共有は残す（current と同じ扱い）。再起動からの復元（`paradisBindingRestoreLedger.ts`）は current を `pageId`、2 枚目以降を `more`（古い順）に控え、古いものから共有して current を最後に共有する
+- `request_browser_page` で承認されたタブや承認済みプロファイルのタブも `bindPageToPane` を通るので、付け替えではなく追加になる。締め切り後に成立した共有は、そのページの共有だけを外す
+- CDP ゲートウェイは、ペインの URL（tab を付けない接続）では current の 1 枚だけを見せる。2 枚目以降は tab_id（`?tab=`）で使う
 
 - エージェントが開くタブは Agent スコープ（ユーザーのログイン情報を持たず、ネットワークの制限が掛かる）で、共有相手を最初からエージェントにして作る。そのため upstream の共有確認は出ない（upstream 自身の open_browser ツールと同じ扱い）
 - upstream の共有確認（「Share this browser page with the agent?」、既定のフォーカスが Allow）は、fork 側で承認済みの共有では出さない。`bindTab` は共有の前に、main のブラウザビューへ直接エージェントを共有相手として加え（`IBrowserViewService.setAudience`、main がネットワークの制限を確かめる）、モデルが共有済みになるのを待ってからバインドする。upstream の `setSharedWithAgent` は共有済みなら確認を出さないので、upstream のファイルは触らずに済む。`bindTab` を通るのは、エージェント自身のタブ・承認ダイアログで許可されたタブとプロファイル・そのペインが作ったプロファイルだけ。ネットワークの制限でそのまま共有できないタブは何もせず、upstream の流れ（共有用のタブを開き直す確認）に任せる。ユーザーが共有ボタンから共有するときは、これまでどおり upstream の確認が出る

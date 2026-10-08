@@ -299,6 +299,36 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		});
 	});
 
+	// 1 つのペインは複数のページを共有できる。current を先頭に全部を持ち、外すのはそのページの共有だけ
+	test('keeps every page shared with a pane (current first) and unshares only the chosen page', async () => {
+		const fixture = createFixture();
+		const scope = { kind: 'managed' as const, stateKey: 'space-a' };
+		fixture.backendBindings = [
+			{ token: 'token', pageId: 'view-b', pageInfo: { url: 'https://b.test', title: 'B' }, generation: 5, boundAt: 5, scope },
+			{ token: 'token', pageId: 'view-a', pageInfo: { url: 'https://a.test', title: 'A' }, generation: 3, boundAt: 3, scope, additional: true },
+			{ token: 'token-b', pageId: 'view-a', pageInfo: { url: 'https://a.test', title: 'A' }, generation: 4, boundAt: 4, scope },
+		];
+		await fixture.bindingModel.refresh();
+		const before = {
+			current: fixture.bindingModel.getBindingForToken('token')?.pageId,
+			all: fixture.bindingModel.getBindingsForToken('token').map(binding => binding.pageId),
+			panesOnA: fixture.bindingModel.getBindingsForPage('view-a').map(binding => binding.token),
+		};
+		await fixture.bindingModel.unbindPane(fixture.model, 'token');
+		assert.deepStrictEqual({
+			before,
+			unbinds: fixture.commands.filter(call => call.command === 'unbind' || call.command === 'unbindIfCurrent').map(call => [call.command, ...call.args]),
+			after: fixture.bindingModel.getBindingsForToken('token').map(binding => binding.pageId),
+			// view-a はほかのペインがまだ共有しているので、ページの共有は止めない
+			sharingCalls: fixture.sharingCalls,
+		}, {
+			before: { current: 'view-b', all: ['view-b', 'view-a'], panesOnA: ['token', 'token-b'] },
+			unbinds: [['unbindIfCurrent', 'token', 3]],
+			after: ['view-b'],
+			sharingCalls: [],
+		});
+	});
+
 	function binding(generation: number = 1): IParadisPaneBinding {
 		return {
 			token: 'token', pageId: 'view-a', pageInfo: { url: 'https://example.test', title: 'Example' },
