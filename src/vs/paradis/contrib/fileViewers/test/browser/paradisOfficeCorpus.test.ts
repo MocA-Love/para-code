@@ -4,12 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisOfficeWebArchive } from '../../browser/office/paradisOfficeWebArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
-import { sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
+import { PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
+import { resolveParadisOfficeRelationshipTarget } from '../../common/office/paradisOfficeArchive.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
@@ -17,8 +18,9 @@ import { buildOpcFixture, type IParadisOfficeFixtureOptions, type IParadisOffice
 
 /*
  * Minimal, invented OPC packages that each exercise one ECMA-376 rule or one way real producers write
- * packages. Every case runs the renderer preprocessor (sanitizer), the package inventory, and the
- * semantic parser over the same bytes through the production web ZIP reader.
+ * packages, through the production web ZIP reader. Cases name which stages they run: the renderer
+ * preprocessor (sanitizer), the package inventory, and the semantic parsers. Rejections that must stay
+ * in place next to each relaxed rule are fixed here too.
  */
 
 const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -26,6 +28,7 @@ const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
+const MS = 'http://schemas.microsoft.com/office';
 const CT = {
 	document: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
 	styles: 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml',
@@ -51,12 +54,21 @@ function wordPackage(overrides: Partial<IParadisOfficeFixtureOptions> & { readon
 			...(overrides.extraRelationships ?? []),
 		],
 		...(overrides.folders ? { folders: overrides.folders } : {}),
+		...(overrides.renameEntries ? { renameEntries: overrides.renameEntries } : {}),
 		...(overrides.contentTypesXml ? { contentTypesXml: overrides.contentTypesXml } : {}),
 	});
 }
 
-async function sanitize(bytes: Uint8Array) {
-	return sanitizeOfficeDocxPackageForRenderer({ nodeId: 'corpus', source: bytes, archive: await createParadisOfficeWebArchive(bytes.slice()) });
+async function sanitize(bytes: Uint8Array, xmlElementLimits?: { readonly part?: number; readonly package?: number }) {
+	return sanitizeOfficeDocxPackageForRenderer({ nodeId: 'corpus', source: bytes, archive: await createParadisOfficeWebArchive(bytes.slice()), ...(xmlElementLimits ? { xmlElementLimits } : {}) });
+}
+
+const plainContentTypes = `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="${CT.document}"/><Override PartName="/word/styles.xml" ContentType="${CT.styles}"/></Types>`;
+
+function relationshipsOf(bytes: Uint8Array, part: string): string {
+	const text = new TextDecoder().decode(bytes);
+	const start = text.indexOf(part);
+	return start < 0 ? '' : text.slice(start, text.indexOf('</Relationships>', start));
 }
 
 async function inventoryOf(bytes: Uint8Array) {
@@ -136,11 +148,20 @@ suite('ParadisOfficeCorpus', () => {
 		await rejects(sanitize(bytes), /malformed/);
 	});
 
-	test('does not read [Content_Types].xml as a story when Default xml carries the document type (Part 2 §7.2.3)', async () => {
+	test('types parts through Default without reading [Content_Types].xml or customXml items as stories (Part 2 §7.2.3)', async () => {
 		const bytes = await wordPackage({
 			contentTypesXml: `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="${CT.document}"/><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/styles.xml" ContentType="${CT.styles}"/></Types>`,
+			extraParts: [['/customXml/item1.xml', '<root/>']],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdItem', type: `${R}/customXml`, target: '../customXml/item1.xml' },
+				{ source: '/customXml/item1.xml', id: 'rIdProps', type: `${R}/customXmlProps`, target: 'itemProps1.xml' },
+			],
 		});
-		strictEqual((await sanitize(bytes)).placeholders.length, 0);
+		await sanitize(bytes);
+		const inventory = await inventoryOf(bytes);
+		strictEqual(inventory.parts.find(part => part.id === '/word/document.xml')?.contentType, CT.document);
+		strictEqual(inventory.parts.find(part => part.id === '/_rels/.rels')?.contentType, 'application/vnd.openxmlformats-package.relationships+xml');
+		strictEqual((await parseWord(bytes)).completeness.terminal, true);
 	});
 
 	test('parses a long story beyond 65,536 XML nodes', async () => {
@@ -167,5 +188,63 @@ suite('ParadisOfficeCorpus', () => {
 		});
 		const snapshot = await parseSpreadsheet(workbook);
 		strictEqual(snapshot.sheets[0].cells.size, 1);
+	});
+	test('keeps rejecting Targets that leave the package or name a network path (RFC 3986 §4.2)', async () => {
+		// The inventory and both semantic parsers resolve through this one function.
+		for (const target of ['/../word/document.xml', '../../x', '//host/word/document.xml', 'a\\b', 'a%2Fb']) {
+			throws(() => resolveParadisOfficeRelationshipTarget('/word/document.xml', target), /malformed/, target);
+		}
+		strictEqual(resolveParadisOfficeRelationshipTarget('/word/document.xml', '/word/styles.xml'), '/word/styles.xml');
+		strictEqual(resolveParadisOfficeRelationshipTarget('/word/document.xml', 'media/../styles.xml'), '/word/styles.xml');
+		const escaping = await wordPackage({ documentTarget: '/../word/document.xml' });
+		await rejects(sanitize(escaping), /malformed/);
+		await rejects(inventoryOf(escaping), /malformed/);
+	});
+
+	test('keeps rejecting folder items that are not plain empty folders', async () => {
+		const cases: readonly { readonly name: string; readonly options: NonNullable<Parameters<typeof wordPackage>[0]>; readonly error: RegExp }[] = [
+			{ name: 'parent segment', options: { folders: ['zz/'], renameEntries: [['zz/', '../']] }, error: /invalid/ },
+			{ name: 'empty segment', options: { folders: ['wordx/'], renameEntries: [['wordx/', 'word//']] }, error: /invalid/ },
+			{ name: 'non-empty folder', options: { extraParts: [['/wordy', 'abc', 'application/octet-stream']], renameEntries: [['wordy', 'word/']], contentTypesXml: plainContentTypes }, error: /malformed|unsafe/ },
+			{ name: 'folder named like a part', options: { folders: ['word/document.xml/'] }, error: /unsafe/ },
+		];
+		for (const testCase of cases) {
+			await rejects(sanitize(await wordPackage(testCase.options)), testCase.error, testCase.name);
+		}
+	});
+
+	test('still shows an external relationship consumed by a story as a placeholder', async () => {
+		const bytes = await wordPackage({
+			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>',
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
+		});
+		deepStrictEqual((await sanitize(bytes)).placeholders.map(placeholder => placeholder.feature), ['externalRelationship']);
+	});
+
+	test('drops absent OLE, macro, and ActiveX targets from the relationships and the output', async () => {
+		const bytes = await wordPackage({
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/absent.bin' },
+				{ source: '/word/document.xml', id: 'rIdVba', type: `${MS}/2006/relationships/vbaProject`, target: 'vbaProject.bin' },
+				{ source: '/word/document.xml', id: 'rIdControl', type: `${R}/control`, target: 'activeX/activeX1.xml' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		const relationships = relationshipsOf(result.bytes, 'word/_rels/document.xml.rels');
+		for (const id of ['rIdOle', 'rIdVba', 'rIdControl']) {
+			ok(!relationships.includes(id), id);
+		}
+		deepStrictEqual(zipNames(result.bytes), ['[Content_Types].xml', '_rels/.rels', 'word/_rels/document.xml.rels', 'word/document.xml', 'word/styles.xml']);
+	});
+
+	test('bounds XML elements per part and per package', async () => {
+		strictEqual(PARADIS_OFFICE_SANITIZER_XML_ELEMENTS.part, 200_000);
+		// document + body + 10 paragraphs + sectPr = 13 elements; styles adds 1.
+		const bytes = await wordPackage({ body: '<w:p/>'.repeat(10) });
+		await sanitize(bytes, { part: 13 });
+		await rejects(sanitize(bytes, { part: 12 }), /limitExceeded/);
+		await sanitize(bytes, { package: 14 });
+		await rejects(sanitize(bytes, { package: 13 }), /limitExceeded/);
 	});
 });

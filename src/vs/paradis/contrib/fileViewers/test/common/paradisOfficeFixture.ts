@@ -23,6 +23,11 @@ export interface IParadisOfficeFixtureOptions {
 	readonly folders?: readonly string[];
 	/** Replaces the generated `[Content_Types].xml`, for producer variants (Default-only typing, lowercase encoding). */
 	readonly contentTypesXml?: string;
+	/**
+	 * Renames ZIP entries after writing, for names JSZip would normalize (`../`, `word//`). Each pair must
+	 * have the same UTF-8 length and the `from` name must appear exactly in the local and central headers.
+	 */
+	readonly renameEntries?: readonly (readonly [from: string, to: string])[];
 }
 
 const FIXED_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
@@ -68,7 +73,35 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
 	}
 
-	return zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+	const bytes = await zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+	for (const [from, to] of options.renameEntries ?? []) {
+		renameZipEntry(bytes, from, to);
+	}
+	return bytes;
+}
+
+function renameZipEntry(bytes: Uint8Array, from: string, to: string): void {
+	const encoder = new TextEncoder();
+	const source = encoder.encode(from);
+	const target = encoder.encode(to);
+	if (source.length !== target.length) {
+		throw new Error(`Renamed ZIP entries must keep their byte length: ${from} -> ${to}`);
+	}
+	let replaced = 0;
+	for (let offset = 0; offset + source.length <= bytes.length; offset++) {
+		let match = true;
+		for (let index = 0; index < source.length && match; index++) {
+			match = bytes[offset + index] === source[index];
+		}
+		if (match) {
+			bytes.set(target, offset);
+			replaced++;
+			offset += source.length - 1;
+		}
+	}
+	if (replaced !== 2) {
+		throw new Error(`Expected one local and one central header for ${from}, found ${replaced}`);
+	}
 }
 
 function canonicalPartName(name: string): string {

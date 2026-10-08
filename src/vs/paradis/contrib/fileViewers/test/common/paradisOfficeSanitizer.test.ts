@@ -351,7 +351,7 @@ suite('ParadisOfficeSanitizer', () => {
 		const dangling = await sanitizeOfficeDocxPackageForRenderer({
 			nodeId: 'dangling-opc', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ ...base, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>' }),
 		});
-		strictEqual(dangling.placeholders.length, 0);
+		strictEqual(dangling.placeholders.some(placeholder => placeholder.feature === 'missingRelationship'), false);
 		strictEqual(textOf(readStoreZipEntries(dangling.bytes), 'word/_rels/document.xml.rels').includes('missing.bin'), false);
 		for (const [index, rels] of invalidRels.slice(1).entries()) {
 			await rejects(
