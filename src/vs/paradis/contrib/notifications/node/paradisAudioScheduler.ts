@@ -107,6 +107,11 @@ export interface AivisTaskRunner {
 	startRingtone?(): void;
 	/** 列に入らなかった・追い出された・一時停止で捨てられた。預かった着信音を今鳴らす。 */
 	onDropped?(): void;
+	/**
+	 * PC では鳴らさない（合成の中でモバイルへ流して終わる。おやすみモード中の読み上げ）。合成が済んだらすぐ次へ進み、
+	 * 着信音・音声入力・worker の再生 lock を待たない。
+	 */
+	readonly mobileOnly?: boolean;
 }
 
 export type AivisPriority = 'normal' | 'high';
@@ -624,6 +629,10 @@ export class AudioScheduler {
 			try {
 				const { audio, rateLimit } = await runner.synthesize();
 				if (rateLimit) { this.rateLimit = rateLimit; }
+				if (runner.mobileOnly) {
+					// モバイルへは合成の中で流し終えた。PC では鳴らさない
+					return;
+				}
 				// 合成は通知音と並行してよい（単なるネットワーク呼び出し）が、再生は2つの音声が
 				// 重ならないよう通知音の完了を待つ。
 				await this.waitForRingtoneIdle();

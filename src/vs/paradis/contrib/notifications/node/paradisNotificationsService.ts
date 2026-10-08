@@ -410,6 +410,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 */
 	notifyAudio(request: IParadisNotifyAudioRequest): void {
 		const priority: AivisPriority = request.priority === 'high' ? 'high' : 'normal';
+		if (request.mobileOnly === true) {
+			this._notifyMobileOnly(request, priority);
+			return;
+		}
 		// 音声入力中の着信音はマイクに拾われるだけなので今までどおり捨てる（前置きにも、着信音だけのジョブにもしない）
 		const ringtone = this._dictationHold.held ? undefined : request.ringtone;
 		const voice = this._createVoiceTask(request, priority);
@@ -434,6 +438,30 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			} else {
 				this._playRingtoneNow(ringtone);
 			}
+		}
+	}
+
+	/**
+	 * おやすみモード中の読み上げ（Q310 A）。PC では鳴らさず、合成を受け取りながらモバイルへだけ流す（`aivis --mute` 中に
+	 * モバイルへ届ける Q209 B と同じ扱い）。声を聞いているモバイルが無ければ合成しない（読み上げの利用料を使わない）。
+	 * 合成は通常の読み上げと同じ口を通るので、音声のキャッシュにも乗る。
+	 */
+	private _notifyMobileOnly(request: IParadisNotifyAudioRequest, priority: AivisPriority): void {
+		const listeners = this.mobileVoiceListenerCount() ?? 0;
+		if (listeners <= 0) {
+			return;
+		}
+		const voice = this._createVoiceTask({ ...request, ringtone: undefined }, priority);
+		if (voice === undefined) {
+			return;
+		}
+		const runner: AivisTaskRunner = {
+			synthesize: voice.runner.synthesize,
+			play: async () => undefined,
+			mobileOnly: true,
+		};
+		if (!this._scheduler.enqueueAivis(runner, priority, { localOnly: true })) {
+			this.logService.info('[ParadisNotifications] dropped a do-not-disturb voice for the mobile because the audio queue is full or paused');
 		}
 	}
 

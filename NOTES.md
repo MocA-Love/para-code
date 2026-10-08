@@ -2725,6 +2725,10 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 確かめていないこと: 実機での合成と再生（ElevenLabs を呼ぶ確認はしていない）、モバイルでの到着の速さ。
 
+## おやすみモード中の通知の読み上げはモバイルへだけ（2026-10-09、Q310 A）
+
+おやすみモードの間、通知のトリガー（`paradisNotificationTrigger.contribution.ts`）は着信音と PC の読み上げを止めたまま、読み上げを `mobileOnly: true` の `notifyAudio` で shared process へ渡す（手元・SSH のペインとも同じトリガーを通る）。shared process は、声を聞いているモバイル（`mobileVoiceListenerCount()`）が 0 台なら合成せず、1 台以上なら通常の読み上げと同じ合成の口（音声のキャッシュに乗る）で合成し、受け取りながらモバイルへだけ流す。スケジューラは `mobileOnly` の件を合成し終えたら終わり、着信音・音声入力・worker の再生 lock を待たず、PC では鳴らさない。`aivis --mute` 中に声をモバイルへ届ける Q209 B と同じ扱い。通知の抑制・受信箱（`doNotDisturb` の記録）・OS 通知は変えていない。フォーカス中の抑制ではモバイルへも流さない（PC の前にいるため）。
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）

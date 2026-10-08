@@ -102,6 +102,16 @@ suite('AudioScheduler', () => {
 		]);
 	});
 
+	test('finishes a mobile-only task right after synthesis without waiting for the play lock or playing (Q310 A)', async () => {
+		const events: string[] = [];
+		const lock = new DeferredPromise<void>();
+		const scheduler = track(createScheduler({ waitForPlayLock: () => { events.push('wait-lock'); return lock.p; } }));
+		scheduler.enqueueAivis({ ...successfulRunner('dnd', events), mobileOnly: true }, 'normal', { localOnly: true });
+		await waitForIdle(scheduler);
+		assert.deepStrictEqual(events, ['synthesize:dnd']);
+		void lock.complete();
+	});
+
 	test('places high-priority work ahead of queued normal work without interrupting the active task', async () => {
 		const firstSynthesis = new DeferredPromise<AivisSynthesizeResult>();
 		const firstSynthesisStarted = new DeferredPromise<void>();

@@ -250,6 +250,29 @@ suite('ParadisNotificationsService voice handoff', () => {
 		assert.deepStrictEqual({ events, queued }, { events: [], queued: true });
 	});
 
+	test('sends a do-not-disturb voice only to the listening mobiles, and does not synthesize without one (Q310 A)', async () => {
+		const outcomes: unknown[] = [];
+		for (const listeners of [0, 1]) {
+			const fetchStub = stubFetch();
+			const ingest = new FakeIngest();
+			const { service, events } = createService(ingest);
+			const mobile: string[] = [];
+			const subscription = service.onDidCreateMobileVoiceClip(event => mobile.push(event.kind));
+			const probe = service.setMobileVoiceListenerProbe(() => listeners);
+			service.notifyAudio({ ...request('おやすみ中'), mobileOnly: true });
+			await timeout(30);
+			outcomes.push({ listeners, fetched: fetchStub.callCount, mobile, events, opened: ingest.opened.length });
+			probe.dispose();
+			subscription.dispose();
+			sinon.restore();
+		}
+		// 着信音も PC の読み上げも鳴らさず、worker にも渡さない。モバイルへは受け取りながら流す
+		assert.deepStrictEqual(outcomes, [
+			{ listeners: 0, fetched: 0, mobile: [], events: [], opened: 0 },
+			{ listeners: 1, fetched: 1, mobile: ['stream-start', 'stream-data', 'stream-end'], events: [], opened: 0 },
+		]);
+	});
+
 	test('waits for --ingest to come back instead of playing locally while the worker may be alive (H5)', async () => {
 		stubFetch();
 		const ingest = new FakeIngest();
