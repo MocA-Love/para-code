@@ -28,7 +28,25 @@ interface XmlFrame {
 	readonly bindings: Readonly<Record<string, string>>;
 }
 
-const rootNamespaces: Readonly<Record<string, string>> = Object.freeze({ xml: xmlNamespace });
+/**
+ * Namespace scopes are prototype-free records, and every prefix lookup checks own properties, so a
+ * prefix such as `constructor`, `toString`, or `__proto__` never resolves through Object.prototype.
+ */
+function namespaceRecord(entries?: Readonly<Record<string, string>>): Record<string, string> {
+	const record: Record<string, string> = Object.create(null);
+	if (entries) {
+		for (const prefix of Object.keys(entries)) {
+			record[prefix] = entries[prefix];
+		}
+	}
+	return record;
+}
+
+function lookupNamespace(namespaces: Readonly<Record<string, string>>, prefix: string): string | undefined {
+	return Object.hasOwn(namespaces, prefix) ? namespaces[prefix] : undefined;
+}
+
+const rootNamespaces: Readonly<Record<string, string>> = Object.freeze(namespaceRecord({ xml: xmlNamespace }));
 const rootBindings: Readonly<Record<string, string>> = Object.freeze({});
 
 interface XmlQName {
@@ -166,21 +184,23 @@ class ParadisOfficeXmlParser {
 				if (attribute.value === xmlNamespace || attribute.value === xmlnsNamespace) {
 					this.malformed();
 				}
-				declared ??= { ...namespaces };
+				declared ??= namespaceRecord(namespaces);
 				declared[''] = attribute.value;
 			} else if (attribute.name.prefix === 'xmlns') {
 				this.validateNamespaceBinding(attribute.name.local, attribute.value);
-				declared ??= { ...namespaces };
+				declared ??= namespaceRecord(namespaces);
 				declared[attribute.name.local] = attribute.value;
 			}
 		}
 		let bindings = parent?.bindings ?? rootBindings;
 		if (declared) {
 			namespaces = Object.freeze(declared);
+			// Exposed on every element as a plain object, so define own properties: plain assignment of a
+			// `__proto__` prefix would set the prototype instead of recording the binding.
 			const own: Record<string, string> = {};
 			for (const [prefix, value] of Object.entries(declared)) {
 				if (prefix !== 'xml') {
-					own[prefix] = value;
+					Object.defineProperty(own, prefix, { value, enumerable: true, writable: true, configurable: true });
 				}
 			}
 			bindings = Object.freeze(own);
@@ -497,9 +517,9 @@ class ParadisOfficeXmlParser {
 			return xmlNamespace;
 		}
 		if (!name.prefix) {
-			return namespaces[''] ?? '';
+			return lookupNamespace(namespaces, '') ?? '';
 		}
-		const uri = namespaces[name.prefix];
+		const uri = lookupNamespace(namespaces, name.prefix);
 		if (!uri) {
 			this.malformed();
 		}
@@ -513,7 +533,7 @@ class ParadisOfficeXmlParser {
 		if (name.prefix === 'xml') {
 			return xmlNamespace;
 		}
-		const uri = namespaces[name.prefix];
+		const uri = lookupNamespace(namespaces, name.prefix);
 		if (!uri) {
 			this.malformed();
 		}
@@ -743,7 +763,7 @@ function selectMarkupCompatibilityBranch(branches: readonly Extract<ParadisOffic
 		const requires = branch.attributes.find(attribute => attribute.local === 'Requires' && attribute.uri === '')?.value;
 		if (!requires) { continue; }
 		const bindings = { ...inheritedBindings, ...(branch.namespaceBindings ?? {}) };
-		if (requires.split(/\s+/).every(prefix => supportedMarkupCompatibilityNamespaces.has(bindings[prefix] ?? ''))) {
+		if (requires.split(/\s+/).every(prefix => supportedMarkupCompatibilityNamespaces.has(lookupNamespace(bindings, prefix) ?? ''))) {
 			return branch;
 		}
 	}

@@ -281,7 +281,9 @@ async function buildInventory(
 			}
 			: { coverage: part.coverage, required: part.required },
 	);
-	const missingRequired = relationships.some(relationship => relationship.missing && (relationship.sourcePartId === undefined || relationship.sourcePartId === rootOfficeDocument.target));
+	// Only an absent part the document needs to render blocks it. A dangling relationship to metadata
+	// (docProps/custom.xml, a thumbnail, customXml) is dropped by the renderer and only degrades.
+	const missingRequired = relationshipRecords.some((record, index) => relationships[index].missing && isRequiredRelationship(record, rootOfficeDocument.target));
 	const baseOutcome = aggregateOfficeOutcome(statuses);
 	const outcome = missingRequired ? 'blocked' : relationships.some(relationship => relationship.missing) && baseOutcome === 'complete' ? 'degraded' : baseOutcome;
 	const parsedParts = inventoryParts.filter(part => part.coverage === 'parsed').length;
@@ -328,7 +330,9 @@ function isRequiredRelationship(relationship: ParsedRelationship, mainPart: stri
 	if (relationship.source !== mainPart) {
 		return false;
 	}
-	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
+	// What the renderers cannot draw without: Word styles and numbering, the workbook's sheets, shared
+	// strings, and styles. Settings and theme are optional to docx-preview and exceljs.
+	return /\/(?:styles|numbering|sharedStrings|workbook|worksheet)$/i.test(relationship.type);
 }
 
 interface ContentTypeTable {
@@ -354,6 +358,11 @@ function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () =
 			const extension = attribute(node, 'Extension');
 			const type = attribute(node, 'ContentType');
 			if (!extension || !type) {
+				throw new ParadisOfficePackageError('malformed');
+			}
+			// Extensions compare case-insensitively (Part 2 §7.2.3.2); a second Default for one is malformed,
+			// as the sanitizer and both semantic parsers already treat it.
+			if (defaults.has(extension.toLowerCase())) {
 				throw new ParadisOfficePackageError('malformed');
 			}
 			defaults.set(extension.toLowerCase(), type);
