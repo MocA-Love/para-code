@@ -7,10 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mkdtempSync, readdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { AivisError } from '../../node/paradisAudioScheduler.js';
 import { ParadisElevenLabsClient } from '../../node/paradisElevenLabsClient.js';
+import { ParadisVoiceSynthesisCache } from '../../node/paradisVoiceSynthesisCache.js';
 
 interface IRecordedRequest {
 	readonly method: string;
@@ -55,7 +59,7 @@ function json(value: unknown, status: number = 200): Response {
 const TEST_KEY = 'test-key-not-real';
 
 suite('ParadisElevenLabsClient', () => {
-	ensureNoDisposablesAreLeakedInTestSuite();
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function createClient(fake: FakeFetch, now: () => number = () => Date.UTC(2026, 9, 4, 12)): ParadisElevenLabsClient {
 		return new ParadisElevenLabsClient(new NullLogService(), fake.fetch, now);
@@ -273,5 +277,66 @@ suite('ParadisElevenLabsClient', () => {
 		await createClient(fake).synthesize({ apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x', dictionaryId: 'd1' });
 
 		assert.deepStrictEqual(fake.requests[1].body, { text: 'x', model_id: 'm', voice_settings: { speed: 1 } });
+	});
+
+	suite('voice cache', () => {
+		let cacheDir: string;
+		setup(() => { cacheDir = mkdtempSync(join(tmpdir(), 'paradis-elevenlabs-cache-test-')); });
+		teardown(() => rmSync(cacheDir, { recursive: true, force: true }));
+
+		async function waitForFiles(count: number): Promise<void> {
+			for (let i = 0; i < 100 && readdirSync(cacheDir).filter(name => name.endsWith('.mp3')).length < count; i++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+		}
+
+		test('plays the same request from the cache, and synthesizes again when the voice, tuning, dictionary version or text differ or the cache is off', async () => {
+			let version = 'ver1';
+			const fake = new FakeFetch()
+				.on('GET', '/v1/pronunciation-dictionaries/dict1', () => json({ id: 'dict1', name: 'D', latest_version_id: version }))
+				.on('POST', '/v1/text-to-speech/voice1/stream', () => new Response(Uint8Array.of(0xff, 0xfb, 0x90, 0x00, 5)));
+			let now = Date.UTC(2026, 9, 9, 12);
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService(), { now: () => now }));
+			const client = new ParadisElevenLabsClient(new NullLogService(), fake.fetch, () => now, cache);
+			const base = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'eleven_v4_turbo', text: 'Para Codeです', dictionaryId: 'dict1', volume: 80, stability: 0.5 };
+			const synthesized = () => fake.requests.filter(request => request.method === 'POST').length;
+			const counts: number[] = [];
+
+			await client.synthesize(base);
+			await waitForFiles(1);
+			const hit = await client.synthesize({ ...base, volume: 30 }); // 音量は鳴らすときの補正なので同じ音
+			counts.push(synthesized());
+			await client.synthesize({ ...base, stability: 0.6 });
+			counts.push(synthesized());
+			await client.synthesize({ ...base, text: 'mainです' });
+			counts.push(synthesized());
+			await client.synthesize({ ...base, cache: false });
+			counts.push(synthesized());
+			// 辞書を直した（版が変わった）。覚えた版の期限が切れたら別の音として合成する
+			version = 'ver2';
+			now += 61_000;
+			await client.synthesize(base);
+			counts.push(synthesized());
+
+			const info = await cache.getInfo();
+			assert.deepStrictEqual({ audio: [...hit.audio], counts, days: info.days }, {
+				audio: [0xff, 0xfb, 0x90, 0x00, 5],
+				counts: [1, 2, 3, 4, 5],
+				days: [{ date: '2026-10-09', hits: 1, hitCharacters: 11, calls: 5, callCharacters: 50 }],
+			});
+		});
+
+		test('does not cache a failed synthesis', async () => {
+			let status = 500;
+			const fake = new FakeFetch().on('POST', '/v1/text-to-speech/voice1/stream', () => status === 200 ? new Response(Uint8Array.of(0xff, 0xfb, 0x90, 0x00)) : new Response('{}', { status }));
+			const cache = store.add(new ParadisVoiceSynthesisCache(cacheDir, new NullLogService()));
+			const client = new ParadisElevenLabsClient(new NullLogService(), fake.fetch, Date.now, cache);
+			const request = { apiKey: TEST_KEY, voiceId: 'voice1', modelId: 'm', text: 'x' };
+			await assert.rejects(client.synthesize(request));
+			status = 200;
+			await client.synthesize(request);
+
+			assert.strictEqual(fake.requests.length, 2);
+		});
 	});
 });

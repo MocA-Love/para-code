@@ -667,4 +667,9 @@ export interface IParadisPlayElevenLabsRequest {
 	/** 声の調整（0〜1）。無い項目は送らない（ElevenLabs の保存値を使う）。 */
 	readonly stability?: number;
 	readonly similarityBoost?: number;
+	/**
+	 * 同じ要求で合成した音声を使い回してよいか（設定「同じ文の読み上げを使い回す」）。無ければ使い回す
+	 * （古い renderer から届いた要求も既定のオンで扱う）。
+	 */
+	readonly cache?: boolean;
 }

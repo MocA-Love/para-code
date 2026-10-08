@@ -314,6 +314,7 @@ export class ParadisNotificationTrigger extends Disposable implements IWorkbench
 						dictionaryId: aivis.elevenLabsDictionaryId || undefined,
 						volume: aivis.volume,
 						...aivis.elevenLabsVoiceSettings[aivis.elevenLabsVoiceId],
+						cache: aivis.elevenLabsVoiceCache,
 					};
 				}
 			}

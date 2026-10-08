@@ -45,6 +45,8 @@ import { ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCa
 import { PARADIS_MAX_SYNTHESIZED_AUDIO_BYTES, ParadisElevenLabsClient } from './paradisElevenLabsClient.js';
 import { PARADIS_AIVIS_FIRST_BYTE_TIMEOUT_MS, paradisBufferBody, paradisCollectBody, paradisReadSynthesisBody, ParadisMobileVoiceTaskGate, ParadisSynthesisTimeouts, paradisTeeBody } from './paradisStreamingBody.js';
 import { paradisHandoffVoice } from './paradisVoiceHandoff.js';
+import { ParadisVoiceSynthesisCache } from './paradisVoiceSynthesisCache.js';
+import { IParadisVoiceCacheInfo } from '../common/paradisVoiceCache.js';
 import {
 	CUSTOM_RINGTONE_ID,
 	getRingtoneFilename,
@@ -205,6 +207,8 @@ export interface IParadisNotificationsTestingOptions {
 	readonly resolveRingtonePath?: (ringtoneId: string) => string | null;
 	/** カスタム音源の置き場所。テストが実際の `~/.para-code` に書かないよう差し替える。 */
 	readonly assetsDir?: string;
+	/** 読み上げの音声キャッシュの置き場所。テストが実際の `~/.para-code` に書かないよう差し替える。 */
+	readonly voiceCacheDir?: string;
 }
 
 /**
@@ -254,6 +258,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	/** ElevenLabs API クライアント。読み上げエンジンが ElevenLabs のときの合成と、設定画面の各 API を受け持つ。 */
 	readonly elevenLabs: ParadisElevenLabsClient;
 
+	/** ElevenLabs で合成した音声の置き場所（`~/.para-code/cache/voice/`）。同じ文の通知を毎回合成させない。 */
+	private readonly _voiceCache: ParadisVoiceSynthesisCache;
+
 	/** 再生中の音声プレイヤー（afplay 等）。音声入力が始まったら止める。 */
 	private readonly _audioPlayers = new Set<ChildProcess>();
 	/** 音声入力で止めたプレイヤー。その終了は失敗として扱わない。 */
@@ -285,7 +292,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		super();
 		this._assetsDir = testing.assetsDir ?? join(homedir(), '.para-code', 'assets', 'ringtones');
 		this._metadataPath = join(this._assetsDir, `${CUSTOM_STEM}.json`);
-		this.elevenLabs = new ParadisElevenLabsClient(logService);
+		this._voiceCache = this._register(new ParadisVoiceSynthesisCache(testing.voiceCacheDir ?? join(homedir(), '.para-code', 'cache', 'voice'), logService));
+		this.elevenLabs = new ParadisElevenLabsClient(logService, undefined, undefined, this._voiceCache);
 		if (testing.ingest) {
 			this._ingest = testing.ingest;
 		} else if (shellEnv) {
@@ -1941,6 +1949,16 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		const { audio } = await this._synthesizeAivis({ ...request, text });
 		await this._playAivisAudio(audio, paradisCorrectedPlaybackVolume(request.volume ?? 100, paradisAivisGainKey(request.modelUuid), this._ingest?.gainTable));
+	}
+
+	/** 読み上げの音声キャッシュの件数・大きさと、キャッシュから鳴らした回数・API で合成した回数（日別）。 */
+	getVoiceCacheInfo(): Promise<IParadisVoiceCacheInfo> {
+		return this._voiceCache.getInfo();
+	}
+
+	/** 読み上げの音声キャッシュを全部消す（回数の記録は残す）。 */
+	clearVoiceCache(): Promise<void> {
+		return this._voiceCache.clear();
 	}
 
 	/** 設定画面の「テスト再生」の ElevenLabs 版。playAivis と同じくスケジューラを通さない。 */
