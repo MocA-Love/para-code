@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -262,6 +262,78 @@ suite('ParadisVoiceSynthesisCache', () => {
 		const kind = await synthesize(cache, key, mp3(2), true);
 		await settled(() => entries().length === 1 && entries()[0] === `${key}.${now}.mp3`);
 		assert.deepStrictEqual({ kind, next: tagOf(await cache.lookup(key)) }, { kind: 'miss', next: 2 });
+	});
+
+	test('keeps the newer voice when two writes of the same key finish at almost the same time', async () => {
+		const cache = create({ inFlightTimeoutMs: 1 });
+		const key = paradisVoiceCacheKey('twice');
+		const first = await cache.lookup(key);
+		await new Promise(resolve => setTimeout(resolve, 10)); // 先の合成を待つのをやめさせる
+		const second = await cache.lookup(key);
+		assert.deepStrictEqual([first.kind, second.kind], ['miss', 'miss']);
+		const startedAt = now;
+		if (first.kind === 'miss' && second.kind === 'miss') {
+			await paradisCollectBody(first.lease.capture(chunks(mp3(1))), 4096);
+			now += 1;
+			await paradisCollectBody(second.lease.capture(chunks(mp3(2))), 4096);
+		}
+		await settled(() => entries().length === 1);
+		assert.deepStrictEqual({ files: entries(), next: tagOf(await cache.lookup(key)) }, { files: [`${key}.${startedAt + 1}.mp3`], next: 2 });
+	});
+
+	test('does not let a synthesis that started before the test playback overwrite the re-synthesized voice', async () => {
+		const cache = create();
+		const key = paradisVoiceCacheKey('replay');
+		const normal = await cache.lookup(key);
+		const replay = await cache.lookup(key, { refresh: true });
+		if (replay.kind === 'miss') {
+			await paradisCollectBody(replay.lease.capture(chunks(mp3(9))), 4096);
+		}
+		await settled(() => entries().length === 1);
+		now += 1000;
+		if (normal.kind === 'miss') {
+			await paradisCollectBody(normal.lease.capture(chunks(mp3(1))), 4096);
+		}
+		await new Promise(resolve => setTimeout(resolve, 50));
+		assert.deepStrictEqual({ files: entries(), next: tagOf(await cache.lookup(key)) }, { files: [`${key}.${now - 1000}.mp3`], next: 9 });
+	});
+
+	test('removes files from the first version without a creation time, and narrows an existing folder to the owner', async () => {
+		const dir = join(cacheDir, 'voice');
+		mkdirSync(dir, { mode: 0o755 });
+		chmodSync(dir, 0o755);
+		const legacy = paradisVoiceCacheKey('legacy');
+		writeFileSync(join(dir, `${legacy}.mp3`), mp3(1));
+		writeFileSync(join(dir, `${paradisVoiceCacheKey('other')}.mp3`), mp3(2));
+		const cache = create({}, dir);
+		await synthesize(cache, legacy, mp3(3));
+		const written = `${legacy}.${now}.mp3`;
+		await settled(() => entries(dir).includes(written) && !entries(dir).includes(`${legacy}.mp3`));
+		const info = await cache.getInfo();
+		const afterPrune = entries(dir);
+		writeFileSync(join(dir, `${legacy}.mp3`), mp3(1));
+		await cache.clear();
+
+		assert.deepStrictEqual({ afterPrune, info: info.entries, afterClear: entries(dir), dirMode: statSync(dir).mode & 0o777 }, {
+			afterPrune: [written],
+			info: 1,
+			afterClear: [],
+			dirMode: 0o700,
+		});
+	});
+
+	test('treats a voice made in the future (the clock went back) as expired', async () => {
+		const cache = create();
+		const key = paradisVoiceCacheKey('future');
+		place(key, now + 3600_000, mp3(1));
+		const other = paradisVoiceCacheKey('future-other');
+		place(other, now + 3600_000, mp3(2));
+		const found = await cache.lookup(key);
+		if (found.kind === 'miss') {
+			found.lease.release();
+		}
+		const info = await cache.getInfo();
+		assert.deepStrictEqual({ found: found.kind, entries: info.entries, files: entries() }, { found: 'miss', entries: 0, files: [] });
 	});
 
 	test('does not keep a synthesis that finished while the cache was being cleared', async () => {
