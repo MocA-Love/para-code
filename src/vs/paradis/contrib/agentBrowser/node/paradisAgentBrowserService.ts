@@ -3527,7 +3527,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const isVoiceToken = requestedToken !== undefined && this._isVoiceIngressToken(requestedToken);
 		const ingressLease = requestedToken === undefined || isVoiceToken ? undefined : this.captureIngressLease(requestedToken);
 		if (ingressLease === undefined && !isVoiceToken) {
-			this._logVoice('ticket rejected (unknown or stale pane token)');
+			// 閉じたペインの aivis が発話するたびに出るので debug にとどめる
+			this._logVoice('ticket rejected (unknown or stale pane token)', 'debug');
 			this._sendIngressRejected(res);
 			return;
 		}
@@ -3591,7 +3592,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _handleMobileVoiceTicketRelease(req: http.IncomingMessage, res: http.ServerResponse): void {
 		const requestedTicket = this._extractToken(req);
 		const found = requestedTicket !== undefined && this._mobileVoiceTickets.delete(requestedTicket);
-		this._logVoice(`ticket released (found=${found}, outstanding=${this._mobileVoiceTickets.size})`);
+		// 使い終わった・期限切れの ticket を返されたとき（found=false）は珍しくないので debug にとどめる
+		this._logVoice(`ticket released (found=${found}, outstanding=${this._mobileVoiceTickets.size})`, found ? 'info' : 'debug');
 		res.writeHead(204, { 'Cache-Control': 'no-store', 'Connection': 'close' });
 		res.end();
 	}
@@ -3603,8 +3605,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** 声の行き先の判断を sharedprocess.log に 1 行残す（音声の本文・ticket・トークンは書かない）。 */
-	private _logVoice(message: string): void {
-		this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisVoice] ${message}`));
+	private _logVoice(message: string, level: 'info' | 'debug' = 'info'): void {
+		this._runNonThrowingDiagnostic(() => level === 'info' ? this.logService.info(`[ParadisVoice] ${message}`) : this.logService.debug(`[ParadisVoice] ${message}`));
 	}
 
 	/**
