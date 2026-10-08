@@ -12,7 +12,7 @@ import {
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
-import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
+import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
@@ -520,6 +520,70 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			promoted: ['view-c'],
 			afterViewGone: [],
 			throttled: 0,
+		});
+	});
+
+	// devtools の道具は世代を見る。繰り上げ・再共有でそのタブの世代が変わっても、tab_id での呼び出しが通り続けること
+	test('devtools tools keep working on a tab_id page after it is promoted to current and after it is shared again', async () => {
+		const { fixture, connection, share, generationOf } = await setup();
+		const coordinator = new ParadisDevtoolsGenerationCoordinator(() => undefined);
+		Reflect.set(fixture.service, '_devtoolsGenerationCoordinator', coordinator);
+		Reflect.set(fixture.service, '_port', 1);
+		Reflect.set(fixture.service, '_devtoolsProxy', {
+			retire: () => undefined,
+			isProxiedTool: async () => true,
+			tryCallTool: async () => ({ content: [{ type: 'text', text: 'snapshot' }] }),
+		});
+		const scoped = () => (Reflect.get(fixture.service, '_scopeToolCall') as (lease: unknown, args: unknown) => { lease: unknown })
+			.call(fixture.service, fixture.service.captureIngressLease('token'), { tab_id: 'view-a' }).lease;
+		const callTool = async () => {
+			const result = await (Reflect.get(fixture.service, '_callDevtoolsTool') as (lease: unknown, name: string, args: unknown, signal: undefined, handoff: boolean) => Promise<{ content: { text: string }[] }>)
+				.call(fixture.service, scoped(), 'take_snapshot', {}, undefined, false);
+			return result.content[0].text;
+		};
+		const tabKey = paradisAgentTabScopeKey('token', 'view-a');
+		const generationIsCurrent = async () => coordinator.isCurrentGeneration(tabKey, await generationOf('view-a'));
+		await share('view-a');
+		await share('view-b');
+		const beforePromotion = await callTool();
+		fixture.gatewayCalls.length = 0;
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-b')), true);
+		const afterPromotion = { tool: await callTool(), current: await generationIsCurrent() };
+		await share('view-c');
+		await callTool();
+		await share('view-a');
+		const afterReshare = { tool: await callTool(), current: await generationIsCurrent() };
+		assert.deepStrictEqual({
+			beforePromotion, afterPromotion, afterReshare,
+			// ゲートウェイの接続は切らない
+			closed: fixture.gatewayCalls.filter(call => call.token === tabKey),
+		}, {
+			beforePromotion: 'snapshot',
+			afterPromotion: { tool: 'snapshot', current: true },
+			afterReshare: { tool: 'snapshot', current: true },
+			closed: [],
+		});
+		coordinator.dispose();
+	});
+
+	// 確かめられない（再読み込みの途中で manifest がまだ無い）ときは、2 枚目以降を消さずに繰り上げを見送り、
+	// manifest が揃ったら繰り上げる
+	test('keeps the other shared pages when they cannot be checked yet, and promotes one once the manifest arrives', async () => {
+		const { fixture, sync, share } = await setup();
+		await share('view-a');
+		await share('view-b');
+		const reloaded = {};
+		assert.strictEqual(fixture.service.registerRendererConnection('window:1', reloaded), true);
+		// current のビューが消えたと main が知らせた（再読み込みの途中）
+		(Reflect.get(fixture.service, '_retireBindingsForUnavailableExactView') as (descriptor: unknown) => void).call(fixture.service, viewOf('view-b'));
+		const pending = {
+			current: fixture.bindings.get('token')?.pageId,
+			kept: [...(Reflect.get(fixture.service, '_agentTabGrants') as Map<string, Map<string, unknown>>).get('token')?.keys() ?? []],
+		};
+		await sync(reloaded, { views: views.filter(viewId => viewId !== 'view-b') });
+		assert.deepStrictEqual({ pending, current: fixture.bindings.get('token')?.pageId }, {
+			pending: { current: undefined, kept: ['view-a'] },
+			current: 'view-a',
 		});
 	});
 
