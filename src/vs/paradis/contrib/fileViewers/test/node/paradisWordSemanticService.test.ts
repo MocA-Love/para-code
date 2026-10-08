@@ -10,6 +10,7 @@ import { CancellationToken, CancellationTokenSource } from '../../../../../base/
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisOfficeChange, ParadisOfficeChangeValue } from '../../common/paradisOfficeProtocol.js';
 import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
+import { alignParadisWordParagraphs, compactParadisWordText } from '../../common/word/paradisWordRenderOutline.js';
 import { ParadisWordSemanticChannel } from '../../node/word/paradisWordSemanticChannel.js';
 import { ParadisWordSemanticService } from '../../node/word/paradisWordSemanticService.js';
 import { PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_LIMIT, ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
@@ -118,6 +119,44 @@ suite('ParadisWordSemanticService', () => {
 		strictEqual(comment?.navigableAnchor, result.searchItems[1].navigableAnchor);
 	});
 
+	test('outlines rendered stories with inline marks and aligns them to the rendered paragraphs', async () => {
+		const result = await new ParadisWordSemanticService().analyze(await wordFixture(), CancellationToken.None);
+		if (!result.ok) {
+			throw new Error(`analysis failed: ${result.code}`);
+		}
+		const outline = result.outline;
+		const body = outline.stories.find(story => story.key === 'b')!;
+		const returnParagraph = body.paragraphs[1];
+		deepStrictEqual({
+			keys: outline.stories.map(story => story.key),
+			body: body.paragraphs.map(paragraph => paragraph.text),
+			marks: returnParagraph.marks.map(mark => [mark.kind, mark.start, mark.end, mark.ordinal, mark.rows.find(row => row[0] === 'author' || row[0] === 'noteId')?.[1]]),
+		}, {
+			keys: ['b', 'p:word/header1.xml', 'p:word/footer1.xml', 'fn:1', 't:word/document.xml:0'],
+			body: ['Equipment request', 'Return by Friday and tell the office.', 'Empty lines follow', '', '', ''],
+			marks: [
+				['comment', 0, 14, undefined, 'Reviewer'],
+				['revision', 14, 14, 0, 'Clerk'],
+				['revision', 14, 30, 0, 'Clerk'],
+				['noteReference', 31, 31, 0, '1'],
+			],
+		});
+		// 表示の側で段落が 1 つ欠け（docx-preview が描かなかった）、フィールドの結果が違って見えても、
+		// 文字の並びと数の揃った区間で対応が取れる。
+		const markers = alignParadisWordParagraphs(outline, {
+			b: [compactParadisWordText('Equipment request'), compactParadisWordText('Return by Friday and tell the office.'), '', '', ''],
+			'p:word/footer1.xml': ['2'],
+		});
+		const footer = outline.stories.find(story => story.key === 'p:word/footer1.xml')!;
+		deepStrictEqual({
+			body: body.paragraphs.map(paragraph => markers.get(paragraph.locator)),
+			footer: markers.get(footer.paragraphs[0].locator),
+		}, {
+			body: ['b#0', 'b#1', undefined, 'b#2', 'b#3', 'b#4'],
+			footer: 'p:word/footer1.xml#0',
+		});
+	});
+
 	test('compares two versions into categorized changes and reports an identical pair as complete with no changes', async () => {
 		const service = new ParadisWordSemanticService();
 		const original = await wordFixture();
@@ -126,12 +165,18 @@ suite('ParadisWordSemanticService', () => {
 		if (!same.ok || !edited.ok) {
 			throw new Error('comparison failed');
 		}
+		const textChange = edited.changes.find(change => change.subject.kind === 'paragraph.text')!;
 		deepStrictEqual({
 			same: [same.outcome, same.noChanges, same.changes.length, same.omittedModels],
 			edited: [...new Set(edited.changes.map(change => `${change.category}:${change.subject.kind}`))].sort(),
+			// 文字の変更は、変更後の側の段落へ移れる。スタイルのような文書全体の変更は移動先を持たない。
+			navigation: Object.values(edited.navigation).map(target => [target.side, edited.modifiedOutline.stories[0].paragraphs.findIndex(paragraph => paragraph.locator === target.paragraph)]),
+			textTarget: edited.navigation[textChange.id]?.side,
 		}, {
 			same: ['complete', true, 0, []],
 			edited: ['content:paragraph.text', 'formatting:package.style'],
+			navigation: [['modified', 0]],
+			textTarget: 'modified',
 		});
 	});
 

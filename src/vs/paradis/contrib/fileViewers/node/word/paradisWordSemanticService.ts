@@ -18,12 +18,13 @@ import { inspectOfficePackage, type ParadisOfficePackageInventory } from '../../
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { compareWordSemantics } from '../../common/word/paradisWordSemanticDiff.js';
 import type { ParadisWordDocument } from '../../common/word/paradisWordSemantic.js';
+import { indexParadisWordParagraphs } from '../../common/word/paradisWordRenderOutline.js';
 import { buildParadisWordSemanticSnapshot } from '../../common/word/paradisWordSemanticSnapshot.js';
 import {
 	resolveParadisWordInventory,
 	summarizeParadisWordDocument,
-	type IParadisWordAnalysisCounts,
 	type IParadisWordAnalysisResult,
+	type IParadisWordChangeTarget,
 	type IParadisWordComparisonResult,
 	type IParadisWordSemanticFailure,
 	type ParadisWordSemanticFailureCode,
@@ -176,9 +177,30 @@ export class ParadisWordSemanticService {
 					deadlineMilliseconds: remaining(),
 					pageSize: COMPARISON_CHANGE_LIMIT,
 				});
-				const counts = (parsed: ParsedWord): IParadisWordAnalysisCounts => summarizeParadisWordDocument(parsed.document, parsed.inventory, {
+				const summary = (parsed: ParsedWord) => summarizeParadisWordDocument(parsed.document, parsed.inventory, {
 					limits: { changes: 0, changeTextCharacters: 0, searchItems: 0, searchCharacters: 0 },
-				}).counts;
+					checkpoint: () => throwIfParadisOfficeCancelled(token),
+				});
+				const [leftSummary, rightSummary] = [summary(left), summary(right)];
+				const navigation: Record<string, IParadisWordChangeTarget> = {};
+				const leftParagraphs = indexParadisWordParagraphs(left.document);
+				const rightParagraphs = indexParadisWordParagraphs(right.document);
+				for (const change of page.changes) {
+					const nodeId = change.navigableAnchor ?? /\/node:([^/]+)$/.exec(change.subject.locator)?.[1];
+					if (!nodeId) {
+						continue;
+					}
+					const removed = change.after.kind === 'none';
+					const modifiedParagraph = removed ? undefined : rightParagraphs.get(nodeId);
+					const originalParagraph = leftParagraphs.get(nodeId);
+					if (modifiedParagraph) {
+						navigation[change.id] = { side: 'modified', paragraph: modifiedParagraph };
+					} else if (originalParagraph) {
+						navigation[change.id] = { side: 'original', paragraph: originalParagraph };
+					} else if (rightParagraphs.has(nodeId)) {
+						navigation[change.id] = { side: 'modified', paragraph: rightParagraphs.get(nodeId)! };
+					}
+				}
 				return {
 					ok: true,
 					changes: page.changes,
@@ -186,10 +208,13 @@ export class ParadisWordSemanticService {
 					outcome: page.outcome,
 					noChanges: page.noChanges,
 					truncated: page.nextCursor !== undefined,
-					original: counts(left),
-					modified: counts(right),
+					original: leftSummary.counts,
+					modified: rightSummary.counts,
 					omittedModels: [...new Set([...leftSnapshot.omittedModels, ...rightSnapshot.omittedModels])].sort(),
 					securityUnreadable: leftSnapshot.securityUnreadable || rightSnapshot.securityUnreadable,
+					originalOutline: leftSummary.outline,
+					modifiedOutline: rightSummary.outline,
+					navigation,
 					timings: { parseMs: Math.round(parseMs), compareMs: Math.round(compareWatch.elapsed()) },
 				};
 			} catch (error) {
