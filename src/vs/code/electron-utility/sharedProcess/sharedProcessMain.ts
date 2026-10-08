@@ -592,7 +592,7 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		this._register(registerParadisWorktreeGit(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 
 		// PARA-PATCH: モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
-		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip));
+		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip, probe => paradisNotifications.setMobileVoiceListenerProbe(probe)));
 		// PARA-PATCH: モバイルの find/grep 用 ripgrep チャネル
 		this._register(registerParadisRemoteSearch(this.server, accessor.get(ILogService)));
 

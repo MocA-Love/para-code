@@ -57,6 +57,12 @@ export function paradisLooksLikeMp3(audio: Uint8Array): boolean {
 /** ticket の応答で名乗る取込の形式。接続先の aivis-mcp 2.5.0 は、これがあれば合成を受け取りながら chunked で送る。 */
 export const PARADIS_REMOTE_VOICE_STREAM_INGRESS = 'stream-v1';
 
+/**
+ * 使わなかった音声 ticket を返す口（aivis-mcp 2.6）。ticket の応答に `release: true` を名乗ったときだけ使われる。
+ * `Authorization: Bearer <ticket>` で、その ticket 1 枚を消す。
+ */
+export const PARADIS_MOBILE_VOICE_TICKET_RELEASE_PATH = '/paradis-mcp/mobile-voice-ticket/release';
+
 /** chunked の取込で、要求のヘッダーを受けた時点で「手元で鳴らす」と引き受けたことを返す応答のヘッダー。 */
 export const PARADIS_REMOTE_VOICE_ACCEPTED_HEADER = 'X-Para-Local-Playback';
 

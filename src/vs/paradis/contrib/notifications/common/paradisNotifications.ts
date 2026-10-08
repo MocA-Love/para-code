@@ -309,4 +309,9 @@ export interface IParadisNotifyAudioRequest {
 	readonly elevenLabs?: IParadisPlayElevenLabsRequest;
 	/** 'high' は要対応（PermissionRequest）。待機中の完了通知より前に割り込む。 */
 	readonly priority: 'normal' | 'high';
+	/**
+	 * PC では鳴らさず、読み上げをモバイルへだけ流す（おやすみモード中。Q310 A）。着信音は付けない。声を聞いている
+	 * モバイルが無ければ合成もしない。
+	 */
+	readonly mobileOnly?: boolean;
 }
