@@ -38,7 +38,7 @@ import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErr
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
-import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed } from './paradisDevtoolsToolAdjustments.js';
+import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -236,6 +236,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	 * ため全ペインで同一。一度取得したらサービス生存中は再取得しない。
 	 */
 	private _toolsCache: readonly IParadisProxiedTool[] | undefined;
+	/** vendored の take_snapshot が root の測り（`paraCodeRootRect`、PARA-PATCH）を知っているか。tools/list で控える。 */
+	private _measuresSnapshotRoot = false;
 	/** 作成・後始末まで受け持つ一時フォルダ（`options.temporaryDirectory` で固定したときは無い）。 */
 	private readonly _temporaryDirectory: ParadisDevtoolsTemporaryDirectory | undefined;
 
@@ -284,6 +286,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			if (!Array.isArray(result?.tools) || !result.tools.every(tool => this._isProxiedTool(tool))) {
 				throw new Error('chrome-devtools-mcp returned an unexpected tools/list response');
 			}
+			// vendored の take_snapshot が root の測りを知っているか（PARA-PATCH が当たっているか）を控える
+			this._measuresSnapshotRoot = paradisSnapshotMeasuresRoot(result.tools);
 			// wait_for / take_snapshot の引数は Para Code 側で足す・広げる（paradisDevtoolsToolAdjustments.ts）
 			this._toolsCache = Object.freeze(result.tools.map(tool => this._deepFreeze(paradisAdjustDevtoolsToolDescriptor(tool))));
 		}
@@ -327,7 +331,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const now = this.options.now ?? Date.now;
 		const budgetStartedAt = now();
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
-		const prepared = paradisPrepareDevtoolsToolCall(name, args);
+		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot });
+		const measuresRoot = this._isRecord(prepared.args) && prepared.args.paraCodeRootRect !== undefined;
 		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
 		const snapshotEpoch = this._snapshots.epoch(token);
 		if (name !== 'take_snapshot' && name !== 'wait_for') {
@@ -372,13 +377,20 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			} else {
 				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
 			}
+			// root の位置の行は、控える前・エージェントへ返す前に取り除き、位置は返す結果に結び付ける
+			const measured = measuresRoot ? paradisTakeSnapshotRootRect(result) : undefined;
+			if (measured) {
+				result = measured.result;
+			}
 			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
 				this._snapshots.remember(token, result, producer, producer.generation, snapshotEpoch);
 			}
 			const adjusted = paradisAdjustDevtoolsToolResult(name, prepared, result, this.options.recentInputRejection?.(token, startedAt));
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
 			// vendored の validatePath に断られたときは、許された場所とパス無しで呼ぶ手を添える
-			return paradisDevtoolsExplainRootsDenial(adjusted, entry.lastRoots) ?? { content: [] };
+			const returned = paradisDevtoolsExplainRootsDenial(adjusted, entry.lastRoots) ?? { content: [] };
+			paradisAttachSnapshotRootRect(returned, measured?.rect);
+			return returned;
 		} catch (error) {
 			this._reportToolCallFailure(token, safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);

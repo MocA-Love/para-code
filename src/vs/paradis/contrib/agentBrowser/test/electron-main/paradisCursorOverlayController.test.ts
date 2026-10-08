@@ -500,6 +500,7 @@ suite('Paradis Cursor Overlay Controller', () => {
 	test('the idle at the end of a tool still reaches a page that went to the background', async () => {
 		const target = new TestTarget();
 		const controller = new ParadisCursorOverlayController(() => true, () => 0);
+		const seen = recordPayloads(target, ['kind', 'status', 'settle']);
 		controller.noteStatus(target, 'script', undefined, undefined);
 		target.visible = false;
 		controller.noteStatus(target, 'idle', undefined, undefined);
@@ -509,7 +510,7 @@ suite('Paradis Cursor Overlay Controller', () => {
 		controller.noteStatus(fresh, 'idle', undefined, undefined);
 		target.destroyed = true;
 		controller.noteStatus(target, 'idle', undefined, undefined);
-		assert.deepStrictEqual({ target: target.commands, fresh: fresh.commands }, { target: ['status', 'status'], fresh: [] });
+		assert.deepStrictEqual({ seen, fresh: fresh.commands }, { seen: [{ kind: 'status', status: 'script' }, { kind: 'status', status: 'idle', settle: true }], fresh: [] });
 	});
 
 	test('after a navigation the recent cursor comes back where it was, once more on dom-ready, and not after cleanup or a long pause', async () => {

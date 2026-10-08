@@ -19,7 +19,7 @@
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IParadisCursorPacing, IParadisCursorStatusNote, ParadisCursorStatus, paradisIsStickyCursorStatus } from '../common/paradisCursorOverlay.js';
-import { paradisTakeSnapshotRootRect } from './paradisDevtoolsToolAdjustments.js';
+import { paradisSnapshotRootRectOf } from './paradisDevtoolsToolAdjustments.js';
 
 /** 1 回のツール呼び出し（run_steps なら手順の全部）で、カーソルの演出のために待ってよい合計（ms）。 */
 export const PARADIS_CURSOR_WAIT_BUDGET_MS = 600;
@@ -82,8 +82,8 @@ export function paradisCursorStatusForTool(tool: string): ParadisCursorStatus | 
  * 終わりの知らせが始まりのページへ届くように）。`runs` はページごとの並走数（同じタブで並んで走る道具が
  * 残っていれば、その表示を消さない）。
  *
- * take_snapshot は、vendored が書いた root の要素の位置の行を結果から取り除き（エージェントへは見せない）、
- * 撮った範囲を光らせる知らせを出す（q.html Q297 の 3・5）。状態は変えない。
+ * take_snapshot は、proxy が結果に結び付けた root の要素の位置（`paradisSnapshotRootRectOf`）で、撮った範囲を
+ * 光らせる知らせを出す（q.html Q297 の 3・5）。状態は変えない。
  */
 export async function paradisWithToolCursorStatus<T>(name: string, runs: Map<string, number>, key: string, note: (note: IParadisCursorStatusNote) => void, run: () => Promise<T>, now: () => number = Date.now): Promise<T> {
 	const status = paradisCursorStatusForTool(name);
@@ -100,11 +100,11 @@ export async function paradisWithToolCursorStatus<T>(name: string, runs: Map<str
 		if (name !== 'take_snapshot') {
 			return result;
 		}
-		const taken = paradisTakeSnapshotRootRect(name, result);
-		if ((taken.result as { isError?: unknown } | undefined)?.isError !== true) {
-			safeNote(note, { flash: true, ...(taken.rect ? { rect: taken.rect } : {}) });
+		if ((result as { isError?: unknown } | undefined)?.isError !== true) {
+			const rect = paradisSnapshotRootRectOf(result);
+			safeNote(note, { flash: true, ...(rect ? { rect } : {}) });
 		}
-		return taken.result as T;
+		return result;
 	} finally {
 		if (sticky) {
 			const left = (runs.get(key) ?? 1) - 1;
@@ -125,6 +125,14 @@ function safeNote(note: (note: IParadisCursorStatusNote) => void, value: IParadi
 	} catch {
 		// 演出は道具の結果を変えない。
 	}
+}
+
+/**
+ * 道具の状態の並走を数える鍵。ページの鍵（tab_id が無ければペインのトークン）にビューを足す。ページの鍵だけだと、
+ * 道具の途中で今のタブが替わり、替わった先で長く続く道具が始まったとき、元のページへ終わりの idle が送られない。
+ */
+export function paradisToolCursorRunKey(pageKey: string, viewId: string): string {
+	return `${pageKey}\0${viewId}`;
 }
 
 export class ParadisCursorPacingLedger {
