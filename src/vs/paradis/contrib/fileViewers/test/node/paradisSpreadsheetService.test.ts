@@ -35,6 +35,51 @@ suite('ParadisSpreadsheetService', () => {
 		strictEqual(runtimeLoads, 1);
 	});
 
+	test('opens a workbook whose legacy comments use an absolute Target and a non-default part name', async () => {
+		// ECMA-376 Part 2 §6.5.3 allows `/xl/comments/comment1.xml`; exceljs only finds `../comments1.xml`.
+		const original = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Notes');
+			sheet.getCell('A1').value = 'noted';
+			sheet.getCell('A1').note = 'a note';
+		});
+		const zip = await JSZip.loadAsync(Buffer.from(original, 'base64'));
+		const relsName = 'xl/worksheets/_rels/sheet1.xml.rels';
+		const rels = await zip.file(relsName)!.async('string');
+		const commentsName = Object.keys(zip.files).find(name => /^xl\/comments\d+\.xml$/.test(name))!;
+		zip.file('xl/comments/comment1.xml', await zip.file(commentsName)!.async('uint8array'));
+		zip.remove(commentsName);
+		zip.file(relsName, rels.replace(/Target="[^"]*comments\d+\.xml"/, 'Target="/xl/comments/comment1.xml"').replace(/Target="\.\.\/drawings\//g, 'Target="/xl/drawings/'));
+		const moved = Buffer.from(await zip.generateAsync({ type: 'uint8array' })).toString('base64');
+
+		const result = await new ParadisSpreadsheetService().parseWorkbook(moved);
+
+		deepStrictEqual(result.sheets.map(sheet => sheet.name), ['Notes']);
+		strictEqual(result.sheets[0].rows[0].cells[0].value, 'noted');
+	});
+
+	test('returns the package error code when semantic diagnostics cannot run', async () => {
+		const zip = new JSZip();
+		zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+		zip.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>');
+		const bytes = Buffer.from(await zip.generateAsync({ type: 'uint8array' })).toString('base64');
+
+		const summary = await new ParadisSpreadsheetService().collectSemanticDiagnostics(bytes);
+
+		deepStrictEqual([summary.available, summary.unavailableReason], [false, 'malformed']);
+	});
+
+	test('collects semantic diagnostics separately from the display projection', async () => {
+		const workbook = await encodeWorkbook(book => { book.addWorksheet('One').getCell('A1').value = 1; });
+		const service = new ParadisSpreadsheetService();
+
+		const display = await service.parseWorkbook(workbook);
+		const summary = await service.collectSemanticDiagnostics(workbook);
+
+		strictEqual(display.semanticDiagnostics, undefined);
+		deepStrictEqual([summary.available, summary.terminal, summary.parsedSheets, summary.parsedCells], [true, true, 1, 1]);
+		ok((summary.elapsedMilliseconds ?? -1) >= 0);
+	});
+
 	test('rejects bytes that are not an xlsx archive', async () => {
 		const service = new ParadisSpreadsheetService();
 		const malformed = Buffer.from('not an xlsx workbook').toString('base64');

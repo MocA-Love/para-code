@@ -34,9 +34,11 @@ import {
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { ParadisOfficePackageError } from '../common/office/paradisOfficeArchive.js';
 import { inspectOfficePackage } from '../common/office/paradisOfficePackageCore.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../common/paradisOfficeProtocol.js';
 import { createParadisOfficeNodeArchive } from './office/paradisOfficeNodeArchive.js';
+import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { parseSpreadsheetSemanticNode } from './spreadsheet/paradisSpreadsheetNodeAdapter.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -963,8 +965,11 @@ function getSheetFreezePane(ws: ExcelJS.Worksheet): IParadisFreezePane | undefin
 	return cols === 0 && rows === 0 ? undefined : { cols, rows };
 }
 
-/** 意味解析にかける上限。超えたら診断は「出せなかった」として表示側へ委ねる。 */
-const SEMANTIC_DIAGNOSTICS_DEADLINE_MS = 4000;
+/**
+ * 意味解析にかける上限。超えたら診断は「出せなかった」として表示側へ委ねる。
+ * 表示（exceljs の投影）は先に返し、診断は別の呼び出しで後から届くので、表示を待たせない。
+ */
+const SEMANTIC_DIAGNOSTICS_DEADLINE_MS = 20_000;
 
 /**
  * ExcelJS の投影とは別に OOXML を直接読み、到達度と食い違いを数える。
@@ -980,9 +985,10 @@ async function collectSemanticDiagnostics(bytes: Uint8Array): Promise<IParadisSe
 	// こちらの締め切りの外側にあるため、トークンで確実に止められるようにする。
 	const source = new CancellationTokenSource();
 	const timer = setTimeout(() => source.cancel(), SEMANTIC_DIAGNOSTICS_DEADLINE_MS);
+	const started = Date.now();
 	try {
 		const archive = await createParadisOfficeNodeArchive(bytes);
-		const inventory = await inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, source.token);
+		const inventory = await inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, source.token, { canonicalHashes: false });
 		// 投影との全件突き合わせは行わない。表示用データは非表示行・列オフセット・行数上限で
 		// 意図的に間引いてあるため、差分が実質すべて「表示側に無いセル」になり上限で解析ごと落ちる。
 		// ここで欲しいのは「どこまで読めたか」なので到達度だけを取る。
@@ -1007,9 +1013,11 @@ async function collectSemanticDiagnostics(bytes: Uint8Array): Promise<IParadisSe
 			unresolvedReferences: completeness.unresolvedReferences,
 			mismatchCount: snapshot.projectionDiagnostics.length,
 			...(Object.keys(mismatchesByKind).length > 0 ? { mismatchesByKind } : {}),
+			elapsedMilliseconds: Date.now() - started,
 		};
 	} catch (error) {
-		return unavailable(error instanceof Error ? error.name : 'unknown');
+		// パッケージ検査の失敗は `unsafe`・`malformed` などのコードを持つ。`error.name` は常に "Error" で役に立たない。
+		return { ...unavailable(error instanceof ParadisOfficePackageError ? error.code : error instanceof Error ? error.name : 'unknown'), elapsedMilliseconds: Date.now() - started };
 	} finally {
 		clearTimeout(timer);
 		source.dispose();
@@ -1361,13 +1369,16 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 	async parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
-		const buffer = Buffer.from(base64Content, 'base64');
+		const source = Buffer.from(base64Content, 'base64');
 		// CFB(Compound File Binary)コンテナ=暗号化ブック。zip ではないため jszip/exceljs からは
 		// 「central directory が見つからない」ような不親切なエラーで落ちる。先頭マジックで判別し、
 		// ビューア/差分がそのまま表示できる理由文言へ変換する(D0 CF 11 E0 = OLE2 標準シグネチャ)。
-		if (buffer.length >= 4 && buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0) {
+		if (source.length >= 4 && source[0] === 0xD0 && source[1] === 0xCF && source[2] === 0x11 && source[3] === 0xE0) {
 			throw new Error(localize('paradis.spreadsheet.encryptedWorkbook', "このブックはパスワードで保護されているため開けません。パスワードを解除してから再度お試しください。"));
 		}
+		// exceljs は部品名の型と相対 Target を前提にする。絶対 Target や別名のコメント部品があると、
+		// ブック全体が開けなくなるので、そのときだけ exceljs の想定する並びへ直してから渡す。
+		const buffer = await normalizeWorkbookForExcelJs(source, runtime.JSZip);
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
@@ -1584,8 +1595,13 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			return projection;
 		}
 		// 解析側は Uint8Array そのものを要求する(Buffer を渡すと invalid で弾かれる)。
-		const semanticDiagnostics = await collectSemanticDiagnostics(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		const semanticDiagnostics = await collectSemanticDiagnostics(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
 		return { ...projection, semanticDiagnostics };
+	}
+
+	async collectSemanticDiagnostics(base64Content: string): Promise<IParadisSemanticDiagnosticsSummary> {
+		const buffer = Buffer.from(base64Content, 'base64');
+		return collectSemanticDiagnostics(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 	}
 
 	private getRuntime(): Promise<IParadisSpreadsheetRuntime> {

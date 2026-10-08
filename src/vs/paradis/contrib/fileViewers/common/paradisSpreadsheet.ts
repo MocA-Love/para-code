@@ -386,8 +386,10 @@ export interface IParadisSemanticDiagnosticsSummary {
 	readonly mismatchCount: number;
 	/** 食い違いの内訳(種類→件数)。 */
 	readonly mismatchesByKind?: { readonly [kind: string]: number };
-	/** 解析を回せなかった/打ち切った理由。 */
+	/** 解析を回せなかった/打ち切った理由。パッケージの検査で落ちたときは `unsafe` などのコード。 */
 	readonly unavailableReason?: string;
+	/** 解析にかかった時間（ミリ秒）。 */
+	readonly elapsedMilliseconds?: number;
 }
 
 const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;
@@ -558,4 +560,9 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
 	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
+	/**
+	 * 意味解析の到達度だけを返す。表示（`parseWorkbook`）とは別に呼び、表示を待たせない。
+	 * 失敗しても例外にせず、`available: false` と理由のコードを返す。
+	 */
+	collectSemanticDiagnostics(base64Content: string): Promise<IParadisSemanticDiagnosticsSummary>;
 }

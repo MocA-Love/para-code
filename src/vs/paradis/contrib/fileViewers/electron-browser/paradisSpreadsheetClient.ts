@@ -14,7 +14,7 @@ import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisParseWorkbookOptions, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisParseWorkbookOptions, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
 import { parseDrawingShapes } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -49,4 +49,17 @@ export async function parseSpreadsheetResource(
 		return shapes.length > 0 ? { ...sheet, shapes } : sheet;
 	});
 	return { sheets, themeColors: raw.themeColors };
+}
+
+/**
+ * 意味解析の到達度を、表示とは別の呼び出しで取る。表示（`parseSpreadsheetResource`）を描いた後に呼ぶ。
+ * ファイルはもう一度読む（読み出しは解析よりずっと速く、表示側の戻り値の形を変えずに済む）。
+ */
+export async function collectSpreadsheetSemanticDiagnostics(
+	fileService: IFileService,
+	sharedProcessService: ISharedProcessService,
+	resource: URI,
+): Promise<IParadisSemanticDiagnosticsSummary> {
+	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
+	return sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisSemanticDiagnosticsSummary>('collectSemanticDiagnostics', [encodeBase64(content.value)]);
 }

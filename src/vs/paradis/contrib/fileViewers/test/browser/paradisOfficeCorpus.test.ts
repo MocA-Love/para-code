@@ -11,7 +11,7 @@ import { createParadisOfficeWebArchive } from '../../browser/office/paradisOffic
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { PARADIS_OFFICE_LISTED_PARTS_LIMIT, PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
 import { resolveParadisOfficeRelationshipTarget } from '../../common/office/paradisOfficeArchive.js';
-import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
+import { canonicalizeOfficeXml, parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
@@ -433,5 +433,66 @@ suite('ParadisOfficeCorpus', () => {
 		strictEqual((nested.match(/<w:hyperlink\b/g) ?? []).length, 2);
 		// A simple field inside a link moves up into the paragraph unchanged.
 		ok((await text('<w:p><w:hyperlink r:id="rIdA"><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:hyperlink></w:p>')).includes('<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>'));
+	});
+	test('parses a workbook that carries binary parts and Default-typed media (Part 2 §7.2.3.4)', async () => {
+		const workbook = await buildOpcFixture({
+			parts: [
+				['/xl/workbook.xml', `<workbook xmlns="${S}" xmlns:r="${R}"><sheets><sheet name="One" sheetId="1" r:id="rIdSheet"/></sheets></workbook>`, CT.workbook],
+				['/xl/worksheets/sheet1.xml', `<worksheet xmlns="${S}" xmlns:r="${R}"><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><pageSetup r:id="rIdPrinter"/></worksheet>`, CT.worksheet],
+				['/xl/printerSettings/printerSettings1.bin', Uint8Array.of(0, 1, 2, 3), 'application/vnd.openxmlformats-officedocument.spreadsheetml.printerSettings'],
+				['/xl/media/image1.png', Uint8Array.of(0x89, 0x50, 0x4e, 0x47), 'image/png'],
+			],
+			relationships: [
+				{ id: 'rIdRoot', type: `${R}/officeDocument`, target: 'xl/workbook.xml' },
+				{ source: '/xl/workbook.xml', id: 'rIdSheet', type: `${R}/worksheet`, target: 'worksheets/sheet1.xml' },
+				{ source: '/xl/worksheets/sheet1.xml', id: 'rIdPrinter', type: `${R}/printerSettings`, target: '../printerSettings/printerSettings1.bin' },
+			],
+		});
+		const snapshot = await parseSpreadsheet(workbook);
+		deepStrictEqual([snapshot.completeness.terminal, snapshot.sheets[0].cells.size], [true, 1]);
+	});
+
+	test('does not count Ignorable markup or AlternateContent as unknown elements (Part 3 §10)', async () => {
+		const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+		const XR = 'http://schemas.microsoft.com/office/spreadsheetml/2014/revision';
+		const workbookXml = (extra: string) => `<workbook xmlns="${S}" xmlns:r="${R}" xmlns:mc="${MC}" xmlns:xr="${XR}" xmlns:x15ac="http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac" mc:Ignorable="x15ac xr"><mc:AlternateContent><mc:Choice Requires="x15"><x15ac:absPath url="C:\\"/></mc:Choice></mc:AlternateContent><xr:revisionPtr revIDLastSave="0"/>${extra}<sheets><sheet name="One" sheetId="1" r:id="rIdSheet"/></sheets></workbook>`;
+		const build = (extra: string) => buildOpcFixture({
+			parts: [
+				['/xl/workbook.xml', workbookXml(extra), CT.workbook],
+				['/xl/worksheets/sheet1.xml', `<worksheet xmlns="${S}"><sheetData/></worksheet>`, CT.worksheet],
+			],
+			relationships: [
+				{ id: 'rIdRoot', type: `${R}/officeDocument`, target: 'xl/workbook.xml' },
+				{ source: '/xl/workbook.xml', id: 'rIdSheet', type: `${R}/worksheet`, target: 'worksheets/sheet1.xml' },
+			],
+		});
+		strictEqual((await parseSpreadsheet(await build(''))).completeness.unknownElements, 0);
+		strictEqual((await parseSpreadsheet(await build('<foo:bar xmlns:foo="urn:example:foo"/>'))).completeness.unknownElements, 1);
+	});
+
+	test('hashes canonical XML like the platform SHA-256 across block boundaries', async () => {
+		for (const length of [0, 1, 40, 41, 55, 56, 63, 64, 65, 119, 120, 1_000, 70_000]) {
+			const document = parseParadisOfficeXml(`<a>${'x'.repeat(length)}</a>`, { depth: 4, nodes: 4, attributeLength: 16, characters: 100_000 });
+			const canonical = canonicalizeOfficeXml(document, () => undefined);
+			const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical.canonical)));
+			strictEqual(canonical.hash.value, [...digest].map(byte => byte.toString(16).padStart(2, '0')).join(''), String(length));
+		}
+	});
+
+	test('parses names, attribute values, and text the same way on the ASCII fast path (XML 1.0 §2.11, §3.3.3)', () => {
+		const document = parseParadisOfficeXml('<α:root xmlns:α="urn:example:a" plain="a\tb\nc\r\nd&#9;e" quoted=\'x"y\'>t&amp;u\r\nv\rw<α:child/>z</α:root>', { depth: 4, nodes: 4, attributeLength: 64, characters: 1_000 });
+		deepStrictEqual(document.root.attributes.map(attribute => [attribute.local, attribute.value]), [['plain', 'a b c d\te'], ['quoted', 'x"y']]);
+		deepStrictEqual(document.root.children.map(child => child.kind === 'text' ? child.value : child.local), ['t&u\nv\nw', 'child', 'z']);
+		strictEqual(document.root.uri, 'urn:example:a');
+	});
+
+	test('can skip canonical hashes while keeping every all-byte hash in the inventory', async () => {
+		const bytes = await wordPackage();
+		const full = await inventoryOf(bytes);
+		const light = await inspectOfficePackage(await createParadisOfficeWebArchive(bytes.slice()), PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, CancellationToken.None, { canonicalHashes: false });
+		ok(full.parts.filter(part => part.coverage === 'parsed').every(part => part.canonicalHash?.value.length === 64));
+		ok(light.parts.every(part => part.canonicalHash === undefined));
+		deepStrictEqual(light.parts.map(part => part.coverage === 'parsed' ? part.rawHash.value : ''), full.parts.map(part => part.coverage === 'parsed' ? part.rawHash.value : ''));
+		strictEqual((await parseWordSemantic(await createParadisOfficeWebArchive(bytes.slice()), light, CancellationToken.None)).completeness.terminal, true);
 	});
 });

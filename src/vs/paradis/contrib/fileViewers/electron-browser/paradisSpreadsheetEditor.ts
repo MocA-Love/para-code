@@ -46,7 +46,7 @@ import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadis
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
-import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
+import { collectSpreadsheetSemanticDiagnostics, parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
@@ -560,6 +560,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
+	/** 表示は描き終え、意味解析の到達度を待っている間だけ真。 */
+	private _semanticPending = false;
 
 	constructor(
 		group: IEditorGroup,
@@ -851,10 +853,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		let workbook: IParadisWorkbookData;
 		try {
-			// 到達度の診断は、診断表示を出す設定のときだけ費用を払う。
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, {
-				semanticDiagnostics: !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration),
-			}, totalBytes => this._probe.setBytes(totalBytes));
+			// 表示を先に返す。到達度の診断は描いた後に別の呼び出しで取る（_loadSemanticDiagnostics）。
+			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, undefined, totalBytes => this._probe.setBytes(totalBytes));
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._probe.disarm();
@@ -885,12 +885,37 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		this._renderSheet();
 		this._renderTabs();
+		const diagnose = !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration);
+		this._semanticPending = diagnose;
 		this._renderSemanticUi(workbook, viewState);
 		this._finishRecoveryRender(recoveryGeneration, resource, viewState);
+		if (diagnose) {
+			void this._loadSemanticDiagnostics(resource, generation, workbook);
+		}
 		if (this._committedInput && isEqual(this._committedInput.resource, resource) && this.input === this._committedInput.input) {
 			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
 		}
 		return true;
+	}
+
+	/** 表示を描いた後で、意味解析の到達度を取ってリボンだけを描き直す。追い越されたら捨てる。 */
+	private async _loadSemanticDiagnostics(resource: URI, generation: number, workbook: IParadisWorkbookData): Promise<void> {
+		let semanticDiagnostics: IParadisWorkbookData['semanticDiagnostics'];
+		try {
+			semanticDiagnostics = await collectSpreadsheetSemanticDiagnostics(this._fileService, this._sharedProcessService, resource);
+		} catch (error) {
+			semanticDiagnostics = {
+				available: false, terminal: false, expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0,
+				expectedCells: 0, parsedCells: 0, unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0,
+				unavailableReason: error instanceof Error ? error.name : 'unknown',
+			};
+		}
+		if (generation !== this._loadGeneration || this._workbook !== workbook || !isEqual(this._currentResource, resource)) {
+			return;
+		}
+		this._semanticPending = false;
+		this._workbook = { ...workbook, semanticDiagnostics };
+		this._renderSemanticUi(this._workbook, this._currentSpreadsheetViewState());
 	}
 
 	private _currentSpreadsheetViewState(): ParadisSpreadsheetViewState {
@@ -982,7 +1007,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
 				});
 			}
-			if (semantic?.available === false) {
+			if (this._semanticPending && !semantic) {
+				warnings.push({
+					code: 'spreadsheet.semanticPending',
+					message: localize('paradis.spreadsheet.semanticPending', "詳しい解析を実行しています…"),
+				});
+			} else if (semantic?.available === false) {
 				warnings.push({
 					code: 'spreadsheet.semanticUnavailable',
 					message: localize('paradis.spreadsheet.semanticUnavailable', "このファイルの詳しい解析はできませんでしたが、表示には影響していません。"),
@@ -993,7 +1023,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					message: localize('paradis.spreadsheet.semanticGaps', "このファイルには、まだ対応していない要素が含まれています。"),
 				});
 			}
-			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome: 'degraded', coverages, warnings });
+			// 意味解析が最後まで読めたときだけ「解析未完了」を外す（表示の再現度は近似のまま）。
+			const outcome = semantic?.available && semantic.terminal ? 'complete' : 'degraded';
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome, coverages, warnings });
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
