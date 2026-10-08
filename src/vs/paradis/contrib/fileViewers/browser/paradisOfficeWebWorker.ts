@@ -36,6 +36,7 @@ import type {
 	ParadisWordTableDiagonalBorder,
 } from '../common/word/paradisWordSemantic.js';
 import { compareWordSemantics } from '../common/word/paradisWordSemanticDiff.js';
+import { findParadisOfficeMainDocumentPart } from '../common/word/paradisWordSemanticSummary.js';
 import { createParadisOfficeWebArchive } from './office/paradisOfficeWebArchive.js';
 import { parseSpreadsheetSemanticWeb } from './spreadsheet/paradisSpreadsheetWebAdapter.js';
 import { parseWordSemanticWeb } from './word/paradisWordWebAdapter.js';
@@ -47,7 +48,6 @@ const maximumWordSummaryStories = 256;
 const maximumWordStoryCharacters = 200_000;
 const maximumWordSummaryDrawings = 512;
 const maximumWordSummaryDiagonals = 1_024;
-const officeDocumentRelationship = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument';
 const mainContentTypes: Readonly<Record<ParadisOfficeSemanticFormat, ReadonlySet<string>>> = {
 	xlsx: new Set(['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml', 'application/vnd.ms-excel.sheet.main+xml']),
 	xlsm: new Set(['application/vnd.ms-excel.sheet.macroEnabled.main+xml']),
@@ -333,14 +333,7 @@ function isSpreadsheetFormat(format: ParadisOfficeSemanticFormat): format is 'xl
 }
 
 function inventoryForRequestedFormat(inventory: ParadisOfficePackageInventory, requested: ParadisOfficeSemanticFormat): ParadisOfficePackageInventory | undefined {
-	const roots = inventory.relationships.filter(relationship => relationship.sourcePartId === undefined
-		&& relationship.type === officeDocumentRelationship
-		&& relationship.targetMode === 'internal'
-		&& !relationship.missing);
-	if (roots.length !== 1) {
-		return undefined;
-	}
-	const mainPart = inventory.parts.find(part => part.canonicalUri === roots[0].target);
+	const mainPart = findParadisOfficeMainDocumentPart(inventory);
 	if (!mainPart || !mainContentTypes[requested].has(mainPart.contentType)) {
 		return undefined;
 	}
@@ -403,6 +396,7 @@ export async function executeParadisOfficeWebWorkerRequest(
 				await parseSpreadsheetSemanticWeb(modifiedBytes, modifiedInventory, token),
 				{ cancellationToken: token, deadlineMilliseconds: PARADIS_OFFICE_BUDGET_PROFILES.browser.diffMilliseconds },
 			))
+			// Web 版の Word の比較は本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。
 			: projectDiffSummary(request.format, compareWordSemantics(
 				await parseWordSemanticWeb(originalBytes, originalInventory, token),
 				await parseWordSemanticWeb(modifiedBytes, modifiedInventory, token),
