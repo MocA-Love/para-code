@@ -409,7 +409,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			}
 			return errorResult(`Unhandled Computer Use tool: ${name}`);
 		} catch (error) {
-			return errorResult(describeHelperError(error));
+			const sent = error instanceof ParadisComputerUseHelperError && error.sent !== undefined
+				? ` ${error.sent} input units were sent; receipt is unconfirmed. Read the app state before retrying; do not replay sent input.`
+				: '';
+			return errorResult(describeHelperError(error) + sent);
 		}
 	}
 
@@ -577,7 +580,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const typing: ITypingProgress = { typed: 0, unconfirmed: false, rewritten: false, clipboardNotes: new Set(), methods: new Set(), routes: new Set(), sentForeground: false };
 		for (let attempt = 0; ; attempt++) {
 			const extra = {
-				...(window.ok ? { windowId: window.window.windowId } : {}),
+				...((name === 'computer_type_text' || name === 'computer_press_key' || name === 'computer_hotkey') && window.ok ? { backgroundWindowId: window.window.windowId } : {}),
 				...(allowForeground ? {} : { allowForeground: false }),
 				...(justApproved ? { activateFirst: true } : {}),
 				...(cursor ? { cursor } : {}),
@@ -742,9 +745,6 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			try {
 				const result = await this._helper.request('typeText', { text: chunk.join(''), pid: app.pid, bundleId: app.bundleId, ...chunkExtra }, signal);
 				const delivery = result && typeof result === 'object' ? result as Record<string, unknown> : undefined;
-				if (delivery?.completed === false || delivery?.focusPreserved === false) {
-					return { ok: false, error: errorResult(`Background input stopped or changed focus. ${typeof delivery.note === 'string' ? delivery.note : ''} ${sentBefore} Read the app state before sending more text; do not resend the whole text.`) };
-				}
 				const check = paradisParseTypeCheck(result);
 				if (check.method) {
 					progress.methods.add(check.method);
@@ -774,6 +774,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				progress.unconfirmed = progress.unconfirmed || check.verified !== true;
 				progress.rewritten = progress.rewritten || check.rewritten === true;
 				progress.typed += chunk.length;
+				if (delivery?.focusPreserved === false) {
+					return { ok: false, error: errorResult(`The foreground focus changed after sending the first ${progress.typed} of ${graphemes.length} characters. ${progress.unconfirmed ? 'Receipt could not be confirmed.' : 'These characters were confirmed.'} Do not resend them. Read the app state before continuing${progress.typed < graphemes.length ? ` with character ${progress.typed + 1}` : '; no characters remain to send'}.`) };
+				}
 			} catch (error) {
 				if (!(error instanceof ParadisComputerUseHelperError)) {
 					throw error;
@@ -783,6 +786,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					return 'needsForeground';
 				}
 				const total = graphemes.length;
+				if (error.sent !== undefined) {
+					const done = typed + Math.min(error.sent, chunk.length);
+					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`) };
+				}
 				if (error.progress !== undefined) {
 					const done = typed + error.progress;
 					return {
@@ -1225,7 +1232,9 @@ function describeHelperError(error: unknown): string {
 			case 'screen_recording_not_granted':
 				return 'macOS has not granted Screen Recording to "Para Code Computer Use". Ask the user to allow it in System Settings > Privacy & Security > Screen Recording (for Para Code Computer Use, not Para Code itself).';
 			case 'user_active':
-				return `The user is using the keyboard or mouse right now, so Para Code did not send input. Wait a few seconds before trying again, and do not retry in a tight loop.${progressOf(error)}`;
+				return `The user is using the keyboard or mouse right now, so Para Code ${error.sent !== undefined && error.sent > 0 ? 'stopped input' : 'did not send input'}. Wait a few seconds before trying again, and do not retry in a tight loop.${progressOf(error)}`;
+			case 'focus_changed':
+				return `The foreground app changed, so Para Code stopped background input. Read the app state before continuing.${progressOf(error)}`;
 			case 'window_not_focused':
 				return `The app is not in front (or another app took focus), so Para Code stopped before sending input. Call computer_activate_app, then try again.${progressOf(error)}`;
 			case 'point_obscured':
@@ -1247,7 +1256,7 @@ function describeHelperError(error: unknown): string {
 			case 'input_unsupported':
 				return `Para Code could not send this action to that element (${error.message}). For a value, click the element and type instead.`;
 			case 'menu_open':
-				return 'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close. Para Code did not send input and left the menu open. Ask the user in the conversation to close the menu (Escape or a click elsewhere), then try again.';
+				return 'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close. Para Code stopped input and left the menu open. Ask the user in the conversation to close the menu (Escape or a click elsewhere), then try again.';
 			case 'screen_locked':
 				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':

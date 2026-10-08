@@ -491,8 +491,8 @@ struct ParadisWindowInfo {
 }
 
 /** その pid の通常のウィンドウ（layer 0）を手前から順に。 */
-func paradisWindowInfos(pid: Int32) -> [ParadisWindowInfo] {
-	guard let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+func paradisWindowInfos(pid: Int32, entries: [[String: Any]]? = nil) -> [ParadisWindowInfo] {
+	guard let list = entries ?? (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) else {
 		return []
 	}
 	return list.compactMap { entry in

@@ -33,6 +33,14 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	}
 
 	func perform(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
+		do { return try performBackground(action, pid: pid, options: options) }
+		catch var error as ParadisHelperError {
+			if error.sent == nil { error.sent = 0 }
+			throw error
+		}
+	}
+
+	private func performBackground(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
 		try desktop.requireInputPermission()
 		try fence(pid)
 		if case .typeText = action, paradisOnMain({ paradisInputMethodIsActive() }) {
@@ -45,7 +53,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		case .click(let id, let target, _, _, _): (windowId, pointer, keyboard) = (id, target, false)
 		case .scroll(let id, let target, _, _): (windowId, pointer, keyboard) = (id, target, false)
 		case .typeText, .pressChord:
-			guard let id = options.windowId else { return .fellThrough("background keys require an exact windowId") }
+			guard let id = options.backgroundWindowId else { return .fellThrough("background keys require an exact windowId") }
 			(windowId, pointer, keyboard) = (id, nil, true)
 		default: return .fellThrough("unsupported background action")
 		}
@@ -83,21 +91,13 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 		try fence(pid)
 		let before = paradisFocusSnapshot()
-		guard let originalPid = before.frontmostPid, before.focusedApplicationPid == originalPid,
-			let originalWindow = before.focusedWindowId,
-			let originalStarted = paradisProcessStart(originalPid),
-			let previousPSN = transport.processSerialNumber(originalPid), let targetPSN = transport.processSerialNumber(pid) else {
-			return .fellThrough("the original focus cannot be saved for background input")
-		}
-		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds,
-			originalPid: originalPid, originalWindow: originalWindow, originalStarted: originalStarted, previousPSN: previousPSN, targetPSN: targetPSN)
+		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
+		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid)
 		ParadisBackgroundCleanup.shared.install { transaction.finish() }
 		defer { ParadisBackgroundCleanup.shared.run() }
 		var result: [String: Any] = ["verified": NSNull()]
-		var sent = 0
 		do {
 			try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: keyboard)
-			try transaction.begin()
 			let group = Int64.random(in: 1...Int64.max)
 			switch action {
 			case .click(_, _, _, let count, let modifiers):
@@ -114,7 +114,6 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 					try transaction.send(down, point: point, group: group, release: up)
 					usleep(25_000)
 					transaction.release()
-					sent += 1
 					usleep(60_000)
 				}
 				result["clicked"] = true
@@ -125,7 +124,6 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 					guard let event = CGEvent(scrollWheelEvent2Source: paradisEventSource(), units: .pixel, wheelCount: 2, wheel1: step.dy, wheel2: step.dx, wheel3: 0) else { throw failed() }
 					event.location = point
 					try transaction.send(event, point: point, group: group)
-					sent += 1
 					usleep(16_000)
 				}
 				result["scrolled"] = true
@@ -133,13 +131,16 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 				if let reason = paradisBlockedChordReason(chord) { throw ParadisHelperError(code: "key_blocked", message: reason) }
 				try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: true)
 				try key(transaction, code: chord.keyCode, flags: paradisEventFlags(chord.modifiers))
-				sent = 1
 				result["pressed"] = true
 			case .typeText(let text, let units):
-				for unit in units {
-					try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: true)
+				var lastFullCheck = Date.distantPast
+				for (index, unit) in units.enumerated() {
+					try fastFence(pid)
+					if paradisNeedsFullFence(unitIndex: index, secondsSinceLastFullFence: Date().timeIntervalSince(lastFullCheck)) {
+						try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: true)
+						lastFullCheck = Date()
+					}
 					if case .text(let character) = unit { try key(transaction, code: 0, flags: [], text: character) }
-					sent += 1
 					usleep(paradisInterCharacterMicroseconds)
 				}
 				usleep(80_000)
@@ -147,21 +148,19 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 				result = paradisTypeResult(method: .keys, check: paradisTypingOutcome(before: textTarget?.value, selection: textTarget?.selection, after: after, text: text), count: units.count)
 			default: break
 			}
-		} catch {
-			// フォーカスの変更を始めた後も次の段へ落とさない。二重クリック・二重入力を防ぐ。
-			result["completed"] = false
-			result["sentUnits"] = sent
-			result["note"] = "Background input stopped; some input may have arrived. Read the target state before retrying. " + String(describing: error)
-			if case .typeText = action { result["typed"] = sent; result["method"] = "keys"; result["verified"] = NSNull() }
+		} catch var error as ParadisHelperError {
+			// エラーコードを保持し、送信数は確認済み文字数と区別する。次の段へは落とさない。
+			error.sent = transaction.sentUnits
+			throw error
 		}
 		transaction.finish()
-		let preserved = transaction.restored && paradisFocusPreserved(before: before, after: paradisFocusSnapshot())
+		let preserved = paradisFocusPreserved(before: before, after: paradisFocusSnapshot())
 		result["focusPreserved"] = preserved
 		if originalPid != pid, paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid) != nil {
 			result["menuOpen"] = true
 			result["note"] = "The target opened a menu that could not be closed. Stop and close that menu before continuing."
 		}
-		if !preserved { result["note"] = "Focus restoration could not be confirmed. " + (result["note"] as? String ?? "Read the target state before retrying.") }
+		if !preserved { result["note"] = "The foreground focus changed during input. " + (result["note"] as? String ?? "Read the target state before retrying.") }
 		if !keyboard {
 			result["point"] = paradisWindowPointJson(point, info.bounds)
 			if let cursor = options.cursor { ParadisCursorOverlay.shared.ripple(cursor, at: point) }
@@ -181,14 +180,8 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		transaction.release()
 	}
 
-	private func fence(_ pid: Int32) throws {
-		if ParadisBackgroundConnection.disconnected {
-			throw ParadisHelperError(code: "cancelled", message: "the input connection closed")
-		}
-		if let failure = paradisCurrentSessionFailure() ?? desktop.keyboardActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) { throw failure }
-		if paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid) != nil {
-			throw ParadisHelperError(code: "menu_open", message: "close the target menu before background input")
-		}
+	private func fastFence(_ pid: Int32) throws {
+		if let failure = paradisCurrentSessionFailure() ?? desktop.keyboardActivityFailure() { throw failure }
 		// 修飾キーが押しっぱなしでも利用者の操作を優先する。
 		let flags = CGEventSource.flagsState(.hidSystemState)
 		if !flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty {
@@ -196,10 +189,18 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 	}
 
+	private func fence(_ pid: Int32, entries: [[String: Any]]? = nil) throws {
+		try fastFence(pid)
+		if let failure = paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows(entries: entries)) { throw failure }
+		if paradisAppMenuWindow(pid: pid, entries: entries) != nil || paradisOpenMenu(pid: pid) != nil {
+			throw ParadisHelperError(code: "menu_open", message: "close the target menu before background input")
+		}
+	}
+
 	private func revalidate(pid: Int32, started: Double, windowId: UInt32, bounds: CGRect, keyboard: Bool) throws {
-		try desktop.requireInputPermission()
-		try fence(pid)
-		guard paradisProcessStart(pid) == started, let info = paradisWindowInfos(pid: pid).first(where: { $0.windowId == windowId }), info.onScreen, info.bounds == bounds, !paradisAppIsHidden(pid) else {
+		let entries = (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+		try fence(pid, entries: entries)
+		guard paradisProcessStart(pid) == started, let info = paradisWindowInfos(pid: pid, entries: entries).first(where: { $0.windowId == windowId }), info.onScreen, info.bounds == bounds, !paradisAppIsHidden(pid) else {
 			throw ParadisHelperError(code: "window_not_found", message: "the background target changed")
 		}
 		if keyboard {
@@ -234,7 +235,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 	private func failed() -> ParadisHelperError { ParadisHelperError(code: "input_failed", message: "could not create a background event") }
 }
 
-/** 操作中の解放と復元を一度だけ行い、終了処理の後には送信しない。 */
+/** 同じプロセスへ押下の解放を送り、終了処理の後には送信しない。フォーカスには触れない。 */
 private final class ParadisBackgroundTransaction {
 	private let lock = NSRecursiveLock()
 	private let transport: ParadisBackgroundTransport
@@ -243,50 +244,31 @@ private final class ParadisBackgroundTransaction {
 	private let started: Double
 	private let bounds: CGRect
 	private let originalPid: Int32
-	private let originalWindow: UInt32
-	private let originalStarted: Double
-	private let previousPSN: [UInt32]
-	private let targetPSN: [UInt32]
 	private var pending: (CGEvent, CGPoint?, Int64)?
-	private var borrowed = false
 	private var closed = false
-	private(set) var restored = false
+	private(set) var sentUnits = 0
 
-	init(transport: ParadisBackgroundTransport, pid: Int32, windowId: UInt32, started: Double, bounds: CGRect, originalPid: Int32, originalWindow: UInt32, originalStarted: Double, previousPSN: [UInt32], targetPSN: [UInt32]) {
+	init(transport: ParadisBackgroundTransport, pid: Int32, windowId: UInt32, started: Double, bounds: CGRect, originalPid: Int32) {
 		self.transport = transport
 		self.pid = pid
 		self.windowId = windowId
 		self.started = started
 		self.bounds = bounds
 		self.originalPid = originalPid
-		self.originalWindow = originalWindow
-		self.originalStarted = originalStarted
-		self.previousPSN = previousPSN
-		self.targetPSN = targetPSN
-	}
-
-	func begin() throws {
-		let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
-		guard frontmost == originalPid, !ParadisBackgroundConnection.disconnected else { throw stopped() }
-		lock.lock()
-		defer { lock.unlock() }
-		guard !closed, paradisProcessStart(originalPid) == originalStarted, paradisProcessStart(pid) == started else { throw stopped() }
-		if pid == originalPid { return }
-		borrowed = true
-		guard transport.focus(previousPSN, windowId: originalWindow, focused: false), transport.focus(targetPSN, windowId: windowId, focused: true) else { throw stopped() }
 	}
 
 	func send(_ event: CGEvent, point: CGPoint?, group: Int64, release: CGEvent? = nil) throws {
+		try ParadisRequestCancellation.check()
 		let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
-		guard frontmost == originalPid, !ParadisBackgroundConnection.disconnected else { throw stopped() }
+		guard frontmost == originalPid else { throw ParadisHelperError(code: "focus_changed", message: "the foreground app changed during background input") }
 		lock.lock()
 		defer { lock.unlock() }
-		guard !closed, paradisProcessStart(pid) == started else { throw stopped() }
+		guard !closed, paradisProcessStart(pid) == started else { throw ParadisHelperError(code: "app_not_found", message: "the background target exited") }
 		// CGEvent.location は画面座標、CGEventSetWindowLocation はウィンドウ左上からの座標。
-		// macOS 27.0.1 の受信側 NSEvent で確認。解放も同じ相対座標を保持する。
 		let localPoint = point.map { CGPoint(x: $0.x - bounds.minX, y: $0.y - bounds.minY) }
 		if let release { pending = (release, localPoint, group) }
 		transport.send(event, pid: pid, windowId: windowId, point: localPoint, group: group)
+		if event.type == .keyDown || event.type == .leftMouseDown || event.type == .scrollWheel { sentUnits += 1 }
 	}
 
 	func release() {
@@ -299,32 +281,10 @@ private final class ParadisBackgroundTransaction {
 	}
 
 	func finish() {
-		// main キューへの問い合わせを lock の外で済ませ、SIGTERM の cleanup と待ち合わない。
-		let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
 		lock.lock()
 		defer { lock.unlock() }
 		guard !closed else { return }
 		closed = true
 		release()
-		guard borrowed else { restored = true; return }
-		if paradisProcessStart(pid) == started, let menu = paradisOpenMenu(pid: pid) {
-			AXUIElementPerformAction(menu, kAXCancelAction as CFString)
-		}
-		// 利用者が別アプリへ移った場合は、元のアプリへ引き戻さない。
-		let system = AXUIElementCreateSystemWide()
-		AXUIElementSetMessagingTimeout(system, 0.3)
-		guard frontmost == originalPid || frontmost == pid,
-			paradisProcessStart(originalPid) == originalStarted,
-			paradisWindowInfos(pid: originalPid).contains(where: { $0.windowId == originalWindow && $0.onScreen }) else { return }
-		if let focused = paradisElement(system, kAXFocusedApplicationAttribute) {
-			var current: Int32 = 0
-			guard AXUIElementGetPid(focused, &current) == .success, current == originalPid || current == pid else { return }
-			if current == originalPid, let currentWindow = paradisElement(focused, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId), currentWindow != originalWindow { return }
-		}
-		let targetReleased = paradisProcessStart(pid) != started || transport.focus(targetPSN, windowId: windowId, focused: false)
-		let originalRestored = transport.focus(previousPSN, windowId: originalWindow, focused: true)
-		restored = targetReleased && originalRestored
 	}
-
-	private func stopped() -> ParadisHelperError { ParadisHelperError(code: "input_failed", message: "background transaction stopped") }
 }

@@ -28,7 +28,7 @@ import Foundation
 
 /**
  * 2 段目（背面への入力）の実装を返す。
- * 実装をはめ込むときは、`ParadisInputRoute` に準拠したクラスをこのフォルダに新しく作り、ここから返す。
+ * 背面経路自身が対応可否を判定し、未送信のときだけ次の段へ譲る。
  */
 func paradisMakeBackgroundRoute(desktop: ParadisDesktop) -> ParadisInputRoute {
 	return ParadisBackgroundRoute(desktop: desktop)
@@ -516,10 +516,10 @@ func paradisAppIsHidden(_ pid: Int32) -> Bool {
  * ポップアップボタンのメニューのように AX のどこに出るか決まらないものも、ウィンドウの層で見分けられる
  * （確認用のアプリで確かめた）。無ければ nil。
  */
-func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
+func paradisAppMenuWindow(pid: Int32, entries: [[String: Any]]? = nil) -> ParadisMenuWindowFacts? {
 	let menuLayer = Int(CGWindowLevelForKey(.popUpMenuWindow))
-	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
-	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid {
+	let list = entries ?? (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
+	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid && (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true {
 		guard let boundsDictionary = entry[kCGWindowBounds as String] as? NSDictionary, let bounds = CGRect(dictionaryRepresentation: boundsDictionary) else {
 			continue
 		}

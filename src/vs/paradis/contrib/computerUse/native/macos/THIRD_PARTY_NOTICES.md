@@ -1,14 +1,14 @@
+<!-- PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. -->
+
 # Background input references
 
-`ParadisBackgroundTransport.swift` implements the SkyLight event fields and
-focus event-record format documented by Cua Driver, including its yabai-derived
-focus-without-raise sequence. No code from the installed ChatGPT or Claude
-applications is included.
+`ParadisBackgroundTransport.swift` uses the SkyLight event fields and dynamic
+symbol signatures documented by Cua Driver (MIT).
 
-- Cua Driver: Copyright (c) 2025 Cua AI, Inc.
-  https://github.com/trycua/cua/blob/2e4736b3ebff61ef99e8c0c74270b5cd75894643/libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs
-- yabai: Copyright (c) 2019 Åsmund Vikane
-  https://github.com/koekeishiya/yabai
+Copyright (c) 2025 Cua AI, Inc.
+
+- https://github.com/trycua/cua/blob/2e4736b3ebff61ef99e8c0c74270b5cd75894643/libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs
+- https://github.com/trycua/cua/blob/2e4736b3ebff61ef99e8c0c74270b5cd75894643/libs/cua-driver/rust/crates/platform-macos/src/input/mouse.rs
 
 ## MIT License
 

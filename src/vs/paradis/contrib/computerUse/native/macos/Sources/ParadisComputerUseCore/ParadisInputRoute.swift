@@ -78,8 +78,8 @@ struct ParadisCursorOwnerSpec: Equatable {
 
 /** 要求ごとの送り方の指定。 */
 struct ParadisInputOptions: Equatable {
-	/** キーの背面配送に使う厳密な宛先。 */
-	var windowId: UInt32? = nil
+	/** キーの背面配送にだけ使う宛先のヒント。AX・前面経路の関門にはしない。 */
+	var backgroundWindowId: UInt32? = nil
 	/** 前面に出す段（実カーソルを動かす）で送ってよいか。省略時は今までどおり true。 */
 	var allowForeground: Bool = true
 	/**
@@ -121,7 +121,7 @@ protocol ParadisInputRoute: AnyObject {
 }
 
 /**
- * 2 段目（背面への入力）の空の実装。常に使えない。実装をはめ込むまでの置き場所で、ここに送る処理は書かない。
+ * 背面 API が使えない環境を表す代替実装。Core の経路選択テストでも使う。
  */
 final class ParadisUnavailableBackgroundRoute: ParadisInputRoute {
 	let kind = ParadisInputRouteKind.background
@@ -644,11 +644,11 @@ func paradisParseCursorOwner(_ value: Any?) -> ParadisCursorOwnerSpec? {
 /** 要求の引数から送り方の指定を読む。`allowForeground` が無ければ今までどおり true。 */
 func paradisParseInputOptions(_ params: [String: Any]) throws -> ParadisInputOptions {
 	var options = ParadisInputOptions()
-	if let raw = params["windowId"] {
+	if let raw = params["backgroundWindowId"] {
 		guard let value = paradisExactInt(raw), value > 0, value <= Int(UInt32.max) else {
-			throw ParadisHelperError.invalidArgument("windowId must be a positive window identifier")
+			throw ParadisHelperError.invalidArgument("backgroundWindowId must be a positive window identifier")
 		}
-		options.windowId = UInt32(value)
+		options.backgroundWindowId = UInt32(value)
 	}
 	if let raw = params["allowForeground"] {
 		guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
