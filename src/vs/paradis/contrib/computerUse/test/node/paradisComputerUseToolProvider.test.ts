@@ -568,6 +568,31 @@ suite('ParadisComputerUseToolProvider', () => {
 		});
 	});
 
+	test('keeps asking the helper to bring the app forward until a chunk is actually sent through the foreground route', async () => {
+		const { helper, ledger, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		let chunks = 0;
+		helper.onInput = async (_method, params) => {
+			chunks++;
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'the focused field does not accept text through accessibility');
+			}
+			// 承認の後の 1 つ目の塊は AX で通り（前面化は起きない）、2 つ目から前面で送る
+			return chunks === 2
+				? { typed: 400, method: 'accessibility', verified: true, route: 'accessibility' }
+				: { typed: 400, method: 'keys', verified: true, route: 'foreground' };
+		};
+		const { context } = createContext('pane', ['once']);
+		const result = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'a'.repeat(1205), includeState: false }, undefined, context) as IResult;
+		assert.deepStrictEqual({
+			typed: JSON.parse((result.content[0] as { text: string }).text).typed,
+			sent: helper.inputs.map(input => `${(input.params.text as string).length}${input.params.allowForeground === false ? ' (ask first)' : ''}${input.params.activateFirst === true ? ' (activate first)' : ''}`),
+		}, {
+			typed: 1205,
+			sent: ['400 (ask first)', '400 (activate first)', '400 (activate first)', '400', '5'],
+		});
+	});
+
 	test('does not resend after the approval when Computer Use was turned off meanwhile, and keeps the element numbers the agent saw', async () => {
 		const { helper, ledger, state, provider } = setup({ confirmForeground: true });
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');
@@ -697,7 +722,7 @@ suite('ParadisComputerUseToolProvider', () => {
 		const noTarget = await provider.callTool('pane-a', 'computer_click', { app: 'Notes' }, undefined, context);
 		const noText = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: '' }, undefined, context);
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');
-		const codes = ['user_active', 'window_not_focused', 'point_obscured', 'stale_element', 'key_blocked', 'accessibility_not_granted', 'system_dialog'];
+		const codes = ['user_active', 'window_not_focused', 'point_obscured', 'stale_element', 'key_blocked', 'accessibility_not_granted', 'system_dialog', 'menu_open'];
 		const messages: string[] = [];
 		for (const code of codes) {
 			helper.onInput = async () => { throw new ParadisComputerUseHelperError(code, 'Spotlight shortcuts are never sent'); };
@@ -715,6 +740,7 @@ suite('ParadisComputerUseToolProvider', () => {
 				'Para Code never sends this shortcut (Spotlight shortcuts are never sent)',
 				'macOS has not granted Accessibility to "Para Code Computer Use"',
 				'An authentication or permission dialog is on screen, so Para Code does not send any input',
+				'A menu is open in the app while it is not in front, so the user is probably using it',
 			],
 		});
 	});
