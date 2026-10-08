@@ -951,7 +951,7 @@ function selectWorksheetChildren(
 				exactAttributes(branch, ['Requires']);
 				const required = requiredAttribute(branch, 'Requires').trim().split(/\s+/);
 				const namespaces = branch.namespaceBindings ?? {};
-				if (!selected && required.length > 0 && required.every(prefix => supportedCompatibilityNamespace(namespaces[prefix]))) {
+				if (!selected && required.length > 0 && required.every(prefix => supportedCompatibilityNamespace(Object.hasOwn(namespaces, prefix) ? namespaces[prefix] : undefined))) {
 					selected = branch;
 				}
 			} else if (branch.local === 'Fallback') {

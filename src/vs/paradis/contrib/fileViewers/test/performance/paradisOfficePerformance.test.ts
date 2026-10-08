@@ -375,9 +375,17 @@ suite('ParadisOfficePerformance', () => {
 		});
 		const text = new TextDecoder().decode(assets.bytes);
 		for (const unsafe of ['attacker.invalid', 'RAW-FONT', 'RAW-OLE', 'RAW-MACRO', '<script>']) { strictEqual(text.includes(unsafe), false, unsafe); }
+		deepStrictEqual({ ignored: assets.ignoredParts, blocked: assets.blockedParts }, {
+			ignored: [{ partName: 'word/fonts/font.bin', kind: 'font', reason: 'notRendered' }],
+			blocked: [{ feature: 'macro', kind: 'unsafeContent', partName: 'word/vbaProject.bin', count: 1 }],
+		});
 		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'malicious-name', source: Uint8Array.of(1), archive: new FixtureArchive({ '../../private.xml': '<x/>' }) }));
 		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'traversal', source: Uint8Array.of(1), archive: new FixtureArchive({ ...common, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="bad" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="..%2Fprivate.svg"/></Relationships>' }) }));
-		await rejects(sanitizeOfficeDocxPackageForRenderer({ nodeId: 'relationship-cycle', source: Uint8Array.of(1), archive: new FixtureArchive({ ...common, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>', 'word/header1.xml': '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>', 'word/_rels/header1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="back" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="../document.xml"/></Relationships>' }) }));
+		// A header relationship that no headerReference uses is left out, so its back edge to the document never
+		// reaches the output: reachability starts from the root and visits each part once.
+		const cycle = await sanitizeOfficeDocxPackageForRenderer({ nodeId: 'relationship-cycle', source: Uint8Array.of(1), archive: new FixtureArchive({ ...common, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>', 'word/header1.xml': '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>', 'word/_rels/header1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="back" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="../document.xml"/></Relationships>' }) });
+		strictEqual(new TextDecoder().decode(cycle.bytes).includes('word/header1.xml'), false);
+		deepStrictEqual(cycle.ignoredParts.map(part => part.partName), ['word/header1.xml']);
 	});
 
 	test('accepts exact hard limits and rejects limit plus one using actual valid archives', async function () {

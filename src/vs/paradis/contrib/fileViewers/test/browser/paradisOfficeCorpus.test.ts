@@ -9,8 +9,9 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisOfficeWebArchive } from '../../browser/office/paradisOfficeWebArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
-import { PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
+import { PARADIS_OFFICE_LISTED_PARTS_LIMIT, PARADIS_OFFICE_SANITIZER_XML_ELEMENTS, sanitizeOfficeDocxPackageForRenderer } from '../../common/paradisOfficeSanitizer.js';
 import { resolveParadisOfficeRelationshipTarget } from '../../common/office/paradisOfficeArchive.js';
+import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
@@ -29,6 +30,8 @@ const S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
 const MS = 'http://schemas.microsoft.com/office';
+const V = 'urn:schemas-microsoft-com:vml';
+const O = 'urn:schemas-microsoft-com:office:office';
 const CT = {
 	document: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
 	styles: 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml',
@@ -37,7 +40,7 @@ const CT = {
 } as const;
 
 function wordDocument(body: string, declaration = ''): string {
-	return `${declaration}<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:wp="${WP}" xmlns:a="${A}"><w:body>${body}<w:sectPr/></w:body></w:document>`;
+	return `${declaration}<w:document xmlns:w="${W}" xmlns:r="${R}" xmlns:wp="${WP}" xmlns:a="${A}" xmlns:v="${V}" xmlns:o="${O}"><w:body>${body}<w:sectPr/></w:body></w:document>`;
 }
 
 function wordPackage(overrides: Partial<IParadisOfficeFixtureOptions> & { readonly body?: string; readonly declaration?: string; readonly extraParts?: readonly ParadisOfficeFixturePart[]; readonly extraRelationships?: readonly IParadisOfficeFixtureRelationship[]; readonly documentTarget?: string } = {}): Promise<Uint8Array> {
@@ -126,6 +129,7 @@ suite('ParadisOfficeCorpus', () => {
 		const bytes = await wordPackage({ extraRelationships: [{ id: 'rIdCustom', type: `${R}/custom-properties`, target: 'docProps/custom.xml' }] });
 		const result = await sanitize(bytes);
 		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [{ partName: 'docProps/custom.xml', kind: 'custom-properties', reason: 'missingTarget' }]);
 		ok(!new TextDecoder().decode(result.bytes).includes('custom-properties'));
 	});
 
@@ -189,6 +193,7 @@ suite('ParadisOfficeCorpus', () => {
 		const snapshot = await parseSpreadsheet(workbook);
 		strictEqual(snapshot.sheets[0].cells.size, 1);
 	});
+
 	test('keeps rejecting Targets that leave the package or name a network path (RFC 3986 §4.2)', async () => {
 		// The inventory and both semantic parsers resolve through this one function.
 		for (const target of ['/../word/document.xml', '../../x', '//host/word/document.xml', 'a\\b', 'a%2Fb']) {
@@ -211,14 +216,6 @@ suite('ParadisOfficeCorpus', () => {
 		for (const testCase of cases) {
 			await rejects(sanitize(await wordPackage(testCase.options)), testCase.error, testCase.name);
 		}
-	});
-
-	test('still shows an external relationship consumed by a story as a placeholder', async () => {
-		const bytes = await wordPackage({
-			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>linked</w:t></w:r></w:hyperlink></w:p>',
-			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
-		});
-		deepStrictEqual((await sanitize(bytes)).placeholders.map(placeholder => placeholder.feature), ['externalRelationship']);
 	});
 
 	test('drops absent OLE, macro, and ActiveX targets from the relationships and the output', async () => {
@@ -246,5 +243,195 @@ suite('ParadisOfficeCorpus', () => {
 		await rejects(sanitize(bytes, { part: 12 }), /limitExceeded/);
 		await sanitize(bytes, { package: 14 });
 		await rejects(sanitize(bytes, { package: 13 }), /limitExceeded/);
+	});
+
+	test('leaves out parts that nothing draws and lists them instead of counting placeholders (Part 1 §9.1.4)', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/customXml/item1.xml', '<root/>', 'application/xml'],
+				['/customXml/itemProps1.xml', '<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{00000000-0000-0000-0000-000000000001}"/>', 'application/vnd.openxmlformats-officedocument.customXmlProperties+xml'],
+				['/word/people.xml', `<w15:people xmlns:w15="${MS}/word/2012/wordml"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml'],
+				['/word/commentsIds.xml', `<w16cid:commentsIds xmlns:w16cid="${MS}/word/2016/wordml/cid"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml'],
+				['/word/header9.xml', `<w:hdr xmlns:w="${W}"><w:p/></w:hdr>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdItem', type: `${R}/customXml`, target: '../customXml/item1.xml' },
+				{ source: '/customXml/item1.xml', id: 'rIdProps', type: `${R}/customXmlProps`, target: 'itemProps1.xml' },
+				{ source: '/word/document.xml', id: 'rIdPeople', type: `${MS}/2011/relationships/people`, target: 'people.xml' },
+				{ source: '/word/document.xml', id: 'rIdIds', type: `${MS}/2016/09/relationships/commentsIds`, target: 'commentsIds.xml' },
+				{ source: '/word/document.xml', id: 'rIdOrphanHeader', type: `${R}/header`, target: 'header9.xml' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [
+			{ partName: 'customXml/item1.xml', kind: 'customXml', reason: 'notRendered' },
+			{ partName: 'customXml/itemProps1.xml', kind: 'customXmlProps', reason: 'notRendered' },
+			{ partName: 'word/commentsIds.xml', kind: 'commentsIds', reason: 'notRendered' },
+			{ partName: 'word/header9.xml', kind: 'header', reason: 'unreferenced' },
+			{ partName: 'word/people.xml', kind: 'people', reason: 'notRendered' },
+		]);
+		const text = new TextDecoder().decode(result.bytes);
+		ok(!text.includes('Office asset unavailable'));
+		strictEqual((await parseWord(bytes)).completeness.terminal, true);
+	});
+
+	test('keeps comment threading written with the wordprocessingml content type (MS-DOCX §2.1.2)', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/word/commentsExtended.xml', `<w15:commentsEx xmlns:w15="${MS}/word/2012/wordml"/>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml']],
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdEx', type: `${MS}/2011/relationships/commentsExtended`, target: 'commentsExtended.xml' }],
+		});
+		const result = await sanitize(bytes);
+		deepStrictEqual([result.placeholders.length, result.ignoredParts.length], [0, 0]);
+		ok(zipNames(result.bytes).includes('word/commentsExtended.xml'));
+	});
+
+	test('keeps the runs of an external hyperlink, drops the link element, and reports only the scheme', async () => {
+		const bytes = await wordPackage({
+			body: '<w:p><w:hyperlink r:id="rIdLink"><w:r><w:t>link text</w:t></w:r></w:hyperlink></w:p>',
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdLink', type: `${R}/hyperlink`, target: 'https://example.invalid/', targetMode: 'External' }],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		const text = new TextDecoder().decode(result.bytes);
+		ok(text.includes('<w:p><w:r><w:t>link text</w:t></w:r></w:p>'));
+		ok(!text.includes('w:hyperlink'));
+		ok(!text.includes('example.invalid'));
+		deepStrictEqual(result.blockedParts, [{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 1 }]);
+	});
+
+	test('counts an OLE object once even though its preview picture is also blocked', async () => {
+		const object = '<w:p><w:r><w:object><v:shape id="s1"><v:imagedata r:id="rIdPreview"/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s1" r:id="rIdOle"/></w:object></w:r></w:p>';
+		const bytes = await wordPackage({
+			body: object,
+			extraParts: [
+				['/word/media/image1.emf', Uint8Array.of(1, 0, 0, 0), 'image/x-emf'],
+				['/word/embeddings/object1.bin', Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdPreview', type: `${R}/image`, target: 'media/image1.emf' },
+				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
+			],
+		});
+		const result = await sanitize(bytes);
+		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['embeddedObject']);
+	});
+
+	test('falls back from an embedded font without a placeholder', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/word/fontTable.xml', `<w:fonts xmlns:w="${W}" xmlns:r="${R}"><w:font w:name="Sample"><w:embedRegular r:id="rIdFont" w:fontKey="{00000000-0000-0000-0000-000000000002}"/></w:font></w:fonts>`, 'application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml'],
+				['/word/fonts/font1.odttf', Uint8Array.of(0, 1, 0, 0), 'application/vnd.openxmlformats-officedocument.obfuscatedFont'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdFonts', type: `${R}/fontTable`, target: 'fontTable.xml' },
+				{ source: '/word/fontTable.xml', id: 'rIdFont', type: `${R}/font`, target: 'fonts/font1.odttf' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.ignoredParts, [{ partName: 'word/fonts/font1.odttf', kind: 'font', reason: 'notRendered' }]);
+		ok(!zipNames(result.bytes).includes('word/fonts/font1.odttf'));
+	});
+	test('never resolves a namespace prefix through Object.prototype', () => {
+		const limits = { depth: 8, nodes: 8, attributeLength: 64, characters: 1024 };
+		for (const prefix of ['constructor', 'toString', '__proto__']) {
+			throws(() => parseParadisOfficeXml(`<${prefix}:a/>`, limits), /malformed/, `element ${prefix}`);
+			throws(() => parseParadisOfficeXml(`<a ${prefix}:b="1"/>`, limits), /malformed/, `attribute ${prefix}`);
+		}
+		// Declaring such a prefix is valid XML and binds it like any other prefix.
+		strictEqual(parseParadisOfficeXml('<__proto__:a xmlns:__proto__="urn:example:p"/>', limits).root.uri, 'urn:example:p');
+	});
+
+	test('rejects a second Default for the same extension in the package inventory (Part 2 §7.2.3.2)', async () => {
+		const bytes = await wordPackage({
+			contentTypesXml: `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="XML" ContentType="application/xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${CT.document}"/><Override PartName="/word/styles.xml" ContentType="${CT.styles}"/></Types>`,
+		});
+		await rejects(inventoryOf(bytes), /malformed/);
+	});
+	test('reports macros, embedded objects, unknown types, and external targets as blocked, without URLs', async () => {
+		const bytes = await wordPackage({
+			extraParts: [
+				['/word/vbaProject.bin', Uint8Array.of(1, 2, 3), 'application/vnd.ms-office.vbaProject'],
+				['/word/embeddings/object1.bin', Uint8Array.of(4, 5, 6), 'application/vnd.openxmlformats-officedocument.oleObject'],
+				['/word/unknown.bin', Uint8Array.of(7), 'application/octet-stream'],
+			],
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdVba', type: `${MS}/2006/relationships/vbaProject`, target: 'vbaProject.bin' },
+				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
+				{ source: '/word/document.xml', id: 'rIdUnknown', type: 'urn:example:unknown', target: 'unknown.bin' },
+				{ source: '/word/document.xml', id: 'rIdTemplate', type: `${R}/attachedTemplate`, target: 'file:///C:/private/template.dotm', targetMode: 'External' },
+				{ id: 'rIdUnc', type: `${R}/hyperlink`, target: '\\\\server\\share\\x.docx', targetMode: 'External' },
+			],
+		});
+		const result = await sanitize(bytes);
+		strictEqual(result.placeholders.length, 0);
+		deepStrictEqual(result.blockedParts, [
+			{ feature: 'embeddedObject', kind: 'oleObject', partName: 'word/embeddings/object1.bin', count: 1 },
+			{ feature: 'externalRelationship', kind: 'attachedTemplate', scheme: 'file', count: 1 },
+			{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'unc', count: 1 },
+			{ feature: 'macro', kind: 'vbaProject', partName: 'word/vbaProject.bin', count: 1 },
+			{ feature: 'unknownRelationship', kind: 'unknown', partName: 'word/unknown.bin', count: 1 },
+		]);
+		const text = new TextDecoder().decode(result.bytes);
+		for (const forbidden of ['private', 'server', 'vbaProject', 'object1', 'unknown.bin']) {
+			ok(!text.includes(forbidden), forbidden);
+		}
+	});
+
+	test('caps the listed parts and counts the rest', async () => {
+		const parts: ParadisOfficeFixturePart[] = [];
+		const relationships: IParadisOfficeFixtureRelationship[] = [];
+		for (let index = 0; index < 260; index++) {
+			parts.push([`/customXml/item${index}.xml`, '<root/>', 'application/xml']);
+			relationships.push({ source: '/word/document.xml', id: `rIdItem${index}`, type: `${R}/customXml`, target: `../customXml/item${index}.xml` });
+		}
+		const result = await sanitize(await wordPackage({ extraParts: parts, extraRelationships: relationships }));
+		strictEqual(result.ignoredParts.length, PARADIS_OFFICE_LISTED_PARTS_LIMIT);
+		strictEqual(result.ignoredPartsOmitted, 4);
+	});
+
+	test('re-serializes retained metadata XML so DOCTYPE-free comments and processing instructions are dropped', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/docProps/core.xml', '<?xml version="1.0" encoding="UTF-8"?><!-- note --><?pi data?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></cp:coreProperties>', 'application/vnd.openxmlformats-package.core-properties+xml']],
+			extraRelationships: [{ id: 'rIdCore', type: 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties', target: 'docProps/core.xml' }],
+		});
+		const text = new TextDecoder().decode((await sanitize(bytes)).bytes);
+		ok(text.includes('<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></cp:coreProperties>'));
+		ok(!text.includes('<!-- note -->'));
+		ok(!text.includes('<?pi'));
+	});
+
+	test('replaces control and bidi characters in listed part names', async () => {
+		const bytes = await wordPackage({
+			extraParts: [['/customXml/item\u202e1.xml', '<root/>', 'application/xml']],
+			extraRelationships: [{ source: '/word/document.xml', id: 'rIdItem', type: `${R}/customXml`, target: '../customXml/item\u202e1.xml' }],
+		});
+		deepStrictEqual((await sanitize(bytes)).ignoredParts.map(part => part.partName), ['customXml/item\ufffd1.xml']);
+	});
+	test('drops an external link element inside other run containers and keeps nested content valid', async () => {
+		const link = (body: string) => wordPackage({
+			body,
+			extraRelationships: [
+				{ source: '/word/document.xml', id: 'rIdA', type: `${R}/hyperlink`, target: 'https://example.invalid/a', targetMode: 'External' },
+				{ source: '/word/document.xml', id: 'rIdB', type: `${R}/hyperlink`, target: 'https://example.invalid/b', targetMode: 'External' },
+			],
+		});
+		const text = async (body: string) => {
+			const result = await sanitize(await link(body));
+			strictEqual(result.placeholders.length, 0);
+			const xml = new TextDecoder().decode(result.bytes);
+			ok(!xml.includes('r:id="rId'), body);
+			ok(!xml.includes('example.invalid'), body);
+			return xml;
+		};
+		// Inside w:dir (bidirectional run container): the element is dropped, the run stays in w:dir.
+		ok((await text('<w:p><w:dir w:val="rtl"><w:hyperlink r:id="rIdA"><w:r><w:t>dir</w:t></w:r></w:hyperlink></w:dir></w:p>')).includes('<w:dir w:val="rtl"><w:r><w:t>dir</w:t></w:r></w:dir>'));
+		// A nested link that declares its own namespace keeps both elements and loses only the links.
+		const nested = await text('<w:p><w:hyperlink r:id="rIdA"><w:hyperlink xmlns:x="urn:example:x" r:id="rIdB"><w:r><w:t>nested</w:t></w:r></w:hyperlink></w:hyperlink></w:p>');
+		ok(nested.includes('<w:t>nested</w:t>'));
+		strictEqual((nested.match(/<w:hyperlink\b/g) ?? []).length, 2);
+		// A simple field inside a link moves up into the paragraph unchanged.
+		ok((await text('<w:p><w:hyperlink r:id="rIdA"><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:hyperlink></w:p>')).includes('<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>'));
 	});
 });
