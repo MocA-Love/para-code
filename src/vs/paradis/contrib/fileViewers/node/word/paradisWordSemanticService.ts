@@ -117,7 +117,6 @@ async function readAllParts(archive: IParadisOfficeArchive, token: CancellationT
  */
 export class ParadisWordSemanticService {
 	private readonly cache = new Map<string, Promise<ParsedWord>>();
-	private queue: Promise<unknown> = Promise.resolve();
 
 	async analyze(bytes: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordAnalysisResult> {
 		if (!(bytes instanceof Uint8Array)) {
@@ -126,7 +125,10 @@ export class ParadisWordSemanticService {
 		if (bytes.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES) {
 			return failure('tooLarge');
 		}
-		return this.serialized(async () => {
+		if (token.isCancellationRequested) {
+			return failure('cancelled');
+		}
+		return (async () => {
 			try {
 				const parsed = await this.parse(bytes, token);
 				const summarizeWatch = StopWatch.create(true);
@@ -138,7 +140,7 @@ export class ParadisWordSemanticService {
 			} catch (error) {
 				return failure(failureCode(error));
 			}
-		}, token);
+		})();
 	}
 
 	async compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordComparisonResult> {
@@ -148,7 +150,10 @@ export class ParadisWordSemanticService {
 		if (original.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES || modified.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES) {
 			return failure('tooLarge');
 		}
-		return this.serialized(async () => {
+		if (token.isCancellationRequested) {
+			return failure('cancelled');
+		}
+		return (async () => {
 			try {
 				// 比較全体で締め切りを 1 つにする。読み直し・補助モデル・比較のそれぞれに、残り時間だけを渡す。
 				const total = StopWatch.create(true);
@@ -215,22 +220,13 @@ export class ParadisWordSemanticService {
 					originalOutline: leftSummary.outline,
 					modifiedOutline: rightSummary.outline,
 					navigation,
+					truncatedValueChangeIds: page.truncatedValueChangeIds,
 					timings: { parseMs: Math.round(parseMs), compareMs: Math.round(compareWatch.elapsed()) },
 				};
 			} catch (error) {
 				return failure(failureCode(error));
 			}
-		}, token);
-	}
-
-	/**
-	 * 解析は 1 本ずつ流す。shared process の同じスレッドで重ねて走らせると、どれも遅くなるうえ
-	 * 他のチャネルの応答も待たされる。待っている間に取り消されたものは走らせない。
-	 */
-	private serialized<T extends IParadisWordAnalysisResult | IParadisWordComparisonResult>(run: () => Promise<T>, token: CancellationToken): Promise<T> {
-		const result = this.queue.then(() => token.isCancellationRequested ? failure('cancelled') as T : run());
-		this.queue = result.catch(() => undefined);
-		return result;
+		})();
 	}
 
 	private parse(bytes: Uint8Array, token: CancellationToken, deadlineMilliseconds = profile.semanticParseMilliseconds): Promise<ParsedWord> {

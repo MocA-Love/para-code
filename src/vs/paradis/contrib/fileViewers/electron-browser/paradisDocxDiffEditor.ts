@@ -22,7 +22,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisDocxFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -68,7 +68,7 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
-import { acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
+import { PARADIS_WORD_SEMANTIC_BUSY_RETRIES, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS, acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, mergeParadisWordPackageExclusions, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
@@ -211,6 +211,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _documentSnapshot: { readonly original: Uint8Array; readonly modified: Uint8Array; readonly placeholders: readonly ParadisOfficePlaceholder[] } | undefined;
 	/** 詳しい比較（shared process）。読み込んだ元のバイト列で頼み、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 混み合っていて比較できなかったときの、頼み直しの予約。 */
+	private readonly _semanticRetry = this._register(new MutableDisposable());
+	private _semanticRetries = 0;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticSources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
@@ -998,6 +1001,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._changeInspector.value = inspector;
 		inspector.setViewState(this._wordViewState);
 		inspector.setComparison(changes, completeness, outcome);
+		if (semantic) {
+			inspector.setTruncatedChanges(semantic.truncatedValueChangeIds);
+		}
 		inspector.setPlaceholders(this._assetPlaceholders);
 		inspector.setAnalysis({
 			...(semantic ? { counts: semantic.modified } : {}),
@@ -1074,6 +1080,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._legacyResult = undefined;
 		this._renderedParagraphs = undefined;
 		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
+		this._semanticRetry.clear();
+		this._semanticRetries = 0;
 	}
 
 	/**
@@ -1107,6 +1115,17 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				return;
 			}
 			this._semanticResult = result;
+			if (!result.ok && result.code === 'busy') {
+				// 混み合っていただけなので、覚えた中身を捨てて、少し後に頼み直す。
+				this._semanticSources = undefined;
+				if (this._semanticRetries++ < PARADIS_WORD_SEMANTIC_BUSY_RETRIES) {
+					this._semanticRetry.value = disposableTimeout(() => {
+						if (inputEpoch === this._inputEpoch && !this._semanticSources) {
+							this._requestSemanticComparison(original, modified);
+						}
+					}, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS);
+				}
+			}
 			if (this._legacyResult) {
 				this._renderSemanticUi(this._legacyResult);
 			}

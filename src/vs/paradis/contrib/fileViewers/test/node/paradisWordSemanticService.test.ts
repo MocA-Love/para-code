@@ -13,7 +13,7 @@ import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '.
 import { alignParadisWordParagraphs, compactParadisWordText } from '../../common/word/paradisWordRenderOutline.js';
 import { ParadisWordSemanticChannel } from '../../node/word/paradisWordSemanticChannel.js';
 import { ParadisWordSemanticService } from '../../node/word/paradisWordSemanticService.js';
-import { PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_LIMIT, ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
+import { PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_BYTES_LIMIT, PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_LIMIT, ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
 import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest } from '../../node/word/paradisWordSemanticWorkerProtocol.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
@@ -261,27 +261,33 @@ suite('ParadisWordSemanticService', () => {
 			const nextResult = await next;
 
 			// worker が落ちたら、走っていた依頼は失敗（メモリ不足なら大きすぎる扱い）。本体で解析し直さない。
-			const outOfMemory = code(backend.analyze(bytes, CancellationToken.None));
+			// メモリ不足で落とした文書は覚えておき、次からは worker を起動せずに断る。
+			const heavy = new Uint8Array([9, 9]);
+			const outOfMemory = code(backend.analyze(heavy, CancellationToken.None));
 			workers[1].crash(Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
+			const rememberedOutOfMemory = await code(backend.analyze(heavy.slice(), CancellationToken.None));
 			const crashed = code(backend.analyze(bytes, CancellationToken.None));
 			workers[2].crash();
 
-			// 待ち行列の長さには上限がある。
+			// 待ち行列の長さ（件数とバイト数）には上限がある。超えた依頼は「混み合っている」。
 			const running = backend.analyze(bytes, CancellationToken.None);
-			const queued = Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT }, () => backend.analyze(bytes, CancellationToken.None));
+			const big = new Uint8Array(PARADIS_WORD_SEMANTIC_QUEUE_BYTES_LIMIT / 2 + 1);
+			const queuedBig = backend.analyze(big, CancellationToken.None);
+			const overBytes = await code(backend.analyze(big.slice(), CancellationToken.None));
+			const queued = Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT - 1 }, () => backend.analyze(bytes, CancellationToken.None));
 			const overflow = await code(backend.analyze(bytes, CancellationToken.None));
 
 			deepStrictEqual({
 				notStarted, waitingResult, compareResult, comparisonWorkerTerminated: workers[0].terminated, hungResult, nextResult,
-				outOfMemory: await outOfMemory, crashed: await crashed, overflow,
+				outOfMemory: await outOfMemory, rememberedOutOfMemory, crashed: await crashed, overBytes, overflow,
 				posted: workers.map(worker => worker.posted.map(message => message.op)),
 			}, {
-				notStarted: 'failed', waitingResult: 'cancelled', compareResult: 'unsupported', comparisonWorkerTerminated: true, hungResult: 'limitExceeded', nextResult: 'invalid',
-				outOfMemory: 'limitExceeded', crashed: 'failed', overflow: 'limitExceeded',
+				notStarted: 'failed', waitingResult: 'busy', compareResult: 'unsupported', comparisonWorkerTerminated: true, hungResult: 'limitExceeded', nextResult: 'invalid',
+				outOfMemory: 'limitExceeded', rememberedOutOfMemory: 'limitExceeded', crashed: 'failed', overBytes: 'busy', overflow: 'busy',
 				posted: [['compare', 'analyze'], ['analyze', 'analyze'], ['analyze'], ['analyze']],
 			});
 			backend.dispose();
-			deepStrictEqual(await Promise.all([running, ...queued].map(code)), Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT + 1 }, () => 'cancelled'));
+			deepStrictEqual(await Promise.all([running, queuedBig, ...queued].map(code)), Array.from({ length: PARADIS_WORD_SEMANTIC_QUEUE_LIMIT + 1 }, () => 'cancelled'));
 		} finally {
 			backend.dispose();
 		}

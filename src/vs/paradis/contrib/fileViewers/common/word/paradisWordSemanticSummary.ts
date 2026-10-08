@@ -28,7 +28,8 @@ export const PARADIS_WORD_SEMANTIC_CHANNEL = 'paradisWordSemantic';
 export type ParadisWordSemanticFormat = 'docx' | 'docm' | 'dotx' | 'dotm';
 
 /** 失敗の理由。パッケージの不備はサニタイズ済みのコードだけを返し、中身やパスは返さない。 */
-export type ParadisWordSemanticFailureCode = ParadisOfficePackageError['code'] | 'unsupported' | 'tooLarge' | 'failed';
+/** `busy` は、解析の worker が混み合っていて走らせられなかった（しばらくしてから頼み直せば通る）。 */
+export type ParadisWordSemanticFailureCode = ParadisOfficePackageError['code'] | 'unsupported' | 'tooLarge' | 'failed' | 'busy';
 
 /** 未知の要素を、表示に関係しないもの（ignorable）と、描くべきなのに描けていないもの（unrendered）に分ける。 */
 export type ParadisWordUnknownElementDisposition = 'ignorable' | 'unrendered';
@@ -103,6 +104,8 @@ export interface IParadisWordComparison {
 	readonly modifiedOutline: IParadisWordRenderOutline;
 	/** 変更の ID → 移動先（どちらの側の、どの段落か）。文書全体の変更（スタイルなど）は持たない。 */
 	readonly navigation: Readonly<Record<string, IParadisWordChangeTarget>>;
+	/** 表示用に値を切り詰めた変更（後半だけが変わっていると、切り詰めた値では違いが見えない）。 */
+	readonly truncatedValueChangeIds: readonly string[];
 	readonly timings: { readonly parseMs: number; readonly compareMs: number };
 }
 
