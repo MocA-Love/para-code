@@ -15,6 +15,7 @@ import {
 	type ParadisOfficeRenderCoverage,
 } from '../../common/paradisOfficeProtocol.js';
 import type { IParadisWordAnalysisCounts, ParadisWordSemanticFailureCode } from '../../common/word/paradisWordSemanticSummary.js';
+import { PARADIS_OFFICE_LISTED_PARTS_LIMIT, type ParadisOfficeBlockedPart, type ParadisOfficeIgnoredPart, type ParadisOfficeRenderablePackage } from '../../common/paradisOfficeSanitizer.js';
 
 /** Theme variables keep diagnostics legible when ordinary colors collapse in high-contrast themes. */
 export const PARADIS_WORD_HIGH_CONTRAST_TOKENS = Object.freeze({
@@ -99,16 +100,89 @@ export function renderWordDiagnosticsRibbon(container: HTMLElement, input: Parad
 	return ribbon;
 }
 
+/** 描画用のパッケージから外した部品（Q313 A）。表示に関係しないので黙って外したものと、安全のために外したもの。 */
+export interface ParadisWordPackageExclusions {
+	readonly ignored: readonly ParadisOfficeIgnoredPart[];
+	readonly ignoredOmitted: number;
+	readonly blocked: readonly ParadisOfficeBlockedPart[];
+	readonly blockedOmitted: number;
+}
+
+export const EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS: ParadisWordPackageExclusions = Object.freeze({ ignored: [], ignoredOmitted: 0, blocked: [], blockedOmitted: 0 });
+
+export function paradisWordPackageExclusions(sanitized: Pick<ParadisOfficeRenderablePackage, 'ignoredParts' | 'ignoredPartsOmitted' | 'blockedParts' | 'blockedPartsOmitted'>): ParadisWordPackageExclusions {
+	return { ignored: sanitized.ignoredParts, ignoredOmitted: sanitized.ignoredPartsOmitted, blocked: sanitized.blockedParts, blockedOmitted: sanitized.blockedPartsOmitted };
+}
+
+/** 比較の両側を 1 つにまとめる。同じ部品は 1 つにし、一覧は上限の件数までにする。 */
+export function mergeParadisWordPackageExclusions(left: ParadisWordPackageExclusions, right: ParadisWordPackageExclusions): ParadisWordPackageExclusions {
+	const merge = <T>(values: readonly T[], key: (value: T) => string): { readonly list: T[]; readonly overflow: number } => {
+		const seen = new Map<string, T>();
+		for (const value of values) {
+			if (!seen.has(key(value))) {
+				seen.set(key(value), value);
+			}
+		}
+		const list = [...seen.values()];
+		return { list: list.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT), overflow: Math.max(0, list.length - PARADIS_OFFICE_LISTED_PARTS_LIMIT) };
+	};
+	const ignored = merge([...left.ignored, ...right.ignored], part => `${part.reason}|${part.kind}|${part.partName}`);
+	const blocked = merge([...left.blocked, ...right.blocked], part => `${part.feature}|${part.kind}|${part.partName ?? ''}|${part.scheme ?? ''}`);
+	return {
+		ignored: ignored.list, ignoredOmitted: left.ignoredOmitted + right.ignoredOmitted + ignored.overflow,
+		blocked: blocked.list, blockedOmitted: left.blockedOmitted + right.blockedOmitted + blocked.overflow,
+	};
+}
+
+/** 安全のために外したものの種類の表示名。 */
+export function paradisWordBlockedFeatureLabel(feature: string): string {
+	switch (feature) {
+		case 'macro': return localize('paradis.word.blocked.macro', "マクロ");
+		case 'embeddedObject': return localize('paradis.word.blocked.embeddedObject', "埋め込み");
+		case 'altChunk': return localize('paradis.word.blocked.altChunk', "埋め込み文書");
+		case 'externalRelationship': return localize('paradis.word.blocked.external', "外部参照");
+		case 'unknownRelationship': return localize('paradis.word.blocked.unknownRelationship', "知らない関係");
+		case 'unsafeRelationship': return localize('paradis.word.blocked.unsafeRelationship', "安全でない関係");
+		default: return localize('paradis.word.blocked.unsafeContent', "安全でない部品");
+	}
+}
+
+/** 黙って外した部品の理由の表示名。 */
+export function paradisWordIgnoredReasonLabel(reason: ParadisOfficeIgnoredPart['reason']): string {
+	switch (reason) {
+		case 'notRendered': return localize('paradis.word.ignored.notRendered', "表示に使わない");
+		case 'unreferenced': return localize('paradis.word.ignored.unreferenced', "どこからも参照されない");
+		case 'missingTarget': return localize('paradis.word.ignored.missingTarget', "関係の先の部品が無い");
+	}
+}
+
+/**
+ * 安全のために外したもの（マクロ・埋め込み・外部参照など）の要約。リボンに必ず警告として出す。
+ * 一覧に載らなかった分（上限を超えた分）は種類が分からないので、件数だけ足す。
+ */
+export function summarizeParadisWordBlockedParts(exclusions: ParadisWordPackageExclusions): string | undefined {
+	const counts = new Map<string, number>();
+	for (const part of exclusions.blocked) {
+		const label = paradisWordBlockedFeatureLabel(part.feature);
+		counts.set(label, (counts.get(label) ?? 0) + Math.max(1, part.count));
+	}
+	const items = [...counts].map(([label, count]) => localize('paradis.word.blocked.item', "{0} {1}", label, count));
+	if (exclusions.blockedOmitted > 0) {
+		items.push(localize('paradis.word.blocked.more', "ほか {0}", exclusions.blockedOmitted));
+	}
+	return items.length > 0 ? localize('paradis.word.blocked.summary', "安全のために外しました: {0}", items.join('・')) : undefined;
+}
+
 /**
  * 詳しい解析の状態。リボンは固定の値ではなく、この状態から作る。
  * `alternatives` は画面で箱に置き換えた数、`ignoredParts` は表示に関係しないので黙って外した部品の数。
  */
 export type ParadisWordSemanticRibbonState =
-	| { readonly kind: 'analyzing'; readonly alternatives: number; readonly ignoredParts: number }
-	| { readonly kind: 'failed'; readonly code: ParadisWordSemanticFailureCode; readonly alternatives: number; readonly ignoredParts: number }
-	| { readonly kind: 'analyzed'; readonly counts: IParadisWordAnalysisCounts; readonly alternatives: number; readonly ignoredParts: number }
-	| { readonly kind: 'comparing'; readonly alternatives: number; readonly ignoredParts: number }
-	| { readonly kind: 'compared'; readonly changes: number; readonly truncated: boolean; readonly outcome: ParadisOfficeOutcome; readonly alternatives: number; readonly ignoredParts: number; readonly warnings?: readonly string[] };
+	| { readonly kind: 'analyzing'; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
+	| { readonly kind: 'failed'; readonly code: ParadisWordSemanticFailureCode; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
+	| { readonly kind: 'analyzed'; readonly counts: IParadisWordAnalysisCounts; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
+	| { readonly kind: 'comparing'; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
+	| { readonly kind: 'compared'; readonly changes: number; readonly truncated: boolean; readonly outcome: ParadisOfficeOutcome; readonly alternatives: number; readonly ignoredParts: number; readonly warnings?: readonly string[]; readonly blocked?: string };
 
 /** 解析できなかった理由を利用者向けの短い文にする。中身やパスは含めない。 */
 export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode): string {
@@ -216,6 +290,10 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 	}
 	action(ribbon, localize('paradis.word.semantic.legacyView', "表示: 従来の表示（近似）"), 'view', undefined);
 	action(ribbon, localize('paradis.word.diagnostics.alternatives', "代替表示 {0}", state.alternatives), 'alternatives', onActivate);
+	if (state.blocked) {
+		const item = action(ribbon, state.blocked, 'blocked', onActivate);
+		item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+	}
 	if (state.ignoredParts > 0) {
 		action(ribbon, localize('paradis.word.semantic.ignoredParts', "無視した部品 {0}", state.ignoredParts), 'ignored', onActivate);
 	}

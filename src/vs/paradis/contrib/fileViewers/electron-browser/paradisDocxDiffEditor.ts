@@ -70,8 +70,8 @@ import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
-import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
-import { renderWordSemanticRibbon, wordSemanticFailureMessage, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, mergeParadisWordPackageExclusions, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { compareParadisWordDocuments } from './word/paradisWordSemanticClient.js';
 import { alignParadisWordParagraphs } from '../common/word/paradisWordRenderOutline.js';
 import type { IParadisWordComparisonResult } from '../common/word/paradisWordSemanticSummary.js';
@@ -216,6 +216,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _semanticSources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
 	private _semanticResult: IParadisWordComparisonResult | undefined;
 	private _legacyResult: IParadisDocxDiffResult | undefined;
+	/** 両側の描画用のパッケージから外した部品（無視したもの・安全のために外したもの）。 */
+	private _packageExclusions: ParadisWordPackageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 	/** いま表示している両側の docx-preview の段落ごとの文字（webview が描いた後に報告する）。 */
 	private _renderedParagraphs: { readonly original: unknown; readonly modified: unknown } | undefined;
 	private _recreatingForRecovery = false;
@@ -663,6 +665,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				modified: new Uint8Array(modifiedPackage.buffer),
 				placeholders: [...originalPackage.placeholders, ...modifiedPackage.placeholders],
 			};
+			this._packageExclusions = mergeParadisWordPackageExclusions(originalPackage.exclusions, modifiedPackage.exclusions);
 			this._assetPlaceholders = this._documentSnapshot.placeholders;
 			this._probe.setBytes(this._documentSnapshot.original.byteLength + this._documentSnapshot.modified.byteLength);
 			this._requestSemanticComparison(originalPackage.source, modifiedPackage.source);
@@ -720,12 +723,12 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		);
 	}
 
-	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array }> {
+	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array; readonly exclusions: ParadisWordPackageExclusions }> {
 		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
 		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
 		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token);
 		const bytes = sanitized.bytes;
-		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer };
+		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer, exclusions: paradisWordPackageExclusions(sanitized) };
 	}
 
 	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる場合だけ専用の案内を出す。 */
@@ -996,10 +999,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		inspector.setViewState(this._wordViewState);
 		inspector.setComparison(changes, completeness, outcome);
 		inspector.setPlaceholders(this._assetPlaceholders);
-		inspector.setAnalysis(this._semanticResult === undefined ? undefined : {
+		inspector.setAnalysis({
 			...(semantic ? { counts: semantic.modified } : {}),
-			ignoredParts: [],
-			...(this._semanticResult.ok ? {} : { failure: localize('paradis.word.compareFailed', "詳しい比較ができませんでした: {0}。段落単位の比較を表示しています。", wordSemanticFailureMessage(this._semanticResult.code)) }),
+			...paradisWordExclusionItems(this._packageExclusions),
+			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.compareFailed', "詳しい比較ができませんでした: {0}。段落単位の比較を表示しています。", wordSemanticFailureMessage(this._semanticResult.code)) } : {}),
 		});
 		if (wasVisible) {
 			this._setInspectorVisible(true);
@@ -1008,14 +1011,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private _semanticRibbonState(): ParadisWordSemanticRibbonState {
 		const alternatives = this._assetPlaceholders.length;
-		const ignoredParts = 0;
+		const ignoredParts = this._packageExclusions.ignored.length + this._packageExclusions.ignoredOmitted;
+		const blocked = summarizeParadisWordBlockedParts(this._packageExclusions);
+		const extra = blocked ? { blocked } : {};
 		const result = this._semanticResult;
 		if (!result) {
-			return { kind: 'comparing', alternatives, ignoredParts };
+			return { kind: 'comparing', alternatives, ignoredParts, ...extra };
 		}
 		return result.ok
-			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts, warnings: comparisonWarnings(result) }
-			: { kind: 'failed', code: result.code, alternatives, ignoredParts };
+			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts, warnings: comparisonWarnings(result), ...extra }
+			: { kind: 'failed', code: result.code, alternatives, ignoredParts, ...extra };
 	}
 
 	private _setInspectorVisible(visible: boolean): void {
@@ -1068,6 +1073,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._semanticResult = undefined;
 		this._legacyResult = undefined;
 		this._renderedParagraphs = undefined;
+		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 	}
 
 	/**

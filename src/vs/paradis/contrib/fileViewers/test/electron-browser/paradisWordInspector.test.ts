@@ -30,14 +30,18 @@ import {
 	resolveParadisWordNavigation,
 	restoreParadisWordViewState,
 	searchParadisWordStories,
+	paradisWordExclusionItems,
 	wordChangeLabel,
 } from '../../electron-browser/word/paradisWordChangeInspector.js';
 import {
 	PARADIS_WORD_HIGH_CONTRAST_TOKENS,
 	canShowWordNoChanges,
 	renderWordDiagnosticsRibbon,
+	mergeParadisWordPackageExclusions,
 	renderWordSemanticRibbon,
+	summarizeParadisWordBlockedParts,
 	wordPrintWarning,
+	type ParadisWordPackageExclusions,
 } from '../../electron-browser/word/paradisWordDiagnostics.js';
 import type { IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 
@@ -149,6 +153,43 @@ suite('ParadisWordInspector', () => {
 			change: '挿入 — added words（Clerk）',
 			analysis: ['本文1', '段落1', 'テキスト2', 'proofErr2 件・表示に関係しない', '他 2 種5 件'],
 			ignored: ['/customXml/item1.xml — customXml'],
+		});
+	});
+
+	test('warns about macros, embeddings, and external references removed for safety, and lists ignored parts (Q313)', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word exclusions');
+		const host = document.createElement('div');
+		const original: ParadisWordPackageExclusions = {
+			ignored: [{ partName: 'customXml/item1.xml', kind: 'customXml', reason: 'notRendered' }],
+			ignoredOmitted: 0,
+			blocked: [
+				{ feature: 'macro', kind: 'vbaProject', partName: 'word/vbaProject.bin', count: 1 },
+				{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 3 },
+			],
+			blockedOmitted: 0,
+		};
+		const modified: ParadisWordPackageExclusions = {
+			ignored: [{ partName: 'customXml/item1.xml', kind: 'customXml', reason: 'notRendered' }, { partName: 'word/people.xml', kind: 'people', reason: 'notRendered' }],
+			ignoredOmitted: 2,
+			blocked: [{ feature: 'embeddedObject', kind: 'oleObject', partName: 'word/embeddings/oleObject1.bin', count: 1 }],
+			blockedOmitted: 0,
+		};
+		const merged = mergeParadisWordPackageExclusions(original, modified);
+		const blocked = summarizeParadisWordBlockedParts(merged);
+		const ribbon = renderWordSemanticRibbon(host, { kind: 'analyzing', alternatives: 0, ignoredParts: merged.ignored.length + merged.ignoredOmitted, ...(blocked ? { blocked } : {}) });
+		const inspectorHost = document.createElement('div');
+		const inspector = disposables.add(new ParadisWordChangeInspector(inspectorHost));
+		inspector.setAnalysis(paradisWordExclusionItems(merged));
+		deepStrictEqual({
+			ribbon: [...ribbon.children].map(item => item.textContent),
+			blocked: [...inspectorHost.querySelectorAll('.paradis-word-blocked-parts > *')].map(item => item.textContent),
+			ignored: [...inspectorHost.querySelectorAll('.paradis-word-ignored-parts > *')].map(item => item.textContent),
+			empty: summarizeParadisWordBlockedParts({ ignored: [], ignoredOmitted: 0, blocked: [], blockedOmitted: 0 }),
+		}, {
+			ribbon: ['解析中…', '表示: 従来の表示（近似）', '代替表示 0', '安全のために外しました: マクロ 1・外部参照 3・埋め込み 1', '無視した部品 4'],
+			blocked: ['安全のために外したもの 3', 'word/vbaProject.bin — マクロ', 'hyperlink (https) — 外部参照・3 件', 'word/embeddings/oleObject1.bin — 埋め込み'],
+			ignored: ['無視した部品 4', 'customXml/item1.xml — customXml: 表示に使わない', 'word/people.xml — people: 表示に使わない', '他 2 件'],
+			empty: undefined,
 		});
 	});
 
