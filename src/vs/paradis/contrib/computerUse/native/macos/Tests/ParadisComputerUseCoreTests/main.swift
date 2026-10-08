@@ -494,9 +494,37 @@ do {
 	check(paradisDecodeManualAccessibilityEntries(Data("broken".utf8)).isEmpty && paradisDecodeManualAccessibilityEntries(nil).isEmpty, "treats a broken or missing record as empty")
 
 	// 背面のアプリで開いているメニューは利用者のもの: 止めて、閉じない（レビュー 2 回目 中 1）
-	check(paradisMenuOpenFailure(menuOpen: true, targetIsFrontmost: false)?.code == "menu_open", "stops while the user has a menu open in a background app")
-	check(paradisMenuOpenFailure(menuOpen: true, targetIsFrontmost: true) == nil, "lets the agent press items of a menu in the front app")
-	check(paradisMenuOpenFailure(menuOpen: false, targetIsFrontmost: false) == nil, "runs when no menu is open")
+	let menuWindow = ParadisMenuWindowFacts(layer: 101, alpha: 1, width: 180, height: 120)
+	check(paradisMenuOpenFailure(menuWindow: menuWindow, axMenuOpen: false, targetIsFrontmost: false) == ParadisHelperError(code: "menu_open", message: "a menu is open in the app (a window at layer 101, 180x120); the user may be using it, or it is a menu that could not be closed"), "stops while a menu window is open in a background app and says what it saw")
+	check(paradisMenuOpenFailure(menuWindow: nil, axMenuOpen: true, targetIsFrontmost: false)?.message == "a menu is open in the app (an accessibility menu); the user may be using it, or it is a menu that could not be closed", "stops on an accessibility menu")
+	check(paradisMenuOpenFailure(menuWindow: menuWindow, axMenuOpen: true, targetIsFrontmost: true) == nil, "lets the agent press items of a menu in the front app")
+	check(paradisMenuOpenFailure(menuWindow: nil, axMenuOpen: false, targetIsFrontmost: false) == nil, "runs when no menu is open")
+
+	// メニューのウィンドウは、層・透明でないこと・大きさで見分ける（レビュー 3 回目 2）
+	check(paradisIsMenuWindow(menuWindow, menuLayer: 101), "counts a visible menu window")
+	check(!paradisIsMenuWindow(ParadisMenuWindowFacts(layer: 101, alpha: 0, width: 180, height: 120), menuLayer: 101), "ignores a transparent window at the menu layer")
+	check(!paradisIsMenuWindow(ParadisMenuWindowFacts(layer: 101, alpha: 1, width: 0, height: 120), menuLayer: 101) && !paradisIsMenuWindow(ParadisMenuWindowFacts(layer: 101, alpha: 1, width: 40, height: 0), menuLayer: 101), "ignores a window without a size")
+	check(!paradisIsMenuWindow(ParadisMenuWindowFacts(layer: 3, alpha: 1, width: 180, height: 120), menuLayer: 101), "ignores windows at other layers")
+
+	// 操作の後のメニュー（レビュー 3 回目 1）: 閉じられなければ黙って残さず伝え、操作の間の打鍵も伝える
+	check(paradisMenuAfterAction(opened: false, closed: false, stillVisible: false, userTypedDuringAction: true) == ParadisMenuAfterAction(closed: false, stillOpen: false, note: nil), "says nothing when the action opened no menu")
+	let closedMenu = paradisMenuAfterAction(opened: true, closed: true, stillVisible: false, userTypedDuringAction: false)
+	check(closedMenu.closed && !closedMenu.stillOpen && closedMenu.note?.hasPrefix("A menu opened in the app while it was not in front, so Para Code closed it.") == true, "reports a menu it closed")
+	let leftOpen = paradisMenuAfterAction(opened: true, closed: false, stillVisible: true, userTypedDuringAction: false)
+	check(!leftOpen.closed && leftOpen.stillOpen && leftOpen.note?.contains("Tell the user that a menu is open in this app") == true, "asks the agent to tell the user about a menu it could not close")
+	let cancelledButVisible = paradisMenuAfterAction(opened: true, closed: true, stillVisible: true, userTypedDuringAction: false)
+	check(!cancelledButVisible.closed && cancelledButVisible.stillOpen, "does not claim a menu closed while its window is still on screen")
+	check(paradisMenuAfterAction(opened: true, closed: true, stillVisible: false, userTypedDuringAction: true).note?.contains("The user typed while the menu was open") == true, "says the user typed while the menu was open")
+	check(paradisUserTypedDuringAction(secondsSinceKeyboard: 0.4, actionSeconds: 1.1) && !paradisUserTypedDuringAction(secondsSinceKeyboard: 5, actionSeconds: 1.1) && !paradisUserTypedDuringAction(secondsSinceKeyboard: nil, actionSeconds: 1.1), "tells keys typed during the action from earlier ones")
+
+	// 記録のファイルは補助アプリごと（レビュー 3 回目 3）
+	check(paradisManualAccessibilityStateFileName(helperPid: 4321) == "manual-accessibility-4321.json", "names the record after the helper pid")
+	check(paradisManualAccessibilityStateFileOwner("manual-accessibility-4321.json") == 4321 && paradisManualAccessibilityStateFileOwner("manual-accessibility.json") == 0, "reads the owner of a record file, including the old name")
+	check(paradisManualAccessibilityStateFileOwner("helper.log") == nil && paradisManualAccessibilityStateFileOwner("manual-accessibility-x1.json") == nil && paradisManualAccessibilityStateFileOwner("manual-accessibility-.json") == nil, "ignores other files")
+	check(paradisShouldRecoverStateFile(ownerPid: 99, selfPid: 42, ownerIsRunningHelper: false), "recovers the record of a helper that is gone")
+	check(!paradisShouldRecoverStateFile(ownerPid: 99, selfPid: 42, ownerIsRunningHelper: true), "leaves the record of another running helper")
+	check(!paradisShouldRecoverStateFile(ownerPid: 42, selfPid: 42, ownerIsRunningHelper: true), "leaves its own record")
+	check(paradisShouldRecoverStateFile(ownerPid: 0, selfPid: 42, ownerIsRunningHelper: false), "recovers the record under the old name")
 	check(paradisShouldCloseMenu(targetIsFrontmost: false, menuOpenBefore: false, menuOpenAfter: true), "closes a menu the action opened in a background app")
 	check(!paradisShouldCloseMenu(targetIsFrontmost: false, menuOpenBefore: true, menuOpenAfter: true), "never closes a menu that was open before the action")
 	check(!paradisShouldCloseMenu(targetIsFrontmost: true, menuOpenBefore: false, menuOpenAfter: true), "never closes a menu in the front app")

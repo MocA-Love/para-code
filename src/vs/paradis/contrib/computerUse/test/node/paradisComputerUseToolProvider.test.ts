@@ -740,7 +740,7 @@ suite('ParadisComputerUseToolProvider', () => {
 				'Para Code never sends this shortcut (Spotlight shortcuts are never sent)',
 				'macOS has not granted Accessibility to "Para Code Computer Use"',
 				'An authentication or permission dialog is on screen, so Para Code does not send any input',
-				'A menu is open in the app while it is not in front, so the user is probably using it',
+				'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close',
 			],
 		});
 	});
