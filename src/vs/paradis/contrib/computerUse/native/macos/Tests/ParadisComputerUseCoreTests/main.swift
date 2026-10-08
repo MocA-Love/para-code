@@ -439,7 +439,7 @@ do {
 	for invalid: Any in [true, 0, -1, 1.5, UInt64(UInt32.max) + 1, "42"] {
 		check((try? paradisParseInputOptions(["backgroundWindowId": invalid])) == nil, "rejects malformed window identifiers before routing")
 	}
-	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the background route is not available yet")
+	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the unavailable background fallback declines input")
 }
 
 // MARK: - 要求 ID ごとの中断
@@ -475,6 +475,29 @@ do {
 	check(payload?["sent"] as? Int == 3 && payload?["code"] as? String == "user_active" && payload?["progress"] == nil, "sent input is not reported as confirmed progress")
 }
 
+// MARK: - 背面メニューと要求待ち上限
+
+do {
+	check(paradisBackgroundClickOpensMenu(roles: ["AXImage", "AXGroup", "AXGroup", "AXPopUpButton"]), "menu opening ancestor three levels above the image blocks background input")
+	check(!paradisBackgroundClickOpensMenu(roles: ["AXStaticText", "AXButton"]), "plain button labels remain eligible for background input")
+	let closed = paradisBackgroundMenuResult(opened: true, attempted: true, accepted: true, stillOpen: false)
+	check(closed["menuClosed"] as? Bool == true && closed["menuCancelAttempted"] as? Bool == true, "reports attempted and observed closed separately")
+	let remains = paradisBackgroundMenuResult(opened: true, attempted: true, accepted: true, stillOpen: true)
+	check(remains["menuClosed"] as? Bool == false && remains["menuOpen"] as? Bool == true, "AXCancel success alone does not prove the menu closed")
+	let unavailable = paradisBackgroundMenuResult(opened: true, attempted: false, accepted: false, stillOpen: true)
+	check(unavailable["menuCancelAttempted"] as? Bool == false && (unavailable["note"] as? String)?.contains("no accessible menu") == true, "does not claim an unattempted cancellation failed")
+	func request(_ id: Int) -> Data { try! JSONSerialization.data(withJSONObject: ["id": id, "method": "typeText", "params": [:]]) }
+	let queue = ParadisRequestQueue()
+	_ = try? queue.append([request(1)], authenticated: true)
+	_ = queue.next()
+	let replies = try? queue.append((2...130).map(request), authenticated: true)
+	let overflow = replies?.first.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+	check(overflow?["id"] as? Int == 130 && (overflow?["error"] as? [String: Any])?["code"] as? String == "queue_full", "overflow is returned to the rejected request")
+	check((try? queue.check()) != nil, "overflow does not stop a different active request")
+	queue.finish()
+	check(queue.next().flatMap { try? paradisParseRequest($0).get() }?.id == 2, "overflow preserves accepted request order")
+}
+
 // MARK: - 1 段目: クリックの代わりの AX の操作
 
 do {
@@ -485,7 +508,7 @@ do {
 	let row = ParadisAXElementFacts(role: "AXRow", actions: ["AXShowMenu"])
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 0), "presses a button")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 1), "presses the button around its label")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, button], targetIsFrontmost: true) == .none("no element near the target accepts AXPress"), "does not climb past three elements")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, group, button], targetIsFrontmost: true) == .none("no element near the target accepts AXPress"), "does not climb past three parents")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [row, button], targetIsFrontmost: true) == .none("AXRow does not accept AXPress"), "does not climb out of a row")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [button], targetIsFrontmost: true) == .none("double and triple clicks need real input"), "double clicks need real input")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: .command, chain: [button], targetIsFrontmost: true) == .none("clicks with modifier keys need real input"), "modified clicks need real input")

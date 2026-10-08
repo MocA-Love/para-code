@@ -38,7 +38,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
-	/** 2 段目（背面への入力）。今は常に使えない空の実装（ParadisInputRoutes.swift）。 */
+	/** 2 段目（背面への入力）。未送信で対応できない操作は前面経路へ譲る（ParadisInputRoutes.swift）。 */
 	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
 
 	init() {

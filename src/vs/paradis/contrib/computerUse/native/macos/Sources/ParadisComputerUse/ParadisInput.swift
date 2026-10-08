@@ -44,7 +44,7 @@ extension ParadisDesktop {
 	// MARK: - 段の振り分け
 
 	/**
-	 * 入力を送る。1 段目（AX）・2 段目（背面。今は空）・3 段目（前面。下の foreground* ）の順に試す（ParadisInputRoute.swift）。
+	 * 入力を送る。1 段目（AX）・2 段目（背面）・3 段目（前面。下の foreground* ）の順に試す（ParadisInputRoute.swift）。
 	 * 独自のカーソルを出さない要求（設定でオフ）が来たら、出ているカーソルを消す。
 	 */
 	func perform(pid: Int32, action: ParadisInputAction, options: ParadisInputOptions) throws -> [String: Any] {
@@ -375,7 +375,7 @@ extension ParadisDesktop {
 	func prepareForeground(pid: Int32, windowId: UInt32?) throws {
 		let deadline = Date().addingTimeInterval(paradisActivateFirstWaitSeconds)
 		while let failure = userActivityFailure() {
-			if Date() >= deadline {
+			if failure.code != "user_active" || Date() >= deadline {
 				throw failure
 			}
 			usleep(100_000)
@@ -384,6 +384,7 @@ extension ParadisDesktop {
 		// 前面になったと OS が知らせるまで少し待つ（前面でなければ、続く確かめが window_not_focused で止める）
 		let shown = Date().addingTimeInterval(1.0)
 		while paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier }) != pid && Date() < shown {
+			try ParadisRequestCancellation.check()
 			usleep(50_000)
 		}
 	}

@@ -8,7 +8,7 @@
 // 入力の送り方の段の実体（段の並びと選び方は Core の ParadisInputRoute.swift）。
 //
 //  - 1 段目 `ParadisAccessibilityRoute`: AX の操作。マウスもカーソルも動かさず、前面に出さない
-//  - 2 段目 `paradisMakeBackgroundRoute()`: 背面への入力の差し込み口。指定ウィンドウへ送る実装を返す
+//  - 2 段目 `paradisMakeBackgroundRoute(desktop:)`: 背面への入力の差し込み口。指定ウィンドウへ送る実装を返す
 //  - 3 段目 `ParadisForegroundRoute`: 今までの経路（ParadisInput.swift の foreground*）
 //
 // 1 段目で確かめること（3 段目と違い、前面のアプリが目的の pid であることは求めない）:
@@ -151,10 +151,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		case .failure(let reason):
 			return .fellThrough(reason.message)
 		}
-		var chain: [AXUIElement] = [hit]
-		while chain.count < paradisAXClickChainLimit, let parent = paradisElement(chain[chain.count - 1], kAXParentAttribute), !paradisIsWindow(parent) {
-			chain.append(parent)
-		}
+		let chain = paradisAXClickAncestors(hit)
 		let targetIsFrontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier } == pid
 		let plan = paradisAccessibilityClickPlan(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain.map(paradisAXFacts), targetIsFrontmost: targetIsFrontmost)
 		let element: AXUIElement
@@ -612,4 +609,13 @@ func paradisFocusSnapshot() -> ParadisFocusSnapshot {
 	let applicationPid = application.flatMap { AXUIElementGetPid($0, &pid) == .success ? pid : nil }
 	let window = application.flatMap { paradisElement($0, kAXFocusedWindowAttribute) }
 	return ParadisFocusSnapshot(frontmostPid: frontmost, focusedApplicationPid: applicationPid, focusedWindowId: window.flatMap(paradisAXWindowNumber))
+}
+
+/** AX 操作と背面クリックが同じ深さで親要素を調べる。ウィンドウの外へは出ない。 */
+func paradisAXClickAncestors(_ hit: AXUIElement) -> [AXUIElement] {
+	var chain = [hit]
+	while chain.count < paradisAXClickChainLimit, let parent = paradisElement(chain[chain.count - 1], kAXParentAttribute), !paradisIsWindow(parent), !chain.contains(where: { CFEqual($0, parent) }) {
+		chain.append(parent)
+	}
+	return chain
 }

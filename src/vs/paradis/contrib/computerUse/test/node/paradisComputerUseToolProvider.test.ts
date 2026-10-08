@@ -712,6 +712,34 @@ suite('ParadisComputerUseToolProvider', () => {
 		assert.deepStrictEqual({ reason: text(result).includes('Wait a few seconds'), sent: text(result).includes('first 2 of 5'), unconfirmed: text(result).includes('unconfirmed'), next: text(result).includes('character 3') }, { reason: true, sent: true, unconfirmed: true, next: true });
 	});
 
+	test('reports zero sent input without suggesting the chunk might have arrived', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => {
+			const error = new ParadisComputerUseHelperError('cancelled', 'cancelled before sending');
+			error.sent = 0;
+			throw error;
+		};
+		const typed = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'hello', includeState: false }, undefined, context));
+		const clicked = text(await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 2, y: 2, includeState: false }, undefined, context));
+		assert.deepStrictEqual({ typed: typed.includes('No input was sent for the current chunk.'), clicked: clicked.includes('No input was sent for this request.'), uncertain: (typed + clicked).includes('unconfirmed') }, { typed: true, clicked: true, uncertain: false });
+	});
+
+	test('keeps menu cleanup advice alongside the original error code', async () => {
+		const { provider, helper, ledger } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', []);
+		helper.onInput = async () => {
+			const error = new ParadisComputerUseHelperError('user_active', 'typing');
+			error.sent = 1;
+			error.note = 'Para Code tried AXCancel, but the menu is still open.';
+			throw error;
+		};
+		const result = text(await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 2, y: 2, includeState: false }, undefined, context));
+		assert.deepStrictEqual({ reason: result.includes('Wait a few seconds'), cleanup: result.includes('tried AXCancel'), sent: result.includes('1 input units were sent') }, { reason: true, cleanup: true, sent: true });
+	});
+
 	test('never sends input to an app the user allowed only to read', async () => {
 		const { helper, ledger, provider } = setup();
 		// 初回の操作の求めに「読み取りのみ」

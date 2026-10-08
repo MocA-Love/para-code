@@ -208,8 +208,8 @@ func paradisAXActionOpensMenu(action: String, role: String) -> Bool {
 	return action == "AXShowMenu" || (action == "AXPress" && paradisMenuOpeningRoles.contains(role))
 }
 
-/** 親をたどる深さ（当たった要素を含めて 3 つまで）。 */
-let paradisAXClickChainLimit = 3
+/** 当たった要素と、その親を3つまで調べる。 */
+let paradisAXClickChainLimit = 4
 
 /**
  * クリックを AX の操作に置き換えられるか（1 段目）。置き換えられるのは、修飾キーの無い 1 回のクリックだけ。
@@ -710,4 +710,23 @@ func paradisParseValueChange(_ params: [String: Any]) throws -> ParadisValueChan
 		_ = try paradisTypedUnits(text)
 	}
 	return .text(text)
+}
+
+/** 背面の座標クリックでも、ラベルや画像の親にあるメニュー部品を除く。 */
+func paradisBackgroundClickOpensMenu(roles: [String]) -> Bool {
+	return roles.prefix(paradisAXClickChainLimit).contains { paradisMenuOpeningRoles.contains($0) || $0 == "AXMenuBarItem" || $0 == "AXMenuItem" }
+}
+
+/** AXCancel の試行と、閉じたことの観測を別々に報告する。 */
+func paradisBackgroundMenuResult(opened: Bool, attempted: Bool, accepted: Bool, stillOpen: Bool) -> [String: Any] {
+	guard opened else { return [:] }
+	let note: String
+	if !stillOpen {
+		note = "The menu opened by the background action is now closed."
+	} else if attempted {
+		note = "Para Code tried AXCancel, but the menu is still open. Ask the user to close it before sending more input."
+	} else {
+		note = "A menu opened, but no accessible menu was available for AXCancel. Ask the user to close it before sending more input."
+	}
+	return ["menuCancelAttempted": attempted, "menuCancelAccepted": accepted, "menuClosed": !stillOpen, "menuOpen": stillOpen, "note": note]
 }

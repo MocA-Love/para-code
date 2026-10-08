@@ -25,7 +25,10 @@ final class ParadisRequestQueue {
 				if activeId == id || pending.contains(where: { $0.1 == id }) { cancelled.insert(id) }
 				replies.append(paradisEncodeSuccess(id: request.id, result: ["cancelRequested": true]))
 			} else {
-				guard pending.count < 128 else { throw ParadisHelperError(code: "invalid_request", message: "too many queued requests") }
+				guard pending.count < 128 else {
+					replies.append(paradisEncodeFailure(id: parsed?.id, error: ParadisHelperError(code: "queue_full", message: "too many queued requests", sent: parsed?.method == "typeText" ? 0 : nil)))
+					continue
+				}
 				pending.append((line, parsed?.id))
 			}
 		}

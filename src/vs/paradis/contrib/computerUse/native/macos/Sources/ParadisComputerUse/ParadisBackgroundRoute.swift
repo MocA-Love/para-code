@@ -77,7 +77,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		var hit: AXUIElement?
 		AXUIElementCopyElementAtPosition(application, Float(point.x), Float(point.y), &hit)
 		if let hit, paradisIsPasteMenuElement(hit) { throw ParadisHelperError(code: "key_blocked", message: "use pasteText for pasting") }
-		if !keyboard, let hit, let role = paradisCopy(hit, kAXRoleAttribute) as? String, ["AXPopUpButton", "AXMenuButton", "AXMenuBarItem", "AXMenuItem"].contains(role) {
+		if !keyboard, let hit, paradisBackgroundClickOpensMenu(roles: paradisAXClickAncestors(hit).map { paradisCopy($0, kAXRoleAttribute) as? String ?? "AXUnknown" }) {
 			return .fellThrough("menu controls need foreground input")
 		}
 		let textTarget = keyboard ? paradisFocusedTextTarget(pid: pid) : nil
@@ -90,6 +90,9 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			while Date() < deadline { try fence(pid); usleep(10_000) }
 		}
 		try fence(pid)
+		// 既に開いていたメニューはこの操作の後始末として閉じない。
+		let menuWasOpen = paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid, near: hit) != nil
+		if menuWasOpen { throw ParadisHelperError(code: "menu_open", message: "the target already has an open menu") }
 		let before = paradisFocusSnapshot()
 		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
 		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid)
@@ -148,24 +151,55 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 				result = paradisTypeResult(method: .keys, check: paradisTypingOutcome(before: textTarget?.value, selection: textTarget?.selection, after: after, text: text), count: units.count)
 			default: break
 			}
-		} catch var error as ParadisHelperError {
-			// エラーコードを保持し、送信数は確認済み文字数と区別する。次の段へは落とさない。
-			error.sent = transaction.sentUnits
-			throw error
+		} catch {
+			var failure = (error as? ParadisHelperError) ?? ParadisHelperError(code: "input_failed", message: "background input failed")
+			transaction.finish()
+			failure.sent = transaction.sentUnits
+			let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+			if let note = menu["note"] as? String { failure.note = note }
+			throw failure
 		}
 		transaction.finish()
+		let menu = closeMenuAfterInput(pid: pid, started: started, near: hit, shouldCheck: originalPid != pid && !menuWasOpen && transaction.sentUnits > 0)
+		result.merge(menu) { _, value in value }
 		let preserved = paradisFocusPreserved(before: before, after: paradisFocusSnapshot())
 		result["focusPreserved"] = preserved
-		if originalPid != pid, paradisAppMenuWindow(pid: pid) != nil || paradisOpenMenu(pid: pid) != nil {
-			result["menuOpen"] = true
-			result["note"] = "The target opened a menu that could not be closed. Stop and close that menu before continuing."
-		}
 		if !preserved { result["note"] = "The foreground focus changed during input. " + (result["note"] as? String ?? "Read the target state before retrying.") }
 		if !keyboard {
 			result["point"] = paradisWindowPointJson(point, info.bounds)
 			if let cursor = options.cursor { ParadisCursorOverlay.shared.ripple(cursor, at: point) }
 		}
 		return .done(result)
+	}
+
+	/** 成功・中断のどちらでも呼ぶ。利用者のフォーカスは動かさず、操作が開いたメニューだけを閉じる。 */
+	private func closeMenuAfterInput(pid: Int32, started: Double, near element: AXUIElement?, shouldCheck: Bool) -> [String: Any] {
+		guard shouldCheck, paradisProcessStart(pid) == started else { return [:] }
+		var menu: AXUIElement?
+		var visible = false
+		let appearanceDeadline = Date().addingTimeInterval(0.12)
+		repeat {
+			menu = paradisOpenMenu(pid: pid, near: element)
+			visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
+			if visible { break }
+			usleep(20_000)
+		} while Date() < appearanceDeadline
+		guard visible else { return [:] }
+		var attempted = false
+		var accepted = false
+		let closingDeadline = Date().addingTimeInterval(0.3)
+		repeat {
+			guard paradisProcessStart(pid) == started else { return paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: false) }
+			if !attempted, let menu {
+				attempted = true
+				AXUIElementSetMessagingTimeout(menu, 0.2)
+				accepted = AXUIElementPerformAction(menu, kAXCancelAction as CFString) == .success
+			}
+			usleep(20_000)
+			menu = paradisOpenMenu(pid: pid, near: element)
+			visible = menu != nil || paradisAppMenuWindow(pid: pid) != nil
+		} while visible && Date() < closingDeadline
+		return paradisBackgroundMenuResult(opened: true, attempted: attempted, accepted: accepted, stillOpen: visible)
 	}
 
 	private func key(_ transaction: ParadisBackgroundTransaction, code: UInt16, flags: CGEventFlags, text: String? = nil) throws {

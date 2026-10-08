@@ -410,7 +410,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			return errorResult(`Unhandled Computer Use tool: ${name}`);
 		} catch (error) {
 			const sent = error instanceof ParadisComputerUseHelperError && error.sent !== undefined
-				? ` ${error.sent} input units were sent; receipt is unconfirmed. Read the app state before retrying; do not replay sent input.`
+				? error.sent === 0 ? ' No input was sent for this request.' : ` ${error.sent} input units were sent; receipt is unconfirmed. Read the app state before retrying; do not replay sent input.`
 				: '';
 			return errorResult(describeHelperError(error) + sent);
 		}
@@ -787,6 +787,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				}
 				const total = graphemes.length;
 				if (error.sent !== undefined) {
+					if (error.sent === 0) {
+						return { ok: false, error: errorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`) };
+					}
 					const done = typed + Math.min(error.sent, chunk.length);
 					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`) };
 				}
@@ -1225,6 +1228,11 @@ function describeApp(app: IRunningApp): object {
 
 /** 補助アプリの失敗を、エージェントが次に何をすればよいか分かる英文にする。 */
 function describeHelperError(error: unknown): string {
+	const message = formatHelperError(error);
+	return error instanceof ParadisComputerUseHelperError && error.note ? `${message} ${error.note}` : message;
+}
+
+function formatHelperError(error: unknown): string {
 	if (error instanceof ParadisComputerUseHelperError) {
 		switch (error.code) {
 			case 'accessibility_not_granted':
@@ -1261,6 +1269,8 @@ function describeHelperError(error: unknown): string {
 				return `The screen is locked or another user is using this Mac, so Para Code does not send any input (${error.message}).`;
 			case 'foreground_needs_approval':
 				return 'This action needs the app in front and the real mouse pointer or keyboard, and the user has not approved that.';
+			case 'queue_full':
+				return 'The helper request queue is full. This request was not started; wait before retrying it.';
 			case 'invalid_argument':
 				return error.message;
 			case 'cancelled':
