@@ -22,6 +22,7 @@ interface IPageState {
 	readonly y: number | null;
 	readonly sticky: string;
 	readonly wt: boolean;
+	wat: number;
 }
 
 /** Runs the page-side script against this test document, the way the isolated world would. */
@@ -161,17 +162,55 @@ suite('Paradis Cursor Overlay page script', () => {
 		}
 	});
 
+	test('script clicks are followed only after the script started, only while one cursor watches, and not past the watch limit', () => {
+		const doc = mainWindow.document;
+		const button = doc.createElement('button');
+		button.style.cssText = 'position:fixed;left:200px;top:120px;width:40px;height:20px;margin:0;padding:0;border:0';
+		doc.body.appendChild(button);
+		const owner = (id: string) => ({ owner: id, color: '#d97757' });
+		const at = (id: string) => { const c = pageGlobal()!.cs[id]; return [c.x, c.y]; };
+		try {
+			run({ kind: 'move', x: 10, y: 10, label: 'A', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], ...owner('aaaaaaaa') });
+			// The page's own click before the script started is not replayed.
+			button.click();
+			run({ kind: 'status', label: 'A', status: 'script', text: 'Running', park: true, since: Date.now() + 1, ...owner('aaaaaaaa') });
+			const notReplayed = at('aaaaaaaa');
+			// Two cursors watching: whose click it is cannot be told, so neither moves.
+			run({ kind: 'status', label: 'B', status: 'script', text: 'Running', park: true, ...owner('bbbbbbbb') });
+			button.click();
+			const twoWatching = [at('aaaaaaaa'), at('bbbbbbbb')];
+			run({ kind: 'status', label: 'B', status: 'idle', text: '', ...owner('bbbbbbbb') });
+			// Past the watch limit (the end never arrived): the page's own clicks are not followed.
+			(pageGlobal()!.cs.aaaaaaaa as IPageState).wat = Date.now() - 31_000;
+			button.click();
+			const expired = at('aaaaaaaa');
+			assert.deepStrictEqual({ notReplayed, twoWatching, expired }, { notReplayed: [10, 10], twoWatching: [[10, 10], twoWatching[1]], expired: [10, 10] });
+		} finally {
+			button.remove();
+		}
+	});
+
+	test('a look frames the element without touching the state on the name tag', () => {
+		run({ kind: 'status', label: 'Claude', status: 'waiting', text: 'Waiting', park: true });
+		run({ kind: 'look', label: 'Claude', box: { x: 40, y: 50, width: 100, height: 20 } });
+		const s = pageState()!;
+		run({ kind: 'look', label: 'Claude', box: { x: -900, y: 50, width: 100, height: 20 } });
+		assert.deepStrictEqual({ at: [s.x, s.y], t: s.t, sticky: s.sticky, spinning: s.wt }, { at: [54, 60], t: 'Claude \u00b7 Waiting', sticky: 'Waiting', spinning: true });
+	});
+
 	test('a snapshot lights only its range, and nothing lights while a capture hides the overlay', async () => {
 		const calm = mainWindow.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		run({ kind: 'flash', toast: 'Snapshot', rect: { x: 10, y: 20, width: 30, height: 40 } });
 		const f = pageGlobal()!.f;
 		const lit = f ? [f.style.left, f.style.top, f.style.width, f.style.height] : null;
 		const toast = pageGlobal()!.ts?.textContent;
+		// The toast lives in a closed shadow root, so the page (and a snapshot of it) does not see its text.
+		const pageSees = mainWindow.document.documentElement.textContent?.includes('Snapshot');
 		await run({ kind: 'hide' });
 		run({ kind: 'flash', toast: 'Again', rect: { x: 10, y: 20, width: 30, height: 40 } });
 		assert.deepStrictEqual(
-			{ lit, toast, whileHidden: [pageGlobal()!.f, pageGlobal()!.ts] },
-			{ lit: calm ? null : ['10px', '20px', '30px', '40px'], toast: 'Snapshot', whileHidden: [null, null] },
+			{ lit, toast, pageSees, whileHidden: [pageGlobal()!.f, pageGlobal()!.ts] },
+			{ lit: calm ? null : ['10px', '20px', '30px', '40px'], toast: 'Snapshot', pageSees: false, whileHidden: [null, null] },
 		);
 	});
 

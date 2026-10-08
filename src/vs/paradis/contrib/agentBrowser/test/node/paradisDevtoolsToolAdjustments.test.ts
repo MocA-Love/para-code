@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -72,7 +72,7 @@ suite('Paradis devtools tool adjustments', () => {
 			missingIsError: (missing as { isError?: boolean }).isError,
 			withFilePath: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_1', filePath: '/tmp/a.txt' }).snapshotRoot,
 		}, {
-			args: { verbose: true },
+			args: { verbose: true, paraCodeRootRect: '1_1' },
 			subtree: '# take_snapshot response\n## Latest page snapshot\nuid=1_1 dialog "Settings"\n  uid=1_2 button "Save"\n    uid=1_3 StaticText "Save"\n  uid=1_4 button "Cancel"\n',
 			leaf: '# take_snapshot response\n## Latest page snapshot\nuid=1_3 StaticText "Save"\n',
 			missingIsError: true,
@@ -113,6 +113,29 @@ suite('Paradis devtools tool adjustments', () => {
 			evaluateRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('evaluate_script', closed),
 			successRetry: paradisShouldRetryDevtoolsToolAfterTargetClosed('take_snapshot', text('ok')),
 		}, { click: true, snapshotRetry: true, clickRetry: false, evaluateRetry: false, successRetry: false });
+	});
+
+	test('take_snapshot with root asks the vendored tool to measure the root, never from the agent, and the measurement line is taken out', () => {
+		const line = (value: unknown) => `${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}${JSON.stringify(value)}`;
+		assert.deepStrictEqual({
+			root: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3' }).args,
+			rootNextPart: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', offset: 100 }).args,
+			fromAgent: paradisPrepareDevtoolsToolCall('take_snapshot', { paraCodeRootRect: '1_9' }).args,
+			toFile: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', filePath: '/tmp/s.txt' }).args,
+			published: Object.keys((paradisAdjustDevtoolsToolDescriptor({ name: 'take_snapshot', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' }, paraCodeRootRect: { type: 'string' } } } }).inputSchema as { properties: object }).properties),
+			taken: paradisTakeSnapshotRootRect('take_snapshot', text(`${line({ x: 1, y: 2, width: 3, height: 4 })}\n## Latest page snapshot\nuid=1_3 dialog`)),
+			broken: paradisTakeSnapshotRootRect('take_snapshot', text(`${line({ x: 1, y: 2, width: 0, height: 4 })}\nrest`)),
+			otherTool: paradisTakeSnapshotRootRect('get_text', text(line({ x: 1 }))).result,
+		}, {
+			root: { paraCodeRootRect: '1_3' },
+			rootNextPart: {},
+			fromAgent: {},
+			toFile: { filePath: '/tmp/s.txt' },
+			published: ['verbose', 'offset', 'root'],
+			taken: { result: text('## Latest page snapshot\nuid=1_3 dialog'), rect: { x: 1, y: 2, width: 3, height: 4 } },
+			broken: { result: text('rest') },
+			otherTool: text(line({ x: 1 })),
+		});
 	});
 
 	test('an evaluate_script that clicks with .click() gets one line pointing to click_by', () => {

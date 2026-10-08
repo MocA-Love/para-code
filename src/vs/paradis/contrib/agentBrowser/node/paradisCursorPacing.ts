@@ -18,7 +18,8 @@
 // get_cdp_endpoint で自分の CDP クライアントを繋いでいるとき）の入力は、今までどおり待つ。
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IParadisCursorPacing, ParadisCursorStatus } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorPacing, IParadisCursorStatusNote, ParadisCursorStatus, paradisIsStickyCursorStatus } from '../common/paradisCursorOverlay.js';
+import { paradisTakeSnapshotRootRect } from './paradisDevtoolsToolAdjustments.js';
 
 /** 1 回のツール呼び出し（run_steps なら手順の全部）で、カーソルの演出のために待ってよい合計（ms）。 */
 export const PARADIS_CURSOR_WAIT_BUDGET_MS = 600;
@@ -72,6 +73,57 @@ export function paradisCursorStatusForTool(tool: string): ParadisCursorStatus | 
 		case 'scroll_to': return 'scroll';
 		case 'upload_file': return 'upload';
 		default: return undefined;
+	}
+}
+
+/**
+ * 入力を伴わない道具の間、カーソルの名札に状態を出す（スクリプト実行中・待機中など）。長く続く状態は道具が
+ * 終わったら消す。`note` は呼び出し側が道具の始まりのページへ結び付けておく（途中で今のタブが替わっても、
+ * 終わりの知らせが始まりのページへ届くように）。`runs` はページごとの並走数（同じタブで並んで走る道具が
+ * 残っていれば、その表示を消さない）。
+ *
+ * take_snapshot は、vendored が書いた root の要素の位置の行を結果から取り除き（エージェントへは見せない）、
+ * 撮った範囲を光らせる知らせを出す（q.html Q297 の 3・5）。状態は変えない。
+ */
+export async function paradisWithToolCursorStatus<T>(name: string, runs: Map<string, number>, key: string, note: (note: IParadisCursorStatusNote) => void, run: () => Promise<T>, now: () => number = Date.now): Promise<T> {
+	const status = paradisCursorStatusForTool(name);
+	if (status === undefined) {
+		return run();
+	}
+	const sticky = paradisIsStickyCursorStatus(status);
+	if (sticky) {
+		runs.set(key, (runs.get(key) ?? 0) + 1);
+	}
+	safeNote(note, { status, ...(status === 'script' ? { since: now() } : {}) });
+	try {
+		const result = await run();
+		if (name !== 'take_snapshot') {
+			return result;
+		}
+		const taken = paradisTakeSnapshotRootRect(name, result);
+		if ((taken.result as { isError?: unknown } | undefined)?.isError !== true) {
+			safeNote(note, { flash: true, ...(taken.rect ? { rect: taken.rect } : {}) });
+		}
+		return taken.result as T;
+	} finally {
+		if (sticky) {
+			const left = (runs.get(key) ?? 1) - 1;
+			if (left > 0) {
+				runs.set(key, left);
+			} else {
+				runs.delete(key);
+				safeNote(note, { status: 'idle' });
+			}
+		}
+	}
+}
+
+/** 演出の知らせは道具の結果を変えない。 */
+function safeNote(note: (note: IParadisCursorStatusNote) => void, value: IParadisCursorStatusNote): void {
+	try {
+		note(value);
+	} catch {
+		// 演出は道具の結果を変えない。
 	}
 }
 
