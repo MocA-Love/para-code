@@ -12,7 +12,11 @@
 //  - 3 段目 `ParadisForegroundRoute`: 今までの経路（ParadisInput.swift の foreground*）
 //
 // 1 段目で確かめること（3 段目と違い、前面のアプリが目的の pid であることは求めない）:
-//  - 目的のウィンドウがあって、しまわれていない（しまわれていれば 3 段目へ譲る）
+//  - 目的のウィンドウがあって、今の画面に出ていて（別の操作スペースでない）、しまわれておらず、アプリを隠していない
+//    （どれかに当たれば 3 段目へ譲る）
+//  - 画面のロック中・ほかのユーザーへの切り替え中でない
+//  - メニューを開く操作（AXShowMenu、ポップアップ・メニューボタンの AXPress）は、目的のアプリが前面のときだけ。背面で
+//    メニューが開いてしまったら（フォーカスが変わったら）AXCancel で閉じる
 //  - 利用者が打鍵中でない（直前 1 秒の物理的なキー入力。マウスの動きでは止めない）
 //  - 認証・同意のダイアログが出ていない
 //  - 操作の前後で、前面のアプリ・キーボードのフォーカスのあるアプリ・その手前のウィンドウが変わらなかったか（結果の
@@ -50,6 +54,21 @@ final class ParadisForegroundRoute: ParadisInputRoute {
 	}
 
 	func perform(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
+		if options.activateFirst {
+			// 承認ダイアログのボタンを押した直後（Para Code が前面で、そのクリックが直前の入力に入る）。入力が止むのを
+			// 待って目的のアプリを前面に出す。前面に出すこと自体が求めた操作なら、それで終わり
+			let windowId: UInt32?
+			switch action {
+			case .activate(let id): windowId = id
+			case .click(let id, _, _, _, _), .drag(let id, _, _), .scroll(let id, _, _, _), .setValue(let id, _, _): windowId = id
+			case .typeText, .pasteText, .pressChord: windowId = nil
+			}
+			try desktop.prepareForeground(pid: pid, windowId: windowId)
+			if case .activate = action {
+				let frontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+				return .done(["frontmost": frontmost == pid])
+			}
+		}
 		switch action {
 		case .activate(let windowId):
 			return .done(try desktop.foregroundActivate(pid: pid, windowId: windowId))
@@ -136,7 +155,8 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		while chain.count < paradisAXClickChainLimit, let parent = paradisElement(chain[chain.count - 1], kAXParentAttribute), !paradisIsWindow(parent) {
 			chain.append(parent)
 		}
-		let plan = paradisAccessibilityClickPlan(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain.map(paradisAXFacts))
+		let targetIsFrontmost = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier } == pid
+		let plan = paradisAccessibilityClickPlan(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain.map(paradisAXFacts), targetIsFrontmost: targetIsFrontmost)
 		let element: AXUIElement
 		let actionName: String
 		switch plan {
@@ -159,11 +179,14 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		let before = paradisAXValueText(paradisCopy(element, kAXValueAttribute))
 		let focusBefore = paradisFocusSnapshot()
 		var verified: Bool?
+		// 「何もしていないと言い切れない」失敗（締め切りなど）。送ったかもしれないので次の段へは譲らず、確かめられないと返す
+		var uncertainError: AXError?
 		if actionName == "AXFocused" {
 			let error = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
 			if error != .success && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
 				return .fellThrough("the text field refused focus (AXError \(error.rawValue))")
 			}
+			uncertainError = error == .success ? nil : error
 			usleep(paradisAXSettleMicroseconds)
 			// 本物のクリックと同じく、選択せずにキャレットを置く（全体が選ばれたまま次の文字入力で消えないように）。置くのは末尾
 			if let value = paradisCopy(element, kAXValueAttribute) as? String {
@@ -179,10 +202,16 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			if error != .success && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
 				return .fellThrough("the element refused \(actionName) (AXError \(error.rawValue))")
 			}
+			uncertainError = error == .success ? nil : error
 			usleep(paradisAXSettleMicroseconds)
-			verified = actionName == "AXPress" ? paradisAXPressCheck(role: role, before: before, after: paradisAXValueText(paradisCopy(element, kAXValueAttribute))).verified : nil
+			verified = actionName == "AXPress" && uncertainError == nil ? paradisAXPressCheck(role: role, before: before, after: paradisAXValueText(paradisCopy(element, kAXValueAttribute))).verified : nil
+		}
+		if uncertainError != nil {
+			verified = nil
 		}
 		let focusPreserved = paradisFocusPreserved(before: focusBefore, after: paradisFocusSnapshot())
+		// 背面のアプリでメニューが開いてしまったら（押したボタンがメニューを出したなど）、利用者の打鍵が項目を選ばないよう閉じる
+		let menuClosed = !focusPreserved && !targetIsFrontmost && paradisCloseOpenMenu(pid: pid)
 		if let cursor, let center {
 			ParadisCursorOverlay.shared.ripple(cursor, at: center)
 		}
@@ -196,10 +225,20 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		if let center {
 			result["point"] = paradisWindowPointJson(center, window.bounds)
 		}
-		if !focusPreserved {
-			result["note"] = actionName == "AXShowMenu"
+		if let uncertainError {
+			result["axError"] = Int(uncertainError.rawValue)
+		}
+		if menuClosed {
+			result["menuClosed"] = true
+			result["note"] = "A menu opened in the app while it was not in front, so Para Code closed it. Bring the app forward with computer_activate_app to use the menu."
+		} else if !focusPreserved {
+			result["note"] = targetIsFrontmost && actionName == "AXShowMenu"
 				? "The context menu took the keyboard focus while it is open."
 				: "The user's focus changed during the action (the app may have brought a window forward)."
+		}
+		if uncertainError != nil {
+			let note = "The app did not confirm the action in time; it may or may not have happened. Read the state before trying again."
+			result["note"] = [result["note"] as? String, note].compactMap { $0 }.joined(separator: " ")
 		}
 		return .done(result)
 	}
@@ -250,6 +289,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		let focusBefore = paradisFocusSnapshot()
 		var actionName = "AXValue"
 		var performed = 0
+		var uncertainError: AXError?
 		switch plan {
 		case .setValue:
 			let value: CFTypeRef
@@ -267,6 +307,9 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			if error != .success && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
 				return .fellThrough("the element refused the new value (AXError \(error.rawValue))")
 			}
+			if error != .success {
+				uncertainError = error
+			}
 			performed = 1
 		case .perform(let action, let count):
 			actionName = action
@@ -275,6 +318,9 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 				if error != .success {
 					if index == 0 && paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
 						return .fellThrough("the element refused \(action) (AXError \(error.rawValue))")
+					}
+					if !paradisAXWriteCertainlyDidNothing(error: error.rawValue) {
+						uncertainError = error
 					}
 					break
 				}
@@ -306,6 +352,9 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		if case .perform = plan {
 			result["steps"] = performed
 		}
+		if let uncertainError {
+			result["axError"] = Int(uncertainError.rawValue)
+		}
 		if let value = check.value {
 			result["value"] = paradisSanitizeText(value, maxLength: 200)
 		}
@@ -323,8 +372,13 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		guard let field = paradisFocusedElement(pid: pid) else {
 			return .fellThrough("the app has no focused element")
 		}
-		if let window = paradisElement(field, kAXWindowAttribute), (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue == true {
-			return .fellThrough("the window with the focused field is minimized")
+		guard let window = paradisElement(field, kAXWindowAttribute), let windowId = paradisAXWindowNumber(window) else {
+			return .fellThrough("the window with the focused field could not be found")
+		}
+		let onScreen = paradisWindowInfos(pid: pid).first(where: { $0.windowId == windowId })?.onScreen ?? false
+		let minimized = (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue == true
+		if let reason = paradisAccessibilityWindowSkipReason(onScreen: onScreen, minimized: minimized, appHidden: paradisAppIsHidden(pid)) {
+			return .fellThrough(reason)
 		}
 		let center = paradisFrame(field).map { CGPoint(x: $0.midX, y: $0.midY) }
 		try glideCursor(cursor, to: center, pid: pid)
@@ -345,7 +399,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 
 	/** 利用者が打鍵中でないか、認証・同意のダイアログが出ていないか。前面のアプリは問わない。 */
 	private func fence(pid: Int32) throws {
-		if let failure = desktop.keyboardActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) {
+		if let failure = paradisCurrentSessionFailure() ?? desktop.keyboardActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) {
 			throw failure
 		}
 	}
@@ -358,8 +412,9 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		guard let window = try? desktop.paradisPickWindow(paradisElements(application, kAXWindowsAttribute), application: application, windowId: windowId, pid: pid) else {
 			return .failure(ParadisAXRouteSkip("the window is not in the accessibility tree"))
 		}
-		if (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue == true {
-			return .failure(ParadisAXRouteSkip("the window is minimized"))
+		let minimized = (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue == true
+		if let reason = paradisAccessibilityWindowSkipReason(onScreen: info.onScreen, minimized: minimized, appHidden: paradisAppIsHidden(pid)) {
+			return .failure(ParadisAXRouteSkip(reason))
 		}
 		return .success(ParadisAXTargetWindow(windowId: windowId, element: window, bounds: info.bounds, application: application))
 	}
@@ -417,6 +472,31 @@ private struct ParadisAXTargetWindow {
 	let element: AXUIElement
 	let bounds: CGRect
 	let application: AXUIElement
+}
+
+/** アプリを隠しているか（⌘H）。 */
+private func paradisAppIsHidden(_ pid: Int32) -> Bool {
+	return paradisOnMain { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
+}
+
+/**
+ * 目的のアプリで開いているメニューを閉じる（`AXCancel`）。キーボードのフォーカスのある要素から親をたどって
+ * `AXMenu` を探す。閉じたら true。
+ */
+private func paradisCloseOpenMenu(pid: Int32) -> Bool {
+	let application = AXUIElementCreateApplication(pid)
+	AXUIElementSetMessagingTimeout(application, 0.5)
+	var element = paradisElement(application, kAXFocusedUIElementAttribute)
+	for _ in 0..<4 {
+		guard let current = element else {
+			break
+		}
+		if (paradisCopy(current, kAXRoleAttribute) as? String) == "AXMenu" {
+			return AXUIElementPerformAction(current, kAXCancelAction as CFString) == .success
+		}
+		element = paradisElement(current, kAXParentAttribute)
+	}
+	return false
 }
 
 private func paradisIsWindow(_ element: AXUIElement) -> Bool {

@@ -118,8 +118,10 @@ final class FakeDesktop: ParadisDesktopBackend {
 		screenshotCalls.append((pid, windowId, maxLongEdge))
 		return ["width": 1]
 	}
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int) throws -> [String: Any] {
+	var manualAccessibilityCalls: [Bool] = []
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any] {
 		treeCalls.append((pid, windowId, maxNodes, maxDepth))
+		manualAccessibilityCalls.append(enableManualAccessibility)
 		throw ParadisHelperError(code: "accessibility_not_granted", message: "no")
 	}
 	var optionCalls: [ParadisInputOptions] = []
@@ -302,6 +304,7 @@ do {
 	check(code(#"{"id":2,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1}}"#) == "ok", "a request without options keeps the old behavior")
 	check(code(#"{"id":3,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"allowForeground":false,"cursor":\#(owner)}}"#) == "ok", "takes allowForeground and the cursor owner")
 	check(code(#"{"id":4,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"allowForeground":"no"}}"#) == "invalid_argument", "allowForeground must be a boolean")
+	check(code(#"{"id":40,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"activateFirst":1}}"#) == "invalid_argument", "activateFirst must be a boolean")
 	check(code(#"{"id":5,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"cursor":{"id":"x","name":"a","mark":"","color":"red"}}}"#) == "ok", "a malformed cursor owner only hides the cursor")
 	check(code(#"{"id":6,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"elementIndex":2,"snapshotId":9,"value":"hello"}}"#) == "ok", "sets a text value")
 	check(code(#"{"id":7,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":3,"y":4,"value":42.5}}"#) == "ok", "sets a number at a point")
@@ -324,6 +327,13 @@ do {
 	], "only valid setValue requests reach the desktop")
 	check(desktop.optionCalls.map { $0.allowForeground } == [true, false, true, true, true, true, true], "allowForeground defaults to true")
 	check(desktop.optionCalls[1].cursor == ParadisCursorOwnerSpec(id: "0123456789abcdef", name: "Checkout", mark: "C", color: 0xd97757), "reads the cursor owner")
+	check(desktop.optionCalls.allSatisfy { !$0.activateFirst }, "activateFirst defaults to false")
+	_ = code(#"{"id":41,"method":"pressKey","params":{"pid":100,"bundleId":"com.apple.finder","key":"return","activateFirst":true}}"#)
+	check(desktop.optionCalls.last?.activateFirst == true, "reads activateFirst")
+	_ = code(#"{"id":42,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder"}}"#)
+	_ = code(#"{"id":43,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder","enableManualAccessibility":true}}"#)
+	_ = code(#"{"id":44,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder","enableManualAccessibility":1}}"#)
+	check(desktop.manualAccessibilityCalls == [false, true, false], "sets AXManualAccessibility only when asked with true")
 	check(desktop.optionCalls[0].cursor == nil && desktop.optionCalls[2].cursor == nil, "no cursor without a valid owner")
 }
 
@@ -430,19 +440,49 @@ do {
 	let group = ParadisAXElementFacts(role: "AXGroup")
 	let field = ParadisAXElementFacts(role: "AXTextField", actions: ["AXShowMenu", "AXConfirm"], focusSettable: true)
 	let row = ParadisAXElementFacts(role: "AXRow", actions: ["AXShowMenu"])
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button]) == .perform(action: "AXPress", depth: 0), "presses a button")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, button]) == .perform(action: "AXPress", depth: 1), "presses the button around its label")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, button]) == .none("no element near the target accepts AXPress"), "does not climb past three elements")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [row, button]) == .none("AXRow does not accept AXPress"), "does not climb out of a row")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [button]) == .none("double and triple clicks need real input"), "double clicks need real input")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: .command, chain: [button]) == .none("clicks with modifier keys need real input"), "modified clicks need real input")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXButton", actions: ["AXPress"], enabled: false)]) == .none("the element is disabled"), "leaves disabled buttons to real input")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [field]) == .focus(depth: 0), "focuses a text field instead of clicking it")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXTextField")]) == .none("the text field does not accept focus through accessibility"), "falls through when focus cannot be set")
-	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [field]) == .perform(action: "AXShowMenu", depth: 0), "opens the context menu of a field")
-	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [button]) == .none("AXButton does not accept AXShowMenu"), "right clicks need AXShowMenu")
-	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: []) == .none("no accessibility element at the target"), "needs an element")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 0), "presses a button")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, button], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 1), "presses the button around its label")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, group, button], targetIsFrontmost: true) == .none("no element near the target accepts AXPress"), "does not climb past three elements")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [row, button], targetIsFrontmost: true) == .none("AXRow does not accept AXPress"), "does not climb out of a row")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [button], targetIsFrontmost: true) == .none("double and triple clicks need real input"), "double clicks need real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: .command, chain: [button], targetIsFrontmost: true) == .none("clicks with modifier keys need real input"), "modified clicks need real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXButton", actions: ["AXPress"], enabled: false)], targetIsFrontmost: true) == .none("the element is disabled"), "leaves disabled buttons to real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [field], targetIsFrontmost: true) == .focus(depth: 0), "focuses a text field instead of clicking it")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXTextField")], targetIsFrontmost: true) == .none("the text field does not accept focus through accessibility"), "falls through when focus cannot be set")
+	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [field], targetIsFrontmost: true) == .perform(action: "AXShowMenu", depth: 0), "opens the context menu of a field")
+	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: true) == .none("AXButton does not accept AXShowMenu"), "right clicks need AXShowMenu")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [], targetIsFrontmost: true) == .none("no accessibility element at the target"), "needs an element")
 	check(paradisPressableRoles.isSuperset(of: ["AXButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXMenuItem", "AXPopUpButton"]), "knows the usual pressable controls")
+
+	// メニューを開く操作は、目的のアプリが前面のときだけ 1 段目で送る（レビュー 重大 2）
+	let popUp = ParadisAXElementFacts(role: "AXPopUpButton", actions: ["AXShowMenu", "AXPress"])
+	let menuButton = ParadisAXElementFacts(role: "AXMenuButton", actions: ["AXPress"])
+	let background = "opening a menu in an app that is not in front would move the keyboard focus to the menu"
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [popUp], targetIsFrontmost: false) == .none(background), "does not open a pop-up menu in a background app")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [menuButton], targetIsFrontmost: false) == .none(background), "does not open a menu button in a background app")
+	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [field], targetIsFrontmost: false) == .none(background), "does not open a context menu in a background app")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [popUp], targetIsFrontmost: true) == .perform(action: "AXPress", depth: 0), "opens a pop-up menu when the app is in front")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: false) == .perform(action: "AXPress", depth: 0), "presses a plain button in a background app")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [field], targetIsFrontmost: false) == .focus(depth: 0), "focuses a text field in a background app")
+	check(paradisAXActionOpensMenu(action: "AXShowMenu", role: "AXTextField") && paradisAXActionOpensMenu(action: "AXPress", role: "AXPopUpButton") && !paradisAXActionOpensMenu(action: "AXPress", role: "AXButton"), "knows which actions open a menu")
+
+	// 別の操作スペース・しまわれた・隠したアプリのウィンドウは 3 段目へ（レビュー 中 3）
+	check(paradisAccessibilityWindowSkipReason(onScreen: true, minimized: false, appHidden: false) == nil, "operates a window on the current screen")
+	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: false, appHidden: false) == "the window is not on the current screen or Space", "leaves windows on other Spaces to the foreground route")
+	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: true, appHidden: false) == "the window is minimized", "leaves minimized windows to the foreground route")
+	check(paradisAccessibilityWindowSkipReason(onScreen: false, minimized: false, appHidden: true) == "the app is hidden", "leaves hidden apps to the foreground route")
+
+	// 画面のロック中・ほかのユーザーへの切り替え中は止める（レビュー 中 6）
+	check(paradisSessionFailure(onConsole: true, screenLocked: false) == nil, "runs on an unlocked console session")
+	check(paradisSessionFailure(onConsole: true, screenLocked: true)?.code == "screen_locked", "stops while the screen is locked")
+	check(paradisSessionFailure(onConsole: false, screenLocked: nil)?.code == "screen_locked", "stops while another user is on the console")
+	check(paradisSessionFailure(onConsole: nil, screenLocked: nil) == nil, "does not stop on unreadable session values")
+
+	// AXManualAccessibility は VS Code 系に立てず、10 分使わなければ戻す（レビュー 中 4）
+	check(paradisManualAccessibilityExcluded(bundleId: "com.microsoft.VSCode") && paradisManualAccessibilityExcluded(bundleId: "com.todesktop.230313mzl4w4u92") && paradisManualAccessibilityExcluded(bundleId: nil), "never sets AXManualAccessibility on VS Code family apps")
+	check(!paradisManualAccessibilityExcluded(bundleId: "com.tinyspeck.slackmacgap"), "may set AXManualAccessibility on other Electron apps")
+	let now = Date()
+	check(paradisManualAccessibilityExpired(lastUsed: now.addingTimeInterval(-paradisManualAccessibilityIdleSeconds), now: now) && !paradisManualAccessibilityExpired(lastUsed: now.addingTimeInterval(-60), now: now), "restores AXManualAccessibility after ten idle minutes")
 
 	let slider = ParadisAXElementFacts(role: "AXSlider", actions: ["AXIncrement", "AXDecrement"])
 	check(paradisAccessibilityValuePlan(.increment(2), facts: slider, valueSettable: true, secret: false) == .perform(action: "AXIncrement", count: 2), "increments a slider")

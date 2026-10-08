@@ -52,6 +52,7 @@ extension ParadisDesktop {
 		if options.cursor == nil {
 			ParadisCursorOverlay.shared.hideAll()
 		}
+		paradisManualAccessibility.touch(pid)
 		let routes: [ParadisInputRoute] = [ParadisAccessibilityRoute(desktop: self), backgroundRoute, ParadisForegroundRoute(desktop: self)]
 		return try paradisRouteInput(action, pid: pid, routes: routes, options: options)
 	}
@@ -60,7 +61,7 @@ extension ParadisDesktop {
 
 	func foregroundActivate(pid: Int32, windowId: UInt32?) throws -> [String: Any] {
 		try requireInputPermission()
-		if let failure = userActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) {
+		if let failure = paradisCurrentSessionFailure() ?? userActivityFailure() ?? paradisOverlayFailure(targetPid: pid, windows: paradisScreenWindows()) {
 			throw failure
 		}
 		try requireRunningApp(pid)
@@ -364,6 +365,27 @@ extension ParadisDesktop {
 		return nil
 	}
 
+	/**
+	 * 承認の直後の送り直し（`activateFirst`）: 利用者の物理的な入力が止むのを最長 3 秒待ってから、目的のアプリを前面に出す。
+	 * 承認ダイアログのボタンを押した直後は Para Code が前面で、そのクリックが直前 1 秒の入力に入るため。
+	 * 待っても止まなければ `user_active` で止める（前面には出さない）。
+	 */
+	func prepareForeground(pid: Int32, windowId: UInt32?) throws {
+		let deadline = Date().addingTimeInterval(paradisActivateFirstWaitSeconds)
+		while let failure = userActivityFailure() {
+			if Date() >= deadline {
+				throw failure
+			}
+			usleep(100_000)
+		}
+		_ = try foregroundActivate(pid: pid, windowId: windowId)
+		// 前面になったと OS が知らせるまで少し待つ（前面でなければ、続く確かめが window_not_focused で止める）
+		let shown = Date().addingTimeInterval(1.0)
+		while paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier }) != pid && Date() < shown {
+			usleep(50_000)
+		}
+	}
+
 	/** 利用者が打鍵中か（1 段目の確かめ。マウスの動きでは止めない）。 */
 	func keyboardActivityFailure() -> ParadisHelperError? {
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalKeyboardInput()) {
@@ -379,7 +401,7 @@ extension ParadisDesktop {
 	}
 
 	private func pointerFenceFailure(pid: Int32, point: CGPoint) -> ParadisHelperError? {
-		if let failure = userActivityFailure() {
+		if let failure = paradisCurrentSessionFailure() ?? userActivityFailure() {
 			return failure
 		}
 		let windows = paradisScreenWindows()
@@ -408,7 +430,7 @@ extension ParadisDesktop {
 
 	/** `full` が false なら利用者の入力だけを見る（長い文字入力で、画面とフォーカスはまとめて確かめる。レビュー N5）。 */
 	private func keyFenceFailure(pid: Int32, full: Bool) -> ParadisHelperError? {
-		if let failure = userActivityFailure() {
+		if let failure = paradisCurrentSessionFailure() ?? userActivityFailure() {
 			return failure
 		}
 		guard full else {
@@ -804,6 +826,20 @@ private func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
 		flags.insert(.maskControl)
 	}
 	return flags
+}
+
+/** 承認の直後の送り直しで、利用者の入力が止むのを待つ上限。 */
+private let paradisActivateFirstWaitSeconds: TimeInterval = 3
+
+/**
+ * 画面のロック中・ほかのユーザーへの切り替え中なら止める（公開の `CGSessionCopyCurrentDictionary` だけで見る。
+ * `CGSSessionScreenIsLocked` はこの辞書のキーで、API の呼び出しは公開のもの）。
+ */
+func paradisCurrentSessionFailure() -> ParadisHelperError? {
+	guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+		return nil
+	}
+	return paradisSessionFailure(onConsole: (session[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue, screenLocked: (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue)
 }
 
 /** 画面のウィンドウの一覧を使い回す時間（長い入力で毎回引き直さない。レビュー N5）。 */

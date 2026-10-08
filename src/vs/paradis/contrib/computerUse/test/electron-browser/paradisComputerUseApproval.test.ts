@@ -10,7 +10,7 @@ import { CancellationToken, CancellationTokenSource } from '../../../../../base/
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentApprovalRequest, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisComputerUseApprovalOutcome, ParadisComputerUseForegroundOutcome } from '../../common/paradisComputerUse.js';
-import { ParadisComputerUseApprovalChannel } from '../../electron-browser/paradisComputerUseApproval.contribution.js';
+import { ParadisComputerUseApprovalChannel, paradisForegroundActionLabel } from '../../electron-browser/paradisComputerUseApproval.contribution.js';
 
 /** 双方向制御の文字。ソースに生のまま置かない（表示と中身がずれるため）。 */
 const RIGHT_TO_LEFT_OVERRIDE = '‮';
@@ -124,6 +124,7 @@ suite('ParadisComputerUseApprovalChannel', () => {
 			buttons: [once.asked[0].alternative, once.asked[0].approve],
 			cooldownKey: once.asked[0].cooldownKey,
 			lines: once.asked[0].detail.length,
+			actionLine: once.asked[0].detail[1],
 			sanitised: [once.asked[0].message, ...once.asked[0].detail].every(line => !line.includes(RIGHT_TO_LEFT_OVERRIDE)),
 		}, {
 			once: 'once',
@@ -135,8 +136,16 @@ suite('ParadisComputerUseApprovalChannel', () => {
 			buttons: ['今回だけ許可', 'このターミナルでは今後も許可'],
 			cooldownKey: 'computer-foreground:com.apple.finder',
 			lines: 4,
+			actionLine: '操作: ドラッグ',
 			sanitised: true,
 		});
+	});
+
+	test('names every foreground action in Japanese and leaves out unknown ones', () => {
+		assert.deepStrictEqual(
+			['activate_app', 'click', 'drag', 'scroll', 'type_text', 'paste_text', 'press_key', 'hotkey', 'set_value', 'rm -rf'].map(paradisForegroundActionLabel),
+			['アプリを前面に出す', 'クリック', 'ドラッグ', 'スクロール', '文字入力', '貼り付け', 'キー操作', 'キーボードショートカット', '値の変更', undefined],
+		);
 	});
 
 	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {

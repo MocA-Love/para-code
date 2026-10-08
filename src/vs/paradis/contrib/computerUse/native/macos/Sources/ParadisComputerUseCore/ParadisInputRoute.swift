@@ -81,6 +81,12 @@ struct ParadisCursorOwnerSpec: Equatable {
 struct ParadisInputOptions: Equatable {
 	/** 前面に出す段（実カーソルを動かす）で送ってよいか。省略時は今までどおり true。 */
 	var allowForeground: Bool = true
+	/**
+	 * 前面の段で送る前に、目的のアプリを前面に出し、利用者の物理的な入力が止むのを待つ。利用者が承認ダイアログで
+	 * 前面の送り方を許した直後の送り直しに付く（ダイアログのボタンを押したので Para Code が前面で、直前に物理的な
+	 * 入力もある。そのままでは `window_not_focused` か `user_active` で止まる）。
+	 */
+	var activateFirst: Bool = false
 	/** 独自のカーソル。nil なら出さない（設定でオフ、または古い shared process）。 */
 	var cursor: ParadisCursorOwnerSpec? = nil
 }
@@ -190,6 +196,17 @@ let paradisTextInputRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboB
 /** 中身だけの要素（ここに当たったら親の部品を見る。ボタンの中の文字や絵など）。 */
 private let paradisPassiveRoles: Set<String> = ["AXStaticText", "AXImage", "AXGroup", "AXUnknown"]
 
+/** 押すとメニューを開く部品（ポップアップ・メニューボタン）。 */
+let paradisMenuOpeningRoles: Set<String> = ["AXPopUpButton", "AXMenuButton"]
+
+/**
+ * その操作がメニューを開くか。メニューは開いている間キーボードのフォーカスを取るので、背面のアプリで開くと
+ * 利用者の次の打鍵がメニューの項目を選んで実行しうる。エージェントは開いたメニューを閉じられない。
+ */
+func paradisAXActionOpensMenu(action: String, role: String) -> Bool {
+	return action == "AXShowMenu" || (action == "AXPress" && paradisMenuOpeningRoles.contains(role))
+}
+
 /** 親をたどる深さ（当たった要素を含めて 3 つまで）。 */
 let paradisAXClickChainLimit = 3
 
@@ -200,7 +217,16 @@ let paradisAXClickChainLimit = 3
  * 当たった要素が中身だけ（ボタンの中の文字など）のときは、親を `paradisAXClickChainLimit` までたどる。
  * 使えない（無効になっている）部品は置き換えない（3 段目のクリックに任せる）。
  */
-func paradisAccessibilityClickPlan(button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers, chain: [ParadisAXElementFacts]) -> ParadisAXClickPlan {
+func paradisAccessibilityClickPlan(button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers, chain: [ParadisAXElementFacts], targetIsFrontmost: Bool) -> ParadisAXClickPlan {
+	let plan = paradisAccessibilityClickPlanIgnoringMenus(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain)
+	// メニューを開く操作は、目的のアプリが前面のときだけ 1 段目で送る（背面では 3 段目に任せる。前面に出してから開く）
+	if !targetIsFrontmost, case .perform(let action, let depth) = plan, paradisAXActionOpensMenu(action: action, role: chain[depth].role) {
+		return .none("opening a menu in an app that is not in front would move the keyboard focus to the menu")
+	}
+	return plan
+}
+
+private func paradisAccessibilityClickPlanIgnoringMenus(button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers, chain: [ParadisAXElementFacts]) -> ParadisAXClickPlan {
 	guard modifiers.isEmpty else {
 		return .none("clicks with modifier keys need real input")
 	}
@@ -232,6 +258,63 @@ func paradisAccessibilityClickPlan(button: ParadisMouseButton, clickCount: Int, 
 		}
 	}
 	return .none("no element near the target accepts \(button == .left ? "AXPress" : "AXShowMenu")")
+}
+
+/**
+ * 1 段目で目的のウィンドウを操作してよいか。画面に出ていない（別の操作スペース・しまわれた）ウィンドウや、
+ * 隠したアプリ（⌘H）のウィンドウは、利用者に見えないところで変わるうえ、独自のカーソルが今の画面の無関係な
+ * アプリの上に出るので、3 段目へ譲る（3 段目は前面に出してから送る）。譲る理由を返す。
+ */
+func paradisAccessibilityWindowSkipReason(onScreen: Bool, minimized: Bool, appHidden: Bool) -> String? {
+	if appHidden {
+		return "the app is hidden"
+	}
+	if minimized {
+		return "the window is minimized"
+	}
+	if !onScreen {
+		return "the window is not on the current screen or Space"
+	}
+	return nil
+}
+
+/**
+ * 画面のロック中・ほかのユーザーへの切り替え中か（`CGSessionCopyCurrentDictionary` の `kCGSessionOnConsoleKey` と
+ * `CGSSessionScreenIsLocked`）。読めない値（nil）では止めない。
+ */
+func paradisSessionFailure(onConsole: Bool?, screenLocked: Bool?) -> ParadisHelperError? {
+	if onConsole == false {
+		return ParadisHelperError(code: "screen_locked", message: "another user is using the screen")
+	}
+	if screenLocked == true {
+		return ParadisHelperError(code: "screen_locked", message: "the screen is locked")
+	}
+	return nil
+}
+
+// MARK: - Electron の AXManualAccessibility
+
+/**
+ * `AXManualAccessibility` を立てないアプリ。VS Code 系は、立てるとスクリーンリーダー向けの動き（エディタの読み上げ用の
+ * モードなど）に切り替わるので触らない。
+ */
+private let paradisManualAccessibilityExcludedPatterns: [String] = [
+	"com.microsoft.vscode", "com.microsoft.vscodeinsiders", "com.vscodium", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf",
+]
+
+func paradisManualAccessibilityExcluded(bundleId: String?) -> Bool {
+	guard let lower = bundleId?.lowercased() else {
+		return true
+	}
+	return paradisManualAccessibilityExcludedPatterns.contains { lower == $0 || lower.hasPrefix($0 + ".") }
+}
+
+/** 立てた `AXManualAccessibility` を、操作が無いまま戻すまでの時間。 */
+let paradisManualAccessibilityIdleSeconds: TimeInterval = 600
+
+/** 最後に使ってからの時間が過ぎたか（過ぎたら false へ戻す）。 */
+func paradisManualAccessibilityExpired(lastUsed: Date, now: Date) -> Bool {
+	return now.timeIntervalSince(lastUsed) >= paradisManualAccessibilityIdleSeconds
 }
 
 /** 値の変更をどう行うか。 */
@@ -410,6 +493,12 @@ func paradisParseInputOptions(_ params: [String: Any]) throws -> ParadisInputOpt
 			throw ParadisHelperError.invalidArgument("\"allowForeground\" must be true or false")
 		}
 		options.allowForeground = number.boolValue
+	}
+	if let raw = params["activateFirst"] {
+		guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+			throw ParadisHelperError.invalidArgument("\"activateFirst\" must be true or false")
+		}
+		options.activateFirst = number.boolValue
 	}
 	options.cursor = paradisParseCursorOwner(params["cursor"])
 	return options

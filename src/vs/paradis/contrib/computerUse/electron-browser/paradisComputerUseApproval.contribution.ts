@@ -51,6 +51,22 @@ const BUNDLE_ID_MAX_LENGTH = 120;
 /** bundle id として受ける形（英数字と . - _ だけ）。 */
 const BUNDLE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
+/** 前面の確認ダイアログに出す操作の名前（ツール名から `computer_` を外したもの → 日本語）。 */
+export function paradisForegroundActionLabel(action: string): string | undefined {
+	switch (action) {
+		case 'activate_app': return localize('paradis.computerUse.foreground.action.activate', "アプリを前面に出す");
+		case 'click': return localize('paradis.computerUse.foreground.action.click', "クリック");
+		case 'drag': return localize('paradis.computerUse.foreground.action.drag', "ドラッグ");
+		case 'scroll': return localize('paradis.computerUse.foreground.action.scroll', "スクロール");
+		case 'type_text': return localize('paradis.computerUse.foreground.action.type', "文字入力");
+		case 'paste_text': return localize('paradis.computerUse.foreground.action.paste', "貼り付け");
+		case 'press_key': return localize('paradis.computerUse.foreground.action.key', "キー操作");
+		case 'hotkey': return localize('paradis.computerUse.foreground.action.hotkey', "キーボードショートカット");
+		case 'set_value': return localize('paradis.computerUse.foreground.action.value', "値の変更");
+		default: return undefined;
+	}
+}
+
 /** shared process から届く承認の求めをダイアログへ流すチャネル。 */
 export class ParadisComputerUseApprovalChannel implements IServerChannel {
 
@@ -90,8 +106,8 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 			return 'cancelled';
 		}
 		const appName = paradisSanitizeDisplayText(typeof prompt.appName === 'string' ? prompt.appName : undefined, APP_NAME_MAX_LENGTH) ?? bundleId;
-		// 操作の名前はツール名から作る短い英字だけを出す
-		const action = typeof prompt.action === 'string' && /^[a-z_]{1,32}$/.test(prompt.action) ? prompt.action : undefined;
+		// 操作の名前は決まった一覧の日本語にする（知らない名前は出さない）
+		const action = typeof prompt.action === 'string' ? paradisForegroundActionLabel(prompt.action) : undefined;
 		const detail = [
 			localize('paradis.computerUse.foreground.app', "アプリ: {0}（{1}）", appName, bundleId),
 			...(action ? [localize('paradis.computerUse.foreground.action', "操作: {0}", action)] : []),
@@ -148,7 +164,7 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 				? [localize('paradis.computerUse.approval.upgrade', "このアプリの画面は読み取りを許可済みです。操作も許可すると、クリック・文字入力・貼り付け・キー操作・前面に出すこともします。")]
 				: [localize('paradis.computerUse.approval.read', "読み取り: このアプリのウィンドウの画面とアクセシビリティの情報（ボタンや文字の並び）を読みます。画面に写ったメール本文やチャットなどもエージェントへ渡り、エージェントの提供元へ送られます。")]),
 			...(offerOperate && !upgrade
-				? [localize('paradis.computerUse.approval.operate', "操作: クリック・文字入力・貼り付け・キー操作・前面に出すこともします。あなたがキーボードやマウスを使っている間は止まります。")]
+				? [localize('paradis.computerUse.approval.operate', "操作: クリック・文字入力・貼り付け・キー操作・前面に出すこともします。あなたがキーを打っている間は止まり、マウスポインタを動かす操作はマウスを使っている間も止まります。")]
 				: []),
 			...(offerOperate && paradisComputerUseRunsCommands(bundleId)
 				? [localize('paradis.computerUse.approval.commands', "このアプリを操作すると、コマンドをあなたの権限で実行できます。")]
