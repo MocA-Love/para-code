@@ -311,8 +311,10 @@ class ParadisOfficeXmlParser {
 		}
 		const second = this.parseName();
 		if (second === 'encoding') {
-			const encoding = this.parseXmlDeclarationValue();
-			if (encoding !== 'UTF-8' && encoding !== 'utf8') {
+			// XML 1.0 §4.3.3: encoding names are matched case-insensitively. Open XML SDK and other
+			// generators write `utf-8`; the bytes themselves were already decoded as strict UTF-8.
+			const encoding = this.parseXmlDeclarationValue().toLowerCase();
+			if (encoding !== 'utf-8' && encoding !== 'utf8') {
 				this.malformed();
 			}
 			if (this.startsWith('?>')) {

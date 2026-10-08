@@ -19,6 +19,10 @@ export interface IParadisOfficeFixtureRelationship {
 export interface IParadisOfficeFixtureOptions {
 	readonly parts: readonly ParadisOfficeFixturePart[];
 	readonly relationships?: readonly IParadisOfficeFixtureRelationship[];
+	/** ZIP folder items such as `word/` that some producers write ahead of the parts. They are not OPC parts. */
+	readonly folders?: readonly string[];
+	/** Replaces the generated `[Content_Types].xml`, for producer variants (Default-only typing, lowercase encoding). */
+	readonly contentTypesXml?: string;
 }
 
 const FIXED_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
@@ -48,12 +52,18 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 	}
 
 	parts.set('/[Content_Types].xml', {
-		content: buildContentTypesXml(parts),
+		content: options.contentTypesXml ?? buildContentTypesXml(parts),
 		contentType: 'application/xml',
 	});
 
 	const JSZip = await importAMDNodeModule<typeof import('jszip')>('jszip', 'dist/jszip.min.js');
 	const zip = new JSZip();
+	for (const folder of options.folders ?? []) {
+		if (!folder.endsWith('/') || folder.startsWith('/')) {
+			throw new Error(`ZIP folder items are written as 'name/': ${folder}`);
+		}
+		zip.file(folder, null, { dir: true, createFolders: false, date: FIXED_TIMESTAMP });
+	}
 	for (const [name, part] of [...parts.entries()].sort(([left], [right]) => compareCodeUnits(left, right))) {
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
 	}

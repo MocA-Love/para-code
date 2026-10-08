@@ -340,13 +340,19 @@ suite('ParadisOfficeSanitizer', () => {
 			'word/document.xml': '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>',
 			'custom/payload.bin': '<svg xmlns="http://www.w3.org/2000/svg"/>',
 		};
-		const invalidRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="urn:custom:drawing" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>'];
+		const invalidRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="urn:custom:drawing" Target="../custom/payload.bin"/></Relationships>', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../custom/payload.bin"/></Relationships>'];
 		const unknown = await sanitizeOfficeDocxPackageForRenderer({
 			nodeId: 'unknown-opc', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ ...base, 'word/_rels/document.xml.rels': invalidRels[0] }),
 		});
 		const unknownEntries = readStoreZipEntries(unknown.bytes);
 		strictEqual(unknownEntries.has('custom/payload.bin'), false);
 		strictEqual(textOf(unknownEntries, 'word/_rels/document.xml.rels').includes('urn:custom:drawing'), false);
+		// A dangling relationship that no story consumes is dropped instead of failing the whole package.
+		const dangling = await sanitizeOfficeDocxPackageForRenderer({
+			nodeId: 'dangling-opc', source: Uint8Array.of(1), archive: new MemoryOfficeArchive({ ...base, 'word/_rels/document.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../missing.bin"/></Relationships>' }),
+		});
+		strictEqual(dangling.placeholders.length, 0);
+		strictEqual(textOf(readStoreZipEntries(dangling.bytes), 'word/_rels/document.xml.rels').includes('missing.bin'), false);
 		for (const [index, rels] of invalidRels.slice(1).entries()) {
 			await rejects(
 				sanitizeOfficeDocxPackageForRenderer({

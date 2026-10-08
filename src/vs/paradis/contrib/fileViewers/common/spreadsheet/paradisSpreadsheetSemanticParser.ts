@@ -2113,11 +2113,14 @@ function validateRelationshipAuthority(
 }
 
 function resolveRelationshipTarget(sourcePartId: string | undefined, target: string): string {
-	if (!target || target.startsWith('/') || target.includes('\\') || target.includes('%')) {
+	if (!target || target.includes('\\') || target.includes('%')) {
 		throw new ParadisOfficePackageError('malformed');
 	}
-	const base = sourcePartId ? sourcePartId.slice(1).split('/').slice(0, -1) : [];
-	for (const segment of target.split('/')) {
+	// ECMA-376 Part 2 §6.5.3: Target is a URI reference resolved against the source part. A leading `/`
+	// is an absolute part name (Open XML SDK and openpyxl write `/word/document.xml`).
+	const absolute = target.startsWith('/');
+	const base = !absolute && sourcePartId ? sourcePartId.slice(1).split('/').slice(0, -1) : [];
+	for (const segment of (absolute ? target.slice(1) : target).split('/')) {
 		if (!segment || segment === '.') {
 			continue;
 		}
