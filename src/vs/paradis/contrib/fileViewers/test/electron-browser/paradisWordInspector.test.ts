@@ -193,6 +193,15 @@ suite('ParadisWordInspector', () => {
 		});
 	});
 
+	test('notes that only the later part changed when a compared value was shortened', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word truncated');
+		const host = document.createElement('div');
+		const inspector = disposables.add(new ParadisWordChangeInspector(host));
+		inspector.setComparison([change('long', 'content', 'paragraph.text', 'story:body:/word/document.xml:0/node:p1', 'p1')], completeManifest, 'complete');
+		inspector.setTruncatedChanges(['long']);
+		strictEqual(host.querySelector('[data-change-id="long"]')?.textContent, '内容 — changed（後半が変わっています）');
+	});
+
 	test('counts categories and Stories while retaining visible changes without markers', () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('word stories');
 		const host = document.createElement('div');

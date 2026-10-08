@@ -85,6 +85,8 @@ export interface ParadisWordSemanticDiffPage {
 	readonly outcome: ParadisOfficeOutcome;
 	readonly noChanges: boolean;
 	readonly terminal: boolean;
+	/** このページの変更のうち、表示用に値（変更前・変更後の文字）を切り詰めたもの。 */
+	readonly truncatedValueChangeIds: readonly string[];
 	readonly nextCursor?: string;
 	readonly warnings: readonly { readonly code: string; readonly detail: string }[];
 }
@@ -134,6 +136,8 @@ interface Runtime {
 	valueCharacters: number;
 	valueNodes: number;
 	readonly changes: ParadisOfficeChange[];
+	/** 値を切り詰めた変更（並べ替えの前の物）。 */
+	readonly truncatedChanges: Set<ParadisOfficeChange>;
 }
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
@@ -167,7 +171,7 @@ export function compareWordSemantics(
 ): ParadisWordSemanticDiffPage {
 	try {
 		const ownedOptions = ownOptions(options);
-		const runtime: Runtime = { options: ownedOptions, started: readClock(ownedOptions.now), hardDeadline: StopWatch.create(true), checks: 0, valueCharacters: 0, valueNodes: 0, changes: [] };
+		const runtime: Runtime = { options: ownedOptions, started: readClock(ownedOptions.now), hardDeadline: StopWatch.create(true), checks: 0, valueCharacters: 0, valueNodes: 0, changes: [], truncatedChanges: new Set() };
 		checkpoint(runtime, true);
 		const original = ownSnapshot(originalInput, runtime);
 		const modified = ownSnapshot(modifiedInput, runtime);
@@ -196,9 +200,14 @@ export function compareWordSemantics(
 		runtime.changes.sort(compareChanges);
 		checkpoint(runtime, true);
 		const sortedChanges: ParadisOfficeChange[] = [];
+		const truncatedIds = new Set<string>();
 		for (let index = 0; index < runtime.changes.length; index++) {
 			checkpoint(runtime);
-			sortedChanges.push(Object.freeze({ ...runtime.changes[index], id: `word-change:${String(index + 1).padStart(6, '0')}` }));
+			const sorted: ParadisOfficeChange = Object.freeze({ ...runtime.changes[index], id: `word-change:${String(index + 1).padStart(6, '0')}` });
+			sortedChanges.push(sorted);
+			if (runtime.truncatedChanges.has(runtime.changes[index])) {
+				truncatedIds.add(sorted.id);
+			}
 		}
 		const allChangeCount = sortedChanges.length;
 		const filtered: ParadisOfficeChange[] = [];
@@ -220,6 +229,7 @@ export function compareWordSemantics(
 		checkpoint(runtime, true);
 		return Object.freeze({
 			changes: Object.freeze(filtered.slice(offset, end)), alignments, completeness, outcome, noChanges, terminal,
+			truncatedValueChangeIds: Object.freeze(filtered.slice(offset, end).filter(change => truncatedIds.has(change.id)).map(change => change.id)),
 			...(!terminal && end < filtered.length ? { nextCursor: `word:${end}:${revision}` } : {}),
 			warnings: Object.freeze(warnings),
 		});
@@ -533,6 +543,7 @@ function emit(
 	}
 	const before = changeValue(original, runtime);
 	const after = changeValue(modified, runtime);
+	const truncated = (typeof original === 'string' && original.length > scalarLimit) || (typeof modified === 'string' && modified.length > scalarLimit);
 	const id = `word-pending:${String(runtime.changes.length + 1).padStart(6, '0')}`;
 	const change: ParadisOfficeChange = Object.freeze({
 		id, category, subject: Object.freeze({ kind: subjectKind, locator }), before, after, certainty, sourceParts: parts,
@@ -543,6 +554,9 @@ function emit(
 		throw new ParadisOfficePackageError('unsafe');
 	}
 	runtime.changes.push(change);
+	if (truncated) {
+		runtime.truncatedChanges.add(change);
+	}
 }
 
 function changeValue(value: string | boolean | null | ParadisOfficeFingerprint | undefined, runtime: Runtime): ParadisOfficeChangeValue {

@@ -197,6 +197,7 @@ export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode)
 		case 'invalid':
 		case 'malformed': return localize('paradis.word.semantic.failure.malformed', "ファイルの形式が正しくありません");
 		case 'failed': return localize('paradis.word.semantic.failure.failed', "内部エラーが起きました");
+		case 'busy': return localize('paradis.word.semantic.failure.busy', "混み合っていました。少し後でもう一度試します");
 	}
 }
 
@@ -258,7 +259,9 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 			action(ribbon, localize('paradis.word.semantic.comparing', "比較中…"), 'analysis', undefined);
 			break;
 		case 'failed': {
-			const item = action(ribbon, localize('paradis.word.semantic.failed', "解析できませんでした: {0}", wordSemanticFailureMessage(state.code)), 'analysis', onActivate);
+			const item = action(ribbon, state.code === 'busy'
+				? localize('paradis.word.semantic.busy', "混み合っていたため解析できませんでした")
+				: localize('paradis.word.semantic.failed', "解析できませんでした: {0}", wordSemanticFailureMessage(state.code)), 'analysis', onActivate);
 			item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
 			item.dataset.code = state.code;
 			break;

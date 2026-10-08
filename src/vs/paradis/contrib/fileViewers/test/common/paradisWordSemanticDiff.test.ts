@@ -219,7 +219,8 @@ suite('Paradis Word Semantic Diff', () => {
 		deepStrictEqual({
 			length: change.after.kind === 'scalar' && typeof change.after.value === 'string' ? change.after.value.length : -1,
 			ellipsis: change.after.kind === 'scalar' && typeof change.after.value === 'string' && change.after.value.endsWith('\u2026'),
-		}, { length: 4_096, ellipsis: true });
+			truncated: result.truncatedValueChangeIds.includes(change.id),
+		}, { length: 4_096, ellipsis: true, truncated: true });
 	});
 
 	test('never aligns paragraphs across a table or between same-depth cells in different tables', () => {

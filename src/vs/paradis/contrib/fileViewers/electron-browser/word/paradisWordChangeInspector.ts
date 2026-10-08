@@ -495,6 +495,7 @@ export class ParadisWordChangeInspector extends Disposable {
 	private changes: readonly ParadisOfficeChange[] = [];
 	private placeholders: readonly ParadisOfficePlaceholder[] = [];
 	private analysis: ParadisWordInspectorAnalysis | undefined;
+	private truncatedChangeIds: ReadonlySet<string> = new Set();
 	private results: readonly ParadisOfficeSearchResult[] = [];
 	private completeness: ParadisOfficeCompletenessManifest | undefined;
 	private outcome: ParadisOfficeOutcome = 'degraded';
@@ -534,6 +535,12 @@ export class ParadisWordChangeInspector extends Disposable {
 	setPlaceholders(placeholders: readonly ParadisOfficePlaceholder[]): void {
 		this.placeholders = [...placeholders];
 		this.placeholderPage = 0;
+		this.render();
+	}
+
+	/** 表示用に値を切り詰めた変更。一覧で「後半が変わっています」と添える。 */
+	setTruncatedChanges(ids: Iterable<string>): void {
+		this.truncatedChangeIds = new Set(ids);
 		this.render();
 	}
 
@@ -796,7 +803,10 @@ export class ParadisWordChangeInspector extends Disposable {
 				const item = dom.append(changeList, dom.$('.paradis-word-change-item'));
 				item.setAttribute('role', 'listitem');
 				const label = wordChangeLabel(change);
-				const button = appendButton(item, `${label} — ${wordChangeSummary(change)}`);
+				const summary = this.truncatedChangeIds.has(change.id)
+					? localize('paradis.word.changeTruncated', "{0}（後半が変わっています）", wordChangeSummary(change))
+					: wordChangeSummary(change);
+				const button = appendButton(item, `${label} — ${summary}`);
 				button.title = change.subject.locator;
 				button.dataset.changeId = change.id;
 				button.setAttribute('aria-label', localize('paradis.word.navigateChange', "{1} の{0}へ移動", label, change.subject.locator));
