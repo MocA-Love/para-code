@@ -451,11 +451,50 @@ struct ParadisModifierPress: Equatable {
  * 離した直後に修飾キーの解放の flagsChanged を 1 つ送って状態を戻す（`paradisModifierRelease`）。修飾キーそのものの
  * 押下は送らない。利用者が押す前から押していた修飾キーは `added` に入れない（解放しない）。
  */
-func paradisModifierPress(chord: CGEventFlags, systemBefore: CGEventFlags) -> ParadisModifierPress {
-	let modifiers = paradisModifierKeys.reduce(UInt64(0)) { $0 | $1.flag.rawValue }
-	let chordModifiers = chord.rawValue & modifiers
-	let added = chordModifiers & ~(systemBefore.rawValue & modifiers)
+func paradisModifierPress(chord: CGEventFlags, systemBefore: CGEventFlags, ownLeftover: CGEventFlags = []) -> ParadisModifierPress {
+	let chordModifiers = chord.rawValue & paradisModifierFlagsMask
+	let added = (chordModifiers & ~(systemBefore.rawValue & paradisModifierFlagsMask)) | (ownLeftover.rawValue & paradisModifierFlagsMask)
 	return ParadisModifierPress(flags: CGEventFlags(rawValue: chordModifiers | paradisNeutralEventFlags(systemBefore: systemBefore).rawValue), added: CGEventFlags(rawValue: added))
+}
+
+/**
+ * 修飾キー付きのクリック（ダブル・トリプルを含む）で送る解放の flagsChanged の数。全部のクリックを終えてから
+ * （途中で止めるときは止める前に）1 回だけ。クリックごとに送ると、⌘ の 2 度押しを拾う常駐アプリが反応しうる。
+ * 1 回も押していない・解放するものが無ければ送らない。
+ */
+func paradisClickModifierReleases(clicksPressed: Int, added: CGEventFlags) -> Int {
+	return clicksPressed > 0 && !added.isEmpty ? 1 : 0
+}
+
+/** 4 つの修飾キー（デバイスに依存しない印）。 */
+private let paradisModifierFlagsMask: UInt64 = paradisModifierKeys.reduce(UInt64(0)) { $0 | $1.flag.rawValue }
+
+/**
+ * 押す前の状態に残っている修飾キーのうち、補助アプリが前に解放を送ったのに OS の状態から消えなかったもの
+ * （`ownLeftover`。`paradisModifierPress` に渡すと `added` に入り、今回の解放で消す）。前に解放した修飾キー
+ * （`lastReleased`）が今も状態にあり、その後に入力の監視が物理的な修飾キーの変化（flagsChanged）を見ていない
+ * （`physicalModifierChangeSinceRelease == false`）ときだけ自分のものと見る。監視が動いていない・その時刻より後に
+ * 始まった（nil）ときや、物理的な変化を見たときは、利用者が押しているかもしれないので空。
+ */
+func paradisOwnLeftoverModifiers(lastReleased: CGEventFlags?, systemBefore: CGEventFlags, physicalModifierChangeSinceRelease: Bool?) -> CGEventFlags {
+	guard let lastReleased, physicalModifierChangeSinceRelease == false else {
+		return []
+	}
+	return CGEventFlags(rawValue: lastReleased.rawValue & systemBefore.rawValue & paradisModifierFlagsMask)
+}
+
+/**
+ * 入力の監視が、ある時刻（`since`）より後に物理的な修飾キーの変化を見たか。監視が動いていないか、その時刻より後に
+ * 始まったなら分からない（nil）。
+ */
+func paradisPhysicalModifierChange(tapStartedAt: Date?, lastPhysicalFlagsChanged: Date?, since: Date) -> Bool? {
+	guard let tapStartedAt, tapStartedAt <= since else {
+		return nil
+	}
+	guard let lastPhysicalFlagsChanged else {
+		return false
+	}
+	return lastPhysicalFlagsChanged >= since
 }
 
 /** 離した後に送る解放の flagsChanged（`keyCode` は解放する修飾キーの 1 つ）。解放するものが無ければ nil。 */

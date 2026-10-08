@@ -104,30 +104,48 @@ extension ParadisDesktop {
 		let (downType, upType, cgButton): (CGEventType, CGEventType, CGMouseButton) = button == .left
 			? (.leftMouseDown, .leftMouseUp, .left)
 			: (.rightMouseDown, .rightMouseUp, .right)
-		let press = paradisModifierPress(chord: paradisEventFlags(modifiers), systemBefore: systemBefore)
-		for click in 1...clickCount {
-			try pointerFence(pid: pid, point: point)
-			let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: press.flags)
-			down?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-			try post(down)
-			paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton, press: press)
-			usleep(25_000)
-			// 押したボタンは、確かめに失敗しても必ず離す。離すイベントも修飾キー付き（Blink・WebKit は click の metaKey などを
-			// mouseup から作る）で、離した直後に修飾キーの解放を送る
-			let failure = pointerFenceFailure(pid: pid, point: point)
-			let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: press.flags)
-			up?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
-			try post(up)
-			paradisPressedInput.releaseMouse()
+		let press = paradisModifierPress(chord: paradisEventFlags(modifiers), systemBefore: systemBefore, ownLeftover: ownLeftoverModifiers(systemBefore: systemBefore))
+		// 修飾キーの解放は、全部のクリックを終えてから 1 回だけ送る（クリックごとに送ると、⌘ の 2 度押しを拾う常駐アプリ
+		// （Alfred・Raycast など）が反応しうる）。途中で止めるときも、止める前に送る
+		var clicksPressed = 0
+		do {
+			for click in 1...clickCount {
+				try pointerFence(pid: pid, point: point)
+				let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: press.flags)
+				down?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+				try post(down)
+				clicksPressed = click
+				paradisPressedInput.holdModifiers(press)
+				paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton, press: press)
+				usleep(25_000)
+				// 押したボタンは、確かめに失敗しても必ず離す。離すイベントも修飾キー付き（Blink・WebKit は click の metaKey などを
+				// mouseup から作る）
+				let failure = pointerFenceFailure(pid: pid, point: point)
+				let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: press.flags)
+				up?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+				try post(up)
+				paradisPressedInput.releaseMouse()
+				if let failure {
+					throw failure
+				}
+				// 実カーソルが動くので、独自のカーソルは名前の札と波紋だけをそこに合わせる
+				if let cursor {
+					ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: true)
+				}
+				usleep(60_000)
+			}
+		} catch {
+			if paradisClickModifierReleases(clicksPressed: clicksPressed, added: press.added) > 0 {
+				_ = try? paradisPostModifierRelease(press)
+			}
+			paradisPressedInput.releaseModifiers()
+			throw error
+		}
+		defer {
+			paradisPressedInput.releaseModifiers()
+		}
+		if paradisClickModifierReleases(clicksPressed: clicksPressed, added: press.added) > 0 {
 			try paradisPostModifierRelease(press)
-			if let failure {
-				throw failure
-			}
-			// 実カーソルが動くので、独自のカーソルは名前の札と波紋だけをそこに合わせる
-			if let cursor {
-				ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: true)
-			}
-			usleep(60_000)
 		}
 		return ["clicked": true, "point": paradisWindowPointJson(point, window)]
 	}
@@ -343,10 +361,12 @@ extension ParadisDesktop {
 		try keyFence(pid: pid)
 		// 実際のキーボードと同じく、キーを修飾キー付きで押して離し、その後に修飾キーの解放を送る。解放を送らないと、
 		// OS の修飾キーの状態が押されたままで残る（実機の報告）
-		let press = paradisModifierPress(chord: paradisEventFlags(chord.modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
+		let systemBefore = CGEventSource.flagsState(.hidSystemState)
+		let press = paradisModifierPress(chord: paradisEventFlags(chord.modifiers), systemBefore: systemBefore, ownLeftover: ownLeftoverModifiers(systemBefore: systemBefore))
 		let down = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: chord.keyCode, keyDown: true)
 		down?.flags = press.flags
 		try post(down)
+		paradisPressedInput.holdModifiers(press)
 		paradisPressedInput.pressKey(chord.keyCode, press: press)
 		usleep(20_000)
 		// 押したキーは、確かめに失敗しても必ず離す
@@ -355,6 +375,9 @@ extension ParadisDesktop {
 		up?.flags = press.flags
 		try post(up)
 		paradisPressedInput.releaseKey()
+		defer {
+			paradisPressedInput.releaseModifiers()
+		}
 		try paradisPostModifierRelease(press)
 		if let failure {
 			throw failure
@@ -512,6 +535,8 @@ final class ParadisInputMonitor {
 	private let lock = NSLock()
 	private var lastKeyboard: Date?
 	private var lastPointer: Date?
+	/** 最後に物理的な修飾キーの変化（目印の無い flagsChanged）を見た時刻。 */
+	private var lastPhysicalFlagsChanged: Date?
 	private var sawKeyboard = false
 	private var startedAt: Date?
 	private var tap: CFMachPort?
@@ -560,8 +585,20 @@ final class ParadisInputMonitor {
 			} else {
 				lastPointer = Date()
 			}
+			if type == .flagsChanged {
+				lastPhysicalFlagsChanged = Date()
+			}
 		}
 		lock.unlock()
+	}
+
+	/** ある時刻より後に、物理的な修飾キーの変化を見たか（`paradisPhysicalModifierChange`）。 */
+	func physicalModifierChange(since: Date) -> Bool? {
+		lock.lock()
+		defer {
+			lock.unlock()
+		}
+		return paradisPhysicalModifierChange(tapStartedAt: tap == nil ? nil : startedAt, lastPhysicalFlagsChanged: lastPhysicalFlagsChanged, since: since)
 	}
 
 	func reenable() {
@@ -632,13 +669,29 @@ private let paradisInputTapCallback: CGEventTapCallBack = { _, type, event, user
 // MARK: - 押したままのボタンとキー（レビュー N5）
 
 /**
- * 押して、まだ離していないボタンとキー。締め切りで SIGTERM を受けたときに離してから終わるため。
- * 離すときは押したときと同じ印で離し、その後に修飾キーの解放を送る（`press`）。
+ * 押して、まだ離していないボタンとキーと、まだ解放を送っていない修飾キー。締め切りで SIGTERM を受けたときに離してから
+ * 終わるため。離すときは押したときと同じ印で離し、その後に修飾キーの解放を送る（ダブルクリックの合間のように、
+ * ボタンは離したが修飾キーの解放はまだのときも送る）。
  */
 final class ParadisPressedInput {
 	private let lock = NSLock()
 	private var mouse: (upType: CGEventType, point: CGPoint, button: CGMouseButton, press: ParadisModifierPress)?
 	private var key: (code: UInt16, press: ParadisModifierPress)?
+	private var modifiers: ParadisModifierPress?
+
+	/** 修飾キー付きのイベントを送り始めた（解放を送るまで覚える）。 */
+	func holdModifiers(_ press: ParadisModifierPress) {
+		lock.lock()
+		modifiers = press.added.isEmpty ? nil : press
+		lock.unlock()
+	}
+
+	/** 修飾キーの解放を送った。 */
+	func releaseModifiers() {
+		lock.lock()
+		modifiers = nil
+		lock.unlock()
+	}
 
 	func pressMouse(upType: CGEventType, point: CGPoint, button: CGMouseButton, press: ParadisModifierPress) {
 		lock.lock()
@@ -669,19 +722,22 @@ final class ParadisPressedInput {
 		lock.lock()
 		let pendingMouse = mouse
 		let pendingKey = key
+		let pendingModifiers = modifiers
 		mouse = nil
 		key = nil
+		modifiers = nil
 		lock.unlock()
 		if let pendingMouse, let event = paradisMouseEvent(pendingMouse.upType, at: pendingMouse.point, button: pendingMouse.button, flags: pendingMouse.press.flags) {
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
-			try? paradisPostModifierRelease(pendingMouse.press)
 		}
 		if let pendingKey, let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: pendingKey.code, keyDown: false) {
 			event.flags = pendingKey.press.flags
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
-			try? paradisPostModifierRelease(pendingKey.press)
+		}
+		if let pendingModifiers {
+			_ = try? paradisPostModifierRelease(pendingModifiers)
 		}
 	}
 }
@@ -691,23 +747,66 @@ let paradisPressedInput = ParadisPressedInput()
 /**
  * 修飾キー付きのキー・クリックを離した直後に、修飾キーの解放の flagsChanged を 1 つ HID へ送る（実際のキーボードと同じ順）。
  * 印は今の状態を読み直して決める（`paradisModifierRelease`）。解放するものが無ければ何も送らない。
+ * OS が受け取るまで最長 0.2 秒待ち（送った直後に状態を読むと、まだ ⌘ が残って見える）、それでも残っていれば
+ * 1 回だけ送り直す。送った修飾キーと時刻は `paradisModifierReleaseLedger` に覚え、まだ残っていれば次の要求で自分の
+ * ものとして解放する（`paradisOwnLeftoverModifiers`）。戻り値は送った回数。
  */
-func paradisPostModifierRelease(_ press: ParadisModifierPress) throws {
-	guard let release = paradisModifierRelease(press, current: CGEventSource.flagsState(.hidSystemState)) else {
-		return
+@discardableResult
+func paradisPostModifierRelease(_ press: ParadisModifierPress) throws -> Int {
+	var sent = 0
+	for _ in 0..<2 {
+		guard let release = paradisModifierRelease(press, current: CGEventSource.flagsState(.hidSystemState)) else {
+			break
+		}
+		guard let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: release.keyCode, keyDown: false) else {
+			throw ParadisHelperError(code: "input_failed", message: "the modifier release event could not be created")
+		}
+		event.type = .flagsChanged
+		event.flags = release.flags
+		event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
+		event.post(tap: .cghidEventTap)
+		sent += 1
+		paradisModifierReleaseLedger.record(press.added)
+		let settled = Date().addingTimeInterval(0.2)
+		while !CGEventSource.flagsState(.hidSystemState).isDisjoint(with: press.added) && Date() < settled {
+			usleep(10_000)
+		}
+		if CGEventSource.flagsState(.hidSystemState).isDisjoint(with: press.added) {
+			break
+		}
 	}
-	guard let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: release.keyCode, keyDown: false) else {
-		throw ParadisHelperError(code: "input_failed", message: "the modifier release event could not be created")
+	return sent
+}
+
+/** 最後に解放を送った修飾キーと時刻（`paradisOwnLeftoverModifiers` で使う）。 */
+final class ParadisModifierReleaseLedger {
+	private let lock = NSLock()
+	private var last: (flags: CGEventFlags, at: Date)?
+
+	func record(_ flags: CGEventFlags) {
+		lock.lock()
+		last = (flags, Date())
+		lock.unlock()
 	}
-	event.type = .flagsChanged
-	event.flags = release.flags
-	event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
-	event.post(tap: .cghidEventTap)
-	// OS が受け取るまで待つ（送った直後に状態を読むと、まだ ⌘ が残って見える。続く要求の確かめが
-	// `holding a modifier key` で止まるのを避ける）。最長 0.2 秒
-	let settled = Date().addingTimeInterval(0.2)
-	while !CGEventSource.flagsState(.hidSystemState).isDisjoint(with: press.added) && Date() < settled {
-		usleep(10_000)
+
+	func latest() -> (flags: CGEventFlags, at: Date)? {
+		lock.lock()
+		defer {
+			lock.unlock()
+		}
+		return last
+	}
+}
+
+let paradisModifierReleaseLedger = ParadisModifierReleaseLedger()
+
+extension ParadisDesktop {
+	/** 押す前の状態に残っている、前に解放を送った自分の修飾キー（`paradisOwnLeftoverModifiers`）。 */
+	func ownLeftoverModifiers(systemBefore: CGEventFlags) -> CGEventFlags {
+		guard let last = paradisModifierReleaseLedger.latest() else {
+			return []
+		}
+		return paradisOwnLeftoverModifiers(lastReleased: last.flags, systemBefore: systemBefore, physicalModifierChangeSinceRelease: inputMonitor.physicalModifierChange(since: last.at))
 	}
 }
 
