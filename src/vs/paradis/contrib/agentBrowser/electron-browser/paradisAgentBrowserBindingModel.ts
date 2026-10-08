@@ -989,11 +989,17 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		const fresh = await this._refreshFromBackend(true);
 		const affectedPageIds = new Set([binding.pageId]);
 		if (!paradisBindingScopesEqual(binding.scope, terminalScope)) {
-			// ペインのスペースが変わった: そのペインの共有はどれも共有したときのスペースのものなので、全部外す
-			for (const candidate of (fresh ?? []).filter(candidate => candidate.token === binding.token)) {
+			// ペインのスペースが変わった: そのペインの共有のうち、今のペインのスペースと違うものを世代を指定して外す
+			// （後から今のスペースで共有し直したものは残す）。2 枚目以降を先に、current を最後に外す（current を
+			// 先に外すと、外すはずのページが新しい世代で繰り上がる）
+			const stale = fresh
+				? fresh.filter(candidate => candidate.token === binding.token && !paradisBindingScopesEqual(candidate.scope, terminalScope))
+					.sort((a, b) => Number(!a.additional) - Number(!b.additional))
+				: [binding];
+			for (const candidate of stale) {
 				affectedPageIds.add(candidate.pageId);
+				await channel.call<boolean>('unbindIfCurrent', [candidate.token, candidate.generation]);
 			}
-			await channel.call<boolean>('unbind', [binding.token]);
 		} else {
 			const current = fresh?.find(candidate => candidate.token === binding.token && candidate.pageId === binding.pageId);
 			await channel.call<boolean>('unbindIfCurrent', [binding.token, current?.generation ?? binding.generation]);

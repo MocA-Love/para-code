@@ -1485,9 +1485,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		assert.deepStrictEqual(fixture.sharingCalls, [true, false]);
 	});
 
-	// ペインのスペースが変わったら、そのペインの共有はどれも外す（1 つのペインは複数のページを共有できる）。
-	// ページのスペースが変わったら、そのページの共有だけを、外す直前の一覧の世代で外す
-	test('unbinds the whole pane on terminal stable scope drift and only the page generation on browser drift', async () => {
+	test('conditionally unbinds only a saved generation on real terminal or browser stable scope drift', async () => {
 		const fixture = createFixture();
 		fixture.backendBindings = [binding(7)];
 		await fixture.bindingModel.refresh();
@@ -1496,12 +1494,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.terminalScope = { kind: 'pending' };
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
-		assert.strictEqual(fixture.commands.some(call => call.command === 'unbindIfCurrent' || call.command === 'unbind'), false);
+		assert.strictEqual(fixture.commands.some(call => call.command === 'unbindIfCurrent'), false);
 
 		fixture.terminalScope = { kind: 'managed', stateKey: 'space-b' };
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
-		await eventually(() => fixture.commands.some(call => call.command === 'unbind'));
-		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbind')?.args, ['token']);
+		await eventually(() => fixture.commands.some(call => call.command === 'unbindIfCurrent'));
+		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 7]);
 
 		fixture.backendBindings = [binding(8)];
 		await fixture.bindingModel.refresh();
@@ -1511,6 +1509,36 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.browserScopeChanged.fire({ viewId: 'view-a' });
 		await eventually(() => fixture.commands.some(call => call.command === 'unbindIfCurrent'));
 		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbindIfCurrent')?.args, ['token', 8]);
+	});
+
+	// ペインのスペースが変わったら、そのペインの共有のうち古いスペースのものだけを世代で外す（2 枚目以降を先に）。
+	// 共有の数だけ片付けが走っても、ペイン単位の解除はしないので、今のスペースで共有し直したものは残る
+	test('on terminal stable scope drift, unshares only the pane\'s pages of the old space, additional ones first', async () => {
+		const fixture = createFixture();
+		const oldSpace = { kind: 'managed' as const, stateKey: 'space-a' };
+		fixture.backendBindings = [
+			{ ...bindingRow('token', 'view-a', 7), scope: oldSpace },
+			{ ...bindingRow('token', 'view-b', 5), scope: oldSpace, additional: true },
+		];
+		await fixture.bindingModel.refresh();
+		// 片付けが走る前に、ユーザーが新しいスペースでページを共有し直した（それが current）
+		fixture.backendBindings = [
+			{ ...bindingRow('token', 'view-c', 9), scope: { kind: 'managed', stateKey: 'space-b' } },
+			{ ...bindingRow('token', 'view-a', 7), scope: oldSpace, additional: true },
+			{ ...bindingRow('token', 'view-b', 5), scope: oldSpace, additional: true },
+		];
+		fixture.commands.length = 0;
+		fixture.terminalScope = { kind: 'managed', stateKey: 'space-b' };
+		fixture.terminalScopeChanged.fire({ instanceId: 1 });
+		await eventually(() => fixture.backendBindings.length === 1);
+		await new Promise<void>(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			unbinds: fixture.commands.filter(call => call.command === 'unbind' || call.command === 'unbindIfCurrent').map(call => [call.command, ...call.args]),
+			left: fixture.backendBindings.map(row => row.pageId),
+		}, {
+			unbinds: [['unbindIfCurrent', 'token', 7], ['unbindIfCurrent', 'token', 5]],
+			left: ['view-c'],
+		});
 	});
 
 	// current が外れて残りが新しい世代で繰り上がった後でも、ページのスペースの変化で外せる（捕まえた世代は古い）
@@ -1538,7 +1566,8 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		fixture.terminalScopeChanged.fire({ instanceId: 1 });
 		await eventually(() => fixture.sharingCalls.includes(false));
 
-		assert.deepStrictEqual(fixture.commands.find(call => call.command === 'unbind')?.args, ['token']);
+		// 外す直前の一覧に行が無いので、何も外さずに共有の印だけを下ろす
+		assert.strictEqual(fixture.commands.some(call => call.command === 'unbindIfCurrent' || call.command === 'unbind'), false);
 		assert.deepStrictEqual(fixture.sharingCalls, [false]);
 	});
 

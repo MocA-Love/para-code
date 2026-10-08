@@ -1335,6 +1335,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._processOwnerRelease(acceptance);
 		this._runNonThrowingCleanup('agent-tab-scope', () => this._dropAgentTabGrantsOutOfScope(acceptedManifest));
+		// current が外れたときに確かめられず繰り上げを見送ったペイン（再読み込みの途中など）を見直す
+		for (const pane of acceptedManifest.panes) {
+			if (!this._bindings.has(pane.token) && this._userSharedPageEntries(pane.token).length > 0) {
+				this._runNonThrowingCleanup('user-share-promotion', () => this._promoteLatestUserSharedPage(pane.token));
+			}
+		}
 		// Para Code が止まっている間の hook の控えを流し直す（W2-20）。受け口はトークンが今生きている
 		// ペインのものかを確かめるので、ペインの同期が済んだこの時点で読む。
 		for (const pane of acceptedManifest.panes) {
@@ -2120,39 +2126,56 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/**
 	 * 2 枚目以降の共有が current へ上がる（同じビューのまま世代だけ変わる）。そのタブを tab_id で使っているスコープの
-	 * 世代を先に書き換えて、`_reconcileTabScopes` が接続・子プロセス・ページの上書きを切らないようにする
-	 * （current から外れるときも切らないので、それと揃える）。ビューが変わっていれば切る。
+	 * 世代を先に書き換えて、`_reconcileTabScopes` がゲートウェイの接続とページの上書きを切らないようにする（current から
+	 * 外れるときも切らないので、それと揃える）。devtools の子プロセスは世代に結びつくので作り直す。ビューが変わっていれば
+	 * 全部切る。
 	 */
 	private _keepTabScope(token: string, previous: IBindingEntry, next: IBindingEntry): void {
 		const scopes = this._tabScopes.get(token);
 		// エージェントのタブでもあった entry は許可へ戻り、そのタブのスコープは許可（元の世代）を指したままになる
 		if (!previous.agentTab && scopes?.get(previous.pageId) === previous.generation && this._sameExactView(previous.exactView, next.exactView)) {
 			scopes.set(previous.pageId, next.generation);
+			// devtools の道具は世代を見る（`_callDevtoolsTool`）ので、そのスコープの世代は進める。子プロセスは
+			// 新しい世代で作り直される。切らないのはゲートウェイの接続と、エージェントが掛けたヘッダ・認証・ルール
+			// （`_activateBindingGeneration` の closeConnectionsForToken と `_pageOps.releaseOwner`）だけ
+			const key = paradisAgentTabScopeKey(token, previous.pageId);
+			this._runNonThrowingCleanup('generation', () => this._devtoolsGenerationCoordinator.setGeneration(key, next.generation, true));
+			this._runNonThrowingCleanup('devtools-retire', () => this._devtoolsProxy.retire(key, next.generation));
 		}
 	}
 
 	/**
-	 * 2 枚目以降の共有が、受理済みの最新の manifest で今も使えるか（ペインとページが同じウィンドウにあり、どちらの
-	 * 確定したスペースも共有したときと同じ）。current へ繰り上げる前に確かめる。
+	 * 2 枚目以降の共有が、受理済みの最新の manifest で今も使えるか。current へ繰り上げる前に確かめる。
+	 * - `usable`: ペインとページが同じウィンドウにあり、どちらの確定したスペースも共有したときと同じ
+	 * - `gone`: ページがペインのウィンドウに無い、またはどちらかのスペースが変わったと確定した（外してよい）
+	 * - `unknown`: 確かめられない（再読み込みの途中で接続や manifest が無い、不完全な manifest に載っていない）。
+	 *   外さずに残し、繰り上げは manifest が揃ったとき（{@link syncBindingAuthority}）に見直す
 	 */
-	private _isUserSharedEntryInScope(token: string, entry: IBindingEntry): boolean {
+	private _userSharedEntryState(token: string, entry: IBindingEntry): 'usable' | 'gone' | 'unknown' {
 		if (!this._bindingAuthority.isViewOwnedWithToken(token, entry.pageId)) {
-			return false;
+			return 'gone';
 		}
 		const connection = this._rendererConnections.get(entry.windowCtx);
 		if (connection === undefined) {
-			return false;
+			return 'unknown';
 		}
 		let manifest: IParadisBindingAuthorityManifest;
 		try {
 			manifest = this._bindingAuthority.getCurrentAcceptedManifest(connection);
 		} catch {
-			return false;
+			return 'unknown';
 		}
 		const paneScope = manifest.panes.find(pane => pane.token === token)?.scope;
 		const viewScope = manifest.browserViews.find(view => view.viewId === entry.pageId)?.scope;
-		return paneScope !== undefined && viewScope !== undefined
-			&& !paradisScopeMovedFrom(paneScope, entry.scope) && !paradisScopeMovedFrom(viewScope, entry.scope);
+		if ((paneScope !== undefined && paradisScopeMovedFrom(paneScope, entry.scope))
+			|| (viewScope !== undefined && paradisScopeMovedFrom(viewScope, entry.scope))) {
+			return 'gone';
+		}
+		if (paneScope === undefined || viewScope === undefined) {
+			// 完全な manifest に無いものは retire 済み（ここへは来ない）。不完全な manifest では判定しない
+			return manifest.complete ? 'gone' : 'unknown';
+		}
+		return 'usable';
 	}
 
 	/** そのページを、ユーザーがそのペインへ共有しているか（current か 2 枚目以降か）。 */
@@ -2223,16 +2246,25 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 世代は共有するたびに進み、current から外れても変わらないので、大きいほど後に共有したもの。
 		// 繰り上げる前に、今も使えるか（ペインやページのスペースが変わっていない・ビューが消えていない）を確かめ、
 		// 使えないものは外して次を見る（別のスペースのページや消えたページを current にしない）
+		// 確かめられない候補があれば、そこで繰り上げを見送る（残りも消さない。manifest が揃ったら見直す）
 		let latest: IBindingEntry | undefined;
+		let removed = false;
 		for (const candidate of this._userSharedPageEntries(token).sort((a, b) => b.generation - a.generation)) {
-			if (this._isUserSharedEntryInScope(token, candidate)) {
+			const state = this._userSharedEntryState(token, candidate);
+			if (state === 'usable') {
 				latest = candidate;
 				break;
 			}
+			if (state === 'unknown') {
+				break;
+			}
 			this._dispatchBackgroundThrottlingEffects(this._removeAgentTabGrantEntry(token, candidate.pageId));
+			removed = true;
 		}
 		if (latest === undefined) {
-			this._reconcileTabScopes(token);
+			if (removed) {
+				this._reconcileTabScopes(token);
+			}
 			return;
 		}
 		const generation = ++this._nextBindingGeneration;
