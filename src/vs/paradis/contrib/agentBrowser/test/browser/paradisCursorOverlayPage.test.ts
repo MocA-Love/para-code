@@ -16,7 +16,13 @@ const STATE_KEY = '__paraCodeAgentCursorOverlay';
 interface IPageState {
 	readonly h: HTMLElement | null;
 	readonly mv: HTMLElement | null;
+	readonly lf: HTMLElement | null;
 	readonly t: string;
+	readonly x: number | null;
+	readonly y: number | null;
+	readonly sticky: string;
+	readonly wt: boolean;
+	wat: number;
 }
 
 /** Runs the page-side script against this test document, the way the isolated world would. */
@@ -26,6 +32,8 @@ function run(command: ParadisCursorOverlayOwnedCommand): unknown {
 
 interface IPageGlobal {
 	readonly cs: Record<string, IPageState>;
+	readonly f: HTMLElement | null;
+	readonly ts: HTMLElement | null;
 }
 
 /** The cursor of commands without an owner. */
@@ -109,6 +117,101 @@ suite('Paradis Cursor Overlay page script', () => {
 		const shown = pageState()!.t;
 		run({ kind: 'status', label: 'Claude', status: 'idle', text: '' });
 		assert.deepStrictEqual({ before, shown, after: pageState()!.t }, { before: null, shown: 'Claude \u00b7 Running a script', after: 'Claude' });
+	});
+
+	test('a tool state with park shows the cursor at the bottom-right corner, and a reading box frames the element and brings the cursor there', () => {
+		run({ kind: 'status', label: 'Claude', status: 'reading', text: 'Reading', park: true });
+		const s = pageState()!;
+		const parked = { x: s.x, y: s.y, t: s.t, connected: s.h?.isConnected };
+		run({ kind: 'status', label: 'Claude', status: 'reading', text: 'Reading', park: true, box: { x: 40, y: 50, width: 100, height: 20 } });
+		const framed = { x: s.x, y: s.y, frame: [s.lf?.style.left, s.lf?.style.top, s.lf?.style.width, s.lf?.style.opacity] };
+		// Off the screen: no frame move and no cursor move.
+		run({ kind: 'status', label: 'Claude', status: 'reading', text: 'Reading', park: true, box: { x: -500, y: -500, width: 10, height: 10 } });
+		assert.deepStrictEqual(
+			{ parked, framed, offscreen: { x: s.x, y: s.y } },
+			{
+				parked: { x: Math.max(12, Math.round(mainWindow.innerWidth - 200)), y: Math.max(12, Math.round(mainWindow.innerHeight - 64)), t: 'Claude \u00b7 Reading', connected: true },
+				framed: { x: 54, y: 60, frame: ['37px', '47px', '106px', '1'] },
+				offscreen: { x: 54, y: 60 },
+			},
+		);
+	});
+
+	test('a restored loading state after a navigation is shown once and does not stick or spin', () => {
+		run({ kind: 'status', label: 'Claude', status: 'loading', text: 'Loading', park: true, transient: true, frames: [{ x: 30, y: 40, r: 0, o: 1 }], durationMs: 0 });
+		const s = pageState()!;
+		assert.deepStrictEqual({ t: s.t, sticky: s.sticky, spinning: s.wt, at: [s.x, s.y] }, { t: 'Claude \u00b7 Loading', sticky: '', spinning: false, at: [30, 40] });
+	});
+
+	test('a click made by a script follows the cursor only while the script runs', () => {
+		const doc = mainWindow.document;
+		const button = doc.createElement('button');
+		button.style.cssText = 'position:fixed;left:200px;top:120px;width:40px;height:20px;margin:0;padding:0;border:0';
+		doc.body.appendChild(button);
+		try {
+			run({ kind: 'status', label: 'Claude', status: 'script', text: 'Running', park: true, clickText: 'Clicked by script' });
+			button.click();
+			const s = pageState()!;
+			const followed = { at: [s.x, s.y], t: s.t };
+			run({ kind: 'status', label: 'Claude', status: 'idle', text: '' });
+			button.style.left = '400px';
+			button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+			assert.deepStrictEqual({ followed, after: [s.x, s.y] }, { followed: { at: [214, 130], t: 'Claude \u00b7 Clicked by script' }, after: [214, 130] });
+		} finally {
+			button.remove();
+		}
+	});
+
+	test('script clicks are followed only after the script started, only while one cursor watches, and not past the watch limit', () => {
+		const doc = mainWindow.document;
+		const button = doc.createElement('button');
+		button.style.cssText = 'position:fixed;left:200px;top:120px;width:40px;height:20px;margin:0;padding:0;border:0';
+		doc.body.appendChild(button);
+		const owner = (id: string) => ({ owner: id, color: '#d97757' });
+		const at = (id: string) => { const c = pageGlobal()!.cs[id]; return [c.x, c.y]; };
+		try {
+			run({ kind: 'move', x: 10, y: 10, label: 'A', durationMs: 0, frames: [{ x: 10, y: 10, r: 0, o: 1 }], ...owner('aaaaaaaa') });
+			// The page's own click before the script started is not replayed.
+			button.click();
+			run({ kind: 'status', label: 'A', status: 'script', text: 'Running', park: true, since: Date.now() + 1, ...owner('aaaaaaaa') });
+			const notReplayed = at('aaaaaaaa');
+			// Two cursors watching: whose click it is cannot be told, so neither moves.
+			run({ kind: 'status', label: 'B', status: 'script', text: 'Running', park: true, ...owner('bbbbbbbb') });
+			button.click();
+			const twoWatching = [at('aaaaaaaa'), at('bbbbbbbb')];
+			run({ kind: 'status', label: 'B', status: 'idle', text: '', ...owner('bbbbbbbb') });
+			// Past the watch limit (the end never arrived): the page's own clicks are not followed.
+			(pageGlobal()!.cs.aaaaaaaa as IPageState).wat = Date.now() - 31_000;
+			button.click();
+			const expired = at('aaaaaaaa');
+			assert.deepStrictEqual({ notReplayed, twoWatching, expired }, { notReplayed: [10, 10], twoWatching: [[10, 10], twoWatching[1]], expired: [10, 10] });
+		} finally {
+			button.remove();
+		}
+	});
+
+	test('a look frames the element without touching the state on the name tag', () => {
+		run({ kind: 'status', label: 'Claude', status: 'waiting', text: 'Waiting', park: true });
+		run({ kind: 'look', label: 'Claude', box: { x: 40, y: 50, width: 100, height: 20 } });
+		const s = pageState()!;
+		run({ kind: 'look', label: 'Claude', box: { x: -900, y: 50, width: 100, height: 20 } });
+		assert.deepStrictEqual({ at: [s.x, s.y], t: s.t, sticky: s.sticky, spinning: s.wt }, { at: [54, 60], t: 'Claude \u00b7 Waiting', sticky: 'Waiting', spinning: true });
+	});
+
+	test('a snapshot lights only its range, and nothing lights while a capture hides the overlay', async () => {
+		const calm = mainWindow.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		run({ kind: 'flash', toast: 'Snapshot', rect: { x: 10, y: 20, width: 30, height: 40 } });
+		const f = pageGlobal()!.f;
+		const lit = f ? [f.style.left, f.style.top, f.style.width, f.style.height] : null;
+		const toast = pageGlobal()!.ts?.textContent;
+		// The toast lives in a closed shadow root, so the page (and a snapshot of it) does not see its text.
+		const pageSees = mainWindow.document.documentElement.textContent?.includes('Snapshot');
+		await run({ kind: 'hide' });
+		run({ kind: 'flash', toast: 'Again', rect: { x: 10, y: 20, width: 30, height: 40 } });
+		assert.deepStrictEqual(
+			{ lit, toast, pageSees, whileHidden: [pageGlobal()!.f, pageGlobal()!.ts] },
+			{ lit: calm ? null : ['10px', '20px', '30px', '40px'], toast: 'Snapshot', pageSees: false, whileHidden: [null, null] },
+		);
 	});
 
 	test('two owners on one page get two cursors with their own names, and remove clears both', () => {

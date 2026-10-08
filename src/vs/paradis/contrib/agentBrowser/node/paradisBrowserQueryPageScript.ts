@@ -123,6 +123,8 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		if (text && text !== name) { out.text = text; }
 		out.visible = visible(el);
 		out.rect = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+		// The rect is relative to the element's own frame, not the page's viewport.
+		if (window.top !== window || el.ownerDocument !== document) { out.inIframe = true; }
 		return out;
 	};
 	const shortLabel = el => {

@@ -79,6 +79,8 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			description: 'Whether to include a page snapshot in the response once the text appears. Default is false (call take_snapshot when you need one).',
 		};
 	} else if (tool.name === 'take_snapshot') {
+		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
+		delete properties.paraCodeRootRect;
 		properties.offset = {
 			type: 'integer',
 			minimum: 0,
@@ -105,10 +107,14 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown): IPa
 		return { args: { ...rest, text }, includeSnapshot: includeSnapshot === true };
 	}
 	if (name === 'take_snapshot') {
+		// `paraCodeRootRect` は Para Code だけが付ける（エージェントが渡しても捨てる）
 		const { offset, root, ...rest } = args;
+		delete rest.paraCodeRootRect;
 		const snapshotOffset = typeof offset === 'number' && Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
 		const snapshotRoot = typeof root === 'string' && root.length > 0 && rest.filePath === undefined ? root : undefined;
-		return { args: rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
+		// root の要素の位置は vendored の take_snapshot の中で測る（エージェントのカーソルの枠。q.html Q297 の 3）。
+		// 別の evaluate_script で測るとタブの道具の順番を握り、次の道具を待たせるため
+		return { args: snapshotRoot !== undefined && snapshotOffset === 0 ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
 }
@@ -170,6 +176,72 @@ export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadis
 		return mapTextParts(result, text => limitSnapshot(text, prepared.snapshotOffset ?? 0));
 	}
 	return result;
+}
+
+/** evaluate_script の中の `.click()` を見分ける（文字列やコメントの中も拾うが、足すのは 1 行の案内だけ）。 */
+const SCRIPT_CLICK_PATTERN = /\.click\s*\(/;
+
+/** evaluate_script の中で `.click()` を使ったときに結果へ足す案内（q.html Q299 A の 1 段目）。 */
+export const PARADIS_SCRIPT_CLICK_HINT = 'Tip: use click_by (role + name, text or selector) instead of .click() in evaluate_script; it shows the user your cursor moving to the element, works with React/MUI, and explains why an element cannot be clicked.';
+
+/**
+ * エージェントの evaluate_script の結果に、中で `.click()` を使っていたら案内を 1 行足す。それ以外の道具・
+ * 失敗した結果・形の違う結果はそのまま返す。Para Code が中で使う evaluate_script には使わない（結果を読むため）。
+ */
+export function paradisWithScriptClickHint(name: string, args: unknown, result: unknown): unknown {
+	if (name !== 'evaluate_script' || !isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
+		return result;
+	}
+	const source = isRecord(args) && typeof args.function === 'string' ? args.function : undefined;
+	if (source === undefined || !SCRIPT_CLICK_PATTERN.test(source)) {
+		return result;
+	}
+	return { ...result, content: [...result.content, { type: 'text', text: PARADIS_SCRIPT_CLICK_HINT }] };
+}
+
+/** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
+export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
+
+/**
+ * take_snapshot の結果から root の要素の位置の行を取り除き、位置（ビューポートの CSS ピクセル）を返す。
+ * エージェントへはこの行を見せない。take_snapshot 以外・印の無い結果はそのまま返す。
+ */
+export function paradisTakeSnapshotRootRect(name: string, result: unknown): { readonly result: unknown; readonly rect?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } } {
+	if (name !== 'take_snapshot' || !isRecord(result) || !Array.isArray(result.content)) {
+		return { result };
+	}
+	let rect: { x: number; y: number; width: number; height: number } | undefined;
+	let found = false;
+	const content = result.content.map(item => {
+		if (!isRecord(item) || item.type !== 'text' || typeof item.text !== 'string' || !item.text.includes(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)) {
+			return item;
+		}
+		found = true;
+		const lines = item.text.split('\n');
+		const kept = lines.filter(line => {
+			if (!line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)) {
+				return true;
+			}
+			try {
+				const value: unknown = JSON.parse(line.slice(PARADIS_SNAPSHOT_ROOT_RECT_MARKER.length));
+				if (isRecord(value) && [value.x, value.y, value.width, value.height].every(n => typeof n === 'number' && Number.isFinite(n)) && (value.width as number) > 0 && (value.height as number) > 0) {
+					rect = { x: value.x as number, y: value.y as number, width: value.width as number, height: value.height as number };
+				}
+			} catch {
+				// 読めない行は捨てるだけ
+			}
+			return false;
+		});
+		return { ...item, text: kept.join('\n') };
+	});
+	if (!found) {
+		return { result };
+	}
+	// structuredContent（vendored の --experimental-structured-content。Para Code は付けないが念のため）からも取り除く
+	const structured = isRecord(result.structuredContent) && typeof result.structuredContent.message === 'string'
+		? { structuredContent: { ...result.structuredContent, message: result.structuredContent.message.split('\n').filter(line => !line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)).join('\n') } }
+		: {};
+	return { result: { ...result, content, ...structured }, ...(rect ? { rect } : {}) };
 }
 
 /**

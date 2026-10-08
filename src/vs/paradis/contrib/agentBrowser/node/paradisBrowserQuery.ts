@@ -18,6 +18,7 @@
 // - サービス本体（paradisAgentBrowserService.ts）がペイントークンと ingress lease を確かめてから呼ぶ。
 //   await の後は共有が変わっていないかを毎回確かめる
 
+import type { IParadisCursorRect } from '../common/paradisCursorOverlay.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from './paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 import type { IParadisNetworkActivitySnapshot } from './paradisCdpNetworkActivity.js';
@@ -40,6 +41,31 @@ export interface IParadisBrowserQueryCall {
 	 * 数えない。まだ何も数えていなければ undefined。
 	 */
 	networkActivity?(ignoreOlderThanMs: number): IParadisNetworkActivitySnapshot | undefined;
+	/**
+	 * 見ている要素（ビューポートの CSS ピクセル）をエージェントのカーソルの枠で示す（q.html Q297 の 3）。
+	 * 演出なので待たない。
+	 */
+	noteLook?(rect: IParadisCursorRect): void;
+}
+
+/**
+ * ページの関数が返した値から、見ている要素の矩形を取り出す（inspect_element の `rect`、ほかのツールの
+ * `element.rect`）。大きさの無いもの・形の違うもの・iframe の中の要素（矩形がその枠の中の座標で、
+ * ページの画面とずれる）は undefined。
+ */
+export function paradisLookedAtRect(value: unknown): IParadisCursorRect | undefined {
+	if (!isRecord(value) || value.inMainFrame === false || value.problem === 'iframe' || value.inIframe === true || (isRecord(value.element) && value.element.inIframe === true)) {
+		return undefined;
+	}
+	const rect = isRecord(value.rect) ? value.rect : isRecord(value.element) && isRecord(value.element.rect) ? value.element.rect : undefined;
+	if (!rect) {
+		return undefined;
+	}
+	const { x, y, width, height } = rect;
+	if (typeof x !== 'number' || typeof y !== 'number' || typeof width !== 'number' || typeof height !== 'number' || ![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+		return undefined;
+	}
+	return { x, y, width, height };
 }
 
 type ToolResult = unknown;
@@ -250,6 +276,18 @@ export class ParadisBrowserQuery {
 		}
 	}
 
+	/** 見ている要素をカーソルの枠で示す（演出なので、結果は何も変えない）。 */
+	private look(call: IParadisBrowserQueryCall, value: Record<string, unknown>): void {
+		const rect = paradisLookedAtRect(value);
+		if (rect) {
+			try {
+				call.noteLook?.(rect);
+			} catch {
+				// 演出は道具の結果を変えない。
+			}
+		}
+	}
+
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
 	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean }> {
 		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate), uids);
@@ -330,6 +368,9 @@ export class ParadisBrowserQuery {
 			checks++;
 			if (outcome.ok) {
 				last = outcome.value;
+				if (locator.given) {
+					this.look(call, outcome.value);
+				}
 				lastFailure = undefined;
 				if (outcome.value.met === true) {
 					if (networkIdle()) {
@@ -391,6 +432,9 @@ export class ParadisBrowserQuery {
 			return outcome.result;
 		}
 		const value = outcome.value;
+		if (locator.given) {
+			this.look(call, value);
+		}
 		if (value.withinMissing === true) {
 			return error(`Nothing matches the container (${describeLocator({ within: args.within, within_uid: args.within_uid })}).`);
 		}
@@ -448,6 +492,7 @@ export class ParadisBrowserQuery {
 				? `No element matches ${describeLocator(args)}. Check with take_snapshot, or wait for it with wait_until.`
 				: `Only ${value.matched} element(s) match, so there is no index ${index}.`);
 		}
+		this.look(call, value);
 		return text(JSON.stringify(value, null, 2));
 	}
 
@@ -513,6 +558,7 @@ export class ParadisBrowserQuery {
 			}
 			lastContainer = value.container;
 			if (value.found === true) {
+				this.look(call, value);
 				return text(`Found after ${steps} scroll step(s) (${scrolled}px) in ${String(value.container)}, and scrolled it into view.\n${JSON.stringify({ matched: value.matched, element: value.element }, null, 2)}`);
 			}
 			const moved = typeof value.moved === 'number' ? value.moved : 0;
@@ -527,6 +573,7 @@ export class ParadisBrowserQuery {
 				}
 				const final = await this.run(call, { ...base, checkOnly: true }, locator.uids);
 				if (final.ok && final.value.found === true) {
+					this.look(call, final.value);
 					return text(`Found at the end of ${String(final.value.container)} after ${steps} scroll step(s) (${scrolled}px), and scrolled it into view.\n${JSON.stringify({ matched: final.value.matched, element: final.value.element }, null, 2)}`);
 				}
 				return error(`Not found: reached the ${direction === 'up' || direction === 'left' ? 'start' : 'end'} of ${String(lastContainer)} after ${steps} scroll step(s) (${scrolled}px). Try "from_start": true, the other direction, or give "container" if the wrong area was scrolled.`);

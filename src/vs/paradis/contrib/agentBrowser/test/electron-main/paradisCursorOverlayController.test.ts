@@ -38,6 +38,29 @@ class TestTarget implements IParadisCursorOverlayTarget {
 	}
 }
 
+/** The command the generated script carries (the JSON argument of the self-calling function). */
+function payloadOf(code: string): Record<string, unknown> {
+	return JSON.parse(/\}\)\((?<json>\{[\s\S]*\})\)$/.exec(code)!.groups!.json);
+}
+
+/** Records the payloads a target receives, with only the fields a test looks at. */
+function recordPayloads(target: TestTarget, fields: readonly string[]): Record<string, unknown>[] {
+	const seen: Record<string, unknown>[] = [];
+	const original = target.webContents.executeJavaScriptInIsolatedWorld;
+	target.webContents.executeJavaScriptInIsolatedWorld = (worldId, scripts) => {
+		const payload = payloadOf(scripts[0].code);
+		const picked: Record<string, unknown> = {};
+		for (const field of fields) {
+			if (payload[field] !== undefined) {
+				picked[field] = payload[field];
+			}
+		}
+		seen.push(picked);
+		return original(worldId, scripts);
+	};
+	return seen;
+}
+
 /** Reads the command kind back out of the generated script's embedded payload. */
 function kindOf(code: string): string {
 	return /"kind":"([a-z]+)"/.exec(code)?.[1] ?? '<unknown>';
@@ -430,6 +453,112 @@ suite('Paradis Cursor Overlay Controller', () => {
 		];
 
 		assert.deepStrictEqual({ waits, commands: target.commands }, { waits: [0, 0, 0], commands: [] });
+	});
+
+	test('a tool state parks the cursor on a fresh page, reading frames are thinned before reaching the page, and a snapshot flashes only outside a capture', async () => {
+		const target = new TestTarget();
+		let clock = 10_000;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const seen = recordPayloads(target, ['kind', 'status', 'park', 'box', 'rect', 'clickText', 'since']);
+		const field = { x: 10, y: 20, width: 100, height: 30 };
+		const button = { x: 10, y: 80, width: 100, height: 30 };
+
+		controller.noteStatus(target, 'script', undefined, undefined, undefined, { since: 9_990 });
+		controller.noteLook(target, field, false);
+		// The same element again, and another element within a second: nothing is sent to the page.
+		controller.noteLook(target, field, false);
+		clock += 500;
+		controller.noteLook(target, button, false);
+		clock += 1_000;
+		controller.noteLook(target, button, true);
+		await controller.hideForCapture(target);
+		clock += 2_000;
+		controller.noteLook(target, undefined, true);
+		controller.afterCapture(target, true, { x: 0, y: 100, width: 50, height: 50, doc: true });
+
+		assert.deepStrictEqual(seen, [
+			{ kind: 'status', status: 'script', park: true, clickText: 'スクリプトでクリック', since: 9_990 },
+			{ kind: 'look', box: field },
+			{ kind: 'flash', rect: button },
+			{ kind: 'look', box: button },
+			{ kind: 'hide' },
+			{ kind: 'captured', rect: { x: 0, y: 100, width: 50, height: 50, doc: true } },
+		]);
+	});
+
+	test('a snapshot flash does not use up the screenshot flash right after it', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		controller.noteLook(target, undefined, true);
+		clock += 100;
+		await controller.hideForCapture(target);
+		const flashed = controller.afterCapture(target, true);
+		assert.deepStrictEqual({ flashed, commands: target.commands }, { flashed: true, commands: ['flash', 'hide', 'captured'] });
+	});
+
+	test('the idle at the end of a tool still reaches a page that went to the background', async () => {
+		const target = new TestTarget();
+		const controller = new ParadisCursorOverlayController(() => true, () => 0);
+		controller.noteStatus(target, 'script', undefined, undefined);
+		target.visible = false;
+		controller.noteStatus(target, 'idle', undefined, undefined);
+		// A page that never had a cursor gets nothing, and neither does a destroyed one.
+		const fresh = new TestTarget();
+		fresh.visible = false;
+		controller.noteStatus(fresh, 'idle', undefined, undefined);
+		target.destroyed = true;
+		controller.noteStatus(target, 'idle', undefined, undefined);
+		assert.deepStrictEqual({ target: target.commands, fresh: fresh.commands }, { target: ['status', 'status'], fresh: [] });
+	});
+
+	test('after a navigation the recent cursor comes back where it was, once more on dom-ready, and not after cleanup or a long pause', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const seen = recordPayloads(target, ['kind', 'status', 'transient', 'frames']);
+
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 100, y: 50 });
+		clock += 2_000;
+		controller.noteStatus(target, 'loading', undefined, undefined);
+		controller.onNavigated(target);
+		controller.onDomReady(target);
+		// Without a running tool, the name tag says loading only for a moment.
+		controller.noteStatus(target, 'idle', undefined, undefined);
+		controller.onNavigated(target);
+		// A move before dom-ready already drew the cursor on the new page, so dom-ready does not pull it back.
+		await controller.onMouseEvent(target, { type: 'mouseMoved', x: 300, y: 50 });
+		controller.onDomReady(target);
+		const beforeCleanup = seen.length;
+		clock += PARADIS_CURSOR_OVERLAY_TUNING.idleMs + 1;
+		controller.onNavigated(target);
+		controller.removeOverlay(target);
+		controller.onNavigated(target);
+
+		const at = (x: number, y: number) => [{ x, y, r: 0, o: 1 }];
+		assert.deepStrictEqual({ seen: seen.slice(0, beforeCleanup).map(p => p.kind === 'move' ? 'move' : p), after: seen.slice(beforeCleanup).map(p => p.kind) }, {
+			seen: [
+				'move',
+				{ kind: 'status', status: 'loading' },
+				{ kind: 'status', status: 'loading', frames: at(100, 50) },
+				{ kind: 'status', status: 'loading', frames: at(100, 50) },
+				{ kind: 'status', status: 'idle' },
+				{ kind: 'status', status: 'loading', transient: true, frames: at(100, 50) },
+				'move',
+			],
+			after: ['remove'],
+		});
+	});
+
+	test('a tool state that never got its end is not brought back as running after a navigation half a minute later', async () => {
+		const target = new TestTarget();
+		let clock = 0;
+		const controller = new ParadisCursorOverlayController(() => true, () => clock);
+		const seen = recordPayloads(target, ['kind', 'status', 'transient']);
+		controller.noteStatus(target, 'script', undefined, undefined);
+		clock += 31_000;
+		controller.onNavigated(target);
+		assert.deepStrictEqual(seen, [{ kind: 'status', status: 'script' }, { kind: 'status', status: 'loading', transient: true }]);
 	});
 
 	test('releases, wheels, special keys and tool states reach the page without delaying input', async () => {
