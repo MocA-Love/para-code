@@ -20,9 +20,9 @@
 //      フォーカスのあるアプリと要素の持ち主が目的の pid か（重なるだけのパネルでは止めない。レビュー N4）
 //    - 認証・同意のダイアログが出ていれば止める（レビュー M3）
 //    - 長い入力では、利用者の入力は毎回、画面とフォーカスは 10 文字か 50 ms ごとに確かめる（レビュー N5）
-//  - 修飾キーはイベントのフラグで付け、修飾キーそのものの押下は送らない。離すイベントには押す前の OS の修飾キーの状態
-//    （組み合わせの修飾キーを除く）を付け、OS に ⌘ などが押されたままの状態を残さない（`paradisModifierEventFlags`）。
-//    押したボタンとキーは、止めるときも必ず離す
+//  - 修飾キーはイベントのフラグで付け、修飾キーそのものの押下は送らない。押す・離すのイベントは組み合わせの修飾キー付きで
+//    送り、離した直後に修飾キーの解放の flagsChanged を 1 つ送って、OS に ⌘ などが押されたままの状態を残さない
+//    （`paradisModifierPress`・`paradisModifierRelease`）。押したボタンとキーは、止めるときも必ず離す
 //  - クリックとキーは HID のタップへ送る（`postToPid` では AppKit に届かないアプリがあるため。Orca と同じ）。
 //    スクロールだけは目的のプロセスへ直接送る
 //  - 貼り付け（Q100、レビュー M6）: クリップボードを退避し、空にしてから文字を入れて ⌘V を送る。貼り付け先の値に
@@ -91,31 +91,35 @@ extension ParadisDesktop {
 
 	func foregroundClick(pid: Int32, windowId: UInt32, target: ParadisPointerTarget, button: ParadisMouseButton, clickCount: Int, modifiers: ParadisModifiers, cursor: ParadisCursorOwnerSpec?) throws -> [String: Any] {
 		try requireInputPermission()
+		// 押す前の修飾キーの状態は、こちらがイベントを送る前に読む（印の無い移動を送ると利用者の ⇧ や Caps Lock が消えうる）
+		let systemBefore = CGEventSource.flagsState(.hidSystemState)
 		let (point, window) = try resolvePoint(pid: pid, windowId: windowId, target: target)
 		try pointerFence(pid: pid, point: point)
 		// メニューの「ペースト」は、⌘V と同じく利用者のクリップボードを貼るので押さない（レビュー N11）
 		if paradisPasteMenuItemAt(point) {
 			throw ParadisHelperError(code: "key_blocked", message: "Paste menu items are never clicked; use pasteText")
 		}
-		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: []))
+		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: paradisNeutralEventFlags(systemBefore: systemBefore)))
 		usleep(40_000)
 		let (downType, upType, cgButton): (CGEventType, CGEventType, CGMouseButton) = button == .left
 			? (.leftMouseDown, .leftMouseUp, .left)
 			: (.rightMouseDown, .rightMouseUp, .right)
-		let flags = paradisModifierEventFlags(chord: paradisEventFlags(modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
+		let press = paradisModifierPress(chord: paradisEventFlags(modifiers), systemBefore: systemBefore)
 		for click in 1...clickCount {
 			try pointerFence(pid: pid, point: point)
-			let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: flags.press)
+			let down = paradisMouseEvent(downType, at: point, button: cgButton, flags: press.flags)
 			down?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
 			try post(down)
-			paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton, releaseFlags: flags.release)
+			paradisPressedInput.pressMouse(upType: upType, point: point, button: cgButton, press: press)
 			usleep(25_000)
-			// 押したボタンは、確かめに失敗しても必ず離す
+			// 押したボタンは、確かめに失敗しても必ず離す。離すイベントも修飾キー付き（Blink・WebKit は click の metaKey などを
+			// mouseup から作る）で、離した直後に修飾キーの解放を送る
 			let failure = pointerFenceFailure(pid: pid, point: point)
-			let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: flags.release)
+			let up = paradisMouseEvent(upType, at: point, button: cgButton, flags: press.flags)
 			up?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
 			try post(up)
 			paradisPressedInput.releaseMouse()
+			try paradisPostModifierRelease(press)
 			if let failure {
 				throw failure
 			}
@@ -130,19 +134,22 @@ extension ParadisDesktop {
 
 	func foregroundDrag(pid: Int32, windowId: UInt32, from: ParadisPointerTarget, to: ParadisPointerTarget, cursor: ParadisCursorOwnerSpec?) throws -> [String: Any] {
 		try requireInputPermission()
+		// 修飾キーは付けないが、利用者の Caps Lock は消さない（押す前の状態はイベントを送る前に読む）
+		let flags = paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState))
 		let (start, window) = try resolvePoint(pid: pid, windowId: windowId, target: from)
 		let (end, _) = try resolvePoint(pid: pid, windowId: windowId, target: to)
 		try pointerFence(pid: pid, point: start)
-		try post(paradisMouseEvent(.mouseMoved, at: start, button: .left, flags: []))
+		try post(paradisMouseEvent(.mouseMoved, at: start, button: .left, flags: flags))
 		usleep(40_000)
 		try pointerFence(pid: pid, point: start)
-		try post(paradisMouseEvent(.leftMouseDown, at: start, button: .left, flags: []))
-		paradisPressedInput.pressMouse(upType: .leftMouseUp, point: start, button: .left)
+		try post(paradisMouseEvent(.leftMouseDown, at: start, button: .left, flags: flags))
+		let neutral = ParadisModifierPress(flags: flags, added: [])
+		paradisPressedInput.pressMouse(upType: .leftMouseUp, point: start, button: .left, press: neutral)
 		var current = start
 		// 途中で止めても、イベントを作れずに抜けても、押したボタンは必ず離す（レビュー L7）
 		defer {
 			usleep(30_000)
-			try? post(paradisMouseEvent(.leftMouseUp, at: current, button: .left, flags: []))
+			try? post(paradisMouseEvent(.leftMouseUp, at: current, button: .left, flags: flags))
 			paradisPressedInput.releaseMouse()
 		}
 		for step in paradisDragPath(from: (Double(start.x), Double(start.y)), to: (Double(end.x), Double(end.y)), steps: 12) {
@@ -152,9 +159,9 @@ extension ParadisDesktop {
 				let reached = paradisWindowPointJson(current, window)
 				throw ParadisHelperError(code: failure.code, message: "\(failure.message); the drag stopped at x=\(reached["x"] ?? 0), y=\(reached["y"] ?? 0) and the button was released")
 			}
-			try post(paradisMouseEvent(.leftMouseDragged, at: point, button: .left, flags: []))
+			try post(paradisMouseEvent(.leftMouseDragged, at: point, button: .left, flags: flags))
 			current = point
-			paradisPressedInput.pressMouse(upType: .leftMouseUp, point: point, button: .left)
+			paradisPressedInput.pressMouse(upType: .leftMouseUp, point: point, button: .left, press: neutral)
 			if let cursor {
 				ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: false)
 			}
@@ -167,13 +174,13 @@ extension ParadisDesktop {
 		let window = try windowInfo(pid: pid, windowId: windowId)
 		let point = try target.map { try resolvePoint(pid: pid, windowId: windowId, target: $0).0 } ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
 		try pointerFence(pid: pid, point: point)
-		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: []))
+		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState))))
 		if let cursor {
 			ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: false)
 		}
 		usleep(30_000)
 		let extent = direction == .up || direction == .down ? Double(window.bounds.height) : Double(window.bounds.width)
-		for step in paradisScrollSteps(direction: direction, pages: pages, extent: extent) {
+		for step in paradisScrollSteps(direction: direction, pages: pages, extent: extent, naturalScrolling: paradisNaturalScrollingIsOn()) {
 			try pointerFence(pid: pid, point: point)
 			guard let event = CGEvent(scrollWheelEvent2Source: paradisEventSource(), units: .pixel, wheelCount: 2, wheel1: step.dy, wheel2: step.dx, wheel3: 0) else {
 				throw ParadisHelperError(code: "input_failed", message: "the scroll event could not be created")
@@ -334,19 +341,21 @@ extension ParadisDesktop {
 			throw ParadisHelperError(code: "key_blocked", message: reason)
 		}
 		try keyFence(pid: pid)
-		// 離すイベントに ⌘ などを付けたまま送ると、OS の修飾キーの状態が押されたままで残る（実機の報告）
-		let flags = paradisModifierEventFlags(chord: paradisEventFlags(chord.modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
+		// 実際のキーボードと同じく、キーを修飾キー付きで押して離し、その後に修飾キーの解放を送る。解放を送らないと、
+		// OS の修飾キーの状態が押されたままで残る（実機の報告）
+		let press = paradisModifierPress(chord: paradisEventFlags(chord.modifiers), systemBefore: CGEventSource.flagsState(.hidSystemState))
 		let down = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: chord.keyCode, keyDown: true)
-		down?.flags = flags.press
+		down?.flags = press.flags
 		try post(down)
-		paradisPressedInput.pressKey(chord.keyCode, releaseFlags: flags.release)
+		paradisPressedInput.pressKey(chord.keyCode, press: press)
 		usleep(20_000)
 		// 押したキーは、確かめに失敗しても必ず離す
 		let failure = keyFenceFailure(pid: pid, full: true)
 		let up = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: chord.keyCode, keyDown: false)
-		up?.flags = flags.release
+		up?.flags = press.flags
 		try post(up)
 		paradisPressedInput.releaseKey()
+		try paradisPostModifierRelease(press)
 		if let failure {
 			throw failure
 		}
@@ -624,16 +633,16 @@ private let paradisInputTapCallback: CGEventTapCallBack = { _, type, event, user
 
 /**
  * 押して、まだ離していないボタンとキー。締め切りで SIGTERM を受けたときに離してから終わるため。
- * 離すときの印（`releaseFlags`）は、押したときに決めたもの（`paradisModifierEventFlags` の `release`）。
+ * 離すときは押したときと同じ印で離し、その後に修飾キーの解放を送る（`press`）。
  */
 final class ParadisPressedInput {
 	private let lock = NSLock()
-	private var mouse: (upType: CGEventType, point: CGPoint, button: CGMouseButton, releaseFlags: CGEventFlags)?
-	private var key: (code: UInt16, releaseFlags: CGEventFlags)?
+	private var mouse: (upType: CGEventType, point: CGPoint, button: CGMouseButton, press: ParadisModifierPress)?
+	private var key: (code: UInt16, press: ParadisModifierPress)?
 
-	func pressMouse(upType: CGEventType, point: CGPoint, button: CGMouseButton, releaseFlags: CGEventFlags = []) {
+	func pressMouse(upType: CGEventType, point: CGPoint, button: CGMouseButton, press: ParadisModifierPress) {
 		lock.lock()
-		mouse = (upType, point, button, releaseFlags)
+		mouse = (upType, point, button, press)
 		lock.unlock()
 	}
 
@@ -643,9 +652,9 @@ final class ParadisPressedInput {
 		lock.unlock()
 	}
 
-	func pressKey(_ code: UInt16, releaseFlags: CGEventFlags) {
+	func pressKey(_ code: UInt16, press: ParadisModifierPress) {
 		lock.lock()
-		key = (code, releaseFlags)
+		key = (code, press)
 		lock.unlock()
 	}
 
@@ -663,19 +672,44 @@ final class ParadisPressedInput {
 		mouse = nil
 		key = nil
 		lock.unlock()
-		if let pendingMouse, let event = paradisMouseEvent(pendingMouse.upType, at: pendingMouse.point, button: pendingMouse.button, flags: pendingMouse.releaseFlags) {
+		if let pendingMouse, let event = paradisMouseEvent(pendingMouse.upType, at: pendingMouse.point, button: pendingMouse.button, flags: pendingMouse.press.flags) {
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
+			try? paradisPostModifierRelease(pendingMouse.press)
 		}
 		if let pendingKey, let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: pendingKey.code, keyDown: false) {
-			event.flags = pendingKey.releaseFlags
+			event.flags = pendingKey.press.flags
 			event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 			event.post(tap: .cghidEventTap)
+			try? paradisPostModifierRelease(pendingKey.press)
 		}
 	}
 }
 
 let paradisPressedInput = ParadisPressedInput()
+
+/**
+ * 修飾キー付きのキー・クリックを離した直後に、修飾キーの解放の flagsChanged を 1 つ HID へ送る（実際のキーボードと同じ順）。
+ * 印は今の状態を読み直して決める（`paradisModifierRelease`）。解放するものが無ければ何も送らない。
+ */
+func paradisPostModifierRelease(_ press: ParadisModifierPress) throws {
+	guard let release = paradisModifierRelease(press, current: CGEventSource.flagsState(.hidSystemState)) else {
+		return
+	}
+	guard let event = CGEvent(keyboardEventSource: paradisEventSource(), virtualKey: release.keyCode, keyDown: false) else {
+		throw ParadisHelperError(code: "input_failed", message: "the modifier release event could not be created")
+	}
+	event.type = .flagsChanged
+	event.flags = release.flags
+	event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
+	event.post(tap: .cghidEventTap)
+	// OS が受け取るまで待つ（送った直後に状態を読むと、まだ ⌘ が残って見える。続く要求の確かめが
+	// `holding a modifier key` で止まるのを避ける）。最長 0.2 秒
+	let settled = Date().addingTimeInterval(0.2)
+	while !CGEventSource.flagsState(.hidSystemState).isDisjoint(with: press.added) && Date() < settled {
+		usleep(10_000)
+	}
+}
 
 // MARK: - 小道具
 
@@ -836,6 +870,22 @@ func paradisEventFlags(_ modifiers: ParadisModifiers) -> CGEventFlags {
 	return flags
 }
 
+/**
+ * ナチュラルなスクロールがオンか（全体の設定 `com.apple.swipescrolldirection`。項目が無ければ OS の既定のオン）。
+ * システム設定はこの値を書くのと同時に WindowServer へ伝える（`SLSSetSwipeScrollDirection`。読む関数は無い）ので、
+ * 要求のたびに読み直す。
+ */
+func paradisNaturalScrollingIsOn() -> Bool {
+	let key = "com.apple.swipescrolldirection" as CFString
+	CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+	return paradisNaturalScrolling(preference: CFPreferencesCopyAppValue(key, kCFPreferencesAnyApplication))
+}
+
+/** 今のナチュラルなスクロールの設定で、スクロールのイベントの並びを作る（背面の段もこれを呼ぶ）。 */
+func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double) -> [(dx: Int32, dy: Int32)] {
+	return paradisScrollSteps(direction: direction, pages: pages, extent: extent, naturalScrolling: paradisNaturalScrollingIsOn())
+}
+
 /** 承認の直後の送り直しで、利用者の入力が止むのを待つ上限。 */
 private let paradisActivateFirstWaitSeconds: TimeInterval = 3
 
@@ -863,8 +913,10 @@ func paradisScreenWindows(entries: [[String: Any]]? = nil) -> [ParadisScreenWind
 	let owners = Set(list.compactMap { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value })
 	let bundleIds: [Int32: String] = paradisOnMain {
 		var result: [Int32: String] = [:]
+		// 一覧は 1 回だけ写す（ウィンドウの持ち主ごとに引き直さない）
+		let running = paradisRunningApplicationsByPid()
 		for pid in owners {
-			if let id = paradisRunningApplication(pid)?.bundleIdentifier {
+			if let id = paradisRunningApplication(pid, running: running)?.bundleIdentifier {
 				result[pid] = id
 			}
 		}

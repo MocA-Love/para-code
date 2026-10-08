@@ -370,7 +370,8 @@ private let paradisScrollStepPixels = 80.0
  * 受け取ったアプリでは、縦も横も正が上・左へ戻す向き（AppKit の `scrollingDeltaY` が正なら上の内容が見える）。
  * ただし WindowServer は、送った縦の値の符号をナチュラルなスクロールの設定（オン）で反転して届ける（2026-10-09 の実機、
  * macOS 27.0.1。送った -80 が受け取り側の CGEvent で +80、横の -80 は -80 のまま）。このため縦だけ、
- * ナチュラルなスクロールがオンなら符号を逆にして送る。`naturalScrolling` は `paradisNaturalScrollingIsOn()`。
+ * ナチュラルなスクロールがオンなら符号を逆にして送る。`naturalScrolling` は補助アプリが要求ごとに読む設定
+ * （`paradisNaturalScrollingIsOn`、ParadisInput.swift）。
  */
 func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double, naturalScrolling: Bool) -> [(dx: Int32, dy: Int32)] {
 	let total = max(1, pages * max(extent, 100) * 0.8)
@@ -390,22 +391,6 @@ func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent
 	}
 }
 
-/** 今のナチュラルなスクロールの設定で、スクロールのイベントの並びを作る（上の関数を参照）。 */
-func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double) -> [(dx: Int32, dy: Int32)] {
-	return paradisScrollSteps(direction: direction, pages: pages, extent: extent, naturalScrolling: paradisNaturalScrollingIsOn())
-}
-
-/**
- * ナチュラルなスクロールがオンか（全体の設定 `com.apple.swipescrolldirection`。項目が無ければ OS の既定のオン）。
- * システム設定はこの値を書くのと同時に WindowServer へ伝える（`SLSSetSwipeScrollDirection`。読む関数は無い）ので、
- * 要求のたびに読み直す。
- */
-func paradisNaturalScrollingIsOn() -> Bool {
-	let key = "com.apple.swipescrolldirection" as CFString
-	CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
-	return paradisNaturalScrolling(preference: CFPreferencesCopyAppValue(key, kCFPreferencesAnyApplication))
-}
-
 /** 設定の値からナチュラルなスクロールかを決める。無い・読めない値は OS の既定のオン。 */
 func paradisNaturalScrolling(preference: Any?) -> Bool {
 	if let flag = preference as? Bool {
@@ -417,40 +402,6 @@ func paradisNaturalScrolling(preference: Any?) -> Bool {
 	return true
 }
 
-// MARK: - 修飾キーの印
-
-/** 修飾キーごとの、左右のキーを表す印（IOKit の NX_DEVICE*KEYMASK）。押した状態の OS の印には、これも付いている。 */
-private let paradisDeviceModifierBits: [(flag: CGEventFlags, device: UInt64)] = [
-	(.maskControl, 0x0000_0001 | 0x0000_2000),
-	(.maskShift, 0x0000_0002 | 0x0000_0004),
-	(.maskCommand, 0x0000_0008 | 0x0000_0010),
-	(.maskAlternate, 0x0000_0020 | 0x0000_0040),
-]
-
-/** 修飾キー付きのキー・クリックで、押す・離すのイベントに付ける印。 */
-struct ParadisModifierEventFlags: Equatable {
-	/** 押すイベントの印。組み合わせの修飾キーだけ。 */
-	let press: CGEventFlags
-	/** 離すイベントの印。押す前の OS の状態から、組み合わせの修飾キーを除いたもの。 */
-	let release: CGEventFlags
-}
-
-/**
- * 修飾キー付きのキーとクリックの印（実機の報告: 離すイベントにも ⌘ を付けて HID へ送ると、OS の修飾キーの状態
- * （`CGEventSource.flagsState(.hidSystemState)`）が ⌘ のまま残り、利用者の次のキーが ⌘ 付きになる）。
- * 修飾キーそのものの押下・解放のイベントは今までどおり送らず、印だけで付ける。HID へ送ったイベントの印が OS の
- * 修飾キーの状態になるので、離すイベントには押す前の状態（`systemBefore`）から組み合わせの修飾キーとその左右の印を
- * 除いたものを付け、送り終えた後の状態を元へ戻す。組み合わせに無い修飾キー（利用者が押している Shift など）と
- * Caps Lock などの印は残す。
- */
-func paradisModifierEventFlags(chord: CGEventFlags, systemBefore: CGEventFlags) -> ParadisModifierEventFlags {
-	var release = systemBefore.rawValue
-	for entry in paradisDeviceModifierBits where chord.contains(entry.flag) {
-		release &= ~(entry.flag.rawValue | entry.device)
-	}
-	return ParadisModifierEventFlags(press: chord, release: CGEventFlags(rawValue: release))
-}
-
 /** ドラッグの途中の点（始点を除き終点を含む）。 */
 func paradisDragPath(from: (x: Double, y: Double), to: (x: Double, y: Double), steps: Int) -> [(x: Double, y: Double)] {
 	let count = max(1, steps)
@@ -458,6 +409,76 @@ func paradisDragPath(from: (x: Double, y: Double), to: (x: Double, y: Double), s
 		let t = Double(index) / Double(count)
 		return (from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t)
 	}
+}
+
+// MARK: - 修飾キーの印
+
+/**
+ * 修飾キーごとの、左右のキーを表す印（IOKit の NX_DEVICE*KEYMASK）と、そのキーの virtual key（左のキー）。
+ * 並びは、解放の flagsChanged に使うキーを選ぶ順（⌘・⌃・⌥・⇧）。
+ */
+private let paradisModifierKeys: [(flag: CGEventFlags, device: UInt64, keyCode: UInt16)] = [
+	(.maskCommand, 0x0000_0008 | 0x0000_0010, 55),
+	(.maskControl, 0x0000_0001 | 0x0000_2000, 59),
+	(.maskAlternate, 0x0000_0020 | 0x0000_0040, 58),
+	(.maskShift, 0x0000_0002 | 0x0000_0004, 56),
+]
+
+/**
+ * 送るイベントに写してよい印: 4 つの修飾キーとその左右の印、Caps Lock（AlphaShift）、NonCoalesced。
+ * fn（SecondaryFn）・NumericPad は OS が矢印キーなどのイベントに自分で足すので写さない。説明の無い印
+ * （実機で見えた 0x20000000 など）も写さない。
+ */
+let paradisCarriedFlagsMask: UInt64 = paradisModifierKeys.reduce(CGEventFlags.maskAlphaShift.rawValue | CGEventFlags.maskNonCoalesced.rawValue) { $0 | $1.flag.rawValue | $1.device }
+
+/** 修飾キーを足さないイベント（ポインタの移動・ドラッグ）の印。押す前の状態の Caps Lock と NonCoalesced だけを写す。 */
+func paradisNeutralEventFlags(systemBefore: CGEventFlags) -> CGEventFlags {
+	return CGEventFlags(rawValue: systemBefore.rawValue & (CGEventFlags.maskAlphaShift.rawValue | CGEventFlags.maskNonCoalesced.rawValue))
+}
+
+/** 修飾キー付きのキー・クリックの、押す側の印。 */
+struct ParadisModifierPress: Equatable {
+	/** 押す・離すのイベントの印。組み合わせの修飾キーと、押す前の状態の Caps Lock・NonCoalesced。 */
+	let flags: CGEventFlags
+	/** 組み合わせの修飾キーのうち、押す前の状態に無かったもの（送った後に解放するもの）。 */
+	let added: CGEventFlags
+}
+
+/**
+ * 修飾キー付きのキーとクリック（実機の報告: 離すイベントまで ⌘ のまま HID へ送り、その後に何も送らないと、OS の
+ * 修飾キーの状態（`CGEventSource.flagsState(.hidSystemState)`）が ⌘ のまま残る）。実際のキーボードと同じ順に送る:
+ * 押す・離すのイベントには組み合わせの修飾キーを付けたまま（Blink・WebKit はクリックの metaKey などを mouseup から作る）、
+ * 離した直後に修飾キーの解放の flagsChanged を 1 つ送って状態を戻す（`paradisModifierRelease`）。修飾キーそのものの
+ * 押下は送らない。利用者が押す前から押していた修飾キーは `added` に入れない（解放しない）。
+ */
+func paradisModifierPress(chord: CGEventFlags, systemBefore: CGEventFlags) -> ParadisModifierPress {
+	let modifiers = paradisModifierKeys.reduce(UInt64(0)) { $0 | $1.flag.rawValue }
+	let chordModifiers = chord.rawValue & modifiers
+	let added = chordModifiers & ~(systemBefore.rawValue & modifiers)
+	return ParadisModifierPress(flags: CGEventFlags(rawValue: chordModifiers | paradisNeutralEventFlags(systemBefore: systemBefore).rawValue), added: CGEventFlags(rawValue: added))
+}
+
+/** 離した後に送る解放の flagsChanged（`keyCode` は解放する修飾キーの 1 つ）。解放するものが無ければ nil。 */
+struct ParadisModifierRelease: Equatable {
+	let keyCode: UInt16
+	let flags: CGEventFlags
+}
+
+/**
+ * 解放の flagsChanged の印は、離す直前に読み直した今の状態（`current`）から、写してよい印だけを残し、`added` の修飾キーと
+ * その左右の印を除いたもの。押す前に読んだ値は使わない（確かめの間に利用者が離した ⇧ を付け直したり、物理的に
+ * 押している ⌘ を消したりしないため）。
+ */
+func paradisModifierRelease(_ press: ParadisModifierPress, current: CGEventFlags) -> ParadisModifierRelease? {
+	let releasing = paradisModifierKeys.filter { press.added.contains($0.flag) }
+	guard let first = releasing.first else {
+		return nil
+	}
+	var flags = current.rawValue & paradisCarriedFlagsMask
+	for key in releasing {
+		flags &= ~(key.flag.rawValue | key.device)
+	}
+	return ParadisModifierRelease(keyCode: first.keyCode, flags: CGEventFlags(rawValue: flags))
 }
 
 // MARK: - 貼り付け（Q100）

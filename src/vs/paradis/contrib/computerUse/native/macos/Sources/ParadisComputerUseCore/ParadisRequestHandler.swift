@@ -116,13 +116,32 @@ protocol ParadisDesktopBackend: AnyObject {
 /**
  * pid から動いているアプリを引く。`NSRunningApplication(processIdentifier:)` は、別のアプリが起動・終了した直後に
  * 関係の無い pid でも一時的に nil を返す（2026-10-09 の実機、macOS 27.0.1。直後に同じ問い合わせをすると返り、
- * `NSWorkspace.runningApplications` には載ったまま）。nil なら一覧から探し直す。
+ * `NSWorkspace.runningApplications` には載ったまま）。nil なら一覧（`fallback`）から探し直す。一覧から拾ったものは、
+ * 終わっておらず（`isTerminated`）、今その pid で動いているプロセスと同じもの（`sameProcess`。実行ファイルのパスか
+ * 起動した時刻で照らす）のときだけ使う（一覧が古く、pid が別のプロセスに使い回されていても取り違えない）。
  */
-func paradisLookUpRunningApplication<App>(pid: Int32, direct: (Int32) -> App?, all: () -> [App], pidOf: (App) -> Int32) -> App? {
+func paradisLookUpRunningApplication<App>(pid: Int32, direct: (Int32) -> App?, fallback: (Int32) -> App?, isTerminated: (App) -> Bool, sameProcess: (App) -> Bool) -> App? {
 	if let app = direct(pid) {
 		return app
 	}
-	return all().first { pidOf($0) == pid }
+	guard let app = fallback(pid), !isTerminated(app), sameProcess(app) else {
+		return nil
+	}
+	return app
+}
+
+/**
+ * 一覧から拾ったアプリが、今その pid で動いているプロセスと同じか。実行ファイルのパスが両方読めればそれで比べ、
+ * 読めなければ起動した時刻（秒）を 2 秒までの差で比べる。どちらも読めなければ同じと言えない。
+ */
+func paradisSameRunningProcess(appExecutablePath: String?, processExecutablePath: String?, appLaunchDate: Double?, processStart: Double?) -> Bool {
+	if let appExecutablePath, let processExecutablePath {
+		return (appExecutablePath as NSString).standardizingPath == (processExecutablePath as NSString).standardizingPath
+	}
+	if let appLaunchDate, let processStart {
+		return abs(appLaunchDate - processStart) <= 2
+	}
+	return false
 }
 
 // MARK: - 振り分け
