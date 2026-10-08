@@ -4371,7 +4371,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _observeHost(ingressLease: IParadisAgentBrowserIngressLease, tabLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): IParadisObserveHost {
 		const token = ingressLease.token;
 		return {
-			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, dialogAction: 'dismiss' }, signal),
+			// 待たずに評価する（vendored の PARA-PATCH。ダイアログが開いていれば断られ、閉じない）
+			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal),
 			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal),
 			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal)),
 			network: () => this._cdpGateway.getNetworkActivity(token, 30_000),

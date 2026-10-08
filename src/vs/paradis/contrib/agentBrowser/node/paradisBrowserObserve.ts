@@ -156,6 +156,12 @@ interface ICollected {
 	readonly more?: number;
 }
 
+/** 待たない評価が、ダイアログが開いているために断られたか。 */
+function paradisIsDialogOpenFailure(result: unknown): boolean {
+	const content = isRecord(result) && result.isError === true && Array.isArray(result.content) ? result.content : [];
+	return content.some(item => isRecord(item) && typeof item.text === 'string' && item.text.includes('PARA_BROWSER_DIALOG_OPEN'));
+}
+
 function evaluated<T>(result: unknown): T | undefined {
 	const parsed = paradisParseEvaluateValue(result);
 	return parsed && isRecord(parsed.value) ? parsed.value as T : undefined;
@@ -235,8 +241,8 @@ export class ParadisBrowserObserver {
 
 	/**
 	 * 操作の後、DOM の変化が {@link QUIET_MS} 止まり、読み込み中の印が消え、通信が落ち着くまで（`settleMs` まで）待つ。
-	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読む前に毎回ダイアログが開いていないかを確かめる
-	 * （開いているときに evaluate_script を呼ぶと止まり、読んでいる間に開いたものは閉じられてしまうため）。
+	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読むのは待たない評価（vendored の PARA-PATCH
+	 * `paraCodeObserve`）で、ダイアログが開いていれば断られる（閉じない）。
 	 */
 	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<{ readonly quiet: boolean; readonly waited: number; readonly navigated: boolean; readonly dialog?: string }> {
 		const start = host.now();
@@ -244,13 +250,14 @@ export class ParadisBrowserObserver {
 		let quiet = settleMs === 0;
 		let dialog: string | undefined;
 		while (settleMs > 0 && host.isCurrent()) {
-			dialog = paradisParseListPages(await host.listPages().catch(() => undefined))?.dialog;
-			if (dialog !== undefined) {
-				break;
-			}
 			const result = await host.evaluate(paradisObserveReadFunction(name)).catch(() => undefined);
 			const value = evaluated<{ age?: unknown; ready?: unknown; busy?: unknown; navigated?: unknown }>(result);
 			if (value === undefined) {
+				if (paradisIsDialogOpenFailure(result)) {
+					// ダイアログが開いた。中身は list_pages で読む
+					dialog = paradisParseListPages(await host.listPages().catch(() => undefined))?.dialog ?? 'a JavaScript dialog';
+					break;
+				}
 				// 遷移の途中（文書が入れ替わった）ならやり直す。それ以外の失敗は待つのをやめる
 				if (result !== undefined && !paradisIsTransientEvaluateFailure(result)) {
 					break;
