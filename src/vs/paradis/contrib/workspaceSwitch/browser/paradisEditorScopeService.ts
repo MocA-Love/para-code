@@ -54,9 +54,10 @@ interface IParadisLiveWorkingSet {
  * 預け先へ入れた経路。二重に握られていたのを見つけたときの記録 (ログ・Sentry) に載せる。
  * `capture` = 切り替え元を預けるとき、`carry-over` = 預けた後に開かれて行き先へ持ち越された入力を回したとき、
  * `restore` / `restore-early` = 開き直す前に持ち主違いを回したとき、
- * `aux-close` = 補助ウィンドウを閉じたとき、`retirement-cancel` = 削除の取り消しで預け直したとき。
+ * `aux-close` = 補助ウィンドウを閉じたとき、`retirement-cancel` = 削除の取り消しで預け直したとき、
+ * `correct` = 今のスペースのキーを付け直したとき。
  */
-type ParadisLiveDepositPhase = 'capture' | 'carry-over' | 'restore' | 'restore-early' | 'aux-close' | 'retirement-cancel';
+type ParadisLiveDepositPhase = 'capture' | 'carry-over' | 'restore' | 'restore-early' | 'aux-close' | 'retirement-cancel' | 'correct';
 
 interface IParadisPreparedEditorRevert {
 	readonly editor: EditorInput;
@@ -269,6 +270,15 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		for (const editor of excludedEditors) {
 			destinations.set(editor, this.depositKeyFor(editor, stateKey));
 		}
+		// 子プロセスの無い (確認の要らない) 端末でも、持ち主が別のスペースなら切り替え元の working set に
+		// 載せない。その端末は切り替えサービスの park が持ち主のスペースへ入れる (`lateParkScope`) ので、
+		// 載せると切り替え元へ戻ったときに同じ端末をもう一度繋ぎに行く。生きている端末と行き先を揃える。
+		const foreignCleanEditors = new Set<EditorInput>();
+		for (const { editor } of this.collectVisibleLiveEditorState(false, stateKey, true, undefined, true).placements) {
+			if (!excludedEditors.has(editor) && this.liveEditorOwner(editor) !== undefined && this.liveEditorOwner(editor) !== stateKey) {
+				foreignCleanEditors.add(editor);
+			}
+		}
 
 		for (const editor of excludedEditors) {
 			for (const workingCopy of modifiedEditorOwners.get(editor) ?? []) {
@@ -283,7 +293,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				pending.add(this.editorGroupsService.retainEditor(editor));
 			}
 
-			saveSerializedState([...excludedEditors]);
+			saveSerializedState([...excludedEditors, ...foreignCleanEditors]);
 			if (placements.length === 0) {
 				return;
 			}
@@ -343,10 +353,14 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		// restoreEditorPlacements' own per-placement recovery) would keep the
 		// same dead entry around forever and repeat the same failure on every
 		// subsequent switch into this scope.
+		// ここで開く (または開くのを諦める) 配置。後片付けはこの配置の分だけにする。
+		let restoring: ReadonlySet<IParadisLiveEditorPlacement> = new Set(liveWorkingSet.placements);
+		let leftover = false;
 		try {
 			// 持ち主が別のスペースの入力は開かずに持ち主の預け先へ回す。前倒しで開いた配置は既に
 			// 画面にあるので触らない (次に預けるときに持ち主へ回る)。
 			const diverted = this.divertForeignPlacements(stateKey, liveWorkingSet.placements.filter(placement => !this.earlyRestoredPlacements.has(placement)), liveWorkingSet.workingCopiesByEditor, 'restore');
+			restoring = new Set(liveWorkingSet.placements.filter(placement => !diverted.has(placement)));
 			// 先に開いた配置は開き直さない。選択の復元にだけ含める。
 			const earlyRestored: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
 			const remaining: IParadisLiveEditorPlacement[] = [];
@@ -368,12 +382,52 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 			await this.restoreEditorPlacements(remaining, earlyRestored);
 		} finally {
-			// 持ち主違いを回すと、この預け先は作り直される (握りの入れ物は同じ) か、空になって既に消えている。
-			if (this.liveWorkingSets.get(stateKey)?.retentions === liveWorkingSet.retentions) {
-				this.liveWorkingSets.delete(stateKey);
-			}
-			liveWorkingSet.retentions.dispose();
+			leftover = this.settleRestoredDeposit(stateKey, liveWorkingSet.retentions, restoring);
 		}
+		// 開くのを待つ間に、このスペース宛ての入力が新しく預けられていた。今見せているスペースに
+		// 預け先が残ると、次に離れるときの `captureScope` が投げてスペースから離れられなくなるので開く。
+		if (leftover) {
+			await this.restoreScope(stateKey);
+		}
+	}
+
+	/**
+	 * `restoreScope` の後片付け。開き始めた時点で控えた配置 (`restoring`) の分の握りだけを放し、預け先から外す。
+	 *
+	 * 預け先ごと捨ててはいけない。開くのを待っている間に、補助ウィンドウを閉じた・持ち主違いが回って
+	 * きた等で同じ預け先へ別の入力が入ることがあり、入れ物ごと捨てるとその入力の握りが 0 になって
+	 * (グループにも無いので) 破棄される。端末なら PTY ごと止まる。
+	 */
+	private settleRestoredDeposit(stateKey: string, retentions: DisposableStore, restoring: ReadonlySet<IParadisLiveEditorPlacement>): boolean {
+		const current = this.liveWorkingSets.get(stateKey);
+		if (current === undefined || current.retentions !== retentions) {
+			// 持ち主違いを全部回して預け先が空になり、既に消えている (その後に作り直された預け先は
+			// 別の入れ物を持つ)。元の入れ物に残っているのはここで開いた入力の握りだけなので、まとめて放してよい。
+			retentions.dispose();
+			return current !== undefined;
+		}
+		const kept = current.placements.filter(placement => !restoring.has(placement));
+		const keptEditors = new Set(kept.map(placement => placement.editor));
+		const released = new Set<EditorInput>();
+		for (const placement of restoring) {
+			if (!keptEditors.has(placement.editor)) {
+				released.add(placement.editor);
+			}
+		}
+		if (kept.length === 0) {
+			this.liveWorkingSets.delete(stateKey);
+			retentions.dispose();
+			return false;
+		}
+		for (const editor of released) {
+			this.releaseRetention(retentions, editor);
+		}
+		this.liveWorkingSets.set(stateKey, {
+			placements: kept,
+			workingCopiesByEditor: this.withoutEditors(current.workingCopiesByEditor, released),
+			retentions
+		});
+		return true;
 	}
 
 	async restoreScopeEarly(stateKey: string, filter: (editor: EditorInput) => boolean): Promise<void> {
@@ -595,12 +649,25 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			const previousLiveState = this.liveWorkingSets.get(previousStateKey);
 			if (previousLiveState && previousStateKey !== stateKey) {
 				this.liveWorkingSets.delete(previousStateKey);
-				this.liveWorkingSets.set(stateKey, previousLiveState);
+				if (this.liveWorkingSets.has(stateKey)) {
+					// 新しいキーにも預け先がある (持ち主の預け先へ回ってきた入力)。上書きすると片方の握りを
+					// 失うので、1 つにまとめてから元の入れ物を捨てる (先にまとめた側が握るので破棄されない)。
+					this.addToDeposit(stateKey, previousLiveState.placements, previousLiveState.workingCopiesByEditor, 'correct');
+					previousLiveState.retentions.dispose();
+				} else {
+					this.liveWorkingSets.set(stateKey, previousLiveState);
+				}
 			}
 			this.saveOwnerLedger();
 		}
 
 		await this.commitSwitch(stateKey, uri);
+		// このスペースは一度も離れていなくても、持ち主の預け先へ回ってきた入力の預け先を持ちうる
+		// (別のスペースを離れるときに、このスペースの端末が見つかった)。今見せているスペースに預け先が
+		// 残ると、端末が見えないうえ、次に離れるときの `captureScope` が投げてスペースから離れられない。
+		if (this.liveWorkingSets.has(stateKey)) {
+			await this.restoreScope(stateKey);
+		}
 		await this.restoreBackups();
 	}
 

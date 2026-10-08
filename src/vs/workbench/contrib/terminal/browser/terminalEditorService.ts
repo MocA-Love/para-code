@@ -15,7 +15,7 @@ import { EditorCloseContext, IEditorPane } from '../../../common/editor.js'; // 
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalInstance, ITerminalInstanceService, TerminalEditorLocation } from './terminal.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
-import { paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js'; // PARA-PATCH: see reviveInput and _revealEditor
+import { paradisHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js'; // PARA-PATCH: see reviveInput and _revealEditor
 import { paradisResolveRevivedTerminalEditorInput } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorRevive.js'; // PARA-PATCH: see reviveInput
 import { getInstanceFromResource } from './terminalUri.js';
 import { TerminalContextKeys } from '../common/terminalContextKey.js';
@@ -332,7 +332,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 	}
 
 	private async _revealEditor(instance: ITerminalInstance, preserveFocus?: boolean): Promise<void> {
-		if (paradisShouldHoldBackTerminalEditorReveal(instance)) { return; } // PARA-PATCH: never pull a terminal owned by another Para Code space into the current one (see paradisTerminalEditorPark.ts)
+		if (paradisHoldBackTerminalEditorReveal(instance, this)) { return; } // PARA-PATCH: never pull a terminal owned by another Para Code space into the current one, nor leave it active (see paradisTerminalEditorPark.ts)
 		// If there is an active openEditor call for this instance it will be revealed by that
 		if (this._activeOpenEditorRequest?.instanceId === instance.instanceId) {
 			await this._activeOpenEditorRequest.promise;

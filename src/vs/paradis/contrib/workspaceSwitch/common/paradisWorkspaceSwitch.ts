@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
@@ -809,6 +809,34 @@ export interface IParadisWorkspaceSwitchService {
  * 割り込むことがある。確かめずに開くと、待っていたスペースのターミナルやページが今のスペースの
  * タブになり、次の切り替えで今のスペースの預け先へ紛れ込む。false のときは開かずに戻ること。
  */
+/**
+ * worktree のスペースが今もあるかを引く口。一覧を持つのは worktree サービスで、切り替えサービスから
+ * DI で掴むと循環する (worktree サービスが切り替えサービスに依存している) ため、ここへ関数を預けてもらう。
+ */
+let worktreePresenceLookup: ((stateKey: string) => boolean) | undefined;
+
+export function paradisRegisterWorktreePresenceLookup(lookup: (stateKey: string) => boolean): IDisposable {
+	worktreePresenceLookup = lookup;
+	return toDisposable(() => {
+		if (worktreePresenceLookup === lookup) {
+			worktreePresenceLookup = undefined;
+		}
+	});
+}
+
+/**
+ * worktree のキー (`worktree:<uri>`) のスペースが、worktree の一覧にあって消えていない (missing でない) か。
+ * 一覧を引けない (worktree サービスがまだ無い・読み込み前) ときも false。呼び出し側は false を
+ * 「持ち主のスペースが分からない」として今までどおりに扱うこと (無い預け先へ入れると二度と届かない)。
+ */
+export function paradisIsPresentWorktreeKey(stateKey: string): boolean {
+	try {
+		return worktreePresenceLookup?.(stateKey) ?? false;
+	} catch {
+		return false;
+	}
+}
+
 export function paradisIsSettledOnSpace(service: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'pendingSwitchTargetKey'>, stateKey: string): boolean {
 	const pending = service.pendingSwitchTargetKey;
 	return service.activeStateKey === stateKey && (pending === undefined || pending === stateKey);

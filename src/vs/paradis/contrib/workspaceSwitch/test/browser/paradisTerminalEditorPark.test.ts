@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TerminalExitReason } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
-import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisHoldBackTerminalEditorReveal, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorRevealGuard, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource } from '../../browser/paradisTerminalEditorRevive.js';
 
 interface IFakeTerminalInstance {
@@ -221,5 +221,34 @@ suite('paradisTerminalEditorPark', () => {
 		});
 
 		paradisRetireParkedTerminalEditorInstances('worktree:counted');
+	});
+
+	test('does not leave a terminal it holds back as the active one, and leaves others alone', () => {
+		const foreign = createFakeInstance(21, 210).instance;
+		const other = createFakeInstance(22, 220).instance;
+		store.add(paradisRegisterTerminalEditorRevealGuard(instance => instance === foreign));
+		let activeInstance: ITerminalInstance | undefined;
+		const host = {
+			get activeInstance() { return activeInstance; },
+			setActiveInstance: (instance: ITerminalInstance | undefined) => { activeInstance = instance; },
+		};
+
+		// focusInstance は開く前にアクティブにしている。開かないなら外す (見えない端末へ送らせない)。
+		activeInstance = foreign;
+		const heldWhileActive = paradisHoldBackTerminalEditorReveal(foreign, host);
+		const activeAfterHold = activeInstance;
+		// 別の端末がアクティブなら触らない。
+		activeInstance = other;
+		const heldWhileOtherActive = paradisHoldBackTerminalEditorReveal(foreign, host);
+		const activeAfterOther = activeInstance;
+		const opensOwn = paradisHoldBackTerminalEditorReveal(other, host);
+
+		assert.deepStrictEqual({ heldWhileActive, activeAfterHold, heldWhileOtherActive, activeAfterOther: activeAfterOther?.instanceId, opensOwn }, {
+			heldWhileActive: true,
+			activeAfterHold: undefined,
+			heldWhileOtherActive: true,
+			activeAfterOther: 22,
+			opensOwn: false,
+		});
 	});
 });
