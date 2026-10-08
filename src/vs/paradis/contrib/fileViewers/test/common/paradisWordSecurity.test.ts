@@ -153,6 +153,22 @@ suite('ParadisWordSecurity', () => {
 		invalid(() => parseParadisWordSecurity({ parts: traversal }), 'unsafe');
 	});
 
+	test('accepts legacy binary OLE embeddings and skips a missing target only for metadata relationships', () => {
+		const legacyOle = parseParadisWordSecurity({ parts: fixtureParts({ oleContentType: 'application/vnd.ms-excel' }) });
+		const withMissingMetadata = fixtureParts();
+		withMissingMetadata[1] = part('/_rels/.rels', relationships([
+			`<Relationship Id="rDocument" Type="${officeRelationships}/officeDocument" Target="word/document.xml"/>`,
+			`<Relationship Id="rCustom" Type="${officeRelationships}/custom-properties" Target="docProps/custom.xml"/>`,
+		].join('')));
+		const missingImage = fixtureParts();
+		missingImage.splice(missingImage.length - 1, 1);
+		deepStrictEqual({
+			legacyOle: legacyOle.unsafeNodes.filter(node => node.kind === 'ole').length,
+			missingMetadata: parseParadisWordSecurity({ parts: withMissingMetadata }).unsafeNodes.length,
+		}, { legacyOle: 1, missingMetadata: 9 });
+		invalid(() => parseParadisWordSecurity({ parts: missingImage }), 'unsafe');
+	});
+
 	test('rejects ContentType parameters before classification or preview metadata projection', () => {
 		const parameterized = fixtureParts();
 		parameterized[0] = part('/[Content_Types].xml', contentTypes().replace('image/png', 'image/png; token=private'));

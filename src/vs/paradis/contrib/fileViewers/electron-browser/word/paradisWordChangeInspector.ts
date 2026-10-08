@@ -10,6 +10,7 @@ import { localize } from '../../../../../nls.js';
 import {
 	type ParadisOfficeChange,
 	type ParadisOfficeChangeCategory,
+	type ParadisOfficeChangeValue,
 	type ParadisOfficeCompletenessManifest,
 	type ParadisOfficeOutcome,
 	type ParadisOfficePlaceholder,
@@ -18,6 +19,7 @@ import {
 	type ParadisOfficeSourceDescriptor,
 } from '../../common/paradisOfficeProtocol.js';
 import type { ParadisWordStoryKind } from '../../common/word/paradisWordSemantic.js';
+import type { IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 import { PARADIS_WORD_HIGH_CONTRAST_TOKENS, canShowWordNoChanges, wordPrintWarning } from './paradisWordDiagnostics.js';
 
 export const PARADIS_WORD_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
@@ -176,7 +178,7 @@ export function searchParadisWordStories(stories: readonly ParadisWordSearchStor
 					match: text.slice(index, end),
 					after: text.slice(end, Math.min(text.length, end + 40)),
 				}),
-				locationBadge: Object.freeze({ kind: 'story', label: storyLabel(story.kind) }),
+				locationBadge: Object.freeze({ kind: 'story', label: paradisWordStoryLabel(story.kind) }),
 				navigableAnchor: story.id,
 			}));
 			offset = Math.max(end, index + 1);
@@ -334,7 +336,8 @@ function categoryLabel(category: ParadisOfficeChangeCategory): string {
 	}
 }
 
-function storyLabel(kind: ParadisWordStoryKind | 'package'): string {
+/** 文書パーツの種類の表示名。検索結果の場所の札にも使う。 */
+export function paradisWordStoryLabel(kind: ParadisWordStoryKind | 'package'): string {
 	switch (kind) {
 		case 'body': return localize('paradis.word.story.body', "本文");
 		case 'header': return localize('paradis.word.story.header', "ヘッダー");
@@ -357,8 +360,90 @@ export function wordChangeLabel(change: ParadisOfficeChange): string {
 		case 'object.imageReference': return localize('paradis.word.change.image', "画像");
 		case 'package.style': return localize('paradis.word.change.style', "スタイル");
 		case 'paragraph.text': return localize('paradis.word.change.content', "内容");
+		case 'revision.inserted': return localize('paradis.word.change.revisionInserted', "挿入");
+		case 'revision.deleted': return localize('paradis.word.change.revisionDeleted', "削除");
+		case 'revision.moveFrom': return localize('paradis.word.change.revisionMoveFrom', "移動元");
+		case 'revision.moveTo': return localize('paradis.word.change.revisionMoveTo', "移動先");
+		case 'revision.propertyChange': return localize('paradis.word.change.revisionProperty', "書式の変更履歴");
 		default: return categoryLabel(change.category);
 	}
+}
+
+function scalarText(value: ParadisOfficeChangeValue | undefined): string | undefined {
+	if (!value) {
+		return undefined;
+	}
+	if (value.kind === 'scalar') {
+		return typeof value.value === 'string' && value.value.trim() ? value.value : undefined;
+	}
+	if (value.kind === 'record') {
+		return scalarText(value.fields.find(field => field.name === 'text')?.value);
+	}
+	return undefined;
+}
+
+function recordText(value: ParadisOfficeChangeValue, name: string): string | undefined {
+	return value.kind === 'record' ? scalarText(value.fields.find(field => field.name === name)?.value) : undefined;
+}
+
+/** 変更に含まれる文字（変更後、無ければ変更前）。文字を持たない変更は undefined。 */
+export function wordChangeText(change: ParadisOfficeChange): string | undefined {
+	return scalarText(change.after) ?? scalarText(change.before);
+}
+
+/** 一覧に出す短い説明。文字の変更なら変更後（無ければ変更前）の抜粋、それ以外は場所。 */
+export function wordChangeSummary(change: ParadisOfficeChange): string {
+	const text = wordChangeText(change);
+	const author = recordText(change.after, 'author');
+	const detail = text ? (text.length > 80 ? `${text.slice(0, 79)}…` : text) : change.subject.locator;
+	return author ? localize('paradis.word.changeSummaryAuthor', "{0}（{1}）", detail, author) : detail;
+}
+
+/** 解析の内訳（変更点パネルの下の節）に出す材料。 */
+export interface ParadisWordInspectorAnalysis {
+	readonly counts?: IParadisWordAnalysisCounts;
+	/** 表示に関係しないので黙って外した部品（Q313 A）。 */
+	readonly ignoredParts: readonly { readonly title: string; readonly detail?: string }[];
+	/** 解析できなかったときの理由（利用者向けの文）。 */
+	readonly failure?: string;
+}
+
+function nodeKindLabel(kind: string): string {
+	switch (kind) {
+		case 'section': return localize('paradis.word.node.section', "セクション");
+		case 'paragraph': return localize('paradis.word.node.paragraph', "段落");
+		case 'table': return localize('paradis.word.node.table', "表");
+		case 'row': return localize('paradis.word.node.row', "行");
+		case 'cell': return localize('paradis.word.node.cell', "セル");
+		case 'contentControl': return localize('paradis.word.node.contentControl', "コンテンツコントロール");
+		case 'drawing': return localize('paradis.word.node.drawing', "図形");
+		case 'altChunk': return localize('paradis.word.node.altChunk', "埋め込み文書");
+		case 'unknownBlock': return localize('paradis.word.node.unknownBlock', "未知の要素");
+		case 'text': return localize('paradis.word.node.text', "テキスト");
+		case 'tab': return localize('paradis.word.node.tab', "タブ");
+		case 'break': return localize('paradis.word.node.break', "改行・改ページ");
+		case 'symbol': return localize('paradis.word.node.symbol', "記号");
+		case 'hyperlink': return localize('paradis.word.node.hyperlink', "ハイパーリンク");
+		case 'bookmark': return localize('paradis.word.node.bookmark', "ブックマーク");
+		case 'field': return localize('paradis.word.node.field', "フィールド");
+		case 'omml': return localize('paradis.word.node.omml', "数式");
+		case 'revision': return localize('paradis.word.node.revision', "変更履歴");
+		case 'image': return localize('paradis.word.node.image', "画像");
+		case 'noteReference': return localize('paradis.word.node.noteReference', "脚注の参照");
+		case 'commentReference': return localize('paradis.word.node.commentReference', "コメントの参照");
+		default: return kind;
+	}
+}
+
+function appendKeyValue(parent: HTMLElement, key: string, value: string): void {
+	const row = dom.append(parent, dom.$('.paradis-word-analysis-row'));
+	row.style.display = 'flex';
+	row.style.justifyContent = 'space-between';
+	row.style.gap = '8px';
+	const keyElement = dom.append(row, dom.$('span'));
+	keyElement.textContent = key;
+	const valueElement = dom.append(row, dom.$('span'));
+	valueElement.textContent = value;
 }
 
 function appendButton(parent: HTMLElement, label: string): HTMLButtonElement {
@@ -390,6 +475,7 @@ export class ParadisWordChangeInspector extends Disposable {
 	private readonly root: HTMLElement;
 	private changes: readonly ParadisOfficeChange[] = [];
 	private placeholders: readonly ParadisOfficePlaceholder[] = [];
+	private analysis: ParadisWordInspectorAnalysis | undefined;
 	private results: readonly ParadisOfficeSearchResult[] = [];
 	private completeness: ParadisOfficeCompletenessManifest | undefined;
 	private outcome: ParadisOfficeOutcome = 'degraded';
@@ -429,6 +515,12 @@ export class ParadisWordChangeInspector extends Disposable {
 	setPlaceholders(placeholders: readonly ParadisOfficePlaceholder[]): void {
 		this.placeholders = [...placeholders];
 		this.placeholderPage = 0;
+		this.render();
+	}
+
+	/** 解析の内訳と、黙って外した部品の一覧を出す。undefined なら節ごと出さない。 */
+	setAnalysis(analysis: ParadisWordInspectorAnalysis | undefined): void {
+		this.analysis = analysis;
 		this.render();
 	}
 
@@ -524,6 +616,58 @@ export class ParadisWordChangeInspector extends Disposable {
 		this.renderDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => setPage(Math.min(pageCount - 1, page + 1))));
 	}
 
+	private renderAnalysis(analysis: ParadisWordInspectorAnalysis): void {
+		const section = dom.append(this.root, dom.$('.paradis-word-analysis'));
+		section.setAttribute('role', 'group');
+		section.setAttribute('aria-label', localize('paradis.word.analysis', "解析の内訳"));
+		const heading = dom.append(section, dom.$('strong'));
+		heading.textContent = localize('paradis.word.analysis', "解析の内訳");
+		if (analysis.failure) {
+			const failure = dom.append(section, dom.$('span.paradis-word-analysis-failure'));
+			failure.setAttribute('role', 'status');
+			failure.style.display = 'block';
+			failure.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
+			failure.textContent = analysis.failure;
+		}
+		const counts = analysis.counts;
+		if (counts) {
+			const stories = dom.append(section, dom.$('.paradis-word-analysis-stories'));
+			for (const [kind, count] of Object.entries(counts.storyKinds)) {
+				appendKeyValue(stories, storyKindSet.has(kind as ParadisWordStoryKind) ? paradisWordStoryLabel(kind as ParadisWordStoryKind) : kind, String(count));
+			}
+			const nodes = dom.append(section, dom.$('.paradis-word-analysis-nodes'));
+			nodes.style.marginTop = '4px';
+			for (const [kind, count] of Object.entries(counts.nodeKinds)) {
+				if (kind !== 'unknownBlock') {
+					appendKeyValue(nodes, nodeKindLabel(kind), String(count));
+				}
+			}
+			if (counts.unknownElements.length > 0) {
+				const unknown = dom.append(section, dom.$('.paradis-word-analysis-unknown'));
+				unknown.style.marginTop = '4px';
+				const title = dom.append(unknown, dom.$('span'));
+				title.textContent = localize('paradis.word.analysis.unknown', "未知の要素の扱い");
+				for (const element of counts.unknownElements) {
+					appendKeyValue(unknown, element.name, element.disposition === 'ignorable'
+						? localize('paradis.word.analysis.unknownIgnorable', "{0} 件・表示に関係しない", element.count)
+						: localize('paradis.word.analysis.unknownUnrendered', "{0} 件・まだ描けない", element.count));
+				}
+			}
+		}
+		if (analysis.ignoredParts.length > 0) {
+			const ignored = dom.append(section, dom.$('.paradis-word-ignored-parts'));
+			ignored.setAttribute('role', 'list');
+			ignored.style.marginTop = '4px';
+			const title = dom.append(ignored, dom.$('span'));
+			title.textContent = localize('paradis.word.ignoredParts', "無視した部品 {0}", analysis.ignoredParts.length);
+			for (const part of analysis.ignoredParts) {
+				const item = dom.append(ignored, dom.$('.paradis-word-ignored-part'));
+				item.setAttribute('role', 'listitem');
+				item.textContent = part.detail ? `${part.title} — ${part.detail}` : part.title;
+			}
+		}
+	}
+
 	private render(): void {
 		this.renderDisposables.clear();
 		dom.clearNode(this.root);
@@ -582,7 +726,7 @@ export class ParadisWordChangeInspector extends Disposable {
 			stories.setAttribute('aria-label', localize('paradis.word.stories', "文書パーツ"));
 			for (const [kind, count] of storyCounts) {
 				const filter = `kind:${kind}`;
-				const button = appendButton(stories, `${storyLabel(kind)} ${count}`);
+				const button = appendButton(stories, `${paradisWordStoryLabel(kind)} ${count}`);
 				button.dataset.storyKind = kind;
 				button.dataset.count = String(count);
 				button.setAttribute('aria-pressed', String(this.viewState.activeStory === filter));
@@ -613,7 +757,8 @@ export class ParadisWordChangeInspector extends Disposable {
 				const item = dom.append(changeList, dom.$('.paradis-word-change-item'));
 				item.setAttribute('role', 'listitem');
 				const label = wordChangeLabel(change);
-				const button = appendButton(item, `${label} — ${change.subject.locator}`);
+				const button = appendButton(item, `${label} — ${wordChangeSummary(change)}`);
+				button.title = change.subject.locator;
 				button.dataset.changeId = change.id;
 				button.setAttribute('aria-label', localize('paradis.word.navigateChange', "{1} の{0}へ移動", label, change.subject.locator));
 				button.setAttribute('aria-current', String(this.viewState.selectedChangeId === change.id));
@@ -641,6 +786,10 @@ export class ParadisWordChangeInspector extends Disposable {
 				this.placeholderPage = page;
 				this.render();
 			});
+		}
+
+		if (this.analysis) {
+			this.renderAnalysis(this.analysis);
 		}
 
 		if (this.options.search) {
