@@ -6,6 +6,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisOfficeRuntimeConfiguration } from '../../common/paradisOfficeCapabilities.js';
@@ -35,8 +36,10 @@ import {
 	PARADIS_WORD_HIGH_CONTRAST_TOKENS,
 	canShowWordNoChanges,
 	renderWordDiagnosticsRibbon,
+	renderWordSemanticRibbon,
 	wordPrintWarning,
 } from '../../electron-browser/word/paradisWordDiagnostics.js';
+import type { IParadisWordAnalysisCounts } from '../../common/word/paradisWordSemanticSummary.js';
 
 const completeManifest: ParadisOfficeCompletenessManifest = {
 	expectedParts: 8,
@@ -88,6 +91,65 @@ suite('ParadisWordInspector', () => {
 		ok(ribbon.textContent?.includes('代替表示 3'));
 		ok(ribbon.textContent?.includes('解析未完了'));
 		ok(ribbon.textContent?.includes('<img src=x onerror=alert(1)>'));
+	});
+
+	test('renders the semantic ribbon from real counts instead of fixed values', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word semantic ribbon');
+		const host = document.createElement('div');
+		const counts: IParadisWordAnalysisCounts = {
+			format: 'docx', parts: { expected: 6, visited: 6, parsed: 6, inPackage: 14 }, nodes: 91,
+			nodeKinds: { paragraph: 12, text: 40 }, storyKinds: { body: 1, footnote: 1 },
+			unknownElements: [{ name: 'ptab', count: 2, disposition: 'unrendered' }, { name: 'proofErr', count: 9, disposition: 'ignorable' }],
+			unknownElementsOther: { kinds: 0, count: 0, unrendered: 0 },
+			unresolvedRelationships: 0, externalRelationships: 1,
+		};
+		const texts = (state: Parameters<typeof renderWordSemanticRibbon>[1]) => [...renderWordSemanticRibbon(host, state).children].map(item => item.textContent);
+		let activated = 0;
+		renderWordSemanticRibbon(host, { kind: 'analyzed', counts, alternatives: 1, ignoredParts: 7 }, () => activated++, disposables.add(new DisposableStore()));
+		(host.querySelector('[data-kind="nodes"]') as HTMLElement).click();
+		deepStrictEqual({
+			analyzing: texts({ kind: 'analyzing', alternatives: 0, ignoredParts: 0 }),
+			analyzed: texts({ kind: 'analyzed', counts, alternatives: 1, ignoredParts: 7 }),
+			failed: texts({ kind: 'failed', code: 'malformed', alternatives: 0, ignoredParts: 0 }),
+			compared: texts({ kind: 'compared', changes: 1000, truncated: true, outcome: 'complete', alternatives: 0, ignoredParts: 0, warnings: ['unsafe parts'] }),
+			activated,
+		}, {
+			analyzing: ['解析中…', '表示: 従来の表示（近似）', '代替表示 0'],
+			analyzed: ['解析 完了', '部品 6/6', '要素 91', '未対応の要素 2', '表示: 従来の表示（近似）', '代替表示 1', '無視した部品 7'],
+			failed: ['解析できませんでした: ファイルの形式が正しくありません', '表示: 従来の表示（近似）', '代替表示 0'],
+			compared: ['比較 完了', '変更 1000 以上', 'unsafe parts', '表示: 従来の表示（近似）', '代替表示 0'],
+			activated: 1,
+		});
+	});
+
+	test('lists the analysis breakdown and ignored parts, and labels revisions with their text and author', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word analysis');
+		const host = document.createElement('div');
+		const inspector = disposables.add(new ParadisWordChangeInspector(host));
+		const revision: ParadisOfficeChange = {
+			...change('r1', 'revision', 'revision.inserted', 'story:body:/word/document.xml:0/node:r1', 'story:body:/word/document.xml:0/node:p1'),
+			after: { kind: 'record', fields: [{ name: 'text', value: { kind: 'scalar', valueType: 'text', value: 'added words' } }, { name: 'author', value: { kind: 'scalar', valueType: 'text', value: 'Clerk' } }] },
+		};
+		inspector.setComparison([revision], completeManifest, 'complete');
+		inspector.setAnalysis({
+			counts: {
+				format: 'docx', parts: { expected: 2, visited: 2, parsed: 2, inPackage: 5 }, nodes: 3,
+				nodeKinds: { paragraph: 1, text: 2 }, storyKinds: { body: 1 },
+				unknownElements: [{ name: 'proofErr', count: 2, disposition: 'ignorable' }],
+				unknownElementsOther: { kinds: 2, count: 5, unrendered: 1 },
+				unresolvedRelationships: 0, externalRelationships: 0,
+			},
+			ignoredParts: [{ title: '/customXml/item1.xml', detail: 'customXml' }],
+		});
+		deepStrictEqual({
+			change: host.querySelector('[data-change-id="r1"]')?.textContent,
+			analysis: [...host.querySelectorAll('.paradis-word-analysis-row')].map(row => row.textContent),
+			ignored: [...host.querySelectorAll('.paradis-word-ignored-part')].map(row => row.textContent),
+		}, {
+			change: '挿入 — added words（Clerk）',
+			analysis: ['本文1', '段落1', 'テキスト2', 'proofErr2 件・表示に関係しない', '他 2 種5 件'],
+			ignored: ['/customXml/item1.xml — customXml'],
+		});
 	});
 
 	test('counts categories and Stories while retaining visible changes without markers', () => {

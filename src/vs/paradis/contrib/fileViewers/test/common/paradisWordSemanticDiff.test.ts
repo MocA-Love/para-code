@@ -197,6 +197,31 @@ suite('Paradis Word Semantic Diff', () => {
 		strictEqual(changesOf(moved, 'node.format').length, 1);
 	});
 
+	test('pairs duplicates in order when both sides have the same count, so an identical pair has no changes', () => {
+		const build = (prefix: string) => document([
+			story(`${prefix}-body`, [section(`${prefix}-s0`, [
+				paragraphText(`${prefix}-title`, 'title', [0, 0]),
+				paragraphText(`${prefix}-empty-1`, '', [0, 1]), paragraphText(`${prefix}-empty-2`, '', [0, 2]),
+				paragraphText(`${prefix}-end`, 'end', [0, 3]),
+				paragraphText(`${prefix}-empty-3`, '', [0, 4]),
+			])]),
+			story(`${prefix}-box-1`, [paragraphText(`${prefix}-box-1-p`, 'stamp', [0])], { kind: 'textbox' }),
+			story(`${prefix}-box-2`, [paragraphText(`${prefix}-box-2-p`, 'stamp', [0])], { kind: 'textbox' }),
+		]);
+		const result = compareWordSemantics(completeSnapshot(build('x')), completeSnapshot(build('x')));
+		deepStrictEqual({ outcome: result.outcome, noChanges: result.noChanges, changes: result.changes.map(change => change.subject.kind) }, { outcome: 'complete', noChanges: true, changes: [] });
+	});
+
+	test('shortens a very long changed value instead of failing the whole comparison', () => {
+		const build = (text: string) => document([story('body', [section('s0', [paragraphText('p', text, [0, 0], 'same')])])]);
+		const result = compareWordSemantics(completeSnapshot(build('a'.repeat(5_000))), completeSnapshot(build('b'.repeat(5_000))));
+		const change = changesOf(result, 'paragraph.text')[0];
+		deepStrictEqual({
+			length: change.after.kind === 'scalar' && typeof change.after.value === 'string' ? change.after.value.length : -1,
+			ellipsis: change.after.kind === 'scalar' && typeof change.after.value === 'string' && change.after.value.endsWith('\u2026'),
+		}, { length: 4_096, ellipsis: true });
+	});
+
 	test('never aligns paragraphs across a table or between same-depth cells in different tables', () => {
 		const original = document([story('body', [section('s0', [
 			paragraphText('outside-o', 'outside', [0, 0]),

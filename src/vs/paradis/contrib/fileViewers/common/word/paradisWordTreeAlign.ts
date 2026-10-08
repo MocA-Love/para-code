@@ -209,6 +209,7 @@ function matchStories(original: readonly ParadisWordStory[], modified: readonly 
 	const pairs: StoryPair[] = [];
 	matchUniqueStories(original, modified, unmatchedOriginal, unmatchedModified, storyAddressKey, 'exact', runtime, pairs);
 	matchUniqueStories(original, modified, unmatchedOriginal, unmatchedModified, storyContentKey, 'normalized', runtime, pairs);
+	matchBalancedStories(original, modified, unmatchedOriginal, unmatchedModified, storyAddressKey, runtime, pairs);
 	for (const index of unmatchedOriginal) {
 		pairs.push({ original: index, certainty: 'ambiguous' });
 	}
@@ -238,6 +239,33 @@ function matchUniqueStories(
 		unmatchedOriginal.delete(originalIndex);
 		unmatchedModified.delete(modifiedIndex);
 		pairs.push({ original: originalIndex, modified: modifiedIndex, certainty });
+	}
+}
+
+/**
+ * 同じ場所に同じ数だけあるパーツ（1 つの段落に入った複数のテキストボックスなど）は、出てくる順に対応させる。
+ * 数が違うときは、どれが増えた・減ったのかを決められないので対応させない。
+ */
+function matchBalancedStories(
+	original: readonly ParadisWordStory[], modified: readonly ParadisWordStory[],
+	unmatchedOriginal: Set<number>, unmatchedModified: Set<number>, keyOf: (story: ParadisWordStory) => string,
+	runtime: Runtime, pairs: StoryPair[],
+): void {
+	const originalKeys = indexKeys(unmatchedOriginal, index => keyOf(original[index]), runtime);
+	const modifiedKeys = indexKeys(unmatchedModified, index => keyOf(modified[index]), runtime);
+	for (const [key, originalIndexes] of originalKeys) {
+		checkpoint(runtime);
+		const modifiedIndexes = modifiedKeys.get(key);
+		if (!modifiedIndexes || originalIndexes.length !== modifiedIndexes.length) {
+			continue;
+		}
+		const orderedOriginal = [...originalIndexes].sort((left, right) => left - right);
+		const orderedModified = [...modifiedIndexes].sort((left, right) => left - right);
+		for (let index = 0; index < orderedOriginal.length; index++) {
+			unmatchedOriginal.delete(orderedOriginal[index]);
+			unmatchedModified.delete(orderedModified[index]);
+			pairs.push({ original: orderedOriginal[index], modified: orderedModified[index], certainty: 'heuristic' });
+		}
 	}
 }
 
@@ -383,8 +411,9 @@ function alignRegion(
 	}
 	runtime.candidates += candidatePairs;
 
-	const originalTokens = regionTokens(original, originalIndexes, duplicateKeys, 'original');
-	const modifiedTokens = regionTokens(modified, modifiedIndexes, duplicateKeys, 'modified');
+	const balancedDuplicates = balancedDuplicateKeys(original, originalIndexes, modified, modifiedIndexes, duplicateKeys);
+	const originalTokens = regionTokens(original, originalIndexes, duplicateKeys, balancedDuplicates, 'original');
+	const modifiedTokens = regionTokens(modified, modifiedIndexes, duplicateKeys, balancedDuplicates, 'modified');
 	const exactPairs = boundedMyersPairs(originalTokens, modifiedTokens, runtime, runtime.limits.alignmentRegionPairs);
 	for (const pair of exactPairs ?? []) {
 		const originalIndex = originalIndexes[pair.original];
@@ -421,8 +450,40 @@ function alignRegion(
 	}
 }
 
-function regionTokens(items: readonly IndexedNode[], itemIndexes: readonly number[], duplicateKeys: ReadonlySet<string>, side: 'original' | 'modified'): string[] {
-	return itemIndexes.map(index => duplicateKeys.has(items[index].stableKey) ? `${side}:${index}` : items[index].stableKey);
+/**
+ * 区間の中で同じ回数ずつ現れる重複キー（空の段落など）。回数が揃っていれば、k 番目どうしを
+ * 対応させても取り違えようがない（同じ文書どうしの比較で、空の段落がすべて追加と削除に化けるのを防ぐ）。
+ * 回数が違うときは、どれが増えた・減ったのかを決められないので、従来どおり対応させない。
+ */
+function balancedDuplicateKeys(
+	original: readonly IndexedNode[], originalIndexes: readonly number[],
+	modified: readonly IndexedNode[], modifiedIndexes: readonly number[], duplicateKeys: ReadonlySet<string>,
+): ReadonlySet<string> {
+	const originalCounts = counts(originalIndexes.map(index => original[index].stableKey).filter(key => duplicateKeys.has(key)));
+	const modifiedCounts = counts(modifiedIndexes.map(index => modified[index].stableKey).filter(key => duplicateKeys.has(key)));
+	const result = new Set<string>();
+	for (const [key, count] of originalCounts) {
+		if (modifiedCounts.get(key) === count) {
+			result.add(key);
+		}
+	}
+	return result;
+}
+
+function regionTokens(items: readonly IndexedNode[], itemIndexes: readonly number[], duplicateKeys: ReadonlySet<string>, balancedDuplicates: ReadonlySet<string>, side: 'original' | 'modified'): string[] {
+	const occurrences = new Map<string, number>();
+	return itemIndexes.map(index => {
+		const key = items[index].stableKey;
+		if (!duplicateKeys.has(key)) {
+			return key;
+		}
+		if (!balancedDuplicates.has(key)) {
+			return `${side}:${index}`;
+		}
+		const occurrence = occurrences.get(key) ?? 0;
+		occurrences.set(key, occurrence + 1);
+		return `${key}\u0000${occurrence}`;
+	});
 }
 
 function candidateRank(
