@@ -224,6 +224,8 @@ class ParadisHelperConnection {
 				this._pending.delete(id);
 				cleanup();
 				reject(new ParadisComputerUseHelperError('cancelled', 'The request was cancelled.'));
+				// 背面入力の途中でも補助アプリが切断を検出し、送信を止めてフォーカスを戻せるようにする。
+				this.destroy();
 			};
 			const cleanup = () => {
 				clearTimeout(timer);

@@ -429,6 +429,16 @@ do {
 	let foreground6 = foreground()
 	let viaBackground = try? paradisRouteInput(click, pid: 100, routes: [FakeRoute(.accessibility) { .fellThrough("no element") }, plugged, foreground6], options: ParadisInputOptions(allowForeground: false))
 	check(viaBackground?["route"] as? String == "background" && foreground6.performed.isEmpty, "a background route plugs in before the foreground route")
+	// 送信後の不明な結果で前面経路へ落ちると二重入力になる。
+	let foregroundAfterPartial = foreground()
+	let partial = FakeRoute(.background) { .done(["completed": false, "verified": NSNull(), "sentUnits": 1]) }
+	let partialResult = try? paradisRouteInput(click, pid: 100, routes: [partial, foregroundAfterPartial], options: ParadisInputOptions())
+	check(partialResult?["completed"] as? Bool == false && foregroundAfterPartial.performed.isEmpty, "partial background delivery is never replayed through foreground")
+	let windowOptions = try? paradisParseInputOptions(["windowId": 42])
+	check(windowOptions?.windowId == 42, "preserves the exact background keyboard window")
+	for invalid: Any in [true, 0, -1, 1.5, UInt64(UInt32.max) + 1, "42"] {
+		check((try? paradisParseInputOptions(["windowId": invalid])) == nil, "rejects malformed window identifiers before routing")
+	}
 	check(background.availability(of: click, pid: 100) != .available && !background.requiresForeground, "the background route is not available yet")
 }
 

@@ -8,7 +8,7 @@
 // 入力の送り方の段の実体（段の並びと選び方は Core の ParadisInputRoute.swift）。
 //
 //  - 1 段目 `ParadisAccessibilityRoute`: AX の操作。マウスもカーソルも動かさず、前面に出さない
-//  - 2 段目 `paradisMakeBackgroundRoute()`: 背面への入力の差し込み口。今は Core の空の実装（常に使えない）を返す
+//  - 2 段目 `paradisMakeBackgroundRoute()`: 背面への入力の差し込み口。指定ウィンドウへ送る実装を返す
 //  - 3 段目 `ParadisForegroundRoute`: 今までの経路（ParadisInput.swift の foreground*）
 //
 // 1 段目で確かめること（3 段目と違い、前面のアプリが目的の pid であることは求めない）:
@@ -27,11 +27,11 @@ import ApplicationServices
 import Foundation
 
 /**
- * 2 段目（背面への入力）の実装を返す。今は常に使えない空の実装。
+ * 2 段目（背面への入力）の実装を返す。
  * 実装をはめ込むときは、`ParadisInputRoute` に準拠したクラスをこのフォルダに新しく作り、ここから返す。
  */
-func paradisMakeBackgroundRoute() -> ParadisInputRoute {
-	return ParadisUnavailableBackgroundRoute()
+func paradisMakeBackgroundRoute(desktop: ParadisDesktop) -> ParadisInputRoute {
+	return ParadisBackgroundRoute(desktop: desktop)
 }
 
 // MARK: - 3 段目
@@ -507,7 +507,7 @@ private struct ParadisAXTargetWindow {
 }
 
 /** アプリを隠しているか（⌘H）。 */
-private func paradisAppIsHidden(_ pid: Int32) -> Bool {
+func paradisAppIsHidden(_ pid: Int32) -> Bool {
 	return paradisOnMain { NSRunningApplication(processIdentifier: pid)?.isHidden ?? false }
 }
 
@@ -516,7 +516,7 @@ private func paradisAppIsHidden(_ pid: Int32) -> Bool {
  * ポップアップボタンのメニューのように AX のどこに出るか決まらないものも、ウィンドウの層で見分けられる
  * （確認用のアプリで確かめた）。無ければ nil。
  */
-private func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
+func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
 	let menuLayer = Int(CGWindowLevelForKey(.popUpMenuWindow))
 	let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]) ?? []
 	for entry in list where (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid {
@@ -541,7 +541,7 @@ private func paradisAppMenuWindow(pid: Int32) -> ParadisMenuWindowFacts? {
  * （ボタンの処理の中で出したメニューはそのボタンの子になる。確認用のアプリで確かめた）、アプリの直下、
  * キーボードのフォーカスのある要素から親をたどった先。
  */
-private func paradisOpenMenu(pid: Int32, near element: AXUIElement? = nil) -> AXUIElement? {
+func paradisOpenMenu(pid: Int32, near element: AXUIElement? = nil) -> AXUIElement? {
 	let application = AXUIElementCreateApplication(pid)
 	AXUIElementSetMessagingTimeout(application, 0.5)
 	let isMenu = { (candidate: AXUIElement) in (paradisCopy(candidate, kAXRoleAttribute) as? String) == "AXMenu" }

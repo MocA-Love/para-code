@@ -140,7 +140,7 @@ export function buildParadisComputerUseHelper(options: IParadisHelperBuildOption
 	const executablePath = join(appPath, 'Contents', 'MacOS', PARADIS_COMPUTER_USE_EXECUTABLE);
 	const sources = appSources();
 	if (options.ifStale && existsSync(executablePath)) {
-		const newestInput = Math.max(newestMtime(sources), statSync(import.meta.filename).mtimeMs);
+		const newestInput = Math.max(newestMtime(sources), statSync(import.meta.filename).mtimeMs, statSync(join(PARADIS_COMPUTER_USE_SOURCE_ROOT, 'THIRD_PARTY_NOTICES.md')).mtimeMs);
 		if (statSync(executablePath).mtimeMs >= newestInput) {
 			log(`up to date: ${appPath}`);
 			return appPath;
@@ -184,6 +184,8 @@ export function buildParadisComputerUseHelper(options: IParadisHelperBuildOption
 		}
 		writeFileSync(join(stagedApp, 'Contents', 'Info.plist'), paradisComputerUseInfoPlist(product.darwinBundleIdentifier, product.version, options.allowAnyPeerForTesting === true, product.dataFolderName));
 		writeFileSync(join(stagedApp, 'Contents', 'PkgInfo'), 'APPL????');
+		mkdirSync(join(stagedApp, 'Contents', 'Resources'), { recursive: true });
+		writeFileSync(join(stagedApp, 'Contents', 'Resources', 'THIRD_PARTY_NOTICES.md'), readFileSync(join(PARADIS_COMPUTER_USE_SOURCE_ROOT, 'THIRD_PARTY_NOTICES.md')));
 		// ad-hoc 署名。リリースは CI が本番の identity で署名し直す
 		execFileSync('codesign', ['--force', '--sign', '-', '--timestamp=none', stagedApp], { stdio: 'inherit' });
 		rmSync(appPath, { recursive: true, force: true });
