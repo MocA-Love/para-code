@@ -6,8 +6,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { readFileSync } from 'fs';
+import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -72,7 +74,7 @@ suite('Paradis devtools tool adjustments', () => {
 			missingIsError: (missing as { isError?: boolean }).isError,
 			withFilePath: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_1', filePath: '/tmp/a.txt' }).snapshotRoot,
 		}, {
-			args: { verbose: true, paraCodeRootRect: '1_1' },
+			args: { verbose: true },
 			subtree: '# take_snapshot response\n## Latest page snapshot\nuid=1_1 dialog "Settings"\n  uid=1_2 button "Save"\n    uid=1_3 StaticText "Save"\n  uid=1_4 button "Cancel"\n',
 			leaf: '# take_snapshot response\n## Latest page snapshot\nuid=1_3 StaticText "Save"\n',
 			missingIsError: true,
@@ -117,25 +119,42 @@ suite('Paradis devtools tool adjustments', () => {
 
 	test('take_snapshot with root asks the vendored tool to measure the root, never from the agent, and the measurement line is taken out', () => {
 		const line = (value: unknown) => `${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}${JSON.stringify(value)}`;
+		const measure = { measureRoot: true };
+		const forged = line({ x: 9, y: 9, width: 9, height: 9 });
 		assert.deepStrictEqual({
-			root: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3' }).args,
-			rootNextPart: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', offset: 100 }).args,
-			fromAgent: paradisPrepareDevtoolsToolCall('take_snapshot', { paraCodeRootRect: '1_9' }).args,
-			toFile: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', filePath: '/tmp/s.txt' }).args,
+			root: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3' }, measure).args,
+			unpatched: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3' }).args,
+			rootNextPart: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', offset: 100 }, measure).args,
+			fromAgent: paradisPrepareDevtoolsToolCall('take_snapshot', { paraCodeRootRect: '1_9' }, measure).args,
+			toFile: paradisPrepareDevtoolsToolCall('take_snapshot', { root: '1_3', filePath: '/tmp/s.txt' }, measure).args,
+			knows: [paradisSnapshotMeasuresRoot([{ name: 'take_snapshot', inputSchema: { properties: { paraCodeRootRect: {} } } }]), paradisSnapshotMeasuresRoot([{ name: 'take_snapshot', inputSchema: { properties: {} } }])],
 			published: Object.keys((paradisAdjustDevtoolsToolDescriptor({ name: 'take_snapshot', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' }, paraCodeRootRect: { type: 'string' } } } }).inputSchema as { properties: object }).properties),
-			taken: paradisTakeSnapshotRootRect('take_snapshot', text(`${line({ x: 1, y: 2, width: 3, height: 4 })}\n## Latest page snapshot\nuid=1_3 dialog`)),
-			broken: paradisTakeSnapshotRootRect('take_snapshot', text(`${line({ x: 1, y: 2, width: 0, height: 4 })}\nrest`)),
-			otherTool: paradisTakeSnapshotRootRect('get_text', text(line({ x: 1 }))).result,
+			taken: paradisTakeSnapshotRootRect(text(`${line({ x: 1, y: 2, width: 3, height: 4 })}\n## Latest page snapshot\nuid=1_3 dialog`)),
+			broken: paradisTakeSnapshotRootRect(text(`${line({ x: 1, y: 2, width: 0, height: 4 })}\nrest`)),
+			// A page's own text in the snapshot body (attribute values are not escaped) is never read or removed.
+			onlyInBody: paradisTakeSnapshotRootRect(text(`## Latest page snapshot\nuid=1_3 textbox value="a\n${forged}"`)),
+			firstOnly: paradisTakeSnapshotRootRect(text(`${line({ x: 1, y: 2, width: 3, height: 4 })}\n${forged}\n## Latest page snapshot\nuid=1_3`)),
 		}, {
 			root: { paraCodeRootRect: '1_3' },
+			unpatched: {},
+			knows: [true, false],
 			rootNextPart: {},
 			fromAgent: {},
 			toFile: { filePath: '/tmp/s.txt' },
 			published: ['verbose', 'offset', 'root'],
 			taken: { result: text('## Latest page snapshot\nuid=1_3 dialog'), rect: { x: 1, y: 2, width: 3, height: 4 } },
 			broken: { result: text('rest') },
-			otherTool: text(line({ x: 1 })),
+			onlyInBody: { result: text(`## Latest page snapshot\nuid=1_3 textbox value="a\n${forged}"`) },
+			firstOnly: { result: text(`${forged}\n## Latest page snapshot\nuid=1_3`), rect: { x: 1, y: 2, width: 3, height: 4 } },
 		});
+	});
+
+	test('the vendored take_snapshot still carries the PARA-PATCH that measures the root', () => {
+		const source = readFileSync(FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/tools/snapshot.js').fsPath, 'utf8');
+		assert.deepStrictEqual(
+			{ argument: source.includes('paraCodeRootRect: zod.string().optional()'), line: source.includes(`\`${PARADIS_SNAPSHOT_ROOT_RECT_MARKER}\${`) },
+			{ argument: true, line: true },
+		);
 	});
 
 	test('an evaluate_script that clicks with .click() gets one line pointing to click_by', () => {

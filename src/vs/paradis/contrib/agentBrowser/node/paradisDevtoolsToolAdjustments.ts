@@ -97,7 +97,7 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 }
 
 /** 子プロセスへ渡す引数に戻す（足した引数を取り除き、wait_for の文字列を配列へ包む）。 */
-export function paradisPrepareDevtoolsToolCall(name: string, args: unknown): IParadisPreparedDevtoolsCall {
+export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean }): IParadisPreparedDevtoolsCall {
 	if (!isRecord(args)) {
 		return { args };
 	}
@@ -113,8 +113,9 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown): IPa
 		const snapshotOffset = typeof offset === 'number' && Number.isSafeInteger(offset) && offset > 0 ? offset : 0;
 		const snapshotRoot = typeof root === 'string' && root.length > 0 && rest.filePath === undefined ? root : undefined;
 		// root の要素の位置は vendored の take_snapshot の中で測る（エージェントのカーソルの枠。q.html Q297 の 3）。
-		// 別の evaluate_script で測るとタブの道具の順番を握り、次の道具を待たせるため
-		return { args: snapshotRoot !== undefined && snapshotOffset === 0 ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
+		// 別の evaluate_script で測るとタブの道具の順番を握り、次の道具を待たせるため。vendored が引数を知っている
+		// （tools/list のスキーマにある）ときだけ付ける。PARA-PATCH を当て忘れた vendored は知らない引数を断るため
+		return { args: snapshotRoot !== undefined && snapshotOffset === 0 && options?.measureRoot === true ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
 }
@@ -202,44 +203,70 @@ export function paradisWithScriptClickHint(name: string, args: unknown, result: 
 /** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
 export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
 
+/** vendored の take_snapshot のスキーマが、Para Code の測りの引数を知っているか（PARA-PATCH が当たっているか）。 */
+export function paradisSnapshotMeasuresRoot(tools: readonly unknown[]): boolean {
+	const tool = tools.find(candidate => isRecord(candidate) && candidate.name === 'take_snapshot');
+	return isRecord(tool) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeRootRect !== undefined;
+}
+
+type IParadisSnapshotRootRect = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+
+/** エージェントへ返す結果 → 測った root の位置。結果の本文には書かない（ページの文字で偽れないように）。 */
+const snapshotRootRects = new WeakMap<object, IParadisSnapshotRootRect>();
+
+/** {@link paradisTakeSnapshotRootRect} で取り出した位置を、エージェントへ返す結果に結び付ける。 */
+export function paradisAttachSnapshotRootRect(result: unknown, rect: IParadisSnapshotRootRect | undefined): void {
+	if (rect && isRecord(result)) {
+		snapshotRootRects.set(result, rect);
+	}
+}
+
+/** take_snapshot の結果に結び付けた root の位置（測っていなければ undefined）。 */
+export function paradisSnapshotRootRectOf(result: unknown): IParadisSnapshotRootRect | undefined {
+	return isRecord(result) ? snapshotRootRects.get(result) : undefined;
+}
+
 /**
- * take_snapshot の結果から root の要素の位置の行を取り除き、位置（ビューポートの CSS ピクセル）を返す。
- * エージェントへはこの行を見せない。take_snapshot 以外・印の無い結果はそのまま返す。
+ * `paraCodeRootRect` を付けて呼んだ take_snapshot の結果から、vendored が書いた root の要素の位置の行を取り除き、
+ * 位置（ビューポートの CSS ピクセル）を返す。見るのは `## Latest page snapshot` の見出しより前の、最初に見つかった
+ * 1 行だけ（スナップショットの本文はページの文字をエスケープせずに含むので、本文の行は読まない）。
  */
-export function paradisTakeSnapshotRootRect(name: string, result: unknown): { readonly result: unknown; readonly rect?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } } {
-	if (name !== 'take_snapshot' || !isRecord(result) || !Array.isArray(result.content)) {
+export function paradisTakeSnapshotRootRect(result: unknown): { readonly result: unknown; readonly rect?: IParadisSnapshotRootRect } {
+	if (!isRecord(result) || !Array.isArray(result.content)) {
 		return { result };
 	}
-	let rect: { x: number; y: number; width: number; height: number } | undefined;
-	let found = false;
+	let rect: IParadisSnapshotRootRect | undefined;
+	let removed: string | undefined;
 	const content = result.content.map(item => {
-		if (!isRecord(item) || item.type !== 'text' || typeof item.text !== 'string' || !item.text.includes(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)) {
+		if (removed !== undefined || !isRecord(item) || item.type !== 'text' || typeof item.text !== 'string') {
 			return item;
 		}
-		found = true;
-		const lines = item.text.split('\n');
-		const kept = lines.filter(line => {
-			if (!line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)) {
-				return true;
+		const heading = item.text.indexOf(SNAPSHOT_HEADING);
+		const head = heading < 0 ? item.text : item.text.slice(0, heading);
+		const lines = head.split('\n');
+		const index = lines.findIndex(line => line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER));
+		if (index < 0) {
+			return item;
+		}
+		removed = lines[index];
+		try {
+			const value: unknown = JSON.parse(removed.slice(PARADIS_SNAPSHOT_ROOT_RECT_MARKER.length));
+			if (isRecord(value) && [value.x, value.y, value.width, value.height].every(n => typeof n === 'number' && Number.isFinite(n)) && (value.width as number) > 0 && (value.height as number) > 0) {
+				rect = { x: value.x as number, y: value.y as number, width: value.width as number, height: value.height as number };
 			}
-			try {
-				const value: unknown = JSON.parse(line.slice(PARADIS_SNAPSHOT_ROOT_RECT_MARKER.length));
-				if (isRecord(value) && [value.x, value.y, value.width, value.height].every(n => typeof n === 'number' && Number.isFinite(n)) && (value.width as number) > 0 && (value.height as number) > 0) {
-					rect = { x: value.x as number, y: value.y as number, width: value.width as number, height: value.height as number };
-				}
-			} catch {
-				// 読めない行は捨てるだけ
-			}
-			return false;
-		});
-		return { ...item, text: kept.join('\n') };
+		} catch {
+			// 読めない行は捨てるだけ
+		}
+		lines.splice(index, 1);
+		return { ...item, text: lines.join('\n') + (heading < 0 ? '' : item.text.slice(heading)) };
 	});
-	if (!found) {
+	if (removed === undefined) {
 		return { result };
 	}
-	// structuredContent（vendored の --experimental-structured-content。Para Code は付けないが念のため）からも取り除く
+	// structuredContent（vendored の --experimental-structured-content。Para Code は付けないが念のため）からも同じ行を取り除く
+	const line = removed;
 	const structured = isRecord(result.structuredContent) && typeof result.structuredContent.message === 'string'
-		? { structuredContent: { ...result.structuredContent, message: result.structuredContent.message.split('\n').filter(line => !line.startsWith(PARADIS_SNAPSHOT_ROOT_RECT_MARKER)).join('\n') } }
+		? { structuredContent: { ...result.structuredContent, message: result.structuredContent.message.split('\n').filter(candidate => candidate !== line).join('\n') } }
 		: {};
 	return { result: { ...result, content, ...structured }, ...(rect ? { rect } : {}) };
 }
