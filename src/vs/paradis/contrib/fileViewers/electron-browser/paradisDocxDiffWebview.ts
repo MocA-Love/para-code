@@ -1280,7 +1280,18 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 			const brokenImage = ${JSON.stringify(`data:image/svg+xml;base64,${encodeBase64(VSBuffer.wrap(paradisOfficeBrokenImagePlaceholderSvg()))}`)};
 			const xlink = 'http://www.w3.org/1999/xlink';
 			const sourceOf = el => el instanceof HTMLImageElement ? el.getAttribute('src') : el instanceof SVGImageElement ? (el.getAttribute('href') || el.getAttributeNS(xlink, 'href')) : null;
+			// docx-preview は画像を型の無い Blob から data URL にするので、SVG の部品（EMF・WMF を変換したもの、
+			// 代わりの箱）は application/octet-stream になって描かれない。先頭が <svg のものだけ型を付け替える。
+			const retypeSvg = el => {
+				const source = sourceOf(el);
+				if (!source || el.dataset.paradisSvgImage || !/^data:(?:application[/]octet-stream)?;base64,PHN2Zy/.test(source)) { return false; }
+				el.dataset.paradisSvgImage = '1';
+				const typed = 'data:image/svg+xml;base64,' + source.slice(source.indexOf(',') + 1);
+				if (el instanceof HTMLImageElement) { el.src = typed; } else { el.removeAttributeNS(xlink, 'href'); el.setAttribute('href', typed); }
+				return true;
+			};
 			const replace = el => {
+				if (retypeSvg(el)) { return; }
 				// 対象は PNG・JPEG・GIF の中身を持つ画像だけ（base64 の先頭で見分ける）。
 				const source = sourceOf(el);
 				if (!source || el.dataset.paradisBrokenImage || !/^data:[^,]*;base64,(?:iVBOR|[/]9j[/]|R0lG)/.test(source)) { return; }

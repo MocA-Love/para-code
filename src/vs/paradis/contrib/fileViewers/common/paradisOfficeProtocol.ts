@@ -397,6 +397,8 @@ export type ParadisOfficeRasterMime = 'image/png' | 'image/jpeg' | 'image/gif' |
 /** Allowlisted asset metadata. Kind and MIME are a fixed discriminated pair. */
 export type ParadisOfficeRenderableAsset = ParadisOfficeRenderableAssetBase & (
 	| { readonly kind: 'rasterImage'; readonly mime: ParadisOfficeRasterMime }
+	// Also carries the SVG the EMF/WMF converter writes (Q321 f), which skips the document SVG check: render it
+	// only as an image (`<img>` or SVG `<image>`), never inline in the DOM.
 	| { readonly kind: 'sanitizedSvg'; readonly mime: 'image/svg+xml' }
 	| { readonly kind: 'fontSubset'; readonly mime: 'font/woff2' }
 	| { readonly kind: 'chartPreview'; readonly mime: 'image/png' | 'image/svg+xml' }
