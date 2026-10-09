@@ -64,6 +64,11 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - セッション履歴の行メニューの結果（コピーした・見つからない・失敗した）はモーダルの中に出す。通知の層（2545）はモーダル（2700）の下にあって見えないため。作業フォルダを開く前にディレクトリか確かめ、macOS のバンドル（`.app` など）は Finder で場所を見せるだけにする
 - 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
 
+## Markdown のプレビューの画像は、更新時刻と大きさで覚える（fileViewers、2026-10-09）
+
+- ローカルの画像（`<img>`・`<video>`・`<audio>`・`<source>`）は `data:` URI にして埋め込む。base64 化はネイティブ（`Uint8Array.prototype.toBase64`、無ければ `FileReader`）。作った `data:` URI は `ParadisInlineMediaCache`（`browser/paradisMarkdownInlineResources.ts`）が、ビューアごとに URI・更新時刻・大きさの組で覚える。描き直すたびに、その描画で使わなかった画像は外す。別の文書へ移るとき・ビューアを捨てるときは空にする
+- 仕組みの限界: 更新時刻と大きさがどちらも同じまま中身だけが変わった画像（同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が出続ける。次にどちらかが変わるか、別の文書へ移るまで直らない。中身のハッシュで見分けると読み込みを省けなくなるので、受け入れている
+
 ## Word の詳しい解析は shared process の worker で動かす（fileViewers、2026-10-09、段階 3）
 
 - 入口は `node/word/paradisWordSemanticWorkerMain.ts`。`build/next/index.ts` の `desktopEntryPoints` に載せてある（どこからも import されないため）。ヒープの上限は Office の worker と同じ 384 MiB。worker へは 1 件ずつ送り、実行の締め切りは走り始めた時点で張る。待ち行列には別の締め切り（過ぎたらその依頼だけを取り消す）と長さの上限がある。worker が落ちたら走っていた依頼は失敗にし、shared process の中では解析しない（表示は解析に頼らない）
@@ -71,6 +76,12 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - Web 版の Worker（`browser/paradisOfficeWebWorker.ts`）の Word の比較は、本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。デスクトップとの差として残している
 - 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
 - 残課題: 比較で、同じ文字のテキストボックスなど（同じ鍵のパーツ）は出てくる順に対応させている（`paradisWordTreeAlign.ts` の `matchBalancedStories`）。版の間で順番が入れ替わると、書式の違いが別の組に付くことがある。中身の文字が同じなので内容の変更は出ない
+
+## Word の画像は検査を通ったものだけを描く（fileViewers、2026-10-09、Q312 A）
+
+- サニタイザ（`common/paradisOfficeSanitizer.ts`）は、PNG・JPEG・GIF のうち `common/word/paradisWordImageInspection.ts` の検査（署名・大きさ・PNG のチャンクの CRC・APNG の拒否・JPEG のセグメント・GIF のブロックとフレーム数）を通り、宣言の content type と中身が一致するものだけを元のバイトのまま渡す。画像の終わり（IEND・EOI・トレーラ）より後ろは切る。1 文書で描く画素は 1 億まで（差分は 1 文書あたり半分）
+- 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
+- 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 
@@ -400,6 +411,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 - Windows は現状スキップ（notify.sh がPOSIX sh前提。必要になったらSupersetの notify.ps1 方式を移植）
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
+
+### hook の届かないペインは Claude Code の OSC 7501 で状態を補う（2026-10-09、#318）
+
+Claude Code 2.1.295 から、端末が `OSC 7501 ; ?` に答えると作業の状態（working・blocked・done・idle・clear）を端末へ書く。Para Code はこれを hook が一度も届いていないペイン（WSL、ターミナルから ssh した先など）の状態の補助にだけ使う（`agentBrowser/common/paradisProgramStatus.ts`、`electron-browser/paradisProgramStatus.contribution.ts`）。
+
+- 出力はどのプログラムでも書けるので、問い合わせに答えるのは前面のコマンドが Claude Code か、先を確かめられない ssh・wsl などのときだけにしている
+- 前面のコマンドは、シェル統合の nonce が合ったコマンド行（`isTrusted`）と、pty が報告する前面のプロセスの題名で見分ける。出力に `OSC 633 ; E` を書くと nonce が合わなくてもコマンド行は上書きされるため、nonce の無いシェル統合のコマンド行は使わない
+- そのため、nonce の無いシェル統合（手で読み込んだ古い統合スクリプトなど）のターミナルでは、npm 版の Claude Code を見分けられない。推測: npm 版は Node のラッパーから起動するのでプロセスの題名が `node` になり、コマンド行だけが手がかりになる【要確認】。この場合は状態の補助が働かない。ネイティブ版はプロセスの題名が版の番号になるので、nonce が無くても見分けられる
+- `instance.processName` は名前を付けた端末では更新が止まるので、プロセスの題名は `processManager.onDidChangeProperty`（Title）から contribution 自身が持つ
 
 ### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
 

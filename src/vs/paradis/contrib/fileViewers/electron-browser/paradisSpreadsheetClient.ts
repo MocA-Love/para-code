@@ -17,8 +17,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisParseWorkbookOptions, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
-import { parseDrawingShapes } from './paradisSpreadsheetDrawings.js';
+import { IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
 export const PARADIS_SPREADSHEET_MAX_BYTES = 20 * 1024 * 1024;
@@ -31,17 +31,18 @@ export async function parseSpreadsheetResource(
 	fileService: IFileService,
 	sharedProcessService: ISharedProcessService,
 	resource: URI,
-	options?: IParadisParseWorkbookOptions,
 	// PARA-CODE: 読み出した大きさは呼び出し側の観測（時間切れの予算・失敗イベントの大きさ段階）に要る。
 	// 返り値ではなくコールバックにしてあるのは、既存の呼び出し側の戻り値の形を変えないため。
 	// 読んだバイト列も渡す（詳しい解析へ、読み直さずにそのまま渡すため）。
 	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
+	/** ブックで描く画像の画素の合計の上限。比較は左右で半分ずつ渡す。無ければ既定値。 */
+	imagePixelBudget?: number,
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	onSourceBytes?.(content.value.byteLength, content.value);
 	throwIfNotWorkbook(resource, content.value);
 	const base64 = encodeBase64(content.value);
-	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64, options]);
+	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {
@@ -50,8 +51,10 @@ export async function parseSpreadsheetResource(
 	// drawings は「表示順(1始まり)」でキーされている。renderer 側 DOMParser で図形/画像へ変換して付与する。
 	// schemeClr の解決にはブック固有のテーマパレット(theme1.xml 由来)を使う。
 	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => {
-		const shapes = parseDrawingShapes(drawings[idx + 1], raw.themeColors);
-		return shapes.length > 0 ? { ...sheet, shapes } : sheet;
+		const { shapes, undrawn } = parseDrawingObjects(drawings[idx + 1], raw.themeColors);
+		return shapes.length > 0 || undrawn.length > 0
+			? { ...sheet, ...(shapes.length > 0 ? { shapes } : {}), ...(undrawn.length > 0 ? { undrawnObjects: undrawn } : {}) }
+			: sheet;
 	});
 	return { sheets, themeColors: raw.themeColors };
 }
@@ -74,9 +77,9 @@ function throwIfNotWorkbook(resource: URI, content: VSBuffer): void {
 	const bytes = content.buffer;
 	const zip = bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04;
 	const compoundFile = bytes.byteLength >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
-	const ownerFile = basename(resource).startsWith('~$');
-	if (ownerFile || (!zip && !compoundFile)) {
-		throw new ParadisSpreadsheetNotWorkbookError(ownerFile);
+	if (!zip && !compoundFile) {
+		// 所有者ファイルの文は、名前が `~$` で始まり、中身も ZIP でないときだけ出す。
+		throw new ParadisSpreadsheetNotWorkbookError(basename(resource).startsWith('~$'));
 	}
 }
 

@@ -17,7 +17,7 @@ import type {
 	ParadisOfficeSourceDescriptor,
 } from '../../common/paradisOfficeProtocol.js';
 import type { ParadisOfficeRuntimeConfiguration } from '../../common/paradisOfficeCapabilities.js';
-import type { IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
+import type { IParadisRenderShape, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
 import type { IParadisDiffSheet } from '../../electron-browser/paradisSpreadsheetDiff.js';
 import { PARADIS_SPREADSHEET_LEGACY_CHANGE_LIMIT, adaptLegacySpreadsheetInspectorChangeSet, adaptLegacySpreadsheetInspectorChanges } from '../../electron-browser/paradisSpreadsheetDiffEditor.js';
 import {
@@ -398,6 +398,27 @@ suite('ParadisSpreadsheetInspector', () => {
 			['object', 'object.lineGeometry', '図形の線'],
 		]);
 		deepStrictEqual(changes.map(item => item.subject.locator), ['Data!B2', 'Data!object:Line 1']);
+	});
+
+	test('lists shape text, fill, and geometry changes one by one with their values', () => {
+		const shape = (extra: Partial<IParadisRenderShape>): IParadisRenderShape => ({
+			type: 'rect', flipV: false, flipH: false, from: { c: 1, co: 0, r: 1, ro: 0 }, to: { c: 3, co: 0, r: 3, ro: 0 },
+			outlineWidth: 1, outlineColor: '#000000', dash: 'solid', name: 'Box 1', geometry: 'rect',
+			text: { paragraphs: [{ runs: [{ text: 'pending' }] }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true }, ...extra,
+		});
+		const sheet: IParadisDiffSheet = {
+			name: 'Data', originalRows: [], modifiedRows: [], columnCount: 0, columnWidths: [],
+			originalShapes: [shape({})],
+			modifiedShapes: [shape({ text: { paragraphs: [{ runs: [{ text: 'approved' }] }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true }, fill: '#E2F0D9', geometry: 'roundRect' })],
+		};
+
+		const changes = adaptLegacySpreadsheetInspectorChanges([sheet]);
+
+		deepStrictEqual(changes.map(item => [item.category, spreadsheetChangeLabel(item), item.subject.locator, item.before, item.after]), [
+			['content', '図形の文字', 'Data!object:Box 1', { kind: 'scalar', valueType: 'text', value: 'pending' }, { kind: 'scalar', valueType: 'text', value: 'approved' }],
+			['object', '図形の塗り', 'Data!object:Box 1', { kind: 'none' }, { kind: 'scalar', valueType: 'text', value: '#E2F0D9' }],
+			['object', '図形の形', 'Data!object:Box 1', { kind: 'scalar', valueType: 'text', value: 'rect' }, { kind: 'scalar', valueType: 'text', value: 'roundRect' }],
+		]);
 	});
 
 	test('adapts and deduplicates original and modified legacy cells, including deleted cells', () => {

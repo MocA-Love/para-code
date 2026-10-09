@@ -9,6 +9,7 @@ import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { minimalJpeg, minimalPng } from '../common/paradisWordImageFixture.js';
 import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
@@ -79,6 +80,40 @@ suite('ParadisSpreadsheetService', () => {
 		strictEqual(display.semanticDiagnostics, undefined);
 		deepStrictEqual([summary.available, summary.terminal, summary.parsedSheets, summary.parsedCells], [true, true, 1, 1]);
 		ok((summary.elapsedMilliseconds ?? -1) >= 0);
+	});
+
+	test('draws only images that pass the Word image checks, cuts trailing data, and keeps to the pixel budget', async () => {
+		const png = minimalPng(2, 2);
+		const big = minimalPng(7_000, 7_000);
+		const encode = async (images: readonly Uint8Array[]) => {
+			const book = new ExcelJS.Workbook();
+			const sheet = book.addWorksheet('Images');
+			images.forEach((image, index) => {
+				const id = book.addImage({ buffer: Buffer.from(image) as unknown as ExcelJS.Buffer, extension: 'png' });
+				sheet.addImage(id, { tl: { col: index * 2, row: 0 }, ext: { width: 10, height: 10 } });
+			});
+			return Buffer.from(await book.xlsx.writeBuffer()).toString('base64');
+		};
+		const media = async (images: readonly Uint8Array[], budget?: number) => {
+			const result = await new ParadisSpreadsheetService().parseWorkbook(await encode(images), budget);
+			return Object.values(result.drawingsBySheet?.[1]?.[0]?.media ?? {}).map(href => `${href.slice(0, href.indexOf(';'))}:${Buffer.from(href.slice(href.indexOf(',') + 1), 'base64').byteLength}`);
+		};
+		const polyglot = Uint8Array.from([...png, ...new TextEncoder().encode('<html></html>')]);
+		const jpegNamedPng = minimalJpeg(2, 2);
+		const rejected = await new ParadisSpreadsheetService().parseWorkbook(await encode([jpegNamedPng]));
+		deepStrictEqual({
+			plain: await media([png]),
+			polyglot: await media([polyglot]),
+			mismatched: await media([jpegNamedPng]),
+			mismatchedReason: Object.values(rejected.drawingsBySheet?.[1]?.[0]?.rejectedMedia ?? {}),
+			budget: [(await media([big, big])).length, (await media([big, big], 50_000_000)).length, (await media([big], Number.POSITIVE_INFINITY)).length],
+		}, {
+			plain: [`data:image/png:${png.byteLength}`],
+			polyglot: [`data:image/png:${png.byteLength}`],
+			mismatched: [],
+			mismatchedReason: ['unverified'],
+			budget: [2, 1, 1],
+		});
 	});
 
 	test('rejects bytes that are not an xlsx archive', async () => {

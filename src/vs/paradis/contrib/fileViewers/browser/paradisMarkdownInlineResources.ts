@@ -34,7 +34,6 @@
 // `trusted-types` 許可リストに名前を足す必要があり、そこまでする理由が無い。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { getMediaMime } from '../../../../base/common/mime.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { dirname, resolvePath, joinPath } from '../../../../base/common/resources.js';
@@ -58,6 +57,136 @@ export const PARADIS_INLINE_MEDIA_LIMITS: IParadisInlineMediaLimits = {
 	maxBytesPerFile: 8 * 1024 * 1024,
 	maxBytesTotal: 32 * 1024 * 1024,
 };
+
+/**
+ * 覚えておく data: URI の合計の上限（文字数）。1 文書の予算 32 MiB を base64 にすると約 42.7M 文字
+ * なので、それが丸ごと入る大きさにしてある。
+ */
+export const PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS = 48 * 1024 * 1024;
+
+/**
+ * 作った data: URI を、ファイルの更新時刻と大きさごとに覚えておく。
+ *
+ * Markdown のビューアは、ファイルを保存するたびに文書を描き直す。覚えておかないと、そのたびに
+ * 全部の画像を読み直して base64 にし直すことになる（8 MB の画像なら毎回）。ビューア 1 つにつき
+ * 1 つ持ち、ビューアと一緒に捨てる。描き直すたびに、その描画で使わなかった画像は外す（{@link retain}）。
+ *
+ * **仕組みの限界**: 版の見分けは更新時刻と大きさだけなので、どちらも同じまま中身だけが変わった画像
+ * （同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が
+ * 出続ける。次にどちらかが変わるか、別の文書へ移るまで直らない。中身のハッシュを取ると読み込みを
+ * 省けなくなるので、この限界は受け入れている（NOTES.md にも記録）。
+ */
+export class ParadisInlineMediaCache {
+
+	/** キー（URI・更新時刻・大きさ）→ data: URI。Map の並びを使った古い順。 */
+	private readonly _entries = new Map<string, string>();
+	/** URI → いま覚えているキー。同じファイルの古い版を残さないため。 */
+	private readonly _keyByResource = new Map<string, string>();
+	private _chars = 0;
+
+	constructor(private readonly _maxChars = PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS) { }
+
+	/** 覚えている文字数の合計（テスト用）。 */
+	get size(): number {
+		return this._chars;
+	}
+
+	get(resource: URI, mtime: number, size: number): string | undefined {
+		const key = paradisInlineMediaCacheKey(resource, mtime, size);
+		const value = this._entries.get(key);
+		if (value !== undefined) {
+			// 使ったものを末尾へ送り、古い順に外せるようにする。
+			this._entries.delete(key);
+			this._entries.set(key, value);
+		}
+		return value;
+	}
+
+	set(resource: URI, mtime: number, size: number, value: string): void {
+		const resourceKey = resource.toString();
+		const previous = this._keyByResource.get(resourceKey);
+		if (previous !== undefined) {
+			this._remove(previous);
+			this._keyByResource.delete(resourceKey);
+		}
+		if (value.length > this._maxChars) {
+			return;
+		}
+		const key = paradisInlineMediaCacheKey(resource, mtime, size);
+		this._entries.set(key, value);
+		this._keyByResource.set(resourceKey, key);
+		this._chars += value.length;
+		while (this._chars > this._maxChars) {
+			const oldest = this._entries.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			this._remove(oldest.value);
+			for (const [resourceOfOldest, keyOfOldest] of this._keyByResource) {
+				if (keyOfOldest === oldest.value) {
+					this._keyByResource.delete(resourceOfOldest);
+					break;
+				}
+			}
+		}
+	}
+
+	/** `resources` に無いファイルの分を外す。描き直しで使わなくなった画像を抱えたままにしない。 */
+	retain(resources: Iterable<URI>): void {
+		const wanted = new Set<string>();
+		for (const resource of resources) {
+			wanted.add(resource.toString());
+		}
+		for (const [resourceKey, key] of [...this._keyByResource]) {
+			if (!wanted.has(resourceKey)) {
+				this._remove(key);
+				this._keyByResource.delete(resourceKey);
+			}
+		}
+	}
+
+	clear(): void {
+		this._entries.clear();
+		this._keyByResource.clear();
+		this._chars = 0;
+	}
+
+	private _remove(key: string): void {
+		const value = this._entries.get(key);
+		if (value !== undefined) {
+			this._entries.delete(key);
+			this._chars -= value.length;
+		}
+	}
+}
+
+function paradisInlineMediaCacheKey(resource: URI, mtime: number, size: number): string {
+	return `${resource.toString()}\n${mtime}\n${size}`;
+}
+
+/** `Uint8Array.prototype.toBase64`（Chromium 140 以降）。型定義がまだ無いので、ここでだけ足す。 */
+type ParadisBase64Bytes = Uint8Array & { toBase64?(): string };
+
+/**
+ * バイト列を base64 にする。**ブラウザのネイティブの処理を使う。**
+ *
+ * `base/common/buffer.ts` の `encodeBase64` は 1 文字ずつ文字列を足していく JS の実装で、
+ * ワークベンチの UI スレッドを止める（8 MB で 0.8〜1 秒）。`toBase64` が無い環境では
+ * `FileReader` に任せる（どちらもネイティブで、数 ms で終わる）。`preferNative` はテスト用。
+ */
+export async function encodeParadisBase64(bytes: Uint8Array, preferNative = true): Promise<string> {
+	const native = preferNative ? (bytes as ParadisBase64Bytes).toBase64?.() : undefined;
+	if (native !== undefined) {
+		return native;
+	}
+	const dataUrl = await new Promise<string>((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => resolve(reader.result as string);
+		reader.onerror = () => reject(reader.error);
+		reader.readAsDataURL(new Blob([bytes as Uint8Array<ArrayBuffer>]));
+	});
+	return dataUrl.slice(dataUrl.indexOf(',') + 1);
+}
 
 /** 埋め込めなかったものの理由。表示する文言を決めるためだけに使う。 */
 type ParadisMediaFailure = 'missing' | 'too-large';
@@ -186,6 +315,7 @@ export async function inlineParadisMarkdownMedia(
 	token: CancellationToken,
 	limits: IParadisInlineMediaLimits = PARADIS_INLINE_MEDIA_LIMITS,
 	rewriteBody?: (body: HTMLElement) => void,
+	mediaCache?: ParadisInlineMediaCache,
 ): Promise<IParadisInlineMediaResult> {
 	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
 	// 型定義は string しか受け付けないので、その1点だけキャストする。
@@ -211,7 +341,11 @@ export async function inlineParadisMarkdownMedia(
 	}
 
 	// 同じ画像を何度も貼っている文書でも、読み込みと base64 化は1回で済ませる。
-	const cache = await readMediaInParallel(wanted.map(item => item.target), fileService, limits, token);
+	const cache = await readMediaInParallel(wanted.map(item => item.target), fileService, limits, token, mediaCache);
+	if (!token.isCancellationRequested) {
+		// この描画で使わなかった画像は覚えておかない（文書から消した画像を抱え続けない）。
+		mediaCache?.retain(wanted.map(item => item.target));
+	}
 
 	let inlined = 0;
 	let skipped = 0;
@@ -269,6 +403,7 @@ async function readMediaInParallel(
 	fileService: IFileService,
 	limits: IParadisInlineMediaLimits,
 	token: CancellationToken,
+	mediaCache: ParadisInlineMediaCache | undefined,
 ): Promise<Map<string, string | ParadisMediaFailure>> {
 	const unique = [...new Set(targets.map(target => target.toString()))];
 	const results = new Map<string, string | ParadisMediaFailure>();
@@ -280,7 +415,7 @@ async function readMediaInParallel(
 	const worker = async () => {
 		while (next < unique.length && !token.isCancellationRequested && readBytes < limits.maxBytesTotal) {
 			const key = unique[next++];
-			const resolved = await readAsDataUri(URI.parse(key), fileService, limits);
+			const resolved = await readAsDataUri(URI.parse(key), fileService, limits, mediaCache);
 			if (resolved !== 'missing' && resolved !== 'too-large') {
 				readBytes += resolved.length;
 			}
@@ -298,6 +433,7 @@ async function readAsDataUri(
 	target: URI,
 	fileService: IFileService,
 	limits: IParadisInlineMediaLimits,
+	mediaCache: ParadisInlineMediaCache | undefined,
 ): Promise<string | ParadisMediaFailure> {
 	try {
 		// 読む前に大きさを見て、巨大なファイルをメモリに載せること自体を避ける。
@@ -305,13 +441,23 @@ async function readAsDataUri(
 		if (typeof stat.size === 'number' && stat.size > limits.maxBytesPerFile) {
 			return 'too-large';
 		}
+		// 前と同じ版（更新時刻と大きさが同じ）なら、読み直さずに前の結果を使う。
+		const remembered = mediaCache?.get(target, stat.mtime, stat.size);
+		if (remembered !== undefined) {
+			return remembered;
+		}
 		const content = await fileService.readFile(target);
 		if (content.value.byteLength > limits.maxBytesPerFile) {
 			return 'too-large';
 		}
-		const encoded = encodeBase64(content.value);
+		const encoded = await encodeParadisBase64(content.value.buffer);
 		const mime = getMediaMime(target.path) ?? 'application/octet-stream';
-		return `data:${mime};base64,${encoded}`;
+		const dataUri = `data:${mime};base64,${encoded}`;
+		// 読み込み中に書き換わったときは、読んだ時点の版で覚える（読み終えた版と stat が違うなら覚えない）。
+		if (content.mtime === stat.mtime && content.size === stat.size) {
+			mediaCache?.set(target, stat.mtime, stat.size, dataUri);
+		}
+		return dataUri;
 	} catch {
 		// 消えている・権限が無い・そもそもファイルではない。どれも利用者から見れば「出ない」なので同じ扱い。
 		return 'missing';
