@@ -10,7 +10,8 @@
 // 保存された値（numCache・strCache）を使い、文書の文字は textContent、数値は属性にだけ入れる。
 
 import type { IParadisChartAxis, IParadisChartData, IParadisChartDataLabels, IParadisChartGroup, IParadisChartSeries } from '../common/paradisSpreadsheet.js';
-import { formatSpreadsheetValue } from '../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
+import { formatPreparedSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisSpreadsheetPreparedNumberFormat } from '../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
+import { PARADIS_CHART_MAX_DATA_LABELS } from './paradisSpreadsheetChartParser.js';
 import type { ParadisShapeBox } from './paradisSpreadsheetShapeSvg.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -133,11 +134,43 @@ function stackedSegments(group: IParadisChartGroup, categoryCount: number): { re
 	return result;
 }
 
+/**
+ * 1 回の描画（{@link appendChartSvg} の呼び出し 1 回）の間だけ使う状態。書式は書式ごとに 1 回だけ準備し、
+ * データラベルは上限の数まで描く。描画は同期で進むので、呼び出しの間だけ置いておく。
+ */
+interface ChartPaintState {
+	readonly formats: Map<string, ParadisSpreadsheetPreparedNumberFormat | undefined>;
+	labelsLeft: number;
+}
+
+let paintState: ChartPaintState | undefined;
+
+/** データラベルを 1 つ描いてよいか（上限の数まで）。 */
+function takeLabel(): boolean {
+	return !paintState || paintState.labelsLeft-- > 0;
+}
+
+function preparedFormat(formatCode: string): ParadisSpreadsheetPreparedNumberFormat | undefined {
+	const cache = paintState?.formats;
+	if (cache?.has(formatCode)) {
+		return cache.get(formatCode);
+	}
+	let prepared: ParadisSpreadsheetPreparedNumberFormat | undefined;
+	try {
+		prepared = prepareSpreadsheetNumberFormat(formatCode);
+	} catch {
+		prepared = undefined;
+	}
+	cache?.set(formatCode, prepared);
+	return prepared;
+}
+
 /** 数値を書式に沿って文字にする。書式が無い・読めないときは簡単な書き方にする。 */
 function formatNumber(value: number, formatCode: string | undefined, percent = false): string {
-	if (formatCode) {
+	const prepared = formatCode ? preparedFormat(formatCode) : undefined;
+	if (prepared) {
 		try {
-			const formatted = formatSpreadsheetValue(value, formatCode);
+			const formatted = formatPreparedSpreadsheetValue(prepared, value);
 			if (formatted.text) {
 				return formatted.text;
 			}
@@ -146,6 +179,25 @@ function formatNumber(value: number, formatCode: string | undefined, percent = f
 		}
 	}
 	return formatTick(value, percent);
+}
+
+/** 数の並びの最小と最大（配列を引数に展開しないので、点が多くても止まらない）。 */
+function extent(values: Iterable<number | null | undefined>): { readonly min: number; readonly max: number } | undefined {
+	let min = Number.POSITIVE_INFINITY;
+	let max = Number.NEGATIVE_INFINITY;
+	for (const value of values) {
+		if (value !== null && value !== undefined && Number.isFinite(value)) {
+			min = Math.min(min, value);
+			max = Math.max(max, value);
+		}
+	}
+	return min <= max ? { min, max } : undefined;
+}
+
+function* seriesValues(group: IParadisChartGroup): Iterable<number | null> {
+	for (const series of group.series) {
+		yield* series.values;
+	}
 }
 
 const MAX_TICKS = 50;
@@ -246,6 +298,9 @@ function appendMarker(parent: Element, x: number, y: number, color: string): voi
 
 /** 点の横にデータラベルを置く（折れ線・散布図・バブル・レーダー・株価）。 */
 function appendPointLabel(parent: Element, x: number, y: number, text: string, position: IParadisChartDataLabels['position'], fallback: NonNullable<IParadisChartDataLabels['position']>): void {
+	if (!takeLabel()) {
+		return;
+	}
 	switch (position ?? fallback) {
 		case 't': svgText(parent, x, y - 6, text, { size: 9, anchor: 'middle' }); break;
 		case 'b': svgText(parent, x, y + 13, text, { size: 9, anchor: 'middle' }); break;
@@ -298,8 +353,8 @@ function layoutLegend(parent: Element, items: readonly LegendItem[], position: N
 			? { x: area.x, y: area.y + height, width: area.width, height: area.height - height }
 			: { x: area.x, y: area.y, width: area.width, height: area.height - height };
 	}
-	const width = Math.min(area.width * 0.3, Math.max(40, Math.max(...items.map(item => textWidth(item.name, 9))) + 24), 120);
 	const visible = items.slice(0, Math.max(1, Math.floor((area.height - 6) / rowHeight)));
+	const width = Math.min(area.width * 0.3, Math.max(40, (extent(visible.map(item => textWidth(item.name, 9)))?.max ?? 0) + 24), 120);
 	const blockHeight = visible.length * rowHeight;
 	const left = position === 'l' ? area.x : area.x + area.width - width;
 	// 右は上下の真ん中、右上は上に寄せる（Excel の既定の置き方）。
@@ -316,14 +371,32 @@ function layoutLegend(parent: Element, items: readonly LegendItem[], position: N
 
 /** 等高線の帯（値の軸の目盛りの区切り）。 */
 function surfaceBands(chart: IParadisChartData, group: IParadisChartGroup): { readonly scale: ValueScale; readonly format: string | undefined } {
-	const values = group.series.flatMap(series => series.values.filter((value): value is number => value !== null));
+	const range = extent(seriesValues(group));
 	const axis = valueAxisOf(chart, group);
-	const scale = buildValueScale(values.length ? Math.min(...values) : 0, values.length ? Math.max(...values) : 1, axis, false);
+	const scale = buildValueScale(range?.min ?? 0, range?.max ?? 1, axis, false);
 	return { scale, format: axisFormat(axis, group.series) };
 }
 
-/** 保存済みの値でグラフを描く。 */
+/** 凡例に並べる項目の上限（円の分類が何万あっても、凡例の項目を作りすぎない）。 */
+const MAX_LEGEND_ITEMS = 200;
+
+/**
+ * 保存済みの値でグラフを描く。壊れた値で例外が出ても、このグラフの枠だけで止める（シートのほかの図形は
+ * 描き続ける）。
+ */
 export function appendChartSvg(parent: Element, chart: IParadisChartData, box: ParadisShapeBox, content = true): void {
+	const previous = paintState;
+	paintState = { formats: new Map(), labelsLeft: PARADIS_CHART_MAX_DATA_LABELS };
+	try {
+		drawChart(parent, chart, box, content);
+	} catch {
+		// 描けたところまでで止める。
+	} finally {
+		paintState = previous;
+	}
+}
+
+function drawChart(parent: Element, chart: IParadisChartData, box: ParadisShapeBox, content: boolean): void {
 	const doc = parent.ownerDocument;
 	const frame = doc.createElementNS(SVG_NS, 'g');
 	parent.appendChild(frame);
@@ -340,7 +413,7 @@ export function appendChartSvg(parent: Element, chart: IParadisChartData, box: P
 	const surfaceGroup = chart.groups.find(group => group.kind === 'surface');
 	let legendItems: LegendItem[];
 	if (pieGroup) {
-		legendItems = (pieGroup.series[0]?.categories ?? []).map((name, index) => ({ name: name || String(index + 1), color: pieGroup.series[0].pointColors?.[index] ?? '#888888' }));
+		legendItems = (pieGroup.series[0]?.categories ?? []).slice(0, MAX_LEGEND_ITEMS).map((name, index) => ({ name: name || String(index + 1), color: pieGroup.series[0].pointColors?.[index] ?? '#888888' }));
 	} else if (surfaceGroup) {
 		const { scale, format } = surfaceBands(chart, surfaceGroup);
 		legendItems = scale.ticks.slice(0, -1).map((value, index) => ({
@@ -348,7 +421,7 @@ export function appendChartSvg(parent: Element, chart: IParadisChartData, box: P
 			color: surfaceGroup.bandColors?.[index] ?? '#888888',
 		}));
 	} else {
-		legendItems = chart.groups.flatMap(group => group.series.map((series, index) => ({ name: series.name ?? `Series${index + 1}`, color: series.color ?? '#888888' })));
+		legendItems = chart.groups.flatMap(group => group.series.map((series, index) => ({ name: series.name ?? `Series${index + 1}`, color: series.color ?? '#888888' }))).slice(0, MAX_LEGEND_ITEMS);
 	}
 	const area = { x: box.x + 8, y: top, width: box.width - 16, height: box.y + box.height - 8 - top };
 	const plot = chart.legend ? layoutLegend(frame, legendItems, chart.legendPosition ?? 'r', area) : area;
@@ -419,7 +492,9 @@ function appendPie(parent: Element, group: IParadisChartGroup, plot: ParadisShap
 		svgCircle(parent, cx, cy, inner, '#FFFFFF');
 	}
 	for (const label of labels) {
-		svgText(parent, label.x, label.y + 3, label.text, { size: 9, anchor: 'middle' });
+		if (takeLabel()) {
+			svgText(parent, label.x, label.y + 3, label.text, { size: 9, anchor: 'middle' });
+		}
 	}
 }
 
@@ -430,34 +505,65 @@ function groupAxis(chart: IParadisChartData, group: IParadisChartGroup, kinds: r
 	return matches[index];
 }
 
+/**
+ * 散布図・バブルの 2 本の値の軸のうち、X（`horizontal`）か Y の軸。`axPos` が b・t なら X、l・r なら Y。
+ * どちらとも決められなければ、`axId` の並び（X が先）に従う。
+ */
+function xyAxis(chart: IParadisChartData, group: IParadisChartGroup, horizontal: boolean): IParadisChartAxis | undefined {
+	const ids = group.axisIds ?? [];
+	const axes = ids.map(id => (chart.axes ?? []).find(axis => axis.id === id)).filter((axis): axis is IParadisChartAxis => !!axis);
+	const byPosition = axes.find(axis => (axis.position === 'b' || axis.position === 't') === horizontal);
+	return byPosition ?? axes[horizontal ? 0 : 1];
+}
+
 function valueAxisOf(chart: IParadisChartData, group: IParadisChartGroup): IParadisChartAxis | undefined {
 	if (group.kind === 'scatter' || group.kind === 'bubble') {
-		// 散布図・バブルは軸が 2 本とも値の軸。2 本目（Y）を値の軸とする。
-		const ids = group.axisIds ?? [];
-		return (chart.axes ?? []).find(axis => axis.id === ids[1]);
+		return xyAxis(chart, group, false);
 	}
 	return groupAxis(chart, group, ['value']);
 }
 
 function categoryAxisOf(chart: IParadisChartData, group: IParadisChartGroup): IParadisChartAxis | undefined {
 	if (group.kind === 'scatter' || group.kind === 'bubble') {
-		const ids = group.axisIds ?? [];
-		return (chart.axes ?? []).find(axis => axis.id === ids[0]);
+		return xyAxis(chart, group, true);
 	}
 	return groupAxis(chart, group, ['category', 'date']);
 }
 
+/**
+ * 値のある最後の添字 + 1。`ptCount` は文書がいくらでも大きく書けるので、軸や列の数には使わない。
+ */
+function filledLength(group: IParadisChartGroup): number {
+	let length = 0;
+	for (const series of group.series) {
+		for (let index = series.values.length - 1; index >= length; index--) {
+			if (series.values[index] !== null && series.values[index] !== undefined) {
+				length = index + 1;
+				break;
+			}
+		}
+	}
+	return length;
+}
+
 /** レーダー: 分類を放射状の軸に、値を中心からの距離にする。 */
 function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisChartGroup, plot: ParadisShapeBox): void {
-	const count = Math.max(...group.series.map(series => Math.max(series.values.length, series.categories.length)), 0);
+	const count = filledLength(group);
 	if (count < 3) {
 		return;
 	}
-	const values = group.series.flatMap(series => series.values.filter((value): value is number => value !== null));
+	const range = extent(seriesValues(group));
 	const axis = valueAxisOf(chart, group);
-	const scale = buildValueScale(values.length ? Math.min(...values) : 0, values.length ? Math.max(...values) : 1, axis ? { ...axis, logBase: undefined, reversed: false } : undefined);
+	const scale = buildValueScale(range?.min ?? 0, range?.max ?? 1, axis ? { ...axis, logBase: undefined, reversed: false } : undefined);
 	const categories = group.series.find(series => series.categories.some(Boolean))?.categories ?? [];
-	const labelRoom = Math.min(40, Math.max(...Array.from({ length: count }, (_, index) => textWidth(categories[index] ?? String(index + 1), 9))) + 8);
+	const radiusGuess = Math.max(4, Math.min(plot.width, plot.height) / 2 - 14);
+	// 分類の文字と軸の線は、円周に 30px ごとに 1 本まで間引く（分類の軸の文字と同じ考え方）。
+	const labelEvery = Math.max(1, Math.ceil(count / Math.max(3, Math.floor(2 * Math.PI * radiusGuess / 30))));
+	let widestLabel = 0;
+	for (let index = 0; index < count; index += labelEvery) {
+		widestLabel = Math.max(widestLabel, textWidth(categories[index] ?? String(index + 1), 9));
+	}
+	const labelRoom = Math.min(40, widestLabel + 8);
 	const radius = Math.max(4, Math.min(plot.width / 2 - labelRoom, plot.height / 2 - 14));
 	const cx = plot.x + plot.width / 2;
 	const cy = plot.y + plot.height / 2;
@@ -465,7 +571,14 @@ function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisC
 		const angle = -Math.PI / 2 + index / count * Math.PI * 2;
 		return [cx + radius * unit * Math.cos(angle), cy + radius * unit * Math.sin(angle)];
 	};
-	const polygon = (unit: number) => Array.from({ length: count }, (_, index) => point(index, unit)).map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`).join(' ') + ' Z';
+	const polygon = (unit: number) => {
+		const parts: string[] = [];
+		for (let index = 0; index < count; index++) {
+			const [x, y] = point(index, unit);
+			parts.push(`${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`);
+		}
+		return parts.join(' ') + ' Z';
+	};
 	if (axis?.gridlines ?? true) {
 		for (const tick of scale.ticks) {
 			const unit = scale.unit(tick) ?? 0;
@@ -474,7 +587,7 @@ function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisC
 			}
 		}
 	}
-	for (let index = 0; index < count; index++) {
+	for (let index = 0; index < count; index += labelEvery) {
 		const [x, y] = point(index, 1);
 		svgPath(parent, `M ${round(cx)} ${round(cy)} L ${round(x)} ${round(y)}`, '#D9D9D9', 'none', 1);
 		const [lx, ly] = point(index, 1 + 10 / radius);
@@ -490,35 +603,36 @@ function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisC
 	}
 	for (const series of group.series) {
 		const color = safeColor(series.color);
-		const points: [number, number][] = [];
+		const parts: string[] = [];
 		for (let index = 0; index < count; index++) {
 			const value = series.values[index];
-			points.push(point(index, value === null || value === undefined ? 0 : Math.max(0, Math.min(1, scale.unit(value) ?? 0))));
+			const [x, y] = point(index, value === null || value === undefined ? 0 : Math.max(0, Math.min(1, scale.unit(value) ?? 0)));
+			parts.push(`${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`);
 		}
-		const d = points.map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`).join(' ') + ' Z';
-		const path = svgPath(parent, d, color, group.radarStyle === 'filled' ? color : 'none', 2);
+		const path = svgPath(parent, parts.join(' ') + ' Z', color, group.radarStyle === 'filled' ? color : 'none', 2);
 		if (group.radarStyle === 'filled') {
 			path.setAttribute('fill-opacity', '0.5');
 		}
-		points.forEach(([x, y], index) => {
+		for (let index = 0; index < count; index++) {
 			const value = series.values[index];
 			if (value === null || value === undefined) {
-				return;
+				continue;
 			}
+			const [x, y] = point(index, Math.max(0, Math.min(1, scale.unit(value) ?? 0)));
 			if (series.marker) {
 				appendMarker(parent, x, y, color);
 			}
 			if (series.dataLabels) {
 				appendPointLabel(parent, x, y, labelText(series.dataLabels, series, categories[index] ?? '', value), series.dataLabels.position, 't');
 			}
-		});
+		}
 	}
 }
 
 /** 等高線: 上から見た面を、値の帯ごとに塗り分ける（列が分類、行が系列）。 */
 function appendSurface(parent: Element, chart: IParadisChartData, group: IParadisChartGroup, plot: ParadisShapeBox): void {
 	const rows = group.series.length;
-	const columns = Math.max(0, ...group.series.map(series => series.values.length));
+	const columns = filledLength(group);
 	if (rows === 0 || columns === 0) {
 		return;
 	}
@@ -564,19 +678,29 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 	const groups = chart.groups;
 	const xy = groups.every(group => group.kind === 'scatter' || group.kind === 'bubble');
 	const horizontal = groups.some(group => group.kind === 'bar');
-	const categoryCount = Math.max(1, ...groups.flatMap(group => group.series.map(series => Math.max(series.values.length, series.categories.length))));
+	let categoryCount = 1;
+	for (const group of groups) {
+		for (const series of group.series) {
+			categoryCount = Math.max(categoryCount, series.values.length, series.categories.length);
+		}
+	}
 	const segments = groups.map(group => stackedSegments(group, categoryCount));
 	const hasBubbles = groups.some(group => group.kind === 'bubble');
 	// 値の軸ごとに群を分ける（複合グラフの第 2 軸）。軸の情報が無いグラフは 1 本にまとめる。
-	const valueAxes: (IParadisChartAxis | undefined)[] = [];
-	const axisIndexOf = groups.map(group => {
+	const found: (IParadisChartAxis | undefined)[] = [];
+	const foundIndexOf = groups.map(group => {
 		const axis = valueAxisOf(chart, group);
-		let index = valueAxes.findIndex(candidate => candidate === axis || (candidate && axis && candidate.id === axis.id));
+		let index = found.findIndex(candidate => candidate === axis || (candidate && axis && candidate.id === axis.id));
 		if (index < 0) {
-			index = valueAxes.length < 2 ? valueAxes.push(axis) - 1 : 0;
+			index = found.length < 2 ? found.push(axis) - 1 : 0;
 		}
 		return index;
 	});
+	// 第 2 軸（右、横棒は上）は `axPos` で決める。出てくる順は使わない。
+	const secondarySide = horizontal ? 't' : 'r';
+	const swap = found.length === 2 && found[0]?.position === secondarySide && found[1]?.position !== secondarySide;
+	const valueAxes = swap ? [found[1], found[0]] : found;
+	const axisIndexOf = foundIndexOf.map(index => swap ? 1 - index : index);
 	const scales = valueAxes.map((axis, axisIndex) => {
 		let min = Number.POSITIVE_INFINITY;
 		let max = Number.NEGATIVE_INFINITY;
@@ -612,12 +736,19 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 	const percent = (axisIndex: number) => groups.some((group, groupIndex) => axisIndexOf[groupIndex] === axisIndex && group.grouping === 'percentStacked');
 	const tickText = (axisIndex: number, value: number) => formatNumber(value, axisFormat(valueAxes[axisIndex], axisSeries(axisIndex)) ?? (percent(axisIndex) ? '0%' : undefined), percent(axisIndex));
 	const showTicks = (axis: IParadisChartAxis | undefined) => !axis?.deleted && (axis?.tickLabels ?? true);
-	const categoryAxis = categoryAxisOf(chart, groups[0]);
+	// 第 1 軸の群の分類の軸を、目盛りの文字に使う。
+	const categoryAxis = categoryAxisOf(chart, groups.find((_, groupIndex) => axisIndexOf[groupIndex] === 0) ?? groups[0]);
 	// 散布図・バブルの X は値の軸。
 	let xScale: ValueScale | undefined;
 	if (xy) {
-		const xs = groups.flatMap(group => group.series.flatMap(series => (series.xValues ?? []).filter((value): value is number => value !== null)));
-		const [low, high] = hasBubbles ? padForBubbles(xs.length ? Math.min(...xs) : 0, xs.length ? Math.max(...xs) : 1) : [xs.length ? Math.min(...xs) : 0, xs.length ? Math.max(...xs) : 1];
+		const xs = extent((function* () {
+			for (const group of groups) {
+				for (const series of group.series) {
+					yield* series.xValues ?? [];
+				}
+			}
+		})());
+		const [low, high] = hasBubbles ? padForBubbles(xs?.min ?? 0, xs?.max ?? 1) : [xs?.min ?? 0, xs?.max ?? 1];
 		xScale = buildValueScale(low, high, categoryAxis, false);
 	}
 	const categories = groups.flatMap(group => group.series).find(series => series.categories.some(Boolean))?.categories ?? [];
@@ -630,14 +761,20 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 	// 余白: 値の軸の目盛りの文字と、軸の名前の分。
 	const primaryLabels = showTicks(valueAxes[0]) ? scales[0].ticks.map(tick => tickText(0, tick)) : [];
 	const secondaryLabels = scales[1] && showTicks(valueAxes[1]) ? scales[1].ticks.map(tick => tickText(1, tick)) : [];
-	const widest = (labels: readonly string[]) => labels.length ? Math.max(...labels.map(label => textWidth(label, 9))) + 6 : 0;
+	const widest = (labels: readonly string[]) => labels.length ? (extent(labels.map(label => textWidth(label, 9)))?.max ?? 0) + 6 : 0;
 	const categoryTitle = categoryAxis?.title;
 	const primaryTitle = valueAxes[0]?.title;
 	const secondaryTitle = valueAxes[1]?.title;
 	const categoryLabelsShown = showTicks(categoryAxis);
 	let left: number, right: number, topPad: number, bottom: number;
 	if (horizontal) {
-		const categoryLabelWidth = categoryLabelsShown ? Math.min(plot.width * 0.4, Math.max(...Array.from({ length: categoryCount }, (_, index) => textWidth(categoryLabel(index), 9))) + 6) : 0;
+		// 描く分類の文字（縦に 14px ごとに 1 つまで）だけを測る。
+		let widestCategory = 0;
+		const step = Math.max(1, Math.ceil(categoryCount / Math.max(1, Math.floor(plot.height / 14))));
+		for (let index = 0; categoryLabelsShown && index < categoryCount; index += step) {
+			widestCategory = Math.max(widestCategory, textWidth(categoryLabel(index), 9));
+		}
+		const categoryLabelWidth = categoryLabelsShown ? Math.min(plot.width * 0.4, widestCategory + 6) : 0;
 		left = categoryLabelWidth + (categoryTitle ? 14 : 0);
 		right = 6;
 		bottom = (primaryLabels.length ? 14 : 0) + (primaryTitle ? 14 : 0);
@@ -706,10 +843,10 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 			svgText(parent, area.x + area.width / 2, plot.y + plot.height - 2, categoryTitle, { size: 9, anchor: 'middle' });
 		}
 	}
-	// 分類の軸が交わる値（棒の付け根）。
-	const crossing = (axisIndex: number): number => {
+	// 分類の軸が交わる値（棒の付け根）。第 2 軸の群は、その群の分類の軸の `crosses` を使う。
+	const crossing = (axisIndex: number, group?: IParadisChartGroup): number => {
 		const scale = scales[axisIndex];
-		const crosses = categoryAxis?.crosses ?? 'autoZero';
+		const crosses = (group ? categoryAxisOf(chart, group) : undefined)?.crosses ?? categoryAxis?.crosses ?? 'autoZero';
 		const value = typeof crosses === 'number' ? crosses : crosses === 'min' ? scale.min : crosses === 'max' ? scale.max : Math.max(scale.min, Math.min(scale.max, 0));
 		return valueAxes[axisIndex]?.logBase ? Math.max(scale.min, value) : value;
 	};
@@ -755,7 +892,7 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 			const barCount = clustered ? Math.max(1, group.series.length) : 1;
 			const groupOffset = barGroups.indexOf(group);
 			const width = slot * 0.7 / barCount / Math.max(1, barGroups.length);
-			const base = crossing(axisIndex);
+			const base = crossing(axisIndex, group);
 			group.series.forEach((series, seriesIndex) => {
 				const color = safeColor(series.color);
 				for (let category = 0; category < categoryCount; category++) {
@@ -788,7 +925,14 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 			appendStock(parent, labelLayer, group, categoryCount, category => slotStart(category) + slot / 2, value => valueToPx(axisIndex, value), slot);
 			return;
 		}
-		const bubbleMax = group.kind === 'bubble' ? Math.max(0, ...group.series.flatMap(series => (series.bubbleSizes ?? []).map(size => Math.abs(size ?? 0)))) : 0;
+		let bubbleMax = 0;
+		if (group.kind === 'bubble') {
+			for (const series of group.series) {
+				for (const size of series.bubbleSizes ?? []) {
+					bubbleMax = Math.max(bubbleMax, Math.abs(size ?? 0));
+				}
+			}
+		}
 		group.series.forEach((series, seriesIndex) => {
 			const points: { x: number; y: number; value: number; category: number }[] = [];
 			for (let category = 0; category < categoryCount; category++) {
@@ -824,7 +968,7 @@ function appendCartesian(parent: Element, chart: IParadisChartData, plot: Paradi
 			}
 			const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${round(point.x)} ${round(point.y)}`).join(' ');
 			if (group.kind === 'area') {
-				const base = valueToPx(axisIndex, crossing(axisIndex)) ?? baseline;
+				const base = valueToPx(axisIndex, crossing(axisIndex, group)) ?? baseline;
 				svgPath(parent, `${line} L ${round(points[points.length - 1].x)} ${round(base)} L ${round(points[0].x)} ${round(base)} Z`, color, color, 1);
 			} else if (group.kind === 'scatter') {
 				for (const point of points) {
@@ -859,6 +1003,9 @@ function padForBubbles(min: number, max: number): [number, number] {
 
 /** 棒のデータラベル。`start` は付け根、`end` は先端の位置（値の軸の方向）。 */
 function appendBarLabel(parent: Element, horizontal: boolean, center: number, start: number, end: number, text: string, position: NonNullable<IParadisChartDataLabels['position']>, area: ParadisShapeBox): void {
+	if (!takeLabel()) {
+		return;
+	}
 	const direction = end >= start ? 1 : -1;
 	let along: number;
 	switch (position) {

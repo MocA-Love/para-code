@@ -8,7 +8,7 @@
 import { deepStrictEqual, ok } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisChartData } from '../../common/paradisSpreadsheet.js';
-import { parseChartXml } from '../../electron-browser/paradisSpreadsheetDrawings.js';
+import { parseChartXml, parseDrawingObjects } from '../../electron-browser/paradisSpreadsheetDrawings.js';
 import { appendChartSvg } from '../../electron-browser/paradisSpreadsheetChartSvg.js';
 
 // 架空の最小の chartN.xml。ECMA-376 Part 1 §21.2（DrawingML - Charts）の要素だけで組んでいる。実在のファイルは使っていない。
@@ -226,5 +226,57 @@ suite('ParadisSpreadsheetChart', () => {
 			elements: svg.querySelectorAll('img, script, foreignObject').length,
 			asText: texts(svg).includes('<script>x</script>') && texts(svg).includes('<img src=x onerror=alert(1)>'),
 		}, { elements: 0, asText: true });
+	});
+
+	test('leaves out data labels past the limit and counts the chart as approximated', () => {
+		const values = Array.from({ length: 1_200 }, (_, index) => index % 97);
+		const xml = chartSpace(`<c:lineChart><c:grouping val="standard"/>${ser(0, 'A', `${showValue()}<c:val>${numCache(values)}</c:val>`)}<c:axId val="1"/><c:axId val="2"/></c:lineChart>${catAx(1, 2)}${valAx(2, 1)}`);
+		const chart = parse(xml);
+		const drawing = `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="${A}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:c="${C}"><xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 2"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${C}"><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+		const { shapes, undrawn } = parseDrawingObjects([{ xml: drawing, media: {}, charts: { rId1: xml } }]);
+		deepStrictEqual({
+			omitted: chart.labelsOmitted,
+			labels: chart.groups[0].series[0].dataLabels,
+			drawn: shapes.map(shape => shape.type),
+			counted: undrawn.map(object => object.kind),
+			texts: texts(render(chart)).length < 60,
+		}, { omitted: true, labels: undefined, drawn: ['chart'], counted: ['chartLabels'], texts: true });
+	});
+
+	test('takes the radar spokes from the points that have values, not from ptCount', () => {
+		const spoofed = RADAR.replace(/<c:ptCount val="5"\/>/g, '<c:ptCount val="10000"/>');
+		const svg = render(parse(spoofed));
+		const spokes = Array.from(svg.querySelectorAll('path')).filter(path => path.getAttribute('stroke') === '#D9D9D9' && /^M [\d.]+ [\d.]+ L [\d.]+ [\d.]+$/.test(path.getAttribute('d') ?? ''));
+		deepStrictEqual({ spokes: spokes.length, texts: texts(svg).length < 20, spoofed: spoofed.includes('10000') }, { spokes: 5, texts: true, spoofed: true });
+	});
+
+	test('puts the secondary axis on the side axPos says, whatever order the groups come in', () => {
+		// 折れ線（第 2 軸、右）の群を先に書いた複合グラフ。
+		const bar = COMBO.slice(COMBO.indexOf('<c:barChart>'), COMBO.indexOf('</c:barChart>') + '</c:barChart>'.length);
+		const line = COMBO.slice(COMBO.indexOf('<c:lineChart>'), COMBO.indexOf('</c:lineChart>') + '</c:lineChart>'.length);
+		const lineFirst = COMBO.replace(bar + line, line + bar);
+		const svg = render(parse(lineFirst));
+		const middle = 160;
+		const lineEl = Array.from(svg.querySelectorAll('path')).find(path => path.getAttribute('stroke') === '#ED7D31' && path.getAttribute('fill') === 'none');
+		const ys = (lineEl?.getAttribute('d') ?? '').match(/-?\d+(?:\.\d+)?/g)!.map(Number).filter((_, index) => index % 2 === 1);
+		const zeroPercent = textPosition(svg, '0%').y - 3;
+		const twentyPercent = textPosition(svg, '20%').y - 3;
+		deepStrictEqual({
+			reordered: lineFirst.indexOf('<c:lineChart>') < lineFirst.indexOf('<c:barChart>'),
+			yenOnLeft: textPosition(svg, '¥150').x < middle,
+			percentOnRight: textPosition(svg, '20%').x > middle,
+			lineOnSecondary: Math.abs(ys[1] - (zeroPercent + (twentyPercent - zeroPercent) * 0.18 / 0.2)) < 1,
+		}, { reordered: true, yenOnLeft: true, percentOnRight: true, lineOnSecondary: true });
+	});
+
+	test('reads X and Y of a scatter chart from axPos, not from the axId order', () => {
+		// Y の軸（左）を先、X の軸（下）を後に挙げる。
+		const xml = chartSpace(`<c:scatterChart><c:scatterStyle val="marker"/>${ser(0, 'P', `<c:xVal>${numCache([10, 20, 30])}</c:xVal><c:yVal>${numCache([1, 2, 3])}</c:yVal>`)}<c:axId val="2"/><c:axId val="1"/></c:scatterChart>`
+			+ valAx(1, 2, '<c:orientation val="minMax"/>', '', 'b') + valAx(2, 1));
+		const svg = render(parse(xml));
+		deepStrictEqual({
+			xBelow: textPosition(svg, '30').y > textPosition(svg, '3').y,
+			yLeft: textPosition(svg, '3').x < textPosition(svg, '30').x,
+		}, { xBelow: true, yLeft: true });
 	});
 });
