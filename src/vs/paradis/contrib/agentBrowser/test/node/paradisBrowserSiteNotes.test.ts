@@ -20,6 +20,7 @@ function textOf(result: unknown): string {
 }
 
 interface ISiteNotesInternals {
+	_dispatch(ingressLease: object, rpc: { jsonrpc: string; id: number; method: string; params?: unknown }): Promise<unknown>;
 	_siteNoteTool(ingressLease: object, name: string, args: unknown): Promise<unknown>;
 	_withSiteNotesHint(ingressLease: object, name: string, args: unknown, result: unknown): Promise<unknown>;
 }
@@ -84,6 +85,9 @@ suite('Paradis site notes (E4)', () => {
 			_siteNoteSpace: async () => ({ key: '/repo' }),
 			_defaultTabId: () => undefined,
 			_bindingForKey: () => ({ pageInfo: { url: 'http://localhost:3000/orders' } }),
+			_requireIngressLeaseCurrent: () => { },
+			_paneRemoteAuthorityOf: () => undefined,
+			_serverInstructions: () => undefined,
 		}) as unknown as ISiteNotesInternals;
 		const ok = { content: [{ type: 'text', text: 'page text' }] };
 		const written = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'The filter button is called Search.' }));
@@ -91,6 +95,9 @@ suite('Paradis site notes (E4)', () => {
 		const nextPane = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'get_text', {}, ok));
 		const nextPaneAgain = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'click_by', {}, ok));
 		const otherSite = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'open_browser_tab', { url: 'https://example.com' }, ok));
+		// 同じペインで新しいエージェントがつながったら、もう一度添える
+		await service._dispatch({ token: 'next-pane' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+		const newAgent = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'get_text', {}, ok));
 		verified = false;
 		const refused = await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'x' }) as { isError?: boolean };
 		const secret = await (verified = true, service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'password: hunter2' })) as { isError?: boolean };
@@ -100,8 +107,9 @@ suite('Paradis site notes (E4)', () => {
 			nextPane: nextPane.includes('[Site notes for http://localhost:3000]') && nextPane.includes('The filter button is called Search.'),
 			nextPaneAgain,
 			otherSite,
+			newAgent: newAgent.includes('The filter button is called Search.'),
 			refused: refused.isError,
 			secret: secret.isError,
-		}, { written: true, ownPane: 'page text', nextPane: true, nextPaneAgain: 'page text', otherSite: 'page text', refused: true, secret: true });
+		}, { written: true, ownPane: 'page text', nextPane: true, nextPaneAgain: 'page text', otherSite: 'page text', newAgent: true, refused: true, secret: true });
 	});
 });
