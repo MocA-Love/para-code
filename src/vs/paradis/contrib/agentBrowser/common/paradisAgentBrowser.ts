@@ -50,6 +50,8 @@ export const PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING = 'paradis.agentB
 export const PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING = 'paradis.agentBrowser.settleAfterAction';
 /** 入力・遷移の道具の結果に、タブ・開いたページ・ダウンロード・ダイアログの状態を添える（I1。既定は無効）。 */
 export const PARADIS_BROWSER_REPORT_STATE_SETTING = 'paradis.agentBrowser.reportBrowserState';
+/** サイトメモ（E4。既定は無効）。オリジンとスペースの組ごとに、エージェントが残したヒントを次のエージェントへ添える。 */
+export const PARADIS_BROWSER_SITE_NOTES_SETTING = 'paradis.agentBrowser.siteNotes';
 
 /** Windowsランチャー(.cmd/.ps1)が、node.exe の無い環境で本物の `codex` を探すのに使うNode互換実行体（Para Code自身のexe）。 */
 export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NODE';
