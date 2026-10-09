@@ -668,5 +668,6 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string): Promise<IParadisWorkbookData>;
+	/** `imagePixelBudget` はブックで描く画像の画素の合計の上限（既定は 1 億。比較では左右で半分ずつ）。 */
+	parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 }

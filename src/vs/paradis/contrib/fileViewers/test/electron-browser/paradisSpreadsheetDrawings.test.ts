@@ -178,6 +178,17 @@ suite('ParadisSpreadsheetDrawings', () => {
 		]);
 	});
 
+	test('replaces an image the browser cannot decode and reports it', () => {
+		const shape: IParadisRenderShape = { type: 'image', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 1, co: 0, r: 1, ro: 0 }, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href: 'data:image/png;base64,AA==' };
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		const reported: IParadisRenderShape[] = [];
+		const drawn = appendShapeSvg(svg, shape, { x: 0, y: 0, width: 10, height: 10 }, { stroke: '#000', strokeWidth: 0, dash: '', opacity: 1, content: true }, undefined, { onImageError: broken => reported.push(broken) });
+		const image = drawn.querySelector('image')!;
+		image.dispatchEvent(new Event('error'));
+		image.dispatchEvent(new Event('error'));
+		deepStrictEqual([image.getAttribute('href')?.startsWith('data:image/svg+xml;base64,'), reported.length, reported[0] === shape], [true, 1, true]);
+	});
+
 	test('builds preset geometry paths in the frame and draws a chart', () => {
 		const base: IParadisRenderShape = { type: 'rect', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 0, co: 0, r: 0, ro: 0 }, outlineWidth: 1, outlineColor: '#000000', dash: 'solid' };
 		const box = { x: 0, y: 0, width: 100, height: 40 };

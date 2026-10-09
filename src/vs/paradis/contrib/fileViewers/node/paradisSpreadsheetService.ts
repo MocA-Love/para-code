@@ -31,6 +31,7 @@ import {
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
+import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1103,16 +1104,56 @@ const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
 /** ブック全体で renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
 const MAX_WORKBOOK_DRAWING_XML_CHARACTERS = 32 * 1024 * 1024;
 
+/** 画素の上限の指定。有限でない・既定より大きい指定は、既定値に戻す。 */
+export function paradisSpreadsheetImagePixelBudget(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS) : PARADIS_WORD_DOCUMENT_IMAGE_PIXELS;
+}
+
+/** 拡張子が宣言する画像の種類。描くのは Word と同じく PNG・JPEG・GIF だけ（EMF・WMF・BMP・SVG などは描かずに数える）。 */
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
 	switch (ext) {
 		case 'jpg': case 'jpeg': return 'image/jpeg';
 		case 'png': return 'image/png';
 		case 'gif': return 'image/gif';
-		case 'bmp': return 'image/bmp';
-		case 'svg': return 'image/svg+xml';
-		// emf/wmf 等の Windows メタファイルはブラウザで表示できないため対象外。
 		default: return undefined;
+	}
+}
+
+/**
+ * ブックの画像を、Word と同じ検査（`inspectParadisWordRasterImage`）に通してから data URI にする。
+ * 中身の形式が拡張子と食い違うもの、壊れたもの、動く PNG、ブック全体の画素の上限を越えたものは描かない
+ * （renderer は画像の無い図形として代替表示に数える）。画像の終わりより後ろのデータは切る。
+ * 同じ画像を複数の図形が使うときは、1 回だけ数える。
+ */
+class WorkbookImages {
+	private readonly cache = new Map<string, Promise<string | undefined>>();
+	private pixels = 0;
+
+	constructor(private readonly budget: number) { }
+
+	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<string | undefined> {
+		let result = this.cache.get(name);
+		if (!result) {
+			result = this.load(name, file);
+			this.cache.set(name, result);
+		}
+		return result;
+	}
+
+	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<string | undefined> {
+		const declared = mediaMime(name);
+		if (!declared || !file) {
+			return undefined;
+		}
+		const bytes = await file.async('uint8array');
+		const inspected = inspectParadisWordRasterImage(bytes);
+		if (!inspected || inspected.mimeType !== declared || this.pixels + inspected.pixels > this.budget) {
+			return undefined;
+		}
+		this.pixels += inspected.pixels;
+		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
+		return `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}`;
 	}
 }
 
@@ -1154,9 +1195,10 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // renderer へ渡し renderer が DOMParser で図形化する。改ページは brk の id だけ抜き出す。
 // 注意: sheetN.xml の「ファイル番号」は表示順と一致しない(workbook.xml の <sheets> 並びが表示順)。
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
-async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
+async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, imagePixelBudget = PARADIS_WORD_DOCUMENT_IMAGE_PIXELS): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const drawingXmlCharactersBySheet = new Map<number, number>();
+	const images = new WorkbookImages(imagePixelBudget);
 	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
@@ -1285,17 +1327,16 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
 			const charts: { [rid: string]: string } = {};
+			const workbookImages = images;
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
 			if (relsFile) {
 				for (const rel of (await relsFile.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
 					const id = rel.match(/Id="([^"]+)"/);
 					const target = rel.match(/Target="[^"]*media\/([^"]+)"/);
 					if (id && target) {
-						const mediaName = target[1];
-						const mime = mediaMime(mediaName);
-						const mediaFile = files[`xl/media/${mediaName}`];
-						if (mime && mediaFile) {
-							media[id[1]] = `data:${mime};base64,${await mediaFile.async('base64')}`;
+						const href = await workbookImages.dataUri(target[1], files[`xl/media/${target[1]}`]);
+						if (href) {
+							media[id[1]] = href;
 						}
 					}
 					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
@@ -1327,7 +1368,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
-	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
+	async parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const source = Buffer.from(base64Content, 'base64');
@@ -1343,7 +1384,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
-		const extras = await extractXlsxExtras(buffer, runtime.JSZip);
+		const extras = await extractXlsxExtras(buffer, runtime.JSZip, paradisSpreadsheetImagePixelBudget(imagePixelBudget));
 
 		// このブックのテーマパレットを組み立てて有効化する(以降の eachSheet ループは同期なので、
 		// 並行する parseWorkbook 呼び出しがあってもループ中に差し替わることはない)。
