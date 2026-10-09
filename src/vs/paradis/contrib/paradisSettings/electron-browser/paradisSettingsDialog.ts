@@ -764,6 +764,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.settleAfterAction',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.settleAfterAction', "（試験的）操作の後にページが落ち着くのを待つ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.settleAfterActionDesc', "エージェントがクリックや入力をした後、ページの表示が落ち着くまで最大 2 秒待ち、何が変わったかを伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental settle wait changes',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.reportBrowserState',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.reportBrowserState', "（試験的）新しいページやダウンロードを伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.reportBrowserStateDesc', "エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。"),
+		keywords: 'agent browser experimental tabs downloads dialog state',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.bookmarkBar.visible',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.bookmarkBar', "ブックマークバーを表示"),
@@ -1108,6 +1126,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.csvViewerEnabledDesc', "開くとすぐ表で表示し、上部の「表 | テキスト」で切り替えられます。テキストを選んだファイルは次もテキストで開きます。オフのときは従来どおりテキストで開きます。"),
 		keywords: 'csv tsv table viewer spreadsheet text',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.imageViewer.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.imageViewerEnabled', "画像を Para Code の画像ビューアで開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.imageViewerEnabledDesc', "PNG・JPEG・GIF・WebP・SVG などの画像を Para Code の画像ビューアで開き、オフのときは従来の画像プレビューで開きます。"),
+		keywords: 'image viewer png jpeg gif webp svg preview',
 	},
 
 	// --- モバイル連携 ---
