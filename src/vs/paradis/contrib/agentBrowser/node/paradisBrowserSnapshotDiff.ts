@@ -129,7 +129,7 @@ export function paradisDiffSnapshotBodies(previousBody: string, currentBody: str
 	if (!previous || !current || previous.root !== current.root) {
 		return undefined;
 	}
-	const when = new Date(takenAt).toISOString();
+	const when = `${new Date(takenAt).toISOString().slice(11, 19)} UTC`;
 
 	const removed: string[] = [];
 	let removedCount = 0;
@@ -185,7 +185,7 @@ export function paradisDiffSnapshotBodies(previousBody: string, currentBody: str
 	}
 
 	if (removed.length === 0 && changed.length === 0 && added.length === 0) {
-		return `[Para Code: the page has not changed since the previous take_snapshot of this tab (taken at ${when}). Its uids still work. Call take_snapshot with full: true for the whole snapshot.]\n`;
+		return `[Para Code: no change since your previous take_snapshot of this tab (${when}); its uids still work. full: true returns the whole page.]\n`;
 	}
 	const counts = [
 		addedCount > 0 ? `${addedCount} added` : undefined,
@@ -194,7 +194,7 @@ export function paradisDiffSnapshotBodies(previousBody: string, currentBody: str
 	].filter(part => part !== undefined).join(', ');
 	const lines = [
 		PARADIS_SNAPSHOT_DIFF_HEADING,
-		`[Para Code: only what changed since the previous take_snapshot of this tab (taken at ${when}): ${counts}. Elements not listed are unchanged and keep their uids. If you have not seen that snapshot, or need the whole page, call take_snapshot with full: true.]`,
+		`[Para Code: changes since your previous take_snapshot of this tab (${when}): ${counts}. Unlisted elements are unchanged and keep their uids. full: true returns the whole page (use it if you have not seen that snapshot).]`,
 	];
 	if (removed.length > 0) {
 		lines.push('Removed (these uids no longer work):', ...removed);

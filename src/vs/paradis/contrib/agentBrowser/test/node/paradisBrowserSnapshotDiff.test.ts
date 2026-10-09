@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { PARADIS_SNAPSHOT_BASELINE_MAX_AGE_MS, ParadisSnapshotBaselines, paradisDiffSnapshotBodies, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from '../../node/paradisBrowserSnapshotDiff.js';
 
 const TAKEN_AT = Date.UTC(2026, 9, 10, 1, 2, 3);
-const WHEN = '2026-10-10T01:02:03.000Z';
+const WHEN = '01:02:03 UTC';
 
 /** 変わらない行を多めに持つページ（差分が全体の半分より小さくなるように）。 */
 function page(lines: readonly string[]): string {
@@ -53,7 +53,7 @@ suite('Paradis snapshot diff', () => {
 		]);
 		assert.strictEqual(paradisDiffSnapshotBodies(before, after, TAKEN_AT), [
 			'## Page snapshot: changes only',
-			`[Para Code: only what changed since the previous take_snapshot of this tab (taken at ${WHEN}): 3 added, 2 removed, 4 changed. Elements not listed are unchanged and keep their uids. If you have not seen that snapshot, or need the whole page, call take_snapshot with full: true.]`,
+			`[Para Code: changes since your previous take_snapshot of this tab (${WHEN}): 3 added, 2 removed, 4 changed. Unlisted elements are unchanged and keep their uids. full: true returns the whole page (use it if you have not seen that snapshot).]`,
 			'Removed (these uids no longer work):',
 			'- uid=1_8 link "Help" (and 1 inside)',
 			'Changed:',
@@ -80,7 +80,7 @@ suite('Paradis snapshot diff', () => {
 			mostlyNew: paradisDiffSnapshotBodies(body, mostlyNew, TAKEN_AT),
 			unreadable: paradisDiffSnapshotBodies(body, 'no snapshot here\n', TAKEN_AT),
 		}, {
-			same: `[Para Code: the page has not changed since the previous take_snapshot of this tab (taken at ${WHEN}). Its uids still work. Call take_snapshot with full: true for the whole snapshot.]\n`,
+			same: `[Para Code: no change since your previous take_snapshot of this tab (${WHEN}); its uids still work. full: true returns the whole page.]\n`,
 			otherDocument: undefined,
 			mostlyNew: undefined,
 			unreadable: undefined,
