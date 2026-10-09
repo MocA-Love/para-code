@@ -19,15 +19,14 @@
 // - 1 つの組に 20 件、1 件 600 字まで。古いものから消す
 
 import { execFile } from 'child_process';
-import { promises as fs } from 'fs';
 import { homedir } from 'os';
-import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisRedactSecrets } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
 
 const MAX_NOTES_PER_KEY = 20;
 const MAX_NOTE_CHARS = 600;
-const MAX_KEYS = 2000;
 
 export interface IParadisSiteNote {
 	readonly id: string;
@@ -37,11 +36,6 @@ export interface IParadisSiteNote {
 	readonly agent?: 'claude' | 'codex';
 	/** 書いたときのリポジトリの HEAD（短い形）。 */
 	readonly commit?: string;
-}
-
-interface IStoreFile {
-	readonly version: 1;
-	readonly notes: Record<string, IParadisSiteNote[]>;
 }
 
 /** URL のオリジン（http / https だけ）。それ以外は undefined。 */
@@ -75,96 +69,34 @@ export function paradisSiteNoteCommit(folder: string | undefined): Promise<strin
 	});
 }
 
-/** 利用者の暦の日付（YYYY-MM-DD）。 */
-function localDate(date: Date): string {
-	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function storeKey(space: string, origin: string): string {
-	return `${space}\n${origin}`;
-}
-
-/**
- * メモの置き場（1 つの JSON ファイル）。読み書きのたびにファイルを読み直す。Para Code が 2 つ（ステーブルとベータ）
- * 動いていても、書く直前に読み直して足すので、互いのメモを消さない。
- */
+/** メモの置き場（paradisBrowserSiteStore.ts。ファイルの欄は `notes`）。 */
 export class ParadisSiteNotesStore {
-	private writing: Promise<unknown> = Promise.resolve();
+	private readonly store: ParadisBrowserSiteStore<IParadisSiteNote>;
 
-	constructor(private readonly filePath: string, private readonly now: () => Date = () => new Date()) { }
-
-	private async load(): Promise<Map<string, IParadisSiteNote[]>> {
-		try {
-			const parsed: unknown = JSON.parse(await fs.readFile(this.filePath, 'utf8'));
-			const notes = typeof parsed === 'object' && parsed !== null && typeof (parsed as IStoreFile).notes === 'object' ? (parsed as IStoreFile).notes : {};
-			return new Map(Object.entries(notes).filter(([, list]) => Array.isArray(list)));
-		} catch {
-			return new Map();
-		}
+	constructor(filePath: string, private readonly now: () => Date = () => new Date()) {
+		this.store = new ParadisBrowserSiteStore(filePath, 'notes');
 	}
 
-	private async save(map: Map<string, IParadisSiteNote[]>): Promise<void> {
-		const body: IStoreFile = { version: 1, notes: Object.fromEntries(map) };
-		await fs.mkdir(dirname(this.filePath), { recursive: true });
-		const temporary = `${this.filePath}.${generateUuid()}.tmp`;
-		await fs.writeFile(temporary, JSON.stringify(body, null, '\t'), { mode: 0o600 });
-		await fs.rename(temporary, this.filePath);
-	}
-
-	/** 読み直し・変更・書き戻しを 1 つずつ順に動かす（このプロセスの中で、書き込みどうしが追い越さないように）。 */
-	private update<T>(change: (map: Map<string, IParadisSiteNote[]>) => { readonly value: T; readonly changed: boolean }): Promise<T> {
-		const run = async () => {
-			const map = await this.load();
-			const { value, changed } = change(map);
-			if (changed) {
-				await this.save(map);
-			}
-			return value;
-		};
-		const next = this.writing.then(run, run);
-		this.writing = next.catch(() => undefined);
-		return next;
-	}
-
-	async list(space: string, origin: string): Promise<readonly IParadisSiteNote[]> {
-		return (await this.load()).get(storeKey(space, origin)) ?? [];
+	list(space: string, origin: string): Promise<readonly IParadisSiteNote[]> {
+		return this.store.list(space, origin);
 	}
 
 	write(space: string, origin: string, text: string, meta: { readonly agent?: 'claude' | 'codex'; readonly commit?: string }): Promise<IParadisSiteNote> {
-		const key = storeKey(space, origin);
 		const note: IParadisSiteNote = {
 			id: generateUuid().slice(0, 8),
 			text: text.trim().slice(0, MAX_NOTE_CHARS),
-			date: localDate(this.now()),
+			date: paradisLocalDate(this.now()),
 			...(meta.agent ? { agent: meta.agent } : {}),
 			...(meta.commit ? { commit: meta.commit } : {}),
 		};
-		return this.update(map => {
-			const list = [...(map.get(key) ?? []), note].slice(-MAX_NOTES_PER_KEY);
-			map.delete(key);
-			map.set(key, list);
-			while (map.size > MAX_KEYS) {
-				map.delete(map.keys().next().value!);
-			}
-			return { value: note, changed: true };
-		});
+		return this.store.update(space, origin, notes => ({ value: note, items: [...notes, note].slice(-MAX_NOTES_PER_KEY) }));
 	}
 
 	/** 消せたら true。 */
 	delete(space: string, origin: string, id: string): Promise<boolean> {
-		const key = storeKey(space, origin);
-		return this.update(map => {
-			const list = map.get(key) ?? [];
-			const kept = list.filter(note => note.id !== id);
-			if (kept.length === list.length) {
-				return { value: false, changed: false };
-			}
-			if (kept.length === 0) {
-				map.delete(key);
-			} else {
-				map.set(key, kept);
-			}
-			return { value: true, changed: true };
+		return this.store.update(space, origin, notes => {
+			const kept = notes.filter(note => note.id !== id);
+			return kept.length === notes.length ? { value: false } : { value: true, items: kept };
 		});
 	}
 }

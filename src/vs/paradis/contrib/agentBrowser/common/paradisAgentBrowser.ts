@@ -52,6 +52,8 @@ export const PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING = 'paradis.agentBrowser
 export const PARADIS_BROWSER_REPORT_STATE_SETTING = 'paradis.agentBrowser.reportBrowserState';
 /** サイトメモ（E4。既定は無効）。オリジンとスペースの組ごとに、エージェントが残したヒントを次のエージェントへ添える。 */
 export const PARADIS_BROWSER_SITE_NOTES_SETTING = 'paradis.agentBrowser.siteNotes';
+/** サイトの手順（E3。既定は無効）。決まった画面までの操作を保存し、run_recipe でやり直す。 */
+export const PARADIS_BROWSER_SITE_RECIPES_SETTING = 'paradis.agentBrowser.siteRecipes';
 /** run_steps に参照・expect・for_each・repeat_until を足す（E6。既定は無効）。 */
 export const PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING = 'paradis.agentBrowser.runStepsFlow';
 
