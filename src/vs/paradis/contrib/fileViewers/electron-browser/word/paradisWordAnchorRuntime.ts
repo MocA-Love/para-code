@@ -32,14 +32,6 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		if (!node.cssStyle) { node.cssStyle = {}; }
 		node.cssStyle['$' + name] = value;
 	}
-	function hasParagraph(node) {
-		var children = node && node.children;
-		if (!children) { return false; }
-		for (var i = 0; i < children.length; i++) {
-			if (children[i].type === 'paragraph' || hasParagraph(children[i])) { return true; }
-		}
-		return false;
-	}
 
 	// AST の段落に、文書パーツごとの通し番号の目印を付ける。テキストボックス（VML・図形の中の段落）は、
 	// 段落の直接の親ごとに別の文書パーツとして数える（意味モデルのテキストボックスの数え方と同じ）。
@@ -99,8 +91,13 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 	}
 
 	// 段落の要素のうち、その段落自身の文字（入れ子の段落・脚注番号・削除された文字を除く）の
-	// テキストノードを、空白を除いた 1 文字ずつの位置と一緒に並べる。
-	function textIndex(elements, visibleOnly) {
+	// テキストノードを、空白を除いた 1 文字ずつの位置と一緒に並べる。options.whole なら、要素を段落ではなく
+	// 文書全体として扱い、入れ子の段落の文字も含める（余白のコメント・脚注番号・削除された文字は除く）。
+	// options.flatOnly なら文字だけを作り、位置は作らない。
+	function textIndex(elements, options) {
+		var visibleOnly = !!(options && options.visibleOnly);
+		var whole = !!(options && options.whole);
+		var flatOnly = !!(options && options.flatOnly);
 		var nodes = [];
 		var offsets = [];
 		var flat = '';
@@ -109,14 +106,17 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 			var walker = owner.ownerDocument.createTreeWalker(owner, NodeFilter.SHOW_TEXT);
 			for (var node = walker.nextNode(); node; node = walker.nextNode()) {
 				var parent = node.parentElement;
-				if (!parent || parent.closest('[' + P + ']') !== owner || parent.closest('[' + SKIP + ']') || parent.closest('del')) { continue; }
+				if (!parent || parent.closest('[' + SKIP + ']') || parent.closest('del')) { continue; }
+				if (whole ? parent.closest('.paradis-word-comment-note') : parent.closest('[' + P + ']') !== owner) { continue; }
 				if (visibleOnly && parent.getClientRects().length === 0) { continue; }
 				var data = node.data;
 				for (var i = 0; i < data.length; i++) {
 					if (isSpace(data[i])) { continue; }
 					flat += data[i];
-					nodes.push(node);
-					offsets.push(i);
+					if (!flatOnly) {
+						nodes.push(node);
+						offsets.push(i);
+					}
 				}
 			}
 		}
@@ -137,16 +137,18 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		return result;
 	}
 
-	// 見えている文字の索引。描き直すまで使い回す（描いた後の collect で捨てる）。
-	var visibleIndexes = new Map();
-	function visibleIndex(key, elements) {
-		var index = visibleIndexes.get(key);
-		if (!index) { index = textIndex(elements, true); visibleIndexes.set(key, index); }
+	// 見えている文字の索引。表示（差分では左右それぞれ）ごとに持ち、描き直すまで使い回す（描いた後の collect で捨てる）。
+	var visibleIndexes = new WeakMap();
+	function visibleIndex(root, key, elements, whole) {
+		var indexes = visibleIndexes.get(root);
+		if (!indexes) { indexes = new Map(); visibleIndexes.set(root, indexes); }
+		var index = indexes.get(key);
+		if (!index) { index = textIndex(elements, { visibleOnly: true, whole: whole }); indexes.set(key, index); }
 		return index;
 	}
 
 	function collect(root) {
-		visibleIndexes = new Map();
+		visibleIndexes.delete(root);
 		var stories = {};
 		groups(root).forEach(function (elements, marker) {
 			var hash = marker.lastIndexOf('#');
@@ -154,7 +156,7 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 			var index = Number(marker.slice(hash + 1));
 			var list = stories[key] || (stories[key] = []);
 			while (list.length < index) { list.push(''); }
-			list[index] = textIndex(elements).flat;
+			list[index] = textIndex(elements, { flatOnly: true }).flat;
 		});
 		return stories;
 	}
@@ -208,7 +210,7 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		var matchCase = message.matchCase !== false;
 		var elements = message.marker ? groups(root).get(message.marker) : undefined;
 		var scoped = !!(elements && elements.length);
-		var index = scoped ? visibleIndex('m:' + message.marker, elements) : visibleIndex('root', [root]);
+		var index = scoped ? visibleIndex(root, 'm:' + message.marker, elements, false) : visibleIndex(root, 'root', [root], true);
 		var flat = matchCase ? index.flat : compact(index.flat, false);
 		var context = compact(message.context, matchCase);
 		var focus = compact(message.focus, matchCase);
@@ -231,12 +233,37 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		return false;
 	}
 
-	function closePopover() {
-		if (popover) { popover.remove(); popover = undefined; }
+	// 吹き出しを開く前にフォーカスがあった要素。閉じるボタンか Esc で閉じたときに、そこへ戻す。
+	var popoverReturnFocus;
+	function closePopover(restoreFocus) {
+		if (!popover) { return; }
+		var hadFocus = popover.contains(document.activeElement);
+		popover.remove();
+		popover = undefined;
+		var previous = popoverReturnFocus;
+		popoverReturnFocus = undefined;
+		if (restoreFocus === true && hadFocus && previous && previous.isConnected && typeof previous.focus === 'function') { previous.focus(); }
+	}
+
+	// 閉じるボタンの印（codicon の close と同じ形）。webview には codicon の字体を読み込まないので、図形で描く。
+	function closeIcon() {
+		var ns = 'http://www.w3.org/2000/svg';
+		var svg = document.createElementNS(ns, 'svg');
+		svg.setAttribute('width', '16');
+		svg.setAttribute('height', '16');
+		svg.setAttribute('viewBox', '0 0 16 16');
+		svg.setAttribute('aria-hidden', 'true');
+		var path = document.createElementNS(ns, 'path');
+		path.setAttribute('fill', 'currentColor');
+		path.setAttribute('d', 'M8 8.707l3.646 3.647.708-.707L8.707 8l3.647-3.646-.707-.708L8 7.293 4.354 3.646l-.707.708L7.293 8l-3.646 3.646.707.708L8 8.707z');
+		svg.appendChild(path);
+		return svg;
 	}
 
 	function openPopover(rows, x, y) {
+		var previousFocus = popover ? popoverReturnFocus : document.activeElement;
 		closePopover();
+		popoverReturnFocus = previousFocus;
 		popover = document.createElement('div');
 		popover.className = 'paradis-word-popover';
 		popover.setAttribute('role', 'dialog');
@@ -244,9 +271,9 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		var close = document.createElement('button');
 		close.type = 'button';
 		close.className = 'paradis-word-popover-close';
-		close.textContent = 'x';
+		close.appendChild(closeIcon());
 		close.setAttribute('aria-label', labels.close);
-		close.addEventListener('click', closePopover);
+		close.addEventListener('click', function () { closePopover(true); });
 		popover.appendChild(close);
 		var title = document.createElement('strong');
 		title.textContent = labels.title;
@@ -404,8 +431,8 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 	window.addEventListener('resize', function () { requestAnimationFrame(placeComments); });
 
 	document.addEventListener('click', onClick);
-	document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closePopover(); } });
-	window.paradisWordAnchors = { stamp: stamp, collect: collect, reveal: reveal, setMarks: setMarks, setComments: setComments, closePopover: closePopover };
+	document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closePopover(true); } });
+	window.paradisWordAnchors = { stamp: stamp, collect: collect, reveal: reveal, setMarks: setMarks, setComments: setComments, closePopover: function () { closePopover(false); } };
 })();`;
 
 /** 吹き出し・点線・コメントの見た目（webview の <style> に足す）。 */
@@ -413,7 +440,8 @@ export const PARADIS_WORD_ANCHOR_STYLE = `
 	::highlight(paradis-word-reveal) { background-color: #ffd33d; color: #000000; }
 	::highlight(paradis-word-node) { text-decoration-line: underline; text-decoration-style: dotted; text-decoration-color: #0969da; text-decoration-thickness: 1px; }
 	.paradis-word-popover { position: fixed; z-index: 1000; max-width: 360px; padding: 8px 28px 8px 10px; background: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,.18); font: 12px/1.5 var(--vscode-font-family, sans-serif); }
-	.paradis-word-popover-close { position: absolute; top: 4px; right: 4px; border: 1px solid #d0d7de; background: #f6f8fa; color: #1f2328; border-radius: 4px; cursor: pointer; }
+	.paradis-word-popover-close { position: absolute; top: 4px; right: 4px; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 1px solid transparent; background: transparent; color: #1f2328; border-radius: 4px; cursor: pointer; }
+	.paradis-word-popover-close:hover { background: #f6f8fa; border-color: #d0d7de; }
 	.paradis-word-popover-rows { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin-top: 4px; word-break: break-all; }
 	.paradis-word-popover-rows > div:nth-child(odd) { color: #656d76; }
 	.paradis-word-has-comments { padding-right: 248px !important; }

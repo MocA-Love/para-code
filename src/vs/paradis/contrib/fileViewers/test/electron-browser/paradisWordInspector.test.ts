@@ -115,12 +115,16 @@ suite('ParadisWordInspector', () => {
 			analyzing: texts({ kind: 'analyzing', alternatives: 0, ignoredParts: 0 }),
 			analyzed: texts({ kind: 'analyzed', counts, alternatives: 1, ignoredParts: 7 }),
 			failed: texts({ kind: 'failed', code: 'malformed', alternatives: 0, ignoredParts: 0 }),
+			busyRetrying: texts({ kind: 'failed', code: 'busy', retrying: true, alternatives: 0, ignoredParts: 0 })[0],
+			busyGivenUp: texts({ kind: 'failed', code: 'busy', retrying: false, alternatives: 0, ignoredParts: 0 })[0],
 			compared: texts({ kind: 'compared', changes: 1000, truncated: true, outcome: 'complete', alternatives: 0, ignoredParts: 0, warnings: ['unsafe parts'] }),
 			activated,
 		}, {
 			analyzing: ['解析中…', '表示: 従来の表示（近似）', '代替表示 0'],
 			analyzed: ['解析 完了', '部品 6/6', '要素 91', '未対応の要素 2', '表示: 従来の表示（近似）', '代替表示 1', '無視した部品 7'],
 			failed: ['解析できませんでした: ファイルの形式が正しくありません', '表示: 従来の表示（近似）', '代替表示 0'],
+			busyRetrying: '混み合っています。少し後でもう一度解析します',
+			busyGivenUp: '解析できませんでした（混雑）',
 			compared: ['比較 完了', '変更 1000 以上', 'unsafe parts', '表示: 従来の表示（近似）', '代替表示 0'],
 			activated: 1,
 		});

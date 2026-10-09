@@ -67,8 +67,8 @@ interface IRequest {
 	readonly runDeadlineMs: number;
 	/** 待ち行列で掴んでいるバイト数。 */
 	readonly bytes: number;
-	/** 入力の SHA-256（比較は 2 つを並べたもの）。メモリ不足で落ちた依頼を覚えるため。 */
-	readonly key: string;
+	/** 依頼の入力。メモリ不足で落ちたときに、覚えておく鍵を作るために持つ。 */
+	readonly inputs: readonly Uint8Array[];
 	readonly resolve: (value: Result) => void;
 	readonly token: CancellationToken;
 	timer?: unknown;
@@ -93,6 +93,11 @@ const defaultTimers: IParadisWordSemanticWorkerTimers = {
 	setTimeout: (handler, delay) => setTimeout(handler, delay),
 	clearTimeout: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
+
+/** メモリ不足で落ちた依頼を覚えておくための鍵（入力の数と、それぞれの SHA-256）。 */
+function outOfMemoryKey(inputs: readonly Uint8Array[]): string {
+	return `${inputs.length}:${inputs.map(input => createHash('sha256').update(input).digest('hex')).join(':')}`;
+}
 
 export class ParadisWordSemanticWorkerBackend extends Disposable implements IParadisWordSemanticBackend {
 
@@ -154,8 +159,8 @@ export class ParadisWordSemanticWorkerBackend extends Disposable implements IPar
 			return Promise.resolve(failure('cancelled'));
 		}
 		// 前にメモリ不足で worker を落とした依頼（同じ文書・同じ組）は、もう一度落とさないよう、走らせずに断る。
-		const key = `${inputs.length}:${inputs.map(input => createHash('sha256').update(input).digest('hex')).join(':')}`;
-		if (this.outOfMemoryKeys.includes(key)) {
+		// 覚えている入力が無ければ、ハッシュは求めない（メモリ不足が起きた時点で求める）。
+		if (this.outOfMemoryKeys.length > 0 && this.outOfMemoryKeys.includes(outOfMemoryKey(inputs))) {
 			return Promise.resolve(failure('limitExceeded'));
 		}
 		// 混み合っているときは「混み合っている」と返す（しばらくしてから頼み直せば通る）。
@@ -166,7 +171,7 @@ export class ParadisWordSemanticWorkerBackend extends Disposable implements IPar
 		}
 		this.clearIdleTimer();
 		return new Promise<Result>(resolve => {
-			const request: IRequest = { id: this.nextId++, send, runDeadlineMs, bytes, key, resolve, token };
+			const request: IRequest = { id: this.nextId++, send, runDeadlineMs, bytes, inputs, resolve, token };
 			request.cancellation = token.onCancellationRequested(() => this.cancel(request));
 			this.queue.push(request);
 			// 待ち行列の締め切り。走り始めたら張り替える。
@@ -239,7 +244,7 @@ export class ParadisWordSemanticWorkerBackend extends Disposable implements IPar
 		if (request) {
 			const outOfMemory = isOutOfMemory(error);
 			if (outOfMemory) {
-				this.outOfMemoryKeys.push(request.key);
+				this.outOfMemoryKeys.push(outOfMemoryKey(request.inputs));
 				this.outOfMemoryKeys.splice(0, Math.max(0, this.outOfMemoryKeys.length - PARADIS_WORD_SEMANTIC_OOM_MEMORY));
 			}
 			this.settle(request, failure(outOfMemory ? 'limitExceeded' : 'failed'));
