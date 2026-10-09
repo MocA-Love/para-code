@@ -51,13 +51,78 @@ export interface IParadisRenderAnchor {
 	readonly ro: number;
 }
 
-/** シート上に描画された図形(直線コネクタ/矩形/画像)。重説等の斜線はこの直線コネクタで表現される。 */
+/** 図形の形（DrawingML の prstGeom のうち描けるもの）。`path` は custGeom を `paths` で描く。 */
+export type ParadisSpreadsheetShapeGeometry =
+	| 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'rtTriangle' | 'diamond'
+	| 'leftBracket' | 'rightBracket' | 'leftBrace' | 'rightBrace' | 'path';
+
+/** 図形の中の文字の 1 区切り。大きさは pt。 */
+export interface IParadisShapeTextRun {
+	readonly text: string;
+	readonly size?: number;
+	readonly bold?: boolean;
+	readonly italic?: boolean;
+	readonly underline?: boolean;
+	readonly color?: string;
+	readonly font?: string;
+}
+
+export interface IParadisShapeTextParagraph {
+	readonly runs: readonly IParadisShapeTextRun[];
+	readonly align?: 'left' | 'center' | 'right' | 'justify';
+}
+
+/** 図形の中の文字（txBody）。余白は px。 */
+export interface IParadisShapeText {
+	readonly paragraphs: readonly IParadisShapeTextParagraph[];
+	readonly anchor?: 'top' | 'middle' | 'bottom';
+	readonly vertical?: boolean;
+	readonly insets: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number };
+	readonly wrap: boolean;
+}
+
+/** custGeom の 1 本の道筋。座標は図形の枠の中の割合（0〜1）。 */
+export interface IParadisShapePath {
+	readonly d: readonly (readonly [command: 'M' | 'L' | 'C' | 'Q' | 'Z', ...coordinates: number[]])[];
+	readonly fill: boolean;
+	readonly stroke: boolean;
+}
+
+/** グラフの系列。 */
+export interface IParadisChartSeries {
+	readonly name?: string;
+	readonly categories: readonly string[];
+	readonly values: readonly (number | null)[];
+	/** 散布図の X。 */
+	readonly xValues?: readonly (number | null)[];
+	readonly color?: string;
+	/** 円・ドーナツの各要素の色。 */
+	readonly pointColors?: readonly string[];
+}
+
+/** グラフの 1 群（棒・折れ線など。複合グラフは群が複数）。 */
+export interface IParadisChartGroup {
+	readonly kind: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter';
+	readonly grouping: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
+	readonly series: readonly IParadisChartSeries[];
+}
+
+/** グラフ（chartN.xml の保存済みの値から描く）。 */
+export interface IParadisChartData {
+	readonly title?: string;
+	readonly groups: readonly IParadisChartGroup[];
+	readonly legend: boolean;
+}
+
+/** シート上に描画された図形(直線コネクタ/図形/画像/グラフ)。重説等の斜線はこの直線コネクタで表現される。 */
 export interface IParadisRenderShape {
-	readonly type: 'line' | 'rect' | 'image';
+	/** `rect` は線以外の図形（形は `geometry`、無ければ矩形）。 */
+	readonly type: 'line' | 'rect' | 'image' | 'chart';
 	readonly flipV: boolean;
 	readonly flipH: boolean;
 	readonly from: IParadisRenderAnchor;
 	readonly to: IParadisRenderAnchor;
+	/** 線の太さ(px)。0 は線なし。 */
 	readonly outlineWidth: number;
 	readonly outlineColor: string;
 	readonly dash: string;
@@ -68,12 +133,40 @@ export interface IParadisRenderShape {
 	/** 図形の安定キー(diff用)。cNvPr の name/id。 */
 	readonly name?: string;
 	readonly shapeId?: string;
+	readonly geometry?: ParadisSpreadsheetShapeGeometry;
+	/** 形の調整値（角丸・括弧の丸み・中括弧の先端の位置など。100000 が全体）。 */
+	readonly adjust?: readonly number[];
+	readonly paths?: readonly IParadisShapePath[];
+	/** 塗りの色。無ければ塗らない。 */
+	readonly fill?: string;
+	/** 塗りの不透明度(0〜1)。 */
+	readonly fillOpacity?: number;
+	readonly text?: IParadisShapeText;
+	/** 回転(度、時計回り)。 */
+	readonly rotation?: number;
+	/** 線の端の矢印。 */
+	readonly headEnd?: string;
+	readonly tailEnd?: string;
+	/**
+	 * グループの中の図形の位置。アンカーの枠の中の割合（左上 x・y と幅・高さ、0〜1）。無ければ枠いっぱい。
+	 */
+	readonly frame?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	readonly chart?: IParadisChartData;
+}
+
+/** 描けなかった図形（代替表示に数える）。 */
+export interface IParadisUndrawnObject {
+	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart';
+	readonly name?: string;
+	readonly from?: IParadisRenderAnchor;
 }
 
 /** shared process が drawing ごとに渡す XML と埋め込みメディア(rId→dataURI)。 */
 export interface IParadisDrawingData {
 	readonly xml: string;
 	readonly media: { readonly [rid: string]: string };
+	/** グラフの XML（rId→chartN.xml の文字列）。 */
+	readonly charts?: { readonly [rid: string]: string };
 }
 
 /** 印刷範囲などの矩形領域(Excel の1始まり行列)。 */
@@ -296,6 +389,8 @@ export interface IParadisSheetData {
 	readonly dataValidations?: readonly IParadisDataValidationEntry[];
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
+	/** 描けなかった図形(renderer 側で付与)。代替表示に数える。 */
+	readonly undrawnObjects?: readonly IParadisUndrawnObject[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */
 	readonly showGridLines?: boolean;
 	/** 保存時のズーム倍率(sheetView.zoomScale、100=等倍)。 */
@@ -344,12 +439,6 @@ export interface IParadisFreezePane {
 	readonly cols: number;
 	/** 固定する行数(上から)。 */
 	readonly rows: number;
-}
-
-/** パースの任意指定。診断は表示に使うときだけ費用を払う。 */
-export interface IParadisParseWorkbookOptions {
-	/** 真のときだけ OOXML を直接読んで到達度を返す(既定は返さない)。 */
-	readonly semanticDiagnostics?: boolean;
 }
 
 /** パース結果のワークブック全体。 */
@@ -563,5 +652,5 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
+	parseWorkbook(base64Content: string): Promise<IParadisWorkbookData>;
 }
