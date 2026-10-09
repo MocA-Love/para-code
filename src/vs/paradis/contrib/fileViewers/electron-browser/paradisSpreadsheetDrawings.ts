@@ -538,7 +538,8 @@ function parseText(shapeEl: Element, themeColors: ParadisShapeThemeColors | unde
 				continue;
 			}
 			hasText = true;
-			// ランの rPr に無い項目は、段落の既定（defRPr）から 1 つずつ引き継ぐ（Office と同じ解き方）。
+			// ランの rPr に無い項目は、段落の既定（a:pPr/a:defRPr）から 1 つずつ引き継ぐ。LibreOffice の取り込み（oox の
+			// TextParagraph::getCharacterStyle）と同じ解き方。Excel 自身の挙動は確かめていない（NOTES の残課題）。
 			const own = xmlChild(run, 'rPr');
 			const attribute = (name: string) => (own?.hasAttribute(name) ? xmlAttr(own, name) : defaults?.hasAttribute(name) ? xmlAttr(defaults, name) : '');
 			const size = (Number.parseInt(attribute('sz'), 10) || 0) / 100;
