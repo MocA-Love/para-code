@@ -14,33 +14,33 @@
 
 import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
-import type { ParadisWordSemanticWorkerReply, ParadisWordSemanticWorkerRequest } from './paradisWordSemanticWorkerProtocol.js';
+import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
 const active = new Map<number, CancellationTokenSource>();
 
-async function handle(request: Exclude<ParadisWordSemanticWorkerRequest, { readonly op: 'cancel' }>): Promise<void> {
+async function handle(id: number, request: ParadisWordSemanticWorkerRun): Promise<void> {
 	const cancellation = new CancellationTokenSource();
-	active.set(request.id, cancellation);
-	let reply: ParadisWordSemanticWorkerReply;
+	active.set(id, cancellation);
+	let reply: ParadisWordSemanticWorkerMessage;
 	try {
 		reply = request.op === 'analyze'
-			? { kind: 'result', id: request.id, result: await service.analyze(request.bytes, cancellation.token) }
-			: { kind: 'result', id: request.id, result: await service.compare(request.original, request.modified, cancellation.token) };
+			? { kind: 'result', id, result: await service.analyze(request.bytes, cancellation.token) }
+			: { kind: 'result', id, result: await service.compare(request.original, request.modified, cancellation.token) };
 	} catch {
-		reply = { kind: 'result', id: request.id, result: { ok: false, code: 'failed' } };
+		reply = { kind: 'result', id, result: { ok: false, code: 'failed' } };
 	} finally {
-		active.delete(request.id);
+		active.delete(id);
 		cancellation.dispose();
 	}
 	parentPort?.postMessage(reply);
 }
 
-parentPort?.on('message', (request: ParadisWordSemanticWorkerRequest) => {
-	if (request.op === 'cancel') {
-		active.get(request.id)?.cancel();
+parentPort?.on('message', (message: ParadisWordSemanticWorkerRequest) => {
+	if (message.op === 'cancel') {
+		active.get(message.id)?.cancel();
 		return;
 	}
-	void handle(request);
+	void handle(message.id, message.request);
 });
