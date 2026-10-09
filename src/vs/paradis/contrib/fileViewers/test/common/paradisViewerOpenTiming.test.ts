@@ -33,7 +33,7 @@ suite('ParadisViewerOpenTiming', () => {
 
 		const markdown = startParadisViewerOpenTiming('markdown', options);
 		clock = 900;
-		markdown.painted({ safe_reused: true });
+		markdown.painted({ safe_images: 2 });
 
 		const second = startParadisViewerOpenTiming('pdf', options);
 		clock = 1000;
@@ -43,7 +43,7 @@ suite('ParadisViewerOpenTiming', () => {
 
 		deepStrictEqual(sent, [
 			{ safe_pages: 500, safe_viewer: 'pdf', safe_open_ordinal: 1, safe_paint_ms: 840 },
-			{ safe_reused: true, safe_viewer: 'markdown', safe_open_ordinal: 1, safe_paint_ms: 60 },
+			{ safe_images: 2, safe_viewer: 'markdown', safe_open_ordinal: 1, safe_paint_ms: 60 },
 			{ safe_viewer: 'pdf', safe_open_ordinal: 2, safe_paint_ms: 100 },
 		]);
 	});
