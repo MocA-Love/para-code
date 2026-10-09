@@ -594,9 +594,16 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 				// a system font. Neither draws a substitute box.
 				const unlink = external && relationshipKind === 'hyperlink' && consumers.every(consumer => consumer.kind === 'hyperlink');
 				const silent = unlink || relationshipKind === 'font';
+				// Q321 f: an embedded object that carries its own preview picture loses only the embedding (its
+				// o:OLEObject element and this relationship). The picture is drawn like any other image, after
+				// the image inspection or the metafile conversion, and the embedding is reported as blocked.
+				const previewOnly = relationshipKind === 'oleObject' && consumers.every(consumer => consumer.kind === 'oleObject' && consumer.anchorKind === 'oleObjectPreview');
 				if (silent) {
 					if (unlink) { blockPart(feature, relationshipTypeName(type), undefined, target); }
 					if (resolved) { ignorePart(resolved, relationshipTypeName(type), 'notRendered'); relationshipPlaceholderTargets.add(resolved); }
+				} else if (previewOnly) {
+					blockPart(feature, relationshipTypeName(type), resolved, undefined);
+					if (resolved) { relationshipPlaceholderTargets.add(resolved); }
 				} else {
 					pushPackagePlaceholder(placeholders, placeholderValue);
 					markReplaced(consumers);
@@ -814,7 +821,7 @@ type OfficeStoryKind = 'document' | 'header' | 'footer' | 'footnotes' | 'endnote
 type OfficeAuxiliaryKind = 'numbering' | 'fontTable' | 'settings' | 'webSettings' | 'styles' | 'theme';
 type OfficeSourceKind = OfficeStoryKind | OfficeAuxiliaryKind;
 type OfficeConsumerKind = 'image' | 'headerReference' | 'footerReference' | 'hyperlink' | 'altChunk' | 'font' | 'oleObject' | 'control' | 'attachedTemplate' | 'unknown';
-type OfficeAnchorKind = 'run' | 'preservedRun' | 'block' | 'fallback' | 'preservedElement' | 'removedElement' | 'unwrappedElement';
+type OfficeAnchorKind = 'run' | 'preservedRun' | 'block' | 'fallback' | 'preservedElement' | 'removedElement' | 'unwrappedElement' | 'oleObjectPreview';
 
 interface OfficeStoryConsumer {
 	readonly id: string;
@@ -1086,12 +1093,33 @@ function officeConsumerKind(element: OfficeXmlElement, attributeLocal: string, p
 	return 'unknown';
 }
 
+/** Whether a w:object holds a VML shape whose v:imagedata points at a picture through a relationship id (its preview). */
+function hasOlePreviewPicture(object: OfficeXmlElement): boolean {
+	const pending: OfficeXmlElement[] = [object];
+	for (let visited = 0; pending.length > 0 && visited < 256; visited++) {
+		const element = pending.pop()!;
+		if (element.uri === VML_NAMESPACE && element.local === 'imagedata' && element.attributes.some(attribute => RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && attribute.local === 'id')) { return true; }
+		for (const child of element.children) { if (child.kind === 'element') { pending.push(child); } }
+	}
+	return false;
+}
+
 function hasWordAncestor(ancestors: readonly { readonly element: OfficeXmlElement }[], local: string): boolean {
 	return ancestors.some(ancestor => WORD_NAMESPACES.has(ancestor.element.uri) && ancestor.element.local === local);
 }
 
 function officeConsumerAnchor(element: OfficeXmlElement, parent: OfficeXmlElement | undefined, ancestors: readonly { readonly element: OfficeXmlElement; readonly parent?: OfficeXmlElement }[], consumerKind: OfficeConsumerKind, sourceKind: OfficeSourceKind): Pick<OfficeStoryConsumer, 'anchor' | 'anchorParent' | 'anchorKind'> {
 	if (!isOfficeStoryKind(sourceKind)) { return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: consumerKind === 'image' ? 'preservedElement' : 'removedElement' }; }
+	// Q321 f: an embedded object with a preview picture keeps the picture. The w:object becomes a w:pict (which the
+	// renderer draws) without the o:OLEObject element and the embedding references on its VML shapes.
+	if (consumerKind === 'oleObject') {
+		const object = [...ancestors].reverse().find(ancestor => WORD_NAMESPACES.has(ancestor.element.uri) && ancestor.element.local === 'object');
+		// The parser shares the parent's binding record when an element declares no namespace, so a different
+		// record means w:object declares its own (which the rewritten w:pict start tag would not carry).
+		if (object?.parent && object.element.namespaceBindings === object.parent.namespaceBindings && hasOlePreviewPicture(object.element)) {
+			return { anchor: object.element, anchorParent: object.parent, anchorKind: 'oleObjectPreview' };
+		}
+	}
 	if (WORD_NAMESPACES.has(element.uri) && element.local === 'altChunk' && parent && WORD_NAMESPACES.has(parent.uri) && parent.local === 'body') { return { anchor: element, anchorParent: parent, anchorKind: 'block' }; }
 	if (WORD_NAMESPACES.has(element.uri) && (element.local === 'headerReference' || element.local === 'footerReference')) { return { anchor: element, ...(parent ? { anchorParent: parent } : {}), anchorKind: 'fallback' }; }
 	if (WORD_NAMESPACES.has(element.uri) && element.local === 'hyperlink' && parent && canInsertOfficeRun(parent)) { return { anchor: element, anchorParent: parent, anchorKind: 'run' }; }
@@ -1201,7 +1229,9 @@ interface OfficeTextMetrics { readonly characters: number; readonly bytes: numbe
 interface OfficeSourceFragment extends OfficeTextMetrics { readonly kind: 'source'; readonly start: number; readonly end: number }
 interface OfficePlaceholderFragment extends OfficeTextMetrics { readonly kind: 'placeholder'; readonly value: ParadisOfficePlaceholder; readonly namespace: WordLexicalNamespace; readonly paragraph: boolean }
 interface OfficeNamespaceFragment extends OfficeTextMetrics { readonly kind: 'namespace'; readonly prefix: string; readonly uri: string }
-type OfficeOutputFragment = OfficeSourceFragment | OfficePlaceholderFragment | OfficeNamespaceFragment;
+/** Markup the sanitizer writes itself (a fixed tag name with the source's own prefix), never document text. */
+interface OfficeGeneratedFragment extends OfficeTextMetrics { readonly kind: 'generated'; readonly value: string }
+type OfficeOutputFragment = OfficeSourceFragment | OfficePlaceholderFragment | OfficeNamespaceFragment | OfficeGeneratedFragment;
 interface OfficeLexicalPatch { readonly start: number; readonly end: number; readonly fragments: OfficeOutputFragment[]; readonly affinity: OfficePatchAffinity }
 interface OfficeLexicalRange { readonly start: number; readonly end: number }
 
@@ -1374,6 +1404,9 @@ async function planOfficeAnchorFragments(entry: OfficeAnchorPatchPlan, insertion
 		validateOfficeRunInsertion(insertionParent);
 		return planUnwrappedOfficeAnchorFragments(entry, insertionParent, fallback, planning);
 	}
+	if (entry.kind === 'oleObjectPreview') {
+		return planOlePreviewFragments(entry, insertionParent, planning);
+	}
 	if (entry.kind === 'preservedRun') { validateOfficeRunInsertion(insertionParent); }
 	else if (insertionParent !== (entry.parent ?? planning.story.root)) { throw new ParadisOfficePackageError('malformed'); }
 	const fragments = await planPreservedOfficeAnchorFragments(entry, insertionParent, fallback, planning);
@@ -1381,6 +1414,56 @@ async function planOfficeAnchorFragments(entry: OfficeAnchorPatchPlan, insertion
 		for (const fragment of await planWordPlaceholderFragments(entry.placeholders, insertionParent, false, planning)) { fragments.push(fragment); }
 	}
 	return fragments;
+}
+
+/**
+ * Q321 f: emits an embedded object's preview picture as a w:pict. The o:OLEObject elements and the embedding
+ * references left on the VML shapes (o:ole, relationship ids other than v:imagedata's) are cut. An object
+ * that cannot be rewritten in place (it was moved under a replaced run, or holds other replaced content)
+ * is dropped; its placeholders were counted when the relationships were decided.
+ */
+async function planOlePreviewFragments(entry: OfficeAnchorPatchPlan, insertionParent: OfficeXmlElement, planning: OfficeFragmentPlanningContext): Promise<OfficeOutputFragment[]> {
+	const lexical = entry.lexical!;
+	if (lexical.selfClosing || entry.children.length > 0 || insertionParent !== entry.parent) { return []; }
+	const cuts: OfficeLexicalRange[] = [];
+	const pending: OfficeXmlElement[] = [entry.anchor];
+	while (pending.length > 0) {
+		await advanceOpcAnalysis(planning.input, planning.state);
+		const element = pending.pop()!;
+		const elementLexical = planning.story.lexicalElements.get(element);
+		if (!elementLexical) { throw new ParadisOfficePackageError('malformed'); }
+		if (element.uri === OFFICE_VML_NAMESPACE && element.local === 'OLEObject') {
+			cuts.push({ start: elementLexical.start, end: elementLexical.end });
+			continue;
+		}
+		if (element.uri === VML_NAMESPACE) {
+			element.attributes.forEach((attribute, index) => {
+				const embedding = attribute.uri === OFFICE_VML_NAMESPACE && attribute.local === 'ole'
+					|| RELATIONSHIP_ATTRIBUTE_NAMESPACES.has(attribute.uri) && element.local !== 'imagedata';
+				const range = elementLexical.attributes[index];
+				if (embedding && range) { cuts.push({ start: range.start, end: range.end }); }
+			});
+		}
+		for (const child of element.children) { if (child.kind === 'element') { pending.push(child); } }
+	}
+	cuts.sort((left, right) => left.start - right.start);
+	const prefix = lexical.name.includes(':') ? `${lexical.name.slice(0, lexical.name.indexOf(':'))}:` : '';
+	const fragments: OfficeOutputFragment[] = [await planOfficeGeneratedFragment(`<${prefix}pict>`, planning)];
+	let cursor = lexical.startTagEnd;
+	for (const cut of cuts) {
+		if (cut.start < cursor || cut.end > lexical.endStart) { throw new ParadisOfficePackageError('malformed'); }
+		await appendOfficeSourceFragment(fragments, cursor, cut.start, planning);
+		cursor = cut.end;
+	}
+	await appendOfficeSourceFragment(fragments, cursor, lexical.endStart, planning);
+	fragments.push(await planOfficeGeneratedFragment(`</${prefix}pict>`, planning));
+	return fragments;
+}
+
+async function planOfficeGeneratedFragment(value: string, planning: OfficeFragmentPlanningContext): Promise<OfficeGeneratedFragment> {
+	const metrics = await measureOfficeString(value, planning);
+	commitOfficeGeneratedFragment(metrics, planning.budget, false);
+	return { kind: 'generated', value, ...metrics };
 }
 
 /** Emits only an element's content (its start and end tags are dropped), patching nested anchors. */
@@ -1651,6 +1734,8 @@ async function applyOfficeLexicalPatches(source: string, patches: readonly Offic
 		else if (fragment.kind === 'placeholder') {
 			input.allocationObserver?.('placeholderFragment', fragment.characters, fragment.bytes);
 			chunks.push(wordPlaceholderFragment(fragment.value, fragment.namespace, fragment.paragraph));
+		} else if (fragment.kind === 'generated') {
+			chunks.push(fragment.value);
 		} else {
 			chunks.push(` xmlns${fragment.prefix ? `:${fragment.prefix}` : ''}="${escapeXmlAttribute(fragment.uri)}"`);
 		}
