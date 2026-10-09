@@ -44,13 +44,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.settleAfterAction', "（試験的）エージェントが内蔵ブラウザでクリック・入力・ページ移動をした後、ページの変化が落ち着くまで最大 2 秒待ち、増えた・変わった・消えた要素を道具の結果に添えます。エージェントが確かめるための呼び出しが減ります。")
+			markdownDescription: localize('paradis.agentBrowser.settleAfterAction', "（試験的）エージェントがクリックや入力をした後、ページの表示が落ち着くまで最大 2 秒待ち、何が変わったかを伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。")
 		},
 		[PARADIS_BROWSER_REPORT_STATE_SETTING]: {
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントが内蔵ブラウザで操作した結果に、使えるタブ、その操作で開いたページ、新しいダウンロード、開いているダイアログを添えます。前回と同じ内容は省きます。")
+			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。")
 		}
 	}
 });
