@@ -1150,6 +1150,7 @@ class WorkbookImages {
 	private pixels = 0;
 	private svgBytes = 0;
 	private svgCount = 0;
+	private svgOutputBytes = 0;
 
 	constructor(private readonly budget: number) { }
 
@@ -1225,8 +1226,13 @@ class WorkbookImages {
 		if (!Object.prototype.hasOwnProperty.call(sanitized, 'bytes')) {
 			return { reason: 'unverified' };
 		}
-		// サニタイズした後の大きさが前より大きくても、1 枚の上限（サニタイザが 1 MiB で止める）を越えない。
-		return { href: dataUrl('image/svg+xml', (sanitized as ParadisSanitizedSvg).bytes) };
+		// サニタイザの出力は、`>` を `&gt;` に直すなどして入力より大きくなりうる。renderer へ渡す合計も上限に収める。
+		const svg = (sanitized as ParadisSanitizedSvg).bytes;
+		if (this.svgOutputBytes + svg.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgOutputBytes += svg.byteLength;
+		return { href: dataUrl('image/svg+xml', svg) };
 	}
 
 	private takePixels(pixels: number): boolean {

@@ -203,6 +203,16 @@ suite('ParadisSpreadsheetService', () => {
 		]);
 	});
 
+	test('also keeps the sanitized SVG output within the workbook limit when it grows past the input', async () => {
+		// Each input is about 250 KB, but the sanitizer writes every `>` of the text as `&gt;`, so each output is
+		// about 1 MB: 17 inputs fit the 16 MiB budget, while their outputs do not.
+		const svg = (index: number) => new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg"><text>${index}${'>'.repeat(250_000)}</text></svg>`);
+		const parts = Array.from({ length: 17 }, (_, index): IPicturePart => ({ kind: `svg${index}`, extension: 'svg', bytes: svg(index), type: 'image/svg+xml' }));
+		const { bytes } = await picturesWorkbook(parts);
+		const drawing = (await new ParadisSpreadsheetService().parseWorkbook(Buffer.from(bytes).toString('base64'))).drawingsBySheet?.[1]?.[0];
+		deepStrictEqual({ drawn: Object.keys(drawing?.media ?? {}).length, rejected: Object.values(drawing?.rejectedMedia ?? {}) }, { drawn: 16, rejected: ['overBudget'] });
+	});
+
 	test('converts the EMF pictures of a workbook to SVG data URLs, leaving out the ones it cannot draw', async () => {
 		const { bytes } = await picturesWorkbook();
 		const images = await convertParadisSpreadsheetMetafiles(bytes);
