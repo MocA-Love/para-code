@@ -220,6 +220,18 @@ suite('ParadisSpreadsheetChart', () => {
 		], ['overLimit', 'object', 'overLimit']);
 	});
 
+	test('budgets points as series times the longest series, not the sum of their lengths', () => {
+		// 長い系列 1 本（1 万点）と 1 点の系列 254 本。長さの和は約 1 万だが、描くときは 255 × 1 万になる。
+		const long = ser(0, 'long', `<c:val>${numCache(Array.from({ length: 10_000 }, (_, index) => index))}</c:val>`);
+		const short = Array.from({ length: 254 }, (_, index) => ser(index + 1, `s${index}`, `<c:val>${numCache([1])}</c:val>`)).join('');
+		const xml = chartSpace(`<c:lineChart><c:grouping val="standard"/>${long}${short}<c:axId val="1"/><c:axId val="2"/></c:lineChart>${catAx(1, 2)}${valAx(2, 1)}`);
+		const withoutShort = chartSpace(`<c:lineChart><c:grouping val="standard"/>${long}<c:axId val="1"/><c:axId val="2"/></c:lineChart>${catAx(1, 2)}${valAx(2, 1)}`);
+		deepStrictEqual([
+			parseChartXml(xml, { parser: new DOMParser(), themeColors: undefined }),
+			typeof parseChartXml(withoutShort, { parser: new DOMParser(), themeColors: undefined }),
+		], ['overLimit', 'object']);
+	});
+
 	test('puts document text into text nodes only', () => {
 		const svg = render(parse(COMBO.replace('売上</c:v>', '&lt;img src=x onerror=alert(1)&gt;</c:v>').replace('<c:v>4月</c:v>', '<c:v>&lt;script&gt;x&lt;/script&gt;</c:v>')));
 		deepStrictEqual({

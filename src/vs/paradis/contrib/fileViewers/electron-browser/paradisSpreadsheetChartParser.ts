@@ -262,6 +262,11 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 	if (groups.length === 0) {
 		return undefined;
 	}
+	// 描く量は「系列の数 × いちばん長い系列」になる。長さの和だけで数えると、長い系列 1 本と短い系列を
+	// 並べたグラフが予算を通り抜ける。
+	if (paradisChartDrawCost(groups) > limits.chartPoints) {
+		return 'overLimit';
+	}
 	// データラベルは点ごとに文字を 1 つ作る。多すぎるときはラベルだけを省き、省いたことを伝える。
 	const labelsOmitted = countLabels(groups) > PARADIS_CHART_MAX_DATA_LABELS;
 	const drawnGroups = labelsOmitted ? groups.map(withoutDataLabels) : groups;
@@ -277,6 +282,44 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 		...(axes.length ? { axes } : {}),
 		...(labelsOmitted ? { labelsOmitted } : {}),
 	};
+}
+
+/**
+ * 値のある最後の添字 + 1（`ptCount` は文書がいくらでも大きく書けるので、描く長さには使わない）。
+ * レーダーと等高線の描画（paradisSpreadsheetChartSvg.ts の `filledLength`）と同じ数え方。
+ */
+function filledLength(group: IParadisChartGroup): number {
+	let length = 0;
+	for (const series of group.series) {
+		for (let index = series.values.length - 1; index >= length; index--) {
+			if (series.values[index] !== null && series.values[index] !== undefined) {
+				length = index + 1;
+				break;
+			}
+		}
+	}
+	return length;
+}
+
+/**
+ * グラフを描くときに作る点の数の見込み。棒・折れ線などは群をまたいで同じ分類の数で描くので
+ * 「その系列の数の合計 × いちばん長い系列」、レーダーと等高線は群ごとに「系列の数 × 値のある長さ」。
+ */
+export function paradisChartDrawCost(groups: readonly IParadisChartGroup[]): number {
+	let cost = 0;
+	let gridSeries = 0;
+	let gridLength = 0;
+	for (const group of groups) {
+		if (group.kind === 'radar' || group.kind === 'surface') {
+			cost += group.series.length * filledLength(group);
+			continue;
+		}
+		gridSeries += group.series.length;
+		for (const series of group.series) {
+			gridLength = Math.max(gridLength, series.values.length, series.categories.length, series.bubbleSizes?.length ?? 0);
+		}
+	}
+	return cost + gridSeries * gridLength;
 }
 
 function countLabels(groups: readonly IParadisChartGroup[]): number {
