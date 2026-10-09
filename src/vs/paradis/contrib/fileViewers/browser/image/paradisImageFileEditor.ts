@@ -24,7 +24,7 @@ import { toAction } from '../../../../../base/common/actions.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { isCancellationError } from '../../../../../base/common/errors.js';
-import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../../base/common/platform.js';
 import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
@@ -46,6 +46,7 @@ import { SideBySideEditorInput } from '../../../../../workbench/common/editor/si
 import { IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
+import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../../common/paradisViewerOpenTiming.js';
 import { ParadisImageInput } from './paradisImageInput.js';
 import {
 	clampParadisImageScale,
@@ -66,17 +67,6 @@ export const PARADIS_IMAGE_SELECT_ZOOM_COMMAND_ID = 'paradis.imagePreview.select
 
 /** ウィンドウ（レンダラ）につき 1 つの、読んだ画像の覚え。 */
 const IMAGE_CACHE = new ParadisImageCache();
-
-// 開いてから描かれるまでの計測（Q320）。共通の計測ヘルパー（`fileViewers/common/paradisViewerOpenTiming.ts`）が
-// main に入ったら、次の 2 つを消して
-// `import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../../common/paradisViewerOpenTiming.js';`
-// に置き換える（呼び方はヘルパーと同じにしてある）。
-interface IParadisViewerOpenTiming extends IDisposable {
-	painted(attributes: Record<string, number | boolean>): void;
-}
-function startParadisViewerOpenTiming(_kind: 'image'): IParadisViewerOpenTiming {
-	return { painted: () => { }, dispose: () => { } };
-}
 
 export function formatParadisImageScale(scale: ParadisImageScale): string {
 	// allow-any-unicode-next-line
@@ -230,7 +220,7 @@ export class ParadisImageFileEditor extends EditorPane {
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
-		this._openTiming.value = startParadisViewerOpenTiming('image');
+		this._openTiming.value = this._startOpenTiming();
 		await super.setInput(input, options, context, token);
 		if (!(input instanceof ParadisImageInput)) {
 			return;
@@ -245,7 +235,7 @@ export class ParadisImageFileEditor extends EditorPane {
 		this._watch(resource, input, store);
 
 		// 読み込みとデコードは待たない（タブの切り替えを止めない）。失敗は _render の中で表示する。
-		void this._render(resource, input.viewState?.scale ?? 'fit', input);
+		void this._render(resource, input.viewState?.scale ?? 'fit', input, true);
 	}
 
 	override clearInput(): void {
@@ -412,12 +402,15 @@ export class ParadisImageFileEditor extends EditorPane {
 				return;
 			}
 			if (this.input === input) {
-				await this._render(resource, this._scale, input);
+				await this._render(resource, this._scale, input, false);
 			}
 		}));
 	}
 
-	private async _render(resource: URI, scale: ParadisImageScale, input: ParadisImageInput): Promise<void> {
+	/**
+	 * 読んで表示する。`measure` は setInput から来たときだけ true（ファイルの変更で描き直したときは測らない）。
+	 */
+	private async _render(resource: URI, scale: ParadisImageScale, input: ParadisImageInput, measure: boolean): Promise<void> {
 		const generation = ++this._generation;
 		const cts = new CancellationTokenSource();
 		this._load.value = toDisposable(() => cts.dispose(true));
@@ -454,7 +447,10 @@ export class ParadisImageFileEditor extends EditorPane {
 			this._setState('ready');
 			this._restoreViewState(scale, input);
 			this._updateStatus();
-			this._reportPainted(data, result.fromCache, true);
+			// タブを行き来して戻っただけ。描き直していないので測らない（「2 回目」の枠を使わない）。
+			if (measure) {
+				this._openTiming.clear();
+			}
 			return;
 		}
 
@@ -495,18 +491,24 @@ export class ParadisImageFileEditor extends EditorPane {
 		this._restoreViewState(scale, input);
 		this._updateStatus();
 
-		this._reportPainted(data, result.fromCache, false);
+		if (measure) {
+			this._reportPainted(data, result.fromCache);
+		}
+	}
+
+	/** テストで送り先を差し替えるための口。 */
+	protected _startOpenTiming(): IParadisViewerOpenTiming {
+		return startParadisViewerOpenTiming('image');
 	}
 
 	/** 最初に描けたことを 1 回だけ知らせる。送るのは大きさと真偽だけ（ファイル名やパスは送らない）。 */
-	private _reportPainted(data: ParadisImageData, fromCache: boolean, reused: boolean): void {
+	private _reportPainted(data: ParadisImageData, fromCache: boolean): void {
 		const image = this._displayed?.element;
 		this._openTiming.value?.painted({
 			safe_size_kb: Math.round(data.size / 1024),
 			safe_width_px: image?.naturalWidth ?? 0,
 			safe_height_px: image?.naturalHeight ?? 0,
 			safe_from_cache: fromCache,
-			safe_reused_image: reused,
 		});
 		this._openTiming.clear();
 	}

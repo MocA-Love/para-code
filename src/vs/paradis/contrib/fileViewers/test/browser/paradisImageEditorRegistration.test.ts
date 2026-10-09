@@ -25,6 +25,8 @@ const IMAGE_INPUT = 'test.paradisImage';
 const UPSTREAM_INPUT = 'test.upstreamImagePreview';
 const TEXT_INPUT = 'test.defaultText';
 const UPSTREAM_VIEW_TYPE = 'imagePreview.previewEditor';
+const AUDIO_INPUT = 'test.upstreamAudioPreview';
+const VIDEO_INPUT = 'test.upstreamVideoPreview';
 
 suite('ParadisImageEditorRegistration', () => {
 	const disposables = new DisposableStore();
@@ -47,6 +49,13 @@ suite('ParadisImageEditorRegistration', () => {
 		disposables.add(service.registerEditor('*.{jpg,jpe,jpeg,png,bmp,gif,ico,webp,avif,svg}', { id: UPSTREAM_VIEW_TYPE, label: 'Image Preview', priority: RegisteredEditorPriority.builtin }, {}, {
 			createEditorInput: ({ resource }) => ({ editor: testInput(resource, UPSTREAM_INPUT) }),
 			createDiffEditorInput: ({ modified }) => ({ editor: testInput(modified.resource!, `diff:${UPSTREAM_INPUT}`) }),
+		}));
+		// The other two custom editors of extensions/media-preview (audio and video) must stay untouched.
+		disposables.add(service.registerEditor('*.{mp3,wav,ogg,oga}', { id: 'vscode.audioPreview', label: 'Audio Preview', priority: RegisteredEditorPriority.builtin }, {}, {
+			createEditorInput: ({ resource }) => ({ editor: testInput(resource, AUDIO_INPUT) }),
+		}));
+		disposables.add(service.registerEditor('*.{mp4,webm}', { id: 'vscode.videoPreview', label: 'Video Preview', priority: RegisteredEditorPriority.builtin }, {}, {
+			createEditorInput: ({ resource }) => ({ editor: testInput(resource, VIDEO_INPUT) }),
 		}));
 		disposables.add(registerParadisImageEditors(service, {
 			isEnabled: () => enabled,
@@ -90,6 +99,28 @@ suite('ParadisImageEditorRegistration', () => {
 			unreadableScheme: UPSTREAM_INPUT,
 			scmDiff: `diff:${IMAGE_INPUT}+${IMAGE_INPUT}`,
 			scmDiffDisabled: `diff:${UPSTREAM_INPUT}`,
+		});
+	});
+
+	test('only takes the image extensions and leaves audio, video and other files to their current editors', async () => {
+		const names = [
+			'a.jpg', 'a.jpe', 'a.jpeg', 'a.png', 'a.bmp', 'a.gif', 'a.ico', 'a.webp', 'a.avif', 'a.svg',
+			'a.mp4', 'a.webm', 'a.mp3', 'a.wav', 'a.ogg', 'a.oga', 'a.mov', 'a.m4a', 'a.flac',
+			'a.html', 'a.md', 'a.svgz', 'a.tiff',
+		];
+		const resolved: Record<string, string> = {};
+		for (const name of names) {
+			resolved[name] = await resolve({}, { resource: URI.file(`/workspace/${name}`) });
+		}
+		deepStrictEqual(resolved, {
+			'a.jpg': IMAGE_INPUT, 'a.jpe': IMAGE_INPUT, 'a.jpeg': IMAGE_INPUT, 'a.png': IMAGE_INPUT, 'a.bmp': IMAGE_INPUT,
+			'a.gif': IMAGE_INPUT, 'a.ico': IMAGE_INPUT, 'a.webp': IMAGE_INPUT, 'a.avif': IMAGE_INPUT, 'a.svg': IMAGE_INPUT,
+			'a.mp4': VIDEO_INPUT, 'a.webm': VIDEO_INPUT,
+			'a.mp3': AUDIO_INPUT, 'a.wav': AUDIO_INPUT, 'a.ogg': AUDIO_INPUT, 'a.oga': AUDIO_INPUT,
+			// Not handled by media-preview upstream either: the text/binary editor, as before.
+			'a.mov': TEXT_INPUT, 'a.m4a': TEXT_INPUT, 'a.flac': TEXT_INPUT,
+			// The fork's HTML / Markdown viewers register their own `*.html` / `*.md` globs; this registration never matches them.
+			'a.html': TEXT_INPUT, 'a.md': TEXT_INPUT, 'a.svgz': TEXT_INPUT, 'a.tiff': TEXT_INPUT,
 		});
 	});
 });
