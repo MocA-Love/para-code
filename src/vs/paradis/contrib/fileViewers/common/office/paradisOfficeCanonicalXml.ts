@@ -808,7 +808,7 @@ export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relati
 			}
 			const attributes = node.attributes.map(attribute => ({ name: `{${attribute.uri}}${attribute.local}`, value: isOfficeRelationshipAttribute(attribute) ? relationshipResolver(attribute.value) ?? `unresolved:${attribute.value}` : attribute.value }));
 			if (attributes.length > 1) {
-				attributes.sort((left, right) => canonicalCollator.compare(left.name, right.name) || canonicalCollator.compare(left.value, right.value));
+				attributes.sort((left, right) => compareCodeUnits(left.name, right.name) || compareCodeUnits(left.value, right.value));
 			}
 			for (const attribute of attributes) { head += `[${attribute.name}=${JSON.stringify(attribute.value)}]`; }
 		}
@@ -849,7 +849,7 @@ export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relati
 		}
 		if (!isKnownOfficeNamespace(node.uri)) { sourceRefs.push({ path: materializePath(link), hash: sha256Fingerprint(out.slice(start).join('')) }); }
 	};
-	const out: string[] = [];
+	const out: string[] = [canonicalVersionHead];
 	render(document.root, { parent: undefined, index: 0 }, false, {}, out);
 	const canonical = out.join('');
 	return { canonical, hash: rootHash === 'deferred' ? deferredRootHash : sha256Fingerprint(canonical), sourceRefs, markupCompatibility };
@@ -861,8 +861,21 @@ export function canonicalizeOfficeXml(document: ParadisOfficeXmlDocument, relati
  */
 const deferredRootHash: ParadisOfficeFingerprint = Object.freeze({ algorithm: 'sha256', value: '', byteLength: 0 });
 
-/** Same ordering as `String.prototype.localeCompare` with no arguments, without rebuilding a collator per call. */
-const canonicalCollator = new Intl.Collator();
+/**
+ * Version of the canonical form, written at the head of every canonical string so fingerprints from
+ * different forms never compare equal. Fingerprints are not persisted; both sides of a comparison are
+ * computed by the same build. Version 2 orders attributes by code units instead of the default collator.
+ */
+export const PARADIS_OFFICE_CANONICAL_XML_VERSION = 2;
+const canonicalVersionHead = `c14n${PARADIS_OFFICE_CANONICAL_XML_VERSION};`;
+
+/**
+ * Orders by UTF-16 code units. Canonical output must not depend on the ICU data or the locale of the
+ * process that hashes it, so a desktop, a remote server and a web worker agree on the same fingerprint.
+ */
+function compareCodeUnits(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
 const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const officeRelationshipNamespaces = new Set([
 	'http://schemas.openxmlformats.org/officeDocument/2006/relationships',

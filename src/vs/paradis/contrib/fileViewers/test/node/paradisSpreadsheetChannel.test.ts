@@ -8,16 +8,12 @@
 import { deepStrictEqual, strictEqual, throws } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
-import type { IParadisParseWorkbookOptions, IParadisSemanticDiagnosticsSummary, IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
+import type { IParadisParseWorkbookOptions, IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
 
 const workbook: IParadisWorkbookData = { sheets: [] };
-const diagnostics: IParadisSemanticDiagnosticsSummary = {
-	available: false, terminal: false, expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0,
-	expectedCells: 0, parsedCells: 0, unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: 'unsafe',
-};
 
 function createService(): IParadisSpreadsheetService {
-	return { parseWorkbook: async () => workbook, collectSemanticDiagnostics: async () => diagnostics };
+	return { parseWorkbook: async () => workbook };
 }
 
 suite('ParadisSpreadsheetChannel', () => {
@@ -69,7 +65,6 @@ suite('ParadisSpreadsheetChannel', () => {
 					default: throw new Error(`Unexpected workbook input: ${input}`);
 				}
 			},
-			collectSemanticDiagnostics: async () => diagnostics,
 		});
 		const results = await Promise.all([first, second]);
 
@@ -108,21 +103,14 @@ suite('ParadisSpreadsheetChannel', () => {
 		strictEqual(result, workbook);
 	});
 
-	test('forwards parse options and the separate diagnostics command to the service', async () => {
+	test('does not forward parse options, so diagnostics never run on the shared process thread', async () => {
 		const received: (IParadisParseWorkbookOptions | undefined)[] = [];
-		const diagnosed: string[] = [];
 		const channel = new ParadisSpreadsheetChannel(async () => ({
 			parseWorkbook: async (_input, options) => { received.push(options); return workbook; },
-			collectSemanticDiagnostics: async input => { diagnosed.push(input); return diagnostics; },
 		}));
 
 		await channel.call('window:1', 'parseWorkbook', ['a', { semanticDiagnostics: true }]);
-		await channel.call('window:1', 'parseWorkbook', ['b', { semanticDiagnostics: 'yes', other: 1 }]);
-		await channel.call('window:1', 'parseWorkbook', ['c']);
-		const result = await channel.call<IParadisSemanticDiagnosticsSummary>('window:1', 'collectSemanticDiagnostics', ['d']);
 
-		deepStrictEqual(received, [{ semanticDiagnostics: true }, undefined, undefined]);
-		deepStrictEqual(diagnosed, ['d']);
-		strictEqual(result, diagnostics);
+		deepStrictEqual(received, [undefined]);
 	});
 });

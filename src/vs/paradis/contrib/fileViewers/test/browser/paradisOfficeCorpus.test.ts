@@ -456,10 +456,10 @@ suite('ParadisOfficeCorpus', () => {
 		const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 		const XR = 'http://schemas.microsoft.com/office/spreadsheetml/2014/revision';
 		const workbookXml = (extra: string) => `<workbook xmlns="${S}" xmlns:r="${R}" xmlns:mc="${MC}" xmlns:xr="${XR}" xmlns:x15ac="http://schemas.microsoft.com/office/spreadsheetml/2010/11/ac" mc:Ignorable="x15ac xr"><mc:AlternateContent><mc:Choice Requires="x15"><x15ac:absPath url="C:\\"/></mc:Choice></mc:AlternateContent><xr:revisionPtr revIDLastSave="0"/>${extra}<sheets><sheet name="One" sheetId="1" r:id="rIdSheet"/></sheets></workbook>`;
-		const build = (extra: string) => buildOpcFixture({
+		const build = (extra: string, sheetExtra = '') => buildOpcFixture({
 			parts: [
 				['/xl/workbook.xml', workbookXml(extra), CT.workbook],
-				['/xl/worksheets/sheet1.xml', `<worksheet xmlns="${S}"><sheetData/></worksheet>`, CT.worksheet],
+				['/xl/worksheets/sheet1.xml', `<worksheet xmlns="${S}" xmlns:xr="${XR}"><sheetData/>${sheetExtra}</worksheet>`, CT.worksheet],
 			],
 			relationships: [
 				{ id: 'rIdRoot', type: `${R}/officeDocument`, target: 'xl/workbook.xml' },
@@ -468,6 +468,8 @@ suite('ParadisOfficeCorpus', () => {
 		});
 		strictEqual((await parseSpreadsheet(await build(''))).completeness.unknownElements, 0);
 		strictEqual((await parseSpreadsheet(await build('<foo:bar xmlns:foo="urn:example:foo"/>'))).completeness.unknownElements, 1);
+		// The workbook's mc:Ignorable does not reach the worksheet, which declares none of its own.
+		strictEqual((await parseSpreadsheet(await build('', '<xr:revisionPtr/>'))).completeness.unknownElements, 1);
 	});
 
 	test('hashes canonical XML like the platform SHA-256 across block boundaries', async () => {

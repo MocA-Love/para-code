@@ -764,7 +764,10 @@ interface SharedStringRecord {
 
 interface SemanticCounters {
 	unknownElements: number;
-	/** Namespaces the current part declares in `mc:Ignorable` (ECMA-376 Part 3 §10.1). */
+	/**
+	 * Namespaces the part being read declares in `mc:Ignorable` (ECMA-376 Part 3 §10.1). Set from the
+	 * part's root and scoped to that part by `inPart`, so one part's declarations never apply to the next.
+	 */
 	ignorableNamespaces?: ReadonlySet<string>;
 	unknownAttributes: number;
 	unresolvedReferences: number;
@@ -876,7 +879,7 @@ export async function parseSpreadsheetSemantic(
 			unresolvedStyleRefs: 0,
 			cellsWithDiagonalStyleRefs: 0,
 		};
-		const workbook = parseWorkbook(workbookPart.document, limits, counters, checkpoint);
+		const workbook = inPart(counters, () => parseWorkbook(workbookPart.document, limits, counters, checkpoint));
 		const referencedWorksheetRelationships = new Set(workbook.sheets.map(sheet => sheet.relationshipId));
 		const requestedPartIds = new Set<string>([
 			contentTypesPartId,
@@ -916,8 +919,8 @@ export async function parseSpreadsheetSemantic(
 		}
 		const stylesPart = stylesRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(stylesRelationship)) : undefined;
 		const sharedStringsPart = sharedStringsRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(sharedStringsRelationship)) : undefined;
-		const styles = parseStyles(stylesPart, counters, checkpoint);
-		const sharedStrings = parseSharedStrings(sharedStringsPart, limits, counters, checkpoint);
+		const styles = inPart(counters, () => parseStyles(stylesPart, counters, checkpoint));
+		const sharedStrings = inPart(counters, () => parseSharedStrings(sharedStringsPart, limits, counters, checkpoint));
 		const sheets: ParadisSemanticSheet[] = [];
 		const seenRelationshipIds = new Set<string>();
 		const seenSheetPartIds = new Set<string>();
@@ -938,7 +941,7 @@ export async function parseSpreadsheetSemantic(
 			}
 			seenSheetPartIds.add(partId);
 			const part = requiredParsedPart(reader.parsed, partId);
-			sheets.push(parseWorksheet(part, partId, order, sheetRecord, sharedStrings, stylesPart, styles, limits, counters, checkpoint));
+			sheets.push(inPart(counters, () => parseWorksheet(part, partId, order, sheetRecord, sharedStrings, stylesPart, styles, limits, counters, checkpoint)));
 		}
 		const resolvedStyles: ParadisSpreadsheetStyles = {
 			...styles,
@@ -3206,6 +3209,16 @@ function spreadsheetRoot(document: ParadisOfficeXmlDocument, local: string): Xml
 }
 
 const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+
+/** Runs the reader of one part with no `mc:Ignorable` in scope before or after it. */
+function inPart<T>(counters: SemanticCounters, read: () => T): T {
+	counters.ignorableNamespaces = undefined;
+	try {
+		return read();
+	} finally {
+		counters.ignorableNamespaces = undefined;
+	}
+}
 
 /** Namespaces listed in the root's `mc:Ignorable`, resolved through the root's own bindings. */
 function markupCompatibilityIgnorable(root: XmlElement): ReadonlySet<string> {

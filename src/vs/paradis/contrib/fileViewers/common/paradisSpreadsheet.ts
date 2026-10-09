@@ -386,7 +386,11 @@ export interface IParadisSemanticDiagnosticsSummary {
 	readonly mismatchCount: number;
 	/** 食い違いの内訳(種類→件数)。 */
 	readonly mismatchesByKind?: { readonly [kind: string]: number };
-	/** 解析を回せなかった/打ち切った理由。パッケージの検査で落ちたときは `unsafe` などのコード。 */
+	/**
+	 * 解析を回せなかった/打ち切った理由のコード。パッケージの検査で落ちたときは `unsafe`・`malformed` など、
+	 * 締め切りや worker のヒープの上限は `limitExceeded`、混み合って走らせなかったときは `busy`（頼み直せる）。
+	 * チャネルの `collectSemanticDiagnostics`（表示とは別の呼び出し。worker で走る）が返す。
+	 */
 	readonly unavailableReason?: string;
 	/** 解析にかかった時間（ミリ秒）。 */
 	readonly elapsedMilliseconds?: number;
@@ -560,9 +564,4 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
 	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
-	/**
-	 * 意味解析の到達度だけを返す。表示（`parseWorkbook`）とは別に呼び、表示を待たせない。
-	 * 失敗しても例外にせず、`available: false` と理由のコードを返す。
-	 */
-	collectSemanticDiagnostics(base64Content: string): Promise<IParadisSemanticDiagnosticsSummary>;
 }
