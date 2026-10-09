@@ -1100,6 +1100,8 @@ interface IXlsxExtras {
 const MAX_CHART_XML_CHARACTERS = 2 * 1024 * 1024;
 /** 1 シートで renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
 const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
+/** ブック全体で renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_WORKBOOK_DRAWING_XML_CHARACTERS = 32 * 1024 * 1024;
 
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
@@ -1155,6 +1157,7 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const drawingXmlCharactersBySheet = new Map<number, number>();
+	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] } = {};
@@ -1275,7 +1278,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			const xml = await files[name].async('text');
 			// renderer の DOM で読むので、シートごとに drawing とグラフの XML の合計に上限を掛ける。
 			const used = drawingXmlCharactersBySheet.get(key) ?? 0;
-			if (used + xml.length > MAX_SHEET_DRAWING_XML_CHARACTERS) {
+			if (used + xml.length > MAX_SHEET_DRAWING_XML_CHARACTERS || workbookDrawingCharacters + xml.length > MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
 				(drawingsBySheet[key] ??= []).push({ xml: '', media: {}, omitted: true });
 				continue;
 			}
@@ -1301,7 +1304,8 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 					if (id && chartFile) {
 						const chartXml = await chartFile.async('text');
 						// 上限を越えるグラフは渡さない（renderer は描かずに代替表示に数える）。
-						if (chartXml.length <= MAX_CHART_XML_CHARACTERS && sheetCharacters + chartXml.length <= MAX_SHEET_DRAWING_XML_CHARACTERS) {
+						if (chartXml.length <= MAX_CHART_XML_CHARACTERS && sheetCharacters + chartXml.length <= MAX_SHEET_DRAWING_XML_CHARACTERS
+							&& workbookDrawingCharacters + (sheetCharacters - used) + chartXml.length <= MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
 							charts[id[1]] = chartXml;
 							sheetCharacters += chartXml.length;
 						}
@@ -1309,6 +1313,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 				}
 			}
 			drawingXmlCharactersBySheet.set(key, sheetCharacters);
+			workbookDrawingCharacters += sheetCharacters - used;
 			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
