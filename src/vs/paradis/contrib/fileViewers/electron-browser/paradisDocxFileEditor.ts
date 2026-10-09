@@ -279,6 +279,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	/** 混み合っていて解析できなかったときの、頼み直しの予約。 */
 	private readonly _semanticRetry = this._register(new MutableDisposable());
 	private _semanticRetries = 0;
+	/** 混み合って断られた中身。違う中身を頼むときに、頼み直しの回数を数え直すために覚える。 */
+	private _semanticBusyBytes: Uint8Array | undefined;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticBytes: Uint8Array | undefined;
@@ -961,7 +963,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		inspector.setAnalysis({
 			...(analysis ? { counts: analysis.counts } : {}),
 			...paradisWordExclusionItems(this._packageExclusions),
-			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code)) } : {}),
+			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code, this._semanticRetrying())) } : {}),
 		});
 		if (wasVisible) {
 			this._setInspectorVisible(true);
@@ -979,7 +981,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		return result.ok
 			? { kind: 'analyzed', counts: result.counts, alternatives, ignoredParts, ...extra }
-			: { kind: 'failed', code: result.code, alternatives, ignoredParts, ...extra };
+			: { kind: 'failed', code: result.code, alternatives, ignoredParts, retrying: this._semanticRetrying(), ...extra };
 	}
 
 	private _setInspectorVisible(visible: boolean): void {
@@ -999,6 +1001,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._markerByLocator = undefined;
 		this._semanticRetry.clear();
 		this._semanticRetries = 0;
+		this._semanticBusyBytes = undefined;
+	}
+
+	/** 混み合って解析できなかった文書を、まだ頼み直す予定があるか。 */
+	private _semanticRetrying(): boolean {
+		return this._semanticRetries <= PARADIS_WORD_SEMANTIC_BUSY_RETRIES;
 	}
 
 	/**
@@ -1012,6 +1020,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		if (this._semanticBytes && equalParadisWordBytes(this._semanticBytes, bytes)) {
 			return;
+		}
+		// 混み合って断られた中身と違う文書なら、頼み直しの回数を数え直す。
+		if (this._semanticBusyBytes && !equalParadisWordBytes(this._semanticBusyBytes, bytes)) {
+			this._semanticRetries = 0;
+			this._semanticBusyBytes = undefined;
 		}
 		this._semanticRequest.value?.cancel();
 		const request = new CancellationTokenSource();
@@ -1035,6 +1048,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			if (!result.ok && result.code === 'busy') {
 				// 混み合っていただけなので、覚えた中身を捨てて、次の描き直しか少し後に頼み直す。
 				this._semanticBytes = undefined;
+				this._semanticBusyBytes = bytes;
 				if (this._semanticRetries++ < PARADIS_WORD_SEMANTIC_BUSY_RETRIES) {
 					this._semanticRetry.value = disposableTimeout(() => {
 						if (isEqual(this._currentResource, resource) && inputEpoch === this._inputEpoch && !this._semanticBytes) {
@@ -1042,6 +1056,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 						}
 					}, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS);
 				}
+			} else {
+				this._semanticRetries = 0;
+				this._semanticBusyBytes = undefined;
 			}
 			if (result.ok) {
 				this._semanticSearch = new ParadisOfficeSemanticSearch({

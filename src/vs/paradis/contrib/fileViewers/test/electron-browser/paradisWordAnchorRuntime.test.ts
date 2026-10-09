@@ -127,4 +127,62 @@ suite('ParadisWordAnchorRuntime', () => {
 			runtime.dispose();
 		}
 	});
+
+	test('reveals in the side it was asked for, finds unmarked text without the comment notes, and returns focus after closing', () => {
+		const runtime = loadRuntime();
+		try {
+			const document = runtime.document;
+			const side = (id: string, text: string) => element(document, 'div', { id },
+				element(document, 'section', {}, element(document, 'p', { 'data-paradis-p': 'b#0' }, text)),
+			);
+			const original = side('doc-original', 'Total 12');
+			const modified = side('doc-modified', 'Total 15');
+			document.body.append(original, modified);
+			runtime.anchors.setComments(modified, modified, [{ marker: 'b#0', author: 'Reviewer', text: 'Check the tax line' }]);
+			const revealed = (root: Element, message: { readonly marker?: string; readonly context?: string; readonly focus: string }) => {
+				runtime.window.CSS.highlights?.delete('paradis-word-reveal');
+				const found = runtime.anchors.reveal(root, { context: '', matchCase: true, ...message });
+				const range = [...(runtime.window.CSS.highlights?.get('paradis-word-reveal') ?? [])][0] as Range | undefined;
+				return { found, text: range?.toString(), inside: range ? root.contains(range.startContainer) : undefined };
+			};
+			const alternating = [
+				revealed(modified, { marker: 'b#0', focus: 'Total' }),
+				revealed(original, { marker: 'b#0', focus: 'Total' }),
+				revealed(modified, { marker: 'b#0', focus: 'Total' }),
+			];
+			const unmarked = [revealed(modified, { context: 'Total 15', focus: '15' }), revealed(modified, { context: 'Check the tax line', focus: 'tax' })];
+
+			const opener = element(document, 'button', {}, 'open');
+			document.body.appendChild(opener);
+			opener.focus();
+			runtime.anchors.setMarks(modified, [{ marker: 'b#0', marks: [{ kind: 'field', start: 0, end: 5, rows: [['kind', 'field']] }] }], { title: 'Info', close: 'Close' }, 'final');
+			const target = modified.querySelector('p')!.firstChild!;
+			const range = document.createRange();
+			range.setStart(target, 0);
+			range.setEnd(target, 5);
+			const rect = range.getBoundingClientRect();
+			modified.querySelector('p')!.dispatchEvent(new (document.defaultView as Window & typeof globalThis).MouseEvent('click', { bubbles: true, clientX: rect.left + 1, clientY: rect.top + rect.height / 2 }));
+			const close = document.querySelector<HTMLButtonElement>('.paradis-word-popover-close');
+			const icon = close?.querySelector('svg') !== null && close?.textContent === '';
+			close?.click();
+
+			deepStrictEqual({ alternating, unmarked, icon, focusReturned: document.activeElement === opener, closed: document.querySelector('.paradis-word-popover') === null }, {
+				alternating: runtime.window.CSS.highlights ? [
+					{ found: true, text: 'Total', inside: true },
+					{ found: true, text: 'Total', inside: true },
+					{ found: true, text: 'Total', inside: true },
+				] : [{ found: true, text: undefined, inside: undefined }, { found: true, text: undefined, inside: undefined }, { found: true, text: undefined, inside: undefined }],
+				unmarked: [
+					{ found: true, text: runtime.window.CSS.highlights ? '15' : undefined, inside: runtime.window.CSS.highlights ? true : undefined },
+					{ found: false, text: undefined, inside: undefined },
+				],
+				icon: true,
+				focusReturned: true,
+				closed: true,
+			});
+		} finally {
+			runtime.anchors.closePopover();
+			runtime.dispose();
+		}
+	});
 });
