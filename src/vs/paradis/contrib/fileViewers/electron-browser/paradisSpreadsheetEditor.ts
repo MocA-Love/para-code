@@ -1216,7 +1216,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		inspector.setViewState(viewState);
 		inspector.setComparison([], INCOMPLETE_SPREADSHEET_MANIFEST, 'degraded');
 		inspector.setPlaceholders(placeholders);
-		inspector.setComments(workbook.sheets.flatMap(sheet => (sheet.comments ?? []).map(comment => ({ sheet: sheet.name, comment }))));
+		inspector.setComments(workbook.sheets.flatMap(sheet => (sheet.comments ?? []).map(comment => ({ sheet: sheet.name, comment }))), workbook.sheets.reduce((sum, sheet) => sum + (sheet.commentsOmitted ?? 0), 0));
 	}
 
 	private _navigateToLogicalLocator(locator: string, anchor?: string): void {

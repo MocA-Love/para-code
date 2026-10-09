@@ -332,6 +332,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 	private changes: readonly ParadisOfficeChange[] = [];
 	private placeholders: readonly ParadisOfficePlaceholder[] = [];
 	private comments: readonly ParadisSpreadsheetInspectorComment[] = [];
+	private commentsOmitted = 0;
 	private commentPage = 0;
 	private results: readonly ParadisOfficeSearchResult[] = [];
 	private completeness: ParadisOfficeCompletenessManifest | undefined;
@@ -369,9 +370,10 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.render();
 	}
 
-	/** セルのメモとスレッド形式のコメントを、本文ごと並べる。 */
-	setComments(comments: readonly ParadisSpreadsheetInspectorComment[]): void {
+	/** セルのメモとスレッド形式のコメントを、本文ごと並べる。`omitted` は上限を越えて読まなかった数。 */
+	setComments(comments: readonly ParadisSpreadsheetInspectorComment[], omitted = 0): void {
 		this.comments = [...comments];
+		this.commentsOmitted = omitted;
 		this.commentPage = 0;
 		this.render();
 	}
@@ -473,6 +475,11 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		list.setAttribute('aria-label', localize('paradis.spreadsheet.comments', "メモとコメント"));
 		const count = dom.append(list, dom.$('span'));
 		count.textContent = localize('paradis.spreadsheet.commentCount', "メモとコメント {0} 件", this.comments.length);
+		if (this.commentsOmitted > 0) {
+			const omitted = dom.append(list, dom.$('span.paradis-spreadsheet-comment-omitted'));
+			omitted.setAttribute('role', 'note');
+			omitted.textContent = localize('paradis.spreadsheet.commentsOmitted', "コメントが多いため、{0} 件を表示していません。", this.commentsOmitted);
+		}
 		const pageCount = Math.max(1, Math.ceil(this.comments.length / INSPECTOR_PAGE_SIZE));
 		this.commentPage = Math.min(this.commentPage, pageCount - 1);
 		for (const { sheet, comment } of this.comments.slice(this.commentPage * INSPECTOR_PAGE_SIZE, (this.commentPage + 1) * INSPECTOR_PAGE_SIZE)) {
@@ -568,7 +575,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 			});
 		}
 
-		if (this.comments.length > 0) {
+		if (this.comments.length > 0 || this.commentsOmitted > 0) {
 			this.renderComments();
 		}
 

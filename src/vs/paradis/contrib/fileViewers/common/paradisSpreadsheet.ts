@@ -515,6 +515,8 @@ export interface IParadisSheetData {
 	readonly shapes?: readonly IParadisRenderShape[];
 	/** セルのメモとコメント（行、列の順）。 */
 	readonly comments?: readonly IParadisCellComment[];
+	/** 上限（シート・ブック）を越えて出さなかったメモとコメントの数。 */
+	readonly commentsOmitted?: number;
 	/** 描けなかった図形(renderer 側で付与)。代替表示に数える。 */
 	readonly undrawnObjects?: readonly IParadisUndrawnObject[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */

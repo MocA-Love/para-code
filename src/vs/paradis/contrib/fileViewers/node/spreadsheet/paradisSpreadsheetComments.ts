@@ -27,7 +27,34 @@ export const PARADIS_SPREADSHEET_COMMENT_LIMITS = Object.freeze({
 	dateCharacters: 64,
 	commentsPerWorkbook: 20_000,
 	workbookCharacters: 4_000_000,
+	/** 1 つの投稿の @メンションの数。 */
+	mentionsPerEntry: 32,
+	/** ブックの文字数の予算に数える、@メンション 1 つ分の重さ（renderer へ送る `{ start, length }` の大きさの目安）。 */
+	mentionCharacters: 16,
 });
+
+/** 1 シートのコメントと、上限を越えて出さなかったコメントの数。 */
+export interface IParadisSpreadsheetSheetComments {
+	readonly comments: IParadisCellComment[];
+	readonly omitted: number;
+}
+
+/** @メンションを始まりの順に並べ、前と重なるもの（`start < 前の終わり`）を捨て、上限の数で切る。 */
+function boundedMentions(mentions: readonly { readonly start: number; readonly length: number }[]): { readonly start: number; readonly length: number }[] {
+	const kept: { readonly start: number; readonly length: number }[] = [];
+	let end = 0;
+	for (const mention of [...mentions].sort((left, right) => left.start - right.start)) {
+		if (kept.length >= PARADIS_SPREADSHEET_COMMENT_LIMITS.mentionsPerEntry) {
+			break;
+		}
+		if (mention.start < end) {
+			continue;
+		}
+		kept.push(mention);
+		end = mention.start + mention.length;
+	}
+	return kept;
+}
 
 /** ブック全体で、まだ読めるコメントの数と文字数。シートをまたいで同じものを渡す。 */
 export interface IParadisSpreadsheetCommentBudget {
@@ -135,9 +162,15 @@ function readPersons(xml: string | undefined): Map<string, string> {
  * ブック全体の残りで、使った分を減らす。使い切ったら、残りのコメントは返さない。
  */
 export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetCommentParts, budget: IParadisSpreadsheetCommentBudget = createParadisSpreadsheetCommentBudget()): IParadisCellComment[] {
+	return readParadisSpreadsheetSheetComments(parts, budget).comments;
+}
+
+/** `readParadisSpreadsheetComments` と同じく読み、上限（シートとブック）を越えて出さなかった数も返す。 */
+export function readParadisSpreadsheetSheetComments(parts: IParadisSpreadsheetCommentParts, budget: IParadisSpreadsheetCommentBudget = createParadisSpreadsheetCommentBudget()): IParadisSpreadsheetSheetComments {
 	const persons = readPersons(parts.personsXml);
 	const result: IParadisCellComment[] = [];
 	const threadRefs = new Set<string>();
+	let omitted = 0;
 
 	const threaded = parse(parts.threadedCommentsXml);
 	if (threaded) {
@@ -145,6 +178,10 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 		const replies: { parentId: string; entry: IParadisCellCommentEntry; order: number }[] = [];
 		children(threaded, 'threadedComment').forEach((element, order) => {
 			if (roots.size + replies.length >= PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerSheet) {
+				// 返信は 1 件に数えない（親のコメントに付くだけ）。
+				if (!attribute(element, 'parentId')) {
+					omitted++;
+				}
 				return;
 			}
 			const ref = attribute(element, 'ref');
@@ -154,10 +191,10 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 				return;
 			}
 			const text = textOf(children(element, 'text')[0], true);
-			const mentions = children(children(element, 'mentions')[0] ?? element, 'mention').map(mention => ({
+			const mentions = boundedMentions(children(children(element, 'mentions')[0] ?? element, 'mention').map(mention => ({
 				start: Number(attribute(mention, 'startIndex')),
 				length: Number(attribute(mention, 'length')),
-			})).filter(mention => Number.isSafeInteger(mention.start) && Number.isSafeInteger(mention.length) && mention.start >= 0 && mention.length > 0 && mention.start + mention.length <= text.length);
+			})).filter(mention => Number.isSafeInteger(mention.start) && Number.isSafeInteger(mention.length) && mention.start >= 0 && mention.length > 0 && mention.start + mention.length <= text.length));
 			const dT = attribute(element, 'dT');
 			const date = dT === undefined ? undefined : clip(dT, PARADIS_SPREADSHEET_COMMENT_LIMITS.dateCharacters);
 			const entry: IParadisCellCommentEntry = {
@@ -190,12 +227,13 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 	if (legacy) {
 		const authors = children(children(legacy, 'authors')[0] ?? legacy, 'author').map(author => clip(author.children.map(child => child.kind === 'text' ? child.value : '').join(''), PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters));
 		for (const element of children(children(legacy, 'commentList')[0] ?? legacy, 'comment')) {
-			if (result.length >= PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerSheet) {
-				break;
-			}
 			const ref = attribute(element, 'ref')?.toUpperCase();
 			const position = ref ? cellPosition(ref) : undefined;
 			if (!ref || !position || threadRefs.has(ref)) {
+				continue;
+			}
+			if (result.length >= PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerSheet) {
+				omitted++;
 				continue;
 			}
 			const author = authors[Number(attribute(element, 'authorId'))] ?? '';
@@ -205,13 +243,16 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 	result.sort((left, right) => left.row - right.row || left.column - right.column);
 	const kept: IParadisCellComment[] = [];
 	for (const comment of result) {
-		const characters = comment.entries.reduce((sum, entry) => sum + entry.text.length + entry.author.length, 0);
+		const characters = comment.entries.reduce((sum, entry) => sum + entry.text.length + entry.author.length + (entry.mentions?.length ?? 0) * PARADIS_SPREADSHEET_COMMENT_LIMITS.mentionCharacters, 0);
 		if (budget.comments <= 0 || characters > budget.characters) {
+			// ブックの予算を使い切った。残りは出さずに数だけ返す。
+			omitted += result.length - kept.length;
+			budget.comments = 0;
 			break;
 		}
 		budget.comments--;
 		budget.characters -= characters;
 		kept.push(comment);
 	}
-	return kept;
+	return { comments: kept, omitted };
 }
