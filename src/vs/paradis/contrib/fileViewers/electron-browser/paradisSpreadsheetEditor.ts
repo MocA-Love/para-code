@@ -48,6 +48,7 @@ import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadis
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
+import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { collectSpreadsheetSemanticDiagnostics, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
@@ -567,8 +568,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _loadGeneration = 0;
 	/** 表示は描き終え、意味解析の到達度を待っている間だけ真。 */
 	private _semanticPending = false;
-	/** 描いた後で読めなかった画像（図形 → シート名）。代替表示に数える。 */
-	private readonly _brokenImages = new Map<IParadisRenderShape, string>();
+	/** 描いた後で読めなかった画像（図形 → シート名）。代替表示に数え、描き直しはまとめて 1 回にする。 */
+	private readonly _brokenImages = this._register(new ParadisSpreadsheetBrokenImages(() => {
+		const current = this._workbook;
+		if (current) {
+			this._renderSemanticUi(current, this._currentSpreadsheetViewState());
+		}
+	}));
 	/** 走っている詳しい解析の取り消し。読み直し・閉じる・破棄で取り消す（shared process の待ち行列と worker から外れる）。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<IDisposable>());
 
@@ -952,15 +958,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._renderSemanticUi(this._workbook, this._currentSpreadsheetViewState());
 	}
 
-	/** 読めなかった画像を覚えて、リボンと変更点パネルの代替表示を描き直す。別のブックの知らせは捨てる。 */
+	/** 読めなかった画像を覚える（描き直しは後でまとめて 1 回）。別のブックの知らせは捨てる。 */
 	private _noteBrokenImage(workbook: IParadisWorkbookData | undefined, sheetName: string, shape: IParadisRenderShape): void {
 		// 診断が届くとブックの入れ物は作り直されるが、シートの中身は同じ。中身で見分ける。
 		const current = this._workbook;
-		if (!workbook || !current || workbook.sheets !== current.sheets || this._brokenImages.has(shape)) {
+		if (!workbook || !current || workbook.sheets !== current.sheets) {
 			return;
 		}
-		this._brokenImages.set(shape, sheetName);
-		this._renderSemanticUi(current, this._currentSpreadsheetViewState());
+		this._brokenImages.add(shape, sheetName);
 	}
 
 	private _currentSpreadsheetViewState(): ParadisSpreadsheetViewState {
@@ -1021,7 +1026,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			? localize('paradis.spreadsheet.searchUnavailableAdapter', "この形式では検索を利用できません。")
 			: localize('paradis.spreadsheet.searchDisabled', "検索は設定で無効になっています。"));
 		// 代替表示は、描けなかった図形（EMF などの画像・対応していないグラフや形）だけを数える。
-		const placeholders = [...spreadsheetUndrawnPlaceholders(workbook.sheets), ...spreadsheetBrokenImagePlaceholders(this._brokenImages)];
+		const placeholders = [...spreadsheetUndrawnPlaceholders(workbook.sheets), ...spreadsheetBrokenImagePlaceholders(this._brokenImages.entries)];
 		// 表示そのものは互換の投影(exceljs)で作っているので、再現度は常に「近似」と申告する。
 		// 意味解析の結果は「ファイルをどこまで読めたか」を伝えるためだけに使い、再現度の主張には
 		// 使わない(読めたことと、同じ見た目に描けたことは別の話)。
