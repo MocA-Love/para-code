@@ -16,7 +16,7 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { inspectParadisMcpTomlSection, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexToolTimeoutLine, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -603,8 +603,8 @@ export class ParadisMcpSetupController {
 	}
 
 	/**
-	 * 利用者がセットアップ済みの私たちの登録（今のポートを指したもの）に、ツール呼び出しの上限が無ければ
-	 * 入れ直す。上限を足す前に登録した人の分を直すため。未設定の人の設定は書かない。同じ設定ファイルと
+	 * 利用者がセットアップ済みの私たちの登録（今のポートを指したもの）に、ツール呼び出しの上限（Codex は
+	 * 並行の呼び出しの許可も）が無ければ入れ直す。上限を足す前に登録した人の分を直すため。未設定の人の設定は書かない。同じ設定ファイルと
 	 * ポートの組は、成否にかかわらず 1 回しか試さない（印は {@link IParadisMcpSetupControllerOptions.upgradeMarkerPath}）。
 	 */
 	async upgradeToolTimeouts(gatewayPort: number | undefined): Promise<void> {
@@ -652,10 +652,13 @@ export class ParadisMcpSetupController {
 			try {
 				const configPath = join(codexHome, 'config.toml');
 				const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
-				// 節を丸ごと書き直さず、`tool_timeout_sec` の 1 行だけを足す（利用者が足した行を消さない）。
-				const content = original.exists ? paradisAddCodexToolTimeoutLine(original.text, gatewayPort) : undefined;
-				if (content !== undefined) {
-					await attempt(`codex:${configPath}:${gatewayPort}`, () => writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem));
+				// 節を丸ごと書き直さず、無い行（`tool_timeout_sec`・`supports_parallel_tool_calls`）だけを足す
+				// （利用者が足した行を消さない）。`supports_parallel_tool_calls` は後の版で足したので印を分け、
+				// `tool_timeout_sec` の入れ直しを試した人にも 1 回だけ入れる。
+				const added = original.exists ? paradisAddCodexMissingTableLines(original.text, gatewayPort) : undefined;
+				if (added !== undefined) {
+					const markerSuffix = added.keys.includes('supports_parallel_tool_calls') ? ':supports_parallel_tool_calls' : '';
+					await attempt(`codex:${configPath}:${gatewayPort}${markerSuffix}`, () => writeConfigAtomic(configPath, original, added.text, this.options.configReadFileSystem));
 				}
 			} catch {
 				this.options.log('Codex MCP tool timeout upgrade failed');
