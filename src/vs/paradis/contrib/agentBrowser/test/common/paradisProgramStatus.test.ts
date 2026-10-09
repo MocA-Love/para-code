@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -184,6 +184,43 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			],
 			permissionAlone: false,
 			closedWhileClosed: false,
+		});
+	});
+
+	test('a command line the output wrote with OSC 633 ; E (nonce not matched) does not open the gate', () => {
+		const foreground = (current: { command?: string; isTrusted?: boolean } | undefined, processName: string) => paradisProgramStatusForeground(paradisTrustedCommandLine(current), processName);
+		assert.deepStrictEqual({
+			untrustedClaude: foreground({ command: 'claude', isTrusted: false }, 'cat'),
+			untrustedVersion: foreground({ command: '1.2.3', isTrusted: false }, 'less'),
+			trustMissing: foreground({ command: 'claude' }, 'zsh'),
+			trustedClaude: foreground({ command: 'claude --resume', isTrusted: true }, 'zsh'),
+			untrustedButProcessIsClaude: foreground({ command: 'cat x', isTrusted: false }, '2.1.295'),
+		}, {
+			untrustedClaude: undefined,
+			untrustedVersion: undefined,
+			trustMissing: undefined,
+			trustedClaude: 'claude',
+			untrustedButProcessIsClaude: 'claude',
+		});
+	});
+
+	test('the last state dropped by the throttle is passed once after the mute, so a fast working then done does not stay working', () => {
+		let now = 0;
+		const gate = new ParadisProgramStatusGate(() => now);
+		gate.query('claude');
+		const results = ['idle', 'working', 'done', 'working', 'done'].map(state => gate.accept({ state: state as 'idle' | 'working' | 'done' }));
+		const dueAt = gate.pendingDueAt;
+		const early = gate.releasePending();
+		now = dueAt!;
+		const released = gate.releasePending();
+		const again = gate.releasePending();
+		assert.deepStrictEqual({ results, dueAt, early, released, again, pendingAfter: gate.pendingDueAt }, {
+			results: [true, true, true, true, false],
+			dueAt: PARADIS_PROGRAM_STATUS_MUTE_MS,
+			early: undefined,
+			released: { state: 'done' },
+			again: undefined,
+			pendingAfter: undefined,
 		});
 	});
 });

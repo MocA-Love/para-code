@@ -145,11 +145,14 @@ function commandName(commandLine: string): string | undefined {
 
 /**
  * 問い合わせが来たときの前面のコマンドから、答えてよいかを決める。シェル統合が報告した実行中のコマンド行と、
- * ターミナルのプロセス名を見る（ネイティブの Claude Code はプロセス名が版の番号になる）。どちらでも
- * Claude Code か、中身を確かめられない ssh・WSL などなら答える。分からなければ答えない。
+ * ターミナルのプロセス名（pty の前面のプロセス。出力では変えられない。ネイティブの Claude Code は版の番号になる）
+ * を見る。どちらかが Claude Code か、中身を確かめられない ssh・WSL などなら答える。分からなければ答えない。
+ *
+ * `trustedCommandLine` には、シェル統合の nonce が合ったコマンド行（`isTrusted`）だけを渡すこと。出力に
+ * `OSC 633 ; E` を書けば、nonce が合わなくてもコマンド行は上書きされる（信頼できない印が付くだけ）。
  */
-export function paradisProgramStatusForeground(commandLine: string | undefined, processName: string | undefined): ParadisProgramStatusForeground | undefined {
-	const names = [commandLine !== undefined ? commandName(commandLine) : undefined, processName !== undefined ? commandName(processName) : undefined];
+export function paradisProgramStatusForeground(trustedCommandLine: string | undefined, processName: string | undefined): ParadisProgramStatusForeground | undefined {
+	const names = [trustedCommandLine !== undefined ? commandName(trustedCommandLine) : undefined, processName !== undefined ? commandName(processName) : undefined];
 	if (names.some(name => name === 'claude' || name === 'claude.exe' || (name !== undefined && /^\d+\.\d+\.\d+$/.test(name)))) {
 		return 'claude';
 	}
@@ -157,6 +160,14 @@ export function paradisProgramStatusForeground(commandLine: string | undefined, 
 		return 'passthrough';
 	}
 	return undefined;
+}
+
+/**
+ * シェル統合が報告している実行中のコマンド行のうち、nonce が合ったもの（{@link paradisProgramStatusForeground} へ渡してよいもの）。
+ * 合っていない（`isTrusted` が true でない）なら undefined。
+ */
+export function paradisTrustedCommandLine(current: { readonly command?: string; readonly isTrusted?: boolean } | undefined): string | undefined {
+	return current?.isTrusted === true ? current.command : undefined;
 }
 
 /** 答えた後、状態が来なくなってからも受け付けを開けておく長さ。 */
@@ -178,6 +189,8 @@ export class ParadisProgramStatusGate {
 	private mutedUntil = 0;
 	private lastKey: string | undefined;
 	private readonly changes: number[] = [];
+	/** 間引きで捨てた最後の状態。無視が明けたら 1 回だけ渡す（working → done が速く続いても working で止まらない）。 */
+	private pending: IParadisProgramStatus | undefined;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
@@ -192,7 +205,23 @@ export class ParadisProgramStatusGate {
 		}
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
+		this.pending = undefined;
 		return true;
+	}
+
+	/** 間引きで捨てた状態があれば、それを渡してよくなる時刻。 */
+	get pendingDueAt(): number | undefined {
+		return this.pending !== undefined ? this.mutedUntil : undefined;
+	}
+
+	/** 無視が明けた後に呼ぶ。捨てた最後の状態を、まだ受け付けが開いていれば 1 回だけ返す。 */
+	releasePending(): IParadisProgramStatus | undefined {
+		const pending = this.pending;
+		if (pending === undefined || this.now() < this.mutedUntil) {
+			return undefined;
+		}
+		this.pending = undefined;
+		return this.accept(pending) ? pending : undefined;
 	}
 
 	/** 状態が来た。shared process へ渡すなら true。 */
@@ -205,9 +234,11 @@ export class ParadisProgramStatusGate {
 		if (status.state === 'clear') {
 			this.openUntil = undefined;
 			this.lastKey = undefined;
+			this.pending = undefined;
 			return true;
 		}
 		if (now < this.mutedUntil) {
+			this.pending = status;
 			return false;
 		}
 		const key = `${status.state}:${status.kind ?? ''}`;
@@ -221,6 +252,7 @@ export class ParadisProgramStatusGate {
 		if (this.changes.length >= PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND) {
 			this.mutedUntil = now + PARADIS_PROGRAM_STATUS_MUTE_MS;
 			this.changes.length = 0;
+			this.pending = status;
 			return false;
 		}
 		this.changes.push(now);
@@ -234,6 +266,7 @@ export class ParadisProgramStatusGate {
 		const wasOpen = this.isOpen;
 		this.openUntil = undefined;
 		this.lastKey = undefined;
+		this.pending = undefined;
 		return wasOpen;
 	}
 }
