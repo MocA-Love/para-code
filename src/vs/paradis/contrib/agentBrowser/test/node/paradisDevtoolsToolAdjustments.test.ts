@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -249,4 +249,12 @@ suite('Paradis devtools tool adjustments', () => {
 			refused: { args: { function: 'f' }, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE },
 		});
 	});
+	test('an agent cannot send the internal non-waiting evaluate argument', () => {
+		assert.deepStrictEqual([
+			paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f', paraCodeObserve: true }),
+			paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f' }),
+			paradisStripInternalDevtoolsArguments('click', { uid: '1_2', paraCodeObserve: true }),
+		], [{ function: 'f' }, { function: 'f' }, { uid: '1_2', paraCodeObserve: true }]);
+	});
+
 });
