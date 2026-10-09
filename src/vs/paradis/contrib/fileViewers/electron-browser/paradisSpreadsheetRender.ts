@@ -9,7 +9,7 @@
 // Excelビューア/差分で共有する DOM 描画ヘルパー(Vanilla DOM。Superset の SpreadsheetViewer.tsx 相当)。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellComment, IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
 import { IParadisPageBreakLine, IParadisPageLabelBox, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
@@ -699,6 +699,20 @@ function tableCellRole(sheet: IParadisSheetData, row: number, col: number): IPar
 }
 
 /** 見出しセルへフィルタ記号を添える。実際の絞り込みは行わず、フィルタがあることだけを示す。 */
+/** Excel の行（1 始まり）と列（1 始まり）→ そのセルのメモ・コメント。 */
+export function commentKindsByCell(sheet: IParadisSheetData): Map<string, IParadisCellComment> {
+	const result = new Map<string, IParadisCellComment>();
+	for (const comment of sheet.comments ?? []) {
+		result.set(`${comment.row + 1}:${comment.column + 1}`, comment);
+	}
+	return result;
+}
+
+/** セルの右上の印のクラス。メモは赤、スレッドは紫（Excel の見た目に合わせる）。 */
+export function commentMarkerClass(kind: IParadisCellComment['kind']): string {
+	return kind === 'thread' ? 'paradis-spreadsheet-comment-thread' : 'paradis-spreadsheet-comment-note';
+}
+
 function appendFilterMarker(td: HTMLElement): void {
 	const marker = dom.append(td, $('span.paradis-spreadsheet-filter-marker'));
 	marker.textContent = '\u25BC';
@@ -738,6 +752,7 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 	const dataRows: { excelRow: number; tr: HTMLElement }[] = [];
 	const shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
 	const overflowCells: IParadisOverflowItem[] = [];
+	const comments = commentKindsByCell(sheet);
 	let displayRowNum = 0;
 	for (const row of sheet.rows) {
 		displayRowNum++;
@@ -786,6 +801,11 @@ export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTable
 			}
 			if (cell.diagonal) {
 				appendDiagonalOverlay(td, cell.diagonal);
+			}
+			const comment = comments.get(`${row.excelRow}:${excelCol}`);
+			if (comment) {
+				td.classList.add(commentMarkerClass(comment.kind));
+				td.dataset.paradisCommentRef = comment.ref;
 			}
 		}
 	}
