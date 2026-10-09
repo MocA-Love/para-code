@@ -32,6 +32,7 @@ import './contrib/defaultExtensions/browser/paradisDefaultNotificationFilters.co
 import './contrib/terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import './contrib/fileViewers/browser/paradisMarkdownViewer.contribution.js';
 import './contrib/fileViewers/browser/csv/paradisCsvViewer.contribution.js';
+import './contrib/fileViewers/browser/image/paradisImageViewer.contribution.js';
 import './contrib/fileViewers/browser/paradisOfficeConfiguration.js';
 import './contrib/fileViewers/browser/paradisOfficeDiagnosticEditor.js';
 import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';
