@@ -646,6 +646,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _unconfirmableTokens = new Set<string>();
 	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
+	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
+	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
 	/**
 	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
@@ -3066,17 +3068,42 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (hit && hit.key === cacheKey) {
 			return hit.kind;
 		}
-		let kind: ParadisMcpCallerKind = 'unverified';
-		try {
-			const peer = await paradisClassifyPeer(socket.remotePort, this._port, process.pid, expectation);
-			kind = peer === 'descendant' && pane.remoteAuthority === undefined
-				? 'pane'
-				: peer === 'tunnel' && pane.remoteAuthority !== undefined
-					? 'tunnel'
-					: 'unverified';
-		} catch {
-			kind = 'unverified';
+		const flightKey = `${token}\n${cacheKey}`;
+		let flights = this._callerClassificationsInFlight.get(socket);
+		const running = flights?.get(flightKey);
+		if (running) {
+			return running;
 		}
+		const remotePort = socket.remotePort;
+		const port = this._port;
+		const flight = (async (): Promise<ParadisMcpCallerKind> => {
+			try {
+				// 負荷が高いと lsof / ps の起動が数秒かかる。照合はコマンドの失敗・時間切れのときだけ待ちを延ばして
+				// やり直す（paradisCdpPeerResolver.ts）。子孫でないと確かめられたものは通さない
+				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation);
+				return peer === 'descendant' && pane.remoteAuthority === undefined
+					? 'pane'
+					: peer === 'tunnel' && pane.remoteAuthority !== undefined
+						? 'tunnel'
+						: 'unverified';
+			} catch {
+				return 'unverified';
+			}
+		})();
+		if (!flights) {
+			flights = new Map();
+			this._callerClassificationsInFlight.set(socket, flights);
+		}
+		flights.set(flightKey, flight);
+		let kind: ParadisMcpCallerKind;
+		try {
+			kind = await flight;
+		} finally {
+			if (flights.get(flightKey) === flight) {
+				flights.delete(flightKey);
+			}
+		}
+		cached = this._callerClassifications.get(socket);
 		if (kind !== 'unverified') {
 			if (!cached) {
 				cached = new Map();
