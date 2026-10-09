@@ -130,14 +130,14 @@ suite('Paradis snapshot diff', () => {
 		const other = { name: 'click', inputSchema: { type: 'object', properties: {} } };
 		assert.deepStrictEqual({
 			properties: Object.keys((tool.inputSchema as { properties: object }).properties),
-			mentionsFull: tool.description.includes('pass full: true'),
+			mentionsChanges: tool.description.includes('only what changed'),
 			otherUntouched: paradisWithSnapshotDiffArgument(other) === other,
 			full: paradisTakeSnapshotDiffMode({ full: true, verbose: false }),
 			diff: paradisTakeSnapshotDiffMode({ full: false }),
 			none: paradisTakeSnapshotDiffMode(undefined),
 		}, {
 			properties: ['verbose', 'full'],
-			mentionsFull: true,
+			mentionsChanges: true,
 			otherUntouched: true,
 			full: { args: { verbose: false }, mode: 'full' },
 			diff: { args: {}, mode: 'diff' },
