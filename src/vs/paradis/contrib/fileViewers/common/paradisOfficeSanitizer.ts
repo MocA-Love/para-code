@@ -9,6 +9,7 @@ import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeR
 import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
 import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
+import { PARADIS_OFFICE_BROKEN_IMAGE_SVG } from './paradisOfficeBrokenImage.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
@@ -1807,8 +1808,7 @@ function sanitizePackageMedia(nodeId: string, name: string, raw: Uint8Array, sem
  * decode. Same look as the package's own image placeholders; the text carries no document data.
  */
 export function paradisOfficeBrokenImagePlaceholderSvg(): Uint8Array {
-	const source = `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 320 48"><rect width="320" height="48" fill="#eeeeee"/><text x="8" y="28" fill="#000000">Office asset unavailable</text></svg>`;
-	const safe = sanitizeOfficeSvg({ nodeId: 'broken_image_placeholder', assetId: 'placeholder_broken_image', source });
+	const safe = sanitizeOfficeSvg({ nodeId: 'broken_image_placeholder', assetId: 'placeholder_broken_image', source: PARADIS_OFFICE_BROKEN_IMAGE_SVG });
 	if (!Object.prototype.hasOwnProperty.call(safe, 'bytes')) { throw new ParadisOfficePackageError('unsafe'); }
 	return (safe as ParadisSanitizedSvg).bytes.slice();
 }
