@@ -170,12 +170,20 @@ export function paradisTrustedCommandLine(current: { readonly command?: string; 
 	return current?.isTrusted === true ? current.command : undefined;
 }
 
+/** 前面に戻ってきたら、Claude Code が終わったと見なすシェル。npm 版の Claude Code の `node` は含めない。 */
+const KNOWN_SHELLS: ReadonlySet<string> = new Set(['zsh', 'bash', 'sh', 'dash', 'ksh', 'tcsh', 'csh', 'fish', 'nu', 'xonsh', 'elvish', 'pwsh', 'powershell', 'cmd']);
+
 /**
  * 前面のプロセス名（pty が報告する題名。`/path/to/claude --resume` のような形でも来る）が変わったときに、
- * 受け付けを閉じるか。シェル統合が無いターミナルだけ、Claude Code でも ssh などでもなくなったら閉じる
- * （シェル統合があれば、コマンドの終わりで閉じる）。
+ * 受け付けを閉じるか。既知のシェルに戻ったら、シェル統合の有無によらず閉じる（Claude Code が落ちて
+ * 「Relaunch Terminal」で同じターミナルに新しいシェルが立つと、シェル統合のコマンドの終わりが来ない）。
+ * シェル統合が無いターミナルは、Claude Code でも ssh などでもなくなったら閉じる。
  */
 export function paradisProgramStatusClosesOnForeground(hasShellIntegration: boolean, processTitle: string | undefined): boolean {
+	const name = processTitle !== undefined ? commandName(processTitle)?.replace(/^-/, '').replace(/\.exe$/, '') : undefined;
+	if (name !== undefined && KNOWN_SHELLS.has(name)) {
+		return true;
+	}
 	return !hasShellIntegration && paradisProgramStatusForeground(undefined, processTitle) === undefined;
 }
 
