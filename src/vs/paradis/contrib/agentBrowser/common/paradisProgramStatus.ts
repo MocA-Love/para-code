@@ -187,6 +187,21 @@ export function paradisProgramStatusClosesOnForeground(hasShellIntegration: bool
 	return !hasShellIntegration && paradisProgramStatusForeground(undefined, processTitle) === undefined;
 }
 
+/**
+ * 前面のプロセスの題名が Claude Code そのもの（`claude` か、ネイティブ版の版の番号）なら、その名前。Ctrl+Z で止めた
+ * Claude Code が `fg` で戻ったと見なす印に使う（2.1.295 は `fg` の後に問い合わせ直さない。PTY で実測）。
+ * npm 版の `node` のように、ほかのプログラムと区別できない名前は undefined。
+ */
+export function paradisClaudeProcessIdentity(processTitle: string | undefined): string | undefined {
+	const name = processTitle !== undefined ? commandName(processTitle) : undefined;
+	return name !== undefined && (name === 'claude' || name === 'claude.exe' || /^\d+\.\d+\.\d+$/.test(name)) ? name : undefined;
+}
+
+/** シェル統合が報告したコマンドの終わりが、Ctrl+Z で止めたもの（128 + SIGTSTP。macOS は 18、Linux は 20）か。 */
+export function paradisIsSuspendedExitCode(exitCode: number | undefined): boolean {
+	return exitCode === 146 || exitCode === 148;
+}
+
 /** 答えた後、状態が来なくなってからも受け付けを開けておく長さ。 */
 export const PARADIS_PROGRAM_STATUS_WINDOW_MS = 12 * 60 * 60 * 1000;
 /** 1 秒に受ける状態の変化の上限。Claude Code の実際の変化は 1 ターンに数回。 */
@@ -208,6 +223,8 @@ export class ParadisProgramStatusGate {
 	private readonly changes: number[] = [];
 	/** 間引きで捨てた最後の状態。無視が明けたら 1 回だけ渡す（working → done が速く続いても working で止まらない）。 */
 	private pending: IParadisProgramStatus | undefined;
+	/** Ctrl+Z で止めた Claude Code（題名）。同じ題名が前面に戻ったら、問い合わせ無しで受け付けを開き直す。 */
+	private held: { readonly identity: string; readonly until: number } | undefined;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
@@ -223,6 +240,34 @@ export class ParadisProgramStatusGate {
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
 		this.pending = undefined;
+		this.held = undefined;
+		return true;
+	}
+
+	/**
+	 * 前面から Claude Code が外れたが、Ctrl+Z で止めただけかもしれない。開いていれば閉じて、`identity` の題名が
+	 * 戻るのを待つ（{@link resume}）。閉じたら true（呼び出し側は状態を消す）。
+	 */
+	suspend(identity: string): boolean {
+		if (!this.isOpen) {
+			return false;
+		}
+		this.openUntil = undefined;
+		this.lastKey = undefined;
+		this.pending = undefined;
+		this.held = { identity, until: this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS };
+		return true;
+	}
+
+	/** 止めた Claude Code と同じ題名が前面に戻った。待っていれば受け付けを開き直して true。 */
+	resume(identity: string): boolean {
+		const held = this.held;
+		if (held === undefined || held.identity !== identity || this.now() > held.until) {
+			return false;
+		}
+		this.held = undefined;
+		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
+		this.lastKey = undefined;
 		return true;
 	}
 
@@ -284,6 +329,7 @@ export class ParadisProgramStatusGate {
 		this.openUntil = undefined;
 		this.lastKey = undefined;
 		this.pending = undefined;
+		this.held = undefined;
 		return wasOpen;
 	}
 }

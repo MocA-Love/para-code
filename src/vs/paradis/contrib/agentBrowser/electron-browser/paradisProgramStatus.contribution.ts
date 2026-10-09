@@ -27,7 +27,7 @@ import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/con
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisParseProgramStatus, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, paradisParseProgramStatus, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
 
 class ParadisProgramStatusContribution extends Disposable implements ITerminalContribution {
 
@@ -44,6 +44,8 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	 * API になるため）、Claude Code が終わっても版の番号のまま残るので、プロセスの知らせを自分で受けて持つ。
 	 */
 	private foregroundProcess: string | undefined;
+	/** 受け付けを開いたときの前面の Claude Code の題名（Ctrl+Z の後に `fg` で戻ったと見分けるため）。 */
+	private openedBy: string | undefined;
 
 	constructor(
 		context: ITerminalContributionContext,
@@ -60,10 +62,9 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		// 前面のコマンド（Claude Code か ssh など）が終わったら受け付けを閉じ、残った状態を消す
 		// （Claude Code が clear を書かずに落ちた場合も含む）
 		const watch = (capability: ICommandDetectionCapability | undefined) => {
-			this.commandFinished.value = capability?.onCommandFinished(() => {
-				if (this.gate.close()) {
-					this.send({ state: 'clear' });
-				}
+			this.commandFinished.value = capability?.onCommandFinished(command => {
+				// Ctrl+Z で止めただけなら、`fg` で戻るのを待つ（Claude Code は問い合わせ直さない）
+				this.leave(paradisIsSuspendedExitCode(command.exitCode));
 			});
 		};
 		watch(this.instance.capabilities.get(TerminalCapability.CommandDetection));
@@ -71,19 +72,20 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（Claude Code でも ssh などでもなくなったら）閉じる
 		this.foregroundProcess = this.instance.processName || undefined;
 		// プロセスが終わったら（Claude Code ごと落ちて「Relaunch Terminal」で立て直す場合も）閉じる
-		this._register(context.processManager.onProcessExit(() => {
-			if (this.gate.close()) {
-				this.send({ state: 'clear' });
-			}
-		}));
+		this._register(context.processManager.onProcessExit(() => this.leave(false)));
 		this._register(context.processManager.onDidChangeProperty(property => {
 			if (property.type !== ProcessPropertyType.Title) {
 				return;
 			}
 			this.foregroundProcess = typeof property.value === 'string' && property.value.length > 0 ? property.value : undefined;
-			if (paradisProgramStatusClosesOnForeground(this.instance.capabilities.get(TerminalCapability.CommandDetection) !== undefined, this.foregroundProcess)
-				&& this.gate.close()) {
-				this.send({ state: 'clear' });
+			const identity = paradisClaudeProcessIdentity(this.foregroundProcess);
+			if (identity !== undefined && identity === this.openedBy && this.gate.resume(identity)) {
+				return;
+			}
+			// シェルへ戻ったのは、終わったのか Ctrl+Z で止めたのか分からない。止めた場合に備えて待ち、本当に終わったなら
+			// コマンドの終わり（シェル統合）かプロセスの終わりで閉じる
+			if (paradisProgramStatusClosesOnForeground(this.instance.capabilities.get(TerminalCapability.CommandDetection) !== undefined, this.foregroundProcess)) {
+				this.leave(true);
 			}
 		}));
 	}
@@ -98,6 +100,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 				// コマンド行は、シェル統合の nonce が合ったときだけ使う（出力の OSC 633 ; E では偽れる）
 				const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
 				if (this.gate.query(paradisProgramStatusForeground(trustedCommandLine, this.foregroundProcess))) {
+					this.openedBy = paradisClaudeProcessIdentity(this.foregroundProcess);
 					// 端末の返事として pty へ書く（利用者の入力にはしない。DA1 の自動の返事と同じ経路）
 					xterm.raw.input(PARADIS_PROGRAM_STATUS_REPLY, false);
 				}
@@ -110,6 +113,20 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 			}
 			return true;
 		}));
+	}
+
+	/**
+	 * 前面から Claude Code が外れた。`maybeSuspended` で、開いたときの題名が Claude Code のものなら止めた扱いで
+	 * 待ち（同じ題名が戻れば開き直す）、そうでなければ閉じる。どちらでも、残った状態は消す。
+	 */
+	private leave(maybeSuspended: boolean): void {
+		const changed = maybeSuspended && this.openedBy !== undefined ? this.gate.suspend(this.openedBy) : this.gate.close();
+		if (!maybeSuspended) {
+			this.openedBy = undefined;
+		}
+		if (changed) {
+			this.send({ state: 'clear' });
+		}
 	}
 
 	/** 間引きで捨てた最後の状態を、無視が明けたら 1 回だけ渡す。 */
