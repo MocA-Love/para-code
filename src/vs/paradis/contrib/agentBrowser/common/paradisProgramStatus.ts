@@ -23,6 +23,13 @@
 //
 // Para Code は hook が届かないペイン（WSL、手で ssh した先、hook のトンネルが無い接続先など）の状態の
 // 補助にだけ使う。hook が届いたペインは hook のまま（{@link paradisProgramStatusApplies}）。
+//
+// 端末の出力はどのプログラムでも書ける（`cat` したファイル、`git log`、ssh の先の出力）。偽の状態でペインが
+// 「許可待ち」や「完了」にならないよう、{@link ParadisProgramStatusGate} で受け付けを絞る:
+//  1. 前面のコマンドが Claude Code（または中身を確かめられない ssh・WSL など）のときに来た問い合わせにだけ答え、
+//     答えたペインでだけ状態を受ける。clear・前面のコマンドの終わり・長い無音で閉じる
+//  2. 状態の変化を 1 秒に数回までに間引き、それより速く変わるペインはしばらく無視する
+// ssh・WSL の先では前面のプログラムを確かめられないので、そこで偽の問い合わせと状態を書かれたら 2 の分しか防げない。
 
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 
@@ -31,6 +38,9 @@ export const PARADIS_PROGRAM_STATUS_OSC = 7501;
 
 /** 問い合わせへの答え（`ESC ] 7501 ; ? ST`）。Claude Code は `?` で始まる 7501 の返事を「対応している」と読む。 */
 export const PARADIS_PROGRAM_STATUS_REPLY = '\x1b]7501;?\x1b\\';
+
+/** これより長い OSC 7501 の中身は読まない（Claude Code が書くのは題名 192 字・文 2048 字を base64 にした程度）。 */
+export const PARADIS_PROGRAM_STATUS_MAX_DATA_LENGTH = 4096;
 
 /** Claude Code が書く状態のうち、Para Code が読むもの。 */
 export type ParadisProgramState = 'working' | 'blocked' | 'done' | 'idle' | 'error' | 'clear';
@@ -48,6 +58,9 @@ const PROGRAM_STATES: ReadonlySet<string> = new Set<ParadisProgramState>(['worki
  * 状態ならその状態、それ以外（サブエージェントの行、別のアプリ、知らない状態）は undefined。
  */
 export function paradisParseProgramStatus(data: string): IParadisProgramStatus | 'query' | undefined {
+	if (data.length > PARADIS_PROGRAM_STATUS_MAX_DATA_LENGTH) {
+		return undefined;
+	}
 	if (data.startsWith('?')) {
 		return 'query';
 	}
@@ -62,7 +75,8 @@ export function paradisParseProgramStatus(data: string): IParadisProgramStatus |
 	if (state === undefined || !PROGRAM_STATES.has(state)) {
 		return undefined;
 	}
-	// 終わりの clear は app を付けない（Claude Code が端末の状態を戻すときにまとめて書く）
+	// 終わりの clear は app を付けない（Claude Code が端末の状態を戻すときにまとめて書く。2.1.295 で実測）。
+	// app を求めると本物の clear を読めない。clear は状態を消すだけで、受け付けは問い合わせに答えたペインに限る
 	if (state === 'clear') {
 		return fields.has('id') ? undefined : { state: 'clear' };
 	}
@@ -112,4 +126,114 @@ export function paradisProgramStatusToAgentStatus(status: IParadisProgramStatus)
  */
 export function paradisProgramStatusApplies(hookReported: boolean): boolean {
 	return !hookReported;
+}
+
+/** 前面のコマンドが何か（{@link paradisProgramStatusForeground}）。 */
+export type ParadisProgramStatusForeground = 'claude' | 'passthrough';
+
+/** 中身を確かめられない、別の機械やコンテナへ入るコマンド。この先の Claude Code の問い合わせにも答える。 */
+const PASSTHROUGH_COMMANDS: ReadonlySet<string> = new Set(['ssh', 'autossh', 'mosh', 'et', 'wsl', 'wsl.exe', 'docker', 'podman', 'kubectl', 'gcloud', 'tmux', 'screen', 'zellij']);
+
+function commandName(commandLine: string): string | undefined {
+	const first = commandLine.trim().split(/\s+/)[0];
+	if (!first) {
+		return undefined;
+	}
+	const base = first.replace(/^.*[\\/]/, '').toLowerCase();
+	return base.length > 0 ? base : undefined;
+}
+
+/**
+ * 問い合わせが来たときの前面のコマンドから、答えてよいかを決める。シェル統合が報告した実行中のコマンド行と、
+ * ターミナルのプロセス名を見る（ネイティブの Claude Code はプロセス名が版の番号になる）。どちらでも
+ * Claude Code か、中身を確かめられない ssh・WSL などなら答える。分からなければ答えない。
+ */
+export function paradisProgramStatusForeground(commandLine: string | undefined, processName: string | undefined): ParadisProgramStatusForeground | undefined {
+	const names = [commandLine !== undefined ? commandName(commandLine) : undefined, processName !== undefined ? commandName(processName) : undefined];
+	if (names.some(name => name === 'claude' || name === 'claude.exe' || (name !== undefined && /^\d+\.\d+\.\d+$/.test(name)))) {
+		return 'claude';
+	}
+	if (names.some(name => name !== undefined && PASSTHROUGH_COMMANDS.has(name))) {
+		return 'passthrough';
+	}
+	return undefined;
+}
+
+/** 答えた後、状態が来なくなってからも受け付けを開けておく長さ。 */
+export const PARADIS_PROGRAM_STATUS_WINDOW_MS = 12 * 60 * 60 * 1000;
+/** 1 秒に受ける状態の変化の上限。Claude Code の実際の変化は 1 ターンに数回。 */
+export const PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND = 4;
+/** 上限を超えたペインの状態を無視する長さ。 */
+export const PARADIS_PROGRAM_STATUS_MUTE_MS = 60_000;
+
+/**
+ * 1 つのターミナルの OSC 7501 の受け付け。問い合わせに答えたときだけ開き、clear・{@link close}・
+ * {@link PARADIS_PROGRAM_STATUS_WINDOW_MS} の無音で閉じる。開いている間の状態は、同じ状態の繰り返しを除き、
+ * 1 秒に {@link PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND} 回まで通す。超えたら
+ * {@link PARADIS_PROGRAM_STATUS_MUTE_MS} の間は何も通さない。
+ */
+export class ParadisProgramStatusGate {
+
+	private openUntil: number | undefined;
+	private mutedUntil = 0;
+	private lastKey: string | undefined;
+	private readonly changes: number[] = [];
+
+	constructor(private readonly now: () => number = Date.now) { }
+
+	get isOpen(): boolean {
+		return this.openUntil !== undefined && this.now() <= this.openUntil;
+	}
+
+	/** 問い合わせが来た。答えてよければ受け付けを開いて true。 */
+	query(foreground: ParadisProgramStatusForeground | undefined): boolean {
+		if (foreground === undefined) {
+			return false;
+		}
+		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
+		this.lastKey = undefined;
+		return true;
+	}
+
+	/** 状態が来た。shared process へ渡すなら true。 */
+	accept(status: IParadisProgramStatus): boolean {
+		const now = this.now();
+		if (this.openUntil === undefined || now > this.openUntil) {
+			this.openUntil = undefined;
+			return false;
+		}
+		if (status.state === 'clear') {
+			this.openUntil = undefined;
+			this.lastKey = undefined;
+			return true;
+		}
+		if (now < this.mutedUntil) {
+			return false;
+		}
+		const key = `${status.state}:${status.kind ?? ''}`;
+		if (key === this.lastKey) {
+			this.openUntil = now + PARADIS_PROGRAM_STATUS_WINDOW_MS;
+			return false;
+		}
+		while (this.changes.length > 0 && now - this.changes[0] >= 1000) {
+			this.changes.shift();
+		}
+		if (this.changes.length >= PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND) {
+			this.mutedUntil = now + PARADIS_PROGRAM_STATUS_MUTE_MS;
+			this.changes.length = 0;
+			return false;
+		}
+		this.changes.push(now);
+		this.lastKey = key;
+		this.openUntil = now + PARADIS_PROGRAM_STATUS_WINDOW_MS;
+		return true;
+	}
+
+	/** 前面のコマンドが終わった。開いていたら true（呼び出し側は状態を消す）。 */
+	close(): boolean {
+		const wasOpen = this.isOpen;
+		this.openUntil = undefined;
+		this.lastKey = undefined;
+		return wasOpen;
+	}
 }
