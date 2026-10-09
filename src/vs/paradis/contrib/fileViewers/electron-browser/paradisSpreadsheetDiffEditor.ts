@@ -45,6 +45,7 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
+import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -935,10 +936,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const loadSide = async (resource: URI): Promise<{ wb: IParadisWorkbookData; error?: unknown }> => {
 				try {
 					return {
+						// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
 						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, totalBytes => {
 							sourceBytes += totalBytes;
 							this._probe.setBytes(sourceBytes);
-						}),
+						}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2),
 					};
 				} catch (error) {
 					return { wb: { sheets: [] }, error };

@@ -14,7 +14,7 @@
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
-import type { IParadisChartData, IParadisChartGroup, IParadisChartSeries, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartData, IParadisChartGroup, IParadisChartSeries, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetImageRejection, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
 import type {
 	ParadisSpreadsheetDrawing,
 	ParadisSpreadsheetDrawingAnchor,
@@ -609,6 +609,7 @@ export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits
 interface ParseContext {
 	readonly limits: ParadisSpreadsheetDrawingLimits;
 	readonly media: { readonly [rid: string]: string };
+	readonly rejectedMedia?: { readonly [rid: string]: ParadisSpreadsheetImageRejection };
 	readonly charts: { readonly [rid: string]: string };
 	readonly themeColors: ParadisShapeThemeColors | undefined;
 	readonly parser: DOMParser;
@@ -769,10 +770,12 @@ function parsePicture(el: Element, box: AnchorBox, space: GroupSpace | undefined
 		return;
 	}
 	const blip = xmlChild(xmlChild(el, 'blipFill'), 'blip');
-	const href = context.media[relationshipId(blip, 'embed')];
+	const rid = relationshipId(blip, 'embed');
+	const href = Object.hasOwn(context.media, rid) ? context.media[rid] : undefined;
 	if (!href) {
-		// EMF・WMF など、表示できない形式か、見つからない画像。
-		context.undrawn.push({ kind: 'image', ...(name ? { name } : {}), from: box.from });
+		// EMF・WMF、表示しない形式、中身を確かめられなかった画像、見つからない画像。
+		const reason = context.rejectedMedia && Object.hasOwn(context.rejectedMedia, rid) ? context.rejectedMedia[rid] : 'unverified';
+		context.undrawn.push({ kind: 'image', reason, ...(name ? { name } : {}), from: box.from });
 		return;
 	}
 	const spPr = xmlChild(el, 'spPr');
@@ -1005,7 +1008,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		return { shapes, undrawn };
 	}
 	const parser = new DOMParser();
-	for (const { xml, media, charts, omitted } of drawings) {
+	for (const { xml, media, rejectedMedia, charts, omitted } of drawings) {
 		if (omitted) {
 			undrawn.push({ kind: 'overLimit' });
 			continue;
@@ -1017,7 +1020,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		} catch {
 			continue;
 		}
-		const context: ParseContext = { limits, media, charts: charts ?? {}, themeColors, parser, shapes, undrawn };
+		const context: ParseContext = { limits, media, ...(rejectedMedia ? { rejectedMedia } : {}), charts: charts ?? {}, themeColors, parser, shapes, undrawn };
 		const visit = (el: Element) => {
 			for (const child of xmlChildren(el)) {
 				if (child.localName === 'twoCellAnchor' || child.localName === 'oneCellAnchor' || child.localName === 'absoluteAnchor') {
@@ -1049,16 +1052,32 @@ export function spreadsheetUndrawnPlaceholders(sheets: readonly IParadisSheetDat
 				feature: `drawing.${object.kind}`,
 				reason: 'unsupported',
 				title: object.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
-				detail: undrawnDetail(object.kind),
+				detail: undrawnDetail(object.kind, object.reason),
 			});
 		});
 	}
 	return placeholders;
 }
 
-function undrawnDetail(kind: IParadisUndrawnObject['kind']): string {
+/** 描いた後に読めなかった画像を、代替表示の項目にする。 */
+export function spreadsheetBrokenImagePlaceholders(broken: ReadonlyMap<IParadisRenderShape, string>): ParadisOfficePlaceholder[] {
+	return [...broken].map(([shape, sheetName], index) => ({
+		nodeId: `${sheetName}!object:${shape.name ?? shape.shapeId ?? `brokenImage-${index + 1}`}`,
+		feature: 'drawing.image',
+		reason: 'unsupported',
+		title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
+		detail: localize('paradis.spreadsheet.brokenImage', "画像の中身を読めなかったため、代わりの箱で表示しています。"),
+	}));
+}
+
+function undrawnDetail(kind: IParadisUndrawnObject['kind'], reason: IParadisUndrawnObject['reason']): string {
 	switch (kind) {
-		case 'image': return localize('paradis.spreadsheet.undrawnImage', "この形式の画像（EMF・WMF など）は表示できません。");
+		case 'image':
+			switch (reason) {
+				case 'metafile': return localize('paradis.spreadsheet.undrawnMetafile', "EMF・WMF の画像は表示できません。");
+				case 'unsupportedFormat': return localize('paradis.spreadsheet.undrawnImageFormat', "表示できない形式の画像（BMP など）です。");
+				default: return localize('paradis.spreadsheet.undrawnImageUnverified', "画像の中身を確かめられなかったため、表示していません。");
+			}
 		case 'chart': return localize('paradis.spreadsheet.undrawnChart', "この種類のグラフは表示できません。");
 		case 'geometry': return localize('paradis.spreadsheet.undrawnGeometry', "この形の図形は、枠の形で近似して表示しています。");
 		case 'overLimit': return localize('paradis.spreadsheet.undrawnOverLimit', "図形が多すぎるか複雑すぎるため、表示していません。");

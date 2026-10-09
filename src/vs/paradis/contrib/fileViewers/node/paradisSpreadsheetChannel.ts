@@ -68,8 +68,8 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	call<T>(_ctx: string, command: string, arg?: unknown, cancellationToken: CancellationToken = CancellationToken.None): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			// 表示の投影だけを返す。第 2 引数（診断の指定）は通さない。診断を本体のスレッドで走らせないため。
-			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]))) as Promise<T>;
+			// 表示の投影だけを返す。第 2 引数は画像の画素の上限（数でなければ既定値）。診断の指定は通さない。
+			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]), typeof args[1] === 'number' ? args[1] : undefined)) as Promise<T>;
 			case 'collectSemanticDiagnostics': return this.collectSemanticDiagnostics(args[0], cancellationToken) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
