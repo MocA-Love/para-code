@@ -29,6 +29,7 @@ import {
 	canonicalizeDataValidationEntries,
 	IParadisSheetData,
 	IParadisSpreadsheetService,
+	ParadisSpreadsheetImageRejection,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
@@ -1126,13 +1127,15 @@ function mediaMime(fileName: string): string | undefined {
  * （renderer は画像の無い図形として代替表示に数える）。画像の終わりより後ろのデータは切る。
  * 同じ画像を複数の図形が使うときは、1 回だけ数える。
  */
+type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
+
 class WorkbookImages {
-	private readonly cache = new Map<string, Promise<string | undefined>>();
+	private readonly cache = new Map<string, Promise<WorkbookImage>>();
 	private pixels = 0;
 
 	constructor(private readonly budget: number) { }
 
-	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<string | undefined> {
+	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
 		let result = this.cache.get(name);
 		if (!result) {
 			result = this.load(name, file);
@@ -1141,19 +1144,26 @@ class WorkbookImages {
 		return result;
 	}
 
-	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<string | undefined> {
+	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
+		const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+		if (extension === 'emf' || extension === 'wmf') {
+			return { reason: 'metafile' };
+		}
 		const declared = mediaMime(name);
-		if (!declared || !file) {
-			return undefined;
+		if (!declared) {
+			return { reason: 'unsupportedFormat' };
+		}
+		if (!file) {
+			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
 		const inspected = inspectParadisWordRasterImage(bytes);
 		if (!inspected || inspected.mimeType !== declared || this.pixels + inspected.pixels > this.budget) {
-			return undefined;
+			return { reason: 'unverified' };
 		}
 		this.pixels += inspected.pixels;
 		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
-		return `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}`;
+		return { href: `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}` };
 	}
 }
 
@@ -1326,6 +1336,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			}
 			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
+			const rejectedMedia: { [rid: string]: ParadisSpreadsheetImageRejection } = {};
 			const charts: { [rid: string]: string } = {};
 			const workbookImages = images;
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
@@ -1334,9 +1345,11 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 					const id = rel.match(/Id="([^"]+)"/);
 					const target = rel.match(/Target="[^"]*media\/([^"]+)"/);
 					if (id && target) {
-						const href = await workbookImages.dataUri(target[1], files[`xl/media/${target[1]}`]);
-						if (href) {
-							media[id[1]] = href;
+						const image = await workbookImages.dataUri(target[1], files[`xl/media/${target[1]}`]);
+						if (image.href !== undefined) {
+							media[id[1]] = image.href;
+						} else {
+							rejectedMedia[id[1]] = image.reason;
 						}
 					}
 					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
@@ -1355,7 +1368,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			}
 			drawingXmlCharactersBySheet.set(key, sheetCharacters);
 			workbookDrawingCharacters += sheetCharacters - used;
-			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。

@@ -8,6 +8,7 @@
 import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
+import { ParadisSpreadsheetBrokenImages } from '../../electron-browser/paradisSpreadsheetBrokenImages.js';
 import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
 import { appendChartSvg, appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
 
@@ -176,6 +177,36 @@ suite('ParadisSpreadsheetDrawings', () => {
 			'translate(50 50) scale(-1 1) translate(-50 -50)',
 			'translate(25 50) scale(-1 1) translate(-25 -50)',
 		]);
+	});
+
+	test('says why a picture was not drawn, and looks media up only by its own keys', () => {
+		const pic = (id: number, rid: string) => anchor(`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Picture ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${rid}"/></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`);
+		const { undrawn } = parseDrawingObjects([{
+			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString')].join('')),
+			media: {},
+			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified' },
+		}]);
+		const placeholders = spreadsheetUndrawnPlaceholders([{ name: 'Sheet1', rows: [], columnCount: 0, columnWidths: [], truncated: false, minCol: 1, undrawnObjects: undrawn }]);
+		deepStrictEqual({ reasons: undrawn.map(object => object.reason), distinctDetails: new Set(placeholders.map(placeholder => placeholder.detail)).size }, {
+			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified'],
+			distinctDetails: 3,
+		});
+	});
+
+	test('reports many broken images with a single redraw', async () => {
+		let redraws = 0;
+		const broken = new ParadisSpreadsheetBrokenImages(() => redraws++, 0);
+		try {
+			const shapes = Array.from({ length: 5_000 }, (_, index): IParadisRenderShape => ({ type: 'image', flipH: false, flipV: false, from: { c: index, co: 0, r: 0, ro: 0 }, to: { c: index, co: 0, r: 0, ro: 0 }, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href: 'data:image/png;base64,AA==' }));
+			for (const shape of shapes) {
+				broken.add(shape, 'Sheet1');
+				broken.add(shape, 'Sheet1');
+			}
+			await new Promise(resolve => setTimeout(resolve, 20));
+			deepStrictEqual([redraws, broken.entries.size], [1, 5_000]);
+		} finally {
+			broken.dispose();
+		}
 	});
 
 	test('replaces an image the browser cannot decode and reports it', () => {
