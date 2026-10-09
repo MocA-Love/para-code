@@ -9,7 +9,7 @@ import { createHash } from 'crypto';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { aggregateOfficeOutcome, canReportNoChanges, PARADIS_OFFICE_BUDGET_PROFILES, type ParadisOfficeBudgetProfile } from '../../common/paradisOfficeProtocol.js';
-import { canonicalizeOfficeXml, parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
+import { canonicalizeOfficeXml, PARADIS_OFFICE_CANONICAL_XML_VERSION, parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
 import { type IParadisOfficeArchive, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlDocument, ParadisOfficePackageError } from '../../common/office/paradisOfficeArchive.js';
 import { ParadisOfficeBudget, ParadisOfficeBudgetError } from '../../common/office/paradisOfficeBudget.js';
 import { findParadisOfficeRelationshipCyclesForTest, inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
@@ -971,7 +971,7 @@ suite('ParadisOfficePackageReader', () => {
 			const result = canonicalizeOfficeXml(parseParadisOfficeXml(xml, { depth: 1, nodes: 1, attributeLength: 1, characters: 128 }), () => undefined);
 			strictEqual(result.hash.value, createHash('sha256').update(result.canonical).digest('hex'));
 		}
-		strictEqual(canonicalizeOfficeXml(parseParadisOfficeXml('<a>abc</a>', { depth: 1, nodes: 1, attributeLength: 1, characters: 3 }), () => undefined).hash.value, '839597b446fd7d49db02157688112c9c4594162f607f3984d2497b8a0bf427f7');
+		strictEqual(canonicalizeOfficeXml(parseParadisOfficeXml('<a>abc</a>', { depth: 1, nodes: 1, attributeLength: 1, characters: 3 }), () => undefined).hash.value, '1fe11962fafc7fdefdf625cb3ca00f1e6a0f6f332690be3f6a6577a31046ad26');
 	});
 
 	test('canonicalizes one MiB XML text with parser checkpoints and cancellation', () => {
@@ -993,6 +993,24 @@ suite('ParadisOfficePackageReader', () => {
 		for (const xml of ['<a:b:c/>', '<a>\u0001</a>', '<a>\ud800</a>', '<!DOCTYPE a [<!ENTITY x "x">]><a>&x;</a>']) {
 			await rejects(canonicalizeXmlStringForTest(xml), /malformed/);
 		}
+	});
+
+	test('orders attributes by UTF-16 code units and marks the canonical form version', () => {
+		const canonical = canonicalizeOfficeXml(
+			{
+				root: {
+					kind: 'element',
+					uri: '',
+					local: 'root',
+					attributes: [{ uri: '', local: 'b', value: '1' }, { uri: '', local: 'B', value: '2' }, { uri: 'urn:x', local: 'a', value: '3' }],
+					children: [],
+				},
+			},
+			() => undefined,
+		).canonical;
+
+		// A collator puts `{}b` first (punctuation and lower case first); code units put `{urn:x}a` first.
+		strictEqual(canonical, `c14n${PARADIS_OFFICE_CANONICAL_XML_VERSION};({}root[{urn:x}a="3"][{}B="2"][{}b="1"])`);
 	});
 
 	test('does not apply a default element namespace to unprefixed attributes', () => {

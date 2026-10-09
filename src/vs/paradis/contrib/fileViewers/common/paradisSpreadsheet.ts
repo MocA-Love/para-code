@@ -386,8 +386,14 @@ export interface IParadisSemanticDiagnosticsSummary {
 	readonly mismatchCount: number;
 	/** 食い違いの内訳(種類→件数)。 */
 	readonly mismatchesByKind?: { readonly [kind: string]: number };
-	/** 解析を回せなかった/打ち切った理由。 */
+	/**
+	 * 解析を回せなかった/打ち切った理由のコード。パッケージの検査で落ちたときは `unsafe`・`malformed` など、
+	 * 締め切りや worker のヒープの上限は `limitExceeded`、混み合って走らせなかったときは `busy`（頼み直せる）。
+	 * チャネルの `collectSemanticDiagnostics`（表示とは別の呼び出し。worker で走る）が返す。
+	 */
 	readonly unavailableReason?: string;
+	/** 解析にかかった時間（ミリ秒）。 */
+	readonly elapsedMilliseconds?: number;
 }
 
 const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;

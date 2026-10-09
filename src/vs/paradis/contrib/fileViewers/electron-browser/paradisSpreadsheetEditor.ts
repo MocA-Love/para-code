@@ -11,8 +11,10 @@
 // シート下部タブで切替、コンテナ幅超過時は CSS transform:scale で全体縮小、ディスク更新で自動再描画(correlated watcher)。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable, toDisposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
@@ -33,7 +35,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
@@ -46,7 +48,7 @@ import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadis
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
-import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
+import { collectSpreadsheetSemanticDiagnostics, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
@@ -64,6 +66,8 @@ const ZOOM_MAX = 4;
 const VIRTUAL_GRID_CELL_THRESHOLD = 10_000;
 const LEGACY_SEARCH_RESULT_LIMIT = 200;
 const LEGACY_PRINT_CELL_LIMIT = 10_000;
+/** shared process が混み合っていたときに、詳しい解析を頼み直すまでの間（回数はこの長さ）。 */
+const SEMANTIC_BUSY_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
 const INCOMPLETE_SPREADSHEET_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
 	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
 	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
@@ -560,6 +564,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
+	/** 表示は描き終え、意味解析の到達度を待っている間だけ真。 */
+	private _semanticPending = false;
+	/** 走っている詳しい解析の取り消し。読み直し・閉じる・破棄で取り消す（shared process の待ち行列と worker から外れる）。 */
+	private readonly _semanticRequest = this._register(new MutableDisposable<IDisposable>());
 
 	constructor(
 		group: IEditorGroup,
@@ -843,6 +851,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
 		const generation = ++this._loadGeneration;
+		this._semanticRequest.clear();
 		// 解析は共有プロセス側で走る。あちらが黙ると renderer では何も起きないので、ここから見張る。
 		this._probe.armSource(recoveryGeneration);
 		if (!preserveCommitted) {
@@ -850,11 +859,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._renderMessage(localize('paradis.spreadsheet.loading', "スプレッドシートを読み込み中..."));
 		}
 		let workbook: IParadisWorkbookData;
+		let content: VSBuffer | undefined;
 		try {
-			// 到達度の診断は、診断表示を出す設定のときだけ費用を払う。
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, {
-				semanticDiagnostics: !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration),
-			}, totalBytes => this._probe.setBytes(totalBytes));
+			// 表示を先に返す。到達度の診断は描いた後に、同じバイト列で別に頼む（_loadSemanticDiagnostics）。
+			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, undefined, (totalBytes, value) => {
+				this._probe.setBytes(totalBytes);
+				content = value;
+			});
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._probe.disarm();
@@ -862,7 +873,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
 					// 理由をその場で画面に出す＝利用者はここで失敗を目にする。1件だけ送る。
-					this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
+					// Excel の一時ファイルなど xlsx でないものは、壊れたブックではないので送らない。
+					if (!(err instanceof ParadisSpreadsheetNotWorkbookError)) {
+						this._probe.noteAndReport({ cause: 'source', stage: 'source', error: err });
+					}
 					this._renderMessage(localize('paradis.spreadsheet.error', "スプレッドシートを開けませんでした: {0}", err instanceof Error ? err.message : String(err)));
 				}
 			}
@@ -885,12 +899,53 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		this._renderSheet();
 		this._renderTabs();
+		const diagnose = !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration);
+		this._semanticPending = diagnose;
 		this._renderSemanticUi(workbook, viewState);
 		this._finishRecoveryRender(recoveryGeneration, resource, viewState);
+		if (diagnose && content) {
+			const request = new CancellationTokenSource(token);
+			this._semanticRequest.value = toDisposable(() => request.dispose(true));
+			void this._loadSemanticDiagnostics(resource, generation, workbook, content, request.token);
+		}
 		if (this._committedInput && isEqual(this._committedInput.resource, resource) && this.input === this._committedInput.input) {
 			this._committedInput = this._captureCommittedInput(this._committedInput.input, this._committedInput.options);
 		}
 		return true;
+	}
+
+	/**
+	 * 表示を描いた後で、意味解析の到達度を取ってリボンだけを描き直す。追い越された・取り消されたら捨てる。
+	 * shared process が混み合っていれば（`busy`）、間を空けて頼み直す。
+	 */
+	private async _loadSemanticDiagnostics(resource: URI, generation: number, workbook: IParadisWorkbookData, content: VSBuffer, token: CancellationToken): Promise<void> {
+		let semanticDiagnostics: IParadisSemanticDiagnosticsSummary;
+		try {
+			semanticDiagnostics = await collectSpreadsheetSemanticDiagnostics(this._sharedProcessService, content, token);
+			for (const delay of SEMANTIC_BUSY_RETRY_DELAYS_MS) {
+				if (semanticDiagnostics.unavailableReason !== 'busy') {
+					break;
+				}
+				await timeout(delay, token);
+				semanticDiagnostics = await collectSpreadsheetSemanticDiagnostics(this._sharedProcessService, content, token);
+			}
+		} catch (error) {
+			if (isCancellationError(error) || token.isCancellationRequested) {
+				return;
+			}
+			// IPC を越えた例外は名前も種類も失っている（常に "Error"）。サーバー側と同じく理由のコードにする。
+			semanticDiagnostics = {
+				available: false, terminal: false, expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0,
+				expectedCells: 0, parsedCells: 0, unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0,
+				unavailableReason: 'failed',
+			};
+		}
+		if (token.isCancellationRequested || generation !== this._loadGeneration || this._workbook !== workbook || !isEqual(this._currentResource, resource)) {
+			return;
+		}
+		this._semanticPending = false;
+		this._workbook = { ...workbook, semanticDiagnostics };
+		this._renderSemanticUi(this._workbook, this._currentSpreadsheetViewState());
 	}
 
 	private _currentSpreadsheetViewState(): ParadisSpreadsheetViewState {
@@ -982,7 +1037,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					message: localize('paradis.spreadsheet.truncatedRows', "行数が多いため、先頭部分だけを表示しています。"),
 				});
 			}
-			if (semantic?.available === false) {
+			if (this._semanticPending && !semantic) {
+				warnings.push({
+					code: 'spreadsheet.semanticPending',
+					message: localize('paradis.spreadsheet.semanticPending', "詳しい解析を実行しています…"),
+				});
+			} else if (semantic?.available === false && semantic.unavailableReason === 'busy') {
+				warnings.push({
+					code: 'spreadsheet.semanticBusy',
+					message: localize('paradis.spreadsheet.semanticBusy', "ほかのファイルの解析が混み合っているため、詳しい解析を見送りました。開き直すと解析します。"),
+				});
+			} else if (semantic?.available === false) {
 				warnings.push({
 					code: 'spreadsheet.semanticUnavailable',
 					message: localize('paradis.spreadsheet.semanticUnavailable', "このファイルの詳しい解析はできませんでしたが、表示には影響していません。"),
@@ -993,7 +1058,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					message: localize('paradis.spreadsheet.semanticGaps', "このファイルには、まだ対応していない要素が含まれています。"),
 				});
 			}
-			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome: 'degraded', coverages, warnings });
+			// 意味解析が最後まで読めたときだけ「解析未完了」を外す（表示の再現度は近似のまま）。
+			const outcome = semantic?.available && semantic.terminal ? 'complete' : 'degraded';
+			renderSpreadsheetDiagnosticsRibbon(this._diagnosticsEl, { outcome, coverages, warnings });
 		}
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
@@ -1623,6 +1690,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._semanticRequest.clear();
 		this._probe.endOpen();
 		this._inputGeneration.invalidate();
 		this._loadGeneration++;
