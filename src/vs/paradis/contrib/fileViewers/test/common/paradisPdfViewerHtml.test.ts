@@ -8,7 +8,7 @@
 
 import { deepStrictEqual, ok } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { buildParadisPdfViewerHtml, IParadisPdfPagePlan, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
+import { buildParadisPdfViewerHtml, IParadisPdfPagePlan, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
 
 suite('ParadisPdfViewerHtml', () => {
 
@@ -46,5 +46,7 @@ suite('ParadisPdfViewerHtml', () => {
 		const plans: IParadisPdfPagePlan[] = [embedded(250, 251, 500, 2, 10), embedded(0, 0, 1, 2, 10)];
 		deepStrictEqual(plans, [planParadisPdfPages(250, 251, 500, 2, 10), planParadisPdfPages(0, 0, 1, 2, 10)]);
 		ok(html.includes('const USE_RANGE = true;'));
+		// 最初のページが描けたことをエディタへ知らせる（開いてから描けるまでの計測）。
+		ok(html.includes(`type: '${PARADIS_PDF_FIRST_PAINT_MESSAGE}'`));
 	});
 });

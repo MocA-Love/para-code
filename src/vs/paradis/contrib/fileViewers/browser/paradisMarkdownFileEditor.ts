@@ -41,6 +41,7 @@ import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/b
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
+import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
@@ -95,6 +96,10 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	// 画像は data: で埋め込むので、`vscode-resource` を解決する service worker は要らない。
 	protected override disableServiceWorkerFor(_resource: URI): boolean {
 		return true;
+	}
+
+	protected override get openTimingKind(): ParadisViewerOpenKind {
+		return 'markdown';
 	}
 
 	// webview 基盤は `#見出し` 以外のリンクを通知するだけで自分では開かないので、ここで開く。

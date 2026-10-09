@@ -60,6 +60,7 @@ import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../../windowTransparency/common/paradisTransparency.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IParadisViewerScrollState, paradisFindHighlightScript, paradisNormalizeScrollProgress, paradisReadViewerScrollState, paradisScrollRestoreScript } from '../common/paradisViewerScroll.js';
+import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 
 import './media/paradisFileViewer.css';
 
@@ -103,6 +104,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _editorVisible = false;
 	// setHtml しても内容が届かない（白紙）ことを検知するウォッチドッグ。
 	private readonly _contentWatchdog = this._register(new MutableDisposable<IDisposable>());
+	/** 開いてから最初に描けるまでの計測（{@link openTimingKind} を返すサブクラスだけ）。 */
+	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	// webview のイベント通知中に webview 自身を捨てないよう、立て直しは次のタイミングまで遅らせる。
 	private readonly _deferredRecovery = this._register(new MutableDisposable<IDisposable>());
 	private readonly _recoveryPolicy = new ParadisViewerRecoveryPolicy();
@@ -268,6 +271,17 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return false;
 	}
 
+	/** 開いてから最初に描けるまでを Sentry へ送るときの種類。送らないビューアは `undefined`。 */
+	protected get openTimingKind(): ParadisViewerOpenKind | undefined {
+		return undefined;
+	}
+
+	/** 開いてから最初に描けた。計測を 1 回だけ送る（2 回目以降の呼び出しは何もしない）。 */
+	private _reportFirstPaint(reused: boolean): void {
+		this._openTiming.value?.painted({ safe_reused: reused });
+		this._openTiming.clear();
+	}
+
 	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
 	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string> | string;
 
@@ -365,6 +379,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 		const viewerInput = input as ParadisFileViewerInput;
 		const resource = viewerInput.resource;
+		const openTimingKind = this.openTimingKind;
+		this._openTiming.value = openTimingKind ? startParadisViewerOpenTiming(openTimingKind) : undefined;
 		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
 		this._renderGeneration++;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
@@ -485,6 +501,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 		// 既に同じ内容を表示している（可視化のたびの claim など）なら送り直さない。
 		if (this._webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
+			// 同じファイルへ戻ってきた。残してある中身がそのまま見えている。
+			this._reportFirstPaint(true);
 			return;
 		}
 
@@ -591,6 +609,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** webview 側から内容の反映を知らせるシグナルが来た。 */
 	private _onContentApplied(): void {
+		this._reportFirstPaint(false);
 		this._contentWatchdog.clear();
 		this._recoveryPolicy.recordSuccess();
 	}
@@ -828,6 +847,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
+		// 描く前に閉じた・別のファイルへ移ったものは送らない。
+		this._openTiming.clear();
 		this._renderGeneration++;
 		this._forgetUnconfirmedRender();
 		this._watchdogGeneration = -1;

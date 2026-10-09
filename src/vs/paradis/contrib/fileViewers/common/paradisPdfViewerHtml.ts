@@ -46,6 +46,9 @@ export function shouldParadisPdfUseRangeRequests(size: number | undefined, serve
 	return served && size !== undefined && size >= PARADIS_PDF_RANGE_THRESHOLD_BYTES;
 }
 
+/** 最初のページが描けたときに webview からエディタへ送るメッセージの `type`。 */
+export const PARADIS_PDF_FIRST_PAINT_MESSAGE = 'paradis-pdf-first-paint';
+
 /** {@link planParadisPdfPages} の結果。番号はすべて 0 始まり。 */
 export interface IParadisPdfPagePlan {
 	/** 描く順番（見えているページ → 近い順に前後）。 */
@@ -153,6 +156,9 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		const MAX_CANVAS_PIXELS = ${PARADIS_PDF_MAX_CANVAS_PIXELS};
 		const planPages = ${planParadisPdfPages.toString()};
 		const statusEl = document.getElementById('status');
+		// 最初のページが描けたことをエディタへ知らせる（開いてから描けるまでの計測）。
+		const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
+		let firstPaintReported = false;
 		try {
 			const pdfjsLib = await import(LIB + '/pdf.min.mjs');
 			// worker はリソースオリジンが document と異なり new Worker(url) が same-origin 制約で失敗するため、
@@ -269,6 +275,10 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				p.wrap.replaceChildren(canvas);
 				p.canvas = canvas;
 				p.renderedScale = target;
+				if (!firstPaintReported) {
+					firstPaintReported = true;
+					requestAnimationFrame(() => vscodeApi?.postMessage({ type: '${PARADIS_PDF_FIRST_PAINT_MESSAGE}', pages: pages.length }));
+				}
 			};
 
 			// 見えているページ（0 始まりの番号）。描く順番と残す範囲はここから決める。
