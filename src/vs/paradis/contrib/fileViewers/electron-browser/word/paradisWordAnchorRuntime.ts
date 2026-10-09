@@ -294,7 +294,8 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 			var index = textIndex(elements);
 			for (var m = 0; m < entries[i].marks.length; m++) {
 				var mark = entries[i].marks[m];
-				var element;
+				// var は繰り返しの中でも前の値を持ち越すので、毎回空にする。
+				var element = undefined;
 				if (mark.kind === 'image') { element = elementOrdinal(elements, 'img,svg', mark.ordinal); }
 				else if (mark.kind === 'noteReference') { element = elementOrdinal(elements, '[' + SKIP + ']', mark.ordinal); }
 				else if (mark.kind === 'revision' && mode !== 'final' && typeof mark.ordinal === 'number') {
@@ -320,11 +321,22 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 	function hit(target, x, y) {
 		var best;
 		var caret = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
-		for (var i = 0; i < marks.length; i++) {
-			var mark = marks[i];
-			var inside = mark.element ? (mark.element === target || mark.element.contains(target))
-				: caret ? mark.range.isPointInRange(caret.startContainer, caret.startOffset) && mark.range.intersectsNode(target) : false;
-			if (inside && (!best || mark.size < best.size)) { best = mark; }
+		// 押した位置の文字（caret）で探す。図形などが重なっていて caret が別の要素を指すときは、
+		// 押した要素の文字がまるごと印の範囲に入っているかで探す。
+		var targetText = target && target.textContent ? target.textContent.trim() : '';
+		for (var pass = 0; pass < 2 && !best; pass++) {
+			for (var i = 0; i < marks.length; i++) {
+				var mark = marks[i];
+				var inside;
+				if (mark.element) {
+					inside = mark.element === target || mark.element.contains(target);
+				} else if (pass === 0) {
+					inside = !!caret && mark.range.isPointInRange(caret.startContainer, caret.startOffset) && mark.range.intersectsNode(target);
+				} else {
+					inside = !!targetText && mark.range.intersectsNode(target) && mark.range.toString().indexOf(targetText) >= 0;
+				}
+				if (inside && (!best || mark.size < best.size)) { best = mark; }
+			}
 		}
 		return best;
 	}
@@ -336,41 +348,60 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 	}
 
 	// コメントを、付いた段落の横（ページの右の余白の外）に出す。重ならないよう下へずらす。
-	function setComments(root, contentEl, entries) {
+	// ページ（section）は docx-preview が overflow:hidden にしているので、中ではなく、ページを並べている
+	// 入れ物（overflow は visible）に置く。位置は描き終わった後の配置（getBoundingClientRect）から求め、
+	// 次の描画の前と、ウィンドウの大きさが変わったときに置き直す（描いた直後は幅が定まっていないことがある）。
+	var commentState;
+	function placeComments() {
+		if (!commentState) { return; }
+		var root = commentState.root;
 		var old = root.querySelectorAll('.paradis-word-comment-note');
 		for (var o = 0; o < old.length; o++) { old[o].remove(); }
 		var byMarker = groups(root);
 		var bottoms = new Map();
 		var placed = 0;
-		for (var i = 0; i < entries.length; i++) {
-			var elements = byMarker.get(entries[i].marker);
+		for (var i = 0; i < commentState.entries.length; i++) {
+			var entry = commentState.entries[i];
+			var elements = byMarker.get(entry.marker);
 			var anchor = elements && elements[0];
 			var section = anchor && anchor.closest('section');
-			if (!section) { continue; }
-			var top = 0;
-			for (var node = anchor; node && node !== section; node = node.offsetParent) { top += node.offsetTop; }
-			top = Math.max(top, bottoms.get(section) || 0);
+			var container = section && section.parentElement;
+			if (!container) { continue; }
+			if (!container.style.position) { container.style.position = 'relative'; }
+			var containerRect = container.getBoundingClientRect();
+			var scale = container.offsetWidth > 0 ? containerRect.width / container.offsetWidth : 1;
+			var sectionRect = section.getBoundingClientRect();
+			var anchorRect = anchor.getBoundingClientRect();
+			var top = Math.max((anchorRect.top - containerRect.top) / scale, bottoms.get(container) || 0);
 			var note = document.createElement('div');
 			note.className = 'paradis-word-comment-note';
 			note.setAttribute('role', 'note');
 			var author = document.createElement('strong');
-			author.textContent = entries[i].author || '';
+			author.textContent = entry.author || '';
 			note.appendChild(author);
-			if (entries[i].date) {
+			if (entry.date) {
 				var date = document.createElement('span');
-				date.textContent = ' ' + entries[i].date;
+				date.textContent = ' ' + entry.date;
 				note.appendChild(date);
 			}
 			var text = document.createElement('div');
-			text.textContent = entries[i].text || '';
+			text.textContent = entry.text || '';
 			note.appendChild(text);
 			note.style.top = top + 'px';
-			section.appendChild(note);
-			bottoms.set(section, top + note.offsetHeight + 4);
+			note.style.left = ((sectionRect.right - containerRect.left) / scale + 12) + 'px';
+			container.appendChild(note);
+			bottoms.set(container, top + note.offsetHeight + 4);
 			placed++;
 		}
-		contentEl.classList.toggle('paradis-word-has-comments', placed > 0);
+		commentState.contentEl.classList.toggle('paradis-word-has-comments', placed > 0);
 	}
+	function setComments(root, contentEl, entries) {
+		commentState = { root: root, contentEl: contentEl, entries: entries };
+		contentEl.classList.toggle('paradis-word-has-comments', entries.length > 0);
+		placeComments();
+		requestAnimationFrame(placeComments);
+	}
+	window.addEventListener('resize', function () { requestAnimationFrame(placeComments); });
 
 	document.addEventListener('click', onClick);
 	document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closePopover(); } });
@@ -387,5 +418,5 @@ export const PARADIS_WORD_ANCHOR_STYLE = `
 	.paradis-word-popover-rows > div:nth-child(odd) { color: #656d76; }
 	.paradis-word-has-comments { padding-right: 248px !important; }
 	#paradis-word-reveal-message { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 1000; padding: 4px 10px; background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 4px; font: 12px var(--vscode-font-family, sans-serif); }
-	.paradis-word-comment-note { position: absolute; left: calc(100% + 12px); width: 220px; padding: 6px 8px; background: #fff8c5; color: #1f2328; border: 1px solid #d4a72c; border-radius: 4px; font: 11px/1.45 var(--vscode-font-family, sans-serif); white-space: pre-wrap; word-break: break-word; }
+	.paradis-word-comment-note { position: absolute; width: 220px; padding: 6px 8px; background: #fff8c5; color: #1f2328; border: 1px solid #d4a72c; border-radius: 4px; font: 11px/1.45 var(--vscode-font-family, sans-serif); white-space: pre-wrap; word-break: break-word; }
 `;

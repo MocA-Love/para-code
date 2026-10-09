@@ -27,14 +27,14 @@ interface Anchors {
 }
 
 /** 実行時のスクリプトを、テスト用の iframe の window と document で動かす。 */
-function loadRuntime(): { readonly anchors: Anchors; readonly document: Document; dispose(): void } {
+function loadRuntime(): { readonly anchors: Anchors; readonly document: Document; readonly window: Window & typeof globalThis; dispose(): void } {
 	const iframe = mainWindow.document.createElement('iframe');
 	mainWindow.document.body.appendChild(iframe);
 	const frameWindow = iframe.contentWindow as Window & typeof globalThis & { paradisWordAnchors?: Anchors };
 	new Function('window', 'document', 'NodeFilter', 'CSS', 'Highlight', PARADIS_WORD_ANCHOR_RUNTIME)(
 		frameWindow, frameWindow.document, frameWindow.NodeFilter, frameWindow.CSS, (frameWindow as unknown as { Highlight?: unknown }).Highlight,
 	);
-	return { anchors: frameWindow.paradisWordAnchors!, document: frameWindow.document, dispose: () => iframe.remove() };
+	return { anchors: frameWindow.paradisWordAnchors!, document: frameWindow.document, window: frameWindow, dispose: () => iframe.remove() };
 }
 
 function element(document: Document, tag: string, attributes: Record<string, string>, ...children: (Node | string)[]): HTMLElement {
@@ -85,7 +85,12 @@ suite('ParadisWordAnchorRuntime', () => {
 				element(document, 'header', {}, element(document, 'p', { 'data-paradis-p': 'p:word/header1.xml#0' }, 'Sample company')),
 			);
 			document.body.appendChild(root);
-			runtime.anchors.setMarks(root, [{ marker: 'b#0', marks: [{ kind: 'image', start: 10, end: 10, ordinal: 0, rows: [['kind', 'image'], ['targetPartUri', '<img src=x onerror=alert(1)>']] }] }], { title: 'Info', close: 'Close' }, 'final');
+			// 画像（要素で示す印）の後の印も、文字の範囲で付く（前の要素を持ち越さない）。
+			runtime.anchors.setMarks(root, [
+				{ marker: 'b#0', marks: [{ kind: 'image', start: 10, end: 10, ordinal: 0, rows: [['kind', 'image'], ['targetPartUri', '<img src=x onerror=alert(1)>']] }] },
+				{ marker: 'b#1', marks: [{ kind: 'field', start: 0, end: 3, rows: [['kind', 'field']] }] },
+			], { title: 'Info', close: 'Close' }, 'final');
+			const highlighted = [...(runtime.window.CSS.highlights?.get('paradis-word-node') ?? [])].map(range => (range as Range).toString());
 			root.querySelector('img')!.dispatchEvent(new (document.defaultView as Window & typeof globalThis).MouseEvent('click', { bubbles: true, clientX: 1, clientY: 1 }));
 			const popover = document.querySelector('.paradis-word-popover');
 
@@ -95,6 +100,7 @@ suite('ParadisWordAnchorRuntime', () => {
 				revealed: runtime.anchors.reveal(root, { marker: 'b#0', context: '', focus: 'wor', matchCase: true }),
 				popover: [...popover?.querySelectorAll('.paradis-word-popover-rows > div') ?? []].map(cell => cell.textContent),
 				unsafeElements: popover?.querySelectorAll('img').length,
+				highlighted,
 			}, {
 				stamped: [
 					{ '$data-paradis-p': 'b#0' },
@@ -108,6 +114,7 @@ suite('ParadisWordAnchorRuntime', () => {
 				revealed: true,
 				popover: ['kind', 'image', 'targetPartUri', '<img src=x onerror=alert(1)>'],
 				unsafeElements: 0,
+				highlighted: runtime.window.CSS.highlights ? ['', 'Sig'] : [],
 			});
 
 			runtime.anchors.setComments(root, root, [{ marker: 'b#0', author: 'Reviewer', date: '2026-09-29', text: 'Use the calendar year' }]);
