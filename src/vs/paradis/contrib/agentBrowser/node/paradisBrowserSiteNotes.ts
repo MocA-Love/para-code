@@ -31,7 +31,7 @@ const MAX_KEYS = 2000;
 export interface IParadisSiteNote {
 	readonly id: string;
 	readonly text: string;
-	/** 書いた日（YYYY-MM-DD、UTC）。 */
+	/** 書いた日（YYYY-MM-DD、利用者の暦）。 */
 	readonly date: string;
 	readonly agent?: 'claude' | 'codex';
 	/** 書いたときのリポジトリの HEAD（短い形）。 */
@@ -72,6 +72,11 @@ export function paradisSiteNoteCommit(folder: string | undefined): Promise<strin
 			resolve(!error && /^[0-9a-f]{4,40}$/.test(commit) ? commit : undefined);
 		});
 	});
+}
+
+/** 利用者の暦の日付（YYYY-MM-DD）。 */
+function localDate(date: Date): string {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function storeKey(space: string, origin: string): string {
@@ -120,7 +125,7 @@ export class ParadisSiteNotesStore {
 		const note: IParadisSiteNote = {
 			id: generateUuid().slice(0, 8),
 			text: text.trim().slice(0, MAX_NOTE_CHARS),
-			date: this.now().toISOString().slice(0, 10),
+			date: localDate(this.now()),
 			...(meta.agent ? { agent: meta.agent } : {}),
 			...(meta.commit ? { commit: meta.commit } : {}),
 		};
