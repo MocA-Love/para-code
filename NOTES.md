@@ -412,6 +412,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
 
+### hook の届かないペインは Claude Code の OSC 7501 で状態を補う（2026-10-09、#318）
+
+Claude Code 2.1.295 から、端末が `OSC 7501 ; ?` に答えると作業の状態（working・blocked・done・idle・clear）を端末へ書く。Para Code はこれを hook が一度も届いていないペイン（WSL、ターミナルから ssh した先など）の状態の補助にだけ使う（`agentBrowser/common/paradisProgramStatus.ts`、`electron-browser/paradisProgramStatus.contribution.ts`）。
+
+- 出力はどのプログラムでも書けるので、問い合わせに答えるのは前面のコマンドが Claude Code か、先を確かめられない ssh・wsl などのときだけにしている
+- 前面のコマンドは、シェル統合の nonce が合ったコマンド行（`isTrusted`）と、pty が報告する前面のプロセスの題名で見分ける。出力に `OSC 633 ; E` を書くと nonce が合わなくてもコマンド行は上書きされるため、nonce の無いシェル統合のコマンド行は使わない
+- そのため、nonce の無いシェル統合（手で読み込んだ古い統合スクリプトなど）のターミナルでは、npm 版の Claude Code を見分けられない。推測: npm 版は Node のラッパーから起動するのでプロセスの題名が `node` になり、コマンド行だけが手がかりになる【要確認】。この場合は状態の補助が働かない。ネイティブ版はプロセスの題名が版の番号になるので、nonce が無くても見分けられる
+- `instance.processName` は名前を付けた端末では更新が止まるので、プロセスの題名は `processManager.onDidChangeProperty`（Title）から contribution 自身が持つ
+
 ### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
 
 Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>"]` の鍵で記録する（手元の config.toml で確認）。以前の `paradisMergeAgentHooksJson` は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの hook があると、設置し直すたびにユーザー側の位置がずれ、信頼が黙って外れ得た。今は既に置いてある自hookをその位置のまま最新の定義へ差し替え、まだ無いイベントだけ末尾へ足す。

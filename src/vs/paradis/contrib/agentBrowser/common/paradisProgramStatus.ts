@@ -170,6 +170,15 @@ export function paradisTrustedCommandLine(current: { readonly command?: string; 
 	return current?.isTrusted === true ? current.command : undefined;
 }
 
+/**
+ * 前面のプロセス名（pty が報告する題名。`/path/to/claude --resume` のような形でも来る）が変わったときに、
+ * 受け付けを閉じるか。シェル統合が無いターミナルだけ、Claude Code でも ssh などでもなくなったら閉じる
+ * （シェル統合があれば、コマンドの終わりで閉じる）。
+ */
+export function paradisProgramStatusClosesOnForeground(hasShellIntegration: boolean, processTitle: string | undefined): boolean {
+	return !hasShellIntegration && paradisProgramStatusForeground(undefined, processTitle) === undefined;
+}
+
 /** 答えた後、状態が来なくなってからも受け付けを開けておく長さ。 */
 export const PARADIS_PROGRAM_STATUS_WINDOW_MS = 12 * 60 * 60 * 1000;
 /** 1 秒に受ける状態の変化の上限。Claude Code の実際の変化は 1 ターンに数回。 */
