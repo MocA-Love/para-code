@@ -53,6 +53,12 @@ export interface ParadisOfficePackageInventory extends ParadisOfficeInventory {
 
 export interface ParadisOfficeInspectOptions {
 	readonly now?: () => number;
+	/**
+	 * Whether parsed XML parts get a canonical hash (default true). Every XML part is still parsed and
+	 * all-byte hashed; callers that only need the semantic parse (desktop diagnostics) skip the
+	 * canonical form, which is the most expensive step for large worksheets.
+	 */
+	readonly canonicalHashes?: boolean;
 }
 
 /** Builds the security-first, whole-package OPC inventory without exposing raw Part access. */
@@ -128,7 +134,7 @@ export async function inspectOfficePackage(
 		}
 		throwIfParadisOfficeCancelled(token);
 		budget.checkDeadline(now());
-		return await buildInventory(parts, profile, budget, archive, token, checkpoint);
+		return await buildInventory(parts, profile, budget, archive, token, checkpoint, options.canonicalHashes !== false);
 	} finally {
 		archive.dispose();
 	}
@@ -141,6 +147,7 @@ async function buildInventory(
 	archive: IParadisOfficeArchive,
 	token: CancellationToken,
 	checkpoint: () => void,
+	canonicalHashes = true,
 ): Promise<ParadisOfficePackageInventory> {
 	const byName = new Map(readParts.map(part => [part.name, part]));
 	const contentTypes = byName.get(contentTypesName);
@@ -177,6 +184,13 @@ async function buildInventory(
 			required.add(relationship.target);
 		}
 	}
+	// First match wins, like the linear search this replaces (duplicate ids are rejected later anyway).
+	const relationshipTargetsBySource = new Map<string, Map<string, string>>();
+	for (const relationship of relationshipRecords) {
+		const targets = relationshipTargetsBySource.get(relationship.source) ?? new Map<string, string>();
+		if (!targets.has(relationship.id)) { targets.set(relationship.id, relationship.target); }
+		relationshipTargetsBySource.set(relationship.source, targets);
+	}
 	const inventoryParts: ParadisOfficeInventoryPart[] = [];
 	for (const part of readParts) {
 		const contentType = types.get(part.name) ?? (part.name.endsWith('.rels') ? 'application/vnd.openxmlformats-package.relationships+xml' : 'application/octet-stream');
@@ -197,7 +211,11 @@ async function buildInventory(
 		if (xml) {
 			try {
 				const tree = await archive.parseXml(asText(part.bytes), limits, token, checkpoint);
-				const canonical = canonicalizeOfficeXml(tree, id => relationshipRecords.find(relationship => relationship.source === part.name && relationship.id === id)?.target, checkpoint);
+				const partRelationships = relationshipTargetsBySource.get(part.name);
+				// The archive hashes with the platform SHA-256 (Node crypto or WebCrypto); same bytes, same digest.
+				const canonicalHash = canonicalHashes
+					? await archive.hash(new TextEncoder().encode(canonicalizeOfficeXml(tree, id => partRelationships?.get(id), checkpoint, 'deferred').canonical))
+					: undefined;
 				inventoryParts.push({
 					id: part.name,
 					canonicalUri: part.name,
@@ -208,7 +226,7 @@ async function buildInventory(
 					coverage: 'parsed',
 					rawHash: part.rawHash!,
 					hashCompleteness: 'allBytes',
-					canonicalHash: canonical.hash,
+					...(canonicalHash ? { canonicalHash } : {}),
 				});
 			} catch (error) {
 				if (!(error instanceof ParadisOfficePackageError)) {
@@ -237,7 +255,8 @@ async function buildInventory(
 			coverage: 'completeOpaque',
 			hashCompleteness: 'allBytes',
 			fingerprint: part.rawHash!,
-			canonicalHash: part.rawHash!,
+			// A distinct object: consumers snapshot both fields and reject a shared reference.
+			canonicalHash: { ...part.rawHash! },
 		});
 	}
 	const completePartNames = new Set<string>();
@@ -281,7 +300,9 @@ async function buildInventory(
 			}
 			: { coverage: part.coverage, required: part.required },
 	);
-	const missingRequired = relationships.some(relationship => relationship.missing && (relationship.sourcePartId === undefined || relationship.sourcePartId === rootOfficeDocument.target));
+	// Only an absent part the document needs to render blocks it. A dangling relationship to metadata
+	// (docProps/custom.xml, a thumbnail, customXml) is dropped by the renderer and only degrades.
+	const missingRequired = relationshipRecords.some((record, index) => relationships[index].missing && isRequiredRelationship(record, rootOfficeDocument.target));
 	const baseOutcome = aggregateOfficeOutcome(statuses);
 	const outcome = missingRequired ? 'blocked' : relationships.some(relationship => relationship.missing) && baseOutcome === 'complete' ? 'degraded' : baseOutcome;
 	const parsedParts = inventoryParts.filter(part => part.coverage === 'parsed').length;
@@ -328,7 +349,9 @@ function isRequiredRelationship(relationship: ParsedRelationship, mainPart: stri
 	if (relationship.source !== mainPart) {
 		return false;
 	}
-	return /\/(?:styles|settings|numbering|theme|sharedStrings|workbook)$/i.test(relationship.type);
+	// What the renderers cannot draw without: Word styles and numbering, the workbook's sheets, shared
+	// strings, and styles. Settings and theme are optional to docx-preview and exceljs.
+	return /\/(?:styles|numbering|sharedStrings|workbook|worksheet)$/i.test(relationship.type);
 }
 
 interface ContentTypeTable {
@@ -354,6 +377,11 @@ function parseContentTypes(document: ParadisOfficeXmlDocument, checkpoint?: () =
 			const extension = attribute(node, 'Extension');
 			const type = attribute(node, 'ContentType');
 			if (!extension || !type) {
+				throw new ParadisOfficePackageError('malformed');
+			}
+			// Extensions compare case-insensitively (Part 2 §7.2.3.2); a second Default for one is malformed,
+			// as the sanitizer and both semantic parsers already treat it.
+			if (defaults.has(extension.toLowerCase())) {
 				throw new ParadisOfficePackageError('malformed');
 			}
 			defaults.set(extension.toLowerCase(), type);
@@ -627,14 +655,23 @@ function joinChunks(chunks: readonly Uint8Array[], length: number): Uint8Array {
 	return result;
 }
 
-function updateCrc32(value: number, bytes: Uint8Array): number {
-
-	let crc = value;
-	for (const byte of bytes) {
-		crc ^= byte;
+const crc32Table = (() => {
+	const table = new Int32Array(256);
+	for (let index = 0; index < 256; index++) {
+		let value = index;
 		for (let bit = 0; bit < 8; bit++) {
-			crc = (crc >>> 1) ^ ((crc & 1) === 1 ? 0xedb88320 : 0);
+			value = (value >>> 1) ^ ((value & 1) === 1 ? 0xedb88320 : 0);
 		}
+		table[index] = value;
+	}
+	return table;
+})();
+
+/** Table-driven CRC-32 (same polynomial and result as the bitwise form, one lookup per byte). */
+function updateCrc32(value: number, bytes: Uint8Array): number {
+	let crc = value;
+	for (let index = 0; index < bytes.length; index++) {
+		crc = (crc >>> 8) ^ crc32Table[(crc ^ bytes[index]) & 0xff];
 	}
 	return crc;
 }

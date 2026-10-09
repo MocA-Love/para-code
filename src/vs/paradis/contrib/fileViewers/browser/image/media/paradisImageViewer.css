@@ -1,0 +1,106 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * 画像ビューア。upstream の extensions/media-preview/media/imagePreview.css を、webview の body ではなく
+ * ペインの要素に当てる形に写したもの（値は同じ）。スクロールバーは webview の既定の見た目に合わせる。
+ */
+
+.paradis-image-viewer {
+	position: relative;
+	box-sizing: border-box;
+	overflow: auto;
+	text-align: center;
+	-webkit-user-select: none;
+	user-select: none;
+	overscroll-behavior-x: none;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+}
+
+.paradis-image-viewer:focus {
+	outline: none !important;
+}
+
+.paradis-image-viewer.container.image {
+	padding: 0;
+	display: flex;
+}
+
+.paradis-image-viewer img {
+	max-width: none;
+	max-height: none;
+	margin: auto;
+	padding: 0;
+	vertical-align: middle;
+	background-size: 16px 16px;
+	/* upstream の 1px の枠は、未登録の色（imagePreview.border）を参照していて描かれない。ここでも描かない。 */
+	background-image: conic-gradient(rgb(230, 230, 230) 25%, transparent 25% 50%, rgb(230, 230, 230) 50% 75%, transparent 75%);
+}
+
+.paradis-image-viewer.vscode-dark img {
+	background-image: conic-gradient(rgb(20, 20, 20) 25%, transparent 25% 50%, rgb(20, 20, 20) 50% 75%, transparent 75%);
+}
+
+.paradis-image-viewer img.pixelated {
+	image-rendering: pixelated;
+}
+
+.paradis-image-viewer img.scale-to-fit {
+	max-width: calc(100% - 20px);
+	max-height: calc(100% - 20px);
+	object-fit: contain;
+}
+
+.paradis-image-viewer.ready.zoom-in {
+	cursor: zoom-in;
+}
+
+.paradis-image-viewer.ready.zoom-out {
+	cursor: zoom-out;
+}
+
+.paradis-image-viewer.loading,
+.paradis-image-viewer.error,
+.paradis-image-viewer.git-lfs {
+	justify-content: center;
+	align-items: center;
+}
+
+.paradis-image-viewer-message,
+.paradis-image-viewer-loading {
+	display: none;
+}
+
+.paradis-image-viewer.error .paradis-image-viewer-message,
+.paradis-image-viewer.git-lfs .paradis-image-viewer-message {
+	display: block;
+	margin: 1em;
+}
+
+.paradis-image-viewer.loading .paradis-image-viewer-loading {
+	display: block;
+	font-size: 30px;
+	/* 速く読めたときに一瞬だけ出ないよう、少し待ってから見せる。 */
+	opacity: 0;
+	animation: paradis-image-viewer-loading-appear 0s linear 150ms forwards;
+}
+
+.paradis-image-viewer-loading .codicon {
+	font-size: 30px;
+}
+
+@keyframes paradis-image-viewer-loading-appear {
+	to {
+		opacity: 1;
+	}
+}
+
+.paradis-image-viewer .open-file-link {
+	cursor: pointer;
+	color: var(--vscode-textLink-foreground);
+	text-decoration: underline;
+}

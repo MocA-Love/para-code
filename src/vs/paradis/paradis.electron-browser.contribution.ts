@@ -23,6 +23,8 @@ import './contrib/agentBrowser/electron-browser/paradisAgentBrowserBindingRestor
 import './contrib/agentBrowser/electron-browser/paradisAgentNotes.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserCursorSettings.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentPageScriptsBanner.contribution.js';
+// Claude Code の OSC 7501（作業の状態）に答え、hook の届かないペインの状態の補助にする
+import './contrib/agentBrowser/electron-browser/paradisProgramStatus.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisBrowserScope.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisAgentStatus.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';

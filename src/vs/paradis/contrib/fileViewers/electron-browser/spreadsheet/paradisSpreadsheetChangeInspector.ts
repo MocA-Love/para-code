@@ -272,6 +272,10 @@ export function spreadsheetChangeLabel(change: ParadisOfficeChange): string {
 		case 'cell.diagonalBorder': return localize('paradis.spreadsheet.change.baseDiagonal', "セルの斜線");
 		case 'conditionalFormatting.diagonalBorder': return localize('paradis.spreadsheet.change.conditionalDiagonal', "条件付き書式の斜線");
 		case 'object.lineGeometry': return localize('paradis.spreadsheet.change.drawingLine', "図形の線");
+		case 'object.text': return localize('paradis.spreadsheet.change.objectText', "図形の文字");
+		case 'object.textFormat': return localize('paradis.spreadsheet.change.objectTextFormat', "図形の文字の書式");
+		case 'object.fill': return localize('paradis.spreadsheet.change.objectFill', "図形の塗り");
+		case 'object.geometry': return localize('paradis.spreadsheet.change.objectGeometry', "図形の形");
 		default: return categoryLabel(change.category);
 	}
 }

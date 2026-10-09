@@ -5,7 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml } from '../office/paradisOfficeCanonicalXml.js';
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
 import { fingerprintParadisWordObjectBytes } from './paradisWordObjects.js';
@@ -59,6 +59,10 @@ const signatureContentTypes = new Set([
 const oleContentTypes = new Set([
 	'application/vnd.openxmlformats-officedocument.oleobject',
 	'application/vnd.ms-office.oleobject',
+	// Word は古い形式の埋め込み（Excel 97-2003 など）を、その形式の content type のまま oleObject の関係で持つ。
+	'application/vnd.ms-excel',
+	'application/msword',
+	'application/vnd.ms-powerpoint',
 ]);
 const activeXContentTypes = new Set([
 	'application/vnd.ms-office.activex',
@@ -75,9 +79,11 @@ const embeddedPackageContentTypes = new Set([
 ]);
 
 const officeDocumentRelationshipTypes = relationshipTypes('officeDocument');
-const vbaRelationshipTypes = relationshipTypes('vbaProject');
+// 実際の Word は、マクロと ActiveX の本体を Microsoft の名前空間の関係で書く（MS-OFFMACRO2・MS-OI29500）。
+const microsoftRelationships = 'http://schemas.microsoft.com/office/2006/relationships';
+const vbaRelationshipTypes = new Set([...relationshipTypes('vbaProject'), `${microsoftRelationships}/vbaProject`, `${microsoftRelationships}/wordVbaData`]);
 const oleRelationshipTypes = relationshipTypes('oleObject');
-const activeXRelationshipTypes = relationshipTypes('control');
+const activeXRelationshipTypes = new Set([...relationshipTypes('control'), `${microsoftRelationships}/activeXControlBinary`]);
 const packageRelationshipTypes = relationshipTypes('package');
 const imageRelationshipTypes = relationshipTypes('image');
 
@@ -519,6 +525,8 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			throw new ParadisOfficePackageError('malformed');
 		}
 		const relationships = new Map<string, Relationship>();
+		// 先が無いので読み飛ばした関係の Id も覚え、同じ Id の重複を見逃さない。
+		const skippedIds = new Set<string>();
 		for (const child of elementChildren(root)) {
 			guard.checkpoint();
 			if (child.uri !== root.uri || child.local !== 'Relationship') {
@@ -528,7 +536,7 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			const type = requiredAttribute(child, '', 'Type');
 			const target = requiredAttribute(child, '', 'Target');
 			const mode = optionalAttribute(child, '', 'TargetMode');
-			if (relationships.has(id) || !validRelationshipType(type) || mode !== undefined && mode !== 'External') {
+			if (relationships.has(id) || skippedIds.has(id) || !validRelationshipType(type) || mode !== undefined && mode !== 'External') {
 				throw new ParadisOfficePackageError('malformed');
 			}
 			if (mode === 'External') {
@@ -540,6 +548,12 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 			} else {
 				const targetPartUri = resolveRelationshipTarget(ownerPartUri, target);
 				if (!parts.has(targetPartUri)) {
+					// 先の部品が無い関係でも、文書情報（custom-properties など）のように安全の判断に関わらない型なら
+					// 読み飛ばす（実際の作成元が書くことがある）。判断に関わる型で先が無ければ、これまでどおり拒否する。
+					if (!isSecurityRelevantRelationship(type)) {
+						skippedIds.add(id);
+						continue;
+					}
 					throw new ParadisOfficePackageError('unsafe');
 				}
 				relationships.set(id, { id, type, relationshipPartFingerprint: part.source.partFingerprint, external: false, targetPartUri });
@@ -548,6 +562,11 @@ function parseAllRelationships(parts: ReadonlyMap<string, OwnedPart>, token: Can
 		result.set(ownerPartUri, relationships);
 	}
 	return result;
+}
+
+function isSecurityRelevantRelationship(type: string): boolean {
+	return officeDocumentRelationshipTypes.has(type) || vbaRelationshipTypes.has(type) || oleRelationshipTypes.has(type)
+		|| activeXRelationshipTypes.has(type) || packageRelationshipTypes.has(type) || imageRelationshipTypes.has(type);
 }
 
 function validatePackageRoot(parts: ReadonlyMap<string, OwnedPart>, relationships: ReadonlyMap<string, ReadonlyMap<string, Relationship>>): void {
@@ -754,32 +773,7 @@ function relationshipOwner(partUri: string): string {
 }
 
 function resolveRelationshipTarget(ownerPartUri: string, target: string): string {
-	if (!target || target.includes('\\') || target.includes('\0') || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	let decoded: string;
-	try {
-		decoded = decodeURIComponent(target);
-	} catch {
-		throw new ParadisOfficePackageError('unsafe');
-	}
-	const ownerDirectory = ownerPartUri === '/' ? '/' : ownerPartUri.slice(0, ownerPartUri.lastIndexOf('/') + 1);
-	const combined = decoded.startsWith('/') ? decoded : `${ownerDirectory}${decoded}`;
-	const normalized: string[] = [];
-	for (const segment of combined.split('/')) {
-		if (!segment || segment === '.') {
-			continue;
-		}
-		if (segment === '..') {
-			if (normalized.length === 0) {
-				throw new ParadisOfficePackageError('unsafe');
-			}
-			normalized.pop();
-		} else {
-			normalized.push(segment);
-		}
-	}
-	const resolved = `/${normalized.join('/')}`;
+	const resolved = resolveSharedRelationshipTarget(ownerPartUri, target);
 	if (canonicalPartUri(resolved) !== resolved) {
 		throw new ParadisOfficePackageError('unsafe');
 	}
@@ -987,4 +981,19 @@ function sanitizeSecurityError(error: unknown): ParadisOfficePackageError {
 		code = 'unsafe';
 	}
 	return new ParadisOfficePackageError(code);
+}
+
+/**
+ * 関係の Target を、サニタイザ・部品一覧と同じ規則（resolveParadisOfficeRelationshipTarget）で解決する。
+ * スキーム付き・クエリ・断片は Word の部品を指さないので拒む。拒むときの理由はこのファイルの他の拒否と同じ unsafe にする。
+ */
+function resolveSharedRelationshipTarget(ownerPartUri: string, target: string): string {
+	if (!target || target.includes('?') || target.includes('#') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) {
+		throw new ParadisOfficePackageError('unsafe');
+	}
+	try {
+		return resolveParadisOfficeRelationshipTarget(ownerPartUri, target);
+	} catch {
+		throw new ParadisOfficePackageError('unsafe');
+	}
 }

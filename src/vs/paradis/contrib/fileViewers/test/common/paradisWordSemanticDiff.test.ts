@@ -90,6 +90,7 @@ interface StoryOptions {
 	readonly role?: 'default' | 'first' | 'even';
 	readonly noteId?: string;
 	readonly commentId?: string;
+	readonly parentNodeId?: string;
 }
 
 function story(id: string, nodes: readonly ParadisWordNode[], options: StoryOptions = {}): ParadisWordStory {
@@ -103,6 +104,7 @@ function story(id: string, nodes: readonly ParadisWordNode[], options: StoryOpti
 			...(options.role ? { roles: [options.role] } : {}),
 			...(options.noteId ? { noteId: options.noteId } : {}),
 			...(options.commentId ? { commentId: options.commentId } : {}),
+			...(options.parentNodeId ? { parentNodeId: options.parentNodeId } : {}),
 		},
 		source: { partUri, semanticPath: [], kind: 'story', ordinal: 0, fingerprint: `story:${storyText}`, partFingerprint: fingerprint('a') },
 		anchor: { partUri, semanticPath: [], kind: 'story', ordinal: 0, fingerprint: `story:${storyText}` },
@@ -195,6 +197,45 @@ suite('Paradis Word Semantic Diff', () => {
 		ok(moved.alignments.stories.flatMap(value => value.nodes).some(value => value.originalNodeId === 'target-o' && value.modifiedNodeId === 'target-m' && value.status === 'moved'));
 		strictEqual(changesOf(moved, 'field.instruction').length, 1);
 		strictEqual(changesOf(moved, 'node.format').length, 1);
+	});
+
+	test('pairs duplicates in order when both sides have the same count, so an identical pair has no changes', () => {
+		const build = (prefix: string) => document([
+			story(`${prefix}-body`, [section(`${prefix}-s0`, [
+				paragraphText(`${prefix}-title`, 'title', [0, 0]),
+				paragraphText(`${prefix}-empty-1`, '', [0, 1]), paragraphText(`${prefix}-empty-2`, '', [0, 2]),
+				paragraphText(`${prefix}-end`, 'end', [0, 3]),
+				paragraphText(`${prefix}-empty-3`, '', [0, 4]),
+			])]),
+			story(`${prefix}-box-1`, [paragraphText(`${prefix}-box-1-p`, 'stamp', [0])], { kind: 'textbox' }),
+			story(`${prefix}-box-2`, [paragraphText(`${prefix}-box-2-p`, 'stamp', [0])], { kind: 'textbox' }),
+		]);
+		const result = compareWordSemantics(completeSnapshot(build('x')), completeSnapshot(build('x')));
+		deepStrictEqual({ outcome: result.outcome, noChanges: result.noChanges, changes: result.changes.map(change => change.subject.kind) }, { outcome: 'complete', noChanges: true, changes: [] });
+	});
+
+	test('pairs same-text textboxes in order when their anchoring paragraph got a new id', () => {
+		const build = (prefix: string, title: string) => document([
+			story(`${prefix}-body`, [section(`${prefix}-s0`, [
+				paragraphText(`${prefix}-title`, title, [0, 0]),
+				paragraphText(`${prefix}-anchor`, 'signature', [0, 1]),
+			])]),
+			story(`${prefix}-box-1`, [paragraphText(`${prefix}-box-1-p`, 'stamp', [0])], { kind: 'textbox', parentNodeId: `${prefix}-anchor` }),
+			story(`${prefix}-box-2`, [paragraphText(`${prefix}-box-2-p`, 'stamp', [0])], { kind: 'textbox', parentNodeId: `${prefix}-anchor` }),
+		]);
+		const result = compareWordSemantics(completeSnapshot(build('x', 'request')), completeSnapshot(build('y', 'loan request')));
+		deepStrictEqual(result.changes.map(change => change.subject.kind).filter(kind => kind.startsWith('story.')), []);
+	});
+
+	test('shortens a very long changed value instead of failing the whole comparison', () => {
+		const build = (text: string) => document([story('body', [section('s0', [paragraphText('p', text, [0, 0], 'same')])])]);
+		const result = compareWordSemantics(completeSnapshot(build('a'.repeat(5_000))), completeSnapshot(build('b'.repeat(5_000))));
+		const change = changesOf(result, 'paragraph.text')[0];
+		deepStrictEqual({
+			length: change.after.kind === 'scalar' && typeof change.after.value === 'string' ? change.after.value.length : -1,
+			ellipsis: change.after.kind === 'scalar' && typeof change.after.value === 'string' && change.after.value.endsWith('\u2026'),
+			truncated: result.truncatedValueChangeIds.includes(change.id),
+		}, { length: 4_096, ellipsis: true, truncated: true });
 	});
 
 	test('never aligns paragraphs across a table or between same-depth cells in different tables', () => {

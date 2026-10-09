@@ -65,6 +65,8 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
+import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
@@ -355,6 +357,12 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'set_cursor_label',
 ]);
 
+/**
+ * タブを選べる Para のツールのうち、同じタブの列（paradisToolCallLanes.ts）に並べないもの。ページに触れず
+ * すぐ返るもの（名札・接続先・共有中のページの情報）と、手順ごとに列へ並ぶ run_steps。
+ */
+const PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES: ReadonlySet<string> = new Set(['run_steps', 'set_cursor_label', 'get_cdp_endpoint', 'get_shared_page']);
+
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
 const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
@@ -498,6 +506,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** ゲートウェイ向けにスコープキーで発行した lease → ペインの lease。 */
 	private readonly _gatewayScopedLeases = new WeakMap<IParadisAgentBrowserIngressLease, IParadisAgentBrowserIngressLease>();
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
+	/** 同じタブへのツール呼び出しを 1 本ずつ流す列（鍵はタブのスコープキー）。 */
+	private readonly _toolCallLanes = new ParadisToolCallLanes();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
@@ -618,6 +628,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * hook を信頼していない Codex でも真になってしまう。
 	 */
 	private readonly _hookReportedTokens = new Set<string>();
+	/**
+	 * hook の届いていないペインのうち、Claude Code が OSC 7501 で状態を知らせてきているもの（notePaneProgramStatus）。
+	 * ここに載っている間は、OSC が状態の出どころ。transcript から読んだターンの始まり・終わりは、届くのが遅れて
+	 * 状態を巻き戻し、完了を二度数えるので反映しない。clear（CLI の終了）・hook の到着・ペインの終了で外れる。
+	 */
+	private readonly _programStatusTokens = new Set<string>();
+	/** OSC 7501 の状態を受けた時刻（ペインごとの直近 1 秒分）。速すぎる書き換えを断る。 */
+	private readonly _programStatusTimes = new Map<string, number[]>();
 	/**
 	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
 	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
@@ -873,7 +891,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the MCP settings to new Codex homes', error));
 			});
 		}));
-		// ツール呼び出しの上限（timeout / tool_timeout_sec）を足す前に登録した para-browser を、起動時に 1 回だけ入れ直す。
+		// ツール呼び出しの上限（timeout / tool_timeout_sec）と Codex の並行の呼び出し（supports_parallel_tool_calls）を
+		// 足す前に登録した para-browser を、起動時に 1 回だけ入れ直す。
 		void this._serverStartPromise.then(() => this._currentGatewayPort()).then(port => this._mcpSetupController.upgradeToolTimeouts(port)).catch(error => {
 			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the tool timeout to the MCP settings', error));
 		});
@@ -897,7 +916,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);
-			if (ingressLease === undefined) {
+			if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 				return;
 			}
 			if (this.isIngressLeaseCurrent(ingressLease)) {
@@ -927,7 +946,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		//    「完了 → 実行中」への補正 (tail はポーリング分だけ hook より遅れることがある)
 		this._register(onParadisAgentPaneActivity(({ token, activity }) => {
 			const ingressLease = this.captureIngressLease(token);
-			if (ingressLease === undefined) {
+			if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 				return;
 			}
 			const entry = this._paneStatuses.get(token);
@@ -1505,6 +1524,59 @@ export class ParadisAgentBrowserService extends Disposable {
 		return true;
 	}
 
+	/**
+	 * ペインの Claude Code が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
+	 * paradisProgramStatus.contribution.ts）。hook が届いていないペイン（WSL・手で ssh した先など）の状態の補助に
+	 * だけ使い、hook が一度でも届いたペインでは何もしない。状態を書き換えたら true。
+	 */
+	async notePaneProgramStatus(connection: object, token: string, value: unknown): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token)) {
+			return false;
+		}
+		const status = paradisCopyProgramStatus(value);
+		const ingressLease = this.captureIngressLease(token);
+		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
+			return false;
+		}
+		const now = Date.now();
+		// renderer でも間引いているが、ここでも 1 秒に数回までにする（renderer 以外の呼び出しや不具合で IPC が続いても状態を振らない）
+		const times = (this._programStatusTimes.get(token) ?? []).filter(at => now - at < 1000);
+		if (status.state !== 'clear' && times.length >= PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND) {
+			this._programStatusTimes.set(token, times);
+			return false;
+		}
+		times.push(now);
+		this._programStatusTimes.set(token, times);
+		const next = paradisProgramStatusToAgentStatus(status);
+		const previous = this._paneStatuses.get(token);
+		// hook の実績（_agentHookTokens・_hookReportedTokens）には混ぜず、別の印で持つ
+		if (status.state === 'clear') {
+			this._programStatusTokens.delete(token);
+			this._programStatusTimes.delete(token);
+		} else {
+			this._programStatusTokens.add(token);
+		}
+		if (next === 'idle') {
+			return this._paneStatuses.delete(token);
+		}
+		if (next === 'review') {
+			if (previous?.status === 'review') {
+				return false;
+			}
+			this._paneStatuses.set(token, this._reviewEntry(token, now, previous?.cwd));
+			return true;
+		}
+		if (previous?.status === next) {
+			return false;
+		}
+		// 待ちや完了の後でない working は、新しいターンの始まり（完了の知らせを同じターンで二度出さないための印）
+		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
+			this._userTurnStarts.set(token, now);
+		}
+		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
+		return true;
+	}
+
 	private _validateProjectedShellPids(windowCtx: string, manifest: IParadisBindingAuthorityManifest): void {
 		const projected = new Map(this._paneShells);
 		const retiringTokensByPid = new Map<number, Set<string>>();
@@ -1864,7 +1936,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private _settlePaneTurnEnded(token: string, at: number, cause: ParadisAgentTurnEndCause): void {
 		const ingressLease = this.captureIngressLease(token);
-		if (ingressLease === undefined) {
+		if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 			return;
 		}
 		const entry = this._paneStatuses.get(token);
@@ -1892,7 +1964,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private _settlePaneAwaitingUser(token: string, includeQuestion: boolean = false): void {
 		const ingressLease = this.captureIngressLease(token);
-		if (ingressLease === undefined) {
+		if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 			return;
 		}
 		const entry = this._paneStatuses.get(token);
@@ -1922,6 +1994,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
+		this._programStatusTokens.delete(token);
+		this._programStatusTimes.delete(token);
 		this._replayedPrompts.delete(token);
 		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
@@ -3922,6 +3996,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				} else {
 					this._agentHookTokens.add(token);
 					this._hookReportedTokens.add(token);
+					// hook が届くペインは hook が正本（OSC 7501 の状態は使わない）
+					this._programStatusTokens.delete(token);
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);
@@ -4438,38 +4514,42 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const pageLease = scopedCall.lease;
 			const devtoolsArgs = scopedCall.args;
-			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
-			// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
-			// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
-			const pathArguments = paradisDevtoolsPathArguments(name, devtoolsArgs);
-			if (pathArguments.length > 0) {
-				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, devtoolsArgs);
-				this._requireIngressLease(ingressLease);
-				if (pathDecision.kind === 'refuse') {
-					// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
-					// 手元の一時ファイルで動かして接続先と中身を受け渡す
-					const remoteAuthority = this._paneRemoteAuthorityOf(token);
-					const direction = paradisRemoteFileToolDirection(name, pathArguments);
-					if (remoteAuthority !== undefined && direction !== undefined) {
-						return this._remoteFileTransfer.callTool(name, direction, devtoolsArgs as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
-							bridgedArgs => this._callDevtoolsTool(pageLease, name, bridgedArgs, signal, false));
+			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
+			// 並べないので、Para の道具（click_by など）と同じ列に入れる
+			return this._toolCallLanes.run(this._pageKeyOf(pageLease), async () => {
+				// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
+				// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
+				// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
+				const pathArguments = paradisDevtoolsPathArguments(name, devtoolsArgs);
+				if (pathArguments.length > 0) {
+					const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, devtoolsArgs);
+					this._requireIngressLease(ingressLease);
+					if (pathDecision.kind === 'refuse') {
+						// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
+						// 手元の一時ファイルで動かして接続先と中身を受け渡す
+						const remoteAuthority = this._paneRemoteAuthorityOf(token);
+						const direction = paradisRemoteFileToolDirection(name, pathArguments);
+						if (remoteAuthority !== undefined && direction !== undefined) {
+							return this._remoteFileTransfer.callTool(name, direction, devtoolsArgs as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
+								bridgedArgs => this._callDevtoolsTool(pageLease, name, bridgedArgs, signal, false));
+						}
+						return this._toolError(pathDecision.message);
 					}
-					return this._toolError(pathDecision.message);
+					// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
+					const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, devtoolsArgs);
+					this._requireIngressLease(ingressLease);
+					if (versionControl !== undefined) {
+						return this._toolError(versionControl);
+					}
 				}
-				// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
-				const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, devtoolsArgs);
-				this._requireIngressLease(ingressLease);
-				if (versionControl !== undefined) {
-					return this._toolError(versionControl);
+				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
+				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
+				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
+					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
+					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
 				}
-			}
-			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
-			if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
-				// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
-				return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
-			}
-			return devtoolsResult;
+				return devtoolsResult;
+			}, signal);
 		}
 
 		// ページを操作する Para のツールは、tab_id（省略可）でどのタブかを決める
@@ -4496,6 +4576,18 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 
+		const laneKey = PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES.has(name) || !PARADIS_TAB_SCOPED_TOOL_NAMES.has(name) ? undefined : this._pageKeyOf(pageLease);
+		if (laneKey !== undefined) {
+			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。待つのはタブを決めた後なので、tab_id を
+			// 省いた呼び出しも、その時点の既定のタブの列に並ぶ
+			return this._toolCallLanes.run(laneKey, () => this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket), signal);
+		}
+		return this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket);
+	}
+
+	/** タブを決めた後の Para のツールの呼び出し（{@link _callToolInner} の続き）。 */
+	private async _callResolvedTool(ingressLease: IParadisAgentBrowserIngressLease, pageLease: IParadisAgentBrowserIngressLease, name: string, toolArguments: unknown, params: { name?: unknown; arguments?: unknown } | undefined, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
+		const token = ingressLease.token;
 		// 利用者に承認を求める・ページやプロファイルを開く / 切り替える / 消すツールは、トークンだけでなく
 		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
 		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。

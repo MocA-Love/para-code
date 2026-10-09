@@ -764,6 +764,11 @@ interface SharedStringRecord {
 
 interface SemanticCounters {
 	unknownElements: number;
+	/**
+	 * Namespaces the part being read declares in `mc:Ignorable` (ECMA-376 Part 3 §10.1). Set from the
+	 * part's root and scoped to that part by `inPart`, so one part's declarations never apply to the next.
+	 */
+	ignorableNamespaces?: ReadonlySet<string>;
 	unknownAttributes: number;
 	unresolvedReferences: number;
 	expectedCells: number;
@@ -874,7 +879,7 @@ export async function parseSpreadsheetSemantic(
 			unresolvedStyleRefs: 0,
 			cellsWithDiagonalStyleRefs: 0,
 		};
-		const workbook = parseWorkbook(workbookPart.document, limits, counters, checkpoint);
+		const workbook = inPart(counters, () => parseWorkbook(workbookPart.document, limits, counters, checkpoint));
 		const referencedWorksheetRelationships = new Set(workbook.sheets.map(sheet => sheet.relationshipId));
 		const requestedPartIds = new Set<string>([
 			contentTypesPartId,
@@ -914,8 +919,8 @@ export async function parseSpreadsheetSemantic(
 		}
 		const stylesPart = stylesRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(stylesRelationship)) : undefined;
 		const sharedStringsPart = sharedStringsRelationship ? requiredParsedPart(reader.parsed, safeRawInternalTarget(sharedStringsRelationship)) : undefined;
-		const styles = parseStyles(stylesPart, counters, checkpoint);
-		const sharedStrings = parseSharedStrings(sharedStringsPart, limits, counters, checkpoint);
+		const styles = inPart(counters, () => parseStyles(stylesPart, counters, checkpoint));
+		const sharedStrings = inPart(counters, () => parseSharedStrings(sharedStringsPart, limits, counters, checkpoint));
 		const sheets: ParadisSemanticSheet[] = [];
 		const seenRelationshipIds = new Set<string>();
 		const seenSheetPartIds = new Set<string>();
@@ -936,7 +941,7 @@ export async function parseSpreadsheetSemantic(
 			}
 			seenSheetPartIds.add(partId);
 			const part = requiredParsedPart(reader.parsed, partId);
-			sheets.push(parseWorksheet(part, partId, order, sheetRecord, sharedStrings, stylesPart, styles, limits, counters, checkpoint));
+			sheets.push(inPart(counters, () => parseWorksheet(part, partId, order, sheetRecord, sharedStrings, stylesPart, styles, limits, counters, checkpoint)));
 		}
 		const resolvedStyles: ParadisSpreadsheetStyles = {
 			...styles,
@@ -2289,6 +2294,7 @@ function parseWorkbook(
 	checkpoint: (force?: boolean) => void,
 ): ParsedWorkbook {
 	const root = spreadsheetRoot(document, 'workbook');
+	counters.ignorableNamespaces = markupCompatibilityIgnorable(root);
 	countUnknownAttributes(root, [], counters);
 	let date1904 = false;
 	let calcProperties: ParadisSpreadsheetCalcProperties | undefined;
@@ -2304,7 +2310,7 @@ function parseWorkbook(
 	for (const child of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(child)) {
-			counters.unknownElements++;
+			countUnknownElement(child, counters);
 			continue;
 		}
 		if (singletonElements.has(child.local)) {
@@ -2350,7 +2356,7 @@ function parseWorkbookViews(root: XmlElement, result: ParadisSpreadsheetWorkbook
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'workbookView')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		const allowed = ['activeTab', 'firstSheet', 'visibility', 'showHorizontalScroll', 'showVerticalScroll', 'showSheetTabs', 'tabRatio', 'xWindow', 'yWindow', 'windowWidth', 'windowHeight'];
@@ -2376,7 +2382,7 @@ function parseWorkbookSheets(root: XmlElement, result: WorkbookSheetRecord[], li
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'sheet')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		if (result.length >= limit) {
@@ -2399,7 +2405,7 @@ function parseDefinedNames(root: XmlElement, result: ParadisSpreadsheetDefinedNa
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'definedName')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		if (result.length >= limit) {
@@ -2449,6 +2455,7 @@ function parseStyles(part: ParsedPart | undefined, counters: SemanticCounters, c
 		};
 	}
 	const root = spreadsheetRoot(part.document, 'styleSheet');
+	counters.ignorableNamespaces = markupCompatibilityIgnorable(root);
 	countUnknownAttributes(root, [], counters);
 	const numberFormats: ParadisSpreadsheetCustomNumberFormat[] = [];
 	const cellFormats: ParadisSemanticCellFormat[] = [];
@@ -2462,7 +2469,7 @@ function parseStyles(part: ParsedPart | undefined, counters: SemanticCounters, c
 	for (const child of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(child)) {
-			counters.unknownElements++;
+			countUnknownElement(child, counters);
 			continue;
 		}
 		if (singletonElements.has(child.local)) {
@@ -2597,12 +2604,13 @@ function parseSharedStrings(
 		return [];
 	}
 	const root = spreadsheetRoot(part.document, 'sst');
+	counters.ignorableNamespaces = markupCompatibilityIgnorable(root);
 	countUnknownAttributes(root, ['count', 'uniqueCount'], counters);
 	const result: SharedStringRecord[] = [];
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'si')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		if (result.length >= limits.sharedStrings) {
@@ -2626,6 +2634,7 @@ function parseWorksheet(
 	checkpoint: (force?: boolean) => void,
 ): ParadisSemanticSheet {
 	const root = spreadsheetRoot(part.document, 'worksheet');
+	counters.ignorableNamespaces = markupCompatibilityIgnorable(root);
 	countUnknownAttributes(root, [], counters);
 	const cells = new Map<string, ParadisSemanticCell>();
 	const rows = new Map<number, ParadisSemanticRow>();
@@ -2645,7 +2654,7 @@ function parseWorksheet(
 	for (const child of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(child)) {
-			counters.unknownElements++;
+			countUnknownElement(child, counters);
 			continue;
 		}
 		if (singletonElements.has(child.local)) {
@@ -2712,7 +2721,7 @@ function parseSheetViews(root: XmlElement, result: ParadisSemanticSheetView[], c
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'sheetView')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		const allowed = ['workbookViewId', 'showGridLines', 'showRowColHeaders', 'showZeros', 'rightToLeft', 'tabSelected', 'showRuler', 'showOutlineSymbols', 'defaultGridColor', 'view', 'topLeftCell', 'colorId', 'zoomScale', 'zoomScaleNormal', 'zoomScaleSheetLayoutView', 'zoomScalePageLayoutView', 'windowProtection'];
@@ -2777,7 +2786,7 @@ function parseColumns(root: XmlElement, result: ParadisSemanticColumn[], limits:
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'col')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		if (result.length >= limits.columns) {
@@ -2815,7 +2824,7 @@ function parseSheetData(
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'row')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		const rowIndex = integerAttribute(node, 'r') ?? previousRow + 1;
@@ -2843,7 +2852,7 @@ function parseSheetData(
 		for (const cellNode of elementChildren(node, checkpoint)) {
 			checkpoint();
 			if (!isSpreadsheetElement(cellNode, 'c')) {
-				counters.unknownElements++;
+				countUnknownElement(cellNode, counters);
 				continue;
 			}
 			counters.expectedCells++;
@@ -3090,7 +3099,7 @@ function parseRichTextProperties(node: XmlElement, counters: SemanticCounters, c
 	for (const child of elementChildren(node, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(child)) {
-			counters.unknownElements++;
+			countUnknownElement(child, counters);
 			continue;
 		}
 		if (child.local !== 'color') {
@@ -3141,7 +3150,7 @@ function parseMerges(root: XmlElement, result: ParadisSemanticRange[], limits: P
 	for (const node of elementChildren(root, checkpoint)) {
 		checkpoint();
 		if (!isSpreadsheetElement(node, 'mergeCell')) {
-			counters.unknownElements++;
+			countUnknownElement(node, counters);
 			continue;
 		}
 		if (result.length >= limits.merges) {
@@ -3197,6 +3206,44 @@ function spreadsheetRoot(document: ParadisOfficeXmlDocument, local: string): Xml
 		throw new ParadisOfficePackageError('malformed');
 	}
 	return document.root;
+}
+
+const markupCompatibilityNamespace = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
+
+/** Runs the reader of one part with no `mc:Ignorable` in scope before or after it. */
+function inPart<T>(counters: SemanticCounters, read: () => T): T {
+	counters.ignorableNamespaces = undefined;
+	try {
+		return read();
+	} finally {
+		counters.ignorableNamespaces = undefined;
+	}
+}
+
+/** Namespaces listed in the root's `mc:Ignorable`, resolved through the root's own bindings. */
+function markupCompatibilityIgnorable(root: XmlElement): ReadonlySet<string> {
+	const value = root.attributes.find(attribute => attribute.uri === markupCompatibilityNamespace && attribute.local === 'Ignorable')?.value;
+	const bindings = root.namespaceBindings ?? {};
+	const result = new Set<string>();
+	for (const prefix of value?.split(/\s+/) ?? []) {
+		if (prefix && Object.hasOwn(bindings, prefix)) { result.add(bindings[prefix]); }
+	}
+	return result;
+}
+
+/**
+ * Counts an element the parser does not understand. Markup Compatibility lets a consumer skip elements
+ * in a namespace the part declares Ignorable, and an `mc:AlternateContent` with no understood branch
+ * (Part 3 §10); Excel writes both at the workbook and sheet level (`xr:revisionPtr`, `x15ac:absPath`).
+ */
+function countUnknownElement(element: XmlElement, counters: SemanticCounters): void {
+	if (element.uri === markupCompatibilityNamespace && element.local === 'AlternateContent') {
+		return;
+	}
+	if (counters.ignorableNamespaces?.has(element.uri)) {
+		return;
+	}
+	counters.unknownElements++;
 }
 
 function isSpreadsheetElement(node: XmlElement, local?: string): boolean {
