@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisWarmLeaseScheduler } from '../../../../common/paradisWarmLease.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, paradisCcusageDataEnv, paradisCcusageProbeArchives, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
+import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, ParadisCcusageArchiveProber, paradisCcusageDataEnv, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
 
 interface IExecResult {
 	readonly stdout?: string;
@@ -757,8 +757,9 @@ suite('ParadisCcusageService', () => {
 	});
 
 	// 切れたネットワークのディスクで stat が返ってこなくても、要求は上限（2秒）で置き場なしとして進み、
-	// 一度確かめ終えた後は、裏の確認が止まっていても待たない。
-	test('does not let a stuck archive check hold requests beyond the probe limit', async () => {
+	// 一度確かめ終えた後は、裏の確認が止まっていても待たない。打ち切った stat は返るまで出し直さないので、
+	// 確認し直しが何度来てもスレッドプールに積もらない（根が2つでも、出す stat は2本まで）。
+	test('does not let a stuck archive check hold requests or pile up stats in the thread pool', async () => {
 		const clock = sinon.useFakeTimers({ now: INITIAL_TIME });
 		const runs: (string | undefined)[] = [];
 		const execFile = ((_file: string, _args: readonly string[], options: cp.ExecFileOptions, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
@@ -766,24 +767,29 @@ suite('ParadisCcusageService', () => {
 			callback(null, dailyOutput('local-only'), '');
 			return { kill: sinon.spy(() => true) } as unknown as cp.ChildProcess;
 		}) as unknown as typeof cp.execFile;
-		const configurationService = new TestConfigurationService({ 'paradis.ccusage.archiveDirs': ['/nas/archive'] });
-		const stuck = () => new Promise<boolean>(() => { });
-		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now, undefined, true, roots => paradisCcusageProbeArchives(roots, '/home/u', stuck));
+		const configurationService = new TestConfigurationService({ 'paradis.ccusage.archiveDirs': ['/nas/a', '/nas/b'] });
+		const statted: string[] = [];
+		const prober = new ParadisCcusageArchiveProber(candidate => {
+			statted.push(candidate);
+			return new Promise<boolean>(() => { });
+		}, undefined, '/home/u');
+		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now, undefined, true, roots => prober.probe(roots));
 		const fetchFirst = service.fetchReport('daily', { executablePath: '/test/ccusage' });
-		await clock.tickAsync(2_000);
+		await clock.tickAsync(4_000);
 		const first = await fetchFirst;
-		clock.setSystemTime(INITIAL_TIME + 60_000);
-		const second = await service.fetchReport('daily', { executablePath: '/test/ccusage' });
+		const later: number[] = [];
+		for (let pass = 1; pass <= 3; pass++) {
+			clock.setSystemTime(INITIAL_TIME + pass * 60_000);
+			later.push((await service.fetchReport('daily', { executablePath: '/test/ccusage' })).fetchedAt - INITIAL_TIME);
+			await clock.tickAsync(2_000);
+		}
 		service.dispose();
 
-		assert.deepStrictEqual({
-			first: { period: first.value[0]?.period, fetchedAt: first.fetchedAt - INITIAL_TIME },
-			second: { period: second.value[0]?.period, fetchedAt: second.fetchedAt - INITIAL_TIME },
-			runs,
-		}, {
-			first: { period: 'local-only', fetchedAt: 2_000 },
-			second: { period: 'local-only', fetchedAt: 2_000 },
+		assert.deepStrictEqual({ first: { period: first.value[0]?.period, fetchedAt: first.fetchedAt - INITIAL_TIME }, later, runs, statted }, {
+			first: { period: 'local-only', fetchedAt: 4_000 },
+			later: [4_000, 4_000, 4_000],
 			runs: [undefined],
+			statted: ['/nas/a/claude/projects', '/nas/b/claude/projects'],
 		});
 	});
 });

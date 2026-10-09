@@ -144,6 +144,11 @@ const ARCHIVE_PROBE_TTL_MS = 10_000;
  * これを過ぎたら「無い」とみなす。
  */
 const ARCHIVE_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * 返ってきていない stat の上限。打ち切っても止まった stat は libuv のスレッドプール（既定 4 本）を占めたままに
+ * なるので、積もるとこのプロセスの非同期の fs・dns・zlib・crypto がすべて止まる。これ以上は新しい stat を出さない。
+ */
+const ARCHIVE_PROBE_MAX_PENDING_STATS = 2;
 
 /**
  * ccusage に手元の記録と一緒に読ませるアーカイブ（設定 `paradis.ccusage.archiveDirs`）のうち、いま実在するもの。
@@ -274,7 +279,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
 		/** 設定 `paradis.ccusage.archiveDirs` を読むか。手元の shared process だけが読む（SSH の接続先では読まない）。 */
 		private readonly readsArchives = false,
-		private readonly probeArchives: (roots: readonly string[]) => Promise<IParadisCcusageArchives> = roots => paradisCcusageProbeArchives(roots),
+		private readonly probeArchives: (roots: readonly string[]) => Promise<IParadisCcusageArchives> = roots => defaultArchiveProber.probe(roots),
 	) {
 		// POSIX では ccusage を自分のプロセスグループで起こし(paradisCcusageProcessGroupOptions)、止めるときは
 		// グループごと止める。npx 経由だと子は npx で、実体の node(ccusage)は孫になる。子だけを止めると孫が
@@ -1034,42 +1039,75 @@ export function paradisCcusageDataEnv(env: NodeJS.ProcessEnv, codexHomes: readon
 }
 
 /**
- * 設定に書かれたアーカイブの根から、いま実在する Claude と Codex の置き場を拾う。絶対パス（`~/` は展開する）
- * だけを見る。カンマを含むパスは区切りと見分けられないので渡さない。外付けのディスクが外れていれば何も拾わない。
- * 確かめるのは非同期で並列に行い、{@link ARCHIVE_PROBE_TIMEOUT_MS} を過ぎても返ってこない場所は「無い」とみなす
- * （切れたネットワークのディスクで stat が止まっても、shared process を止めない）。
+ * 設定に書かれたアーカイブの根から、いま実在する Claude と Codex の置き場を拾う。絶対パス（`~/` と Windows の
+ * `~\` は展開する）だけを見る。カンマを含むパスは区切りと見分けられないので渡さない。外付けのディスクが
+ * 外れていれば何も拾わない。
+ *
+ * 切れたネットワークのディスクや回転待ちのディスクで stat が返ってこなくても shared process を止めないよう、
+ * stat は非同期で1本ずつ出し、{@link ARCHIVE_PROBE_TIMEOUT_MS} を過ぎたらその根は「無い」とみなして残りを見ない。
+ * 打ち切った stat は返ってくるまで覚えておき、その間は同じパスに新しい stat を出さない。返ってきていない stat が
+ * {@link ARCHIVE_PROBE_MAX_PENDING_STATS} 本あれば、どこにも出さない（スレッドプールを埋めないため）。
  */
-export async function paradisCcusageProbeArchives(
-	roots: readonly string[],
-	homeDirectory: string = homedir(),
-	isDirectory: (candidate: string) => Promise<boolean> = async candidate => (await fs.promises.stat(candidate)).isDirectory(),
-	timeoutMs: number = ARCHIVE_PROBE_TIMEOUT_MS,
-): Promise<IParadisCcusageArchives> {
-	const withinLimit = (candidate: string) => new Promise<boolean>(resolve => {
-		const timer = setTimeout(() => resolve(false), timeoutMs);
-		isDirectory(candidate).then(result => resolve(result), () => resolve(false)).finally(() => clearTimeout(timer));
-	});
-	const resolved: string[] = [];
-	for (const raw of roots) {
-		const trimmed = raw.trim();
-		const root = trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith(`~${path.sep}`) ? path.join(homeDirectory, trimmed.slice(1)) : trimmed;
-		if (path.isAbsolute(root) && !root.includes(',') && !resolved.includes(root)) {
-			resolved.push(root);
+export class ParadisCcusageArchiveProber {
+
+	/** 出したまま返ってきていない stat のパス。 */
+	private readonly pending = new Set<string>();
+
+	constructor(
+		private readonly isDirectory: (candidate: string) => Promise<boolean> = async candidate => (await fs.promises.stat(candidate)).isDirectory(),
+		private readonly timeoutMs: number = ARCHIVE_PROBE_TIMEOUT_MS,
+		private readonly homeDirectory: string = homedir(),
+	) { }
+
+	async probe(roots: readonly string[]): Promise<IParadisCcusageArchives> {
+		const claude: string[] = [];
+		const codex: string[] = [];
+		const seen: string[] = [];
+		for (const raw of roots) {
+			const trimmed = raw.trim();
+			const root = trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith(`~${path.sep}`) ? path.join(this.homeDirectory, trimmed.slice(1)) : trimmed;
+			if (!path.isAbsolute(root) || root.includes(',') || seen.includes(root)) {
+				continue;
+			}
+			seen.push(root);
+			// undefined（返ってこない・出せない）なら、この根の残りは見ない
+			const projects = await this.check(path.join(root, 'claude', 'projects'));
+			if (projects === undefined) {
+				continue;
+			}
+			if (projects) {
+				claude.push(path.join(root, 'claude'));
+			}
+			const sessions = await this.check(path.join(root, 'codex', 'sessions'));
+			if (sessions === undefined) {
+				continue;
+			}
+			if (sessions || await this.check(path.join(root, 'codex', 'archived_sessions'))) {
+				codex.push(path.join(root, 'codex'));
+			}
 		}
+		return { claude, codex };
 	}
-	const found = await Promise.all(resolved.map(async root => {
-		const [claude, sessions, archivedSessions] = await Promise.all([
-			withinLimit(path.join(root, 'claude', 'projects')),
-			withinLimit(path.join(root, 'codex', 'sessions')),
-			withinLimit(path.join(root, 'codex', 'archived_sessions')),
-		]);
-		return { root, claude, codex: sessions || archivedSessions };
-	}));
-	return {
-		claude: found.filter(entry => entry.claude).map(entry => path.join(entry.root, 'claude')),
-		codex: found.filter(entry => entry.codex).map(entry => path.join(entry.root, 'codex')),
-	};
+
+	/** ディレクトリか。上限までに返らない・前の stat がまだ返っていない・出せる本数を超えるときは undefined。 */
+	private check(candidate: string): Promise<boolean | undefined> {
+		if (this.pending.has(candidate) || this.pending.size >= ARCHIVE_PROBE_MAX_PENDING_STATS) {
+			return Promise.resolve(undefined);
+		}
+		this.pending.add(candidate);
+		const stat = this.isDirectory(candidate).catch(() => false).finally(() => this.pending.delete(candidate));
+		return new Promise<boolean | undefined>(resolve => {
+			const timer = setTimeout(() => resolve(undefined), this.timeoutMs);
+			void stat.then(result => {
+				clearTimeout(timer);
+				resolve(result);
+			});
+		});
+	}
 }
+
+/** shared process の既定の確認役。止まった stat はプロセス全体のスレッドプールを占めるので、本数はプロセスで1つにまとめて数える。 */
+const defaultArchiveProber = new ParadisCcusageArchiveProber();
 
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
 export class ParadisCcusageChannel<TContext = string> implements IServerChannel<TContext> {
