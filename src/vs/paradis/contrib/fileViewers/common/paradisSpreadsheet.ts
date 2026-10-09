@@ -479,6 +479,31 @@ export interface IParadisRowData {
 	readonly height: number;
 }
 
+/** メモ・コメントの 1 件（スレッドでは最初の投稿と返信のそれぞれ）。 */
+export interface IParadisCellCommentEntry {
+	/** 作成者の表示名。分からなければ空。 */
+	readonly author: string;
+	/** 作成日時（ISO 8601、スレッドのみ）。 */
+	readonly date?: string;
+	readonly text: string;
+	/** @メンションの位置（本文の中の開始と長さ）。 */
+	readonly mentions?: readonly { readonly start: number; readonly length: number }[];
+}
+
+/** セルに付いたメモ（古い形式）またはスレッド形式のコメント。 */
+export interface IParadisCellComment {
+	/** `B12` のようなセルの番地。 */
+	readonly ref: string;
+	/** 0 始まりの行と列。 */
+	readonly row: number;
+	readonly column: number;
+	readonly kind: 'note' | 'thread';
+	/** スレッドが解決済みか。 */
+	readonly resolved?: boolean;
+	/** スレッドは最初の投稿と返信の順。メモは 1 件。 */
+	readonly entries: readonly IParadisCellCommentEntry[];
+}
+
 /** 1シート。 */
 export interface IParadisSheetData {
 	readonly name: string;
@@ -493,6 +518,8 @@ export interface IParadisSheetData {
 	readonly dataValidations?: readonly IParadisDataValidationEntry[];
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
+	/** セルのメモとコメント（行、列の順）。 */
+	readonly comments?: readonly IParadisCellComment[];
 	/** 描けなかった図形(renderer 側で付与)。代替表示に数える。 */
 	readonly undrawnObjects?: readonly IParadisUndrawnObject[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */

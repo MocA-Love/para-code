@@ -110,6 +110,17 @@ suite('ParadisSpreadsheetTableRender', () => {
 		]);
 	});
 
+	test('marks cells that carry a note or a threaded comment', () => {
+		const { table } = buildSheetTableDom(sheet({
+			comments: [
+				{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [{ author: '', text: 'n' }] },
+				{ ref: 'B2', row: 1, column: 1, kind: 'thread', entries: [{ author: '', text: 't' }] },
+			],
+		}));
+		const marked = Array.from(table.querySelectorAll<HTMLElement>('[data-paradis-comment-ref]')).map(cell => [cell.dataset.paradisCommentRef, cell.classList.contains('paradis-spreadsheet-comment-note'), cell.classList.contains('paradis-spreadsheet-comment-thread')]);
+		deepStrictEqual(marked, [['A1', true, false], ['B2', false, true]]);
+	});
+
 	test('leaves every cell untouched when the sheet has no table', () => {
 		const { table } = buildSheetTableDom(sheet({ rows: rows(2, 2) }));
 
