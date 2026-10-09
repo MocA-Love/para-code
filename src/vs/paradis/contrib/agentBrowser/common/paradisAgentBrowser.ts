@@ -46,6 +46,10 @@ export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR'
  * OFFでも実行する（ONだった頃に置かれたカーソルが残らないようにするため）。
  */
 export const PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING = 'paradis.agentBrowser.showCursorOverlay';
+/** 入力・遷移の道具の後に道具の側で待ち、ページの変化を結果に添える（E1。既定は無効）。 */
+export const PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING = 'paradis.agentBrowser.settleAfterAction';
+/** 入力・遷移の道具の結果に、タブ・開いたページ・ダウンロード・ダイアログの状態を添える（I1。既定は無効）。 */
+export const PARADIS_BROWSER_REPORT_STATE_SETTING = 'paradis.agentBrowser.reportBrowserState';
 
 /** Windowsランチャー(.cmd/.ps1)が、node.exe の無い環境で本物の `codex` を探すのに使うNode互換実行体（Para Code自身のexe）。 */
 export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NODE';
