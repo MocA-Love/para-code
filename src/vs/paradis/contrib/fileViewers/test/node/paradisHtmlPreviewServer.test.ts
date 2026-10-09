@@ -272,6 +272,43 @@ suite('ParadisHtmlPreviewServer', () => {
 			});
 		});
 
+		test('sends the same safety and webview headers with a 416, and ignores a range for another version', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { base } = await mount(disposables);
+			const { request } = await import('http');
+			const target = new URL(`${base}index.html`);
+			const get = (headers: Record<string, string>) => new Promise<{ status: number; headers: Record<string, unknown> }>((resolve, reject) => {
+				const call = request(
+					{ hostname: target.hostname, port: target.port, path: target.pathname, method: 'GET', headers: { Host: `127.0.0.1:${target.port}`, Origin: 'vscode-webview://abcdef', ...headers } },
+					response => {
+						response.resume();
+						response.on('end', () => resolve({ status: response.statusCode ?? 0, headers: response.headers }));
+					});
+				call.on('error', reject);
+				call.end();
+			});
+
+			const whole = await get({});
+			const etag = whole.headers.etag as string;
+			const past = await get({ Range: 'bytes=100-' });
+			const sameVersion = await get({ Range: 'bytes=4-8', 'If-Range': etag });
+			const otherVersion = await get({ Range: 'bytes=4-8', 'If-Range': '"1-1"' });
+			const pick = (response: { status: number; headers: Record<string, unknown> }) => [
+				response.status,
+				response.headers['access-control-allow-origin'],
+				response.headers['x-content-type-options'],
+				response.headers['referrer-policy'],
+				response.headers['cache-control'],
+			];
+			ok(/^"14-\d+"$/.test(etag), etag);
+			deepStrictEqual([pick(past), past.headers['content-range'], sameVersion.status, otherVersion.status], [
+				[416, 'vscode-webview://abcdef', 'nosniff', 'no-referrer', 'no-store'],
+				'bytes */14',
+				206,
+				200,
+			]);
+		});
+
 		test('lets a webview read the range headers', async () => {
 			// pdf.js は `Accept-Ranges` を読んで区間読みに切り替える。別オリジンの応答は、名指しで
 			// 公開しないとスクリプトから読めず、黙って全体読みに戻ってしまう。
@@ -289,7 +326,7 @@ suite('ParadisHtmlPreviewServer', () => {
 				call.on('error', reject);
 				call.end();
 			});
-			strictEqual(exposed, 'Accept-Ranges, Content-Range, Content-Length');
+			strictEqual(exposed, 'Accept-Ranges, Content-Range, Content-Length, ETag');
 		});
 
 		test('does not listen until something is mounted', async () => {

@@ -41,6 +41,12 @@ export const PARADIS_PDF_MAX_CANVAS_PIXELS = 33554432;
 /** 描く解像度の倍率（devicePixelRatio）の上限。3 だと 1 ページが 2 の 2.25 倍のメモリになる。 */
 export const PARADIS_PDF_MAX_DEVICE_PIXEL_RATIO = 2;
 
+/**
+ * 残しておく canvas の画素の合計の上限（2^26 画素 ≒ 256 MB）。枚数だけで決めると、大きく拡大した
+ * まま送ったときに 1 枚 128 MB × 21 枚まで溜まる。見えているページだけはこれを超えても描く。
+ */
+export const PARADIS_PDF_CANVAS_PIXEL_BUDGET = 67108864;
+
 /** 文書の大きさから、区間読みにするかを決める。配信サーバを使えないとき（リモート等）は今までどおり。 */
 export function shouldParadisPdfUseRangeRequests(size: number | undefined, served: boolean): boolean {
 	return served && size !== undefined && size >= PARADIS_PDF_RANGE_THRESHOLD_BYTES;
@@ -48,6 +54,9 @@ export function shouldParadisPdfUseRangeRequests(size: number | undefined, serve
 
 /** {@link planParadisPdfPages} の結果。番号はすべて 0 始まり。 */
 export interface IParadisPdfPagePlan {
+	/** 見えているページの先頭と末尾（含む）。 */
+	readonly first: number;
+	readonly last: number;
 	/** 描く順番（見えているページ → 近い順に前後）。 */
 	readonly order: number[];
 	/** canvas を残す範囲の先頭（含む）。 */
@@ -75,7 +84,231 @@ export function planParadisPdfPages(first: number, last: number, count: number, 
 			order.push(first - distance);
 		}
 	}
-	return { order, keepFrom: Math.max(0, first - keep), keepTo: Math.min(count - 1, last + keep) };
+	return { first, last, order, keepFrom: Math.max(0, first - keep), keepTo: Math.min(count - 1, last + keep) };
+}
+
+/** 描いてある canvas 1 枚。`current` はいまの倍率で描いたものか（拡大縮小の前のものは false）。 */
+export interface IParadisPdfCanvasInfo {
+	readonly index: number;
+	readonly pixels: number;
+	readonly current: boolean;
+}
+
+/**
+ * 外す canvas を決める。残す範囲の外はすべて外し、範囲の中でも画素の合計が `budget` を超えるなら、
+ * 優先度の低い順に外す。優先度は、見えているページ（外さない）→ 描く順番（{@link planParadisPdfPages}
+ * の `order`）→ それ以外は見えているページから近い順。古い倍率の canvas はいちばん先に外す。
+ *
+ * **webview のスクリプトへ関数の本体を文字列のまま埋め込む**ので、外の名前を参照しないこと。
+ */
+export function selectParadisPdfCanvasesToRelease(canvases: readonly IParadisPdfCanvasInfo[], plan: IParadisPdfPagePlan, budget: number): number[] {
+	const rank = (canvas: IParadisPdfCanvasInfo) => {
+		if (canvas.index >= plan.first && canvas.index <= plan.last) {
+			return -1;
+		}
+		if (!canvas.current) {
+			return 1e9;
+		}
+		const position = plan.order.indexOf(canvas.index);
+		return position >= 0 ? position : plan.order.length + (canvas.index < plan.first ? plan.first - canvas.index : canvas.index - plan.last);
+	};
+	const release: number[] = [];
+	const kept: IParadisPdfCanvasInfo[] = [];
+	let total = 0;
+	for (const canvas of canvases) {
+		if (canvas.index < plan.keepFrom || canvas.index > plan.keepTo) {
+			release.push(canvas.index);
+		} else {
+			kept.push(canvas);
+			total += canvas.pixels;
+		}
+	}
+	const candidates = kept.filter(canvas => rank(canvas) >= 0).sort((a, b) => rank(b) - rank(a));
+	for (const canvas of candidates) {
+		if (total <= budget) {
+			break;
+		}
+		release.push(canvas.index);
+		total -= canvas.pixels;
+	}
+	return release;
+}
+
+/**
+ * 見えていないページ `index` を先に描いても、それより優先度の高い canvas と合わせて `budget` に
+ * 収まるか。収まらないなら描かない（描いても、すぐ外すことになる）。
+ *
+ * **webview のスクリプトへ関数の本体を文字列のまま埋め込む**ので、外の名前を参照しないこと。
+ */
+export function fitsParadisPdfCanvasBudget(canvases: readonly IParadisPdfCanvasInfo[], plan: IParadisPdfPagePlan, index: number, estimate: number, budget: number): boolean {
+	const target = plan.order.indexOf(index);
+	let total = estimate;
+	for (const canvas of canvases) {
+		if (canvas.index === index || !canvas.current || canvas.index < plan.keepFrom || canvas.index > plan.keepTo) {
+			continue;
+		}
+		const visible = canvas.index >= plan.first && canvas.index <= plan.last;
+		const position = plan.order.indexOf(canvas.index);
+		if (visible || (position >= 0 && position < target)) {
+			total += canvas.pixels;
+		}
+	}
+	return total <= budget;
+}
+
+/** 描画 1 件。`done` は描き終えたか、取りやめたか、失敗したときに決着する。 */
+export interface IParadisPdfRenderJob {
+	readonly done: Promise<void>;
+	cancel(): void;
+}
+
+/** {@link createParadisPdfPageScheduler} が webview の中の実物を触るための口。テストでは偽物を渡す。 */
+export interface IParadisPdfSchedulerHost {
+	readonly pageCount: number;
+	readonly prerender: number;
+	readonly keep: number;
+	readonly pixelBudget: number;
+	plan(first: number, last: number, count: number, prerender: number, keep: number): IParadisPdfPagePlan;
+	selectRelease(canvases: readonly IParadisPdfCanvasInfo[], plan: IParadisPdfPagePlan, budget: number): number[];
+	fitsBudget(canvases: readonly IParadisPdfCanvasInfo[], plan: IParadisPdfPagePlan, index: number, estimate: number, budget: number): boolean;
+	/** 描いてある canvas の一覧。 */
+	canvases(): IParadisPdfCanvasInfo[];
+	/** そのページをいまの倍率で描いたときの画素数の見込み。 */
+	estimatePixels(index: number): number;
+	/** 描き始める。 */
+	render(index: number): IParadisPdfRenderJob;
+	/** canvas を外す（描いている途中なら止める）。 */
+	release(index: number): void;
+}
+
+/** {@link createParadisPdfPageScheduler} の戻り値。 */
+export interface IParadisPdfPageScheduler {
+	setVisible(index: number, visible: boolean): void;
+	/** 見えているページの先頭と末尾。何も見えていなければ `undefined`。 */
+	visibleRange(): { readonly first: number; readonly last: number } | undefined;
+	/** いまの計画で canvas を残す範囲の中か（計画がまだ無ければ true）。 */
+	isKept(index: number): boolean;
+	/** 見えているページが変わった・拡大縮小した。描く順番を決め直す。 */
+	schedule(): void;
+	/** いまの描画が一段落したら決着する（テスト用）。 */
+	idle(): Promise<void>;
+}
+
+/**
+ * どのページをどの順に描き、どの canvas を外すかを決めて回す。1 枚ずつ順に描く（pdf.js の worker は
+ * 1 本なので、並べても速くならない）。
+ *
+ *  - 見えているページは必ず描く。前後のページは、画素の合計が上限に収まるときだけ先に描く
+ *  - 描く前に、その 1 枚の分を空けてから描く（描いた瞬間も上限を超えない）
+ *  - 遠くへ飛んだら、描いている途中の離れたページは待たずに止める
+ *
+ * **webview のスクリプトへ関数の本体を文字列のまま埋め込む**ので、外の名前を参照しないこと
+ * （計画と選択の関数も `host` から受け取る）。
+ */
+export function createParadisPdfPageScheduler(host: IParadisPdfSchedulerHost): IParadisPdfPageScheduler {
+	const visible = new Set<number>();
+	let plan: IParadisPdfPagePlan | undefined;
+	let running: { readonly index: number; readonly job: IParadisPdfRenderJob } | undefined;
+	let pumping: Promise<void> | undefined;
+	let dirty = false;
+
+	const visibleRange = () => {
+		let first = Infinity;
+		let last = -Infinity;
+		for (const index of visible) {
+			first = Math.min(first, index);
+			last = Math.max(last, index);
+		}
+		return visible.size ? { first, last } : undefined;
+	};
+
+	const enforce = (current: IParadisPdfPagePlan, budget: number) => {
+		for (const index of host.selectRelease(host.canvases(), current, budget)) {
+			if (running && running.index === index) {
+				running.job.cancel();
+			}
+			host.release(index);
+		}
+	};
+
+	const pump = async () => {
+		do {
+			dirty = false;
+			const range = visibleRange();
+			if (!range) {
+				break;
+			}
+			const current = host.plan(range.first, range.last, host.pageCount, host.prerender, host.keep);
+			plan = current;
+			enforce(current, host.pixelBudget);
+			for (const index of current.order) {
+				if (dirty) {
+					break;
+				}
+				const canvases = host.canvases();
+				if (canvases.some(canvas => canvas.index === index && canvas.current)) {
+					continue;
+				}
+				const isVisible = index >= range.first && index <= range.last;
+				const estimate = host.estimatePixels(index);
+				if (!isVisible && !host.fitsBudget(canvases, current, index, estimate, host.pixelBudget)) {
+					continue;
+				}
+				// 描く 1 枚の分を先に空ける。
+				enforce(current, Math.max(0, host.pixelBudget - estimate));
+				const job = host.render(index);
+				running = { index, job };
+				try {
+					await job.done;
+				} catch {
+					// 1 ページ描けなくても、ほかのページは描き続ける。
+				}
+				running = undefined;
+				enforce(current, host.pixelBudget);
+			}
+		} while (dirty);
+	};
+
+	const start = () => {
+		if (pumping) {
+			dirty = true;
+			return;
+		}
+		pumping = pump().finally(() => {
+			pumping = undefined;
+			running = undefined;
+			// 回し終えた後、片付けまでの間に頼まれた分を取りこぼさない。
+			if (dirty) {
+				start();
+			}
+		});
+	};
+
+	return {
+		setVisible(index: number, isVisible: boolean): void {
+			if (isVisible) {
+				visible.add(index);
+			} else {
+				visible.delete(index);
+			}
+		},
+		visibleRange,
+		isKept(index: number): boolean {
+			return !plan || (index >= plan.keepFrom && index <= plan.keepTo);
+		},
+		schedule(): void {
+			const range = visibleRange();
+			if (running && range && (running.index < range.first - host.prerender || running.index > range.last + host.prerender)) {
+				running.job.cancel();
+			}
+			start();
+		},
+		async idle(): Promise<void> {
+			while (pumping) {
+				await pumping;
+			}
+		},
+	};
 }
 
 export interface IParadisPdfViewerHtmlOptions {
@@ -151,7 +384,11 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 		const KEEP = ${PARADIS_PDF_KEEP_PAGES};
 		const MAX_DPR = ${PARADIS_PDF_MAX_DEVICE_PIXEL_RATIO};
 		const MAX_CANVAS_PIXELS = ${PARADIS_PDF_MAX_CANVAS_PIXELS};
+		const PIXEL_BUDGET = ${PARADIS_PDF_CANVAS_PIXEL_BUDGET};
 		const planPages = ${planParadisPdfPages.toString()};
+		const selectRelease = ${selectParadisPdfCanvasesToRelease.toString()};
+		const fitsBudget = ${fitsParadisPdfCanvasBudget.toString()};
+		const createScheduler = ${createParadisPdfPageScheduler.toString()};
 		const statusEl = document.getElementById('status');
 		try {
 			const pdfjsLib = await import(LIB + '/pdf.min.mjs');
@@ -240,104 +477,98 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				p.renderedScale = 0;
 			};
 
-			const renderPage = async (p) => {
-				if (p.renderedScale === scale) { return; }
-				if (p.renderTask) { p.renderTask.cancel(); p.renderTask = null; }
-				const target = scale;
-				const page = await loadPage(p);
-				if (scale !== target) { return; }
-				const cssViewport = page.getViewport({ scale: target });
-				let dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-				const area = cssViewport.width * cssViewport.height;
-				if (area * dpr * dpr > MAX_CANVAS_PIXELS) { dpr = Math.sqrt(MAX_CANVAS_PIXELS / area); }
-				const vp = page.getViewport({ scale: target * dpr });
-				const canvas = document.createElement('canvas');
-				canvas.width = Math.floor(vp.width);
-				canvas.height = Math.floor(vp.height);
-				const task = page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
-				p.renderTask = task;
-				try {
-					await task.promise;
-				} catch {
-					canvas.width = 0;
-					canvas.height = 0;
-					return; // キャンセル（ズーム変更・遠くへ移った等）
-				}
-				p.renderTask = null;
-				if (scale !== target) { canvas.width = 0; canvas.height = 0; return; }
-				if (p.canvas) { p.canvas.width = 0; p.canvas.height = 0; }
-				p.wrap.replaceChildren(canvas);
-				p.canvas = canvas;
-				p.renderedScale = target;
+			// いまの倍率で描いたときの、そのページの解像度の倍率（画素数の上限で抑える）。
+			const deviceScaleFor = (width, height) => {
+				const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+				const area = width * height;
+				return area * dpr * dpr > MAX_CANVAS_PIXELS ? Math.sqrt(MAX_CANVAS_PIXELS / area) : dpr;
 			};
 
-			// 見えているページ（0 始まりの番号）。描く順番と残す範囲はここから決める。
-			const visible = new Set();
-			let rendering = null;
-			let pumping = false;
-			let dirty = false;
-
-			const visibleRange = () => {
-				let first = Infinity;
-				let last = -Infinity;
-				for (const index of visible) { first = Math.min(first, index); last = Math.max(last, index); }
-				return visible.size ? { first, last } : undefined;
+			// 1 ページを描く。取りやめたとき・倍率が変わったとき・残す範囲から外れたときは何も残さない。
+			const renderPage = (p) => {
+				let cancelled = false;
+				let task = null;
+				const done = (async () => {
+					const target = scale;
+					const page = await loadPage(p);
+					// 読み込みを待つ間に遠くへ移っていたら、描かない（描いてもすぐ外すことになる）。
+					if (cancelled || scale !== target || !scheduler.isKept(p.index)) { return; }
+					const cssViewport = page.getViewport({ scale: target });
+					const vp = page.getViewport({ scale: target * deviceScaleFor(cssViewport.width, cssViewport.height) });
+					const canvas = document.createElement('canvas');
+					canvas.width = Math.floor(vp.width);
+					canvas.height = Math.floor(vp.height);
+					task = page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
+					p.renderTask = task;
+					try {
+						await task.promise;
+					} catch {
+						canvas.width = 0;
+						canvas.height = 0;
+						return; // 取りやめ（拡大縮小・遠くへ移った等）
+					} finally {
+						if (p.renderTask === task) { p.renderTask = null; }
+					}
+					if (cancelled || scale !== target || !scheduler.isKept(p.index)) { canvas.width = 0; canvas.height = 0; return; }
+					if (p.canvas) { p.canvas.width = 0; p.canvas.height = 0; }
+					p.wrap.replaceChildren(canvas);
+					p.canvas = canvas;
+					p.renderedScale = target;
+				})();
+				return { done, cancel: () => { cancelled = true; if (task) { task.cancel(); } } };
 			};
 
-			// 1 ページずつ順に描く（pdf.js の worker は 1 本なので、並べても速くならない）。
-			const pump = async () => {
-				if (pumping) { dirty = true; return; }
-				pumping = true;
-				try {
-					do {
-						dirty = false;
-						const range = visibleRange();
-						if (!range) { break; }
-						const plan = planPages(range.first, range.last, pages.length, PRERENDER, KEEP);
-						for (const p of pages) {
-							if ((p.canvas || p.renderTask) && (p.index < plan.keepFrom || p.index > plan.keepTo)) { releaseCanvas(p); }
-						}
-						for (const index of plan.order) {
-							if (dirty) { break; }
-							const p = pages[index];
-							if (p.renderedScale === scale) { continue; }
-							rendering = p;
-							try {
-								await renderPage(p);
-							} catch {
-								// 1 ページ読めなくても、ほかのページは描き続ける。
-							}
-							rendering = null;
-						}
-					} while (dirty);
-				} finally {
-					pumping = false;
-					rendering = null;
-				}
-			};
+			// どのページをどの順に描き、どの canvas を外すかは scheduler が決める。
+			const scheduler = createScheduler({
+				pageCount: pages.length,
+				prerender: PRERENDER,
+				keep: KEEP,
+				pixelBudget: PIXEL_BUDGET,
+				plan: planPages,
+				selectRelease,
+				fitsBudget,
+				canvases: () => {
+					const list = [];
+					for (const p of pages) {
+						if (p.canvas) { list.push({ index: p.index, pixels: p.canvas.width * p.canvas.height, current: p.renderedScale === scale }); }
+					}
+					return list;
+				},
+				estimatePixels: (index) => {
+					const p = pages[index];
+					const width = p.width * scale;
+					const height = p.height * scale;
+					const deviceScale = deviceScaleFor(width, height);
+					return width * height * deviceScale * deviceScale;
+				},
+				render: (index) => renderPage(pages[index]),
+				release: (index) => releaseCanvas(pages[index]),
+			});
 
-			const schedule = () => {
-				// 遠くへ飛んだら、描いている途中の離れたページは待たずに止める。
-				const range = visibleRange();
-				if (rendering && rendering.renderTask && range && (rendering.index < range.first - PRERENDER || rendering.index > range.last + PRERENDER)) {
-					rendering.renderTask.cancel();
+			const updatePageLabel = () => {
+				// 見えているページの中から、画面の真ん中にかかっているものを選ぶ（全ページは見ない）。
+				const range = scheduler.visibleRange();
+				if (!range) { pageLabel.textContent = '1 / ' + pages.length; return; }
+				const mid = scroller.scrollTop + scroller.clientHeight / 2;
+				let current = range.first;
+				for (let i = range.first; i <= range.last; i++) {
+					if (pages[i].wrap.offsetTop <= mid) { current = i; }
 				}
-				void pump();
+				pageLabel.textContent = (current + 1) + ' / ' + pages.length;
 			};
 
 			const observer = new IntersectionObserver(entries => {
 				for (const e of entries) {
-					const index = Number(e.target.dataset.index);
-					if (e.isIntersecting) { visible.add(index); } else { visible.delete(index); }
+					scheduler.setVisible(Number(e.target.dataset.index), e.isIntersecting);
 				}
 				updatePageLabel();
-				schedule();
+				scheduler.schedule();
 			}, { root: scroller });
 			for (const p of pages) { observer.observe(p.wrap); }
 
 			const rerenderVisible = () => {
 				applySizes();
-				schedule();
+				scheduler.schedule();
 			};
 
 			let zoomTimer;
@@ -346,16 +577,6 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 				applySizes();
 				clearTimeout(zoomTimer);
 				zoomTimer = setTimeout(rerenderVisible, 120);
-			};
-
-			const updatePageLabel = () => {
-				const mid = scroller.scrollTop + scroller.clientHeight / 2;
-				let current = 1;
-				for (let i = 0; i < pages.length; i++) {
-					const el = pages[i].wrap;
-					if (el.offsetTop <= mid) { current = i + 1; }
-				}
-				pageLabel.textContent = current + ' / ' + pages.length;
 			};
 
 			document.getElementById('zoomIn').addEventListener('click', () => setZoom(scale * 1.2));
