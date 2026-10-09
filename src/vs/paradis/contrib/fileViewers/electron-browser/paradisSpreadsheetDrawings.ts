@@ -22,6 +22,7 @@ import type {
 	ParadisSpreadsheetDrawingTransform,
 } from '../common/spreadsheet/paradisSpreadsheetObjects.js';
 import { parseParadisChartDocument } from './paradisSpreadsheetChartParser.js';
+import { intAttr, xmlAttr, xmlChild, xmlChildren, xmlText } from './paradisSpreadsheetXml.js';
 
 const EMU_PER_PIXEL = 9_525;
 
@@ -233,47 +234,6 @@ const SHAPE_THEME_COLORS: Record<string, string> = {
 
 /** 図形の schemeClr 解決に使うテーマ色(scheme名→hex)。 */
 export type ParadisShapeThemeColors = { readonly [schemeName: string]: string };
-
-function xmlAttr(el: Element, name: string): string {
-	return el.getAttribute(name) || '';
-}
-
-function xmlChild(el: Element | null | undefined, localName: string): Element | null {
-	if (!el) {
-		return null;
-	}
-	for (let i = 0; i < el.children.length; i++) {
-		const child = el.children[i];
-		if (child.localName === localName) {
-			return child;
-		}
-	}
-	return null;
-}
-
-function xmlChildren(el: Element | null | undefined, localName?: string): Element[] {
-	const result: Element[] = [];
-	if (!el) {
-		return result;
-	}
-	for (let i = 0; i < el.children.length; i++) {
-		const child = el.children[i];
-		if (localName === undefined || child.localName === localName) {
-			result.push(child);
-		}
-	}
-	return result;
-}
-
-function xmlText(el: Element, localName: string): string {
-	const child = xmlChild(el, localName);
-	return child?.textContent?.trim() || '0';
-}
-
-function intAttr(el: Element | null, name: string, fallback: number): number {
-	const value = el ? Number.parseInt(xmlAttr(el, name), 10) : Number.NaN;
-	return Number.isFinite(value) ? value : fallback;
-}
 
 function parseAnchorPosition(el: Element): IParadisRenderAnchor {
 	return {

@@ -10,6 +10,7 @@
 // （paradisSpreadsheetDrawings.ts）から分けた。色の解決（テーマ色・spPr）は図形と同じものを使うので、
 // 呼び出し側から受け取る。
 
+import { intAttr, xmlAttr, xmlChild, xmlChildren } from './paradisSpreadsheetXml.js';
 import type { IParadisChartAxis, IParadisChartData, IParadisChartDataLabels, IParadisChartGroup, IParadisChartSeries } from '../common/paradisSpreadsheet.js';
 
 /** グラフの部品の色を決める（図形の読み込みと同じテーマ色・spPr の解き方を使う）。 */
@@ -24,43 +25,6 @@ export interface IParadisChartColors {
 export interface IParadisChartLimits {
 	readonly chartSeries: number;
 	readonly chartPoints: number;
-}
-
-// XML を辿る小さな道具。図形の読み込みにも同じものがあるが、あちらを import すると循環するので持つ。
-function xmlAttr(el: Element, name: string): string {
-	return el.getAttribute(name) || '';
-}
-
-function xmlChild(el: Element | null | undefined, localName: string): Element | null {
-	if (!el) {
-		return null;
-	}
-	for (let i = 0; i < el.children.length; i++) {
-		const child = el.children[i];
-		if (child.localName === localName) {
-			return child;
-		}
-	}
-	return null;
-}
-
-function xmlChildren(el: Element | null | undefined, localName?: string): Element[] {
-	const result: Element[] = [];
-	if (!el) {
-		return result;
-	}
-	for (let i = 0; i < el.children.length; i++) {
-		const child = el.children[i];
-		if (localName === undefined || child.localName === localName) {
-			result.push(child);
-		}
-	}
-	return result;
-}
-
-function intAttr(el: Element | null, name: string, fallback: number): number {
-	const value = el ? Number.parseInt(xmlAttr(el, name), 10) : Number.NaN;
-	return Number.isFinite(value) ? value : fallback;
 }
 
 const CHART_KINDS: Record<string, IParadisChartGroup['kind'] | undefined> = {
