@@ -80,6 +80,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 ## Word の画像は検査を通ったものだけを描く（fileViewers、2026-10-09、Q312 A）
 
 - サニタイザ（`common/paradisOfficeSanitizer.ts`）は、PNG・JPEG・GIF のうち `common/word/paradisWordImageInspection.ts` の検査（署名・大きさ・PNG のチャンクの CRC・APNG の拒否・JPEG のセグメント・GIF のブロックとフレーム数）を通り、宣言の content type と中身が一致するものだけを元のバイトのまま渡す。画像の終わり（IEND・EOI・トレーラ）より後ろは切る。1 文書で描く画素は 1 億まで（差分は 1 文書あたり半分）
+- サニタイザ（`common/paradisOfficeSanitizer.ts`）は、大きすぎる画像と文書の画素の上限を越えた画像の代替表示の説明に `localize` を使っている（2026-10-09）。いまは renderer と shared process の中で動くので問題ないが、サニタイザを worker へ移すと、worker には NLS の表が無いため `!!! NLS MISSING` で落ちる。移すときは、説明を理由のコードだけにして、表示する側で文に直す
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
