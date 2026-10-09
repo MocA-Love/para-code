@@ -54,6 +54,7 @@ import {
 	paradisMatchUrlPattern,
 	PARADIS_INIT_SCRIPT_MAX_PER_TAB,
 } from '../common/paradisBrowserPageOps.js';
+import type { IParadisAgentPageScriptEntry, IParadisAgentPageScriptOwner } from '../common/paradisAgentBrowser.js';
 
 /** Electron の `login` イベントの認証の情報のうち、使うもの。 */
 export interface IParadisLoginAuthInfo {
@@ -137,10 +138,35 @@ interface ITargetSession {
 	pageEnabled: boolean;
 }
 
+/** 本文を持っておく量の合計の上限（文字数）。越えたら、その後に置かれたものの本文は持たない。 */
+export const PARADIS_INIT_SCRIPT_SOURCE_BUDGET = 20_000_000;
+/** 一覧に出す先頭の行数と、1 行の長さの上限。 */
+const PREVIEW_LINES = 3;
+const PREVIEW_LINE_CHARS = 200;
+
+/** 本文の先頭 3 行（長い行は切る）。 */
+function previewOf(source: string): string {
+	return source.split('\n', PREVIEW_LINES).map(line => line.length > PREVIEW_LINE_CHARS ? `${line.slice(0, PREVIEW_LINE_CHARS)}…` : line).join('\n');
+}
+
+function lineCount(source: string): number {
+	let count = 1;
+	for (let index = source.indexOf('\n'); index !== -1; index = source.indexOf('\n', index + 1)) {
+		count++;
+	}
+	return count;
+}
+
 /** タブに置いたスクリプト（add_init_script）。 */
 interface IInitScript {
 	readonly info: IParadisInitScriptInfo;
 	readonly ownerKey: string;
+	/** 利用者に見せる本文（持つ量の上限を越えたら undefined）。エージェントの道具には返さない。 */
+	readonly source: string | undefined;
+	readonly preview: string;
+	readonly lines: number;
+	readonly named: boolean;
+	readonly owner: IParadisAgentPageScriptOwner | undefined;
 	readonly generation: number;
 	/** `Page.addScriptToEvaluateOnNewDocument` が返した識別子。 */
 	readonly identifier: string;
@@ -199,6 +225,8 @@ export class ParadisBrowserPageOpsController {
 		private readonly onTeardownFailure: (step: string, error: unknown) => void = () => { },
 		/** タブに置かれたスクリプトの本数が変わった（ワークベンチにバナーを出すため）。 */
 		private readonly onDidChangeInitScripts: (target: IParadisPageOpsTarget, count: number) => void = () => { },
+		/** 本文を持っておく量の合計の上限（テストで小さくする）。 */
+		private readonly sourceBudget: number = PARADIS_INIT_SCRIPT_SOURCE_BUDGET,
 	) { }
 
 	/** 台帳を書き換え、本数が変わったら知らせる。 */
@@ -223,6 +251,42 @@ export class ParadisBrowserPageOpsController {
 	/** 利用者が外した。どのペインのものもすべて外す。外した数を返す。 */
 	removeAllInitScripts(target: IParadisPageOpsTarget): Promise<number> {
 		return this.removeScripts(target, () => true);
+	}
+
+	/** 利用者に見せる一覧（どのペインのものも。置いた順）。 */
+	pageScriptEntries(target: IParadisPageOpsTarget): IParadisAgentPageScriptEntry[] {
+		return (this.initScripts.get(target) ?? []).map(script => ({
+			id: script.info.id,
+			label: script.info.label,
+			named: script.named,
+			chars: script.info.chars,
+			lines: script.lines,
+			addedAt: script.info.addedAt,
+			preview: script.preview,
+			sourceKept: script.source !== undefined,
+			...(script.owner ? { owner: script.owner } : {}),
+		}));
+	}
+
+	/** 利用者が 1 本外した（どのペインのものでも）。外した数を返す。 */
+	removeInitScriptById(target: IParadisPageOpsTarget, id: string): Promise<number> {
+		return this.removeScripts(target, script => script.info.id === id);
+	}
+
+	/** 利用者が見る本文の全文。エージェントの道具からは呼ばない。 */
+	initScriptSource(target: IParadisPageOpsTarget, id: string): string | undefined {
+		return this.initScripts.get(target)?.find(script => script.info.id === id)?.source;
+	}
+
+	/** いま持っている本文の合計（文字数）。 */
+	private keptSourceChars(): number {
+		let total = 0;
+		for (const scripts of this.initScripts.values()) {
+			for (const script of scripts) {
+				total += script.source?.length ?? 0;
+			}
+		}
+		return total;
 	}
 
 	/** タブに掛かっている上書きの要約。持ち主でなければ上書きの中身は見せない。 */
@@ -400,7 +464,7 @@ export class ParadisBrowserPageOpsController {
 	 * 遷移・再読み込みの後も動くスクリプトを置く（`Page.addScriptToEvaluateOnNewDocument`）。持ち主の
 	 * 共有が入れ替わった後に届いた要求は断る。
 	 */
-	async addInitScript(target: IParadisPageOpsTarget, ownerKey: string, generation: number, request: IParadisInitScriptRequest): Promise<IParadisInitScriptsResult> {
+	async addInitScript(target: IParadisPageOpsTarget, ownerKey: string, generation: number, request: IParadisInitScriptRequest, owner?: IParadisAgentPageScriptOwner): Promise<IParadisInitScriptsResult> {
 		const isStale = () => (this.ownerWatermarks.get(ownerKey) ?? 0) > generation;
 		if (isStale()) {
 			return { ok: false, reason: 'stale' };
@@ -433,7 +497,12 @@ export class ParadisBrowserPageOpsController {
 			return { ok: false, reason: 'stale' };
 		}
 		const info: IParadisInitScriptInfo = Object.freeze({ id: `s${this.nextInitScriptId++}`, label: request.label, chars: request.source.length, addedAt: this.now() });
-		this.setInitScripts(target, [...(this.initScripts.get(target) ?? []), { info, ownerKey, generation, identifier, session: entry.session }]);
+		// 本文は利用者が「中身を見る」ためだけに持つ。全部のタブを合わせて上限を越えるなら持たない。
+		const source = this.keptSourceChars() + request.source.length <= this.sourceBudget ? request.source : undefined;
+		this.setInitScripts(target, [...(this.initScripts.get(target) ?? []), {
+			info, ownerKey, generation, identifier, session: entry.session,
+			source, preview: previewOf(request.source), lines: lineCount(request.source), named: request.named, owner,
+		}]);
 		return { ...this.describeScripts(target, ownerKey), added: info };
 	}
 

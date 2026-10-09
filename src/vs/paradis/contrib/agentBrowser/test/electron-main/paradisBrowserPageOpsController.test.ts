@@ -465,15 +465,15 @@ suite('ParadisBrowserPageOpsController', () => {
 	test('init scripts stay until removed, are listed per pane, and go away when the sharing changes or the tab is released', async () => {
 		const controller = new ParadisBrowserPageOpsController(() => 1000);
 		const target = createTarget();
-		const added = await controller.addInitScript(target, OWNER, 2, { source: 'window.__a = 1', label: 'hook', runNow: true });
-		const fromOther = await controller.addInitScript(target, OTHER_OWNER, 5, { source: 'window.__b = 1', label: 'other', runNow: false });
+		const added = await controller.addInitScript(target, OWNER, 2, { source: 'window.__a = 1', label: 'hook', runNow: true, named: true });
+		const fromOther = await controller.addInitScript(target, OTHER_OWNER, 5, { source: 'window.__b = 1', label: 'other', runNow: false, named: true });
 		const session = target.sessions[0];
 		const listed = controller.listInitScripts(target, OWNER);
 		const unknown = await controller.removeInitScripts(target, OWNER, 's99');
 		controller.releaseOwner(OWNER, 3);
 		await flush();
 		const afterRelease = [controller.listInitScripts(target, OWNER), session.initScripts.size, session.pageEnabled];
-		const stale = await controller.addInitScript(target, OWNER, 2, { source: 'window.__c = 1', label: 'late', runNow: false });
+		const stale = await controller.addInitScript(target, OWNER, 2, { source: 'window.__c = 1', label: 'late', runNow: false, named: true });
 		controller.releaseTarget(target);
 		await flush();
 		assert.deepStrictEqual({
@@ -501,9 +501,9 @@ suite('ParadisBrowserPageOpsController', () => {
 		const controller = new ParadisBrowserPageOpsController();
 		const target = createTarget();
 		for (let i = 0; i < 10; i++) {
-			await controller.addInitScript(target, OWNER, 1, { source: `window.__n = ${i}`, label: `n${i}`, runNow: false });
+			await controller.addInitScript(target, OWNER, 1, { source: `window.__n = ${i}`, label: `n${i}`, runNow: false, named: true });
 		}
-		const full = await controller.addInitScript(target, OWNER, 1, { source: 'x', label: 'x', runNow: false });
+		const full = await controller.addInitScript(target, OWNER, 1, { source: 'x', label: 'x', runNow: false, named: true });
 		const one = await controller.removeInitScripts(target, OWNER, 's1');
 		const all = await controller.removeInitScripts(target, OWNER, undefined);
 		assert.deepStrictEqual([full.ok, one.ok && one.removed, all.ok && all.removed, target.sessions[0].initScripts.size, target.sessions[0].pageEnabled], [false, 1, 9, 0, false]);
@@ -515,13 +515,39 @@ suite('ParadisBrowserPageOpsController', () => {
 		const counts: number[] = [];
 		const controller = new ParadisBrowserPageOpsController(Date.now, () => { }, (_target, count) => counts.push(count));
 		const target = createTarget();
-		await controller.addInitScript(target, OWNER, 1, { source: 'window.__a = 1', label: 'a', runNow: false });
-		await controller.addInitScript(target, OTHER_OWNER, 1, { source: 'window.__b = 1', label: 'b', runNow: false });
+		await controller.addInitScript(target, OWNER, 1, { source: 'window.__a = 1', label: 'a', runNow: false, named: true });
+		await controller.addInitScript(target, OTHER_OWNER, 1, { source: 'window.__b = 1', label: 'b', runNow: false, named: true });
 		const listed = controller.initScriptCounts().map(([, count]) => count);
 		const removed = await controller.removeAllInitScripts(target);
-		await controller.addInitScript(target, OWNER, 1, { source: 'window.__c = 1', label: 'c', runNow: false });
+		await controller.addInitScript(target, OWNER, 1, { source: 'window.__c = 1', label: 'c', runNow: false, named: true });
 		controller.releaseTarget(target);
 		await flush();
 		assert.deepStrictEqual({ counts, listed, removed, browser: target.sessions[0].initScripts.size }, { counts: [1, 2, 0, 1, 0], listed: [2], removed: 2, browser: 0 });
+	});
+
+	test('the user sees every pane\'s scripts with owner, preview and full source, and can remove one; agents still see only their own', async () => {
+		// 本文の合計の上限 60 字: 1 本目（57 字）に 2 本目（31 字）を足すと越えるので、2 本目の本文は持たない
+		const controller = new ParadisBrowserPageOpsController(() => 1000, () => { }, () => { }, 60);
+		const target = createTarget();
+		const owner = { name: 'Claude', mark: 'C', color: '#d97757', pane: '0123456789abcdef' };
+		const first = '// hide the banner\nconst a = 1;\nconst b = 2;\nconst c = 3;';
+		await controller.addInitScript(target, OWNER, 1, { source: first, label: 'hide', runNow: false, named: true }, owner);
+		await controller.addInitScript(target, OTHER_OWNER, 1, { source: 'window.__b = 1; window.__c = 2;', label: 'window.__b = 1; window.__c = 2;', runNow: false, named: false });
+		const entries = controller.pageScriptEntries(target);
+		const sources = [controller.initScriptSource(target, 's1'), controller.initScriptSource(target, 's2'), controller.initScriptSource(target, 's9')];
+		// 利用者は、ほかのペインのもの（s2）も外せる。エージェントの道具の一覧は自分の分だけのまま
+		const removed = await controller.removeInitScriptById(target, 's2');
+		const agentView = controller.listInitScripts(target, OTHER_OWNER);
+		controller.releaseTarget(target);
+		await flush();
+		assert.deepStrictEqual({ entries, sources, removed, agentView }, {
+			entries: [
+				{ id: 's1', label: 'hide', named: true, chars: first.length, lines: 4, addedAt: 1000, preview: '// hide the banner\nconst a = 1;\nconst b = 2;', sourceKept: true, owner },
+				{ id: 's2', label: 'window.__b = 1; window.__c = 2;', named: false, chars: 31, lines: 1, addedAt: 1000, preview: 'window.__b = 1; window.__c = 2;', sourceKept: false },
+			],
+			sources: [first, undefined, undefined],
+			removed: 1,
+			agentView: { ok: true, scripts: [], otherPanes: 1 },
+		});
 	});
 });
