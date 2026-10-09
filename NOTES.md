@@ -71,6 +71,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - Web 版の Worker（`browser/paradisOfficeWebWorker.ts`）の Word の比較は、本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。デスクトップとの差として残している
 - 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
 
+## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
+
+- 入口は `node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.ts`（`build/next/index.ts` の `desktopEntryPoints` に載せてある）。待ち行列の守りは `node/office/paradisOfficeSemanticWorkerQueue.ts` にまとめた。Word の worker と同じく 1 件ずつ・実行と待ち行列で別の締め切り・ヒープ 384 MiB で、加えて待ち行列のバイト数の上限（60 MiB）を持ち、待ち行列があふれたときと待ちすぎたときは `busy` を返す。エディタは間を空けて 3 回まで頼み直す
+- renderer は表示（exceljs の投影）を出した後に、表示のために読んだバイト列をそのまま（base64 にせず）渡して解析を頼む。エディタを閉じる・読み直すと取り消しが届き、待ち行列からも worker からも外れる。チャネルは `parseWorkbook` の診断の指定を通さないので、本体のスレッドでは解析しない
+- 正規化の属性の並べ替えはコード単位の比較（`Intl.Collator` をやめた）。正規形の版（`PARADIS_OFFICE_CANONICAL_XML_VERSION`）を 2 にして、正規化した文字列の先頭に書いている。指紋は保存していないので、版が変わっても古い値と突き合わせる場所は無い
+- Word の worker（`node/word/paradisWordSemanticWorkerBackend.ts`）はまだ自前の待ち行列を持つ。同じ待ち行列へ寄せられる
+
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
 Claude の使用量の取得・アカウントの保存・PC 全体の切り替えは、shared process の `src/vs/paradis/contrib/limitsMonitor/node/paradisClaudeAccountService.ts` が1か所で持ち、チャネル `paradisClaudeAccounts` で全ウィンドウへ配ります。登録は `ParadisSharedProcessContributions`（`paradisClaudeAccounts.contribution.ts` → `paradis.sharedProcess.contribution.ts`）です。upstream 側は `sharedProcessMain.ts` の既存の PARA-PATCH コメント1行の文言を直しただけです。SSH の接続先（REH）にも同じサービスを動かし、接続先のログインを切り替えます（下の「SSH の接続先での切り替え」）。Codex の分は従来どおり `paradisLimitsMonitorChannel.ts`（接続中は REH）で、レンダラーの `ParadisLimitsMonitorClient.getSnapshot()` が2つを合わせます。
