@@ -789,6 +789,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.runStepsFlow',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.runStepsFlow', "（試験的）手順をまとめて書けるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.runStepsFlowDesc', "エージェントが内蔵ブラウザで、前の結果を使う・条件を待つ・繰り返す、を 1 回の呼び出しで書けるようにします。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental run_steps script loop wait',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browserLiveWindow.titleBar.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserLiveTitleBar', "タイトルバーに「ブラウザ一覧」ボタンを表示"),
