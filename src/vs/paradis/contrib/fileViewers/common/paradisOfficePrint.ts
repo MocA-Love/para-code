@@ -577,6 +577,8 @@ function validateSheetGrid(grid: ParadisOfficePrintSheetGrid, consumeText: (valu
 	}
 	for (const cell of grid.cells) {
 		if (!Number.isSafeInteger(cell.row) || !Number.isSafeInteger(cell.column) || cell.row < 0 || cell.column < 0 || cell.row >= grid.rows.length || cell.column >= grid.columns.length
+			|| (cell.rowSpan !== undefined && !(Number.isSafeInteger(cell.rowSpan) && cell.rowSpan >= 1 && cell.row + cell.rowSpan <= grid.rows.length))
+			|| (cell.columnSpan !== undefined && !(Number.isSafeInteger(cell.columnSpan) && cell.columnSpan >= 1 && cell.column + cell.columnSpan <= grid.columns.length))
 			|| (cell.css !== undefined && !isSafeParadisPrintCss(cell.css))) {
 			throw new ParadisOfficePrintError('invalidModel');
 		}

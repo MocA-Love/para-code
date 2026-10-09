@@ -636,8 +636,11 @@ function validatePrintSheetGrid(value: unknown): void {
 	if (grid.horizontalCentered !== undefined) { boolean(grid.horizontalCentered); } if (grid.verticalCentered !== undefined) { boolean(grid.verticalCentered); }
 	for (const cellValue of array(grid.cells)) {
 		const cell = record(cellValue, ['row', 'column', 'runs'], ['rowSpan', 'columnSpan', 'css']);
-		if (nonNegativeInteger(cell.row) >= rows.length || nonNegativeInteger(cell.column) >= columns.length) { wireError(); }
-		if (cell.rowSpan !== undefined) { nonNegativeInteger(cell.rowSpan); } if (cell.columnSpan !== undefined) { nonNegativeInteger(cell.columnSpan); }
+		const row = nonNegativeInteger(cell.row); const column = nonNegativeInteger(cell.column);
+		if (row >= rows.length || column >= columns.length) { wireError(); }
+		// The merged range must stay inside the page grid.
+		if (cell.rowSpan !== undefined && row + nonNegativeInteger(cell.rowSpan) > rows.length) { wireError(); }
+		if (cell.columnSpan !== undefined && column + nonNegativeInteger(cell.columnSpan) > columns.length) { wireError(); }
 		validateTextRuns(cell.runs);
 		if (cell.css !== undefined && !isSafeParadisPrintCss(string(cell.css, 4096))) { wireError(); }
 	}
