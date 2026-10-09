@@ -1118,6 +1118,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.csvViewerEnabledDesc', "開くとすぐ表で表示し、上部の「表 | テキスト」で切り替えられます。テキストを選んだファイルは次もテキストで開きます。オフのときは従来どおりテキストで開きます。"),
 		keywords: 'csv tsv table viewer spreadsheet text',
 	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.imageViewer.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.imageViewerEnabled', "画像を Para Code の画像ビューアで開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.imageViewerEnabledDesc', "PNG・JPEG・GIF・WebP・SVG などの画像を Para Code の画像ビューアで開き、オフのときは従来の画像プレビューで開きます。"),
+		keywords: 'image viewer png jpeg gif webp svg preview',
+	},
 
 	// --- モバイル連携 ---
 	{
