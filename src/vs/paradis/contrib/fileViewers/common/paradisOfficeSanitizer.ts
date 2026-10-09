@@ -14,8 +14,10 @@ import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/par
 import { PARADIS_OFFICE_BROKEN_IMAGE_SVG } from './paradisOfficeBrokenImage.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
-/** The SVG bytes converted from EMF and WMF images in one Word document. */
-const PARADIS_WORD_METAFILE_DOCUMENT_BYTES = 16 * 1024 * 1024;
+/** The rewritten renderer package's size cap (`writeStoreZip` output). */
+const MAX_RENDERER_PACKAGE_BYTES = 32 * 1024 * 1024;
+/** Room left in the rewritten package for XML rewrites, placeholder boxes, and ZIP headers. */
+const RENDERER_PACKAGE_MARGIN_BYTES = 1024 * 1024;
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
 const MAX_SVG_BYTES = 1024 * 1024;
 const MAX_SVG_DEPTH = 64;
@@ -402,7 +404,7 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		if (assets.length + placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
 		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: false }));
 		const bytes = await writeStoreZip(entries, input);
-		if (bytes.byteLength > 32 * 1024 * 1024) { throw new ParadisOfficePackageError('limitExceeded'); }
+		if (bytes.byteLength > MAX_RENDERER_PACKAGE_BYTES) { throw new ParadisOfficePackageError('limitExceeded'); }
 		return { bytes, assets, placeholders, ignoredParts: policy.ignoredParts, ignoredPartsOmitted: policy.ignoredPartsOmitted, blockedParts: policy.blockedParts, blockedPartsOmitted: policy.blockedPartsOmitted };
 	} finally {
 		input.archive.dispose();
@@ -602,7 +604,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 					if (unlink) { blockPart(feature, relationshipTypeName(type), undefined, target); }
 					if (resolved) { ignorePart(resolved, relationshipTypeName(type), 'notRendered'); relationshipPlaceholderTargets.add(resolved); }
 				} else if (previewOnly) {
-					blockPart(feature, relationshipTypeName(type), resolved, undefined);
+					blockPart(feature, relationshipTypeName(type), resolved, external ? target : undefined);
 					if (resolved) { relationshipPlaceholderTargets.add(resolved); }
 				} else {
 					pushPackagePlaceholder(placeholders, placeholderValue);
@@ -743,13 +745,15 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	}
 	// Q321 f: an EMF or WMF image is drawn as the SVG the metafile converter writes. It does not go through
 	// the document SVG check; the renderer only shows it as an image (img or SVG image), and the converter
-	// bounds its output (4 MiB per image; 16 MiB per document here, so the rewritten package stays under its
-	// 32 MiB cap). Images it cannot draw stay boxes.
+	// bounds its output (4 MiB per image). Replacing an image may grow the package, so the growth is capped
+	// by what is left under the rewritten package's cap; images that do not fit stay boxes rather than the
+	// whole document failing to open.
+	const packageBytes = [...values.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0);
 	const metafileParts = await convertParadisOfficeMetafileParts([...imageParts]
 		.filter(name => !svgParts.has(name) && !hiddenImageParts.has(name) && !rasterParts.has(name) && !oversizedImageParts.has(name) && values.has(name))
 		.map(name => ({ name, bytes: values.get(name)!, contentType: contentType(name) })), {
 		checkpoint: () => advanceOpcAnalysis(input, state, true),
-		documentBytes: PARADIS_WORD_METAFILE_DOCUMENT_BYTES,
+		growthBytes: Math.max(0, MAX_RENDERER_PACKAGE_BYTES - RENDERER_PACKAGE_MARGIN_BYTES - packageBytes),
 		// Converting stops halfway to the document's deadline, so slow images stay boxes instead of failing it.
 		...(input.deadline !== undefined ? { deadline: Date.now() + Math.max(0, input.deadline - Date.now()) / 2 } : {}),
 	});
@@ -1090,6 +1094,8 @@ function officeConsumerKind(element: OfficeXmlElement, attributeLocal: string, p
 		if (element.local === 'attachedTemplate') { return 'attachedTemplate'; }
 	}
 	if (element.uri === OFFICE_VML_NAMESPACE && element.local === 'OLEObject' && hasWordAncestor(ancestors, 'object')) { return 'oleObject'; }
+	// ISO/IEC 29500 strict writes the embedding as w:objectEmbed / w:objectLink inside w:object.
+	if (WORD_NAMESPACES.has(element.uri) && (element.local === 'objectEmbed' || element.local === 'objectLink') && hasWordAncestor(ancestors, 'object')) { return 'oleObject'; }
 	return 'unknown';
 }
 
@@ -1432,7 +1438,7 @@ async function planOlePreviewFragments(entry: OfficeAnchorPatchPlan, insertionPa
 		const element = pending.pop()!;
 		const elementLexical = planning.story.lexicalElements.get(element);
 		if (!elementLexical) { throw new ParadisOfficePackageError('malformed'); }
-		if (element.uri === OFFICE_VML_NAMESPACE && element.local === 'OLEObject') {
+		if (element.uri === OFFICE_VML_NAMESPACE && element.local === 'OLEObject' || WORD_NAMESPACES.has(element.uri) && (element.local === 'objectEmbed' || element.local === 'objectLink')) {
 			cuts.push({ start: elementLexical.start, end: elementLexical.end });
 			continue;
 		}
