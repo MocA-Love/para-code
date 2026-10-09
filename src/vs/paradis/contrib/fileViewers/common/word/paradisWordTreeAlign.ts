@@ -210,6 +210,8 @@ function matchStories(original: readonly ParadisWordStory[], modified: readonly 
 	matchUniqueStories(original, modified, unmatchedOriginal, unmatchedModified, storyAddressKey, 'exact', runtime, pairs);
 	matchUniqueStories(original, modified, unmatchedOriginal, unmatchedModified, storyContentKey, 'normalized', runtime, pairs);
 	matchBalancedStories(original, modified, unmatchedOriginal, unmatchedModified, storyAddressKey, runtime, pairs);
+	// 置き場所の段落の id が版で変わっても、同じ文字のパーツが同じ数だけあれば出てくる順に対応させる。
+	matchBalancedStories(original, modified, unmatchedOriginal, unmatchedModified, storyContentKey, runtime, pairs);
 	for (const index of unmatchedOriginal) {
 		pairs.push({ original: index, certainty: 'ambiguous' });
 	}

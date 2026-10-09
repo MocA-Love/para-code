@@ -19,6 +19,7 @@ import type {
 	ParadisOfficeOutcome,
 } from '../paradisOfficeProtocol.js';
 import type { ParadisOfficeSearchField, ParadisOfficeSearchItem } from '../paradisOfficeSearch.js';
+import { buildParadisWordRenderOutline, type IParadisWordRenderOutline } from './paradisWordRenderOutline.js';
 import type { ParadisWordDocument, ParadisWordNode, ParadisWordStory, ParadisWordStoryKind } from './paradisWordSemantic.js';
 
 /** shared process の Word 解析チャネル名。 */
@@ -27,7 +28,8 @@ export const PARADIS_WORD_SEMANTIC_CHANNEL = 'paradisWordSemantic';
 export type ParadisWordSemanticFormat = 'docx' | 'docm' | 'dotx' | 'dotm';
 
 /** 失敗の理由。パッケージの不備はサニタイズ済みのコードだけを返し、中身やパスは返さない。 */
-export type ParadisWordSemanticFailureCode = ParadisOfficePackageError['code'] | 'unsupported' | 'tooLarge' | 'failed';
+/** `busy` は、解析の worker が混み合っていて走らせられなかった（しばらくしてから頼み直せば通る）。 */
+export type ParadisWordSemanticFailureCode = ParadisOfficePackageError['code'] | 'unsupported' | 'tooLarge' | 'failed' | 'busy';
 
 /** 未知の要素を、表示に関係しないもの（ignorable）と、描くべきなのに描けていないもの（unrendered）に分ける。 */
 export type ParadisWordUnknownElementDisposition = 'ignorable' | 'unrendered';
@@ -70,6 +72,8 @@ export interface IParadisWordAnalysis {
 	/** 検索の索引（段落ごと）。本文・テキストボックス・脚注・コメント・ヘッダー・フッターをまたぐ。 */
 	readonly searchItems: readonly ParadisOfficeSearchItem[];
 	readonly searchTruncated: boolean;
+	/** 表示（docx-preview）と結び付けるための、文書パーツごとの段落の並びと段落の中の要素。 */
+	readonly outline: IParadisWordRenderOutline;
 	readonly timings: IParadisWordAnalysisTimings;
 }
 
@@ -95,7 +99,19 @@ export interface IParadisWordComparison {
 	readonly omittedModels: readonly string[];
 	/** マクロ・埋め込みなどの部品の形が正しくなく、セキュリティの解析が「安全に読めない」と判断した。 */
 	readonly securityUnreadable: boolean;
+	/** 両側の、表示と結び付けるための段落の並び。 */
+	readonly originalOutline: IParadisWordRenderOutline;
+	readonly modifiedOutline: IParadisWordRenderOutline;
+	/** 変更の ID → 移動先（どちらの側の、どの段落か）。文書全体の変更（スタイルなど）は持たない。 */
+	readonly navigation: Readonly<Record<string, IParadisWordChangeTarget>>;
+	/** 表示用に値を切り詰めた変更（後半だけが変わっていると、切り詰めた値では違いが見えない）。 */
+	readonly truncatedValueChangeIds: readonly string[];
 	readonly timings: { readonly parseMs: number; readonly compareMs: number };
+}
+
+export interface IParadisWordChangeTarget {
+	readonly side: 'original' | 'modified';
+	readonly paragraph: string;
 }
 
 export type IParadisWordComparisonResult = IParadisWordComparison | IParadisWordSemanticFailure;
@@ -182,6 +198,7 @@ interface StoryContext {
 	readonly story: ParadisWordStory;
 	readonly locator: string;
 	paragraphOrdinal: number;
+	readonly searchable: boolean;
 }
 
 interface ParagraphText {
@@ -267,8 +284,8 @@ class WordSummaryBuilder {
 
 	constructor(private readonly limits: ParadisWordSummaryLimits, private readonly checkpoint: () => void) { }
 
-	visitStory(story: ParadisWordStory): void {
-		const context: StoryContext = { story, locator: paradisWordStoryLocator(story), paragraphOrdinal: 0 };
+	visitStory(story: ParadisWordStory, searchable: boolean): void {
+		const context: StoryContext = { story, locator: paradisWordStoryLocator(story), paragraphOrdinal: 0, searchable };
 		for (const node of story.nodes) {
 			this.visit(context, node, undefined);
 		}
@@ -353,7 +370,7 @@ class WordSummaryBuilder {
 
 	private addParagraph(context: StoryContext, locator: string, node: Extract<ParadisWordNode, { readonly kind: 'paragraph' }>): void {
 		const ordinal = context.paragraphOrdinal++;
-		if (this.searchTruncated) {
+		if (this.searchTruncated || !context.searchable) {
 			return;
 		}
 		const story = context.story;
@@ -402,9 +419,10 @@ export function summarizeParadisWordDocument(
 	const limits = options.limits ?? PARADIS_WORD_SUMMARY_LIMITS;
 	const builder = new WordSummaryBuilder(limits, options.checkpoint ?? (() => { }));
 	const storyKinds = new Map<string, number>();
+	const duplicates = duplicateTextboxStories(document.stories);
 	for (const story of document.stories) {
 		increment(storyKinds, story.address.kind);
-		builder.visitStory(story);
+		builder.visitStory(story, !duplicates.has(story));
 	}
 	builder.addComments(document.stories);
 	return {
@@ -428,6 +446,7 @@ export function summarizeParadisWordDocument(
 		changesTruncated: builder.changesTruncated,
 		searchItems: builder.searchItems,
 		searchTruncated: builder.searchTruncated,
+		outline: buildParadisWordRenderOutline(document, options.checkpoint ? { checkpoint: options.checkpoint } : {}),
 	};
 }
 
@@ -447,6 +466,28 @@ function unknownElementSummary(unknown: ReadonlyMap<string, number>): Pick<IPara
 			unrendered: rest.reduce((total, element) => element.disposition === 'unrendered' ? total + element.count : total, 0),
 		},
 	};
+}
+
+/**
+ * Word は図形のテキストボックスを、新しい形（DrawingML）と古い形（VML）の両方で書く（mc:AlternateContent）。
+ * 意味モデルには両方が別の文書パーツとして入るので、同じ場所・同じ文字の DrawingML 側を検索から外す
+ * （表示に出るのは VML 側だけで、同じ結果が 2 回出ないようにする）。
+ */
+function duplicateTextboxStories(stories: readonly ParadisWordStory[]): ReadonlySet<ParadisWordStory> {
+	const vml = new Set<string>();
+	for (const story of stories) {
+		if (story.address.kind === 'textbox' && story.address.textboxGeometry?.container === 'vmlShape') {
+			vml.add(`${story.address.partUri}|${story.address.parentStoryId ?? ''}|${story.text}`);
+		}
+	}
+	const result = new Set<ParadisWordStory>();
+	for (const story of stories) {
+		if (story.address.kind === 'textbox' && story.address.textboxGeometry?.container !== 'vmlShape'
+			&& vml.has(`${story.address.partUri}|${story.address.parentStoryId ?? ''}|${story.text}`)) {
+			result.add(story);
+		}
+	}
+	return result;
 }
 
 const storyKindOrder: readonly ParadisWordStoryKind[] = ['body', 'header', 'footer', 'footnote', 'endnote', 'comment', 'textbox', 'glossary'];

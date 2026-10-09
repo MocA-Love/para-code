@@ -18,12 +18,13 @@ import { inspectOfficePackage, type ParadisOfficePackageInventory } from '../../
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { compareWordSemantics } from '../../common/word/paradisWordSemanticDiff.js';
 import type { ParadisWordDocument } from '../../common/word/paradisWordSemantic.js';
+import { indexParadisWordParagraphs } from '../../common/word/paradisWordRenderOutline.js';
 import { buildParadisWordSemanticSnapshot } from '../../common/word/paradisWordSemanticSnapshot.js';
 import {
 	resolveParadisWordInventory,
 	summarizeParadisWordDocument,
-	type IParadisWordAnalysisCounts,
 	type IParadisWordAnalysisResult,
+	type IParadisWordChangeTarget,
 	type IParadisWordComparisonResult,
 	type IParadisWordSemanticFailure,
 	type ParadisWordSemanticFailureCode,
@@ -116,7 +117,6 @@ async function readAllParts(archive: IParadisOfficeArchive, token: CancellationT
  */
 export class ParadisWordSemanticService {
 	private readonly cache = new Map<string, Promise<ParsedWord>>();
-	private queue: Promise<unknown> = Promise.resolve();
 
 	async analyze(bytes: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordAnalysisResult> {
 		if (!(bytes instanceof Uint8Array)) {
@@ -125,7 +125,10 @@ export class ParadisWordSemanticService {
 		if (bytes.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES) {
 			return failure('tooLarge');
 		}
-		return this.serialized(async () => {
+		if (token.isCancellationRequested) {
+			return failure('cancelled');
+		}
+		return (async () => {
 			try {
 				const parsed = await this.parse(bytes, token);
 				const summarizeWatch = StopWatch.create(true);
@@ -137,7 +140,7 @@ export class ParadisWordSemanticService {
 			} catch (error) {
 				return failure(failureCode(error));
 			}
-		}, token);
+		})();
 	}
 
 	async compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordComparisonResult> {
@@ -147,7 +150,10 @@ export class ParadisWordSemanticService {
 		if (original.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES || modified.byteLength > PARADIS_WORD_SEMANTIC_MAX_BYTES) {
 			return failure('tooLarge');
 		}
-		return this.serialized(async () => {
+		if (token.isCancellationRequested) {
+			return failure('cancelled');
+		}
+		return (async () => {
 			try {
 				// 比較全体で締め切りを 1 つにする。読み直し・補助モデル・比較のそれぞれに、残り時間だけを渡す。
 				const total = StopWatch.create(true);
@@ -176,9 +182,30 @@ export class ParadisWordSemanticService {
 					deadlineMilliseconds: remaining(),
 					pageSize: COMPARISON_CHANGE_LIMIT,
 				});
-				const counts = (parsed: ParsedWord): IParadisWordAnalysisCounts => summarizeParadisWordDocument(parsed.document, parsed.inventory, {
+				const summary = (parsed: ParsedWord) => summarizeParadisWordDocument(parsed.document, parsed.inventory, {
 					limits: { changes: 0, changeTextCharacters: 0, searchItems: 0, searchCharacters: 0 },
-				}).counts;
+					checkpoint: () => throwIfParadisOfficeCancelled(token),
+				});
+				const [leftSummary, rightSummary] = [summary(left), summary(right)];
+				const navigation: Record<string, IParadisWordChangeTarget> = {};
+				const leftParagraphs = indexParadisWordParagraphs(left.document);
+				const rightParagraphs = indexParadisWordParagraphs(right.document);
+				for (const change of page.changes) {
+					const nodeId = change.navigableAnchor ?? /\/node:([^/]+)$/.exec(change.subject.locator)?.[1];
+					if (!nodeId) {
+						continue;
+					}
+					const removed = change.after.kind === 'none';
+					const modifiedParagraph = removed ? undefined : rightParagraphs.get(nodeId);
+					const originalParagraph = leftParagraphs.get(nodeId);
+					if (modifiedParagraph) {
+						navigation[change.id] = { side: 'modified', paragraph: modifiedParagraph };
+					} else if (originalParagraph) {
+						navigation[change.id] = { side: 'original', paragraph: originalParagraph };
+					} else if (rightParagraphs.has(nodeId)) {
+						navigation[change.id] = { side: 'modified', paragraph: rightParagraphs.get(nodeId)! };
+					}
+				}
 				return {
 					ok: true,
 					changes: page.changes,
@@ -186,26 +213,20 @@ export class ParadisWordSemanticService {
 					outcome: page.outcome,
 					noChanges: page.noChanges,
 					truncated: page.nextCursor !== undefined,
-					original: counts(left),
-					modified: counts(right),
+					original: leftSummary.counts,
+					modified: rightSummary.counts,
 					omittedModels: [...new Set([...leftSnapshot.omittedModels, ...rightSnapshot.omittedModels])].sort(),
 					securityUnreadable: leftSnapshot.securityUnreadable || rightSnapshot.securityUnreadable,
+					originalOutline: leftSummary.outline,
+					modifiedOutline: rightSummary.outline,
+					navigation,
+					truncatedValueChangeIds: page.truncatedValueChangeIds,
 					timings: { parseMs: Math.round(parseMs), compareMs: Math.round(compareWatch.elapsed()) },
 				};
 			} catch (error) {
 				return failure(failureCode(error));
 			}
-		}, token);
-	}
-
-	/**
-	 * 解析は 1 本ずつ流す。shared process の同じスレッドで重ねて走らせると、どれも遅くなるうえ
-	 * 他のチャネルの応答も待たされる。待っている間に取り消されたものは走らせない。
-	 */
-	private serialized<T extends IParadisWordAnalysisResult | IParadisWordComparisonResult>(run: () => Promise<T>, token: CancellationToken): Promise<T> {
-		const result = this.queue.then(() => token.isCancellationRequested ? failure('cancelled') as T : run());
-		this.queue = result.catch(() => undefined);
-		return result;
+		})();
 	}
 
 	private parse(bytes: Uint8Array, token: CancellationToken, deadlineMilliseconds = profile.semanticParseMilliseconds): Promise<ParsedWord> {
