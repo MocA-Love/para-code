@@ -538,18 +538,22 @@ function parseText(shapeEl: Element, themeColors: ParadisShapeThemeColors | unde
 				continue;
 			}
 			hasText = true;
-			const rPr = xmlChild(run, 'rPr') ?? defaults;
-			const size = rPr ? intAttr(rPr, 'sz', 0) / 100 : 0;
-			const fill = rPr ? resolveFill(rPr, themeColors) : undefined;
+			// ランの rPr に無い項目は、段落の既定（defRPr）から 1 つずつ引き継ぐ（Office と同じ解き方）。
+			const own = xmlChild(run, 'rPr');
+			const attribute = (name: string) => (own?.hasAttribute(name) ? xmlAttr(own, name) : defaults?.hasAttribute(name) ? xmlAttr(defaults, name) : '');
+			const size = (Number.parseInt(attribute('sz'), 10) || 0) / 100;
+			const fill = (own ? resolveFill(own, themeColors) : undefined) ?? (defaults ? resolveFill(defaults, themeColors) : undefined);
 			const color = fill && fill !== 'none' ? fill.color : fontColor && fontColor !== 'none' ? fontColor.color : undefined;
-			const latin = xmlChild(rPr, 'ea') ?? xmlChild(rPr, 'latin');
+			const latin = xmlChild(own, 'ea') ?? xmlChild(own, 'latin') ?? xmlChild(defaults, 'ea') ?? xmlChild(defaults, 'latin');
 			const font = latin ? xmlAttr(latin, 'typeface') : '';
+			const flag = (name: string) => attribute(name) === '1' || attribute(name) === 'true';
+			const underline = attribute('u');
 			runs.push({
 				text,
 				...(size > 0 ? { size } : {}),
-				...(rPr && (xmlAttr(rPr, 'b') === '1' || xmlAttr(rPr, 'b') === 'true') ? { bold: true } : {}),
-				...(rPr && (xmlAttr(rPr, 'i') === '1' || xmlAttr(rPr, 'i') === 'true') ? { italic: true } : {}),
-				...(rPr && xmlAttr(rPr, 'u') && xmlAttr(rPr, 'u') !== 'none' ? { underline: true } : {}),
+				...(flag('b') ? { bold: true } : {}),
+				...(flag('i') ? { italic: true } : {}),
+				...(underline && underline !== 'none' ? { underline: true } : {}),
 				...(color ? { color } : {}),
 				...(font && !font.startsWith('+') ? { font } : {}),
 			});
