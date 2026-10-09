@@ -11,6 +11,8 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
+import { StringSHA1 } from '../../../../base/common/hash.js';
+import { URI } from '../../../../base/common/uri.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 
 /**
@@ -186,6 +188,39 @@ export interface IParadisAgentPageScriptsChange {
 	readonly count: number;
 }
 
+/** スクリプトを置いたペインとエージェント（帯と一覧に出す）。 */
+export interface IParadisAgentPageScriptOwner {
+	/** 名札の名前（`set_cursor_label`、無ければ「Claude」「Codex 2」など）。 */
+	readonly name: string;
+	/** CLI の印（C・X）。分からなければ空。 */
+	readonly mark: string;
+	/** 名札の色（#rrggbb）。 */
+	readonly color: string;
+	/**
+	 * ペインの指紋（{@link paradisPaneFingerprint}）。トークンそのものは渡さない。ワークベンチは自分の
+	 * ペインのトークンから同じ指紋を作って、ターミナルの番号を引き当てる。
+	 */
+	readonly pane: string;
+}
+
+/** タブに置かれたスクリプト 1 本（利用者に見せる一覧の 1 行）。 */
+export interface IParadisAgentPageScriptEntry {
+	/** `s1` など。 */
+	readonly id: string;
+	readonly label: string;
+	/** エージェントが名前を付けたか（無ければ `label` は本文の先頭 40 字）。 */
+	readonly named: boolean;
+	readonly chars: number;
+	readonly lines: number;
+	/** 置いた時刻（ミリ秒）。 */
+	readonly addedAt: number;
+	/** 本文の先頭 3 行。 */
+	readonly preview: string;
+	/** 本文の全文を持っているか（持つ量の上限を越えたら持たない）。 */
+	readonly sourceKept: boolean;
+	readonly owner?: IParadisAgentPageScriptOwner;
+}
+
 /** {@link PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL} の公開面。 */
 export interface IParadisAgentPageScriptsSurface {
 	readonly onDidChangeInitScripts: Event<IParadisAgentPageScriptsChange>;
@@ -193,6 +228,51 @@ export interface IParadisAgentPageScriptsSurface {
 	getInitScriptCounts(): Promise<IParadisAgentPageScriptsChange[]>;
 	/** 利用者が外した。そのタブのスクリプトをどのペインのものもすべて外し、外した数を返す。 */
 	removeAllInitScripts(viewId: string): Promise<number>;
+	/** そのタブのスクリプトの一覧（どのペインのものも。置いた順）。 */
+	listInitScripts(viewId: string): Promise<IParadisAgentPageScriptEntry[]>;
+	/** 利用者が 1 本外した。外した数（0 か 1）を返す。 */
+	removeInitScript(viewId: string, id: string): Promise<number>;
+	/** 1 本の本文の全文。外された・持っていないときは undefined。 */
+	getInitScriptSource(viewId: string, id: string): Promise<string | undefined>;
+}
+
+/** 「中身を見る」で開く読み取り専用の文書の scheme。パスは `/<viewId>/<id>.js`。 */
+export const PARADIS_AGENT_PAGE_SCRIPT_SCHEME = 'paradis-agent-script';
+
+/** 読み取り専用の文書の場所。viewId は URI のパスに入れても崩れないよう符号化する。 */
+export function paradisAgentPageScriptUri(viewId: string, id: string): URI {
+	return URI.from({ scheme: PARADIS_AGENT_PAGE_SCRIPT_SCHEME, path: `/${encodeURIComponent(viewId)}/${id}.js` });
+}
+
+/** {@link paradisAgentPageScriptUri} の逆。形が違えば undefined。 */
+export function paradisParseAgentPageScriptUri(resource: URI): { readonly viewId: string; readonly id: string } | undefined {
+	const match = resource.scheme === PARADIS_AGENT_PAGE_SCRIPT_SCHEME ? /^\/(?<view>[^/]+)\/(?<id>s\d{1,12})\.js$/.exec(resource.path) : null;
+	if (!match?.groups) {
+		return undefined;
+	}
+	try {
+		return { viewId: decodeURIComponent(match.groups.view), id: match.groups.id };
+	} catch {
+		return undefined;
+	}
+}
+
+/** ペインの指紋の長さ（16 進）。 */
+const PARADIS_PANE_FINGERPRINT_LENGTH = 16;
+
+/**
+ * ペインのトークンから作る指紋。トークンは MCP の Bearer なのでプロセスの外へ出さず、これだけを渡す。
+ * shared process と ワークベンチの両方で同じ値になる（同期の SHA-1）。
+ */
+export function paradisPaneFingerprint(token: string): string {
+	const sha = new StringSHA1();
+	sha.update(`paradis-pane-fingerprint\0${token}`);
+	return sha.digest().slice(0, PARADIS_PANE_FINGERPRINT_LENGTH);
+}
+
+/** IPC で受けたペインの指紋を確かめる。 */
+export function paradisIsPaneFingerprint(value: unknown): value is string {
+	return typeof value === 'string' && new RegExp(`^[0-9a-f]{${PARADIS_PANE_FINGERPRINT_LENGTH}}$`).test(value);
 }
 
 /** {@link PARADIS_AGENT_CURSOR_CHANNEL} の公開面。renderer は購読しかしない。 */

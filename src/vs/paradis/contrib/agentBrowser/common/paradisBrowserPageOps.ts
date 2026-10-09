@@ -642,6 +642,8 @@ export interface IParadisInitScriptRequest {
 	readonly label: string;
 	/** いま開いているページでもすぐ動かすか。 */
 	readonly runNow: boolean;
+	/** エージェントが名前を付けたか（無ければ `label` は本文の先頭 40 字）。 */
+	readonly named: boolean;
 }
 
 /** タブに置いたスクリプト（中身は返さない）。 */
@@ -683,7 +685,9 @@ export function paradisParseInitScriptRequest(value: unknown): ParadisPageOpsPar
 		return fail('"run_now" must be true or false.');
 	}
 	const fallbackLabel = source.trim().replace(/\s+/g, ' ').slice(0, 40);
-	return { ok: true, value: Object.freeze({ source, label: typeof label === 'string' && label.trim().length > 0 ? label.trim() : fallbackLabel, runNow: runNow === true }) };
+	const given = typeof label === 'string' ? label.trim() : '';
+	const named = given.length > 0;
+	return { ok: true, value: Object.freeze({ source, label: named ? given : fallbackLabel, runNow: runNow === true, named }) };
 }
 
 /** electron-main が受け取った要求を検証し直す（shared process を信用しない）。 */

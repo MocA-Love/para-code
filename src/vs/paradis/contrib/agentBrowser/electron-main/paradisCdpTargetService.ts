@@ -28,7 +28,9 @@ import {
 	IParadisCdpScreenshotOptions,
 	IParadisAgentCursorEvent,
 	IParadisAgentPageScriptsChange,
+	IParadisAgentPageScriptOwner,
 	IParadisAgentPageScriptsSurface,
+	paradisIsPaneFingerprint,
 	IParadisExactBrowserViewDescriptor,
 	PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH,
 	PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH,
@@ -44,7 +46,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
-import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorOwner, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -240,13 +242,30 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return viewId !== undefined ? [{ viewId, count }] : [];
 		}),
 		removeAllInitScripts: async (viewIdValue: unknown) => {
-			if (typeof viewIdValue !== 'string') {
-				return 0;
-			}
-			const target = this.pageOps.initScriptCounts().map(([candidate]) => candidate).find(candidate => this.pageOpsViewIds.get(candidate) === viewIdValue);
+			const target = this.pageScriptsTarget(viewIdValue);
 			return target ? this.pageOps.removeAllInitScripts(target) : 0;
 		},
+		listInitScripts: async (viewIdValue: unknown) => {
+			const target = this.pageScriptsTarget(viewIdValue);
+			return target ? this.pageOps.pageScriptEntries(target) : [];
+		},
+		removeInitScript: async (viewIdValue: unknown, idValue: unknown) => {
+			const target = this.pageScriptsTarget(viewIdValue);
+			return target && paradisIsInitScriptId(idValue) ? this.pageOps.removeInitScriptById(target, idValue) : 0;
+		},
+		getInitScriptSource: async (viewIdValue: unknown, idValue: unknown) => {
+			const target = this.pageScriptsTarget(viewIdValue);
+			return target && paradisIsInitScriptId(idValue) ? this.pageOps.initScriptSource(target, idValue) : undefined;
+		},
 	};
+
+	/** スクリプトが置かれているタブのうち、ワークベンチの viewId に当たるもの。 */
+	private pageScriptsTarget(viewIdValue: unknown): IParadisPageOpsTarget | undefined {
+		if (typeof viewIdValue !== 'string') {
+			return undefined;
+		}
+		return this.pageOps.initScriptCounts().map(([candidate]) => candidate).find(candidate => this.pageOpsViewIds.get(candidate) === viewIdValue);
+	}
 
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
@@ -1158,7 +1177,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
-	async addExactViewInitScript(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown): Promise<IParadisInitScriptsResult> {
+	async addExactViewInitScript(descriptorValue: unknown, ownerKeyValue: unknown, generationValue: unknown, requestJsonValue: unknown, ownerValue?: unknown): Promise<IParadisInitScriptsResult> {
 		const target = this.resolvePageOpsTarget(descriptorValue);
 		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || typeof generationValue !== 'number' || !Number.isSafeInteger(generationValue) || typeof requestJsonValue !== 'string' || requestJsonValue.length > 1024 * 1024) {
 			return { ok: false, reason: 'invalid' };
@@ -1177,12 +1196,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!request.ok) {
 			return { ok: false, reason: 'invalid', message: request.error };
 		}
-		return this.pageOps.addInitScript(target, ownerKeyValue, generationValue, request.value);
+		return this.pageOps.addInitScript(target, ownerKeyValue, generationValue, request.value, paradisParsePageScriptOwner(ownerValue));
 	}
 
 	async removeExactViewInitScripts(descriptorValue: unknown, ownerKeyValue: unknown, idValue: unknown): Promise<IParadisInitScriptsResult> {
 		const target = this.resolvePageOpsTarget(descriptorValue);
-		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || (idValue !== null && (typeof idValue !== 'string' || !/^s\d{1,12}$/.test(idValue)))) {
+		if (!paradisIsPageOpsOwnerKey(ownerKeyValue) || (idValue !== null && !paradisIsInitScriptId(idValue))) {
 			return { ok: false, reason: 'invalid' };
 		}
 		return target ? this.pageOps.removeInitScripts(target, ownerKeyValue, idValue ?? undefined) : { ok: false, reason: 'unavailable' };
@@ -1476,4 +1495,19 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 /** カーソルの写し（一覧ウィンドウ・モバイル）に付ける持ち主。 */
 function ownerOfEvent(owner: IParadisCursorOwner | undefined): { ownerId?: string; name?: string; mark?: string; color?: string } {
 	return owner ? { ownerId: owner.id, name: owner.name, mark: owner.mark, color: owner.color } : {};
+}
+
+/** スクリプトの名前（`s1` など）か。 */
+function paradisIsInitScriptId(value: unknown): value is string {
+	return typeof value === 'string' && /^s\d{1,12}$/.test(value);
+}
+
+/** shared process から受けたスクリプトの持ち主を確かめる（名前・印・色はカーソルの持ち主と同じ規則）。 */
+function paradisParsePageScriptOwner(value: unknown): IParadisAgentPageScriptOwner | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const { pane } = value as { pane?: unknown };
+	const owner = paradisParseCursorOwner(value);
+	return owner && paradisIsPaneFingerprint(pane) ? { name: owner.name, mark: owner.mark, color: owner.color, pane } : undefined;
 }
