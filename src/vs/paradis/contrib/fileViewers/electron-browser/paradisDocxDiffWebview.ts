@@ -35,6 +35,7 @@ import { setTimeout0 } from '../../../../base/common/platform.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
+import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
 import { createParadisOfficeWebArchive } from '../browser/office/paradisOfficeWebArchive.js';
 import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin, sanitizeOfficeDocxPackageForRenderer, type ParadisOfficeRenderablePackage } from '../common/paradisOfficeSanitizer.js';
 import {
@@ -174,6 +175,10 @@ export interface IParadisDocxDiffWebviewHost {
 	clearPane?(side: ParadisDocxSide): void;
 	isPaneBlank?(side: ParadisDocxSide): boolean;
 	setAssetPlaceholders(placeholders: readonly { readonly title: string; readonly feature: string; readonly fingerprint?: string }[]): void;
+	/** 段落に目印を付ける・描いた段落の文字を集める・目印の段落へ移る（paradisWordAnchorRuntime.ts）。 */
+	stampParagraphs?(document: IParadisDocxAstDocument): void;
+	collectParagraphs?(side: ParadisDocxSide): unknown;
+	revealParagraph?(side: ParadisDocxSide, marker: string, focus: string): boolean;
 	setTimeout(handler: () => void, delay: number): number;
 	clearTimeout(handle: number): void;
 }
@@ -879,6 +884,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 				if (state.loadGeneration !== generation) {
 					return;
 				}
+				host.stampParagraphs?.(wordDocument);
 				const extracted = extractOutline(wordDocument);
 				state.documents[input.side] = { wordDocument, refs: extracted.refs, outline: extracted.outline };
 			} catch (error) {
@@ -923,6 +929,9 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		applyZoom();
 		if (state.activeChangeId >= 0) {
 			reveal(state.activeChangeId);
+		}
+		if (host.collectParagraphs) {
+			host.post({ type: 'paragraphs', generation: state.loadGeneration, original: host.collectParagraphs('original'), modified: host.collectParagraphs('modified') });
 		}
 	}
 
@@ -984,6 +993,11 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 			case 'reveal':
 				reveal(wordMessage.changeId);
 				break;
+			case 'revealAnchor':
+				// 片側だけを動かす。先に同期を止めないと、もう片側が釣られて動く。
+				holdSync();
+				host.revealParagraph?.(wordMessage.side, wordMessage.marker, wordMessage.focus);
+				break;
 			case 'zoom':
 				state.scale = wordMessage.scale;
 				applyZoom();
@@ -1032,6 +1046,13 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 	};
 	const api = globals.acquireVsCodeApi();
 	const byId = (id: string) => window.document.getElementById(id)!;
+	const anchors = (window as unknown as {
+		paradisWordAnchors?: {
+			stamp(document: IParadisDocxAstDocument): void;
+			collect(root: Element): unknown;
+			reveal(root: Element, message: { readonly marker: string; readonly context: string; readonly focus: string; readonly matchCase: boolean }): boolean;
+		};
+	}).paradisWordAnchors;
 
 	const wrapElement = (element: Element): IParadisDocxDiffElement => ({
 		top: () => element.getBoundingClientRect().top,
@@ -1094,6 +1115,9 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 		},
 		setTimeout: (handler: () => void, delay: number) => window.setTimeout(handler, delay),
 		clearTimeout: (handle: number) => window.clearTimeout(handle),
+		stampParagraphs: document => anchors?.stamp(document),
+		collectParagraphs: side => anchors?.collect(byId('doc-' + side)),
+		revealParagraph: (side, marker, focus) => !!anchors?.reveal(byId('doc-' + side), { marker, context: '', focus, matchCase: true }),
 	};
 	main(ctx, host);
 
@@ -1223,6 +1247,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 		[${PARADIS_DOCX_GHOST_ATTR}="moved"] { border-color: rgba(168, 85, 247, .55); }
 
 		.paradis-current { outline: 2px solid #f59e0b !important; outline-offset: 1px; }
+		${PARADIS_WORD_ANCHOR_STYLE}
 		.paradis-pulse { animation: paradis-docx-pulse 1.1s ease-out 1; }
 		@keyframes paradis-docx-pulse {
 			0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, .6); }
@@ -1249,6 +1274,7 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	<div id="style-modified" style="display:none"></div>
 	<script nonce="${nonce}" src="${libBase}/jszip.min.js"></script>
 	<script nonce="${nonce}" src="${libBase}/docx-preview.min.js"></script>
+	<script nonce="${nonce}">${PARADIS_WORD_ANCHOR_RUNTIME}</script>
 	<script nonce="${nonce}">(${paradisDocxDiffWebviewBoot.toString()})(${context}, ${paradisDocxDiffWebviewMain.toString()});</script>
 </body>
 </html>`;
