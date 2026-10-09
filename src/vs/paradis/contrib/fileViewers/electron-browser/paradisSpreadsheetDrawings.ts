@@ -775,7 +775,9 @@ function parsePicture(el: Element, box: AnchorBox, space: GroupSpace | undefined
 		return;
 	}
 	const blip = xmlChild(xmlChild(el, 'blipFill'), 'blip');
-	const rid = relationshipId(blip, 'embed');
+	// SVG の画像は、PNG の代わりの絵（blip）に加えて、拡張（asvg:svgBlip）で SVG 本体を指す。描ける方を使う。
+	const svgRid = xmlChildren(xmlChild(blip, 'extLst'), 'ext').map(ext => relationshipId(xmlChild(ext, 'svgBlip'), 'embed')).find(id => id && Object.hasOwn(context.media, id));
+	const rid = svgRid ?? relationshipId(blip, 'embed');
 	const href = Object.hasOwn(context.media, rid) ? context.media[rid] : undefined;
 	if (!href) {
 		// EMF・WMF、表示しない形式、中身を確かめられなかった画像、見つからない画像。
@@ -1079,8 +1081,8 @@ function undrawnDetail(kind: IParadisUndrawnObject['kind'], reason: IParadisUndr
 	switch (kind) {
 		case 'image':
 			switch (reason) {
-				case 'metafile': return localize('paradis.spreadsheet.undrawnMetafile', "EMF・WMF の画像は表示できません。");
-				case 'unsupportedFormat': return localize('paradis.spreadsheet.undrawnImageFormat', "表示できない形式の画像（BMP など）です。");
+				case 'metafile': return localize('paradis.spreadsheet.undrawnMetafile', "この EMF・WMF の画像は、描けない内容を含むか、上限を越えたため表示していません。");
+				case 'unsupportedFormat': return localize('paradis.spreadsheet.undrawnImageFormat', "表示できない形式の画像（TIFF など）です。");
 				case 'tooLarge': return localize('paradis.spreadsheet.undrawnImageTooLarge', "画像が大きすぎるため、表示していません。");
 				case 'overBudget': return localize('paradis.spreadsheet.undrawnImageOverBudget', "画像が多いため、表示していません。");
 				default: return localize('paradis.spreadsheet.undrawnImageUnverified', "画像の中身を確かめられなかったため、表示していません。");
