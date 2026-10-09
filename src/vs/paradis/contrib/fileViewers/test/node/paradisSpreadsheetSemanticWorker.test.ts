@@ -10,7 +10,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisSemanticDiagnosticsSummary, IParadisSpreadsheetService } from '../../common/paradisSpreadsheet.js';
-import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
+import { ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorkerReply, type ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
 import {
 	PARADIS_SPREADSHEET_SEMANTIC_QUEUE_BYTES,
@@ -110,13 +110,15 @@ suite('ParadisSpreadsheetSemanticWorker', () => {
 			// worker が落ちたら、走っていた依頼は失敗（メモリ不足なら大きすぎる扱い）。本体で解析し直さない。
 			const outOfMemory = reason(backend.collect(bytes, CancellationToken.None));
 			workers[1].crash(Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
-			const crashed = reason(backend.collect(bytes, CancellationToken.None));
+			// メモリ不足になった入力は覚えているので、ここからは別の入力で続ける。
+			const other = new Uint8Array([2]);
+			const crashed = reason(backend.collect(other, CancellationToken.None));
 			workers[2].crash();
 
 			// 待ち行列の件数とバイト数には上限があり、超えたら busy（頼み直せる）。
-			const running = backend.collect(bytes, CancellationToken.None);
-			const tooMany = Array.from({ length: PARADIS_SPREADSHEET_SEMANTIC_QUEUE_LIMIT }, () => backend.collect(bytes, CancellationToken.None));
-			const countOverflow = await reason(backend.collect(bytes, CancellationToken.None));
+			const running = backend.collect(other, CancellationToken.None);
+			const tooMany = Array.from({ length: PARADIS_SPREADSHEET_SEMANTIC_QUEUE_LIMIT }, () => backend.collect(other, CancellationToken.None));
+			const countOverflow = await reason(backend.collect(other, CancellationToken.None));
 			backend.dispose();
 			const disposed = await Promise.all([running, ...tooMany].map(reason));
 
@@ -132,6 +134,54 @@ suite('ParadisSpreadsheetSemanticWorker', () => {
 		} finally {
 			closing.dispose();
 			backend.dispose();
+		}
+	});
+
+	test('remembers inputs that ran the worker out of memory and honours a per-request run deadline', async () => {
+		type Message = ParadisOfficeSemanticWorkerMessage<{ readonly bytes: Uint8Array }>;
+		const posted: Message[] = [];
+		const listeners = new Map<string, ((value: never) => void)[]>();
+		const scheduled: { readonly handler: () => void; readonly delay: number; cleared: boolean }[] = [];
+		const queue = new ParadisOfficeSemanticWorkerQueue<{ readonly bytes: Uint8Array }, string>({
+			createWorker: () => {
+				listeners.clear();
+				return {
+					postMessage: message => { posted.push(message); },
+					on: (event: string, listener: (value: never) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); return undefined; },
+					terminate: async () => 0,
+				};
+			},
+			failure: code => code,
+			runDeadlineMs: 1_000,
+			queueDeadlineMs: 2_000,
+			queueLimit: 4,
+			queueByteLimit: 1_000,
+			idleMs: 3_000,
+			timers: {
+				setTimeout: (handler: () => void, delay: number) => { const entry = { handler, delay, cleared: false }; scheduled.push(entry); return entry; },
+				clearTimeout: (handle: unknown) => { if (handle) { (handle as { cleared: boolean }).cleared = true; } },
+			},
+		});
+		const emit = (event: string, value: unknown) => { for (const listener of listeners.get(event) ?? []) { listener(value as never); } };
+		const run = (bytes: Uint8Array, runDeadlineMs?: number) => queue.run(bytes.byteLength, () => ({ request: { bytes }, transfer: [] }), CancellationToken.None, { memoryKeys: [bytes], ...(runDeadlineMs ? { runDeadlineMs } : {}) });
+		try {
+			const heavy = new Uint8Array([1, 2, 3]);
+			const first = run(heavy, 5_000);
+			const deadlines = scheduled.filter(entry => !entry.cleared).map(entry => entry.delay);
+			emit('error', Object.assign(new Error('heap'), { code: 'ERR_WORKER_OUT_OF_MEMORY' }));
+			emit('exit', 1);
+			const firstResult = await first;
+			const postedBefore = posted.length;
+			const again = await run(new Uint8Array([1, 2, 3]));
+			const postedAfterAgain = posted.length;
+			const other = run(new Uint8Array([4]));
+			deepStrictEqual({ deadlines, firstResult, again, skippedTheWorker: postedAfterAgain === postedBefore, otherPosted: posted.length === postedBefore + 1 }, {
+				deadlines: [5_000], firstResult: 'limitExceeded', again: 'limitExceeded', skippedTheWorker: true, otherPosted: true,
+			});
+			queue.dispose();
+			await other;
+		} finally {
+			queue.dispose();
 		}
 	});
 
