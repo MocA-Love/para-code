@@ -45,6 +45,11 @@ export interface ParadisOfficeMetafilePartsOptions {
 	readonly checkpoint?: () => void | Promise<void>;
 	/** 変換した SVG の合計のバイト数の上限。既定は 32 MiB。 */
 	readonly documentBytes?: number;
+	/**
+	 * 置き換えで増えるバイト数（SVG − 元の画像）の合計の上限。書き出すパッケージに上限がある呼び出し側は、
+	 * 上限から変換しない部品の大きさを引いた値を渡す。入りきらない画像は変換しない（箱のまま）。
+	 */
+	readonly growthBytes?: number;
 	/** 変換に読む入力のバイト数の合計の上限。既定は 64 MiB。 */
 	readonly inputBytes?: number;
 	/** 変換で読む記録の数の合計の上限。既定は 100 万件。 */
@@ -70,6 +75,7 @@ export async function convertParadisOfficeMetafileParts(parts: Iterable<ParadisO
 		await options.checkpoint?.();
 	};
 	let total = 0;
+	let growth = 0;
 	let inputBytes = options.inputBytes ?? PARADIS_OFFICE_METAFILE_DOCUMENT_INPUT_BYTES;
 	let records = options.records ?? PARADIS_OFFICE_METAFILE_DOCUMENT_RECORDS;
 	const encoder = new TextEncoder();
@@ -98,10 +104,13 @@ export async function convertParadisOfficeMetafileParts(parts: Iterable<ParadisO
 			continue;
 		}
 		const svg = encoder.encode(result.svg);
-		if (svg.byteLength > PARADIS_OFFICE_METAFILE_IMAGE_BYTES || total + svg.byteLength > documentBytes) {
+		const added = svg.byteLength - part.bytes.byteLength;
+		if (svg.byteLength > PARADIS_OFFICE_METAFILE_IMAGE_BYTES || total + svg.byteLength > documentBytes
+			|| options.growthBytes !== undefined && growth + added > options.growthBytes) {
 			continue;
 		}
 		total += svg.byteLength;
+		growth += added;
 		converted.set(part.name, svg);
 	}
 	return converted;

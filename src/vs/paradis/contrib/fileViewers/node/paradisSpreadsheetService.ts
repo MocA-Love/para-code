@@ -1734,6 +1734,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				...(printArea ? { printArea } : {}),
 				...(pageLayout ? { pageLayout } : {}),
 				...(extras.commentsBySheet[sheetIndex]?.length ? { comments: extras.commentsBySheet[sheetIndex] } : {}),
+				...(pageSetup ? { pageSetup } : {}),
 			});
 		});
 

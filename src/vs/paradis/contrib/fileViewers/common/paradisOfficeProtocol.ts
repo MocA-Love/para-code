@@ -324,13 +324,54 @@ export type ParadisOfficePrintBlock =
 	| { readonly kind: 'text'; readonly nodeId: string; readonly runs: readonly ParadisOfficeTextRun[] }
 	| { readonly kind: 'container'; readonly nodeId: string; readonly role: 'section' | 'table' | 'row' | 'cell' | 'list'; readonly children: readonly ParadisOfficePrintBlock[] }
 	| { readonly kind: 'object'; readonly nodeId: string; readonly object: ParadisOfficeRenderObject }
-	| { readonly kind: 'placeholder'; readonly nodeId: string; readonly placeholder: ParadisOfficePlaceholder };
+	| { readonly kind: 'placeholder'; readonly nodeId: string; readonly placeholder: ParadisOfficePlaceholder }
+	| { readonly kind: 'sheetGrid'; readonly nodeId: string; readonly grid: ParadisOfficePrintSheetGrid };
+
+/** One cell of a printed spreadsheet page. Rows and columns count from 0 inside the page. */
+export interface ParadisOfficePrintGridCell {
+	readonly row: number;
+	readonly column: number;
+	readonly rowSpan?: number;
+	readonly columnSpan?: number;
+	readonly runs: readonly ParadisOfficeTextRun[];
+	/** Inline CSS for the cell, produced by the viewer's own cell styling and checked by the print model. */
+	readonly css?: string;
+}
+
+/** A drawing (shape, picture, chart, or cell diagonal) rendered to an SVG image, in points from the top-left of the page body (after the repeated titles). */
+export interface ParadisOfficePrintGridDrawing {
+	readonly nodeId: string;
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+	/** A percent-encoded `data:image/svg+xml,...` URL only. */
+	readonly href: string;
+}
+
+/** A spreadsheet page laid out like the sheet: column widths and row heights in points, cells, and drawings. */
+export interface ParadisOfficePrintSheetGrid {
+	readonly columns: readonly number[];
+	readonly rows: readonly number[];
+	readonly cells: readonly ParadisOfficePrintGridCell[];
+	readonly drawings: readonly ParadisOfficePrintGridDrawing[];
+	readonly gridLines: boolean;
+	/** Print scale (1 = 100%). */
+	readonly scale: number;
+	/** How many leading rows / columns are repeated print titles rather than the page's own. */
+	readonly titleRows?: number;
+	readonly titleColumns?: number;
+	readonly horizontalCentered?: boolean;
+	readonly verticalCentered?: boolean;
+}
 
 /** One page in a script-free print model. */
 export interface ParadisOfficePrintPage {
 	readonly pageNumber: number;
 	readonly widthPoints: number;
 	readonly heightPoints: number;
+	/** Page margins in points (top, right, bottom, left). Absent pages use the default print padding. */
+	readonly marginsPoints?: readonly [number, number, number, number];
 	readonly blocks: readonly ParadisOfficePrintBlock[];
 	readonly placeholders: readonly ParadisOfficePlaceholder[];
 }
@@ -356,6 +397,8 @@ export type ParadisOfficeRasterMime = 'image/png' | 'image/jpeg' | 'image/gif' |
 /** Allowlisted asset metadata. Kind and MIME are a fixed discriminated pair. */
 export type ParadisOfficeRenderableAsset = ParadisOfficeRenderableAssetBase & (
 	| { readonly kind: 'rasterImage'; readonly mime: ParadisOfficeRasterMime }
+	// Also carries the SVG the EMF/WMF converter writes (Q321 f), which skips the document SVG check: render it
+	// only as an image (`<img>` or SVG `<image>`), never inline in the DOM.
 	| { readonly kind: 'sanitizedSvg'; readonly mime: 'image/svg+xml' }
 	| { readonly kind: 'fontSubset'; readonly mime: 'font/woff2' }
 	| { readonly kind: 'chartPreview'; readonly mime: 'image/png' | 'image/svg+xml' }

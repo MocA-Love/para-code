@@ -84,6 +84,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
+## EMF・WMF は記録を読んで SVG にして描く（fileViewers、2026-10-09、Q321 f）
+
+- 変換は `common/office/paradisOfficeMetafile.ts`（描き先は `paradisOfficeMetafileSvg.ts`、パッケージの部品をまとめて変換するのは `paradisOfficeMetafileParts.ts`）。描けない記録を 1 つでも含む画像は箱のまま。EMF+ は解釈せず、二重（dual）なら GDI の記録で描く
+- 変換した SVG は変換器が組み立てた決まった形なので、文書由来の SVG の検査（`sanitizeOfficeSvg`）は通さない。代わりに 1 枚 4 MiB・1 文書の合計 32 MiB と、1 文書で試す入力 64 MiB・記録 100 万件の上限を持つ。Word では、置き換えで増える分（SVG − 元の画像）を、書き出すパッケージの上限 32 MiB から元のパッケージの大きさと余白 1 MiB を引いた範囲に収める（入りきらない画像は箱のまま。文書は開ける）。表示は `<img>`（data URL）か SVG の `<image>` に入れる形に限り、インラインの SVG として DOM に差し込まない
+- docx-preview は画像を型の無い Blob から data URL にするので、SVG の部品は `data:application/octet-stream` になり描かれない。Word の 2 つの webview は、先頭が `<svg` のものを `image/svg+xml` に付け替える（それまで「Office asset unavailable」の箱も出ていなかった）
+- 埋め込みオブジェクト（`w:object`）にプレビューの絵（`v:imagedata`）があれば、サニタイザが `w:pict` に書き換え、`o:OLEObject`（strict の `w:objectEmbed`・`w:objectLink` も）と VML の図形に残る埋め込みへの参照（`o:ole`、`v:imagedata` 以外の関係の id）を外す。埋め込みの本体と関係は今までどおり外し、「安全のために外しました: 埋め込み」に数える。プレビューの絵は画像の検査か EMF・WMF の変換を通ったものだけを描く。`w:object` が自分で名前空間を宣言している場合は書き換えず、今までどおり箱にする
+
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 
 - 入口は `node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.ts`（`build/next/index.ts` の `desktopEntryPoints` に載せてある）。待ち行列の守りは `node/office/paradisOfficeSemanticWorkerQueue.ts` にまとめた。Word の worker と同じく 1 件ずつ・実行と待ち行列で別の締め切り・ヒープ 384 MiB で、加えて待ち行列のバイト数の上限（60 MiB）を持ち、待ち行列があふれたときと待ちすぎたときは `busy` を返す。エディタは間を空けて 3 回まで頼み直す
@@ -381,12 +388,13 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 
 ### vendored chrome-devtools-mcp への変更（2026-10-04）
 
-vendored の中身は原則そのまま同梱するが、2 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
+vendored の中身は原則そのまま同梱するが、3 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
 
 | ファイル | 変更 | 理由 |
 |---|---|---|
 | `build/src/McpContext.js` の `waitForTextOnPage` | `locator.wait()` に `AbortController` の signal を渡し、勝ち負けが決まったら（成功・時間切れとも）`abort()` する | `wait_for` は全フレーム × 全テキストで `aria/` と `text/` の Locator を race させる。rxjs の race は負け側の購読を外すだけで、負け側の `waitForSelector`（`Runtime.callFunctionOn` の awaitPromise）は上流に既定 5 秒残り、直後の click がゲートウェイの入力の関所でそれを待って not interactive になっていた |
 | `build/src/tools/snapshot.js` の `take_snapshot`（2026-10-08） | 内部用の引数 `paraCodeRootRect`（uid）を足し、その要素の `boundingBox()` を `[Para Code root rect] {...}` の 1 行で結果に書く。引数は Para Code の `paradisPrepareDevtoolsToolCall` が `root` から付ける。付けるのは tools/list の `take_snapshot` のスキーマに `paraCodeRootRect` があるときだけ（当て忘れた vendored は知らない引数を断るため。`paradisSnapshotMeasuresRoot`）。エージェントが渡しても捨て、tools/list には出さない。行は proxy が `paradisTakeSnapshotRootRect` で、見出しより前の最初の 1 行だけを取り除き、位置は返す結果に結び付ける（本文はページの文字をエスケープしないので読まない）。当たっていることは `paradisDevtoolsToolAdjustments.test.ts` が vendored の中身で確かめる | `root` の要素にエージェントのカーソルの枠を出すため（q.html Q297 の 3）。別の `evaluate_script` で測ると、同じタブの道具の順番（toolMutex）を握り、ナビゲーション待ちと DOM の安定待ちのぶん次の道具を待たせ、既定の `dialogAction` で confirm を承認してしまう |
+| `build/src/tools/script.js` の `evaluate_script`（2026-10-09） | 内部用の引数 `paraCodeObserve`（boolean）を足す。付いていれば `waitForEventsAfterAction` を通さずに評価し（ダイアログの処理・遷移と DOM の安定待ちをしない）、ダイアログが開いていれば `PARA_BROWSER_DIALOG_OPEN` で断る。3 秒答えなければ同じ印で打ち切る。付けるのは操作の後の観測（`paradisBrowserObserve.ts`、設定 `paradis.agentBrowser.settleAfterAction` / `reportBrowserState`）だけで、tools/list のスキーマに `paraCodeObserve` があるときだけ（`paradisEvaluateObserves`）。無い版（パッチの当て忘れ）ではページの中を一切読まず（タブとダウンロードの状態だけを添える）、`paraCodeObserve` 付きの呼び出しが来ても従来の評価に戻さず `PARA_BROWSER_OBSERVE_UNSUPPORTED` で断る（従来の評価は dialogAction の既定が accept で、確認のダイアログを承認しうるため。Q322）。tools/list には出さない。当たっていることは `paradisDevtoolsToolAdjustments.test.ts` が確かめる | 観測は操作の後に 100ms ごとにページの記録を読む。既定の評価は呼び出しのたびに dialog の handler を置き、DOM の安定待ちの間も外さないため、その間に開いた confirm を閉じてしまい、エージェントの handle_dialog が効かなくなった（見本サイトの遅れて開く confirm で再現） |
 
 上流で `waitForTextOnPage` が signal を渡すようになったら、この変更は外してよい。ツールの入口と出口の調整（`wait_for` の `text` を文字列でも受ける、スナップショットを既定で返さない、`take_snapshot` の文字数の上限と `offset`、not interactive への拒否理由の追記、Target closed の 1 回の再試行）は vendored を触らず `node/paradisDevtoolsToolAdjustments.ts` で行っている。
 
