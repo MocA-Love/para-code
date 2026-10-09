@@ -37,7 +37,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトのコツ（入力の書式やボタンの場所など）を短いメモに残し、同じリポジトリで次にそのサイトを開いたエージェントに伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。")
+			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトについて短いメモを残し、同じリポジトリの次のエージェントへヒントとして渡します。")
 		},
 		// 内蔵ブラウザの道具（para-browser MCP）は shared process で動くので、cursor と同じく APPLICATION スコープ
 		[PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING]: {

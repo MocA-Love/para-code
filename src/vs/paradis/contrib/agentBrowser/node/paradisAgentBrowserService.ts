@@ -4509,8 +4509,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		return this._callToolInner(ingressLease, params, signal, socket);
 	}
 
-	/** ペインのスペース（メモを分ける鍵）。手元のペインはスペースの最初のフォルダ、接続先のペインは接続先の名前。 */
-	private async _siteNoteSpace(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string }> {
+	/**
+	 * ペインのスペース（メモを分ける鍵）。手元のペインはスペースの最初のフォルダ、接続先のペインは接続先の名前。
+	 * 分からなければ undefined（どのリポジトリのメモか決められないので、書きも添えもしない）。
+	 */
+	private async _siteNoteSpace(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
 		const token = ingressLease.token;
 		const remote = this._paneRemoteAuthorityOf(token);
 		if (remote !== undefined) {
@@ -4525,7 +4528,16 @@ export class ParadisAgentBrowserService extends Disposable {
 			timeoutMs: 4000,
 		}).catch(() => undefined);
 		const folder = call?.ok && Array.isArray(call.value) ? call.value.find((value): value is string => typeof value === 'string' && isAbsolute(value)) : undefined;
-		return folder !== undefined ? { key: folder, folder } : { key: 'unknown' };
+		return folder !== undefined ? { key: folder, folder } : undefined;
+	}
+
+	/** このペインが今使えるタブ（共有されたページと、自分で開いたタブ）のオリジン。メモを書く・消すのはここに限る。 */
+	private _siteNoteOpenOrigins(token: string): ReadonlySet<string> {
+		const urls = [this._bindings.get(token)?.pageInfo.url];
+		for (const tabId of this._agentTabGrants.get(token)?.keys() ?? []) {
+			urls.push(this._scopeBinding(token, tabId)?.pageInfo.url);
+		}
+		return new Set(urls.map(url => paradisSiteNoteOrigin(url)).filter((origin): origin is string => origin !== undefined));
 	}
 
 	/** ペインの今のタブ（`tab_id` があればそのタブ）の URL。 */
@@ -4547,6 +4559,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				return result;
 			}
 			const space = await this._siteNoteSpace(ingressLease);
+			if (space === undefined) {
+				return result;
+			}
 			const shown = this._siteNotesShown.get(token) ?? new Set<string>();
 			const shownKey = `${space.key}\n${origin}`;
 			if (shown.has(shownKey)) {
@@ -4578,8 +4593,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (origin === undefined) {
 			return this._toolError(`${name} needs a website: pass "url" (http or https), or open the site in this pane's current tab first.`);
 		}
+		if (name !== 'list_site_notes' && !this._siteNoteOpenOrigins(token).has(origin)) {
+			// 開いているページの文が、別のサイトのメモを書き換えさせないように（evil.example から bank.example へ）
+			return this._toolError(`${name} only changes notes of a site open in this pane's tabs, and ${origin} is not. Open the site first, or leave the note while you are on it.`);
+		}
 		const space = await this._siteNoteSpace(ingressLease);
 		this._requireIngressLease(ingressLease);
+		if (space === undefined) {
+			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so site notes are not available here.`);
+		}
 		if (name === 'list_site_notes') {
 			return this._toolText(paradisFormatSiteNotesHint(origin, await this._siteNotes.list(space.key, origin)) ?? `No notes for ${origin} in this repository.`);
 		}
