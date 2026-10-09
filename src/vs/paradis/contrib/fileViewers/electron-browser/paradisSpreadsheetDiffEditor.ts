@@ -39,11 +39,12 @@ import { ParadisOfficeAccessibility, applyParadisOfficeChangeLegendSemantics, wi
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisDataValidation, IParadisRenderShape, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
-import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
+import type { ParadisOfficeChange, ParadisOfficeChangeCategory, ParadisOfficeChangeValue, ParadisOfficeCompletenessManifest, ParadisOfficeRenderCoverage } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -724,20 +725,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			: localize('paradis.spreadsheet.diffSearchDisabled', "検索は設定で無効になっています。"));
 		const legacyChangeSet = adaptLegacySpreadsheetInspectorChangeSet(this._diffSheets);
 		const changes = legacyChangeSet.changes;
-		const placeholders: ParadisOfficePlaceholder[] = [];
-		for (const sheet of modifiedWorkbook.sheets) {
-			for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
-				const shape = sheet.shapes![shapeIndex];
-				const name = shape.name ?? shape.shapeId ?? `${shape.type}-${shapeIndex + 1}`;
-				placeholders.push({
-					nodeId: `${sheet.name}!object:${name}`,
-					feature: `drawing.${shape.type}`,
-					reason: 'unsupported',
-					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
-					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "従来の表示方法で表示しています。"),
-				});
-			}
-		}
+		// 代替表示は、描けなかった図形（EMF などの画像・対応していないグラフや形）だけを数える。
+		const placeholders = spreadsheetUndrawnPlaceholders(modifiedWorkbook.sheets);
 		const coverages: ParadisOfficeRenderCoverage[] = changes.length > 0
 			? changes.map(change => change.certainty === 'exact' || change.certainty === 'normalized' ? 'rendered' : 'approximated')
 			: ['approximated'];
@@ -946,7 +935,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const loadSide = async (resource: URI): Promise<{ wb: IParadisWorkbookData; error?: unknown }> => {
 				try {
 					return {
-						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, undefined, totalBytes => {
+						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, totalBytes => {
 							sourceBytes += totalBytes;
 							this._probe.setBytes(sourceBytes);
 						}),
