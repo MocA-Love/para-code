@@ -115,7 +115,7 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.usage.ccusageArchiveDirs', "古い会話の記録の置き場"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.usage.ccusageArchiveDirsDesc', "外付けディスクなどへ移した記録も AI コストに含めます。中の claude と codex を読みます。複数あるときはカンマで区切ります。つながっていないときは飛ばします。"),
+		description: localize('paradis.usage.ccusageArchiveDirsDesc', "外付けやネットワークのディスクへ移した記録も AI コストに含めます。中の claude と codex を読みます。複数あるときはカンマで区切ります。つながっていない場所や、2 秒以内に確かめられない場所は飛ばします。ccusage 20.0.14 以上が必要です。"),
 		placeholder: '/Volumes/SSD/agent-archive',
 		list: true,
 	},

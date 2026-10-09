@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisWarmLeaseScheduler } from '../../../../common/paradisWarmLease.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, paradisCcusageDataEnv, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
+import { IParadisCcusageArchives, ParadisCcusageChannel, ParadisCcusageService, paradisCcusageCodexHomeEnv, paradisCcusageDataEnv, paradisCcusageProbeArchives, paradisCcusageProcessGroupOptions } from '../../node/paradisCcusageChannel.js';
 
 interface IExecResult {
 	readonly stdout?: string;
@@ -722,6 +722,7 @@ suite('ParadisCcusageService', () => {
 	});
 
 	// 外付けのディスクを抜き差ししたら、前の状態で数えた値を出し続けない（アーカイブの有無はキャッシュの鍵に入る）。
+	// 確認は裏で走り、新しい結果は次の要求から使う。
 	test('keys the cache by the archives that were read, so plugging or unplugging the disk does not serve the other state', async () => {
 		const clock = sinon.useFakeTimers({ now: INITIAL_TIME });
 		let plugged = true;
@@ -729,29 +730,60 @@ suite('ParadisCcusageService', () => {
 		const runs: (string | undefined)[] = [];
 		const execFile = ((_file: string, _args: readonly string[], options: cp.ExecFileOptions, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
 			runs.push(options.env?.CLAUDE_CONFIG_DIR);
-			callback(null, dailyOutput(plugged ? 'with-archive' : 'local-only'), '');
+			callback(null, dailyOutput(options.env?.CLAUDE_CONFIG_DIR ? 'with-archive' : 'local-only'), '');
 			return { kill: sinon.spy(() => true) } as unknown as cp.ChildProcess;
 		}) as unknown as typeof cp.execFile;
 		const configurationService = new TestConfigurationService({ 'paradis.ccusage.archiveDirs': ['/archive'] });
-		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now, undefined, true, () => plugged ? archives : { claude: [], codex: [] });
+		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now, undefined, true, async () => plugged ? archives : { claude: [], codex: [] });
 		const period = async () => {
 			const result = await service.fetchReport('daily', { executablePath: '/test/ccusage' });
-			return `${result.value[0]?.period}${result.stale ? ' (stale)' : ''}`;
+			return result.value[0]?.period;
 		};
 
 		const periods = [await period()];
 		plugged = false;
 		periods.push(await period());
 		clock.setSystemTime(INITIAL_TIME + 10_000);
-		periods.push(await period());
+		periods.push(await period(), await period());
 		plugged = true;
 		clock.setSystemTime(INITIAL_TIME + 20_000);
-		periods.push(await period());
+		periods.push(await period(), await period());
 		service.dispose();
 
 		assert.deepStrictEqual({ periods, runs: runs.map(dir => dir?.endsWith(',/archive/claude') ?? false) }, {
-			periods: ['with-archive', 'with-archive', 'local-only', 'with-archive'],
+			periods: ['with-archive', 'with-archive', 'with-archive', 'local-only', 'local-only', 'with-archive'],
 			runs: [true, false],
+		});
+	});
+
+	// 切れたネットワークのディスクで stat が返ってこなくても、要求は上限（2秒）で置き場なしとして進み、
+	// 一度確かめ終えた後は、裏の確認が止まっていても待たない。
+	test('does not let a stuck archive check hold requests beyond the probe limit', async () => {
+		const clock = sinon.useFakeTimers({ now: INITIAL_TIME });
+		const runs: (string | undefined)[] = [];
+		const execFile = ((_file: string, _args: readonly string[], options: cp.ExecFileOptions, callback: (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void) => {
+			runs.push(options.env?.CLAUDE_CONFIG_DIR);
+			callback(null, dailyOutput('local-only'), '');
+			return { kill: sinon.spy(() => true) } as unknown as cp.ChildProcess;
+		}) as unknown as typeof cp.execFile;
+		const configurationService = new TestConfigurationService({ 'paradis.ccusage.archiveDirs': ['/nas/archive'] });
+		const stuck = () => new Promise<boolean>(() => { });
+		const service = new ParadisCcusageService(new NullLogService(), configurationService, undefined, execFile, () => clock.now, undefined, true, roots => paradisCcusageProbeArchives(roots, '/home/u', stuck));
+		const fetchFirst = service.fetchReport('daily', { executablePath: '/test/ccusage' });
+		await clock.tickAsync(2_000);
+		const first = await fetchFirst;
+		clock.setSystemTime(INITIAL_TIME + 60_000);
+		const second = await service.fetchReport('daily', { executablePath: '/test/ccusage' });
+		service.dispose();
+
+		assert.deepStrictEqual({
+			first: { period: first.value[0]?.period, fetchedAt: first.fetchedAt - INITIAL_TIME },
+			second: { period: second.value[0]?.period, fetchedAt: second.fetchedAt - INITIAL_TIME },
+			runs,
+		}, {
+			first: { period: 'local-only', fetchedAt: 2_000 },
+			second: { period: 'local-only', fetchedAt: 2_000 },
+			runs: [undefined],
 		});
 	});
 });

@@ -147,7 +147,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// 読むのは手元の shared process だけ（SSH 接続中に接続先で数えるときは使わない）。既定プロファイル
 			// 以外の settings.json の値も shared process から読めるよう、execTimeoutSeconds と同じスコープにする。
 			scope: ConfigurationScope.APPLICATION_MACHINE,
-			markdownDescription: localize('paradis.ccusage.archiveDirs', "古い会話の記録を移した場所（例: 外付けディスク）の絶対パス。それぞれの下の `claude`（`projects/` を含む）と `codex`（`sessions/` を含む）を、手元の記録と一緒に使用量へ含めます。つながっていない場所は飛ばします。手元と同じ記録が重なっていても二重には数えません。SSH 接続中に接続先で数えるときは使いません。"),
+			markdownDescription: localize('paradis.ccusage.archiveDirs', "古い会話の記録を移した場所（外付けディスクやネットワークのディスク）の絶対パス。それぞれの下の `claude`（`projects/` を含む）と `codex`（`sessions/` を含む）を、手元の記録と一緒に使用量へ含めます。つながっていない場所や、2 秒以内に確かめられない場所は飛ばします。手元と同じ記録が重なっていても二重には数えません（`ccusage` 20.0.14 以上が必要です。それより古い版では二重に数えることがあります）。SSH 接続中に接続先で数えるときは使いません。"),
 		},
 	},
 });
