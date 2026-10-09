@@ -1158,8 +1158,11 @@ class WorkbookImages {
 		}
 		const bytes = await file.async('uint8array');
 		const inspected = inspectParadisWordRasterImage(bytes);
-		if (!inspected || inspected.mimeType !== declared || this.pixels + inspected.pixels > this.budget) {
+		if (!inspected || inspected.mimeType !== declared) {
 			return { reason: 'unverified' };
+		}
+		if (this.pixels + inspected.pixels > this.budget) {
+			return { reason: 'overBudget' };
 		}
 		this.pixels += inspected.pixels;
 		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;

@@ -182,14 +182,14 @@ suite('ParadisSpreadsheetDrawings', () => {
 	test('says why a picture was not drawn, and looks media up only by its own keys', () => {
 		const pic = (id: number, rid: string) => anchor(`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Picture ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${rid}"/></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`);
 		const { undrawn } = parseDrawingObjects([{
-			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString')].join('')),
+			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString'), pic(5, 'rIdMany')].join('')),
 			media: {},
-			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified' },
+			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified', rIdMany: 'overBudget' },
 		}]);
 		const placeholders = spreadsheetUndrawnPlaceholders([{ name: 'Sheet1', rows: [], columnCount: 0, columnWidths: [], truncated: false, minCol: 1, undrawnObjects: undrawn }]);
 		deepStrictEqual({ reasons: undrawn.map(object => object.reason), distinctDetails: new Set(placeholders.map(placeholder => placeholder.detail)).size }, {
-			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified'],
-			distinctDetails: 3,
+			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified', 'overBudget'],
+			distinctDetails: 4,
 		});
 	});
 

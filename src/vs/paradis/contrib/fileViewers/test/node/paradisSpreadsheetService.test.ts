@@ -100,18 +100,20 @@ suite('ParadisSpreadsheetService', () => {
 		};
 		const polyglot = Uint8Array.from([...png, ...new TextEncoder().encode('<html></html>')]);
 		const jpegNamedPng = minimalJpeg(2, 2);
-		const rejected = await new ParadisSpreadsheetService().parseWorkbook(await encode([jpegNamedPng]));
+		const reasons = async (images: readonly Uint8Array[], budget?: number) => Object.values((await new ParadisSpreadsheetService().parseWorkbook(await encode(images), budget)).drawingsBySheet?.[1]?.[0]?.rejectedMedia ?? {});
 		deepStrictEqual({
 			plain: await media([png]),
 			polyglot: await media([polyglot]),
 			mismatched: await media([jpegNamedPng]),
-			mismatchedReason: Object.values(rejected.drawingsBySheet?.[1]?.[0]?.rejectedMedia ?? {}),
+			mismatchedReason: await reasons([jpegNamedPng]),
+			overBudgetReason: await reasons([big, big], 50_000_000),
 			budget: [(await media([big, big])).length, (await media([big, big], 50_000_000)).length, (await media([big], Number.POSITIVE_INFINITY)).length],
 		}, {
 			plain: [`data:image/png:${png.byteLength}`],
 			polyglot: [`data:image/png:${png.byteLength}`],
 			mismatched: [],
 			mismatchedReason: ['unverified'],
+			overBudgetReason: ['overBudget'],
 			budget: [2, 1, 1],
 		});
 	});

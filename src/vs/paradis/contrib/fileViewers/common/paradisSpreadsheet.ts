@@ -167,8 +167,8 @@ export interface IParadisShapeGroupTransform {
 	readonly flipV?: boolean;
 }
 
-/** 画像を描かなかった理由。EMF・WMF、表示しない形式（BMP など）、中身を確かめられなかったもの。 */
-export type ParadisSpreadsheetImageRejection = 'metafile' | 'unsupportedFormat' | 'unverified';
+/** 画像を描かなかった理由。EMF・WMF、表示しない形式（BMP など）、中身を確かめられなかったもの、ブックの画素の上限を越えたもの。 */
+export type ParadisSpreadsheetImageRejection = 'metafile' | 'unsupportedFormat' | 'unverified' | 'overBudget';
 
 /** 描けなかった図形（代替表示に数える）。 */
 export interface IParadisUndrawnObject {
