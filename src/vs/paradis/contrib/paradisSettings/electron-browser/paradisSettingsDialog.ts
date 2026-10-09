@@ -782,7 +782,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.siteNotes', "（試験的）サイトのコツをメモして次のエージェントに伝える"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.siteNotesDesc', "エージェントが内蔵ブラウザで使ったサイトのコツ（入力の書式やボタンの場所など）を短いメモに残し、同じリポジトリで次にそのサイトを開いたエージェントに伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		description: localize('paradis.settings.siteNotesDesc', "エージェントが内蔵ブラウザで使ったサイトについて短いメモを残し、同じリポジトリの次のエージェントへヒントとして渡します。"),
 		keywords: 'agent browser experimental site notes memo hint',
 	},
 	{
