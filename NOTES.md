@@ -80,6 +80,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 ## Word の画像は検査を通ったものだけを描く（fileViewers、2026-10-09、Q312 A）
 
 - サニタイザ（`common/paradisOfficeSanitizer.ts`）は、PNG・JPEG・GIF のうち `common/word/paradisWordImageInspection.ts` の検査（署名・大きさ・PNG のチャンクの CRC・APNG の拒否・JPEG のセグメント・GIF のブロックとフレーム数）を通り、宣言の content type と中身が一致するものだけを元のバイトのまま渡す。画像の終わり（IEND・EOI・トレーラ）より後ろは切る。1 文書で描く画素は 1 億まで（差分は 1 文書あたり半分）
+- サニタイザ（`common/paradisOfficeSanitizer.ts`）は、大きすぎる画像と文書の画素の上限を越えた画像の代替表示の説明に `localize` を使っている（2026-10-09）。いまは renderer と shared process の中で動くので問題ないが、サニタイザを worker へ移すと、worker には NLS の表が無いため `!!! NLS MISSING` で落ちる。移すときは、説明を理由のコードだけにして、表示する側で文に直す
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
@@ -89,6 +90,9 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - renderer は表示（exceljs の投影）を出した後に、表示のために読んだバイト列をそのまま（base64 にせず）渡して解析を頼む。エディタを閉じる・読み直すと取り消しが届き、待ち行列からも worker からも外れる。チャネルは `parseWorkbook` の診断の指定を通さないので、本体のスレッドでは解析しない
 - 正規化の属性の並べ替えはコード単位の比較（`Intl.Collator` をやめた）。正規形の版（`PARADIS_OFFICE_CANONICAL_XML_VERSION`）を 2 にして、正規化した文字列の先頭に書いている。指紋は保存していないので、版が変わっても古い値と突き合わせる場所は無い
 - Word の worker（`node/word/paradisWordSemanticWorkerBackend.ts`）はまだ自前の待ち行列を持つ。同じ待ち行列へ寄せられる
+- 残課題（Excel の比較、2026-10-09）: 図形の比較（`electron-browser/paradisSpreadsheetDiff.ts` の `shapeStyleDetails`）は、文字・文字の書式・塗り・形・回転・線の矢印までを比べる。グラフの中身（系列・値・軸）、文字の余白（`insets`）、折り返し（`wrap`）、グラデーション（今は最初の色で近似して塗りとして比べている）は比べていない
+- Excel の比較の画面（`electron-browser/paradisSpreadsheetDiffEditor.ts`）は EMF・WMF の変換を頼まないので、EMF・WMF の画像は代替表示の箱のまま（2026-10-10）。ビューアは表を描いた後で worker（`node/spreadsheet/paradisSpreadsheetMetafileWorkerMain.ts`）に変換を頼み、届いたら差し替える。比較でも描くなら、左右それぞれで同じ頼み方をし、差分の図形を作り直す
+- 残課題（Excel の図形の文字、2026-10-09）: 図形の文字のランは、`rPr` に無い項目を段落の `a:pPr/a:defRPr` から引き継いでいる（`electron-browser/paradisSpreadsheetDrawings.ts` の `parseText`）。ECMA-376 Part 1 の `defRPr`（§21.1.2.3.2）は親に `pPr` を挙げ、「段落の中のランの既定。`rPr` で上書きされていない項目に使う」と書いている。LibreOffice の取り込み（oox の `TextParagraph::getCharacterStyle`）もこう解く。MS-OI29500 の `pPr`（§21.1.2.2.7）の注記には、これを打ち消す記述は無い。ただし、Excel 自身が同じかは手元で確かめられていない。PowerPoint は段落の `defRPr` を使わないという指摘もある。gcs の図形 13,325 個では、引き継いでも引き継がなくても読み取り結果は同じだった。Excel で違うと分かったら、引き継ぎを外す
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
@@ -412,6 +416,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
 
+### hook の届かないペインは Claude Code の OSC 7501 で状態を補う（2026-10-09、#318）
+
+Claude Code 2.1.295 から、端末が `OSC 7501 ; ?` に答えると作業の状態（working・blocked・done・idle・clear）を端末へ書く。Para Code はこれを hook が一度も届いていないペイン（WSL、ターミナルから ssh した先など）の状態の補助にだけ使う（`agentBrowser/common/paradisProgramStatus.ts`、`electron-browser/paradisProgramStatus.contribution.ts`）。
+
+- 出力はどのプログラムでも書けるので、問い合わせに答えるのは前面のコマンドが Claude Code か、先を確かめられない ssh・wsl などのときだけにしている
+- 前面のコマンドは、シェル統合の nonce が合ったコマンド行（`isTrusted`）と、pty が報告する前面のプロセスの題名で見分ける。出力に `OSC 633 ; E` を書くと nonce が合わなくてもコマンド行は上書きされるため、nonce の無いシェル統合のコマンド行は使わない
+- そのため、nonce の無いシェル統合（手で読み込んだ古い統合スクリプトなど）のターミナルでは、npm 版の Claude Code を見分けられない。推測: npm 版は Node のラッパーから起動するのでプロセスの題名が `node` になり、コマンド行だけが手がかりになる【要確認】。この場合は状態の補助が働かない。ネイティブ版はプロセスの題名が版の番号になるので、nonce が無くても見分けられる
+- `instance.processName` は名前を付けた端末では更新が止まるので、プロセスの題名は `processManager.onDidChangeProperty`（Title）から contribution 自身が持つ
+
 ### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
 
 Codex は信頼した hook を `~/.codex/config.toml` に `[hooks.state."<hooks.json のパス>:<イベント>:<定義の位置>:<hookの位置>"]` の鍵で記録する（手元の config.toml で確認）。以前の `paradisMergeAgentHooksJson` は自hookを毎回いったん全部外して末尾へ付け直していたため、自hookより後ろにユーザーの hook があると、設置し直すたびにユーザー側の位置がずれ、信頼が黙って外れ得た。今は既に置いてある自hookをその位置のまま最新の定義へ差し替え、まだ無いイベントだけ末尾へ足す。
@@ -553,6 +566,7 @@ SSH の接続先と Windows は今回入れていない。
 - 「前のアカウントのまま」かを決めるホームは、見つけた Codex のプロセスの `CODEX_HOME` を読めたらそれを使う（`paradisRunningCodexHome`）。読めなければそのペインを開いたときのホーム、それも無い再接続したペインは切替の直前の選択とみなす。読むのは macOS では `ps -E -ww -o uid=,command= -p <pid>`（uid が自分と同じときだけ使う。`sleep` のような OS 付属の実行ファイルは環境変数が出ないが、node・codex は出る）、Linux では `/proc/<pid>/environ`（`/proc/<pid>` の所有者が自分のときだけ）。環境変数には秘密が入りうるので、取り出すのは `CODEX_HOME` の値だけで、出力はその場で捨ててログにも出さない。Windows は読まない。`CODEX_HOME` が既定のホームと同じ場所なら既定として扱う
 - `[tui] terminal_title`（タブ名）の設定は、起動時と、ログイン済みのアカウント用ホームの顔ぶれが変わったとき（codexAccounts が全ウィンドウへ配る状態で分かる）に、新しいホームへも書く
 - 「AI コスト」（ccusage）は、Para Code が扱う全ホームを `CODEX_HOME` にカンマ区切りで渡して読ませる（`paradisCcusageCodexHomeEnv`）。ccusage 20.0.14 は、カンマ区切りの `CODEX_HOME` を全部読み、ホームの間で同じ会話を1回だけ数える（一時フォルダに会話ログを置いて実測。ハードリンクでも複製でも1回）。ホームが1つのとき（既定のホームだけ、SSH の接続先）は env を変えない。カンマを含むパスのホームは渡さない。ccusage はダッシュボードの JSON の形のために v20 を前提にしている（npx では 20.0.14 に固定）ので、それより古い版で読めるかは見ていない
+- 古い会話の記録を移した置き場（設定 `paradis.ccusage.archiveDirs`、2026-10-09、#328）は、手元の shared process だけが読む（REH は読まない）。実在する `<根>/claude`・`<根>/codex` を `CLAUDE_CONFIG_DIR`・`CODEX_HOME` の後ろに足し、読ませた置き場をキャッシュの鍵に入れる。置き場の確認（`ParadisCcusageArchiveProber`）は非同期で、根ごとに `claude/projects`・`codex/sessions`・`codex/archived_sessions` を 1 本ずつ stat し、1 本 2 秒で打ち切ってその根を「無い」とみなす。打ち切った stat は返るまで同じパスに出し直さず、返っていない stat が 2 本あればどこにも出さない（止まった stat は libuv のスレッドプールを占め続けるため）。そのため、応答しない根が 2 つあると、返るまではほかの根も読まない。要求が確認を待つのは、今の設定をまだ一度も確かめ終えていないときだけで、その待ちは最大で「根の数 × 3 本 × 2 秒」になる（遅いが 2 秒以内に返る場所が続くとき。止まった根は 2 秒で次へ進む）。確認は起動時と設定の変更時にも先に走らせるので、ふだんは待たない
 - ペインごとに「開いたときのホーム」を覚えるのは新しく開いたペインだけ（`paradisPaneTokenService.ts`）。再接続したペインにも env は入れる（main の `2deced7dc9f`。繋げずに新しいシェルを起こすときのため）が、繋げたプロセスは前回の env のまま動いているので記録しない。記録の無いペインは、切り替えの通知で「切替の直前の選択で開いたもの」とみなす。繋げずに新しいシェルを起こした復元のペインも記録されないので、起動直後の通知（返事の前に開いた数）には入らない
 
 **会話ログの共有**: 切り替えると、**切替元と切替先の2ホームの間だけ**で `sessions/YYYY/MM/DD/rollout-*.jsonl` をハードリンクし合う（`paradisCodexSessionLinker.ts`）。リンクするのは出どころ（その会話を Codex が最初に書いたホーム）がその2ホームのどちらかの会話だけで、A→B→C と切り替えても A の会話は C へ届かない。出どころは初めて見たときに「持っているホームが1つだけならそこ」と決め、分からないものはリンクしない。起動後60秒にも、最後の切替の2ホームの間で1回走る。全アカウントへ広げないのは、仕事用のホームの会話を別の組織のアカウントで `resume` すると、会話の内容がそのアカウントへ送られるため。設定 `paradis.codexAccounts.shareConversations`（既定オン）でやめられる（オフにしても、すでに共有した記録は消さない）。

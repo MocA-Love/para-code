@@ -29,8 +29,12 @@ import {
 	canonicalizeDataValidationEntries,
 	IParadisSheetData,
 	IParadisSpreadsheetService,
+	ParadisSpreadsheetImageRejection,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
+import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
+import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
+import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1103,16 +1107,140 @@ const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
 /** ブック全体で renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
 const MAX_WORKBOOK_DRAWING_XML_CHARACTERS = 32 * 1024 * 1024;
 
+/** 画素の上限の指定。有限でない・既定より大きい指定は、既定値に戻す。 */
+export function paradisSpreadsheetImagePixelBudget(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS) : PARADIS_WORD_DOCUMENT_IMAGE_PIXELS;
+}
+
+/** 拡張子が宣言する画像の種類。描くのは Word と同じく PNG・JPEG・GIF だけ（EMF・WMF・BMP・SVG などは描かずに数える）。 */
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
 	switch (ext) {
 		case 'jpg': case 'jpeg': return 'image/jpeg';
 		case 'png': return 'image/png';
 		case 'gif': return 'image/gif';
-		case 'bmp': return 'image/bmp';
-		case 'svg': return 'image/svg+xml';
-		// emf/wmf 等の Windows メタファイルはブラウザで表示できないため対象外。
 		default: return undefined;
+	}
+}
+
+/**
+ * 描く SVG の画像のバイト数の合計と枚数の上限（ブック全体）。サニタイズは shared process の本体で同期に走るので、
+ * サニタイズする前の大きさで数え、上限を越える分はサニタイズしない。1 枚の上限はサニタイザと同じ 1 MiB。
+ */
+export const PARADIS_SPREADSHEET_SVG_IMAGE_BYTES = 16 * 1024 * 1024;
+export const PARADIS_SPREADSHEET_SVG_IMAGE_COUNT = 128;
+const PARADIS_SPREADSHEET_SVG_IMAGE_EACH_BYTES = 1024 * 1024;
+
+type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
+
+function dataUrl(mimeType: string, bytes: Uint8Array): string {
+	return `data:${mimeType};base64,${Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')}`;
+}
+
+/**
+ * 図形が使う画像を、名前ごとに 1 回だけ確かめて data URL にする。
+ * - PNG・JPEG・GIF: Word と同じ検査を通し、画像の終わりで切る
+ * - BMP: 見出しを確かめ、ファイルの見出しが言う長さで切る（PNG へは変換しない）
+ * - SVG: Office の SVG のサニタイザを通す
+ * - EMF・WMF: ここでは描かない（`metafile`）。表示を返した後で worker が SVG にし、renderer が差し替える
+ * ラスターの画像はブックの画素の上限に数える。
+ */
+class WorkbookImages {
+	private readonly cache = new Map<string, Promise<WorkbookImage>>();
+	private pixels = 0;
+	private svgBytes = 0;
+	private svgCount = 0;
+	private svgOutputBytes = 0;
+
+	constructor(private readonly budget: number) { }
+
+	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
+		let result = this.cache.get(name);
+		if (!result) {
+			result = this.load(name, file);
+			this.cache.set(name, result);
+		}
+		return result;
+	}
+
+	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
+		const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+		if (extension === 'emf' || extension === 'wmf') {
+			return { reason: 'metafile' };
+		}
+		if (extension !== 'svg' && extension !== 'bmp' && !mediaMime(name)) {
+			return { reason: 'unsupportedFormat' };
+		}
+		if (!file || file.dir) {
+			return { reason: 'unverified' };
+		}
+		const bytes = await file.async('uint8array');
+		if (extension === 'svg') {
+			return this.loadSvg(name, bytes);
+		}
+		if (extension === 'bmp') {
+			const { image, rejection } = inspectParadisOfficeBmp(bytes);
+			if (!image) {
+				return { reason: rejection === 'tooLarge' ? 'tooLarge' : 'unverified' };
+			}
+			return this.takePixels(image.pixels) ? { href: dataUrl(image.mimeType, image.end < bytes.byteLength ? bytes.subarray(0, image.end) : bytes) } : { reason: 'overBudget' };
+		}
+		const declared = mediaMime(name);
+		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(bytes);
+		// 中身の形式が拡張子と食い違うものは、大きさに関係なく「確かめられなかった」にする。
+		if ((inspected?.mimeType ?? mimeType) !== declared) {
+			return { reason: 'unverified' };
+		}
+		if (rejection === 'tooLarge') {
+			return { reason: 'tooLarge' };
+		}
+		if (!inspected) {
+			return { reason: 'unverified' };
+		}
+		if (!this.takePixels(inspected.pixels)) {
+			return { reason: 'overBudget' };
+		}
+		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
+		return { href: dataUrl(inspected.mimeType, image) };
+	}
+
+	/** SVG の画像は、Office の SVG のサニタイザを通したものだけを描く。 */
+	private loadSvg(name: string, bytes: Uint8Array): WorkbookImage {
+		if (bytes.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_EACH_BYTES) {
+			return { reason: 'tooLarge' };
+		}
+		// 合計と枚数は、サニタイズの前に数える（上限を越えた分はサニタイズしない）。描けなかった分も数える。
+		if (this.svgCount >= PARADIS_SPREADSHEET_SVG_IMAGE_COUNT || this.svgBytes + bytes.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgCount++;
+		this.svgBytes += bytes.byteLength;
+		let source: string;
+		try {
+			source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		} catch {
+			return { reason: 'unverified' };
+		}
+		// サニタイザの ID は英数字と `:_-` だけなので、部品の名前を写して使う。
+		const sanitized = sanitizeOfficeSvg({ nodeId: 'spreadsheet-media', assetId: `media_${name.replace(/[^A-Za-z\d:_-]/g, '_').slice(0, 200)}`, source });
+		if (!Object.prototype.hasOwnProperty.call(sanitized, 'bytes')) {
+			return { reason: 'unverified' };
+		}
+		// サニタイザの出力は、`>` を `&gt;` に直すなどして入力より大きくなりうる。renderer へ渡す合計も上限に収める。
+		const svg = (sanitized as ParadisSanitizedSvg).bytes;
+		if (this.svgOutputBytes + svg.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgOutputBytes += svg.byteLength;
+		return { href: dataUrl('image/svg+xml', svg) };
+	}
+
+	private takePixels(pixels: number): boolean {
+		if (this.pixels + pixels > this.budget) {
+			return false;
+		}
+		this.pixels += pixels;
+		return true;
 	}
 }
 
@@ -1154,9 +1282,10 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // renderer へ渡し renderer が DOMParser で図形化する。改ページは brk の id だけ抜き出す。
 // 注意: sheetN.xml の「ファイル番号」は表示順と一致しない(workbook.xml の <sheets> 並びが表示順)。
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
-async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
+async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, imagePixelBudget = PARADIS_WORD_DOCUMENT_IMAGE_PIXELS): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const drawingXmlCharactersBySheet = new Map<number, number>();
+	const images = new WorkbookImages(imagePixelBudget);
 	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
@@ -1284,18 +1413,25 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			}
 			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
+			const rejectedMedia: { [rid: string]: ParadisSpreadsheetImageRejection } = {};
+			const metafileMedia: { [rid: string]: string } = {};
 			const charts: { [rid: string]: string } = {};
+			const workbookImages = images;
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
 			if (relsFile) {
 				for (const rel of (await relsFile.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
 					const id = rel.match(/Id="([^"]+)"/);
 					const target = rel.match(/Target="[^"]*media\/([^"]+)"/);
 					if (id && target) {
-						const mediaName = target[1];
-						const mime = mediaMime(mediaName);
-						const mediaFile = files[`xl/media/${mediaName}`];
-						if (mime && mediaFile) {
-							media[id[1]] = `data:${mime};base64,${await mediaFile.async('base64')}`;
+						const image = await workbookImages.dataUri(target[1], files[`xl/media/${target[1]}`]);
+						if (image.href !== undefined) {
+							media[id[1]] = image.href;
+						} else {
+							rejectedMedia[id[1]] = image.reason;
+							// EMF・WMF は、表示を返した後で worker が変換する。どの画像かを renderer に教える。
+							if (image.reason === 'metafile' && files[`xl/media/${target[1]}`]) {
+								metafileMedia[id[1]] = target[1];
+							}
 						}
 					}
 					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
@@ -1314,7 +1450,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			}
 			drawingXmlCharactersBySheet.set(key, sheetCharacters);
 			workbookDrawingCharacters += sheetCharacters - used;
-			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(metafileMedia).length > 0 ? { metafileMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
@@ -1327,7 +1463,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
-	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
+	async parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const source = Buffer.from(base64Content, 'base64');
@@ -1343,7 +1479,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
-		const extras = await extractXlsxExtras(buffer, runtime.JSZip);
+		const extras = await extractXlsxExtras(buffer, runtime.JSZip, paradisSpreadsheetImagePixelBudget(imagePixelBudget));
 
 		// このブックのテーマパレットを組み立てて有効化する(以降の eachSheet ループは同期なので、
 		// 並行する parseWorkbook 呼び出しがあってもループ中に差し替わることはない)。

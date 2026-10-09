@@ -14,7 +14,7 @@
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
-import type { IParadisChartData, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartData, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetImageRejection, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
 import type {
 	ParadisSpreadsheetDrawing,
 	ParadisSpreadsheetDrawingAnchor,
@@ -499,18 +499,23 @@ function parseText(shapeEl: Element, themeColors: ParadisShapeThemeColors | unde
 				continue;
 			}
 			hasText = true;
-			const rPr = xmlChild(run, 'rPr') ?? defaults;
-			const size = rPr ? intAttr(rPr, 'sz', 0) / 100 : 0;
-			const fill = rPr ? resolveFill(rPr, themeColors) : undefined;
+			// ランの rPr に無い項目は、段落の既定（a:pPr/a:defRPr）から 1 つずつ引き継ぐ。LibreOffice の取り込み（oox の
+			// TextParagraph::getCharacterStyle）と同じ解き方。Excel 自身の挙動は確かめていない（NOTES の残課題）。
+			const own = xmlChild(run, 'rPr');
+			const attribute = (name: string) => (own?.hasAttribute(name) ? xmlAttr(own, name) : defaults?.hasAttribute(name) ? xmlAttr(defaults, name) : '');
+			const size = (Number.parseInt(attribute('sz'), 10) || 0) / 100;
+			const fill = (own ? resolveFill(own, themeColors) : undefined) ?? (defaults ? resolveFill(defaults, themeColors) : undefined);
 			const color = fill && fill !== 'none' ? fill.color : fontColor && fontColor !== 'none' ? fontColor.color : undefined;
-			const latin = xmlChild(rPr, 'ea') ?? xmlChild(rPr, 'latin');
+			const latin = xmlChild(own, 'ea') ?? xmlChild(own, 'latin') ?? xmlChild(defaults, 'ea') ?? xmlChild(defaults, 'latin');
 			const font = latin ? xmlAttr(latin, 'typeface') : '';
+			const flag = (name: string) => attribute(name) === '1' || attribute(name) === 'true';
+			const underline = attribute('u');
 			runs.push({
 				text,
 				...(size > 0 ? { size } : {}),
-				...(rPr && (xmlAttr(rPr, 'b') === '1' || xmlAttr(rPr, 'b') === 'true') ? { bold: true } : {}),
-				...(rPr && (xmlAttr(rPr, 'i') === '1' || xmlAttr(rPr, 'i') === 'true') ? { italic: true } : {}),
-				...(rPr && xmlAttr(rPr, 'u') && xmlAttr(rPr, 'u') !== 'none' ? { underline: true } : {}),
+				...(flag('b') ? { bold: true } : {}),
+				...(flag('i') ? { italic: true } : {}),
+				...(underline && underline !== 'none' ? { underline: true } : {}),
 				...(color ? { color } : {}),
 				...(font && !font.startsWith('+') ? { font } : {}),
 			});
@@ -576,6 +581,7 @@ export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits
 interface ParseContext {
 	readonly limits: ParadisSpreadsheetDrawingLimits;
 	readonly media: { readonly [rid: string]: string };
+	readonly rejectedMedia?: { readonly [rid: string]: ParadisSpreadsheetImageRejection };
 	readonly charts: { readonly [rid: string]: string };
 	readonly themeColors: ParadisShapeThemeColors | undefined;
 	readonly parser: DOMParser;
@@ -738,10 +744,14 @@ function parsePicture(el: Element, box: AnchorBox, space: GroupSpace | undefined
 		return;
 	}
 	const blip = xmlChild(xmlChild(el, 'blipFill'), 'blip');
-	const href = context.media[relationshipId(blip, 'embed')];
+	// SVG の画像は、PNG の代わりの絵（blip）に加えて、拡張（asvg:svgBlip）で SVG 本体を指す。描ける方を使う。
+	const svgRid = xmlChildren(xmlChild(blip, 'extLst'), 'ext').map(ext => relationshipId(xmlChild(ext, 'svgBlip'), 'embed')).find(id => id && Object.hasOwn(context.media, id));
+	const rid = svgRid ?? relationshipId(blip, 'embed');
+	const href = Object.hasOwn(context.media, rid) ? context.media[rid] : undefined;
 	if (!href) {
-		// EMF・WMF など、表示できない形式か、見つからない画像。
-		context.undrawn.push({ kind: 'image', ...(name ? { name } : {}), from: box.from });
+		// EMF・WMF、表示しない形式、中身を確かめられなかった画像、見つからない画像。
+		const reason = context.rejectedMedia && Object.hasOwn(context.rejectedMedia, rid) ? context.rejectedMedia[rid] : 'unverified';
+		context.undrawn.push({ kind: 'image', reason, ...(name ? { name } : {}), from: box.from });
 		return;
 	}
 	const spPr = xmlChild(el, 'spPr');
@@ -917,7 +927,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 	}
 	const parser = new DOMParser();
 	const chartBudget = { points: 0, labels: 0, parsed: new Map<string, IParadisChartData | 'overLimit' | undefined>() };
-	for (const { xml, media, charts, omitted } of drawings) {
+	for (const { xml, media, rejectedMedia, charts, omitted } of drawings) {
 		if (omitted) {
 			undrawn.push({ kind: 'overLimit' });
 			continue;
@@ -929,7 +939,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		} catch {
 			continue;
 		}
-		const context: ParseContext = { limits, media, charts: charts ?? {}, themeColors, parser, shapes, undrawn, chartBudget };
+		const context: ParseContext = { limits, media, ...(rejectedMedia ? { rejectedMedia } : {}), charts: charts ?? {}, themeColors, parser, shapes, undrawn, chartBudget };
 		const visit = (el: Element) => {
 			for (const child of xmlChildren(el)) {
 				if (child.localName === 'twoCellAnchor' || child.localName === 'oneCellAnchor' || child.localName === 'absoluteAnchor') {
@@ -961,16 +971,34 @@ export function spreadsheetUndrawnPlaceholders(sheets: readonly IParadisSheetDat
 				feature: `drawing.${object.kind}`,
 				reason: 'unsupported',
 				title: object.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
-				detail: undrawnDetail(object.kind),
+				detail: undrawnDetail(object.kind, object.reason),
 			});
 		});
 	}
 	return placeholders;
 }
 
-function undrawnDetail(kind: IParadisUndrawnObject['kind']): string {
+/** 描いた後に読めなかった画像を、代替表示の項目にする。 */
+export function spreadsheetBrokenImagePlaceholders(broken: ReadonlyMap<IParadisRenderShape, string>): ParadisOfficePlaceholder[] {
+	return [...broken].map(([shape, sheetName], index) => ({
+		nodeId: `${sheetName}!object:${shape.name ?? shape.shapeId ?? `brokenImage-${index + 1}`}`,
+		feature: 'drawing.image',
+		reason: 'unsupported',
+		title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
+		detail: localize('paradis.spreadsheet.brokenImage', "画像の中身を読めなかったため、代わりの箱で表示しています。"),
+	}));
+}
+
+function undrawnDetail(kind: IParadisUndrawnObject['kind'], reason: IParadisUndrawnObject['reason']): string {
 	switch (kind) {
-		case 'image': return localize('paradis.spreadsheet.undrawnImage', "この形式の画像（EMF・WMF など）は表示できません。");
+		case 'image':
+			switch (reason) {
+				case 'metafile': return localize('paradis.spreadsheet.undrawnMetafile', "この EMF・WMF の画像は、描けない内容を含むか、上限を越えたため表示していません。");
+				case 'unsupportedFormat': return localize('paradis.spreadsheet.undrawnImageFormat', "表示できない形式の画像（TIFF など）です。");
+				case 'tooLarge': return localize('paradis.spreadsheet.undrawnImageTooLarge', "画像が大きすぎるため、表示していません。");
+				case 'overBudget': return localize('paradis.spreadsheet.undrawnImageOverBudget', "画像が多いため、表示していません。");
+				default: return localize('paradis.spreadsheet.undrawnImageUnverified', "画像の中身を確かめられなかったため、表示していません。");
+			}
 		case 'chart': return localize('paradis.spreadsheet.undrawnChart', "この種類のグラフは表示できません。");
 		case 'geometry': return localize('paradis.spreadsheet.undrawnGeometry', "この形の図形は、枠の形で近似して表示しています。");
 		case 'overLimit': return localize('paradis.spreadsheet.undrawnOverLimit', "図形が多すぎるか複雑すぎるため、表示していません。");
