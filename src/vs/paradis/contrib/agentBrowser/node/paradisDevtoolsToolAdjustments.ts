@@ -56,6 +56,8 @@ export interface IParadisPreparedDevtoolsCall {
 	readonly snapshotOffset?: number;
 	/** take_snapshot で、この uid の要素の部分木だけを返す。 */
 	readonly snapshotRoot?: string;
+	/** 子プロセスへ渡さずに、この文を道具の失敗として返す（Para Code が中で使う呼び出しを、安全に動かせないとき）。 */
+	readonly refuse?: string;
 }
 
 /** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる（他はそのまま）。 */
@@ -105,10 +107,11 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		return { args };
 	}
 	if (name === 'evaluate_script' && Object.hasOwn(args, 'paraCodeObserve') && options?.evaluateObserve !== true) {
-		// PARA-PATCH を当て忘れた vendored は知らない引数を断るので、知らないときは外す（ダイアログを閉じうる従来の評価になる）
+		// PARA-PATCH が当たっていない vendored では、従来の評価に戻さずに断る。従来の評価は dialogAction の既定が
+		// accept なので、観測のつもりで確認のダイアログを承認しうる（Q322）
 		const rest = { ...args };
 		delete rest.paraCodeObserve;
-		return { args: rest };
+		return { args: rest, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE };
 	}
 	if (name === 'wait_for') {
 		const { includeSnapshot, ...rest } = args;
@@ -211,6 +214,9 @@ export function paradisWithScriptClickHint(name: string, args: unknown, result: 
 
 /** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
 export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
+
+/** 待たない評価（`paraCodeObserve`）を vendored が知らないときに返す文。観測（paradisBrowserObserve.ts）はこれを見て止まる。 */
+export const PARADIS_OBSERVE_UNSUPPORTED_MESSAGE = 'PARA_BROWSER_OBSERVE_UNSUPPORTED: the embedded chrome-devtools-mcp cannot evaluate without its dialog handler, so Para Code did not run this observation.';
 
 /** vendored の evaluate_script のスキーマが、待たずに評価する Para Code の引数を知っているか（PARA-PATCH が当たっているか）。 */
 export function paradisEvaluateObserves(tools: readonly unknown[]): boolean {

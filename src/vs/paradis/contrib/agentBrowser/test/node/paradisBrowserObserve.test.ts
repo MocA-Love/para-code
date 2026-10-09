@@ -25,6 +25,8 @@ interface IFakeHostOptions {
 	readonly pages: readonly unknown[];
 	/** read の答え（既定は落ち着いた記録）。 */
 	readonly read?: unknown;
+	/** 待たない評価に対応していない vendored を真似る。 */
+	readonly cannotEvaluate?: boolean;
 	readonly collect?: unknown;
 	readonly downloads?: readonly ReadonlyMap<string, number>[];
 }
@@ -36,7 +38,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 	let clock = 0;
 	const host: IParadisObserveHost = {
 		evaluate: async source => {
-			const kind = source.includes('delete window[N]') ? 'collect' : source.includes('const busy') ? 'read' : 'install';
+			const kind = source.includes('const out = {') ? 'collect' : source.includes('const busy') ? 'read' : 'install';
 			calls.push(kind);
 			if (kind === 'install') {
 				return evaluateResult({ url: 'http://127.0.0.1/orders', title: 'Orders' });
@@ -55,6 +57,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 		tabs: async () => [{ tabId: 't1', url: 'http://127.0.0.1/orders', title: 'Orders', current: true, shared: false }],
 		downloads: async () => options.downloads?.[Math.min(downloadCall++, (options.downloads?.length ?? 1) - 1)],
 		isCurrent: () => true,
+		canEvaluate: () => options.cannotEvaluate !== true,
 		sleep: async ms => { clock += ms; },
 		now: () => clock,
 	};
@@ -181,6 +184,18 @@ suite('Paradis browser observe', () => {
 		assert.deepStrictEqual({ calls, report }, {
 			calls: ['list_pages', 'install', 'list_pages', 'read', 'list_pages'],
 			report: 'A JavaScript dialog is open (confirm: Delete?). Handle it with handle_dialog before anything else on this page.',
+		});
+	});
+
+	test('without the non-waiting evaluate the page is never evaluated, and only the browser state is reported', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: true, state: true };
+		const { host, calls } = fakeHost({ pages: [PAGES_ONE, PAGES_ONE], cannotEvaluate: true });
+		const before = await observer.before(host, options, 'changes', 2000);
+		const report = await observer.after(host, 'pane', options, before, 'changes', 2000);
+		assert.deepStrictEqual({ calls, report }, {
+			calls: ['list_pages', 'list_pages'],
+			report: '[Browser state]\nYour tabs: t1 (current) "Orders" http://127.0.0.1/orders',
 		});
 	});
 

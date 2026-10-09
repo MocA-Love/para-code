@@ -239,6 +239,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	/** vendored の take_snapshot が root の測り（`paraCodeRootRect`、PARA-PATCH）を知っているか。tools/list で控える。 */
 	private _measuresSnapshotRoot = false;
 	private _evaluateObserves = false;
+
+	/** vendored の evaluate_script が待たない評価（`paraCodeObserve`）を知っているか。tools/list を読むまでは false。 */
+	get evaluateObserves(): boolean {
+		return this._evaluateObserves;
+	}
 	/** 作成・後始末まで受け持つ一時フォルダ（`options.temporaryDirectory` で固定したときは無い）。 */
 	private readonly _temporaryDirectory: ParadisDevtoolsTemporaryDirectory | undefined;
 
@@ -335,6 +340,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const budgetStartedAt = now();
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
 		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot, evaluateObserve: this._evaluateObserves });
+		if (prepared.refuse !== undefined) {
+			return { content: [{ type: 'text', text: prepared.refuse }], isError: true };
+		}
 		const measuresRoot = this._isRecord(prepared.args) && prepared.args.paraCodeRootRect !== undefined;
 		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
 		const snapshotEpoch = this._snapshots.epoch(token);

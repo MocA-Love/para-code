@@ -56,7 +56,8 @@ const INSTALL_BODY = String.raw`
 	});
 	rec.mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true,
 		attributeFilter: ['disabled', 'checked', 'selected', 'value', 'hidden', 'open', 'class', 'style', 'aria-expanded', 'aria-checked', 'aria-selected', 'aria-disabled', 'aria-invalid', 'aria-pressed', 'aria-busy'] });
-	setTimeout(() => rec.mo.disconnect(), 60000);
+	// 読まれずに残った記録（道具の失敗・ダイアログ）は 60 秒で止めて消す
+	setTimeout(() => { rec.mo.disconnect(); if (window[N] === rec) { delete window[N]; } }, 60000);
 	Object.defineProperty(window, N, { value: rec, configurable: true, enumerable: false });
 `;
 

@@ -4408,39 +4408,63 @@ export class ParadisAgentBrowserService extends Disposable {
 	/**
 	 * 入力・遷移の道具を呼び、成功したら操作の後のページ（E1）とブラウザの状態（I1）を結果の末尾に添える
 	 * （paradisBrowserObserve.ts）。観測そのものの失敗は、道具の結果を変えない。
+	 *
+	 * 観測と操作は同じタブで行う。タブは最初に 1 回だけ決め、操作へは tab_id として渡す（途中で既定のタブが
+	 * 変わっても、操作だけが別のタブへ行かない）。前の観測・操作・後の観測は、そのタブの列（paradisToolCallLanes.ts）
+	 * を 1 回取ったまま続けて行う（間に同じタブへの別の呼び出しを挟まない）。手順ごとに列へ並ぶ run_steps だけは、
+	 * 操作の間は列を手放す。操作の前後でタブの共有（binding）が替わっていたら、後の観測はしない。
 	 */
 	private async _callToolObserved(ingressLease: IParadisAgentBrowserIngressLease, name: string, params: { name?: unknown; arguments?: unknown } | undefined, options: IParadisObserveOptions, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
 		const taken = paradisTakeObserveArguments(params?.arguments);
-		const call = { name, arguments: taken.rest };
 		const scoped = this._scopeToolCall(ingressLease, taken.rest);
-		if (!scoped.ok || this._bindingForKey(this._pageKeyOf(scoped.lease)) === undefined) {
-			return this._callToolInner(ingressLease, call, signal, socket);
+		const tabLease = scoped.ok ? scoped.lease : undefined;
+		const tabKey = tabLease !== undefined ? this._pageKeyOf(tabLease) : undefined;
+		const binding = tabKey !== undefined ? this._bindingForKey(tabKey) : undefined;
+		if (!scoped.ok || tabLease === undefined || tabKey === undefined || binding === undefined) {
+			return this._callToolInner(ingressLease, { name, arguments: taken.rest }, signal, socket);
 		}
-		const tabLease = scoped.lease;
+		// 操作に使うタブを固定する（tab_id を省いた呼び出しも、今決めたタブへ）
+		const restArgs = isExactRecord(taken.rest) ? taken.rest : {};
+		const call = scoped.tabId !== undefined && !Object.hasOwn(restArgs, PARADIS_TAB_ID_ARGUMENT)
+			? { name, arguments: { ...restArgs, [PARADIS_TAB_ID_ARGUMENT]: scoped.tabId } }
+			: { name, arguments: taken.rest };
 		const host = this._observeHost(ingressLease, tabLease, signal);
-		let before;
-		try {
-			before = await this._browserObserver.before(host, options, taken.observe, taken.settleMs);
-		} catch {
-			before = undefined;
+		const observeBefore = async () => {
+			try {
+				return await this._browserObserver.before(host, options, taken.observe, taken.settleMs);
+			} catch {
+				return undefined;
+			}
+		};
+		const observeAfter = async (before: Awaited<ReturnType<typeof observeBefore>>, result: unknown): Promise<unknown> => {
+			this._requireIngressLease(ingressLease);
+			if (before === undefined || this._bindingForKey(tabKey) !== binding || typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
+				return result;
+			}
+			let note: string | undefined;
+			try {
+				note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs);
+			} catch {
+				note = undefined;
+			}
+			this._requireIngressLease(ingressLease);
+			if (note === undefined) {
+				return result;
+			}
+			const typed = result as { content: unknown[] };
+			return { ...typed, content: [...typed.content, { type: 'text', text: note }] };
+		};
+		if (PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES.has(name)) {
+			// run_steps は手順ごとに列へ並ぶので、操作の間は列を持たない（持つと手順が自分を待って止まる）
+			const before = await this._toolCallLanes.run(tabKey, observeBefore, signal);
+			const result = await this._callToolInner(ingressLease, call, signal, socket);
+			return this._toolCallLanes.run(tabKey, () => observeAfter(before, result), signal);
 		}
-		const result = await this._callToolInner(ingressLease, call, signal, socket);
-		this._requireIngressLease(ingressLease);
-		if (before === undefined || typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
-			return result;
-		}
-		let note: string | undefined;
-		try {
-			note = await this._browserObserver.after(host, this._pageKeyOf(tabLease), options, before, taken.observe, taken.settleMs);
-		} catch {
-			note = undefined;
-		}
-		this._requireIngressLease(ingressLease);
-		if (note === undefined) {
-			return result;
-		}
-		const typed = result as { content: unknown[] };
-		return { ...typed, content: [...typed.content, { type: 'text', text: note }] };
+		return this._toolCallLanes.run(tabKey, async () => {
+			const before = await observeBefore();
+			const result = await this._callToolInner(ingressLease, call, signal, socket, tabKey);
+			return observeAfter(before, result);
+		}, signal);
 	}
 
 	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
@@ -4451,7 +4475,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal),
 			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal),
 			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal)),
-			network: () => this._cdpGateway.getNetworkActivity(token, 30_000),
+			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
+			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), 30_000),
 			tabs: async () => {
 				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
 					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
@@ -4484,12 +4509,17 @@ export class ParadisAgentBrowserService extends Disposable {
 				return files;
 			},
 			isCurrent: () => this.isIngressLeaseCurrent(ingressLease),
+			canEvaluate: () => this._devtoolsProxy.evaluateObserves,
 			sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 			now: () => Date.now(),
 		};
 	}
 
-	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
+	/**
+	 * @param heldLane 呼び出し元がすでに持っているタブの列の鍵（{@link _callToolObserved}）。同じ鍵の列には並び直さない
+	 * （列は入れ子にできず、並び直すと自分を待って止まる）。
+	 */
+	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket, heldLane?: string): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const name = typeof params?.name === 'string' ? params.name : undefined;
@@ -4516,7 +4546,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			const devtoolsArgs = scopedCall.args;
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
-			return this._toolCallLanes.run(this._pageKeyOf(pageLease), async () => {
+			const devtoolsLane = this._pageKeyOf(pageLease);
+			return this._runInLane(devtoolsLane, heldLane, async () => {
 				// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
 				// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
 				// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
@@ -4580,9 +4611,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (laneKey !== undefined) {
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。待つのはタブを決めた後なので、tab_id を
 			// 省いた呼び出しも、その時点の既定のタブの列に並ぶ
-			return this._toolCallLanes.run(laneKey, () => this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket), signal);
+			return this._runInLane(laneKey, heldLane, () => this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket), signal);
 		}
 		return this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket);
+	}
+
+	/** タブの列で動かす。呼び出し元がすでにその列を持っていれば、並び直さずにそのまま動かす。 */
+	private _runInLane<T>(key: string, heldLane: string | undefined, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		return key === heldLane ? operation() : this._toolCallLanes.run(key, operation, signal);
 	}
 
 	/** タブを決めた後の Para のツールの呼び出し（{@link _callToolInner} の続き）。 */

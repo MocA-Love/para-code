@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -239,13 +239,14 @@ suite('Paradis devtools tool adjustments', () => {
 			knows: [paradisEvaluateObserves([{ name: 'evaluate_script', inputSchema: { properties: { paraCodeObserve: {} } } }]), paradisEvaluateObserves([{ name: 'evaluate_script', inputSchema: { properties: {} } }])],
 			published: Object.keys((paradisAdjustDevtoolsToolDescriptor({ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' }, paraCodeObserve: { type: 'boolean' } } } }).inputSchema as { properties: object }).properties),
 			kept: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeObserve: true }, { evaluateObserve: true }).args,
-			dropped: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeObserve: true }).args,
+			refused: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeObserve: true }),
 		}, {
 			patched: [true, true],
 			knows: [true, false],
 			published: ['function'],
 			kept: { function: 'f', paraCodeObserve: true },
-			dropped: { function: 'f' },
+			// 対応していない vendored では従来の評価（ダイアログを承認しうる）に戻さず、渡さずに断る
+			refused: { args: { function: 'f' }, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE },
 		});
 	});
 });
