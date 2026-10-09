@@ -4355,6 +4355,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._requireIngressLease(ingressLease);
 		switch (rpc.method) {
 			case 'initialize': {
+				// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
+				this._siteNotesShown?.delete(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
 				const instructions: string | undefined = this._paneRemoteAuthorityOf(ingressLease.token) !== undefined
