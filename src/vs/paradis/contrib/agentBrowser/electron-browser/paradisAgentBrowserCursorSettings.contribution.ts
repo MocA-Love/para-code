@@ -9,7 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING } from '../common/paradisAgentBrowser.js';
+import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING } from '../common/paradisAgentBrowser.js';
 
 // 共通の 'paradis' セクションへプロパティを追加する（windowTransparency の設定登録と同じ id/title を
 // 再利用し、Settings UI 上は同じ「Para Code」カテゴリへマージ表示される）。
@@ -45,6 +45,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントが内蔵ブラウザで操作した結果に、使えるタブ、その操作で開いたページ、新しいダウンロード、開いているダイアログを添えます。前回と同じ内容は省きます。")
+		},
+		[PARADIS_BROWSER_SITE_NOTES_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトについて短いメモ（入力の書式やボタンの場所など）を残し、同じリポジトリで次にそのサイトを開いたエージェントへヒントとして渡します。メモはサイトとリポジトリの組ごとに、書いた日とエージェントを添えて利用者のフォルダの .para-code/browser-notes に保存します。エージェントは間違ったメモを消せます。有効にした後は、エージェントを起動し直すとメモの道具が使えます。")
 		}
 	}
 });
