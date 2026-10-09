@@ -77,6 +77,12 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
 - 残課題: 比較で、同じ文字のテキストボックスなど（同じ鍵のパーツ）は出てくる順に対応させている（`paradisWordTreeAlign.ts` の `matchBalancedStories`）。版の間で順番が入れ替わると、書式の違いが別の組に付くことがある。中身の文字が同じなので内容の変更は出ない
 
+## Word の画像は検査を通ったものだけを描く（fileViewers、2026-10-09、Q312 A）
+
+- サニタイザ（`common/paradisOfficeSanitizer.ts`）は、PNG・JPEG・GIF のうち `common/word/paradisWordImageInspection.ts` の検査（署名・大きさ・PNG のチャンクの CRC・APNG の拒否・JPEG のセグメント・GIF のブロックとフレーム数）を通り、宣言の content type と中身が一致するものだけを元のバイトのまま渡す。画像の終わり（IEND・EOI・トレーラ）より後ろは切る。1 文書で描く画素は 1 億まで（差分は 1 文書あたり半分）
+- 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
+- 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
+
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 
 - 入口は `node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.ts`（`build/next/index.ts` の `desktopEntryPoints` に載せてある）。待ち行列の守りは `node/office/paradisOfficeSemanticWorkerQueue.ts` にまとめた。Word の worker と同じく 1 件ずつ・実行と待ち行列で別の締め切り・ヒープ 384 MiB で、加えて待ち行列のバイト数の上限（60 MiB）を持ち、待ち行列があふれたときと待ちすぎたときは `busy` を返す。エディタは間を空けて 3 回まで頼み直す

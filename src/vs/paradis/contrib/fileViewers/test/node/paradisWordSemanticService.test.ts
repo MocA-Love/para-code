@@ -280,7 +280,7 @@ suite('ParadisWordSemanticService', () => {
 			deepStrictEqual({
 				notStarted, waitingResult, compareResult, comparisonWorkerTerminated: workers[0].terminated, hungResult, nextResult,
 				outOfMemory: await outOfMemory, rememberedOutOfMemory, crashed: await crashed, overBytes, overflow,
-				posted: workers.map(worker => worker.posted.map(message => message.op)),
+				posted: workers.map(worker => worker.posted.map(message => message.op === 'run' ? message.request.op : message.op)),
 			}, {
 				notStarted: 'failed', waitingResult: 'busy', compareResult: 'unsupported', comparisonWorkerTerminated: true, hungResult: 'limitExceeded', nextResult: 'invalid',
 				outOfMemory: 'limitExceeded', rememberedOutOfMemory: 'limitExceeded', crashed: 'failed', overBytes: 'busy', overflow: 'busy',

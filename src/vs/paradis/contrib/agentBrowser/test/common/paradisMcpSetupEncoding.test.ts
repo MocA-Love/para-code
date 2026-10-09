@@ -99,6 +99,7 @@ suite('Para Browser MCP setup encoding', () => {
 			'url = "http://127.0.0.1:47286/"',
 			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
 			'tool_timeout_sec = 300',
+			'supports_parallel_tool_calls = true',
 			'',
 			'[mcp_servers.other]',
 			'command = "keep"',
@@ -114,6 +115,7 @@ suite('Para Browser MCP setup encoding', () => {
 			'url = "http://127.0.0.1:4100/"',
 			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
 			'tool_timeout_sec = 300',
+			'supports_parallel_tool_calls = true',
 			'',
 		].join('\n'));
 		assert.strictEqual(paradisUpsertCodexMcpToml('model = "gpt-5"\n', 4100), [
@@ -123,6 +125,7 @@ suite('Para Browser MCP setup encoding', () => {
 			'url = "http://127.0.0.1:4100/"',
 			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
 			'tool_timeout_sec = 300',
+			'supports_parallel_tool_calls = true',
 			'',
 		].join('\n'));
 	});
