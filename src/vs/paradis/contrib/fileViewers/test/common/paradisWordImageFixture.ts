@@ -37,10 +37,11 @@ export function minimalPng(width: number, height: number, options: { readonly en
 	]);
 }
 
-export function minimalJpeg(width: number, height: number, trailer = [0xff, 0xd9]): Uint8Array {
+export function minimalJpeg(width: number, height: number, trailer = [0xff, 0xd9], app1: readonly number[] = []): Uint8Array {
 	return new Uint8Array([
 		0xff, 0xd8,
 		0xff, 0xe0, 0x00, 0x04, 0x4a, 0x46,
+		...(app1.length ? [0xff, 0xe1, (app1.length + 2) >> 8, (app1.length + 2) & 0xff, ...app1] : []),
 		0xff, 0xc0, 0x00, 0x0b, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x01, 0x01, 0x11, 0x00,
 		0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00,
 		0x12, 0xff, 0x00, 0x34,
@@ -48,12 +49,12 @@ export function minimalJpeg(width: number, height: number, trailer = [0xff, 0xd9
 	]);
 }
 
-export function minimalGif(width: number, height: number, options: { readonly frames?: number; readonly frameWidth?: number; readonly trailer?: boolean } = {}): Uint8Array {
+export function minimalGif(width: number, height: number, options: { readonly frames?: number; readonly frameWidth?: number; readonly trailer?: boolean; readonly lzwMinimumCodeSize?: number } = {}): Uint8Array {
 	const frame = (index: number) => [
 		// Graphic control extension, then an image descriptor with no local color table and one data sub-block.
 		0x21, 0xf9, 0x04, 0x00, index & 0xff, 0x00, 0x00, 0x00,
 		0x2c, 0, 0, 0, 0, (options.frameWidth ?? width) & 0xff, (options.frameWidth ?? width) >> 8, height & 0xff, height >> 8, 0x00,
-		0x02, 0x02, 0x44, 0x01, 0x00,
+		options.lzwMinimumCodeSize ?? 0x02, 0x02, 0x44, 0x01, 0x00,
 	];
 	const frames: number[] = [];
 	for (let index = 0; index < (options.frames ?? 1); index++) {

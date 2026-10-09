@@ -31,6 +31,8 @@ suite('ParadisWordImageInspection', () => {
 			gifWithoutFrames: inspectParadisWordRasterImage(minimalGif(7, 6, { frames: 0 })),
 			gifTooManyFrames: inspectParadisWordRasterImage(minimalGif(7, 6, { frames: 1_001 })),
 			gifFrameOutsideScreen: inspectParadisWordRasterImage(minimalGif(7, 6, { frameWidth: 8 })),
+			gifLzwCodeSizeZero: inspectParadisWordRasterImage(minimalGif(7, 6, { lzwMinimumCodeSize: 0 })),
+			gifLzwCodeSizeNine: inspectParadisWordRasterImage(minimalGif(7, 6, { lzwMinimumCodeSize: 9 })),
 			emptyGif: inspectParadisWordRasterImage(minimalGif(0, 6)),
 			svgNamedPng: inspectParadisWordRasterImage(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>')),
 			emf: inspectParadisWordRasterImage(emf),
@@ -49,6 +51,8 @@ suite('ParadisWordImageInspection', () => {
 			gifWithoutFrames: undefined,
 			gifTooManyFrames: undefined,
 			gifFrameOutsideScreen: undefined,
+			gifLzwCodeSizeZero: undefined,
+			gifLzwCodeSizeNine: undefined,
 			emptyGif: undefined,
 			svgNamedPng: undefined,
 			emf: undefined,
@@ -66,5 +70,12 @@ suite('ParadisWordImageInspection', () => {
 			inspectParadisWordRasterImage(Uint8Array.from([...gif, ...html]))?.end,
 			inspectParadisWordRasterImage(gif)?.pixels,
 		], [png.byteLength, jpeg.byteLength, gif.byteLength, 3 * 42]);
+	});
+
+	test('does not stop at the end marker of an EXIF thumbnail inside APP1', () => {
+		// An APP1 segment that carries its own small JPEG (FFD8 … FFD9) before the real image.
+		const thumbnail = [...new TextEncoder().encode('Exif'), 0, 0, ...minimalJpeg(1, 1)];
+		const jpeg = minimalJpeg(5, 4, [0xff, 0xd9], thumbnail);
+		deepStrictEqual(inspectParadisWordRasterImage(jpeg), { format: 'jpeg', mimeType: 'image/jpeg', width: 5, height: 4, pixels: 20, end: jpeg.byteLength });
 	});
 });

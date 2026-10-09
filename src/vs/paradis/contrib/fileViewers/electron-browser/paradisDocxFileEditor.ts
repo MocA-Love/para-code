@@ -1324,19 +1324,37 @@ export class ParadisDocxFileEditor extends EditorPane {
 		(async () => {
 			const vscode = acquireVsCodeApi();
 			const DOCX_URL = ${JSON.stringify(docxUrl)};
-			// 検査を通った画像でも、描画側で読めなかったら（img の error、decode の失敗）代わりの箱に替え、
-			// 何枚あったかをホストへ知らせる（代替表示に数える）。
+			// 検査を通った画像でも、描画側で読めなかったら代わりの箱に替え、何枚あったかをホストへ知らせる
+			// （代替表示に数える）。HTML の img と、VML の画像を描く SVG の image の両方を見る。
 			const PARADIS_BROKEN_IMAGE = ${JSON.stringify(`data:image/svg+xml;base64,${encodeBase64(VSBuffer.wrap(paradisOfficeBrokenImagePlaceholderSvg()))}`)};
+			const PARADIS_XLINK = 'http://www.w3.org/1999/xlink';
 			const paradisBrokenImageSources = new Set();
-			const replaceParadisBrokenImage = img => {
+			const paradisImageSource = el => el instanceof HTMLImageElement ? el.getAttribute('src') : el instanceof SVGImageElement ? (el.getAttribute('href') || el.getAttributeNS(PARADIS_XLINK, 'href')) : null;
+			const replaceParadisBrokenImage = el => {
 				// 対象は PNG・JPEG・GIF の中身を持つ画像だけ（base64 の先頭で見分ける）。代わりの箱の SVG などは数えない。
-				if (!(img instanceof HTMLImageElement) || img.dataset.paradisBrokenImage || !/^data:[^,]*;base64,(?:iVBOR|[/]9j[/]|R0lG)/.test(img.getAttribute('src') || '')) {
+				const source = paradisImageSource(el);
+				if (!source || el.dataset.paradisBrokenImage || !/^data:[^,]*;base64,(?:iVBOR|[/]9j[/]|R0lG)/.test(source)) {
 					return;
 				}
-				img.dataset.paradisBrokenImage = '1';
-				paradisBrokenImageSources.add(img.getAttribute('src') || '');
-				img.src = PARADIS_BROKEN_IMAGE;
+				el.dataset.paradisBrokenImage = '1';
+				paradisBrokenImageSources.add(source);
+				if (el instanceof HTMLImageElement) {
+					el.src = PARADIS_BROKEN_IMAGE;
+				} else {
+					el.removeAttributeNS(PARADIS_XLINK, 'href');
+					el.setAttribute('href', PARADIS_BROKEN_IMAGE);
+				}
 				vscode.postMessage({ type: 'paradisWordBrokenImages', generation: ${recoveryGeneration}, count: paradisBrokenImageSources.size });
+			};
+			// 読み込みを終えて幅が 0 の img は読めなかった（decode を全部に掛けると、大きな画像をまとめて展開してしまう）。
+			const checkParadisImage = img => {
+				if (img.complete) {
+					if (img.naturalWidth === 0) {
+						replaceParadisBrokenImage(img);
+					}
+				} else {
+					img.addEventListener('load', () => { if (img.naturalWidth === 0) { replaceParadisBrokenImage(img); } }, { once: true });
+				}
 			};
 			// docx-preview が描かない図形(グラフ・SmartArt 等)。本文表示のあとに送られてくる。
 			let PARADIS_WORD_OBJECTS = [];
@@ -1476,10 +1494,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 					vscode.postMessage({ type: 'paradisWordObjects', expected: PARADIS_WORD_OBJECTS.length, placed });
 				};
 				paradisDocumentRendered = true;
-				// 描画の途中（まだ文書に付いていない間）に失敗した画像は error を拾えないので、decode で確かめる。
+				// 描画の途中（まだ文書に付いていない間）に失敗した画像は error を拾えないので、読み込みの結果を見る。
 				for (const img of contentEl.querySelectorAll('img')) {
 					if (img.getAttribute('src') && !img.dataset.paradisBrokenImage) {
-						img.decode().catch(() => replaceParadisBrokenImage(img));
+						checkParadisImage(img);
 					}
 				}
 				placeParadisWordObjects();
