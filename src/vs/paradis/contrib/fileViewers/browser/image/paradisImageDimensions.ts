@@ -163,19 +163,150 @@ function icoDimensions(bytes: Uint8Array): { width: number; height: number } {
 	return best;
 }
 
-/** AVIF（ISOBMFF）: `ispe`（画像の空間的な大きさ）の箱のうち一番大きいもの。見つからなければ 0。 */
-function avifDimensions(bytes: Uint8Array): { width: number; height: number } {
-	let best = { width: 0, height: 0 };
-	const last = Math.min(bytes.byteLength - 16, 1024 * 1024);
-	for (let offset = 8; offset <= last; offset++) {
-		if (bytes[offset] === 0x69 && bytes[offset + 1] === 0x73 && bytes[offset + 2] === 0x70 && bytes[offset + 3] === 0x65) {
-			const size = { width: u32be(bytes, offset + 8), height: u32be(bytes, offset + 12) };
-			if (size.width * size.height > best.width * best.height) {
-				best = size;
+/** ISOBMFF の箱をたどるときの上限（壊れた・細工したファイルで回り続けないため）。 */
+const MAX_BOXES = 10_000;
+const MAX_BOX_DEPTH = 8;
+
+interface IsoBox {
+	readonly type: string;
+	/** 中身（ヘッダーの後ろ）の始まりと終わり。 */
+	readonly start: number;
+	readonly end: number;
+}
+
+/** `[start, end)` の中の箱を順に返す。長さが範囲をはみ出す箱が来たら undefined（壊れている）。 */
+function readIsoBoxes(bytes: Uint8Array, start: number, end: number, budget: { boxes: number }): IsoBox[] | undefined {
+	const boxes: IsoBox[] = [];
+	let offset = start;
+	while (offset + 8 <= end) {
+		if (--budget.boxes < 0) {
+			return undefined;
+		}
+		let size = u32be(bytes, offset);
+		const type = ascii(bytes, offset + 4, 4);
+		let header = 8;
+		if (size === 1) {
+			// 64 ビットの長さ。上位 32 ビットが 0 でなければ、上限（256 MiB）を超えている。
+			if (offset + 16 > end || u32be(bytes, offset + 8) !== 0) {
+				return undefined;
 			}
+			size = u32be(bytes, offset + 12);
+			header = 16;
+		} else if (size === 0) {
+			size = end - offset;
+		}
+		if (size < header || offset + size > end) {
+			return undefined;
+		}
+		boxes.push({ type, start: offset + header, end: offset + size });
+		offset += size;
+	}
+	return boxes;
+}
+
+/**
+ * AVIF（ISOBMFF）: `meta` → `iprp` → `ipco` の中の `ispe`（画像の空間的な大きさ）のうち一番大きいもの。
+ * 箱の長さで飛ばしてたどるので、ファイルのどこに `meta` があっても読む。`ispe` は必須の箱なので、
+ * 見つからなければ 0（呼び出し側で断る）。
+ */
+function avifDimensions(bytes: Uint8Array): { width: number; height: number } {
+	const none = { width: 0, height: 0 };
+	const budget = { boxes: MAX_BOXES };
+	const find = (parent: IsoBox, type: string, depth: number): IsoBox[] | undefined => {
+		if (depth > MAX_BOX_DEPTH) {
+			return undefined;
+		}
+		return readIsoBoxes(bytes, parent.start, parent.end, budget)?.filter(box => box.type === type);
+	};
+	const top = readIsoBoxes(bytes, 0, bytes.byteLength, budget);
+	const meta = top?.filter(box => box.type === 'meta');
+	if (!meta || meta.length !== 1) {
+		return none;
+	}
+	// meta は FullBox（版とフラグの 4 バイトの後ろに子の箱）。
+	const metaChildren: IsoBox = { type: 'meta', start: meta[0].start + 4, end: meta[0].end };
+	const iprp = find(metaChildren, 'iprp', 1);
+	if (!iprp || iprp.length !== 1) {
+		return none;
+	}
+	const ipco = find(iprp[0], 'ipco', 2);
+	if (!ipco || ipco.length !== 1) {
+		return none;
+	}
+	const ispe = find(ipco[0], 'ispe', 3);
+	if (!ispe || ispe.length === 0) {
+		return none;
+	}
+	let best = none;
+	for (const box of ispe) {
+		// FullBox の 4 バイトの後ろに、幅と高さが 4 バイトずつ。
+		if (box.end - box.start < 12) {
+			return none;
+		}
+		const size = { width: u32be(bytes, box.start + 4), height: u32be(bytes, box.start + 8) };
+		if (size.width * size.height > best.width * best.height) {
+			best = size;
 		}
 	}
 	return best;
+}
+
+/** GIF のサブブロック列（長さ 1 バイト + データ、長さ 0 で終わる）を飛ばした次の位置。壊れていれば undefined。 */
+function skipGifSubBlocks(bytes: Uint8Array, offset: number): number | undefined {
+	while (offset < bytes.byteLength) {
+		const length = bytes[offset];
+		offset += 1 + length;
+		if (length === 0) {
+			return offset;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * GIF: 論理画面と、すべてのフレーム（画像記述子）の右下のうち一番大きい範囲。Chromium は論理画面より
+ * 大きいフレームに合わせて画像を広げるので、論理画面だけでは足りない。フレームが 1 つも無ければ 0。
+ */
+function gifDimensions(bytes: Uint8Array): { width: number; height: number } {
+	const none = { width: 0, height: 0 };
+	if (bytes.byteLength < 13) {
+		return none;
+	}
+	let width = u16le(bytes, 6);
+	let height = u16le(bytes, 8);
+	const flags = bytes[10];
+	let offset = 13 + ((flags & 0x80) ? 3 * (1 << ((flags & 0x07) + 1)) : 0);
+	let frames = 0;
+	while (offset < bytes.byteLength) {
+		const introducer = bytes[offset];
+		if (introducer === 0x3b) {
+			break;
+		}
+		if (introducer === 0x21) {
+			// 拡張ブロック: ラベル 1 バイトの後ろにサブブロック列。
+			const next = skipGifSubBlocks(bytes, offset + 2);
+			if (next === undefined) {
+				break;
+			}
+			offset = next;
+			continue;
+		}
+		if (introducer !== 0x2c || offset + 10 > bytes.byteLength) {
+			break;
+		}
+		frames++;
+		width = Math.max(width, u16le(bytes, offset + 1) + u16le(bytes, offset + 5));
+		height = Math.max(height, u16le(bytes, offset + 3) + u16le(bytes, offset + 7));
+		const localFlags = bytes[offset + 9];
+		offset += 10 + ((localFlags & 0x80) ? 3 * (1 << ((localFlags & 0x07) + 1)) : 0);
+		// LZW の最小符号長 1 バイトと、画像データのサブブロック列。
+		const next = skipGifSubBlocks(bytes, offset + 1);
+		if (next === undefined) {
+			break;
+		}
+		offset = next;
+	}
+	return frames ? { width, height } : none;
 }
 
 /**
@@ -191,7 +322,7 @@ export function readParadisImageHeader(bytes: Uint8Array): ParadisImageDimension
 	}
 	const head = ascii(bytes, 0, 6);
 	if (head === 'GIF87a' || head === 'GIF89a') {
-		return bytes.byteLength >= 10 ? { format: 'gif', width: u16le(bytes, 6), height: u16le(bytes, 8) } : { format: 'gif', width: 0, height: 0 };
+		return { format: 'gif', ...gifDimensions(bytes) };
 	}
 	if (ascii(bytes, 0, 4) === 'RIFF' && ascii(bytes, 8, 4) === 'WEBP') {
 		return { format: 'webp', ...webpDimensions(bytes) };
@@ -212,8 +343,8 @@ export type ParadisImageDecodeVerdict = 'ok' | 'tooLarge' | 'invalid';
 
 /**
  * デコードさせてよいか。展開後の画素数が `maxPixels` を超えるもの、署名の分かる形式なのに大きさが
- * 読めないものは断る。SVG（ベクタ。<img> では表示の大きさで描く）と、大きさの箱が見つからない AVIF は、
- * バイト数の上限だけで通す。署名の分からないものは、SVG 以外は断る（Chromium もデコードできない）。
+ * 読めないもの（AVIF の `ispe` が無い、GIF にフレームが無いなども含む）は断る。SVG（ベクタ。<img> では
+ * 表示の大きさで描く）は、バイト数の上限だけで通す。署名の分からないものは、SVG 以外は断る。
  */
 export function judgeParadisImageDecode(bytes: Uint8Array, mimeType: string, maxPixels: number): ParadisImageDecodeVerdict {
 	const header = readParadisImageHeader(bytes);
@@ -221,7 +352,7 @@ export function judgeParadisImageDecode(bytes: Uint8Array, mimeType: string, max
 		return mimeType === 'image/svg+xml' ? 'ok' : 'invalid';
 	}
 	if (!header.width || !header.height) {
-		return header.format === 'avif' ? 'ok' : 'invalid';
+		return 'invalid';
 	}
 	return header.width * header.height > maxPixels ? 'tooLarge' : 'ok';
 }
