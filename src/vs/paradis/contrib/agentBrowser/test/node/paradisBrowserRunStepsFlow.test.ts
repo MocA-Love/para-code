@@ -160,6 +160,7 @@ suite('Paradis run_steps flow (E6)', () => {
 				{ tool: 'evaluate_script', args: { function: '() => document.title.includes($1.text)' } },
 				{ tool: 'wait_until', args: { predicate: '() => document.body.innerText.includes($1.text)' } },
 				{ expect: { predicate: '() => location.hash === $1.text', timeout_ms: 1000 } },
+				{ tool: 'navigate_page', args: { url: 'about:blank', initScript: 'window.lastTitle = $1.text;' } },
 				{ tool: 'fill_by', args: { name: 'Search', value: '$1.text' } },
 			],
 		});
@@ -168,6 +169,7 @@ suite('Paradis run_steps flow (E6)', () => {
 			{ function: `() => document.title.includes(${quoted})` },
 			{ predicate: `() => document.body.innerText.includes(${quoted})`, timeout_seconds: 10 },
 			{ timeout_seconds: 1, predicate: `() => location.hash === ${quoted}` },
+			{ url: 'about:blank', initScript: `window.lastTitle = ${quoted};` },
 			{ name: 'Search', value: hostile },
 		]);
 	});

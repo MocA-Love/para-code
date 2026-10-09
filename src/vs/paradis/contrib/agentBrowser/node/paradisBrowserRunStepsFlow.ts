@@ -280,11 +280,11 @@ function substituteDeep(value: unknown, scope: IScope, missing: string[]): unkno
 }
 
 /** 道具の引数のうち、ページで動くスクリプトの引数。 */
-const SCRIPT_ARGUMENTS: Readonly<Record<string, string>> = { evaluate_script: 'function', wait_until: 'predicate' };
+const SCRIPT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = { evaluate_script: ['function'], wait_until: ['predicate'], navigate_page: ['initScript'] };
 
 /** 道具の引数に参照を差し込む（スクリプトの引数は文字の値として）。 */
 export function paradisSubstituteRunStepsArgs(tool: string, args: Record<string, unknown>, scope: IScope, missing: string[]): Record<string, unknown> {
-	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool] === key && typeof value === 'string' ? substitute(value, scope, missing, true) : substituteDeep(value, scope, missing)]));
+	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool]?.includes(key) && typeof value === 'string' ? substitute(value, scope, missing, true) : substituteDeep(value, scope, missing)]));
 }
 
 // --- 実行 ----------------------------------------------------------------------------------------
@@ -590,7 +590,7 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 		+ '{"for_each": "$3.items", "steps": [...]} (repeat steps for each item; "$3.items" are the matches of a get_text with all: true at top-level step 3, or a literal list; use $item and $index inside); '
 		+ '{"repeat_until": {"disabled": {"role": "button", "name": "Next"}}, "steps": [...], "max": 20} (repeat steps until the condition holds, checked before each round; for paging). '
 		+ 'Tool arguments can refer to earlier top-level results: "$2.text" is the text of step 2 (for get_text, just the text), "$$" is a literal $. '
-		+ 'Inside scripts (the function of evaluate_script, predicates) a reference is inserted as a quoted string value, for example "() => document.title === $2.text". '
+		+ 'Inside scripts (the function of evaluate_script, initScript of navigate_page, predicates) a reference is inserted as a quoted string value, for example "() => document.title === $2.text". '
 		+ `At most ${PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED} executed steps and "max_seconds" (default ${DEFAULT_MAX_SECONDS}, keep it below your MCP client's tool timeout). Stops at the first failed step or unmet expect (unless continue_on_error). `
 		+ `Allowed tools: ${[...PARADIS_RUN_STEPS_ALLOWED_TOOLS].join(', ')}.`;
 	return {
