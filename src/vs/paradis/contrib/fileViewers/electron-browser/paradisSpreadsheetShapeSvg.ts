@@ -13,6 +13,7 @@
 import type { IParadisRenderShape, IParadisShapeText } from '../common/paradisSpreadsheet.js';
 import { PARADIS_OFFICE_BROKEN_IMAGE_HREF } from '../common/paradisOfficeBrokenImage.js';
 import { appendChartSvg } from './paradisSpreadsheetChartSvg.js';
+import { paradisShapeGeometry, type ParadisGeometryPath, type ParadisGeometryResult } from '../common/spreadsheet/paradisPresetShapeGeometry.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
@@ -55,81 +56,34 @@ export function applyShapeFrame(shape: IParadisRenderShape, anchorBox: ParadisSh
 	};
 }
 
-function adjustValue(shape: IParadisRenderShape, index: number, fallback: number): number {
-	const value = shape.adjust?.[index];
-	return value === undefined || !Number.isFinite(value) ? fallback : value;
-}
-
 function round(value: number): string {
 	return String(Math.round(value * 100) / 100);
 }
 
-/** 既定の形の道筋（SVG の d）。矩形と楕円も道筋にすると、回転や反転を同じ式で掛けられる。 */
-export function shapeGeometryPath(shape: IParadisRenderShape, box: ParadisShapeBox): { readonly fill?: string; readonly stroke: string } {
-	const { x, y, width: w, height: h } = box;
-	const ss = Math.min(w, h);
-	const n = round;
-	switch (shape.geometry) {
-		case 'ellipse': {
-			const rx = w / 2, ry = h / 2, cx = x + rx, cy = y + ry;
-			const d = `M ${n(cx - rx)} ${n(cy)} A ${n(rx)} ${n(ry)} 0 1 0 ${n(cx + rx)} ${n(cy)} A ${n(rx)} ${n(ry)} 0 1 0 ${n(cx - rx)} ${n(cy)} Z`;
-			return { fill: d, stroke: d };
-		}
-		case 'roundRect': {
-			const r = Math.min(ss * Math.max(0, Math.min(50000, adjustValue(shape, 0, 16667))) / 100000, w / 2, h / 2);
-			const d = `M ${n(x + r)} ${n(y)} L ${n(x + w - r)} ${n(y)} A ${n(r)} ${n(r)} 0 0 1 ${n(x + w)} ${n(y + r)} L ${n(x + w)} ${n(y + h - r)} A ${n(r)} ${n(r)} 0 0 1 ${n(x + w - r)} ${n(y + h)} L ${n(x + r)} ${n(y + h)} A ${n(r)} ${n(r)} 0 0 1 ${n(x)} ${n(y + h - r)} L ${n(x)} ${n(y + r)} A ${n(r)} ${n(r)} 0 0 1 ${n(x + r)} ${n(y)} Z`;
-			return { fill: d, stroke: d };
-		}
-		case 'triangle': {
-			const apex = x + w * Math.max(0, Math.min(100000, adjustValue(shape, 0, 50000))) / 100000;
-			const d = `M ${n(apex)} ${n(y)} L ${n(x + w)} ${n(y + h)} L ${n(x)} ${n(y + h)} Z`;
-			return { fill: d, stroke: d };
-		}
-		case 'rtTriangle': {
-			const d = `M ${n(x)} ${n(y)} L ${n(x)} ${n(y + h)} L ${n(x + w)} ${n(y + h)} Z`;
-			return { fill: d, stroke: d };
-		}
-		case 'diamond': {
-			const d = `M ${n(x + w / 2)} ${n(y)} L ${n(x + w)} ${n(y + h / 2)} L ${n(x + w / 2)} ${n(y + h)} L ${n(x)} ${n(y + h / 2)} Z`;
-			return { fill: d, stroke: d };
-		}
-		case 'leftBracket':
-		case 'rightBracket': {
-			// 角の丸みの縦の半径 y1 = ss * adj / 100000（adj は 0〜50000×h/ss）、横の半径は幅いっぱい。
-			const r = Math.min(h / 2, ss * Math.max(0, adjustValue(shape, 0, 8333)) / 100000);
-			const stroke = shape.geometry === 'leftBracket'
-				? `M ${n(x + w)} ${n(y + h)} A ${n(w)} ${n(r)} 0 0 1 ${n(x)} ${n(y + h - r)} L ${n(x)} ${n(y + r)} A ${n(w)} ${n(r)} 0 0 1 ${n(x + w)} ${n(y)}`
-				: `M ${n(x)} ${n(y)} A ${n(w)} ${n(r)} 0 0 1 ${n(x + w)} ${n(y + r)} L ${n(x + w)} ${n(y + h - r)} A ${n(w)} ${n(r)} 0 0 1 ${n(x)} ${n(y + h)}`;
-			return { fill: `${stroke} Z`, stroke };
-		}
-		case 'leftBrace':
-		case 'rightBrace': {
-			// 丸み r1 = ss * adj1 / 100000、先端の高さ = h * adj2 / 100000。
-			const r = Math.min(h / 4, ss * Math.max(0, adjustValue(shape, 0, 8333)) / 100000);
-			const tip = y + h * Math.max(0, Math.min(100000, adjustValue(shape, 1, 50000))) / 100000;
-			const half = w / 2;
-			const stroke = shape.geometry === 'leftBrace'
-				? `M ${n(x + w)} ${n(y)} A ${n(half)} ${n(r)} 0 0 0 ${n(x + half)} ${n(y + r)} L ${n(x + half)} ${n(tip - r)} A ${n(half)} ${n(r)} 0 0 1 ${n(x)} ${n(tip)} A ${n(half)} ${n(r)} 0 0 1 ${n(x + half)} ${n(tip + r)} L ${n(x + half)} ${n(y + h - r)} A ${n(half)} ${n(r)} 0 0 0 ${n(x + w)} ${n(y + h)}`
-				: `M ${n(x)} ${n(y)} A ${n(half)} ${n(r)} 0 0 1 ${n(x + half)} ${n(y + r)} L ${n(x + half)} ${n(tip - r)} A ${n(half)} ${n(r)} 0 0 0 ${n(x + w)} ${n(tip)} A ${n(half)} ${n(r)} 0 0 0 ${n(x + half)} ${n(tip + r)} L ${n(x + half)} ${n(y + h - r)} A ${n(half)} ${n(r)} 0 0 1 ${n(x)} ${n(y + h)}`;
-			return { fill: `${stroke} Z`, stroke };
-		}
-		case 'path': {
-			const toD = (paths: NonNullable<IParadisRenderShape['paths']>) => paths.map(path => path.d.map(([command, ...values]) => {
-				const coordinates: string[] = [];
-				for (let index = 0; index + 1 < values.length; index += 2) {
-					coordinates.push(`${n(x + values[index] * w)} ${n(y + values[index + 1] * h)}`);
-				}
-				return `${command}${coordinates.length ? ' ' + coordinates.join(' ') : ''}`;
-			}).join(' ')).join(' ');
-			const paths = shape.paths ?? [];
-			const fill = toD(paths.filter(path => path.fill));
-			return { ...(fill ? { fill } : {}), stroke: toD(paths.filter(path => path.stroke)) };
-		}
-		default: {
-			const d = `M ${n(x)} ${n(y)} L ${n(x + w)} ${n(y)} L ${n(x + w)} ${n(y + h)} L ${n(x)} ${n(y + h)} Z`;
-			return { fill: d, stroke: d };
-		}
+/**
+ * 図形の形を、DrawingML の式どおりに計算して SVG の道筋にする（既定の形 187 種と自由形状）。
+ * 計算できなければ枠の矩形。
+ */
+export function shapeGeometry(shape: IParadisRenderShape, box: ParadisShapeBox): ParadisGeometryResult {
+	const result = paradisShapeGeometry(shape.customGeometry ?? shape.geometry ?? 'rect', box, shape.adjust);
+	if (result) {
+		return result;
 	}
+	const n = round;
+	const d = `M ${n(box.x)} ${n(box.y)} L ${n(box.x + box.width)} ${n(box.y)} L ${n(box.x + box.width)} ${n(box.y + box.height)} L ${n(box.x)} ${n(box.y + box.height)} Z`;
+	return { paths: [{ d, fill: 'norm', stroke: true }] };
+}
+
+/** 塗り方（lighten・darken など）に合わせて、塗りの色を明るく・暗くする。 */
+function fillColor(color: string, mode: ParadisGeometryPath['fill']): string {
+	const factor = mode === 'darken' ? -0.4 : mode === 'darkenLess' ? -0.2 : mode === 'lighten' ? 0.4 : mode === 'lightenLess' ? 0.2 : 0;
+	const match = /^#(?<value>[0-9a-fA-F]{6})$/.exec(color);
+	if (!factor || !match?.groups) {
+		return color;
+	}
+	const value = Number.parseInt(match.groups.value, 16);
+	const channels = [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff].map(channel => factor < 0 ? channel * (1 + factor) : channel + (255 - channel) * factor);
+	return `#${channels.map(channel => Math.round(channel).toString(16).padStart(2, '0')).join('')}`;
 }
 
 /** 回転と反転（枠の中心まわり）。文字には反転を掛けない。 */
@@ -344,27 +298,45 @@ export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box:
 		appendChartSvg(group, shape.chart, box, paint.content);
 		return group;
 	}
-	const geometry = shapeGeometryPath(shape, box);
+	const geometry = shapeGeometry(shape, box);
 	const shapeGroup = doc.createElementNS(SVG_NS, 'g');
 	const transform = transformAttribute(shape, box, true);
 	if (transform) {
 		shapeGroup.setAttribute('transform', transform);
 	}
-	if (paint.content && shape.fill && geometry.fill) {
-		const fill = doc.createElementNS(SVG_NS, 'path');
-		fill.setAttribute('d', geometry.fill);
-		fill.setAttribute('fill', shape.fill);
-		if (shape.fillOpacity !== undefined) {
-			fill.setAttribute('fill-opacity', String(shape.fillOpacity));
+	// 塗りを先にすべて描き、線を後から重ねる（塗りの道筋が線の道筋を隠さないように）。
+	if (paint.content && shape.fill) {
+		for (const path of geometry.paths) {
+			if (path.fill === 'none') {
+				continue;
+			}
+			const fill = doc.createElementNS(SVG_NS, 'path');
+			fill.setAttribute('d', path.d);
+			fill.setAttribute('fill', fillColor(shape.fill, path.fill));
+			if (shape.fillOpacity !== undefined) {
+				fill.setAttribute('fill-opacity', String(shape.fillOpacity));
+			}
+			fill.setAttribute('stroke', 'none');
+			shapeGroup.appendChild(fill);
 		}
-		fill.setAttribute('stroke', 'none');
-		shapeGroup.appendChild(fill);
 	}
-	const outline = doc.createElementNS(SVG_NS, 'path');
-	outline.setAttribute('d', geometry.stroke);
-	outline.setAttribute('fill', 'none');
-	setStroke(outline, paint);
-	shapeGroup.appendChild(outline);
+	const stroked = geometry.paths.filter(path => path.stroke);
+	for (const path of stroked) {
+		const outline = doc.createElementNS(SVG_NS, 'path');
+		outline.setAttribute('d', path.d);
+		outline.setAttribute('fill', 'none');
+		setStroke(outline, paint);
+		shapeGroup.appendChild(outline);
+	}
+	// カギ線・曲線のコネクタなどの矢印は、道筋の最初と最後の向きに付ける。
+	const firstPath = stroked[0];
+	const lastPath = stroked[stroked.length - 1];
+	if (shape.headEnd && firstPath?.start) {
+		appendLineEnd(shapeGroup, shape.headEnd, firstPath.start[0], firstPath.start[1], paint);
+	}
+	if (shape.tailEnd && lastPath?.end) {
+		appendLineEnd(shapeGroup, shape.tailEnd, lastPath.end[0], lastPath.end[1], paint);
+	}
 	group.appendChild(shapeGroup);
 	if (paint.content && shape.text) {
 		const textGroup = doc.createElementNS(SVG_NS, 'g');
@@ -379,7 +351,7 @@ export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box:
 		if (rotation) {
 			textGroup.setAttribute('transform', rotation);
 		}
-		appendText(textGroup, shape.text, box);
+		appendText(textGroup, shape.text, geometry.textRect ?? box);
 		group.appendChild(textGroup);
 	}
 	return group;

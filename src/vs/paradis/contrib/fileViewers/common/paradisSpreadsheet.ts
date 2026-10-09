@@ -12,6 +12,7 @@
 // Object.assign(element.style, style) によりそのまま適用できる。
 
 import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
+import type { ParadisPresetShape } from './spreadsheet/paradisPresetShapeData.js';
 import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColor, ParadisSpreadsheetDiagonalIdentity, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
 
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
@@ -51,10 +52,10 @@ export interface IParadisRenderAnchor {
 	readonly ro: number;
 }
 
-/** 図形の形（DrawingML の prstGeom のうち描けるもの）。`path` は custGeom を `paths` で描く。 */
-export type ParadisSpreadsheetShapeGeometry =
-	| 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'rtTriangle' | 'diamond'
-	| 'leftBracket' | 'rightBracket' | 'leftBrace' | 'rightBrace' | 'path';
+/**
+ * 図形の形。既定の形（prstGeom）の名前（ST_ShapeType の 187 種）か、自由形状（custGeom）を表す `custom`。
+ */
+export type ParadisSpreadsheetShapeGeometry = string;
 
 /** 図形の中の文字の 1 区切り。大きさは pt。 */
 export interface IParadisShapeTextRun {
@@ -79,13 +80,6 @@ export interface IParadisShapeText {
 	readonly vertical?: boolean;
 	readonly insets: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number };
 	readonly wrap: boolean;
-}
-
-/** custGeom の 1 本の道筋。座標は図形の枠の中の割合（0〜1）。 */
-export interface IParadisShapePath {
-	readonly d: readonly (readonly [command: 'M' | 'L' | 'C' | 'Q' | 'Z', ...coordinates: number[]])[];
-	readonly fill: boolean;
-	readonly stroke: boolean;
 }
 
 /** データラベル（`dLbls`、ECMA-376 Part 1 §21.2.2.49）。何を出すかと、どこに置くか。 */
@@ -200,9 +194,10 @@ export interface IParadisRenderShape {
 	readonly name?: string;
 	readonly shapeId?: string;
 	readonly geometry?: ParadisSpreadsheetShapeGeometry;
-	/** 形の調整値（角丸・括弧の丸み・中括弧の先端の位置など。100000 が全体）。 */
-	readonly adjust?: readonly number[];
-	readonly paths?: readonly IParadisShapePath[];
+	/** 形の調整値（avLst。名前 → 値。角丸・括弧の丸み・矢印の太さなど）。 */
+	readonly adjust?: Readonly<Record<string, number>>;
+	/** 自由形状（custGeom）の式と道筋。既定の形の定義と同じ形にしてある。 */
+	readonly customGeometry?: ParadisPresetShape;
 	/** 塗りの色。無ければ塗らない。 */
 	readonly fill?: string;
 	/** 塗りの不透明度(0〜1)。 */
