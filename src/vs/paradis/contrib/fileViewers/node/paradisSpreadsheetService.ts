@@ -17,6 +17,7 @@ import type ExcelJS from 'exceljs';
 import type JSZip from 'jszip';
 import {
 	IParadisCellData,
+	IParadisCellComment,
 	IParadisCellRange,
 	IParadisCellStyle,
 	IParadisDataValidation,
@@ -36,6 +37,7 @@ import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PI
 import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
 import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
+import { readParadisSpreadsheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -1098,6 +1100,21 @@ interface IXlsxExtras {
 	themeColorsByName?: { [name: string]: string };
 	/** 既定フォントの最大数字幅(px)。列幅の文字数→px 換算に使う。 */
 	maxDigitWidth: number;
+	/** セルのメモとコメント(表示順キー)。 */
+	commentsBySheet: { [sheetIndex: number]: IParadisCellComment[] };
+}
+
+/** 関係の Target（相対または `/` で始まる絶対）を、ZIP の中の名前にする。 */
+function resolveXlPart(sourceDirectory: string, target: string): string {
+	const segments = target.startsWith('/') ? [] : sourceDirectory.split('/');
+	for (const segment of target.replace(/^\/+/, '').split('/')) {
+		if (segment === '..') {
+			segments.pop();
+		} else if (segment && segment !== '.') {
+			segments.push(segment);
+		}
+	}
+	return segments.join('/');
 }
 
 /** renderer へ渡すグラフの XML の上限（文字数）。超えたグラフは描かずに代替表示に数える。 */
@@ -1286,6 +1303,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const drawingXmlCharactersBySheet = new Map<number, number>();
 	const images = new WorkbookImages(imagePixelBudget);
+	const commentsBySheet: { [sheetIndex: number]: IParadisCellComment[] } = {};
 	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
@@ -1452,10 +1470,46 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			workbookDrawingCharacters += sheetCharacters - used;
 			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(metafileMedia).length > 0 ? { metafileMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
+		// セルのメモとコメント。人の名前は workbook の関係から persons を引く。
+		let personsXml: string | undefined;
+		if (wbRels) {
+			for (const rel of (await wbRels.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
+				const target = /\bType="[^"]*\/person"/.test(rel) ? rel.match(/Target="([^"]+)"/)?.[1] : undefined;
+				const file = target ? files[resolveXlPart('xl', target)] : undefined;
+				if (file) {
+					personsXml = await file.async('text');
+				}
+			}
+		}
+		for (const name of Object.keys(files)) {
+			const m = name.match(/^xl\/worksheets\/_rels\/sheet(\d+)\.xml\.rels$/);
+			if (!m || files[name].dir) {
+				continue;
+			}
+			let commentsXml: string | undefined;
+			let threadedCommentsXml: string | undefined;
+			for (const rel of (await files[name].async('text')).match(/<Relationship[^>]*>/g) ?? []) {
+				const target = rel.match(/Target="([^"]+)"/)?.[1];
+				const isComments = /\bType="[^"]*\/comments"/.test(rel);
+				const isThreaded = /\bType="[^"]*\/threadedComment"/.test(rel);
+				const file = target && (isComments || isThreaded) ? files[resolveXlPart('xl/worksheets', target)] : undefined;
+				if (file && isComments) {
+					commentsXml = await file.async('text');
+				} else if (file && isThreaded) {
+					threadedCommentsXml = await file.async('text');
+				}
+			}
+			if (commentsXml || threadedCommentsXml) {
+				const comments = readParadisSpreadsheetComments({ commentsXml, threadedCommentsXml, personsXml });
+				if (comments.length > 0) {
+					commentsBySheet[keyForFile(Number.parseInt(m[1], 10))] = comments;
+				}
+			}
+		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
 	}
-	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, dataValidationRangesBySheet, pageSetupBySheet, themeColorsByName, maxDigitWidth };
+	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, dataValidationRangesBySheet, pageSetupBySheet, themeColorsByName, maxDigitWidth, commentsBySheet };
 }
 
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
@@ -1678,6 +1732,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				...(extras.colBreaksBySheet[sheetIndex] ? { colBreaks: extras.colBreaksBySheet[sheetIndex] } : {}),
 				...(printArea ? { printArea } : {}),
 				...(pageLayout ? { pageLayout } : {}),
+				...(extras.commentsBySheet[sheetIndex]?.length ? { comments: extras.commentsBySheet[sheetIndex] } : {}),
 			});
 		});
 

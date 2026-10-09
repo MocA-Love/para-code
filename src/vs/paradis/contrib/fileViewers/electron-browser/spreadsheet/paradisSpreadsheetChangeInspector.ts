@@ -17,6 +17,7 @@ import {
 	type ParadisOfficeSearchResult,
 	type ParadisOfficeSourceDescriptor,
 } from '../../common/paradisOfficeProtocol.js';
+import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS, canShowSpreadsheetNoChanges, spreadsheetPrintWarning } from './paradisSpreadsheetDiagnostics.js';
 
 export const PARADIS_SPREADSHEET_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
@@ -292,11 +293,46 @@ function appendButton(parent: HTMLElement, label: string): HTMLButtonElement {
 	return button;
 }
 
+/** 変更点パネルに並べるメモ・コメント。 */
+export interface ParadisSpreadsheetInspectorComment {
+	readonly sheet: string;
+	readonly comment: IParadisCellComment;
+}
+
+/** 本文を、@メンションの部分だけ強調して並べる（文字だけを入れ、HTML としては読まない）。 */
+function appendCommentText(parent: HTMLElement, entry: IParadisCellCommentEntry): void {
+	const text = dom.append(parent, dom.$('div.paradis-spreadsheet-comment-text'));
+	text.style.whiteSpace = 'pre-wrap';
+	text.style.overflowWrap = 'anywhere';
+	const mentions = [...(entry.mentions ?? [])].sort((left, right) => left.start - right.start);
+	let offset = 0;
+	for (const mention of mentions) {
+		if (mention.start < offset) {
+			continue;
+		}
+		text.appendChild(parent.ownerDocument.createTextNode(entry.text.slice(offset, mention.start)));
+		const strong = dom.append(text, dom.$('strong.paradis-spreadsheet-comment-mention'));
+		strong.textContent = entry.text.slice(mention.start, mention.start + mention.length);
+		offset = mention.start + mention.length;
+	}
+	text.appendChild(parent.ownerDocument.createTextNode(entry.text.slice(offset)));
+}
+
+function formatCommentDate(value: string | undefined): string {
+	if (!value) {
+		return '';
+	}
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
 export class ParadisSpreadsheetChangeInspector extends Disposable {
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private readonly root: HTMLElement;
 	private changes: readonly ParadisOfficeChange[] = [];
 	private placeholders: readonly ParadisOfficePlaceholder[] = [];
+	private comments: readonly ParadisSpreadsheetInspectorComment[] = [];
+	private commentPage = 0;
 	private results: readonly ParadisOfficeSearchResult[] = [];
 	private completeness: ParadisOfficeCompletenessManifest | undefined;
 	private outcome: ParadisOfficeOutcome = 'degraded';
@@ -330,6 +366,13 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.announcement = changes.length === 1
 			? localize('paradis.spreadsheet.changeCountOne', "1 件の変更")
 			: localize('paradis.spreadsheet.changeCountMany', "{0} 件の変更", changes.length);
+		this.render();
+	}
+
+	/** セルのメモとスレッド形式のコメントを、本文ごと並べる。 */
+	setComments(comments: readonly ParadisSpreadsheetInspectorComment[]): void {
+		this.comments = [...comments];
+		this.commentPage = 0;
 		this.render();
 	}
 
@@ -405,7 +448,7 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		this.render();
 	}
 
-	private appendPager(parent: HTMLElement, kind: 'changes' | 'placeholders' | 'results', total: number, page: number, setPage: (page: number) => void): void {
+	private appendPager(parent: HTMLElement, kind: 'changes' | 'placeholders' | 'results' | 'comments', total: number, page: number, setPage: (page: number) => void): void {
 		const pageCount = Math.ceil(total / INSPECTOR_PAGE_SIZE);
 		if (pageCount <= 1) {
 			return;
@@ -422,6 +465,55 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 		next.disabled = page + 1 >= pageCount;
 		this.renderDisposables.add(dom.addDisposableListener(previous, dom.EventType.CLICK, () => setPage(Math.max(0, page - 1))));
 		this.renderDisposables.add(dom.addDisposableListener(next, dom.EventType.CLICK, () => setPage(Math.min(pageCount - 1, page + 1))));
+	}
+
+	private renderComments(): void {
+		const list = dom.append(this.root, dom.$('.paradis-spreadsheet-comment-list'));
+		list.setAttribute('role', 'list');
+		list.setAttribute('aria-label', localize('paradis.spreadsheet.comments', "メモとコメント"));
+		const count = dom.append(list, dom.$('span'));
+		count.textContent = localize('paradis.spreadsheet.commentCount', "メモとコメント {0} 件", this.comments.length);
+		const pageCount = Math.max(1, Math.ceil(this.comments.length / INSPECTOR_PAGE_SIZE));
+		this.commentPage = Math.min(this.commentPage, pageCount - 1);
+		for (const { sheet, comment } of this.comments.slice(this.commentPage * INSPECTOR_PAGE_SIZE, (this.commentPage + 1) * INSPECTOR_PAGE_SIZE)) {
+			const item = dom.append(list, dom.$('.paradis-spreadsheet-comment-item'));
+			item.setAttribute('role', 'listitem');
+			item.style.border = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
+			item.style.borderRadius = '2px';
+			item.style.padding = '4px 6px';
+			const locator = `${sheet}!${comment.ref}`;
+			const header = dom.append(item, dom.$('div'));
+			const button = appendButton(header, `${comment.kind === 'thread' ? localize('paradis.spreadsheet.commentThread', "コメント") : localize('paradis.spreadsheet.commentNote', "メモ")} — ${locator}`);
+			button.setAttribute('aria-label', localize('paradis.spreadsheet.navigateComment', "{0} のコメントへ移動", locator));
+			this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.navigate('change', locator)));
+			if (comment.resolved) {
+				const resolved = dom.append(header, dom.$('span.paradis-spreadsheet-comment-resolved'));
+				resolved.textContent = localize('paradis.spreadsheet.commentResolvedBadge', "解決済み");
+				resolved.style.marginLeft = '6px';
+			}
+			comment.entries.forEach((entry, index) => {
+				const block = dom.append(item, dom.$('div.paradis-spreadsheet-comment-entry'));
+				if (index > 0) {
+					block.style.marginLeft = '12px';
+					block.style.borderTop = `1px solid ${PARADIS_SPREADSHEET_HIGH_CONTRAST_TOKENS.border}`;
+					block.style.paddingTop = '3px';
+				}
+				const meta = dom.append(block, dom.$('div'));
+				const author = dom.append(meta, dom.$('strong'));
+				author.textContent = entry.author || localize('paradis.spreadsheet.commentUnknownAuthor', "（作成者不明）");
+				const date = formatCommentDate(entry.date);
+				if (date) {
+					const time = dom.append(meta, dom.$('span'));
+					time.style.marginLeft = '6px';
+					time.textContent = date;
+				}
+				appendCommentText(block, entry);
+			});
+		}
+		this.appendPager(list, 'comments', this.comments.length, this.commentPage, page => {
+			this.commentPage = page;
+			this.render();
+		});
 	}
 
 	private render(): void {
@@ -474,6 +566,10 @@ export class ParadisSpreadsheetChangeInspector extends Disposable {
 				this.changePage = page;
 				this.render();
 			});
+		}
+
+		if (this.comments.length > 0) {
+			this.renderComments();
 		}
 
 		if (this.placeholders.length > 0) {
