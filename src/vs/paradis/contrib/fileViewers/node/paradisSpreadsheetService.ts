@@ -1678,6 +1678,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				...(extras.colBreaksBySheet[sheetIndex] ? { colBreaks: extras.colBreaksBySheet[sheetIndex] } : {}),
 				...(printArea ? { printArea } : {}),
 				...(pageLayout ? { pageLayout } : {}),
+				...(pageSetup ? { pageSetup } : {}),
 			});
 		});
 
