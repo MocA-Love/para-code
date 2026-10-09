@@ -5,7 +5,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
-import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
+import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRasterMime, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
+import { inspectParadisWordRasterImage } from './word/paradisWordImageInspection.js';
 import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
 
@@ -368,6 +369,12 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		for (const name of policy.imageParts) {
 			if (policy.svgParts.has(name)) { continue; }
 			const raw = values.get(name); if (!raw) { continue; }
+			const rasterMime = policy.rasterParts.get(name);
+			if (rasterMime) {
+				const rawHash = fingerprint(raw, input.token, input.checkpoint);
+				pushPackageAsset(assets, placeholders, { id: `asset_${rawHash.value.slice(0, 32)}`, kind: 'rasterImage', mime: rasterMime, byteLength: raw.byteLength, fingerprint: rawHash });
+				continue;
+			}
 			const processed = placeholderMedia(input.nodeId, name, fingerprint(raw, input.token, input.checkpoint));
 			values.set(name, processed.bytes); pushPackageAsset(assets, placeholders, processed.asset);
 			if (!policy.hiddenImageParts.has(name)) { pushPackagePlaceholder(placeholders, processed.placeholder, assets.length); }
@@ -398,6 +405,8 @@ interface OpcPolicy {
 	readonly imageParts: Set<string>;
 	/** Image parts whose every consumer sits inside an element replaced by a placeholder: never drawn. */
 	readonly hiddenImageParts: ReadonlySet<string>;
+	/** Raster images that passed inspection and keep their original bytes. */
+	readonly rasterParts: ReadonlyMap<string, ParadisOfficeRasterMime>;
 	readonly rewrittenXml: Map<string, Uint8Array>;
 	readonly placeholders: ParadisOfficePlaceholder[];
 	readonly ignoredParts: readonly ParadisOfficeIgnoredPart[];
@@ -655,8 +664,18 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		if (values.has(relationshipPart)) { removedParts.add(relationshipPart); }
 	}
 	for (const part of removedParts) { svgParts.delete(part); imageParts.delete(part); }
+	// Q312 A: a PNG, JPEG, or GIF whose bytes pass the structural check and match its declared content
+	// type is drawn as it is. Anything else (EMF, WMF, TIFF, a mismatch) stays a substitute box.
+	const rasterParts = new Map<string, ParadisOfficeRasterMime>();
+	for (const name of imageParts) {
+		await advanceOpcAnalysis(input, state);
+		if (svgParts.has(name)) { continue; }
+		const raw = values.get(name); if (!raw) { continue; }
+		const inspected = inspectParadisWordRasterImage(raw);
+		if (inspected && inspected.mimeType === contentType(name).toLowerCase()) { rasterParts.set(name, inspected.mimeType); }
+	}
 	const retainedParts = new Set([...values.keys()].filter(name => name !== '[Content_Types].xml' && !removedParts.has(name)));
-	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name))));
+	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name) && !rasterParts.has(name))));
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	// Retained XML that no story parse covered (document properties, comment threading ...) is parsed and
 	// written again; in these rewritten parts, DOCTYPE, processing instructions, and comments do not
@@ -690,7 +709,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		...[...blockedExternal.values()].map((entry): ParadisOfficeBlockedPart => ({ feature: entry.feature, kind: entry.kind, scheme: entry.scheme, count: entry.count })),
 	].sort((left, right) => compareText(left.feature, right.feature) || compareText(left.kind, right.kind) || compareText(left.partName ?? left.scheme ?? '', right.partName ?? right.scheme ?? ''));
 	return {
-		removedParts, svgParts, imageParts, hiddenImageParts, rewrittenXml, placeholders,
+		removedParts, svgParts, imageParts, hiddenImageParts, rasterParts, rewrittenXml, placeholders,
 		ignoredParts: Object.freeze(listedIgnored.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze({ ...part, partName: displaySafePartName(part.partName) }))),
 		ignoredPartsOmitted: Math.max(0, listedIgnored.length - PARADIS_OFFICE_LISTED_PARTS_LIMIT),
 		blockedParts: Object.freeze(listedBlocked.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze(part.partName === undefined ? part : { ...part, partName: displaySafePartName(part.partName) }))),
