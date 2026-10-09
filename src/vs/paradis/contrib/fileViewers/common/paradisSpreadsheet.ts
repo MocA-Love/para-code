@@ -88,23 +88,84 @@ export interface IParadisShapePath {
 	readonly stroke: boolean;
 }
 
+/** データラベル（`dLbls`、ECMA-376 Part 1 §21.2.2.49）。何を出すかと、どこに置くか。 */
+export interface IParadisChartDataLabels {
+	readonly value: boolean;
+	readonly category: boolean;
+	readonly series: boolean;
+	readonly percent: boolean;
+	/** `dLblPos`。無ければ種類ごとの既定。 */
+	readonly position?: 'outEnd' | 'inEnd' | 'ctr' | 'inBase' | 't' | 'b' | 'l' | 'r' | 'bestFit';
+	/** 数値の書式（`numFmt`、`sourceLinked` でないもの）。 */
+	readonly formatCode?: string;
+}
+
 /** グラフの系列。 */
 export interface IParadisChartSeries {
 	readonly name?: string;
 	readonly categories: readonly string[];
 	readonly values: readonly (number | null)[];
-	/** 散布図の X。 */
+	/** 散布図・バブルの X。 */
 	readonly xValues?: readonly (number | null)[];
+	/** バブルの大きさ（`bubbleSize`）。 */
+	readonly bubbleSizes?: readonly (number | null)[];
 	readonly color?: string;
 	/** 円・ドーナツの各要素の色。 */
 	readonly pointColors?: readonly string[];
+	/** 値の保存された書式（`numCache` の `formatCode`）。軸やラベルが「元の書式に合わせる」ときに使う。 */
+	readonly formatCode?: string;
+	readonly dataLabels?: IParadisChartDataLabels;
+	/** 点に印を付けるか（折れ線・レーダー・散布図）。 */
+	readonly marker?: boolean;
 }
 
 /** グラフの 1 群（棒・折れ線など。複合グラフは群が複数）。 */
 export interface IParadisChartGroup {
-	readonly kind: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter';
+	readonly kind: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'bubble' | 'stock' | 'surface';
 	readonly grouping: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
 	readonly series: readonly IParadisChartSeries[];
+	/** この群が使う軸（`axId`、{@link IParadisChartAxis.id}）。 */
+	readonly axisIds?: readonly string[];
+	readonly dataLabels?: IParadisChartDataLabels;
+	/** レーダーの描き方（`radarStyle`）。 */
+	readonly radarStyle?: 'standard' | 'marker' | 'filled';
+	/** バブルの大きさの倍率（`bubbleScale`、%）と、大きさが表すもの（`sizeRepresents`）。 */
+	readonly bubbleScale?: number;
+	readonly bubbleSizeRepresents?: 'area' | 'w';
+	/** 株価の高値と安値を結ぶ線（`hiLowLines`）と、始値と終値の箱（`upDownBars`）の色。 */
+	readonly hiLowLines?: boolean;
+	readonly upDownBars?: { readonly up: string; readonly down: string };
+	/** 等高線の帯の色（帯の番号順）。 */
+	readonly bandColors?: readonly string[];
+	/** 3D の面を上から見た塗り分けで近似したか。 */
+	readonly surface3D?: boolean;
+}
+
+/** グラフの軸（`catAx`・`valAx`・`dateAx`・`serAx`、ECMA-376 Part 1 §21.2.2）。 */
+export interface IParadisChartAxis {
+	readonly id: string;
+	readonly kind: 'category' | 'value' | 'date' | 'series';
+	/** `axPos`（l・r・t・b）。 */
+	readonly position: 'l' | 'r' | 't' | 'b';
+	/** `delete`。消した軸は目盛りの文字を描かない（値の範囲は使う）。 */
+	readonly deleted: boolean;
+	/** `scaling` の `min`・`max`・`logBase`・`orientation`（maxMin なら反転）。 */
+	readonly min?: number;
+	readonly max?: number;
+	readonly logBase?: number;
+	readonly reversed: boolean;
+	/** `majorUnit`。 */
+	readonly majorUnit?: number;
+	/** `numFmt` の書式。`sourceLinked` なら系列の保存された書式を使う。 */
+	readonly formatCode?: string;
+	readonly sourceLinked: boolean;
+	readonly title?: string;
+	/** `majorGridlines`。 */
+	readonly gridlines: boolean;
+	/** `tickLblPos` が none でないか。 */
+	readonly tickLabels: boolean;
+	/** 相手の軸と交わる位置（`crosses`・`crossesAt`）。 */
+	readonly crosses: 'autoZero' | 'min' | 'max' | number;
 }
 
 /** グラフ（chartN.xml の保存済みの値から描く）。 */
@@ -112,6 +173,11 @@ export interface IParadisChartData {
 	readonly title?: string;
 	readonly groups: readonly IParadisChartGroup[];
 	readonly legend: boolean;
+	/** 凡例の位置（`legendPos`）。無ければ右。 */
+	readonly legendPosition?: 'r' | 'l' | 't' | 'b' | 'tr';
+	readonly axes?: readonly IParadisChartAxis[];
+	/** データラベルが多すぎて省いたか（グラフは描き、代替表示として数える）。 */
+	readonly labelsOmitted?: boolean;
 }
 
 /** シート上に描画された図形(直線コネクタ/図形/画像/グラフ)。重説等の斜線はこの直線コネクタで表現される。 */
@@ -172,8 +238,11 @@ export type ParadisSpreadsheetImageRejection = 'metafile' | 'unsupportedFormat' 
 
 /** 描けなかった図形（代替表示に数える）。 */
 export interface IParadisUndrawnObject {
-	/** `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。 */
-	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit';
+	/**
+	 * `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。`chartLabels` は、
+	 * グラフは描いたが、データラベルが多すぎて省いたもの。
+	 */
+	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit' | 'chartLabels';
 	/** 画像を描かなかった理由。 */
 	readonly reason?: ParadisSpreadsheetImageRejection;
 	readonly name?: string;
