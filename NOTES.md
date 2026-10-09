@@ -91,6 +91,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 正規化の属性の並べ替えはコード単位の比較（`Intl.Collator` をやめた）。正規形の版（`PARADIS_OFFICE_CANONICAL_XML_VERSION`）を 2 にして、正規化した文字列の先頭に書いている。指紋は保存していないので、版が変わっても古い値と突き合わせる場所は無い
 - Word の worker（`node/word/paradisWordSemanticWorkerBackend.ts`）はまだ自前の待ち行列を持つ。同じ待ち行列へ寄せられる
 - 残課題（Excel の比較、2026-10-09）: 図形の比較（`electron-browser/paradisSpreadsheetDiff.ts` の `shapeStyleDetails`）は、文字・文字の書式・塗り・形・回転・線の矢印までを比べる。グラフの中身（系列・値・軸）、文字の余白（`insets`）、折り返し（`wrap`）、グラデーション（今は最初の色で近似して塗りとして比べている）は比べていない
+- 残課題（Excel の図形の文字、2026-10-09）: 図形の文字のランは、`rPr` に無い項目を段落の `a:pPr/a:defRPr` から引き継いでいる（`electron-browser/paradisSpreadsheetDrawings.ts` の `parseText`）。ECMA-376 Part 1 の `defRPr`（§21.1.2.3.2）は親に `pPr` を挙げ、「段落の中のランの既定。`rPr` で上書きされていない項目に使う」と書いている。LibreOffice の取り込み（oox の `TextParagraph::getCharacterStyle`）もこう解く。MS-OI29500 の `pPr`（§21.1.2.2.7）の注記には、これを打ち消す記述は無い。ただし、Excel 自身が同じかは手元で確かめられていない。PowerPoint は段落の `defRPr` を使わないという指摘もある。gcs の図形 13,325 個では、引き継いでも引き継がなくても読み取り結果は同じだった。Excel で違うと分かったら、引き継ぎを外す
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
