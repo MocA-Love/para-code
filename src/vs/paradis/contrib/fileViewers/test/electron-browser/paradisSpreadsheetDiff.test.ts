@@ -286,15 +286,21 @@ suite('paradisSpreadsheetDiff', () => {
 		const byId = buildShapeDiff([named({ shapeId: '1' }), named({ shapeId: '2', ...lower })], [named({ shapeId: '2', ...lower, outlineColor: '#FF0000' }), named({ shapeId: '1' })]);
 		const byPosition = buildShapeDiff([named({}), named(lower)], [named({ ...lower, outlineColor: '#FF0000' }), named({})]);
 		const extra = buildShapeDiff([named({})], [named({}), named(lower)]);
+		// Copied shapes can share an id as well as a name: the pair that also keeps its position comes first.
+		const sharedId = buildShapeDiff([named({ shapeId: '5' }), named({ shapeId: '5', ...lower })], [named({ shapeId: '5', ...lower }), named({ shapeId: '5', outlineColor: '#FF0000' })]);
+		const many = Array.from({ length: 2_000 }, (_, index) => named({ shapeId: String(index), from: { c: 0, co: 0, r: index, ro: 0 }, to: { c: 1, co: 0, r: index + 1, ro: 0 } }));
+		const manyChanges = buildShapeDiff(many, [...many].reverse()).changes.length;
 		const summary = (diff: ReturnType<typeof buildShapeDiff>) => ({
 			original: diff.originalRenders.map(render => render.status),
 			modified: diff.modifiedRenders.map(render => render.status),
 			changes: diff.changes.map(change => [change.key, change.status]),
 		});
-		deepStrictEqual([summary(byId), summary(byPosition), summary(extra)], [
+		deepStrictEqual([summary(byId), summary(byPosition), summary(extra), summary(sharedId), manyChanges], [
 			{ original: ['unchanged', 'changed'], modified: ['changed', 'unchanged'], changes: [['Arrow#2', 'changed']] },
 			{ original: ['unchanged', 'changed'], modified: ['changed', 'unchanged'], changes: [['Arrow#2', 'changed']] },
 			{ original: ['unchanged'], modified: ['unchanged', 'added'], changes: [['Arrow#2', 'added']] },
+			{ original: ['changed', 'unchanged'], modified: ['unchanged', 'changed'], changes: [['Arrow', 'changed']] },
+			0,
 		]);
 	});
 
