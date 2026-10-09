@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -284,6 +284,47 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			nativeClaude: false,
 			ssh: false,
 			unknown: false,
+		});
+	});
+
+	test('Ctrl+Z holds the gate and fg with the same Claude Code reopens it without a new query, since Claude Code 2.1.295 does not ask again', () => {
+		let now = 0;
+		const gate = new ParadisProgramStatusGate(() => now);
+		const identity = paradisClaudeProcessIdentity('2.1.295')!;
+		const steps: [string, boolean][] = [];
+		gate.query('claude');
+		steps.push(['working before Ctrl+Z', gate.accept({ state: 'working' })]);
+		steps.push(['suspend', gate.suspend(identity)]);
+		steps.push(['state while held', gate.accept({ state: 'blocked', kind: 'permission' })]);
+		steps.push(['another program comes back', gate.resume('cat')]);
+		steps.push(['fg brings the same Claude Code back', gate.resume(identity)]);
+		steps.push(['working after fg', gate.accept({ state: 'working' })]);
+		steps.push(['suspend again', gate.suspend(identity)]);
+		now += PARADIS_PROGRAM_STATUS_WINDOW_MS + 1;
+		steps.push(['fg after the hold expired', gate.resume(identity)]);
+		gate.query('claude');
+		gate.suspend(identity);
+		steps.push(['close drops the hold', gate.close()]);
+		steps.push(['fg after close', gate.resume(identity)]);
+		assert.deepStrictEqual({
+			steps,
+			identities: ['2.1.295', '/Users/example/.local/bin/claude --resume', 'node', 'zsh', undefined].map(title => paradisClaudeProcessIdentity(title)),
+			suspendedCodes: [146, 148, 0, 1, 130, undefined].map(code => paradisIsSuspendedExitCode(code)),
+		}, {
+			steps: [
+				['working before Ctrl+Z', true],
+				['suspend', true],
+				['state while held', false],
+				['another program comes back', false],
+				['fg brings the same Claude Code back', true],
+				['working after fg', true],
+				['suspend again', true],
+				['fg after the hold expired', false],
+				['close drops the hold', false],
+				['fg after close', false],
+			],
+			identities: ['2.1.295', 'claude', undefined, undefined, undefined],
+			suspendedCodes: [true, true, false, false, false, false],
 		});
 	});
 });
