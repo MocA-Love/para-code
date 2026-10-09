@@ -70,6 +70,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - renderer は表示（docx-preview）を出した後に解析を頼み、結果はリボン・変更点パネル・検索・差分にだけ使う。表示の経路（サニタイザと docx-preview）は解析の結果を使わない
 - Web 版の Worker（`browser/paradisOfficeWebWorker.ts`）の Word の比較は、本文の木だけを比べる（スタイル・セキュリティなどの補助モデルは作らない）。デスクトップとの差として残している
 - 残課題: docx-preview 0.3.7 は、表のセルの直下にあるブロックのコンテンツコントロール（`w:tc` > `w:sdt`）の中身を描かない。手元の実文書（2 組、計 191 件）では該当 0 件のため、手を入れていない
+- 残課題: 比較で、同じ文字のテキストボックスなど（同じ鍵のパーツ）は出てくる順に対応させている（`paradisWordTreeAlign.ts` の `matchBalancedStories`）。版の間で順番が入れ替わると、書式の違いが別の組に付くことがある。中身の文字が同じなので内容の変更は出ない
 
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 

@@ -1042,12 +1042,20 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
 		}
-		// 幅が狭いとツールバーが折り返して高くなるので、比較の表示が始まる位置に合わせる。
-		if (visible && this._webviewContainer && this._webviewContainer.offsetTop > 0) {
-			this._inspectorPanel.style.top = `${this._webviewContainer.offsetTop}px`;
-		}
 		this._inspectorPanel.style.display = visible ? 'block' : 'none';
 		this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		this._alignInspectorPanel();
+	}
+
+	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端に合わせる。 */
+	private _alignInspectorPanel(): void {
+		if (!this._inspectorPanel || this._inspectorPanel.style.display === 'none' || !this._webviewContainer) {
+			return;
+		}
+		const top = this._webviewContainer.offsetTop;
+		if (top > 0) {
+			this._inspectorPanel.style.top = `${top}px`;
+		}
 	}
 
 	/**
@@ -1394,6 +1402,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._root.style.width = `${dimension.width}px`;
 			this._root.style.height = `${dimension.height}px`;
 		}
+		this._alignInspectorPanel();
 		this.setEditorVisible(dimension.width > 0 && dimension.height > 0);
 	}
 }
