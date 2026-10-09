@@ -32,7 +32,7 @@ import {
 	ParadisSpreadsheetImageRejection,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
-import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
+import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1157,7 +1157,10 @@ class WorkbookImages {
 			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
-		const inspected = inspectParadisWordRasterImage(bytes);
+		const { image: inspected, rejection } = inspectParadisWordRasterImageWithReason(bytes);
+		if (rejection === 'tooLarge') {
+			return { reason: 'tooLarge' };
+		}
 		if (!inspected || inspected.mimeType !== declared) {
 			return { reason: 'unverified' };
 		}

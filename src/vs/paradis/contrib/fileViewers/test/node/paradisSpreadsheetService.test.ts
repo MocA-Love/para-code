@@ -107,6 +107,7 @@ suite('ParadisSpreadsheetService', () => {
 			mismatched: await media([jpegNamedPng]),
 			mismatchedReason: await reasons([jpegNamedPng]),
 			overBudgetReason: await reasons([big, big], 50_000_000),
+			tooLargeReason: await reasons([minimalPng(40_000, 1)]),
 			budget: [(await media([big, big])).length, (await media([big, big], 50_000_000)).length, (await media([big], Number.POSITIVE_INFINITY)).length],
 		}, {
 			plain: [`data:image/png:${png.byteLength}`],
@@ -114,6 +115,7 @@ suite('ParadisSpreadsheetService', () => {
 			mismatched: [],
 			mismatchedReason: ['unverified'],
 			overBudgetReason: ['overBudget'],
+			tooLargeReason: ['tooLarge'],
 			budget: [2, 1, 1],
 		});
 	});
