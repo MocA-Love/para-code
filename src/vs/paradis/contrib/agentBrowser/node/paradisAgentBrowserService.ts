@@ -65,6 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
@@ -627,6 +628,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private readonly _hookReportedTokens = new Set<string>();
 	/**
+	 * hook の届いていないペインのうち、Claude Code が OSC 7501 で状態を知らせてきているもの（notePaneProgramStatus）。
+	 * ここに載っている間は、OSC が状態の出どころ。transcript から読んだターンの始まり・終わりは、届くのが遅れて
+	 * 状態を巻き戻し、完了を二度数えるので反映しない。clear（CLI の終了）・hook の到着・ペインの終了で外れる。
+	 */
+	private readonly _programStatusTokens = new Set<string>();
+	/** OSC 7501 の状態を受けた時刻（ペインごとの直近 1 秒分）。速すぎる書き換えを断る。 */
+	private readonly _programStatusTimes = new Map<string, number[]>();
+	/**
 	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
 	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
 	 * 信用しない（Enter を送らない）。確かめた hook が来たら外す。
@@ -898,7 +907,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);
-			if (ingressLease === undefined) {
+			if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 				return;
 			}
 			if (this.isIngressLeaseCurrent(ingressLease)) {
@@ -928,7 +937,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		//    「完了 → 実行中」への補正 (tail はポーリング分だけ hook より遅れることがある)
 		this._register(onParadisAgentPaneActivity(({ token, activity }) => {
 			const ingressLease = this.captureIngressLease(token);
-			if (ingressLease === undefined) {
+			if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 				return;
 			}
 			const entry = this._paneStatuses.get(token);
@@ -1506,6 +1515,59 @@ export class ParadisAgentBrowserService extends Disposable {
 		return true;
 	}
 
+	/**
+	 * ペインの Claude Code が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
+	 * paradisProgramStatus.contribution.ts）。hook が届いていないペイン（WSL・手で ssh した先など）の状態の補助に
+	 * だけ使い、hook が一度でも届いたペインでは何もしない。状態を書き換えたら true。
+	 */
+	async notePaneProgramStatus(connection: object, token: string, value: unknown): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token)) {
+			return false;
+		}
+		const status = paradisCopyProgramStatus(value);
+		const ingressLease = this.captureIngressLease(token);
+		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
+			return false;
+		}
+		const now = Date.now();
+		// renderer でも間引いているが、ここでも 1 秒に数回までにする（renderer 以外の呼び出しや不具合で IPC が続いても状態を振らない）
+		const times = (this._programStatusTimes.get(token) ?? []).filter(at => now - at < 1000);
+		if (status.state !== 'clear' && times.length >= PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND) {
+			this._programStatusTimes.set(token, times);
+			return false;
+		}
+		times.push(now);
+		this._programStatusTimes.set(token, times);
+		const next = paradisProgramStatusToAgentStatus(status);
+		const previous = this._paneStatuses.get(token);
+		// hook の実績（_agentHookTokens・_hookReportedTokens）には混ぜず、別の印で持つ
+		if (status.state === 'clear') {
+			this._programStatusTokens.delete(token);
+			this._programStatusTimes.delete(token);
+		} else {
+			this._programStatusTokens.add(token);
+		}
+		if (next === 'idle') {
+			return this._paneStatuses.delete(token);
+		}
+		if (next === 'review') {
+			if (previous?.status === 'review') {
+				return false;
+			}
+			this._paneStatuses.set(token, this._reviewEntry(token, now, previous?.cwd));
+			return true;
+		}
+		if (previous?.status === next) {
+			return false;
+		}
+		// 待ちや完了の後でない working は、新しいターンの始まり（完了の知らせを同じターンで二度出さないための印）
+		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
+			this._userTurnStarts.set(token, now);
+		}
+		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
+		return true;
+	}
+
 	private _validateProjectedShellPids(windowCtx: string, manifest: IParadisBindingAuthorityManifest): void {
 		const projected = new Map(this._paneShells);
 		const retiringTokensByPid = new Map<number, Set<string>>();
@@ -1865,7 +1927,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private _settlePaneTurnEnded(token: string, at: number, cause: ParadisAgentTurnEndCause): void {
 		const ingressLease = this.captureIngressLease(token);
-		if (ingressLease === undefined) {
+		if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 			return;
 		}
 		const entry = this._paneStatuses.get(token);
@@ -1893,7 +1955,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private _settlePaneAwaitingUser(token: string, includeQuestion: boolean = false): void {
 		const ingressLease = this.captureIngressLease(token);
-		if (ingressLease === undefined) {
+		if (ingressLease === undefined || this._programStatusTokens.has(token)) {
 			return;
 		}
 		const entry = this._paneStatuses.get(token);
@@ -1923,6 +1985,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._awaitingUserTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
+		this._programStatusTokens.delete(token);
+		this._programStatusTimes.delete(token);
 		this._replayedPrompts.delete(token);
 		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
@@ -3923,6 +3987,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				} else {
 					this._agentHookTokens.add(token);
 					this._hookReportedTokens.add(token);
+					// hook が届くペインは hook が正本（OSC 7501 の状態は使わない）
+					this._programStatusTokens.delete(token);
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);
