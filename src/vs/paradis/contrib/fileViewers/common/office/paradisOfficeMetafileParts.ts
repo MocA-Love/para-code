@@ -11,12 +11,18 @@
 // 今までどおり代替表示の箱にする）。返す SVG は変換器が組み立てたもので、表示は `<img>`（data URL）か SVG の
 // `<image>` に入れる形に限る（インラインの SVG として DOM に差し込まない）。
 
-import { convertParadisOfficeMetafile, sniffParadisOfficeMetafile, type ParadisOfficeMetafileFormat, type ParadisOfficeMetafileResult } from './paradisOfficeMetafile.js';
+import { convertParadisOfficeMetafile, PARADIS_OFFICE_METAFILE_LIMITS, sniffParadisOfficeMetafile, type ParadisOfficeMetafileFormat, type ParadisOfficeMetafileResult } from './paradisOfficeMetafile.js';
 
 /** 1 枚の SVG のバイト数の上限。 */
 export const PARADIS_OFFICE_METAFILE_IMAGE_BYTES = 4 * 1024 * 1024;
 /** 1 文書で変換する SVG のバイト数の合計の上限。 */
 export const PARADIS_OFFICE_METAFILE_DOCUMENT_BYTES = 32 * 1024 * 1024;
+/**
+ * 1 文書で変換にかける仕事の上限（読んだ入力のバイト数と記録の数）。描けなかった画像も数える
+ * （上限の直前で失敗する画像を並べられても、文書の手間が増え続けないように）。
+ */
+export const PARADIS_OFFICE_METAFILE_DOCUMENT_INPUT_BYTES = 64 * 1024 * 1024;
+export const PARADIS_OFFICE_METAFILE_DOCUMENT_RECORDS = 1_000_000;
 
 const CONTENT_TYPES = new Map<string, ParadisOfficeMetafileFormat>([
 	['image/x-emf', 'emf'], ['image/emf', 'emf'], ['image/x-wmf', 'wmf'], ['image/wmf', 'wmf'],
@@ -39,6 +45,10 @@ export interface ParadisOfficeMetafilePartsOptions {
 	readonly checkpoint?: () => void | Promise<void>;
 	/** 変換した SVG の合計のバイト数の上限。既定は 32 MiB。 */
 	readonly documentBytes?: number;
+	/** 変換に読む入力のバイト数の合計の上限。既定は 64 MiB。 */
+	readonly inputBytes?: number;
+	/** 変換で読む記録の数の合計の上限。既定は 100 万件。 */
+	readonly records?: number;
 	/**
 	 * この時刻（`Date.now()` の値）を過ぎたら、変換をやめる。変換中の画像も、残りの画像も変換しない
 	 * （箱のまま）。文書全体の締め切りより前に置き、画像のために文書の表示が止まらないようにする。
@@ -60,22 +70,30 @@ export async function convertParadisOfficeMetafileParts(parts: Iterable<ParadisO
 		await options.checkpoint?.();
 	};
 	let total = 0;
+	let inputBytes = options.inputBytes ?? PARADIS_OFFICE_METAFILE_DOCUMENT_INPUT_BYTES;
+	let records = options.records ?? PARADIS_OFFICE_METAFILE_DOCUMENT_RECORDS;
 	const encoder = new TextEncoder();
 	for (const part of parts) {
 		const declared = paradisOfficeMetafileContentType(part.contentType);
 		if (!declared || sniffParadisOfficeMetafile(part.bytes) !== declared) {
 			continue;
 		}
+		// 仕事の上限を使い切ったら、残りの部品は変換しない（箱のまま）。
+		if (part.bytes.byteLength > inputBytes || records <= 0) {
+			break;
+		}
+		inputBytes -= part.bytes.byteLength;
 		let result: ParadisOfficeMetafileResult;
 		try {
 			await checkpoint();
-			result = await convertParadisOfficeMetafile(part.bytes, { checkpoint });
+			result = await convertParadisOfficeMetafile(part.bytes, { checkpoint, limits: { records: Math.min(PARADIS_OFFICE_METAFILE_LIMITS.records, records) } });
 		} catch (error) {
 			if (error instanceof MetafileDeadline) {
 				break;
 			}
 			throw error;
 		}
+		records -= result.records;
 		if (!result.ok) {
 			continue;
 		}

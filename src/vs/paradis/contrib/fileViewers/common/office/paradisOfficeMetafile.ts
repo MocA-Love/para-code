@@ -25,6 +25,7 @@ import {
 	ParadisMetafilePathBuilder,
 	ParadisMetafileSvgCanvas,
 	ParadisOfficeMetafileStop,
+	PARADIS_METAFILE_CLIP_DEPTH,
 	type ParadisMetafileBitmap,
 	type ParadisMetafileClip,
 	type ParadisMetafileColor,
@@ -80,6 +81,8 @@ export type ParadisOfficeMetafileResult =
 		readonly reason: 'notMetafile' | 'unsupported' | 'malformed' | 'limitExceeded';
 		/** 記録の名前などの決まった語。文書の中身は入れない。 */
 		readonly detail: string;
+		/** 止まるまでに読んだ記録の数（文書ごとの仕事の上限に数える）。 */
+		readonly records: number;
 	};
 
 export interface ParadisOfficeMetafileOptions {
@@ -107,20 +110,21 @@ export async function convertParadisOfficeMetafile(bytes: Uint8Array, options: P
 	const limits: ParadisOfficeMetafileLimits = { ...PARADIS_OFFICE_METAFILE_LIMITS, ...options.limits };
 	const format = sniffParadisOfficeMetafile(bytes);
 	if (!format) {
-		return { ok: false, reason: 'notMetafile', detail: 'signature' };
+		return { ok: false, reason: 'notMetafile', detail: 'signature', records: 0 };
 	}
 	if (bytes.byteLength > limits.bytes) {
-		return { ok: false, format, reason: 'limitExceeded', detail: 'bytes' };
+		return { ok: false, format, reason: 'limitExceeded', detail: 'bytes', records: 0 };
 	}
+	const progress = { records: 0 };
 	try {
-		const converted = format === 'emf' ? await convertEmf(bytes, limits, options.checkpoint) : await convertWmf(bytes, limits, options.checkpoint);
+		const converted = format === 'emf' ? await convertEmf(bytes, limits, options.checkpoint, progress) : await convertWmf(bytes, limits, options.checkpoint, progress);
 		return { ok: true, format, ...converted };
 	} catch (error) {
 		if (error instanceof ParadisOfficeMetafileStop) {
-			return { ok: false, format, reason: error.reason, detail: error.detail };
+			return { ok: false, format, reason: error.reason, detail: error.detail, records: progress.records };
 		}
 		if (error instanceof RangeError) {
-			return { ok: false, format, reason: 'malformed', detail: 'range' };
+			return { ok: false, format, reason: 'malformed', detail: 'range', records: progress.records };
 		}
 		throw error;
 	}
@@ -194,6 +198,7 @@ class GdiInterpreter {
 	private path: ParadisMetafilePathBuilder | undefined;
 	private inPath = false;
 	private completedPath: ParadisMetafilePathBuilder | undefined;
+	private nextClipId = 0;
 
 	constructor(private readonly limits: ParadisOfficeMetafileLimits, private readonly mapping: (state: DcState) => ParadisMetafileMatrix) {
 		this.canvas = new ParadisMetafileSvgCanvas(limits);
@@ -296,12 +301,13 @@ class GdiInterpreter {
 		this.combineClip({ d, rule: this.fillRule }, mode);
 	}
 
-	combineClip(clip: ParadisMetafileClip | undefined, mode: number): void {
+	/** 切り抜きを組み合わせる。`clip` が無い RGN_COPY は切り抜きを外す。 */
+	combineClip(clip: Omit<ParadisMetafileClip, 'id'> | undefined, mode: number): void {
 		if (mode === 5) { // RGN_COPY
-			this.state.clip = clip ? [clip] : [];
+			this.state.clip = clip ? [this.makeClip(clip)] : [];
 		} else if (mode === 1) { // RGN_AND
 			if (clip) {
-				this.state.clip = [...this.state.clip, clip];
+				this.state.clip = this.intersect(this.state.clip, clip);
 			}
 		} else {
 			throw new ParadisOfficeMetafileStop('unsupported', 'clipMode');
@@ -309,9 +315,40 @@ class GdiInterpreter {
 	}
 
 	intersectClipRect(left: number, top: number, right: number, bottom: number): void {
+		this.combineClip(this.rectClip(left, top, right, bottom), 1);
+	}
+
+	/** 論理の座標の矩形の切り抜き。写した先が軸に沿っていれば、矩形として持つ。 */
+	private rectClip(left: number, top: number, right: number, bottom: number): Omit<ParadisMetafileClip, 'id'> {
+		const matrix = this.matrix;
+		const [x0, y0] = this.device([left, top], matrix);
+		const [x1, y1] = this.device([right, bottom], matrix);
+		if (Math.abs(matrix.b) < 1e-9 && Math.abs(matrix.c) < 1e-9) {
+			return rectangleClip([Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)]);
+		}
 		const builder = new ParadisMetafilePathBuilder(this.canvas);
 		this.addPolygon(builder, [[left, top], [right, top], [right, bottom], [left, bottom]]);
-		this.combineClip({ d: builder.toString(), rule: 'nonzero' }, 1);
+		return { d: builder.toString(), rule: 'nonzero' };
+	}
+
+	/** 鎖に交わりを足す。矩形どうしは 1 つの矩形に畳む。鎖の長さには上限がある。 */
+	private intersect(chain: readonly ParadisMetafileClip[], clip: Omit<ParadisMetafileClip, 'id'>): readonly ParadisMetafileClip[] {
+		const last = chain[chain.length - 1];
+		if (last?.rect && clip.rect) {
+			const [a, b] = [last.rect, clip.rect];
+			const left = Math.max(a[0], b[0]);
+			const top = Math.max(a[1], b[1]);
+			const folded = rectangleClip([left, top, Math.max(left, Math.min(a[2], b[2])), Math.max(top, Math.min(a[3], b[3]))]);
+			return [...chain.slice(0, -1), this.makeClip(folded)];
+		}
+		if (chain.length >= PARADIS_METAFILE_CLIP_DEPTH) {
+			throw new ParadisOfficeMetafileStop('limitExceeded', 'clipDepth');
+		}
+		return [...chain, this.makeClip(clip)];
+	}
+
+	private makeClip(clip: Omit<ParadisMetafileClip, 'id'>): ParadisMetafileClip {
+		return { ...clip, id: this.nextClipId++ };
 	}
 
 	// ── 図形（経路の記録中は経路へ、それ以外は描く） ──
@@ -527,7 +564,8 @@ class GdiInterpreter {
 		const horizontal = align & 6;
 		const vertical = align & 24;
 		const linearScale = Math.sqrt(Math.abs(matrix.a * matrix.d - matrix.b * matrix.c)) || 1;
-		const em = Math.abs(font.height) * linearScale;
+		// 高さが負なら文字の高さ（em）、正ならセルの高さ（行間を含む）なので em に直す。0 は既定の大きさ。
+		const em = (font.height < 0 ? -font.height : font.height > 0 ? font.height * 0.85 : DEFAULT_FONT.height) * linearScale;
 		if (em <= 0) {
 			return;
 		}
@@ -573,9 +611,7 @@ class GdiInterpreter {
 		let clip = this.state.clip;
 		if (options.clipRect) {
 			const [left, top, right, bottom] = options.clipRect;
-			const builder = new ParadisMetafilePathBuilder(this.canvas);
-			this.addPolygon(builder, [[left, top], [right, top], [right, bottom], [left, bottom]]);
-			clip = [...clip, { d: builder.toString(), rule: 'nonzero' }];
+			clip = this.intersect(clip, this.rectClip(left, top, right, bottom));
 		}
 		this.canvas.setClip(clip);
 		this.canvas.text({
@@ -653,6 +689,11 @@ class GdiInterpreter {
 		this.canvas.setClip(this.state.clip);
 		this.canvas.stroke(d, { kind: pen.style, width, color: pen.color, cap: pen.cap, join: pen.join, miterLimit: this.state.miterLimit });
 	}
+}
+
+function rectangleClip(rect: readonly [number, number, number, number]): Omit<ParadisMetafileClip, 'id'> {
+	const [left, top, right, bottom] = rect.map(formatMetafileNumber);
+	return { d: `M${left} ${top}H${right}V${bottom}H${left}Z`, rule: 'nonzero', rect };
 }
 
 function genericFamily(pitchAndFamily: number): 'serif' | 'sans-serif' | 'monospace' {
@@ -857,7 +898,7 @@ function isEmfPlusDrawing(type: number): boolean {
 	return type >= 0x4009 && type <= 0x401c || type === 0x4036 || type === 0x4037;
 }
 
-async function convertEmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits, checkpoint: (() => void | Promise<void>) | undefined): Promise<{ readonly svg: string; readonly width: number; readonly height: number; readonly records: number }> {
+async function convertEmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits, checkpoint: (() => void | Promise<void>) | undefined, progress: { records: number }): Promise<{ readonly svg: string; readonly width: number; readonly height: number; readonly records: number }> {
 	const headerSize = readU32(bytes, 4);
 	if (headerSize < 88 || headerSize > bytes.byteLength) {
 		throw new ParadisOfficeMetafileStop('malformed', 'header');
@@ -884,7 +925,6 @@ async function convertEmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 	let emfPlus = false;
 	let emfPlusDual = false;
 	let emfPlusDrawing = false;
-	let records = 0;
 	let offset = 0;
 	let finished = false;
 	while (offset + 8 <= end) {
@@ -893,10 +933,10 @@ async function convertEmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 		if (size < 8 || size % 4 !== 0 || offset + size > end) {
 			throw new ParadisOfficeMetafileStop('malformed', 'recordSize');
 		}
-		if (++records > limits.records) {
+		if (++progress.records > limits.records) {
 			throw new ParadisOfficeMetafileStop('limitExceeded', 'records');
 		}
-		if (records % 1024 === 0 && checkpoint) {
+		if (progress.records % 1024 === 0 && checkpoint) {
 			await checkpoint();
 		}
 		const at = (relative: number, length: number) => {
@@ -1152,7 +1192,7 @@ async function convertEmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 	gdi.checkCoordinate(viewBox.y);
 	gdi.checkCoordinate(viewBox.width);
 	gdi.checkCoordinate(viewBox.height);
-	return { svg: gdi.canvas.finish(viewBox, cssWidth, cssHeight), width: cssWidth, height: cssHeight, records };
+	return { svg: gdi.canvas.finish(viewBox, cssWidth, cssHeight), width: cssWidth, height: cssHeight, records: progress.records };
 }
 
 function stockObject(index: number): GdiObject | undefined {
@@ -1241,7 +1281,7 @@ function emfFont(bytes: Uint8Array, offset: number): FontObject {
 }
 
 /** EXTSELECTCLIPRGN の領域（装置の座標の矩形の集まり）。データが無ければ undefined（切り抜きを外す）。 */
-function regionClip(bytes: Uint8Array, offset: number, size: number, dataSize: number): ParadisMetafileClip | undefined {
+function regionClip(bytes: Uint8Array, offset: number, size: number, dataSize: number): Omit<ParadisMetafileClip, 'id'> | undefined {
 	if (dataSize === 0) {
 		return undefined;
 	}
@@ -1252,6 +1292,10 @@ function regionClip(bytes: Uint8Array, offset: number, size: number, dataSize: n
 	const count = readU32(bytes, header + 8);
 	if (32 + count * 16 > dataSize) {
 		throw new ParadisOfficeMetafileStop('malformed', 'region');
+	}
+	if (count === 1) {
+		const rect = header + 32;
+		return rectangleClip([readI32(bytes, rect), readI32(bytes, rect + 4), readI32(bytes, rect + 8), readI32(bytes, rect + 12)]);
 	}
 	let d = '';
 	for (let index = 0; index < count; index++) {
@@ -1300,7 +1344,17 @@ function emfBitBlt(bytes: Uint8Array, offset: number, size: number, gdi: GdiInte
 	const bitmap = readDib(bytes, offset + offBmi, cbBmi, offset + offBits, cbBits, limits, readU32(bytes, offset + 80));
 	const sourceWidth = stretch ? readI32(bytes, offset + 100) : width;
 	const sourceHeight = stretch ? readI32(bytes, offset + 104) : height;
-	gdi.drawBitmap(bitmap, { x: readI32(bytes, offset + 44), y: readI32(bytes, offset + 48), width: sourceWidth, height: sourceHeight }, { x, y, width, height });
+	// 元の範囲は元の DC の論理の座標なので、xformSrc（拡大と平行移動）でビットマップの画素の座標に直す。
+	const sourceRect = {
+		x: source.a * readI32(bytes, offset + 44) + source.e,
+		y: source.d * readI32(bytes, offset + 48) + source.f,
+		width: source.a * sourceWidth,
+		height: source.d * sourceHeight,
+	};
+	if (sourceRect.width <= 0 || sourceRect.height <= 0) {
+		throw new ParadisOfficeMetafileStop('unsupported', 'sourceTransform');
+	}
+	gdi.drawBitmap(bitmap, sourceRect, { x, y, width, height });
 }
 
 function emfText(bytes: Uint8Array, offset: number, size: number, gdi: GdiInterpreter, limits: ParadisOfficeMetafileLimits, wide: boolean): void {
@@ -1394,7 +1448,7 @@ const WMF_IGNORED = new Set([
 	0x020e, // SETVIEWPORTEXT
 ]);
 
-async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits, checkpoint: (() => void | Promise<void>) | undefined): Promise<{ readonly svg: string; readonly width: number; readonly height: number; readonly records: number }> {
+async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits, checkpoint: (() => void | Promise<void>) | undefined, progress: { records: number }): Promise<{ readonly svg: string; readonly width: number; readonly height: number; readonly records: number }> {
 	let offset = 0;
 	let placeable: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number; readonly inch: number } | undefined;
 	if (readU32(bytes, 0) === 0x9ac6cdd7) {
@@ -1411,22 +1465,16 @@ async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 	}
 	offset += 18;
 	const objects: (GdiObject | undefined)[] = new Array(objectCount);
+	const slots = new FreeObjectSlots(objectCount);
 	let windowBox: { origin: Point; extent: Point } | undefined = placeable && placeable.right !== placeable.left && placeable.bottom !== placeable.top
 		? { origin: [placeable.left, placeable.top], extent: [placeable.right - placeable.left, placeable.bottom - placeable.top] }
 		: undefined;
-	let frameWindow: { origin: Point; extent: Point } | undefined;
-	const gdi = new GdiInterpreter(limits, state => {
-		const [ex, ey] = state.windowExt;
-		if (ex === 0 || ey === 0) {
-			throw new ParadisOfficeMetafileStop('malformed', 'windowExtent');
-		}
-		return { a: Math.sign(ex), b: 0, c: 0, d: Math.sign(ey), e: -state.windowOrg[0] * Math.sign(ex), f: -state.windowOrg[1] * Math.sign(ey) };
-	});
+	let frame: { readonly matrix: ParadisMetafileMatrix; readonly mapMode: number; readonly window: { origin: Point; extent: Point } } | undefined;
+	const gdi = new GdiInterpreter(limits, wmfMatrix);
 	if (windowBox) {
 		gdi.state.windowOrg = windowBox.origin;
 		gdi.state.windowExt = windowBox.extent;
 	}
-	let records = 0;
 	let finished = false;
 	while (offset + 6 <= bytes.byteLength) {
 		const words = readU32(bytes, offset);
@@ -1435,10 +1483,10 @@ async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 		if (words < 3 || offset + size > bytes.byteLength) {
 			throw new ParadisOfficeMetafileStop('malformed', 'recordSize');
 		}
-		if (++records > limits.records) {
+		if (++progress.records > limits.records) {
 			throw new ParadisOfficeMetafileStop('limitExceeded', 'records');
 		}
-		if (records % 1024 === 0 && checkpoint) {
+		if (progress.records % 1024 === 0 && checkpoint) {
 			await checkpoint();
 		}
 		const param = (index: number) => {
@@ -1450,17 +1498,17 @@ async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 		const paramU = (index: number) => param(index) & 0xffff;
 		const paramU32 = (index: number) => (paramU(index) | (paramU(index + 1) << 16)) >>> 0;
 		const create = (value: GdiObject) => {
-			const free = objects.findIndex(entry => entry === undefined);
-			const index = free >= 0 ? free : objects.length < objectCount ? objects.length : -1;
-			if (index < 0) {
+			// WMF のオブジェクトは、空いている中で最も小さい番号に入る。
+			const index = slots.take();
+			if (index === undefined) {
 				throw new ParadisOfficeMetafileStop('malformed', 'objectTable');
 			}
 			objects[index] = value;
 		};
 		const drawStarted = () => {
-			// 最初に描く時点の窓を、表示の範囲にする。
-			if (!frameWindow) {
-				frameWindow = { origin: gdi.state.windowOrg, extent: gdi.state.windowExt };
+			// 最初に描く時点の写像と窓で、表示の範囲を決める。
+			if (!frame) {
+				frame = { matrix: gdi.matrix, mapMode: gdi.state.mapMode, window: { origin: gdi.state.windowOrg, extent: gdi.state.windowExt } };
 			}
 		};
 		const points = (start: number, count: number): Point[] => {
@@ -1501,7 +1549,10 @@ async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 			}
 			case 0x01f0: { // DELETEOBJECT
 				const index = paramU(0);
-				if (index < objects.length) { objects[index] = undefined; }
+				if (index < objects.length && objects[index] !== undefined) {
+					objects[index] = undefined;
+					slots.release(index);
+				}
 				break;
 			}
 			case 0x02fa: create(penObject(paramU(0), param(1), paramU32(3), param(1) > 1)); break; // CREATEPENINDIRECT
@@ -1615,20 +1666,98 @@ async function convertWmf(bytes: Uint8Array, limits: ParadisOfficeMetafileLimits
 	if (!finished) {
 		throw new ParadisOfficeMetafileStop('malformed', 'eof');
 	}
-	windowBox = frameWindow ?? windowBox ?? { origin: gdi.state.windowOrg, extent: gdi.state.windowExt };
-	const width = Math.abs(windowBox.extent[0]);
-	const height = Math.abs(windowBox.extent[1]);
+	// 表示の範囲は、MM_ISOTROPIC・MM_ANISOTROPIC なら最初に描いた時点の窓、それ以外は placeable の範囲を、その時点の
+	// 写像で写したもの。どちらも無い（placeable でない MM_TEXT など）と、絵の大きさが決まらないので描かない。
+	const used = frame ?? { matrix: gdi.matrix, mapMode: gdi.state.mapMode, window: { origin: gdi.state.windowOrg, extent: gdi.state.windowExt } };
+	windowBox = used.mapMode === 7 || used.mapMode === 8 ? used.window : placeable ? windowBox : undefined;
+	if (!windowBox) {
+		throw new ParadisOfficeMetafileStop('unsupported', 'wmfExtent');
+	}
+	const [x0, y0] = gdi.device(windowBox.origin, used.matrix);
+	const [x1, y1] = gdi.device([windowBox.origin[0] + windowBox.extent[0], windowBox.origin[1] + windowBox.extent[1]], used.matrix);
+	const width = Math.abs(x1 - x0);
+	const height = Math.abs(y1 - y0);
 	if (width === 0 || height === 0) {
 		throw new ParadisOfficeMetafileStop('malformed', 'windowExtent');
 	}
-	const viewBox = { x: 0, y: 0, width, height };
+	const viewBox = { x: Math.min(x0, x1), y: Math.min(y0, y1), width, height };
 	let cssWidth = width;
 	let cssHeight = height;
 	if (placeable && placeable.inch > 0) {
 		cssWidth = Math.abs(placeable.right - placeable.left) / placeable.inch * 96;
 		cssHeight = Math.abs(placeable.bottom - placeable.top) / placeable.inch * 96;
 	}
-	return { svg: gdi.canvas.finish(viewBox, cssWidth, cssHeight), width: cssWidth, height: cssHeight, records };
+	return { svg: gdi.canvas.finish(viewBox, cssWidth, cssHeight), width: cssWidth, height: cssHeight, records: progress.records };
+}
+
+/** WMF のオブジェクトの表の空き。最も小さい空きの番号を、表の大きさの対数の手間で出し入れする（最小ヒープ）。 */
+class FreeObjectSlots {
+	private readonly heap: number[] = [];
+
+	constructor(count: number) {
+		// 0 から順に並べた配列は、そのまま最小ヒープになっている。
+		for (let index = 0; index < count; index++) {
+			this.heap.push(index);
+		}
+	}
+
+	take(): number | undefined {
+		const heap = this.heap;
+		if (heap.length === 0) {
+			return undefined;
+		}
+		const top = heap[0];
+		const last = heap.pop()!;
+		if (heap.length > 0) {
+			heap[0] = last;
+			let index = 0;
+			for (; ;) {
+				const left = index * 2 + 1;
+				const right = left + 1;
+				let smallest = index;
+				if (left < heap.length && heap[left] < heap[smallest]) { smallest = left; }
+				if (right < heap.length && heap[right] < heap[smallest]) { smallest = right; }
+				if (smallest === index) { break; }
+				[heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+				index = smallest;
+			}
+		}
+		return top;
+	}
+
+	release(slot: number): void {
+		const heap = this.heap;
+		heap.push(slot);
+		let index = heap.length - 1;
+		while (index > 0) {
+			const parent = (index - 1) >> 1;
+			if (heap[parent] <= heap[index]) { break; }
+			[heap[index], heap[parent]] = [heap[parent], heap[index]];
+			index = parent;
+		}
+	}
+}
+
+/** WMF の論理の座標から出力の座標へ。装置を持たないので、窓の写像では窓の大きさ、固定の単位では 96 dpi の px にする。 */
+function wmfMatrix(state: DcState): ParadisMetafileMatrix {
+	const [ox, oy] = state.windowOrg;
+	const fixed = (perUnit: number): ParadisMetafileMatrix => ({ a: perUnit, b: 0, c: 0, d: -perUnit, e: -ox * perUnit, f: oy * perUnit });
+	switch (state.mapMode) {
+		case 1: return { a: 1, b: 0, c: 0, d: 1, e: -ox, f: -oy }; // MM_TEXT
+		case 2: return fixed(96 / 254); // MM_LOMETRIC（0.1 mm）
+		case 3: return fixed(96 / 2540); // MM_HIMETRIC（0.01 mm）
+		case 4: return fixed(0.96); // MM_LOENGLISH（0.01 in）
+		case 5: return fixed(0.096); // MM_HIENGLISH（0.001 in）
+		case 6: return fixed(96 / 1440); // MM_TWIPS
+		case 7: case 8: { // MM_ISOTROPIC・MM_ANISOTROPIC: 窓の向きだけを使い、大きさは窓のまま
+			const [ex, ey] = state.windowExt;
+			if (ex === 0 || ey === 0) {
+				throw new ParadisOfficeMetafileStop('malformed', 'windowExtent');
+			}
+			return { a: Math.sign(ex), b: 0, c: 0, d: Math.sign(ey), e: -ox * Math.sign(ex), f: -oy * Math.sign(ey) };
+		}
+		default: throw new ParadisOfficeMetafileStop('unsupported', 'mapMode');
+	}
 }
 
 function wmfFont(bytes: Uint8Array, offset: number, length: number): FontObject {
