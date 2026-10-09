@@ -186,10 +186,22 @@ export interface IParadisDrawingData {
 	readonly media: { readonly [rid: string]: string };
 	/** 描かなかった画像（rId→理由）。 */
 	readonly rejectedMedia?: { readonly [rid: string]: ParadisSpreadsheetImageRejection };
+	/**
+	 * まだ描いていない EMF・WMF の画像（rId→メディアの名前 `image1.emf`）。表示を返した後で worker が SVG に
+	 * 変換し、renderer が `IParadisSpreadsheetMetafileImages` で差し替える。
+	 */
+	readonly metafileMedia?: { readonly [rid: string]: string };
 	/** グラフの XML（rId→chartN.xml の文字列）。 */
 	readonly charts?: { readonly [rid: string]: string };
 	/** シートごとの XML の上限を越えたので、この drawing を渡さなかった（描かずに代替表示に数える）。 */
 	readonly omitted?: boolean;
+}
+
+/** EMF・WMF を SVG にした結果。メディアの名前（`image1.emf`）→ `data:image/svg+xml;base64,...`。 */
+export interface IParadisSpreadsheetMetafileImages {
+	readonly images: { readonly [mediaName: string]: string };
+	/** 変換できなかった理由（worker が使えない・混んでいる・取り消し）。描けた分が無くても失敗とは限らない。 */
+	readonly unavailableReason?: string;
 }
 
 /** 印刷範囲などの矩形領域(Excel の1始まり行列)。 */
