@@ -14,7 +14,7 @@
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
-import type { IParadisChartData, IParadisChartGroup, IParadisChartSeries, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartData, IParadisChartGroup, IParadisChartSeries, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
 import type {
 	ParadisSpreadsheetDrawing,
 	ParadisSpreadsheetDrawingAnchor,
@@ -330,6 +330,16 @@ function hslToRgb([hue, saturation, lightness]: readonly number[]): [number, num
 	return [channel(hue + 1 / 3), channel(hue), channel(hue - 1 / 3)];
 }
 
+function toLinear(channel: number): number {
+	const value = Math.max(0, Math.min(255, channel)) / 255;
+	return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+}
+
+function fromLinear(linear: number): number {
+	const value = Math.max(0, Math.min(1, linear));
+	return 255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - 0.055);
+}
+
 /** 色の要素（srgbClr・schemeClr・sysClr・prstClr）と、その明るさの変換（lumMod・lumOff・shade・tint・alpha）。 */
 function resolveColorElement(colorEl: Element, themeColors: ParadisShapeThemeColors | undefined, placeholder?: ResolvedColor): ResolvedColor | undefined {
 	let base: string | undefined;
@@ -364,8 +374,9 @@ function resolveColorElement(colorEl: Element, themeColors: ParadisShapeThemeCol
 				[red, green, blue] = hslToRgb([hue, saturation, Math.max(0, Math.min(1, next))]);
 				break;
 			}
-			case 'shade': red *= value; green *= value; blue *= value; break;
-			case 'tint': red += (255 - red) * (1 - value); green += (255 - green) * (1 - value); blue += (255 - blue) * (1 - value); break;
+			// shade・tint は線形の RGB で掛ける（Part 1 §20.1.2.3.31・§20.1.2.3.34）。
+			case 'shade': [red, green, blue] = [red, green, blue].map(channel => fromLinear(toLinear(channel) * value)); break;
+			case 'tint': [red, green, blue] = [red, green, blue].map(channel => { const linear = toLinear(channel); return fromLinear(linear + (1 - linear) * (1 - value)); }); break;
 			case 'alpha': alpha = Math.max(0, Math.min(1, value)); break;
 		}
 	}
@@ -433,6 +444,8 @@ const FULL_FRAME: Frame = { x: 0, y: 0, width: 1, height: 1 };
 /** グループの中の座標を、アンカーの枠の割合へ写す。 */
 interface GroupSpace {
 	readonly frame: Frame;
+	readonly depth: number;
+	readonly transforms: readonly IParadisShapeGroupTransform[];
 	readonly offX: number;
 	readonly offY: number;
 	readonly extX: number;
@@ -466,8 +479,9 @@ const LINE_GEOMETRIES = new Set(['line', 'straightConnector1', 'bentConnector2',
 const APPROXIMATED_LINE_GEOMETRIES = new Set(['bentConnector2', 'bentConnector3', 'curvedConnector3']);
 
 /** custGeom の pathLst を、枠の中の割合の道筋にする。arcTo を含む道筋は描けないので undefined。 */
-function parseCustomPaths(custGeom: Element): IParadisShapePath[] | undefined {
+function parseCustomPaths(custGeom: Element, commandLimit: number): IParadisShapePath[] | 'overLimit' | undefined {
 	const paths: IParadisShapePath[] = [];
+	let commands = 0;
 	for (const path of xmlChildren(xmlChild(custGeom, 'pathLst'), 'path')) {
 		const width = intAttr(path, 'w', 0);
 		const height = intAttr(path, 'h', 0);
@@ -477,6 +491,9 @@ function parseCustomPaths(custGeom: Element): IParadisShapePath[] | undefined {
 		const point = (el: Element): number[] => [intAttr(el, 'x', 0) / width, intAttr(el, 'y', 0) / height];
 		const d: (readonly ['M' | 'L' | 'C' | 'Q' | 'Z', ...number[]])[] = [];
 		for (const command of xmlChildren(path)) {
+			if (++commands > commandLimit) {
+				return 'overLimit';
+			}
 			const points = xmlChildren(command, 'pt');
 			switch (command.localName) {
 				case 'moveTo': if (points[0]) { d.push(['M', ...point(points[0])]); } break;
@@ -567,7 +584,30 @@ interface AnchorBox {
 	readonly ext?: { readonly cx: number; readonly cy: number };
 }
 
+/** 描く量の上限。workbench の renderer の DOM で直接描くので、壊れた・大きすぎるブックで止まらないようにする。 */
+export interface ParadisSpreadsheetDrawingLimits {
+	/** グループの入れ子の深さ。 */
+	readonly groupDepth: number;
+	/** 1 シートで描く図形の数。 */
+	readonly shapesPerSheet: number;
+	/** 1 つの図形の道筋の命令の数。 */
+	readonly pathCommands: number;
+	/** 1 つのグラフの系列の数。 */
+	readonly chartSeries: number;
+	/** 1 つのグラフの点の合計。 */
+	readonly chartPoints: number;
+}
+
+export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits = Object.freeze({
+	groupDepth: 32,
+	shapesPerSheet: 5_000,
+	pathCommands: 10_000,
+	chartSeries: 255,
+	chartPoints: 100_000,
+});
+
 interface ParseContext {
+	readonly limits: ParadisSpreadsheetDrawingLimits;
 	readonly media: { readonly [rid: string]: string };
 	readonly charts: { readonly [rid: string]: string };
 	readonly themeColors: ParadisShapeThemeColors | undefined;
@@ -592,6 +632,19 @@ function transformOf(xfrm: Element | null): { flipH: boolean; flipV: boolean; ro
 
 function frameField(frame: Frame | undefined): { frame?: Frame } {
 	return frame && (frame.x !== 0 || frame.y !== 0 || frame.width !== 1 || frame.height !== 1) ? { frame } : {};
+}
+
+function groupField(space: GroupSpace | undefined): { groupTransforms?: readonly IParadisShapeGroupTransform[] } {
+	return space && space.transforms.length > 0 ? { groupTransforms: space.transforms } : {};
+}
+
+/** 図形を 1 つ描く枠を取る。シートの上限を越えたら取らずに、描けなかった図形として数える。 */
+function reserveShape(context: ParseContext, name: string | undefined, box: AnchorBox): boolean {
+	if (context.shapes.length >= context.limits.shapesPerSheet) {
+		context.undrawn.push({ kind: 'overLimit', ...(name ? { name } : {}), from: box.from });
+		return false;
+	}
+	return true;
 }
 
 function parseShapeElement(el: Element, box: AnchorBox, space: GroupSpace | undefined, context: ParseContext): void {
@@ -647,7 +700,12 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 	let paths: IParadisShapePath[] | undefined;
 	let approximated = false;
 	if (custGeom) {
-		paths = parseCustomPaths(custGeom);
+		const parsed = parseCustomPaths(custGeom, context.limits.pathCommands);
+		if (parsed === 'overLimit') {
+			context.undrawn.push({ kind: 'overLimit', ...(name ? { name } : {}), from: box.from });
+			return;
+		}
+		paths = parsed;
 		geometry = paths ? 'path' : 'rect';
 		approximated = !paths;
 	} else if (!isLine) {
@@ -675,6 +733,9 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 	const headEnd = ln ? xmlAttr(xmlChild(ln, 'headEnd') ?? ln, 'type') : '';
 	const tailEnd = ln ? xmlAttr(xmlChild(ln, 'tailEnd') ?? ln, 'type') : '';
 	const text = isLine ? undefined : parseText(el, context.themeColors);
+	if (!reserveShape(context, name, box)) {
+		return;
+	}
 	const shape: IParadisRenderShape = {
 		type: isLine ? 'line' : 'rect',
 		...transformOf(xfrm),
@@ -694,6 +755,7 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 		...(headEnd && headEnd !== 'none' ? { headEnd } : {}),
 		...(tailEnd && tailEnd !== 'none' ? { tailEnd } : {}),
 		...frameField(frame),
+		...groupField(space),
 	};
 	context.shapes.push(shape);
 	if (approximated) {
@@ -715,14 +777,23 @@ function parsePicture(el: Element, box: AnchorBox, space: GroupSpace | undefined
 	}
 	const spPr = xmlChild(el, 'spPr');
 	const xfrm = xmlChild(spPr, 'xfrm');
+	if (!reserveShape(context, name, box)) {
+		return;
+	}
 	context.shapes.push({
 		type: 'image', ...transformOf(xfrm), from: box.from, to: box.to, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href,
-		...(box.ext ? { ext: box.ext } : {}), name, shapeId, ...frameField(childFrame(xfrm, space)),
+		...(box.ext ? { ext: box.ext } : {}), name, shapeId, ...frameField(childFrame(xfrm, space)), ...groupField(space),
 	});
 }
 
 function parseGroup(el: Element, box: AnchorBox, space: GroupSpace | undefined, context: ParseContext): void {
-	if (cNvPrOf(xmlChild(el, 'nvGrpSpPr')).hidden) {
+	const { name, hidden } = cNvPrOf(xmlChild(el, 'nvGrpSpPr'));
+	if (hidden) {
+		return;
+	}
+	const depth = (space?.depth ?? 0) + 1;
+	if (depth > context.limits.groupDepth) {
+		context.undrawn.push({ kind: 'overLimit', ...(name ? { name } : {}), from: box.from });
 		return;
 	}
 	const xfrm = xmlChild(xmlChild(el, 'grpSpPr'), 'xfrm');
@@ -731,8 +802,15 @@ function parseGroup(el: Element, box: AnchorBox, space: GroupSpace | undefined, 
 	const chExt = xmlChild(xfrm, 'chExt');
 	const ext = xmlChild(xfrm, 'ext');
 	const off = xmlChild(xfrm, 'off');
+	// グループの回転・反転は、グループの枠の中心まわりに中の図形すべてへ掛かる（Part 1 §20.1.7.5）。
+	const { flipH, flipV, rotation } = transformOf(xfrm);
+	const transform: IParadisShapeGroupTransform | undefined = flipH || flipV || rotation
+		? { frame, ...(rotation ? { rotation } : {}), ...(flipH ? { flipH } : {}), ...(flipV ? { flipV } : {}) }
+		: undefined;
 	const inner: GroupSpace = {
 		frame,
+		depth,
+		transforms: transform ? [...(space?.transforms ?? []), transform] : space?.transforms ?? [],
 		offX: intAttr(chOff ?? off, 'x', 0),
 		offY: intAttr(chOff ?? off, 'y', 0),
 		extX: intAttr(chExt ?? ext, 'cx', 0),
@@ -754,14 +832,17 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	const uri = graphicData ? xmlAttr(graphicData, 'uri') : '';
 	const chartRef = uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart' ? xmlChild(graphicData, 'chart') : null;
 	const xml = chartRef ? context.charts[relationshipId(chartRef, 'id')] : undefined;
-	const chart = xml ? parseChartXml(xml, context) : undefined;
+	const chart = xml ? parseChartXml(xml, context, context.limits) : undefined;
 	if (!chart) {
 		context.undrawn.push({ kind: chartRef ? 'chart' : 'graphicFrame', ...(name ? { name } : {}), from: box.from });
 		return;
 	}
+	if (!reserveShape(context, name, box)) {
+		return;
+	}
 	context.shapes.push({
 		type: 'chart', flipH: false, flipV: false, from: box.from, to: box.to, outlineWidth: 0, outlineColor: '#000', dash: 'solid',
-		...(box.ext ? { ext: box.ext } : {}), name, shapeId, chart, ...frameField(childFrame(xmlChild(el, 'xfrm'), space)),
+		...(box.ext ? { ext: box.ext } : {}), name, shapeId, chart, ...frameField(childFrame(xmlChild(el, 'xfrm'), space)), ...groupField(space),
 	});
 }
 
@@ -816,7 +897,7 @@ function richText(el: Element | null): string {
 }
 
 /** chartN.xml の保存済みの値（numCache・strCache）からグラフを組み立てる。描けない種類が混ざれば undefined。 */
-export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' | 'themeColors'>): IParadisChartData | undefined {
+export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' | 'themeColors'>, limits: Pick<ParadisSpreadsheetDrawingLimits, 'chartSeries' | 'chartPoints'> = PARADIS_SPREADSHEET_DRAWING_LIMITS): IParadisChartData | undefined {
 	let doc: Document;
 	try {
 		const trusted = ttPolicy?.createHTML(xml) ?? xml;
@@ -830,6 +911,8 @@ export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' 
 		return undefined;
 	}
 	const groups: IParadisChartGroup[] = [];
+	let seriesCount = 0;
+	let pointCount = 0;
 	for (const group of xmlChildren(plotArea)) {
 		if (!group.localName.endsWith('Chart')) {
 			continue;
@@ -843,11 +926,18 @@ export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' 
 		const grouping = groupingValue === 'stacked' || groupingValue === 'percentStacked' || groupingValue === 'clustered' ? groupingValue : 'standard';
 		const series: IParadisChartSeries[] = [];
 		for (const ser of xmlChildren(group, 'ser')) {
+			if (++seriesCount > limits.chartSeries) {
+				return undefined;
+			}
 			const tx = xmlChild(ser, 'tx');
 			const name = richText(tx) || cachedValues(tx).strings.join(' ') || xmlChild(tx, 'v')?.textContent || undefined;
 			const categories = cachedValues(xmlChild(ser, kind === 'scatter' ? 'xVal' : 'cat')).strings;
 			const values = cachedValues(xmlChild(ser, kind === 'scatter' ? 'yVal' : 'val')).numbers;
 			const xValues = kind === 'scatter' ? cachedValues(xmlChild(ser, 'xVal')).numbers : undefined;
+			pointCount += Math.max(values.length, categories.length);
+			if (pointCount > limits.chartPoints) {
+				return undefined;
+			}
 			const seriesIndex = series.length;
 			const color = seriesColor(ser, context) ?? chartPalette(context.themeColors, intAttr(xmlChild(ser, 'idx'), 'val', seriesIndex));
 			let pointColors: string[] | undefined;
@@ -905,14 +995,18 @@ function parseAnchor(anchor: Element, context: ParseContext): void {
 }
 
 /** drawing(XML + 埋め込みメディア + グラフ)群を解析して、描く図形と描けなかった図形を返す。 */
-export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | undefined, themeColors?: ParadisShapeThemeColors): { readonly shapes: IParadisRenderShape[]; readonly undrawn: IParadisUndrawnObject[] } {
+export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | undefined, themeColors?: ParadisShapeThemeColors, limits: ParadisSpreadsheetDrawingLimits = PARADIS_SPREADSHEET_DRAWING_LIMITS): { readonly shapes: IParadisRenderShape[]; readonly undrawn: IParadisUndrawnObject[] } {
 	const shapes: IParadisRenderShape[] = [];
 	const undrawn: IParadisUndrawnObject[] = [];
 	if (!drawings || drawings.length === 0) {
 		return { shapes, undrawn };
 	}
 	const parser = new DOMParser();
-	for (const { xml, media, charts } of drawings) {
+	for (const { xml, media, charts, omitted } of drawings) {
+		if (omitted) {
+			undrawn.push({ kind: 'overLimit' });
+			continue;
+		}
 		let doc: Document;
 		try {
 			const trusted = ttPolicy?.createHTML(xml) ?? xml;
@@ -920,7 +1014,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		} catch {
 			continue;
 		}
-		const context: ParseContext = { media, charts: charts ?? {}, themeColors, parser, shapes, undrawn };
+		const context: ParseContext = { limits, media, charts: charts ?? {}, themeColors, parser, shapes, undrawn };
 		const visit = (el: Element) => {
 			for (const child of xmlChildren(el)) {
 				if (child.localName === 'twoCellAnchor' || child.localName === 'oneCellAnchor' || child.localName === 'absoluteAnchor') {
@@ -964,6 +1058,7 @@ function undrawnDetail(kind: IParadisUndrawnObject['kind']): string {
 		case 'image': return localize('paradis.spreadsheet.undrawnImage', "この形式の画像（EMF・WMF など）は表示できません。");
 		case 'chart': return localize('paradis.spreadsheet.undrawnChart', "この種類のグラフは表示できません。");
 		case 'geometry': return localize('paradis.spreadsheet.undrawnGeometry', "この形の図形は、枠の形で近似して表示しています。");
+		case 'overLimit': return localize('paradis.spreadsheet.undrawnOverLimit', "図形が多すぎるか複雑すぎるため、表示していません。");
 		default: return localize('paradis.spreadsheet.undrawnObject', "この図形は表示できません。");
 	}
 }

@@ -190,8 +190,8 @@ export function buildShapeOverlay(
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
 	for (const shape of shapes) {
-		const box = shapeBox(shape, anchorPos);
-		appendShapeSvg(svg, shape, box, { stroke: shape.outlineColor, strokeWidth: shape.outlineWidth, dash: SVG_DASH_PATTERNS[shape.dash] || '', opacity: 1, content: true });
+		const anchorBox = shapeAnchorBox(shape, anchorPos);
+		appendShapeSvg(svg, shape, applyShapeFrame(shape, anchorBox), { stroke: shape.outlineColor, strokeWidth: shape.outlineWidth, dash: dashPattern(shape.dash), opacity: 1, content: true }, anchorBox);
 	}
 	return svg;
 }
@@ -200,13 +200,22 @@ export function buildShapeOverlay(
  * 図形を置く枠(px)。oneCellAnchor・absoluteAnchor は始点と大きさ(ext)、twoCellAnchor は始点と終点で決まる。
  * グループの中の図形は、その枠の中の割合(frame)で位置を決める。
  */
-function shapeBox(shape: IParadisRenderShape, anchorPos: (a: IParadisRenderAnchor) => { x: number; y: number }): ParadisShapeBox {
+function shapeAnchorBox(shape: IParadisRenderShape, anchorPos: (a: IParadisRenderAnchor) => { x: number; y: number }): ParadisShapeBox {
 	const tl = anchorPos(shape.from);
 	if (shape.ext) {
-		return applyShapeFrame(shape, { x: tl.x, y: tl.y, width: emuToPx(shape.ext.cx), height: emuToPx(shape.ext.cy) });
+		return { x: tl.x, y: tl.y, width: emuToPx(shape.ext.cx), height: emuToPx(shape.ext.cy) };
 	}
 	const br = anchorPos(shape.to);
-	return applyShapeFrame(shape, { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y });
+	return { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y };
+}
+
+function shapeBox(shape: IParadisRenderShape, anchorPos: (a: IParadisRenderAnchor) => { x: number; y: number }): ParadisShapeBox {
+	return applyShapeFrame(shape, shapeAnchorBox(shape, anchorPos));
+}
+
+/** 線の種類（prstDash）の SVG の dasharray。知らない値や Object の持ち物の名前は実線。 */
+function dashPattern(dash: string): string {
+	return Object.hasOwn(SVG_DASH_PATTERNS, dash) ? SVG_DASH_PATTERNS[dash] : '';
 }
 
 /** shrinkToFit セル: 内容を span に包んで返す(後で applyShrinkToFit で横方向に縮小する)。 */
@@ -573,7 +582,7 @@ function shapeDiffStroke(status: string, side: 'original' | 'modified', shape: I
 		case 'changed':
 			return { stroke: '#3b82f6', dash: '', width: Math.max(2, shape.outlineWidth), opacity: 1 };
 		default:
-			return { stroke: shape.outlineColor, dash: SVG_DASH_PATTERNS[shape.dash] || '', width: shape.outlineWidth, opacity: 1 };
+			return { stroke: shape.outlineColor, dash: dashPattern(shape.dash), width: shape.outlineWidth, opacity: 1 };
 	}
 }
 
@@ -604,10 +613,11 @@ export function buildShapeDiffOverlay(
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
 	for (const { shape, status, diffDetails } of renders) {
-		const box = shapeBox(shape, anchorPos);
+		const anchorBox = shapeAnchorBox(shape, anchorPos);
+		const box = applyShapeFrame(shape, anchorBox);
 		const st = shapeDiffStroke(status, side, shape);
 		const diffTitle = status !== 'unchanged' && diffDetails?.length ? formatDiffDetails(diffDetails) : undefined;
-		const drawn = appendShapeSvg(svg, shape, box, { stroke: st.stroke, strokeWidth: st.width, dash: st.dash, opacity: st.opacity, content: true });
+		const drawn = appendShapeSvg(svg, shape, box, { stroke: st.stroke, strokeWidth: st.width, dash: st.dash, opacity: st.opacity, content: true }, anchorBox);
 		appendSvgHoverTitle(drawn as SVGElement, diffTitle, shape.type === 'line' ? 'stroke' : 'visiblePainted');
 		if ((shape.type === 'image' || shape.type === 'chart') && status !== 'unchanged') {
 			// 画像とグラフは線を持たないので、状態の色の枠を重ねる。
