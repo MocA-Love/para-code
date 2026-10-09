@@ -78,7 +78,7 @@ import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoo
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
-import { paradisAdjustDevtoolsToolResult, paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
+import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
 import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
@@ -205,6 +205,43 @@ interface IParadisPaneStatusEntry {
 	 * このときだけ、確かめられない解除の hook を受け付ける。書き換える側はこの項目を持ち越さない。
 	 */
 	readonly waitEntryUnverified?: true;
+}
+
+/** 観測しながら呼んだ道具が、呼ぶ直前にタブが替わって別の列へ並ぼうとしたときの文。 */
+const PARADIS_TAB_CHANGED_DURING_CALL_MESSAGE = 'PARA_BROWSER_RETRYABLE: the tab this call was using changed while it started; call it again (pass tab_id to keep using one tab).';
+
+/** `ms` 待つ。`signal` が止まったらすぐ返る。 */
+function paradisSleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	if (signal?.aborted) {
+		return Promise.resolve();
+	}
+	return new Promise<void>(resolve => {
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', done);
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		signal?.addEventListener('abort', done, { once: true });
+	});
+}
+
+/** 照合の結果を待つ。`signal` が止まったら待つのをやめて `unverified`（照合そのものは止めない）。 */
+function paradisCallerKindUnlessAborted(flight: Promise<ParadisMcpCallerKind>, signal: AbortSignal | undefined): Promise<ParadisMcpCallerKind> {
+	if (!signal) {
+		return flight;
+	}
+	if (signal.aborted) {
+		return Promise.resolve('unverified');
+	}
+	return new Promise<ParadisMcpCallerKind>(resolve => {
+		const onAbort = () => resolve('unverified');
+		signal.addEventListener('abort', onAbort, { once: true });
+		flight.then(kind => {
+			signal.removeEventListener('abort', onAbort);
+			resolve(kind);
+		});
+	});
 }
 
 function isExactRecord(value: unknown): value is Record<string, unknown> {
@@ -1982,6 +2019,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
+		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
+		this._browserObserver.forget(token);
 		this._runNonThrowingCleanup('agent-tabs', () => this._forgetAgentTabState(token));
 		const cleanupGeneration = generation ?? this._advanceBindingGeneration(token);
 		this._paneShells.delete(token);
@@ -3048,7 +3087,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 同じ接続（keep-alive）とトークンの組の結果は、接続が閉じるまで覚えておく（1 回に `lsof` / `ps` を数回起こすため）。
 	 * シェルの PID や戻り経路が変わったら覚えた結果は使わない。
 	 */
-	private async _classifyCaller(token: string, socket: Socket | undefined): Promise<ParadisMcpCallerKind> {
+	private async _classifyCaller(token: string, socket: Socket | undefined, signal?: AbortSignal): Promise<ParadisMcpCallerKind> {
 		if (!socket || this._port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== this._port) {
 			return 'unverified';
 		}
@@ -3062,7 +3101,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const ancestorPid = pane.remoteAuthority === undefined && Number.isSafeInteger(pane.shellPid) && pane.shellPid > 1 ? pane.shellPid : undefined;
 		const expectation = { tunnelPid, ancestorPid };
 		const cacheKey = `${pane.remoteAuthority ?? ''}|${tunnelPid ?? ''}|${ancestorPid ?? ''}`;
-		let cached = this._callerClassifications.get(socket);
+		const cached = this._callerClassifications.get(socket);
 		const hit = cached?.get(token);
 		// シェルが入れ替わった・戻り経路が張り直された後は、前の判定を使わない
 		if (hit && hit.key === cacheKey) {
@@ -3072,7 +3111,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		let flights = this._callerClassificationsInFlight.get(socket);
 		const running = flights?.get(flightKey);
 		if (running) {
-			return running;
+			return paradisCallerKindUnlessAborted(running, signal);
 		}
 		const remotePort = socket.remotePort;
 		const port = this._port;
@@ -3095,23 +3134,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._callerClassificationsInFlight.set(socket, flights);
 		}
 		flights.set(flightKey, flight);
-		let kind: ParadisMcpCallerKind;
-		try {
-			kind = await flight;
-		} finally {
+		// 結果は待っている呼び出しが取り消されても覚える（照合は止めず、次の呼び出しで使う）
+		void flight.then(kind => {
 			if (flights.get(flightKey) === flight) {
 				flights.delete(flightKey);
 			}
-		}
-		cached = this._callerClassifications.get(socket);
-		if (kind !== 'unverified') {
-			if (!cached) {
-				cached = new Map();
-				this._callerClassifications.set(socket, cached);
+			if (kind !== 'unverified') {
+				let cache = this._callerClassifications.get(socket);
+				if (!cache) {
+					cache = new Map();
+					this._callerClassifications.set(socket, cache);
+				}
+				cache.set(token, { kind, key: cacheKey });
 			}
-			cached.set(token, { kind, key: cacheKey });
-		}
-		return kind;
+		});
+		// 取り消された呼び出しは照合の終わりを待たない
+		return paradisCallerKindUnlessAborted(flight, signal);
 	}
 
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
@@ -4420,6 +4458,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		const name = typeof params?.name === 'string' ? params.name : '';
 		const pacing = this._cursorPacing.begin(ingressLease.token, name, params?.arguments);
 		try {
+			// 呼び出し元の照合（負荷が高いと最大 15 秒）は、タブの列に並ぶ前に済ませる。列の中で待つと、確かめられない
+			// 呼び出しのたびに同じタブのほかの呼び出しを止める。通ったら結果は接続ごとに覚えるので、列の中の照合はすぐ返る
+			const refusal = await this._callerRefusalBeforeLane(ingressLease, name, socket, signal);
+			if (refusal !== undefined) {
+				return refusal;
+			}
 			// run_steps の中の手順には添えない（run_steps 全体の後に 1 回だけ）
 			const observeSettings = this._observeSettings?.();
 			const observeOptions = nested || observeSettings === undefined ? undefined : paradisObserveOptionsFor(name, observeSettings);
@@ -4430,6 +4474,27 @@ export class ParadisAgentBrowserService extends Disposable {
 		} finally {
 			pacing.dispose();
 		}
+	}
+
+	/**
+	 * 呼び出し元を確かめる道具なら、ここで確かめ、確かめられなければ断る（{@link _callResolvedTool} の照合と同じ分け方と文）。
+	 * 確かめない道具は undefined。
+	 */
+	private async _callerRefusalBeforeLane(ingressLease: IParadisAgentBrowserIngressLease, name: string, socket: Socket | undefined, signal: AbortSignal | undefined): Promise<unknown> {
+		if (TOOLS.every(tool => tool.name !== name)) {
+			return undefined;
+		}
+		const message = PARADIS_CALLER_VERIFIED_TOOL_NAMES.has(name)
+			? CALLER_UNVERIFIED_BROWSER_MESSAGE
+			: name === 'read_download' || name === 'capture_screenshot' || PARADIS_PAGE_OPS_TOOL_NAME_SET.has(name) || PARADIS_BROWSER_ACT_TOOL_NAME_SET.has(name)
+				? CALLER_UNVERIFIED_PAGE_OPS_MESSAGE
+				: undefined;
+		if (message === undefined) {
+			return undefined;
+		}
+		const caller = await this._classifyCaller(ingressLease.token, socket, signal);
+		this._requireIngressLease(ingressLease);
+		return caller === 'unverified' ? this._toolError(message) : undefined;
 	}
 
 	/**
@@ -4487,11 +4552,18 @@ export class ParadisAgentBrowserService extends Disposable {
 			const result = await this._callToolInner(ingressLease, call, signal, socket);
 			return this._toolCallLanes.run(tabKey, () => observeAfter(before, result), signal);
 		}
-		return this._toolCallLanes.run(tabKey, async () => {
+		const observed = await this._toolCallLanes.run(tabKey, async () => {
+			// 列に並んでいる間にタブがなくなる・替わることがある。操作が別の列へ並び直すと、2 つの呼び出しが互いの
+			// 列を待って止まりうるので、そのときは観測をやめ、列を手放してから普通に呼ぶ
+			const scopedNow = this._scopeToolCall(ingressLease, call.arguments);
+			if (!scopedNow.ok || this._pageKeyOf(scopedNow.lease) !== tabKey) {
+				return undefined;
+			}
 			const before = await observeBefore();
 			const result = await this._callToolInner(ingressLease, call, signal, socket, tabKey);
-			return observeAfter(before, result);
+			return { value: await observeAfter(before, result) };
 		}, signal);
+		return observed !== undefined ? observed.value : this._callToolInner(ingressLease, { name, arguments: taken.rest }, signal, socket);
 	}
 
 	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
@@ -4535,9 +4607,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				return files;
 			},
-			isCurrent: () => this.isIngressLeaseCurrent(ingressLease),
+			// 取り消された呼び出しは待つのをやめる（列を持ったまま落ち着くのを待ち続けない）
+			isCurrent: () => signal?.aborted !== true && this.isIngressLeaseCurrent(ingressLease),
 			canEvaluate: () => this._devtoolsProxy.evaluateObserves,
-			sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+			sleep: ms => paradisSleepUnlessAborted(ms, signal),
 			now: () => Date.now(),
 		};
 	}
@@ -4570,7 +4643,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				return scopedCall.error;
 			}
 			const pageLease = scopedCall.lease;
-			const devtoolsArgs = scopedCall.args;
+			// Para Code だけが付ける内部の引数は、エージェントから来たら捨てる（観測の待たない評価を勝手に使わせない）
+			const devtoolsArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
 			const devtoolsLane = this._pageKeyOf(pageLease);
@@ -4645,6 +4719,11 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** タブの列で動かす。呼び出し元がすでにその列を持っていれば、並び直さずにそのまま動かす。 */
 	private _runInLane<T>(key: string, heldLane: string | undefined, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		if (heldLane !== undefined && key !== heldLane) {
+			// 持っている列と違うタブの列に並ぶと、2 つの呼び出しが互いの列を待って止まりうる。並ばずに断る
+			// （{@link _callToolObserved} は呼ぶ前にタブを確かめ直すので、ここへ来るのは間にタブが替わったときだけ）
+			return Promise.resolve(this._toolError(PARADIS_TAB_CHANGED_DURING_CALL_MESSAGE) as T);
+		}
 		return key === heldLane ? operation() : this._toolCallLanes.run(key, operation, signal);
 	}
 

@@ -7,6 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 import { IParadisObserveHost, ParadisBrowserObserver, paradisFormatChanges, paradisObserveOptionsFor, paradisParseListPages, paradisTakeObserveArguments, paradisWithObserveArguments } from '../../node/paradisBrowserObserve.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from '../../node/paradisBrowserObservePageScript.js';
 
@@ -203,4 +204,18 @@ suite('Paradis browser observe', () => {
 		const sources = [paradisObserveInstallFunction('__x'), paradisObserveReadFunction('__x'), paradisObserveCollectFunction('__x', 30)];
 		assert.deepStrictEqual(sources.map(source => typeof new Function(`return (${source});`)()), ['function', 'function', 'function']);
 	});
+	test('the remembered browser state of a pane and its tabs is forgotten when the pane goes away', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const report = async (key: string) => {
+			const { host } = fakeHost({ pages: [PAGES_ONE, PAGES_ONE] });
+			return observer.after(host, key, options, await observer.before(host, options, 'changes', 2000), 'changes', 2000);
+		};
+		const tab = paradisAgentTabScopeKey('pane-a', 'tab-1');
+		await report(tab);
+		await report('pane-b');
+		observer.forget('pane-a');
+		assert.deepStrictEqual({ forgotten: (await report(tab)) !== undefined, kept: await report('pane-b') }, { forgotten: true, kept: undefined });
+	});
+
 });

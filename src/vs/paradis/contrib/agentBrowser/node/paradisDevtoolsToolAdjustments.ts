@@ -215,6 +215,19 @@ export function paradisWithScriptClickHint(name: string, args: unknown, result: 
 /** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
 export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
 
+/**
+ * エージェントから来た内蔵の道具の引数から、Para Code だけが付ける内部の引数を取り除く（`evaluate_script` の
+ * `paraCodeObserve`。ダイアログの処理と待ちを外した評価を、エージェントが勝手に使わないように）。
+ */
+export function paradisStripInternalDevtoolsArguments(name: string, args: unknown): unknown {
+	if (name !== 'evaluate_script' || !isRecord(args) || !Object.hasOwn(args, 'paraCodeObserve')) {
+		return args;
+	}
+	const rest = { ...args };
+	delete rest.paraCodeObserve;
+	return rest;
+}
+
 /** 待たない評価（`paraCodeObserve`）を vendored が知らないときに返す文。観測（paradisBrowserObserve.ts）はこれを見て止まる。 */
 export const PARADIS_OBSERVE_UNSUPPORTED_MESSAGE = 'PARA_BROWSER_OBSERVE_UNSUPPORTED: the embedded chrome-devtools-mcp cannot evaluate without its dialog handler, so Para Code did not run this observation.';
 
