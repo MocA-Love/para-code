@@ -18,8 +18,10 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { extname } from '../../../../../base/common/resources.js';
+import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../../platform/files/common/files.js';
+import { judgeParadisImageDecode } from './paradisImageDimensions.js';
 
 /** 画像ビューアの EditorPane / EditorInput 識別子。 */
 export const PARADIS_IMAGE_EDITOR_ID = 'paradis.editor.imagePreview';
@@ -126,7 +128,10 @@ export interface ParadisImageData {
 	/** 読んだときの etag（mtime と大きさから作られる）。 */
 	readonly etag: string;
 	/**
-	 * この Blob の URL。キャッシュから外れるまで同じ URL を使い続ける（Chromium は同じ文書の中で同じ URL の
+	 * この Blob の URL。**ワークベンチの外（ドラッグ、リンク、ほかのウィンドウ）へ渡さないこと**: Blob URL は
+	 * ワークベンチと同じオリジンなので、SVG の Blob URL へ遷移されると、SVG がワークベンチのオリジンの文書として
+	 * 開き、中のスクリプトが動く（<img> で描くあいだは動かない）。今は main の `will-navigate` が遷移を止めている。
+	 * キャッシュから外れるまで同じ URL を使い続ける（Chromium は同じ文書の中で同じ URL の
 	 * 画像をデコード済みのまま使い回すので、開き直したときにデコードもやり直さずに済む）。
 	 */
 	readonly url: string;
@@ -134,7 +139,21 @@ export interface ParadisImageData {
 
 export type ParadisImageLoadResult =
 	| { readonly kind: 'image'; readonly data: ParadisImageData; readonly fromCache: boolean }
-	| { readonly kind: 'gitLfs' };
+	| { readonly kind: 'gitLfs' }
+	/** ファイルが {@link PARADIS_IMAGE_MAX_BYTES} より大きい、または展開後が {@link PARADIS_IMAGE_MAX_PIXELS} を超える。 */
+	| { readonly kind: 'tooLarge' }
+	/** 署名の分かる形式なのに大きさが読めない、または画像の署名が無い（デコードさせない）。 */
+	| { readonly kind: 'invalid' };
+
+/**
+ * 読み込む大きさの上限。画像はワークベンチの renderer で読んでデコードするので（upstream は webview の
+ * フレームの中だった）、巨大なファイルや画像の爆弾で本体ごと落ちないように上限を置く。
+ */
+export const PARADIS_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+/** 展開後の画素数の上限（RGBA で約 400 MB）。 */
+export const PARADIS_IMAGE_MAX_PIXELS = 100_000_000;
+/** 画像を表示しているペインが 1 つも無くなってから、覚えている Blob を手放すまで。 */
+const CACHE_IDLE_MS = 3 * 60 * 1000;
 
 /**
  * etag が変わらないあいだ読み直さないで済むスキーム。`git:` は ref ごとに中身が変わりうる（`~` はインデックス）
@@ -154,10 +173,39 @@ export class ParadisImageCache {
 	private readonly _entries = new Map<string, ParadisImageData>();
 	private _totalBytes = 0;
 
+	private _users = 0;
+	private _idleTimer: ReturnType<typeof setTimeout> | undefined;
+
 	constructor(
 		private readonly _maxBytes = DEFAULT_CACHE_BYTES,
 		private readonly _revokeUrl: (url: string) => void = url => URL.revokeObjectURL(url),
+		private readonly _idleMs = CACHE_IDLE_MS,
 	) { }
+
+	/**
+	 * 画像を表示しているあいだ持つ。全部が手放してから `_idleMs` たったら、覚えている Blob を全部手放す
+	 * （画像のタブを全部閉じた後まで、Blob storage に画像を残し続けない）。
+	 */
+	acquire(): IDisposable {
+		this._users++;
+		if (this._idleTimer !== undefined) {
+			clearTimeout(this._idleTimer);
+			this._idleTimer = undefined;
+		}
+		let released = false;
+		return toDisposable(() => {
+			if (released) {
+				return;
+			}
+			released = true;
+			if (--this._users === 0) {
+				this._idleTimer = setTimeout(() => {
+					this._idleTimer = undefined;
+					this.clear();
+				}, this._idleMs);
+			}
+		});
+	}
 
 	get totalBytes(): number {
 		return this._totalBytes;
@@ -240,16 +288,24 @@ export async function loadParadisImage(
 
 	let content;
 	try {
-		content = await fileService.readFile(resource, cached ? { etag: cached.etag } : undefined, token);
+		content = await fileService.readFile(resource, { etag: cached?.etag, limits: { size: PARADIS_IMAGE_MAX_BYTES } }, token);
 	} catch (error) {
-		if (cached && toFileOperationResult(error) === FileOperationResult.FILE_NOT_MODIFIED_SINCE) {
+		const result = toFileOperationResult(error);
+		if (cached && result === FileOperationResult.FILE_NOT_MODIFIED_SINCE) {
 			return { kind: 'image', data: cached, fromCache: true };
+		}
+		if (result === FileOperationResult.FILE_TOO_LARGE) {
+			return { kind: 'tooLarge' };
 		}
 		throw error;
 	}
 
 	if (isParadisGitLfsPointer(resource, content.value)) {
 		return { kind: 'gitLfs' };
+	}
+	const verdict = judgeParadisImageDecode(content.value.buffer, mimeType, PARADIS_IMAGE_MAX_PIXELS);
+	if (verdict !== 'ok') {
+		return { kind: verdict };
 	}
 
 	const blob = new Blob([content.value.buffer as Uint8Array<ArrayBuffer>], { type: mimeType });

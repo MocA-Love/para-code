@@ -14,9 +14,12 @@ import { DisposableStore, IDisposable } from '../../../../../base/common/lifecyc
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { EditorInput } from '../../../../../workbench/common/editor/editorInput.js';
-import { IEditorResolverService, RegisteredEditorPriority } from '../../../../../workbench/services/editor/common/editorResolverService.js';
+import { globMatchesResource, IEditorResolverService, RegisteredEditorPriority } from '../../../../../workbench/services/editor/common/editorResolverService.js';
 import { paradisGlobForExtension } from '../paradisFileViewers.js';
 import { isParadisImageResource, PARADIS_IMAGE_EDITOR_ID, PARADIS_IMAGE_EXTENSIONS } from './paradisImagePreview.js';
+
+/** upstream の画像プレビュー（extensions/media-preview）の viewType。 */
+const UPSTREAM_IMAGE_PREVIEW_VIEW_TYPE = 'imagePreview.previewEditor';
 
 // allow-any-unicode-next-line
 export const PARADIS_IMAGE_VIEWER_LABEL = localize('paradis.imageViewer', "画像プレビュー");
@@ -39,6 +42,9 @@ export interface ParadisImageEditorRegistrationOptions {
  * （Markdown ビューアで実際に起きた）。exclusive でも、`override` に ID を指定して開く経路
  * （「ソース テキストとして開き直す」= `default`）は効く。設定でオフにすると canSupportResource が false に
  * なり、upstream の画像プレビューで開く。
+ *
+ * exclusive は利用者の関連付けより先に選ばれるので、そのファイルに効く関連付けが upstream の画像プレビュー
+ * でもこのビューアでもないとき（例 `"*.svg": "default"`）は canSupportResource を false にして、関連付けに譲る。
  */
 export function registerParadisImageEditors(editorResolverService: IEditorResolverService, options: ParadisImageEditorRegistrationOptions): IDisposable {
 	const store = new DisposableStore();
@@ -51,7 +57,8 @@ export function registerParadisImageEditors(editorResolverService: IEditorResolv
 				priority: RegisteredEditorPriority.exclusive
 			},
 			{
-				canSupportResource: resource => isParadisImageResource(resource) && options.canRead(resource) && options.isEnabled(),
+				canSupportResource: resource => isParadisImageResource(resource) && options.canRead(resource) && options.isEnabled()
+					&& !isAssociatedWithAnotherEditor(editorResolverService, resource),
 				singlePerResource: true
 			},
 			{
@@ -69,4 +76,17 @@ export function registerParadisImageEditors(editorResolverService: IEditorResolv
 		));
 	}
 	return store;
+}
+
+/**
+ * そのファイルに効く利用者の関連付け（`workbench.editorAssociations`）が、ほかのエディタを指しているか。
+ * resolver と同じく、glob が一致するもののうち最も長いものを使い、登録されていないエディタを指す
+ * 関連付けは無視する。
+ */
+function isAssociatedWithAnotherEditor(editorResolverService: IEditorResolverService, resource: URI): boolean {
+	const association = editorResolverService.getAllUserAssociations()
+		.filter(candidate => candidate.filenamePattern && globMatchesResource(candidate.filenamePattern, resource))
+		.sort((a, b) => (b.filenamePattern?.length ?? 0) - (a.filenamePattern?.length ?? 0))
+		.find(candidate => editorResolverService.getEditors().some(editor => editor.id === candidate.viewType));
+	return !!association && association.viewType !== PARADIS_IMAGE_EDITOR_ID && association.viewType !== UPSTREAM_IMAGE_PREVIEW_VIEW_TYPE;
 }

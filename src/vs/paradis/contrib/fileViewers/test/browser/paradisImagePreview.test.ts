@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual } from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -17,6 +18,7 @@ import {
 	getParadisImageZoomOutScale,
 	isParadisGitLfsPointer,
 	loadParadisImage,
+	PARADIS_IMAGE_MAX_BYTES,
 	ParadisImageCache,
 	ParadisImageData,
 } from '../../browser/image/paradisImagePreview.js';
@@ -152,6 +154,46 @@ suite('ParadisImagePreview', () => {
 			revoked: ['blob:1'],
 			gitOwned: false,
 		});
+	});
+
+	test('refuses files over the byte limit and images over the pixel limit without decoding them', async () => {
+		const bomb = VSBuffer.wrap(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0x4e, 0x20, 0, 0, 0x4e, 0x20, 8, 6, 0, 0, 0]));
+		const limits: (number | undefined)[] = [];
+		const fileService: Pick<IFileService, 'readFile'> = {
+			async readFile(resource: URI, options?: IReadFileOptions): Promise<IFileContent> {
+				limits.push(options?.limits?.size);
+				if (resource.path.endsWith('huge.png')) {
+					throw new FileOperationError('too large', FileOperationResult.FILE_TOO_LARGE);
+				}
+				return { resource, name: 'bomb.png', value: bomb, size: bomb.byteLength, etag: 'e', mtime: 1, ctime: 1, readonly: false, locked: false, executable: false };
+			}
+		};
+		const urls: string[] = [];
+		const cache = new ParadisImageCache();
+		deepStrictEqual({
+			huge: await loadParadisImage(fileService, URI.file('/w/huge.png'), cache, CancellationToken.None, () => { urls.push('x'); return 'blob:x'; }),
+			bomb: await loadParadisImage(fileService, URI.file('/w/bomb.png'), cache, CancellationToken.None, () => { urls.push('x'); return 'blob:x'; }),
+			limits,
+			urls,
+			cached: cache.totalBytes,
+		}, { huge: { kind: 'tooLarge' }, bomb: { kind: 'tooLarge' }, limits: [PARADIS_IMAGE_MAX_BYTES, PARADIS_IMAGE_MAX_BYTES], urls: [], cached: 0 });
+	});
+
+	test('lets go of every remembered image a while after the last viewer stops showing one', async () => {
+		const revoked: string[] = [];
+		const cache = new ParadisImageCache(1024, url => revoked.push(url), 5);
+		cache.set('a', { blob: new Blob([]), size: 10, etag: 'a', url: 'blob:a' });
+		const first = cache.acquire();
+		const second = cache.acquire();
+		first.dispose();
+		await timeout(20);
+		const whileShown = [...revoked];
+		second.dispose();
+		second.dispose();
+		const third = cache.acquire();
+		third.dispose();
+		await timeout(20);
+		deepStrictEqual({ whileShown, afterIdle: revoked, totalBytes: cache.totalBytes }, { whileShown: [], afterIdle: ['blob:a'], totalBytes: 0 });
 	});
 
 	test('reports Git LFS pointers instead of an image', async () => {

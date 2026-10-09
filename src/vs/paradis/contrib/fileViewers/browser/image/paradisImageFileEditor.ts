@@ -79,7 +79,7 @@ interface DisplayedImage {
 	readonly element: HTMLImageElement;
 }
 
-type ViewerState = 'empty' | 'loading' | 'ready' | 'error' | 'gitLfs';
+type ViewerState = 'empty' | 'loading' | 'ready' | 'error' | 'gitLfs' | 'tooLarge';
 
 export class ParadisImageFileEditor extends EditorPane {
 
@@ -98,6 +98,8 @@ export class ParadisImageFileEditor extends EditorPane {
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _load = this._register(new MutableDisposable());
+	/** 画像を表示しているあいだ、覚えている Blob を手放させない。 */
+	private readonly _cacheLease = this._register(new MutableDisposable());
 	/** setInput から最初に描けるまでの計測（同じファイルを開き直したときも測る）。 */
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	private readonly _zoomEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
@@ -435,9 +437,9 @@ export class ParadisImageFileEditor extends EditorPane {
 			this._releaseUrl(result.kind === 'image' ? result.data.url : undefined);
 			return;
 		}
-		if (result.kind === 'gitLfs') {
+		if (result.kind !== 'image') {
 			this._clearDisplayed();
-			this._setState('gitLfs');
+			this._setState(result.kind === 'invalid' ? 'error' : result.kind);
 			return;
 		}
 
@@ -480,6 +482,7 @@ export class ParadisImageFileEditor extends EditorPane {
 		}
 		const previous = this._displayed;
 		this._displayed = { resource, data, element: image };
+		this._cacheLease.value ??= IMAGE_CACHE.acquire();
 		if (previous) {
 			previous.element.remove();
 			if (previous.data.url !== data.url) {
@@ -535,15 +538,18 @@ export class ParadisImageFileEditor extends EditorPane {
 		}
 		root.classList.toggle('loading', state === 'loading');
 		root.classList.toggle('ready', state === 'ready');
-		root.classList.toggle('error', state === 'error');
+		root.classList.toggle('error', state === 'error' || state === 'tooLarge');
 		root.classList.toggle('git-lfs', state === 'gitLfs');
 		root.classList.toggle('zoom-in', state === 'ready');
 		if (this._messageText) {
 			this._messageText.textContent = state === 'gitLfs'
 				// allow-any-unicode-next-line
 				? localize('paradis.imagePreview.gitLfs', "この画像は Git LFS で保存されており、プレビューできません。")
-				// allow-any-unicode-next-line
-				: localize('paradis.imagePreview.loadError', "イメージの読み込み中にエラーが発生しました。");
+				: state === 'tooLarge'
+					// allow-any-unicode-next-line
+					? localize('paradis.imagePreview.tooLarge', "画像が大きすぎるため、プレビューできません。")
+					// allow-any-unicode-next-line
+					: localize('paradis.imagePreview.loadError', "イメージの読み込み中にエラーが発生しました。");
 		}
 		root.setAttribute('aria-busy', String(state === 'loading'));
 		if (this.input instanceof ParadisImageInput) {
@@ -559,6 +565,7 @@ export class ParadisImageFileEditor extends EditorPane {
 		this._displayed = undefined;
 		displayed.element.remove();
 		this._releaseUrl(displayed.data.url);
+		this._cacheLease.clear();
 		this._scale = 'fit';
 		this._setState('empty');
 		this._updateStatus();
