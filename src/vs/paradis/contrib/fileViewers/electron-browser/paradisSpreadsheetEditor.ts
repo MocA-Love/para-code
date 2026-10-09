@@ -48,6 +48,7 @@ import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadis
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
 import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
+import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { collectSpreadsheetSemanticDiagnostics, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
@@ -862,7 +863,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		let content: VSBuffer | undefined;
 		try {
 			// 表示を先に返す。到達度の診断は描いた後に、同じバイト列で別に頼む（_loadSemanticDiagnostics）。
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, undefined, (totalBytes, value) => {
+			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, (totalBytes, value) => {
 				this._probe.setBytes(totalBytes);
 				content = value;
 			});
@@ -1005,21 +1006,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._findWidget.value?.setSearchProvider(callbacks.search?.find, callbacks.search
 			? localize('paradis.spreadsheet.searchUnavailableAdapter', "この形式では検索を利用できません。")
 			: localize('paradis.spreadsheet.searchDisabled', "検索は設定で無効になっています。"));
-		const placeholders: ParadisOfficePlaceholder[] = [];
-		for (let sheetIndex = 0; sheetIndex < workbook.sheets.length; sheetIndex++) {
-			const sheet = workbook.sheets[sheetIndex];
-			for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
-				const shape = sheet.shapes![shapeIndex];
-				const name = shape.name ?? shape.shapeId ?? `${shape.type}-${shapeIndex + 1}`;
-				placeholders.push({
-					nodeId: `${sheet.name}!object:${name}`,
-					feature: `drawing.${shape.type}`,
-					reason: 'unsupported',
-					title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
-					detail: localize('paradis.spreadsheet.legacyDrawingDiagnostic', "従来の表示方法で表示しています。"),
-				});
-			}
-		}
+		// 代替表示は、描けなかった図形（EMF などの画像・対応していないグラフや形）だけを数える。
+		const placeholders = spreadsheetUndrawnPlaceholders(workbook.sheets);
 		// 表示そのものは互換の投影(exceljs)で作っているので、再現度は常に「近似」と申告する。
 		// 意味解析の結果は「ファイルをどこまで読めたか」を伝えるためだけに使い、再現度の主張には
 		// 使わない(読めたことと、同じ見た目に描けたことは別の話)。

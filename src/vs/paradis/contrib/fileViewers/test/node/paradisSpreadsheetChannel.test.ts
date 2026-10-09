@@ -8,7 +8,7 @@
 import { deepStrictEqual, strictEqual, throws } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
-import type { IParadisParseWorkbookOptions, IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
+import type { IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
 
 const workbook: IParadisWorkbookData = { sheets: [] };
 
@@ -103,14 +103,14 @@ suite('ParadisSpreadsheetChannel', () => {
 		strictEqual(result, workbook);
 	});
 
-	test('does not forward parse options, so diagnostics never run on the shared process thread', async () => {
-		const received: (IParadisParseWorkbookOptions | undefined)[] = [];
+	test('passes only the workbook bytes, so diagnostics never run on the shared process thread', async () => {
+		const received: number[] = [];
 		const channel = new ParadisSpreadsheetChannel(async () => ({
-			parseWorkbook: async (_input, options) => { received.push(options); return workbook; },
+			parseWorkbook: async (...args: unknown[]) => { received.push(args.length); return workbook; },
 		}));
 
 		await channel.call('window:1', 'parseWorkbook', ['a', { semanticDiagnostics: true }]);
 
-		deepStrictEqual(received, [undefined]);
+		deepStrictEqual(received, [1]);
 	});
 });

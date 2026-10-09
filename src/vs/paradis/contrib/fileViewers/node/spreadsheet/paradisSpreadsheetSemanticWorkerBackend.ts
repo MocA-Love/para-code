@@ -25,7 +25,10 @@ export type IParadisSpreadsheetSemanticWorker = IParadisOfficeSemanticWorker<IPa
 
 /** 依頼が途絶えてから worker を終了させるまでの時間。 */
 export const PARADIS_SPREADSHEET_SEMANTIC_WORKER_IDLE_MS = 60_000;
-/** 実行の締め切り。worker の中の締め切り（部品一覧と解析で 20 秒）が先に効くよう、それより長くしてある。 */
+/**
+ * 実行の締め切り。worker の中では、部品一覧と解析をあわせて 20 秒で取り消しを掛ける。ただし取り消しが効くのは
+ * 部品や読み込みの区切りだけなので、1 つの処理が長引くと 20 秒を越える。そのときはこの締め切りで worker ごと止める。
+ */
 export const PARADIS_SPREADSHEET_SEMANTIC_RUN_DEADLINE_MS = PARADIS_SPREADSHEET_SEMANTIC_DIAGNOSTICS_DEADLINE_MS + 20_000;
 /** 待ち行列で待てる時間。過ぎた依頼は走らせずに `busy` で返す。 */
 export const PARADIS_SPREADSHEET_SEMANTIC_QUEUE_DEADLINE_MS = 60_000;
@@ -70,6 +73,6 @@ export class ParadisSpreadsheetSemanticWorkerBackend extends Disposable {
 		return this.queue.run(bytes.byteLength, () => {
 			const copy = ownedParadisOfficeBytes(bytes);
 			return { request: { bytes: copy }, transfer: [copy.buffer as ArrayBuffer] };
-		}, token);
+		}, token, { memoryKeys: [bytes] });
 	}
 }
