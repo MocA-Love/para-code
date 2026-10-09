@@ -379,14 +379,15 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 	// 入れ物（overflow は visible）に置く。位置は描き終わった後の配置（getBoundingClientRect）から求め、
 	// 次の描画の前と、ウィンドウの大きさが変わったときに置き直す（描いた直後は幅が定まっていないことがある）。
 	var commentState;
+	var placeScheduled = false;
 	function placeComments() {
 		if (!commentState) { return; }
 		var root = commentState.root;
 		var old = root.querySelectorAll('.paradis-word-comment-note');
 		for (var o = 0; o < old.length; o++) { old[o].remove(); }
+		// 先に配置をまとめて読み、その後で注釈をまとめて書く（読み書きを交互にすると、そのたびに配置を計算し直す）。
 		var byMarker = groups(root);
-		var bottoms = new Map();
-		var placed = 0;
+		var places = [];
 		for (var i = 0; i < commentState.entries.length; i++) {
 			var entry = commentState.entries[i];
 			var elements = byMarker.get(entry.marker);
@@ -394,41 +395,60 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 			var section = anchor && anchor.closest('section');
 			var container = section && section.parentElement;
 			if (!container) { continue; }
-			if (!container.style.position) { container.style.position = 'relative'; }
 			var containerRect = container.getBoundingClientRect();
 			var scale = container.offsetWidth > 0 ? containerRect.width / container.offsetWidth : 1;
-			var sectionRect = section.getBoundingClientRect();
-			var anchorRect = anchor.getBoundingClientRect();
-			var top = Math.max((anchorRect.top - containerRect.top) / scale, bottoms.get(container) || 0);
+			places.push({
+				entry: entry,
+				container: container,
+				top: (anchor.getBoundingClientRect().top - containerRect.top) / scale,
+				left: (section.getBoundingClientRect().right - containerRect.left) / scale + 12,
+			});
+		}
+		var notes = [];
+		for (var p = 0; p < places.length; p++) {
+			var place = places[p];
+			if (!place.container.style.position) { place.container.style.position = 'relative'; }
 			var note = document.createElement('div');
 			note.className = 'paradis-word-comment-note';
 			note.setAttribute('role', 'note');
 			var author = document.createElement('strong');
-			author.textContent = entry.author || '';
+			author.textContent = place.entry.author || '';
 			note.appendChild(author);
-			if (entry.date) {
+			if (place.entry.date) {
 				var date = document.createElement('span');
-				date.textContent = ' ' + entry.date;
+				date.textContent = ' ' + place.entry.date;
 				note.appendChild(date);
 			}
 			var text = document.createElement('div');
-			text.textContent = entry.text || '';
+			text.textContent = place.entry.text || '';
 			note.appendChild(text);
-			note.style.top = top + 'px';
-			note.style.left = ((sectionRect.right - containerRect.left) / scale + 12) + 'px';
-			container.appendChild(note);
-			bottoms.set(container, top + note.offsetHeight + 4);
-			placed++;
+			note.style.left = place.left + 'px';
+			place.container.appendChild(note);
+			notes.push(note);
 		}
-		commentState.contentEl.classList.toggle('paradis-word-has-comments', placed > 0);
+		// 重ならないよう下へずらす。高さは書き終えた後にまとめて読む。
+		var heights = notes.map(function (note) { return note.offsetHeight; });
+		var bottoms = new Map();
+		for (var n = 0; n < notes.length; n++) {
+			var top = Math.max(places[n].top, bottoms.get(places[n].container) || 0);
+			notes[n].style.top = top + 'px';
+			bottoms.set(places[n].container, top + heights[n] + 4);
+		}
+		commentState.contentEl.classList.toggle('paradis-word-has-comments', notes.length > 0);
+	}
+	// 次の描画の前に 1 回だけ置き直す（大きさを変えている間に何度呼ばれても、予約は 1 つ）。
+	function schedulePlaceComments() {
+		if (placeScheduled) { return; }
+		placeScheduled = true;
+		requestAnimationFrame(function () { placeScheduled = false; placeComments(); });
 	}
 	function setComments(root, contentEl, entries) {
 		commentState = { root: root, contentEl: contentEl, entries: entries };
 		contentEl.classList.toggle('paradis-word-has-comments', entries.length > 0);
 		placeComments();
-		requestAnimationFrame(placeComments);
+		schedulePlaceComments();
 	}
-	window.addEventListener('resize', function () { requestAnimationFrame(placeComments); });
+	window.addEventListener('resize', schedulePlaceComments);
 
 	document.addEventListener('click', onClick);
 	document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closePopover(true); } });
