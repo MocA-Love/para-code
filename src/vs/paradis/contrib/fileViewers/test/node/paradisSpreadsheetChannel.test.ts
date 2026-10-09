@@ -6,6 +6,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual, strictEqual, throws } from 'assert';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
 import type { IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
@@ -103,14 +105,45 @@ suite('ParadisSpreadsheetChannel', () => {
 		strictEqual(result, workbook);
 	});
 
-	test('passes only the workbook bytes, so diagnostics never run on the shared process thread', async () => {
-		const received: number[] = [];
+	test('passes the workbook bytes and a numeric image budget, never diagnostics options', async () => {
+		const received: unknown[][] = [];
 		const channel = new ParadisSpreadsheetChannel(async () => ({
-			parseWorkbook: async (...args: unknown[]) => { received.push(args.length); return workbook; },
+			parseWorkbook: async (...args: unknown[]) => { received.push(args); return workbook; },
 		}));
 
 		await channel.call('window:1', 'parseWorkbook', ['a', { semanticDiagnostics: true }]);
+		await channel.call('window:1', 'parseWorkbook', ['b', 5]);
 
-		deepStrictEqual(received, [1]);
+		deepStrictEqual(received, [['a', undefined], ['b', 5]]);
+	});
+
+	test('sends the workbook bytes to the metafile worker once created, and turns away what it cannot send', async () => {
+		const received: number[] = [];
+		let created = 0;
+		const channel = new ParadisSpreadsheetChannel(
+			async () => createService(),
+			async () => ({ collect: async () => { throw new Error('unused'); } }),
+			async () => {
+				created++;
+				return { convert: async (bytes: Uint8Array) => { received.push(bytes.byteLength); return { images: { 'image1.emf': 'data:image/svg+xml;base64,AA==' } }; } };
+			},
+		);
+		const results = [
+			await channel.call('window:1', 'convertMetafiles', [VSBuffer.wrap(new Uint8Array(3))], CancellationToken.None),
+			await channel.call('window:1', 'convertMetafiles', [new Uint8Array(5)], CancellationToken.None),
+			await channel.call('window:1', 'convertMetafiles', ['not bytes'], CancellationToken.None),
+			await channel.call('window:1', 'convertMetafiles', [new Uint8Array(20 * 1024 * 1024 + 1)], CancellationToken.None),
+		];
+		channel.dispose();
+		deepStrictEqual({ received, created, results }, {
+			received: [3, 5],
+			created: 1,
+			results: [
+				{ images: { 'image1.emf': 'data:image/svg+xml;base64,AA==' } },
+				{ images: { 'image1.emf': 'data:image/svg+xml;base64,AA==' } },
+				{ images: {}, unavailableReason: 'invalid' },
+				{ images: {}, unavailableReason: 'tooLarge' },
+			],
+		});
 	});
 });

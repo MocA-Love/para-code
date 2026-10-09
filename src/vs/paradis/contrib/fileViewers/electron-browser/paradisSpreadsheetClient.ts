@@ -17,7 +17,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -35,12 +35,14 @@ export async function parseSpreadsheetResource(
 	// 返り値ではなくコールバックにしてあるのは、既存の呼び出し側の戻り値の形を変えないため。
 	// 読んだバイト列も渡す（詳しい解析へ、読み直さずにそのまま渡すため）。
 	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
+	/** ブックで描く画像の画素の合計の上限。比較は左右で半分ずつ渡す。無ければ既定値。 */
+	imagePixelBudget?: number,
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	onSourceBytes?.(content.value.byteLength, content.value);
 	throwIfNotWorkbook(resource, content.value);
 	const base64 = encodeBase64(content.value);
-	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
+	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {
@@ -48,13 +50,75 @@ export async function parseSpreadsheetResource(
 	}
 	// drawings は「表示順(1始まり)」でキーされている。renderer 側 DOMParser で図形/画像へ変換して付与する。
 	// schemeClr の解決にはブック固有のテーマパレット(theme1.xml 由来)を使う。
-	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => {
-		const { shapes, undrawn } = parseDrawingObjects(drawings[idx + 1], raw.themeColors);
-		return shapes.length > 0 || undrawn.length > 0
-			? { ...sheet, ...(shapes.length > 0 ? { shapes } : {}), ...(undrawn.length > 0 ? { undrawnObjects: undrawn } : {}) }
-			: sheet;
+	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => withDrawings(sheet, drawings[idx + 1], raw.themeColors));
+	// まだ描いていない EMF・WMF があるときだけ、差し替えのために drawing の XML を残す。
+	const pendingMetafiles = Object.values(drawings).some(list => list.some(drawing => drawing.metafileMedia && Object.keys(drawing.metafileMedia).length > 0));
+	return { sheets, themeColors: raw.themeColors, ...(pendingMetafiles ? { drawingsBySheet: drawings } : {}) };
+}
+
+function withDrawings(sheet: IParadisSheetData, drawings: readonly IParadisDrawingData[] | undefined, themeColors: IParadisWorkbookData['themeColors']): IParadisSheetData {
+	const { shapes, undrawn } = parseDrawingObjects(drawings, themeColors);
+	const { shapes: _shapes, undrawnObjects: _undrawn, ...rest } = sheet;
+	return shapes.length > 0 || undrawn.length > 0
+		? { ...rest, ...(shapes.length > 0 ? { shapes } : {}), ...(undrawn.length > 0 ? { undrawnObjects: undrawn } : {}) }
+		: rest;
+}
+
+/** まだ描いていない EMF・WMF が残っているか（`convertSpreadsheetMetafiles` を頼む意味があるか）。 */
+export function hasPendingSpreadsheetMetafiles(workbook: IParadisWorkbookData): boolean {
+	return !!workbook.drawingsBySheet;
+}
+
+/**
+ * 表示を描いた後で、EMF・WMF を SVG にしてもらう。変換は shared process の worker で走る。表示のために
+ * 読んだバイト列をそのまま渡す（読み直さず、base64 にもしない）。`token` を取り消すと worker からも外れる。
+ */
+export async function convertSpreadsheetMetafiles(
+	sharedProcessService: ISharedProcessService,
+	content: VSBuffer,
+	token: CancellationToken,
+): Promise<IParadisSpreadsheetMetafileImages> {
+	return sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisSpreadsheetMetafileImages>('convertMetafiles', [content], token);
+}
+
+const SVG_DATA_URL = /^data:image\/svg\+xml;base64,[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * 変換できた EMF・WMF を drawing に入れ、図形を読み直したブックを返す。変わったシートだけを作り直し、
+ * ほかのシートはそのまま使う。変換できなかったものは代替表示の箱のまま。差し替えた後は drawing の XML を手放す。
+ */
+export function applySpreadsheetMetafiles(workbook: IParadisWorkbookData, converted: IParadisSpreadsheetMetafileImages): IParadisWorkbookData {
+	const drawings = workbook.drawingsBySheet;
+	if (!drawings) {
+		return workbook;
+	}
+	const images = converted.images && typeof converted.images === 'object' ? converted.images : {};
+	const imageFor = (name: string) => Object.hasOwn(images, name) && typeof images[name] === 'string' && SVG_DATA_URL.test(images[name]) ? images[name] : undefined;
+	const sheets = workbook.sheets.map((sheet, index) => {
+		const list = drawings[index + 1];
+		if (!list?.some(drawing => drawing.metafileMedia && Object.keys(drawing.metafileMedia).some(rid => imageFor(drawing.metafileMedia![rid])))) {
+			return sheet;
+		}
+		const updated = list.map((drawing): IParadisDrawingData => {
+			if (!drawing.metafileMedia) {
+				return drawing;
+			}
+			const media = { ...drawing.media };
+			const rejectedMedia = { ...drawing.rejectedMedia };
+			for (const rid of Object.keys(drawing.metafileMedia)) {
+				const href = imageFor(drawing.metafileMedia[rid]);
+				if (href) {
+					media[rid] = href;
+					delete rejectedMedia[rid];
+				}
+			}
+			const { metafileMedia: _pending, rejectedMedia: _rejected, ...rest } = drawing;
+			return { ...rest, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}) };
+		});
+		return withDrawings(sheet, updated, workbook.themeColors);
 	});
-	return { sheets, themeColors: raw.themeColors };
+	const { drawingsBySheet: _drawings, ...rest } = workbook;
+	return { ...rest, sheets };
 }
 
 /**

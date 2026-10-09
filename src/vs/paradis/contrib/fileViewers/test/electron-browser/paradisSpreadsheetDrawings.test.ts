@@ -8,6 +8,7 @@
 import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
+import { ParadisSpreadsheetBrokenImages } from '../../electron-browser/paradisSpreadsheetBrokenImages.js';
 import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
 import { appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
 import { appendChartSvg } from '../../electron-browser/paradisSpreadsheetChartSvg.js';
@@ -69,6 +70,17 @@ suite('ParadisSpreadsheetDrawings', () => {
 			undrawn: [{ kind: 'geometry', name: 'Shape 5', from: { c: 0, co: 0, r: 0, ro: 0 } }],
 			vertical: true,
 		});
+	});
+
+	test('takes each run property the run does not set from the paragraph defaults', () => {
+		const body = '<xdr:txBody><a:bodyPr/><a:p><a:pPr><a:defRPr sz="1400" b="1" i="1"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:latin typeface="Sample Sans"/></a:defRPr></a:pPr>'
+			+ '<a:r><a:rPr b="0"/><a:t>A</a:t></a:r><a:r><a:rPr sz="1000"/><a:t>B</a:t></a:r><a:r><a:t>C</a:t></a:r></a:p></xdr:txBody>';
+		const { shapes } = parseDrawingObjects([{ xml: drawing(anchor(sp(8, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>', body))), media: {} }]);
+		deepStrictEqual(shapes[0].text?.paragraphs[0].runs, [
+			{ text: 'A', size: 14, italic: true, color: '#FF0000', font: 'Sample Sans' },
+			{ text: 'B', size: 10, bold: true, italic: true, color: '#FF0000', font: 'Sample Sans' },
+			{ text: 'C', size: 14, bold: true, italic: true, color: '#FF0000', font: 'Sample Sans' },
+		]);
 	});
 
 	test('places shapes inside nested groups by their share of the anchor, and picks AlternateContent branches', () => {
@@ -201,6 +213,57 @@ suite('ParadisSpreadsheetDrawings', () => {
 			'translate(50 50) scale(-1 1) translate(-50 -50)',
 			'translate(25 50) scale(-1 1) translate(-25 -50)',
 		]);
+	});
+
+	test('draws the SVG of a picture when it has one, and its PNG otherwise', () => {
+		const ASVG = 'http://schemas.microsoft.com/office/drawing/2016/SVG/main';
+		const pic = `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="1" name="Picture 1"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rIdPng"><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip xmlns:asvg="${ASVG}" r:embed="rIdSvg"/></a:ext></a:extLst></a:blip></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`;
+		const href = (media: Record<string, string>) => parseDrawingObjects([{ xml: drawing(anchor(pic)), media }]).shapes[0]?.href;
+		deepStrictEqual([
+			href({ rIdPng: 'data:image/png;base64,AA==', rIdSvg: 'data:image/svg+xml;base64,AA==' }),
+			href({ rIdPng: 'data:image/png;base64,AA==' }),
+		], ['data:image/svg+xml;base64,AA==', 'data:image/png;base64,AA==']);
+	});
+
+	test('says why a picture was not drawn, and looks media up only by its own keys', () => {
+		const pic = (id: number, rid: string) => anchor(`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Picture ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${rid}"/></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`);
+		const { undrawn } = parseDrawingObjects([{
+			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString'), pic(5, 'rIdMany'), pic(6, 'rIdHuge')].join('')),
+			media: {},
+			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified', rIdMany: 'overBudget', rIdHuge: 'tooLarge' },
+		}]);
+		const placeholders = spreadsheetUndrawnPlaceholders([{ name: 'Sheet1', rows: [], columnCount: 0, columnWidths: [], truncated: false, minCol: 1, undrawnObjects: undrawn }]);
+		deepStrictEqual({ reasons: undrawn.map(object => object.reason), distinctDetails: new Set(placeholders.map(placeholder => placeholder.detail)).size }, {
+			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified', 'overBudget', 'tooLarge'],
+			distinctDetails: 5,
+		});
+	});
+
+	test('reports many broken images with a single redraw', async () => {
+		let redraws = 0;
+		const broken = new ParadisSpreadsheetBrokenImages(() => redraws++, 0);
+		try {
+			const shapes = Array.from({ length: 5_000 }, (_, index): IParadisRenderShape => ({ type: 'image', flipH: false, flipV: false, from: { c: index, co: 0, r: 0, ro: 0 }, to: { c: index, co: 0, r: 0, ro: 0 }, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href: 'data:image/png;base64,AA==' }));
+			for (const shape of shapes) {
+				broken.add(shape, 'Sheet1');
+				broken.add(shape, 'Sheet1');
+			}
+			await new Promise(resolve => setTimeout(resolve, 20));
+			deepStrictEqual([redraws, broken.entries.size], [1, 5_000]);
+		} finally {
+			broken.dispose();
+		}
+	});
+
+	test('replaces an image the browser cannot decode and reports it', () => {
+		const shape: IParadisRenderShape = { type: 'image', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 1, co: 0, r: 1, ro: 0 }, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href: 'data:image/png;base64,AA==' };
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		const reported: IParadisRenderShape[] = [];
+		const drawn = appendShapeSvg(svg, shape, { x: 0, y: 0, width: 10, height: 10 }, { stroke: '#000', strokeWidth: 0, dash: '', opacity: 1, content: true }, undefined, { onImageError: broken => reported.push(broken) });
+		const image = drawn.querySelector('image')!;
+		image.dispatchEvent(new Event('error'));
+		image.dispatchEvent(new Event('error'));
+		deepStrictEqual([image.getAttribute('href')?.startsWith('data:image/svg+xml;base64,'), reported.length, reported[0] === shape], [true, 1, true]);
 	});
 
 	test('builds preset geometry paths in the frame and draws a chart', () => {

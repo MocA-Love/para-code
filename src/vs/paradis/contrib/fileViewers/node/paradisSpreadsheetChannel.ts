@@ -15,11 +15,16 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
+import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
 
 /** 詳しい解析を受け持つ口（テストで差し替えられるように）。 */
 export interface IParadisSpreadsheetDiagnosticsBackend {
 	collect(bytes: Uint8Array, token: CancellationToken): Promise<IParadisSemanticDiagnosticsSummary>;
+}
+
+/** EMF・WMF の変換を受け持つ口（テストで差し替えられるように）。 */
+export interface IParadisSpreadsheetMetafileBackend {
+	convert(bytes: Uint8Array, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages>;
 }
 
 /** ビューアが読む上限（PARADIS_SPREADSHEET_MAX_BYTES）と同じ。これより大きいものは worker へ送らない。 */
@@ -42,10 +47,18 @@ async function createWorkerBackend(): Promise<IParadisSpreadsheetDiagnosticsBack
 	return new ParadisSpreadsheetSemanticWorkerBackend(ParadisSpreadsheetSemanticWorkerBackend.workerFactory(workerPath));
 }
 
+/** EMF・WMF の変換も worker で行う。変換は記録 1 件の中で長く止まることがあり、本体で走らせると他のチャネルが待たされるため。 */
+async function createMetafileWorkerBackend(): Promise<IParadisSpreadsheetMetafileBackend & IDisposable> {
+	const { ParadisSpreadsheetMetafileWorkerBackend } = await import('./spreadsheet/paradisSpreadsheetMetafileWorkerBackend.js');
+	const workerPath = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain.js').fsPath;
+	return new ParadisSpreadsheetMetafileWorkerBackend(ParadisSpreadsheetMetafileWorkerBackend.workerFactory(workerPath));
+}
+
 export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDisposable {
 
 	private servicePromise: Promise<IParadisSpreadsheetService> | undefined;
 	private diagnosticsPromise: Promise<IParadisSpreadsheetDiagnosticsBackend & Partial<IDisposable>> | undefined;
+	private metafilePromise: Promise<IParadisSpreadsheetMetafileBackend & Partial<IDisposable>> | undefined;
 	private disposed = false;
 
 	constructor(
@@ -54,11 +67,13 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 			return new ParadisSpreadsheetService();
 		},
 		private readonly diagnosticsFactory: () => Promise<IParadisSpreadsheetDiagnosticsBackend & Partial<IDisposable>> = createWorkerBackend,
+		private readonly metafileFactory: () => Promise<IParadisSpreadsheetMetafileBackend & Partial<IDisposable>> = createMetafileWorkerBackend,
 	) { }
 
 	dispose(): void {
 		this.disposed = true;
 		void this.diagnosticsPromise?.then(backend => backend.dispose?.(), () => undefined);
+		void this.metafilePromise?.then(backend => backend.dispose?.(), () => undefined);
 	}
 
 	listen<T>(_ctx: string, event: string): Event<T> {
@@ -68,9 +83,11 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	call<T>(_ctx: string, command: string, arg?: unknown, cancellationToken: CancellationToken = CancellationToken.None): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			// 表示の投影だけを返す。第 2 引数（診断の指定）は通さない。診断を本体のスレッドで走らせないため。
-			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]))) as Promise<T>;
+			// 表示の投影だけを返す。第 2 引数は画像の画素の上限（数でなければ既定値）。診断の指定は通さない。
+			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]), typeof args[1] === 'number' ? args[1] : undefined)) as Promise<T>;
 			case 'collectSemanticDiagnostics': return this.collectSemanticDiagnostics(args[0], cancellationToken) as Promise<T>;
+			// 表示を返した後で、同じバイト列の EMF・WMF を worker で SVG にする。
+			case 'convertMetafiles': return this.convertMetafiles(args[0], cancellationToken) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -95,6 +112,27 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 			return unavailable('failed');
 		}
 		return backend.collect(bytes, token);
+	}
+
+	private async convertMetafiles(value: unknown, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages> {
+		const bytes = value instanceof VSBuffer ? value.buffer : value instanceof Uint8Array ? value : undefined;
+		if (!bytes) {
+			return { images: {}, unavailableReason: 'invalid' };
+		}
+		if (bytes.byteLength > MAX_DIAGNOSTICS_BYTES) {
+			return { images: {}, unavailableReason: 'tooLarge' };
+		}
+		if (this.disposed) {
+			return { images: {}, unavailableReason: 'cancelled' };
+		}
+		let backend: IParadisSpreadsheetMetafileBackend;
+		try {
+			backend = await (this.metafilePromise ??= this.metafileFactory());
+		} catch {
+			this.metafilePromise = undefined;
+			return { images: {}, unavailableReason: 'failed' };
+		}
+		return backend.convert(bytes, token);
 	}
 
 	private getService(): Promise<IParadisSpreadsheetService> {

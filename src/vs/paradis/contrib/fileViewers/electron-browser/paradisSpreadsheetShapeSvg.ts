@@ -11,10 +11,17 @@
 // presetShapeDefinitions.xml）に沿って、枠の中の座標で組み立てる。
 
 import type { IParadisRenderShape, IParadisShapeText } from '../common/paradisSpreadsheet.js';
+import { PARADIS_OFFICE_BROKEN_IMAGE_HREF } from '../common/paradisOfficeBrokenImage.js';
 import { appendChartSvg } from './paradisSpreadsheetChartSvg.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
+
+/** 描いた後に起きたことを呼び出し側へ知らせる口。 */
+export interface ParadisShapeHooks {
+	/** 画像を読めなかった（代わりの箱に替えた）。 */
+	readonly onImageError?: (shape: IParadisRenderShape) => void;
+}
 
 /** 図形を置く枠（px）。 */
 export interface ParadisShapeBox {
@@ -276,7 +283,7 @@ function groupTransformAttribute(shape: IParadisRenderShape, anchorBox: ParadisS
  * 図形 1 つを `parent`（svg か g）へ足し、足した要素を返す。`box` は図形の枠、`anchorBox` はアンカーの枠
  * （グループの回転・反転の中心を求めるのに使う）。
  */
-export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box: ParadisShapeBox, paint: ParadisShapePaint, anchorBox?: ParadisShapeBox): Element {
+export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box: ParadisShapeBox, paint: ParadisShapePaint, anchorBox?: ParadisShapeBox, hooks?: ParadisShapeHooks): Element {
 	const doc = parent.ownerDocument;
 	const group = doc.createElementNS(SVG_NS, 'g');
 	if (paint.opacity !== 1) {
@@ -321,6 +328,11 @@ export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box:
 		img.setAttribute('height', round(Math.max(0, box.height)));
 		img.setAttribute('preserveAspectRatio', 'none');
 		img.setAttribute('href', shape.href);
+		// 検査は通ったのに読めなかった画像（見出しは正しく中身が壊れたもの）は、代わりの箱に替えて知らせる。
+		img.addEventListener('error', () => {
+			img.setAttribute('href', PARADIS_OFFICE_BROKEN_IMAGE_HREF);
+			hooks?.onImageError?.(shape);
+		}, { once: true });
 		const transform = transformAttribute(shape, box, true);
 		if (transform) {
 			img.setAttribute('transform', transform);
