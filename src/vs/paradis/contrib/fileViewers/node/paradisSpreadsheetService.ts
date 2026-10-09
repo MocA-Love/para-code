@@ -37,7 +37,7 @@ import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PI
 import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
 import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
-import { readParadisSpreadsheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
+import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -1470,7 +1470,8 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			workbookDrawingCharacters += sheetCharacters - used;
 			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(metafileMedia).length > 0 ? { metafileMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
-		// セルのメモとコメント。人の名前は workbook の関係から persons を引く。
+		// セルのメモとコメント。人の名前は workbook の関係から persons を引く。数と文字数の上限はブック全体で共有する。
+		const commentBudget = createParadisSpreadsheetCommentBudget();
 		let personsXml: string | undefined;
 		if (wbRels) {
 			for (const rel of (await wbRels.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
@@ -1500,7 +1501,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 				}
 			}
 			if (commentsXml || threadedCommentsXml) {
-				const comments = readParadisSpreadsheetComments({ commentsXml, threadedCommentsXml, personsXml });
+				const comments = readParadisSpreadsheetComments({ commentsXml, threadedCommentsXml, personsXml }, commentBudget);
 				if (comments.length > 0) {
 					commentsBySheet[keyForFile(Number.parseInt(m[1], 10))] = comments;
 				}
