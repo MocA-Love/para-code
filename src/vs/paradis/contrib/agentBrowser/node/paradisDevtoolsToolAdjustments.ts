@@ -13,7 +13,13 @@
 //     `root`（uid）を渡されたら、その要素の部分木だけを返す（取ったスナップショットから切り出す）
 //   - click / fill などの「not interactive」に、直前にゲートウェイが入力を断った理由を書き足す
 //   - Target closed で失敗した読み取り系のツールを 1 回だけ呼び直してよいかを決める
+//   - navigate_page: 行き先は http / https / about:blank（open_browser_tab と同じ）と、手元のファイルの file: だけ。
+//     javascript: の URL は「Unable to navigate」と返りながら、今のページで実行される（台の腕で確かめた）。
+//     file: は従来どおり通し、手元のパスの決まり（paradisDevtoolsPathPolicy.ts）で確かめる
 // 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
+
+import { paradisIsAllowedAgentTabUrl } from '../common/paradisAgentBrowserTabs.js';
+import { paradisIsLocalFileUrl } from './paradisCdpRemotePolicy.js';
 
 /** take_snapshot が 1 回に返す本文の上限（文字数）。 */
 export const PARADIS_SNAPSHOT_MAX_CHARS = 20_000;
@@ -113,6 +119,10 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		delete rest.paraCodeObserve;
 		return { args: rest, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE };
 	}
+	if (name === 'navigate_page' && typeof args.url === 'string' && (args.type === undefined || args.type === 'url') && !paradisIsAllowedAgentTabUrl(args.url) && !paradisIsLocalFileUrl(args.url)) {
+		// javascript: は今のページで動き、data: や内部のスキームはページを丸ごと差し替える。どれもエージェントに任せる理由が無い
+		return { args, refuse: `navigate_page only opens http, https, about:blank or file URLs, not ${describeUrlScheme(args.url)}. To run code in the page, use evaluate_script.` };
+	}
 	if (name === 'wait_for') {
 		const { includeSnapshot, ...rest } = args;
 		const text = typeof rest.text === 'string' ? [rest.text] : rest.text;
@@ -130,6 +140,12 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		return { args: snapshotRoot !== undefined && snapshotOffset === 0 && options?.measureRoot === true ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
+}
+
+/** 断った URL の見せ方（スキームだけ。URL の中身はエージェントがもう知っているので繰り返さない）。 */
+function describeUrlScheme(url: string): string {
+	const scheme = /^(?<scheme>[a-z][a-z0-9+.-]*):/i.exec(url.trim())?.groups?.scheme;
+	return scheme !== undefined ? `${scheme.toLowerCase()}: URLs` : 'this URL';
 }
 
 /** Target closed で失敗した呼び出しを 1 回だけ呼び直してよいか。 */
