@@ -22,11 +22,12 @@ import { Disposable, MutableDisposable, toDisposable } from '../../../../base/co
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { ProcessPropertyType } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisParseProgramStatus, paradisProgramStatusForeground, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisParseProgramStatus, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
 
 class ParadisProgramStatusContribution extends Disposable implements ITerminalContribution {
 
@@ -38,6 +39,11 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	private readonly gate = new ParadisProgramStatusGate();
 	private readonly commandFinished = this._register(new MutableDisposable());
 	private readonly pendingTimer = this._register(new MutableDisposable());
+	/**
+	 * pty が報告した前面のプロセスの題名。`instance.processName` は名前を付けた端末では更新が止まり（題名の出どころが
+	 * API になるため）、Claude Code が終わっても版の番号のまま残るので、プロセスの知らせを自分で受けて持つ。
+	 */
+	private foregroundProcess: string | undefined;
 
 	constructor(
 		context: ITerminalContributionContext,
@@ -62,11 +68,14 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		};
 		watch(this.instance.capabilities.get(TerminalCapability.CommandDetection));
 		this._register(this.instance.capabilities.onDidAddCommandDetectionCapability(capability => watch(capability)));
-		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（プロセス名が Claude Code でも ssh などでも
-		// なくなったら）閉じる
-		this._register(this.instance.onTitleChanged(() => {
-			if (this.instance.capabilities.get(TerminalCapability.CommandDetection) === undefined
-				&& paradisProgramStatusForeground(undefined, this.instance.processName) === undefined
+		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（Claude Code でも ssh などでもなくなったら）閉じる
+		this.foregroundProcess = this.instance.processName || undefined;
+		this._register(context.processManager.onDidChangeProperty(property => {
+			if (property.type !== ProcessPropertyType.Title) {
+				return;
+			}
+			this.foregroundProcess = typeof property.value === 'string' && property.value.length > 0 ? property.value : undefined;
+			if (paradisProgramStatusClosesOnForeground(this.instance.capabilities.get(TerminalCapability.CommandDetection) !== undefined, this.foregroundProcess)
 				&& this.gate.close()) {
 				this.send({ state: 'clear' });
 			}
@@ -82,7 +91,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 			if (parsed === 'query') {
 				// コマンド行は、シェル統合の nonce が合ったときだけ使う（出力の OSC 633 ; E では偽れる）
 				const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
-				if (this.gate.query(paradisProgramStatusForeground(trustedCommandLine, this.instance.processName))) {
+				if (this.gate.query(paradisProgramStatusForeground(trustedCommandLine, this.foregroundProcess))) {
 					// 端末の返事として pty へ書く（利用者の入力にはしない。DA1 の自動の返事と同じ経路）
 					xterm.raw.input(PARADIS_PROGRAM_STATUS_REPLY, false);
 				}
@@ -108,6 +117,9 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 			const pending = this.gate.releasePending();
 			if (pending !== undefined) {
 				this.send(pending);
+			} else if (this.gate.pendingDueAt !== undefined) {
+				// タイマーが明ける時刻より早く起きた（時計の粒度）。捨てた状態が残っているので、もう一度予約する
+				this.schedulePending();
 			}
 		}, Math.max(0, dueAt - Date.now()));
 		this.pendingTimer.value = toDisposable(() => clearTimeout(handle));
