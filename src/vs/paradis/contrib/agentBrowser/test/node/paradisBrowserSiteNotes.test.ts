@@ -14,6 +14,7 @@ import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserServic
 import { ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin } from '../../node/paradisBrowserSiteNotes.js';
 
 const TOKEN = 'pane-token';
+const NOTES = { notes: true, recipes: false };
 
 function textOf(result: unknown): string {
 	return ((result as { content: { text?: string }[] }).content).map(item => item.text ?? '').join('\n');
@@ -22,7 +23,7 @@ function textOf(result: unknown): string {
 interface ISiteNotesInternals {
 	_dispatch(ingressLease: object, rpc: { jsonrpc: string; id: number; method: string; params?: unknown }): Promise<unknown>;
 	_siteNoteTool(ingressLease: object, name: string, args: unknown): Promise<unknown>;
-	_withSiteNotesHint(ingressLease: object, name: string, args: unknown, result: unknown): Promise<unknown>;
+	_withSiteHints(ingressLease: object, name: string, args: unknown, result: unknown, kinds: { notes: boolean; recipes: boolean }): Promise<unknown>;
 }
 
 suite('Paradis site notes (E4)', () => {
@@ -171,13 +172,13 @@ suite('Paradis site notes (E4)', () => {
 		}) as unknown as ISiteNotesInternals;
 		const ok = { content: [{ type: 'text', text: 'page text' }] };
 		const written = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'The filter button is called Search.' }));
-		const ownPane = textOf(await service._withSiteNotesHint({ token: TOKEN }, 'get_text', {}, ok));
-		const nextPane = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'get_text', {}, ok));
-		const nextPaneAgain = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'click_by', {}, ok));
-		const otherSite = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'open_browser_tab', { url: 'https://example.com' }, ok));
+		const ownPane = textOf(await service._withSiteHints({ token: TOKEN }, 'get_text', {}, ok, NOTES));
+		const nextPane = textOf(await service._withSiteHints({ token: 'next-pane' }, 'get_text', {}, ok, NOTES));
+		const nextPaneAgain = textOf(await service._withSiteHints({ token: 'next-pane' }, 'click_by', {}, ok, NOTES));
+		const otherSite = textOf(await service._withSiteHints({ token: 'next-pane' }, 'open_browser_tab', { url: 'https://example.com' }, ok, NOTES));
 		// 同じペインで新しいエージェントがつながったら、もう一度添える
 		await service._dispatch({ token: 'next-pane' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
-		const newAgent = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'get_text', {}, ok));
+		const newAgent = textOf(await service._withSiteHints({ token: 'next-pane' }, 'get_text', {}, ok, NOTES));
 		verified = false;
 		const refused = await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'x' }) as { isError?: boolean };
 		const secret = await (verified = true, service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'password: hunter2' })) as { isError?: boolean };
@@ -189,13 +190,13 @@ suite('Paradis site notes (E4)', () => {
 		const movedWrite = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'The dev server moved to 5173.' }));
 		const oldOriginWrite = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'Old site.', url: 'http://localhost:3000/' }));
 		tabs.get('next-pane')!.set('tab-9', 'http://localhost:5173/');
-		const movedHint = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'navigate_page', {}, ok));
+		const movedHint = textOf(await service._withSiteHints({ token: 'next-pane' }, 'navigate_page', {}, ok, NOTES));
 		space = undefined;
 		// スペースはペインごとに控えるので、新しいエージェントがつながったところで聞き直す
 		await service._dispatch({ token: TOKEN }, { jsonrpc: '2.0', id: 3, method: 'initialize', params: {} });
 		const unknownSpace = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'Anything.' }));
 		await service._dispatch({ token: 'next-pane' }, { jsonrpc: '2.0', id: 2, method: 'initialize', params: {} });
-		const unknownSpaceHint = textOf(await service._withSiteNotesHint({ token: 'next-pane' }, 'get_text', {}, ok));
+		const unknownSpaceHint = textOf(await service._withSiteHints({ token: 'next-pane' }, 'get_text', {}, ok, NOTES));
 		assert.deepStrictEqual({
 			written: written.startsWith('Saved the note ') && written.includes('(2026-10-10, claude)'),
 			ownPane,

@@ -814,6 +814,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.siteRecipes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.siteRecipes', "（試験的）サイトの操作を手順として保存する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.siteRecipesDesc', "エージェントが内蔵ブラウザで決まった画面まで進む操作を手順として保存し、同じリポジトリの次のエージェントが 1 回の呼び出しでやり直せるようにします。"),
+		keywords: 'agent browser experimental recipe replay steps save',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.downloads', "ダウンロードを確認なしで受け取る"),
