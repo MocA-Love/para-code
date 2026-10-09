@@ -201,7 +201,7 @@ interface IParadisSettingRowSpec {
 	 * 値の型。拡張機能の設定 (git.*) は登録されるまで値が読めず、型から
 	 * コントロールを選べない (オン/オフの設定が文字の入力欄になる) ので明示する。
 	 */
-	readonly valueType?: 'boolean';
+	readonly valueType?: 'boolean' | 'stringList';
 	/**
 	 * resource スコープの設定 (オン/オフのみ対応)。ワークスペースやフォルダの設定がユーザー設定より
 	 * 優先されるので、ダイアログがユーザー設定へ書いても実際の値が変わらないことがある。
@@ -444,6 +444,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
 		placeholder: '/usr/local/bin/ccusage',
 		keywords: 'ccusage executable path cost',
+	},
+	{
+		sectionId: 'psd-sec-usage',
+		key: 'paradis.ccusage.archiveDirs',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.ccusageArchiveDirs', "古い会話の記録の置き場"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.ccusageArchiveDirsDesc', "外付けやネットワークのディスクへ移した記録も AI コストに含めます。中の claude と codex を読みます。複数あるときはカンマで区切ります。つながっていない場所や、2 秒以内に確かめられない場所は飛ばします。ccusage 20.0.14 以上が必要です。"),
+		placeholder: '/Volumes/SSD/agent-archive',
+		keywords: 'ccusage archive external network disk nas ssd history claude codex',
+		valueType: 'stringList',
 	},
 	{
 		sectionId: 'psd-sec-usage',
@@ -1487,6 +1498,25 @@ export class ParadisSettingsDialog extends Disposable {
 			sync();
 			this._refreshers.push(sync);
 			this._register(dom.addDisposableListener(toggle, 'change', () => void this._write(key, toggle.checked)));
+			return;
+		}
+
+		if (spec.valueType === 'stringList') {
+			// 文字列の配列（パスの一覧など）は、カンマ区切りの 1 行で見せて書く
+			const input = dom.append(row, $('input.psd-input')) as HTMLInputElement;
+			input.type = 'text';
+			input.spellcheck = false;
+			if (spec.placeholder) {
+				input.placeholder = spec.placeholder;
+			}
+			const sync = () => {
+				const current = this.configurationService.getValue<unknown>(key);
+				input.value = Array.isArray(current) ? current.join(', ') : '';
+				input.disabled = !this._isRegistered(key);
+			};
+			sync();
+			this._refreshers.push(sync);
+			this._register(dom.addDisposableListener(input, 'change', () => void this._write(key, input.value.split(',').map(item => item.trim()).filter(item => item.length > 0))));
 			return;
 		}
 

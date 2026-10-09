@@ -20,6 +20,13 @@ export const PARADIS_CCUSAGE_CHANNEL = 'paradisCcusage';
  */
 export const PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS = 'paradis.ccusage.execTimeoutSeconds';
 
+/**
+ * 古い会話の記録を移した置き場（アーカイブの根）の設定キー。各要素の下の `claude`（`projects/` を持つ）と
+ * `codex`（`sessions/` を持つ）を、手元の記録と一緒に ccusage へ読ませる。shared process が読むので
+ * common に置く。
+ */
+export const PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS = 'paradis.ccusage.archiveDirs';
+
 /** renderer から shared process へ渡す実行オプション。args はサービス側でホワイトリスト構築する。 */
 export interface IParadisCcusageExecOptions {
 	/** 設定 paradis.ccusage.executablePath の明示パス(空なら自動解決)。 */

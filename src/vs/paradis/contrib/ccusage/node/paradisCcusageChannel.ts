@@ -15,6 +15,7 @@
 
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import { homedir } from 'os';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import * as path from '../../../../base/common/path.js';
@@ -40,6 +41,7 @@ import {
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
 	PARADIS_CCUSAGE_FETCH_REPORT_COMMAND,
+	PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS,
 	PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS,
 	PARADIS_CCUSAGE_TIMEZONE_PATTERN,
 	ParadisCcusageProjects,
@@ -132,6 +134,34 @@ const WARM_LEASE_MAX_MEMBERSHIPS = 512;
 const WARM_LEASE_MAX_TARGETS_PER_OWNER = 4;
 const WARM_LEASE_MAX_EXECUTABLE_PATH_LENGTH = 4096;
 const WARM_LEASE_OWNER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
+/**
+ * アーカイブの置き場があるかを見直す間隔。キャッシュの鍵を作るたびに見るので、毎回ディスクを見に行かない。
+ * 外付けのディスクを抜き差ししても、この長さが過ぎれば次の要求から新しい鍵（＝新しい状態の値）になる。
+ */
+const ARCHIVE_PROBE_TTL_MS = 10_000;
+/**
+ * 置き場を1回確かめる長さの上限。切れたネットワークのディスクや回転待ちのディスクでは stat が返ってこないので、
+ * これを過ぎたら「無い」とみなす。
+ */
+const ARCHIVE_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * 返ってきていない stat の上限。打ち切っても止まった stat は libuv のスレッドプール（既定 4 本）を占めたままに
+ * なるので、積もるとこのプロセスの非同期の fs・dns・zlib・crypto がすべて止まる。これ以上は新しい stat を出さない。
+ */
+const ARCHIVE_PROBE_MAX_PENDING_STATS = 2;
+
+/**
+ * ccusage に手元の記録と一緒に読ませるアーカイブ（設定 `paradis.ccusage.archiveDirs`）のうち、いま実在するもの。
+ * 外付けのディスクが外れていれば空になり、env は今までと同じになる。
+ */
+export interface IParadisCcusageArchives {
+	/** `projects/` を持つ Claude の置き場（`<根>/claude`）。 */
+	readonly claude: readonly string[];
+	/** `sessions/` か `archived_sessions/` を持つ Codex の置き場（`<根>/codex`）。 */
+	readonly codex: readonly string[];
+}
+
+const NO_ARCHIVES: IParadisCcusageArchives = { claude: [], codex: [] };
 
 interface IWarmFailure {
 	readonly generation: number;
@@ -227,6 +257,11 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private warmPassPending = false;
 	/** dispose 後にタイマーが再起動しないようにする。 */
 	private disposed = false;
+	/** 直前に見たアーカイブの置き場（{@link ARCHIVE_PROBE_TTL_MS}）。 */
+	private archiveProbe: { readonly at: number; readonly setting: string; readonly archives: IParadisCcusageArchives } | undefined;
+	/** 走っている置き場の確認（同じ設定の確認は1本にまとめる）。 */
+	private archiveProbing: { readonly setting: string; readonly promise: Promise<void> } | undefined;
+	private readonly archiveSettingListener: IDisposable | undefined;
 	/**
 	 * ログインシェル由来の解決済み環境(PATH 等)。shared process は Dock/Spotlight 起動の
 	 * electron-main から process.env を継承するだけなので、GUI 起動では ~/.zshrc 等で
@@ -242,6 +277,9 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		private readonly now: () => number = Date.now,
 		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
+		/** 設定 `paradis.ccusage.archiveDirs` を読むか。手元の shared process だけが読む（SSH の接続先では読まない）。 */
+		private readonly readsArchives = false,
+		private readonly probeArchives: (roots: readonly string[]) => Promise<IParadisCcusageArchives> = roots => defaultArchiveProber.probe(roots),
 	) {
 		// POSIX では ccusage を自分のプロセスグループで起こし(paradisCcusageProcessGroupOptions)、止めるときは
 		// グループごと止める。npx 経由だと子は npx で、実体の node(ccusage)は孫になる。子だけを止めると孫が
@@ -273,6 +311,15 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			},
 		);
 		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
+		if (readsArchives) {
+			// 要求が来る前に確かめておく（設定を変えたときも）。最初の要求が確認を待たずに済むように
+			this.archiveSettingListener = configurationService?.onDidChangeConfiguration(e => {
+				if (e.affectsConfiguration(PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS)) {
+					this.currentArchives();
+				}
+			});
+			this.currentArchives();
+		}
 	}
 
 	/** 設定 paradis.ccusage.execTimeoutSeconds(未設定なら既定値)から実行タイムアウトを求める。 */
@@ -292,6 +339,63 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
 	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
 		return this.cachedShellEnv.getEnv();
+	}
+
+	/** 設定 `paradis.ccusage.archiveDirs` の根（文字列だけ）と、それを比べるための文字列。読まないときは undefined。 */
+	private archiveSetting(): { readonly roots: readonly string[]; readonly setting: string } | undefined {
+		if (!this.readsArchives) {
+			return undefined;
+		}
+		const configured = this.configurationService?.getValue<unknown>(PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS);
+		const roots = Array.isArray(configured) ? configured.filter((root): root is string => typeof root === 'string') : [];
+		return roots.length === 0 ? undefined : { roots, setting: JSON.stringify(roots) };
+	}
+
+	/**
+	 * いま読めるアーカイブ。キャッシュの鍵に含め、同じ値で ccusage を実行する（鍵と実際に読んだものを揃える）。
+	 * ディスクは見に行かず、直前の確認の結果を返す。結果が {@link ARCHIVE_PROBE_TTL_MS} より古ければ裏で確かめ直し、
+	 * 新しい結果は次の要求から使う（抜き差しを拾うため）。
+	 */
+	private currentArchives(): IParadisCcusageArchives {
+		const configured = this.archiveSetting();
+		if (!configured) {
+			return NO_ARCHIVES;
+		}
+		const probe = this.archiveProbe;
+		if (!probe || probe.setting !== configured.setting || this.now() - probe.at >= ARCHIVE_PROBE_TTL_MS) {
+			void this.refreshArchives(configured.roots, configured.setting);
+		}
+		return probe?.setting === configured.setting ? probe.archives : NO_ARCHIVES;
+	}
+
+	/**
+	 * 今の設定をまだ一度も確かめ終えていなければ、その確認を待つ（{@link ARCHIVE_PROBE_TIMEOUT_MS} が上限）。
+	 * 起動直後や設定を変えた直後の要求が、置き場を読まない値を取ってしまわないようにする。
+	 * 一度でも確かめ終えていれば待たない（undefined を返す）。
+	 */
+	private archivesReady(): Promise<void> | undefined {
+		const configured = this.archiveSetting();
+		return configured && this.archiveProbe?.setting !== configured.setting ? this.refreshArchives(configured.roots, configured.setting) : undefined;
+	}
+
+	private refreshArchives(roots: readonly string[], setting: string): Promise<void> {
+		if (this.archiveProbing?.setting === setting) {
+			return this.archiveProbing.promise;
+		}
+		const promise = this.probeArchives(roots).then(
+			archives => archives,
+			() => NO_ARCHIVES,
+		).then(archives => {
+			if (!this.disposed) {
+				this.archiveProbe = { at: this.now(), setting, archives };
+			}
+		}).finally(() => {
+			if (this.archiveProbing?.promise === promise) {
+				this.archiveProbing = undefined;
+			}
+		});
+		this.archiveProbing = { setting, promise };
+		return promise;
 	}
 
 	async fetchDaily(options: IParadisCcusageExecOptions): Promise<IParadisCcusageDailyRow[]> {
@@ -371,11 +475,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			const now = this.now();
 			// 直前に手動更新された等で十分新しいものは飛ばす(同じ走査を続けて2回しない)。
 			const reportArgs = [...warmReportArgs[target.kind]];
-			const cached = this.cache.get(this.cacheFamilyKeyFor(reportArgs, target.options));
+			const archives = this.currentArchives();
+			const cached = this.cache.get(this.cacheFamilyKeyFor(reportArgs, target.options, archives));
 			if (cached && cached.since === sinceArg(target.options) && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 				continue;
 			}
-			if (this.inflight.has(key)) {
+			if (this.inflight.has(this.runKeyFor(reportArgs, target.options, archives))) {
 				continue;
 			}
 			try {
@@ -489,18 +594,24 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return memberships <= WARM_LEASE_MAX_MEMBERSHIPS && distinctKeys.size <= WARM_LEASE_MAX_MEMBERSHIPS;
 	}
 
-	/** 実行の鍵(同時実行の束ね・warm の対象)。since/until/timezone を含む実行引数と実行ファイルパスで決まる。 */
+	/** warm の対象の鍵。since/until/timezone を含む実行引数と実行ファイルパスで決まる（アーカイブの有無では変えない）。 */
 	private cacheKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
 		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '']);
 	}
 
+	/** 実行の鍵（同時実行の束ね）。{@link cacheKeyFor} に、読ませたアーカイブを足したもの。 */
+	private runKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
+		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '', archives]);
+	}
+
 	/**
-	 * キャッシュの鍵。{@link cacheKeyFor} から `--since` だけを除いたもの。`--since` は「今日から 90 日前」で
+	 * キャッシュの鍵。{@link runKeyFor} から `--since` だけを除いたもの。`--since` は「今日から 90 日前」で
 	 * 毎日1日ずつ進むので、鍵に含めると日付が変わるたびに前日の値が引けなくなる。until・timezone・
-	 * 実行ファイルは値の意味を変えるので鍵に残す。
+	 * 実行ファイルは値の意味を変えるので鍵に残す。読ませたアーカイブも残す（外付けのディスクを抜き差ししたときに、
+	 * 前の状態で数えた値を出し続けないため）。
 	 */
-	private cacheFamilyKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
-		return JSON.stringify([this.buildArgs(reportArgs, { ...options, since: undefined }), options.executablePath ?? '']);
+	private cacheFamilyKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives): string {
+		return JSON.stringify([this.buildArgs(reportArgs, { ...options, since: undefined }), options.executablePath ?? '', archives]);
 	}
 
 	private buildArgs(reportArgs: string[], options: IParadisCcusageExecOptions): string[] {
@@ -525,6 +636,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			this.warmTimer = undefined;
 		}
 		this.warmLeaseListener.dispose();
+		this.archiveSettingListener?.dispose();
 		this.warmLeaseTracker.dispose();
 		this.warmLeaseOwners.clear();
 		this.warmFailures.clear();
@@ -548,7 +660,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		foregroundCacheInterest = true,
 		background = false,
 	): Promise<IParadisCcusageReportResult<T>> {
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
+		const ready = this.archivesReady();
+		if (ready) {
+			await ready;
+		}
+		const archives = this.currentArchives();
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
 		if (!options.bypassCache) {
 			const cached = this.cache.get(familyKey);
 			if (cached) {
@@ -557,7 +674,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 					return { value: cached.value as T, fetchedAt: cached.at, stale: false };
 				}
 				if (age < STALE_MAX_AGE_MS) {
-					this.revalidate(reportArgs, options, ttl);
+					this.revalidate(reportArgs, options, ttl, archives);
 					return { value: cached.value as T, fetchedAt: cached.at, stale: true };
 				}
 			}
@@ -575,7 +692,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 		}
 		try {
-			const running = this.run(reportArgs, options, ttl, shouldCache, foregroundCacheInterest);
+			const running = this.run(reportArgs, options, archives, ttl, shouldCache, foregroundCacheInterest);
 			const completed = background ? await running : await this.waitWithinForegroundLimit(running);
 			return { value: completed.value as T, fetchedAt: completed.at, stale: false };
 		} catch (error) {
@@ -615,8 +732,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** 古い値を返した後の裏の取り直し。失敗はログだけにして、次に試してよい時刻を遅らせる。 */
-	private revalidate(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number): void {
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
+	private revalidate(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number, archives: IParadisCcusageArchives): void {
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
 		// 同じキャッシュの鍵で走っているものがあれば（`--since` だけ違う実行を含む）、それが終われば値が入るので起こさない。
 		if (this.disposed || this.inflightForFamily(familyKey)) {
 			return;
@@ -625,7 +742,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		if (failure && this.now() < failure.retryAt) {
 			return;
 		}
-		this.run(reportArgs, { ...options, bypassCache: true }, ttl, () => true, true).then(() => {
+		this.run(reportArgs, { ...options, bypassCache: true }, archives, ttl, () => true, true).then(() => {
 			this.revalidateFailures.delete(familyKey);
 		}, error => {
 			const count = (this.revalidateFailures.get(familyKey)?.count ?? 0) + 1;
@@ -641,13 +758,14 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private run(
 		reportArgs: string[],
 		options: IParadisCcusageExecOptions,
+		archives: IParadisCcusageArchives,
 		ttl: number,
 		shouldCache: () => boolean,
 		foregroundCacheInterest: boolean,
 	): Promise<ICompletedReport> {
 		const args = this.buildArgs(reportArgs, options);
-		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
-		const familyKey = this.cacheFamilyKeyFor(reportArgs, options);
+		const cacheKey = this.runKeyFor(reportArgs, options, archives);
+		const familyKey = this.cacheFamilyKeyFor(reportArgs, options, archives);
 		// bypassCache でも実行中の同一リクエストには相乗りする(結果はどのみち今まさに取り直したもの)
 		const inflight = this.inflight.get(cacheKey);
 		if (inflight) {
@@ -659,7 +777,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			familyKey,
 			foregroundCacheInterest,
 			// 実行の上限は常に裏の上限。待っている側の上限は waitWithinForegroundLimit が持つ
-			promise: this.doExecJson<unknown>(reportArgs, args, options, this.getBackgroundExecTimeoutMs())
+			promise: this.doExecJson<unknown>(reportArgs, args, options, archives, this.getBackgroundExecTimeoutMs())
 				.then(({ value, usedOfflineFallback }) => {
 					const at = this.now();
 					this.negativeCache.delete(familyKey);
@@ -689,12 +807,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		}
 	}
 
-	private async doExecJson<T>(reportArgs: string[], args: string[], options: IParadisCcusageExecOptions, timeoutMs: number): Promise<{ value: T; usedOfflineFallback: boolean }> {
+	private async doExecJson<T>(reportArgs: string[], args: string[], options: IParadisCcusageExecOptions, archives: IParadisCcusageArchives, timeoutMs: number): Promise<{ value: T; usedOfflineFallback: boolean }> {
 		const executable = await this.resolveExecutable(options.executablePath);
 		let stdout: string;
 		let usedOfflineFallback = false;
 		try {
-			stdout = await this.exec(executable, args, timeoutMs);
+			stdout = await this.exec(executable, args, archives, timeoutMs);
 		} catch (error) {
 			// 価格表のオンライン取得失敗(オフライン環境等)で落ちることがあるため、キャッシュ済み価格を
 			// 使う --offline で一度だけ再試行する。ただしバイナリが起動できなかった(ENOENT)・timeout の
@@ -706,7 +824,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			this.logService.info(`[ParadisCcusage] retrying 'ccusage ${reportArgs.join(' ')}' with --offline: ${execError.message}`);
 			try {
 				// 1回目に解決済みの executable をそのまま使う(再解決の PATH プローブを避ける)
-				stdout = await this.exec(executable, [...args, '--offline'], timeoutMs);
+				stdout = await this.exec(executable, [...args, '--offline'], archives, timeoutMs);
 				usedOfflineFallback = true;
 			} catch {
 				// 再試行も失敗した場合は元のエラーの方が原因を表している
@@ -721,7 +839,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		}
 	}
 
-	private async exec(executable: IResolvedExecutable, args: string[], timeoutMs: number): Promise<string> {
+	private async exec(executable: IResolvedExecutable, args: string[], archives: IParadisCcusageArchives, timeoutMs: number): Promise<string> {
 		const fullArgs = [...executable.prefixArgs, ...args];
 		const env = await this.getExecEnv();
 		// Windows で解決先が .cmd/.bat シムのときは cmd.exe 経由にラップする。旧 Node の
@@ -735,7 +853,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				windowsHide: true,
 				windowsVerbatimArguments: shimInvocation !== undefined,
 				...paradisCcusageProcessGroupOptions(),
-				env: { ...paradisCcusageCodexHomeEnv(env, paradisCodexHomes()), NO_COLOR: '1', LOG_LEVEL: '0' }
+				env: { ...paradisCcusageDataEnv(env, paradisCodexHomes(), archives), NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				execution.completed = true;
 				const timedOut = execution.tracked?.timedOut === true;
@@ -892,6 +1010,104 @@ export function paradisCcusageCodexHomeEnv(env: NodeJS.ProcessEnv, codexHomes: r
 	const homes = codexHomes.filter(home => !home.includes(','));
 	return homes.length > 1 ? { ...env, CODEX_HOME: homes.join(',') } : env;
 }
+
+/**
+ * ccusage に読ませる記録の場所を env にする。Codex のホームは {@link paradisCcusageCodexHomeEnv} のとおりで、
+ * アーカイブ（{@link IParadisCcusageArchives}）があればその後ろに足す。ccusage 20.0.14 以降は `CLAUDE_CONFIG_DIR` と
+ * `CODEX_HOME` のカンマ区切りを全部読み、同じ記録（Claude は message.id と requestId、Codex は response_id）を
+ * 1回だけ数える。アーカイブが無ければ {@link paradisCcusageCodexHomeEnv} と同じ env を返す。
+ *
+ * `CLAUDE_CONFIG_DIR` を足すと ccusage の既定の場所（`$XDG_CONFIG_HOME/claude` と `~/.claude`）を見なくなるので、
+ * 利用者が `CLAUDE_CONFIG_DIR` を決めていなければ既定の 2 つを先に並べる（無い方は ccusage が飛ばす）。
+ * Codex もホームが 1 つのときは、利用者の `CODEX_HOME`（無ければ既定の `~/.codex`）を先に並べる。
+ */
+export function paradisCcusageDataEnv(env: NodeJS.ProcessEnv, codexHomes: readonly string[], archives: IParadisCcusageArchives, homeDirectory: string = env.HOME || homedir()): NodeJS.ProcessEnv {
+	let result = paradisCcusageCodexHomeEnv(env, codexHomes);
+	if (archives.codex.length > 0) {
+		const homes = codexHomes.filter(home => !home.includes(','));
+		const local = homes.length > 1 ? homes : [env.CODEX_HOME?.trim() || path.join(homeDirectory, '.codex')];
+		result = { ...result, CODEX_HOME: [...local, ...archives.codex].join(',') };
+	}
+	if (archives.claude.length > 0) {
+		const configured = env.CLAUDE_CONFIG_DIR?.trim();
+		const local = configured
+			? [configured]
+			: [path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDirectory, '.config'), 'claude'), path.join(homeDirectory, '.claude')];
+		result = { ...result, CLAUDE_CONFIG_DIR: [...local, ...archives.claude].join(',') };
+	}
+	return result;
+}
+
+/**
+ * 設定に書かれたアーカイブの根から、いま実在する Claude と Codex の置き場を拾う。絶対パス（`~/` と Windows の
+ * `~\` は展開する）だけを見る。カンマを含むパスは区切りと見分けられないので渡さない。外付けのディスクが
+ * 外れていれば何も拾わない。
+ *
+ * 切れたネットワークのディスクや回転待ちのディスクで stat が返ってこなくても shared process を止めないよう、
+ * stat は非同期で1本ずつ出し、{@link ARCHIVE_PROBE_TIMEOUT_MS} を過ぎたらその根は「無い」とみなして残りを見ない。
+ * 打ち切った stat は返ってくるまで覚えておき、その間は同じパスに新しい stat を出さない。返ってきていない stat が
+ * {@link ARCHIVE_PROBE_MAX_PENDING_STATS} 本あれば、どこにも出さない（スレッドプールを埋めないため）。
+ */
+export class ParadisCcusageArchiveProber {
+
+	/** 出したまま返ってきていない stat のパス。 */
+	private readonly pending = new Set<string>();
+
+	constructor(
+		private readonly isDirectory: (candidate: string) => Promise<boolean> = async candidate => (await fs.promises.stat(candidate)).isDirectory(),
+		private readonly timeoutMs: number = ARCHIVE_PROBE_TIMEOUT_MS,
+		private readonly homeDirectory: string = homedir(),
+	) { }
+
+	async probe(roots: readonly string[]): Promise<IParadisCcusageArchives> {
+		const claude: string[] = [];
+		const codex: string[] = [];
+		const seen: string[] = [];
+		for (const raw of roots) {
+			const trimmed = raw.trim();
+			const root = trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith(`~${path.sep}`) ? path.join(this.homeDirectory, trimmed.slice(1)) : trimmed;
+			if (!path.isAbsolute(root) || root.includes(',') || seen.includes(root)) {
+				continue;
+			}
+			seen.push(root);
+			// undefined（返ってこない・出せない）なら、この根の残りは見ない
+			const projects = await this.check(path.join(root, 'claude', 'projects'));
+			if (projects === undefined) {
+				continue;
+			}
+			if (projects) {
+				claude.push(path.join(root, 'claude'));
+			}
+			const sessions = await this.check(path.join(root, 'codex', 'sessions'));
+			if (sessions === undefined) {
+				continue;
+			}
+			if (sessions || await this.check(path.join(root, 'codex', 'archived_sessions'))) {
+				codex.push(path.join(root, 'codex'));
+			}
+		}
+		return { claude, codex };
+	}
+
+	/** ディレクトリか。上限までに返らない・前の stat がまだ返っていない・出せる本数を超えるときは undefined。 */
+	private check(candidate: string): Promise<boolean | undefined> {
+		if (this.pending.has(candidate) || this.pending.size >= ARCHIVE_PROBE_MAX_PENDING_STATS) {
+			return Promise.resolve(undefined);
+		}
+		this.pending.add(candidate);
+		const stat = this.isDirectory(candidate).catch(() => false).finally(() => this.pending.delete(candidate));
+		return new Promise<boolean | undefined>(resolve => {
+			const timer = setTimeout(() => resolve(undefined), this.timeoutMs);
+			void stat.then(result => {
+				clearTimeout(timer);
+				resolve(result);
+			});
+		});
+	}
+}
+
+/** shared process の既定の確認役。止まった stat はプロセス全体のスレッドプールを占めるので、本数はプロセスで1つにまとめて数える。 */
+const defaultArchiveProber = new ParadisCcusageArchiveProber();
 
 // 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
 export class ParadisCcusageChannel<TContext = string> implements IServerChannel<TContext> {
@@ -1050,6 +1266,7 @@ function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): va
  * マシンスコープの設定で、接続先のログ量に応じて延ばせる必要があるため（渡さないと接続先だけ
  * 既定値に固定され、設定画面から書いた値が誰にも読まれない）。起動引数は渡さない: シェル環境の
  * 解決は設定と引数の両方が揃ったときだけ行うので、接続先では既定の解決のままになる。
+ * アーカイブ（`paradis.ccusage.archiveDirs`）も読まない（手元のディスクの場所なので、接続先には無い）。
  */
 export function registerParadisCcusageForServer<TContext>(server: IPCServer<TContext>, logService: ILogService, configurationService?: IConfigurationService): IDisposable {
 	const service = new ParadisCcusageService(logService, configurationService);
@@ -1070,7 +1287,7 @@ export function registerParadisCcusageForServer<TContext>(server: IPCServer<TCon
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisCcusage(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
-	const service = new ParadisCcusageService(logService, configurationService, args);
+	const service = new ParadisCcusageService(logService, configurationService, args, undefined, undefined, undefined, true);
 	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel<string>(service));
 	// バックグラウンド更新のタイマーを止める(unref 済みだが、明示的に畳んでおく)。
 	return { dispose: () => service.dispose() };
