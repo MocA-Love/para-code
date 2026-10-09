@@ -6,7 +6,7 @@
 
 import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { inspectParadisWordRasterImage } from '../../common/word/paradisWordImageInspection.js';
+import { inspectParadisWordRasterImage, inspectParadisWordRasterImageWithReason, PARADIS_WORD_IMAGE_LIMITS } from '../../common/word/paradisWordImageInspection.js';
 import { minimalGif, minimalJpeg, minimalPng, pngChunk } from './paradisWordImageFixture.js';
 
 suite('ParadisWordImageInspection', () => {
@@ -56,6 +56,31 @@ suite('ParadisWordImageInspection', () => {
 			emptyGif: undefined,
 			svgNamedPng: undefined,
 			emf: undefined,
+		});
+	});
+
+	test('tells an image that is only too large from one that is broken', () => {
+		const reason = (bytes: Uint8Array, limits = PARADIS_WORD_IMAGE_LIMITS) => inspectParadisWordRasterImageWithReason(bytes, limits).rejection ?? 'shown';
+		deepStrictEqual({
+			shown: reason(minimalPng(3, 2)),
+			tooWide: reason(minimalPng(40_000, 1)),
+			tooManyPixels: reason(minimalJpeg(10_000, 10_000)),
+			tooManyFrames: reason(minimalGif(7, 6, { frames: 1_001 })),
+			tooManyBytes: reason(minimalPng(3, 2), { ...PARADIS_WORD_IMAGE_LIMITS, bytes: 16 }),
+			broken: reason(minimalPng(3, 2, { end: false })),
+			brokenAndWide: reason(minimalPng(40_000, 1, { end: false })),
+			animated: reason(minimalPng(3, 2, { before: pngChunk('acTL', [0, 0, 0, 2, 0, 0, 0, 0]) })),
+			empty: reason(new Uint8Array()),
+		}, {
+			shown: 'shown',
+			tooWide: 'tooLarge',
+			tooManyPixels: 'tooLarge',
+			tooManyFrames: 'tooLarge',
+			tooManyBytes: 'tooLarge',
+			broken: 'invalid',
+			brokenAndWide: 'invalid',
+			animated: 'invalid',
+			empty: 'invalid',
 		});
 	});
 

@@ -285,8 +285,34 @@ function inspectGif(bytes: Uint8Array, limits: ParadisWordImageInspectionLimits)
  * 大きすぎる、動く PNG、PNG・JPEG・GIF 以外）は undefined。
  */
 export function inspectParadisWordRasterImage(bytes: Uint8Array, limits: ParadisWordImageInspectionLimits = PARADIS_WORD_IMAGE_LIMITS): ParadisWordRasterImage | undefined {
-	if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > limits.bytes) {
-		return undefined;
+	return inspectParadisWordRasterImageWithReason(bytes, limits).image;
+}
+
+/** 画像を表示しない理由。`tooLarge` は、1 枚のバイト数・画素数・一辺・GIF のフレーム数の上限を越えたもの。 */
+export type ParadisWordRasterRejection = 'tooLarge' | 'invalid';
+
+export type ParadisWordRasterInspection =
+	| { readonly image: ParadisWordRasterImage; readonly rejection?: undefined }
+	| { readonly image?: undefined; readonly rejection: ParadisWordRasterRejection };
+
+/** 上限を外して読み直すときの上限（バイト数は元のまま。読む量は変わらない）。 */
+const UNBOUNDED_DIMENSIONS = { pixels: Number.MAX_SAFE_INTEGER, side: Number.MAX_SAFE_INTEGER, frames: Number.MAX_SAFE_INTEGER };
+
+/**
+ * `inspectParadisWordRasterImage` と同じ検査をし、表示しないときはその理由も返す。上限を越えたかどうかは、
+ * 大きさの上限だけを外して読み直し、それで通るかで見分ける（壊れた画像を「大きすぎる」と言わないため）。
+ */
+export function inspectParadisWordRasterImageWithReason(bytes: Uint8Array, limits: ParadisWordImageInspectionLimits = PARADIS_WORD_IMAGE_LIMITS): ParadisWordRasterInspection {
+	if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+		return { rejection: 'invalid' };
 	}
-	return inspectPng(bytes, limits) ?? inspectJpeg(bytes, limits) ?? inspectGif(bytes, limits);
+	if (bytes.byteLength > limits.bytes) {
+		return { rejection: 'tooLarge' };
+	}
+	const image = inspectPng(bytes, limits) ?? inspectJpeg(bytes, limits) ?? inspectGif(bytes, limits);
+	if (image) {
+		return { image };
+	}
+	const relaxed = { ...limits, ...UNBOUNDED_DIMENSIONS };
+	return { rejection: inspectPng(bytes, relaxed) ?? inspectJpeg(bytes, relaxed) ?? inspectGif(bytes, relaxed) ? 'tooLarge' : 'invalid' };
 }
