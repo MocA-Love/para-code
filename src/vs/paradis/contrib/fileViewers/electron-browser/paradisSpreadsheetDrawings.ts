@@ -14,13 +14,14 @@
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
-import type { IParadisChartData, IParadisChartGroup, IParadisChartSeries, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartData, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
 import type {
 	ParadisSpreadsheetDrawing,
 	ParadisSpreadsheetDrawingAnchor,
 	ParadisSpreadsheetDrawingMarker,
 	ParadisSpreadsheetDrawingTransform,
 } from '../common/spreadsheet/paradisSpreadsheetObjects.js';
+import { parseParadisChartDocument } from './paradisSpreadsheetChartParser.js';
 
 const EMU_PER_PIXEL = 9_525;
 
@@ -846,32 +847,6 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	});
 }
 
-const CHART_KINDS: Record<string, IParadisChartGroup['kind'] | undefined> = {
-	lineChart: 'line', line3DChart: 'line', areaChart: 'area', area3DChart: 'area', pieChart: 'pie', pie3DChart: 'pie',
-	doughnutChart: 'doughnut', scatterChart: 'scatter',
-};
-
-function cachedValues(ref: Element | null): { strings: string[]; numbers: (number | null)[] } {
-	const cache = xmlChild(xmlChild(ref, 'numRef'), 'numCache') ?? xmlChild(xmlChild(ref, 'strRef'), 'strCache') ?? xmlChild(ref, 'numLit') ?? xmlChild(ref, 'strLit')
-		?? xmlChild(xmlChild(ref, 'multiLvlStrRef'), 'multiLvlStrCache');
-	const count = Math.min(10_000, intAttr(xmlChild(cache, 'ptCount'), 'val', 0));
-	const strings: string[] = new Array(count).fill('');
-	const numbers: (number | null)[] = new Array(count).fill(null);
-	const points = cache?.localName === 'multiLvlStrCache' ? xmlChildren(xmlChild(cache, 'lvl'), 'pt') : xmlChildren(cache, 'pt');
-	for (const point of points) {
-		const index = intAttr(point, 'idx', -1);
-		if (index < 0 || index >= 10_000) {
-			continue;
-		}
-		const value = xmlChild(point, 'v')?.textContent ?? '';
-		while (strings.length <= index) { strings.push(''); numbers.push(null); }
-		strings[index] = value;
-		const number = Number(value);
-		numbers[index] = value.trim() !== '' && Number.isFinite(number) ? number : null;
-	}
-	return { strings, numbers };
-}
-
 /** 既定の系列の色。テーマの accent1〜6 を順に使い、7 番目からは暗くして回す（Excel の既定の並び）。 */
 function chartPalette(themeColors: ParadisShapeThemeColors | undefined, index: number): string {
 	const name = `accent${(index % 6) + 1}`;
@@ -881,24 +856,16 @@ function chartPalette(themeColors: ParadisShapeThemeColors | undefined, index: n
 	return cycle === 0 || !rgb ? base : rgbToHex(rgb.map(channel => channel * Math.max(0.4, 1 - 0.25 * cycle)));
 }
 
-function seriesColor(ser: Element, context: Pick<ParseContext, 'themeColors'>): string | undefined {
-	const spPr = xmlChild(ser, 'spPr');
-	const fill = resolveFill(spPr, context.themeColors) ?? resolveFill(xmlChild(spPr, 'ln'), context.themeColors);
+/** グラフの部品（系列・点）の spPr の塗り、無ければ線の色。 */
+function chartPartColor(part: Element | null, themeColors: ParadisShapeThemeColors | undefined): string | undefined {
+	const spPr = xmlChild(part, 'spPr');
+	const fill = resolveFill(spPr, themeColors) ?? resolveFill(xmlChild(spPr, 'ln'), themeColors);
 	return fill && fill !== 'none' ? fill.color : undefined;
-}
-
-function richText(el: Element | null): string {
-	const parts: string[] = [];
-	// eslint-disable-next-line no-restricted-syntax -- DOMParser で生成した分離ドキュメントの走査(ライブDOMではない)
-	for (const t of el ? Array.from(el.getElementsByTagNameNS('*', 't')) : []) {
-		parts.push(t.textContent ?? '');
-	}
-	return parts.join('');
 }
 
 /**
  * chartN.xml の保存済みの値（numCache・strCache）からグラフを組み立てる。描けない種類が混ざれば undefined、
- * 系列や点が上限を越えれば `overLimit`。
+ * 系列や点が上限を越えれば `overLimit`。読み方は paradisSpreadsheetChartParser.ts にある。
  */
 export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' | 'themeColors'>, limits: Pick<ParadisSpreadsheetDrawingLimits, 'chartSeries' | 'chartPoints'> = PARADIS_SPREADSHEET_DRAWING_LIMITS): IParadisChartData | 'overLimit' | undefined {
 	let doc: Document;
@@ -908,65 +875,12 @@ export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' 
 	} catch {
 		return undefined;
 	}
-	const chartEl = xmlChild(doc.documentElement, 'chart');
-	const plotArea = xmlChild(chartEl, 'plotArea');
-	if (!chartEl || !plotArea) {
-		return undefined;
-	}
-	const groups: IParadisChartGroup[] = [];
-	let seriesCount = 0;
-	let pointCount = 0;
-	for (const group of xmlChildren(plotArea)) {
-		if (!group.localName.endsWith('Chart')) {
-			continue;
-		}
-		const barDirection = xmlAttr(xmlChild(group, 'barDir') ?? group, 'val');
-		const kind = group.localName === 'barChart' || group.localName === 'bar3DChart' ? (barDirection === 'bar' ? 'bar' : 'column') : CHART_KINDS[group.localName];
-		if (!kind) {
-			return undefined;
-		}
-		const groupingValue = xmlAttr(xmlChild(group, 'grouping') ?? group, 'val');
-		const grouping = groupingValue === 'stacked' || groupingValue === 'percentStacked' || groupingValue === 'clustered' ? groupingValue : 'standard';
-		const series: IParadisChartSeries[] = [];
-		for (const ser of xmlChildren(group, 'ser')) {
-			if (++seriesCount > limits.chartSeries) {
-				return 'overLimit';
-			}
-			const tx = xmlChild(ser, 'tx');
-			const name = richText(tx) || cachedValues(tx).strings.join(' ') || xmlChild(tx, 'v')?.textContent || undefined;
-			const categories = cachedValues(xmlChild(ser, kind === 'scatter' ? 'xVal' : 'cat')).strings;
-			const values = cachedValues(xmlChild(ser, kind === 'scatter' ? 'yVal' : 'val')).numbers;
-			const xValues = kind === 'scatter' ? cachedValues(xmlChild(ser, 'xVal')).numbers : undefined;
-			pointCount += Math.max(values.length, categories.length);
-			if (pointCount > limits.chartPoints) {
-				return 'overLimit';
-			}
-			const seriesIndex = series.length;
-			const color = seriesColor(ser, context) ?? chartPalette(context.themeColors, intAttr(xmlChild(ser, 'idx'), 'val', seriesIndex));
-			let pointColors: string[] | undefined;
-			if (kind === 'pie' || kind === 'doughnut') {
-				const explicit = new Map<number, string>();
-				for (const point of xmlChildren(ser, 'dPt')) {
-					const pointColor = seriesColor(point, context);
-					if (pointColor) {
-						explicit.set(intAttr(xmlChild(point, 'idx'), 'val', -1), pointColor);
-					}
-				}
-				pointColors = values.map((_, index) => explicit.get(index) ?? chartPalette(context.themeColors, index));
-			}
-			series.push({ ...(name ? { name } : {}), categories, values, ...(xValues ? { xValues } : {}), color, ...(pointColors ? { pointColors } : {}) });
-		}
-		groups.push({ kind, grouping, series });
-	}
-	if (groups.length === 0) {
-		return undefined;
-	}
-	const titleEl = xmlChild(chartEl, 'title');
-	const title = titleEl ? richText(xmlChild(titleEl, 'tx')) : '';
-	const autoDeleted = xmlAttr(xmlChild(chartEl, 'autoTitleDeleted') ?? chartEl, 'val') === '1';
-	const singleSeriesTitle = !titleEl || autoDeleted ? undefined : title || (groups.length === 1 && groups[0].series.length === 1 ? groups[0].series[0].name : undefined);
-	return { ...(singleSeriesTitle ? { title: singleSeriesTitle } : {}), groups, legend: !!xmlChild(chartEl, 'legend') };
+	return parseParadisChartDocument(doc, {
+		color: part => chartPartColor(part, context.themeColors),
+		palette: index => chartPalette(context.themeColors, index),
+	}, limits);
 }
+
 
 function parseAnchor(anchor: Element, context: ParseContext): void {
 	let box: AnchorBox;
