@@ -31,6 +31,8 @@
 //    載せたフォルダーの中に居ることを確かめる（シンボリックリンクでの抜け出しも塞ぐ）
 //  - ディレクトリ一覧は返さない
 //  - GET / HEAD 以外は 405
+//  - `Range` は1区間だけ受け付ける（PDF ビューアが大きい文書を必要な所だけ読むため）。複数区間や
+//    読めない指定は無視して全体を返す（RFC 9110 が許す動き）
 
 // `http` は読み込みが重いので型だけ静的に取り、実体は最初に listen するときまで待つ
 // （このリポジトリの `code-no-http-import` ルールが要求する形）。
@@ -140,6 +142,43 @@ export function parseParadisPreviewPath(pathname: string): { token: string; segm
 		segments.push(decoded);
 	}
 	return { token, segments };
+}
+
+/** `Range` を解いた結果。`undefined` は「指定なし・解けない」で、全体を返す。 */
+export type ParadisByteRange = { readonly start: number; readonly end: number } | 'unsatisfiable';
+
+/**
+ * `Range: bytes=…` を1区間だけ解く。`end` は含む（HTTP と同じ）。
+ *
+ * 複数区間（`bytes=0-1,5-6`）や `bytes` 以外の単位は、応答を multipart にする手間に見合わないので
+ * 解かずに全体を返す。始まりがファイルの外なら `unsatisfiable`（416）。
+ */
+export function parseParadisByteRange(header: string | undefined, size: number): ParadisByteRange | undefined {
+	const match = header === undefined ? null : /^bytes=(?<start>\d*)-(?<end>\d*)$/.exec(header.trim());
+	if (!match?.groups) {
+		return undefined;
+	}
+	const { start: rawStart, end: rawEnd } = match.groups;
+	if (rawStart === '') {
+		// `bytes=-500` は末尾の500バイト。
+		if (rawEnd === '') {
+			return undefined;
+		}
+		const suffix = Number(rawEnd);
+		if (suffix === 0) {
+			return 'unsatisfiable';
+		}
+		return size === 0 ? 'unsatisfiable' : { start: Math.max(0, size - suffix), end: size - 1 };
+	}
+	const start = Number(rawStart);
+	const end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1);
+	if (start >= size) {
+		return 'unsatisfiable';
+	}
+	if (end < start) {
+		return undefined;
+	}
+	return { start, end };
 }
 
 /** HTML プレビュー用のローカル配信サーバ。shared process に1つだけ持つ。 */
@@ -297,18 +336,40 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		}
 
 		const origin = firstHeader(request.headers.origin);
-		response.writeHead(200, {
-			'Content-Type': CONTENT_TYPES.get(extname(target).toLowerCase()) ?? 'application/octet-stream',
-			'Content-Length': String(stat.size),
+		// 区間読みの途中でファイルが書き換わると、別の版の断片を継ぎ合わせてしまう。版を ETag で示し、
+		// `If-Range` が今の版と合わなければ区間を無視して全体を返す（RFC 9110 の決まり）。
+		const etag = `"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+		const ifRange = firstHeader(request.headers['if-range']);
+		const range = ifRange === undefined || ifRange === etag ? parseParadisByteRange(firstHeader(request.headers.range), stat.size) : undefined;
+		// 安全のためのヘッダーは、416 を含むどの応答にも同じものを付ける。
+		const commonHeaders: http.OutgoingHttpHeaders = {
+			'Accept-Ranges': 'bytes',
+			'ETag': etag,
 			// webview からは別オリジンとして見えるので、fetch やモジュール読み込みには許可が要る。
 			// **`*` にはしない**（上の説明を参照）。Origin ごとに応答が変わるので `Vary` を添える。
-			...(origin !== undefined && isWebviewOrigin(origin) ? { 'Access-Control-Allow-Origin': origin } : {}),
+			...(origin !== undefined && isWebviewOrigin(origin) ? {
+				'Access-Control-Allow-Origin': origin,
+				// pdf.js は `Accept-Ranges` を見て区間読みに切り替える。別オリジンの応答では、
+				// 名指しで公開しないとスクリプトから読めない（読めないと黙って全体読みに戻る）。
+				'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Range, Content-Length, ETag',
+			} : {}),
 			'Vary': 'Origin',
 			// トークンは URL の中にある。ページが `<meta name="referrer" content="unsafe-url">` を
 			// 書くと、外部への全リクエストに URL ごと載ってしまうので、こちらから止めておく。
 			'Referrer-Policy': 'no-referrer',
 			'Cache-Control': 'no-store',
 			'X-Content-Type-Options': 'nosniff',
+		};
+		if (range === 'unsatisfiable') {
+			response.writeHead(416, { ...commonHeaders, 'Content-Range': `bytes */${stat.size}` });
+			response.end();
+			return;
+		}
+		response.writeHead(range ? 206 : 200, {
+			...commonHeaders,
+			'Content-Type': CONTENT_TYPES.get(extname(target).toLowerCase()) ?? 'application/octet-stream',
+			'Content-Length': String(range ? range.end - range.start + 1 : stat.size),
+			...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}` } : {}),
 		});
 		if (request.method === 'HEAD') {
 			response.end();
@@ -316,7 +377,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		}
 
 		await new Promise<void>(resolve => {
-			const stream = createReadStream(target);
+			const stream = createReadStream(target, range ? { start: range.start, end: range.end } : undefined);
 			stream.on('error', () => {
 				response.destroy();
 				resolve();

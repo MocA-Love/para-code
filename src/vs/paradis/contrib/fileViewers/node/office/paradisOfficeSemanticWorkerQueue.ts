@@ -19,7 +19,10 @@
 //   超えたら走らせずに `busy` で返す。呼び出し側は間を空けて頼み直せる
 // - 取り消しのトークンが来たら、待っている依頼は外し、走っている依頼は worker へ取り消しを送る
 // - worker が落ちたら、走っていた依頼は失敗として返す。shared process の中で解析し直すことはしない
+// - メモリ不足で落ちた入力は SHA-256 で覚えておき（新しいものから 8 件）、同じ入力が来たら走らせずに返す。
+//   覚えている入力が無い間は、ハッシュを求めない
 
+import { createHash } from 'crypto';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 
@@ -69,9 +72,30 @@ export interface IParadisOfficeSemanticWorkerQueueOptions<TRun, TResult> {
 	readonly timers?: IParadisOfficeSemanticWorkerTimers;
 }
 
+/** 依頼ごとの指定。 */
+export interface IParadisOfficeSemanticWorkerRunOptions {
+	/** 実行の締め切り。無ければ待ち行列の既定値。 */
+	readonly runDeadlineMs?: number;
+	/**
+	 * メモリ不足の記録の鍵にするバイト列（複数のときは並び順も鍵に含む）。渡さなければ記録も照合もしない。
+	 */
+	readonly memoryKeys?: readonly Uint8Array[];
+}
+
+/** 覚えておくメモリ不足の入力の数。 */
+const OUT_OF_MEMORY_MEMORY = 8;
+
+function memoryKey(inputs: readonly Uint8Array[]): string {
+	return `${inputs.length}:${inputs.map(input => createHash('sha256').update(input).digest('hex')).join(':')}`;
+}
+
 interface IQueuedRequest<TRun, TResult> {
 	readonly id: number;
 	readonly byteLength: number;
+	readonly runDeadlineMs: number;
+	readonly memoryKeys?: readonly Uint8Array[];
+	/** 求めた鍵（記録が無いうちは求めない）。 */
+	memoryKey?: string;
 	/** worker へ送る中身を作る。送るときにバイト列を写す（送ると元の ArrayBuffer は手放すため）。 */
 	readonly prepare: () => { readonly request: TRun; readonly transfer: readonly ArrayBuffer[] };
 	readonly resolve: (value: TResult) => void;
@@ -103,6 +127,8 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 	/** まだ worker へ送っていない依頼。 */
 	private readonly queue: IQueuedRequest<TRun, TResult>[] = [];
 	private queuedBytes = 0;
+	/** メモリ不足で落ちた入力の鍵。古いものが先頭。 */
+	private readonly outOfMemoryKeys: string[] = [];
 	private nextId = 1;
 	private idleTimer: unknown;
 	private readonly timers: IParadisOfficeSemanticWorkerTimers;
@@ -120,9 +146,17 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 	 * 1 件を頼む。`byteLength` は待ち行列のバイト数の上限に数える大きさ、`prepare` は worker へ送る直前に
 	 * 呼ばれて、送る中身と移す ArrayBuffer を返す。
 	 */
-	run(byteLength: number, prepare: IQueuedRequest<TRun, TResult>['prepare'], token: CancellationToken): Promise<TResult> {
+	run(byteLength: number, prepare: IQueuedRequest<TRun, TResult>['prepare'], token: CancellationToken, runOptions: IParadisOfficeSemanticWorkerRunOptions = {}): Promise<TResult> {
 		if (this._store.isDisposed || token.isCancellationRequested) {
 			return Promise.resolve(this.options.failure('cancelled'));
+		}
+		let key: string | undefined;
+		if (runOptions.memoryKeys && this.outOfMemoryKeys.length > 0) {
+			key = memoryKey(runOptions.memoryKeys);
+			if (this.outOfMemoryKeys.includes(key)) {
+				// 前にこの入力で worker がメモリ不足になった。もう一度走らせても同じように落ちる。
+				return Promise.resolve(this.options.failure('limitExceeded'));
+			}
 		}
 		const waiting = this.running !== undefined || this.queue.length > 0;
 		if (waiting && (this.queue.length >= this.options.queueLimit || this.queuedBytes + byteLength > this.options.queueByteLimit)) {
@@ -130,7 +164,12 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 		}
 		this.clearIdleTimer();
 		return new Promise<TResult>(resolve => {
-			const request: IQueuedRequest<TRun, TResult> = { id: this.nextId++, byteLength, prepare, resolve };
+			const request: IQueuedRequest<TRun, TResult> = {
+				id: this.nextId++, byteLength, prepare, resolve,
+				runDeadlineMs: runOptions.runDeadlineMs ?? this.options.runDeadlineMs,
+				...(runOptions.memoryKeys ? { memoryKeys: runOptions.memoryKeys } : {}),
+				...(key ? { memoryKey: key } : {}),
+			};
 			request.cancellation = token.onCancellationRequested(() => this.cancel(request));
 			this.queue.push(request);
 			this.queuedBytes += byteLength;
@@ -157,6 +196,14 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 		while (!this.running && this.queue.length > 0) {
 			const request = this.dequeue(0);
 			this.clearTimer(request);
+			// 待っている間に、同じ入力の先の依頼がメモリ不足で落ちたかもしれない。送る直前にも照合する。
+			if (request.memoryKeys && this.outOfMemoryKeys.length > 0) {
+				request.memoryKey ??= memoryKey(request.memoryKeys);
+				if (this.outOfMemoryKeys.includes(request.memoryKey)) {
+					this.settle(request, this.options.failure('limitExceeded'));
+					continue;
+				}
+			}
 			const worker = this.ensureWorker();
 			if (!worker) {
 				this.settle(request, this.options.failure('failed'));
@@ -170,7 +217,7 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 				continue;
 			}
 			this.running = request;
-			request.timer = this.timers.setTimeout(() => this.expireRunning(request), this.options.runDeadlineMs);
+			request.timer = this.timers.setTimeout(() => this.expireRunning(request), request.runDeadlineMs);
 		}
 		this.scheduleIdle();
 	}
@@ -221,7 +268,11 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 		const request = this.running;
 		this.running = undefined;
 		if (request) {
-			this.settle(request, this.options.failure(isOutOfMemory(error) ? 'limitExceeded' : 'failed'));
+			const outOfMemory = isOutOfMemory(error);
+			if (outOfMemory && request.memoryKeys) {
+				this.rememberOutOfMemory(request.memoryKey ?? memoryKey(request.memoryKeys));
+			}
+			this.settle(request, this.options.failure(outOfMemory ? 'limitExceeded' : 'failed'));
 		}
 		this.pump();
 	}
@@ -264,6 +315,17 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 			} catch {
 				// worker が既に止まっていれば、待ちは exit の処理で畳まれる。
 			}
+		}
+	}
+
+	private rememberOutOfMemory(key: string): void {
+		const index = this.outOfMemoryKeys.indexOf(key);
+		if (index >= 0) {
+			this.outOfMemoryKeys.splice(index, 1);
+		}
+		this.outOfMemoryKeys.push(key);
+		while (this.outOfMemoryKeys.length > OUT_OF_MEMORY_MEMORY) {
+			this.outOfMemoryKeys.shift();
 		}
 	}
 
