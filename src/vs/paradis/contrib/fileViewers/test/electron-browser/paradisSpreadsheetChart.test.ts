@@ -250,6 +250,18 @@ suite('ParadisSpreadsheetChart', () => {
 		deepStrictEqual({ spokes: spokes.length, texts: texts(svg).length < 20, spoofed: spoofed.includes('10000') }, { spokes: 5, texts: true, spoofed: true });
 	});
 
+	test('draws the radar rings as circles when a point far down the list makes thousands of spokes', () => {
+		// ptCount 10000 で、9999 番に点を 1 つだけ置く。軸は 1 万本になるが、輪は円で描く。
+		const far = RADAR.replace('<c:pt idx="4"><c:v>4</c:v></c:pt></c:numCache>', '<c:pt idx="4"><c:v>4</c:v></c:pt><c:pt idx="9999"><c:v>3</c:v></c:pt></c:numCache>').replace(/<c:ptCount val="5"\/>/g, '<c:ptCount val="10000"/>');
+		const svg = render(parse(far));
+		const longestRing = Math.max(0, ...Array.from(svg.querySelectorAll('path')).filter(path => path.getAttribute('stroke') === '#E0E0E0').map(path => (path.getAttribute('d') ?? '').split('L').length));
+		deepStrictEqual({
+			changed: far.includes('idx="9999"'),
+			rings: svg.querySelectorAll('circle[stroke="#E0E0E0"]').length > 0,
+			longestRing: longestRing <= 361,
+		}, { changed: true, rings: true, longestRing: true });
+	});
+
 	test('puts the secondary axis on the side axPos says, whatever order the groups come in', () => {
 		// 折れ線（第 2 軸、右）の群を先に書いた複合グラフ。
 		const bar = COMBO.slice(COMBO.indexOf('<c:barChart>'), COMBO.indexOf('</c:barChart>') + '</c:barChart>'.length);
