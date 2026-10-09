@@ -292,8 +292,22 @@ export function inspectParadisWordRasterImage(bytes: Uint8Array, limits: Paradis
 export type ParadisWordRasterRejection = 'tooLarge' | 'invalid';
 
 export type ParadisWordRasterInspection =
-	| { readonly image: ParadisWordRasterImage; readonly rejection?: undefined }
-	| { readonly image?: undefined; readonly rejection: ParadisWordRasterRejection };
+	| { readonly image: ParadisWordRasterImage; readonly rejection?: undefined; readonly mimeType?: undefined }
+	/** 大きすぎる画像も、中身の形式（`mimeType`）は返す。呼び出し側が宣言の形式と照らしてから「大きすぎる」と言えるように。 */
+	| { readonly image?: undefined; readonly rejection: 'tooLarge'; readonly mimeType: ParadisWordRasterImage['mimeType'] }
+	| { readonly image?: undefined; readonly rejection: 'invalid'; readonly mimeType?: undefined };
+
+/** 先頭の署名だけで見た形式。バイト数の上限を越えた画像は中身を読まないので、これで形式を決める。 */
+function signatureMimeType(bytes: Uint8Array): ParadisWordRasterImage['mimeType'] | undefined {
+	if (pngSignature.every((value, index) => bytes[index] === value)) {
+		return 'image/png';
+	}
+	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+		return 'image/jpeg';
+	}
+	const header = ascii(bytes, 0, Math.min(6, bytes.byteLength));
+	return header === 'GIF87a' || header === 'GIF89a' ? 'image/gif' : undefined;
+}
 
 /** 上限を外して読み直すときの上限（バイト数は元のまま。読む量は変わらない）。 */
 const UNBOUNDED_DIMENSIONS = { pixels: Number.MAX_SAFE_INTEGER, side: Number.MAX_SAFE_INTEGER, frames: Number.MAX_SAFE_INTEGER };
@@ -307,12 +321,14 @@ export function inspectParadisWordRasterImageWithReason(bytes: Uint8Array, limit
 		return { rejection: 'invalid' };
 	}
 	if (bytes.byteLength > limits.bytes) {
-		return { rejection: 'tooLarge' };
+		const mimeType = signatureMimeType(bytes);
+		return mimeType ? { rejection: 'tooLarge', mimeType } : { rejection: 'invalid' };
 	}
 	const image = inspectPng(bytes, limits) ?? inspectJpeg(bytes, limits) ?? inspectGif(bytes, limits);
 	if (image) {
 		return { image };
 	}
 	const relaxed = { ...limits, ...UNBOUNDED_DIMENSIONS };
-	return { rejection: inspectPng(bytes, relaxed) ?? inspectJpeg(bytes, relaxed) ?? inspectGif(bytes, relaxed) ? 'tooLarge' : 'invalid' };
+	const oversized = inspectPng(bytes, relaxed) ?? inspectJpeg(bytes, relaxed) ?? inspectGif(bytes, relaxed);
+	return oversized ? { rejection: 'tooLarge', mimeType: oversized.mimeType } : { rejection: 'invalid' };
 }

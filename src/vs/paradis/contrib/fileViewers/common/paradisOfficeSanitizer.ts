@@ -713,9 +713,11 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		await advanceOpcAnalysis(input, state);
 		if (svgParts.has(name) || hiddenImageParts.has(name)) { continue; }
 		const raw = values.get(name); if (!raw) { continue; }
-		const { image: inspected, rejection } = inspectParadisWordRasterImageWithReason(raw);
+		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(raw);
+		// A type that differs from the declared one stays unsafe whatever its size.
+		if ((inspected?.mimeType ?? mimeType) !== rasterContentType(contentType(name))) { continue; }
 		if (rejection === 'tooLarge') { oversizedImageParts.set(name, 'tooLarge'); continue; }
-		if (!inspected || inspected.mimeType !== rasterContentType(contentType(name))) { continue; }
+		if (!inspected) { continue; }
 		if (rasterPixels + inspected.pixels > imagePixelBudget) { oversizedImageParts.set(name, 'overBudget'); continue; }
 		rasterPixels += inspected.pixels;
 		rasterParts.set(name, { mime: inspected.mimeType, end: inspected.end });
