@@ -196,6 +196,14 @@ export class ParadisOfficeSemanticWorkerQueue<TRun, TResult> extends Disposable 
 		while (!this.running && this.queue.length > 0) {
 			const request = this.dequeue(0);
 			this.clearTimer(request);
+			// 待っている間に、同じ入力の先の依頼がメモリ不足で落ちたかもしれない。送る直前にも照合する。
+			if (request.memoryKeys && this.outOfMemoryKeys.length > 0) {
+				request.memoryKey ??= memoryKey(request.memoryKeys);
+				if (this.outOfMemoryKeys.includes(request.memoryKey)) {
+					this.settle(request, this.options.failure('limitExceeded'));
+					continue;
+				}
+			}
 			const worker = this.ensureWorker();
 			if (!worker) {
 				this.settle(request, this.options.failure('failed'));

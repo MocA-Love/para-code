@@ -246,12 +246,44 @@ function appendText(parent: Element, text: IParadisShapeText, box: ParadisShapeB
 	parent.appendChild(foreign);
 }
 
-/** 図形 1 つを `parent`（svg か g）へ足し、足した要素を返す。 */
-export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box: ParadisShapeBox, paint: ParadisShapePaint): Element {
+/** 外側のグループの回転・反転（外側から順に左へ並べる。SVG では左のものが最後に掛かる）。 */
+function groupTransformAttribute(shape: IParadisRenderShape, anchorBox: ParadisShapeBox | undefined): string {
+	if (!shape.groupTransforms?.length || !anchorBox) {
+		return '';
+	}
+	return shape.groupTransforms.map(transform => {
+		const box = {
+			x: anchorBox.x + transform.frame.x * anchorBox.width,
+			y: anchorBox.y + transform.frame.y * anchorBox.height,
+			width: transform.frame.width * anchorBox.width,
+			height: transform.frame.height * anchorBox.height,
+		};
+		const cx = box.x + box.width / 2;
+		const cy = box.y + box.height / 2;
+		const parts: string[] = [];
+		if (transform.rotation) {
+			parts.push(`rotate(${round(transform.rotation)} ${round(cx)} ${round(cy)})`);
+		}
+		if (transform.flipH || transform.flipV) {
+			parts.push(`translate(${round(cx)} ${round(cy)}) scale(${transform.flipH ? -1 : 1} ${transform.flipV ? -1 : 1}) translate(${round(-cx)} ${round(-cy)})`);
+		}
+		return parts.join(' ');
+	}).filter(Boolean).join(' ');
+}
+
+/**
+ * 図形 1 つを `parent`（svg か g）へ足し、足した要素を返す。`box` は図形の枠、`anchorBox` はアンカーの枠
+ * （グループの回転・反転の中心を求めるのに使う）。
+ */
+export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box: ParadisShapeBox, paint: ParadisShapePaint, anchorBox?: ParadisShapeBox): Element {
 	const doc = parent.ownerDocument;
 	const group = doc.createElementNS(SVG_NS, 'g');
 	if (paint.opacity !== 1) {
 		group.setAttribute('opacity', String(paint.opacity));
+	}
+	const outer = groupTransformAttribute(shape, anchorBox);
+	if (outer) {
+		group.setAttribute('transform', outer);
 	}
 	parent.appendChild(group);
 	if (shape.type === 'line') {

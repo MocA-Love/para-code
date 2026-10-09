@@ -8,7 +8,7 @@
 import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
-import { parseDrawingObjects, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
+import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
 import { appendChartSvg, appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
 
 // Invented minimal drawings. None of them comes from a real file.
@@ -115,6 +115,51 @@ suite('ParadisSpreadsheetDrawings', () => {
 			chart: { title: 'Sales', legend: true, groups: [{ kind: 'column', grouping: 'clustered', series: [{ name: 'A', categories: ['Q1', 'Q2'], values: [3, 5], color: '#2244AA' }] }] },
 			undrawn: [['image', 'Picture 31'], ['chart', 'Chart 33'], ['graphicFrame', 'Chart 34']],
 			placeholders: ['drawing.image', 'drawing.chart', 'drawing.graphicFrame'],
+		});
+	});
+
+	test('stops at each drawing limit plus one and counts what it did not draw', () => {
+		const rect = (id: number) => anchor(sp(id, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'));
+		const group = (depth: number, inner: string): string => depth === 0 ? inner
+			: `<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="${100 + depth}" name="Group ${depth}"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr/>${group(depth - 1, inner)}</xdr:grpSp>`;
+		const custom = (commands: number) => sp(50, `<a:custGeom><a:pathLst><a:path w="10" h="10"><a:moveTo><a:pt x="0" y="0"/></a:moveTo>${'<a:lnTo><a:pt x="10" y="10"/></a:lnTo>'.repeat(commands - 1)}</a:path></a:pathLst></a:custGeom>`);
+		const limits = { groupDepth: 2, shapesPerSheet: 2, pathCommands: 3, chartSeries: 1, chartPoints: 3 };
+		const parse = (xml: string) => {
+			const result = parseDrawingObjects([{ xml: drawing(xml), media: {} }], undefined, limits);
+			return [result.shapes.length, result.undrawn.map(object => object.kind).join(',')];
+		};
+		const series = (count: number, points: number) => Array.from({ length: count }, () => `<c:ser><c:val><c:numRef><c:numCache><c:ptCount val="${points}"/></c:numCache></c:numRef></c:val></c:ser>`).join('');
+		const chart = (count: number, points: number) => `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:lineChart>${series(count, points)}</c:lineChart></c:plotArea></c:chart></c:chartSpace>`;
+		const parser = new DOMParser();
+		deepStrictEqual({
+			shapes: [parse(rect(1) + rect(2)), parse(rect(1) + rect(2) + rect(3))],
+			depth: [parse(anchor(group(2, sp(60, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>')))), parse(anchor(group(3, sp(60, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'))))],
+			path: [parse(anchor(custom(3))), parse(anchor(custom(4)))],
+			series: [!!parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), !!parseChartXml(chart(2, 1), { parser, themeColors: undefined }, limits)],
+			points: [!!parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), !!parseChartXml(chart(1, 4), { parser, themeColors: undefined }, limits)],
+			omitted: parseDrawingObjects([{ xml: '', media: {}, omitted: true }]).undrawn.map(object => object.kind),
+			defaults: PARADIS_SPREADSHEET_DRAWING_LIMITS,
+		}, {
+			shapes: [[2, ''], [2, 'overLimit']],
+			depth: [[1, ''], [0, 'overLimit']],
+			path: [[1, ''], [0, 'overLimit']],
+			series: [true, false],
+			points: [true, false],
+			omitted: ['overLimit'],
+			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000 },
+		});
+	});
+
+	test('carries a group rotation and flip to the shapes inside it', () => {
+		const rotated = `<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="70" name="Group 70"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr><a:xfrm rot="5400000" flipH="1"><a:off x="0" y="0"/><a:ext cx="100" cy="100"/><a:chOff x="0" y="0"/><a:chExt cx="100" cy="100"/></a:xfrm></xdr:grpSpPr>`
+			+ sp(71, `${xfrm(0, 0, 50, 100)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>`) + '</xdr:grpSp>';
+		const { shapes } = parseDrawingObjects([{ xml: drawing(anchor(rotated)), media: {} }]);
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		const anchorBox = { x: 0, y: 0, width: 200, height: 100 };
+		const drawn = appendShapeSvg(svg, shapes[0], { x: 0, y: 0, width: 100, height: 100 }, { stroke: '#000000', strokeWidth: 1, dash: '', opacity: 1, content: true }, anchorBox);
+		deepStrictEqual({ transforms: shapes[0].groupTransforms, attribute: drawn.getAttribute('transform') }, {
+			transforms: [{ frame: { x: 0, y: 0, width: 1, height: 1 }, rotation: 90, flipH: true }],
+			attribute: 'rotate(90 100 50) translate(100 50) scale(-1 1) translate(-100 -50)',
 		});
 	});
 

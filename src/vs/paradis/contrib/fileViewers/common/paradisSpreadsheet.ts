@@ -151,12 +151,26 @@ export interface IParadisRenderShape {
 	 * グループの中の図形の位置。アンカーの枠の中の割合（左上 x・y と幅・高さ、0〜1）。無ければ枠いっぱい。
 	 */
 	readonly frame?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	/**
+	 * 図形を含むグループの回転・反転（外側のグループから順）。それぞれ、そのグループの枠（アンカーの枠の中の
+	 * 割合）の中心まわりに掛ける。
+	 */
+	readonly groupTransforms?: readonly IParadisShapeGroupTransform[];
 	readonly chart?: IParadisChartData;
+}
+
+/** グループの回転・反転。 */
+export interface IParadisShapeGroupTransform {
+	readonly frame: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	readonly rotation?: number;
+	readonly flipH?: boolean;
+	readonly flipV?: boolean;
 }
 
 /** 描けなかった図形（代替表示に数える）。 */
 export interface IParadisUndrawnObject {
-	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart';
+	/** `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。 */
+	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit';
 	readonly name?: string;
 	readonly from?: IParadisRenderAnchor;
 }
@@ -167,6 +181,8 @@ export interface IParadisDrawingData {
 	readonly media: { readonly [rid: string]: string };
 	/** グラフの XML（rId→chartN.xml の文字列）。 */
 	readonly charts?: { readonly [rid: string]: string };
+	/** シートごとの XML の上限を越えたので、この drawing を渡さなかった（描かずに代替表示に数える）。 */
+	readonly omitted?: boolean;
 }
 
 /** 印刷範囲などの矩形領域(Excel の1始まり行列)。 */

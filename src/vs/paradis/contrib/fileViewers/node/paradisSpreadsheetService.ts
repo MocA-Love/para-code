@@ -1098,6 +1098,8 @@ interface IXlsxExtras {
 
 /** renderer へ渡すグラフの XML の上限（文字数）。超えたグラフは描かずに代替表示に数える。 */
 const MAX_CHART_XML_CHARACTERS = 2 * 1024 * 1024;
+/** 1 シートで renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
 
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
@@ -1152,6 +1154,7 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
 async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
+	const drawingXmlCharactersBySheet = new Map<number, number>();
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] } = {};
@@ -1268,7 +1271,15 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			if (fileNum === undefined) {
 				continue;
 			}
+			const key = keyForFile(fileNum);
 			const xml = await files[name].async('text');
+			// renderer の DOM で読むので、シートごとに drawing とグラフの XML の合計に上限を掛ける。
+			const used = drawingXmlCharactersBySheet.get(key) ?? 0;
+			if (used + xml.length > MAX_SHEET_DRAWING_XML_CHARACTERS) {
+				(drawingsBySheet[key] ??= []).push({ xml: '', media: {}, omitted: true });
+				continue;
+			}
+			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
 			const charts: { [rid: string]: string } = {};
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
@@ -1289,17 +1300,16 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 					const chartFile = chartTarget ? files[`xl/charts/${chartTarget[1]}`] : undefined;
 					if (id && chartFile) {
 						const chartXml = await chartFile.async('text');
-						if (chartXml.length <= MAX_CHART_XML_CHARACTERS) {
+						// 上限を越えるグラフは渡さない（renderer は描かずに代替表示に数える）。
+						if (chartXml.length <= MAX_CHART_XML_CHARACTERS && sheetCharacters + chartXml.length <= MAX_SHEET_DRAWING_XML_CHARACTERS) {
 							charts[id[1]] = chartXml;
+							sheetCharacters += chartXml.length;
 						}
 					}
 				}
 			}
-			const key = keyForFile(fileNum);
-			if (!drawingsBySheet[key]) {
-				drawingsBySheet[key] = [];
-			}
-			drawingsBySheet[key].push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
+			drawingXmlCharactersBySheet.set(key, sheetCharacters);
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
