@@ -32,7 +32,7 @@ import {
 	ParadisSpreadsheetImageRejection,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
-import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
+import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1157,8 +1157,15 @@ class WorkbookImages {
 			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
-		const inspected = inspectParadisWordRasterImage(bytes);
-		if (!inspected || inspected.mimeType !== declared) {
+		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(bytes);
+		// 中身の形式が拡張子と食い違うものは、大きさに関係なく「確かめられなかった」にする。
+		if ((inspected?.mimeType ?? mimeType) !== declared) {
+			return { reason: 'unverified' };
+		}
+		if (rejection === 'tooLarge') {
+			return { reason: 'tooLarge' };
+		}
+		if (!inspected) {
 			return { reason: 'unverified' };
 		}
 		if (this.pixels + inspected.pixels > this.budget) {
