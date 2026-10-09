@@ -20,6 +20,7 @@
 // - 足した引数（`settle_ms`・`observe`）は、道具へ渡す前に必ず取り除く（内蔵 chrome-devtools-mcp は未知の引数を断る）
 
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
 import { paradisIsTransientEvaluateFailure, paradisParseEvaluateValue } from './paradisBrowserQuery.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
 
@@ -240,9 +241,10 @@ export class ParadisBrowserObserver {
 		return parts.length > 0 ? parts.join('\n\n') : undefined;
 	}
 
-	forget(stateKeyPrefix: string): void {
+	/** ペインが片付いたら、そのペインと、そのペインのタブの控えを消す（鍵はペインのトークンかタブのスコープキー）。 */
+	forget(paneToken: string): void {
 		for (const key of [...this._lastState.keys()]) {
-			if (key.startsWith(stateKeyPrefix)) {
+			if (paradisPaneTokenOfScopeKey(key) === paneToken) {
 				this._lastState.delete(key);
 			}
 		}

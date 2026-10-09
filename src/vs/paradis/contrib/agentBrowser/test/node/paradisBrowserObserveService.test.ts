@@ -15,8 +15,11 @@ const TOKEN = 'pane-token';
 const TAB_KEY = paradisAgentTabScopeKey(TOKEN, 'tab-1');
 
 interface IObserveServiceInternals {
+	_callTool(ingressLease: object, params: { name?: unknown; arguments?: unknown }, signal?: AbortSignal): Promise<unknown>;
 	_callToolObserved(ingressLease: object, name: string, params: { name?: unknown; arguments?: unknown }, options: { settle: boolean; state: boolean }): Promise<unknown>;
-	_observeHost(ingressLease: object, tabLease: object): { network(): unknown };
+	_observeHost(ingressLease: object, tabLease: object, signal?: AbortSignal): { network(): unknown; isCurrent(): boolean; sleep(ms: number): Promise<void> };
+	_runInLane(key: string, heldLane: string | undefined, operation: () => Promise<unknown>): Promise<unknown>;
+	_toolCallLanes: ParadisToolCallLanes;
 }
 
 /** _callToolObserved が使う所だけを持つサービス（タブの解決・列・観測・操作は差し替える）。 */
@@ -94,4 +97,46 @@ suite('Paradis browser observe in the service', () => {
 		service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }).network();
 		assert.deepStrictEqual(log, [`network ${TAB_KEY}`]);
 	});
+	test('a caller that cannot be verified is refused before it queues on the tab\'s lane', async () => {
+		const log: string[] = [];
+		const svc = service(log, {
+			_cursorPacing: { begin: () => ({ dispose: () => { } }) },
+			_classifyCaller: async () => {
+				log.push(`classify busy=${svc._toolCallLanes.isBusy(TAB_KEY)}`);
+				return 'unverified';
+			},
+		});
+		const result = await svc._callTool({ token: TOKEN }, { name: 'click_by', arguments: { role: 'button' } }) as { isError?: boolean };
+		assert.deepStrictEqual({ log, isError: result.isError }, { log: ['classify busy=false'], isError: true });
+	});
+
+	test('a cancelled call stops waiting for the page to settle', async () => {
+		const log: string[] = [];
+		const controller = new AbortController();
+		controller.abort();
+		const host = service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }, controller.signal);
+		const started = Date.now();
+		await host.sleep(10_000);
+		assert.deepStrictEqual({ current: host.isCurrent(), quick: Date.now() - started < 1000 }, { current: false, quick: true });
+	});
+
+	test('when the tab changed while the call waited in the lane, it is not observed and gives the lane back first', async () => {
+		const log: string[] = [];
+		let scopes = 0;
+		const svc = service(log, {
+			_scopeToolCall: (_lease: object, args: unknown) => {
+				const tabId = ++scopes < 2 ? 'tab-1' : 'tab-9';
+				return { ok: true, lease: { token: TOKEN, pageKey: paradisAgentTabScopeKey(TOKEN, tabId) }, args, tabId };
+			},
+		});
+		await svc._callToolObserved({ token: TOKEN }, 'click', { name: 'click', arguments: { uid: '1_2' } }, { settle: true, state: false });
+		assert.deepStrictEqual(log, ['inner click {"uid":"1_2"} held=false']);
+	});
+
+	test('a call that holds one tab\'s lane is refused instead of queuing on another tab\'s lane', async () => {
+		const svc = service([]);
+		const result = await svc._runInLane(paradisAgentTabScopeKey(TOKEN, 'tab-2'), TAB_KEY, async () => 'ran') as { isError?: boolean; content?: { text: string }[] };
+		assert.deepStrictEqual({ isError: result.isError, retryable: result.content?.[0].text.startsWith('PARA_BROWSER_RETRYABLE') }, { isError: true, retryable: true });
+	});
+
 });
