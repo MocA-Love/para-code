@@ -306,6 +306,8 @@ export type ParadisDocxHostMessage =
 		readonly fillers: readonly IParadisDocxFiller[];
 	}
 	| { readonly type: 'reveal'; readonly changeId: number }
+	// 詳しい比較の変更へ移る。marker は表示の段落の目印（paradisWordAnchorRuntime.ts）。
+	| { readonly type: 'revealAnchor'; readonly side: ParadisDocxSide; readonly marker: string; readonly focus: string }
 	| { readonly type: 'zoom'; readonly scale: number }
 	| { readonly type: 'showFormatChanges'; readonly enabled: boolean };
 
@@ -318,4 +320,6 @@ export type ParadisDocxWebviewMessage =
 	// 省略されたら「判定できなかった」ではなく「本文あり」として扱う（古い webview との互換）。
 	| { readonly type: 'rendered'; readonly hasExpectedRoot?: boolean }
 	| { readonly type: 'activeChange'; readonly changeId: number }
+	// 描いた後の、両側の表示の段落ごとの文字。renderer はこれと詳しい比較の段落を対応づける。
+	| { readonly type: 'paragraphs'; readonly generation: number; readonly original: unknown; readonly modified: unknown }
 	| { readonly type: 'error'; readonly side?: ParadisDocxSide; readonly message: string };

@@ -72,6 +72,21 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		entry: 'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
 		lists: ['desktopEntryPoints'],
 	},
+	{
+		// shared process が worker_threads で起動する、Word の詳しい解析の worker（同じくパスを指定して起動する）
+		entry: 'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain',
+		lists: ['desktopEntryPoints'],
+	},
+	{
+		// shared process が worker_threads で起動する、Excel の詳しい解析の worker（同じくパスを指定して起動する）
+		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain',
+		lists: ['desktopEntryPoints'],
+	},
+	{
+		// shared process が worker_threads で起動する、Excel の EMF・WMF を SVG にする worker（同じくパスを指定して起動する）
+		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
+		lists: ['desktopEntryPoints'],
+	},
 ];
 
 suite('Para Code entry points ship in the esbuild bundle', () => {

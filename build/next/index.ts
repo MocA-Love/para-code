@@ -129,6 +129,12 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
 	// PARA-PATCH: worker thread the shared process starts to read agent transcripts (usage per space, full-text index)
 	'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts for the Word semantic analysis (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts for the Excel semantic diagnostics (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts to convert Excel EMF/WMF pictures to SVG (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
 ];
 
 const codeEntryPoints = [

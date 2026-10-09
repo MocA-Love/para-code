@@ -477,7 +477,7 @@ suite('Para Browser MCP setup', () => {
 		}
 	});
 
-	test('upgrades our current-port registrations once per file and port, adding only the Codex timeout line', async () => {
+	test('upgrades our current-port registrations once per file and port, adding only the missing Codex lines', async () => {
 		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-timeout-'));
 		try {
 			const claudeDir = join(directory, 'claude-config');
@@ -525,11 +525,53 @@ suite('Para Browser MCP setup', () => {
 					'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
 					'enabled = false',
 					'tool_timeout_sec = 300',
+					'supports_parallel_tool_calls = true',
 					'',
 					'[mcp_servers.other]',
 					'command = "keep"',
 					'',
 				].join('\n'),
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('adds supports_parallel_tool_calls once even where the timeout upgrade already ran', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-parallel-'));
+		try {
+			const codexHome = join(directory, 'codex');
+			await fs.mkdir(codexHome);
+			const configPath = join(codexHome, 'config.toml');
+			const markerPath = join(directory, 'marker.json');
+			// The earlier upgrade (timeout only) already left its marker for this file and port.
+			await fs.writeFile(markerPath, JSON.stringify([`codex:${configPath}:${PORT}`]));
+			const original = [
+				'[mcp_servers.para-browser]',
+				`url = "http://127.0.0.1:${PORT}/"`,
+				'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+				'tool_timeout_sec = 300',
+				'',
+			].join('\n');
+			await fs.writeFile(configPath, original);
+			const create = () => new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'failure', output: '' }),
+				codexHome,
+				claudeConfigJsonPath: join(directory, '.claude.json'),
+				upgradeMarkerPath: markerPath,
+				log: () => undefined,
+			});
+			await create().upgradeToolTimeouts(PORT);
+			const afterFirst = await fs.readFile(configPath, 'utf8');
+			// The user takes the line out again: the next start does not put it back.
+			await fs.writeFile(configPath, original);
+			await create().upgradeToolTimeouts(PORT);
+			assert.deepStrictEqual({ afterFirst, afterSecond: await fs.readFile(configPath, 'utf8') }, {
+				afterFirst: original.replace('tool_timeout_sec = 300\n', 'tool_timeout_sec = 300\nsupports_parallel_tool_calls = true\n'),
+				afterSecond: original,
 			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });

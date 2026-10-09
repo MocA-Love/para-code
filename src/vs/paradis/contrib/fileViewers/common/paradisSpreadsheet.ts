@@ -51,13 +51,144 @@ export interface IParadisRenderAnchor {
 	readonly ro: number;
 }
 
-/** シート上に描画された図形(直線コネクタ/矩形/画像)。重説等の斜線はこの直線コネクタで表現される。 */
+/** 図形の形（DrawingML の prstGeom のうち描けるもの）。`path` は custGeom を `paths` で描く。 */
+export type ParadisSpreadsheetShapeGeometry =
+	| 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'rtTriangle' | 'diamond'
+	| 'leftBracket' | 'rightBracket' | 'leftBrace' | 'rightBrace' | 'path';
+
+/** 図形の中の文字の 1 区切り。大きさは pt。 */
+export interface IParadisShapeTextRun {
+	readonly text: string;
+	readonly size?: number;
+	readonly bold?: boolean;
+	readonly italic?: boolean;
+	readonly underline?: boolean;
+	readonly color?: string;
+	readonly font?: string;
+}
+
+export interface IParadisShapeTextParagraph {
+	readonly runs: readonly IParadisShapeTextRun[];
+	readonly align?: 'left' | 'center' | 'right' | 'justify';
+}
+
+/** 図形の中の文字（txBody）。余白は px。 */
+export interface IParadisShapeText {
+	readonly paragraphs: readonly IParadisShapeTextParagraph[];
+	readonly anchor?: 'top' | 'middle' | 'bottom';
+	readonly vertical?: boolean;
+	readonly insets: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number };
+	readonly wrap: boolean;
+}
+
+/** custGeom の 1 本の道筋。座標は図形の枠の中の割合（0〜1）。 */
+export interface IParadisShapePath {
+	readonly d: readonly (readonly [command: 'M' | 'L' | 'C' | 'Q' | 'Z', ...coordinates: number[]])[];
+	readonly fill: boolean;
+	readonly stroke: boolean;
+}
+
+/** データラベル（`dLbls`、ECMA-376 Part 1 §21.2.2.49）。何を出すかと、どこに置くか。 */
+export interface IParadisChartDataLabels {
+	readonly value: boolean;
+	readonly category: boolean;
+	readonly series: boolean;
+	readonly percent: boolean;
+	/** `dLblPos`。無ければ種類ごとの既定。 */
+	readonly position?: 'outEnd' | 'inEnd' | 'ctr' | 'inBase' | 't' | 'b' | 'l' | 'r' | 'bestFit';
+	/** 数値の書式（`numFmt`、`sourceLinked` でないもの）。 */
+	readonly formatCode?: string;
+}
+
+/** グラフの系列。 */
+export interface IParadisChartSeries {
+	readonly name?: string;
+	readonly categories: readonly string[];
+	readonly values: readonly (number | null)[];
+	/** 散布図・バブルの X。 */
+	readonly xValues?: readonly (number | null)[];
+	/** バブルの大きさ（`bubbleSize`）。 */
+	readonly bubbleSizes?: readonly (number | null)[];
+	readonly color?: string;
+	/** 円・ドーナツの各要素の色。 */
+	readonly pointColors?: readonly string[];
+	/** 値の保存された書式（`numCache` の `formatCode`）。軸やラベルが「元の書式に合わせる」ときに使う。 */
+	readonly formatCode?: string;
+	readonly dataLabels?: IParadisChartDataLabels;
+	/** 点に印を付けるか（折れ線・レーダー・散布図）。 */
+	readonly marker?: boolean;
+}
+
+/** グラフの 1 群（棒・折れ線など。複合グラフは群が複数）。 */
+export interface IParadisChartGroup {
+	readonly kind: 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'radar' | 'bubble' | 'stock' | 'surface';
+	readonly grouping: 'clustered' | 'stacked' | 'percentStacked' | 'standard';
+	readonly series: readonly IParadisChartSeries[];
+	/** この群が使う軸（`axId`、{@link IParadisChartAxis.id}）。 */
+	readonly axisIds?: readonly string[];
+	readonly dataLabels?: IParadisChartDataLabels;
+	/** レーダーの描き方（`radarStyle`）。 */
+	readonly radarStyle?: 'standard' | 'marker' | 'filled';
+	/** バブルの大きさの倍率（`bubbleScale`、%）と、大きさが表すもの（`sizeRepresents`）。 */
+	readonly bubbleScale?: number;
+	readonly bubbleSizeRepresents?: 'area' | 'w';
+	/** 株価の高値と安値を結ぶ線（`hiLowLines`）と、始値と終値の箱（`upDownBars`）の色。 */
+	readonly hiLowLines?: boolean;
+	readonly upDownBars?: { readonly up: string; readonly down: string };
+	/** 等高線の帯の色（帯の番号順）。 */
+	readonly bandColors?: readonly string[];
+	/** 3D の面を上から見た塗り分けで近似したか。 */
+	readonly surface3D?: boolean;
+}
+
+/** グラフの軸（`catAx`・`valAx`・`dateAx`・`serAx`、ECMA-376 Part 1 §21.2.2）。 */
+export interface IParadisChartAxis {
+	readonly id: string;
+	readonly kind: 'category' | 'value' | 'date' | 'series';
+	/** `axPos`（l・r・t・b）。 */
+	readonly position: 'l' | 'r' | 't' | 'b';
+	/** `delete`。消した軸は目盛りの文字を描かない（値の範囲は使う）。 */
+	readonly deleted: boolean;
+	/** `scaling` の `min`・`max`・`logBase`・`orientation`（maxMin なら反転）。 */
+	readonly min?: number;
+	readonly max?: number;
+	readonly logBase?: number;
+	readonly reversed: boolean;
+	/** `majorUnit`。 */
+	readonly majorUnit?: number;
+	/** `numFmt` の書式。`sourceLinked` なら系列の保存された書式を使う。 */
+	readonly formatCode?: string;
+	readonly sourceLinked: boolean;
+	readonly title?: string;
+	/** `majorGridlines`。 */
+	readonly gridlines: boolean;
+	/** `tickLblPos` が none でないか。 */
+	readonly tickLabels: boolean;
+	/** 相手の軸と交わる位置（`crosses`・`crossesAt`）。 */
+	readonly crosses: 'autoZero' | 'min' | 'max' | number;
+}
+
+/** グラフ（chartN.xml の保存済みの値から描く）。 */
+export interface IParadisChartData {
+	readonly title?: string;
+	readonly groups: readonly IParadisChartGroup[];
+	readonly legend: boolean;
+	/** 凡例の位置（`legendPos`）。無ければ右。 */
+	readonly legendPosition?: 'r' | 'l' | 't' | 'b' | 'tr';
+	readonly axes?: readonly IParadisChartAxis[];
+	/** データラベルが多すぎて省いたか（グラフは描き、代替表示として数える）。 */
+	readonly labelsOmitted?: boolean;
+}
+
+/** シート上に描画された図形(直線コネクタ/図形/画像/グラフ)。重説等の斜線はこの直線コネクタで表現される。 */
 export interface IParadisRenderShape {
-	readonly type: 'line' | 'rect' | 'image';
+	/** `rect` は線以外の図形（形は `geometry`、無ければ矩形）。 */
+	readonly type: 'line' | 'rect' | 'image' | 'chart';
 	readonly flipV: boolean;
 	readonly flipH: boolean;
 	readonly from: IParadisRenderAnchor;
 	readonly to: IParadisRenderAnchor;
+	/** 線の太さ(px)。0 は線なし。 */
 	readonly outlineWidth: number;
 	readonly outlineColor: string;
 	readonly dash: string;
@@ -68,12 +199,78 @@ export interface IParadisRenderShape {
 	/** 図形の安定キー(diff用)。cNvPr の name/id。 */
 	readonly name?: string;
 	readonly shapeId?: string;
+	readonly geometry?: ParadisSpreadsheetShapeGeometry;
+	/** 形の調整値（角丸・括弧の丸み・中括弧の先端の位置など。100000 が全体）。 */
+	readonly adjust?: readonly number[];
+	readonly paths?: readonly IParadisShapePath[];
+	/** 塗りの色。無ければ塗らない。 */
+	readonly fill?: string;
+	/** 塗りの不透明度(0〜1)。 */
+	readonly fillOpacity?: number;
+	readonly text?: IParadisShapeText;
+	/** 回転(度、時計回り)。 */
+	readonly rotation?: number;
+	/** 線の端の矢印。 */
+	readonly headEnd?: string;
+	readonly tailEnd?: string;
+	/**
+	 * グループの中の図形の位置。アンカーの枠の中の割合（左上 x・y と幅・高さ、0〜1）。無ければ枠いっぱい。
+	 */
+	readonly frame?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	/**
+	 * 図形を含むグループの回転・反転（外側のグループから順）。それぞれ、そのグループの枠（アンカーの枠の中の
+	 * 割合）の中心まわりに掛ける。
+	 */
+	readonly groupTransforms?: readonly IParadisShapeGroupTransform[];
+	readonly chart?: IParadisChartData;
+}
+
+/** グループの回転・反転。 */
+export interface IParadisShapeGroupTransform {
+	readonly frame: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	readonly rotation?: number;
+	readonly flipH?: boolean;
+	readonly flipV?: boolean;
+}
+
+/** 画像を描かなかった理由。EMF・WMF、表示しない形式（BMP など）、中身を確かめられなかったもの、1 枚が大きすぎるもの、ブックの画素の上限を越えたもの。 */
+export type ParadisSpreadsheetImageRejection = 'metafile' | 'unsupportedFormat' | 'unverified' | 'tooLarge' | 'overBudget';
+
+/** 描けなかった図形（代替表示に数える）。 */
+export interface IParadisUndrawnObject {
+	/**
+	 * `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。`chartLabels` は、
+	 * グラフは描いたが、データラベルが多すぎて省いたもの。
+	 */
+	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit' | 'chartLabels';
+	/** 画像を描かなかった理由。 */
+	readonly reason?: ParadisSpreadsheetImageRejection;
+	readonly name?: string;
+	readonly from?: IParadisRenderAnchor;
 }
 
 /** shared process が drawing ごとに渡す XML と埋め込みメディア(rId→dataURI)。 */
 export interface IParadisDrawingData {
 	readonly xml: string;
 	readonly media: { readonly [rid: string]: string };
+	/** 描かなかった画像（rId→理由）。 */
+	readonly rejectedMedia?: { readonly [rid: string]: ParadisSpreadsheetImageRejection };
+	/**
+	 * まだ描いていない EMF・WMF の画像（rId→メディアの名前 `image1.emf`）。表示を返した後で worker が SVG に
+	 * 変換し、renderer が `IParadisSpreadsheetMetafileImages` で差し替える。
+	 */
+	readonly metafileMedia?: { readonly [rid: string]: string };
+	/** グラフの XML（rId→chartN.xml の文字列）。 */
+	readonly charts?: { readonly [rid: string]: string };
+	/** シートごとの XML の上限を越えたので、この drawing を渡さなかった（描かずに代替表示に数える）。 */
+	readonly omitted?: boolean;
+}
+
+/** EMF・WMF を SVG にした結果。メディアの名前（`image1.emf`）→ `data:image/svg+xml;base64,...`。 */
+export interface IParadisSpreadsheetMetafileImages {
+	readonly images: { readonly [mediaName: string]: string };
+	/** 変換できなかった理由（worker が使えない・混んでいる・取り消し）。描けた分が無くても失敗とは限らない。 */
+	readonly unavailableReason?: string;
 }
 
 /** 印刷範囲などの矩形領域(Excel の1始まり行列)。 */
@@ -296,6 +493,8 @@ export interface IParadisSheetData {
 	readonly dataValidations?: readonly IParadisDataValidationEntry[];
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
+	/** 描けなかった図形(renderer 側で付与)。代替表示に数える。 */
+	readonly undrawnObjects?: readonly IParadisUndrawnObject[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */
 	readonly showGridLines?: boolean;
 	/** 保存時のズーム倍率(sheetView.zoomScale、100=等倍)。 */
@@ -346,12 +545,6 @@ export interface IParadisFreezePane {
 	readonly rows: number;
 }
 
-/** パースの任意指定。診断は表示に使うときだけ費用を払う。 */
-export interface IParadisParseWorkbookOptions {
-	/** 真のときだけ OOXML を直接読んで到達度を返す(既定は返さない)。 */
-	readonly semanticDiagnostics?: boolean;
-}
-
 /** パース結果のワークブック全体。 */
 export interface IParadisWorkbookData {
 	readonly sheets: readonly IParadisSheetData[];
@@ -386,8 +579,14 @@ export interface IParadisSemanticDiagnosticsSummary {
 	readonly mismatchCount: number;
 	/** 食い違いの内訳(種類→件数)。 */
 	readonly mismatchesByKind?: { readonly [kind: string]: number };
-	/** 解析を回せなかった/打ち切った理由。 */
+	/**
+	 * 解析を回せなかった/打ち切った理由のコード。パッケージの検査で落ちたときは `unsafe`・`malformed` など、
+	 * 締め切りや worker のヒープの上限は `limitExceeded`、混み合って走らせなかったときは `busy`（頼み直せる）。
+	 * チャネルの `collectSemanticDiagnostics`（表示とは別の呼び出し。worker で走る）が返す。
+	 */
 	readonly unavailableReason?: string;
+	/** 解析にかかった時間（ミリ秒）。 */
+	readonly elapsedMilliseconds?: number;
 }
 
 const MAX_SEMANTIC_PROJECTION_DIAGNOSTICS = 10_000;
@@ -557,5 +756,6 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData>;
+	/** `imagePixelBudget` はブックで描く画像の画素の合計の上限（既定は 1 億。比較では左右で半分ずつ）。 */
+	parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 }
