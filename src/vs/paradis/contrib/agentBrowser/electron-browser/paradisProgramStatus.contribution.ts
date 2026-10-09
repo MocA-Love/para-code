@@ -70,6 +70,12 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		this._register(this.instance.capabilities.onDidAddCommandDetectionCapability(capability => watch(capability)));
 		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（Claude Code でも ssh などでもなくなったら）閉じる
 		this.foregroundProcess = this.instance.processName || undefined;
+		// プロセスが終わったら（Claude Code ごと落ちて「Relaunch Terminal」で立て直す場合も）閉じる
+		this._register(context.processManager.onProcessExit(() => {
+			if (this.gate.close()) {
+				this.send({ state: 'clear' });
+			}
+		}));
 		this._register(context.processManager.onDidChangeProperty(property => {
 			if (property.type !== ProcessPropertyType.Title) {
 				return;
