@@ -5,14 +5,14 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ok, strictEqual } from 'assert';
+import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisHtmlPreviewServer, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
+import { ParadisHtmlPreviewServer, parseParadisByteRange, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
 
 suite('ParadisHtmlPreviewServer', () => {
 
@@ -90,6 +90,39 @@ suite('ParadisHtmlPreviewServer', () => {
 			strictEqual(parseParadisPreviewPath('/'), undefined);
 			strictEqual(parseParadisPreviewPath('/short/index.html'), undefined);
 			strictEqual(parseParadisPreviewPath(`/${TOKEN.toUpperCase()}/index.html`), undefined);
+		});
+	});
+
+	suite('parseParadisByteRange', () => {
+
+		test('reads a single byte range and clamps it to the file', () => {
+			deepStrictEqual([
+				parseParadisByteRange('bytes=0-99', 1000),
+				parseParadisByteRange('bytes=900-', 1000),
+				parseParadisByteRange('bytes=900-5000', 1000),
+				parseParadisByteRange('bytes=-100', 1000),
+				parseParadisByteRange('bytes=-5000', 1000),
+			], [
+				{ start: 0, end: 99 },
+				{ start: 900, end: 999 },
+				{ start: 900, end: 999 },
+				{ start: 900, end: 999 },
+				{ start: 0, end: 999 },
+			]);
+		});
+
+		test('serves the whole file for what it does not handle, and refuses ranges past the end', () => {
+			// 複数区間や bytes 以外の単位は解かずに全体を返す（RFC 9110 が許す）。
+			deepStrictEqual([
+				parseParadisByteRange(undefined, 1000),
+				parseParadisByteRange('bytes=0-1,5-6', 1000),
+				parseParadisByteRange('items=0-1', 1000),
+				parseParadisByteRange('bytes=-', 1000),
+				parseParadisByteRange('bytes=10-5', 1000),
+				parseParadisByteRange('bytes=1000-', 1000),
+				parseParadisByteRange('bytes=-0', 1000),
+				parseParadisByteRange('bytes=0-', 0),
+			], [undefined, undefined, undefined, undefined, undefined, 'unsatisfiable', 'unsatisfiable', 'unsatisfiable']);
 		});
 	});
 
@@ -219,6 +252,44 @@ suite('ParadisHtmlPreviewServer', () => {
 			const head = await fetch(`${base}index.html`, { method: 'HEAD' });
 			strictEqual(head.status, 200);
 			strictEqual(head.headers.get('content-length'), '14');
+		});
+
+		test('serves a byte range so the PDF viewer can read large documents in pieces', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { base } = await mount(disposables);
+
+			const whole = await fetch(`${base}index.html`);
+			const part = await fetch(`${base}index.html`, { headers: { Range: 'bytes=4-8' } });
+			const past = await fetch(`${base}index.html`, { headers: { Range: 'bytes=100-' } });
+			deepStrictEqual({
+				whole: [whole.status, whole.headers.get('accept-ranges'), await whole.text()],
+				part: [part.status, part.headers.get('content-range'), part.headers.get('content-length'), await part.text()],
+				past: [past.status, past.headers.get('content-range')],
+			}, {
+				whole: [200, 'bytes', '<h1>hello</h1>'],
+				part: [206, 'bytes 4-8/14', '5', 'hello'],
+				past: [416, 'bytes */14'],
+			});
+		});
+
+		test('lets a webview read the range headers', async () => {
+			// pdf.js は `Accept-Ranges` を読んで区間読みに切り替える。別オリジンの応答は、名指しで
+			// 公開しないとスクリプトから読めず、黙って全体読みに戻ってしまう。
+			const disposables = store.add(new DisposableStore());
+			const { base } = await mount(disposables);
+			const { request } = await import('http');
+			const target = new URL(`${base}index.html`);
+			const exposed = await new Promise<string | undefined>((resolve, reject) => {
+				const call = request(
+					{ hostname: target.hostname, port: target.port, path: target.pathname, method: 'GET', headers: { Host: `127.0.0.1:${target.port}`, Origin: 'vscode-webview://abcdef' } },
+					response => {
+						response.resume();
+						response.on('end', () => resolve(response.headers['access-control-expose-headers'] as string | undefined));
+					});
+				call.on('error', reject);
+				call.end();
+			});
+			strictEqual(exposed, 'Accept-Ranges, Content-Range, Content-Length');
 		});
 
 		test('does not listen until something is mounted', async () => {
