@@ -6,7 +6,7 @@
 
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRasterMime, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
-import { inspectParadisWordRasterImage } from './word/paradisWordImageInspection.js';
+import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
 import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
 
@@ -369,10 +369,13 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		for (const name of policy.imageParts) {
 			if (policy.svgParts.has(name)) { continue; }
 			const raw = values.get(name); if (!raw) { continue; }
-			const rasterMime = policy.rasterParts.get(name);
-			if (rasterMime) {
-				const rawHash = fingerprint(raw, input.token, input.checkpoint);
-				pushPackageAsset(assets, placeholders, { id: `asset_${rawHash.value.slice(0, 32)}`, kind: 'rasterImage', mime: rasterMime, byteLength: raw.byteLength, fingerprint: rawHash });
+			const raster = policy.rasterParts.get(name);
+			if (raster) {
+				// Data after the image's end marker (IEND, EOI, trailer) is cut, not passed to the decoder.
+				const image = raster.end < raw.byteLength ? raw.slice(0, raster.end) : raw;
+				if (image !== raw) { values.set(name, image); }
+				const imageHash = fingerprint(image, input.token, input.checkpoint);
+				pushPackageAsset(assets, placeholders, { id: `asset_${imageHash.value.slice(0, 32)}`, kind: 'rasterImage', mime: raster.mime, byteLength: image.byteLength, fingerprint: imageHash });
 				continue;
 			}
 			const processed = placeholderMedia(input.nodeId, name, fingerprint(raw, input.token, input.checkpoint));
@@ -405,8 +408,8 @@ interface OpcPolicy {
 	readonly imageParts: Set<string>;
 	/** Image parts whose every consumer sits inside an element replaced by a placeholder: never drawn. */
 	readonly hiddenImageParts: ReadonlySet<string>;
-	/** Raster images that passed inspection and keep their original bytes. */
-	readonly rasterParts: ReadonlyMap<string, ParadisOfficeRasterMime>;
+	/** Raster images that passed inspection: their type and where the image ends. */
+	readonly rasterParts: ReadonlyMap<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>;
 	readonly rewrittenXml: Map<string, Uint8Array>;
 	readonly placeholders: ParadisOfficePlaceholder[];
 	readonly ignoredParts: readonly ParadisOfficeIgnoredPart[];
@@ -664,19 +667,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		if (values.has(relationshipPart)) { removedParts.add(relationshipPart); }
 	}
 	for (const part of removedParts) { svgParts.delete(part); imageParts.delete(part); }
-	// Q312 A: a PNG, JPEG, or GIF whose bytes pass the structural check and match its declared content
-	// type is drawn as it is. Anything else (EMF, WMF, TIFF, a mismatch) stays a substitute box.
-	const rasterParts = new Map<string, ParadisOfficeRasterMime>();
-	for (const name of imageParts) {
-		await advanceOpcAnalysis(input, state);
-		if (svgParts.has(name)) { continue; }
-		const raw = values.get(name); if (!raw) { continue; }
-		const inspected = inspectParadisWordRasterImage(raw);
-		if (inspected && inspected.mimeType === contentType(name).toLowerCase()) { rasterParts.set(name, inspected.mimeType); }
-	}
 	const retainedParts = new Set([...values.keys()].filter(name => name !== '[Content_Types].xml' && !removedParts.has(name)));
-	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name) && !rasterParts.has(name))));
-	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	// Retained XML that no story parse covered (document properties, comment threading ...) is parsed and
 	// written again; in these rewritten parts, DOCTYPE, processing instructions, and comments do not
 	// reach the renderer. Story parts keep their source bytes apart from the patched consumers.
@@ -701,6 +692,22 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	for (const [target, uses] of imageConsumersByTarget) {
 		if (uses.length > 0 && uses.every(use => replacedAnchors.has(use.anchor))) { hiddenImageParts.add(target); }
 	}
+	// Q312 A: a PNG, JPEG, or GIF whose bytes pass the structural check and match its declared content
+	// type is drawn as it is. Anything else (EMF, WMF, TIFF, APNG, a mismatch) stays a substitute box, as
+	// do images only used inside replaced elements and images past the document's pixel budget.
+	const rasterParts = new Map<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>();
+	let rasterPixels = 0;
+	for (const name of imageParts) {
+		await advanceOpcAnalysis(input, state);
+		if (svgParts.has(name) || hiddenImageParts.has(name)) { continue; }
+		const raw = values.get(name); if (!raw) { continue; }
+		const inspected = inspectParadisWordRasterImage(raw);
+		if (!inspected || inspected.mimeType !== rasterContentType(contentType(name)) || rasterPixels + inspected.pixels > PARADIS_WORD_DOCUMENT_IMAGE_PIXELS) { continue; }
+		rasterPixels += inspected.pixels;
+		rasterParts.set(name, { mime: inspected.mimeType, end: inspected.end });
+	}
+	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name) && !rasterParts.has(name))));
+	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	const listedIgnored = [...ignoredParts.values()]
 		.filter(part => part.reason === 'missingTarget' ? !removedParts.has(missingTargetSources.get(part.partName) ?? '') : removedParts.has(part.partName))
 		.sort((left, right) => compareText(left.partName, right.partName));
@@ -890,7 +897,7 @@ function relationshipTypeName(type: string): string {
 }
 
 const UNSAFE_RELATIONSHIP_KINDS = new Set<OfficeRelationshipKind>(['hyperlink', 'altChunk', 'font', 'oleObject', 'package', 'control', 'activeX', 'vbaProject', 'attachedTemplate']);
-const KNOWN_IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff', 'image/x-emf', 'image/x-wmf', 'image/emf', 'image/wmf']);
+const KNOWN_IMAGE_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff', 'image/x-emf', 'image/x-wmf', 'image/emf', 'image/wmf']);
 const RELATIONSHIP_TARGET_CONTENT_TYPES: Readonly<Partial<Record<OfficeRelationshipKind, ReadonlySet<string>>>> = {
 	officeDocument: new Set(['application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml', 'application/vnd.ms-word.document.macroEnabled.main+xml', 'application/vnd.ms-word.template.macroEnabledTemplate.main+xml']),
 	image: KNOWN_IMAGE_CONTENT_TYPES,
@@ -1786,6 +1793,23 @@ function sanitizePackageMedia(nodeId: string, name: string, raw: Uint8Array, sem
 		}
 	}
 	return placeholderMedia(nodeId, name, rawHash);
+}
+
+/**
+ * The substitute box a renderer shows in place of an image that passed inspection but still failed to
+ * decode. Same look as the package's own image placeholders; the text carries no document data.
+ */
+export function paradisOfficeBrokenImagePlaceholderSvg(): Uint8Array {
+	const source = `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 320 48"><rect width="320" height="48" fill="#eeeeee"/><text x="8" y="28" fill="#000000">Office asset unavailable</text></svg>`;
+	const safe = sanitizeOfficeSvg({ nodeId: 'broken_image_placeholder', assetId: 'placeholder_broken_image', source });
+	if (!Object.prototype.hasOwnProperty.call(safe, 'bytes')) { throw new ParadisOfficePackageError('unsafe'); }
+	return (safe as ParadisSanitizedSvg).bytes.slice();
+}
+
+/** The declared raster type, with `image/jpg` (written by some producers) read as `image/jpeg`. */
+function rasterContentType(value: string): string {
+	const type = value.toLowerCase();
+	return type === 'image/jpg' ? 'image/jpeg' : type;
 }
 
 function placeholderMedia(nodeId: string, name: string, rawHash: ParadisOfficeFingerprint): { readonly bytes: Uint8Array; readonly asset: ParadisOfficeRenderableAsset; readonly placeholder: ParadisOfficePlaceholder } {

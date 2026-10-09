@@ -50,7 +50,7 @@ import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { PARADIS_DOCX_MAX_BYTES, type IParadisDocxOutline } from '../common/paradisDocx.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
-import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
+import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
@@ -527,11 +527,30 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 	}
 
+	/**
+	 * 検査を通ったのに描画側で読めなかった画像。webview が代わりの箱に替えたので、その枚数を代替表示に足す。
+	 * いま表示している世代の知らせだけを受ける。
+	 */
+	private _onBrokenImages(generation: number, count: number): void {
+		if (generation !== this._recoveryState.generation || !Number.isSafeInteger(count) || count < 0 || count > 256) {
+			return;
+		}
+		const broken = Array.from({ length: count }, (_, index): ParadisOfficePlaceholder => ({
+			nodeId: `broken_image_${index}`, feature: 'unsafeMedia', reason: 'unsafe', title: 'Office asset unavailable', detail: 'decode-failed',
+		}));
+		this._assetPlaceholders = [...this._assetPlaceholders.filter(placeholder => !placeholder.nodeId.startsWith('broken_image_')), ...broken];
+		this._renderSemanticUi();
+	}
+
 	private _onRecoveryMessage(message: unknown): void {
 		if (!message || typeof message !== 'object') {
 			return;
 		}
-		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown };
+		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown; readonly count?: unknown };
+		if (candidate.type === 'paradisWordBrokenImages' && typeof candidate.generation === 'number' && typeof candidate.count === 'number') {
+			this._onBrokenImages(candidate.generation, candidate.count);
+			return;
+		}
 		if (candidate.type === 'paradisOfficeRecovery' && typeof candidate.generation === 'number' && typeof candidate.hasExpectedRoot === 'boolean') {
 			// **いま待っている世代の応答だけが見張りを解ける。** 読み直しをまたいで届いた
 			// 古い応答で解くと、新しい世代が無防備になり、そちらが黙っても誰も気づかない。
@@ -1142,6 +1161,20 @@ export class ParadisDocxFileEditor extends EditorPane {
 		(async () => {
 			const vscode = acquireVsCodeApi();
 			const DOCX_URL = ${JSON.stringify(docxUrl)};
+			// 検査を通った画像でも、描画側で読めなかったら（img の error、decode の失敗）代わりの箱に替え、
+			// 何枚あったかをホストへ知らせる（代替表示に数える）。
+			const PARADIS_BROKEN_IMAGE = ${JSON.stringify(`data:image/svg+xml;base64,${encodeBase64(VSBuffer.wrap(paradisOfficeBrokenImagePlaceholderSvg()))}`)};
+			const paradisBrokenImageSources = new Set();
+			const replaceParadisBrokenImage = img => {
+				// 対象は PNG・JPEG・GIF の中身を持つ画像だけ（base64 の先頭で見分ける）。代わりの箱の SVG などは数えない。
+				if (!(img instanceof HTMLImageElement) || img.dataset.paradisBrokenImage || !/^data:[^,]*;base64,(?:iVBOR|[/]9j[/]|R0lG)/.test(img.getAttribute('src') || '')) {
+					return;
+				}
+				img.dataset.paradisBrokenImage = '1';
+				paradisBrokenImageSources.add(img.getAttribute('src') || '');
+				img.src = PARADIS_BROKEN_IMAGE;
+				vscode.postMessage({ type: 'paradisWordBrokenImages', generation: ${recoveryGeneration}, count: paradisBrokenImageSources.size });
+			};
 			// docx-preview が描かない図形(グラフ・SmartArt 等)。本文表示のあとに送られてくる。
 			let PARADIS_WORD_OBJECTS = [];
 			let paradisDocumentRendered = false;
@@ -1252,6 +1285,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			});
 			const statusEl = document.getElementById('status');
 			const contentEl = document.getElementById('content');
+			// error は泡立たないので、捕捉の段階で拾う。
+			contentEl.addEventListener('error', event => replaceParadisBrokenImage(event.target), true);
 			try {
 				if (!window.docx || !window.JSZip) {
 					throw new Error('レンダリングライブラリの読み込みに失敗しました');
@@ -1338,6 +1373,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 					vscode.postMessage({ type: 'paradisWordObjects', expected: PARADIS_WORD_OBJECTS.length, placed });
 				};
 				paradisDocumentRendered = true;
+				// 描画の途中（まだ文書に付いていない間）に失敗した画像は error を拾えないので、decode で確かめる。
+				for (const img of contentEl.querySelectorAll('img')) {
+					if (img.getAttribute('src') && !img.dataset.paradisBrokenImage) {
+						img.decode().catch(() => replaceParadisBrokenImage(img));
+					}
+				}
 				placeParadisWordObjects();
 				if (pendingParadisWordReveal) {
 					revealParadisWord(pendingParadisWordReveal);
