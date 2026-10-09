@@ -764,6 +764,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.settleAfterAction',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.settleAfterAction', "（試験的）操作の後にページが落ち着くのを待つ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.settleAfterActionDesc', "エージェントがクリックや入力をした後、ページの表示が落ち着くまで最大 2 秒待ち、何が変わったかを伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental settle wait changes',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.reportBrowserState',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.reportBrowserState', "（試験的）新しいページやダウンロードを伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.reportBrowserStateDesc', "エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。"),
+		keywords: 'agent browser experimental tabs downloads dialog state',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.bookmarkBar.visible',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.bookmarkBar', "ブックマークバーを表示"),
