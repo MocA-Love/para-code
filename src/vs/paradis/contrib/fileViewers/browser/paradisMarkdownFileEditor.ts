@@ -41,7 +41,7 @@ import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/b
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
-import { inlineParadisMarkdownMedia, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
@@ -53,6 +53,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	static readonly ID = PARADIS_MARKDOWN_EDITOR_ID;
 
 	private readonly _zoom: ParadisViewerZoomControls;
+	/** 埋め込んだ画像の data: URI。保存のたびの描き直しで、同じ画像を base64 にし直さない。 */
+	private readonly _mediaCache = new ParadisInlineMediaCache();
 
 	constructor(
 		group: IEditorGroup,
@@ -78,6 +80,17 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		// 拡大縮小はページ内のスクリプトで反映する（Markdown はスクリプトを常に許可している）。
 		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
+	}
+
+	override clearInput(): void {
+		// 別の文書へ移るときは、前の文書の画像を抱えたままにしない。
+		this._mediaCache.clear();
+		super.clearInput();
+	}
+
+	override dispose(): void {
+		this._mediaCache.clear();
+		super.dispose();
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
@@ -145,7 +158,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			this._fileService,
 			token,
 			PARADIS_INLINE_MEDIA_LIMITS,
-			body => rewriteParadisMarkdownLinks(body, resource, workspaceFolder));
+			body => rewriteParadisMarkdownLinks(body, resource, workspaceFolder),
+			this._mediaCache);
 
 		const nonce = generateUuid();
 		const colorMap = TokenizationRegistry.getColorMap();
