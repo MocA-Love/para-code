@@ -13,7 +13,7 @@ import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagona
 import { IParadisPageBreakLine, IParadisPageLabelBox, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
-import { appendShapeSvg, applyShapeFrame, type ParadisShapeBox } from './paradisSpreadsheetShapeSvg.js';
+import { appendShapeSvg, applyShapeFrame, type ParadisShapeBox, type ParadisShapeHooks } from './paradisSpreadsheetShapeSvg.js';
 
 const $ = dom.$;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -181,6 +181,7 @@ export function buildShapeOverlay(
 	columnWidths: readonly number[],
 	minCol: number,
 	doc: Document,
+	hooks?: ParadisShapeHooks,
 ): SVGElement | undefined {
 	if (shapes.length === 0) {
 		return undefined;
@@ -191,7 +192,7 @@ export function buildShapeOverlay(
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
 	for (const shape of shapes) {
 		const anchorBox = shapeAnchorBox(shape, anchorPos);
-		appendShapeSvg(svg, shape, applyShapeFrame(shape, anchorBox), { stroke: shape.outlineColor, strokeWidth: shape.outlineWidth, dash: dashPattern(shape.dash), opacity: 1, content: true }, anchorBox);
+		appendShapeSvg(svg, shape, applyShapeFrame(shape, anchorBox), { stroke: shape.outlineColor, strokeWidth: shape.outlineWidth, dash: dashPattern(shape.dash), opacity: 1, content: true }, anchorBox, hooks);
 	}
 	return svg;
 }
