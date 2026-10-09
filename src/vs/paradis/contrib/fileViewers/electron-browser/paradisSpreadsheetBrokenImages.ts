@@ -42,4 +42,13 @@ export class ParadisSpreadsheetBrokenImages extends Disposable {
 		this.images.clear();
 		this.scheduler.cancel();
 	}
+
+	/** 図形を作り直したシートの分を忘れる（作り直した図形は、描き直したときに改めて知らせが来る）。 */
+	forgetSheets(sheetNames: ReadonlySet<string>): void {
+		for (const [shape, sheetName] of this.images) {
+			if (sheetNames.has(sheetName)) {
+				this.images.delete(shape);
+			}
+		}
+	}
 }
