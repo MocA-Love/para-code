@@ -52,7 +52,10 @@ export function shouldParadisPdfUseRangeRequests(size: number | undefined, serve
 	return served && size !== undefined && size >= PARADIS_PDF_RANGE_THRESHOLD_BYTES;
 }
 
-/** 最初のページが描けたときに webview からエディタへ送るメッセージの `type`。 */
+/**
+ * 最初のページが描けたときに webview からエディタへ送るメッセージの `type`。`render` には、その HTML を
+ * 作ったときの nonce を載せる（使い回した webview に残った前の文書の知らせを、エディタが見分けるため）。
+ */
 export const PARADIS_PDF_FIRST_PAINT_MESSAGE = 'paradis-pdf-first-paint';
 
 /** {@link planParadisPdfPages} の結果。番号はすべて 0 始まり。 */
@@ -522,7 +525,7 @@ export function buildParadisPdfViewerHtml(options: IParadisPdfViewerHtmlOptions)
 					p.renderedScale = target;
 					if (!firstPaintReported) {
 						firstPaintReported = true;
-						requestAnimationFrame(() => vscodeApi?.postMessage({ type: '${PARADIS_PDF_FIRST_PAINT_MESSAGE}', pages: pages.length }));
+						requestAnimationFrame(() => vscodeApi?.postMessage({ type: '${PARADIS_PDF_FIRST_PAINT_MESSAGE}', render: ${JSON.stringify(nonce)}, pages: pages.length }));
 					}
 				})();
 				return { done, cancel: () => { cancelled = true; if (task) { task.cancel(); } } };
