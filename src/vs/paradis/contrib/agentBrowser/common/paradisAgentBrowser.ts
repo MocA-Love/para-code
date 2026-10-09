@@ -50,6 +50,8 @@ export const PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING = 'paradis.agentB
 export const PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING = 'paradis.agentBrowser.settleAfterAction';
 /** 入力・遷移の道具の結果に、タブ・開いたページ・ダウンロード・ダイアログの状態を添える（I1。既定は無効）。 */
 export const PARADIS_BROWSER_REPORT_STATE_SETTING = 'paradis.agentBrowser.reportBrowserState';
+/** サイトメモ（E4。既定は無効）。オリジンとスペースの組ごとに、エージェントが残したヒントを次のエージェントへ添える。 */
+export const PARADIS_BROWSER_SITE_NOTES_SETTING = 'paradis.agentBrowser.siteNotes';
 /** run_steps に参照・expect・for_each・repeat_until を足す（E6。既定は無効）。 */
 export const PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING = 'paradis.agentBrowser.runStepsFlow';
 
