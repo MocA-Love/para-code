@@ -84,6 +84,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
+## EMF・WMF は記録を読んで SVG にして描く（fileViewers、2026-10-09、Q321 f）
+
+- 変換は `common/office/paradisOfficeMetafile.ts`（描き先は `paradisOfficeMetafileSvg.ts`、パッケージの部品をまとめて変換するのは `paradisOfficeMetafileParts.ts`）。描けない記録を 1 つでも含む画像は箱のまま。EMF+ は解釈せず、二重（dual）なら GDI の記録で描く
+- 変換した SVG は変換器が組み立てた決まった形なので、文書由来の SVG の検査（`sanitizeOfficeSvg`）は通さない。代わりに 1 枚 4 MiB・1 文書の合計（Word は 16 MiB、パッケージの上限 32 MiB に収めるため）と、1 文書で試す入力 64 MiB・記録 100 万件の上限を持つ。表示は `<img>`（data URL）か SVG の `<image>` に入れる形に限り、インラインの SVG として DOM に差し込まない
+- docx-preview は画像を型の無い Blob から data URL にするので、SVG の部品は `data:application/octet-stream` になり描かれない。Word の 2 つの webview は、先頭が `<svg` のものを `image/svg+xml` に付け替える（それまで「Office asset unavailable」の箱も出ていなかった）
+- 埋め込みオブジェクト（`w:object`）にプレビューの絵（`v:imagedata`）があれば、サニタイザが `w:pict` に書き換え、`o:OLEObject` と VML の図形に残る埋め込みへの参照（`o:ole`、`v:imagedata` 以外の関係の id）を外す。埋め込みの本体と関係は今までどおり外し、「安全のために外しました: 埋め込み」に数える。プレビューの絵は画像の検査か EMF・WMF の変換を通ったものだけを描く。`w:object` が自分で名前空間を宣言している場合は書き換えず、今までどおり箱にする
+
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 
 - 入口は `node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.ts`（`build/next/index.ts` の `desktopEntryPoints` に載せてある）。待ち行列の守りは `node/office/paradisOfficeSemanticWorkerQueue.ts` にまとめた。Word の worker と同じく 1 件ずつ・実行と待ち行列で別の締め切り・ヒープ 384 MiB で、加えて待ち行列のバイト数の上限（60 MiB）を持ち、待ち行列があふれたときと待ちすぎたときは `busy` を返す。エディタは間を空けて 3 回まで頼み直す

@@ -302,21 +302,37 @@ suite('ParadisOfficeCorpus', () => {
 		deepStrictEqual(result.blockedParts, [{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 1 }]);
 	});
 
-	test('counts an OLE object once even though its preview picture is also blocked', async () => {
-		const object = '<w:p><w:r><w:object><v:shape id="s1"><v:imagedata r:id="rIdPreview"/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s1" r:id="rIdOle"/></w:object></w:r></w:p>';
+	test('draws an embedded object as its preview picture, without the embedding, and reports the embedding as blocked (Q321 f)', async () => {
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		const objectRun = (index: number, shapeAttributes: string) => `<w:p><w:r><w:object w:dxaOrig="100" w:dyaOrig="50"><v:shape id="s${index}" o:ole="" ${shapeAttributes}><v:imagedata r:id="rIdPreview${index}" o:title=""/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s${index}" r:id="rIdOle${index}"/></w:object></w:r></w:p>`;
+		const previews = [minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), Uint8Array.of(1, 0, 0, 0)];
 		const bytes = await wordPackage({
-			body: object,
+			body: objectRun(0, 'style="width:50pt;height:25pt"') + objectRun(1, ''),
 			extraParts: [
-				['/word/media/image1.emf', Uint8Array.of(1, 0, 0, 0), 'image/x-emf'],
-				['/word/embeddings/object1.bin', Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'],
+				...previews.map((preview, index) => [`/word/media/image${index}.emf`, preview, 'image/x-emf'] as const),
+				...previews.map((_, index) => [`/word/embeddings/object${index}.bin`, Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'] as const),
 			],
-			extraRelationships: [
-				{ source: '/word/document.xml', id: 'rIdPreview', type: `${R}/image`, target: 'media/image1.emf' },
-				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
-			],
+			extraRelationships: previews.flatMap((_, index) => [
+				{ source: '/word/document.xml', id: `rIdPreview${index}`, type: `${R}/image`, target: `media/image${index}.emf` },
+				{ source: '/word/document.xml', id: `rIdOle${index}`, type: `${R}/oleObject`, target: `embeddings/object${index}.bin` },
+			]),
 		});
 		const result = await sanitize(bytes);
-		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['embeddedObject']);
+		const text = new TextDecoder().decode(result.bytes);
+		deepStrictEqual({
+			// The preview that converts is drawn; the one that does not stays a box. Neither embedding is a box.
+			placeholders: result.placeholders.map(placeholder => placeholder.feature),
+			drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length,
+			blocked: result.blockedParts.map(part => `${part.feature}:${part.partName}`),
+			pictures: (text.match(/<w:pict><v:shape id="s\d"[^>]*><v:imagedata r:id="rIdPreview\d" o:title=""\/><\/v:shape><\/w:pict>/g) ?? []).length,
+			leftovers: ['<w:object', 'OLEObject', 'o:ole=', 'object0.bin', 'object1.bin', 'rIdOle'].filter(value => text.includes(value)),
+		}, {
+			placeholders: ['unsafeMedia'],
+			drawn: 1,
+			blocked: ['embeddedObject:word/embeddings/object0.bin', 'embeddedObject:word/embeddings/object1.bin'],
+			pictures: 2,
+			leftovers: [],
+		});
 	});
 
 	test('falls back from an embedded font without a placeholder', async () => {
