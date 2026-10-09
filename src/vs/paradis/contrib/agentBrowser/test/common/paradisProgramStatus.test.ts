@@ -234,7 +234,7 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			closeAtShellWithoutIntegration: paradisProgramStatusClosesOnForeground(false, 'zsh'),
 			closeWhenTitleUnknown: paradisProgramStatusClosesOnForeground(false, undefined),
 			keepWhileClaude: paradisProgramStatusClosesOnForeground(false, '2.1.295'),
-			keepWithIntegration: paradisProgramStatusClosesOnForeground(true, 'zsh'),
+			keepWithIntegration: paradisProgramStatusClosesOnForeground(true, 'vim'),
 		}, {
 			claudePathWithArgs: 'claude',
 			nativeVersion: 'claude',
@@ -260,5 +260,30 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 		const stillDue = gate.pendingDueAt;
 		now = dueAt;
 		assert.deepStrictEqual({ tooEarly, stillDue, released: gate.releasePending() }, { tooEarly: undefined, stillDue: dueAt, released: { state: 'done' } });
+	});
+
+	test('closes once a known shell is back in front, even with shell integration, but not for the node of an npm Claude Code', () => {
+		const closes = (title: string | undefined) => paradisProgramStatusClosesOnForeground(true, title);
+		assert.deepStrictEqual({
+			zsh: closes('zsh'),
+			loginZsh: closes('-zsh'),
+			bashPath: closes('/bin/bash --login'),
+			fish: closes('fish'),
+			pwshExe: closes('pwsh.exe'),
+			npmClaudeNode: closes('node'),
+			nativeClaude: closes('2.1.295'),
+			ssh: closes('ssh dev-box'),
+			unknown: closes(undefined),
+		}, {
+			zsh: true,
+			loginZsh: true,
+			bashPath: true,
+			fish: true,
+			pwshExe: true,
+			npmClaudeNode: false,
+			nativeClaude: false,
+			ssh: false,
+			unknown: false,
+		});
 	});
 });
