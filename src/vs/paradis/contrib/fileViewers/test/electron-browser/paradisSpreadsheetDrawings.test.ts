@@ -190,6 +190,16 @@ suite('ParadisSpreadsheetDrawings', () => {
 		]);
 	});
 
+	test('draws the SVG of a picture when it has one, and its PNG otherwise', () => {
+		const ASVG = 'http://schemas.microsoft.com/office/drawing/2016/SVG/main';
+		const pic = `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="1" name="Picture 1"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rIdPng"><a:extLst><a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}"><asvg:svgBlip xmlns:asvg="${ASVG}" r:embed="rIdSvg"/></a:ext></a:extLst></a:blip></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`;
+		const href = (media: Record<string, string>) => parseDrawingObjects([{ xml: drawing(anchor(pic)), media }]).shapes[0]?.href;
+		deepStrictEqual([
+			href({ rIdPng: 'data:image/png;base64,AA==', rIdSvg: 'data:image/svg+xml;base64,AA==' }),
+			href({ rIdPng: 'data:image/png;base64,AA==' }),
+		], ['data:image/svg+xml;base64,AA==', 'data:image/png;base64,AA==']);
+	});
+
 	test('says why a picture was not drawn, and looks media up only by its own keys', () => {
 		const pic = (id: number, rid: string) => anchor(`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Picture ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${rid}"/></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`);
 		const { undrawn } = parseDrawingObjects([{
