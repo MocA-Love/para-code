@@ -56,7 +56,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。")
+			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）新しいページやダウンロード、開いたダイアログなどを、エージェントに伝えます。")
 		}
 	}
 });
