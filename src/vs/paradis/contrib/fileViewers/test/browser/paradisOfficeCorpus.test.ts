@@ -434,4 +434,30 @@ suite('ParadisOfficeCorpus', () => {
 		// A simple field inside a link moves up into the paragraph unchanged.
 		ok((await text('<w:p><w:hyperlink r:id="rIdA"><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:hyperlink></w:p>')).includes('<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>'));
 	});
+	test('draws inspected PNG, JPEG, and GIF images and keeps EMF and mismatched images as boxes (Q312 A)', async () => {
+		const be32 = (value: number) => [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff];
+		const chunk = (type: string, data: readonly number[]) => [...be32(data.length), ...[...type].map(character => character.charCodeAt(0)), ...data, 0, 0, 0, 0];
+		const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk('IHDR', [...be32(2), ...be32(2), 8, 6, 0, 0, 0]), ...chunk('IDAT', [0x78, 0x9c, 0x63, 0x00, 0x00]), ...chunk('IEND', [])]);
+		const gif = Uint8Array.from([...'GIF89a'].map(character => character.charCodeAt(0)).concat([2, 0, 2, 0, 0, 0, 0, 0x2c, 0, 0, 0x3b]));
+		const images: readonly (readonly [name: string, bytes: Uint8Array, type: string])[] = [
+			['image1.png', png, 'image/png'],
+			['image2.gif', gif, 'image/gif'],
+			['image3.png', png, 'image/jpeg'],
+			['image4.emf', Uint8Array.of(1, 0, 0, 0, 0x6c, 0, 0, 0), 'image/x-emf'],
+			['image5.png', png.slice(0, 30), 'image/png'],
+		];
+		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
+		const result = await sanitize(await wordPackage({
+			body,
+			extraParts: images.map(([name, bytes, type]) => [`/word/media/${name}`, bytes, type] as const),
+			extraRelationships: images.map(([name], index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/${name}` })),
+		}));
+		deepStrictEqual(result.assets.map(asset => `${asset.kind}:${asset.mime}`).sort(), ['placeholderPreview:image/svg+xml', 'placeholderPreview:image/svg+xml', 'placeholderPreview:image/svg+xml', 'rasterImage:image/gif', 'rasterImage:image/png']);
+		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['unsafeMedia', 'unsafeMedia', 'unsafeMedia']);
+		const text = new TextDecoder().decode(result.bytes);
+		ok(text.includes('PartName="/word/media/image1.png" ContentType="image/png"'));
+		ok(text.includes('PartName="/word/media/image2.gif" ContentType="image/gif"'));
+		ok(text.includes('PartName="/word/media/image3.png" ContentType="image/svg+xml"'));
+		ok(text.includes('PartName="/word/media/image4.emf" ContentType="image/svg+xml"'));
+	});
 });
