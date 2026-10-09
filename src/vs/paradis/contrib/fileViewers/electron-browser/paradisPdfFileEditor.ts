@@ -8,9 +8,10 @@
 
 // PDF ビューア。vendored pdf.js（media/pdfjs/、pdfjs-dist の build 成果物）を webview 内で実行し、
 // PDF 本体は base64 化せず asWebviewUri のリソース URL を pdf.js に直接 fetch させる（大きい PDF でも
-// レンダラのメモリを二重に食わない）。ページはビューポート近傍のみ遅延レンダリングし、ズームは
-// ツールバー（webview 内）で再レンダリングする。日本語 PDF の非埋め込み CID フォントのために
-// cmaps/、非埋め込み標準フォントのために standard_fonts/ を同梱している。
+// レンダラのメモリを二重に食わない）。webview に書く HTML とページの描き方は
+// common/paradisPdfViewerHtml.ts にある（大きい文書の区間読み、遠いページの canvas の解放）。
+// 日本語 PDF の非埋め込み CID フォントのために cmaps/、非埋め込み標準フォントのために
+// standard_fonts/ を同梱している。
 //
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisRenderedFileEditor.ts と
 // 同じ方式（upstream webviewPanel 準拠）。PDF に Raw モードは無いためトグルは持たない。
@@ -39,6 +40,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
+import { buildParadisPdfViewerHtml, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
 
 /** vendored pdf.js 成果物の配置ディレクトリ（AppResourcePath）。 */
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
@@ -52,6 +54,15 @@ export function isParadisPdfHeader(bytes: Uint8Array): boolean {
 export async function readParadisPdfHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
 	try {
 		return isParadisPdfHeader((await fileService.readFile(resource, { length: PDF_HEADER_BYTES })).value.buffer);
+	} catch {
+		return undefined;
+	}
+}
+
+/** 文書の大きさ（バイト）。分からなければ `undefined`（区間読みにしない）。 */
+async function readParadisPdfSize(fileService: IFileService, resource: URI): Promise<number | undefined> {
+	try {
+		return (await fileService.stat(resource)).size;
 	} catch {
 		return undefined;
 	}
@@ -248,13 +259,13 @@ export class ParadisPdfFileEditor extends EditorPane {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
-		const isValid = await readParadisPdfHeader(this._fileService, resource);
+		const [isValid, size] = await Promise.all([readParadisPdfHeader(this._fileService, resource), readParadisPdfSize(this._fileService, resource)]);
 		switch (getParadisPdfRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
 			case 'rejected':
 				webview.setHtml(this._buildRejectedFileHtml());
 				return;
 			case 'viewer':
-				webview.setHtml(this._buildHtml(resource, documentUrl));
+				webview.setHtml(this._buildHtml(resource, documentUrl, size));
 				return;
 			case 'stale':
 				return;
@@ -265,202 +276,23 @@ export class ParadisPdfFileEditor extends EditorPane {
 		return '<!DOCTYPE html><html><body>PDF を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
-	private _buildHtml(resource: URI, documentUrl: string | undefined): string {
-		const nonce = generateUuid();
+	private _buildHtml(resource: URI, documentUrl: string | undefined, size: number | undefined): string {
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		// 配信サーバを使うかどうかは webview の作り方と揃える。片方だけサーバにすると、
 		// service worker を切った webview に解決できない URL を渡すことになる。
 		const served = this._webviewServiceWorkerDisabled && documentUrl !== undefined;
 		const pdfUrl = served ? documentUrl : asWebviewUri(resource, remoteInfo).toString(true);
 		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
-		// CSP は実際に使うポートまで絞る。`http://127.0.0.1:*` にすると、他のプロセスが立てた
-		// ローカルサーバまで script-src に含めてしまう。
-		const serverOrigin = served ? paradisPreviewOrigins(libBase, pdfUrl) : '';
-		// 空のときは CSP に余分な空白を残さない。
-		const serverSrc = serverOrigin ? ` ${serverOrigin}` : '';
-
-		// CSP: スクリプトは nonce 付き inline module と webview リソース(https:)のみ。worker は
-		// クロスオリジン制約を避けるため blob 化して起動する（worker-src blob:）。connect-src は
-		// pdf.js が PDF 本体 / cmaps / standard_fonts を fetch するために webview リソースを許可する。
-		return `<!DOCTYPE html>
-<html>
-<head>
-	<meta charset="utf-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:${serverSrc} blob:; style-src 'nonce-${nonce}'; img-src blob: data:; font-src https:${serverSrc} data: blob:; connect-src https:${serverSrc} blob: data:; worker-src blob:;">
-	<style nonce="${nonce}">
-		html, body { margin: 0; padding: 0; height: 100%; }
-		body {
-			background-color: var(--vscode-editor-background);
-			color: var(--vscode-editor-foreground);
-			font-family: var(--vscode-font-family);
-			font-size: 13px;
-		}
-		#scroller { position: absolute; inset: 0; overflow: auto; }
-		#pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 16px 24px; }
-		.pm-page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
-		.pm-page canvas { display: block; width: 100%; height: 100%; }
-		#toolbar {
-			position: fixed; top: 6px; left: 50%; transform: translateX(-50%); z-index: 10;
-			display: flex; align-items: center; gap: 2px;
-			background: var(--vscode-editorWidget-background, #252526);
-			color: var(--vscode-editorWidget-foreground, #ccc);
-			border: 1px solid var(--vscode-editorWidget-border, #454545);
-			border-radius: 5px; padding: 2px 6px; user-select: none;
-		}
-		#toolbar button {
-			background: transparent; color: inherit; border: none; border-radius: 3px;
-			width: 24px; height: 22px; cursor: pointer; font-size: 14px; line-height: 1;
-		}
-		#toolbar button:hover { background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,.31)); }
-		#zoomLabel { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
-		#pageLabel { margin-left: 8px; opacity: .8; font-variant-numeric: tabular-nums; }
-		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
-	</style>
-</head>
-<body>
-	<div id="scroller"><div id="pages"></div></div>
-	<div id="toolbar" hidden>
-		<button id="zoomOut" title="縮小">−</button>
-		<span id="zoomLabel">100%</span>
-		<button id="zoomIn" title="拡大">＋</button>
-		<button id="zoomFit" title="幅に合わせる">⤢</button>
-		<span id="pageLabel"></span>
-	</div>
-	<div id="status">読み込み中…</div>
-	<script type="module" nonce="${nonce}">
-		const PDF_URL = ${JSON.stringify(pdfUrl)};
-		const LIB = ${JSON.stringify(libBase)};
-		const statusEl = document.getElementById('status');
-		try {
-			const pdfjsLib = await import(LIB + '/pdf.min.mjs');
-			// worker はリソースオリジンが document と異なり new Worker(url) が same-origin 制約で失敗するため、
-			// fetch して blob URL から起動する。失敗時は workerSrc 指定に任せる（pdf.js が fake worker へフォールバック）。
-			try {
-				const src = await (await fetch(LIB + '/pdf.worker.min.mjs')).text();
-				const blobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
-				pdfjsLib.GlobalWorkerOptions.workerPort = new Worker(blobUrl, { type: 'module' });
-			} catch {
-				pdfjsLib.GlobalWorkerOptions.workerSrc = LIB + '/pdf.worker.min.mjs';
-			}
-
-			const doc = await pdfjsLib.getDocument({
-				url: PDF_URL,
-				cMapUrl: LIB + '/cmaps/',
-				cMapPacked: true,
-				standardFontDataUrl: LIB + '/standard_fonts/'
-			}).promise;
-
-			const scroller = document.getElementById('scroller');
-			const pagesEl = document.getElementById('pages');
-			const toolbar = document.getElementById('toolbar');
-			const zoomLabel = document.getElementById('zoomLabel');
-			const pageLabel = document.getElementById('pageLabel');
-
-			const pages = [];
-			for (let i = 1; i <= doc.numPages; i++) {
-				const page = await doc.getPage(i);
-				const wrap = document.createElement('div');
-				wrap.className = 'pm-page';
-				pagesEl.appendChild(wrap);
-				pages.push({ page, wrap, canvas: null, renderedScale: 0, renderTask: null });
-			}
-
-			// 初期スケール = 1ページ目が横幅に収まる倍率（100%を上限にしない: 小さいPDFは等倍のまま）。
-			const base = pages[0].page.getViewport({ scale: 1 });
-			const fitScale = () => Math.max(0.1, (scroller.clientWidth - 48) / base.width);
-			let scale = Math.min(fitScale(), 2);
-
-			const applySizes = () => {
-				for (const p of pages) {
-					const vp = p.page.getViewport({ scale });
-					p.wrap.style.width = vp.width + 'px';
-					p.wrap.style.height = vp.height + 'px';
-				}
-				zoomLabel.textContent = Math.round(scale * 100) + '%';
-			};
-
-			const renderPage = async (p) => {
-				if (p.renderedScale === scale) { return; }
-				if (p.renderTask) { p.renderTask.cancel(); p.renderTask = null; }
-				const target = scale;
-				const dpr = Math.min(window.devicePixelRatio || 1, 3);
-				const vp = p.page.getViewport({ scale: target * dpr });
-				const canvas = document.createElement('canvas');
-				canvas.width = Math.floor(vp.width);
-				canvas.height = Math.floor(vp.height);
-				const task = p.page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
-				p.renderTask = task;
-				try {
-					await task.promise;
-				} catch {
-					return; // キャンセル（ズーム変更等）
-				}
-				if (scale !== target) { return; }
-				p.wrap.replaceChildren(canvas);
-				p.canvas = canvas;
-				p.renderedScale = target;
-				p.renderTask = null;
-			};
-
-			const visible = new Set();
-			const observer = new IntersectionObserver(entries => {
-				for (const e of entries) {
-					const p = pages.find(x => x.wrap === e.target);
-					if (!p) { continue; }
-					if (e.isIntersecting) { visible.add(p); void renderPage(p); }
-					else { visible.delete(p); }
-				}
-				updatePageLabel();
-			}, { root: scroller, rootMargin: '600px 0px' });
-			for (const p of pages) { observer.observe(p.wrap); }
-
-			const rerenderVisible = () => {
-				applySizes();
-				for (const p of pages) { p.renderedScale = p.renderedScale === scale ? scale : 0; }
-				for (const p of visible) { void renderPage(p); }
-			};
-
-			let zoomTimer;
-			const setZoom = (next) => {
-				scale = Math.min(8, Math.max(0.1, next));
-				applySizes();
-				clearTimeout(zoomTimer);
-				zoomTimer = setTimeout(rerenderVisible, 120);
-			};
-
-			const updatePageLabel = () => {
-				const mid = scroller.scrollTop + scroller.clientHeight / 2;
-				let current = 1;
-				for (let i = 0; i < pages.length; i++) {
-					const el = pages[i].wrap;
-					if (el.offsetTop <= mid) { current = i + 1; }
-				}
-				pageLabel.textContent = current + ' / ' + pages.length;
-			};
-
-			document.getElementById('zoomIn').addEventListener('click', () => setZoom(scale * 1.2));
-			document.getElementById('zoomOut').addEventListener('click', () => setZoom(scale / 1.2));
-			document.getElementById('zoomFit').addEventListener('click', () => setZoom(fitScale()));
-			scroller.addEventListener('scroll', updatePageLabel, { passive: true });
-			window.addEventListener('resize', () => { clearTimeout(zoomTimer); zoomTimer = setTimeout(rerenderVisible, 200); });
-			// Ctrl/Cmd + ホイールでズーム（一般的なPDFビューアと同じ操作感）。
-			scroller.addEventListener('wheel', e => {
-				if (e.ctrlKey || e.metaKey) {
-					e.preventDefault();
-					setZoom(scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
-				}
-			}, { passive: false });
-
-			applySizes();
-			updatePageLabel();
-			toolbar.hidden = false;
-			statusEl.remove();
-		} catch (err) {
-			statusEl.textContent = 'PDF を表示できませんでした: ' + (err && err.message ? err.message : err);
-		}
-	</script>
-</body>
-</html>`;
+		return buildParadisPdfViewerHtml({
+			nonce: generateUuid(),
+			pdfUrl,
+			libBase,
+			// CSP は実際に使うポートまで絞る。`http://127.0.0.1:*` にすると、他のプロセスが立てた
+			// ローカルサーバまで script-src に含めてしまう。
+			serverOrigin: served ? paradisPreviewOrigins(libBase, pdfUrl) : '',
+			// 区間読みは配信サーバ（Range に対応済み）から読むときだけ。service worker 経由は今までどおり。
+			useRangeRequests: shouldParadisPdfUseRangeRequests(size, served),
+		});
 	}
 
 	private _updateWebviewPlacement(): void {
