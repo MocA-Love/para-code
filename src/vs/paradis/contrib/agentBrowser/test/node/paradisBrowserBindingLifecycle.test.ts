@@ -12,6 +12,7 @@ import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler, paradisBindingMatchesGeneration, paradisBindingsForMissingPages, paradisBrowserViewIdsWereRemoved } from '../../common/paradisBrowserBindingLifecycle.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
+import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 
 function binding(token: string, pageId: string, generation: number = 1, boundAt: number = 1): IParadisPaneBinding {
@@ -758,6 +759,7 @@ function createServiceFixture(generation: number): {
 		_unconfirmableTokens: new Set(),
 		_callerClassifications: new WeakMap(),
 		_callerClassificationsInFlight: new WeakMap(),
+		_browserObserver: new ParadisBrowserObserver(),
 		_seenTokens: new Set(),
 		_rendererConnections: new Map([['window:1', connection]]),
 		_rendererConnectionContexts: new Map([[connection, 'window:1']]),
