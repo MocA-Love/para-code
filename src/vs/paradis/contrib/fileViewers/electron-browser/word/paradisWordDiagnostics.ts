@@ -179,13 +179,16 @@ export function summarizeParadisWordBlockedParts(exclusions: ParadisWordPackageE
  */
 export type ParadisWordSemanticRibbonState =
 	| { readonly kind: 'analyzing'; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
-	| { readonly kind: 'failed'; readonly code: ParadisWordSemanticFailureCode; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
+	| { readonly kind: 'failed'; readonly code: ParadisWordSemanticFailureCode; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string; /** `busy` のとき、まだ頼み直す予定があるか。 */ readonly retrying?: boolean }
 	| { readonly kind: 'analyzed'; readonly counts: IParadisWordAnalysisCounts; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
 	| { readonly kind: 'comparing'; readonly alternatives: number; readonly ignoredParts: number; readonly blocked?: string }
 	| { readonly kind: 'compared'; readonly changes: number; readonly truncated: boolean; readonly outcome: ParadisOfficeOutcome; readonly alternatives: number; readonly ignoredParts: number; readonly warnings?: readonly string[]; readonly blocked?: string };
 
-/** 解析できなかった理由を利用者向けの短い文にする。中身やパスは含めない。 */
-export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode): string {
+/**
+ * 解析できなかった理由を利用者向けの短い文にする。中身やパスは含めない。
+ * `busy` は、まだ頼み直すなら（`retrying`）そう伝え、頼み直しを使い切ったら「混雑」とだけ書く。
+ */
+export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode, retrying = false): string {
 	switch (code) {
 		case 'encrypted': return localize('paradis.word.semantic.failure.encrypted', "暗号化されています");
 		case 'zipBomb':
@@ -197,7 +200,9 @@ export function wordSemanticFailureMessage(code: ParadisWordSemanticFailureCode)
 		case 'invalid':
 		case 'malformed': return localize('paradis.word.semantic.failure.malformed', "ファイルの形式が正しくありません");
 		case 'failed': return localize('paradis.word.semantic.failure.failed', "内部エラーが起きました");
-		case 'busy': return localize('paradis.word.semantic.failure.busy', "混み合っていました。少し後でもう一度試します");
+		case 'busy': return retrying
+			? localize('paradis.word.semantic.failure.busyRetrying', "混み合っています。少し後でもう一度試します")
+			: localize('paradis.word.semantic.failure.busy', "混雑");
 	}
 }
 
@@ -259,9 +264,11 @@ export function renderWordSemanticRibbon(container: HTMLElement, state: ParadisW
 			action(ribbon, localize('paradis.word.semantic.comparing', "比較中…"), 'analysis', undefined);
 			break;
 		case 'failed': {
-			const item = action(ribbon, state.code === 'busy'
-				? localize('paradis.word.semantic.busy', "混み合っていたため解析できませんでした")
-				: localize('paradis.word.semantic.failed', "解析できませんでした: {0}", wordSemanticFailureMessage(state.code)), 'analysis', onActivate);
+			const item = action(ribbon, state.code !== 'busy'
+				? localize('paradis.word.semantic.failed', "解析できませんでした: {0}", wordSemanticFailureMessage(state.code))
+				: state.retrying
+					? localize('paradis.word.semantic.busyRetrying', "混み合っています。少し後でもう一度解析します")
+					: localize('paradis.word.semantic.busy', "解析できませんでした（混雑）"), 'analysis', onActivate);
 			item.style.color = PARADIS_WORD_HIGH_CONTRAST_TOKENS.warning;
 			item.dataset.code = state.code;
 			break;
