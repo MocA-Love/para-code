@@ -126,6 +126,11 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.confirmReplayedPrompt(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			// ペインの Claude Code が OSC 7501 で知らせた状態（hook の届かないペインの補助）
+			case 'notePaneProgramStatus': {
+				const args = requireArgs(arg, 2);
+				return this.service.notePaneProgramStatus(this.rendererConnection, requireToken(args[0]), args[1]) as Promise<T>;
+			}
 			// Claude Code の設定フォルダ（CLAUDE_CONFIG_DIR）。renderer の Claude Code の mod が managed 設定を探すのに使う
 			case 'getClaudeConfigDir':
 				requireArgs(arg, 0);

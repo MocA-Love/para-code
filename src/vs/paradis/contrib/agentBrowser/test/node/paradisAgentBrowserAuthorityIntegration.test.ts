@@ -158,6 +158,7 @@ function createFixture(): {
 		_hookSyncGraceSince: 0,
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
+		_programStatusTokens: new Set<string>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
@@ -856,6 +857,69 @@ suite('ParadisAgentBrowser authority integration', () => {
 			],
 			awaitingUser: ['perm-exit', 'question-exit'],
 		});
+	});
+
+	test('takes the Claude Code OSC 7501 state only for panes no hook reached, and then ignores late transcript turns there', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'osc-only' }, { token: 'hooked' }]));
+		Reflect.get(fixture.service, '_hookReportedTokens').add('hooked');
+		Reflect.get(fixture.service, '_paneStatuses').set('hooked', { status: 'working', changedAt: 1 });
+		const note = (token: string, value: unknown) => fixture.service.notePaneProgramStatus(connection, token, value);
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		const turnEnded = (token: string) => (fixture.service as unknown as { _settlePaneTurnEnded(token: string, at: number, cause: 'turn' | 'cli-exit'): void })._settlePaneTurnEnded(token, Date.now(), 'turn');
+		const steps: { step: string; changed: boolean; status: string }[] = [];
+		const record = async (step: string, changed: boolean) => { steps.push({ step, changed, status: await status('osc-only') }); };
+		await record('idle at start', await note('osc-only', { state: 'idle' }));
+		await record('working', await note('osc-only', { state: 'working' }));
+		// The transcript tailer reads the same turn a moment later; it must not settle it again.
+		turnEnded('osc-only');
+		await record('late transcript turn end', false);
+		await record('question', await note('osc-only', { state: 'blocked', kind: 'question' }));
+		await record('permission', await note('osc-only', { state: 'blocked', kind: 'permission' }));
+		await record('auth counts as waiting', await note('osc-only', { state: 'blocked', kind: 'auth' }));
+		await record('done', await note('osc-only', { state: 'done' }));
+		await record('done again', await note('osc-only', { state: 'done' }));
+		await record('unknown state', await note('osc-only', { state: 'bogus' }));
+		await record('clear', await note('osc-only', { state: 'clear' }));
+		const hookedChanged = await note('hooked', { state: 'done' });
+		assert.deepStrictEqual({
+			steps,
+			hooked: { changed: hookedChanged, status: await status('hooked') },
+			stillReadingOsc: Reflect.get(fixture.service, '_programStatusTokens').has('osc-only'),
+			agentPane: (await fixture.service.listAgentStatusSnapshot(connection)).agentHookTokens.includes('osc-only'),
+		}, {
+			steps: [
+				{ step: 'idle at start', changed: false, status: 'idle' },
+				{ step: 'working', changed: true, status: 'working' },
+				{ step: 'late transcript turn end', changed: false, status: 'working' },
+				{ step: 'question', changed: true, status: 'question' },
+				{ step: 'permission', changed: true, status: 'permission' },
+				{ step: 'auth counts as waiting', changed: false, status: 'permission' },
+				{ step: 'done', changed: true, status: 'review' },
+				{ step: 'done again', changed: false, status: 'review' },
+				{ step: 'unknown state', changed: false, status: 'review' },
+				{ step: 'clear', changed: true, status: 'idle' },
+			],
+			hooked: { changed: false, status: 'working' },
+			stillReadingOsc: false,
+			agentPane: true,
+		});
+	});
+
+	test('a hook reaching a pane takes it back from the OSC 7501 state', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'late-hook' }]));
+		const before = await fixture.service.notePaneProgramStatus(connection, 'late-hook', { state: 'working' });
+		// What the hook ingress does once a verified hook arrives for the pane.
+		Reflect.get(fixture.service, '_hookReportedTokens').add('late-hook');
+		Reflect.get(fixture.service, '_programStatusTokens').delete('late-hook');
+		const after = await fixture.service.notePaneProgramStatus(connection, 'late-hook', { state: 'done' });
+		const statuses = (await fixture.service.listPaneStatuses(connection)).map(entry => ({ token: entry.token, status: entry.status }));
+		assert.deepStrictEqual({ before, after, statuses }, { before: true, after: false, statuses: [{ token: 'late-hook', status: 'working' }] });
 	});
 
 	test('keeps legacy status and hook-token list commands independently available', async () => {
