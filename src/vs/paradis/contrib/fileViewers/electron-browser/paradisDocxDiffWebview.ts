@@ -29,6 +29,7 @@
 // `window` を直に触ると webview の外からは動かせず、この一番込み入った部分（run の分割・
 // ゴーストの差し込み）が一切検証できなくなる。テストは test/electron-browser/paradisDocxDiffWebview.test.ts。
 
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import { setTimeout0 } from '../../../../base/common/platform.js';
@@ -37,7 +38,7 @@ import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webvi
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
 import { createParadisOfficeWebArchive } from '../browser/office/paradisOfficeWebArchive.js';
-import { buildParadisOfficeWordCsp, paradisOfficeWebviewResourceOrigin, sanitizeOfficeDocxPackageForRenderer, type ParadisOfficeRenderablePackage } from '../common/paradisOfficeSanitizer.js';
+import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin, sanitizeOfficeDocxPackageForRenderer, type ParadisOfficeRenderablePackage } from '../common/paradisOfficeSanitizer.js';
 import {
 	IParadisDocxAnnotation,
 	IParadisDocxBlock,
@@ -65,12 +66,12 @@ import {
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 
 /** Owns and sanitizes every package asset before docx-preview can observe the package. */
-export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string, token?: CancellationToken): Promise<ParadisOfficeRenderablePackage> {
+export async function sanitizeParadisDocxBytesForRenderer(bytes: Uint8Array, nodeId: string, token?: CancellationToken, imagePixelBudget?: number): Promise<ParadisOfficeRenderablePackage> {
 	if (!(bytes instanceof Uint8Array) || bytes.byteLength > 16 * 1024 * 1024) { throw new Error('Office package exceeds renderer preprocessing limits'); }
 	const owned = new Uint8Array(bytes.byteLength);
 	owned.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 	const archive = await createParadisOfficeWebArchive(owned);
-	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000, scheduler: createParadisDocxSlicedScheduler() });
+	return sanitizeOfficeDocxPackageForRenderer({ nodeId, source: owned, archive, token, deadline: Date.now() + 10_000, scheduler: createParadisDocxSlicedScheduler(), ...(imagePixelBudget !== undefined ? { imagePixelBudget } : {}) });
 }
 
 /** 前処理が続けて走ってよい時間。これを超えたら 1 回だけ譲る（画面の操作が止まって見えない長さ）。 */
@@ -1272,6 +1273,38 @@ export function buildParadisDocxDiffHtml(labels: { original: string; modified: s
 	<div id="status">${escapeHtml(labels.loading)}</div>
 	<div id="style-original" style="display:none"></div>
 	<div id="style-modified" style="display:none"></div>
+	<script nonce="${nonce}">
+		// 検査を通った画像でも、描画側で読めなかったら代わりの箱に替える。HTML の img と、VML の画像を描く
+		// SVG の image の両方を見る。
+		(() => {
+			const brokenImage = ${JSON.stringify(`data:image/svg+xml;base64,${encodeBase64(VSBuffer.wrap(paradisOfficeBrokenImagePlaceholderSvg()))}`)};
+			const xlink = 'http://www.w3.org/1999/xlink';
+			const sourceOf = el => el instanceof HTMLImageElement ? el.getAttribute('src') : el instanceof SVGImageElement ? (el.getAttribute('href') || el.getAttributeNS(xlink, 'href')) : null;
+			const replace = el => {
+				// 対象は PNG・JPEG・GIF の中身を持つ画像だけ（base64 の先頭で見分ける）。
+				const source = sourceOf(el);
+				if (!source || el.dataset.paradisBrokenImage || !/^data:[^,]*;base64,(?:iVBOR|[/]9j[/]|R0lG)/.test(source)) { return; }
+				el.dataset.paradisBrokenImage = '1';
+				if (el instanceof HTMLImageElement) { el.src = brokenImage; } else { el.removeAttributeNS(xlink, 'href'); el.setAttribute('href', brokenImage); }
+			};
+			// 読み込みを終えて幅が 0 の img は読めなかった（decode を全部に掛けると、大きな画像をまとめて展開してしまう）。
+			const check = img => {
+				if (img.complete) { if (img.naturalWidth === 0) { replace(img); } }
+				else { img.addEventListener('load', () => { if (img.naturalWidth === 0) { replace(img); } }, { once: true }); }
+			};
+			document.addEventListener('error', event => replace(event.target), true);
+			new MutationObserver(records => {
+				for (const record of records) {
+					for (const node of record.addedNodes) {
+						const images = node instanceof HTMLImageElement ? [node] : node instanceof Element ? node.querySelectorAll('img') : [];
+						for (const img of images) {
+							if (img.getAttribute('src') && !img.dataset.paradisBrokenImage) { check(img); }
+						}
+					}
+				}
+			}).observe(document.getElementById('panes'), { childList: true, subtree: true });
+		})();
+	</script>
 	<script nonce="${nonce}" src="${libBase}/jszip.min.js"></script>
 	<script nonce="${nonce}" src="${libBase}/docx-preview.min.js"></script>
 	<script nonce="${nonce}">${PARADIS_WORD_ANCHOR_RUNTIME}</script>

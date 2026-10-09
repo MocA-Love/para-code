@@ -336,24 +336,22 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		}
 
 		const origin = firstHeader(request.headers.origin);
-		const range = parseParadisByteRange(firstHeader(request.headers.range), stat.size);
-		if (range === 'unsatisfiable') {
-			response.writeHead(416, { 'Content-Range': `bytes */${stat.size}`, 'Cache-Control': 'no-store' });
-			response.end();
-			return;
-		}
-		response.writeHead(range ? 206 : 200, {
-			'Content-Type': CONTENT_TYPES.get(extname(target).toLowerCase()) ?? 'application/octet-stream',
-			'Content-Length': String(range ? range.end - range.start + 1 : stat.size),
-			...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}` } : {}),
+		// 区間読みの途中でファイルが書き換わると、別の版の断片を継ぎ合わせてしまう。版を ETag で示し、
+		// `If-Range` が今の版と合わなければ区間を無視して全体を返す（RFC 9110 の決まり）。
+		const etag = `"${stat.size}-${Math.floor(stat.mtimeMs)}"`;
+		const ifRange = firstHeader(request.headers['if-range']);
+		const range = ifRange === undefined || ifRange === etag ? parseParadisByteRange(firstHeader(request.headers.range), stat.size) : undefined;
+		// 安全のためのヘッダーは、416 を含むどの応答にも同じものを付ける。
+		const commonHeaders: http.OutgoingHttpHeaders = {
 			'Accept-Ranges': 'bytes',
+			'ETag': etag,
 			// webview からは別オリジンとして見えるので、fetch やモジュール読み込みには許可が要る。
 			// **`*` にはしない**（上の説明を参照）。Origin ごとに応答が変わるので `Vary` を添える。
 			...(origin !== undefined && isWebviewOrigin(origin) ? {
 				'Access-Control-Allow-Origin': origin,
 				// pdf.js は `Accept-Ranges` を見て区間読みに切り替える。別オリジンの応答では、
 				// 名指しで公開しないとスクリプトから読めない（読めないと黙って全体読みに戻る）。
-				'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Range, Content-Length',
+				'Access-Control-Expose-Headers': 'Accept-Ranges, Content-Range, Content-Length, ETag',
 			} : {}),
 			'Vary': 'Origin',
 			// トークンは URL の中にある。ページが `<meta name="referrer" content="unsafe-url">` を
@@ -361,6 +359,17 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			'Referrer-Policy': 'no-referrer',
 			'Cache-Control': 'no-store',
 			'X-Content-Type-Options': 'nosniff',
+		};
+		if (range === 'unsatisfiable') {
+			response.writeHead(416, { ...commonHeaders, 'Content-Range': `bytes */${stat.size}` });
+			response.end();
+			return;
+		}
+		response.writeHead(range ? 206 : 200, {
+			...commonHeaders,
+			'Content-Type': CONTENT_TYPES.get(extname(target).toLowerCase()) ?? 'application/octet-stream',
+			'Content-Length': String(range ? range.end - range.start + 1 : stat.size),
+			...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}` } : {}),
 		});
 		if (request.method === 'HEAD') {
 			response.end();

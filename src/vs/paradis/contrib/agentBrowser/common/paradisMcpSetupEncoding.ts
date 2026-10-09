@@ -304,6 +304,22 @@ export const PARADIS_MCP_TOOL_TIMEOUT_MS = 300_000;
 export const PARADIS_CODEX_MCP_TOOL_TIMEOUT_SEC = PARADIS_MCP_TOOL_TIMEOUT_MS / 1000;
 
 /**
+ * Codex の `supports_parallel_tool_calls` に書く値。無い（既定 false）と、Codex は MCP サーバーの呼び出しを
+ * 1 本ずつ流す（codex-rs/core/src/tools/parallel.rs、0.162.0）。para-browser は同じタブへの呼び出しを
+ * サーバー側で 1 本ずつに並べる（paradisToolCallLanes.ts）ので、別のタブへの呼び出しだけが並行に走る。
+ */
+export const PARADIS_CODEX_MCP_SUPPORTS_PARALLEL_TOOL_CALLS = true;
+
+/**
+ * Codex の `[mcp_servers.para-browser]` に Para Code が書く、url と認証以外の行（キーと値の TOML 表記）。
+ * 書いた後の版で足した行は、セットアップ済みの人の節へ起動時に 1 行ずつ足す（paradisAddCodexMissingTableLines）。
+ */
+export const PARADIS_CODEX_MCP_MANAGED_LINES: readonly { readonly key: string; readonly value: string }[] = [
+	{ key: 'tool_timeout_sec', value: String(PARADIS_CODEX_MCP_TOOL_TIMEOUT_SEC) },
+	{ key: 'supports_parallel_tool_calls', value: String(PARADIS_CODEX_MCP_SUPPORTS_PARALLEL_TOOL_CALLS) },
+];
+
+/**
  * Codex の `[mcp_servers.para-browser]` の中身（ヘッダー行を除く）。
  *
  * トークンはペインごとに違うので値は焼き込まず、環境変数の名前だけを渡す
@@ -313,7 +329,7 @@ export function paradisCodexMcpTableBody(port: number): string {
 	return [
 		`url = ${encodeParadisTomlBasicString(paradisMcpServerUrl(port))}`,
 		`bearer_token_env_var = ${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}`,
-		`tool_timeout_sec = ${PARADIS_CODEX_MCP_TOOL_TIMEOUT_SEC}`,
+		...PARADIS_CODEX_MCP_MANAGED_LINES.map(line => `${line.key} = ${line.value}`),
 	].join('\n');
 }
 

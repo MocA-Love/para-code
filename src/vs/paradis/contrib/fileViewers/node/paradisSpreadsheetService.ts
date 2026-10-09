@@ -24,16 +24,16 @@ import {
 	IParadisDrawingData,
 	IParadisFreezePane,
 	IParadisSheetTable,
-	IParadisParseWorkbookOptions,
 	IParadisRichTextPart,
 	IParadisRowData,
 	canonicalizeDataValidationEntries,
 	IParadisSheetData,
 	IParadisSpreadsheetService,
+	ParadisSpreadsheetImageRejection,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
+import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
-import { collectParadisSpreadsheetSemanticDiagnostics } from './spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -1098,16 +1098,72 @@ interface IXlsxExtras {
 	maxDigitWidth: number;
 }
 
+/** renderer へ渡すグラフの XML の上限（文字数）。超えたグラフは描かずに代替表示に数える。 */
+const MAX_CHART_XML_CHARACTERS = 2 * 1024 * 1024;
+/** 1 シートで renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
+/** ブック全体で renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_WORKBOOK_DRAWING_XML_CHARACTERS = 32 * 1024 * 1024;
+
+/** 画素の上限の指定。有限でない・既定より大きい指定は、既定値に戻す。 */
+export function paradisSpreadsheetImagePixelBudget(value: unknown): number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS) : PARADIS_WORD_DOCUMENT_IMAGE_PIXELS;
+}
+
+/** 拡張子が宣言する画像の種類。描くのは Word と同じく PNG・JPEG・GIF だけ（EMF・WMF・BMP・SVG などは描かずに数える）。 */
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
 	switch (ext) {
 		case 'jpg': case 'jpeg': return 'image/jpeg';
 		case 'png': return 'image/png';
 		case 'gif': return 'image/gif';
-		case 'bmp': return 'image/bmp';
-		case 'svg': return 'image/svg+xml';
-		// emf/wmf 等の Windows メタファイルはブラウザで表示できないため対象外。
 		default: return undefined;
+	}
+}
+
+/**
+ * ブックの画像を、Word と同じ検査（`inspectParadisWordRasterImage`）に通してから data URI にする。
+ * 中身の形式が拡張子と食い違うもの、壊れたもの、動く PNG、ブック全体の画素の上限を越えたものは描かない
+ * （renderer は画像の無い図形として代替表示に数える）。画像の終わりより後ろのデータは切る。
+ * 同じ画像を複数の図形が使うときは、1 回だけ数える。
+ */
+type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
+
+class WorkbookImages {
+	private readonly cache = new Map<string, Promise<WorkbookImage>>();
+	private pixels = 0;
+
+	constructor(private readonly budget: number) { }
+
+	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
+		let result = this.cache.get(name);
+		if (!result) {
+			result = this.load(name, file);
+			this.cache.set(name, result);
+		}
+		return result;
+	}
+
+	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
+		const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+		if (extension === 'emf' || extension === 'wmf') {
+			return { reason: 'metafile' };
+		}
+		const declared = mediaMime(name);
+		if (!declared) {
+			return { reason: 'unsupportedFormat' };
+		}
+		if (!file) {
+			return { reason: 'unverified' };
+		}
+		const bytes = await file.async('uint8array');
+		const inspected = inspectParadisWordRasterImage(bytes);
+		if (!inspected || inspected.mimeType !== declared || this.pixels + inspected.pixels > this.budget) {
+			return { reason: 'unverified' };
+		}
+		this.pixels += inspected.pixels;
+		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
+		return { href: `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}` };
 	}
 }
 
@@ -1149,8 +1205,11 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // renderer へ渡し renderer が DOMParser で図形化する。改ページは brk の id だけ抜き出す。
 // 注意: sheetN.xml の「ファイル番号」は表示順と一致しない(workbook.xml の <sheets> 並びが表示順)。
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
-async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
+async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, imagePixelBudget = PARADIS_WORD_DOCUMENT_IMAGE_PIXELS): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
+	const drawingXmlCharactersBySheet = new Map<number, number>();
+	const images = new WorkbookImages(imagePixelBudget);
+	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] } = {};
@@ -1267,28 +1326,49 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			if (fileNum === undefined) {
 				continue;
 			}
+			const key = keyForFile(fileNum);
 			const xml = await files[name].async('text');
+			// renderer の DOM で読むので、シートごとに drawing とグラフの XML の合計に上限を掛ける。
+			const used = drawingXmlCharactersBySheet.get(key) ?? 0;
+			if (used + xml.length > MAX_SHEET_DRAWING_XML_CHARACTERS || workbookDrawingCharacters + xml.length > MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
+				(drawingsBySheet[key] ??= []).push({ xml: '', media: {}, omitted: true });
+				continue;
+			}
+			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
+			const rejectedMedia: { [rid: string]: ParadisSpreadsheetImageRejection } = {};
+			const charts: { [rid: string]: string } = {};
+			const workbookImages = images;
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
 			if (relsFile) {
 				for (const rel of (await relsFile.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
 					const id = rel.match(/Id="([^"]+)"/);
 					const target = rel.match(/Target="[^"]*media\/([^"]+)"/);
 					if (id && target) {
-						const mediaName = target[1];
-						const mime = mediaMime(mediaName);
-						const mediaFile = files[`xl/media/${mediaName}`];
-						if (mime && mediaFile) {
-							media[id[1]] = `data:${mime};base64,${await mediaFile.async('base64')}`;
+						const image = await workbookImages.dataUri(target[1], files[`xl/media/${target[1]}`]);
+						if (image.href !== undefined) {
+							media[id[1]] = image.href;
+						} else {
+							rejectedMedia[id[1]] = image.reason;
+						}
+					}
+					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
+					const chartTarget = /\bType="[^"]*\/chart"/.test(rel) ? rel.match(/Target="(?:\/xl\/charts\/|\.\.\/charts\/)(chart[^"/]*\.xml)"/) : null;
+					const chartFile = chartTarget ? files[`xl/charts/${chartTarget[1]}`] : undefined;
+					if (id && chartFile) {
+						const chartXml = await chartFile.async('text');
+						// 上限を越えるグラフは渡さない（renderer は描かずに代替表示に数える）。
+						if (chartXml.length <= MAX_CHART_XML_CHARACTERS && sheetCharacters + chartXml.length <= MAX_SHEET_DRAWING_XML_CHARACTERS
+							&& workbookDrawingCharacters + (sheetCharacters - used) + chartXml.length <= MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
+							charts[id[1]] = chartXml;
+							sheetCharacters += chartXml.length;
 						}
 					}
 				}
 			}
-			const key = keyForFile(fileNum);
-			if (!drawingsBySheet[key]) {
-				drawingsBySheet[key] = [];
-			}
-			drawingsBySheet[key].push({ xml, media });
+			drawingXmlCharactersBySheet.set(key, sheetCharacters);
+			workbookDrawingCharacters += sheetCharacters - used;
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
@@ -1301,7 +1381,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
-	async parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData> {
+	async parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const source = Buffer.from(base64Content, 'base64');
@@ -1317,7 +1397,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
-		const extras = await extractXlsxExtras(buffer, runtime.JSZip);
+		const extras = await extractXlsxExtras(buffer, runtime.JSZip, paradisSpreadsheetImagePixelBudget(imagePixelBudget));
 
 		// このブックのテーマパレットを組み立てて有効化する(以降の eachSheet ループは同期なので、
 		// 並行する parseWorkbook 呼び出しがあってもループ中に差し替わることはない)。
@@ -1519,21 +1599,12 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			});
 		});
 
-		const projection: IParadisWorkbookData = {
+		// 表示の投影だけを返す。詳しい解析は別の呼び出し（チャネルの collectSemanticDiagnostics）が worker で行う。
+		return {
 			sheets,
 			drawingsBySheet: extras.drawingsBySheet,
 			...(extras.themeColorsByName ? { themeColors: extras.themeColorsByName } : {}),
 		};
-		// 表示は投影で確定済み。意味解析は診断表示のためだけに回すので、
-		// 診断を出さない設定のときは費用を払わない。失敗しても表示は変わらない。
-		if (options?.semanticDiagnostics !== true) {
-			return projection;
-		}
-		// 解析側は Uint8Array そのものを要求する(Buffer を渡すと invalid で弾かれる)。
-		// この経路は同じプロセスで解析する（テストと突き合わせ用）。renderer からの診断は、チャネルが
-		// worker（paradisSpreadsheetSemanticWorkerBackend.ts）へ回すので、ここは通らない。
-		const semanticDiagnostics = await collectParadisSpreadsheetSemanticDiagnostics(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
-		return { ...projection, semanticDiagnostics };
 	}
 
 	private getRuntime(): Promise<IParadisSpreadsheetRuntime> {
