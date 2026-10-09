@@ -11,7 +11,7 @@
 // スタイルは CSS プロパティ名(camelCase)→値文字列 のプレーンオブジェクトで、renderer 側で
 // Object.assign(element.style, style) によりそのまま適用できる。
 
-import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
+import type { IParadisPageLayout, IParadisPageSetup } from './paradisSpreadsheetPageLayout.js';
 import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColor, ParadisSpreadsheetDiagonalIdentity, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
 
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
@@ -511,6 +511,8 @@ export interface IParadisSheetData {
 	readonly printArea?: IParadisCellRange;
 	/** 手動改ページ＋用紙設定から求めたページ割り(自動改ページとページ番号)。 */
 	readonly pageLayout?: IParadisPageLayout;
+	/** 用紙・余白・倍率・印刷の設定（印刷プレビューで使う）。 */
+	readonly pageSetup?: IParadisPageSetup;
 	/** ウィンドウ枠の固定(sheetView.pane)。行・列とも「固定する本数」で、0 は固定なし。 */
 	readonly freezePane?: IParadisFreezePane;
 	/** オートフィルタ/テーブルのフィルタ範囲(見出し行にフィルタ記号を出すため)。 */
