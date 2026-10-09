@@ -143,8 +143,9 @@ suite('ParadisOfficeMetafile', () => {
 			{ name: 'word/media/image2.wmf', bytes: emf, contentType: 'image/x-wmf' },
 			{ name: 'word/media/image3.emf', bytes: arc, contentType: 'image/x-emf' },
 			{ name: 'word/media/image4.emf', bytes: emf, contentType: 'IMAGE/EMF' },
-		], undefined, budget);
-		deepStrictEqual([...converted.keys()], ['word/media/image1.emf']);
+		], { documentBytes: budget });
+		const late = await convertParadisOfficeMetafileParts([{ name: 'word/media/image1.emf', bytes: emf, contentType: 'image/x-emf' }], { deadline: Date.now() - 1 });
+		deepStrictEqual({ converted: [...converted.keys()], late: late.size }, { converted: ['word/media/image1.emf'], late: 0 });
 	});
 
 	test('yields to the caller while drawing and stops when the caller throws', async () => {
