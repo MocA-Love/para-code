@@ -976,7 +976,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onNavigate: target => {
 				const legacy = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
-				const semanticChange = legacy ? undefined : semantic?.changes.find(change => change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? ''));
+				const semanticChange = legacy ? undefined : semantic?.changes.find(change => target.changeId !== undefined
+					? change.id === target.changeId
+					: change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? ''));
 				if (semanticChange && semantic && this._revealSemanticChange(semantic, semanticChange)) {
 					return;
 				}
@@ -1032,6 +1034,10 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _setInspectorVisible(visible: boolean): void {
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
+		}
+		// 幅が狭いとツールバーが折り返して高くなるので、比較の表示が始まる位置に合わせる。
+		if (visible && this._webviewContainer && this._webviewContainer.offsetTop > 0) {
+			this._inspectorPanel.style.top = `${this._webviewContainer.offsetTop}px`;
 		}
 		this._inspectorPanel.style.display = visible ? 'block' : 'none';
 		this._inspectorToggle.setAttribute('aria-expanded', String(visible));

@@ -202,6 +202,15 @@ suite('ParadisWordInspector', () => {
 		strictEqual(host.querySelector('[data-change-id="long"]')?.textContent, '内容 — changed（後半が変わっています）');
 	});
 
+	test('names a changed style instead of showing its fingerprint', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word style');
+		const host = document.createElement('div');
+		const inspector = disposables.add(new ParadisWordChangeInspector(host));
+		const style: ParadisOfficeChange = { ...change('style', 'formatting', 'package.style', 'package:Heading1'), after: { kind: 'scalar', valueType: 'text', value: 'fnv1a32:0123abcd' } };
+		inspector.setComparison([style], completeManifest, 'complete');
+		strictEqual(host.querySelector('[data-change-id="style"]')?.textContent, 'スタイル — Heading1');
+	});
+
 	test('counts categories and Stories while retaining visible changes without markers', () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('word stories');
 		const host = document.createElement('div');
@@ -274,7 +283,7 @@ suite('ParadisWordInspector', () => {
 		host.querySelector<HTMLButtonElement>('[data-placeholder-id="drawing-7"]')?.click();
 		strictEqual(host.querySelector('svg,script'), null);
 		deepStrictEqual(navigated, [
-			{ kind: 'change', locator: 'story:textbox:/word/document.xml:0/node:drawing-7', anchor: 'drawing-7' },
+			{ kind: 'change', locator: 'story:textbox:/word/document.xml:0/node:drawing-7', anchor: 'drawing-7', changeId: 'drawing' },
 			{ kind: 'placeholder', locator: 'drawing-7' },
 		]);
 	});
