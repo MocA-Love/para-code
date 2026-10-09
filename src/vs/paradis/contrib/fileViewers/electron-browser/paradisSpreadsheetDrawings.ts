@@ -1056,6 +1056,17 @@ export function spreadsheetUndrawnPlaceholders(sheets: readonly IParadisSheetDat
 	return placeholders;
 }
 
+/** 描いた後に読めなかった画像を、代替表示の項目にする。 */
+export function spreadsheetBrokenImagePlaceholders(broken: ReadonlyMap<IParadisRenderShape, string>): ParadisOfficePlaceholder[] {
+	return [...broken].map(([shape, sheetName], index) => ({
+		nodeId: `${sheetName}!object:${shape.name ?? shape.shapeId ?? `brokenImage-${index + 1}`}`,
+		feature: 'drawing.image',
+		reason: 'unsupported',
+		title: shape.name ?? localize('paradis.spreadsheet.drawingObject', "図形"),
+		detail: localize('paradis.spreadsheet.brokenImage', "画像の中身を読めなかったため、代わりの箱で表示しています。"),
+	}));
+}
+
 function undrawnDetail(kind: IParadisUndrawnObject['kind']): string {
 	switch (kind) {
 		case 'image': return localize('paradis.spreadsheet.undrawnImage', "この形式の画像（EMF・WMF など）は表示できません。");
