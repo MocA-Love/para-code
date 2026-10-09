@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -326,5 +326,68 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			identities: ['2.1.295', 'claude', undefined, undefined, undefined],
 			suspendedCodes: [true, true, false, false, false, false],
 		});
+	});
+
+	test('a command run while Claude Code is stopped does not drop the hold (shell integration: open, D;148, D;0, title back)', () => {
+		const tracker = new ParadisProgramStatusTracker();
+		const log: string[] = [];
+		const note = (step: string, value: unknown) => log.push(`${step}: ${String(value)}`);
+		note('query', tracker.query('claude', '2.1.295'));
+		note('working', tracker.gate.accept({ state: 'working' }));
+		note('Ctrl+Z (D;148)', tracker.commandFinished(148));
+		note('git status (D;0)', tracker.commandFinished(0));
+		note('title git', tracker.foregroundChanged('git', true));
+		note('title zsh', tracker.foregroundChanged('zsh', true));
+		note('fg (title back)', tracker.foregroundChanged('2.1.295', true));
+		note('open after fg', tracker.gate.isOpen);
+		note('working after fg', tracker.gate.accept({ state: 'working' }));
+		note('/exit then D;0', tracker.commandFinished(0));
+		note('open after the real end', tracker.gate.isOpen);
+		note('same title again without a query', tracker.foregroundChanged('2.1.295', true));
+		note('still closed', tracker.gate.isOpen);
+		assert.deepStrictEqual(log, [
+			'query: true',
+			'working: true',
+			'Ctrl+Z (D;148): clear',
+			'git status (D;0): undefined',
+			'title git: undefined',
+			'title zsh: undefined',
+			'fg (title back): undefined',
+			'open after fg: true',
+			'working after fg: true',
+			'/exit then D;0: clear',
+			'open after the real end: false',
+			'same title again without a query: undefined',
+			'still closed: false',
+		]);
+	});
+
+	test('without shell integration the hold survives other programs (zsh, ls, zsh, version number)', () => {
+		const tracker = new ParadisProgramStatusTracker();
+		const log: string[] = [];
+		const note = (step: string, value: unknown) => log.push(`${step}: ${String(value)}`);
+		// The title is polled, so at the moment of the answer it can still be the shell.
+		note('query while the title is still zsh', tracker.query('claude', 'zsh'));
+		note('title becomes Claude Code', tracker.foregroundChanged('2.1.295', false));
+		note('Ctrl+Z (title zsh)', tracker.foregroundChanged('zsh', false));
+		note('ls', tracker.foregroundChanged('ls', false));
+		note('zsh', tracker.foregroundChanged('zsh', false));
+		note('fg (version number)', tracker.foregroundChanged('2.1.295', false));
+		note('open after fg', tracker.gate.isOpen);
+		note('process exit', tracker.processExited());
+		note('version number after the exit', tracker.foregroundChanged('2.1.295', false));
+		note('open after the exit', tracker.gate.isOpen);
+		assert.deepStrictEqual(log, [
+			'query while the title is still zsh: true',
+			'title becomes Claude Code: undefined',
+			'Ctrl+Z (title zsh): clear',
+			'ls: undefined',
+			'zsh: undefined',
+			'fg (version number): undefined',
+			'open after fg: true',
+			'process exit: clear',
+			'version number after the exit: undefined',
+			'open after the exit: false',
+		]);
 	});
 });

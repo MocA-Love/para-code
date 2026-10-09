@@ -333,3 +333,73 @@ export class ParadisProgramStatusGate {
 		return wasOpen;
 	}
 }
+
+/** 受け付けの変化を受けて、呼び出し側がすること。'clear' は shared process へ状態を消す知らせを送る。 */
+export type ParadisProgramStatusEffect = 'clear' | undefined;
+
+/**
+ * 1 つのターミナルの OSC 7501 の受け付けと、Ctrl+Z の保留の判断（入出力を持たない。contribution が呼ぶ）。
+ *
+ * - 受け付けが開いている間に Claude Code が前面から外れたら（シェルの題名に戻る・SIGTSTP で終わったコマンド）、
+ *   開いたときの Claude Code の題名で保留にする。同じ題名が前面に戻ったら開き直す（2.1.295 は `fg` の後に問い合わせ直さない）
+ * - 保留の間に打ったコマンド（`git status` など）が終わっても、保留は消さない。保留を消すのは、プロセスの終了・
+ *   12 時間の経過・新しい問い合わせだけ
+ * - 受け付けが開いている間に、ほかの終わり方（0 などの終了コード）でコマンドが終われば閉じる
+ */
+export class ParadisProgramStatusTracker {
+
+	/** 受け付けを開いた Claude Code の題名。答えた時点の題名がまだシェルのことがあるので、開いている間に埋める。 */
+	private openedBy: string | undefined;
+
+	constructor(readonly gate: ParadisProgramStatusGate = new ParadisProgramStatusGate()) { }
+
+	/** 問い合わせが来た。答えるなら true。 */
+	query(trustedCommandLine: string | undefined, processTitle: string | undefined): boolean {
+		if (!this.gate.query(paradisProgramStatusForeground(trustedCommandLine, processTitle))) {
+			return false;
+		}
+		this.openedBy = paradisClaudeProcessIdentity(processTitle);
+		return true;
+	}
+
+	/** pty の前面のプロセスの題名が変わった。 */
+	foregroundChanged(processTitle: string | undefined, hasShellIntegration: boolean): ParadisProgramStatusEffect {
+		const identity = paradisClaudeProcessIdentity(processTitle);
+		if (this.gate.isOpen) {
+			if (this.openedBy === undefined && identity !== undefined) {
+				this.openedBy = identity;
+			}
+			// シェルへ戻ったのは、終わったのか Ctrl+Z で止めたのか分からない。止めた場合に備えて保留にする
+			if (paradisProgramStatusClosesOnForeground(hasShellIntegration, processTitle)) {
+				return this.leave(true);
+			}
+			return undefined;
+		}
+		if (identity !== undefined && identity === this.openedBy) {
+			this.gate.resume(identity);
+		}
+		return undefined;
+	}
+
+	/** シェル統合がコマンドの終わりを報告した。受け付けが閉じて保留だけがある間は何もしない。 */
+	commandFinished(exitCode: number | undefined): ParadisProgramStatusEffect {
+		if (!this.gate.isOpen) {
+			return undefined;
+		}
+		return this.leave(paradisIsSuspendedExitCode(exitCode));
+	}
+
+	/** プロセスが終わった（「Relaunch Terminal」で立て直す場合も）。保留も消す。 */
+	processExited(): ParadisProgramStatusEffect {
+		this.openedBy = undefined;
+		return this.gate.close() ? 'clear' : undefined;
+	}
+
+	private leave(maybeSuspended: boolean): ParadisProgramStatusEffect {
+		if (maybeSuspended && this.openedBy !== undefined) {
+			return this.gate.suspend(this.openedBy) ? 'clear' : undefined;
+		}
+		this.openedBy = undefined;
+		return this.gate.close() ? 'clear' : undefined;
+	}
+}
