@@ -15,6 +15,7 @@ import { canonicalizeOfficeXml, parseParadisOfficeXml } from '../../common/offic
 import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtocol.js';
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
+import { minimalGif, minimalJpeg, minimalPng, pngChunk } from '../common/paradisWordImageFixture.js';
 import { buildOpcFixture, type IParadisOfficeFixtureOptions, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
 
 /*
@@ -434,6 +435,57 @@ suite('ParadisOfficeCorpus', () => {
 		// A simple field inside a link moves up into the paragraph unchanged.
 		ok((await text('<w:p><w:hyperlink r:id="rIdA"><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:hyperlink></w:p>')).includes('<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>'));
 	});
+	test('draws inspected PNG, JPEG, and GIF images and keeps everything else as boxes (Q312 A)', async () => {
+		const png = minimalPng(2, 2);
+		const crcBroken = png.slice();
+		crcBroken[29] ^= 0xff;
+		const script = [...new TextEncoder().encode('<html><script>alert(1)</script></html>')];
+		const images: readonly (readonly [name: string, bytes: Uint8Array, type: string])[] = [
+			['image1.png', png, 'image/png'],
+			['image2.gif', minimalGif(2, 2), 'image/gif'],
+			['image3.jpg', minimalJpeg(2, 2), 'image/jpg'],
+			// A polyglot: the PNG is drawn and the HTML after IEND is cut.
+			['image4.png', Uint8Array.from([...png, ...script]), 'image/png'],
+			['image5.png', png, 'image/jpeg'],
+			['image6.emf', Uint8Array.of(1, 0, 0, 0, 0x6c, 0, 0, 0), 'image/x-emf'],
+			['image7.png', png.slice(0, 30), 'image/png'],
+			['image8.png', crcBroken, 'image/png'],
+			['image9.png', minimalPng(2, 2, { before: pngChunk('acTL', [0, 0, 0, 2, 0, 0, 0, 0]) }), 'image/png'],
+			['image10.gif', minimalGif(2, 2, { frames: 1_001 }), 'image/gif'],
+			['image11.png', new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), 'image/png'],
+		];
+		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
+		const result = await sanitize(await wordPackage({
+			body,
+			extraParts: images.map(([name, bytes, type]) => [`/word/media/${name}`, bytes, type] as const),
+			extraRelationships: images.map(([name], index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/${name}` })),
+		}));
+		const text = new TextDecoder().decode(result.bytes);
+		deepStrictEqual({
+			drawn: result.assets.filter(asset => asset.kind === 'rasterImage').map(asset => `${asset.mime}:${asset.byteLength}`).sort(),
+			boxes: result.placeholders.length,
+			scriptLeft: text.includes('<script>'),
+			types: ['image1.png', 'image3.jpg', 'image4.png', 'image5.png', 'image11.png'].map(name => new RegExp(`PartName="/word/media/${name.replace('.', '[.]')}" ContentType="(?<type>[^"]+)"`).exec(text)?.groups?.type),
+		}, {
+			drawn: [`image/gif:${minimalGif(2, 2).byteLength}`, `image/jpeg:${minimalJpeg(2, 2).byteLength}`, `image/png:${png.byteLength}`, `image/png:${png.byteLength}`].sort(),
+			boxes: 7,
+			scriptLeft: false,
+			types: ['image/png', 'image/jpg', 'image/png', 'image/svg+xml', 'image/svg+xml'],
+		});
+	});
+
+	test('keeps images past the document pixel budget as boxes', async () => {
+		// The inspector reads only the header, so the claimed sizes need no pixel data.
+		const images = [minimalPng(7_000, 7_000), minimalPng(7_000, 7_000), minimalPng(7_000, 1_000)];
+		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
+		const result = await sanitize(await wordPackage({
+			body,
+			extraParts: images.map((bytes, index) => [`/word/media/image${index + 1}.png`, bytes, 'image/png'] as const),
+			extraRelationships: images.map((_, index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/image${index + 1}.png` })),
+		}));
+		deepStrictEqual([result.assets.filter(asset => asset.kind === 'rasterImage').length, result.placeholders.length], [2, 1]);
+	});
+
 	test('parses a workbook that carries binary parts and Default-typed media (Part 2 §7.2.3.4)', async () => {
 		const workbook = await buildOpcFixture({
 			parts: [
