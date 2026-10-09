@@ -267,8 +267,8 @@ function inspectGif(bytes: Uint8Array, limits: ParadisWordImageInspectionLimits)
 			return undefined;
 		}
 		offset += 10 + ((frameFlags & 0x80) ? 3 * (1 << ((frameFlags & 0x07) + 1)) : 0);
-		// LZW の最小符号長（1 バイト）と、画像データの小ブロック列。
-		if (offset >= bytes.byteLength) {
+		// LZW の最小符号長（1 バイト、1〜8）と、画像データの小ブロック列。
+		if (offset >= bytes.byteLength || bytes[offset] < 1 || bytes[offset] > 8) {
 			return undefined;
 		}
 		const next = skipGifSubBlocks(bytes, offset + 1);

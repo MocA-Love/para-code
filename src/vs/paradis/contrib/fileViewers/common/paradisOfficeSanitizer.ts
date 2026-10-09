@@ -159,6 +159,11 @@ export interface ParadisOfficePackageSanitizerInput {
 	readonly allocationObserver?: (kind: 'placeholderFragment' | 'placeholderJoin' | 'outputJoin' | 'textEncoder', characters: number, bytes?: number) => void;
 	/** Tighter element budgets for tests; values above the defaults are ignored. */
 	readonly xmlElementLimits?: { readonly part?: number; readonly package?: number };
+	/**
+	 * Pixels this package may draw as raster images. Defaults to PARADIS_WORD_DOCUMENT_IMAGE_PIXELS; a view
+	 * that shows two documents at once passes a share of it. Values above the default are ignored.
+	 */
+	readonly imagePixelBudget?: number;
 }
 
 /**
@@ -697,12 +702,13 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	// do images only used inside replaced elements and images past the document's pixel budget.
 	const rasterParts = new Map<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>();
 	let rasterPixels = 0;
+	const imagePixelBudget = Math.min(PARADIS_WORD_DOCUMENT_IMAGE_PIXELS, Math.max(0, input.imagePixelBudget ?? PARADIS_WORD_DOCUMENT_IMAGE_PIXELS));
 	for (const name of imageParts) {
 		await advanceOpcAnalysis(input, state);
 		if (svgParts.has(name) || hiddenImageParts.has(name)) { continue; }
 		const raw = values.get(name); if (!raw) { continue; }
 		const inspected = inspectParadisWordRasterImage(raw);
-		if (!inspected || inspected.mimeType !== rasterContentType(contentType(name)) || rasterPixels + inspected.pixels > PARADIS_WORD_DOCUMENT_IMAGE_PIXELS) { continue; }
+		if (!inspected || inspected.mimeType !== rasterContentType(contentType(name)) || rasterPixels + inspected.pixels > imagePixelBudget) { continue; }
 		rasterPixels += inspected.pixels;
 		rasterParts.set(name, { mime: inspected.mimeType, end: inspected.end });
 	}
