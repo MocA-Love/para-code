@@ -81,6 +81,9 @@ const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freez
 export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
 export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
 
+/** ツールバーが 1 行のときの高さ。まだ描かれていなくて高さが測れないときに使う。 */
+const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 36;
+
 /** 解析が最後まで通った文書の、文書内の変更履歴とコメントの一覧の完全さ。 */
 function analyzedWordManifest(analysis: IParadisWordAnalysis): ParadisOfficeCompletenessManifest {
 	const parts = analysis.counts.parts;
@@ -344,8 +347,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._semanticToolbar.style.padding = '2px 8px';
 		this._semanticToolbar.style.background = 'var(--vscode-editor-background)';
 		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
+		this._diagnosticsElement.style.flex = '1 1 auto';
+		this._diagnosticsElement.style.minWidth = '0';
 		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
+		// 幅が狭いときにボタンの文字が縦に折り返さないようにする。
+		this._inspectorToggle.style.flex = '0 0 auto';
+		this._inspectorToggle.style.whiteSpace = 'nowrap';
 		this._inspectorToggle.textContent = localize('paradis.word.inspector', "変更点");
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
@@ -869,6 +877,23 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 	}
 
+	/**
+	 * 文書の表示と変更点パネルを、ツールバーのすぐ下から始める。幅が狭いとリボンが折り返して
+	 * ツールバーが高くなるので、決め打ちの高さではなく実際の高さを使う。
+	 */
+	private _syncSemanticToolbarOffset(): void {
+		if (!this._semanticToolbar || this._semanticToolbar.style.display === 'none') {
+			return;
+		}
+		const top = `${Math.max(PARADIS_WORD_TOOLBAR_MIN_OFFSET, this._semanticToolbar.offsetHeight)}px`;
+		if (this._webviewContainer) {
+			this._webviewContainer.style.top = top;
+		}
+		if (this._inspectorPanel) {
+			this._inspectorPanel.style.top = top;
+		}
+	}
+
 	private _renderSemanticUi(): void {
 		const configuration = this._runtimeConfiguration;
 		if (!configuration) {
@@ -898,12 +923,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (this._semanticToolbar) {
 			this._semanticToolbar.style.display = 'flex';
 		}
-		if (this._webviewContainer) {
-			this._webviewContainer.style.top = '36px';
-		}
 		if (this._diagnosticsElement) {
 			renderWordSemanticRibbon(this._diagnosticsElement, this._semanticRibbonState(), () => this._setInspectorVisible(true), this._ribbonDisposables);
 		}
+		this._syncSemanticToolbarOffset();
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
 		}
@@ -1057,7 +1080,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		const paragraph = target.anchor ? analysis.searchItems.find(item => item.navigableAnchor === target.anchor) : undefined;
 		const context = paragraph?.fields.find(field => field.kind !== 'hidden')?.text ?? '';
-		const change = target.kind === 'change' ? analysis.changes.find(candidate => candidate.navigableAnchor === target.anchor && candidate.subject.locator === target.locator) : undefined;
+		const change = target.kind === 'change' ? analysis.changes.find(candidate => target.changeId !== undefined
+			? candidate.id === target.changeId
+			: candidate.navigableAnchor === target.anchor && candidate.subject.locator === target.locator) : undefined;
 		// コメントは本文に無いので、コメントの付いた段落そのものを示す。変更履歴は段落の中の変わった文字を示す。
 		const focus = change && change.category !== 'annotation' ? wordChangeText(change) ?? context : context;
 		if (!context && !focus) {
@@ -1557,6 +1582,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._rootElement.style.width = `${dimension.width}px`;
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
+		this._syncSemanticToolbarOffset();
 		this.setEditorVisible(dimension.width > 0 && dimension.height > 0);
 	}
 }

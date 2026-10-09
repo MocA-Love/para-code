@@ -102,6 +102,8 @@ export interface ParadisWordNavigationTarget {
 	readonly kind: 'change' | 'placeholder' | 'search';
 	readonly locator: string;
 	readonly anchor?: string;
+	/** 変更を選んだとき、その変更の id。同じ場所に変更が 2 つ以上あっても取り違えないために使う。 */
+	readonly changeId?: string;
 }
 
 export interface ParadisWordLogicalNavigation {
@@ -388,14 +390,18 @@ function recordText(value: ParadisOfficeChangeValue, name: string): string | und
 
 /** 変更に含まれる文字（変更後、無ければ変更前）。文字を持たない変更は undefined。 */
 export function wordChangeText(change: ParadisOfficeChange): string | undefined {
-	return scalarText(change.after) ?? scalarText(change.before);
+	const text = scalarText(change.after) ?? scalarText(change.before);
+	// 書式などの変更は、値が中身の指紋（fnv1a32:…）の文字列になっている。読める文字ではないので出さない。
+	return text !== undefined && change.category !== 'content' && WORD_FINGERPRINT_TEXT.test(text) ? undefined : text;
 }
+
+const WORD_FINGERPRINT_TEXT = /^fnv1a32:[0-9a-f]{8}$/;
 
 /** 一覧に出す短い説明。文字の変更なら変更後（無ければ変更前）の抜粋、それ以外は場所。 */
 export function wordChangeSummary(change: ParadisOfficeChange): string {
 	const text = wordChangeText(change);
 	const author = recordText(change.after, 'author');
-	const detail = text ? truncateParadisWordText(text, 80) : change.subject.locator;
+	const detail = text ? truncateParadisWordText(text, 80) : change.subject.locator.replace(/^package:/, '');
 	return author ? localize('paradis.word.changeSummaryAuthor', "{0}（{1}）", detail, author) : detail;
 }
 
@@ -619,7 +625,7 @@ export class ParadisWordChangeInspector extends Disposable {
 			this.viewState = copyViewState({ ...this.viewState, selectedChangeId });
 			this.options.onDidChangeViewState?.(this.getViewState());
 		}
-		this.options.onNavigate?.({ kind, locator, ...(anchor ? { anchor } : {}) });
+		this.options.onNavigate?.({ kind, locator, ...(anchor ? { anchor } : {}), ...(kind === 'change' && selectedChangeId ? { changeId: selectedChangeId } : {}) });
 		this.render();
 	}
 
