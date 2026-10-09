@@ -93,7 +93,8 @@ suite('ParadisSpreadsheetDrawings', () => {
 		const frame = (id: number, uri: string, inner: string) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${uri}">${inner}</a:graphicData></a:graphic></xdr:graphicFrame>`;
 		const chartUri = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 		const barChart = `<c:chartSpace xmlns:c="${C}" xmlns:a="${A}"><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:tx><c:strRef><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>A</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:ptCount val="2"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>3</c:v></c:pt><c:pt idx="1"><c:v>5</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea><c:legend/></c:chart></c:chartSpace>`;
-		const radarChart = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:radarChart/></c:plotArea></c:chart></c:chartSpace>`;
+		// 補助円（ofPieChart）はまだ描かない種類。
+		const radarChart = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:ofPieChart/></c:plotArea></c:chart></c:chartSpace>`;
 		const { shapes, undrawn } = parseDrawingObjects([{
 			xml: drawing([
 				anchor(pic(30, 'rIdPng')),
