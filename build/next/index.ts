@@ -133,6 +133,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts for the Excel semantic diagnostics (fileViewers)
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts to convert Excel EMF/WMF pictures to SVG (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
 ];
 
 const codeEntryPoints = [

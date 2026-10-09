@@ -10,6 +10,9 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { minimalJpeg, minimalPng } from '../common/paradisWordImageFixture.js';
+import { minimalBmp } from '../common/paradisOfficeBmpFixture.js';
+import { emfRecord, minimalEmf, ParadisMetafileBytes } from '../common/paradisOfficeMetafileFixture.js';
+import { convertParadisSpreadsheetMetafiles } from '../../node/spreadsheet/paradisSpreadsheetMetafiles.js';
 import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
@@ -18,6 +21,52 @@ async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): 
 	configure(workbook);
 	const bytes = await workbook.xlsx.writeBuffer();
 	return Buffer.from(bytes).toString('base64');
+}
+
+/**
+ * Invented workbook with five pictures whose media are an EMF, a broken EMF, a BMP, an SVG, and a TIFF.
+ * exceljs only writes PNG pictures, so each picture's media part is replaced the way Excel stores the others.
+ */
+async function picturesWorkbook(): Promise<{ readonly bytes: Uint8Array; readonly kindByRid: ReadonlyMap<string, string>; readonly parts: { readonly bmp: Uint8Array } }> {
+	const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values.map(value => value >>> 0));
+	// A mapping to 80 x 40 device pixels and one filled rectangle.
+	const emf = minimalEmf([
+		emfRecord(17, words(8)), emfRecord(10, words(0, 0)), emfRecord(9, words(200, 100)), emfRecord(12, words(0, 0)), emfRecord(11, words(80, 40)),
+		emfRecord(39, words(1, 0, 0x0000ff, 0)), emfRecord(37, words(1)), emfRecord(43, words(10, 10, 50, 30)),
+	]);
+	const bmp = minimalBmp(3, 2, { trailer: 8 });
+	const parts = [
+		{ kind: 'emf', extension: 'emf', bytes: emf, type: 'image/x-emf' },
+		{ kind: 'brokenEmf', extension: 'emf', bytes: emf.slice(0, 120), type: 'image/x-emf' },
+		{ kind: 'bmp', extension: 'bmp', bytes: bmp, type: 'image/bmp' },
+		{ kind: 'svg', extension: 'svg', bytes: new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#ff0000"/></svg>'), type: 'image/svg+xml' },
+		{ kind: 'tif', extension: 'tif', bytes: minimalPng(1, 1), type: 'image/tiff' },
+	];
+	const book = new ExcelJS.Workbook();
+	const sheet = book.addWorksheet('Images');
+	parts.forEach((_, index) => {
+		const id = book.addImage({ buffer: Buffer.from(minimalPng(index + 1, 1)) as unknown as ExcelJS.Buffer, extension: 'png' });
+		sheet.addImage(id, { tl: { col: index * 2, row: 0 }, ext: { width: 10, height: 10 } });
+	});
+	const zip = await JSZip.loadAsync(await book.xlsx.writeBuffer());
+	const relsName = Object.keys(zip.files).find(name => /^xl\/drawings\/_rels\/[^/]+\.rels$/.test(name))!;
+	let rels = await zip.file(relsName)!.async('text');
+	let types = await zip.file('[Content_Types].xml')!.async('text');
+	const targets = [...rels.matchAll(/Target="\.\.\/media\/(?<name>[^"]+)"/g)].map(match => match.groups!.name);
+	const kindByRid = new Map<string, string>();
+	targets.forEach((target, index) => {
+		const part = parts[index];
+		const renamed = target.replace(/\.png$/, `.${part.extension}`);
+		zip.remove(`xl/media/${target}`);
+		zip.file(`xl/media/${renamed}`, part.bytes);
+		rels = rels.replace(`../media/${target}"`, `../media/${renamed}"`);
+		types = types.replace('</Types>', `<Override PartName="/xl/media/${renamed}" ContentType="${part.type}"/></Types>`);
+		const rid = new RegExp(`Id="(?<id>[^"]+)"[^>]*Target="\\.\\./media/${renamed.replace('.', '\\.')}"`).exec(rels)?.groups?.id ?? '';
+		kindByRid.set(rid, part.kind);
+	});
+	zip.file(relsName, rels);
+	zip.file('[Content_Types].xml', types);
+	return { bytes: await zip.generateAsync({ type: 'uint8array' }), kindByRid, parts: { bmp } };
 }
 
 suite('ParadisSpreadsheetService', () => {
@@ -120,6 +169,27 @@ suite('ParadisSpreadsheetService', () => {
 			tooLargeMismatchedReason: ['unverified'],
 			budget: [2, 1, 1],
 		});
+	});
+
+	test('draws BMP after its header checks and sanitized SVG, leaves EMF for the worker, and boxes the rest', async () => {
+		const { bytes, kindByRid, parts } = await picturesWorkbook();
+		const result = await new ParadisSpreadsheetService().parseWorkbook(Buffer.from(bytes).toString('base64'));
+		const drawing = result.drawingsBySheet?.[1]?.[0];
+		const decode = (href: string) => Buffer.from(href.slice(href.indexOf(',') + 1), 'base64');
+		const drawn = Object.entries(drawing?.media ?? {}).map(([rid, href]) => [kindByRid.get(rid), href.slice(0, href.indexOf(';')), href.includes('image/bmp') ? decode(href).byteLength : /<svg\b/.test(decode(href).toString('utf8'))]);
+		const rejected = Object.entries(drawing?.rejectedMedia ?? {}).map(([rid, reason]) => [kindByRid.get(rid), reason]);
+		const pending = Object.entries(drawing?.metafileMedia ?? {}).map(([rid, name]) => [kindByRid.get(rid), name.endsWith('.emf')]);
+		deepStrictEqual({ drawn: drawn.sort(), rejected: rejected.sort(), pending: pending.sort() }, {
+			drawn: [['bmp', 'data:image/bmp', parts.bmp.byteLength - 8], ['svg', 'data:image/svg+xml', true]],
+			rejected: [['brokenEmf', 'metafile'], ['emf', 'metafile'], ['tif', 'unsupportedFormat']],
+			pending: [['brokenEmf', true], ['emf', true]],
+		});
+	});
+
+	test('converts the EMF pictures of a workbook to SVG data URLs, leaving out the ones it cannot draw', async () => {
+		const { bytes } = await picturesWorkbook();
+		const images = await convertParadisSpreadsheetMetafiles(bytes);
+		deepStrictEqual(Object.values(images).map(href => [href.slice(0, href.indexOf(';')), /<svg\b/.test(Buffer.from(href.slice(href.indexOf(',') + 1), 'base64').toString('utf8'))]), [['data:image/svg+xml', true]]);
 	});
 
 	test('rejects bytes that are not an xlsx archive', async () => {

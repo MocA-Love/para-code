@@ -33,6 +33,8 @@ import {
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
+import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
+import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1121,17 +1123,27 @@ function mediaMime(fileName: string): string | undefined {
 	}
 }
 
-/**
- * ブックの画像を、Word と同じ検査（`inspectParadisWordRasterImage`）に通してから data URI にする。
- * 中身の形式が拡張子と食い違うもの、壊れたもの、動く PNG、ブック全体の画素の上限を越えたものは描かない
- * （renderer は画像の無い図形として代替表示に数える）。画像の終わりより後ろのデータは切る。
- * 同じ画像を複数の図形が使うときは、1 回だけ数える。
- */
+/** 描く SVG の画像（サニタイズした後）のバイト数の合計の上限（ブック全体）。 */
+export const PARADIS_SPREADSHEET_SVG_IMAGE_BYTES = 16 * 1024 * 1024;
+
 type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
 
+function dataUrl(mimeType: string, bytes: Uint8Array): string {
+	return `data:${mimeType};base64,${Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')}`;
+}
+
+/**
+ * 図形が使う画像を、名前ごとに 1 回だけ確かめて data URL にする。
+ * - PNG・JPEG・GIF: Word と同じ検査を通し、画像の終わりで切る
+ * - BMP: 見出しを確かめ、ファイルの見出しが言う長さで切る（PNG へは変換しない）
+ * - SVG: Office の SVG のサニタイザを通す
+ * - EMF・WMF: ここでは描かない（`metafile`）。表示を返した後で worker が SVG にし、renderer が差し替える
+ * ラスターの画像はブックの画素の上限に数える。
+ */
 class WorkbookImages {
 	private readonly cache = new Map<string, Promise<WorkbookImage>>();
 	private pixels = 0;
+	private svgBytes = 0;
 
 	constructor(private readonly budget: number) { }
 
@@ -1149,14 +1161,24 @@ class WorkbookImages {
 		if (extension === 'emf' || extension === 'wmf') {
 			return { reason: 'metafile' };
 		}
-		const declared = mediaMime(name);
-		if (!declared) {
+		if (extension !== 'svg' && extension !== 'bmp' && !mediaMime(name)) {
 			return { reason: 'unsupportedFormat' };
 		}
-		if (!file) {
+		if (!file || file.dir) {
 			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
+		if (extension === 'svg') {
+			return this.loadSvg(name, bytes);
+		}
+		if (extension === 'bmp') {
+			const { image, rejection } = inspectParadisOfficeBmp(bytes);
+			if (!image) {
+				return { reason: rejection === 'tooLarge' ? 'tooLarge' : 'unverified' };
+			}
+			return this.takePixels(image.pixels) ? { href: dataUrl(image.mimeType, image.end < bytes.byteLength ? bytes.subarray(0, image.end) : bytes) } : { reason: 'overBudget' };
+		}
+		const declared = mediaMime(name);
 		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(bytes);
 		// 中身の形式が拡張子と食い違うものは、大きさに関係なく「確かめられなかった」にする。
 		if ((inspected?.mimeType ?? mimeType) !== declared) {
@@ -1168,12 +1190,40 @@ class WorkbookImages {
 		if (!inspected) {
 			return { reason: 'unverified' };
 		}
-		if (this.pixels + inspected.pixels > this.budget) {
+		if (!this.takePixels(inspected.pixels)) {
 			return { reason: 'overBudget' };
 		}
-		this.pixels += inspected.pixels;
 		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
-		return { href: `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}` };
+		return { href: dataUrl(inspected.mimeType, image) };
+	}
+
+	/** SVG の画像は、Office の SVG のサニタイザを通したものだけを描く。 */
+	private loadSvg(name: string, bytes: Uint8Array): WorkbookImage {
+		let source: string;
+		try {
+			source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		} catch {
+			return { reason: 'unverified' };
+		}
+		// サニタイザの ID は英数字と `:_-` だけなので、部品の名前を写して使う。
+		const sanitized = sanitizeOfficeSvg({ nodeId: 'spreadsheet-media', assetId: `media_${name.replace(/[^A-Za-z\d:_-]/g, '_').slice(0, 200)}`, source });
+		if (!Object.prototype.hasOwnProperty.call(sanitized, 'bytes')) {
+			return { reason: 'unverified' };
+		}
+		const svg = (sanitized as ParadisSanitizedSvg).bytes;
+		if (this.svgBytes + svg.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgBytes += svg.byteLength;
+		return { href: dataUrl('image/svg+xml', svg) };
+	}
+
+	private takePixels(pixels: number): boolean {
+		if (this.pixels + pixels > this.budget) {
+			return false;
+		}
+		this.pixels += pixels;
+		return true;
 	}
 }
 
@@ -1347,6 +1397,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
 			const rejectedMedia: { [rid: string]: ParadisSpreadsheetImageRejection } = {};
+			const metafileMedia: { [rid: string]: string } = {};
 			const charts: { [rid: string]: string } = {};
 			const workbookImages = images;
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
@@ -1360,6 +1411,10 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 							media[id[1]] = image.href;
 						} else {
 							rejectedMedia[id[1]] = image.reason;
+							// EMF・WMF は、表示を返した後で worker が変換する。どの画像かを renderer に教える。
+							if (image.reason === 'metafile' && files[`xl/media/${target[1]}`]) {
+								metafileMedia[id[1]] = target[1];
+							}
 						}
 					}
 					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
@@ -1378,7 +1433,7 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			}
 			drawingXmlCharactersBySheet.set(key, sheetCharacters);
 			workbookDrawingCharacters += sheetCharacters - used;
-			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(rejectedMedia).length > 0 ? { rejectedMedia } : {}), ...(Object.keys(metafileMedia).length > 0 ? { metafileMedia } : {}), ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
