@@ -131,6 +131,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts for the Word semantic analysis (fileViewers)
 	'vs/paradis/contrib/fileViewers/node/word/paradisWordSemanticWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts for the Excel semantic diagnostics (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain',
 ];
 
 const codeEntryPoints = [

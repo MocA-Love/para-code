@@ -44,7 +44,7 @@ import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reducePar
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
-import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
+import { parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
@@ -980,11 +980,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._recoveryState = transition.state;
 				if (!preserveCommitted || transition.effects.length === 0) {
 					// 両側失敗でも1件にまとめる。側ごとに送ると1回の失敗でレート枠を2つ食う。
-					this._probe.noteAndReport({
-						cause: 'source', stage: 'source',
-						error: origResult.error ?? modResult.error,
-						side: origResult.error && modResult.error ? 'both' : origResult.error ? 'original' : 'modified',
-					});
+					// Excel の一時ファイルなど xlsx でないものだけが理由なら、壊れたブックではないので送らない。
+					const reportable = [origResult.error, modResult.error].some(error => error !== undefined && !(error instanceof ParadisSpreadsheetNotWorkbookError));
+					if (reportable) {
+						this._probe.noteAndReport({
+							cause: 'source', stage: 'source',
+							error: origResult.error ?? modResult.error,
+							side: origResult.error && modResult.error ? 'both' : origResult.error ? 'original' : 'modified',
+						});
+					}
 					this._renderMessage(localize('paradis.spreadsheet.diffLoadFailed', "差分を表示できません。{0}", reasons.join(' / ')));
 				}
 				return false;

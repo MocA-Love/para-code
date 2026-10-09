@@ -178,7 +178,9 @@ suite('ParadisOfficeDualRead', () => {
 			baseValue: 'Diagonal border',
 			baseShapes: 0,
 			objectCounts: { images: 1, drawings: 0, charts: 0, opaque: 0 },
-			v1Diagnostic: { code: 'unsafe', outcome: 'degraded', canReportNoChanges: false },
+			// The image part used to share one fingerprint object between two inventory fields, which the
+			// semantic parser rejected as unsafe. With distinct objects the workbook parses completely.
+			v1Diagnostic: { code: undefined, outcome: 'complete', canReportNoChanges: true },
 			drawingAudit: {
 				kind: 'image',
 				name: 'Picture 1',

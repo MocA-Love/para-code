@@ -15,7 +15,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisPdfFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -57,9 +57,11 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
-import { renderWordSemanticRibbon, wordSemanticFailureMessage, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { analyzeParadisWordDocument } from './word/paradisWordSemanticClient.js';
+import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
+import { alignParadisWordParagraphs, type IParadisWordParagraphOutline } from '../common/word/paradisWordRenderOutline.js';
 import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
 import type { IParadisWordAnalysis, IParadisWordAnalysisResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
@@ -74,6 +76,13 @@ const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freez
 	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
 	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
 });
+
+/** 混み合っていて解析できなかったときに、頼み直すまでの時間と回数。 */
+export const PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS = 5_000;
+export const PARADIS_WORD_SEMANTIC_BUSY_RETRIES = 3;
+
+/** ツールバーが 1 行のときの高さ。まだ描かれていなくて高さが測れないときに使う。 */
+const PARADIS_WORD_TOOLBAR_MIN_OFFSET = 36;
 
 /** 解析が最後まで通った文書の、文書内の変更履歴とコメントの一覧の完全さ。 */
 function analyzedWordManifest(analysis: IParadisWordAnalysis): ParadisOfficeCompletenessManifest {
@@ -95,6 +104,8 @@ export interface ParadisWordRevealRequest {
 	readonly matchCase: boolean;
 	/** 表示の中に見つからなかったときに出す文。 */
 	readonly notFound?: string;
+	/** 対応の取れた表示の段落の目印。あればその段落の中だけを探す。 */
+	readonly marker?: string;
 }
 
 /** 検索結果から、webview で位置を探すための手がかりを作る。 */
@@ -171,6 +182,32 @@ function wordViewStateFromOptions(value: object | undefined, fallback: ParadisWo
 	return restoreParadisWordViewState(nested, fallback);
 }
 
+/** webview が報告した表示の段落ごとの文字。形と大きさを確かめてから受け取る。 */
+export function acceptRenderedParagraphs(value: unknown): Record<string, string[]> | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		return undefined;
+	}
+	// 鍵は文書の部品名から来るので、`__proto__` などで既定の性質を書き換えられないよう素の入れ物にする。
+	const result: Record<string, string[]> = Object.create(null);
+	let total = 0;
+	for (const [key, texts] of Object.entries(value as Record<string, unknown>)) {
+		if (key.length > 1024 || !Array.isArray(texts) || texts.length > 100_000) {
+			return undefined;
+		}
+		const owned: string[] = [];
+		for (const text of texts) {
+			const string = typeof text === 'string' ? text : '';
+			total += string.length;
+			owned.push(string);
+		}
+		if (total > 16 * 1024 * 1024) {
+			return undefined;
+		}
+		result[key] = owned;
+	}
+	return result;
+}
+
 /** 同じ中身かどうか（同じ中身を描き直しただけなら解析を頼み直さないために使う）。 */
 export function equalParadisWordBytes(left: Uint8Array, right: Uint8Array): boolean {
 	if (left === right) {
@@ -235,8 +272,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _accessibility: ParadisOfficeAccessibility | undefined;
 	private _assetPlaceholders: readonly ParadisOfficePlaceholder[] = [];
+	/** 描画用のパッケージから外した部品（無視したもの・安全のために外したもの）。 */
+	private _packageExclusions: ParadisWordPackageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 	/** 詳しい解析（shared process）。表示を出した後に裏で走らせ、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 混み合っていて解析できなかったときの、頼み直しの予約。 */
+	private readonly _semanticRetry = this._register(new MutableDisposable());
+	private _semanticRetries = 0;
+	/** 混み合って断られた中身。違う中身を頼むときに、頼み直しの回数を数え直すために覚える。 */
+	private _semanticBusyBytes: Uint8Array | undefined;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticBytes: Uint8Array | undefined;
@@ -244,6 +288,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _semanticSearch: ParadisOfficeSemanticSearch | undefined;
 	private _semanticSearchHandle = 0;
 	private _findMatchCase = false;
+	/** いま表示している docx-preview の段落ごとの文字（webview が描いた後に報告する）。 */
+	private _renderedParagraphs: Record<string, string[]> | undefined;
+	/** 解析結果の段落の位置 → 表示の段落の目印。 */
+	private _markerByLocator: Map<string, string> | undefined;
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
@@ -286,7 +334,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._findWidget.value = new ParadisOfficeFindWidget(this._rootElement, {
 			unavailableMessage: localize('paradis.word.searchUnavailableAdapter', "この形式では検索を利用できません。"),
 			isActive: () => !!this._webview?.isFocused,
-			onNavigate: result => this._postReveal(createParadisWordSearchReveal(result, this._findMatchCase)),
+			onNavigate: result => this._postReveal(createParadisWordSearchReveal(result, this._findMatchCase), result.navigableAnchor),
 		});
 		this._semanticToolbar = dom.append(this._rootElement, dom.$('.paradis-word-semantic-toolbar'));
 		this._semanticToolbar.setAttribute('role', 'toolbar');
@@ -301,8 +349,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._semanticToolbar.style.padding = '2px 8px';
 		this._semanticToolbar.style.background = 'var(--vscode-editor-background)';
 		this._diagnosticsElement = dom.append(this._semanticToolbar, dom.$('.paradis-word-diagnostics-host'));
+		this._diagnosticsElement.style.flex = '1 1 auto';
+		this._diagnosticsElement.style.minWidth = '0';
 		this._inspectorToggle = dom.append(this._semanticToolbar, dom.$('button.paradis-word-inspector-toggle')) as HTMLButtonElement;
 		this._inspectorToggle.type = 'button';
+		// 幅が狭いときにボタンの文字が縦に折り返さないようにする。
+		this._inspectorToggle.style.flex = '0 0 auto';
+		this._inspectorToggle.style.whiteSpace = 'nowrap';
 		this._inspectorToggle.textContent = localize('paradis.word.inspector', "変更点");
 		this._accessibility.labelButton(this._inspectorToggle, localize('paradis.word.inspector', "変更点"));
 		this._inspectorToggle.setAttribute('aria-expanded', 'false');
@@ -546,9 +599,17 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (!message || typeof message !== 'object') {
 			return;
 		}
-		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown; readonly count?: unknown };
+		const candidate = message as { readonly type?: unknown; readonly generation?: unknown; readonly hasExpectedRoot?: unknown; readonly action?: unknown; readonly count?: unknown; readonly stories?: unknown };
 		if (candidate.type === 'paradisWordBrokenImages' && typeof candidate.generation === 'number' && typeof candidate.count === 'number') {
 			this._onBrokenImages(candidate.generation, candidate.count);
+			return;
+		}
+		if (candidate.type === 'paradisWordParagraphs') {
+			// いま表示している世代の報告だけを使う（作り直しをまたいで届いた古い報告は、目印の番号が違いうる）。
+			if (candidate.generation === this._recoveryState.generation) {
+				this._renderedParagraphs = acceptRenderedParagraphs(candidate.stories);
+				this._publishAnnotations();
+			}
 			return;
 		}
 		if (candidate.type === 'paradisOfficeRecovery' && typeof candidate.generation === 'number' && typeof candidate.hasExpectedRoot === 'boolean') {
@@ -634,6 +695,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (!snapshot || !isEqual(snapshot.resource, this._currentResource) || !this._webviewClaimed) {
 			return false;
 		}
+		this._renderedParagraphs = undefined;
+		this._markerByLocator = undefined;
 		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(this._buildHtml(
 			snapshot.resource,
 			snapshot.inlineData,
@@ -708,6 +771,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	protected _renderResource(resource: URI, recoveryGeneration = this._recoveryState.generation): void {
 		this._assetPlaceholders = [];
+		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
+		this._renderedParagraphs = undefined;
+		this._markerByLocator = undefined;
 		const generation = ++this._renderGeneration;
 		const inputEpoch = this._inputEpoch;
 		this._assetSanitization.value?.cancel();
@@ -746,6 +812,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
 				this._assetPlaceholders = sanitized.placeholders;
+				this._packageExclusions = paradisWordPackageExclusions(sanitized);
 				overlaySource = sanitized.bytes;
 			} catch (error) {
 				// 理由を覚えておく。この先 `rejected` として画面に出るときに、これが原因欄になる
@@ -831,6 +898,23 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 	}
 
+	/**
+	 * 文書の表示と変更点パネルを、ツールバーのすぐ下から始める。幅が狭いとリボンが折り返して
+	 * ツールバーが高くなるので、決め打ちの高さではなく実際の高さを使う。
+	 */
+	private _syncSemanticToolbarOffset(): void {
+		if (!this._semanticToolbar || this._semanticToolbar.style.display === 'none') {
+			return;
+		}
+		const top = `${Math.max(PARADIS_WORD_TOOLBAR_MIN_OFFSET, this._semanticToolbar.offsetHeight)}px`;
+		if (this._webviewContainer) {
+			this._webviewContainer.style.top = top;
+		}
+		if (this._inspectorPanel) {
+			this._inspectorPanel.style.top = top;
+		}
+	}
+
 	private _renderSemanticUi(): void {
 		const configuration = this._runtimeConfiguration;
 		if (!configuration) {
@@ -860,12 +944,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (this._semanticToolbar) {
 			this._semanticToolbar.style.display = 'flex';
 		}
-		if (this._webviewContainer) {
-			this._webviewContainer.style.top = '36px';
-		}
 		if (this._diagnosticsElement) {
 			renderWordSemanticRibbon(this._diagnosticsElement, this._semanticRibbonState(), () => this._setInspectorVisible(true), this._ribbonDisposables);
 		}
+		this._syncSemanticToolbarOffset();
 		if (!this._inspectorPanel || !this._inspectorToggle) {
 			return;
 		}
@@ -897,10 +979,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 			inspector.setComparison([], INCOMPLETE_WORD_MANIFEST, 'degraded');
 		}
 		inspector.setPlaceholders(this._assetPlaceholders);
-		inspector.setAnalysis(this._semanticResult === undefined ? undefined : {
+		inspector.setAnalysis({
 			...(analysis ? { counts: analysis.counts } : {}),
-			ignoredParts: [],
-			...(this._semanticResult.ok ? {} : { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code)) }),
+			...paradisWordExclusionItems(this._packageExclusions),
+			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.analysisFailed', "解析できませんでした: {0}", wordSemanticFailureMessage(this._semanticResult.code, this._semanticRetrying())) } : {}),
 		});
 		if (wasVisible) {
 			this._setInspectorVisible(true);
@@ -909,14 +991,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _semanticRibbonState(): ParadisWordSemanticRibbonState {
 		const alternatives = this._assetPlaceholders.length;
-		const ignoredParts = 0;
+		const ignoredParts = this._packageExclusions.ignored.length + this._packageExclusions.ignoredOmitted;
+		const blocked = summarizeParadisWordBlockedParts(this._packageExclusions);
+		const extra = blocked ? { blocked } : {};
 		const result = this._semanticResult;
 		if (!result) {
-			return { kind: 'analyzing', alternatives, ignoredParts };
+			return { kind: 'analyzing', alternatives, ignoredParts, ...extra };
 		}
 		return result.ok
-			? { kind: 'analyzed', counts: result.counts, alternatives, ignoredParts }
-			: { kind: 'failed', code: result.code, alternatives, ignoredParts };
+			? { kind: 'analyzed', counts: result.counts, alternatives, ignoredParts, ...extra }
+			: { kind: 'failed', code: result.code, alternatives, ignoredParts, retrying: this._semanticRetrying(), ...extra };
 	}
 
 	private _setInspectorVisible(visible: boolean): void {
@@ -933,6 +1017,15 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._semanticBytes = undefined;
 		this._semanticResult = undefined;
 		this._semanticSearch = undefined;
+		this._markerByLocator = undefined;
+		this._semanticRetry.clear();
+		this._semanticRetries = 0;
+		this._semanticBusyBytes = undefined;
+	}
+
+	/** 混み合って解析できなかった文書を、まだ頼み直す予定があるか。 */
+	private _semanticRetrying(): boolean {
+		return this._semanticRetries <= PARADIS_WORD_SEMANTIC_BUSY_RETRIES;
 	}
 
 	/**
@@ -946,6 +1039,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		if (this._semanticBytes && equalParadisWordBytes(this._semanticBytes, bytes)) {
 			return;
+		}
+		// 混み合って断られた中身と違う文書なら、頼み直しの回数を数え直す。
+		if (this._semanticBusyBytes && !equalParadisWordBytes(this._semanticBusyBytes, bytes)) {
+			this._semanticRetries = 0;
+			this._semanticBusyBytes = undefined;
 		}
 		this._semanticRequest.value?.cancel();
 		const request = new CancellationTokenSource();
@@ -966,6 +1064,21 @@ export class ParadisDocxFileEditor extends EditorPane {
 				return;
 			}
 			this._semanticResult = result;
+			if (!result.ok && result.code === 'busy') {
+				// 混み合っていただけなので、覚えた中身を捨てて、次の描き直しか少し後に頼み直す。
+				this._semanticBytes = undefined;
+				this._semanticBusyBytes = bytes;
+				if (this._semanticRetries++ < PARADIS_WORD_SEMANTIC_BUSY_RETRIES) {
+					this._semanticRetry.value = disposableTimeout(() => {
+						if (isEqual(this._currentResource, resource) && inputEpoch === this._inputEpoch && !this._semanticBytes) {
+							this._requestSemanticAnalysis(resource, bytes, inputEpoch);
+						}
+					}, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS);
+				}
+			} else {
+				this._semanticRetries = 0;
+				this._semanticBusyBytes = undefined;
+			}
 			if (result.ok) {
 				this._semanticSearch = new ParadisOfficeSemanticSearch({
 					ownerId: 'paradis-word-view',
@@ -978,6 +1091,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				});
 			}
 			this._renderSemanticUi();
+			this._publishAnnotations();
 		})();
 	}
 
@@ -1002,18 +1116,67 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		const paragraph = target.anchor ? analysis.searchItems.find(item => item.navigableAnchor === target.anchor) : undefined;
 		const context = paragraph?.fields.find(field => field.kind !== 'hidden')?.text ?? '';
-		const change = target.kind === 'change' ? analysis.changes.find(candidate => candidate.navigableAnchor === target.anchor && candidate.subject.locator === target.locator) : undefined;
+		const change = target.kind === 'change' ? analysis.changes.find(candidate => target.changeId !== undefined
+			? candidate.id === target.changeId
+			: candidate.navigableAnchor === target.anchor && candidate.subject.locator === target.locator) : undefined;
 		// コメントは本文に無いので、コメントの付いた段落そのものを示す。変更履歴は段落の中の変わった文字を示す。
 		const focus = change && change.category !== 'annotation' ? wordChangeText(change) ?? context : context;
 		if (!context && !focus) {
 			return;
 		}
-		this._postReveal({ type: 'paradisWordReveal', context: context || focus, focus: focus || context, matchCase: true });
+		this._postReveal({ type: 'paradisWordReveal', context: context || focus, focus: focus || context, matchCase: true }, target.anchor);
 	}
 
-	private _postReveal(request: ParadisWordRevealRequest): void {
-		void this._webview?.postMessage({ ...request, notFound: localize('paradis.word.revealNotFound', "表示の中で見つかりません。") });
+	private _postReveal(request: ParadisWordRevealRequest, paragraphLocator: string | undefined): void {
+		const marker = paragraphLocator ? this._markerByLocator?.get(paragraphLocator) : undefined;
+		const notFound = localize('paradis.word.revealNotFound', "表示の中で見つかりません。");
+		void this._webview?.postMessage(marker ? { ...request, notFound, marker } : { ...request, notFound });
 	}
+
+	/**
+	 * 表示の段落と解析結果の段落の対応を取り、段落の中の要素（点線と吹き出し）とコメント（余白）を webview へ送る。
+	 * 表示（webview が段落の文字を報告する）と解析（shared process）のどちらが後に届いても、ここで揃える。
+	 */
+	private _publishAnnotations(): void {
+		const analysis = this._semanticResult?.ok ? this._semanticResult : undefined;
+		const rendered = this._renderedParagraphs;
+		if (!analysis || !rendered || !this._webview) {
+			this._markerByLocator = undefined;
+			return;
+		}
+		const markers = alignParadisWordParagraphs(analysis.outline, rendered);
+		this._markerByLocator = markers;
+		const marks: { readonly marker: string; readonly marks: IParadisWordParagraphOutline['marks'] }[] = [];
+		const comments: { readonly marker: string; readonly author: string; readonly date: string; readonly text: string }[] = [];
+		const seenComments = new Set<string>();
+		for (const story of analysis.outline.stories) {
+			for (const paragraph of story.paragraphs) {
+				const marker = markers.get(paragraph.locator);
+				if (!marker || paragraph.marks.length === 0) {
+					continue;
+				}
+				marks.push({ marker, marks: paragraph.marks });
+				for (const mark of paragraph.marks) {
+					const value = (name: string) => mark.rows.find(row => row[0] === name)?.[1] ?? '';
+					if (mark.kind === 'comment' && !seenComments.has(value('commentId'))) {
+						seenComments.add(value('commentId'));
+						comments.push({ marker, author: value('author'), date: value('date'), text: value('text') });
+					}
+				}
+			}
+		}
+		void this._webview.postMessage({
+			type: 'paradisWordAnnotations',
+			marks,
+			comments,
+			labels: {
+				title: localize('paradis.word.nodeInfo', "解析器が持っている情報"),
+				close: localize('paradis.word.nodeInfoClose', "閉じる"),
+			},
+		});
+	}
+
+
 
 
 	private _buildRejectedFileHtml(): string {
@@ -1147,8 +1310,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		中身は溢れさせない」という直感的な挙動を期待されるため、必ず折り返して高さ側に逃がす。 */
 		#content table td, #content table th { overflow-wrap: break-word; }
 		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
-		::highlight(paradis-word-reveal) { background-color: #ffd33d; color: #000000; }
-		#paradis-reveal-toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); padding: 4px 10px; background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 4px; font: 12px var(--vscode-font-family, sans-serif); z-index: 100; }
+		${PARADIS_WORD_ANCHOR_STYLE}
 	</style>
 </head>
 <body class="paradis-word-${displayMode}">
@@ -1158,6 +1320,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	<script nonce="${nonce}" src="${libBase}/jszip.min.js"></script>
 	<script nonce="${nonce}" src="${libBase}/docx-preview.min.js"></script>
 	<script nonce="${nonce}">
+		${PARADIS_WORD_ANCHOR_RUNTIME}
 		(async () => {
 			const vscode = acquireVsCodeApi();
 			const DOCX_URL = ${JSON.stringify(docxUrl)};
@@ -1181,100 +1344,34 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// 差し込みの本体は描画完了後に入れ替える。受け取りだけ先に構えておく
 			// (送信は本文表示の直後に来るので、リスナーが後だと取りこぼす)。
 			let placeParadisWordObjects = () => { };
-			// 検索結果や変更点の位置へ移る。解析器は表示の DOM を知らないので、段落の文字（空白を除く）を
-			// 手がかりに表示の中を探し、見つかった範囲に印を付けて画面の中央へ送る。描き終わる前に来たら覚えておく。
+			// 検索結果・変更点・押した要素の情報。表示の段落に付けた目印（paradisWordAnchorRuntime.ts）で位置を探す。
+			// 描き終わる前に届いたものは覚えておき、描いた後に当てる。
+			const anchors = window.paradisWordAnchors;
 			let pendingParadisWordReveal;
-			const compactParadisWordText = (value, matchCase) => {
-				let out = '';
-				for (const ch of String(value || '')) {
-					if (ch.trim() === '') {
-						continue;
-					}
-					const folded = matchCase ? ch : ch.toLowerCase();
-					out += folded.length === ch.length ? folded : ch;
+			let pendingParadisWordAnnotations;
+			const applyParadisWordAnnotations = message => {
+				if (!paradisDocumentRendered || !anchors) {
+					pendingParadisWordAnnotations = message;
+					return;
 				}
-				return out;
-			};
-			// 見えている文字（隠れた削除・挿入を除く）の索引。描き直すまで使い回す（webview は描くたびに作り直される）。
-			let paradisRevealIndex;
-			const buildParadisRevealIndex = matchCase => {
-				const nodes = [];
-				const offsets = [];
-				let flat = '';
-				const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
-				for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-					const parent = node.parentElement;
-					if (!parent || parent.getClientRects().length === 0) {
-						continue;
-					}
-					const data = node.data;
-					for (let index = 0; index < data.length; index++) {
-						const ch = data[index];
-						if (ch.trim() === '') {
-							continue;
-						}
-						const folded = matchCase ? ch : ch.toLowerCase();
-						flat += folded.length === 1 ? folded : ch;
-						nodes.push(node);
-						offsets.push(index);
-					}
-				}
-				return { flat, nodes, offsets };
-			};
-			const showParadisRevealMessage = text => {
-				let toast = document.getElementById('paradis-reveal-toast');
-				if (!toast) {
-					toast = document.createElement('div');
-					toast.id = 'paradis-reveal-toast';
-					toast.setAttribute('role', 'status');
-					document.body.appendChild(toast);
-				}
-				toast.textContent = text;
-				toast.style.display = '';
-				clearTimeout(toast.paradisTimer);
-				toast.paradisTimer = setTimeout(() => { toast.style.display = 'none'; }, 2500);
+				anchors.setMarks(contentEl, Array.isArray(message.marks) ? message.marks : [], message.labels, ${JSON.stringify(displayMode)});
+				anchors.setComments(contentEl, contentEl, Array.isArray(message.comments) ? message.comments : []);
 			};
 			const revealParadisWord = message => {
-				if (!paradisDocumentRendered) {
+				if (!paradisDocumentRendered || !anchors) {
 					pendingParadisWordReveal = message;
 					return;
 				}
-				const matchCase = message.matchCase !== false;
-				if (!paradisRevealIndex || paradisRevealIndex.matchCase !== matchCase) {
-					paradisRevealIndex = { matchCase, ...buildParadisRevealIndex(matchCase) };
-				}
-				const { flat, nodes, offsets } = paradisRevealIndex;
-				const context = compactParadisWordText(message.context, matchCase);
-				const focus = compactParadisWordText(message.focus, matchCase);
-				// 段落の文字（前後の文脈つき）が表示の中にあるときだけ移る。焦点の文字だけで文書全体を探すと、
-				// 別の場所の同じ文字へ飛んでしまうので、見つからなければ移らずにそう伝える。
-				const contextAt = context ? flat.indexOf(context) : -1;
-				if (contextAt < 0) {
-					showParadisRevealMessage(message.notFound || '');
-					return;
-				}
-				const prefix = typeof message.prefix === 'string' ? compactParadisWordText(message.prefix, matchCase).length : -1;
-				const inner = prefix >= 0 && context.startsWith(focus, prefix) ? prefix : context.indexOf(focus);
-				const start = contextAt + (inner >= 0 ? inner : 0);
-				const end = inner >= 0 && focus ? start + focus.length : contextAt + context.length;
-				if (end <= start) {
-					return;
-				}
-				const range = document.createRange();
-				range.setStart(nodes[start], offsets[start]);
-				range.setEnd(nodes[end - 1], offsets[end - 1] + 1);
-				if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
-					CSS.highlights.set('paradis-word-reveal', new Highlight(range));
-				}
-				const target = range.startContainer.parentElement;
-				if (target) {
-					target.scrollIntoView({ block: 'center', inline: 'nearest' });
-				}
+				anchors.reveal(contentEl, message);
 			};
 			window.addEventListener('message', event => {
 				const message = event.data;
 				if (message && message.type === 'paradisWordReveal') {
 					revealParadisWord(message);
+					return;
+				}
+				if (message && message.type === 'paradisWordAnnotations') {
+					applyParadisWordAnnotations(message);
 					return;
 				}
 				if (!message || message.type !== 'paradisWordObjects' || !Array.isArray(message.items)) {
@@ -1292,7 +1389,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					throw new Error('レンダリングライブラリの読み込みに失敗しました');
 				}
 				const buf = await (await fetch(DOCX_URL)).arrayBuffer();
-				const renderDocument = () => window.docx.renderAsync(buf.slice(0), contentEl, undefined, {
+				const renderOptions = {
 					className: 'docx',
 					inWrapper: true,
 					ignoreWidth: false,
@@ -1324,8 +1421,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// Arbitrary altChunk HTML is represented by a semantic placeholder, never an iframe.
 					renderAltChunks: false,
 					renderChanges: ${displayMode !== 'final'}
-				});
-				await renderDocument();
+				};
+				// renderAsync と同じ 2 段（解析→描画）を自分で呼び、その間で段落に目印を付ける。
+				// 目印は属性が 1 つ増えるだけで、描画の結果は変わらない。
+				const parsed = await window.docx.parseAsync(buf.slice(0), renderOptions);
+				if (anchors) {
+					anchors.stamp(parsed);
+				}
+				await window.docx.renderDocument(parsed, contentEl, undefined, renderOptions);
 				vscode.postMessage({
 					type: 'paradisOfficeRecovery',
 					generation: ${recoveryGeneration},
@@ -1380,6 +1483,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 					}
 				}
 				placeParadisWordObjects();
+				if (anchors) {
+					// 表示の段落ごとの文字をホストへ渡す。ホストはこれと解析結果の段落を対応づける。
+					vscode.postMessage({ type: 'paradisWordParagraphs', generation: ${recoveryGeneration}, stories: anchors.collect(contentEl) });
+				}
+				if (pendingParadisWordAnnotations) {
+					applyParadisWordAnnotations(pendingParadisWordAnnotations);
+					pendingParadisWordAnnotations = undefined;
+				}
 				if (pendingParadisWordReveal) {
 					revealParadisWord(pendingParadisWordReveal);
 					pendingParadisWordReveal = undefined;
@@ -1529,6 +1640,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._rootElement.style.width = `${dimension.width}px`;
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
+		this._syncSemanticToolbarOffset();
 		this.setEditorVisible(dimension.width > 0 && dimension.height > 0);
 	}
 }

@@ -24,7 +24,6 @@ import {
 	IParadisDrawingData,
 	IParadisFreezePane,
 	IParadisSheetTable,
-	IParadisSemanticDiagnosticsSummary,
 	IParadisParseWorkbookOptions,
 	IParadisRichTextPart,
 	IParadisRowData,
@@ -33,11 +32,8 @@ import {
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { inspectOfficePackage } from '../common/office/paradisOfficePackageCore.js';
-import { PARADIS_OFFICE_BUDGET_PROFILES } from '../common/paradisOfficeProtocol.js';
-import { createParadisOfficeNodeArchive } from './office/paradisOfficeNodeArchive.js';
-import { parseSpreadsheetSemanticNode } from './spreadsheet/paradisSpreadsheetNodeAdapter.js';
+import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
+import { collectParadisSpreadsheetSemanticDiagnostics } from './spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -963,59 +959,6 @@ function getSheetFreezePane(ws: ExcelJS.Worksheet): IParadisFreezePane | undefin
 	return cols === 0 && rows === 0 ? undefined : { cols, rows };
 }
 
-/** 意味解析にかける上限。超えたら診断は「出せなかった」として表示側へ委ねる。 */
-const SEMANTIC_DIAGNOSTICS_DEADLINE_MS = 4000;
-
-/**
- * ExcelJS の投影とは別に OOXML を直接読み、到達度と食い違いを数える。
- * 表示そのものは投影側が担うため、ここが失敗しても表示は変わらない(理由だけ返す)。
- */
-async function collectSemanticDiagnostics(bytes: Uint8Array): Promise<IParadisSemanticDiagnosticsSummary> {
-	const unavailable = (reason: string): IParadisSemanticDiagnosticsSummary => ({
-		available: false, terminal: false,
-		expectedParts: 0, parsedParts: 0, expectedSheets: 0, parsedSheets: 0, expectedCells: 0, parsedCells: 0,
-		unknownElements: 0, unresolvedReferences: 0, mismatchCount: 0, unavailableReason: reason,
-	});
-	// 解析全体に締め切りを掛ける。パッケージ検査は自前の予算(30秒)を持っており、
-	// こちらの締め切りの外側にあるため、トークンで確実に止められるようにする。
-	const source = new CancellationTokenSource();
-	const timer = setTimeout(() => source.cancel(), SEMANTIC_DIAGNOSTICS_DEADLINE_MS);
-	try {
-		const archive = await createParadisOfficeNodeArchive(bytes);
-		const inventory = await inspectOfficePackage(archive, PARADIS_OFFICE_BUDGET_PROFILES.desktopLocal, source.token);
-		// 投影との全件突き合わせは行わない。表示用データは非表示行・列オフセット・行数上限で
-		// 意図的に間引いてあるため、差分が実質すべて「表示側に無いセル」になり上限で解析ごと落ちる。
-		// ここで欲しいのは「どこまで読めたか」なので到達度だけを取る。
-		const snapshot = await parseSpreadsheetSemanticNode(bytes, inventory, source.token, {
-			deadlineMilliseconds: SEMANTIC_DIAGNOSTICS_DEADLINE_MS,
-		});
-		const mismatchesByKind: Record<string, number> = {};
-		for (const diagnostic of snapshot.projectionDiagnostics) {
-			mismatchesByKind[diagnostic.kind] = (mismatchesByKind[diagnostic.kind] ?? 0) + 1;
-		}
-		const completeness = snapshot.completeness;
-		return {
-			available: true,
-			terminal: completeness.terminal,
-			expectedParts: completeness.expectedParts,
-			parsedParts: completeness.parsedParts,
-			expectedSheets: completeness.expectedSheets,
-			parsedSheets: completeness.parsedSheets,
-			expectedCells: completeness.expectedCells,
-			parsedCells: completeness.parsedCells,
-			unknownElements: completeness.unknownElements,
-			unresolvedReferences: completeness.unresolvedReferences,
-			mismatchCount: snapshot.projectionDiagnostics.length,
-			...(Object.keys(mismatchesByKind).length > 0 ? { mismatchesByKind } : {}),
-		};
-	} catch (error) {
-		return unavailable(error instanceof Error ? error.name : 'unknown');
-	} finally {
-		clearTimeout(timer);
-		source.dispose();
-	}
-}
-
 /** シート上のテーブル。縞模様・見出し行・集計行の描き分けに使う。 */
 function getSheetTables(ws: ExcelJS.Worksheet): readonly IParadisSheetTable[] {
 	const tables = (ws as unknown as { tables?: Record<string, unknown> }).tables;
@@ -1361,13 +1304,16 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 	async parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
-		const buffer = Buffer.from(base64Content, 'base64');
+		const source = Buffer.from(base64Content, 'base64');
 		// CFB(Compound File Binary)コンテナ=暗号化ブック。zip ではないため jszip/exceljs からは
 		// 「central directory が見つからない」ような不親切なエラーで落ちる。先頭マジックで判別し、
 		// ビューア/差分がそのまま表示できる理由文言へ変換する(D0 CF 11 E0 = OLE2 標準シグネチャ)。
-		if (buffer.length >= 4 && buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0) {
+		if (source.length >= 4 && source[0] === 0xD0 && source[1] === 0xCF && source[2] === 0x11 && source[3] === 0xE0) {
 			throw new Error(localize('paradis.spreadsheet.encryptedWorkbook', "このブックはパスワードで保護されているため開けません。パスワードを解除してから再度お試しください。"));
 		}
+		// exceljs は部品名の型と相対 Target を前提にする。絶対 Target や別名のコメント部品があると、
+		// ブック全体が開けなくなるので、そのときだけ exceljs の想定する並びへ直してから渡す。
+		const buffer = await normalizeWorkbookForExcelJs(source, runtime.JSZip);
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
@@ -1584,7 +1530,9 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			return projection;
 		}
 		// 解析側は Uint8Array そのものを要求する(Buffer を渡すと invalid で弾かれる)。
-		const semanticDiagnostics = await collectSemanticDiagnostics(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		// この経路は同じプロセスで解析する（テストと突き合わせ用）。renderer からの診断は、チャネルが
+		// worker（paradisSpreadsheetSemanticWorkerBackend.ts）へ回すので、ここは通らない。
+		const semanticDiagnostics = await collectParadisSpreadsheetSemanticDiagnostics(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
 		return { ...projection, semanticDiagnostics };
 	}
 
