@@ -20,11 +20,14 @@
 //       chrome-devtools-mcpはCLI（claude/codex）の子、CLIはシェルの子なのでチェーンは2〜3ホップ）
 //
 // ピアPIDの特定（プラットフォーム別）:
-//   - macOS:   `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED`
+//   - macOS:   `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED`。親をたどるプロセス表は `ps -A -o pid=,ppid=` を 1 回だけ
+//              取り、lsof と同時に走らせる（以前は親 1 段ごとに `ps` を起こしていた）
 //   - Linux:   `ss -Htnp` を優先し、失敗時は `lsof` にフォールバック
 //   - Windows: PowerShell `Get-NetTCPConnection` を優先し、失敗時は `netstat -ano` パース
 //
 // 各コマンド実行は失敗してもゲートウェイ全体を壊さないよう、すべて undefined フォールバックで包む。
+// 呼び出し元の分類（paradisClassifyPeer）は、コマンドが失敗・時間切れしたとき（機械の負荷が高いと起動に数秒
+// かかる）に、待ちを延ばして数回やり直す。確かめた結果が「子孫でない」ならやり直さない（通す範囲は広げない）。
 // 実機検証はmacOSのみ（Linux / Windows経路はコードレビュー品質、未検証）。
 
 import { exec } from 'child_process';
@@ -36,6 +39,20 @@ const execAsync = promisify(exec);
 
 const MAX_PARENT_WALK = 15;
 const EXEC_TIMEOUT_MS = 3000;
+/** 呼び出し元の分類のやり直しで、外部コマンド 1 本に待つ長さ（1 回目は {@link EXEC_TIMEOUT_MS}）。 */
+const CLASSIFY_RETRY_TIMEOUT_MS = 8000;
+/** 呼び出し元の分類に掛けてよい時間の合計（MCP の道具の呼び出しは数十秒まで待てる）。 */
+const CLASSIFY_BUDGET_MS = 15_000;
+const CLASSIFY_RETRY_DELAY_MS = 250;
+const CLASSIFY_MAX_ATTEMPTS = 3;
+
+/** 接続の相手やプロセスを読むコマンドが失敗・時間切れした（やり直せば読めるかもしれない）。 */
+export class ParadisPeerProbeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'ParadisPeerProbeError';
+	}
+}
 
 const TOKEN_PATTERN = new RegExp(`${PARADIS_PANE_TOKEN_ENV_VAR}=([0-9a-fA-F-]+)`);
 
@@ -63,8 +80,10 @@ export interface IParadisPeerProcessProbe {
 	 * `127.0.0.1:<clientPort> -> 127.0.0.1:<serverPort>` の接続を持つプロセス（自分以外）。
 	 * 4つ組の完全一致だけを採る。手元のポートだけで探すと、同じポート番号の IPv6（`[::1]`）の接続や、
 	 * 別のサーバーへの接続を持つ無関係なプロセスが当たる（送信元ポートを細工すればなりすませる）。
+	 * コマンドが失敗・時間切れしたら {@link ParadisPeerProbeError} を投げる（空の配列は「見つからなかった」）。
 	 */
 	findPeerPids(clientPort: number, serverPort: number, ownPid: number): Promise<readonly number[]>;
+	/** プロセスが無ければ undefined。読めなかったら {@link ParadisPeerProbeError} を投げてよい。 */
 	readProcess(pid: number): Promise<IParadisProcessInfo | undefined>;
 	/** プロセスの環境変数からペイントークンを読む（CDP ゲートウェイの解決だけが使う）。 */
 	readTokenFromEnv(pid: number): Promise<string | undefined>;
@@ -86,16 +105,23 @@ export async function paradisResolvePaneTokenForPeerPort(
 		return undefined;
 	}
 	probe ??= paradisPeerProbeFor(remotePort, serverPort);
-	const peerPids = await probe.findPeerPids(remotePort, serverPort, ownPid);
-	let resolved: string | undefined;
-	for (const peerPid of peerPids) {
-		const token = await resolveTokenFromAncestors(peerPid, shellLookup, probe);
-		if (token === undefined || (resolved !== undefined && resolved !== token)) {
+	try {
+		const peerPids = await probe.findPeerPids(remotePort, serverPort, ownPid);
+		let resolved: string | undefined;
+		for (const peerPid of peerPids) {
+			const token = await resolveTokenFromAncestors(peerPid, shellLookup, probe);
+			if (token === undefined || (resolved !== undefined && resolved !== token)) {
+				return undefined;
+			}
+			resolved = token;
+		}
+		return resolved;
+	} catch (error) {
+		if (error instanceof ParadisPeerProbeError) {
 			return undefined;
 		}
-		resolved = token;
+		throw error;
 	}
-	return resolved;
 }
 
 async function resolveTokenFromAncestors(peerPid: number, shellLookup: IParadisPaneShellLookup, probe: IParadisPeerProcessProbe): Promise<string | undefined> {
@@ -168,27 +194,67 @@ export interface IParadisPeerExpectation {
 	readonly tunnelPid?: number;
 }
 
+/** {@link paradisClassifyPeer} のやり直しの決め事（テストで時計と待ちを差し替える）。 */
+export interface IParadisClassifyPeerOptions {
+	/** 全体に掛けてよい時間。既定 {@link CLASSIFY_BUDGET_MS}。 */
+	readonly budgetMs?: number;
+	readonly now?: () => number;
+	readonly sleep?: (ms: number) => Promise<void>;
+	/** 何回目の試し（0 から）に使う probe か。既定は実物の OS コマンド（やり直すほど待ちを延ばす）。 */
+	readonly probeFor?: (attempt: number, timeoutMs: number) => IParadisPeerProcessProbe;
+}
+
 /**
  * loopback 接続の相手のプロセスを分類する。
  *
  * MCP ツールと hook で「トークンを名乗っているのが本当にそのペインの中のプロセスか」を見るのに使う。
  * 環境変数（`PARA_CODE_TERMINAL_PANE_ID`）は別のプロセスが自分に設定すれば偽装できるので見ない。
  * 接続を持つプロセスが複数あるときは、全部が同じ分類に着くときだけその分類を返す。
- * 相手の特定や親の読み取りに失敗したら `unknown`（確かめられないものは通さない）。
+ * 相手の特定や親の読み取りに失敗したら `unknown`（確かめられないものは通さない）。ただし、コマンドの失敗・
+ * 時間切れと、接続の持ち主が見つからなかったときは、待ちを延ばして {@link CLASSIFY_MAX_ATTEMPTS} 回まで
+ * やり直す（負荷が高いと lsof / ps の起動が数秒かかり、正しい呼び出し元を断っていた）。親をたどり切って
+ * 子孫でないと分かったときはやり直さない。
+ * @param probe 渡すと、やり直しでも同じ probe を使う（テスト用）。
  */
 export async function paradisClassifyPeer(
 	clientPort: number,
 	serverPort: number,
 	ownPid: number,
 	expectation: IParadisPeerExpectation,
-	probe: IParadisPeerProcessProbe = paradisPeerProbeFor(clientPort, serverPort),
+	probe?: IParadisPeerProcessProbe,
+	options?: IParadisClassifyPeerOptions,
 ): Promise<ParadisPeerKind> {
 	if (!isPort(clientPort) || !isPort(serverPort)) {
 		return 'unknown';
 	}
+	const now = options?.now ?? Date.now;
+	const sleep = options?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+	const deadline = now() + (options?.budgetMs ?? CLASSIFY_BUDGET_MS);
+	for (let attempt = 0; ; attempt++) {
+		const timeoutMs = Math.max(500, Math.min(attempt === 0 ? EXEC_TIMEOUT_MS : CLASSIFY_RETRY_TIMEOUT_MS, deadline - now()));
+		const attemptProbe = probe ?? options?.probeFor?.(attempt, timeoutMs) ?? paradisPeerProbeFor(clientPort, serverPort, timeoutMs, { processTable: true });
+		let outcome: { readonly kind: ParadisPeerKind; readonly retry: boolean };
+		try {
+			outcome = await classifyPeerOnce(clientPort, serverPort, ownPid, expectation, attemptProbe);
+		} catch (error) {
+			if (!(error instanceof ParadisPeerProbeError)) {
+				throw error;
+			}
+			outcome = { kind: 'unknown', retry: true };
+		}
+		if (!outcome.retry || attempt + 1 >= CLASSIFY_MAX_ATTEMPTS || now() + CLASSIFY_RETRY_DELAY_MS >= deadline) {
+			return outcome.kind;
+		}
+		await sleep(CLASSIFY_RETRY_DELAY_MS);
+	}
+}
+
+/** 1 回分の照合。`retry` はやり直せば結果が変わりうるか（持ち主が見つからなかった）。 */
+async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: number, expectation: IParadisPeerExpectation, probe: IParadisPeerProcessProbe): Promise<{ readonly kind: ParadisPeerKind; readonly retry: boolean }> {
 	const peerPids = await probe.findPeerPids(clientPort, serverPort, ownPid);
 	if (peerPids.length === 0) {
-		return 'unknown';
+		// サーバーが接続を握っている最中なので、持ち主は居るはず。見えなかったのは読み取りの取りこぼし
+		return { kind: 'unknown', retry: true };
 	}
 	let verdict: ParadisPeerKind | undefined;
 	for (const peerPid of peerPids) {
@@ -202,11 +268,11 @@ export async function paradisClassifyPeer(
 			}
 		}
 		if (kind === 'unknown' || (verdict !== undefined && verdict !== kind)) {
-			return 'unknown';
+			return { kind: 'unknown', retry: false };
 		}
 		verdict = kind;
 	}
-	return verdict ?? 'unknown';
+	return { kind: verdict ?? 'unknown', retry: false };
 }
 
 /**
@@ -227,7 +293,15 @@ export async function paradisPeerIsOneOf(
 		return undefined;
 	}
 	const wanted = new Set(pids);
-	const peerPids = await probe.findPeerPids(clientPort, serverPort, ownPid);
+	let peerPids: readonly number[];
+	try {
+		peerPids = await probe.findPeerPids(clientPort, serverPort, ownPid);
+	} catch (error) {
+		if (error instanceof ParadisPeerProbeError) {
+			return undefined;
+		}
+		throw error;
+	}
 	return peerPids.length === 0 ? undefined : peerPids.some(pid => wanted.has(pid));
 }
 
@@ -291,20 +365,22 @@ export function paradisParseNetstatPeerPids(stdout: string, clientPort: number, 
 	return uniquePids(pids, ownPid);
 }
 
-async function findPeerPids(clientPort: number, serverPort: number, ownPid: number): Promise<number[]> {
+/** 接続の持ち主を探す（macOS / Linux）。コマンドが失敗・時間切れしたら {@link ParadisPeerProbeError}。 */
+async function findPeerPids(clientPort: number, serverPort: number, ownPid: number, timeoutMs: number = EXEC_TIMEOUT_MS): Promise<number[]> {
 	if (!isPort(clientPort) || !isPort(serverPort)) {
 		return [];
 	}
 	switch (process.platform) {
 		case 'darwin':
-			return findPeerPidsViaLsof(clientPort, serverPort, ownPid);
+			return findPeerPidsViaLsof(clientPort, serverPort, ownPid, timeoutMs);
 		case 'linux': {
-			const viaSs = await findPeerPidsViaSs(clientPort, serverPort, ownPid);
-			return viaSs.length > 0 ? viaSs : findPeerPidsViaLsof(clientPort, serverPort, ownPid);
-		}
-		case 'win32': {
-			const viaPowerShell = await findPeerPidsViaPowerShell(clientPort, serverPort, ownPid);
-			return viaPowerShell.length > 0 ? viaPowerShell : findPeerPidsViaNetstat(clientPort, serverPort, ownPid);
+			let viaSs: number[] | undefined;
+			try {
+				viaSs = await findPeerPidsViaSs(clientPort, serverPort, ownPid, timeoutMs);
+			} catch {
+				viaSs = undefined;
+			}
+			return viaSs !== undefined && viaSs.length > 0 ? viaSs : findPeerPidsViaLsof(clientPort, serverPort, ownPid, timeoutMs);
 		}
 		default:
 			return [];
@@ -312,74 +388,101 @@ async function findPeerPids(clientPort: number, serverPort: number, ownPid: numb
 }
 
 /** `lsof` によるピアPID特定（macOS主経路 / Linuxフォールバック）。 */
-async function findPeerPidsViaLsof(clientPort: number, serverPort: number, ownPid: number): Promise<number[]> {
+async function findPeerPidsViaLsof(clientPort: number, serverPort: number, ownPid: number, timeoutMs: number): Promise<number[]> {
+	let stdout: string;
 	try {
-		const { stdout } = await execAsync(`lsof -nP -iTCP@127.0.0.1:${clientPort} -sTCP:ESTABLISHED 2>/dev/null || true`, {
-			timeout: EXEC_TIMEOUT_MS,
+		// 一致が無いと lsof は 1 で終わるので `|| true` で成功にする（失敗として扱うのは起動の失敗と時間切れだけ）
+		({ stdout } = await execAsync(`lsof -nP -iTCP@127.0.0.1:${clientPort} -sTCP:ESTABLISHED 2>/dev/null || true`, {
+			timeout: timeoutMs,
 			maxBuffer: 1024 * 1024,
-		});
-		return paradisParseLsofPeerPids(stdout, clientPort, serverPort, ownPid);
-	} catch {
-		return [];
+		}));
+	} catch (error) {
+		throw new ParadisPeerProbeError(`lsof failed: ${error instanceof Error ? error.message.split('\n')[0] : 'unknown error'}`);
 	}
+	return paradisParseLsofPeerPids(stdout, clientPort, serverPort, ownPid);
 }
 
 /** `ss -Htnp` によるピアPID特定（Linux主経路）。送信元・宛先のアドレスとポートの両方で絞る。 */
-async function findPeerPidsViaSs(clientPort: number, serverPort: number, ownPid: number): Promise<number[]> {
-	try {
-		const { stdout } = await execAsync(`ss -Htnp state established "( src 127.0.0.1:${clientPort} and dst 127.0.0.1:${serverPort} )" 2>/dev/null || true`, {
-			timeout: EXEC_TIMEOUT_MS,
-			maxBuffer: 1024 * 1024,
-		});
-		return paradisParseSsPeerPids(stdout, clientPort, serverPort, ownPid);
-	} catch {
-		return [];
-	}
+async function findPeerPidsViaSs(clientPort: number, serverPort: number, ownPid: number, timeoutMs: number): Promise<number[]> {
+	const { stdout } = await execAsync(`ss -Htnp state established "( src 127.0.0.1:${clientPort} and dst 127.0.0.1:${serverPort} )" 2>/dev/null || true`, {
+		timeout: timeoutMs,
+		maxBuffer: 1024 * 1024,
+	});
+	return paradisParseSsPeerPids(stdout, clientPort, serverPort, ownPid);
 }
 
-/** PowerShell `Get-NetTCPConnection` によるピアPID特定（Windows主経路）。4つ組で絞る。 */
-async function findPeerPidsViaPowerShell(clientPort: number, serverPort: number, ownPid: number): Promise<number[]> {
-	try {
-		const cmd = `powershell -NoProfile -NonInteractive -Command "(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${clientPort} -RemoteAddress 127.0.0.1 -RemotePort ${serverPort} -State Established -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)"`;
-		const { stdout } = await execAsync(cmd, { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 1024 * 1024 });
-		return uniquePids(stdout.trim().split(/\r?\n/).map(line => Number.parseInt(line.trim(), 10)), ownPid);
-	} catch {
-		return [];
-	}
+/** {@link paradisPeerProbeFor} の選び方。 */
+interface IParadisPeerProbeOptions {
+	/**
+	 * macOS で、親をたどるためのプロセス表（`ps -A -o pid=,ppid=`）を最初に 1 回だけ取り、接続の持ち主を探す
+	 * コマンドと同時に走らせる。親を 1 段ごとに `ps` で読むと、負荷が高いときに起動の待ちが積み重なる。
+	 */
+	readonly processTable?: boolean;
 }
-
-/** `netstat -ano` パースによるピアPID特定（Windowsフォールバック）。 */
-async function findPeerPidsViaNetstat(clientPort: number, serverPort: number, ownPid: number): Promise<number[]> {
-	try {
-		const { stdout } = await execAsync('netstat -ano -p TCP', { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 4 * 1024 * 1024 });
-		return paradisParseNetstatPeerPids(stdout, clientPort, serverPort, ownPid);
-	} catch {
-		return [];
-	}
-}
-
-/** 実物の OS コマンドで探す・読む。 */
-const PARADIS_REAL_PEER_PROBE: IParadisPeerProcessProbe = {
-	findPeerPids,
-	readProcess: readProcessInfo,
-	readTokenFromEnv,
-};
 
 /**
- * 1 回の照合に使う probe。Windows では PowerShell の起動が重い（1 回 0.3〜1 秒）ので、接続表と
- * プロセス表を 1 本のスクリプトでまとめて取り、その結果だけで照合する（hook の待ち時間 3 秒に収める）。
+ * 1 回の照合に使う probe。`timeoutMs` は外部コマンド 1 本に待つ長さ。Windows では PowerShell の起動が重い
+ * （1 回 0.3〜1 秒）ので、接続表とプロセス表を 1 本のスクリプトでまとめて取り、その結果だけで照合する
+ * （hook の待ち時間 3 秒に収める）。
  */
-function paradisPeerProbeFor(clientPort: number, serverPort: number): IParadisPeerProcessProbe {
-	if (process.platform !== 'win32') {
-		return PARADIS_REAL_PEER_PROBE;
+function paradisPeerProbeFor(clientPort: number, serverPort: number, timeoutMs: number = EXEC_TIMEOUT_MS, options?: IParadisPeerProbeOptions): IParadisPeerProcessProbe {
+	if (process.platform === 'win32') {
+		let snapshot: Promise<IParadisWindowsPeerSnapshot | undefined> | undefined;
+		const load = () => snapshot ??= readWindowsPeerSnapshot(clientPort, serverPort, timeoutMs);
+		return {
+			findPeerPids: async (_clientPort, _serverPort, ownPid) => {
+				const loaded = await load();
+				if (loaded === undefined) {
+					throw new ParadisPeerProbeError('the Windows connection snapshot failed');
+				}
+				return uniquePids(loaded.peerPids, ownPid);
+			},
+			readProcess: async pid => (await load())?.processes.get(pid),
+			readTokenFromEnv: async () => undefined,
+		};
 	}
-	let snapshot: Promise<IParadisWindowsPeerSnapshot | undefined> | undefined;
-	const load = () => snapshot ??= readWindowsPeerSnapshot(clientPort, serverPort);
+	let table: Promise<ReadonlyMap<number, IParadisProcessInfo>> | undefined;
+	if (process.platform === 'darwin' && options?.processTable === true) {
+		table = readProcessTable(timeoutMs);
+		// 使われずに失敗しても、未処理の拒否にしない
+		table.catch(() => undefined);
+	}
 	return {
-		findPeerPids: async (_clientPort, _serverPort, ownPid) => uniquePids((await load())?.peerPids ?? [], ownPid),
-		readProcess: async pid => (await load())?.processes.get(pid),
-		readTokenFromEnv: async () => undefined,
+		findPeerPids: (clientPortArg, serverPortArg, ownPid) => findPeerPids(clientPortArg, serverPortArg, ownPid, timeoutMs),
+		readProcess: async pid => table !== undefined ? (await table).get(pid) : readProcessInfo(pid),
+		readTokenFromEnv,
 	};
+}
+
+/** `ps -A -o pid=,ppid=` の出力を PID → 親 PID の表にする。 */
+export function paradisParseProcessTable(stdout: string): ReadonlyMap<number, IParadisProcessInfo> {
+	const table = new Map<number, IParadisProcessInfo>();
+	for (const line of stdout.split('\n')) {
+		const cols = line.trim().split(/\s+/);
+		if (cols.length < 2) {
+			continue;
+		}
+		const pid = Number.parseInt(cols[0], 10);
+		const ppid = Number.parseInt(cols[1], 10);
+		if (Number.isSafeInteger(pid) && pid > 0) {
+			table.set(pid, { ppid: Number.isSafeInteger(ppid) && ppid > 0 ? ppid : undefined });
+		}
+	}
+	return table;
+}
+
+/** macOS のプロセス表を 1 回で読む。失敗・時間切れは {@link ParadisPeerProbeError}。 */
+async function readProcessTable(timeoutMs: number): Promise<ReadonlyMap<number, IParadisProcessInfo>> {
+	try {
+		const { stdout } = await execAsync('ps -A -o pid=,ppid=', { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+		const table = paradisParseProcessTable(stdout);
+		if (table.size === 0) {
+			throw new Error('empty process table');
+		}
+		return table;
+	} catch (error) {
+		throw new ParadisPeerProbeError(`ps failed: ${error instanceof Error ? error.message.split('\n')[0] : 'unknown error'}`);
+	}
 }
 
 interface IParadisWindowsPeerSnapshot {
@@ -410,7 +513,7 @@ export function paradisParseWindowsPeerSnapshot(stdout: string): IParadisWindows
 	return { peerPids, processes };
 }
 
-async function readWindowsPeerSnapshot(clientPort: number, serverPort: number): Promise<IParadisWindowsPeerSnapshot | undefined> {
+async function readWindowsPeerSnapshot(clientPort: number, serverPort: number, timeoutMs: number): Promise<IParadisWindowsPeerSnapshot | undefined> {
 	if (!isPort(clientPort) || !isPort(serverPort)) {
 		return undefined;
 	}
@@ -421,13 +524,13 @@ async function readWindowsPeerSnapshot(clientPort: number, serverPort: number): 
 	try {
 		// スクリプトは UTF-16LE の Base64 で渡す（cmd.exe を経由する引用の崩れを避ける）
 		const encoded = Buffer.from(script, 'utf16le').toString('base64');
-		const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 8 * 1024 * 1024 });
+		const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: timeoutMs * 2, maxBuffer: 8 * 1024 * 1024 });
 		const parsed = paradisParseWindowsPeerSnapshot(stdout);
 		if (parsed.peerPids.length > 0) {
 			return parsed;
 		}
 		// Get-NetTCPConnection が使えない環境（古い Windows など）は netstat で持ち主を探す
-		const { stdout: netstat } = await execAsync('netstat -ano -p TCP', { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 4 * 1024 * 1024 });
+		const { stdout: netstat } = await execAsync('netstat -ano -p TCP', { timeout: timeoutMs * 2, maxBuffer: 4 * 1024 * 1024 });
 		return { peerPids: paradisParseNetstatPeerPids(netstat, clientPort, serverPort, 0), processes: parsed.processes };
 	} catch {
 		return undefined;

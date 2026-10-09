@@ -12,6 +12,7 @@ import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, par
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
+import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { ParadisCursorPacingLedger } from '../../node/paradisCursorPacing.js';
 import { ParadisToolCallLanes } from '../../common/paradisToolCallLanes.js';
@@ -165,6 +166,8 @@ function createFixture(): {
 		_unconfirmedReleaseTokens: new Set<string>(),
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
+		_callerClassificationsInFlight: new WeakMap(),
+		_browserObserver: new ParadisBrowserObserver(),
 		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
 		_hookOwnership: new ParadisAgentHookOwnership({ snapshot: async () => undefined }),
 		_seenTokens: new Set<string>(),

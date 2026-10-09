@@ -30,6 +30,11 @@ Example with arguments: \`(el) => el.innerText\`
                 .string()
                 .optional()
                 .describe('The absolute or relative path to a file to save the script output to. If omitted, the output is returned inline.'),
+            // PARA-PATCH (Para Code): internal argument set only by Para Code (never published in tools/list).
+            // Evaluate without waitForEventsAfterAction: no dialog handler (it would dismiss a confirm() the page
+            // opens while Para Code reads its own observer) and no navigation / stable-DOM wait. Refuse while a
+            // dialog is open instead of blocking. See NOTES.md "vendored chrome-devtools-mcp への変更".
+            paraCodeObserve: zod.boolean().optional(),
             dialogAction: zod
                 .string()
                 .optional()
@@ -46,7 +51,7 @@ Example with arguments: \`(el) => el.innerText\`
         blockedByDialog: true,
         verifyFilesSchema: ['filePath'],
         handler: async (request, response, context) => {
-            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, } = request.params;
+            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, paraCodeObserve, } = request.params;
             if (cliArgs?.categoryExtensions && serviceWorkerId) {
                 if (uidArgs && uidArgs.length > 0) {
                     throw new Error('args (element uids) cannot be used when evaluating in a service worker.');
@@ -70,6 +75,23 @@ Example with arguments: \`(el) => el.innerText\`
                 ? context.getPageById(request.params.pageId)
                 : context.getSelectedMcpPage();
             const page = mcpPage.pptrPage;
+            // PARA-PATCH (Para Code): see the schema above. The function is evaluated as is; it must not wait.
+            if (paraCodeObserve === true) {
+                if (mcpPage.getDialog()) {
+                    throw new Error('PARA_BROWSER_DIALOG_OPEN: a JavaScript dialog is open on the page.');
+                }
+                let timer;
+                try {
+                    await Promise.race([
+                        performEvaluation(page, fnString, [], response, {}),
+                        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).')), 3000); }),
+                    ]);
+                }
+                finally {
+                    clearTimeout(timer);
+                }
+                return;
+            }
             const args = [];
             try {
                 const frames = new Set();

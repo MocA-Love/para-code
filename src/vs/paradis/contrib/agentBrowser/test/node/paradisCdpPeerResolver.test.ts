@@ -10,7 +10,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisPeerProcessProbe,
 	IParadisProcessInfo,
+	ParadisPeerProbeError,
 	paradisClassifyPeer,
+	paradisParseProcessTable,
+	paradisPeerIsOneOf,
 	paradisParseLsofPeerPids,
 	paradisParseNetstatPeerPids,
 	paradisParseSsPeerPids,
@@ -110,4 +113,64 @@ suite('paradisCdpPeerResolver', () => {
 			await paradisResolvePaneTokenForPeerPort(49768, OWN_PID, lookup, undefined, probe([70], table)),
 		], ['token-a', undefined, undefined]);
 	});
+	test('a failed or timed-out probe is retried with a longer wait, but a peer that is not a descendant is not', async () => {
+		const table: Record<number, IParadisProcessInfo> = { 70: { ppid: 60 }, 60: { ppid: 50 }, 80: { ppid: 1 } };
+		const options = (log: string[]) => ({
+			now: () => 0,
+			sleep: async () => { log.push('sleep'); },
+			probeFor: (attempt: number, timeoutMs: number): IParadisPeerProcessProbe => {
+				log.push(`probe ${attempt} ${timeoutMs}`);
+				return {
+					findPeerPids: async () => {
+						if (attempt === 0) {
+							throw new ParadisPeerProbeError('lsof timed out');
+						}
+						return log[0] === 'negative' ? [80] : [70];
+					},
+					readProcess: async pid => table[pid],
+					readTokenFromEnv: async () => undefined,
+				};
+			},
+		});
+		const retried: string[] = [];
+		const negative: string[] = ['negative'];
+		const failing: string[] = [];
+		assert.deepStrictEqual({
+			retried: [await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, undefined, options(retried)), retried],
+			negative: [await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, undefined, options(negative)), negative],
+			gaveUp: [await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, {
+				findPeerPids: async () => { failing.push('lsof'); throw new ParadisPeerProbeError('lsof timed out'); },
+				readProcess: async pid => table[pid],
+				readTokenFromEnv: async () => undefined,
+			}, { now: () => 0, sleep: async () => { } }), failing.length],
+		}, {
+			retried: ['descendant', ['probe 0 3000', 'sleep', 'probe 1 8000']],
+			negative: ['unknown', ['negative', 'probe 0 3000', 'sleep', 'probe 1 8000']],
+			gaveUp: ['unknown', 3],
+		});
+	});
+
+	test('a connection whose owner is not found yet is looked up again, within the time budget', async () => {
+		let calls = 0;
+		const table: Record<number, IParadisProcessInfo> = { 70: { ppid: 50 } };
+		let clock = 0;
+		const late: IParadisPeerProcessProbe = { findPeerPids: async () => ++calls < 2 ? [] : [70], readProcess: async pid => table[pid], readTokenFromEnv: async () => undefined };
+		const noTime: IParadisPeerProcessProbe = { findPeerPids: async () => { clock += 20_000; return []; }, readProcess: async pid => table[pid], readTokenFromEnv: async () => undefined };
+		assert.deepStrictEqual([
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, late, { now: () => 0, sleep: async () => { } }),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, noTime, { now: () => clock, sleep: async () => { } }),
+		], ['descendant', 'unknown']);
+	});
+
+	test('the process table of ps -A is read once, and a failed lookup of the tunnel peer is undefined', async () => {
+		const failing: IParadisPeerProcessProbe = { findPeerPids: async () => { throw new ParadisPeerProbeError('lsof failed'); }, readProcess: async () => undefined, readTokenFromEnv: async () => undefined };
+		assert.deepStrictEqual({
+			table: [...paradisParseProcessTable('    1     0\n  501     1\n 7020   501\n\n garbage\n').entries()],
+			tunnel: await paradisPeerIsOneOf(49768, SERVER_PORT, OWN_PID, [90], failing),
+		}, {
+			table: [[1, { ppid: undefined }], [501, { ppid: 1 }], [7020, { ppid: 501 }]],
+			tunnel: undefined,
+		});
+	});
+
 });

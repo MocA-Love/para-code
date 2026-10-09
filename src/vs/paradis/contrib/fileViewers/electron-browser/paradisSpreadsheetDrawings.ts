@@ -12,9 +12,11 @@
 // セル上の斜線もこの直線コネクタで表現される。
 
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
+import type { ParadisPresetCommand, ParadisPresetPath, ParadisPresetShape } from '../common/spreadsheet/paradisPresetShapeData.js';
+import { isParadisPresetShape } from '../common/spreadsheet/paradisPresetShapeGeometry.js';
 import { localize } from '../../../../nls.js';
 import type { ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
-import type { IParadisChartData, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapePath, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetImageRejection, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartData, IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape, IParadisShapeGroupTransform, IParadisSheetData, IParadisShapeText, IParadisShapeTextParagraph, IParadisShapeTextRun, IParadisUndrawnObject, ParadisSpreadsheetImageRejection, ParadisSpreadsheetShapeGeometry } from '../common/paradisSpreadsheet.js';
 import type {
 	ParadisSpreadsheetDrawing,
 	ParadisSpreadsheetDrawingAnchor,
@@ -434,42 +436,116 @@ function childFrame(xfrm: Element | null, space: GroupSpace | undefined): Frame 
 	};
 }
 
-const KNOWN_GEOMETRIES = new Set<ParadisSpreadsheetShapeGeometry>(['rect', 'roundRect', 'ellipse', 'triangle', 'rtTriangle', 'diamond', 'leftBracket', 'rightBracket', 'leftBrace', 'rightBrace']);
-const LINE_GEOMETRIES = new Set(['line', 'straightConnector1', 'bentConnector2', 'bentConnector3', 'curvedConnector3']);
-/** 線の形のうち、直線で描くと形が違ってしまうもの（近似として数える）。 */
-const APPROXIMATED_LINE_GEOMETRIES = new Set(['bentConnector2', 'bentConnector3', 'curvedConnector3']);
+/** 直線として描く形（対角の 1 本の線）。ほかの線の形（カギ線・曲線のコネクタ、lineInv）は既定の形の定義で描く。 */
+const LINE_GEOMETRIES = new Set(['line', 'straightConnector1']);
 
-/** custGeom の pathLst を、枠の中の割合の道筋にする。arcTo を含む道筋は描けないので undefined。 */
-function parseCustomPaths(custGeom: Element, commandLimit: number): IParadisShapePath[] | 'overLimit' | undefined {
-	const paths: IParadisShapePath[] = [];
+function guideList(parent: Element | null): [string, string][] {
+	return xmlChildren(parent, 'gd').map(gd => [xmlAttr(gd, 'name'), xmlAttr(gd, 'fmla')] as [string, string]).filter(([name, formula]) => !!name && !!formula);
+}
+
+/**
+ * custGeom を、既定の形と同じ形（式と道筋）にする。座標や半径は式の名前か数のまま持ち、描くときに計算する。
+ * 命令が上限を越えれば `overLimit`、読めない命令があれば undefined。
+ */
+function parseCustomGeometry(custGeom: Element, commandLimit: number): ParadisPresetShape | 'overLimit' | undefined {
+	const paths: ParadisPresetPath[] = [];
 	let commands = 0;
+	const coordinate = (el: Element | undefined, name: 'x' | 'y'): string | undefined => {
+		const value = el ? xmlAttr(el, name) : '';
+		return value ? value : undefined;
+	};
 	for (const path of xmlChildren(xmlChild(custGeom, 'pathLst'), 'path')) {
-		const width = intAttr(path, 'w', 0);
-		const height = intAttr(path, 'h', 0);
-		if (width <= 0 || height <= 0) {
-			return undefined;
-		}
-		const point = (el: Element): number[] => [intAttr(el, 'x', 0) / width, intAttr(el, 'y', 0) / height];
-		const d: (readonly ['M' | 'L' | 'C' | 'Q' | 'Z', ...number[]])[] = [];
+		const c: ParadisPresetCommand[] = [];
 		for (const command of xmlChildren(path)) {
 			if (++commands > commandLimit) {
 				return 'overLimit';
 			}
 			const points = xmlChildren(command, 'pt');
+			const xy = (index: number): [string, string] | undefined => {
+				const x = coordinate(points[index], 'x');
+				const y = coordinate(points[index], 'y');
+				return x !== undefined && y !== undefined ? [x, y] : undefined;
+			};
 			switch (command.localName) {
-				case 'moveTo': if (points[0]) { d.push(['M', ...point(points[0])]); } break;
-				case 'lnTo': if (points[0]) { d.push(['L', ...point(points[0])]); } break;
-				case 'cubicBezTo': if (points.length === 3) { d.push(['C', ...points.flatMap(point)]); } break;
-				case 'quadBezTo': if (points.length === 2) { d.push(['Q', ...points.flatMap(point)]); } break;
-				case 'close': d.push(['Z']); break;
+				case 'moveTo': case 'lnTo': {
+					const point = xy(0);
+					if (!point) {
+						return undefined;
+					}
+					c.push([command.localName === 'moveTo' ? 'M' : 'L', ...point]);
+					break;
+				}
+				case 'quadBezTo': {
+					const first = xy(0);
+					const second = xy(1);
+					if (!first || !second) {
+						return undefined;
+					}
+					c.push(['Q', ...first, ...second]);
+					break;
+				}
+				case 'cubicBezTo': {
+					const first = xy(0);
+					const second = xy(1);
+					const third = xy(2);
+					if (!first || !second || !third) {
+						return undefined;
+					}
+					c.push(['C', ...first, ...second, ...third]);
+					break;
+				}
+				case 'arcTo': {
+					const values = ['wR', 'hR', 'stAng', 'swAng'].map(name => xmlAttr(command, name));
+					if (values.some(value => !value)) {
+						return undefined;
+					}
+					c.push(['A', values[0], values[1], values[2], values[3]]);
+					break;
+				}
+				case 'close': c.push(['Z']); break;
 				default: return undefined;
 			}
 		}
+		const width = intAttr(path, 'w', 0);
+		const height = intAttr(path, 'h', 0);
 		const fill = xmlAttr(path, 'fill');
 		const stroke = xmlAttr(path, 'stroke');
-		paths.push({ d, fill: fill !== 'none', stroke: stroke !== '0' && stroke !== 'false' });
+		paths.push({
+			...(width > 0 ? { w: width } : {}),
+			...(height > 0 ? { h: height } : {}),
+			...(fill === 'none' || fill === 'lighten' || fill === 'lightenLess' || fill === 'darken' || fill === 'darkenLess' ? { fill } : {}),
+			...(stroke === '0' || stroke === 'false' ? { stroke: false as const } : {}),
+			c,
+		});
 	}
-	return paths.length > 0 ? paths : undefined;
+	if (paths.length === 0) {
+		return undefined;
+	}
+	const av = guideList(xmlChild(custGeom, 'avLst'));
+	const gd = guideList(xmlChild(custGeom, 'gdLst'));
+	const rect = xmlChild(custGeom, 'rect');
+	const rectValues = rect ? ['l', 't', 'r', 'b'].map(name => xmlAttr(rect, name)) : [];
+	return {
+		...(av.length ? { av } : {}),
+		...(gd.length ? { gd } : {}),
+		paths,
+		...(rectValues.length === 4 && rectValues.every(Boolean) ? { rect: rectValues as [string, string, string, string] } : {}),
+	};
+}
+
+/** avLst の調整値（`val 数` の式だけ）を、名前 → 値にする。 */
+function adjustValues(prstGeom: Element | null): Record<string, number> | undefined {
+	const result: Record<string, number> = {};
+	let count = 0;
+	for (const gd of xmlChildren(xmlChild(prstGeom, 'avLst'), 'gd')) {
+		const value = /^val (?<value>-?\d+)$/.exec(xmlAttr(gd, 'fmla'))?.groups?.value;
+		const name = xmlAttr(gd, 'name');
+		if (name && value !== undefined) {
+			result[name] = Number(value);
+			count++;
+		}
+	}
+	return count > 0 ? result : undefined;
 }
 
 const TEXT_INSET_DEFAULT_EMU = { left: 91440, top: 45720, right: 91440, bottom: 45720 };
@@ -670,26 +746,28 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 	const prstGeom = xmlChild(spPr, 'prstGeom');
 	const custGeom = xmlChild(spPr, 'custGeom');
 	const prst = prstGeom ? xmlAttr(prstGeom, 'prst') : '';
-	const isLine = LINE_GEOMETRIES.has(prst) || (el.localName === 'cxnSp' && !custGeom);
+	const isLine = LINE_GEOMETRIES.has(prst) || (el.localName === 'cxnSp' && !custGeom && !prst);
+	// コネクタ（cxnSp）は塗りも文字も持たない。
+	const isConnector = isLine || el.localName === 'cxnSp';
 	let geometry: ParadisSpreadsheetShapeGeometry | undefined;
-	let paths: IParadisShapePath[] | undefined;
+	let customGeometry: ParadisPresetShape | undefined;
 	let approximated = false;
 	if (custGeom) {
-		const parsed = parseCustomPaths(custGeom, context.limits.pathCommands);
+		const parsed = parseCustomGeometry(custGeom, context.limits.pathCommands);
 		if (parsed === 'overLimit') {
 			context.undrawn.push({ kind: 'overLimit', ...(name ? { name } : {}), from: box.from });
 			return;
 		}
-		paths = parsed;
-		geometry = paths ? 'path' : 'rect';
-		approximated = !paths;
+		customGeometry = parsed;
+		geometry = customGeometry ? 'custom' : 'rect';
+		approximated = !customGeometry;
 	} else if (!isLine) {
-		geometry = KNOWN_GEOMETRIES.has(prst as ParadisSpreadsheetShapeGeometry) ? prst as ParadisSpreadsheetShapeGeometry : 'rect';
-		approximated = !!prst && !KNOWN_GEOMETRIES.has(prst as ParadisSpreadsheetShapeGeometry);
-	} else {
-		approximated = APPROXIMATED_LINE_GEOMETRIES.has(prst);
+		// 既定の形（187 種）はすべて定義どおりに描く。知らない名前だけを枠で近似して数える。
+		const known = !prst || isParadisPresetShape(prst);
+		geometry = prst && known ? prst : 'rect';
+		approximated = !known;
 	}
-	const adjust = prstGeom ? xmlChildren(xmlChild(prstGeom, 'avLst'), 'gd').map(gd => /^val (?<value>-?\d+)$/.exec(xmlAttr(gd, 'fmla'))?.groups?.value).map(value => value === undefined ? Number.NaN : Number(value)) : [];
+	const adjust = prstGeom ? adjustValues(prstGeom) : undefined;
 
 	// 線: spPr の ln が先、無ければ style の lnRef（Part 1 §20.1.2.2.24・§20.1.4.2.19）。
 	const ln = xmlChild(spPr, 'ln');
@@ -704,10 +782,10 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 	}
 	const dash = ln ? xmlAttr(xmlChild(ln, 'prstDash') ?? ln, 'val') || 'solid' : 'solid';
 	const fillRef = styleRef(el, 'fillRef', context.themeColors);
-	const fill = isLine ? undefined : resolveFill(spPr, context.themeColors, fillRef && fillRef !== 'none' ? fillRef : undefined) ?? fillRef;
+	const fill = isConnector ? undefined : resolveFill(spPr, context.themeColors, fillRef && fillRef !== 'none' ? fillRef : undefined) ?? fillRef;
 	const headEnd = ln ? xmlAttr(xmlChild(ln, 'headEnd') ?? ln, 'type') : '';
 	const tailEnd = ln ? xmlAttr(xmlChild(ln, 'tailEnd') ?? ln, 'type') : '';
-	const text = isLine ? undefined : parseText(el, context.themeColors);
+	const text = isConnector ? undefined : parseText(el, context.themeColors);
 	if (!reserveShape(context, name, box)) {
 		return;
 	}
@@ -723,8 +801,8 @@ function parseGeometryShape(el: Element, box: AnchorBox, space: GroupSpace | und
 		name,
 		shapeId,
 		...(geometry ? { geometry } : {}),
-		...(adjust.length > 0 && adjust.every(Number.isFinite) ? { adjust } : {}),
-		...(paths ? { paths } : {}),
+		...(adjust ? { adjust } : {}),
+		...(customGeometry ? { customGeometry } : {}),
 		...(fill && fill !== 'none' ? { fill: fill.color, ...(fill.alpha < 1 ? { fillOpacity: fill.alpha } : {}) } : {}),
 		...(text ? { text } : {}),
 		...(headEnd && headEnd !== 'none' ? { headEnd } : {}),

@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -231,4 +231,30 @@ suite('Paradis devtools tool adjustments', () => {
 			during: 'second', beforeCall: undefined, stale: undefined, other: undefined,
 		});
 	});
+
+	test('evaluate_script gets a hidden argument to evaluate without waiting, only when the vendored server knows it', () => {
+		const source = readFileSync(FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/tools/script.js').fsPath, 'utf8');
+		assert.deepStrictEqual({
+			patched: [source.includes('paraCodeObserve: zod.boolean().optional()'), source.includes('PARA_BROWSER_DIALOG_OPEN')],
+			knows: [paradisEvaluateObserves([{ name: 'evaluate_script', inputSchema: { properties: { paraCodeObserve: {} } } }]), paradisEvaluateObserves([{ name: 'evaluate_script', inputSchema: { properties: {} } }])],
+			published: Object.keys((paradisAdjustDevtoolsToolDescriptor({ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' }, paraCodeObserve: { type: 'boolean' } } } }).inputSchema as { properties: object }).properties),
+			kept: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeObserve: true }, { evaluateObserve: true }).args,
+			refused: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeObserve: true }),
+		}, {
+			patched: [true, true],
+			knows: [true, false],
+			published: ['function'],
+			kept: { function: 'f', paraCodeObserve: true },
+			// 対応していない vendored では従来の評価（ダイアログを承認しうる）に戻さず、渡さずに断る
+			refused: { args: { function: 'f' }, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE },
+		});
+	});
+	test('an agent cannot send the internal non-waiting evaluate argument', () => {
+		assert.deepStrictEqual([
+			paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f', paraCodeObserve: true }),
+			paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f' }),
+			paradisStripInternalDevtoolsArguments('click', { uid: '1_2', paraCodeObserve: true }),
+		], [{ function: 'f' }, { function: 'f' }, { uid: '1_2', paraCodeObserve: true }]);
+	});
+
 });

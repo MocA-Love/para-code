@@ -12,6 +12,7 @@ import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler, paradisBindingMatchesGeneration, paradisBindingsForMissingPages, paradisBrowserViewIdsWereRemoved } from '../../common/paradisBrowserBindingLifecycle.js';
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
+import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
 
 function binding(token: string, pageId: string, generation: number = 1, boundAt: number = 1): IParadisPaneBinding {
@@ -746,6 +747,8 @@ function createServiceFixture(generation: number): {
 		_hookSpoolDir: '/nonexistent/paradis-agent-hook-spool',
 		_hookSpoolPruned: Promise.resolve(),
 		_hookSpoolCheckedTokens: new Set<string>(),
+		_programStatusTokens: new Set(),
+		_programStatusTimes: new Map(),
 		_replayedPrompts: new Map<string, unknown>(),
 		_hookSpoolReplayAfter: 0,
 		_recentHookIds: new Set<string>(),
@@ -755,6 +758,8 @@ function createServiceFixture(generation: number): {
 		_unconfirmedReleaseTokens: new Set(),
 		_unconfirmableTokens: new Set(),
 		_callerClassifications: new WeakMap(),
+		_callerClassificationsInFlight: new WeakMap(),
+		_browserObserver: new ParadisBrowserObserver(),
 		_seenTokens: new Set(),
 		_rendererConnections: new Map([['window:1', connection]]),
 		_rendererConnectionContexts: new Map([[connection, 'window:1']]),
