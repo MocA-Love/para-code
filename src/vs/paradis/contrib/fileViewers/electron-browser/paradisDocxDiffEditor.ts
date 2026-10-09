@@ -76,6 +76,7 @@ import { compareParadisWordDocuments } from './word/paradisWordSemanticClient.js
 import { alignParadisWordParagraphs } from '../common/word/paradisWordRenderOutline.js';
 import type { IParadisWordComparisonResult } from '../common/word/paradisWordSemanticSummary.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
+import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import './media/paradisDocxDiff.css';
 
 const $ = dom.$;
@@ -735,7 +736,8 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array; readonly exclusions: ParadisWordPackageExclusions }> {
 		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
 		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token);
+		// 差分は 2 つの文書を同じ webview に描くので、画像の画素の上限を半分ずつにする。
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2);
 		const bytes = sanitized.bytes;
 		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer, exclusions: paradisWordPackageExclusions(sanitized) };
 	}
