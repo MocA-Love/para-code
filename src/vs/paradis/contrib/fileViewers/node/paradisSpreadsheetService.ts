@@ -1123,8 +1123,13 @@ function mediaMime(fileName: string): string | undefined {
 	}
 }
 
-/** 描く SVG の画像（サニタイズした後）のバイト数の合計の上限（ブック全体）。 */
+/**
+ * 描く SVG の画像のバイト数の合計と枚数の上限（ブック全体）。サニタイズは shared process の本体で同期に走るので、
+ * サニタイズする前の大きさで数え、上限を越える分はサニタイズしない。1 枚の上限はサニタイザと同じ 1 MiB。
+ */
 export const PARADIS_SPREADSHEET_SVG_IMAGE_BYTES = 16 * 1024 * 1024;
+export const PARADIS_SPREADSHEET_SVG_IMAGE_COUNT = 128;
+const PARADIS_SPREADSHEET_SVG_IMAGE_EACH_BYTES = 1024 * 1024;
 
 type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
 
@@ -1144,6 +1149,7 @@ class WorkbookImages {
 	private readonly cache = new Map<string, Promise<WorkbookImage>>();
 	private pixels = 0;
 	private svgBytes = 0;
+	private svgCount = 0;
 
 	constructor(private readonly budget: number) { }
 
@@ -1199,6 +1205,15 @@ class WorkbookImages {
 
 	/** SVG の画像は、Office の SVG のサニタイザを通したものだけを描く。 */
 	private loadSvg(name: string, bytes: Uint8Array): WorkbookImage {
+		if (bytes.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_EACH_BYTES) {
+			return { reason: 'tooLarge' };
+		}
+		// 合計と枚数は、サニタイズの前に数える（上限を越えた分はサニタイズしない）。描けなかった分も数える。
+		if (this.svgCount >= PARADIS_SPREADSHEET_SVG_IMAGE_COUNT || this.svgBytes + bytes.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgCount++;
+		this.svgBytes += bytes.byteLength;
 		let source: string;
 		try {
 			source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -1210,12 +1225,8 @@ class WorkbookImages {
 		if (!Object.prototype.hasOwnProperty.call(sanitized, 'bytes')) {
 			return { reason: 'unverified' };
 		}
-		const svg = (sanitized as ParadisSanitizedSvg).bytes;
-		if (this.svgBytes + svg.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
-			return { reason: 'overBudget' };
-		}
-		this.svgBytes += svg.byteLength;
-		return { href: dataUrl('image/svg+xml', svg) };
+		// サニタイズした後の大きさが前より大きくても、1 枚の上限（サニタイザが 1 MiB で止める）を越えない。
+		return { href: dataUrl('image/svg+xml', (sanitized as ParadisSanitizedSvg).bytes) };
 	}
 
 	private takePixels(pixels: number): boolean {
