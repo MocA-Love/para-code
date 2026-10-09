@@ -23,6 +23,27 @@ function textOf(result: unknown): string {
 suite('Paradis devtools tool adjustments', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('navigate_page refuses javascript:, data: and internal URLs, and keeps http, https, about:blank and file', () => {
+		const refused = (url: string, type?: string) => paradisPrepareDevtoolsToolCall('navigate_page', { url, ...(type !== undefined ? { type } : {}) }).refuse;
+		assert.deepStrictEqual({
+			javascript: refused(`javascript:document.title='x'`),
+			upperCase: refused(' JavaScript:alert(1)') !== undefined,
+			data: refused('data:text/html,<script>alert(1)</script>') !== undefined,
+			chrome: refused('chrome://settings') !== undefined,
+			viewSource: refused('view-source:https://example.com') !== undefined,
+			allowed: ['https://example.com/a', 'http://localhost:3000', 'about:blank', 'file:///tmp/report.html'].map(url => refused(url)),
+			reloadKeepsUrl: refused('javascript:void 0', 'reload'),
+		}, {
+			javascript: 'navigate_page only opens http, https, about:blank or file URLs, not javascript: URLs. To run code in the page, use evaluate_script.',
+			upperCase: true,
+			data: true,
+			chrome: true,
+			viewSource: true,
+			allowed: [undefined, undefined, undefined, undefined],
+			reloadKeepsUrl: undefined,
+		});
+	});
+
 	test('wait_for accepts a single string and drops the snapshot unless asked for', () => {
 		const prepared = paradisPrepareDevtoolsToolCall('wait_for', { text: 'Attachments', timeout: 15000 });
 		const withSnapshot = paradisPrepareDevtoolsToolCall('wait_for', { text: ['a', 'b'], includeSnapshot: true });
