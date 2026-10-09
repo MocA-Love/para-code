@@ -304,6 +304,22 @@ suite('paradisSpreadsheetDiff', () => {
 		]);
 	});
 
+	test('compares adjust values by guide name and leaves out the preset defaults', () => {
+		const shape = (geometry: string, adjust?: Record<string, number>) => lineShape({ type: 'rect', name: 'Box 1', geometry, ...(adjust ? { adjust } : {}) });
+		const details = (before: IParadisRenderShape, after: IParadisRenderShape) => buildShapeDiff([before], [after]).modifiedRenders[0].diffDetails?.map(detail => [detail.kind, detail.original, detail.modified]);
+		deepStrictEqual({
+			explicitDefault: details(shape('roundRect'), shape('roundRect', { adj: 16667 })),
+			reordered: details(shape('downArrow', { adj2: 30000, adj1: 40000 }), shape('downArrow', { adj1: 40000, adj2: 30000 })),
+			changed: details(shape('roundRect'), shape('roundRect', { adj: 20000 })),
+			aliasDefault: details(shape('upArrow'), shape('upArrow', { adj1: 50000, adj2: 50000 })),
+		}, {
+			explicitDefault: undefined,
+			reordered: undefined,
+			changed: [['objectGeometry', 'roundRect', 'roundRect (adj=20000)']],
+			aliasDefault: undefined,
+		});
+	});
+
 	test('includes geometry and style details when both change', () => {
 		const originalShape = lineShape();
 		const modifiedShape = lineShape({
