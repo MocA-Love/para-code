@@ -24,7 +24,6 @@ import {
 	IParadisDrawingData,
 	IParadisFreezePane,
 	IParadisSheetTable,
-	IParadisParseWorkbookOptions,
 	IParadisRichTextPart,
 	IParadisRowData,
 	canonicalizeDataValidationEntries,
@@ -33,7 +32,6 @@ import {
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
-import { collectParadisSpreadsheetSemanticDiagnostics } from './spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -1098,6 +1096,13 @@ interface IXlsxExtras {
 	maxDigitWidth: number;
 }
 
+/** renderer へ渡すグラフの XML の上限（文字数）。超えたグラフは描かずに代替表示に数える。 */
+const MAX_CHART_XML_CHARACTERS = 2 * 1024 * 1024;
+/** 1 シートで renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_SHEET_DRAWING_XML_CHARACTERS = 8 * 1024 * 1024;
+/** ブック全体で renderer へ渡す drawing とグラフの XML の合計の上限（文字数）。 */
+const MAX_WORKBOOK_DRAWING_XML_CHARACTERS = 32 * 1024 * 1024;
+
 function mediaMime(fileName: string): string | undefined {
 	const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
 	switch (ext) {
@@ -1151,6 +1156,8 @@ function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
 // exceljs の eachSheet は表示順なので、すべて「表示順(1始まり)」に正規化して返す。
 async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
+	const drawingXmlCharactersBySheet = new Map<number, number>();
+	let workbookDrawingCharacters = 0;
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] } = {};
@@ -1267,8 +1274,17 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 			if (fileNum === undefined) {
 				continue;
 			}
+			const key = keyForFile(fileNum);
 			const xml = await files[name].async('text');
+			// renderer の DOM で読むので、シートごとに drawing とグラフの XML の合計に上限を掛ける。
+			const used = drawingXmlCharactersBySheet.get(key) ?? 0;
+			if (used + xml.length > MAX_SHEET_DRAWING_XML_CHARACTERS || workbookDrawingCharacters + xml.length > MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
+				(drawingsBySheet[key] ??= []).push({ xml: '', media: {}, omitted: true });
+				continue;
+			}
+			let sheetCharacters = used + xml.length;
 			const media: { [rid: string]: string } = {};
+			const charts: { [rid: string]: string } = {};
 			const relsFile = files[`xl/drawings/_rels/${m[1]}.xml.rels`];
 			if (relsFile) {
 				for (const rel of (await relsFile.async('text')).match(/<Relationship[^>]*>/g) ?? []) {
@@ -1282,13 +1298,23 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip): Pr
 							media[id[1]] = `data:${mime};base64,${await mediaFile.async('base64')}`;
 						}
 					}
+					// グラフの部品（chartN.xml）。renderer が保存済みの値から描く。
+					const chartTarget = /\bType="[^"]*\/chart"/.test(rel) ? rel.match(/Target="(?:\/xl\/charts\/|\.\.\/charts\/)(chart[^"/]*\.xml)"/) : null;
+					const chartFile = chartTarget ? files[`xl/charts/${chartTarget[1]}`] : undefined;
+					if (id && chartFile) {
+						const chartXml = await chartFile.async('text');
+						// 上限を越えるグラフは渡さない（renderer は描かずに代替表示に数える）。
+						if (chartXml.length <= MAX_CHART_XML_CHARACTERS && sheetCharacters + chartXml.length <= MAX_SHEET_DRAWING_XML_CHARACTERS
+							&& workbookDrawingCharacters + (sheetCharacters - used) + chartXml.length <= MAX_WORKBOOK_DRAWING_XML_CHARACTERS) {
+							charts[id[1]] = chartXml;
+							sheetCharacters += chartXml.length;
+						}
+					}
 				}
 			}
-			const key = keyForFile(fileNum);
-			if (!drawingsBySheet[key]) {
-				drawingsBySheet[key] = [];
-			}
-			drawingsBySheet[key].push({ xml, media });
+			drawingXmlCharactersBySheet.set(key, sheetCharacters);
+			workbookDrawingCharacters += sheetCharacters - used;
+			(drawingsBySheet[key] ??= []).push({ xml, media, ...(Object.keys(charts).length > 0 ? { charts } : {}) });
 		}
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
@@ -1301,7 +1327,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
-	async parseWorkbook(base64Content: string, options?: IParadisParseWorkbookOptions): Promise<IParadisWorkbookData> {
+	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
 		const source = Buffer.from(base64Content, 'base64');
@@ -1519,21 +1545,12 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			});
 		});
 
-		const projection: IParadisWorkbookData = {
+		// 表示の投影だけを返す。詳しい解析は別の呼び出し（チャネルの collectSemanticDiagnostics）が worker で行う。
+		return {
 			sheets,
 			drawingsBySheet: extras.drawingsBySheet,
 			...(extras.themeColorsByName ? { themeColors: extras.themeColorsByName } : {}),
 		};
-		// 表示は投影で確定済み。意味解析は診断表示のためだけに回すので、
-		// 診断を出さない設定のときは費用を払わない。失敗しても表示は変わらない。
-		if (options?.semanticDiagnostics !== true) {
-			return projection;
-		}
-		// 解析側は Uint8Array そのものを要求する(Buffer を渡すと invalid で弾かれる)。
-		// この経路は同じプロセスで解析する（テストと突き合わせ用）。renderer からの診断は、チャネルが
-		// worker（paradisSpreadsheetSemanticWorkerBackend.ts）へ回すので、ここは通らない。
-		const semanticDiagnostics = await collectParadisSpreadsheetSemanticDiagnostics(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
-		return { ...projection, semanticDiagnostics };
 	}
 
 	private getRuntime(): Promise<IParadisSpreadsheetRuntime> {
