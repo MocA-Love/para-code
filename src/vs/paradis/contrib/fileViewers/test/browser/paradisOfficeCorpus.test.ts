@@ -16,6 +16,7 @@ import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtoc
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
 import { minimalGif, minimalJpeg, minimalPng, pngChunk } from '../common/paradisWordImageFixture.js';
+import { emfRecord, minimalEmf, minimalWmf, ParadisMetafileBytes, wmfRecord } from '../common/paradisOfficeMetafileFixture.js';
 import { buildOpcFixture, type IParadisOfficeFixtureOptions, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
 
 /*
@@ -471,6 +472,36 @@ suite('ParadisOfficeCorpus', () => {
 			boxes: 7,
 			scriptLeft: false,
 			types: ['image/png', 'image/jpg', 'image/png', 'image/svg+xml', 'image/svg+xml'],
+		});
+	});
+
+	test('draws EMF and WMF images as converted SVG and keeps the ones it cannot draw as boxes (Q321 f)', async () => {
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		const images: readonly (readonly [name: string, bytes: Uint8Array, type: string])[] = [
+			['image1.emf', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/x-emf'],
+			['image2.wmf', minimalWmf([wmfRecord(0x041b, [500, 1000, 0, 0])]), 'image/x-wmf'],
+			// An arc is not drawn, so the image stays a box.
+			['image3.emf', minimalEmf([emfRecord(45, words(0, 0, 10, 10, 0, 0, 10, 10))]), 'image/x-emf'],
+			// The declared type must match the signature.
+			['image4.png', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/png'],
+		];
+		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
+		const result = await sanitize(await wordPackage({
+			body,
+			extraParts: images.map(([name, bytes, type]) => [`/word/media/${name}`, bytes, type] as const),
+			extraRelationships: images.map(([name], index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/${name}` })),
+		}));
+		const text = new TextDecoder().decode(result.bytes);
+		deepStrictEqual({
+			drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length,
+			boxes: result.placeholders.length,
+			types: images.map(([name]) => new RegExp(`PartName="/word/media/${name.replace('.', '[.]')}" ContentType="(?<type>[^"]+)"`).exec(text)?.groups?.type),
+			converted: (text.match(/<svg xmlns="http:[/][/]www[.]w3[.]org[/]2000[/]svg" width=/g) ?? []).length,
+		}, {
+			drawn: 2,
+			boxes: 2,
+			types: ['image/svg+xml', 'image/svg+xml', 'image/svg+xml', 'image/svg+xml'],
+			converted: 2,
 		});
 	});
 
