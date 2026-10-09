@@ -1076,6 +1076,7 @@ function undrawnDetail(kind: IParadisUndrawnObject['kind'], reason: IParadisUndr
 			switch (reason) {
 				case 'metafile': return localize('paradis.spreadsheet.undrawnMetafile', "EMF・WMF の画像は表示できません。");
 				case 'unsupportedFormat': return localize('paradis.spreadsheet.undrawnImageFormat', "表示できない形式の画像（BMP など）です。");
+				case 'tooLarge': return localize('paradis.spreadsheet.undrawnImageTooLarge', "画像が大きすぎるため、表示していません。");
 				case 'overBudget': return localize('paradis.spreadsheet.undrawnImageOverBudget', "画像が多いため、表示していません。");
 				default: return localize('paradis.spreadsheet.undrawnImageUnverified', "画像の中身を確かめられなかったため、表示していません。");
 			}
