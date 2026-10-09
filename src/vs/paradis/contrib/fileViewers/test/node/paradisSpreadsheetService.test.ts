@@ -14,7 +14,7 @@ import { minimalBmp } from '../common/paradisOfficeBmpFixture.js';
 import { emfRecord, minimalEmf, ParadisMetafileBytes } from '../common/paradisOfficeMetafileFixture.js';
 import { convertParadisSpreadsheetMetafiles } from '../../node/spreadsheet/paradisSpreadsheetMetafiles.js';
 import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
-import { ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
+import { PARADIS_SPREADSHEET_SVG_IMAGE_COUNT, ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
 async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): Promise<string> {
 	const workbook = new ExcelJS.Workbook();
@@ -27,7 +27,9 @@ async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): 
  * Invented workbook with five pictures whose media are an EMF, a broken EMF, a BMP, an SVG, and a TIFF.
  * exceljs only writes PNG pictures, so each picture's media part is replaced the way Excel stores the others.
  */
-async function picturesWorkbook(): Promise<{ readonly bytes: Uint8Array; readonly kindByRid: ReadonlyMap<string, string>; readonly parts: { readonly bmp: Uint8Array } }> {
+interface IPicturePart { readonly kind: string; readonly extension: string; readonly bytes: Uint8Array; readonly type: string }
+
+async function picturesWorkbook(override?: readonly IPicturePart[]): Promise<{ readonly bytes: Uint8Array; readonly kindByRid: ReadonlyMap<string, string>; readonly parts: { readonly bmp: Uint8Array } }> {
 	const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values.map(value => value >>> 0));
 	// A mapping to 80 x 40 device pixels and one filled rectangle.
 	const emf = minimalEmf([
@@ -35,7 +37,7 @@ async function picturesWorkbook(): Promise<{ readonly bytes: Uint8Array; readonl
 		emfRecord(39, words(1, 0, 0x0000ff, 0)), emfRecord(37, words(1)), emfRecord(43, words(10, 10, 50, 30)),
 	]);
 	const bmp = minimalBmp(3, 2, { trailer: 8 });
-	const parts = [
+	const parts: readonly IPicturePart[] = override ?? [
 		{ kind: 'emf', extension: 'emf', bytes: emf, type: 'image/x-emf' },
 		{ kind: 'brokenEmf', extension: 'emf', bytes: emf.slice(0, 120), type: 'image/x-emf' },
 		{ kind: 'bmp', extension: 'bmp', bytes: bmp, type: 'image/bmp' },
@@ -184,6 +186,21 @@ suite('ParadisSpreadsheetService', () => {
 			rejected: [['brokenEmf', 'metafile'], ['emf', 'metafile'], ['tif', 'unsupportedFormat']],
 			pending: [['brokenEmf', true], ['emf', true]],
 		});
+	});
+
+	test('counts SVG pictures against the workbook limits before sanitizing them', async () => {
+		const svg = (index: number) => new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="${index + 1}" height="10"/></svg>`);
+		const many = Array.from({ length: PARADIS_SPREADSHEET_SVG_IMAGE_COUNT + 1 }, (_, index): IPicturePart => ({ kind: `svg${index}`, extension: 'svg', bytes: svg(index), type: 'image/svg+xml' }));
+		const huge: IPicturePart = { kind: 'huge', extension: 'svg', bytes: new TextEncoder().encode(`<svg xmlns="http://www.w3.org/2000/svg"><desc>${'x'.repeat(1024 * 1024)}</desc></svg>`), type: 'image/svg+xml' };
+		const reasons = async (parts: readonly IPicturePart[]) => {
+			const { bytes } = await picturesWorkbook(parts);
+			const drawing = (await new ParadisSpreadsheetService().parseWorkbook(Buffer.from(bytes).toString('base64'))).drawingsBySheet?.[1]?.[0];
+			return { drawn: Object.keys(drawing?.media ?? {}).length, rejected: Object.values(drawing?.rejectedMedia ?? {}) };
+		};
+		deepStrictEqual([await reasons(many), await reasons([huge])], [
+			{ drawn: PARADIS_SPREADSHEET_SVG_IMAGE_COUNT, rejected: ['overBudget'] },
+			{ drawn: 0, rejected: ['tooLarge'] },
+		]);
 	});
 
 	test('converts the EMF pictures of a workbook to SVG data URLs, leaving out the ones it cannot draw', async () => {
