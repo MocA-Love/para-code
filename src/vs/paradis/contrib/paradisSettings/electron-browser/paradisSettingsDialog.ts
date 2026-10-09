@@ -778,6 +778,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.siteNotes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.siteNotes', "（試験的）サイトのコツをメモして次のエージェントに伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.siteNotesDesc', "エージェントが内蔵ブラウザで使ったサイトのコツ（入力の書式やボタンの場所など）を短いメモに残し、同じリポジトリで次にそのサイトを開いたエージェントに伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental site notes memo hint',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.downloads', "ダウンロードを確認なしで受け取る"),
