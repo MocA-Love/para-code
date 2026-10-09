@@ -33,6 +33,9 @@ import {
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
 import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
+import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
+import { convertParadisOfficeMetafileParts, PARADIS_OFFICE_METAFILE_DOCUMENT_INPUT_BYTES, type ParadisOfficeMetafilePart } from '../common/office/paradisOfficeMetafileParts.js';
+import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -1121,19 +1124,90 @@ function mediaMime(fileName: string): string | undefined {
 	}
 }
 
-/**
- * ブックの画像を、Word と同じ検査（`inspectParadisWordRasterImage`）に通してから data URI にする。
- * 中身の形式が拡張子と食い違うもの、壊れたもの、動く PNG、ブック全体の画素の上限を越えたものは描かない
- * （renderer は画像の無い図形として代替表示に数える）。画像の終わりより後ろのデータは切る。
- * 同じ画像を複数の図形が使うときは、1 回だけ数える。
- */
+/** EMF・WMF を SVG にするのにかけてよい時間（ブック全体）。過ぎたら残りは代替表示の箱のまま。 */
+export const PARADIS_SPREADSHEET_METAFILE_MILLISECONDS = 10_000;
+/** 描く SVG の画像（サニタイズした後）のバイト数の合計の上限（ブック全体）。 */
+export const PARADIS_SPREADSHEET_SVG_IMAGE_BYTES = 16 * 1024 * 1024;
+
+/** 変換の途中で、shared process の他の処理に順番を譲る。 */
+function yieldToEventLoop(): Promise<void> {
+	return new Promise(resolve => setImmediate(resolve));
+}
+
+/** `[Content_Types].xml` から、部品の名前（`/xl/media/image1.emf`）→ content type を引く関数を作る。 */
+async function readContentTypes(file: JSZip.JSZipObject | undefined): Promise<(partName: string) => string> {
+	const overrides = new Map<string, string>();
+	const defaults = new Map<string, string>();
+	for (const tag of (file ? await file.async('text') : '').match(/<(?:\w+:)?(?:Override|Default)\b[^>]*>/g) ?? []) {
+		const type = /\bContentType=["']([^"']*)["']/.exec(tag)?.[1] ?? '';
+		const part = /\bPartName=["']([^"']*)["']/.exec(tag)?.[1];
+		const extension = /\bExtension=["']([^"']*)["']/.exec(tag)?.[1];
+		if (part) {
+			overrides.set(part.toLowerCase(), type);
+		} else if (extension) {
+			defaults.set(extension.toLowerCase(), type);
+		}
+	}
+	return partName => overrides.get(partName.toLowerCase()) ?? defaults.get(partName.slice(partName.lastIndexOf('.') + 1).toLowerCase()) ?? '';
+}
+
 type WorkbookImage = { readonly href: string; readonly reason?: undefined } | { readonly href?: undefined; readonly reason: ParadisSpreadsheetImageRejection };
 
+function dataUrl(mimeType: string, bytes: Uint8Array): string {
+	return `data:${mimeType};base64,${Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')}`;
+}
+
+/**
+ * 図形が使う画像を、名前ごとに 1 回だけ確かめて data URL にする。
+ * - PNG・JPEG・GIF: Word と同じ検査を通し、画像の終わりで切る
+ * - BMP: 見出しを確かめ、ファイルの見出しが言う長さで切る（PNG へは変換しない）
+ * - SVG: Office の SVG のサニタイザを通す
+ * - EMF・WMF: `prepareMetafiles` でまとめて SVG にしておいたものを使う（変換の出力はサニタイザに通さない）
+ * ラスターの画像はブックの画素の上限に数える。
+ */
 class WorkbookImages {
 	private readonly cache = new Map<string, Promise<WorkbookImage>>();
 	private pixels = 0;
+	private svgBytes = 0;
+	private metafiles: ReadonlyMap<string, Uint8Array> = new Map();
 
 	constructor(private readonly budget: number) { }
+
+	/**
+	 * 図形の関係から参照される EMF・WMF を集め、ブック 1 つ分の上限（1 枚 4 MiB・合計 32 MiB・読む量）と
+	 * 締め切りで SVG にする。描けないもの・上限を越えたものは変換しない（代替表示の箱になる）。
+	 */
+	async prepareMetafiles(files: { readonly [name: string]: JSZip.JSZipObject }): Promise<void> {
+		const names = new Set<string>();
+		for (const name of Object.keys(files)) {
+			if (!/^xl\/drawings\/_rels\/[^/]+\.xml\.rels$/.test(name) || files[name].dir) {
+				continue;
+			}
+			for (const match of (await files[name].async('text')).matchAll(/Target="[^"]*media\/([^"/]+\.(?:emf|wmf))"/gi)) {
+				names.add(match[1]);
+			}
+		}
+		if (names.size === 0) {
+			return;
+		}
+		const contentType = await readContentTypes(files['[Content_Types].xml']);
+		const parts: ParadisOfficeMetafilePart[] = [];
+		let input = 0;
+		for (const name of names) {
+			const file = files[`xl/media/${name}`];
+			if (!file || file.dir) {
+				continue;
+			}
+			const bytes = await file.async('uint8array');
+			// 変換が読む量の上限を越える分は読み込まない（変換しても、どうせ途中で打ち切られる）。
+			if (input + bytes.byteLength > PARADIS_OFFICE_METAFILE_DOCUMENT_INPUT_BYTES) {
+				break;
+			}
+			input += bytes.byteLength;
+			parts.push({ name, bytes, contentType: contentType(`/xl/media/${name}`) });
+		}
+		this.metafiles = await convertParadisOfficeMetafileParts(parts, { checkpoint: yieldToEventLoop, deadline: Date.now() + PARADIS_SPREADSHEET_METAFILE_MILLISECONDS });
+	}
 
 	dataUri(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
 		let result = this.cache.get(name);
@@ -1147,16 +1221,27 @@ class WorkbookImages {
 	private async load(name: string, file: JSZip.JSZipObject | undefined): Promise<WorkbookImage> {
 		const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
 		if (extension === 'emf' || extension === 'wmf') {
-			return { reason: 'metafile' };
+			const svg = this.metafiles.get(name);
+			return svg ? { href: dataUrl('image/svg+xml', svg) } : { reason: 'metafile' };
 		}
-		const declared = mediaMime(name);
-		if (!declared) {
+		if (extension !== 'svg' && extension !== 'bmp' && !mediaMime(name)) {
 			return { reason: 'unsupportedFormat' };
 		}
-		if (!file) {
+		if (!file || file.dir) {
 			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
+		if (extension === 'svg') {
+			return this.loadSvg(name, bytes);
+		}
+		if (extension === 'bmp') {
+			const { image, rejection } = inspectParadisOfficeBmp(bytes);
+			if (!image) {
+				return { reason: rejection === 'tooLarge' ? 'tooLarge' : 'unverified' };
+			}
+			return this.takePixels(image.pixels) ? { href: dataUrl(image.mimeType, image.end < bytes.byteLength ? bytes.subarray(0, image.end) : bytes) } : { reason: 'overBudget' };
+		}
+		const declared = mediaMime(name);
 		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(bytes);
 		// 中身の形式が拡張子と食い違うものは、大きさに関係なく「確かめられなかった」にする。
 		if ((inspected?.mimeType ?? mimeType) !== declared) {
@@ -1168,12 +1253,40 @@ class WorkbookImages {
 		if (!inspected) {
 			return { reason: 'unverified' };
 		}
-		if (this.pixels + inspected.pixels > this.budget) {
+		if (!this.takePixels(inspected.pixels)) {
 			return { reason: 'overBudget' };
 		}
-		this.pixels += inspected.pixels;
 		const image = inspected.end < bytes.byteLength ? bytes.subarray(0, inspected.end) : bytes;
-		return { href: `data:${inspected.mimeType};base64,${Buffer.from(image.buffer, image.byteOffset, image.byteLength).toString('base64')}` };
+		return { href: dataUrl(inspected.mimeType, image) };
+	}
+
+	/** SVG の画像は、Office の SVG のサニタイザを通したものだけを描く。 */
+	private loadSvg(name: string, bytes: Uint8Array): WorkbookImage {
+		let source: string;
+		try {
+			source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+		} catch {
+			return { reason: 'unverified' };
+		}
+		// サニタイザの ID は英数字と `:_-` だけなので、部品の名前を写して使う。
+		const sanitized = sanitizeOfficeSvg({ nodeId: 'spreadsheet-media', assetId: `media_${name.replace(/[^A-Za-z\d:_-]/g, '_').slice(0, 200)}`, source });
+		if (!Object.prototype.hasOwnProperty.call(sanitized, 'bytes')) {
+			return { reason: 'unverified' };
+		}
+		const svg = (sanitized as ParadisSanitizedSvg).bytes;
+		if (this.svgBytes + svg.byteLength > PARADIS_SPREADSHEET_SVG_IMAGE_BYTES) {
+			return { reason: 'overBudget' };
+		}
+		this.svgBytes += svg.byteLength;
+		return { href: dataUrl('image/svg+xml', svg) };
+	}
+
+	private takePixels(pixels: number): boolean {
+		if (this.pixels + pixels > this.budget) {
+			return false;
+		}
+		this.pixels += pixels;
+		return true;
 	}
 }
 
@@ -1229,6 +1342,12 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 	try {
 		const zip = await JSZipRuntime.loadAsync(buffer as unknown as Parameters<typeof JSZip.loadAsync>[0]);
 		const files = zip.files;
+		// EMF・WMF は図形の画像を読む前にまとめて SVG にする（ブック 1 つ分の上限と締め切りを共有するため）。
+		try {
+			await images.prepareMetafiles(files);
+		} catch {
+			// 変換できなかった EMF・WMF は、これまでどおり代替表示の箱にする。
+		}
 
 		// テーマパレット(セルのテーマ色・図形の schemeClr の解決に使う)。
 		const theme = files['xl/theme/theme1.xml'];
