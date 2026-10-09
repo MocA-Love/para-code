@@ -16,8 +16,33 @@ import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common
 
 type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
 
-/** 1 シートで読むコメントの数と、1 つの本文の長さの上限。 */
-export const PARADIS_SPREADSHEET_COMMENT_LIMITS = Object.freeze({ commentsPerSheet: 10_000, textCharacters: 32_768 });
+/**
+ * コメントの上限。1 シートの数、1 つの本文・作成者の名前・日時の長さ、ブック全体の数と文字数（本文と作成者の
+ * 名前の合計）。名前と日時はコメントの数だけ renderer へ写されるので、短く切る。
+ */
+export const PARADIS_SPREADSHEET_COMMENT_LIMITS = Object.freeze({
+	commentsPerSheet: 10_000,
+	textCharacters: 32_768,
+	authorCharacters: 256,
+	dateCharacters: 64,
+	commentsPerWorkbook: 20_000,
+	workbookCharacters: 4_000_000,
+});
+
+/** ブック全体で、まだ読めるコメントの数と文字数。シートをまたいで同じものを渡す。 */
+export interface IParadisSpreadsheetCommentBudget {
+	comments: number;
+	characters: number;
+}
+
+export function createParadisSpreadsheetCommentBudget(): IParadisSpreadsheetCommentBudget {
+	return { comments: PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerWorkbook, characters: PARADIS_SPREADSHEET_COMMENT_LIMITS.workbookCharacters };
+}
+
+/** 長すぎる文字を切る（最後の 1 文字を `…` にする）。 */
+function clip(value: string, limit: number): string {
+	return value.length > limit ? `${value.slice(0, limit - 1)}…` : value;
+}
 
 const XML_LIMITS: ParadisOfficeXmlLimits = { depth: 64, nodes: 2_000_000, attributeLength: 65_536, characters: 32 * 1024 * 1024 };
 
@@ -65,7 +90,7 @@ function textOf(element: XmlElement | undefined, direct = false): string {
 		}
 	};
 	visit(element);
-	return text.length > PARADIS_SPREADSHEET_COMMENT_LIMITS.textCharacters ? `${text.slice(0, PARADIS_SPREADSHEET_COMMENT_LIMITS.textCharacters - 1)}…` : text;
+	return clip(text, PARADIS_SPREADSHEET_COMMENT_LIMITS.textCharacters);
 }
 
 /** `B12` → 0 始まりの行と列。読めなければ undefined。 */
@@ -99,14 +124,17 @@ function readPersons(xml: string | undefined): Map<string, string> {
 	for (const person of root ? children(root, 'person') : []) {
 		const id = attribute(person, 'id');
 		if (id) {
-			persons.set(id.toUpperCase(), attribute(person, 'displayName') ?? '');
+			persons.set(id.toUpperCase(), clip(attribute(person, 'displayName') ?? '', PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters));
 		}
 	}
 	return persons;
 }
 
-/** 1 シートのメモとスレッドを、セルの順（行、列）に並べて返す。読めない部品は無いものとして扱う。 */
-export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetCommentParts): IParadisCellComment[] {
+/**
+ * 1 シートのメモとスレッドを、セルの順（行、列）に並べて返す。読めない部品は無いものとして扱う。`budget` は
+ * ブック全体の残りで、使った分を減らす。使い切ったら、残りのコメントは返さない。
+ */
+export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetCommentParts, budget: IParadisSpreadsheetCommentBudget = createParadisSpreadsheetCommentBudget()): IParadisCellComment[] {
 	const persons = readPersons(parts.personsXml);
 	const result: IParadisCellComment[] = [];
 	const threadRefs = new Set<string>();
@@ -130,7 +158,8 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 				start: Number(attribute(mention, 'startIndex')),
 				length: Number(attribute(mention, 'length')),
 			})).filter(mention => Number.isSafeInteger(mention.start) && Number.isSafeInteger(mention.length) && mention.start >= 0 && mention.length > 0 && mention.start + mention.length <= text.length);
-			const date = attribute(element, 'dT');
+			const dT = attribute(element, 'dT');
+			const date = dT === undefined ? undefined : clip(dT, PARADIS_SPREADSHEET_COMMENT_LIMITS.dateCharacters);
 			const entry: IParadisCellCommentEntry = {
 				author: persons.get(attribute(element, 'personId')?.toUpperCase() ?? '') ?? '',
 				...(date ? { date } : {}),
@@ -159,7 +188,7 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 
 	const legacy = parse(parts.commentsXml);
 	if (legacy) {
-		const authors = children(children(legacy, 'authors')[0] ?? legacy, 'author').map(author => author.children.map(child => child.kind === 'text' ? child.value : '').join(''));
+		const authors = children(children(legacy, 'authors')[0] ?? legacy, 'author').map(author => clip(author.children.map(child => child.kind === 'text' ? child.value : '').join(''), PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters));
 		for (const element of children(children(legacy, 'commentList')[0] ?? legacy, 'comment')) {
 			if (result.length >= PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerSheet) {
 				break;
@@ -173,5 +202,16 @@ export function readParadisSpreadsheetComments(parts: IParadisSpreadsheetComment
 			result.push({ ref, row: position.row, column: position.column, kind: 'note', entries: [{ author: author.startsWith('tc=') ? '' : author, text: textOf(children(element, 'text')[0]) }] });
 		}
 	}
-	return result.sort((left, right) => left.row - right.row || left.column - right.column);
+	result.sort((left, right) => left.row - right.row || left.column - right.column);
+	const kept: IParadisCellComment[] = [];
+	for (const comment of result) {
+		const characters = comment.entries.reduce((sum, entry) => sum + entry.text.length + entry.author.length, 0);
+		if (budget.comments <= 0 || characters > budget.characters) {
+			break;
+		}
+		budget.comments--;
+		budget.characters -= characters;
+		kept.push(comment);
+	}
+	return kept;
 }

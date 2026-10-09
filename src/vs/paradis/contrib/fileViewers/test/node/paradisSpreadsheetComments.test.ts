@@ -9,7 +9,7 @@ import { deepStrictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
-import { readParadisSpreadsheetComments } from '../../node/spreadsheet/paradisSpreadsheetComments.js';
+import { PARADIS_SPREADSHEET_COMMENT_LIMITS, readParadisSpreadsheetComments } from '../../node/spreadsheet/paradisSpreadsheetComments.js';
 
 // Invented minimal parts. None of them comes from a real file.
 const S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -40,6 +40,34 @@ suite('ParadisSpreadsheetComments', () => {
 			},
 			{ ref: 'B3', row: 2, column: 1, kind: 'thread', resolved: true, entries: [{ author: 'Sample Two', date: '2026-09-28T17:05:00.00', text: 'Fixed' }] },
 		]);
+	});
+
+	test('clips long author names and dates, and stops at the workbook limits when one long name repeats', () => {
+		const longName = 'N'.repeat(60_000);
+		const longDate = `2026-09-30T10:12:00.00${'0'.repeat(1_000)}`;
+		const people = `<personList xmlns="${TC}"><person displayName="${longName}" id="{00000000-0000-0000-0000-000000000009}" userId="nine" providerId="None"/></personList>`;
+		const threads = `<ThreadedComments xmlns="${TC}"><threadedComment ref="A1" dT="${longDate}" personId="{00000000-0000-0000-0000-000000000009}" id="{00000000-0000-0000-0000-0000000000B1}"><text>x</text></threadedComment></ThreadedComments>`;
+		const notes = (count: number) => `<comments xmlns="${S}"><authors><author>${longName}</author></authors><commentList>`
+			+ Array.from({ length: count }, (_, index) => `<comment ref="A${index + 2}" authorId="0"><text><t>x</t></text></comment>`).join('') + '</commentList></comments>';
+		const [thread] = readParadisSpreadsheetComments({ threadedCommentsXml: threads, personsXml: people });
+		const budget = { comments: PARADIS_SPREADSHEET_COMMENT_LIMITS.commentsPerWorkbook, characters: PARADIS_SPREADSHEET_COMMENT_LIMITS.workbookCharacters };
+		const first = readParadisSpreadsheetComments({ commentsXml: notes(10_000) }, budget);
+		const second = readParadisSpreadsheetComments({ commentsXml: notes(10_000) }, budget);
+		const perComment = PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters + 1;
+		const expected = Math.floor(PARADIS_SPREADSHEET_COMMENT_LIMITS.workbookCharacters / perComment);
+		deepStrictEqual({
+			author: thread.entries[0].author.length,
+			date: thread.entries[0].date?.length,
+			noteAuthor: first[0].entries[0].author.length,
+			kept: first.length + second.length,
+			characters: first.concat(second).reduce((sum, comment) => sum + comment.entries[0].author.length + comment.entries[0].text.length, 0) <= PARADIS_SPREADSHEET_COMMENT_LIMITS.workbookCharacters,
+		}, {
+			author: PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters,
+			date: PARADIS_SPREADSHEET_COMMENT_LIMITS.dateCharacters,
+			noteAuthor: PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters,
+			kept: expected,
+			characters: true,
+		});
 	});
 
 	test('ignores parts it cannot read', () => {
