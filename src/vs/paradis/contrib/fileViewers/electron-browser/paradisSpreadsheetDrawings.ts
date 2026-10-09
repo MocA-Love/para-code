@@ -21,7 +21,7 @@ import type {
 	ParadisSpreadsheetDrawingMarker,
 	ParadisSpreadsheetDrawingTransform,
 } from '../common/spreadsheet/paradisSpreadsheetObjects.js';
-import { parseParadisChartDocument } from './paradisSpreadsheetChartParser.js';
+import { paradisChartLabelCount, parseParadisChartDocument, withoutParadisChartLabels } from './paradisSpreadsheetChartParser.js';
 import { intAttr, xmlAttr, xmlChild, xmlChildren, xmlText } from './paradisSpreadsheetXml.js';
 
 const EMU_PER_PIXEL = 9_525;
@@ -559,6 +559,8 @@ export interface ParadisSpreadsheetDrawingLimits {
 	readonly chartPoints: number;
 	/** 1 シートのグラフの点の合計。同じグラフを何度も参照させて描く量を増やすのを止める。 */
 	readonly chartPointsPerSheet?: number;
+	/** 1 シートのグラフのデータラベルの合計。越えたグラフはラベルを省いて描く。 */
+	readonly chartLabelsPerSheet?: number;
 }
 
 export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits = Object.freeze({
@@ -568,6 +570,7 @@ export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits
 	chartSeries: 255,
 	chartPoints: 100_000,
 	chartPointsPerSheet: 200_000,
+	chartLabelsPerSheet: 10_000,
 });
 
 interface ParseContext {
@@ -579,7 +582,7 @@ interface ParseContext {
 	readonly shapes: IParadisRenderShape[];
 	readonly undrawn: IParadisUndrawnObject[];
 	/** シート全体のグラフの点の合計と、読んだグラフ（同じ chartN.xml を何度も読まない）。 */
-	readonly chartBudget: { points: number; readonly parsed: Map<string, IParadisChartData | 'overLimit' | undefined> };
+	readonly chartBudget: { points: number; labels: number; readonly parsed: Map<string, IParadisChartData | 'overLimit' | undefined> };
 }
 
 function relationshipId(el: Element | null, name: string): string {
@@ -797,7 +800,9 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	const graphicData = xmlChild(xmlChild(el, 'graphic'), 'graphicData');
 	const uri = graphicData ? xmlAttr(graphicData, 'uri') : '';
 	const chartRef = uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart' ? xmlChild(graphicData, 'chart') : null;
-	const xml = chartRef ? context.charts[relationshipId(chartRef, 'id')] : undefined;
+	const chartId = chartRef ? relationshipId(chartRef, 'id') : '';
+	// 関係の id は文書が決めるので、`__proto__` などで継承した値を拾わないよう自分の項目だけを引く。
+	const xml = chartRef && Object.hasOwn(context.charts, chartId) ? context.charts[chartId] : undefined;
 	let chart = xml !== undefined ? context.chartBudget.parsed.get(xml) : undefined;
 	if (xml !== undefined && !context.chartBudget.parsed.has(xml)) {
 		chart = parseChartXml(xml, context, context.limits);
@@ -808,6 +813,14 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 		context.chartBudget.points += chartPointCount(chart);
 		if (context.chartBudget.points > (context.limits.chartPointsPerSheet ?? Number.POSITIVE_INFINITY)) {
 			chart = 'overLimit';
+		} else {
+			// データラベルもシート全体で数える。越えたらこのグラフのラベルを省く。
+			const labels = paradisChartLabelCount(chart);
+			if (labels > 0 && context.chartBudget.labels + labels > (context.limits.chartLabelsPerSheet ?? Number.POSITIVE_INFINITY)) {
+				chart = withoutParadisChartLabels(chart);
+			} else {
+				context.chartBudget.labels += labels;
+			}
 		}
 	}
 	if (!chart || chart === 'overLimit') {
@@ -909,7 +922,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		return { shapes, undrawn };
 	}
 	const parser = new DOMParser();
-	const chartBudget = { points: 0, parsed: new Map<string, IParadisChartData | 'overLimit' | undefined>() };
+	const chartBudget = { points: 0, labels: 0, parsed: new Map<string, IParadisChartData | 'overLimit' | undefined>() };
 	for (const { xml, media, charts, omitted } of drawings) {
 		if (omitted) {
 			undrawn.push({ kind: 'overLimit' });

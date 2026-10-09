@@ -546,6 +546,9 @@ function filledLength(group: IParadisChartGroup): number {
 	return length;
 }
 
+/** レーダーの目盛りの輪を多角形で描く頂点の数の上限。越えたら円で描く。 */
+const MAX_RADAR_RING_VERTICES = 360;
+
 /** レーダー: 分類を放射状の軸に、値を中心からの距離にする。 */
 function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisChartGroup, plot: ParadisShapeBox): void {
 	const count = filledLength(group);
@@ -582,7 +585,21 @@ function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisC
 	if (axis?.gridlines ?? true) {
 		for (const tick of scale.ticks) {
 			const unit = scale.unit(tick) ?? 0;
-			if (unit > 0) {
+			if (unit <= 0) {
+				continue;
+			}
+			// 頂点が多いと、輪 1 本ごとに点の数だけ頂点ができる（目盛りの数を掛けると膨らむ）。円と見分けが
+			// つかない数を越えたら、円で描く。
+			if (count > MAX_RADAR_RING_VERTICES) {
+				const ring = parent.ownerDocument.createElementNS(SVG_NS, 'circle');
+				ring.setAttribute('cx', round(cx));
+				ring.setAttribute('cy', round(cy));
+				ring.setAttribute('r', round(radius * unit));
+				ring.setAttribute('fill', 'none');
+				ring.setAttribute('stroke', '#E0E0E0');
+				ring.setAttribute('stroke-width', '1');
+				parent.appendChild(ring);
+			} else {
 				svgPath(parent, polygon(unit), '#E0E0E0', 'none', 1);
 			}
 		}

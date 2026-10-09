@@ -129,6 +129,20 @@ suite('ParadisSpreadsheetDrawings', () => {
 		deepStrictEqual({ drawn: shapes.length, undrawn: undrawn.map(object => object.kind) }, { drawn: 2, undrawn: ['overLimit', 'overLimit', 'overLimit'] });
 	});
 
+	test('counts data labels across the sheet and reads only the charts the drawing names', () => {
+		// 3 点にラベルを出すグラフを 2 回参照する。シートのラベルの上限 4 なら、2 回目はラベルを省く。
+		const labelled = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:lineChart><c:ser><c:idx val="0"/><c:dLbls><c:showVal val="1"/></c:dLbls><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>`;
+		const chartFrame = (id: number, rid: string) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${C}"><c:chart r:id="${rid}"/></a:graphicData></a:graphic></xdr:graphicFrame>`;
+		const labels = parseDrawingObjects([{ xml: drawing(anchor(chartFrame(1, 'rIdA'), [0, 0], [1, 1]) + anchor(chartFrame(2, 'rIdA'), [1, 0], [2, 1])), media: {}, charts: { rIdA: labelled } }], undefined, { ...PARADIS_SPREADSHEET_DRAWING_LIMITS, chartLabelsPerSheet: 4 });
+		// 関係の id が `toString` や `__proto__` でも、継承した値を chartN.xml として読まない。
+		const inherited = parseDrawingObjects([{ xml: drawing(anchor(chartFrame(3, 'toString')) + anchor(chartFrame(4, '__proto__'), [4, 4], [5, 5])), media: {}, charts: {} }]);
+		deepStrictEqual({
+			labels: labels.shapes.map(shape => !!shape.chart?.groups[0].series[0].dataLabels),
+			counted: labels.undrawn.map(object => object.kind),
+			inherited: [inherited.shapes.length, inherited.undrawn.map(object => object.kind)],
+		}, { labels: [true, false], counted: ['chartLabels'], inherited: [0, ['chart', 'chart']] });
+	});
+
 	test('stops at each drawing limit plus one and counts what it did not draw', () => {
 		const rect = (id: number) => anchor(sp(id, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'));
 		const group = (depth: number, inner: string): string => depth === 0 ? inner
@@ -159,7 +173,7 @@ suite('ParadisSpreadsheetDrawings', () => {
 			points: ['object', 'overLimit'],
 			chartFrame: ['overLimit'],
 			omitted: ['overLimit'],
-			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000, chartPointsPerSheet: 200_000 },
+			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000, chartPointsPerSheet: 200_000, chartLabelsPerSheet: 10_000 },
 		});
 	});
 

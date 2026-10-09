@@ -263,19 +263,7 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 		return undefined;
 	}
 	// データラベルは点ごとに文字を 1 つ作る。多すぎるときはラベルだけを省き、省いたことを伝える。
-	let labelCount = 0;
-	for (const group of groups) {
-		for (const series of group.series) {
-			if (series.dataLabels) {
-				for (const value of series.values) {
-					if (value !== null) {
-						labelCount++;
-					}
-				}
-			}
-		}
-	}
-	const labelsOmitted = labelCount > PARADIS_CHART_MAX_DATA_LABELS;
+	const labelsOmitted = countLabels(groups) > PARADIS_CHART_MAX_DATA_LABELS;
 	const drawnGroups = labelsOmitted ? groups.map(withoutDataLabels) : groups;
 	const titleEl = xmlChild(chartEl, 'title');
 	const title = titleEl ? richText(xmlChild(titleEl, 'tx')) : '';
@@ -289,6 +277,32 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 		...(axes.length ? { axes } : {}),
 		...(labelsOmitted ? { labelsOmitted } : {}),
 	};
+}
+
+function countLabels(groups: readonly IParadisChartGroup[]): number {
+	let count = 0;
+	for (const group of groups) {
+		for (const series of group.series) {
+			if (series.dataLabels) {
+				for (const value of series.values) {
+					if (value !== null) {
+						count++;
+					}
+				}
+			}
+		}
+	}
+	return count;
+}
+
+/** グラフが描くデータラベルの数（値のある点のうち、ラベルを出す系列のもの）。 */
+export function paradisChartLabelCount(chart: IParadisChartData): number {
+	return countLabels(chart.groups);
+}
+
+/** データラベルを省いたグラフ（`labelsOmitted` を立てる）。 */
+export function withoutParadisChartLabels(chart: IParadisChartData): IParadisChartData {
+	return { ...chart, groups: chart.groups.map(withoutDataLabels), labelsOmitted: true };
 }
 
 function withoutDataLabels(group: IParadisChartGroup): IParadisChartGroup {
