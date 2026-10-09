@@ -478,12 +478,16 @@ suite('ParadisOfficeCorpus', () => {
 		// The inspector reads only the header, so the claimed sizes need no pixel data.
 		const images = [minimalPng(7_000, 7_000), minimalPng(7_000, 7_000), minimalPng(7_000, 1_000)];
 		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
-		const result = await sanitize(await wordPackage({
+		const bytes = await wordPackage({
 			body,
-			extraParts: images.map((bytes, index) => [`/word/media/image${index + 1}.png`, bytes, 'image/png'] as const),
+			extraParts: images.map((image, index) => [`/word/media/image${index + 1}.png`, image, 'image/png'] as const),
 			extraRelationships: images.map((_, index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/image${index + 1}.png` })),
-		}));
-		deepStrictEqual([result.assets.filter(asset => asset.kind === 'rasterImage').length, result.placeholders.length], [2, 1]);
+		});
+		const counts = (result: Awaited<ReturnType<typeof sanitize>>) => [result.assets.filter(asset => asset.kind === 'rasterImage').length, result.placeholders.length];
+		const whole = await sanitize(bytes);
+		// A view that shows two documents passes half of the budget for each.
+		const half = await sanitizeOfficeDocxPackageForRenderer({ nodeId: 'corpus', source: bytes, archive: await createParadisOfficeWebArchive(bytes.slice()), imagePixelBudget: 50_000_000 });
+		deepStrictEqual([counts(whole), counts(half)], [[2, 1], [1, 2]]);
 	});
 
 	test('parses a workbook that carries binary parts and Default-typed media (Part 2 §7.2.3.4)', async () => {
