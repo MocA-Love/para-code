@@ -309,6 +309,45 @@ suite('ParadisHtmlPreviewServer', () => {
 			]);
 		});
 
+		test('lets video and audio seek, and serves page assets the same way as before', async () => {
+			// HTML のプレビューの `<video>`・`<audio>` は、再生もシークも Range で読む（Chromium は最初に
+			// `bytes=0-` を送り、シークのたびに途中からの区間を送る）。Range の無い普通の取得（画像・CSS・
+			// JS・フォント）は、今までどおり 200 で全体を返す。
+			const disposables = store.add(new DisposableStore());
+			const { base, root } = await mount(disposables);
+			const media = new Uint8Array(4096).map((_, index) => index % 251);
+			await fs.writeFile(join(root, 'clip.mp4'), media);
+			await fs.writeFile(join(root, 'clip.webm'), media);
+			await fs.writeFile(join(root, 'sound.mp3'), media);
+			await fs.writeFile(join(root, 'style.css'), 'body { color: red; }', 'utf8');
+			await fs.writeFile(join(root, 'font.woff2'), media.subarray(0, 100));
+
+			const summary = async (path: string, range?: string) => {
+				const response = await fetch(`${base}${path}`, range ? { headers: { Range: range } } : undefined);
+				const body = new Uint8Array(await response.arrayBuffer());
+				return [response.status, response.headers.get('content-type'), response.headers.get('content-range'), response.headers.get('accept-ranges'), body.length, body[0]];
+			};
+			deepStrictEqual({
+				videoStart: await summary('clip.mp4', 'bytes=0-'),
+				videoSeek: await summary('clip.mp4', 'bytes=3000-'),
+				videoChunk: await summary('clip.webm', 'bytes=1000-1999'),
+				audioSeek: await summary('sound.mp3', 'bytes=2048-'),
+				videoWhole: await summary('clip.mp4'),
+				css: await summary('style.css'),
+				font: await summary('font.woff2'),
+				page: await summary('index.html'),
+			}, {
+				videoStart: [206, 'video/mp4', 'bytes 0-4095/4096', 'bytes', 4096, 0],
+				videoSeek: [206, 'video/mp4', 'bytes 3000-4095/4096', 'bytes', 1096, 3000 % 251],
+				videoChunk: [206, 'video/webm', 'bytes 1000-1999/4096', 'bytes', 1000, 1000 % 251],
+				audioSeek: [206, 'audio/mpeg', 'bytes 2048-4095/4096', 'bytes', 2048, 2048 % 251],
+				videoWhole: [200, 'video/mp4', null, 'bytes', 4096, 0],
+				css: [200, 'text/css; charset=utf-8', null, 'bytes', 20, 98],
+				font: [200, 'font/woff2', null, 'bytes', 100, 0],
+				page: [200, 'text/html; charset=utf-8', null, 'bytes', 14, 60],
+			});
+		});
+
 		test('lets a webview read the range headers', async () => {
 			// pdf.js は `Accept-Ranges` を読んで区間読みに切り替える。別オリジンの応答は、名指しで
 			// 公開しないとスクリプトから読めず、黙って全体読みに戻ってしまう。
