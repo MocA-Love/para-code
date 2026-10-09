@@ -90,6 +90,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - renderer は表示（exceljs の投影）を出した後に、表示のために読んだバイト列をそのまま（base64 にせず）渡して解析を頼む。エディタを閉じる・読み直すと取り消しが届き、待ち行列からも worker からも外れる。チャネルは `parseWorkbook` の診断の指定を通さないので、本体のスレッドでは解析しない
 - 正規化の属性の並べ替えはコード単位の比較（`Intl.Collator` をやめた）。正規形の版（`PARADIS_OFFICE_CANONICAL_XML_VERSION`）を 2 にして、正規化した文字列の先頭に書いている。指紋は保存していないので、版が変わっても古い値と突き合わせる場所は無い
 - Word の worker（`node/word/paradisWordSemanticWorkerBackend.ts`）はまだ自前の待ち行列を持つ。同じ待ち行列へ寄せられる
+- 残課題（Excel の比較、2026-10-09）: 図形の比較（`electron-browser/paradisSpreadsheetDiff.ts` の `shapeStyleDetails`）は、文字・文字の書式・塗り・形・回転・線の矢印までを比べる。グラフの中身（系列・値・軸）、文字の余白（`insets`）、折り返し（`wrap`）、グラデーション（今は最初の色で近似して塗りとして比べている）は比べていない
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
