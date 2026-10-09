@@ -18,7 +18,7 @@
 // 答えたターミナルでだけ状態を受ける。速すぎる変化は間引く（paradisProgramStatus.ts の ParadisProgramStatusGate）。
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -26,7 +26,7 @@ import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/con
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisParseProgramStatus, paradisProgramStatusForeground } from '../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusGate, paradisParseProgramStatus, paradisProgramStatusForeground, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
 
 class ParadisProgramStatusContribution extends Disposable implements ITerminalContribution {
 
@@ -37,6 +37,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	private replaying: boolean;
 	private readonly gate = new ParadisProgramStatusGate();
 	private readonly commandFinished = this._register(new MutableDisposable());
+	private readonly pendingTimer = this._register(new MutableDisposable());
 
 	constructor(
 		context: ITerminalContributionContext,
@@ -61,6 +62,15 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		};
 		watch(this.instance.capabilities.get(TerminalCapability.CommandDetection));
 		this._register(this.instance.capabilities.onDidAddCommandDetectionCapability(capability => watch(capability)));
+		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（プロセス名が Claude Code でも ssh などでも
+		// なくなったら）閉じる
+		this._register(this.instance.onTitleChanged(() => {
+			if (this.instance.capabilities.get(TerminalCapability.CommandDetection) === undefined
+				&& paradisProgramStatusForeground(undefined, this.instance.processName) === undefined
+				&& this.gate.close()) {
+				this.send({ state: 'clear' });
+			}
+		}));
 	}
 
 	xtermReady(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
@@ -70,16 +80,37 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 			}
 			const parsed = paradisParseProgramStatus(data);
 			if (parsed === 'query') {
-				const commandLine = this.instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-				if (this.gate.query(paradisProgramStatusForeground(commandLine, this.instance.processName))) {
+				// コマンド行は、シェル統合の nonce が合ったときだけ使う（出力の OSC 633 ; E では偽れる）
+				const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
+				if (this.gate.query(paradisProgramStatusForeground(trustedCommandLine, this.instance.processName))) {
 					// 端末の返事として pty へ書く（利用者の入力にはしない。DA1 の自動の返事と同じ経路）
 					xterm.raw.input(PARADIS_PROGRAM_STATUS_REPLY, false);
 				}
-			} else if (parsed !== undefined && this.gate.accept(parsed)) {
-				this.send(parsed);
+			} else if (parsed !== undefined) {
+				if (this.gate.accept(parsed)) {
+					this.send(parsed);
+				} else {
+					this.schedulePending();
+				}
 			}
 			return true;
 		}));
+	}
+
+	/** 間引きで捨てた最後の状態を、無視が明けたら 1 回だけ渡す。 */
+	private schedulePending(): void {
+		const dueAt = this.gate.pendingDueAt;
+		if (dueAt === undefined || this.pendingTimer.value !== undefined) {
+			return;
+		}
+		const handle = setTimeout(() => {
+			this.pendingTimer.clear();
+			const pending = this.gate.releasePending();
+			if (pending !== undefined) {
+				this.send(pending);
+			}
+		}, Math.max(0, dueAt - Date.now()));
+		this.pendingTimer.value = toDisposable(() => clearTimeout(handle));
 	}
 
 	private send(status: IParadisProgramStatus): void {
