@@ -28,6 +28,8 @@ export interface IParadisOfficeFixtureOptions {
 	 * have the same UTF-8 length and the `from` name must appear exactly in the local and central headers.
 	 */
 	readonly renameEntries?: readonly (readonly [from: string, to: string])[];
+	/** Compresses the entries (the default stores them), for packages whose expanded size exceeds the input cap. */
+	readonly compression?: 'DEFLATE';
 }
 
 const FIXED_TIMESTAMP = new Date(1980, 0, 1, 0, 0, 0);
@@ -73,7 +75,7 @@ export async function buildOpcFixture(options: IParadisOfficeFixtureOptions): Pr
 		zip.file(name.slice(1), part.content, { createFolders: false, date: FIXED_TIMESTAMP });
 	}
 
-	const bytes = await zip.generateAsync({ comment: '', compression: 'STORE', platform: 'DOS', type: 'uint8array' });
+	const bytes = await zip.generateAsync({ comment: '', compression: options.compression ?? 'STORE', platform: 'DOS', type: 'uint8array' });
 	for (const [from, to] of options.renameEntries ?? []) {
 		renameZipEntry(bytes, from, to);
 	}
