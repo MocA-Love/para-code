@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -222,5 +222,43 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			again: undefined,
 			pendingAfter: undefined,
 		});
+	});
+
+	test('reads the raw foreground process title the pty reports, and closes a terminal without shell integration once it is back at the shell', () => {
+		assert.deepStrictEqual({
+			claudePathWithArgs: paradisProgramStatusForeground(undefined, '/Users/example/.local/bin/claude --resume'),
+			nativeVersion: paradisProgramStatusForeground(undefined, '2.1.295'),
+			sshWithHost: paradisProgramStatusForeground(undefined, 'ssh dev-box'),
+			// A named terminal keeps showing the old name; the pty title is what counts.
+			backAtShell: paradisProgramStatusForeground(undefined, 'zsh'),
+			closeAtShellWithoutIntegration: paradisProgramStatusClosesOnForeground(false, 'zsh'),
+			closeWhenTitleUnknown: paradisProgramStatusClosesOnForeground(false, undefined),
+			keepWhileClaude: paradisProgramStatusClosesOnForeground(false, '2.1.295'),
+			keepWithIntegration: paradisProgramStatusClosesOnForeground(true, 'zsh'),
+		}, {
+			claudePathWithArgs: 'claude',
+			nativeVersion: 'claude',
+			sshWithHost: 'passthrough',
+			backAtShell: undefined,
+			closeAtShellWithoutIntegration: true,
+			closeWhenTitleUnknown: true,
+			keepWhileClaude: false,
+			keepWithIntegration: false,
+		});
+	});
+
+	test('a pending state stays pending when it is asked for before the mute ends', () => {
+		let now = 0;
+		const gate = new ParadisProgramStatusGate(() => now);
+		gate.query('claude');
+		for (const state of ['idle', 'working', 'done', 'working', 'done'] as const) {
+			gate.accept({ state });
+		}
+		const dueAt = gate.pendingDueAt!;
+		now = dueAt - 1;
+		const tooEarly = gate.releasePending();
+		const stillDue = gate.pendingDueAt;
+		now = dueAt;
+		assert.deepStrictEqual({ tooEarly, stillDue, released: gate.releasePending() }, { tooEarly: undefined, stillDue: dueAt, released: { state: 'done' } });
 	});
 });
