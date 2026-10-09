@@ -8,11 +8,14 @@ import type { CancellationToken } from '../../../../base/common/cancellation.js'
 import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRasterMime, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
 import { localize } from '../../../../nls.js';
 import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
+import { convertParadisOfficeMetafileParts } from './office/paradisOfficeMetafileParts.js';
 import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
 import { PARADIS_OFFICE_BROKEN_IMAGE_SVG } from './paradisOfficeBrokenImage.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+/** The SVG bytes converted from EMF and WMF images in one Word document. */
+const PARADIS_WORD_METAFILE_DOCUMENT_BYTES = 16 * 1024 * 1024;
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
 const MAX_SVG_BYTES = 1024 * 1024;
 const MAX_SVG_DEPTH = 64;
@@ -376,6 +379,13 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 		for (const name of policy.imageParts) {
 			if (policy.svgParts.has(name)) { continue; }
 			const raw = values.get(name); if (!raw) { continue; }
+			const metafile = policy.metafileParts.get(name);
+			if (metafile) {
+				values.set(name, metafile);
+				const svgHash = fingerprint(metafile, input.token, input.checkpoint);
+				pushPackageAsset(assets, placeholders, { id: `asset_${svgHash.value.slice(0, 32)}`, kind: 'sanitizedSvg', mime: 'image/svg+xml', byteLength: metafile.byteLength, fingerprint: svgHash });
+				continue;
+			}
 			const raster = policy.rasterParts.get(name);
 			if (raster) {
 				// Data after the image's end marker (IEND, EOI, trailer) is cut, not passed to the decoder.
@@ -419,6 +429,8 @@ interface OpcPolicy {
 	readonly rasterParts: ReadonlyMap<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>;
 	/** Raster images left out for their size: one image over the per-image limits, or past the document's pixel budget. */
 	readonly oversizedImageParts: ReadonlyMap<string, 'tooLarge' | 'overBudget'>;
+	/** EMF and WMF images converted to SVG (Q321 f): the SVG bytes that replace the part. */
+	readonly metafileParts: ReadonlyMap<string, Uint8Array>;
 	readonly rewrittenXml: Map<string, Uint8Array>;
 	readonly placeholders: ParadisOfficePlaceholder[];
 	readonly ignoredParts: readonly ParadisOfficeIgnoredPart[];
@@ -702,7 +714,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		if (uses.length > 0 && uses.every(use => replacedAnchors.has(use.anchor))) { hiddenImageParts.add(target); }
 	}
 	// Q312 A: a PNG, JPEG, or GIF whose bytes pass the structural check and match its declared content
-	// type is drawn as it is. Anything else (EMF, WMF, TIFF, APNG, a mismatch) stays a substitute box, as
+	// type is drawn as it is. Anything else (TIFF, APNG, a mismatch) stays a substitute box, as
 	// do images only used inside replaced elements and images past the document's pixel budget.
 	const rasterParts = new Map<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>();
 	const oversizedImageParts = new Map<string, 'tooLarge' | 'overBudget'>();
@@ -722,6 +734,18 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		rasterPixels += inspected.pixels;
 		rasterParts.set(name, { mime: inspected.mimeType, end: inspected.end });
 	}
+	// Q321 f: an EMF or WMF image is drawn as the SVG the metafile converter writes. It does not go through
+	// the document SVG check; the renderer only shows it as an image (img or SVG image), and the converter
+	// bounds its output (4 MiB per image; 16 MiB per document here, so the rewritten package stays under its
+	// 32 MiB cap). Images it cannot draw stay boxes.
+	const metafileParts = await convertParadisOfficeMetafileParts([...imageParts]
+		.filter(name => !svgParts.has(name) && !hiddenImageParts.has(name) && !rasterParts.has(name) && !oversizedImageParts.has(name) && values.has(name))
+		.map(name => ({ name, bytes: values.get(name)!, contentType: contentType(name) })), {
+		checkpoint: () => advanceOpcAnalysis(input, state, true),
+		documentBytes: PARADIS_WORD_METAFILE_DOCUMENT_BYTES,
+		// Converting stops halfway to the document's deadline, so slow images stay boxes instead of failing it.
+		...(input.deadline !== undefined ? { deadline: Date.now() + Math.max(0, input.deadline - Date.now()) / 2 } : {}),
+	});
 	rewriteContentTypes(contentDocument.root, retainedParts, new Set([...imageParts].filter(name => !svgParts.has(name) && !rasterParts.has(name))));
 	rewrittenXml.set('[Content_Types].xml', new TextEncoder().encode(serializeOfficeXml(contentDocument.root)));
 	const listedIgnored = [...ignoredParts.values()]
@@ -732,7 +756,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		...[...blockedExternal.values()].map((entry): ParadisOfficeBlockedPart => ({ feature: entry.feature, kind: entry.kind, scheme: entry.scheme, count: entry.count })),
 	].sort((left, right) => compareText(left.feature, right.feature) || compareText(left.kind, right.kind) || compareText(left.partName ?? left.scheme ?? '', right.partName ?? right.scheme ?? ''));
 	return {
-		removedParts, svgParts, imageParts, hiddenImageParts, rasterParts, oversizedImageParts, rewrittenXml, placeholders,
+		removedParts, svgParts, imageParts, hiddenImageParts, rasterParts, oversizedImageParts, metafileParts, rewrittenXml, placeholders,
 		ignoredParts: Object.freeze(listedIgnored.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze({ ...part, partName: displaySafePartName(part.partName) }))),
 		ignoredPartsOmitted: Math.max(0, listedIgnored.length - PARADIS_OFFICE_LISTED_PARTS_LIMIT),
 		blockedParts: Object.freeze(listedBlocked.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze(part.partName === undefined ? part : { ...part, partName: displaySafePartName(part.partName) }))),
