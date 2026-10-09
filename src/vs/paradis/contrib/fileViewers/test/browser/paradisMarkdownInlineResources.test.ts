@@ -5,17 +5,17 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ok, strictEqual } from 'assert';
+import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { encodeBase64, VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { inlineParadisMarkdownMedia, resolveParadisMediaUri } from '../../browser/paradisMarkdownInlineResources.js';
+import { encodeParadisBase64, inlineParadisMarkdownMedia, ParadisInlineMediaCache, resolveParadisMediaUri } from '../../browser/paradisMarkdownInlineResources.js';
 
 suite('paradisMarkdownInlineResources', () => {
 
@@ -213,6 +213,88 @@ suite('paradisMarkdownInlineResources', () => {
 
 			strictEqual(result.inlined, 2);
 			strictEqual(provider.reads, 1);
+		});
+
+		test('inlines video and audio the same way as before, and leaves links alone', async () => {
+			// 埋め込みの対象（img・video・audio・source）と mime は変えていない。リンクは別の処理が書き換える。
+			const disposables = store.add(new DisposableStore());
+			const clip = VSBuffer.fromString('fake-mp4');
+			const sound = VSBuffer.fromString('fake-mp3');
+			const { fileService } = await createFileService(disposables, [['/repo/docs/clip.mp4', clip], ['/repo/docs/sound.mp3', sound], ['/repo/docs/a.png', GIF]]);
+			const result = await inlineParadisMarkdownMedia(
+				'<video src="clip.mp4"></video><audio controls><source src="sound.mp3"></audio><a href="a.png">a</a>',
+				DOC, FOLDER, fileService, CancellationToken.None);
+			deepStrictEqual({ html: result.html, inlined: result.inlined }, {
+				html: `<video src="data:video/mp4;base64,${encodeBase64(clip)}"></video><audio controls=""><source src="data:audio/mpeg;base64,${encodeBase64(sound)}"></audio><a href="a.png">a</a>`,
+				inlined: 2,
+			});
+		});
+
+		test('reuses the data uri of an unchanged image when the document is drawn again', async () => {
+			// 保存のたびに描き直すので、覚えておかないと毎回全部の画像を読み直して base64 にし直す。
+			const disposables = store.add(new DisposableStore());
+			const { fileService, provider } = await createFileService(disposables, [['/repo/docs/a.png', GIF]]);
+			const cache = new ParadisInlineMediaCache();
+			const html = '<img src="a.png">';
+
+			const first = await inlineParadisMarkdownMedia(html, DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			const second = await inlineParadisMarkdownMedia(html, DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			const readsBeforeChange = provider.reads;
+			// 大きさも変えて書き換える（同じミリ秒の中では更新時刻だけでは見分けられない）。
+			await fileService.writeFile(URI.from({ scheme: Schemas.file, path: '/repo/docs/a.png' }), VSBuffer.fromString('GIF89a-changed'));
+			const third = await inlineParadisMarkdownMedia(html, DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+
+			deepStrictEqual({
+				same: first.html === second.html,
+				readsBeforeChange,
+				readsAfterChange: provider.reads,
+				changed: third.html.includes(encodeBase64(VSBuffer.fromString('GIF89a-changed'))),
+			}, { same: true, readsBeforeChange: 1, readsAfterChange: 2, changed: true });
+		});
+	});
+
+	suite('ParadisInlineMediaCache', () => {
+
+		test('drops the images that the latest drawing did not use', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { fileService } = await createFileService(disposables, [['/repo/docs/a.png', GIF], ['/repo/docs/b.png', VSBuffer.fromString('GIF89a-b')]]);
+			const cache = new ParadisInlineMediaCache();
+			await inlineParadisMarkdownMedia('<img src="a.png"><img src="b.png">', DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			const both = cache.size;
+			await inlineParadisMarkdownMedia('<img src="a.png">', DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			deepStrictEqual([both, cache.size], [
+				`data:image/png;base64,${encodeBase64(GIF)}`.length + `data:image/png;base64,${encodeBase64(VSBuffer.fromString('GIF89a-b'))}`.length,
+				`data:image/png;base64,${encodeBase64(GIF)}`.length,
+			]);
+		});
+
+		test('keeps one version per file and drops the oldest when it is full', () => {
+			const a = URI.file('/a.png');
+			const b = URI.file('/b.png');
+			const c = URI.file('/c.png');
+			const cache = new ParadisInlineMediaCache(10);
+			cache.set(a, 1, 1, 'aaaa');
+			cache.set(a, 2, 1, 'AAAA');
+			cache.set(b, 1, 1, 'bbbb');
+			cache.set(c, 1, 1, 'cccc');
+			cache.set(c, 1, 1, 'x'.repeat(11));
+			deepStrictEqual([cache.get(a, 1, 1), cache.get(a, 2, 1), cache.get(b, 1, 1), cache.get(c, 1, 1), cache.size], [undefined, undefined, 'bbbb', undefined, 4]);
+		});
+	});
+
+	suite('encodeParadisBase64', () => {
+
+		test('matches the JS encoder with both the native and the FileReader path', async () => {
+			const samples = [0, 1, 2, 3, 4, 1000].map(length => {
+				const bytes = new Uint8Array(length);
+				for (let index = 0; index < length; index++) {
+					bytes[index] = (index * 37 + 11) & 0xff;
+				}
+				return bytes;
+			});
+			const expected = samples.map(bytes => encodeBase64(VSBuffer.wrap(bytes)));
+			deepStrictEqual(await Promise.all(samples.map(bytes => encodeParadisBase64(bytes))), expected);
+			deepStrictEqual(await Promise.all(samples.map(bytes => encodeParadisBase64(bytes, false))), expected);
 		});
 	});
 });
