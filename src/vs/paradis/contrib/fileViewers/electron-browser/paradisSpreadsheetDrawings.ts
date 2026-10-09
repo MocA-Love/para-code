@@ -21,7 +21,7 @@ import type {
 	ParadisSpreadsheetDrawingMarker,
 	ParadisSpreadsheetDrawingTransform,
 } from '../common/spreadsheet/paradisSpreadsheetObjects.js';
-import { paradisChartLabelCount, parseParadisChartDocument, withoutParadisChartLabels } from './paradisSpreadsheetChartParser.js';
+import { paradisChartDrawCost, paradisChartLabelCount, parseParadisChartDocument, withoutParadisChartLabels } from './paradisSpreadsheetChartParser.js';
 import { intAttr, xmlAttr, xmlChild, xmlChildren, xmlText } from './paradisSpreadsheetXml.js';
 
 const EMU_PER_PIXEL = 9_525;
@@ -839,15 +839,9 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	});
 }
 
-/** グラフが描く点の数（値とバブルの大きさ）。 */
+/** グラフを描くときに作る点の数の見込み（系列の数 × いちばん長い系列。パーサの予算と同じ数え方）。 */
 function chartPointCount(chart: IParadisChartData): number {
-	let count = 0;
-	for (const group of chart.groups) {
-		for (const series of group.series) {
-			count += Math.max(series.values.length, series.categories.length) + (series.bubbleSizes?.length ?? 0);
-		}
-	}
-	return count;
+	return paradisChartDrawCost(chart.groups);
 }
 
 /** 既定の系列の色。テーマの accent1〜6 を順に使い、7 番目からは暗くして回す（Excel の既定の並び）。 */
