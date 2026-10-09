@@ -9,6 +9,7 @@ import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
 async function encodeWorkbook(configure: (workbook: ExcelJS.Workbook) => void): Promise<string> {
@@ -61,9 +62,9 @@ suite('ParadisSpreadsheetService', () => {
 		const zip = new JSZip();
 		zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
 		zip.file('_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>');
-		const bytes = Buffer.from(await zip.generateAsync({ type: 'uint8array' })).toString('base64');
+		const bytes = await zip.generateAsync({ type: 'uint8array' });
 
-		const summary = await new ParadisSpreadsheetService().collectSemanticDiagnostics(bytes);
+		const summary = await collectParadisSpreadsheetSemanticDiagnostics(bytes);
 
 		deepStrictEqual([summary.available, summary.unavailableReason], [false, 'malformed']);
 	});
@@ -73,7 +74,7 @@ suite('ParadisSpreadsheetService', () => {
 		const service = new ParadisSpreadsheetService();
 
 		const display = await service.parseWorkbook(workbook);
-		const summary = await service.collectSemanticDiagnostics(workbook);
+		const summary = await collectParadisSpreadsheetSemanticDiagnostics(new Uint8Array(Buffer.from(workbook, 'base64')));
 
 		strictEqual(display.semanticDiagnostics, undefined);
 		deepStrictEqual([summary.available, summary.terminal, summary.parsedSheets, summary.parsedCells], [true, true, 1, 1]);
