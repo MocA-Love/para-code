@@ -9,7 +9,8 @@
 // Excel のグラフを SVG に描く（図形の描画 paradisSpreadsheetShapeSvg.ts から分けた）。値は chartN.xml に
 // 保存された値（numCache・strCache）を使い、文書の文字は textContent、数値は属性にだけ入れる。
 
-import type { IParadisChartData, IParadisChartGroup } from '../common/paradisSpreadsheet.js';
+import type { IParadisChartAxis, IParadisChartData, IParadisChartDataLabels, IParadisChartGroup, IParadisChartSeries } from '../common/paradisSpreadsheet.js';
+import { formatSpreadsheetValue } from '../common/spreadsheet/paradisSpreadsheetNumberFormat.js';
 import type { ParadisShapeBox } from './paradisSpreadsheetShapeSvg.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -18,12 +19,15 @@ function round(value: number): string {
 	return String(Math.round(value * 100) / 100);
 }
 
-function svgText(parent: Element, x: number, y: number, value: string, options: { readonly size?: number; readonly anchor?: 'start' | 'middle' | 'end'; readonly bold?: boolean; readonly baseline?: string } = {}): void {
+function svgText(parent: Element, x: number, y: number, value: string, options: { readonly size?: number; readonly anchor?: 'start' | 'middle' | 'end'; readonly bold?: boolean; readonly baseline?: string; readonly rotate?: number } = {}): void {
 	const text = parent.ownerDocument.createElementNS(SVG_NS, 'text');
 	text.setAttribute('x', round(x));
 	text.setAttribute('y', round(y));
 	text.setAttribute('font-size', String(options.size ?? 10));
 	text.setAttribute('fill', '#404040');
+	if (options.rotate) {
+		text.setAttribute('transform', `rotate(${round(options.rotate)} ${round(x)} ${round(y)})`);
+	}
 	text.setAttribute('text-anchor', options.anchor ?? 'start');
 	if (options.baseline) {
 		text.setAttribute('dominant-baseline', options.baseline);
@@ -35,7 +39,7 @@ function svgText(parent: Element, x: number, y: number, value: string, options: 
 	parent.appendChild(text);
 }
 
-function svgRect(parent: Element, x: number, y: number, width: number, height: number, fill: string, stroke?: string): void {
+function svgRect(parent: Element, x: number, y: number, width: number, height: number, fill: string, stroke?: string): Element {
 	const rect = parent.ownerDocument.createElementNS(SVG_NS, 'rect');
 	rect.setAttribute('x', round(Math.min(x, x + width)));
 	rect.setAttribute('y', round(Math.min(y, y + height)));
@@ -47,15 +51,44 @@ function svgRect(parent: Element, x: number, y: number, width: number, height: n
 		rect.setAttribute('stroke-width', '1');
 	}
 	parent.appendChild(rect);
+	return rect;
 }
 
-function svgPath(parent: Element, d: string, stroke: string, fill: string, width = 1.5): void {
+function svgPath(parent: Element, d: string, stroke: string, fill: string, width = 1.5): Element {
 	const path = parent.ownerDocument.createElementNS(SVG_NS, 'path');
 	path.setAttribute('d', d);
 	path.setAttribute('stroke', stroke);
 	path.setAttribute('stroke-width', String(width));
 	path.setAttribute('fill', fill);
 	parent.appendChild(path);
+	return path;
+}
+
+function svgCircle(parent: Element, cx: number, cy: number, r: number, fill: string, opacity?: number): void {
+	const circle = parent.ownerDocument.createElementNS(SVG_NS, 'circle');
+	circle.setAttribute('cx', round(cx));
+	circle.setAttribute('cy', round(cy));
+	circle.setAttribute('r', round(Math.max(0, r)));
+	circle.setAttribute('fill', fill);
+	if (opacity !== undefined) {
+		circle.setAttribute('fill-opacity', String(opacity));
+		circle.setAttribute('stroke', fill);
+	}
+	parent.appendChild(circle);
+}
+
+/** 文書から読んだ色は `#RRGGBB` だけを属性に入れる。それ以外は灰色にする。 */
+function safeColor(color: string | undefined, fallback = '#888888'): string {
+	return color && /^#[0-9A-Fa-f]{6}$/.test(color) ? color : fallback;
+}
+
+/** 文字の幅の見込み（px）。全角は 1 文字、半角は 0.6 文字で数える。 */
+function textWidth(value: string, size: number): number {
+	let width = 0;
+	for (const char of value) {
+		width += (char.codePointAt(0) ?? 0) >= 0x2E80 ? size : size * 0.6;
+	}
+	return width;
 }
 
 /** 目盛りの間隔を 1・2・5×10^n から選ぶ。 */
@@ -75,11 +108,6 @@ function formatTick(value: number, percent: boolean): string {
 	}
 	const abs = Math.abs(value);
 	return abs >= 1000 || abs === 0 || Number.isInteger(value) ? value.toLocaleString('en-US', { maximumFractionDigits: 0 }) : String(Math.round(value * 100) / 100);
-}
-
-interface ValueRange {
-	readonly min: number;
-	readonly max: number;
 }
 
 /** 積み上げ・100% 積み上げを考えて、群ごとの各要素の値の区間を求める。 */
@@ -105,7 +133,196 @@ function stackedSegments(group: IParadisChartGroup, categoryCount: number): { re
 	return result;
 }
 
-/** 保存済みの値でグラフを描く（軸・目盛り・凡例は簡略）。 */
+/** 数値を書式に沿って文字にする。書式が無い・読めないときは簡単な書き方にする。 */
+function formatNumber(value: number, formatCode: string | undefined, percent = false): string {
+	if (formatCode) {
+		try {
+			const formatted = formatSpreadsheetValue(value, formatCode);
+			if (formatted.text) {
+				return formatted.text;
+			}
+		} catch {
+			// 読めない書式は簡単な書き方へ。
+		}
+	}
+	return formatTick(value, percent);
+}
+
+const MAX_TICKS = 50;
+
+/** 値の軸の目盛り（範囲・間隔・反転・対数）。 */
+interface ValueScale {
+	readonly min: number;
+	readonly max: number;
+	readonly ticks: readonly number[];
+	/** 値を軸の上の位置（最小の側を 0、最大の側を 1）にする。対数で 0 以下なら undefined。 */
+	unit(value: number): number | undefined;
+}
+
+/** データの範囲と軸の指定から目盛りを決める。棒の付け根が見えるよう、線形では 0 を含める。 */
+function buildValueScale(dataMin: number, dataMax: number, axis: IParadisChartAxis | undefined, includeZero = true): ValueScale {
+	const reversed = axis?.reversed ?? false;
+	const flip = (unit: number) => reversed ? 1 - unit : unit;
+	if (axis?.logBase) {
+		const base = axis.logBase;
+		const log = (value: number) => Math.log(value) / Math.log(base);
+		const positiveMin = dataMin > 0 ? dataMin : Math.min(1, dataMax > 0 ? dataMax : 1);
+		let low = axis.min !== undefined && axis.min > 0 ? log(axis.min) : Math.floor(log(positiveMin));
+		let high = axis.max !== undefined && axis.max > 0 ? log(axis.max) : Math.ceil(log(Math.max(dataMax, positiveMin)));
+		if (!(high > low)) {
+			high = low + 1;
+		}
+		if (high - low > MAX_TICKS) {
+			low = high - MAX_TICKS;
+		}
+		const ticks: number[] = [];
+		for (let exponent = Math.ceil(low - 1e-9); exponent <= high + 1e-9 && ticks.length <= MAX_TICKS; exponent++) {
+			ticks.push(Math.pow(base, exponent));
+		}
+		return {
+			min: Math.pow(base, low), max: Math.pow(base, high), ticks,
+			unit: value => value > 0 ? flip((log(value) - low) / (high - low)) : undefined,
+		};
+	}
+	let low = includeZero ? Math.min(0, dataMin) : dataMin;
+	let high = includeZero ? Math.max(0, dataMax) : dataMax;
+	if (axis?.min !== undefined) {
+		low = axis.min;
+	}
+	if (axis?.max !== undefined) {
+		high = axis.max;
+	}
+	if (!(high > low)) {
+		high = low + 1;
+	}
+	let step = axis?.majorUnit ?? niceStep(high - low, 5);
+	if ((high - low) / step > MAX_TICKS) {
+		step = niceStep(high - low, 5);
+	}
+	const min = axis?.min !== undefined ? axis.min : Math.floor(low / step + 1e-9) * step;
+	const max = axis?.max !== undefined ? axis.max : Math.ceil(high / step - 1e-9) * step;
+	const ticks: number[] = [];
+	for (let index = 0; ticks.length <= MAX_TICKS; index++) {
+		const value = min + index * step;
+		if (value > max + step * 1e-6) {
+			break;
+		}
+		ticks.push(Math.abs(value) < step * 1e-9 ? 0 : value);
+	}
+	const span = (max - min) || 1;
+	return { min, max, ticks, unit: value => flip((value - min) / span) };
+}
+
+/** 軸の目盛りの文字の書式。`sourceLinked` なら系列の保存された書式を使う。 */
+function axisFormat(axis: IParadisChartAxis | undefined, series: readonly IParadisChartSeries[]): string | undefined {
+	if (axis && !axis.sourceLinked && axis.formatCode) {
+		return axis.formatCode;
+	}
+	return series.find(item => item.formatCode)?.formatCode;
+}
+
+/** データラベルの文字（系列名・分類名・値・割合を「, 」でつなぐ）。 */
+function labelText(labels: IParadisChartDataLabels, series: IParadisChartSeries, category: string, value: number, percent?: number): string {
+	const parts: string[] = [];
+	if (labels.series && series.name) {
+		parts.push(series.name);
+	}
+	if (labels.category && category) {
+		parts.push(category);
+	}
+	if (labels.value) {
+		parts.push(formatNumber(value, labels.formatCode ?? series.formatCode));
+	}
+	if (labels.percent && percent !== undefined) {
+		parts.push(formatNumber(percent, '0%', true));
+	}
+	return parts.join(', ');
+}
+
+/** 点の印（丸）。 */
+function appendMarker(parent: Element, x: number, y: number, color: string): void {
+	svgCircle(parent, x, y, 3, color);
+}
+
+/** 点の横にデータラベルを置く（折れ線・散布図・バブル・レーダー・株価）。 */
+function appendPointLabel(parent: Element, x: number, y: number, text: string, position: IParadisChartDataLabels['position'], fallback: NonNullable<IParadisChartDataLabels['position']>): void {
+	switch (position ?? fallback) {
+		case 't': svgText(parent, x, y - 6, text, { size: 9, anchor: 'middle' }); break;
+		case 'b': svgText(parent, x, y + 13, text, { size: 9, anchor: 'middle' }); break;
+		case 'l': svgText(parent, x - 6, y + 3, text, { size: 9, anchor: 'end' }); break;
+		case 'ctr': svgText(parent, x, y + 3, text, { size: 9, anchor: 'middle' }); break;
+		default: svgText(parent, x + 6, y + 3, text, { size: 9 }); break;
+	}
+}
+
+interface LegendItem {
+	readonly name: string;
+	readonly color: string;
+}
+
+/** 凡例を置き、残りの描く範囲を返す。 */
+function layoutLegend(parent: Element, items: readonly LegendItem[], position: NonNullable<IParadisChartData['legendPosition']>, area: ParadisShapeBox): ParadisShapeBox {
+	if (items.length === 0) {
+		return area;
+	}
+	const rowHeight = 14;
+	if (position === 't' || position === 'b') {
+		// 横に並べ、入り切らなければ折り返す（最大 3 行）。
+		const rows: { item: LegendItem; width: number }[][] = [[]];
+		let rowWidth = 0;
+		for (const item of items) {
+			const width = 12 + textWidth(item.name, 9) + 12;
+			if (rowWidth + width > area.width && rows[rows.length - 1].length > 0) {
+				if (rows.length === 3) {
+					break;
+				}
+				rows.push([]);
+				rowWidth = 0;
+			}
+			rows[rows.length - 1].push({ item, width });
+			rowWidth += width;
+		}
+		const height = rows.length * rowHeight + 4;
+		const top = position === 't' ? area.y : area.y + area.height - height;
+		rows.forEach((row, rowIndex) => {
+			const total = row.reduce((sum, entry) => sum + entry.width, 0);
+			let x = area.x + Math.max(0, (area.width - total) / 2);
+			const y = top + 2 + rowIndex * rowHeight;
+			for (const { item, width } of row) {
+				svgRect(parent, x, y + 1, 8, 8, safeColor(item.color));
+				svgText(parent, x + 12, y + 9, item.name, { size: 9 });
+				x += width;
+			}
+		});
+		return position === 't'
+			? { x: area.x, y: area.y + height, width: area.width, height: area.height - height }
+			: { x: area.x, y: area.y, width: area.width, height: area.height - height };
+	}
+	const width = Math.min(area.width * 0.3, Math.max(40, Math.max(...items.map(item => textWidth(item.name, 9))) + 24), 120);
+	const visible = items.slice(0, Math.max(1, Math.floor((area.height - 6) / rowHeight)));
+	const blockHeight = visible.length * rowHeight;
+	const left = position === 'l' ? area.x : area.x + area.width - width;
+	// 右は上下の真ん中、右上は上に寄せる（Excel の既定の置き方）。
+	const top = position === 'tr' ? area.y + 4 : area.y + Math.max(4, (area.height - blockHeight) / 2);
+	visible.forEach((item, index) => {
+		const y = top + index * rowHeight;
+		svgRect(parent, left + 4, y, 8, 8, safeColor(item.color));
+		svgText(parent, left + 16, y + 8, item.name, { size: 9 });
+	});
+	return position === 'l'
+		? { x: area.x + width, y: area.y, width: area.width - width, height: area.height }
+		: { x: area.x, y: area.y, width: area.width - width, height: area.height };
+}
+
+/** 等高線の帯（値の軸の目盛りの区切り）。 */
+function surfaceBands(chart: IParadisChartData, group: IParadisChartGroup): { readonly scale: ValueScale; readonly format: string | undefined } {
+	const values = group.series.flatMap(series => series.values.filter((value): value is number => value !== null));
+	const axis = valueAxisOf(chart, group);
+	const scale = buildValueScale(values.length ? Math.min(...values) : 0, values.length ? Math.max(...values) : 1, axis, false);
+	return { scale, format: axisFormat(axis, group.series) };
+}
+
+/** 保存済みの値でグラフを描く。 */
 export function appendChartSvg(parent: Element, chart: IParadisChartData, box: ParadisShapeBox, content = true): void {
 	const doc = parent.ownerDocument;
 	const frame = doc.createElementNS(SVG_NS, 'g');
@@ -120,23 +337,35 @@ export function appendChartSvg(parent: Element, chart: IParadisChartData, box: P
 		top += 22;
 	}
 	const pieGroup = chart.groups.find(group => group.kind === 'pie' || group.kind === 'doughnut');
-	const legendItems = pieGroup
-		? (pieGroup.series[0]?.categories ?? []).map((name, index) => ({ name: name || String(index + 1), color: pieGroup.series[0].pointColors?.[index] ?? '#888888' }))
-		: chart.groups.flatMap(group => group.series.map((series, index) => ({ name: series.name ?? `Series${index + 1}`, color: series.color ?? '#888888' })));
-	const legendWidth = chart.legend && legendItems.length > 0 ? Math.min(box.width * 0.3, 120) : 0;
-	const plot = { x: box.x + 8, y: top, width: box.width - 16 - legendWidth, height: box.y + box.height - 8 - top };
-	if (legendWidth > 0) {
-		legendItems.slice(0, Math.max(1, Math.floor(plot.height / 14))).forEach((item, index) => {
-			const ly = top + 6 + index * 14;
-			svgRect(frame, plot.x + plot.width + 8, ly, 8, 8, item.color);
-			svgText(frame, plot.x + plot.width + 20, ly + 8, item.name, { size: 9 });
-		});
+	const surfaceGroup = chart.groups.find(group => group.kind === 'surface');
+	let legendItems: LegendItem[];
+	if (pieGroup) {
+		legendItems = (pieGroup.series[0]?.categories ?? []).map((name, index) => ({ name: name || String(index + 1), color: pieGroup.series[0].pointColors?.[index] ?? '#888888' }));
+	} else if (surfaceGroup) {
+		const { scale, format } = surfaceBands(chart, surfaceGroup);
+		legendItems = scale.ticks.slice(0, -1).map((value, index) => ({
+			name: `${formatNumber(value, format)}-${formatNumber(scale.ticks[index + 1], format)}`,
+			color: surfaceGroup.bandColors?.[index] ?? '#888888',
+		}));
+	} else {
+		legendItems = chart.groups.flatMap(group => group.series.map((series, index) => ({ name: series.name ?? `Series${index + 1}`, color: series.color ?? '#888888' })));
 	}
+	const area = { x: box.x + 8, y: top, width: box.width - 16, height: box.y + box.height - 8 - top };
+	const plot = chart.legend ? layoutLegend(frame, legendItems, chart.legendPosition ?? 'r', area) : area;
 	if (plot.width < 16 || plot.height < 16) {
 		return;
 	}
 	if (pieGroup) {
 		appendPie(frame, pieGroup, plot);
+		return;
+	}
+	if (surfaceGroup) {
+		appendSurface(frame, chart, surfaceGroup, plot);
+		return;
+	}
+	const radarGroup = chart.groups.find(group => group.kind === 'radar');
+	if (radarGroup) {
+		appendRadar(frame, chart, radarGroup, plot);
 		return;
 	}
 	appendCartesian(frame, chart, plot);
@@ -156,6 +385,7 @@ function appendPie(parent: Element, group: IParadisChartGroup, plot: ParadisShap
 	const cx = plot.x + plot.width / 2;
 	const cy = plot.y + plot.height / 2;
 	const inner = group.kind === 'doughnut' ? radius * 0.5 : 0;
+	const labels: { x: number; y: number; text: string }[] = [];
 	let angle = -Math.PI / 2;
 	values.forEach((value, index) => {
 		if (value <= 0) {
@@ -164,7 +394,7 @@ function appendPie(parent: Element, group: IParadisChartGroup, plot: ParadisShap
 		const sweep = value / total * Math.PI * 2;
 		const end = angle + sweep;
 		const large = sweep > Math.PI ? 1 : 0;
-		const color = series.pointColors?.[index] ?? '#888888';
+		const color = safeColor(series.pointColors?.[index]);
 		if (sweep >= Math.PI * 2 - 1e-9) {
 			svgPath(parent, `M ${round(cx - radius)} ${round(cy)} A ${round(radius)} ${round(radius)} 0 1 1 ${round(cx + radius)} ${round(cy)} A ${round(radius)} ${round(radius)} 0 1 1 ${round(cx - radius)} ${round(cy)} Z`, '#FFFFFF', color, 1);
 		} else {
@@ -177,134 +407,512 @@ function appendPie(parent: Element, group: IParadisChartGroup, plot: ParadisShap
 				: `M ${round(cx)} ${round(cy)} L ${round(outerStart[0])} ${round(outerStart[1])} A ${round(radius)} ${round(radius)} 0 ${large} 1 ${round(outerEnd[0])} ${round(outerEnd[1])} Z`;
 			svgPath(parent, d, '#FFFFFF', color, 1);
 		}
+		const labelSettings = series.dataLabels;
+		if (labelSettings) {
+			const middle = angle + sweep / 2;
+			const distance = labelSettings.position === 'outEnd' ? radius + 10 : labelSettings.position === 'inEnd' ? radius * 0.8 : inner > 0 ? (radius + inner) / 2 : radius * 0.62;
+			labels.push({ x: cx + distance * Math.cos(middle), y: cy + distance * Math.sin(middle), text: labelText(labelSettings, series, series.categories[index] ?? '', value, value / total) });
+		}
 		angle = end;
 	});
 	if (inner > 0) {
-		const hole = parent.ownerDocument.createElementNS(SVG_NS, 'circle');
-		hole.setAttribute('cx', round(cx));
-		hole.setAttribute('cy', round(cy));
-		hole.setAttribute('r', round(inner));
-		hole.setAttribute('fill', '#FFFFFF');
-		parent.appendChild(hole);
+		svgCircle(parent, cx, cy, inner, '#FFFFFF');
 	}
+	for (const label of labels) {
+		svgText(parent, label.x, label.y + 3, label.text, { size: 9, anchor: 'middle' });
+	}
+}
+
+/** 群が使う軸を探す。`kind` が合うもののうち、群の `axId` に挙がっているもの。 */
+function groupAxis(chart: IParadisChartData, group: IParadisChartGroup, kinds: readonly IParadisChartAxis['kind'][], index = 0): IParadisChartAxis | undefined {
+	const ids = group.axisIds ?? [];
+	const matches = (chart.axes ?? []).filter(axis => ids.includes(axis.id) && kinds.includes(axis.kind));
+	return matches[index];
+}
+
+function valueAxisOf(chart: IParadisChartData, group: IParadisChartGroup): IParadisChartAxis | undefined {
+	if (group.kind === 'scatter' || group.kind === 'bubble') {
+		// 散布図・バブルは軸が 2 本とも値の軸。2 本目（Y）を値の軸とする。
+		const ids = group.axisIds ?? [];
+		return (chart.axes ?? []).find(axis => axis.id === ids[1]);
+	}
+	return groupAxis(chart, group, ['value']);
+}
+
+function categoryAxisOf(chart: IParadisChartData, group: IParadisChartGroup): IParadisChartAxis | undefined {
+	if (group.kind === 'scatter' || group.kind === 'bubble') {
+		const ids = group.axisIds ?? [];
+		return (chart.axes ?? []).find(axis => axis.id === ids[0]);
+	}
+	return groupAxis(chart, group, ['category', 'date']);
+}
+
+/** レーダー: 分類を放射状の軸に、値を中心からの距離にする。 */
+function appendRadar(parent: Element, chart: IParadisChartData, group: IParadisChartGroup, plot: ParadisShapeBox): void {
+	const count = Math.max(...group.series.map(series => Math.max(series.values.length, series.categories.length)), 0);
+	if (count < 3) {
+		return;
+	}
+	const values = group.series.flatMap(series => series.values.filter((value): value is number => value !== null));
+	const axis = valueAxisOf(chart, group);
+	const scale = buildValueScale(values.length ? Math.min(...values) : 0, values.length ? Math.max(...values) : 1, axis ? { ...axis, logBase: undefined, reversed: false } : undefined);
+	const categories = group.series.find(series => series.categories.some(Boolean))?.categories ?? [];
+	const labelRoom = Math.min(40, Math.max(...Array.from({ length: count }, (_, index) => textWidth(categories[index] ?? String(index + 1), 9))) + 8);
+	const radius = Math.max(4, Math.min(plot.width / 2 - labelRoom, plot.height / 2 - 14));
+	const cx = plot.x + plot.width / 2;
+	const cy = plot.y + plot.height / 2;
+	const point = (index: number, unit: number): [number, number] => {
+		const angle = -Math.PI / 2 + index / count * Math.PI * 2;
+		return [cx + radius * unit * Math.cos(angle), cy + radius * unit * Math.sin(angle)];
+	};
+	const polygon = (unit: number) => Array.from({ length: count }, (_, index) => point(index, unit)).map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`).join(' ') + ' Z';
+	if (axis?.gridlines ?? true) {
+		for (const tick of scale.ticks) {
+			const unit = scale.unit(tick) ?? 0;
+			if (unit > 0) {
+				svgPath(parent, polygon(unit), '#E0E0E0', 'none', 1);
+			}
+		}
+	}
+	for (let index = 0; index < count; index++) {
+		const [x, y] = point(index, 1);
+		svgPath(parent, `M ${round(cx)} ${round(cy)} L ${round(x)} ${round(y)}`, '#D9D9D9', 'none', 1);
+		const [lx, ly] = point(index, 1 + 10 / radius);
+		const anchor = Math.abs(lx - cx) < 4 ? 'middle' : lx > cx ? 'start' : 'end';
+		svgText(parent, lx, ly + 3, categories[index] ?? String(index + 1), { size: 9, anchor });
+	}
+	if (!axis?.deleted && (axis?.tickLabels ?? true)) {
+		const format = axisFormat(axis, group.series);
+		for (const tick of scale.ticks) {
+			const unit = scale.unit(tick) ?? 0;
+			svgText(parent, cx - 3, cy - radius * unit + 3, formatNumber(tick, format), { size: 8, anchor: 'end' });
+		}
+	}
+	for (const series of group.series) {
+		const color = safeColor(series.color);
+		const points: [number, number][] = [];
+		for (let index = 0; index < count; index++) {
+			const value = series.values[index];
+			points.push(point(index, value === null || value === undefined ? 0 : Math.max(0, Math.min(1, scale.unit(value) ?? 0))));
+		}
+		const d = points.map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`).join(' ') + ' Z';
+		const path = svgPath(parent, d, color, group.radarStyle === 'filled' ? color : 'none', 2);
+		if (group.radarStyle === 'filled') {
+			path.setAttribute('fill-opacity', '0.5');
+		}
+		points.forEach(([x, y], index) => {
+			const value = series.values[index];
+			if (value === null || value === undefined) {
+				return;
+			}
+			if (series.marker) {
+				appendMarker(parent, x, y, color);
+			}
+			if (series.dataLabels) {
+				appendPointLabel(parent, x, y, labelText(series.dataLabels, series, categories[index] ?? '', value), series.dataLabels.position, 't');
+			}
+		});
+	}
+}
+
+/** 等高線: 上から見た面を、値の帯ごとに塗り分ける（列が分類、行が系列）。 */
+function appendSurface(parent: Element, chart: IParadisChartData, group: IParadisChartGroup, plot: ParadisShapeBox): void {
+	const rows = group.series.length;
+	const columns = Math.max(0, ...group.series.map(series => series.values.length));
+	if (rows === 0 || columns === 0) {
+		return;
+	}
+	const { scale } = surfaceBands(chart, group);
+	const bandCount = Math.max(1, scale.ticks.length - 1);
+	const bandOf = (value: number) => Math.max(0, Math.min(bandCount - 1, Math.floor((scale.unit(value) ?? 0) * bandCount)));
+	const valueAt = (row: number, column: number) => group.series[Math.max(0, Math.min(rows - 1, row))].values[Math.max(0, Math.min(columns - 1, column))] ?? scale.min;
+	// 格子の点（行・列）の間を双線形で補って、小さな升に分けて塗る。升の数は描く量の上限に収める。
+	const cellsX = Math.max(1, columns - 1);
+	const cellsY = Math.max(1, rows - 1);
+	const per = Math.max(1, Math.min(12, Math.floor(Math.sqrt(20_000 / (cellsX * cellsY)))));
+	const samplesX = cellsX * per;
+	const samplesY = cellsY * per;
+	const width = plot.width / samplesX;
+	const height = plot.height / samplesY;
+	const sample = (sx: number, sy: number) => {
+		const fx = columns === 1 ? 0 : (sx + 0.5) / per;
+		const fy = rows === 1 ? 0 : (sy + 0.5) / per;
+		const x0 = Math.floor(fx), y0 = Math.floor(fy);
+		const tx = fx - x0, ty = fy - y0;
+		const top = valueAt(y0, x0) * (1 - tx) + valueAt(y0, x0 + 1) * tx;
+		const bottom = valueAt(y0 + 1, x0) * (1 - tx) + valueAt(y0 + 1, x0 + 1) * tx;
+		return top * (1 - ty) + bottom * ty;
+	};
+	for (let sy = 0; sy < samplesY; sy++) {
+		// 同じ帯が続く升は 1 つの矩形にまとめる（DOM の数を抑える）。行の 0 番目の系列を下に置く。
+		const y = plot.y + plot.height - (sy + 1) * height;
+		let runStart = 0;
+		let runBand = bandOf(sample(0, sy));
+		for (let sx = 1; sx <= samplesX; sx++) {
+			const band = sx < samplesX ? bandOf(sample(sx, sy)) : -1;
+			if (band !== runBand) {
+				svgRect(parent, plot.x + runStart * width, y, (sx - runStart) * width + 0.5, height + 0.5, safeColor(group.bandColors?.[runBand]));
+				runStart = sx;
+				runBand = band;
+			}
+		}
+	}
+	svgRect(parent, plot.x, plot.y, plot.width, plot.height, 'none', '#A0A0A0');
 }
 
 function appendCartesian(parent: Element, chart: IParadisChartData, plot: ParadisShapeBox): void {
 	const groups = chart.groups;
-	const scatter = groups.every(group => group.kind === 'scatter');
+	const xy = groups.every(group => group.kind === 'scatter' || group.kind === 'bubble');
 	const horizontal = groups.some(group => group.kind === 'bar');
 	const categoryCount = Math.max(1, ...groups.flatMap(group => group.series.map(series => Math.max(series.values.length, series.categories.length))));
-	const percent = groups.some(group => group.grouping === 'percentStacked');
 	const segments = groups.map(group => stackedSegments(group, categoryCount));
-	let range: ValueRange = { min: 0, max: 0 };
-	for (const groupSegments of segments) {
-		for (const seriesSegments of groupSegments) {
-			for (const segment of seriesSegments) {
-				if (segment) {
-					range = { min: Math.min(range.min, segment.start, segment.end), max: Math.max(range.max, segment.start, segment.end) };
-				}
-			}
+	const hasBubbles = groups.some(group => group.kind === 'bubble');
+	// 値の軸ごとに群を分ける（複合グラフの第 2 軸）。軸の情報が無いグラフは 1 本にまとめる。
+	const valueAxes: (IParadisChartAxis | undefined)[] = [];
+	const axisIndexOf = groups.map(group => {
+		const axis = valueAxisOf(chart, group);
+		let index = valueAxes.findIndex(candidate => candidate === axis || (candidate && axis && candidate.id === axis.id));
+		if (index < 0) {
+			index = valueAxes.length < 2 ? valueAxes.push(axis) - 1 : 0;
 		}
-	}
-	let xRange: ValueRange = { min: 0, max: categoryCount };
-	if (scatter) {
+		return index;
+	});
+	const scales = valueAxes.map((axis, axisIndex) => {
+		let min = Number.POSITIVE_INFINITY;
+		let max = Number.NEGATIVE_INFINITY;
+		groups.forEach((group, groupIndex) => {
+			if (axisIndexOf[groupIndex] !== axisIndex) {
+				return;
+			}
+			// 棒と面は付け根も範囲に入れる。折れ線・散布図・株価などは点の値だけ。
+			const withBase = group.kind === 'column' || group.kind === 'bar' || group.kind === 'area';
+			segments[groupIndex].forEach((seriesSegments, seriesIndex) => {
+				seriesSegments.forEach((segment, category) => {
+					const raw = group.series[seriesIndex].values[category];
+					if (!segment || raw === null || raw === undefined) {
+						return;
+					}
+					min = Math.min(min, segment.end, withBase ? segment.start : segment.end);
+					max = Math.max(max, segment.end, withBase ? segment.start : segment.end);
+				});
+			});
+		});
+		if (!Number.isFinite(min)) {
+			min = 0;
+			max = 1;
+		}
+		if (hasBubbles) {
+			[min, max] = padForBubbles(min, max);
+		}
+		// 散布図・バブル・株価は 0 を含めない（値の近くだけを見せる）。棒・折れ線・面は今までどおり 0 から。
+		const includeZero = groups.some((group, groupIndex) => axisIndexOf[groupIndex] === axisIndex && group.kind !== 'scatter' && group.kind !== 'bubble' && group.kind !== 'stock');
+		return buildValueScale(min, max, axis, includeZero);
+	});
+	const axisSeries = (axisIndex: number) => groups.filter((_, groupIndex) => axisIndexOf[groupIndex] === axisIndex).flatMap(group => group.series);
+	const percent = (axisIndex: number) => groups.some((group, groupIndex) => axisIndexOf[groupIndex] === axisIndex && group.grouping === 'percentStacked');
+	const tickText = (axisIndex: number, value: number) => formatNumber(value, axisFormat(valueAxes[axisIndex], axisSeries(axisIndex)) ?? (percent(axisIndex) ? '0%' : undefined), percent(axisIndex));
+	const showTicks = (axis: IParadisChartAxis | undefined) => !axis?.deleted && (axis?.tickLabels ?? true);
+	const categoryAxis = categoryAxisOf(chart, groups[0]);
+	// 散布図・バブルの X は値の軸。
+	let xScale: ValueScale | undefined;
+	if (xy) {
 		const xs = groups.flatMap(group => group.series.flatMap(series => (series.xValues ?? []).filter((value): value is number => value !== null)));
-		xRange = xs.length ? { min: Math.min(0, ...xs), max: Math.max(...xs) } : xRange;
+		const [low, high] = hasBubbles ? padForBubbles(xs.length ? Math.min(...xs) : 0, xs.length ? Math.max(...xs) : 1) : [xs.length ? Math.min(...xs) : 0, xs.length ? Math.max(...xs) : 1];
+		xScale = buildValueScale(low, high, categoryAxis, false);
 	}
-	if (range.max === range.min) {
-		range = { min: range.min, max: range.min + 1 };
+	const categories = groups.flatMap(group => group.series).find(series => series.categories.some(Boolean))?.categories ?? [];
+	const categoryFormat = categoryAxis && !categoryAxis.sourceLinked ? categoryAxis.formatCode : undefined;
+	const categoryLabel = (index: number) => {
+		const raw = categories[index] ?? String(index + 1);
+		const number = Number(raw);
+		return categoryFormat && raw.trim() !== '' && Number.isFinite(number) ? formatNumber(number, categoryFormat) : raw;
+	};
+	// 余白: 値の軸の目盛りの文字と、軸の名前の分。
+	const primaryLabels = showTicks(valueAxes[0]) ? scales[0].ticks.map(tick => tickText(0, tick)) : [];
+	const secondaryLabels = scales[1] && showTicks(valueAxes[1]) ? scales[1].ticks.map(tick => tickText(1, tick)) : [];
+	const widest = (labels: readonly string[]) => labels.length ? Math.max(...labels.map(label => textWidth(label, 9))) + 6 : 0;
+	const categoryTitle = categoryAxis?.title;
+	const primaryTitle = valueAxes[0]?.title;
+	const secondaryTitle = valueAxes[1]?.title;
+	const categoryLabelsShown = showTicks(categoryAxis);
+	let left: number, right: number, topPad: number, bottom: number;
+	if (horizontal) {
+		const categoryLabelWidth = categoryLabelsShown ? Math.min(plot.width * 0.4, Math.max(...Array.from({ length: categoryCount }, (_, index) => textWidth(categoryLabel(index), 9))) + 6) : 0;
+		left = categoryLabelWidth + (categoryTitle ? 14 : 0);
+		right = 6;
+		bottom = (primaryLabels.length ? 14 : 0) + (primaryTitle ? 14 : 0);
+		topPad = (secondaryLabels.length ? 14 : 0) + (secondaryTitle ? 14 : 0);
+	} else {
+		left = Math.max(8, widest(primaryLabels)) + (primaryTitle ? 14 : 0);
+		right = Math.max(6, widest(secondaryLabels)) + (secondaryTitle ? 14 : 0);
+		bottom = (categoryLabelsShown || xy ? 14 : 0) + (categoryTitle ? 14 : 0);
+		topPad = 4;
 	}
-	const step = niceStep(range.max - range.min, 5);
-	const axisMin = Math.floor(range.min / step) * step;
-	const axisMax = Math.ceil(range.max / step) * step;
-	const labelSpace = 34;
-	const area = horizontal
-		? { x: plot.x + 48, y: plot.y, width: plot.width - 48, height: plot.height - 14 }
-		: { x: plot.x + labelSpace, y: plot.y, width: plot.width - labelSpace, height: plot.height - 14 };
+	const area = { x: plot.x + left, y: plot.y + topPad, width: plot.width - left - right, height: plot.height - topPad - bottom };
 	if (area.width < 8 || area.height < 8) {
 		return;
 	}
-	const valueToPx = (value: number) => horizontal
-		? area.x + (value - axisMin) / (axisMax - axisMin) * area.width
-		: area.y + area.height - (value - axisMin) / (axisMax - axisMin) * area.height;
-	// 目盛りの線と値。
-	for (let value = axisMin, guard = 0; value <= axisMax + step / 2 && guard < 50; value += step, guard++) {
-		const position = valueToPx(value);
-		svgPath(parent, horizontal ? `M ${round(position)} ${round(area.y)} L ${round(position)} ${round(area.y + area.height)}` : `M ${round(area.x)} ${round(position)} L ${round(area.x + area.width)} ${round(position)}`, '#E0E0E0', 'none', 1);
-		if (horizontal) {
-			svgText(parent, position, area.y + area.height + 11, formatTick(value, percent), { size: 9, anchor: 'middle' });
-		} else {
-			svgText(parent, area.x - 4, position + 3, formatTick(value, percent), { size: 9, anchor: 'end' });
+	const valueToPx = (axisIndex: number, value: number): number | undefined => {
+		const unit = scales[axisIndex].unit(value);
+		if (unit === undefined) {
+			return undefined;
+		}
+		return horizontal ? area.x + unit * area.width : area.y + area.height - unit * area.height;
+	};
+	// 目盛りの線（第 1 軸の主目盛り線）と値の文字。
+	const primaryAxis = valueAxes[0];
+	const gridlines = chart.axes ? !!primaryAxis?.gridlines : true;
+	scales.forEach((scale, axisIndex) => {
+		for (const tick of scale.ticks) {
+			const position = valueToPx(axisIndex, tick);
+			if (position === undefined) {
+				continue;
+			}
+			if (axisIndex === 0 && gridlines) {
+				svgPath(parent, horizontal ? `M ${round(position)} ${round(area.y)} L ${round(position)} ${round(area.y + area.height)}` : `M ${round(area.x)} ${round(position)} L ${round(area.x + area.width)} ${round(position)}`, '#E0E0E0', 'none', 1);
+			}
+			if (!showTicks(valueAxes[axisIndex])) {
+				continue;
+			}
+			const label = tickText(axisIndex, tick);
+			if (horizontal) {
+				svgText(parent, position, axisIndex === 0 ? area.y + area.height + 11 : area.y - 4, label, { size: 9, anchor: 'middle' });
+			} else if (axisIndex === 0) {
+				svgText(parent, area.x - 4, position + 3, label, { size: 9, anchor: 'end' });
+			} else {
+				svgText(parent, area.x + area.width + 4, position + 3, label, { size: 9 });
+			}
+		}
+	});
+	// 軸の名前。
+	if (horizontal) {
+		if (primaryTitle) {
+			svgText(parent, area.x + area.width / 2, plot.y + plot.height - 2, primaryTitle, { size: 9, anchor: 'middle' });
+		}
+		if (secondaryTitle) {
+			svgText(parent, area.x + area.width / 2, plot.y + 10, secondaryTitle, { size: 9, anchor: 'middle' });
+		}
+		if (categoryTitle) {
+			svgText(parent, plot.x + 10, area.y + area.height / 2, categoryTitle, { size: 9, anchor: 'middle', rotate: -90 });
+		}
+	} else {
+		if (primaryTitle) {
+			svgText(parent, plot.x + 10, area.y + area.height / 2, primaryTitle, { size: 9, anchor: 'middle', rotate: -90 });
+		}
+		if (secondaryTitle) {
+			svgText(parent, plot.x + plot.width - 4, area.y + area.height / 2, secondaryTitle, { size: 9, anchor: 'middle', rotate: 90 });
+		}
+		if (categoryTitle) {
+			svgText(parent, area.x + area.width / 2, plot.y + plot.height - 2, categoryTitle, { size: 9, anchor: 'middle' });
 		}
 	}
-	const zero = valueToPx(Math.max(axisMin, Math.min(axisMax, 0)));
-	svgPath(parent, horizontal ? `M ${round(zero)} ${round(area.y)} L ${round(zero)} ${round(area.y + area.height)}` : `M ${round(area.x)} ${round(zero)} L ${round(area.x + area.width)} ${round(zero)}`, '#A0A0A0', 'none', 1);
+	// 分類の軸が交わる値（棒の付け根）。
+	const crossing = (axisIndex: number): number => {
+		const scale = scales[axisIndex];
+		const crosses = categoryAxis?.crosses ?? 'autoZero';
+		const value = typeof crosses === 'number' ? crosses : crosses === 'min' ? scale.min : crosses === 'max' ? scale.max : Math.max(scale.min, Math.min(scale.max, 0));
+		return valueAxes[axisIndex]?.logBase ? Math.max(scale.min, value) : value;
+	};
+	const baseline = valueToPx(0, crossing(0)) ?? (horizontal ? area.x : area.y + area.height);
+	svgPath(parent, horizontal ? `M ${round(baseline)} ${round(area.y)} L ${round(baseline)} ${round(area.y + area.height)}` : `M ${round(area.x)} ${round(baseline)} L ${round(area.x + area.width)} ${round(baseline)}`, '#A0A0A0', 'none', 1);
+	// 分類の位置。横棒は 1 つ目の分類を下に置く（Excel と同じ）。`orientation` が maxMin なら逆。
 	const slot = (horizontal ? area.height : area.width) / categoryCount;
-	const categories = groups.flatMap(group => group.series).find(series => series.categories.some(Boolean))?.categories ?? [];
-	const labelEvery = Math.max(1, Math.ceil(categoryCount / Math.max(1, Math.floor((horizontal ? area.height : area.width) / 40))));
-	if (!scatter) {
+	const reversedCategories = categoryAxis?.reversed ?? false;
+	const slotStart = (category: number) => {
+		const order = horizontal !== reversedCategories ? categoryCount - 1 - category : category;
+		return (horizontal ? area.y : area.x) + slot * order;
+	};
+	const xToPx = (value: number) => {
+		const unit = xScale?.unit(value);
+		return unit === undefined ? undefined : area.x + unit * area.width;
+	};
+	if (xy && xScale) {
+		const xFormat = axisFormat(categoryAxis, []);
+		for (const tick of xScale.ticks) {
+			const position = xToPx(tick);
+			if (position !== undefined && showTicks(categoryAxis)) {
+				svgText(parent, position, area.y + area.height + 11, formatNumber(tick, xFormat), { size: 9, anchor: 'middle' });
+			}
+		}
+	} else if (categoryLabelsShown) {
+		const labelEvery = Math.max(1, Math.ceil(categoryCount / Math.max(1, Math.floor((horizontal ? area.height / 14 : area.width / 40)))));
 		for (let category = 0; category < categoryCount; category += labelEvery) {
-			const label = categories[category] ?? String(category + 1);
+			const center = slotStart(category) + slot / 2;
 			if (horizontal) {
-				svgText(parent, area.x - 4, area.y + slot * category + slot / 2 + 3, label, { size: 9, anchor: 'end' });
+				svgText(parent, area.x - 4, center + 3, categoryLabel(category), { size: 9, anchor: 'end' });
 			} else {
-				svgText(parent, area.x + slot * category + slot / 2, area.y + area.height + 11, label, { size: 9, anchor: 'middle' });
+				svgText(parent, center, area.y + area.height + 11, categoryLabel(category), { size: 9, anchor: 'middle' });
 			}
 		}
 	}
+	const labelLayer = parent.ownerDocument.createElementNS(SVG_NS, 'g');
 	const barGroups = groups.filter(group => group.kind === 'column' || group.kind === 'bar');
 	groups.forEach((group, groupIndex) => {
+		const axisIndex = axisIndexOf[groupIndex];
 		const groupSegments = segments[groupIndex];
 		if (group.kind === 'column' || group.kind === 'bar') {
 			const clustered = group.grouping !== 'stacked' && group.grouping !== 'percentStacked';
 			const barCount = clustered ? Math.max(1, group.series.length) : 1;
 			const groupOffset = barGroups.indexOf(group);
 			const width = slot * 0.7 / barCount / Math.max(1, barGroups.length);
+			const base = crossing(axisIndex);
 			group.series.forEach((series, seriesIndex) => {
+				const color = safeColor(series.color);
 				for (let category = 0; category < categoryCount; category++) {
 					const segment = groupSegments[seriesIndex][category];
-					if (!segment || series.values[category] === null || series.values[category] === undefined) {
+					const raw = series.values[category];
+					if (!segment || raw === null || raw === undefined) {
 						continue;
 					}
 					const offset = slot * 0.15 + (groupOffset * barCount + (clustered ? seriesIndex : 0)) * width;
-					const start = valueToPx(segment.start);
-					const end = valueToPx(segment.end);
+					const start = valueToPx(axisIndex, clustered ? base : segment.start);
+					const end = valueToPx(axisIndex, segment.end);
+					if (start === undefined || end === undefined) {
+						continue;
+					}
+					const along = slotStart(category) + offset;
 					if (horizontal) {
-						svgRect(parent, start, area.y + slot * category + offset, end - start, width, series.color ?? '#888888');
+						svgRect(parent, start, along, end - start, width, color);
 					} else {
-						svgRect(parent, area.x + slot * category + offset, end, width, start - end, series.color ?? '#888888');
+						svgRect(parent, along, end, width, start - end, color);
+					}
+					if (series.dataLabels) {
+						const text = labelText(series.dataLabels, series, categories[category] ?? '', raw);
+						appendBarLabel(labelLayer, horizontal, along + width / 2, start, end, text, series.dataLabels.position ?? (clustered ? 'outEnd' : 'ctr'), area);
 					}
 				}
 			});
 			return;
 		}
+		if (group.kind === 'stock') {
+			appendStock(parent, labelLayer, group, categoryCount, category => slotStart(category) + slot / 2, value => valueToPx(axisIndex, value), slot);
+			return;
+		}
+		const bubbleMax = group.kind === 'bubble' ? Math.max(0, ...group.series.flatMap(series => (series.bubbleSizes ?? []).map(size => Math.abs(size ?? 0)))) : 0;
 		group.series.forEach((series, seriesIndex) => {
-			const points: [number, number][] = [];
+			const points: { x: number; y: number; value: number; category: number }[] = [];
 			for (let category = 0; category < categoryCount; category++) {
 				const segment = groupSegments[seriesIndex][category];
-				if (!segment || series.values[category] === null || series.values[category] === undefined) {
+				const raw = series.values[category];
+				if (!segment || raw === null || raw === undefined) {
 					continue;
 				}
-				const x = scatter && series.xValues
-					? area.x + ((series.xValues[category] ?? 0) - xRange.min) / ((xRange.max - xRange.min) || 1) * area.width
-					: area.x + slot * category + slot / 2;
-				points.push([x, valueToPx(segment.end)]);
+				const x = xy ? xToPx(series.xValues?.[category] ?? category + 1) : slotStart(category) + slot / 2;
+				const y = valueToPx(axisIndex, segment.end);
+				if (x === undefined || y === undefined) {
+					continue;
+				}
+				points.push({ x, y, value: raw, category });
 			}
 			if (points.length === 0) {
 				return;
 			}
-			const color = series.color ?? '#888888';
-			const line = points.map(([x, y], index) => `${index === 0 ? 'M' : 'L'} ${round(x)} ${round(y)}`).join(' ');
+			const color = safeColor(series.color);
+			if (group.kind === 'bubble') {
+				// 大きさの最大を、描く範囲の短い辺の 25%（`bubbleScale` が 100 のとき）の直径にする。
+				const maxRadius = Math.min(area.width, area.height) * 0.125 * (group.bubbleScale ?? 100) / 100;
+				for (const point of points) {
+					const size = Math.abs(series.bubbleSizes?.[point.category] ?? 0);
+					const ratio = bubbleMax > 0 ? size / bubbleMax : 0;
+					const radius = maxRadius * (group.bubbleSizeRepresents === 'w' ? ratio : Math.sqrt(ratio));
+					svgCircle(parent, point.x, point.y, radius, color, 0.75);
+					if (series.dataLabels) {
+						appendPointLabel(labelLayer, point.x, point.y, labelText(series.dataLabels, series, '', point.value), series.dataLabels.position, 'ctr');
+					}
+				}
+				return;
+			}
+			const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${round(point.x)} ${round(point.y)}`).join(' ');
 			if (group.kind === 'area') {
-				const base = valueToPx(0);
-				svgPath(parent, `${line} L ${round(points[points.length - 1][0])} ${round(base)} L ${round(points[0][0])} ${round(base)} Z`, color, color, 1);
+				const base = valueToPx(axisIndex, crossing(axisIndex)) ?? baseline;
+				svgPath(parent, `${line} L ${round(points[points.length - 1].x)} ${round(base)} L ${round(points[0].x)} ${round(base)} Z`, color, color, 1);
 			} else if (group.kind === 'scatter') {
-				for (const [x, y] of points) {
-					svgRect(parent, x - 2.5, y - 2.5, 5, 5, color);
+				for (const point of points) {
+					if (series.marker !== false) {
+						svgRect(parent, point.x - 2.5, point.y - 2.5, 5, 5, color);
+					}
 				}
 			} else {
 				svgPath(parent, line, color, 'none', 2);
+				if (series.marker) {
+					for (const point of points) {
+						appendMarker(parent, point.x, point.y, color);
+					}
+				}
+			}
+			if (series.dataLabels) {
+				for (const point of points) {
+					appendPointLabel(labelLayer, point.x, point.y, labelText(series.dataLabels, series, categories[point.category] ?? '', point.value), series.dataLabels.position, group.kind === 'area' ? 'ctr' : 'r');
+				}
 			}
 		});
 	});
+	// ラベルは系列の上に重ねる。
+	parent.appendChild(labelLayer);
+}
+
+/** バブルが描く範囲からはみ出さないよう、値の範囲を両側に 15% 広げる（軸の指定があればそちらが勝つ）。 */
+function padForBubbles(min: number, max: number): [number, number] {
+	const pad = (max - min) * 0.15 || 1;
+	return [min - pad, max + pad];
+}
+
+/** 棒のデータラベル。`start` は付け根、`end` は先端の位置（値の軸の方向）。 */
+function appendBarLabel(parent: Element, horizontal: boolean, center: number, start: number, end: number, text: string, position: NonNullable<IParadisChartDataLabels['position']>, area: ParadisShapeBox): void {
+	const direction = end >= start ? 1 : -1;
+	let along: number;
+	switch (position) {
+		case 'inEnd': along = end - direction * 8; break;
+		case 'ctr': along = (start + end) / 2; break;
+		case 'inBase': along = start + direction * 8; break;
+		default: along = end + direction * 8; break;
+	}
+	if (horizontal) {
+		svgText(parent, along, center + 3, text, { size: 9, anchor: position === 'ctr' ? 'middle' : direction > 0 === (position === 'outEnd' || position === 'inBase') ? 'start' : 'end' });
+	} else {
+		// 縦棒の値の軸は下が小さい（px は上ほど小さい）。描く範囲の外（タイトルの上など）には出さない。
+		svgText(parent, center, Math.max(area.y + 9, Math.min(area.y + area.height - 2, along + 3)), text, { size: 9, anchor: 'middle' });
+	}
+}
+
+/** 株価: 高値と安値を線で結び、始値と終値の箱（上がりは白、下がりは濃い色）を置く。 */
+function appendStock(parent: Element, labels: Element, group: IParadisChartGroup, categoryCount: number, centerOf: (category: number) => number, valueToPx: (value: number) => number | undefined, slot: number): void {
+	const series = group.series;
+	// 系列は 始値・高値・安値・終値（4 本）か、高値・安値・終値（3 本）の順（ECMA-376 Part 1 §21.2.2.198）。
+	const [open, high, low, close] = series.length >= 4 ? [series[0], series[1], series[2], series[3]] : [undefined, series[0], series[1], series[2]];
+	if (!high || !low) {
+		return;
+	}
+	const boxWidth = Math.max(2, Math.min(16, slot * 0.4));
+	for (let category = 0; category < categoryCount; category++) {
+		const x = centerOf(category);
+		const highValue = high.values[category];
+		const lowValue = low.values[category];
+		if (highValue !== null && highValue !== undefined && lowValue !== null && lowValue !== undefined && group.hiLowLines !== false) {
+			const top = valueToPx(highValue);
+			const bottom = valueToPx(lowValue);
+			if (top !== undefined && bottom !== undefined) {
+				svgPath(parent, `M ${round(x)} ${round(top)} L ${round(x)} ${round(bottom)}`, '#404040', 'none', 1);
+			}
+		}
+		const openValue = open?.values[category];
+		const closeValue = close?.values[category];
+		const openY = openValue === null || openValue === undefined ? undefined : valueToPx(openValue);
+		const closeY = closeValue === null || closeValue === undefined ? undefined : valueToPx(closeValue);
+		if (group.upDownBars && openY !== undefined && closeY !== undefined) {
+			const up = (closeValue ?? 0) >= (openValue ?? 0);
+			svgRect(parent, x - boxWidth / 2, Math.min(openY, closeY), boxWidth, Math.max(1, Math.abs(openY - closeY)), safeColor(up ? group.upDownBars.up : group.upDownBars.down, up ? '#FFFFFF' : '#404040'), '#404040');
+		} else {
+			// 箱が無いときは、始値を左、終値を右の短い線で示す。
+			if (openY !== undefined) {
+				svgPath(parent, `M ${round(x - boxWidth / 2)} ${round(openY)} L ${round(x)} ${round(openY)}`, '#404040', 'none', 1.5);
+			}
+			if (closeY !== undefined) {
+				svgPath(parent, `M ${round(x)} ${round(closeY)} L ${round(x + boxWidth / 2)} ${round(closeY)}`, '#404040', 'none', 1.5);
+			}
+		}
+		if (close?.dataLabels && closeY !== undefined && closeValue !== null && closeValue !== undefined) {
+			appendPointLabel(labels, x, closeY, labelText(close.dataLabels, close, close.categories[category] ?? '', closeValue), close.dataLabels.position, 'r');
+		}
+	}
 }
