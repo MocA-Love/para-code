@@ -97,6 +97,8 @@ interface IParadisUsageSettingSpec {
 	readonly placeholder?: string;
 	/** 数値 select の選択肢。指定するとテキスト欄ではなくプルダウンになる。 */
 	readonly choices?: readonly { readonly value: number; readonly label: string }[];
+	/** 文字列の配列の設定。カンマ区切りの 1 行で見せて書く。 */
+	readonly list?: boolean;
 }
 
 const SETTINGS: readonly IParadisUsageSettingSpec[] = [
@@ -107,6 +109,15 @@ const SETTINGS: readonly IParadisUsageSettingSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.usage.ccusagePathDesc', "空欄なら自動で探します。見つからないときだけ指定してください。"),
 		placeholder: '/usr/local/bin/ccusage',
+	},
+	{
+		key: 'paradis.ccusage.archiveDirs',
+		// allow-any-unicode-next-line
+		label: localize('paradis.usage.ccusageArchiveDirs', "古い会話の記録の置き場"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.usage.ccusageArchiveDirsDesc', "外付けディスクなどへ移した記録も AI コストに含めます。中の claude と codex を読みます。複数あるときはカンマで区切ります。つながっていないときは飛ばします。"),
+		placeholder: '/Volumes/SSD/agent-archive',
+		list: true,
 	},
 	{
 		key: 'paradis.ccusage.statusBar.enabled',
@@ -353,6 +364,21 @@ export class ParadisUsageDashboardDialog extends Disposable {
 				this._settingRefreshers.push(sync);
 				store.add(dom.addDisposableListener(select, 'change', () => {
 					void this.configurationService.updateValue(spec.key, Number(select.value), ConfigurationTarget.USER);
+				}));
+			} else if (spec.list) {
+				const input = dom.append(row, $('input.pud-input')) as HTMLInputElement;
+				input.type = 'text';
+				input.spellcheck = false;
+				input.placeholder = spec.placeholder ?? STR_UNSET;
+				const sync = () => {
+					const current = this.configurationService.getValue<unknown>(spec.key);
+					input.value = Array.isArray(current) ? current.join(', ') : '';
+				};
+				sync();
+				this._settingRefreshers.push(sync);
+				store.add(dom.addDisposableListener(input, 'change', () => {
+					const items = input.value.split(',').map(item => item.trim()).filter(item => item.length > 0);
+					void this.configurationService.updateValue(spec.key, items, ConfigurationTarget.USER);
 				}));
 			} else if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
 				const toggle = dom.append(row, $('input.pud-toggle')) as HTMLInputElement;
