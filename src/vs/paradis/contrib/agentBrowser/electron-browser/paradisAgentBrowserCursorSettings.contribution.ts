@@ -9,7 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING } from '../common/paradisAgentBrowser.js';
+import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING } from '../common/paradisAgentBrowser.js';
 
 // 共通の 'paradis' セクションへプロパティを追加する（windowTransparency の設定登録と同じ id/title を
 // 再利用し、Settings UI 上は同じ「Para Code」カテゴリへマージ表示される）。
@@ -45,6 +45,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントが内蔵ブラウザで操作した結果に、使えるタブ、その操作で開いたページ、新しいダウンロード、開いているダイアログを添えます。前回と同じ内容は省きます。")
+		},
+		[PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.runStepsFlow', "（試験的）エージェントが内蔵ブラウザの run_steps に、前の手順の結果の参照、条件を待って確かめる手順（expect）、一覧の項目ごとの繰り返し（for_each）、条件が成り立つまでの繰り返し（repeat_until）を書けるようにします。手順は合計 200 まで、時間は既定で 240 秒までです。有効にした後は、エージェントを起動し直すと使えます。")
 		}
 	}
 });
