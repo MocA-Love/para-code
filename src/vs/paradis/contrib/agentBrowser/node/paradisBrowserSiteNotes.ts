@@ -215,9 +215,19 @@ export const PARADIS_SITE_NOTE_TOOLS = [
 	},
 ] as const;
 
+/** `Basic` の後ろの語が、Basic 認証の値（base64）らしいか。数字・記号を含むか、2 文字目以降に大文字が 2 つ以上ある。 */
+function looksLikeBasicCredentials(value: string): boolean {
+	return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(value) && (/[0-9+/=]/.test(value) || (value.slice(1).match(/[A-Z]/g)?.length ?? 0) >= 2);
+}
+
 /**
  * 秘密らしい文を書かせない。通知の伏せ字（paradisRedactSecrets）が何かを伏せる文と、Cookie の値を含む文を断る。
+ * 伏せ字は「Basic + 6 文字以上の語」を Basic 認証として伏せるので、「Open the Basic settings tab」のような文は、
+ * 語が base64 らしくなければ先に外してから調べる。
+ *
+ * 拾えない例（形の決まった項目名や値が無い）: 「the password is hunter2」「パスワードはhunter2」。
  */
 export function paradisSiteNoteLooksSecret(text: string): boolean {
-	return paradisRedactSecrets(text) !== text || /\b(?:set-)?cookie\s*[:=\uFF1A\uFF1D]\s*[^\s=;]+=[^\s;]+/i.test(text);
+	const checked = text.replace(/\b(Basic)(\s+)([A-Za-z0-9._~+/=-]+)/gi, (match: string, word: string, space: string, value: string) => looksLikeBasicCredentials(value) ? match : `${word}_${space}${value}`);
+	return paradisRedactSecrets(checked) !== checked || /\b(?:set-)?cookie\s*[:=\uFF1A\uFF1D]\s*[^\s=;]+=[^\s;]+/i.test(text);
 }

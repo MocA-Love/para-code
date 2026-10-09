@@ -790,6 +790,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _siteNotes = new ParadisSiteNotesStore(paradisSiteNotesDefaultPath());
 	/** ペインごとに、メモを添え終えた「スペース\nオリジン」（同じペインへは 1 回だけ添える）。 */
 	private readonly _siteNotesShown = new Map<string, Set<string>>();
+	/** ペインごとのスペース（サイトメモの鍵）。窓に聞くと最大 4 秒かかるので控える。initialize とペインの片付けで消す。 */
+	private readonly _siteNoteSpaces = new Map<string, Promise<{ readonly key: string; readonly folder?: string } | undefined>>();
 	/** run_steps を手順書にするか（E6）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _runStepsFlowEnabled: (() => boolean) | undefined;
 	/** 操作の結果に添える、操作の後のページとブラウザの状態（paradisBrowserObserve.ts）。 */
@@ -2038,6 +2040,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
 		// サイトメモを添え終えた控え（E4）
 		this._siteNotesShown?.delete(token);
+		this._siteNoteSpaces?.delete(token);
 		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
 		this._browserObserver.forget(token);
 		this._runNonThrowingCleanup('agent-tabs', () => this._forgetAgentTabState(token));
@@ -4361,6 +4364,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'initialize': {
 				// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
 				this._siteNotesShown?.delete(ingressLease.token);
+				this._siteNoteSpaces?.delete(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
 				const instructions: string | undefined = this._paneRemoteAuthorityOf(ingressLease.token) !== undefined
@@ -4537,19 +4541,42 @@ export class ParadisAgentBrowserService extends Disposable {
 		return folder !== undefined ? { key: folder, folder } : undefined;
 	}
 
-	/** このペインが今使えるタブ（共有されたページと、自分で開いたタブ）のオリジン。メモを書く・消すのはここに限る。 */
-	private _siteNoteOpenOrigins(token: string): ReadonlySet<string> {
-		const urls = [this._bindings.get(token)?.pageInfo.url];
-		for (const tabId of this._agentTabGrants.get(token)?.keys() ?? []) {
-			urls.push(this._scopeBinding(token, tabId)?.pageInfo.url);
+	/** {@link _siteNoteSpace} を、ペインごとに控えて返す（分からなかったときは控えない）。 */
+	private _siteNoteSpaceOf(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
+		const token = ingressLease.token;
+		let space = this._siteNoteSpaces.get(token);
+		if (space === undefined) {
+			space = this._siteNoteSpace(ingressLease);
+			this._siteNoteSpaces.set(token, space);
+			const pending = space;
+			const forgetFailure = () => {
+				if (this._siteNoteSpaces.get(token) === pending) {
+					this._siteNoteSpaces.delete(token);
+				}
+			};
+			void pending.then(value => value === undefined ? forgetFailure() : undefined, forgetFailure);
 		}
-		return new Set(urls.map(url => paradisSiteNoteOrigin(url)).filter((origin): origin is string => origin !== undefined));
+		return space;
 	}
 
-	/** ペインの今のタブ（`tab_id` があればそのタブ）の URL。 */
-	private _siteNoteUrl(token: string, args: unknown): string | undefined {
-		const tabId = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token);
-		return this._bindingForKey(tabId !== undefined ? paradisAgentTabScopeKey(token, tabId) : token)?.pageInfo.url;
+	/**
+	 * このペインが今使えるタブ（共有されたページと、自分で開いたタブ）の、今の URL（tabId → URL）。共有・許可した
+	 * 時点の URL（binding の pageInfo）はタブの中の移動で変わらないので、list_browser_tabs と同じ一覧を窓から読む。
+	 * 読めなければ undefined。
+	 */
+	private async _siteNoteTabUrls(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<ReadonlyMap<string, string> | undefined> {
+		const token = ingressLease.token;
+		const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
+			channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+			method: ParadisAgentTabMethod.List,
+			args: [token],
+			failureLabel: 'site-notes',
+			failureMessage: 'Failed to list the browser tabs in Para Code.',
+		}, signal).catch(() => undefined);
+		if (!call?.ok || !call.value.ok) {
+			return undefined;
+		}
+		return new Map(call.value.tabs.filter(tab => typeof tab.url === 'string' && this._scopeBinding(token, tab.tabId) !== undefined).map(tab => [tab.tabId, tab.url]));
 	}
 
 	/** 道具の結果に、そのサイトのメモを 1 回だけ添える（E4）。 */
@@ -4559,12 +4586,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		try {
 			const token = ingressLease.token;
-			const urlArgument = isExactRecord(args) ? args.url : undefined;
-			const origin = paradisSiteNoteOrigin(name === 'open_browser_tab' ? urlArgument : this._siteNoteUrl(token, args));
+			// 道具の後の、そのタブの今の URL（navigate_page や open_browser_tab の後なら移った先）
+			const tabs = await this._siteNoteTabUrls(ingressLease);
+			const tabId = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token);
+			const origin = paradisSiteNoteOrigin(tabId !== undefined ? tabs?.get(tabId) : undefined);
 			if (origin === undefined) {
 				return result;
 			}
-			const space = await this._siteNoteSpace(ingressLease);
+			const space = await this._siteNoteSpaceOf(ingressLease);
 			if (space === undefined) {
 				return result;
 			}
@@ -4595,15 +4624,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolError(CALLER_UNVERIFIED_PAGE_OPS_MESSAGE);
 		}
 		const args = isExactRecord(rawArgs) ? rawArgs : {};
-		const origin = paradisSiteNoteOrigin(typeof args.url === 'string' ? args.url : this._siteNoteUrl(token, undefined));
+		const tabs = await this._siteNoteTabUrls(ingressLease, signal);
+		this._requireIngressLease(ingressLease);
+		if (tabs === undefined) {
+			return this._toolError(`${name}: Para Code could not read the tabs of this terminal pane. Try again.`);
+		}
+		const defaultTabId = this._defaultTabId(token);
+		const origin = paradisSiteNoteOrigin(typeof args.url === 'string' ? args.url : defaultTabId !== undefined ? tabs.get(defaultTabId) : undefined);
 		if (origin === undefined) {
 			return this._toolError(`${name} needs a website: pass "url" (http or https), or open the site in this pane's current tab first.`);
 		}
-		if (name !== 'list_site_notes' && !this._siteNoteOpenOrigins(token).has(origin)) {
+		const openOrigins = new Set([...tabs.values()].map(url => paradisSiteNoteOrigin(url)));
+		if (name !== 'list_site_notes' && !openOrigins.has(origin)) {
 			// 開いているページの文が、別のサイトのメモを書き換えさせないように（evil.example から bank.example へ）
 			return this._toolError(`${name} only changes notes of a site open in this pane's tabs, and ${origin} is not. Open the site first, or leave the note while you are on it.`);
 		}
-		const space = await this._siteNoteSpace(ingressLease);
+		const space = await this._siteNoteSpaceOf(ingressLease);
 		this._requireIngressLease(ingressLease);
 		if (space === undefined) {
 			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so site notes are not available here.`);
