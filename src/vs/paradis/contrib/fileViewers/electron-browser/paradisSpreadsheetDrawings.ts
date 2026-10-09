@@ -833,8 +833,8 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	const chartRef = uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart' ? xmlChild(graphicData, 'chart') : null;
 	const xml = chartRef ? context.charts[relationshipId(chartRef, 'id')] : undefined;
 	const chart = xml ? parseChartXml(xml, context, context.limits) : undefined;
-	if (!chart) {
-		context.undrawn.push({ kind: chartRef ? 'chart' : 'graphicFrame', ...(name ? { name } : {}), from: box.from });
+	if (!chart || chart === 'overLimit') {
+		context.undrawn.push({ kind: chart === 'overLimit' ? 'overLimit' : chartRef ? 'chart' : 'graphicFrame', ...(name ? { name } : {}), from: box.from });
 		return;
 	}
 	if (!reserveShape(context, name, box)) {
@@ -896,8 +896,11 @@ function richText(el: Element | null): string {
 	return parts.join('');
 }
 
-/** chartN.xml の保存済みの値（numCache・strCache）からグラフを組み立てる。描けない種類が混ざれば undefined。 */
-export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' | 'themeColors'>, limits: Pick<ParadisSpreadsheetDrawingLimits, 'chartSeries' | 'chartPoints'> = PARADIS_SPREADSHEET_DRAWING_LIMITS): IParadisChartData | undefined {
+/**
+ * chartN.xml の保存済みの値（numCache・strCache）からグラフを組み立てる。描けない種類が混ざれば undefined、
+ * 系列や点が上限を越えれば `overLimit`。
+ */
+export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' | 'themeColors'>, limits: Pick<ParadisSpreadsheetDrawingLimits, 'chartSeries' | 'chartPoints'> = PARADIS_SPREADSHEET_DRAWING_LIMITS): IParadisChartData | 'overLimit' | undefined {
 	let doc: Document;
 	try {
 		const trusted = ttPolicy?.createHTML(xml) ?? xml;
@@ -927,7 +930,7 @@ export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' 
 		const series: IParadisChartSeries[] = [];
 		for (const ser of xmlChildren(group, 'ser')) {
 			if (++seriesCount > limits.chartSeries) {
-				return undefined;
+				return 'overLimit';
 			}
 			const tx = xmlChild(ser, 'tx');
 			const name = richText(tx) || cachedValues(tx).strings.join(' ') || xmlChild(tx, 'v')?.textContent || undefined;
@@ -936,7 +939,7 @@ export function parseChartXml(xml: string, context: Pick<ParseContext, 'parser' 
 			const xValues = kind === 'scatter' ? cachedValues(xmlChild(ser, 'xVal')).numbers : undefined;
 			pointCount += Math.max(values.length, categories.length);
 			if (pointCount > limits.chartPoints) {
-				return undefined;
+				return 'overLimit';
 			}
 			const seriesIndex = series.length;
 			const color = seriesColor(ser, context) ?? chartPalette(context.themeColors, intAttr(xmlChild(ser, 'idx'), 'val', seriesIndex));

@@ -702,7 +702,8 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	// do images only used inside replaced elements and images past the document's pixel budget.
 	const rasterParts = new Map<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>();
 	let rasterPixels = 0;
-	const imagePixelBudget = Math.min(PARADIS_WORD_DOCUMENT_IMAGE_PIXELS, Math.max(0, input.imagePixelBudget ?? PARADIS_WORD_DOCUMENT_IMAGE_PIXELS));
+	const requestedBudget = input.imagePixelBudget;
+	const imagePixelBudget = requestedBudget !== undefined && Number.isFinite(requestedBudget) ? Math.min(PARADIS_WORD_DOCUMENT_IMAGE_PIXELS, Math.max(0, requestedBudget)) : PARADIS_WORD_DOCUMENT_IMAGE_PIXELS;
 	for (const name of imageParts) {
 		await advanceOpcAnalysis(input, state);
 		if (svgParts.has(name) || hiddenImageParts.has(name)) { continue; }

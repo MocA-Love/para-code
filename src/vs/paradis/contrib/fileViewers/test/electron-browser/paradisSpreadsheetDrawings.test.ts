@@ -135,16 +135,18 @@ suite('ParadisSpreadsheetDrawings', () => {
 			shapes: [parse(rect(1) + rect(2)), parse(rect(1) + rect(2) + rect(3))],
 			depth: [parse(anchor(group(2, sp(60, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>')))), parse(anchor(group(3, sp(60, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'))))],
 			path: [parse(anchor(custom(3))), parse(anchor(custom(4)))],
-			series: [!!parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), !!parseChartXml(chart(2, 1), { parser, themeColors: undefined }, limits)],
-			points: [!!parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), !!parseChartXml(chart(1, 4), { parser, themeColors: undefined }, limits)],
+			series: [typeof parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), parseChartXml(chart(2, 1), { parser, themeColors: undefined }, limits)],
+			points: [typeof parseChartXml(chart(1, 3), { parser, themeColors: undefined }, limits), parseChartXml(chart(1, 4), { parser, themeColors: undefined }, limits)],
+			chartFrame: parseDrawingObjects([{ xml: drawing(anchor(`<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="80" name="Chart 80"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:r="${R}" r:id="rIdChart"/></a:graphicData></a:graphic></xdr:graphicFrame>`)), media: {}, charts: { rIdChart: chart(2, 1) } }], undefined, limits).undrawn.map(object => object.kind),
 			omitted: parseDrawingObjects([{ xml: '', media: {}, omitted: true }]).undrawn.map(object => object.kind),
 			defaults: PARADIS_SPREADSHEET_DRAWING_LIMITS,
 		}, {
 			shapes: [[2, ''], [2, 'overLimit']],
 			depth: [[1, ''], [0, 'overLimit']],
 			path: [[1, ''], [0, 'overLimit']],
-			series: [true, false],
-			points: [true, false],
+			series: ['object', 'overLimit'],
+			points: ['object', 'overLimit'],
+			chartFrame: ['overLimit'],
 			omitted: ['overLimit'],
 			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000 },
 		});
@@ -161,6 +163,19 @@ suite('ParadisSpreadsheetDrawings', () => {
 			transforms: [{ frame: { x: 0, y: 0, width: 1, height: 1 }, rotation: 90, flipH: true }],
 			attribute: 'rotate(90 100 50) translate(100 50) scale(-1 1) translate(-100 -50)',
 		});
+	});
+
+	test('keeps text readable inside a flipped group', () => {
+		const flipped = `<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="90" name="Group 90"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr><a:xfrm flipH="1"><a:off x="0" y="0"/><a:ext cx="100" cy="100"/><a:chOff x="0" y="0"/><a:chExt cx="100" cy="100"/></a:xfrm></xdr:grpSpPr>`
+			+ sp(91, `${xfrm(0, 0, 50, 100)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>`, '<xdr:txBody><a:bodyPr/><a:p><a:r><a:t>AB</a:t></a:r></a:p></xdr:txBody>') + '</xdr:grpSp>';
+		const { shapes } = parseDrawingObjects([{ xml: drawing(anchor(flipped)), media: {} }]);
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		const drawn = appendShapeSvg(svg, shapes[0], { x: 0, y: 0, width: 50, height: 100 }, { stroke: '#000000', strokeWidth: 1, dash: '', opacity: 1, content: true }, { x: 0, y: 0, width: 100, height: 100 });
+		const textGroup = drawn.querySelector('foreignObject')!.parentElement!;
+		deepStrictEqual([drawn.getAttribute('transform'), textGroup.getAttribute('transform')], [
+			'translate(50 50) scale(-1 1) translate(-50 -50)',
+			'translate(25 50) scale(-1 1) translate(-25 -50)',
+		]);
 	});
 
 	test('builds preset geometry paths in the frame and draws a chart', () => {

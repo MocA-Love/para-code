@@ -355,7 +355,14 @@ export function appendShapeSvg(parent: Element, shape: IParadisRenderShape, box:
 	group.appendChild(shapeGroup);
 	if (paint.content && shape.text) {
 		const textGroup = doc.createElementNS(SVG_NS, 'g');
-		const rotation = transformAttribute(shape, box, false);
+		// 外側のグループの反転は文字の位置だけを動かし、字形は裏返さない。奇数回の反転を、文字の枠の中心まわりの
+		// 反転で打ち消す（外側の反転と合わせると、字形は表のまま位置だけが写る）。
+		const flipH = (shape.groupTransforms ?? []).filter(transform => transform.flipH).length % 2 === 1;
+		const flipV = (shape.groupTransforms ?? []).filter(transform => transform.flipV).length % 2 === 1;
+		const cx = box.x + box.width / 2;
+		const cy = box.y + box.height / 2;
+		const counter = flipH || flipV ? `translate(${round(cx)} ${round(cy)}) scale(${flipH ? -1 : 1} ${flipV ? -1 : 1}) translate(${round(-cx)} ${round(-cy)})` : '';
+		const rotation = [transformAttribute(shape, box, false), counter].filter(Boolean).join(' ');
 		if (rotation) {
 			textGroup.setAttribute('transform', rotation);
 		}
