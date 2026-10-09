@@ -10,7 +10,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetBrokenImages } from '../../electron-browser/paradisSpreadsheetBrokenImages.js';
 import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
-import { appendChartSvg, appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
+import { appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
+import { appendChartSvg } from '../../electron-browser/paradisSpreadsheetChartSvg.js';
 
 // Invented minimal drawings. None of them comes from a real file.
 const XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
@@ -104,7 +105,8 @@ suite('ParadisSpreadsheetDrawings', () => {
 		const frame = (id: number, uri: string, inner: string) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${uri}">${inner}</a:graphicData></a:graphic></xdr:graphicFrame>`;
 		const chartUri = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
 		const barChart = `<c:chartSpace xmlns:c="${C}" xmlns:a="${A}"><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Sales</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:tx><c:strRef><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>A</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:ptCount val="2"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>3</c:v></c:pt><c:pt idx="1"><c:v>5</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea><c:legend/></c:chart></c:chartSpace>`;
-		const radarChart = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:radarChart/></c:plotArea></c:chart></c:chartSpace>`;
+		// 補助円（ofPieChart）はまだ描かない種類。
+		const radarChart = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:ofPieChart/></c:plotArea></c:chart></c:chartSpace>`;
 		const { shapes, undrawn } = parseDrawingObjects([{
 			xml: drawing([
 				anchor(pic(30, 'rIdPng')),
@@ -128,6 +130,29 @@ suite('ParadisSpreadsheetDrawings', () => {
 			undrawn: [['image', 'Picture 31'], ['chart', 'Chart 33'], ['graphicFrame', 'Chart 34']],
 			placeholders: ['drawing.image', 'drawing.chart', 'drawing.graphicFrame'],
 		});
+	});
+
+	test('counts the points of a chart each time it is referenced, so one chart cannot be drawn thousands of times', () => {
+		// 3 点のグラフを 5 回参照する。シートの合計の上限 7 なら、描けるのは 2 回まで。
+		const chartXml = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:lineChart><c:ser><c:idx val="0"/><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>`;
+		const chartFrame = (id: number) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${C}"><c:chart r:id="rIdSame"/></a:graphicData></a:graphic></xdr:graphicFrame>`;
+		const frames = [1, 2, 3, 4, 5].map(index => anchor(chartFrame(90 + index), [index, 0], [index + 1, 1])).join('');
+		const { shapes, undrawn } = parseDrawingObjects([{ xml: drawing(frames), media: {}, charts: { rIdSame: chartXml } }], undefined, { ...PARADIS_SPREADSHEET_DRAWING_LIMITS, chartPointsPerSheet: 7 });
+		deepStrictEqual({ drawn: shapes.length, undrawn: undrawn.map(object => object.kind) }, { drawn: 2, undrawn: ['overLimit', 'overLimit', 'overLimit'] });
+	});
+
+	test('counts data labels across the sheet and reads only the charts the drawing names', () => {
+		// 3 点にラベルを出すグラフを 2 回参照する。シートのラベルの上限 4 なら、2 回目はラベルを省く。
+		const labelled = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:lineChart><c:ser><c:idx val="0"/><c:dLbls><c:showVal val="1"/></c:dLbls><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>`;
+		const chartFrame = (id: number, rid: string) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${C}"><c:chart r:id="${rid}"/></a:graphicData></a:graphic></xdr:graphicFrame>`;
+		const labels = parseDrawingObjects([{ xml: drawing(anchor(chartFrame(1, 'rIdA'), [0, 0], [1, 1]) + anchor(chartFrame(2, 'rIdA'), [1, 0], [2, 1])), media: {}, charts: { rIdA: labelled } }], undefined, { ...PARADIS_SPREADSHEET_DRAWING_LIMITS, chartLabelsPerSheet: 4 });
+		// 関係の id が `toString` や `__proto__` でも、継承した値を chartN.xml として読まない。
+		const inherited = parseDrawingObjects([{ xml: drawing(anchor(chartFrame(3, 'toString')) + anchor(chartFrame(4, '__proto__'), [4, 4], [5, 5])), media: {}, charts: {} }]);
+		deepStrictEqual({
+			labels: labels.shapes.map(shape => !!shape.chart?.groups[0].series[0].dataLabels),
+			counted: labels.undrawn.map(object => object.kind),
+			inherited: [inherited.shapes.length, inherited.undrawn.map(object => object.kind)],
+		}, { labels: [true, false], counted: ['chartLabels'], inherited: [0, ['chart', 'chart']] });
 	});
 
 	test('stops at each drawing limit plus one and counts what it did not draw', () => {
@@ -160,7 +185,7 @@ suite('ParadisSpreadsheetDrawings', () => {
 			points: ['object', 'overLimit'],
 			chartFrame: ['overLimit'],
 			omitted: ['overLimit'],
-			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000 },
+			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000, chartPointsPerSheet: 200_000, chartLabelsPerSheet: 10_000 },
 		});
 	});
 
