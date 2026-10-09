@@ -4706,6 +4706,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				const pinnedTabId = scopedCall.tabId;
 				const runStepsCall = {
 					signal,
+					// 決まった時間の待ち（sleep_ms）と条件の確かめ直しの間は、取り消されたらすぐ抜ける
+					sleep: (ms: number) => paradisSleepUnlessAborted(ms, signal),
 					callTool: (stepName: string, stepArgs: Record<string, unknown>) => this._callTool(ingressLease, {
 						name: stepName,
 						arguments: pinnedTabId !== undefined && !Object.hasOwn(stepArgs, PARADIS_TAB_ID_ARGUMENT) ? { ...stepArgs, [PARADIS_TAB_ID_ARGUMENT]: pinnedTabId } : stepArgs,

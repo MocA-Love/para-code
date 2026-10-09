@@ -23,6 +23,12 @@ const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	...paradisConfigurationNodeBase,
 	properties: {
+		[PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.runStepsFlow', "（試験的）エージェントが内蔵ブラウザで、前の結果を使う・条件を待つ・繰り返す、を 1 回の呼び出しで書けるようにします。すべてが効くのは、オンにした後に起動したエージェントからです。")
+		},
 		[PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING]: {
 			type: 'boolean',
 			default: true,
@@ -45,12 +51,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントが内蔵ブラウザで操作した結果に、使えるタブ、その操作で開いたページ、新しいダウンロード、開いているダイアログを添えます。前回と同じ内容は省きます。")
-		},
-		[PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING]: {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.runStepsFlow', "（試験的）エージェントが内蔵ブラウザの run_steps に、前の手順の結果の参照、条件を待って確かめる手順（expect）、一覧の項目ごとの繰り返し（for_each）、条件が成り立つまでの繰り返し（repeat_until）を書けるようにします。手順は合計 200 まで、時間は既定で 240 秒までです。有効にした後は、エージェントを起動し直すと使えます。")
 		}
 	}
 });
