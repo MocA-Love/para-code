@@ -35,12 +35,14 @@ export async function parseSpreadsheetResource(
 	// 返り値ではなくコールバックにしてあるのは、既存の呼び出し側の戻り値の形を変えないため。
 	// 読んだバイト列も渡す（詳しい解析へ、読み直さずにそのまま渡すため）。
 	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
+	/** ブックで描く画像の画素の合計の上限。比較は左右で半分ずつ渡す。無ければ既定値。 */
+	imagePixelBudget?: number,
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	onSourceBytes?.(content.value.byteLength, content.value);
 	throwIfNotWorkbook(resource, content.value);
 	const base64 = encodeBase64(content.value);
-	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
+	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]);
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {

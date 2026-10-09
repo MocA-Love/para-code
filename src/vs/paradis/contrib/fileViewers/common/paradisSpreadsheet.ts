@@ -167,10 +167,15 @@ export interface IParadisShapeGroupTransform {
 	readonly flipV?: boolean;
 }
 
+/** 画像を描かなかった理由。EMF・WMF、表示しない形式（BMP など）、中身を確かめられなかったもの、1 枚が大きすぎるもの、ブックの画素の上限を越えたもの。 */
+export type ParadisSpreadsheetImageRejection = 'metafile' | 'unsupportedFormat' | 'unverified' | 'tooLarge' | 'overBudget';
+
 /** 描けなかった図形（代替表示に数える）。 */
 export interface IParadisUndrawnObject {
 	/** `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。 */
 	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit';
+	/** 画像を描かなかった理由。 */
+	readonly reason?: ParadisSpreadsheetImageRejection;
 	readonly name?: string;
 	readonly from?: IParadisRenderAnchor;
 }
@@ -179,6 +184,8 @@ export interface IParadisUndrawnObject {
 export interface IParadisDrawingData {
 	readonly xml: string;
 	readonly media: { readonly [rid: string]: string };
+	/** 描かなかった画像（rId→理由）。 */
+	readonly rejectedMedia?: { readonly [rid: string]: ParadisSpreadsheetImageRejection };
 	/** グラフの XML（rId→chartN.xml の文字列）。 */
 	readonly charts?: { readonly [rid: string]: string };
 	/** シートごとの XML の上限を越えたので、この drawing を渡さなかった（描かずに代替表示に数える）。 */
@@ -668,5 +675,6 @@ function parseSemanticCellAddress(address: string): { readonly row: number; read
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */
 export interface IParadisSpreadsheetService {
 	/** base64エンコードされた xlsx バイト列をパースして構造化データを返す。 */
-	parseWorkbook(base64Content: string): Promise<IParadisWorkbookData>;
+	/** `imagePixelBudget` はブックで描く画像の画素の合計の上限（既定は 1 億。比較では左右で半分ずつ）。 */
+	parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 }

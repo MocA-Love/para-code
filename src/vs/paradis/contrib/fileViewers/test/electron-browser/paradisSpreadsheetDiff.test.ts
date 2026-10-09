@@ -244,6 +244,60 @@ suite('paradisSpreadsheetDiff', () => {
 		]);
 	});
 
+	test('compares the text, text format, fill, and geometry of shapes', () => {
+		const text = (value: string, bold = false) => ({ paragraphs: [{ runs: [{ text: value, ...(bold ? { bold: true } : {}) }] }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true });
+		const box = (extra: Partial<IParadisRenderShape>) => lineShape({ type: 'rect', name: 'Box 1', geometry: 'rect', text: text('pending'), ...extra });
+		const changed = buildShapeDiff([box({})], [box({ text: text('approved'), fill: '#E2F0D9', geometry: 'roundRect' })]);
+		const formatOnly = buildShapeDiff([box({})], [box({ text: text('pending', true) })]);
+		deepStrictEqual({
+			status: changed.modifiedRenders[0].status,
+			details: changed.modifiedRenders[0].diffDetails?.map(detail => [detail.kind, detail.original, detail.modified]),
+			formatOnly: formatOnly.modifiedRenders[0].diffDetails?.map(detail => detail.kind),
+			unchanged: buildShapeDiff([box({})], [box({})]).modifiedRenders[0].status,
+		}, {
+			status: 'changed',
+			details: [['objectText', 'pending', 'approved'], ['objectFill', undefined, '#E2F0D9'], ['objectGeometry', 'rect', 'roundRect']],
+			formatOnly: ['objectTextFormat'],
+			unchanged: 'unchanged',
+		});
+	});
+
+	test('keeps which characters carry which format, and shows where a long text starts to differ', () => {
+		const runs = (...parts: [string, boolean][]) => ({ paragraphs: [{ runs: parts.map(([text, bold]) => ({ text, ...(bold ? { bold: true } : {}) })) }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true });
+		const box = (text: IParadisRenderShape['text']) => lineShape({ type: 'rect', name: 'Box 1', geometry: 'rect', text });
+		const swapped = buildShapeDiff([box(runs(['AB', true], ['CD', false]))], [box(runs(['AB', false], ['CD', true]))]).modifiedRenders[0].diffDetails ?? [];
+		const merged = buildShapeDiff([box(runs(['AB', true], ['CD', true]))], [box(runs(['ABCD', true]))]).modifiedRenders[0].status;
+		const head = 'x'.repeat(600);
+		const long = buildShapeDiff([box(runs([`${head}old tail`, false]))], [box(runs([`${head}new tail`, false]))]).modifiedRenders[0].diffDetails?.find(detail => detail.kind === 'objectText');
+		deepStrictEqual({
+			swapped: swapped.map(detail => [detail.kind, detail.original, detail.modified]),
+			merged,
+			long: [long?.original?.startsWith('…') && long.original.includes('old tail'), long?.modified?.startsWith('…') && long.modified.includes('new tail'), (long?.original?.length ?? 0) <= 512],
+		}, {
+			swapped: [['objectTextFormat', '2: bold / 2: default | top left', '2: default / 2: bold | top left']],
+			merged: 'unchanged',
+			long: [true, true, true],
+		});
+	});
+
+	test('pairs shapes that share a name by id, then by position, without losing either', () => {
+		const named = (extra: Partial<IParadisRenderShape>) => lineShape({ name: 'Arrow', ...extra });
+		const lower = { from: { c: 0, co: 0, r: 5, ro: 0 }, to: { c: 1, co: 0, r: 6, ro: 0 } };
+		const byId = buildShapeDiff([named({ shapeId: '1' }), named({ shapeId: '2', ...lower })], [named({ shapeId: '2', ...lower, outlineColor: '#FF0000' }), named({ shapeId: '1' })]);
+		const byPosition = buildShapeDiff([named({}), named(lower)], [named({ ...lower, outlineColor: '#FF0000' }), named({})]);
+		const extra = buildShapeDiff([named({})], [named({}), named(lower)]);
+		const summary = (diff: ReturnType<typeof buildShapeDiff>) => ({
+			original: diff.originalRenders.map(render => render.status),
+			modified: diff.modifiedRenders.map(render => render.status),
+			changes: diff.changes.map(change => [change.key, change.status]),
+		});
+		deepStrictEqual([summary(byId), summary(byPosition), summary(extra)], [
+			{ original: ['unchanged', 'changed'], modified: ['changed', 'unchanged'], changes: [['Arrow#2', 'changed']] },
+			{ original: ['unchanged', 'changed'], modified: ['changed', 'unchanged'], changes: [['Arrow#2', 'changed']] },
+			{ original: ['unchanged'], modified: ['unchanged', 'added'], changes: [['Arrow#2', 'added']] },
+		]);
+	});
+
 	test('includes geometry and style details when both change', () => {
 		const originalShape = lineShape();
 		const modifiedShape = lineShape({

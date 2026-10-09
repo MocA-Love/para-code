@@ -474,9 +474,9 @@ suite('ParadisOfficeCorpus', () => {
 		});
 	});
 
-	test('keeps images past the document pixel budget as boxes', async () => {
+	test('keeps images past the document pixel budget, and images too large on their own, as boxes that say why', async () => {
 		// The inspector reads only the header, so the claimed sizes need no pixel data.
-		const images = [minimalPng(7_000, 7_000), minimalPng(7_000, 7_000), minimalPng(7_000, 1_000)];
+		const images = [minimalPng(7_000, 7_000), minimalPng(7_000, 7_000), minimalPng(7_000, 1_000), minimalPng(40_000, 1)];
 		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
 		const bytes = await wordPackage({
 			body,
@@ -487,7 +487,13 @@ suite('ParadisOfficeCorpus', () => {
 		const whole = await sanitize(bytes);
 		// A view that shows two documents passes half of the budget for each.
 		const half = await sanitizeOfficeDocxPackageForRenderer({ nodeId: 'corpus', source: bytes, archive: await createParadisOfficeWebArchive(bytes.slice()), imagePixelBudget: 50_000_000 });
-		deepStrictEqual([counts(whole), counts(half)], [[2, 1], [1, 2]]);
+		deepStrictEqual({
+			counts: [counts(whole), counts(half)],
+			why: whole.placeholders.map(placeholder => [placeholder.reason, placeholder.detail]),
+		}, {
+			counts: [[2, 2], [1, 3]],
+			why: [['budget', '画像が多いため、表示していません。'], ['budget', '画像が大きすぎるため、表示していません。']],
+		});
 	});
 
 	test('parses a workbook that carries binary parts and Default-typed media (Part 2 §7.2.3.4)', async () => {

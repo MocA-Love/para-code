@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -222,5 +222,172 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			again: undefined,
 			pendingAfter: undefined,
 		});
+	});
+
+	test('reads the raw foreground process title the pty reports, and closes a terminal without shell integration once it is back at the shell', () => {
+		assert.deepStrictEqual({
+			claudePathWithArgs: paradisProgramStatusForeground(undefined, '/Users/example/.local/bin/claude --resume'),
+			nativeVersion: paradisProgramStatusForeground(undefined, '2.1.295'),
+			sshWithHost: paradisProgramStatusForeground(undefined, 'ssh dev-box'),
+			// A named terminal keeps showing the old name; the pty title is what counts.
+			backAtShell: paradisProgramStatusForeground(undefined, 'zsh'),
+			closeAtShellWithoutIntegration: paradisProgramStatusClosesOnForeground(false, 'zsh'),
+			closeWhenTitleUnknown: paradisProgramStatusClosesOnForeground(false, undefined),
+			keepWhileClaude: paradisProgramStatusClosesOnForeground(false, '2.1.295'),
+			keepWithIntegration: paradisProgramStatusClosesOnForeground(true, 'vim'),
+		}, {
+			claudePathWithArgs: 'claude',
+			nativeVersion: 'claude',
+			sshWithHost: 'passthrough',
+			backAtShell: undefined,
+			closeAtShellWithoutIntegration: true,
+			closeWhenTitleUnknown: true,
+			keepWhileClaude: false,
+			keepWithIntegration: false,
+		});
+	});
+
+	test('a pending state stays pending when it is asked for before the mute ends', () => {
+		let now = 0;
+		const gate = new ParadisProgramStatusGate(() => now);
+		gate.query('claude');
+		for (const state of ['idle', 'working', 'done', 'working', 'done'] as const) {
+			gate.accept({ state });
+		}
+		const dueAt = gate.pendingDueAt!;
+		now = dueAt - 1;
+		const tooEarly = gate.releasePending();
+		const stillDue = gate.pendingDueAt;
+		now = dueAt;
+		assert.deepStrictEqual({ tooEarly, stillDue, released: gate.releasePending() }, { tooEarly: undefined, stillDue: dueAt, released: { state: 'done' } });
+	});
+
+	test('closes once a known shell is back in front, even with shell integration, but not for the node of an npm Claude Code', () => {
+		const closes = (title: string | undefined) => paradisProgramStatusClosesOnForeground(true, title);
+		assert.deepStrictEqual({
+			zsh: closes('zsh'),
+			loginZsh: closes('-zsh'),
+			bashPath: closes('/bin/bash --login'),
+			fish: closes('fish'),
+			pwshExe: closes('pwsh.exe'),
+			npmClaudeNode: closes('node'),
+			nativeClaude: closes('2.1.295'),
+			ssh: closes('ssh dev-box'),
+			unknown: closes(undefined),
+		}, {
+			zsh: true,
+			loginZsh: true,
+			bashPath: true,
+			fish: true,
+			pwshExe: true,
+			npmClaudeNode: false,
+			nativeClaude: false,
+			ssh: false,
+			unknown: false,
+		});
+	});
+
+	test('Ctrl+Z holds the gate and fg with the same Claude Code reopens it without a new query, since Claude Code 2.1.295 does not ask again', () => {
+		let now = 0;
+		const gate = new ParadisProgramStatusGate(() => now);
+		const identity = paradisClaudeProcessIdentity('2.1.295')!;
+		const steps: [string, boolean][] = [];
+		gate.query('claude');
+		steps.push(['working before Ctrl+Z', gate.accept({ state: 'working' })]);
+		steps.push(['suspend', gate.suspend(identity)]);
+		steps.push(['state while held', gate.accept({ state: 'blocked', kind: 'permission' })]);
+		steps.push(['another program comes back', gate.resume('cat')]);
+		steps.push(['fg brings the same Claude Code back', gate.resume(identity)]);
+		steps.push(['working after fg', gate.accept({ state: 'working' })]);
+		steps.push(['suspend again', gate.suspend(identity)]);
+		now += PARADIS_PROGRAM_STATUS_WINDOW_MS + 1;
+		steps.push(['fg after the hold expired', gate.resume(identity)]);
+		gate.query('claude');
+		gate.suspend(identity);
+		steps.push(['close drops the hold', gate.close()]);
+		steps.push(['fg after close', gate.resume(identity)]);
+		assert.deepStrictEqual({
+			steps,
+			identities: ['2.1.295', '/Users/example/.local/bin/claude --resume', 'node', 'zsh', undefined].map(title => paradisClaudeProcessIdentity(title)),
+			suspendedCodes: [146, 148, 0, 1, 130, undefined].map(code => paradisIsSuspendedExitCode(code)),
+		}, {
+			steps: [
+				['working before Ctrl+Z', true],
+				['suspend', true],
+				['state while held', false],
+				['another program comes back', false],
+				['fg brings the same Claude Code back', true],
+				['working after fg', true],
+				['suspend again', true],
+				['fg after the hold expired', false],
+				['close drops the hold', false],
+				['fg after close', false],
+			],
+			identities: ['2.1.295', 'claude', undefined, undefined, undefined],
+			suspendedCodes: [true, true, false, false, false, false],
+		});
+	});
+
+	test('a command run while Claude Code is stopped does not drop the hold (shell integration: open, D;148, D;0, title back)', () => {
+		const tracker = new ParadisProgramStatusTracker();
+		const log: string[] = [];
+		const note = (step: string, value: unknown) => log.push(`${step}: ${String(value)}`);
+		note('query', tracker.query('claude', '2.1.295'));
+		note('working', tracker.gate.accept({ state: 'working' }));
+		note('Ctrl+Z (D;148)', tracker.commandFinished(148));
+		note('git status (D;0)', tracker.commandFinished(0));
+		note('title git', tracker.foregroundChanged('git', true));
+		note('title zsh', tracker.foregroundChanged('zsh', true));
+		note('fg (title back)', tracker.foregroundChanged('2.1.295', true));
+		note('open after fg', tracker.gate.isOpen);
+		note('working after fg', tracker.gate.accept({ state: 'working' }));
+		note('/exit then D;0', tracker.commandFinished(0));
+		note('open after the real end', tracker.gate.isOpen);
+		note('same title again without a query', tracker.foregroundChanged('2.1.295', true));
+		note('still closed', tracker.gate.isOpen);
+		assert.deepStrictEqual(log, [
+			'query: true',
+			'working: true',
+			'Ctrl+Z (D;148): clear',
+			'git status (D;0): undefined',
+			'title git: undefined',
+			'title zsh: undefined',
+			'fg (title back): undefined',
+			'open after fg: true',
+			'working after fg: true',
+			'/exit then D;0: clear',
+			'open after the real end: false',
+			'same title again without a query: undefined',
+			'still closed: false',
+		]);
+	});
+
+	test('without shell integration the hold survives other programs (zsh, ls, zsh, version number)', () => {
+		const tracker = new ParadisProgramStatusTracker();
+		const log: string[] = [];
+		const note = (step: string, value: unknown) => log.push(`${step}: ${String(value)}`);
+		// The title is polled, so at the moment of the answer it can still be the shell.
+		note('query while the title is still zsh', tracker.query('claude', 'zsh'));
+		note('title becomes Claude Code', tracker.foregroundChanged('2.1.295', false));
+		note('Ctrl+Z (title zsh)', tracker.foregroundChanged('zsh', false));
+		note('ls', tracker.foregroundChanged('ls', false));
+		note('zsh', tracker.foregroundChanged('zsh', false));
+		note('fg (version number)', tracker.foregroundChanged('2.1.295', false));
+		note('open after fg', tracker.gate.isOpen);
+		note('process exit', tracker.processExited());
+		note('version number after the exit', tracker.foregroundChanged('2.1.295', false));
+		note('open after the exit', tracker.gate.isOpen);
+		assert.deepStrictEqual(log, [
+			'query while the title is still zsh: true',
+			'title becomes Claude Code: undefined',
+			'Ctrl+Z (title zsh): clear',
+			'ls: undefined',
+			'zsh: undefined',
+			'fg (version number): undefined',
+			'open after fg: true',
+			'process exit: clear',
+			'version number after the exit: undefined',
+			'open after the exit: false',
+		]);
 	});
 });
