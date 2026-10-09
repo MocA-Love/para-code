@@ -148,6 +148,54 @@ suite('ParadisOfficeMetafile', () => {
 		deepStrictEqual({ converted: [...converted.keys()], late: late.size }, { converted: ['word/media/image1.emf'], late: 0 });
 	});
 
+	test('folds rectangle clips, bounds the clip chain, and reuses the lowest free WMF object slot', async () => {
+		const rects = Array.from({ length: 10_000 }, (_, index) => emfRecord(30, words(index % 50, 0, 200, 100))); // INTERSECTCLIPRECT
+		const started = Date.now();
+		const folded = await convertParadisOfficeMetafile(minimalEmf([...MAPPING, ...rects, emfRecord(43, words(0, 0, 200, 100))]));
+		const elapsed = Date.now() - started;
+		const path = [emfRecord(59), emfRecord(27, words(0, 0)), emfRecord(54, words(10, 10)), emfRecord(54, words(0, 10)), emfRecord(60), emfRecord(67, words(1))];
+		const deep = await convertParadisOfficeMetafile(minimalEmf(Array.from({ length: 33 }, () => path).flat()));
+		const slots = minimalWmf([
+			wmfRecord(0x02fa, [0, 1, 0, 0, 0]), // pen → 0
+			wmfRecord(0x02fc, [0, 0x00ff, 0, 0]), // 赤のブラシ → 1
+			wmfRecord(0x02fc, [0, 0xff00, 0, 0]), // 緑のブラシ → 2
+			wmfRecord(0x01f0, [1]), // 1 を空ける
+			wmfRecord(0x02fc, [0, 0, 0x00ff, 0]), // 青のブラシ → 空いた 1
+			wmfRecord(0x012d, [1]),
+			wmfRecord(0x0324, [3, 0, 0, 1000, 0, 500, 500]),
+		], [0, 0, 1000, 500], 3);
+		const blue = await convertParadisOfficeMetafile(slots);
+		const unplaced = await convertParadisOfficeMetafile(minimalWmf([wmfRecord(0x041b, [500, 1000, 0, 0])]).slice(22));
+		deepStrictEqual({
+			folded: summary(folded),
+			fast: elapsed < 5_000,
+			deep: summary(deep),
+			blue: blue.ok && blue.svg.includes('fill="#0000ff"'),
+			unplaced: summary(unplaced),
+		}, {
+			folded: { ok: true, format: 'emf', size: [76, 38], elements: 'clipPath path g path path' },
+			fast: true,
+			deep: { ok: false, reason: 'limitExceeded', detail: 'clipDepth' },
+			blue: true,
+			unplaced: { ok: false, reason: 'unsupported', detail: 'wmfExtent' },
+		});
+	});
+
+	test('stops converting a document once its input bytes or records are used up, counting images it could not draw', async () => {
+		const arc = minimalEmf([emfRecord(45, words(0, 0, 10, 10, 0, 0, 10, 10))]);
+		const emf = minimalEmf([...MAPPING, emfRecord(43, words(0, 0, 10, 10))]);
+		const parts = [
+			{ name: 'word/media/image1.emf', bytes: arc, contentType: 'image/x-emf' },
+			{ name: 'word/media/image2.emf', bytes: emf, contentType: 'image/x-emf' },
+		];
+		const [byBytes, byRecords, enough] = await Promise.all([
+			convertParadisOfficeMetafileParts(parts, { inputBytes: arc.byteLength }),
+			convertParadisOfficeMetafileParts(parts, { records: 2 }),
+			convertParadisOfficeMetafileParts(parts),
+		]);
+		deepStrictEqual([byBytes.size, byRecords.size, [...enough.keys()]], [0, 0, ['word/media/image2.emf']]);
+	});
+
 	test('yields to the caller while drawing and stops when the caller throws', async () => {
 		const many = Array.from({ length: 2100 }, () => emfRecord(18, words(1))); // SETBKMODE
 		let calls = 0;

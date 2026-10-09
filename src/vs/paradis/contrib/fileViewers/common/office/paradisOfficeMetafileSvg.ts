@@ -47,10 +47,17 @@ export interface ParadisMetafilePen {
 }
 
 export interface ParadisMetafileClip {
+	/** 作った時点で振る番号。切り抜きの鎖の鍵に使う（経路の文字は鍵に入れない）。 */
+	readonly id: number;
 	/** 出力の座標の経路。 */
 	readonly d: string;
 	readonly rule: 'nonzero' | 'evenodd';
+	/** 軸に沿った矩形なら、その範囲（出力の座標の left・top・right・bottom）。矩形どうしの交わりを 1 つに畳むのに使う。 */
+	readonly rect?: readonly [number, number, number, number];
 }
+
+/** 切り抜きの鎖（交わり）の長さの上限。 */
+export const PARADIS_METAFILE_CLIP_DEPTH = 32;
 
 export interface ParadisMetafileText {
 	/** 文字の基準線の始まり（出力の座標）。 */
@@ -196,6 +203,7 @@ export class ParadisMetafileSvgCanvas {
 	private readonly clipIds = new Map<string, string>();
 	private readonly patternIds = new Map<string, string>();
 	private currentClipKey = '';
+	private lastClipChain: readonly ParadisMetafileClip[] | undefined;
 	private groupOpen = false;
 	private pending: PendingFill | undefined;
 	private characters = 0;
@@ -215,10 +223,18 @@ export class ParadisMetafileSvgCanvas {
 
 	/** これから描く要素の切り抜き（外側から順に、すべての交わり）。 */
 	setClip(chain: readonly ParadisMetafileClip[]): void {
+		// 同じ鎖（同じ配列）なら、作り直さない。
+		if (chain === this.lastClipChain) {
+			return;
+		}
+		if (chain.length > PARADIS_METAFILE_CLIP_DEPTH) {
+			throw new ParadisOfficeMetafileStop('limitExceeded', 'clipDepth');
+		}
+		this.lastClipChain = chain;
 		let key = '';
 		let id = '';
 		for (const clip of chain) {
-			key += `|${clip.rule}:${clip.d}`;
+			key += `.${clip.id}`;
 			let existing = this.clipIds.get(key);
 			if (!existing) {
 				existing = `c${this.nextId++}`;
