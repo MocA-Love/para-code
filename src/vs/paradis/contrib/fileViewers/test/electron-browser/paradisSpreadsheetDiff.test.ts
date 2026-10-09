@@ -244,6 +244,24 @@ suite('paradisSpreadsheetDiff', () => {
 		]);
 	});
 
+	test('compares the text, text format, fill, and geometry of shapes', () => {
+		const text = (value: string, bold = false) => ({ paragraphs: [{ runs: [{ text: value, ...(bold ? { bold: true } : {}) }] }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true });
+		const box = (extra: Partial<IParadisRenderShape>) => lineShape({ type: 'rect', name: 'Box 1', geometry: 'rect', text: text('pending'), ...extra });
+		const changed = buildShapeDiff([box({})], [box({ text: text('approved'), fill: '#E2F0D9', geometry: 'roundRect' })]);
+		const formatOnly = buildShapeDiff([box({})], [box({ text: text('pending', true) })]);
+		deepStrictEqual({
+			status: changed.modifiedRenders[0].status,
+			details: changed.modifiedRenders[0].diffDetails?.map(detail => [detail.kind, detail.original, detail.modified]),
+			formatOnly: formatOnly.modifiedRenders[0].diffDetails?.map(detail => detail.kind),
+			unchanged: buildShapeDiff([box({})], [box({})]).modifiedRenders[0].status,
+		}, {
+			status: 'changed',
+			details: [['objectText', 'pending', 'approved'], ['objectFill', undefined, '#E2F0D9'], ['objectGeometry', 'rect', 'roundRect']],
+			formatOnly: ['objectTextFormat'],
+			unchanged: 'unchanged',
+		});
+	});
+
 	test('includes geometry and style details when both change', () => {
 		const originalShape = lineShape();
 		const modifiedShape = lineShape({

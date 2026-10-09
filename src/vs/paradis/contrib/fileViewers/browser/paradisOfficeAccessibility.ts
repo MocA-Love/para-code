@@ -404,6 +404,10 @@ export function paradisOfficeChangeLabel(change: Pick<ParadisOfficeChange, 'cate
 		case 'conditionalFormatting.diagonalBorder': return localize('paradis.office.change.conditionalDiagonal', "条件付き書式の斜線");
 		case 'table.diagonalBorder': return localize('paradis.office.change.tableDiagonal', "表の斜線");
 		case 'object.lineGeometry': return localize('paradis.office.change.drawingLine', "図形の線");
+		case 'object.text': return localize('paradis.office.change.objectText', "図形の文字の変更");
+		case 'object.textFormat': return localize('paradis.office.change.objectTextFormat', "図形の文字の書式の変更");
+		case 'object.fill': return localize('paradis.office.change.objectFill', "図形の塗りの変更");
+		case 'object.geometry': return localize('paradis.office.change.objectGeometry', "図形の形の変更");
 	}
 	switch (change.category) {
 		case 'content': return localize('paradis.office.change.content', "内容の変更");
