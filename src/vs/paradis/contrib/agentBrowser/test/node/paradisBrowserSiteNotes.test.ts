@@ -38,7 +38,7 @@ suite('Paradis site notes (E4)', () => {
 
 	test('notes are kept per repository and origin, with their date and writer, and survive a new store', async () => {
 		const file = join(folder, 'notes.json');
-		const store = new ParadisSiteNotesStore(file, () => new Date('2026-10-10T03:00:00Z'));
+		const store = new ParadisSiteNotesStore(file, () => new Date(2026, 9, 10, 12));
 		const first = await store.write('/repo-a', 'http://localhost:3000', '  Dates are filled as YYYY/MM/DD.  ', { agent: 'claude', commit: 'abc1234' });
 		await store.write('/repo-b', 'http://localhost:3000', 'Another product on the same port.', { agent: 'codex' });
 		const reread = new ParadisSiteNotesStore(file);
@@ -74,7 +74,7 @@ suite('Paradis site notes (E4)', () => {
 	});
 
 	test('a note written in one pane is shown once to the next pane that opens the site, and only a verified caller can write', async () => {
-		const store = new ParadisSiteNotesStore(join(folder, 'notes.json'), () => new Date('2026-10-10T03:00:00Z'));
+		const store = new ParadisSiteNotesStore(join(folder, 'notes.json'), () => new Date(2026, 9, 10, 12));
 		let verified = true;
 		const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 			_siteNotes: store,
