@@ -40,7 +40,8 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisPdfInput } from './paradisPdfInput.js';
 import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { buildParadisPdfViewerHtml, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
+import { buildParadisPdfViewerHtml, PARADIS_PDF_FIRST_PAINT_MESSAGE, shouldParadisPdfUseRangeRequests } from '../common/paradisPdfViewerHtml.js';
+import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 
 /** vendored pdf.js 成果物の配置ディレクトリ（AppResourcePath）。 */
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
@@ -91,6 +92,10 @@ export class ParadisPdfFileEditor extends EditorPane {
 	private _currentResource: URI | undefined;
 	private _renderGeneration = 0;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	/** 開いてから最初のページが描けるまでの計測（Sentry へ数値だけ送る）。 */
+	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
+	/** いま描いている文書の、計測に添える値（大きさと区間読みか）。 */
+	private _renderedDocument: { readonly sizeKb: number | undefined; readonly rangeRequests: boolean } | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -124,6 +129,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 		const resource = (input as ParadisPdfInput).resource;
 		this._currentResource = resource;
+		this._openTiming.value = startParadisViewerOpenTiming('pdf');
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
@@ -228,6 +234,17 @@ export class ParadisPdfFileEditor extends EditorPane {
 		});
 		this._webview = webview;
 		store.add(webview);
+		store.add(webview.onMessage(({ message }) => {
+			if (typeof message === 'object' && message !== null && (message as { type?: unknown }).type === PARADIS_PDF_FIRST_PAINT_MESSAGE) {
+				const pages = (message as { pages?: unknown }).pages;
+				this._openTiming.value?.painted({
+					...(typeof pages === 'number' ? { safe_pages: pages } : {}),
+					...(this._renderedDocument?.sizeKb !== undefined ? { safe_size_kb: this._renderedDocument.sizeKb } : {}),
+					safe_range: this._renderedDocument?.rangeRequests ?? false,
+				});
+				this._openTiming.clear();
+			}
+		}));
 		return webview;
 	}
 
@@ -283,6 +300,8 @@ export class ParadisPdfFileEditor extends EditorPane {
 		const served = this._webviewServiceWorkerDisabled && documentUrl !== undefined;
 		const pdfUrl = served ? documentUrl : asWebviewUri(resource, remoteInfo).toString(true);
 		const libBase = served && this._resolvedLibBase ? this._resolvedLibBase : asWebviewUri(FileAccess.asFileUri(PDFJS_MEDIA_ROOT)).toString(true);
+		const useRangeRequests = shouldParadisPdfUseRangeRequests(size, served);
+		this._renderedDocument = { sizeKb: size === undefined ? undefined : Math.round(size / 1024), rangeRequests: useRangeRequests };
 		return buildParadisPdfViewerHtml({
 			nonce: generateUuid(),
 			pdfUrl,
@@ -291,7 +310,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 			// ローカルサーバまで script-src に含めてしまう。
 			serverOrigin: served ? paradisPreviewOrigins(libBase, pdfUrl) : '',
 			// 区間読みは配信サーバ（Range に対応済み）から読むときだけ。service worker 経由は今までどおり。
-			useRangeRequests: shouldParadisPdfUseRangeRequests(size, served),
+			useRangeRequests,
 		});
 	}
 
@@ -326,6 +345,8 @@ export class ParadisPdfFileEditor extends EditorPane {
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
+		// 描く前に閉じた・別のファイルへ移ったものは送らない。
+		this._openTiming.clear();
 		this._currentResource = undefined;
 		if (this._webview && this._webviewClaimed) {
 			this._webview.release(this);
