@@ -19,9 +19,12 @@ import type { IParadisSpreadsheetMetafileWorkerRun } from './paradisSpreadsheetM
 
 class MetafileCancelled extends Error { }
 
+/** 走っている依頼。取り消しは、この中の依頼についてだけ覚える（終わった依頼の取り消しを溜めないため）。 */
+const running = new Set<number>();
 const cancelled = new Set<number>();
 
 async function handle(id: number, request: IParadisSpreadsheetMetafileWorkerRun): Promise<void> {
+	running.add(id);
 	let reply: IParadisOfficeSemanticWorkerReply<IParadisSpreadsheetMetafileImages>;
 	try {
 		const images = await convertParadisSpreadsheetMetafiles(request.bytes, {
@@ -37,6 +40,7 @@ async function handle(id: number, request: IParadisSpreadsheetMetafileWorkerRun)
 	} catch (error) {
 		reply = { kind: 'result', id, result: { images: {}, unavailableReason: error instanceof MetafileCancelled ? 'cancelled' : 'failed' } };
 	} finally {
+		running.delete(id);
 		cancelled.delete(id);
 	}
 	parentPort?.postMessage(reply);
@@ -44,7 +48,9 @@ async function handle(id: number, request: IParadisSpreadsheetMetafileWorkerRun)
 
 parentPort?.on('message', (message: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetMetafileWorkerRun>) => {
 	if (message.op === 'cancel') {
-		cancelled.add(message.id);
+		if (running.has(message.id)) {
+			cancelled.add(message.id);
+		}
 		return;
 	}
 	if (message.request?.bytes instanceof Uint8Array) {
