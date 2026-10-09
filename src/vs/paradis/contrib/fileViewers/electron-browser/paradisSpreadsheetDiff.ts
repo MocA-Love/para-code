@@ -906,14 +906,26 @@ function withShapeChange(key: string, status: IParadisShapeChange['status'], sha
 	return { key, status, anchorRow: shape.from.r + 1, shape, side, diffDetails: details };
 }
 
-/** 2 つの図形が同じ位置（始点と終点）にあるか。 */
-function sameAnchor(original: IParadisRenderShape, modified: IParadisRenderShape): boolean {
-	return anchorText(original.from) === anchorText(modified.from) && anchorText(original.to) === anchorText(modified.to);
+/** 図形の位置（始点と終点）を表す文字列。 */
+function anchorKey(shape: IParadisRenderShape): string {
+	return `${anchorText(shape.from)}|${anchorText(shape.to)}`;
 }
 
 /**
- * 旧版と新版の図形を組にする。キーが 1 対 1 ならそのまま組み、同じ名前の図形が複数あるときは、ID、位置、
- * 並び順の順に組む（Map で上書きして片方を見失わないように）。2 つ目以降の組のキーには番号を付ける。
+ * 同じキーの図形を組む手掛かりの順。ID と位置の両方が同じもの → ID が同じもの → 位置が同じもの。
+ * どれも合わなければ、残りを並び順で組む。
+ */
+const SHAPE_PAIRING_KEYS: readonly ((shape: IParadisRenderShape) => string | undefined)[] = [
+	shape => shape.shapeId === undefined ? undefined : `${shape.shapeId}\u0000${anchorKey(shape)}`,
+	shape => shape.shapeId,
+	shape => anchorKey(shape),
+];
+
+/**
+ * 旧版と新版の図形を組にする。キーが 1 対 1 ならそのまま組み、同じ名前の図形が複数あるときは、
+ * `SHAPE_PAIRING_KEYS` の順に手掛かりで引いて組む（Map で上書きして片方を見失わないように）。手掛かりは
+ * 1 回ずつ Map に入れて引くので、同じキーの図形が多くても組む手間は図形の数に比例する。2 つ目以降の組の
+ * キーには、旧版の並び順で番号を付ける。
  */
 function pairShapes(orig: readonly IParadisRenderShape[], mod: readonly IParadisRenderShape[]): Map<IParadisRenderShape, { readonly key: string; readonly partner?: IParadisRenderShape }> {
 	const group = (shapes: readonly IParadisRenderShape[]) => {
@@ -934,32 +946,47 @@ function pairShapes(orig: readonly IParadisRenderShape[], mod: readonly IParadis
 	const result = new Map<IParadisRenderShape, { readonly key: string; readonly partner?: IParadisRenderShape }>();
 	for (const key of new Set([...originalGroups.keys(), ...modifiedGroups.keys()])) {
 		const originals = originalGroups.get(key) ?? [];
-		const remaining = [...(modifiedGroups.get(key) ?? [])];
-		const pairs: [IParadisRenderShape | undefined, IParadisRenderShape | undefined][] = [];
-		const unmatched: IParadisRenderShape[] = [];
-		for (const original of originals) {
-			const index = remaining.findIndex(candidate => original.shapeId !== undefined && candidate.shapeId === original.shapeId);
-			if (index !== -1) {
-				pairs.push([original, remaining.splice(index, 1)[0]]);
-			} else {
-				unmatched.push(original);
+		const modifieds = modifiedGroups.get(key) ?? [];
+		const partners = new Map<IParadisRenderShape, IParadisRenderShape>();
+		const used = new Set<IParadisRenderShape>();
+		let unmatched: readonly IParadisRenderShape[] = originals;
+		for (const keyOf of originals.length > 1 || modifieds.length > 1 ? SHAPE_PAIRING_KEYS : []) {
+			const candidates = new Map<string, IParadisRenderShape[]>();
+			for (const candidate of modifieds) {
+				const candidateKey = used.has(candidate) ? undefined : keyOf(candidate);
+				if (candidateKey !== undefined) {
+					const list = candidates.get(candidateKey);
+					if (list) {
+						list.push(candidate);
+					} else {
+						candidates.set(candidateKey, [candidate]);
+					}
+				}
 			}
+			const next: IParadisRenderShape[] = [];
+			for (const original of unmatched) {
+				const originalKey = keyOf(original);
+				const partner = originalKey === undefined ? undefined : candidates.get(originalKey)?.shift();
+				if (partner) {
+					used.add(partner);
+					partners.set(original, partner);
+				} else {
+					next.push(original);
+				}
+			}
+			unmatched = next;
 		}
-		const unmatchedByPosition: IParadisRenderShape[] = [];
+		const remaining = modifieds.filter(candidate => !used.has(candidate));
 		for (const original of unmatched) {
-			const index = remaining.findIndex(candidate => sameAnchor(original, candidate));
-			if (index !== -1) {
-				pairs.push([original, remaining.splice(index, 1)[0]]);
-			} else {
-				unmatchedByPosition.push(original);
+			const partner = remaining.shift();
+			if (partner) {
+				partners.set(original, partner);
 			}
 		}
-		for (const original of unmatchedByPosition) {
-			pairs.push([original, remaining.shift()]);
-		}
-		for (const modified of remaining) {
-			pairs.push([undefined, modified]);
-		}
+		const pairs: [IParadisRenderShape | undefined, IParadisRenderShape | undefined][] = [
+			...originals.map((original): [IParadisRenderShape, IParadisRenderShape | undefined] => [original, partners.get(original)]),
+			...remaining.map((modified): [undefined, IParadisRenderShape] => [undefined, modified]),
+		];
 		pairs.forEach(([original, modified], index) => {
 			const pairKey = index === 0 ? key : `${key}#${index + 1}`;
 			if (original) {
