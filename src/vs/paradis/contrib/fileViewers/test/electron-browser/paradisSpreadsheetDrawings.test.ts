@@ -120,6 +120,15 @@ suite('ParadisSpreadsheetDrawings', () => {
 		});
 	});
 
+	test('counts the points of a chart each time it is referenced, so one chart cannot be drawn thousands of times', () => {
+		// 3 点のグラフを 5 回参照する。シートの合計の上限 7 なら、描けるのは 2 回まで。
+		const chartXml = `<c:chartSpace xmlns:c="${C}"><c:chart><c:plotArea><c:lineChart><c:ser><c:idx val="0"/><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>`;
+		const chartFrame = (id: number) => `<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="${id}" name="Chart ${id}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="${C}"><c:chart r:id="rIdSame"/></a:graphicData></a:graphic></xdr:graphicFrame>`;
+		const frames = [1, 2, 3, 4, 5].map(index => anchor(chartFrame(90 + index), [index, 0], [index + 1, 1])).join('');
+		const { shapes, undrawn } = parseDrawingObjects([{ xml: drawing(frames), media: {}, charts: { rIdSame: chartXml } }], undefined, { ...PARADIS_SPREADSHEET_DRAWING_LIMITS, chartPointsPerSheet: 7 });
+		deepStrictEqual({ drawn: shapes.length, undrawn: undrawn.map(object => object.kind) }, { drawn: 2, undrawn: ['overLimit', 'overLimit', 'overLimit'] });
+	});
+
 	test('stops at each drawing limit plus one and counts what it did not draw', () => {
 		const rect = (id: number) => anchor(sp(id, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'));
 		const group = (depth: number, inner: string): string => depth === 0 ? inner
@@ -150,7 +159,7 @@ suite('ParadisSpreadsheetDrawings', () => {
 			points: ['object', 'overLimit'],
 			chartFrame: ['overLimit'],
 			omitted: ['overLimit'],
-			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000 },
+			defaults: { groupDepth: 32, shapesPerSheet: 5_000, pathCommands: 10_000, chartSeries: 255, chartPoints: 100_000, chartPointsPerSheet: 200_000 },
 		});
 	});
 

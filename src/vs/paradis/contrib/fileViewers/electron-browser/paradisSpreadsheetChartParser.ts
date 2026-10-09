@@ -33,6 +33,9 @@ const CHART_KINDS: Record<string, IParadisChartGroup['kind'] | undefined> = {
 	surfaceChart: 'surface', surface3DChart: 'surface',
 };
 
+/** 1 つのグラフで描くデータラベルの数の上限。越えたらラベルを省く（`labelsOmitted`）。 */
+export const PARADIS_CHART_MAX_DATA_LABELS = 1_000;
+
 /** 等高線の帯の色を、いくつ先まで用意するか（目盛りの数の上限と同じ）。 */
 const SURFACE_BAND_COLORS = 50;
 
@@ -259,6 +262,21 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 	if (groups.length === 0) {
 		return undefined;
 	}
+	// データラベルは点ごとに文字を 1 つ作る。多すぎるときはラベルだけを省き、省いたことを伝える。
+	let labelCount = 0;
+	for (const group of groups) {
+		for (const series of group.series) {
+			if (series.dataLabels) {
+				for (const value of series.values) {
+					if (value !== null) {
+						labelCount++;
+					}
+				}
+			}
+		}
+	}
+	const labelsOmitted = labelCount > PARADIS_CHART_MAX_DATA_LABELS;
+	const drawnGroups = labelsOmitted ? groups.map(withoutDataLabels) : groups;
 	const titleEl = xmlChild(chartEl, 'title');
 	const title = titleEl ? richText(xmlChild(titleEl, 'tx')) : '';
 	const autoDeleted = xmlAttr(xmlChild(chartEl, 'autoTitleDeleted') ?? chartEl, 'val') === '1';
@@ -266,10 +284,16 @@ export function parseParadisChartDocument(doc: Document, colors: IParadisChartCo
 	const legend = xmlChild(chartEl, 'legend');
 	const legendPosition = valAttr(xmlChild(legend, 'legendPos'));
 	return {
-		...(singleSeriesTitle ? { title: singleSeriesTitle } : {}), groups, legend: !!legend,
+		...(singleSeriesTitle ? { title: singleSeriesTitle } : {}), groups: drawnGroups, legend: !!legend,
 		...(legendPosition === 'l' || legendPosition === 't' || legendPosition === 'b' || legendPosition === 'tr' || legendPosition === 'r' ? { legendPosition } : {}),
 		...(axes.length ? { axes } : {}),
+		...(labelsOmitted ? { labelsOmitted } : {}),
 	};
+}
+
+function withoutDataLabels(group: IParadisChartGroup): IParadisChartGroup {
+	const { dataLabels: _groupLabels, ...rest } = group;
+	return { ...rest, series: group.series.map(({ dataLabels: _seriesLabels, ...series }) => series) };
 }
 
 function radarStyleOf(group: Element): 'standard' | 'marker' | 'filled' {

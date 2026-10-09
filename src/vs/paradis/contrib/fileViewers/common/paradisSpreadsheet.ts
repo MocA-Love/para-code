@@ -176,6 +176,8 @@ export interface IParadisChartData {
 	/** 凡例の位置（`legendPos`）。無ければ右。 */
 	readonly legendPosition?: 'r' | 'l' | 't' | 'b' | 'tr';
 	readonly axes?: readonly IParadisChartAxis[];
+	/** データラベルが多すぎて省いたか（グラフは描き、代替表示として数える）。 */
+	readonly labelsOmitted?: boolean;
 }
 
 /** シート上に描画された図形(直線コネクタ/図形/画像/グラフ)。重説等の斜線はこの直線コネクタで表現される。 */
@@ -233,8 +235,11 @@ export interface IParadisShapeGroupTransform {
 
 /** 描けなかった図形（代替表示に数える）。 */
 export interface IParadisUndrawnObject {
-	/** `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。 */
-	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit';
+	/**
+	 * `overLimit` は、描く量の上限（図形の数・グループの深さ・道筋の長さ）を越えたもの。`chartLabels` は、
+	 * グラフは描いたが、データラベルが多すぎて省いたもの。
+	 */
+	readonly kind: 'image' | 'chart' | 'graphicFrame' | 'geometry' | 'contentPart' | 'overLimit' | 'chartLabels';
 	readonly name?: string;
 	readonly from?: IParadisRenderAnchor;
 }

@@ -557,6 +557,8 @@ export interface ParadisSpreadsheetDrawingLimits {
 	readonly chartSeries: number;
 	/** 1 つのグラフの点の合計。 */
 	readonly chartPoints: number;
+	/** 1 シートのグラフの点の合計。同じグラフを何度も参照させて描く量を増やすのを止める。 */
+	readonly chartPointsPerSheet?: number;
 }
 
 export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits = Object.freeze({
@@ -565,6 +567,7 @@ export const PARADIS_SPREADSHEET_DRAWING_LIMITS: ParadisSpreadsheetDrawingLimits
 	pathCommands: 10_000,
 	chartSeries: 255,
 	chartPoints: 100_000,
+	chartPointsPerSheet: 200_000,
 });
 
 interface ParseContext {
@@ -575,6 +578,8 @@ interface ParseContext {
 	readonly parser: DOMParser;
 	readonly shapes: IParadisRenderShape[];
 	readonly undrawn: IParadisUndrawnObject[];
+	/** シート全体のグラフの点の合計と、読んだグラフ（同じ chartN.xml を何度も読まない）。 */
+	readonly chartBudget: { points: number; readonly parsed: Map<string, IParadisChartData | 'overLimit' | undefined> };
 }
 
 function relationshipId(el: Element | null, name: string): string {
@@ -793,7 +798,18 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	const uri = graphicData ? xmlAttr(graphicData, 'uri') : '';
 	const chartRef = uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart' ? xmlChild(graphicData, 'chart') : null;
 	const xml = chartRef ? context.charts[relationshipId(chartRef, 'id')] : undefined;
-	const chart = xml ? parseChartXml(xml, context, context.limits) : undefined;
+	let chart = xml !== undefined ? context.chartBudget.parsed.get(xml) : undefined;
+	if (xml !== undefined && !context.chartBudget.parsed.has(xml)) {
+		chart = parseChartXml(xml, context, context.limits);
+		context.chartBudget.parsed.set(xml, chart);
+	}
+	if (chart && chart !== 'overLimit') {
+		// 同じグラフを何度参照しても、描く点はシート全体で数える。
+		context.chartBudget.points += chartPointCount(chart);
+		if (context.chartBudget.points > (context.limits.chartPointsPerSheet ?? Number.POSITIVE_INFINITY)) {
+			chart = 'overLimit';
+		}
+	}
 	if (!chart || chart === 'overLimit') {
 		context.undrawn.push({ kind: chart === 'overLimit' ? 'overLimit' : chartRef ? 'chart' : 'graphicFrame', ...(name ? { name } : {}), from: box.from });
 		return;
@@ -801,10 +817,24 @@ function parseGraphicFrame(el: Element, box: AnchorBox, space: GroupSpace | unde
 	if (!reserveShape(context, name, box)) {
 		return;
 	}
+	if (chart.labelsOmitted) {
+		context.undrawn.push({ kind: 'chartLabels', ...(name ? { name } : {}), from: box.from });
+	}
 	context.shapes.push({
 		type: 'chart', flipH: false, flipV: false, from: box.from, to: box.to, outlineWidth: 0, outlineColor: '#000', dash: 'solid',
 		...(box.ext ? { ext: box.ext } : {}), name, shapeId, chart, ...frameField(childFrame(xmlChild(el, 'xfrm'), space)), ...groupField(space),
 	});
+}
+
+/** グラフが描く点の数（値とバブルの大きさ）。 */
+function chartPointCount(chart: IParadisChartData): number {
+	let count = 0;
+	for (const group of chart.groups) {
+		for (const series of group.series) {
+			count += Math.max(series.values.length, series.categories.length) + (series.bubbleSizes?.length ?? 0);
+		}
+	}
+	return count;
 }
 
 /** 既定の系列の色。テーマの accent1〜6 を順に使い、7 番目からは暗くして回す（Excel の既定の並び）。 */
@@ -879,6 +909,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		return { shapes, undrawn };
 	}
 	const parser = new DOMParser();
+	const chartBudget = { points: 0, parsed: new Map<string, IParadisChartData | 'overLimit' | undefined>() };
 	for (const { xml, media, charts, omitted } of drawings) {
 		if (omitted) {
 			undrawn.push({ kind: 'overLimit' });
@@ -891,7 +922,7 @@ export function parseDrawingObjects(drawings: readonly IParadisDrawingData[] | u
 		} catch {
 			continue;
 		}
-		const context: ParseContext = { limits, media, charts: charts ?? {}, themeColors, parser, shapes, undrawn };
+		const context: ParseContext = { limits, media, charts: charts ?? {}, themeColors, parser, shapes, undrawn, chartBudget };
 		const visit = (el: Element) => {
 			for (const child of xmlChildren(el)) {
 				if (child.localName === 'twoCellAnchor' || child.localName === 'oneCellAnchor' || child.localName === 'absoluteAnchor') {
@@ -936,6 +967,7 @@ function undrawnDetail(kind: IParadisUndrawnObject['kind']): string {
 		case 'chart': return localize('paradis.spreadsheet.undrawnChart', "この種類のグラフは表示できません。");
 		case 'geometry': return localize('paradis.spreadsheet.undrawnGeometry', "この形の図形は、枠の形で近似して表示しています。");
 		case 'overLimit': return localize('paradis.spreadsheet.undrawnOverLimit', "図形が多すぎるか複雑すぎるため、表示していません。");
+		case 'chartLabels': return localize('paradis.spreadsheet.undrawnChartLabels', "データラベルが多すぎるため、グラフのラベルを省いて表示しています。");
 		default: return localize('paradis.spreadsheet.undrawnObject', "この図形は表示できません。");
 	}
 }
