@@ -31,6 +31,9 @@ suite('Paradis devtools tool adjustments', () => {
 			data: refused('data:text/html,<script>alert(1)</script>') !== undefined,
 			chrome: refused('chrome://settings') !== undefined,
 			viewSource: refused('view-source:https://example.com') !== undefined,
+			viewSourceFile: refused('view-source:file:///tmp/report.html') !== undefined,
+			tab: refused('\tjavascript:alert(1)') !== undefined,
+			newline: refused('java\nscript:alert(1)') !== undefined,
 			allowed: ['https://example.com/a', 'http://localhost:3000', 'about:blank', 'file:///tmp/report.html'].map(url => refused(url)),
 			reloadKeepsUrl: refused('javascript:void 0', 'reload'),
 		}, {
@@ -39,6 +42,9 @@ suite('Paradis devtools tool adjustments', () => {
 			data: true,
 			chrome: true,
 			viewSource: true,
+			viewSourceFile: true,
+			tab: true,
+			newline: true,
 			allowed: [undefined, undefined, undefined, undefined],
 			reloadKeepsUrl: undefined,
 		});
