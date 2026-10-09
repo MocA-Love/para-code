@@ -409,6 +409,37 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		}, { afterCachedPart: 1, cachedNote: true, afterClick: 3, afterVerbose: 5 });
 	});
 
+	test('turns an agent take_snapshot into the changes since its previous one only when asked, and keeps the whole page for the next part', async () => {
+		const rows = Array.from({ length: 2000 }, (_, i) => `  uid=1_${i + 10} StaticText "Row ${i}"`).join('\n');
+		const page = (value: string) => ({ content: [{ type: 'text', text: `## Latest page snapshot\nuid=1_0 RootWebArea "Form"\n  uid=1_1 textbox "Name" value="${value}"\n${rows}\n` }] });
+		const fixture = createFakeDevtoolsChildren({
+			toolsListResult: { tools: [{ name: 'take_snapshot' }] },
+			toolCallResults: [page('Ann'), page('Bob'), page('Bob'), page('Cid')],
+		});
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		const call = async (args: object, mode?: 'diff' | 'full') => ((await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', args, undefined, mode)) as { content: { text: string }[] }).content[0].text;
+
+		const first = await call({}, 'diff');
+		const second = await call({}, 'diff');
+		const nextPart = await call({ offset: 20 }, 'diff');
+		const withoutMode = await call({});
+		const afterWithoutMode = await call({}, 'diff');
+		assert.deepStrictEqual({
+			first: first.startsWith('## Latest page snapshot\n'),
+			second: second.split('\n').slice(2),
+			nextPart: nextPart.includes('Row 0') || nextPart.includes('Row 1'),
+			withoutMode: withoutMode.startsWith('## Latest page snapshot\n'),
+			afterWithoutMode: afterWithoutMode.split('\n').slice(2),
+		}, {
+			first: true,
+			second: ['Changed:', '~ uid=1_1 textbox "Name" value="Bob"', ''],
+			nextPart: true,
+			withoutMode: true,
+			// the call without a mode (Para Code's own, or the setting off) does not move what the agent last saw
+			afterWithoutMode: ['Changed:', '~ uid=1_1 textbox "Name" value="Cid"', ''],
+		});
+	});
+
 	test('asks to measure the snapshot root only when the vendored take_snapshot knows the argument, and keeps the measurement out of the text', async () => {
 		const rect = { x: 5, y: 6, width: 70, height: 80 };
 		const body = '## Latest page snapshot\nuid=1_0 RootWebArea\n  uid=1_1 dialog\n    uid=1_2 textbox\n';
