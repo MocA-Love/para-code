@@ -64,6 +64,11 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - セッション履歴の行メニューの結果（コピーした・見つからない・失敗した）はモーダルの中に出す。通知の層（2545）はモーダル（2700）の下にあって見えないため。作業フォルダを開く前にディレクトリか確かめ、macOS のバンドル（`.app` など）は Finder で場所を見せるだけにする
 - 一覧の行との突き合わせは `paradisSessionCatalogId`（agent と正規化したパスのハッシュ）。Codex の一覧は state DB の `rollout_path` から作るので、`CODEX_HOME` をシンボリックリンクにしているとパスの綴りがずれて索引が効かない（その会話は従来の方法で探す）
 
+## Markdown のプレビューの画像は、更新時刻と大きさで覚える（fileViewers、2026-10-09）
+
+- ローカルの画像（`<img>`・`<video>`・`<audio>`・`<source>`）は `data:` URI にして埋め込む。base64 化はネイティブ（`Uint8Array.prototype.toBase64`、無ければ `FileReader`）。作った `data:` URI は `ParadisInlineMediaCache`（`browser/paradisMarkdownInlineResources.ts`）が、ビューアごとに URI・更新時刻・大きさの組で覚える。描き直すたびに、その描画で使わなかった画像は外す。別の文書へ移るとき・ビューアを捨てるときは空にする
+- 仕組みの限界: 更新時刻と大きさがどちらも同じまま中身だけが変わった画像（同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が出続ける。次にどちらかが変わるか、別の文書へ移るまで直らない。中身のハッシュで見分けると読み込みを省けなくなるので、受け入れている
+
 ## Word の詳しい解析は shared process の worker で動かす（fileViewers、2026-10-09、段階 3）
 
 - 入口は `node/word/paradisWordSemanticWorkerMain.ts`。`build/next/index.ts` の `desktopEntryPoints` に載せてある（どこからも import されないため）。ヒープの上限は Office の worker と同じ 384 MiB。worker へは 1 件ずつ送り、実行の締め切りは走り始めた時点で張る。待ち行列には別の締め切り（過ぎたらその依頼だけを取り消す）と長さの上限がある。worker が落ちたら走っていた依頼は失敗にし、shared process の中では解析しない（表示は解析に頼らない）

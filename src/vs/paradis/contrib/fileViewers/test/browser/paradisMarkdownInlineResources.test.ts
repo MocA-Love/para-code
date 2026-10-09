@@ -215,6 +215,21 @@ suite('paradisMarkdownInlineResources', () => {
 			strictEqual(provider.reads, 1);
 		});
 
+		test('inlines video and audio the same way as before, and leaves links alone', async () => {
+			// 埋め込みの対象（img・video・audio・source）と mime は変えていない。リンクは別の処理が書き換える。
+			const disposables = store.add(new DisposableStore());
+			const clip = VSBuffer.fromString('fake-mp4');
+			const sound = VSBuffer.fromString('fake-mp3');
+			const { fileService } = await createFileService(disposables, [['/repo/docs/clip.mp4', clip], ['/repo/docs/sound.mp3', sound], ['/repo/docs/a.png', GIF]]);
+			const result = await inlineParadisMarkdownMedia(
+				'<video src="clip.mp4"></video><audio controls><source src="sound.mp3"></audio><a href="a.png">a</a>',
+				DOC, FOLDER, fileService, CancellationToken.None);
+			deepStrictEqual({ html: result.html, inlined: result.inlined }, {
+				html: `<video src="data:video/mp4;base64,${encodeBase64(clip)}"></video><audio controls=""><source src="data:audio/mpeg;base64,${encodeBase64(sound)}"></audio><a href="a.png">a</a>`,
+				inlined: 2,
+			});
+		});
+
 		test('reuses the data uri of an unchanged image when the document is drawn again', async () => {
 			// 保存のたびに描き直すので、覚えておかないと毎回全部の画像を読み直して base64 にし直す。
 			const disposables = store.add(new DisposableStore());
@@ -239,6 +254,19 @@ suite('paradisMarkdownInlineResources', () => {
 	});
 
 	suite('ParadisInlineMediaCache', () => {
+
+		test('drops the images that the latest drawing did not use', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { fileService } = await createFileService(disposables, [['/repo/docs/a.png', GIF], ['/repo/docs/b.png', VSBuffer.fromString('GIF89a-b')]]);
+			const cache = new ParadisInlineMediaCache();
+			await inlineParadisMarkdownMedia('<img src="a.png"><img src="b.png">', DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			const both = cache.size;
+			await inlineParadisMarkdownMedia('<img src="a.png">', DOC, FOLDER, fileService, CancellationToken.None, undefined, undefined, cache);
+			deepStrictEqual([both, cache.size], [
+				`data:image/png;base64,${encodeBase64(GIF)}`.length + `data:image/png;base64,${encodeBase64(VSBuffer.fromString('GIF89a-b'))}`.length,
+				`data:image/png;base64,${encodeBase64(GIF)}`.length,
+			]);
+		});
 
 		test('keeps one version per file and drops the oldest when it is full', () => {
 			const a = URI.file('/a.png');
