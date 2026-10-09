@@ -71,6 +71,17 @@ suite('ParadisSpreadsheetDrawings', () => {
 		});
 	});
 
+	test('takes each run property the run does not set from the paragraph defaults', () => {
+		const body = '<xdr:txBody><a:bodyPr/><a:p><a:pPr><a:defRPr sz="1400" b="1" i="1"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:latin typeface="Sample Sans"/></a:defRPr></a:pPr>'
+			+ '<a:r><a:rPr b="0"/><a:t>A</a:t></a:r><a:r><a:rPr sz="1000"/><a:t>B</a:t></a:r><a:r><a:t>C</a:t></a:r></a:p></xdr:txBody>';
+		const { shapes } = parseDrawingObjects([{ xml: drawing(anchor(sp(8, '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>', body))), media: {} }]);
+		deepStrictEqual(shapes[0].text?.paragraphs[0].runs, [
+			{ text: 'A', size: 14, italic: true, color: '#FF0000', font: 'Sample Sans' },
+			{ text: 'B', size: 10, bold: true, italic: true, color: '#FF0000', font: 'Sample Sans' },
+			{ text: 'C', size: 14, bold: true, italic: true, color: '#FF0000', font: 'Sample Sans' },
+		]);
+	});
+
 	test('places shapes inside nested groups by their share of the anchor, and picks AlternateContent branches', () => {
 		const group = `<xdr:grpSp><xdr:nvGrpSpPr><xdr:cNvPr id="10" name="Group 10"/><xdr:cNvGrpSpPr/></xdr:nvGrpSpPr><xdr:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000" cy="1000"/><a:chOff x="0" y="0"/><a:chExt cx="1000" cy="1000"/></a:xfrm></xdr:grpSpPr>`
 			+ sp(11, `${xfrm(0, 0, 500, 1000)}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>`)
@@ -182,14 +193,14 @@ suite('ParadisSpreadsheetDrawings', () => {
 	test('says why a picture was not drawn, and looks media up only by its own keys', () => {
 		const pic = (id: number, rid: string) => anchor(`<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${id}" name="Picture ${id}"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="${rid}"/></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>`);
 		const { undrawn } = parseDrawingObjects([{
-			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString'), pic(5, 'rIdMany')].join('')),
+			xml: drawing([pic(1, 'rIdEmf'), pic(2, 'rIdBmp'), pic(3, 'rIdBroken'), pic(4, 'toString'), pic(5, 'rIdMany'), pic(6, 'rIdHuge')].join('')),
 			media: {},
-			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified', rIdMany: 'overBudget' },
+			rejectedMedia: { rIdEmf: 'metafile', rIdBmp: 'unsupportedFormat', rIdBroken: 'unverified', rIdMany: 'overBudget', rIdHuge: 'tooLarge' },
 		}]);
 		const placeholders = spreadsheetUndrawnPlaceholders([{ name: 'Sheet1', rows: [], columnCount: 0, columnWidths: [], truncated: false, minCol: 1, undrawnObjects: undrawn }]);
 		deepStrictEqual({ reasons: undrawn.map(object => object.reason), distinctDetails: new Set(placeholders.map(placeholder => placeholder.detail)).size }, {
-			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified', 'overBudget'],
-			distinctDetails: 4,
+			reasons: ['metafile', 'unsupportedFormat', 'unverified', 'unverified', 'overBudget', 'tooLarge'],
+			distinctDetails: 5,
 		});
 	});
 

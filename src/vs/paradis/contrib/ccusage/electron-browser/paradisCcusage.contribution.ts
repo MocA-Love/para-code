@@ -27,7 +27,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
-import { PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS } from '../common/paradisCcusage.js';
+import { PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS, PARADIS_CCUSAGE_SETTING_EXEC_TIMEOUT_SECONDS } from '../common/paradisCcusage.js';
 import { ParadisCcusageClient, PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH } from './paradisCcusageClient.js';
 import { ParadisCcusageEditor } from './paradisCcusageEditor.js';
 import { ParadisCcusageInput, ParadisCcusageInputSerializer, PARADIS_CCUSAGE_EDITOR_ID, PARADIS_CCUSAGE_INPUT_TYPE_ID } from './paradisCcusageInput.js';
@@ -139,6 +139,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				localize('paradis.ccusage.execTimeoutSeconds.600', "10分。"),
 			],
 			markdownDescription: localize('paradis.ccusage.execTimeoutSeconds', "`ccusage` を1回実行する際のタイムアウトです。`ccusage` は実行のたびにセッションログの全履歴を走査するため、履歴（Claude Code / Codex 等のログ）が大量にある場合は値を増やす必要があるかもしれません。"),
+		},
+		[PARADIS_CCUSAGE_SETTING_ARCHIVE_DIRS]: {
+			type: 'array',
+			items: { type: 'string' },
+			default: [],
+			// 読むのは手元の shared process だけ（SSH 接続中に接続先で数えるときは使わない）。既定プロファイル
+			// 以外の settings.json の値も shared process から読めるよう、execTimeoutSeconds と同じスコープにする。
+			scope: ConfigurationScope.APPLICATION_MACHINE,
+			markdownDescription: localize('paradis.ccusage.archiveDirs', "古い会話の記録を移した場所（外付けディスクやネットワークのディスク）の絶対パス。それぞれの下の `claude`（`projects/` を含む）と `codex`（`sessions/` を含む）を、手元の記録と一緒に使用量へ含めます。つながっていない場所や、2 秒以内に確かめられない場所は飛ばします。応答しない場所が 2 つあると、それが応答するまではほかの場所も読みません。手元と同じ記録が重なっていても二重には数えません（`ccusage` 20.0.14 以上が必要です。それより古い版では二重に数えることがあります）。SSH 接続中に接続先で数えるときは使いません。"),
 		},
 	},
 });

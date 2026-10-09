@@ -277,8 +277,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	}
 
 	/** 開いてから最初に描けた。計測を 1 回だけ送る（2 回目以降の呼び出しは何もしない）。 */
-	private _reportFirstPaint(reused: boolean): void {
-		this._openTiming.value?.painted({ safe_reused: reused });
+	private _reportFirstPaint(): void {
+		this._openTiming.value?.painted();
 		this._openTiming.clear();
 	}
 
@@ -501,8 +501,9 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 		// 既に同じ内容を表示している（可視化のたびの claim など）なら送り直さない。
 		if (this._webview && this._renderedSource && isEqual(this._renderedSource.resource, resource) && this._renderedSource.text === text) {
-			// 同じファイルへ戻ってきた。残してある中身がそのまま見えている。
-			this._reportFirstPaint(true);
+			// 同じファイルへ戻ってきた。残してある中身がそのまま見えているので、描くのにかかった時間ではない。
+			// 送らず、1 回目・2 回目の枠も使わない（使うと、本当の 2 回目がほぼ 0 ms で埋まる）。
+			this._openTiming.clear();
 			return;
 		}
 
@@ -609,7 +610,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** webview 側から内容の反映を知らせるシグナルが来た。 */
 	private _onContentApplied(): void {
-		this._reportFirstPaint(false);
+		this._reportFirstPaint();
 		this._contentWatchdog.clear();
 		this._recoveryPolicy.recordSuccess();
 	}

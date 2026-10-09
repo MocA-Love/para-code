@@ -243,6 +243,8 @@ const STYLE_ORDER = [
 
 const EMPTY_CELL: IParadisCellData = { value: '', style: {} };
 const MAX_DIFF_DETAIL_VALUE_LENGTH = 512;
+/** 長い値を切り出すとき、最初に食い違う位置より前に残す文字数。 */
+const DIFF_DETAIL_CONTEXT_BEFORE = 64;
 
 interface CharRun {
 	value: string;
@@ -260,12 +262,33 @@ function detailValue(value: unknown): string | undefined {
 	return text.length <= MAX_DIFF_DETAIL_VALUE_LENGTH ? text : `${text.slice(0, MAX_DIFF_DETAIL_VALUE_LENGTH - 1)}…`;
 }
 
+/**
+ * 長い 2 つの文を、最初に食い違う位置の前後で同じだけ切り出す。先頭から切ると、上限より後ろだけが変わったときに
+ * 前と後が同じ文に見えるため。
+ */
+function detailValuePair(original: unknown, modified: unknown): [string | undefined, string | undefined] {
+	if (typeof original !== 'string' || typeof modified !== 'string' || Math.max(original.length, modified.length) <= MAX_DIFF_DETAIL_VALUE_LENGTH) {
+		return [detailValue(original), detailValue(modified)];
+	}
+	let first = 0;
+	while (first < original.length && first < modified.length && original.charCodeAt(first) === modified.charCodeAt(first)) {
+		first++;
+	}
+	const start = Math.max(0, first - DIFF_DETAIL_CONTEXT_BEFORE);
+	const window = (text: string) => {
+		const end = start + MAX_DIFF_DETAIL_VALUE_LENGTH - 2;
+		return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
+	};
+	return [window(original), window(modified)];
+}
+
 function pushDetail(details: IParadisDiffDetail[], kind: ParadisDiffDetailKind, original: unknown, modified: unknown, property?: string): void {
 	if (original === modified) {
 		return;
 	}
 	const boundedProperty = detailValue(property);
-	details.push({ kind, ...(boundedProperty ? { property: boundedProperty } : {}), original: detailValue(original), modified: detailValue(modified) });
+	const [boundedOriginal, boundedModified] = detailValuePair(original, modified);
+	details.push({ kind, ...(boundedProperty ? { property: boundedProperty } : {}), original: boundedOriginal, modified: boundedModified });
 }
 
 function normalizeStyle(style: IParadisCellData['style']): Record<string, string> {
@@ -798,7 +821,9 @@ function shapeStyleDetails(original: IParadisRenderShape, modified: IParadisRend
 		pushDetail(details, 'objectImage', imageDescription(original.href), imageDescription(modified.href));
 	}
 	pushDetail(details, 'objectText', shapeText(original), shapeText(modified));
-	pushDetail(details, 'objectTextFormat', shapeTextFormat(original), shapeTextFormat(modified));
+	// 文字が変わったときは文字数がずれるだけで書式の変更に見えるので、書式の並びだけを比べる。
+	const sameText = shapeText(original) === shapeText(modified);
+	pushDetail(details, 'objectTextFormat', shapeTextFormat(original, sameText), shapeTextFormat(modified, sameText));
 	pushDetail(details, 'objectFill', shapeFill(original), shapeFill(modified));
 	pushDetail(details, 'objectGeometry', shapeGeometry(original), shapeGeometry(modified));
 	pushDetail(details, 'objectRotation', original.rotation ? String(Math.round(original.rotation * 100) / 100) : undefined, modified.rotation ? String(Math.round(modified.rotation * 100) / 100) : undefined);
@@ -812,22 +837,40 @@ function shapeText(shape: IParadisRenderShape): string | undefined {
 	return text ? text : undefined;
 }
 
-/** 文字の書式（大きさ・太字・斜体・下線・色・書体・揃え・上下の位置・縦書き）を、比べられる 1 つの文にする。 */
-function shapeTextFormat(shape: IParadisRenderShape): string | undefined {
+/**
+ * 文字の書式（大きさ・太字・斜体・下線・色・書体・揃え・上下の位置・縦書き）を、比べられる 1 つの文にする。
+ * どの文字がどの書式かを残すため、「文字数と書式」の組を文字の順に並べ、隣り合う同じ書式はまとめる。
+ * `withLengths` が false のときは、文字数を付けずに書式の並びだけにする。
+ */
+function shapeTextFormat(shape: IParadisRenderShape, withLengths: boolean): string | undefined {
 	const text = shape.text;
 	if (!text) {
 		return undefined;
 	}
-	const runs = text.paragraphs.flatMap(paragraph => paragraph.runs.filter(run => run.text !== '\n').map(run => [
-		run.size ? `${run.size}pt` : '',
-		run.bold ? 'bold' : '',
-		run.italic ? 'italic' : '',
-		run.underline ? 'underline' : '',
-		run.color ?? '',
-		run.font ?? '',
-	].filter(Boolean).join(' ')));
+	const spans: { length: number; format: string }[] = [];
+	for (const paragraph of text.paragraphs) {
+		for (const run of paragraph.runs) {
+			if (run.text === '\n' || !run.text) {
+				continue;
+			}
+			const format = [
+				run.size ? `${run.size}pt` : '',
+				run.bold ? 'bold' : '',
+				run.italic ? 'italic' : '',
+				run.underline ? 'underline' : '',
+				run.color ?? '',
+				run.font ?? '',
+			].filter(Boolean).join(' ') || 'default';
+			const last = spans[spans.length - 1];
+			if (last?.format === format) {
+				last.length += run.text.length;
+			} else {
+				spans.push({ length: run.text.length, format });
+			}
+		}
+	}
 	const layout = [text.anchor ?? 'top', text.vertical ? 'vertical' : '', ...text.paragraphs.map(paragraph => paragraph.align ?? 'left')].filter(Boolean).join(' ');
-	return [...new Set(runs)].join(' / ') + ` | ${layout}`;
+	return spans.map(span => withLengths ? `${span.length}: ${span.format}` : span.format).join(' / ') + ` | ${layout}`;
 }
 
 function shapeFill(shape: IParadisRenderShape): string | undefined {
@@ -863,38 +906,97 @@ function withShapeChange(key: string, status: IParadisShapeChange['status'], sha
 	return { key, status, anchorRow: shape.from.r + 1, shape, side, diffDetails: details };
 }
 
+/** 2 つの図形が同じ位置（始点と終点）にあるか。 */
+function sameAnchor(original: IParadisRenderShape, modified: IParadisRenderShape): boolean {
+	return anchorText(original.from) === anchorText(modified.from) && anchorText(original.to) === anchorText(modified.to);
+}
+
+/**
+ * 旧版と新版の図形を組にする。キーが 1 対 1 ならそのまま組み、同じ名前の図形が複数あるときは、ID、位置、
+ * 並び順の順に組む（Map で上書きして片方を見失わないように）。2 つ目以降の組のキーには番号を付ける。
+ */
+function pairShapes(orig: readonly IParadisRenderShape[], mod: readonly IParadisRenderShape[]): Map<IParadisRenderShape, { readonly key: string; readonly partner?: IParadisRenderShape }> {
+	const group = (shapes: readonly IParadisRenderShape[]) => {
+		const groups = new Map<string, IParadisRenderShape[]>();
+		for (const shape of shapes) {
+			const key = shapeKey(shape);
+			const list = groups.get(key);
+			if (list) {
+				list.push(shape);
+			} else {
+				groups.set(key, [shape]);
+			}
+		}
+		return groups;
+	};
+	const originalGroups = group(orig);
+	const modifiedGroups = group(mod);
+	const result = new Map<IParadisRenderShape, { readonly key: string; readonly partner?: IParadisRenderShape }>();
+	for (const key of new Set([...originalGroups.keys(), ...modifiedGroups.keys()])) {
+		const originals = originalGroups.get(key) ?? [];
+		const remaining = [...(modifiedGroups.get(key) ?? [])];
+		const pairs: [IParadisRenderShape | undefined, IParadisRenderShape | undefined][] = [];
+		const unmatched: IParadisRenderShape[] = [];
+		for (const original of originals) {
+			const index = remaining.findIndex(candidate => original.shapeId !== undefined && candidate.shapeId === original.shapeId);
+			if (index !== -1) {
+				pairs.push([original, remaining.splice(index, 1)[0]]);
+			} else {
+				unmatched.push(original);
+			}
+		}
+		const unmatchedByPosition: IParadisRenderShape[] = [];
+		for (const original of unmatched) {
+			const index = remaining.findIndex(candidate => sameAnchor(original, candidate));
+			if (index !== -1) {
+				pairs.push([original, remaining.splice(index, 1)[0]]);
+			} else {
+				unmatchedByPosition.push(original);
+			}
+		}
+		for (const original of unmatchedByPosition) {
+			pairs.push([original, remaining.shift()]);
+		}
+		for (const modified of remaining) {
+			pairs.push([undefined, modified]);
+		}
+		pairs.forEach(([original, modified], index) => {
+			const pairKey = index === 0 ? key : `${key}#${index + 1}`;
+			if (original) {
+				result.set(original, { key: pairKey, ...(modified ? { partner: modified } : {}) });
+			}
+			if (modified) {
+				result.set(modified, { key: pairKey, ...(original ? { partner: original } : {}) });
+			}
+		});
+	}
+	return result;
+}
+
 /** 旧版/新版の図形を安定キーで突き合わせ、各版の描画リストと変更一覧を返す。 */
 export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefined, modified: readonly IParadisRenderShape[] | undefined): IParadisShapeDiff {
 	const orig = original ?? [];
 	const mod = modified ?? [];
-	const origByKey = new Map<string, IParadisRenderShape>();
-	for (const s of orig) {
-		origByKey.set(shapeKey(s), s);
-	}
-	const modByKey = new Map<string, IParadisRenderShape>();
-	for (const s of mod) {
-		modByKey.set(shapeKey(s), s);
-	}
+	const pairs = pairShapes(orig, mod);
 
 	const originalRenders: IParadisShapeRender[] = [];
 	const modifiedRenders: IParadisShapeRender[] = [];
 	const changes: IParadisShapeChange[] = [];
 	const pairDetails = new Map<string, { readonly geometry: readonly IParadisDiffDetail[]; readonly style: readonly IParadisDiffDetail[]; readonly all: readonly IParadisDiffDetail[] }>();
-	for (const [key, originalShape] of origByKey) {
-		const modifiedShape = modByKey.get(key);
-		if (!modifiedShape) {
+	for (const originalShape of orig) {
+		const pair = pairs.get(originalShape)!;
+		if (!pair.partner) {
 			continue;
 		}
-		const geometry = shapeGeometryDetails(originalShape, modifiedShape);
-		const style = shapeStyleDetails(originalShape, modifiedShape);
-		pairDetails.set(key, { geometry, style, all: [...geometry, ...style] });
+		const geometry = shapeGeometryDetails(originalShape, pair.partner);
+		const style = shapeStyleDetails(originalShape, pair.partner);
+		pairDetails.set(pair.key, { geometry, style, all: [...geometry, ...style] });
 	}
 
 	// original 側(左)。変更のカウントは削除のみここで、移動/スタイル変更は modified 側で1回だけ数える。
 	for (const s of orig) {
-		const key = shapeKey(s);
-		const m = modByKey.get(key);
-		if (!m) {
+		const { key, partner } = pairs.get(s)!;
+		if (!partner) {
 			const details = shapeRemovedDetails(s);
 			originalRenders.push(withShapeDiff(s, 'removed', details));
 			changes.push(withShapeChange(key, 'removed', s, 'original', details));
@@ -909,9 +1011,8 @@ export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefi
 
 	// modified 側(右)。追加/移動/スタイル変更をここでカウント。
 	for (const s of mod) {
-		const key = shapeKey(s);
-		const o = origByKey.get(key);
-		if (!o) {
+		const { key, partner } = pairs.get(s)!;
+		if (!partner) {
 			const details = shapeAddedDetails(s);
 			modifiedRenders.push(withShapeDiff(s, 'added', details));
 			changes.push(withShapeChange(key, 'added', s, 'modified', details));
