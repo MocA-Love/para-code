@@ -777,7 +777,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.reportBrowserState', "（試験的）新しいページやダウンロードを伝える"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.reportBrowserStateDesc', "エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。"),
+		description: localize('paradis.settings.reportBrowserStateDesc', "新しいページやダウンロード、開いたダイアログなどを、エージェントに伝えます。"),
 		keywords: 'agent browser experimental tabs downloads dialog state',
 	},
 	{
@@ -802,6 +802,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.browserLiveTitleBar', "タイトルバーに「ブラウザ一覧」ボタンを表示"),
 		keywords: 'browser live window titlebar list',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.siteNotes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.siteNotes', "（試験的）サイトのコツをメモして次のエージェントに伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.siteNotesDesc', "エージェントが内蔵ブラウザで使ったサイトについて短いメモを残し、同じリポジトリの次のエージェントへヒントとして渡します。"),
+		keywords: 'agent browser experimental site notes memo hint',
 	},
 	{
 		sectionId: 'psd-sec-browser',

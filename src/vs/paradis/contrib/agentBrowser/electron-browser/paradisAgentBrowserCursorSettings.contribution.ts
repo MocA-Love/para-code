@@ -9,7 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING } from '../common/paradisAgentBrowser.js';
+import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING } from '../common/paradisAgentBrowser.js';
 
 // 共通の 'paradis' セクションへプロパティを追加する（windowTransparency の設定登録と同じ id/title を
 // 再利用し、Settings UI 上は同じ「Para Code」カテゴリへマージ表示される）。
@@ -39,6 +39,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.showCursorOverlay', "エージェント（Claude Code / Codex）が内蔵ブラウザを操作していることを、ページ上の演出で見せるかどうかを制御します。クリック・ホバー・ドラッグに合わせてマウスカーソルが動き、エージェントがスクリーンショットを撮るときは画面が一瞬光ります。そのカーソルは撮影された画像には写りません。演出は表示中のタブでのみ行い、ページの共有をやめたとき・自分でページを操作し始めたときは消えます。無効にしても操作自体には影響しません。OSで視差効果を減らす設定が有効な場合は、演出も自動的に控えめになります。")
 		},
+		[PARADIS_BROWSER_SITE_NOTES_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトについて短いメモを残し、同じリポジトリの次のエージェントへヒントとして渡します。")
+		},
 		// 内蔵ブラウザの道具（para-browser MCP）は shared process で動くので、cursor と同じく APPLICATION スコープ
 		[PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING]: {
 			type: 'boolean',
@@ -50,7 +56,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントの操作で新しいページが開いたときや、ファイルがダウンロードされたときに、そのことをエージェントに伝えます。")
+			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）新しいページやダウンロード、開いたダイアログなどを、エージェントに伝えます。")
 		}
 	}
 });
