@@ -101,6 +101,11 @@ export interface IParadisObserveHost {
 	/** ダウンロードの保存先の中のファイル（名前 → 大きさ）。取れなければ undefined。 */
 	downloads(): Promise<ReadonlyMap<string, number> | undefined>;
 	isCurrent(): boolean;
+	/**
+	 * ページを待たずに評価できるか（vendored の evaluate_script が `paraCodeObserve` を知っているか）。できなければ
+	 * ページの中は一切読まない（従来の評価は確認のダイアログを承認しうるため）。タブとダウンロードの状態は添える。
+	 */
+	canEvaluate(): boolean;
 	sleep(ms: number): Promise<void>;
 	now(): number;
 }
@@ -182,7 +187,8 @@ export class ParadisBrowserObserver {
 		let installed = false;
 		let url: string | undefined;
 		let title: string | undefined;
-		if (options.settle && observe === 'changes' && settleMs >= 0 && pages?.dialog === undefined && host.isCurrent()) {
+		// list_pages を呼んだ後で確かめる（子プロセスの道具の一覧を読むまで、対応しているか分からない）
+		if (options.settle && observe !== 'none' && pages?.dialog === undefined && host.canEvaluate() && host.isCurrent()) {
 			const info = evaluated<{ url?: unknown; title?: unknown }>(await host.evaluate(paradisObserveInstallFunction(name)).catch(() => undefined));
 			if (info) {
 				installed = true;
@@ -197,7 +203,8 @@ export class ParadisBrowserObserver {
 	async after(host: IParadisObserveHost, stateKey: string, options: IParadisObserveOptions, before: IBefore, observe: 'changes' | 'none' | 'snapshot', settleMs: number): Promise<string | undefined> {
 		const parts: string[] = [];
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
-		if (options.settle && observe !== 'none' && pages?.dialog === undefined) {
+		// 記録を始められたときだけページを読む（ダイアログ・未対応の vendored・評価の失敗では読まない）
+		if (options.settle && before.installed && pages?.dialog === undefined) {
 			const settled = await this._settle(host, before.name, settleMs);
 			if (settled.dialog !== undefined) {
 				pages = { pages: pages?.pages ?? [], dialog: settled.dialog };
@@ -208,7 +215,9 @@ export class ParadisBrowserObserver {
 				if (text) {
 					parts.push(text);
 				}
-			} else if (before.installed) {
+				// 記録は使わないが、ページに残さない
+				await host.evaluate(paradisObserveCollectFunction(before.name, 0)).catch(() => undefined);
+			} else {
 				// 読む直前にもダイアログを確かめる（開いていれば変化は読まず、ダイアログだけを伝える）
 				const latest = paradisParseListPages(await host.listPages().catch(() => undefined));
 				if (latest?.dialog !== undefined) {
