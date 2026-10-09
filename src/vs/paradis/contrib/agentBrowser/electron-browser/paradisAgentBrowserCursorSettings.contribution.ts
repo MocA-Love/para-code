@@ -33,6 +33,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.showCursorOverlay', "エージェント（Claude Code / Codex）が内蔵ブラウザを操作していることを、ページ上の演出で見せるかどうかを制御します。クリック・ホバー・ドラッグに合わせてマウスカーソルが動き、エージェントがスクリーンショットを撮るときは画面が一瞬光ります。そのカーソルは撮影された画像には写りません。演出は表示中のタブでのみ行い、ページの共有をやめたとき・自分でページを操作し始めたときは消えます。無効にしても操作自体には影響しません。OSで視差効果を減らす設定が有効な場合は、演出も自動的に控えめになります。")
 		},
+		[PARADIS_BROWSER_SITE_NOTES_SETTING]: {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトのコツ（入力の書式やボタンの場所など）を短いメモに残し、同じリポジトリで次にそのサイトを開いたエージェントに伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。")
+		},
 		// 内蔵ブラウザの道具（para-browser MCP）は shared process で動くので、cursor と同じく APPLICATION スコープ
 		[PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING]: {
 			type: 'boolean',
@@ -45,12 +51,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.reportBrowserState', "（試験的）エージェントが内蔵ブラウザで操作した結果に、使えるタブ、その操作で開いたページ、新しいダウンロード、開いているダイアログを添えます。前回と同じ内容は省きます。")
-		},
-		[PARADIS_BROWSER_SITE_NOTES_SETTING]: {
-			type: 'boolean',
-			default: false,
-			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.siteNotes', "（試験的）エージェントが内蔵ブラウザで使ったサイトについて短いメモ（入力の書式やボタンの場所など）を残し、同じリポジトリで次にそのサイトを開いたエージェントへヒントとして渡します。メモはサイトとリポジトリの組ごとに、書いた日とエージェントを添えて利用者のフォルダの .para-code/browser-notes に保存します。エージェントは間違ったメモを消せます。有効にした後は、エージェントを起動し直すとメモの道具が使えます。")
 		}
 	}
 });
