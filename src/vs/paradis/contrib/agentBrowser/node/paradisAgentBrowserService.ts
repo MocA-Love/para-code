@@ -65,6 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
+import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
@@ -354,6 +355,12 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'set_cursor_label',
 ]);
 
+/**
+ * タブを選べる Para のツールのうち、同じタブの列（paradisToolCallLanes.ts）に並べないもの。ページに触れず
+ * すぐ返るもの（名札・接続先・共有中のページの情報）と、手順ごとに列へ並ぶ run_steps。
+ */
+const PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES: ReadonlySet<string> = new Set(['run_steps', 'set_cursor_label', 'get_cdp_endpoint', 'get_shared_page']);
+
 /** エージェントによるプロファイルの一覧・作成・切替・削除のツール名（paradisBrowserProfileMcp.ts の契約）。 */
 const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_browser_profiles', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile']);
 
@@ -497,6 +504,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** ゲートウェイ向けにスコープキーで発行した lease → ペインの lease。 */
 	private readonly _gatewayScopedLeases = new WeakMap<IParadisAgentBrowserIngressLease, IParadisAgentBrowserIngressLease>();
 	// 入力が詰まったときの一時停止と再開をログと Sentry に残す（停止が解けないとそのページのマウスとキーが全部断られるため）
+	/** 同じタブへのツール呼び出しを 1 本ずつ流す列（鍵はタブのスコープキー）。 */
+	private readonly _toolCallLanes = new ParadisToolCallLanes();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
@@ -864,7 +873,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the MCP settings to new Codex homes', error));
 			});
 		}));
-		// ツール呼び出しの上限（timeout / tool_timeout_sec）を足す前に登録した para-browser を、起動時に 1 回だけ入れ直す。
+		// ツール呼び出しの上限（timeout / tool_timeout_sec）と Codex の並行の呼び出し（supports_parallel_tool_calls）を
+		// 足す前に登録した para-browser を、起動時に 1 回だけ入れ直す。
 		void this._serverStartPromise.then(() => this._currentGatewayPort()).then(port => this._mcpSetupController.upgradeToolTimeouts(port)).catch(error => {
 			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to add the tool timeout to the MCP settings', error));
 		});
@@ -4336,38 +4346,42 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const pageLease = scopedCall.lease;
 			const devtoolsArgs = scopedCall.args;
-			// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
-			// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
-			// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
-			const pathArguments = paradisDevtoolsPathArguments(name, devtoolsArgs);
-			if (pathArguments.length > 0) {
-				const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, devtoolsArgs);
-				this._requireIngressLease(ingressLease);
-				if (pathDecision.kind === 'refuse') {
-					// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
-					// 手元の一時ファイルで動かして接続先と中身を受け渡す
-					const remoteAuthority = this._paneRemoteAuthorityOf(token);
-					const direction = paradisRemoteFileToolDirection(name, pathArguments);
-					if (remoteAuthority !== undefined && direction !== undefined) {
-						return this._remoteFileTransfer.callTool(name, direction, devtoolsArgs as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
-							bridgedArgs => this._callDevtoolsTool(pageLease, name, bridgedArgs, signal, false));
+			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
+			// 並べないので、Para の道具（click_by など）と同じ列に入れる
+			return this._toolCallLanes.run(this._pageKeyOf(pageLease), async () => {
+				// 内蔵chrome-devtools-mcpは手元で動くので、ファイルのパスは手元のパスになる。接続先（SSH・WSL・
+				// コンテナ）からのパスは渡す前に断る（手元のファイルの読み書きが機械の境界を越えるため。NOTES.md
+				// 「chrome-devtools-mcp のファイルのパスは手元のペインからだけ受け、roots で範囲を絞る」）
+				const pathArguments = paradisDevtoolsPathArguments(name, devtoolsArgs);
+				if (pathArguments.length > 0) {
+					const pathDecision = paradisDevtoolsPathDecision(await this._devtoolsPathCaller(token, socket), name, pathArguments, devtoolsArgs);
+					this._requireIngressLease(ingressLease);
+					if (pathDecision.kind === 'refuse') {
+						// 接続先のペインの `filePath`（スクリーンショット・スナップショットの保存先、upload_file の元）は、
+						// 手元の一時ファイルで動かして接続先と中身を受け渡す
+						const remoteAuthority = this._paneRemoteAuthorityOf(token);
+						const direction = paradisRemoteFileToolDirection(name, pathArguments);
+						if (remoteAuthority !== undefined && direction !== undefined) {
+							return this._remoteFileTransfer.callTool(name, direction, devtoolsArgs as Record<string, unknown>, this._remoteFileTransferHost(ingressLease, remoteAuthority, name, signal),
+								bridgedArgs => this._callDevtoolsTool(pageLease, name, bridgedArgs, signal, false));
+						}
+						return this._toolError(pathDecision.message);
 					}
-					return this._toolError(pathDecision.message);
+					// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
+					const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, devtoolsArgs);
+					this._requireIngressLease(ingressLease);
+					if (versionControl !== undefined) {
+						return this._toolError(versionControl);
+					}
 				}
-				// 手元のペイン: シンボリックリンクを通って `.git` などの中を指していないかを、渡す前に realpath で確かめる
-				const versionControl = await paradisDevtoolsVersionControlRealpathRefusal(name, pathArguments, devtoolsArgs);
-				this._requireIngressLease(ingressLease);
-				if (versionControl !== undefined) {
-					return this._toolError(versionControl);
+				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
+				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
+				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
+					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
+					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
 				}
-			}
-			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-			const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
-			if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
-				// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
-				return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
-			}
-			return devtoolsResult;
+				return devtoolsResult;
+			}, signal);
 		}
 
 		// ページを操作する Para のツールは、tab_id（省略可）でどのタブかを決める
@@ -4394,6 +4408,18 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 
+		const laneKey = PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES.has(name) || !PARADIS_TAB_SCOPED_TOOL_NAMES.has(name) ? undefined : this._pageKeyOf(pageLease);
+		if (laneKey !== undefined) {
+			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。待つのはタブを決めた後なので、tab_id を
+			// 省いた呼び出しも、その時点の既定のタブの列に並ぶ
+			return this._toolCallLanes.run(laneKey, () => this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket), signal);
+		}
+		return this._callResolvedTool(ingressLease, pageLease, name, toolArguments, params, signal, socket);
+	}
+
+	/** タブを決めた後の Para のツールの呼び出し（{@link _callToolInner} の続き）。 */
+	private async _callResolvedTool(ingressLease: IParadisAgentBrowserIngressLease, pageLease: IParadisAgentBrowserIngressLease, name: string, toolArguments: unknown, params: { name?: unknown; arguments?: unknown } | undefined, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
+		const token = ingressLease.token;
 		// 利用者に承認を求める・ページやプロファイルを開く / 切り替える / 消すツールは、トークンだけでなく
 		// 接続元のプロセスも確かめる（トークンは同じユーザーの別プロセスが読めるので、他のペインの名で
 		// 共有を頼めてしまう）。SSH の接続先のエージェントは戻り経路の ssh（tunnel）として通す。

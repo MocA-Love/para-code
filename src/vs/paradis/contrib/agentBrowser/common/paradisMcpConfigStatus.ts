@@ -14,7 +14,7 @@
 // TOMLは全実装せず、既存の注入耐性スキャナ（paradisMcpSetupEncoding）を再利用して安全側に倒す。
 
 import { PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpConfigState } from './paradisAgentBrowser.js';
-import { MultilineDelimiter, PARADIS_MCP_SERVER_NAME, PARADIS_MCP_TOOL_TIMEOUT_MS, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
+import { MultilineDelimiter, PARADIS_CODEX_MCP_MANAGED_LINES, PARADIS_MCP_SERVER_NAME, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
 
 /** stdioシムのファイル名断片。設定値がこれを含めば para-browser（旧shim方式）とみなす。 */
 export const PARADIS_MCP_SHIM_MARKER = 'paradisBrowserMcpShim';
@@ -290,18 +290,25 @@ export function paradisClaudeMcpEntryNeedsToolTimeout(text: string, gatewayPort:
 }
 
 /**
- * Codex の `[mcp_servers.para-browser]` が今のポートを指しているのに `tool_timeout_sec` が無いか。
- * 他の名前の節（chrome-devtools を書き換えたもの）は触らない。
+ * Codex の `[mcp_servers.para-browser]` が今のポートを指しているのに、Para Code が書く行
+ * （{@link PARADIS_CODEX_MCP_MANAGED_LINES}）のどれかが無いか。他の名前の節（chrome-devtools を書き換えたもの）は触らない。
  */
-export function paradisCodexMcpTableNeedsToolTimeout(text: string, gatewayPort: number): boolean {
-	return codexToolTimeoutTarget(text, gatewayPort) !== undefined;
+export function paradisCodexMcpTableNeedsManagedLines(text: string, gatewayPort: number): boolean {
+	return codexMissingLinesTarget(text, gatewayPort) !== undefined;
 }
 
-function codexToolTimeoutTarget(text: string, gatewayPort: number): IServerTable | undefined {
+function codexMissingLinesTarget(text: string, gatewayPort: number): { readonly table: IServerTable; readonly missing: readonly { readonly key: string; readonly value: string }[] } | undefined {
 	const tables = collectCodexServerTables(text.split(/\r?\n/)).filter(table => table.name === PARADIS_MCP_SERVER_NAME);
-	if (tables.length !== 1
-		|| detectCodexTableUrlPort(tables[0].code) !== gatewayPort
-		|| codexToolTimeoutKeyState(text) !== 'absent') {
+	if (tables.length !== 1 || detectCodexTableUrlPort(tables[0].code) !== gatewayPort) {
+		return undefined;
+	}
+	const states = PARADIS_CODEX_MCP_MANAGED_LINES.map(line => ({ line, state: codexTableKeyState(text, line.key) }));
+	// どれかのキーが「あるか分からない」なら何も足さない（足すとキーが重複して TOML が壊れうる）。
+	if (states.some(entry => entry.state === 'ambiguous')) {
+		return undefined;
+	}
+	const missing = states.filter(entry => entry.state === 'absent').map(entry => entry.line);
+	if (missing.length === 0) {
 		return undefined;
 	}
 	// 節の中に複数行文字列があると、節の終わり（行を足す場所）を行単位で正しく決められない。触らない。
@@ -309,7 +316,7 @@ function codexToolTimeoutTarget(text: string, gatewayPort: number): IServerTable
 	if (lines.some(line => line.includes('"""') || line.includes('\x27\x27\x27'))) {
 		return undefined;
 	}
-	return tables[0];
+	return { table: tables[0], missing };
 }
 
 /** キー（の候補）に `\u` / `\U` のエスケープがあるか。 */
@@ -317,16 +324,15 @@ function hasUnicodeEscape(keyText: string): boolean {
 	return /\\[uU]/.test(keyText);
 }
 
-const CODEX_TOOL_TIMEOUT_KEY_PATH: readonly string[] = ['mcp_servers', PARADIS_MCP_SERVER_NAME, 'tool_timeout_sec'];
-
 /**
- * `mcp_servers.para-browser.tool_timeout_sec` が既に定義されているか。キーは各行の左辺を `parseTomlKeyPath`
- * で解釈し、属する節のパスとつないで見る（節の中の `"tool_timeout_sec"`、`[mcp_servers]` の中の
- * `para-browser.tool_timeout_sec`、節の外の `mcp_servers.para-browser.tool_timeout_sec` のどれでも見つける）。
- * `tool_timeout_sec` を含むのに解釈できない行があれば 'ambiguous'（足すとキーが重複して TOML が壊れうるので
+ * `mcp_servers.para-browser.<key>` が既に定義されているか。キーは各行の左辺を `parseTomlKeyPath`
+ * で解釈し、属する節のパスとつないで見る（節の中の `"<key>"`、`[mcp_servers]` の中の
+ * `para-browser.<key>`、節の外の `mcp_servers.para-browser.<key>` のどれでも見つける）。
+ * `<key>` を含むのに解釈できない行があれば 'ambiguous'（足すとキーが重複して TOML が壊れうるので
  * 足さない側に倒す）。
  */
-function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguous' {
+function codexTableKeyState(text: string, key: string): 'present' | 'absent' | 'ambiguous' {
+	const expected: readonly string[] = ['mcp_servers', PARADIS_MCP_SERVER_NAME, key];
 	let tablePath: readonly string[] | undefined = [];
 	let multiline: MultilineDelimiter | undefined;
 	let state: 'present' | 'absent' | 'ambiguous' = 'absent';
@@ -346,7 +352,7 @@ function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguo
 			}
 			const close = trimmed.lastIndexOf(']');
 			tablePath = close > 0 ? parseTomlKeyPath(trimmed.slice(1, close)) : undefined;
-			if ((tablePath === undefined && trimmed.includes('tool_timeout_sec')) || hasUnicodeEscape(trimmed)) {
+			if ((tablePath === undefined && trimmed.includes(key)) || hasUnicodeEscape(trimmed)) {
 				state = 'ambiguous';
 			}
 			continue;
@@ -354,12 +360,12 @@ function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguo
 		const assignment = findTomlAssignment(trimmed);
 		const keyText = assignment > 0 ? trimmed.slice(0, assignment) : undefined;
 		// 引用符付きのキーの `\u` / `\U` は、文字列として探しても見つからない形で同じキーを書ける
-		// （"tool_timeout_sec"）。どのキーか確かめないまま足すと重複しうるので足さない。
+		// （"tool\u005Ftimeout_sec"）。どのキーか確かめないまま足すと重複しうるので足さない。
 		if (keyText !== undefined && hasUnicodeEscape(keyText)) {
 			state = 'ambiguous';
 			continue;
 		}
-		if (!trimmed.includes('tool_timeout_sec')) {
+		if (!trimmed.includes(key)) {
 			continue;
 		}
 		const keyPath = keyText !== undefined ? parseTomlKeyPath(keyText) : undefined;
@@ -371,7 +377,7 @@ function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguo
 			continue;
 		}
 		const fullPath = [...tablePath, ...keyPath];
-		if (fullPath.length === CODEX_TOOL_TIMEOUT_KEY_PATH.length && fullPath.every((key, index) => key === CODEX_TOOL_TIMEOUT_KEY_PATH[index])) {
+		if (fullPath.length === expected.length && fullPath.every((part, index) => part === expected[index])) {
 			state = 'present';
 		}
 	}
@@ -379,16 +385,18 @@ function codexToolTimeoutKeyState(text: string): 'present' | 'absent' | 'ambiguo
 }
 
 /**
- * `[mcp_servers.para-browser]` の最後の行の後ろへ `tool_timeout_sec = <秒>` の 1 行だけを足す。節の他の行
- * （利用者が足した `enabled = false` など）はそのまま残す。足す対象でなければ undefined。
+ * `[mcp_servers.para-browser]` の最後の行の後ろへ、Para Code が書く行のうち無いもの（`tool_timeout_sec = <秒>`、
+ * `supports_parallel_tool_calls = true`）だけを足す。節の他の行（利用者が足した `enabled = false` や、
+ * 利用者が自分で書いた `supports_parallel_tool_calls = false`）はそのまま残す。足す対象でなければ undefined。
+ * `keys` は足した行のキー（起動時の入れ直しを 1 回だけにする印に使う）。
  */
-export function paradisAddCodexToolTimeoutLine(text: string, gatewayPort: number): string | undefined {
-	const target = codexToolTimeoutTarget(text, gatewayPort);
+export function paradisAddCodexMissingTableLines(text: string, gatewayPort: number): { readonly text: string; readonly keys: readonly string[] } | undefined {
+	const target = codexMissingLinesTarget(text, gatewayPort);
 	if (target === undefined) {
 		return undefined;
 	}
 	const eol = text.includes('\r\n') ? '\r\n' : '\n';
 	const lines = text.split(/\r?\n/);
-	lines.splice(target.endLine + 1, 0, `tool_timeout_sec = ${PARADIS_MCP_TOOL_TIMEOUT_MS / 1000}`);
-	return lines.join(eol);
+	lines.splice(target.table.endLine + 1, 0, ...target.missing.map(line => `${line.key} = ${line.value}`));
+	return { text: lines.join(eol), keys: target.missing.map(line => line.key) };
 }

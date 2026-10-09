@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpSetupController } from '../../node/paradisMcpSetup.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexToolTimeoutLine } from '../../node/paradisMcpConfigStatus.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines } from '../../node/paradisMcpConfigStatus.js';
 import { paradisCodexMcpTableBody } from '../../common/paradisMcpSetupEncoding.js';
 
 const PORT = 47286;
@@ -274,13 +274,15 @@ suite('Para Browser MCP config status', () => {
 	});
 
 	test('adds tool_timeout_sec only when no key anywhere already defines it, so the TOML never gets a duplicate key', () => {
-		const table = (...extra: string[]) => [
+		const tableWithoutParallel = (...extra: string[]) => [
 			'[mcp_servers.para-browser]',
 			`url = "http://127.0.0.1:${PORT}/"`,
 			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
 			...extra,
 		].join('\n');
-		const add = (text: string) => paradisAddCodexToolTimeoutLine(text, PORT);
+		// supports_parallel_tool_calls is already there, so only the timeout key decides what happens.
+		const table = (...extra: string[]) => tableWithoutParallel('supports_parallel_tool_calls = true', ...extra);
+		const add = (text: string) => paradisAddCodexMissingTableLines(text, PORT)?.text;
 		assert.deepStrictEqual({
 			absent: add(table('enabled = false')),
 			quotedKey: add(table('"tool_timeout_sec" = 120')),
@@ -311,6 +313,29 @@ suite('Para Browser MCP config status', () => {
 			unicodeEscapedHeader: undefined,
 			multilineInTable: undefined,
 			multilineLiteralInTable: undefined,
+		});
+	});
+
+	test('adds supports_parallel_tool_calls next to the timeout, keeps a value the user wrote, and reports the keys it added', () => {
+		const table = (...extra: string[]) => [
+			'[mcp_servers.para-browser]',
+			`url = "http://127.0.0.1:${PORT}/"`,
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			...extra,
+		].join('\n');
+		const add = (text: string) => paradisAddCodexMissingTableLines(text, PORT);
+		assert.deepStrictEqual({
+			bothMissing: add(table()),
+			timeoutPresent: add(table('tool_timeout_sec = 120')),
+			userTurnedItOff: add(table('tool_timeout_sec = 120', 'supports_parallel_tool_calls = false')),
+			unsureAboutParallel: add(table('tool_timeout_sec = 120', '"supports\\u005Fparallel_tool_calls" = false')),
+			otherPort: add(table().replace(String(PORT), '1')),
+		}, {
+			bothMissing: { text: `${table()}\ntool_timeout_sec = 300\nsupports_parallel_tool_calls = true`, keys: ['tool_timeout_sec', 'supports_parallel_tool_calls'] },
+			timeoutPresent: { text: `${table('tool_timeout_sec = 120')}\nsupports_parallel_tool_calls = true`, keys: ['supports_parallel_tool_calls'] },
+			userTurnedItOff: undefined,
+			unsureAboutParallel: undefined,
+			otherPort: undefined,
 		});
 	});
 });
