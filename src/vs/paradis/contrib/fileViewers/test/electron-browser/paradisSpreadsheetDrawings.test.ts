@@ -9,7 +9,8 @@ import { deepStrictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
 import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
-import { appendChartSvg, appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
+import { appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
+import { appendChartSvg } from '../../electron-browser/paradisSpreadsheetChartSvg.js';
 
 // Invented minimal drawings. None of them comes from a real file.
 const XDR = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
