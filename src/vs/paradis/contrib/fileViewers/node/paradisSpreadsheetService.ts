@@ -1157,11 +1157,15 @@ class WorkbookImages {
 			return { reason: 'unverified' };
 		}
 		const bytes = await file.async('uint8array');
-		const { image: inspected, rejection } = inspectParadisWordRasterImageWithReason(bytes);
+		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(bytes);
+		// 中身の形式が拡張子と食い違うものは、大きさに関係なく「確かめられなかった」にする。
+		if ((inspected?.mimeType ?? mimeType) !== declared) {
+			return { reason: 'unverified' };
+		}
 		if (rejection === 'tooLarge') {
 			return { reason: 'tooLarge' };
 		}
-		if (!inspected || inspected.mimeType !== declared) {
+		if (!inspected) {
 			return { reason: 'unverified' };
 		}
 		if (this.pixels + inspected.pixels > this.budget) {

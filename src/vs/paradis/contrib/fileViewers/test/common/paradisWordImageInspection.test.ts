@@ -60,23 +60,28 @@ suite('ParadisWordImageInspection', () => {
 	});
 
 	test('tells an image that is only too large from one that is broken', () => {
-		const reason = (bytes: Uint8Array, limits = PARADIS_WORD_IMAGE_LIMITS) => inspectParadisWordRasterImageWithReason(bytes, limits).rejection ?? 'shown';
+		const reason = (bytes: Uint8Array, limits = PARADIS_WORD_IMAGE_LIMITS) => {
+			const result = inspectParadisWordRasterImageWithReason(bytes, limits);
+			return result.rejection ? `${result.rejection}${result.mimeType ? `:${result.mimeType}` : ''}` : 'shown';
+		};
 		deepStrictEqual({
 			shown: reason(minimalPng(3, 2)),
 			tooWide: reason(minimalPng(40_000, 1)),
 			tooManyPixels: reason(minimalJpeg(10_000, 10_000)),
 			tooManyFrames: reason(minimalGif(7, 6, { frames: 1_001 })),
-			tooManyBytes: reason(minimalPng(3, 2), { ...PARADIS_WORD_IMAGE_LIMITS, bytes: 16 }),
+			tooManyBytes: reason(minimalJpeg(3, 2), { ...PARADIS_WORD_IMAGE_LIMITS, bytes: 16 }),
+			tooManyBytesNotImage: reason(new Uint8Array(64), { ...PARADIS_WORD_IMAGE_LIMITS, bytes: 16 }),
 			broken: reason(minimalPng(3, 2, { end: false })),
 			brokenAndWide: reason(minimalPng(40_000, 1, { end: false })),
 			animated: reason(minimalPng(3, 2, { before: pngChunk('acTL', [0, 0, 0, 2, 0, 0, 0, 0]) })),
 			empty: reason(new Uint8Array()),
 		}, {
 			shown: 'shown',
-			tooWide: 'tooLarge',
-			tooManyPixels: 'tooLarge',
-			tooManyFrames: 'tooLarge',
-			tooManyBytes: 'tooLarge',
+			tooWide: 'tooLarge:image/png',
+			tooManyPixels: 'tooLarge:image/jpeg',
+			tooManyFrames: 'tooLarge:image/gif',
+			tooManyBytes: 'tooLarge:image/jpeg',
+			tooManyBytesNotImage: 'invalid',
 			broken: 'invalid',
 			brokenAndWide: 'invalid',
 			animated: 'invalid',
