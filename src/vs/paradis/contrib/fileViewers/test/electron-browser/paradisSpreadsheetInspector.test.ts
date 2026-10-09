@@ -228,6 +228,14 @@ suite('ParadisSpreadsheetInspector', () => {
 		ok(alert?.textContent?.includes('代替表示 1 件'));
 	});
 
+	test('says how many comments it left out for the limits', () => {
+		const host = document.createElement('div');
+		const inspector = disposables.add(new ParadisSpreadsheetChangeInspector(host));
+		inspector.setComments([{ sheet: 'Data', comment: { ref: 'A1', row: 0, column: 0, kind: 'note', entries: [{ author: 'Sample', text: 'x' }] } }], 3);
+		const omitted = host.querySelector('.paradis-spreadsheet-comment-omitted');
+		strictEqual(omitted?.textContent, 'コメントが多いため、3 件を表示していません。');
+	});
+
 	test('restores bounded zoom, category filters, and active sheet view state', () => {
 		const restored = restoreParadisSpreadsheetViewState({
 			zoom: 1.75,

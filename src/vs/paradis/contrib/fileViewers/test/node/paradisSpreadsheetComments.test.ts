@@ -9,7 +9,7 @@ import { deepStrictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
-import { PARADIS_SPREADSHEET_COMMENT_LIMITS, readParadisSpreadsheetComments } from '../../node/spreadsheet/paradisSpreadsheetComments.js';
+import { PARADIS_SPREADSHEET_COMMENT_LIMITS, readParadisSpreadsheetComments, readParadisSpreadsheetSheetComments } from '../../node/spreadsheet/paradisSpreadsheetComments.js';
 
 // Invented minimal parts. None of them comes from a real file.
 const S = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -68,6 +68,30 @@ suite('ParadisSpreadsheetComments', () => {
 			kept: expected,
 			characters: true,
 		});
+	});
+
+	test('keeps at most 32 mentions per post and drops ones that overlap the previous mention', () => {
+		const post = (mentions: string) => `<ThreadedComments xmlns="${TC}"><threadedComment ref="A1" dT="2026-09-30T10:12:00.00" personId="{00000000-0000-0000-0000-000000000001}" id="{00000000-0000-0000-0000-0000000000C1}"><text>${'abcdefgh'.repeat(100)}</text><mentions>${mentions}</mentions></threadedComment></ThreadedComments>`;
+		const mention = (start: number, length: number) => `<mention mentionpersonId="{00000000-0000-0000-0000-000000000002}" mentionId="{00000000-0000-0000-0000-0000000000F2}" startIndex="${start}" length="${length}"/>`;
+		const read = (mentions: string) => readParadisSpreadsheetComments({ threadedCommentsXml: post(mentions), personsXml: persons })[0].entries[0].mentions;
+		deepStrictEqual({
+			sameRange: read(mention(0, 8).repeat(10_000)),
+			overlapping: read(mention(4, 8) + mention(0, 8) + mention(10, 4)),
+			many: read(Array.from({ length: 100 }, (_, index) => mention(index * 8, 4)).join(''))?.length,
+		}, {
+			sameRange: [{ start: 0, length: 8 }],
+			overlapping: [{ start: 0, length: 8 }, { start: 10, length: 4 }],
+			many: PARADIS_SPREADSHEET_COMMENT_LIMITS.mentionsPerEntry,
+		});
+	});
+
+	test('counts the comments it leaves out once the workbook limits are used up', () => {
+		const notes = (count: number) => `<comments xmlns="${S}"><authors><author>Sample</author></authors><commentList>`
+			+ Array.from({ length: count }, (_, index) => `<comment ref="A${index + 1}" authorId="0"><text><t>x</t></text></comment>`).join('') + '</commentList></comments>';
+		const budget = { comments: 2, characters: PARADIS_SPREADSHEET_COMMENT_LIMITS.workbookCharacters };
+		const first = readParadisSpreadsheetSheetComments({ commentsXml: notes(3) }, budget);
+		const second = readParadisSpreadsheetSheetComments({ commentsXml: notes(4) }, budget);
+		deepStrictEqual([[first.comments.length, first.omitted], [second.comments.length, second.omitted]], [[2, 1], [0, 4]]);
 	});
 
 	test('ignores parts it cannot read', () => {
