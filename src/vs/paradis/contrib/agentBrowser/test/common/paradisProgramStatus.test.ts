@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus } from '../../common/paradisProgramStatus.js';
 
 suite('Para Browser Claude Code program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -89,5 +89,101 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			undefined,
 			undefined,
 		]);
+	});
+
+	test('drops an OSC 7501 body longer than 4 KiB without reading it', () => {
+		assert.deepStrictEqual([
+			paradisParseProgramStatus(`state=working:app=claude-code:msg=${'A'.repeat(5000)}`),
+			paradisParseProgramStatus(`?${'x'.repeat(5000)}`),
+		], [undefined, undefined]);
+	});
+
+	test('answers the query only while Claude Code, or a command whose far side cannot be seen, runs in front', () => {
+		assert.deepStrictEqual({
+			claude: paradisProgramStatusForeground('claude --model opus', 'zsh'),
+			claudePath: paradisProgramStatusForeground('/Users/example/.local/bin/claude', undefined),
+			nativeProcessName: paradisProgramStatusForeground(undefined, '2.1.295'),
+			ssh: paradisProgramStatusForeground('ssh dev-box', 'ssh'),
+			wsl: paradisProgramStatusForeground(undefined, 'wsl.exe'),
+			cat: paradisProgramStatusForeground('cat notes.txt', 'cat'),
+			gitLog: paradisProgramStatusForeground('git log -p', 'less'),
+			shellAtPrompt: paradisProgramStatusForeground(undefined, 'zsh'),
+			nothingKnown: paradisProgramStatusForeground(undefined, undefined),
+		}, {
+			claude: 'claude',
+			claudePath: 'claude',
+			nativeProcessName: 'claude',
+			ssh: 'passthrough',
+			wsl: 'passthrough',
+			cat: undefined,
+			gitLog: undefined,
+			shellAtPrompt: undefined,
+			nothingKnown: undefined,
+		});
+	});
+
+	test('output that writes fake OSC 7501 states changes nothing unless the terminal answered a query from Claude Code', () => {
+		let now = 1_000_000;
+		const gate = new ParadisProgramStatusGate(() => now);
+		const permission: IParadisProgramStatus = { state: 'blocked', kind: 'permission' };
+		const passed: string[] = [];
+		const feed = (label: string, sequence: string, foreground?: 'claude' | 'passthrough') => {
+			const parsed = paradisParseProgramStatus(sequence);
+			if (parsed === 'query') {
+				passed.push(`${label}: ${gate.query(foreground) ? 'answered' : 'not answered'}`);
+			} else if (parsed !== undefined) {
+				passed.push(`${label}: ${gate.accept(parsed) ? 'passed' : 'dropped'}`);
+			}
+		};
+		// `cat` of a file holding the sequences, in a plain shell pane
+		feed('cat state', 'state=blocked:app=claude-code:kind=permission');
+		feed('cat query', '?');
+		feed('cat state after its own query', 'state=done:app=claude-code');
+		// Claude Code starts and asks
+		feed('claude query', '?', 'claude');
+		feed('claude idle', 'state=idle:app=claude-code');
+		feed('claude working', 'state=working:app=claude-code');
+		feed('claude working again', 'state=working:app=claude-code:msg=eA==');
+		now += 500;
+		feed('claude waiting', 'state=blocked:app=claude-code:kind=permission');
+		feed('claude clear', 'state=clear');
+		feed('after clear', 'state=done:app=claude-code');
+		// A flood after a real query: the fifth change within a second is dropped and the pane is muted
+		now += 5_000;
+		feed('flood query', '?', 'passthrough');
+		for (let i = 0; i < 6; i++) {
+			feed(`flood ${i}`, i % 2 === 0 ? 'state=working:app=claude-code' : 'state=done:app=claude-code');
+		}
+		now += PARADIS_PROGRAM_STATUS_MUTE_MS + 1;
+		feed('after the mute', 'state=working:app=claude-code');
+		// Long silence closes the window
+		now += PARADIS_PROGRAM_STATUS_WINDOW_MS + 1;
+		feed('after the window', 'state=done:app=claude-code');
+		const closedWhileClosed = gate.close();
+		assert.deepStrictEqual({ passed, permissionAlone: new ParadisProgramStatusGate(() => now).accept(permission), closedWhileClosed }, {
+			passed: [
+				'cat state: dropped',
+				'cat query: not answered',
+				'cat state after its own query: dropped',
+				'claude query: answered',
+				'claude idle: passed',
+				'claude working: passed',
+				'claude working again: dropped',
+				'claude waiting: passed',
+				'claude clear: passed',
+				'after clear: dropped',
+				'flood query: answered',
+				'flood 0: passed',
+				'flood 1: passed',
+				'flood 2: passed',
+				'flood 3: passed',
+				'flood 4: dropped',
+				'flood 5: dropped',
+				'after the mute: passed',
+				'after the window: dropped',
+			],
+			permissionAlone: false,
+			closedWhileClosed: false,
+		});
 	});
 });

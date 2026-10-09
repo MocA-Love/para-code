@@ -159,6 +159,7 @@ function createFixture(): {
 		_agentHookTokens: new Set<string>(),
 		_hookReportedTokens: new Set<string>(),
 		_programStatusTokens: new Set<string>(),
+		_programStatusTimes: new Map<string, number[]>(),
 		_unconfirmedReleaseTokens: new Set<string>(),
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
@@ -866,7 +867,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'osc-only' }, { token: 'hooked' }]));
 		Reflect.get(fixture.service, '_hookReportedTokens').add('hooked');
 		Reflect.get(fixture.service, '_paneStatuses').set('hooked', { status: 'working', changedAt: 1 });
-		const note = (token: string, value: unknown) => fixture.service.notePaneProgramStatus(connection, token, value);
+		// Each step stands for a separate moment: forget the per-second budget between them (tested on its own below).
+		const note = (token: string, value: unknown) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, token, value); };
 		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
 		const turnEnded = (token: string) => (fixture.service as unknown as { _settlePaneTurnEnded(token: string, at: number, cause: 'turn' | 'cli-exit'): void })._settlePaneTurnEnded(token, Date.now(), 'turn');
 		const steps: { step: string; changed: boolean; status: string }[] = [];
@@ -888,7 +890,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 			steps,
 			hooked: { changed: hookedChanged, status: await status('hooked') },
 			stillReadingOsc: Reflect.get(fixture.service, '_programStatusTokens').has('osc-only'),
-			agentPane: (await fixture.service.listAgentStatusSnapshot(connection)).agentHookTokens.includes('osc-only'),
+			// not counted as a pane that ever sent a hook
+			countedAsHookPane: (await fixture.service.listAgentStatusSnapshot(connection)).agentHookTokens.includes('osc-only'),
 		}, {
 			steps: [
 				{ step: 'idle at start', changed: false, status: 'idle' },
@@ -904,7 +907,23 @@ suite('ParadisAgentBrowser authority integration', () => {
 			],
 			hooked: { changed: false, status: 'working' },
 			stillReadingOsc: false,
-			agentPane: true,
+			countedAsHookPane: false,
+		});
+	});
+
+	test('refuses OSC 7501 states that change faster than a few times a second, but still takes a clear', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'flood' }]));
+		const states = ['working', 'done', 'working', 'done', 'working', 'clear'];
+		const results: boolean[] = [];
+		for (const state of states) {
+			results.push(await fixture.service.notePaneProgramStatus(connection, 'flood', { state }));
+		}
+		assert.deepStrictEqual({ results, statuses: await fixture.service.listPaneStatuses(connection) }, {
+			results: [true, true, true, true, false, true],
+			statuses: [],
 		});
 	});
 

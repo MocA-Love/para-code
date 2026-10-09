@@ -65,7 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
@@ -624,6 +624,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 状態を巻き戻し、完了を二度数えるので反映しない。clear（CLI の終了）・hook の到着・ペインの終了で外れる。
 	 */
 	private readonly _programStatusTokens = new Set<string>();
+	/** OSC 7501 の状態を受けた時刻（ペインごとの直近 1 秒分）。速すぎる書き換えを断る。 */
+	private readonly _programStatusTimes = new Map<string, number[]>();
 	/**
 	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
 	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
@@ -1517,14 +1519,23 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (status === undefined || ingressLease === undefined || !paradisProgramStatusApplies(this._hookReportedTokens.has(token))) {
 			return false;
 		}
-		const next = paradisProgramStatusToAgentStatus(status);
 		const now = Date.now();
+		// renderer でも間引いているが、ここでも 1 秒に数回までにする（renderer 以外の呼び出しや不具合で IPC が続いても状態を振らない）
+		const times = (this._programStatusTimes.get(token) ?? []).filter(at => now - at < 1000);
+		if (status.state !== 'clear' && times.length >= PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND) {
+			this._programStatusTimes.set(token, times);
+			return false;
+		}
+		times.push(now);
+		this._programStatusTimes.set(token, times);
+		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
+		// hook の実績（_agentHookTokens・_hookReportedTokens）には混ぜず、別の印で持つ
 		if (status.state === 'clear') {
 			this._programStatusTokens.delete(token);
+			this._programStatusTimes.delete(token);
 		} else {
 			this._programStatusTokens.add(token);
-			this._agentHookTokens.add(token);
 		}
 		if (next === 'idle') {
 			return this._paneStatuses.delete(token);
@@ -1965,6 +1976,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._agentHookTokens.delete(token);
 		this._hookReportedTokens.delete(token);
 		this._programStatusTokens.delete(token);
+		this._programStatusTimes.delete(token);
 		this._replayedPrompts.delete(token);
 		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
