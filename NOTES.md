@@ -87,9 +87,9 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 ## EMF・WMF は記録を読んで SVG にして描く（fileViewers、2026-10-09、Q321 f）
 
 - 変換は `common/office/paradisOfficeMetafile.ts`（描き先は `paradisOfficeMetafileSvg.ts`、パッケージの部品をまとめて変換するのは `paradisOfficeMetafileParts.ts`）。描けない記録を 1 つでも含む画像は箱のまま。EMF+ は解釈せず、二重（dual）なら GDI の記録で描く
-- 変換した SVG は変換器が組み立てた決まった形なので、文書由来の SVG の検査（`sanitizeOfficeSvg`）は通さない。代わりに 1 枚 4 MiB・1 文書の合計（Word は 16 MiB、パッケージの上限 32 MiB に収めるため）と、1 文書で試す入力 64 MiB・記録 100 万件の上限を持つ。表示は `<img>`（data URL）か SVG の `<image>` に入れる形に限り、インラインの SVG として DOM に差し込まない
+- 変換した SVG は変換器が組み立てた決まった形なので、文書由来の SVG の検査（`sanitizeOfficeSvg`）は通さない。代わりに 1 枚 4 MiB・1 文書の合計 32 MiB と、1 文書で試す入力 64 MiB・記録 100 万件の上限を持つ。Word では、置き換えで増える分（SVG − 元の画像）を、書き出すパッケージの上限 32 MiB から元のパッケージの大きさと余白 1 MiB を引いた範囲に収める（入りきらない画像は箱のまま。文書は開ける）。表示は `<img>`（data URL）か SVG の `<image>` に入れる形に限り、インラインの SVG として DOM に差し込まない
 - docx-preview は画像を型の無い Blob から data URL にするので、SVG の部品は `data:application/octet-stream` になり描かれない。Word の 2 つの webview は、先頭が `<svg` のものを `image/svg+xml` に付け替える（それまで「Office asset unavailable」の箱も出ていなかった）
-- 埋め込みオブジェクト（`w:object`）にプレビューの絵（`v:imagedata`）があれば、サニタイザが `w:pict` に書き換え、`o:OLEObject` と VML の図形に残る埋め込みへの参照（`o:ole`、`v:imagedata` 以外の関係の id）を外す。埋め込みの本体と関係は今までどおり外し、「安全のために外しました: 埋め込み」に数える。プレビューの絵は画像の検査か EMF・WMF の変換を通ったものだけを描く。`w:object` が自分で名前空間を宣言している場合は書き換えず、今までどおり箱にする
+- 埋め込みオブジェクト（`w:object`）にプレビューの絵（`v:imagedata`）があれば、サニタイザが `w:pict` に書き換え、`o:OLEObject`（strict の `w:objectEmbed`・`w:objectLink` も）と VML の図形に残る埋め込みへの参照（`o:ole`、`v:imagedata` 以外の関係の id）を外す。埋め込みの本体と関係は今までどおり外し、「安全のために外しました: 埋め込み」に数える。プレビューの絵は画像の検査か EMF・WMF の変換を通ったものだけを描く。`w:object` が自分で名前空間を宣言している場合は書き換えず、今までどおり箱にする
 
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 

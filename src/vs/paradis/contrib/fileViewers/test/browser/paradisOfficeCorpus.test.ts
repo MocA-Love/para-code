@@ -61,6 +61,7 @@ function wordPackage(overrides: Partial<IParadisOfficeFixtureOptions> & { readon
 		...(overrides.folders ? { folders: overrides.folders } : {}),
 		...(overrides.renameEntries ? { renameEntries: overrides.renameEntries } : {}),
 		...(overrides.contentTypesXml ? { contentTypesXml: overrides.contentTypesXml } : {}),
+		...(overrides.compression ? { compression: overrides.compression } : {}),
 	});
 }
 
@@ -304,10 +305,14 @@ suite('ParadisOfficeCorpus', () => {
 
 	test('draws an embedded object as its preview picture, without the embedding, and reports the embedding as blocked (Q321 f)', async () => {
 		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
-		const objectRun = (index: number, shapeAttributes: string) => `<w:p><w:r><w:object w:dxaOrig="100" w:dyaOrig="50"><v:shape id="s${index}" o:ole="" ${shapeAttributes}><v:imagedata r:id="rIdPreview${index}" o:title=""/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s${index}" r:id="rIdOle${index}"/></w:object></w:r></w:p>`;
-		const previews = [minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), Uint8Array.of(1, 0, 0, 0)];
+		const embedding = (index: number) => index < 2
+			? `<o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s${index}" r:id="rIdOle${index}"/>`
+			// ISO/IEC 29500 strict writes the embedding as w:objectEmbed.
+			: `<w:objectEmbed w:progId="Excel.Sheet.8" w:shapeId="s${index}" r:id="rIdOle${index}"/>`;
+		const objectRun = (index: number, shapeAttributes: string) => `<w:p><w:r><w:object w:dxaOrig="100" w:dyaOrig="50"><v:shape id="s${index}" o:ole="" ${shapeAttributes}><v:imagedata r:id="rIdPreview${index}" o:title=""/></v:shape>${embedding(index)}</w:object></w:r></w:p>`;
+		const previews = [minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), Uint8Array.of(1, 0, 0, 0), minimalEmf([emfRecord(43, words(0, 0, 20, 20))])];
 		const bytes = await wordPackage({
-			body: objectRun(0, 'style="width:50pt;height:25pt"') + objectRun(1, ''),
+			body: objectRun(0, 'style="width:50pt;height:25pt"') + objectRun(1, '') + objectRun(2, ''),
 			extraParts: [
 				...previews.map((preview, index) => [`/word/media/image${index}.emf`, preview, 'image/x-emf'] as const),
 				...previews.map((_, index) => [`/word/embeddings/object${index}.bin`, Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'] as const),
@@ -325,12 +330,12 @@ suite('ParadisOfficeCorpus', () => {
 			drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length,
 			blocked: result.blockedParts.map(part => `${part.feature}:${part.partName}`),
 			pictures: (text.match(/<w:pict><v:shape id="s\d"[^>]*><v:imagedata r:id="rIdPreview\d" o:title=""\/><\/v:shape><\/w:pict>/g) ?? []).length,
-			leftovers: ['<w:object', 'OLEObject', 'o:ole=', 'object0.bin', 'object1.bin', 'rIdOle'].filter(value => text.includes(value)),
+			leftovers: ['<w:object', 'OLEObject', 'objectEmbed', 'o:ole=', 'object0.bin', 'object1.bin', 'object2.bin', 'rIdOle'].filter(value => text.includes(value)),
 		}, {
 			placeholders: ['unsafeMedia'],
-			drawn: 1,
-			blocked: ['embeddedObject:word/embeddings/object0.bin', 'embeddedObject:word/embeddings/object1.bin'],
-			pictures: 2,
+			drawn: 2,
+			blocked: ['embeddedObject:word/embeddings/object0.bin', 'embeddedObject:word/embeddings/object1.bin', 'embeddedObject:word/embeddings/object2.bin'],
+			pictures: 3,
 			leftovers: [],
 		});
 	});
@@ -519,6 +524,33 @@ suite('ParadisOfficeCorpus', () => {
 			types: ['image/svg+xml', 'image/svg+xml', 'image/svg+xml', 'image/svg+xml'],
 			converted: 2,
 		});
+	});
+
+	test('converts EMF only while the rewritten package stays under its cap, and keeps opening the document (Q321 f)', async function () {
+		this.timeout(20_000);
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		// Filler parts that deflate about 15 times (one noisy byte in 24), so the package passes the ZIP ratio and
+		// size checks while its expanded size sits near the 32 MiB cap of the rewritten package.
+		const filler = (bytes: number, seed: number) => {
+			const value = new Uint8Array(bytes).fill(0x41);
+			let state = seed;
+			for (let index = 0; index < bytes; index += 24) {
+				state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+				value[index] = 0x41 + (state >>> 26);
+			}
+			return value;
+		};
+		const open = async (fillerBytes: number) => {
+			const fillers = [0, 1, 2, 3].map(index => [`/customXml/item${index}.bin`, filler(fillerBytes / 4, index + 1), 'application/octet-stream'] as const);
+			const result = await sanitize(await wordPackage({
+				body: '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+				extraParts: [['/word/media/image1.emf', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/x-emf'], ...fillers],
+				extraRelationships: [{ source: '/word/document.xml', id: 'rIdImage', type: `${R}/image`, target: 'media/image1.emf' }],
+				compression: 'DEFLATE',
+			}));
+			return { drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length, boxes: result.placeholders.length };
+		};
+		deepStrictEqual([await open(29 * 1024 * 1024), await open(31 * 1024 * 1024)], [{ drawn: 1, boxes: 0 }, { drawn: 0, boxes: 1 }]);
 	});
 
 	test('keeps images past the document pixel budget, and images too large on their own, as boxes that say why', async () => {

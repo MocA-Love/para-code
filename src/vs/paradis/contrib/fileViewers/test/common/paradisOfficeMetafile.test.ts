@@ -193,7 +193,8 @@ suite('ParadisOfficeMetafile', () => {
 			convertParadisOfficeMetafileParts(parts, { records: 2 }),
 			convertParadisOfficeMetafileParts(parts),
 		]);
-		deepStrictEqual([byBytes.size, byRecords.size, [...enough.keys()]], [0, 0, ['word/media/image2.emf']]);
+		const noRoom = await convertParadisOfficeMetafileParts(parts, { growthBytes: 0 });
+		deepStrictEqual([byBytes.size, byRecords.size, [...enough.keys()], noRoom.size], [0, 0, ['word/media/image2.emf'], 0]);
 	});
 
 	test('yields to the caller while drawing and stops when the caller throws', async () => {
