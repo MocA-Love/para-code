@@ -300,14 +300,14 @@ export function paradisWithSnapshotDiffArgument<T extends { readonly name: strin
 	}
 	return {
 		...tool,
-		description: `${tool.description ?? ''} After the first snapshot of a tab, the response lists only what changed since your previous take_snapshot of that tab (elements not listed keep their uids); pass full: true for the whole snapshot.`.trim(),
+		description: `${tool.description ?? ''} From the second call on a tab, the response lists only what changed since your previous take_snapshot of that tab; elements not listed are unchanged and keep their uids, so keep using them.`.trim(),
 		inputSchema: {
 			...tool.inputSchema,
 			properties: {
 				...tool.inputSchema.properties,
 				full: {
 					type: 'boolean',
-					description: 'Return the whole snapshot instead of the changes since your previous take_snapshot of this tab. Use it when you have not seen the previous snapshot (for example in a new subagent, or after your context was summarized). Default is false.',
+					description: 'Only when you no longer have the previous snapshot of this tab (for example in a new subagent, or after your context was summarized): return the whole snapshot instead of the changes. Default false; the changes are enough otherwise.',
 				},
 			},
 		},
