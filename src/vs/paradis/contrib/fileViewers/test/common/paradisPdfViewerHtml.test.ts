@@ -8,7 +8,7 @@
 
 import { deepStrictEqual, ok } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { buildParadisPdfViewerHtml, createParadisPdfPageScheduler, fitsParadisPdfCanvasBudget, IParadisPdfCanvasInfo, IParadisPdfPagePlan, IParadisPdfRenderJob, PARADIS_PDF_CANVAS_PIXEL_BUDGET, PARADIS_PDF_KEEP_PAGES, PARADIS_PDF_PRERENDER_PAGES, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, selectParadisPdfCanvasesToRelease, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
+import { buildParadisPdfViewerHtml, createParadisPdfPageScheduler, fitsParadisPdfCanvasBudget, IParadisPdfCanvasInfo, IParadisPdfPagePlan, IParadisPdfRenderJob, PARADIS_PDF_CANVAS_PIXEL_BUDGET, PARADIS_PDF_FIRST_PAINT_MESSAGE, PARADIS_PDF_KEEP_PAGES, PARADIS_PDF_PRERENDER_PAGES, PARADIS_PDF_RANGE_THRESHOLD_BYTES, planParadisPdfPages, selectParadisPdfCanvasesToRelease, shouldParadisPdfUseRangeRequests } from '../../common/paradisPdfViewerHtml.js';
 
 suite('ParadisPdfViewerHtml', () => {
 
@@ -101,6 +101,8 @@ suite('ParadisPdfViewerHtml', () => {
 		await scheduler.idle();
 		deepStrictEqual([...fake.canvasesByIndex.keys()], [5, 6]);
 		ok(html.includes('const USE_RANGE = true;'));
+		// 最初のページが描けたことをエディタへ知らせる（開いてから描けるまでの計測）。
+		ok(html.includes(`type: '${PARADIS_PDF_FIRST_PAINT_MESSAGE}'`));
 	});
 
 	test('releases canvases far from the visible pages first once their pixels go over the budget', () => {

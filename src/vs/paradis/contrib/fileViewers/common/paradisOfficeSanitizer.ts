@@ -6,9 +6,11 @@
 
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint, ParadisOfficePlaceholder, ParadisOfficeRasterMime, ParadisOfficeRenderableAsset } from './paradisOfficeProtocol.js';
-import { inspectParadisWordRasterImage, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
+import { localize } from '../../../../nls.js';
+import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from './word/paradisWordImageInspection.js';
 import { canonicalizeParadisOfficeArchiveName, ParadisOfficePackageError, resolveParadisOfficeRelationshipTarget, throwIfParadisOfficeCancelled, type ParadisOfficeArchiveEntry, type ParadisOfficeXmlNode } from './office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from './office/paradisOfficeCanonicalXml.js';
+import { PARADIS_OFFICE_BROKEN_IMAGE_SVG } from './paradisOfficeBrokenImage.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
@@ -385,7 +387,7 @@ export async function sanitizeOfficeDocxPackageForRenderer(input: ParadisOfficeP
 			}
 			const processed = placeholderMedia(input.nodeId, name, fingerprint(raw, input.token, input.checkpoint));
 			values.set(name, processed.bytes); pushPackageAsset(assets, placeholders, processed.asset);
-			if (!policy.hiddenImageParts.has(name)) { pushPackagePlaceholder(placeholders, processed.placeholder, assets.length); }
+			if (!policy.hiddenImageParts.has(name)) { pushPackagePlaceholder(placeholders, oversizedPlaceholder(processed.placeholder, policy.oversizedImageParts.get(name)), assets.length); }
 		}
 		if (assets.length + placeholders.length > 256) { throw new ParadisOfficePackageError('limitExceeded'); }
 		const entries = metadata.filter(entry => values.has(entry.name)).map(entry => ({ name: entry.name, bytes: values.get(entry.name)!, directory: false }));
@@ -415,6 +417,8 @@ interface OpcPolicy {
 	readonly hiddenImageParts: ReadonlySet<string>;
 	/** Raster images that passed inspection: their type and where the image ends. */
 	readonly rasterParts: ReadonlyMap<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>;
+	/** Raster images left out for their size: one image over the per-image limits, or past the document's pixel budget. */
+	readonly oversizedImageParts: ReadonlyMap<string, 'tooLarge' | 'overBudget'>;
 	readonly rewrittenXml: Map<string, Uint8Array>;
 	readonly placeholders: ParadisOfficePlaceholder[];
 	readonly ignoredParts: readonly ParadisOfficeIgnoredPart[];
@@ -701,6 +705,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 	// type is drawn as it is. Anything else (EMF, WMF, TIFF, APNG, a mismatch) stays a substitute box, as
 	// do images only used inside replaced elements and images past the document's pixel budget.
 	const rasterParts = new Map<string, { readonly mime: ParadisOfficeRasterMime; readonly end: number }>();
+	const oversizedImageParts = new Map<string, 'tooLarge' | 'overBudget'>();
 	let rasterPixels = 0;
 	const requestedBudget = input.imagePixelBudget;
 	const imagePixelBudget = requestedBudget !== undefined && Number.isFinite(requestedBudget) ? Math.min(PARADIS_WORD_DOCUMENT_IMAGE_PIXELS, Math.max(0, requestedBudget)) : PARADIS_WORD_DOCUMENT_IMAGE_PIXELS;
@@ -708,8 +713,12 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		await advanceOpcAnalysis(input, state);
 		if (svgParts.has(name) || hiddenImageParts.has(name)) { continue; }
 		const raw = values.get(name); if (!raw) { continue; }
-		const inspected = inspectParadisWordRasterImage(raw);
-		if (!inspected || inspected.mimeType !== rasterContentType(contentType(name)) || rasterPixels + inspected.pixels > imagePixelBudget) { continue; }
+		const { image: inspected, rejection, mimeType } = inspectParadisWordRasterImageWithReason(raw);
+		// A type that differs from the declared one stays unsafe whatever its size.
+		if ((inspected?.mimeType ?? mimeType) !== rasterContentType(contentType(name))) { continue; }
+		if (rejection === 'tooLarge') { oversizedImageParts.set(name, 'tooLarge'); continue; }
+		if (!inspected) { continue; }
+		if (rasterPixels + inspected.pixels > imagePixelBudget) { oversizedImageParts.set(name, 'overBudget'); continue; }
 		rasterPixels += inspected.pixels;
 		rasterParts.set(name, { mime: inspected.mimeType, end: inspected.end });
 	}
@@ -723,7 +732,7 @@ async function analyzeOpcPackage(values: ReadonlyMap<string, Uint8Array>, input:
 		...[...blockedExternal.values()].map((entry): ParadisOfficeBlockedPart => ({ feature: entry.feature, kind: entry.kind, scheme: entry.scheme, count: entry.count })),
 	].sort((left, right) => compareText(left.feature, right.feature) || compareText(left.kind, right.kind) || compareText(left.partName ?? left.scheme ?? '', right.partName ?? right.scheme ?? ''));
 	return {
-		removedParts, svgParts, imageParts, hiddenImageParts, rasterParts, rewrittenXml, placeholders,
+		removedParts, svgParts, imageParts, hiddenImageParts, rasterParts, oversizedImageParts, rewrittenXml, placeholders,
 		ignoredParts: Object.freeze(listedIgnored.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze({ ...part, partName: displaySafePartName(part.partName) }))),
 		ignoredPartsOmitted: Math.max(0, listedIgnored.length - PARADIS_OFFICE_LISTED_PARTS_LIMIT),
 		blockedParts: Object.freeze(listedBlocked.slice(0, PARADIS_OFFICE_LISTED_PARTS_LIMIT).map(part => Object.freeze(part.partName === undefined ? part : { ...part, partName: displaySafePartName(part.partName) }))),
@@ -1807,8 +1816,7 @@ function sanitizePackageMedia(nodeId: string, name: string, raw: Uint8Array, sem
  * decode. Same look as the package's own image placeholders; the text carries no document data.
  */
 export function paradisOfficeBrokenImagePlaceholderSvg(): Uint8Array {
-	const source = `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 320 48"><rect width="320" height="48" fill="#eeeeee"/><text x="8" y="28" fill="#000000">Office asset unavailable</text></svg>`;
-	const safe = sanitizeOfficeSvg({ nodeId: 'broken_image_placeholder', assetId: 'placeholder_broken_image', source });
+	const safe = sanitizeOfficeSvg({ nodeId: 'broken_image_placeholder', assetId: 'placeholder_broken_image', source: PARADIS_OFFICE_BROKEN_IMAGE_SVG });
 	if (!Object.prototype.hasOwnProperty.call(safe, 'bytes')) { throw new ParadisOfficePackageError('unsafe'); }
 	return (safe as ParadisSanitizedSvg).bytes.slice();
 }
@@ -1834,6 +1842,15 @@ function placeholderMedia(nodeId: string, name: string, rawHash: ParadisOfficeFi
 
 function assetMetadata(svg: ParadisSanitizedSvg): Extract<ParadisOfficeRenderableAsset, { readonly kind: 'sanitizedSvg' }> {
 	return { id: svg.id, kind: 'sanitizedSvg', mime: 'image/svg+xml', byteLength: svg.byteLength, fingerprint: svg.fingerprint, ...(svg.altText === undefined ? {} : { altText: svg.altText }) };
+}
+
+/** A valid image left out for its size says so, instead of looking like a broken or unsafe one. */
+function oversizedPlaceholder(placeholder: ParadisOfficePlaceholder, oversized: 'tooLarge' | 'overBudget' | undefined): ParadisOfficePlaceholder {
+	switch (oversized) {
+		case 'tooLarge': return { ...placeholder, reason: 'budget', detail: localize('paradis.office.imageTooLarge', "画像が大きすぎるため、表示していません。") };
+		case 'overBudget': return { ...placeholder, reason: 'budget', detail: localize('paradis.office.imageOverBudget', "画像が多いため、表示していません。") };
+		default: return placeholder;
+	}
 }
 
 function packagePlaceholder(nodeId: string, name: string, feature: string, hash: string): ParadisOfficePlaceholder {

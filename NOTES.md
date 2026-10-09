@@ -80,6 +80,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 ## Word の画像は検査を通ったものだけを描く（fileViewers、2026-10-09、Q312 A）
 
 - サニタイザ（`common/paradisOfficeSanitizer.ts`）は、PNG・JPEG・GIF のうち `common/word/paradisWordImageInspection.ts` の検査（署名・大きさ・PNG のチャンクの CRC・APNG の拒否・JPEG のセグメント・GIF のブロックとフレーム数）を通り、宣言の content type と中身が一致するものだけを元のバイトのまま渡す。画像の終わり（IEND・EOI・トレーラ）より後ろは切る。1 文書で描く画素は 1 億まで（差分は 1 文書あたり半分）
+- サニタイザ（`common/paradisOfficeSanitizer.ts`）は、大きすぎる画像と文書の画素の上限を越えた画像の代替表示の説明に `localize` を使っている（2026-10-09）。いまは renderer と shared process の中で動くので問題ないが、サニタイザを worker へ移すと、worker には NLS の表が無いため `!!! NLS MISSING` で落ちる。移すときは、説明を理由のコードだけにして、表示する側で文に直す
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
@@ -89,6 +90,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - renderer は表示（exceljs の投影）を出した後に、表示のために読んだバイト列をそのまま（base64 にせず）渡して解析を頼む。エディタを閉じる・読み直すと取り消しが届き、待ち行列からも worker からも外れる。チャネルは `parseWorkbook` の診断の指定を通さないので、本体のスレッドでは解析しない
 - 正規化の属性の並べ替えはコード単位の比較（`Intl.Collator` をやめた）。正規形の版（`PARADIS_OFFICE_CANONICAL_XML_VERSION`）を 2 にして、正規化した文字列の先頭に書いている。指紋は保存していないので、版が変わっても古い値と突き合わせる場所は無い
 - Word の worker（`node/word/paradisWordSemanticWorkerBackend.ts`）はまだ自前の待ち行列を持つ。同じ待ち行列へ寄せられる
+- 残課題（Excel の比較、2026-10-09）: 図形の比較（`electron-browser/paradisSpreadsheetDiff.ts` の `shapeStyleDetails`）は、文字・文字の書式・塗り・形・回転・線の矢印までを比べる。グラフの中身（系列・値・軸）、文字の余白（`insets`）、折り返し（`wrap`）、グラデーション（今は最初の色で近似して塗りとして比べている）は比べていない
 
 ## Claude のアカウントと使用量（limitsMonitor、2026-09-27、claude-swap を撤去）
 
@@ -411,6 +413,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 - Windows は現状スキップ（notify.sh がPOSIX sh前提。必要になったらSupersetの notify.ps1 方式を移植）
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
+
+### hook の届かないペインは Claude Code の OSC 7501 で状態を補う（2026-10-09、#318）
+
+Claude Code 2.1.295 から、端末が `OSC 7501 ; ?` に答えると作業の状態（working・blocked・done・idle・clear）を端末へ書く。Para Code はこれを hook が一度も届いていないペイン（WSL、ターミナルから ssh した先など）の状態の補助にだけ使う（`agentBrowser/common/paradisProgramStatus.ts`、`electron-browser/paradisProgramStatus.contribution.ts`）。
+
+- 出力はどのプログラムでも書けるので、問い合わせに答えるのは前面のコマンドが Claude Code か、先を確かめられない ssh・wsl などのときだけにしている
+- 前面のコマンドは、シェル統合の nonce が合ったコマンド行（`isTrusted`）と、pty が報告する前面のプロセスの題名で見分ける。出力に `OSC 633 ; E` を書くと nonce が合わなくてもコマンド行は上書きされるため、nonce の無いシェル統合のコマンド行は使わない
+- そのため、nonce の無いシェル統合（手で読み込んだ古い統合スクリプトなど）のターミナルでは、npm 版の Claude Code を見分けられない。推測: npm 版は Node のラッパーから起動するのでプロセスの題名が `node` になり、コマンド行だけが手がかりになる【要確認】。この場合は状態の補助が働かない。ネイティブ版はプロセスの題名が版の番号になるので、nonce が無くても見分けられる
+- `instance.processName` は名前を付けた端末では更新が止まるので、プロセスの題名は `processManager.onDidChangeProperty`（Title）から contribution 自身が持つ
 
 ### hook の位置を動かさない理由と、自動設置の ON/OFF（2026-09-27）
 

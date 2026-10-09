@@ -45,6 +45,7 @@ import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
+import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
 import { parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -175,6 +176,14 @@ function legacyDetailSubject(kind: IParadisDiffDetail['kind']): string {
 
 export const PARADIS_SPREADSHEET_LEGACY_CHANGE_LIMIT = 10_000;
 
+/** 図形の中身の変更の種類と、変更点パネルの見出しに使う主題。 */
+const SHAPE_CONTENT_SUBJECTS: ReadonlyMap<IParadisDiffDetail['kind'], string> = new Map([
+	['objectText', 'object.text'],
+	['objectTextFormat', 'object.textFormat'],
+	['objectFill', 'object.fill'],
+	['objectGeometry', 'object.geometry'],
+]);
+
 export interface IParadisSpreadsheetLegacyChangeSet {
 	readonly changes: readonly ParadisOfficeChange[];
 	readonly truncated: boolean;
@@ -250,6 +259,29 @@ export function adaptLegacySpreadsheetInspectorChangeSet(sheets: readonly IParad
 		for (let shapeIndex = 0; shapeIndex < shapeDiff.changes.length; shapeIndex++) {
 			const shape = shapeDiff.changes[shapeIndex];
 			const name = shape.shape.name ?? shape.shape.shapeId ?? `${shape.shape.type}-${shapeIndex + 1}`;
+			// 図形の文字・書式・塗り・形の変更は、項目ごとに前と後の値を並べる。
+			const contentDetails = shape.status === 'added' || shape.status === 'removed' ? [] : (shape.diffDetails ?? []).filter(detail => SHAPE_CONTENT_SUBJECTS.has(detail.kind));
+			for (const detail of contentDetails) {
+				if (!append({
+					id: `legacy-object:${sheetIndex}:${shapeIndex}:${shape.key}:${detail.kind}`,
+					category: detail.kind === 'objectText' ? 'content' : 'object',
+					subject: { kind: SHAPE_CONTENT_SUBJECTS.get(detail.kind)!, locator: `${sheet.name}!object:${name}` },
+					before: legacyChangeValue(detail.original),
+					after: legacyChangeValue(detail.modified),
+					certainty: 'degraded',
+					sourceParts: [],
+					navigableAnchor: `sheet:${sheet.name}`,
+				})) {
+					break;
+				}
+			}
+			if (truncated) {
+				break;
+			}
+			// 位置・線・画像など、それ以外の変更があるときだけ、図形 1 つにつき 1 件を足す（今までどおり）。
+			if (contentDetails.length > 0 && contentDetails.length === (shape.diffDetails ?? []).length) {
+				continue;
+			}
 			if (!append({
 				id: `legacy-object:${sheetIndex}:${shapeIndex}:${shape.key}`,
 				category: 'object',
@@ -935,10 +967,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const loadSide = async (resource: URI): Promise<{ wb: IParadisWorkbookData; error?: unknown }> => {
 				try {
 					return {
+						// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
 						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, totalBytes => {
 							sourceBytes += totalBytes;
 							this._probe.setBytes(sourceBytes);
-						}),
+						}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2),
 					};
 				} catch (error) {
 					return { wb: { sheets: [] }, error };
