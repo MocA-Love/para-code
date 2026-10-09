@@ -22,7 +22,7 @@
 // webview のライフサイクル（OverlayWebview + claim/release）は paradisDocxFileEditor.ts と同方式。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -68,11 +68,12 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { describeDocxChangeStatus, localizeDocxAnnotations } from '../common/paradisDocxDiffPresentation.js';
 import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
-import { createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
+import { PARADIS_WORD_SEMANTIC_BUSY_RETRIES, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS, acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
-import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
-import { renderWordSemanticRibbon, wordSemanticFailureMessage, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, mergeParadisWordPackageExclusions, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { compareParadisWordDocuments } from './word/paradisWordSemanticClient.js';
+import { alignParadisWordParagraphs } from '../common/word/paradisWordRenderOutline.js';
 import type { IParadisWordComparisonResult } from '../common/word/paradisWordSemanticSummary.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
 import './media/paradisDocxDiff.css';
@@ -210,11 +211,22 @@ export class ParadisDocxDiffEditor extends EditorPane {
 	private _documentSnapshot: { readonly original: Uint8Array; readonly modified: Uint8Array; readonly placeholders: readonly ParadisOfficePlaceholder[] } | undefined;
 	/** 詳しい比較（shared process）。読み込んだ元のバイト列で頼み、表示は待たせない。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 混み合っていて比較できなかったときの、頼み直しの予約。 */
+	private readonly _semanticRetry = this._register(new MutableDisposable());
+	private _semanticRetries = 0;
 	/** リボンのボタンのリスナー。描き直すたびに外す。 */
 	private readonly _ribbonDisposables = this._register(new DisposableStore());
 	private _semanticSources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
 	private _semanticResult: IParadisWordComparisonResult | undefined;
 	private _legacyResult: IParadisDocxDiffResult | undefined;
+	/** 両側の描画用のパッケージから外した部品（無視したもの・安全のために外したもの）。 */
+	private _packageExclusions: ParadisWordPackageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
+	/** いま表示している両側の docx-preview の段落ごとの文字（webview が描いた後に報告する）。 */
+	private _renderedParagraphs: { readonly original: unknown; readonly modified: unknown } | undefined;
+	/** 解析側の段落の位置 → 表示の段落の目印。段落の報告と詳しい比較の結果がそろった時点で、左右 1 回ずつ求める。 */
+	private _paragraphMarkers: { readonly original: ReadonlyMap<string, string>; readonly modified: ReadonlyMap<string, string> } | undefined;
+	/** 混み合って断られた組。違う組を頼むときに、頼み直しの回数を数え直すために覚える。 */
+	private _semanticBusySources: { readonly original: Uint8Array; readonly modified: Uint8Array } | undefined;
 	private _recreatingForRecovery = false;
 	/**
 	 * 表示の見張りと観測。
@@ -610,6 +622,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 		this._recoveryGeneration = recoveryGeneration;
 		this._loadGeneration++;
+		this._forgetRenderedParagraphs();
 		this._webviewRecoveryGeneration = recoveryGeneration;
 		this._webview?.setHtml(applyParadisOfficeWebviewAccessibility(buildParadisDocxDiffHtml({
 			original: localize('paradis.docxDiff.paneOriginal', "旧版 — {0}", basename(this._originalResource!)),
@@ -642,6 +655,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			return;
 		}
 		const loadGeneration = ++this._loadGeneration;
+		this._forgetRenderedParagraphs();
 		this._assetSanitization.value?.cancel();
 		const sanitization = new CancellationTokenSource(); this._assetSanitization.value = sanitization;
 		// 読み出しと消毒も返ってこないことがある区間なので、webview を作る前から見張る。
@@ -660,6 +674,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				modified: new Uint8Array(modifiedPackage.buffer),
 				placeholders: [...originalPackage.placeholders, ...modifiedPackage.placeholders],
 			};
+			this._packageExclusions = mergeParadisWordPackageExclusions(originalPackage.exclusions, modifiedPackage.exclusions);
 			this._assetPlaceholders = this._documentSnapshot.placeholders;
 			this._probe.setBytes(this._documentSnapshot.original.byteLength + this._documentSnapshot.modified.byteLength);
 			this._requestSemanticComparison(originalPackage.source, modifiedPackage.source);
@@ -717,12 +732,12 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		);
 	}
 
-	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array }> {
+	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array; readonly exclusions: ParadisWordPackageExclusions }> {
 		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
 		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
 		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token);
 		const bytes = sanitized.bytes;
-		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer };
+		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer, exclusions: paradisWordPackageExclusions(sanitized) };
 	}
 
 	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる場合だけ専用の案内を出す。 */
@@ -774,6 +789,12 @@ export class ParadisDocxDiffEditor extends EditorPane {
 					this._applyRecoveryEffects(transition.effects);
 				}
 				this._updateNav();
+				return;
+			case 'paragraphs':
+				if (message.generation === this._loadGeneration) {
+					this._renderedParagraphs = { original: message.original, modified: message.modified };
+					this._alignRenderedParagraphs();
+				}
 				return;
 			case 'activeChange': {
 				const index = this._changes.findIndex(change => change.id === message.changeId);
@@ -962,7 +983,13 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onNavigate: target => {
 				const legacy = /^legacy-change:(\d+)$/.exec(target.anchor ?? '');
-				const changeId = legacy ? Number(legacy[1]) : this._legacyChangeFor(semantic?.changes.find(change => change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? '')));
+				const semanticChange = legacy ? undefined : semantic?.changes.find(change => target.changeId !== undefined
+					? change.id === target.changeId
+					: change.subject.locator === target.locator && (change.navigableAnchor ?? '') === (target.anchor ?? ''));
+				if (semanticChange && semantic && this._revealSemanticChange(semantic, semanticChange)) {
+					return;
+				}
+				const changeId = legacy ? Number(legacy[1]) : this._legacyChangeFor(semanticChange);
 				if (changeId === undefined) {
 					return;
 				}
@@ -983,11 +1010,14 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._changeInspector.value = inspector;
 		inspector.setViewState(this._wordViewState);
 		inspector.setComparison(changes, completeness, outcome);
+		if (semantic) {
+			inspector.setTruncatedChanges(semantic.truncatedValueChangeIds);
+		}
 		inspector.setPlaceholders(this._assetPlaceholders);
-		inspector.setAnalysis(this._semanticResult === undefined ? undefined : {
+		inspector.setAnalysis({
 			...(semantic ? { counts: semantic.modified } : {}),
-			ignoredParts: [],
-			...(this._semanticResult.ok ? {} : { failure: localize('paradis.word.compareFailed', "詳しい比較ができませんでした: {0}。段落単位の比較を表示しています。", wordSemanticFailureMessage(this._semanticResult.code)) }),
+			...paradisWordExclusionItems(this._packageExclusions),
+			...(this._semanticResult && !this._semanticResult.ok ? { failure: localize('paradis.word.compareFailed', "詳しい比較ができませんでした: {0}。段落単位の比較を表示しています。", wordSemanticFailureMessage(this._semanticResult.code, this._semanticRetrying())) } : {}),
 		});
 		if (wasVisible) {
 			this._setInspectorVisible(true);
@@ -996,14 +1026,16 @@ export class ParadisDocxDiffEditor extends EditorPane {
 
 	private _semanticRibbonState(): ParadisWordSemanticRibbonState {
 		const alternatives = this._assetPlaceholders.length;
-		const ignoredParts = 0;
+		const ignoredParts = this._packageExclusions.ignored.length + this._packageExclusions.ignoredOmitted;
+		const blocked = summarizeParadisWordBlockedParts(this._packageExclusions);
+		const extra = blocked ? { blocked } : {};
 		const result = this._semanticResult;
 		if (!result) {
-			return { kind: 'comparing', alternatives, ignoredParts };
+			return { kind: 'comparing', alternatives, ignoredParts, ...extra };
 		}
 		return result.ok
-			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts, warnings: comparisonWarnings(result) }
-			: { kind: 'failed', code: result.code, alternatives, ignoredParts };
+			? { kind: 'compared', changes: result.changes.length, truncated: result.truncated, outcome: result.outcome, alternatives, ignoredParts, warnings: comparisonWarnings(result), ...extra }
+			: { kind: 'failed', code: result.code, alternatives, ignoredParts, retrying: this._semanticRetrying(), ...extra };
 	}
 
 	private _setInspectorVisible(visible: boolean): void {
@@ -1012,6 +1044,59 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 		this._inspectorPanel.style.display = visible ? 'block' : 'none';
 		this._inspectorToggle.setAttribute('aria-expanded', String(visible));
+		this._alignInspectorPanel();
+	}
+
+	/** 幅が狭いとツールバーが折り返して高くなるので、変更点パネルを比較の表示（webview）の上端に合わせる。 */
+	private _alignInspectorPanel(): void {
+		if (!this._inspectorPanel || this._inspectorPanel.style.display === 'none' || !this._webviewContainer) {
+			return;
+		}
+		const top = this._webviewContainer.offsetTop;
+		if (top > 0) {
+			this._inspectorPanel.style.top = `${top}px`;
+		}
+	}
+
+	/**
+	 * 詳しい比較の変更を、表示の段落へ移す。変更が属する段落（どちらの側か）を解析側で決めてあるので、
+	 * 書式・構造・フィールドのように文字で探せない変更にも移れる。段落の対応が取れなければ false。
+	 */
+	private _revealSemanticChange(semantic: Extract<IParadisWordComparisonResult, { readonly ok: true }>, change: ParadisOfficeChange): boolean {
+		const target = semantic.navigation[change.id];
+		if (!target || !this._webview) {
+			return false;
+		}
+		const marker = this._paragraphMarkers?.[target.side].get(target.paragraph);
+		if (!marker) {
+			return false;
+		}
+		void this._webview.postMessage({ type: 'revealAnchor', side: target.side, marker, focus: wordChangeText(change) ?? '' });
+		return true;
+	}
+
+	/** 描き直しを始めたら、前の描画の段落とその対応は使えないので捨てる（新しい報告が届くまで移動は段落単位の比較へ）。 */
+	private _forgetRenderedParagraphs(): void {
+		this._renderedParagraphs = undefined;
+		this._paragraphMarkers = undefined;
+	}
+
+	/**
+	 * 表示の段落と解析側の段落を対応させて覚える。変更点を押すたびに対応を取り直さないよう、段落の報告か
+	 * 詳しい比較の結果が新しく届いたときだけ求める。どちらかがまだなら、覚えている対応を捨てるだけ。
+	 */
+	private _alignRenderedParagraphs(): void {
+		const semantic = this._semanticResult?.ok ? this._semanticResult : undefined;
+		const rendered = this._renderedParagraphs;
+		if (!semantic || !rendered) {
+			this._paragraphMarkers = undefined;
+			return;
+		}
+		const align = (outline: typeof semantic.originalOutline, reported: unknown): ReadonlyMap<string, string> => {
+			const paragraphs = acceptRenderedParagraphs(reported);
+			return paragraphs ? alignParadisWordParagraphs(outline, paragraphs) : new Map();
+		};
+		this._paragraphMarkers = { original: align(semantic.originalOutline, rendered.original), modified: align(semantic.modifiedOutline, rendered.modified) };
 	}
 
 	/** 詳しい比較の変更に対応する、表示中の（段落単位の）変更を探す。文字が重なるものを選ぶ。 */
@@ -1035,6 +1120,17 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		this._semanticSources = undefined;
 		this._semanticResult = undefined;
 		this._legacyResult = undefined;
+		this._renderedParagraphs = undefined;
+		this._paragraphMarkers = undefined;
+		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
+		this._semanticRetry.clear();
+		this._semanticRetries = 0;
+		this._semanticBusySources = undefined;
+	}
+
+	/** 混み合って比較できなかった組を、まだ頼み直す予定があるか。 */
+	private _semanticRetrying(): boolean {
+		return this._semanticRetries <= PARADIS_WORD_SEMANTIC_BUSY_RETRIES;
 	}
 
 	/**
@@ -1050,12 +1146,19 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		if (previous && equalParadisWordBytes(previous.original, original) && equalParadisWordBytes(previous.modified, modified)) {
 			return;
 		}
+		// 混み合って断られた組と違うなら、頼み直しの回数を数え直す。
+		const busy = this._semanticBusySources;
+		if (busy && !(equalParadisWordBytes(busy.original, original) && equalParadisWordBytes(busy.modified, modified))) {
+			this._semanticRetries = 0;
+			this._semanticBusySources = undefined;
+		}
 		this._semanticRequest.value?.cancel();
 		const request = new CancellationTokenSource();
 		this._semanticRequest.value = request;
 		const sources = { original, modified };
 		this._semanticSources = sources;
 		this._semanticResult = undefined;
+		this._paragraphMarkers = undefined;
 		const inputEpoch = this._inputEpoch;
 		void (async () => {
 			let result: IParadisWordComparisonResult;
@@ -1068,6 +1171,22 @@ export class ParadisDocxDiffEditor extends EditorPane {
 				return;
 			}
 			this._semanticResult = result;
+			this._alignRenderedParagraphs();
+			if (!result.ok && result.code === 'busy') {
+				// 混み合っていただけなので、覚えた中身を捨てて、少し後に頼み直す。
+				this._semanticSources = undefined;
+				this._semanticBusySources = sources;
+				if (this._semanticRetries++ < PARADIS_WORD_SEMANTIC_BUSY_RETRIES) {
+					this._semanticRetry.value = disposableTimeout(() => {
+						if (inputEpoch === this._inputEpoch && !this._semanticSources) {
+							this._requestSemanticComparison(original, modified);
+						}
+					}, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS);
+				}
+			} else {
+				this._semanticRetries = 0;
+				this._semanticBusySources = undefined;
+			}
 			if (this._legacyResult) {
 				this._renderSemanticUi(this._legacyResult);
 			}
@@ -1283,6 +1402,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 			this._root.style.width = `${dimension.width}px`;
 			this._root.style.height = `${dimension.height}px`;
 		}
+		this._alignInspectorPanel();
 		this.setEditorVisible(dimension.width > 0 && dimension.height > 0);
 	}
 }
