@@ -69,7 +69,12 @@ export const PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS = 48 * 1024 * 1024;
  *
  * Markdown のビューアは、ファイルを保存するたびに文書を描き直す。覚えておかないと、そのたびに
  * 全部の画像を読み直して base64 にし直すことになる（8 MB の画像なら毎回）。ビューア 1 つにつき
- * 1 つ持ち、ビューアと一緒に捨てる。
+ * 1 つ持ち、ビューアと一緒に捨てる。描き直すたびに、その描画で使わなかった画像は外す（{@link retain}）。
+ *
+ * **仕組みの限界**: 版の見分けは更新時刻と大きさだけなので、どちらも同じまま中身だけが変わった画像
+ * （同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が
+ * 出続ける。次にどちらかが変わるか、別の文書へ移るまで直らない。中身のハッシュを取ると読み込みを
+ * 省けなくなるので、この限界は受け入れている（NOTES.md にも記録）。
  */
 export class ParadisInlineMediaCache {
 
@@ -122,6 +127,20 @@ export class ParadisInlineMediaCache {
 					this._keyByResource.delete(resourceOfOldest);
 					break;
 				}
+			}
+		}
+	}
+
+	/** `resources` に無いファイルの分を外す。描き直しで使わなくなった画像を抱えたままにしない。 */
+	retain(resources: Iterable<URI>): void {
+		const wanted = new Set<string>();
+		for (const resource of resources) {
+			wanted.add(resource.toString());
+		}
+		for (const [resourceKey, key] of [...this._keyByResource]) {
+			if (!wanted.has(resourceKey)) {
+				this._remove(key);
+				this._keyByResource.delete(resourceKey);
 			}
 		}
 	}
@@ -323,6 +342,10 @@ export async function inlineParadisMarkdownMedia(
 
 	// 同じ画像を何度も貼っている文書でも、読み込みと base64 化は1回で済ませる。
 	const cache = await readMediaInParallel(wanted.map(item => item.target), fileService, limits, token, mediaCache);
+	if (!token.isCancellationRequested) {
+		// この描画で使わなかった画像は覚えておかない（文書から消した画像を抱え続けない）。
+		mediaCache?.retain(wanted.map(item => item.target));
+	}
 
 	let inlined = 0;
 	let skipped = 0;

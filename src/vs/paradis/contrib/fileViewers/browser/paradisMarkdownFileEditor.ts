@@ -17,6 +17,7 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { URI } from '../../../../base/common/uri.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -47,6 +48,10 @@ import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMerm
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
+import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
+import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 
 export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 
@@ -55,6 +60,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	private readonly _zoom: ParadisViewerZoomControls;
 	/** 埋め込んだ画像の data: URI。保存のたびの描き直しで、同じ画像を base64 にし直さない。 */
 	private readonly _mediaCache = new ParadisInlineMediaCache();
+	/** `_mediaCache` がどの文書の画像を覚えているか。 */
+	private _mediaCacheResource: URI | undefined;
 
 	constructor(
 		group: IEditorGroup,
@@ -82,9 +89,21 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
 	}
 
+	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		// 同じペインで別の文書へ移るときは、前の文書の画像を抱えたままにしない（clearInput を経ずに
+		// 入力が差し替わることがある）。
+		const resource = (input as ParadisFileViewerInput).resource;
+		if (!isEqual(this._mediaCacheResource, resource)) {
+			this._mediaCache.clear();
+			this._mediaCacheResource = resource;
+		}
+		await super.setInput(input, options, context, token);
+	}
+
 	override clearInput(): void {
 		// 別の文書へ移るときは、前の文書の画像を抱えたままにしない。
 		this._mediaCache.clear();
+		this._mediaCacheResource = undefined;
 		super.clearInput();
 	}
 
