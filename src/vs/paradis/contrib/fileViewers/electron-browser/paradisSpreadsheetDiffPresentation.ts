@@ -50,6 +50,12 @@ function detailLabel(detail: IParadisDiffDetail): string {
 		case 'objectOutlineWidth': return localize('paradis.spreadsheet.diff.objectOutlineWidth', "枠線の太さ");
 		case 'objectDash': return localize('paradis.spreadsheet.diff.objectDash', "線種");
 		case 'objectImage': return localize('paradis.spreadsheet.diff.objectImage', "画像（種類；サイズ；フィンガープリント）");
+		case 'objectText': return localize('paradis.spreadsheet.diff.objectText', "図形の文字");
+		case 'objectTextFormat': return localize('paradis.spreadsheet.diff.objectTextFormat', "図形の文字の書式");
+		case 'objectFill': return localize('paradis.spreadsheet.diff.objectFill', "図形の塗り");
+		case 'objectGeometry': return localize('paradis.spreadsheet.diff.objectGeometry', "図形の形");
+		case 'objectRotation': return localize('paradis.spreadsheet.diff.objectRotation', "図形の回転（度）");
+		case 'objectLineEnds': return localize('paradis.spreadsheet.diff.objectLineEnds', "線の端の矢印");
 	}
 }
 

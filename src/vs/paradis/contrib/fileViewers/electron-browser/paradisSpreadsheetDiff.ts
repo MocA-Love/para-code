@@ -59,7 +59,13 @@ export type ParadisDiffDetailKind =
 	| 'objectOutlineColor'
 	| 'objectOutlineWidth'
 	| 'objectDash'
-	| 'objectImage';
+	| 'objectImage'
+	| 'objectText'
+	| 'objectTextFormat'
+	| 'objectFill'
+	| 'objectGeometry'
+	| 'objectRotation'
+	| 'objectLineEnds';
 
 export interface IParadisDiffDetail {
 	readonly kind: ParadisDiffDetailKind;
@@ -791,7 +797,59 @@ function shapeStyleDetails(original: IParadisRenderShape, modified: IParadisRend
 	if (original.href !== modified.href) {
 		pushDetail(details, 'objectImage', imageDescription(original.href), imageDescription(modified.href));
 	}
+	pushDetail(details, 'objectText', shapeText(original), shapeText(modified));
+	pushDetail(details, 'objectTextFormat', shapeTextFormat(original), shapeTextFormat(modified));
+	pushDetail(details, 'objectFill', shapeFill(original), shapeFill(modified));
+	pushDetail(details, 'objectGeometry', shapeGeometry(original), shapeGeometry(modified));
+	pushDetail(details, 'objectRotation', original.rotation ? String(Math.round(original.rotation * 100) / 100) : undefined, modified.rotation ? String(Math.round(modified.rotation * 100) / 100) : undefined);
+	pushDetail(details, 'objectLineEnds', shapeLineEnds(original), shapeLineEnds(modified));
 	return details;
+}
+
+/** 図形の中の文字（段落は改行でつなぐ）。文字が無ければ undefined。 */
+function shapeText(shape: IParadisRenderShape): string | undefined {
+	const text = shape.text?.paragraphs.map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n');
+	return text ? text : undefined;
+}
+
+/** 文字の書式（大きさ・太字・斜体・下線・色・書体・揃え・上下の位置・縦書き）を、比べられる 1 つの文にする。 */
+function shapeTextFormat(shape: IParadisRenderShape): string | undefined {
+	const text = shape.text;
+	if (!text) {
+		return undefined;
+	}
+	const runs = text.paragraphs.flatMap(paragraph => paragraph.runs.filter(run => run.text !== '\n').map(run => [
+		run.size ? `${run.size}pt` : '',
+		run.bold ? 'bold' : '',
+		run.italic ? 'italic' : '',
+		run.underline ? 'underline' : '',
+		run.color ?? '',
+		run.font ?? '',
+	].filter(Boolean).join(' ')));
+	const layout = [text.anchor ?? 'top', text.vertical ? 'vertical' : '', ...text.paragraphs.map(paragraph => paragraph.align ?? 'left')].filter(Boolean).join(' ');
+	return [...new Set(runs)].join(' / ') + ` | ${layout}`;
+}
+
+function shapeFill(shape: IParadisRenderShape): string | undefined {
+	if (!shape.fill) {
+		return undefined;
+	}
+	return shape.fillOpacity !== undefined ? `${shape.fill} (${Math.round(shape.fillOpacity * 100)}%)` : shape.fill;
+}
+
+/** 形の種類と調整値。自由形状は道筋の指紋で比べる。 */
+function shapeGeometry(shape: IParadisRenderShape): string | undefined {
+	if (shape.type !== 'rect' && !shape.geometry) {
+		return undefined;
+	}
+	const geometry = shape.geometry ?? 'rect';
+	const adjust = shape.adjust?.length ? ` (${shape.adjust.join(', ')})` : '';
+	const paths = shape.paths ? ` ${(stringHash(JSON.stringify(shape.paths), 0) >>> 0).toString(16).padStart(8, '0')}` : '';
+	return `${geometry}${adjust}${paths}`;
+}
+
+function shapeLineEnds(shape: IParadisRenderShape): string | undefined {
+	return shape.headEnd || shape.tailEnd ? `${shape.headEnd ?? 'none'} → ${shape.tailEnd ?? 'none'}` : undefined;
 }
 
 function withShapeDiff(shape: IParadisRenderShape, status: ParadisShapeDiffStatus, details: readonly IParadisDiffDetail[] = []): IParadisShapeRender {
