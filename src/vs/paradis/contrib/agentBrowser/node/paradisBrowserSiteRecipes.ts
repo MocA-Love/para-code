@@ -265,7 +265,7 @@ function fill(value: unknown, values: Readonly<Record<string, string>>): unknown
 /** run_recipe の手順（パラメータを差し込み、done_when を最後の expect にしたもの）。足りないパラメータがあれば断る。 */
 export function paradisSiteRecipeSteps(recipe: IParadisSiteRecipe, rawValues: unknown, origin: string): { readonly ok: true; readonly steps: unknown[] } | { readonly ok: false; readonly error: string } {
 	// ファイルを直接書き換えられて形が崩れた手順は動かさない
-	if (!Array.isArray(recipe.steps) || !Array.isArray(recipe.params) || recipe.params.some(param => !isRecord(param) || typeof param.name !== 'string') || (recipe.doneWhen !== undefined && !isRecord(recipe.doneWhen))) {
+	if (!isWellFormedRecipe(recipe)) {
 		return { ok: false, error: `run_recipe: the saved recipe "${String(recipe.name)}" is malformed. Save it again with save_recipe.` };
 	}
 	const values: Record<string, string> = {};
@@ -300,8 +300,21 @@ export function paradisSiteRecipeSteps(recipe: IParadisSiteRecipe, rawValues: un
 	return { ok: true, steps: filled };
 }
 
+/**
+ * 保存のときの決まりに合う形か（名前と params の名前が {@link NAME_PATTERN} に合い、steps と params が配列）。
+ * 名前の制限は保存のときにしか掛からないので、ファイルを直接書き換えて名前に自由な文を入れた手順は、一覧にも
+ * ヒントにも出さず、動かしもしない。
+ */
+function isWellFormedRecipe(recipe: IParadisSiteRecipe): boolean {
+	return typeof recipe.name === 'string' && NAME_PATTERN.test(recipe.name)
+		&& Array.isArray(recipe.steps) && Array.isArray(recipe.params)
+		&& recipe.params.every(param => isRecord(param) && typeof param.name === 'string' && NAME_PATTERN.test(param.name))
+		&& (recipe.doneWhen === undefined || isRecord(recipe.doneWhen));
+}
+
 /** 道具の結果に添える 1 行（そのサイトに保存した手順の名前とパラメータ）。 */
-export function paradisFormatSiteRecipesHint(origin: string, recipes: readonly IParadisSiteRecipe[]): string | undefined {
+export function paradisFormatSiteRecipesHint(origin: string, allRecipes: readonly IParadisSiteRecipe[]): string | undefined {
+	const recipes = allRecipes.filter(isWellFormedRecipe);
 	if (recipes.length === 0) {
 		return undefined;
 	}
@@ -312,7 +325,8 @@ export function paradisFormatSiteRecipesHint(origin: string, recipes: readonly I
 }
 
 /** list_recipes の一覧。 */
-export function paradisFormatSiteRecipesList(origin: string, recipes: readonly IParadisSiteRecipe[]): string {
+export function paradisFormatSiteRecipesList(origin: string, allRecipes: readonly IParadisSiteRecipe[]): string {
+	const recipes = allRecipes.filter(isWellFormedRecipe);
 	if (recipes.length === 0) {
 		return `No recipes for ${origin} in this repository.`;
 	}
