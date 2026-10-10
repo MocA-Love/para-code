@@ -11,8 +11,11 @@
 //     loaderId + backendNodeId）。行を uid で突き合わせれば、消えた・増えた・変わった要素が分かる
 //   - 前回の控えはタブ（子プロセスの台帳のキー）ごとに 1 つ。取った子プロセスと世代が違う（uid の数え直し）、
 //     根の uid が違う（別の文書）、古い、のどれかなら差分にせず全体を返す
-//   - 差分が全体の半分を超えるなら全体を返す（読む量が減らないため）
+//   - 差分が、返す全体（本文と 1 回に返す上限 20,000 字の小さい方）の半分を超えるなら全体を返す（読む量が減らないため）
+//   - 前回の本文が上限より長くて切って返したときは、差分にしない（エージェントが見ていない要素を「変わっていない」と言わない）
 //   - エージェントは `full: true` で全体を取れる。全体を返したときも控えは取り直す
+
+import { PARADIS_SNAPSHOT_MAX_CHARS } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored の take_snapshot が本文の前に置く見出し。 */
 const SNAPSHOT_HEADING = '## Latest page snapshot';
@@ -25,7 +28,9 @@ export const PARADIS_SNAPSHOT_BASELINE_MAX_AGE_MS = 10 * 60_000;
 const MAX_BASELINES = 32;
 /** これより長い本文は控えない（メモリを抑える）。 */
 const MAX_BASELINE_CHARS = 2_000_000;
-/** 差分がこの割合を超えたら、全体を返す。 */
+/** 控え全体の文字数の上限。越えたら古い控えから捨てる。 */
+const MAX_TOTAL_BASELINE_CHARS = 8_000_000;
+/** 差分が、エージェントに返す全体（本文と、1 回に返す上限の小さい方）のこの割合を超えたら、全体を返す。 */
 const MAX_DIFF_RATIO = 0.5;
 /** 並び替えを知らせるときに並べる uid の数。 */
 const MAX_LISTED_ORDER = 20;
@@ -206,7 +211,8 @@ export function paradisDiffSnapshotBodies(previousBody: string, currentBody: str
 		lines.push('Added:', ...added);
 	}
 	const text = `${lines.join('\n')}\n`;
-	return text.length > currentBody.length * MAX_DIFF_RATIO ? undefined : text;
+	// 全体は 1 回に PARADIS_SNAPSHOT_MAX_CHARS 字までしか返さない（差分の見出しは切られない）。それより大きい差分は返さない
+	return text.length > Math.min(currentBody.length, PARADIS_SNAPSHOT_MAX_CHARS) * MAX_DIFF_RATIO ? undefined : text;
 }
 
 /** take_snapshot の結果の、見出しより前と本文。見出しが無ければ undefined。 */
@@ -227,13 +233,41 @@ export type ParadisSnapshotDiffMode = 'diff' | 'full';
  * （ペインのトークン、または tab_id のスコープキー）。
  */
 export class ParadisSnapshotBaselines {
-	private readonly entries = new Map<string, { readonly body: string; readonly at: number; readonly child: object; readonly generation: number }>();
+	private readonly entries = new Map<string, { readonly body: string; readonly at: number; readonly child: object; readonly generation: number; readonly truncated: boolean }>();
+	/** 控えの本文の文字数の合計。 */
+	private total = 0;
 
-	constructor(private readonly now: () => number = Date.now) { }
+	/** @param maxTotalChars 控え全体の文字数の上限（テストで小さくする）。 */
+	constructor(private readonly now: () => number = Date.now, private readonly maxTotalChars: number = MAX_TOTAL_BASELINE_CHARS) { }
+
+	private remove(token: string): void {
+		const entry = this.entries.get(token);
+		if (entry !== undefined) {
+			this.total -= entry.body.length;
+			this.entries.delete(token);
+		}
+	}
+
+	/** 期限の切れた控えと、数・文字数の上限を越えた古い控えを捨てる。 */
+	private prune(now: number): void {
+		for (const [token, entry] of [...this.entries]) {
+			if (now - entry.at > PARADIS_SNAPSHOT_BASELINE_MAX_AGE_MS) {
+				this.remove(token);
+			}
+		}
+		while (this.entries.size > MAX_BASELINES || this.total > this.maxTotalChars) {
+			const oldest = this.entries.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			this.remove(oldest.value);
+		}
+	}
 
 	/**
 	 * take_snapshot の結果を、`mode` に従って差分に置き換え（できるときだけ）、本文を次の控えにする。
-	 * 失敗した結果・スナップショットの無い結果はそのまま返し、控えも変えない。
+	 * 失敗した結果・スナップショットの無い結果はそのまま返し、控えも変えない。前回の本文が 1 回に返す上限
+	 * （PARADIS_SNAPSHOT_MAX_CHARS）より長くて切って返したときは、エージェントが見ていない要素があるので差分にしない。
 	 * @param child 結果を返した子プロセス。uid はこれと `generation` が同じ間だけ続けて使える。
 	 */
 	apply(token: string, child: object, generation: number, result: unknown, mode: ParadisSnapshotDiffMode): unknown {
@@ -248,19 +282,16 @@ export class ParadisSnapshotBaselines {
 		if (!parts) {
 			return result;
 		}
-		const previous = this.entries.get(token);
 		const at = this.now();
-		this.entries.delete(token);
+		this.prune(at);
+		const previous = this.entries.get(token);
+		this.remove(token);
 		if (parts.body.length <= MAX_BASELINE_CHARS) {
-			if (this.entries.size >= MAX_BASELINES) {
-				const oldest = this.entries.keys().next();
-				if (!oldest.done) {
-					this.entries.delete(oldest.value);
-				}
-			}
-			this.entries.set(token, { body: parts.body, at, child, generation });
+			this.entries.set(token, { body: parts.body, at, child, generation, truncated: parts.body.length > PARADIS_SNAPSHOT_MAX_CHARS });
+			this.total += parts.body.length;
+			this.prune(at);
 		}
-		if (mode !== 'diff' || previous === undefined || previous.child !== child || previous.generation !== generation || at - previous.at > PARADIS_SNAPSHOT_BASELINE_MAX_AGE_MS) {
+		if (mode !== 'diff' || previous === undefined || previous.truncated || previous.child !== child || previous.generation !== generation) {
 			return result;
 		}
 		const diff = paradisDiffSnapshotBodies(previous.body, parts.body, previous.at);
@@ -276,20 +307,26 @@ export class ParadisSnapshotBaselines {
 	}
 
 	forget(token: string): void {
-		this.entries.delete(token);
+		this.remove(token);
 	}
 
 	/** 条件に合うキーの控えを捨てる（新しいエージェントがつながったペインなど）。 */
 	forgetWhere(predicate: (token: string) => boolean): void {
 		for (const token of [...this.entries.keys()]) {
 			if (predicate(token)) {
-				this.entries.delete(token);
+				this.remove(token);
 			}
 		}
 	}
 
 	clear(): void {
 		this.entries.clear();
+		this.total = 0;
+	}
+
+	/** 控えの数と、本文の文字数の合計（テスト用）。 */
+	get size(): { readonly entries: number; readonly chars: number } {
+		return { entries: this.entries.size, chars: this.total };
 	}
 }
 

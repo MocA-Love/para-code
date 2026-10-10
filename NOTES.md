@@ -2792,7 +2792,9 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 設定 `paradis.agentBrowser.snapshotDiff`（既定オフ）。エージェントの take_snapshot を、同じタブの 2 回目からは前回との差分（消えた・変わった・増えた要素、uid 付き）で返す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSnapshotDiff.ts`、控えは `paradisDevtoolsMcpProxy.ts` が子プロセスの台帳のキー（タブ）ごとに持つ。
 
-- 全体を返すのは、初回・別の文書（根の uid が違う）・子プロセスか世代が違う（uid の数え直し）・10 分を過ぎた・差分が全体の半分を超える、のどれか。`full: true` でも全体
+- 全体を返すのは、初回・別の文書（根の uid が違う）・子プロセスか世代が違う（uid の数え直し）・10 分を過ぎた・差分が「本文と 1 回に返す上限 20,000 字の小さい方」の半分を超える・前回の本文が 20,000 字を超えて切って返した、のどれか。`full: true` でも全体
+- run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけなので）
+- 控えは 32 枠・本文の合計 8,000,000 字まで。期限切れは取るときに捨てる
 - 差分にするのは素の take_snapshot だけ。`root`・`filePath`・`verbose`・`offset` の呼び出しは今までどおりで、控えも変えない。Para Code が中で使う take_snapshot（観測など）も差分にしない
 - MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
 - tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
