@@ -23,6 +23,7 @@ import { $, addDisposableListener, append, clearNode, EventType, isAncestor, isH
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { AnchorAlignment, AnchorPosition } from '../../../../base/browser/ui/contextview/contextview.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -32,6 +33,7 @@ import { ITextModel } from '../../../../editor/common/model.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { ITextModelContentProvider, ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -40,6 +42,7 @@ import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrows
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisAgentPageScriptEntry, IParadisAgentPageScriptOwner, IParadisAgentPageScriptsSurface, paradisAgentPageScriptUri, paradisPaneFingerprint, paradisParseAgentPageScriptUri, PARADIS_AGENT_PAGE_SCRIPT_SCHEME, PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
+import { paradisRefreshAgentPageScriptModels } from '../browser/paradisAgentPageScriptModels.js';
 
 /** Toolbar の帯の並び順（Design Mode のトレイより上に出す）。 */
 const BANNER_ORDER = 5;
@@ -97,6 +100,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super(editor);
 		this.surface = ProxyChannel.toService<IParadisAgentPageScriptsSurface>(mainProcessService.getChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL));
@@ -104,16 +108,17 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		this.banner.setAttribute('role', 'status');
 		this.banner.style.display = 'none';
 		this.label = append(this.banner, $('span.paradis-page-scripts-banner-text'));
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.label, () => localize('paradis.agentPageScripts.bannerTitle', "このタブにエージェントのスクリプトが入っています（{0} 本）。ページを読み込むたびに動きます。", this.entries.length)));
 		this.detailsButton = append(this.banner, $<HTMLButtonElement>('button.paradis-page-scripts-banner-button'));
 		this.detailsButton.type = 'button';
 		this.detailsButton.textContent = localize('paradis.agentPageScripts.details', "詳細");
-		this.detailsButton.title = localize('paradis.agentPageScripts.detailsTitle', "このタブに入っているスクリプトの一覧を開きます。");
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.detailsButton, localize('paradis.agentPageScripts.detailsTitle', "このタブに入っているスクリプトの一覧を開きます。")));
 		this.detailsButton.setAttribute('aria-haspopup', 'dialog');
 		this._register(addDisposableListener(this.detailsButton, EventType.CLICK, () => this.toggleDetails()));
 		this.removeButton = append(this.banner, $<HTMLButtonElement>('button.paradis-page-scripts-banner-button'));
 		this.removeButton.type = 'button';
 		this.removeButton.textContent = localize('paradis.agentPageScripts.removeAll', "すべて外す");
-		this.removeButton.title = localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。");
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.removeButton, localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。")));
 		this._register(addDisposableListener(this.removeButton, EventType.CLICK, () => void this.removeAll()));
 	}
 
@@ -214,7 +219,6 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 			if (entries.length > 1) {
 				append(this.label, $('span')).textContent = localize('paradis.agentPageScripts.others', "ほか {0} 本", entries.length - 1);
 			}
-			this.label.title = localize('paradis.agentPageScripts.bannerTitle', "このタブにエージェントのスクリプトが入っています（{0} 本）。ページを読み込むたびに動きます。", entries.length);
 		}
 		const visible = entries.length > 0;
 		if (!visible) {
@@ -282,7 +286,7 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 						store.add(addDisposableListener(view, EventType.CLICK, () => this.openSource(entry)));
 					} else {
 						view.disabled = true;
-						view.title = localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。");
+						store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), view, localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。")));
 					}
 					const remove = append(actions, $<HTMLButtonElement>('button.paradis-page-scripts-details-button'));
 					remove.type = 'button';
@@ -321,6 +325,10 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 
 BrowserEditor.registerContribution(ParadisAgentPageScriptsBanner);
 
+function sourceGoneText(): string {
+	return localize('paradis.agentPageScripts.sourceGone', "// このスクリプトは外されたか、本文を保持していません。");
+}
+
 /** 「中身を見る」で開く読み取り専用の文書（本文は electron-main から取る）。 */
 class ParadisAgentPageScriptContentProvider implements ITextModelContentProvider, IWorkbenchContribution {
 
@@ -328,6 +336,7 @@ class ParadisAgentPageScriptContentProvider implements ITextModelContentProvider
 
 	private readonly surface: IParadisAgentPageScriptsSurface;
 	private readonly registration: IDisposable;
+	private readonly changes: IDisposable;
 
 	constructor(
 		@ITextModelService textModelService: ITextModelService,
@@ -337,6 +346,9 @@ class ParadisAgentPageScriptContentProvider implements ITextModelContentProvider
 	) {
 		this.surface = ProxyChannel.toService<IParadisAgentPageScriptsSurface>(mainProcessService.getChannel(PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL));
 		this.registration = textModelService.registerTextModelContentProvider(PARADIS_AGENT_PAGE_SCRIPT_SCHEME, this);
+		// 外されたスクリプトの文書をエディタで開いたままにしても、古い本文が見え続けないようにする
+		this.changes = this.surface.onDidChangeInitScripts(change => void paradisRefreshAgentPageScriptModels(
+			this.modelService.getModels(), change.viewId, (viewId, id) => this.surface.getInitScriptSource(viewId, id), sourceGoneText()));
 	}
 
 	async provideTextContent(resource: URI): Promise<ITextModel | null> {
@@ -346,11 +358,12 @@ class ParadisAgentPageScriptContentProvider implements ITextModelContentProvider
 		}
 		const parsed = paradisParseAgentPageScriptUri(resource);
 		const source = parsed ? await this.surface.getInitScriptSource(parsed.viewId, parsed.id) : undefined;
-		const text = source ?? localize('paradis.agentPageScripts.sourceGone', "// このスクリプトは外されたか、本文を保持していません。");
+		const text = source ?? sourceGoneText();
 		return this.modelService.createModel(text, this.languageService.createById('javascript'), resource);
 	}
 
 	dispose(): void {
+		this.changes.dispose();
 		this.registration.dispose();
 	}
 }
