@@ -27,7 +27,7 @@ import { homedir } from 'os';
 import { join } from '../../../../base/common/path.js';
 import { paradisParseRunStepsFlow } from './paradisBrowserRunStepsFlow.js';
 import { paradisDevtoolsPathArguments } from './paradisDevtoolsPathPolicy.js';
-import { paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
+import { paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
 
 const MAX_RECIPES_PER_KEY = 30;
@@ -212,6 +212,9 @@ export function paradisCheckSiteRecipe(args: Record<string, unknown>, meta: { re
 	const serialized = JSON.stringify({ steps, params, description: args.description });
 	if (serialized.length > MAX_RECIPE_CHARS) {
 		return { ok: false, error: `save_recipe: the recipe is too long (${serialized.length} characters, at most ${MAX_RECIPE_CHARS}).` };
+	}
+	if (paradisSiteNoteContainsCardNumber(serialized)) {
+		return { ok: false, error: 'save_recipe did not save the recipe: it contains a number that looks like a payment card number. Make the value a parameter such as {{card_number}} and pass it to run_recipe.' };
 	}
 	if (paradisSiteNoteLooksSecret(serialized)) {
 		return { ok: false, error: 'save_recipe did not save the recipe: it looks like it contains a password, token or key. Make the value a parameter such as {{password}} and pass it to run_recipe.' };
