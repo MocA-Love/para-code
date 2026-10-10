@@ -16,18 +16,22 @@
 
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_MOBILE_HTML_IMAGE_MAX_COUNT, paradisSplitMobileHtmlImages } from '../common/paradisMobileHtmlImages.js';
+import { PARADIS_MOBILE_HTML_IMAGE_MAX_COUNT, paradisSplitMobileHtmlImagesSliced } from '../common/paradisMobileHtmlImages.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /** 画像を抜くために読む HTML の大きさの上限。これより大きいファイルは、今までどおり先頭の 20 MiB だけを送る。 */
 export const PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT = 64 * 1024 * 1024;
-/** 控える文書の数と、控える画像の文字の合計の上限（古いものから捨てる）。 */
+/** 控える文書の数と、控える文書の文字の合計の上限（古いものから捨てる）。 */
 const CACHE_DOCUMENTS = 2;
 const CACHE_CHARACTERS = 128 * 1024 * 1024;
 /** 取り寄せが止まってからこの時間がたったら、控えを全部捨てる（ウィンドウのメモリを抱え続けない。捨てた後は読み直す）。 */
 const CACHE_IDLE_MS = 10 * 60 * 1000;
 
-const cache = new Map<string, readonly string[]>();
+/**
+ * 控え。`images` は元の本文の部分文字列なので、V8 では元の本文を丸ごと抱えたままになる（sliced string）。
+ * 勘定には元の本文の長さ（`chars`）を使う。
+ */
+const cache = new Map<string, { readonly images: readonly string[]; readonly chars: number }>();
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
 function touch(): void {
@@ -38,20 +42,20 @@ function touch(): void {
 	}, CACHE_IDLE_MS);
 }
 
-function remember(token: string, images: readonly string[]): void {
+function remember(token: string, images: readonly string[], source: string): void {
 	touch();
 	cache.delete(token);
-	cache.set(token, images);
+	cache.set(token, { images, chars: source.length });
 	let total = 0;
 	for (const value of cache.values()) {
-		total += value.reduce((sum, image) => sum + image.length, 0);
+		total += value.chars;
 	}
 	for (const [key, value] of cache) {
 		if (cache.size <= 1 || (cache.size <= CACHE_DOCUMENTS && total <= CACHE_CHARACTERS)) {
 			break;
 		}
 		cache.delete(key);
-		total -= value.reduce((sum, image) => sum + image.length, 0);
+		total -= value.chars;
 	}
 }
 
@@ -66,12 +70,12 @@ async function tokenOf(text: string): Promise<string> {
  * provider の fs `read` が、アプリが `htmlImages: true` を付けたときだけ呼ぶ。
  */
 export async function paradisPrepareMobileHtmlImages(text: string): Promise<{ readonly html: string; readonly token: string; readonly count: number } | undefined> {
-	const split = paradisSplitMobileHtmlImages(text);
+	const split = await paradisSplitMobileHtmlImagesSliced(text);
 	if (split === undefined) {
 		return undefined;
 	}
 	const token = await tokenOf(text);
-	remember(token, split.images);
+	remember(token, split.images, text);
 	return { html: split.html, token, count: split.images.length };
 }
 
@@ -100,7 +104,7 @@ registerParadisMobileRequestHandler('fs', 'htmlImage', {
 		const remembered = cache.get(token);
 		if (remembered !== undefined) {
 			touch();
-			send(remembered);
+			send(remembered.images);
 			return;
 		}
 		return (async () => {
@@ -120,12 +124,12 @@ registerParadisMobileRequestHandler('fs', 'htmlImage', {
 				context.reply(staleReply());
 				return;
 			}
-			const split = paradisSplitMobileHtmlImages(text);
+			const split = await paradisSplitMobileHtmlImagesSliced(text);
 			if (split === undefined) {
 				context.reply(staleReply());
 				return;
 			}
-			remember(token, split.images);
+			remember(token, split.images, text);
 			send(split.images);
 		})();
 	},
