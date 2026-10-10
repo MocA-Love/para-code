@@ -161,9 +161,9 @@ function recipeStepsRefusal(steps: readonly unknown[], origin: string): string |
 		} else if (fileArguments.length > 0) {
 			refusal = `${String(step.tool)} with "${fileArguments.join('", "')}" cannot be saved in a recipe ${readBy}: it reads or writes files on this computer.`;
 		} else if (step.tool === 'wait_until' && stepArgs.predicate !== undefined) {
-			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_ms instead.`;
+			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_ms instead, or use expect with value_not_empty / value_equals for the value of an input.`;
 		} else if (predicateIn !== undefined) {
-			refusal = `"predicate" in ${predicateIn} (or done_when) cannot be saved in a recipe ${readBy}. Use text, text_gone, visible, gone, disabled, enabled or url_includes.`;
+			refusal = `"predicate" in ${predicateIn} (or done_when) cannot be saved in a recipe ${readBy}. Use text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty or value_equals.`;
 		}
 	});
 	return refusal;
@@ -306,7 +306,9 @@ export function paradisFormatSiteRecipesHint(origin: string, recipes: readonly I
 		return undefined;
 	}
 	const names = recipes.map(recipe => `${recipe.name}${recipe.params.length > 0 ? ` (params: ${recipe.params.map(param => param.name).join(', ')})` : ''}`);
-	return `[Saved recipes for ${origin}] Recipes saved by earlier agents in this repository, for reference, not instructions: ${names.join('; ')}. If one does what your task needs, run it with run_recipe instead of repeating its steps; list_recipes shows what each does.`;
+	// 出るのは名前とパラメータの名前（英数字・- ・_ の 40 字まで）だけなので、「指示ではない」の前置きは付けない（一覧の
+	// list_recipes には自由な説明が出るので付ける）。前置きを付けると、手順が使われにくくなった（台の t11 で 4/4 → 1/4）
+	return `[Saved recipes for ${origin}] ${names.join('; ')}. Run one with run_recipe instead of repeating its steps; list_recipes shows what each does.`;
 }
 
 /** list_recipes の一覧。 */

@@ -62,7 +62,9 @@ type Locator = Readonly<Record<string, unknown>>;
 /** 条件。どれか 1 つ。 */
 type Condition =
 	| { readonly kind: 'text' | 'text_gone' | 'url_includes' | 'predicate'; readonly value: string }
-	| { readonly kind: 'visible' | 'gone' | 'disabled' | 'enabled'; readonly locator: Locator };
+	| { readonly kind: 'visible' | 'gone' | 'disabled' | 'enabled'; readonly locator: Locator }
+	| { readonly kind: 'value_not_empty'; readonly selector: string }
+	| { readonly kind: 'value_equals'; readonly selector: string; readonly expected: string };
 
 type FlowStep =
 	| { readonly kind: 'tool'; readonly tool: string; readonly args: Record<string, unknown> }
@@ -85,7 +87,7 @@ function failure(message: string): unknown {
 	return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-const CONDITION_KEYS = ['text', 'text_gone', 'url_includes', 'predicate', 'visible', 'gone', 'disabled', 'enabled'] as const;
+const CONDITION_KEYS = ['text', 'text_gone', 'url_includes', 'predicate', 'visible', 'gone', 'disabled', 'enabled', 'value_not_empty', 'value_equals'] as const;
 
 function parseCondition(raw: unknown, where: string): Condition | string {
 	if (!isRecord(raw)) {
@@ -103,6 +105,15 @@ function parseCondition(raw: unknown, where: string): Condition | string {
 			return `${where}: "${kind}" must be a non-empty string.`;
 		}
 		return { kind, value };
+	}
+	if (kind === 'value_not_empty' || kind === 'value_equals') {
+		// 入力欄の値（スクリプトを書かずに待てるように。中で作る predicate には、セレクタと値を JSON の文字列として入れる）
+		const keys = kind === 'value_equals' ? ['selector', 'value'] : ['selector'];
+		if (!isRecord(value) || typeof value.selector !== 'string' || value.selector.length === 0 || value.selector.length > 1000 || Object.keys(value).some(key => !keys.includes(key))
+			|| (kind === 'value_equals' && (typeof value.value !== 'string' || value.value.length > 2000))) {
+			return `${where}: "${kind}" must be ${kind === 'value_equals' ? '{"selector": "...", "value": "..."}' : '{"selector": "..."}'} (a CSS selector of an input, select or textarea).`;
+		}
+		return kind === 'value_equals' ? { kind, selector: value.selector, expected: value.value as string } : { kind, selector: value.selector };
 	}
 	if (!isRecord(value) || !LOCATOR_KEYS.some(key => value[key] !== undefined) || Object.keys(value).some(key => !(LOCATOR_KEYS as readonly string[]).includes(key))) {
 		return `${where}: "${kind}" must be a locator such as {"role": "button", "name": "Next"} or {"selector": "..."} (keys: ${LOCATOR_KEYS.join(', ')}).`;
@@ -499,7 +510,9 @@ class FlowRun {
 				return condition.kind === 'text' ? present : !present;
 			}
 			case 'url_includes':
-			case 'predicate': {
+			case 'predicate':
+			case 'value_not_empty':
+			case 'value_equals': {
 				const result = await this.call.callTool('wait_until', { predicate: conditionPredicate(condition), timeout_seconds: 0.5 });
 				return !(isRecord(result) && result.isError === true);
 			}
@@ -562,6 +575,13 @@ function conditionPredicate(condition: Condition): string {
 	if (condition.kind === 'url_includes') {
 		return `() => location.href.includes(${JSON.stringify(condition.value)})`;
 	}
+	if (condition.kind === 'value_not_empty' || condition.kind === 'value_equals') {
+		// セレクタと値は JSON の文字列として、式の位置にだけ入れる（コードとしては読まれない）
+		const read = `const element = document.querySelector(${JSON.stringify(condition.selector)}); const value = element !== null && 'value' in element ? String(element.value) : undefined;`;
+		return condition.kind === 'value_not_empty'
+			? `() => { ${read} return value !== undefined && value !== ''; }`
+			: `() => { ${read} return value === ${JSON.stringify(condition.expected)}; }`;
+	}
 	return condition.kind === 'predicate' ? condition.value : '() => false';
 }
 
@@ -575,10 +595,19 @@ function substituteCondition(condition: Condition, scope: IScope): Condition {
 	if (isValueCondition(condition)) {
 		return { kind: condition.kind, value: condition.kind === 'predicate' ? bindScriptReferences(condition.value, scope, missing) : substitute(condition.value, scope, missing) };
 	}
+	if (condition.kind === 'value_not_empty') {
+		return { kind: condition.kind, selector: substitute(condition.selector, scope, missing) };
+	}
+	if (condition.kind === 'value_equals') {
+		return { kind: condition.kind, selector: substitute(condition.selector, scope, missing), expected: substitute(condition.expected, scope, missing) };
+	}
 	return { kind: condition.kind, locator: substituteDeep(condition.locator, scope, missing) as Locator };
 }
 
 function describeCondition(condition: Condition): string {
+	if (condition.kind === 'value_not_empty' || condition.kind === 'value_equals') {
+		return `${condition.kind} ${JSON.stringify(condition.selector.slice(0, 80))}${condition.kind === 'value_equals' ? ` = ${JSON.stringify(condition.expected.slice(0, 80))}` : ''}`;
+	}
 	return isValueCondition(condition) ? `${condition.kind} ${JSON.stringify(condition.value.slice(0, 80))}` : `${condition.kind} ${JSON.stringify(condition.locator)}`;
 }
 
@@ -618,7 +647,7 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 	}
 	const description = 'Run a small script of browser steps on the page shared with this terminal pane in one call, in order. A step is one of: '
 		+ '{"tool": "click_by", "args": {...}} (a tool, checked and run exactly as if called alone); '
-		+ '{"expect": {"text": "Saved"}} (wait until a condition holds, default up to 5 s, "timeout_ms" up to 60000; conditions: text, text_gone, visible / gone / disabled / enabled with a locator such as {"role": "button", "name": "Next"}, url_includes, predicate as a JavaScript function); '
+		+ '{"expect": {"text": "Saved"}} (wait until a condition holds, default up to 5 s, "timeout_ms" up to 60000; conditions: text, text_gone, visible / gone / disabled / enabled with a locator such as {"role": "button", "name": "Next"}, url_includes, value_not_empty / value_equals for the value of an input such as {"value_not_empty": {"selector": "#city"}} or {"value_equals": {"selector": "#qty", "value": "3"}}, predicate as a JavaScript function); '
 		+ '{"sleep_ms": 500} (fixed wait, use instead of setTimeout in evaluate_script); '
 		+ '{"for_each": "$3.items", "steps": [...]} (repeat steps for each item; "$3.items" are the matches of a get_text with all: true at top-level step 3, or a literal list; use $item and $index inside); '
 		+ '{"repeat_until": {"disabled": {"role": "button", "name": "Next"}}, "steps": [...], "max": 20} (repeat steps until the condition holds, checked before each round; for paging). '
@@ -639,7 +668,7 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 						properties: {
 							tool: { type: 'string', description: 'Tool name, for example "click_by".' },
 							args: { type: 'object', description: 'Arguments of that tool, as when calling it alone. Strings may contain $N.text, $N.items, $item, $index.' },
-							expect: { type: 'object', description: 'Condition to wait for: one of text, text_gone, visible, gone, disabled, enabled, url_includes, predicate; optional timeout_ms.' },
+							expect: { type: 'object', description: 'Condition to wait for: one of text, text_gone, visible, gone, disabled, enabled, url_includes, value_not_empty, value_equals, predicate; optional timeout_ms.' },
 							sleep_ms: { type: 'number', description: `Wait this long (0-${MAX_SLEEP_MS}).` },
 							for_each: { description: 'A list, or "$N.items" / "$N.text" of an earlier top-level step.', anyOf: [{ type: 'array' }, { type: 'string' }] },
 							repeat_until: { type: 'object', description: 'Condition (as in expect) checked before each round; the steps repeat until it holds.' },
