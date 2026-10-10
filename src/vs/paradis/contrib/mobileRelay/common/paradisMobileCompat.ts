@@ -230,6 +230,12 @@ export const ParadisMobileCapability = {
 	 * 広告しているときだけ、トークのメンバーの起動の行を 1 枚のチームのカードにする（古い PC・古いアプリは今の表示のまま）。
 	 */
 	AgentTeams: 'agent.teams.v1',
+	/**
+	 * HTML の埋め込み画像を抜いて送る（Q325 案 A。`paradisMobileHtmlImages.ts`）。アプリは PC が広告しているときだけ、プレビューの
+	 * fs `read` に `htmlImages: true` を付ける。PC は画像を抜けたら、抜いた本文と `htmlImages: { token, count }` を返し、アプリは
+	 * fs の `htmlImage`（`token`・`index`）で 1 枚ずつ取り寄せる。抜く画像が無い・どちらかが古いときは、今までどおり本文だけを送る。
+	 */
+	FsHtmlImages: 'fs.html-images.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -288,6 +294,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentSessionStatus,
 	ParadisMobileCapability.BrowserCursor,
 	ParadisMobileCapability.AgentTeams,
+	ParadisMobileCapability.FsHtmlImages,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -313,6 +320,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserCursor,
 	// チームのカード。PC は広告の有無に関わらず `teams` を載せる（古いアプリは無視する）。
 	ParadisMobileCapability.AgentTeams,
+	// HTML の埋め込み画像の取り寄せ。PC は要求の `htmlImages: true` を見て抜く（広告だけでは抜かない）。
+	ParadisMobileCapability.FsHtmlImages,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

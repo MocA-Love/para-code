@@ -81,6 +81,7 @@ import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, 
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
 import { paradisStatMobileWorkspaceFiles } from '../common/paradisMobileWorkspaceFileStats.js';
+import { PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT, paradisIsMobileHtmlPath, paradisPrepareMobileHtmlImages } from './paradisMobileHtmlImageRequests.js';
 import { PARADIS_MOBILE_SHOW_PREFIX_ARGS, ParadisMobileIgnoredRuns, paradisMarkMobileIgnoredEntries, paradisMobileIgnoredRepoDir, paradisMobileIgnoredStatusArgs, paradisParseMobileIgnoredNames } from '../common/paradisMobileIgnoredEntries.js';
 import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead.js';
 import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncated, paradisLimitMobileDiff } from '../common/paradisMobileDiffLimit.js';
@@ -485,7 +486,8 @@ type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	// terminalKey（任意、W2-31）: スマホのターミナルで押したパス。そのターミナルの作業フォルダを基準に相対パスを解く。
 	| { t: 'resolveLink'; id: string; ws: string; path: string; terminalKey?: string }
-	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
+	// htmlImages: HTML の埋め込み画像を抜いた本文を返してよい（fs.html-images.v1 のアプリだけが付ける）
+	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; htmlImages?: boolean; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'docx'; id: string; ws: string; path: string; responseEncoding?: string }
@@ -2809,8 +2811,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'read') {
 				const stat = await paradisWithHostDeadline(this.fileService.stat(uri), PARADIS_MOBILE_READ_DEADLINE_MS);
 				timing?.mark('stat');
-				const content = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: FS_READ_LIMIT }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
+				// HTML の埋め込み画像を抜く（fs.html-images.v1）。抜くために全体を読み、抜いた本文に 20 MiB の上限を掛ける。
+				// ハイライト（ソースの表示）では抜かない（ソースは元のまま見せる）。
+				const splitImages = msg.htmlImages === true && msg.highlight !== true && paradisIsMobileHtmlPath(msg.path)
+					&& (stat.size ?? 0) <= PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT;
+				const readLimit = splitImages ? PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT : FS_READ_LIMIT;
+				const whole = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: readLimit }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				timing?.mark('read');
+				const split = splitImages && !paradisLooksBinary(whole.value.buffer) ? await paradisPrepareMobileHtmlImages(whole.value.toString()) : undefined;
+				if (split !== undefined && VSBuffer.fromString(split.html).byteLength <= FS_READ_LIMIT) {
+					timing?.set({ safe_source_bytes: stat.size ?? 0, safe_text_chars: split.html.length, safe_html_images: split.count });
+					await replyCacheable({ t: 'read', content: split.html, truncated: false, size: stat.size ?? 0, htmlImages: { token: split.token, count: split.count } });
+					return;
+				}
+				// 抜けない・抜いても大きいときは、今までどおり先頭の 20 MiB を送る
+				const content = whole.value.byteLength > FS_READ_LIMIT ? { value: whole.value.slice(0, FS_READ_LIMIT) } : whole;
 				// 先頭に NUL がある＝テキストではない（pptx・zip・画像など）。文字化けした本文を送らず、そう返す
 				// （古いアプリにもそのまま文が出る。新しいアプリは表示の分岐が無い形式をそもそも読まない）
 				if (paradisLooksBinary(content.value.buffer)) {
