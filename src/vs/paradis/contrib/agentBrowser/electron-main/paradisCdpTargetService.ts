@@ -28,9 +28,7 @@ import {
 	IParadisCdpScreenshotOptions,
 	IParadisAgentCursorEvent,
 	IParadisAgentPageScriptsChange,
-	IParadisAgentPageScriptOwner,
 	IParadisAgentPageScriptsSurface,
-	paradisIsPaneFingerprint,
 	IParadisExactBrowserViewDescriptor,
 	PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH,
 	PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH,
@@ -39,6 +37,7 @@ import {
 	paradisParseExactBrowserViewWindowId,
 	paradisParseExactCdpScreenshotOptions,
 	paradisParseCdpInputCommand,
+	paradisParsePageScriptOwner,
 } from '../common/paradisAgentBrowser.js';
 import {
 	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
@@ -46,7 +45,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
-import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorOwner, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
+import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForMirror, paradisParseCursorPacing, paradisParseCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
@@ -1500,14 +1499,4 @@ function ownerOfEvent(owner: IParadisCursorOwner | undefined): { ownerId?: strin
 /** スクリプトの名前（`s1` など）か。 */
 function paradisIsInitScriptId(value: unknown): value is string {
 	return typeof value === 'string' && /^s\d{1,12}$/.test(value);
-}
-
-/** shared process から受けたスクリプトの持ち主を確かめる（名前・印・色はカーソルの持ち主と同じ規則）。 */
-function paradisParsePageScriptOwner(value: unknown): IParadisAgentPageScriptOwner | undefined {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		return undefined;
-	}
-	const { pane } = value as { pane?: unknown };
-	const owner = paradisParseCursorOwner(value);
-	return owner && paradisIsPaneFingerprint(pane) ? { name: owner.name, mark: owner.mark, color: owner.color, pane } : undefined;
 }

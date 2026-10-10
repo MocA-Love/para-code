@@ -316,13 +316,26 @@ export function paradisParseCursorOwner(value: unknown): IParadisCursorOwner | u
 	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
 		return undefined;
 	}
-	const { id, name, mark, color } = value as { id?: unknown; name?: unknown; mark?: unknown; color?: unknown };
-	if (typeof id !== 'string' || !/^[0-9a-f]{8,32}$/.test(id) || typeof name !== 'string' || typeof mark !== 'string' || !/^[A-Z]{0,2}$/.test(mark) || typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+	const { id } = value as { id?: unknown };
+	if (typeof id !== 'string' || !/^[0-9a-f]{8,32}$/.test(id)) {
+		return undefined;
+	}
+	const label = paradisParseOwnerLabel(value);
+	return label ? { id, ...label } : undefined;
+}
+
+/** IPC で受けた名札（名前・印・色）を確かめる。`id` は見ない（スクリプトの持ち主のように `id` を持たないものにも使う）。 */
+export function paradisParseOwnerLabel(value: unknown): Pick<IParadisCursorOwner, 'name' | 'mark' | 'color'> | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const { name, mark, color } = value as { name?: unknown; mark?: unknown; color?: unknown };
+	if (typeof name !== 'string' || typeof mark !== 'string' || !/^[A-Z]{0,2}$/.test(mark) || typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
 		return undefined;
 	}
 	// 名前は shared process で整えてあるが、ここでも制御文字・書式文字を落として長さを抑える
 	const cleaned = name.replace(/[\p{Cc}\p{Cf}]/gu, '').slice(0, 24);
-	return cleaned.length > 0 ? { id, name: cleaned, mark, color } : undefined;
+	return cleaned.length > 0 ? { name: cleaned, mark, color } : undefined;
 }
 
 /**
