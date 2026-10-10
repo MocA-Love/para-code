@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, toBase64, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, PcUnreachableError, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, PcUnreachableError, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type BrowserTargetsScope, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsHtmlImageResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type PcPushMessage, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type SpaceNoteSetOptions, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import type { AgentShellOutput } from './agentShells.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { PcCapability, pcHasCapability, type UpdateTarget } from './pcCompat.js';
@@ -437,7 +437,10 @@ interface AppState extends StoreState {
 	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions): Promise<SpaceNoteResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
-	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
+	/** `htmlImages` を立てると、PC が対応していれば HTML の埋め込み画像を抜いた本文を返す（{@link FsReadResult.htmlImages}）。 */
+	fsRead(ws: string, path: string, highlight?: boolean, htmlImages?: boolean): Promise<FsReadResult>;
+	/** HTML から抜いた画像を 1 枚取り寄せる（fs.html-images.v1）。 */
+	fsHtmlImage(ws: string, path: string, token: string, index: number): Promise<FsHtmlImageResult>;
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
 	fsPdf(ws: string, path: string): Promise<FsPdfResult>;
 	fsDocx(ws: string, path: string): Promise<FsDocxResult>;
@@ -2451,10 +2454,16 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.fsResolveLink(ws, path);
 	},
 
-	fsRead(ws: string, path: string, highlight?: boolean) {
+	fsRead(ws: string, path: string, highlight?: boolean, htmlImages?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
-		return controller.fsRead(ws, path, highlight);
+		return controller.fsRead(ws, path, highlight, htmlImages);
+	},
+
+	fsHtmlImage(ws: string, path: string, token: string, index: number) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
+		return controller.fsHtmlImage(ws, path, token, index);
 	},
 
 	fsXlsx(ws: string, path: string, sheet?: number) {

@@ -23,5 +23,6 @@ import './paradisMobileFileIconRequests.js'; // ファイルの一覧のアイ�
 import './paradisMobileAttachmentRequests.js'; // モバイルから上げた添付画像のサムネイルと原寸（fs.attachment.v1）
 import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenLabs）の使用量（usage.voice.v1）
 import './paradisMobileDoNotDisturbRequests.js'; // PC のおやすみモードの切り替え（notify.dnd-remote.v1）
+import './paradisMobileHtmlImageRequests.js'; // HTML の埋め込み画像を 1 枚ずつ（fs.html-images.v1）
 
 export { };
