@@ -88,7 +88,7 @@ import { paradisRunSteps } from './paradisBrowserRunSteps.js';
 import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
-import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
+import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
@@ -4807,7 +4807,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const recipes = await this._siteRecipes.list(space.key, origin);
 		const recipe = recipes.find(item => item.name === recipeName);
 		if (recipe === undefined) {
-			return this._toolError(`No recipe "${recipeName}" for ${origin} in this repository.${recipes.length > 0 ? ` Saved: ${recipes.map(item => item.name).join(', ')}.` : ''}`);
+			return this._toolError(paradisSiteRecipeNotFound(recipeName, origin, recipes));
 		}
 		const prepared = paradisSiteRecipeSteps(recipe, args.params, origin);
 		if (!prepared.ok) {
