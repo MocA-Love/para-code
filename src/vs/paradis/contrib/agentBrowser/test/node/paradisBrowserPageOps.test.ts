@@ -7,7 +7,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisCdpInputDispatchResult } from '../../common/paradisAgentBrowser.js';
+import { createHash } from 'crypto';
+import { URI } from '../../../../../base/common/uri.js';
+import { IParadisAgentPageScriptOwner, IParadisCdpInputDispatchResult, paradisAgentPageScriptUri, paradisPaneFingerprint, paradisParseAgentPageScriptUri } from '../../common/paradisAgentBrowser.js';
 import { IParadisPageOpsBinding, IParadisPageOpsCall, IParadisPageOpsHost, ParadisBrowserPageOps, paradisBuildMouseCommands, paradisPageOpsOwnerKey } from '../../node/paradisBrowserPageOps.js';
 import { IParadisResolvedDropTarget } from '../../node/paradisFileDropUpload.js';
 import { PARADIS_MCP_PAGE_OPS_TOOLS, PARADIS_PAGE_OPS_TOOL_NAMES } from '../../node/paradisBrowserPageOpsTools.js';
@@ -42,9 +44,14 @@ class FakeHost implements IParadisPageOpsHost {
 	refuseDispatch: (n: number) => boolean = () => false;
 	private dispatchCount = 0;
 	filter: { isUriAllowed(url: string): boolean } | undefined;
+	owner: IParadisAgentPageScriptOwner | undefined;
 
 	binding(): IParadisPageOpsBinding | undefined {
 		return this.current;
+	}
+
+	scriptOwner(): IParadisAgentPageScriptOwner | undefined {
+		return this.owner;
 	}
 
 	async callMain<T>(method: string, args: unknown[]): Promise<T> {
@@ -263,6 +270,10 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		host.mainResults.set('removeExactViewInitScripts', { ok: true, scripts: [], otherPanes: 0, removed: 1 });
 		const ops = new ParadisBrowserPageOps(host);
 		const added = await ops.call(createCall(), 'add_init_script', { source: 'window.__a = 1', label: 'hooks' });
+		// 持ち主（名札・印・色・ペインの指紋）が分かれば、帯と一覧のために添える。トークンは渡さない
+		host.owner = { name: 'Claude', mark: 'C', color: '#d97757', pane: paradisPaneFingerprint('pane-token') };
+		await ops.call(createCall(), 'add_init_script', { source: '(() => {})()' });
+		host.owner = undefined;
 		const empty = await ops.call(createCall(), 'add_init_script', { source: '  ' });
 		const neither = await ops.call(createCall(), 'remove_init_script', {});
 		const removed = await ops.call(createCall(), 'remove_init_script', { id: 's4' });
@@ -272,12 +283,28 @@ suite('paradisBrowserPageOps (shared process)', () => {
 			errors: [isError(empty), isError(neither), isError(removed)],
 		}, {
 			calls: [
-				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: 'window.__a = 1', label: 'hooks', runNow: false })]],
+				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: 'window.__a = 1', label: 'hooks', runNow: false, named: true })]],
+				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: '(() => {})()', label: '(() => {})()', runNow: false, named: false }), { name: 'Claude', mark: 'C', color: '#d97757', pane: paradisPaneFingerprint('pane-token') }]],
 				['removeExactViewInitScripts', [paradisPageOpsOwnerKey('pane-token'), 's4']],
 			],
 			reminds: true,
 			errors: [true, true, false],
 		});
+	});
+
+	test('the pane fingerprint is a short hash of the token, the same in every process', () => {
+		// ワークベンチは同じ関数で自分のペインの指紋を作る。node の SHA-1 と一致すること、トークンを含まないこと。
+		const expected = createHash('sha1').update('paradis-pane-fingerprint\0pane-token').digest('hex').slice(0, 16);
+		assert.deepStrictEqual([paradisPaneFingerprint('pane-token'), paradisPaneFingerprint('pane-token').includes('pane')], [expected, false]);
+	});
+
+	test('the read-only script document keeps the tab id and script id through a URI round trip', () => {
+		const uri = paradisAgentPageScriptUri('view/1 a', 's12');
+		assert.deepStrictEqual([
+			paradisParseAgentPageScriptUri(URI.parse(uri.toString())),
+			paradisParseAgentPageScriptUri(URI.parse('paradis-agent-script:/view/x12.js')),
+			paradisParseAgentPageScriptUri(URI.parse('file:///view/s1.js')),
+		], [{ viewId: 'view/1 a', id: 's12' }, undefined, undefined]);
 	});
 
 	test('save_page_as_pdf leaves the default name to electron-main (the current page title) and keeps a given one', async () => {
