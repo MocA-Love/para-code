@@ -85,7 +85,7 @@ import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, pa
 import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
-import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
+import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
@@ -4754,6 +4754,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (typeof args.text !== 'string' || args.text.trim().length === 0) {
 			return this._toolError('write_site_note needs "text".');
+		}
+		if (paradisSiteNoteContainsCardNumber(args.text)) {
+			return this._toolError('write_site_note did not save the note: it contains a number that looks like a payment card number. Describe the step without the number.');
 		}
 		if (paradisSiteNoteLooksSecret(args.text)) {
 			return this._toolError('write_site_note did not save the note: it looks like it contains a password, token or key. Notes are shown to other agents; describe the step without the secret.');
