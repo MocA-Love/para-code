@@ -145,6 +145,51 @@ suite('Paradis site notes (E4)', () => {
 		assert.deepStrictEqual((await beta.list('/repo', 'https://example.com')).map(note => note.text), ['Written by beta.', 'Written by stable.']);
 	});
 
+	test('writes ask for the pane\'s space every time, hints keep it for a while, and an unreadable tab list adds nothing', async () => {
+		const store = new ParadisSiteNotesStore(join(folder, 'notes.json'), () => new Date(2026, 9, 10, 12));
+		let space = { key: '/repo-a' };
+		let spaceQuestions = 0;
+		let listReadable = true;
+		const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
+			_siteNotes: store,
+			_siteNotesShown: new Map<string, Set<string>>(),
+			_paneSessions: new Map(),
+			_requireIngressLease: () => { },
+			_classifyCaller: async () => 'pane',
+			_siteNoteSpaces: new Map(),
+			_siteNoteSpace: async () => (spaceQuestions++, space),
+			_defaultTabId: () => 'tab-1',
+			_callOwningWindow: async () => listReadable ? { ok: true, value: { ok: true, openedCount: 0, tabs: [{ tabId: 'tab-1', url: 'http://localhost:3000/', title: '', openedByAgent: true }] } } : { ok: false, error: 'window is gone' },
+			_scopeBinding: () => ({}),
+		}) as unknown as ISiteNotesInternals;
+		const ok = { content: [{ type: 'text', text: 'page text' }] };
+		await service._withSiteHints({ token: TOKEN }, 'get_text', {}, ok, NOTES);
+		const afterHint = spaceQuestions;
+		// 所属の選び直しでスペースが替わった後の書き込みは、新しいスペースへ
+		space = { key: '/repo-b' };
+		await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'Written after the space changed.' });
+		await service._withSiteHints({ token: TOKEN }, 'click_by', {}, ok, NOTES);
+		listReadable = false;
+		const unreadableHint = await service._withSiteHints({ token: 'other-pane' }, 'get_text', {}, ok, NOTES);
+		const unreadableWrite = textOf(await service._siteNoteTool({ token: TOKEN }, 'write_site_note', { text: 'x' }));
+		assert.deepStrictEqual({
+			afterHint,
+			afterWriteAndSecondHint: spaceQuestions,
+			repoA: (await store.list('/repo-a', 'http://localhost:3000')).length,
+			repoB: (await store.list('/repo-b', 'http://localhost:3000')).map(note => note.text),
+			unreadableHint: unreadableHint === ok,
+			unreadableWrite,
+		}, {
+			afterHint: 1,
+			// 書き込みで 1 回聞き、2 回目のヒントは控えを使う
+			afterWriteAndSecondHint: 2,
+			repoA: 0,
+			repoB: ['Written after the space changed.'],
+			unreadableHint: true,
+			unreadableWrite: 'write_site_note: Para Code could not read the tabs of this terminal pane. Try again.',
+		});
+	});
+
 	test('a note written in one pane is shown once to the next pane that opens the site, and only a verified caller can write', async () => {
 		const store = new ParadisSiteNotesStore(join(folder, 'notes.json'), () => new Date(2026, 9, 10, 12));
 		let verified = true;
