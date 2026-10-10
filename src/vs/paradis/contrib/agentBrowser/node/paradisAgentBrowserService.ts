@@ -5009,10 +5009,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			// Para Code だけが付ける内部の引数は、エージェントから来たら捨てる（観測の待たない評価を勝手に使わせない）
 			const strippedArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
 			// take_snapshot を差分にする設定（既定は無効）が有効なら、`full` を取り除いて、差分か全体かを決める
-			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled?.() === true ? paradisTakeSnapshotDiffMode(strippedArgs) : undefined;
+			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled?.() === true ? paradisTakeSnapshotDiffMode(strippedArgs, nested === true) : undefined;
 			const devtoolsArgs = snapshotDiff?.args ?? strippedArgs;
-			// run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけで、エージェントが全部を見たとは限らない）
-			const snapshotDiffMode = nested === true ? undefined : snapshotDiff?.mode;
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
 			const devtoolsLane = this._pageKeyOf(pageLease);
@@ -5043,7 +5041,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					}
 				}
 				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiffMode)));
+				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiff?.mode)));
 				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
 					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
 					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);

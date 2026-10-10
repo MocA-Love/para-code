@@ -168,6 +168,30 @@ suite('Paradis snapshot diff', () => {
 		}, { hugeEntries: 3, hugeWithinTotal: true, afterMany: 32, afterExpiry: 1 });
 	});
 
+	test('a take_snapshot inside run_steps returns the whole page and leaves the kept snapshot as it was', () => {
+		const baselines = new ParadisSnapshotBaselines(() => TAKEN_AT);
+		const child = {};
+		// プロキシと同じく、モードがあるときだけ控えと差分に通す
+		const take = (body: string, args: unknown, nested: boolean) => {
+			const prepared = paradisTakeSnapshotDiffMode(args, nested);
+			const result = response(body);
+			return { args: prepared.args, text: textOf(prepared.mode === undefined ? result : baselines.apply('tab', child, 1, result, prepared.mode)) };
+		};
+		const first = take(page(['  uid=1_3 textbox "Name" value="Ann"']), {}, false);
+		const inside = take(page(['  uid=1_3 textbox "Name" value="Bob"']), { full: false }, true);
+		const second = take(page(['  uid=1_3 textbox "Name" value="Cid"']), {}, false);
+		assert.deepStrictEqual({
+			first: first.text.includes('## Latest page snapshot'),
+			inside: { whole: inside.text.includes('## Latest page snapshot'), args: inside.args },
+			// 外の 2 回目は、run_steps の中の 1 回（Bob）ではなく、外の 1 回目（Ann）を元にした差分
+			second: second.text.split('\n').slice(3),
+		}, {
+			first: true,
+			inside: { whole: true, args: {} },
+			second: ['Changed:', '~ uid=1_3 textbox "Name" value="Cid"', ''],
+		});
+	});
+
 	test('take_snapshot gets a full argument, which is taken out before the call', () => {
 		const tool = paradisWithSnapshotDiffArgument({ name: 'take_snapshot', description: 'Take a text snapshot.', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' } } } });
 		const other = { name: 'click', inputSchema: { type: 'object', properties: {} } };
@@ -178,6 +202,7 @@ suite('Paradis snapshot diff', () => {
 			full: paradisTakeSnapshotDiffMode({ full: true, verbose: false }),
 			diff: paradisTakeSnapshotDiffMode({ full: false }),
 			none: paradisTakeSnapshotDiffMode(undefined),
+			nested: paradisTakeSnapshotDiffMode({ full: true }, true),
 		}, {
 			properties: ['verbose', 'full'],
 			mentionsChanges: true,
@@ -185,6 +210,7 @@ suite('Paradis snapshot diff', () => {
 			full: { args: { verbose: false }, mode: 'full' },
 			diff: { args: {}, mode: 'diff' },
 			none: { args: undefined, mode: 'diff' },
+			nested: { args: {}, mode: undefined },
 		});
 	});
 });
