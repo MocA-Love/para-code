@@ -125,6 +125,49 @@ suite('Paradis snapshot diff', () => {
 		});
 	});
 
+	test('a diff larger than half of what one response can hold is not used, and a cut previous snapshot is never diffed', () => {
+		const rows = (count: number, label: string) => Array.from({ length: count }, (_, i) => `  uid=1_${i + 10} StaticText "${label} ${i}"`);
+		const big = ['uid=1_0 RootWebArea "Big"', ...rows(1500, 'Row')].join('\n') + '\n';
+		// 400 行の文字が変わる。全体（約 5 万字）の半分より小さいが、1 回に返す 20,000 字の半分より大きい
+		const changed = ['uid=1_0 RootWebArea "Big"', ...rows(1500, 'Row').map((line, i) => i < 400 ? line.replace('"Row', '"Changed row') : line)].join('\n') + '\n';
+		const baselines = new ParadisSnapshotBaselines(() => TAKEN_AT);
+		const child = {};
+		const kinds = [big, big.replace('"Row 1499"', '"Row 1499 edited"')].map(body => textOf(baselines.apply('tab', child, 1, response(body), 'diff')).includes('changes only') ? 'diff' : 'full');
+		assert.deepStrictEqual({
+			bigDiff: paradisDiffSnapshotBodies(big, changed, TAKEN_AT),
+			bodyLength: big.length > 40_000,
+			afterCutSnapshot: kinds,
+		}, {
+			bigDiff: undefined,
+			bodyLength: true,
+			// 前回は 20,000 字で切って返したので、1 行だけ変わっても全体を返す
+			afterCutSnapshot: ['full', 'full'],
+		});
+	});
+
+	test('baselines are capped by count and by total characters, and expired ones are dropped', () => {
+		let now = TAKEN_AT;
+		// 控え全体の上限を 10,000 字にした置き場（1 つ 3,000 字ほどの控えなら 3 つまで）
+		const baselines = new ParadisSnapshotBaselines(() => now, 10_000);
+		const huge = (label: string) => ['uid=1_0 RootWebArea "Huge"', `  uid=1_1 StaticText "${label}${'x'.repeat(3_000)}"`].join('\n') + '\n';
+		for (let i = 0; i < 6; i++) {
+			baselines.apply(`huge-${i}`, {}, 1, response(huge(String(i))), 'diff');
+		}
+		const afterHuge = baselines.size;
+		for (let i = 0; i < 40; i++) {
+			baselines.apply(`small-${i}`, {}, 1, response(`uid=1_0 RootWebArea "${i}"\n`), 'diff');
+		}
+		const afterMany = baselines.size.entries;
+		now += PARADIS_SNAPSHOT_BASELINE_MAX_AGE_MS + 1;
+		baselines.apply('fresh', {}, 1, response('uid=1_0 RootWebArea "fresh"\n'), 'diff');
+		assert.deepStrictEqual({
+			hugeEntries: afterHuge.entries,
+			hugeWithinTotal: afterHuge.chars <= 10_000,
+			afterMany,
+			afterExpiry: baselines.size.entries,
+		}, { hugeEntries: 3, hugeWithinTotal: true, afterMany: 32, afterExpiry: 1 });
+	});
+
 	test('take_snapshot gets a full argument, which is taken out before the call', () => {
 		const tool = paradisWithSnapshotDiffArgument({ name: 'take_snapshot', description: 'Take a text snapshot.', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' } } } });
 		const other = { name: 'click', inputSchema: { type: 'object', properties: {} } };
