@@ -324,6 +324,12 @@ export function paradisFormatSiteRecipesHint(origin: string, allRecipes: readonl
 	return `[Saved recipes for ${origin}] ${names.join('; ')}. Run one with run_recipe instead of repeating its steps; list_recipes shows what each does.`;
 }
 
+/** run_recipe で名前が見つからないときの文。並べるのは、形の決まりに合う手順の名前だけ。 */
+export function paradisSiteRecipeNotFound(name: string, origin: string, allRecipes: readonly IParadisSiteRecipe[]): string {
+	const names = allRecipes.filter(isWellFormedRecipe).map(recipe => recipe.name);
+	return `No recipe "${name}" for ${origin} in this repository.${names.length > 0 ? ` Saved: ${names.join(', ')}.` : ''}`;
+}
+
 /** list_recipes の一覧。 */
 export function paradisFormatSiteRecipesList(origin: string, allRecipes: readonly IParadisSiteRecipe[]): string {
 	const recipes = allRecipes.filter(isWellFormedRecipe);
