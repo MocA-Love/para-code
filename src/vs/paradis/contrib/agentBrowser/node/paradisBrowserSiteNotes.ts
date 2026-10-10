@@ -115,11 +115,11 @@ export function paradisFormatSiteNotesHint(origin: string, notes: readonly IPara
  * オンのときだけ足す。道具の説明だけでは、エージェントは自分からメモを書かなかった（台で 16 回中 0 回）。
  */
 export function paradisSiteMemoryInstructions(kinds: { readonly notes: boolean; readonly recipes: boolean }): string | undefined {
-	const ways = [kinds.notes ? 'what took you extra steps to find out with write_site_note' : undefined, kinds.recipes ? 'a sequence you would repeat with save_recipe' : undefined].filter(way => way !== undefined);
+	const ways = [kinds.notes ? 'what made it work in one short write_site_note call' : undefined, kinds.recipes ? 'a sequence you would repeat with save_recipe' : undefined].filter(way => way !== undefined);
 	if (ways.length === 0) {
 		return undefined;
 	}
-	return `When you finish a task on a website, leave ${ways.join(', and ')}, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.`;
+	return `Before you finish a task on a website, record ${ways.join(', and ')}, so the next agent in this repository does not repeat the trouble; never include secrets or values that only apply to this run.`;
 }
 
 export const PARADIS_SITE_NOTE_TOOL_NAMES: ReadonlySet<string> = new Set(['write_site_note', 'list_site_notes', 'delete_site_note']);
