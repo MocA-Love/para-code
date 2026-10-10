@@ -104,5 +104,5 @@ export function paradisSiteNudgeText(kinds: { readonly notes: boolean; readonly 
 	if (ways.length === 0) {
 		return undefined;
 	}
-	return `[Para Code] That worked after a failed or repeated attempt. If you found out something about this site that would spare the next agent the same trouble, leave ${ways.join(', or ')}. Do not include secrets or values that only apply to this run.`;
+	return `[Para Code] You got past a failed or repeated step on this site. Before you go on, record what made it work in ${ways.join(', or ')} (one short call, for example the input format or the element that worked), so the next agent does not repeat the trouble. Do not include secrets or values that only apply to this run.`;
 }
