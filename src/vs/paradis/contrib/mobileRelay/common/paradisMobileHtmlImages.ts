@@ -22,6 +22,8 @@
  */
 
 import { decodeBase64 } from '../../../../base/common/buffer.js';
+import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../base/common/errors.js';
 import { paradisReadImageDimensions } from './paradisMobileAttachment.js';
 
 /** これより短い `data:` の文字列は抜かない（本文はほとんど軽くならず、取り寄せの往復だけが増える）。 */
@@ -57,14 +59,20 @@ export function paradisSplitMobileHtmlImages(html: string): IParadisMobileHtmlIm
 	return step.value;
 }
 
-/** {@link paradisSplitMobileHtmlImages} と同じ結果を、`sliceMs` ごとに手を離しながら作る（ウィンドウを固めない）。 */
-export async function paradisSplitMobileHtmlImagesSliced(html: string, sliceMs = 12): Promise<IParadisMobileHtmlImageSplit | undefined> {
+/**
+ * {@link paradisSplitMobileHtmlImages} と同じ結果を、`sliceMs` ごとに手を離しながら作る（ウィンドウを固めない）。
+ * 手を離すたびに `token` を見て、取り消されていたら {@link CancellationError} で抜ける。
+ */
+export async function paradisSplitMobileHtmlImagesSliced(html: string, token?: CancellationToken, sliceMs = 12): Promise<IParadisMobileHtmlImageSplit | undefined> {
 	const steps = splitSteps(html);
 	let sliceStart = Date.now();
 	let step = steps.next();
 	while (!step.done) {
 		if (Date.now() - sliceStart >= sliceMs) {
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			if (token?.isCancellationRequested) {
+				throw new CancellationError();
+			}
 			sliceStart = Date.now();
 		}
 		step = steps.next();
