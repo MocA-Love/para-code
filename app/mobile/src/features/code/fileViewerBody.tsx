@@ -16,6 +16,7 @@ import { Button, EmptyState, useThemeColors } from '../../ui/index.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoverySnapshot, type ParadisOfficeRecoveryEffect } from '../../../../../src/vs/paradis/contrib/fileViewers/common/paradisOfficeRecovery.js';
 import { CenterSpinner } from './codeParts.js';
 import { buildFindScript, findTargetOf } from './fileFind.js';
+import { HTML_IMAGES_LOADER_SCRIPT, HtmlImageQueue, buildHtmlImageDeliverScript } from './htmlImages.js';
 import { CODE_LINE_WINDOW, buildCodeHtml, buildMarkdownHtml, codeLineTotal, codePageStartOf, type ViewerKind, type ViewerMode } from './fileViewerModel.js';
 import type { FileContent } from './useFileContent.js';
 import type { FileFindBinding } from './useFileFind.js';
@@ -350,7 +351,32 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		trace?.loadEnded();
 		find?.onViewLoaded();
 	};
+	// HTML から抜いた画像（fs.html-images.v1）。本文が替わる・閉じるたびにキューを作り直し、古いキューの結果は捨てる
+	const htmlImages = mode === 'render' && kind === 'html' ? content?.htmlImages : undefined;
+	const imageQueueRef = useRef<HtmlImageQueue | undefined>(undefined);
+	useEffect(() => {
+		if (htmlImages === undefined) {
+			return undefined;
+		}
+		const queue = new HtmlImageQueue({
+			count: htmlImages.count,
+			fetch: index => htmlImages.fetch(index),
+			deliver: (index, data) => webRef.current?.injectJavaScript(buildHtmlImageDeliverScript(index, data)),
+			isStale: error => htmlImages.isStale(error),
+			onStale: () => htmlImages.reload(),
+		});
+		imageQueueRef.current = queue;
+		return () => {
+			queue.dispose();
+			if (imageQueueRef.current === queue) {
+				imageQueueRef.current = undefined;
+			}
+		};
+	}, [htmlImages]);
 	const onViewMessage = (data: string) => {
+		if (imageQueueRef.current?.handleMessage(data) === true) {
+			return;
+		}
 		find?.onMessage(data);
 	};
 
@@ -382,8 +408,10 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 			/>
 		);
 	} else if (html !== undefined) {
+		// 画像を取り寄せる本文は、取り寄せのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
+				key={htmlImages !== undefined ? 'html-images' : 'page'}
 				ref={setWebRef}
 				style={styles.web}
 				source={{ html }}
@@ -392,7 +420,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
 				onLoadStart={trace?.loadStarted}
 				onLoadEnd={onViewLoadEnd}
-				{...(find !== undefined ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
+				{...(htmlImages !== undefined ? { injectedJavaScriptBeforeContentLoaded: HTML_IMAGES_LOADER_SCRIPT } : {})}
+				{...(find !== undefined || htmlImages !== undefined ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
 			/>
 		);
 	} else {
