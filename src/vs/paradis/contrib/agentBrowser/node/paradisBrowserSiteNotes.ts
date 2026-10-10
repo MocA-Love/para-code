@@ -164,14 +164,69 @@ function looksLikeBasicCredentials(value: string): boolean {
 	return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(value) && (/[0-9+/=]/.test(value) || (value.slice(1).match(/[A-Z]/g)?.length ?? 0) >= 2);
 }
 
+/** 13〜19 桁の数字の並び（数字の間に空白か - を 1 つまで許す）。 */
+const CARD_NUMBER_CANDIDATE = /(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g;
+
+/** Luhn の検査に通るか（カード番号の形）。 */
+function passesLuhn(digits: string): boolean {
+	let sum = 0;
+	for (let i = 0; i < digits.length; i++) {
+		let digit = digits.charCodeAt(digits.length - 1 - i) - 48;
+		if (i % 2 === 1) {
+			digit *= 2;
+			if (digit > 9) {
+				digit -= 9;
+			}
+		}
+		sum += digit;
+	}
+	return sum % 10 === 0;
+}
+
 /**
- * 秘密らしい文を書かせない。通知の伏せ字（paradisRedactSecrets）が何かを伏せる文と、Cookie の値を含む文を断る。
+ * 先頭の数字と桁数が、カードの種類の組に合うか（誤検知を減らすため）。13 桁の Visa は今は出ておらず、
+ * 13 桁の JAN コード（45・49 で始まる）とぶつかるので数えない。
+ */
+function matchesCardBrand(digits: string): boolean {
+	const length = digits.length;
+	if (/^3[47]/.test(digits)) {
+		return length === 15; // American Express
+	}
+	if (/^3(?:5|0[0-5]|[68])/.test(digits)) {
+		return length >= 14 && length <= 19; // JCB・Diners Club
+	}
+	if (digits.startsWith('4')) {
+		return length === 16 || length === 19; // Visa
+	}
+	if (/^5[1-5]/.test(digits)) {
+		return length === 16; // Mastercard
+	}
+	if (/^6(?:011|2|4[4-9]|5)/.test(digits)) {
+		return length >= 16 && length <= 19; // Discover・UnionPay
+	}
+	return false;
+}
+
+/** カード番号らしい並び（種類と桁数の組に合い、Luhn が通る）を含むか。 */
+export function paradisSiteNoteContainsCardNumber(text: string): boolean {
+	return [...text.matchAll(CARD_NUMBER_CANDIDATE)].some(match => {
+		const digits = match[0].replace(/[ -]/g, '');
+		return matchesCardBrand(digits) && passesLuhn(digits);
+	});
+}
+
+/**
+ * 秘密らしい文を書かせない。通知の伏せ字（paradisRedactSecrets）が何かを伏せる文、Cookie の値を含む文、カード番号らしい
+ * 並び（13〜19 桁、間の空白・- を 1 つまで許し、先頭の数字と桁数がカードの種類に合い、Luhn が通るもの）を含む文を断る。
+ * サイトの手順（E3）の保存もこの判定を使う。
  * 伏せ字は「Basic + 6 文字以上の語」を Basic 認証として伏せるので、「Open the Basic settings tab」のような文は、
  * 語が base64 らしくなければ先に外してから調べる。
  *
- * 拾えない例（形の決まった項目名や値が無い）: 「the password is hunter2」「パスワードはhunter2」。
+ * 拾えない例（形の決まった項目名や値が無い）: 「the password is hunter2」「パスワードはhunter2」。カードの有効期限だけ
+ * （「05/30」）や、セキュリティコードだけ（「CVC 123」）の断片も拾えない。カード番号も、全角の数字、数字の間の区切りが
+ * 2 つ以上、`.` の区切り、前に別の数字がつながっているもの（「Ref 12 4242 4242 4242 4242」）は拾えない。
  */
 export function paradisSiteNoteLooksSecret(text: string): boolean {
 	const checked = text.replace(/\b(Basic)(\s+)([A-Za-z0-9._~+/=-]+)/gi, (match: string, word: string, space: string, value: string) => looksLikeBasicCredentials(value) ? match : `${word}_${space}${value}`);
-	return paradisRedactSecrets(checked) !== checked || /\b(?:set-)?cookie\s*[:=\uFF1A\uFF1D]\s*[^\s=;]+=[^\s;]+/i.test(text);
+	return paradisRedactSecrets(checked) !== checked || /\b(?:set-)?cookie\s*[:=\uFF1A\uFF1D]\s*[^\s=;]+=[^\s;]+/i.test(text) || paradisSiteNoteContainsCardNumber(text);
 }
