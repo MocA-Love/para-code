@@ -24,7 +24,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { AnchorAlignment, AnchorPosition } from '../../../../base/browser/ui/contextview/contextview.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
-import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -248,6 +248,8 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		const entries = this.entries;
 		const paneOf = this.paneNumbers();
 		this.detailsButton.classList.add('active');
+		/** 自分で閉じている最中（`handle` の dispose の中）か。 */
+		let closing = false;
 		const view = this.contextViewService.showContextView({
 			getAnchor: () => this.detailsButton,
 			anchorAlignment: AnchorAlignment.RIGHT,
@@ -313,12 +315,16 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 			},
 			onHide: () => {
 				this.detailsButton.classList.remove('active');
-				if (this.details.value === handle) {
-					this.details.clearAndLeak();
+				// ほかの context view が開くなど、外から閉じられた。自分で閉じているときは dispose の中なので触らない
+				if (!closing && this.details.value === handle) {
+					this.details.clear();
 				}
 			},
 		});
-		const handle: IDisposable = { dispose: () => view.close() };
+		const handle = toDisposable(() => {
+			closing = true;
+			view.close();
+		});
 		this.details.value = handle;
 	}
 }

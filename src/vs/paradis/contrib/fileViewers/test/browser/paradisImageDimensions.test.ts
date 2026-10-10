@@ -46,6 +46,15 @@ const ispe = (width: number, height: number) => box('ispe', be32(0), be32(width)
 const ftyp = box('ftyp', 'avif', be32(0), 'avifmif1');
 const meta = (...properties: Uint8Array[]) => box('meta', be32(0), box('hdlr', be32(0), be32(0), 'pict', be32(0), be32(0), be32(0), [0]), box('iprp', box('ipco', ...properties), box('ipma', be32(0), be32(0))));
 const avif = (width: number, height: number) => bytes(ftyp, meta(ispe(width, height)), box('mdat', [0, 0, 0, 0]));
+/** Animated AVIF (brand avis): one track whose sample description is an av01 visual sample entry, or another codec. */
+const ftypAvis = box('ftyp', 'avis', be32(0), 'avismif1');
+/** tkhd (version 0: 84 bytes, version 1: 96 bytes) whose last 8 bytes are the 16.16 fixed-point width and height. */
+const tkhd = (width: number, height: number, version = 0) => box('tkhd', [version, 0, 0, 0], new Uint8Array(version === 1 ? 84 : 72), be32(width * 0x10000), be32(height * 0x10000));
+const mdiaWith = (...entries: Uint8Array[]) => box('mdia', box('mdhd', new Uint8Array(24)), box('minf', box('stbl', box('stsd', be32(0), be32(entries.length), ...entries))));
+const av01 = (width: number, height: number) => box('av01', new Uint8Array(6), be16(1), new Uint8Array(16), be16(width), be16(height), new Uint8Array(50));
+const trak = (codec: string, width: number, height: number, header = tkhd(0, 0)) => box('trak', header, mdiaWith(codec === 'av01' ? av01(width, height) : box(codec, new Uint8Array(20))));
+const moov = (...tracks: Uint8Array[]) => box('moov', box('mvhd', new Uint8Array(100)), ...tracks);
+const avis = (...parts: Uint8Array[]) => bytes(ftypAvis, ...parts, box('mdat', [0, 0, 0, 0]));
 
 suite('ParadisImageDimensions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -53,7 +62,7 @@ suite('ParadisImageDimensions', () => {
 	test('reads the size from the header of every raster format the viewer opens', () => {
 		deepStrictEqual([
 			png(577, 300), jpeg(4000, 3000), gif(320, 200), webpVp8x(5000, 4000), webpVp8l(1024, 768),
-			bmp(640, -480), icoWithPng(512, 512), avif(8192, 4096), bytes('<svg/>'),
+			bmp(640, -480), icoWithPng(512, 512), avif(8192, 4096), avis(moov(trak('av01', 640, 480))), bytes('<svg/>'),
 		].map(readParadisImageHeader), [
 			{ format: 'png', width: 577, height: 300 },
 			{ format: 'jpeg', width: 4000, height: 3000 },
@@ -63,6 +72,7 @@ suite('ParadisImageDimensions', () => {
 			{ format: 'bmp', width: 640, height: 480 },
 			{ format: 'ico', width: 512, height: 512 },
 			{ format: 'avif', width: 8192, height: 4096 },
+			{ format: 'avif', width: 640, height: 480 },
 			undefined,
 		]);
 	});
@@ -82,6 +92,14 @@ suite('ParadisImageDimensions', () => {
 			gifWithoutFrame: judgeParadisImageDecode(bytes('GIF89a', le16(1), le16(1), [0, 0, 0], [0x3b]), 'image/gif', limit),
 			avifMetaAfterOneMiB: judgeParadisImageDecode(bytes(ftyp, box('mdat', new Uint8Array(1_100_000)), meta(ispe(20_000, 20_000))), 'image/avif', limit),
 			avifDecoyIspe: judgeParadisImageDecode(bytes(ftyp, box('free', ispe(1, 1)), meta(ispe(64, 64), ispe(20_000, 20_000))), 'image/avif', limit),
+			avisTrackOnly: judgeParadisImageDecode(avis(moov(trak('av01', 1920, 1080))), 'image/avif', limit),
+			avisTrackOnlyBomb: judgeParadisImageDecode(avis(moov(trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisSmallIspeLargeTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisLargerSecondTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 64, 64), trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisWithoutAv01: judgeParadisImageDecode(avis(moov(trak('mp4a', 0, 0))), 'image/avif', limit),
+			avisLargeTkhdVersion0: judgeParadisImageDecode(avis(moov(trak('av01', 64, 64, tkhd(20_000, 20_000)))), 'image/avif', limit),
+			avisLargeTkhdVersion1: judgeParadisImageDecode(avis(moov(trak('av01', 64, 64, tkhd(20_000, 20_000, 1)))), 'image/avif', limit),
+			avisFragmented: judgeParadisImageDecode(avis(moov(trak('av01', 640, 480, tkhd(640, 480))), ...Array.from({ length: 20_000 }, () => box('moof', [0]))), 'image/avif', limit),
 			avifIspeOutsideMeta: judgeParadisImageDecode(bytes(ftyp, ispe(1, 1), box('mdat', [0])), 'image/avif', limit),
 			svg: judgeParadisImageDecode(bytes('<svg xmlns="http://www.w3.org/2000/svg"/>'), 'image/svg+xml', limit),
 			htmlNamedPng: judgeParadisImageDecode(bytes('<html><script>alert(1)</script></html>'), 'image/png', limit),
@@ -99,10 +117,41 @@ suite('ParadisImageDimensions', () => {
 			gifWithoutFrame: 'invalid',
 			avifMetaAfterOneMiB: 'tooLarge',
 			avifDecoyIspe: 'tooLarge',
+			avisTrackOnly: 'ok',
+			avisTrackOnlyBomb: 'tooLarge',
+			avisSmallIspeLargeTrack: 'tooLarge',
+			avisLargerSecondTrack: 'tooLarge',
+			avisWithoutAv01: 'invalid',
+			avisLargeTkhdVersion0: 'tooLarge',
+			avisLargeTkhdVersion1: 'tooLarge',
+			avisFragmented: 'ok',
 			avifIspeOutsideMeta: 'invalid',
 			svg: 'ok',
 			htmlNamedPng: 'invalid',
 			truncatedJpeg: 'invalid',
+		});
+	});
+
+	test('refuses AVIF files whose box structure is broken', () => {
+		const limit = 100_000_000;
+		const judge = (...parts: Uint8Array[]) => judgeParadisImageDecode(avis(...parts), 'image/avif', limit);
+		const box64 = (type: string, high: number, content: Uint8Array) => bytes(be32(1), type, be32(high), be32(16 + content.byteLength), content);
+		deepStrictEqual({
+			stsdShorterThan8Bytes: judge(moov(box('trak', tkhd(64, 64), box('mdia', box('minf', box('stbl', box('stsd', be32(0)))))))),
+			av01ShorterThan28Bytes: judge(moov(box('trak', tkhd(64, 64), mdiaWith(box('av01', new Uint8Array(10)))))),
+			tkhdTooShort: judge(moov(box('trak', box('tkhd', [0, 0, 0, 0], new Uint8Array(20)), mdiaWith(av01(64, 64))))),
+			twoMoov: judge(moov(trak('av01', 64, 64)), moov(trak('av01', 64, 64))),
+			childOverrunsParent: judge(box('moov', be32(1000), 'trak')),
+			valid64BitLength: judge(moov(trak('av01', 64, 64)), box64('free', 0, new Uint8Array(8))),
+			oversized64BitLength: judge(moov(trak('av01', 64, 64)), box64('free', 1, new Uint8Array(8))),
+		}, {
+			stsdShorterThan8Bytes: 'invalid',
+			av01ShorterThan28Bytes: 'invalid',
+			tkhdTooShort: 'invalid',
+			twoMoov: 'invalid',
+			childOverrunsParent: 'invalid',
+			valid64BitLength: 'ok',
+			oversized64BitLength: 'invalid',
 		});
 	});
 });

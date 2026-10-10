@@ -354,6 +354,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/state.json` | `capabilities` に `notify.dnd-remote.v1`、`current` に `doNotDisturb`（`enabled`・`until`）を追加（2026-10-06） | モバイルから PC のおやすみモードを切り替える。PC は今の状態を Desktop State に載せて変わったときだけ送り直し、fs の `dndSet` で切り替えを受ける。PC だけが広告する |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `agent.json` | 両方の `capabilities` に `agent.session-status.v1`、`agent.json` に `sessionStatus`・`sessionStatusAt` の delta を追加（2026-10-06） | モバイルのセッションの輪（キャッシュの hit / miss と切れる時刻、コンテキストの使用率。Claude Code 2.1.291 の `cn.record` と同じ式で数える） |
 | `app/protocol/test/golden/state.json` / `state-request.json` / `agent.json` | 両方の `capabilities` に `agent.teams.v1`、`agent.json` に `teams`・`teamsAt` の delta を 5 つ目に追加（2026-10-07） | トークのチームのカード（Claude Code のエージェントチームのメンバー・状態・許可待ち・やりとり・計画） |
+| `app/protocol/test/golden/state.json` / `state-request.json` | 両方の `capabilities` に `fs.html-images.v1` を追加（2026-10-10） | HTML のプレビューで埋め込み画像を抜いた本文を送り、画像は fs の `htmlImage` で 1 枚ずつ送る（q.html Q325 案 A。どちらかが古ければ今までどおり先頭の 20 MiB） |
+| `app/mobile/app.json` | `expo.version` を `0.12.10` に（2026-10-10） | 画像を埋め込んだ大きな HTML のプレビューの配信 |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.3.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。`session.measure` の `context` を `measure` として送る版）（2026-10-06） | モバイルのセッションの輪のコンテキストの使用率を statusline と同じ値にする（無い版・古い Claude Code では transcript の usage から出す） |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
@@ -2816,6 +2818,18 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
 - tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
 - 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない
+
+## モバイルの HTML の埋め込み画像は 1 枚ずつ送る（mobileRelay、2026-10-10、Q325 A）
+
+アプリが fs の `read` に `htmlImages: true` を付けたとき（capability `fs.html-images.v1`）、PC は HTML から `<img src="data:image/...">` の中身を抜き、同じ縦横の空の SVG を仮の `src` に置いた本文を返す。画像は fs の `htmlImage` で 1 枚ずつ返し、アプリは元の `data:` の文字列のまま戻す。実体は `src/vs/paradis/contrib/mobileRelay/common/paradisMobileHtmlImages.ts`（抜き出し）、`electron-browser/paradisMobileHtmlImageRequests.ts`（控えと `htmlImage`）、`app/mobile/src/features/code/htmlImages.ts`（取り寄せのスクリプトと順番待ち）。
+
+抜かないもの（本文に元のまま残る）:
+
+- `srcset` のある `img`、`<picture>` の中の `img`、16 KiB より短い・16 MiB より長い・見出しから縦横が読めない画像、1 文書で 2,000 枚を超えた分
+- CSS の `url()`、SVG の `image`、`<a href="data:...">` など `img src` 以外の経路
+- `script`・`style`・`textarea`・`template`・`noscript`・`title`・`xmp`・`iframe`・`noembed`・`noframes`・`plaintext` とコメントの中。閉じの無いものが出たら、そこから後ろは全部書き換えない
+- 抜き出しは HTML を本当には組み立てず、タグの始まりを文字で探すだけ。属性の値の中の `<img`・`<script`（例 `<div title="<script>">`）もタグとして読む。その結果、後ろの本物の画像を抜かずに残すことがある（属性の中の `<script` から閉じまでを飛ばす・閉じが無く打ち切るなど）。逆に、属性の値の中の文字列を画像として書き換えることはまず無い（属性の中に 16 KiB 以上の `<img src="data:image/...">` がそのまま入っている必要がある）
+- `<template>` の入れ子は数えない（最初の `</template` までを飛ばす）
 
 ## 今後の方針候補（未確定、要議論）
 

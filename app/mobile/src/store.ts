@@ -473,6 +473,15 @@ export interface FsReadResult {
 	fg?: string;
 	/** ハイライトがサイズ上限で先頭のみになっている。 */
 	highlightTruncated?: boolean;
+	/**
+	 * HTML の埋め込み画像を抜いた本文のとき（fs.html-images.v1）。`content` の画像は空の仮の画像に置き換わっていて、
+	 * 元の画像は `fsHtmlImage(ws, path, token, 番号)` で 1 枚ずつ取り寄せる。抜く画像が無ければ付かない。
+	 */
+	htmlImages?: { token: string; count: number };
+}
+/** fs htmlImage 応答（抜いた画像 1 枚の、元の `data:` の文字列）。 */
+export interface FsHtmlImageResult {
+	data: string;
 }
 
 /** fs xlsx 応答（PC側でレンダリングされたExcelの1シート分の静的HTML + シート一覧）。 */
@@ -4554,9 +4563,16 @@ export class MobileController {
 	 * ファイル読み取り（上限つき、PC側は20MBまで）。highlight=trueでPCテーマのハイライトHTMLも返る。
 	 * 大きいファイルはモバイル回線での受信に時間がかかるため、fsXlsxと同じ長めのタイムアウトにする。
 	 */
-	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
-		const cacheKey = JSON.stringify(['read', ws, path, highlight === true]);
-		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000, undefined, cacheKey);
+	fsRead(ws: string, path: string, highlight?: boolean, htmlImages?: boolean): Promise<FsReadResult> {
+		// HTML の画像を抜いてもらうのは、PC が対応しているときだけ（古い PC は今までどおり先頭の 20 MiB を返す）
+		const splitImages = htmlImages === true && highlight !== true && this.hasPcCapability(PcCapability.FsHtmlImages);
+		const cacheKey = JSON.stringify(splitImages ? ['read', ws, path, false, 'htmlImages'] : ['read', ws, path, highlight === true]);
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), ...(splitImages ? { htmlImages: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000, undefined, cacheKey);
+	}
+
+	/** HTML から抜いた画像を 1 枚取り寄せる（fs.html-images.v1。`token` は `fsRead` の応答の `htmlImages.token`）。 */
+	fsHtmlImage(ws: string, path: string, token: string, index: number): Promise<FsHtmlImageResult> {
+		return this.request<FsHtmlImageResult>('fs', { t: 'htmlImage', ws, path, token, index }, 120_000);
 	}
 
 	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
