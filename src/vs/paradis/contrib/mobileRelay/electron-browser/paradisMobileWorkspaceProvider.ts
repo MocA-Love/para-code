@@ -2816,9 +2816,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const splitImages = msg.htmlImages === true && msg.highlight !== true && paradisIsMobileHtmlPath(msg.path)
 					&& (stat.size ?? 0) <= PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT;
 				const readLimit = splitImages ? PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT : FS_READ_LIMIT;
-				const whole = await paradisWithCancellableHostDeadline(token => this.fileService.readFile(uri, { length: readLimit }, token), PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
-				timing?.mark('read');
-				const split = splitImages && !paradisLooksBinary(whole.value.buffer) ? await paradisPrepareMobileHtmlImages(whole.value.toString()) : undefined;
+				// 画像の抜き出しも読み出しと同じ時間で打ち切る（打ち切ったら、抜き出しは手を離した区切りで止まる）
+				const { whole, split } = await paradisWithCancellableHostDeadline(async token => {
+					const read = await this.fileService.readFile(uri, { length: readLimit }, token);
+					timing?.mark('read');
+					return {
+						whole: read,
+						split: splitImages && !paradisLooksBinary(read.value.buffer) ? await paradisPrepareMobileHtmlImages(read.value.toString(), token) : undefined,
+					};
+				}, PARADIS_MOBILE_FILE_READ_DEADLINE_MS);
 				if (split !== undefined && VSBuffer.fromString(split.html).byteLength <= FS_READ_LIMIT) {
 					timing?.set({ safe_source_bytes: stat.size ?? 0, safe_text_chars: split.html.length, safe_html_images: split.count });
 					await replyCacheable({ t: 'read', content: split.html, truncated: false, size: stat.size ?? 0, htmlImages: { token: split.token, count: split.count } });
