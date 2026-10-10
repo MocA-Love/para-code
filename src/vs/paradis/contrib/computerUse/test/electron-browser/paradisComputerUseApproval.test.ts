@@ -151,7 +151,12 @@ suite('ParadisComputerUseApprovalChannel', () => {
 	test('says the user did not answer when the deadline closes the dialog, but still says cancelled when the caller gave up', async () => {
 		const waitForClose = async (cancellation: CancellationToken): Promise<ParadisAgentApprovalOutcome> => {
 			if (!cancellation.isCancellationRequested) {
-				await new Promise<void>(resolve => cancellation.onCancellationRequested(() => resolve()));
+				await new Promise<void>(resolve => {
+					const listener = cancellation.onCancellationRequested(() => {
+						listener.dispose();
+						resolve();
+					});
+				});
 			}
 			return 'cancelled';
 		};
