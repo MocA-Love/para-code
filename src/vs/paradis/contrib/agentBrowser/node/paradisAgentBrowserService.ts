@@ -35,7 +35,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -82,6 +82,7 @@ import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments,
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
 import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
+import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
 import { PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
@@ -784,6 +785,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _remoteVoiceLocalPlaybackEnabled: () => boolean;
 	/** 操作の後に待って変化を添えるか（E1）・ブラウザの状態を添えるか（I1）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _observeSettings: (() => IParadisObserveOptions) | undefined;
+	/** take_snapshot の 2 回目以降を前回との差分にするか（E2）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
+	private readonly _snapshotDiffEnabled: (() => boolean) | undefined;
 	/** サイトメモ（E4）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _siteNotesEnabled: (() => boolean) | undefined;
 	/** サイトメモの置き場（paradisBrowserSiteNotes.ts）。 */
@@ -911,6 +914,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			settle: configurationService?.getValue(PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING) === true,
 			state: configurationService?.getValue(PARADIS_BROWSER_REPORT_STATE_SETTING) === true,
 		});
+		this._snapshotDiffEnabled = () => configurationService?.getValue(PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING) === true;
 		this._siteNotesEnabled = () => configurationService?.getValue(PARADIS_BROWSER_SITE_NOTES_SETTING) === true;
 		this._runStepsFlowEnabled = () => configurationService?.getValue(PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING) === true;
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
@@ -4370,6 +4374,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				const instructions: string | undefined = this._paneRemoteAuthorityOf(ingressLease.token) !== undefined
 					? `${this._serverInstructions()}\n\n${PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS}`
 					: this._serverInstructions();
+				// 新しいエージェントは前のエージェントのスナップショットを見ていない。次の take_snapshot は全体を返す（E2）
+				this._devtoolsProxy?.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === ingressLease.token);
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -4382,8 +4388,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'tools/list': {
 				// para固有ツール＋内蔵chrome-devtools-mcpのツール（子プロセスが起動できない場合は
 				// para固有ツールのみに縮退し、一覧自体は失敗させない）
-				const tools = await this._listDevtoolsTools(ingressLease, signal);
+				const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
 				this._requireIngressLease(ingressLease);
+				// take_snapshot を差分にする設定（既定は無効）が有効なら、全体を取る `full` と説明を足す
+				const tools = this._snapshotDiffEnabled?.() === true ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
 				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 				// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
@@ -4516,7 +4524,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (observeOptions !== undefined) {
 			return this._callToolObserved(ingressLease, name, params, observeOptions, signal, socket);
 		}
-		return this._callToolInner(ingressLease, params, signal, socket);
+		return this._callToolInner(ingressLease, params, signal, socket, undefined, nested);
 	}
 
 	/**
@@ -4812,7 +4820,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * @param heldLane 呼び出し元がすでに持っているタブの列の鍵（{@link _callToolObserved}）。同じ鍵の列には並び直さない
 	 * （列は入れ子にできず、並び直すと自分を待って止まる）。
 	 */
-	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket, heldLane?: string): Promise<unknown> {
+	private async _callToolInner(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket, heldLane?: string, nested?: boolean): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		const token = ingressLease.token;
 		const name = typeof params?.name === 'string' ? params.name : undefined;
@@ -4837,7 +4845,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const pageLease = scopedCall.lease;
 			// Para Code だけが付ける内部の引数は、エージェントから来たら捨てる（観測の待たない評価を勝手に使わせない）
-			const devtoolsArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
+			const strippedArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
+			// take_snapshot を差分にする設定（既定は無効）が有効なら、`full` を取り除いて、差分か全体かを決める
+			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled?.() === true ? paradisTakeSnapshotDiffMode(strippedArgs) : undefined;
+			const devtoolsArgs = snapshotDiff?.args ?? strippedArgs;
+			// run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけで、エージェントが全部を見たとは限らない）
+			const snapshotDiffMode = nested === true ? undefined : snapshotDiff?.mode;
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
 			const devtoolsLane = this._pageKeyOf(pageLease);
@@ -4868,7 +4881,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					}
 				}
 				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
-				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
+				const devtoolsResult = paradisWithScriptClickHint(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiffMode)));
 				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
 					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
 					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
@@ -5445,7 +5458,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
-	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true): Promise<unknown> {
+	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		// 子プロセスと世代はタブのスコープキーごと（tab_id を解決していなければペインのトークン）。別のタブの
 		// 子プロセスは別なので、別のタブへの呼び出しは並行に走る
@@ -5467,7 +5480,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!binding) {
 					return this._toolError(NOT_BOUND_MESSAGE);
 				}
-				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal);
+				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal, snapshotDiff);
 				this._requireIngressLease(ingressLease);
 				const current = this._bindingForKey(token);
 				if (current !== binding || !this._devtoolsGenerationCoordinator.isCurrentGeneration(token, generation)) {
