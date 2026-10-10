@@ -66,6 +66,9 @@ suite('Paradis site recipes (E3)', () => {
 			repeatPredicate: errorOf(check({ name: 'x', steps: [{ repeat_until: { predicate: '() => true' }, steps: [{ sleep_ms: 1 }] }] }, META)) !== undefined,
 			doneWhenPredicate: errorOf(check({ name: 'x', steps: [{ sleep_ms: 1 }], done_when: { predicate: '() => true' } }, META)) !== undefined,
 			waitPredicate: errorOf(check({ name: 'x', steps: [{ tool: 'wait_until', args: { predicate: '() => true' } }] }, META)),
+			snapshotFile: errorOf(check({ name: 'x', steps: [{ tool: 'take_snapshot', args: { filePath: 'src/index.ts' } }] }, META)),
+			captureSaveTo: errorOf(check({ name: 'x', steps: [{ tool: 'capture_screenshot', args: { selector: 'main', saveTo: 'README.md' } }] }, META)),
+			nestedScript: errorOf(check({ name: 'x', steps: [{ for_each: ['a', 'b'], steps: [{ tool: 'evaluate_script', args: { function: '() => 1' } }] }] }, META)) !== undefined,
 			plainConditions: errorOf(check({ name: 'x', steps: [{ expect: { url_includes: '/done' } }, { tool: 'wait_until', args: { text: 'Done' } }], done_when: { visible: { role: 'heading', name: 'Done' } } }, META)),
 			// パスワード欄の判定が拾えない例（欄の名前が手順に無い、または違う名前の欄）。分かっている抜けとして残す
 			knownMisses: [
@@ -92,6 +95,9 @@ suite('Paradis site recipes (E3)', () => {
 			repeatPredicate: true,
 			doneWhenPredicate: true,
 			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_ms instead.',
+			snapshotFile: 'save_recipe: take_snapshot with "filePath" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
+			captureSaveTo: 'save_recipe: capture_screenshot with "saveTo" cannot be saved in a recipe (a later agent runs the recipe without reading it): it reads or writes files on this computer.',
+			nestedScript: true,
 			plainConditions: undefined,
 			knownMisses: [true, true, true, true],
 		});
@@ -111,6 +117,9 @@ suite('Paradis site recipes (E3)', () => {
 			missing: paradisSiteRecipeSteps(recipe, {}, SITE),
 			// ファイルを直接書き換えた手順も、動かす前に同じ決まりで断る
 			storedScript: paradisSiteRecipeSteps({ ...recipe, params: [], steps: [{ tool: 'evaluate_script', args: { function: '() => 1' } }] }, {}, SITE).ok,
+			storedFile: paradisSiteRecipeSteps({ ...recipe, params: [], doneWhen: undefined, steps: [{ tool: 'take_screenshot', args: { filePath: 'out.png' } }] }, {}, SITE).ok,
+			malformed: paradisSiteRecipeSteps({ ...recipe, steps: 'oops' } as unknown as IParadisSiteRecipe, { q: 'a' }, SITE),
+			malformedParams: paradisSiteRecipeSteps({ ...recipe, params: 'q' } as unknown as IParadisSiteRecipe, { q: 'a' }, SITE).ok,
 			storedPredicate: paradisSiteRecipeSteps({ ...recipe, params: [], doneWhen: { predicate: '() => true' }, steps: [{ sleep_ms: 1 }] }, {}, SITE).ok,
 			sameSite: paradisSiteRecipeSteps({ ...recipe, params: [{ name: 'path' }], doneWhen: undefined, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/{{path}}` } }] }, { path: 'a' }, SITE),
 		}, {
@@ -124,6 +133,9 @@ suite('Paradis site recipes (E3)', () => {
 			},
 			missing: { ok: false, error: 'run_recipe: the recipe "search" needs "q" in "params".' },
 			storedScript: false,
+			storedFile: false,
+			malformed: { ok: false, error: 'run_recipe: the saved recipe "search" is malformed. Save it again with save_recipe.' },
+			malformedParams: false,
 			storedPredicate: false,
 			sameSite: { ok: true, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/a` } }] },
 		});
