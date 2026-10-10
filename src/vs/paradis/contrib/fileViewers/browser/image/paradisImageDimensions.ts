@@ -166,6 +166,12 @@ function icoDimensions(bytes: Uint8Array): { width: number; height: number } {
 /** ISOBMFF の箱をたどるときの上限（壊れた・細工したファイルで回り続けないため）。 */
 const MAX_BOXES = 10_000;
 const MAX_BOX_DEPTH = 8;
+/**
+ * トップレベルの箱は数えるだけで、`meta` と `moov` のほかは覚えない。断片化した長い動く AVIF（`moof` と
+ * `mdat` が何千と並ぶ）を、中の箱の上限で誤って断らないよう、上限を中の箱とは別にする。
+ */
+const MAX_TOP_LEVEL_BOXES = 1_000_000;
+const TOP_LEVEL_TYPES: ReadonlySet<string> = new Set(['meta', 'moov']);
 
 interface IsoBox {
 	readonly type: string;
@@ -174,8 +180,11 @@ interface IsoBox {
 	readonly end: number;
 }
 
-/** `[start, end)` の中の箱を順に返す。長さが範囲をはみ出す箱が来たら undefined（壊れている）。 */
-function readIsoBoxes(bytes: Uint8Array, start: number, end: number, budget: { boxes: number }): IsoBox[] | undefined {
+/**
+ * `[start, end)` の中の箱を順に返す（`keep` を渡したときはその型だけ）。長さが範囲をはみ出す箱が来たら
+ * undefined（壊れている）。
+ */
+function readIsoBoxes(bytes: Uint8Array, start: number, end: number, budget: { boxes: number }, keep?: ReadonlySet<string>): IsoBox[] | undefined {
 	const boxes: IsoBox[] = [];
 	let offset = start;
 	while (offset + 8 <= end) {
@@ -198,7 +207,9 @@ function readIsoBoxes(bytes: Uint8Array, start: number, end: number, budget: { b
 		if (size < header || offset + size > end) {
 			return undefined;
 		}
-		boxes.push({ type, start: offset + header, end: offset + size });
+		if (!keep || keep.has(type)) {
+			boxes.push({ type, start: offset + header, end: offset + size });
+		}
 		offset += size;
 	}
 	return boxes;
@@ -209,8 +220,9 @@ type Size = { readonly width: number; readonly height: number };
 /**
  * AVIF（ISOBMFF）の画像の大きさ。箱の長さで飛ばしてたどるので、ファイルのどこにあっても読む。
  * - 静止画: `meta` → `iprp` → `ipco` の中の `ispe`（画像の空間的な大きさ）
- * - 動く AVIF（brand `avis`）: 上に加えて `moov` → `trak` → `mdia` → `minf` → `stbl` → `stsd` の `av01` の
- *   幅と高さ（`meta` を持たずトラックだけのものもあり、`meta` の `ispe` よりトラックが大きいこともある）
+ * - 動く AVIF（brand `avis`）: 上に加えて、`moov` → `trak` の `tkhd` と、`trak` → `mdia` → `minf` → `stbl` →
+ *   `stsd` の `av01` の幅と高さ（`meta` を持たずトラックだけのものもあり、`meta` の `ispe` よりトラックが
+ *   大きいこともある）
  * 見つかったもののうち一番大きいものを返す。どちらも無い、または箱が壊れていれば 0（呼び出し側で断る）。
  */
 function avifDimensions(bytes: Uint8Array): Size {
@@ -224,7 +236,7 @@ function avifDimensions(bytes: Uint8Array): Size {
 		return !found || found.length > 1 ? undefined : found[0] ?? null;
 	};
 
-	const top = readIsoBoxes(bytes, 0, bytes.byteLength, budget);
+	const top = readIsoBoxes(bytes, 0, bytes.byteLength, { boxes: MAX_TOP_LEVEL_BOXES }, TOP_LEVEL_TYPES);
 	const meta = single(top, 'meta');
 	const moov = single(top, 'moov');
 	if (meta === undefined || moov === undefined) {
@@ -256,7 +268,21 @@ function avifDimensions(bytes: Uint8Array): Size {
 			return none;
 		}
 		for (const trak of tracks) {
-			const mdia = single(children(trak, 2), 'mdia');
+			const trakChildren = children(trak, 2);
+			const tkhd = single(trakChildren, 'tkhd');
+			if (tkhd === undefined) {
+				return none;
+			}
+			if (tkhd) {
+				// tkhd は FullBox。幅と高さ（16.16 の固定小数）は箱の末尾の 8 バイトで、箱の長さは版 0 で 84、
+				// 版 1 で 96 バイト（時刻と長さが 64 ビットになる）。推測: libavif はトラックの大きさをここから取る。
+				const length = bytes[tkhd.start] === 1 ? 96 : bytes[tkhd.start] === 0 ? 84 : 0;
+				if (!length || tkhd.end - tkhd.start < length) {
+					return none;
+				}
+				sizes.push({ width: Math.ceil(u32be(bytes, tkhd.start + length - 8) / 0x10000), height: Math.ceil(u32be(bytes, tkhd.start + length - 4) / 0x10000) });
+			}
+			const mdia = single(trakChildren, 'mdia');
 			const minf = mdia ? single(children(mdia, 3), 'minf') : mdia;
 			const stbl = minf ? single(children(minf, 4), 'stbl') : minf;
 			const stsd = stbl ? single(children(stbl, 5), 'stsd') : stbl;
@@ -264,6 +290,9 @@ function avifDimensions(bytes: Uint8Array): Size {
 				return none;
 			}
 			// stsd は FullBox（4 バイト）と、項目の数（4 バイト）の後ろに見本の記述が並ぶ。
+			if (stsd && stsd.end - stsd.start < 8) {
+				return none;
+			}
 			const entries = stsd ? children(stsd, 6, 8) : [];
 			if (!entries) {
 				return none;
