@@ -222,18 +222,25 @@ suite('Paradis run_steps flow (E6)', () => {
 		const globals = globalThis as { pwned?: boolean };
 		delete globals.pwned;
 		const asked: string[] = [];
-		// document を差し替えて、作った predicate を評価する
-		const run = (predicate: string, value: string | undefined) => (new Function('document', `return (${predicate})();`) as (document: unknown) => unknown)({
+		// document と入力の部品の型を差し替えて、作った predicate を評価する
+		class FakeInput { constructor(readonly value: string) { } }
+		class FakeSelect { constructor(readonly value: string) { } }
+		class FakeTextArea { constructor(readonly value: string) { } }
+		class FakeListItem { constructor(readonly value: string) { } }
+		const evaluate = (predicate: string, element: object | null) => (new Function('document', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', `return (${predicate})();`) as (...args: unknown[]) => unknown)({
 			querySelector: (selector: string) => {
 				asked.push(selector);
-				return value === undefined ? null : { value };
+				return element;
 			},
-		});
+		}, FakeInput, FakeSelect, FakeTextArea);
+		const run = (predicate: string, value: string | undefined) => evaluate(predicate, value === undefined ? null : new FakeInput(value));
 		const bad = paradisParseRunStepsFlow({ steps: [{ expect: { value_equals: { selector: '#city' } } }] });
 		assert.deepStrictEqual({
 			notEmpty: [run(predicates[0], 'Chiyoda'), run(predicates[0], ''), run(predicates[0], undefined)],
 			equals: [run(predicates[1], hostileValue), run(predicates[1], 'x')],
 			reference: run(predicates[2], 'ok'),
+			// select と textarea の値は見る。value を持っていても入力欄でない部品（li など）は見ない
+			otherElements: [new FakeSelect('x'), new FakeTextArea('x'), new FakeListItem('x'), { value: 'x' }].map(element => evaluate(predicates[0], element)),
 			asked: asked.slice(0, 1),
 			pwned: globals.pwned,
 			bad: bad.ok ? 'ok' : bad.error,
@@ -242,6 +249,7 @@ suite('Paradis run_steps flow (E6)', () => {
 			equals: [true, false],
 			// get_text の結果（'ok'）が値として入る
 			reference: true,
+			otherElements: [true, true, false, false],
 			asked: [hostileSelector],
 			pwned: undefined,
 			bad: '"steps" step 1 "expect": "value_equals" must be {"selector": "...", "value": "..."} (a CSS selector of an input, select or textarea).',
