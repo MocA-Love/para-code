@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.10',
+		date: '2026-10-10',
+		items: [
+			{
+				icon: 'images-outline',
+				title: '画像を埋め込んだ大きな HTML も、最後まで開いて画像を押せるようになりました',
+				body: '画像を抜いた軽い本文を先に開き、画像は見えているものから順に PC から取り寄せます。届くまでは画像の場所が空いて見えます（PC の Para Code も新しい版が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.12.9',
 		date: '2026-10-09',
 		items: [
