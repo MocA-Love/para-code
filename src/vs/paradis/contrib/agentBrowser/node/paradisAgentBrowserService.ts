@@ -84,8 +84,9 @@ import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradi
 import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
-import { PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
+import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
+import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -4698,7 +4699,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (paradisSiteNoteLooksSecret(args.text)) {
 			return this._toolError('write_site_note did not save the note: it looks like it contains a password, token or key. Notes are shown to other agents; describe the step without the secret.');
 		}
-		const note = await this._siteNotes.write(space.key, origin, args.text, { agent: this._paneSessions.get(token)?.agent, commit: await paradisSiteNoteCommit(space.folder) });
+		let note: IParadisSiteNote;
+		try {
+			note = await this._siteNotes.write(space.key, origin, args.text, { agent: this._paneSessions.get(token)?.agent, commit: await paradisSiteNoteCommit(space.folder) });
+		} catch (error) {
+			if (error instanceof ParadisBrowserSiteStoreFullError) {
+				return this._toolError(`write_site_note: ${error.message} Call list_site_notes and delete_site_note.`);
+			}
+			throw error;
+		}
 		// 書いたペインへはもう添えなくてよい
 		const shown = this._siteNotesShown.get(token) ?? new Set<string>();
 		shown.add(`${space.key}\n${origin}`);
@@ -4731,6 +4740,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolError(`${name}: tab ${scoped.tabId} is not a tab this pane can use. Call list_browser_tabs for usable tabIds.`);
 		}
 		const tabId = scoped.tabId ?? this._defaultTabId(token);
+		if (name === 'run_recipe' && args.url !== undefined) {
+			// 動かすのは、タブが今いるサイトの手順だけ（別のサイトの手順を、今のページで動かさない）
+			return this._toolError('run_recipe runs the recipes of the site the tab is on now and does not take "url". Open the site first.');
+		}
 		const origin = paradisSiteNoteOrigin(typeof args.url === 'string' ? args.url : tabId !== undefined ? tabs.get(tabId) : undefined);
 		if (origin === undefined) {
 			return this._toolError(`${name} needs a website: pass "url" (http or https), or open the site in this pane's current tab first.`);
@@ -4753,11 +4766,19 @@ export class ParadisAgentBrowserService extends Disposable {
 					? this._toolText(`Deleted the recipe "${recipeName}" of ${origin}.`)
 					: this._toolError(`No recipe "${recipeName}" for ${origin} in this repository. Call list_recipes for the names.`);
 			case 'save_recipe': {
-				const checked = paradisCheckSiteRecipe(args, { date: new Date(), agent: this._paneSessions.get(token)?.agent, commit: await paradisSiteNoteCommit(space.folder) });
+				const checked = paradisCheckSiteRecipe(args, { date: new Date(), agent: this._paneSessions.get(token)?.agent, commit: await paradisSiteNoteCommit(space.folder) }, origin);
 				if (!checked.ok) {
 					return this._toolError(checked.error);
 				}
-				const replaced = await this._siteRecipes.save(space.key, origin, checked.recipe);
+				let replaced: boolean;
+				try {
+					replaced = await this._siteRecipes.save(space.key, origin, checked.recipe);
+				} catch (error) {
+					if (error instanceof ParadisBrowserSiteStoreFullError) {
+						return this._toolError(`save_recipe: ${error.message} Call list_recipes and delete_recipe.`);
+					}
+					throw error;
+				}
 				// 保存したペインへは、手順の名前をもう添えなくてよい
 				const shown = this._siteNotesShown.get(token) ?? new Set<string>();
 				shown.add(`recipes\n${space.key}\n${origin}`);
@@ -4771,7 +4792,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (recipe === undefined) {
 			return this._toolError(`No recipe "${recipeName}" for ${origin} in this repository.${recipes.length > 0 ? ` Saved: ${recipes.map(item => item.name).join(', ')}.` : ''}`);
 		}
-		const prepared = paradisSiteRecipeSteps(recipe, args.params);
+		const prepared = paradisSiteRecipeSteps(recipe, args.params, origin);
 		if (!prepared.ok) {
 			return this._toolError(prepared.error);
 		}
@@ -4786,10 +4807,19 @@ export class ParadisAgentBrowserService extends Disposable {
 			return { ...result, content: [...result.content, { type: 'text', text: `Recipe "${recipe.name}" finished${recipe.doneWhen !== undefined ? ' and its done_when holds' : ''}.` }] };
 		}
 		// 止まったら、その時のページの頭を添える（直して保存し直せるように）
-		const snapshot = await this._callTool(ingressLease, { name: 'take_snapshot', arguments: withTab({}) }, signal, socket, true).catch(() => undefined);
+		const snapshot = await this._siteRecipeSnapshot(ingressLease, withTab({}), signal).catch(() => undefined);
 		const snapshotText = isExactRecord(snapshot) && Array.isArray(snapshot.content) ? snapshot.content.map(item => isExactRecord(item) && typeof item.text === 'string' ? item.text : '').join('\n') : '';
 		const head = snapshotText.length > PARADIS_SITE_RECIPE_SNAPSHOT_CHARS ? `${snapshotText.slice(0, PARADIS_SITE_RECIPE_SNAPSHOT_CHARS)}\n... (cut; call take_snapshot for the rest)` : snapshotText;
 		return { ...result, content: [...result.content, { type: 'text', text: `Recipe "${recipe.name}" stopped at the failed step above. The page now:\n${head}\nFix the steps (the site may have changed) and call save_recipe with the same name "${recipe.name}".` }] };
+	}
+
+	/**
+	 * run_recipe が止まったときに添えるスナップショット。内蔵の take_snapshot を直接呼び、いつも全体を取る（エージェントの
+	 * take_snapshot の扱い、たとえば前回との差分にする設定を通さない。直す手掛かりは全体が要る）。
+	 */
+	private async _siteRecipeSnapshot(ingressLease: IParadisAgentBrowserIngressLease, args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<unknown> {
+		const scoped = this._scopeToolCall(ingressLease, args);
+		return scoped.ok ? this._callDevtoolsTool(scoped.lease, 'take_snapshot', scoped.args, signal) : undefined;
 	}
 
 	/**
