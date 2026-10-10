@@ -50,8 +50,8 @@ suite('Paradis run_steps flow (E6)', () => {
 			notAllowed: paradisParseRunStepsFlow({ steps: [{ tool: 'open_browser_tab', args: {} }] }),
 			plain: textOf(await paradisRunSteps({ callTool: async () => text('ok') }, { steps: [{ expect: { text: 'x' } }] })),
 		}, {
-			unknownKey: { ok: false, error: '"steps" step 1 "expect" must have exactly one of: text, text_gone, url_includes, predicate, visible, gone, disabled, enabled (unknown: colour).' },
-			twoConditions: { ok: false, error: '"steps" step 1 "expect" must have exactly one of: text, text_gone, url_includes, predicate, visible, gone, disabled, enabled.' },
+			unknownKey: { ok: false, error: '"steps" step 1 "expect" must have exactly one of: text, text_gone, url_includes, predicate, visible, gone, disabled, enabled, value_not_empty, value_equals (unknown: colour).' },
+			twoConditions: { ok: false, error: '"steps" step 1 "expect" must have exactly one of: text, text_gone, url_includes, predicate, visible, gone, disabled, enabled, value_not_empty, value_equals.' },
 			badLocator: { ok: false, error: '"steps" step 1 "repeat_until": "disabled" must be a locator such as {"role": "button", "name": "Next"} or {"selector": "..."} (keys: selector, role, name, text, exact).' },
 			deepLoop: { ok: false, error: '"steps" step 1 "steps" step 1 "steps" step 1: loops can be nested only 2 deep.' },
 			notAllowed: { ok: false, error: '"steps" step 1: "open_browser_tab" cannot be used in run_steps. Allowed: navigate_page, click, click_at, fill, fill_form, hover, press_key, type_text, drag, handle_dialog, wait_for, take_screenshot, take_snapshot, evaluate_script, list_console_messages, list_network_requests, click_by, fill_by, wait_until, get_text, inspect_element, scroll_to, capture_screenshot, mouse_action, highlight_element.' },
@@ -203,6 +203,48 @@ suite('Paradis run_steps flow (E6)', () => {
 		}, {
 			refused: '"steps" step 2: references such as $2.text cannot be used in "initScript". Pass the value in a later evaluate_script instead.',
 			calls: ['evaluate_script {"function":"() => \\"$1.text\\""}', 'navigate_page {"url":"about:blank","initScript":"window.price = \\"$5\\";"}'],
+		});
+	});
+
+	test('value_not_empty and value_equals wait on the value of an input without a script, with the selector and value kept as data', async () => {
+		const hostileSelector = `"]'); globalThis.pwned = true; ('`;
+		const hostileValue = `x"; globalThis.pwned = true; "`;
+		const fake = fakeCall(() => text('ok'));
+		await paradisRunStepsFlow(fake.call, {
+			steps: [
+				{ tool: 'get_text', args: {} },
+				{ expect: { value_not_empty: { selector: hostileSelector } } },
+				{ expect: { value_equals: { selector: '#city', value: hostileValue } } },
+				{ expect: { value_equals: { selector: '#city', value: '$1.text' } } },
+			],
+		});
+		const predicates = fake.calls.slice(1).map(call => (JSON.parse(call.slice(call.indexOf(' ') + 1)) as { predicate: string }).predicate);
+		const globals = globalThis as { pwned?: boolean };
+		delete globals.pwned;
+		const asked: string[] = [];
+		// document を差し替えて、作った predicate を評価する
+		const run = (predicate: string, value: string | undefined) => (new Function('document', `return (${predicate})();`) as (document: unknown) => unknown)({
+			querySelector: (selector: string) => {
+				asked.push(selector);
+				return value === undefined ? null : { value };
+			},
+		});
+		const bad = paradisParseRunStepsFlow({ steps: [{ expect: { value_equals: { selector: '#city' } } }] });
+		assert.deepStrictEqual({
+			notEmpty: [run(predicates[0], 'Chiyoda'), run(predicates[0], ''), run(predicates[0], undefined)],
+			equals: [run(predicates[1], hostileValue), run(predicates[1], 'x')],
+			reference: run(predicates[2], 'ok'),
+			asked: asked.slice(0, 1),
+			pwned: globals.pwned,
+			bad: bad.ok ? 'ok' : bad.error,
+		}, {
+			notEmpty: [true, false, false],
+			equals: [true, false],
+			// get_text の結果（'ok'）が値として入る
+			reference: true,
+			asked: [hostileSelector],
+			pwned: undefined,
+			bad: '"steps" step 1 "expect": "value_equals" must be {"selector": "...", "value": "..."} (a CSS selector of an input, select or textarea).',
 		});
 	});
 

@@ -354,10 +354,9 @@ export function paradisWithSnapshotDiffArgument<T extends { readonly name: strin
 /**
  * エージェントの take_snapshot の引数から `full` を取り除き（vendored は知らない引数を断る）、どう返すかを決める。
  */
-export function paradisTakeSnapshotDiffMode(args: unknown): { readonly args: unknown; readonly mode: ParadisSnapshotDiffMode } {
-	if (!isRecord(args) || !Object.hasOwn(args, 'full')) {
-		return { args, mode: 'diff' };
-	}
-	const { full, ...rest } = args;
-	return { args: rest, mode: full === true ? 'full' : 'diff' };
+export function paradisTakeSnapshotDiffMode(args: unknown, nested: boolean = false): { readonly args: unknown; readonly mode: ParadisSnapshotDiffMode | undefined } {
+	const { full, ...rest } = isRecord(args) ? args : {};
+	const stripped = isRecord(args) && Object.hasOwn(args, 'full') ? rest : args;
+	// run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけで、エージェントが全部を見たとは限らない）
+	return { args: stripped, mode: nested ? undefined : full === true ? 'full' : 'diff' };
 }
