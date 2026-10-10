@@ -2818,6 +2818,18 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
 - 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない
 
+## モバイルの HTML の埋め込み画像は 1 枚ずつ送る（mobileRelay、2026-10-10、Q325 A）
+
+アプリが fs の `read` に `htmlImages: true` を付けたとき（capability `fs.html-images.v1`）、PC は HTML から `<img src="data:image/...">` の中身を抜き、同じ縦横の空の SVG を仮の `src` に置いた本文を返す。画像は fs の `htmlImage` で 1 枚ずつ返し、アプリは元の `data:` の文字列のまま戻す。実体は `src/vs/paradis/contrib/mobileRelay/common/paradisMobileHtmlImages.ts`（抜き出し）、`electron-browser/paradisMobileHtmlImageRequests.ts`（控えと `htmlImage`）、`app/mobile/src/features/code/htmlImages.ts`（取り寄せのスクリプトと順番待ち）。
+
+抜かないもの（本文に元のまま残る）:
+
+- `srcset` のある `img`、`<picture>` の中の `img`、16 KiB より短い・16 MiB より長い・見出しから縦横が読めない画像、1 文書で 2,000 枚を超えた分
+- CSS の `url()`、SVG の `image`、`<a href="data:...">` など `img src` 以外の経路
+- `script`・`style`・`textarea`・`template`・`noscript`・`title`・`xmp`・`iframe`・`noembed`・`noframes`・`plaintext` とコメントの中。閉じの無いものが出たら、そこから後ろは全部書き換えない
+- 抜き出しは HTML を本当には組み立てず、タグの始まりを文字で探すだけ。属性の値の中の `<img`・`<script`（例 `<div title="<script>">`）もタグとして読む。その結果、後ろの本物の画像を抜かずに残すことがある（属性の中の `<script` から閉じまでを飛ばす・閉じが無く打ち切るなど）。逆に、属性の値の中の文字列を画像として書き換えることはまず無い（属性の中に 16 KiB 以上の `<img src="data:image/...">` がそのまま入っている必要がある）
+- `<template>` の入れ子は数えない（最初の `</template` までを飛ばす）
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）

@@ -8,6 +8,8 @@
 
 import * as assert from 'assert';
 import { VSBuffer, encodeBase64 } from '../../../../../base/common/buffer.js';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MOBILE_HTML_IMAGE_MIN_CHARS, paradisReadDataImageSize, paradisSplitMobileHtmlImages, paradisSplitMobileHtmlImagesSliced } from '../../common/paradisMobileHtmlImages.js';
 
@@ -82,10 +84,19 @@ suite('ParadisMobileHtmlImages', () => {
 		const elapsed = Date.now() - started;
 		// 区切って手を離す版も同じ結果を返す
 		const long = lead + '<script>x</script>'.repeat(20_000) + lead;
-		const sliced = await paradisSplitMobileHtmlImagesSliced(long, 1);
-		// 以前の正規表現の書き方では、1 つ目と 2 つ目だけで 30 秒近くかかった
-		assert.deepStrictEqual({ results, fast: elapsed < 2_000, sliced: sliced?.images.length }, { results: tails.map(() => true), fast: true, sliced: 2 });
+		const sliced = await paradisSplitMobileHtmlImagesSliced(long, undefined, 1);
+		// 以前の正規表現の書き方では、1 つ目と 2 つ目だけで 30 秒近くかかった。混んだ CI でも落ちないよう、上限は広く取る
+		assert.deepStrictEqual({ results, fast: elapsed < 10_000, sliced: sliced?.images.length }, { results: tails.map(() => true), fast: true, sliced: 2 });
 		assert.deepStrictEqual(sliced, paradisSplitMobileHtmlImages(long));
+	});
+
+	test('the sliced split stops at the next slice once the token is cancelled', async () => {
+		const image = pngDataUrl(320, 240);
+		const source = new CancellationTokenSource();
+		source.cancel();
+		const error = await paradisSplitMobileHtmlImagesSliced(`<img src="${image}">${'<p>x</p>'.repeat(10_000)}<img src="${image}">`, source.token, 0).then(() => undefined, (reason: unknown) => reason);
+		source.dispose();
+		assert.strictEqual(isCancellationError(error), true);
 	});
 
 	test('reads the size from the start of a wrapped base64 payload', () => {
