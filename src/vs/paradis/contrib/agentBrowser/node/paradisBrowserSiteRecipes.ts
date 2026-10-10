@@ -26,6 +26,7 @@
 import { homedir } from 'os';
 import { join } from '../../../../base/common/path.js';
 import { paradisParseRunStepsFlow } from './paradisBrowserRunStepsFlow.js';
+import { paradisDevtoolsPathArguments } from './paradisDevtoolsPathPolicy.js';
 import { paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
 
@@ -149,12 +150,16 @@ function recipeStepsRefusal(steps: readonly unknown[], origin: string): string |
 		}
 		const stepArgs = isRecord(step.args) ? step.args : {};
 		const predicateIn = ['expect', 'repeat_until'].find(key => isRecord(step[key]) && (step[key] as Record<string, unknown>).predicate !== undefined);
+		// 手元のファイルを読む・書く引数（take_snapshot / take_screenshot の filePath、capture_screenshot の saveTo など）
+		const fileArguments = [...(typeof step.tool === 'string' ? paradisDevtoolsPathArguments(step.tool, stepArgs) : []), ...(stepArgs.saveTo !== undefined ? ['saveTo'] : [])];
 		if (step.tool === 'evaluate_script') {
 			refusal = `evaluate_script cannot be saved in a recipe ${readBy}. Use click_by, fill_by, get_text, wait_until and expect.`;
 		} else if (step.tool === 'navigate_page' && stepArgs.initScript !== undefined) {
 			refusal = `navigate_page with "initScript" cannot be saved in a recipe ${readBy}.`;
 		} else if (step.tool === 'navigate_page' && typeof stepArgs.url === 'string' && !isWithinOrigin(stepArgs.url, origin)) {
 			refusal = `navigate_page in a recipe for ${origin} can only open pages of ${origin} (got ${JSON.stringify(stepArgs.url.slice(0, 120))}).`;
+		} else if (fileArguments.length > 0) {
+			refusal = `${String(step.tool)} with "${fileArguments.join('", "')}" cannot be saved in a recipe ${readBy}: it reads or writes files on this computer.`;
 		} else if (step.tool === 'wait_until' && stepArgs.predicate !== undefined) {
 			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_ms instead.`;
 		} else if (predicateIn !== undefined) {
@@ -259,6 +264,10 @@ function fill(value: unknown, values: Readonly<Record<string, string>>): unknown
 
 /** run_recipe の手順（パラメータを差し込み、done_when を最後の expect にしたもの）。足りないパラメータがあれば断る。 */
 export function paradisSiteRecipeSteps(recipe: IParadisSiteRecipe, rawValues: unknown, origin: string): { readonly ok: true; readonly steps: unknown[] } | { readonly ok: false; readonly error: string } {
+	// ファイルを直接書き換えられて形が崩れた手順は動かさない
+	if (!Array.isArray(recipe.steps) || !Array.isArray(recipe.params) || recipe.params.some(param => !isRecord(param) || typeof param.name !== 'string') || (recipe.doneWhen !== undefined && !isRecord(recipe.doneWhen))) {
+		return { ok: false, error: `run_recipe: the saved recipe "${String(recipe.name)}" is malformed. Save it again with save_recipe.` };
+	}
 	const values: Record<string, string> = {};
 	if (isRecord(rawValues)) {
 		for (const [key, value] of Object.entries(rawValues)) {
