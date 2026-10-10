@@ -66,8 +66,8 @@ suite('Paradis site note nudges (Q327)', () => {
 		}, {
 			first: [true, true, true, false, false],
 			afterNewAgent: true,
-			notes: '[Para Code] That worked after a failed or repeated attempt. If you found out something about this site that would spare the next agent the same trouble, leave a short note with write_site_note. Do not include secrets or values that only apply to this run.',
-			both: '[Para Code] That worked after a failed or repeated attempt. If you found out something about this site that would spare the next agent the same trouble, leave a short note with write_site_note, or the steps with save_recipe. Do not include secrets or values that only apply to this run.',
+			notes: '[Para Code] You got past a failed or repeated step on this site. Before you go on, record what made it work in a short note with write_site_note (one short call, for example the input format or the element that worked), so the next agent does not repeat the trouble. Do not include secrets or values that only apply to this run.',
+			both: '[Para Code] You got past a failed or repeated step on this site. Before you go on, record what made it work in a short note with write_site_note, or the steps with save_recipe (one short call, for example the input format or the element that worked), so the next agent does not repeat the trouble. Do not include secrets or values that only apply to this run.',
 			none: undefined,
 		});
 	});
@@ -88,7 +88,7 @@ suite('Paradis site note nudges (Q327)', () => {
 			recovered: recovered.content.map(item => item.text.slice(0, 40)),
 		}, {
 			afterError: true,
-			recovered: ['clicked', '[Para Code] That worked after a failed o'],
+			recovered: ['clicked', '[Para Code] You got past a failed or rep'],
 		});
 	});
 });
