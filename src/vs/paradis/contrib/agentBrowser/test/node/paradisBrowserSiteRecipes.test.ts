@@ -11,7 +11,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
-import { IParadisSiteRecipe, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisSiteRecipeSteps } from '../../node/paradisBrowserSiteRecipes.js';
+import { IParadisSiteRecipe, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeSteps } from '../../node/paradisBrowserSiteRecipes.js';
 
 const TOKEN = 'pane-token';
 const META = { date: new Date(2026, 9, 10, 12), agent: 'claude' as const };
@@ -101,12 +101,14 @@ suite('Paradis site recipes (E3)', () => {
 			second,
 			descriptions: listed.map(item => item.description),
 			hint: paradisFormatSiteRecipesHint('https://shop.example', listed),
+			list: paradisFormatSiteRecipesList('https://shop.example', [{ ...listed[0], description: 'Open the export page.', agent: 'codex', doneWhen: { text: 'Export' } }]),
 			otherRepo: await store.list('/other', 'https://shop.example'),
 		}, {
 			first: false,
 			second: true,
 			descriptions: ['new'],
 			hint: '[Saved recipes for https://shop.example] export (params: month). Run one with run_recipe instead of repeating its steps; list_recipes shows what each does.',
+			list: 'Recipes for https://shop.example in this repository:\n- export (2026-10-10, codex): Open the export page. Params: month. 1 step(s), done when {"text":"Export"}.',
 			otherRepo: [],
 		});
 	});

@@ -275,7 +275,8 @@ export function paradisFormatSiteRecipesList(origin: string, recipes: readonly I
 	}
 	return [`Recipes for ${origin} in this repository:`, ...recipes.map(recipe => {
 		const params = recipe.params.map(param => `${param.name}${param.description ? ` (${param.description})` : ''}`).join(', ');
-		return `- ${recipe.name} (${recipe.date}${recipe.agent ? `, ${recipe.agent}` : ''}${recipe.commit ? `, commit ${recipe.commit}` : ''}): ${recipe.description ?? '(no description)'}${params ? `. Params: ${params}` : ''}. ${recipe.steps.length} step(s)${recipe.doneWhen ? `, done when ${JSON.stringify(recipe.doneWhen)}` : ''}.`;
+		const description = (recipe.description ?? '(no description)').replace(/[.\s]+$/, '');
+		return `- ${recipe.name} (${recipe.date}${recipe.agent ? `, ${recipe.agent}` : ''}${recipe.commit ? `, commit ${recipe.commit}` : ''}): ${description}.${params ? ` Params: ${params}.` : ''} ${recipe.steps.length} step(s)${recipe.doneWhen ? `, done when ${JSON.stringify(recipe.doneWhen)}` : ''}.`;
 	})].join('\n');
 }
 
