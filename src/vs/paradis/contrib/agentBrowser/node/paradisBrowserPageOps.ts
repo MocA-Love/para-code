@@ -17,7 +17,7 @@
 // 毎回確かめる。
 
 import { createHash } from 'crypto';
-import { IParadisCdpInputDispatchResult, IParadisExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPageScriptOwner, IParadisCdpInputDispatchResult, IParadisExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisHighlightRect,
@@ -84,6 +84,11 @@ export interface IParadisPageOpsHost {
 	dispatchInput(token: string, binding: IParadisPageOpsBinding, method: string, paramsJson: string): Promise<IParadisCdpInputDispatchResult>;
 	/** エージェントのネットワークの制限。有効でなければ undefined。 */
 	networkFilter(): { isUriAllowed(url: string): boolean } | undefined;
+	/**
+	 * スクリプトを置いたペインの名札・印・色と指紋（利用者に見せる帯と一覧のため）。トークンは含めない。
+	 * 分からなければ undefined。
+	 */
+	scriptOwner?(token: string): IParadisAgentPageScriptOwner | undefined;
 }
 
 type ToolResult = unknown;
@@ -699,7 +704,8 @@ export class ParadisBrowserPageOps {
 		if (!request.ok) {
 			return error(request.error);
 		}
-		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, JSON.stringify(request.value)]);
+		const owner = this.host.scriptOwner?.(call.token);
+		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, JSON.stringify(request.value), ...(owner ? [owner] : [])]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}
