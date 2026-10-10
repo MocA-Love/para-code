@@ -2788,6 +2788,16 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 書く・消すたびにファイルを読み直してから書き戻す。ステーブルとベータが同時に動いていても、互いのメモを消さない（同じ瞬間の書き込みは後勝ち）
 - いつ書くかは道具の説明で促す（Q326 A）。作業の終わりに、手間取って分かったことを 1〜2 文で残し、秘密やその回だけの値は書かない
 
+## 内蔵ブラウザのスナップショットの差分（agentBrowser、2026-10-10、E2・Q303）
+
+設定 `paradis.agentBrowser.snapshotDiff`（既定オフ）。エージェントの take_snapshot を、同じタブの 2 回目からは前回との差分（消えた・変わった・増えた要素、uid 付き）で返す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSnapshotDiff.ts`、控えは `paradisDevtoolsMcpProxy.ts` が子プロセスの台帳のキー（タブ）ごとに持つ。
+
+- 全体を返すのは、初回・別の文書（根の uid が違う）・子プロセスか世代が違う（uid の数え直し）・10 分を過ぎた・差分が全体の半分を超える、のどれか。`full: true` でも全体
+- 差分にするのは素の take_snapshot だけ。`root`・`filePath`・`verbose`・`offset` の呼び出しは今までどおりで、控えも変えない。Para Code が中で使う take_snapshot（観測など）も差分にしない
+- MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
+- tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
+- 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない
+
 ## 今後の方針候補（未確定、要議論）
 
 - 優先実装ターゲットの選定（機能1〜3のうちfork版でしか解決できない部分から着手すべきか）

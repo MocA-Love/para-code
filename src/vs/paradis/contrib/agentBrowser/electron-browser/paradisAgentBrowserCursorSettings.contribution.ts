@@ -62,7 +62,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.agentBrowser.snapshotDiff', "（試験的）エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。すべてが効くのは、オンにした後に起動したエージェントからです。")
+			markdownDescription: localize('paradis.agentBrowser.snapshotDiff', "（試験的）エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。")
 		}
 	}
 });

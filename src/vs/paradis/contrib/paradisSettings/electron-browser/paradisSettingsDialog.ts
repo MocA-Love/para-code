@@ -825,7 +825,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.snapshotDiff', "（試験的）ページの読み取りを前回との差分にする"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。"),
 		keywords: 'agent browser experimental snapshot diff changes',
 	},
 	{
