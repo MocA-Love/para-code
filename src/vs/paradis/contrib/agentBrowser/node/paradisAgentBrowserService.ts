@@ -85,7 +85,7 @@ import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, pa
 import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
-import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
+import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
@@ -3094,6 +3094,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _serverInstructions(): string {
 		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
 		const parts: string[] = [PARADIS_BROWSER_MCP_INSTRUCTIONS];
+		// サイトメモ（E4）・サイトの手順（E3）の設定がオンなら、作業の終わりに残すよう 1 文足す（Q327 A。オフなら足さない）
+		const siteMemory = paradisSiteMemoryInstructions({ notes: this._siteNotesEnabled?.() === true, recipes: this._siteRecipesEnabled?.() === true });
+		if (siteMemory !== undefined) {
+			parts.push(siteMemory);
+		}
 		for (const provider of this._allToolProviders()) {
 			try {
 				const text = provider.instructions?.();
