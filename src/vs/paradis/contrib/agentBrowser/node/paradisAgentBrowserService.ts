@@ -4548,7 +4548,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペインのスペース（メモを分ける鍵）。手元のペインはスペースの最初のフォルダ、接続先のペインは接続先の名前。
 	 * 分からなければ undefined（どのリポジトリのメモか決められないので、書きも添えもしない）。
 	 */
-	private async _siteNoteSpace(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
+	private async _siteNoteSpace(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
 		const token = ingressLease.token;
 		const remote = this._paneRemoteAuthorityOf(token);
 		if (remote !== undefined) {
@@ -4561,19 +4561,19 @@ export class ParadisAgentBrowserService extends Disposable {
 			failureLabel: 'site-notes',
 			failureMessage: 'Para Code could not resolve the folders of this terminal pane.',
 			timeoutMs: 4000,
-		}).catch(() => undefined);
+		}, signal).catch(() => undefined);
 		const folder = call?.ok && Array.isArray(call.value) ? call.value.find((value): value is string => typeof value === 'string' && isAbsolute(value)) : undefined;
 		return folder !== undefined ? { key: folder, folder } : undefined;
 	}
 
 	/** ヒントを添えるときの {@link _siteNoteSpace}。ペインごとに少しの間控える（分からなかったときは控えない）。 */
-	private _siteNoteSpaceForHints(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
+	private _siteNoteSpaceForHints(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
 		const token = ingressLease.token;
 		const cached = this._siteNoteSpaces.get(token);
 		if (cached !== undefined && Date.now() - cached.at <= PARADIS_SITE_NOTE_SPACE_CACHE_MS) {
 			return cached.space;
 		}
-		const entry = { space: this._siteNoteSpace(ingressLease), at: Date.now() };
+		const entry = { space: this._siteNoteSpace(ingressLease, signal), at: Date.now() };
 		this._siteNoteSpaces.set(token, entry);
 		const forgetFailure = () => {
 			if (this._siteNoteSpaces.get(token) === entry) {
@@ -4582,6 +4582,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 		void entry.space.then(value => value === undefined ? forgetFailure() : undefined, forgetFailure);
 		return entry.space;
+	}
+
+	/** 書く・消す道具の {@link _siteNoteSpace}。毎回窓に聞き、分かったスペースはヒントの控えにも入れる。 */
+	private async _siteNoteSpaceFresh(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
+		const space = await this._siteNoteSpace(ingressLease, signal);
+		if (space !== undefined) {
+			this._siteNoteSpaces.set(ingressLease.token, { space: Promise.resolve(space), at: Date.now() });
+		}
+		return space;
 	}
 
 	/**
@@ -4620,7 +4629,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (origin === undefined) {
 				return result;
 			}
-			const space = await this._siteNoteSpaceForHints(ingressLease);
+			const space = await this._siteNoteSpaceForHints(ingressLease, signal);
 			if (space === undefined) {
 				return result;
 			}
@@ -4677,7 +4686,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 開いているページの文が、別のサイトのメモを書き換えさせないように（evil.example から bank.example へ）
 			return this._toolError(`${name} only changes notes of a site open in this pane's tabs, and ${origin} is not. Open the site first, or leave the note while you are on it.`);
 		}
-		const space = await this._siteNoteSpace(ingressLease);
+		const space = await this._siteNoteSpaceFresh(ingressLease, signal);
 		this._requireIngressLease(ingressLease);
 		if (space === undefined) {
 			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so site notes are not available here.`);
@@ -4752,7 +4761,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 開いているページの文が、別のサイトの手順を書き換えさせないように
 			return this._toolError(`${name} only changes recipes of a site open in this pane's tabs, and ${origin} is not. Open the site first.`);
 		}
-		const space = await this._siteNoteSpace(ingressLease);
+		const space = await this._siteNoteSpaceFresh(ingressLease, signal);
 		this._requireIngressLease(ingressLease);
 		if (space === undefined) {
 			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so recipes are not available here.`);

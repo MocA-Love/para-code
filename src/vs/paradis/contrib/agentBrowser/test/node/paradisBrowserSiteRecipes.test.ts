@@ -62,8 +62,11 @@ suite('Paradis site recipes (E3)', () => {
 			otherSite: errorOf(check({ name: 'x', steps: [{ tool: 'navigate_page', args: { url: 'https://example.com.evil.test/' } }] }, META)),
 			paramOrigin: errorOf(check({ name: 'x', params: ['host'], steps: [{ tool: 'navigate_page', args: { url: 'https://{{host}}/' } }] }, META)) !== undefined,
 			sameSite: errorOf(check({ name: 'x', params: ['id'], steps: [{ tool: 'navigate_page', args: { url: `${SITE}/orders/{{id}}` } }] }, META)),
-			quotedParam: errorOf(check({ name: 'x', params: ['q'], steps: [{ expect: { predicate: `() => location.hash === '#{{q}}'` } }] }, META)),
-			expressionParam: errorOf(check({ name: 'x', params: ['q'], steps: [{ expect: { predicate: '() => location.hash.endsWith({{q}})' } }] }, META)),
+			expectPredicate: errorOf(check({ name: 'x', steps: [{ expect: { predicate: '() => true' } }] }, META)),
+			repeatPredicate: errorOf(check({ name: 'x', steps: [{ repeat_until: { predicate: '() => true' }, steps: [{ sleep_ms: 1 }] }] }, META)) !== undefined,
+			doneWhenPredicate: errorOf(check({ name: 'x', steps: [{ sleep_ms: 1 }], done_when: { predicate: '() => true' } }, META)) !== undefined,
+			waitPredicate: errorOf(check({ name: 'x', steps: [{ tool: 'wait_until', args: { predicate: '() => true' } }] }, META)),
+			plainConditions: errorOf(check({ name: 'x', steps: [{ expect: { url_includes: '/done' } }, { tool: 'wait_until', args: { text: 'Done' } }], done_when: { visible: { role: 'heading', name: 'Done' } } }, META)),
 			// パスワード欄の判定が拾えない例（欄の名前が手順に無い、または違う名前の欄）。分かっている抜けとして残す
 			knownMisses: [
 				[{ tool: 'fill', args: { uid: '1_4', value: 'hunter2' } }],
@@ -85,19 +88,21 @@ suite('Paradis site recipes (E3)', () => {
 			otherSite: 'save_recipe: navigate_page in a recipe for https://example.com can only open pages of https://example.com (got "https://example.com.evil.test/").',
 			paramOrigin: true,
 			sameSite: undefined,
-			quotedParam: 'save_recipe: {{q}} is inside a \'...\' string in the predicate of expect. A parameter is inserted into a script as a quoted string value, so write it where a value goes, outside quotes, templates and comments.',
-			expressionParam: undefined,
+			expectPredicate: 'save_recipe: "predicate" in expect (or done_when) cannot be saved in a recipe (a later agent runs the recipe without reading it). Use text, text_gone, visible, gone, disabled, enabled or url_includes.',
+			repeatPredicate: true,
+			doneWhenPredicate: true,
+			waitPredicate: 'save_recipe: wait_until with "predicate" cannot be saved in a recipe (a later agent runs the recipe without reading it). Wait for text, a locator or network_idle_ms instead.',
+			plainConditions: undefined,
 			knownMisses: [true, true, true, true],
 		});
 	});
 
-	test('run_recipe fills params as plain text, as quoted values inside scripts, keeps $ literal, and checks stored recipes again', () => {
+	test('run_recipe fills params as plain text, keeps $ literal, and checks stored recipes again', () => {
 		const recipe: IParadisSiteRecipe = {
 			name: 'search', params: [{ name: 'q' }], date: '2026-10-10', doneWhen: { text: 'Results for {{q}}' },
 			steps: [
 				{ tool: 'fill_by', args: { role: 'searchbox', value: '{{q}}' } },
-				{ tool: 'wait_until', args: { predicate: '() => document.title.includes({{q}})' } },
-				{ expect: { predicate: '() => location.search.includes({{q}})' } },
+				{ tool: 'wait_until', args: { text: '{{q}}' } },
 				{ repeat_until: { text: '{{q}}' }, steps: [{ tool: 'click_by', args: { text: 'More {{q}}' } }], max: 2 },
 			],
 		};
@@ -105,21 +110,22 @@ suite('Paradis site recipes (E3)', () => {
 			filled: paradisSiteRecipeSteps(recipe, { q: `a"b $1.text` }, SITE),
 			missing: paradisSiteRecipeSteps(recipe, {}, SITE),
 			// ファイルを直接書き換えた手順も、動かす前に同じ決まりで断る
-			stored: paradisSiteRecipeSteps({ ...recipe, params: [], steps: [{ tool: 'evaluate_script', args: { function: '() => 1' } }] }, {}, SITE).ok,
-			leaving: paradisSiteRecipeSteps({ ...recipe, params: [{ name: 'path' }], doneWhen: undefined, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/{{path}}` } }] }, { path: 'a' }, SITE),
+			storedScript: paradisSiteRecipeSteps({ ...recipe, params: [], steps: [{ tool: 'evaluate_script', args: { function: '() => 1' } }] }, {}, SITE).ok,
+			storedPredicate: paradisSiteRecipeSteps({ ...recipe, params: [], doneWhen: { predicate: '() => true' }, steps: [{ sleep_ms: 1 }] }, {}, SITE).ok,
+			sameSite: paradisSiteRecipeSteps({ ...recipe, params: [{ name: 'path' }], doneWhen: undefined, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/{{path}}` } }] }, { path: 'a' }, SITE),
 		}, {
 			filled: {
 				ok: true, steps: [
 					{ tool: 'fill_by', args: { role: 'searchbox', value: 'a"b $$1.text' } },
-					{ tool: 'wait_until', args: { predicate: '() => document.title.includes("a\\"b $$1.text")' } },
-					{ expect: { predicate: '() => location.search.includes("a\\"b $$1.text")' } },
+					{ tool: 'wait_until', args: { text: 'a"b $$1.text' } },
 					{ repeat_until: { text: 'a"b $$1.text' }, steps: [{ tool: 'click_by', args: { text: 'More a"b $$1.text' } }], max: 2 },
 					{ expect: { text: 'Results for a"b $$1.text' } },
 				],
 			},
 			missing: { ok: false, error: 'run_recipe: the recipe "search" needs "q" in "params".' },
-			stored: false,
-			leaving: { ok: true, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/a` } }] },
+			storedScript: false,
+			storedPredicate: false,
+			sameSite: { ok: true, steps: [{ tool: 'navigate_page', args: { url: `${SITE}/a` } }] },
 		});
 	});
 
