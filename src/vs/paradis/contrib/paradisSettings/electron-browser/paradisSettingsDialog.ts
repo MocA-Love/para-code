@@ -821,6 +821,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.snapshotDiff',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.snapshotDiff', "（試験的）ページの読み取りを前回との差分にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。"),
+		keywords: 'agent browser experimental snapshot diff changes',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.path',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.downloadsPath', "ダウンロードの保存先"),
