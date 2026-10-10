@@ -135,6 +135,27 @@ suite('Paradis site notes (E4)', () => {
 		});
 	});
 
+	test('the MCP instructions get one sentence about leaving notes or recipes only while a setting is on', () => {
+		const instructions = (notes: boolean, recipes: boolean) => (Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
+			_allToolProviders: () => [],
+			_siteNotesEnabled: () => notes,
+			_siteRecipesEnabled: () => recipes,
+		}) as unknown as { _serverInstructions(): string })._serverInstructions();
+		const plain = instructions(false, false);
+		const added = (text: string) => text.startsWith(plain) ? text.slice(plain.length) : text;
+		assert.deepStrictEqual({
+			off: plain.includes('write_site_note') || plain.includes('save_recipe'),
+			notes: added(instructions(true, false)),
+			recipes: added(instructions(false, true)),
+			both: added(instructions(true, true)),
+		}, {
+			off: false,
+			notes: '\n\nWhen you finish a task on a website, leave what took you extra steps to find out with write_site_note, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
+			recipes: '\n\nWhen you finish a task on a website, leave a sequence you would repeat with save_recipe, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
+			both: '\n\nWhen you finish a task on a website, leave what took you extra steps to find out with write_site_note, and a sequence you would repeat with save_recipe, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
+		});
+	});
+
 	test('two stores on the same file (stable and beta) keep each other\'s notes', async () => {
 		const file = join(folder, 'notes.json');
 		const stable = new ParadisSiteNotesStore(file);
