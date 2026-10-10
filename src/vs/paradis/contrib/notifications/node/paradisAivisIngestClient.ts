@@ -71,6 +71,10 @@ const HELLO_TIMEOUT_MS = 10_000;
 const FALLBACK_RETRY_MS = 5 * 60_000;
 /** 版の確認と音量の表の取り直しの間隔。 */
 const VERSION_CHECK_INTERVAL_MS = 10 * 60_000;
+/** 版の確認が時間切れになったとき、次の定期確認を待たずに確かめ直すまで（失敗が続くたびに倍にする）。 */
+const VERSION_RETRY_MS = 30_000;
+/** 確かめ直しの間隔の上限。負荷が高い最中に node を起こし続けない。 */
+const VERSION_RETRY_MAX_MS = 10 * 60_000;
 /** hold を延長する間隔（aivis-mcp 側の期限は 60 秒）。 */
 export const PARADIS_INGEST_HOLD_RENEW_MS = 20_000;
 /** worker の `failed` がこれだけ続いたら afplay に任せる。 */
@@ -122,8 +126,11 @@ export interface IParadisIngestChild {
 }
 
 export type ParadisIngestSpawner = (args: readonly string[], env: NodeJS.ProcessEnv) => IParadisIngestChild;
-/** `aivis-mcp --version` の出力。入っていなければ undefined。 */
-export type ParadisAivisVersionProbe = (env: NodeJS.ProcessEnv) => Promise<string | undefined>;
+/**
+ * `aivis-mcp --version` の出力。時間切れ（負荷が高いだけのことがある）は undefined、
+ * それ以外の失敗（見つからない・実行できない・異常終了）は null。
+ */
+export type ParadisAivisVersionProbe = (env: NodeJS.ProcessEnv) => Promise<string | undefined | null>;
 /** worker の lock が生きているか。確かめられないときは undefined（afplay へ切り替えない）。 */
 export type ParadisWorkerLockProbe = (env: NodeJS.ProcessEnv) => Promise<boolean | undefined>;
 /** `aivis --mute` 中か。確かめられないときは undefined（ミュートしていないとみなす）。 */
@@ -397,6 +404,9 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 	private degradedUntil = 0;
 	private installedVersion: readonly [number, number, number] | undefined;
 	private versionChecked = false;
+	private versionRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	private versionRetryDelayMs = VERSION_RETRY_MS;
+	private versionProbeFailing = false;
 	private readonly versionCheckedWaiters: Array<() => void> = [];
 	private readonly streams = new Map<string, ParadisIngestStream>();
 	/** 子が落ちたときに列に入っていてまだ鳴っていなかった件。次の子が名乗ったら withdraw を送る。 */
@@ -434,7 +444,10 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		this.probePlayLock = options.probePlayLock ?? (env => probeAivisRedisKey(env, PLAY_LOCK_KEY));
 		this.now = options.now ?? Date.now;
 		const versionTimer = setInterval(() => void this.checkVersion(), VERSION_CHECK_INTERVAL_MS);
-		this._register(toDisposable(() => clearInterval(versionTimer)));
+		this._register(toDisposable(() => {
+			clearInterval(versionTimer);
+			clearTimeout(this.versionRetryTimer);
+		}));
 	}
 
 	/** await の後に読み直す（TypeScript の絞り込みを効かせない）。 */
@@ -786,13 +799,18 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 			this.setState('checking');
 		}
 		const env = await this.resolveEnv();
-		const output = await this.probeVersion(env).catch(() => undefined);
+		const output = await this.probeVersion(env).catch(() => null);
 		if (this.isDisposed()) {
 			return;
 		}
-		const version = output === undefined ? undefined : paradisParseAivisVersion(output);
+		// 時間切れ（undefined）だけは一時的な失敗とみなす。負荷が高いだけで手元の aivis-mcp を「無い」と
+		// 扱わないよう前回の版を残して、少し後に確かめ直す。ほかの失敗（null）と読めない出力は「無い」
+		const timedOut = output === undefined;
+		this.noteVersionProbe(timedOut);
+		const version = timedOut ? this.installedVersion : output === null ? undefined : paradisParseAivisVersion(output);
 		this.installedVersion = version;
-		if (!this.versionChecked) {
+		// 起動直後の確認が時間切れなら、待つ側（hasLocalAivis）は自分の上限まで確かめ直しを待つ
+		if (!this.versionChecked && !timedOut) {
 			this.versionChecked = true;
 			for (const waiter of this.versionCheckedWaiters.splice(0)) {
 				waiter();
@@ -830,6 +848,31 @@ export class ParadisAivisIngestClient extends Disposable implements IParadisAivi
 		if (child?.readyAt !== undefined) {
 			void this.send(child, paradisEncodeIngestControl({ type: 'gain?', requestId: `gain-${++this.pingCounter}` }), 'control');
 		}
+	}
+
+	/** 版の確認が時間切れなら、定期確認を待たずに確かめ直す。間隔は失敗が続くたびに倍にし、上限で止める。 */
+	private noteVersionProbe(timedOut: boolean): void {
+		if (!timedOut) {
+			this.versionProbeFailing = false;
+			this.versionRetryDelayMs = VERSION_RETRY_MS;
+			clearTimeout(this.versionRetryTimer);
+			this.versionRetryTimer = undefined;
+			return;
+		}
+		if (this.versionRetryTimer !== undefined) {
+			return;
+		}
+		const delay = this.versionRetryDelayMs;
+		this.versionRetryDelayMs = Math.min(delay * 2, VERSION_RETRY_MAX_MS);
+		if (!this.versionProbeFailing) {
+			this.versionProbeFailing = true;
+			const kept = this.installedVersion ? this.installedVersion.join('.') : 'none';
+			this.options.logService.info(`[ParadisAivisIngest] the aivis-mcp version check timed out; keeping ${kept} and checking again in ${delay / 1000}s`);
+		}
+		this.versionRetryTimer = setTimeout(() => {
+			this.versionRetryTimer = undefined;
+			void this.checkVersion();
+		}, delay);
 	}
 
 	/** 版が変わった。書きかけの流れが空くまで（上限付きで）待ってから、新しい子を起こす。 */
@@ -1512,15 +1555,25 @@ function spawnAivisIngest(args: readonly string[], env: NodeJS.ProcessEnv): IPar
 	};
 }
 
-function probeAivisVersion(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+function probeAivisVersion(env: NodeJS.ProcessEnv): Promise<string | undefined | null> {
 	return new Promise(resolve => {
 		const isWindows = process.platform === 'win32';
 		const command = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'aivis-mcp';
 		const args = isWindows ? ['/d', '/s', '/c', 'aivis-mcp --version'] : ['--version'];
-		execFile(command, args, { env, cwd: homedir(), timeout: 3_000, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-			resolve(error ? undefined : stdout);
-		});
+		execFile(command, args, { env, cwd: homedir(), timeout: 3_000, windowsHide: true, encoding: 'utf8' }, (error, stdout) => resolve(paradisAivisVersionProbeResult(error, stdout)));
 	});
+}
+
+/**
+ * `aivis-mcp --version` の終わり方を {@link ParadisAivisVersionProbe} の値に分ける。`execFile` は時間切れで
+ * SIGTERM を送り、`killed` を立てる。それだけを undefined（確かめ直す）にし、ほかの失敗（127・126・EACCES・
+ * 異常終了）は null にする。正常に終わったときは出力をそのまま返す（読めなければ呼び出し側で「無い」にする）。
+ */
+export function paradisAivisVersionProbeResult(error: { readonly killed?: boolean; readonly signal?: string | null; readonly code?: number | string | null } | null, stdout: string): string | undefined | null {
+	if (!error) {
+		return stdout;
+	}
+	return error.killed === true || error.signal === 'SIGTERM' ? undefined : null;
 }
 
 /** aivis-mcp と同じ順（REDIS_URL → ~/.config/aivis-mcp/config.json → 既定）で Redis の URL を決める。 */

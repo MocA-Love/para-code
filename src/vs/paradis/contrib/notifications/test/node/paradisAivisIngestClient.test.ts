@@ -12,7 +12,7 @@ import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { EventEmitter } from 'events';
-import { IParadisIngestChild, PARADIS_INGEST_WRITE_STALL_MS, ParadisAivisIngestClient, paradisOnIngestChildDone } from '../../node/paradisAivisIngestClient.js';
+import { IParadisIngestChild, PARADIS_INGEST_WRITE_STALL_MS, ParadisAivisIngestClient, paradisAivisVersionProbeResult, paradisOnIngestChildDone } from '../../node/paradisAivisIngestClient.js';
 import { paradisEncodeIngestAudio, paradisEncodeIngestControl, ParadisIngestFrameDecoder } from '../../node/paradisAivisIngestFrames.js';
 
 /** 親が書いた枠を読む（テスト側。音声の枠も読む）。 */
@@ -128,12 +128,16 @@ suite('ParadisAivisIngestClient', () => {
 	function createClient(options: { version?: string; lock?: 'alive' | 'gone' | 'unknown'; muted?: boolean } = {}) {
 		const children: FakeIngestChild[] = [];
 		const spawned: string[][] = [];
-		let version = options.version ?? 'aivis-mcp v2.5.0\n';
+		let version: string | undefined | null = options.version ?? 'aivis-mcp v2.5.0\n';
+		const probeTimes: number[] = [];
 		const client = store.add(new ParadisAivisIngestClient({
 			getEnv: async () => ({}),
 			preludeDirs: () => ['/sounds'],
 			logService: new NullLogService(),
-			probeVersion: async () => version,
+			probeVersion: async () => {
+				probeTimes.push(Date.now());
+				return version;
+			},
 			probeWorkerLock: async () => options.lock === 'alive' ? true : options.lock === 'unknown' ? undefined : false,
 			probeMute: async () => options.muted,
 			spawnIngest: args => {
@@ -144,7 +148,7 @@ suite('ParadisAivisIngestClient', () => {
 			},
 			now: () => Date.now(),
 		}));
-		return { client, children, spawned, setVersion: (value: string) => { version = value; } };
+		return { client, children, spawned, setVersion: (value: string | undefined | null) => { version = value; }, probes: () => probeTimes.length, probeTimes };
 	}
 
 	async function startReady(context: ReturnType<typeof createClient>): Promise<FakeIngestChild> {
@@ -807,5 +811,96 @@ suite('ParadisAivisIngestClient', () => {
 			// 2.5.0: queued の前の失敗は積めていない
 			{ version: '2.5.0', withdraws: 0, plain: false, stillQueued: false, withdrawn: false },
 		]);
+	});
+
+	test('keeps the last version when the version check times out under load and checks again in 30 seconds', async () => {
+		const context = createClient();
+		await startReady(context);
+		// 負荷が高く `aivis-mcp --version` が時間切れになった
+		context.setVersion(undefined);
+		await clock.tickAsync(10 * 60_000);
+		const afterFailure = { probes: context.probes(), hasLocal: await context.client.hasLocalAivis(0), state: context.client.state, spawned: context.children.length };
+		context.setVersion('aivis-mcp v2.5.0\n');
+		await clock.tickAsync(30_000);
+		const afterRetry = { probes: context.probes(), hasLocal: await context.client.hasLocalAivis(0), state: context.client.state, spawned: context.children.length };
+		await clock.tickAsync(60_000);
+		assert.deepStrictEqual({ afterFailure, afterRetry, retriesStopped: context.probes() === afterRetry.probes }, {
+			afterFailure: { probes: 2, hasLocal: true, state: 'ready', spawned: 1 },
+			afterRetry: { probes: 3, hasLocal: true, state: 'ready', spawned: 1 },
+			retriesStopped: true,
+		});
+	});
+
+	test('backs off the early checks while the version check keeps timing out, up to 10 minutes apart', async () => {
+		const context = createClient();
+		await startReady(context);
+		context.setVersion(undefined);
+		await clock.tickAsync(50 * 60_000);
+		// 10 分ごとの定期確認（600・1200…）の間に、30 秒から倍に伸ばした確かめ直しが入り、600 秒で頭打ちになる
+		assert.deepStrictEqual({ seconds: context.probeTimes.map(time => time / 1000), hasLocal: await context.client.hasLocalAivis(0) }, {
+			seconds: [0, 600, 630, 690, 810, 1050, 1200, 1530, 1800, 2130, 2400, 2730, 3000],
+			hasLocal: true,
+		});
+	});
+
+	test('treats unreadable version output as no aivis-mcp and does not check again early', async () => {
+		const context = createClient();
+		await startReady(context);
+		context.setVersion('garbled output');
+		await clock.tickAsync(10 * 60_000);
+		await clock.tickAsync(90_000);
+		assert.deepStrictEqual({ probes: context.probes(), hasLocal: await context.client.hasLocalAivis(0) }, { probes: 2, hasLocal: false });
+	});
+
+	test('keeps the last version only when the version check timed out, not for 127, EACCES or unreadable output', async () => {
+		const outcomes = {
+			timedOut: paradisAivisVersionProbeResult({ killed: true, signal: 'SIGTERM' }, ''),
+			notFound: paradisAivisVersionProbeResult(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }), ''),
+			exit127: paradisAivisVersionProbeResult(Object.assign(new Error('exit 127'), { code: 127, killed: false, signal: null }), ''),
+			notPermitted: paradisAivisVersionProbeResult(Object.assign(new Error('EACCES'), { code: 'EACCES' }), ''),
+			unreadable: paradisAivisVersionProbeResult(null, 'garbled output'),
+		};
+		const hasLocal: Record<string, boolean> = {};
+		for (const [name, outcome] of Object.entries(outcomes)) {
+			const context = createClient();
+			await startReady(context);
+			context.setVersion(outcome);
+			await clock.tickAsync(10 * 60_000);
+			hasLocal[name] = await context.client.hasLocalAivis(0);
+		}
+		assert.deepStrictEqual({ outcomes, hasLocal }, {
+			outcomes: { timedOut: undefined, notFound: null, exit127: null, notPermitted: null, unreadable: 'garbled output' },
+			hasLocal: { timedOut: true, notFound: false, exit127: false, notPermitted: false, unreadable: false },
+		});
+	});
+
+	test('treats aivis-mcp as gone when the version check fails without timing out', async () => {
+		const context = createClient();
+		await startReady(context);
+		context.setVersion(null);
+		await clock.tickAsync(10 * 60_000);
+		await clock.tickAsync(60_000);
+		assert.deepStrictEqual({ probes: context.probes(), hasLocal: await context.client.hasLocalAivis(0) }, { probes: 2, hasLocal: false });
+	});
+
+	test('starts --ingest once a version check that timed out at startup succeeds on the retry', async () => {
+		const context = createClient();
+		context.setVersion(undefined);
+		context.client.start();
+		await clock.tickAsync(0);
+		// 起動直後の確認が時間切れなら、待つ側は確かめ直しを自分の上限まで待ってから「無い」と答える
+		let answered: boolean | undefined;
+		void context.client.hasLocalAivis(5_000).then(value => { answered = value; });
+		await clock.tickAsync(4_999);
+		const beforeLimit = answered;
+		await clock.tickAsync(1);
+		const atStart = { state: context.client.state, spawned: context.children.length, beforeLimit, atLimit: answered };
+		context.setVersion('aivis-mcp v2.5.0\n');
+		await clock.tickAsync(25_000);
+		assert.deepStrictEqual({ atStart, spawned: context.children.length, hasLocal: await context.client.hasLocalAivis(0) }, {
+			atStart: { state: 'unsupported', spawned: 0, beforeLimit: undefined, atLimit: false },
+			spawned: 1,
+			hasLocal: true,
+		});
 	});
 });
