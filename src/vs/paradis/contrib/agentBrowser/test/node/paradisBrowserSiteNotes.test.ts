@@ -150,9 +150,9 @@ suite('Paradis site notes (E4)', () => {
 			both: added(instructions(true, true)),
 		}, {
 			off: false,
-			notes: '\n\nWhen you finish a task on a website, leave what took you extra steps to find out with write_site_note, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
-			recipes: '\n\nWhen you finish a task on a website, leave a sequence you would repeat with save_recipe, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
-			both: '\n\nWhen you finish a task on a website, leave what took you extra steps to find out with write_site_note, and a sequence you would repeat with save_recipe, in a sentence or two for later agents in this repository; never include secrets or values that only apply to this run.',
+			notes: '\n\nBefore you finish a task on a website, record what made it work in one short write_site_note call, so the next agent in this repository does not repeat the trouble; never include secrets or values that only apply to this run.',
+			recipes: '\n\nBefore you finish a task on a website, record a sequence you would repeat with save_recipe, so the next agent in this repository does not repeat the trouble; never include secrets or values that only apply to this run.',
+			both: '\n\nBefore you finish a task on a website, record what made it work in one short write_site_note call, and a sequence you would repeat with save_recipe, so the next agent in this repository does not repeat the trouble; never include secrets or values that only apply to this run.',
 		});
 	});
 
