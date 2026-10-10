@@ -705,7 +705,11 @@ export class ParadisBrowserPageOps {
 			return error(request.error);
 		}
 		const owner = this.host.scriptOwner?.(call.token);
-		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, JSON.stringify(request.value), ...(owner ? [owner] : [])]);
+		// electron-main も同じ関数で読み直すので、補った名前（本文の先頭）ではなく受け取った名前だけを渡す。
+		// 補った名前を渡すと、main では名前があるものとして読まれ「名前なし」の印が消える。
+		const { source, label, runNow, named } = request.value;
+		const requestJson = JSON.stringify({ source, label: named ? label : undefined, runNow });
+		const result = await this.host.callMain<IParadisInitScriptsResult>('addExactViewInitScript', [binding.exactView, paradisPageOpsOwnerKey(call.token), binding.generation, requestJson, ...(owner ? [owner] : [])]);
 		if (!this.isCurrent(call, binding)) {
 			return error(BINDING_CHANGED);
 		}

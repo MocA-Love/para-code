@@ -9,7 +9,8 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createHash } from 'crypto';
 import { URI } from '../../../../../base/common/uri.js';
-import { IParadisAgentPageScriptOwner, IParadisCdpInputDispatchResult, paradisAgentPageScriptUri, paradisPaneFingerprint, paradisParseAgentPageScriptUri } from '../../common/paradisAgentBrowser.js';
+import { IParadisAgentPageScriptOwner, IParadisCdpInputDispatchResult, paradisAgentPageScriptUri, paradisPaneFingerprint, paradisParseAgentPageScriptUri, paradisParsePageScriptOwner } from '../../common/paradisAgentBrowser.js';
+import { paradisParseInitScriptRequest } from '../../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsBinding, IParadisPageOpsCall, IParadisPageOpsHost, ParadisBrowserPageOps, paradisBuildMouseCommands, paradisPageOpsOwnerKey } from '../../node/paradisBrowserPageOps.js';
 import { IParadisResolvedDropTarget } from '../../node/paradisFileDropUpload.js';
 import { PARADIS_MCP_PAGE_OPS_TOOLS, PARADIS_PAGE_OPS_TOOL_NAMES } from '../../node/paradisBrowserPageOpsTools.js';
@@ -277,15 +278,25 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		const empty = await ops.call(createCall(), 'add_init_script', { source: '  ' });
 		const neither = await ops.call(createCall(), 'remove_init_script', {});
 		const removed = await ops.call(createCall(), 'remove_init_script', { id: 's4' });
+		// electron-main が同じ関数で読み直したときに、名前なしの印と持ち主が残ること
+		const mainSees = host.mainCalls.filter(call => call.method === 'addExactViewInitScript').map(call => {
+			const request = paradisParseInitScriptRequest(JSON.parse(call.args[3] as string));
+			return { label: request.ok && request.value.label, named: request.ok && request.value.named, owner: paradisParsePageScriptOwner(call.args[4]) };
+		});
 		assert.deepStrictEqual({
 			calls: host.mainCalls.map(call => [call.method, call.args.slice(1)]),
+			mainSees,
 			reminds: textOf(added).includes('remove_init_script'),
 			errors: [isError(empty), isError(neither), isError(removed)],
 		}, {
 			calls: [
-				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: 'window.__a = 1', label: 'hooks', runNow: false, named: true })]],
-				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: '(() => {})()', label: '(() => {})()', runNow: false, named: false }), { name: 'Claude', mark: 'C', color: '#d97757', pane: paradisPaneFingerprint('pane-token') }]],
+				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: 'window.__a = 1', label: 'hooks', runNow: false })]],
+				['addExactViewInitScript', [paradisPageOpsOwnerKey('pane-token'), 7, JSON.stringify({ source: '(() => {})()', runNow: false }), { name: 'Claude', mark: 'C', color: '#d97757', pane: paradisPaneFingerprint('pane-token') }]],
 				['removeExactViewInitScripts', [paradisPageOpsOwnerKey('pane-token'), 's4']],
+			],
+			mainSees: [
+				{ label: 'hooks', named: true, owner: undefined },
+				{ label: '(() => {})()', named: false, owner: { name: 'Claude', mark: 'C', color: '#d97757', pane: paradisPaneFingerprint('pane-token') } },
 			],
 			reminds: true,
 			errors: [true, true, false],
