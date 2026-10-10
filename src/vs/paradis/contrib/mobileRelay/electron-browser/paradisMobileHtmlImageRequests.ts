@@ -14,8 +14,11 @@
 //   控えから外れていたら（PC を開き直した・ほかの文書を開いた）、ファイルを読み直して同じ中身か確かめてから返す。
 //   中身が変わっていたら `{ error, code: 'stale' }`（アプリは本文から読み直す）、番号が無ければ `{ error, code: 'missing' }`
 
+import type { CancellationToken } from '../../../../base/common/cancellation.js';
+import type { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { localize } from '../../../../nls.js';
+import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, paradisWithCancellableHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { PARADIS_MOBILE_HTML_IMAGE_MAX_COUNT, paradisSplitMobileHtmlImagesSliced } from '../common/paradisMobileHtmlImages.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
@@ -67,10 +70,11 @@ async function tokenOf(text: string): Promise<string> {
 
 /**
  * HTML の本文から画像を抜き、抜いた画像を控える。抜く画像が無ければ `undefined`（本文はそのまま送る）。
- * provider の fs `read` が、アプリが `htmlImages: true` を付けたときだけ呼ぶ。
+ * provider の fs `read` が、アプリが `htmlImages: true` を付けたときだけ呼ぶ。`cancellation` が取り消されたら
+ * （`read` の打ち切り）、手を離した区切りで `CancellationError` を投げて抜ける。
  */
-export async function paradisPrepareMobileHtmlImages(text: string): Promise<{ readonly html: string; readonly token: string; readonly count: number } | undefined> {
-	const split = await paradisSplitMobileHtmlImagesSliced(text);
+export async function paradisPrepareMobileHtmlImages(text: string, cancellation?: CancellationToken): Promise<{ readonly html: string; readonly token: string; readonly count: number } | undefined> {
+	const split = await paradisSplitMobileHtmlImagesSliced(text, cancellation);
 	if (split === undefined) {
 		return undefined;
 	}
@@ -82,6 +86,42 @@ export async function paradisPrepareMobileHtmlImages(text: string): Promise<{ re
 /** HTML のファイルか（拡張子で見る）。 */
 export function paradisIsMobileHtmlPath(path: string): boolean {
 	return /\.html?$/i.test(path);
+}
+
+/**
+ * 控えから外れた後の読み直し。同じ `token` の取り寄せが同時に来ても（アプリは 2 枚ずつ頼む）、読み直しは 1 本に
+ * まとめて結果を分け合う。`undefined` は中身が変わっていた。`read` と同じ時間で打ち切り、打ち切ったら抜き出しも止める。
+ */
+const rereads = new Map<string, Promise<readonly string[] | undefined>>();
+
+function reread(fileService: IFileService, uri: URI, token: string): Promise<readonly string[] | undefined> {
+	const running = rereads.get(token);
+	if (running !== undefined) {
+		return running;
+	}
+	const pending = paradisWithCancellableHostDeadline(async cancellation => {
+		const stat = await fileService.stat(uri);
+		if (stat.isDirectory || (stat.size ?? 0) > PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT) {
+			return undefined;
+		}
+		const content = await fileService.readFile(uri, { length: PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT }, cancellation);
+		const text = content.value.toString();
+		if (await tokenOf(text) !== token) {
+			return undefined;
+		}
+		const split = await paradisSplitMobileHtmlImagesSliced(text, cancellation);
+		if (split === undefined) {
+			return undefined;
+		}
+		remember(token, split.images, text);
+		return split.images;
+	}, PARADIS_MOBILE_FILE_READ_DEADLINE_MS).finally(() => {
+		if (rereads.get(token) === pending) {
+			rereads.delete(token);
+		}
+	});
+	rereads.set(token, pending);
+	return pending;
 }
 
 function staleReply(): object {
@@ -113,24 +153,12 @@ registerParadisMobileRequestHandler('fs', 'htmlImage', {
 				context.reply({ error: 'html image not found', code: 'missing' });
 				return;
 			}
-			const stat = await fileService.stat(uri);
-			if (stat.isDirectory || (stat.size ?? 0) > PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT) {
+			const images = await reread(fileService, uri, token);
+			if (images === undefined) {
 				context.reply(staleReply());
 				return;
 			}
-			const content = await fileService.readFile(uri, { length: PARADIS_MOBILE_HTML_IMAGES_SOURCE_LIMIT });
-			const text = content.value.toString();
-			if (await tokenOf(text) !== token) {
-				context.reply(staleReply());
-				return;
-			}
-			const split = await paradisSplitMobileHtmlImagesSliced(text);
-			if (split === undefined) {
-				context.reply(staleReply());
-				return;
-			}
-			remember(token, split.images, text);
-			send(split.images);
+			send(images);
 		})();
 	},
 });
