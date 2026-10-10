@@ -7,6 +7,7 @@
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import type { CancellationToken } from '../../../../base/common/cancellation.js';
 import { BufferWriter, serialize } from '../../../../base/parts/ipc/common/ipc.js';
+import { isSafeParadisPrintCss, isSafeParadisPrintSvgDataUrl } from './paradisOfficePrint.js';
 import { PARADIS_SPREADSHEET_CHANNEL } from './paradisSpreadsheet.js';
 import { createParadisOfficeError, type ParadisOfficeError, type ParadisOfficeErrorDetails } from './paradisOfficeErrors.js';
 import { PARADIS_OFFICE_SPOOL_CHUNK_BYTES, validateParadisOfficeWritableSpoolReference } from './paradisOfficeSourceBroker.js';
@@ -616,17 +617,43 @@ function validateSearchResults(value: unknown): void {
 function validatePrintBlock(value: unknown, depth: number): void {
 	if (depth > 32) { wireError(); }
 	const block = openRecord(value, ['kind', 'nodeId']); string(block.nodeId);
-	switch (oneOf(block.kind, ['text', 'container', 'object', 'placeholder'] as const)) {
+	switch (oneOf(block.kind, ['text', 'container', 'object', 'placeholder', 'sheetGrid'] as const)) {
 		case 'text': exactKeys(block, ['kind', 'nodeId', 'runs']); validateTextRuns(block.runs); break;
 		case 'container': exactKeys(block, ['kind', 'nodeId', 'role', 'children']); oneOf(block.role, ['section', 'table', 'row', 'cell', 'list'] as const); for (const child of array(block.children)) { validatePrintBlock(child, depth + 1); } break;
 		case 'object': exactKeys(block, ['kind', 'nodeId', 'object']); validateRenderObject(block.object); break;
 		case 'placeholder': exactKeys(block, ['kind', 'nodeId', 'placeholder']); validatePlaceholder(block.placeholder); break;
+		case 'sheetGrid': exactKeys(block, ['kind', 'nodeId', 'grid']); validatePrintSheetGrid(block.grid); break;
+	}
+}
+
+function validatePrintSheetGrid(value: unknown): void {
+	const grid = record(value, ['columns', 'rows', 'cells', 'drawings', 'gridLines', 'scale'], ['titleRows', 'titleColumns', 'horizontalCentered', 'verticalCentered']);
+	const columns = array(grid.columns, 16_384); const rows = array(grid.rows, 1_048_576);
+	if (columns.length > 16_384 || rows.length > 1_048_576) { wireError(); }
+	for (const size of [...columns, ...rows]) { if (finiteNumber(size) < 0 || (size as number) > 14_400) { wireError(); } }
+	boolean(grid.gridLines); const scale = finiteNumber(grid.scale); if (scale <= 0 || scale > 4) { wireError(); }
+	if (grid.titleRows !== undefined && nonNegativeInteger(grid.titleRows) > rows.length) { wireError(); } if (grid.titleColumns !== undefined && nonNegativeInteger(grid.titleColumns) > columns.length) { wireError(); }
+	if (grid.horizontalCentered !== undefined) { boolean(grid.horizontalCentered); } if (grid.verticalCentered !== undefined) { boolean(grid.verticalCentered); }
+	for (const cellValue of array(grid.cells)) {
+		const cell = record(cellValue, ['row', 'column', 'runs'], ['rowSpan', 'columnSpan', 'css']);
+		const row = nonNegativeInteger(cell.row); const column = nonNegativeInteger(cell.column);
+		if (row >= rows.length || column >= columns.length) { wireError(); }
+		// The merged range must stay inside the page grid.
+		if (cell.rowSpan !== undefined && row + nonNegativeInteger(cell.rowSpan) > rows.length) { wireError(); }
+		if (cell.columnSpan !== undefined && column + nonNegativeInteger(cell.columnSpan) > columns.length) { wireError(); }
+		validateTextRuns(cell.runs);
+		if (cell.css !== undefined && !isSafeParadisPrintCss(string(cell.css, 4096))) { wireError(); }
+	}
+	for (const drawingValue of array(grid.drawings)) {
+		const drawing = record(drawingValue, ['nodeId', 'x', 'y', 'width', 'height', 'href']); string(drawing.nodeId);
+		finiteNumber(drawing.x); finiteNumber(drawing.y); if (finiteNumber(drawing.width) < 0 || finiteNumber(drawing.height) < 0) { wireError(); }
+		if (!isSafeParadisPrintSvgDataUrl(string(drawing.href, 64 * 1024 * 1024))) { wireError(); }
 	}
 }
 
 function validatePrintModel(value: unknown): void {
 	const model = record(value, ['title', 'pages', 'approximationWarnings']); string(model.title);
-	for (const pageValue of array(model.pages)) { const page = record(pageValue, ['pageNumber', 'widthPoints', 'heightPoints', 'blocks', 'placeholders']); if (nonNegativeInteger(page.pageNumber) < 1) { wireError(); } finiteNumber(page.widthPoints); finiteNumber(page.heightPoints); for (const block of array(page.blocks)) { validatePrintBlock(block, 1); } for (const placeholder of array(page.placeholders)) { validatePlaceholder(placeholder); } }
+	for (const pageValue of array(model.pages)) { const page = record(pageValue, ['pageNumber', 'widthPoints', 'heightPoints', 'blocks', 'placeholders'], ['marginsPoints']); if (page.marginsPoints !== undefined) { const margins = array(page.marginsPoints); if (margins.length !== 4 || margins.some(margin => finiteNumber(margin) < 0)) { wireError(); } } if (nonNegativeInteger(page.pageNumber) < 1) { wireError(); } finiteNumber(page.widthPoints); finiteNumber(page.heightPoints); for (const block of array(page.blocks)) { validatePrintBlock(block, 1); } for (const placeholder of array(page.placeholders)) { validatePlaceholder(placeholder); } }
 	validateWarnings(model.approximationWarnings);
 }
 

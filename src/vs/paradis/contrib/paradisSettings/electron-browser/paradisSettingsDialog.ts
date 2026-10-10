@@ -764,10 +764,37 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.settleAfterAction',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.settleAfterAction', "（試験的）操作の後にページが落ち着くのを待つ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.settleAfterActionDesc', "エージェントがクリックや入力をした後、ページの表示が落ち着くまで最大 2 秒待ち、何が変わったかを伝えます。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental settle wait changes',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.reportBrowserState',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.reportBrowserState', "（試験的）新しいページやダウンロードを伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.reportBrowserStateDesc', "新しいページやダウンロード、開いたダイアログなどを、エージェントに伝えます。"),
+		keywords: 'agent browser experimental tabs downloads dialog state',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.bookmarkBar.visible',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.bookmarkBar', "ブックマークバーを表示"),
 		keywords: 'browser bookmark bar visible',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.runStepsFlow',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.runStepsFlow', "（試験的）手順をまとめて書けるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.runStepsFlowDesc', "エージェントが内蔵ブラウザで、前の結果を使う・条件を待つ・繰り返す、を 1 回の呼び出しで書けるようにします。すべてが効くのは、オンにした後に起動したエージェントからです。"),
+		keywords: 'agent browser experimental run_steps script loop wait',
 	},
 	{
 		sectionId: 'psd-sec-browser',
@@ -778,10 +805,37 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.siteNotes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.siteNotes', "（試験的）サイトのコツをメモして次のエージェントに伝える"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.siteNotesDesc', "エージェントが内蔵ブラウザで使ったサイトについて短いメモを残し、同じリポジトリの次のエージェントへヒントとして渡します。"),
+		keywords: 'agent browser experimental site notes memo hint',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.siteRecipes',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.siteRecipes', "（試験的）サイトの操作を手順として保存する"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.siteRecipesDesc', "エージェントが内蔵ブラウザで決まった画面まで進む操作を手順として保存し、同じリポジトリの次のエージェントが 1 回の呼び出しでやり直せるようにします。"),
+		keywords: 'agent browser experimental recipe replay steps save',
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.downloads.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.downloads', "ダウンロードを確認なしで受け取る"),
 		keywords: 'browser downloads auto save',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.snapshotDiff',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.snapshotDiff', "（試験的）ページの読み取りを前回との差分にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.snapshotDiffDesc', "エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。"),
+		keywords: 'agent browser experimental snapshot diff changes',
 	},
 	{
 		sectionId: 'psd-sec-browser',
@@ -1099,6 +1153,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.csvViewerEnabledDesc', "開くとすぐ表で表示し、上部の「表 | テキスト」で切り替えられます。テキストを選んだファイルは次もテキストで開きます。オフのときは従来どおりテキストで開きます。"),
 		keywords: 'csv tsv table viewer spreadsheet text',
+	},
+	{
+		sectionId: 'psd-sec-office',
+		key: 'paradis.imageViewer.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.imageViewerEnabled', "画像を Para Code の画像ビューアで開く"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.imageViewerEnabledDesc', "PNG・JPEG・GIF・WebP・SVG などの画像を Para Code の画像ビューアで開き、オフのときは従来の画像プレビューで開きます。"),
+		keywords: 'image viewer png jpeg gif webp svg preview',
 	},
 
 	// --- モバイル連携 ---

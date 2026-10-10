@@ -8,6 +8,7 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	PARADIS_OFFICE_PRINT_DRAWING_BYTES,
 	PARADIS_OFFICE_PRINT_LIMITS,
 	ParadisOfficePrintError,
 	createParadisOfficeLineLabelBlock,
@@ -154,6 +155,109 @@ suite('ParadisOfficePrint', () => {
 
 		const pages = createLegacySpreadsheetPrintModel(workbook, 'Ordered.xlsx').pages.map(page => JSON.stringify(page));
 		deepStrictEqual(pages.map(page => ['A1', 'A2', 'B1', 'B2'].find(value => page.includes(value))), ['A1', 'A2', 'B1', 'B2']);
+	});
+
+	test('lays Excel pages out like the sheet, repeats titles, clips drawings to the body, and shares one drawing budget', () => {
+		const small = 'data:image/svg+xml,%3Csvg%3E';
+		const large = `data:image/svg+xml,${'a'.repeat(PARADIS_OFFICE_PRINT_DRAWING_BYTES + 1)}`;
+		const input: ParadisOfficeSpreadsheetPrintInput = {
+			title: 'Laid.xlsx',
+			sheets: [{
+				nodeId: 'laid',
+				name: 'Laid',
+				cells: [
+					{ nodeId: 'a1', row: 1, column: 1, columnSpan: 2, runs: [{ text: 'Title' }], css: 'font-weight: bold;' },
+					{ nodeId: 'a2', row: 2, column: 1, runs: [{ text: 'A2' }] },
+					{ nodeId: 'b3', row: 3, column: 2, rowSpan: 2, runs: [{ text: 'B3' }] },
+					{ nodeId: 'a4', row: 4, column: 1, runs: [{ text: 'A4' }] },
+				],
+				pageRanges: [{ minRow: 2, minColumn: 1, maxRow: 3, maxColumn: 2 }, { minRow: 4, minColumn: 1, maxRow: 4, maxColumn: 2 }],
+				printTitles: { rows: { from: 1, to: 1 } },
+				layout: {
+					minRow: 1, minColumn: 1, rowHeights: [10, 20, 20, 20], columnWidths: [30, 40],
+					drawings: [
+						{ nodeId: 'drawing:0', x: 5, y: 12, width: 10, height: 10, href: small },
+						{ nodeId: 'drawing:1', x: 5, y: 55, width: 10, height: 10, href: large },
+					],
+					gridLines: true, scale: 0.5, marginsPoints: [1, 2, 3, 4], horizontalCentered: true,
+				},
+			}],
+		};
+		const model = createParadisOfficeSpreadsheetPrintModel(input);
+		const html = renderParadisOfficePrintHtml(model).html;
+
+		deepStrictEqual({
+			pages: model.pages.map(page => ({ margins: page.marginsPoints, blocks: page.blocks.map(block => block.kind === 'sheetGrid' ? block.grid : block.kind) })),
+			warnings: model.approximationWarnings.map(warning => warning.code),
+			html: ['padding:1pt 2pt 3pt 4pt', 'zoom:0.5', 'colspan="2"', 'class="paradis-office-print-drawings" style="left:0pt;top:10pt;width:70pt;height:40pt"', `<img alt="" src="${small}"`].map(part => html.includes(part)),
+		}, {
+			pages: [
+				{
+					margins: [1, 2, 3, 4], blocks: [{
+						columns: [30, 40], rows: [10, 20, 20],
+						cells: [
+							{ row: 0, column: 0, columnSpan: 2, runs: [{ text: 'Title' }], css: 'font-weight: bold;' },
+							{ row: 1, column: 0, runs: [{ text: 'A2' }] },
+							{ row: 2, column: 1, runs: [{ text: 'B3' }] },
+						],
+						drawings: [{ nodeId: 'drawing:0', x: 5, y: 2, width: 10, height: 10, href: small }],
+						gridLines: true, scale: 0.5, titleRows: 1, horizontalCentered: true,
+					}],
+				},
+				{
+					margins: [1, 2, 3, 4], blocks: [{
+						columns: [30, 40], rows: [10, 20],
+						cells: [
+							{ row: 0, column: 0, columnSpan: 2, runs: [{ text: 'Title' }], css: 'font-weight: bold;' },
+							{ row: 1, column: 0, runs: [{ text: 'A4' }] },
+						],
+						drawings: [],
+						gridLines: true, scale: 0.5, titleRows: 1, horizontalCentered: true,
+					}],
+				},
+			],
+			warnings: ['spreadsheet.printDrawingLimit'],
+			html: [true, true, true, true, true],
+		});
+		const withCell = (css: string) => ({ ...input, sheets: [{ ...input.sheets[0], cells: [{ nodeId: 'a1', row: 1, column: 1, runs: [], css }] }] });
+		throws(() => createParadisOfficeSpreadsheetPrintModel(withCell('background: url(https://example.invalid/x.png)')), (error: unknown) => error instanceof ParadisOfficePrintError && error.code === 'invalidModel');
+		throws(() => createParadisOfficeSpreadsheetPrintModel(withCell('color: red;} body {color: blue')), (error: unknown) => error instanceof ParadisOfficePrintError && error.code === 'invalidModel');
+	});
+
+	test('prints the sheet\'s own sizes, cell styles, shapes, pictures, and diagonals when the viewer document is given', () => {
+		const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+		const workbook: IParadisWorkbookData = {
+			sheets: [{
+				name: 'Drawn', minCol: 1, columnCount: 2, columnWidths: [64, 80], truncated: false,
+				rows: [
+					{ excelRow: 1, height: 20, cells: [{ value: 'Bold', style: { 'font-weight': 'bold' } }, { value: '', style: {}, diagonal: { up: false, down: true, style: '1px solid', color: '#000000' } }] },
+					{ excelRow: 2, height: 20, cells: [{ value: 'A2', style: {} }, { value: 'B2', style: {} }] },
+				],
+				shapes: [
+					{ type: 'rect', geometry: 'rect', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 1, co: 0, r: 1, ro: 0 }, outlineWidth: 1, outlineColor: '#000000', dash: 'solid', fill: '#2244AA' },
+					{ type: 'image', flipH: false, flipV: false, from: { c: 1, co: 0, r: 1, ro: 0 }, to: { c: 2, co: 0, r: 2, ro: 0 }, outlineWidth: 0, outlineColor: '#000000', dash: 'solid', href: png },
+				],
+			}],
+		};
+
+		const model = createLegacySpreadsheetPrintModel(workbook, 'Drawn.xlsx', document);
+		const grid = model.pages[0].blocks.find(block => block.kind === 'sheetGrid');
+		const drawings = grid?.kind === 'sheetGrid' ? grid.grid.drawings : [];
+		deepStrictEqual({
+			drawings: drawings.map(drawing => drawing.nodeId),
+			svg: drawings.every(drawing => drawing.href.startsWith('data:image/svg+xml,')),
+			picture: decodeURIComponent(drawings[1]?.href ?? '').includes(png),
+			columns: grid?.kind === 'sheetGrid' ? grid.grid.columns : [],
+			bold: grid?.kind === 'sheetGrid' ? /font-weight: bold/.test(grid.grid.cells[0].css ?? '') : false,
+			legacyWarning: model.approximationWarnings.some(warning => warning.code === 'spreadsheet.legacyPrintProjection'),
+		}, {
+			drawings: ['drawing:0', 'drawing:1', 'diagonal:1:1'],
+			svg: true,
+			picture: true,
+			columns: [48, 60],
+			bold: true,
+			legacyWarning: false,
+		});
 	});
 
 	test('uses Word sections and saved breaks without claiming Word-equivalent automatic pagination', () => {

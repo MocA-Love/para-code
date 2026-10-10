@@ -13,7 +13,13 @@
 //     `root`（uid）を渡されたら、その要素の部分木だけを返す（取ったスナップショットから切り出す）
 //   - click / fill などの「not interactive」に、直前にゲートウェイが入力を断った理由を書き足す
 //   - Target closed で失敗した読み取り系のツールを 1 回だけ呼び直してよいかを決める
+//   - navigate_page: 行き先は http / https / about:blank（open_browser_tab と同じ）と、手元のファイルの file: だけ。
+//     javascript: の URL は「Unable to navigate」と返りながら、今のページで実行される（台の腕で確かめた）。
+//     file: は従来どおり通す。接続先のペインの file: は paradisDevtoolsPathPolicy.ts が断る。手元のペインでどの
+//     ファイルを開くか（roots・.git の範囲）は確かめていない（q.html Q328）。view-source:file: は file: として扱わずに断る
 // 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
+
+import { paradisIsAllowedAgentTabUrl } from '../common/paradisAgentBrowserTabs.js';
 
 /** take_snapshot が 1 回に返す本文の上限（文字数）。 */
 export const PARADIS_SNAPSHOT_MAX_CHARS = 20_000;
@@ -56,6 +62,8 @@ export interface IParadisPreparedDevtoolsCall {
 	readonly snapshotOffset?: number;
 	/** take_snapshot で、この uid の要素の部分木だけを返す。 */
 	readonly snapshotRoot?: string;
+	/** 子プロセスへ渡さずに、この文を道具の失敗として返す（Para Code が中で使う呼び出しを、安全に動かせないとき）。 */
+	readonly refuse?: string;
 }
 
 /** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる（他はそのまま）。 */
@@ -78,6 +86,9 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			type: 'boolean',
 			description: 'Whether to include a page snapshot in the response once the text appears. Default is false (call take_snapshot when you need one).',
 		};
+	} else if (tool.name === 'evaluate_script' && properties.paraCodeObserve !== undefined) {
+		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
+		delete properties.paraCodeObserve;
 	} else if (tool.name === 'take_snapshot') {
 		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
 		delete properties.paraCodeRootRect;
@@ -97,9 +108,20 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 }
 
 /** 子プロセスへ渡す引数に戻す（足した引数を取り除き、wait_for の文字列を配列へ包む）。 */
-export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean }): IParadisPreparedDevtoolsCall {
+export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean; readonly evaluateObserve?: boolean }): IParadisPreparedDevtoolsCall {
 	if (!isRecord(args)) {
 		return { args };
+	}
+	if (name === 'evaluate_script' && Object.hasOwn(args, 'paraCodeObserve') && options?.evaluateObserve !== true) {
+		// PARA-PATCH が当たっていない vendored では、従来の評価に戻さずに断る。従来の評価は dialogAction の既定が
+		// accept なので、観測のつもりで確認のダイアログを承認しうる（Q322）
+		const rest = { ...args };
+		delete rest.paraCodeObserve;
+		return { args: rest, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE };
+	}
+	if (name === 'navigate_page' && typeof args.url === 'string' && (args.type === undefined || args.type === 'url') && !paradisIsAllowedAgentTabUrl(args.url) && !isFileUrl(args.url)) {
+		// javascript: は今のページで動き、data: や内部のスキームはページを丸ごと差し替える。どれもエージェントに任せる理由が無い
+		return { args, refuse: `navigate_page only opens http, https, about:blank or file URLs, not ${describeUrlScheme(args.url)}. To run code in the page, use evaluate_script.` };
 	}
 	if (name === 'wait_for') {
 		const { includeSnapshot, ...rest } = args;
@@ -118,6 +140,21 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		return { args: snapshotRoot !== undefined && snapshotOffset === 0 && options?.measureRoot === true ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
+}
+
+/** `file:` の URL か（URL として読んだときのスキームで決める。`view-source:file:` は含めない）。 */
+function isFileUrl(url: string): boolean {
+	try {
+		return new URL(url).protocol === 'file:';
+	} catch {
+		return false;
+	}
+}
+
+/** 断った URL の見せ方（スキームだけ。URL の中身はエージェントがもう知っているので繰り返さない）。 */
+function describeUrlScheme(url: string): string {
+	const scheme = /^(?<scheme>[a-z][a-z0-9+.-]*):/i.exec(url.trim())?.groups?.scheme;
+	return scheme !== undefined ? `${scheme.toLowerCase()}: URLs` : 'this URL';
 }
 
 /** Target closed で失敗した呼び出しを 1 回だけ呼び直してよいか。 */
@@ -202,6 +239,28 @@ export function paradisWithScriptClickHint(name: string, args: unknown, result: 
 
 /** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
 export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
+
+/**
+ * エージェントから来た内蔵の道具の引数から、Para Code だけが付ける内部の引数を取り除く（`evaluate_script` の
+ * `paraCodeObserve`。ダイアログの処理と待ちを外した評価を、エージェントが勝手に使わないように）。
+ */
+export function paradisStripInternalDevtoolsArguments(name: string, args: unknown): unknown {
+	if (name !== 'evaluate_script' || !isRecord(args) || !Object.hasOwn(args, 'paraCodeObserve')) {
+		return args;
+	}
+	const rest = { ...args };
+	delete rest.paraCodeObserve;
+	return rest;
+}
+
+/** 待たない評価（`paraCodeObserve`）を vendored が知らないときに返す文。観測（paradisBrowserObserve.ts）はこれを見て止まる。 */
+export const PARADIS_OBSERVE_UNSUPPORTED_MESSAGE = 'PARA_BROWSER_OBSERVE_UNSUPPORTED: the embedded chrome-devtools-mcp cannot evaluate without its dialog handler, so Para Code did not run this observation.';
+
+/** vendored の evaluate_script のスキーマが、待たずに評価する Para Code の引数を知っているか（PARA-PATCH が当たっているか）。 */
+export function paradisEvaluateObserves(tools: readonly unknown[]): boolean {
+	const tool = tools.find(candidate => isRecord(candidate) && candidate.name === 'evaluate_script');
+	return isRecord(tool) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeObserve !== undefined;
+}
 
 /** vendored の take_snapshot のスキーマが、Para Code の測りの引数を知っているか（PARA-PATCH が当たっているか）。 */
 export function paradisSnapshotMeasuresRoot(tools: readonly unknown[]): boolean {

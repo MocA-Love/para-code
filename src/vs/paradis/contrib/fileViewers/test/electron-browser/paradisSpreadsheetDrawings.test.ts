@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IParadisRenderShape } from '../../common/paradisSpreadsheet.js';
 import { ParadisSpreadsheetBrokenImages } from '../../electron-browser/paradisSpreadsheetBrokenImages.js';
 import { parseChartXml, parseDrawingObjects, PARADIS_SPREADSHEET_DRAWING_LIMITS, spreadsheetUndrawnPlaceholders } from '../../electron-browser/paradisSpreadsheetDrawings.js';
-import { appendShapeSvg, shapeGeometryPath } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
+import { appendShapeSvg, shapeGeometry } from '../../electron-browser/paradisSpreadsheetShapeSvg.js';
 import { appendChartSvg } from '../../electron-browser/paradisSpreadsheetChartSvg.js';
 
 // Invented minimal drawings. None of them comes from a real file.
@@ -64,10 +64,10 @@ suite('ParadisSpreadsheetDrawings', () => {
 				{ type: 'rect', name: 'Shape 2', geometry: 'ellipse', outlineWidth: 12700 / 12700 * 96 / 72, outlineColor: '#FF0000' },
 				{ type: 'rect', name: 'Shape 3', geometry: 'rect', outlineWidth: 1, outlineColor: '#111111', fill: '#2244AA' },
 				{ type: 'rect', name: 'Shape 4', geometry: 'leftBracket', outlineWidth: 0, outlineColor: '#000000' },
-				{ type: 'rect', name: 'Shape 5', geometry: 'rect', outlineWidth: 0, outlineColor: '#000000' },
+				{ type: 'rect', name: 'Shape 5', geometry: 'wave', outlineWidth: 0, outlineColor: '#000000' },
 				{ type: 'rect', name: 'Shape 7', geometry: 'rect', outlineWidth: 0, outlineColor: '#000000', text: 'AB' },
 			],
-			undrawn: [{ kind: 'geometry', name: 'Shape 5', from: { c: 0, co: 0, r: 0, ro: 0 } }],
+			undrawn: [],
 			vertical: true,
 		});
 	});
@@ -266,13 +266,33 @@ suite('ParadisSpreadsheetDrawings', () => {
 		deepStrictEqual([image.getAttribute('href')?.startsWith('data:image/svg+xml;base64,'), reported.length, reported[0] === shape], [true, 1, true]);
 	});
 
+	test('flips a line vertically, and turns before it flips a shape that is both rotated and flipped', () => {
+		const base: IParadisRenderShape = { type: 'rect', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 0, co: 0, r: 0, ro: 0 }, outlineWidth: 1, outlineColor: '#000000', dash: 'solid' };
+		const box = { x: 0, y: 0, width: 100, height: 40 };
+		const paint = { stroke: '#000000', strokeWidth: 1, dash: '', opacity: 1, content: true };
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		const line = appendShapeSvg(svg, { ...base, type: 'line', flipV: true }, box, paint).querySelector('line')!;
+		const both = appendShapeSvg(svg, { ...base, rotation: 30, flipH: true, flipV: true, text: { paragraphs: [{ runs: [{ text: 'AB' }] }], insets: { left: 0, top: 0, right: 0, bottom: 0 }, wrap: true } }, box, paint);
+		const textGroup = both.querySelector('foreignObject')!.parentElement!;
+		deepStrictEqual({
+			line: ['x1', 'y1', 'x2', 'y2'].map(name => line.getAttribute(name)),
+			shape: both.querySelector('path')!.parentElement!.getAttribute('transform'),
+			text: textGroup.getAttribute('transform'),
+		}, {
+			line: ['0', '40', '100', '0'],
+			shape: 'rotate(30 50 20) translate(50 20) scale(-1 -1) translate(-50 -20)',
+			text: 'rotate(30 50 20)',
+		});
+	});
+
 	test('builds preset geometry paths in the frame and draws a chart', () => {
 		const base: IParadisRenderShape = { type: 'rect', flipH: false, flipV: false, from: { c: 0, co: 0, r: 0, ro: 0 }, to: { c: 0, co: 0, r: 0, ro: 0 }, outlineWidth: 1, outlineColor: '#000000', dash: 'solid' };
 		const box = { x: 0, y: 0, width: 100, height: 40 };
-		deepStrictEqual(['leftBracket', 'rightBrace', 'triangle'].map(geometry => shapeGeometryPath({ ...base, geometry: geometry as IParadisRenderShape['geometry'] }, box).stroke), [
-			'M 100 40 A 100 3.33 0 0 1 0 36.67 L 0 3.33 A 100 3.33 0 0 1 100 0',
-			'M 0 0 A 50 3.33 0 0 1 50 3.33 L 50 16.67 A 50 3.33 0 0 0 100 20 A 50 3.33 0 0 0 50 23.33 L 50 36.67 A 50 3.33 0 0 1 0 40',
-			'M 50 0 L 100 40 L 0 40 Z',
+		// 括弧と中括弧は、手で書いていた道筋と同じ形になる（式どおりに計算した結果）。
+		deepStrictEqual(['leftBracket', 'rightBrace', 'triangle'].map(geometry => shapeGeometry({ ...base, geometry }, box).paths.filter(path => path.stroke).map(path => path.d)), [
+			['M 100 40 A 100 3.33 0 0 1 0 36.67 L 0 3.33 A 100 3.33 0 0 1 100 0'],
+			['M 0 0 A 50 3.33 0 0 1 50 3.33 L 50 16.67 A 50 3.33 0 0 0 100 20 A 50 3.33 0 0 0 50 23.33 L 50 36.67 A 50 3.33 0 0 1 0 40'],
+			['M 0 40 L 50 0 L 100 40 Z'],
 		]);
 		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
 		appendShapeSvg(svg, { ...base, geometry: 'ellipse', fill: '#FF0000' }, box, { stroke: '#000000', strokeWidth: 1, dash: '', opacity: 1, content: true });
