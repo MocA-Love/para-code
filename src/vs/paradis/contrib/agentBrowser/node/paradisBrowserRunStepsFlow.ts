@@ -18,7 +18,11 @@
 // - 実行する手順は全部で {@link PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED} まで、時間は既定 240 秒（MCP の 300 秒未満）まで
 // - 入れ子は 2 段まで。repeat_until は回す前に条件を確かめる（成り立っていれば 1 回も回さない）
 // - expect が成り立たなければ、その手順の失敗として止まる（continue_on_error で続ける）
+// - スクリプト（evaluate_script の function、predicate）の中の参照は、値に置き換えずに推測できない名前の識別子に
+//   置き換え、値は外側の包みの const で束縛する。値は一度もコードとして読まれないので、参照が文字列やコメントの
+//   中にあっても注入にならない（その場合は名前の文字が入るだけ）。包めない initScript の中の参照は断る
 
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RUN_STEPS_ALLOWED_TOOLS } from './paradisBrowserRunSteps.js';
 
 /** 実行する手順（ループの中の繰り返しを含む）の合計の上限。 */
@@ -130,6 +134,11 @@ function parseBlock(raw: unknown, depth: number, where: string): FlowStep[] | st
 			if (!PARADIS_RUN_STEPS_ALLOWED_TOOLS.has(step.tool)) {
 				return `${at}: "${step.tool}" cannot be used in run_steps. Allowed: ${[...PARADIS_RUN_STEPS_ALLOWED_TOOLS].join(', ')}.`;
 			}
+			const initScript = isRecord(step.args) ? step.args.initScript : undefined;
+			if (step.tool === 'navigate_page' && typeof initScript === 'string' && [...initScript.matchAll(REFERENCE_PATTERN)].some(match => match[0] !== '$$')) {
+				// initScript は包むと var や関数の宣言の意味が変わるので、値を束縛して渡せない
+				return `${at}: references such as $2.text cannot be used in "initScript". Pass the value in a later evaluate_script instead.`;
+			}
 			steps.push({ kind: 'tool', tool: step.tool, args: (step.args ?? {}) as Record<string, unknown> });
 		} else if (step.expect !== undefined) {
 			const condition = parseCondition(step.expect, `${at} "expect"`);
@@ -237,8 +246,8 @@ const REFERENCE_PATTERN = /\$\$|\$(\d+)\.(text|items)\b|\$item\b|\$index\b/g;
  * JavaScript の文字の値（`JSON.stringify`）として入れる。値はページが自由に書ける文字なので、そのまま埋めると
  * 別のページのスクリプトとして動いてしまう。
  */
-function substitute(value: string, scope: IScope, missing: string[], script: boolean): string {
-	const insert = (text: string) => script ? JSON.stringify(text) : text;
+/** 文字の中の参照を、`insert` が返す文字に置き換える（`$$` は `$`、`$index` は数）。 */
+function substitute(value: string, scope: IScope, missing: string[], insert: (text: string) => string = text => text): string {
 	return value.replace(REFERENCE_PATTERN, (match, step: string | undefined, field: string | undefined) => {
 		if (match === '$$') {
 			return '$';
@@ -268,7 +277,7 @@ function substitute(value: string, scope: IScope, missing: string[], script: boo
 
 function substituteDeep(value: unknown, scope: IScope, missing: string[]): unknown {
 	if (typeof value === 'string') {
-		return substitute(value, scope, missing, false);
+		return substitute(value, scope, missing);
 	}
 	if (Array.isArray(value)) {
 		return value.map(item => substituteDeep(item, scope, missing));
@@ -279,12 +288,36 @@ function substituteDeep(value: unknown, scope: IScope, missing: string[]): unkno
 	return value;
 }
 
-/** 道具の引数のうち、ページで動くスクリプトの引数。 */
-const SCRIPT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = { evaluate_script: ['function'], wait_until: ['predicate'], navigate_page: ['initScript'] };
+/** 道具の引数のうち、関数を受け取るスクリプトの引数（参照を束縛して包める）。 */
+const SCRIPT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = { evaluate_script: ['function'], wait_until: ['predicate'] };
 
-/** 道具の引数に参照を差し込む（スクリプトの引数は文字の値として）。 */
+/**
+ * 関数のスクリプトの中の参照を、推測できない名前の識別子に置き換え、値はその外側の包みの const で束縛する。
+ * 例: `() => document.title === $2.text` は
+ * `(...a) => { const __paraRef_<nonce>_0 = "値"; const f = (() => document.title === __paraRef_<nonce>_0\n); return typeof f === 'function' ? f(...a) : f; }`
+ * になる（f の名前にも nonce を付ける）。
+ */
+function bindScriptReferences(source: string, scope: IScope, missing: string[]): string {
+	const nonce = generateUuid().replace(/-/g, '').slice(0, 12);
+	const bindings: string[] = [];
+	const body = substitute(source, scope, missing, text => {
+		const name = `__paraRef_${nonce}_${bindings.length}`;
+		bindings.push(`const ${name} = ${JSON.stringify(text)};`);
+		return name;
+	});
+	if (bindings.length === 0) {
+		return body;
+	}
+	const rest = `__paraArgs_${nonce}`;
+	const value = `__paraValue_${nonce}`;
+	// predicate は関数でなく式だけでもよい（関数なら呼び、式ならその値を返す）。末尾の // コメントで包みを壊さないよう、
+	// 本文の後に改行を置く
+	return `(...${rest}) => { ${bindings.join(' ')} const ${value} = (${body}\n); return typeof ${value} === 'function' ? ${value}(...${rest}) : ${value}; }`;
+}
+
+/** 道具の引数に参照を差し込む（関数のスクリプトの引数では、値を束縛して包む）。 */
 export function paradisSubstituteRunStepsArgs(tool: string, args: Record<string, unknown>, scope: IScope, missing: string[]): Record<string, unknown> {
-	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool]?.includes(key) && typeof value === 'string' ? substitute(value, scope, missing, true) : substituteDeep(value, scope, missing)]));
+	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool]?.includes(key) && typeof value === 'string' ? bindScriptReferences(value, scope, missing) : substituteDeep(value, scope, missing)]));
 }
 
 // --- 実行 ----------------------------------------------------------------------------------------
@@ -540,7 +573,7 @@ function isValueCondition(condition: Condition): condition is Extract<Condition,
 function substituteCondition(condition: Condition, scope: IScope): Condition {
 	const missing: string[] = [];
 	if (isValueCondition(condition)) {
-		return { kind: condition.kind, value: substitute(condition.value, scope, missing, condition.kind === 'predicate') };
+		return { kind: condition.kind, value: condition.kind === 'predicate' ? bindScriptReferences(condition.value, scope, missing) : substitute(condition.value, scope, missing) };
 	}
 	return { kind: condition.kind, locator: substituteDeep(condition.locator, scope, missing) as Locator };
 }
@@ -590,7 +623,7 @@ export function paradisRunStepsFlowDescriptor<T extends { readonly name: string;
 		+ '{"for_each": "$3.items", "steps": [...]} (repeat steps for each item; "$3.items" are the matches of a get_text with all: true at top-level step 3, or a literal list; use $item and $index inside); '
 		+ '{"repeat_until": {"disabled": {"role": "button", "name": "Next"}}, "steps": [...], "max": 20} (repeat steps until the condition holds, checked before each round; for paging). '
 		+ 'Tool arguments can refer to earlier top-level results: "$2.text" is the text of step 2 (for get_text, just the text), "$$" is a literal $. '
-		+ 'Inside scripts (the function of evaluate_script, initScript of navigate_page, predicates) a reference is inserted as a quoted string value, for example "() => document.title === $2.text". '
+		+ 'Inside a script (the function of evaluate_script, a predicate) a reference stands for a string value: use it where a value goes, for example "() => document.title === $2.text" or `${$2.text}` in a template; inside quotes it is not replaced by the value. References cannot be used in initScript. '
 		+ `At most ${PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED} executed steps and "max_seconds" (default ${DEFAULT_MAX_SECONDS}, keep it below your MCP client's tool timeout). Stops at the first failed step or unmet expect (unless continue_on_error). `
 		+ `Allowed tools: ${[...PARADIS_RUN_STEPS_ALLOWED_TOOLS].join(', ')}.`;
 	return {

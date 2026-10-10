@@ -38,6 +38,7 @@ import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErr
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
+import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
@@ -227,6 +228,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	private readonly _children = new Map<string, IChildEntry>();
 	/** take_snapshot の続き（offset）用に、上限より長かった直近のスナップショット（ペインごと）。 */
 	private readonly _snapshots = new ParadisSnapshotCache();
+	/** エージェントが前回 take_snapshot で受け取ったページ（差分の元。設定 snapshotDiff が有効なときだけ使う）。 */
+	private readonly _snapshotBaselines = new ParadisSnapshotBaselines();
 	/** kill要求済みでも実process exit/errorを観測するまではslotを占有する。 */
 	private readonly _childSlots = new Set<IChildEntry>();
 	private readonly _generationHighWatermarks = new Map<string, number>();
@@ -318,8 +321,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	 * ツール呼び出しを子プロセスへ転送する。`name` が転送対象でなければ `undefined` を返す
 	 * （未知ツールのJSON-RPCエラー化は呼び出し側の責務）。転送対象で実行に失敗した場合は
 	 * MCPツールエラー（`isError: true` のcontent）を返し、プロトコルエラーにはしない。
+	 * @param snapshotDiff エージェントの take_snapshot を前回との差分にするか（paradisBrowserSnapshotDiff.ts）。省くと従来どおり。
 	 */
-	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal): Promise<unknown | undefined> {
+	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal, snapshotDiff?: ParadisSnapshotDiffMode): Promise<unknown | undefined> {
 		let known: boolean;
 		try {
 			known = (await this._listTools(token, generation, wsEndpoint, signal)).some(tool => tool.name === name);
@@ -395,6 +399,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
 				this._snapshots.remember(token, result, producer, producer.generation, snapshotEpoch);
+			}
+			if (snapshotDiff !== undefined && name === 'take_snapshot' && snapshotCacheUsable && prepared.snapshotRoot === undefined && (prepared.snapshotOffset ?? 0) === 0) {
+				// 続き（offset）の控えは全体のまま。エージェントへ返す分だけを差分にする
+				result = this._snapshotBaselines.apply(token, producer, producer.generation, result, snapshotDiff);
 			}
 			const adjusted = paradisAdjustDevtoolsToolResult(name, prepared, result, this.options.recentInputRejection?.(token, startedAt));
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
@@ -492,6 +500,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (entry && entry.generation < generation) {
 			this._killChild(token, entry, 'pane retired');
 			this._snapshots.forget(token);
+			this._snapshotBaselines.forget(token);
 		}
 	}
 
@@ -505,7 +514,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._killChild(token, entry, 'pane forgotten');
 		}
 		this._snapshots.forget(token);
+		this._snapshotBaselines.forget(token);
 		this._generationHighWatermarks.delete(token);
+	}
+
+	/** 条件に合うキーの、差分の元にする控えを捨てる（新しいエージェントがつながったペイン）。 */
+	forgetSnapshotBaselines(predicate: (token: string) => boolean): void {
+		this._snapshotBaselines.forgetWhere(predicate);
 	}
 
 	override dispose(): void {
@@ -518,6 +533,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._generationHighWatermarks.clear();
 		this._snapshots.clear();
+		this._snapshotBaselines.clear();
 		this._toolsCache = undefined;
 		void this._temporaryDirectory?.dispose();
 		super.dispose();
