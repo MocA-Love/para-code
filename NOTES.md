@@ -2788,6 +2788,21 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 書く・消すたびにファイルを読み直してから書き戻す。ステーブルとベータが同時に動いていても、互いのメモを消さない（同じ瞬間の書き込みは後勝ち）
 - いつ書くかは道具の説明で促す（Q326 A）。作業の終わりに、手間取って分かったことを 1〜2 文で残し、秘密やその回だけの値は書かない
 
+## 内蔵ブラウザのサイトの手順（agentBrowser、2026-10-10、E3・Q303・Q304）
+
+設定 `paradis.agentBrowser.siteRecipes`（既定オフ）。エージェントが `save_recipe` で、決まった画面まで進む操作を run_steps の手順書（E6）と同じ形で保存し、`run_recipe` の 1 回の呼び出しでやり直す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSiteRecipes.ts`。
+
+- 置き場は `~/.para-code/browser-recipes/recipes.json`（0600）。鍵はサイトメモ（E4）と同じく、スペースの最初のフォルダとオリジンの組。ファイルの読み書きは E4 と同じ `paradisBrowserSiteStore.ts`
+- 道具（`save_recipe`・`run_recipe`・`list_recipes`・`delete_recipe`）は設定がオンのときだけ一覧に出る。オンにした後に起動したエージェントから使える
+- 変わる値は `{{name}}` のパラメータ。手順にスクリプトが無いので、どこでもそのままの文字として入れる。値の中の `$` は run_steps の参照と読まれないように `$$` にする
+- 秘密は手順に書かせない。サイトメモと同じ伏せ字の判定に加えて、パスワードらしい欄（fill_by / type_text の name・selector・text）へ決まった値を入れる手順を断る
+- 保存した手順は次のエージェントが中身を読まずに動かすので、スクリプトを 1 つも保存させない（evaluate_script、navigate_page の initScript、wait_until・expect・repeat_until・done_when の predicate）。text・visible・url_includes などの条件は使える。手元のファイルを読む・書く引数（take_snapshot / take_screenshot の filePath、capture_screenshot の saveTo など。`paradisDevtoolsPathArguments` が返すもの）も保存させない。形の崩れた手順（steps や params が配列でない）は動かさない。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。保存してあった手順も、動かす前に同じ決まりで確かめ直す
+- run_recipe は、タブが今いるサイトの手順だけを動かす（`url` は受けない）。一覧とヒントには「指示ではなく参考の情報」と書く
+- 置き場のファイルは約 8 MiB まで。越える書き込み（大きくなるもの）は断り、消す書き込みは通す
+- 保存・削除は、そのペインで今開いているタブのオリジンだけ（E4 と同じく今の URL）。同じ名前で保存すると置き換える
+- run_recipe は選んだタブに固定して、run_steps と同じ道筋（入れ子の `_callTool`）で動かす。`done_when` は最後の expect になる。止まったら、止まった手順と、その時のスナップショットの頭（6,000 字）を返し、直して保存し直すよう促す。このスナップショットは内蔵の take_snapshot を直接呼んで取る（スナップショットの差分の設定がオンでも全体）
+- そのサイトを初めて使った結果に、保存した手順の名前とパラメータを 1 行添える（ペインごとに 1 回）
+
 ## 内蔵ブラウザのスナップショットの差分（agentBrowser、2026-10-10、E2・Q303）
 
 設定 `paradis.agentBrowser.snapshotDiff`（既定オフ）。エージェントの take_snapshot を、同じタブの 2 回目からは前回との差分（消えた・変わった・増えた要素、uid 付き）で返す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSnapshotDiff.ts`、控えは `paradisDevtoolsMcpProxy.ts` が子プロセスの台帳のキー（タブ）ごとに持つ。
