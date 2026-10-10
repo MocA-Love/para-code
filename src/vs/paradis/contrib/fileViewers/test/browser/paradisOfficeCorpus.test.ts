@@ -16,6 +16,7 @@ import { PARADIS_OFFICE_BUDGET_PROFILES } from '../../common/paradisOfficeProtoc
 import { parseSpreadsheetSemantic } from '../../common/spreadsheet/paradisSpreadsheetSemanticParser.js';
 import { parseWordSemantic } from '../../common/word/paradisWordSemanticParser.js';
 import { minimalGif, minimalJpeg, minimalPng, pngChunk } from '../common/paradisWordImageFixture.js';
+import { emfRecord, minimalEmf, minimalWmf, ParadisMetafileBytes, wmfRecord } from '../common/paradisOfficeMetafileFixture.js';
 import { buildOpcFixture, type IParadisOfficeFixtureOptions, type IParadisOfficeFixtureRelationship, type ParadisOfficeFixturePart } from '../common/paradisOfficeFixture.js';
 
 /*
@@ -60,6 +61,7 @@ function wordPackage(overrides: Partial<IParadisOfficeFixtureOptions> & { readon
 		...(overrides.folders ? { folders: overrides.folders } : {}),
 		...(overrides.renameEntries ? { renameEntries: overrides.renameEntries } : {}),
 		...(overrides.contentTypesXml ? { contentTypesXml: overrides.contentTypesXml } : {}),
+		...(overrides.compression ? { compression: overrides.compression } : {}),
 	});
 }
 
@@ -301,21 +303,41 @@ suite('ParadisOfficeCorpus', () => {
 		deepStrictEqual(result.blockedParts, [{ feature: 'externalRelationship', kind: 'hyperlink', scheme: 'https', count: 1 }]);
 	});
 
-	test('counts an OLE object once even though its preview picture is also blocked', async () => {
-		const object = '<w:p><w:r><w:object><v:shape id="s1"><v:imagedata r:id="rIdPreview"/></v:shape><o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s1" r:id="rIdOle"/></w:object></w:r></w:p>';
+	test('draws an embedded object as its preview picture, without the embedding, and reports the embedding as blocked (Q321 f)', async () => {
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		const embedding = (index: number) => index < 2
+			? `<o:OLEObject Type="Embed" ProgID="Excel.Sheet.8" ShapeID="s${index}" r:id="rIdOle${index}"/>`
+			// ISO/IEC 29500 strict writes the embedding as w:objectEmbed.
+			: `<w:objectEmbed w:progId="Excel.Sheet.8" w:shapeId="s${index}" r:id="rIdOle${index}"/>`;
+		const objectRun = (index: number, shapeAttributes: string) => `<w:p><w:r><w:object w:dxaOrig="100" w:dyaOrig="50"><v:shape id="s${index}" o:ole="" ${shapeAttributes}><v:imagedata r:id="rIdPreview${index}" o:title=""/></v:shape>${embedding(index)}</w:object></w:r></w:p>`;
+		const previews = [minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), Uint8Array.of(1, 0, 0, 0), minimalEmf([emfRecord(43, words(0, 0, 20, 20))])];
 		const bytes = await wordPackage({
-			body: object,
+			body: objectRun(0, 'style="width:50pt;height:25pt"') + objectRun(1, '') + objectRun(2, ''),
 			extraParts: [
-				['/word/media/image1.emf', Uint8Array.of(1, 0, 0, 0), 'image/x-emf'],
-				['/word/embeddings/object1.bin', Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'],
+				...previews.map((preview, index) => [`/word/media/image${index}.emf`, preview, 'image/x-emf'] as const),
+				...previews.map((_, index) => [`/word/embeddings/object${index}.bin`, Uint8Array.of(0xd0, 0xcf, 0x11, 0xe0), 'application/vnd.openxmlformats-officedocument.oleObject'] as const),
 			],
-			extraRelationships: [
-				{ source: '/word/document.xml', id: 'rIdPreview', type: `${R}/image`, target: 'media/image1.emf' },
-				{ source: '/word/document.xml', id: 'rIdOle', type: `${R}/oleObject`, target: 'embeddings/object1.bin' },
-			],
+			extraRelationships: previews.flatMap((_, index) => [
+				{ source: '/word/document.xml', id: `rIdPreview${index}`, type: `${R}/image`, target: `media/image${index}.emf` },
+				{ source: '/word/document.xml', id: `rIdOle${index}`, type: `${R}/oleObject`, target: `embeddings/object${index}.bin` },
+			]),
 		});
 		const result = await sanitize(bytes);
-		deepStrictEqual(result.placeholders.map(placeholder => placeholder.feature), ['embeddedObject']);
+		const text = new TextDecoder().decode(result.bytes);
+		deepStrictEqual({
+			// The preview that converts is drawn; the one that does not stays a box. Neither embedding is a box.
+			placeholders: result.placeholders.map(placeholder => placeholder.feature),
+			drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length,
+			blocked: result.blockedParts.map(part => `${part.feature}:${part.partName}`),
+			pictures: (text.match(/<w:pict><v:shape id="s\d"[^>]*><v:imagedata r:id="rIdPreview\d" o:title=""\/><\/v:shape><\/w:pict>/g) ?? []).length,
+			leftovers: ['<w:object', 'OLEObject', 'objectEmbed', 'o:ole=', 'object0.bin', 'object1.bin', 'object2.bin', 'rIdOle'].filter(value => text.includes(value)),
+		}, {
+			placeholders: ['unsafeMedia'],
+			drawn: 2,
+			blocked: ['embeddedObject:word/embeddings/object0.bin', 'embeddedObject:word/embeddings/object1.bin', 'embeddedObject:word/embeddings/object2.bin'],
+			pictures: 3,
+			leftovers: [],
+		});
 	});
 
 	test('falls back from an embedded font without a placeholder', async () => {
@@ -472,6 +494,63 @@ suite('ParadisOfficeCorpus', () => {
 			scriptLeft: false,
 			types: ['image/png', 'image/jpg', 'image/png', 'image/svg+xml', 'image/svg+xml'],
 		});
+	});
+
+	test('draws EMF and WMF images as converted SVG and keeps the ones it cannot draw as boxes (Q321 f)', async () => {
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		const images: readonly (readonly [name: string, bytes: Uint8Array, type: string])[] = [
+			['image1.emf', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/x-emf'],
+			['image2.wmf', minimalWmf([wmfRecord(0x041b, [500, 1000, 0, 0])]), 'image/x-wmf'],
+			// An arc is not drawn, so the image stays a box.
+			['image3.emf', minimalEmf([emfRecord(45, words(0, 0, 10, 10, 0, 0, 10, 10))]), 'image/x-emf'],
+			// The declared type must match the signature.
+			['image4.png', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/png'],
+		];
+		const body = images.map((_, index) => `<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage${index}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`).join('');
+		const result = await sanitize(await wordPackage({
+			body,
+			extraParts: images.map(([name, bytes, type]) => [`/word/media/${name}`, bytes, type] as const),
+			extraRelationships: images.map(([name], index) => ({ source: '/word/document.xml', id: `rIdImage${index}`, type: `${R}/image`, target: `media/${name}` })),
+		}));
+		const text = new TextDecoder().decode(result.bytes);
+		deepStrictEqual({
+			drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length,
+			boxes: result.placeholders.length,
+			types: images.map(([name]) => new RegExp(`PartName="/word/media/${name.replace('.', '[.]')}" ContentType="(?<type>[^"]+)"`).exec(text)?.groups?.type),
+			converted: (text.match(/<svg xmlns="http:[/][/]www[.]w3[.]org[/]2000[/]svg" width=/g) ?? []).length,
+		}, {
+			drawn: 2,
+			boxes: 2,
+			types: ['image/svg+xml', 'image/svg+xml', 'image/svg+xml', 'image/svg+xml'],
+			converted: 2,
+		});
+	});
+
+	test('converts EMF only while the rewritten package stays under its cap, and keeps opening the document (Q321 f)', async function () {
+		this.timeout(20_000);
+		const words = (...values: number[]) => new ParadisMetafileBytes().u32(...values);
+		// Filler parts that deflate about 15 times (one noisy byte in 24), so the package passes the ZIP ratio and
+		// size checks while its expanded size sits near the 32 MiB cap of the rewritten package.
+		const filler = (bytes: number, seed: number) => {
+			const value = new Uint8Array(bytes).fill(0x41);
+			let state = seed;
+			for (let index = 0; index < bytes; index += 24) {
+				state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+				value[index] = 0x41 + (state >>> 26);
+			}
+			return value;
+		};
+		const open = async (fillerBytes: number) => {
+			const fillers = [0, 1, 2, 3].map(index => [`/customXml/item${index}.bin`, filler(fillerBytes / 4, index + 1), 'application/octet-stream'] as const);
+			const result = await sanitize(await wordPackage({
+				body: '<w:p><w:r><w:drawing><wp:inline><wp:extent cx="1" cy="1"/><a:graphic><a:graphicData><a:blip r:embed="rIdImage"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>',
+				extraParts: [['/word/media/image1.emf', minimalEmf([emfRecord(43, words(0, 0, 40, 20))]), 'image/x-emf'], ...fillers],
+				extraRelationships: [{ source: '/word/document.xml', id: 'rIdImage', type: `${R}/image`, target: 'media/image1.emf' }],
+				compression: 'DEFLATE',
+			}));
+			return { drawn: result.assets.filter(asset => asset.kind === 'sanitizedSvg').length, boxes: result.placeholders.length };
+		};
+		deepStrictEqual([await open(29 * 1024 * 1024), await open(31 * 1024 * 1024)], [{ drawn: 1, boxes: 0 }, { drawn: 0, boxes: 1 }]);
 	});
 
 	test('keeps images past the document pixel budget, and images too large on their own, as boxes that say why', async () => {

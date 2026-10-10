@@ -19,6 +19,7 @@ import { IParadisCellData, IParadisDataValidationEntry, IParadisRenderShape, IPa
 import { computeLcsRowPairs, rowFingerprint } from '../common/paradisSpreadsheetRowAlign.js';
 import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageLabelText, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { selectSpreadsheetSheetAlignment, type ParadisSpreadsheetSemanticDiffPage, type ParadisSpreadsheetSheetAlignment } from '../common/spreadsheet/paradisSpreadsheetSemanticDiff.js';
+import { paradisPresetShapeAdjustDefaults } from '../common/spreadsheet/paradisPresetShapeGeometry.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
@@ -880,15 +881,21 @@ function shapeFill(shape: IParadisRenderShape): string | undefined {
 	return shape.fillOpacity !== undefined ? `${shape.fill} (${Math.round(shape.fillOpacity * 100)}%)` : shape.fill;
 }
 
-/** 形の種類と調整値。自由形状は道筋の指紋で比べる。 */
+/**
+ * 形の種類と調整値。調整値は `gd` の名前で並べ、既定の形の既定値と同じものは省く（既定値を書いたときと
+ * 省いたときを同じに扱う）。自由形状は道筋の指紋で比べる。
+ */
 function shapeGeometry(shape: IParadisRenderShape): string | undefined {
 	if (shape.type !== 'rect' && !shape.geometry) {
 		return undefined;
 	}
 	const geometry = shape.geometry ?? 'rect';
-	const adjust = shape.adjust?.length ? ` (${shape.adjust.join(', ')})` : '';
-	const paths = shape.paths ? ` ${(stringHash(JSON.stringify(shape.paths), 0) >>> 0).toString(16).padStart(8, '0')}` : '';
-	return `${geometry}${adjust}${paths}`;
+	const defaults = paradisPresetShapeAdjustDefaults(geometry);
+	const values = shape.adjust ?? {};
+	const adjusted = Object.keys(values).sort().filter(name => !(Object.hasOwn(defaults, name) && defaults[name] === values[name])).map(name => `${name}=${values[name]}`);
+	const adjust = adjusted.length > 0 ? ` (${adjusted.join(', ')})` : '';
+	const custom = shape.customGeometry ? ` ${(stringHash(JSON.stringify(shape.customGeometry), 0) >>> 0).toString(16).padStart(8, '0')}` : '';
+	return `${geometry}${adjust}${custom}`;
 }
 
 function shapeLineEnds(shape: IParadisRenderShape): string | undefined {

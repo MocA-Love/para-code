@@ -40,6 +40,11 @@ export interface IParadisPageSetup {
 	readonly landscape: boolean;
 	/** 用紙名(表示用。"A4" 等)。 */
 	readonly paperName: string;
+	/** 枠線（グリッド線）を印刷するか（printOptions/@gridLines、既定は印刷しない）。 */
+	readonly printGridLines?: boolean;
+	/** ページの中央に置くか（printOptions/@horizontalCentered・@verticalCentered）。 */
+	readonly horizontalCentered?: boolean;
+	readonly verticalCentered?: boolean;
 	/** 各ページの先頭で繰り返す行(印刷タイトル)。 */
 	readonly repeatRowsFrom?: number;
 	readonly repeatRowsTo?: number;
@@ -209,6 +214,7 @@ export function parsePageSetup(sheetXml: string): IParadisPageSetup {
 	const setupTag = body.match(/<pageSetup\b[^>]*\/?>/)?.[0];
 	const marginTag = body.match(/<pageMargins\b[^>]*\/?>/)?.[0];
 	const fitTag = body.match(/<pageSetUpPr\b[^>]*\/?>/)?.[0];
+	const optionsTag = body.match(/<printOptions\b[^>]*\/?>/)?.[0];
 
 	const paper = paperSizeToPt(setupTag ? num(attr(setupTag, 'paperSize'), 9) : 9);
 	const landscape = attr(setupTag, 'orientation') === 'landscape';
@@ -241,6 +247,9 @@ export function parsePageSetup(sheetXml: string): IParadisPageSetup {
 		pageOrder: attr(setupTag, 'pageOrder') === 'overThenDown' ? 'overThenDown' : 'downThenOver',
 		landscape,
 		paperName: paper.name,
+		...(bool(attr(optionsTag, 'gridLines')) ? { printGridLines: true } : {}),
+		...(bool(attr(optionsTag, 'horizontalCentered')) ? { horizontalCentered: true } : {}),
+		...(bool(attr(optionsTag, 'verticalCentered')) ? { verticalCentered: true } : {}),
 	};
 }
 

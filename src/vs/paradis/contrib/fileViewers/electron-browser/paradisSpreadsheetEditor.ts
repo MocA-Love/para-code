@@ -26,6 +26,7 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -35,10 +36,10 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellComment, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
-import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell } from '../common/paradisOfficePrint.js';
+import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell, type ParadisOfficeSpreadsheetPrintSheet } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
@@ -47,9 +48,10 @@ import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js'
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, commentKindsByCell, commentMarkerClass, describeSheetPageBreaks, getColumnLabel } from './paradisSpreadsheetRender.js';
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
+import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
 import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, hasPendingSpreadsheetMetafiles, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
@@ -177,11 +179,66 @@ export function createLegacySpreadsheetSearchPage(workbook: IParadisWorkbookData
 	return Object.freeze({ results: Object.freeze([...results]), total: results.length, capped: results.length === LEGACY_SEARCH_RESULT_LIMIT });
 }
 
+/** シートと同じ寸法・書式・図形でページを組む印刷用のシート。描けなかった図形だけを代替表示に数える。 */
+function layoutPrintSheet(sheet: IParadisSheetData, sheetIndex: number, printLayout: IParadisSpreadsheetPrintLayout, takeCell: () => boolean): ParadisOfficeSpreadsheetPrintSheet {
+	const cells: ParadisOfficeSpreadsheetPrintCell[] = [];
+	outer: for (const row of sheet.rows) {
+		for (let columnIndex = 0; columnIndex < row.cells.length; columnIndex++) {
+			const source = row.cells[columnIndex];
+			if (source.hidden) {
+				continue;
+			}
+			if (!takeCell()) {
+				break outer;
+			}
+			const column = sheet.minCol + columnIndex;
+			const css = printLayout.cellCss.get(`${row.excelRow}:${column}`);
+			const runs = source.richText?.length ? source.richText.map(part => ({ text: part.text })) : [{ text: source.value }];
+			cells.push({
+				nodeId: `legacy:${sheetIndex}:cell:${row.excelRow}:${column}`,
+				row: row.excelRow,
+				column,
+				runs,
+				...(source.rowSpan && source.rowSpan > 1 ? { rowSpan: source.rowSpan } : {}),
+				...(source.colSpan && source.colSpan > 1 ? { columnSpan: source.colSpan } : {}),
+				...(css ? { css } : {}),
+			});
+		}
+	}
+	const setup = sheet.pageSetup;
+	return {
+		nodeId: `legacy:${sheetIndex}`,
+		name: sheet.name,
+		cells,
+		...(sheet.printArea ? { printAreas: [{ minRow: sheet.printArea.minR, minColumn: sheet.printArea.minC, maxRow: sheet.printArea.maxR, maxColumn: sheet.printArea.maxC }] } : {}),
+		...(sheet.pageLayout ? { pageRanges: pageRectangles(sheet.pageLayout).sort((first, second) => first.page - second.page).map(page => ({ minRow: page.fromRow, minColumn: page.fromCol, maxRow: page.toRow, maxColumn: page.toCol })) } : {}),
+		...(setup ? { pageSetup: { widthPoints: setup.paperWidth, heightPoints: setup.paperHeight } } : {}),
+		...(setup?.repeatRowsFrom !== undefined && setup.repeatRowsTo !== undefined ? { printTitles: { rows: { from: setup.repeatRowsFrom, to: setup.repeatRowsTo } } } : {}),
+		// 枠の形で近似した図形は印刷のページに描いているので、代替表示には出さない。
+		placeholders: spreadsheetUndrawnPlaceholders([sheet]).filter(placeholder => placeholder.feature !== 'drawing.geometry'),
+		layout: printLayout.layout,
+	};
+}
+
 /** Script-free, bounded fallback model used until a platform print callback is available for this source. */
-export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData, title: string): ParadisOfficePrintModel {
+export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData, title: string, doc?: Document): ParadisOfficePrintModel {
 	let remainingCells = LEGACY_PRINT_CELL_LIMIT;
 	let truncated = false;
-	const sheets = workbook.sheets.map((sheet, sheetIndex) => {
+	let omittedDrawings = 0;
+	const drawingBudget = createParadisSpreadsheetPrintDrawingBudget();
+	const sheets = workbook.sheets.map((sheet, sheetIndex): ParadisOfficeSpreadsheetPrintSheet => {
+		// 文書が渡されたときは、ページをシートと同じ寸法・書式で組み、図形・画像・グラフを描く。
+		const printLayout = doc ? paradisSpreadsheetPrintLayout(sheet, doc, drawingBudget) : undefined;
+		if (printLayout) {
+			omittedDrawings += printLayout.omittedDrawings;
+			return layoutPrintSheet(sheet, sheetIndex, printLayout, () => {
+				if (remainingCells-- <= 0) {
+					truncated = true;
+					return false;
+				}
+				return true;
+			});
+		}
 		const lineAnchors = new Map<string, ParadisOfficePrintLinePrimitive[]>();
 		for (let shapeIndex = 0; shapeIndex < (sheet.shapes?.length ?? 0); shapeIndex++) {
 			const shape = sheet.shapes![shapeIndex];
@@ -246,11 +303,14 @@ export function createLegacySpreadsheetPrintModel(workbook: IParadisWorkbookData
 			placeholders,
 		};
 	});
-	const model = createParadisOfficeSpreadsheetPrintModel({ title, sheets });
-	const approximationWarnings = [...model.approximationWarnings, {
-		code: 'spreadsheet.legacyPrintProjection',
-		message: localize('paradis.spreadsheet.legacyPrintProjection', "従来の表示方法で開いているため、ページの区切りはおおよその位置になります。"),
-	}];
+	const model = createParadisOfficeSpreadsheetPrintModel({ title, sheets, ...(omittedDrawings ? { omittedDrawings } : {}) });
+	const approximationWarnings = [...model.approximationWarnings];
+	if (!doc) {
+		approximationWarnings.push({
+			code: 'spreadsheet.legacyPrintProjection',
+			message: localize('paradis.spreadsheet.legacyPrintProjection', "従来の表示方法で開いているため、ページの区切りはおおよその位置になります。"),
+		});
+	}
 	if (truncated) {
 		approximationWarnings.push({
 			code: 'spreadsheet.legacyPrintLimit',
@@ -283,6 +343,7 @@ export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): bool
 
 function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreadsheetTileRequest): ParadisSpreadsheetGridTile {
 	const cells: ParadisSpreadsheetGridTile['cells'][number][] = [];
+	const comments = commentKindsByCell(sheet);
 	for (let rowIndex = request.range[0]; rowIndex < request.range[2]; rowIndex++) {
 		const row = sheet.rows[rowIndex];
 		if (!row) {
@@ -301,6 +362,7 @@ function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreadsheetTil
 				classNames: [
 					...(cell.wrapText ? ['paradis-spreadsheet-virtual-cell-wrap'] : []),
 					...(cell.verticalText ? ['paradis-spreadsheet-virtual-cell-vertical'] : []),
+					...commentClassFor(comments, row.excelRow, sheet.minCol + columnIndex),
 				],
 				...(cell.rowSpan ? { rowSpan: cell.rowSpan } : {}),
 				...(cell.colSpan ? { columnSpan: cell.colSpan } : {}),
@@ -309,6 +371,23 @@ function legacyGridTile(sheet: IParadisSheetData, request: ParadisSpreadsheetTil
 		}
 	}
 	return { revision: request.revision, range: request.range, cells };
+}
+
+function commentClassFor(comments: ReadonlyMap<string, IParadisCellComment>, excelRow: number, excelColumn: number): string[] {
+	const comment = comments.get(`${excelRow}:${excelColumn}`);
+	return comment ? [commentMarkerClass(comment.kind)] : [];
+}
+
+/** 印にマウスを乗せたときの簡単な表示。最初の投稿と、返信の数・解決済みだけを出す（本文は変更点パネル）。 */
+export function spreadsheetCommentHoverText(comment: IParadisCellComment): string {
+	const first = comment.entries[0];
+	const body = first ? `${first.author ? `${first.author}: ` : ''}${first.text.length > 300 ? `${first.text.slice(0, 299)}…` : first.text}` : '';
+	const replies = comment.entries.length - 1;
+	return [
+		body,
+		replies > 0 ? localize('paradis.spreadsheet.commentReplies', "返信 {0} 件", replies) : '',
+		comment.resolved ? localize('paradis.spreadsheet.commentResolved', "解決済み") : '',
+	].filter(Boolean).join('\n');
 }
 
 /** 固定ヘッダー帯の計測と DOM 更新を 1 回ずつのフラグメント追加で行う。 */
@@ -588,6 +667,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(PARADIS_SPREADSHEET_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -651,6 +731,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		// 兄弟として重ね、body の scroll イベントで transform だけ更新する。
 		const bodyWrap = dom.append(this._root, $('.paradis-spreadsheet-bodywrap'));
 		this._bodyEl = dom.append(bodyWrap, $('.paradis-spreadsheet-body'));
+		this._register(dom.addDisposableListener(this._bodyEl, dom.EventType.MOUSE_OVER, event => this._showCommentHover(event)));
 		this._colStripEl = dom.append(bodyWrap, $('.paradis-spreadsheet-colstrip'));
 		this._colStripInner = dom.append(this._colStripEl, $('.paradis-spreadsheet-strip-inner'));
 		this._rowStripEl = dom.append(bodyWrap, $('.paradis-spreadsheet-rowstrip'));
@@ -1064,7 +1145,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				inspect: async (query: string) => searchLegacySpreadsheetWorkbook(workbook, query),
 			}),
 			print: () => async () => {
-				const model = createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx')));
+				const model = createLegacySpreadsheetPrintModel(workbook, basename(this._currentResource ?? URI.file('spreadsheet.xlsx')), this.window.document);
 				const result = await printParadisOfficeModelInBrowser(model, this.window);
 				return withParadisOfficePrintResult(model, result);
 			},
@@ -1135,6 +1216,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		inspector.setViewState(viewState);
 		inspector.setComparison([], INCOMPLETE_SPREADSHEET_MANIFEST, 'degraded');
 		inspector.setPlaceholders(placeholders);
+		inspector.setComments(workbook.sheets.flatMap(sheet => (sheet.comments ?? []).map(comment => ({ sheet: sheet.name, comment }))), workbook.sheets.reduce((sum, sheet) => sum + (sheet.commentsOmitted ?? 0), 0));
 	}
 
 	private _navigateToLogicalLocator(locator: string, anchor?: string): void {
@@ -1614,6 +1696,33 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				scheduler.schedule();
 			}
 		}, () => { /* フォント待ち失敗は無視 */ });
+	}
+
+	/** メモ・コメントの印にマウスを乗せたら、最初の投稿だけを簡単に出す。 */
+	private _showCommentHover(event: MouseEvent): void {
+		if (!dom.isHTMLElement(event.target)) {
+			return;
+		}
+		const target = event.target.closest<HTMLElement>('.paradis-spreadsheet-comment-note, .paradis-spreadsheet-comment-thread');
+		if (!target || (dom.isHTMLElement(event.relatedTarget) && target.contains(event.relatedTarget))) {
+			return;
+		}
+		const sheet = this._sheets[this._activeSheetIndex];
+		if (!sheet?.comments) {
+			return;
+		}
+		// 表のセルは番地を持つ。仮想のグリッドのセルは行と列の位置（aria）から番地を求める。
+		let ref = target.dataset.paradisCommentRef;
+		if (!ref) {
+			const rowIndex = Number(target.getAttribute('aria-rowindex')) - 1;
+			const columnIndex = Number(target.getAttribute('aria-colindex')) - 1;
+			const excelRow = sheet.rows[rowIndex]?.excelRow;
+			ref = excelRow !== undefined && columnIndex >= 0 ? `${getColumnLabel(sheet.minCol - 1 + columnIndex)}${excelRow}` : undefined;
+		}
+		const comment = ref ? sheet.comments.find(candidate => candidate.ref === ref) : undefined;
+		if (comment) {
+			this._hoverService.showDelayedHover({ target, content: spreadsheetCommentHoverText(comment) }, { groupId: 'paradis-spreadsheet-comment' });
+		}
 	}
 
 	private _buildSheetTable(sheet: IParadisSheetData): { table: HTMLTableElement; naturalWidth: number } {

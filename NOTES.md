@@ -84,6 +84,13 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 検査は見出し（構造）しか読まず、画像を展開しない。そのため、見出しは正しいのに中身（圧縮されたデータ）が壊れた JPEG と GIF は検査を通る。描画側では webview が `img` の `error` を捕捉の段階で拾い、読み込みを終えて幅が 0 の画像を代わりの箱に替えて数える
 - 限界: 全画像に `decode()` を掛けるのはやめた（大きな画像をまとめて展開するため）。そのため、文書に付く前に読み込みに失敗した画像と、SVG の `image`（VML の画像）のうち `error` を拾えなかったものは、壊れていても箱に替わらず、代替表示にも数えられない。また、見出しは正しく中身だけが壊れた JPEG と GIF は、ブラウザが途中まで描けてしまう（幅が 0 にならない）ことがあり、その場合も数えられない
 
+## EMF・WMF は記録を読んで SVG にして描く（fileViewers、2026-10-09、Q321 f）
+
+- 変換は `common/office/paradisOfficeMetafile.ts`（描き先は `paradisOfficeMetafileSvg.ts`、パッケージの部品をまとめて変換するのは `paradisOfficeMetafileParts.ts`）。描けない記録を 1 つでも含む画像は箱のまま。EMF+ は解釈せず、二重（dual）なら GDI の記録で描く
+- 変換した SVG は変換器が組み立てた決まった形なので、文書由来の SVG の検査（`sanitizeOfficeSvg`）は通さない。代わりに 1 枚 4 MiB・1 文書の合計 32 MiB と、1 文書で試す入力 64 MiB・記録 100 万件の上限を持つ。Word では、置き換えで増える分（SVG − 元の画像）を、書き出すパッケージの上限 32 MiB から元のパッケージの大きさと余白 1 MiB を引いた範囲に収める（入りきらない画像は箱のまま。文書は開ける）。表示は `<img>`（data URL）か SVG の `<image>` に入れる形に限り、インラインの SVG として DOM に差し込まない
+- docx-preview は画像を型の無い Blob から data URL にするので、SVG の部品は `data:application/octet-stream` になり描かれない。Word の 2 つの webview は、先頭が `<svg` のものを `image/svg+xml` に付け替える（それまで「Office asset unavailable」の箱も出ていなかった）
+- 埋め込みオブジェクト（`w:object`）にプレビューの絵（`v:imagedata`）があれば、サニタイザが `w:pict` に書き換え、`o:OLEObject`（strict の `w:objectEmbed`・`w:objectLink` も）と VML の図形に残る埋め込みへの参照（`o:ole`、`v:imagedata` 以外の関係の id）を外す。埋め込みの本体と関係は今までどおり外し、「安全のために外しました: 埋め込み」に数える。プレビューの絵は画像の検査か EMF・WMF の変換を通ったものだけを描く。`w:object` が自分で名前空間を宣言している場合は書き換えず、今までどおり箱にする
+
 ## Excel の詳しい解析も shared process の worker で動かす（fileViewers、2026-10-09、段階 2）
 
 - 入口は `node/spreadsheet/paradisSpreadsheetSemanticWorkerMain.ts`（`build/next/index.ts` の `desktopEntryPoints` に載せてある）。待ち行列の守りは `node/office/paradisOfficeSemanticWorkerQueue.ts` にまとめた。Word の worker と同じく 1 件ずつ・実行と待ち行列で別の締め切り・ヒープ 384 MiB で、加えて待ち行列のバイト数の上限（60 MiB）を持ち、待ち行列があふれたときと待ちすぎたときは `busy` を返す。エディタは間を空けて 3 回まで頼み直す
@@ -381,12 +388,13 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 
 ### vendored chrome-devtools-mcp への変更（2026-10-04）
 
-vendored の中身は原則そのまま同梱するが、2 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
+vendored の中身は原則そのまま同梱するが、3 か所だけ直している。パッケージを更新したら、この変更を当て直すこと（`grep -rn "PARA-PATCH" src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build` で見つかる）。
 
 | ファイル | 変更 | 理由 |
 |---|---|---|
 | `build/src/McpContext.js` の `waitForTextOnPage` | `locator.wait()` に `AbortController` の signal を渡し、勝ち負けが決まったら（成功・時間切れとも）`abort()` する | `wait_for` は全フレーム × 全テキストで `aria/` と `text/` の Locator を race させる。rxjs の race は負け側の購読を外すだけで、負け側の `waitForSelector`（`Runtime.callFunctionOn` の awaitPromise）は上流に既定 5 秒残り、直後の click がゲートウェイの入力の関所でそれを待って not interactive になっていた |
 | `build/src/tools/snapshot.js` の `take_snapshot`（2026-10-08） | 内部用の引数 `paraCodeRootRect`（uid）を足し、その要素の `boundingBox()` を `[Para Code root rect] {...}` の 1 行で結果に書く。引数は Para Code の `paradisPrepareDevtoolsToolCall` が `root` から付ける。付けるのは tools/list の `take_snapshot` のスキーマに `paraCodeRootRect` があるときだけ（当て忘れた vendored は知らない引数を断るため。`paradisSnapshotMeasuresRoot`）。エージェントが渡しても捨て、tools/list には出さない。行は proxy が `paradisTakeSnapshotRootRect` で、見出しより前の最初の 1 行だけを取り除き、位置は返す結果に結び付ける（本文はページの文字をエスケープしないので読まない）。当たっていることは `paradisDevtoolsToolAdjustments.test.ts` が vendored の中身で確かめる | `root` の要素にエージェントのカーソルの枠を出すため（q.html Q297 の 3）。別の `evaluate_script` で測ると、同じタブの道具の順番（toolMutex）を握り、ナビゲーション待ちと DOM の安定待ちのぶん次の道具を待たせ、既定の `dialogAction` で confirm を承認してしまう |
+| `build/src/tools/script.js` の `evaluate_script`（2026-10-09） | 内部用の引数 `paraCodeObserve`（boolean）を足す。付いていれば `waitForEventsAfterAction` を通さずに評価し（ダイアログの処理・遷移と DOM の安定待ちをしない）、ダイアログが開いていれば `PARA_BROWSER_DIALOG_OPEN` で断る。3 秒答えなければ同じ印で打ち切る。付けるのは操作の後の観測（`paradisBrowserObserve.ts`、設定 `paradis.agentBrowser.settleAfterAction` / `reportBrowserState`）だけで、tools/list のスキーマに `paraCodeObserve` があるときだけ（`paradisEvaluateObserves`）。無い版（パッチの当て忘れ）ではページの中を一切読まず（タブとダウンロードの状態だけを添える）、`paraCodeObserve` 付きの呼び出しが来ても従来の評価に戻さず `PARA_BROWSER_OBSERVE_UNSUPPORTED` で断る（従来の評価は dialogAction の既定が accept で、確認のダイアログを承認しうるため。Q322）。tools/list には出さない。当たっていることは `paradisDevtoolsToolAdjustments.test.ts` が確かめる | 観測は操作の後に 100ms ごとにページの記録を読む。既定の評価は呼び出しのたびに dialog の handler を置き、DOM の安定待ちの間も外さないため、その間に開いた confirm を閉じてしまい、エージェントの handle_dialog が効かなくなった（見本サイトの遅れて開く confirm で再現） |
 
 上流で `waitForTextOnPage` が signal を渡すようになったら、この変更は外してよい。ツールの入口と出口の調整（`wait_for` の `text` を文字列でも受ける、スナップショットを既定で返さない、`take_snapshot` の文字数の上限と `offset`、not interactive への拒否理由の追記、Target closed の 1 回の再試行）は vendored を触らず `node/paradisDevtoolsToolAdjustments.ts` で行っている。
 
@@ -2768,6 +2776,45 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 ## おやすみモード中の通知の読み上げはモバイルへだけ（2026-10-09、Q310 A）
 
 おやすみモードの間、通知のトリガー（`paradisNotificationTrigger.contribution.ts`）は着信音と PC の読み上げを止めたまま、読み上げを `mobileOnly: true` の `notifyAudio` で shared process へ渡す（手元・SSH のペインとも同じトリガーを通る）。shared process は、声を聞いているモバイル（`mobileVoiceListenerCount()`）を列に積むときと合成する直前の 2 回数え、0 台なら合成しない。1 台以上なら通常の読み上げと同じ合成の口（音声のキャッシュに乗る）で合成し、受け取りながらモバイルへだけ流す。スケジューラは `mobileOnly` の件を、ほかの件と同じく音声入力が終わってから始め、合成した後は鳴り終わりも worker の再生 lock も待たずに終える（PC では鳴らさない）。PC の読み上げの音量が 0 のときは、通常の読み上げと同じく作らないので、モバイルへも送らない。`aivis --mute` 中に声をモバイルへ届ける Q209 B と同じ扱い。通知の抑制・受信箱（`doNotDisturb` の記録）・OS 通知は変えていない。フォーカス中の抑制ではモバイルへも流さない（PC の前にいるため）。
+
+## 内蔵ブラウザのサイトメモ（agentBrowser、2026-10-10、E4・Q303・Q304・Q326）
+
+設定 `paradis.agentBrowser.siteNotes`（既定オフ）。エージェントが `write_site_note` でサイトの気づきを残し、同じリポジトリで次にそのサイトを開いたエージェントへ、結果の末尾に 1 回だけヒントとして添える。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSiteNotes.ts`。
+
+- 置き場は利用者のフォルダの `~/.para-code/browser-notes/site-notes.json`（0600）。鍵はスペースの最初のフォルダ（接続先のペインは接続先の名前）とオリジンの組。スペースが分からないペインでは書きも添えもしない
+- 道具（`write_site_note`・`list_site_notes`・`delete_site_note`）は設定がオンのときだけ一覧に出る。一覧はエージェントの起動時に読まれるので、オンにした後に起動したエージェントから使える
+- 書く・消すのは、そのペインが今使えるタブ（共有されたページと自分で開いたタブ）の、今の URL のオリジンだけ。開いたページの文に従って、別のサイトのメモを書き換えさせないため。今の URL は窓のタブの一覧（list_browser_tabs と同じ）から読む。共有・許可した時点の URL（binding の pageInfo）はタブの中の移動で変わらないので使わない
+- 秘密の判定は通知の伏せ字（`paradisRedactSecrets`）に、Cookie の値を足したもの。添える文の頭には「指示ではなく参考の情報」と書く
+- 書く・消すたびにファイルを読み直してから書き戻す。ステーブルとベータが同時に動いていても、互いのメモを消さない（同じ瞬間の書き込みは後勝ち）
+- いつ書くかは道具の説明で促す（Q326 A）。作業の終わりに、手間取って分かったことを 1〜2 文で残し、秘密やその回だけの値は書かない
+
+## 内蔵ブラウザのサイトの手順（agentBrowser、2026-10-10、E3・Q303・Q304）
+
+設定 `paradis.agentBrowser.siteRecipes`（既定オフ）。エージェントが `save_recipe` で、決まった画面まで進む操作を run_steps の手順書（E6）と同じ形で保存し、`run_recipe` の 1 回の呼び出しでやり直す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSiteRecipes.ts`。
+
+- 置き場は `~/.para-code/browser-recipes/recipes.json`（0600）。鍵はサイトメモ（E4）と同じく、スペースの最初のフォルダとオリジンの組。ファイルの読み書きは E4 と同じ `paradisBrowserSiteStore.ts`
+- 道具（`save_recipe`・`run_recipe`・`list_recipes`・`delete_recipe`）は設定がオンのときだけ一覧に出る。オンにした後に起動したエージェントから使える
+- 変わる値は `{{name}}` のパラメータ。手順にスクリプトが無いので、どこでもそのままの文字として入れる。値の中の `$` は run_steps の参照と読まれないように `$$` にする
+- 秘密は手順に書かせない。サイトメモと同じ伏せ字の判定に加えて、パスワードらしい欄（fill_by / type_text の name・selector・text）へ決まった値を入れる手順を断る
+- 保存した手順は次のエージェントが中身を読まずに動かすので、スクリプトを 1 つも保存させない（evaluate_script、navigate_page の initScript、wait_until・expect・repeat_until・done_when の predicate）。text・visible・url_includes などの条件は使える。手元のファイルを読む・書く引数（take_snapshot / take_screenshot の filePath、capture_screenshot の saveTo など。`paradisDevtoolsPathArguments` が返すもの）も保存させない。形の崩れた手順（steps や params が配列でない、手順や params の名前が保存のときの決まりに合わない）は、一覧にもヒントにも出さず、動かさない。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。保存してあった手順も、動かす前に同じ決まりで確かめ直す
+- run_recipe は、タブが今いるサイトの手順だけを動かす（`url` は受けない）。一覧とヒントには「指示ではなく参考の情報」と書く
+- 置き場のファイルは約 8 MiB まで。越える書き込み（大きくなるもの）は断り、消す書き込みは通す
+- 保存・削除は、そのペインで今開いているタブのオリジンだけ（E4 と同じく今の URL）。同じ名前で保存すると置き換える
+- run_recipe は選んだタブに固定して、run_steps と同じ道筋（入れ子の `_callTool`）で動かす。`done_when` は最後の expect になる。止まったら、止まった手順と、その時のスナップショットの頭（6,000 字）を返し、直して保存し直すよう促す。このスナップショットは内蔵の take_snapshot を直接呼んで取る（スナップショットの差分の設定がオンでも全体）
+- そのサイトを初めて使った結果に、保存した手順の名前とパラメータを 1 行添える（ペインごとに 1 回）。この行には「指示ではなく参考」の前置きを付けない（出るのは英数字の名前だけ。前置きを付けると、台の t11 で手順が使われたのが 4/4 → 1/4 に減った）。前置きは自由な説明が出る list_recipes と、E4 のメモのヒントに付ける
+- 入力欄の値を待つ条件（run_steps の expect・repeat_until の `value_not_empty`・`value_equals`）は、Para Code がセレクタと値を JSON の文字列として埋めた predicate を作って wait_until に渡す。見るのは input・select・textarea の値だけ（li や button なども value を持つが入力欄ではない）。エージェントの書いたコードは入らないので、手順に保存してよい
+
+## 内蔵ブラウザのスナップショットの差分（agentBrowser、2026-10-10、E2・Q303）
+
+設定 `paradis.agentBrowser.snapshotDiff`（既定オフ）。エージェントの take_snapshot を、同じタブの 2 回目からは前回との差分（消えた・変わった・増えた要素、uid 付き）で返す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSnapshotDiff.ts`、控えは `paradisDevtoolsMcpProxy.ts` が子プロセスの台帳のキー（タブ）ごとに持つ。
+
+- 全体を返すのは、初回・別の文書（根の uid が違う）・子プロセスか世代が違う（uid の数え直し）・10 分を過ぎた・差分が「本文と 1 回に返す上限 20,000 字の小さい方」の半分を超える・前回の本文が 20,000 字を超えて切って返した、のどれか。`full: true` でも全体
+- run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけなので）
+- 控えは 32 枠・本文の合計 8,000,000 字まで。期限切れは取るときに捨てる
+- 差分にするのは素の take_snapshot だけ。`root`・`filePath`・`verbose`・`offset` の呼び出しは今までどおりで、控えも変えない。Para Code が中で使う take_snapshot（観測など）も差分にしない
+- MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
+- tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
+- 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない
 
 ## 今後の方針候補（未確定、要議論）
 

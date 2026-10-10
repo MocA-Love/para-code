@@ -538,6 +538,25 @@ suite('ParadisOfficeChannel', () => {
 		assert.throws(() => snapshotParadisOfficeResponse(missingWarnings), ParadisOfficeWireError);
 	});
 
+	test('rejects a printed sheet cell whose merged range leaves the page grid', () => {
+		const meta = { version: 1 as const, requestId: 'grid-1', ok: true as const, outcome: 'complete' as const, warnings: [], budgetUsage: {}, timings: {}, revision: { kind: 'document' as const, sourceRevision: 'document-revision-1' }, completeness };
+		const response = (cell: { readonly row: number; readonly column: number; readonly rowSpan?: number; readonly columnSpan?: number }): ParadisOfficeResponse => ({
+			...meta, operation: 'getPrintModel', printModel: {
+				title: 'Grid', approximationWarnings: [], pages: [{
+					pageNumber: 1, widthPoints: 612, heightPoints: 792, placeholders: [], blocks: [{
+						kind: 'sheetGrid', nodeId: 'grid', grid: { columns: [10, 10], rows: [10, 10], cells: [{ ...cell, runs: [{ text: 'A' }] }], drawings: [], gridLines: false, scale: 1 },
+					}],
+				}],
+			},
+		});
+		const accepted = (cell: Parameters<typeof response>[0]) => { try { return snapshotParadisOfficeResponse(response(cell)).ok; } catch (error) { return error instanceof ParadisOfficeWireError ? 'rejected' : String(error); } };
+		assert.deepStrictEqual([
+			accepted({ row: 0, column: 0, rowSpan: 2, columnSpan: 2 }),
+			accepted({ row: 1, column: 0, rowSpan: 2 }),
+			accepted({ row: 0, column: 1, columnSpan: 2 }),
+		], [true, 'rejected', 'rejected']);
+	});
+
 	test('commits handles and cursors only after response marshal succeeds', async () => {
 		const backend = new RecordingBackend();
 		backend.responses.set('close', request => Promise.resolve({ version: 1, requestId: request.requestId, operation: 'close', ok: true, outcome: 'complete', warnings: [], budgetUsage: {}, timings: {}, acknowledged: true }));

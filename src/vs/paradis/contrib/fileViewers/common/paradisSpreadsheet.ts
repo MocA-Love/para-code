@@ -11,7 +11,8 @@
 // スタイルは CSS プロパティ名(camelCase)→値文字列 のプレーンオブジェクトで、renderer 側で
 // Object.assign(element.style, style) によりそのまま適用できる。
 
-import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
+import type { IParadisPageLayout, IParadisPageSetup } from './paradisSpreadsheetPageLayout.js';
+import type { ParadisPresetShape } from './spreadsheet/paradisPresetShapeData.js';
 import type { ParadisSemanticBorder, ParadisSemanticCell, ParadisSpreadsheetColor, ParadisSpreadsheetDiagonalIdentity, ParadisSpreadsheetProjectionDiagnostic, ParadisSpreadsheetSnapshot } from './spreadsheet/paradisSpreadsheetSemantic.js';
 
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
@@ -51,10 +52,10 @@ export interface IParadisRenderAnchor {
 	readonly ro: number;
 }
 
-/** 図形の形（DrawingML の prstGeom のうち描けるもの）。`path` は custGeom を `paths` で描く。 */
-export type ParadisSpreadsheetShapeGeometry =
-	| 'rect' | 'roundRect' | 'ellipse' | 'triangle' | 'rtTriangle' | 'diamond'
-	| 'leftBracket' | 'rightBracket' | 'leftBrace' | 'rightBrace' | 'path';
+/**
+ * 図形の形。既定の形（prstGeom）の名前（ST_ShapeType の 187 種）か、自由形状（custGeom）を表す `custom`。
+ */
+export type ParadisSpreadsheetShapeGeometry = string;
 
 /** 図形の中の文字の 1 区切り。大きさは pt。 */
 export interface IParadisShapeTextRun {
@@ -79,13 +80,6 @@ export interface IParadisShapeText {
 	readonly vertical?: boolean;
 	readonly insets: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number };
 	readonly wrap: boolean;
-}
-
-/** custGeom の 1 本の道筋。座標は図形の枠の中の割合（0〜1）。 */
-export interface IParadisShapePath {
-	readonly d: readonly (readonly [command: 'M' | 'L' | 'C' | 'Q' | 'Z', ...coordinates: number[]])[];
-	readonly fill: boolean;
-	readonly stroke: boolean;
 }
 
 /** データラベル（`dLbls`、ECMA-376 Part 1 §21.2.2.49）。何を出すかと、どこに置くか。 */
@@ -200,9 +194,10 @@ export interface IParadisRenderShape {
 	readonly name?: string;
 	readonly shapeId?: string;
 	readonly geometry?: ParadisSpreadsheetShapeGeometry;
-	/** 形の調整値（角丸・括弧の丸み・中括弧の先端の位置など。100000 が全体）。 */
-	readonly adjust?: readonly number[];
-	readonly paths?: readonly IParadisShapePath[];
+	/** 形の調整値（avLst。名前 → 値。角丸・括弧の丸み・矢印の太さなど）。 */
+	readonly adjust?: Readonly<Record<string, number>>;
+	/** 自由形状（custGeom）の式と道筋。既定の形の定義と同じ形にしてある。 */
+	readonly customGeometry?: ParadisPresetShape;
 	/** 塗りの色。無ければ塗らない。 */
 	readonly fill?: string;
 	/** 塗りの不透明度(0〜1)。 */
@@ -479,6 +474,31 @@ export interface IParadisRowData {
 	readonly height: number;
 }
 
+/** メモ・コメントの 1 件（スレッドでは最初の投稿と返信のそれぞれ）。 */
+export interface IParadisCellCommentEntry {
+	/** 作成者の表示名。分からなければ空。 */
+	readonly author: string;
+	/** 作成日時（ISO 8601、スレッドのみ）。 */
+	readonly date?: string;
+	readonly text: string;
+	/** @メンションの位置（本文の中の開始と長さ）。 */
+	readonly mentions?: readonly { readonly start: number; readonly length: number }[];
+}
+
+/** セルに付いたメモ（古い形式）またはスレッド形式のコメント。 */
+export interface IParadisCellComment {
+	/** `B12` のようなセルの番地。 */
+	readonly ref: string;
+	/** 0 始まりの行と列。 */
+	readonly row: number;
+	readonly column: number;
+	readonly kind: 'note' | 'thread';
+	/** スレッドが解決済みか。 */
+	readonly resolved?: boolean;
+	/** スレッドは最初の投稿と返信の順。メモは 1 件。 */
+	readonly entries: readonly IParadisCellCommentEntry[];
+}
+
 /** 1シート。 */
 export interface IParadisSheetData {
 	readonly name: string;
@@ -493,6 +513,10 @@ export interface IParadisSheetData {
 	readonly dataValidations?: readonly IParadisDataValidationEntry[];
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
+	/** セルのメモとコメント（行、列の順）。 */
+	readonly comments?: readonly IParadisCellComment[];
+	/** 上限（シート・ブック）を越えて出さなかったメモとコメントの数。 */
+	readonly commentsOmitted?: number;
 	/** 描けなかった図形(renderer 側で付与)。代替表示に数える。 */
 	readonly undrawnObjects?: readonly IParadisUndrawnObject[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */
@@ -511,6 +535,8 @@ export interface IParadisSheetData {
 	readonly printArea?: IParadisCellRange;
 	/** 手動改ページ＋用紙設定から求めたページ割り(自動改ページとページ番号)。 */
 	readonly pageLayout?: IParadisPageLayout;
+	/** 用紙・余白・倍率・印刷の設定（印刷プレビューで使う）。 */
+	readonly pageSetup?: IParadisPageSetup;
 	/** ウィンドウ枠の固定(sheetView.pane)。行・列とも「固定する本数」で、0 は固定なし。 */
 	readonly freezePane?: IParadisFreezePane;
 	/** オートフィルタ/テーブルのフィルタ範囲(見出し行にフィルタ記号を出すため)。 */
