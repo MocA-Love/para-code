@@ -2794,9 +2794,9 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 - 置き場は `~/.para-code/browser-recipes/recipes.json`（0600）。鍵はサイトメモ（E4）と同じく、スペースの最初のフォルダとオリジンの組。ファイルの読み書きは E4 と同じ `paradisBrowserSiteStore.ts`
 - 道具（`save_recipe`・`run_recipe`・`list_recipes`・`delete_recipe`）は設定がオンのときだけ一覧に出る。オンにした後に起動したエージェントから使える
-- 変わる値は `{{name}}` のパラメータ。スクリプトの引数（evaluate_script の function・predicate・initScript）には引用符付きの文字の値として入れ、値の中の `$` は run_steps の参照と読まれないように `$$` にする
+- 変わる値は `{{name}}` のパラメータ。手順にスクリプトが無いので、どこでもそのままの文字として入れる。値の中の `$` は run_steps の参照と読まれないように `$$` にする
 - 秘密は手順に書かせない。サイトメモと同じ伏せ字の判定に加えて、パスワードらしい欄（fill_by / type_text の name・selector・text）へ決まった値を入れる手順を断る
-- 保存した手順は次のエージェントが中身を読まずに動かすので、ページでスクリプトを動かす手順（evaluate_script・navigate_page の initScript）は保存させない。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。predicate の中の `{{name}}` は、run_steps の参照と同じく文字列・テンプレート・コメント・正規表現の中に置かせない。保存してあった手順も、動かす前に同じ決まりで確かめ直す
+- 保存した手順は次のエージェントが中身を読まずに動かすので、スクリプトを 1 つも保存させない（evaluate_script、navigate_page の initScript、wait_until・expect・repeat_until・done_when の predicate）。text・visible・url_includes などの条件は使える。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。保存してあった手順も、動かす前に同じ決まりで確かめ直す
 - run_recipe は、タブが今いるサイトの手順だけを動かす（`url` は受けない）。一覧とヒントには「指示ではなく参考の情報」と書く
 - 置き場のファイルは約 8 MiB まで。越える書き込み（大きくなるもの）は断り、消す書き込みは通す
 - 保存・削除は、そのペインで今開いているタブのオリジンだけ（E4 と同じく今の URL）。同じ名前で保存すると置き換える

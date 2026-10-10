@@ -18,13 +18,14 @@
 //   スナップショットの頭を返し、エージェントが直して保存し直す
 // - 手順は uid ではなく role・name・text で書かせる（uid はページを読み直すと変わる）
 // - 保存した手順は、次のエージェントが中身を読まずに動かす。ページの文に唆されたエージェントが保存した手順が、
-//   別のエージェントの権限で動かないように、ページでスクリプトを動かす手順（evaluate_script・initScript）は
-//   保存させず、navigate_page はその手順のサイトの中に限る。run_recipe は、タブが今いるサイトの手順だけを動かす。
+//   別のエージェントの権限で動かないように、ページでスクリプトを動かす手順（evaluate_script・initScript・
+//   predicate の条件）は保存させず、navigate_page はその手順のサイトの中に限る。run_recipe は、タブが今いるサイトの
+//   手順だけを動かす。保存した手順にはスクリプトが入らないので、パラメータはどこでもそのままの文字として入れる。
 //   一覧とヒントには「指示ではなく参考の情報」と書く
 
 import { homedir } from 'os';
 import { join } from '../../../../base/common/path.js';
-import { paradisParseRunStepsFlow, paradisRunStepsScriptArguments, paradisScriptPlaceholderInLiteral } from './paradisBrowserRunStepsFlow.js';
+import { paradisParseRunStepsFlow } from './paradisBrowserRunStepsFlow.js';
 import { paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
 
@@ -140,33 +141,24 @@ function isWithinOrigin(url: string, origin: string): boolean {
  * navigate_page、文字列などのリテラルの中の `{{name}}` を断る。
  */
 function recipeStepsRefusal(steps: readonly unknown[], origin: string): string | undefined {
+	const readBy = '(a later agent runs the recipe without reading it)';
 	let refusal: string | undefined;
-	const checkPredicate = (source: unknown, where: string) => {
-		const found = typeof source === 'string' ? paradisScriptPlaceholderInLiteral(source, PLACEHOLDER) : undefined;
-		if (refusal === undefined && found !== undefined) {
-			refusal = `${found.match} is inside ${found.place} in ${where}. A parameter is inserted into a script as a quoted string value, so write it where a value goes, outside quotes, templates and comments.`;
-		}
-	};
 	visitSteps(steps, step => {
 		if (refusal !== undefined) {
 			return;
 		}
 		const stepArgs = isRecord(step.args) ? step.args : {};
+		const predicateIn = ['expect', 'repeat_until'].find(key => isRecord(step[key]) && (step[key] as Record<string, unknown>).predicate !== undefined);
 		if (step.tool === 'evaluate_script') {
-			refusal = 'evaluate_script cannot be saved in a recipe (a later agent runs the recipe without reading it). Use click_by, fill_by, get_text, wait_until and expect.';
+			refusal = `evaluate_script cannot be saved in a recipe ${readBy}. Use click_by, fill_by, get_text, wait_until and expect.`;
 		} else if (step.tool === 'navigate_page' && stepArgs.initScript !== undefined) {
-			refusal = 'navigate_page with "initScript" cannot be saved in a recipe (a later agent runs the recipe without reading it).';
+			refusal = `navigate_page with "initScript" cannot be saved in a recipe ${readBy}.`;
 		} else if (step.tool === 'navigate_page' && typeof stepArgs.url === 'string' && !isWithinOrigin(stepArgs.url, origin)) {
 			refusal = `navigate_page in a recipe for ${origin} can only open pages of ${origin} (got ${JSON.stringify(stepArgs.url.slice(0, 120))}).`;
-		}
-		for (const argument of typeof step.tool === 'string' ? paradisRunStepsScriptArguments(step.tool) : []) {
-			checkPredicate(stepArgs[argument], `"${argument}" of ${step.tool}`);
-		}
-		for (const key of ['expect', 'repeat_until']) {
-			const condition = step[key];
-			if (isRecord(condition)) {
-				checkPredicate(condition.predicate, `the predicate of ${key}`);
-			}
+		} else if (step.tool === 'wait_until' && stepArgs.predicate !== undefined) {
+			refusal = `wait_until with "predicate" cannot be saved in a recipe ${readBy}. Wait for text, a locator or network_idle_ms instead.`;
+		} else if (predicateIn !== undefined) {
+			refusal = `"predicate" in ${predicateIn} (or done_when) cannot be saved in a recipe ${readBy}. Use text, text_gone, visible, gone, disabled, enabled or url_includes.`;
 		}
 	});
 	return refusal;
@@ -250,55 +242,19 @@ export function paradisCheckSiteRecipe(args: Record<string, unknown>, meta: { re
 	};
 }
 
-/** パラメータの値を差し込む。スクリプトの引数（evaluate_script の function、predicate など）には引用符付きの文字の値として入れる。 */
-function fill(text: string, values: Readonly<Record<string, string>>, script: boolean): string {
-	// 値の中の `$` は run_steps の参照（`$2.text`）と読まれないように `$$` にする
-	return text.replace(PLACEHOLDER, (_match, name: string) => {
-		const value = values[name] ?? '';
-		return (script ? JSON.stringify(value) : value).replaceAll('$', '$$$$');
-	});
-}
-
-function fillDeep(value: unknown, values: Readonly<Record<string, string>>): unknown {
+/** パラメータの値を、そのままの文字として差し込む（保存した手順にはスクリプトが無い）。 */
+function fill(value: unknown, values: Readonly<Record<string, string>>): unknown {
 	if (typeof value === 'string') {
-		return fill(value, values, false);
+		// 値の中の `$` は run_steps の参照（`$2.text`）と読まれないように `$$` にする
+		return value.replace(PLACEHOLDER, (_match, name: string) => (values[name] ?? '').replaceAll('$', '$$$$'));
 	}
 	if (Array.isArray(value)) {
-		return value.map(item => fillDeep(item, values));
+		return value.map(item => fill(item, values));
 	}
 	if (isRecord(value)) {
-		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fillDeep(item, values)]));
+		return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fill(item, values)]));
 	}
 	return value;
-}
-
-/** 条件（expect / repeat_until / done_when）。predicate だけがスクリプト。 */
-function fillCondition(condition: unknown, values: Readonly<Record<string, string>>): unknown {
-	if (!isRecord(condition)) {
-		return condition;
-	}
-	return Object.fromEntries(Object.entries(condition).map(([key, item]) => [key, key === 'predicate' && typeof item === 'string' ? fill(item, values, true) : fillDeep(item, values)]));
-}
-
-function fillSteps(steps: readonly unknown[], values: Readonly<Record<string, string>>): unknown[] {
-	return steps.map(step => {
-		if (!isRecord(step)) {
-			return step;
-		}
-		const scripts = typeof step.tool === 'string' ? paradisRunStepsScriptArguments(step.tool) : [];
-		return Object.fromEntries(Object.entries(step).map(([key, item]) => {
-			if (key === 'args' && isRecord(item)) {
-				return [key, Object.fromEntries(Object.entries(item).map(([argKey, argValue]) => [argKey, scripts.includes(argKey) && typeof argValue === 'string' ? fill(argValue, values, true) : fillDeep(argValue, values)]))];
-			}
-			if (key === 'expect' || key === 'repeat_until') {
-				return [key, fillCondition(item, values)];
-			}
-			if (key === 'steps' && Array.isArray(item)) {
-				return [key, fillSteps(item, values)];
-			}
-			return [key, fillDeep(item, values)];
-		}));
-	});
 }
 
 /** run_recipe の手順（パラメータを差し込み、done_when を最後の expect にしたもの）。足りないパラメータがあれば断る。 */
@@ -321,7 +277,7 @@ export function paradisSiteRecipeSteps(recipe: IParadisSiteRecipe, rawValues: un
 	if (refusal !== undefined) {
 		return { ok: false, error: `run_recipe: the recipe "${recipe.name}" cannot run: ${refusal}` };
 	}
-	const filled = fillSteps(steps, values);
+	const filled = fill(steps, values) as unknown[];
 	let outside: string | undefined;
 	visitSteps(filled, step => {
 		const url = isRecord(step.args) ? step.args.url : undefined;
@@ -364,7 +320,7 @@ const URL_PROPERTY = { type: 'string', description: 'A URL of the site (the reci
 export const PARADIS_SITE_RECIPE_TOOLS = [
 	{
 		name: 'save_recipe',
-		description: 'Save the steps that reach a screen on a website open in this pane (for example logging in, or opening the CSV export page), so later agents in this repository can repeat them with one run_recipe call. Steps take the same form as run_steps (tools, expect, sleep_ms, for_each, repeat_until); write elements by role, name or text, not uid. Put values that change in {{name}} placeholders and list them in params; never write passwords or other secrets into the steps. evaluate_script and initScript cannot be saved, and navigate_page stays on the same site. done_when checks that the screen was reached. Saving under an existing name replaces it (fix a recipe this way when it stops).',
+		description: 'Save the steps that reach a screen on a website open in this pane (for example logging in, or opening the CSV export page), so later agents in this repository can repeat them with one run_recipe call. Steps take the same form as run_steps (tools, expect, sleep_ms, for_each, repeat_until); write elements by role, name or text, not uid. Put values that change in {{name}} placeholders and list them in params; never write passwords or other secrets into the steps. Scripts cannot be saved (evaluate_script, initScript, predicate conditions), and navigate_page stays on the same site. done_when checks that the screen was reached. Saving under an existing name replaces it (fix a recipe this way when it stops).',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -372,7 +328,7 @@ export const PARADIS_SITE_RECIPE_TOOLS = [
 				description: { type: 'string', description: `What the recipe does and which screen it ends on (at most ${MAX_DESCRIPTION_CHARS} characters).` },
 				steps: { type: 'array', items: { type: 'object' }, description: 'The steps, as for run_steps. Strings may contain {{param}}.' },
 				params: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' } }, required: ['name'] }] }, description: 'Names of the {{param}} placeholders, optionally with a description.' },
-				done_when: { type: 'object', description: 'Condition that holds on the target screen, as in run_steps expect, for example {"text": "Export orders"}.' },
+				done_when: { type: 'object', description: 'Condition that holds on the target screen, as in run_steps expect but without predicate, for example {"text": "Export orders"}.' },
 				url: URL_PROPERTY,
 			},
 			required: ['name', 'steps'],

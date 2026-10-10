@@ -282,11 +282,6 @@ function substituteDeep(value: unknown, scope: IScope, missing: string[]): unkno
 /** 道具の引数のうち、ページで動くスクリプトの引数。 */
 const SCRIPT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = { evaluate_script: ['function'], wait_until: ['predicate'], navigate_page: ['initScript'] };
 
-/** その道具の、ページで動くスクリプトを受け取る引数の名前（サイトの手順の値の差し込みでも使う）。 */
-export function paradisRunStepsScriptArguments(tool: string): readonly string[] {
-	return SCRIPT_ARGUMENTS[tool] ?? [];
-}
-
 /** 道具の引数に参照を差し込む（スクリプトの引数は文字の値として）。 */
 export function paradisSubstituteRunStepsArgs(tool: string, args: Record<string, unknown>, scope: IScope, missing: string[]): Record<string, unknown> {
 	return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, SCRIPT_ARGUMENTS[tool]?.includes(key) && typeof value === 'string' ? substitute(value, scope, missing, true) : substituteDeep(value, scope, missing)]));
