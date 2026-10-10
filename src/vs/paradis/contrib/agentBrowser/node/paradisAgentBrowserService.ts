@@ -403,6 +403,11 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
  */
 const PARADIS_TOOL_CALL_LANE_EXEMPT_NAMES: ReadonlySet<string> = new Set(['run_steps', 'set_cursor_label', 'get_cdp_endpoint', 'get_shared_page']);
 
+/** ヒントを添えるときに控えるペインのスペースの期限（ミリ秒）。 */
+const PARADIS_SITE_NOTE_SPACE_CACHE_MS = 60_000;
+/** ヒントを添えるために窓のタブの一覧を待つ上限（ミリ秒）。 */
+const PARADIS_SITE_HINT_TABS_TIMEOUT_MS = 1000;
+
 /** run_recipe が止まったときに添える、ページのスナップショットの頭の長さ。 */
 const PARADIS_SITE_RECIPE_SNAPSHOT_CHARS = 6000;
 
@@ -798,8 +803,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _siteRecipesEnabled: (() => boolean) | undefined;
 	/** サイトの手順の置き場（paradisBrowserSiteRecipes.ts）。 */
 	private readonly _siteRecipes = new ParadisSiteRecipesStore(paradisSiteRecipesDefaultPath());
-	/** ペインごとのスペース（サイトメモの鍵）。窓に聞くと最大 4 秒かかるので控える。initialize とペインの片付けで消す。 */
-	private readonly _siteNoteSpaces = new Map<string, Promise<{ readonly key: string; readonly folder?: string } | undefined>>();
+	/**
+	 * ペインごとのスペース（サイトメモの鍵）。窓に聞くと最大 4 秒かかるので、ヒントを添える側だけで
+	 * {@link PARADIS_SITE_NOTE_SPACE_CACHE_MS} の間控える。initialize とペインの片付けで消す。書く・消す道具は毎回窓に聞く
+	 * （ペインの所属の選び直しやフォルダの開き直しの後に、古いスペースへ書かないように）。
+	 */
+	private readonly _siteNoteSpaces = new Map<string, { readonly space: Promise<{ readonly key: string; readonly folder?: string } | undefined>; readonly at: number }>();
 	/** run_steps を手順書にするか（E6）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _runStepsFlowEnabled: (() => boolean) | undefined;
 	/** 操作の結果に添える、操作の後のページとブラウザの状態（paradisBrowserObserve.ts）。 */
@@ -4515,7 +4524,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if ((siteNotes || siteRecipes) && PARADIS_SITE_NOTE_HINT_TOOLS.has(name)) {
 				// そのサイトを初めて使った結果に、残されたメモ（E4）と保存した手順の名前（E3）を添える
 				const result = await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
-				return await this._withSiteHints(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes });
+				return await this._withSiteHints(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes }, signal);
 			}
 			return await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
 		} finally {
@@ -4556,22 +4565,22 @@ export class ParadisAgentBrowserService extends Disposable {
 		return folder !== undefined ? { key: folder, folder } : undefined;
 	}
 
-	/** {@link _siteNoteSpace} を、ペインごとに控えて返す（分からなかったときは控えない）。 */
-	private _siteNoteSpaceOf(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
+	/** ヒントを添えるときの {@link _siteNoteSpace}。ペインごとに少しの間控える（分からなかったときは控えない）。 */
+	private _siteNoteSpaceForHints(ingressLease: IParadisAgentBrowserIngressLease): Promise<{ readonly key: string; readonly folder?: string } | undefined> {
 		const token = ingressLease.token;
-		let space = this._siteNoteSpaces.get(token);
-		if (space === undefined) {
-			space = this._siteNoteSpace(ingressLease);
-			this._siteNoteSpaces.set(token, space);
-			const pending = space;
-			const forgetFailure = () => {
-				if (this._siteNoteSpaces.get(token) === pending) {
-					this._siteNoteSpaces.delete(token);
-				}
-			};
-			void pending.then(value => value === undefined ? forgetFailure() : undefined, forgetFailure);
+		const cached = this._siteNoteSpaces.get(token);
+		if (cached !== undefined && Date.now() - cached.at <= PARADIS_SITE_NOTE_SPACE_CACHE_MS) {
+			return cached.space;
 		}
-		return space;
+		const entry = { space: this._siteNoteSpace(ingressLease), at: Date.now() };
+		this._siteNoteSpaces.set(token, entry);
+		const forgetFailure = () => {
+			if (this._siteNoteSpaces.get(token) === entry) {
+				this._siteNoteSpaces.delete(token);
+			}
+		};
+		void entry.space.then(value => value === undefined ? forgetFailure() : undefined, forgetFailure);
+		return entry.space;
 	}
 
 	/**
@@ -4579,7 +4588,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 時点の URL（binding の pageInfo）はタブの中の移動で変わらないので、list_browser_tabs と同じ一覧を窓から読む。
 	 * 読めなければ undefined。
 	 */
-	private async _siteNoteTabUrls(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<ReadonlyMap<string, string> | undefined> {
+	private async _siteNoteTabUrls(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal, timeoutMs?: number): Promise<ReadonlyMap<string, string> | undefined> {
 		const token = ingressLease.token;
 		const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
 			channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
@@ -4587,6 +4596,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			args: [token],
 			failureLabel: 'site-notes',
 			failureMessage: 'Failed to list the browser tabs in Para Code.',
+			...(timeoutMs !== undefined ? { timeoutMs } : {}),
 		}, signal).catch(() => undefined);
 		if (!call?.ok || !call.value.ok) {
 			return undefined;
@@ -4595,20 +4605,21 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** 道具の結果に、そのサイトのメモ（E4）と保存した手順の名前（E3）を、それぞれペインごとに 1 回だけ添える。 */
-	private async _withSiteHints(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, kinds: { readonly notes: boolean; readonly recipes: boolean }): Promise<unknown> {
+	private async _withSiteHints(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, kinds: { readonly notes: boolean; readonly recipes: boolean }, signal?: AbortSignal): Promise<unknown> {
 		if (typeof result !== 'object' || result === null || (result as { isError?: unknown }).isError === true || !Array.isArray((result as { content?: unknown }).content)) {
 			return result;
 		}
 		try {
 			const token = ingressLease.token;
 			// 道具の後の、そのタブの今の URL（navigate_page や open_browser_tab の後なら移った先）
-			const tabs = await this._siteNoteTabUrls(ingressLease);
+			// 添えるのはおまけなので、窓の一覧を長く待たない（道具の結果を遅らせない）
+			const tabs = await this._siteNoteTabUrls(ingressLease, signal, PARADIS_SITE_HINT_TABS_TIMEOUT_MS);
 			const tabId = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token);
 			const origin = paradisSiteNoteOrigin(tabId !== undefined ? tabs?.get(tabId) : undefined);
 			if (origin === undefined) {
 				return result;
 			}
-			const space = await this._siteNoteSpaceOf(ingressLease);
+			const space = await this._siteNoteSpaceForHints(ingressLease);
 			if (space === undefined) {
 				return result;
 			}
@@ -4665,7 +4676,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 開いているページの文が、別のサイトのメモを書き換えさせないように（evil.example から bank.example へ）
 			return this._toolError(`${name} only changes notes of a site open in this pane's tabs, and ${origin} is not. Open the site first, or leave the note while you are on it.`);
 		}
-		const space = await this._siteNoteSpaceOf(ingressLease);
+		const space = await this._siteNoteSpace(ingressLease);
 		this._requireIngressLease(ingressLease);
 		if (space === undefined) {
 			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so site notes are not available here.`);
@@ -4728,7 +4739,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// 開いているページの文が、別のサイトの手順を書き換えさせないように
 			return this._toolError(`${name} only changes recipes of a site open in this pane's tabs, and ${origin} is not. Open the site first.`);
 		}
-		const space = await this._siteNoteSpaceOf(ingressLease);
+		const space = await this._siteNoteSpace(ingressLease);
 		this._requireIngressLease(ingressLease);
 		if (space === undefined) {
 			return this._toolError(`${name}: Para Code could not tell which repository this terminal pane works in, so recipes are not available here.`);
