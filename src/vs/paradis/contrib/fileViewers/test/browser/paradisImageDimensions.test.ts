@@ -48,8 +48,11 @@ const meta = (...properties: Uint8Array[]) => box('meta', be32(0), box('hdlr', b
 const avif = (width: number, height: number) => bytes(ftyp, meta(ispe(width, height)), box('mdat', [0, 0, 0, 0]));
 /** Animated AVIF (brand avis): one track whose sample description is an av01 visual sample entry, or another codec. */
 const ftypAvis = box('ftyp', 'avis', be32(0), 'avismif1');
-const trak = (codec: string, width: number, height: number) => box('trak', box('tkhd', new Uint8Array(84)), box('mdia', box('mdhd', new Uint8Array(24)), box('minf', box('stbl',
-	box('stsd', be32(0), be32(1), box(codec, new Uint8Array(6), be16(1), new Uint8Array(16), be16(width), be16(height), new Uint8Array(50)))))));
+/** tkhd (version 0: 84 bytes, version 1: 96 bytes) whose last 8 bytes are the 16.16 fixed-point width and height. */
+const tkhd = (width: number, height: number, version = 0) => box('tkhd', [version, 0, 0, 0], new Uint8Array(version === 1 ? 84 : 72), be32(width * 0x10000), be32(height * 0x10000));
+const mdiaWith = (...entries: Uint8Array[]) => box('mdia', box('mdhd', new Uint8Array(24)), box('minf', box('stbl', box('stsd', be32(0), be32(entries.length), ...entries))));
+const av01 = (width: number, height: number) => box('av01', new Uint8Array(6), be16(1), new Uint8Array(16), be16(width), be16(height), new Uint8Array(50));
+const trak = (codec: string, width: number, height: number, header = tkhd(0, 0)) => box('trak', header, mdiaWith(codec === 'av01' ? av01(width, height) : box(codec, new Uint8Array(20))));
 const moov = (...tracks: Uint8Array[]) => box('moov', box('mvhd', new Uint8Array(100)), ...tracks);
 const avis = (...parts: Uint8Array[]) => bytes(ftypAvis, ...parts, box('mdat', [0, 0, 0, 0]));
 
@@ -94,6 +97,9 @@ suite('ParadisImageDimensions', () => {
 			avisSmallIspeLargeTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 20_000, 20_000))), 'image/avif', limit),
 			avisLargerSecondTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 64, 64), trak('av01', 20_000, 20_000))), 'image/avif', limit),
 			avisWithoutAv01: judgeParadisImageDecode(avis(moov(trak('mp4a', 0, 0))), 'image/avif', limit),
+			avisLargeTkhdVersion0: judgeParadisImageDecode(avis(moov(trak('av01', 64, 64, tkhd(20_000, 20_000)))), 'image/avif', limit),
+			avisLargeTkhdVersion1: judgeParadisImageDecode(avis(moov(trak('av01', 64, 64, tkhd(20_000, 20_000, 1)))), 'image/avif', limit),
+			avisFragmented: judgeParadisImageDecode(avis(moov(trak('av01', 640, 480, tkhd(640, 480))), ...Array.from({ length: 20_000 }, () => box('moof', [0]))), 'image/avif', limit),
 			avifIspeOutsideMeta: judgeParadisImageDecode(bytes(ftyp, ispe(1, 1), box('mdat', [0])), 'image/avif', limit),
 			svg: judgeParadisImageDecode(bytes('<svg xmlns="http://www.w3.org/2000/svg"/>'), 'image/svg+xml', limit),
 			htmlNamedPng: judgeParadisImageDecode(bytes('<html><script>alert(1)</script></html>'), 'image/png', limit),
@@ -116,10 +122,36 @@ suite('ParadisImageDimensions', () => {
 			avisSmallIspeLargeTrack: 'tooLarge',
 			avisLargerSecondTrack: 'tooLarge',
 			avisWithoutAv01: 'invalid',
+			avisLargeTkhdVersion0: 'tooLarge',
+			avisLargeTkhdVersion1: 'tooLarge',
+			avisFragmented: 'ok',
 			avifIspeOutsideMeta: 'invalid',
 			svg: 'ok',
 			htmlNamedPng: 'invalid',
 			truncatedJpeg: 'invalid',
+		});
+	});
+
+	test('refuses AVIF files whose box structure is broken', () => {
+		const limit = 100_000_000;
+		const judge = (...parts: Uint8Array[]) => judgeParadisImageDecode(avis(...parts), 'image/avif', limit);
+		const box64 = (type: string, high: number, content: Uint8Array) => bytes(be32(1), type, be32(high), be32(16 + content.byteLength), content);
+		deepStrictEqual({
+			stsdShorterThan8Bytes: judge(moov(box('trak', tkhd(64, 64), box('mdia', box('minf', box('stbl', box('stsd', be32(0)))))))),
+			av01ShorterThan28Bytes: judge(moov(box('trak', tkhd(64, 64), mdiaWith(box('av01', new Uint8Array(10)))))),
+			tkhdTooShort: judge(moov(box('trak', box('tkhd', [0, 0, 0, 0], new Uint8Array(20)), mdiaWith(av01(64, 64))))),
+			twoMoov: judge(moov(trak('av01', 64, 64)), moov(trak('av01', 64, 64))),
+			childOverrunsParent: judge(box('moov', be32(1000), 'trak')),
+			valid64BitLength: judge(moov(trak('av01', 64, 64)), box64('free', 0, new Uint8Array(8))),
+			oversized64BitLength: judge(moov(trak('av01', 64, 64)), box64('free', 1, new Uint8Array(8))),
+		}, {
+			stsdShorterThan8Bytes: 'invalid',
+			av01ShorterThan28Bytes: 'invalid',
+			tkhdTooShort: 'invalid',
+			twoMoov: 'invalid',
+			childOverrunsParent: 'invalid',
+			valid64BitLength: 'ok',
+			oversized64BitLength: 'invalid',
 		});
 	});
 });
