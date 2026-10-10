@@ -85,9 +85,10 @@ import { IParadisObserveHost, IParadisObserveOptions, ParadisBrowserObserver, pa
 import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
-import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
+import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
+import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -803,6 +804,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _siteNotes = new ParadisSiteNotesStore(paradisSiteNotesDefaultPath());
 	/** ペインごとに、メモを添え終えた「スペース\nオリジン」（同じペインへは 1 回だけ添える）。 */
 	private readonly _siteNotesShown = new Map<string, Set<string>>();
+	/** 詰まった後にうまくいったときの 1 行（Q327 B）を添えるための、タブごとの記録。 */
+	private readonly _siteNudges = new ParadisSiteNudges();
 	/** サイトの手順（E3）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _siteRecipesEnabled: (() => boolean) | undefined;
 	/** サイトの手順の置き場（paradisBrowserSiteRecipes.ts）。 */
@@ -2072,6 +2075,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
 		// サイトメモを添え終えた控え（E4）
 		this._siteNotesShown?.delete(token);
+		this._siteNudges?.forget(token);
 		this._siteNoteSpaces?.delete(token);
 		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
 		this._browserObserver.forget(token);
@@ -3090,6 +3094,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _serverInstructions(): string {
 		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
 		const parts: string[] = [PARADIS_BROWSER_MCP_INSTRUCTIONS];
+		// サイトメモ（E4）・サイトの手順（E3）の設定がオンなら、作業の終わりに残すよう 1 文足す（Q327 A。オフなら足さない）
+		const siteMemory = paradisSiteMemoryInstructions({ notes: this._siteNotesEnabled?.() === true, recipes: this._siteRecipesEnabled?.() === true });
+		if (siteMemory !== undefined) {
+			parts.push(siteMemory);
+		}
 		for (const provider of this._allToolProviders()) {
 			try {
 				const text = provider.instructions?.();
@@ -4396,6 +4405,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'initialize': {
 				// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
 				this._siteNotesShown?.delete(ingressLease.token);
+				this._siteNudges?.forget(ingressLease.token);
 				this._siteNoteSpaces?.delete(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
@@ -4539,6 +4549,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (siteRecipes && PARADIS_SITE_RECIPE_TOOL_NAMES.has(name)) {
 				return await this._siteRecipeTool(ingressLease, name, params?.arguments, socket, signal);
 			}
+			if ((siteNotes || siteRecipes) && PARADIS_SITE_NUDGE_ACTION_TOOLS.has(name)) {
+				// 詰まった後にうまくいったら、分かったことを残せると 1 行添える（Q327 B）
+				const result = PARADIS_SITE_NOTE_HINT_TOOLS.has(name)
+					? await this._withSiteHints(ingressLease, name, params?.arguments, await this._callToolDispatch(ingressLease, name, params, signal, socket, nested), { notes: siteNotes, recipes: siteRecipes }, signal)
+					: await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
+				return this._withSiteNudge(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes });
+			}
 			if ((siteNotes || siteRecipes) && PARADIS_SITE_NOTE_HINT_TOOLS.has(name)) {
 				// そのサイトを初めて使った結果に、残されたメモ（E4）と保存した手順の名前（E3）を添える
 				const result = await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
@@ -4629,6 +4646,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			return undefined;
 		}
 		return new Map(call.value.tabs.filter(tab => typeof tab.url === 'string' && this._scopeBinding(token, tab.tabId) !== undefined).map(tab => [tab.tabId, tab.url]));
+	}
+
+	/** 操作の道具の結果を数え、詰まった後にうまくいったら、メモや手順に残せると 1 行添える（paradisBrowserSiteNudge.ts）。 */
+	private _withSiteNudge(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, kinds: { readonly notes: boolean; readonly recipes: boolean }): unknown {
+		if (typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
+			return result;
+		}
+		const token = ingressLease.token;
+		const tab = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token) ?? '';
+		const failed = (result as { isError?: unknown }).isError === true;
+		const text = this._siteNudges.observe(token, tab, name, args, failed) ? paradisSiteNudgeText(kinds) : undefined;
+		if (text === undefined) {
+			return result;
+		}
+		const typed = result as { content: unknown[] };
+		return { ...typed, content: [...typed.content, { type: 'text', text }] };
 	}
 
 	/** 道具の結果に、そのサイトのメモ（E4）と保存した手順の名前（E3）を、それぞれペインごとに 1 回だけ添える。 */
