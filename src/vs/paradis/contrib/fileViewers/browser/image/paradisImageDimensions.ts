@@ -204,46 +204,81 @@ function readIsoBoxes(bytes: Uint8Array, start: number, end: number, budget: { b
 	return boxes;
 }
 
+type Size = { readonly width: number; readonly height: number };
+
 /**
- * AVIF（ISOBMFF）: `meta` → `iprp` → `ipco` の中の `ispe`（画像の空間的な大きさ）のうち一番大きいもの。
- * 箱の長さで飛ばしてたどるので、ファイルのどこに `meta` があっても読む。`ispe` は必須の箱なので、
- * 見つからなければ 0（呼び出し側で断る）。
+ * AVIF（ISOBMFF）の画像の大きさ。箱の長さで飛ばしてたどるので、ファイルのどこにあっても読む。
+ * - 静止画: `meta` → `iprp` → `ipco` の中の `ispe`（画像の空間的な大きさ）
+ * - 動く AVIF（brand `avis`）: 上に加えて `moov` → `trak` → `mdia` → `minf` → `stbl` → `stsd` の `av01` の
+ *   幅と高さ（`meta` を持たずトラックだけのものもあり、`meta` の `ispe` よりトラックが大きいこともある）
+ * 見つかったもののうち一番大きいものを返す。どちらも無い、または箱が壊れていれば 0（呼び出し側で断る）。
  */
-function avifDimensions(bytes: Uint8Array): { width: number; height: number } {
+function avifDimensions(bytes: Uint8Array): Size {
 	const none = { width: 0, height: 0 };
 	const budget = { boxes: MAX_BOXES };
-	const find = (parent: IsoBox, type: string, depth: number): IsoBox[] | undefined => {
-		if (depth > MAX_BOX_DEPTH) {
-			return undefined;
-		}
-		return readIsoBoxes(bytes, parent.start, parent.end, budget)?.filter(box => box.type === type);
+	const children = (parent: IsoBox, depth: number, skip = 0): IsoBox[] | undefined =>
+		depth > MAX_BOX_DEPTH ? undefined : readIsoBoxes(bytes, parent.start + skip, parent.end, budget);
+	/** 子のうち、その型の箱がちょうど 1 つならそれ、無ければ null、2 つ以上か壊れていれば undefined。 */
+	const single = (boxes: IsoBox[] | undefined, type: string): IsoBox | null | undefined => {
+		const found = boxes?.filter(box => box.type === type);
+		return !found || found.length > 1 ? undefined : found[0] ?? null;
 	};
+
 	const top = readIsoBoxes(bytes, 0, bytes.byteLength, budget);
-	const meta = top?.filter(box => box.type === 'meta');
-	if (!meta || meta.length !== 1) {
+	const meta = single(top, 'meta');
+	const moov = single(top, 'moov');
+	if (meta === undefined || moov === undefined) {
 		return none;
 	}
-	// meta は FullBox（版とフラグの 4 バイトの後ろに子の箱）。
-	const metaChildren: IsoBox = { type: 'meta', start: meta[0].start + 4, end: meta[0].end };
-	const iprp = find(metaChildren, 'iprp', 1);
-	if (!iprp || iprp.length !== 1) {
-		return none;
-	}
-	const ipco = find(iprp[0], 'ipco', 2);
-	if (!ipco || ipco.length !== 1) {
-		return none;
-	}
-	const ispe = find(ipco[0], 'ispe', 3);
-	if (!ispe || ispe.length === 0) {
-		return none;
-	}
-	let best = none;
-	for (const box of ispe) {
-		// FullBox の 4 バイトの後ろに、幅と高さが 4 バイトずつ。
-		if (box.end - box.start < 12) {
+	const sizes: Size[] = [];
+	if (meta) {
+		// meta は FullBox（版とフラグの 4 バイトの後ろに子の箱）。iprp・ipco が無いのは、トラックだけの avis。
+		const iprp = single(children(meta, 1, 4), 'iprp');
+		const ipco = iprp ? single(children(iprp, 2), 'ipco') : iprp;
+		if (iprp === undefined || ipco === undefined) {
 			return none;
 		}
-		const size = { width: u32be(bytes, box.start + 4), height: u32be(bytes, box.start + 8) };
+		const properties = ipco ? children(ipco, 3) : [];
+		if (!properties) {
+			return none;
+		}
+		for (const ispe of properties.filter(box => box.type === 'ispe')) {
+			// FullBox の 4 バイトの後ろに、幅と高さが 4 バイトずつ。
+			if (ispe.end - ispe.start < 12) {
+				return none;
+			}
+			sizes.push({ width: u32be(bytes, ispe.start + 4), height: u32be(bytes, ispe.start + 8) });
+		}
+	}
+	if (moov) {
+		const tracks = children(moov, 1)?.filter(box => box.type === 'trak');
+		if (!tracks) {
+			return none;
+		}
+		for (const trak of tracks) {
+			const mdia = single(children(trak, 2), 'mdia');
+			const minf = mdia ? single(children(mdia, 3), 'minf') : mdia;
+			const stbl = minf ? single(children(minf, 4), 'stbl') : minf;
+			const stsd = stbl ? single(children(stbl, 5), 'stsd') : stbl;
+			if (mdia === undefined || minf === undefined || stbl === undefined || stsd === undefined) {
+				return none;
+			}
+			// stsd は FullBox（4 バイト）と、項目の数（4 バイト）の後ろに見本の記述が並ぶ。
+			const entries = stsd ? children(stsd, 6, 8) : [];
+			if (!entries) {
+				return none;
+			}
+			for (const entry of entries.filter(box => box.type === 'av01')) {
+				// VisualSampleEntry: 予約 6・データ参照 2・予約 16 バイトの後ろに、幅と高さが 2 バイトずつ。
+				if (entry.end - entry.start < 28) {
+					return none;
+				}
+				sizes.push({ width: u16be(bytes, entry.start + 24), height: u16be(bytes, entry.start + 26) });
+			}
+		}
+	}
+	let best: Size = none;
+	for (const size of sizes) {
 		if (size.width * size.height > best.width * best.height) {
 			best = size;
 		}
