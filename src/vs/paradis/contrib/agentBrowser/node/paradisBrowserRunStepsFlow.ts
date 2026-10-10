@@ -577,7 +577,8 @@ function conditionPredicate(condition: Condition): string {
 	}
 	if (condition.kind === 'value_not_empty' || condition.kind === 'value_equals') {
 		// セレクタと値は JSON の文字列として、式の位置にだけ入れる（コードとしては読まれない）
-		const read = `const element = document.querySelector(${JSON.stringify(condition.selector)}); const value = element !== null && 'value' in element ? String(element.value) : undefined;`;
+		// 値を持つ入力の部品だけを見る（li・button・option・meter・progress・output・data も value を持つが、入力欄ではない）
+		const read = `const element = document.querySelector(${JSON.stringify(condition.selector)}); const value = element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement ? element.value : undefined;`;
 		return condition.kind === 'value_not_empty'
 			? `() => { ${read} return value !== undefined && value !== ''; }`
 			: `() => { ${read} return value === ${JSON.stringify(condition.expected)}; }`;

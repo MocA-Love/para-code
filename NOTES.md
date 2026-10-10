@@ -2796,13 +2796,13 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 道具（`save_recipe`・`run_recipe`・`list_recipes`・`delete_recipe`）は設定がオンのときだけ一覧に出る。オンにした後に起動したエージェントから使える
 - 変わる値は `{{name}}` のパラメータ。手順にスクリプトが無いので、どこでもそのままの文字として入れる。値の中の `$` は run_steps の参照と読まれないように `$$` にする
 - 秘密は手順に書かせない。サイトメモと同じ伏せ字の判定に加えて、パスワードらしい欄（fill_by / type_text の name・selector・text）へ決まった値を入れる手順を断る
-- 保存した手順は次のエージェントが中身を読まずに動かすので、スクリプトを 1 つも保存させない（evaluate_script、navigate_page の initScript、wait_until・expect・repeat_until・done_when の predicate）。text・visible・url_includes などの条件は使える。手元のファイルを読む・書く引数（take_snapshot / take_screenshot の filePath、capture_screenshot の saveTo など。`paradisDevtoolsPathArguments` が返すもの）も保存させない。形の崩れた手順（steps や params が配列でない）は動かさない。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。保存してあった手順も、動かす前に同じ決まりで確かめ直す
+- 保存した手順は次のエージェントが中身を読まずに動かすので、スクリプトを 1 つも保存させない（evaluate_script、navigate_page の initScript、wait_until・expect・repeat_until・done_when の predicate）。text・visible・url_includes などの条件は使える。手元のファイルを読む・書く引数（take_snapshot / take_screenshot の filePath、capture_screenshot の saveTo など。`paradisDevtoolsPathArguments` が返すもの）も保存させない。形の崩れた手順（steps や params が配列でない、手順や params の名前が保存のときの決まりに合わない）は、一覧にもヒントにも出さず、動かさない。navigate_page はその手順のオリジンの中だけ（保存のときと、パラメータを入れた後の両方で確かめる）。保存してあった手順も、動かす前に同じ決まりで確かめ直す
 - run_recipe は、タブが今いるサイトの手順だけを動かす（`url` は受けない）。一覧とヒントには「指示ではなく参考の情報」と書く
 - 置き場のファイルは約 8 MiB まで。越える書き込み（大きくなるもの）は断り、消す書き込みは通す
 - 保存・削除は、そのペインで今開いているタブのオリジンだけ（E4 と同じく今の URL）。同じ名前で保存すると置き換える
 - run_recipe は選んだタブに固定して、run_steps と同じ道筋（入れ子の `_callTool`）で動かす。`done_when` は最後の expect になる。止まったら、止まった手順と、その時のスナップショットの頭（6,000 字）を返し、直して保存し直すよう促す。このスナップショットは内蔵の take_snapshot を直接呼んで取る（スナップショットの差分の設定がオンでも全体）
 - そのサイトを初めて使った結果に、保存した手順の名前とパラメータを 1 行添える（ペインごとに 1 回）。この行には「指示ではなく参考」の前置きを付けない（出るのは英数字の名前だけ。前置きを付けると、台の t11 で手順が使われたのが 4/4 → 1/4 に減った）。前置きは自由な説明が出る list_recipes と、E4 のメモのヒントに付ける
-- 入力欄の値を待つ条件（run_steps の expect・repeat_until の `value_not_empty`・`value_equals`）は、Para Code がセレクタと値を JSON の文字列として埋めた predicate を作って wait_until に渡す。エージェントの書いたコードは入らないので、手順に保存してよい
+- 入力欄の値を待つ条件（run_steps の expect・repeat_until の `value_not_empty`・`value_equals`）は、Para Code がセレクタと値を JSON の文字列として埋めた predicate を作って wait_until に渡す。見るのは input・select・textarea の値だけ（li や button なども value を持つが入力欄ではない）。エージェントの書いたコードは入らないので、手順に保存してよい
 
 ## 内蔵ブラウザのスナップショットの差分（agentBrowser、2026-10-10、E2・Q303）
 
