@@ -16,6 +16,15 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 
 /** 1 つのファイルに持つ組（スペース × オリジン）の上限。古い組から消す。 */
 const MAX_KEYS = 2000;
+/** ファイルの大きさの上限（JSON の文字数、約 8 MiB）。項目を足して越えるときは書かない。 */
+const MAX_FILE_CHARS = 8 * 1024 * 1024;
+
+/** 置き場のファイルが上限に達していて、項目を足せない。 */
+export class ParadisBrowserSiteStoreFullError extends Error {
+	constructor() {
+		super(`The store is full (about ${MAX_FILE_CHARS / 1024 / 1024} MiB). Delete old items first.`);
+	}
+}
 
 /** 利用者の暦の日付（YYYY-MM-DD）。 */
 export function paradisLocalDate(date: Date): string {
@@ -28,7 +37,7 @@ export function paradisLocalDate(date: Date): string {
 export class ParadisBrowserSiteStore<T> {
 	private writing: Promise<unknown> = Promise.resolve();
 
-	constructor(private readonly filePath: string, private readonly field: string) { }
+	constructor(private readonly filePath: string, private readonly field: string, private readonly maxFileChars: number = MAX_FILE_CHARS) { }
 
 	private static key(space: string, origin: string): string {
 		return `${space}\n${origin}`;
@@ -44,11 +53,15 @@ export class ParadisBrowserSiteStore<T> {
 		}
 	}
 
-	private async save(map: Map<string, T[]>): Promise<void> {
-		const body = { version: 1, [this.field]: Object.fromEntries(map) };
+	private async save(map: Map<string, T[]>, grew: boolean): Promise<void> {
+		const text = JSON.stringify({ version: 1, [this.field]: Object.fromEntries(map) }, null, '\t');
+		if (grew && text.length > this.maxFileChars) {
+			// 消す・減らす書き込みは上限を越えていても通す（越えた置き場を小さくできるように）
+			throw new ParadisBrowserSiteStoreFullError();
+		}
 		await fs.mkdir(dirname(this.filePath), { recursive: true });
 		const temporary = `${this.filePath}.${generateUuid()}.tmp`;
-		await fs.writeFile(temporary, JSON.stringify(body, null, '\t'), { mode: 0o600 });
+		await fs.writeFile(temporary, text, { mode: 0o600 });
 		await fs.rename(temporary, this.filePath);
 	}
 
@@ -59,12 +72,14 @@ export class ParadisBrowserSiteStore<T> {
 	/**
 	 * 組の一覧を読み直して変える。読み直し・変更・書き戻しは 1 つずつ順に動かす（このプロセスの中で、書き込みどうしが
 	 * 追い越さないように）。`items` を返すと書き戻す（空なら組ごと消す）。書き込んだ組は、いちばん新しい組になる。
+	 * 組が大きくなる書き込みでファイルが上限を越えるときは {@link ParadisBrowserSiteStoreFullError} を投げる。
 	 */
 	update<R>(space: string, origin: string, change: (items: readonly T[]) => { readonly value: R; readonly items?: readonly T[] }): Promise<R> {
 		const key = ParadisBrowserSiteStore.key(space, origin);
 		const run = async () => {
 			const map = await this.load();
-			const { value, items } = change(map.get(key) ?? []);
+			const before = map.get(key) ?? [];
+			const { value, items } = change(before);
 			if (items !== undefined) {
 				map.delete(key);
 				if (items.length > 0) {
@@ -73,7 +88,7 @@ export class ParadisBrowserSiteStore<T> {
 				while (map.size > MAX_KEYS) {
 					map.delete(map.keys().next().value!);
 				}
-				await this.save(map);
+				await this.save(map, JSON.stringify(items).length > JSON.stringify(before).length);
 			}
 			return value;
 		};
