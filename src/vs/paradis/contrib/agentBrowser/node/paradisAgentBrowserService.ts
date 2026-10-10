@@ -785,8 +785,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _remoteVoiceLocalPlaybackEnabled: () => boolean;
 	/** 操作の後に待って変化を添えるか（E1）・ブラウザの状態を添えるか（I1）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _observeSettings: (() => IParadisObserveOptions) | undefined;
-	/** take_snapshot の 2 回目以降を前回との差分にするか（E2）。設定（既定は無効）を毎回読む。 */
-	private readonly _snapshotDiffEnabled: () => boolean;
+	/** take_snapshot の 2 回目以降を前回との差分にするか（E2）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
+	private readonly _snapshotDiffEnabled: (() => boolean) | undefined;
 	/** サイトメモ（E4）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _siteNotesEnabled: (() => boolean) | undefined;
 	/** サイトメモの置き場（paradisBrowserSiteNotes.ts）。 */
@@ -4375,7 +4375,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					? `${this._serverInstructions()}\n\n${PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS}`
 					: this._serverInstructions();
 				// 新しいエージェントは前のエージェントのスナップショットを見ていない。次の take_snapshot は全体を返す（E2）
-				this._devtoolsProxy.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === ingressLease.token);
+				this._devtoolsProxy?.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === ingressLease.token);
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -4391,7 +4391,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
 				this._requireIngressLease(ingressLease);
 				// take_snapshot を差分にする設定（既定は無効）が有効なら、全体を取る `full` と説明を足す
-				const tools = this._snapshotDiffEnabled() ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
+				const tools = this._snapshotDiffEnabled?.() === true ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
 				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
 				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 				// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
@@ -4847,7 +4847,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			// Para Code だけが付ける内部の引数は、エージェントから来たら捨てる（観測の待たない評価を勝手に使わせない）
 			const strippedArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
 			// take_snapshot を差分にする設定（既定は無効）が有効なら、`full` を取り除いて、差分か全体かを決める
-			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled() ? paradisTakeSnapshotDiffMode(strippedArgs) : undefined;
+			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled?.() === true ? paradisTakeSnapshotDiffMode(strippedArgs) : undefined;
 			const devtoolsArgs = snapshotDiff?.args ?? strippedArgs;
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
