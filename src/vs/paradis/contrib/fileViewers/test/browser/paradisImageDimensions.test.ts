@@ -46,6 +46,12 @@ const ispe = (width: number, height: number) => box('ispe', be32(0), be32(width)
 const ftyp = box('ftyp', 'avif', be32(0), 'avifmif1');
 const meta = (...properties: Uint8Array[]) => box('meta', be32(0), box('hdlr', be32(0), be32(0), 'pict', be32(0), be32(0), be32(0), [0]), box('iprp', box('ipco', ...properties), box('ipma', be32(0), be32(0))));
 const avif = (width: number, height: number) => bytes(ftyp, meta(ispe(width, height)), box('mdat', [0, 0, 0, 0]));
+/** Animated AVIF (brand avis): one track whose sample description is an av01 visual sample entry, or another codec. */
+const ftypAvis = box('ftyp', 'avis', be32(0), 'avismif1');
+const trak = (codec: string, width: number, height: number) => box('trak', box('tkhd', new Uint8Array(84)), box('mdia', box('mdhd', new Uint8Array(24)), box('minf', box('stbl',
+	box('stsd', be32(0), be32(1), box(codec, new Uint8Array(6), be16(1), new Uint8Array(16), be16(width), be16(height), new Uint8Array(50)))))));
+const moov = (...tracks: Uint8Array[]) => box('moov', box('mvhd', new Uint8Array(100)), ...tracks);
+const avis = (...parts: Uint8Array[]) => bytes(ftypAvis, ...parts, box('mdat', [0, 0, 0, 0]));
 
 suite('ParadisImageDimensions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -53,7 +59,7 @@ suite('ParadisImageDimensions', () => {
 	test('reads the size from the header of every raster format the viewer opens', () => {
 		deepStrictEqual([
 			png(577, 300), jpeg(4000, 3000), gif(320, 200), webpVp8x(5000, 4000), webpVp8l(1024, 768),
-			bmp(640, -480), icoWithPng(512, 512), avif(8192, 4096), bytes('<svg/>'),
+			bmp(640, -480), icoWithPng(512, 512), avif(8192, 4096), avis(moov(trak('av01', 640, 480))), bytes('<svg/>'),
 		].map(readParadisImageHeader), [
 			{ format: 'png', width: 577, height: 300 },
 			{ format: 'jpeg', width: 4000, height: 3000 },
@@ -63,6 +69,7 @@ suite('ParadisImageDimensions', () => {
 			{ format: 'bmp', width: 640, height: 480 },
 			{ format: 'ico', width: 512, height: 512 },
 			{ format: 'avif', width: 8192, height: 4096 },
+			{ format: 'avif', width: 640, height: 480 },
 			undefined,
 		]);
 	});
@@ -82,6 +89,11 @@ suite('ParadisImageDimensions', () => {
 			gifWithoutFrame: judgeParadisImageDecode(bytes('GIF89a', le16(1), le16(1), [0, 0, 0], [0x3b]), 'image/gif', limit),
 			avifMetaAfterOneMiB: judgeParadisImageDecode(bytes(ftyp, box('mdat', new Uint8Array(1_100_000)), meta(ispe(20_000, 20_000))), 'image/avif', limit),
 			avifDecoyIspe: judgeParadisImageDecode(bytes(ftyp, box('free', ispe(1, 1)), meta(ispe(64, 64), ispe(20_000, 20_000))), 'image/avif', limit),
+			avisTrackOnly: judgeParadisImageDecode(avis(moov(trak('av01', 1920, 1080))), 'image/avif', limit),
+			avisTrackOnlyBomb: judgeParadisImageDecode(avis(moov(trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisSmallIspeLargeTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisLargerSecondTrack: judgeParadisImageDecode(avis(meta(ispe(64, 64)), moov(trak('av01', 64, 64), trak('av01', 20_000, 20_000))), 'image/avif', limit),
+			avisWithoutAv01: judgeParadisImageDecode(avis(moov(trak('mp4a', 0, 0))), 'image/avif', limit),
 			avifIspeOutsideMeta: judgeParadisImageDecode(bytes(ftyp, ispe(1, 1), box('mdat', [0])), 'image/avif', limit),
 			svg: judgeParadisImageDecode(bytes('<svg xmlns="http://www.w3.org/2000/svg"/>'), 'image/svg+xml', limit),
 			htmlNamedPng: judgeParadisImageDecode(bytes('<html><script>alert(1)</script></html>'), 'image/png', limit),
@@ -99,6 +111,11 @@ suite('ParadisImageDimensions', () => {
 			gifWithoutFrame: 'invalid',
 			avifMetaAfterOneMiB: 'tooLarge',
 			avifDecoyIspe: 'tooLarge',
+			avisTrackOnly: 'ok',
+			avisTrackOnlyBomb: 'tooLarge',
+			avisSmallIspeLargeTrack: 'tooLarge',
+			avisLargerSecondTrack: 'tooLarge',
+			avisWithoutAv01: 'invalid',
 			avifIspeOutsideMeta: 'invalid',
 			svg: 'ok',
 			htmlNamedPng: 'invalid',
