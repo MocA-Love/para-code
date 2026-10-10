@@ -294,7 +294,8 @@ const SCRIPT_ARGUMENTS: Readonly<Record<string, readonly string[]>> = { evaluate
 /**
  * 関数のスクリプトの中の参照を、推測できない名前の識別子に置き換え、値はその外側の包みの const で束縛する。
  * 例: `() => document.title === $2.text` は
- * `(...a) => { const __paraRef_<nonce>_0 = "値"; return (() => document.title === __paraRef_<nonce>_0)(...a); }` になる。
+ * `(...a) => { const __paraRef_<nonce>_0 = "値"; const f = (() => document.title === __paraRef_<nonce>_0\n); return typeof f === 'function' ? f(...a) : f; }`
+ * になる（f の名前にも nonce を付ける）。
  */
 function bindScriptReferences(source: string, scope: IScope, missing: string[]): string {
 	const nonce = generateUuid().replace(/-/g, '').slice(0, 12);
@@ -308,7 +309,10 @@ function bindScriptReferences(source: string, scope: IScope, missing: string[]):
 		return body;
 	}
 	const rest = `__paraArgs_${nonce}`;
-	return `(...${rest}) => { ${bindings.join(' ')} return (${body})(...${rest}); }`;
+	const value = `__paraValue_${nonce}`;
+	// predicate は関数でなく式だけでもよい（関数なら呼び、式ならその値を返す）。末尾の // コメントで包みを壊さないよう、
+	// 本文の後に改行を置く
+	return `(...${rest}) => { ${bindings.join(' ')} const ${value} = (${body}\n); return typeof ${value} === 'function' ? ${value}(...${rest}) : ${value}; }`;
 }
 
 /** 道具の引数に参照を差し込む（関数のスクリプトの引数では、値を束縛して包む）。 */
