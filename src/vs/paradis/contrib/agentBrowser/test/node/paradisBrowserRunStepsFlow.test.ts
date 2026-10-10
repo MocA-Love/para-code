@@ -152,7 +152,7 @@ suite('Paradis run_steps flow (E6)', () => {
 		}, { properties: ['steps', 'continue_on_error', 'max_seconds'], mentions: true, other: true });
 	});
 	test('a reference inside a script is bound to a constant, so text from a page never runs as code wherever it is written', async () => {
-		const hostile = `x'+(globalThis.pwned=true)+' globalThis.pwned = true; /`;
+		const hostile = `x'+(globalThis.pwned=true)+'\u2028\u2028globalThis.pwned = true; /`;
 		const sources = {
 			expression: '() => $1.text + "!"',
 			template: '() => `<${$1.text}>`',
@@ -166,6 +166,9 @@ suite('Paradis run_steps flow (E6)', () => {
 				{ tool: 'get_text', args: {} },
 				...Object.values(sources).map(source => ({ tool: 'evaluate_script', args: { function: source } })),
 				{ expect: { predicate: '() => $1.text.length > 0', timeout_ms: 1000 } },
+				// 式だけの predicate と、末尾に // コメントがある predicate
+				{ expect: { predicate: '$1.text.length > 0', timeout_ms: 1000 } },
+				{ expect: { predicate: '() => $1.text.startsWith("x") // starts with x', timeout_ms: 1000 } },
 				{ tool: 'fill_by', args: { name: 'Search', value: '$1.text' } },
 			],
 		});
@@ -175,16 +178,16 @@ suite('Paradis run_steps flow (E6)', () => {
 		// 包んだ関数を評価して動かす（スクリプトとして読む。HTML 風のコメントも有効）
 		const run = (source: string) => (new Function(`return (${source});`) as () => () => unknown)()();
 		const results = sent.slice(0, 5).map(args => run(args.function));
-		const predicate = run(sent[5].predicate);
+		const predicates = sent.slice(5, 8).map(args => run(args.predicate));
 		assert.deepStrictEqual({
 			// 引用符の中の参照は値にならず、識別子の名前の文字のまま
 			results: results.map((value, index) => index === 2 ? String(value).startsWith('__paraRef_') : value),
-			predicate,
+			predicates,
 			pwned: globals.pwned,
-			fill: sent[6],
+			fill: sent[8],
 		}, {
 			results: [`${hostile}!`, `<${hostile}>`, true, 1, 2],
-			predicate: true,
+			predicates: [true, true, true],
 			pwned: undefined,
 			fill: { name: 'Search', value: hostile },
 		});
