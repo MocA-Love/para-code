@@ -14,6 +14,7 @@ import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { URI } from '../../../../base/common/uri.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
+import { paradisParseOwnerLabel } from './paradisCursorOverlay.js';
 
 /**
  * ターミナルのPTY環境へ注入する、ペインを一意に識別するトークンの環境変数名。
@@ -285,6 +286,16 @@ export function paradisPaneFingerprint(token: string): string {
 /** IPC で受けたペインの指紋を確かめる。 */
 export function paradisIsPaneFingerprint(value: unknown): value is string {
 	return typeof value === 'string' && new RegExp(`^[0-9a-f]{${PARADIS_PANE_FINGERPRINT_LENGTH}}$`).test(value);
+}
+
+/**
+ * shared process から受けたスクリプトの持ち主を確かめる。名前・印・色はカーソルの名札と同じ規則で見るが、
+ * カーソルの持ち主の `id` は持たない（shared process は名札とペインの指紋だけを送る）。
+ */
+export function paradisParsePageScriptOwner(value: unknown): IParadisAgentPageScriptOwner | undefined {
+	const label = paradisParseOwnerLabel(value);
+	const pane = label ? (value as { pane?: unknown }).pane : undefined;
+	return label && paradisIsPaneFingerprint(pane) ? { ...label, pane } : undefined;
 }
 
 /** {@link PARADIS_AGENT_CURSOR_CHANNEL} の公開面。renderer は購読しかしない。 */
