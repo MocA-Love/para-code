@@ -376,9 +376,13 @@ export class ParadisClaudeModBridge {
 			// 観測だけの便（ほとんどがこれ）は送り主を確かめ直さない（確かめはプロセス表を引くので重い）。
 			// 直前 60 秒に同じ会話で確かめていれば、確かめたものとして扱う（コマンドの長いポーリングが 25 秒ごとに確かめる）
 			const events = request.events.slice(0, MAX_EVENTS_PER_REQUEST);
+			// 入力欄の文は確かめた送り主のものしか使わないので、確かめが古ければ確かめ直す（使えなければ 403 で断り、mod に送り直させる）
 			const observationOnly = events.every(event => paradisIsObservationEvent(rec(event)));
-			const verified = observationOnly ? this.recentlyVerified(token, sessionId) : await this.verify(token, sessionId, verifyCaller);
-			return this.handleEvents(token, sessionId, verified ? this.touch(token, sessionId) : undefined, events);
+			const draftSent = events.some(event => rec(event)?.type === 'draft');
+			const recent = this.recentlyVerified(token, sessionId);
+			const verified = observationOnly && (recent || !draftSent) ? recent : await this.verify(token, sessionId, verifyCaller);
+			const reply = this.handleEvents(token, sessionId, verified ? this.touch(token, sessionId) : undefined, events);
+			return draftSent && !verified ? { status: 403, body: { error: 'caller not verified' } } : reply;
 		}
 		// 状態を動かす要求は、送り主がそのペインのプロセスだと確かめられたときだけ受ける
 		if (!(await this.verify(token, sessionId, verifyCaller))) {
