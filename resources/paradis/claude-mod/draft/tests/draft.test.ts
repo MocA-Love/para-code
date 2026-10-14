@@ -83,6 +83,28 @@ describe('para-code-draft mod', () => {
 		expect(posted.map(entry => [((entry.body as Json).events as Json[])[0]?.text, entry.status])).toEqual([['a', 429], ['ab', 200]]);
 	});
 
+	test('waits twice as long after each refusal, tries at most 8 times in a row, and starts afresh when the box changes', async ($, on) => {
+		const posted: Json[] = [];
+		const clock = fakeParaCode(on, posted, true, () => 403);
+		await $.session.start({ cwd: '/para-code-test', surface: 'terminal', isInteractive: true });
+		await type($, '', 'a');
+		const sentAt: number[] = [];
+		for (let elapsed = 0; elapsed <= 300_000; elapsed += 50) {
+			const before = posted.length;
+			await clock.advance(50);
+			await clock.settle();
+			if (posted.length > before) {
+				sentAt.push(elapsed + 50);
+			}
+		}
+		// a change while a retry waits does not send at once
+		await type($, 'a', 'b');
+		await clock.advance(150);
+		await clock.settle();
+		const afterChange = posted.length;
+		expect({ sentAt, afterChange }).toEqual({ sentAt: [150, 1_150, 3_150, 7_150, 15_150, 31_150, 61_150, 91_150, 121_150], afterChange: 10 });
+	});
+
 	test('marks a text over 20,000 characters as cut', async ($, on) => {
 		const posted: Json[] = [];
 		const clock = fakeParaCode(on, posted);
