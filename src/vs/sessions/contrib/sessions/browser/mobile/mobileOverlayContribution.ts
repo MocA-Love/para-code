@@ -78,7 +78,7 @@ class MobileOpenChangesViewAction extends Action2 {
 	constructor() {
 		super({
 			id: MOBILE_OPEN_CHANGES_VIEW_COMMAND_ID,
-			title: localize2('mobileOpenSessionChanges', 'Open Session Changes'),
+			title: localize2('mobileOpenChanges', 'Open Changes'),
 			precondition: IsPhoneLayoutContext,
 			f1: false,
 		});
@@ -95,7 +95,7 @@ class MobileOpenChangesViewAction extends Action2 {
 		const instantiationService = accessor.get(IInstantiationService);
 
 		const session = sessionsService.activeSession.get();
-		const changes = session?.changes.get() ?? [];
+		const changes = session?.activeChat.get().changes.get() ?? [];
 
 		// Build per-file diff data, filtering out synthetic aggregate entries
 		// (entries with no original/modified URIs can't be diffed).
@@ -105,7 +105,7 @@ class MobileOpenChangesViewAction extends Action2 {
 			.filter(d => d.originalURI || d.modifiedURI);
 
 		if (diffs.length === 0) {
-			notificationService.info(localize('mobileChangesNotAvailable', "File-level changes are not available for this session yet."));
+			notificationService.info(localize('mobileChangesNotAvailable', "File-level changes are not available yet."));
 			return;
 		}
 

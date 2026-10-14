@@ -29,6 +29,7 @@ import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browse
 import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
 // PARA-PATCH: named persistent browser profiles get their own persist: partition
 import { paradisBrowserProfilePartition } from '../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileId.js';
+import { ISandboxNetworkRestrictions } from '../../sandbox/common/sandboxSettingsResolutionHelper.js';
 
 /**
  * Holds an Electron session along with its storage scope and unique browser
@@ -266,6 +267,20 @@ export class BrowserSession {
 	private readonly _remote: BrowserSessionRemote;
 	private readonly _permissions: BrowserSessionPermissions;
 	private _networkFilterEnabled = false;
+	private _sandboxNetworkRestrictions?: ISandboxNetworkRestrictions;
+	sandboxSessionId?: string;
+
+	setSandboxNetworkRestrictions(sessionId: string, restrictions: ISandboxNetworkRestrictions): void {
+		if (this.storageScope !== BrowserViewStorageScope.Agent) {
+			throw new Error('Sandbox network restrictions require an isolated Agent browser session');
+		}
+		if (this.sandboxSessionId !== undefined && this.sandboxSessionId !== sessionId) {
+			throw new Error('Browser sandbox restrictions cannot be shared across agent sessions');
+		}
+		this.sandboxSessionId = sessionId;
+		this._sandboxNetworkRestrictions = restrictions;
+		this.updateNetworkFilter(true);
+	}
 
 	/**
 	 * @deprecated Don't use this directly. Create sessions via the static factory methods.
@@ -332,13 +347,13 @@ export class BrowserSession {
 	/**
 	 * Dynamically apply network filtering to Agent sessions.
 	 */
-	private updateNetworkFilter(): void {
+	private updateNetworkFilter(force = false): void {
 		if (this.storageScope !== BrowserViewStorageScope.Agent) {
 			return;
 		}
 
-		const enabled = this.agentNetworkFilterService.isEnabled();
-		if (this._networkFilterEnabled === enabled) {
+		const enabled = this.agentNetworkFilterService.isEnabled(this._sandboxNetworkRestrictions);
+		if (!force && this._networkFilterEnabled === enabled) {
 			return;
 		}
 		this._networkFilterEnabled = enabled;
@@ -350,7 +365,7 @@ export class BrowserSession {
 				callback({ cancel: true });
 				return;
 			}
-			callback({ cancel: !this.agentNetworkFilterService.isUriAllowed(uri) });
+			callback({ cancel: !this.agentNetworkFilterService.isUriAllowed(uri, this._sandboxNetworkRestrictions) });
 		} : null);
 	}
 

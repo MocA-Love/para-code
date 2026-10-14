@@ -31,6 +31,7 @@ import { FileAccess } from '../../../base/common/network.js';
 import { paradisBootstrapPtyHost } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyHostBootstrap.js';
 import { paradisAwaitAdoption, paradisAwaitPtyDaemon, paradisPtyDaemonConnection } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisAdoptIntoPtyService } from '../../../paradis/contrib/ptyDaemon/node/paradisAdoptIntoPtyService.js';
+import { markNodeCompileCacheReady } from '../../../base/node/nodeCompileCache.js';
 
 startPtyHost();
 
@@ -149,6 +150,7 @@ async function startPtyHost() {
 	if (_isUtilityProcess || paradisDaemon) {
 		server.registerChannel(TerminalIpcChannels.PtyHostWindow, ptyServiceChannel);
 	}
+	markNodeCompileCacheReady(message => logService.info(message));
 
 	// PARA-PATCH: take back terminals the daemon kept running while no app was here. This runs after
 	// the channels are registered, so a window that connects meanwhile is answered rather than timed

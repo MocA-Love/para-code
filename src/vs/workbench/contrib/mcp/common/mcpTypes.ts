@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { equals as arraysEqual } from '../../../../base/common/arrays.js';
+import { distinct, equals as arraysEqual } from '../../../../base/common/arrays.js';
 import { assertNever } from '../../../../base/common/assert.js';
 import { decodeHex, encodeHex, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -23,7 +23,7 @@ import { RawContextKey } from '../../../../platform/contextkey/common/contextkey
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { McpGalleryManifestStatus } from '../../../../platform/mcp/common/mcpGalleryManifest.js';
+import { IMcpGalleryManifest, McpGalleryManifestStatus } from '../../../../platform/mcp/common/mcpGalleryManifest.js';
 import { IGalleryMcpServer, IGalleryMcpServerConfiguration, IInstallableMcpServer, IQueryOptions } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpDevModeConfig, IMcpSandboxConfiguration, IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
 import { McpResourceFormat } from '../../../../platform/mcp/common/mcpWorkspaceConfiguration.js';
@@ -212,6 +212,10 @@ export interface McpServerDefinition {
 	readonly cacheNonce: string;
 	/** Dev mode configuration for the server */
 	readonly devMode?: IMcpDevModeConfig;
+	/** Optional server version metadata from the source configuration. */
+	readonly version?: string;
+	/** Optional gallery metadata from the source configuration. */
+	readonly gallery?: boolean | string;
 	/** Static description of server tools/data, used to hydrate the cache. */
 	readonly staticMetadata?: McpServerStaticMetadata;
 	/** Indicates if the sandbox is enabled for this server. */
@@ -297,6 +301,8 @@ export namespace McpServerDefinition {
 		readonly variableReplacement?: McpServerDefinitionVariableReplacement.Serialized;
 		readonly staticMetadata?: McpServerStaticMetadata;
 		readonly sandboxEnabled?: boolean;
+		readonly version?: string;
+		readonly gallery?: boolean | string;
 	}
 
 	export function toSerialized(def: McpServerDefinition): McpServerDefinition.Serialized {
@@ -312,6 +318,8 @@ export namespace McpServerDefinition {
 			launch: McpServerLaunch.fromSerialized(def.launch),
 			defaultCwd: def.defaultCwd ? URI.revive(def.defaultCwd) : undefined,
 			sandboxEnabled: def.sandboxEnabled,
+			version: def.version,
+			gallery: def.gallery,
 			variableReplacement: def.variableReplacement ? McpServerDefinitionVariableReplacement.fromSerialized(def.variableReplacement) : undefined,
 		};
 	}
@@ -326,6 +334,8 @@ export namespace McpServerDefinition {
 			&& objectsEqualWithUris(a.presentation, b.presentation)
 			&& objectsEqualWithUris(a.variableReplacement, b.variableReplacement)
 			&& objectsEqual(a.devMode, b.devMode)
+			&& a.version === b.version
+			&& a.gallery === b.gallery
 			&& a.sandboxEnabled === b.sandboxEnabled;
 
 	}
@@ -725,6 +735,7 @@ export interface McpServerTransportHTTP {
 	readonly type: McpServerTransportType.HTTP;
 	readonly transport?: 'sse' | 'streamable-http';
 	readonly uri: URI;
+	/** Additional headers are restricted to the configured URI's origin. */
 	readonly headers: [string, string][];
 	readonly oauth?: McpServerTransportHTTPOAuth;
 	/**
@@ -774,7 +785,7 @@ export namespace McpServerLaunch {
 				env: configuration.env ? { ...configuration.env } : {},
 				envFile: configuration.envFile,
 				cwd: configuration.cwd,
-				sandbox,
+				sandbox: mergeSandboxConfiguration(sandbox, configuration.sandbox),
 			};
 		}
 
@@ -794,6 +805,23 @@ export namespace McpServerLaunch {
 	export async function hash(launch: McpServerLaunch): Promise<string> {
 		const nonce = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(launch)));
 		return encodeHex(VSBuffer.wrap(new Uint8Array(nonce)));
+	}
+
+	function mergeSandboxConfiguration(root: IMcpSandboxConfiguration | undefined, server: IMcpSandboxConfiguration | undefined): IMcpSandboxConfiguration | undefined {
+		if (!root) {
+			return server;
+		}
+		return {
+			network: {
+				allowedDomains: distinct(server?.network?.allowedDomains ?? []),
+				deniedDomains: distinct([...(root.network?.deniedDomains ?? []), ...(server?.network?.deniedDomains ?? [])]),
+			},
+			filesystem: {
+				allowWrite: distinct(server?.filesystem?.allowWrite ?? []),
+				denyRead: distinct([...(root.filesystem?.denyRead ?? []), ...(server?.filesystem?.denyRead ?? [])]),
+				denyWrite: distinct([...(root.filesystem?.denyWrite ?? []), ...(server?.filesystem?.denyWrite ?? [])]),
+			},
+		};
 	}
 }
 
@@ -1028,7 +1056,9 @@ export interface IMcpWorkbenchService {
 	/** Returns enabled VS Code-format servers after name precedence; root files are discovered independently. */
 	getEnabledLocalMcpServers(): IWorkbenchLocalMcpServer[];
 	queryLocal(): Promise<IWorkbenchMcpServer[]>;
-	queryGallery(options?: IQueryOptions, token?: CancellationToken): Promise<IIterativePager<IWorkbenchMcpServer>>;
+	queryGallery(options?: IQueryOptions, token?: CancellationToken, manifest?: IMcpGalleryManifest): Promise<IIterativePager<IWorkbenchMcpServer>>;
+	getMcpServerFromGallery(name: string, manifest?: IMcpGalleryManifest): Promise<IWorkbenchMcpServer | undefined>;
+	getMcpServerFromAgentFinder(name: string, version: string, token?: CancellationToken): Promise<IWorkbenchMcpServer | undefined>;
 	canInstall(mcpServer: IWorkbenchMcpServer): true | IMarkdownString;
 	install(server: IWorkbenchMcpServer, installOptions?: IWorkbencMcpServerInstallOptions): Promise<IWorkbenchMcpServer>;
 	uninstall(mcpServer: IWorkbenchMcpServer): Promise<void>;

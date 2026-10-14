@@ -9,11 +9,11 @@ import { parentOriginHash } from '../../../../base/browser/iframe.js';
 import { IMouseWheelEvent } from '../../../../base/browser/mouseEvent.js';
 import { CodeWindow } from '../../../../base/browser/window.js';
 import { promiseWithResolvers, ThrottledDelayer } from '../../../../base/common/async.js';
-import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Lazy } from '../../../../base/common/lazy.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { COI } from '../../../../base/common/network.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { COI, Schemas } from '../../../../base/common/network.js';
 import { observableValue } from '../../../../base/common/observable.js';
 import { listenStream } from '../../../../base/common/stream.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -32,6 +32,7 @@ import { IRemoteAuthorityResolverService } from '../../../../platform/remote/com
 import { ITunnelService } from '../../../../platform/tunnel/common/tunnel.js';
 import { WebviewPortMappingManager } from '../../../../platform/webview/common/webviewPortMapping.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
+import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { decodeAuthority, webviewGenericCspSource, webviewRootResourceAuthority } from '../common/webview.js';
 import { loadLocalResource, WebviewResourceResponse } from './resourceLoading.js';
 import { WebviewThemeDataProvider } from './themeing.js';
@@ -142,8 +143,7 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 
 	private readonly _portMappingManager: WebviewPortMappingManager;
 
-	private readonly _resourceLoadingCts = this._register(new CancellationTokenSource());
-	private readonly _activeStreamControllers = new Set<ReadableStreamDefaultController>();
+	private readonly _resourceLoadingDisposables = this._register(new DisposableStore());
 
 	private _contextKeyService: IContextKeyService | undefined;
 
@@ -180,6 +180,7 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 		@ITunnelService private readonly _tunnelService: ITunnelService,
 		@IAccessibilityService private readonly _accessibilityService: IAccessibilityService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IRemoteAgentService private readonly _remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 
@@ -309,7 +310,7 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 					path: decodeURIComponent(entry.path), // This gets re-encoded
 					query: entry.query ? decodeURIComponent(entry.query) : entry.query,
 				});
-				this.loadResource(entry.id, uri, { ifNoneMatch: entry.ifNoneMatch, range: entry.range }, this._resourceLoadingCts.token);
+				this.loadResource(entry.id, uri, { ifNoneMatch: entry.ifNoneMatch, range: entry.range });
 			} catch (e) {
 				this._send('did-load-resource', {
 					id: entry.id,
@@ -371,12 +372,7 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 
 		this._onDidDispose.fire();
 
-		for (const controller of this._activeStreamControllers) {
-			try { controller.close(); } catch { /* already closed */ }
-		}
-		this._activeStreamControllers.clear();
-
-		this._resourceLoadingCts.dispose(true);
+		this._resourceLoadingDisposables.dispose();
 
 		super.dispose();
 	}
@@ -808,19 +804,36 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 		}
 	}
 
-	private async loadResource(id: number, uri: URI, options: { ifNoneMatch: string | undefined; range?: { readonly start: number; readonly end?: number } }, token: CancellationToken) {
+	private async loadResource(id: number, uri: URI, options: { ifNoneMatch: string | undefined; range?: { readonly start: number; readonly end?: number } }) {
 		if (this._disposed) {
 			return;
 		}
 
+		const { promise: streamDone, resolve: resolveStreamDone } = promiseWithResolvers<void>();
+		let closeStream: (() => void) | undefined;
+		const cts = new CancellationTokenSource();
+		const request = this._resourceLoadingDisposables.add(toDisposable(() => {
+			closeStream?.();
+			cts.dispose(true);
+			resolveStreamDone();
+		}));
+		const token = cts.token;
+
 		try {
+			const remoteOS = uri.scheme === Schemas.vscodeRemote && this._remoteAgentService.getConnection()?.remoteAuthority === uri.authority
+				? (await this._remoteAgentService.getEnvironment())?.os
+				: undefined;
 			const result = await this._instantiationService.invokeFunction(loadLocalResource, uri, {
 				ifNoneMatch: options.ifNoneMatch,
 				roots: this._content.options.localResourceRoots || [],
 				range: options.range,
+				remoteOS,
 			}, token);
 
 			if (this._disposed) {
+				if (result.type === WebviewResourceResponse.Type.Success) {
+					result.stream.resume();
+				}
 				return;
 			}
 
@@ -833,26 +846,21 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 						? `bytes ${range.start}-${rangeEnd}/${result.size}`
 						: undefined;
 					if (WebviewElement._supportsTransferableStreams.value) {
-						const streamCts = this.platform === 'electron' ? new CancellationTokenSource(token) : undefined;
 						let controller: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>> | undefined;
 						let closed = false;
 						const close = () => {
 							if (!closed) {
 								closed = true;
-								streamCts?.dispose();
 								if (controller) {
-									this._activeStreamControllers.delete(controller);
 									try { controller.close(); } catch { /* already closed */ }
 								}
+								resolveStreamDone();
 							}
 						};
+						closeStream = close;
 						const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
 							start: (newController) => {
-								// Track this controller so that the single
-								// cancellation handler in dispose() can close
-								// all active streams without per-stream listeners.
 								controller = newController;
-								this._activeStreamControllers.add(controller);
 
 								listenStream(result.stream, {
 									onData: (chunk) => {
@@ -867,20 +875,19 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 									onError: (err) => {
 										if (!closed) {
 											closed = true;
-											streamCts?.dispose();
 											const currentController = controller;
 											if (currentController) {
-												this._activeStreamControllers.delete(currentController);
 												try { currentController.error(err); } catch { /* already closed */ }
 											}
+											resolveStreamDone();
 										}
 									},
 									onEnd: () => close()
-								}, streamCts?.token ?? token);
+								}, token);
 							},
-							cancel: streamCts ? () => {
-								streamCts.dispose(true);
-								result.stream.destroy();
+							cancel: this.platform === 'electron' ? () => {
+								// Let the file stream finish cancellation so its end/error listeners can clean up.
+								cts.cancel();
 								close();
 							} : undefined,
 						});
@@ -917,12 +924,15 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 							},
 							onError: () => {
 								this._send('did-load-resource-end', { id, error: true });
+								resolveStreamDone();
 							},
 							onEnd: () => {
 								this._send('did-load-resource-end', { id });
+								resolveStreamDone();
 							}
 						}, token);
 					}
+					await streamDone;
 					return;
 				}
 				case WebviewResourceResponse.Type.NotModified: {
@@ -944,6 +954,8 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 			}
 		} catch {
 			// noop
+		} finally {
+			this._resourceLoadingDisposables.delete(request);
 		}
 
 		return this._send('did-load-resource', {
