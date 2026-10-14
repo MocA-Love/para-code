@@ -63,9 +63,10 @@ export const PARADIS_AGENT_HOOK_ID_PARAM = 'hid';
 
 /**
  * 控えないイベント。ツールの開始・終了と応答の途中経過は数が多く、再起動の後には transcript から
- * 同じことが分かるので控えない（Orca も Pre/PostToolUse を控えない）。
+ * 同じことが分かるので控えない（Orca も Pre/PostToolUse を控えない）。モデルの切り替え（PostModelSwitch）も、遅れて
+ * 流し直すと古いモデルの表示に戻してしまうので控えない（次の応答の行がモデルを運ぶ）。
  */
-export const PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS: readonly string[] = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'MessageDisplay'];
+export const PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS: readonly string[] = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'MessageDisplay', 'PostModelSwitch'];
 
 /** 控えの 1 行。 */
 export interface IParadisSpooledAgentHook {

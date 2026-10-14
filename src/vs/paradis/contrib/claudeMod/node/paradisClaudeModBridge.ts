@@ -148,6 +148,8 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'alive-changed'; readonly alive: boolean }
 	/** PC の Claude Code の入力欄の文（入力欄の mod。Claude Code 2.1.300 以降）。{@link ParadisClaudeModBridge.draftOf} と同じもの。 */
 	| { readonly type: 'draft'; readonly text: string; readonly truncated: boolean }
+	/** 入力欄の文が分からなくなった（mod が去った・読み直した）。{@link ParadisClaudeModBridge.draftOf} は undefined を返す。 */
+	| { readonly type: 'draft-unknown' }
 );
 
 /**
@@ -465,15 +467,21 @@ export class ParadisClaudeModBridge {
 			const base = { token, sessionId, at };
 			switch (event.type) {
 				case 'hello':
-					if (state !== undefined) {
+					if (state?.draft !== undefined) {
 						// mod が読み直した（会話の始まり・mod の読み直し）。入力欄は次の知らせまで分からない
 						state.draft = undefined;
+						this.fire({ ...base, type: 'draft-unknown' });
 					}
 					this.fire({ ...base, type: 'hello', ...(text(event.version, 50) !== undefined ? { version: text(event.version, 50) } : {}) });
 					break;
 				case 'bye':
 					// /clear でも bye が来る（会話の id が変わる）。待ちはどちらでも残らない。
 					this.settleSession(token, sessionId, 'expired');
+					// 去った会話の入力欄の文は使わない（bye の後もしばらく isAlive が true のまま残るため、ここで消す）
+					if (state?.draft !== undefined) {
+						state.draft = undefined;
+						this.fire({ ...base, type: 'draft-unknown' });
+					}
 					this.fire({ ...base, type: 'bye', ...(text(event.reason, 50) !== undefined ? { reason: text(event.reason, 50) } : {}) });
 					break;
 				case 'row': {
@@ -583,7 +591,8 @@ export class ParadisClaudeModBridge {
 				}
 				case 'draft': {
 					// 確かめた送り主のものだけ使う（確かめていない便の文で、モバイルの送信を止めたり入力欄を書き換えたりしない）
-					if (state !== undefined && typeof event.text === 'string') {
+					// 送った順に届かなかった古い知らせ（at が前の知らせより前）は捨てる
+					if (state !== undefined && typeof event.text === 'string' && (state.draft === undefined || at >= state.draft.at)) {
 						const draft: IParadisClaudeModDraft = { text: event.text.slice(0, MAX_DRAFT_CHARS), truncated: event.truncated === true || event.text.length > MAX_DRAFT_CHARS, at };
 						state.draft = draft;
 						this.fire({ ...base, type: 'draft', text: draft.text, truncated: draft.truncated });
@@ -1078,10 +1087,10 @@ export class ParadisClaudeModBridge {
 	}
 
 	/**
-	 * PC の入力欄の文を `text` に置き換える（mod の `$.prompt.fill`。mod 1.4.0 以降）。入力欄の文が分かっている会話だけ
+	 * PC の入力欄の文を `text` に置き換える（`append` は後ろへ足す。mod の `$.prompt.fill`。mod 1.4.0 以降）。入力欄の文が分かっている会話だけ
 	 * （{@link draftOf}）。`unavailable` は mod へ渡せなかった（何もしていない）、`unconfirmed` は答えが来なかった。
 	 */
-	async fillDraft(token: string, sessionId: string, text: string): Promise<ParadisClaudeModFillDraftResult> {
+	async fillDraft(token: string, sessionId: string, text: string, mode: 'replace' | 'append' = 'replace'): Promise<ParadisClaudeModFillDraftResult> {
 		const state = this.sessions.get(this.sessionKey(token, sessionId));
 		if (state === undefined || !state.features.has('draft.fill') || state.draft === undefined || text.length > MAX_DRAFT_CHARS) {
 			return 'unavailable';
@@ -1100,7 +1109,7 @@ export class ParadisClaudeModBridge {
 			const timer = setTimeout(() => settle(undefined), DIALOG_ACK_MS);
 			state.acks.set(commandId, settle);
 		});
-		waiter([{ id: commandId, kind: 'draftFill', text }]);
+		waiter([{ id: commandId, kind: 'draftFill', text, mode }]);
 		return answer;
 	}
 

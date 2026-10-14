@@ -15,7 +15,7 @@ type Json = Record<string, unknown>;
 const PORT_FILE = '/para-code-test/paradis-browser-mcp.json';
 
 /** Para Code as the mod sees it; records the events posted to it. */
-function fakeParaCode(on: On, posted: Json[], withPane = true): MockClock {
+function fakeParaCode(on: On, posted: Json[], withPane = true, status: () => number = () => 200): MockClock {
 	mock.env(on, withPane ? { PARA_CODE_TERMINAL_PANE_ID: 'pane-token', PARA_CODE_MCP_PORT_FILE: PORT_FILE } : {});
 	const clock = mock.clock(on);
 	on('fs.read', ($, e) => e.path === PORT_FILE ? { value: '{"port":47999}' } : { deny: 'no such file' });
@@ -24,8 +24,9 @@ function fakeParaCode(on: On, posted: Json[], withPane = true): MockClock {
 	on('prompt.edit', ($, e) => ({ text: `${e.text.slice(0, e.start)}${e.inputText}${e.text.slice(e.end)}`, cursor: e.start + e.inputText.length }));
 	on('prompt.change', ($, e) => ({ text: e.text }));
 	on('http.fetch', ($, e) => {
-		posted.push({ url: e.url, body: JSON.parse(e.init?.body ?? '{}') as Json });
-		return { value: { status: 200, ok: true, headers: {}, text: '{}' } };
+		const answer = status();
+		posted.push({ url: e.url, body: JSON.parse(e.init?.body ?? '{}') as Json, status: answer });
+		return { value: { status: answer, ok: answer < 300, headers: {}, text: '{}' } };
 	});
 	return clock;
 }
@@ -60,6 +61,26 @@ describe('para-code-draft mod', () => {
 		await clock.advance(150);
 		await clock.settle();
 		expect(posted).toEqual([]);
+	});
+
+	test('tries a refused send again with the latest text, and counts a text as sent only once Para Code took it', async ($, on) => {
+		const posted: Json[] = [];
+		const answers = [429, 200, 200];
+		const clock = fakeParaCode(on, posted, true, () => answers.shift() ?? 200);
+		await $.session.start({ cwd: '/para-code-test', surface: 'terminal', isInteractive: true });
+		await type($, '', 'a');
+		await clock.advance(150);
+		await clock.settle();
+		await type($, 'a', 'b');
+		await clock.advance(150);
+		await clock.settle();
+		await clock.advance(1_000);
+		await clock.settle();
+		// the same text again is not sent once Para Code took it
+		await $.prompt.change({ text: 'ab', cursor: 2, origin: { kind: 'engine' } });
+		await clock.advance(150);
+		await clock.settle();
+		expect(posted.map(entry => [((entry.body as Json).events as Json[])[0]?.text, entry.status])).toEqual([['a', 429], ['ab', 200]]);
 	});
 
 	test('marks a text over 20,000 characters as cut', async ($, on) => {
