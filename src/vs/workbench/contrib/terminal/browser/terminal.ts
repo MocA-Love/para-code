@@ -35,6 +35,7 @@ import type { IProgressState } from '@xterm/addon-progress';
 import type { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import type { TerminalEditorInput } from './terminalEditorInput.js';
 import type { MaybePromise } from '../../../../base/common/async.js';
+import type { IAction } from '../../../../base/common/actions.js';
 import { isNumber, type SingleOrMany } from '../../../../base/common/types.js';
 import type { ToolConfirmationAction } from '../../chat/common/tools/languageModelToolsService.js';
 // PARA-PATCH: terminal creation scope lease plumbing needs the editor group type (see CLAUDE.md)
@@ -127,6 +128,8 @@ export interface IChatTerminalToolProgressPart {
 	readonly elementIndex: number;
 	readonly contentIndex: number;
 	readonly terminalToolSessionId: string | undefined;
+	/** Opens the complete output associated with this progress part, when available. */
+	readonly fullOutputAction?: IAction;
 	focusTerminal(): Promise<void>;
 	toggleOutputFromKeyboard(): Promise<void>;
 	toggleOutputFromAction(): Promise<void>;

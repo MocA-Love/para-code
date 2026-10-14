@@ -39,8 +39,8 @@ export interface IWebviewManagerService {
 	// PARA-PATCH: report whether the find actually ran. `WebFrameMain.findInFrame` only exists in the
 	// Electron build Microsoft ships; on stock Electron it is missing, so the call silently did nothing.
 	// Returning the outcome lets ElectronWebviewElement fall back to the browser (window.find) path.
-	findInFrame(windowId: WebviewWindowId, frameName: string, text: string, options: FindInFrameOptions): Promise<boolean>;
+	findInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, text: string, options: FindInFrameOptions): Promise<boolean>;
 
 	// PARA-PATCH: same as findInFrame — report whether the stop actually ran.
-	stopFindInFrame(windowId: WebviewWindowId, frameName: string, options: { keepSelection?: boolean }): Promise<boolean>;
+	stopFindInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, options: { keepSelection?: boolean }): Promise<boolean>;
 }

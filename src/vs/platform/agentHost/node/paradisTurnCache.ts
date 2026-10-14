@@ -85,12 +85,21 @@ export class ParadisTurnCache {
 		}
 	}
 
-	/** Fire-and-forget; per-routing writes are serialized so a slow write can't race a newer one. */
+	/**
+	 * Fire-and-forget; per-routing writes are serialized so a slow write can't race a newer one.
+	 * The turns are serialized right here, before returning: callers go on to decorate the same
+	 * turn objects in place (the Claude agent appends restored terminal output to tool calls),
+	 * and caching the decorated copy would make every later cache hit decorate it again.
+	 */
 	write(routingUri: URI, key: IParadisTurnCacheKey, stamp: IParadisTurnCacheStamp, turns: readonly Turn[]): void {
+		const json = this._serialize(key, stamp, turns);
+		if (json === undefined) {
+			return;
+		}
 		const dirKey = routingUri.toString();
 		const previous = this._writeQueue.get(dirKey) ?? Promise.resolve();
 		const next = previous
-			.then(() => this._doWrite(routingUri, key, stamp, turns))
+			.then(() => this._doWrite(routingUri, json))
 			.catch(err => this._logService.warn(`[ParadisTurnCache] write failed for ${dirKey}`, err));
 		this._writeQueue.set(dirKey, next);
 		void next.finally(() => {
@@ -107,19 +116,23 @@ export class ParadisTurnCache {
 		}
 	}
 
-	private async _doWrite(routingUri: URI, key: IParadisTurnCacheKey, stamp: IParadisTurnCacheStamp, turns: readonly Turn[]): Promise<void> {
+	private _serialize(key: IParadisTurnCacheKey, stamp: IParadisTurnCacheStamp, turns: readonly Turn[]): string | undefined {
 		// Filter on the known transcript size first: building the JSON for an
 		// entry we're about to discard would burn a full extra copy of it.
 		if (stamp.size > MAX_CACHE_BYTES) {
 			this._logService.trace(`[ParadisTurnCache] skipping write for ${key.id}: transcript is ${stamp.size} bytes`);
-			return;
+			return undefined;
 		}
 		const entry: IParadisTurnCacheFile = { v: CACHE_SCHEMA_VERSION, fmt: this._formatVersion, key, stamp, turns };
 		const json = JSON.stringify(entry);
 		if (json.length > MAX_CACHE_BYTES) {
 			this._logService.trace(`[ParadisTurnCache] skipping write for ${key.id}: serialized entry is ${json.length} bytes`);
-			return;
+			return undefined;
 		}
+		return json;
+	}
+
+	private async _doWrite(routingUri: URI, json: string): Promise<void> {
 		await this._fileService.createFolder(this._sessionDataService.getSessionDataDir(routingUri));
 		// Not atomic: this is a best-effort cache, and a torn write just fails
 		// JSON.parse on the next read, which `read()` already treats as a miss.

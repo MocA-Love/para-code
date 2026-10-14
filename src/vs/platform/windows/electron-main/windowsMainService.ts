@@ -61,6 +61,7 @@ import { ResourceSet } from '../../../base/common/map.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
 // PARA-PATCH: default Para Code multi-repo workspace on startup (see paradisDefaultWorkspace.ts)
 import { paradisEnsureDefaultWorkspace } from '../../../paradis/contrib/workspaceSwitch/electron-main/paradisDefaultWorkspace.js';
+import { resolveAgentsWindowFolder } from './agentsWindow.js';
 
 //#region Helper Interfaces
 
@@ -294,8 +295,10 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		this.handleChatRequest(openConfig, [window]);
 	}
 
-	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, sessionResource?: URI, source?: AgentsWindowOpenSource, folderUriIsDefault = false, draft?: IAgentsWindowDraft): Promise<ICodeWindow[]> {
+	async openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, sessionResource?: URI, source?: AgentsWindowOpenSource, folderUriIsDefault = false, draft?: IAgentsWindowDraft, onboardingSessionResource?: URI): Promise<ICodeWindow[]> {
 		this.logService.trace('windowsManager#openAgentsWindow');
+
+		folderUri = await resolveAgentsWindowFolder(openConfig, folderUri, sessionResource, source, cli => this.doExtractPathsFromCLI(cli));
 
 		// Open in a new browser window with the agent sessions workspace
 		const windows = await this.open(await this.ensureAgentsWindow(openConfig));
@@ -303,7 +306,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		// Existing-session intent takes precedence over explicit or inferred workspace selection.
 		if (windows.length > 0) {
 			const openSource = source ?? (openConfig.cli.agents ? AgentsWindowOpenSource.CommandLine : AgentsWindowOpenSource.Unknown);
-			windows[0].sendWhenReady('vscode:selectAgentsFolder', CancellationToken.None, folderUri?.toJSON(), sessionResource?.toJSON(), openSource, folderUriIsDefault, draft);
+			windows[0].sendWhenReady('vscode:selectAgentsFolder', CancellationToken.None, folderUri?.toJSON(), sessionResource?.toJSON(), openSource, folderUriIsDefault, draft, onboardingSessionResource?.toJSON());
 		}
 
 		return windows;
@@ -938,7 +941,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return coalesce(pathsToOpen);
 	}
 
-	private async doExtractPathsFromCLI(cli: NativeParsedArgs): Promise<IPath[]> {
+	private async doExtractPathsFromCLI(cli: NativeParsedArgs): Promise<IPathToOpen[]> {
 		const pathsToOpen: IPathToOpen[] = [];
 		const pathResolveOptions: IPathResolveOptions = {
 			ignoreFileNotFound: true,
