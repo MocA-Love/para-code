@@ -189,11 +189,34 @@ export default defineConfig(
 			'local/code-no-sync-fs': 'error',
 		},
 	},
-	// PARA-PATCH: the fork's own code predates the 1.142 code-no-sync-fs rule (98 sync fs calls in 22 files under
-	// src/vs/paradis). Turn off only this rule there, keeping every other rule; move those calls to async I/O or
-	// give each a reasoned eslint-disable, then drop this block.
+	// PARA-PATCH: these fork files predate the 1.142 code-no-sync-fs rule (98 sync fs calls). Turn off only this rule
+	// for them, so new fork code is still checked; move each file to async I/O or give its calls a reasoned
+	// eslint-disable, then remove it from this list.
 	{
-		files: ['src/vs/paradis/**'],
+		files: [
+			'src/vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.ts',
+			'src/vs/paradis/contrib/agentActivity/node/paradisSessionIndexStore.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentBrowserService.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHome.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHookOwnership.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHooksSetup.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShimCore.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisDevtoolsTemporaryDirectory.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisRemoteAgentTunnel.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloadsCore.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisDownloadQuarantine.ts',
+			'src/vs/paradis/contrib/computerUse/node/paradisComputerUseHelperClient.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisAivisIngestClient.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisNotificationsService.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisVoiceSynthesisCache.ts',
+			'src/vs/paradis/contrib/ptyDaemon/electron-main/paradisDaemonPtyHostStarter.ts',
+			'src/vs/paradis/contrib/ptyDaemon/node/paradisEnsurePtyHost.ts',
+			'src/vs/paradis/contrib/workspaceSwitch/electron-main/paradisDefaultWorkspace.ts',
+			'src/vs/paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.ts',
+			'src/vs/paradis/node/paradisRollingFileBackup.ts',
+			'src/vs/paradis/node/paradisWriteFileAtomic.ts',
+		],
 		rules: {
 			'local/code-no-sync-fs': 'off',
 		},
