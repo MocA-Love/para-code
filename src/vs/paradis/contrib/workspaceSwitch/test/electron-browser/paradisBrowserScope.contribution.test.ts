@@ -6,12 +6,11 @@
 import * as assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewContextualFilter, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
-import { paradisCreateBrowserViewInitialization } from '../../../../../workbench/contrib/browserView/electron-browser/browserViewWorkbenchService.js';
+import { paradisWhenBrowserViewsInitialized } from '../../common/paradisBrowserViewsInitialized.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisWorkspaceSwitchService } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_BROWSER_SCOPE_STORAGE_KEY } from '../../common/paradisBrowserScopeState.js';
@@ -76,33 +75,12 @@ suite('ParadisBrowserScopeService', () => {
 		assert.deepStrictEqual(service.resolveScope('view-a'), { kind: 'managed', stateKey: 'space-a' });
 	});
 
-	test('re-evaluates a retained view recovered by a later snapshot before completing its scope barrier', async () => {
+	test('re-evaluates a retained view delivered by a late snapshot before completing its scope barrier', async () => {
 		const browserChanges = store.add(new Emitter<void>());
 		const known = new Map<string, BrowserEditorInput>();
-		let retryTimer: (() => void) | undefined;
-		let attempts = 0;
-		const initialization = paradisCreateBrowserViewInitialization<string>(
-			() => toDisposable(() => undefined),
-			() => ++attempts === 1 ? Promise.reject(new Error('Main temporarily unavailable')) : Promise.resolve(['retained']),
-			viewId => {
-				known.set(viewId, fakeInput(viewId));
-				browserChanges.fire();
-			},
-			() => undefined,
-			{
-				setTimeout: callback => {
-					assert.strictEqual(retryTimer, undefined);
-					retryTimer = callback;
-					return callback;
-				},
-				clearTimeout: handle => {
-					if (retryTimer === handle) {
-						retryTimer = undefined;
-					}
-				},
-			},
-		);
-		store.add(initialization.listener);
+		const snapshot = new DeferredPromise<void>();
+		const initialization = paradisWhenBrowserViewsInitialized(snapshot.p);
+		store.add(initialization.lifetime);
 		const service = store.add(new ParadisBrowserScopeService(
 			{
 				whenInitialized: initialization.whenInitialized,
@@ -122,13 +100,12 @@ suite('ParadisBrowserScopeService', () => {
 
 		await Promise.resolve();
 		await Promise.resolve();
-		assert.ok(retryTimer);
-		const retry = retryTimer;
-		retryTimer = undefined;
-		retry();
+		// The snapshot arrives on upstream's ordered browser view stream: its models exist before it completes.
+		known.set('retained', fakeInput('retained'));
+		browserChanges.fire();
+		await snapshot.complete();
 		await service.initializationBarrier;
 
-		assert.strictEqual(attempts, 2);
 		assert.deepStrictEqual([...known.keys()], ['retained']);
 		assert.deepStrictEqual(service.resolveScope('retained'), { kind: 'managed', stateKey: 'space-a' });
 	});

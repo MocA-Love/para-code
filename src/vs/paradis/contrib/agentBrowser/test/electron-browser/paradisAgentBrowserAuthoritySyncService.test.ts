@@ -6,11 +6,10 @@
 import * as assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
-import { paradisCreateBrowserViewInitialization } from '../../../../../workbench/contrib/browserView/electron-browser/browserViewWorkbenchService.js';
+import { paradisWhenBrowserViewsInitialized } from '../../../workspaceSwitch/common/paradisBrowserViewsInitialized.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
@@ -155,47 +154,22 @@ suite('ParadisAgentBrowserAuthoritySyncService', () => {
 		assert.ok(completeRevision > incompleteRevision);
 	});
 
-	test('publishes a complete manifest after a failed initial snapshot later recovers a retained view and scope', async () => {
+	test('publishes a complete manifest after a late initial snapshot delivers a retained view and scope', async () => {
 		const knownViews = new Map<string, never>();
 		const scopes = new Map<string, ParadisBindingScope>();
-		let retryTimer: (() => void) | undefined;
-		let attempts = 0;
-		let notifyBrowserViewsChanged: () => void = () => undefined;
-		const initialization = paradisCreateBrowserViewInitialization<string>(
-			() => toDisposable(() => undefined),
-			() => ++attempts < 3 ? Promise.reject(new Error('Main temporarily unavailable')) : Promise.resolve(['retained']),
-			viewId => {
-				knownViews.set(viewId, undefined as never);
-				scopes.set(viewId, { kind: 'managed', stateKey: 'space-a' });
-				notifyBrowserViewsChanged();
-			},
-			() => undefined,
-			{
-				setTimeout: callback => {
-					assert.strictEqual(retryTimer, undefined);
-					retryTimer = callback;
-					return callback;
-				},
-				clearTimeout: handle => {
-					if (retryTimer === handle) {
-						retryTimer = undefined;
-					}
-				},
-			},
-		);
-		store.add(initialization.listener);
+		const snapshot = new DeferredPromise<void>();
+		const initialization = paradisWhenBrowserViewsInitialized(snapshot.p);
+		store.add(initialization.lifetime);
 		const fixture = createFixture(undefined, { whenInitialized: initialization.whenInitialized, knownViews, scopes });
-		notifyBrowserViewsChanged = () => fixture.browserViewsChanged.fire();
 		fixture.terminalBarrier.complete();
+		await Promise.resolve();
+		await Promise.resolve();
 
-		for (let failure = 0; failure < 2; failure++) {
-			await Promise.resolve();
-			await Promise.resolve();
-			assert.ok(retryTimer);
-			const retry = retryTimer;
-			retryTimer = undefined;
-			retry();
-		}
+		// The snapshot arrives on upstream's ordered browser view stream: its models exist before it completes.
+		knownViews.set('retained', undefined as never);
+		scopes.set('retained', { kind: 'managed', stateKey: 'space-a' });
+		fixture.browserViewsChanged.fire();
+		await snapshot.complete();
 		assert.strictEqual(await initialization.whenInitialized, true);
 		fixture.browserScopeBarrier.complete();
 		await eventually(() => fixture.manifests.some(manifest => manifest.complete));
