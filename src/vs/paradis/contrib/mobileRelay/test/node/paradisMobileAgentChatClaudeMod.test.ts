@@ -607,6 +607,26 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.strictEqual(next, 'nothing handed');
 	}));
 
+	test('sends the PC prompt box draft only to a phone that advertises agent.pc-draft.v1, and null once the box is empty', () => withHarness(async harness => {
+		const poll = harness.mod('commands', { busy: false, features: ['commands.list', 'command.run', 'draft.fill'] });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		const drafts = () => harness.sent.filter(message => Object.prototype.hasOwnProperty.call(message, 'pcDraft')).map(message => [message.t, message.pcDraft]);
+		// 広告していないアプリ（既定）には送らない
+		await harness.mod('event', { events: [{ type: 'draft', text: '秘密かもしれない書きかけ' }] });
+		await new Promise<void>(resolve => setTimeout(resolve, 400));
+		const toOldApp = drafts();
+		harness.chat.setMobileCapabilityCheck(async (_mobileId, name) => name === 'agent.pc-draft.v1');
+		harness.inbound({ t: 'attach' });
+		await waitFor(() => drafts().length === 1, 'the attach did not carry the draft');
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		await waitFor(() => drafts().length === 2, 'the cleared box was not sent');
+		void poll;
+		assert.deepStrictEqual({ toOldApp, drafts: drafts() }, {
+			toOldApp: [],
+			drafts: [['snapshot', { text: '秘密かもしれない書きかけ', truncated: false }], ['delta', null]],
+		});
+	}));
+
 	test('shows the model Claude Code switched to without waiting for the next reply', () => withHarness(async harness => {
 		harness.hook('PostModelSwitch', { payload: { from_model: 'claude-sonnet-5-5', to_model: 'claude-haiku-5-5', requested_model: 'haiku', source: 'command' } });
 		await waitFor(() => harness.tailer()?.model === 'claude-haiku-5-5', 'the model switch was not shown');
