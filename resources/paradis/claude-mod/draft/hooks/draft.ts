@@ -25,6 +25,8 @@ const MOD_PROTOCOL = '1';
 const DRAFT_FLUSH_MS = 150;
 /** Longer text is sent cut and marked `truncated` (Para Code then does not put it back). */
 const MAX_DRAFT_CHARS = 20_000;
+/** A send Para Code refused (or could not take) is tried again after this. */
+const DRAFT_RETRY_MS = 1_000;
 
 interface IEndpoint {
 	readonly url: string;
@@ -36,9 +38,11 @@ let endpoint: IEndpoint | undefined;
 let active = false;
 /** The box's text as the last `prompt.edit` / `prompt.change` left it; undefined until one came this session. */
 let draft: string | undefined;
-/** The text last sent to Para Code, and whether a send waits for {@link DRAFT_FLUSH_MS}. */
+/** The text Para Code last took, whether a send waits for {@link DRAFT_FLUSH_MS}, one is under way, or a retry waits. */
 let draftSent: string | undefined;
 let draftScheduled = false;
+let sending = false;
+let retryScheduled = false;
 /** Counts the sessions, so a send scheduled before a new session.start is not sent for the new one. */
 let generation = 0;
 
@@ -68,22 +72,25 @@ async function resolveEndpoint($: Engine): Promise<IEndpoint | undefined> {
 	return { url: `http://127.0.0.1:${port}/claude-mod/v1`, token };
 }
 
-/** Sends the events through `$.http.fetch`, or curl when the fetch is refused (the token and body go on stdin). */
-async function post($: Engine, body: string): Promise<void> {
+/**
+ * Sends the events through `$.http.fetch`, or curl when the fetch is refused (the token and body go on stdin). True only
+ * when Para Code took them (a 2xx answer): a refusal (429, 403) is not retried here but by the caller later.
+ */
+async function post($: Engine, body: string): Promise<boolean> {
 	// Para Code may have restarted on another port since the last send: read the port file again after a failure.
 	for (let attempt = 0; attempt < 2; attempt++) {
 		const target = endpoint ?? await resolveEndpoint($);
 		if (target === undefined) {
-			return;
+			return false;
 		}
 		endpoint = target;
 		try {
-			await $.http.fetch(`${target.url}/event`, {
+			const response = await $.http.fetch(`${target.url}/event`, {
 				method: 'POST',
 				headers: { 'authorization': `Bearer ${target.token}`, 'content-type': 'application/json', 'x-para-code-mod': MOD_PROTOCOL },
 				body,
 			});
-			return;
+			return response.status >= 200 && response.status < 300;
 		} catch {
 			// fall through to curl
 		}
@@ -96,29 +103,55 @@ async function post($: Engine, body: string): Promise<void> {
 				`header = ${curlQuote(`X-Para-Code-Mod: ${MOD_PROTOCOL}`)}`,
 				`data-binary = ${curlQuote(body)}`,
 				'silent',
+				'fail',
 				'max-time = 10',
 				'',
 			].join('\n');
 			const result = await $.process.run(['curl', '--config', '-'], { stdin: config, timeoutMs: 15_000 });
 			if (result.exitCode === 0) {
-				return;
+				return true;
+			}
+			if (result.exitCode === 22) {
+				// Para Code answered with an error status: the port is right, so do not read the port file again
+				return false;
 			}
 		} catch {
 			// try the port file once more
 		}
 		endpoint = undefined;
 	}
+	return false;
 }
 
-async function send($: Engine, mine: number): Promise<void> {
-	if (!active || mine !== generation || draft === undefined || draft === draftSent) {
+/**
+ * Sends the box's text, one request at a time so a later text never arrives before an earlier one. A text counts as
+ * sent only once Para Code took it; a refused send is tried again after {@link DRAFT_RETRY_MS} with the latest text.
+ */
+async function pump($: Engine, mine: number): Promise<void> {
+	if (sending) {
 		return;
 	}
-	const text = draft;
-	draftSent = text;
-	const sessionId = await $.session.id();
-	const event = { type: 'draft', text: text.slice(0, MAX_DRAFT_CHARS), ...(text.length > MAX_DRAFT_CHARS ? { truncated: true } : {}), at: Date.now() };
-	await post($, JSON.stringify({ sessionId, events: [event] }));
+	sending = true;
+	try {
+		while (active && mine === generation && draft !== undefined && draft !== draftSent) {
+			const text = draft;
+			const sessionId = await $.session.id();
+			const event = { type: 'draft', text: text.slice(0, MAX_DRAFT_CHARS), ...(text.length > MAX_DRAFT_CHARS ? { truncated: true } : {}), at: Date.now() };
+			if (!await post($, JSON.stringify({ sessionId, events: [event] }))) {
+				if (!retryScheduled) {
+					retryScheduled = true;
+					$.clock.after(DRAFT_RETRY_MS, () => {
+						retryScheduled = false;
+						void pump($, mine).catch(() => undefined);
+					});
+				}
+				return;
+			}
+			draftSent = text;
+		}
+	} finally {
+		sending = false;
+	}
 }
 
 /** The box changed: sends its text to Para Code, at most every {@link DRAFT_FLUSH_MS}. */
@@ -131,7 +164,7 @@ function noteDraft($: Engine, text: string): void {
 	const mine = generation;
 	$.clock.after(DRAFT_FLUSH_MS, () => {
 		draftScheduled = false;
-		void send($, mine).catch(() => undefined);
+		void pump($, mine).catch(() => undefined);
 	});
 }
 
@@ -143,6 +176,7 @@ export const register: Register = on => {
 		draft = undefined;
 		draftSent = undefined;
 		draftScheduled = false;
+		retryScheduled = false;
 		endpoint = e.isInteractive ? await resolveEndpoint($) : undefined;
 		active = endpoint !== undefined;
 		return started;

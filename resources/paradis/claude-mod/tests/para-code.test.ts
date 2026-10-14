@@ -435,7 +435,7 @@ describe('para-code mod', () => {
 
 	test('replaces the prompt box text when Para Code asks, and acks a refusal with its reason', async ($, on) => {
 		const recorded: IRecorded[] = [];
-		const handed: Json[][] = [[{ id: 'f1', kind: 'draftFill', text: '' }], [{ id: 'f2', kind: 'draftFill', text: 'put back' }], [{ id: 'f3', kind: 'draftFill', text: 'x'.repeat(20_001) }]];
+		const handed: Json[][] = [[{ id: 'f1', kind: 'draftFill', text: '' }], [{ id: 'f2', kind: 'draftFill', text: 'put back', mode: 'append' }], [{ id: 'f3', kind: 'draftFill', text: 'x'.repeat(20_001) }]];
 		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
 		const fills: unknown[] = [];
 		// A hook cannot claim the `dialog` cause itself (see the dialogCheck test): any other refusal is `refused`.
@@ -452,7 +452,7 @@ describe('para-code mod', () => {
 			fills,
 			acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body),
 		}).toEqual({
-			fills: [{ text: '', mode: 'replace' }, { text: 'put back', mode: 'replace' }],
+			fills: [{ text: '', mode: 'replace' }, { text: 'put back', mode: 'append' }],
 			acks: [{ sessionId: 'session-1', id: 'f1', ok: true }, { sessionId: 'session-1', id: 'f2', ok: false, reason: 'refused' }],
 		});
 	});
