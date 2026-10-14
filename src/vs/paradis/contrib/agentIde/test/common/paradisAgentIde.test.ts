@@ -26,7 +26,7 @@ import {
 } from '../../common/paradisAgentIde.js';
 import { PARADIS_AGENT_IDE_SKILL_CONTENT, paradisAgentIdeGuide } from '../../common/paradisAgentIdeGuide.js';
 import { paradisAgentChoiceMenu } from '../../common/paradisAgentChoiceMenu.js';
-import { paradisAgentStartupScreenState } from '../../common/paradisAgentStartupScreen.js';
+import { paradisAgentStartupScreenState, paradisTrustDialogCursor } from '../../common/paradisAgentStartupScreen.js';
 
 // codex-cli 0.158.0 / 0.160.0 の選択画面（Orca、MIT License、Copyright (c) 2026 Lovecast Inc. の
 // src/main/runtime/__fixtures__ の録画を 120x40 で描いた画面の末尾）。キーの案内の行は、このソースを
@@ -273,6 +273,20 @@ suite('paradisAgentIde (common)', () => {
 			codexQuestionOnly: null,
 			scrolledAway: null,
 			empty: null,
+		});
+		// 信頼する側を選ぶとき、カーソルがどちらにあり、承諾の行が上か下か（タスクボードが矢印の向きを決める）
+		assert.deepStrictEqual({
+			claudeTrust: paradisTrustDialogCursor(screens.claudeTrust),
+			claudeTrustMoved: paradisTrustDialogCursor(screens.claudeTrustMoved),
+			codex159Trust: paradisTrustDialogCursor(screens.codex159Trust),
+			codex159Restricted: paradisTrustDialogCursor(screens.codex159Restricted),
+			claudeReady: paradisTrustDialogCursor(screens.claudeReady),
+		}, {
+			claudeTrust: { on: 'deny', acceptIsAbove: false },
+			claudeTrustMoved: { on: 'accept', acceptIsAbove: false },
+			codex159Trust: { on: 'accept', acceptIsAbove: true },
+			codex159Restricted: { on: 'deny', acceptIsAbove: true },
+			claudeReady: undefined,
 		});
 	});
 

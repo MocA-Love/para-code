@@ -163,6 +163,36 @@ function showsChoicePair(lines: readonly string[], [first, second]: readonly [Re
 	return false;
 }
 
+/**
+ * 信頼の確認の画面で、選択のカーソルが承諾（信頼する）と断る側のどちらにあるか。
+ * 画面が信頼の確認でない・選択肢の2行が読めないときは undefined。カーソルを動かして承諾を選ぶ側
+ * （タスクボード）が、Enter を送る前に毎回読み直して確かめるために使う（既定の位置は CLI の版で違う）。
+ */
+export function paradisTrustDialogCursor(screen: string | undefined): { readonly on: 'accept' | 'deny'; readonly acceptIsAbove: boolean } | undefined {
+	if (paradisAgentStartupScreenState(screen) !== 'trust_dialog') {
+		return undefined;
+	}
+	const lines = screen!.split('\n').slice(-STARTUP_SCREEN_TAIL_LINES);
+	const tail = compactScreen(lines.join('\n'));
+	const choices = lines.map(parseChoiceLine).filter((line): line is { readonly cursor: boolean; readonly label: string } => line !== undefined);
+	for (const rule of PARADIS_AGENT_STARTUP_SCREEN_RULES) {
+		if (rule.state !== 'trust_dialog' || rule.choices === undefined || !rule.allOf.every(pattern => pattern.test(tail))) {
+			continue;
+		}
+		const [accept, deny] = rule.choices;
+		for (let index = 0; index + 1 < choices.length; index++) {
+			const [a, b] = [choices[index], choices[index + 1]];
+			const acceptIsAbove = accept.test(a.label) && deny.test(b.label);
+			if (!acceptIsAbove && !(deny.test(a.label) && accept.test(b.label))) {
+				continue;
+			}
+			const [acceptLine, denyLine] = acceptIsAbove ? [a, b] : [b, a];
+			return acceptLine.cursor ? { on: 'accept', acceptIsAbove } : denyLine.cursor ? { on: 'deny', acceptIsAbove } : undefined;
+		}
+	}
+	return undefined;
+}
+
 /** 行頭に `›`（U+203A）のある行のうち、最後のもの（空白を落とした形）。 */
 function lastPromptLine(lines: readonly string[]): string | undefined {
 	for (let index = lines.length - 1; index >= 0; index--) {

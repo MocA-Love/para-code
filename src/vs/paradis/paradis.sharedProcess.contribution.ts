@@ -35,6 +35,7 @@ import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
+import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';
 import './contrib/computerUse/node/paradisComputerUse.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisFileModes.sharedProcess.js';
 import './contrib/fileTransfer/node/paradisSftp.sharedProcess.js';
