@@ -184,12 +184,18 @@ export default defineConfig(
 			'src/vs/code/node/cli.ts',
 			'src/vs/server/node/server.cli.ts',
 			'extensions/git/src/askpass-main.ts',
-			// PARA-PATCH: the fork's own code predates this 1.142 rule (98 sync fs calls in src/vs/paradis);
-			// keep it out until those calls are moved to async I/O or get a reasoned disable.
-			'src/vs/paradis/**',
 		],
 		rules: {
 			'local/code-no-sync-fs': 'error',
+		},
+	},
+	// PARA-PATCH: the fork's own code predates the 1.142 code-no-sync-fs rule (98 sync fs calls in 22 files under
+	// src/vs/paradis). Turn off only this rule there, keeping every other rule; move those calls to async I/O or
+	// give each a reasoned eslint-disable, then drop this block.
+	{
+		files: ['src/vs/paradis/**'],
+		rules: {
+			'local/code-no-sync-fs': 'off',
 		},
 	},
 	// Disallow bracket notation for property names that can use dot notation.
