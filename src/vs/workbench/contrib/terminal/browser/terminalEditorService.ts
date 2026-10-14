@@ -197,6 +197,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 						pinned: true,
 						forceReload: true,
 						preserveFocus: editorOptions?.preserveFocus,
+						// PARA-PATCH: agent and scheduled terminals open as background tabs so the user's terminal keeps its tab
 						inactive: editorOptions?.paradisInactive,
 						auxiliary: editorOptions?.auxiliary,
 					}
