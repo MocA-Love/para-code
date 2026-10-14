@@ -32,12 +32,46 @@ export const PARADIS_CLAUDE_MOD_HTTP_PREFIX = '/claude-mod/v1/';
 export const PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS: readonly string[] = ['resources', 'paradis', 'claude-mod'];
 
 /**
+ * 入力欄の文を Para Code へ知らせる 2 つ目の mod（`draft/`。mod のフォルダの中の別のプラグイン）。Claude Code は知らない
+ * イベント名（`prompt.change` は 2.1.300 から）を含む mod を読み込まず、画面に断りを出すので、本体と分けて
+ * {@link paradisSupportsClaudeDraftMod} の版にだけ読ませる。
+ */
+export const PARADIS_CLAUDE_DRAFT_MOD_SEGMENT = 'draft';
+
+/**
  * mod のフォルダの中で写す（同梱する）ファイルか（mod のフォルダからの相対、`/` 区切り）。許可リスト: マニフェストと
- * `hooks/` の下だけ（テストや、Claude Code が読み込んだときに書き足す型定義・tsconfig は写さない）。
- * build/gulpfile.vscode.ts の同梱の glob（PARA-PATCH）と同じもの。
+ * `hooks/` の下だけ。入力欄の mod（`draft/`）も同じ形（テストや、Claude Code が読み込んだときに書き足す型定義・
+ * tsconfig は写さない）。build/gulpfile.vscode.ts の同梱の glob（PARA-PATCH）と同じもの。
  */
 export function paradisClaudeModShipsFile(relativePath: string): boolean {
-	return relativePath === '.claude-plugin/plugin.json' || (relativePath.startsWith('hooks/') && !relativePath.includes('/../'));
+	const inPlugin = relativePath.startsWith(`${PARADIS_CLAUDE_DRAFT_MOD_SEGMENT}/`) ? relativePath.slice(PARADIS_CLAUDE_DRAFT_MOD_SEGMENT.length + 1) : relativePath;
+	return !relativePath.includes('/../') && (inPlugin === '.claude-plugin/plugin.json' || inPlugin.startsWith('hooks/'));
+}
+
+/**
+ * PC の入力欄の文の様子（入力欄の mod の知らせから）。`unknown`: 分からない（古い Claude Code・mod の無い会話・まだ何も
+ * 打っていない会話。今までどおり動く）、`empty`: 空、`text`: 書きかけがある、`cut`: 書きかけが長すぎて全部は分からない。
+ */
+export type ParadisClaudeDraftState = 'unknown' | 'empty' | 'text' | 'cut';
+
+export function paradisClaudeDraftState(draft: { readonly text: string; readonly truncated: boolean } | undefined): ParadisClaudeDraftState {
+	if (draft === undefined) {
+		return 'unknown';
+	}
+	if (draft.truncated) {
+		return 'cut';
+	}
+	return draft.text.length === 0 ? 'empty' : 'text';
+}
+
+/** 入力欄の mod（`prompt.change`）を読める Claude Code か（`claude --version` の出力。2.1.300 以降）。 */
+export function paradisSupportsClaudeDraftMod(versionOutput: string | undefined): boolean {
+	const match = versionOutput !== undefined ? /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput) : null;
+	if (!match) {
+		return false;
+	}
+	const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 300)));
 }
 
 /**
@@ -80,6 +114,19 @@ export function paradisClaudeConfigDirProvider(): (() => Promise<string | undefi
 export function paradisOnDidSetClaudeConfigDirProvider(listener: () => void): () => void {
 	claudeConfigDirProviderListeners.add(listener);
 	return () => claudeConfigDirProviderListeners.delete(listener);
+}
+
+// 同じく、shared process が確かめた Claude Code の版（`claude --version` の出力）。入力欄の mod を読ませてよいかに使う。
+// 教わる前・確かめられないときは undefined（入力欄の mod は読ませない）。
+let claudeVersionProvider: (() => Promise<string | undefined>) | undefined;
+
+/** shared process が確かめた Claude Code の版を返す口を入れる（electron-browser のウィンドウだけ）。 */
+export function paradisSetClaudeVersionProvider(provider: (() => Promise<string | undefined>) | undefined): void {
+	claudeVersionProvider = provider;
+}
+
+export function paradisClaudeVersionProvider(): (() => Promise<string | undefined>) | undefined {
+	return claudeVersionProvider;
 }
 
 /** 写し先（ホームからの相対）。版ごとに `<内容の指紋>` のフォルダを作り、一度作ったら書き換えない。 */
