@@ -515,9 +515,11 @@ suite('ParadisClaudeModBridge', () => {
 	test('keeps the prompt box text only from a verified sender, and forgets it when the mod says hello again', async () => {
 		const features = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
 		const beforeAnything = bridge.draftOf(TOKEN, SESSION);
-		// 確かめていない送り主の便（直前 60 秒に確かめていない）の入力欄の文は使わない
-		await call('event', { events: [{ type: 'draft', text: 'from a stranger' }] });
+		// 確かめられない送り主の入力欄の文は使わず、403 で断る（mod は送れたと数えない）。ほかの行は今までどおり受ける
+		callerVerified = false;
+		const strangerStatus = (await call('event', { events: [{ type: 'step', text: 'thinking' }, { type: 'draft', text: 'from a stranger' }] })).status;
 		const fromStranger = bridge.draftOf(TOKEN, SESSION);
+		callerVerified = true;
 		const poll = call('commands', { busy: false, features });
 		await flushRequests();
 		await call('event', { events: [{ type: 'draft', text: 'half typed' }] });
@@ -530,6 +532,7 @@ suite('ParadisClaudeModBridge', () => {
 		await poll;
 		assert.deepStrictEqual({
 			beforeAnything,
+			strangerStatus,
 			fromStranger,
 			typed: typed && { text: typed.text, truncated: typed.truncated },
 			tooLong: tooLong && { length: tooLong.text.length, truncated: tooLong.truncated },
@@ -537,6 +540,7 @@ suite('ParadisClaudeModBridge', () => {
 			fired: events.filter(event => event.type === 'draft').map(event => event.type === 'draft' ? event.text.length : 0),
 		}, {
 			beforeAnything: undefined,
+			strangerStatus: 403,
 			fromStranger: undefined,
 			typed: { text: 'half typed', truncated: false },
 			tooLong: { length: 20_000, truncated: true },

@@ -25,8 +25,12 @@ const MOD_PROTOCOL = '1';
 const DRAFT_FLUSH_MS = 150;
 /** Longer text is sent cut and marked `truncated` (Para Code then does not put it back). */
 const MAX_DRAFT_CHARS = 20_000;
-/** A send Para Code refused (or could not take) is tried again after this. */
+/** A send Para Code refused (or could not take) is tried again after this, twice as long after each further refusal. */
 const DRAFT_RETRY_MS = 1_000;
+/** The longest wait between two tries. */
+const DRAFT_RETRY_MAX_MS = 30_000;
+/** Tries after refusals in a row, after which the mod stops trying until the box changes again. */
+const DRAFT_RETRY_LIMIT = 8;
 
 interface IEndpoint {
 	readonly url: string;
@@ -43,6 +47,8 @@ let draftSent: string | undefined;
 let draftScheduled = false;
 let sending = false;
 let retryScheduled = false;
+/** Sends refused in a row since Para Code last took one. */
+let refusals = 0;
 /** Counts the sessions, so a send scheduled before a new session.start is not sent for the new one. */
 let generation = 0;
 
@@ -125,7 +131,8 @@ async function post($: Engine, body: string): Promise<boolean> {
 
 /**
  * Sends the box's text, one request at a time so a later text never arrives before an earlier one. A text counts as
- * sent only once Para Code took it; a refused send is tried again after {@link DRAFT_RETRY_MS} with the latest text.
+ * sent only once Para Code took it; a refused send is tried again with the latest text, after {@link DRAFT_RETRY_MS}
+ * and then twice as long each time (at most {@link DRAFT_RETRY_MAX_MS}), and at most {@link DRAFT_RETRY_LIMIT} times in a row.
  */
 async function pump($: Engine, mine: number): Promise<void> {
 	if (sending) {
@@ -138,15 +145,18 @@ async function pump($: Engine, mine: number): Promise<void> {
 			const sessionId = await $.session.id();
 			const event = { type: 'draft', text: text.slice(0, MAX_DRAFT_CHARS), ...(text.length > MAX_DRAFT_CHARS ? { truncated: true } : {}), at: Date.now() };
 			if (!await post($, JSON.stringify({ sessionId, events: [event] }))) {
-				if (!retryScheduled) {
+				if (!retryScheduled && refusals < DRAFT_RETRY_LIMIT) {
 					retryScheduled = true;
-					$.clock.after(DRAFT_RETRY_MS, () => {
+					const delay = Math.min(DRAFT_RETRY_MS * 2 ** refusals, DRAFT_RETRY_MAX_MS);
+					refusals++;
+					$.clock.after(delay, () => {
 						retryScheduled = false;
 						void pump($, mine).catch(() => undefined);
 					});
 				}
 				return;
 			}
+			refusals = 0;
 			draftSent = text;
 		}
 	} finally {
@@ -154,11 +164,17 @@ async function pump($: Engine, mine: number): Promise<void> {
 	}
 }
 
-/** The box changed: sends its text to Para Code, at most every {@link DRAFT_FLUSH_MS}. */
+/**
+ * The box changed: sends its text to Para Code, at most every {@link DRAFT_FLUSH_MS}. While a retry waits, the retry
+ * sends the latest text; after the mod gave up, a change starts the tries afresh.
+ */
 function noteDraft($: Engine, text: string): void {
 	draft = text;
-	if (!active || draftScheduled) {
+	if (!active || draftScheduled || retryScheduled) {
 		return;
+	}
+	if (refusals >= DRAFT_RETRY_LIMIT) {
+		refusals = 0;
 	}
 	draftScheduled = true;
 	const mine = generation;
@@ -177,6 +193,7 @@ export const register: Register = on => {
 		draftSent = undefined;
 		draftScheduled = false;
 		retryScheduled = false;
+		refusals = 0;
 		endpoint = e.isInteractive ? await resolveEndpoint($) : undefined;
 		active = endpoint !== undefined;
 		return started;
