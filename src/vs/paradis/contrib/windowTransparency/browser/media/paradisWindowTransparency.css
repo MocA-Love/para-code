@@ -123,6 +123,31 @@
 	background: linear-gradient(var(--vscode-notifications-background, var(--vscode-editor-background)), var(--vscode-notifications-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
 }
 
+/* Frosted glass (workbench.modernUIFrostedGlass, q.html Q330 D). Upstream makes the glass surfaces'
+	own background tokens transparent and paints the glass in a ::before layer (frostedGlass.css), so the
+	opaque editor-colour backstops above would turn the notification list into the editor colour and darken
+	the quick input and hovers. While the glass is active, drop those backstops so the glass shows, and use
+	the glass colours paradisFrostedGlassTint.contribution.ts computes: over the editor background they
+	composite to the same colours as without the glass, while the blur keeps upstream's strength. The
+	guards mirror frostedGlass.css, so high contrast, reduced transparency and windows without
+	transparency keep the previous behaviour (upstream's glass as is when transparency is off). */
+@supports (backdrop-filter: blur(12px)) and (background-color: color-mix(in srgb, black 92%, transparent)) {
+	@media (prefers-reduced-transparency: no-preference) and (forced-colors: none) {
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) {
+			--modern-ui-glass-notifications-background: var(--paradis-glass-notifications-background, color-mix(in srgb, var(--vscode-notifications-background) var(--modern-ui-glass-opacity, 92%), transparent));
+			--modern-ui-glass-quick-input-background: var(--paradis-glass-quick-input-background, color-mix(in srgb, var(--modern-ui-solid-quick-input-background) var(--modern-ui-glass-opacity, 92%), transparent));
+			--modern-ui-glass-menu-background: var(--paradis-glass-menu-background, color-mix(in srgb, var(--modern-ui-solid-menu-background) var(--modern-ui-glass-opacity, 92%), transparent));
+			--modern-ui-glass-hover-background: var(--paradis-glass-hover-background, color-mix(in srgb, var(--vscode-editorHoverWidget-background) var(--modern-ui-glass-opacity, 92%), transparent));
+		}
+
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .quick-input-widget:not(.quick-input-widget-overlay),
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .monaco-hover,
+		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .notifications-list-container {
+			background: transparent !important;
+		}
+	}
+}
+
 /* Editor part content backdrop. editorPart.ts paints an opaque editorBackground on the part's */
 /* `.content` element via inline style, hiding the translucent `.part.editor` layer underneath for */
 /* the entire editor area. Clear it; `!important` outranks the inline style. */
