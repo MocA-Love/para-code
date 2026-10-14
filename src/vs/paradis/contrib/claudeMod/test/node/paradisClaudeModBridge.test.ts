@@ -545,6 +545,19 @@ suite('ParadisClaudeModBridge', () => {
 		});
 	});
 
+	test('drops a prompt box text that arrives after a newer one, and forgets the text when the mod says bye', async () => {
+		const poll = call('commands', { busy: false, features: ['draft.fill'] });
+		await flushRequests();
+		await call('event', { events: [{ type: 'draft', text: 'newer', at: now - 100 }] });
+		await call('event', { events: [{ type: 'draft', text: 'older', at: now - 500 }] });
+		const afterReversed = bridge.draftOf(TOKEN, SESSION)?.text;
+		await call('event', { events: [{ type: 'bye', reason: 'clear' }] });
+		const afterBye = bridge.draftOf(TOKEN, SESSION);
+		signal.abort();
+		await poll;
+		assert.deepStrictEqual({ afterReversed, afterBye, unknown: events.filter(event => event.type === 'draft-unknown').length }, { afterReversed: 'newer', afterBye: undefined, unknown: 1 });
+	});
+
 	test('replaces the prompt box text through the mod only while the box is known', async () => {
 		const features = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
 		const verify = call('commands', { busy: false, features });
@@ -559,8 +572,8 @@ suite('ParadisClaudeModBridge', () => {
 		const refusing = bridge.fillDraft(TOKEN, SESSION, 'half typed');
 		const [refused] = (await refusedPoll).body.commands as { id: string }[];
 		await call('ack', { id: refused.id, ok: false, reason: 'panel-open' });
-		assert.deepStrictEqual({ unknownBox, command: { kind: fill.kind, text: fill.text }, filled: await filling, refused: await refusing }, {
-			unknownBox: 'unavailable', command: { kind: 'draftFill', text: '' }, filled: 'filled', refused: 'panel-open',
+		assert.deepStrictEqual({ unknownBox, command: { kind: fill.kind, text: fill.text, mode: (fill as { mode?: string }).mode }, filled: await filling, refused: await refusing }, {
+			unknownBox: 'unavailable', command: { kind: 'draftFill', text: '', mode: 'replace' }, filled: 'filled', refused: 'panel-open',
 		});
 	});
 
