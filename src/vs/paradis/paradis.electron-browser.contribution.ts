@@ -16,6 +16,7 @@ import './contrib/sentry/electron-browser/paradisUnhandledErrorReporter.contribu
 // main プロセスの混雑の計測チャネルを、スペースの切り替えの計測へつなぐ（M1〜M4）
 import './contrib/mainLoad/electron-browser/paradisMainLoadProbe.contribution.js';
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
+import './contrib/windowTransparency/electron-browser/paradisFrostedGlassTint.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentPreview.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserTabs.contribution.js';
