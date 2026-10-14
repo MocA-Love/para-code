@@ -2019,10 +2019,10 @@ suite('LocalAgentHostSessionsProvider', () => {
 		assert.deepStrictEqual(provider.getSessions().map(s => s.title.get()), ['Burst'], 'the session cache still reflects the burst correctly');
 	}));
 
-	test('a trailing rerun booked mid-failure has its announce flag folded into the retry', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
-		// Regression test: a failed pass used to arm a backoff retry with only
-		// its own announce flag, silently dropping the announce=true a
-		// trailing rerun had booked while the pass was in flight.
+	test('a trailing rerun booked while a pass fails still announces the existing sessions', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		// Regression test: the announce=true a trailing rerun books while a pass is
+		// in flight must survive that pass failing. Booking supersedes the failing
+		// pass, so no backoff retry is armed and the rerun itself announces.
 		agentHost.addSession(createSession('retry-announce-1', { summary: 'Retry' }));
 		const provider = createProvider(disposables, agentHost);
 		await timeout(0);
@@ -2043,9 +2043,8 @@ suite('LocalAgentHostSessionsProvider', () => {
 		agentHost.listSessionsBarrier.complete();
 		await firstPass;
 
-		// The first pass failed and armed a backoff retry before the trailing
-		// rerun could run. Its announce=true must reach the retry instead of
-		// silently downgrading it to a plain (non-announcing) refresh.
+		// The first pass failed but was superseded by the booked rerun, which
+		// runs with announce=true instead of being downgraded to a plain refresh.
 		await timeout(1_100);
 
 		assert.deepStrictEqual({

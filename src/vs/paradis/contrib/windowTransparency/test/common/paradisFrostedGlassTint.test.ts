@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { editorBackground, editorHoverBackground } from '../../../../../platform/theme/common/colors/editorColors.js';
+import { editorBackground, editorHoverBackground, editorWidgetBackground } from '../../../../../platform/theme/common/colors/editorColors.js';
 import { menuBackground } from '../../../../../platform/theme/common/colors/menuColors.js';
 import { quickInputBackground } from '../../../../../platform/theme/common/colors/quickpickColors.js';
 import { TestColorTheme } from '../../../../../platform/theme/test/common/testThemeService.js';
@@ -38,19 +38,22 @@ suite('ParadisFrostedGlassTint', () => {
 		);
 	});
 
-	test('computes one tint per glass surface from the theme, flattening translucent colours over the editor background', () => {
+	test('computes one tint per glass surface from the theme, flattening translucent colours over the editor background and dimming the dialog backdrop', () => {
 		const theme = new TestColorTheme({
 			[editorBackground]: '#141414',
 			[NOTIFICATIONS_BACKGROUND]: '#303030',
 			[quickInputBackground]: '#ffffff00',
 			[menuBackground]: '#3c3c3c',
 			[editorHoverBackground]: '#282828',
+			[editorWidgetBackground]: '#2a2a2a',
 		});
 		assert.deepStrictEqual(computeParadisGlassTintValues(theme, 80), [
 			['--paradis-glass-notifications-background', 'rgb(55 55 55 / 80%)'],
 			['--paradis-glass-quick-input-background', 'rgb(20 20 20 / 80%)'],
 			['--paradis-glass-menu-background', 'rgb(70 70 70 / 80%)'],
 			['--paradis-glass-hover-background', 'rgb(45 45 45 / 80%)'],
+			// The dialog sits over the screen dimmed by 50% black, so its backdrop is half the editor colour.
+			['--paradis-glass-dialog-background', 'rgb(50 50 50 / 80%)'],
 		]);
 	});
 

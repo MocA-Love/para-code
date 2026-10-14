@@ -50,6 +50,8 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { localize } from '../../../../nls.js';
 // PARA-PATCH: per-view named browser profile routing (see the getOrCreateLazy call below)
 import { paradisResolveBrowserSessionOptions } from '../../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileRouting.js';
+// PARA-PATCH: the fork's whenInitialized barrier built from upstream's snapshot promise
+import { paradisWhenBrowserViewsInitialized } from '../../../../paradis/contrib/workspaceSwitch/common/paradisBrowserViewsInitialized.js';
 
 // PARA-PATCH: introduce paradisCreateBrowserViewInitialization and its options/result types - a non-rejecting barrier that subscribes before snapshotting existing views, with bounded backoff/timeout retries, to close the snapshot/listen gap on recovery (Para Browser MCP recovery hardening)
 export interface IParadisBrowserViewInitialization<T> {
@@ -450,14 +452,11 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 			this.logService.error('[BrowserViewWorkbenchService] Failed to initialize browser view event stream.', error);
 		});
 
-		// PARA-PATCH: expose the existing-view snapshot as the fork's non-rejecting whenInitialized barrier.
-		// Upstream now delivers the snapshot and later creations on one ordered stream, which closes the
-		// snapshot/listen gap the fork's own barrier (paradisCreateBrowserViewInitialization) used to close.
-		// Resolves false when the snapshot fails or the service is disposed first.
-		const paradisInitialized = new DeferredPromise<boolean>();
-		this._register(toDisposable(() => void paradisInitialized.complete(false)));
-		void this._browserViewsReady.p.then(() => paradisInitialized.complete(true), () => paradisInitialized.complete(false));
-		this.whenInitialized = paradisInitialized.p;
+		// PARA-PATCH: expose the existing-view snapshot as the fork's non-rejecting whenInitialized barrier
+		// (see paradisWhenBrowserViewsInitialized for why it no longer retries).
+		const paradisInitialized = paradisWhenBrowserViewsInitialized(this._browserViewsReady.p);
+		this._register(paradisInitialized.lifetime);
+		this.whenInitialized = paradisInitialized.whenInitialized;
 	}
 
 	willUseRemoteProxy(): boolean {

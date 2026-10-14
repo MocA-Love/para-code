@@ -7848,7 +7848,9 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		// _sessionRefreshInFlight covers the reruns too so no bare pass can slip into the
 		// microtask window between passes. Booking a rerun also bumps upstream's generation so
 		// the in-flight pass is superseded: its (possibly stale) listing and its error are
-		// dropped, and the booked rerun applies the fresh one.
+		// dropped (a superseded failure arms no backoff retry), and the booked rerun applies
+		// the fresh listing with the merged announce flag. A rerun booked after a failed pass
+		// already armed its retry runs as well; it clears that retry (doRefreshSessions).
 		if (this._sessionRefreshInFlight) {
 			this._sessionRefreshGeneration++;
 			this._refreshRerunPending = true;
@@ -7858,9 +7860,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		this._sessionRefreshInFlight = true;
 		try {
 			await this.doRefreshSessions(announceExistingAsAdded);
-			while (this._refreshRerunPending && !this._sessionRefreshRetry.value && !this._store.isDisposed) {
-				// A failed pass armed a backoff retry; let the retry carry the refresh instead
-				// of immediately re-hitting the backend past its backoff.
+			while (this._refreshRerunPending && !this._store.isDisposed) {
 				this._refreshRerunPending = false;
 				const announce = this._refreshRerunAnnounceExisting;
 				this._refreshRerunAnnounceExisting = false;
@@ -7869,6 +7869,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		} finally {
 			this._sessionRefreshInFlight = false;
 			this._refreshRerunPending = false;
+			this._refreshRerunAnnounceExisting = false;
 		}
 	}
 
@@ -7974,12 +7975,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			// we deliberately do NOT pop a sign-in dialog just to render the
 			// list. Instead, retry silently in the background with backoff.
 			this._logService.trace(`[AgentHostSessionsProvider] listSessions failed; scheduling retry: ${err}`);
-			// PARA-PATCH: a trailing rerun booked while this pass was in flight (see
-			// _refreshSessions) wants the retry to carry its announce flag too — the while
-			// loop there bails out without running that rerun once _sessionRefreshRetry is
-			// armed, so this is the only place left to fold it in before it's lost.
-			this._scheduleSessionRefreshRetry(announceExistingAsAdded || this._refreshRerunAnnounceExisting);
-			this._refreshRerunAnnounceExisting = false;
+			this._scheduleSessionRefreshRetry(announceExistingAsAdded);
 		}
 	}
 

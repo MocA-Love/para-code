@@ -138,6 +138,7 @@
 			--modern-ui-glass-quick-input-background: var(--paradis-glass-quick-input-background, color-mix(in srgb, var(--modern-ui-solid-quick-input-background) var(--modern-ui-glass-opacity, 92%), transparent));
 			--modern-ui-glass-menu-background: var(--paradis-glass-menu-background, color-mix(in srgb, var(--modern-ui-solid-menu-background) var(--modern-ui-glass-opacity, 92%), transparent));
 			--modern-ui-glass-hover-background: var(--paradis-glass-hover-background, color-mix(in srgb, var(--vscode-editorHoverWidget-background) var(--modern-ui-glass-opacity, 92%), transparent));
+			--modern-ui-glass-dialog-background: var(--paradis-glass-dialog-background, color-mix(in srgb, var(--modern-ui-solid-dialog-background) var(--modern-ui-glass-opacity, 92%), transparent));
 		}
 
 		.monaco-workbench.paradis-transparent.modern-ui-frosted-glass:not(.hc-black):not(.hc-light) .quick-input-widget:not(.quick-input-widget-overlay),

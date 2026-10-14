@@ -14,7 +14,7 @@
 
 import { Color } from '../../../../base/common/color.js';
 import { ColorIdentifier } from '../../../../platform/theme/common/colorUtils.js';
-import { editorBackground, editorHoverBackground } from '../../../../platform/theme/common/colors/editorColors.js';
+import { editorBackground, editorHoverBackground, editorWidgetBackground } from '../../../../platform/theme/common/colors/editorColors.js';
 import { menuBackground } from '../../../../platform/theme/common/colors/menuColors.js';
 import { quickInputBackground } from '../../../../platform/theme/common/colors/quickpickColors.js';
 import { IColorTheme } from '../../../../platform/theme/common/themeService.js';
@@ -27,7 +27,10 @@ export interface IParadisGlassRgb {
 	readonly b: number;
 }
 
-/** すりガラスの透け具合の範囲（`workbench.modernUIFrostedGlassOpacity` と同じ、%）。 */
+/**
+ * すりガラスの透け具合の範囲（`workbench.modernUIFrostedGlassOpacity` と同じ、%）。upstream の値は
+ * layoutService.ts の `ModernUIFrostedGlassOpacity`（const enum）にあるが、browser 層なので common からは import できず写している。
+ */
 export const PARADIS_GLASS_OPACITY_MIN = 50;
 export const PARADIS_GLASS_OPACITY_MAX = 100;
 export const PARADIS_GLASS_OPACITY_DEFAULT = 80;
@@ -59,12 +62,17 @@ export function formatParadisGlassTint(tint: IParadisGlassRgb, opacityPercent: n
 	return `rgb(${tint.r} ${tint.g} ${tint.b} / ${clampParadisGlassOpacity(opacityPercent)}%)`;
 }
 
-/** すりガラスの層ごとの [補正した色を入れる変数, 面の色]。CSS（paradisWindowTransparency.css）が upstream の層の色をこの変数で置き換える。 */
-export const PARADIS_GLASS_SURFACES: readonly [cssProperty: string, surface: ColorIdentifier][] = [
-	['--paradis-glass-notifications-background', NOTIFICATIONS_BACKGROUND],
-	['--paradis-glass-quick-input-background', quickInputBackground],
-	['--paradis-glass-menu-background', menuBackground],
-	['--paradis-glass-hover-background', editorHoverBackground],
+/**
+ * すりガラスの層ごとの [補正した色を入れる変数, 面の色, 背後の明るさ]。CSS（paradisWindowTransparency.css）が
+ * upstream の層の色をこの変数で置き換える。背後は通常エディタの地の色で、ダイアログだけは画面全体を黒の 50% で
+ * 暗くした上に出る（dialog.css の `.monaco-dialog-modal-block.dimmed`）ので、その明るさで計算する。
+ */
+export const PARADIS_GLASS_SURFACES: readonly [cssProperty: string, surface: ColorIdentifier, backdropScale: number][] = [
+	['--paradis-glass-notifications-background', NOTIFICATIONS_BACKGROUND, 1],
+	['--paradis-glass-quick-input-background', quickInputBackground, 1],
+	['--paradis-glass-menu-background', menuBackground, 1],
+	['--paradis-glass-hover-background', editorHoverBackground, 1],
+	['--paradis-glass-dialog-background', editorWidgetBackground, 0.5],
 ];
 
 /**
@@ -79,12 +87,13 @@ export function computeParadisGlassTintValues(theme: IColorTheme, opacityPercent
 	}
 	const backdrop = toRgb(editor.makeOpaque(Color.black));
 	const values: [string, string][] = [];
-	for (const [property, id] of PARADIS_GLASS_SURFACES) {
+	for (const [property, id, backdropScale] of PARADIS_GLASS_SURFACES) {
 		const surface = theme.getColor(id);
 		if (!surface) {
 			continue;
 		}
-		const tint = computeParadisGlassTint(toRgb(surface.makeOpaque(editor.makeOpaque(Color.black))), backdrop, opacityPercent);
+		const scaled = { r: backdrop.r * backdropScale, g: backdrop.g * backdropScale, b: backdrop.b * backdropScale };
+		const tint = computeParadisGlassTint(toRgb(surface.makeOpaque(editor.makeOpaque(Color.black))), scaled, opacityPercent);
 		values.push([property, formatParadisGlassTint(tint, opacityPercent)]);
 	}
 	return values;
