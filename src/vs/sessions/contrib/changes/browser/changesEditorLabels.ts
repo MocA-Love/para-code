@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
-// PARA-PATCH: getComparisonKey replaces isEqual for the O(1) stats index below
-import { getComparisonKey } from '../../../../base/common/resources.js';
+// PARA-PATCH: getComparisonKey for the O(1) stats index below
+import { getComparisonKey, isEqual } from '../../../../base/common/resources.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { isIChatSessionFileChange2 } from '../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { ISessionFileChange } from '../../../services/sessions/common/session.js';
@@ -19,6 +19,28 @@ export interface IChangesEditorLabels {
 export interface IChangesEditorFileStats {
 	readonly insertions: number;
 	readonly deletions: number;
+}
+
+/**
+ * Returns the resource that identifies a change in the Changes editor. This is
+ * the file's own URI (not a content snapshot URI), and is defined for deleted
+ * files, whose `modifiedUri` is `undefined`.
+ */
+export function getChangesEditorFileResource(change: ISessionFileChange): URI {
+	return isIChatSessionFileChange2(change) ? change.uri : change.modifiedUri;
+}
+
+/**
+ * Finds the change that `resource` refers to, matching the change's file URI
+ * as well as its original and modified (snapshot) URIs.
+ */
+export function findChangesEditorFileChange(resource: URI, changes: readonly ISessionFileChange[]): ISessionFileChange | undefined {
+	return changes.find(change => {
+		const resources = isIChatSessionFileChange2(change)
+			? [change.uri, change.modifiedUri, change.originalUri]
+			: [change.modifiedUri, change.originalUri];
+		return resources.some(candidate => candidate && isEqual(candidate, resource));
+	});
 }
 
 /**

@@ -54,6 +54,9 @@ const NODE_BUILTINS = new Set([
 /** main プロセスの入口。ここから辿れる範囲が「起動時に必ず読まれるもの」。 */
 const MAIN_ENTRY_POINTS = [
 	'src/main.ts',
+	// upstream 1.141 から main.ts は compile cache を有効にして mainImpl.ts を動的 import するだけになり、
+	// 起動処理（Sentry の初期化を含む）は mainImpl.ts にある。動的 import は辿らないので入口として足す
+	'src/mainImpl.ts',
 	'src/vs/code/electron-main/main.ts',
 	'src/vs/code/electron-main/app.ts',
 ];

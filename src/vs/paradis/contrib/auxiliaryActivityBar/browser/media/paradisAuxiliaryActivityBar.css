@@ -65,3 +65,10 @@
 .monaco-workbench.floating-panels.modern-ui-compact #workbench\.parts\.auxiliaryactivitybar.right {
 	--modern-ui-floating-card-left-border-color: transparent;
 }
+
+/* Compact density squares the rail off like the primary activity bar (upstream 1.141 sets
+ * `border-radius: 0` on `.modern-ui-compact .part.activitybar`; the ID rules above would
+ * otherwise keep the rail rounded on its window side). */
+.monaco-workbench.floating-panels.modern-ui-compact #workbench\.parts\.auxiliaryactivitybar {
+	border-radius: 0;
+}

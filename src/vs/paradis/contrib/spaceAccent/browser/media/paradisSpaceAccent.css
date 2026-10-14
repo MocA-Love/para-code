@@ -35,3 +35,19 @@
 .monaco-workbench .part.editor > .content .editor-group-container:not(.active) > .title .tabs-container > .tab.active.tab-border-top:not(:focus) > .tab-border-top-container.tab-border-top-container {
 	background-color: var(--paradis-space-accent-unfocused, var(--tab-border-top-color));
 }
+
+/*
+ * Modern UI の丸いタブ (pill、`modernUIEditorTabStyle: pill`) では、上の `.tab-border-top-container` は
+ * 隠れていて、upstream 1.141 から選んでいるタブの上端の線を `.tab-fill::before` が描く
+ * (tabs.css の `--modern-ui-editor-tab-current-border-top`)。その線もスペースの色にする。
+ * スペースに色が無いときは `--paradis-space-accent` が無いので、upstream どおりテーマの色に戻る。
+ * upstream のセレクタ (クラス 11 個分) に `.editor-group-container(.active / :not(.active))` を足して
+ * 詳細度を上げ、読み込み順に関係なく勝たせる。フォーカスの無いグループは減光した色を使う。
+ */
+.modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs):not(:is(.hc-black, .hc-light)) .part.editor .editor-group-container.active .tabs-container > .tab.active:not(.multi-selected) > .tab-fill::before {
+	background-color: var(--paradis-space-accent, var(--modern-ui-editor-tab-current-border-top));
+}
+
+.modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs):not(:is(.hc-black, .hc-light)) .part.editor .editor-group-container:not(.active) .tabs-container > .tab.active:not(.multi-selected) > .tab-fill::before {
+	background-color: var(--paradis-space-accent-unfocused, var(--modern-ui-editor-tab-current-border-top));
+}
