@@ -2037,11 +2037,11 @@ suite('LocalAgentHostSessionsProvider', () => {
 		const firstPass = refreshSessions(false);
 		await timeout(0);
 		// Booked while the first pass is still awaiting listSessions() — becomes
-		// a trailing rerun instead of its own concurrent pass.
-		await refreshSessions(true);
+		// a trailing rerun instead of its own concurrent pass, and resolves with it.
+		const booked = refreshSessions(true);
 
 		agentHost.listSessionsBarrier.complete();
-		await firstPass;
+		await Promise.all([firstPass, booked]);
 
 		// The first pass failed but was superseded by the booked rerun, which
 		// runs with announce=true instead of being downgraded to a plain refresh.
@@ -2054,6 +2054,28 @@ suite('LocalAgentHostSessionsProvider', () => {
 			eventCount: 1,
 			added: ['Retry'],
 		});
+	}));
+
+	test('a refresh booked while a pass is in flight resolves only after its rerun applied a fresh listing', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		// The coalescing must keep upstream's contract that `await _refreshSessions()`
+		// returns once a listing taken after the call has been applied.
+		agentHost.addSession(createSession('await-1', { summary: 'First' }));
+		const provider = createProvider(disposables, agentHost);
+		await timeout(0);
+
+		const refreshSessions = () =>
+			(provider as unknown as { _refreshSessions(): Promise<void> })._refreshSessions();
+
+		agentHost.listSessionsBarrier = new DeferredPromise<void>();
+		const firstPass = refreshSessions();
+		await timeout(0);
+		agentHost.addSession(createSession('await-2', { summary: 'Second' }));
+		const booked = refreshSessions();
+		agentHost.listSessionsBarrier.complete();
+		await booked;
+
+		assert.deepStrictEqual(provider.getSessions().map(s => s.title.get()).sort(), ['First', 'Second']);
+		await firstPass;
 	}));
 
 	// ---- Startup session cache (persistence) -------

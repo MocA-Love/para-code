@@ -162,7 +162,8 @@ function createAccessor(container: HTMLElement, resource: URI, changes: readonly
 			return CommandsRegistry.getCommand(command)!.handler(accessor, ...args);
 		},
 	} as unknown as ICommandService;
-	const session = { resource, changes: constObservable(changes) } as unknown as IActiveSession;
+	// PARA-PATCH: upstream 1.141 reads the changes from the active chat (session.activeChat.get().changes)
+	const session = { resource, changes: constObservable(changes), activeChat: constObservable({ changes: constObservable(changes) }) } as unknown as IActiveSession;
 	const services = new Map<unknown, unknown>([
 		[ILayoutService, { mainContainer: container }],
 		[ITextFileService, { read: () => Promise.resolve({ value: '' }) } as unknown as ITextFileService],
@@ -202,7 +203,8 @@ function createRealAccessor(store: DisposableStore, container: HTMLElement, reso
 	instantiationService.set(ILayoutService, { mainContainer: container } as ILayoutService);
 	instantiationService.set(IMenuService, menuService);
 	instantiationService.set(INotificationService, { info: () => assert.fail('changes should be available') } as unknown as INotificationService);
-	instantiationService.set(ISessionsService, { activeSession: constObservable({ resource, changes: constObservable(changes) } as unknown as IActiveSession) } as unknown as ISessionsService);
+	// PARA-PATCH: upstream 1.141 reads the changes from the active chat (session.activeChat.get().changes)
+	instantiationService.set(ISessionsService, { activeSession: constObservable({ resource, changes: constObservable(changes), activeChat: constObservable({ changes: constObservable(changes) }) } as unknown as IActiveSession) } as unknown as ISessionsService);
 	instantiationService.set(ITelemetryService, new NullTelemetryServiceShape());
 	instantiationService.set(ITextFileService, { read: () => Promise.resolve({ value: '' }) } as unknown as ITextFileService);
 	return { contextMenuService, instantiationService, menuService };
