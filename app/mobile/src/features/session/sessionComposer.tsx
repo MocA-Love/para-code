@@ -4,7 +4,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, 
 import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
-import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Monitor } from 'lucide-react-native';
+import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
 import { appendQuickReply } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
@@ -29,7 +29,7 @@ import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import type { AgentMonitor } from '../../agentMonitors.js';
 import type { AgentShell, AgentShellsAccess } from '../../agentShells.js';
-import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type AgentPanel, type FsUploadResult } from '../../store.js';
+import { AGENT_COMPOSER_NOT_EMPTY_CODE, AGENT_PANEL_OPEN_CODE, AGENT_SLASH_COMMAND_REJECTED_CODE, type AgentCommandCatalogState, type AgentSlashRejection, type AgentCommandOption, type AgentMessageSendResult, type AgentModelControlState, type AgentPanel, type AgentPcDraft, type FsUploadResult } from '../../store.js';
 import { colors, radius, space, squircle, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { Button, Icon, iconSize, useThemeColors } from '../../ui/index.js';
@@ -98,6 +98,8 @@ interface SessionComposerProps {
 	panel?: AgentPanel;
 	/** PC が画面の帯と「閉じる」を扱える（agent.panel.v1）。断りの panel-open は帯に任せる。 */
 	panelSupported?: boolean;
+	/** PC の Claude Code の入力欄の書きかけ（agent.pc-draft.v1）。あれば入力欄の上に帯で見せる（送信は止めない）。 */
+	pcDraft?: AgentPcDraft;
 	/** 帯の「閉じる」（PC へ Esc を送る）。 */
 	onClosePanel?: () => Promise<AgentMessageSendResult>;
 	/** `/usage`: アプリの「使用量」の画面へ移る。 */
@@ -134,7 +136,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 	draftKey, terminalKey, sessionEpoch, agent, model, effort, modelControl, modelLocked, commandCatalog, monitors, shells, shellsAccess, sessionStatus, sessionStatusSupported = false, working = false,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, ws, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 	answerTarget, onCancelAnswer, answerRefreshing, slashRejection, onSlashRejectionHandled, onOpenTerminal,
-	panel, panelSupported = false, onClosePanel, onOpenUsage, spaceName, branch,
+	panel, panelSupported = false, pcDraft, onClosePanel, onOpenUsage, spaceName, branch,
 }, ref) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
@@ -643,6 +645,15 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						<Text style={textStyles.answerLabel} numberOfLines={1}>{agentPanelLabel(panel?.command) ?? '画面'}</Text>
 					</View>
 					{onClosePanel !== undefined ? <Button label="閉じる" variant="ghost" size="sm" loading={closingPanel} onPress={closePanel} /> : null}
+				</View>
+			) : null}
+			{pcDraft !== undefined && !panelOpen && answerTarget === undefined ? (
+				<View style={styles.answerBanner} accessibilityLiveRegion="polite">
+					<Icon icon={Keyboard} size={answerIconSize} color={colors.textDim} />
+					<View style={textStyles.answerBody}>
+						<Text style={textStyles.answerPrompt}>PC で書きかけの文があります</Text>
+						<Text style={textStyles.answerLabel} numberOfLines={2}>{pcDraft.truncated ? `${pcDraft.text.slice(0, 200)}…` : pcDraft.text}</Text>
+					</View>
 				</View>
 			) : null}
 			{slashError !== undefined && answerTarget === undefined ? (

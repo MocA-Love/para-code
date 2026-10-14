@@ -401,6 +401,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						onSlashRejectionHandled={handleSlashRejection}
 						onOpenTerminal={openTerminal}
 						panel={chatReady ? chat?.panel : undefined}
+						pcDraft={chatReady && chat?.agent === 'claude' ? chat.pcDraft : undefined}
 						panelSupported={panelSupported}
 						{...(panelSupported ? { onClosePanel: closePanel } : {})}
 						onOpenUsage={openUsage}
