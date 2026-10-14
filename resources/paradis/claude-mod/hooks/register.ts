@@ -534,7 +534,8 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 	}
 	if (id !== undefined && command.kind === 'draftFill') {
 		if (typeof command.text === 'string' && command.text.length <= MAX_DRAFT_FILL_CHARS) {
-			await fillDraft($, sessionId, id, command.text);
+			// `append` puts a draft back without removing what the person typed in the meantime
+			await fillDraft($, sessionId, id, command.text, command.mode === 'append' ? 'append' : 'replace');
 		}
 		return;
 	}
@@ -593,12 +594,12 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 }
 
 /**
- * Replaces the prompt box's text for Para Code. Para Code only asks while it knows the box's text (draft.ts tells it on
- * Claude Code 2.1.300 and later), so this never guesses what is in the box.
+ * Replaces (or appends to) the prompt box's text for Para Code. Para Code only asks while it knows the box's text (draft.ts
+ * tells it on Claude Code 2.1.300 and later), so this never guesses what is in the box.
  */
-async function fillDraft($: Engine, sessionId: string, id: string, text: string): Promise<void> {
+async function fillDraft($: Engine, sessionId: string, id: string, text: string, mode: 'replace' | 'append'): Promise<void> {
 	try {
-		const filled = await $.prompt.fill({ text, mode: 'replace' });
+		const filled = await $.prompt.fill({ text, mode });
 		await request($, 'ack', { sessionId, id, ok: filled.isFilled, ...(filled.isFilled ? {} : { reason: filled.refusal === 'dialog' ? 'panel-open' : 'refused' }) });
 	} catch (error) {
 		await request($, 'ack', { sessionId, id, ok: false, reason: 'refused', ...(errorText(error) !== undefined ? { message: errorText(error) } : {}) });
