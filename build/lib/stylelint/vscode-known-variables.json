@@ -1327,6 +1327,7 @@
 		"--paradis-agent-live-row-height",
 		"--paradis-chip-color",
 		"--paradis-cursor-duration",
+		"--paradis-glass-dialog-background",
 		"--paradis-glass-hover-background",
 		"--paradis-glass-menu-background",
 		"--paradis-glass-notifications-background",
