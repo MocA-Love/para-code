@@ -34,6 +34,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { BrowserNavigationFeatures } from '../../../../workbench/contrib/browserView/electron-browser/features/browserNavigationFeatures.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
@@ -128,8 +130,12 @@ export interface IParadisBrowserProfilesService {
 	 */
 	canUseProfiles(): boolean;
 
-	/** 指定プロファイルで新しいブラウザタブを開く。 */
-	openInProfile(profileId: string, url?: string, group?: IEditorGroup): Promise<BrowserEditorInput | undefined>;
+	/**
+	 * 指定プロファイルで新しいブラウザタブを開く。`openUrlPicker` を立てると、URL なしで開いたときに
+	 * URL の入力欄を開く（upstream 1.142 から空タブは自動では開かず、開いた側が呼ぶため）。
+	 * エージェントの経路ではユーザーのフォーカスを奪わないよう立てない。
+	 */
+	openInProfile(profileId: string, url?: string, group?: IEditorGroup, options?: { readonly openUrlPicker?: boolean }): Promise<BrowserEditorInput | undefined>;
 
 	/**
 	 * 開いているビューを別のプロファイル／組み込みスコープへ「切り替える」。
@@ -424,7 +430,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 
 	// #region 開く / 切り替える
 
-	async openInProfile(profileId: string, url?: string, group?: IEditorGroup): Promise<BrowserEditorInput | undefined> {
+	async openInProfile(profileId: string, url?: string, group?: IEditorGroup, options?: { readonly openUrlPicker?: boolean }): Promise<BrowserEditorInput | undefined> {
 		if (!this._profiles.some(profile => profile.id === profileId) || !this.canUseProfiles()) {
 			return undefined;
 		}
@@ -432,7 +438,10 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		try {
 			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
 			const input = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
-			await this.editorService.openEditor(input, { pinned: true }, group);
+			const pane = await this.editorService.openEditor(input, { pinned: true }, group);
+			if (!url && options?.openUrlPicker && pane instanceof BrowserEditor) {
+				pane.getContribution(BrowserNavigationFeatures)?.openUrlPicker();
+			}
 			this.touch(profileId);
 			return input;
 		} catch (error) {
