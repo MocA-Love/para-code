@@ -13,7 +13,8 @@
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { deriveGitHubEndpoints, gitHubCopilotResource, gitHubRepoResource, IGitHubEndpoints } from '../../../../platform/agentHost/common/githubEndpoints.js';
+import { gitHubCopilotResource, gitHubRepoResource } from '../../../../platform/agentHost/common/githubEndpoints.js';
+import { deriveGitHubEndpoints, IGitHubEndpoints } from '../../../../platform/github/common/githubEndpoints.js';
 import { IAgentHostGitHubEndpointService } from '../../../../platform/agentHost/node/agentHostGitHubEndpointService.js';
 import { CopilotApiService, ICopilotApiService } from '../../../../platform/agentHost/node/shared/copilotApiService.js';
 import { ProtectedResourceMetadata } from '../../../../platform/agentHost/common/state/protocol/state.js';

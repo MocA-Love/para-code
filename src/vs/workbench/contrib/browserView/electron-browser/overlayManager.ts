@@ -70,6 +70,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// behind the browser instead; notifications remain reachable via the status bar bell. The
 	// notifications-center entry above is kept: that panel is user-invoked and interactive.
 	// { className: 'notification-toast-container', type: BrowserOverlayType.Notification },
+	{ className: 'spotlight-overlay', type: BrowserOverlayType.Unknown },
 	// Context view is very generic, so treat the content as unknown
 	{ className: 'context-view', type: BrowserOverlayType.Unknown }
 ];
