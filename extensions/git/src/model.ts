@@ -985,6 +985,9 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 			// PARA-PATCH: parking drops the `.git` watcher, so a repository deleted while parked
 			// (Para Code removes worktrees itself) would otherwise come back pointing at nothing.
 			// See paradisRepositoryPark.ts.
+			// PARA-PATCH: unpark runs synchronously from the space switch; one stat on the .git path decides
+			// whether the repository is pushed back or disposed, and must not interleave with another unpark.
+			// eslint-disable-next-line local/code-no-sync-fs -- see the PARA-PATCH comment above.
 			if (!fs.existsSync(path.join(repository.dotGit.commonPath ?? repository.dotGit.path))) {
 				this.logger.trace(`[Model][unpark] Parked repository disappeared, disposing instead: ${repository.root}`);
 				dispose();

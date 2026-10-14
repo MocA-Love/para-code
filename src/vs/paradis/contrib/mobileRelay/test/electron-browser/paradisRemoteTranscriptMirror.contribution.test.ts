@@ -150,6 +150,7 @@ class TranscriptRelayChannel implements IChannel {
 /** 接続先の REH のチャネルを呼んだ記録を残す、接続の代わり。 */
 class ShellOutputRemoteConnection implements IRemoteAgentConnection {
 	readonly remoteAuthority = REMOTE_AUTHORITY;
+	readonly isConnected = true;
 	readonly onReconnecting = Event.None;
 	readonly onDidStateChange: Event<PersistentConnectionEvent> = Event.None;
 	readonly calls: Array<{ readonly channelName: string; readonly command: string; readonly arg: unknown }> = [];

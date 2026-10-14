@@ -55,7 +55,7 @@ class ParadisOpenBrowserProfileAction extends Action2 {
 
 		const profiles = profilesService.list();
 		if (profiles.length === 0) {
-			paradisShowCreateProfileDialog(instantiationService, profile => void profilesService.openInProfile(profile.id));
+			paradisShowCreateProfileDialog(instantiationService, profile => void profilesService.openInProfile(profile.id, undefined, undefined, { openUrlPicker: true }));
 			return;
 		}
 
@@ -66,7 +66,7 @@ class ParadisOpenBrowserProfileAction extends Action2 {
 		if (picked?.id) {
 			// ユーザーが自分で使ったので、エージェントが作った印を外す。
 			profilesService.claimForUser(picked.id);
-			await profilesService.openInProfile(picked.id);
+			await profilesService.openInProfile(picked.id, undefined, undefined, { openUrlPicker: true });
 		}
 	}
 }
@@ -98,7 +98,7 @@ class ParadisCreateBrowserProfileAction extends Action2 {
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const profilesService = accessor.get(IParadisBrowserProfilesService);
-		paradisShowCreateProfileDialog(accessor.get(IInstantiationService), profile => void profilesService.openInProfile(profile.id));
+		paradisShowCreateProfileDialog(accessor.get(IInstantiationService), profile => void profilesService.openInProfile(profile.id, undefined, undefined, { openUrlPicker: true }));
 	}
 }
 
