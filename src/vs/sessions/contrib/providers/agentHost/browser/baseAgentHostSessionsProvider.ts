@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { disposableTimeout, raceCancellation, raceCancellationError } from '../../../../../base/common/async.js';
+// PARA-PATCH: +DeferredPromise (waiters of the coalesced session refresh rerun, see _refreshSessions)
+import { DeferredPromise, disposableTimeout, raceCancellation, raceCancellationError } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { arrayEquals, structuralEquals } from '../../../../../base/common/equals.js';
@@ -7835,41 +7836,74 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 	/**
 	 * Trailing-rerun booking for the ChatTurnComplete burst coalescing below.
 	 * While a pass is in flight, further requests book one rerun instead of
-	 * starting their own concurrent pass.
+	 * starting their own concurrent pass, and wait for that rerun to finish.
 	 */
-	private _refreshRerunPending = false;
-	private _refreshRerunAnnounceExisting = false;
+	private _refreshRerun: { readonly done: DeferredPromise<void>; announce: boolean } | undefined;
+	private readonly _refreshRerunGrace = this._register(new MutableDisposable());
+	/** How long a booked rerun waits for the in-flight pass before it starts anyway. */
+	private static readonly REFRESH_RERUN_GRACE_MS = 250;
 
 	protected async _refreshSessions(announceExistingAsAdded = false): Promise<void> {
 		// PARA-PATCH: coalesce the ChatTurnComplete burst. K sessions completing turns at
 		// nearly the same time used to fire this K times concurrently, each doing its own
 		// listSessions() round-trip and full cache re-adjustment. While a pass is in
-		// flight, further requests just book a single trailing rerun (announce flags merge).
-		// _sessionRefreshInFlight covers the reruns too so no bare pass can slip into the
-		// microtask window between passes. Booking a rerun also bumps upstream's generation so
-		// the in-flight pass is superseded: its (possibly stale) listing and its error are
-		// dropped (a superseded failure arms no backoff retry), and the booked rerun applies
-		// the fresh listing with the merged announce flag. A rerun booked after a failed pass
-		// already armed its retry runs as well; it clears that retry (doRefreshSessions).
+		// flight, further requests book a single rerun (announce flags merge) and await it,
+		// so `await _refreshSessions()` still returns only once a listing taken after the
+		// call has been applied, as upstream's does. The rerun starts when the in-flight
+		// pass ends, or after a short grace if that pass stalls (upstream lets a newer call
+		// overtake a stalled listing, and callers rely on not waiting for it).
+		// Booking also bumps upstream's generation, so the in-flight pass is superseded: its
+		// (possibly stale) listing and its error are dropped (a superseded failure arms no
+		// backoff retry). A rerun that starts after a failed pass already armed its retry
+		// clears that retry (doRefreshSessions), so it also takes over the retry's announce.
 		if (this._sessionRefreshInFlight) {
 			this._sessionRefreshGeneration++;
-			this._refreshRerunPending = true;
-			this._refreshRerunAnnounceExisting = this._refreshRerunAnnounceExisting || announceExistingAsAdded;
-			return;
+			if (!this._refreshRerun) {
+				this._refreshRerun = { done: new DeferredPromise<void>(), announce: false };
+				this._refreshRerunGrace.value = disposableTimeout(() => this._startBookedRefreshRerun(), BaseAgentHostSessionsProvider.REFRESH_RERUN_GRACE_MS);
+			}
+			this._refreshRerun.announce = this._refreshRerun.announce || announceExistingAsAdded;
+			return this._refreshRerun.done.p;
 		}
 		this._sessionRefreshInFlight = true;
+		this._lastRefreshAnnounce = announceExistingAsAdded;
 		try {
 			await this.doRefreshSessions(announceExistingAsAdded);
-			while (this._refreshRerunPending && !this._store.isDisposed) {
-				this._refreshRerunPending = false;
-				const announce = this._refreshRerunAnnounceExisting;
-				this._refreshRerunAnnounceExisting = false;
-				await this.doRefreshSessions(announce);
+			while (this._refreshRerun && !this._store.isDisposed) {
+				await this._runBookedRefreshRerun();
 			}
 		} finally {
 			this._sessionRefreshInFlight = false;
-			this._refreshRerunPending = false;
-			this._refreshRerunAnnounceExisting = false;
+			// Disposed with a rerun still booked: release its waiters.
+			this._refreshRerunGrace.clear();
+			void this._refreshRerun?.done.complete();
+			this._refreshRerun = undefined;
+		}
+	}
+
+	/** The announce flag of the most recent pass; a backoff retry armed by that pass carries it. */
+	private _lastRefreshAnnounce = false;
+
+	/** The in-flight pass stalled past the grace: start the booked rerun now, alongside it. */
+	private _startBookedRefreshRerun(): void {
+		if (this._refreshRerun && !this._store.isDisposed) {
+			void this._runBookedRefreshRerun();
+		}
+	}
+
+	private async _runBookedRefreshRerun(): Promise<void> {
+		const rerun = this._refreshRerun;
+		if (!rerun) {
+			return;
+		}
+		this._refreshRerun = undefined;
+		this._refreshRerunGrace.clear();
+		const announce = rerun.announce || (!!this._sessionRefreshRetry.value && this._lastRefreshAnnounce);
+		this._lastRefreshAnnounce = announce;
+		try {
+			await this.doRefreshSessions(announce);
+		} finally {
+			void rerun.done.complete();
 		}
 	}
 
