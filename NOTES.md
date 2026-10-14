@@ -169,7 +169,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 - `sessions/browser/workbench.ts` の `registerLayoutListeners`: upstream は iOS 以外の window resize をネイティブ側に任せ、visualViewport の resize は phone のときだけ layout するようにした。fork の IMobileVisualViewport の listener（`isMobile || isIOS`）と二重にならないよう、upstream の listener は `!isIOSWindow && !isMobile` に絞って残した
 - `baseAgentHostSessionsProvider`: upstream がセッションのキャッシュのキーを raw id からセッション URI の文字列に変え（`_rawIdFromChatId` → `_sessionKeyFromChatId`）、タイトルの更新を `setTitleFromHost` に集めた。fork はタイトルを `paradisHumanizeAgentSessionTitle` で変換してから `setTitleFromHost` に渡す
 - webview の `pre/index.html`: upstream が偽のキー入力を捨てる `keyEventToken` を足した。CSP の sha256 を計算し直した（インラインの `<script>` の中身の sha256 を base64）
-- upstream が lint 規則 `local/code-no-sync-fs` を足し、`src/vs/paradis` の 22 ファイル・98 件が違反になった。`eslint.config.js` の ignores に `src/vs/paradis/**` を足して止めてある（非同期化か理由付きの disable は未対応）
+- upstream が lint 規則 `local/code-no-sync-fs` を足し、`src/vs/paradis` の 22 ファイル・98 件が違反になった。`eslint.config.js` に `src/vs/paradis/**` だけこの規則を off にするブロックを足して止めてある（ほかの規則は効いたまま。非同期化か理由付きの disable は未対応）。fork が `extensions/git/src/model.ts` に入れた unpark の `existsSync` は理由付きの disable にした
 - upstream が空のブラウザタブで URL 欄を自動で開かなくした（開いた側が `openUrlPicker()` を呼ぶ）。名前付きプロファイルをユーザーが開く経路は fork 側で呼ぶようにした
 
 ## upstream取り込みの記録（2026-10-14、1.141.1）
