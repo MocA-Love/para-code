@@ -114,6 +114,12 @@ jobs:
           key-prefix: node_modules-para-ci
           key-args: "compile $(node -p process.arch)"
 
+      # npm ci builds native modules (kerberos needs gssapi.h from libkrb5-dev) whenever the
+      # node_modules cache misses, e.g. after package-lock.json changes. Same tools as above.
+      - name: Install build tools
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
+
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: npm ci
