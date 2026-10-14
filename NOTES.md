@@ -165,11 +165,11 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 
 - 1.141.2 を先に取り込み（衝突 0）、続けて 1.142.0。1.142.0 は 1.141 系の子孫ではなく、merge-base は分岐点 `ae1080a9ed1`。衝突は 62 ファイルで、うち 47 は fork 変更の無い 1.141 endgame 由来、add/add 3 件も同じ由来。fork が触っていないパスは、衝突の有無にかかわらず 1.142.0 の版をそのまま採った（自動マージでも半端になったものが 5 件あった）
 - **検証のこつ**: fork が触ったファイルは、`git merge-file <fork 版> <前回タグの版> <新タグの版>`（base を merge-base ではなく前回取り込んだタグにする）で作った結果と突き合わせる。endgame の変更が「fork 側の変更」に見えなくなるので、自動マージ分はこれと一致するはず（今回 39 件すべて一致）。手で解いたものは `git diff 前回タグ fork -- f` と `git diff --cached 新タグ -- f` の +/- 行を比べる
-- 1.141 系にあって 1.142.0 に無い修正は `86c80ce2ef4`（Agents ウィンドウのセッション一覧から Open in Grid を消す）だけ。MSRC の修正（PR 768〜779）は 1.142.0 の `4e706008cf7`（PR 780）などで同じ効果のものが入っている
+- 1.141 系にあって 1.142.0 に無い修正は `86c80ce2ef4`（Agents ウィンドウのセッション一覧から Open in Grid を消す）だけ。**この削除は保持中**（`src/vs/sessions/browser/menus.ts`・`sessionsViewActions.ts` が 1.142.0 と違う。q.html Q358 の回答待ち）。MSRC の修正（PR 768〜779）は 1.142.0 の `4e706008cf7`（PR 780）などで同じ効果のものが入っている
 - `sessions/browser/workbench.ts` の `registerLayoutListeners`: upstream は iOS 以外の window resize をネイティブ側に任せ、visualViewport の resize は phone のときだけ layout するようにした。fork の IMobileVisualViewport の listener（`isMobile || isIOS`）と二重にならないよう、upstream の listener は `!isIOSWindow && !isMobile` に絞って残した
 - `baseAgentHostSessionsProvider`: upstream がセッションのキャッシュのキーを raw id からセッション URI の文字列に変え（`_rawIdFromChatId` → `_sessionKeyFromChatId`）、タイトルの更新を `setTitleFromHost` に集めた。fork はタイトルを `paradisHumanizeAgentSessionTitle` で変換してから `setTitleFromHost` に渡す
 - webview の `pre/index.html`: upstream が偽のキー入力を捨てる `keyEventToken` を足した。CSP の sha256 を計算し直した（インラインの `<script>` の中身の sha256 を base64）
-- upstream が lint 規則 `local/code-no-sync-fs` を足し、`src/vs/paradis` の 22 ファイル・98 件が違反になった。`eslint.config.js` に `src/vs/paradis/**` だけこの規則を off にするブロックを足して止めてある（ほかの規則は効いたまま。非同期化か理由付きの disable は未対応）。fork が `extensions/git/src/model.ts` に入れた unpark の `existsSync` は理由付きの disable にした
+- upstream が lint 規則 `local/code-no-sync-fs` を足し、`src/vs/paradis` の 22 ファイル・98 件が違反になった。`eslint.config.js` で、違反のある 22 ファイルを列挙してこの規則だけ off にしてある（ほかの規則と、新しく足す fork のコードには効く。非同期化か理由付きの disable にしたファイルから列挙を外す）。fork が `extensions/git/src/model.ts` に入れた unpark の `existsSync` は理由付きの disable にした
 - upstream が空のブラウザタブで URL 欄を自動で開かなくした（開いた側が `openUrlPicker()` を呼ぶ）。名前付きプロファイルをユーザーが開く経路は fork 側で呼ぶようにした
 
 ## upstream取り込みの記録（2026-10-14、1.141.1）
