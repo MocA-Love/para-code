@@ -5344,6 +5344,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.logService.warn(`[paradisAgentChat] gave up putting the PC draft back: ${result}`);
 				return;
 			}
+			this.logService.info(`[paradisAgentChat] could not put the PC draft back yet (${result}); trying again`);
 			// 答えが来なかったときは、戻ったかを入力欄の知らせで確かめられるよう長めに待つ
 			this.retryStashedDraft(key, result === 'unconfirmed' ? DRAFT_RESTORE_RETRY_MS * 3 : DRAFT_RESTORE_RETRY_MS);
 		};
