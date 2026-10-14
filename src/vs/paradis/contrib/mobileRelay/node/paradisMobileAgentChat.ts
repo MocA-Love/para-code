@@ -3494,6 +3494,8 @@ interface IParadisAgentPcDraft {
 
 /** 書きかけの知らせをまとめて送る間（mod は 150 ms ごとに送ってくる。リレーへはもう少し間引く）。 */
 const PC_DRAFT_PUSH_MS = 300;
+/** アプリへ送る書きかけの先頭の字数（アプリは 2 行だけ出す）。 */
+const PC_DRAFT_PREVIEW_CHARS = 400;
 
 interface IAgentSubscriber {
 	readonly owner: IParadisMobilePaneOwner;
@@ -4002,6 +4004,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.subscribers.keys()]) {
 			if (!liveTokens.has(token)) {
 				this.subscribers.delete(token);
+			}
+		}
+		// 消えたペインへ書きかけを送る相手とタイマーも捨てる
+		for (const token of [...this.pcDraftViewers.keys(), ...this.pcDraftPushes.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.pcDraftViewers.delete(token);
+				clearTimeout(this.pcDraftPushes.get(token));
+				this.pcDraftPushes.delete(token);
 			}
 		}
 		for (const token of [...this.tailers.keys()]) {
@@ -5281,9 +5291,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		return draft !== null ? { pcDraft: draft } : explicit ? { pcDraft: null } : {};
 	}
 
+	/**
+	 * いま見せる書きかけ。アプリは入力欄の上に 2 行だけ出すので、先頭の {@link PC_DRAFT_PREVIEW_CHARS} 字だけを送る
+	 * （それより長い・mod が切ったものは `truncated`）。
+	 */
 	private currentPcDraft(token: string, sessionId: string | undefined): IParadisAgentPcDraft | null {
 		const draft = this.claudeModBridge.draftOf(token, sessionId);
-		return draft !== undefined && draft.text.length > 0 ? { text: draft.text, truncated: draft.truncated } : null;
+		return draft !== undefined && draft.text.length > 0
+			? { text: draft.text.slice(0, PC_DRAFT_PREVIEW_CHARS), truncated: draft.truncated || draft.text.length > PC_DRAFT_PREVIEW_CHARS }
+			: null;
 	}
 
 	/** 書きかけが変わった。少し待ってから、受け取れる見ているモバイルへ今の書きかけを送る。 */
@@ -6429,6 +6445,10 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.noteDraftForStash(token, event.text);
 				this.schedulePcDraftPush(token);
 				return;
+			case 'draft-unknown':
+				// mod が去った・読み直した。見せていた書きかけの帯を外させる
+				this.schedulePcDraftPush(token);
+				return;
 			case 'row': {
 				const tailer = this.tailers.get(token);
 				if (tailer === undefined || tailer.transcriptPath !== session.transcriptPath) {
@@ -6494,8 +6514,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'bye':
 				this.modLive.delete(token);
 				this.modStreamedAt.delete(token);
-				// mod が去った（終了・/clear）。書きかけは分からなくなるので、見せていた帯を外させる
-				this.schedulePcDraftPush(token);
 				return;
 			default:
 				return;

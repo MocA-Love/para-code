@@ -669,10 +669,27 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		await waitFor(() => drafts().length === 1, 'the attach did not carry the draft');
 		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
 		await waitFor(() => drafts().length === 2, 'the cleared box was not sent');
+		// 長い書きかけは先頭の 400 字だけ送る
+		await harness.mod('event', { events: [{ type: 'draft', text: 'あ'.repeat(500) }] });
+		await waitFor(() => drafts().length === 3, 'the long draft was not sent');
+		// mod が去ったら（終了・/clear）、書きかけは分からなくなるので帯を外させる
+		await harness.mod('event', { events: [{ type: 'bye', reason: 'clear' }] });
+		await waitFor(() => drafts().length === 4, 'the draft was not cleared on bye');
+		// ペインが消えたら、書きかけを送る相手も捨てる
+		const internals = harness.chat as unknown as { readonly pcDraftViewers: Map<string, Set<string>> };
+		const viewersBefore = internals.pcDraftViewers.get(harness.token)?.size ?? 0;
+		assert.strictEqual(harness.chat.syncPanes(1, 'window-session', 1, 2, []), true);
 		void poll;
-		assert.deepStrictEqual({ toOldApp, drafts: drafts() }, {
+		assert.deepStrictEqual({
+			toOldApp,
+			drafts: drafts().map(([t, draft]) => [t, draft === null ? null : { length: (draft as { text: string }).text.length, truncated: (draft as { truncated: boolean }).truncated }]),
+			viewersBefore,
+			viewersAfter: internals.pcDraftViewers.has(harness.token),
+		}, {
 			toOldApp: [],
-			drafts: [['snapshot', { text: '秘密かもしれない書きかけ', truncated: false }], ['delta', null]],
+			drafts: [['snapshot', { length: 12, truncated: false }], ['delta', null], ['delta', { length: 400, truncated: true }], ['delta', null]],
+			viewersBefore: 1,
+			viewersAfter: false,
 		});
 	}));
 

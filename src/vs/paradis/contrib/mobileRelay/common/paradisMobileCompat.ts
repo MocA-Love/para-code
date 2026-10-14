@@ -167,7 +167,8 @@ export const ParadisMobileCapability = {
 	 */
 	AgentPanel: 'agent.panel.v1',
 	/**
-	 * agent の snapshot・delta の `pcDraft`（PC の Claude Code の入力欄の書きかけ `{ text, truncated }`、無くなったら `null`）。
+	 * agent の snapshot・delta の `pcDraft`（PC の Claude Code の入力欄の書きかけの先頭 400 字 `{ text, truncated }`、無くなったら・
+	 * 分からなくなったら `null`）。
 	 * 書きかけには秘密が入りうるので、PC はこれを広告したアプリが見ている会話へだけ、E2E の agent チャネルで送る。アプリは保存しない。
 	 * 入力欄の mod（Claude Code 2.1.300 以降）が知らせたときだけ届く。
 	 */
