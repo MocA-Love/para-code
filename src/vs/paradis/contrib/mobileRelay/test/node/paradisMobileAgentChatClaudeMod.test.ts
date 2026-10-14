@@ -57,6 +57,12 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
 	}
 }
 
+/** Waits until the pane counts as waiting for input (the Stop hook is handled asynchronously). */
+async function waitForIdle(harness: IHarness): Promise<void> {
+	const internals = harness.chat as unknown as { readonly liveStates: Map<string, unknown>; readonly activeTurnTokens: Set<string> };
+	await waitFor(() => !internals.activeTurnTokens.has(harness.token) && !internals.liveStates.has(harness.token), 'the pane did not become idle');
+}
+
 interface IHarnessOptions {
 	/** tailer を作る前に transcript へ書いておく行（初回読み込みで読まれる）。 */
 	readonly initialLines?: readonly Record<string, unknown>[];
@@ -520,6 +526,91 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		await new Promise<void>(resolve => setTimeout(resolve, 50));
 		harness.inbound({ t: 'action/sendMessage', requestId: 'send-keys', epoch: harness.tailer()!.epoch, text: '続けて' });
 		await waitFor(() => harness.actions.some(action => action.t === 'action/sendMessage'), 'the send did not go to the window');
+	}));
+
+	test('does not type a message by keys onto a draft in the PC prompt box, and types it once the box is empty', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		// busy の mod は発言を受け取らないので、キーの経路になる
+		const poll = harness.mod('commands', { busy: true, features: ['commands.list', 'command.run', 'draft.fill'] });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await harness.mod('event', { events: [{ type: 'draft', text: 'PC で書きかけ' }] });
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'action/sendMessage', requestId: 'onto-draft', epoch, text: '続けて' });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'onto-draft'), 'the send was not answered');
+		const keysWhileDrafted = harness.actions.filter(action => action.t === 'action/sendMessage').length;
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		harness.inbound({ t: 'action/sendMessage', requestId: 'onto-empty', epoch, text: '続けて' });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/sendMessage'), 'the send did not go by keys');
+		void poll;
+		assert.deepStrictEqual({
+			refused: harness.sent.filter(message => message.t === 'action-result' && message.requestId === 'onto-draft').map(message => ({ status: message.status, code: message.code })),
+			keysWhileDrafted,
+			keys: harness.actions.filter(action => action.t === 'action/sendMessage').map(action => action.text),
+		}, { refused: [{ status: 'rejected', code: 'composer-not-empty' }], keysWhileDrafted: 0, keys: ['続けて'] });
+	}));
+
+	test('clears a draft in the PC prompt box before typing a setting, and puts it back once the typed command left the box', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const features = ['commands.list', 'command.run', 'draft.fill'];
+		let poll = harness.mod('commands', { busy: false, features });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await harness.mod('event', { events: [{ type: 'draft', text: 'PC で書きかけ' }] });
+		const handed: { kind: unknown; text: unknown }[] = [];
+		/** Takes the command the open poll hands over, opens the next poll, then acks it. */
+		const answer = async () => {
+			const [command] = (await poll).commands as Record<string, unknown>[];
+			handed.push({ kind: command.kind, text: command.text });
+			poll = harness.mod('commands', { busy: false, features });
+			await new Promise<void>(resolve => setTimeout(resolve, 20));
+			await harness.mod('ack', { id: command.id, ok: true });
+		};
+		await waitForIdle(harness);
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'action/claudeSetting', requestId: 'model', epoch, setting: 'model', value: 'haiku' });
+		await answer();
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/claudeSetting'), 'the setting did not go to the window');
+		assert.strictEqual(harness.chat.claimSendMessageAction('mobile-1', 'model', harness.token, epoch, 1, 'window-session'), 'claimed');
+		// ウィンドウが打った /config の文が入り、Enter で消える。その後で操作の終わりが届く
+		await harness.mod('event', { events: [{ type: 'draft', text: '/config model=haiku' }] });
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		const handedBeforeEnd = handed.length;
+		harness.chat.finalizeInteractionAction('mobile-1', 'model', harness.token, 'accepted', 1, 'window-session');
+		await answer();
+		assert.deepStrictEqual({ handedBeforeEnd, handed }, {
+			handedBeforeEnd: 1,
+			handed: [{ kind: 'draftFill', text: '' }, { kind: 'draftFill', text: 'PC で書きかけ' }],
+		});
+	}));
+
+	test('does not put the draft back over text typed on the PC meanwhile', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const features = ['commands.list', 'command.run', 'draft.fill'];
+		let poll = harness.mod('commands', { busy: false, features });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await harness.mod('event', { events: [{ type: 'draft', text: '前の書きかけ' }] });
+		await waitForIdle(harness);
+		const epoch = harness.tailer()!.epoch;
+		harness.inbound({ t: 'action/claudeSetting', requestId: 'effort', epoch, setting: 'effort', value: 'high' });
+		const [stash] = (await poll).commands as Record<string, unknown>[];
+		poll = harness.mod('commands', { busy: false, features });
+		await harness.mod('ack', { id: stash.id, ok: true });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/claudeSetting'), 'the setting did not go to the window');
+		assert.strictEqual(harness.chat.claimSendMessageAction('mobile-1', 'effort', harness.token, epoch, 1, 'window-session'), 'claimed');
+		await harness.mod('event', { events: [{ type: 'draft', text: '/effort high' }] });
+		await harness.mod('event', { events: [{ type: 'draft', text: '新しく打った' }] });
+		harness.chat.finalizeInteractionAction('mobile-1', 'effort', harness.token, 'accepted', 1, 'window-session');
+		const next = await Promise.race([poll.then(reply => (reply.commands as unknown[]).length), new Promise<string>(resolve => setTimeout(() => resolve('nothing handed'), 300))]);
+		assert.strictEqual(next, 'nothing handed');
+	}));
+
+	test('shows the model Claude Code switched to without waiting for the next reply', () => withHarness(async harness => {
+		harness.hook('PostModelSwitch', { payload: { from_model: 'claude-sonnet-5-5', to_model: 'claude-haiku-5-5', requested_model: 'haiku', source: 'command' } });
+		await waitFor(() => harness.tailer()?.model === 'claude-haiku-5-5', 'the model switch was not shown');
+		await waitFor(() => harness.sent.some(message => message.t === 'delta' && (message.info as { model?: string } | undefined)?.model === 'claude-haiku-5-5'), 'the phone was not told');
 	}));
 
 	test('runs a slash command through a mod that can, and answers its refusal with the reason', () => withHarness(async harness => {

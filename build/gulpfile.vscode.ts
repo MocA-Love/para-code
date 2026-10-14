@@ -355,10 +355,13 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			all = es.merge(all, gulp.src('resources/paradis/bin/codex', { base: '.', allowEmpty: false }));
 			// PARA-PATCH: the Claude Code mod (Claude Mods) loaded into local terminals on macOS/Linux
 			// (src/vs/paradis/contrib/claudeMod). Allow-list, same as paradisClaudeModShipsFile(): the manifest
-			// and hooks/ only (no tests, no types/tsconfig that Claude Code writes into a folder it loads).
+			// and hooks/ only (no tests, no types/tsconfig that Claude Code writes into a folder it loads), for the
+			// mod and for the prompt box mod in draft/.
 			all = es.merge(all, gulp.src([
 				'resources/paradis/claude-mod/.claude-plugin/plugin.json',
 				'resources/paradis/claude-mod/hooks/**',
+				'resources/paradis/claude-mod/draft/.claude-plugin/plugin.json',
+				'resources/paradis/claude-mod/draft/hooks/**',
 			], { base: '.', dot: true, allowEmpty: false }));
 		} else {
 			// PARA-PATCH: the Windows pane launcher is a .cmd/.ps1 pair over a shared JS body

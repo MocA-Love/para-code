@@ -68,7 +68,8 @@ const CALLER_VERIFIED_TTL_MS = 60_000;
  * 別プロセスからも読めるので、偽の終わりや偽の回答待ちで画面と操作を取り違えさせない）。
  */
 function paradisIsObservationEvent(event: Record<string, unknown> | undefined): boolean {
-	if (event?.type === 'step') {
+	// 入力欄の文（draft）は打つたびに届くので、確かめ直さない便に入れる。使うのは確かめた送り主のものだけ（handleEvents）
+	if (event?.type === 'step' || event?.type === 'draft') {
 		return true;
 	}
 	const message = event?.type === 'row' ? rec(event.message) : undefined;
@@ -145,7 +146,22 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'pending-changed'; readonly kind: 'question' | 'permission' }
 	/** {@link ParadisClaudeModBridge.isAlive} の答えが変わった（来た・途絶えた・ペインが消えた）。停止の可否を送り直すのに使う。 */
 	| { readonly type: 'alive-changed'; readonly alive: boolean }
+	/** PC の Claude Code の入力欄の文（入力欄の mod。Claude Code 2.1.300 以降）。{@link ParadisClaudeModBridge.draftOf} と同じもの。 */
+	| { readonly type: 'draft'; readonly text: string; readonly truncated: boolean }
 );
+
+/**
+ * PC の Claude Code の入力欄の文（入力欄の mod `draft/` が `prompt.edit`・`prompt.change` から送る）。`truncated` は長すぎて
+ * 切った文（元へ戻せない）。届くのは Claude Code 2.1.300 以降で、その会話で入力欄が一度でも変わった後だけ。
+ */
+export interface IParadisClaudeModDraft {
+	readonly text: string;
+	readonly truncated: boolean;
+	readonly at: number;
+}
+
+/** 入力欄の文を書き換えた結果（{@link ParadisClaudeModBridge.fillDraft}）。 */
+export type ParadisClaudeModFillDraftResult = 'filled' | 'refused' | 'panel-open' | 'unavailable' | 'unconfirmed';
 
 export interface IParadisClaudeModReply {
 	readonly status: number;
@@ -164,8 +180,10 @@ export interface IParadisClaudeModReply {
 export type ParadisClaudeModStopResult = { readonly outcome: 'stopped' | 'refused' | 'unavailable' | 'unconfirmed'; readonly message?: string };
 
 /** mod ができること（`commands` の要求の `features`）。古い mod は送ってこない。 */
-export type ParadisClaudeModFeature = 'commands.list' | 'command.run' | 'prompt.dialog';
-const KNOWN_FEATURES: readonly ParadisClaudeModFeature[] = ['commands.list', 'command.run', 'prompt.dialog'];
+export type ParadisClaudeModFeature = 'commands.list' | 'command.run' | 'prompt.dialog' | 'draft.fill';
+const KNOWN_FEATURES: readonly ParadisClaudeModFeature[] = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
+/** 入力欄の文の上限（mod の MAX_DRAFT_CHARS と同じ）。 */
+const MAX_DRAFT_CHARS = 20_000;
 
 /**
  * スラッシュコマンドの行方（{@link ParadisClaudeModBridge.runCommand}）。
@@ -239,6 +257,8 @@ interface ISessionState {
 	/** 渡した発言の id → 本文（mod の会話の行で受理を確かめるため）。 */
 	readonly submitted: Map<string, string>;
 	readonly pickups: Set<() => void>;
+	/** 入力欄の文（入力欄の mod が最後に知らせたもの）。届く前・mod が読み直した後は undefined（分からない）。 */
+	draft?: IParadisClaudeModDraft;
 }
 
 function rec(value: unknown): Record<string, unknown> | undefined {
@@ -445,6 +465,10 @@ export class ParadisClaudeModBridge {
 			const base = { token, sessionId, at };
 			switch (event.type) {
 				case 'hello':
+					if (state !== undefined) {
+						// mod が読み直した（会話の始まり・mod の読み直し）。入力欄は次の知らせまで分からない
+						state.draft = undefined;
+					}
 					this.fire({ ...base, type: 'hello', ...(text(event.version, 50) !== undefined ? { version: text(event.version, 50) } : {}) });
 					break;
 				case 'bye':
@@ -554,6 +578,15 @@ export class ParadisClaudeModBridge {
 					const tool = text(event.tool, 200);
 					if (toolUseId !== undefined && tool !== undefined) {
 						this.fire({ ...base, type: 'tool.check', toolUseId, tool });
+					}
+					break;
+				}
+				case 'draft': {
+					// 確かめた送り主のものだけ使う（確かめていない便の文で、モバイルの送信を止めたり入力欄を書き換えたりしない）
+					if (state !== undefined && typeof event.text === 'string') {
+						const draft: IParadisClaudeModDraft = { text: event.text.slice(0, MAX_DRAFT_CHARS), truncated: event.truncated === true || event.text.length > MAX_DRAFT_CHARS, at };
+						state.draft = draft;
+						this.fire({ ...base, type: 'draft', text: draft.text, truncated: draft.truncated });
 					}
 					break;
 				}
@@ -1032,6 +1065,42 @@ export class ParadisClaudeModBridge {
 			state.acks.set(commandId, settle);
 		});
 		waiter([{ id: commandId, kind: 'dialogCheck' }]);
+		return answer;
+	}
+
+	/**
+	 * PC の入力欄の文。mod が生きていて、入力欄の mod（Claude Code 2.1.300 以降）が一度でも知らせた会話のときだけ返す。
+	 * undefined は「分からない」（古い Claude Code・mod の無い会話・まだ何も打っていない会話）で、呼び出し側は今までどおり動く。
+	 */
+	draftOf(token: string, sessionId: string | undefined): IParadisClaudeModDraft | undefined {
+		const state = sessionId !== undefined ? this.sessions.get(this.sessionKey(token, sessionId)) : undefined;
+		return state?.draft !== undefined && this.isAlive(token, sessionId) ? state.draft : undefined;
+	}
+
+	/**
+	 * PC の入力欄の文を `text` に置き換える（mod の `$.prompt.fill`。mod 1.4.0 以降）。入力欄の文が分かっている会話だけ
+	 * （{@link draftOf}）。`unavailable` は mod へ渡せなかった（何もしていない）、`unconfirmed` は答えが来なかった。
+	 */
+	async fillDraft(token: string, sessionId: string, text: string): Promise<ParadisClaudeModFillDraftResult> {
+		const state = this.sessions.get(this.sessionKey(token, sessionId));
+		if (state === undefined || !state.features.has('draft.fill') || state.draft === undefined || text.length > MAX_DRAFT_CHARS) {
+			return 'unavailable';
+		}
+		const waiter = await this.takeCommandWaiter(state);
+		if (waiter === undefined) {
+			return 'unavailable';
+		}
+		const commandId = randomUUID();
+		const answer = new Promise<ParadisClaudeModFillDraftResult>(resolve => {
+			const settle = (outcome: SubmitOutcome | undefined) => {
+				clearTimeout(timer);
+				state.acks.delete(commandId);
+				resolve(outcome === 'ok' ? 'filled' : outcome === 'panel-open' ? 'panel-open' : outcome === undefined ? 'unconfirmed' : 'refused');
+			};
+			const timer = setTimeout(() => settle(undefined), DIALOG_ACK_MS);
+			state.acks.set(commandId, settle);
+		});
+		waiter([{ id: commandId, kind: 'draftFill', text }]);
 		return answer;
 	}
 

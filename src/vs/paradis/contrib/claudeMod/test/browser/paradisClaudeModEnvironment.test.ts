@@ -18,7 +18,7 @@ import { FileService } from '../../../../../platform/files/common/fileService.js
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisClaudeModEnvironment } from '../../browser/paradisClaudeModEnvironment.js';
-import { paradisSetClaudeConfigDirProvider } from '../../common/paradisClaudeMod.js';
+import { paradisSetClaudeConfigDirProvider, paradisSetClaudeVersionProvider } from '../../common/paradisClaudeMod.js';
 
 const APP_ROOT = '/app';
 const HOME = URI.file('/home/test');
@@ -47,7 +47,10 @@ suite('ParadisClaudeModEnvironment', () => {
 		}
 	});
 
-	teardown(() => paradisSetClaudeConfigDirProvider(undefined));
+	teardown(() => {
+		paradisSetClaudeConfigDirProvider(undefined);
+		paradisSetClaudeVersionProvider(undefined);
+	});
 
 	const create = (options?: { readonly now?: () => number; readonly windows?: boolean }) => store.add(new ParadisClaudeModEnvironment(
 		APP_ROOT, async () => HOME, options, fileService, configuration, new NullLogService(),
@@ -105,6 +108,31 @@ suite('ParadisClaudeModEnvironment', () => {
 		const withProvider = create();
 		await withProvider.ready;
 		assert.deepStrictEqual({ before, after: withProvider.pluginDirectory() }, { before: true, after: undefined });
+	});
+
+	test('hands out the prompt box mod in draft/ only when the shared process saw Claude Code 2.1.300 or later', async () => {
+		for (const [path, text] of [['draft/.claude-plugin/plugin.json', '{"name":"para-code-draft"}'], ['draft/hooks/hooks.json', '{"modules":["./draft.ts"]}'], ['draft/hooks/draft.ts', 'export const register = () => {};']]) {
+			await fileService.writeFile(joinPath(MOD, ...path.split('/')), VSBuffer.fromString(text));
+		}
+		const withoutVersion = create();
+		await withoutVersion.ready;
+		paradisSetClaudeVersionProvider(async () => '2.1.299 (Claude Code)');
+		const older = create();
+		await older.ready;
+		paradisSetClaudeVersionProvider(async () => '2.1.300 (Claude Code)');
+		const newer = create();
+		await newer.ready;
+		const directory = newer.pluginDirectory();
+		configuration.setUserConfiguration('paradis.agentHooks.claudeMod.enabled', false);
+		const settingOff = newer.draftPluginDirectory();
+		configuration.setUserConfiguration('paradis.agentHooks.claudeMod.enabled', true);
+		assert.deepStrictEqual({
+			withoutVersion: withoutVersion.draftPluginDirectory(),
+			older: older.draftPluginDirectory(),
+			newer: newer.draftPluginDirectory() === `${directory}/draft`,
+			settingOff,
+			files: (await listInstalled()).filter(file => file.startsWith('draft/')),
+		}, { withoutVersion: undefined, older: undefined, newer: true, settingOff: undefined, files: ['draft/.claude-plugin/plugin.json', 'draft/hooks/draft.ts', 'draft/hooks/hooks.json'] });
 	});
 
 	test('removes copies of other versions once they have been unused for 30 days, and keeps the current one', async () => {
