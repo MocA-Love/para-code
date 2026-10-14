@@ -307,7 +307,15 @@ export function getFloatingPaneCompositeHorizontalMargins(layoutService: IWorkbe
 		&& layoutService.isVisible(Parts.ACTIVITYBAR_PART)
 		&& layoutService.isVisible(Parts.SIDEBAR_PART)
 		&& getFloatingSidebarSiblingToEditorStatus(layoutService).sideBar;
-	const trailing = panelMeetsRightActivityBar ? margin : FLOATING_PANEL_INNER_MARGIN;
+	// PARA-PATCH: floatingPanels.css gives a justify/right horizontal panel that is not the right outer card a
+	// trailing margin whenever the side bar is visible. Upstream only reaches that state with the side bar on the
+	// right; the auxiliary activity bar rail reaches it with the side bar on the left too, so mirror the CSS rule.
+	const panelMeetsAuxiliaryActivityBarRail = partId === Parts.PANEL_PART
+		&& isHorizontal(layoutService.getPanelPosition())
+		&& layoutService.isVisible(Parts.SIDEBAR_PART)
+		&& (layoutService.getPanelAlignment() === 'justify' || layoutService.getPanelAlignment() === 'right')
+		&& !outerGutter.right;
+	const trailing = panelMeetsRightActivityBar || panelMeetsAuxiliaryActivityBarRail ? margin : FLOATING_PANEL_INNER_MARGIN; // PARA-PATCH: include the auxiliary rail case
 
 	return {
 		left: outerGutter.left ? outerMargin : leading,

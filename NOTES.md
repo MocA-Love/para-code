@@ -170,6 +170,8 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 - `baseAgentHostSessionsProvider._refreshSessions`: fork の合流（実行中は後続を 1 回の再実行に）と upstream の `_sessionRefreshGeneration` を両立させるため、再実行を予約するときに generation を進めて実行中の結果を捨てる
 - `mobileSessionFilterChips.ts`: upstream が状態チップを消して Sort と Find だけになったので、チップ列をタッチでスクロールする fork のパッチは外した
 - lock を作り直すとまた Sentry が上がった（`@sentry/electron` 7.20.1 など）。`npm install @sentry/electron@7.17.0 @sentry/node-native@10.70.0 @sentry/cli@3.6.2` で lock を戻し、package.json の範囲は元に戻した
+- upstream が `floatingPanels.css` に「justify/right の横パネルが右の外周でなく、サイドバーが見えているとき `margin-right`」を足したが、TS（`getFloatingPaneCompositeHorizontalMargins`）が幅を引くのはサイドバーが右のときだけ。fork の補助アクティビティバーがあるとサイドバーが左でもこの状態になり、パネルの中身が右端で 3〜4px 切れた（実機で確認）。CSS と同じ条件で trailing に margin を取る PARA-PATCH を足した。あわせて Compact 密度では補助アクティビティバーの角を 0 にした（upstream が主アクティビティバーを 0 にしたため）
+- 既知（以前から）: パネルの配置を実行中に justify へ変えると補助アクティビティバーが補助バーの列に移って全高でなくなるが、起動時は全高で並ぶ。`getFloatingHorizontalPanelOuterEdges` の fork パッチは常に全高とみなしている
 - fork の `ParadisTurnCache.write` は、書き込みキューの中で遅れて `JSON.stringify` していたため、upstream の `_terminalOutputs.restore` が同じ turns に足した中身までキャッシュしていた。`write()` の中で同期的に直列化するようにした
 
 ## upstream取り込み前監査の記録（2026-09-27、1.139.1取り込み準備）
