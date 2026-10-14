@@ -14,6 +14,7 @@ import { paradisIsParcelWatcherPatched, paradisPatchAndRebuildParcelWatcher } fr
 import { paradisApplyXtermImePatch } from './paradisXtermImePatch.ts';
 import { root, stateFile, stateContentsFile, computeState, computeContents, isUpToDate } from './installStateHash.ts';
 import { ensureElectronTypes } from './electronTypes.ts';
+import { finishCloudSandbox } from './cloudSandbox.ts';
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const rootNpmrcConfigKeys = getNpmrcConfigKeys(path.join(root, '.npmrc'));
@@ -265,6 +266,7 @@ async function main() {
 
 	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate() && paradisWatcherPatched) {
 		await paradisApplyXtermImePatch(root, message => log('.', message)); // PARA-PATCH: xterm IME fix when nothing else needs installing
+		finishCloudSandbox();
 		log('.', 'All dependencies up to date, skipping postinstall.');
 		child_process.execSync('git config pull.rebase merges');
 		child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
@@ -348,6 +350,7 @@ async function main() {
 
 	// PARA-PATCH: xterm IME fix, once build/ (which provides esbuild) has been installed
 	await paradisApplyXtermImePatch(root, message => log('.', message));
+	finishCloudSandbox();
 
 	fs.writeFileSync(stateFile, JSON.stringify(_state));
 	fs.writeFileSync(stateContentsFile, JSON.stringify(computeContents()));
