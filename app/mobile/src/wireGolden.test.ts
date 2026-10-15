@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Channels, FrameMux, generateIdentity, respondHandshake, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { MobileController, type AgentQuestionAnswer, type PcPushMessage, type StoreState } from './store.js';
+import { MobileController, parseAgentPcDraft, type AgentQuestionAnswer, type PcPushMessage, type StoreState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 import { PcCapability, stateRequestFields } from './pcCompat.js';
 import { parseApprovalOptionsReply } from './approvalOptions.js';
@@ -574,6 +574,41 @@ describe('wire golden (app side)', () => {
 			request: shapeOf(agentGolden.toPc.find(message => message.t === 'action/closePanel')),
 			result: { status: 'accepted' },
 			closed: undefined,
+		});
+		controller.disconnect();
+	});
+
+	it('agent: PC の入力欄の書きかけ（agent.pc-draft.v1）を delta で受け、届かない delta では持ち越し、null で外す', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		const snapshot = agentGolden.toMobile.find(message => message.t === 'snapshot');
+		pcMux.send(Channels.Agent, encode(snapshot));
+		await flush();
+		const before = latest()?.agentChats.get('terminal-key-1')?.pcDraft;
+		const delta = (extra: Record<string, unknown>) => encode({ t: 'delta', id: 7, token: 'agent-token-1', agent: 'claude', epoch: snapshot?.['epoch'], rev: snapshot?.['rev'], messages: [], ...extra });
+		pcMux.send(Channels.Agent, delta({ pcDraft: { text: 'PC で書きかけ', truncated: false } }));
+		await flush();
+		const drafted = latest()?.agentChats.get('terminal-key-1')?.pcDraft;
+		pcMux.send(Channels.Agent, delta({}));
+		await flush();
+		const kept = latest()?.agentChats.get('terminal-key-1')?.pcDraft;
+		pcMux.send(Channels.Agent, delta({ pcDraft: null }));
+		await flush();
+		expect({
+			before,
+			drafted,
+			kept,
+			cleared: latest()?.agentChats.get('terminal-key-1')?.pcDraft,
+			parsed: [parseAgentPcDraft({ text: 'abc' }), parseAgentPcDraft({ text: '' }), parseAgentPcDraft({ text: 'x'.repeat(20_001) })?.truncated, parseAgentPcDraft({ text: 5 }), parseAgentPcDraft(null)],
+		}).toEqual({
+			before: undefined,
+			drafted: { text: 'PC で書きかけ', truncated: false },
+			kept: { text: 'PC で書きかけ', truncated: false },
+			cleared: undefined,
+			parsed: [{ text: 'abc', truncated: false }, null, true, undefined, null],
 		});
 		controller.disconnect();
 	});
