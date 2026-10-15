@@ -7,7 +7,7 @@
 
 import type * as SentryUtility from '@sentry/electron/utility';
 import { isParadisSentryDevelopmentBuild } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, IParadisSpanOptions, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryUtility | undefined;
@@ -42,8 +42,8 @@ if (!isParadisSentryDevelopmentBuild(process.env)) {
 		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
 			captureParadisUtilityException(scope, feature, operation, error, safeExtra, severity);
 		});
-		configureParadisSpanRunner((feature, operation, attributes, callback) =>
-			startParadisUtilitySpan(feature, operation, callback, attributes));
+		configureParadisSpanRunner((feature, operation, attributes, callback, options) =>
+			startParadisUtilitySpan(feature, operation, callback, attributes, options));
 		configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
 		sentry = Sentry;
 	}).catch(error => {
@@ -88,6 +88,7 @@ export function startParadisUtilitySpan<T>(
 	operation: string,
 	callback: () => T,
 	attributes?: ParadisSpanAttributes,
+	options?: IParadisSpanOptions,
 ): T {
 	if (!sentry) {
 		return callback();
@@ -95,6 +96,7 @@ export function startParadisUtilitySpan<T>(
 	return sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
+		...(options?.forceTransaction ? { forceTransaction: true } : {}),
 		attributes: {
 			...attributes,
 			'para.scope': 'owned',

@@ -71,11 +71,22 @@ export function setParadisDiagnosticCorrelationTag(key: 'para.pairing', value: s
  */
 export type ParadisSpanAttributes = Record<`safe_${string}`, number | string | boolean>;
 
+/** Options for {@link runInParadisSpan}. */
+export interface IParadisSpanOptions {
+	/**
+	 * Send the span as its own transaction even when another span is active. In the renderer a span
+	 * started inside the synchronous part of another span's callback (a space switch, for instance)
+	 * otherwise becomes its child and never shows up under its own transaction name.
+	 */
+	readonly forceTransaction?: boolean;
+}
+
 export type ParadisSpanRunner = <T>(
 	feature: string,
 	operation: string,
 	attributes: ParadisSpanAttributes | undefined,
 	callback: () => T,
+	options?: IParadisSpanOptions,
 ) => T;
 
 let spanRunner: ParadisSpanRunner | undefined;
@@ -100,8 +111,24 @@ export function runInParadisSpan<T>(
 	operation: string,
 	attributes: ParadisSpanAttributes | undefined,
 	callback: () => T,
+	options?: IParadisSpanOptions,
 ): T {
-	return spanRunner ? spanRunner(feature, operation, attributes, callback) : callback();
+	return spanRunner ? spanRunner(feature, operation, attributes, callback, options) : callback();
+}
+
+/**
+ * Words Sentry scrubs wherever they appear: Relay's default key pattern (`PASSWORD_KEY_REGEX` in
+ * relay-pii/src/regexes.rs: `password`, `secret`, `passwd`, `api_key`, `apikey`, `auth`, `credentials`,
+ * `mysql_pwd`, `privatekey`, `private_key`, `token`, `otp`, `two_factor`; a bare `key` is not in it) and
+ * the desktop project's own sensitive fields (`token`, `session`, `cookie`, `dsn`, `cwd`, `command`,
+ * `prompt`, `terminal`, `env`, `environment`). A key or a fixed value containing one arrives as
+ * `[Filtered]` or null (2026-10: `para.operation:desktop-relay.auth-probe` and `safe_highlight_tokenize_ms`).
+ */
+const scrubbedWord = /password|passwd|secret|api[-_]?key|private[-_]?key|auth|credential|mysql_pwd|token|^otp$|two[-_]factor|session|cookie|dsn|cwd|command|prompt|terminal|env/i;
+
+/** Whether Sentry would scrub this key or fixed value. Pick another word for anything this matches. */
+export function isParadisSentryScrubbedWord(value: string): boolean {
+	return scrubbedWord.test(value);
 }
 
 let spanAttributeSetter: ((attributes: ParadisSpanAttributes) => void) | undefined;

@@ -8,6 +8,7 @@
 import assert from 'assert';
 import { safeIntl } from '../../../../../base/common/date.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ParadisSpanAttributes } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisComputerUseApprovalPrompt, ParadisComputerUseApprovalOutcome, ParadisComputerUseAvailability, ParadisComputerUseForegroundOutcome } from '../../common/paradisComputerUse.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
@@ -106,14 +107,18 @@ suite('ParadisComputerUseToolProvider', () => {
 		const ledger = new ParadisComputerUseGrantLedger();
 		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor };
 		const blockOptions = options.blockSystemSurfaces === undefined ? undefined : { blockSystemSurfaces: options.blockSystemSurfaces };
+		const recorded: ParadisSpanAttributes[] = [];
+		const clock = { time: 0 };
 		const provider = new ParadisComputerUseToolProvider(helper, ledger, {
 			enabled: () => state.enabled,
 			...(options.confirmForeground !== undefined ? { confirmForeground: () => state.confirmForeground === true } : {}),
 			...(options.showCursor !== undefined ? { showCursor: () => state.showCursor === true } : {}),
 			blockOptions,
 			settleMs: 0,
+			recordCall: attributes => recorded.push(attributes),
+			now: () => clock.time,
 		}, undefined);
-		return { helper, ledger, state, provider };
+		return { helper, ledger, state, provider, recorded, clock };
 	}
 
 	test('shows the tools only while the setting is on and the helper is ready', () => {
@@ -455,6 +460,37 @@ suite('ParadisComputerUseToolProvider', () => {
 			window(12, true, 300, { standard: false, subrole: 'AXSheet', focused: true }),
 			window(13, true, 300, { standard: false, subrole: 'AXFloatingWindow' }),
 		]).map(entry => entry.windowId), [12, 10, 11, 13]);
+	});
+
+	test('records each call as one span with a reason word, and no app name, window title or typed text', async () => {
+		const { helper, ledger, provider, recorded, clock } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const { context } = createContext('pane', ['denied'], () => { clock.time += 1_000; });
+		await provider.callTool('pane-a', 'computer_list_apps', {}, undefined, createContext('tunnel', []).context);
+		helper.failTree = 'window_not_found';
+		await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes' }, undefined, context);
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('foreground_needs_approval', 'needs the foreground'); };
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		helper.onInput = async () => {
+			const failure = new ParadisComputerUseHelperError('timeout', 'The Computer Use helper did not answer click in time.');
+			failure.sent = 0;
+			throw failure;
+		};
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		helper.onInput = async () => ({ ok: true, route: 'accessibility' });
+		await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		await provider.callTool('pane-a', 'computer_list_windows', { app: '1Password' }, undefined, context);
+		const base = { safe_duration_ms: 0, safe_approval_wait_ms: 0, safe_foreground_asked: false, safe_state_failures: 0, safe_helper_version: '0.1.0' };
+		assert.deepStrictEqual(recorded, [
+			{ ...base, safe_tool: 'computer_list_apps', safe_outcome: 'refused', safe_failure: 'caller_ssh' },
+			// ツリーが読めなくても呼び出しは成功として返る。読めなかったことは数で残す
+			{ ...base, safe_tool: 'computer_get_app_state', safe_outcome: 'ok', safe_state_failures: 1, safe_state_failure: 'tree_window_not_found' },
+			// 利用者の答えを待った時間は分けて送る
+			{ ...base, safe_tool: 'computer_click', safe_outcome: 'refused', safe_failure: 'foreground_denied', safe_duration_ms: 1_000, safe_approval_wait_ms: 1_000, safe_foreground_asked: true },
+			{ ...base, safe_tool: 'computer_click', safe_outcome: 'error', safe_failure: 'timeout', safe_input_sent: 0 },
+			{ ...base, safe_tool: 'computer_click', safe_outcome: 'ok', safe_route: 'accessibility' },
+			{ ...base, safe_tool: 'computer_list_windows', safe_outcome: 'refused', safe_failure: 'blocked_vault_app' },
+		]);
 	});
 
 	test('keeps the tool list in sync with the handler', () => {
