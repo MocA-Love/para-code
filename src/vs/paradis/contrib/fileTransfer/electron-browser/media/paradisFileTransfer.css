@@ -10,7 +10,7 @@
  * Colors are theme variables only, and sizes follow the Para Code dialogs (radius 8px / buttons 5px /
  * body 13px), so the tab does not look like a different app inside the editor area. */
 
-/* ---------- mark: codicon `files` with `arrow-swap` on top (plan 3) ---------- */
+/* ---------- mark: codicon `folder` with `arrow-swap` on top, centered as a whole (Q371 plan C) ---------- */
 
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer {
@@ -20,10 +20,12 @@
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::before,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::before {
 	display: inline-block;
-	transform: translate(-14%, -14%) scale(0.86);
+	/* The folder shrinks a little toward the upper left and the arrow sits over its lower right corner, so the
+	 * pair together stays in the middle of the glyph box (the folder alone would leave the arrow hanging out). */
+	transform: translate(-0.0875em, -0.106em) scale(0.9);
 }
 
-/* The arrow is cut out of the files glyph with a halo in the color of whatever is behind it. */
+/* The arrow is cut out of the folder with a halo in the color of whatever is behind it. */
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
 	content: '\ebcb';
@@ -97,18 +99,22 @@
 		-1px 1px 0 var(--vscode-tab-inactiveBackground);
 }
 
-/* The label box is larger than the glyph (activity bar 48px, title bar 22px), so place the arrow from the center. */
+/* The label box is larger than the glyph (activity bar 48px, title bar 22px) and the glyph sits in its middle, so
+ * place the arrow from the center: half the glyph's size, its center 0.29 / 0.28 of the glyph right of and below
+ * the glyph's center (in the arrow's own em, which is half the glyph's). */
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after {
-	left: 50%;
-	top: 50%;
-	transform: translate(-2%, -4%);
+	font-size: 0.5em;
+	left: calc(50% + 0.075em);
+	top: calc(50% + 0.05em);
 }
 
-/* In a tab the label also holds the name, so place the arrow from the icon at the start of the label. */
+/* In a tab the label also holds the name, and the glyph (13px) starts 3px into the label (the predefined file icon's
+ * padding), centered vertically. Half of 13px would be too small to read, so the arrow is 8px, at the same center. */
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
-	left: 4px;
-	top: calc(50% - 3px);
-	font-size: 9px;
+	font-size: 8px;
+	/* glyph center (3px + 6.5px) + 0.29 of 13px - half the arrow; vertically 0.28 of 13px - half the arrow */
+	left: 9.2px;
+	top: calc(50% - 0.4px);
 }
 
 /* ---------- editor ---------- */
