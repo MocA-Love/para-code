@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.11',
+		date: '2026-10-15',
+		items: [
+			{
+				icon: 'create-outline',
+				title: 'PC の Claude Code の入力欄に書きかけの文があると、会話の入力欄の上に出るようになりました',
+				body: '書きかけがある間は、こちらから送った発言が書きかけにつながらないよう PC が送るのを止めることがあります。見せるのは先頭だけで、手元には保存しません（PC の Para Code と Claude Code 2.1.300 以上が必要です）。',
+			},
+		],
+	},
+	{
 		version: '0.12.10',
 		date: '2026-10-10',
 		items: [

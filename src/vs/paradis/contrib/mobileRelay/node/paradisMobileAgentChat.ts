@@ -78,6 +78,7 @@ import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisRe
 import { IParadisAgentTeam, ParadisAgentTeamTracker, ParadisTeamApprovals, paradisTeamActivityText, paradisTeamsForStoppedPane } from '../../agentChat/common/paradisAgentTeams.js';
 import { IParadisTeamConfigReadState, IParadisTeamMemberReadState, paradisNewTeamMemberReadState, paradisReadClaudeTeamConfig, paradisReadClaudeTeamMember } from './paradisClaudeTeamFiles.js';
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
+import { ParadisMobileCapability } from '../common/paradisMobileCompat.js';
 import { paradisStripAgentInvisibleCharacters } from '../common/paradisAgentInvisibleText.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
@@ -187,8 +188,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -3497,6 +3498,17 @@ interface ICommandCatalogContext {
 	readonly cwd: string;
 }
 
+/** PC の Claude Code の入力欄の書きかけ（agent.pc-draft.v1）。広告したアプリが見ている会話へだけ送る。 */
+interface IParadisAgentPcDraft {
+	readonly text: string;
+	readonly truncated: boolean;
+}
+
+/** 書きかけの知らせをまとめて送る間（mod は 150 ms ごとに送ってくる。リレーへはもう少し間引く）。 */
+const PC_DRAFT_PUSH_MS = 300;
+/** アプリへ送る書きかけの先頭の字数（アプリは 2 行だけ出す）。 */
+const PC_DRAFT_PREVIEW_CHARS = 400;
+
 interface IAgentSubscriber {
 	readonly owner: IParadisMobilePaneOwner;
 	readonly liveEncoding: string | undefined;
@@ -3742,6 +3754,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			for (const key of [...this.stashedDrafts.keys()]) {
 				this.forgetStashedDraft(key);
 			}
+			for (const timer of this.pcDraftPushes.values()) {
+				clearTimeout(timer);
+			}
+			this.pcDraftPushes.clear();
 			for (const timer of this.keysWaitTimers) {
 				clearTimeout(timer);
 			}
@@ -4007,6 +4023,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.subscribers.keys()]) {
 			if (!liveTokens.has(token)) {
 				this.subscribers.delete(token);
+			}
+		}
+		// 消えたペインへ書きかけを送る相手とタイマーも捨てる
+		for (const token of [...this.pcDraftViewers.keys(), ...this.pcDraftPushes.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.pcDraftViewers.delete(token);
+				clearTimeout(this.pcDraftPushes.get(token));
+				this.pcDraftPushes.delete(token);
 			}
 		}
 		for (const token of [...this.tailers.keys()]) {
@@ -5347,6 +5371,70 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/** そのモバイルが capability を広告しているか（relay が入れる。入るまでは誰も広告していない扱い）。 */
+	private mobileHasCapability: (mobileId: string, name: string) => Promise<boolean> = async () => false;
+	/** ペイン → PC の書きかけを受け取れる（agent.pc-draft.v1 を広告した）見ているモバイル。 */
+	private readonly pcDraftViewers = new Map<string, Set<string>>();
+	/** ペイン → 書きかけをまとめて送るタイマー。 */
+	private readonly pcDraftPushes = new Map<string, ReturnType<typeof setTimeout>>();
+
+	/** モバイルが広告した capability を確かめる口（relay が入れる）。 */
+	setMobileCapabilityCheck(check: (mobileId: string, name: string) => Promise<boolean>): void {
+		this.mobileHasCapability = check;
+	}
+
+	/**
+	 * attach の応答に添える PC の書きかけ。Claude Code の会話で、そのモバイルが agent.pc-draft.v1 を広告しているときだけ
+	 * （以後の知らせも送るよう覚える）。`explicit` は差分の応答（無いときも `null` を書く。持ち越させない）。
+	 */
+	private async pcDraftField(mobileId: string, token: string, session: IPaneSessionInfo, explicit: boolean): Promise<{ pcDraft?: IParadisAgentPcDraft | null }> {
+		if (session.agent !== 'claude' || !(await this.mobileHasCapability(mobileId, ParadisMobileCapability.AgentPcDraft).catch(() => false))) {
+			this.pcDraftViewers.get(token)?.delete(mobileId);
+			return {};
+		}
+		let viewers = this.pcDraftViewers.get(token);
+		if (viewers === undefined) {
+			viewers = new Set();
+			this.pcDraftViewers.set(token, viewers);
+		}
+		viewers.add(mobileId);
+		const draft = this.currentPcDraft(token, session.sessionId);
+		return draft !== null ? { pcDraft: draft } : explicit ? { pcDraft: null } : {};
+	}
+
+	/**
+	 * いま見せる書きかけ。アプリは入力欄の上に 2 行だけ出すので、先頭の {@link PC_DRAFT_PREVIEW_CHARS} 字だけを送る
+	 * （それより長い・mod が切ったものは `truncated`）。
+	 */
+	private currentPcDraft(token: string, sessionId: string | undefined): IParadisAgentPcDraft | null {
+		const draft = this.claudeModBridge.draftOf(token, sessionId);
+		return draft !== undefined && draft.text.length > 0
+			? { text: draft.text.slice(0, PC_DRAFT_PREVIEW_CHARS), truncated: draft.truncated || draft.text.length > PC_DRAFT_PREVIEW_CHARS }
+			: null;
+	}
+
+	/** 書きかけが変わった。少し待ってから、受け取れる見ているモバイルへ今の書きかけを送る。 */
+	private schedulePcDraftPush(token: string): void {
+		if ((this.pcDraftViewers.get(token)?.size ?? 0) === 0 || this.pcDraftPushes.has(token)) {
+			return;
+		}
+		this.pcDraftPushes.set(token, setTimeout(() => {
+			this.pcDraftPushes.delete(token);
+			const session = this.paneSessions.get(token);
+			const tailer = this.tailers.get(token);
+			const terminalId = this.terminalIdForToken(token);
+			if (session?.agent !== 'claude' || tailer === undefined || terminalId === undefined) {
+				return;
+			}
+			const pcDraft = this.currentPcDraft(token, session.sessionId);
+			for (const mobileId of this.pcDraftViewers.get(token) ?? []) {
+				if (this.hasSubscriber(token, mobileId)) {
+					this.sendTo(mobileId, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], pcDraft }, token);
+				}
+			}
+		}, PC_DRAFT_PUSH_MS));
+	}
+
 	/**
 	 * ウィンドウが打っている最中の設定（actionKey → ペイン）。受け取って（claim）から、終わりの知らせ（finalize）までの間、
 	 * 同じペインの次の操作を待たせる（確認の画面を確定するまでキーを打つ）。
@@ -6125,6 +6213,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			const afterRev = msg.afterRev;
+			const resuming = msg.epoch === tailer.epoch && typeof afterRev === 'number';
+			const pcDraft = await this.pcDraftField(mobileId, token, currentSession, resuming);
+			if (this.attachDisposed || this.attachGenerations.get(pendingKey) !== attachGeneration || !this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== currentSession) {
+				return;
+			}
 			// 差分応答は「afterRevの続きが欠けなくリングに残っている」場合のみ。切断中に
 			// リング上限を超えて古い分が退避済みだと、先頭revが飛んでいてサイレント欠落に
 			// なるため、その場合は全量スナップショットへフォールバックする。
@@ -6137,7 +6230,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token) }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -6148,6 +6241,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...this.monitorsField(token, tailer, true),
 					...this.sessionStatusField(token, tailer, true),
 					...this.panelField(token),
+					...pcDraft,
 				}, token, owner);
 			}
 		} finally {
@@ -6528,6 +6622,11 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.forgetKeyTyped(token, event.at);
 				}
 				this.noteDraftForStash(token, event.text, event.at);
+				this.schedulePcDraftPush(token);
+				return;
+			case 'draft-unknown':
+				// mod が去った・読み直した。見せていた書きかけの帯を外させる
+				this.schedulePcDraftPush(token);
 				return;
 			case 'row': {
 				const tailer = this.tailers.get(token);
@@ -9862,6 +9961,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const subscribers = this.subscribers.get(token);
 		if (subscribers === undefined || !subscribers.delete(mobileId)) {
 			return false;
+		}
+		const draftViewers = this.pcDraftViewers.get(token);
+		draftViewers?.delete(mobileId);
+		if (draftViewers?.size === 0) {
+			this.pcDraftViewers.delete(token);
 		}
 		if (subscribers.size === 0) {
 			this.subscribers.delete(token);

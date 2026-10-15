@@ -1080,6 +1080,33 @@ export function parseAgentPanel(value: unknown): AgentPanel | null | undefined {
 	return { since: raw['since'], ...(command !== undefined ? { command } : {}) };
 }
 
+/**
+ * PC の Claude Code の入力欄に書きかけている文（agent.pc-draft.v1。Claude Code 2.1.300 以降で、書きかけがある間だけ）。
+ * 手元には保存しない（会話の状態と一緒にメモリにだけ持つ）。`truncated` は長すぎて先頭だけ届いた。
+ */
+export interface AgentPcDraft {
+	text: string;
+	truncated: boolean;
+}
+
+/** 書きかけの文の上限（PC と同じ）。 */
+const AGENT_PC_DRAFT_MAX_CHARS = 20_000;
+
+/** PC が送ってきた `pcDraft` を確かめる。`null` は書きかけが無い。形が違えば undefined（届かなかったものとして扱う）。 */
+export function parseAgentPcDraft(value: unknown): AgentPcDraft | null | undefined {
+	if (value === null) {
+		return null;
+	}
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+	if (typeof raw['text'] !== 'string' || raw['text'].length === 0) {
+		return raw['text'] === '' ? null : undefined;
+	}
+	return { text: raw['text'].slice(0, AGENT_PC_DRAFT_MAX_CHARS), truncated: raw['truncated'] === true || raw['text'].length > AGENT_PC_DRAFT_MAX_CHARS };
+}
+
 /** tool_result に含まれていた画像1枚のメタ情報（実体は含まない）。 */
 export interface AgentChatImage {
 	/** 同一メッセージ内での並び順。rev と組で1枚を指す。 */
@@ -1522,6 +1549,8 @@ export interface AgentChatState {
 	slashRejection?: AgentSlashRejection;
 	/** PC で開いている画面（agent.panel.v1。開いている間だけ）。入力欄の上に帯を出し、閉じるまで送信を止める。 */
 	panel?: AgentPanel;
+	/** PC の入力欄の書きかけ（agent.pc-draft.v1。ある間だけ）。入力欄の上に帯で見せる。保存しない。 */
+	pcDraft?: AgentPcDraft;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
@@ -5435,6 +5464,10 @@ export class MobileController {
 			// （capabilities 付き）は今の状態を丸ごと運ぶので、無ければ閉じている
 			const panelPresent = Object.prototype.hasOwnProperty.call(msg, 'panel');
 			const parsedPanel = panelPresent ? parseAgentPanel((msg as { panel?: unknown }).panel) : undefined;
+			// PC の入力欄の書きかけ（agent.pc-draft.v1）も同じ。delta では届いたときだけ置き換え（null は無くなった）、attach の応答に
+			// 無ければ書きかけは無い
+			const pcDraftPresent = Object.prototype.hasOwnProperty.call(msg, 'pcDraft');
+			const parsedPcDraft = pcDraftPresent ? parseAgentPcDraft((msg as { pcDraft?: unknown }).pcDraft) : undefined;
 			// 任意項目。届いたときだけ丸ごと置き換える（delta で無ければ手元のまま）。
 			// 時刻は PC の時計で届くので、PC の送信時刻（monitorsAt）との差で手元の時計へ直す。
 			const rawMonitors = parseAgentMonitors((msg as { monitors?: unknown }).monitors);
@@ -5543,6 +5576,7 @@ export class MobileController {
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
+					...(parsedPcDraft !== undefined && parsedPcDraft !== null ? { pcDraft: parsedPcDraft } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 					...(previous?.commandCatalog !== undefined && previous.epoch === msg.epoch ? { commandCatalog: previous.commandCatalog } : {}),
 					...(previous?.slashRejection !== undefined ? { slashRejection: previous.slashRejection } : {}),
@@ -5604,7 +5638,8 @@ export class MobileController {
 				const merged = [...existing.messages, ...fresh];
 				// 前の差分で切った分は持ち越さない（1 回だけ渡す）。
 				const { trimmedByDelta: _previousTrim, ...keptAll } = base;
-				const kept = panelPresent || msg.capabilities?.agentActions === true ? (({ panel: _panel, ...rest }) => rest)(keptAll) : keptAll;
+				const keptPanel = panelPresent || msg.capabilities?.agentActions === true ? (({ panel: _panel, ...rest }) => rest)(keptAll) : keptAll;
+				const kept = pcDraftPresent ? (({ pcDraft: _pcDraft, ...rest }) => rest)(keptPanel) : keptPanel;
 				this.state.agentChats.set(terminalKey, {
 					...kept,
 					rev: msg.rev ?? existing.rev,
@@ -5626,6 +5661,7 @@ export class MobileController {
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
+					...(parsedPcDraft !== undefined && parsedPcDraft !== null ? { pcDraft: parsedPcDraft } : {}),
 				});
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
 				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・
