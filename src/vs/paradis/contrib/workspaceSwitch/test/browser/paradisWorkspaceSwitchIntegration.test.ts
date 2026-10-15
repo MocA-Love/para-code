@@ -9,6 +9,7 @@ import { IShellLaunchConfig, TerminalExitReason, TerminalLocation } from '../../
 import { INotificationHandle, INotificationService, IPromptChoice, Severity } from '../../../../../platform/notification/common/notification.js';
 import assert from 'assert';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
@@ -51,7 +52,7 @@ import { IProgressService } from '../../../../../platform/progress/common/progre
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
-import { extUri } from '../../../../../base/common/resources.js';
+import { extUri, isEqual } from '../../../../../base/common/resources.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
@@ -63,6 +64,11 @@ import { IParadisWorkspaceFileFlush, paradisOverrideWorkspaceFileFlushedForTest 
 
 /** `ParadisWorkspaceSwitchService.WORKSPACE_FILE_BEHIND_STORAGE_KEY`。 */
 const WORKSPACE_FILE_BEHIND_STORAGE_KEY = 'paradis.workspaceSwitch.workspaceFileBehind';
+
+/** 「ディスクの folders が遅れている」印（`noteWorkspaceFileBehind` が書く形）。 */
+function workspaceFileBehind(ownerWindowId: number, stateKey: string, path: string): string {
+	return JSON.stringify({ ownerWindowId, stateKey, uri: URI.file(path).toString() });
+}
 import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
 import { paradisLookupRestartedShellScope } from '../../common/paradisTerminalSpaceFolder.js';
 import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -1913,13 +1919,13 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		testDisposables.add(paradisOverrideWorkspaceFileFlushedForTest(() => pending));
 		const journal = () => paradisParseWorkspaceSwitchTransactions(harness!.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE))
 			.map(transaction => `${transaction.fromStateKey}->${transaction.toStateKey}:${transaction.phase}`);
-		const behind = () => harness!.storageService.getBoolean(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE, false);
+		const behind = () => harness!.storageService.get(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE);
 		const flush = (ok: boolean): (() => Promise<void>) => {
 			let finish!: (result: IParadisWorkspaceFileFlush) => void;
 			pending = new Promise(resolve => finish = resolve);
 			return async () => {
 				pending = undefined;
-				finish({ ok, ms: 1, writes: 2, fallback: false, timedOut: !ok });
+				finish({ ok, ms: 1, writes: 2, fallback: false, timedOut: false });
 				await timeout(0);
 			};
 		};
@@ -1939,7 +1945,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			await finishWrite();
 			const afterWritten = behind();
 
-			// 書き込みが失敗・時間切れで終わったら、印は残して知らせる。
+			// 書き込みが失敗で終わったら、印は残して知らせる。
 			const finishFailed = flush(false);
 			await harness.workspaceSwitchService.switchRepository('space-a');
 			await finishFailed();
@@ -1952,10 +1958,11 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				notices: harness.notifications.map(notification => notification.severity),
 				activeStateKey: harness.workspaceSwitchService.activeStateKey,
 			}, {
-				whileWriting: { journal: [], behind: true },
+				// 進める先は最後に切り替えたスペース。持ち主はこのウィンドウ。
+				whileWriting: { journal: [], behind: workspaceFileBehind(mainWindow.vscodeWindowId, 'space-c', '/workspace-c') },
 				openedAfterRecovery: true,
-				afterWritten: false,
-				afterFailure: { journal: [], behind: true },
+				afterWritten: undefined,
+				afterFailure: { journal: [], behind: workspaceFileBehind(mainWindow.vscodeWindowId, 'space-a', '/workspace-a') },
 				notices: [Severity.Warning],
 				activeStateKey: 'space-a',
 			});
@@ -1968,17 +1975,18 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 	// 書き終える前に閉じた（終了の待ちを超えた・書き込みが失敗した・落ちた）次の起動は、ディスクの
 	// 古い folders で開くが、復元されたタブとアクティブエントリは最後のスペースのもの。戻さずに
 	// folders を前へ進める（戻すと、離れるときしか保存しない working set を当てて、開いたタブを失う）。
-	test('moves the folders forward to the last space at startup when the workspace file was not written before the window closed, keeping its tabs', async () => {
+	test('moves the folders forward to the space written in the mark at startup when the workspace file was not written before the window closed, keeping its tabs', async () => {
 		const testDisposables = new DisposableStore();
 		let openedInB: TestFileEditorInput | undefined;
 		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
 		try {
-			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables, undefined, [], undefined, async context => {
 				// 前の回に space-b で開いて、書き終える前に閉じたタブ。space-b の working set は古いまま（空）。
 				openedInB = context.createEditor('/workspace-b/opened-before-close.txt', false);
 				await context.parts.activeGroup.openEditor(openedInB, { pinned: true });
-				context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-b', uri: URI.file('/workspace-b').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-				context.storageService.store(WORKSPACE_FILE_BEHIND_STORAGE_KEY, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				// 進める先はアクティブエントリではなく印に書いた値（アクティブエントリは別のスペースを指している）。
+				context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-c', uri: URI.file('/workspace-c').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(WORKSPACE_FILE_BEHIND_STORAGE_KEY, workspaceFileBehind(mainWindow.vscodeWindowId, 'space-b', '/workspace-b'), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 			});
 
 			await harness.workspaceSwitchService.recoverInterruptedSwitch();
@@ -1986,8 +1994,77 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			assert.deepStrictEqual({
 				activeStateKey: harness.workspaceSwitchService.activeStateKey,
 				openedVisible: harness.parts.activeGroup.contains(openedInB!),
-				behind: harness.storageService.getBoolean(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE, false),
-			}, { activeStateKey: 'space-b', openedVisible: true, behind: false });
+				behind: harness.storageService.get(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, { activeStateKey: 'space-b', openedVisible: true, behind: undefined });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// 起動時は接続先がまだ繋がっていない等で、folders を進められないことがある。印を消すと二度と直らない
+	// （folders は古いスペース、タブとアクティブエントリは最後のスペースのまま）。残して知らせ、次の
+	// 切り替えの頭で試し直す。
+	test('keeps the mark and tells the user when moving the folders forward fails, and retries at the head of the next switch', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables, undefined, [], undefined, async context => {
+				context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-b', uri: URI.file('/workspace-b').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(WORKSPACE_FILE_BEHIND_STORAGE_KEY, workspaceFileBehind(mainWindow.vscodeWindowId, 'space-b', '/workspace-b'), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+			// 書き込みが失敗して folders が変わらない（upstream は失敗を握りつぶして読み直した古い folders を返す）。
+			harness.setFolderWriteSwallowed(uri => isEqual(uri, URI.file('/workspace-b')));
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			const afterFailure = {
+				folders: harness.workspaceSwitchService.activeStateKey,
+				behind: harness.storageService.get(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE) !== undefined,
+				notices: harness.notifications.map(notification => notification.severity),
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+			};
+			// 繋がった後の次の切り替えの頭で進めてから、行き先へ切り替える。
+			harness.setFolderWriteSwallowed(() => false);
+			await harness.workspaceSwitchService.switchRepository('space-c');
+
+			assert.deepStrictEqual({
+				afterFailure,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				behind: harness.storageService.get(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE),
+				notices: harness.notifications.length,
+			}, {
+				afterFailure: { folders: 'space-a', behind: true, notices: [Severity.Warning], isSwitching: false },
+				activeStateKey: 'space-c',
+				behind: undefined,
+				notices: 1,
+			});
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// WORKSPACE の storage は同じワークスペースの別のウィンドウと共有。別のウィンドウの印で folders を
+	// 動かさず、消しもしない。
+	test('neither moves the folders nor clears the mark written by another window', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		const otherWindowMark = workspaceFileBehind(mainWindow.vscodeWindowId + 1000, 'space-b', '/workspace-b');
+		try {
+			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables, undefined, [], undefined, async context => {
+				context.storageService.store(WORKSPACE_FILE_BEHIND_STORAGE_KEY, otherWindowMark, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			const afterRecovery = harness.workspaceSwitchService.activeStateKey;
+			// このウィンドウの切り替えは書き終わっている（後ろの書き込みが無い）。それでも別のウィンドウの印は消さない。
+			await harness.workspaceSwitchService.switchRepository('space-c');
+
+			assert.deepStrictEqual({
+				afterRecovery,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				behind: harness.storageService.get(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, { afterRecovery: 'space-a', activeStateKey: 'space-c', behind: otherWindowMark });
 		} finally {
 			await harness?.parts.activeGroup.closeAllEditors();
 			testDisposables.dispose();

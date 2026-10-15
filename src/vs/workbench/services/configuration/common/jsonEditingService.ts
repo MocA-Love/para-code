@@ -39,7 +39,7 @@ export class JSONEditingService implements IJSONEditingService {
 		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService
 	) {
 		this.queue = new Queue<void>();
-		this.paradisWorkspaceFile = new ParadisWorkspaceFileWriteCache(fileService, textFileService, (resource, values) => this.paradisWriteThroughModel(resource, values)); // PARA-PATCH: see doWriteConfiguration
+		this.paradisWorkspaceFile = new ParadisWorkspaceFileWriteCache(fileService, textFileService, (resource, values, remember) => this.paradisWriteThroughModel(resource, values, remember)); // PARA-PATCH: see doWriteConfiguration
 	}
 
 	write(resource: URI, values: IJSONValue[]): Promise<void> {
@@ -67,11 +67,11 @@ export class JSONEditingService implements IJSONEditingService {
 
 	// PARA-PATCH: the background write of a Para Code `.code-workspace` (see doWriteConfiguration). Same as the
 	// code below the cache in doWriteConfiguration, without the timing marks of a space switch.
-	private async paradisWriteThroughModel(resource: URI, values: IJSONValue[]): Promise<void> {
+	private async paradisWriteThroughModel(resource: URI, values: IJSONValue[], remember: () => void): Promise<void> {
 		const reference = await this.resolveAndValidate(resource, true);
 		try {
 			await this.writeToBuffer(reference.object.textEditorModel, values);
-			this.paradisWorkspaceFile.rememberModel(resource);
+			remember();
 		} finally {
 			reference.dispose();
 		}
