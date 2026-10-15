@@ -73,7 +73,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 	let cache: ParadisWorkspaceFileWriteCache;
 
 	/** `'default'` は本番と同じ判定（Para Code のウィンドウのワークスペースのファイルだけ）。 */
-	function createCache(applies: ((resource: URI) => boolean) | 'default' = resource => hasWorkspaceFileExtension(resource)): ParadisWorkspaceFileWriteCache {
+	function createCache(applies: ((resource: URI) => boolean) | 'default' = resource => hasWorkspaceFileExtension(resource), flushStepTimeoutMs?: number): ParadisWorkspaceFileWriteCache {
 		const textFileService = {
 			files: { get: (resource: URI) => openModels.has(resource.toString()) ? {} : undefined },
 			write: (resource: URI, value: string, options: IWriteFileOptions) => {
@@ -81,18 +81,18 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 				return writeHook ? writeHook(resource, value, options) : fileService.writeFile(resource, VSBuffer.fromString(value), options);
 			},
 		} as unknown as ITextFileService;
-		// upstream の経路の代わり: ディスクを読み、folders だけを当てて保存し、書いた中身を覚え直す。
+		// upstream の経路の代わり: ディスクを読み、渡された path を全部当てて保存し、書いた中身を覚え直す。
 		const writeThroughModel = async (resource: URI, values: IJSONValue[]) => {
-			modelWrites.push(values[0].value);
+			modelWrites.push(values.length === 1 && values[0].path[0] === 'folders' ? values[0].value : values.map(value => value.path.join('.')));
 			if (modelWriteFails) {
 				return; // upstream は保存の失敗を投げずにモデルへ残す（覚え直さない）
 			}
 			const disk = JSON.parse((await fileService.readFile(resource)).value.toString()) as Record<string, unknown>;
-			const content = JSON.stringify({ ...disk, folders: values[0].value }, null, '\t');
+			const content = JSON.stringify({ ...disk, ...Object.fromEntries(values.map(value => [value.path[0], value.value])) }, null, '\t');
 			const stat = await fileService.writeFile(resource, VSBuffer.fromString(content));
 			created.remember(resource, stat, { content, etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING });
 		};
-		const created: ParadisWorkspaceFileWriteCache = new ParadisWorkspaceFileWriteCache(fileService, textFileService, writeThroughModel, undefined, applies === 'default' ? undefined : applies);
+		const created: ParadisWorkspaceFileWriteCache = new ParadisWorkspaceFileWriteCache(fileService, textFileService, writeThroughModel, undefined, applies === 'default' ? undefined : applies, flushStepTimeoutMs);
 		disposables.add(created);
 		return created;
 	}
@@ -167,7 +167,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			writtenAgain: true,
 			reloaded: ['/repo/b'],
 			reloadedWhileWriting: ['/repo/c'],
-			flushed: { ok: true, ms: undefined, writes: 2, fallback: false },
+			flushed: { ok: true, ms: undefined, writes: 2, fallback: false, timedOut: false },
 			afterFlush: undefined,
 			reloadedAfterFlush: undefined,
 			atomic: [{ postfix: '.vsctmp' }],
@@ -205,11 +205,11 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			modelWrites,
 		}, {
 			sameSize: true,
-			sameSizeFlush: { ok: true, ms: undefined, writes: 1, fallback: true },
+			sameSizeFlush: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
 			// 外部で変えた settings を残し、folders だけをメモリの中身に揃える。
 			afterSameSize: { folders: [{ path: '/repo/b' }], settings: { 'editor.tabSize': 8 } },
 			conflicted: true,
-			conflictFlush: { ok: true, ms: undefined, writes: 1, fallback: true },
+			conflictFlush: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
 			disk: ['/repo/c'],
 			modelWrites: [[{ path: '/repo/b' }], [{ path: '/repo/c' }]],
 		});
@@ -242,13 +242,66 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			reloadedAfterLaterWrite: paradisTakeWrittenWorkspaceContent(resource),
 		}, {
 			written: true,
-			failed: { ok: false, ms: undefined, writes: 1, fallback: true },
+			failed: { ok: false, ms: undefined, writes: 1, fallback: true, timedOut: false },
 			reloadedAfterFailure: ['/repo/b'],
 			stillFailed: true,
 			next: false,
 			afterLaterWrite: undefined,
 			reloadedAfterLaterWrite: undefined,
 		});
+	});
+
+	test('applies every path written behind, not only the last one, when the background write falls back to the upstream path', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		await seed(resource, workspaceContent('/repo/a'));
+		// 外部での変更（folders 以外も変わっている）。
+		await fileService.writeFile(resource, VSBuffer.fromString(JSON.stringify({ folders: [{ path: '/repo/x' }], settings: { 'editor.tabSize': 8 } }, null, '\t')));
+		let releaseStat!: () => void;
+		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
+
+		// 書き込みが stat で止まっている間に、同じファイルの別の path（拡張機能のおすすめ）が来る。
+		const folders = await cache.tryWrite(resource, FOLDERS_B);
+		const extensions = await cache.tryWrite(resource, [{ path: ['extensions'], value: { recommendations: ['example.ext'] } }]);
+		const flushing = paradisWhenWorkspaceFileFlushed();
+		provider.statGate = undefined;
+		releaseStat();
+		const flushed = await flushing;
+
+		assert.deepStrictEqual({ folders, extensions, flushed: { ...flushed, ms: undefined }, modelWrites, disk: JSON.parse(await readDisk(resource)) }, {
+			folders: true,
+			extensions: true,
+			// 2 回目は 1 回目（upstream の経路）が両方を書いていたので、何もしない。
+			flushed: { ok: true, ms: undefined, writes: 2, fallback: true, timedOut: false },
+			modelWrites: [['folders', 'extensions']],
+			disk: { folders: [{ path: '/repo/b' }], settings: { 'editor.tabSize': 8 }, extensions: { recommendations: ['example.ext'] } },
+		});
+	});
+
+	test('gives up a background write that does not return within the limit, reports it, and leaves the next write to the upstream path', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		const limited = createCache(undefined, 30);
+		await seed(resource, workspaceContent('/repo/a'), limited);
+		let releaseStat!: () => void;
+		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
+		try {
+			const written = await limited.tryWrite(resource, FOLDERS_B);
+			const flushed = await paradisWhenWorkspaceFileFlushed();
+			const reloaded = paradisTakeWrittenWorkspaceContent(resource);
+			const next = await limited.tryWrite(resource, FOLDERS_C);
+			assert.deepStrictEqual({ written, flushed: { ...flushed, ms: undefined }, reloaded: reloaded === undefined ? undefined : foldersOf(reloaded), next }, {
+				written: true,
+				flushed: { ok: false, ms: undefined, writes: 1, fallback: false, timedOut: true },
+				// 書けていないので、読み直しには切り替えた中身を渡し続ける。
+				reloaded: ['/repo/b'],
+				next: false,
+			});
+		} finally {
+			provider.statGate = undefined;
+			releaseStat();
+			await timeout(20);
+		}
+		// 遅れて返ってきても、諦めた書き込みの続きはしない。
+		assert.deepStrictEqual({ modelWrites, disk: foldersOf(await readDisk(resource)) }, { modelWrites: [], disk: ['/repo/a'] });
 	});
 
 	test('waits for the background write of the same file before leaving a write to the upstream path, without holding up other files', async () => {

@@ -57,9 +57,12 @@ import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js
 import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
 import { TerminalEditorInput } from '../../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { ITextFileEditorModel, ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisRegisterWorktreePresenceLookup, paradisSetManagedWorkspaceWindowForTest, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisRegisterWorktreePresenceLookup, paradisSetManagedWorkspaceWindowForTest, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisParseWorkspaceSwitchTransactions, paradisSerializeWorkspaceSwitchTransactions } from '../../common/paradisWorkspaceSwitchTransaction.js';
 import { IParadisWorkspaceFileFlush, paradisOverrideWorkspaceFileFlushedForTest } from '../../common/paradisWorkspaceFileWriteCache.js';
+
+/** `ParadisWorkspaceSwitchService.WORKSPACE_FILE_BEHIND_STORAGE_KEY`。 */
+const WORKSPACE_FILE_BEHIND_STORAGE_KEY = 'paradis.workspaceSwitch.workspaceFileBehind';
 import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest } from '../../common/paradisTerminalLaunchPreparers.js';
 import { paradisLookupRestartedShellScope } from '../../common/paradisTerminalSpaceFolder.js';
 import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
@@ -1900,55 +1903,91 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	// folders は `.code-workspace` の書き込みを待たずに変わる。書き終わる前に落ちたら、起動時の復旧が
-	// ディスクの folders の側へ揃えられるよう、ジャーナルは書き終わるまで残す。その間の切り替えの
-	// 復旧は、終わった切り替えを中断と取り違えて working set を当て直してはいけない。
-	test('keeps the journal of a finished switch until the workspace file is on disk, without replaying it in this window', async () => {
+	// folders は `.code-workspace` の書き込みを待たずに変わる。ジャーナルは今までどおり切り替えの終わりで
+	// 消す（残すと、後の切り替えの頭の復旧が保存済みの working set を当て、開いたタブが黙って巻き戻る）。
+	// 書き終わるまでは「ディスクの folders が遅れている」印を残し、失敗したら残したまま知らせる。
+	test('clears the journal at the end of a switch and marks the workspace file as behind until the background write lands', async () => {
 		const testDisposables = new DisposableStore();
 		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
 		let pending: Promise<IParadisWorkspaceFileFlush> | undefined;
 		testDisposables.add(paradisOverrideWorkspaceFileFlushedForTest(() => pending));
 		const journal = () => paradisParseWorkspaceSwitchTransactions(harness!.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE))
 			.map(transaction => `${transaction.fromStateKey}->${transaction.toStateKey}:${transaction.phase}`);
+		const behind = () => harness!.storageService.getBoolean(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE, false);
 		const flush = (ok: boolean): (() => Promise<void>) => {
 			let finish!: (result: IParadisWorkspaceFileFlush) => void;
 			pending = new Promise(resolve => finish = resolve);
 			return async () => {
 				pending = undefined;
-				finish({ ok, ms: 1, writes: 1, fallback: false });
+				finish({ ok, ms: 1, writes: 2, fallback: false, timedOut: !ok });
 				await timeout(0);
 			};
 		};
 		try {
 			harness = await createHarness(['space-a', 'space-b', 'space-c'], testDisposables);
 
-			// 書き込みが後ろで続いている間。
-			const finishB = flush(true);
+			// 書き込みが後ろで続いている間に 2 回続けて切り替える。
+			const finishWrite = flush(true);
 			await harness.workspaceSwitchService.switchRepository('space-b');
-			const openedInB = harness.createEditor('/workspace-b/opened-after-switch.txt', false);
-			await harness.parts.activeGroup.openEditor(openedInB, { pinned: true });
-			const whileWriting = journal();
-			await harness.workspaceSwitchService.recoverInterruptedSwitch();
-			const openedAfterRecovery = harness.parts.activeGroup.contains(openedInB);
-			await finishB();
-			const afterWritten = journal();
-
-			// 書き込みが失敗したまま終わったら残し、次に書けた切り替えでまとめて消す。
-			const finishC = flush(false);
 			await harness.workspaceSwitchService.switchRepository('space-c');
-			await finishC();
-			const afterFailure = journal();
-			await harness.workspaceSwitchService.switchRepository('space-a');
-			const afterNextSwitch = journal();
+			const openedInC = harness.createEditor('/workspace-c/opened-after-switch.txt', false);
+			await harness.parts.activeGroup.openEditor(openedInC, { pinned: true });
+			const whileWriting = { journal: journal(), behind: behind() };
+			// 次の切り替えの頭の復旧と同じ呼び出し。終わった切り替えを中断と取り違えない。
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			const openedAfterRecovery = harness.parts.activeGroup.contains(openedInC);
+			await finishWrite();
+			const afterWritten = behind();
 
-			assert.deepStrictEqual({ whileWriting, openedAfterRecovery, afterWritten, afterFailure, afterNextSwitch, activeStateKey: harness.workspaceSwitchService.activeStateKey }, {
-				whileWriting: ['space-a->space-b:foldersCommitted'],
+			// 書き込みが失敗・時間切れで終わったら、印は残して知らせる。
+			const finishFailed = flush(false);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			await finishFailed();
+
+			assert.deepStrictEqual({
+				whileWriting,
+				openedAfterRecovery,
+				afterWritten,
+				afterFailure: { journal: journal(), behind: behind() },
+				notices: harness.notifications.map(notification => notification.severity),
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+			}, {
+				whileWriting: { journal: [], behind: true },
 				openedAfterRecovery: true,
-				afterWritten: [],
-				afterFailure: ['space-b->space-c:foldersCommitted'],
-				afterNextSwitch: [],
+				afterWritten: false,
+				afterFailure: { journal: [], behind: true },
+				notices: [Severity.Warning],
 				activeStateKey: 'space-a',
 			});
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
+	// 書き終える前に閉じた（終了の待ちを超えた・書き込みが失敗した・落ちた）次の起動は、ディスクの
+	// 古い folders で開くが、復元されたタブとアクティブエントリは最後のスペースのもの。戻さずに
+	// folders を前へ進める（戻すと、離れるときしか保存しない working set を当てて、開いたタブを失う）。
+	test('moves the folders forward to the last space at startup when the workspace file was not written before the window closed, keeping its tabs', async () => {
+		const testDisposables = new DisposableStore();
+		let openedInB: TestFileEditorInput | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				// 前の回に space-b で開いて、書き終える前に閉じたタブ。space-b の working set は古いまま（空）。
+				openedInB = context.createEditor('/workspace-b/opened-before-close.txt', false);
+				await context.parts.activeGroup.openEditor(openedInB, { pinned: true });
+				context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-b', uri: URI.file('/workspace-b').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				context.storageService.store(WORKSPACE_FILE_BEHIND_STORAGE_KEY, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				openedVisible: harness.parts.activeGroup.contains(openedInB!),
+				behind: harness.storageService.getBoolean(WORKSPACE_FILE_BEHIND_STORAGE_KEY, StorageScope.WORKSPACE, false),
+			}, { activeStateKey: 'space-b', openedVisible: true, behind: false });
 		} finally {
 			await harness?.parts.activeGroup.closeAllEditors();
 			testDisposables.dispose();
