@@ -148,15 +148,19 @@ export function paradisNoteParkedFolderConfiguration(): void {
  * `.code-workspace` の往復を省いた・省けなかった印（`paradisWorkspaceFileWriteCache.ts`）。送るキーは
  * `safe_update_folders_<名前>`（回数）。
  *
- * - `resolve_cached`   stat 1 回で etag を確かめ、覚えていた中身で書いた（存在確認と読み込みをしていない）
- * - `resolve_conflict` 覚えていた etag で書いたら衝突した（または失敗した）ので、読み直して書き直した
- * - `reload_cached`    書いた直後の読み直しを、書いた中身で済ませた
+ * - `write_behind`  覚えていた中身に folders を当て、ディスクへの書き込みを待たずに済ませた（書き込みは
+ *                   切り替えの後ろで続く。結果は `workspaceSwitch.workspace-file-flush` の span）
+ * - `flush_waited`  後ろで続いていた前の書き込みを待ってから、upstream の経路で書いた
+ * - `reload_cached` 書いた直後の読み直しを、書いた中身で済ませた
+ *
+ * paracode-165 までは `resolve_cached`（stat 1 回で確かめてから書いた）と `resolve_conflict`（その書き込みが
+ * 衝突した）を送っていた。書き込みを待たなくなったので、確かめと衝突は切り替えの外（flush の span）へ移った。
  */
-export const PARADIS_FOLDER_UPDATE_SHORTCUTS = ['resolve_cached', 'resolve_conflict', 'reload_cached'] as const;
+export const PARADIS_FOLDER_UPDATE_SHORTCUTS = ['write_behind', 'flush_waited', 'reload_cached'] as const;
 export type ParadisFolderUpdateShortcut = typeof PARADIS_FOLDER_UPDATE_SHORTCUTS[number];
 
 function emptyShortcuts(): Record<ParadisFolderUpdateShortcut, number> {
-	return { resolve_cached: 0, resolve_conflict: 0, reload_cached: 0 };
+	return { write_behind: 0, flush_waited: 0, reload_cached: 0 };
 }
 
 /** 往復を省いた・省けなかったとき。記録中でなければ何もしない。 */
