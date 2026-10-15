@@ -172,8 +172,10 @@ suite('ParadisComputerUseHelperClient', () => {
 	function createClient(options: IFakeHelperOptions = {}, overrides: Partial<IParadisComputerUseHelperHost> = {}) {
 		const fake = new FakeHelper(options);
 		fakes.push(fake);
-		const client = disposables.add(new ParadisComputerUseHelperClient(fake.host(root, overrides), undefined, { requestTimeoutMs: 300, launchTimeoutMs: 500 }));
-		return { fake, client };
+		// 送った値は段階とキーだけ見る（ミリ秒は毎回変わる）
+		const reports: string[] = [];
+		const client = disposables.add(new ParadisComputerUseHelperClient(fake.host(root, overrides), undefined, { requestTimeoutMs: 300, launchTimeoutMs: 500 }, (stage, _error, extra) => reports.push(`${stage}: ${Object.keys(extra).sort().join(',')}`)));
+		return { fake, client, reports };
 	}
 
 	test('launches the helper, authenticates with a one-time token and reads its status', async () => {
@@ -232,7 +234,9 @@ suite('ParadisComputerUseHelperClient', () => {
 			missing: await missing.client.check(),
 			launches: old.fake.launches + linux.fake.launches + missing.fake.launches,
 			staticMissing: missing.client.staticAvailability(),
-		}, { old: 'unsupported-os', linux: 'unsupported-os', missing: 'missing', launches: 0, staticMissing: 'missing' });
+			// 古い macOS は壊れているのではないので送らない。配布物に補助アプリが無いのは送る
+			reports: [...old.reports, ...linux.reports, ...missing.reports],
+		}, { old: 'unsupported-os', linux: 'unsupported-os', missing: 'missing', launches: 0, staticMissing: 'missing', reports: ['missing: safe_availability,safe_launch_ms'] });
 	});
 
 	test('turns a failed launch, a helper that never listens, a protocol mismatch and a misattributed helper into states', async () => {
@@ -250,6 +254,14 @@ suite('ParadisComputerUseHelperClient', () => {
 			unknownResponsibility: await unknownResponsibility.client.check(),
 		}, { launchFails: 'launch-failed', neverListens: 'launch-failed', incompatible: 'incompatible', misattributed: 'misattributed', unknownResponsibility: 'ok' });
 		await assert.rejects(launchFails.client.request('listApps'), (error: ParadisComputerUseHelperError) => error.code === 'unavailable');
+		// 壊れた段階ごとに 1 件だけ送り、止めた後の呼び出しでは送り直さない
+		assert.deepStrictEqual([launchFails, neverListens, incompatible, misattributed, unknownResponsibility].map(created => created.reports), [
+			['open: safe_availability,safe_launch_ms'],
+			['socket: safe_availability,safe_launch_ms'],
+			['protocol: safe_availability,safe_expected_protocol,safe_helper_protocol,safe_launch_ms'],
+			['responsibility: safe_availability,safe_launch_ms'],
+			[],
+		]);
 	});
 
 	test('passes helper errors through with their code', async () => {
@@ -281,12 +293,12 @@ suite('ParadisComputerUseHelperClient', () => {
 	});
 
 	test('restarts once after a crash while answering and stops after a second one', async () => {
-		const { fake, client } = createClient({ reply: method => method === 'listApps' ? 'crash' : { ok: true, result: {} } });
+		const { fake, client, reports } = createClient({ reply: method => method === 'listApps' ? 'crash' : { ok: true, result: {} } });
 		await client.check();
 		await assert.rejects(client.request('listApps'), (error: ParadisComputerUseHelperError) => error.code === 'helper_disconnected');
 		const afterFirst = client.availability;
 		await assert.rejects(client.request('listApps'), (error: ParadisComputerUseHelperError) => error.code === 'helper_disconnected');
-		assert.deepStrictEqual({ afterFirst, afterSecond: client.availability, launches: fake.launches }, { afterFirst: 'ok', afterSecond: 'launch-failed', launches: 2 });
+		assert.deepStrictEqual({ afterFirst, afterSecond: client.availability, launches: fake.launches, reports }, { afterFirst: 'ok', afterSecond: 'launch-failed', launches: 2, reports: ['crashed-repeatedly: safe_crashes,safe_helper_version'] });
 		// 設定を入れ直す（check）と、もう一度試す
 		assert.strictEqual(await client.check(), 'ok');
 	});

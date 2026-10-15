@@ -9,7 +9,7 @@
 import * as Sentry from '@sentry/electron/renderer';
 import { env } from '../../../../base/common/process.js';
 import { isParadisSentryDevelopmentBuild } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, IParadisSpanOptions, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
@@ -63,8 +63,8 @@ function initializeParadisRendererSentry(): void {
 			'process.type': 'renderer',
 		});
 		configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
-		configureParadisSpanRunner((feature, operation, attributes, callback) =>
-			startParadisRendererSpan(feature, operation, callback, attributes));
+		configureParadisSpanRunner((feature, operation, attributes, callback, options) =>
+			startParadisRendererSpan(feature, operation, callback, attributes, options));
 		configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
 		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
 			captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
@@ -129,10 +129,12 @@ export function startParadisRendererSpan<T>(
 	operation: string,
 	callback: () => T,
 	attributes?: ParadisSpanAttributes,
+	options?: IParadisSpanOptions,
 ): T {
 	return Sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
+		...(options?.forceTransaction ? { forceTransaction: true } : {}),
 		attributes: {
 			...attributes,
 			'para.scope': 'owned',

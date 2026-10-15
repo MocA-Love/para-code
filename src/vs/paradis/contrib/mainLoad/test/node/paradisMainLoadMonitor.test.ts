@@ -8,10 +8,9 @@
 
 import * as assert from 'assert';
 import { tmpdir } from 'os';
-import { EventLoopUtilization } from 'perf_hooks';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMainLoopPeriodSummary, paradisIsMainLoopCongested, paradisSplitStatRoundTrip, paradisSummarizeMainLoop } from '../../common/paradisMainLoad.js';
+import { IParadisMainLoopPeriodSummary, paradisIsMainLoopCongested, paradisMainThreadUtilization, paradisSplitStatRoundTrip, paradisSummarizeMainLoop } from '../../common/paradisMainLoad.js';
 import { IParadisMainLoadDependencies, PARADIS_MAIN_LOAD_DEFAULTS, ParadisMainLoadMonitor, paradisCreateMainLoadChannel } from '../../node/paradisMainLoadMonitor.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 
@@ -31,6 +30,7 @@ function createFakes() {
 	let intervalMs: number | undefined;
 	let cleared = false;
 	let utilization = 0.25;
+	let cpuMs = 0;
 	const deps: Partial<IParadisMainLoadDependencies> = {
 		createHistogram: resolution => {
 			const state: IFakeHistogram = { resolution, enabled: false, resets: 0, p50: 2e6, p99: 30e6, max: 40e6 };
@@ -43,7 +43,8 @@ function createFakes() {
 				reset: () => { state.resets++; },
 			};
 		},
-		eventLoopUtilization: () => ({ idle: 0, active: 0, utilization } as EventLoopUtilization),
+		// 時計を進めた分の `utilization` 倍だけ CPU を使ったことにする。
+		threadCpuMs: () => cpuMs,
 		now: () => now,
 		setInterval: (_handler, ms) => { intervalMs = ms; return 1; },
 		clearInterval: () => { cleared = true; },
@@ -59,7 +60,7 @@ function createFakes() {
 		logService,
 		histograms,
 		congested,
-		advance: (ms: number) => { now += ms; },
+		advance: (ms: number) => { now += ms; cpuMs += ms * utilization; },
 		setUtilization: (value: number) => { utilization = value; },
 		get intervalMs() { return intervalMs; },
 		get cleared() { return cleared; },
@@ -75,8 +76,11 @@ suite('ParadisMainLoad', () => {
 		// 200ms の分解能で暇な main は、値が分解能そのもの (p50 ≒ 201ms) になる。混んでいるとは言わない。
 		const idleAt200 = paradisSummarizeMainLoop({ max: 260_000_000, percentile: p => p === 50 ? 201_000_000 : 205_000_000 }, 0, 60_000);
 		const slowAt200 = paradisSummarizeMainLoop({ max: 400_000_000, percentile: p => p === 50 ? 201_000_000 : 320_000_000 }, 0.05, 60_000);
+		// スレッドの CPU 時間が取れなかった・区間の長さが 0 なら稼働率を付けない (0 と区別する)。
+		const unmeasured = paradisSummarizeMainLoop({ max: 0, percentile: () => 0 }, paradisMainThreadUtilization(undefined, 1_000), 1_000);
 		assert.deepStrictEqual({
-			calm, busy,
+			calm, busy, unmeasured,
+			zeroLength: paradisMainThreadUtilization(5, 0),
 			calmCongested: paradisIsMainLoopCongested(calm, 10),
 			busyCongested: paradisIsMainLoopCongested(busy, 10),
 			idleAt200Congested: paradisIsMainLoopCongested(idleAt200, 200),
@@ -84,6 +88,8 @@ suite('ParadisMainLoad', () => {
 		}, {
 			calm: { p50Ms: 1, p99Ms: 10, maxMs: 12.3, busyPct: 12.3, durationMs: 60_000 },
 			busy: { p50Ms: 50, p99Ms: 50, maxMs: 1500, busyPct: 100, durationMs: 10 },
+			unmeasured: { p50Ms: 0, p99Ms: 0, maxMs: 0, durationMs: 1_000 },
+			zeroLength: undefined,
 			calmCongested: false,
 			busyCongested: true,
 			idleAt200Congested: false,
@@ -148,8 +154,8 @@ suite('ParadisMainLoad', () => {
 		for (let i = 0; i < PARADIS_MAIN_LOAD_DEFAULTS.maxOpenWindows + 1; i++) {
 			ids.push(monitor.beginWindow('window:1'));
 		}
-		fakes.advance(1_500);
 		fakes.setUtilization(0.9);
+		fakes.advance(1_500);
 		const dropped = monitor.endWindow('window:1', ids[0]);
 		const notOwner = monitor.endWindow('window:2', ids[1]);
 		const last = monitor.endWindow('window:1', ids[ids.length - 1]);
@@ -238,6 +244,19 @@ suite('ParadisMainLoad', () => {
 			summaries: [],
 			hidden: 'Call not found: summarizePeriod',
 		});
+	});
+
+	test('measures the busy share from the CPU time of the real thread', () => {
+		// Electron の main では `performance.eventLoopUtilization` が常に 0 だった。本物の道具で、
+		// CPU を回した区間の稼働率が 0 にならないことを確かめる。
+		const monitor = store.add(new ParadisMainLoadMonitor(new NullLogService()));
+		const id = monitor.beginWindow('window:1');
+		const startedAt = Date.now();
+		while (Date.now() - startedAt < 50) {
+			// CPU を回す
+		}
+		const busyPct = monitor.endWindow('window:1', id)?.busyPct;
+		assert.deepStrictEqual({ measured: busyPct !== undefined && busyPct > 0 && busyPct <= 100 }, { measured: true });
 	});
 
 	test('stats a local folder from main and refuses other schemes', async () => {
