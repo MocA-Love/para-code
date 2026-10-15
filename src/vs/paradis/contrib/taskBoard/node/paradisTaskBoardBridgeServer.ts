@@ -162,7 +162,9 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 
 	private removeDiscoveryFileSync(): void {
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- This cleanup runs from the process exit/disposal path; Node exit handlers cannot await I/O, so the discovery file must be checked before returning.
 			if (this.ownsDiscoveryFile(readFileSync(this.discoveryPath, 'utf8'))) {
+				// eslint-disable-next-line local/code-no-sync-fs -- This cleanup runs from the process exit/disposal path; Node exit handlers cannot await I/O, so the discovery file must be removed before returning.
 				unlinkSync(this.discoveryPath);
 			}
 		} catch {
