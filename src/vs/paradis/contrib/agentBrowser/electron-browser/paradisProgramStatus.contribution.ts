@@ -29,7 +29,7 @@ import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnost
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusEffect, ParadisProgramStatusTracker, paradisParseProgramStatus, paradisProgramStatusDropReason, paradisProgramStatusForeground, paradisProgramStatusProcessKind, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
-import { ParadisProgramStatusRunEnd, ParadisProgramStatusRunStats, paradisProgramStatusCliVersion, paradisProgramStatusQueryAttributes, recordParadisProgramStatus } from '../common/paradisProgramStatusDiagnostics.js';
+import { ParadisProgramStatusRunEnd, ParadisProgramStatusRunStats, ParadisProgramStatusSpanThrottle, paradisProgramStatusCliVersion, paradisProgramStatusQueryAttributes, recordParadisProgramStatus } from '../common/paradisProgramStatusDiagnostics.js';
 
 class ParadisProgramStatusContribution extends Disposable implements ITerminalContribution {
 
@@ -42,6 +42,9 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	private readonly gate = this.tracker.gate;
 	/** 答えなかった問い合わせ・捨てた状態を Sentry で数えるための件数（受け付けが閉じるたびに送る）。 */
 	private readonly runStats = new ParadisProgramStatusRunStats();
+	/** 問い合わせ・受け付けの終わりの span を、このターミナルから 10 秒に 1 件ずつまでにする。 */
+	private readonly querySpans = new ParadisProgramStatusSpanThrottle();
+	private readonly runSpans = new ParadisProgramStatusSpanThrottle();
 	private readonly commandFinished = this._register(new MutableDisposable());
 	private readonly pendingTimer = this._register(new MutableDisposable());
 	/**
@@ -65,7 +68,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		// 前面のコマンド（Claude Code か ssh など）が終わったら受け付けを閉じ、残った状態を消す（Claude Code が clear を
 		// 書かずに落ちた場合も含む）。Ctrl+Z で止めただけなら `fg` で戻るのを待つ（判断は ParadisProgramStatusTracker）
 		const watch = (capability: ICommandDetectionCapability | undefined) => {
-			this.commandFinished.value = capability?.onCommandFinished(command => this.apply(this.tracker.commandFinished(command.exitCode), 'command-finished'));
+			this.commandFinished.value = capability?.onCommandFinished(command => this.apply(this.tracker.commandFinished(command.exitCode), 'shell-end'));
 		};
 		watch(this.instance.capabilities.get(TerminalCapability.CommandDetection));
 		this._register(this.instance.capabilities.onDidAddCommandDetectionCapability(capability => watch(capability)));
@@ -116,14 +119,20 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 				}
 				// 答えなかったときは Claude Code がこのターミナルへ状態を送らないので、hook の無いペインの状態が出ない。
 				// 何が前面に見えていたかの種類だけを送る（プロセス名・コマンド行は送らない）
-				this.record('query', paradisProgramStatusQueryAttributes({
-					answered,
-					foreground: paradisProgramStatusForeground(trustedCommandLine, this.foregroundProcess),
-					processKind: paradisProgramStatusProcessKind(this.foregroundProcess),
-					cmdlineTrusted: trustedCommandLine !== undefined,
-					shellIntegration: commandDetection !== undefined,
-					cliVersion: paradisProgramStatusCliVersion(this.foregroundProcess),
-				}));
+				const skipped = this.querySpans.take();
+				if (skipped !== undefined) {
+					this.record('query', {
+						...paradisProgramStatusQueryAttributes({
+							answered,
+							foreground: paradisProgramStatusForeground(trustedCommandLine, this.foregroundProcess),
+							processKind: paradisProgramStatusProcessKind(this.foregroundProcess),
+							cmdlineTrusted: trustedCommandLine !== undefined,
+							shellIntegration: commandDetection !== undefined,
+							cliVersion: paradisProgramStatusCliVersion(this.foregroundProcess),
+						}),
+						...(skipped > 0 ? { safe_queries_skipped: skipped } : {}),
+					});
+				}
 			} else if (parsed !== undefined) {
 				const wasOpen = this.gate.isOpen;
 				if (this.gate.accept(parsed)) {
@@ -160,11 +169,21 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		}
 	}
 
-	/** 受け付けが閉じた。開いていた間の件数を 1 件の span で送る。 */
+	/**
+	 * 受け付けが閉じた。開いていた間の件数を 1 件の span で送る。間引くときは件数を持ち越し、次に送る span
+	 * （ターミナルを閉じたときは必ず送る）にまとめる。
+	 */
 	private endRun(endedBy: ParadisProgramStatusRunEnd): void {
+		if (!this.runStats.hasData) {
+			return;
+		}
+		const skipped = this.runSpans.take(endedBy === 'disposed');
+		if (skipped === undefined) {
+			return;
+		}
 		const attributes = this.runStats.take(endedBy);
 		if (attributes !== undefined) {
-			this.record('run', attributes);
+			this.record('run', { ...attributes, ...(skipped > 0 ? { safe_runs_skipped: skipped } : {}) });
 		}
 	}
 

@@ -16,15 +16,15 @@
 // プロセスの名前、題名、文は送らない。キー名には Sentry のサーバー側で値を消す語
 // （terminal・command・session・token・env など）を含めない。
 
-import { ParadisSpanAttributes, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { isParadisSentryScrubbedWord, ParadisSpanAttributes, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisProgramStatusDropReason, ParadisProgramStatusForeground, ParadisProgramStatusProcessKind, paradisClaudeProcessIdentity } from './paradisProgramStatus.js';
 
 /** 受け付けが閉じた理由。 */
 export type ParadisProgramStatusRunEnd =
 	/** Claude Code が clear を書いた。 */
 	| 'clear-status'
-	/** シェル統合がコマンドの終わりを報告した（Ctrl+Z の保留も含む）。 */
-	| 'command-finished'
+	/** シェル統合がコマンドの終わりを報告した（Ctrl+Z の保留も含む）。`command` は Sentry が値ごと消す語なので使わない。 */
+	| 'shell-end'
 	/** プロセスが終わった。 */
 	| 'process-exit'
 	/** 前面のプロセスがシェルなどに戻った。 */
@@ -126,7 +126,10 @@ export class ParadisProgramStatusRunStats {
 			case 'unknown-state':
 			case 'no-state':
 				this.unknownStates++;
-				this.unknownStateName ??= unknownState;
+				// Sentry が値ごと消す語を含む名前は送らない（件数だけ残す）
+				if (unknownState !== undefined && !isParadisSentryScrubbedWord(unknownState)) {
+					this.unknownStateName ??= unknownState;
+				}
 				break;
 			case 'too-long':
 				this.tooLong++;
@@ -146,10 +149,14 @@ export class ParadisProgramStatusRunStats {
 		this.ipcFailures++;
 	}
 
+	/** 開いているか、何か数えたか（送るものがあるか）。 */
+	get hasData(): boolean {
+		return this.openedAt !== undefined || this.sent + this.applied + this.muted + this.gateClosed + this.unknownStates + this.tooLong + this.ignored + this.unbound + this.ipcFailures > 0;
+	}
+
 	/** 閉じたときの値。開いておらず何も数えていなければ undefined。数えた値は戻す。 */
 	take(endedBy: ParadisProgramStatusRunEnd): ParadisSpanAttributes | undefined {
-		const counted = this.sent + this.applied + this.muted + this.gateClosed + this.unknownStates + this.tooLong + this.ignored + this.unbound + this.ipcFailures;
-		if (this.openedAt === undefined && counted === 0) {
+		if (!this.hasData) {
 			return undefined;
 		}
 		const attributes: ParadisSpanAttributes = {
@@ -174,7 +181,36 @@ export class ParadisProgramStatusRunStats {
 	}
 }
 
-/** 時間のかからない span として送る（値は作るときに全部渡す。renderer では await の後に足すと失われるため）。 */
+/** 1 つのターミナルから送る span の間隔。OSC 7501 は前面のどのプログラムでも書けるので、問い合わせを含むログを `cat` しただけで数千件になりうる。 */
+export const PARADIS_PROGRAM_STATUS_SPAN_INTERVAL_MS = 10_000;
+
+/**
+ * 1 つのターミナルから送る span を {@link PARADIS_PROGRAM_STATUS_SPAN_INTERVAL_MS} に 1 件までに間引く。
+ * 間引いた数は次に送る span に載せる。
+ */
+export class ParadisProgramStatusSpanThrottle {
+
+	private lastAt: number | undefined;
+	private skipped = 0;
+
+	constructor(private readonly now: () => number = Date.now, private readonly intervalMs = PARADIS_PROGRAM_STATUS_SPAN_INTERVAL_MS) { }
+
+	/** 送ってよければ前回から間引いた数、間引くなら undefined。`force` はターミナルを閉じるときの最後の 1 件。 */
+	take(force = false): number | undefined {
+		const now = this.now();
+		if (!force && this.lastAt !== undefined && now - this.lastAt < this.intervalMs) {
+			this.skipped++;
+			return undefined;
+		}
+		this.lastAt = now;
+		const skipped = this.skipped;
+		this.skipped = 0;
+		return skipped;
+	}
+}
+
+/** 時間のかからない独立の transaction として送る（値は作るときに全部渡す。renderer では await の後に足すと失われるため）。 */
 export function recordParadisProgramStatus(operation: 'query' | 'run', attributes: ParadisSpanAttributes): void {
-	runInParadisSpan('programStatus', operation, attributes, () => { });
+	// スペースの切り替えなど、ほかの span の同期の区間で呼ばれても子に吸われず、自分の名前で届くようにする
+	runInParadisSpan('programStatus', operation, attributes, () => { }, { forceTransaction: true });
 }
