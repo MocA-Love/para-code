@@ -23,6 +23,7 @@
 // 一覧はダウンロードを始めた日ごとに見出し（「今日」「昨日」「10月14日」）で区切り、各行の2行目の先頭に
 // 始めた時刻を出す。「今日」の基準は一覧を開いた時刻で、開くたびに取り直す（開いたまま日付をまたいでも
 // 見出しは変えない）。見出しは行と同じリストの中の要素で、ボタンを持たないので Tab の巡回には入らない。
+// 読み上げでは、各行が aria-describedby でその日の見出しを指す。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
@@ -51,6 +52,9 @@ const EDGE_MARGIN = 8;
 /** ファイル名の表示上の最大文字数（長いものは CSS で省略するが、ホバーの文言もこれで抑える）。 */
 const FILENAME_MAX_LENGTH = 200;
 
+/** 日付の見出しの id（行の aria-describedby から指す）。ウィンドウの中で重ならないよう通し番号にする。 */
+let groupHeadingIds = 0;
+
 /** 行の見た目を決める値。これが変わったときだけ行を作り直す（進み具合だけの変化では作り直さない）。 */
 function rowShape(item: IParadisBrowserDownloadItem, canOpen: boolean): string {
 	return `${item.state}|${canOpen}|${item.filename}|${item.totalBytes > 0}`;
@@ -78,7 +82,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 	private readonly _headerButtons: HTMLButtonElement[] = [];
 	/** id → 描いている行。一覧と同じ順に並べる。 */
 	private readonly _rows = new Map<string, IRenderedRow>();
-	/** 暦日の鍵 → 日付の見出し。 */
+	/** 「暦日の鍵#その日の何番目の塊か」→ 日付の見出し。 */
 	private readonly _groups = new Map<string, HTMLElement>();
 	/** 「今日」「昨日」の基準。一覧を開いた時刻。 */
 	private readonly _openedAt = Date.now();
@@ -174,6 +178,9 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 
 		const seen = new Set<string>();
 		const seenGroups = new Set<string>();
+		const dayRuns = new Map<string, number>();
+		let previousDayKey: string | undefined;
+		let heading: HTMLElement | undefined;
 		let previous: HTMLElement | undefined;
 		const placeNext = (element: HTMLElement) => {
 			// 並びを一覧の順に合わせる（新しいものが先頭）。既に正しい位置なら動かさない。
@@ -185,11 +192,17 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		};
 		for (const item of items) {
 			seen.add(item.id);
-			// 一覧は新しい順なので、同じ日の項目は続いて並ぶ。日が変わったところに見出しを置く。
+			// 日が前の行から変わるたびに見出しを置く。一覧は始めた順で startTime では並べ替えないので、時計が
+			// 戻ると同じ日が飛び飛びに並ぶことがある。そのときは2つ目の塊にも同じ日の見出しを別に置く。
 			const dayKey = paradisDownloadDayKey(item.startTime);
-			if (!seenGroups.has(dayKey)) {
-				seenGroups.add(dayKey);
-				placeNext(this._groupHeading(dayKey, item.startTime));
+			if (!heading || dayKey !== previousDayKey) {
+				const run = dayRuns.get(dayKey) ?? 0;
+				dayRuns.set(dayKey, run + 1);
+				const groupKey = `${dayKey}#${run}`;
+				seenGroups.add(groupKey);
+				heading = this._groupHeading(groupKey, item.startTime);
+				placeNext(heading);
+				previousDayKey = dayKey;
 			}
 			const canOpen = this._canOpen(item);
 			const shape = rowShape(item, canOpen);
@@ -204,6 +217,11 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 				this._rows.set(item.id, row);
 			}
 			this._updateRow(row, item, canOpen);
+			// 読み上げの項目送りは listitem だけをたどるので、行から日付の見出しを説明として指す。aria-label は
+			// 行の中身の読み上げを上書きするので付けない。
+			if (row.element.getAttribute('aria-describedby') !== heading.id) {
+				row.element.setAttribute('aria-describedby', heading.id);
+			}
 			placeNext(row.element);
 		}
 		for (const [id, row] of [...this._rows]) {
@@ -228,14 +246,15 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		this._downloads.markSeen();
 	}
 
-	private _groupHeading(dayKey: string, time: number): HTMLElement {
-		let heading = this._groups.get(dayKey);
+	private _groupHeading(groupKey: string, time: number): HTMLElement {
+		let heading = this._groups.get(groupKey);
 		if (!heading) {
 			heading = $('.pbd-group');
+			heading.id = `paradis-browser-downloads-day-${++groupHeadingIds}`;
 			// リストの中の区切り。項目ではないので listitem にせず、文字だけを読ませる。
 			heading.setAttribute('role', 'presentation');
 			heading.textContent = paradisFormatDownloadDay(time, this._openedAt);
-			this._groups.set(dayKey, heading);
+			this._groups.set(groupKey, heading);
 		}
 		return heading;
 	}

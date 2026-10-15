@@ -24,21 +24,10 @@ suite('ParadisBrowserDownloadsPopover', () => {
 
 	const ds = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('groups the list by the day a download started and starts each status with its time', () => {
-		const now = new Date();
-		const at = (dayOffset: number, hours: number, minutes: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, hours, minutes, 5).getTime();
-		const item = (id: string, state: ParadisBrowserDownloadState, startTime: number, extra: Partial<IParadisBrowserDownloadItem> = {}): IParadisBrowserDownloadItem => ({
-			id, filename: `${id}.pdf`, savePath: `/dl/${id}.pdf`, url: `https://example.com/${id}.pdf`, state, receivedBytes: 241800, totalBytes: 241800, openable: true, fromAgent: false, startTime, ...extra,
-		});
-		// The service lists the newest first.
-		const items = [
-			item('running', 'progressing', at(0, 14, 32), { receivedBytes: 1000, totalBytes: 4000 }),
-			item('done', 'completed', at(0, 9, 5)),
-			item('agent', 'completed', at(-1, 23, 59), { fromAgent: true, savePath: '' }),
-			item('failed', 'interrupted', at(-3, 8, 0)),
-			item('old', 'cancelled', new Date(now.getFullYear() - 1, 2, 7, 10, 0).getTime()),
-		];
+	interface IShownGroup { readonly kind: 'group'; readonly group: string | null; readonly role: string | null }
+	interface IShownRow { readonly kind: 'row'; readonly role: string | null; readonly name: string | null; readonly status: string | null; readonly describedBy: string | null | undefined; readonly tooltip: IManagedHoverContentOrFactory }
 
+	function openPopover(items: readonly IParadisBrowserDownloadItem[], run: (shown: (IShownGroup | IShownRow)[], list: Element) => void): void {
 		const onDidChange = ds.add(new Emitter<void>());
 		const downloads: Partial<IParadisBrowserDownloadsService> = {
 			onDidChange: onDidChange.event,
@@ -48,9 +37,9 @@ suite('ParadisBrowserDownloadsPopover', () => {
 		const tooltips = new Map<HTMLElement, IManagedHoverContentOrFactory>();
 		const hoverService: IHoverService = {
 			...NullHoverService,
-			setupManagedHover: (_delegate, target, content) => {
+			setupManagedHover: (delegate, target, content) => {
 				tooltips.set(target, content);
-				return NullHoverService.setupManagedHover(_delegate, target, content);
+				return NullHoverService.setupManagedHover(delegate, target, content);
 			},
 		};
 		const container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
@@ -62,35 +51,81 @@ suite('ParadisBrowserDownloadsPopover', () => {
 		const popover = instantiationService.createInstance(ParadisBrowserDownloadsPopover, undefined, () => { });
 		try {
 			const list = container.querySelector('.pbd-list')!;
-			const shown = [...list.children].map(child => child.classList.contains('pbd-group')
-				? { group: child.textContent, role: child.getAttribute('role') }
-				: {
+			const ids = new Set<string>();
+			const shown = [...list.children].map((child): IShownGroup | IShownRow => {
+				if (child.classList.contains('pbd-group')) {
+					ids.add(child.id);
+					return { kind: 'group', group: child.textContent, role: child.getAttribute('role') };
+				}
+				const describedBy = child.getAttribute('aria-describedby');
+				return {
+					kind: 'row',
 					role: child.getAttribute('role'),
 					name: child.querySelector('.pbd-name')!.textContent,
 					status: child.querySelector('.pbd-status')!.textContent,
+					// The heading text the row points at, so the snapshot shows which day it reads.
+					describedBy: describedBy ? container.querySelector(`[id="${describedBy}"]`)?.textContent : null,
 					tooltip: tooltips.get(child.querySelector<HTMLElement>('.pbd-name')!),
-				});
-
-			const opened = now.getTime();
-			const started = (time: number) => `開始 ${paradisFormatDownloadStart(time)}`;
-			const size = ByteSize.formatSize(241800);
-			assert.deepStrictEqual({ listRole: list.getAttribute('role'), shown }, {
-				listRole: 'list',
-				shown: [
-					{ group: paradisFormatDownloadDay(at(0, 14, 32), opened), role: 'presentation' },
-					{ role: 'listitem', name: 'running.pdf', status: `${paradisFormatDownloadClock(at(0, 14, 32))} · ${ByteSize.formatSize(1000)} / ${ByteSize.formatSize(4000)}`, tooltip: `${started(at(0, 14, 32))}\n/dl/running.pdf` },
-					{ role: 'listitem', name: 'done.pdf', status: `09:05 · 完了 · ${size}`, tooltip: `${started(at(0, 9, 5))}\n/dl/done.pdf` },
-					{ group: '昨日', role: 'presentation' },
-					{ role: 'listitem', name: 'agent.pdf', status: `23:59 · 完了 · ${size}`, tooltip: `${started(at(-1, 23, 59))}\nエージェントのタブから（「開く」は出ません）\nhttps://example.com/agent.pdf` },
-					{ group: paradisFormatDownloadDay(at(-3, 8, 0), opened), role: 'presentation' },
-					{ role: 'listitem', name: 'failed.pdf', status: '08:00 · 失敗しました', tooltip: `${started(at(-3, 8, 0))}\n/dl/failed.pdf` },
-					{ group: `${now.getFullYear() - 1}年3月7日`, role: 'presentation' },
-					{ role: 'listitem', name: 'old.pdf', status: '10:00 · 取り消しました', tooltip: `${started(new Date(now.getFullYear() - 1, 2, 7, 10, 0).getTime())}\n/dl/old.pdf` },
-				],
+				};
 			});
+			assert.strictEqual(ids.size, shown.filter(entry => entry.kind === 'group').length, 'every heading has its own id');
+			run(shown, list);
 		} finally {
 			popover.dispose();
 			container.remove();
 		}
+	}
+
+	const now = new Date();
+	const at = (dayOffset: number, hours: number, minutes: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, hours, minutes, 5).getTime();
+	const item = (id: string, state: ParadisBrowserDownloadState, startTime: number, extra: Partial<IParadisBrowserDownloadItem> = {}): IParadisBrowserDownloadItem => ({
+		id, filename: `${id}.pdf`, savePath: `/dl/${id}.pdf`, url: `https://example.com/${id}.pdf`, state, receivedBytes: 241800, totalBytes: 241800, openable: true, fromAgent: false, startTime, ...extra,
+	});
+	const started = (time: number) => `開始 ${paradisFormatDownloadStart(time)}`;
+	const size = ByteSize.formatSize(241800);
+
+	test('groups the list by the day a download started and starts each status with its time', () => {
+		const old = new Date(now.getFullYear() - 1, 2, 7, 10, 0).getTime();
+		const today = paradisFormatDownloadDay(at(0, 14, 32), now.getTime());
+		const threeDaysAgo = paradisFormatDownloadDay(at(-3, 8, 0), now.getTime());
+		const lastYear = `${now.getFullYear() - 1}年3月7日`;
+		// The service lists the newest first.
+		openPopover([
+			item('running', 'progressing', at(0, 14, 32), { receivedBytes: 1000, totalBytes: 4000 }),
+			item('done', 'completed', at(0, 9, 5)),
+			item('agent', 'completed', at(-1, 23, 59), { fromAgent: true, savePath: '' }),
+			item('failed', 'interrupted', at(-3, 8, 0)),
+			item('old', 'cancelled', old),
+		], (shown, list) => assert.deepStrictEqual({ listRole: list.getAttribute('role'), shown }, {
+			listRole: 'list',
+			shown: [
+				{ kind: 'group', group: today, role: 'presentation' },
+				{ kind: 'row', role: 'listitem', name: 'running.pdf', status: `${paradisFormatDownloadClock(at(0, 14, 32))} · ${ByteSize.formatSize(1000)} / ${ByteSize.formatSize(4000)}`, describedBy: today, tooltip: `${started(at(0, 14, 32))}\n/dl/running.pdf` },
+				{ kind: 'row', role: 'listitem', name: 'done.pdf', status: `09:05 · 完了 · ${size}`, describedBy: today, tooltip: `${started(at(0, 9, 5))}\n/dl/done.pdf` },
+				{ kind: 'group', group: '昨日', role: 'presentation' },
+				{ kind: 'row', role: 'listitem', name: 'agent.pdf', status: `23:59 · 完了 · ${size}`, describedBy: '昨日', tooltip: `${started(at(-1, 23, 59))}\nエージェントのタブから（「開く」は出ません）\nhttps://example.com/agent.pdf` },
+				{ kind: 'group', group: threeDaysAgo, role: 'presentation' },
+				{ kind: 'row', role: 'listitem', name: 'failed.pdf', status: '08:00 · 失敗しました', describedBy: threeDaysAgo, tooltip: `${started(at(-3, 8, 0))}\n/dl/failed.pdf` },
+				{ kind: 'group', group: lastYear, role: 'presentation' },
+				{ kind: 'row', role: 'listitem', name: 'old.pdf', status: '10:00 · 取り消しました', describedBy: lastYear, tooltip: `${started(old)}\n/dl/old.pdf` },
+			],
+		}));
+	});
+
+	test('puts a heading wherever the day changes, even when the clock went back and a day repeats', () => {
+		// The list keeps the order downloads started in, so a clock set back can put today, yesterday, today.
+		const today = paradisFormatDownloadDay(at(0, 10, 0), now.getTime());
+		openPopover([
+			item('after', 'completed', at(0, 10, 0)),
+			item('clockBack', 'completed', at(-1, 22, 0)),
+			item('before', 'completed', at(0, 9, 0)),
+		], shown => assert.deepStrictEqual(shown.map(entry => entry.kind === 'group' ? entry.group : `${entry.name} → ${entry.describedBy}`), [
+			today,
+			`after.pdf → ${today}`,
+			'昨日',
+			'clockBack.pdf → 昨日',
+			today,
+			`before.pdf → ${today}`,
+		]));
 	});
 });
