@@ -28,8 +28,12 @@
  * - 後ろの書き込みが終わるまで、読み直しにはメモリの中身を渡し続ける（`mask`）。待っている間に届いた
  *   前の書き込みや外部での変更の通知で、古い folders を読み直して切り替えが戻らないようにするため。
  *   書き込みが失敗したまま終わったときも、次に書けるまで渡し続ける
+ * - upstream の経路へ回すときは、まだ書いていない書き込みを path ごとに全部当てる（folders の後に
+ *   `extensions` 等の別の path が来ていても、folders を落とさない）
+ * - 書き込み 1 回に上限（`FLUSH_STEP_TIMEOUT_MS`）を付ける。超えたら失敗として扱い、覚えた中身を捨てる
  * - 後ろの書き込みが終わったか（失敗したか）は `paradisWhenWorkspaceFileFlushed` で引ける。切り替えは
- *   書き終わるまで中断の台帳を消さない（書き終わる前に落ちたら、ディスクの folders に合わせて戻す）
+ *   書き終わるまで「ディスクの folders が遅れている」印を残し、次の起動で folders を前へ進める
+ *   （`ParadisWorkspaceSwitchService.rollWorkspaceFileForward`）
  * - upstream の経路へ回すとき（テキストモデルが開いている・atomic に書けない・覚えていない）は、
  *   後ろの書き込みが終わるのを待ってから回す。順番を入れ替えない
  * - テキストモデルが開いているとき（ユーザーがエディタで開いている）は使わない。開いたモデルを
@@ -43,6 +47,7 @@
  * 自分で読む）。
  */
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { IDisposable, markAsSingleton } from '../../../../base/common/lifecycle.js';
 import { applyEdit, setProperty } from '../../../../base/common/jsonEdit.js';
 import { FormattingOptions } from '../../../../base/common/jsonFormatter.js';
@@ -60,6 +65,12 @@ import { isParadisManagedWorkspaceWindow } from './paradisWorkspaceSwitch.js';
 const RELOAD_OFFER_MS = 10_000;
 
 const ATOMIC_WRITE = { postfix: '.vsctmp' } as const;
+
+/**
+ * 後ろの書き込み 1 回の上限。超えたら失敗として扱い、覚えた中身を捨てる（書き込み自体は止められないので、
+ * 後で終わっても結果は使わない）。SSH の接続先の保存は paracode-165 の実測で最大 12.5 秒。
+ */
+const FLUSH_STEP_TIMEOUT_MS = 30_000;
 
 /** 覚えておく `.code-workspace` の中身。 */
 export interface IParadisWorkspaceFileSnapshot {
@@ -95,6 +106,8 @@ export interface IParadisWorkspaceFileFlush {
 	readonly writes: number;
 	/** 外部での変更・衝突・失敗で upstream の経路へ回したか。 */
 	readonly fallback: boolean;
+	/** 書き込みが上限（`FLUSH_STEP_TIMEOUT_MS`）までに終わらなかったか。 */
+	readonly timedOut: boolean;
 }
 
 /** upstream の経路で書く（`JSONEditingService` のテキストモデルを使う書き込み）。 */
@@ -148,8 +161,18 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 	/** 変更の通知の購読。Para Code のウィンドウで覚え始めてから作る。 */
 	private listener: IDisposable | undefined;
 
-	/** まだディスクに書いていない最後の書き込み。後ろの書き込みはこれだけを書く。 */
-	private unflushed: { readonly resource: URI; readonly values: IJSONValue[] } | undefined;
+	/**
+	 * メモリの中身に当てたが、ディスクに書けたと確かめていない書き込み。path ごとに最後の値だけを、来た順に
+	 * 持つ。upstream の経路へ回すときはこれを全部当てる（folders の後に別の path（`extensions` 等）が
+	 * 来ていても、どちらも落とさない）。
+	 */
+	private readonly unconfirmed = new Map<string, IJSONValue>();
+
+	/** 前に書き始めてから、メモリの中身が変わったか（後ろの書き込みにまだ書く分があるか）。 */
+	private unflushed = false;
+
+	/** 時間切れで諦めた回数。諦めた後に遅れて返ってきた書き込みの続き（upstream の経路）をさせない。 */
+	private abandoned = 0;
 
 	/** 後ろで続いている書き込み。 */
 	private flushing: Promise<IParadisWorkspaceFileFlush> | undefined;
@@ -169,6 +192,7 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 		private readonly writeThroughModel: ParadisWorkspaceFileModelWriter | undefined = undefined,
 		private readonly now: () => number = () => Date.now(),
 		private readonly applies: (resource: URI) => boolean = isWindowWorkspaceFile,
+		private readonly flushStepTimeoutMs: number = FLUSH_STEP_TIMEOUT_MS,
 	) { }
 
 	/**
@@ -196,7 +220,12 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 		if (content !== entry.content) {
 			entry.content = content;
 			this.mask = { resource, content };
-			this.unflushed = { resource, values };
+			for (const value of values) {
+				const key = JSON.stringify(value.path);
+				this.unconfirmed.delete(key);
+				this.unconfirmed.set(key, value);
+			}
+			this.unflushed = true;
 			this.flushResource = resource;
 			this.flushing ??= this.flush();
 		}
@@ -289,30 +318,69 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 			&& this.fileService.hasCapability(resource, FileSystemProviderCapabilities.FileAtomicWrite);
 	}
 
-	/** まだ書いていない最後の中身を、無くなるまで 1 本ずつ書く。 */
+	/** まだ書いていない中身を、無くなるまで 1 本ずつ書く。 */
 	private async flush(): Promise<IParadisWorkspaceFileFlush> {
 		const startedAt = this.now();
+		const resource = this.flushResource!;
 		let writes = 0;
 		let fallback = false;
+		let timedOut = false;
 		let ok = true;
 		try {
-			while (this.unflushed !== undefined) {
-				const { resource, values } = this.unflushed;
-				this.unflushed = undefined;
+			while (this.unflushed) {
+				this.unflushed = false;
 				writes++;
-				if (await this.writeRemembered(resource)) {
-					ok = true;
-					continue;
+				const step = await raceTimeout(this.writeStep(resource), this.flushStepTimeoutMs);
+				if (step === undefined) {
+					// 返ってこない（接続先が応答しない等）。ここで諦めて知らせる。覚えた中身は捨てる
+					// （次の書き込みは upstream の経路でディスクを読み直してから書く）。
+					timedOut = true;
+					ok = false;
+					this.abandoned++;
+					this.forget();
+					break;
 				}
-				fallback = true;
-				ok = await this.writeUpstream(resource, values);
+				fallback ||= step.fallback;
+				ok = step.ok;
 			}
 		} finally {
 			this.flushing = undefined;
+			this.unflushed = false;
+			// 書けた分は各ステップで消してある。残っているのは書けなかった分で、次は upstream の経路で
+			// ディスクを読み直して書くので持ち越さない。
+			this.unconfirmed.clear();
 		}
-		const result: IParadisWorkspaceFileFlush = { ok, ms: Math.max(0, this.now() - startedAt), writes, fallback };
+		const result: IParadisWorkspaceFileFlush = { ok, ms: Math.max(0, this.now() - startedAt), writes, fallback, timedOut };
 		this.failedFlush = ok ? undefined : result;
 		return result;
+	}
+
+	/** 1 回分。覚えた中身で書けなければ、upstream の経路で、まだ確かめていない書き込みを全部当てて書く。 */
+	private async writeStep(resource: URI): Promise<{ readonly ok: boolean; readonly fallback: boolean }> {
+		const abandoned = this.abandoned;
+		if (await this.writeRemembered(resource)) {
+			return { ok: true, fallback: false };
+		}
+		if (abandoned !== this.abandoned) {
+			return { ok: false, fallback: false };
+		}
+		// 当てる分は覚えた中身を捨てた後で決める（stat を待っている間に来た path も含める）。この後は
+		// 覚えた中身が無いので、新しい書き込みは後ろへ回らずにこの書き込みを待つ。
+		const included = new Map(this.unconfirmed);
+		const ok = await this.writeUpstream(resource, [...included.values()]);
+		if (ok) {
+			this.confirm(included);
+		}
+		return { ok, fallback: true };
+	}
+
+	/** ディスクに書けたと確かめた書き込みを消す（その後に同じ path へ来た新しい値は残す）。 */
+	private confirm(included: ReadonlyMap<string, IJSONValue>): void {
+		for (const [key, value] of included) {
+			if (this.unconfirmed.get(key) === value) {
+				this.unconfirmed.delete(key);
+			}
+		}
 	}
 
 	/** 覚えた中身を、外部での変更が無いことを確かめてから書く。書けたら true。 */
@@ -323,6 +391,7 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 		}
 		// 前の回の書き込みが、待っている間に来た分まで書いていれば書かない。
 		if (entry.content === entry.diskContent) {
+			this.confirm(new Map(this.unconfirmed));
 			this.lowerMaskIfFlushed(entry);
 			return true;
 		}
@@ -340,12 +409,14 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 			return false;
 		}
 		const content = entry.content;
+		const included = new Map(this.unconfirmed);
 		try {
 			const stat = await this.textFileService.write(resource, content, { etag: entry.etag, mtime: entry.mtime, encoding: entry.encoding, atomic: ATOMIC_WRITE });
 			if (this.entry === entry) {
 				entry.diskContent = content;
 				entry.etag = stat.etag;
 				entry.mtime = stat.mtime;
+				this.confirm(included);
 				this.lowerMaskIfFlushed(entry);
 			}
 			return true;
@@ -360,7 +431,7 @@ export class ParadisWorkspaceFileWriteCache implements IDisposable {
 
 	/** 書いている間に次の切り替えが来ていなければ、ディスクはメモリに追いついた。読み直しはディスクを読んでよい。 */
 	private lowerMaskIfFlushed(entry: IEntry): void {
-		if (this.unflushed === undefined && entry.content === entry.diskContent && this.mask?.content === entry.content) {
+		if (!this.unflushed && entry.content === entry.diskContent && this.mask?.content === entry.content) {
 			this.mask = undefined;
 		}
 	}
