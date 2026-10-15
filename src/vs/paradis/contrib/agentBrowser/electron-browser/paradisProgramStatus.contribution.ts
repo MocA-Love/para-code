@@ -25,9 +25,11 @@ import { ICommandDetectionCapability, TerminalCapability } from '../../../../pla
 import { ProcessPropertyType } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
+import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusEffect, ParadisProgramStatusTracker, paradisParseProgramStatus, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusEffect, ParadisProgramStatusTracker, paradisParseProgramStatus, paradisProgramStatusDropReason, paradisProgramStatusForeground, paradisProgramStatusProcessKind, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
+import { ParadisProgramStatusRunEnd, ParadisProgramStatusRunStats, paradisProgramStatusCliVersion, paradisProgramStatusQueryAttributes, recordParadisProgramStatus } from '../common/paradisProgramStatusDiagnostics.js';
 
 class ParadisProgramStatusContribution extends Disposable implements ITerminalContribution {
 
@@ -38,6 +40,8 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	private replaying: boolean;
 	private readonly tracker = new ParadisProgramStatusTracker();
 	private readonly gate = this.tracker.gate;
+	/** 答えなかった問い合わせ・捨てた状態を Sentry で数えるための件数（受け付けが閉じるたびに送る）。 */
+	private readonly runStats = new ParadisProgramStatusRunStats();
 	private readonly commandFinished = this._register(new MutableDisposable());
 	private readonly pendingTimer = this._register(new MutableDisposable());
 	/**
@@ -61,21 +65,35 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 		// 前面のコマンド（Claude Code か ssh など）が終わったら受け付けを閉じ、残った状態を消す（Claude Code が clear を
 		// 書かずに落ちた場合も含む）。Ctrl+Z で止めただけなら `fg` で戻るのを待つ（判断は ParadisProgramStatusTracker）
 		const watch = (capability: ICommandDetectionCapability | undefined) => {
-			this.commandFinished.value = capability?.onCommandFinished(command => this.apply(this.tracker.commandFinished(command.exitCode)));
+			this.commandFinished.value = capability?.onCommandFinished(command => this.apply(this.tracker.commandFinished(command.exitCode), 'command-finished'));
 		};
 		watch(this.instance.capabilities.get(TerminalCapability.CommandDetection));
 		this._register(this.instance.capabilities.onDidAddCommandDetectionCapability(capability => watch(capability)));
 		// シェル統合が無いターミナルは、前面のプロセスがシェルへ戻ったら（Claude Code でも ssh などでもなくなったら）閉じる
 		this.foregroundProcess = this.instance.processName || undefined;
 		// プロセスが終わったら（Claude Code ごと落ちて「Relaunch Terminal」で立て直す場合も）閉じる
-		this._register(context.processManager.onProcessExit(() => this.apply(this.tracker.processExited())));
+		this._register(context.processManager.onProcessExit(() => this.apply(this.tracker.processExited(), 'process-exit')));
 		this._register(context.processManager.onDidChangeProperty(property => {
 			if (property.type !== ProcessPropertyType.Title) {
 				return;
 			}
 			this.foregroundProcess = typeof property.value === 'string' && property.value.length > 0 ? property.value : undefined;
-			this.apply(this.tracker.foregroundChanged(this.foregroundProcess, this.instance.capabilities.get(TerminalCapability.CommandDetection) !== undefined));
+			const wasOpen = this.gate.isOpen;
+			this.apply(this.tracker.foregroundChanged(this.foregroundProcess, this.instance.capabilities.get(TerminalCapability.CommandDetection) !== undefined), 'foreground');
+			if (this.gate.isOpen) {
+				// Ctrl+Z の後に `fg` で開き直したら、新しい受け付けとして数える
+				if (!wasOpen) {
+					this.runStats.opened(paradisProgramStatusCliVersion(this.foregroundProcess));
+				} else {
+					this.runStats.noteCliVersion(paradisProgramStatusCliVersion(this.foregroundProcess));
+				}
+			}
 		}));
+	}
+
+	override dispose(): void {
+		this.endRun('disposed');
+		super.dispose();
 	}
 
 	xtermReady(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
@@ -86,16 +104,48 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 			const parsed = paradisParseProgramStatus(data);
 			if (parsed === 'query') {
 				// コマンド行は、シェル統合の nonce が合ったときだけ使う（出力の OSC 633 ; E では偽れる）
-				const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
-				if (this.tracker.query(trustedCommandLine, this.foregroundProcess)) {
+				const commandDetection = this.instance.capabilities.get(TerminalCapability.CommandDetection);
+				const trustedCommandLine = paradisTrustedCommandLine(commandDetection?.currentCommand);
+				const answered = this.tracker.query(trustedCommandLine, this.foregroundProcess);
+				if (answered) {
+					// 前の受け付けの件数（閉じた後に届いた状態を含む）を先に送ってから数え直す
+					this.endRun('requery');
+					this.runStats.opened(paradisProgramStatusCliVersion(this.foregroundProcess));
 					// 端末の返事として pty へ書く（利用者の入力にはしない。DA1 の自動の返事と同じ経路）
 					xterm.raw.input(PARADIS_PROGRAM_STATUS_REPLY, false);
 				}
+				// 答えなかったときは Claude Code がこのターミナルへ状態を送らないので、hook の無いペインの状態が出ない。
+				// 何が前面に見えていたかの種類だけを送る（プロセス名・コマンド行は送らない）
+				this.record('query', paradisProgramStatusQueryAttributes({
+					answered,
+					foreground: paradisProgramStatusForeground(trustedCommandLine, this.foregroundProcess),
+					processKind: paradisProgramStatusProcessKind(this.foregroundProcess),
+					cmdlineTrusted: trustedCommandLine !== undefined,
+					shellIntegration: commandDetection !== undefined,
+					cliVersion: paradisProgramStatusCliVersion(this.foregroundProcess),
+				}));
 			} else if (parsed !== undefined) {
+				const wasOpen = this.gate.isOpen;
 				if (this.gate.accept(parsed)) {
 					this.send(parsed);
+					if (parsed.state === 'clear') {
+						this.endRun('clear-status');
+					}
 				} else {
+					if (!wasOpen) {
+						// Claude Code は終わるときにも clear を書く。受け付けを閉じた後の clear は数えない
+						if (parsed.state !== 'clear') {
+							this.runStats.noteGateClosed();
+						}
+					} else if (this.gate.pendingDueAt !== undefined) {
+						this.runStats.noteMuted();
+					}
 					this.schedulePending();
+				}
+			} else if (this.gate.isOpen) {
+				const drop = paradisProgramStatusDropReason(data);
+				if (drop !== undefined) {
+					this.runStats.noteDropped(drop.reason, drop.unknownState);
 				}
 			}
 			return true;
@@ -103,9 +153,26 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	}
 
 	/** 受け付けを閉じた・保留にしたら、残った状態を消す。 */
-	private apply(effect: ParadisProgramStatusEffect): void {
+	private apply(effect: ParadisProgramStatusEffect, endedBy: ParadisProgramStatusRunEnd): void {
 		if (effect === 'clear') {
 			this.send({ state: 'clear' });
+			this.endRun(endedBy);
+		}
+	}
+
+	/** 受け付けが閉じた。開いていた間の件数を 1 件の span で送る。 */
+	private endRun(endedBy: ParadisProgramStatusRunEnd): void {
+		const attributes = this.runStats.take(endedBy);
+		if (attributes !== undefined) {
+			this.record('run', attributes);
+		}
+	}
+
+	private record(operation: 'query' | 'run', attributes: ParadisSpanAttributes): void {
+		try {
+			recordParadisProgramStatus(operation, attributes);
+		} catch {
+			// 診断は観測している動きを変えない
 		}
 	}
 
@@ -131,10 +198,22 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	private send(status: IParadisProgramStatus): void {
 		const token = this.paneTokenService.getTokenForInstance(this.instance.instanceId);
 		if (token === undefined) {
+			if (status.state !== 'clear') {
+				this.runStats.noteUnbound();
+			}
 			return;
 		}
+		const counted = status.state !== 'clear';
+		if (counted) {
+			this.runStats.noteSent();
+		}
 		this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<boolean>('notePaneProgramStatus', [token, status])
-			.catch(error => {
+			.then(applied => {
+				if (counted && applied) {
+					this.runStats.noteApplied();
+				}
+			}, error => {
+				this.runStats.noteIpcFailure();
 				this.logService.warn('[paradisProgramStatus] could not pass the Claude Code status to the shared process', error);
 			});
 	}
