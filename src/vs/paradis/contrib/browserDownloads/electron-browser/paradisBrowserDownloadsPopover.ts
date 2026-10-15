@@ -19,6 +19,10 @@
 //
 // 行は id ごとに作っておき、進み具合の通知（250ms ごと）では進捗バーと文言だけを書き換える。作り直すと
 // 押している途中の「取り消す」がクリックを取りこぼし、キーボードのフォーカスも失われるため。
+//
+// 一覧はダウンロードを始めた日ごとに見出し（「今日」「昨日」「10月14日」）で区切り、各行の2行目の先頭に
+// 始めた時刻を出す。「今日」の基準は一覧を開いた時刻で、開くたびに取り直す（開いたまま日付をまたいでも
+// 見出しは変えない）。見出しは行と同じリストの中の要素で、ボタンを持たないので Tab の巡回には入らない。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
@@ -33,7 +37,7 @@ import { ByteSize } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
-import { IParadisBrowserDownloadItem } from '../common/paradisBrowserDownloads.js';
+import { IParadisBrowserDownloadItem, paradisDownloadDayKey, paradisFormatDownloadClock, paradisFormatDownloadDay, paradisFormatDownloadStart } from '../common/paradisBrowserDownloads.js';
 import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsService.js';
 
 const $ = dom.$;
@@ -74,6 +78,10 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 	private readonly _headerButtons: HTMLButtonElement[] = [];
 	/** id → 描いている行。一覧と同じ順に並べる。 */
 	private readonly _rows = new Map<string, IRenderedRow>();
+	/** 暦日の鍵 → 日付の見出し。 */
+	private readonly _groups = new Map<string, HTMLElement>();
+	/** 「今日」「昨日」の基準。一覧を開いた時刻。 */
+	private readonly _openedAt = Date.now();
 	private _emptyElement: HTMLElement | undefined;
 	private _disposed = false;
 
@@ -148,6 +156,10 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 				row.element.remove();
 			}
 			this._rows.clear();
+			for (const group of this._groups.values()) {
+				group.remove();
+			}
+			this._groups.clear();
 			if (!this._emptyElement) {
 				this._emptyElement = dom.append(this._list, $('.pbd-empty'));
 				this._emptyElement.textContent = localize('paradis.browserDownloads.empty', "内蔵ブラウザでダウンロードしたファイルはまだありません。");
@@ -161,9 +173,24 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		const focused = this._focusedRowButton();
 
 		const seen = new Set<string>();
+		const seenGroups = new Set<string>();
 		let previous: HTMLElement | undefined;
+		const placeNext = (element: HTMLElement) => {
+			// 並びを一覧の順に合わせる（新しいものが先頭）。既に正しい位置なら動かさない。
+			const expectedNext = previous ? previous.nextSibling : this._list.firstChild;
+			if (expectedNext !== element) {
+				this._list.insertBefore(element, expectedNext);
+			}
+			previous = element;
+		};
 		for (const item of items) {
 			seen.add(item.id);
+			// 一覧は新しい順なので、同じ日の項目は続いて並ぶ。日が変わったところに見出しを置く。
+			const dayKey = paradisDownloadDayKey(item.startTime);
+			if (!seenGroups.has(dayKey)) {
+				seenGroups.add(dayKey);
+				placeNext(this._groupHeading(dayKey, item.startTime));
+			}
 			const canOpen = this._canOpen(item);
 			const shape = rowShape(item, canOpen);
 			let row = this._rows.get(item.id);
@@ -177,18 +204,19 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 				this._rows.set(item.id, row);
 			}
 			this._updateRow(row, item, canOpen);
-			// 並びを一覧の順に合わせる（新しいものが先頭）。既に正しい位置なら動かさない。
-			const expectedNext = previous ? previous.nextSibling : this._list.firstChild;
-			if (expectedNext !== row.element) {
-				this._list.insertBefore(row.element, expectedNext);
-			}
-			previous = row.element;
+			placeNext(row.element);
 		}
 		for (const [id, row] of [...this._rows]) {
 			if (!seen.has(id)) {
 				row.store.dispose();
 				row.element.remove();
 				this._rows.delete(id);
+			}
+		}
+		for (const [key, group] of [...this._groups]) {
+			if (!seenGroups.has(key)) {
+				group.remove();
+				this._groups.delete(key);
 			}
 		}
 
@@ -198,6 +226,18 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		}
 		// 開いている間に届いた完了も、見えているので「未確認」にしない。
 		this._downloads.markSeen();
+	}
+
+	private _groupHeading(dayKey: string, time: number): HTMLElement {
+		let heading = this._groups.get(dayKey);
+		if (!heading) {
+			heading = $('.pbd-group');
+			// リストの中の区切り。項目ではないので listitem にせず、文字だけを読ませる。
+			heading.setAttribute('role', 'presentation');
+			heading.textContent = paradisFormatDownloadDay(time, this._openedAt);
+			this._groups.set(dayKey, heading);
+		}
+		return heading;
 	}
 
 	private _focusedRowButton(): { readonly id: string; readonly action: string } | undefined {
@@ -227,10 +267,15 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		const name = dom.append(main, $('.pbd-name'));
 		// ファイル名はサイトが決める。双方向制御文字（U+202E など）で拡張子を偽装できないよう、表示前に落とす。
 		name.textContent = paradisSanitizeDisplayText(item.filename, FILENAME_MAX_LENGTH) ?? item.filename;
-		const tooltip = paradisSanitizeDisplayText(item.savePath || item.url, 1000);
-		if (tooltip) {
-			store.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), name, tooltip));
+		const tooltip = [localize('paradis.browserDownloads.tooltip.started', "開始 {0}", paradisFormatDownloadStart(item.startTime))];
+		if (item.fromAgent) {
+			tooltip.push(localize('paradis.browserDownloads.tooltip.fromAgent', "エージェントのタブから（「開く」は出ません）"));
 		}
+		const location = paradisSanitizeDisplayText(item.savePath || item.url, 1000);
+		if (location) {
+			tooltip.push(location);
+		}
+		store.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), name, tooltip.join('\n')));
 		let barFill: HTMLElement | undefined;
 		if (item.state === 'progressing') {
 			const bar = dom.append(main, $('.pbd-bar'));
@@ -272,7 +317,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		if (row.barFill && item.totalBytes > 0) {
 			row.barFill.style.width = `${Math.min(100, Math.round(item.receivedBytes / item.totalBytes * 100))}%`;
 		}
-		const text = paradisDescribeDownload(item, canOpen);
+		const text = localize('paradis.browserDownloads.statusWithTime', "{0} · {1}", paradisFormatDownloadClock(item.startTime), paradisDescribeDownload(item, canOpen));
 		if (row.status.textContent !== text) {
 			row.status.textContent = text;
 		}
@@ -396,7 +441,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 	}
 }
 
-/** 行の2行目（大きさ・状態）。 */
+/** 行の2行目の、時刻より後ろ（状態・大きさ）。エージェントのタブからのものかはツールチップに出す。 */
 export function paradisDescribeDownload(item: IParadisBrowserDownloadItem, canOpen: boolean): string {
 	switch (item.state) {
 		case 'progressing':
@@ -404,10 +449,7 @@ export function paradisDescribeDownload(item: IParadisBrowserDownloadItem, canOp
 				? localize('paradis.browserDownloads.progress', "{0} / {1}", ByteSize.formatSize(item.receivedBytes), ByteSize.formatSize(item.totalBytes))
 				: ByteSize.formatSize(item.receivedBytes);
 		case 'completed':
-			if (item.fromAgent) {
-				return localize('paradis.browserDownloads.completedFromAgent', "完了 · エージェントのタブから · {0}", ByteSize.formatSize(item.receivedBytes));
-			}
-			return canOpen
+			return canOpen || item.fromAgent
 				? localize('paradis.browserDownloads.completed', "完了 · {0}", ByteSize.formatSize(item.receivedBytes))
 				: localize('paradis.browserDownloads.completedFolderOnly', "完了 · フォルダから開く種類 · {0}", ByteSize.formatSize(item.receivedBytes));
 		case 'cancelled':
