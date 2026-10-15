@@ -311,6 +311,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private readonly _activeSwitchBodies = new Set<Promise<void>>();
 	private readonly _shutdownOperations = new Set<Promise<void>>();
 	private _switchRecovery: Promise<void> | undefined;
+	/** `_switchRecovery` が予約から走った「folders を進めるだけ」の回か（`retryRollWorkspaceFileForward`）。 */
+	private _switchRecoveryRollForwardOnly = false;
 	private _shuttingDown = false;
 	private readonly _liveSwitchTransactionIds = new Set<string>();
 	/** `.code-workspace` の後ろの書き込みの終わりを待っている間の Promise。待つのは同時に 1 本だけ。 */
@@ -823,7 +825,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	recoverInterruptedSwitch(): Promise<void> {
 		if (this._switchRecovery !== undefined) {
-			return this._switchRecovery;
+			// 予約から走った「folders を進めるだけ」の回なら、終わってから改めてジャーナルまで見る。
+			return this._switchRecoveryRollForwardOnly ? this._switchRecovery.then(() => this.recoverInterruptedSwitch()) : this._switchRecovery;
 		}
 		// A released sequencer slot can coexist with an older live body. Its journal is not
 		// interrupted and must never be replayed underneath it by the next switch request.
@@ -838,6 +841,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// それまでの間に見送っても、復旧は次の切り替えでも試みるので取りこぼさない。
 		const recovery = this.trackShutdownOperation(this.doRecoverInterruptedSwitch());
 		this._switchRecovery = recovery;
+		this._switchRecoveryRollForwardOnly = false;
 		const clearRecovery = () => {
 			if (this._switchRecovery === recovery) {
 				this._switchRecovery = undefined;
@@ -845,6 +849,31 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		};
 		void recovery.then(clearRecovery, clearRecovery);
 		return recovery;
+	}
+
+	/**
+	 * 予約（`rollWorkspaceFileForward` の `_rollForwardRetry`）から、folders を進めることだけを試す。
+	 * 利用者が何もしていない時刻に走るので、ジャーナルの復旧（working set を当てる）はしない。排他は
+	 * `recoverInterruptedSwitch` と同じ（切り替え・復旧が走っていればそちら、またはその次の切り替えの
+	 * 頭に任せる）。終了の待ちの最中には folders を書き換え始めない。
+	 */
+	private retryRollWorkspaceFileForward(): void {
+		if (this._shuttingDown || this._switchRecovery !== undefined || this._activeSwitchBodies.size > 0) {
+			return;
+		}
+		const recovery = this.trackShutdownOperation(this.rollWorkspaceFileForward());
+		this._switchRecovery = recovery;
+		this._switchRecoveryRollForwardOnly = true;
+		const clearRecovery = () => {
+			if (this._switchRecovery === recovery) {
+				this._switchRecovery = undefined;
+				this._switchRecoveryRollForwardOnly = false;
+			}
+		};
+		void recovery.then(clearRecovery, error => {
+			clearRecovery();
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to retry moving the workspace folders forward', error);
+		});
 	}
 
 	private async doRecoverInterruptedSwitch(): Promise<void> {
@@ -1237,9 +1266,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 		if (target === undefined) {
 			if (retryInMs !== undefined) {
-				this._rollForwardRetry.value = disposableTimeout(() => {
-					this.recoverInterruptedSwitch().catch(error => this.logService.error('[ParadisWorkspaceSwitch] Failed to retry moving the workspace folders forward', error));
-				}, retryInMs);
+				this._rollForwardRetry.value = disposableTimeout(() => this.retryRollWorkspaceFileForward(), retryInMs);
 			}
 			return;
 		}
