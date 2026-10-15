@@ -516,6 +516,69 @@ suite('ParadisAgentHookOwnership', () => {
 		assert.strictEqual((await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CODEX_TRANSCRIPT, at: 3 })).origin, 'owner');
 	});
 
+	test('a pid-less owner hands the pane to its own /resume, /clear and restart', async () => {
+		// 接続先のペインは hook の pid を使えないので、所有者は transcript だけで決まる。
+		const CLAUDE_TRANSCRIPT_3 = '/home/user/.claude/projects/-repo/33333333-3333-3333-3333-333333333333.jsonl';
+		const CLAUDE_TRANSCRIPT_4 = '/home/user/.claude/projects/-repo/44444444-4444-4444-4444-444444444444.jsonl';
+		const ownership = ownershipWith(standardTree());
+		const hook = async (transcriptPath: string, event: string, extra: { sessionSource?: string; toolUseId?: string } = {}) =>
+			(await ownership.classify({ token: 't', hookPid: undefined, transcriptPath, at: 1, event, ...extra })).origin;
+		assert.deepStrictEqual([
+			await hook(CLAUDE_TRANSCRIPT, 'SessionStart', { sessionSource: 'startup' }),
+			// 起動してすぐ /resume（SessionEnd が来ない場合）
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionStart', { sessionSource: 'resume' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'UserPromptSubmit'),
+			await hook(CLAUDE_TRANSCRIPT, 'PreToolUse', { toolUseId: 'old' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'PreToolUse', { toolUseId: 'a' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'PostToolUse', { toolUseId: 'a' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'Stop'),
+			// /clear（SessionEnd が来る場合）
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionEnd'),
+			await hook(CLAUDE_TRANSCRIPT_3, 'SessionStart', { sessionSource: 'clear' }),
+			// 終了して同じペインで起動し直す
+			await hook(CLAUDE_TRANSCRIPT_3, 'SessionEnd'),
+			await hook(CLAUDE_TRANSCRIPT_4, 'SessionStart', { sessionSource: 'startup' }),
+			await hook(CLAUDE_TRANSCRIPT_3, 'Stop'),
+		], ['owner', 'owner', 'owner', 'invalid', 'owner', 'owner', 'owner', 'owner', 'owner', 'owner', 'owner', 'invalid']);
+	});
+
+	test('a pid-less owner keeps the pane against SessionStarts of nested agents', async () => {
+		const CLAUDE_TRANSCRIPT_3 = '/home/user/.claude/projects/-repo/33333333-3333-3333-3333-333333333333.jsonl';
+		const ownership = ownershipWith(standardTree());
+		const hook = async (transcriptPath: string, event: string, extra: { sessionSource?: string; toolUseId?: string; fromSubagent?: boolean } = {}) =>
+			(await ownership.classify({ token: 't', hookPid: undefined, transcriptPath, at: 1, event, ...extra })).origin;
+		assert.deepStrictEqual([
+			await hook(CLAUDE_TRANSCRIPT, 'SessionStart', { sessionSource: 'startup' }),
+			// ペインの中で起動した別の claude（`claude -p` など）
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionStart', { sessionSource: 'startup' }),
+			// サブエージェント・teammate の中から来た SessionStart
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionStart', { sessionSource: 'resume', fromSubagent: true }),
+			// 所有者と違う種別のエージェント（plugin の codex など）
+			await hook(CODEX_TRANSCRIPT, 'SessionStart', { sessionSource: 'resume' }),
+			// 所有者のツールの実行中に起動した `claude --resume`
+			await hook(CLAUDE_TRANSCRIPT, 'PreToolUse', { toolUseId: 'bash' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionStart', { sessionSource: 'resume' }),
+			// 子の SessionEnd・サブエージェントの SessionEnd では所有者は終わらない
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionEnd'),
+			await hook(CLAUDE_TRANSCRIPT, 'SessionEnd', { fromSubagent: true }),
+			await hook(CLAUDE_TRANSCRIPT_3, 'SessionStart', { sessionSource: 'startup' }),
+			// ツールが終われば所有者自身の /resume は通る
+			await hook(CLAUDE_TRANSCRIPT, 'PostToolUse', { toolUseId: 'bash' }),
+			await hook(CLAUDE_TRANSCRIPT_2, 'SessionStart', { sessionSource: 'resume' }),
+		], ['owner', 'invalid', 'invalid', 'invalid', 'owner', 'invalid', 'invalid', 'owner', 'invalid', 'owner', 'owner']);
+	});
+
+	test('an owner pinned by pid is not handed off by pid-less SessionStarts', async () => {
+		const ownership = ownershipWith(standardTree());
+		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1, event: 'SessionStart', sessionSource: 'startup' });
+		const results = [
+			await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT, at: 2, event: 'SessionEnd' }),
+			await ownership.classify({ token: 't', hookPid: undefined, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 3, event: 'SessionStart', sessionSource: 'resume' }),
+			await ownership.classify({ token: 't', hookPid: 999, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 4, event: 'SessionStart', sessionSource: 'clear' }),
+		].map(result => result.origin);
+		assert.deepStrictEqual(results, ['owner', 'invalid', 'invalid']);
+	});
+
 	test('a nested child hook arriving before any owner hook does not bootstrap the child as owner', async () => {
 		// shared process 再起動直後など、レジストリが空の状態で子のhookが先に届くケース。
 		// チェーン最外側のエージェント（ペインのシェルに最も近いclaude）を所有者とする。

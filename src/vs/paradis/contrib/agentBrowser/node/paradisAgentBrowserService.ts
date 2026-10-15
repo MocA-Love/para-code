@@ -4089,7 +4089,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				// ペインのシェルの pid は手元のペインのときだけ渡す（所有者の後継をシェルの子孫に絞る・`claude attach` の会話を
 				// 所有者にする判定に使う。接続先の pid は手元のプロセス表と照合できない）。
 				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
-				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid });
+				const hookOrigin = await this._hookOwnership.classify({
+					token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid,
+					event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
+				});
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
