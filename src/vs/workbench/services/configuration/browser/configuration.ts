@@ -788,7 +788,7 @@ class FileServiceBasedWorkspaceConfiguration extends Disposable {
 	}
 
 	async resolveContent(workspaceIdentifier: IWorkspaceIdentifier): Promise<string> {
-		// PARA-PATCH: right after a Para Code window wrote its `.code-workspace`, reuse what it wrote instead of reading it back (paradisWorkspaceFileWriteCache.ts)
+		// PARA-PATCH: while a Para Code window is still writing its `.code-workspace` in the background, or right after it wrote it, reuse that content instead of reading it back (paradisWorkspaceFileWriteCache.ts)
 		const written = paradisTakeWrittenWorkspaceContent(workspaceIdentifier.configPath);
 		if (written !== undefined) {
 			return written;
