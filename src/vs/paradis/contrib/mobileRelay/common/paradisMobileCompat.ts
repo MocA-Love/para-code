@@ -167,6 +167,13 @@ export const ParadisMobileCapability = {
 	 */
 	AgentPanel: 'agent.panel.v1',
 	/**
+	 * agent の snapshot・delta の `pcDraft`（PC の Claude Code の入力欄の書きかけの先頭 400 字 `{ text, truncated }`、無くなったら・
+	 * 分からなくなったら `null`）。
+	 * 書きかけには秘密が入りうるので、PC はこれを広告したアプリが見ている会話へだけ、E2E の agent チャネルで送る。アプリは保存しない。
+	 * 入力欄の mod（Claude Code 2.1.300 以降）が知らせたときだけ届く。
+	 */
+	AgentPcDraft: 'agent.pc-draft.v1',
+	/**
 	 * fs の `voiceUsage`（読み上げの Aivis・ElevenLabs の使用量。キーは送らず、キーの印 `keyId` だけを付ける。
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
@@ -322,6 +329,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentTeams,
 	// HTML の埋め込み画像の取り寄せ。PC は要求の `htmlImages: true` を見て抜く（広告だけでは抜かない）。
 	ParadisMobileCapability.FsHtmlImages,
+	// PC はこれを見て、PC の入力欄の書きかけ（`pcDraft`）を送る（古いアプリには送らない）。
+	ParadisMobileCapability.AgentPcDraft,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

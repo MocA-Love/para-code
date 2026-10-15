@@ -1,0 +1,216 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// The prompt box's text for Para Code (the person's draft in the Claude Code prompt box).
+//
+// `prompt.edit` carries the typed edits and `prompt.change` (Claude Code 2.1.300) everything else: undo, a clear, a
+// recalled history entry, the clear after a submit, a plugin's fill. Without `prompt.change` a submit is never seen, so
+// the text would stay stale. Claude Code refuses to load a hooks module that names an event it does not know, so this
+// lives in its own module: older Claude Code skips this file and keeps register.ts. Para Code treats the box as unknown
+// until a `draft` event arrives, and then keeps everything else as before.
+//
+// Rules: the same as register.ts (only `next` and `$` are waited on; every failed request is dropped quietly).
+
+import type { EngineInterface, Register } from 'claude-code';
+
+type Engine = EngineInterface;
+type Json = Record<string, unknown>;
+
+const MOD_PROTOCOL = '1';
+/** The box's text is sent at most this often (the last text of a burst is always sent). */
+const DRAFT_FLUSH_MS = 150;
+/** Longer text is sent cut and marked `truncated` (Para Code then does not put it back). */
+const MAX_DRAFT_CHARS = 20_000;
+/** A send Para Code refused (or could not take) is tried again after this, twice as long after each further refusal. */
+const DRAFT_RETRY_MS = 1_000;
+/** The longest wait between two tries. */
+const DRAFT_RETRY_MAX_MS = 30_000;
+/** Tries after refusals in a row, after which the mod stops trying until the box changes again. */
+const DRAFT_RETRY_LIMIT = 8;
+
+interface IEndpoint {
+	readonly url: string;
+	readonly token: string;
+}
+
+let endpoint: IEndpoint | undefined;
+/** Connected to an interactive session in a Para Code terminal. */
+let active = false;
+/** The box's text as the last `prompt.edit` / `prompt.change` left it; undefined until one came this session. */
+let draft: string | undefined;
+/** The text Para Code last took, whether a send waits for {@link DRAFT_FLUSH_MS}, one is under way, or a retry waits. */
+let draftSent: string | undefined;
+let draftScheduled = false;
+let sending = false;
+let retryScheduled = false;
+/** Sends refused in a row since Para Code last took one. */
+let refusals = 0;
+/** Counts the sessions, so a send scheduled before a new session.start is not sent for the new one. */
+let generation = 0;
+
+function rec(value: unknown): Json | undefined {
+	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : undefined;
+}
+
+function curlQuote(value: string): string {
+	return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
+}
+
+async function resolveEndpoint($: Engine): Promise<IEndpoint | undefined> {
+	const token = await $.env.get('PARA_CODE_TERMINAL_PANE_ID');
+	const portFile = await $.env.get('PARA_CODE_MCP_PORT_FILE');
+	if (token === undefined || token.length === 0 || portFile === undefined || portFile.length === 0) {
+		return undefined;
+	}
+	let port: unknown;
+	try {
+		port = rec(JSON.parse(String(await $.fs.read(portFile))))?.port;
+	} catch {
+		return undefined;
+	}
+	if (typeof port !== 'number' || !Number.isInteger(port) || port <= 0 || port > 65_535) {
+		return undefined;
+	}
+	return { url: `http://127.0.0.1:${port}/claude-mod/v1`, token };
+}
+
+/**
+ * Sends the events through `$.http.fetch`, or curl when the fetch is refused (the token and body go on stdin). True only
+ * when Para Code took them (a 2xx answer): a refusal (429, 403) is not retried here but by the caller later.
+ */
+async function post($: Engine, body: string): Promise<boolean> {
+	// Para Code may have restarted on another port since the last send: read the port file again after a failure.
+	for (let attempt = 0; attempt < 2; attempt++) {
+		const target = endpoint ?? await resolveEndpoint($);
+		if (target === undefined) {
+			return false;
+		}
+		endpoint = target;
+		try {
+			const response = await $.http.fetch(`${target.url}/event`, {
+				method: 'POST',
+				headers: { 'authorization': `Bearer ${target.token}`, 'content-type': 'application/json', 'x-para-code-mod': MOD_PROTOCOL },
+				body,
+			});
+			return response.status >= 200 && response.status < 300;
+		} catch {
+			// fall through to curl
+		}
+		try {
+			const config = [
+				`url = ${curlQuote(`${target.url}/event`)}`,
+				'request = "POST"',
+				`header = ${curlQuote(`Authorization: Bearer ${target.token}`)}`,
+				'header = "Content-Type: application/json"',
+				`header = ${curlQuote(`X-Para-Code-Mod: ${MOD_PROTOCOL}`)}`,
+				`data-binary = ${curlQuote(body)}`,
+				'silent',
+				'fail',
+				'max-time = 10',
+				'',
+			].join('\n');
+			const result = await $.process.run(['curl', '--config', '-'], { stdin: config, timeoutMs: 15_000 });
+			if (result.exitCode === 0) {
+				return true;
+			}
+			if (result.exitCode === 22) {
+				// Para Code answered with an error status: the port is right, so do not read the port file again
+				return false;
+			}
+		} catch {
+			// try the port file once more
+		}
+		endpoint = undefined;
+	}
+	return false;
+}
+
+/**
+ * Sends the box's text, one request at a time so a later text never arrives before an earlier one. A text counts as
+ * sent only once Para Code took it; a refused send is tried again with the latest text, after {@link DRAFT_RETRY_MS}
+ * and then twice as long each time (at most {@link DRAFT_RETRY_MAX_MS}), and at most {@link DRAFT_RETRY_LIMIT} times in a row.
+ */
+async function pump($: Engine, mine: number): Promise<void> {
+	if (sending) {
+		return;
+	}
+	sending = true;
+	try {
+		while (active && mine === generation && draft !== undefined && draft !== draftSent) {
+			const text = draft;
+			const sessionId = await $.session.id();
+			const event = { type: 'draft', text: text.slice(0, MAX_DRAFT_CHARS), ...(text.length > MAX_DRAFT_CHARS ? { truncated: true } : {}), at: Date.now() };
+			if (!await post($, JSON.stringify({ sessionId, events: [event] }))) {
+				if (!retryScheduled && refusals < DRAFT_RETRY_LIMIT) {
+					retryScheduled = true;
+					const delay = Math.min(DRAFT_RETRY_MS * 2 ** refusals, DRAFT_RETRY_MAX_MS);
+					refusals++;
+					$.clock.after(delay, () => {
+						retryScheduled = false;
+						void pump($, mine).catch(() => undefined);
+					});
+				}
+				return;
+			}
+			refusals = 0;
+			draftSent = text;
+		}
+	} finally {
+		sending = false;
+	}
+}
+
+/**
+ * The box changed: sends its text to Para Code, at most every {@link DRAFT_FLUSH_MS}. While a retry waits, the retry
+ * sends the latest text; after the mod gave up, a change starts the tries afresh.
+ */
+function noteDraft($: Engine, text: string): void {
+	draft = text;
+	if (!active || draftScheduled || retryScheduled) {
+		return;
+	}
+	if (refusals >= DRAFT_RETRY_LIMIT) {
+		refusals = 0;
+	}
+	draftScheduled = true;
+	const mine = generation;
+	$.clock.after(DRAFT_FLUSH_MS, () => {
+		draftScheduled = false;
+		void pump($, mine).catch(() => undefined);
+	});
+}
+
+export const register: Register = on => {
+	on('session.start', async ($, e, next) => {
+		const started = await next(e);
+		generation++;
+		// The box is unknown until it changes (a reload of this module may find text in it).
+		draft = undefined;
+		draftSent = undefined;
+		draftScheduled = false;
+		retryScheduled = false;
+		refusals = 0;
+		endpoint = e.isInteractive ? await resolveEndpoint($) : undefined;
+		active = endpoint !== undefined;
+		return started;
+	});
+
+	on('prompt.change', ($, e, next) => {
+		if (active && typeof e.text === 'string') {
+			noteDraft($, e.text);
+		}
+		return next(e);
+	});
+
+	on('prompt.edit', async ($, e, next) => {
+		const edited = await next(e);
+		if (active) {
+			noteDraft($, typeof edited?.text === 'string' ? edited.text : `${e.text.slice(0, e.start)}${e.inputText}${e.text.slice(e.end)}`);
+		}
+		return edited;
+	});
+};

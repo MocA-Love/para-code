@@ -168,6 +168,11 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		const claudePluginDirectory = onWindowHost ? this.claudeMod?.pluginDirectory() : undefined;
 		if (claudePluginDirectory !== undefined) {
 			shellLaunchConfig.env = paradisAddClaudePluginDir(shellLaunchConfig.env, claudePluginDirectory, ':');
+			// 入力欄の文を知らせる mod（Claude Code 2.1.300 以降だけ。読めない版には渡さない）
+			const draftPluginDirectory = this.claudeMod?.draftPluginDirectory();
+			if (draftPluginDirectory !== undefined) {
+				shellLaunchConfig.env = paradisAddClaudePluginDir(shellLaunchConfig.env, draftPluginDirectory, ':');
+			}
 		}
 		// 開いたときのホームを覚えるのは新しく開いたペインだけ。再接続したペインのプロセスは元の env
 		// （前回起動したときの CODEX_HOME）のまま動いているので、いまの選択を記録すると食い違う。

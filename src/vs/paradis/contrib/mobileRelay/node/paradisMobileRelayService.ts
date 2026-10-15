@@ -1075,6 +1075,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			undefined,
 			this.remoteShellOutputs,
 		));
+		// PC の入力欄の書きかけ（agent.pc-draft.v1）は、広告したアプリへだけ送る
+		this.agentChat.setMobileCapabilityCheck(async (mobileId, name) => paradisHasMobileCapability(await this.getMobileCapabilities(mobileId), name));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(toDisposable(() => { if (this.revokeTimer !== undefined) { clearTimeout(this.revokeTimer); } }));
 		this._register(toDisposable(() => this.backgroundSessions.dispose()));

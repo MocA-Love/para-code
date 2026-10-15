@@ -133,6 +133,13 @@ export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
  */
 export const PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT: IParadisManagedHookEvent = { eventName: 'MessageDisplay' };
 
+/**
+ * モデルの切り替えの後（`from_model`・`to_model`・`requested_model`・`source`。Claude Code 2.1.251 で追加、2.1.300 で
+ * payload を実測）。モバイルのモデルの表示を、次の応答の行を待たずに変える。旧版は未知のhookキーを拒否し得るので
+ * 版を確かめられたときだけ置く。
+ */
+export const PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT: IParadisManagedHookEvent = { eventName: 'PostModelSwitch' };
+
 /** Claude Code 2.1.207でpayloadを確認し、モバイルactivityへ実際に写像する追加hook。 */
 export const PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'SubagentStart' },

@@ -8,13 +8,14 @@
 
 // renderer の Claude Code の mod の準備（paradisClaudeModEnvironment.ts、browser 層）へ、shared process が読んでいる
 // Claude Code の設定フォルダ（`CLAUDE_CONFIG_DIR`）を教える。そこの `remote-settings.json`（組織の方針の控え）も
-// 確かめるため。browser 層からは shared process へ話せないので、ここで口を入れる。
+// 確かめるため。browser 層からは shared process へ話せないので、ここで口を入れる。Claude Code の版（入力欄の mod を
+// 読ませてよいか）も同じ口で教える。
 
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
+import { paradisSetClaudeConfigDirProvider, paradisSetClaudeVersionProvider } from '../common/paradisClaudeMod.js';
 
 class ParadisClaudeModConfigDirContribution extends Disposable implements IWorkbenchContribution {
 
@@ -34,6 +35,12 @@ class ParadisClaudeModConfigDirContribution extends Disposable implements IWorkb
 			return cached;
 		});
 		this._register(toDisposable(() => paradisSetClaudeConfigDirProvider(undefined)));
+		// Claude Code の版（入力欄の mod を読ませてよいか）。shared process が 5 分ごとに確かめ直すので、ここでは使い回さない
+		paradisSetClaudeVersionProvider(() => sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string | undefined>('getClaudeVersion').then(
+			version => typeof version === 'string' && version.length > 0 ? version : undefined,
+			() => undefined,
+		));
+		this._register(toDisposable(() => paradisSetClaudeVersionProvider(undefined)));
 	}
 }
 

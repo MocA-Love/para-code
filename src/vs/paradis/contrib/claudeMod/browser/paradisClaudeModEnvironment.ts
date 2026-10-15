@@ -32,7 +32,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { PARADIS_CLAUDE_MOD_ENABLED_SETTING, PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS, PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS, PARADIS_CLAUDE_MOD_STALE_INSTALL_MS, paradisClaudeConfigDirProvider, paradisClaudeManagedSettingsBlockMods, paradisClaudeModShipsFile, paradisOnDidSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
+import { PARADIS_CLAUDE_MOD_ENABLED_SETTING, PARADIS_CLAUDE_MOD_INSTALL_SEGMENTS, PARADIS_CLAUDE_MOD_SOURCE_SEGMENTS, PARADIS_CLAUDE_DRAFT_MOD_SEGMENT, PARADIS_CLAUDE_MOD_STALE_INSTALL_MS, paradisClaudeConfigDirProvider, paradisClaudeVersionProvider, paradisClaudeManagedSettingsBlockMods, paradisClaudeModShipsFile, paradisSupportsClaudeDraftMod, paradisOnDidSetClaudeConfigDirProvider } from '../common/paradisClaudeMod.js';
 
 /** 使っている指紋を記録し直す間隔（掃除は 30 日使われていないものが対象）。 */
 const MARK_USED_INTERVAL_MS = 24 * 60 * 60_000;
@@ -79,6 +79,12 @@ export class ParadisClaudeModEnvironment extends Disposable {
 	private policyGeneration = 0;
 	private installRoot: URI | undefined;
 	private lastMarkedAt = 0;
+	/** 写した mod に入力欄の mod（`draft/`）が入っているか。 */
+	private hasDraftMod = false;
+	/** shared process が確かめた Claude Code が入力欄の mod を読める版か（確かめられないうちは false）。 */
+	private draftSupported = false;
+	private draftCheckedAt = 0;
+	private draftCheck: Promise<void> | undefined;
 	/** 準備が済んだら解決する（テストと、準備の失敗を記録するため）。 */
 	readonly ready: Promise<void>;
 	private readonly now: () => number;
@@ -133,6 +139,41 @@ export class ParadisClaudeModEnvironment extends Disposable {
 		return this.installedDirectory;
 	}
 
+	/**
+	 * ペインへ渡す入力欄の mod のフォルダ（{@link pluginDirectory} の中の `draft/`）。本体を渡さないとき、写した mod に無いとき、
+	 * Claude Code が読めない版（2.1.300 より前。知らないイベント名の mod は読み込みに失敗して画面に断りが出る）か版を
+	 * 確かめられていないときは undefined。版は 5 分ごとに確かめ直す（その間に Claude Code を下げると断りが出うる）。
+	 */
+	draftPluginDirectory(): string | undefined {
+		const directory = this.pluginDirectory();
+		if (directory === undefined || !this.hasDraftMod) {
+			return undefined;
+		}
+		if (this.now() - this.draftCheckedAt > POLICY_RECHECK_MS) {
+			void this.checkDraftSupport();
+		}
+		return this.draftSupported ? `${directory}/${PARADIS_CLAUDE_DRAFT_MOD_SEGMENT}` : undefined;
+	}
+
+	private checkDraftSupport(): Promise<void> {
+		const provider = paradisClaudeVersionProvider();
+		if (provider === undefined) {
+			// 口が入る前（起動直後）。次のペインでまた確かめる
+			return Promise.resolve();
+		}
+		this.draftCheck ??= (async () => {
+			try {
+				this.draftSupported = paradisSupportsClaudeDraftMod(await provider());
+			} catch {
+				this.draftSupported = false;
+			} finally {
+				this.draftCheckedAt = this.now();
+				this.draftCheck = undefined;
+			}
+		})();
+		return this.draftCheck;
+	}
+
 	/** mod のフォルダの中の写すファイル（`/` 区切りの相対パス）。同梱の glob と同じ除外（paradisClaudeModShipsFile）。 */
 	private async listSourceFiles(root: URI): Promise<string[]> {
 		const files: string[] = [];
@@ -184,6 +225,10 @@ export class ParadisClaudeModEnvironment extends Disposable {
 		}
 		this.installedDirectory = target.fsPath;
 		this.installRoot = installRoot;
+		this.hasDraftMod = files.some(file => file.path === `${PARADIS_CLAUDE_DRAFT_MOD_SEGMENT}/hooks/hooks.json`);
+		if (this.hasDraftMod) {
+			await this.checkDraftSupport();
+		}
 		await this.markUsed(installRoot, target);
 		this.logService.info(`[ParadisClaudeMod] the Claude Code mod is ready at ${target.fsPath}${this.blockedByPolicy ? ' (not loaded: managed settings forbid plugin folders)' : ''}`);
 		await this.removeStaleInstalls(installRoot, target);

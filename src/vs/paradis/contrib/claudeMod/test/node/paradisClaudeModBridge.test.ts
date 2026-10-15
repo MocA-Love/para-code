@@ -411,6 +411,18 @@ suite('ParadisClaudeModBridge', () => {
 		assert.deepStrictEqual({ rows, checks: verifications - verificationsBefore }, { rows: [], checks: 2 });
 	});
 
+	test('a caller that fails the check does not erase the verification remembered for the session', async () => {
+		await call('settle', { ids: [] });
+		const rows: boolean[] = [];
+		store.add(bridge.onEvent(event => { if (event.type === 'row') { rows.push(event.verified); } }));
+		// トークンを持つ別のプロセスの便（確かめに失敗する）
+		callerVerified = false;
+		await call('event', { events: [{ type: 'row', uuid: 'u-x', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_y', name: 'Bash', input: {} }] } }] });
+		// 本物の mod の表示だけの行は、前の確かめのまま確かめた送り主として扱う
+		await call('event', { events: [{ type: 'row', uuid: 'u-y', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 't' }] } }] });
+		assert.deepStrictEqual(rows, [true]);
+	});
+
 	test('reports a prompt that the mod received but then could not send', async () => {
 		const poll = call('commands', { busy: false });
 		await flushRequests();
@@ -510,6 +522,75 @@ suite('ParadisClaudeModBridge', () => {
 			prompt: await prompting,
 			stale: await staleRun,
 		}, { fromOldMod: undefined, kind: 'dialogCheck', open: true, prompt: 'panel-open', stale: { outcome: 'stale' } });
+	});
+
+	test('keeps the prompt box text only from a verified sender, and forgets it when the mod says hello again', async () => {
+		const features = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
+		const beforeAnything = bridge.draftOf(TOKEN, SESSION);
+		// 確かめられない送り主の入力欄の文は使わず、403 で断る（mod は送れたと数えない）。ほかの行は今までどおり受ける
+		callerVerified = false;
+		const strangerStatus = (await call('event', { events: [{ type: 'step', text: 'thinking' }, { type: 'draft', text: 'from a stranger' }] })).status;
+		const fromStranger = bridge.draftOf(TOKEN, SESSION);
+		callerVerified = true;
+		const poll = call('commands', { busy: false, features });
+		await flushRequests();
+		await call('event', { events: [{ type: 'draft', text: 'half typed' }] });
+		const typed = bridge.draftOf(TOKEN, SESSION);
+		await call('event', { events: [{ type: 'draft', text: 'x'.repeat(20_001) }] });
+		const tooLong = bridge.draftOf(TOKEN, SESSION);
+		await call('event', { events: [{ type: 'hello', version: '1.4.0' }] });
+		const afterHello = bridge.draftOf(TOKEN, SESSION);
+		signal.abort();
+		await poll;
+		assert.deepStrictEqual({
+			beforeAnything,
+			strangerStatus,
+			fromStranger,
+			typed: typed && { text: typed.text, truncated: typed.truncated },
+			tooLong: tooLong && { length: tooLong.text.length, truncated: tooLong.truncated },
+			afterHello,
+			fired: events.filter(event => event.type === 'draft').map(event => event.type === 'draft' ? event.text.length : 0),
+		}, {
+			beforeAnything: undefined,
+			strangerStatus: 403,
+			fromStranger: undefined,
+			typed: { text: 'half typed', truncated: false },
+			tooLong: { length: 20_000, truncated: true },
+			afterHello: undefined,
+			fired: [10, 20_000],
+		});
+	});
+
+	test('drops a prompt box text that arrives after a newer one, and forgets the text when the mod says bye', async () => {
+		const poll = call('commands', { busy: false, features: ['draft.fill'] });
+		await flushRequests();
+		await call('event', { events: [{ type: 'draft', text: 'newer', at: now - 100 }] });
+		await call('event', { events: [{ type: 'draft', text: 'older', at: now - 500 }] });
+		const afterReversed = bridge.draftOf(TOKEN, SESSION)?.text;
+		await call('event', { events: [{ type: 'bye', reason: 'clear' }] });
+		const afterBye = bridge.draftOf(TOKEN, SESSION);
+		signal.abort();
+		await poll;
+		assert.deepStrictEqual({ afterReversed, afterBye, unknown: events.filter(event => event.type === 'draft-unknown').length }, { afterReversed: 'newer', afterBye: undefined, unknown: 1 });
+	});
+
+	test('replaces the prompt box text through the mod only while the box is known', async () => {
+		const features = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
+		const verify = call('commands', { busy: false, features });
+		await flushRequests();
+		const unknownBox = await bridge.fillDraft(TOKEN, SESSION, '');
+		await call('event', { events: [{ type: 'draft', text: 'half typed' }] });
+		const filling = bridge.fillDraft(TOKEN, SESSION, '');
+		const [fill] = (await verify).body.commands as { id: string; kind: string; text: string }[];
+		await call('ack', { id: fill.id, ok: true });
+		const refusedPoll = call('commands', { busy: false, features });
+		await flushRequests();
+		const refusing = bridge.fillDraft(TOKEN, SESSION, 'half typed');
+		const [refused] = (await refusedPoll).body.commands as { id: string }[];
+		await call('ack', { id: refused.id, ok: false, reason: 'panel-open' });
+		assert.deepStrictEqual({ unknownBox, command: { kind: fill.kind, text: fill.text, mode: (fill as { mode?: string }).mode }, filled: await filling, refused: await refusing }, {
+			unknownBox: 'unavailable', command: { kind: 'draftFill', text: '', mode: 'replace' }, filled: 'filled', refused: 'panel-open',
+		});
 	});
 
 	test('forgets a pane: its waits end and the mod is no longer considered alive', async () => {

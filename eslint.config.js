@@ -152,6 +152,75 @@ export default defineConfig(
 			]
 		},
 	},
+	// Production filesystem operations must not block the event loop.
+	{
+		files: [
+			'src/**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts}',
+			'extensions/**/src/**/*.{ts,tsx,js,jsx,mjs,cjs,mts,cts}',
+		],
+		ignores: [
+			// Bootstrap entry points and the AMD loader retain their startup I/O.
+			'src/*',
+			'src/vs/amdX.ts',
+			'src/vs/code/electron-main/main.ts',
+			// Core synchronous helpers and startup/shutdown infrastructure.
+			'src/vs/base/node/pfs.ts',
+			'src/vs/platform/environment/node/wait.ts',
+			'src/vs/server/node/remoteExtensionHostAgentServer.ts',
+			'src/vs/server/node/server.main.ts',
+			'src/vs/workbench/api/node/extHostCLIServer.ts',
+			'src/vs/workbench/api/node/extHostExtensionService.ts',
+			'src/vs/workbench/api/node/extHostStoragePaths.ts',
+			'**/test/**',
+			'**/tests/**',
+			'**/fixtures/**',
+			'**/*.{test,spec,stest,integrationTest}.{ts,tsx,js,jsx,mts,cts,mjs,cjs}',
+			'**/scripts/**',
+			'**/script/**',
+			'**/build/**',
+			'extensions/vscode-test-resolver/**',
+			'extensions/vscode-api-tests/**',
+			// These isolated CLI/askpass processes do not share the application's event loop.
+			'src/vs/code/node/cli.ts',
+			'src/vs/server/node/server.cli.ts',
+			'extensions/git/src/askpass-main.ts',
+		],
+		rules: {
+			'local/code-no-sync-fs': 'error',
+		},
+	},
+	// PARA-PATCH: these fork files predate the 1.142 code-no-sync-fs rule (98 sync fs calls). Turn off only this rule
+	// for them, so new fork code is still checked; move each file to async I/O or give its calls a reasoned
+	// eslint-disable, then remove it from this list.
+	{
+		files: [
+			'src/vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain.ts',
+			'src/vs/paradis/contrib/agentActivity/node/paradisSessionIndexStore.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentBrowserService.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHome.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHookOwnership.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisAgentHooksSetup.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShimCore.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisDevtoolsTemporaryDirectory.ts',
+			'src/vs/paradis/contrib/agentBrowser/node/paradisRemoteAgentTunnel.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloadsCore.ts',
+			'src/vs/paradis/contrib/browserDownloads/electron-main/paradisDownloadQuarantine.ts',
+			'src/vs/paradis/contrib/computerUse/node/paradisComputerUseHelperClient.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisAivisIngestClient.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisNotificationsService.ts',
+			'src/vs/paradis/contrib/notifications/node/paradisVoiceSynthesisCache.ts',
+			'src/vs/paradis/contrib/ptyDaemon/electron-main/paradisDaemonPtyHostStarter.ts',
+			'src/vs/paradis/contrib/ptyDaemon/node/paradisEnsurePtyHost.ts',
+			'src/vs/paradis/contrib/workspaceSwitch/electron-main/paradisDefaultWorkspace.ts',
+			'src/vs/paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.ts',
+			'src/vs/paradis/node/paradisRollingFileBackup.ts',
+			'src/vs/paradis/node/paradisWriteFileAtomic.ts',
+		],
+		rules: {
+			'local/code-no-sync-fs': 'off',
+		},
+	},
 	// Disallow bracket notation for property names that can use dot notation.
 	{
 		files: [
@@ -203,6 +272,40 @@ export default defineConfig(
 				}
 			]
 		}
+	},
+	{
+		files: [
+			'src/vs/platform/agentHost/test/**/missionControl*.test.ts',
+			'src/vs/platform/agentHost/test/**/protocolServerHandler.test.ts',
+			'src/vs/platform/agentHost/test/**/agentHostProtocolClient.test.ts',
+			'src/vs/platform/agentHost/test/**/webPubSubRelayTransport.test.ts',
+			'src/vs/platform/agentHost/test/common/webPubSub/*.test.ts',
+			'src/vs/workbench/contrib/chat/test/browser/remoteAgentHost/cloudSandbox*.test.ts',
+			'src/vs/sessions/contrib/providers/remoteAgentHost/test/browser/remoteAgentHost.contribution.test.ts',
+		],
+		plugins: {
+			'agent-host-test': {
+				rules: {
+					'no-nested-tests': {
+						meta: {
+							type: 'problem',
+							schema: [],
+							messages: { nested: 'Declare tests in the suite, not inside another test; Mocha does not execute nested declarations.' },
+						},
+						create(context) {
+							return {
+								'CallExpression[callee.name="test"] CallExpression[callee.name="test"]'(node) {
+									context.report({ node, messageId: 'nested' });
+								},
+							};
+						},
+					},
+				},
+			},
+		},
+		rules: {
+			'agent-host-test/no-nested-tests': 'error',
+		},
 	},
 	// Disallow common telemetry properties in event data
 	{
@@ -1725,6 +1828,8 @@ export default defineConfig(
 						'@modelcontextprotocol/sdk/**/*', // used by agentHost for Claude client-tool MCP result types (Phase 10)
 						'@github/copilot-sdk',
 						'zod', // used by agentHost for Claude client-tool MCP input schemas
+						{ 'when': 'hasNode', 'pattern': 'libsodium-wrappers' },
+						{ 'when': 'hasNode', 'pattern': '@hpke/core' },
 						{
 							'when': 'test',
 							'pattern': 'events'

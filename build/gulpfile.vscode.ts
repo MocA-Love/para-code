@@ -26,7 +26,7 @@ import { createAsar } from './lib/asar.ts';
 import minimist from 'minimist';
 import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask, compileCopilotExtensionBuildTask } from './gulpfile.extensions.ts';
 import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getMxcExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
+import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
 import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
 import { readAgentSdkResults } from './agent-sdk/common.ts';
 import { readDictationRuntimeResults } from './dictation-runtime/common.ts';
@@ -294,7 +294,6 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
 			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
 			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
-			.pipe(filter(getMxcExcludeFilter(arch)))
 			.pipe(filter(getFoundryLocalExcludeFilter()))
 			.pipe(filter(getOSProxyResolverExcludeFilter(platform, arch)))
 			.pipe(jsFilter)
@@ -308,7 +307,6 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				// The Dev Container CLI is spawned as an external Node process,
 				// so its bundled entrypoint must be available outside the ASAR.
 				'**/@devcontainers/cli/**',
-				'**/@microsoft/mxc-sdk/bin/**',
 				'**/node-pty/build/Release/*',
 				'**/node-pty/build/Release/conpty/*',
 				'**/node-pty/lib/worker/conoutSocketWorker.js',
@@ -355,10 +353,13 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			all = es.merge(all, gulp.src('resources/paradis/bin/codex', { base: '.', allowEmpty: false }));
 			// PARA-PATCH: the Claude Code mod (Claude Mods) loaded into local terminals on macOS/Linux
 			// (src/vs/paradis/contrib/claudeMod). Allow-list, same as paradisClaudeModShipsFile(): the manifest
-			// and hooks/ only (no tests, no types/tsconfig that Claude Code writes into a folder it loads).
+			// and hooks/ only (no tests, no types/tsconfig that Claude Code writes into a folder it loads), for the
+			// mod and for the prompt box mod in draft/.
 			all = es.merge(all, gulp.src([
 				'resources/paradis/claude-mod/.claude-plugin/plugin.json',
 				'resources/paradis/claude-mod/hooks/**',
+				'resources/paradis/claude-mod/draft/.claude-plugin/plugin.json',
+				'resources/paradis/claude-mod/draft/hooks/**',
 			], { base: '.', dot: true, allowEmpty: false }));
 		} else {
 			// PARA-PATCH: the Windows pane launcher is a .cmd/.ps1 pair over a shared JS body

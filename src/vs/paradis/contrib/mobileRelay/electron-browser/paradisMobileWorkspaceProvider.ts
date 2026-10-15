@@ -1693,7 +1693,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
 		} finally {
-			if (interaction) {
+			// Claude Code の設定も終わりを知らせる（shared process が、よけていた PC の入力欄の書きかけを戻す）
+			if (interaction || claudeSetting) {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
 			}
 		}
