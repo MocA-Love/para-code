@@ -55,7 +55,8 @@ class PersistedMenuHideState implements IDisposable {
 	private static readonly _key = 'menu.hiddenCommands';
 
 	private readonly _disposables = new DisposableStore();
-	private readonly _onDidChange = new Emitter<void>();
+	// PARA-PATCH: every listened MenuImpl subscribes here, so large windows legitimately pass the global 175 (microsoft/vscode#308255)
+	private readonly _onDidChange = new Emitter<void>({ leakWarningThreshold: 500, leakWarningName: 'PersistedMenuHideState._onDidChange' });
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
 	private _ignoreChangeEvent: boolean = false;
