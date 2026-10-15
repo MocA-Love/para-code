@@ -411,6 +411,18 @@ suite('ParadisClaudeModBridge', () => {
 		assert.deepStrictEqual({ rows, checks: verifications - verificationsBefore }, { rows: [], checks: 2 });
 	});
 
+	test('a caller that fails the check does not erase the verification remembered for the session', async () => {
+		await call('settle', { ids: [] });
+		const rows: boolean[] = [];
+		store.add(bridge.onEvent(event => { if (event.type === 'row') { rows.push(event.verified); } }));
+		// トークンを持つ別のプロセスの便（確かめに失敗する）
+		callerVerified = false;
+		await call('event', { events: [{ type: 'row', uuid: 'u-x', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_y', name: 'Bash', input: {} }] } }] });
+		// 本物の mod の表示だけの行は、前の確かめのまま確かめた送り主として扱う
+		await call('event', { events: [{ type: 'row', uuid: 'u-y', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 't' }] } }] });
+		assert.deepStrictEqual(rows, [true]);
+	});
+
 	test('reports a prompt that the mod received but then could not send', async () => {
 		const poll = call('commands', { busy: false });
 		await flushRequests();
