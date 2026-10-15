@@ -1496,7 +1496,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						// 残りとして開き直す。この回の nonce 集合 (`parkedNonces`) には**足さない**。集合は
 						// 「working set の端末を賄えたか」の証明で、working set に無い端末で数を埋めると件数比較と
 						// 同じ穴になる。
-						await timePhase('park_late_terminals', () => this.parkLateTerminalEditors(previousKey));
+						await timePhase('park_late_term_editors', () => this.parkLateTerminalEditors(previousKey));
 					}
 
 					// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
@@ -1580,7 +1580,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					});
 					// 索引の待ち（最大 500ms）の間に開かれた端末を、適用の直前にもう一度拾う。ここでは待たない。
 					if (previousKey !== undefined) {
-						timeSyncPhase('park_last_terminals', () => this.parkTerminalEditorsFor(previousKey, undefined, instance => this.ownerParkScope(instance, previousKey)));
+						timeSyncPhase('park_last_term_editors', () => this.parkTerminalEditorsFor(previousKey, undefined, instance => this.ownerParkScope(instance, previousKey)));
 					}
 					try {
 						await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
@@ -2008,8 +2008,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	/**
 	 * 長いタスクを段階ごとに数える区間 (`timePhase` の名前)。送る名前は `safe_<段階>_longtask_ms`。
 	 * **名前に sensitiveFields の語 (terminal・session・env 等) を含む段階を足さないこと**
-	 * (`park_late_terminals` は部分一致で値が消える)。同期の区間 (`timeSyncPhase`) は 1 つのタスクの
-	 * 中で終わり、長いタスクはその後で数えられるので、差が常に 0 になる。足さない。
+	 * (部分一致で値が消える。`park_terminals` だけは Sentry の safeFields に完全な名前で載せてある)。
+	 * 同期の区間 (`timeSyncPhase`) は 1 つのタスクの中で終わり、長いタスクはその後で数えられるので、差が常に 0 になる。足さない。
 	 */
 	private static readonly LONG_TASK_PHASES: ReadonlySet<string> = new Set([
 		'apply_working_set',
@@ -2068,7 +2068,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				mainLoad.safe_main_loop_p50_ms = sample.mainLoop.p50Ms;
 				mainLoad.safe_main_loop_p99_ms = sample.mainLoop.p99Ms;
 				mainLoad.safe_main_loop_max_ms = sample.mainLoop.maxMs;
-				mainLoad.safe_main_busy_pct = sample.mainLoop.busyPct;
+				if (sample.mainLoop.busyPct !== undefined) {
+					mainLoad.safe_main_busy_pct = sample.mainLoop.busyPct;
+				}
 				// Mac 全体の負荷 (切り替えを始めた時点)。main の返事に相乗りしている。
 				// 1 分平均なので、コア数で割って「CPU が足りていたか」を読む。
 				if (sample.mainLoop.hostLoad !== undefined) {
