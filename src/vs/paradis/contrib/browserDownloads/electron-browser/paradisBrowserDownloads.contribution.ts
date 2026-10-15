@@ -42,7 +42,7 @@ const SHOW_DOWNLOADS_ACTION_ID = 'paradis.browser.showDownloads';
 /** ダウンロードが1件でもあるか。ボタンの表示条件。 */
 const CONTEXT_PARADIS_BROWSER_HAS_DOWNLOADS = new RawContextKey<boolean>('paradisBrowserHasDownloads', false, localize('paradis.browserDownloads.hasDownloads', "内蔵ブラウザのダウンロード一覧に項目があるかどうか"));
 
-const downloadsIcon = registerIcon('paradis-browser-downloads', Codicon.desktopDownload, localize('paradis.browserDownloads.icon', "内蔵ブラウザのダウンロードボタンのアイコン"));
+const downloadsIcon = registerIcon('paradis-browser-downloads', Codicon.download, localize('paradis.browserDownloads.icon', "内蔵ブラウザのダウンロードボタンのアイコン"));
 
 /** 今描かれているボタン。コマンドパレットから開いたときの位置合わせに使う。 */
 const liveButtons = new Set<ParadisBrowserDownloadsActionViewItem>();
