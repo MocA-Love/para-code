@@ -368,7 +368,7 @@ describe('para-code mod', () => {
 			features: recorded.find(entry => entry.op === 'commands')?.body.features,
 			acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body),
 		}).toEqual({
-			features: ['commands.list', 'command.run', 'prompt.dialog'],
+			features: ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'],
 			acks: [{
 				sessionId: 'session-1', id: 'l1', ok: true, commands: [
 					{ name: 'context', description: 'mine', source: 'user' },
@@ -427,9 +427,33 @@ describe('para-code mod', () => {
 			fills,
 			ack: recorded.find(entry => entry.op === 'ack')?.body,
 		}).toEqual({
-			features: ['commands.list', 'command.run', 'prompt.dialog'],
+			features: ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'],
 			fills: [{ text: '', mode: 'append' }],
 			ack: { sessionId: 'session-1', id: 'd1', ok: true, dialog: false },
+		});
+	});
+
+	test('replaces the prompt box text when Para Code asks, and acks a refusal with its reason', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const handed: Json[][] = [[{ id: 'f1', kind: 'draftFill', text: '' }], [{ id: 'f2', kind: 'draftFill', text: 'put back', mode: 'append' }], [{ id: 'f3', kind: 'draftFill', text: 'x'.repeat(20_001) }]];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: handed.shift() ?? [] }) }, recorded);
+		const fills: unknown[] = [];
+		// A hook cannot claim the `dialog` cause itself (see the dialogCheck test): any other refusal is `refused`.
+		on('prompt.fill', ($, e) => {
+			fills.push({ text: e.text, mode: e.mode });
+			return e.text === 'put back' ? { isFilled: false, refusal: 'no_composer' } : { isFilled: true };
+		});
+		await startSession($);
+		for (let round = 0; round < 3; round++) {
+			await clock.advance(1);
+			await clock.settle();
+		}
+		expect({
+			fills,
+			acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body),
+		}).toEqual({
+			fills: [{ text: '', mode: 'replace' }, { text: 'put back', mode: 'append' }],
+			acks: [{ sessionId: 'session-1', id: 'f1', ok: true }, { sessionId: 'session-1', id: 'f2', ok: false, reason: 'refused' }],
 		});
 	});
 

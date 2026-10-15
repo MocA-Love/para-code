@@ -63,6 +63,15 @@ suite('ParadisAgentHooksSetup', () => {
 		], [false, true, true]);
 	});
 
+	test('adds PostModelSwitch only for Claude Code 2.1.251 and later, and keeps it while the version is unknown', () => {
+		const names = (versionOutput: string | undefined) => paradisClaudeManagedHookEvents(versionOutput).filter(event => event.eventName === 'PostModelSwitch').map(event => ({ name: event.eventName, retainOnly: event.retainOnly === true }));
+		assert.deepStrictEqual({
+			older: names('2.1.250 (Claude Code)'),
+			supported: names('2.1.251 (Claude Code)'),
+			unknown: names(undefined),
+		}, { older: [], supported: [{ name: 'PostModelSwitch', retainOnly: false }], unknown: [{ name: 'PostModelSwitch', retainOnly: true }] });
+	});
+
 	test('marks managed commands with the current schema', () => {
 		assert.ok(paradisManagedAgentHookCommand().includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
 	});
