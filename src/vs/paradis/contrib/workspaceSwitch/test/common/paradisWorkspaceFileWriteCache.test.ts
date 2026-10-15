@@ -9,6 +9,7 @@
 import * as assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { timeout } from '../../../../../base/common/async.js';
+import { isEqual } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileOperationError, FileOperationResult, FileSystemProviderCapabilities, IFileStatWithMetadata, IStat, IWriteFileOptions } from '../../../../../platform/files/common/files.js';
@@ -16,7 +17,7 @@ import { FileService } from '../../../../../platform/files/common/fileService.js
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { hasWorkspaceFileExtension } from '../../../../../platform/workspace/common/workspace.js';
-import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
+import { ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { paradisBeginFolderUpdateTrace } from '../../common/paradisFolderUpdateTrace.js';
 import { IJSONValue } from '../../../../../workbench/services/configuration/common/jsonEditing.js';
 import { IParadisWorkspaceFileSnapshot, ParadisWorkspaceFileWriteCache, paradisTakeWrittenWorkspaceContent, paradisWhenWorkspaceFileFlushed } from '../../common/paradisWorkspaceFileWriteCache.js';
@@ -70,27 +71,45 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 	/** upstream の経路（テキストモデルで書く）に回した回の folders。 */
 	let modelWrites: unknown[];
 	let modelWriteFails: boolean;
+	/** これが解けるまで upstream の経路の保存を返さない。 */
+	let modelWriteGate: Promise<void> | undefined;
 	let cache: ParadisWorkspaceFileWriteCache;
 
 	/** `'default'` は本番と同じ判定（Para Code のウィンドウのワークスペースのファイルだけ）。 */
 	function createCache(applies: ((resource: URI) => boolean) | 'default' = resource => hasWorkspaceFileExtension(resource), flushStepTimeoutMs?: number): ParadisWorkspaceFileWriteCache {
+		// upstream の経路で保存した直後のモデル（`rememberModel` が読む形だけ）。
+		let savedModel: { readonly resource: URI; readonly content: string; readonly stat: IFileStatWithMetadata } | undefined;
+		const modelFor = (saved: NonNullable<typeof savedModel>) => ({
+			lastResolvedFileStat: saved.stat,
+			isResolved: () => true,
+			hasState: (state: TextFileEditorModelState) => state === TextFileEditorModelState.SAVED,
+			getEncoding: () => undefined,
+			textEditorModel: { getOptions: () => ({ tabSize: 4, insertSpaces: false }), getValue: () => saved.content, getEOL: () => '\n' },
+		});
 		const textFileService = {
-			files: { get: (resource: URI) => openModels.has(resource.toString()) ? {} : undefined },
+			// 保存した直後は（エディタで開いていても）保存したモデル。
+			files: { get: (resource: URI) => savedModel && isEqual(savedModel.resource, resource) ? modelFor(savedModel) : openModels.has(resource.toString()) ? {} : undefined },
 			write: (resource: URI, value: string, options: IWriteFileOptions) => {
 				writeOptions.push(options.atomic);
 				return writeHook ? writeHook(resource, value, options) : fileService.writeFile(resource, VSBuffer.fromString(value), options);
 			},
 		} as unknown as ITextFileService;
 		// upstream の経路の代わり: ディスクを読み、渡された path を全部当てて保存し、書いた中身を覚え直す。
-		const writeThroughModel = async (resource: URI, values: IJSONValue[]) => {
+		const writeThroughModel = async (resource: URI, values: IJSONValue[], remember: () => void) => {
 			modelWrites.push(values.length === 1 && values[0].path[0] === 'folders' ? values[0].value : values.map(value => value.path.join('.')));
 			if (modelWriteFails) {
 				return; // upstream は保存の失敗を投げずにモデルへ残す（覚え直さない）
 			}
 			const disk = JSON.parse((await fileService.readFile(resource)).value.toString()) as Record<string, unknown>;
 			const content = JSON.stringify({ ...disk, ...Object.fromEntries(values.map(value => [value.path[0], value.value])) }, null, '\t');
+			await modelWriteGate;
 			const stat = await fileService.writeFile(resource, VSBuffer.fromString(content));
-			created.remember(resource, stat, { content, etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING });
+			savedModel = { resource, content, stat };
+			try {
+				remember();
+			} finally {
+				savedModel = undefined;
+			}
 		};
 		const created: ParadisWorkspaceFileWriteCache = new ParadisWorkspaceFileWriteCache(fileService, textFileService, writeThroughModel, undefined, applies === 'default' ? undefined : applies, flushStepTimeoutMs);
 		disposables.add(created);
@@ -122,6 +141,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		writeOptions = [];
 		modelWrites = [];
 		modelWriteFails = false;
+		modelWriteGate = undefined;
 		cache = createCache();
 	});
 
@@ -167,7 +187,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			writtenAgain: true,
 			reloaded: ['/repo/b'],
 			reloadedWhileWriting: ['/repo/c'],
-			flushed: { ok: true, ms: undefined, writes: 2, fallback: false, timedOut: false },
+			flushed: { ok: true, ms: undefined, writes: 1, fallback: false, timedOut: false },
 			afterFlush: undefined,
 			reloadedAfterFlush: undefined,
 			atomic: [{ postfix: '.vsctmp' }],
@@ -215,7 +235,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		});
 	});
 
-	test('keeps handing the switched content to reloads and reports the failure when the background write fails, until a later write lands', async () => {
+	test('keeps handing the switched content to reloads and reports the failure when the background write fails, and retries on the next write', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 		await seed(resource, workspaceContent('/repo/a'));
 		writeHook = async () => { throw new FileOperationError('no space', FileOperationResult.FILE_OTHER_ERROR); };
@@ -226,11 +246,12 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		await timeout(20);
 		const reloadedAfterFailure = paradisTakeWrittenWorkspaceContent(resource);
 		const stillFailed = await paradisWhenWorkspaceFileFlushed();
-		// 覚えた中身は捨ててあるので、次は upstream の経路（呼び出し元）へ回す。
-		const next = await cache.tryWrite(resource, FOLDERS_C);
-		// upstream の経路で書けたら（`rememberModel`）、失敗は消える。
+		// 空きができた後の次の書き込みは、メモリの中身に当てて後ろへ積み、upstream の経路で書き直す。
 		writeHook = undefined;
-		await seed(resource, workspaceContent('/repo/c'));
+		modelWriteFails = false;
+		const next = await cache.tryWrite(resource, FOLDERS_C);
+		const retried = await paradisWhenWorkspaceFileFlushed();
+		await timeout(20);
 
 		assert.deepStrictEqual({
 			written,
@@ -238,16 +259,22 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			reloadedAfterFailure: reloadedAfterFailure === undefined ? undefined : foldersOf(reloadedAfterFailure),
 			stillFailed: stillFailed === failed,
 			next,
-			afterLaterWrite: paradisWhenWorkspaceFileFlushed(),
-			reloadedAfterLaterWrite: paradisTakeWrittenWorkspaceContent(resource),
+			retried: { ...retried, ms: undefined },
+			afterRetry: paradisWhenWorkspaceFileFlushed(),
+			reloadedAfterRetry: paradisTakeWrittenWorkspaceContent(resource),
+			modelWrites,
+			disk: foldersOf(await readDisk(resource)),
 		}, {
 			written: true,
 			failed: { ok: false, ms: undefined, writes: 1, fallback: true, timedOut: false },
 			reloadedAfterFailure: ['/repo/b'],
 			stillFailed: true,
-			next: false,
-			afterLaterWrite: undefined,
-			reloadedAfterLaterWrite: undefined,
+			next: true,
+			retried: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
+			afterRetry: undefined,
+			reloadedAfterRetry: undefined,
+			modelWrites: [[{ path: '/repo/b' }], [{ path: '/repo/c' }]],
+			disk: ['/repo/c'],
 		});
 	});
 
@@ -270,73 +297,144 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		assert.deepStrictEqual({ folders, extensions, flushed: { ...flushed, ms: undefined }, modelWrites, disk: JSON.parse(await readDisk(resource)) }, {
 			folders: true,
 			extensions: true,
-			// 2 回目は 1 回目（upstream の経路）が両方を書いていたので、何もしない。
-			flushed: { ok: true, ms: undefined, writes: 2, fallback: true, timedOut: false },
+			flushed: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
 			modelWrites: [['folders', 'extensions']],
 			disk: { folders: [{ path: '/repo/b' }], settings: { 'editor.tabSize': 8 }, extensions: { recommendations: ['example.ext'] } },
 		});
 	});
 
-	test('gives up a background write that does not return within the limit, reports it, and leaves the next write to the upstream path', async () => {
+	test('reports a background write that does not return within the limit, keeps the next switch behind it, and rewrites after the late write lands instead of being overwritten by it', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 		const limited = createCache(undefined, 30);
 		await seed(resource, workspaceContent('/repo/a'), limited);
-		let releaseStat!: () => void;
-		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
-		try {
-			const written = await limited.tryWrite(resource, FOLDERS_B);
-			const flushed = await paradisWhenWorkspaceFileFlushed();
-			const reloaded = paradisTakeWrittenWorkspaceContent(resource);
-			const next = await limited.tryWrite(resource, FOLDERS_C);
-			assert.deepStrictEqual({ written, flushed: { ...flushed, ms: undefined }, reloaded: reloaded === undefined ? undefined : foldersOf(reloaded), next }, {
-				written: true,
-				flushed: { ok: false, ms: undefined, writes: 1, fallback: false, timedOut: true },
-				// 書けていないので、読み直しには切り替えた中身を渡し続ける。
-				reloaded: ['/repo/b'],
-				next: false,
-			});
-		} finally {
-			provider.statGate = undefined;
-			releaseStat();
-			await timeout(20);
-		}
-		// 遅れて返ってきても、諦めた書き込みの続きはしない。
-		assert.deepStrictEqual({ modelWrites, disk: foldersOf(await readDisk(resource)) }, { modelWrites: [], disk: ['/repo/a'] });
+		// 接続先へ送った B の書き込みが返ってこない（後で届く）。
+		let releaseWrite!: () => void;
+		const writeGate = new Promise<void>(resolve => releaseWrite = resolve);
+		writeHook = async (target, value, options) => {
+			await writeGate;
+			return fileService.writeFile(target, VSBuffer.fromString(value), options);
+		};
+
+		const written = await limited.tryWrite(resource, FOLDERS_B);
+		const timedOut = await paradisWhenWorkspaceFileFlushed();
+		// 次の切り替えは止めずに後ろへ積む（諦めた書き込みを追い越して書かない）。
+		const next = await limited.tryWrite(resource, FOLDERS_C);
+		const reloadedWhileWaiting = paradisTakeWrittenWorkspaceContent(resource);
+		const flushing = paradisWhenWorkspaceFileFlushed();
+		// B が遅れて届く。その後で C を書き直す。
+		releaseWrite();
+		const flushed = await flushing;
+		await timeout(20);
+
+		assert.deepStrictEqual({
+			written,
+			timedOut: { ...timedOut, ms: undefined },
+			next,
+			reloadedWhileWaiting: reloadedWhileWaiting === undefined ? undefined : foldersOf(reloadedWhileWaiting),
+			flushed: { ...flushed, ms: undefined },
+			afterFlush: paradisWhenWorkspaceFileFlushed(),
+			modelWrites,
+			disk: foldersOf(await readDisk(resource)),
+		}, {
+			written: true,
+			timedOut: { ok: false, ms: undefined, writes: 1, fallback: false, timedOut: true },
+			next: true,
+			reloadedWhileWaiting: ['/repo/c'],
+			flushed: { ok: true, ms: undefined, writes: 1, fallback: false, timedOut: false },
+			afterFlush: undefined,
+			modelWrites: [],
+			disk: ['/repo/c'],
+		});
 	});
 
-	test('waits for the background write of the same file before leaving a write to the upstream path, without holding up other files', async () => {
+	test('does not remember the result of an upstream-path write that came back after it was given up', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		const limited = createCache(undefined, 30);
+		await seed(resource, workspaceContent('/repo/a'), limited);
+		// 外部での変更で upstream の経路へ回り、その保存が返ってこない。
+		await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/x')));
+		let releaseModelWrite!: () => void;
+		modelWriteGate = new Promise<void>(resolve => releaseModelWrite = resolve);
+
+		await limited.tryWrite(resource, FOLDERS_B);
+		const timedOut = await paradisWhenWorkspaceFileFlushed();
+		// 諦めた後に返ってきた B の保存の結果で覚え直さない（覚え直すと、メモリの中身が B に戻る）。
+		const next = await limited.tryWrite(resource, FOLDERS_C);
+		const flushing = paradisWhenWorkspaceFileFlushed();
+		modelWriteGate = undefined;
+		releaseModelWrite();
+		const flushed = await flushing;
+		await timeout(20);
+
+		assert.deepStrictEqual({
+			timedOut: { ...timedOut, ms: undefined },
+			next,
+			flushed: { ...flushed, ms: undefined },
+			reloaded: paradisTakeWrittenWorkspaceContent(resource),
+			modelWrites,
+			disk: foldersOf(await readDisk(resource)),
+		}, {
+			timedOut: { ok: false, ms: undefined, writes: 1, fallback: false, timedOut: true },
+			next: true,
+			// 返ってきた B は覚えていないので、C は upstream の経路でディスクを読み直して書く。
+			flushed: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
+			reloaded: undefined,
+			modelWrites: [[{ path: '/repo/b' }], [{ path: '/repo/c' }]],
+			disk: ['/repo/c'],
+		});
+	});
+
+	test('keeps writing behind through the model when the file is opened in an editor during a background write, without holding up other files', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 		await seed(resource, workspaceContent('/repo/a'));
 		// 後ろの書き込みが、外部での変更を確かめる stat で止まっている間。
 		let releaseStat!: () => void;
 		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
-		const order: string[] = [];
 
-		assert.strictEqual(await cache.tryWrite(resource, FOLDERS_B), true);
+		const written = await cache.tryWrite(resource, FOLDERS_B);
 		// ほかのファイルは待たせない。
 		const settings = URI.file('/example/.vscode/settings.json');
-		assert.strictEqual(await cache.tryWrite(settings, [{ path: ['a'], value: 1 }]), false);
-		order.push('other file');
-		// エディタで開かれたら upstream の経路だが、後ろの書き込みを追い越さない。
+		const otherFile = await cache.tryWrite(settings, [{ path: ['a'], value: 1 }]);
+		// エディタで開かれても、切り替えは止めずに積む。ディスクへは開いたモデルを通して書く。
 		openModels.add(resource.toString());
-		const trace = paradisBeginFolderUpdateTrace();
-		const opened = cache.tryWrite(resource, FOLDERS_C).then(result => { order.push('opened'); return result; });
-		await timeout(10);
-		order.push('released');
+		const opened = await cache.tryWrite(resource, FOLDERS_C);
+		const flushing = paradisWhenWorkspaceFileFlushed();
 		provider.statGate = undefined;
 		releaseStat();
-		const openedResult = await opened;
-		const summary = trace.summarize(undefined);
-		trace.end();
+		const flushed = await flushing;
 		openModels.clear();
 
-		assert.deepStrictEqual({ order, openedResult, shortcuts: shortcutsOf(summary), modelWrites, disk: foldersOf(await readDisk(resource)) }, {
-			order: ['other file', 'released', 'opened'],
-			openedResult: false,
-			shortcuts: { safe_update_folders_write_behind: 0, safe_update_folders_flush_waited: 1, safe_update_folders_reload_cached: 0 },
-			// B を書く前にモデルが開かれたので、B は upstream の経路（モデル）で書いた。
+		assert.deepStrictEqual({ written, otherFile, opened, flushed: { ...flushed, ms: undefined }, modelWrites, disk: foldersOf(await readDisk(resource)) }, {
+			written: true,
+			otherFile: false,
+			opened: true,
+			flushed: { ok: true, ms: undefined, writes: 1, fallback: true, timedOut: false },
+			modelWrites: [[{ path: '/repo/c' }]],
+			disk: ['/repo/c'],
+		});
+	});
+
+	test('re-applies a write that came in while the upstream path was writing, instead of treating it as written', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		await seed(resource, workspaceContent('/repo/a'));
+		await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/x')));
+		let releaseModelWrite!: () => void;
+		modelWriteGate = new Promise<void>(resolve => releaseModelWrite = resolve);
+
+		await cache.tryWrite(resource, FOLDERS_B);
+		await timeout(10);
+		// upstream の経路が B を保存している途中に C が来る。
+		const next = await cache.tryWrite(resource, FOLDERS_C);
+		const flushing = paradisWhenWorkspaceFileFlushed();
+		modelWriteGate = undefined;
+		releaseModelWrite();
+		const flushed = await flushing;
+
+		assert.deepStrictEqual({ next, flushed: { ...flushed, ms: undefined }, modelWrites, disk: foldersOf(await readDisk(resource)) }, {
+			next: true,
+			flushed: { ok: true, ms: undefined, writes: 2, fallback: true, timedOut: false },
 			modelWrites: [[{ path: '/repo/b' }]],
-			disk: ['/repo/b'],
+			disk: ['/repo/c'],
 		});
 	});
 
