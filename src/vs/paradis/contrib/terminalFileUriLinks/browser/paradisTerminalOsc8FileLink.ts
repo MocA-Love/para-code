@@ -54,6 +54,8 @@ export interface IParadisOsc8FileTarget {
 const schemeRegex = /^(?<scheme>[a-zA-Z][a-zA-Z0-9+.-]*):(?<rest>.*)$/s;
 // Line fragments: `#L3`, `#L3C2`, `#L5-L9`, `#L5-9`, `#L5C1-L9C4` and the plain `#339`.
 const lineFragmentRegex = /^L?(?<row>\d+)(?:C(?<col>\d+))?(?:-L?(?<rowEnd>\d+)(?:C(?<colEnd>\d+))?)?$/;
+// Common file names without an extension, read as `Makefile:3` rather than as a scheme.
+const extensionlessFileNames = new Set(['makefile', 'gnumakefile', 'dockerfile', 'containerfile', 'gemfile', 'rakefile', 'procfile', 'jenkinsfile', 'vagrantfile', 'brewfile', 'justfile', 'license', 'readme', 'changelog']);
 
 /**
  * Reads an OSC 8 link target as a file path. Returns `undefined` for a real URL (http, mailto, ...)
@@ -85,9 +87,11 @@ export function paradisParseOsc8FileTarget(text: string, os: OperatingSystem): I
 	const pathText = hasFragment ? text.substring(0, hashIndex) : text;
 	const fragment = hasFragment ? text.substring(hashIndex + 1) : '';
 	if (scheme !== undefined) {
-		const isWindowsDrive = scheme.length === 1 && /^[\\/]/.test(text.substring(2));
-		// `a.md:12` and `Makefile:3:4` look like a scheme followed by a line suffix.
-		const isFileWithLineSuffix = getLinkSuffix(pathText) !== null && removeLinkSuffix(pathText) === scheme;
+		const isWindowsDrive = os === OperatingSystem.Windows && scheme.length === 1 && /^[\\/]/.test(text.substring(2));
+		// `a.md:12` and `Makefile:3:4` look like a scheme followed by a line suffix. The scheme must
+		// look like a file name, so `tel:5551234` and `localhost:3000` stay URLs.
+		const looksLikeFileName = scheme.includes('.') || extensionlessFileNames.has(scheme.toLowerCase());
+		const isFileWithLineSuffix = looksLikeFileName && getLinkSuffix(pathText) !== null && removeLinkSuffix(pathText) === scheme;
 		if (!isWindowsDrive && !isFileWithLineSuffix) {
 			return undefined;
 		}
@@ -155,8 +159,9 @@ export interface IParadisOsc8LinkRequest {
 }
 
 /**
- * Opens an OSC 8 link that names a file. Returns `false` when the link is a URL (or file links are
- * turned off), leaving it to the upstream handler.
+ * Opens an OSC 8 link that names a file. Returns `false` when the link is a URL, file links are
+ * turned off, or a `file:` link is not in `allowedLinkSchemes` (upstream then asks first), leaving
+ * it to the upstream handler.
  */
 export function paradisOpenOsc8FileLink(accessor: ServicesAccessor, request: IParadisOsc8LinkRequest): Promise<boolean> {
 	// The accessor is only valid synchronously, so read every service before the first await.
@@ -166,8 +171,12 @@ export function paradisOpenOsc8FileLink(accessor: ServicesAccessor, request: IPa
 	const workspaceContextService = accessor.get(IWorkspaceContextService);
 
 	const { processInfo } = request;
-	const enableFileLinks = configurationService.getValue<ITerminalConfiguration>(TERMINAL_CONFIG_SECTION)?.enableFileLinks as ITerminalConfiguration['enableFileLinks'] | boolean | undefined;
+	const terminalConfiguration = configurationService.getValue<ITerminalConfiguration>(TERMINAL_CONFIG_SECTION);
+	const enableFileLinks = terminalConfiguration?.enableFileLinks as ITerminalConfiguration['enableFileLinks'] | boolean | undefined;
 	if (enableFileLinks === 'off' || enableFileLinks === false || (enableFileLinks === 'notRemote' && processInfo.remoteAuthority)) {
+		return Promise.resolve(false);
+	}
+	if (/^file:/i.test(request.text) && !terminalConfiguration?.allowedLinkSchemes?.includes(Schemas.file)) {
 		return Promise.resolve(false);
 	}
 	const os = processInfo.os ?? OS;
