@@ -8,19 +8,23 @@
 
 import { promises as fs } from 'fs';
 import * as os from 'os';
-import { EventLoopUtilization, monitorEventLoopDelay, performance } from 'perf_hooks';
+import { monitorEventLoopDelay, performance } from 'perf_hooks';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
-import { IParadisHostLoad, IParadisLoopDelayHistogram, IParadisMainLoopPeriodSummary, IParadisMainLoopWindowSummary, IParadisStatProbeReply, paradisIsMainLoopCongested, paradisSummarizeMainLoop } from '../common/paradisMainLoad.js';
+import { IParadisHostLoad, IParadisLoopDelayHistogram, IParadisMainLoopPeriodSummary, IParadisMainLoopWindowSummary, IParadisStatProbeReply, paradisIsMainLoopCongested, paradisMainThreadUtilization, paradisSummarizeMainLoop } from '../common/paradisMainLoad.js';
 
 /** 計測に使う道具。テストでは偽物を渡す。 */
 export interface IParadisMainLoadDependencies {
 	createHistogram(resolutionMs: number): IParadisLoopDelayHistogram & { enable(): void; disable(): void; reset(): void };
-	eventLoopUtilization(previous?: EventLoopUtilization): EventLoopUtilization;
+	/**
+	 * 今のスレッド (main) がこれまでに使った CPU 時間 (ms、user + system の累計)。取れない環境では undefined。
+	 * `performance.eventLoopUtilization` は Electron の main では常に 0 なので使わない (`paradisMainLoad.ts` の M2)。
+	 */
+	threadCpuMs(): number | undefined;
 	now(): number;
 	setInterval(handler: () => void, ms: number): unknown;
 	clearInterval(handle: unknown): void;
@@ -61,13 +65,21 @@ export const PARADIS_MAIN_LOAD_DEFAULTS = {
 function defaultDependencies(): IParadisMainLoadDependencies {
 	return {
 		createHistogram: resolution => monitorEventLoopDelay({ resolution }),
-		eventLoopUtilization: previous => performance.eventLoopUtilization(previous),
+		threadCpuMs: readThreadCpuMs,
 		now: () => Date.now(),
 		setInterval: (handler, ms) => setInterval(handler, ms),
 		clearInterval: handle => clearInterval(handle as ReturnType<typeof setInterval>),
 		stat: fsPath => fs.stat(fsPath),
 		hostLoad: readHostLoad,
 	};
+}
+
+function readThreadCpuMs(): number | undefined {
+	if (typeof process.threadCpuUsage !== 'function') {
+		return undefined;
+	}
+	const usage = process.threadCpuUsage();
+	return (usage.user + usage.system) / 1000;
 }
 
 /**
@@ -90,10 +102,16 @@ function readHostLoad(): IParadisHostLoad | undefined {
 	}
 }
 
+/** 2 つの累計の差。どちらかが取れなかったら undefined。 */
+function cpuDelta(startMs: number | undefined, endMs: number | undefined): number | undefined {
+	return startMs === undefined || endMs === undefined ? undefined : Math.max(0, endMs - startMs);
+}
+
 interface IOpenWindow {
 	readonly owner: string;
 	readonly histogram: ReturnType<IParadisMainLoadDependencies['createHistogram']>;
-	readonly elu: EventLoopUtilization;
+	/** 区間を始めた時点の main スレッドの CPU 時間 (ms)。 */
+	readonly cpuMs: number | undefined;
 	readonly startedAt: number;
 	/** 区間を始めた時点の Mac 全体の負荷。 */
 	readonly hostLoad: IParadisHostLoad | undefined;
@@ -107,7 +125,7 @@ export class ParadisMainLoadMonitor extends Disposable {
 
 	private readonly deps: IParadisMainLoadDependencies;
 	private readonly periodic: ReturnType<IParadisMainLoadDependencies['createHistogram']>;
-	private periodElu: EventLoopUtilization;
+	private periodCpuMs: number | undefined;
 	private periodStartedAt: number;
 	private readonly recent: IParadisMainLoopPeriodSummary[] = [];
 	private readonly openWindows = new Map<number, IOpenWindow>();
@@ -122,7 +140,7 @@ export class ParadisMainLoadMonitor extends Disposable {
 		this.deps = { ...defaultDependencies(), ...dependencies };
 		this.periodic = this.deps.createHistogram(options.periodicResolutionMs);
 		this.periodic.enable();
-		this.periodElu = this.deps.eventLoopUtilization();
+		this.periodCpuMs = this.deps.threadCpuMs();
 		this.periodStartedAt = this.deps.now();
 		const timer = this.deps.setInterval(() => this.summarizePeriod(), options.periodMs);
 		// 計測のためにプロセスの終了を引き止めない。
@@ -143,13 +161,14 @@ export class ParadisMainLoadMonitor extends Disposable {
 	/** 定期の要約を 1 回作る。タイマーから呼ばれる（テストからも直接呼ぶ）。 */
 	summarizePeriod(): IParadisMainLoopPeriodSummary {
 		const now = this.deps.now();
-		const elu = this.deps.eventLoopUtilization(this.periodElu);
+		const cpuMs = this.deps.threadCpuMs();
+		const durationMs = now - this.periodStartedAt;
 		const summary: IParadisMainLoopPeriodSummary = {
-			...paradisSummarizeMainLoop(this.periodic, elu.utilization, now - this.periodStartedAt),
+			...paradisSummarizeMainLoop(this.periodic, paradisMainThreadUtilization(cpuDelta(this.periodCpuMs, cpuMs), durationMs), durationMs),
 			endedAt: now,
 		};
 		this.periodic.reset();
-		this.periodElu = this.deps.eventLoopUtilization();
+		this.periodCpuMs = cpuMs;
 		this.periodStartedAt = now;
 		this.recent.push(summary);
 		while (this.recent.length > this.options.recentLimit) {
@@ -189,7 +208,7 @@ export class ParadisMainLoadMonitor extends Disposable {
 		const id = this.nextWindowId++;
 		const histogram = this.deps.createHistogram(this.options.windowResolutionMs);
 		histogram.enable();
-		this.openWindows.set(id, { owner, histogram, elu: this.deps.eventLoopUtilization(), startedAt: now, hostLoad: this.deps.hostLoad() });
+		this.openWindows.set(id, { owner, histogram, cpuMs: this.deps.threadCpuMs(), startedAt: now, hostLoad: this.deps.hostLoad() });
 		return id;
 	}
 
@@ -201,8 +220,8 @@ export class ParadisMainLoadMonitor extends Disposable {
 		}
 		this.openWindows.delete(id);
 		window.histogram.disable();
-		const elu = this.deps.eventLoopUtilization(window.elu);
-		const summary = paradisSummarizeMainLoop(window.histogram, elu.utilization, this.deps.now() - window.startedAt);
+		const durationMs = this.deps.now() - window.startedAt;
+		const summary = paradisSummarizeMainLoop(window.histogram, paradisMainThreadUtilization(cpuDelta(window.cpuMs, this.deps.threadCpuMs()), durationMs), durationMs);
 		return window.hostLoad === undefined ? summary : { ...summary, hostLoad: window.hostLoad };
 	}
 

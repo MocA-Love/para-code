@@ -11,7 +11,9 @@
 //
 // 何を測るか:
 // - M1 main のイベントループ遅延（`perf_hooks.monitorEventLoopDelay`）
-// - M2 main の稼働率（`performance.eventLoopUtilization` の差分）
+// - M2 main の稼働率（main スレッドの CPU 時間 `process.threadCpuUsage` の差分 ÷ 区間の長さ）。
+//   `performance.eventLoopUtilization` は使えない。Electron の main は node の `SpinEventLoop` を
+//   通らず `performance.nodeTiming.loopStart` が -1 のままなので、どれだけ混んでいても常に 0 を返す
 // - M3 renderer の長いタスク（`paradisLongTaskMonitor.ts`）
 // - M4 stat の往復を「main へ届くまで／main で処理／renderer へ戻るまで」に割る
 //
@@ -29,8 +31,11 @@ export interface IParadisMainLoopSummary {
 	readonly p50Ms: number;
 	readonly p99Ms: number;
 	readonly maxMs: number;
-	/** 区間のうち main の JS スレッドが動いていた割合 (%)。 */
-	readonly busyPct: number;
+	/**
+	 * 区間のうち main スレッドが CPU を使っていた割合 (%)。同期 I/O で寝ていた時間は含まない。
+	 * スレッドの CPU 時間が取れない環境では無い (0 を「暇だった」と読ませない)。
+	 */
+	readonly busyPct?: number;
 	/** 区間の長さ。 */
 	readonly durationMs: number;
 }
@@ -91,15 +96,25 @@ function nsToMs(ns: number): number {
 	return Number.isFinite(ns) && ns > 0 ? Math.round(ns / 1e5) / 10 : 0;
 }
 
-/** ヒストグラムと稼働率を ms・% の要約にする。 */
-export function paradisSummarizeMainLoop(histogram: IParadisLoopDelayHistogram, utilization: number, durationMs: number): IParadisMainLoopSummary {
-	return {
+/**
+ * 区間の main スレッドの CPU 時間 (ms) を稼働率 (0〜1) にする。CPU 時間が取れなかった・区間の長さが
+ * 0 のときは undefined。`Date.now()` の粒度で CPU 時間が区間の長さを少し超えることがあるので、要約で 1 に止める。
+ */
+export function paradisMainThreadUtilization(cpuMs: number | undefined, durationMs: number): number | undefined {
+	return cpuMs !== undefined && Number.isFinite(cpuMs) && durationMs > 0 ? cpuMs / durationMs : undefined;
+}
+
+/** ヒストグラムと稼働率を ms・% の要約にする。稼働率が無ければ `busyPct` を付けない。 */
+export function paradisSummarizeMainLoop(histogram: IParadisLoopDelayHistogram, utilization: number | undefined, durationMs: number): IParadisMainLoopSummary {
+	const summary: IParadisMainLoopSummary = {
 		p50Ms: nsToMs(histogram.percentile(50)),
 		p99Ms: nsToMs(histogram.percentile(99)),
 		maxMs: nsToMs(histogram.max),
-		busyPct: Number.isFinite(utilization) ? Math.round(Math.min(Math.max(utilization, 0), 1) * 1000) / 10 : 0,
 		durationMs: Math.max(0, Math.round(durationMs)),
 	};
+	return utilization !== undefined && Number.isFinite(utilization)
+		? { ...summary, busyPct: Math.round(Math.min(Math.max(utilization, 0), 1) * 1000) / 10 }
+		: summary;
 }
 
 /**
