@@ -256,7 +256,7 @@ const PARADIS_PANEL_OPEN_MESSAGE = 'PC の Claude Code で画面（/config な�
  */
 const PARADIS_PC_DRAFT_MESSAGE = 'PC の Claude Code の入力欄に書きかけの文があるので送っていません。PC で送るか消してから送り直してください';
 const PARADIS_PC_DRAFT_SETTING_MESSAGE = 'PC の Claude Code の入力欄の書きかけを一時的によけられなかったので、設定を変えていません。PC で送るか消してから変えてください';
-const PARADIS_PC_DRAFT_RESTORING_MESSAGE = 'PC の Claude Code の入力欄へ書きかけを戻している途中なので、打っていません。少し待ってから送り直してください';
+const PARADIS_PC_DRAFT_RESTORING_MESSAGE = 'PC の Claude Code で前の操作（設定の変更や、よけた書きかけを戻すこと）がまだ終わっていないので、打っていません。少し待ってから送り直してください';
 /** 設定を変える前によけた PC の書きかけを、戻さずに諦めるまでの上限。 */
 const DRAFT_STASH_MAX_MS = 30_000;
 /** 設定の操作が終わった後、打ったコマンドが入力欄から消えたのを見届けられなくても書きかけを戻すまでの間。 */
@@ -5278,12 +5278,23 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * キーで打つ前に入力欄が空くのを待つ理由。`stash`: 設定の前によけた書きかけを戻している途中（入力欄は空と知らされて
-	 * いるが、途中で戻ってくる）、`typed`: 直前に Para Code が貼った文がまだ入力欄にある（Enter の後の空の知らせを待つ）。
+	 * キーで打つ前に入力欄が空くのを待つ理由。`stash`: 前の操作がまだ終わっていない（書きかけをよけている・戻している途中で、
+	 * 入力欄は空と知らされていても途中で戻ってくる。または、前の設定をウィンドウがまだ打っていない）、`typed`: 直前に
+	 * Para Code が貼った文がまだ入力欄にある（Enter の後の空の知らせを待つ）。
 	 */
 	private keysWaitReason(token: string, sessionId: string | undefined): 'stash' | 'typed' | undefined {
 		for (const stash of this.stashedDrafts.values()) {
 			if (stash.token === token) {
+				return 'stash';
+			}
+		}
+		for (const stashing of this.stashingDrafts.values()) {
+			if (stashing === token) {
+				return 'stash';
+			}
+		}
+		for (const pending of this.pendingActions.values()) {
+			if (pending.token === token && pending.requirePrompt === true) {
 				return 'stash';
 			}
 		}
@@ -5411,6 +5422,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, PC_DRAFT_PUSH_MS));
 	}
 
+	/** 書きかけをよけている最中の設定（actionKey → ペイン）。答えが来るまで、同じペインの次の操作を待たせる。 */
+	private readonly stashingDrafts = new Map<string, string>();
+
 	/** 設定を変える前によけた PC の書きかけ（actionKey → よけた文と、戻す時機の手がかり）。 */
 	private readonly stashedDrafts = new Map<string, { readonly token: string; readonly sessionId: string; readonly text: string; readonly expiresAt: number; typed: boolean; finalized: boolean; restoring: boolean; unconfirmedAt?: number; backAt?: number; timer: ReturnType<typeof setTimeout> }>();
 
@@ -5420,8 +5434,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private stashDraftThen(mobileId: string, terminalId: number, requestId: string, key: string, token: string, sessionId: string, text: string, proceed: () => void): void {
 		this.dialogChecks.add(key);
+		this.stashingDrafts.set(key, token);
 		void this.claudeModBridge.fillDraft(token, sessionId, '').catch(() => 'unconfirmed' as const).then(result => {
 			this.dialogChecks.delete(key);
+			this.stashingDrafts.delete(key);
 			if (result === 'filled' || result === 'unconfirmed') {
 				this.forgetStashedDraft(key);
 				const timer = setTimeout(() => this.restoreStashedDraft(key), DRAFT_STASH_MAX_MS);
