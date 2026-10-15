@@ -394,7 +394,8 @@ function describeInputBarrierTimeout(
 		transport,
 		safe_method: method,
 		safe_pending_count: remaining.length,
-		safe_session_allowed: allowed,
+		// キー名に `session` を入れない (Sentry の sensitiveFields に部分一致して値が消える)。
+		safe_cdp_target_attached: allowed,
 	}, 'warning');
 	return `PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (${detail})`;
 }
