@@ -55,7 +55,7 @@ import {
 	paradisParseComputerUseApprovalOutcome,
 	paradisParseComputerUseForegroundOutcome,
 } from '../common/paradisComputerUse.js';
-import { createParadisComputerUseCallDiagnostics, IParadisComputerUseCallDiagnostics, ParadisComputerUseCallOutcome, paradisComputerUseCallAttributes, paradisComputerUseReasonWord, recordParadisComputerUseCall } from '../common/paradisComputerUseDiagnostics.js';
+import { createParadisComputerUseCallDiagnostics, IParadisComputerUseCallDiagnostics, ParadisComputerUseCallOutcome, ParadisComputerUseFailure, paradisComputerUseBlockFailure, paradisComputerUseCallAttributes, paradisComputerUseUnavailableFailure, recordParadisComputerUseCall } from '../common/paradisComputerUseDiagnostics.js';
 import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from './paradisComputerUseGrantLedger.js';
 import { IParadisComputerUseHelper, ParadisComputerUseHelperError, paradisParseHelperPermissions } from './paradisComputerUseHelperClient.js';
@@ -413,7 +413,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			}
 			const availability = this._helper.availability;
 			if (availability !== 'ok') {
-				return errorResult(AVAILABILITY_MESSAGES[availability], `unavailable_${paradisComputerUseReasonWord(availability)}`);
+				return errorResult(AVAILABILITY_MESSAGES[availability], paradisComputerUseUnavailableFailure(availability));
 			}
 			switch (name) {
 				case 'computer_status':
@@ -436,7 +436,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			if (error instanceof ParadisComputerUseHelperError && error.sent !== undefined) {
 				diagnostics.inputSent = error.sent;
 			}
-			return errorResult(describeHelperError(error) + sent, helperFailureCode(error));
+			return helperErrorResult(describeHelperError(error) + sent, error);
 		}
 	}
 
@@ -678,8 +678,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			diagnostics.foregroundAsked = true;
 			const answer = await this._askForeground(paneToken, app, name, context, diagnostics, signal);
 			if (answer !== true) {
-				const answered = failureOf.get(answer);
-				return typing.typed > 0 ? errorResult(`${resultText(answer)} The first ${typing.typed} characters were already typed through accessibility; do not retype them.`, answered?.failure, answered?.outcome) : answer;
+				return typing.typed > 0 ? taggedResult(`${resultText(answer)} The first ${typing.typed} characters were already typed through accessibility; do not retype them.`, failureOf.get(answer)) : answer;
 			}
 			// 待つ間に設定がオフになっていたら送らない
 			if (!this._options.enabled()) {
@@ -826,19 +825,19 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				const total = graphemes.length;
 				if (error.sent !== undefined) {
 					if (error.sent === 0) {
-						return { ok: false, error: errorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`, error.code) };
+						return { ok: false, error: helperErrorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`, error) };
 					}
 					const done = typed + Math.min(error.sent, chunk.length);
-					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`, error.code) };
+					return { ok: false, error: helperErrorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`, error) };
 				}
 				if (error.progress !== undefined) {
 					const done = typed + error.progress;
 					return {
-						ok: false, error: errorResult(`${describeHelperError(error).split(' Progress:')[0]} Para Code typed the first ${done} of ${total} characters before it stopped. They are already in the app: if you continue, send only the remaining ${total - done} characters (from character ${done + 1}) and do not retype the first part.`, error.code),
+						ok: false, error: helperErrorResult(`${describeHelperError(error).split(' Progress:')[0]} Para Code typed the first ${done} of ${total} characters before it stopped. They are already in the app: if you continue, send only the remaining ${total - done} characters (from character ${done + 1}) and do not retype the first part.`, error),
 					};
 				}
 				return {
-					ok: false, error: errorResult(`${describeHelperError(error)} The first ${typed} of ${total} characters were typed for sure, and some of the next ${chunk.length} may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.`, error.code),
+					ok: false, error: helperErrorResult(`${describeHelperError(error)} The first ${typed} of ${total} characters were typed for sure, and some of the next ${chunk.length} may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.`, error),
 				};
 			}
 		}
@@ -873,7 +872,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const app = resolved.app;
 		const blocked = paradisComputerUseBlockReason(app.bundleId, this._options.blockOptions);
 		if (blocked) {
-			return { ok: false, error: refusal(`${app.name} (${app.bundleId}) ${BLOCK_MESSAGES[blocked]}`, `blocked_${paradisComputerUseReasonWord(blocked)}`) };
+			return { ok: false, error: refusal(`${app.name} (${app.bundleId}) ${BLOCK_MESSAGES[blocked]}`, paradisComputerUseBlockFailure(blocked)) };
 		}
 		const grant = this._ledger.get(paneToken, app.bundleId);
 		if (grant === 'denied') {
@@ -1349,17 +1348,26 @@ function jsonResult(value: object): IToolResult {
 /** 失敗した結果の理由（Sentry の span へ載せる語）。結果はエージェントへの英文だけなので、ここで添える。 */
 const failureOf = new WeakMap<IToolResult, { readonly outcome: Exclude<ParadisComputerUseCallOutcome, 'ok'>; readonly failure: string }>();
 
-function errorResult(text: string, failure?: string, outcome: Exclude<ParadisComputerUseCallOutcome, 'ok'> = 'error'): IToolResult {
-	const result: IToolResult = { content: [{ type: 'text', text }], isError: true };
-	if (failure !== undefined) {
-		failureOf.set(result, { outcome, failure });
-	}
-	return result;
+function errorResult(text: string, failure?: ParadisComputerUseFailure): IToolResult {
+	return taggedResult(text, failure !== undefined ? { outcome: 'error', failure } : undefined);
 }
 
 /** 設定・利用者の判断・常に断るアプリで断った結果（壊れているのではない）。 */
-function refusal(text: string, failure: string): IToolResult {
-	return errorResult(text, failure, 'refused');
+function refusal(text: string, failure: ParadisComputerUseFailure): IToolResult {
+	return taggedResult(text, { outcome: 'refused', failure });
+}
+
+/** 補助アプリのエラーで止まった結果。理由はそのコード（送るときに {@link paradisComputerUseCallAttributes} が形を確かめる）。 */
+function helperErrorResult(text: string, error: unknown): IToolResult {
+	return taggedResult(text, { outcome: 'error', failure: helperFailureCode(error) });
+}
+
+function taggedResult(text: string, tag: { readonly outcome: Exclude<ParadisComputerUseCallOutcome, 'ok'>; readonly failure: string } | undefined): IToolResult {
+	const result: IToolResult = { content: [{ type: 'text', text }], isError: true };
+	if (tag !== undefined) {
+		failureOf.set(result, tag);
+	}
+	return result;
 }
 
 /** 例外の理由の語。補助アプリのエラーはそのコード、それ以外は `exception`。 */

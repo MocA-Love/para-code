@@ -24,7 +24,7 @@ import { release, tmpdir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ParadisComputerUseHelperFailureReporter, ParadisComputerUseHelperFailureStage, reportParadisComputerUseHelperFailure } from '../common/paradisComputerUseDiagnostics.js';
+import { ParadisComputerUseHelperFailureReporter, ParadisComputerUseHelperFailureStage, paradisComputerUseHelperVersion, reportParadisComputerUseHelperFailure } from '../common/paradisComputerUseDiagnostics.js';
 import {
 	IParadisComputerUsePermissions,
 	PARADIS_COMPUTER_USE_APP_NAME,
@@ -527,7 +527,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			this._availability = 'launch-failed';
 			this._detail = 'the helper stopped repeatedly while answering';
 			this._logService?.warn('[ParadisComputerUse] helper stopped repeatedly; Computer Use is disabled until it is turned on again');
-			this._report('crashed-repeatedly', undefined, { safe_crashes: this._consecutiveCrashes, safe_helper_version: this._status?.helperVersion ?? 'unknown' });
+			this._report('crashed-repeatedly', undefined, { safe_crashes: this._consecutiveCrashes, safe_helper_version: paradisComputerUseHelperVersion(this._status?.helperVersion) ?? 'unknown' });
 		}
 	}
 

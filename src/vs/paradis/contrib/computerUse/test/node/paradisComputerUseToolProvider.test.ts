@@ -489,7 +489,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			{ ...base, safe_tool: 'computer_click', safe_outcome: 'refused', safe_failure: 'foreground_denied', safe_duration_ms: 1_000, safe_approval_wait_ms: 1_000, safe_foreground_asked: true },
 			{ ...base, safe_tool: 'computer_click', safe_outcome: 'error', safe_failure: 'timeout', safe_input_sent: 0 },
 			{ ...base, safe_tool: 'computer_click', safe_outcome: 'ok', safe_route: 'accessibility' },
-			{ ...base, safe_tool: 'computer_list_windows', safe_outcome: 'refused', safe_failure: 'blocked_password_manager' },
+			{ ...base, safe_tool: 'computer_list_windows', safe_outcome: 'refused', safe_failure: 'blocked_vault_app' },
 		]);
 	});
 

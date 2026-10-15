@@ -8,7 +8,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisComputerUseBlockReason, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
+import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
 suite('ParadisComputerUse common', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -89,6 +91,27 @@ suite('ParadisComputerUse common', () => {
 			refused: [true, false, false],
 			afterForget: [],
 			c: [{ bundleId: 'com.apple.Mail', grant: 'read' }],
+		});
+	});
+
+	test('sends no reason word or key that Sentry would scrub, and renames helper codes that contain one', () => {
+		// 補助アプリ（ParadisProtocol.swift ほか）と接続（paradisComputerUseHelperClient.ts）が返すコード
+		const helperCodes = [
+			'accessibility_not_granted', 'app_blocked', 'app_not_found', 'cancelled', 'focus_changed', 'foreground_needs_approval', 'input_failed',
+			'input_unsupported', 'internal_error', 'invalid_argument', 'invalid_request', 'key_blocked', 'menu_open', 'point_obscured', 'point_outside_window',
+			'queue_full', 'screen_locked', 'screen_recording_not_granted', 'screenshot_failed', 'stale_element', 'system_dialog', 'unknown_method',
+			'user_active', 'window_not_focused', 'window_not_found', 'timeout', 'helper_disconnected', 'helper_error', 'unavailable',
+		];
+		const sent = [...PARADIS_COMPUTER_USE_FAILURES, ...helperCodes.map(paradisComputerUseFailureCode), paradisComputerUseFailureCode('tree_key_blocked')];
+		const keys = Object.keys(paradisComputerUseCallAttributes('computer_click', 'error', 'timeout', 1, { ...createParadisComputerUseCallDiagnostics(), route: 'foreground', inputSent: 1, stateFailure: 'tree_timeout' }, '0.1.0'));
+		assert.deepStrictEqual({
+			scrubbed: [...sent, ...keys].filter(isParadisSentryScrubbedWord),
+			renamed: [paradisComputerUseFailureCode('key_blocked'), paradisComputerUseFailureCode('tree_key_blocked')],
+			unknown: [paradisComputerUseFailureCode('auth_failed'), paradisComputerUseFailureCode('/Users/someone'), paradisComputerUseFailureCode('Timeout')],
+		}, {
+			scrubbed: [],
+			renamed: ['shortcut_blocked', 'tree_shortcut_blocked'],
+			unknown: ['other', 'other', 'other'],
 		});
 	});
 });

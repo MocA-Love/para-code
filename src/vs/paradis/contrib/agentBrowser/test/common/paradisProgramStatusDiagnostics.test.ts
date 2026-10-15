@@ -8,8 +8,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisProgramStatusDropReason, paradisProgramStatusProcessKind } from '../../common/paradisProgramStatus.js';
-import { ParadisProgramStatusRunStats, paradisProgramStatusCliVersion, paradisProgramStatusQueryAttributes } from '../../common/paradisProgramStatusDiagnostics.js';
+import { PARADIS_PROGRAM_STATUS_SPAN_INTERVAL_MS, ParadisProgramStatusRunEnd, ParadisProgramStatusRunStats, ParadisProgramStatusSpanThrottle, paradisProgramStatusCliVersion, paradisProgramStatusQueryAttributes } from '../../common/paradisProgramStatusDiagnostics.js';
 
 suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -65,12 +66,12 @@ suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 		stats.noteUnbound();
 		stats.noteIpcFailure();
 		now += 5_000;
-		const run = stats.take('command-finished');
+		const run = stats.take('shell-end');
 		stats.noteGateClosed();
 		assert.deepStrictEqual({ before, run, after: stats.take('disposed'), nothing: stats.take('disposed') }, {
 			before: undefined,
 			run: {
-				safe_ended_by: 'command-finished',
+				safe_ended_by: 'shell-end',
 				safe_open_ms: 5_000,
 				safe_states_sent: 2,
 				safe_states_applied: 1,
@@ -99,5 +100,40 @@ suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 			},
 			nothing: undefined,
 		});
+	});
+
+	test('sends at most one span per terminal every 10 seconds, carries the skipped count, and always sends the last one on close', () => {
+		let now = 0;
+		const throttle = new ParadisProgramStatusSpanThrottle(() => now);
+		const taken: (number | undefined)[] = [throttle.take()];
+		for (let index = 0; index < 1_000; index++) {
+			now += 1;
+			taken.push(throttle.take());
+		}
+		const sentDuringFlood = taken.filter(value => value !== undefined).length;
+		now = PARADIS_PROGRAM_STATUS_SPAN_INTERVAL_MS;
+		const afterInterval = throttle.take();
+		now += 1;
+		throttle.take();
+		assert.deepStrictEqual({ sentDuringFlood, afterInterval, onClose: throttle.take(true) }, { sentDuringFlood: 1, afterInterval: 1_000, onClose: 1 });
+	});
+
+	test('drops an unknown state name that Sentry would scrub, but still counts it', () => {
+		const stats = new ParadisProgramStatusRunStats(() => 0);
+		stats.opened(undefined);
+		stats.noteDropped('unknown-state', 'auth_wait');
+		const run = stats.take('process-exit');
+		assert.deepStrictEqual({ unknown: run?.safe_unknown_states, name: run?.safe_unknown_state_name }, { unknown: 1, name: undefined });
+	});
+
+	test('sends no key or fixed value that Sentry would scrub', () => {
+		const ends: ParadisProgramStatusRunEnd[] = ['clear-status', 'shell-end', 'process-exit', 'foreground', 'requery', 'disposed'];
+		const stats = new ParadisProgramStatusRunStats(() => 0);
+		stats.opened('2.1.295');
+		stats.noteDropped('unknown-state', 'thinking');
+		const run = stats.take('disposed') ?? {};
+		const query = paradisProgramStatusQueryAttributes({ answered: true, foreground: 'passthrough', processKind: 'passthrough', cmdlineTrusted: true, shellIntegration: true, cliVersion: '2.1.295' });
+		const words = [...ends, ...Object.keys(run), ...Object.keys(query), 'safe_queries_skipped', 'safe_runs_skipped', ...[...Object.values(run), ...Object.values(query)].filter((value): value is string => typeof value === 'string')];
+		assert.deepStrictEqual(words.filter(isParadisSentryScrubbedWord), []);
 	});
 });
