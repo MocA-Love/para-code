@@ -117,12 +117,14 @@ export function runInParadisSpan<T>(
 }
 
 /**
- * Words Sentry scrubs wherever they appear: the default data scrubber (`password`, `auth`, `secret`,
- * `token`, `session`, `cookie`, `key`, ...) and the desktop project's own sensitive fields (`terminal`,
- * `command`, `prompt`, `env`, `cwd`, `dsn`). A key or a fixed value containing one arrives as
+ * Words Sentry scrubs wherever they appear: Relay's default key pattern (`PASSWORD_KEY_REGEX` in
+ * relay-pii/src/regexes.rs: `password`, `secret`, `passwd`, `api_key`, `apikey`, `auth`, `credentials`,
+ * `mysql_pwd`, `privatekey`, `private_key`, `token`, `otp`, `two_factor`; a bare `key` is not in it) and
+ * the desktop project's own sensitive fields (`token`, `session`, `cookie`, `dsn`, `cwd`, `command`,
+ * `prompt`, `terminal`, `env`, `environment`). A key or a fixed value containing one arrives as
  * `[Filtered]` or null (2026-10: `para.operation:desktop-relay.auth-probe` and `safe_highlight_tokenize_ms`).
  */
-const scrubbedWord = /password|passwd|pwd|secret|token|session|cookie|auth|key|credential|private|dsn|cwd|command|prompt|terminal|env/i;
+const scrubbedWord = /password|passwd|secret|api[-_]?key|private[-_]?key|auth|credential|mysql_pwd|token|^otp$|two[-_]factor|session|cookie|dsn|cwd|command|prompt|terminal|env/i;
 
 /** Whether Sentry would scrub this key or fixed value. Pick another word for anything this matches. */
 export function isParadisSentryScrubbedWord(value: string): boolean {

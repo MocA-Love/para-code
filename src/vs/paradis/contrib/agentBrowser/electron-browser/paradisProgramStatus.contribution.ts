@@ -174,17 +174,21 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	 * （ターミナルを閉じたときは必ず送る）にまとめる。
 	 */
 	private endRun(endedBy: ParadisProgramStatusRunEnd): void {
-		if (!this.runStats.hasData) {
+		const disposed = endedBy === 'disposed';
+		// 閉じるときは、間引いたまま送れなかった問い合わせの数もここに載せる（次の問い合わせの span はもう来ない）
+		const queriesSkipped = disposed ? this.querySpans.take(true) ?? 0 : 0;
+		if (!this.runStats.hasData && queriesSkipped === 0) {
 			return;
 		}
-		const skipped = this.runSpans.take(endedBy === 'disposed');
+		const skipped = this.runSpans.take(disposed);
 		if (skipped === undefined) {
 			return;
 		}
-		const attributes = this.runStats.take(endedBy);
-		if (attributes !== undefined) {
-			this.record('run', { ...attributes, ...(skipped > 0 ? { safe_runs_skipped: skipped } : {}) });
-		}
+		this.record('run', {
+			...(this.runStats.take(endedBy) ?? { safe_ended_by: endedBy }),
+			...(skipped > 0 ? { safe_runs_skipped: skipped } : {}),
+			...(queriesSkipped > 0 ? { safe_queries_skipped: queriesSkipped } : {}),
+		});
 	}
 
 	private record(operation: 'query' | 'run', attributes: ParadisSpanAttributes): void {
