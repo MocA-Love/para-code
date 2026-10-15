@@ -48,6 +48,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'PC の Claude Code の入力欄に書きかけの文があると、会話の入力欄の上に出るようになりました',
 				body: '書きかけがある間は、こちらから送った発言が書きかけにつながらないよう PC が送るのを止めることがあります。見せるのは先頭だけで、手元には保存しません（PC の Para Code と Claude Code 2.1.300 以上が必要です）。',
 			},
+			{
+				icon: 'notifications-outline',
+				title: '通知を長押ししたとき、中身が出ずに暗い板だけになっていたのを直しました',
+				body: '長押しで、エージェントの最後の発言や承認待ちのコマンドが読めるようになります。',
+			},
 		],
 	},
 	{
