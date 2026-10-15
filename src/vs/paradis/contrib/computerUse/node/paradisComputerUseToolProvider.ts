@@ -55,6 +55,8 @@ import {
 	paradisParseComputerUseApprovalOutcome,
 	paradisParseComputerUseForegroundOutcome,
 } from '../common/paradisComputerUse.js';
+import { createParadisComputerUseCallDiagnostics, IParadisComputerUseCallDiagnostics, ParadisComputerUseCallOutcome, paradisComputerUseCallAttributes, paradisComputerUseReasonWord, recordParadisComputerUseCall } from '../common/paradisComputerUseDiagnostics.js';
+import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from './paradisComputerUseGrantLedger.js';
 import { IParadisComputerUseHelper, ParadisComputerUseHelperError, paradisParseHelperPermissions } from './paradisComputerUseHelperClient.js';
 
@@ -340,6 +342,10 @@ export interface IParadisComputerUseToolOptions {
 	readonly blockOptions?: IParadisComputerUseBlockOptions;
 	/** 操作の後に状態を読むまで待つ時間（テストで 0 にする）。 */
 	readonly settleMs?: number;
+	/** 呼び出し 1 回の結果を送る口（テストで差し替える。無ければ Sentry の `para.computerUse.call` の span）。 */
+	recordCall?(attributes: ParadisSpanAttributes): void;
+	/** 所要時間を測る時計（テストで差し替える）。 */
+	now?(): number;
 }
 
 export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
@@ -377,22 +383,37 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		if (!TOOL_NAMES.has(name)) {
 			return undefined;
 		}
+		const startedAt = this._now();
+		const diagnostics = createParadisComputerUseCallDiagnostics();
+		const result = await this._callTool(paneToken, name, args, diagnostics, signal, context);
+		// 失敗はエージェントへ英文で返すだけで、ログにも残らなかった。理由の語と所要時間を span で送る
+		const failure = result.isError ? (failureOf.get(result) ?? { outcome: 'error' as const, failure: 'unclassified' }) : undefined;
+		try {
+			const record = this._options.recordCall ?? recordParadisComputerUseCall;
+			record(paradisComputerUseCallAttributes(name, failure?.outcome ?? 'ok', failure?.failure, this._now() - startedAt, diagnostics, this._helper.lastStatus?.helperVersion));
+		} catch {
+			// 診断は観測している動きを変えない
+		}
+		return result;
+	}
+
+	private async _callTool(paneToken: string, name: string, args: unknown, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<IToolResult> {
 		const record = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
 		try {
 			// 補助アプリは利用者の権限で OS に触れるので、読み取りも手元のペインからだけ受ける（SSH は固定で拒否、Q99）
 			const caller: ParadisMcpCallerKind = context ? await context.classifyCaller() : 'unverified';
 			if (caller === 'tunnel') {
-				return errorResult(SSH_REFUSED_MESSAGE);
+				return refusal(SSH_REFUSED_MESSAGE, 'caller_ssh');
 			}
 			if (caller !== 'pane' || !context) {
-				return errorResult(CALLER_UNVERIFIED_MESSAGE);
+				return refusal(CALLER_UNVERIFIED_MESSAGE, 'caller_unverified');
 			}
 			if (!this._options.enabled()) {
-				return errorResult(DISABLED_MESSAGE);
+				return refusal(DISABLED_MESSAGE, 'disabled');
 			}
 			const availability = this._helper.availability;
 			if (availability !== 'ok') {
-				return errorResult(AVAILABILITY_MESSAGES[availability]);
+				return errorResult(AVAILABILITY_MESSAGES[availability], `unavailable_${paradisComputerUseReasonWord(availability)}`);
 			}
 			switch (name) {
 				case 'computer_status':
@@ -400,24 +421,31 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				case 'computer_list_apps':
 					return await this._listApps(paneToken, signal);
 				case 'computer_list_windows':
-					return await this._listWindows(paneToken, record, context, signal);
+					return await this._listWindows(paneToken, record, context, diagnostics, signal);
 				case 'computer_get_app_state':
-					return await this._getAppState(paneToken, record, context, signal);
+					return await this._getAppState(paneToken, record, context, diagnostics, signal);
 			}
 			if (OPERATE_METHODS[name] && PARADIS_COMPUTER_USE_OPERATE_AVAILABLE) {
-				return await this._operate(paneToken, name, record, context, signal);
+				return await this._operate(paneToken, name, record, context, diagnostics, signal);
 			}
-			return errorResult(`Unhandled Computer Use tool: ${name}`);
+			return errorResult(`Unhandled Computer Use tool: ${name}`, 'unhandled_tool');
 		} catch (error) {
 			const sent = error instanceof ParadisComputerUseHelperError && error.sent !== undefined
 				? error.sent === 0 ? ' No input was sent for this request.' : ` ${error.sent} input units were sent; receipt is unconfirmed. Read the app state before retrying; do not replay sent input.`
 				: '';
-			return errorResult(describeHelperError(error) + sent);
+			if (error instanceof ParadisComputerUseHelperError && error.sent !== undefined) {
+				diagnostics.inputSent = error.sent;
+			}
+			return errorResult(describeHelperError(error) + sent, helperFailureCode(error));
 		}
 	}
 
 	private _visible(): boolean {
 		return this._options.enabled() && this._helper.availability === 'ok';
+	}
+
+	private _now(): number {
+		return this._options.now?.() ?? Date.now();
 	}
 
 	// --- 状態・一覧 ---
@@ -458,8 +486,8 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 
 	// --- 読み取り ---
 
-	private async _listWindows(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
-		const access = await this._authorize(paneToken, args, 'read', context, signal);
+	private async _listWindows(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<IToolResult> {
+		const access = await this._authorize(paneToken, args, 'read', context, diagnostics, signal);
 		if (!access.ok) {
 			return access.error;
 		}
@@ -475,9 +503,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		};
 	}
 
-	private async _getAppState(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
+	private async _getAppState(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<IToolResult> {
 		const maxNodes = optionalInteger(args.maxNodes, 'maxNodes', 1, 2_000);
-		const access = await this._authorize(paneToken, args, 'read', context, signal);
+		const access = await this._authorize(paneToken, args, 'read', context, diagnostics, signal);
 		if (!access.ok) {
 			return access.error;
 		}
@@ -488,14 +516,14 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const permissions = paradisParseHelperPermissions(await this._helper.request('permissions', {}, signal));
 		const wantScreenshot = args.screenshot !== false;
 		if (!permissions.accessibility && !(wantScreenshot && permissions.screenRecording)) {
-			return errorResult('macOS has not granted Accessibility (or Screen Recording) to "Para Code Computer Use", so it cannot read the window. Ask the user to allow it in System Settings > Privacy & Security. Do not ask them to allow Para Code itself.');
+			return errorResult('macOS has not granted Accessibility (or Screen Recording) to "Para Code Computer Use", so it cannot read the window. Ask the user to allow it in System Settings > Privacy & Security. Do not ask them to allow Para Code itself.', 'permissions_missing');
 		}
 		this._logService?.info(`[ParadisComputerUse] read the state of ${access.app.bundleId}`);
-		return { content: await this._readState(paneToken, access.app, window.window, wantScreenshot, maxNodes, signal, permissions) };
+		return { content: await this._readState(paneToken, access.app, window.window, wantScreenshot, maxNodes, signal, permissions, diagnostics) };
 	}
 
 	/** ウィンドウのツリーとスクショ。許可の無い方は理由を書いて省く。 */
-	private async _readState(paneToken: string, app: IBundledApp, window: IWindowInfo, wantScreenshot: boolean, maxNodes: number | undefined, signal?: AbortSignal, knownPermissions?: IParadisComputerUsePermissions): Promise<ToolContent[]> {
+	private async _readState(paneToken: string, app: IBundledApp, window: IWindowInfo, wantScreenshot: boolean, maxNodes: number | undefined, signal?: AbortSignal, knownPermissions?: IParadisComputerUsePermissions, diagnostics?: IParadisComputerUseCallDiagnostics): Promise<ToolContent[]> {
 		const permissions = knownPermissions ?? paradisParseHelperPermissions(await this._helper.request('permissions', {}, signal));
 		const notes: string[] = [];
 		let tree: string | undefined;
@@ -512,6 +540,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				}
 			} catch (error) {
 				notes.push(`Accessibility tree unavailable: ${describeHelperError(error)}`);
+				noteStateFailure(diagnostics, 'tree', error);
 			}
 		} else {
 			notes.push('Accessibility is not granted to "Para Code Computer Use", so there is no accessibility tree.');
@@ -529,6 +558,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					}
 				} catch (error) {
 					notes.push(`Screenshot unavailable: ${describeHelperError(error)}`);
+					noteStateFailure(diagnostics, 'screenshot', error);
 				}
 			} else {
 				notes.push('Screen Recording is not granted to "Para Code Computer Use", so there is no screenshot.');
@@ -554,9 +584,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 
 	// --- 操作 ---
 
-	private async _operate(paneToken: string, name: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
+	private async _operate(paneToken: string, name: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<IToolResult> {
 		const params = operateParams(name, args);
-		const access = await this._authorize(paneToken, args, 'operate', context, signal);
+		const access = await this._authorize(paneToken, args, 'operate', context, diagnostics, signal);
 		if (!access.ok) {
 			return access.error;
 		}
@@ -617,6 +647,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					}
 				}
 				const record = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+				if (typeof record.route === 'string') {
+					diagnostics.route = record.route;
+				}
 				this._logService?.info(`[ParadisComputerUse] ${method} in ${app.bundleId}${typeof record.route === 'string' ? ` via ${record.route}` : ''}`);
 				const summary: Record<string, unknown> = { app: describeApp(app), action: name.replace(/^computer_/, ''), ...record };
 				const note = [typeof record.note === 'string' ? record.note : undefined, pasteNote(record)].filter(Boolean).join(' ');
@@ -627,9 +660,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				if (includeState && window.ok) {
 					await sleep(this._options.settleMs ?? SETTLE_BEFORE_STATE_MS);
 					try {
-						content.push(...await this._readState(paneToken, app, window.window, true, undefined, signal));
+						content.push(...await this._readState(paneToken, app, window.window, true, undefined, signal, undefined, diagnostics));
 					} catch (error) {
 						content.push({ type: 'text', text: `The state after the action could not be read: ${describeHelperError(error)}` });
+						noteStateFailure(diagnostics, 'after', error);
 					}
 				}
 				return { content };
@@ -639,15 +673,17 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			}
 			// 補助アプリは何も送らずに返している。列の外で利用者に聞き、許されたら同じ要求を送り直す（1 回だけ）
 			if (attempt > 0) {
-				return errorResult('Para Code could not send this action. Try again.');
+				return errorResult('Para Code could not send this action. Try again.', 'foreground_retry_failed');
 			}
-			const answer = await this._askForeground(paneToken, app, name, context, signal);
+			diagnostics.foregroundAsked = true;
+			const answer = await this._askForeground(paneToken, app, name, context, diagnostics, signal);
 			if (answer !== true) {
-				return typing.typed > 0 ? errorResult(`${resultText(answer)} The first ${typing.typed} characters were already typed through accessibility; do not retype them.`) : answer;
+				const answered = failureOf.get(answer);
+				return typing.typed > 0 ? errorResult(`${resultText(answer)} The first ${typing.typed} characters were already typed through accessibility; do not retype them.`, answered?.failure, answered?.outcome) : answer;
 			}
 			// 待つ間に設定がオフになっていたら送らない
 			if (!this._options.enabled()) {
-				return errorResult(DISABLED_MESSAGE);
+				return refusal(DISABLED_MESSAGE, 'disabled');
 			}
 			allowForeground = true;
 			justApproved = true;
@@ -681,8 +717,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	 * 前面に出して実カーソルとキーボードを使ってよいか、利用者に聞く（設定 `paradis.computerUse.confirmForegroundInput`）。
 	 * 許されたら true、断られたらエージェントへ返す結果。「このターミナルでは聞かない」はペインとアプリの組で覚える。
 	 */
-	private async _askForeground(paneToken: string, app: IBundledApp, name: string, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<true | IToolResult> {
+	private async _askForeground(paneToken: string, app: IBundledApp, name: string, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<true | IToolResult> {
 		const prompt: IParadisComputerUseForegroundPrompt = { appName: app.name, bundleId: app.bundleId, action: name.replace(/^computer_/, '') };
+		const askedAt = this._now();
 		const call = await context.callOwningWindow<unknown>({
 			channelName: PARADIS_COMPUTER_USE_APPROVAL_CHANNEL,
 			method: PARADIS_COMPUTER_USE_FOREGROUND_METHOD,
@@ -692,8 +729,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			timeoutMs: PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS,
 			timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
 		}, signal);
+		diagnostics.approvalWaitMs += this._now() - askedAt;
 		if (!call.ok) {
-			return errorResult(call.error);
+			return errorResult(call.error, 'foreground_dialog_failed');
 		}
 		switch (paradisParseComputerUseForegroundOutcome(call.value)) {
 			case 'pane':
@@ -705,20 +743,20 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				return true;
 			case 'denied':
 				this._logService?.info(`[ParadisComputerUse] the user declined real pointer and keyboard input in ${app.bundleId}`);
-				return errorResult(`The user declined to let Para Code bring ${app.name} forward and use the real mouse pointer and keyboard for this action. Actions that work through accessibility (clicking buttons and fields, computer_set_value, typing into a field that accepts it) still work without asking; for anything else, ask the user in the conversation.`);
+				return refusal(`The user declined to let Para Code bring ${app.name} forward and use the real mouse pointer and keyboard for this action. Actions that work through accessibility (clicking buttons and fields, computer_set_value, typing into a field that accepts it) still work without asking; for anything else, ask the user in the conversation.`, 'foreground_denied');
 			case 'recentlyDenied':
-				return errorResult('The user declined a request to use the real mouse pointer and keyboard in this app a short while ago, so Para Code turned this one down without asking. Use actions that work through accessibility, wait, or ask the user in the conversation.');
+				return refusal('The user declined a request to use the real mouse pointer and keyboard in this app a short while ago, so Para Code turned this one down without asking. Use actions that work through accessibility, wait, or ask the user in the conversation.', 'foreground_recently_denied');
 			case 'busy':
-				return errorResult('Another request from this terminal pane is waiting for the user. Wait for it to finish, then try again.');
+				return errorResult('Another request from this terminal pane is waiting for the user. Wait for it to finish, then try again.', 'foreground_busy');
 			case 'unanswered':
-				return errorResult('Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.');
+				return errorResult('Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.', 'foreground_unanswered');
 			case 'paneUnresolved':
-				return errorResult('Para Code could not find the window of this terminal pane, so it could not ask the user.');
+				return errorResult('Para Code could not find the window of this terminal pane, so it could not ask the user.', 'foreground_pane_unresolved');
 			case 'timedOut':
-				return errorResult(REQUEST_TIMEOUT_MESSAGE);
+				return errorResult(REQUEST_TIMEOUT_MESSAGE, 'foreground_timed_out');
 			case 'cancelled':
 			default:
-				return errorResult('The request was cancelled before the user answered.');
+				return errorResult('The request was cancelled before the user answered.', 'foreground_cancelled');
 		}
 	}
 
@@ -768,14 +806,14 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 							? `the field does not show them as sent (it shows ${check.inserted} new characters)`
 							: 'the field does not show them as sent';
 					return {
-						ok: false, error: errorResult(`Para Code sent characters ${typed + 1} to ${typed + chunk.length} of ${graphemes.length}, but ${what}. ${sentBefore} Read the app with computer_get_app_state and fix the text there if needed before continuing; do not resend the whole text.`),
+						ok: false, error: errorResult(`Para Code sent characters ${typed + 1} to ${typed + chunk.length} of ${graphemes.length}, but ${what}. ${sentBefore} Read the app with computer_get_app_state and fix the text there if needed before continuing; do not resend the whole text.`, check.rewritten ? 'typing_rewritten' : 'typing_mismatch'),
 					};
 				}
 				progress.unconfirmed = progress.unconfirmed || check.verified !== true;
 				progress.rewritten = progress.rewritten || check.rewritten === true;
 				progress.typed += chunk.length;
 				if (delivery?.focusPreserved === false) {
-					return { ok: false, error: errorResult(`The foreground focus changed after sending the first ${progress.typed} of ${graphemes.length} characters. ${progress.unconfirmed ? 'Receipt could not be confirmed.' : 'These characters were confirmed.'} Do not resend them. Read the app state before continuing${progress.typed < graphemes.length ? ` with character ${progress.typed + 1}` : '; no characters remain to send'}.`) };
+					return { ok: false, error: errorResult(`The foreground focus changed after sending the first ${progress.typed} of ${graphemes.length} characters. ${progress.unconfirmed ? 'Receipt could not be confirmed.' : 'These characters were confirmed.'} Do not resend them. Read the app state before continuing${progress.typed < graphemes.length ? ` with character ${progress.typed + 1}` : '; no characters remain to send'}.`, 'typing_focus_changed') };
 				}
 			} catch (error) {
 				if (!(error instanceof ParadisComputerUseHelperError)) {
@@ -788,19 +826,19 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 				const total = graphemes.length;
 				if (error.sent !== undefined) {
 					if (error.sent === 0) {
-						return { ok: false, error: errorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`) };
+						return { ok: false, error: errorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`, error.code) };
 					}
 					const done = typed + Math.min(error.sent, chunk.length);
-					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`) };
+					return { ok: false, error: errorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`, error.code) };
 				}
 				if (error.progress !== undefined) {
 					const done = typed + error.progress;
 					return {
-						ok: false, error: errorResult(`${describeHelperError(error).split(' Progress:')[0]} Para Code typed the first ${done} of ${total} characters before it stopped. They are already in the app: if you continue, send only the remaining ${total - done} characters (from character ${done + 1}) and do not retype the first part.`),
+						ok: false, error: errorResult(`${describeHelperError(error).split(' Progress:')[0]} Para Code typed the first ${done} of ${total} characters before it stopped. They are already in the app: if you continue, send only the remaining ${total - done} characters (from character ${done + 1}) and do not retype the first part.`, error.code),
 					};
 				}
 				return {
-					ok: false, error: errorResult(`${describeHelperError(error)} The first ${typed} of ${total} characters were typed for sure, and some of the next ${chunk.length} may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.`),
+					ok: false, error: errorResult(`${describeHelperError(error)} The first ${typed} of ${total} characters were typed for sure, and some of the next ${chunk.length} may also have been typed. Read the app with computer_get_app_state before continuing, and do not resend the whole text.`, error.code),
 				};
 			}
 		}
@@ -827,7 +865,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	 * アプリを解いて、常に断るものでないこと、このペインに求める許可があることを確かめる。
 	 * 許可が無ければ承認ダイアログを出す。読み取りだけを許されたアプリへの操作は、格上げを聞く（断られていれば聞かずに断る）。
 	 */
-	private async _authorize(paneToken: string, args: Record<string, unknown>, level: AccessLevel, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IResolved> {
+	private async _authorize(paneToken: string, args: Record<string, unknown>, level: AccessLevel, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<IResolved> {
 		const resolved = await this._resolveApp(args.app, signal);
 		if (!resolved.ok) {
 			return resolved;
@@ -835,35 +873,35 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		const app = resolved.app;
 		const blocked = paradisComputerUseBlockReason(app.bundleId, this._options.blockOptions);
 		if (blocked) {
-			return { ok: false, error: errorResult(`${app.name} (${app.bundleId}) ${BLOCK_MESSAGES[blocked]}`) };
+			return { ok: false, error: refusal(`${app.name} (${app.bundleId}) ${BLOCK_MESSAGES[blocked]}`, `blocked_${paradisComputerUseReasonWord(blocked)}`) };
 		}
 		const grant = this._ledger.get(paneToken, app.bundleId);
 		if (grant === 'denied') {
-			return { ok: false, error: errorResult(`The user declined to let this terminal pane use ${app.name}. Do not ask again; Para Code refuses further requests from this pane for this app.`) };
+			return { ok: false, error: refusal(`The user declined to let this terminal pane use ${app.name}. Do not ask again; Para Code refuses further requests from this pane for this app.`, 'user_denied') };
 		}
 		if (grant === 'operate' || (grant === 'read' && level === 'read')) {
 			return { ok: true, app };
 		}
 		if (grant === 'read' && this._ledger.operateRefused(paneToken, app.bundleId)) {
-			return { ok: false, error: errorResult(readOnlyMessage(app)) };
+			return { ok: false, error: refusal(readOnlyMessage(app), 'read_only') };
 		}
 		const upgrade = grant === 'read';
-		const answer = await this._askApproval(paneToken, app, level, upgrade, context, signal);
+		const answer = await this._askApproval(paneToken, app, level, upgrade, context, diagnostics, signal);
 		if (typeof answer === 'object') {
 			return { ok: false, error: answer };
 		}
 		if (level === 'operate' && answer !== 'operate') {
-			return { ok: false, error: errorResult(readOnlyMessage(app)) };
+			return { ok: false, error: refusal(readOnlyMessage(app), 'read_only') };
 		}
 		// 承認を待つ間にアプリが終わった・起動し直したら、別のプロセスに触れない
 		const current = (await this._runningApps(signal)).find(candidate => candidate.pid === app.pid && candidate.bundleId === app.bundleId);
 		if (!current) {
-			return { ok: false, error: errorResult(`${app.name} quit or restarted while the user was answering. Call computer_list_apps and try again.`) };
+			return { ok: false, error: errorResult(`${app.name} quit or restarted while the user was answering. Call computer_list_apps and try again.`, 'app_restarted') };
 		}
 		return { ok: true, app };
 	}
 
-	private async _askApproval(paneToken: string, app: IBundledApp, level: AccessLevel, upgrade: boolean, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<AccessLevel | IToolResult> {
+	private async _askApproval(paneToken: string, app: IBundledApp, level: AccessLevel, upgrade: boolean, context: IParadisMcpToolCallContext, diagnostics: IParadisComputerUseCallDiagnostics, signal?: AbortSignal): Promise<AccessLevel | IToolResult> {
 		const prompt: IParadisComputerUseApprovalPrompt = {
 			appName: app.name,
 			bundleId: app.bundleId,
@@ -871,6 +909,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			upgrade,
 			offerOperate: PARADIS_COMPUTER_USE_OPERATE_AVAILABLE,
 		};
+		const askedAt = this._now();
 		const call = await context.callOwningWindow<unknown>({
 			channelName: PARADIS_COMPUTER_USE_APPROVAL_CHANNEL,
 			method: PARADIS_COMPUTER_USE_APPROVAL_METHOD,
@@ -880,8 +919,9 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			timeoutMs: PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS,
 			timeoutMessage: REQUEST_TIMEOUT_MESSAGE,
 		}, signal);
+		diagnostics.approvalWaitMs += this._now() - askedAt;
 		if (!call.ok) {
-			return errorResult(call.error);
+			return errorResult(call.error, 'approval_dialog_failed');
 		}
 		const outcome = paradisParseComputerUseApprovalOutcome(call.value);
 		switch (outcome) {
@@ -899,24 +939,24 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					// 格上げを断られても、読み取りの許可は残す
 					this._ledger.set(paneToken, app.bundleId, 'read', true);
 					this._logService?.info(`[ParadisComputerUse] the user declined operating ${app.bundleId}`);
-					return errorResult(readOnlyMessage(app));
+					return refusal(readOnlyMessage(app), 'read_only');
 				}
 				this._ledger.set(paneToken, app.bundleId, 'denied');
 				this._logService?.info(`[ParadisComputerUse] the user declined ${app.bundleId}`);
-				return errorResult(`The user declined to let this terminal pane use ${app.name}. Do not ask again; Para Code refuses further requests from this pane for this app.`);
+				return refusal(`The user declined to let this terminal pane use ${app.name}. Do not ask again; Para Code refuses further requests from this pane for this app.`, 'user_denied');
 			case 'recentlyDenied':
-				return errorResult('The user declined a request for this app a short while ago, so Para Code turned this one down without asking. Wait, or ask the user in the conversation.');
+				return refusal('The user declined a request for this app a short while ago, so Para Code turned this one down without asking. Wait, or ask the user in the conversation.', 'approval_recently_denied');
 			case 'busy':
-				return errorResult('Another request from this terminal pane is waiting for the user. Wait for it to finish, then try again.');
+				return errorResult('Another request from this terminal pane is waiting for the user. Wait for it to finish, then try again.', 'approval_busy');
 			case 'unanswered':
-				return errorResult('Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.');
+				return errorResult('Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.', 'approval_unanswered');
 			case 'paneUnresolved':
-				return errorResult('Para Code could not find the window of this terminal pane, so it could not ask the user.');
+				return errorResult('Para Code could not find the window of this terminal pane, so it could not ask the user.', 'approval_pane_unresolved');
 			case 'timedOut':
-				return errorResult(REQUEST_TIMEOUT_MESSAGE);
+				return errorResult(REQUEST_TIMEOUT_MESSAGE, 'approval_timed_out');
 			case 'cancelled':
 			default:
-				return errorResult('The request was cancelled before the user answered.');
+				return errorResult('The request was cancelled before the user answered.', 'approval_cancelled');
 		}
 	}
 
@@ -925,7 +965,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	private async _resolveApp(value: unknown, signal?: AbortSignal): Promise<IResolved> {
 		const wanted = typeof value === 'string' ? value.trim() : '';
 		if (!wanted) {
-			return { ok: false, error: errorResult('"app" must be a bundle id, an exact app name or pid:<number> from computer_list_apps.') };
+			return { ok: false, error: errorResult('"app" must be a bundle id, an exact app name or pid:<number> from computer_list_apps.', 'app_argument_invalid') };
 		}
 		const apps = await this._runningApps(signal);
 		let matches: IRunningApp[];
@@ -941,15 +981,15 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			}
 		}
 		if (matches.length === 0) {
-			return { ok: false, error: errorResult(`No running app matches "${wanted}". Call computer_list_apps to see the running apps.`) };
+			return { ok: false, error: errorResult(`No running app matches "${wanted}". Call computer_list_apps to see the running apps.`, 'app_not_running') };
 		}
 		// 同じ bundle id のアプリが複数動いていることがある（`open -n` など）。どれか分からないので pid で選ばせる
 		if (matches.length > 1) {
-			return { ok: false, error: errorResult(`More than one running app matches "${wanted}". Pass pid:<number> from computer_list_apps instead.`) };
+			return { ok: false, error: errorResult(`More than one running app matches "${wanted}". Pass pid:<number> from computer_list_apps instead.`, 'app_ambiguous') };
 		}
 		const app = matches[0];
 		if (!app.bundleId) {
-			return { ok: false, error: errorResult(`${app.name} has no bundle id, so Computer Use cannot ask the user about it.`) };
+			return { ok: false, error: errorResult(`${app.name} has no bundle id, so Computer Use cannot ask the user about it.`, 'app_no_bundle_id') };
 		}
 		return { ok: true, app: { ...app, bundleId: app.bundleId } };
 	}
@@ -968,7 +1008,7 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			return {
 				ok: false, error: errorResult(windows.length === 0
 					? `${app.name} has no windows.`
-					: 'There is no such window. Call computer_list_windows to see the windows of this app.'),
+					: 'There is no such window. Call computer_list_windows to see the windows of this app.', windows.length === 0 ? 'no_windows' : 'no_such_window'),
 			};
 		}
 		return { ok: true, window };
@@ -1306,8 +1346,34 @@ function jsonResult(value: object): IToolResult {
 	return { content: [{ type: 'text', text: JSON.stringify(value, undefined, 2) }], structuredContent: value };
 }
 
-function errorResult(text: string): IToolResult {
-	return { content: [{ type: 'text', text }], isError: true };
+/** 失敗した結果の理由（Sentry の span へ載せる語）。結果はエージェントへの英文だけなので、ここで添える。 */
+const failureOf = new WeakMap<IToolResult, { readonly outcome: Exclude<ParadisComputerUseCallOutcome, 'ok'>; readonly failure: string }>();
+
+function errorResult(text: string, failure?: string, outcome: Exclude<ParadisComputerUseCallOutcome, 'ok'> = 'error'): IToolResult {
+	const result: IToolResult = { content: [{ type: 'text', text }], isError: true };
+	if (failure !== undefined) {
+		failureOf.set(result, { outcome, failure });
+	}
+	return result;
+}
+
+/** 設定・利用者の判断・常に断るアプリで断った結果（壊れているのではない）。 */
+function refusal(text: string, failure: string): IToolResult {
+	return errorResult(text, failure, 'refused');
+}
+
+/** 例外の理由の語。補助アプリのエラーはそのコード、それ以外は `exception`。 */
+function helperFailureCode(error: unknown): string {
+	return error instanceof ParadisComputerUseHelperError ? error.code : 'exception';
+}
+
+/** ツリー・スクショ・操作後の状態が読めなかったことを数える（呼び出しは成功として返る）。 */
+function noteStateFailure(diagnostics: IParadisComputerUseCallDiagnostics | undefined, what: 'tree' | 'screenshot' | 'after', error: unknown): void {
+	if (!diagnostics) {
+		return;
+	}
+	diagnostics.stateFailures++;
+	diagnostics.stateFailure ??= `${what}_${helperFailureCode(error)}`;
 }
 
 function resultText(result: IToolResult): string {
