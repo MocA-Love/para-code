@@ -2118,6 +2118,50 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 見直しの予約は利用者が何もしていない時刻に走る。folders を進めるだけにして、ジャーナルの復旧
+	// （working set を当てる）はしない。終了の待ちの最中には folders を書き換え始めない。
+	test('only moves the folders forward from the delayed retry, without recovering journals, and does nothing once shutdown has begun', async () => {
+		const runRetry = async (shuttingDown: boolean) => {
+			const testDisposables = new DisposableStore();
+			let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+			const previousLaunchId = mainWindow.vscodeWindowId + 6;
+			try {
+				harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+					context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-b', uri: URI.file('/workspace-b').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+					context.storageService.store(workspaceFileBehindKey(previousLaunchId), workspaceFileBehind(previousLaunchId, 'space-b', '/workspace-b', Date.now()), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				});
+				const service = harness.workspaceSwitchService as unknown as { workspaceFileBehindStaleMs: number; _shuttingDown: boolean };
+				service.workspaceFileBehindStaleMs = 50;
+				await harness.workspaceSwitchService.recoverInterruptedSwitch();
+				// 起動の後に残ったジャーナル（巻き戻しに失敗した回など）。予約からは当てない。
+				harness.storageService.store(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, paradisSerializeWorkspaceSwitchTransactions([{
+					version: 1,
+					id: 'left-after-startup',
+					createdAt: 1,
+					fromStateKey: 'space-a',
+					fromUri: URI.file('/workspace-a').toString(),
+					toStateKey: 'space-b',
+					toUri: URI.file('/workspace-b').toString(),
+					phase: 'targetApplied',
+				}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				service._shuttingDown = shuttingDown;
+				await timeout(1_500);
+				return {
+					activeStateKey: harness.workspaceSwitchService.activeStateKey,
+					journal: paradisParseWorkspaceSwitchTransactions(harness.storageService.get(PARADIS_WORKSPACE_SWITCH_TRANSACTION_STORAGE_KEY, StorageScope.WORKSPACE)).map(transaction => transaction.id),
+				};
+			} finally {
+				await harness?.parts.activeGroup.closeAllEditors();
+				testDisposables.dispose();
+			}
+		};
+
+		assert.deepStrictEqual({ retried: await runRetry(false), duringShutdown: await runRetry(true) }, {
+			retried: { activeStateKey: 'space-b', journal: ['left-after-startup'] },
+			duringShutdown: { activeStateKey: 'space-a', journal: ['left-after-startup'] },
+		});
+	});
+
 	// WORKSPACE の storage は同じワークスペースの別のウィンドウと共有。生きている別のウィンドウの印
 	// （書き直された時刻が新しい）では folders を動かさず、消しもしない。こちらの印は別のキーに書くので、
 	// 別のウィンドウの印を上書きしない。
