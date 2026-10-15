@@ -28,14 +28,17 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.3.0';
+const MOD_VERSION = '1.4.0';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
  * slash command for Para Code Mobile with `$.command.run`, `prompt.dialog` answers `dialogCheck` (whether a
- * screen such as `/config` holds the keys).
+ * screen such as `/config` holds the keys), `draft.fill` answers `draftFill` (replaces the prompt box's text: Para Code clears
+ * a draft before it types a setting and puts it back after; it learns the box's text from draft.ts).
  */
-const MOD_FEATURES = ['commands.list', 'command.run', 'prompt.dialog'];
+const MOD_FEATURES = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
+/** Para Code never asks to put back more than this (draft.ts marks longer text as cut). */
+const MAX_DRAFT_FILL_CHARS = 20_000;
 /** How long a slash command may take before Para Code is told it was taken (a panel holds `$.command.run` open). */
 const COMMAND_RUN_EARLY_MS = 1_500;
 /**
@@ -529,6 +532,13 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 		await listCommands($, sessionId, id);
 		return;
 	}
+	if (id !== undefined && command.kind === 'draftFill') {
+		if (typeof command.text === 'string' && command.text.length <= MAX_DRAFT_FILL_CHARS) {
+			// `append` puts a draft back without removing what the person typed in the meantime
+			await fillDraft($, sessionId, id, command.text, command.mode === 'append' ? 'append' : 'replace');
+		}
+		return;
+	}
 	if (id !== undefined && command.kind === 'commandRun') {
 		const name = str(command.command);
 		const args = typeof command.args === 'string' ? command.args : '';
@@ -580,6 +590,19 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 		if (submitGeneration === mine) {
 			submitting = false;
 		}
+	}
+}
+
+/**
+ * Replaces (or appends to) the prompt box's text for Para Code. Para Code only asks while it knows the box's text (draft.ts
+ * tells it on Claude Code 2.1.300 and later), so this never guesses what is in the box.
+ */
+async function fillDraft($: Engine, sessionId: string, id: string, text: string, mode: 'replace' | 'append'): Promise<void> {
+	try {
+		const filled = await $.prompt.fill({ text, mode });
+		await request($, 'ack', { sessionId, id, ok: filled.isFilled, ...(filled.isFilled ? {} : { reason: filled.refusal === 'dialog' ? 'panel-open' : 'refused' }) });
+	} catch (error) {
+		await request($, 'ack', { sessionId, id, ok: false, reason: 'refused', ...(errorText(error) !== undefined ? { message: errorText(error) } : {}) });
 	}
 }
 
