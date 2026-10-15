@@ -48,6 +48,10 @@ suite('Para Code terminal OSC 8 file links', () => {
 			'https://example.com/a.md',
 			'mailto:someone@example.com',
 			'vscode://file/home/u/a.md',
+			'tel:5551234',
+			'sms:5551234',
+			'localhost:3000',
+			'C:\\work\\a.md:4',
 		];
 		assert.deepStrictEqual(Object.fromEntries(inputs.map(input => [input, paradisParseOsc8FileTarget(input, OperatingSystem.Linux) ?? null])), {
 			'a.md': { path: 'a.md', selection: undefined },
@@ -66,6 +70,11 @@ suite('Para Code terminal OSC 8 file links', () => {
 			'https://example.com/a.md': null,
 			'mailto:someone@example.com': null,
 			'vscode://file/home/u/a.md': null,
+			'tel:5551234': null,
+			'sms:5551234': null,
+			'localhost:3000': null,
+			// A drive letter means nothing on a Linux host.
+			'C:\\work\\a.md:4': null,
 		});
 	});
 
@@ -115,7 +124,8 @@ suite('Para Code terminal OSC 8 file links', () => {
 			[TerminalBuiltinLinkType.Search, recordingOpener],
 		]);
 
-		const configurationService = new TestConfigurationService({ terminal: { integrated: { enableFileLinks: 'on' } } });
+		const allowedLinkSchemes = ['file', 'http', 'https'];
+		const configurationService = new TestConfigurationService({ terminal: { integrated: { enableFileLinks: 'on', allowedLinkSchemes } } });
 		const instantiationService = ds.add(new TestInstantiationService());
 		instantiationService.stub(IConfigurationService, configurationService);
 		instantiationService.stub(ITerminalLogService, new NullLogService());
@@ -137,11 +147,14 @@ suite('Para Code terminal OSC 8 file links', () => {
 			await open('missing.md:2'),
 			await open('https://example.com/'),
 		];
-		await configurationService.setUserConfiguration('terminal', { integrated: { enableFileLinks: 'off' } });
+		// Without `file` in allowedLinkSchemes, upstream asks before a file: link opens.
+		await configurationService.setUserConfiguration('terminal', { integrated: { enableFileLinks: 'on', allowedLinkSchemes: ['http', 'https'] } });
+		handled.push(await open('file:///home/u/c.md#L3'));
+		await configurationService.setUserConfiguration('terminal', { integrated: { enableFileLinks: 'off', allowedLinkSchemes } });
 		handled.push(await open('backend/x.ts:12'));
 
 		assert.deepStrictEqual({ handled, resolved, opened }, {
-			handled: [true, true, true, false, false],
+			handled: [true, true, true, false, false, false],
 			resolved: ['backend/x.ts', '/home/u/proj/backend/x.ts', '/home/u/c.md', 'missing.md', '/home/u/proj/missing.md'],
 			opened: [
 				{ type: TerminalBuiltinLinkType.LocalFile, text: '/home/u/proj/backend/x.ts', uri: remote('/home/u/proj/backend/x.ts').toString(), selection: { startLineNumber: 12, startColumn: 1, endLineNumber: undefined, endColumn: undefined } },
