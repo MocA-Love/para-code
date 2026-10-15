@@ -2088,6 +2088,36 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// WORKSPACE の storage は別のウィンドウへ変更を配らないので、見える「書き直した時刻」は起動時のまま。
+	// 落ちてすぐ別の id で起動し直すと、自分の前回の印が「生きている別のウィンドウの印」に見える。行き先が
+	// アクティブエントリと一致するなら、古くなった頃にもう一度見て進める。
+	test('looks again once a fresh-looking mark of another window id would be stale, and moves the folders forward when its space matches the active entry', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		const previousLaunchId = mainWindow.vscodeWindowId + 5;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables, undefined, [], undefined, async context => {
+				context.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify({ stateKey: 'space-b', uri: URI.file('/workspace-b').toString() }), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+				// 前の起動が落ちる直前に書き直した印。
+				context.storageService.store(workspaceFileBehindKey(previousLaunchId), workspaceFileBehind(previousLaunchId, 'space-b', '/workspace-b', Date.now()), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			});
+			(harness.workspaceSwitchService as unknown as { workspaceFileBehindStaleMs: number }).workspaceFileBehindStaleMs = 50;
+
+			await harness.workspaceSwitchService.recoverInterruptedSwitch();
+			const atStartup = harness.workspaceSwitchService.activeStateKey;
+			await timeout(1_500);
+
+			assert.deepStrictEqual({
+				atStartup,
+				afterStale: harness.workspaceSwitchService.activeStateKey,
+				behind: readWorkspaceFileBehind(harness.storageService, previousLaunchId),
+			}, { atStartup: 'space-a', afterStale: 'space-b', behind: undefined });
+		} finally {
+			await harness?.parts.activeGroup.closeAllEditors();
+			testDisposables.dispose();
+		}
+	});
+
 	// WORKSPACE の storage は同じワークスペースの別のウィンドウと共有。生きている別のウィンドウの印
 	// （書き直された時刻が新しい）では folders を動かさず、消しもしない。こちらの印は別のキーに書くので、
 	// 別のウィンドウの印を上書きしない。
