@@ -417,13 +417,14 @@ export class ParadisClaudeModBridge {
 		return at !== undefined && this.now() - at <= CALLER_VERIFIED_TTL_MS;
 	}
 
+	/**
+	 * 送り主を確かめる。確かめられなかったときも、前の確かめの記憶は消さない（トークンを持つ別のプロセスの便で、本物の mod の
+	 * 記憶を消させない。記憶は {@link CALLER_VERIFIED_TTL_MS} で切れる）。
+	 */
 	private async verify(token: string, sessionId: string, verifyCaller: () => Promise<boolean>): Promise<boolean> {
 		const verified = await verifyCaller();
-		const key = this.sessionKey(token, sessionId);
 		if (verified) {
-			this.callerVerifiedAt.set(key, this.now());
-		} else {
-			this.callerVerifiedAt.delete(key);
+			this.callerVerifiedAt.set(this.sessionKey(token, sessionId), this.now());
 		}
 		return verified;
 	}
