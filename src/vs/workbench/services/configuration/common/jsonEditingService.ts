@@ -39,7 +39,7 @@ export class JSONEditingService implements IJSONEditingService {
 		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService
 	) {
 		this.queue = new Queue<void>();
-		this.paradisWorkspaceFile = new ParadisWorkspaceFileWriteCache(fileService, textFileService); // PARA-PATCH: see doWriteConfiguration
+		this.paradisWorkspaceFile = new ParadisWorkspaceFileWriteCache(fileService, textFileService, (resource, values) => this.paradisWriteThroughModel(resource, values)); // PARA-PATCH: see doWriteConfiguration
 	}
 
 	write(resource: URI, values: IJSONValue[]): Promise<void> {
@@ -47,9 +47,10 @@ export class JSONEditingService implements IJSONEditingService {
 	}
 
 	private async doWriteConfiguration(resource: URI, values: IJSONValue[]): Promise<void> {
-		// PARA-PATCH: a Para Code window rewrites its `.code-workspace` on every space switch. Write from the
-		// content and etag remembered after the last write instead of checking and re-reading the file over
-		// IPC; falls back to the code below on a conflict or an external change (paradisWorkspaceFileWriteCache.ts)
+		// PARA-PATCH: a Para Code window rewrites its `.code-workspace` on every space switch. Apply the edit to
+		// the content remembered after the last write and write it to disk in the background, so a space switch
+		// does not wait for slow file IPC; the background write falls back to `paradisWriteThroughModel` on a
+		// conflict or an external change (paradisWorkspaceFileWriteCache.ts)
 		if (await this.paradisWorkspaceFile.tryWrite(resource, values)) {
 			return;
 		}
@@ -59,6 +60,18 @@ export class JSONEditingService implements IJSONEditingService {
 			await this.writeToBuffer(reference.object.textEditorModel, values);
 			paradisMarkFolderUpdate('saved'); // PARA-PATCH: see above
 			this.paradisWorkspaceFile.rememberModel(resource); // PARA-PATCH: see above
+		} finally {
+			reference.dispose();
+		}
+	}
+
+	// PARA-PATCH: the background write of a Para Code `.code-workspace` (see doWriteConfiguration). Same as the
+	// code below the cache in doWriteConfiguration, without the timing marks of a space switch.
+	private async paradisWriteThroughModel(resource: URI, values: IJSONValue[]): Promise<void> {
+		const reference = await this.resolveAndValidate(resource, true);
+		try {
+			await this.writeToBuffer(reference.object.textEditorModel, values);
+			this.paradisWorkspaceFile.rememberModel(resource);
 		} finally {
 			reference.dispose();
 		}

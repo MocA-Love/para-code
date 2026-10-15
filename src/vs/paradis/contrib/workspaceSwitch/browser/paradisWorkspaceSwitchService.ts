@@ -34,6 +34,7 @@ import { IParadisMainLoadService, IParadisMainLoopWindowSummary, IParadisStatRou
 import { IParadisLongTaskSummary, IParadisLongTaskWindow, paradisStartLongTaskWindow } from '../../mainLoad/browser/paradisLongTaskMonitor.js';
 import { IParadisLongFrameSummary, IParadisLongFrameWindow, paradisDiffLongFrames, paradisLongFrameAttributes, paradisStartLongFrameWindow } from '../../mainLoad/browser/paradisLongFrameMonitor.js';
 import { paradisBeginFolderUpdateTrace, paradisSafeSwitchAttributes } from '../common/paradisFolderUpdateTrace.js';
+import { IParadisWorkspaceFileFlush, paradisWhenWorkspaceFileFlushed } from '../common/paradisWorkspaceFileWriteCache.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisIsPresentWorktreeKey, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
@@ -288,6 +289,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private _switchRecovery: Promise<void> | undefined;
 	private _shuttingDown = false;
 	private readonly _liveSwitchTransactionIds = new Set<string>();
+	/**
+	 * 切り替えは終わったが、`.code-workspace` の書き込みが後ろでまだ続いている（または失敗したまま
+	 * の）ジャーナル。書き終わるまで消さない（`clearSwitchTransactionWhenFlushed`）。このウィンドウの
+	 * 中断の復旧はこれを中断とみなさない（切り替え自体は終わっていて、今の画面と一致している）。
+	 */
+	private readonly _unflushedSwitchTransactionIds = new Set<string>();
+	/** 後ろの書き込みの終わりを待っている間の Promise。待つのは同時に 1 本だけ。 */
+	private _workspaceFileFlushWatch: Promise<void> | undefined;
+	/** 最後に送った後ろの書き込みの結果（失敗したまま残っている結果を何度も送らない）。 */
+	private _recordedWorkspaceFileFlush: IParadisWorkspaceFileFlush | undefined;
 	private readonly _ownerWindowId = mainWindow.vscodeWindowId;
 	private _switchOwnerLeaseTimer: number | undefined;
 	get isSwitching(): boolean {
@@ -814,6 +825,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		const currentUri = folders.length === 1 ? folders[0].uri : undefined;
 		const relevant: { transaction: IParadisWorkspaceSwitchTransaction; endpoint: 'from' | 'to'; fromUri: URI; toUri: URI }[] = [];
 		for (const candidate of transactions) {
+			if (this._unflushedSwitchTransactionIds.has(candidate.id)) {
+				continue;
+			}
 			try {
 				const fromUri = URI.parse(candidate.fromUri);
 				const toUri = URI.parse(candidate.toUri);
@@ -1029,8 +1043,72 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 	}
 
-	private clearSwitchTransaction(transactionId: string): void {
-		this.clearSwitchTransactions(new Set([transactionId]));
+	/**
+	 * 終わった切り替え（巻き戻しを含む）のジャーナルを、`.code-workspace` がディスクで folders に
+	 * 追いついてから消す。
+	 *
+	 * folders は書き込みを待たずに変わる（`paradisWorkspaceFileWriteCache.ts`）。書き終わる前にウィンドウが
+	 * 落ちると、次の起動はディスクの古い folders で開くのに、エディタとアクティブエントリは切り替えの後の
+	 * まま残り、別のスペースのタブが混ざる。ジャーナルを残しておけば、起動時の復旧がディスクの folders の
+	 * 側の working set を当て直して揃える。
+	 *
+	 * 書き込みが失敗したまま終わったら、ジャーナルは残したままにする。次に書けた（次の切り替えで書けた）
+	 * ときにまとめて消す。待っている間はシャットダウンが待つ（上限は `SHUTDOWN_JOIN_TIMEOUT_MS`）。
+	 */
+	private clearSwitchTransactionWhenFlushed(transactionId: string): void {
+		this._unflushedSwitchTransactionIds.add(transactionId);
+		this.settleUnflushedSwitchTransactions();
+	}
+
+	private settleUnflushedSwitchTransactions(): void {
+		if (this._unflushedSwitchTransactionIds.size === 0 || this._workspaceFileFlushWatch !== undefined) {
+			return;
+		}
+		const flushed = paradisWhenWorkspaceFileFlushed();
+		if (flushed === undefined) {
+			const transactionIds = new Set(this._unflushedSwitchTransactionIds);
+			this._unflushedSwitchTransactionIds.clear();
+			this.clearSwitchTransactions(transactionIds);
+			return;
+		}
+		const watch = this.trackShutdownOperation(flushed.then(result => {
+			this._workspaceFileFlushWatch = undefined;
+			this.recordWorkspaceFileFlush(result);
+			// 失敗したらジャーナルは残す。次の切り替えの終わりにもう一度ここへ来る。いつ書けるか
+			// 分からないので、リースの更新（3 秒ごとの storage の書き込み）は止める。
+			if (result.ok) {
+				this.settleUnflushedSwitchTransactions();
+			} else {
+				for (const transactionId of this._unflushedSwitchTransactionIds) {
+					this.untrackLiveSwitchTransaction(transactionId);
+				}
+			}
+		}, error => {
+			this._workspaceFileFlushWatch = undefined;
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to wait for the workspace file write', error);
+		}));
+		// 書き込みが既に終わっていても then は後で走るので、ここで代入してから抜ける。
+		this._workspaceFileFlushWatch = watch;
+	}
+
+	/** 後ろの書き込みの結果を送る。**項目名に sensitiveFields の語を含めないこと**（`recordSwitchPhases` 参照）。 */
+	private recordWorkspaceFileFlush(result: IParadisWorkspaceFileFlush): void {
+		if (this._recordedWorkspaceFileFlush === result) {
+			return;
+		}
+		this._recordedWorkspaceFileFlush = result;
+		try {
+			const folders = this.contextService.getWorkspace().folders;
+			runInParadisSpan('workspaceSwitch', 'workspace-file-flush', {
+				safe_flush_ms: result.ms,
+				safe_flush_writes: result.writes,
+				safe_flush_fallback: result.fallback ? 1 : 0,
+				safe_flush_ok: result.ok ? 1 : 0,
+				...(folders.length === 1 ? { safe_target_remote: folders[0].uri.scheme === Schemas.vscodeRemote ? 1 : 0 } : {}),
+			}, () => { });
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to record the workspace file write', error);
+		}
 	}
 
 	private clearSwitchTransactions(transactionIds: ReadonlySet<string>): void {
@@ -1683,7 +1761,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					completed = true;
 					if (switchTransaction !== undefined) {
 						try {
-							this.clearSwitchTransaction(switchTransaction.id);
+							this.clearSwitchTransactionWhenFlushed(switchTransaction.id);
 						} catch (error) {
 							// The switch is already committed. A journal cleanup failure must not enter the
 							// source rollback path while completion events are emitted for the target.
@@ -1745,7 +1823,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					if (!rollbackFailed && previousUri !== undefined && rolledBackFolders.length === 1 && isEqual(rolledBackFolders[0].uri, previousUri)) {
 						if (switchTransaction !== undefined) {
 							try {
-								this.clearSwitchTransaction(switchTransaction.id);
+								this.clearSwitchTransactionWhenFlushed(switchTransaction.id);
 							} catch (clearError) {
 								this.logService.error('[ParadisWorkspaceSwitch] Failed to clear a rolled-back switch transaction', clearError);
 							}
@@ -1758,8 +1836,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// **リースのタイマーだけは必ず止める。** ジャーナル自体は復旧のために残ってよいが、
 					// ロールバックのどれか1フェーズが投げて `clearSwitchTransaction` に到達しなかった
 					// 回に、3秒ごとの storage 書き込みがウィンドウを閉じるまで走り続けるのは別問題。
-					// 既に消えている id を渡しても無害（Set の delete）。
-					if (switchTransaction !== undefined) {
+					// 既に消えている id を渡しても無害（Set の delete）。`.code-workspace` の書き込みを後ろで
+					// 待っているジャーナルは、書き終わるまでリースを保つ（別のウィンドウに中断と取られない）。
+					if (switchTransaction !== undefined && !this._unflushedSwitchTransactionIds.has(switchTransaction.id)) {
 						this.untrackLiveSwitchTransaction(switchTransaction.id);
 					}
 

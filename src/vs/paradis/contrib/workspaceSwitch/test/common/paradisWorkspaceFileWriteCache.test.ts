@@ -18,18 +18,22 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { hasWorkspaceFileExtension } from '../../../../../platform/workspace/common/workspace.js';
 import { ITextFileService } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { paradisBeginFolderUpdateTrace } from '../../common/paradisFolderUpdateTrace.js';
-import { IParadisWorkspaceFileSnapshot, ParadisWorkspaceFileWriteCache, paradisTakeWrittenWorkspaceContent } from '../../common/paradisWorkspaceFileWriteCache.js';
+import { IJSONValue } from '../../../../../workbench/services/configuration/common/jsonEditing.js';
+import { IParadisWorkspaceFileSnapshot, ParadisWorkspaceFileWriteCache, paradisTakeWrittenWorkspaceContent, paradisWhenWorkspaceFileFlushed } from '../../common/paradisWorkspaceFileWriteCache.js';
 import { paradisSetManagedWorkspaceWindowForTest } from '../../common/paradisWorkspaceSwitch.js';
 
 /** 呼び出しを数える（往復の数の代わり）。atomic に書けるかを切り替えられる。 */
 class CountingProvider extends InMemoryFileSystemProvider {
 	readonly calls: string[] = [];
 	atomic = true;
+	/** これが解けるまで stat を返さない（接続先が詰まっている回）。 */
+	statGate: Promise<void> | undefined;
 	override get capabilities(): FileSystemProviderCapabilities {
 		return super.capabilities | (this.atomic ? FileSystemProviderCapabilities.FileAtomicWrite : 0);
 	}
 	override async stat(resource: URI): Promise<IStat> {
 		this.calls.push('stat');
+		await this.statGate;
 		return super.stat(resource);
 	}
 	override async readFile(resource: URI): Promise<Uint8Array> {
@@ -49,10 +53,11 @@ function foldersOf(content: string): string[] {
 }
 
 function shortcutsOf(summary: Record<string, number>): Record<string, number> {
-	return Object.fromEntries(Object.entries(summary).filter(([key]) => /_(cached|conflict)$/.test(key)));
+	return Object.fromEntries(Object.entries(summary).filter(([key]) => /_(write_behind|flush_waited|reload_cached)$/.test(key)));
 }
 
 const FOLDERS_B = [{ path: ['folders'], value: [{ path: '/repo/b' }] }];
+const FOLDERS_C = [{ path: ['folders'], value: [{ path: '/repo/c' }] }];
 
 suite('ParadisWorkspaceFileWriteCache', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -62,6 +67,9 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 	let openModels: Set<string>;
 	let writeHook: ((resource: URI, value: string, options: IWriteFileOptions) => Promise<IFileStatWithMetadata>) | undefined;
 	let writeOptions: unknown[];
+	/** upstream の経路（テキストモデルで書く）に回した回の folders。 */
+	let modelWrites: unknown[];
+	let modelWriteFails: boolean;
 	let cache: ParadisWorkspaceFileWriteCache;
 
 	/** `'default'` は本番と同じ判定（Para Code のウィンドウのワークスペースのファイルだけ）。 */
@@ -73,7 +81,18 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 				return writeHook ? writeHook(resource, value, options) : fileService.writeFile(resource, VSBuffer.fromString(value), options);
 			},
 		} as unknown as ITextFileService;
-		const created = new ParadisWorkspaceFileWriteCache(fileService, textFileService, undefined, applies === 'default' ? undefined : applies);
+		// upstream の経路の代わり: ディスクを読み、folders だけを当てて保存し、書いた中身を覚え直す。
+		const writeThroughModel = async (resource: URI, values: IJSONValue[]) => {
+			modelWrites.push(values[0].value);
+			if (modelWriteFails) {
+				return; // upstream は保存の失敗を投げずにモデルへ残す（覚え直さない）
+			}
+			const disk = JSON.parse((await fileService.readFile(resource)).value.toString()) as Record<string, unknown>;
+			const content = JSON.stringify({ ...disk, folders: values[0].value }, null, '\t');
+			const stat = await fileService.writeFile(resource, VSBuffer.fromString(content));
+			created.remember(resource, stat, { content, etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING });
+		};
+		const created: ParadisWorkspaceFileWriteCache = new ParadisWorkspaceFileWriteCache(fileService, textFileService, writeThroughModel, undefined, applies === 'default' ? undefined : applies);
 		disposables.add(created);
 		return created;
 	}
@@ -83,7 +102,8 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		const stat = await fileService.writeFile(resource, VSBuffer.fromString(content));
 		const snapshot: IParadisWorkspaceFileSnapshot = { content, etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING };
 		target.remember(resource, stat, snapshot);
-		// 自分の書き込みの通知を流し切る（InMemory の通知は少し遅れて届く）。
+		// 自分の書き込みの通知を流し切る（InMemory の通知は少し遅れて届く）。上の remember の読み直しの
+		// 申し出も、この通知で取り下がる。
 		await timeout(20);
 		provider.calls.length = 0;
 	}
@@ -100,118 +120,195 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 		openModels = new Set();
 		writeHook = undefined;
 		writeOptions = [];
+		modelWrites = [];
+		modelWriteFails = false;
 		cache = createCache();
 	});
 
-	test('writes from the remembered content after one stat instead of checking and reading the file, and hands the written content to the next reload once', async () => {
+	test('changes the content without waiting for the disk, hands it to every reload until the background write lands, and writes only the last of two quick switches', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 		await seed(resource, workspaceContent('/repo/a'));
+		// 接続先が詰まっていて、ファイルの IPC が返らない回。
+		let releaseStat!: () => void;
+		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
 
 		const trace = paradisBeginFolderUpdateTrace();
 		const written = await cache.tryWrite(resource, FOLDERS_B);
-		const calls = [...provider.calls];
 		const reloaded = paradisTakeWrittenWorkspaceContent(resource);
-		const reloadedAgain = paradisTakeWrittenWorkspaceContent(resource);
 		const summary = trace.summarize(undefined);
 		trace.end();
-		// 自分の書き込みの通知の後も、etag が同じなので次も覚えた中身で書く。
+		// 書き込みが止まっている間の次の切り替えと、その間に届いた通知の後の読み直し。
+		const writtenAgain = await cache.tryWrite(resource, FOLDERS_C);
 		await timeout(20);
-		const writtenAgain = await cache.tryWrite(resource, [{ path: ['folders'], value: [{ path: '/repo/c' }] }]);
-		const disk = await readDisk(resource);
+		const reloadedWhileWriting = paradisTakeWrittenWorkspaceContent(resource);
+		const flushing = paradisWhenWorkspaceFileFlushed();
+		provider.statGate = undefined;
+		releaseStat();
+		const flushed = await flushing;
+		await timeout(20);
 
 		assert.deepStrictEqual({
 			written,
 			writtenAgain,
-			// 外部での変更を確かめる stat、書き込みの中の etag の確認と書き込み後の stat。存在確認と読み込みはしない。
-			calls,
+			reloaded: reloaded === undefined ? undefined : foldersOf(reloaded),
+			reloadedWhileWriting: reloadedWhileWriting === undefined ? undefined : foldersOf(reloadedWhileWriting),
+			flushed: { ...flushed, ms: undefined },
+			afterFlush: paradisWhenWorkspaceFileFlushed(),
+			// 書き終わって通知が来た後は、読み直しはディスクを読む。
+			reloadedAfterFlush: paradisTakeWrittenWorkspaceContent(resource),
+			// B を書く前に C が来たので、書いたのは C の 1 回だけ。
 			atomic: writeOptions,
-			folders: foldersOf(disk),
+			folders: foldersOf(await readDisk(resource)),
 			// folders 以外はそのまま残す。
-			settings: (JSON.parse(disk) as { settings: unknown }).settings,
-			reloadedHasB: reloaded !== undefined && foldersOf(reloaded)[0] === '/repo/b',
-			reloadedAgain,
+			settings: (JSON.parse(await readDisk(resource)) as { settings: unknown }).settings,
 			shortcuts: shortcutsOf(summary),
 		}, {
 			written: true,
 			writtenAgain: true,
-			calls: ['stat', 'stat', 'stat'],
-			atomic: [{ postfix: '.vsctmp' }, { postfix: '.vsctmp' }],
+			reloaded: ['/repo/b'],
+			reloadedWhileWriting: ['/repo/c'],
+			flushed: { ok: true, ms: undefined, writes: 2, fallback: false },
+			afterFlush: undefined,
+			reloadedAfterFlush: undefined,
+			atomic: [{ postfix: '.vsctmp' }],
 			folders: ['/repo/c'],
 			settings: { 'editor.tabSize': 2 },
-			reloadedHasB: true,
-			reloadedAgain: undefined,
-			shortcuts: { safe_update_folders_resolve_cached: 1, safe_update_folders_resolve_conflict: 0, safe_update_folders_reload_cached: 1 },
+			shortcuts: { safe_update_folders_write_behind: 1, safe_update_folders_flush_waited: 0, safe_update_folders_reload_cached: 1 },
 		});
 	});
 
-	test('leaves an external change of the same size, a deletion and an unreported change to the upstream path without overwriting them', async () => {
+	test('keeps an external change by writing through the upstream path when the file changed on disk, was deleted, or the write conflicts', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 
-		// サイズの変わらない外部での変更（書き込みの etag の確認だけでは見逃す）。
+		// 外部での変更（folders 以外も変わっている）。
 		await seed(resource, workspaceContent('/repo/a'));
 		await timeout(5);
-		await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/x')));
+		await fileService.writeFile(resource, VSBuffer.fromString(JSON.stringify({ folders: [{ path: '/repo/x' }], settings: { 'editor.tabSize': 8 } }, null, '\t')));
 		const sameSize = await cache.tryWrite(resource, FOLDERS_B);
-		const afterSameSize = foldersOf(await readDisk(resource));
-		// 捨ててあるので次も upstream の経路。
-		const sameSizeAgain = await cache.tryWrite(resource, FOLDERS_B);
+		const sameSizeFlush = await paradisWhenWorkspaceFileFlushed();
+		const afterSameSize = JSON.parse(await readDisk(resource));
 
-		// 削除: upstream は '{}' から作り直す。覚えた中身（古い settings）で作り直さない。
-		await seed(resource, workspaceContent('/repo/a'));
-		await fileService.del(resource);
-		const deleted = await cache.tryWrite(resource, FOLDERS_B);
-		const deletedExists = await fileService.exists(resource);
-
-		// 通知が来ない変更でも、覚えた etag が古ければ書かない。
-		await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/external')));
-		cache.remember(resource, { etag: 'stale', mtime: 1 }, { content: workspaceContent('/repo/a'), etag: 'stale', mtime: 1, encoding: undefined, formatting: FORMATTING });
-		const stale = await cache.tryWrite(resource, FOLDERS_B);
-
-		assert.deepStrictEqual({ sameSize, afterSameSize, sameSizeAgain, deleted, deletedExists, stale, disk: foldersOf(await readDisk(resource)), writes: writeOptions.length }, {
-			sameSize: false,
-			afterSameSize: ['/repo/x'],
-			sameSizeAgain: false,
-			deleted: false,
-			deletedExists: false,
-			stale: false,
-			disk: ['/repo/external'],
-			writes: 0,
-		});
-	});
-
-	test('falls back to the upstream path when the write itself conflicts or fails', async () => {
-		const resource = URI.file('/example/space.code-workspace');
+		// 書き込みそのものの衝突。
 		await seed(resource, workspaceContent('/repo/a'));
 		writeHook = async () => { throw new FileOperationError('modified since', FileOperationResult.FILE_MODIFIED_SINCE); };
-
-		const trace = paradisBeginFolderUpdateTrace();
-		const written = await cache.tryWrite(resource, FOLDERS_B);
-		const summary = trace.summarize(undefined);
-		trace.end();
+		const conflicted = await cache.tryWrite(resource, FOLDERS_C);
+		const conflictFlush = await paradisWhenWorkspaceFileFlushed();
 		writeHook = undefined;
-		const writtenAgain = await cache.tryWrite(resource, FOLDERS_B);
 
-		assert.deepStrictEqual({ written, writtenAgain, conflict: summary.safe_update_folders_resolve_conflict, disk: foldersOf(await readDisk(resource)) }, {
-			written: false,
-			writtenAgain: false,
-			conflict: 1,
-			disk: ['/repo/a'],
+		assert.deepStrictEqual({
+			sameSize,
+			sameSizeFlush: { ...sameSizeFlush, ms: undefined },
+			afterSameSize,
+			conflicted,
+			conflictFlush: { ...conflictFlush, ms: undefined },
+			disk: foldersOf(await readDisk(resource)),
+			modelWrites,
+		}, {
+			sameSize: true,
+			sameSizeFlush: { ok: true, ms: undefined, writes: 1, fallback: true },
+			// 外部で変えた settings を残し、folders だけをメモリの中身に揃える。
+			afterSameSize: { folders: [{ path: '/repo/b' }], settings: { 'editor.tabSize': 8 } },
+			conflicted: true,
+			conflictFlush: { ok: true, ms: undefined, writes: 1, fallback: true },
+			disk: ['/repo/c'],
+			modelWrites: [[{ path: '/repo/b' }], [{ path: '/repo/c' }]],
 		});
 	});
 
-	test('does not hand the written content to a reload after a file change notification', async () => {
+	test('keeps handing the switched content to reloads and reports the failure when the background write fails, until a later write lands', async () => {
 		const resource = URI.file('/example/space.code-workspace');
 		await seed(resource, workspaceContent('/repo/a'));
-		assert.strictEqual(await cache.tryWrite(resource, FOLDERS_B), true);
-		// 自分の書き込みでも外部でも、通知の後の読み直しは upstream が自分で読む。
+		writeHook = async () => { throw new FileOperationError('no space', FileOperationResult.FILE_OTHER_ERROR); };
+		modelWriteFails = true;
+
+		const written = await cache.tryWrite(resource, FOLDERS_B);
+		const failed = await paradisWhenWorkspaceFileFlushed();
 		await timeout(20);
-		assert.strictEqual(paradisTakeWrittenWorkspaceContent(resource), undefined);
+		const reloadedAfterFailure = paradisTakeWrittenWorkspaceContent(resource);
+		const stillFailed = await paradisWhenWorkspaceFileFlushed();
+		// 覚えた中身は捨ててあるので、次は upstream の経路（呼び出し元）へ回す。
+		const next = await cache.tryWrite(resource, FOLDERS_C);
+		// upstream の経路で書けたら（`rememberModel`）、失敗は消える。
+		writeHook = undefined;
+		await seed(resource, workspaceContent('/repo/c'));
+
+		assert.deepStrictEqual({
+			written,
+			failed: { ...failed, ms: undefined },
+			reloadedAfterFailure: reloadedAfterFailure === undefined ? undefined : foldersOf(reloadedAfterFailure),
+			stillFailed: stillFailed === failed,
+			next,
+			afterLaterWrite: paradisWhenWorkspaceFileFlushed(),
+			reloadedAfterLaterWrite: paradisTakeWrittenWorkspaceContent(resource),
+		}, {
+			written: true,
+			failed: { ok: false, ms: undefined, writes: 1, fallback: true },
+			reloadedAfterFailure: ['/repo/b'],
+			stillFailed: true,
+			next: false,
+			afterLaterWrite: undefined,
+			reloadedAfterLaterWrite: undefined,
+		});
+	});
+
+	test('waits for the background write of the same file before leaving a write to the upstream path, without holding up other files', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		await seed(resource, workspaceContent('/repo/a'));
+		// 後ろの書き込みが、外部での変更を確かめる stat で止まっている間。
+		let releaseStat!: () => void;
+		provider.statGate = new Promise<void>(resolve => releaseStat = resolve);
+		const order: string[] = [];
+
+		assert.strictEqual(await cache.tryWrite(resource, FOLDERS_B), true);
+		// ほかのファイルは待たせない。
+		const settings = URI.file('/example/.vscode/settings.json');
+		assert.strictEqual(await cache.tryWrite(settings, [{ path: ['a'], value: 1 }]), false);
+		order.push('other file');
+		// エディタで開かれたら upstream の経路だが、後ろの書き込みを追い越さない。
+		openModels.add(resource.toString());
+		const trace = paradisBeginFolderUpdateTrace();
+		const opened = cache.tryWrite(resource, FOLDERS_C).then(result => { order.push('opened'); return result; });
+		await timeout(10);
+		order.push('released');
+		provider.statGate = undefined;
+		releaseStat();
+		const openedResult = await opened;
+		const summary = trace.summarize(undefined);
+		trace.end();
+		openModels.clear();
+
+		assert.deepStrictEqual({ order, openedResult, shortcuts: shortcutsOf(summary), modelWrites, disk: foldersOf(await readDisk(resource)) }, {
+			order: ['other file', 'released', 'opened'],
+			openedResult: false,
+			shortcuts: { safe_update_folders_write_behind: 0, safe_update_folders_flush_waited: 1, safe_update_folders_reload_cached: 0 },
+			// B を書く前にモデルが開かれたので、B は upstream の経路（モデル）で書いた。
+			modelWrites: [[{ path: '/repo/b' }]],
+			disk: ['/repo/b'],
+		});
+	});
+
+	test('hands the content written through the upstream path to the next reload once, and not after a file change notification', async () => {
+		const resource = URI.file('/example/space.code-workspace');
+		const stat = await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/a')));
+		cache.remember(resource, stat, { content: workspaceContent('/repo/a'), etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING });
+		const offered = paradisTakeWrittenWorkspaceContent(resource);
+		const offeredAgain = paradisTakeWrittenWorkspaceContent(resource);
+		cache.remember(resource, stat, { content: workspaceContent('/repo/a'), etag: stat.etag, mtime: stat.mtime, encoding: undefined, formatting: FORMATTING });
+		await fileService.writeFile(resource, VSBuffer.fromString(workspaceContent('/repo/x')));
+		await timeout(20);
+		const afterNotification = paradisTakeWrittenWorkspaceContent(resource);
+		assert.deepStrictEqual({ offered: offered === undefined ? undefined : foldersOf(offered), offeredAgain, afterNotification }, {
+			offered: ['/repo/a'],
+			offeredAgain: undefined,
+			afterNotification: undefined,
+		});
 	});
 
 	test('works the same for a workspace file on an SSH remote, and leaves other files, open models and non-atomic providers to upstream', async () => {
 		const remote = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+example', path: '/home/example/space.code-workspace' });
 		await seed(remote, workspaceContent('/home/example/a'));
 		const remoteWritten = await cache.tryWrite(remote, [{ path: ['folders'], value: [{ path: '/home/example/b' }] }]);
+		await paradisWhenWorkspaceFileFlushed();
 		const remoteCalls = [...provider.calls];
 
 		// 手元に同じパスの別のファイルがあっても、覚えたもの（接続先）とは別扱い。
@@ -237,6 +334,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 
 		assert.deepStrictEqual({ remoteWritten, remoteCalls, localWritten, settingsWritten, openWritten, nonAtomicWritten, disk: foldersOf(await readDisk(remote)) }, {
 			remoteWritten: true,
+			// 外部での変更を確かめる stat、書き込みの中の etag の確認と書き込み後の stat。存在確認と読み込みはしない。
 			remoteCalls: ['stat', 'stat', 'stat'],
 			localWritten: false,
 			settingsWritten: false,
@@ -263,6 +361,7 @@ suite('ParadisWorkspaceFileWriteCache', () => {
 			const otherFile = await byDefault.tryWrite(other, FOLDERS_B);
 			await seed(resource, workspaceContent('/repo/a'), byDefault);
 			const windowFile = await byDefault.tryWrite(resource, FOLDERS_B);
+			await paradisWhenWorkspaceFileFlushed();
 
 			assert.deepStrictEqual({ outside, otherFile, windowFile }, { outside: false, otherFile: false, windowFile: true });
 		} finally {
