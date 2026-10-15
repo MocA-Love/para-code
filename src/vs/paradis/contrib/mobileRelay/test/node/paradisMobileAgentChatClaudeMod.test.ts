@@ -827,6 +827,58 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('changes one setting at a time: a second setting waits until the first one put the draft back', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const features = ['commands.list', 'command.run', 'prompt.dialog', 'draft.fill'];
+		let poll = harness.mod('commands', { busy: false, features });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		// 入力欄を持つ mod の代わり: 書き換えを入力欄に当て、その後の入力欄を知らせる
+		let box = 'PC で書きかけ';
+		await harness.mod('event', { events: [{ type: 'draft', text: box }] });
+		const handed: unknown[] = [];
+		let stop = false;
+		const mod = (async () => {
+			while (!stop) {
+				const reply = await Promise.race([poll, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 100))]);
+				if (reply === undefined) {
+					continue;
+				}
+				poll = harness.mod('commands', { busy: false, features });
+				for (const command of reply.commands as Record<string, unknown>[]) {
+					handed.push(command.kind === 'draftFill' ? [command.text, command.mode] : command.kind);
+					await harness.mod('ack', command.kind === 'dialogCheck' ? { id: command.id, ok: true, dialog: false } : { id: command.id, ok: true });
+					if (command.kind === 'draftFill') {
+						box = command.mode === 'append' ? `${box}${command.text}` : String(command.text);
+						await harness.mod('event', { events: [{ type: 'draft', text: box }] });
+					}
+				}
+			}
+		})();
+		await waitForIdle(harness);
+		const epoch = harness.tailer()!.epoch;
+		const settings = () => harness.actions.filter(action => action.t === 'action/claudeSetting').map(action => action.requestId);
+		harness.inbound({ t: 'action/claudeSetting', requestId: 'model', epoch, setting: 'model', value: 'haiku' });
+		harness.inbound({ t: 'action/claudeSetting', requestId: 'effort', epoch, setting: 'effort', value: 'high' });
+		await waitFor(() => settings().length === 1, 'the first setting did not go to the window');
+		await new Promise<void>(resolve => setTimeout(resolve, 300));
+		const whileFirst = settings();
+		// ウィンドウが 1 つ目を打って、入力欄から消えた
+		const [first] = whileFirst;
+		assert.strictEqual(harness.chat.claimSendMessageAction('mobile-1', String(first), harness.token, epoch, 1, 'window-session'), 'claimed');
+		await harness.mod('event', { events: [{ type: 'draft', text: '/config model=haiku' }] });
+		await harness.mod('event', { events: [{ type: 'draft', text: '' }] });
+		harness.chat.finalizeInteractionAction('mobile-1', String(first), harness.token, 'accepted', 1, 'window-session');
+		await waitFor(() => settings().length === 2, 'the second setting did not go to the window after the draft was back');
+		stop = true;
+		await mod;
+		assert.deepStrictEqual({ whileFirst: whileFirst.length, handed }, {
+			whileFirst: 1,
+			// 2 つ目は待った後、画面の確かめからやり直す
+			handed: ['dialogCheck', 'dialogCheck', ['', 'replace'], ['PC で書きかけ', 'append'], 'dialogCheck', ['', 'replace']],
+		});
+	}));
+
 	test('shows the model Claude Code switched to without waiting for the next reply', () => withHarness(async harness => {
 		harness.hook('PostModelSwitch', { payload: { from_model: 'claude-sonnet-5-5', to_model: 'claude-haiku-5-5', requested_model: 'haiku', source: 'command' } });
 		await waitFor(() => harness.tailer()?.model === 'claude-haiku-5-5', 'the model switch was not shown');
