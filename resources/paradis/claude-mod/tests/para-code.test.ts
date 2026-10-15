@@ -534,6 +534,32 @@ describe('para-code mod', () => {
 		expect(events.map(({ at, ...event }) => event)).toEqual([{ type: 'measure', context: { window: 1_000_000, tokens: 142_800, percent: 14 } }]);
 	});
 
+	test('a subagent or teammate turn does not make the session busy and is not sent as the main turn', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		const clock = fakeParaCode(on, { commands: () => ({ commands: [] }) }, recorded);
+		on('turn.start', ($, e) => ({ turnId: e.turnId }));
+		on('turn.complete', () => ({ text: '' }));
+		await startSession($);
+		const lastBusy = async () => {
+			await clock.advance(1);
+			await clock.settle();
+			return recorded.filter(entry => entry.op === 'commands').at(-1)?.body.busy;
+		};
+		// Claude Code 2.1.299 and later: the child's turn starts with its agentId, here after the main turn ended
+		await $.turn.start({ text: 'look around', turnId: 'child-1', agentId: 'a-child' });
+		const afterChildStart = await lastBusy();
+		await $.turn.start({ text: 'go on', turnId: 'main-1' });
+		const afterMainStart = await lastBusy();
+		await $.turn.complete({ turnId: 'child-1', agentId: 'a-child', reason: 'answer', isAborted: false, answer: 'done', durationMs: 1 });
+		const afterChildComplete = await lastBusy();
+		await $.turn.complete({ turnId: 'main-1', reason: 'answer', isAborted: false, answer: 'done', durationMs: 1 });
+		const afterMainComplete = await lastBusy();
+		const starts = recorded.filter(entry => entry.op === 'event').flatMap(entry => entry.body.events as Json[]).filter(event => event.type === 'turn.start');
+		expect({ afterChildStart, afterMainStart, afterChildComplete, afterMainComplete, starts: starts.map(event => event.turnId) }).toEqual({
+			afterChildStart: false, afterMainStart: true, afterChildComplete: true, afterMainComplete: false, starts: ['main-1'],
+		});
+	});
+
 	test('keeps using fetch when it works again after reading the port file once more', async ($, on) => {
 		mock.env(on, { PARA_CODE_TERMINAL_PANE_ID: 'pane-token', PARA_CODE_MCP_PORT_FILE: PORT_FILE });
 		mock.clock(on);
