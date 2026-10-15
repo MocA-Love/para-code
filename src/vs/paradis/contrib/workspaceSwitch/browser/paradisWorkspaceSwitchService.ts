@@ -825,8 +825,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	recoverInterruptedSwitch(): Promise<void> {
 		if (this._switchRecovery !== undefined) {
-			// 予約から走った「folders を進めるだけ」の回なら、終わってから改めてジャーナルまで見る。
-			return this._switchRecoveryRollForwardOnly ? this._switchRecovery.then(() => this.recoverInterruptedSwitch()) : this._switchRecovery;
+			// 予約から走った「folders を進めるだけ」の回なら、終わってから（失敗しても）改めてジャーナルまで見る。
+			const retry = () => this.recoverInterruptedSwitch();
+			return this._switchRecoveryRollForwardOnly ? this._switchRecovery.then(retry, retry) : this._switchRecovery;
 		}
 		// A released sequencer slot can coexist with an older live body. Its journal is not
 		// interrupted and must never be replayed underneath it by the next switch request.
