@@ -647,6 +647,24 @@ export function paradisStaleServerVersionLabel(server: Pick<IParadisStaleServerI
 	return server.version ? `${server.version} (${short})` : short;
 }
 
+/** お知らせの書き出し（版と動いている時間）。 */
+function paradisStaleServerHead(hostLabel: string, servers: readonly IParadisStaleServerInfo[]): string {
+	const longest = servers.reduce<number | undefined>((max, server) => server.elapsedSeconds !== undefined && (max === undefined || server.elapsedSeconds > max) ? server.elapsedSeconds : max, undefined);
+	const uptime = longest !== undefined ? paradisFormatUptime(longest * 1000) : localize('paradis.staleServers.uptimeUnknown', "しばらく");
+	return servers.length === 1
+		? localize('paradis.staleServers.one', "{0} で古い版 {1} のサーバーが {2} 動いています。", hostLabel, paradisStaleServerVersionLabel(servers[0]), uptime)
+		: localize('paradis.staleServers.many', "{0} で古い版のサーバーが {1} 個動いています（長いものは {2}）。", hostLabel, servers.length, uptime);
+}
+
+/** 消せるフォルダの案内。無ければ空。 */
+function paradisStaleServerDirsTail(scan: IParadisStaleServersScan): string {
+	const dirs = scan.removableDirCount + scan.removableAfterStopDirCount;
+	const bytes = scan.removableBytes + scan.removableAfterStopBytes;
+	return dirs > 0
+		? localize('paradis.staleServers.dirs', "使っていない版のフォルダ {0} 個（{1}）も消せます。", dirs, paradisFormatBytes(bytes))
+		: '';
+}
+
 /** お知らせの本文。 */
 export function paradisStaleServerMessage(hostLabel: string, scan: IParadisStaleServersScan): string {
 	const servers = scan.servers;
@@ -654,23 +672,36 @@ export function paradisStaleServerMessage(hostLabel: string, scan: IParadisStale
 	const claude = servers.reduce((sum, server) => sum + server.claudeCount, 0);
 	const codex = servers.reduce((sum, server) => sum + server.codexCount, 0);
 	const memory = paradisFormatBytes(servers.reduce((sum, server) => sum + server.rssBytes, 0));
-	const longest = servers.reduce<number | undefined>((max, server) => server.elapsedSeconds !== undefined && (max === undefined || server.elapsedSeconds > max) ? server.elapsedSeconds : max, undefined);
-	const uptime = longest !== undefined ? paradisFormatUptime(longest * 1000) : localize('paradis.staleServers.uptimeUnknown', "しばらく");
 	const agents = claude + codex > 0
 		? localize('paradis.staleServers.agents', "（Claude {0}・Codex {1} を含む）", claude, codex)
 		: '';
-	const head = servers.length === 1
-		? localize('paradis.staleServers.one', "{0} で古い版 {1} のサーバーが {2} 動いています。", hostLabel, paradisStaleServerVersionLabel(servers[0]), uptime)
-		: localize('paradis.staleServers.many', "{0} で古い版のサーバーが {1} 個動いています（長いものは {2}）。", hostLabel, servers.length, uptime);
+	const head = paradisStaleServerHead(hostLabel, servers);
 	// 「この版からは開けない」とだけ言うと、別の PC の古い版からは開けることを隠してしまう。
 	const body = localize('paradis.staleServers.body', "ターミナル {0} 個{1}とメモリ約 {2} を使っています。今つながっているクライアントは無く、今の版の Para Code からは開けません。ただし、スリープ中などで一時的に切れている別の PC のものかもしれません（まだ更新していない別の PC からなら開けることがあります）。", terminals, agents, memory);
 	const warn = localize('paradis.staleServers.warn', "止めると、その版のターミナルで動いているもの（nohup で残した処理を含む）もすべて止まります。");
-	const dirs = scan.removableDirCount + scan.removableAfterStopDirCount;
-	const bytes = scan.removableBytes + scan.removableAfterStopBytes;
-	const tail = dirs > 0
-		? localize('paradis.staleServers.dirs', "使っていない版のフォルダ {0} 個（{1}）も消せます。", dirs, paradisFormatBytes(bytes))
-		: '';
+	const tail = paradisStaleServerDirsTail(scan);
 	return [head, body, warn, tail].filter(part => part.length > 0).join(' ');
+}
+
+/**
+ * お知らせの本文（接続先の常駐にターミナルを預けているとき）。
+ *
+ * 常駐に預けた端末は古い版のサーバーを止めても止まらず、止めると今の版が引き取れるようになる
+ * （`paradisPtyReadopt.ts`）。「止めると全部止まります」と言うと、引き継げる人を怖がらせて
+ * 止めさせない方へ倒してしまう。古い版の pty ホストが自分で持っている（常駐に預けていない）
+ * ターミナルだけは止まるので、それがあるときだけその数を言う。
+ */
+export function paradisStaleServerHandoverMessage(hostLabel: string, scan: IParadisStaleServersScan): string {
+	const servers = scan.servers;
+	const ownTerminals = servers.reduce((sum, server) => sum + server.terminalCount, 0);
+	const memory = paradisFormatBytes(servers.reduce((sum, server) => sum + server.rssBytes, 0));
+	const head = paradisStaleServerHead(hostLabel, servers);
+	const body = localize('paradis.staleServers.handover.body', "メモリ約 {0} を使っていて、今つながっているクライアントはありません。止めると、そのサーバーが握っているターミナル（常駐に預けたもの）は止まらずに、動いたままこのウィンドウへ引き継ぎます。", memory);
+	const own = ownTerminals > 0
+		? localize('paradis.staleServers.handover.own', "常駐に預けていないターミナル {0} 個は止まります。", ownTerminals)
+		: '';
+	const tail = paradisStaleServerDirsTail(scan);
+	return [head, body, own, tail].filter(part => part.length > 0).join(' ');
 }
 
 /** 止めた後の結果の本文。 */
