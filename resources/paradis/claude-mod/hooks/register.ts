@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.4.0';
+const MOD_VERSION = '1.4.1';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -680,7 +680,9 @@ export const register: Register = on => {
 	});
 
 	on('turn.start', ($, e, next) => {
-		if (active) {
+		// Since Claude Code 2.1.299 a subagent's or a teammate's turn starts here too, with its agentId. Only the main
+		// loop's turn makes the session busy (turn.complete and turn.step skip them the same way).
+		if (active && e.agentId === undefined) {
 			mainBusy = true;
 			emit($, { type: 'turn.start', turnId: e.turnId });
 		}
