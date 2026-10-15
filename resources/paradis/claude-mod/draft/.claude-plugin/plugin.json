@@ -1,0 +1,8 @@
+{
+	"name": "para-code-draft",
+	"version": "1.0.0",
+	"description": "Tells Para Code what is in the Claude Code prompt box (needs Claude Code 2.1.300 or later; older versions skip it).",
+	"author": {
+		"name": "Para Code"
+	}
+}

@@ -43,7 +43,7 @@ import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.j
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
 import { paradisBuildAgentCommandCatalog, paradisBuiltInAgentCommands, paradisLegacyAgentCommandCatalog, paradisNormalizeModCommandList, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
-import { IParadisSlashCommand, PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotAliasMessage, paradisClaudeModelSwitch, paradisParseSlashCommand, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
+import { IParadisSlashCommand, PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotAliasMessage, paradisClaudeModelSwitch, paradisParseSlashCommand, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 import { IParadisAgentActivityState, IParadisAgentAdvisorUpdate, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
@@ -65,7 +65,7 @@ import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger
 import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisIsClaudeSessionIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
 import { paradisClaudeAttachNameQuery, paradisReadClaudeJobs, paradisSelectClaudeJobByName } from '../../agentBrowser/node/paradisClaudeJobNames.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
-import { paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
+import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
@@ -78,6 +78,8 @@ import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisRe
 import { IParadisAgentTeam, ParadisAgentTeamTracker, ParadisTeamApprovals, paradisTeamActivityText, paradisTeamsForStoppedPane } from '../../agentChat/common/paradisAgentTeams.js';
 import { IParadisTeamConfigReadState, IParadisTeamMemberReadState, paradisNewTeamMemberReadState, paradisReadClaudeTeamConfig, paradisReadClaudeTeamMember } from './paradisClaudeTeamFiles.js';
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
+import { ParadisMobileCapability } from '../common/paradisMobileCompat.js';
+import { paradisStripAgentInvisibleCharacters } from '../common/paradisAgentInvisibleText.js';
 import { IParadisAgentShellsField, ParadisAgentShellInbound, ParadisAgentShellOutbound, paradisClaudeSessionIdFromTranscript, paradisHandleShellRequest, paradisIsValidShellRequest } from './paradisAgentShellOutput.js';
 import { IFlattenedImage, IParadisAgentActivityDetailMessage, IParseSignals, type ParadisBackgroundTaskKind, IRawMessage, ICodexTranscriptActivityEvent, ITranscriptProgress, liveQuestionContentKey, MAX_IMAGES_PER_MESSAGE, newClaudeQueuedPromptState, newParseSignals, num, paradisParseCodexDetailLinesForTest, paradisQuestionReadyMarker, paradisTakeLiveQuestionSyntheticId, paradisHasPendingDuplicateQuestion, paradisToolImageMeta, parseAskUserQuestions, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec, str, TEXT_LIMIT, toDetailMessage, TOOL_IMAGE_BASE64_LIMIT, TOOL_TEXT_LIMIT, truncateText } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
@@ -186,8 +188,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -248,6 +250,32 @@ const PANEL_NOT_CLOSABLE_MESSAGE = 'いまは Esc を送れません（作業中
 /** 承認・質問以外の画面（/config など）が PC でキーを持っているときの断り（`action-result` の code と文）。 */
 const PARADIS_PANEL_OPEN_CODE = 'panel-open';
 const PARADIS_PANEL_OPEN_MESSAGE = 'PC の Claude Code で画面（/config など）が開いたままです。端末を開いて Esc を送ると閉じられます。閉じてから送り直してください';
+/**
+ * PC の Claude Code の入力欄に書きかけがあるときの断り（キーで打つと書きかけにつながって送られる）。code は Codex の
+ * 入力欄に残った文字と同じで、アプリは理由と端末を開くボタンを出す（古いアプリも扱える）。
+ */
+const PARADIS_PC_DRAFT_MESSAGE = 'PC の Claude Code の入力欄に書きかけの文があるので送っていません。PC で送るか消してから送り直してください';
+const PARADIS_PC_DRAFT_SETTING_MESSAGE = 'PC の Claude Code の入力欄の書きかけを一時的によけられなかったので、設定を変えていません。PC で送るか消してから変えてください';
+const PARADIS_PC_DRAFT_RESTORING_MESSAGE = 'PC の Claude Code で前の操作（設定の変更や、よけた書きかけを戻すこと）がまだ終わっていないので、打っていません。少し待ってから送り直してください';
+/** モバイルから前に送った発言が、送られずに PC の入力欄に残っているときの断り（Enter が効かなかった）。 */
+const PARADIS_PC_LEFTOVER_MESSAGE = '前に送った発言が PC の Claude Code の入力欄に残っているので、送っていません。PC で送るか消してから送り直してください';
+/** ウィンドウが打ち始めた設定を、終わりの知らせが来なくても打っている途中と見なすのをやめるまで。 */
+const SETTING_TYPING_MAX_MS = 30_000;
+/** 設定を変える前によけた PC の書きかけを、戻さずに諦めるまでの上限。 */
+const DRAFT_STASH_MAX_MS = 30_000;
+/** 設定の操作が終わった後、打ったコマンドが入力欄から消えたのを見届けられなくても書きかけを戻すまでの間。 */
+const DRAFT_RESTORE_FALLBACK_MS = 2_000;
+/** 書きかけを戻せなかった（確認の画面がまだ閉じ切っていない等）ときに、もう一度試すまでの間。 */
+const DRAFT_RESTORE_RETRY_MS = 500;
+/** Para Code がキーで貼った文を、入力欄の知らせで書きかけと見なさない間（Enter の後の空の知らせが届くまでの隙間）。 */
+const KEY_TYPED_GRACE_MS = 15_000;
+/**
+ * キーで打つ前に、入力欄が空くのを待つ上限（よけた書きかけを戻している途中・直前にキーで貼った文がまだ入力欄にある）。
+ * 過ぎたら、戻している途中なら断り、貼った文が残っていれば書きかけと見なす（Enter が効かずに残った文）。
+ */
+const KEYS_WAIT_MAX_MS = 5_000;
+/** 入力欄が空くのを待つ間、様子を見直す間隔。 */
+const KEYS_WAIT_POLL_MS = 100;
 /** mod が発言を送れなかったと答えたときの文（理由が届かなかったとき）。 */
 const MOD_SEND_REFUSED_MESSAGE = 'PC の Claude Code がこの発言を受け付けませんでした。PC の画面で確かめてください';
 /** Claude hookが渡す agent_id の受理形。SubagentStart/Stopの2経路(親子関係の解決・backgroundTasks反映)で共有する。 */
@@ -1992,7 +2020,7 @@ class TranscriptTailer {
 	private liveQuestionSeq = 0;
 	/** ライブ注入の質問グループ連番（1回の AskUserQuestion hook = 1グループ）。 */
 	private liveQuestionGroupSeq = 0;
-	/** セッションメタ情報（transcriptから学習した最新値）。 */
+	/** セッションメタ情報（transcriptから学習した最新値。モデルは PostModelSwitch hook でも変わる）。 */
 	model: string | undefined;
 	effort: string | undefined;
 	/** transcript の行が書かれた CLI のバージョン。計測にのみ使う（モバイルへは送らない）。 */
@@ -2059,6 +2087,14 @@ class TranscriptTailer {
 		const effortLevel = str(rec(JSON.parse(raw))?.effortLevel);
 		if (!this.disposed && effortLevel !== undefined && effortLevel.length > 0 && this.effort === undefined) {
 			this.effort = effortLevel;
+			this.delegate.onInfo();
+		}
+	}
+
+	/** Claude Code がモデルを切り替えた（PostModelSwitch hook の `to_model`）。次の応答の行を待たずに表示を変える。 */
+	noteModelSwitch(model: string): void {
+		if (!this.disposed && model.length > 0 && model !== this.model) {
+			this.model = model;
 			this.delegate.onInfo();
 		}
 	}
@@ -3462,6 +3498,17 @@ interface ICommandCatalogContext {
 	readonly cwd: string;
 }
 
+/** PC の Claude Code の入力欄の書きかけ（agent.pc-draft.v1）。広告したアプリが見ている会話へだけ送る。 */
+interface IParadisAgentPcDraft {
+	readonly text: string;
+	readonly truncated: boolean;
+}
+
+/** 書きかけの知らせをまとめて送る間（mod は 150 ms ごとに送ってくる。リレーへはもう少し間引く）。 */
+const PC_DRAFT_PUSH_MS = 300;
+/** アプリへ送る書きかけの先頭の字数（アプリは 2 行だけ出す）。 */
+const PC_DRAFT_PREVIEW_CHARS = 400;
+
 interface IAgentSubscriber {
 	readonly owner: IParadisMobilePaneOwner;
 	readonly liveEncoding: string | undefined;
@@ -3607,7 +3654,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
-	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly claudeSetting?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
@@ -3703,6 +3750,22 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.desktopClaimTimers.clear();
 		}));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
+		this._register(toDisposable(() => {
+			for (const key of [...this.stashedDrafts.keys()]) {
+				this.forgetStashedDraft(key);
+			}
+			for (const timer of this.pcDraftPushes.values()) {
+				clearTimeout(timer);
+			}
+			this.pcDraftPushes.clear();
+			for (const timer of this.keysWaitTimers) {
+				clearTimeout(timer);
+			}
+			this.keysWaitTimers.clear();
+			for (const key of [...this.typingSettings.keys()]) {
+				this.forgetTypingSetting(key);
+			}
+		}));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
@@ -3960,6 +4023,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.subscribers.keys()]) {
 			if (!liveTokens.has(token)) {
 				this.subscribers.delete(token);
+			}
+		}
+		// 消えたペインへ書きかけを送る相手とタイマーも捨てる
+		for (const token of [...this.pcDraftViewers.keys(), ...this.pcDraftPushes.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.pcDraftViewers.delete(token);
+				clearTimeout(this.pcDraftPushes.get(token));
+				this.pcDraftPushes.delete(token);
 			}
 		}
 		for (const token of [...this.tailers.keys()]) {
@@ -4767,7 +4838,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * `$.prompt.submit` で送る。mod へ渡せなかったときは false で呼び直し、今までどおりウィンドウのキー入力で送る。
 	 * `dialogChecked` は、承認・質問以外の画面（`/config` など）が開いていないかを mod に聞き終えたか（{@link checkClaudeDialog}）。
 	 */
-	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true, dialogChecked = false): void {
+	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true, dialogChecked = false, keysWaitUntil?: number): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -4793,7 +4864,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (modelSwitch?.kind === 'switch') {
-			this.handleSendMessageAction(mobileId, { ...msg, text: modelSwitch.text }, viaMod, dialogChecked);
+			this.handleSendMessageAction(mobileId, { ...msg, text: modelSwitch.text }, viaMod, dialogChecked, keysWaitUntil);
 			return;
 		}
 		const rejection = this.sendRejection(session, msg.text);
@@ -4801,11 +4872,26 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...rejection }, token);
 			return;
 		}
-		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleSendMessageAction(mobileId, msg, viaMod, true))) {
+		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleSendMessageAction(mobileId, msg, viaMod, true, keysWaitUntil))) {
 			return;
 		}
 		if (viaMod && this.trySendViaMod(mobileId, msg, token, session, tailer, key, sendKey)) {
 			return;
+		}
+		// キーで打つと PC の書きかけにつながって送られる。よけた書きかけを戻している途中・直前に貼った文がまだ入力欄にあるときは
+		// 空くのを待ち、書きかけがあると分かっているときは打たずに断る（分からないとき（古い Claude Code・mod の無い会話）は今までどおり打つ）
+		if (session.agent === 'claude') {
+			const until = keysWaitUntil ?? Date.now() + KEYS_WAIT_MAX_MS;
+			const waiting = this.keysWaitReason(token, session.sessionId);
+			if (waiting !== undefined && Date.now() < until) {
+				this.waitForKeys(key, () => this.keysWaitReason(token, session.sessionId) === undefined, until, () => this.handleSendMessageAction(mobileId, msg, viaMod, false, until));
+				return;
+			}
+			if (waiting !== undefined || this.pcDraftBlocksKeys(token, session.sessionId)) {
+				const message = waiting === 'stash' ? PARADIS_PC_DRAFT_RESTORING_MESSAGE : waiting === 'typed' ? PARADIS_PC_LEFTOVER_MESSAGE : PARADIS_PC_DRAFT_MESSAGE;
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message }, token);
+				return;
+			}
 		}
 		const timer = setTimeout(() => {
 			if (this.pendingActions.delete(key)) {
@@ -4823,6 +4909,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (slash !== undefined && session.agent === 'claude') {
 			this.rememberClaudeSlashCheck(key, { token, command: slash.name, sentAt: Date.now(), sendKey });
 			void this.watchClaudeSlashRejection(mobileId, msg.id, msg.requestId, key).catch(error => this.logService.warn('[paradisAgentChat] watching a slash command failed', error));
+		}
+		if (session.agent === 'claude') {
+			this.rememberKeyTyped(token, msg.text);
 		}
 		// `agent`: 所有ウィンドウは Codex のペインで、前に断られたコマンドの文字が入力欄に残っていないかを貼り付けの前に確かめる
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
@@ -5126,7 +5215,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>, dialogChecked = false): void {
+	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>, dialogChecked = false, draftStashed = false, keysWaitUntil?: number): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -5139,19 +5228,402 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		// `/model` などを打つので、ほかの画面（モバイルから開いた /config など）が開いていればキーを打たずに断る
-		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleClaudeSettingAction(mobileId, msg, true))) {
+		if (!dialogChecked && this.checkClaudeDialog(mobileId, msg.id, msg.requestId, key, token, session, tailer, () => this.handleClaudeSettingAction(mobileId, msg, true, false, keysWaitUntil))) {
 			return;
+		}
+		// 設定はキーで打つので、PC の書きかけがあれば先によけて（入力欄を空にして）、終わってから戻す（mod 1.4.0 以降）。
+		// 前の設定でよけた書きかけを戻している途中・直前に貼った文がまだ入力欄にあるときは、空くのを待つ
+		if (!draftStashed && session.sessionId !== undefined) {
+			const sessionId = session.sessionId;
+			const until = keysWaitUntil ?? Date.now() + KEYS_WAIT_MAX_MS;
+			const waiting = this.keysWaitReason(token, sessionId);
+			if (waiting !== undefined && Date.now() < until) {
+				this.waitForKeys(key, () => this.keysWaitReason(token, sessionId) === undefined, until, () => this.handleClaudeSettingAction(mobileId, msg, false, false, until));
+				return;
+			}
+			if (waiting === 'stash') {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message: PARADIS_PC_DRAFT_RESTORING_MESSAGE }, token);
+				return;
+			}
+			// 待っても貼った文が残っている（Enter が効かなかった）なら、PC の書きかけと同じによけて戻す
+			const draft = this.claudeModBridge.draftOf(token, sessionId);
+			const draftState = paradisClaudeDraftState(draft);
+			if (draftState === 'cut' || (draftState === 'text' && !this.claudeModBridge.supports(token, session.sessionId, 'draft.fill'))) {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message: PARADIS_PC_DRAFT_SETTING_MESSAGE }, token);
+				return;
+			}
+			if (draftState === 'text' && draft !== undefined) {
+				this.stashDraftThen(mobileId, msg.id, msg.requestId, key, token, session.sessionId, draft.text, () => {
+					this.handleClaudeSettingAction(mobileId, msg, true, true);
+					if (!this.pendingActions.has(key)) {
+						// 打つ前に断った（会話が変わった・作業が始まった）。よけた書きかけはすぐ戻す
+						this.finishStashedDraft(key);
+					}
+				});
+				return;
+			}
 		}
 		const timer = setTimeout(() => {
 			if (this.pendingActions.delete(key)) {
+				this.finishStashedDraft(key);
 				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
 			}
 		}, 5_000);
-		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, requirePrompt: true, timer });
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, requirePrompt: true, claudeSetting: true, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/claudeSetting', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch,
 			setting: msg.setting, value: msg.value, windowId: owner.windowId,
 		})));
+	}
+
+	/**
+	 * PC の Claude Code の入力欄に何か入っていると分かっている（キーで打つとつながる）。分からないときは false。直前に
+	 * Para Code が貼った文でも true（Enter が効かずに残った文の上に打たない。空くのを待つのは {@link keysWaitReason}）。
+	 */
+	private pcDraftBlocksKeys(token: string, sessionId: string | undefined): boolean {
+		const state = paradisClaudeDraftState(this.claudeModBridge.draftOf(token, sessionId));
+		return state === 'text' || state === 'cut';
+	}
+
+	/**
+	 * キーで打つ前に入力欄が空くのを待つ理由。`stash`: 前の操作がまだ終わっていない（書きかけをよけている・戻している途中で、
+	 * 入力欄は空と知らされていても途中で戻ってくる。または、前の設定をウィンドウがまだ打っていない）、`typed`: 直前に
+	 * Para Code が貼った文がまだ入力欄にある（Enter の後の空の知らせを待つ）。
+	 */
+	private keysWaitReason(token: string, sessionId: string | undefined): 'stash' | 'typed' | undefined {
+		for (const stash of this.stashedDrafts.values()) {
+			if (stash.token === token) {
+				return 'stash';
+			}
+		}
+		for (const stashing of this.stashingDrafts.values()) {
+			if (stashing === token) {
+				return 'stash';
+			}
+		}
+		for (const pending of this.pendingActions.values()) {
+			if (pending.token === token && pending.requirePrompt === true) {
+				return 'stash';
+			}
+		}
+		for (const typing of this.typingSettings.values()) {
+			if (typing.token === token) {
+				return 'stash';
+			}
+		}
+		const draft = this.claudeModBridge.draftOf(token, sessionId);
+		return draft !== undefined && draft.text.length > 0 && this.typedByUs(token, draft.text) ? 'typed' : undefined;
+	}
+
+	/**
+	 * 入力欄が空くまで（`ready`）、または `until` まで待ってから `proceed` する（画面の確かめからやり直す。待つ間に
+	 * 確認の画面が開いたかもしれない）。待つ間は同じ操作の二度目を弾く。
+	 */
+	private waitForKeys(key: string, ready: () => boolean, until: number, proceed: () => void): void {
+		this.dialogChecks.add(key);
+		const check = () => {
+			this.keysWaitTimers.delete(timer);
+			if (!ready() && Date.now() < until) {
+				timer = setTimeout(check, Math.min(KEYS_WAIT_POLL_MS, Math.max(0, until - Date.now())));
+				this.keysWaitTimers.add(timer);
+				return;
+			}
+			this.dialogChecks.delete(key);
+			proceed();
+		};
+		let timer = setTimeout(check, KEYS_WAIT_POLL_MS);
+		this.keysWaitTimers.add(timer);
+	}
+
+	/** 入力欄が空くのを待っている操作のタイマー（破棄で止める）。 */
+	private readonly keysWaitTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/** ペイン → Para Code がキーで貼った文（モバイルの発言。新しい順ではなく貼った順）。 */
+	private readonly keyTypedTexts = new Map<string, { readonly text: string; readonly at: number }[]>();
+
+	/** Para Code がキーで貼る文を覚える（Enter の後に入力欄が空いたと知らせが届くまで、書きかけと見なさないため）。 */
+	private rememberKeyTyped(token: string, text: string): void {
+		const now = Date.now();
+		const typed = (this.keyTypedTexts.get(token) ?? []).filter(entry => now - entry.at < KEY_TYPED_GRACE_MS);
+		typed.push({ text: paradisStripAgentInvisibleCharacters(text), at: now });
+		this.keyTypedTexts.set(token, typed.slice(-8));
+	}
+
+	/**
+	 * 入力欄の文が、直前に Para Code がキーで貼った文そのものか。長い文（801 字以上か 5 行以上）は入力欄で
+	 * `[Pasted text #1 +4 lines]` のように畳まれて知らされる（Claude Code 2.1.300 で実測）ので、行数の合う畳まれた表記も含める。
+	 */
+	private typedByUs(token: string, text: string): boolean {
+		const now = Date.now();
+		const folded = /^\[Pasted text #\d+(?: \+(?<lines>\d+) lines)?\]$/.exec(text);
+		const foldedLines = folded !== null ? Number(folded.groups?.lines ?? '0') : undefined;
+		return (this.keyTypedTexts.get(token) ?? []).some(entry => now - entry.at < KEY_TYPED_GRACE_MS
+			&& (entry.text === text || (foldedLines !== undefined && entry.text.split('\n').length - 1 === foldedLines)));
+	}
+
+	/** 入力欄が空いた（`at` の知らせ）。それより前に貼った文は、もう入力欄に無い。 */
+	private forgetKeyTyped(token: string, at: number): void {
+		const typed = (this.keyTypedTexts.get(token) ?? []).filter(entry => entry.at >= at);
+		if (typed.length > 0) {
+			this.keyTypedTexts.set(token, typed);
+		} else {
+			this.keyTypedTexts.delete(token);
+		}
+	}
+
+	/** そのモバイルが capability を広告しているか（relay が入れる。入るまでは誰も広告していない扱い）。 */
+	private mobileHasCapability: (mobileId: string, name: string) => Promise<boolean> = async () => false;
+	/** ペイン → PC の書きかけを受け取れる（agent.pc-draft.v1 を広告した）見ているモバイル。 */
+	private readonly pcDraftViewers = new Map<string, Set<string>>();
+	/** ペイン → 書きかけをまとめて送るタイマー。 */
+	private readonly pcDraftPushes = new Map<string, ReturnType<typeof setTimeout>>();
+
+	/** モバイルが広告した capability を確かめる口（relay が入れる）。 */
+	setMobileCapabilityCheck(check: (mobileId: string, name: string) => Promise<boolean>): void {
+		this.mobileHasCapability = check;
+	}
+
+	/**
+	 * attach の応答に添える PC の書きかけ。Claude Code の会話で、そのモバイルが agent.pc-draft.v1 を広告しているときだけ
+	 * （以後の知らせも送るよう覚える）。`explicit` は差分の応答（無いときも `null` を書く。持ち越させない）。
+	 */
+	private async pcDraftField(mobileId: string, token: string, session: IPaneSessionInfo, explicit: boolean): Promise<{ pcDraft?: IParadisAgentPcDraft | null }> {
+		if (session.agent !== 'claude' || !(await this.mobileHasCapability(mobileId, ParadisMobileCapability.AgentPcDraft).catch(() => false))) {
+			this.pcDraftViewers.get(token)?.delete(mobileId);
+			return {};
+		}
+		let viewers = this.pcDraftViewers.get(token);
+		if (viewers === undefined) {
+			viewers = new Set();
+			this.pcDraftViewers.set(token, viewers);
+		}
+		viewers.add(mobileId);
+		const draft = this.currentPcDraft(token, session.sessionId);
+		return draft !== null ? { pcDraft: draft } : explicit ? { pcDraft: null } : {};
+	}
+
+	/**
+	 * いま見せる書きかけ。アプリは入力欄の上に 2 行だけ出すので、先頭の {@link PC_DRAFT_PREVIEW_CHARS} 字だけを送る
+	 * （それより長い・mod が切ったものは `truncated`）。
+	 */
+	private currentPcDraft(token: string, sessionId: string | undefined): IParadisAgentPcDraft | null {
+		const draft = this.claudeModBridge.draftOf(token, sessionId);
+		return draft !== undefined && draft.text.length > 0
+			? { text: draft.text.slice(0, PC_DRAFT_PREVIEW_CHARS), truncated: draft.truncated || draft.text.length > PC_DRAFT_PREVIEW_CHARS }
+			: null;
+	}
+
+	/** 書きかけが変わった。少し待ってから、受け取れる見ているモバイルへ今の書きかけを送る。 */
+	private schedulePcDraftPush(token: string): void {
+		if ((this.pcDraftViewers.get(token)?.size ?? 0) === 0 || this.pcDraftPushes.has(token)) {
+			return;
+		}
+		this.pcDraftPushes.set(token, setTimeout(() => {
+			this.pcDraftPushes.delete(token);
+			const session = this.paneSessions.get(token);
+			const tailer = this.tailers.get(token);
+			const terminalId = this.terminalIdForToken(token);
+			if (session?.agent !== 'claude' || tailer === undefined || terminalId === undefined) {
+				return;
+			}
+			const pcDraft = this.currentPcDraft(token, session.sessionId);
+			for (const mobileId of this.pcDraftViewers.get(token) ?? []) {
+				if (this.hasSubscriber(token, mobileId)) {
+					this.sendTo(mobileId, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], pcDraft }, token);
+				}
+			}
+		}, PC_DRAFT_PUSH_MS));
+	}
+
+	/**
+	 * ウィンドウが打っている最中の設定（actionKey → ペイン）。受け取って（claim）から、終わりの知らせ（finalize）までの間、
+	 * 同じペインの次の操作を待たせる（確認の画面を確定するまでキーを打つ）。
+	 */
+	private readonly typingSettings = new Map<string, { readonly token: string; readonly timer: ReturnType<typeof setTimeout> }>();
+
+	private forgetTypingSetting(key: string): void {
+		const typing = this.typingSettings.get(key);
+		if (typing !== undefined) {
+			clearTimeout(typing.timer);
+			this.typingSettings.delete(key);
+		}
+	}
+
+	/** 書きかけをよけている最中の設定（actionKey → ペイン）。答えが来るまで、同じペインの次の操作を待たせる。 */
+	private readonly stashingDrafts = new Map<string, string>();
+
+	/** 設定を変える前によけた PC の書きかけ（actionKey → よけた文と、戻す時機の手がかり）。 */
+	private readonly stashedDrafts = new Map<string, { readonly token: string; readonly sessionId: string; readonly text: string; readonly expiresAt: number; typed: boolean; finalized: boolean; restoring: boolean; unconfirmedAt?: number; backAt?: number; timer: ReturnType<typeof setTimeout> }>();
+
+	/**
+	 * PC の入力欄の書きかけをよけて（mod で空にして）から `proceed` する。よけられなければ断る。答えが来なかったとき
+	 * （空にしたかもしれない）は、よけたものとして覚えてすぐ戻しにかかり、設定は変えずに断る。
+	 */
+	private stashDraftThen(mobileId: string, terminalId: number, requestId: string, key: string, token: string, sessionId: string, text: string, proceed: () => void): void {
+		this.dialogChecks.add(key);
+		this.stashingDrafts.set(key, token);
+		// 答えが来なかったときに、どの知らせからが書き換えの後かを決める時刻（出す直前。入力欄は変わったときだけ知らされる）
+		const issuedAt = Date.now();
+		void this.claudeModBridge.fillDraft(token, sessionId, '').catch(() => 'unconfirmed' as const).then(result => {
+			this.dialogChecks.delete(key);
+			this.stashingDrafts.delete(key);
+			if (result === 'filled' || result === 'unconfirmed') {
+				this.forgetStashedDraft(key);
+				const timer = setTimeout(() => this.restoreStashedDraft(key), DRAFT_STASH_MAX_MS);
+				this.stashedDrafts.set(key, { token, sessionId, text, expiresAt: Date.now() + DRAFT_STASH_MAX_MS, typed: false, finalized: false, restoring: false, ...(result === 'unconfirmed' ? { unconfirmedAt: issuedAt } : {}), timer });
+			}
+			if (result !== 'filled') {
+				// 設定は打たないので、打ったコマンドが消えるのを待たずに戻しにかかる（空にしたかは、出した後の入力欄の知らせで確かめる）
+				const stash = this.stashedDrafts.get(key);
+				if (stash !== undefined) {
+					stash.finalized = true;
+					this.restoreStashedDraft(key);
+				}
+				this.sendTo(mobileId, { t: 'action-result', id: terminalId, requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message: PARADIS_PC_DRAFT_SETTING_MESSAGE }, token);
+				return;
+			}
+			proceed();
+		});
+	}
+
+	/**
+	 * 設定の操作が終わった（成功・失敗・時間切れ）。打ったコマンドが入力欄から消えていれば書きかけを戻し、まだなら消えるのを
+	 * 待つ（入力欄の知らせ）。見届けられなくても {@link DRAFT_RESTORE_FALLBACK_MS} 後に、入力欄が空なら戻す。
+	 */
+	private finishStashedDraft(key: string): void {
+		const stash = this.stashedDrafts.get(key);
+		if (stash === undefined || stash.finalized) {
+			return;
+		}
+		stash.finalized = true;
+		if (stash.typed && this.claudeModBridge.draftOf(stash.token, stash.sessionId)?.text === '') {
+			this.restoreStashedDraft(key);
+			return;
+		}
+		this.retryStashedDraft(key, DRAFT_RESTORE_FALLBACK_MS);
+	}
+
+	/** 入力欄の知らせ（`at` に送られた）。よけている書きかけがあれば、打ったコマンドが入って消えたかを見て戻す。 */
+	private noteDraftForStash(token: string, text: string, at: number): void {
+		for (const [key, stash] of this.stashedDrafts) {
+			if (stash.token !== token) {
+				continue;
+			}
+			if (stash.backAt !== undefined) {
+				// 戻した後の入力欄が知らされた。ここからは入力欄の知らせのとおりに扱う
+				if (at >= stash.backAt) {
+					this.forgetStashedDraft(key);
+				}
+				continue;
+			}
+			if (text.length > 0) {
+				stash.typed = true;
+			} else if (stash.typed && stash.finalized) {
+				this.restoreStashedDraft(key);
+			}
+		}
+	}
+
+	/**
+	 * よけた書きかけを入力欄へ戻す（後ろへ足すので、戻す間に PC で打たれた字は消さない）。入力欄が空と分かっているときだけ戻し、
+	 * その間に PC で打ち始めていたら上書きせずに諦める。戻せなかった（確認の画面がまだ閉じ切っていない・mod が答えない）
+	 * ときは、よけたものを残して {@link DRAFT_STASH_MAX_MS} まで試し直す。
+	 */
+	private restoreStashedDraft(key: string): void {
+		const stash = this.stashedDrafts.get(key);
+		if (stash === undefined || stash.restoring) {
+			return;
+		}
+		if (stash.backAt !== undefined) {
+			// 戻したが、その後の入力欄の知らせが届かないまま待ちきった
+			this.forgetStashedDraft(key);
+			return;
+		}
+		const expired = Date.now() >= stash.expiresAt;
+		const current = this.claudeModBridge.draftOf(stash.token, stash.sessionId);
+		if (this.paneSessions.get(stash.token)?.sessionId !== stash.sessionId) {
+			this.forgetStashedDraft(key);
+			this.logService.info('[paradisAgentChat] did not put the PC draft back: the session moved on');
+			return;
+		}
+		if (stash.unconfirmedAt !== undefined) {
+			// 答えの来なかった書き換えが、効いたかどうか分からない。その後の入力欄の知らせが届くまで足さない（二重に足さない）
+			if (current === undefined || current.at <= stash.unconfirmedAt) {
+				if (expired) {
+					this.forgetStashedDraft(key);
+					this.logService.warn('[paradisAgentChat] gave up putting the PC draft back: the prompt box was not heard from after an unanswered fill');
+				} else {
+					this.retryStashedDraft(key, DRAFT_RESTORE_RETRY_MS);
+				}
+				return;
+			}
+			stash.unconfirmedAt = undefined;
+		}
+		if (current?.text === stash.text) {
+			// もう戻っている（答えの来なかった前回の戻しが効いていた）
+			this.forgetStashedDraft(key);
+			return;
+		}
+		if (current !== undefined && current.text !== '') {
+			this.forgetStashedDraft(key);
+			this.logService.info('[paradisAgentChat] did not put the PC draft back: something was typed into the prompt box meanwhile');
+			return;
+		}
+		if (current === undefined) {
+			// 入力欄の様子が分からない（mod の読み直しなど）。分かるまで待つ
+			if (expired) {
+				this.forgetStashedDraft(key);
+				this.logService.warn('[paradisAgentChat] gave up putting the PC draft back: the prompt box stayed unknown');
+			} else {
+				this.retryStashedDraft(key, DRAFT_RESTORE_RETRY_MS);
+			}
+			return;
+		}
+		stash.restoring = true;
+		const issuedAt = Date.now();
+		const settle = (result: string) => {
+			stash.restoring = false;
+			if (this.stashedDrafts.get(key) !== stash) {
+				return;
+			}
+			if (result === 'filled') {
+				// 戻った。入力欄が空と知らされたままなので、戻った後の知らせが届くまで（{@link DRAFT_RESTORE_FALLBACK_MS} まで）は
+				// 戻している途中として扱う（その間にキーで打つと、戻した書きかけにつながる）
+				stash.backAt = Date.now();
+				this.retryStashedDraft(key, DRAFT_RESTORE_FALLBACK_MS);
+				return;
+			}
+			if (Date.now() >= stash.expiresAt) {
+				this.forgetStashedDraft(key);
+				this.logService.warn(`[paradisAgentChat] gave up putting the PC draft back: ${result}`);
+				return;
+			}
+			this.logService.info(`[paradisAgentChat] could not put the PC draft back yet (${result}); trying again`);
+			if (result === 'unconfirmed') {
+				// 答えが来なかった。戻ったかは、出した後の入力欄の知らせで確かめる
+				stash.unconfirmedAt = issuedAt;
+			}
+			this.retryStashedDraft(key, DRAFT_RESTORE_RETRY_MS);
+		};
+		void this.claudeModBridge.fillDraft(stash.token, stash.sessionId, stash.text, 'append').then(settle, () => settle('failed'));
+	}
+
+	/** よけた書きかけを `delayMs` 後に戻しにかかる（期限より後には延ばさない）。 */
+	private retryStashedDraft(key: string, delayMs: number): void {
+		const stash = this.stashedDrafts.get(key);
+		if (stash === undefined) {
+			return;
+		}
+		clearTimeout(stash.timer);
+		stash.timer = setTimeout(() => this.restoreStashedDraft(key), Math.max(0, Math.min(delayMs, stash.expiresAt - Date.now())));
+	}
+
+	private forgetStashedDraft(key: string): void {
+		const stash = this.stashedDrafts.get(key);
+		if (stash !== undefined) {
+			clearTimeout(stash.timer);
+			this.stashedDrafts.delete(key);
+		}
 	}
 
 	private isAgentPrompt(token: string, tailer: TranscriptTailer): boolean {
@@ -5417,6 +5889,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (!valid) {
 			this.releaseInteractionClaim(pending.interactionKey, key);
 			this.forgetSendId(pending.sendKey);
+			this.finishStashedDraft(key);
+		} else if (pending.claudeSetting === true) {
+			this.forgetTypingSetting(key);
+			this.typingSettings.set(key, { token, timer: setTimeout(() => this.forgetTypingSetting(key), SETTING_TYPING_MAX_MS) });
 		}
 		return valid ? 'claimed' : 'stale';
 	}
@@ -5455,6 +5931,13 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	finalizeInteractionAction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', windowId: number, windowSession: string): void {
 		const key = this.actionKey(mobileId, requestId);
+		if (this.typingSettings.get(key)?.token === token) {
+			this.forgetTypingSetting(key);
+		}
+		// Claude Code の設定の操作が終わった。よけていた PC の書きかけを戻しにかかる
+		if (this.stashedDrafts.get(key)?.token === token) {
+			this.finishStashedDraft(key);
+		}
 		const completed = this.completedActions.get(key);
 		// モバイルから答え終えた承認も、表に出す候補から外す（デスクトップと同じ。同じ内容の次の許可を出すため）。
 		const answered = completed ?? this.pendingActions.get(key);
@@ -5730,6 +6213,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			const afterRev = msg.afterRev;
+			const resuming = msg.epoch === tailer.epoch && typeof afterRev === 'number';
+			const pcDraft = await this.pcDraftField(mobileId, token, currentSession, resuming);
+			if (this.attachDisposed || this.attachGenerations.get(pendingKey) !== attachGeneration || !this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== currentSession) {
+				return;
+			}
 			// 差分応答は「afterRevの続きが欠けなくリングに残っている」場合のみ。切断中に
 			// リング上限を超えて古い分が退避済みだと、先頭revが飛んでいてサイレント欠落に
 			// なるため、その場合は全量スナップショットへフォールバックする。
@@ -5742,7 +6230,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token) }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -5753,6 +6241,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					...this.monitorsField(token, tailer, true),
 					...this.sessionStatusField(token, tailer, true),
 					...this.panelField(token),
+					...pcDraft,
 				}, token, owner);
 			}
 		} finally {
@@ -6128,6 +6617,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.resendShellsAccessIfChanged(token);
 		}
 		switch (event.type) {
+			case 'draft':
+				if (event.text === '') {
+					this.forgetKeyTyped(token, event.at);
+				}
+				this.noteDraftForStash(token, event.text, event.at);
+				this.schedulePcDraftPush(token);
+				return;
+			case 'draft-unknown':
+				// mod が去った・読み直した。見せていた書きかけの帯を外させる
+				this.schedulePcDraftPush(token);
+				return;
 			case 'row': {
 				const tailer = this.tailers.get(token);
 				if (tailer === undefined || tailer.transcriptPath !== session.transcriptPath) {
@@ -8496,6 +8996,14 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
+		// モデルの切り替え（PostModelSwitch hook。Claude Code 2.1.251 以降）。次の応答の行を待たずに表示を変える
+		if (event.event === 'PostModelSwitch' && info.agent === 'claude' && nested === undefined) {
+			const switchedModel = str(event.payload?.to_model)?.slice(0, 100);
+			const switchTailer = this.tailers.get(event.token);
+			if (switchedModel !== undefined && switchTailer?.transcriptPath === info.transcriptPath) {
+				switchTailer.noteModelSwitch(switchedModel);
+			}
+		}
 		if (event.event === 'TeammateIdle' && info.agent === 'claude') {
 			const idleName = str(event.payload?.teammate_name);
 			const teamTailer = this.tailers.get(event.token);
@@ -9453,6 +9961,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const subscribers = this.subscribers.get(token);
 		if (subscribers === undefined || !subscribers.delete(mobileId)) {
 			return false;
+		}
+		const draftViewers = this.pcDraftViewers.get(token);
+		draftViewers?.delete(mobileId);
+		if (draftViewers?.size === 0) {
+			this.pcDraftViewers.delete(token);
 		}
 		if (subscribers.size === 0) {
 			this.subscribers.delete(token);

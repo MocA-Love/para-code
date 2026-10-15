@@ -48,7 +48,7 @@ import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIn
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexHome, paradisCodexHomes } from './paradisAgentHome.js';
-import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -826,6 +826,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペインの所有権もバインディング操作も一切与えず、音声ticketの発行にだけ使える。
 	 */
 	private readonly _voiceIngressToken = `${randomUUID()}-${randomUUID()}`;
+	/** `claude --version` を確かめる口と、確かめた結果（{@link getClaudeVersion}。5 分使い回す）。 */
+	private readonly _probeClaudeVersion: () => Promise<string | undefined>;
+	private _claudeVersion: { readonly at: number; readonly value: Promise<string | undefined> } | undefined;
 
 	constructor(
 		private readonly _userDataPath: string,
@@ -937,6 +940,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 構成（1Password / gpg-agent 等）だと、shared process が継いだ環境のままでは公開鍵認証が
 		// 黙って失敗し、拡張機能側の接続だけ成功して戻り経路が張れない状態になる
 		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, () => cachedShellEnv.getEnv()));
+		this._probeClaudeVersion = () => paradisProbeClaudeVersionOutput(() => cachedShellEnv.getEnv());
 		// 手元の aivis-mcp もログインシェルの PATH（npm・bun のグローバル）で探す
 		this._localVoicePlayer = new ParadisLocalVoicePlayer(() => cachedShellEnv.getEnv());
 		this._remoteVoiceLocalPlaybackEnabled = () => paradisRemoteVoiceLocalPlaybackEnabled(configurationService?.getValue(PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING));
@@ -3715,6 +3719,24 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** Claude Code の設定フォルダ（`CLAUDE_CONFIG_DIR`、無ければ ~/.claude）。中身は返さない。 */
 	async getClaudeConfigDir(): Promise<string> {
 		return paradisClaudeConfigDir();
+	}
+
+	/**
+	 * 手元の Claude Code の `claude --version` の出力（確かめられなければ undefined）。renderer の mod の準備が、入力欄の mod を
+	 * 読ませてよい版かを決めるのに使う。5 分は前の結果を返す（失敗した結果は使い回さない）。
+	 */
+	async getClaudeVersion(): Promise<string | undefined> {
+		const now = Date.now();
+		if (this._claudeVersion === undefined || now - this._claudeVersion.at > 5 * 60_000) {
+			const value = this._probeClaudeVersion().catch(() => undefined);
+			this._claudeVersion = { at: now, value };
+			void value.then(version => {
+				if (version === undefined && this._claudeVersion?.value === value) {
+					this._claudeVersion = undefined;
+				}
+			});
+		}
+		return this._claudeVersion.value;
 	}
 
 	async getVoiceIngressToken(): Promise<string> {

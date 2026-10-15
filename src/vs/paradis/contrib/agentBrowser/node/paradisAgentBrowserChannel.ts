@@ -135,6 +135,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'getClaudeConfigDir':
 				requireArgs(arg, 0);
 				return this.service.getClaudeConfigDir() as Promise<T>;
+			// `claude --version` の出力。renderer の mod の準備が入力欄の mod（Claude Code 2.1.300 以降）を読ませるかに使う
+			case 'getClaudeVersion':
+				requireArgs(arg, 0);
+				return this.service.getClaudeVersion() as Promise<T>;
 			case 'getVoiceIngressToken':
 				requireArgs(arg, 0);
 				return this.service.getVoiceIngressToken() as Promise<T>;
