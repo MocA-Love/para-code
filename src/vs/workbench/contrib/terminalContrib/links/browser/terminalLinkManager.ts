@@ -122,7 +122,7 @@ export class TerminalLinkManager extends DisposableStore {
 		}));
 		this._xterm.options.linkHandler = {
 			allowNonHttpProtocols: true,
-			activate: async (event, text, range) => {
+			activate: async (event, text, range) => { // PARA-PATCH: `range` is for the OSC 8 file link below
 				if (!this._isLinkActivationModifierDown(event)) {
 					return;
 				}
