@@ -299,7 +299,9 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		try {
 			// preserveFocus: ユーザーは大抵ターミナルでエージェントとやり取り中なので、
 			// 入力フォーカスは奪わずエディタを開いて見せるだけにする。
-			const editor = await this.editorService.openEditor({ resource, options: { preserveFocus: true } }, group);
+			// pinned: 仮のタブ（斜体）で開くと、エージェントが続けて開いた次のファイルで置き換わり、最後の 1 つしか残らない。
+			// 予約から開き直す分も同じ（ここを通る）。
+			const editor = await this.editorService.openEditor({ resource, options: { preserveFocus: true, pinned: true } }, group);
 			return editor ? { ok: true } : this.failed(resource, 'no editor was opened', 'openFailed');
 		} catch (error) {
 			return this.failed(resource, error, 'openFailed');
