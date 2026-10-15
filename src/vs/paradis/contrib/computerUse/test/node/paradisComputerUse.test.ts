@@ -8,7 +8,10 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisComputerUseBlockReason, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
+import { PARADIS_COMPUTER_USE_TOOLS } from '../../node/paradisComputerUseToolProvider.js';
+import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
 suite('ParadisComputerUse common', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -89,6 +92,30 @@ suite('ParadisComputerUse common', () => {
 			refused: [true, false, false],
 			afterForget: [],
 			c: [{ bundleId: 'com.apple.Mail', grant: 'read' }],
+		});
+	});
+
+	test('sends no reason word, tool name or key that Sentry would scrub, and keeps every tool and helper code apart', () => {
+		// 補助アプリ（ParadisProtocol.swift ほか）と接続（paradisComputerUseHelperClient.ts）が返すコード
+		const helperCodes = [
+			'accessibility_not_granted', 'app_blocked', 'app_not_found', 'cancelled', 'focus_changed', 'foreground_needs_approval', 'input_failed',
+			'input_unsupported', 'internal_error', 'invalid_argument', 'invalid_request', 'key_blocked', 'menu_open', 'point_obscured', 'point_outside_window',
+			'queue_full', 'screen_locked', 'screen_recording_not_granted', 'screenshot_failed', 'stale_element', 'system_dialog', 'unknown_method',
+			'user_active', 'window_not_focused', 'window_not_found', 'timeout', 'helper_disconnected', 'helper_error', 'unavailable',
+		];
+		// computer_press_key・computer_hotkey は素の key を含む。Sentry の既定のスクラブ（api_key 等）には当たらない
+		const tools = PARADIS_COMPUTER_USE_TOOLS.map(tool => tool.name);
+		const keys = Object.keys(paradisComputerUseCallAttributes('computer_click', 'error', 'timeout', 1, { ...createParadisComputerUseCallDiagnostics(), route: 'foreground', inputSent: 1, stateFailure: 'tree_timeout' }, '0.1.0'));
+		assert.deepStrictEqual({
+			scrubbed: [...PARADIS_COMPUTER_USE_FAILURES, ...helperCodes, ...tools, ...keys].filter(isParadisSentryScrubbedWord),
+			tools: tools.map(paradisComputerUseFailureCode),
+			helperCodes: helperCodes.map(paradisComputerUseFailureCode),
+			unknown: [paradisComputerUseFailureCode('auth_failed'), paradisComputerUseFailureCode('api_key_missing'), paradisComputerUseFailureCode('/Users/someone'), paradisComputerUseFailureCode('Timeout')],
+		}, {
+			scrubbed: [],
+			tools,
+			helperCodes,
+			unknown: ['other', 'other', 'other', 'other'],
 		});
 	});
 });

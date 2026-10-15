@@ -23,6 +23,8 @@ import { TerminalWordLinkDetector } from './terminalWordLinkDetector.js';
 // PARA-PATCH: file:// links with an authority (SMB/UNC-style, e.g. from CLI agent output) fail the
 // built-in Uri detector's local stat check and silently fall through to word-link quick-open search.
 import { ParadisTerminalFileUriLinkDetector } from '../../../../../paradis/contrib/terminalFileUriLinks/browser/paradisTerminalFileUriLinkDetector.js';
+// PARA-PATCH: OSC 8 links that name a file (e.g. Claude Code's Markdown links) open as files, also in remote windows.
+import { paradisOpenOsc8FileLink } from '../../../../../paradis/contrib/terminalFileUriLinks/browser/paradisTerminalOsc8FileLink.js';
 import { ITerminalConfigurationService, ITerminalExternalLinkProvider, TerminalLinkQuickPickEvent } from '../../../terminal/browser/terminal.js';
 import { ILinkHoverTargetOptions, TerminalHover } from '../../../terminal/browser/widgets/terminalHoverWidget.js';
 import { TerminalWidgetManager } from '../../../terminal/browser/widgets/widgetManager.js';
@@ -120,8 +122,12 @@ export class TerminalLinkManager extends DisposableStore {
 		}));
 		this._xterm.options.linkHandler = {
 			allowNonHttpProtocols: true,
-			activate: async (event, text) => {
+			activate: async (event, text, range) => { // PARA-PATCH: `range` is for the OSC 8 file link below
 				if (!this._isLinkActivationModifierDown(event)) {
+					return;
+				}
+				// PARA-PATCH: see paradisTerminalOsc8FileLink.ts. Paths and file:// open in the editor; URLs fall through.
+				if (await this._instantiationService.invokeFunction(paradisOpenOsc8FileLink, { text, range, processInfo: this._processInfo, capabilities, linkResolver: this._linkResolver, openers: this._openers })) {
 					return;
 				}
 				const colonIndex = text.indexOf(':');

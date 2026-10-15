@@ -256,6 +256,19 @@ suite('ParadisClaudeModBridge', () => {
 		assert.deepStrictEqual({ sent, busyAfterPoll, busyAfterTurn }, { sent: 'accepted', busyAfterPoll: true, busyAfterTurn: false });
 	});
 
+	test('a subagent or teammate turn (agentId) does not make the session busy or count as the main turn', async () => {
+		await call('settle', { ids: [] });
+		await call('event', { events: [{ type: 'turn.start', turnId: 'child', agentId: 'a-child' }] });
+		const afterChild = bridge.isBusy(TOKEN, SESSION);
+		await call('event', { events: [{ type: 'turn.start', turnId: 'main' }] });
+		const afterMain = bridge.isBusy(TOKEN, SESSION);
+		assert.deepStrictEqual({
+			afterChild,
+			afterMain,
+			starts: events.filter(event => event.type === 'turn.start').map(event => event.type === 'turn.start' ? event.turnId : undefined),
+		}, { afterChild: false, afterMain: true, starts: ['main'] });
+	});
+
 	/** 発言を 1 通渡し、mod の最初の ack を返す（`received` か `ok`）。 */
 	async function handOver(firstAck: Record<string, unknown>): Promise<{ readonly id: string; readonly result: string }> {
 		const poll = call('commands', { busy: false });

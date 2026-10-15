@@ -704,6 +704,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		},
 	},
 	{
+		sectionId: 'psd-sec-agentide',
+		key: 'paradis.taskBoard.bridge.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.taskBoardBridge', "タスクボードからエージェントを動かせるようにする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.taskBoardBridgeDesc', "（開発中の機能）タスクボードが、この PC の Para Code でエージェントを起動し、その様子を見て、質問や許可に答えられるようになります。オンの間は、同じ PC で動くエージェントもその鍵を読めば答えを送れるので、タスクボードを使うときだけオンにしてください。"),
+		keywords: 'task board taskboard bridge agent launch kanban',
+	},
+	{
 		sectionId: 'psd-sec-notif',
 		key: 'paradis.notifications.osIncludeMessage',
 		// allow-any-unicode-next-line

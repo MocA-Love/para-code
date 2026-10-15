@@ -524,8 +524,10 @@ export class ParadisClaudeModBridge {
 					break;
 				}
 				case 'turn.start': {
+					// 本会話のターンだけ。サブエージェント・teammate のターン（Claude Code 2.1.299 以降、agentId 付き）は mod が
+					// 送らないが、送られても作業中にしない（turn.complete と同じ。子のターンで本会話を作業中に固めない）
 					const turnId = id(event.turnId);
-					if (turnId !== undefined && state !== undefined) {
+					if (turnId !== undefined && state !== undefined && event.agentId === undefined) {
 						if (state.heldBusy) {
 							state.heldBusyUntil = this.now() + HELD_BUSY_TURN_MS;
 						}

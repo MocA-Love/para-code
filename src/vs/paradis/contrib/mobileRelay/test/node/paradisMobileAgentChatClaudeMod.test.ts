@@ -496,6 +496,28 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		}, { command: { kind: 'submit', text: '続けて' }, result: [{ status: 'accepted' }], keys: 0 });
 	}));
 
+	test('a subagent or teammate turn while the agent waits keeps it idle: a message still goes through the mod', () => withHarness(async harness => {
+		harness.hook('Stop');
+		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });
+		const poll = harness.mod('commands', { busy: false });
+		await waitFor(() => harness.bridge.isAlive(harness.token, SESSION), 'the mod was not alive');
+		await waitForIdle(harness);
+		// Claude Code 2.1.299 以降: 本会話が待っている間に、teammate や背景のサブエージェントのターンが始まる（agentId 付き）
+		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-child', agentId: 'a-child' }] });
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const internals = harness.chat as unknown as { readonly liveStates: Map<string, unknown>; readonly activeTurnTokens: Set<string> };
+		const whileChildRuns = { busy: harness.bridge.isBusy(harness.token, SESSION), active: internals.activeTurnTokens.has(harness.token), live: internals.liveStates.has(harness.token) };
+		harness.inbound({ t: 'action/sendMessage', requestId: 'send-1', epoch: harness.tailer()!.epoch, text: '続けて' });
+		const commands = (await poll).commands as { id: string; kind: string; text: string }[];
+		await harness.mod('ack', { id: commands[0].id, ok: true });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'send-1'), 'the send was not acknowledged');
+		assert.deepStrictEqual({
+			whileChildRuns,
+			command: { kind: commands[0].kind, text: commands[0].text },
+			keys: harness.actions.filter(action => action.t === 'action/sendMessage').length,
+		}, { whileChildRuns: { busy: false, active: false, live: false }, command: { kind: 'submit', text: '続けて' }, keys: 0 });
+	}));
+
 	test('a second message the mod refuses as busy goes by keys only after the first one was received', () => withHarness(async harness => {
 		harness.hook('Stop');
 		await harness.mod('event', { events: [{ type: 'turn.complete', turnId: 't-0', aborted: false, reason: 'answer' }] });

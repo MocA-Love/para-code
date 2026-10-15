@@ -53,6 +53,18 @@ export interface IParadisProgramStatus {
 
 const PROGRAM_STATES: ReadonlySet<string> = new Set<ParadisProgramState>(['working', 'blocked', 'done', 'idle', 'error', 'clear']);
 
+/** `key=value` を `:` で並べた中身を読む。 */
+function programStatusFields(data: string): Map<string, string> {
+	const fields = new Map<string, string>();
+	for (const part of data.split(':')) {
+		const equals = part.indexOf('=');
+		if (equals > 0) {
+			fields.set(part.slice(0, equals), part.slice(equals + 1));
+		}
+	}
+	return fields;
+}
+
 /**
  * OSC 7501 の中身（`7501;` の後ろ）を読む。問い合わせなら 'query'、会話そのもの（id 無し）の Claude Code の
  * 状態ならその状態、それ以外（サブエージェントの行、別のアプリ、知らない状態）は undefined。
@@ -64,13 +76,7 @@ export function paradisParseProgramStatus(data: string): IParadisProgramStatus |
 	if (data.startsWith('?')) {
 		return 'query';
 	}
-	const fields = new Map<string, string>();
-	for (const part of data.split(':')) {
-		const equals = part.indexOf('=');
-		if (equals > 0) {
-			fields.set(part.slice(0, equals), part.slice(equals + 1));
-		}
-	}
+	const fields = programStatusFields(data);
 	const state = fields.get('state');
 	if (state === undefined || !PROGRAM_STATES.has(state)) {
 		return undefined;
@@ -85,6 +91,42 @@ export function paradisParseProgramStatus(data: string): IParadisProgramStatus |
 	}
 	const kind = fields.get('kind');
 	return { state: state as ParadisProgramState, ...(kind !== undefined && kind.length > 0 ? { kind } : {}) };
+}
+
+/** {@link paradisParseProgramStatus} が読まなかった理由。 */
+export type ParadisProgramStatusDropReason =
+	/** 4 KiB を超える。 */
+	| 'too-long'
+	/** `state=` が無い。 */
+	| 'no-state'
+	/** Para Code の知らない状態（Claude Code の新しい版が足した状態かもしれない）。 */
+	| 'unknown-state'
+	/** サブエージェントの行（`id=` 付き）。 */
+	| 'subagent'
+	/** Claude Code 以外のアプリが書いたもの。 */
+	| 'other-app';
+
+/**
+ * {@link paradisParseProgramStatus} が undefined を返した中身の、読まなかった理由（Sentry で件数を数えるため）。
+ * 読める中身（問い合わせ・状態）なら undefined。`unknownState` は、知らない状態の名前が送ってよい形
+ * （小文字の語）のときだけ返す。
+ */
+export function paradisProgramStatusDropReason(data: string): { readonly reason: ParadisProgramStatusDropReason; readonly unknownState?: string } | undefined {
+	if (data.length > PARADIS_PROGRAM_STATUS_MAX_DATA_LENGTH) {
+		return { reason: 'too-long' };
+	}
+	if (paradisParseProgramStatus(data) !== undefined) {
+		return undefined;
+	}
+	const fields = programStatusFields(data);
+	const state = fields.get('state');
+	if (state === undefined) {
+		return { reason: 'no-state' };
+	}
+	if (!PROGRAM_STATES.has(state)) {
+		return { reason: 'unknown-state', ...(/^[a-z_]{1,24}$/.test(state) ? { unknownState: state } : {}) };
+	}
+	return fields.has('id') ? { reason: 'subagent' } : { reason: 'other-app' };
 }
 
 /** IPC で受けた値を確かめて写す（renderer から shared process へ渡すとき）。形が違えば undefined。 */
@@ -195,6 +237,27 @@ export function paradisProgramStatusClosesOnForeground(hasShellIntegration: bool
 export function paradisClaudeProcessIdentity(processTitle: string | undefined): string | undefined {
 	const name = processTitle !== undefined ? commandName(processTitle) : undefined;
 	return name !== undefined && (name === 'claude' || name === 'claude.exe' || /^\d+\.\d+\.\d+$/.test(name)) ? name : undefined;
+}
+
+/** 前面のプロセスの種類（Sentry で、問い合わせに答えなかった理由を数えるため。プロセスの名前そのものは送らない）。 */
+export type ParadisProgramStatusProcessKind = 'claude' | 'passthrough' | 'node' | 'shell' | 'other' | 'none';
+
+/** 前面のプロセスの題名を {@link ParadisProgramStatusProcessKind} に畳む。`node` は npm 版の Claude Code がこう見える。 */
+export function paradisProgramStatusProcessKind(processTitle: string | undefined): ParadisProgramStatusProcessKind {
+	const name = processTitle !== undefined ? commandName(processTitle)?.replace(/^-/, '').replace(/\.exe$/, '') : undefined;
+	if (name === undefined) {
+		return 'none';
+	}
+	if (paradisClaudeProcessIdentity(processTitle) !== undefined) {
+		return 'claude';
+	}
+	if (PASSTHROUGH_COMMANDS.has(name)) {
+		return 'passthrough';
+	}
+	if (name === 'node') {
+		return 'node';
+	}
+	return KNOWN_SHELLS.has(name) ? 'shell' : 'other';
 }
 
 /** シェル統合が報告したコマンドの終わりが、Ctrl+Z で止めたもの（128 + SIGTSTP。macOS は 18、Linux は 20）か。 */

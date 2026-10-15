@@ -2255,7 +2255,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const firstLine = newlineIndex === -1 ? source : source.slice(0, newlineIndex);
 			const languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(uri, firstLine);
 			const html = await tokenizeToString(this.languageService, source, languageId);
-			timing?.mark('highlight_tokenize');
+			// `tokenize` は Sentry の既定のスクラブ (キーに token を含む) で値が消えるので、この名前にしている
+			timing?.mark('highlight_colorize');
 			const colorMap = TokenizationRegistry.getColorMap();
 			const css = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
 			const theme = this.themeService.getColorTheme();

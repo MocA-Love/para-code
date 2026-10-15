@@ -24,6 +24,7 @@ import { release, tmpdir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { ParadisComputerUseHelperFailureReporter, ParadisComputerUseHelperFailureStage, paradisComputerUseHelperVersion, reportParadisComputerUseHelperFailure } from '../common/paradisComputerUseDiagnostics.js';
 import {
 	IParadisComputerUsePermissions,
 	PARADIS_COMPUTER_USE_APP_NAME,
@@ -342,6 +343,8 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 		private readonly _host: IParadisComputerUseHelperHost,
 		private readonly _logService: ILogService | undefined,
 		timeouts: IParadisComputerUseHelperTimeouts = {},
+		/** 補助アプリが壊れたことを送る口（テストで差し替える。無ければ Sentry のエラー）。 */
+		private readonly _reportFailure: ParadisComputerUseHelperFailureReporter = reportParadisComputerUseHelperFailure,
 	) {
 		super();
 		this._requestTimeoutMs = timeouts.requestTimeoutMs ?? PARADIS_COMPUTER_USE_REQUEST_TIMEOUT_MS;
@@ -432,16 +435,23 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 	}
 
 	private async _launchAndConnect(generation: number): Promise<ParadisHelperConnection> {
-		const fail = (availability: ParadisComputerUseAvailability, detail: string): never => {
+		const startedAt = Date.now();
+		// 起動の失敗は状態を書き換えるだけで、ログにも Sentry にも残らなかった。壊れた段階をエラーで 1 件送る
+		// （`detail` と helper.log の末尾はパスを含みうるので送らない）
+		const fail = (availability: ParadisComputerUseAvailability, stage: ParadisComputerUseHelperFailureStage | undefined, detail: string, error?: unknown, extra?: Record<`safe_${string}`, number>): never => {
 			if (generation === this._generation) {
 				this._availability = availability;
 				this._detail = detail;
+				if (stage !== undefined) {
+					this._report(stage, error, { safe_availability: availability, safe_launch_ms: Date.now() - startedAt, ...extra });
+				}
 			}
 			throw new ParadisComputerUseHelperError('unavailable', detail);
 		};
 		const staticAvailability = this.staticAvailability();
 		if (staticAvailability) {
-			fail(staticAvailability, staticAvailability === 'missing' ? 'The Computer Use helper is not included in this build.' : 'Computer Use needs macOS 14 or later.');
+			// macOS 14 より前は壊れているのではないので送らない
+			fail(staticAvailability, staticAvailability === 'missing' ? 'missing' : undefined, staticAvailability === 'missing' ? 'The Computer Use helper is not included in this build.' : 'Computer Use needs macOS 14 or later.');
 		}
 		const appPath = this._findHelper()!;
 		const runtimeDirectory = await this._prepareRuntimeDirectory();
@@ -458,11 +468,11 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 				// `--state-dir`: 補助アプリがクラッシュしても次の起動で戻せるよう、AXManualAccessibility を立てたアプリの記録を置く
 				await this._host.launch(appPath, ['--agent', '--socket', socketPath, '--token-file', tokenPath, '--state-dir', runtimeDirectory], join(runtimeDirectory, 'helper.log'));
 			} catch (error) {
-				fail('launch-failed', `open failed: ${toMessage(error)}`);
+				fail('launch-failed', 'open', `open failed: ${toMessage(error)}`, error);
 			}
 			const socket = await this._waitAndConnect(socketPath);
 			if (!socket) {
-				fail('launch-failed', `the helper did not open its socket within ${this._launchTimeoutMs / 1000}s${await this._helperLogTail(runtimeDirectory)}`);
+				fail('launch-failed', 'socket', `the helper did not open its socket within ${this._launchTimeoutMs / 1000}s${await this._helperLogTail(runtimeDirectory)}`);
 			}
 			// 応答しない補助アプリは、切断に気づくのを待たずに終わらせる（AX の呼び出しの中で止まっていても残さない。レビュー L5）
 			connection = new ParadisHelperConnection(socket!, closedWhileBusy => this._onConnectionClosed(connection!, closedWhileBusy), () => {
@@ -475,15 +485,15 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			try {
 				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, Math.max(this._launchTimeoutMs, PARADIS_COMPUTER_USE_HANDSHAKE_TIMEOUT_MS));
 			} catch (error) {
-				fail('launch-failed', `handshake failed: ${toMessage(error)}${await this._helperLogTail(runtimeDirectory)}`);
+				fail('launch-failed', 'handshake', `handshake failed: ${toMessage(error)}${await this._helperLogTail(runtimeDirectory)}`, error);
 			}
 			const status = paradisParseHelperStatus(hello);
 			if (!status || status.protocolVersion !== PARADIS_COMPUTER_USE_PROTOCOL_VERSION) {
-				fail('incompatible', `helper protocol ${status?.protocolVersion ?? 'unknown'} does not match ${PARADIS_COMPUTER_USE_PROTOCOL_VERSION}`);
+				fail('incompatible', 'protocol', `helper protocol ${status?.protocolVersion ?? 'unknown'} does not match ${PARADIS_COMPUTER_USE_PROTOCOL_VERSION}`, undefined, { safe_helper_protocol: status?.protocolVersion ?? -1, safe_expected_protocol: PARADIS_COMPUTER_USE_PROTOCOL_VERSION });
 			}
 			// 許可が補助アプリ以外（Para Code 本体など）で評価されるなら、許可をアプリごとの承認に閉じ込められない。止める
 			if (status!.responsibility === 'other') {
-				fail('misattributed', `TCC responsibility belongs to pid ${status!.responsiblePid ?? 'unknown'}, not the helper`);
+				fail('misattributed', 'responsibility', `TCC responsibility belongs to pid ${status!.responsiblePid ?? 'unknown'}, not the helper`);
 			}
 			if (generation !== this._generation) {
 				throw new ParadisComputerUseHelperError('cancelled', 'Computer Use was turned off while the helper was starting.');
@@ -517,6 +527,15 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			this._availability = 'launch-failed';
 			this._detail = 'the helper stopped repeatedly while answering';
 			this._logService?.warn('[ParadisComputerUse] helper stopped repeatedly; Computer Use is disabled until it is turned on again');
+			this._report('crashed-repeatedly', undefined, { safe_crashes: this._consecutiveCrashes, safe_helper_version: paradisComputerUseHelperVersion(this._status?.helperVersion) ?? 'unknown' });
+		}
+	}
+
+	private _report(stage: ParadisComputerUseHelperFailureStage, error: unknown, safeExtra: Record<`safe_${string}`, string | number | boolean>): void {
+		try {
+			this._reportFailure(stage, error ?? new Error(`Computer Use helper ${stage}`), safeExtra);
+		} catch {
+			// 診断は観測している動きを変えない
 		}
 	}
 
