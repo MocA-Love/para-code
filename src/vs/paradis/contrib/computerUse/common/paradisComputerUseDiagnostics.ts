@@ -47,28 +47,19 @@ const ROUTE = /^[a-z]{1,16}(?:\+[a-z]{1,16}){0,3}$/;
 const HELPER_VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
 
 /**
- * Sentry が値ごと消す語（`key`・`auth`・`password` など）を含む、補助アプリのエラーコードの言い換え。
- * 載せないと理由が `[Filtered]` で届く。
- */
-const RENAMED_CODES: Readonly<Record<string, string>> = {
-	'key_blocked': 'shortcut_blocked',
-};
-
-/**
- * 理由として送ってよい形（小文字・数字・`_` の語）にする。補助アプリが返すコードもここを通すので、
- * 想定外の値（文・パス）と、Sentry が消す語を含む値（言い換えの無いもの）は `other` に畳む。
+ * 理由・ツール名として送ってよい形（小文字・数字・`_` の語）にする。補助アプリが返すコードもここを通すので、
+ * 想定外の値（文・パス）と、Sentry が値ごと消す語を含む値は `other` に畳む。
  */
 export function paradisComputerUseFailureCode(value: unknown): string {
 	if (typeof value !== 'string' || !FAILURE_CODE.test(value)) {
 		return 'other';
 	}
-	// `tree_key_blocked` のように前置きが付いた形でも言い換える
-	const word = Object.entries(RENAMED_CODES).reduce((current, [from, to]) => current.replaceAll(from, to), value);
-	return isParadisSentryScrubbedWord(word) ? 'other' : word;
+	return isParadisSentryScrubbedWord(value) ? 'other' : value;
 }
 
 /**
- * 常に断るアプリの理由を送るときの語。`password-manager`・`authenticator`・`keychain` は Sentry が値ごと消す語を含むので言い換える。
+ * 常に断るアプリの理由を送るときの語。`password-manager`・`authenticator` は Sentry が値ごと消す語を含むので言い換える
+ * （`keychain` は消されないが、並びをそろえる）。
  */
 const BLOCK_REASON_WORDS: Readonly<Record<ParadisComputerUseBlockReason, ParadisComputerUseFailure>> = {
 	'password-manager': 'blocked_vault_app',
@@ -89,7 +80,7 @@ export function paradisComputerUseHelperVersion(value: string | undefined): stri
 
 /**
  * Para Code 側で決める理由の語の一覧（補助アプリのエラーコードは別に {@link paradisComputerUseFailureCode} を通す）。
- * Sentry が値ごと消す語（`password`・`auth`・`key`・`token`・`session` など）を含めない。テストが全部を検査する。
+ * Sentry が値ごと消す語（`password`・`auth`・`api_key`・`token`・`session` など）を含めない。テストが全部を検査する。
  */
 export const PARADIS_COMPUTER_USE_FAILURES = [
 	'caller_ssh', 'caller_unverified', 'disabled', 'unhandled_tool', 'unclassified',
