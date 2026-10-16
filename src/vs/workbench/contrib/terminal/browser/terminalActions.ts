@@ -64,8 +64,6 @@ import { ITerminalQuickPickItem } from './terminalProfileQuickpick.js';
 import { TerminalTabList } from './terminalTabsList.js';
 import { ResourceContextKey } from '../../../common/contextkeys.js';
 import { SeparatorSelectOption } from '../../../../base/browser/ui/selectBox/selectBox.js';
-// PARA-PATCH: Attach to Session must not end the terminals Para Code keeps detached on purpose
-import { paradisShouldReduceGraceOnAttach } from '../../../../paradis/contrib/ptyDaemon/common/paradisAttachToSessionGrace.js';
 
 export const switchTerminalShowTabsTitle = localize('showTerminalTabs', "Show Tabs");
 
@@ -844,7 +842,6 @@ export function registerTerminalActions() {
 			const labelService = accessor.get(ILabelService);
 			const remoteAgentService = accessor.get(IRemoteAgentService);
 			const notificationService = accessor.get(INotificationService);
-			const configurationService = accessor.get(IConfigurationService); // PARA-PATCH: read before the first await (see below)
 
 			const remoteAuthority = remoteAgentService.getConnection()?.remoteAuthority ?? undefined;
 			const backend = await accessor.get(ITerminalInstanceService).getBackend(remoteAuthority);
@@ -855,10 +852,7 @@ export function registerTerminalActions() {
 
 			const terms = await backend.listProcesses();
 
-			// PARA-PATCH: the pty daemon and SSH keep detached terminals on purpose; shortening their grace ends every one but the picked one (paradisAttachToSessionGrace.ts)
-			if (paradisShouldReduceGraceOnAttach(remoteAuthority, configurationService, isWindows)) {
-				backend.reduceConnectionGraceTime();
-			}
+			backend.reduceConnectionGraceTime();
 
 			const unattachedTerms = terms.filter(term => !c.service.isAttachedToTerminal(term));
 			const items = unattachedTerms.map(term => {

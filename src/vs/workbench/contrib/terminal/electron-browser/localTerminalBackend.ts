@@ -349,7 +349,12 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 		this._storageService.store(TerminalStorageKeys.TerminalLayoutInfo, JSON.stringify(args), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
+	// PARA-PATCH: open the revive gate however the revive below ends, a throw included (paradisReviveGate.ts)
 	async getTerminalLayoutInfo(): Promise<ITerminalsLayoutInfo | undefined> {
+		return this._paradisReviveGate.openAfter(() => this._paradisGetTerminalLayoutInfo());
+	}
+
+	private async _paradisGetTerminalLayoutInfo(): Promise<ITerminalsLayoutInfo | undefined> {
 		const workspaceId = this._getWorkspaceId();
 		const layoutArgs: IGetTerminalLayoutInfoArgs = { workspaceId };
 

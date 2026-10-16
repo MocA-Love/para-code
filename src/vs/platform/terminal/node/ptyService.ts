@@ -529,6 +529,10 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async reduceConnectionGraceTime(): Promise<void> {
 		for (const pty of this._ptys.values()) {
+			// PARA-PATCH: a terminal the pty daemon holds was left detached on purpose (another window, another space, across an update); Attach to Session and a reconnecting remote window must not end it in seconds
+			if (pty.paradisHeldByDaemon) {
+				continue;
+			}
 			pty.reduceGraceTime();
 		}
 	}

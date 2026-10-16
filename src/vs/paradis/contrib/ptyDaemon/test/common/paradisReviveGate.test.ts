@@ -53,6 +53,16 @@ suite('ParadisReviveGate', () => {
 		assert.deepStrictEqual(attached, [6]);
 	});
 
+	test('opens even when the revive throws halfway, so editor tabs do not wait out the limit', async () => {
+		const clock = manualClock();
+		const gate = new ParadisReviveGate(10_000, clock.now, clock.setTimeout);
+		const waiting = gate.whenOpen();
+
+		const failure = await gate.openAfter(async () => { throw new Error('saved screens could not be read'); }).then(() => undefined, (error: Error) => error.message);
+
+		assert.deepStrictEqual({ failure, timedOut: await waiting, isOpen: gate.isOpen }, { failure: 'saved screens could not be read', timedOut: false, isOpen: true });
+	});
+
 	test('opens by itself at the limit, and does not hold back callers after opening', async () => {
 		const clock = manualClock();
 		const neverRevived = new ParadisReviveGate(10_000, clock.now, clock.setTimeout);

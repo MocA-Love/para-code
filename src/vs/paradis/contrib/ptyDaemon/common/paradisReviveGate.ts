@@ -54,6 +54,18 @@ export class ParadisReviveGate {
 	}
 
 	/**
+	 * 起こし直しを走らせ、どう終わっても（途中で投げても）門を開ける。開け忘れると、エディタの
+	 * タブが上限まで待たされる。
+	 */
+	async openAfter<T>(revive: () => Promise<T>): Promise<T> {
+		try {
+			return await revive();
+		} finally {
+			this.open();
+		}
+	}
+
+	/**
 	 * 起こし直しが済むまで待つ。上限を過ぎたら待たずに返る。
 	 * @returns 上限で打ち切ったなら true（呼び出し側は従来どおり繋ぎに行く）
 	 */
