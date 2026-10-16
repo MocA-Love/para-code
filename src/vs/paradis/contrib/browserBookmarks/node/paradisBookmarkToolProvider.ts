@@ -13,6 +13,8 @@
 
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
+	PARADIS_BOOKMARK_CREATE_LIMIT,
+	PARADIS_BOOKMARK_CREATE_WINDOW_MS,
 	PARADIS_BOOKMARK_DELETE_TIMEOUT_MS,
 	PARADIS_BOOKMARK_MCP_CHANNEL,
 	PARADIS_BOOKMARK_MCP_METHOD,
@@ -33,6 +35,7 @@ const SSH_REFUSED_MESSAGE = 'Agents on an SSH host can read the bookmarks with l
 const NO_TAB_MESSAGE = 'This terminal pane has no browser tab to bookmark (or tab_id is not one of its tabs). Pass "url", or open or select a tab first (list_browser_tabs).';
 const TAB_URL_MESSAGE = 'That tab does not show an http or https page, so Para Code does not bookmark it. Pass "url" instead.';
 const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this terminal pane to use the bookmarks. Retry in a few seconds.';
+const CREATE_LIMIT_MESSAGE = `This terminal pane added ${PARADIS_BOOKMARK_CREATE_LIMIT} bookmarks and folders in the last ${PARADIS_BOOKMARK_CREATE_WINDOW_MS / 60_000} minutes, so Para Code turns this one down. Ask the user before adding more.`;
 const DELETE_TIMEOUT_MESSAGE = 'The user did not answer the deletion dialog in time, so nothing was deleted. Ask the user in the conversation before asking again.';
 
 function toolText(value: object): unknown {
@@ -44,6 +47,11 @@ function toolError(text: string): unknown {
 }
 
 export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
+
+	/** ペインごとの、足したブックマークとフォルダの時刻（{@link PARADIS_BOOKMARK_CREATE_WINDOW_MS} より古いものは捨てる）。 */
+	private readonly _created = new Map<string, number[]>();
+
+	constructor(private readonly _now: () => number = Date.now) { }
 
 	listTools(): readonly IParadisMcpToolDefinition[] {
 		return PARADIS_BOOKMARK_TOOLS;
@@ -63,7 +71,11 @@ export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
 				return toolError(READ_CALLER_UNVERIFIED_MESSAGE);
 			}
 			const parsed = paradisParseListBookmarks(args);
-			return parsed.ok ? this._callWindow(paneToken, name, parsed.request, context, signal) : toolError(parsed.error);
+			if (!parsed.ok) {
+				return toolError(parsed.error);
+			}
+			// SSH の接続先へは URL のクエリとフラグメントを渡さない（token や社内の情報を接続先の機械へ持ち出させない）
+			return this._callWindow(paneToken, name, caller === 'tunnel' && parsed.request.op === 'list' ? { ...parsed.request, redactUrls: true } : parsed.request, context, signal);
 		}
 		if (caller === 'tunnel') {
 			return toolError(SSH_REFUSED_MESSAGE);
@@ -76,6 +88,10 @@ export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
 			return toolError(parsed.error);
 		}
 		let request = parsed.request;
+		const creates = request.op === 'add' || request.op === 'createFolder';
+		if (creates && this._recentCreations(paneToken).length >= PARADIS_BOOKMARK_CREATE_LIMIT) {
+			return toolError(CREATE_LIMIT_MESSAGE);
+		}
 		if (parsed.needsTab && request.op === 'add') {
 			const tab = await context.getPaneTab?.(parsed.needsTab.tabId, signal);
 			if (!tab) {
@@ -86,7 +102,20 @@ export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
 			}
 			request = { ...request, url: tab.url, title: request.title || paradisBookmarkToolTitle(tab.title) };
 		}
-		return this._callWindow(paneToken, name, request, context, signal);
+		const result = await this._callWindow(paneToken, name, request, context, signal);
+		if (creates && !(result as { isError?: boolean }).isError) {
+			this._created.set(paneToken, [...this._recentCreations(paneToken), this._now()]);
+		}
+		return result;
+	}
+
+	private _recentCreations(paneToken: string): number[] {
+		const since = this._now() - PARADIS_BOOKMARK_CREATE_WINDOW_MS;
+		const recent = (this._created.get(paneToken) ?? []).filter(time => time > since);
+		if (recent.length === 0) {
+			this._created.delete(paneToken);
+		}
+		return recent;
 	}
 
 	private async _callWindow(paneToken: string, name: string, request: ParadisBookmarkToolRequest, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<unknown> {

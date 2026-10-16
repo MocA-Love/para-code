@@ -39,6 +39,7 @@ suite('Paradis bookmark MCP tools', () => {
 			{ action: 'delete' },
 			{ action: 'remove', id: 'n1' },
 			{ action: 'rename', id: '', title: 'x' },
+			{ action: 'rename', id: 'n1', title: ' \n ' },
 		].map(parse), [
 			{ request: { op: 'add', url: 'https://example.com/a', title: 'A B', folderId: 'f1' } },
 			{ request: { op: 'add', url: '', title: '', folderId: null }, needsTab: { tabId: undefined } },
@@ -59,6 +60,7 @@ suite('Paradis bookmark MCP tools', () => {
 			'action "delete" needs the "id" of a bookmark or folder from list_bookmarks.',
 			'"action" must be one of "add", "create_folder", "rename", "move", "delete".',
 			'"id" must be an id from list_bookmarks.',
+			'action "rename" needs a non-empty "title".',
 		]);
 	});
 
@@ -73,6 +75,11 @@ suite('Paradis bookmark MCP tools', () => {
 			folder: paradisParseListBookmarks({ folder_id: 'f1' }),
 			badFolder: paradisParseListBookmarks({ folder_id: 3 }),
 			longTitle: Array.from(paradisBookmarkToolTitle('x'.repeat(300))).length,
+			// SSH の接続先へは、クエリ・フラグメント・ユーザー情報を落とした URL を返す
+			redacted: paradisBookmarkToolTree([
+				{ id: 'b3', type: 'bookmark', url: 'https://user:secret@intra.example:8443/path/a?token=abc#frag', title: 'C', createdAt: 1 },
+				{ id: 'b4', type: 'bookmark', url: 'not a url?token=abc', title: 'D', createdAt: 1 },
+			], undefined, true).nodes,
 		}, {
 			full: {
 				nodes: [
@@ -86,6 +93,10 @@ suite('Paradis bookmark MCP tools', () => {
 			folder: { ok: true, request: { op: 'list', folderId: 'f1' } },
 			badFolder: { ok: false, error: '"folder_id" must be an id from list_bookmarks.' },
 			longTitle: 200,
+			redacted: [
+				{ id: 'b3', type: 'bookmark', title: 'C', url: 'https://intra.example:8443/path/a' },
+				{ id: 'b4', type: 'bookmark', title: 'D', url: 'not a url' },
+			],
 		});
 	});
 });

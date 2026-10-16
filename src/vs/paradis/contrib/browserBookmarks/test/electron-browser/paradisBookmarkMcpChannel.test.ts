@@ -34,6 +34,9 @@ function error(result: ParadisBookmarkToolResult): string {
 	return result.ok ? 'ok' : result.error;
 }
 
+/** 通知でリンク（コマンドの実行）になる書式と、表示の順を入れ替える双方向の制御文字を仕込んだ題名。 */
+const EVIL_TITLE = '[Run](command:workbench.action.terminal.new)\u202Etxt.exe\u2066';
+
 suite('ParadisBookmarkMcpChannel', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -42,7 +45,7 @@ suite('ParadisBookmarkMcpChannel', () => {
 		const service = store.add(new ParadisBookmarksService(store.add(new InMemoryStorageService())));
 		const notices: IParadisBookmarkNotice[] = [];
 		const dialogs: string[][] = [];
-		const channel = new ParadisBookmarkMcpChannel(service, notice => notices.push(notice), token => token === 'pane-a' ? 'claude' : undefined, async (_token, request) => {
+		const channel = new ParadisBookmarkMcpChannel(service, notice => notices.push(notice), token => token === 'pane-a' ? 'claude' : token === 'pane-evil' ? EVIL_TITLE : undefined, async (_token, request) => {
 			dialogs.push([request.messageTemplate('pane'), ...request.detail]);
 			return answers.shift() ?? 'cancelled';
 		});
@@ -78,6 +81,21 @@ suite('ParadisBookmarkMcpChannel', () => {
 				'silent: ターミナル「不明」のエージェントがブックマーク「Same」をフォルダ「Inner」へ移しました。',
 			],
 		});
+	});
+
+	test('keeps link syntax and bidi controls out of the notices and the deletion dialog', async () => {
+		const { notices, dialogs, channel } = setup(['denied']);
+		const created = data(await channel.handle('pane-evil', { op: 'createFolder', title: EVIL_TITLE, folderId: null })).created.id as string;
+		const bookmark = data(await channel.handle('pane-evil', { op: 'add', url: 'https://evil.example/', title: EVIL_TITLE, folderId: created })).bookmark.id as string;
+		await channel.handle('pane-evil', { op: 'rename', id: bookmark, title: `${EVIL_TITLE}2` });
+		await channel.handle('pane-evil', { op: 'move', id: bookmark, folderId: null });
+		await channel.handle('pane-evil', { op: 'delete', id: created, recursive: true });
+		const shown = [...notices.map(notice => notice.message), ...dialogs.flat()];
+		assert.deepStrictEqual({
+			shown: shown.length,
+			unsafe: shown.filter(text => /[\[\]()\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text)),
+			fullWidth: notices[0].message.includes('\uFF3BRun\uFF3D\uFF08command:'),
+		}, { shown: 6, unsafe: [], fullWidth: true });
 	});
 
 	test('deletes only after the user approves, needs recursive for a folder with contents, and undoes to the same place', async () => {

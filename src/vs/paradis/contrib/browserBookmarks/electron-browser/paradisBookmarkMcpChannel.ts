@@ -27,9 +27,11 @@ import { INotificationService, NotificationPriority, Severity } from '../../../.
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
+import { paradisBindingRestoreDisplayName } from '../../agentBrowser/common/paradisBindingRestoreController.js';
 import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisAgentApprovalOutcome, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { countParadisDescendants, findParadisBookmarkByUrl, findParadisNodeById, findParadisParentFolderId, isParadisBookmarkFolder, ParadisBookmarkMoveError, ParadisBookmarkNode } from '../common/paradisBookmarkModel.js';
-import { PARADIS_BOOKMARK_MCP_CHANNEL, PARADIS_BOOKMARK_MCP_METHOD, ParadisBookmarkToolRequest, ParadisBookmarkToolResult, paradisBookmarkToolTitle, paradisBookmarkToolTree, paradisBookmarkToolUrlAllowed } from '../common/paradisBookmarkTools.js';
+import { PARADIS_BOOKMARK_MCP_CHANNEL, PARADIS_BOOKMARK_MCP_METHOD, PARADIS_BOOKMARK_URL_MAX_LENGTH, ParadisBookmarkToolRequest, ParadisBookmarkToolResult, paradisBookmarkToolTitle, paradisBookmarkToolTree, paradisBookmarkToolUrlAllowed } from '../common/paradisBookmarkTools.js';
 import { IParadisBookmarksService } from './paradisBookmarksService.js';
 
 const MOVE_ERRORS: Readonly<Record<ParadisBookmarkMoveError, string>> = {
@@ -57,8 +59,13 @@ export interface IParadisBookmarkNotice {
 /** 削除の確認のダイアログを出す口（ページ共有と同じ承認のダイアログ。テストでは差し替える）。 */
 export type ParadisBookmarkDeleteConfirm = (paneToken: string, request: IParadisAgentApprovalRequest, cancellation: CancellationToken) => Promise<ParadisAgentApprovalOutcome>;
 
-/** 通知に出すターミナルの題名の上限（題名はターミナルの中のプログラムが書ける）。 */
-const CALLER_TITLE_MAX_LENGTH = 60;
+/**
+ * 題名を通知とダイアログに入れられる形にする。題名はエージェントやページ・ターミナルの中のプログラムが決められ、
+ * 通知は `[文字](command:…)` をコマンドの実行のリンクとして描くので、かっこを全角にし、双方向の制御文字を落とす。
+ */
+function display(title: string | undefined): string {
+	return paradisBindingRestoreDisplayName(title, localize('paradis.bookmarks.mcp.unknownCaller', "不明"));
+}
 
 function fail(error: string): ParadisBookmarkToolResult {
 	return { ok: false, error };
@@ -84,13 +91,13 @@ function isRequest(value: unknown): value is ParadisBookmarkToolRequest {
 	const optionalFolder = request.folderId === null || typeof request.folderId === 'string';
 	switch (request.op) {
 		case 'list':
-			return request.folderId === undefined || typeof request.folderId === 'string';
+			return (request.folderId === undefined || typeof request.folderId === 'string') && (request.redactUrls === undefined || typeof request.redactUrls === 'boolean');
 		case 'add':
 			return typeof request.url === 'string' && typeof request.title === 'string' && optionalFolder;
 		case 'createFolder':
 			return typeof request.title === 'string' && request.title.length > 0 && optionalFolder;
 		case 'rename':
-			return typeof request.id === 'string' && typeof request.title === 'string';
+			return typeof request.id === 'string' && typeof request.title === 'string' && request.title.length > 0;
 		case 'move':
 			return typeof request.id === 'string' && optionalFolder && (request.index === undefined || (typeof request.index === 'number' && Number.isInteger(request.index) && request.index >= 0));
 		case 'delete':
@@ -137,10 +144,10 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 					if (!folder || !isParadisBookmarkFolder(folder)) {
 						return fail(MOVE_ERRORS['folder-not-found']);
 					}
-					const tree = paradisBookmarkToolTree(folder.children);
+					const tree = paradisBookmarkToolTree(folder.children, undefined, request.redactUrls);
 					return { ok: true, data: { folder: describeNode(nodes, folder), ...tree } };
 				}
-				return { ok: true, data: paradisBookmarkToolTree(nodes) };
+				return { ok: true, data: paradisBookmarkToolTree(nodes, undefined, request.redactUrls) };
 			}
 			case 'add': {
 				if (!paradisBookmarkToolUrlAllowed(request.url)) {
@@ -157,7 +164,7 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 				if (!added) {
 					return fail('"url" must be an http or https URL.');
 				}
-				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.added', "ターミナル「{0}」のエージェントがブックマーク「{1}」を追加しました。", caller, paradisBookmarkToolTitle(added.title)));
+				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.added', "ターミナル「{0}」のエージェントがブックマーク「{1}」を追加しました。", caller, display(added.title)));
 				return { ok: true, data: { added: true, bookmark: describeNode(this.bookmarks.nodes, added) } };
 			}
 			case 'createFolder': {
@@ -165,7 +172,7 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 					return fail(MOVE_ERRORS['folder-not-found']);
 				}
 				const folder = this.bookmarks.addFolder({ title: request.title, parentFolderId: request.folderId });
-				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.folderCreated', "ターミナル「{0}」のエージェントがブックマークのフォルダ「{1}」を作りました。", caller, paradisBookmarkToolTitle(folder.title)));
+				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.folderCreated', "ターミナル「{0}」のエージェントがブックマークのフォルダ「{1}」を作りました。", caller, display(folder.title)));
 				return { ok: true, data: { created: describeNode(this.bookmarks.nodes, folder) } };
 			}
 			case 'rename': {
@@ -177,7 +184,7 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 				if (!renamed) {
 					return fail(MOVE_ERRORS['not-found']);
 				}
-				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.renamed', "ターミナル「{0}」のエージェントがブックマーク「{1}」の名前を「{2}」に変えました。", caller, paradisBookmarkToolTitle(target.title), paradisBookmarkToolTitle(renamed.title)));
+				this.announce(paneToken, caller => localize('paradis.bookmarks.mcp.renamed', "ターミナル「{0}」のエージェントがブックマーク「{1}」の名前を「{2}」に変えました。", caller, display(target.title), display(renamed.title)));
 				return { ok: true, data: { renamed: describeNode(this.bookmarks.nodes, renamed), previous_title: paradisBookmarkToolTitle(target.title) } };
 			}
 			case 'move': {
@@ -191,8 +198,8 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 				const siblings = folder && isParadisBookmarkFolder(folder) ? folder.children : after;
 				const destinationTitle = folder?.title;
 				this.announce(paneToken, caller => destinationTitle === undefined
-					? localize('paradis.bookmarks.mcp.movedToBar', "ターミナル「{0}」のエージェントがブックマーク「{1}」をバーへ移しました。", caller, paradisBookmarkToolTitle(target.title))
-					: localize('paradis.bookmarks.mcp.moved', "ターミナル「{0}」のエージェントがブックマーク「{1}」をフォルダ「{2}」へ移しました。", caller, paradisBookmarkToolTitle(target.title), paradisBookmarkToolTitle(destinationTitle)));
+					? localize('paradis.bookmarks.mcp.movedToBar', "ターミナル「{0}」のエージェントがブックマーク「{1}」をバーへ移しました。", caller, display(target.title))
+					: localize('paradis.bookmarks.mcp.moved', "ターミナル「{0}」のエージェントがブックマーク「{1}」をフォルダ「{2}」へ移しました。", caller, display(target.title), display(destinationTitle)));
 				return { ok: true, data: { moved: describeNode(after, target), index: siblings.findIndex(node => node.id === target.id) } };
 			}
 			case 'delete':
@@ -209,14 +216,14 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 		if (inside.bookmarks + inside.folders > 0 && !recursive) {
 			return fail(`That folder contains ${inside.bookmarks} bookmarks and ${inside.folders} folders. Pass "recursive": true to delete it with everything inside, after checking with list_bookmarks that this is what the user wants.`);
 		}
-		const title = paradisBookmarkToolTitle(target.title);
+		const title = display(target.title);
 		const isFolder = isParadisBookmarkFolder(target);
 		const request: IParadisAgentApprovalRequest = {
 			messageTemplate: pane => isFolder
 				? localize('paradis.bookmarks.mcp.deleteFolderMessage', "{0} のエージェントが、ブックマークのフォルダ「{1}」を削除しようとしています", pane, title)
 				: localize('paradis.bookmarks.mcp.deleteMessage', "{0} のエージェントが、ブックマーク「{1}」を削除しようとしています", pane, title),
 			detail: [
-				...(target.type === 'bookmark' ? [localize('paradis.bookmarks.mcp.deleteUrl', "URL: {0}", target.url)] : []),
+				...(target.type === 'bookmark' ? [localize('paradis.bookmarks.mcp.deleteUrl', "URL: {0}", paradisSanitizeDisplayText(target.url, PARADIS_BOOKMARK_URL_MAX_LENGTH) ?? '')] : []),
 				...(inside.bookmarks + inside.folders > 0 ? [localize('paradis.bookmarks.mcp.deleteInside', "フォルダの中のブックマーク {0} 件とフォルダ {1} 個も一緒に削除されます。", inside.bookmarks, inside.folders)] : []),
 				localize('paradis.bookmarks.mcp.deleteUndo', "削除した後に出る通知の「元に戻す」で、元の場所へ戻せます。"),
 			],
@@ -239,13 +246,13 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 		const index = siblings.findIndex(node => node.id === id);
 		this.bookmarks.removeNode(id);
 		const count = 1 + removedInside.bookmarks + removedInside.folders;
-		const caller = this.describeCaller(paneToken) ?? localize('paradis.bookmarks.mcp.unknownCaller', "不明");
+		const caller = display(this.describeCaller(paneToken));
 		this.notify({
-			message: localize('paradis.bookmarks.mcp.deleted', "ターミナル「{0}」のエージェントがブックマークを {1} 件削除しました（「{2}」）。", caller, count, paradisBookmarkToolTitle(current.title)),
+			message: localize('paradis.bookmarks.mcp.deleted', "ターミナル「{0}」のエージェントがブックマークを {1} 件削除しました（「{2}」）。", caller, count, display(current.title)),
 			silent: false,
 			undo: () => {
 				if (!this.bookmarks.restoreNode(current, parentId, index)) {
-					this.notify({ message: localize('paradis.bookmarks.mcp.undoFailed', "削除したブックマーク「{0}」を戻せませんでした。同じブックマークがもう一度足されています。", paradisBookmarkToolTitle(current.title)), silent: false });
+					this.notify({ message: localize('paradis.bookmarks.mcp.undoFailed', "削除したブックマーク「{0}」を戻せませんでした。同じブックマークがもう一度足されています。", display(current.title)), silent: false });
 				}
 			},
 		});
@@ -268,8 +275,7 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 	}
 
 	private announce(paneToken: string, message: (caller: string) => string): void {
-		const caller = this.describeCaller(paneToken) ?? localize('paradis.bookmarks.mcp.unknownCaller', "不明");
-		this.notify({ message: message(caller), silent: true });
+		this.notify({ message: message(display(this.describeCaller(paneToken))), silent: true });
 	}
 }
 
@@ -295,14 +301,10 @@ class ParadisBookmarkMcpContribution extends Disposable implements IWorkbenchCon
 				message: notice.message,
 				...(notice.undo ? { actions: { primary: [toAction({ id: 'paradis.bookmarks.mcp.undo', label: localize('paradis.bookmarks.mcp.undo', "元に戻す"), run: notice.undo })] } } : {}),
 			}),
+			// 題名はターミナルの中のプログラムが書けるので、通知に入れる所（display）で整える
 			paneToken => {
 				const instanceId = paneTokenService.getInstanceForToken(paneToken);
-				const title = instanceId !== undefined ? terminalService.getInstanceFromId(instanceId)?.title : undefined;
-				if (title === undefined) {
-					return undefined;
-				}
-				const flattened = paradisBookmarkToolTitle(title);
-				return flattened.length > CALLER_TITLE_MAX_LENGTH ? `${flattened.slice(0, CALLER_TITLE_MAX_LENGTH)}...` : flattened;
+				return instanceId !== undefined ? terminalService.getInstanceFromId(instanceId)?.title : undefined;
 			},
 			async (paneToken, request, cancellation) => {
 				// ダイアログはウィンドウ側の締め切り（50 秒）で閉じる。shared process の待ちはそれより長い
