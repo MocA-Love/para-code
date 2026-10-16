@@ -55,7 +55,7 @@ const MAX_TEXT = 20000;
 const PREPARE_WAIT_MS = 5 * 60 * 1000;
 
 /** エージェント工程の指示の末尾に足す、報告の仕方。 */
-export const TASK_BOARD_PROMPT_SUFFIX = 'この工程が終わったら、成果物（計画・モック・スクショ・報告のファイルの path か本文）を添えて para-browser の board_complete_step で報告して。人に決めてほしいことがあれば board_ask_human で聞いて、ターンを終えて回答を待って。';
+export const TASK_BOARD_PROMPT_SUFFIX = '計画・モック・スクショ・報告などのファイルは、作業場所の .para/ に置いて（git には入れない）。この工程が終わったら、成果物（そのファイルの path か本文）を添えて para-browser の board_complete_step で報告して。人に決めてほしいことがあれば board_ask_human で聞いて、ターンを終えて回答を待って。';
 
 /** コミットをエージェントに任せるフローで、指示に書き足す一言。 */
 export const TASK_BOARD_COMMIT_PROMPT = 'ファイルを変更したら、タスクのブランチにコミットして（push と PR の作成はボードが行うので、しないで）。.para/ の中はコミットしないで。';
@@ -139,12 +139,16 @@ export interface ITaskBoardRunResult {
 	readonly pr?: ITaskBoardPrRef;
 	/** PR を作れなかった理由が、作業場所の未コミットの変更（ファイルの一覧）。 */
 	readonly uncommitted?: readonly string[];
+	/** そのうち、git が追跡していない新しいファイル。 */
+	readonly untracked?: readonly string[];
 }
 
 export interface ITaskBoardPersisted {
 	readonly version: 1;
 	readonly activeFlowId: string;
 	readonly tasks: readonly ITaskBoardTask[];
+	/** ワークツリーの作業場所のパス（タスク id ごと）。再起動の後も同じ作業場所で続けられるように。 */
+	readonly worktreePaths?: Readonly<Record<string, string>>;
 }
 
 interface IStepInput {
@@ -185,8 +189,9 @@ function issueKey(issue: ITaskBoardIssueRef): string {
 }
 
 /** 作業場所（ディレクトリ）を借りて行う工程か。エージェントと、任意のコマンドを走らせる run 工程。 */
+/** 作業場所が要る工程。ドラフト PR も、作業場所の変更をコミットして送るので作業場所で動かす。 */
 export function taskBoardStepNeedsPlace(step: ITaskBoardStep): boolean {
-	return step.kind === 'agent' || (step.kind === 'run' && step.run !== 'draft-pr');
+	return step.kind === 'agent' || step.kind === 'run';
 }
 
 function sameStepShape(a: ITaskBoardStep, b: ITaskBoardStep): boolean {
@@ -370,7 +375,8 @@ export class TaskBoardEngine {
 	/* ---------------- 保存と復元 ---------------- */
 
 	serialize(): ITaskBoardPersisted {
-		return { version: 1, activeFlowId: this.activeFlowId, tasks: this.getTasks() };
+		const worktreePaths = Object.fromEntries([...this.worktreeSlots].filter(([, slot]) => slot.path).map(([taskId, slot]) => [taskId, slot.path]));
+		return { version: 1, activeFlowId: this.activeFlowId, tasks: this.getTasks(), ...(Object.keys(worktreePaths).length ? { worktreePaths } : {}) };
 	}
 
 	/**
@@ -401,7 +407,7 @@ export class TaskBoardEngine {
 				task.attempt++;
 			}
 			if (task.place?.startsWith('wt:')) {
-				this.worktreeSlots.set(task.id, { id: task.place, name: task.branch ?? task.place, path: '', kind: 'worktree', leasedBy: task.id });
+				this.worktreeSlots.set(task.id, { id: task.place, name: task.branch ?? task.place, path: data.worktreePaths?.[task.id] ?? '', kind: 'worktree', leasedBy: task.id });
 			}
 		}
 		this.normalizeTasks();
@@ -915,6 +921,7 @@ export class TaskBoardEngine {
 			task.status = 'failed';
 			task.error = result.detail ? clip(result.detail, 1000) : 'failed';
 			task.uncommitted = result.uncommitted?.length ? result.uncommitted.slice(0, 50) : undefined;
+			task.untracked = result.untracked?.length ? result.untracked.slice(0, 50) : undefined;
 			this.activity(task, 'error', task.error);
 			this.notice('failed', task, task.error);
 		}
@@ -1073,6 +1080,7 @@ export class TaskBoardEngine {
 		task.stepSince = now;
 		task.stepPrompt = undefined;
 		task.uncommitted = undefined;
+		task.untracked = undefined;
 		task.question = undefined;
 		task.error = undefined;
 		task.activity = undefined;

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { ITaskBoardRepositoryChoice, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardRpcMethod } from '@engine/paradisTaskBoard.js';
 import { connect, onNotice, reconnectNow, rpc, RpcError, useBoard } from './api.js';
 import { Board, Dock } from './components/Board.js';
-import { AddTaskDialog, ShortcutsDialog } from './components/dialogs.js';
+import { AddTaskDialog, ConfirmDialog, ShortcutsDialog } from './components/dialogs.js';
 import { FlowEditor } from './components/FlowEditor.js';
 import { Inbox } from './components/Inbox.js';
 import { ListView } from './components/ListView.js';
@@ -102,9 +102,19 @@ function TopBar({ attention, theme, setTheme }: { attention: number; theme: Them
 	const pool = s.slots.filter(x => x.kind === 'clone-pool');
 	const freePool = pool.filter(x => !x.leasedBy && !x.dirty && !x.missing).length;
 	const repos = useRepositories(s.runtime.repoPath, s.runtime.agentsConnected);
+	const switchTo = (repoPath: string, label: string) => {
+		const go = () => app.call('switchRepository', { path: repoPath }, { title: 'リポジトリを切り替えています', body: label, tone: 'blue' });
+		// 動いているタスクは止まらない（Para Code のターミナルで続き、戻ると結び直す）が、その間は見えなくなる
+		const running = s.tasks.filter(t => t.status === 'working' || t.status === 'preparing' || t.status === 'question' || t.status === 'permission').length;
+		if (running === 0) {
+			void go();
+			return;
+		}
+		app.showDialog(<ConfirmDialog title={`${label} に切り替えますか`} body={`このリポジトリで ${running} 件のタスクが動いています。切り替えてもエージェントは Para Code のターミナルで続きますが、戻るまでボードには出ません。質問や許可にも、戻るまで答えられません。`} ok="切り替える" onOk={go} />);
+	};
 	const repoItems = s.runtime.repoPath && repos.length > 1 ? [
 		{ label: 'リポジトリ', header: true },
-		...repos.map(r => ({ label: r.label, sub: r.source === 'para-code' ? 'Para Code' : undefined, on: r.path === s.runtime.repoPath, run: () => r.path !== s.runtime.repoPath && void app.call('switchRepository', { path: r.path }, { title: 'リポジトリを切り替えています', body: r.label, tone: 'blue' }) })),
+		...repos.map(r => ({ label: r.label, sub: r.source === 'para-code' ? 'Para Code' : undefined, on: r.path === s.runtime.repoPath, run: () => r.path !== s.runtime.repoPath && switchTo(r.path, r.label) })),
 		{ separator: true, label: '' },
 	] : [];
 	return (

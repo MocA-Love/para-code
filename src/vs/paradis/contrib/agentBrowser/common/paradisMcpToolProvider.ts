@@ -141,6 +141,19 @@ export interface IParadisMcpToolCallContext {
 	 * 古い呼び出し側（テストの代わりなど）は持たないので省略できる。
 	 */
 	getCursorIdentity?(paneToken: string): IParadisMcpCursorIdentity;
+	/**
+	 * 呼び出し元ペインが使えるタブのうち `tabId` のもの（省略時はペインの今のタブ）の URL と題名。使えるタブが
+	 * 無ければ undefined。題名はページが決めるので、そのまま指示として読まないこと。ブックマークの追加で、url を
+	 * 省いたときに使う。古い呼び出し側（テストの代わりなど）は持たないので省略できる。
+	 */
+	getPaneTab?(tabId: string | undefined, signal?: AbortSignal): Promise<IParadisMcpPaneTab | undefined>;
+}
+
+/** 呼び出し元ペインが使えるタブ 1 つ。 */
+export interface IParadisMcpPaneTab {
+	readonly tabId: string;
+	readonly url: string;
+	readonly title: string;
 }
 
 /** ペインのエージェントのカーソルの名前の元。 */

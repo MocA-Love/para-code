@@ -296,6 +296,8 @@ interface ITerminalLink {
 	sentAt?: number;
 	/** 起動を頼んだがまだターミナルの id が返っていない。 */
 	launching?: boolean;
+	/** 起動を待つ間に手放された（起動し直し・中止）。起動が返ってきたら、そのターミナルは閉じて結び付けない。 */
+	released?: boolean;
 	/** 今の許可待ちは選択肢を持たない（許可する／拒否するをボードが補った）。回答は allow で送る。 */
 	allowOnly?: boolean;
 }
@@ -333,8 +335,14 @@ export interface IParaCodeAgentsOptions {
 	readonly bridgeFile?: string;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
-	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number };
+	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
 }
+
+/**
+ * ターンの終わり（入力待ち）を見てから「報告なしで止まった」とするまで待つ時間。hook の取りこぼしなどで
+ * 一瞬だけ入力待ちに見えることがあるので、続いたときだけ止まったとする。
+ */
+const STALL_CONFIRM_MS = 6_000;
 
 /** 状態の取りこぼしを直すために、Para Code のターミナルの一覧と突き合わせる間隔。 */
 const RECONCILE_MS = 15_000;
@@ -496,6 +504,11 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 			return;
 		}
 		const link: ITerminalLink = { ...placeholder, terminal, launching: false };
+		if (placeholder.released) {
+			// 起動を待つ間に「起動し直す」や中止で手放された。遅れて起きたターミナルは閉じ、結び付けない
+			await this.close(link);
+			return;
+		}
 		this.links.set(terminal, link);
 		const current = this.engine.getTask(task.id);
 		if (!current || current.step === 'todo' || current.step === 'done' || current.place !== place) {
@@ -661,8 +674,19 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		}
 	}
 
+	/** タスクのターミナルを閉じて、結び付きを外す（次の工程の開始で新しいターミナルを起こすように）。 */
+	async release(task: ITaskBoardTask): Promise<void> {
+		const link = this.linkOf(task);
+		if (link) {
+			await this.close(link);
+		}
+	}
+
 	private async close(link: ITerminalLink): Promise<void> {
 		this.links.delete(link.terminal);
+		if (link.launching) {
+			link.released = true;
+		}
 		if (link.status !== 'exited' && !link.launching) {
 			await this.client.request('POST', '/v1/close', { terminal: link.terminal }).catch(() => undefined);
 		}
@@ -845,7 +869,18 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 			case 'idle':
 			case 'review':
 				if (before === 'working' || before === 'question' || before === 'permission') {
-					engine.reportIdle(task.id, link.attempt);
+					const attempt = link.attempt;
+					const confirm = () => {
+						if (this.links.get(link.terminal) === link && link.attempt === attempt && (link.status === 'idle' || link.status === 'review')) {
+							engine.reportIdle(task.id, attempt);
+						}
+					};
+					const wait = this.options.timeouts?.stall ?? STALL_CONFIRM_MS;
+					if (wait <= 0) {
+						confirm();
+					} else {
+						setTimeout(confirm, wait).unref?.();
+					}
 				}
 				return;
 			case 'exited':

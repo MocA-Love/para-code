@@ -2,7 +2,7 @@
 
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, promises as fs, realpathSync } from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +75,10 @@ function validateParams(raw: unknown): Record<string, unknown> {
 			if (value !== 'issue' && value !== 'pr') {
 				throw new TaskBoardError('invalid-params', 'target must be issue or pr');
 			}
+		} else if (key === 'trackedOnly') {
+			if (typeof value !== 'boolean') {
+				throw new TaskBoardError('invalid-params', 'trackedOnly must be a boolean');
+			}
 		} else if (key === 'attempt') {
 			if (!Number.isInteger(value) || (value as number) < 0) {
 				throw new TaskBoardError('invalid-params', 'attempt must be a non-negative integer');
@@ -131,6 +135,10 @@ const { values: args } = parseArgs({
 	allowPositionals: false,
 });
 
+/** WebSocket のサブプロトコル。`taskboard.<鍵>` で鍵を送り、サーバーは `taskboard` を選ぶ。 */
+const WS_PROTOCOL = 'taskboard';
+const WS_PROTOCOL_PREFIX = `${WS_PROTOCOL}.`;
+
 /** 開き直すときに、鍵をコマンドラインに載せずに子へ渡す環境変数。 */
 const TOKEN_ENV = 'TASKBOARD_RELAUNCH_TOKEN';
 // git や gh の子プロセスへ渡らないよう、何かを起こす前に読んで消す
@@ -146,6 +154,40 @@ function log(...parts: unknown[]): void {
 async function resolveRepo(): Promise<string | undefined> {
 	const candidate = path.resolve(args.repo ?? process.cwd());
 	return git(candidate, ['rev-parse', '--show-toplevel'], 5000).catch(() => undefined);
+}
+
+/** 開発モード（Vite）で鍵なしに配ってよいパス。画面のコード・依存・公開ファイル、エンジンとロゴの /@fs/ だけ。 */
+const DEV_FS_ALLOWED = [
+	path.resolve(fileURLToPath(new URL('../../../src/vs/paradis/contrib/taskBoard/common/', import.meta.url))),
+	path.resolve(fileURLToPath(new URL('../../../src/vs/paradis/common/paradisAgentLogoPaths.ts', import.meta.url))),
+];
+function devPathAllowed(rawPathname: string): boolean {
+	// 符号化した区切り（%2F・%5C）や、戻ると .. になるものは、判定と実際に配るファイルがずれうるので断る
+	let pathname: string;
+	try {
+		pathname = decodeURIComponent(rawPathname);
+	} catch {
+		return false;
+	}
+	if (/%2f|%5c/i.test(rawPathname) || pathname.includes('\\') || pathname.split('/').includes('..')) {
+		return false;
+	}
+	if (pathname === '/' || pathname === '/index.html' || /^\/[\w.-]+\.(png|ico|svg|webmanifest)$/.test(pathname)) {
+		return true;
+	}
+	if (['/src/', '/@vite/', '/@id/', '/@react-refresh', '/node_modules/'].some(prefix => pathname.startsWith(prefix))) {
+		return true;
+	}
+	if (pathname.startsWith('/@fs/')) {
+		const file = path.resolve(pathname.slice('/@fs'.length));
+		return DEV_FS_ALLOWED.some(allowed => file === allowed || file.startsWith(`${allowed}${path.sep}`));
+	}
+	return false;
+}
+
+/** HTML で書かれた成果物（計画を HTML で出すエージェントもいる）。 */
+function isHtmlArtifact(artifact: ITaskBoardArtifact): boolean {
+	return /\.html?$/i.test(artifact.path ?? '') || /^\s*(<!doctype html|<html)/i.test(artifact.content ?? '');
 }
 
 function stripContent(task: ITaskBoardTask): ITaskBoardTask {
@@ -176,6 +218,8 @@ function prFromDetail(base: ITaskBoardPrRef, d: ITaskBoardPullDetail): ITaskBoar
 
 async function main(): Promise<void> {
 	const demo = args.demo;
+	// <img> とモックの <iframe> の URL に付ける、読むだけの鍵（スナップショットで画面へ渡す。早く作っておく）
+	const assetKey = randomBytes(24).toString('base64url');
 	const repoPath = demo ? undefined : await resolveRepo();
 	const remote: IRepoSlug | undefined = repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
 	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), args.data));
@@ -275,6 +319,7 @@ async function main(): Promise<void> {
 		agentsDetail: paraCodeMode && !bridgeState.connected ? bridgeState.detail : undefined,
 		codexApprovalMissing: paraCodeMode ? codexMissing : undefined,
 		codexConfigPath: paraCodeMode ? codexConfigPath() : undefined,
+		assetKey,
 		speed: sim.getSpeed(),
 		realWorkspaces,
 		repoPath,
@@ -459,18 +504,44 @@ async function main(): Promise<void> {
 			if (!task || task.status !== 'failed' || !task.uncommitted?.length || (p.attempt !== undefined && p.attempt !== task.attempt)) {
 				throw new TaskBoardError('invalid-state', 'このタスクはコミットを待っていません');
 			}
+			// 待つ間にタスクが進んでも、別の工程をやり直さないように、今の工程と試行を固定する
+			const { step: fromStep, attempt: fromAttempt } = task;
 			const cwd = placePath(task);
 			const message = p.message.trim();
 			if (!cwd || !message) {
 				throw new TaskBoardError('invalid-params', !cwd ? '作業場所が分かりません' : 'コミットのメッセージが空です');
 			}
 			await excludeBoardFiles(cwd);
-			await git(cwd, ['add', '-A']);
+			if (p.trackedOnly && !(await git(cwd, ['status', '--porcelain', '--untracked-files=no']).catch(() => ''))) {
+				throw new TaskBoardError('invalid-state', '変更したファイルがありません（新しいファイルだけです）。すべてコミットするか、差し戻してください');
+			}
+			// 追跡しているファイルだけを選ぶと、エージェントが作った新しいファイル（試作の残りなど）は入れない
+			await git(cwd, ['add', p.trackedOnly ? '-u' : '-A']);
 			await git(cwd, ['commit', '--quiet', '-m', message]);
 			const sha = await git(cwd, ['rev-parse', '--short', 'HEAD']);
 			engine.reportOutput(task.id, [`${cwd} $ git commit -m ${JSON.stringify(message)}`, `  ${sha}`]);
-			engine.retry(task.id, task.step, task.attempt);
+			engine.retry(task.id, fromStep, fromAttempt);
 			return { sha };
+		},
+		restartAgent: async p => {
+			const task = engine.getTask(p.taskId);
+			const step = task ? engine.flowOf(task).steps.find(s => s.id === task.step) : undefined;
+			if (!task || step?.kind !== 'agent' || (p.attempt !== undefined && p.attempt !== task.attempt)) {
+				throw new TaskBoardError('invalid-state', 'エージェントの工程ではありません');
+			}
+			const { step: fromStep, attempt: fromAttempt } = task;
+			if (paraAgents) {
+				await paraAgents.release(task);
+			}
+			engine.retry(task.id, fromStep, fromAttempt);
+		},
+		prReady: async p => {
+			const task = engine.getTask(p.taskId);
+			if (!task?.pr || task.pr.simulated || task.pr.state !== 'draft') {
+				throw new TaskBoardError('invalid-state', 'ドラフトの PR がありません');
+			}
+			await new Promise<void>((resolve, reject) => execFile('gh', ['pr', 'ready', String(task.pr!.number), '--repo', `${task.pr!.owner}/${task.pr!.repo}`], { timeout: 30000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, err => err ? reject(new TaskBoardError('invalid-state', `gh pr ready が失敗しました: ${err.message}`)) : resolve()));
+			engine.reportPullRequest(task.id, { ...task.pr, state: 'open' });
 		},
 		repositories: async () => {
 			let fromParaCode: { path: string; name: string }[] = [];
@@ -496,9 +567,13 @@ async function main(): Promise<void> {
 			if (target === repoPath) {
 				return;
 			}
-			// ボードの作業場所（クローン・ワークツリー）は、リポジトリとしては開かない
+			// ボードの作業場所（クローン・ワークツリー）は、リポジトリとしては開かない。シンボリックリンクを挟んでも見分ける
+			const real = (p: string) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
 			const known = await boardPlaces();
-			if (known.clones.includes(target) || known.worktreeRoots.some(root => target.startsWith(`${root}${path.sep}`))) {
+			const realTarget = real(target);
+			const places = [...known.clones, ...(clones ?? [])].map(real);
+			const roots = [...known.worktreeRoots, ...(worktreeRoot ? [worktreeRoot] : [])].map(real);
+			if (places.includes(realTarget) || roots.some(root => realTarget.startsWith(`${root}${path.sep}`))) {
 				throw new TaskBoardError('invalid-params', 'これはタスクボードの作業場所なので、リポジトリとしては開けません');
 			}
 			// 返事を返してから、同じポートと鍵で起動し直す
@@ -534,8 +609,12 @@ async function main(): Promise<void> {
 		}
 		return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 	};
-	const cookieToken = (req: http.IncomingMessage) => (req.headers.cookie ?? '').split(';').map(c => c.trim()).find(c => c.startsWith('tb_token='))?.slice('tb_token='.length);
-	const authed = (req: http.IncomingMessage) => safeEqual(cookieToken(req), token) || safeEqual(req.headers['x-taskboard-token'] as string | undefined, token);
+	// 鍵は Cookie にしない（Cookie はポートを区別せず、同じ PC の別のポートのサーバーにも送られる）。
+	// 画面は鍵をこのオリジンの localStorage に持ち、ヘッダー（WebSocket はサブプロトコル）で送る
+	const wsProtocolToken = (req: http.IncomingMessage) => (req.headers['sec-websocket-protocol'] ?? '').split(',').map(p => p.trim()).find(p => p.startsWith(WS_PROTOCOL_PREFIX))?.slice(WS_PROTOCOL_PREFIX.length);
+	const authed = (req: http.IncomingMessage) => safeEqual(req.headers['x-taskboard-token'] as string | undefined, token) || safeEqual(wsProtocolToken(req), token);
+	// <img> とモックの <iframe> はヘッダーを付けられないので、読むだけの別の鍵を URL に付ける（RPC には使えない）
+	const assetAuthed = (req: http.IncomingMessage, url: URL) => safeEqual(url.searchParams.get('k') ?? undefined, assetKey) || authed(req);
 	const hostOk = (req: http.IncomingMessage) => allowedHosts().includes(req.headers.host ?? '');
 	const originOk = (req: http.IncomingMessage) => {
 		const origin = req.headers.origin;
@@ -578,9 +657,9 @@ async function main(): Promise<void> {
 			res.writeHead(404).end();
 			return;
 		}
-		const headers: Record<string, string> = { 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff' };
-		if (artifact.kind === 'mock') {
-			// モックは別オリジン扱い（スクリプトも親の画面も触れない）で表示する
+		const headers: Record<string, string> = { 'referrer-policy': 'no-referrer', 'cache-control': 'private, max-age=60', 'x-content-type-options': 'nosniff' };
+		if (artifact.kind === 'mock' || isHtmlArtifact(artifact)) {
+			// モックや HTML で書かれた計画は、別オリジン扱い（スクリプトも親の画面も触れない）で表示する
 			res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:" });
 			res.end(artifact.content);
 			return;
@@ -619,18 +698,15 @@ async function main(): Promise<void> {
 			}
 			const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 			const given = url.searchParams.get('token');
-			if (given !== null) {
-				if (!safeEqual(given, token)) {
-					res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' }).end('トークンが違います。ターミナルに表示された URL を開いてください。');
-					return;
-				}
-				url.searchParams.delete('token');
-				res.writeHead(302, { 'set-cookie': `tb_token=${token}; HttpOnly; SameSite=Strict; Path=/`, 'location': url.pathname + url.search + url.hash });
-				res.end();
+			if (given !== null && !safeEqual(given, token)) {
+				res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' }).end('トークンが違います。ターミナルに表示された URL を開いてください。');
 				return;
 			}
-			if (!authed(req)) {
-				res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' }).end('<!DOCTYPE html><meta charset="utf-8"><title>Task board</title><body style="font:15px -apple-system,sans-serif;background:#0a0c10;color:#e6edf3;display:grid;place-items:center;height:100vh;margin:0"><div><h1 style="font-size:18px">トークンが必要です</h1><p style="color:#8b949e">サーバーを起動したターミナルに表示された URL（?token= 付き）を開いてください。</p></div>');
+			const artifact = url.pathname.match(/^\/api\/artifacts\/(?<task>[^/]+)\/(?<artifact>[^/]+)$/);
+			const isAsset = (artifact?.groups !== undefined || url.pathname === '/api/image') && req.method === 'GET';
+			// 画面のコード（HTML・JS・CSS）は鍵なしで配る。データの口だけを鍵で守る
+			if (url.pathname.startsWith('/api/') && !(isAsset ? assetAuthed(req, url) : authed(req))) {
+				json(res, 401, { ok: false, error: { code: 'unauthorized', message: 'サーバーを起動したターミナルに表示された URL（?token= 付き）を開いてください' } });
 				return;
 			}
 			if (url.pathname === '/api/rpc') {
@@ -661,7 +737,6 @@ async function main(): Promise<void> {
 				}
 				return;
 			}
-			const artifact = url.pathname.match(/^\/api\/artifacts\/(?<task>[^/]+)\/(?<artifact>[^/]+)$/);
 			if (artifact?.groups && req.method === 'GET') {
 				serveArtifact(res, decodeURIComponent(artifact.groups.task), decodeURIComponent(artifact.groups.artifact));
 				return;
@@ -674,7 +749,7 @@ async function main(): Promise<void> {
 					res.writeHead(404, { 'cache-control': 'no-store' }).end();
 					return;
 				}
-				res.writeHead(200, { 'content-type': image.type, 'cache-control': 'private, max-age=600', 'x-content-type-options': 'nosniff', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
+				res.writeHead(200, { 'content-type': image.type, 'cache-control': 'private, max-age=600', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
 				res.end(image.body);
 				return;
 			}
@@ -683,6 +758,11 @@ async function main(): Promise<void> {
 				return;
 			}
 			if (vite) {
+				// 開発モードでも、鍵なしで届くのは画面のコードだけにする（アプリのディレクトリ全体や、エディタを開く口は出さない）
+				if (!devPathAllowed(url.pathname)) {
+					res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+					return;
+				}
 				vite.middlewares(req, res, () => res.writeHead(404).end());
 			} else {
 				await serveStatic(req, res, url.pathname);
@@ -695,7 +775,8 @@ async function main(): Promise<void> {
 		});
 	});
 
-	const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+	// 鍵はサブプロトコルで受け取る。返すサブプロトコルは鍵を含まない固定の名前にする
+	const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, handleProtocols: protocols => protocols.has(WS_PROTOCOL) ? WS_PROTOCOL : false });
 	server.on('upgrade', (req, socket, head) => {
 		const url = new URL(req.url ?? '/', 'http://localhost');
 		if (url.pathname !== '/api/events') {

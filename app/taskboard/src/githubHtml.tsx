@@ -2,6 +2,7 @@
 
 import DOMPurify from 'dompurify';
 import { useMemo } from 'react';
+import { withAssetKey } from './api.js';
 
 /*
  * GitHub が描画した本文（bodyHTML）を表示する。
@@ -23,7 +24,7 @@ export function imageProxyUrl(src: string): string | undefined {
 		if (url.hostname === 'avatars.githubusercontent.com') {
 			return url.toString();
 		}
-		return GITHUB_IMAGE_HOSTS.has(url.hostname) ? `/api/image?url=${encodeURIComponent(url.toString())}` : undefined;
+		return GITHUB_IMAGE_HOSTS.has(url.hostname) ? withAssetKey(`/api/image?url=${encodeURIComponent(url.toString())}`) : undefined;
 	} catch {
 		return undefined;
 	}
