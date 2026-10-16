@@ -58,7 +58,6 @@ function paradisAssignDownloadSavePath(item: DownloadItem, configurationService:
 	const targetDirectory = paradisResolveBrowserDownloadsDirectory(configurationService, defaultDownloadsPath);
 
 	try {
-		// eslint-disable-next-line local/code-no-sync-fs -- Electron honors setSavePath only synchronously inside the will-download listener; awaiting here would fall back to the native save dialog.
 		fs.mkdirSync(targetDirectory, { recursive: true });
 	} catch (error) {
 		console.error('[paradis] Failed to create the browser downloads directory, falling back to the save dialog:', error);
@@ -89,7 +88,6 @@ function paradisResolveUniqueDownloadPath(directory: string, filename: string): 
 	const base = filename.slice(0, filename.length - ext.length);
 
 	let candidate = join(directory, filename);
-	// eslint-disable-next-line local/code-no-sync-fs -- Runs inside the synchronous will-download listener (see paradisAssignDownloadSavePath); the free name must be known before setSavePath returns.
 	for (let i = 1; reservedDownloadPaths.has(candidate) || fs.existsSync(candidate); i++) {
 		candidate = join(directory, `${base} (${i})${ext}`);
 	}
