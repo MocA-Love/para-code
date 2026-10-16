@@ -24,7 +24,12 @@ import { PARADIS_POINTER_HIT_PAGE_SCRIPT } from './paradisPointerHitPageScript.j
 /** ページの中で動かす関数の本体。 */
 export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, predicate, notAfter) => {
 	// Started too late (the page did not answer in time): do nothing, so a stale step does not scroll or type (q.html Q379).
-	if (typeof notAfter === 'number' && Date.now() > notAfter) { return { paraLate: true }; }
+	// The page's own Date may be faked (fake timers, a mocked date), so read the monotonic clock, and trust neither clock
+	// when it is more than a day away from notAfter.
+	if (typeof notAfter === 'number') {
+		const pageNow = typeof performance !== 'undefined' && typeof performance.timeOrigin === 'number' && typeof performance.now === 'function' ? performance.timeOrigin + performance.now() : Date.now();
+		if (pageNow > notAfter && pageNow - notAfter < 86400000) { return { paraLate: true }; }
+	}
 	const MAX_ELEMENTS = 20000;
 	const norm = value => String(value === null || value === undefined ? '' : value).replace(/\s+/g, ' ').trim();
 	const squash = value => String(value === null || value === undefined ? '' : value).replace(/\s+/g, '').toLowerCase();
@@ -374,9 +379,13 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			// resetTo "end": the far end, for a search that goes up or left.
 			const before = scrollPosition(container);
 			scrollToPosition(container, spec.resetTo === 'end' ? maxPosition(container) : 0);
-			return { found: false, reset: true, container: label, before: Math.round(before) };
+			return { found: false, reset: true, container: label, before: Math.round(before), position: Math.round(scrollPosition(container)) };
 		}
 		if (typeof spec.restoreTo === 'number') {
+			// Only undo our own scrolling: not when the user scrolled meanwhile, or when another area is picked now.
+			if (label !== spec.expectContainer || typeof spec.expectAt !== 'number' || Math.abs(scrollPosition(container) - spec.expectAt) > 1) {
+				return { restored: false, container: label };
+			}
 			scrollToPosition(container, spec.restoreTo);
 			return { restored: true, container: label };
 		}

@@ -575,6 +575,8 @@ export class ParadisBrowserQuery {
 		const origin: 'start' | 'end' = backwards ? 'end' : 'start';
 		/** 呼ばれたときの位置。見つからなければここへ戻す（q.html Q379 の 5）。 */
 		let startPosition: number | undefined;
+		/** 最後に自分が送った（戻した）位置と、その領域。見つからなかったときに戻すのは、今もそこにあるときだけ。 */
+		let lastWritten: { readonly position: number; readonly container: unknown } | undefined;
 		if (args.from_start === true) {
 			const reset = await this.run(call, { ...base, reset: true }, locator.uids);
 			if (!reset.ok) {
@@ -584,6 +586,8 @@ export class ParadisBrowserQuery {
 				return error(`No element matches "container" ${JSON.stringify(container)}.`);
 			}
 			startPosition = finiteNumber(reset.value.before);
+			const resetPosition = finiteNumber(reset.value.position);
+			lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
 			await this.delay(settleMs as number, call.signal);
 			if (!call.isCurrent()) {
 				return error(BINDING_CHANGED);
@@ -605,8 +609,8 @@ export class ParadisBrowserQuery {
 		};
 		const notFound = async (message: string): Promise<ToolResult> => {
 			let restored = false;
-			if (startPosition !== undefined) {
-				const restore = await this.run(call, { ...base, restoreTo: startPosition }, locator.uids);
+			if (startPosition !== undefined && lastWritten !== undefined) {
+				const restore = await this.run(call, { ...base, restoreTo: startPosition, expectAt: lastWritten.position, expectContainer: lastWritten.container }, locator.uids);
 				restored = restore.ok && restore.value.restored === true;
 			}
 			const hints = await this.run(call, { ...base, mode: 'scrollMiss' }, locator.uids);
@@ -679,6 +683,8 @@ export class ParadisBrowserQuery {
 					if (!reset.ok) {
 						return reset.result;
 					}
+					const resetPosition = finiteNumber(reset.value.position);
+					lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
 					await this.delay(settleMs as number, call.signal);
 					if (!call.isCurrent()) {
 						return error(BINDING_CHANGED);
@@ -691,6 +697,7 @@ export class ParadisBrowserQuery {
 			scrolled += Math.abs(moved);
 			// 探し直して始めの位置まで来たら、その先は 1 回目に探してある
 			const position = finiteNumber(value.position);
+			lastWritten = position !== undefined ? { position, container: value.container } : undefined;
 			if (restarted && startPosition !== undefined && position !== undefined && (backwards ? position <= startPosition : position >= startPosition)) {
 				finishing = true;
 			}
