@@ -1,10 +1,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { addCodexApprovals, CodexConfigError, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
+import { addCodexApprovals, codexConfigCandidates, CodexConfigError, codexHomesFromSettings, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
 
 const SERVER = '[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n';
 
@@ -72,5 +72,37 @@ describe('codex approval', () => {
 			backup: readFileSync(`${file}.taskboard.bak`, 'utf8'),
 			linkRefused,
 		}).toEqual({ approved: [], backup: SERVER, linkRefused: true });
+	});
+	test('finds the Codex homes Para Code uses: CODEX_HOME, ~/.codex, ~/.codex-<number> (also as a link) and the configured ones', async () => {
+		const home = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-home-'));
+		const elsewhere = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-env-'));
+		const configured = mkdtempSync(path.join(os.tmpdir(), 'tb-codex-conf-'));
+		dirs.push(home, elsewhere, configured);
+		const write = (dir: string, text: string) => {
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(path.join(dir, 'config.toml'), text);
+		};
+		write(path.join(home, '.codex'), SERVER);
+		write(path.join(home, '.codex-2'), `[mcp_servers."para-browser"]\ncommand = "node"\n`);
+		write(path.join(home, '.codex-3'), '[mcp_servers.other]\n');
+		write(path.join(home, '.codex-backup'), SERVER);
+		mkdirSync(path.join(home, '.codex-4'));
+		write(path.join(home, 'accounts', 'five'), SERVER);
+		symlinkSync(path.join(home, 'accounts', 'five'), path.join(home, '.codex-5'));
+		symlinkSync(path.join(home, '.codex'), path.join(home, '.codex-6'));
+		write(elsewhere, SERVER);
+		write(configured, SERVER);
+		const found = await codexConfigCandidates({ CODEX_HOME: elsewhere }, home, ['relative/path', configured, '~/.codex']);
+		const relative = await codexConfigCandidates({ CODEX_HOME: '.codex-backup' }, home, []);
+		const settings = codexHomesFromSettings('{\n  "paradis.limitsMonitor.codexHomes": [\n    // work\n    "~/work-codex",\n  ],\n}');
+		expect({
+			found: found.map(f => path.relative(home, f)),
+			relative: relative.map(f => path.relative(home, f)),
+			settings,
+		}).toEqual({
+			found: [path.relative(home, path.join(elsewhere, 'config.toml')), '.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml', path.relative(home, path.join(configured, 'config.toml'))],
+			relative: ['.codex/config.toml', '.codex-2/config.toml', '.codex-5/config.toml'],
+			settings: ['~/work-codex'],
+		});
 	});
 });

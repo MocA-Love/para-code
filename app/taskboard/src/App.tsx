@@ -405,7 +405,7 @@ function CodexApprovalBanner() {
 	return (
 		<div className="banner warn">
 			<Icon name="info" size={14} />
-			<span>Codex はボードへの報告（{missing.join('、')}）のたびに許可を求めます。Codex の設定（<code>{app.snapshot.runtime.codexConfigPath ?? '~/.codex/config.toml'}</code>）に、この {missing.length} つだけを常に許可する設定を足しますか。Para Code で別の Codex のアカウント（CODEX_HOME）を使っている場合、そちらには足されません。</span>
+			<span>Codex はボードへの報告（{missing.join('、')}）のたびに許可を求めます。Codex の設定（{(app.snapshot.runtime.codexConfigPaths ?? []).map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</span>
 			<span className="grow" />
 			<button className="btn sm" onClick={() => setHidden(true)}>あとで</button>
 			<button className="btn sm primary" disabled={busy} onClick={() => void approve()}>設定に足す</button>
