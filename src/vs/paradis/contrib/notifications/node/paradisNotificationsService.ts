@@ -18,6 +18,7 @@ import { existsSync, readdirSync, realpath, statSync, type Dirent } from 'fs';
 import { chmod, copyFile, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
 import { promisify } from 'util';
+import { Sequencer } from '../../../../base/common/async.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -119,6 +120,15 @@ function mimeTypeFor(filePath: string): string {
 		case '.webm': return 'audio/webm';
 		default: return 'audio/mpeg';
 	}
+}
+
+/** カスタム音源のメタ情報（`notification-custom.json`）。`sourceUrl` は後から足した項目で、無い JSON も読める。 */
+interface IParadisCustomRingtoneMetadata {
+	readonly name?: string;
+	readonly importedAt?: number;
+	readonly thumbnailUrl?: string;
+	readonly editState?: IParadisRingtoneEditState;
+	readonly sourceUrl?: string;
 }
 
 /** インストールログの購読用バッファ（yt-dlp/ffmpeg の `brew install` 進捗、UIはポーリングで取得）。 */
@@ -233,6 +243,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	private readonly _assetsDir: string;
 	private readonly _metadataPath: string;
 
+	/** カスタム音源のメタ情報の読み直し〜書き込み・削除を 1 本に並べる（{@link _updateMetadata}）。 */
+	private readonly _metadataSequencer = new Sequencer();
 	/**
 	 * downloadYouTubeAudio / downloadMyinstantsAudio が発行した一時音源 (tempId → { path, dir })。
 	 * Myinstants 由来のものだけ、取得した mp3 の URL（出典）を持つ。
@@ -945,7 +957,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 * カスタム音源のメタ情報。`sourceUrl` は Myinstants から取り込んだ音の出典（後から足した項目。無い JSON は
 	 * 今までどおり読める）。YouTube 由来の出典は `editState.sourceUrl` にある。
 	 */
-	private async _readMetadata(): Promise<{ name?: string; importedAt?: number; thumbnailUrl?: string; editState?: IParadisRingtoneEditState; sourceUrl?: string }> {
+	private async _readMetadata(): Promise<IParadisCustomRingtoneMetadata> {
 		if (!await Promises.exists(this._metadataPath)) {
 			return {};
 		}
@@ -954,6 +966,17 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		} catch {
 			return {};
 		}
+	}
+
+	/**
+	 * メタ情報を読み直して書き換える。読んでから書くまでの間に別の更新（名前の変更と切り出しの保存が重なったときなど）が
+	 * 入ると、後の書き込みが先の変更を消すので、更新は {@link _metadataSequencer} で 1 本ずつ行う。
+	 */
+	private _updateMetadata(update: (metadata: IParadisCustomRingtoneMetadata) => IParadisCustomRingtoneMetadata & { readonly name: string; readonly importedAt: number }): Promise<void> {
+		return this._metadataSequencer.queue(async () => {
+			const { name, importedAt, thumbnailUrl, editState, sourceUrl } = update(await this._readMetadata());
+			await this._writeMetadata(name, importedAt, thumbnailUrl, editState, sourceUrl);
+		});
 	}
 
 	private async _writeMetadata(name: string, importedAt: number, thumbnailUrl?: string, editState?: IParadisRingtoneEditState, sourceUrl?: string): Promise<void> {
@@ -1022,7 +1045,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		// 直接インポートはYouTube由来ではないため再編集用ソース・editStateは残さない。
 		await this._removeSourceFiles();
-		await this._writeMetadata(displayName, Date.now());
+		await this._updateMetadata(() => ({ name: displayName, importedAt: Date.now() }));
 
 		// allow-any-unicode-next-line
 		return { id: CUSTOM_RINGTONE_ID, name: displayName, description: 'Imported from your local machine', emoji: '🔊' };
@@ -1031,13 +1054,15 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	async deleteCustomAudio(): Promise<void> {
 		await this._removeFilesByStem(CUSTOM_STEM);
 		await this._removeSourceFiles();
-		if (await Promises.exists(this._metadataPath)) {
-			try {
-				await unlink(this._metadataPath);
-			} catch {
-				// best effort
+		await this._metadataSequencer.queue(async () => {
+			if (await Promises.exists(this._metadataPath)) {
+				try {
+					await unlink(this._metadataPath);
+				} catch {
+					// best effort
+				}
 			}
-		}
+		});
 	}
 
 	async renameCustomAudio(name: string): Promise<IParadisCustomRingtoneInfo> {
@@ -1047,8 +1072,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			throw new Error('カスタム音源が見つかりません');
 		}
 		const displayName = name.trim().slice(0, 80) || 'Custom Audio';
-		const metadata = await this._readMetadata();
-		await this._writeMetadata(displayName, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, metadata.editState, metadata.sourceUrl);
+		await this._updateMetadata(metadata => ({ ...metadata, name: displayName, importedAt: metadata.importedAt ?? Date.now() }));
 		return { ...existing, name: displayName };
 	}
 
@@ -1770,7 +1794,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		await this.importCustomAudio(entry.path);
 		const name = displayName.trim().slice(0, 80) || paradisMyinstantsDisplayName(basename(new URL(entry.myinstantsSourceUrl).pathname));
-		await this._writeMetadata(name, Date.now(), undefined, undefined, entry.myinstantsSourceUrl);
+		await this._updateMetadata(() => ({ name, importedAt: Date.now(), sourceUrl: entry.myinstantsSourceUrl }));
 		await this.cleanupTempAudio(tempId);
 		return (await this.getCustomRingtoneInfo())!;
 	}
@@ -1830,17 +1854,17 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				await this.renameCustomAudio(displayName);
 			}
 			if (request.thumbnailUrl) {
-				const metadata = await this._readMetadata();
-				await this._writeMetadata(metadata.name ?? result.name, metadata.importedAt ?? Date.now(), request.thumbnailUrl, metadata.editState);
+				await this._updateMetadata(metadata => ({ name: metadata.name ?? result.name, importedAt: metadata.importedAt ?? Date.now(), thumbnailUrl: request.thumbnailUrl, editState: metadata.editState }));
 			}
 
 			// 再編集用にソース音源と編集パラメータを保存する。
 			await this._saveCustomSource(inputPath);
-			const metadata = await this._readMetadata();
-			await this._writeMetadata(metadata.name ?? result.name, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, {
-				startSeconds, endSeconds, fadeInSeconds: request.fadeInSeconds, fadeOutSeconds: request.fadeOutSeconds,
-				playbackRate, sourceTitle: request.sourceTitle, sourceUrl: request.sourceUrl,
-			});
+			await this._updateMetadata(metadata => ({
+				name: metadata.name ?? result.name, importedAt: metadata.importedAt ?? Date.now(), thumbnailUrl: metadata.thumbnailUrl, editState: {
+					startSeconds, endSeconds, fadeInSeconds: request.fadeInSeconds, fadeOutSeconds: request.fadeOutSeconds,
+					playbackRate, sourceTitle: request.sourceTitle, sourceUrl: request.sourceUrl,
+				},
+			}));
 
 			return (await this.getCustomRingtoneInfo())!;
 		} finally {
