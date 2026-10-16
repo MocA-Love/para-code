@@ -54,16 +54,20 @@ export function paradisEnableRemotePtyHostDaemon(
 	configurationService: IConfigurationService,
 	stateDir: string,
 	logService: ILogService,
+	/** 動いている機械。テストで差し替える。 */
+	platform: NodeJS.Platform = process.platform,
+	/** 環境変数を置く先。テストで差し替える。 */
+	env: { [key: string]: string | undefined } = process.env,
 ): IDisposable {
 	const apply = () => {
-		if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) !== true || process.env[PARADIS_PTY_HOST_STATE_DIR] === stateDir) {
+		if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) !== true || env[PARADIS_PTY_HOST_STATE_DIR] === stateDir) {
 			return;
 		}
-		if (process.platform === 'win32') {
+		if (platform === 'win32') {
 			logService.info('[ParadisPtyHost] not keeping terminals in a daemon on this Windows host: the named pipe cannot tell us who it is talking to');
 			return;
 		}
-		process.env[PARADIS_PTY_HOST_STATE_DIR] = stateDir;
+		env[PARADIS_PTY_HOST_STATE_DIR] = stateDir;
 		logService.info(`[ParadisPtyHost] terminals on this server may outlive it; state lives under ${stateDir}`);
 	};
 	apply();
