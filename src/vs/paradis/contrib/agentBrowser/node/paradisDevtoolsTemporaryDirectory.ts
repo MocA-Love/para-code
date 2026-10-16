@@ -35,6 +35,7 @@ function isOwnPrivateStat(stat: Stats): boolean {
 
 function isOwnPrivateDirectorySync(path: string): boolean {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Used by ensure(), which the devtools proxy calls right before it spawns a child synchronously (see ensure).
 		return isOwnPrivateStat(lstatSync(path));
 	} catch {
 		return false;
@@ -84,15 +85,18 @@ export class ParadisDevtoolsTemporaryDirectory {
 		this._path = undefined;
 		let created: string;
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 			created = mkdtempSync(join(this.parent, PREFIX));
 		} catch {
 			return undefined;
 		}
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 			writeFileSync(join(created, OWNER_FILE), String(this.ownPid), { mode: 0o600 });
 		} catch {
 			// 持ち主の印が無いと、別の Para Code の起動時の掃除で使用中に消されうる。作ったものは片付けて諦める
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 				rmSync(created, { recursive: true, force: true });
 			} catch {
 				// 次の起動の掃除（24 時間より古い印の無いもの）に任せる
