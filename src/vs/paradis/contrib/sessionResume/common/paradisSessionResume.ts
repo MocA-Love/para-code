@@ -122,6 +122,7 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 	// 権限の確認を省かない再開は、確認ありの権限を明示する。0.163.0 から cold resume は会話を始めたときの権限を戻すので、
 	// 何も付けないと確認を省いて始めた会話が確認なしのまま動く（2026-10-16 に `/status` で実測。0.162.1 は設定の既定に
 	// 戻っていた。0.163.0 の `fork` は戻らなかったが、同じ扱いにそろえる）。0.162.1 も `resume`・`fork` の後ろで受け付ける（`--help` で確認）。
+	// 版によらず付けるので、`config.toml` で普段から確認を省いている人も、普通の再開・分岐では確認ありになる（省くなら bypass の再開を選ぶ）。
 	// `codex resume --help`・`codex fork --help` に載っている位置（サブコマンドの後ろ）に置く
 	return `codex ${mode === 'fork' ? 'fork' : 'resume'} ${bypass ? '--dangerously-bypass-approvals-and-sandbox' : PARADIS_CODEX_FULL_AUTO_FLAGS} ${sessionId}`;
 }

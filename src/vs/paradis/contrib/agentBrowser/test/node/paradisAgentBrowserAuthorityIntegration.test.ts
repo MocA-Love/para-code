@@ -163,6 +163,7 @@ function createFixture(): {
 		_hookReportedTokens: new Set<string>(),
 		_programStatusTokens: new Set<string>(),
 		_programStatusTimes: new Map<string, number[]>(),
+		_codexProgramStatusEntries: new Map(),
 		_unconfirmedReleaseTokens: new Set<string>(),
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
@@ -1009,6 +1010,34 @@ suite('ParadisAgentBrowser authority integration', () => {
 			},
 			hooked: { changed: false, status: 'working' },
 			readingOsc: [],
+		});
+	});
+
+	test('the first hook of a Codex pane drops the working its OSC 7501 wrote, so the idle it then ignores does not leave the pane working', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'codex' }, { token: 'turn' }]));
+		const note = (token: string, state: string) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, token, { state, app: 'codex' }); };
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		// Codex starts: OSC working, then its SessionStart hook arrives before the OSC idle
+		await note('codex', 'working');
+		const hookBody = await sendHook(fixture.service, 'codex', 'SessionStart');
+		const idleTaken = await note('codex', 'idle');
+		// A status the hook itself wrote afterwards is not touched by a later hook
+		await note('turn', 'working');
+		await sendHook(fixture.service, 'turn', 'UserPromptSubmit');
+		await sendHook(fixture.service, 'turn', 'PostToolUse');
+		assert.deepStrictEqual({
+			hook: JSON.parse(hookBody),
+			idleTaken,
+			codex: await status('codex'),
+			turn: await status('turn'),
+		}, {
+			hook: { ok: false, reason: 'ignored event' },
+			idleTaken: false,
+			codex: 'idle',
+			turn: 'working',
 		});
 	});
 

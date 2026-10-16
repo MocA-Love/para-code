@@ -109,10 +109,15 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
  * `Set-Location -LiteralPath '...'` とする（二重引用符だと `$(...)` が実行され、cmd の `cd "..."` では
  * `%VAR%` が展開されるため）。PowerShell は `'` のほかに U+2018・U+2019・U+201A・U+201B も単一引用符として
  * 扱うので、どれも2つ重ねる。
+ *
+ * 再開の部分は「ターミナルで再開」と同じ {@link paradisAgentResumeCommandLine}（確認ありの権限を明示する。付けないと
+ * Claude Code は auto mode、Codex は 0.163.0 から会話を始めたときの権限になる）。ID が検証に通らなければ undefined。
  */
-export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string {
-	// 「ターミナルで再開」と同じく確認ありの権限を明示する（付けないと Claude Code は auto mode、Codex は 0.163.0 から会話を始めたときの権限になる）
-	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume') ?? (session.agent === 'claude' ? `claude --resume ${session.id}` : `codex resume ${session.id}`);
+export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string | undefined {
+	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume');
+	if (resume === undefined) {
+		return undefined;
+	}
 	return windows
 		? `Set-Location -LiteralPath '${session.cwd.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'; ${resume}`
 		: `cd '${session.cwd.replace(/'/g, `'\\''`)}' && ${resume}`;

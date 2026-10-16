@@ -40,7 +40,7 @@
 //   `/exit`      → clear
 // `done` と `kind` が無いので、完了と、許可と質問の区別は取れない。問い合わせが無いので、前面のコマンドが Codex
 // （か ssh・WSL など）のときに届いた状態で受け付けを開く。hook も transcript も無いペインの作業中・許可待ちの補助にだけ使う
-// （{@link paradisCodexProgramStatusTransition}）。0.162.1 以前は書かないので何も変わらない。
+// （{@link paradisCodexProgramStatusTransition}）。0.162.1 以前は書かないので、この読み取りでは何も変わらない。
 
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 
@@ -480,6 +480,16 @@ export class ParadisProgramStatusGate {
 	}
 }
 
+/** {@link ParadisProgramStatusTracker.receive} の結果。 */
+export interface IParadisProgramStatusReceipt {
+	/** 問い合わせ無しの Codex の状態で、受け付けを Codex 用に開いた。 */
+	readonly reopened: boolean;
+	/** 状態を受ける直前に受け付けが開いていたか（開き直した分を含む）。 */
+	readonly wasOpen: boolean;
+	/** shared process へ渡す状態。渡さないなら undefined。Codex の受け付けで届いた clear には `app: 'codex'` を付ける。 */
+	readonly send: IParadisProgramStatus | undefined;
+}
+
 /** 受け付けの変化を受けて、呼び出し側がすること。'clear' は shared process へ状態を消す知らせを送る。 */
 export type ParadisProgramStatusEffect = 'clear' | undefined;
 
@@ -515,6 +525,20 @@ export class ParadisProgramStatusTracker {
 		}
 		this.openedBy = undefined;
 		return true;
+	}
+
+	/**
+	 * 状態が届いた。Codex の状態なら、受け付けを確かめる前に Codex 用に開けるかを見る（問い合わせが無いので、
+	 * 先に開かないと最初の状態を捨てる）。clear は受け付けで閉じる前に相手を読み、Codex のものなら印を付けて渡す。
+	 */
+	receive(status: IParadisProgramStatus, trustedCommandLine: string | undefined, processTitle: string | undefined): IParadisProgramStatusReceipt {
+		const reopened = status.app === 'codex' && !this.gate.isOpen && this.codexStatus(trustedCommandLine, processTitle);
+		const wasOpen = this.gate.isOpen;
+		const codexClear = status.state === 'clear' && this.gate.app === 'codex';
+		if (!this.gate.accept(status)) {
+			return { reopened, wasOpen, send: undefined };
+		}
+		return { reopened, wasOpen, send: codexClear ? { state: 'clear', app: 'codex' } : status };
 	}
 
 	/** pty の前面のプロセスの題名が変わった。 */
