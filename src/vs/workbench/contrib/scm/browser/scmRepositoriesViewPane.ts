@@ -46,6 +46,9 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IActionViewItemProvider } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { fromNow } from '../../../../base/common/date.js';
+// PARA-PATCH: Para Code scopes the view's repositories to the current space, so a worktree opened while its main repository was open
+// can keep a parentId that points at a repository the view no longer lists. Such a child is listed at the top level instead.
+import { paradisScmDisplayedParentId } from '../../../../paradis/contrib/workspaceSwitch/common/paradisScmScope.js';
 
 type TreeElement = ISCMRepository | SCMArtifactGroupTreeElement | SCMArtifactTreeElement | IResourceNode<SCMArtifactTreeElement, SCMArtifactGroupTreeElement>;
 
@@ -278,8 +281,9 @@ class RepositoryTreeDataSource extends Disposable implements IAsyncDataSource<IS
 				? inputOrElement.provider.id
 				: undefined;
 
-			const repositories = this.scmViewService.repositories
-				.filter(r => r.provider.parentId === parentId);
+			const allRepositories = this.scmViewService.repositories; // PARA-PATCH: see paradisScmDisplayedParentId
+			const repositories = allRepositories
+				.filter(r => paradisScmDisplayedParentId(r, allRepositories) === parentId); // PARA-PATCH: see paradisScmDisplayedParentId
 
 			return repositories;
 		}
@@ -291,8 +295,9 @@ class RepositoryTreeDataSource extends Disposable implements IAsyncDataSource<IS
 		// (see paradis/contrib/workspaceSwitch/browser/paradisScopedScmViewService.ts).
 		if (inputOrElement === this.scmViewService) {
 			// Get all top level repositories
-			const repositories = this.scmViewService.repositories
-				.filter(r => r.provider.parentId === undefined);
+			const allRepositories = this.scmViewService.repositories; // PARA-PATCH: see paradisScmDisplayedParentId
+			const repositories = allRepositories
+				.filter(r => paradisScmDisplayedParentId(r, allRepositories) === undefined); // PARA-PATCH: see paradisScmDisplayedParentId
 
 			// Check whether there are any child repositories
 			if (repositories.length !== this.scmViewService.repositories.length) {
@@ -380,8 +385,9 @@ class RepositoryTreeDataSource extends Disposable implements IAsyncDataSource<IS
 				? inputOrElement.provider.id
 				: undefined;
 
-			const repositories = this.scmViewService.repositories
-				.filter(r => r.provider.parentId === parentId);
+			const allRepositories = this.scmViewService.repositories; // PARA-PATCH: see paradisScmDisplayedParentId
+			const repositories = allRepositories
+				.filter(r => paradisScmDisplayedParentId(r, allRepositories) === parentId); // PARA-PATCH: see paradisScmDisplayedParentId
 
 			return repositories.length > 0;
 		}
@@ -581,7 +587,7 @@ export class SCMRepositoriesViewPane extends ViewPane {
 				horizontalScrolling: false,
 				collapseByDefault: (e: unknown) => {
 					if (this.scmViewService.explorerEnabledConfig.get() === false) {
-						if (isSCMRepository(e) && e.provider.parentId === undefined) {
+						if (isSCMRepository(e) && paradisScmDisplayedParentId(e, this.scmViewService.repositories) === undefined) { // PARA-PATCH: see paradisScmDisplayedParentId
 							return false;
 						}
 						return true;
@@ -803,6 +809,8 @@ export class SCMRepositoriesViewPane extends ViewPane {
 		const parentRepository = this.scmViewService.repositories
 			.find(r => r.provider.id === repository.provider.parentId);
 		if (!parentRepository) {
+			// PARA-PATCH: the parent is not in the view (see paradisScmDisplayedParentId), so the child is listed at the top level
+			await this.updateChildren();
 			return;
 		}
 

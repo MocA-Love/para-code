@@ -39,7 +39,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisAgentChatSource, IParadisAgentChatMessage, paradisAgentQuestionHasPreview } from '../../agentChat/common/paradisAgentChat.js';
 import { paradisPendingCodexQuestion } from '../../agentChat/common/paradisAgentChatTimeline.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../../agentChat/browser/paradisAgentChatInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { ParadisAgentChatSession } from '../../agentChat/browser/paradisAgentChatSession.js';
 import { paradisScreenShowsAgentPrompt, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
@@ -47,6 +47,7 @@ import { IParadisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoic
 import { PARADIS_AGENT_IDE_LAUNCH_GRACE_MS, paradisAgentIdeChoiceMenuOf, paradisAgentIdeKeySequence, paradisAgentIdeStatusLabel, paradisAgentIdeTailLines } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisAgentStartupScreenState, paradisTrustDialogCursor } from '../../agentIde/common/paradisAgentStartupScreen.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { paradisCodexApprovalFormShown, paradisSplitCodexFormOption } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { paradisStripAgentInvisibleCharacters } from '../../mobileRelay/common/paradisAgentInvisibleText.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
@@ -58,6 +59,7 @@ import { ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/par
 import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import {
 	IParadisTaskBoardAnswerRequest,
+	IParadisTaskBoardExitWatch,
 	IParadisTaskBoardKeyRequest,
 	IParadisTaskBoardLaunchRequest,
 	IParadisTaskBoardQuestionPayload,
@@ -74,7 +76,13 @@ import {
 	paradisParseTaskBoardLaunch,
 	paradisParseTaskBoardSend,
 	paradisParseTaskBoardTerminalOnly,
+	paradisTaskBoardAgentExitConfirmed,
+	paradisTaskBoardApprovalChoices,
+	paradisTaskBoardConfirmAgentExit,
 	paradisTaskBoardFail,
+	paradisTaskBoardIsLastingApproval,
+	paradisTaskBoardKeyBlockedOnApprovalForm,
+	paradisTaskBoardMissingTerminalExited,
 	paradisTaskBoardSamePath,
 	paradisTaskBoardSendBlock,
 	paradisTaskBoardStatusFrom,
@@ -85,8 +93,6 @@ import {
 const POLL_INTERVAL_MS = 2_000;
 /** 中継へ「このペインの質問を拾って」と頼み直す間隔（チャット表示と同じ）。 */
 const WATCH_RENEW_INTERVAL_MS = 10_000;
-/** ターミナルが見つからない（再読み込みの後の復元待ち）ままでいられる時間。過ぎたら終わったとみなす。 */
-const MISSING_GRACE_MS = 60_000;
 /** 報告を shared process に断られ続けたら（台帳に無い）見張りをやめる回数。 */
 const MAX_REJECTED_REPORTS = 5;
 /** 画面の読み取りで、見えている範囲の上に足す行数。 */
@@ -108,11 +114,17 @@ interface IWatchedTerminal {
 	readonly prompted: boolean;
 	sawAgentStatus: boolean;
 	sawAgent: boolean;
+	/** 前面がシェルへ戻ったのを続けて見ているか（終わりと決めるのは続いたときだけ）。 */
+	readonly exitWatch: IParadisTaskBoardExitWatch;
 	missingSince?: number;
+	/** 見張っていた instance が破棄された時刻（同じペインが別の instance で戻れば消す）。 */
+	disposedAt?: number;
 	instanceId?: number;
 	listener?: IDisposable;
 	lastSent?: string;
 	rejected: number;
+	/** 許可の確認として出した、画面の番号の選択肢（Codex の MCP のツールの許可）。回答で同じ承認・同じ文言かを確かめる。 */
+	approvalOptions?: { readonly interactionId: string; readonly options: readonly { readonly n: number; readonly label: string }[] };
 }
 
 interface IResolvedTerminal {
@@ -126,6 +138,8 @@ interface IComputedStatus {
 	readonly question?: IParadisTaskBoardQuestionPayload;
 	readonly choiceMenu?: IParadisAgentChoiceMenu;
 	readonly trustDialog: boolean;
+	/** 前面がシェルへ戻って見える（終わりとはまだ決めていなくても、文はシェルへ打ち込まれうる）。 */
+	readonly shellBack: boolean;
 }
 
 type Result<T> = ParadisTaskBoardResult<T>;
@@ -368,6 +382,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			// 再読み込みの後に戻したものは、もう動き出している
 			sawAgentStatus: launchedAt === undefined,
 			sawAgent: launchedAt === undefined,
+			exitWatch: { shellSeen: 0 },
 			rejected: 0,
 		});
 		this.renewWatch();
@@ -420,13 +435,14 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		if (!resolved) {
 			const now = Date.now();
 			watched.missingSince ??= now;
-			if (now - watched.missingSince >= MISSING_GRACE_MS) {
+			if (paradisTaskBoardMissingTerminalExited({ missingSince: watched.missingSince, disposedAt: watched.disposedAt }, now)) {
 				await this.report(watched, { terminal: watched.terminal, status: 'exited' });
 				this.unwatch(watched.terminal);
 			}
 			return;
 		}
 		watched.missingSince = undefined;
+		watched.disposedAt = undefined;
 		if (watched.instanceId !== resolved.instance.instanceId) {
 			watched.listener?.dispose();
 			watched.instanceId = resolved.instance.instanceId;
@@ -434,13 +450,16 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 				if (this.shuttingDown || this._store.isDisposed) {
 					return;
 				}
-				void this.report(watched, { terminal: watched.terminal, status: 'exited' }).finally(() => this.unwatch(watched.terminal));
+				// 同じ pty を別の instance へ付け替えた（detach / reattach）だけなら、ペイン（トークン）は新しい
+				// instance で生きている。ここで終わりと知らせず、次の見直しでトークンから引き直す
+				watched.disposedAt ??= Date.now();
+				this.poll();
 			});
 		}
-		const computed = this.computeStatus(watched, resolved);
+		const computed = this.computeStatus(watched, resolved, true);
 		let question = computed.question;
 		if (question === undefined && (computed.status === 'question' || computed.status === 'permission')) {
-			question = await this.questionFromSession(resolved.token, computed.status);
+			question = await this.questionFromSession(resolved.token, computed.status, watched, resolved.instance);
 		}
 		await this.report(watched, { terminal: watched.terminal, status: computed.status, ...(question ? { question } : {}) });
 	}
@@ -467,7 +486,11 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 	}
 
 	/** いまの状態（同期。送る直前の確かめにも使う）。 */
-	private computeStatus(watched: IWatchedTerminal, resolved: IResolvedTerminal): IComputedStatus {
+	/**
+	 * ターミナルの今の様子。`advance` は見張りの見直し（poll）だけが true にする。前面がシェルへ戻ったのを「見た回数」を
+	 * 進めるのはそのときだけで、画面の取得・送信・回答の確かめで呼ぶときは読むだけにする（数えると、続けて見たことにならない）。
+	 */
+	private computeStatus(watched: IWatchedTerminal, resolved: IResolvedTerminal, advance = false): IComputedStatus {
 		const instance = resolved.instance;
 		const agentStatus = this.statusStore.getInstanceStatus(instance.instanceId);
 		if (agentStatus !== undefined) {
@@ -479,8 +502,11 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		if (runsAgent) {
 			watched.sawAgent = true;
 		}
-		// 一度エージェントが動いた後に、前面がシェルへ戻った（エージェントが終わった）
-		const agentExited = watched.sawAgent && !runsAgent && foregroundShell;
+		// 一度エージェントが動いた後に、前面がシェルへ戻った（エージェントが終わった）。続けて見たときだけ認める
+		const shellBack = watched.sawAgent && !runsAgent && foregroundShell;
+		const agentExited = advance
+			? paradisTaskBoardConfirmAgentExit(watched.exitWatch, shellBack, Date.now())
+			: paradisTaskBoardAgentExitConfirmed(watched.exitWatch, shellBack, Date.now());
 		const label = paradisAgentIdeStatusLabel(agentStatus);
 		const screen = agentStatus === 'working' || !runsAgent ? undefined : readScreen(instance, 0);
 		// 起動直後の信頼の確認（hook が届く前に出る）。人が答える
@@ -492,6 +518,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 				trustDialog: true,
 				// allow-any-unicode-next-line
 				question: { text: localize('paradis.taskBoard.trustDialog', "エージェントが、このフォルダを信頼するかを確かめています。"), options: [], allowText: false },
+				shellBack,
 			};
 		}
 		const choiceMenu = screen !== undefined ? paradisAgentIdeChoiceMenuOf(screen, true, label) : undefined;
@@ -503,11 +530,11 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		const menuQuestion = status === 'question' && agentStatus !== 'question' && choiceMenu !== undefined
 			? { text: choiceMenu.title ?? choiceMenu.enterWould, options: choiceMenu.options.map(label => ({ label })), allowText: false }
 			: undefined;
-		return { status, trustDialog: false, ...(choiceMenu ? { choiceMenu } : {}), ...(menuQuestion ? { question: menuQuestion } : {}) };
+		return { status, trustDialog: false, shellBack, ...(choiceMenu ? { choiceMenu } : {}), ...(menuQuestion ? { question: menuQuestion } : {}) };
 	}
 
 	/** 質問・許可の中身を、中継の会話（hook と transcript から拾ったもの）から取る。 */
-	private async questionFromSession(token: string, status: 'question' | 'permission'): Promise<IParadisTaskBoardQuestionPayload | undefined> {
+	private async questionFromSession(token: string, status: 'question' | 'permission', watched: IWatchedTerminal, instance: ITerminalInstance): Promise<IParadisTaskBoardQuestionPayload | undefined> {
 		const session = this.session(token);
 		await session.refresh();
 		const state = session.state;
@@ -533,9 +560,15 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			return codex ? { text: codex.text, options: [], allowText: false } : undefined;
 		}
 		if (interaction?.kind === 'approval') {
+			// Codex の MCP のツールの許可は、画面の選択肢から「このセッションでは許可」「常に許可」（paradisTaskBoardIsLastingApproval）と
+			// 「Cancel」（「拒否」と同じ）を除いて出す。残りが 1 つ以下なら「許可 / 拒否」のまま
+			const screenOptions = paradisCodexApprovalFormOptions(paradisVisibleTerminalText(instance), interaction.detail);
+			const formOptions = screenOptions !== undefined ? paradisTaskBoardApprovalChoices(screenOptions) : undefined;
+			watched.approvalOptions = formOptions !== undefined && formOptions.length >= 2 ? { interactionId: interaction.id, options: formOptions } : undefined;
 			return {
 				text: [interaction.title, interaction.detail].filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n'),
-				options: interaction.choices?.map(choice => ({ label: choice.label }))
+				options: watched.approvalOptions?.options.map(option => paradisSplitCodexFormOption(option.label))
+					?? interaction.choices?.map(choice => ({ label: choice.label }))
 					// allow-any-unicode-next-line
 					?? [{ label: localize('paradis.taskBoard.allow', "許可") }, { label: localize('paradis.taskBoard.deny', "拒否") }],
 				allowText: false,
@@ -638,7 +671,8 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			return paradisTaskBoardFail('not-found', localize('paradis.taskBoard.noTerminal', "送り先のターミナルが見つかりません"));
 		}
 		const computed = this.computeStatus(watched, resolved);
-		const block = paradisTaskBoardSendBlock(computed.status);
+		// 終わりと決める前でも、前面がシェルに見える間は送らない（指示がシェルのコマンドとして走らないように）
+		const block = paradisTaskBoardSendBlock(computed.status, computed.shellBack);
 		if (block !== undefined) {
 			return paradisTaskBoardFail(block, this.blockMessage(block));
 		}
@@ -711,6 +745,10 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			return paradisTaskBoardFail('not-found', localize('paradis.taskBoard.noTerminal', "送り先のターミナルが見つかりません"));
 		}
 		const instance = resolved.instance;
+		if (paradisTaskBoardKeyBlockedOnApprovalForm(request.key) && paradisCodexApprovalFormShown(paradisVisibleTerminalText(instance))) {
+			// allow-any-unicode-next-line
+			return paradisTaskBoardFail('rejected', localize('paradis.taskBoard.keyOnApprovalForm', "ツールの許可の確認には、キーではなく回答で答えてください"));
+		}
 		const sequence = /^[1-9]$/.test(request.key)
 			? request.key
 			: paradisAgentIdeKeySequence(request.key as Exclude<typeof request.key, '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'>, instance.xterm?.raw.modes.applicationCursorKeysMode === true);
@@ -772,6 +810,19 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			return paradisTaskBoardFail('rejected', localize('paradis.taskBoard.noQuestion', "回答を待っている質問がありません"));
 		}
 		if (interaction?.kind === 'approval') {
+			// 画面の番号の選択肢として出した許可（Codex の MCP のツールの許可）は、その番号と見せた文言で答える
+			const offered = watched.approvalOptions;
+			if (request.allow === undefined && request.optionIndex !== undefined && offered?.interactionId === interaction.id) {
+				const option = offered.options[request.optionIndex];
+				if (option === undefined) {
+					return paradisTaskBoardFail('invalid', `optionIndex must be less than ${offered.options.length}.`);
+				}
+				if (paradisTaskBoardIsLastingApproval(option.label)) {
+					// allow-any-unicode-next-line
+					return paradisTaskBoardFail('rejected', localize('paradis.taskBoard.lastingApproval', "この許可はボードからは選べません。ターミナルで答えてください"));
+				}
+				return done(await this.input.answerApproval(instance.instanceId, token, interaction.id, `opt:${option.n}`, option.label));
+			}
 			const choiceId = request.allow !== undefined
 				? (request.allow ? 'yes' : 'no')
 				: request.optionIndex !== undefined ? interaction.choices?.[request.optionIndex]?.id : undefined;

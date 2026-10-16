@@ -27,7 +27,8 @@
 //     Codex plugin が起動した codex と判定できる → invalid（plugin が detached で起動した `codex app-server` が、
 //     継承したトークンで所有者になるのを防ぐ。素の `codex` の共有 daemon や tmux 等は従来どおり後継になれる）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
-// 既知の所有者と同じtranscriptへのイベントだけを通す。
+// 既知の所有者と同じtranscriptへのイベントだけを通す。ただし接続先のペイン（hook が pid を持たない）では、
+// 所有者の SessionEnd の後の SessionStart（/resume・/clear・起動し直し）にだけ所有者を移す（classifyWithoutIdentity）。
 
 import { exec } from 'child_process';
 import { statSync } from 'fs';
@@ -97,6 +98,13 @@ interface IOwnerRecord {
 	 * 同じプロセスからの hook は、/clear で会話 id が変わっても所有者のものとして通す。
 	 */
 	attachedHost?: IProcessIdentity;
+	/**
+	 * pid の無い所有者の会話から SessionEnd を受けた。次の SessionStart（子エージェントのものを除く）で所有者を
+	 * 決め直す（/resume・/clear で会話が替わる・同じペインで起動し直す）。
+	 */
+	ended?: boolean;
+	/** pid の無い所有者の会話で、PreToolUse を受けて終わりをまだ受けていないツール（`tool_use_id`）。 */
+	toolsInFlight?: readonly string[];
 }
 
 /** transcript_path からエージェント種別を判定する（mobileRelay 側の判定と同一規約）。 */
@@ -732,6 +740,57 @@ export interface IParadisHookClassifyInput {
 	 * ペインがまだ同期していない）・プロセス表に無いときは、ペインのシェルを使う判定をすべて飛ばして従来どおりに動く。
 	 */
 	readonly paneShellPid?: number;
+	/**
+	 * hook のイベント名。pid の無い hook（接続先のペイン）で、所有者を会話の切り替え（/resume・/clear）へ
+	 * 引き継ぐかを決めるときだけ使う。
+	 */
+	readonly event?: string;
+	/** `SessionStart` の `source`（`startup` / `resume` / `clear` / `compact`）。 */
+	readonly sessionSource?: string;
+	/** サブエージェント・teammate の中から来た hook（payload に `agent_id` がある）。 */
+	readonly fromSubagent?: boolean;
+	/** ツールの hook の `tool_use_id`。 */
+	readonly toolUseId?: string;
+}
+
+/**
+ * SessionEnd を送らない Codex で、会話を切り替えたとみなす `SessionStart` の `source`。`startup` は新しい起動、
+ * `compact` は同じ会話のまま（transcript が変わらない）なので含めない。Claude Code は /resume・/clear・/branch の前に
+ * 所有者の SessionEnd（`reason` が resume / clear）を送るので、`source` だけでは移さない。
+ */
+const CODEX_CONVERSATION_SWITCH_SOURCES: ReadonlySet<string> = new Set(['resume', 'clear', 'fork']);
+/** 所有者の会話で動いているツールを覚える上限。 */
+const MAX_TOOLS_IN_FLIGHT = 64;
+/** `tool_use_id` の無いツールの hook を数えるときのキー。 */
+const UNKNOWN_TOOL_USE_ID = '?';
+
+/**
+ * pid の無い所有者の会話へ届いた hook で、ターンの状態（終わったか・動いているツール）を進める。
+ * 子エージェントのツールも数える（子が Bash で別の claude を起動しうるため）。
+ */
+function nextConversationState(owner: IOwnerRecord, input: IParadisHookClassifyInput): Pick<IOwnerRecord, 'ended' | 'toolsInFlight'> {
+	const toolUseId = input.toolUseId ?? UNKNOWN_TOOL_USE_ID;
+	switch (input.event) {
+		case 'SessionEnd':
+			return input.fromSubagent === true ? owner : { ended: true, toolsInFlight: undefined };
+		case 'SessionStart':
+		case 'UserPromptSubmit':
+		case 'Stop':
+		case 'StopFailure':
+			return input.fromSubagent === true ? owner : { ended: false, toolsInFlight: undefined };
+		case 'PreToolUse': {
+			const tools = [...(owner.toolsInFlight ?? []).filter(id => id !== toolUseId), toolUseId];
+			return { ended: owner.ended, toolsInFlight: tools.slice(-MAX_TOOLS_IN_FLIGHT) };
+		}
+		case 'PostToolUse':
+		case 'PostToolUseFailure':
+		case 'PermissionDenied': {
+			const tools = (owner.toolsInFlight ?? []).filter(id => id !== toolUseId);
+			return { ended: owner.ended, toolsInFlight: tools.length > 0 ? tools : undefined };
+		}
+		default:
+			return owner;
+	}
 }
 
 /**
@@ -797,7 +856,7 @@ export class ParadisAgentHookOwnership {
 		const { token, hookPid, transcriptPath, at } = input;
 		const eventKind = transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined;
 		if (hookPid === undefined) {
-			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-pid', undefined);
+			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-pid', undefined, input);
 		}
 		const snapshot = await this.inspector.snapshot();
 		const snapshotAgeMs = this.snapshotAgeMs();
@@ -1035,16 +1094,30 @@ export class ParadisAgentHookOwnership {
 	 * 発信元プロセスを特定できないhook（旧v2スクリプト・ps失敗・プロセス消滅）の fail-closed 判定:
 	 * 所有者が既知なら、同じtranscriptへのイベントとtranscript無しイベント（状態のみのGET
 	 * フォールバック等）だけを通し、別transcriptへのrebindは拒否する。
+	 *
+	 * 例外として、hook がそもそも pid を持たない（接続先のペイン。`hook` を渡す）ときは、pid の無い所有者を
+	 * 会話の切り替えへ引き継ぐ。所有者の会話から SessionEnd を受けた後の SessionStart（Claude Code の /resume・/clear・
+	 * /branch・起動し直し）と、SessionEnd を送らない Codex の所有者のツールが動いていない間に届いた Codex の
+	 * `SessionStart`（`source` が resume / clear / fork）が対象。サブエージェント・teammate の hook（`agent_id` 付き）では
+	 * 移さない。所有者の Claude Code が生きている間の `SessionStart` は、`source` が resume でも、ペインの中で起動した
+	 * 別の claude（背景のツールからの `claude -p --resume` など）とみなして移さない。
 	 */
-	private classifyWithoutIdentity(token: string, transcriptPath: string | undefined, at: number, eventKind: ParadisHookAgentKind | undefined, identityLoss: ParadisHookIdentityLoss, snapshotAgeMs: number | undefined): IParadisHookClassification {
+	private classifyWithoutIdentity(token: string, transcriptPath: string | undefined, at: number, eventKind: ParadisHookAgentKind | undefined, identityLoss: ParadisHookIdentityLoss, snapshotAgeMs: number | undefined, hook?: IParadisHookClassifyInput): IParadisHookClassification {
 		const owner = this.owners.get(token);
 		if (owner === undefined) {
 			this.setOwner(token, { pid: undefined, startKey: undefined, agentKind: eventKind, transcriptPath, at });
 			return { origin: 'owner', agentKind: eventKind, unverified: true };
 		}
+		if (hook !== undefined && owner.pid === undefined && transcriptPath !== undefined && owner.transcriptPath !== undefined
+			&& owner.transcriptPath !== transcriptPath && this.handsOffToNewConversation(owner, hook, eventKind)) {
+			this.setOwner(token, { pid: undefined, startKey: undefined, agentKind: eventKind, transcriptPath, at });
+			return { origin: 'owner', agentKind: eventKind, unverified: true };
+		}
 		if (transcriptPath === undefined || owner.transcriptPath === undefined || owner.transcriptPath === transcriptPath) {
 			if (owner.pid === undefined) {
-				this.setOwner(token, { ...owner, transcriptPath: owner.transcriptPath ?? transcriptPath, agentKind: owner.agentKind ?? eventKind, at });
+				// ターンの状態は、所有者の会話と分かる hook（transcript 付き）でだけ進める。
+				const state = hook !== undefined && transcriptPath !== undefined ? nextConversationState(owner, hook) : undefined;
+				this.setOwner(token, { ...owner, ...(state !== undefined ? { ended: state.ended, toolsInFlight: state.toolsInFlight } : {}), transcriptPath: owner.transcriptPath ?? transcriptPath, agentKind: owner.agentKind ?? eventKind, at });
 			}
 			return { origin: 'owner', agentKind: eventKind ?? owner.agentKind, unverified: true };
 		}
@@ -1052,6 +1125,19 @@ export class ParadisAgentHookOwnership {
 			origin: 'invalid', agentKind: eventKind,
 			rejection: { identityLoss, ownerPinnedBy: owner.pid !== undefined ? 'pid' : 'transcript', ownerTranscriptPath: owner.transcriptPath, ownerAt: owner.at, snapshotAgeMs },
 		};
+	}
+
+	/** pid の無い所有者を、別の transcript の hook（`hook`）の会話へ移してよいか。 */
+	private handsOffToNewConversation(owner: IOwnerRecord, hook: IParadisHookClassifyInput, eventKind: ParadisHookAgentKind | undefined): boolean {
+		if (hook.event !== 'SessionStart' || hook.fromSubagent === true) {
+			return false;
+		}
+		if (owner.ended === true) {
+			return true;
+		}
+		return eventKind === 'codex' && owner.agentKind === 'codex'
+			&& hook.sessionSource !== undefined && CODEX_CONVERSATION_SWITCH_SOURCES.has(hook.sessionSource)
+			&& (owner.toolsInFlight?.length ?? 0) === 0;
 	}
 
 	/** 直近に使ったプロセス表の控えの古さ（診断ログ用）。 */

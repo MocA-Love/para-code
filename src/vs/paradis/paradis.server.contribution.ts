@@ -34,6 +34,7 @@ import './contrib/agentHookTrust/node/paradisRemoteCodexHookTrust.server.js';
 import './contrib/updateTerminals/node/paradisStaleServers.server.js';
 import './contrib/notifications/node/paradisAgentDictionary.server.js';
 import './contrib/mobileRelay/node/paradisRemoteShellOutput.server.js'; // SSH の接続先のシェルの出力（agent.shells.v1）
+import './contrib/ptyDaemon/node/paradisPtyHandover.server.js'; // 常駐の端末の引き継ぎ（記録と引き取り直し）
 
 /**
  * 登録済みの REH サーバー向け contribution をすべて呼ぶ。

@@ -12,9 +12,10 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
 import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
+import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
 class FakeTerminal implements IParadisAgentChatTerminal {
 	readonly sent: string[] = [];
@@ -198,6 +199,63 @@ suite('ParadisAgentChatInput', () => {
 			codex: undefined,
 			sent: ['"1"', 'paste:"next"', '"\\r"'],
 			claims: ['claim:approval:approval:e:0', 'release:approval:approval:e:0:false', 'claim:approval:approval:e:0', 'release:approval:approval:e:0:true', 'codex:codex:thread:1:0'],
+		});
+	});
+
+	test('answers a tall Codex command approval with y and a Codex tool approval form with 1 or Esc, only for its own tool', async () => {
+		const exec = { kind: 'approval' as const, id: 'approval:e:2', detail: CODEX_EXEC_APPROVAL_DETAIL };
+		const { input, terminal, setView } = setup({ agent: 'codex', interaction: exec });
+		const sentFor = async (screen: string, id: string, choice: string) => {
+			terminal.sent.length = 0;
+			terminal.screen = screen;
+			// 答えたら確認が閉じて作業中の表示になる
+			terminal.onKey = () => { terminal.screen = CODEX_WORKING_SCREEN; };
+			const error = await input.answerApproval(1, 't', id, choice);
+			return { error, sent: [...terminal.sent] };
+		};
+		const execYes = await sentFor(CODEX_EXEC_APPROVAL_SCREEN, exec.id, 'yes');
+		const tool = { kind: 'approval' as const, id: 'approval:e:3', detail: CODEX_MCP_APPROVAL_DETAIL };
+		setView({ interaction: tool });
+		const toolYes = await sentFor(CODEX_MCP_APPROVAL_SCREEN, tool.id, 'yes');
+		const toolNo = await sentFor(CODEX_MCP_APPROVAL_SCREEN, tool.id, 'no');
+		// 画面に出ているのは別のツールの許可
+		setView({ interaction: { ...tool, id: 'approval:e:4', detail: 'mcp__para-browser__board_ask_human: {"question":"?"}' } });
+		const otherTool = await sentFor(CODEX_MCP_APPROVAL_SCREEN, 'approval:e:4', 'yes');
+		assert.deepStrictEqual({ execYes, toolYes, toolNo, otherTool: { refused: otherTool.error !== undefined, sent: otherTool.sent } }, {
+			execYes: { error: undefined, sent: ['"y"'] },
+			toolYes: { error: undefined, sent: ['"1"'] },
+			toolNo: { error: undefined, sent: ['"\\u001b"'] },
+			otherTool: { refused: true, sent: [] },
+		});
+	});
+
+	test('answers a numbered option of a Codex tool approval form only while the same label is on screen, for the board', async () => {
+		const tool = { kind: 'approval' as const, id: 'approval:e:5', detail: CODEX_MCP_APPROVAL_DETAIL };
+		const { input, terminal } = setup({ agent: 'codex', interaction: tool });
+		const options = paradisCodexApprovalFormOptions(CODEX_MCP_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL);
+		const answer = async (choice: string, label?: string) => {
+			terminal.sent.length = 0;
+			terminal.screen = CODEX_MCP_APPROVAL_SCREEN;
+			terminal.onKey = () => { terminal.screen = CODEX_WORKING_SCREEN; };
+			const error = await input.answerApproval(1, 't', tool.id, choice, label);
+			return { refused: error !== undefined, sent: [...terminal.sent] };
+		};
+		assert.deepStrictEqual({
+			options: options?.map(option => option.n),
+			// 別の承認の確認には選択肢を出さない
+			otherApproval: paradisCodexApprovalFormOptions(CODEX_MCP_APPROVAL_SCREEN, 'mcp__para-browser__board_ask_human: {}'),
+			notForm: paradisCodexApprovalFormOptions(CODEX_EXEC_APPROVAL_SCREEN, CODEX_EXEC_APPROVAL_DETAIL),
+			session: await answer('opt:2', options![1].label),
+			// 見せた文言と画面の文言が違えば送らない
+			changed: await answer('opt:2', options![2].label),
+			withoutLabel: await answer('opt:2'),
+		}, {
+			options: [1, 2, 3, 4],
+			otherApproval: undefined,
+			notForm: undefined,
+			session: { refused: false, sent: ['"2"'] },
+			changed: { refused: true, sent: [] },
+			withoutLabel: { refused: true, sent: [] },
 		});
 	});
 

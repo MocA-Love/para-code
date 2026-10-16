@@ -100,3 +100,57 @@ export function paradisDecodeLayout(raw: string, idOf: ParadisIdLookup): ISetTer
 		background: (parsed.background ?? []).map(handle => idOf(handle) ?? UNKNOWN).filter(id => id !== UNKNOWN),
 	};
 }
+
+/**
+ * 常駐へ書く配置に、別の相手が見ている端末のタブを足す。
+ *
+ * **書く配置が「全体」とは限らない。** 更新後の版のサーバーの窓は、更新前の版のサーバーがまだ
+ * 見ている端末を持っていない。そのまま書くと常駐の配置が窓の分だけになり、後でその端末を
+ * 引き取れてもタブ配置が戻らない（`paradisPtyReadopt.ts`）。起動時に常駐から読んだ配置
+ * （`foreignRaw`、handle で書かれている）から、まだ別の相手が見ている端末の載ったタブだけを
+ * 取り出して後ろへ足す。
+ *
+ * @param encoded 窓の配置を handle で書いたもの（`paradisLayoutToRemember` の結果。空文字は「忘れる」）。
+ */
+export function paradisMergeForeignLayout(workspaceId: string, encoded: string, foreignRaw: string, foreignHandles: ReadonlySet<number>): string {
+	let foreignLayout: ISetTerminalLayoutInfoArgs;
+	try {
+		foreignLayout = JSON.parse(foreignRaw) as ISetTerminalLayoutInfoArgs;
+	} catch {
+		return encoded;
+	}
+	if (!Array.isArray(foreignLayout?.tabs)) {
+		return encoded;
+	}
+	let own: ISetTerminalLayoutInfoArgs;
+	try {
+		own = encoded.length === 0 ? { workspaceId, tabs: [], background: [] } : JSON.parse(encoded) as ISetTerminalLayoutInfoArgs;
+	} catch {
+		return encoded;
+	}
+	const present = new Set<number>();
+	for (const tab of own.tabs ?? []) {
+		for (const terminal of tab.terminals ?? []) {
+			present.add(terminal.terminal);
+		}
+	}
+	for (const handle of own.background ?? []) {
+		present.add(handle);
+	}
+	const keep = (handle: number) => foreignHandles.has(handle) && !present.has(handle);
+	const tabs = foreignLayout.tabs.map(tab => ({
+		// 足すタブは前面にしない。前面は窓が決めたものを守る。
+		isActive: false,
+		activePersistentProcessId: tab.activePersistentProcessId !== undefined && keep(tab.activePersistentProcessId) ? tab.activePersistentProcessId : undefined,
+		terminals: (tab.terminals ?? []).filter(terminal => keep(terminal.terminal)),
+	})).filter(tab => tab.terminals.length > 0);
+	const background = (foreignLayout.background ?? []).filter(keep);
+	if (tabs.length === 0 && background.length === 0) {
+		return encoded;
+	}
+	return JSON.stringify({
+		workspaceId,
+		tabs: [...(own.tabs ?? []), ...tabs],
+		background: [...(own.background ?? []), ...background],
+	} satisfies ISetTerminalLayoutInfoArgs);
+}
