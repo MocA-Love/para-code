@@ -18,11 +18,12 @@
 // (`paradisPtyHostPaths.ts`)、ビルドが違っても同じ名前に辿り着く。
 
 import { spawn } from 'child_process';
-import { closeSync, mkdirSync, openSync, rmSync, statSync } from 'fs';
+import { promises as fs } from 'fs';
 import { createConnection } from 'net';
 import { timeout } from '../../../../base/common/async.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
@@ -80,7 +81,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		return existing;
 	}
 
-	paradisSpawnDaemon(options);
+	await paradisSpawnDaemon(options);
 
 	const deadline = Date.now() + STARTUP_TIMEOUT;
 	while (Date.now() < deadline) {
@@ -218,22 +219,22 @@ function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
  * ただし**捨てもしない**。前の常駐で、標準出力を捨てたせいで起動できない理由が一切残らず、
  * 「ターミナルが開かない」という症状だけを見て何時間も溶かしたことがある。
  */
-function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
+async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<void> {
 	const { paths, launch, logService } = options;
 	let stdio: 'ignore' | number = 'ignore';
 	try {
-		mkdirSync(dirname(paths.socketPath), { recursive: true, mode: 0o700 });
+		await fs.mkdir(dirname(paths.socketPath), { recursive: true, mode: 0o700 });
 		const log = join(dirname(paths.socketPath), 'startup.log');
 		// 起こすたびに追記され続けるので、大きくなったら捨てて始め直す。**残す側に倒す**のは、
 		// ここが「常駐が上がらない理由」を書く唯一の場所だから（前の内容より直近が重要）。
 		try {
-			if (statSync(log).size > STARTUP_LOG_LIMIT) {
-				rmSync(log, { force: true });
+			if ((await fs.stat(log)).size > STARTUP_LOG_LIMIT) {
+				await fs.rm(log, { force: true });
 			}
 		} catch {
 			// まだ無い。
 		}
-		stdio = openSync(log, 'a');
+		stdio = await Promises.open(log, 'a');
 	} catch (error) {
 		logService.warn('[ParadisPtyHost] could not open the startup log; the daemon will start without one', error);
 	}
@@ -247,6 +248,6 @@ function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
 	});
 	child.unref();
 	if (typeof stdio === 'number') {
-		closeSync(stdio);
+		await Promises.close(stdio);
 	}
 }
