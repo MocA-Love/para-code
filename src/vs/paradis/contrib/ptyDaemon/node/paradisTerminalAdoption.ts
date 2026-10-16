@@ -46,6 +46,14 @@ export interface IParadisAdoptionResult {
 	 * 数を返すのは、黙って減っているのが一番困るため。呼び出し側がログにも画面にも出せる。
 	 */
 	readonly skipped: number;
+	/**
+	 * 別の相手が見ているので残したもの（{@link skipped} の内訳）。
+	 *
+	 * **後で引き取り直すために要る。** SSH 先では、更新前の版のサーバーが窓の去った後も端末を
+	 * 見たまま残ることがある。そのサーバーが居なくなれば引き取れるので、何を待っているかを持つ
+	 * （`paradisPtyReadopt.ts`）。
+	 */
+	readonly foreign: readonly IParadisAdoptedTerminal[];
 }
 
 /**
@@ -62,16 +70,17 @@ export interface IParadisAdoptionResult {
  *
  * 繋ぐのは、窓が実際に開きに来たとき（器の `start()`）に1回だけ。
  */
-export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IParadisAdoptionResult> {
+export async function paradisAdoptTerminals(host: IParadisPtyHost, known?: ReadonlySet<number>): Promise<IParadisAdoptionResult> {
 	let summaries: readonly IParadisPtySummary[];
 	try {
 		summaries = await host.list();
 	} catch {
 		// 常駐と話せない。**これは「抱えているものが無い」ではない。** 区別が付く形で返す。
-		return { reachable: false, adopted: [], skipped: 0 };
+		return { reachable: false, adopted: [], skipped: 0, foreign: [] };
 	}
 
 	const adopted: IParadisAdoptedTerminal[] = [];
+	const foreign: IParadisAdoptedTerminal[] = [];
 	let skipped = 0;
 	// **生きているものから、次に古いものから並べる。** 順番が意味を持つのは、同じ nonce を持つ
 	// 2本が居ることがあるため。繋ぎ直しに失敗すると upstream はそのタブでシェルを起こし直すが、
@@ -86,10 +95,16 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 	//
 	// 常駐の `list()` は今のところ handle 昇順で返すが、それに黙って寄りかからない。
 	for (const summary of [...summaries].sort((a, b) => (a.alive === b.alive ? a.handle - b.handle : (a.alive ? -1 : 1)))) {
+		if (known?.has(summary.handle)) {
+			// **もう引き取ってある**（2回目以降の引き取り）。自分で見ているか、窓が開くのを
+			// 待っているだけなので、数にも入れない。
+			continue;
+		}
 		if (summary.attached) {
 			// **すでに誰かが見ている。** 割り込むと、入力も出力も二重になり、こちらの終了操作が
-			// 向こうの端末を殺す。見ている相手が居なくなれば、次の起動で引き取れる。
+			// 向こうの端末を殺す。見ている相手が居なくなれば引き取り直せる（`paradisPtyReadopt.ts`）。
 			skipped++;
+			foreign.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
 			continue;
 		}
 		// 読み取りは失敗しない設計（`paradisDecodeTerminalMetadata` は何が入っていても値を返す）
@@ -97,5 +112,5 @@ export async function paradisAdoptTerminals(host: IParadisPtyHost): Promise<IPar
 		// (`paradisAdoptIntoPtyService`) が引き受けている。
 		adopted.push({ summary, metadata: paradisDecodeTerminalMetadata(summary.metadata) });
 	}
-	return { reachable: true, adopted, skipped };
+	return { reachable: true, adopted, skipped, foreign };
 }

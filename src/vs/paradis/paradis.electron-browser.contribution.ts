@@ -45,6 +45,8 @@ import './contrib/notifications/electron-browser/paradisAgentDictionarySync.cont
 import './contrib/notifications/electron-browser/paradisDictationAudioHold.contribution.js';
 import './contrib/dictation/browser/paradisDictationAvailability.contribution.js';
 import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
+import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
+import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
@@ -99,6 +101,7 @@ import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mob
 registerParadisRemoteTranscriptMirrorContribution();
 import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonStatusBar.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisPtyHandover.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contribution.js';
 import './contrib/updateTerminals/electron-browser/paradisUpdateTerminals.contribution.js';
 import './contrib/updateTerminals/electron-browser/paradisStaleRemoteServer.contribution.js';

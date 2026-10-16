@@ -82,6 +82,9 @@ export class ParadisPtyHolder extends Disposable {
 	/** 前回繋いだ時点の目印。ここからこぼれたかを見る。 */
 	private droppedMark = 0;
 
+	/** 控えの世代。消すたびに進む（`IParadisPtyAttachment.epoch`）。 */
+	private epoch = 0;
+
 	/**
 	 * 終了を告げるのを待っている間の予約。出力が来るたびに取り直す（{@link queueExit}）。
 	 */
@@ -228,6 +231,8 @@ export class ParadisPtyHolder extends Disposable {
 		const attachment: IParadisPtyAttachment = {
 			frames: this.scrollback.frames(),
 			dropped: this.scrollback.droppedSince(this.droppedMark),
+			written: this.scrollback.mark(),
+			epoch: this.epoch,
 		};
 		this.droppedMark = this.scrollback.mark();
 		this.attached = true;
@@ -297,6 +302,7 @@ export class ParadisPtyHolder extends Disposable {
 	clearScrollback(): void {
 		this.scrollback = new ParadisPtyScrollback(this.cols, this.rows);
 		this.droppedMark = 0;
+		this.epoch++;
 	}
 
 	kill(signal?: string): void {

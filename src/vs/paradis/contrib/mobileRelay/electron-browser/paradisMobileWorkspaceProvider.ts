@@ -773,7 +773,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）。
 		// SSH 接続先のリポジトリでも正しいマシンの gh を使えるよう、URI をそのまま渡す
 		// （コマンド側で paradisWorktreeGitHostResolver がホストを解決する）。
-		private readonly getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
+		// activeUris は今いるスペース（PC で開いている・スマホで開いている）。それは5分、ほかは15分ごとに取り直される。
+		private readonly getPrStatuses: (uris: readonly URI[], activeUris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
 		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
 		private readonly fetchResourceReport: (force: boolean, history?: unknown) => Promise<IParadisResourceMonitorMobileReport>,
@@ -1046,6 +1047,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// モバイルが1台もオンラインでない間はポーリングを止める。
 	private static readonly PR_STATUS_POLL_INTERVAL_MS = 300_000;
 	private readonly prStatusCache = new Map<string, IParadisPrStatus>();
+	/**
+	 * スマホが最後に名指ししたスペース（scm・ファイル・ターミナルの要求の ws）。スマホで開いているスペースとして、
+	 * PC で開いているスペースと同じく PR を5分ごとに取り直させる（ほかは15分）。
+	 */
+	private mobileOpenedWs: string | undefined;
 	private mobileOnline = false;
 	private prStatusesInFlight = false;
 	private readonly prStatusScheduler = this._register(new RunOnceScheduler(() => { this.refreshPrStatuses().catch(() => { /* refreshPrStatuses内で処理済み */ }); }, ParadisMobileWorkspaceProvider.PR_STATUS_POLL_INTERVAL_MS));
@@ -1088,16 +1094,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// に任せる。
 		const pathToWsId = new Map<string, string>();
 		const uris: URI[] = [];
+		const activeWs = new Set([this.workspaceSwitchService.activeStateKey, this.mobileOpenedWs]);
+		const activeUris: URI[] = [];
 		for (const repo of this.workspaceSwitchService.repositories) {
 			if (!this.isReachableWorkspaceUri(repo.uri)) {
 				continue;
 			}
 			pathToWsId.set(repo.uri.fsPath, repo.id);
 			uris.push(repo.uri);
+			if (activeWs.has(repo.id)) {
+				activeUris.push(repo.uri);
+			}
 			for (const worktree of this.worktreeService.getWorktrees(repo.id)) {
 				if (!worktree.missing && this.isReachableWorkspaceUri(worktree.uri)) {
 					pathToWsId.set(worktree.uri.fsPath, paradisWorktreeStateKey(worktree.uri));
 					uris.push(worktree.uri);
+					if (activeWs.has(paradisWorktreeStateKey(worktree.uri))) {
+						activeUris.push(worktree.uri);
+					}
 				}
 			}
 		}
@@ -1107,7 +1121,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.prStatusesInFlight = true;
 		try {
-			const result = await this.getPrStatuses(uris);
+			// 全件を渡すが、gh が走るのは期限切れ・ブランチが変わったものだけ（ウィンドウの一覧と git チャネルで使い回す）
+			const result = await this.getPrStatuses(uris, activeUris);
 			if (result) {
 				const next = new Map<string, IParadisPrStatus>();
 				for (const [path, status] of Object.entries(result)) {
@@ -1794,6 +1809,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * scm / fs / ターミナル作成の全チャネルで共通に使う。
 	 */
 	private resolveWsRoot(ws: string): URI | undefined {
+		const root = this.findWsRoot(ws);
+		if (root !== undefined) {
+			this.noteMobileOpenedWs(ws);
+		}
+		return root;
+	}
+
+	private findWsRoot(ws: string): URI | undefined {
 		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
 		if (repo) {
 			return repo.uri;
@@ -1808,6 +1831,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 		}
 		return undefined;
+	}
+
+	/**
+	 * スマホがスペースを名指しした（そのスペースを開いている）。別のスペースに移ったら、そのスペースの PR を
+	 * 5分の間隔で取り直させる（ほかのスペースは使い回しのまま）。
+	 */
+	private noteMobileOpenedWs(ws: string): void {
+		if (this.mobileOpenedWs === ws) {
+			return;
+		}
+		this.mobileOpenedWs = ws;
+		this.kickPrStatusRefresh();
 	}
 
 	/**

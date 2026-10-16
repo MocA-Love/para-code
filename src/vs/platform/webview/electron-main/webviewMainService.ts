@@ -9,6 +9,8 @@ import { Disposable } from '../../../base/common/lifecycle.js';
 import { hasKey } from '../../../base/common/types.js';
 import { FindInFrameOptions, FoundInFrameResult, IWebviewManagerService, WebviewWebContentsId, WebviewWindowId } from '../common/webviewManagerService.js';
 import { WebviewProtocolProvider } from './webviewProtocolProvider.js';
+// PARA-PATCH: look a missing webview frame up once more before failing a find.
+import { paradisFindWebviewFrame } from '../common/paradisWebviewFind.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { IFileService } from '../../files/common/files.js';
 
@@ -57,12 +59,13 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 
 	// PARA-PATCH: returns `false` when this Electron build has no `findInFrame`, so the caller can
 	// fall back to the browser find path instead of silently searching nothing.
-	public async findInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, text: string, options: { findNext?: boolean; forward?: boolean }): Promise<boolean> {
-		// PARA-PATCH: a missing frame (auxiliary windows resolve the wrong window id) means the find did
-		// not run either, so report it like a missing API instead of rejecting into the void.
-		const initialFrame = this.tryGetFrameByName(id, frameName);
+	public async findInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, text: string, options: { findNext?: boolean; forward?: boolean }): Promise<boolean | undefined> {
+		// PARA-PATCH: a missing frame (auxiliary windows resolve the wrong window id) is not a missing API.
+		// Look once more, then report `undefined` so only this find fails instead of every webview
+		// switching to the fallback for the rest of the session (see IWebviewManagerService.findInFrame).
+		const initialFrame = await paradisFindWebviewFrame(() => this.tryGetFrameByName(id, frameName));
 		if (!initialFrame) {
-			return false;
+			return undefined;
 		}
 
 		type WebFrameMainWithFindSupport = WebFrameMain & {
@@ -89,11 +92,11 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 	}
 
 	// PARA-PATCH: see findInFrame — report whether this Electron build could stop the find.
-	public async stopFindInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, options: { keepSelection?: boolean }): Promise<boolean> {
+	public async stopFindInFrame(id: WebviewWebContentsId | WebviewWindowId, frameName: string, options: { keepSelection?: boolean }): Promise<boolean | undefined> {
 		// PARA-PATCH: see findInFrame.
-		const initialFrame = this.tryGetFrameByName(id, frameName);
+		const initialFrame = await paradisFindWebviewFrame(() => this.tryGetFrameByName(id, frameName));
 		if (!initialFrame) {
-			return false;
+			return undefined;
 		}
 
 		type WebFrameMainWithFindSupport = WebFrameMain & {
