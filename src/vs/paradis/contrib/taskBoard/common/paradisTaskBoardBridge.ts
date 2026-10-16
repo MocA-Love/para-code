@@ -11,6 +11,7 @@
 // VS Code の仕組み（サービス・nls）には依存しない（純粋な関数だけ）。
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
+import { paradisIsCodexFormCancel } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 
 /** 接続口を有効にする設定（オフなら HTTP を立てない）。 */
 export const PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING = 'paradis.taskBoard.bridge.enabled';
@@ -52,6 +53,31 @@ export interface IParadisTaskBoardQuestionPayload {
 	readonly text: string;
 	readonly options: readonly { readonly label: string; readonly detail?: string }[];
 	readonly allowText: boolean;
+}
+
+/**
+ * ボードから選ばせない許可の選択肢か（この先も許可し続ける「このセッションでは許可」「常に許可」）。ボードの HTTP の口は
+ * 接続元を確かめないので、ペインの中のエージェント自身が自分のツールを恒久的に許可できてしまうため。
+ */
+export function paradisTaskBoardIsLastingApproval(screenLabel: string): boolean {
+	return /^(?:Allow for this session|Always allow)\b/.test(screenLabel);
+}
+
+/**
+ * 画面に Codex の MCP のツールの許可のフォームが出ている間、ボードのキー（`/v1/key`）で送らないキー（数字と Enter）。
+ * フォームは数字や Enter でそのまま確定するので、ペインの中のエージェントが自分のツールの「常に許可」を選べてしまう
+ * （`/v1/answer` で塞いだ経路の迂回）。フォームへの答えは `/v1/answer` に一本化する。Esc（取り消し）は通す。
+ */
+export function paradisTaskBoardKeyBlockedOnApprovalForm(key: ParadisTaskBoardKey): boolean {
+	return key === 'enter' || /^[1-9]$/.test(key);
+}
+
+/**
+ * 画面の許可の選択肢のうち、ボードに出すもの。{@link paradisTaskBoardIsLastingApproval} と「Cancel」（ボードの「拒否」と同じ）を
+ * 除く。番号はそのまま持つ。残りが 1 つ以下なら、ボードは今までどおり「許可 / 拒否」を出す。
+ */
+export function paradisTaskBoardApprovalChoices<T extends { readonly n: number; readonly label: string }>(options: readonly T[]): readonly T[] {
+	return options.filter(option => !paradisTaskBoardIsLastingApproval(option.label) && !paradisIsCodexFormCancel(option.label));
 }
 
 /**
@@ -122,8 +148,64 @@ export function paradisTaskBoardStatusFrom(input: {
 	return input.agentStatus === 'review' ? 'review' : 'idle';
 }
 
+/** 前面がシェルへ戻ったのを、エージェントの終わりと決めるまでに続いてほしい長さ。 */
+export const PARADIS_TASK_BOARD_AGENT_EXIT_CONFIRM_MS = 4_000;
+/** 見張っていたターミナルの instance が破棄された後、同じペインが別の instance で戻るのを待つ長さ。 */
+export const PARADIS_TASK_BOARD_DISPOSED_GRACE_MS = 5_000;
+/** ターミナルが見つからない（再読み込みの後の復元待ち）ままでいられる時間。過ぎたら終わったとみなす。 */
+export const PARADIS_TASK_BOARD_MISSING_GRACE_MS = 60_000;
+
+/** 前面がシェルへ戻ったのを続けて見ているか（{@link paradisTaskBoardConfirmAgentExit} が書き換える）。 */
+export interface IParadisTaskBoardExitWatch {
+	/** 前面がシェルへ戻ったのを最初に見た時刻。 */
+	shellSince?: number;
+	/** 続けて見た回数。 */
+	shellSeen: number;
+}
+
+/**
+ * 前面がシェルへ戻った（エージェントが終わった）と認めるか。続けて 2 回以上、{@link PARADIS_TASK_BOARD_AGENT_EXIT_CONFIRM_MS}
+ * 以上見たときだけ認める。1 回の見え方で決めると、プロセス名や実行中のコマンドの知らせが遅れた・一時的に
+ * 外れた瞬間を終わりと取り違え、動いているエージェントを「終了」と知らせる。本当に終わったなら前面は
+ * シェルのままなので、待っても見逃さない。
+ */
+export function paradisTaskBoardConfirmAgentExit(watch: IParadisTaskBoardExitWatch, shellBack: boolean, now: number): boolean {
+	if (!shellBack) {
+		watch.shellSince = undefined;
+		watch.shellSeen = 0;
+		return false;
+	}
+	watch.shellSince ??= now;
+	watch.shellSeen++;
+	return watch.shellSeen >= 2 && now - watch.shellSince >= PARADIS_TASK_BOARD_AGENT_EXIT_CONFIRM_MS;
+}
+
+/**
+ * {@link paradisTaskBoardConfirmAgentExit} の読むだけの版。これまでに見た回数だけで、終わりと認められているか
+ * （見張りの見直し以外で様子を確かめるときに使う。そこで回数を進めると、続けて見たことにならない）。
+ */
+export function paradisTaskBoardAgentExitConfirmed(watch: Readonly<IParadisTaskBoardExitWatch>, shellBack: boolean, now: number): boolean {
+	return shellBack && watch.shellSince !== undefined && watch.shellSeen >= 2 && now - watch.shellSince >= PARADIS_TASK_BOARD_AGENT_EXIT_CONFIRM_MS;
+}
+
+/**
+ * 見張っているターミナルが見つからないとき、終わったとみなすか。instance が破棄されたのを見たなら
+ * {@link PARADIS_TASK_BOARD_DISPOSED_GRACE_MS}、そうでなければ（再読み込みの後の復元待ち）
+ * {@link PARADIS_TASK_BOARD_MISSING_GRACE_MS} 待つ。同じ pty を別の instance へ付け替える（detach / reattach）と、
+ * 古い instance は破棄されるがペインは動き続けるので、破棄だけでは終わりと決めない。
+ */
+export function paradisTaskBoardMissingTerminalExited(missing: { readonly missingSince: number; readonly disposedAt?: number }, now: number): boolean {
+	return missing.disposedAt !== undefined
+		? now - missing.disposedAt >= PARADIS_TASK_BOARD_DISPOSED_GRACE_MS
+		: now - missing.missingSince >= PARADIS_TASK_BOARD_MISSING_GRACE_MS;
+}
+
 /** 文を送ってはいけない状態なら、その理由のコード。入力待ち（idle / review）なら undefined。 */
-export function paradisTaskBoardSendBlock(status: ParadisTaskBoardTerminalStatus): 'busy' | 'question' | 'permission' | 'exited' | undefined {
+export function paradisTaskBoardSendBlock(status: ParadisTaskBoardTerminalStatus, shellBack = false): 'busy' | 'question' | 'permission' | 'exited' | undefined {
+	// 終わりと決める前でも、前面がシェルに見える間は送らない（指示がシェルのコマンドとして走らないように）
+	if (shellBack && status !== 'exited') {
+		return 'busy';
+	}
 	switch (status) {
 		case 'working': return 'busy';
 		case 'question': return 'question';
