@@ -2088,7 +2088,7 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 
 **「残したはずの端末が消えた」という報告が来たら、まずここを疑うこと。** これを知らないと、常駐側の猶予やアイドル終了を延々と調べることになる（そちらは無実）。
 
-**2026-10-16 対処済み**: `terminalActions.ts` の PARA-PATCH で、常駐を使っているこの PC と SSH の接続先では猶予を縮めない（判定は `ptyDaemon/common/paradisAttachToSessionGrace.ts`）。Windows と、常駐を使っていないこの PC では upstream どおり縮める。
+**2026-10-16 対処済み**: `ptyService.ts` の `reduceConnectionGraceTime()` の PARA-PATCH で、常駐（pty daemon）が持っている端末は猶予を縮めない。同じ関数は、接続先のウィンドウが繋ぐたび（`terminalService.ts` の `_reconnectToRemoteTerminals`）にも呼ばれ、SSH の短い猶予は `serverServices.ts` の `min(5 分, 猶予)` なので、直す前は新しい SSH のウィンドウを開くたびに、ほかのウィンドウが残した端末の寿命が 24 時間から 5 分に縮んでいた。判定は pty ホストの中で端末ごとにするので、この PC でも SSH の接続先（REH の pty ホスト）でも同じ 1 か所で効く。常駐を使っていない端末は upstream どおり縮める。
 
 ### Windows で常駐を無効にしている理由（2026-08-20 調査済み。再調査不要）
 
@@ -2339,7 +2339,7 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 - 【要確認】`reattachAcrossUpdates` の常駐で、更新をまたいだときに今の常駐の pid と起動時刻が変わるか。変わって、かつ更新前の常駐が `foreign` に出ないなら、更新のたびに起こし直しが走る
 - 復元の前に保存が走ると、戻すはずの画面を空で上書きする。保存は `take` が済むまで（呼ばれなければ起動から2分）始めない
 - 30日より古いものは使わずに消す。開かれなくなったワークスペースの分は、起動5分後に保存フォルダを一度見回って消す。設定 `paradis.terminal.daemon.saveScreens`（既定 true）を切るとその場で消す
-- **常駐そのものは既定オフのまま**。実機での再起動の確認がまだで、「Terminal: Attach to Session」が残した端末を巻き添えにする件と、SSH 先の環境変数の件（上の節）が残っているため
+- **常駐そのものは既定オフのまま**。実機での再起動の確認がまだで、SSH 先の環境変数の件（上の節）が残っているため（「Terminal: Attach to Session」が残した端末を巻き添えにする件は 2026-10-16 に対処済み）
 - Windows は常駐を使っていないので何もしない（upstream の保存・復元がそのまま働く）。保存の仕組み自体は OS に依存しないので、上の「開けるときの筋道」で Windows の常駐を開ければそのまま効く
 
 ### xterm の IME パッチ（TM16）

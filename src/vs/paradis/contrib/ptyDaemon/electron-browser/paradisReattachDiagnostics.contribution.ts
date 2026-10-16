@@ -23,6 +23,7 @@ import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { ILocalPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -41,6 +42,7 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 	constructor(
 		@ILocalPtyService private readonly _localPtyService: ILocalPtyService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
+		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		if (isWindows) {
@@ -60,8 +62,11 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 			if (attributes && !cancellation.token.isCancellationRequested) {
 				runInParadisSpan('pty-daemon', 'startup-revive', attributes, () => undefined, { forceTransaction: true });
 			}
-		} catch {
-			// 診断のために振る舞いを変えない（キャンセルや pty ホストの再起動を含む）。
+		} catch (error) {
+			// 診断のために振る舞いを変えない（キャンセルや pty ホストの再起動を含む）。更新をまたいで
+			// 生き残った古い pty ホストはこのメソッドを知らず「Method not found」で断る。聞くのは窓ごとに
+			// 1 回だけなので、trace に 1 行残すだけにする。
+			this._logService.trace('[paradisReattachDiagnostics] could not take the reattach tally', error);
 		}
 	}
 }
