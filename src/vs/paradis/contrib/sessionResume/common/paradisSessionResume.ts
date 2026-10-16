@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
-import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
@@ -114,8 +114,15 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 	}
 	const bypass = options?.dangerouslyBypassPermissions === true;
 	if (agent === 'claude') {
-		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）
+		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）。
+		// 省くときは `--permission-mode` を付けない（`--dangerously-skip-permissions` は `--permission-mode bypassPermissions` と同じ意味で、
+		// 両方を付けたときにどちらが勝つかは公式の文書に無い）
 		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
 	}
-	return `codex ${bypass ? '--dangerously-bypass-approvals-and-sandbox ' : ''}${mode === 'fork' ? 'fork' : 'resume'} ${sessionId}`;
+	// 権限の確認を省かない再開は、確認ありの権限を明示する。0.163.0 から cold resume は会話を始めたときの権限を戻すので、
+	// 何も付けないと確認を省いて始めた会話が確認なしのまま動く（2026-10-16 に `/status` で実測。0.162.1 は設定の既定に
+	// 戻っていた。0.163.0 の `fork` は戻らなかったが、同じ扱いにそろえる）。0.162.1 も `resume`・`fork` の後ろで受け付ける（`--help` で確認）。
+	// 版によらず付けるので、`config.toml` で普段から確認を省いている人も、普通の再開・分岐では確認ありになる（省くなら bypass の再開を選ぶ）。
+	// `codex resume --help`・`codex fork --help` に載っている位置（サブコマンドの後ろ）に置く
+	return `codex ${mode === 'fork' ? 'fork' : 'resume'} ${bypass ? '--dangerously-bypass-approvals-and-sandbox' : PARADIS_CODEX_FULL_AUTO_FLAGS} ${sessionId}`;
 }

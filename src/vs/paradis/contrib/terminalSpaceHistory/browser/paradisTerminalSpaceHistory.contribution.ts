@@ -38,7 +38,7 @@ import { paradisIsSharedPanelShell, paradisSharedPanelEnabledAtStartup } from '.
 import { paradisRegisterTerminalLaunchPreparer } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { IParadisTerminalScopeRoot, paradisResolveInitialCwdScope } from '../../workspaceSwitch/common/paradisTerminalProcessScope.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisScopeRootPath, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisSpaceHistoryInstance, PARADIS_SPACE_HISTORY_DIR_ENV, PARADIS_SPACE_HISTORY_FOLDER, PARADIS_SPACE_HISTORY_ID_ENV, PARADIS_TERMINAL_SPACE_HISTORY_ENABLED, paradisFishHistoryFileName, IParadisCreatedHistoryId, paradisParseCreatedHistoryIds, paradisRegisterSpaceHistoryFileResolver, paradisSerializeCreatedHistoryIds, paradisShouldDeleteOrphanHistory, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../common/paradisTerminalSpaceHistory.js';
+import { IParadisSpaceHistoryInstance, PARADIS_SPACE_HISTORY_DIR_ENV, PARADIS_SPACE_HISTORY_FOLDER, PARADIS_SPACE_HISTORY_ID_ENV, PARADIS_TERMINAL_SPACE_HISTORY_ENABLED, paradisFishHistoryFileName, IParadisCreatedHistoryId, paradisParseCreatedHistoryIds, paradisRegisterSpaceHistoryFileResolver, paradisRegisterSpaceHistoryLocator, paradisSerializeCreatedHistoryIds, paradisShouldDeleteOrphanHistory, paradisSpaceHistoryDirectory, paradisSpaceHistoryId } from '../common/paradisTerminalSpaceHistory.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -101,6 +101,10 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		}
 		this._register(paradisRegisterTerminalLaunchPreparer((shellLaunchConfig, target) => this.prepare(shellLaunchConfig, target)));
 		this._register(paradisRegisterSpaceHistoryFileResolver((instance, shell) => this.resolveHistoryFile(instance, shell)));
+		this._register(paradisRegisterSpaceHistoryLocator({
+			directoryOf: instance => this.resolveHistoryDirectoryOf(instance),
+			root: () => this.isEnabled() ? this.historyBase() : undefined,
+		}));
 		this._register(this.workspaceSwitchService.onDidRetireScope(stateKey => this.deleteHistory(stateKey)));
 		// スペースの削除を受け損ねた（別のウィンドウで消した、接続先を切断中に消した）履歴を片付ける。
 		// スペースの一覧が確定してから（worktree の列挙が終わってから）でないと、生きているスペースの
@@ -171,12 +175,18 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 	}
 
 	/**
-	 * 補完候補（↓ のサジェスト）が読む、そのターミナルのスペースの履歴ファイル。
+	 * 補完候補（Ctrl+Space）と履歴の一覧（↓）が読む、そのターミナルのスペースの履歴ファイル。
 	 * 起動時に渡したフォルダがあればそれ。復元したエディタのターミナル（起動設定に環境変数が
 	 * 残っていない）は、今のスペースのもの（エディタのターミナルはスペースごとに入れ替わるので、
 	 * 入力中のターミナルは今のスペースに居る）。
 	 */
 	private resolveHistoryFile(instance: IParadisSpaceHistoryInstance, shell: 'zsh' | 'bash'): string | undefined {
+		const directory = this.resolveHistoryDirectoryOf(instance);
+		return directory === undefined ? undefined : `${directory}/${shell}_history`;
+	}
+
+	/** そのターミナルのスペースの履歴フォルダ（履歴の一覧と、実行したコマンドの記録が使う）。 */
+	private resolveHistoryDirectoryOf(instance: IParadisSpaceHistoryInstance): string | undefined {
 		if (!this.isEnabled() || this.isLocalShellInRemoteWindow(instance.shellLaunchConfig)) {
 			return undefined;
 		}
@@ -186,7 +196,7 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 			const stateKey = this.workspaceSwitchService.activeStateKey;
 			directory = stateKey === undefined ? undefined : this.historyDirectoryFor(stateKey)?.path;
 		}
-		return directory === undefined ? undefined : `${directory}/${shell}_history`;
+		return directory;
 	}
 
 	/**

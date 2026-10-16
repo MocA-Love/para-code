@@ -223,6 +223,7 @@
 /* ---------- list ---------- */
 
 .paradis-preset-editor-dialog .ppe-list {
+	position: relative; /* 挿入線・札の基準 */
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
@@ -249,16 +250,98 @@
 	background: var(--vscode-list-hoverBackground);
 }
 
-/* ドラッグ中の行、ドロップ可能な行、ドロップ拒否中の行（フォルダ跨ぎ・保存先跨ぎ・フォルダ行自体） */
+/* ドラッグ中の行と、ドロップ先の表示。行の間の挿入線（入れられない位置は赤い点線）と、
+	フォルダへ入れるときのフォルダ（ヘッダー行と中身）の強調。 */
 .paradis-preset-editor-dialog .ppe-row.dragging {
 	opacity: 0.35;
 }
-.paradis-preset-editor-dialog .ppe-row.drop-target {
+
+.paradis-preset-editor-dialog .ppe-row.drop-into {
 	border-color: var(--vscode-focusBorder);
+	background: color-mix(in srgb, var(--vscode-focusBorder) 18%, transparent);
 }
-.paradis-preset-editor-dialog .ppe-row.drop-denied {
-	border-color: var(--vscode-errorForeground, var(--vscode-inputValidation-errorBorder));
-	border-style: dashed;
+
+.paradis-preset-editor-dialog .ppe-folder-children.drop-into {
+	border-left-color: var(--vscode-focusBorder);
+	background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent);
+}
+
+.paradis-preset-editor-dialog .ppe-drop-line {
+	position: absolute;
+	right: 0;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--vscode-focusBorder);
+	pointer-events: none;
+	z-index: 1;
+}
+
+.paradis-preset-editor-dialog .ppe-drop-line::before {
+	content: "";
+	position: absolute;
+	left: -3px;
+	top: -3px;
+	width: 8px;
+	height: 8px;
+	box-sizing: border-box;
+	border-radius: 50%;
+	border: 2px solid var(--vscode-focusBorder);
+	background: var(--vscode-editor-background);
+}
+
+.paradis-preset-editor-dialog .ppe-drop-line.denied {
+	background: repeating-linear-gradient(90deg, var(--vscode-errorForeground) 0 6px, transparent 6px 10px);
+}
+
+.paradis-preset-editor-dialog .ppe-drop-line.denied::before {
+	border-color: var(--vscode-errorForeground);
+}
+
+/* 「どこに入るか」の札。線の右端の上に出す。フォルダへ入れるときはフォルダの行の中ほど。 */
+.paradis-preset-editor-dialog .ppe-drop-label {
+	position: absolute;
+	right: 4px;
+	transform: translateY(calc(-100% - 3px));
+	padding: 1px 8px;
+	border-radius: 4px;
+	font-size: 11px;
+	white-space: nowrap;
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	pointer-events: none;
+	z-index: 2;
+}
+
+.paradis-preset-editor-dialog .ppe-drop-label.into {
+	transform: translateY(-50%);
+}
+
+.paradis-preset-editor-dialog .ppe-drop-label.denied {
+	background: var(--vscode-inputValidation-errorBackground, var(--vscode-editorWidget-background));
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-errorForeground);
+}
+
+/* 保存先（ユーザー設定・各リポジトリの .paracode.json）が 2 つ以上並ぶときの境目の見出し。 */
+.paradis-preset-editor-dialog .ppe-section {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px 2px;
+	font-size: 10.5px;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-preset-editor-dialog .ppe-section::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	background: var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-preset-editor-dialog .ppe-section:first-child {
+	padding-top: 0;
 }
 
 /* grip ハンドル（⋮⋮）。ここをつかんだときだけ行が draggable になる。 */
@@ -642,9 +725,15 @@
 	width: auto;
 }
 
-.paradis-preset-editor-dialog .ppe-task-btn:disabled {
+.paradis-preset-editor-dialog .ppe-task-btn:disabled,
+.paradis-preset-editor-dialog .ppe-task-btn.disabled {
 	opacity: 0.4;
 	cursor: default;
+}
+
+/* 押せない ↑↓ はホバーで理由を出すため disabled にせず aria-disabled で表す。見た目は disabled と同じにする。 */
+.paradis-preset-editor-dialog .ppe-task-btn.disabled:hover {
+	background: var(--vscode-button-secondaryBackground);
 }
 
 .paradis-preset-editor-dialog .ppe-add-task {

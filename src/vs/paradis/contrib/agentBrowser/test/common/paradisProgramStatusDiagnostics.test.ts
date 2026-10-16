@@ -84,6 +84,7 @@ suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 				safe_unbound_drops: 1,
 				safe_ipc_failures: 1,
 				safe_cli_version: '2.1.295',
+				safe_app: 'claude-code',
 			},
 			after: {
 				safe_ended_by: 'disposed',
@@ -97,6 +98,7 @@ suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 				safe_unbound_drops: 0,
 				safe_ipc_failures: 0,
 				safe_cli_version: '2.1.295',
+				safe_app: 'claude-code',
 			},
 			nothing: undefined,
 		});
@@ -127,13 +129,16 @@ suite('Para Browser Claude Code program status diagnostics (OSC 7501)', () => {
 	});
 
 	test('sends no key or fixed value that Sentry would scrub', () => {
-		const ends: ParadisProgramStatusRunEnd[] = ['clear-status', 'shell-end', 'process-exit', 'foreground', 'requery', 'disposed'];
+		const ends: ParadisProgramStatusRunEnd[] = ['clear-status', 'shell-end', 'process-exit', 'foreground', 'requery', 'reopened', 'disposed'];
 		const stats = new ParadisProgramStatusRunStats(() => 0);
 		stats.opened('2.1.295');
 		stats.noteDropped('unknown-state', 'thinking');
 		const run = stats.take('disposed') ?? {};
+		const codexStats = new ParadisProgramStatusRunStats(() => 0);
+		codexStats.opened(undefined, 'codex');
+		const codexRun = codexStats.take('reopened') ?? {};
 		const query = paradisProgramStatusQueryAttributes({ answered: true, foreground: 'passthrough', processKind: 'passthrough', cmdlineTrusted: true, shellIntegration: true, cliVersion: '2.1.295' });
-		const words = [...ends, ...Object.keys(run), ...Object.keys(query), 'safe_queries_skipped', 'safe_runs_skipped', ...[...Object.values(run), ...Object.values(query)].filter((value): value is string => typeof value === 'string')];
+		const words = [...ends, ...Object.keys(run), ...Object.keys(codexRun), ...Object.keys(query), 'safe_queries_skipped', 'safe_runs_skipped', ...[...Object.values(run), ...Object.values(codexRun), ...Object.values(query)].filter((value): value is string => typeof value === 'string')];
 		assert.deepStrictEqual(words.filter(isParadisSentryScrubbedWord), []);
 	});
 });
