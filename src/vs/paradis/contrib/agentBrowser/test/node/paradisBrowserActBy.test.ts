@@ -9,7 +9,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpInputDispatchResult } from '../../common/paradisAgentBrowser.js';
 import { IParadisBrowserActCall, ParadisBrowserActBy } from '../../node/paradisBrowserActBy.js';
-import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
+import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES, PARADIS_MCP_BROWSER_ACT_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
 interface IResult {

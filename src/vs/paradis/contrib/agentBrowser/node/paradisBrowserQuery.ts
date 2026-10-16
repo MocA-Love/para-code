@@ -13,13 +13,15 @@
 // 決め事:
 // - 1 回の evaluate は長くても約 1 秒（wait_until の 1 区切り）。ページの中で待ち続けないので、
 //   入力の barrier を長く塞がない
+// - ページが評価に答えなければ「1 区切り＋10 秒」で諦める（vendored の PARA-PATCH `paraCodeDeadlineMs`）。
+//   締め切りが無いと puppeteer の既定の 180 秒まで待ち、そのタブの後続の道具も止めていた（q.html Q379 の 4）
 // - 待っている間の遷移・再読み込み（実行コンテキストの破棄）は「まだ」として待ち続ける
 // - evaluate の間に開いたダイアログは閉じる（dismiss）。承認の confirm を勝手に押さないため
 // - サービス本体（paradisAgentBrowserService.ts）がペイントークンと ingress lease を確かめてから呼ぶ。
 //   await の後は共有が変わっていないかを毎回確かめる
 
 import type { IParadisCursorRect } from '../common/paradisCursorOverlay.js';
-import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from './paradisBrowserQueryPageScript.js';
+import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 import type { IParadisNetworkActivitySnapshot } from './paradisCdpNetworkActivity.js';
 
@@ -30,10 +32,10 @@ export const PARADIS_BROWSER_QUERY_TOOL_NAME_SET: ReadonlySet<string> = new Set(
 export interface IParadisBrowserQueryCall {
 	readonly signal?: AbortSignal;
 	/**
-	 * 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。`uids` は関数の引数に渡す要素。
-	 * 戻り値は MCP のツールの結果（失敗は isError）。
+	 * 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。`uids` は関数の引数に渡す要素。`deadlineMs` を過ぎても
+	 * ページが答えなければ {@link PARADIS_PAGE_UNRESPONSIVE} の失敗になる。戻り値は MCP のツールの結果（失敗は isError）。
 	 */
-	evaluate(functionSource: string, uids: readonly string[]): Promise<unknown>;
+	evaluate(functionSource: string, uids: readonly string[], deadlineMs?: number): Promise<unknown>;
 	/** ingress lease が古ければ投げる。共有が変わっていたら false。await の後に呼ぶ。 */
 	isCurrent(): boolean;
 	/**
@@ -82,15 +84,26 @@ const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this termi
 
 /** wait_until の 1 回の evaluate でページの中に留まる上限。 */
 export const PARADIS_WAIT_UNTIL_SLICE_MS = 1000;
+/** 1 回の評価の締め切りに、区切りの長さへ足す余裕。健全なページなら評価は区切りのうちに返る。 */
+export const PARADIS_EVALUATE_DEADLINE_MARGIN_MS = 10_000;
+/**
+ * 締め切りのこれだけ手前を過ぎてから動き始めた評価は、ページの中で何もせずに返る。答えなかったページが後で
+ * 戻ったとき、溜まっていた古い評価がスクロールや入力をしないため（CDP の命令は取り消せない）。
+ */
+const LATE_START_GUARD_MS = 2000;
+/** ページが評価に答えなかったときの印（vendored の script.js の PARA-PATCH と同じ）。 */
+export const PARADIS_PAGE_UNRESPONSIVE = 'PARA_BROWSER_PAGE_UNRESPONSIVE';
 /** network idle で、これより長く続く要求（ストリーミング・ロングポーリング）は数えない。 */
 export const PARADIS_NETWORK_IDLE_IGNORE_AFTER_MS = 30_000;
+/** scroll_to が端で中身の伸びを待って送り続ける回数の上限。 */
+const MAX_SCROLL_GROWTH_RETRIES = 3;
 const MAX_STRING = 2000;
 const MAX_PREDICATE = 20_000;
 const DEFAULT_STYLES = ['display', 'visibility', 'opacity', 'position', 'z-index', 'overflow', 'pointer-events', 'cursor', 'transform', 'color', 'background-color', 'font-size'];
 
 /** ページの中で使う引数（JSON にしてページの関数へ埋め込む）。 */
 export interface IParadisQuerySpec {
-	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
+	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'scrollMiss' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
 	readonly selector?: string;
 	readonly role?: string;
 	readonly name?: string;
@@ -146,12 +159,35 @@ export function paradisIsTransientEvaluateFailure(result: unknown): boolean {
 
 /**
  * ページの中で動かす関数のソースを作る。`spec` は JSON で、`predicate` はそのまま埋め込む
- * （evaluate_script と同じく、エージェントが書いた JavaScript をページで動かす）。
+ * （evaluate_script と同じく、エージェントが書いた JavaScript をページで動かす）。`notAfter`（エポックからの ms）を
+ * 過ぎてから動き始めたら、ページの関数は何もせずに `{ paraLate: true }` を返す。
  */
-export function paradisBuildQueryFunction(spec: IParadisQuerySpec, uidCount: number, predicate?: string): string {
+export function paradisBuildQueryFunction(spec: IParadisQuerySpec, uidCount: number, predicate?: string, notAfter?: number): string {
 	const params = Array.from({ length: uidCount }, (_, index) => `e${index}`).join(', ');
 	const predicateSource = predicate === undefined ? 'undefined' : `() => (${predicate}\n)`;
-	return `async (${params}) => (${PARADIS_BROWSER_QUERY_PAGE_SCRIPT})(${JSON.stringify(spec)}, [${params}], ${predicateSource})`;
+	const notAfterSource = notAfter !== undefined && Number.isFinite(notAfter) ? String(Math.round(notAfter)) : 'undefined';
+	return `async (${params}) => (${PARADIS_BROWSER_QUERY_PAGE_SCRIPT})(${JSON.stringify(spec)}, [${params}], ${predicateSource}, ${notAfterSource})`;
+}
+
+/** この評価の締め切り（1 区切り＋{@link PARADIS_EVALUATE_DEADLINE_MARGIN_MS}）と、ページが動き始めてよい最後の時刻。 */
+export function paradisEvaluateDeadline(spec: IParadisQuerySpec, now: number): { readonly deadlineMs: number; readonly notAfter: number } {
+	const deadlineMs = (typeof spec.sliceMs === 'number' && Number.isFinite(spec.sliceMs) ? Math.max(0, spec.sliceMs) : 0) + PARADIS_EVALUATE_DEADLINE_MARGIN_MS;
+	return { deadlineMs, notAfter: now + deadlineMs - LATE_START_GUARD_MS };
+}
+
+/** 評価がページに答えてもらえなかったか（締め切りを過ぎたか、締め切りの間際に動き始めて何もしなかった）。 */
+export function paradisIsPageUnresponsive(result: unknown): boolean {
+	const content = (result as { content?: unknown } | undefined)?.content;
+	if ((result as { isError?: unknown } | undefined)?.isError === true) {
+		return Array.isArray(content) && content.some(item => typeof (item as { text?: unknown })?.text === 'string' && (item as { text: string }).text.includes(PARADIS_PAGE_UNRESPONSIVE));
+	}
+	const parsed = paradisParseEvaluateValue(result);
+	return parsed !== undefined && isRecord(parsed.value) && parsed.value.paraLate === true;
+}
+
+/** ページが答えなかったときにエージェントへ返す文。 */
+export function paradisPageUnresponsiveMessage(deadlineMs: number): string {
+	return `${PARADIS_PAGE_UNRESPONSIVE}: the page did not answer within ${deadlineMs / 1000} s (it may be busy running scripts or loading, or frozen), so Para Code stopped waiting. Other tools on this tab are not held up and take_screenshot still works; retry when the page responds.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -289,10 +325,14 @@ export class ParadisBrowserQuery {
 	}
 
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
-	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean }> {
-		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate), uids);
+	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean; unresponsive?: boolean }> {
+		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, this.now());
+		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate, notAfter), uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED), transient: false };
+		}
+		if (paradisIsPageUnresponsive(result)) {
+			return { ok: false, result: error(paradisPageUnresponsiveMessage(deadlineMs)), transient: false, unresponsive: true };
 		}
 		if ((result as { isError?: unknown } | undefined)?.isError === true) {
 			return { ok: false, result, transient: paradisIsTransientEvaluateFailure(result) };
@@ -345,6 +385,8 @@ export class ParadisBrowserQuery {
 		const deadline = startedAt + (timeoutSeconds as number) * 1000;
 		let last: Record<string, unknown> | undefined;
 		let lastFailure: ToolResult | undefined;
+		/** 最後の確認でページが答えなかったときの締め切り（ms）。 */
+		let lastUnresponsiveMs: number | undefined;
 		let checks = 0;
 		let lastNetwork: IParadisNetworkActivitySnapshot | undefined;
 		/** 通信が静かか。network idle を頼まれていなければ常に true。 */
@@ -372,6 +414,7 @@ export class ParadisBrowserQuery {
 					this.look(call, outcome.value);
 				}
 				lastFailure = undefined;
+				lastUnresponsiveMs = undefined;
 				if (outcome.value.met === true) {
 					if (networkIdle()) {
 						const elapsed = ((this.now() - startedAt) / 1000).toFixed(1);
@@ -388,6 +431,9 @@ export class ParadisBrowserQuery {
 					}
 					continue;
 				}
+			} else if (outcome.unresponsive) {
+				// 重いページが答え始めるまで待つ（締め切りの分はもう待ったので、間を空けずに確かめ直す）
+				lastUnresponsiveMs = paradisEvaluateDeadline(spec, 0).deadlineMs;
 			} else if (!outcome.transient) {
 				return outcome.result;
 			} else {
@@ -396,7 +442,7 @@ export class ParadisBrowserQuery {
 			if (this.now() >= deadline) {
 				break;
 			}
-			if (!outcome.ok) {
+			if (!outcome.ok && !outcome.unresponsive) {
 				// 遷移の途中。次のページが読めるまで少し待つ。
 				await this.delay(Math.min(intervalMs as number, Math.max(0, deadline - this.now())), call.signal);
 				if (!call.isCurrent()) {
@@ -406,7 +452,7 @@ export class ParadisBrowserQuery {
 		}
 		const what = [locator.given ? `${state} ${describeLocator(args)}` : '', predicate !== undefined ? 'predicate truthy' : '', networkIdleMs !== undefined ? `network idle for ${networkIdleMs}ms` : ''].filter(Boolean).join(' and ');
 		const network = lastNetwork !== undefined ? `\nNetwork at the last check: ${lastNetwork.inflight} request(s) in flight${lastNetwork.pendingUrls.length > 0 ? ` (${lastNetwork.pendingUrls.join(', ')})` : ''}, quiet for ${lastNetwork.quietMs ?? 0}ms.` : '';
-		const seen = (last !== undefined ? `\nLast check: ${JSON.stringify(last, null, 2)}` : lastFailure !== undefined ? '\nThe page was still navigating or reloading at the last check.' : '') + network;
+		const seen = (lastUnresponsiveMs !== undefined ? `\nAt the last check the page did not answer within ${lastUnresponsiveMs / 1000} s (it may be busy running scripts or loading, or frozen); take_screenshot still works.` : last !== undefined ? `\nLast check: ${JSON.stringify(last, null, 2)}` : lastFailure !== undefined ? '\nThe page was still navigating or reloading at the last check.' : '') + network;
 		return error(`Timed out after ${timeoutSeconds}s waiting for ${what} (${checks} checks).${seen}`);
 	}
 
@@ -524,6 +570,13 @@ export class ParadisBrowserQuery {
 			}
 		}
 		const base = { ...locator.spec, mode: 'scroll' as const, direction, stepPx, ...(container !== undefined ? { container } : {}) };
+		const backwards = direction === 'up' || direction === 'left';
+		/** 探し始めの端（下・右へ探すなら先頭、上・左へ探すなら末尾）。 */
+		const origin: 'start' | 'end' = backwards ? 'end' : 'start';
+		/** 呼ばれたときの位置。見つからなければここへ戻す（q.html Q379 の 5）。 */
+		let startPosition: number | undefined;
+		/** 最後に自分が送った（戻した）位置と、その領域。見つからなかったときに戻すのは、今もそこにあるときだけ。 */
+		let lastWritten: { readonly position: number; readonly container: unknown } | undefined;
 		if (args.from_start === true) {
 			const reset = await this.run(call, { ...base, reset: true }, locator.uids);
 			if (!reset.ok) {
@@ -532,6 +585,9 @@ export class ParadisBrowserQuery {
 			if (reset.value.containerMissing === true) {
 				return error(`No element matches "container" ${JSON.stringify(container)}.`);
 			}
+			startPosition = finiteNumber(reset.value.before);
+			const resetPosition = finiteNumber(reset.value.position);
+			lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
 			await this.delay(settleMs as number, call.signal);
 			if (!call.isCurrent()) {
 				return error(BINDING_CHANGED);
@@ -540,12 +596,42 @@ export class ParadisBrowserQuery {
 		let scrolled = 0;
 		let steps = 0;
 		let lastContainer: unknown;
+		/** 端に着いた後、始めの位置の手前から探し直したか。 */
+		let restarted = false;
+		/** 探し直して始めの位置まで戻ってきた。次の確認で終える。 */
+		let finishing = false;
+		let growthRetries = 0;
+		let firstExtent: number | undefined;
+		let lastExtent: number | undefined;
+		const found = (value: Record<string, unknown>, where: string): ToolResult => {
+			this.look(call, value);
+			return text(`${where}${restarted ? ' after searching again from the ' + origin : ''}, and scrolled it into view.\n${JSON.stringify({ matched: value.matched, element: value.element }, null, 2)}`);
+		};
+		const notFound = async (message: string): Promise<ToolResult> => {
+			let restored = false;
+			if (startPosition !== undefined && lastWritten !== undefined) {
+				const restore = await this.run(call, { ...base, restoreTo: startPosition, expectAt: lastWritten.position, expectContainer: lastWritten.container }, locator.uids);
+				restored = restore.ok && restore.value.restored === true;
+			}
+			const hints = await this.run(call, { ...base, mode: 'scrollMiss' }, locator.uids);
+			const lines = [`${message}${restored ? ', and scrolled it back to where it was' : ''}.`];
+			if (firstExtent !== undefined && lastExtent !== undefined && lastExtent !== firstExtent) {
+				lines.push(`- The content of ${String(lastContainer)} changed size while searching (${firstExtent}px -> ${lastExtent}px), so it may still be loading. Wait for it with wait_until, then retry.`);
+			}
+			lines.push(...(hints.ok ? paradisScrollMissHints(hints.value) : []));
+			if (lines.length === 1) {
+				lines[0] += restarted
+					? ' Give "container" if the wrong area was scrolled, or check the locator with take_snapshot.'
+					: ' Try "from_start": true, the other direction, or give "container" if the wrong area was scrolled.';
+			}
+			return error(lines.join('\n'));
+		};
 		for (; ;) {
 			if (call.signal?.aborted) {
 				return error('scroll_to was cancelled.');
 			}
 			const atLimit = steps >= (maxSteps as number);
-			const outcome = await this.run(call, { ...base, checkOnly: atLimit }, locator.uids);
+			const outcome = await this.run(call, { ...base, checkOnly: atLimit || finishing }, locator.uids);
 			if (!outcome.ok) {
 				return outcome.result;
 			}
@@ -557,13 +643,19 @@ export class ParadisBrowserQuery {
 				return error(`Nothing matches the container (${describeLocator({ within: args.within, within_uid: args.within_uid })}).`);
 			}
 			lastContainer = value.container;
+			startPosition ??= finiteNumber(value.before);
+			const extent = finiteNumber(value.extent);
+			firstExtent ??= extent;
+			lastExtent = extent ?? lastExtent;
 			if (value.found === true) {
-				this.look(call, value);
-				return text(`Found after ${steps} scroll step(s) (${scrolled}px) in ${String(value.container)}, and scrolled it into view.\n${JSON.stringify({ matched: value.matched, element: value.element }, null, 2)}`);
+				return found(value, `Found after ${steps} scroll step(s) (${scrolled}px) in ${String(value.container)}`);
+			}
+			if (finishing) {
+				return notFound(`Not found: searched all of ${String(lastContainer)} (from where it was to the ${backwards ? 'start' : 'end'}, then from the ${origin} back to where it was) in ${steps} scroll step(s) (${scrolled}px)`);
 			}
 			const moved = typeof value.moved === 'number' ? value.moved : 0;
 			if (atLimit) {
-				return error(`Not found after ${steps} scroll step(s) (${scrolled}px) in ${String(lastContainer)}. Raise max_steps, give "container", or check the locator with take_snapshot.`);
+				return notFound(`Not found after ${steps} scroll step(s) (${scrolled}px) in ${String(lastContainer)}. Raise max_steps, give "container", or check the locator with take_snapshot`);
 			}
 			if (moved === 0) {
 				// 端に着いた。描画を待ってから最後にもう一度だけ探す。
@@ -573,17 +665,78 @@ export class ParadisBrowserQuery {
 				}
 				const final = await this.run(call, { ...base, checkOnly: true }, locator.uids);
 				if (final.ok && final.value.found === true) {
-					this.look(call, final.value);
-					return text(`Found at the end of ${String(final.value.container)} after ${steps} scroll step(s) (${scrolled}px), and scrolled it into view.\n${JSON.stringify({ matched: final.value.matched, element: final.value.element }, null, 2)}`);
+					return found(final.value, `Found at the end of ${String(final.value.container)} after ${steps} scroll step(s) (${scrolled}px)`);
 				}
-				return error(`Not found: reached the ${direction === 'up' || direction === 'left' ? 'start' : 'end'} of ${String(lastContainer)} after ${steps} scroll step(s) (${scrolled}px). Try "from_start": true, the other direction, or give "container" if the wrong area was scrolled.`);
+				const finalExtent = final.ok ? finiteNumber(final.value.extent) : undefined;
+				lastExtent = finalExtent ?? lastExtent;
+				// 待つ間に中身が伸びた（遅れて読み込む一覧）なら、端とせずに送り続ける
+				if (extent !== undefined && finalExtent !== undefined && finalExtent > extent + 1 && growthRetries < MAX_SCROLL_GROWTH_RETRIES) {
+					growthRetries++;
+					continue;
+				}
+				// 探し始めの端から始めていなければ、そこへ移ってもう 1 回だけ探す（目的が始めの位置より手前にあった）
+				const max = finiteNumber(value.max);
+				const atOrigin = startPosition === undefined || (origin === 'start' ? startPosition <= 1 : max !== undefined && startPosition >= max - 1);
+				if (!restarted && args.from_start !== true && !atOrigin) {
+					restarted = true;
+					const reset = await this.run(call, { ...base, reset: true, resetTo: origin }, locator.uids);
+					if (!reset.ok) {
+						return reset.result;
+					}
+					const resetPosition = finiteNumber(reset.value.position);
+					lastWritten = resetPosition !== undefined ? { position: resetPosition, container: reset.value.container } : undefined;
+					await this.delay(settleMs as number, call.signal);
+					if (!call.isCurrent()) {
+						return error(BINDING_CHANGED);
+					}
+					continue;
+				}
+				return notFound(`Not found: reached the ${backwards ? 'start' : 'end'} of ${String(lastContainer)} after ${steps} scroll step(s) (${scrolled}px)`);
 			}
 			steps++;
 			scrolled += Math.abs(moved);
+			// 探し直して始めの位置まで来たら、その先は 1 回目に探してある
+			const position = finiteNumber(value.position);
+			lastWritten = position !== undefined ? { position, container: value.container } : undefined;
+			if (restarted && startPosition !== undefined && position !== undefined && (backwards ? position <= startPosition : position >= startPosition)) {
+				finishing = true;
+			}
 			await this.delay(settleMs as number, call.signal);
 			if (!call.isCurrent()) {
 				return error(BINDING_CHANGED);
 			}
 		}
 	}
+}
+
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** scroll_to が見つけられなかったときに、ページを 1 回調べた結果（ページの関数の `scrollMiss`）を文にする。 */
+export function paradisScrollMissHints(value: Record<string, unknown>): string[] {
+	const lines: string[] = [];
+	const inField = isRecord(value.inField) ? value.inField : undefined;
+	if (inField && typeof inField.count === 'number' && inField.count > 0) {
+		lines.push(`- "text" matches the text of elements, not what is typed or selected in a form field, and ${inField.count} form field${inField.count === 1 ? ' holds' : 's hold'} it (for example ${JSON.stringify(inField.first)}). Find the field by role and name instead.`);
+	}
+	const collapsed = isRecord(value.collapsed) ? value.collapsed : undefined;
+	if (collapsed && typeof collapsed.count === 'number' && collapsed.count > 0) {
+		const names = Array.isArray(collapsed.names) ? collapsed.names.filter((name): name is string => typeof name === 'string' && name.length > 0) : [];
+		lines.push(`- ${collapsed.count} collapsed control(s) (aria-expanded="false") are on the page${names.length > 0 ? `, for example ${names.map(name => JSON.stringify(name)).join(', ')}` : ''}. The element may be inside a section that is not rendered until it is expanded.`);
+	}
+	if (typeof value.dialog === 'string') {
+		lines.push(`- A dialog is open (${JSON.stringify(value.dialog)}). The element may be behind it; give "within" for the dialog if it is inside it.`);
+	}
+	if (Array.isArray(value.sameRole)) {
+		const names = value.sameRole.filter((name): name is string => typeof name === 'string');
+		lines.push(names.length > 0 ? `- Elements with this role on the page now are named ${names.map(name => JSON.stringify(name)).join(', ')}.` : '- No element with this role is on the page now.');
+	}
+	if (Array.isArray(value.otherContainers)) {
+		const others = value.otherContainers.filter((label): label is string => typeof label === 'string');
+		if (others.length > 0) {
+			lines.push(`- Other scrollable areas: ${others.join(', ')}. Give one as "container" if the wrong area was scrolled.`);
+		}
+	}
+	return lines;
 }
