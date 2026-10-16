@@ -344,7 +344,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// URI.revive がパースに失敗する（このバグで PR 状態がずっと出ていなかった）。
 			// URI.prototype.toJSON() は自身をそのまま返すだけなので、この map の役目は
 			// 「URI を渡す」ことそのもの（文字列を渡さないこと）であり、変換の意味はない。
-			uris => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, uris.map(uri => uri.toJSON())),
+			(uris, activeUris) => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, uris.map(uri => uri.toJSON()), activeUris.map(uri => uri.toJSON())),
 			// モバイルの「システム」画面。PC版タイトルバーのCPU/RAMモニタと同じクライアントを再利用し、
 			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
 			(force, history) => resourceMonitorClient.getMobileReport(force, history),

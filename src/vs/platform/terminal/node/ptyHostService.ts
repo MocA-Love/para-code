@@ -21,6 +21,8 @@ import { detectAvailableProfiles } from './terminalProfiles.js';
 import * as performance from '../../../base/common/performance.js';
 import { getSystemShell } from '../../../base/node/shell.js';
 import { StopWatch } from '../../../base/common/stopwatch.js';
+// PARA-PATCH: types of the forwarded pty daemon handover calls
+import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
 // PARA-PATCH: the reattach tally forwarded by paradisTakeReattachTally
 import type { IParadisReattachTally } from '../common/paradisReattachTally.js';
 
@@ -233,9 +235,16 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 	async paradisSetAppQuitting(quitting: boolean): Promise<void> {
 		await this._optionalProxy?.paradisSetAppQuitting(quitting);
 	}
+	// PARA-PATCH: forward the pty daemon handover calls without starting a pty host (paradisPtyReadopt.ts)
+	async paradisReadoptFromDaemon(trigger: ParadisPtyAdoptTrigger): Promise<IParadisPtyAdoptionRun | undefined> {
+		return this._optionalProxy?.paradisReadoptFromDaemon?.(trigger);
+	}
+	async paradisTakeHandoverReport(): Promise<IParadisPtyHandoverReport | undefined> {
+		return this._optionalProxy?.paradisTakeHandoverReport?.();
+	}
 	// PARA-PATCH: forward the reattach tally without starting a pty host (paradisReattachTally.ts)
 	async paradisTakeReattachTally(workspaceId: string): Promise<IParadisReattachTally | undefined> {
-		return this._optionalProxy?.paradisTakeReattachTally(workspaceId);
+		return this._optionalProxy?.paradisTakeReattachTally?.(workspaceId);
 	}
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void> {
 		return this._proxy.detachFromProcess(id, forcePersist);
