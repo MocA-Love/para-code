@@ -51,12 +51,14 @@
 	mask-position: 0 0, calc(50% + 0.4167em) calc(50% + 0.4233em);
 }
 
-/* In a tab the folder's box is 22px wide (3px padding on both sides of 16px) with the 13px glyph at its left
- * edge, and the transform turns about the box's center (11px), not the glyph's. The arrow's center (13.2px,
- * 3.6px below the middle, 8px wide) is therefore 3.71px right of and 5.53px below that center, 8.89px wide. */
+/* Next to a name (tabs, Open Editors, the Ctrl+Tab list, breadcrumbs) the folder's box is the predefined file icon's:
+ * 16px with 3px padding on both sides, the glyph (1em of the label's font, 13px today) at the left of the content,
+ * and the transform turning about the box's center (11px), not the glyph's. With the arrow placed below (center
+ * 3px + 0.7846em right of the label's left edge and 0.2769em below its middle), that is 0.969em - 8.89px right of
+ * and 0.4254em below the box's center, 0.6154em / 0.9 wide (3.71px, 5.53px and 8.89px at 13px). */
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::before {
-	mask-size: 100% 100%, 11.11px 11.11px;
-	mask-position: 0 0, calc(50% + 3.71px) calc(50% + 5.53px);
+	mask-size: 100% 100%, 0.8547em 0.8547em;
+	mask-position: 0 0, calc(50% - 8.89px + 0.969em) calc(50% + 0.4254em);
 }
 
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after,
@@ -68,7 +70,7 @@
 	font-weight: normal;
 	font-size: 0.58em;
 	line-height: 1;
-	/* A tab's label also styles ::after as the decoration badge (5px left margin, 75% opacity); undo both so the
+	/* A name's label also styles ::after as the decoration badge (5px left margin, 75% opacity); undo both so the
 	 * arrow lands where it is placed below and is as strong as the folder. */
 	margin: 0;
 	opacity: 1;
@@ -84,13 +86,15 @@
 	top: calc(50% + 0.05em);
 }
 
-/* In a tab the label also holds the name, and the glyph (13px) starts 3px into the label (the predefined file icon's
- * padding), centered vertically. Half of 13px would be too small to read, so the arrow is 8px, at the same center. */
+/* Next to a name the glyph starts 3px into the label (the predefined file icon's padding) and is centered vertically.
+ * Half of a 13px glyph would be too small to read, so the arrow is 8 / 13 of it (8px), its center 0.2846em right of
+ * and 0.2769em below the glyph's center. In the arrow's own em (f = 0.6154 of the label's): left = 3px + 0.775f,
+ * top = 50% - 0.05f. Everything follows the label's font size, so the arrow stays on the folder wherever the
+ * label is drawn. */
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
-	font-size: 8px;
-	/* glyph center (3px + 6.5px) + 0.29 of 13px - half the arrow; vertically 0.28 of 13px - half the arrow */
-	left: 9.2px;
-	top: calc(50% - 0.4px);
+	font-size: 0.6154em;
+	left: calc(3px + 0.775em);
+	top: calc(50% - 0.05em);
 }
 
 /* ---------- editor ---------- */
