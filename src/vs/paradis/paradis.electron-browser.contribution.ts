@@ -45,6 +45,8 @@ import './contrib/notifications/electron-browser/paradisAgentDictionarySync.cont
 import './contrib/notifications/electron-browser/paradisDictationAudioHold.contribution.js';
 import './contrib/dictation/browser/paradisDictationAvailability.contribution.js';
 import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
+import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
+import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
@@ -110,6 +112,7 @@ import './contrib/terminalIme/browser/paradisTerminalImeInputGate.contribution.j
 import './contrib/unfocusedDimming/electron-browser/paradisUnfocusedDimming.contribution.js';
 import './contrib/terminalResumeBanner/electron-browser/paradisTerminalResumeBanner.contribution.js';
 import './contrib/agentChat/electron-browser/paradisAgentChat.contribution.js';
+import './contrib/agentChat/electron-browser/paradisApprovalScreenSettle.contribution.js';
 import './contrib/claudeMod/electron-browser/paradisClaudeModConfigDir.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';

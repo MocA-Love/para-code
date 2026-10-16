@@ -121,6 +121,14 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.acknowledgePaneStatus(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			// 許可の確認が画面から消え、エージェントが作業を続けていると確かめた（ターミナルのキーで答えた）
+			case 'settlePanePermissionOffScreen': {
+				const args = requireArgs(arg, 2);
+				if (typeof args[1] !== 'number' || !Number.isSafeInteger(args[1])) {
+					throw protocolError();
+				}
+				return this.service.settlePanePermissionOffScreen(this.rendererConnection, requireToken(args[0]), args[1]) as Promise<T>;
+			}
 			// 控えから流し直した許可要求・質問が、画面に今も出ていると確かめた（W2-20）
 			case 'confirmReplayedPrompt': {
 				const args = requireArgs(arg, 1);

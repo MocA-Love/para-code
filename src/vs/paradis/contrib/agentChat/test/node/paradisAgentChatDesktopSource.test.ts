@@ -518,4 +518,55 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			}
 		}));
 	}
+
+	test('settles only the approvals the screen showed and then saw leave, keeping one that has not been drawn yet', () => withClaudeHome(async claudeHome => {
+		const token = 'pane-desktop-off-screen';
+		const transcriptPath = join(claudeHome, 'projects', 'repo', 'session-9.jsonl');
+		await writeFile(transcriptPath, line({ type: 'user', timestamp: '2026-09-27T10:00:00.000Z', message: { role: 'user', content: '終わらせて' } }));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'session-9', transcriptPath, cwd: '/repo', at: Date.now(), ...extra });
+		const guard = registerParadisAgentPaneActivityGuard(candidate => candidate === token);
+		try {
+			// モバイルが注入を有効にしている（承認がペインの状態に数えられる）
+			chat.setEagerTailing(true);
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			const interaction = async () => (await chat.getDesktopChat(token, undefined))?.interaction ?? null;
+
+			// 許可したツールが長く返らない（PostToolUse が来ない）。その後に次の許可要求が届いた
+			hook('PreToolUse', { toolName: 'mcp__para-browser__board_complete_step', toolUseId: 'call_1', toolInput: { summary: 'done' } });
+			hook('PermissionRequest', { toolName: 'mcp__para-browser__board_complete_step', toolInput: { summary: 'done' } });
+			await settled();
+			const before = { pending: getParadisAgentPaneActivity(token).pendingApproval, interaction: (await interaction())?.id };
+			hook('PreToolUse', { toolName: 'Bash', toolUseId: 'call_2', toolInput: { command: 'npm test' } });
+			hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+			await settled();
+			// 画面が見たのは最初の承認だけ。印を付け終えた後に、まだ答えていない次の承認が残っていると返す（ペインを戻させない）
+			const remainingAfterFirst = await chat.settleApprovalsOffScreen(token, ['call_1']);
+			const front = await interaction();
+			const after = { remaining: remainingAfterFirst, pending: getParadisAgentPaneActivity(token).pendingApproval, interaction: front?.id };
+			const remainingAfterAll = await chat.settleApprovalsOffScreen(token, ['call_2']);
+			const afterAll = { remaining: remainingAfterAll, pending: getParadisAgentPaneActivity(token).pendingApproval, interaction: await interaction() };
+			// 中継が会話を持っていないペインは、残りが無い
+			const unknownPane = await chat.settleApprovalsOffScreen('pane-unknown', []);
+
+			assert.deepStrictEqual({ before, after, afterAll, unknownPane }, {
+				before: { pending: true, interaction: 'call_1' },
+				after: { remaining: true, pending: true, interaction: 'call_2' },
+				afterAll: { remaining: false, pending: false, interaction: null },
+				unknownPane: false,
+			});
+		} finally {
+			chat.dispose();
+			guard.dispose();
+			clearParadisAgentPaneActivity(token);
+		}
+	}));
 });

@@ -367,3 +367,26 @@
 	font-size: 12.5px;
 	color: var(--vscode-descriptionForeground);
 }
+
+/* allow-any-unicode-next-line */
+/* オン/オフの設定をチェックの並びで 1 行にまとめた行（メニューバーの「メニューに出す項目」など）。 */
+.paradis-settings-dialog .psd-checks {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 6px 18px;
+	margin-top: 8px;
+	max-width: 520px;
+}
+
+.paradis-settings-dialog .psd-check {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 12.5px;
+	cursor: pointer;
+}
+
+.paradis-settings-dialog .psd-check input {
+	margin: 0;
+	accent-color: var(--vscode-button-background);
+}
