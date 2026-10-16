@@ -128,6 +128,11 @@ const desktopEntryPoints = [
 	// run it directly via `node out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js`
 	// (see paradisMcpSnippets.ts), so packaged builds must emit it at that exact path.
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
+	// PARA-PATCH: common entry of the fork's worker threads. It registers the node_modules.asar
+	// resolution in the worker before importing the real entry (see paradisWorkerAsarResolution.ts).
+	'vs/paradis/node/paradisWorkerBootstrap',
+	// PARA-PATCH: worker thread the Office v1 channel starts (fileViewers, paradisOfficeWorkerHost)
+	'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts to read agent transcripts (usage per space, full-text index)
 	'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts for the Word semantic analysis (fileViewers)
@@ -166,6 +171,9 @@ const serverEntryPoints = [
 	// daemon (paradisEnsurePtyHost). Nothing imports it, so it only reaches a packaged
 	// build by being listed here.
 	'vs/paradis/contrib/ptyDaemon/node/paradisPtyHostDaemonEntry',
+	// PARA-PATCH: the remote server also hosts the Office v1 channel and its worker thread
+	'vs/paradis/node/paradisWorkerBootstrap',
+	'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
 	'vs/platform/agentHost/node/agentHostMain',
 	'vs/platform/agentHost/node/diffWorkerMain',
 ];
