@@ -36,8 +36,9 @@ export function unavailableParadisSpreadsheetSemanticDiagnostics(reason: string,
 /**
  * ExcelJS の投影とは別に OOXML を直接読み、到達度と食い違いを数える。
  * 表示そのものは投影側が担うため、ここが失敗しても表示は変わらない(理由だけ返す)。
+ * `onUnexpectedError` は、想定外の例外で `failed` を返すときにだけ呼ばれる（worker が種類を Sentry へ送るため）。
  */
-export async function collectParadisSpreadsheetSemanticDiagnostics(bytes: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisSemanticDiagnosticsSummary> {
+export async function collectParadisSpreadsheetSemanticDiagnostics(bytes: Uint8Array, token: CancellationToken = CancellationToken.None, onUnexpectedError?: (error: unknown) => void): Promise<IParadisSemanticDiagnosticsSummary> {
 	// 解析全体に締め切りを掛ける。パッケージ検査は自前の予算(30秒)を持っており、
 	// こちらの締め切りの外側にあるため、トークンで確実に止められるようにする。
 	const source = new CancellationTokenSource(token);
@@ -81,6 +82,13 @@ export async function collectParadisSpreadsheetSemanticDiagnostics(bytes: Uint8A
 			: source.token.isCancellationRequested
 				? 'limitExceeded'
 				: error instanceof ParadisOfficePackageError ? error.code : 'failed';
+		if (code === 'failed') {
+			try {
+				onUnexpectedError?.(error);
+			} catch {
+				// 報告が結果を変えてはいけない。
+			}
+		}
 		return unavailableParadisSpreadsheetSemanticDiagnostics(code, Date.now() - started);
 	} finally {
 		clearTimeout(timer);

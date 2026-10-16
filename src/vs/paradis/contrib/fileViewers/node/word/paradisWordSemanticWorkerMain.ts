@@ -15,6 +15,7 @@
 import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
+import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
@@ -24,12 +25,16 @@ async function handle(id: number, request: ParadisWordSemanticWorkerRun): Promis
 	const cancellation = new CancellationTokenSource();
 	active.set(id, cancellation);
 	let reply: ParadisWordSemanticWorkerMessage;
+	// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+	let cause: string | undefined;
+	const onUnexpectedError = (error: unknown) => { cause = paradisOfficeWorkerFailureKind(error); };
 	try {
-		reply = request.op === 'analyze'
-			? { kind: 'result', id, result: await service.analyze(request.bytes, cancellation.token) }
-			: { kind: 'result', id, result: await service.compare(request.original, request.modified, cancellation.token) };
-	} catch {
-		reply = { kind: 'result', id, result: { ok: false, code: 'failed' } };
+		const result = request.op === 'analyze'
+			? await service.analyze(request.bytes, cancellation.token, onUnexpectedError)
+			: await service.compare(request.original, request.modified, cancellation.token, onUnexpectedError);
+		reply = { kind: 'result', id, result, ...(cause ? { cause } : {}) };
+	} catch (error) {
+		reply = { kind: 'result', id, result: { ok: false, code: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {
 		active.delete(id);
 		cancellation.dispose();

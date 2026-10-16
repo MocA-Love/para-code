@@ -176,7 +176,7 @@ async function setup(useRunner = false, hangEvents = 0) {
 	bridge.hangEvents = hangEvents;
 	let engine!: TaskBoardEngine;
 	const placePath = (task: ITaskBoardTask) => engine.getSlots().find(s => s.id === task.place)?.path;
-	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100 } });
+	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
 	const noop = new NoopPorts();
 	const runner = useRunner ? new CommandRunner({ engine: () => engine, placePath, repoPath: place, repo: undefined }) : noop;
 	let seq = 0;
@@ -192,7 +192,7 @@ async function setup(useRunner = false, hangEvents = 0) {
 		rmSync(dir, { recursive: true, force: true });
 	});
 	const id = engine.addTask({ title: 'タブ名' });
-	return { engine, bridge, id, place };
+	return { engine, bridge, id, place, agents };
 }
 
 describe('ParaCodeAgents', () => {
@@ -266,6 +266,17 @@ describe('ParaCodeAgents', () => {
 		expect(engine.getTask(id)!.step).toBe('todo');
 	});
 
+	test('a moment of idle that turns back to working does not stall the task', async () => {
+		const { engine, bridge, id } = await setup();
+		engine.start(id, { agent: 'claude' });
+		await until(() => engine.getTask(id)!.activities.some(a => a.label.includes('始めました')));
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'working' });
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'idle' });
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'working' });
+		await new Promise(r => setTimeout(r, 200));
+		expect(engine.getTask(id)!.status).toBe('working');
+	});
+
 	test('after a retry, complete_step from the interrupted turn is refused until the new prompt is sent', async () => {
 		const { engine, bridge, id } = await setup();
 		engine.start(id, { agent: 'claude' });
@@ -330,6 +341,21 @@ describe('ParaCodeAgents: interruptions', () => {
 		expect({ attempt: engine.getTask(id)!.attempt, error: engine.getTask(id)!.error }).toEqual({ attempt: 2, error: '起動に失敗' });
 	});
 
+	test('a terminal released while it was launching is closed when the late launch returns', async () => {
+		const { engine, bridge, id, agents } = await setup();
+		bridge.launchDelayMs = 300;
+		engine.start(id, { agent: 'claude' });
+		await until(() => bridge.routes().includes('/v1/launch'));
+		const first = engine.getTask(id)!.attempt;
+		await agents.release(engine.getTask(id)!);
+		bridge.launchDelayMs = 0;
+		engine.retry(id);
+		await until(() => bridge.routes().includes('/v1/close'), 3000);
+		const late = bridge.terminals.find(t => t.launchId.endsWith(`:${first}`))!.terminal;
+		const closed = bridge.requests.filter(r => r.route === '/v1/close').map(r => r.body.terminal);
+		expect({ closed, launches: bridge.routes().filter(r => r === '/v1/launch').length }).toEqual({ closed: [late], launches: 2 });
+	});
+
 	test('when Para Code restarts and the terminal is gone, the task fails instead of waiting forever', async () => {
 		const { engine, bridge, id } = await setup();
 		engine.start(id, { agent: 'claude' });
@@ -350,7 +376,7 @@ describe('ParaCodeAgents: interruptions', () => {
 		const saved = engine.serialize();
 		let engine2!: TaskBoardEngine;
 		const place = engine.getSlots()[0].path;
-		const agents2 = new ParaCodeAgents({ engine: () => engine2, placePath: () => place, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100 } });
+		const agents2 = new ParaCodeAgents({ engine: () => engine2, placePath: () => place, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, stall: 50 } });
 		const noop = new NoopPorts();
 		engine2 = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: agents2, runner: noop, workspaces: noop });
 		engine2.setFlows([FLOW], 'f', true);
@@ -389,7 +415,7 @@ describe('ParaCodeAgents: interruptions', () => {
 		const saved = engine.serialize();
 		let engine2!: TaskBoardEngine;
 		const place = engine.getSlots()[0].path;
-		const agents2 = new ParaCodeAgents({ engine: () => engine2, placePath: () => place, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100 } });
+		const agents2 = new ParaCodeAgents({ engine: () => engine2, placePath: () => place, bridgeFile: bridge.file, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
 		const noop = new NoopPorts();
 		engine2 = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: agents2, runner: noop, workspaces: noop });
 		engine2.setFlows([FLOW], 'f', true);
@@ -469,6 +495,95 @@ describe('CommandRunner', () => {
 			pushed: run(origin, 'branch', '--list', 'para/7-x').toString().trim(),
 			create: calls.includes('pr create --repo o/code --head para/7-x --draft --title=X --body=Closes o/issues#7'),
 		}).toEqual({ pr: 42, pushed: 'para/7-x', create: true });
+	}, 20000);
+
+	test('draft-pr pushes new commits to an existing PR instead of skipping them', async () => {
+		const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-pr-'));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const origin = path.join(dir, 'origin.git');
+		const work = path.join(dir, 'work');
+		const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+		mkdirSync(work);
+		run(dir, 'init', '--bare', '-q', origin);
+		run(work, 'init', '-q', '-b', 'main');
+		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'base');
+		run(work, 'remote', 'add', 'origin', origin);
+		run(work, 'push', '-q', 'origin', 'main');
+		run(work, 'fetch', '-q', 'origin');
+		run(work, 'switch', '-q', '-c', 'para/7-x');
+		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'first');
+		run(work, 'push', '-q', 'origin', 'para/7-x');
+		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'rework');
+		const bin = path.join(dir, 'bin');
+		mkdirSync(bin);
+		const log = path.join(dir, 'gh.log');
+		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$2" in list) echo '[{"number":42,"url":"https://github.com/o/code/pull/42","title":"X","isDraft":true}]';; create) echo 'https://github.com/o/code/pull/43';; esac\n`);
+		chmodSync(path.join(bin, 'gh'), 0o755);
+		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
+		let engine!: TaskBoardEngine;
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: () => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
+		engine.setFlows([flow], 'f', true);
+		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
+		engine.syncIntake([{ issue: { owner: 'o', repo: 'issues', number: 7, url: '' }, title: 'X', labels: [], assignees: [] }]);
+		const id = 'gh:o/issues#7';
+		engine.start(id, { agent: 'claude' });
+		await until(() => engine.getTask(id)!.pr !== undefined, 10000);
+		expect({
+			pr: engine.getTask(id)!.pr?.number,
+			remoteHead: run(origin, 'log', '-1', '--format=%s', 'para/7-x').toString().trim(),
+			created: readFileSync(log, 'utf8').includes('pr create'),
+		}).toEqual({ pr: 42, remoteHead: 'rework', created: false });
+	}, 20000);
+
+	const prAfterRemoteMoved = async (localCommit: boolean) => {
+		const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-pr-'));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		const origin = path.join(dir, 'origin.git');
+		const work = path.join(dir, 'work');
+		const other = path.join(dir, 'other');
+		const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+		const commit = (cwd: string, m: string) => run(cwd, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', m);
+		mkdirSync(work);
+		run(dir, 'init', '--bare', '-q', origin);
+		run(work, 'init', '-q', '-b', 'main');
+		commit(work, 'base');
+		run(work, 'remote', 'add', 'origin', origin);
+		run(work, 'push', '-q', 'origin', 'main');
+		run(work, 'fetch', '-q', 'origin');
+		run(work, 'switch', '-q', '-c', 'para/7-x');
+		commit(work, 'first');
+		run(work, 'push', '-q', 'origin', 'para/7-x');
+		// 別の場所（GitHub の Update branch の代わり）でリモートのブランチだけを進める
+		run(dir, 'clone', '-q', '-b', 'para/7-x', origin, other);
+		commit(other, 'remote only');
+		run(other, 'push', '-q', 'origin', 'para/7-x');
+		if (localCommit) {
+			commit(work, 'local');
+		}
+		const bin = path.join(dir, 'bin');
+		mkdirSync(bin);
+		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\ncase "$2" in list) echo '[{"number":42,"url":"https://github.com/o/code/pull/42","title":"X","isDraft":true}]';; esac\n`);
+		chmodSync(path.join(bin, 'gh'), 0o755);
+		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
+		let engine!: TaskBoardEngine;
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: () => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
+		engine.setFlows([flow], 'f', true);
+		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
+		engine.syncIntake([{ issue: { owner: 'o', repo: 'issues', number: 7, url: '' }, title: 'X', labels: [], assignees: [] }]);
+		const id = 'gh:o/issues#7';
+		engine.start(id, { agent: 'claude' });
+		await until(() => engine.getTask(id)!.pr !== undefined || engine.getTask(id)!.status === 'failed', 10000);
+		return { pr: engine.getTask(id)!.pr?.number, error: engine.getTask(id)!.error, remoteHead: run(origin, 'log', '-1', '--format=%s', 'para/7-x').toString().trim() };
+	};
+
+	test('draft-pr reuses an existing PR without pushing when only the remote moved', async () => {
+		expect(await prAfterRemoteMoved(false)).toEqual({ pr: 42, error: undefined, remoteHead: 'remote only' });
+	}, 20000);
+
+	test('draft-pr stops with a clear message when both the remote and the place moved', async () => {
+		expect(await prAfterRemoteMoved(true)).toEqual({ pr: undefined, error: 'リモートの para/7-x に、手元に無いコミットが 1 件あります。取り込んでからやり直してください', remoteHead: 'remote only' });
 	}, 20000);
 
 	test('draft-pr stops before push when the place has uncommitted changes or no commits of its own', async () => {

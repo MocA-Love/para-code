@@ -43,6 +43,7 @@ import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePr
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
+import { ParadisOfficeOpenCache } from '../common/paradisOfficeOpenCache.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
@@ -53,7 +54,7 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applySh
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
-import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, hasPendingSpreadsheetMetafiles, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, warmSpreadsheetParser } from './paradisSpreadsheetClient.js';
+import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, openSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
@@ -73,6 +74,12 @@ const LEGACY_SEARCH_RESULT_LIMIT = 200;
 const LEGACY_PRINT_CELL_LIMIT = 10_000;
 /** shared process が混み合っていたときに、詳しい解析を頼み直すまでの間（回数はこの長さ）。 */
 const SEMANTIC_BUSY_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
+/**
+ * 解析したブックを、ウィンドウにつき 1 つ覚えておく。タブを戻したとき・別のグループで同じブックを開いた
+ * ときに、読み込みと解析を省く。解析結果は元のファイルの 20 倍ほどになるので、最近の 3 冊まで、見積もりで
+ * 合計 192 MiB まで。Excel のタブがどれも何も表示しなくなって 10 分たったら全部手放す。
+ */
+const SPREADSHEET_OPEN_CACHE = new ParadisOfficeOpenCache<IParadisSpreadsheetOpenCacheValue>({ maxEntries: 3, maxBytes: 192 * 1024 * 1024, idleMs: 10 * 60 * 1000 });
 const INCOMPLETE_SPREADSHEET_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
 	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
 	expectedSemanticUnits: 1, visitedSemanticUnits: 0, terminal: false,
@@ -658,6 +665,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	/** 走っている詳しい解析の取り消し。読み直し・閉じる・破棄で取り消す（shared process の待ち行列と worker から外れる）。 */
 	private readonly _semanticRequest = this._register(new MutableDisposable<IDisposable>());
 	private readonly _metafileRequest = this._register(new MutableDisposable<IDisposable>());
+	/** ブックを表示しているあいだ、覚えておいた解析結果を手放させない。 */
+	private readonly _openCacheLease = this._register(new MutableDisposable());
 	/** 開いてから表が描かれるまでの計測（`setInput` で始め、最初に描けたら送る）。 */
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	/** いま開いているブックの大きさ（計測に添える）。 */
@@ -859,6 +868,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			store.add(watcher);
 			const scheduler = store.add(new RunOnceScheduler(() => this._onWatchedResourceChanged(resource), 50));
 			store.add(watcher.onDidChange(e => {
+				if (e.contains(resource)) {
+					// 変わったファイルの解析結果は使わない（更新時刻と大きさが変わらない書き換えもあるので、etag に頼らない）。
+					SPREADSHEET_OPEN_CACHE.delete(resource);
+				}
 				if (e.contains(resource) && isEqual(this._currentResource, resource)) {
 					scheduler.schedule();
 				}
@@ -984,11 +997,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		let content: VSBuffer | undefined;
 		try {
 			// 表示を先に返す。到達度の診断は描いた後に、同じバイト列で別に頼む（_loadSemanticDiagnostics）。
-			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, (totalBytes, value) => {
+			// 同じブックを前に解析していて、ファイルが変わっていなければ、覚えた結果を使う。
+			workbook = (await openSpreadsheetResource(this._fileService, this._sharedProcessService, resource, SPREADSHEET_OPEN_CACHE, (totalBytes, value) => {
 				this._probe.setBytes(totalBytes);
 				this._openBytes = totalBytes;
 				content = value;
-			});
+			})).workbook;
 		} catch (err) {
 			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._probe.disarm();
@@ -1012,6 +1026,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return false;
 		}
 		this._workbook = workbook;
+		this._openCacheLease.value ??= SPREADSHEET_OPEN_CACHE.acquire();
 		this._brokenImages.clear();
 		this._sheets = workbook.sheets;
 		const restoredSheet = this._sheets.findIndex(sheet => sheet.name === viewState.activeSheet);
@@ -1023,7 +1038,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		this._renderSheet();
 		this._renderTabs();
-		const diagnose = !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration);
+		// 覚えておいた結果に到達度の診断まで入っていれば、頼み直さない。
+		const diagnose = !!this._runtimeConfiguration && isParadisSpreadsheetV1Enabled(this._runtimeConfiguration) && !workbook.semanticDiagnostics?.available;
 		this._semanticPending = diagnose;
 		this._renderSemanticUi(workbook, viewState);
 		this._finishRecoveryRender(recoveryGeneration, resource, viewState);
@@ -1077,6 +1093,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 		this._semanticPending = false;
 		this._workbook = { ...current, semanticDiagnostics };
+		if (semanticDiagnostics.available) {
+			SPREADSHEET_OPEN_CACHE.update(resource, value => value.content === content ? { ...value, workbook: { ...value.workbook, semanticDiagnostics } } : undefined);
+		}
 		this._renderSemanticUi(this._workbook, this._currentSpreadsheetViewState());
 	}
 
@@ -1101,6 +1120,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		const updated = applySpreadsheetMetafiles(current, converted);
+		if (!converted.unavailableReason) {
+			// 変換し終えたブックを覚える（変換できなかったときは覚えず、次に開いたときに頼み直す）。
+			SPREADSHEET_OPEN_CACHE.update(resource, value => value.content === content ? { ...value, workbook: updated } : undefined, estimateParadisWorkbookBytes(updated, content));
+		}
 		const changed = new Set(updated.sheets.flatMap((sheet, index) => sheet !== current.sheets[index] ? [sheet.name] : []));
 		this._workbook = updated;
 		this._sheets = updated.sheets;
@@ -1895,6 +1918,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._brokenImages.clear();
 		this._semanticRequest.clear();
 		this._metafileRequest.clear();
+		this._openCacheLease.clear();
 		this._openTiming.clear();
 		this._probe.endOpen();
 		this._inputGeneration.invalidate();

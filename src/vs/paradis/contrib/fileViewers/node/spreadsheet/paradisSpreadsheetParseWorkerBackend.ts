@@ -15,11 +15,11 @@
 // （{@link ParadisSpreadsheetParseWorkerBackend.warm}）、ファイルの読み出しと並べて読み込みの待ちを隠す。
 
 import { promises as fs } from 'fs';
-import { Worker } from 'worker_threads';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import type { IParadisPackedWorkbookData } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers, type ParadisOfficeSemanticWorkerFailure } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 
 /** worker へ送る依頼。`bytes` が無ければ、読み込みだけをする（温める）。 */
 export interface IParadisSpreadsheetParseWorkerRun {
@@ -89,7 +89,8 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 		} catch {
 			return undefined;
 		}
-		return () => new Worker(workerPath, { resourceLimits: PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetParseWorker;
+		// 共通の入口から起こす（パッケージ版で exceljs・jszip を node_modules.asar から読めるように）。起動・読み込みの失敗は Sentry へ送る。
+		return () => createParadisOfficeWorker('spreadsheet-parse', workerPath, { resourceLimits: PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetParseWorker;
 	}
 
 	parse(bytes: Uint8Array, imagePixelBudget: number | undefined, token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {

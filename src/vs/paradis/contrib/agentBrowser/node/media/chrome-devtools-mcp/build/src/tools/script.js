@@ -35,6 +35,11 @@ Example with arguments: \`(el) => el.innerText\`
             // opens while Para Code reads its own observer) and no navigation / stable-DOM wait. Refuse while a
             // dialog is open instead of blocking. See NOTES.md "vendored chrome-devtools-mcp への変更".
             paraCodeObserve: zod.boolean().optional(),
+            // PARA-PATCH (Para Code): internal argument set only by Para Code's own read / wait / find tools (never
+            // published in tools/list). Evaluate without waitForEventsAfterAction and give up after this many ms, so a
+            // page that does not answer does not hold this tool (and the tool mutex of this tab) for the 180 s protocol
+            // timeout. Dialogs that open meanwhile are handled by dialogAction only until the call returns.
+            paraCodeDeadlineMs: zod.number().optional(),
             dialogAction: zod
                 .string()
                 .optional()
@@ -51,7 +56,7 @@ Example with arguments: \`(el) => el.innerText\`
         blockedByDialog: true,
         verifyFilesSchema: ['filePath'],
         handler: async (request, response, context) => {
-            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, paraCodeObserve, } = request.params;
+            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, paraCodeObserve, paraCodeDeadlineMs, } = request.params;
             if (cliArgs?.categoryExtensions && serviceWorkerId) {
                 if (uidArgs && uidArgs.length > 0) {
                     throw new Error('args (element uids) cannot be used when evaluating in a service worker.');
@@ -89,6 +94,34 @@ Example with arguments: \`(el) => el.innerText\`
                 }
                 finally {
                     clearTimeout(timer);
+                }
+                return;
+            }
+            // PARA-PATCH (Para Code): see the schema above. CDP commands cannot be cancelled; ones still pending at the
+            // deadline settle later on their own (Promise.race keeps them handled).
+            if (typeof paraCodeDeadlineMs === 'number' && paraCodeDeadlineMs > 0) {
+                const onDialog = (dialog) => void (dialogAction === 'dismiss' || dialogAction === undefined ? dialog.dismiss() : dialog.accept(dialogAction === 'accept' ? undefined : dialogAction));
+                page.on('dialog', onDialog);
+                const handles = [];
+                let timer;
+                try {
+                    await Promise.race([
+                        (async () => {
+                            const frames = new Set();
+                            for (const uid of uidArgs ?? []) {
+                                const handle = await mcpPage.getElementByUid(uid);
+                                handles.push(handle);
+                                frames.add(handle.frame);
+                            }
+                            await performEvaluation(await getPageOrFrame(page, frames), fnString, handles, response, {});
+                        })(),
+                        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not answer within ${paraCodeDeadlineMs} ms.`)), paraCodeDeadlineMs); }),
+                    ]);
+                }
+                finally {
+                    clearTimeout(timer);
+                    page.off('dialog', onDialog);
+                    void Promise.allSettled(handles.map(arg => arg.dispose()));
                 }
                 return;
             }

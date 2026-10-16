@@ -37,6 +37,7 @@ import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PI
 import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
 import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
+import { installParadisExcelJsMergeFastPath, paradisExcelJsMergeRanges } from './spreadsheet/paradisSpreadsheetExcelJsMerges.js';
 import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetSheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
@@ -58,6 +59,8 @@ const loadSpreadsheetRuntime: SpreadsheetRuntimeLoader = async () => {
 		import('exceljs'),
 		import('jszip'),
 	]);
+	// 結合セルの多いブックで、exceljs の重なりの確認が解析時間の大半を使うのを避ける（結果は変わらない）。
+	installParadisExcelJsMergeFastPath(excelJSModule.default);
 	return { ExcelJS: excelJSModule.default, JSZip: jsZipModule.default };
 };
 
@@ -831,11 +834,8 @@ function decodeAddr(addr: string): { r: number; c: number } {
 
 function buildMergeMap(ws: ExcelJS.Worksheet): Record<string, MergeEntry> {
 	const mm: Record<string, MergeEntry> = {};
-	const model = ws.model as { merges?: string[] } | undefined;
-	if (!model?.merges) {
-		return mm;
-	}
-	for (const range of model.merges) {
+	// `ws.model` は全行・全列のモデルを組み立て直すので、結合の一覧だけを読む。
+	for (const range of paradisExcelJsMergeRanges(ws)) {
 		const parts = range.split(':');
 		if (parts.length !== 2) {
 			continue;

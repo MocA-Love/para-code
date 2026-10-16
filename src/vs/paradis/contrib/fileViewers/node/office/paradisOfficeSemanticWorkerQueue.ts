@@ -39,6 +39,8 @@ export interface IParadisOfficeSemanticWorkerReply<TResult> {
 	readonly kind: 'result';
 	readonly id: number;
 	readonly result: TResult;
+	/** 中で例外が出て `failed` を返したときの、その種類（paradisOfficeWorkerFailureKind）。Sentry へ送るためだけに使う。 */
+	readonly cause?: string;
 }
 
 /** worker_threads の Worker のうち、ここで使う部分。テストでは偽物を渡す。 */

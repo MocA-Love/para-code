@@ -63,6 +63,25 @@ suite('ParadisBrowserScopeState', () => {
 		});
 	});
 
+	test('tells views carried over from the previous session apart from views created now', () => {
+		const state = store.add(new ParadisBrowserScopeState(JSON.stringify({
+			version: 1,
+			entries: [{ viewId: 'view-a', stateKey: 'space-a' }],
+		})));
+		// A restored tab without a stored scope is known before initialization completes.
+		state.markPending('view-restored');
+		state.completeInitialization(true);
+		state.tagManaged('view-restored', 'space-a', 'initialTag');
+		state.markPending('view-new');
+		state.tagManaged('view-new', 'space-a', 'initialTag');
+		const corrupt = store.add(new ParadisBrowserScopeState('{'));
+		// Corrupt storage cannot prove a view is new, so every view counts as carried over.
+		assert.deepStrictEqual(
+			[state.isCarriedOver('view-a'), state.isCarriedOver('view-restored'), state.isCarriedOver('view-new'), corrupt.isCarriedOver('view-new')],
+			[true, true, false, true],
+		);
+	});
+
 	test('deletes persisted mapping on user close without emitting a scope reassignment', () => {
 		const state = store.add(new ParadisBrowserScopeState(JSON.stringify({
 			version: 1,

@@ -31,6 +31,7 @@ import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from './paradisAdoptIntoPtyService.js';
 import { paradisRecordAdoptionRun, paradisTakePtyHandoverReport } from './paradisPtyHandoverJournal.js';
 import { IParadisAdoptedTerminal } from './paradisTerminalAdoption.js';
+import { paradisRecordAdoption } from './paradisReattachTally.js';
 import { paradisIdOfHandle, paradisKnownHandles, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
 
 /** 別の相手が見ている端末が空いたかを見に行く間隔。覚えている端末がある間だけ回す。 */
@@ -54,7 +55,9 @@ let pollTimer: ReturnType<typeof setTimeout> | undefined;
 export async function paradisAdoptAtStartup(ptyService: IParadisAdoptionTarget, host: IParadisPtyHost, log: ILogService): Promise<void> {
 	target = ptyService;
 	logService = log;
-	await enqueue(() => run('startup', ptyService, host, log));
+	const result = await enqueue(() => run('startup', ptyService, host, log));
+	// 起動時の結果は、起こし直しの数と一緒にウィンドウが送る（`paradisReattachTally.ts`）。
+	paradisRecordAdoption({ reachable: result.reachable, adopted: result.adopted, skipped: result.foreign + result.failed });
 }
 
 /**
