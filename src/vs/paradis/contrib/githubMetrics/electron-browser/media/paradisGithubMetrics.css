@@ -522,6 +522,11 @@
 	height: 100%;
 }
 
+.paradis-ghm-hbar-track > span.other {
+	background: var(--vscode-descriptionForeground);
+	height: 100%;
+}
+
 .paradis-ghm-hbar-track > span.search {
 	background: var(--vscode-charts-orange, var(--vscode-charts-yellow));
 	height: 100%;

@@ -87,9 +87,9 @@ import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead
 import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncated, paradisLimitMobileDiff } from '../common/paradisMobileDiffLimit.js';
 import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
-import { paradisCodexApprovalDenyKey } from '../common/paradisAgentQuestionKeys.js';
-import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisCodexMobileApprovalKeys } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -773,7 +773,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）。
 		// SSH 接続先のリポジトリでも正しいマシンの gh を使えるよう、URI をそのまま渡す
 		// （コマンド側で paradisWorktreeGitHostResolver がホストを解決する）。
-		private readonly getPrStatuses: (uris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
+		// activeUris は今いるスペース（PC で開いている・スマホで開いている）。それは5分、ほかは15分ごとに取り直される。
+		private readonly getPrStatuses: (uris: readonly URI[], activeUris: readonly URI[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
 		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
 		private readonly fetchResourceReport: (force: boolean, history?: unknown) => Promise<IParadisResourceMonitorMobileReport>,
@@ -1046,6 +1047,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// モバイルが1台もオンラインでない間はポーリングを止める。
 	private static readonly PR_STATUS_POLL_INTERVAL_MS = 300_000;
 	private readonly prStatusCache = new Map<string, IParadisPrStatus>();
+	/**
+	 * スマホが最後に名指ししたスペース（scm・ファイル・ターミナルの要求の ws）。スマホで開いているスペースとして、
+	 * PC で開いているスペースと同じく PR を5分ごとに取り直させる（ほかは15分）。
+	 */
+	private mobileOpenedWs: string | undefined;
 	private mobileOnline = false;
 	private prStatusesInFlight = false;
 	private readonly prStatusScheduler = this._register(new RunOnceScheduler(() => { this.refreshPrStatuses().catch(() => { /* refreshPrStatuses内で処理済み */ }); }, ParadisMobileWorkspaceProvider.PR_STATUS_POLL_INTERVAL_MS));
@@ -1088,16 +1094,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// に任せる。
 		const pathToWsId = new Map<string, string>();
 		const uris: URI[] = [];
+		const activeWs = new Set([this.workspaceSwitchService.activeStateKey, this.mobileOpenedWs]);
+		const activeUris: URI[] = [];
 		for (const repo of this.workspaceSwitchService.repositories) {
 			if (!this.isReachableWorkspaceUri(repo.uri)) {
 				continue;
 			}
 			pathToWsId.set(repo.uri.fsPath, repo.id);
 			uris.push(repo.uri);
+			if (activeWs.has(repo.id)) {
+				activeUris.push(repo.uri);
+			}
 			for (const worktree of this.worktreeService.getWorktrees(repo.id)) {
 				if (!worktree.missing && this.isReachableWorkspaceUri(worktree.uri)) {
 					pathToWsId.set(worktree.uri.fsPath, paradisWorktreeStateKey(worktree.uri));
 					uris.push(worktree.uri);
+					if (activeWs.has(paradisWorktreeStateKey(worktree.uri))) {
+						activeUris.push(worktree.uri);
+					}
 				}
 			}
 		}
@@ -1107,7 +1121,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		this.prStatusesInFlight = true;
 		try {
-			const result = await this.getPrStatuses(uris);
+			// 全件を渡すが、gh が走るのは期限切れ・ブランチが変わったものだけ（ウィンドウの一覧と git チャネルで使い回す）
+			const result = await this.getPrStatuses(uris, activeUris);
 			if (result) {
 				const next = new Map<string, IParadisPrStatus>();
 				for (const [path, status] of Object.entries(result)) {
@@ -1503,7 +1518,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; slashCheck?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -1607,6 +1622,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				let parts = msg.parts as string[];
 				// Codex の承認の「拒否」は版でキーが違う（0.155.1 は Esc、それより前は `d`）。中継は画面を
 				// 見られないので `d` を送ってくる。画面の選択肢の表記に合わせて差し替える（`d` の版はそのまま）。
+				// MCP のツールの許可のフォームには近道が無いので、カードの承認の確認だと確かめられたら `y` も `1` に差し替える
+				// （拒否は Esc）。差し替えは最初のキーの直前に、そのときの画面で行う（paradisCodexMobileApprovalKeys）。
 				const interactionKind = typeof msg.interaction === 'object' && msg.interaction !== null ? (msg.interaction as { kind?: unknown }).kind : undefined;
 				const expectOption = interactionKind === 'approval' ? paradisReadExpectedApprovalOption(msg.expectOption) : undefined;
 				const expectPromptHash = typeof msg.expectPromptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.expectPromptHash) ? msg.expectPromptHash : undefined;
@@ -1616,9 +1633,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const optionAgent = msg.agent === 'codex' ? 'codex' : 'claude';
-				if (interactionKind === 'approval' && expectOption === undefined && parts.length === 1 && parts[0] === 'd') {
-					parts = [paradisCodexApprovalDenyKey(paradisVisibleTerminalText(instance))];
-				}
+				const approvalPiece = typeof msg.approvalPiece === 'string' && msg.approvalPiece.length <= 500 ? msg.approvalPiece : undefined;
+				const codexApprovalKey = interactionKind === 'approval' && expectOption === undefined && optionAgent === 'codex' && parts.length === 1
+					&& (parts[0] === 'd' || parts[0] === 'y') ? parts[0] : undefined;
 				// 画面の番号付きの選択肢で答えたとき（W2-21）は、送る直前に画面を読み直し、その番号が同じ文言のままかを
 				// 確かめる。違えば送らない（押したものと違う選択肢を確定させないため）。キーもここで画面から決める。
 				let optionCheckPending = expectOption !== undefined;
@@ -1628,12 +1645,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					optionCheckPending = false;
 					// 許可の確認が出ていて（M1）、見出しまでが選択肢を見せたときと同じで（M2）、その番号が同じ文言のときだけ送る。
-					const prompt = paradisPermissionPromptParts(paradisVisibleTerminalLogicalText(instance));
+					const screen = paradisVisibleTerminalLogicalText(instance);
+					const prompt = paradisPermissionPromptParts(screen);
 					if (prompt === undefined || (expectPromptHash !== undefined && paradisPermissionPromptHash(prompt.context) !== expectPromptHash)) {
 						return false;
 					}
-					const screenOption = paradisParseApprovalOptions(prompt.options)?.find(candidate => candidate.n === expectOption.n);
-					const key = screenOption !== undefined && paradisApprovalOptionLabelsMatch(screenOption.label, expectOption.label) ? paradisApprovalOptionKey(optionAgent, screenOption) : undefined;
+					const key = paradisMobileApprovalOptionKey(optionAgent, screen, prompt.options, expectOption, approvalPiece);
 					if (key === undefined) {
 						return false;
 					}
@@ -1644,8 +1661,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// （paradisSendAgentInteractionKeys。待ちの間に PC で答えられた・別の質問に変わった場合に、
 				// 消えた質問の跡地へ打鍵しないため）。
 				const stopped: { reason?: { readonly code: string; readonly message: string } } = {};
-				const sendTarget = expectOption === undefined ? instance : {
-					// 送る直前に確かめたキー（Codex は行末の近道）へ差し替えて送る。
+				const sendTarget = expectOption === undefined && codexApprovalKey === undefined ? instance : {
+					// 送る直前に確かめたキー（Codex は行末の近道・フォームの番号）へ差し替えて送る。
 					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
 				};
 				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs as number, {
@@ -1657,7 +1674,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 							const prompt = paradisPermissionPromptParts(screen);
 							return prompt !== undefined && paradisParseApprovalOptions(prompt.options)?.some(candidate => candidate.n === expectOption.n) === true;
 						}
-						: msg.readyMarker as string | undefined,
+						: codexApprovalKey !== undefined && approvalPiece !== undefined
+							// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
+							? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
+							: msg.readyMarker as string | undefined,
 					strict: false,
 					source: 'mobile',
 				}, async () => {
@@ -1678,6 +1698,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					if (!checkExpectedOption()) {
 						stopped.reason = { code: 'options-changed', message: 'PC の選択肢が変わっていたため送りませんでした。選択肢を確かめてから選び直してください' };
 						return false;
+					}
+					if (codexApprovalKey !== undefined) {
+						const screen = paradisVisibleTerminalText(instance);
+						// どの承認の確認かを確かめる一片が届いていて、確認に見えない（待ちの上限を過ぎた・別の確認に変わった）なら送らない
+						if (approvalPiece !== undefined && !(paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece))) {
+							stopped.reason = { code: 'stale-interaction', message: 'PC の画面でこの承認の確認を確かめられなかったため送りませんでした。PC の画面で確かめてください' };
+							return false;
+						}
+						parts = paradisCodexMobileApprovalKeys(codexApprovalKey, screen, approvalPiece);
 					}
 					return true;
 				});
@@ -1745,8 +1774,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const deadline = Date.now() + PARADIS_APPROVAL_OPTIONS_WAIT_MS;
 		for (; ;) {
 			// 選択肢は許可の確認の見出しより後の行からだけ読む（レビュー M1）。見出しまでの指紋を添え、回答で返させる（M2）。
-			const prompt = paradisPermissionPromptParts(paradisVisibleTerminalLogicalText(instance));
-			options = prompt !== undefined ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(prompt.options)) : undefined;
+			const screen = paradisVisibleTerminalLogicalText(instance);
+			const prompt = paradisPermissionPromptParts(screen);
+			// Codex の MCP のツールの許可のフォームは近道が無く、数字で選ぶ（paradisApprovalOptionKey）
+			options = prompt !== undefined ? paradisApprovalOptionsForMobile(agent, paradisParseApprovalOptions(prompt.options), paradisCodexApprovalFormShown(screen)) : undefined;
 			promptHash = prompt !== undefined ? paradisPermissionPromptHash(prompt.context) : undefined;
 			// 見出しの上の警告の行（Claude Code だけ。hook には来ない。agent.approval.detail.v1）
 			warning = prompt !== undefined && agent === 'claude' ? paradisParsePermissionWarning(prompt.context) : undefined;
@@ -1778,6 +1809,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * scm / fs / ターミナル作成の全チャネルで共通に使う。
 	 */
 	private resolveWsRoot(ws: string): URI | undefined {
+		const root = this.findWsRoot(ws);
+		if (root !== undefined) {
+			this.noteMobileOpenedWs(ws);
+		}
+		return root;
+	}
+
+	private findWsRoot(ws: string): URI | undefined {
 		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
 		if (repo) {
 			return repo.uri;
@@ -1792,6 +1831,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 		}
 		return undefined;
+	}
+
+	/**
+	 * スマホがスペースを名指しした（そのスペースを開いている）。別のスペースに移ったら、そのスペースの PR を
+	 * 5分の間隔で取り直させる（ほかのスペースは使い回しのまま）。
+	 */
+	private noteMobileOpenedWs(ws: string): void {
+		if (this.mobileOpenedWs === ws) {
+			return;
+		}
+		this.mobileOpenedWs = ws;
+		this.kickPrStatusRefresh();
 	}
 
 	/**

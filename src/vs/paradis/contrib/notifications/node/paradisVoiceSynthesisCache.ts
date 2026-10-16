@@ -200,7 +200,9 @@ export class ParadisVoiceSynthesisCache extends Disposable {
 		if (this._statsDirty && this._days !== undefined) {
 			// 終了の間際。待てないので同期で書く（書けなくても読み上げには関係ない）
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- Runs while the shared process shuts down; the process can exit before an async write lands.
 				mkdirSync(this.dir, { recursive: true, mode: DIR_MODE });
+				// eslint-disable-next-line local/code-no-sync-fs -- Shutdown write (see above).
 				writeFileSync(join(this.dir, STATS_FILE), JSON.stringify({ version: 1, days: this._days }), { mode: FILE_MODE });
 				this._statsDirty = false;
 			} catch {

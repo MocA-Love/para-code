@@ -19,6 +19,8 @@ import './contrib/terminalPromptInput/browser/paradisPromptInputEmpty.contributi
 import './contrib/remoteHosts/browser/paradisRemoteHosts.contribution.js';
 import './contrib/terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
 import './contrib/terminalHistorySuggest/browser/paradisTerminalSuggestDownKey.contribution.js';
+import './contrib/terminalHistoryPanel/browser/paradisTerminalCommandRecordService.js';
+import './contrib/terminalHistoryPanel/browser/paradisTerminalHistoryPanel.contribution.js';
 import './contrib/watermark/browser/paradisWatermark.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';

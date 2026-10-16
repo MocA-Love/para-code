@@ -15,19 +15,27 @@ import { PARADIS_RESUME_LEDGER_TTL_MS, paradisCodexThreadIdFromTitle, paradisPar
 suite('paradisTerminalResumeBanner', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('builds resume and CLI fork commands only for ids that cannot be read as options', () => {
+	test('builds resume and CLI fork commands, with or without skipping permission checks, only for ids that cannot be read as options', () => {
 		assert.deepStrictEqual({
 			claudeResume: paradisResumeCommandLine('claude', 'a1b2c3d4-0000-4000-8000-000000000001', 'resume'),
 			claudeFork: paradisResumeCommandLine('claude', 'a1b2c3d4-0000-4000-8000-000000000001', 'fork'),
 			codexResume: paradisResumeCommandLine('codex', '0199aaaa-0000-7000-8000-000000000002', 'resume'),
 			codexFork: paradisResumeCommandLine('codex', '0199aaaa-0000-7000-8000-000000000002', 'fork'),
+			claudeResumeSkipping: paradisResumeCommandLine('claude', 'a1b2c3d4-0000-4000-8000-000000000001', 'resume', true),
+			claudeForkSkipping: paradisResumeCommandLine('claude', 'a1b2c3d4-0000-4000-8000-000000000001', 'fork', true),
+			codexResumeSkipping: paradisResumeCommandLine('codex', '0199aaaa-0000-7000-8000-000000000002', 'resume', true),
+			codexForkSkipping: paradisResumeCommandLine('codex', '0199aaaa-0000-7000-8000-000000000002', 'fork', true),
 			option: paradisResumeCommandLine('claude', '--dangerously-skip-permissions', 'resume'),
 			shell: paradisResumeCommandLine('codex', 'abc; rm -rf ~', 'fork'),
 		}, {
 			claudeResume: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001',
 			claudeFork: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
-			codexResume: 'codex resume 0199aaaa-0000-7000-8000-000000000002',
-			codexFork: 'codex fork 0199aaaa-0000-7000-8000-000000000002',
+			codexResume: 'codex resume --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002',
+			codexFork: 'codex fork --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002',
+			claudeResumeSkipping: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001',
+			claudeForkSkipping: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
+			codexResumeSkipping: 'codex resume --dangerously-bypass-approvals-and-sandbox 0199aaaa-0000-7000-8000-000000000002',
+			codexForkSkipping: 'codex fork --dangerously-bypass-approvals-and-sandbox 0199aaaa-0000-7000-8000-000000000002',
 			option: undefined,
 			shell: undefined,
 		});

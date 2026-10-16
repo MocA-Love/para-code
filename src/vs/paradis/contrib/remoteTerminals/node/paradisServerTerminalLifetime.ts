@@ -35,6 +35,10 @@
 // 数えるので、接続先のマシンがスリープすると壁時計では猶予の方が長くなる。壁時計で上限を測ると、
 // まだ猶予の残っている——つまり正しく切り離された——ターミナルを先に見捨てることになる。
 //
+// 常駐（`paradis.terminal.daemon.reattachAcrossUpdates`）が持っている端末は守る対象から外す。
+// 常駐の端末はこのサーバーが終わっても走り続け、次に起きた pty ホストが引き取れるので、
+// サーバーを生かしておく理由にならない（下の `paradisHeldByDaemon` の絞り込み）。
+//
 // ここで守っているターミナルが**もう誰にも拾えない**場合がある。クライアントを更新すると、
 // 接続先には別の commit の（＝別ディレクトリ・別プロセスの）サーバーが立ち、そちらへ繋がる。
 // 更新前に残したターミナルはこのサーバーの pty host の中にあり、新しいサーバーからは開けない。
@@ -116,7 +120,11 @@ export function registerParadisServerTerminalLifetime(
 		}
 		checking = true;
 		try {
-			const waiting = await ptyService.listProcesses();
+			// 常駐が持っている端末は数えない。このサーバーが終わっても走り続け、次に起きた
+			// サーバーの pty ホストが引き取る（同じ版でも、更新後の版でも）。それを理由に居座ると、
+			// むしろ邪魔になる: 窓が離れる合図が届かなかった端末をこのサーバーが見たまま残り、
+			// 更新後の版のサーバーが引き取れない（`paradisPtyReadopt.ts`）。
+			const waiting = (await ptyService.listProcesses()).filter(terminal => terminal.paradisHeldByDaemon !== true);
 			if (waiting.length === 0) {
 				if (extendingSince !== undefined) {
 					extendingSince = undefined;
