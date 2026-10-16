@@ -31,6 +31,7 @@ const MAX_SYMLINK_HOPS = 40;
  */
 function resolveWriteTargetSync(filePath: string): string {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync, which must not yield between its compare and its write.
 		return realpathSync(filePath);
 	} catch {
 		// 無いファイル、またはリンク先がまだ無い symlink（多段を含む）
@@ -38,9 +39,11 @@ function resolveWriteTargetSync(filePath: string): string {
 	let current = filePath;
 	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see above).
 			if (!lstatSync(current).isSymbolicLink()) {
 				return current;
 			}
+			// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see above).
 			current = resolve(dirname(current), readlinkSync(current));
 		} catch {
 			return current; // 辿った先が無い。ここへ新しく作る
@@ -83,6 +86,7 @@ function isNotFound(error: unknown): boolean {
 
 function removeQuietlySync(filePath: string): void {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see resolveWriteTargetSync).
 		unlinkSync(filePath);
 	} catch {
 		// 作れていなかった
@@ -108,6 +112,7 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 	const target = resolveWriteTargetSync(filePath);
 	let stat: Stats | undefined;
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		stat = statSync(target);
 	} catch {
 		stat = undefined; // まだ無い（新規作成）
@@ -117,8 +122,10 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 			// root は accessSync が通ってしまうので、所有者の書き込みビットでも見る
 			throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES', path: target });
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		accessSync(target, fsConstants.W_OK);
 		if (stat.nlink > 1) {
+			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 			writeFileSync(target, content);
 			return;
 		}
@@ -126,20 +133,25 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 	const mode = stat ? stat.mode & 0o7777 : undefined;
 	const temp = temporaryPathFor(target);
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(temp, content, { mode: mode ?? 0o666, flag: 'wx' });
 		if (mode !== undefined) {
 			// writeFileSync の mode は umask で削られるので、元と同じになるよう当て直す
+			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 			chmodSync(temp, mode);
 		}
 	} catch {
 		removeQuietlySync(temp);
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 		return;
 	}
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		renameSync(temp, target);
 	} catch {
 		removeQuietlySync(temp);
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 	}
 }
