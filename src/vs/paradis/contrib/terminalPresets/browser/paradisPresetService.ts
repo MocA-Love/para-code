@@ -52,6 +52,7 @@ import {
 	paradisPresetFingerprint,
 	paradisPresetHostsMatch,
 	paradisPresetKey,
+	paradisPresetScopeKey,
 	paradisResolvePresetIndex,
 	paradisUsablePresetId,
 	PARADIS_PRESET_FOLDERS_SETTING,
@@ -72,6 +73,7 @@ import {
 	paradisPresetTitleKey,
 	paradisRememberPresetTitleEntry,
 } from '../common/paradisTerminalPresets.js';
+import { IParadisPresetMovePlan, paradisMovePresetDefinitions } from '../common/paradisPresetReorder.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 
@@ -588,6 +590,38 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		[list[indexA], list[indexB]] = [list[indexB], list[indexA]];
 		parsed.presets = list;
 		await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+	}
+
+	async movePresets(plan: IParadisPresetMovePlan): Promise<void> {
+		const first = plan.moving[0];
+		if (!first) {
+			return;
+		}
+		// 定義元（ユーザー設定 / どの .paracode.json か）を跨ぐ移動は書き込み先が決められないので
+		// 受け付けない。ダイアログ側でも止めているが、渡されたら何も書かずに例外にする。
+		const scopeKey = paradisPresetScopeKey(first);
+		if (plan.moving.some(preset => paradisPresetScopeKey(preset) !== scopeKey) || (plan.anchor && paradisPresetScopeKey(plan.anchor) !== scopeKey)) {
+			throw new Error(STR_PRESET_GONE);
+		}
+		const reorder = (list: readonly unknown[]): unknown[] => paradisMovePresetDefinitions(list, plan, () => new Error(STR_PRESET_GONE));
+		if (first.source === 'user') {
+			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
+			const list = reorder(Array.isArray(raw) ? [...raw] : []);
+			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+			return;
+		}
+		if (!first.sourceUri) {
+			return;
+		}
+		const { parsed, list } = await this._readWorkspacePresetsFile(first.sourceUri);
+		parsed.presets = reorder(list);
+		await this.fileService.writeFile(first.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+		// setPresetsFolder と同じく、watcher の再読込を待たずにキャッシュを書き込んだ内容へ更新する。
+		const workspaceFolder = this._workspaceFolderForPresetFile(first.sourceUri);
+		if (workspaceFolder) {
+			this._workspacePresets.set(workspaceFolder.uri.toString(), this._parseWorkspacePresets(parsed.presets, first.sourceUri));
+			this._onDidChangePresets.fire();
+		}
 	}
 
 	/**
