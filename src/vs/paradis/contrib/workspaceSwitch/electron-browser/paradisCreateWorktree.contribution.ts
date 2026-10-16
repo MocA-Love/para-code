@@ -29,6 +29,7 @@ import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/w
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
+import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
@@ -523,14 +524,14 @@ registerAction2(ParadisRemoveWorktreeAction);
  * パス文字列だけを受け取って接続の有無で送り先を決めると、手元と接続先に同じ絶対パスがある構成で
  * 別マシンの値を拾って平然と表示してしまう。どのマシンのものかは URI にしか書かれていない。
  */
-async function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string): Promise<Record<string, T>> {
+async function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string, extraArgs: (resource: URI) => readonly unknown[] = () => []): Promise<Record<string, T>> {
 	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
 	const result: Record<string, T> = {};
 	await Promise.all(resources.map(async component => {
 		const resource = URI.revive(component);
 		const host = resolveGitHost(resource);
 		try {
-			const value = await host.channel.call<T | undefined>(command, [host.path(resource)]);
+			const value = await host.channel.call<T | undefined>(command, [host.path(resource), ...extraArgs(resource)]);
 			if (value !== undefined) {
 				result[resource.fsPath] = value;
 			}
@@ -581,12 +582,17 @@ class ParadisGetPrStatusesAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, resources?: UriComponents[]): Promise<Record<string, IParadisPrStatus>> {
+	/**
+	 * `activeResources` は今いるスペース（PC で開いている・スマホで開いている）。それは5分、ほかは15分より古ければ
+	 * gh で取り直し、新しければ git チャネルが使い回す（渡さない古い呼び出し元は全部を今いるスペースとして扱う）。
+	 */
+	async run(accessor: ServicesAccessor, resources?: UriComponents[], activeResources?: UriComponents[]): Promise<Record<string, IParadisPrStatus>> {
 		if (!Array.isArray(resources) || resources.length === 0) {
 			return {};
 		}
+		const active = Array.isArray(activeResources) ? activeResources.map(resource => URI.revive(resource).toString()) : undefined;
 		// git と同じ理由で、そのリポジトリがあるマシンの gh を使う
-		return collectPerWorktree<IParadisPrStatus>(accessor, resources, 'getPrStatus');
+		return collectPerWorktree<IParadisPrStatus>(accessor, resources, 'getPrStatus', resource => [paradisGithubStatusMaxAge(active === undefined || active.includes(resource.toString()))]);
 	}
 }
 
@@ -596,6 +602,8 @@ registerAction2(ParadisGetPrStatusesAction);
 interface IParadisGetIssueStatusesRequest {
 	readonly resource: UriComponents;
 	readonly issueUrls: readonly string[];
+	/** 今いるスペースか。開いている Issue を5分（そうでなければ15分）より古ければ取り直す。省略時は今いるスペース扱い。 */
+	readonly active?: boolean;
 }
 
 /**
@@ -627,27 +635,45 @@ class ParadisGetIssueStatusesAction extends Action2 {
 		// そのホストにつき1回だけ解決する。手元と接続先を同じ回に混ぜていても、
 		// paradisWorktreeGitHostResolver は解決先ごとに同じホストオブジェクトを返すため、
 		// Map のキーとしてそのまま使える。
-		const byHost = new Map<IParadisWorktreeGitHost, { anchor: URI; issueUrls: Set<string> }>();
+		// 今いるスペースの Issue とそれ以外で取り直す間隔が違うので、ホストと間隔の組ごとにまとめる。
+		// 同じ URL が両方にあれば今いるスペース側（短い方）だけで問い合わせる
+		const byHost = new Map<IParadisWorktreeGitHost, Map<boolean, { anchor: URI; issueUrls: Set<string> }>>();
 		for (const request of requests) {
 			if (!Array.isArray(request.issueUrls) || request.issueUrls.length === 0) {
 				continue;
 			}
 			const resource = URI.revive(request.resource);
 			const host = resolveGitHost(resource);
-			const entry = byHost.get(host);
+			const active = request.active !== false;
+			let byActive = byHost.get(host);
+			if (byActive === undefined) {
+				byActive = new Map();
+				byHost.set(host, byActive);
+			}
+			const entry = byActive.get(active);
 			if (entry === undefined) {
-				byHost.set(host, { anchor: resource, issueUrls: new Set(request.issueUrls) });
+				byActive.set(active, { anchor: resource, issueUrls: new Set(request.issueUrls) });
 			} else {
 				for (const url of request.issueUrls) {
 					entry.issueUrls.add(url);
 				}
 			}
 		}
+		const groups: { host: IParadisWorktreeGitHost; anchor: URI; issueUrls: string[]; active: boolean }[] = [];
+		for (const [host, byActive] of byHost) {
+			const activeUrls = byActive.get(true)?.issueUrls ?? new Set<string>();
+			for (const [active, entry] of byActive) {
+				const issueUrls = active ? [...entry.issueUrls] : [...entry.issueUrls].filter(url => !activeUrls.has(url));
+				if (issueUrls.length > 0) {
+					groups.push({ host, anchor: entry.anchor, issueUrls, active });
+				}
+			}
+		}
 		const resolved: Record<string, IParadisIssueStatus> = {};
 		const attempted: string[] = [];
-		await Promise.all([...byHost.entries()].map(async ([host, entry]) => {
+		await Promise.all(groups.map(async ({ host, anchor, issueUrls, active }) => {
 			try {
-				const hostResult = await host.channel.call<IParadisIssueStatusesResult>('getIssueStatuses', [host.path(entry.anchor), [...entry.issueUrls]]);
+				const hostResult = await host.channel.call<IParadisIssueStatusesResult>('getIssueStatuses', [host.path(anchor), issueUrls, paradisGithubStatusMaxAge(active)]);
 				Object.assign(resolved, hostResult.resolved);
 				attempted.push(...hostResult.attempted);
 			} catch {
