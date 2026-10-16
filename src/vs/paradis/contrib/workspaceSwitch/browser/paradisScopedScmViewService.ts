@@ -6,9 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { URI } from '../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IObservable } from '../../../../base/common/observable.js';
+import { autorun, IObservable, observableSignalFromEvent } from '../../../../base/common/observable.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
@@ -105,8 +106,24 @@ export class ParadisScopedScmViewService extends Disposable implements ISCMViewS
 		// toggleSortKey)、握り潰すと並べ替えが一覧に反映されない。また visible 側は upstream で
 		// デバウンス合流済みのため、素通しすることで起動時の連続追加のまとまりも保てる。
 		this._register(this._inner.onDidChangeRepositories(e => {
+			// 入れ子の作業ツリー (ワークツリー) が増減すると、外側のリポジトリのスコープも変わる
+			// (`paradisIsScmRootInScope` の `otherRoots`)。upstream のイベントには載らないので差分を足す。
+			const previous = this._lastRepositories;
 			this._syncBaselines();
-			this._onDidChangeRepositories.fire(this._scopeEvent(e));
+			const scoped = this._scopeEvent(e);
+			const added = new Set(scoped.added);
+			const removed = new Set(scoped.removed);
+			for (const repository of this._lastRepositories) {
+				if (!previous.has(repository)) {
+					added.add(repository);
+				}
+			}
+			for (const repository of previous) {
+				if (!this._lastRepositories.has(repository)) {
+					removed.add(repository);
+				}
+			}
+			this._onDidChangeRepositories.fire({ added, removed });
 		}));
 		this._register(this._inner.onDidChangeVisibleRepositories(e => {
 			this._syncBaselines();
@@ -119,6 +136,16 @@ export class ParadisScopedScmViewService extends Disposable implements ISCMViewS
 			if (e.affectsConfiguration(PARADIS_SCM_SCOPE_SETTING_ID)) {
 				this._refreshScope();
 			}
+		}));
+		// ワークツリーかどうか (`contextValue` の 'worktree') は、git 拡張がリポジトリの登録の後に別に
+		// 送ってくる。登録の時点ではまだ分からず入れ子のワークツリーを絞れないので、届いたら絞り直す。
+		const repositoriesChanged = observableSignalFromEvent(this, this._inner.onDidChangeRepositories);
+		this._register(autorun(reader => {
+			repositoriesChanged.read(reader);
+			for (const repository of this._inner.repositories) {
+				repository.provider.contextValue.read(reader);
+			}
+			this._refreshScope();
 		}));
 	}
 
@@ -152,7 +179,18 @@ export class ParadisScopedScmViewService extends Disposable implements ISCMViewS
 			return true;
 		}
 		const folders = this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri);
-		return paradisIsScmRootInScope(repository.provider.rootUri, folders, this.uriIdentityService.extUri);
+		return paradisIsScmRootInScope(repository.provider.rootUri, folders, this.uriIdentityService.extUri, repository.provider.contextValue.get(), this._allRoots());
+	}
+
+	/** 登録済みの全リポジトリのルート (待避中も含む)。入れ子の作業ツリーが間にあるかを見るのに使う。 */
+	private _allRoots(): URI[] {
+		const roots: URI[] = [];
+		for (const repository of this._inner.repositories) {
+			if (repository.provider.rootUri) {
+				roots.push(repository.provider.rootUri);
+			}
+		}
+		return roots;
 	}
 
 	private _filter(repositories: readonly ISCMRepository[]): ISCMRepository[] {
@@ -162,7 +200,8 @@ export class ParadisScopedScmViewService extends Disposable implements ISCMViewS
 		// getter は描画のたびに読まれるため、設定とフォルダの解決はリポジトリ1件ごとではなく1回だけ行う。
 		const folders = this.workspaceContextService.getWorkspace().folders.map(folder => folder.uri);
 		const extUri = this.uriIdentityService.extUri;
-		return repositories.filter(repository => paradisIsScmRootInScope(repository.provider.rootUri, folders, extUri));
+		const roots = this._allRoots();
+		return repositories.filter(repository => paradisIsScmRootInScope(repository.provider.rootUri, folders, extUri, repository.provider.contextValue.get(), roots));
 	}
 
 	/**

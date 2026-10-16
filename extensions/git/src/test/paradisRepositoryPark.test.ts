@@ -80,6 +80,39 @@ suite('ParadisRepositoryParkingLot', () => {
 		});
 	});
 
+	// メインのリポジトリの中に入れ子で置いたワークツリー A。メインのスペースへ戻るときに A を、
+	// A のスペースへ行くときにメインを復帰させない（どちらも別のスペース）。入れ子のサブモジュールは
+	// 今までどおり外側のスペースへ戻す。
+	test('unparkForFolder does not bring a nested worktree back into the outer space, nor the outer repository into the worktree space', () => {
+		const dotGitFolders = new Set(['/w/main', '/w/main/.worktrees/a', '/w/main/vendor/sub']);
+		const between = (outerRoot: string, folder: string) => {
+			for (let current = folder; current !== outerRoot && current.startsWith(`${outerRoot}/`); current = current.slice(0, current.lastIndexOf('/'))) {
+				if (dotGitFolders.has(current)) {
+					return true;
+				}
+			}
+			return false;
+		};
+		const park = (lot: ParadisRepositoryParkingLot, log: string[]) => {
+			for (const [root, kind] of [['/w/main', 'repository'], ['/w/main/.worktrees/a', 'worktree'], ['/w/main/vendor/sub', 'submodule']]) {
+				lot.park({ ...createEntry(root, log), kind });
+			}
+		};
+		const toMain: string[] = [];
+		const mainLot = new ParadisRepositoryParkingLot(silentLogger, 8, between);
+		park(mainLot, toMain);
+		mainLot.unparkForFolder('/w/main');
+		const toWorktree: string[] = [];
+		const worktreeLot = new ParadisRepositoryParkingLot(silentLogger, 8, between);
+		park(worktreeLot, toWorktree);
+		worktreeLot.unparkForFolder('/w/main/.worktrees/a');
+
+		assert.deepStrictEqual({ toMain, toWorktree }, {
+			toMain: ['unpark:/w/main', 'unpark:/w/main/vendor/sub'],
+			toWorktree: ['unpark:/w/main/.worktrees/a'],
+		});
+	});
+
 	test('matches a symlinked root through rootRealPath', () => {
 		const log: string[] = [];
 		const lot = new ParadisRepositoryParkingLot(silentLogger, 4);
