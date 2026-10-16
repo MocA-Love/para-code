@@ -19,12 +19,13 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -33,6 +34,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
 import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -42,13 +44,17 @@ import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserA
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
-import { paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
-import { resolveDialogPageModel } from './paradisDialogPageModelResolver.js';
+import { IParadisDialogPageMiss, ParadisDialogPageResult, paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
+import { resolveDialogPageModel, resolveToolbarPageModel } from './paradisDialogPageModelResolver.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const CATEGORY = localize2('paradis.category', "Para Code");
 
-/** アクティブなブラウザエディタのページが1つ以上のペインと共有中かどうか。 */
-const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the active integrated browser page is shared with a terminal pane."));
+/**
+ * そのブラウザエディタのページが1つ以上のペインと共有中かどうか。エディタごとの context key
+ * （ParadisBrowserShareStateFeature）なので、分割した画面でもツールバーごとに自分のページの状態が出る。
+ */
+const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the page of this integrated browser editor is shared with a terminal pane."));
 
 const BROWSER_EDITOR_ACTIVE = ContextKeyExpr.equals('activeEditor', BrowserEditorInput.EDITOR_ID);
 
@@ -85,21 +91,51 @@ function openActiveDialog(create: () => ParadisBindingDialog): void {
 	});
 }
 
-async function openBindingDialog(accessor: ServicesAccessor, instanceId?: number): Promise<void> {
+/** ダイアログをどこから開いたか（見つからなかったときの診断に載せる）。 */
+type ParadisBindingDialogEntry = 'toolbar' | 'pane-mark' | 'palette';
+
+/**
+ * ページが見つからなかった段を残す。通知だけでは、どの段（ペインの共有先・画面のタブ・スペースのタブ）で
+ * 落ちたかが分からず、実機の報告から原因を辿れない。ページの URL・題名は送らない。
+ */
+function reportDialogPageMiss(logService: ILogService, entry: ParadisBindingDialogEntry, miss: IParadisDialogPageMiss): void {
+	logService.warn(`[paradisAgentBrowser] No browser page for the binding dialog (entry: ${entry}, exact: ${miss.exact}, visible: ${miss.visible}, contextual: ${miss.contextual})`);
+	reportParadisDiagnosticError('owned', 'agent-browser', 'bind-page-missing', new Error('bind-page-missing'), {
+		safe_entry: entry,
+		safe_exact: miss.exact,
+		safe_visible: miss.visible,
+		safe_contextual: miss.contextual,
+	}, 'warning');
+}
+
+async function openBindingDialog(
+	accessor: ServicesAccessor,
+	entry: ParadisBindingDialogEntry,
+	resolvePage: (accessor: ServicesAccessor) => Promise<ParadisDialogPageResult<IBrowserViewModel>>,
+	instanceId?: number,
+): Promise<void> {
 	const notificationService = accessor.get(INotificationService);
 	const instantiationService = accessor.get(IInstantiationService);
+	const logService = accessor.get(ILogService);
 
-	const model = await resolveDialogPageModel(accessor, instanceId);
-	if (!model) {
+	const result = await resolvePage(accessor);
+	if (!result.page) {
+		reportDialogPageMiss(logService, entry, result.miss);
 		notificationService.warn(localize('paradis.dialog.noBrowserPage', "Open an integrated browser page first, then run this command again."));
 		return;
 	}
 
+	const model = result.page;
 	openActiveDialog(() => instantiationService.createInstance(
 		ParadisBindingDialog,
 		model,
 		instanceId !== undefined ? { selectInstanceId: instanceId } : undefined,
 	));
+}
+
+/** ペインの印・コマンドパレットから開く。対象は画面に見えているタブ → ペインの共有先 → 最後に見たタブの順。 */
+function openPaneBindingDialog(accessor: ServicesAccessor, instanceId?: number): Promise<void> {
+	return openBindingDialog(accessor, instanceId !== undefined ? 'pane-mark' : 'palette', pageAccessor => resolveDialogPageModel(pageAccessor, instanceId), instanceId);
 }
 
 /**
@@ -143,7 +179,7 @@ class ParadisOpenBindingDialogAction extends Action2 {
 	}
 
 	run(accessor: ServicesAccessor, instanceId?: unknown): void {
-		void openBindingDialog(accessor, typeof instanceId === 'number' ? instanceId : undefined);
+		void openPaneBindingDialog(accessor, typeof instanceId === 'number' ? instanceId : undefined);
 	}
 }
 
@@ -341,8 +377,8 @@ class ParadisToolbarShareAction extends Action2 {
 		});
 	}
 
-	run(accessor: ServicesAccessor): void {
-		void openBindingDialog(accessor);
+	run(accessor: ServicesAccessor, browserEditor?: unknown): void {
+		void openBindingDialog(accessor, 'toolbar', pageAccessor => resolveToolbarPageModel(pageAccessor, browserEditor));
 	}
 }
 
@@ -365,10 +401,40 @@ class ParadisToolbarSharedAction extends Action2 {
 		});
 	}
 
-	run(accessor: ServicesAccessor): void {
-		void openBindingDialog(accessor);
+	run(accessor: ServicesAccessor, browserEditor?: unknown): void {
+		void openBindingDialog(accessor, 'toolbar', pageAccessor => resolveToolbarPageModel(pageAccessor, browserEditor));
 	}
 }
+
+/**
+ * そのブラウザエディタのページが共有中かを、エディタごとの context key に出す。ツールバーの共有ボタンの
+ * 表示（共有する／共有中）はこれで決まる。全体で 1 つの key にすると、分割した画面でアクティブな別の
+ * タブの状態が、押そうとしているタブのツールバーに出てしまう。
+ */
+class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
+	private readonly _shared: IContextKey<boolean>;
+
+	constructor(
+		editor: BrowserEditor,
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
+	) {
+		super(editor);
+		this._shared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
+	}
+
+	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
+		const update = () => this._shared.set(this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
+		store.add(this.bindingModel.onDidChange(update));
+		update();
+	}
+
+	override onModelDetached(): void {
+		this._shared.reset();
+	}
+}
+
+BrowserEditor.registerContribution(ParadisBrowserShareStateFeature);
 
 // --- ステータスバー + コンテキストキー + ペインインジケータのホスト ---
 
@@ -387,20 +453,11 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IHostService private readonly hostService: IHostService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IContextKeyService contextKeyService: IContextKeyService,
 	) {
 		super();
 
-		const activePageShared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
-		const update = () => {
-			this._updateStatusbar();
-			const model = this.editorService.activeEditor instanceof BrowserEditorInput ? this.editorService.activeEditor.model : undefined;
-			activePageShared.set(!!model && (this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0));
-		};
-
-		this._register(this.bindingModel.onDidChange(update));
-		this._register(this.editorService.onDidActiveEditorChange(update));
-		update();
+		this._register(this.bindingModel.onDidChange(() => this._updateStatusbar()));
+		this._updateStatusbar();
 
 		// ターミナルグリッドセルの接続インジケータへ状態を供給する（vs/sessions側はこのホスト
 		// 経由でのみ状態を知る。デスクトップ以外ではホスト未登録のままインジケータ非表示）。
@@ -427,7 +484,7 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 			},
 			onDidChangeState: this.bindingModel.onDidChange,
 			openBindingDialog: instanceId => {
-				void this.instantiationService.invokeFunction(accessor => openBindingDialog(accessor, instanceId));
+				void this.instantiationService.invokeFunction(accessor => openPaneBindingDialog(accessor, instanceId));
 			},
 			getBoundPage: instanceId => {
 				const binding = this._getBinding(instanceId);
