@@ -18,15 +18,17 @@
 // (`paradisPtyHostPaths.ts`)、ビルドが違っても同じ名前に辿り着く。
 
 import { spawn } from 'child_process';
-import { closeSync, mkdirSync, openSync, rmSync, statSync } from 'fs';
+import { promises as fs } from 'fs';
 import { createConnection } from 'net';
 import { timeout } from '../../../../base/common/async.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
 import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
@@ -80,7 +82,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		return existing;
 	}
 
-	paradisSpawnDaemon(options);
+	await paradisSpawnDaemon(options);
 
 	const deadline = Date.now() + STARTUP_TIMEOUT;
 	while (Date.now() < deadline) {
@@ -217,23 +219,25 @@ function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
  * 親が消えても生き残らなければ意味が無いので、プロセスグループを分け、標準入出力は握らない。
  * ただし**捨てもしない**。前の常駐で、標準出力を捨てたせいで起動できない理由が一切残らず、
  * 「ターミナルが開かない」という症状だけを見て何時間も溶かしたことがある。
+ *
+ * export しているのは、起動に失敗してもプロセスが落ちないことをテストで確かめるため。
  */
-function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
+export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<void> {
 	const { paths, launch, logService } = options;
 	let stdio: 'ignore' | number = 'ignore';
 	try {
-		mkdirSync(dirname(paths.socketPath), { recursive: true, mode: 0o700 });
+		await fs.mkdir(dirname(paths.socketPath), { recursive: true, mode: 0o700 });
 		const log = join(dirname(paths.socketPath), 'startup.log');
 		// 起こすたびに追記され続けるので、大きくなったら捨てて始め直す。**残す側に倒す**のは、
 		// ここが「常駐が上がらない理由」を書く唯一の場所だから（前の内容より直近が重要）。
 		try {
-			if (statSync(log).size > STARTUP_LOG_LIMIT) {
-				rmSync(log, { force: true });
+			if ((await fs.stat(log)).size > STARTUP_LOG_LIMIT) {
+				await fs.rm(log, { force: true });
 			}
 		} catch {
 			// まだ無い。
 		}
-		stdio = openSync(log, 'a');
+		stdio = await Promises.open(log, 'a');
 	} catch (error) {
 		logService.warn('[ParadisPtyHost] could not open the startup log; the daemon will start without one', error);
 	}
@@ -245,8 +249,14 @@ function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): void {
 		stdio: ['ignore', stdio, stdio],
 		env,
 	});
+	// 起動の失敗（実行ファイルが無い等）は次のティックの 'error' で届く。受け手が無いとこのプロセスごと落ちるので、
+	// 閉じるのを待つより前に付ける。落とさずに記録し、呼び出し側の接続待ちが時間切れになってアプリの中の pty へ落ちる。
+	child.on('error', error => {
+		logService.error('[ParadisPtyHost] failed to spawn the daemon process', error);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
+	});
 	child.unref();
 	if (typeof stdio === 'number') {
-		closeSync(stdio);
+		await Promises.close(stdio);
 	}
 }

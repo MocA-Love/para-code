@@ -865,6 +865,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(toDisposable(() => {
 			clearInterval(aliveTimer);
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- Runs while the shared process shuts down; the process can exit before an async write lands, and the next start reads this stamp.
 				writeFileSync(join(hookSpoolDir, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE), String(Date.now()), { mode: 0o600 });
 			} catch {
 				// フォルダが無い・書けない。次の起動は 1 時間以内の分だけを流す。
