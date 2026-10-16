@@ -883,6 +883,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
+				permitsRemoteFileInput: (key, files) => this._remoteFileTransfer.permitsFileInput(paradisPaneTokenOfScopeKey(key), files),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
 			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
@@ -1549,7 +1550,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				return typeof value === 'string' ? value : undefined;
 			};
 			const transcriptPath = field('transcript_path');
-			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at });
+			// 控えには `source`・`agent_id`・ツールの hook が残らない（手元の版だけが控える）。イベント名だけでも、切断中の
+			// SessionEnd の後の SessionStart なら所有者を移せる。
+			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at, event: record.event });
 			if (!this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
 				return;
 			}
@@ -4089,7 +4092,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				// ペインのシェルの pid は手元のペインのときだけ渡す（所有者の後継をシェルの子孫に絞る・`claude attach` の会話を
 				// 所有者にする判定に使う。接続先の pid は手元のプロセス表と照合できない）。
 				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
-				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid });
+				const hookOrigin = await this._hookOwnership.classify({
+					token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid,
+					event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
+				});
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
@@ -6596,6 +6602,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			}, signal),
 			// 受け渡し用フォルダを本人だけのものにする（SSH の接続先だけ）
 			restrictFolder: (remoteFolder: string) => this._remoteTunnels.chmodPrivateFolder(remoteAuthority, remoteFolder),
+			// upload_file の間、このペインの CDP 接続にだけ写した一時ファイルを input へ入れさせる
+			paneToken: ingressLease.token,
 		};
 	}
 
