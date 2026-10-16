@@ -57,13 +57,14 @@ suite('ParadisBookmarkToolProvider', () => {
 			other: await provider.callTool('pane', 'list_browser_tabs', {}, undefined, ssh.context),
 		}, {
 			results: [
-				'{\n  "received": {\n    "op": "list"\n  }\n}',
+				'{\n  "received": {\n    "op": "list",\n    "redactUrls": true\n  }\n}',
 				'error: Agents on an SSH host can read the bookmarks with list_bookmarks but cannot change them',
 				'error: Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request',
 				'error: Para Code could not confirm that this request comes from a process inside your own terminal pane, so it does not change bookmarks',
 				'error: Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request',
 			],
-			sent: [['pane', { op: 'list' }]],
+			// SSH の接続先へは URL のクエリとフラグメントを落として返させる
+			sent: [['pane', { op: 'list', redactUrls: true }]],
 			other: undefined,
 		});
 	});
@@ -95,6 +96,32 @@ suite('ParadisBookmarkToolProvider', () => {
 				// 削除は利用者の確認を待つので、ウィンドウへの呼び出しを長く待つ
 				['pane', { op: 'delete', id: 'b1', recursive: false }, 60_000],
 			],
+		});
+	});
+
+	test('limits how many bookmarks and folders one pane adds in ten minutes', async () => {
+		let now = 0;
+		const provider = new ParadisBookmarkToolProvider(() => now);
+		const { context } = createContext('pane');
+		const other = createContext('pane');
+		const create = async (pane: string, ctx: IParadisMcpToolCallContext) => text(await provider.callTool(pane, 'edit_bookmarks', { action: 'create_folder', title: 'Docs' }, undefined, ctx));
+		for (let i = 0; i < 99; i++) {
+			await create('pane', context);
+		}
+		const lastAllowed = await create('pane', context);
+		const refused = await provider.callTool('pane', 'edit_bookmarks', { action: 'add', url: 'https://example.com/' }, undefined, context);
+		const otherPane = await create('pane-b', other.context);
+		now = 10 * 60_000 + 1;
+		assert.deepStrictEqual({
+			lastAllowed: lastAllowed.startsWith('error: '),
+			refused: text(refused).split('.')[0],
+			otherPane: otherPane.startsWith('error: '),
+			afterWindow: (await create('pane', context)).startsWith('error: '),
+		}, {
+			lastAllowed: false,
+			refused: 'error: This terminal pane added 100 bookmarks and folders in the last 10 minutes, so Para Code turns this one down',
+			otherPane: false,
+			afterWindow: false,
 		});
 	});
 });

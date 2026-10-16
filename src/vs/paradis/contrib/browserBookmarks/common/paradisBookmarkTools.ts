@@ -33,6 +33,9 @@ export const PARADIS_BOOKMARK_TITLE_MAX_LENGTH = 200;
 export const PARADIS_BOOKMARK_URL_MAX_LENGTH = 2_048;
 /** 削除の確認を待つ上限（ウィンドウ側のダイアログの締め切り 50 秒に余裕を足したもの）。 */
 export const PARADIS_BOOKMARK_DELETE_TIMEOUT_MS = 60_000;
+/** 1 つのペインが {@link PARADIS_BOOKMARK_CREATE_WINDOW_MS} の間に足せるブックマークとフォルダの数（暴走したエージェントがバーを埋めないように）。 */
+export const PARADIS_BOOKMARK_CREATE_LIMIT = 100;
+export const PARADIS_BOOKMARK_CREATE_WINDOW_MS = 10 * 60_000;
 /** id の上限（uuid を想定。形は問わない。読み込んだ古い id もあるため）。 */
 const ID_MAX_LENGTH = 100;
 
@@ -73,7 +76,8 @@ export const PARADIS_BOOKMARK_TOOLS: readonly IParadisMcpToolDefinition[] = [
 
 /** ウィンドウへ渡す 1 回の操作（shared process で検証済み）。 */
 export type ParadisBookmarkToolRequest =
-	| { readonly op: 'list'; readonly folderId?: string }
+	// redactUrls: SSH の接続先からの呼び出し。URL のクエリやフラグメント（token など）を接続先の機械へ渡さない
+	| { readonly op: 'list'; readonly folderId?: string; readonly redactUrls?: boolean }
 	| { readonly op: 'add'; readonly url: string; readonly title: string; readonly folderId: string | null }
 	| { readonly op: 'createFolder'; readonly title: string; readonly folderId: string | null }
 	| { readonly op: 'rename'; readonly id: string; readonly title: string }
@@ -198,8 +202,8 @@ export function paradisParseEditBookmarks(args: unknown): ParadisParsedEditBookm
 			if (id.value === undefined) {
 				return { ok: false, error: 'action "rename" needs the "id" of a bookmark or folder from list_bookmarks.' };
 			}
-			if (title === undefined) {
-				return { ok: false, error: 'action "rename" needs a "title".' };
+			if (!title) {
+				return { ok: false, error: 'action "rename" needs a non-empty "title".' };
 			}
 			return { ok: true, request: { op: 'rename', id: id.value, title } };
 		case 'move': {
@@ -230,8 +234,21 @@ export type ParadisBookmarkToolNode =
 	| { readonly id: string; readonly type: 'bookmark'; readonly title: string; readonly url: string }
 	| { readonly id: string; readonly type: 'folder'; readonly title: string; readonly children: readonly ParadisBookmarkToolNode[] };
 
-/** 木を一覧の形にする。節が {@link PARADIS_BOOKMARK_LIST_MAX_NODES} を超えたら残りは返さず `truncated` を立てる。 */
-export function paradisBookmarkToolTree(nodes: readonly ParadisBookmarkNode[], maxNodes = PARADIS_BOOKMARK_LIST_MAX_NODES): { readonly nodes: readonly ParadisBookmarkToolNode[]; readonly count: number; readonly truncated: boolean } {
+/** URL の scheme・host・path だけを残す（クエリ・フラグメント・ユーザー情報を落とす）。読めない URL は `?` と `#` から後ろを落とす。 */
+export function paradisBookmarkToolUrlWithoutQuery(url: string): string {
+	try {
+		const parsed = new URL(url);
+		return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+	} catch {
+		return url.replace(/[?#].*$/s, '');
+	}
+}
+
+/**
+ * 木を一覧の形にする。節が {@link PARADIS_BOOKMARK_LIST_MAX_NODES} を超えたら残りは返さず `truncated` を立てる。
+ * `redactUrls` なら URL を {@link paradisBookmarkToolUrlWithoutQuery} の形にする。
+ */
+export function paradisBookmarkToolTree(nodes: readonly ParadisBookmarkNode[], maxNodes = PARADIS_BOOKMARK_LIST_MAX_NODES, redactUrls = false): { readonly nodes: readonly ParadisBookmarkToolNode[]; readonly count: number; readonly truncated: boolean } {
 	let count = 0;
 	let truncated = false;
 	const convert = (source: readonly ParadisBookmarkNode[]): ParadisBookmarkToolNode[] => {
@@ -245,7 +262,7 @@ export function paradisBookmarkToolTree(nodes: readonly ParadisBookmarkNode[], m
 			const title = paradisBookmarkToolTitle(node.title);
 			result.push(isParadisBookmarkFolder(node)
 				? { id: node.id, type: 'folder', title, children: convert(node.children) }
-				: { id: node.id, type: 'bookmark', title, url: node.url });
+				: { id: node.id, type: 'bookmark', title, url: redactUrls ? paradisBookmarkToolUrlWithoutQuery(node.url) : node.url });
 		}
 		return result;
 	};
