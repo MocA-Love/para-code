@@ -13,19 +13,25 @@ import { paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache, paradisGithu
 suite('ParadisGithubLookupCache', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('reuses values within the lifetime, keeps final ones forever and the last one after expiry', () => {
+	test('reuses values within the lifetime, long-lived ones for their own lifetime and the last one after expiry', () => {
 		let now = 0;
-		const cache = new ParadisGithubLookupCache<string | undefined>(1000, 10, value => value === 'closed', () => now);
+		const cache = new ParadisGithubLookupCache<string | undefined>(1000, 10, value => value === 'closed' ? 5000 : undefined, () => now);
 		cache.set('open', 'open');
 		cache.set('closed', 'closed');
 		cache.set('none', undefined);
 		const within = { open: cache.getFresh('open'), closed: cache.getFresh('closed'), none: cache.getFresh('none') };
 		now = 1000;
 		const expired = { open: cache.getFresh('open'), closed: cache.getFresh('closed'), none: cache.getFresh('none'), lastOpen: cache.getLast('open') };
+		now = 5000;
+		const closedExpired = cache.getFresh('closed');
+		cache.deleteWhere(key => key.startsWith('o'));
 
-		assert.deepStrictEqual({ within, expired }, {
+		assert.deepStrictEqual({ within, expired, closedExpired, deleted: cache.getLast('open'), kept: cache.getLast('none') }, {
 			within: { open: { value: 'open' }, closed: { value: 'closed' }, none: { value: undefined } },
 			expired: { open: undefined, closed: { value: 'closed' }, none: undefined, lastOpen: { value: 'open' } },
+			closedExpired: undefined,
+			deleted: undefined,
+			kept: { value: undefined },
 		});
 	});
 
