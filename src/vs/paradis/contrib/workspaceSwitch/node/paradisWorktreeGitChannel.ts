@@ -13,7 +13,7 @@
 // 同じ execFile('git', ...) 直叩き。upstream サービスの改変を避けるため fork 側に独立させている。
 
 import * as cp from 'child_process';
-import { constants as fsConstants, existsSync, promises as fs } from 'fs';
+import { constants as fsConstants, promises as fs } from 'fs';
 import { homedir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -21,6 +21,7 @@ import { basename, dirname, isAbsolute, join } from '../../../../base/common/pat
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { isLinux, isWindows } from '../../../../base/common/platform.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -349,7 +350,7 @@ export class ParadisWorktreeGitService {
 			return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 		}
 		// 時間切れで止めたことと、ロックが残ったかを、呼び出し側（失敗の要約）が見分けられるように出力へ足す
-		const lockRemains = await this.gitIndexHostPath(repoPath).then(index => index !== undefined && existsSync(`${index}.lock`), () => false);
+		const lockRemains = await this.gitIndexHostPath(repoPath).then(async index => index !== undefined && await Promises.exists(`${index}.lock`), () => false);
 		return {
 			code: result.code === 0 ? 1 : result.code,
 			stdout: result.stdout,
@@ -477,7 +478,7 @@ export class ParadisWorktreeGitService {
 			times = { atime: stat.atime, mtime: stat.mtime };
 			await fs.copyFile(indexPath, backupPath, fsConstants.COPYFILE_EXCL);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || existsSync(backupPath)) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || await Promises.exists(backupPath)) {
 				throw error;
 			}
 			existed = false;
@@ -1166,7 +1167,7 @@ export class ParadisWorktreeGitService {
 		if (this.runningClones.has(cloneId)) {
 			throw new Error(`Clone already running: ${cloneId}`);
 		}
-		if (existsSync(targetPath)) {
+		if (await Promises.exists(targetPath)) {
 			// allow-any-unicode-next-line
 			throw new Error(localize('paradis.repositoryClone.targetExists', "フォルダが既に存在します: {0}", targetPath));
 		}
