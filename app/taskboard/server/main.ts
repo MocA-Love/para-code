@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, promises as fs, realpathSync } from 'node:fs';
 import * as http from 'node:http';
@@ -18,7 +18,7 @@ import { GitHubClient, GitHubError, ghTokenProvider } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents } from './paraCode.js';
-import { boardPlaces, rememberRepository, repositoryChoices } from './repositories.js';
+import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { dataDir, Store, type ILocalSettings } from './store.js';
@@ -139,20 +139,14 @@ const { values: args } = parseArgs({
 const WS_PROTOCOL = 'taskboard';
 const WS_PROTOCOL_PREFIX = `${WS_PROTOCOL}.`;
 
-/** 開き直すときに、鍵をコマンドラインに載せずに子へ渡す環境変数。 */
-const TOKEN_ENV = 'TASKBOARD_RELAUNCH_TOKEN';
-// git や gh の子プロセスへ渡らないよう、何かを起こす前に読んで消す
-const inherited = process.env[TOKEN_ENV];
-delete process.env[TOKEN_ENV];
-
 function log(...parts: unknown[]): void {
 	if (!args.quiet) {
 		console.log('[taskboard]', ...parts);
 	}
 }
 
-async function resolveRepo(): Promise<string | undefined> {
-	const candidate = path.resolve(args.repo ?? process.cwd());
+async function resolveRepo(repo = args.repo): Promise<string | undefined> {
+	const candidate = path.resolve(repo ?? process.cwd());
 	return git(candidate, ['rev-parse', '--show-toplevel'], 5000).catch(() => undefined);
 }
 
@@ -216,16 +210,27 @@ function prFromDetail(base: ITaskBoardPrRef, d: ITaskBoardPullDetail): ITaskBoar
 	};
 }
 
-async function main(): Promise<void> {
-	const demo = args.demo;
+/** リポジトリを切り替えて開き直すときに、前のサーバーから引き継ぐもの。 */
+interface IRestart {
+	readonly repo: string;
+	readonly token: string;
+	readonly port: number;
+}
+
+/**
+ * ボードのサーバーを起こす。`restart` は、上部のメニューでリポジトリを切り替えたときに同じプロセスの中で
+ * 開き直すためのもの（台帳・作業場所・クローンの指定・ブラウザを開くかは引き継がず、ポートと鍵だけ引き継ぐ）。
+ */
+async function main(restart?: IRestart): Promise<void> {
+	const demo = !restart && args.demo;
 	// <img> とモックの <iframe> の URL に付ける、読むだけの鍵（スナップショットで画面へ渡す。早く作っておく）
 	const assetKey = randomBytes(24).toString('base64url');
-	const repoPath = demo ? undefined : await resolveRepo();
+	const repoPath = demo ? undefined : await resolveRepo(restart?.repo);
 	const remote: IRepoSlug | undefined = repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
-	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), args.data));
+	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), restart ? undefined : args.data));
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
-	const clones = args.clones ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
-	const worktreeRoot = args['worktree-root'] ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
+	const clones = args.clones && !restart ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
+	const worktreeRoot = (restart ? undefined : args['worktree-root']) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
 	if (args.agents !== 'simulated' && args.agents !== 'para-code') {
 		throw new Error('--agents は simulated か para-code');
 	}
@@ -238,7 +243,7 @@ async function main(): Promise<void> {
 	if (args['real-workspaces'] && !repoPath) {
 		throw new Error('--real-workspaces needs --repo');
 	}
-	if (args.clones && !args.demo) {
+	if (args.clones && !args.demo && !restart) {
 		await store.saveSettings({ ...settings, clones });
 	}
 
@@ -301,7 +306,7 @@ async function main(): Promise<void> {
 
 	// Codex の設定の許可の有無（起動時と、書き足したとき・1 分ごとに読み直す）
 	// まだ常に許可になっていない Codex の設定（CODEX_HOME ごと）と、足りないツール
-	let codexPending: { readonly path: string; readonly missing: readonly string[] }[] = [];
+	let codexPending: { readonly path: string; readonly missing: readonly string[]; readonly manual?: string }[] = [];
 	const refreshCodexApproval = async () => {
 		const next = await codexApprovalStates();
 		if (JSON.stringify(next) !== JSON.stringify(codexPending)) {
@@ -319,7 +324,8 @@ async function main(): Promise<void> {
 		agentsConnected: paraCodeMode ? bridgeState.connected : undefined,
 		agentsDetail: paraCodeMode && !bridgeState.connected ? bridgeState.detail : undefined,
 		codexApprovalMissing: paraCodeMode ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
-		codexConfigPaths: paraCodeMode ? codexPending.map(p => p.path) : undefined,
+		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
+		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		assetKey,
 		speed: sim.getSpeed(),
 		realWorkspaces,
@@ -554,8 +560,10 @@ async function main(): Promise<void> {
 			const known = await boardPlaces();
 			const places = new Set([...known.clones, ...(clones ?? []).map(c => path.resolve(c)), ...engine.getSlots().map(s => s.path).filter(Boolean)]);
 			const roots = [...known.worktreeRoots, ...(worktreeRoot ? [path.resolve(worktreeRoot)] : [])];
-			const items = await repositoryChoices(fromParaCode);
-			return { current: repoPath, items: items.filter(r => !places.has(path.resolve(r.path)) && !roots.some(root => path.resolve(r.path).startsWith(`${root}${path.sep}`))) };
+			const items = (await repositoryChoices(fromParaCode)).filter(r => !places.has(path.resolve(r.path)) && !roots.some(root => path.resolve(r.path).startsWith(`${root}${path.sep}`)));
+			// 切り替えで断るもの（ほかのボードのワークツリー）も出さない
+			const others = await Promise.all(items.map(r => isOtherBoardWorktree(r.path)));
+			return { current: repoPath, items: items.filter((_, i) => !others[i]) };
 		},
 		switchRepository: async p => {
 			if (demo) {
@@ -574,7 +582,7 @@ async function main(): Promise<void> {
 			const realTarget = real(target);
 			const places = [...known.clones, ...(clones ?? [])].map(real);
 			const roots = [...known.worktreeRoots, ...(worktreeRoot ? [worktreeRoot] : [])].map(real);
-			if (places.includes(realTarget) || roots.some(root => realTarget.startsWith(`${root}${path.sep}`))) {
+			if (places.includes(realTarget) || roots.some(root => realTarget.startsWith(`${root}${path.sep}`)) || await isOtherBoardWorktree(target)) {
 				throw new TaskBoardError('invalid-params', 'これはタスクボードの作業場所なので、リポジトリとしては開けません');
 			}
 			// 返事を返してから、同じポートと鍵で起動し直す
@@ -590,6 +598,10 @@ async function main(): Promise<void> {
 			const written: string[] = [];
 			try {
 				for (const pending of await codexApprovalStates()) {
+					// 書き方を読み切れない設定は書かない（帯に手で足す方法を出している）
+					if (pending.manual !== undefined) {
+						continue;
+					}
 					try {
 						await addCodexApprovals(pending.path);
 						written.push(pending.path);
@@ -618,8 +630,8 @@ async function main(): Promise<void> {
 
 	/* ---------------- HTTP ---------------- */
 
-	const token = args.token ?? inherited ?? randomBytes(24).toString('base64url');
-	let port = Number(args.port);
+	const token = restart?.token ?? args.token ?? randomBytes(24).toString('base64url');
+	let port = restart?.port ?? Number(args.port);
 	const allowedHosts = () => [`127.0.0.1:${port}`, `localhost:${port}`];
 	const safeEqual = (a: string | undefined, b: string) => {
 		if (!a || a.length !== b.length) {
@@ -819,7 +831,7 @@ async function main(): Promise<void> {
 	port = (server.address() as { port: number }).port;
 	const address = `http://127.0.0.1:${port}/?token=${token}`;
 	console.log(`\n  タスクボード: ${address}\n  台帳: ${store.directory}${realWorkspaces ? '\n  作業場所: 実際に git を操作します' : ''}\n`);
-	if (args.open) {
+	if (args.open && !restart) {
 		execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [address]);
 	}
 
@@ -832,8 +844,7 @@ async function main(): Promise<void> {
 	}
 
 	let closing = false;
-	let relaunched: ChildProcess | undefined;
-	/** 止める。`switchTo` を渡すと、同じポートと鍵でそのリポジトリを開き直した新しいサーバーを起動する。 */
+	/** 止める。`switchTo` を渡すと、同じプロセスの中で、同じポートと鍵のままそのリポジトリを開き直す。 */
 	const shutdown = async (switchTo?: string) => {
 		if (closing) {
 			return;
@@ -858,31 +869,19 @@ async function main(): Promise<void> {
 		await Promise.race([new Promise<void>(resolve => server.close(() => resolve())), new Promise(resolve => setTimeout(resolve, 3000))]);
 		server.closeAllConnections();
 		if (switchTo) {
-			// 引き継ぐのは、リポジトリに依らない起動の仕方だけ（台帳・作業場所・クローン・ポート・鍵・ブラウザを開くかは引き継がない）
-			const rest: string[] = [];
-			const carry = { agents: args.agents, bridge: args.bridge, speed: args.speed, login: args.login } as const;
-			for (const [name, value] of Object.entries(carry)) {
-				if (typeof value === 'string') {
-					rest.push(`--${name}`, value);
-				}
-			}
-			for (const flag of ['prod', 'quiet', 'no-github', 'real-workspaces'] as const) {
-				if (args[flag]) {
-					rest.push(`--${flag}`);
-				}
-			}
+			// 以前は子プロセスで開き直し、親が残っていた（切り替えるたびに入れ子が 1 つ増えた）。同じプロセスで開き直す
+			process.off('SIGINT', onSignal);
+			process.off('SIGTERM', onSignal);
 			log(`${switchTo} で開き直します`);
-			// 鍵はコマンドラインに載せない（ps で見えるため）。環境変数で渡し、子は読んだら消す
-			relaunched = spawn(process.execPath, [...process.execArgv, process.argv[1], ...rest, '--repo', switchTo, '--port', String(port)], { stdio: 'inherit', env: { ...process.env, [TOKEN_ENV]: token } });
-			// 子が同じ端末に出力を続ける。親は子が終わるまで残る（pnpm dev から見て、ボードが動き続けているように）
-			relaunched.on('exit', code => process.exit(code ?? 0));
+			main({ repo: switchTo, token, port }).catch(err => {
+				console.error('[taskboard] failed to reopen:', err);
+				process.exit(1);
+			});
 			return;
 		}
 		process.exit(0);
 	};
-	// 開き直した後は、止める合図を新しいサーバーへ渡す。端末の Ctrl+C（SIGINT）は同じプロセスグループの子にも
-	// 直接届くので、渡すのは SIGTERM だけにする（二重に届くと子が保存の途中で終わる）
-	const onSignal = (signal: NodeJS.Signals) => relaunched ? (signal === 'SIGTERM' && relaunched.kill(signal)) : closing ? process.exit(0) : void shutdown();
+	const onSignal = () => closing ? process.exit(0) : void shutdown();
 	process.on('SIGINT', onSignal);
 	process.on('SIGTERM', onSignal);
 }
