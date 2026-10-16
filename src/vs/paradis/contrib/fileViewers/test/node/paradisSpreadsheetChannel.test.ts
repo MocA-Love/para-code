@@ -179,10 +179,31 @@ suite('ParadisSpreadsheetChannel', () => {
 		}
 		channel.dispose();
 		deepStrictEqual({ outcomes, sent, parsedInProcess }, {
-			outcomes: [packed, 'Cannot merge already merged cells', workbook, workbook, 'このブックは大きすぎるため開けませんでした。', workbook],
+			outcomes: [packed, 'Cannot merge already merged cells', workbook, workbook, workbook, workbook],
 			sent: [['PK-1', 9], ['PK-2', 9], ['PK-3', 9], ['PK-4', 9], ['PK-5', 9]],
-			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('\xD0\xCF\x11\xE0-encrypted')],
+			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('PK-5'), base64('\xD0\xCF\x11\xE0-encrypted')],
 		});
+	});
+
+	test('warms the parse worker on request without waiting for it, and does nothing without a worker', async () => {
+		let warmed = 0;
+		let created = 0;
+		const finishWarm: (() => void)[] = [];
+		const channel = new ParadisSpreadsheetChannel(async () => createService(), undefined, undefined, async () => {
+			created++;
+			return { parse: async () => { throw new Error('unused'); }, warm: () => { warmed++; return new Promise(resolve => finishWarm.push(() => resolve({ kind: 'warm' }))); } };
+		});
+		const withoutWorker = new ParadisSpreadsheetChannel(async () => createService());
+		const replies = [
+			await channel.call('window:1', 'warmParser', [], CancellationToken.None),
+			await channel.call('window:1', 'warmParser', [], CancellationToken.None),
+			await withoutWorker.call('window:1', 'warmParser', [], CancellationToken.None),
+		];
+		await new Promise(resolve => setTimeout(resolve, 0));
+		finishWarm.forEach(finish => finish());
+		channel.dispose();
+		withoutWorker.dispose();
+		deepStrictEqual({ replies, warmed, created }, { replies: [undefined, undefined, undefined], warmed: 2, created: 1 });
 	});
 
 	test('parses in the shared process when no worker is given', async () => {

@@ -11,8 +11,8 @@
 // 解析は大きなブックで 10 秒ほど shared process 本体を止め、その間は Word の配信先の登録や拡張機能など、
 // ほかのチャネルの応答も待たされていた。worker（別スレッド）で走らせ、本体は受け渡しだけをする。
 // 待ち行列の守り（1 件ずつ・締め切り・メモリ不足の記録）は paradisOfficeSemanticWorkerQueue.ts にある。
-// worker は起動して少し後に exceljs と jszip を読み込んでおき（{@link ParadisSpreadsheetParseWorkerBackend.warm}）、
-// 最初のブックを開くときの読み込みの待ち（実測 320〜458 ms）を表示の前から外す。
+// Excel のエディタを開いた・戻したときに worker を起動して exceljs と jszip を読み込ませ
+// （{@link ParadisSpreadsheetParseWorkerBackend.warm}）、ファイルの読み出しと並べて読み込みの待ちを隠す。
 
 import { promises as fs } from 'fs';
 import { Worker } from 'worker_threads';
@@ -37,21 +37,24 @@ export type ParadisSpreadsheetParseWorkerResult =
 export type IParadisSpreadsheetParseWorker = IParadisOfficeSemanticWorker<IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult>;
 
 /**
- * 依頼が途絶えてから worker を終了させるまでの時間。温めた worker を、ブックを開くあいだは持っておく。
- * 終了した後は、次のブックを開くときにもう一度起動する（そのときは読み込みの待ちがある）。
+ * 依頼が途絶えてから worker を終了させるまでの時間。Excel を開いているあいだは持っておく（エディタを開く・戻すたびに
+ * 温める依頼が来て延びる）。Excel を開かない人には worker を起動しない。
  */
 export const PARADIS_SPREADSHEET_PARSE_WORKER_IDLE_MS = 30 * 60 * 1000;
-/** 実行の締め切り。実ファイルでいちばん重いブックでも 12 秒ほどなので、十分に長くとる。 */
-export const PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS = 120_000;
-/** 待ち行列で待てる時間。表示を待っている依頼なので、実行の締め切りと同じだけ待つ。 */
+/**
+ * 実行の締め切り。返ってこない worker を止めるためだけのもので、ブックを断るためではない（過ぎたら shared process
+ * 本体で解析し直す。worker を入れる前は締め切りが無かった）。実ファイルでいちばん重いブックでも 12 秒ほど。
+ */
+export const PARADIS_SPREADSHEET_PARSE_RUN_DEADLINE_MS = 10 * 60 * 1000;
+/** 待ち行列で待てる時間。過ぎたら本体で解析する。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_DEADLINE_MS = 120_000;
 /** 待ち行列に置ける依頼の数（走っている 1 件は数えない）。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_LIMIT = 8;
 /** 待ち行列に置ける依頼のバイト数の合計。ビューアが読む上限（20 MiB）の 4 件ぶん。 */
 export const PARADIS_SPREADSHEET_PARSE_QUEUE_BYTES = 80 * 1024 * 1024;
 /**
- * worker のヒープの上限。解析は shared process 本体で走っていたときと同じだけのブックを開ける必要があるので、
- * 詳しい解析の worker（384 MB）より大きくとる。
+ * worker のヒープの上限。詳しい解析の worker（384 MB）より大きくとる。超えたら shared process 本体で解析し直す
+ * （worker を入れる前と同じ扱い）。
  */
 export const PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 3072, maxYoungGenerationSizeMb: 64, stackSizeMb: 8 });
 
