@@ -384,6 +384,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/state-request.json` | アプリの `capabilities` に `agent.pc-draft.v1` を追加（2026-10-15） | PC の Claude Code の入力欄の書きかけ（agent の snapshot・delta の `pcDraft`）。PC は広告したアプリが見ている会話へだけ送り、アプリは保存しない |
 | `app/mobile/app.json` | `expo.version` を `0.12.10` に（2026-10-10） | 画像を埋め込んだ大きな HTML のプレビューの配信 |
 | `app/mobile/app.json` | `expo.version` を `0.12.11` に（2026-10-15） | PC の入力欄の書きかけの帯（agent.pc-draft.v1）の配信 |
+| `app/mobile/app.json` | `expo.version` を `0.12.12` に（2026-10-16） | 通知の長押しの画面が暗い板だけになる件の修正（`ios/` の Frameworks）の配信 |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.3.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。`session.measure` の `context` を `measure` として送る版）（2026-10-06） | モバイルのセッションの輪のコンテキストの使用率を statusline と同じ値にする（無い版・古い Claude Code では transcript の usage から出す） |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
