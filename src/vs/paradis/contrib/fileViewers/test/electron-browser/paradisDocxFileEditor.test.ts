@@ -15,7 +15,7 @@ import { FileAccess, Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/index.js';
-import { FileChangesEvent, FileChangeType, IFileService, IFileSystemWatcher } from '../../../../../platform/files/common/files.js';
+import { FileChangesEvent, FileChangeType, FileOperationError, FileOperationResult, IFileService, IFileSystemWatcher } from '../../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
@@ -260,9 +260,11 @@ suite('ParadisDocxFileEditor', () => {
 		}
 	});
 
-	function createDocxEditorFixture() {
+	/** `etag` を渡すと、文書の読み出しはその etag を返し、同じ etag で読まれたら「変わっていない」と答える。 */
+	function createDocxEditorFixture(fixtureOptions: { readonly etag?: string } = {}) {
 		const watcherResources: string[] = [];
 		const readResources: string[] = [];
+		const documentReads: string[] = [];
 		const readOptions: { length: number }[] = [];
 		const htmlDocuments: string[] = [];
 		const rawHtmlDocuments: string[] = [];
@@ -374,7 +376,13 @@ suite('ParadisDocxFileEditor', () => {
 			},
 			readFile: async (resource: URI, options: { length?: number; limits?: { readonly size: number } }) => {
 				if (options.length !== 4) {
-					return { value: VSBuffer.wrap(defaultDocxPackage.slice()) };
+					const etag = (options as { etag?: string }).etag;
+					if (fixtureOptions.etag !== undefined && etag === fixtureOptions.etag) {
+						documentReads.push('not modified');
+						throw new FileOperationError('not modified', FileOperationResult.FILE_NOT_MODIFIED_SINCE);
+					}
+					documentReads.push('read');
+					return { value: VSBuffer.wrap(defaultDocxPackage.slice()), etag: fixtureOptions.etag };
 				}
 				readResources.push(resource.toString());
 				readOptions.push({ length: options.length });
@@ -443,6 +451,15 @@ suite('ParadisDocxFileEditor', () => {
 					reads: [...readResources],
 					html: rawHtmlDocuments.map(extractHtmlSnapshot),
 				};
+			},
+			documentReads(): readonly string[] {
+				return [...documentReads];
+			},
+			docxUrls(): readonly (string | undefined)[] {
+				return rawHtmlDocuments.map(html => {
+					const match = /const DOCX_URL = ("(?:[^"\\]|\\.)*");/.exec(html);
+					return match ? JSON.parse(match[1]) as string : undefined;
+				});
 			},
 			localResourceRootsAtSetHtml(): readonly (readonly string[])[] {
 				return localResourceRootsAtSetHtml.map(roots => [...roots]);
@@ -613,6 +630,29 @@ suite('ParadisDocxFileEditor', () => {
 				releases: 0,
 				htmlDocuments: ['viewer'],
 				overlayCallsAfterDispose: 0,
+			});
+		});
+
+		test('reuses the sanitized document when the unchanged file is opened again, and reads it again after a change', async () => {
+			const fixture = createDocxEditorFixture({ etag: 'v1' });
+			const resource = URI.file('/workspace/reopened.docx');
+			await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			fixture.editor.clearInput();
+			await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			fixture.fire(resource);
+			await fixture.settleCurrentRender();
+
+			const urls = fixture.docxUrls();
+			deepStrictEqual({
+				documentReads: fixture.documentReads(),
+				html: fixture.snapshot().htmlDocuments,
+				sameDocument: urls.length === 3 && urls.every(url => url?.startsWith('data:') && url === urls[0]),
+			}, {
+				documentReads: ['read', 'not modified', 'read'],
+				html: ['viewer', 'viewer', 'viewer'],
+				sameDocument: true,
 			});
 		});
 

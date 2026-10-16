@@ -18,6 +18,7 @@ import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -40,8 +41,69 @@ export async function parseSpreadsheetResource(
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	onSourceBytes?.(content.value.byteLength, content.value);
-	throwIfNotWorkbook(resource, content.value);
-	const base64 = encodeBase64(content.value);
+	return parseSpreadsheetContent(sharedProcessService, resource, content.value, imagePixelBudget);
+}
+
+/** ビューアが覚えておく 1 冊分。表示に使うブックと、後から変換・解析を頼むのに使う元のバイト列。 */
+export interface IParadisSpreadsheetOpenCacheValue {
+	readonly workbook: IParadisWorkbookData;
+	readonly content: VSBuffer;
+}
+
+/**
+ * ビューア用: {@link parseSpreadsheetResource} と同じものを返すが、同じファイルを前に解析していて、
+ * ファイルが変わっていなければ（etag が同じなら）読み込みも解析もせず覚えた結果を返す。
+ * 解析した結果は `cache` に覚える。
+ */
+export async function openSpreadsheetResource(
+	fileService: IFileService,
+	sharedProcessService: ISharedProcessService,
+	resource: URI,
+	cache: ParadisOfficeOpenCache<IParadisSpreadsheetOpenCacheValue>,
+	onSourceBytes?: (totalBytes: number, content: VSBuffer) => void,
+): Promise<IParadisSpreadsheetOpenCacheValue & { readonly fromCache: boolean }> {
+	const read = await readParadisOfficeFile(fileService, resource, cache, PARADIS_SPREADSHEET_MAX_BYTES);
+	if (read.kind === 'cached') {
+		onSourceBytes?.(read.value.content.byteLength, read.value.content);
+		return { ...read.value, fromCache: true };
+	}
+	const content = read.content.value;
+	onSourceBytes?.(content.byteLength, content);
+	const workbook = await parseSpreadsheetContent(sharedProcessService, resource, content);
+	cache.set(resource, read.content.etag, { workbook, content }, estimateParadisWorkbookBytes(workbook, content));
+	return { workbook, content, fromCache: false };
+}
+
+/** 1 セルあたりの見積もり（値の文字列を除く）。書式のオブジェクトと配列の分。 */
+const ESTIMATED_CELL_BYTES = 320;
+
+/** ブックがメモリで占める大きさの見積もり。厳密ではなく、覚えておく分の追い出しの目安に使う。 */
+export function estimateParadisWorkbookBytes(workbook: IParadisWorkbookData, content: VSBuffer): number {
+	let bytes = content.byteLength;
+	for (const sheet of workbook.sheets) {
+		for (const shape of sheet.shapes ?? []) {
+			bytes += 256 + (shape.href?.length ?? 0) * 2;
+		}
+		for (const row of sheet.rows) {
+			for (const cell of row.cells) {
+				bytes += ESTIMATED_CELL_BYTES + cell.value.length * 2;
+			}
+		}
+	}
+	for (const drawings of Object.values(workbook.drawingsBySheet ?? {})) {
+		for (const drawing of drawings) {
+			bytes += drawing.xml.length * 2;
+			for (const text of [...Object.values(drawing.media), ...Object.values(drawing.metafileMedia ?? {}), ...Object.values(drawing.charts ?? {})]) {
+				bytes += text.length * 2;
+			}
+		}
+	}
+	return bytes;
+}
+
+async function parseSpreadsheetContent(sharedProcessService: ISharedProcessService, resource: URI, content: VSBuffer, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
+	throwIfNotWorkbook(resource, content);
+	const base64 = encodeBase64(content);
 	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]);
 
 	const drawings = raw.drawingsBySheet;
