@@ -18,6 +18,8 @@ import { ILogService } from '../../log/common/log.js';
 import type { IAction } from '../../../base/common/actions.js';
 import type { IDisposable } from '../../../base/common/lifecycle.js';
 import type { SingleOrMany } from '../../../base/common/types.js';
+// PARA-PATCH: the reattach tally that IPtyService#paradisTakeReattachTally answers with
+import type { IParadisReattachTally } from './paradisReattachTally.js';
 
 // PARA-PATCH: shared "do not attach" id, see paradisTerminalEditorRevive.ts and PtyService#getRevivedPtyNewId
 /**
@@ -382,6 +384,8 @@ export interface IPtyService {
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	// PARA-PATCH: tell the pty host that the app is quitting, so closing terminals leaves their background processes alone (paradisTerminalCloseCleanupQuit.ts)
 	paradisSetAppQuitting(quitting: boolean): Promise<void>;
+	// PARA-PATCH: what the startup reattach to the pty daemon came to, for the reattach diagnostics (paradisReattachTally.ts)
+	paradisTakeReattachTally(workspaceId: string): Promise<IParadisReattachTally | undefined>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
 	shutdownAll(): Promise<void>;
 

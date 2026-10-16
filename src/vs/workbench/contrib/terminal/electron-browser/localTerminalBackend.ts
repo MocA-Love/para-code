@@ -42,6 +42,8 @@ import { shouldUseEnvironmentVariableCollection } from '../../../../platform/ter
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 // PARA-PATCH: screens the pty daemon saved to disk, revived after an OS restart (see vs/paradis/contrib/ptyDaemon)
 import { paradisTakeSavedTerminalScreens } from '../../../../paradis/contrib/ptyDaemon/electron-browser/paradisTerminalScreenRestore.js';
+// PARA-PATCH: editor terminals wait for the startup revive before resolving their revived id (see vs/paradis/contrib/ptyDaemon)
+import { ParadisReviveGate } from '../../../../paradis/contrib/ptyDaemon/common/paradisReviveGate.js';
 
 export class LocalTerminalBackendContribution implements IWorkbenchContribution {
 
@@ -65,6 +67,8 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 	private _directProxyClientEventually: DeferredPromise<MessagePortClient> | undefined;
 	private _directProxy: IPtyService | undefined;
 	private readonly _directProxyDisposables = this._register(new MutableDisposable());
+	// PARA-PATCH: closed until getTerminalLayoutInfo has revived the saved terminals (paradisReviveGate.ts)
+	private readonly _paradisReviveGate = new ParadisReviveGate();
 
 	/**
 	 * Communicate to the direct proxy (renderer<->ptyhost) if it's available, otherwise use the
@@ -238,6 +242,11 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 	// PARA-PATCH: `paradisExpectedNonce` keeps a restored editor tab from attaching to another terminal
 	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		await this._connectToDirectProxy();
+		// PARA-PATCH: asking before the startup revive is done misses the revived pty, starts an empty shell and leaves the revived one unclaimed.
+		// Remote windows never revive through this backend, so they do not wait.
+		if (!this._remoteAgentService.getConnection()?.remoteAuthority) {
+			await this._paradisReviveGate.whenOpen();
+		}
 		try {
 			if (paradisRequireOrphanClaim && paradisExpectedNonce !== undefined) {
 				try {
@@ -384,6 +393,8 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 			}
 		}
 
+		// PARA-PATCH: the revive is done (or there was nothing to revive); let the editor terminals resolve their ids
+		this._paradisReviveGate.open();
 		return this._proxy.getTerminalLayoutInfo(layoutArgs);
 	}
 

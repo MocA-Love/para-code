@@ -103,6 +103,7 @@ import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contributi
 import './contrib/updateTerminals/electron-browser/paradisUpdateTerminals.contribution.js';
 import './contrib/updateTerminals/electron-browser/paradisStaleRemoteServer.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisTerminalScreens.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisReattachDiagnostics.contribution.js';
 import './contrib/terminalCloseCleanup/electron-browser/paradisTerminalCloseCleanupQuit.contribution.js';
 import './contrib/terminalRenderer/electron-browser/paradisRenderRepair.contribution.js';
 import './contrib/terminalIme/browser/paradisTerminalImeInputGate.contribution.js';

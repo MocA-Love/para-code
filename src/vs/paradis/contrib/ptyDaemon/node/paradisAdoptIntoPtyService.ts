@@ -23,6 +23,7 @@ import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTermina
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisDecodeLayout } from './paradisTerminalLayout.js';
 import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
+import { paradisRecordAdoption } from './paradisReattachTally.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {
@@ -135,6 +136,7 @@ export async function paradisAdoptIntoPtyService(
 	const result = await paradisAdoptTerminals(host);
 	if (!result.reachable) {
 		logService.warn('[ParadisPtyHost] could not ask the daemon what it holds; terminals it has are not lost, only unseen');
+		paradisRecordAdoption({ reachable: false, adopted: 0, skipped: 0 });
 		return { reachable: false, adopted: 0, skipped: 0 };
 	}
 
@@ -192,6 +194,7 @@ export async function paradisAdoptIntoPtyService(
 	await paradisRestoreLayouts(ptyService, host, result.adopted, idByHandle, logService);
 
 	logService.info(`[ParadisPtyHost] took over ${adopted} terminal(s) from the daemon${skipped > 0 ? `, left ${skipped} behind` : ''}`);
+	paradisRecordAdoption({ reachable: true, adopted, skipped });
 	return { reachable: true, adopted, skipped };
 }
 
