@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": false,
+		"noImplicitOverride": true,
+		"noImplicitReturns": true,
+		"useUnknownInCatchVariables": false,
+		"allowImportingTsExtensions": false,
+		"isolatedModules": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"useDefineForClassFields": false,
+		"types": ["node"],
+		"baseUrl": ".",
+		"paths": {
+			"@engine/*": ["../../src/vs/paradis/contrib/taskBoard/common/*"],
+			"@paradis-logos": ["../../src/vs/paradis/common/paradisAgentLogoPaths.ts"]
+		}
+	},
+	"include": ["src", "server", "test", "vite.config.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoard.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardFlow.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardEngine.ts", "../../src/vs/paradis/common/paradisAgentLogoPaths.ts"]
+}
