@@ -21,6 +21,7 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -41,7 +42,7 @@ import {
 } from '../common/paradisLimitsMonitor.js';
 import { PARADIS_CLAUDE_HOST_ACCOUNT_ID } from '../common/paradisClaudeAccounts.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
-import { ParadisLimitsMonitorClient, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
+import { ParadisLimitsMonitorClient, PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
 import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
 // 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
@@ -87,6 +88,18 @@ function paradisLimitsStatusSummary(account: IParadisLimitsAccount): string {
 			return account.statusDetail ?? localize('paradis.limitsMonitor.tooltipFetchFailed', "使用状況を取得できませんでした");
 	}
 }
+
+/** このウィンドウのタイトルバーの使用量パネル（いちばん新しく作られたもの）。 */
+let latestWidget: ParadisLimitsMonitorWidget | undefined;
+
+// メニューバーのアイコンから使用量パネルを開く。タイトルバーに出していない（設定でオフ）ときは、
+// 開く先が無いので「設定 (Para Code)」の使用量の節を開く。
+CommandsRegistry.registerCommand(PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, async accessor => {
+	if (latestWidget?.openPanel()) {
+		return;
+	}
+	await accessor.get(ICommandService).executeCommand('paradis.openSettingsDialog', 'psd-sec-usage');
+});
 
 /** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
 export function createParadisLimitsMonitorWidget(instantiationService: IInstantiationService, container: HTMLElement): IDisposable {
@@ -173,11 +186,26 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				this.applyEnabled();
 			}
 		}));
+		latestWidget = this;
 	}
 
 	override dispose(): void {
+		if (latestWidget === this) {
+			latestWidget = undefined;
+		}
 		this.button.remove();
 		super.dispose();
+	}
+
+	/** パネルを開く（開いていればそのまま）。タイトルバーに出していなければ false。 */
+	openPanel(): boolean {
+		if (!this.isEnabled()) {
+			return false;
+		}
+		if (!this.panel.value) {
+			this.togglePanel();
+		}
+		return true;
 	}
 
 	private isEnabled(): boolean {

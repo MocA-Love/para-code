@@ -15,7 +15,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISetTerminalLayoutInfoArgs } from '../../../../../platform/terminal/common/terminalProcess.js';
-import { paradisDecodeLayout, paradisEncodeLayout, paradisLayoutToRemember } from '../../node/paradisTerminalLayout.js';
+import { paradisDecodeLayout, paradisEncodeLayout, paradisLayoutToRemember, paradisMergeForeignLayout } from '../../node/paradisTerminalLayout.js';
 
 function layout(ids: number[], background: number[] = []): ISetTerminalLayoutInfoArgs {
 	return {
@@ -98,5 +98,38 @@ suite('ParadisTerminalLayout', () => {
 			// 1本でも分かれば、分かるものだけ預ける
 			partial: (JSON.parse(paradisLayoutToRemember(layout([1, 2]), known)!) as ISetTerminalLayoutInfoArgs).tabs[0].terminals.map(terminal => terminal.terminal),
 		}, { notStarted: undefined, none: '', partial: [10] });
+	});
+	test('別の pty ホストがまだ見ている端末のタブは、窓の配置で上書きせずに後ろへ残す', () => {
+		// 起動時に常駐が持っていた配置（更新前の版の窓が書いたもの）: handle 20,21 のタブと、背面の 22。
+		const foreignRaw = JSON.stringify({
+			workspaceId: 'ws-1',
+			tabs: [{ isActive: true, activePersistentProcessId: 20, terminals: [{ relativeSize: 0.5, terminal: 20 }, { relativeSize: 0.5, terminal: 21 }] }],
+			background: [22],
+		} satisfies ISetTerminalLayoutInfoArgs);
+		// 更新後の版の窓は、自分が起こした handle 30 だけの配置を書こうとする。
+		const own = paradisEncodeLayout(layout([3]), id => ({ 3: 30 })[id]);
+		// 21 はもう引き取って窓の配置に入っている、という場合も混ぜる。
+		const ownWith21 = paradisEncodeLayout(layout([3, 4]), id => ({ 3: 30, 4: 21 })[id]);
+
+		const merged = JSON.parse(paradisMergeForeignLayout('ws-1', own, foreignRaw, new Set([20, 21, 22]))) as ISetTerminalLayoutInfoArgs;
+		const mergedWith21 = JSON.parse(paradisMergeForeignLayout('ws-1', ownWith21, foreignRaw, new Set([20, 21, 22]))) as ISetTerminalLayoutInfoArgs;
+		const forget = JSON.parse(paradisMergeForeignLayout('ws-1', '', foreignRaw, new Set([22]))) as ISetTerminalLayoutInfoArgs;
+
+		assert.deepStrictEqual({
+			tabs: merged.tabs.map(tab => ({ isActive: tab.isActive, terminals: tab.terminals.map(terminal => terminal.terminal) })),
+			background: merged.background,
+			// 窓が持っている 21 は二重に足さない。
+			with21: mergedWith21.tabs.map(tab => tab.terminals.map(terminal => terminal.terminal)),
+			// 窓が「忘れて」と言っても、まだ見られている端末の分は残す。
+			forget: { tabs: forget.tabs.length, background: forget.background },
+			// 別の相手が見ている端末が無ければ、窓の配置をそのまま書く。
+			untouched: paradisMergeForeignLayout('ws-1', own, foreignRaw, new Set()) === own,
+		}, {
+			tabs: [{ isActive: true, terminals: [30] }, { isActive: false, terminals: [20, 21] }],
+			background: [22],
+			with21: [[30, 21], [20]],
+			forget: { tabs: 0, background: [22] },
+			untouched: true,
+		});
 	});
 });

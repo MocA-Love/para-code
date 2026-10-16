@@ -418,6 +418,22 @@ suite('Paradis CDP screenshot filter', () => {
 		});
 	});
 
+	test('a remote pane may put only the temporary copy of its own upload_file into a file input', async () => {
+		const staged = '/tmp/paradis-upload-test/report.csv';
+		const fixture = await createOpenBrowserProxyFixture(context({ isRemotePane: () => true, permitsRemoteFileInput: files => Array.isArray(files) && files.length === 1 && files[0] === staged }));
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'DOM.setFileInputFiles', params: { files: [staged], backendNodeId: 1 } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'DOM.setFileInputFiles', params: { files: [staged, '/etc/passwd'], backendNodeId: 1 } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'session-1', method: 'DOM.getFileInfo', params: { objectId: staged } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			refused: (parseSent(fixture.client) as Array<{ id: number; error?: { message: string } }>).filter(frame => frame.error?.message.includes('remote window (SSH, WSL, container)')).map(frame => frame.id),
+			upstream: (parseSent(fixture.upstream) as Array<{ id: number }>).map(frame => frame.id),
+		}, { refused: [2, 3], upstream: [1] });
+	});
+
 	test('page connections of a remote pane refuse file: navigation (navigate_page then take_snapshot cannot read local files)', () => {
 		const run = (remote: boolean) => {
 			const fixture = createProxyFixture(context({ isRemotePane: () => remote }));

@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { isDescendant, pathEquals } from './util';
+import { ParadisWorkingTreeBetween, paradisRepositoryBelongsToFolder } from './paradisUnaccountedToPark';
 
 /**
  * スペース切り替えで「今は見えないが、すぐ戻ってくる」リポジトリの待避所。
@@ -48,6 +49,8 @@ export interface IParadisParkedRepository {
 	 * いないと照合が黙って外れ、待避中のまま新しいリポジトリが作られてしまう。
 	 */
 	readonly rootRealPath?: string;
+	/** `Repository.kind`。リンクされたワークツリーは、外側のフォルダのスペースへ戻さない（`unparkForFolder`）。 */
+	readonly kind?: string;
 	/** 待避所から取り出して再びアクティブにする。 */
 	unpark(): void;
 	/** 本当に破棄する（待避上限を超えた場合と、信頼設定などで無効になった場合）。 */
@@ -88,7 +91,11 @@ export class ParadisRepositoryParkingLot {
 
 	private readonly parked = new Map<string, IParadisParkedRepository>();
 
-	constructor(private readonly logger: IParadisParkLogger, private limit: number = PARADIS_DEFAULT_PARK_LIMIT) { }
+	constructor(
+		private readonly logger: IParadisParkLogger,
+		private limit: number = PARADIS_DEFAULT_PARK_LIMIT,
+		private readonly hasWorkingTreeBetween: ParadisWorkingTreeBetween = () => false,
+	) { }
 
 	/** 今の上限。無制限なら `Infinity`。 */
 	get currentLimit(): number {
@@ -155,19 +162,19 @@ export class ParadisRepositoryParkingLot {
 	}
 
 	/**
-	 * このワークスペースフォルダに関係する待避リポジトリを全て復帰させる。
+	 * このワークスペースフォルダに属する待避リポジトリを全て復帰させる。
 	 *
-	 * upstream の破棄判定（`isDescendant(folder, repositoryRoot)`）と対になるよう、フォルダが
-	 * リポジトリの祖先である場合に加えて、リポジトリがフォルダの祖先である場合（リポジトリ内の
-	 * サブフォルダだけをスペースとして開いている場合）も復帰させる。
+	 * 属するかは `paradisRepositoryBelongsToFolder`（待避の選定と同じ規則）で決める。フォルダが
+	 * リポジトリの祖先である場合（入れ子のリポジトリ）に加えて、リポジトリがフォルダの祖先である
+	 * 場合（リポジトリ内のサブフォルダだけをスペースとして開いている場合）も復帰させる。ただし入れ子の
+	 * リンクされたワークツリーと、間に別の作業ツリーがある外側のリポジトリは、別のスペースなので戻さない。
 	 *
 	 * @returns 復帰させた件数。
 	 */
 	unparkForFolder(folderPath: string): number {
 		const matches: IParadisParkedRepository[] = [];
 		for (const entry of this.parked.values()) {
-			const roots = entry.rootRealPath !== undefined ? [entry.root, entry.rootRealPath] : [entry.root];
-			if (roots.some(root => pathEquals(root, folderPath) || isDescendant(folderPath, root) || isDescendant(root, folderPath))) {
+			if (paradisRepositoryBelongsToFolder(entry, folderPath, isDescendant, pathEquals, this.hasWorkingTreeBetween)) {
 				matches.push(entry);
 			}
 		}

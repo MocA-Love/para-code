@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ファイルのビューア（PDF・Markdown・画像）で、開いてから最初に描かれるまでの時間を Sentry へ送る。
+// ファイルのビューア（PDF・Markdown・画像・Excel・Word）で、開いてから最初に描かれるまでの時間を Sentry へ送る。
 //
 // 使い方（ビューアのエディタから）:
 //   const timing = startParadisViewerOpenTiming('pdf');   // 入力を受け取ったとき（setInput）
@@ -29,7 +29,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisSpanAttributes, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** 測るビューアの種類。 */
-export type ParadisViewerOpenKind = 'pdf' | 'markdown' | 'image';
+export type ParadisViewerOpenKind = 'pdf' | 'markdown' | 'image' | 'excel' | 'word';
 
 /** 1 件の計測を送る口。テストでは差し替える。 */
 export type ParadisViewerOpenRecorder = (attributes: ParadisSpanAttributes) => void;

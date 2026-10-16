@@ -57,8 +57,8 @@ import { paradisRegisterBrowserDownloads } from '../../paradis/contrib/browserDo
 // PARA-PATCH: pty daemon status channel for the status bar entry (see paradis/contrib/ptyDaemon)
 import { paradisRegisterPtyDaemonStatus } from '../../paradis/contrib/ptyDaemon/electron-main/paradisPtyDaemonStatusService.js';
 import { paradisRegisterUpdateTerminals } from '../../paradis/contrib/updateTerminals/electron-main/paradisUpdateTerminalsMain.js'; // PARA-PATCH: confirm ending kept terminals before restarting to update
-// PARA-PATCH: menu bar (tray) icon for the notification inbox (see paradis/contrib/notificationInbox)
-import { paradisRegisterNotificationTray } from '../../paradis/contrib/notificationInbox/electron-main/paradisNotificationTrayMain.js';
+// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage (see paradis/contrib/menuBar)
+import { paradisRegisterMenuBar } from '../../paradis/contrib/menuBar/electron-main/paradisMenuBarMain.js';
 import { paradisRegisterKeepAwake } from '../../paradis/contrib/keepAwake/electron-main/paradisKeepAwakeMain.js'; // PARA-PATCH: sleep prevention blockers owned per window (see paradis/contrib/keepAwake)
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
 import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
@@ -1581,8 +1581,8 @@ export class CodeApplication extends Disposable {
 		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
 		disposables.add(paradisRegisterUpdateTerminals(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IDialogMainService), this.configurationService, this.environmentMainService, this.productService, accessor.get(IUpdateService), this.lifecycleMainService, this.logService)); // PARA-PATCH: ask before ending terminals kept on remotes / the pty daemon when restarting to update (see paradis/contrib/updateTerminals)
 
-		// PARA-PATCH: menu bar (tray) icon for the notification inbox, off by default (see paradis/contrib/notificationInbox)
-		disposables.add(paradisRegisterNotificationTray(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
+		// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage, off by default (see paradis/contrib/menuBar)
+		disposables.add(paradisRegisterMenuBar(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
 		disposables.add(paradisRegisterKeepAwake(mainProcessElectronServer, accessor.get(IWindowsMainService))); // PARA-PATCH: stop a window's sleep prevention when it reloads, crashes and reopens, or closes (see paradis/contrib/keepAwake)
 
 		// allow-any-unicode-next-line

@@ -31,6 +31,8 @@ export type ParadisProgramStatusRunEnd =
 	| 'foreground'
 	/** 開いている間に新しい問い合わせが来た。 */
 	| 'requery'
+	/** 問い合わせ無しの Codex の状態で、受け付けを開き直した（前の受け付けの後に数えた件数を送る）。 */
+	| 'reopened'
 	/** ターミナルが閉じた。 */
 	| 'disposed';
 
@@ -72,6 +74,8 @@ export class ParadisProgramStatusRunStats {
 	/** 一度でも問い合わせに答えたか。答えていないターミナルに届いた状態は、Claude Code 以外の出力なので数えない。 */
 	private everOpened = false;
 	private cliVersion: string | undefined;
+	/** 受け付けを開いた相手。 */
+	private app: 'claude-code' | 'codex' | undefined;
 	private sent = 0;
 	private applied = 0;
 	private muted = 0;
@@ -85,10 +89,11 @@ export class ParadisProgramStatusRunStats {
 
 	constructor(private readonly now: () => number = Date.now) { }
 
-	/** 受け付けを開いた（問い合わせに答えた、Ctrl+Z の後に開き直した）。 */
-	opened(cliVersion: string | undefined): void {
+	/** 受け付けを開いた（問い合わせに答えた、Ctrl+Z の後に開き直した、Codex の状態が届いた）。 */
+	opened(cliVersion: string | undefined, app: 'claude-code' | 'codex' = 'claude-code'): void {
 		this.openedAt = this.now();
 		this.everOpened = true;
+		this.app = app;
 		this.noteCliVersion(cliVersion);
 	}
 
@@ -173,6 +178,7 @@ export class ParadisProgramStatusRunStats {
 			safe_unbound_drops: this.unbound,
 			safe_ipc_failures: this.ipcFailures,
 			...(this.cliVersion !== undefined ? { safe_cli_version: this.cliVersion } : {}),
+			...(this.app !== undefined ? { safe_app: this.app } : {}),
 		};
 		this.openedAt = undefined;
 		this.sent = this.applied = this.muted = this.gateClosed = this.unknownStates = this.tooLong = this.ignored = this.unbound = this.ipcFailures = 0;

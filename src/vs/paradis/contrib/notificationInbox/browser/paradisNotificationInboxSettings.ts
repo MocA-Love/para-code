@@ -47,7 +47,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.notifications.menuBarIcon', "メニューバー（Windows では通知領域）に Para Code のアイコンを表示します。対応が必要なペインがあると印が付き、メニューから最大 5 件のペインへ直接移動できます。Linux では表示されません。"),
+			markdownDescription: localize('paradis.notifications.menuBarIcon', "メニューバー（Windows では通知領域）に Para Code のアイコンを表示します。対応が必要なペインがあると点が付き、横に Claude Code と Codex の使用率を出せます。メニューから要対応のペインへ移動したり、アカウントごとの使用量を見たりできます。Linux では表示されません。"),
 		},
 	},
 });

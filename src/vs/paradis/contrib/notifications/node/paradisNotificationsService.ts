@@ -14,14 +14,17 @@
 
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, unlinkSync, writeFileSync, type Dirent } from 'fs';
-import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
+import { existsSync, readdirSync, realpath, statSync, type Dirent } from 'fs';
+import { chmod, copyFile, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
+import { promisify } from 'util';
+import { Sequencer } from '../../../../base/common/async.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { basename, delimiter, dirname, extname, join } from '../../../../base/common/path.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	AivisError,
@@ -117,6 +120,15 @@ function mimeTypeFor(filePath: string): string {
 		case '.webm': return 'audio/webm';
 		default: return 'audio/mpeg';
 	}
+}
+
+/** カスタム音源のメタ情報（`notification-custom.json`）。`sourceUrl` は後から足した項目で、無い JSON も読める。 */
+interface IParadisCustomRingtoneMetadata {
+	readonly name?: string;
+	readonly importedAt?: number;
+	readonly thumbnailUrl?: string;
+	readonly editState?: IParadisRingtoneEditState;
+	readonly sourceUrl?: string;
 }
 
 /** インストールログの購読用バッファ（yt-dlp/ffmpeg の `brew install` 進捗、UIはポーリングで取得）。 */
@@ -231,6 +243,8 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	private readonly _assetsDir: string;
 	private readonly _metadataPath: string;
 
+	/** カスタム音源のメタ情報の読み直し〜書き込み・削除を 1 本に並べる（{@link _updateMetadata}）。 */
+	private readonly _metadataSequencer = new Sequencer();
 	/**
 	 * downloadYouTubeAudio / downloadMyinstantsAudio が発行した一時音源 (tempId → { path, dir })。
 	 * Myinstants 由来のものだけ、取得した mp3 の URL（出典）を持つ。
@@ -346,7 +360,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				}
 			}));
 		}
-		this._sweepOrphanTempWorkDirs();
+		void this._sweepOrphanTempWorkDirs();
 	}
 
 	override dispose(): void {
@@ -374,11 +388,11 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 * 最終更新から一定年齢を超えたディレクトリだけを対象にする。同一マシンで別インスタンスが
 	 * 実行中の取得を持っていても、その作業ディレクトリは更新され続けているため触られない。
 	 */
-	private _sweepOrphanTempWorkDirs(): void {
+	private async _sweepOrphanTempWorkDirs(): Promise<void> {
 		const tmp = tmpdir();
 		let entries: Dirent[];
 		try {
-			entries = readdirSync(tmp, { withFileTypes: true });
+			entries = await readdir(tmp, { withFileTypes: true });
 		} catch (error) {
 			this.logService.warn(`[ParadisNotifications] failed to list ${tmp} for the temp work dir sweep: ${getErrorMessage(error)}`);
 			return;
@@ -389,7 +403,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			}
 			const dirPath = join(tmp, entry.name);
 			try {
-				if (Date.now() - statSync(dirPath).mtimeMs < ParadisNotificationsService.TEMP_WORK_DIR_MIN_AGE_MS) {
+				if (Date.now() - (await stat(dirPath)).mtimeMs < ParadisNotificationsService.TEMP_WORK_DIR_MIN_AGE_MS) {
 					continue;
 				}
 			} catch {
@@ -568,6 +582,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	/**
 	 * 着信音のジョブの前置き。鳴らせない（音量 0・ファイルが無い）なら undefined。aivis-mcp が前置きとして受け付けない
 	 * 大きさ（10MiB 超）なら 'direct'（Para Code が鳴らす）。
+	 *
+	 * ファイルの確認まで同期で行う。声の受け渡し（handOff）は `pendingRingtone` を読み、同じターンで消すか worker へ
+	 * 預ける。ここで await すると、その間に `startRingtone` / `onDropped` が同じ着信音をもう一度鳴らしうる。
 	 */
 	private _ringtonePrelude(ringtone: { readonly id: string; readonly volume: number }): IParadisIngestOpenOptions['prelude'] | 'direct' {
 		if (!(ringtone.volume > 0)) {
@@ -578,6 +595,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return undefined;
 		}
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- The ringtone handoff in the voice runner reads and clears pendingRingtone in the same turn; awaiting here would let startRingtone or onDropped play it a second time.
 			if (statSync(path).size > PARADIS_AIVIS_PRELUDE_MAX_BYTES) {
 				return 'direct';
 			}
@@ -884,7 +902,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		await this._playSoundFile(path, volume);
 	}
 
-	/** ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。 */
+	/**
+	 * ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。
+	 * {@link _ringtonePrelude} から同じターンで呼ばれるので同期のまま（理由はそちら）。
+	 */
 	private _resolveRingtonePath(ringtoneId: string): string | null {
 		if (this.testing.resolveRingtonePath) {
 			return this.testing.resolveRingtonePath(ringtoneId);
@@ -899,6 +920,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				return null;
 			}
 			const path = FileAccess.asFileUri(`vs/paradis/contrib/notifications/browser/media/sounds/${filename}`).fsPath;
+			// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 			return existsSync(path) ? path : null;
 		}
 		return null;
@@ -906,32 +928,36 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	// === カスタム音源 ============================================================================
 
-	private _ensureAssetsDir(): void {
-		if (!existsSync(this._assetsDir)) {
-			mkdirSync(this._assetsDir, { recursive: true, mode: 0o700 });
+	private async _ensureAssetsDir(): Promise<void> {
+		if (!await Promises.exists(this._assetsDir)) {
+			await mkdir(this._assetsDir, { recursive: true, mode: 0o700 });
 		}
 	}
 
+	/** 名前が `stem.` で始まる音源のうち最も新しいもの。{@link _resolveRingtonePath} 経由で着信音の前置きにも使うので同期のまま。 */
 	private _findFileByStem(stem: string, extensions: ReadonlySet<string>): string | null {
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		if (!existsSync(this._assetsDir)) {
 			return null;
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		const candidates = readdirSync(this._assetsDir).filter(file => file.startsWith(`${stem}.`) && extensions.has(extname(file).toLowerCase()));
 		if (candidates.length === 0) {
 			return null;
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		candidates.sort((a, b) => statSync(join(this._assetsDir, b)).mtimeMs - statSync(join(this._assetsDir, a)).mtimeMs);
 		return candidates[0] ?? null;
 	}
 
-	private _removeFilesByStem(stem: string): void {
-		if (!existsSync(this._assetsDir)) {
+	private async _removeFilesByStem(stem: string): Promise<void> {
+		if (!await Promises.exists(this._assetsDir)) {
 			return;
 		}
-		for (const file of readdirSync(this._assetsDir)) {
+		for (const file of await readdir(this._assetsDir)) {
 			if (file.startsWith(`${stem}.`)) {
 				try {
-					unlinkSync(join(this._assetsDir, file));
+					await unlink(join(this._assetsDir, file));
 				} catch {
 					// best effort
 				}
@@ -943,22 +969,33 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 * カスタム音源のメタ情報。`sourceUrl` は Myinstants から取り込んだ音の出典（後から足した項目。無い JSON は
 	 * 今までどおり読める）。YouTube 由来の出典は `editState.sourceUrl` にある。
 	 */
-	private _readMetadata(): { name?: string; importedAt?: number; thumbnailUrl?: string; editState?: IParadisRingtoneEditState; sourceUrl?: string } {
-		if (!existsSync(this._metadataPath)) {
+	private async _readMetadata(): Promise<IParadisCustomRingtoneMetadata> {
+		if (!await Promises.exists(this._metadataPath)) {
 			return {};
 		}
 		try {
-			return JSON.parse(readFileSync(this._metadataPath, 'utf8'));
+			return JSON.parse(await readFile(this._metadataPath, 'utf8'));
 		} catch {
 			return {};
 		}
 	}
 
-	private _writeMetadata(name: string, importedAt: number, thumbnailUrl?: string, editState?: IParadisRingtoneEditState, sourceUrl?: string): void {
-		this._ensureAssetsDir();
-		writeFileSync(this._metadataPath, JSON.stringify({ name, importedAt, ...(thumbnailUrl ? { thumbnailUrl } : {}), ...(editState ? { editState } : {}), ...(sourceUrl ? { sourceUrl } : {}) }), 'utf8');
+	/**
+	 * メタ情報を読み直して書き換える。読んでから書くまでの間に別の更新（名前の変更と切り出しの保存が重なったときなど）が
+	 * 入ると、後の書き込みが先の変更を消すので、更新は {@link _metadataSequencer} で 1 本ずつ行う。
+	 */
+	private _updateMetadata(update: (metadata: IParadisCustomRingtoneMetadata) => IParadisCustomRingtoneMetadata & { readonly name: string; readonly importedAt: number }): Promise<void> {
+		return this._metadataSequencer.queue(async () => {
+			const { name, importedAt, thumbnailUrl, editState, sourceUrl } = update(await this._readMetadata());
+			await this._writeMetadata(name, importedAt, thumbnailUrl, editState, sourceUrl);
+		});
+	}
+
+	private async _writeMetadata(name: string, importedAt: number, thumbnailUrl?: string, editState?: IParadisRingtoneEditState, sourceUrl?: string): Promise<void> {
+		await this._ensureAssetsDir();
+		await writeFile(this._metadataPath, JSON.stringify({ name, importedAt, ...(thumbnailUrl ? { thumbnailUrl } : {}), ...(editState ? { editState } : {}), ...(sourceUrl ? { sourceUrl } : {}) }), 'utf8');
 		try {
-			chmodSync(this._metadataPath, 0o600);
+			await chmod(this._metadataPath, 0o600);
 		} catch {
 			// best effort
 		}
@@ -969,7 +1006,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		if (!filename) {
 			return null;
 		}
-		const metadata = this._readMetadata();
+		const metadata = await this._readMetadata();
 		return {
 			id: CUSTOM_RINGTONE_ID,
 			name: metadata.name?.trim() || 'Custom Audio',
@@ -981,7 +1018,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	}
 
 	async getCustomEditState(): Promise<IParadisRingtoneEditState | null> {
-		return this._readMetadata().editState ?? null;
+		return (await this._readMetadata()).editState ?? null;
 	}
 
 	async importCustomAudio(sourceFsPath: string): Promise<IParadisCustomRingtoneInfo> {
@@ -990,52 +1027,54 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			// allow-any-unicode-next-line
 			throw new Error('.mp3、.wav、.ogg のみサポートしています');
 		}
-		const stat = statSync(sourceFsPath);
-		if (!stat.isFile()) {
+		const sourceStat = await stat(sourceFsPath);
+		if (!sourceStat.isFile()) {
 			// allow-any-unicode-next-line
 			throw new Error('指定されたパスはファイルではありません');
 		}
-		if (stat.size > PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES) {
+		if (sourceStat.size > PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES) {
 			// allow-any-unicode-next-line
-			throw new Error(`音源ファイルが大きすぎます (${Math.round(stat.size / 1024 / 1024)}MB)。最大20MBです。`);
+			throw new Error(`音源ファイルが大きすぎます (${Math.round(sourceStat.size / 1024 / 1024)}MB)。最大20MBです。`);
 		}
 
-		this._ensureAssetsDir();
+		await this._ensureAssetsDir();
 		const destination = join(this._assetsDir, `${CUSTOM_STEM}${ext}`);
 		const displayName = basename(sourceFsPath).replace(/\.[^/.]+$/, '').trim().slice(0, 80) || 'Custom Audio';
 
 		const tempPath = join(this._assetsDir, `.tmp-${CUSTOM_STEM}-${randomUUID()}${ext}`);
 		try {
 			await copyFile(sourceFsPath, tempPath);
-			this._removeFilesByStem(CUSTOM_STEM);
+			await this._removeFilesByStem(CUSTOM_STEM);
 			await rename(tempPath, destination);
 		} catch (error) {
 			await unlink(tempPath).catch(() => { /* ignore */ });
 			throw error;
 		}
 		try {
-			chmodSync(destination, 0o600);
+			await chmod(destination, 0o600);
 		} catch {
 			// best effort
 		}
 		// 直接インポートはYouTube由来ではないため再編集用ソース・editStateは残さない。
-		this._removeSourceFiles();
-		this._writeMetadata(displayName, Date.now());
+		await this._removeSourceFiles();
+		await this._updateMetadata(() => ({ name: displayName, importedAt: Date.now() }));
 
 		// allow-any-unicode-next-line
 		return { id: CUSTOM_RINGTONE_ID, name: displayName, description: 'Imported from your local machine', emoji: '🔊' };
 	}
 
 	async deleteCustomAudio(): Promise<void> {
-		this._removeFilesByStem(CUSTOM_STEM);
-		this._removeSourceFiles();
-		if (existsSync(this._metadataPath)) {
-			try {
-				unlinkSync(this._metadataPath);
-			} catch {
-				// best effort
+		await this._removeFilesByStem(CUSTOM_STEM);
+		await this._removeSourceFiles();
+		await this._metadataSequencer.queue(async () => {
+			if (await Promises.exists(this._metadataPath)) {
+				try {
+					await unlink(this._metadataPath);
+				} catch {
+					// best effort
+				}
 			}
-		}
+		});
 	}
 
 	async renameCustomAudio(name: string): Promise<IParadisCustomRingtoneInfo> {
@@ -1045,8 +1084,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			throw new Error('カスタム音源が見つかりません');
 		}
 		const displayName = name.trim().slice(0, 80) || 'Custom Audio';
-		const metadata = this._readMetadata();
-		this._writeMetadata(displayName, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, metadata.editState, metadata.sourceUrl);
+		await this._updateMetadata(metadata => ({ ...metadata, name: displayName, importedAt: metadata.importedAt ?? Date.now() }));
 		return { ...existing, name: displayName };
 	}
 
@@ -1062,14 +1100,14 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 
 	// --- 再編集用ソース保存 ---------------------------------------------------------------------
 
-	private _removeSourceFiles(): void {
-		if (!existsSync(this._assetsDir)) {
+	private async _removeSourceFiles(): Promise<void> {
+		if (!await Promises.exists(this._assetsDir)) {
 			return;
 		}
-		for (const file of readdirSync(this._assetsDir)) {
+		for (const file of await readdir(this._assetsDir)) {
 			if (file.startsWith(`${CUSTOM_SOURCE_STEM}.`)) {
 				try {
-					unlinkSync(join(this._assetsDir, file));
+					await unlink(join(this._assetsDir, file));
 				} catch {
 					// best effort
 				}
@@ -1083,20 +1121,20 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	}
 
 	private async _saveCustomSource(sourcePath: string): Promise<void> {
-		this._ensureAssetsDir();
+		await this._ensureAssetsDir();
 		const ext = extname(sourcePath).toLowerCase();
 		const destination = join(this._assetsDir, `${CUSTOM_SOURCE_STEM}${ext}`);
 		const tempPath = join(this._assetsDir, `.tmp-${CUSTOM_SOURCE_STEM}-${randomUUID()}${ext}`);
 		try {
 			await copyFile(sourcePath, tempPath);
-			this._removeSourceFiles();
+			await this._removeSourceFiles();
 			await rename(tempPath, destination);
 		} catch (error) {
 			await unlink(tempPath).catch(() => { /* ignore */ });
 			throw error;
 		}
 		try {
-			chmodSync(destination, 0o600);
+			await chmod(destination, 0o600);
 		} catch {
 			// best effort
 		}
@@ -1138,7 +1176,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				continue;
 			}
 			const candidate = join(dir, process.platform === 'win32' ? `${binary}.exe` : binary);
-			if (existsSync(candidate) && statSync(candidate).isFile()) {
+			if (await Promises.exists(candidate) && (await stat(candidate)).isFile()) {
 				return candidate;
 			}
 		}
@@ -1203,28 +1241,29 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return undefined;
 		}
 		const assessment = paradisAssessYtDlpVersion(version, Date.now());
-		const [realPath, head] = this._readBinaryIdentity(binaryPath);
+		const [realPath, head] = await this._readBinaryIdentity(binaryPath);
 		const installMethod = paradisDetectYtDlpInstallMethod(realPath, head);
 		return { version: version.raw, status: assessment.status, ageDays: assessment.ageDays, installMethod, update: paradisYtDlpUpdatePlan(installMethod) };
 	}
 
 	/** 実行ファイルのシンボリックリンクを解いた実体のパスと、先頭 512 バイト（入れ方の見分けに使う）。 */
-	private _readBinaryIdentity(binaryPath: string): [string, string] {
+	private async _readBinaryIdentity(binaryPath: string): Promise<[string, string]> {
 		let realPath = binaryPath;
 		try {
-			realPath = realpathSync(binaryPath);
+			// realpathSync と同じ JS の実装（fs/promises の realpath は native で、Windows の subst などで結果が変わる）
+			realPath = await promisify(realpath)(binaryPath);
 		} catch {
 			// 解けなければ見つけたパスのまま
 		}
 		let head = '';
 		try {
-			const fd = openSync(realPath, 'r');
+			const handle = await open(realPath, 'r');
 			try {
 				const buffer = Buffer.alloc(512);
-				const read = readSync(fd, buffer, 0, buffer.length, 0);
-				head = buffer.subarray(0, read).toString('latin1');
+				const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+				head = buffer.subarray(0, bytesRead).toString('latin1');
 			} finally {
-				closeSync(fd);
+				await handle.close();
 			}
 		} catch {
 			// 読めなければパスだけで見分ける
@@ -1421,19 +1460,30 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		});
 	}
 
-	private _findProducedAudio(workDir: string): string | null {
-		if (!existsSync(workDir)) {
+	private async _findProducedAudio(workDir: string): Promise<string | null> {
+		if (!await Promises.exists(workDir)) {
 			return null;
 		}
-		const candidates = readdirSync(workDir)
-			.filter(name => OUTPUT_EXTENSIONS.has(extname(name).toLowerCase()))
-			.map(name => join(workDir, name))
-			.filter(p => { try { return statSync(p).isFile() && statSync(p).size > 0; } catch { return false; } });
+		const candidates: { readonly path: string; readonly mtimeMs: number }[] = [];
+		for (const name of await readdir(workDir)) {
+			if (!OUTPUT_EXTENSIONS.has(extname(name).toLowerCase())) {
+				continue;
+			}
+			const path = join(workDir, name);
+			try {
+				const fileStat = await stat(path);
+				if (fileStat.isFile() && fileStat.size > 0) {
+					candidates.push({ path, mtimeMs: fileStat.mtimeMs });
+				}
+			} catch {
+				// 消えた・読めない
+			}
+		}
 		if (candidates.length === 0) {
 			return null;
 		}
-		candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-		return candidates[0] ?? null;
+		candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+		return candidates[0]?.path ?? null;
 	}
 
 	async downloadYouTubeAudio(url: string): Promise<IParadisYouTubeDownloadResult> {
@@ -1493,7 +1543,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 
 		const { precursors } = this._logYtDlpWarnings(stderr);
-		const producedPath = this._findProducedAudio(workDir);
+		const producedPath = await this._findProducedAudio(workDir);
 		if (!producedPath) {
 			await rm(workDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
 			// 「非公開」と決めつけない。理由が分からないときは、まず yt-dlp の更新を勧める。
@@ -1756,7 +1806,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 		await this.importCustomAudio(entry.path);
 		const name = displayName.trim().slice(0, 80) || paradisMyinstantsDisplayName(basename(new URL(entry.myinstantsSourceUrl).pathname));
-		this._writeMetadata(name, Date.now(), undefined, undefined, entry.myinstantsSourceUrl);
+		await this._updateMetadata(() => ({ name, importedAt: Date.now(), sourceUrl: entry.myinstantsSourceUrl }));
 		await this.cleanupTempAudio(tempId);
 		return (await this.getCustomRingtoneInfo())!;
 	}
@@ -1816,17 +1866,17 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				await this.renameCustomAudio(displayName);
 			}
 			if (request.thumbnailUrl) {
-				const metadata = this._readMetadata();
-				this._writeMetadata(metadata.name ?? result.name, metadata.importedAt ?? Date.now(), request.thumbnailUrl, metadata.editState);
+				await this._updateMetadata(metadata => ({ name: metadata.name ?? result.name, importedAt: metadata.importedAt ?? Date.now(), thumbnailUrl: request.thumbnailUrl, editState: metadata.editState }));
 			}
 
 			// 再編集用にソース音源と編集パラメータを保存する。
 			await this._saveCustomSource(inputPath);
-			const metadata = this._readMetadata();
-			this._writeMetadata(metadata.name ?? result.name, metadata.importedAt ?? Date.now(), metadata.thumbnailUrl, {
-				startSeconds, endSeconds, fadeInSeconds: request.fadeInSeconds, fadeOutSeconds: request.fadeOutSeconds,
-				playbackRate, sourceTitle: request.sourceTitle, sourceUrl: request.sourceUrl,
-			});
+			await this._updateMetadata(metadata => ({
+				name: metadata.name ?? result.name, importedAt: metadata.importedAt ?? Date.now(), thumbnailUrl: metadata.thumbnailUrl, editState: {
+					startSeconds, endSeconds, fadeInSeconds: request.fadeInSeconds, fadeOutSeconds: request.fadeOutSeconds,
+					playbackRate, sourceTitle: request.sourceTitle, sourceUrl: request.sourceUrl,
+				},
+			}));
 
 			return (await this.getCustomRingtoneInfo())!;
 		} finally {
@@ -2115,7 +2165,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	 * macOS: afplay -v、Linux: 利用可能な音声プレイヤーを順に試行、Windows: PowerShell。
 	 */
 	private async _playSoundFile(soundPath: string, volume: number): Promise<void> {
-		if (!existsSync(soundPath)) {
+		if (!await Promises.exists(soundPath)) {
 			this.logService.warn(`[ParadisNotifications] sound file not found: ${soundPath}`);
 			return;
 		}

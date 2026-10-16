@@ -659,11 +659,13 @@ export class ParadisMcpStdioLineBuffer {
 }
 
 function readParadisMcpPortFileBoundedSync(path: string): string {
+	// eslint-disable-next-line local/code-no-sync-fs -- Runs in the standalone stdio shim process, not in Para Code. Each stdin line resolves the port and sends its request in the same turn, so requests reach the server in stdin order.
 	const file = openSync(path, 'r');
 	try {
 		const buffer = Buffer.allocUnsafe(PARADIS_MCP_MAX_PORT_FILE_BYTES + 1);
 		let bytesRead = 0;
 		while (bytesRead < buffer.length) {
+			// eslint-disable-next-line local/code-no-sync-fs -- Standalone shim process; keeps requests in stdin order (see above).
 			const read = readSync(file, buffer, bytesRead, buffer.length - bytesRead, null);
 			if (read === 0) {
 				break;
@@ -675,6 +677,7 @@ function readParadisMcpPortFileBoundedSync(path: string): string {
 		}
 		return buffer.subarray(0, bytesRead).toString('utf8');
 	} finally {
+		// eslint-disable-next-line local/code-no-sync-fs -- Standalone shim process; keeps requests in stdin order (see above).
 		closeSync(file);
 	}
 }
