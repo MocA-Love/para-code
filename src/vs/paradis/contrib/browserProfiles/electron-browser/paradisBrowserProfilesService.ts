@@ -59,6 +59,7 @@ import {
 	paradisSerializeProfiles,
 } from '../common/paradisBrowserProfileModel.js';
 import { paradisRegisterBrowserProfileRouter } from '../common/paradisBrowserProfileRouting.js';
+import { IParadisBrowserSpaceDefaultsService } from './paradisBrowserSpaceDefaultsService.js';
 
 /** プロファイル台帳（表示名・色・時刻）。マシン固有なので同期しない。 */
 const PROFILES_STORAGE_KEY = PARADIS_BROWSER_PROFILES_STORAGE_KEY;
@@ -188,6 +189,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisBrowserSpaceDefaultsService private readonly spaceDefaultsService: IParadisBrowserSpaceDefaultsService,
 	) {
 		super();
 
@@ -199,6 +201,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 			this.storageService.get(PROFILES_STORAGE_KEY, StorageScope.APPLICATION),
 		);
 		this._restoreViewOverrides();
+		this._pruneSpaceDefaults();
 
 		// ルーターの登録は台帳の復元より後。復元前に登録すると、まだ対応を知らないまま
 		// 復元中のビューへ fallback（グローバル等）を返してしまい、ログイン状態が消えたように見える。
@@ -215,6 +218,8 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 				return;
 			}
 			this._profiles = paradisDeserializeProfiles(this.storageService.get(PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
+			// 他のウィンドウで消されたプロファイルを、スペースの既定からも外す。
+			this._pruneSpaceDefaults();
 			this._onDidChangeProfiles.fire();
 		}));
 
@@ -293,6 +298,8 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		}
 		this._persistProfiles(profileId);
 		this._persistViewOverrides();
+		// スペースの既定からも外す。残すと、そのスペースの新しいタブが設定どおりに戻らない。
+		this._pruneSpaceDefaults({ evenIfLedgerIsEmpty: true });
 		await this._clearProfileDataInMain(profileId);
 	}
 
@@ -402,22 +409,70 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 
 	/**
 	 * upstream から渡ってくる唯一の判断点。優先順位は
-	 * 「これから開くと決めたもの（pending）」→「復元用の対応表」→「upstream の既定」。
+	 * 「これから開くと決めたもの（pending）」→「復元用の対応表」→「スペースの既定（新しいタブだけ）」
+	 * →「upstream の既定」。
 	 *
 	 * 信頼していないワークスペースでは必ず fallback（upstream がエフェメラルへ倒したもの）を
 	 * 返す。ここで上書きすると、信頼していないフォルダを開いているだけで Cookie が永続化
 	 * されることになり、upstream の安全側の判断を黙って壊してしまう。
+	 *
+	 * エージェントが開くタブ（Agent スコープ）は upstream がセッションを指定して作るので、
+	 * そもそもここを通らない。スペースの既定はエージェントのタブには効かない。
 	 */
 	private _resolveSessionOptions(viewId: string, fallback: IBrowserViewSessionOptions): IBrowserViewSessionOptions {
 		const options = this._pending.get(viewId) ?? this._viewOverrides.get(viewId);
 		this._pending.delete(viewId);
-		if (!options || this._isWorkspaceUntrusted()) {
+		if (this._isWorkspaceUntrusted()) {
 			return fallback;
+		}
+		if (!options) {
+			return this._resolveSpaceDefault(viewId) ?? fallback;
 		}
 		if (options.scope === BrowserViewStorageScope.Profile) {
 			return this._profiles.some(profile => profile.id === options.profileId) ? options : fallback;
 		}
 		return options;
+	}
+
+	/**
+	 * ユーザーがスペースで新しく開いたタブに、そのスペースの既定を当てる。当てたら対応表にも
+	 * 書く: 書かないと、再起動して復元したときに既定ではなく upstream の既定で開き直してしまう
+	 * （復元するタブには既定を当てないため）。
+	 */
+	private _resolveSpaceDefault(viewId: string): IBrowserViewSessionOptions | undefined {
+		const target = this.spaceDefaultsService.getDefaultForNewView(viewId);
+		if (!target) {
+			return undefined;
+		}
+		if (target.kind === 'profile' && !this._profiles.some(profile => profile.id === target.profileId)) {
+			return undefined;
+		}
+		const options = target.kind === 'profile'
+			? paradisSessionOptionsFor(BrowserViewStorageScope.Profile, target.profileId)
+			: paradisSessionOptionsFor(target.scope);
+		if (!options) {
+			return undefined;
+		}
+		this._viewOverrides.set(viewId, options);
+		this._persistViewOverrides();
+		if (target.kind === 'profile') {
+			this.touch(target.profileId);
+		}
+		return options;
+	}
+
+	/**
+	 * 台帳に無いプロファイルを指すスペースの既定を外す。
+	 *
+	 * 起動時と他のウィンドウの変更では、台帳が空なら外さない: 壊れた台帳は空として読まれる
+	 * （paradisDeserializeProfiles）ので、そのまま刈ると全スペースの既定が一度に消える。
+	 * 外しそびれた既定は、ルーターが台帳に無いプロファイルを使わないので害は無い。
+	 */
+	private _pruneSpaceDefaults(options?: { readonly evenIfLedgerIsEmpty?: boolean }): void {
+		if (this._profiles.length === 0 && !options?.evenIfLedgerIsEmpty) {
+			return;
+		}
+		this.spaceDefaultsService.pruneProfiles(new Set(this._profiles.map(profile => profile.id)));
 	}
 
 	/** upstream の `_resolveStorageScope()` と同じ判定（あちらは private なので写している）。 */
