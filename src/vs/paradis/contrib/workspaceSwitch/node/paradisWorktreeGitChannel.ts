@@ -30,7 +30,7 @@ import { localize } from '../../../../nls.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithubResourceFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
-import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
+import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
@@ -99,6 +99,11 @@ const PARADIS_GH_UNAVAILABLE_RETRY_MS = 10 * 60_000;
  * 実行するため、対話から大量のURLが検出された回でもレート枠を食い潰さないよう先着で丸める。
  */
 const PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
+
+/** PR の状態を使い回すキー（作業ツリーのパスと今のブランチ）。 */
+function paradisPrStatusCacheKey(worktreePath: string, branch: string): string {
+	return `${worktreePath}\n${branch}`;
+}
 
 /** 使い回す PR・Issue の件数の上限（worktree と Issue の数に対して十分大きく）。 */
 const PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES = 1000;
@@ -198,9 +203,9 @@ export class ParadisWorktreeGitService {
 		/** PR・Issue の状態を使い回す時間の基準になる時計。テストからのみ差し替える。 */
 		now: () => number = Date.now,
 	) {
-		this.prStatusCache = new ParadisGithubLookupCache<IParadisPrStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, () => false, now);
-		// 閉じた Issue は開き直されない限り変わらないので取り直さない（開いているものだけ周期で取り直す）
-		this.issueStatusCache = new ParadisGithubLookupCache<IParadisIssueStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, status => status?.state === 'closed', now);
+		this.prStatusCache = new ParadisGithubLookupCache<IParadisPrStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, undefined, now);
+		// 閉じた Issue はめったに変わらないので、開いているものより長く（数時間）使い回す
+		this.issueStatusCache = new ParadisGithubLookupCache<IParadisIssueStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, status => status?.state === 'closed' ? PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS : undefined, now);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisWorktreeGit',
@@ -674,7 +679,7 @@ export class ParadisWorktreeGitService {
 		}
 		// ウィンドウごとの一覧とスマホのリレーが同じ worktree を別々に問い合わせるので、ここで使い回す。
 		// ブランチをキーに含めるので、切り替えた worktree は期限を待たずに取り直す
-		const key = `${worktreePath}\n${branch}`;
+		const key = paradisPrStatusCacheKey(worktreePath, branch);
 		// 今いるスペースは5分、それ以外は15分ごとに取り直す（どちらかは呼び出し元が maxAgeMs で決める）
 		const fresh = this.prStatusCache.getFresh(key, maxAgeMs);
 		if (fresh !== undefined) {
@@ -725,13 +730,17 @@ export class ParadisWorktreeGitService {
 		if (!branch || branch === 'HEAD') {
 			return { kind: 'none', reason: 'detached' };
 		}
+		const statusKey = paradisPrStatusCacheKey(worktreePath, branch);
 		try {
 			const stdout = await this.execGh(['pr', 'view', '--json', PARADIS_PR_DETAIL_FIELDS], worktreePath);
+			// 詳細の項目は一覧のチップの項目を含むので、取れた状態を一覧の使い回しにも書き込む
+			this.prStatusCache.set(statusKey, paradisParseGhPrStatus(stdout, branch));
 			const detail = paradisParseGhPullRequestDetail(stdout, branch);
 			return detail !== undefined ? { kind: 'ok', detail } : { kind: 'none', reason: 'no-pr' };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (paradisIsGithubNoPullRequestMessage(message)) {
+				this.prStatusCache.set(statusKey, undefined);
 				return { kind: 'none', reason: 'no-pr' };
 			}
 			if (this.isGhUnavailable(worktreePath) || /\bENOENT\b|command not found/i.test(message)) {
@@ -784,6 +793,9 @@ export class ParadisWorktreeGitService {
 			throw new Error('このリポジトリで使えるマージの方式が分かりませんでした。');
 		}
 		await this.execGh(['pr', 'merge', String(request.number), '-R', request.repo, `--${method}`, '--match-head-commit', request.headSha], worktreePath, { timeout: 60_000 });
+		// 一覧のチップが OPEN のまま残らないよう、この作業ツリーの使い回しを捨てて次の問い合わせで取り直させる
+		const prefix = paradisPrStatusCacheKey(worktreePath, '');
+		this.prStatusCache.deleteWhere(key => key.startsWith(prefix));
 		return { method };
 	}
 

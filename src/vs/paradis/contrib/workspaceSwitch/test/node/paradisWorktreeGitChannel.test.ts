@@ -807,27 +807,57 @@ suite('ParadisWorktreeGitService', () => {
 			});
 		});
 
-		test('does not ask again about closed issues, and refreshes open ones after the lifetime', async () => {
+		test('asks about closed issues only every two hours, so a reopened one comes back, and refreshes open ones after the lifetime', async () => {
 			const harness = createHarness();
 			const issue = (number: number, state: 'OPEN' | 'CLOSED') => JSON.stringify({ number, title: `Issue ${number}`, url: `https://github.com/o/r/issues/${number}`, state });
-			harness.state.respond = args => ({ stdout: args[2] === '1' ? issue(1, 'CLOSED') : issue(2, 'OPEN') });
+			let firstState: 'OPEN' | 'CLOSED' = 'CLOSED';
+			harness.state.respond = args => ({ stdout: args[2] === '1' ? issue(1, firstState) : issue(2, 'OPEN') });
 			const urls = ['https://github.com/o/r/issues/1', 'https://github.com/o/r/issues/2'];
 
 			const first = await harness.service.getIssueStatuses('/repo', urls);
 			await harness.service.getIssueStatuses('/repo-2', urls);
 			harness.state.now += 270_000;
 			const later = await harness.service.getIssueStatuses('/repo', urls);
+			const callsBeforeReopen = harness.state.ghCalls.map(args => args[2]);
+			// #1 が開き直された。2時間たてば取り直して開いた状態に戻る
+			firstState = 'OPEN';
+			harness.state.now += 2 * 60 * 60_000 - 270_000;
+			const reopened = await harness.service.getIssueStatuses('/repo', urls);
 
 			assert.deepStrictEqual({
 				states: Object.values(first.resolved).map(status => status.state),
 				attempted: later.attempted,
-				ghIssues: harness.state.ghCalls.map(args => args[2]),
+				callsBeforeReopen,
+				reopened: reopened.resolved[urls[0]]?.state,
 			}, {
 				states: ['closed', 'open'],
 				attempted: urls,
 				// 閉じた #1 は1回だけ。開いている #2 は期限が過ぎてから取り直す
-				ghIssues: ['1', '2', '2'],
+				callsBeforeReopen: ['1', '2', '2'],
+				reopened: 'open',
 			});
+		});
+
+		test('refetches the PR of a worktree right after it was merged from the phone, and reuses what the PR screen read', async () => {
+			const harness = createHarness();
+			const merged = JSON.stringify({ number: 12, title: 'Add sync', url: 'https://github.com/o/r/pull/12', state: 'MERGED', isDraft: false, headRefName: 'feature' });
+			const before = await harness.service.getPrStatus('/repo');
+			harness.state.respond = args => args[0] === 'repo'
+				? { stdout: JSON.stringify({ viewerDefaultMergeMethod: 'SQUASH', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true }) }
+				: args[1] === 'merge' ? { stdout: '' } : { stdout: merged };
+			await harness.service.mergePullRequest('/repo', { repo: 'o/r', number: 12, headSha: 'a'.repeat(40) });
+			const afterMerge = await harness.service.getPrStatus('/repo');
+			// スマホの PR の画面が読んだ状態は一覧でも使い回す（取り直さない）
+			await harness.service.getPullRequestDetail('/repo-2');
+			const callsBeforeList = harness.state.ghCalls.length;
+			const fromDetail = await harness.service.getPrStatus('/repo-2');
+
+			assert.deepStrictEqual({
+				before: before?.state,
+				afterMerge: afterMerge?.state,
+				fromDetail: fromDetail?.state,
+				listCallsAfterDetail: harness.state.ghCalls.length - callsBeforeList,
+			}, { before: 'open', afterMerge: 'merged', fromDetail: 'merged', listCallsAfterDetail: 0 });
 		});
 	});
 
