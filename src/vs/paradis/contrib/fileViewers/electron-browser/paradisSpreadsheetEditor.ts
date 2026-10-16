@@ -54,7 +54,7 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applySh
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
-import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, openSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
+import { applySpreadsheetMetafiles, collectSpreadsheetSemanticDiagnostics, convertSpreadsheetMetafiles, estimateParadisWorkbookBytes, hasPendingSpreadsheetMetafiles, openSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, warmSpreadsheetParser, type IParadisSpreadsheetOpenCacheValue } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 import { ParadisSpreadsheetGridRenderer, type ParadisSpreadsheetGridTile } from '../browser/spreadsheet/paradisSpreadsheetGridRenderer.js';
@@ -775,6 +775,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 
 		const resource = (input as ParadisSpreadsheetInput).resource;
+		// ファイルを読み出している間に、解析の worker を起動して exceljs を読み込ませておく。
+		warmSpreadsheetParser(this._sharedProcessService);
 		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
 		// 母数は「利用者が1つのブックを開いた」回数。同じブックならタブを往復しても増えない。
 		this._probe.beginOpen(resource.toString(), this._diagnosticEngine());

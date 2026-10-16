@@ -97,6 +97,11 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		entry: 'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
 		lists: ['desktopEntryPoints', 'serverEntryPoints'],
 	},
+	{
+		// shared process が worker_threads で起動する、Excel のブックを表示用に解析する worker（同じくパスを指定して起動する）
+		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
+		lists: ['desktopEntryPoints'],
+	},
 ];
 
 suite('Para Code entry points ship in the esbuild bundle', () => {
