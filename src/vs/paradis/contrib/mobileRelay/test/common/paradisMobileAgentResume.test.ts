@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { IParadisResumeSession } from '../../../sessionResume/common/paradisSessionResume.js';
+import { IParadisResumeSession, paradisAgentResumeCommandLine } from '../../../sessionResume/common/paradisSessionResume.js';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
 import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
 import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
@@ -74,6 +74,9 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			claudeShort: paradisResumedSessionOfCommand(`claude -r '0f7c1d2e-session' --model opus`),
 			claudeEquals: paradisResumedSessionOfCommand('claude --resume=0f7c1d2e-session'),
 			codex: paradisResumedSessionOfCommand('codex resume 019a-thread'),
+			// Para Code が打つ再開（確認ありの権限を明示した形）も、同じ会話として読む
+			codexWithPermissions: paradisResumedSessionOfCommand(paradisAgentResumeCommandLine('codex', '019a-thread', 'resume') ?? ''),
+			codexForkWithPermissions: paradisResumedSessionOfCommand(paradisAgentResumeCommandLine('codex', '019a-thread', 'fork') ?? ''),
 			fork: paradisResumedSessionOfCommand('claude --resume 0f7c1d2e-session --fork-session'),
 			picker: paradisResumedSessionOfCommand('claude --resume --model opus'),
 			fresh: paradisResumedSessionOfCommand('claude'),
@@ -83,6 +86,8 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			claudeShort: { agent: 'claude', sessionId: '0f7c1d2e-session' },
 			claudeEquals: { agent: 'claude', sessionId: '0f7c1d2e-session' },
 			codex: { agent: 'codex', sessionId: '019a-thread' },
+			codexWithPermissions: { agent: 'codex', sessionId: '019a-thread' },
+			codexForkWithPermissions: undefined,
 			fork: undefined,
 			picker: undefined,
 			fresh: undefined,
