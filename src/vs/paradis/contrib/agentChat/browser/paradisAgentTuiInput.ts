@@ -15,6 +15,7 @@
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisCodexApprovalFormHeadingAt } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 
 /**
  * 質問の選択肢が画面に出るのを待つ上限。ここを過ぎたら待たずに流す（送信を止める門ではない）。
@@ -93,6 +94,18 @@ export function paradisScreenShowsMarker(screen: string, marker: string): boolea
 const PROMPT_REGION_LINES = 14;
 
 /**
+ * Codex の確認の画面は背が高い（理由の `Reason:` の折り返し、複数行のコマンド、MCP のツールの引数の行と、その間の空行）。
+ * codex-cli 0.162.1 の実画面では、コマンドの許可の見出し `Would you like to run the following command?` が下から 18 行目にあり、
+ * {@link PROMPT_REGION_LINES} 行の範囲から外れて、ボード・チャット表示から答えられなかった。最下部に Codex の確認の操作説明
+ * （{@link showsCodexPromptFooter}）が出ているときだけ、許可の見出しを探す範囲をこの行数へ広げる。操作説明が
+ * 最下部にある限り、確認の画面がそこに出ているので、上に残る会話の本文を確認と取り違える心配は増えない。
+ */
+const CODEX_PROMPT_REGION_LINES = 40;
+
+/** 見出しの文言が折り返しでまたがる行数の上限（狭いペインで 2〜3 行に分かれる）。 */
+const PROMPT_HEADING_SPAN_LINES = 4;
+
+/**
  * 許可の確認の文言（空白を除いた小文字）。【推測】Claude Code 2.1 系と Codex 0.14x の表示から取った
  * （実測したキー注入の文言ではない）。文言が変わると見落とす（＝従来どおり送る）方向に外れる。
  */
@@ -106,7 +119,7 @@ const PERMISSION_PROMPT_MARKERS: readonly string[] = [
 	// 計画が空の ExitPlanMode（Claude Code 2.1.283 の実画面: `Exit plan mode?` / `Claude wants to exit plan mode` /
 	// `❯ 1. Yes, and switch to default (ask each time) for this session`）
 	'exitplanmode?',
-	// Codex の承認
+	// Codex の承認（MCP のツールの許可のフォームは文言ではなく見出しの行の形で見る。permissionHeadingEndsAt）
 	'wouldyouliketorunthefollowingcommand',
 	'wouldyouliketomakethefollowingedits',
 	'allowcommand?',
@@ -138,34 +151,69 @@ function compact(text: string): string {
 	return text.replace(/\s+/g, '').toLowerCase();
 }
 
-/** 見えている範囲の下端の行（末尾の空行は除く）。 */
-function promptRegion(screen: string): string[] {
+/** 末尾の空行を除いた行。 */
+function screenLines(screen: string): string[] {
 	const lines = screen.split('\n');
 	while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) {
 		lines.pop();
 	}
-	return lines.slice(-PROMPT_REGION_LINES);
+	return lines;
+}
+
+/** 見えている範囲の下端の行（末尾の空行は除く）。 */
+function promptRegion(screen: string): string[] {
+	return screenLines(screen).slice(-PROMPT_REGION_LINES);
+}
+
+/** Codex の確認の操作説明（空白を除いた小文字）。文言を丸ごと照らす。 */
+const CODEX_PROMPT_FOOTERS: readonly string[] = ['pressentertoconfirmoresctocancel', 'entertosubmit|esctocancel'];
+
+/**
+ * 最下部（末尾の 2 行。狭いペインでは操作説明が折り返す）に、Codex の確認の操作説明が出ているか。コマンド・編集の承認は
+ * `Press enter to confirm or esc to cancel`（codex-rs/tui/src/bottom_pane/approval_overlay.rs）、MCP のツールの許可は
+ * `enter to submit | esc to cancel`（mcp_server_elicitation.rs）。Claude Code の `Esc to cancel · Tab to amend` と
+ * Codex の質問の `enter to submit answer | esc to interrupt` は当たらない。
+ */
+function showsCodexPromptFooter(lines: readonly string[]): boolean {
+	const footer = compact(lines.slice(-2).join(''));
+	return CODEX_PROMPT_FOOTERS.some(text => footer.includes(text));
+}
+
+/** 許可の確認を探す範囲。Codex の確認の操作説明が最下部にあれば広げる（{@link CODEX_PROMPT_REGION_LINES}）。 */
+function permissionRegion(screen: string): string[] {
+	const lines = screenLines(screen);
+	return lines.slice(-(showsCodexPromptFooter(lines) ? CODEX_PROMPT_REGION_LINES : PROMPT_REGION_LINES));
 }
 
 /**
- * 下端の範囲に、いずれかの文言があり、しかもその後ろに選択肢の1行目が続いているか。折り返しで文言が
- * 2行にまたがっても見つけられるよう、行を足しながら空白を除いて照合する。
+ * 許可の確認の見出しが `index` の行で終わるか。文言は折り返しで数行にまたがってもよい（空白を除いて照合する）。
+ * Codex の MCP のツールの許可のフォームは、見出しの `Field 1/1` の行（最初の選択肢が `1. Allow` のときだけ）。
  */
-function regionShowsPromptWithOptions(lines: readonly string[], markers: readonly string[]): boolean {
-	let joined = '';
-	for (let index = 0; index < lines.length; index++) {
-		joined += compact(lines[index]);
-		if (markers.some(marker => joined.includes(marker))) {
-			const after = lines.slice(index + 1);
-			if (!after.some(line => FIRST_OPTION_LINE.test(line))) {
-				return false;
-			}
-			// 文言と選択肢の後ろに入力欄が出ていれば、それは本文の中の例示（確認の画面ではない）。
-			const idleInput = after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
-			return !idleInput;
+function permissionHeadingEndsAt(lines: readonly string[], index: number): boolean {
+	const from = Math.max(0, index - PROMPT_HEADING_SPAN_LINES + 1);
+	const through = compact(lines.slice(from, index + 1).join(''));
+	const before = compact(lines.slice(from, index).join(''));
+	return PERMISSION_PROMPT_MARKERS.some(marker => through.includes(marker) && !before.includes(marker))
+		|| paradisCodexApprovalFormHeadingAt(lines, index);
+}
+
+/**
+ * 範囲の中で、いちばん下にある許可の確認の見出しの行。その後ろに選択肢の 1 行目が続き、入力欄が出ていないときだけ
+ * （文言と選択肢の後ろに入力欄が出ていれば、それは本文の中の例示）。見つからなければ -1。
+ */
+function permissionHeadingIndex(lines: readonly string[]): number {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		if (!permissionHeadingEndsAt(lines, index)) {
+			continue;
 		}
+		const after = lines.slice(index + 1);
+		if (!after.some(line => FIRST_OPTION_LINE.test(line))) {
+			return -1;
+		}
+		const idleInput = after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
+		return idleInput ? -1 : index;
 	}
-	return false;
+	return -1;
 }
 
 /**
@@ -177,32 +225,26 @@ function regionShowsPromptWithOptions(lines: readonly string[], markers: readonl
  * 同じ確認のままかを照らし合わせるのに使う。
  */
 export function paradisPermissionPromptParts(screen: string): { readonly context: string; readonly options: string } | undefined {
-	const lines = promptRegion(screen);
-	let joined = '';
-	for (let index = 0; index < lines.length; index++) {
-		joined += compact(lines[index]);
-		if (PERMISSION_PROMPT_MARKERS.some(marker => joined.includes(marker))) {
-			if (!regionShowsPromptWithOptions(lines, PERMISSION_PROMPT_MARKERS)) {
-				return undefined;
-			}
-			// 見出しの上は、確認の枠の上端の横線か、空行が 2 つ続くところまで（最大 PROMPT_CONTEXT_LINES 行の中身）。
-			// Claude Code の確認は「横線 / Bash command / 空行 / コマンド / 説明 / 空行 / 見出し」の形で、1 つの空行では止めない。
-			let top = index;
-			let filled = 0;
-			while (top > 0 && filled < PROMPT_CONTEXT_LINES) {
-				const above = lines[top - 1];
-				if (HORIZONTAL_RULE_LINE.test(above) || (above.trim().length === 0 && top > 1 && lines[top - 2].trim().length === 0)) {
-					break;
-				}
-				top--;
-				if (above.trim().length > 0) {
-					filled++;
-				}
-			}
-			return { context: lines.slice(top, index + 1).join('\n'), options: lines.slice(index + 1).join('\n') };
+	const lines = permissionRegion(screen);
+	const index = permissionHeadingIndex(lines);
+	if (index < 0) {
+		return undefined;
+	}
+	// 見出しの上は、確認の枠の上端の横線か、空行が 2 つ続くところまで（最大 PROMPT_CONTEXT_LINES 行の中身）。
+	// Claude Code の確認は「横線 / Bash command / 空行 / コマンド / 説明 / 空行 / 見出し」の形で、1 つの空行では止めない。
+	let top = index;
+	let filled = 0;
+	while (top > 0 && filled < PROMPT_CONTEXT_LINES) {
+		const above = lines[top - 1];
+		if (HORIZONTAL_RULE_LINE.test(above) || (above.trim().length === 0 && top > 1 && lines[top - 2].trim().length === 0)) {
+			break;
+		}
+		top--;
+		if (above.trim().length > 0) {
+			filled++;
 		}
 	}
-	return undefined;
+	return { context: lines.slice(top, index + 1).join('\n'), options: lines.slice(index + 1).join('\n') };
 }
 
 /** 許可の確認の見出しの上から、照らし合わせに含める行の数。 */
@@ -223,7 +265,7 @@ export function paradisPermissionPromptHash(context: string): string {
  * 選択肢の行が見えているときだけ true（会話の本文に同じ文言があるだけでは反応しない）。
  */
 export function paradisScreenShowsPermissionPrompt(screen: string): boolean {
-	return regionShowsPromptWithOptions(promptRegion(screen), PERMISSION_PROMPT_MARKERS);
+	return permissionHeadingIndex(permissionRegion(screen)) >= 0;
 }
 
 /** 画面の下端に、質問の選択の画面（操作説明か回答の確認）が出ているか。 */
@@ -241,9 +283,13 @@ export function paradisScreenShowsAgentPrompt(screen: string): boolean {
 	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen);
 }
 
-/** 画面の下端に、この一片（空白を除いたもの）が見えているか。 */
+/**
+ * 画面の下端の許可の確認（{@link paradisPermissionPromptParts} の、見出しの上の行から最下部まで）に、この一片が見えているか。
+ * 空白と改行は見ない（理由やコマンドが折り返していても当たる）。確認の外（上に残る会話の本文）は見ない。
+ */
 export function paradisPromptRegionShows(screen: string, piece: string): boolean {
-	return compact(promptRegion(screen).join('\n')).includes(compact(piece));
+	const prompt = paradisPermissionPromptParts(screen);
+	return prompt !== undefined && compact(piece).length > 0 && compact(`${prompt.context}\n${prompt.options}`).includes(compact(piece));
 }
 
 /** 打鍵の送り先（ITerminalInstance の必要な部分だけ。テストで差し替えられるように）。 */
