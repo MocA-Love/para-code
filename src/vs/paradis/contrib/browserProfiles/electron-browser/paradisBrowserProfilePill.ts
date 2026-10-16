@@ -23,6 +23,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
+import { toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -36,10 +37,12 @@ import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/co
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
+import { ParadisSpaceDefaultTarget, paradisSpaceDefaultTargetsEqual } from '../common/paradisBrowserSpaceDefaults.js';
 import { ParadisBrowserProfileDropdown } from './paradisBrowserProfileDropdown.js';
 import { paradisShowCreateProfileDialog, paradisShowManageProfilesDialog } from './paradisBrowserProfileDialogs.js';
 import { paradisShowLoginImportDialog } from './paradisBrowserLoginImportDialog.js';
 import { IParadisBrowserProfilesService, ParadisProfileTarget } from './paradisBrowserProfilesService.js';
+import { IParadisBrowserSpaceDefaultsService } from './paradisBrowserSpaceDefaultsService.js';
 
 const $ = dom.$;
 
@@ -70,6 +73,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IParadisBrowserSpaceDefaultsService private readonly spaceDefaultsService: IParadisBrowserSpaceDefaultsService,
 		@IHoverService hoverService: IHoverService,
 	) {
 		super(editor);
@@ -181,12 +185,22 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			return;
 		}
 		const model = this.editor.model;
+		const profilesEnabled = this.profilesService.canUseProfiles();
+		// このタブが属するスペース。スペースの管理外・所属が未確定のときはピンを出さない。
+		const stateKey = model && profilesEnabled ? this.spaceDefaultsService.getSpaceOfView(model.id) : undefined;
 		this._dropdown.value = this.instantiationService.createInstance(ParadisBrowserProfileDropdown, {
 			anchor: this._element,
 			current: model ? this.profilesService.getViewSession(model.id) : undefined,
 			profiles: this.profilesService.list(),
 			agentProfileIds: this._activeAgentProfiles(),
-			profilesEnabled: this.profilesService.canUseProfiles(),
+			profilesEnabled,
+			spaceDefault: stateKey !== undefined ? {
+				current: this.spaceDefaultsService.getDefault(stateKey),
+				onToggle: target => {
+					this._dropdown.clear();
+					this._toggleSpaceDefault(stateKey, target);
+				},
+			} : undefined,
 			onSelect: target => {
 				this._dropdown.clear();
 				void this._switchTo(target);
@@ -219,18 +233,71 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 	}
 
 	/**
+	 * スペースの新しいタブの既定を付け外しする。開いているタブは変えず、今のタブが既定と違えば
+	 * 通知から切り替えられるようにする（切り替えは開き直しでログイン状態が変わるので、勝手にはしない）。
+	 */
+	private _toggleSpaceDefault(stateKey: string, target: ParadisSpaceDefaultTarget): void {
+		const before = this.spaceDefaultsService.getDefault(stateKey);
+		const unpin = before !== undefined && !before.inherited && paradisSpaceDefaultTargetsEqual(before.target, target);
+		this.spaceDefaultsService.setDefault(stateKey, unpin ? undefined : target);
+
+		const spaceLabel = this.spaceDefaultsService.getSpaceLabel(stateKey) || localize('paradis.browserProfiles.spaceDefault.thisSpace', "このスペース");
+		if (unpin) {
+			const inherited = this.spaceDefaultsService.getDefault(stateKey);
+			this.notificationService.notify({
+				severity: Severity.Info,
+				message: inherited
+					? localize('paradis.browserProfiles.spaceDefault.unpinnedInherited', "「{0}」の既定を外しました。新しく開くタブは、メインツリーの既定「{1}」で開きます。", spaceLabel, this._targetLabel(inherited.target))
+					: localize('paradis.browserProfiles.spaceDefault.unpinned', "「{0}」の既定を外しました。新しく開くタブは設定 workbench.browser.dataStorage に従います。", spaceLabel),
+			});
+			return;
+		}
+
+		const base = localize('paradis.browserProfiles.spaceDefault.pinned', "「{0}」で新しく開くタブは「{1}」になります。開いているタブは変わりません。", spaceLabel, this._targetLabel(target));
+		// 名前付きプロファイルはリモート接続中に転送ポートへ届かない（_switchTo と同じ事情）。
+		const message = target.kind === 'profile' && this.environmentService.remoteAuthority !== undefined
+			? localize('paradis.browserProfiles.spaceDefault.pinnedRemote', "{0} 名前付きプロファイルは転送されたポート（localhost など）へ接続できません。", base)
+			: base;
+
+		const input = this.editor.input;
+		const model = this.editor.model;
+		const session = model ? this.profilesService.getViewSession(model.id) : undefined;
+		const currentDiffers = target.kind === 'profile'
+			? session?.profileId !== target.profileId
+			: session?.profileId !== undefined || session?.scope !== target.scope;
+		this.notificationService.notify({
+			severity: Severity.Info,
+			message,
+			actions: input instanceof BrowserEditorInput && currentDiffers ? {
+				primary: [toAction({
+					id: 'paradis.browserProfiles.spaceDefault.applyToCurrentTab',
+					label: localize('paradis.browserProfiles.spaceDefault.applyToCurrentTab', "今のタブも切り替える"),
+					run: () => this._switchTo(target, input),
+				})],
+			} : undefined,
+		});
+	}
+
+	private _targetLabel(target: ParadisProfileTarget): string {
+		return target.kind === 'profile'
+			? this.profilesService.list().find(profile => profile.id === target.profileId)?.name ?? ''
+			: this._scopeLabel(target.scope);
+	}
+
+	/**
 	 * 選ばれたプロファイル／スコープへ切り替える。
 	 *
 	 * Electron のセッションはビューの構築時に固定されるため、実体は「同じ位置に新しいタブを
 	 * 差し替える」ことになる。URL は引き継ぐが、ログイン状態が違えば同じ画面が出るとは限らない。
 	 * ここを黙ってやると「勝手にログアウトされた」ように見えるので、必ず知らせる。
 	 */
-	private async _switchTo(target: ParadisProfileTarget): Promise<void> {
-		const input = this.editor.input;
-		if (!(input instanceof BrowserEditorInput)) {
+	private async _switchTo(target: ParadisProfileTarget, input = this.editor.input): Promise<void> {
+		// 通知のボタンから呼ばれると、その間にエディタが別のタブへ移っていることがある。対象は
+		// 通知を出したときのタブに固定し、そのタブが閉じられていたら何もしない。
+		if (!(input instanceof BrowserEditorInput) || input.isDisposed()) {
 			return;
 		}
-		const current = this.editor.model ? this.profilesService.getViewSession(this.editor.model.id) : undefined;
+		const current = input.model ? this.profilesService.getViewSession(input.model.id) : undefined;
 		if (target.kind === 'profile' && current?.profileId === target.profileId) {
 			return;
 		}
@@ -249,9 +316,7 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 			});
 			return;
 		}
-		const name = target.kind === 'profile'
-			? this.profilesService.list().find(profile => profile.id === target.profileId)?.name ?? ''
-			: this._scopeLabel(target.scope);
+		const name = this._targetLabel(target);
 		const base = localize(
 			'paradis.browserProfiles.switched',
 			"「{0}」で開き直しました。ログイン状態が切り替え前とは違うため、同じページが表示されるとは限りません。",
