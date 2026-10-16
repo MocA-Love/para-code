@@ -8,11 +8,12 @@
 
 // Excel のメモ（古い形式のコメント、comments）と新しいコメント（スレッド、threadedComments）を、表示用に読む。
 // 新しいコメントのあるセルには、読めない版のために Excel が同じ内容の古い形式のメモも書く。そのメモは
-// スレッドの写しなので、スレッドのあるセルでは出さない。
+// スレッドの写しなので、スレッドのあるセルでは出さない。メモの吹き出しの位置・大きさ・表示するかどうかは
+// VML（vmlDrawing）にあり、「表示」に設定したメモだけ、その枠を付けて返す。
 
 import type { ParadisOfficeXmlNode } from '../../common/office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../../common/office/paradisOfficeCanonicalXml.js';
-import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common/paradisSpreadsheet.js';
+import type { IParadisCellComment, IParadisCellCommentEntry, IParadisShownNoteBox } from '../../common/paradisSpreadsheet.js';
 
 type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
 
@@ -80,6 +81,8 @@ export interface IParadisSpreadsheetCommentParts {
 	readonly threadedCommentsXml?: string;
 	/** persons の XML（ブックに 1 つ）。 */
 	readonly personsXml?: string;
+	/** メモの吹き出しの VML（vmlDrawing）。 */
+	readonly vmlDrawingXml?: string;
 }
 
 function children(element: XmlElement, local?: string): XmlElement[] {
@@ -142,6 +145,106 @@ function parse(xml: string | undefined): XmlElement | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/** 1px = 9525 EMU（図形のオフセットと同じ単位にそろえる）。 */
+const EMU_PER_PX = 9525;
+/** Excel の列と行の数。 */
+const MAX_COLUMNS = 16_384;
+const MAX_ROWS = 1_048_576;
+/** x:Anchor のオフセット（px）と、style の位置・大きさ（px）の上限。これを越える値は壊れたものとして使わない。 */
+const MAX_ANCHOR_OFFSET = 65_535;
+const MAX_STYLE_PIXELS = 1_000_000;
+/** CSS の長さの単位 → px。VML の style は pt で書かれることが多い。 */
+const PIXELS_PER_UNIT: Readonly<Record<string, number>> = { px: 1, pt: 96 / 72, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, pc: 16 };
+
+/** VML の style（`position:absolute;margin-left:107.25pt;…`）の長さを px で読む。読めなければ undefined。 */
+function styleLength(style: ReadonlyMap<string, string>, name: string): number | undefined {
+	const match = /^(?<value>-?\d+(?:\.\d+)?)(?<unit>px|pt|in|cm|mm|pc)?$/.exec(style.get(name) ?? '');
+	if (!match?.groups) {
+		return undefined;
+	}
+	const pixels = Number(match.groups.value) * PIXELS_PER_UNIT[match.groups.unit ?? 'px'];
+	return Number.isFinite(pixels) && Math.abs(pixels) <= MAX_STYLE_PIXELS ? pixels : undefined;
+}
+
+function parseVmlStyle(value: string | undefined): Map<string, string> {
+	const style = new Map<string, string>();
+	for (const declaration of (value ?? '').split(';')) {
+		const colon = declaration.indexOf(':');
+		if (colon > 0) {
+			style.set(declaration.slice(0, colon).trim().toLowerCase(), declaration.slice(colon + 1).trim().toLowerCase());
+		}
+	}
+	return style;
+}
+
+/** x:Anchor（左の列, オフセット, 上の行, オフセット, 右の列, オフセット, 下の行, オフセット。列・行は 0 始まり、オフセットは px）。 */
+function anchorBox(text: string): Pick<IParadisShownNoteBox, 'from' | 'to'> | undefined {
+	const values = text.split(',').map(value => value.trim());
+	if (values.length !== 8 || values.some(value => !/^\d{1,7}$/.test(value))) {
+		return undefined;
+	}
+	const [leftColumn, leftOffset, topRow, topOffset, rightColumn, rightOffset, bottomRow, bottomOffset] = values.map(Number);
+	if (leftColumn >= MAX_COLUMNS || rightColumn >= MAX_COLUMNS || topRow >= MAX_ROWS || bottomRow >= MAX_ROWS
+		|| [leftOffset, topOffset, rightOffset, bottomOffset].some(offset => offset > MAX_ANCHOR_OFFSET)
+		|| rightColumn < leftColumn || rightColumn === leftColumn && rightOffset <= leftOffset
+		|| bottomRow < topRow || bottomRow === topRow && bottomOffset <= topOffset) {
+		return undefined;
+	}
+	return {
+		from: { c: leftColumn, co: leftOffset * EMU_PER_PX, r: topRow, ro: topOffset * EMU_PER_PX },
+		to: { c: rightColumn, co: rightOffset * EMU_PER_PX, r: bottomRow, ro: bottomOffset * EMU_PER_PX },
+	};
+}
+
+/**
+ * VML のメモの図形のうち「表示」に設定したものの枠を、セル（`行:列`、0 始まり）ごとに返す。表示は x:Visible
+ * （中身が False でないもの）、無ければ style の `visibility:visible`。位置と大きさは x:Anchor、読めなければ style の
+ * margin-left・margin-top・width・height（シートの左上から）。読めない VML は無いものとして扱う。
+ */
+function readShownNoteBoxes(xml: string | undefined): Map<string, IParadisShownNoteBox> {
+	const boxes = new Map<string, IParadisShownNoteBox>();
+	// Excel の古い VML には閉じない `<br>` が混じることがある。
+	const root = parse(xml?.replace(/<br\s*>/gi, '<br/>'));
+	for (const shape of root ? children(root, 'shape') : []) {
+		const clientData = children(shape, 'ClientData').find(candidate => attribute(candidate, 'ObjectType') === 'Note');
+		if (!clientData) {
+			continue;
+		}
+		const row = Number(textOf(children(clientData, 'Row')[0], true).trim());
+		const column = Number(textOf(children(clientData, 'Column')[0], true).trim());
+		const key = `${row}:${column}`;
+		if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || row < 0 || column < 0 || boxes.has(key)) {
+			continue;
+		}
+		const style = parseVmlStyle(attribute(shape, 'style'));
+		const visibleElement = children(clientData, 'Visible')[0];
+		const visible = visibleElement
+			? !/^(?:false|f|0)$/i.test(textOf(visibleElement, true).trim())
+			: style.get('visibility') === 'visible';
+		if (!visible) {
+			continue;
+		}
+		const fill = /^#[0-9a-f]{6}\b/i.exec(attribute(shape, 'fillcolor')?.trim() ?? '')?.[0].toLowerCase();
+		const anchor = anchorBox(textOf(children(clientData, 'Anchor')[0], true));
+		if (anchor) {
+			boxes.set(key, { ...anchor, ...(fill ? { fill } : {}) });
+			continue;
+		}
+		const left = styleLength(style, 'margin-left') ?? 0;
+		const top = styleLength(style, 'margin-top') ?? 0;
+		const width = styleLength(style, 'width');
+		const height = styleLength(style, 'height');
+		if (width !== undefined && height !== undefined && width > 0 && height > 0) {
+			boxes.set(key, {
+				from: { c: 0, co: Math.max(0, left) * EMU_PER_PX, r: 0, ro: Math.max(0, top) * EMU_PER_PX },
+				ext: { cx: width * EMU_PER_PX, cy: height * EMU_PER_PX },
+				...(fill ? { fill } : {}),
+			});
+		}
+	}
+	return boxes;
 }
 
 /** persons の id → 表示名。 */
@@ -225,6 +328,7 @@ export function readParadisSpreadsheetSheetComments(parts: IParadisSpreadsheetCo
 
 	const legacy = parse(parts.commentsXml);
 	if (legacy) {
+		const shownBoxes = readShownNoteBoxes(parts.vmlDrawingXml);
 		const authors = children(children(legacy, 'authors')[0] ?? legacy, 'author').map(author => clip(author.children.map(child => child.kind === 'text' ? child.value : '').join(''), PARADIS_SPREADSHEET_COMMENT_LIMITS.authorCharacters));
 		for (const element of children(children(legacy, 'commentList')[0] ?? legacy, 'comment')) {
 			const ref = attribute(element, 'ref')?.toUpperCase();
@@ -237,7 +341,8 @@ export function readParadisSpreadsheetSheetComments(parts: IParadisSpreadsheetCo
 				continue;
 			}
 			const author = authors[Number(attribute(element, 'authorId'))] ?? '';
-			result.push({ ref, row: position.row, column: position.column, kind: 'note', entries: [{ author: author.startsWith('tc=') ? '' : author, text: textOf(children(element, 'text')[0]) }] });
+			const shown = shownBoxes.get(`${position.row}:${position.column}`);
+			result.push({ ref, row: position.row, column: position.column, kind: 'note', entries: [{ author: author.startsWith('tc=') ? '' : author, text: textOf(children(element, 'text')[0]) }], ...(shown ? { shown } : {}) });
 		}
 	}
 	result.sort((left, right) => left.row - right.row || left.column - right.column);

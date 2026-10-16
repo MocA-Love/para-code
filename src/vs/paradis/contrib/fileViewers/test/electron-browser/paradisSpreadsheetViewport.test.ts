@@ -178,6 +178,10 @@ suite('paradisSpreadsheetViewport', () => {
 			}],
 		})), false);
 		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { rowBreaks: [10] })), false);
+		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, { comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [] }] })), true);
+		strictEqual(shouldVirtualizeSpreadsheetSheet(largeProjection(undefined, {
+			comments: [{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [], shown: { from: { c: 1, co: 0, r: 0, ro: 0 }, to: { c: 3, co: 0, r: 4, ro: 0 } } }],
+		})), false);
 	});
 });
 

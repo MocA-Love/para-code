@@ -39,7 +39,7 @@ import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOf
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { installParadisExcelJsMergeFastPath, paradisExcelJsMergeRanges } from './spreadsheet/paradisSpreadsheetExcelJsMerges.js';
 import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetSheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
-import { paradisDrawingRightmostColumn } from '../common/spreadsheet/paradisSpreadsheetDrawingExtent.js';
+import { paradisDrawingRightmostColumn, paradisShownNotesExtent, type IParadisDrawingExtentMetrics } from '../common/spreadsheet/paradisSpreadsheetDrawingExtent.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -900,7 +900,13 @@ function extendSheetDimensionsToDrawings(dims: ISheetDims, ws: ExcelJS.Worksheet
 	if (xmls.length === 0) {
 		return dims;
 	}
-	const rightmost = paradisDrawingRightmostColumn(xmls, {
+	const rightmost = paradisDrawingRightmostColumn(xmls, sheetExtentMetrics(ws, sheetProps, maxDigitWidth), dims.maxC + MAX_DRAWING_EXTRA_COLUMNS);
+	return rightmost !== undefined && rightmost > dims.maxC ? { ...dims, maxC: rightmost } : dims;
+}
+
+/** 列の幅と行の高さ（px）。図形とメモの外枠を求めるのに使う。 */
+function sheetExtentMetrics(ws: ExcelJS.Worksheet, sheetProps: { defaultColWidth?: number; defaultRowHeight?: number } | undefined, maxDigitWidth: number): IParadisDrawingExtentMetrics {
+	return {
 		columnWidth: column => {
 			const col = ws.getColumn(column);
 			return col.hidden ? 0 : charWidthToPx(col.width, sheetProps?.defaultColWidth, maxDigitWidth);
@@ -909,8 +915,24 @@ function extendSheetDimensionsToDrawings(dims: ISheetDims, ws: ExcelJS.Worksheet
 			const found = ws.findRow(row);
 			return found?.hidden ? 0 : rowHeightToPx(found?.height, sheetProps?.defaultRowHeight);
 		},
-	}, dims.maxC + MAX_DRAWING_EXTRA_COLUMNS);
-	return rightmost !== undefined && rightmost > dims.maxC ? { ...dims, maxC: rightmost } : dims;
+	};
+}
+
+/** 常に表示するメモの吹き出しが表示する行の下へはみ出すとき、延ばす行の数の上限。 */
+const MAX_NOTE_EXTRA_ROWS = 64;
+
+/**
+ * 常に表示するメモの吹き出しが、表示する列・行より右や下へはみ出すなら、外枠の右下が入る列と行まで延ばす（図形と
+ * 同じく、印刷範囲の外の吹き出しが表で切られないように）。列の上限は図形と同じ。行は表示する行の上限（MAX_ROWS）を
+ * 越えて延ばさない（延ばした分で「先頭 2,000 行のみ」にならないように）。
+ */
+function extendSheetDimensionsToShownNotes(dims: ISheetDims, ws: ExcelJS.Worksheet, comments: readonly IParadisCellComment[] | undefined, sheetProps: { defaultColWidth?: number; defaultRowHeight?: number } | undefined, maxDigitWidth: number): ISheetDims {
+	const boxes = (comments ?? []).flatMap(comment => comment.shown ? [comment.shown] : []);
+	const extent = paradisShownNotesExtent(boxes, sheetExtentMetrics(ws, sheetProps, maxDigitWidth), dims.maxC + MAX_DRAWING_EXTRA_COLUMNS, Math.max(dims.maxR, Math.min(dims.maxR + MAX_NOTE_EXTRA_ROWS, dims.minR + MAX_ROWS - 1)));
+	if (!extent || (extent.column <= dims.maxC && extent.row <= dims.maxR)) {
+		return dims;
+	}
+	return { ...dims, maxC: Math.max(dims.maxC, extent.column), maxR: Math.max(dims.maxR, extent.row) };
 }
 
 function isNumericCell(cell: ExcelJS.Cell, numberCellType: ExcelJS.ValueType): boolean {
@@ -1519,19 +1541,28 @@ async function extractXlsxExtras(buffer: Buffer, JSZipRuntime: typeof JSZip, ima
 			}
 			let commentsXml: string | undefined;
 			let threadedCommentsXml: string | undefined;
+			let vmlDrawingXml: string | undefined;
 			for (const rel of (await files[name].async('text')).match(/<Relationship[^>]*>/g) ?? []) {
 				const target = rel.match(/Target="([^"]+)"/)?.[1];
 				const isComments = /\bType="[^"]*\/comments"/.test(rel);
 				const isThreaded = /\bType="[^"]*\/threadedComment"/.test(rel);
-				const file = target && (isComments || isThreaded) ? files[resolveXlPart('xl/worksheets', target)] : undefined;
+				const isVml = /\bType="[^"]*\/vmlDrawing"/.test(rel);
+				const file = target && (isComments || isThreaded || isVml) ? files[resolveXlPart('xl/worksheets', target)] : undefined;
 				if (file && isComments) {
 					commentsXml = await file.async('text');
 				} else if (file && isThreaded) {
 					threadedCommentsXml = await file.async('text');
+				} else if (file && isVml && vmlDrawingXml === undefined) {
+					// メモの吹き出しの位置と、表示するかどうか。ヘッダー・フッターの画像の VML（legacyDrawingHF）も同じ種類の
+					// 関係なので、メモを持つものだけを取る。
+					const vml = await file.async('text');
+					if (/ObjectType\s*=\s*["']Note["']/.test(vml)) {
+						vmlDrawingXml = vml;
+					}
 				}
 			}
 			if (commentsXml || threadedCommentsXml) {
-				const { comments, omitted } = readParadisSpreadsheetSheetComments({ commentsXml, threadedCommentsXml, personsXml }, commentBudget);
+				const { comments, omitted } = readParadisSpreadsheetSheetComments({ commentsXml, threadedCommentsXml, personsXml, vmlDrawingXml }, commentBudget);
 				const key = keyForFile(Number.parseInt(m[1], 10));
 				if (comments.length > 0) {
 					commentsBySheet[key] = comments;
@@ -1601,7 +1632,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		workbook.eachSheet(worksheet => {
 			sheetIndex++;
 			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
-			const dims = extendSheetDimensionsToDrawings(getSheetDimensions(worksheet), worksheet, extras.drawingsBySheet[sheetIndex], sheetProps, extras.maxDigitWidth);
+			const dims = extendSheetDimensionsToShownNotes(extendSheetDimensionsToDrawings(getSheetDimensions(worksheet), worksheet, extras.drawingsBySheet[sheetIndex], sheetProps, extras.maxDigitWidth), worksheet, extras.commentsBySheet[sheetIndex], sheetProps, extras.maxDigitWidth);
 			const worksheetDataValidations = getWorksheetDataValidations(worksheet, extras.dataValidationRangesBySheet[sheetIndex] ?? []);
 			const mergeMap = buildMergeMap(worksheet);
 			const colCount = dims.maxC - dims.minC + 1;

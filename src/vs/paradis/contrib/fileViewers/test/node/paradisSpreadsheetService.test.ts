@@ -402,6 +402,59 @@ suite('ParadisSpreadsheetService', () => {
 		});
 	});
 
+	suite('notes set to show on the sheet', () => {
+		/** A note at B2 whose VML box is anchored from `from` to `to` (column, row; 0-based), shown or hidden. */
+		function noteShape(visible: boolean, from: readonly [number, number], to: readonly [number, number]): string {
+			return `<v:shape id="_x0000_s1025" type="#_x0000_t202" style='position:absolute;margin-left:80pt;margin-top:2pt;width:96pt;height:55.5pt;z-index:1;visibility:${visible ? 'visible' : 'hidden'}' fillcolor="#ffffe1" o:insetmode="auto">`
+				+ `<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>${from[0]}, 15, ${from[1]}, 2, ${to[0]}, 15, ${to[1]}, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>1</x:Row><x:Column>1</x:Column>${visible ? '<x:Visible/>' : ''}</x:ClientData></v:shape>`;
+		}
+
+		/** A sheet printing A1:E3 with 75px columns and a note at B2 whose VML holds `shapes` (none: the VML exceljs wrote). */
+		async function noteWorkbook(shapes: string | undefined): Promise<string> {
+			const book = new ExcelJS.Workbook();
+			const sheet = book.addWorksheet('Form');
+			sheet.columns = Array.from({ length: 12 }, () => ({ width: 10 }));
+			for (let row = 1; row <= 3; row++) {
+				for (let column = 1; column <= 5; column++) {
+					sheet.getCell(row, column).value = `r${row}c${column}`;
+				}
+			}
+			sheet.getCell('B2').note = 'Sample: check this';
+			sheet.pageSetup.printArea = 'A1:E3';
+			const zip = await JSZip.loadAsync(await book.xlsx.writeBuffer());
+			if (shapes !== undefined) {
+				const name = Object.keys(zip.files).find(candidate => /^xl\/drawings\/vmlDrawing\d+\.vml$/.test(candidate))!;
+				zip.file(name, '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">' + shapes + '</xml>');
+			}
+			return Buffer.from(await zip.generateAsync({ type: 'uint8array' })).toString('base64');
+		}
+
+		async function shown(workbook: string) {
+			const sheet = (await new ParadisSpreadsheetService().parseWorkbook(workbook)).sheets[0];
+			return { columns: sheet.columnCount, rows: sheet.rows.length, printArea: sheet.printArea, notes: sheet.comments?.map(comment => [comment.ref, comment.shown]) };
+		}
+
+		test('keeps the saved box of a shown note and extends the shown columns and rows to it, keeping the print area', async () => {
+			// From D1 + 15px to H7 + 15px: the box ends inside column H (8) and row 7.
+			deepStrictEqual(await shown(await noteWorkbook(noteShape(true, [3, 0], [7, 6]))), {
+				columns: 8,
+				rows: 7,
+				printArea: { minR: 1, maxR: 3, minC: 1, maxC: 5 },
+				notes: [['B2', { from: { c: 3, co: 15 * 9525, r: 0, ro: 2 * 9525 }, to: { c: 7, co: 15 * 9525, r: 6, ro: 4 * 9525 }, fill: '#ffffe1' }]],
+			});
+		});
+
+		test('keeps hidden notes, notes from exceljs, and shown notes whose box it cannot read as markers only', async () => {
+			const hidden = await shown(await noteWorkbook(noteShape(false, [3, 0], [7, 6])));
+			const fromExcelJs = await shown(await noteWorkbook(undefined));
+			// Shown, but the anchor ends before it starts and the style has no size. (A VML that is not XML at all stops
+			// exceljs from opening the workbook, so the reader's own fallback for it is covered by the comment tests.)
+			const broken = await shown(await noteWorkbook(noteShape(true, [7, 6], [3, 0]).replace(/width:[^;]+;height:[^;]+;/, '')));
+			const expected = { columns: 5, rows: 3, printArea: { minR: 1, maxR: 3, minC: 1, maxC: 5 }, notes: [['B2', undefined]] };
+			deepStrictEqual([hidden, fromExcelJs, broken], [expected, expected, expected]);
+		});
+	});
+
 	test('rejects encrypted (CFB) workbooks with a descriptive message', async () => {
 		const service = new ParadisSpreadsheetService(async () => ({ ExcelJS, JSZip }));
 		// OLE2/CFB 標準シグネチャ(D0 CF 11 E0) + 適当な続き。zip ではないため exceljs も読めない。
