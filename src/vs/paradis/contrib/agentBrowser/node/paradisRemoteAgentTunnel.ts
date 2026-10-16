@@ -245,6 +245,7 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	) {
 		super();
 		this.spawnSsh = spawnSsh ?? ((args, captureOutput) => spawn(
+			// eslint-disable-next-line local/code-no-sync-fs -- spawnSsh returns the ChildProcess synchronously because callers attach their listeners right away; this is one stat of a fixed path.
 			existsSync('/usr/bin/ssh') ? '/usr/bin/ssh' : 'ssh',
 			args,
 			{ stdio: ['ignore', captureOutput === true ? 'pipe' : 'ignore', 'pipe'], env: this.sshEnv }
