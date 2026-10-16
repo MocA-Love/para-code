@@ -47,6 +47,7 @@ import { paradisIsSpaceHistoryId, paradisSpaceHistoryDirectoryOf, paradisSpaceHi
 import { IParadisCommandRecord, paradisShouldRecordCommand } from '../common/paradisTerminalCommandRecords.js';
 import { ParadisHistoryNavigationTracker, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
 import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel } from '../common/paradisTerminalHistoryPanelModel.js';
+import { ParadisTypedPrefixTracker, paradisPromptTextAfterCursor } from '../common/paradisTerminalTypedPrefix.js';
 import { IParadisTerminalCommandRecordService } from './paradisTerminalCommandRecordService.js';
 import { PARADIS_HISTORY_PANEL_CHROME_HEIGHT, PARADIS_HISTORY_PANEL_ROW_HEIGHT, ParadisHistoryPanelScope, ParadisTerminalHistoryPanelWidget } from './paradisTerminalHistoryPanelWidget.js';
 
@@ -128,6 +129,8 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 	private _commandDetection: ICommandDetectionCapability | undefined;
 	private _xterm: RawXtermTerminal | undefined;
 	private readonly _navigation = new ParadisHistoryNavigationTracker();
+	/** 前方一致に使う「自分で打った文字」（入力行の value にはプロンプトの表示や薄い文字が混ざりうる）。 */
+	private readonly _typedPrefix = new ParadisTypedPrefixTracker();
 
 	constructor(
 		private readonly _ctx: ITerminalContributionContext,
@@ -168,7 +171,9 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		this._xterm = xterm.raw;
 		this._register(xterm.raw.onData(data => {
 			const model = this._commandDetection?.promptInputModel;
-			this._navigation.input(data, model ? paradisPromptTextWithoutGhost(model) : '', Date.now());
+			const now = Date.now();
+			this._navigation.input(data, model ? paradisPromptTextWithoutGhost(model) : '', now);
+			this._typedPrefix.input(data, now);
 			this._updateCanOpen();
 		}));
 		this._register(xterm.raw.onScroll(() => this._close(false)));
@@ -179,15 +184,21 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const store = new DisposableStore();
 		const model = commandDetection.promptInputModel;
 		const onPromptChanged = () => {
-			this._navigation.prompt(paradisPromptTextWithoutGhost(model), Date.now());
+			const now = Date.now();
+			this._navigation.prompt(paradisPromptTextWithoutGhost(model), now);
+			this._typedPrefix.prompt(model, now);
 			this._updateCanOpen();
 			this._refilter();
 		};
-		store.add(model.onDidStartInput(onPromptChanged));
+		store.add(model.onDidStartInput(() => {
+			this._typedPrefix.promptStarted();
+			onPromptChanged();
+		}));
 		store.add(model.onDidChangeInput(onPromptChanged));
 		store.add(model.onDidFinishInput(onPromptChanged));
 		store.add(commandDetection.onCommandExecuted(() => {
 			this._navigation.reset();
+			this._typedPrefix.commandExecuted();
 			this._close(false);
 			this._updateCanOpen();
 		}));
@@ -208,7 +219,17 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const commandDetection = this._commandDetection;
 		this._canOpenKey.set(this._isEnabled()
 			&& commandDetection !== undefined
+			&& this._typedText(commandDetection.promptInputModel) !== undefined
 			&& this._navigation.canOpen(commandDetection.promptInputModel, commandDetection.executingCommand, false));
+	}
+
+	/**
+	 * 前方一致に使う文字（プロンプトの終わりからカーソルまで、ゴースト文字を除く）。確かめられない・
+	 * 空白だけのときは undefined（一覧は開かない）。
+	 */
+	private _typedText(model: IPromptInputModel): string | undefined {
+		const typed = this._typedPrefix.resolve(model, Date.now());
+		return typed !== undefined && typed.trim().length > 0 ? typed : undefined;
 	}
 
 	/**
@@ -240,11 +261,11 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		}
 		// ↓ を押した時点の入力行で確かめ直す（シェルの描き直しが遅れて届いた場合）。開けなければ ↓ は
 		// シェルのもの（このキーはシェルへ流れない設定なので、ここで渡す）。
-		if (!this._navigation.canOpen(model, this._commandDetection?.executingCommand, false)) {
+		const typed = this._typedText(model);
+		if (typed === undefined || !this._navigation.canOpen(model, this._commandDetection?.executingCommand, false)) {
 			this._forwardDown(xterm, model);
 			return;
 		}
-		const typed = paradisPromptTextWithoutGhost(model);
 		const directory = paradisSpaceHistoryDirectoryOf(this._ctx.instance);
 		const widget = this._instantiationService.createInstance(ParadisTerminalHistoryPanelWidget, xterm.element);
 		const panel = new OpenPanel(widget, typed, directory !== undefined && this._spaceHistoryShell() !== undefined ? 'space' : undefined);
@@ -265,7 +286,9 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 
 	private _forwardDown(xterm: RawXtermTerminal, model: IPromptInputModel): void {
 		const down = xterm.modes.applicationCursorKeysMode ? '\x1bOB' : '\x1b[B';
-		this._navigation.input(down, paradisPromptTextWithoutGhost(model), Date.now());
+		const now = Date.now();
+		this._navigation.input(down, paradisPromptTextWithoutGhost(model), now);
+		this._typedPrefix.input(down, now);
 		this._updateCanOpen();
 		void this._ctx.instance.sendText(down, false);
 	}
@@ -330,23 +353,31 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const panel = this._panel.value;
 		const model = this._commandDetection?.promptInputModel;
 		const item = panel?.items[panel.selectedIndex];
-		if (!panel || !model || !item) {
+		const typed = model && this._typedPrefix.resolve(model, Date.now());
+		if (!panel || !model || !item || typed === undefined) {
 			this._close(true);
 			return;
 		}
-		const typed = paradisPromptTextWithoutGhost(model);
-		const cursor = Math.min(model.cursorIndex, typed.length);
+		// キーから組み立てた文字のままなら、カーソルは打った文字の末尾にあり、その後ろの表示（薄い文字・
+		// 右プロンプト）は入力ではない。
+		const suffix = this._typedPrefix.cursorAtEndOfTyped ? '' : paradisPromptTextAfterCursor(model);
+		const prefix = typed.trimStart();
 		let edit: string;
 		let text: string;
-		if (cursor === typed.length && item.command.startsWith(typed)) {
+		let line: string;
+		if (suffix.length === 0 && item.command.startsWith(prefix)) {
 			edit = '';
-			text = item.command.substring(typed.length);
+			text = item.command.substring(prefix.length);
+			line = typed + text;
 		} else {
-			edit = '\x1b[3~'.repeat(typed.length - cursor) + '\x7f'.repeat(cursor);
+			edit = '\x1b[3~'.repeat(suffix.length) + '\x7f'.repeat(typed.length);
 			text = item.command;
+			line = item.command;
 		}
 		this._close(false);
-		this._navigation.wrote(Date.now());
+		const now = Date.now();
+		this._navigation.wrote(now);
+		this._typedPrefix.wrote(line, now);
 		this._updateCanOpen();
 		const instance = this._ctx.instance;
 		void (async () => {
@@ -464,14 +495,18 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		return { records, lists };
 	}
 
-	/** 打った文字で絞り直す（打った文字は入力行から取る）。 */
+	/** 打った文字で絞り直す。 */
 	private _refilter(): void {
 		const panel = this._panel.value;
 		const model = this._commandDetection?.promptInputModel;
 		if (!panel || !model) {
 			return;
 		}
-		const typed = paradisPromptTextWithoutGhost(model);
+		const typed = this._typedPrefix.resolve(model, Date.now());
+		if (typed === undefined) {
+			// シェルの表示が追いつく前・確かめられない間は今の絞り込みのまま（選んだときに確かめ直す）。
+			return;
+		}
 		if (typed.trim().length === 0) {
 			this._close(false);
 			return;
