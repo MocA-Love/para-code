@@ -39,7 +39,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			],
 			default: 'usage',
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.menuBar.title', "メニューバーの Para Code のアイコンの横に出すもの。使用量は Claude Code（C）と Codex（X）の使用中のアカウントの使用率です。"),
+			markdownDescription: localize('paradis.menuBar.title', "メニューバーの Para Code のアイコンの横に出すもの。使用量は Claude Code（C）と Codex（X）の使用中のアカウントの使用率です。タイトルバーの使用量を非表示にしていても、メニューバーに使用量を出している間は数分ごとに使用量を取りに行きます。"),
 		},
 		[PARADIS_MENU_BAR_USAGE_STYLE_SETTING]: {
 			type: 'string',
@@ -88,7 +88,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.menuBar.menu.usage', "メニューに Claude Code と Codex のアカウントごとの使用量と、今日のコストを出します。"),
+			markdownDescription: localize('paradis.menuBar.menu.usage', "メニューに Claude Code と Codex のアカウントごとの使用量と、今日のコストを出します。タイトルバーの使用量を非表示にしていても、メニューバーに使用量を出している間は数分ごとに使用量を取りに行きます。"),
 		},
 		[PARADIS_MENU_BAR_MENU_WORKING_COUNT_SETTING]: {
 			type: 'boolean',

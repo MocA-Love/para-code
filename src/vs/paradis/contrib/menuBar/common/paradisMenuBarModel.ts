@@ -53,9 +53,13 @@ export interface IParadisMenuBarMenuInput {
 
 const PROVIDER_LABEL: Readonly<Record<ParadisMenuBarProvider, string>> = { claude: 'Claude Code', codex: 'Codex' };
 
-function accountItem(account: IParadisMenuBarMergedAccount, withProvider: boolean, plain: boolean, now: number): ParadisMenuBarMenuItem {
+/**
+ * @param sameNames そのサービスで表示名が重なっている名前。重なっているものだけ @ の後ろも出して見分ける
+ */
+function accountItem(account: IParadisMenuBarMergedAccount, withProvider: boolean, plain: boolean, sameNames: ReadonlySet<string>, now: number): ParadisMenuBarMenuItem {
 	const line = paradisMenuBarAccountLine(account, now);
-	const head = withProvider ? `${PROVIDER_LABEL[account.provider]}  ${account.name}` : account.name;
+	const name = sameNames.has(account.name) && account.domain ? `${account.name}@${account.domain}` : account.name;
+	const head = withProvider ? `${PROVIDER_LABEL[account.provider]}  ${name}` : name;
 	const back = paradisMenuBarBackText(account, now);
 	// 2 行目を使わない表示では、戻る時刻を同じ行の後ろに付ける
 	const label = plain && back ? `${head}  ${line}（${back}）` : `${head}  ${line}`;
@@ -73,14 +77,16 @@ function usageItems(input: IParadisMenuBarMenuInput, plain: boolean): ParadisMen
 		if (sorted.length === 0) {
 			continue;
 		}
+		const seen = new Set<string>();
+		const sameNames = new Set(sorted.map(account => account.name).filter(name => seen.has(name) || !seen.add(name)));
 		// 使用中が分からない（その出どころのウィンドウが無い）ときは、余裕の多いものを先頭に出す
-		items.push(accountItem(sorted[0], true, plain, input.now));
+		items.push(accountItem(sorted[0], true, plain, sameNames, input.now));
 		if (sorted.length > 1) {
 			items.push({
 				kind: 'submenu',
 				label: localize('paradis.menuBar.accountsSubmenu', "{0}（{1}）", PROVIDER_LABEL[provider], sorted.length),
 				items: [
-					...sorted.map(account => accountItem(account, false, plain, input.now)),
+					...sorted.map(account => accountItem(account, false, plain, sameNames, input.now)),
 					{ kind: 'separator' },
 					{ kind: 'action', label: localize('paradis.menuBar.switchAccount', "アカウントを切り替える…"), action: 'openUsagePanel' },
 				],

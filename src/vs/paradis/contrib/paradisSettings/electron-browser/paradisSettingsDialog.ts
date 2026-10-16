@@ -120,7 +120,7 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headMenuBar', "メニューバー"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.descMenuBar', "画面の上端のメニューバーに Para Code のマークを出し、確認が必要なペインや使用量をウィンドウを開かずに見られるようにします。Windows では通知領域に出ます。"),
+		description: localize('paradis.settings.descMenuBar', "画面の上端のメニューバーに Para Code のマークを出し、確認が必要なペインや使用量をウィンドウを開かずに見られるようにします。Windows では通知領域に出ます。タイトルバーの使用量を非表示にしていても、メニューバーに使用量を出している間は数分ごとに使用量を取りに行きます。"),
 	},
 	{
 		id: 'psd-sec-browser',
