@@ -17,6 +17,8 @@
 //   - predicate: wait_until の述語（無ければ undefined）。呼ぶと関数か値を返す
 // 戻り値は JSON にできる値だけにする（evaluate_script が JSON.stringify する）。
 
+import { PARADIS_POINTER_HIT_PAGE_SCRIPT } from '../common/paradisPointerHitPageScript.js';
+
 /** ページの中で動かす関数の本体。 */
 export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, predicate) => {
 	const MAX_ELEMENTS = 20000;
@@ -34,6 +36,7 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		const rect = el.getBoundingClientRect();
 		return rect.width > 0 && rect.height > 0;
 	};
+${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 
 	const IMPLICIT_ROLES = {
 		button: 'button', textarea: 'textbox', option: 'option', li: 'listitem', ul: 'list', ol: 'list', menu: 'list',
@@ -272,10 +275,11 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		for (const [label, x, y] of points) {
 			if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight || rect.width <= 0 || rect.height <= 0) { pointer[label] = 'outside the viewport'; continue; }
 			const hit = hitTest.elementFromPoint(x, y);
+			const reach = hit ? pointerHit(el, hit) : undefined;
 			if (!hit) { pointer[label] = 'nothing'; }
-			else if (hit === el) { pointer[label] = 'self'; }
-			else if (el.contains(hit)) { pointer[label] = 'self (child ' + shortLabel(hit) + ')'; }
-			else if (hit.contains(el)) { pointer[label] = 'ancestor ' + shortLabel(hit) + ' (this element does not receive the pointer here)'; }
+			else if (reach === 'self') { pointer[label] = 'self'; }
+			else if (reach === 'child') { pointer[label] = 'self (child ' + shortLabel(hit) + ')'; }
+			else if (reach === 'ancestor') { pointer[label] = 'ancestor ' + shortLabel(hit) + ' (this element does not receive the pointer here)'; }
 			else { pointer[label] = { coveredBy: describe(hit) }; }
 		}
 		const ancestors = [];
@@ -441,7 +445,10 @@ export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, pr
 		let hit = document.elementFromPoint(x, y);
 		while (hit && hit.shadowRoot) { const inner = hit.shadowRoot.elementFromPoint(x, y); if (!inner || inner === hit) { break; } hit = inner; }
 		if (!hit) { out.problem = 'nothing-at-point'; return out; }
-		if (hit !== el && !el.contains(hit)) {
+		// The element itself or something inside it (also inside its shadow root) takes the click. An ancestor takes it only when
+		// the element does not receive the pointer (pointer-events: none), as it would for a person; not when the element is clipped
+		// away at the point (the click would land on the ancestor), and never for a field, which must get focus itself.
+		if (!pointerReaches(el, hit, spec.purpose)) {
 			// A <label> for the element forwards the click to it.
 			const label = hit.closest ? hit.closest('label') : null;
 			if (!(label && el.labels && Array.from(el.labels).includes(label))) {

@@ -172,6 +172,27 @@ suite('ParadisRemoteFileTransfer', () => {
 		});
 	});
 
+	test('lets only the uploading pane put its temporary copy into a file input, and only while upload_file runs', async () => {
+		window.files.set('/home/example/report.csv', new TextEncoder().encode('a,b'));
+		let during: Record<string, boolean> = {};
+		let local = '';
+		await transfer.callTool('upload_file', 'input', { uid: '1_2', filePath: '/home/example/report.csv' }, { ...host(), paneToken: 'pane-a' }, async args => {
+			local = args.filePath as string;
+			during = {
+				samePane: transfer.permitsFileInput('pane-a', [local]),
+				otherPane: transfer.permitsFileInput('pane-b', [local]),
+				withAnotherFile: transfer.permitsFileInput('pane-a', [local, '/etc/passwd']),
+				otherFile: transfer.permitsFileInput('pane-a', ['/etc/passwd']),
+				empty: transfer.permitsFileInput('pane-a', []),
+			};
+			return { content: [{ type: 'text', text: 'ok' }] };
+		});
+		assert.deepStrictEqual({ during, after: transfer.permitsFileInput('pane-a', [local]) }, {
+			during: { samePane: true, otherPane: false, withAnotherFile: false, otherFile: false, empty: false },
+			after: false,
+		});
+	});
+
 	test('the raw read result object loses its bytes over IPC, the encoded form keeps them', () => {
 		const bytes = new TextEncoder().encode('%PDF');
 		const raw = overIpc({ ok: true, data: VSBuffer.wrap(bytes), name: 'a.pdf' });

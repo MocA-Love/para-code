@@ -11,6 +11,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisReattachSpanAttributes } from '../../common/paradisReattachDiagnostics.js';
 import { paradisNoteAttached, paradisNoteRevived, paradisRecordAdoption, paradisResetReattachTally, paradisTakeReattachTally } from '../../node/paradisReattachTally.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IParadisPtyHost } from '../../common/paradisPtyProtocol.js';
+import { paradisAdoptAtStartup } from '../../node/paradisPtyReadopt.js';
 
 suite('ParadisReattachTally', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -37,6 +40,12 @@ suite('ParadisReattachTally', () => {
 			again: { firstTake: false, reachable: true, adopted: 0, leftBehind: 0, revived: 0, revivedUnclaimed: 0 },
 			other: { firstTake: false, reachable: true, adopted: 0, leftBehind: 0, revived: 1, revivedUnclaimed: 1 },
 		});
+	});
+
+	test('the startup adoption is what gets counted, also when the daemon could not be asked', async () => {
+		const unreachable: Partial<IParadisPtyHost> = { list: async () => { throw new Error('daemon gone'); } };
+		await paradisAdoptAtStartup({ paradisSetTerminalLayoutInfo: () => { }, createProcess: async () => 1 }, unreachable as IParadisPtyHost, new NullLogService());
+		assert.deepStrictEqual(paradisTakeReattachTally('a'), { firstTake: true, reachable: false, adopted: 0, leftBehind: 0, revived: 0, revivedUnclaimed: 0 });
 	});
 
 	test('sends only what is worth a span, under keys Sentry keeps', () => {

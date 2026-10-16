@@ -6,7 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 起動したときの繋ぎ直しの結果を Sentry へ送る（span `para.pty-daemon.reattach`）。
+// 起動したときの繋ぎ直しの結果を Sentry へ送る（span `para.pty-daemon.startup-revive`）。
+//
+// 常駐からの引き取りそのもの（回ごとの本数・時間・失敗）は `ptyHandover` の span（`paradisPtyHandover.contribution.ts`）
+// が送る。こちらは保存した画面からの起こし直しと、それに誰も繋ぎに来なかった本数を、起動時の引き取りの
+// 本数と並べて見るためのもの。名前は `ptyHandover` と分けてある（同じ名前だと集計が混ざる）。
 //
 // 常駐を使っていると、更新や再起動のたびに「常駐から何本引き取れたか」「引き取れず残ったか」
 // 「保存した画面から起こし直したのに、誰も繋ぎに来なかったものがあるか」が決まる。これまでは手元の
@@ -50,10 +54,11 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 	private async _report(cancellation: CancellationTokenSource): Promise<void> {
 		try {
 			await timeout(REPORT_DELAY_MS, cancellation.token);
-			const tally = await raceTimeout(this._localPtyService.paradisTakeReattachTally(this._workspaceContextService.getWorkspace().id), TALLY_TIMEOUT_MS);
+			// 古い pty ホスト（常駐が更新をまたいで生かしているもの）にはメソッドが無い。
+			const tally = await raceTimeout(this._localPtyService.paradisTakeReattachTally?.(this._workspaceContextService.getWorkspace().id) ?? Promise.resolve(undefined), TALLY_TIMEOUT_MS);
 			const attributes = paradisReattachSpanAttributes(tally);
 			if (attributes && !cancellation.token.isCancellationRequested) {
-				runInParadisSpan('pty-daemon', 'reattach', attributes, () => undefined, { forceTransaction: true });
+				runInParadisSpan('pty-daemon', 'startup-revive', attributes, () => undefined, { forceTransaction: true });
 			}
 		} catch {
 			// 診断のために振る舞いを変えない（キャンセルや pty ホストの再起動を含む）。

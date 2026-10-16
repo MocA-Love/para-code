@@ -10,6 +10,7 @@ import assert from 'assert';
 import * as cp from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { ParadisGithubRateLimitPause } from '../../common/paradisGithubRateLimitPause.js';
 import { ParadisGithubMetricsService, paradisParseGhViewerLogin } from '../../node/paradisGithubMetricsChannel.js';
 
 suite('ParadisGithubMetricsService', () => {
@@ -67,6 +68,8 @@ suite('ParadisGithubMetricsService', () => {
 			execFile,
 			() => state.clock,
 			async () => ({}),
+			// プロセス共有の台帳を汚さない（worktree の gh のテストへ漏らさない）
+			new ParadisGithubRateLimitPause(() => state.clock),
 		);
 		return { service, state };
 	}
@@ -169,9 +172,12 @@ suite('ParadisGithubMetricsService', () => {
 		assert.deepStrictEqual({
 			core: snapshot.rateLimits.find(entry => entry.resource === 'core'),
 			rateLimited: snapshot.operations.find(operation => operation.callSite === CORE_CALL_SITE)?.session.rateLimited,
+			// 残量0の資源は、リセット時刻まで worktree の PR・Issue の取得を止めていると画面に出す
+			pauses: snapshot.rateLimitPauses,
 		}, {
 			core: { resource: 'core', limit: 5000, remaining: 0, used: 5000, resetAt: 4_000_000 },
 			rateLimited: 1,
+			pauses: [{ resource: 'core', until: 4_000_000 }],
 		});
 	});
 

@@ -61,7 +61,9 @@ export class ParadisPtyDaemonStatusServerService implements IParadisPtyDaemonSta
 	}
 
 	async getStatus(): Promise<IParadisPtyDaemonStatus> {
-		if (this.configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) !== true) {
+		// Windows の接続先では常駐を使わない（`paradisRemotePtyHost.ts`）。設定が入っていても
+		// 「使っていない」と答える。答えを違えると、更新の前の確認が「残せる」と誤って案内する。
+		if (this.configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) !== true || process.platform === 'win32') {
 			return paradisDisabledDaemonStatus();
 		}
 		return this.collector.collect(this.scope());

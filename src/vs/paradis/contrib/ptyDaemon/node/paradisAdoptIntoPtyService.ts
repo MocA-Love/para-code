@@ -23,7 +23,6 @@ import { IParadisAdoptedTerminal, paradisAdoptTerminals } from './paradisTermina
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisDecodeLayout } from './paradisTerminalLayout.js';
 import { IParadisAdoptTarget, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
-import { paradisRecordAdoption } from './paradisReattachTally.js';
 
 /** 器を作れる相手。`PtyService` のうち、ここが使う部分だけ。 */
 export interface IParadisAdoptionTarget {
@@ -121,6 +120,28 @@ export interface IParadisAdoptionOutcome {
 	readonly adopted: number;
 	/** 載せられなかった本数。**常駐にはそのまま残っている。** */
 	readonly skipped: number;
+	/** 載せられなかったうち、別の相手が見ているので残したもの。 */
+	readonly foreign: readonly IParadisAdoptedTerminal[];
+	/** 器を作れずに残した本数。 */
+	readonly failed: number;
+	/** 載せたうち、すでに終わっていたもの。 */
+	readonly finished: number;
+	/** 配置を戻せたスペースの数。 */
+	readonly layouts: number;
+}
+
+/** 2回目以降の引き取りに要るもの。 */
+export interface IParadisReadoptContext {
+	/** もう引き取ってある handle。飛ばす。 */
+	readonly known: ReadonlySet<number>;
+	/**
+	 * もう引き取ってある handle の、こちらでの番号。
+	 *
+	 * **配置を戻すときに要る。** 常駐が持つ配置には、今回引き取った端末と一緒に、前から
+	 * このホストに居る端末も入っている。前から居る分を番号に戻せないと、今回の分だけの配置で
+	 * 窓の配置を上書きし、前から居たタブが消える。
+	 */
+	readonly idOf: (handle: number) => number | undefined;
 }
 
 /**
@@ -132,16 +153,18 @@ export async function paradisAdoptIntoPtyService(
 	ptyService: IParadisAdoptionTarget,
 	host: IParadisPtyHost,
 	logService: ILogService,
+	readopt?: IParadisReadoptContext,
 ): Promise<IParadisAdoptionOutcome> {
-	const result = await paradisAdoptTerminals(host);
+	const result = await paradisAdoptTerminals(host, readopt?.known);
 	if (!result.reachable) {
 		logService.warn('[ParadisPtyHost] could not ask the daemon what it holds; terminals it has are not lost, only unseen');
-		paradisRecordAdoption({ reachable: false, adopted: 0, skipped: 0 });
-		return { reachable: false, adopted: 0, skipped: 0 };
+		return { reachable: false, adopted: 0, skipped: 0, foreign: [], failed: 0, finished: 0, layouts: 0 };
 	}
 
 	let adopted = 0;
 	let skipped = result.skipped;
+	let failed = 0;
+	let finished = 0;
 	/** 常駐側の handle と、こちら側で振り直した番号の対応。配置を戻すのに要る。 */
 	const idByHandle = new Map<number, number>();
 	for (const terminal of result.adopted) {
@@ -181,21 +204,25 @@ export async function paradisAdoptIntoPtyService(
 			// そのスペースの端末は永久に画面へ出てこない。
 			paradisRememberHandle(id, terminal.summary.handle);
 			adopted++;
+			if (!terminal.summary.alive) {
+				finished++;
+			}
 		} catch (error) {
 			// **常駐からは外さない。** こちらが器を作れないというだけで、走っているプロセスを
 			// 畳む理由が無い。次の起動でもう一度試せる。
 			logService.error(`[ParadisPtyHost] could not take over terminal ${terminal.summary.handle}`, error);
 			skipped++;
+			failed++;
 		}
 	}
 
 	// **配置を戻すまでが引き取り。** 戻さないと、器はできているのに窓が繋ぎに来ないので、
 	// 走っているプロセスはあるのに画面には何も出ない。
-	await paradisRestoreLayouts(ptyService, host, result.adopted, idByHandle, logService);
+	const lookup = (handle: number) => idByHandle.get(handle) ?? readopt?.idOf(handle);
+	const layouts = await paradisRestoreLayouts(ptyService, host, result.adopted.filter(terminal => idByHandle.has(terminal.summary.handle)), lookup, logService);
 
-	logService.info(`[ParadisPtyHost] took over ${adopted} terminal(s) from the daemon${skipped > 0 ? `, left ${skipped} behind` : ''}`);
-	paradisRecordAdoption({ reachable: true, adopted, skipped });
-	return { reachable: true, adopted, skipped };
+	logService.info(`[ParadisPtyHost] took over ${adopted} terminal(s) from the daemon${skipped > 0 ? `, left ${skipped} behind (${result.foreign.length} watched by another pty host)` : ''}`);
+	return { reachable: true, adopted, skipped, foreign: result.foreign, failed, finished, layouts };
 }
 
 /**
@@ -208,19 +235,22 @@ async function paradisRestoreLayouts(
 	ptyService: IParadisAdoptionTarget,
 	host: IParadisPtyHost,
 	adopted: readonly IParadisAdoptedTerminal[],
-	idByHandle: Map<number, number>,
+	idOf: (handle: number) => number | undefined,
 	logService: ILogService,
-): Promise<void> {
+): Promise<number> {
 	const workspaces = new Set(adopted.map(terminal => terminal.metadata.workspaceId).filter(id => id.length > 0));
+	let restored = 0;
 	for (const workspaceId of workspaces) {
 		try {
 			const raw = await host.getLayout(workspaceId);
-			const layout = raw === undefined ? undefined : paradisDecodeLayout(raw, handle => idByHandle.get(handle));
+			const layout = raw === undefined ? undefined : paradisDecodeLayout(raw, idOf);
 			if (layout) {
 				ptyService.paradisSetTerminalLayoutInfo(layout);
+				restored++;
 			}
 		} catch (error) {
 			logService.warn(`[ParadisPtyHost] could not restore the layout for ${workspaceId}`, error);
 		}
 	}
+	return restored;
 }

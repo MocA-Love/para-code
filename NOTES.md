@@ -433,7 +433,7 @@ vendored chrome-devtools-mcp と CDP ゲートウェイは手元の shared proce
 
 - **「接続先から」の判定**: ペインの `remoteAuthority`（`_classifyCaller` が `tunnel` と `pane` のどちらで確かめるかを決めるのと同じ属性）に加え、接続の相手が Para Code の張った戻り経路の ssh（`ParadisRemoteAgentTunnels.processPidFor` の PID、`paradisPeerIsOneOf`）なら、手元のペインのトークンでも接続先として扱う。`remoteAuthority` はシェルの PID と別の台帳（`_paneRemoteAuthorities`）にも覚える。`_paneShells` は PID の分かるペインしか持たず、SSH のウィンドウの再読み込みでターミナルが付き直す前など PID の無い manifest では接続先のペインが台帳から消え、手元と見なされていたため。一度接続先と分かったトークンはトークンが片付くまで手元に戻さない。CDP ゲートウェイは台帳に無いトークンも接続先として扱う（MCP の層が台帳に無いペインのパスを断るのと揃える）。戻り経路の確認は、戻り経路が1本も無ければプロセス表を調べない。戻り経路があるのに相手を特定できない（lsof 等が失敗した）ときは接続先として扱う。CDP ゲートウェイでは接続ごとに、手元のファイルに触れるコマンドが初めて来たときに1回だけ調べる（その間そのコマンドと後続は待たせる）。手元のペインに `pane`（シェルの子孫）であることは求めない（tmux・WSL・採用した Codex app-server でパスが使えなくなるため）
 - **MCP の層**（`paradisDevtoolsPathPolicy.ts`、`ParadisAgentBrowserService._callTool` の転送直前）: 接続先からの呼び出しは、パスの引数があれば英文のツールエラーで断る。台帳に無いペインも断る。対象は 1.5.0 の `verifyFilesSchema` と同じ（`take_screenshot` / `take_snapshot` / `evaluate_script` / `performance_start_trace` / `performance_stop_trace` / `take_heapsnapshot` / `upload_file` の `filePath`、`get_network_request` の `requestFilePath` と `responseFilePath`、`lighthouse_audit` の `outputDirPath`。一覧に出ない `get_heapsnapshot_*`・`close_heapsnapshot`・`compare_heapsnapshots`・`install_extension`・`screencast_start` の分も）。名前が `path` で終わる引数と、`navigate_page` の `file:` の `url` も断る。表は `paradisDevtoolsPathArgumentsSync.test.ts` が vendored の `build/src/tools/*.js` と突き合わせる
-- **CDP ゲートウェイの層**（`paradisCdpRemotePolicy.ts`、`paradisCdpFilterProxy.ts` のページ接続とブラウザ接続のセッション）: 接続先からの接続（`IParadisCdpGatewayDelegate.isRemotePane` は毎回、`isTunnelPeer` は接続ごとに手元のファイルに触れるコマンドが初めて来たときに1回だけ判定）では、`DOM.setFileInputFiles`・`DOM.getFileInfo`・`Page.handleFileChooser`・`data.files` 付きの `Input.dispatchDragEvent`・`file:`（`view-source:file:` を含む）への `Page.navigate` / `Target.createTarget`・`perfettoConfig` 付きか `tracingBackend: 'system'` の `Tracing.start`（Perfetto の設定の出力先でブラウザの機械へ書かせうるため。puppeteer の通常のトレースは `traceConfig` だけなので MCP の `performance_*` は動く。`traceConfig` にはファイルの出力先の項目が無い）を断る。MCP の `navigate_page` / `upload_file` もこの接続を通るので二重に塞がる。手元のペインは今までどおり `file:` を開ける。**塞いでいないもの**: (1) `Page.navigateToHistoryEntry` とページの JS の `history.back()`（戻る・進むに使う。そのタブの履歴に利用者が開いた `file:` のページがあればそこへ戻れる）。(2) 共有されたタブが既に `file:` のページのとき、そのページの JS（`Runtime.evaluate`）から別の `file:` の URL へ移る・iframe で読む（Chromium が `file:` 同士を読ませる範囲に限る）。web のページから `file:` へは Chromium が遷移を断るので、ここへ来るのは利用者が `file:` のページを共有したときだけ。止めるには electron-main の内蔵ブラウザの遷移（`will-frame-navigate`）で「接続先のペインに共有中のビュー」を見分ける必要があり、共有の台帳を main へ渡す変更になるので見送った。(3) 内蔵ブラウザのダウンロード: 接続先のエージェントもページの JS（blob と `a.download`）や para-browser の `save_page_as_pdf` / `download_by_click` でダウンロードを起こせ、利用者のダウンロードフォルダ（`~/Downloads` など）にファイルを作れる。既存のファイルは上書きせず、中身を読み返すこともできない。(4) `Page.addScriptToEvaluateOnNewDocument` で仕込んだスクリプト: 接続先のエージェントが共有中のタブに仕込んでおくと、利用者が後でそのタブ（共有中のまま）で `file:` のページを開いたとき、そのページで動いて中身を読める
+- **CDP ゲートウェイの層**（`paradisCdpRemotePolicy.ts`、`paradisCdpFilterProxy.ts` のページ接続とブラウザ接続のセッション）: 接続先からの接続（`IParadisCdpGatewayDelegate.isRemotePane` は毎回、`isTunnelPeer` は接続ごとに手元のファイルに触れるコマンドが初めて来たときに1回だけ判定）では、`DOM.setFileInputFiles`・`DOM.getFileInfo`・`Page.handleFileChooser`・`data.files` 付きの `Input.dispatchDragEvent`・`file:`（`view-source:file:` を含む）への `Page.navigate` / `Target.createTarget`・`perfettoConfig` 付きか `tracingBackend: 'system'` の `Tracing.start`（Perfetto の設定の出力先でブラウザの機械へ書かせうるため。puppeteer の通常のトレースは `traceConfig` だけなので MCP の `performance_*` は動く。`traceConfig` にはファイルの出力先の項目が無い）を断る。MCP の `navigate_page` / `upload_file` もこの接続を通るので二重に塞がる。ただし接続先のペインの `upload_file` は、接続先のファイルを手元の一時ファイルへ写して vendored に渡す（`paradisRemoteFileTransfer.ts`）ので、その呼び出しの間だけ、そのペインの接続から写した一時ファイルだけを指す `DOM.setFileInputFiles` を通す（`permitsRemoteFileInput`。2026-10-16 まではここで断っていたため、接続先の `upload_file` が全件「要素がファイルを受け取らない」で失敗していた）。手元のペインは今までどおり `file:` を開ける。**塞いでいないもの**: (1) `Page.navigateToHistoryEntry` とページの JS の `history.back()`（戻る・進むに使う。そのタブの履歴に利用者が開いた `file:` のページがあればそこへ戻れる）。(2) 共有されたタブが既に `file:` のページのとき、そのページの JS（`Runtime.evaluate`）から別の `file:` の URL へ移る・iframe で読む（Chromium が `file:` 同士を読ませる範囲に限る）。web のページから `file:` へは Chromium が遷移を断るので、ここへ来るのは利用者が `file:` のページを共有したときだけ。止めるには electron-main の内蔵ブラウザの遷移（`will-frame-navigate`）で「接続先のペインに共有中のビュー」を見分ける必要があり、共有の台帳を main へ渡す変更になるので見送った。(3) 内蔵ブラウザのダウンロード: 接続先のエージェントもページの JS（blob と `a.download`）や para-browser の `save_page_as_pdf` / `download_by_click` でダウンロードを起こせ、利用者のダウンロードフォルダ（`~/Downloads` など）にファイルを作れる。既存のファイルは上書きせず、中身を読み返すこともできない。(4) `Page.addScriptToEvaluateOnNewDocument` で仕込んだスクリプト: 接続先のエージェントが共有中のタブに仕込んでおくと、利用者が後でそのタブ（共有中のまま）で `file:` のページを開いたとき、そのページで動いて中身を読める
 - **roots**: proxy は `initialize` で `roots: { listChanged: true }` を名乗り、`roots/list` に次を返す。手元のペインはスペースのフォルダ（ペインを所有するウィンドウの `paradisAgentPreview` チャネル `paneRoots`。スペースを持たないペインはウィンドウのワークスペースのフォルダ、`file:` だけ。ペインの所属がまだ決まっていなければ `undefined` を返し、揃っていない扱いで後から引き直させる）、利用者の一時フォルダ（shared process の `os.tmpdir()`、macOS では `/tmp` と `/private/tmp` も）、Para Code の一時フォルダ。接続先のペインは Para Code の一時フォルダだけ。上限 16 フォルダを超えた分はログに残す
 - **roots の応答の順序と取り直し**: `roots/list` にエラーで答えたり SDK の 60 秒を超えたりすると vendored は roots を未設定のまま（＝何も確かめない）にするので、フォルダの解決に失敗・5 秒で時間切れしても一時フォルダだけの一覧で必ず答える。揃わなかったときは 2 秒から倍々で最大 5 回引き直し、揃ったら `notifications/roots/list_changed` を送る（vendored の `index.js` は roots を名乗ったクライアントのこの通知で `roots/list` を取り直す）。一度揃ったフォルダは以後のすべての応答に使うので、初期化時の遅い要求の応答が後の正しい応答を上書きすることはない
 - **`preview_file`**: 接続先のペインのパスは、ウィンドウに接続先（`remoteAuthority`）も渡して `vscode-remote://<接続先>/<パス>` として開く（以前は `URI.file` で手元のファイルを開けた・有無を探れた）。手元のペインのトークンで戻り経路から来たものは断る
@@ -528,6 +528,10 @@ tmux と同じ形の問題が Claude Code 2.1.289 の daemon にもあります�
 - plugin の codex でも、起動行に plugin が見えず（Windows で CommandLine が取れない等）、rollout がまだ無い最初の hook（Codex は最初のターンで rollout を作る）は判定できず、後継になりうる
 - 逆に、plugin が作った会話をペインで `codex resume` し、その hook が共有 daemon（ペインの外）から届くと、rollout の `originator` が `"Claude Code"` のままなので所有者のいない間は後継になれない
 - pid の無い hook（古いスクリプト・プロセス表が取れない）は daemon の会話と見分けられない。受け手が transcript の `sessionKind` で確かめるが、所有者の記録は先に届いた分岐先の transcript で決まりうる（その後のペインの hook は `invalid` で捨てられる）。pid の無いペインで分岐先を `--resume` し直したときは、最初のターンの行が書かれるまで分岐先として扱われる
+
+### pid の無いペイン（接続先）の所有者は、自分の SessionEnd の後の SessionStart へ移す（2026-10-16、#389）
+
+接続先のペインの hook は pid を持たないので、所有者は transcript だけで決まり、/resume・/clear・/branch で会話が替わると状態が出なくなっていた。今は所有者の会話から `SessionEnd` を受けた後の `SessionStart`（子エージェントのものを除く）で所有者を移す（Claude Code 2.1.301 は /resume・/branch の前に `reason: resume`、/clear の前に `reason: clear` の `SessionEnd` を送る。実測）。Codex は `SessionEnd` を送らないので、ツールが動いていない間の Codex の `SessionStart`（`source` が resume / clear / fork）だけで移す。既知の制限: Codex の起動し直し（`source: startup`）や、Codex を終えた後に同じペインで別のエージェントを起動した場合は、ペインを閉じるまで所有者が移らず状態が出ない。
 - daemon の会話の状態（許可待ち・完了）は、どのペインのタブにも出ない
 
 ### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
@@ -2102,6 +2106,53 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 
 既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
 
+### SSH 先で更新をまたいで端末を引き継ぐ（2026-10-16）
+
+「更新をまたいで繋ぎ直す」（`paradis.terminal.daemon.reattachAcrossUpdates`、MACHINE スコープ）は SSH 先でも薄い常駐を立てる作りだったが、更新すると端末が戻らなかった。原因はコードを通しで読んで確定した（実機では未確認）:
+
+1. 窓を閉じると renderer は `detachFromProcess` を呼ぶが、`PersistentTerminalProcess.detach()` は猶予タイマーを掛けるだけで、常駐から手を離す口が無かった。古い版のサーバー A の pty ホストは端末を見たまま（常駐の viewer のまま）残る
+2. A は `paradisServerTerminalLifetime.ts` が拾い直し待ちを理由に最大 24 時間 5 分延ばすので居座る
+3. 更新後の版のサーバー B の pty ホストは起動時に1回だけ引き取り、見られている端末を飛ばす。後から A を止めても引き取り直さない
+4. B の窓が自分の配置を保存すると、B はそのスペースの常駐の端末を持たないので、常駐の配置が B の分で上書きされ、A のタブ配置が失われる
+5. 窓を閉じている間も A が viewer なので、常駐は代わりに受け取らず、誰も ack しないまま 10 万文字（`HighWatermarkChars`）で pty が止まる。**手元でも、アプリを起動したまま窓だけ閉じたときに同じことが起きていた**
+
+直し方（すべて `ptyDaemon/` の fork 所有ファイルと、upstream への小さな PARA-PATCH）:
+
+- **窓が離れたら pty ホストも常駐から手を離す**（`paradisDaemonTerminalProcess.ts` の `paradisLetGo`、`ptyService.ts` の `PersistentTerminalProcess.detach()` から呼ぶ）。常駐が代わりに受け取るので走り切り、B も引き取れる
+- **同じ pty ホストへ戻ったら繋ぎ直す**（`paradisComeBack`、`PersistentTerminalProcess.attach()` から呼ぶ）。常駐が `attach` で返す控えの総量（`written`）と世代（`epoch`）を、手を離した時点の量と比べて、何もしない・差分だけ流す・控え全体で画面（`XtermSerializer`）を作り直す、を選ぶ（`common/paradisPtyReattachPlan.ts`）。窓の再読み込みはほぼ「何もしない」で済む
+- 戻ったら別の pty ホストが見ていた／常駐に無かった: 常駐には触れずに器を畳み、繋ぎ直しを失敗にする（upstream が新しいシェルを起こす）
+- 手を離した端末の猶予切れの終了は、別の pty ホストが見ていれば手を引く。`kill` と `release` に頼んだ側の名札（`caller`）を足し、新しい常駐は別の相手が見ている端末を終わらせない（古い常駐は引数を無視する。確かめてから頼むので、すき間は ms 単位）
+- 手を離している間に終わった端末は、その場で終了を伝えず、戻ってきて画面を渡してから 1.5 秒後に伝える（伝えると器が畳まれ、閉じている間に走り切った結果を読めない）
+- **引き取り直し**（`node/paradisPtyReadopt.ts`）: 飛ばした端末（別の相手が見ている）を覚え、30 秒ごとに空いたかを見て引き取る。古い版のサーバーを「止めて引き継ぐ」で止めた直後にも引き取り、引き取れたら窓を再読み込みして通常の復元で出す（`paradisStaleRemoteServer.contribution.ts`）。見回りで引き取ったときは「再読み込みすると表示されます」と知らせる
+- **配置の上書きを防ぐ**: 飛ばした端末が居るスペースは、起動時に常駐から読んだ配置のうち、その端末のタブを常駐へ書く配置の後ろへ足し続ける（`paradisMergeForeignLayout`）
+- 常駐が持っている端末は、サーバーの寿命延長の理由にしない（`IProcessDetails.paradisHeldByDaemon`）。A は窓が去って 5 分で終わり、次に起きたサーバーが引き取る
+- 常駐に預けていた端末について「前の版で残したターミナルは開けません」と伝えない（残したときの記録に `acrossUpdates` を足す。古い記録は今までどおり）
+- 通信の版（`PARADIS_PTY_PROTOCOL_VERSION`）は 2 のまま。足したのは省略可能な項目（`written`・`epoch`・`caller`）だけで、古い常駐と新しいアプリ、新しい常駐と古いアプリのどちらの組み合わせでも動く
+
+接続先のマシンでこの機能をオンにする方法（ユーザー向け）:
+
+1. SSH のウィンドウで設定を開き、「リモート [SSH: <接続先>]」のタブで「更新をまたいで繋ぎ直す」（`paradis.terminal.daemon.reattachAcrossUpdates`）にチェックを入れる。手元の「ユーザー」のタブでオンにしても接続先には効かない（MACHINE スコープの設定は接続先のマシン設定 `~/.para-code-server/data/Machine/settings.json` から読む）
+2. コマンドパレットで「ターミナル: PTY ホストの再起動」を実行する（いま開いているターミナルは起動し直しになる）。以前はサーバーが起き直すまで効かなかったが、設定が入った時点で環境変数を足すようにしたので、次に pty ホストが起きたときから常駐を使う
+3. 左下の常駐ターミナルの表示が「稼働中」になれば有効。接続先の `~/.para-code-server/data/ptyHost/` に `v2.json` とソケットができる
+
+調べて分かったこと（再調査不要）:
+
+- 接続先の `bin/<commit>` を消すのは Para Code の古い版の掃除（`paradisStaleServers.ts`）だけで、open-remote-ssh の `server-setup.sh` は他の版を消さない。掃除は引数（と Linux の `/proc/<pid>/exe`）にそのフォルダを含むプロセスがあれば消さないので、常駐（`bin/<旧 commit>/node .../bootstrap-fork`）の版は残る。したがって macOS の接続先で常駐が旧い版のフォルダの `spawn-helper` を使い続けても、新しい端末を起こせなくなることは無い
+- Windows の接続先では常駐を使わないようにした（手元と同じ名前付きパイプの偽装の理由。REH の経路には除外が無く、設定を入れると有効になっていた）
+- 端末の環境に入る窓ごとのポートファイルは、PC の machineId から作る `~/.para-code/<dir>/<sourceId>.json` で版に依存せず、新しい窓が繋いだときに書き直すので、引き継いだ端末の hook も届く
+- 「ターミナル: PTY ホストの再起動」: 新しい pty ホストは起動時に常駐の端末を引き取るが、窓は upstream の動き（`terminalProcessManager.ts` の `onPtyHostRestart`）で各タブに新しいシェルを起こす。引き取った端末は再読み込みで戻る（エディタのターミナルは nonce で元へ繋がる）
+- 複数の PC: 常駐の端末を見られるのは1つの pty ホストだけ。新しい版のサーバーが引き取った後、古い版のまま戻ってきた PC からは見えない（繋ぎ直しが失敗し、新しいシェルが起きる）。逆に古い版の PC が先に繋ぐと、そちらのサーバーが空いている端末を引き取る
+- 回線が落ちたなどで窓が離れる合図が届かなかったときは A が見たまま残るが、A は 5 分で終わる（寿命延長から外したため。ただし upstream の接続の猶予で拡張ホストが残る間は終わらない）。A が消えた時点で 30 秒以内に B が引き取る
+- 【既知の制限】B の窓が先に開いたあとで引き取り直したとき、A が持っていたエディタのターミナルは、窓が代わりに起こした空のシェル（同じ nonce）に置き換わって見える。再読み込みで元の端末へ繋がり、空のシェルは触っていなければ再読み込みで終わる
+
+Sentry（pty ホストにも REH にも SDK が無いので、pty ホストが数え、窓が 60 秒ごとに取りに行って送る。`common/paradisPtyHandover.ts`、`electron-browser/paradisPtyHandover.contribution.ts`）:
+
+- transaction `para.ptyHandover.adopt`（引き取り1回ごと）: `safe_trigger`（`startup`/`poll`/`stale-stop`）・`safe_adopted`・`safe_foreign`・`safe_failed`・`safe_finished`・`safe_layouts`・`safe_duration_ms`・`safe_reachable`
+- transaction `para.ptyHandover.reattach`（前回からの合計）: `safe_let_go`・`safe_unchanged`・`safe_tail`・`safe_rebuild`・`safe_rebuild_<理由>`・`safe_rebuild_chars`・`safe_rebuild_max_ms`・`safe_handed_off`・`safe_gone`・`safe_failed`・`safe_spared`・`safe_finished_away`
+- どちらにも `safe_protocol`・`safe_host_os`・`safe_remote`・`safe_foreign_held`
+- 失敗はまとめて1件の例外（`ptyHandover` / `failed:unreachable`・`failed:adopt`・`failed:come-back`・`failed:let-go`）。renderer ではメッセージの経路が繋がっていないため例外の経路で送る
+- 取ると数えた分は消えるので、同じ pty ホストを見ている窓が複数あっても二重に送らない。送る量は窓の開け閉めと更新のときだけで、1人1日あたり数件〜数十件の見込み
+
 ### 常駐の内部用の環境変数はシェルへ渡さない（2026-09-27）
 
 製品版のターミナルのシェルに `PARADIS_PTY_HOST_STATE_DIR=~/Library/Application Support/Para Code` が入っており、そこから開発版を起動すると、開発版のターミナルが製品版の常駐に作られていた。main が `process.env` に入れっぱなしにした値を pty ホストが継ぎ、`PtyService.getEnvironment()`（= `{ ...process.env }`）がターミナルの基底環境として renderer へ返していたのが経路。SSH 先ではサーバーの `process.env` から `buildUserEnvironment` 経由で同じように漏れる。
@@ -2284,7 +2335,7 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 - 保存物があって常駐が動いていないときは、ターミナルの復元が最大6秒遅れる
 - **エディタのタブは起こし直しを待ってから繋ぐ**（2026-10-16）。待たないと、タブの復元が `getTerminalLayoutInfo` の起こし直しより先に `attachToRevivedProcess` を呼び、旧い番号のまま失敗して空のシェルを起こす。直後に同じタブの画面が起こし直されるが誰も繋ぎに来ず、画面は戻らず、起こし直した方は起動されないまま pty ホストに残る（`Attach to Session` の一覧に出る）。実機では再起動の 4 回とも 1〜5 本がこうなっていた。`localTerminalBackend.ts` の PARA-PATCH で、起こし直しが済むまで（最長でバックエンドを作ってから 10 秒）待たせる（`ptyDaemon/common/paradisReviveGate.ts`）
 - 入力も再生も一度も無かったターミナル（開いただけのシェル）は upstream の `serializeTerminalState` が `hasWrittenData` で外すので、保存されず、再起動後は新しいシェルになる（10/13 の再起動で 5 本中 1 本しか戻らなかったのはこれと推測。4 本は同時に開いたまま触っていないシェルだった）
-- 起動したときの結果は span `para.pty-daemon.reattach` で送る（引き取り・残った本数・起こし直し・誰も繋がなかった本数。`ptyDaemon/node/paradisReattachTally.ts`）
+- 起動したときの結果は span `para.pty-daemon.startup-revive` で送る（起動時の引き取り・残った本数・起こし直し・誰も繋がなかった本数。数えるのは `ptyDaemon/node/paradisReattachTally.ts`、引き取りの本数は `paradisAdoptAtStartup` が記録する）。引き取りの回ごとの詳細は `ptyHandover` の span が別に送る
 - 【要確認】`reattachAcrossUpdates` の常駐で、更新をまたいだときに今の常駐の pid と起動時刻が変わるか。変わって、かつ更新前の常駐が `foreign` に出ないなら、更新のたびに起こし直しが走る
 - 復元の前に保存が走ると、戻すはずの画面を空で上書きする。保存は `take` が済むまで（呼ばれなければ起動から2分）始めない
 - 30日より古いものは使わずに消す。開かれなくなったワークスペースの分は、起動5分後に保存フォルダを一度見回って消す。設定 `paradis.terminal.daemon.saveScreens`（既定 true）を切るとその場で消す
@@ -2637,6 +2688,17 @@ upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と�
 - `gh api -i` は HTTP エラーでも非0終了しつつヘッダを stdout に出す（`gh: HTTP 404` は stderr）。枠を使い切ったときの 403 レスポンスにも `X-RateLimit-Remaining: 0` と `X-RateLimit-Reset` が載るため、`execGh()` は非0終了でも stdout を捨てない。捨てると「あと何分で戻るか」を最も知りたい瞬間に情報が落ちる
 - 片方のプローブだけ失敗した回は、その資源の前回値を残す。ただしリセット時刻を過ぎた前回値は捨てる（窓が回った後の `remaining` は意味を持たず、残すとステータスバーの%と警告色が固まる）
 - 将来 GitHub が `/rate_limit` を直したとしても、ヘッダ方式のほうが正確（プローブ分のコストだけが差分）なので戻す必要はない
+
+### 枠切れ中の停止と、ウィンドウ・スマホをまたいだ使い回し（2026-10-16、Q373）
+
+- 内訳（呼び出し元・スペース）に出るのは Para Code 自身の gh（`paradisWorktreeGitChannel.ts` の `execGh()` とプローブ）だけ。エージェントがターミナルで打った gh や拡張機能の消費は枠の残量にしか現れないので、画面では「その他（エージェント・拡張など）」として、枠の消費から Para Code の送信（枠切れで断られた分を除く）を引いた推定を出す（`paradisGithubOtherConsumption()`）
+- `gh pr view` / `gh issue view` / `gh repo view` / `gh pr merge` は GraphQL の枠を使う。資源は引数から決める（`paradisGithubResourceFromArgs()`）。以前は全部 `core` で記録していた
+- 枠のリセットはリセット時刻の進み（60 秒以上）で判定する。残量が増えたかで判定すると、同じ窓で残量が少し戻っただけの区間を「リセット後に limit-remaining 使った」と数え、数千の偽の山が立っていた
+- gh が枠の上限で断られたら、その実行名前空間（手元 / WSL のディストロ）・資源の定期の PR・Issue の取得を、プローブが知っているリセット時刻まで止める（分からなければ 15 分。`paradisGithubRateLimitPause.ts`）。プローブが残量0を見たときも止め、残量を見たら解く。止めている間は最後に取れた状態を返す。止めるのは定期の取得（`getPrStatus` / `getIssueStatuses`）だけで、スマホの PR 詳細・マージ・失敗したジョブのログは利用者の操作なので止めない
+- PR の状態は「worktree のパス + 今のブランチ」、Issue は `owner/repo#number` をキーに git チャネル（shared process / 接続先のサーバー）で 270 秒使い回す（ポーリングの 5 分より短くして、呼び出し元が 1 つでも毎回取り直す）。同時の問い合わせは 1 本にまとめる。閉じた Issue は 2 時間使い回す（接続先のサーバーは何日も動くので、期限なしにすると開き直された Issue が戻らない）。スマホからマージしたらその worktree の PR の使い回しを捨て、スマホの PR の画面が読んだ状態は一覧の使い回しにも書き込む。今いないスペースの PR の状態は最大 20 分ほど遅れる
+- 取り直す間隔はスペースで変える。今いるスペース（そのウィンドウで開いているもの、スマホが最後に名指ししたもの）は 270 秒、ほかは 870 秒より古ければ取り直す（`paradisGithubStatusMaxAge()`。一覧とリレーの 5 分ごとの問い合わせが、それぞれ 5 分・15 分ごとになる）。一覧とリレーは全件を渡し、古さの判定は git チャネル側で行う（間隔を渡さない古いクライアントは全部 270 秒）
+- 一覧・worktree の通知は中身が変わらなくても来る（`ParadisWorktreeService.refresh()` は毎回鳴らし、main の HEAD の書き換えやピンの付け外しでも鳴る）。PR・Issue は「対象の URI・ブランチ・今いるスペース」の指紋（`paradisGithubTargetsFingerprint()`）が変わったときだけ取り直す。diff は従来どおり通知ごとに取り直す
+- 見送ったもの: ワークツリーごとの `gh pr view` を `gh pr list --state all` 1 本にまとめる案は、`pr list` がブランチの集合で絞れず（`--limit` 件で切れる）、`pr view` の PR の選び方（`refs/pull/N/head`、push 先の fork の owner、OPEN 優先、デフォルトブランチの除外）を Para Code で作り直すことになるため保留
 
 ## 他のブラウザからのログイン取り込み（browserProfiles/loginImport、2026-09-27、フェーズ7 B4）
 

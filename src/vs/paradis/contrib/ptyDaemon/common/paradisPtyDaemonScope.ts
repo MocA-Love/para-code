@@ -160,6 +160,8 @@ export function paradisDaemonLeadText(scope: IParadisDaemonScope, status: IParad
 /** 常駐していないときの警告の本文。放っておくと何を失うかは、機械によって違う。 */
 export function paradisDaemonNotRunningSub(scope: IParadisDaemonScope): string {
 	return scope.isRemote
-		? localize('paradis.ptyDaemon.popover.notRunningSubRemote', "いまのターミナルは接続先のサーバーの中で動いているので、サーバーが入れ替わると失われます。次にターミナルを開くと常駐を立て直します。")
+		// 接続先の pty ホストは、常駐を使うかを起きたときに1回だけ決める（`paradisPtyHostBootstrap.ts`）。
+		// ターミナルを開き直しても立たないので、立て方を言う。
+		? localize('paradis.ptyDaemon.popover.notRunningSubRemote', "いまのターミナルは接続先のサーバーの中で動いているので、サーバーが入れ替わると失われます。コマンドパレットで「ターミナル: PTY ホストの再起動」を実行すると常駐を使い始めます（いま開いているターミナルは起動し直しになります）。")
 		: localize('paradis.ptyDaemon.popover.notRunningSub', "いまのターミナルは Para Code の中で動いているので、閉じると終了します。次にターミナルを開くと常駐を立て直します。");
 }
