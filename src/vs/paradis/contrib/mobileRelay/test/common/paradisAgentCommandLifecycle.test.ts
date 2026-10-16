@@ -13,10 +13,12 @@ import { IParadisAgentCommandTimer, ParadisAgentCommandAuthority, ParadisAgentCo
 class FakeTimer implements IParadisAgentCommandTimer {
 	private nextId = 1;
 	private readonly callbacks = new Map<number, () => void>();
+	readonly delays: number[] = [];
 
-	set(callback: () => void): number {
+	set(callback: () => void, delayMs: number): number {
 		const id = this.nextId++;
 		this.callbacks.set(id, callback);
+		this.delays.push(delayMs);
 		return id;
 	}
 
@@ -198,6 +200,38 @@ suite('ParadisAgentCommandDeliveryCoordinator', () => {
 		await coordinator.whenIdle('pane');
 		assert.strictEqual(timer.size, 0);
 		assert.strictEqual(coordinator.queuedTokenCount, 0);
+		coordinator.dispose();
+	});
+
+	test('panes that keep getting stale share one registry sync per retry round and back off', async () => {
+		const timer = new FakeTimer();
+		let syncs = 0;
+		const coordinator = new ParadisAgentCommandDeliveryCoordinator({
+			timer,
+			retryDelayMs: 1_000,
+			maxRetryDelayMs: 4_000,
+			operationTimeoutMs: 60_000,
+			syncRegistry: async () => { syncs++; },
+			onProvisionalChange: () => { },
+			onGenerationEnded: () => { },
+		});
+		const tokens = ['pane-1', 'pane-2', 'pane-3', 'pane-4', 'pane-5'];
+		const settle = () => Promise.all(tokens.map(token => coordinator.whenIdle(token)));
+		const retryDelays: number[] = [];
+		const delaysOfRound = () => timer.delays.splice(0).filter(delay => delay !== 60_000);
+		for (const token of tokens) {
+			coordinator.start(token, 'claude', async () => 'stale');
+		}
+		await settle();
+		retryDelays.push(...new Set(delaysOfRound()));
+		for (let round = 0; round < 4; round++) {
+			timer.runAll();
+			await settle();
+			retryDelays.push(...new Set(delaysOfRound()));
+		}
+		// 直す前は 1 秒ごとに、ペインの数（5）だけ全ペインの同期が走っていた（5 巡で 25 回）。今は 1 巡に
+		// 高々 2 回（走っている 1 回と、その間に頼まれたぶんをまとめた 1 回）
+		assert.deepStrictEqual({ syncs, retryDelays }, { syncs: 9, retryDelays: [1_000, 2_000, 4_000, 4_000, 4_000] });
 		coordinator.dispose();
 	});
 

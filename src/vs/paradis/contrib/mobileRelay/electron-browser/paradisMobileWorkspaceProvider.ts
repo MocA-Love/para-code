@@ -288,8 +288,16 @@ export class ParadisMobileWarmLeaseProvider implements IDisposable {
  * Resolves the best local cwd available for agent command discovery. CwdDetection
  * is authoritative when present; local terminals then fall back to the terminal's
  * speculative resolver, which also includes NaiveCwdDetection and the initial cwd.
+ *
+ * 接続先のターミナルには手元の作業フォルダが無いので、何も調べずに undefined を返す。upstream の
+ * `getCwdResource` は接続先のターミナルでも cwd を `file:` の URI にして手元で exists するため、
+ * SSH のウィンドウでは接続先のパスを手元の Mac で stat し続けていた（`/home` は autofs で 1 回が
+ * 数十〜千ミリ秒かかり、main のファイル操作のスレッドを埋めてダウンロードや転送を止めていた）。
  */
 export async function paradisResolveLocalAgentPaneCwd(instance: Pick<ITerminalInstance, 'remoteAuthority' | 'getCwdResource' | 'getSpeculativeCwd'>): Promise<string | undefined> {
+	if (instance.remoteAuthority !== undefined) {
+		return undefined;
+	}
 	try {
 		const detected = await instance.getCwdResource();
 		if (detected !== undefined) {
@@ -298,15 +306,26 @@ export async function paradisResolveLocalAgentPaneCwd(instance: Pick<ITerminalIn
 	} catch {
 		// A local speculative cwd can still be available without shell integration.
 	}
-	if (instance.remoteAuthority !== undefined) {
-		return undefined;
-	}
 	try {
 		const speculative = await instance.getSpeculativeCwd();
 		return speculative.length > 0 ? speculative : undefined;
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * ターミナルの作業フォルダを、そのターミナルが動いている機械のリソースとして返す。
+ * 接続先のターミナルは shell integration が知らせた cwd を接続先の URI へ写すだけで、存在は確かめない
+ * （upstream の `getCwdResource` は接続先の cwd も `file:` にして手元で exists してしまう）。
+ */
+async function paradisTerminalCwdResource(instance: Pick<ITerminalInstance, 'remoteAuthority' | 'capabilities' | 'getCwdResource'>): Promise<URI | undefined> {
+	const remoteAuthority = instance.remoteAuthority;
+	if (remoteAuthority === undefined) {
+		return instance.getCwdResource();
+	}
+	const cwd = instance.capabilities.get(TerminalCapability.CwdDetection)?.getCwd();
+	return cwd ? paradisResolveExternalPath(URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: '/' }), cwd) : undefined;
 }
 
 /**
@@ -947,6 +966,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private readonly agentPaneCwdListeners = this._register(new DisposableMap<number>());
+	/**
+	 * 作業フォルダの変化による同期は 500ms に 1 回へまとめる（同期は全ペインを調べ直すので、cd が続く
+	 * たびに走らせない）。`isScheduled()` のガードで間引くので、cd が続いても 500ms ごとに 1 回は流れる。
+	 */
+	private readonly agentPaneCwdSyncScheduler = this._register(new RunOnceScheduler(() => { void this.pushAgentPanes(); }, 500));
 
 	private refreshAgentPaneCwdListeners(): void {
 		const instances = paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService);
@@ -966,7 +990,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const bindCwdListener = () => {
 				const capability = instance.capabilities.get(TerminalCapability.CwdDetection)
 					?? instance.capabilities.get(TerminalCapability.NaiveCwdDetection);
-				cwdListener.value = capability?.onDidChangeCwd(() => { void this.pushAgentPanes(); });
+				cwdListener.value = capability?.onDidChangeCwd(() => {
+					if (!this.agentPaneCwdSyncScheduler.isScheduled()) {
+						this.agentPaneCwdSyncScheduler.schedule();
+					}
+				});
 			};
 			bindCwdListener();
 			listeners.add(instance.capabilities.onDidAddCapability(() => {
@@ -2212,7 +2240,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return undefined;
 		}
 		try {
-			const cwd = await instance.getCwdResource();
+			const cwd = await paradisTerminalCwdResource(instance);
 			if (cwd === undefined || !extUriBiasedIgnorePathCase.isEqualOrParent(cwd, root)) {
 				return undefined;
 			}
