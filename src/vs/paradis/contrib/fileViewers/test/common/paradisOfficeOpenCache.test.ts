@@ -80,6 +80,16 @@ suite('ParadisOfficeOpenCache', () => {
 		deepStrictEqual({ whileUsed, afterReacquire, afterIdle: cache.resources.length }, { whileUsed: 1, afterReacquire: 1, afterIdle: 0 });
 	}));
 
+	test('lets go of what was kept but never shown, once no viewer has used it for a while', () => runWithFakedTimers({}, async () => {
+		// A load can be overtaken, or fail before it is drawn, after the result was kept and before any viewer acquired it.
+		const cache = new ParadisOfficeOpenCache<string>(limits);
+		cache.set(URI.file('/w/a.xlsx'), 'e', 'A', 10);
+		await timeout(500);
+		const beforeIdle = cache.resources.length;
+		await timeout(1000);
+		deepStrictEqual({ beforeIdle, afterIdle: cache.resources.length, totalBytes: cache.totalBytes }, { beforeIdle: 1, afterIdle: 0, totalBytes: 0 });
+	}));
+
 	test('reads the file once and then only checks its etag while it is unchanged', async () => {
 		const reads: (string | undefined)[] = [];
 		let etag = 'v1';
