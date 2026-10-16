@@ -130,7 +130,8 @@ function horizontalOverhang(shape: XmlElement, width: number, height: number): {
 	let minX = 0, maxX = width, minY = 0, maxY = height;
 	const geometry = child(properties, 'prstGeom');
 	const preset = attribute(geometry, 'prst');
-	if (preset) {
+	// 四角形（画像のほとんど）は枠からはみ出さないので、形を計算しない。
+	if (preset && preset !== 'rect') {
 		const result = paradisShapeGeometry(preset, { x: 0, y: 0, width, height }, adjustValues(geometry));
 		for (const path of result?.paths ?? []) {
 			pathPoints(path.d, (x, y) => {
@@ -157,6 +158,58 @@ function horizontalOverhang(shape: XmlElement, width: number, height: number): {
 		maxX = Math.max(...xs);
 	}
 	return { left: Math.min(0, minX), right: Math.max(0, maxX - width) };
+}
+
+/** 要素の直下の図形。mc:AlternateContent に包まれたものは、その中の 1 つの枝（Choice、無ければ Fallback）を見る。 */
+function shapeElements(element: XmlElement): XmlElement[] {
+	const result: XmlElement[] = [];
+	for (const node of children(element)) {
+		if (node.local === 'AlternateContent') {
+			const branch = child(node, 'Choice') ?? child(node, 'Fallback');
+			if (branch) {
+				result.push(...shapeElements(branch));
+			}
+		} else if (node.local === 'sp' || node.local === 'cxnSp' || node.local === 'pic' || node.local === 'grpSp' || node.local === 'graphicFrame') {
+			result.push(node);
+		}
+	}
+	return result;
+}
+
+/** 入れ子のグループを辿る深さの上限。 */
+const MAX_GROUP_DEPTH = 32;
+
+/**
+ * 枠（左端 `left`・幅 `width`・高さ `height`、px）に置いた図形の外枠の右端。グループは中の図形を子の座標系
+ * （chOff・chExt）から枠へ写して、それぞれの形（しっぽなど）を見る。グループの回転・反転は見ない。表・グラフは枠のまま。
+ */
+function outlineRight(shape: XmlElement, left: number, width: number, height: number, depth: number): number {
+	if (shape.local === 'sp' || shape.local === 'cxnSp' || shape.local === 'pic') {
+		return left + width + horizontalOverhang(shape, width, height).right;
+	}
+	let right = left + width;
+	if (shape.local !== 'grpSp' || depth >= MAX_GROUP_DEPTH) {
+		return right;
+	}
+	const transform = child(child(shape, 'grpSpPr'), 'xfrm');
+	const childOffset = child(transform, 'chOff');
+	const childExtent = child(transform, 'chExt');
+	const childWidth = integer(attribute(childExtent, 'cx'));
+	const childHeight = integer(attribute(childExtent, 'cy'));
+	const scaleX = childWidth > 0 ? width / childWidth : 1 / EMU_PER_PX;
+	const scaleY = childHeight > 0 ? height / childHeight : 1 / EMU_PER_PX;
+	const originX = integer(attribute(childOffset, 'x'));
+	for (const member of shapeElements(shape)) {
+		const memberTransform = child(child(member, member.local === 'grpSp' ? 'grpSpPr' : 'spPr'), 'xfrm');
+		const offset = child(memberTransform, 'off');
+		const extent = child(memberTransform, 'ext');
+		if (!offset || !extent) {
+			continue;
+		}
+		const memberLeft = left + (integer(attribute(offset, 'x')) - originX) * scaleX;
+		right = Math.max(right, outlineRight(member, memberLeft, Math.max(0, integer(attribute(extent, 'cx')) * scaleX), Math.max(0, integer(attribute(extent, 'cy')) * scaleY), depth + 1));
+	}
+	return right;
 }
 
 /**
@@ -222,10 +275,10 @@ export function paradisDrawingRightmostColumn(xmls: readonly string[], metrics: 
 			}
 			width = Math.max(0, width);
 			height = Math.max(0, height);
-			// 図形が 1 つ（sp・cxnSp・pic）なら形を見る。グループや表・グラフは枠のまま。
-			const shape = children(node).find(candidate => candidate.local === 'sp' || candidate.local === 'cxnSp' || candidate.local === 'pic');
-			const overhang = shape ? horizontalOverhang(shape, width, height) : { left: 0, right: 0 };
-			const shapeRight = left + width + overhang.right;
+			let shapeRight = left + width;
+			for (const shape of shapeElements(node)) {
+				shapeRight = Math.max(shapeRight, outlineRight(shape, left, width, height, 0));
+			}
 			if (Number.isFinite(shapeRight)) {
 				right = Math.max(right ?? 0, shapeRight);
 			}
