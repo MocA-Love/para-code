@@ -57,6 +57,7 @@ import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 import { paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 
 /**
  * 属性値に埋める前のエスケープ。`toString(true)`(skipEncoding) は `"` 等をそのまま残すため、
@@ -109,6 +110,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	/** 信頼していないワークスペースではスクリプトを動かさない（冒頭の説明を参照）。 */
 	protected override get allowScripts(): boolean {
 		return this._workspaceTrustManagementService.isWorkspaceTrusted();
+	}
+
+	protected override get openTimingKind(): ParadisViewerOpenKind {
+		return 'html';
 	}
 
 	/**

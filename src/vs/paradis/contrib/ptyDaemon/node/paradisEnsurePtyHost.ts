@@ -167,16 +167,21 @@ function paradisOpenSocket(socketPath: string): Promise<NodeSocket | undefined> 
 export function paradisPtyHostDaemonEnv(
 	base: { readonly [key: string]: string | undefined },
 	extra: { readonly [key: string]: string },
+	/** Electron の中で動いているか。テストで差し替える。 */
+	inElectron: boolean = !!process.versions.electron,
 ): { [key: string]: string | undefined } {
-	const env: { [key: string]: string | undefined } = {
-		...base,
+	const env: { [key: string]: string | undefined } = { ...base, ...extra };
+	if (inElectron) {
 		// **これが無いと node ではなく Electron アプリとして起きる。** ローカルでの実行ファイルは
 		// Para Code 本体なので、付け忘れると2つ目の Para Code が起動しようとして常駐は上がらず、
-		// 10秒待って縮退する。main の env にも入っていないので、ここで必ず付ける
-		// (リモートは素の node なので影響しないが、経路を分けない)。
-		ELECTRON_RUN_AS_NODE: '1',
-		...extra,
-	};
+		// 10秒待って縮退する。main の env にも入っていないので、ここで必ず付ける。
+		env.ELECTRON_RUN_AS_NODE = '1';
+	} else {
+		// **接続先（REH）は素の node なので付けてはいけない。** bootstrap-esm.ts はこの変数を見て
+		// Electron の中だと判断し、'fs' を Electron にしか無い 'node:original-fs' へ向ける。素の node では
+		// ERR_UNKNOWN_BUILTIN_MODULE で常駐が起きず、SSH 先の「更新をまたいで繋ぎ直す」が一度も効かなかった。
+		delete env.ELECTRON_RUN_AS_NODE;
+	}
 	// 親の生死を見て自分を殺す仕掛けが動くと、常駐にならない。
 	delete env.VSCODE_PARENT_PID;
 	delete env.VSCODE_PIPE_LOGGING;

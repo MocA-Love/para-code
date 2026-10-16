@@ -10,6 +10,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
@@ -68,6 +69,9 @@ export class ParadisAgentBrowserAuthoritySyncService extends Disposable implemen
 	get acceptedRevision(): number { return this._acceptedRevision; }
 	get isFrozen(): boolean { return this._frozen; }
 
+	/** 重なったシェルの番号を一度だけログに出すための記録。 */
+	private readonly _warnedSharedPids = new Set<number>();
+
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ITerminalService private readonly terminalService: ITerminalService,
@@ -78,6 +82,7 @@ export class ParadisAgentBrowserAuthoritySyncService extends Disposable implemen
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
@@ -214,13 +219,33 @@ export class ParadisAgentBrowserAuthoritySyncService extends Disposable implemen
 	private _createManifest(revision: number): IParadisBindingAuthorityManifest {
 		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
 		const livePaneByToken = new Map(livePanes.map(entry => [entry.token, entry.instance]));
+		// 手元のペインで同じシェルの番号が 2 つ以上あると、shared process は一覧全体を受け付けない
+		// （どのペインのプロセスか決められないため）。そうなると、その後に開いたペインがすべて未登録になり、
+		// MCP も hook も届かなくなる。pty host の再起動の後に、待避中のエディタのタブ 2 つが同じシェルへ
+		// 繋がることがあった（2026-10-17）。重なった番号はどのペインにも付けずに送る。そのペインは pid の
+		// まだ無いペインと同じ扱いになり、呼び出し元を確かめる操作（ブラウザの操作など）と許可待ちの hook は
+		// 断られる。ほかのペインは登録されたまま
+		const localPidCounts = new Map<number, number>();
+		for (const { instance } of livePanes) {
+			const pid = instance.processId;
+			if (typeof pid === 'number' && !instance.remoteAuthority) {
+				localPidCounts.set(pid, (localPidCounts.get(pid) ?? 0) + 1);
+			}
+		}
+		for (const [pid, count] of localPidCounts) {
+			if (count > 1 && !this._warnedSharedPids.has(pid)) {
+				this._warnedSharedPids.add(pid);
+				this.logService.warn(`[ParadisAgentBrowserAuthoritySync] ${count} panes share the shell process ${pid}; sending them without it`);
+			}
+		}
 		const panes = this.paneTokenService.listPaneTokens()
 			.map(({ instanceId, token }) => {
 				const instance = livePaneByToken.get(token);
-				const shellPid = instance?.processId;
 				// 接続先で動くペインの番号は接続先のプロセス表のもの。shared process が手元のプロセスと
 				// 取り違えないよう、接続先を添えて送る
 				const remoteAuthority = instance?.remoteAuthority;
+				const pid = instance?.processId;
+				const shellPid = !remoteAuthority && typeof pid === 'number' && (localPidCounts.get(pid) ?? 0) > 1 ? undefined : pid;
 				return Object.freeze({
 					token,
 					...(typeof shellPid === 'number' && Number.isSafeInteger(shellPid) && shellPid > 0 ? { shellPid } : {}),

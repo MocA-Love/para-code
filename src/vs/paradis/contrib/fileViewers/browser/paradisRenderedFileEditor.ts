@@ -64,6 +64,22 @@ import { IParadisViewerOpenTiming, ParadisViewerOpenKind, startParadisViewerOpen
 
 import './media/paradisFileViewer.css';
 
+/**
+ * ビューアの種類ごとの、このウィンドウでの延長の回数（延長した回数と、延長の間に描けた回数）。
+ * 白紙の報告に相乗りさせて、延長が効いているかを Sentry から読めるようにする（成功のたびに
+ * 送るとレートリミットの枠を使い切るため、別のイベントにはしない）。
+ */
+const extensionTallies = new Map<string, { started: number; rescued: number }>();
+
+function extensionTallyFor(viewerId: string): { started: number; rescued: number } {
+	let tally = extensionTallies.get(viewerId);
+	if (!tally) {
+		tally = { started: 0, rescued: 0 };
+		extensionTallies.set(viewerId, tally);
+	}
+	return tally;
+}
+
 const RAW_EDITOR_OPTIONS: IEditorConstructionOptions = {
 	automaticLayout: true,
 	scrollBeyondLastLine: false,
@@ -276,9 +292,12 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		return undefined;
 	}
 
-	/** 開いてから最初に描けた。計測を 1 回だけ送る（2 回目以降の呼び出しは何もしない）。 */
-	private _reportFirstPaint(): void {
-		this._openTiming.value?.painted();
+	/**
+	 * 開いてから最初に描けた。計測を 1 回だけ送る（2 回目以降の呼び出しは何もしない）。
+	 * `afterExtension` は、最初の待ち時間を過ぎて延長の間に描けたか。
+	 */
+	private _reportFirstPaint(afterExtension: boolean): void {
+		this._openTiming.value?.painted({ safe_after_extension: afterExtension });
 		this._openTiming.clear();
 	}
 
@@ -533,6 +552,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._watchdogTimeoutMs = timeoutMs;
 		this._renderStartedAt = Date.now();
 		this._lastContentSignal = 'none';
+		this._recoveryPolicy.renderStarted();
 		// ここでは service worker の猶予を足さない。制御待ちは webview が内容を受け取ってから
 		// 始まるので、その合図（content-started）が来た時点で足す。webview がそもそも動いていない
 		// ケースまで長く待つと、読める状態に戻すのがいたずらに遅くなる。
@@ -562,11 +582,27 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			return;
 		}
 
-		const action = this._recoveryPolicy.recordFailure();
+		const afterExtension = this._recoveryPolicy.extending;
+		// 合図が 1 つも来ていなければ、webview のプロセスがまだ起動しきっていないだけのことが多い
+		// （機械が混んでいるとき）。作り直すと起動からやり直しになるので、1 回だけ同じ長さを待ち足す。
+		const action = reason === 'content-timeout'
+			? this._recoveryPolicy.recordTimeout(this._lastContentSignal !== 'none')
+			: this._recoveryPolicy.recordFailure();
+		const tally = extensionTallyFor(this.getId());
+		if (action === 'extend') {
+			tally.started++;
+			this._armContentWatchdog(this._watchdogTimeoutMs);
+			return;
+		}
 		reportParadisDiagnosticError('owned', 'file-viewers', 'blank-recovery', new Error(`Rendered view stayed blank (${reason})`), {
 			safe_viewer: this.getId(),
 			safe_reason: reason,
 			safe_action: action,
+			// この時間切れが延長の後か。延長が効いたかは、このウィンドウでの延長の回数と、
+			// その間に描けた回数（`safe_extensions` / `safe_extensions_rescued`）で読む。
+			safe_after_extension: afterExtension,
+			safe_extensions: tally.started,
+			safe_extensions_rescued: tally.rescued,
 			// `setHtml` からの実経過。`safe_last_signal` と併せて読むと、webview が起動して
 			// いないのか（`none`）、起動後に描画が止まったのか（`content-started` 以降）が分かる。
 			//
@@ -610,9 +646,12 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	/** webview 側から内容の反映を知らせるシグナルが来た。 */
 	private _onContentApplied(): void {
-		this._reportFirstPaint();
+		const rescued = this._recoveryPolicy.recordSuccess();
+		if (rescued) {
+			extensionTallyFor(this.getId()).rescued++;
+		}
+		this._reportFirstPaint(rescued);
 		this._contentWatchdog.clear();
-		this._recoveryPolicy.recordSuccess();
 	}
 
 	/**
