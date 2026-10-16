@@ -10,7 +10,7 @@ import assert from 'assert';
 import { extUri, extUriIgnorePathCase } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsScmRootInScope } from '../../common/paradisScmScope.js';
+import { paradisIsScmRootInScope, paradisScmDisplayedParentId } from '../../common/paradisScmScope.js';
 
 suite('ParadisScmScope', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,6 +32,54 @@ suite('ParadisScmScope', () => {
 			// 名前が前方一致するだけの別リポジトリ
 			paradisIsScmRootInScope(root('/repos/para-code-2'), folders, extUri),
 		], [true, true, false, true, false]);
+	});
+
+	// メインのリポジトリの中に入れ子で置いたワークツリー A。メインのスペースに A を、A のスペースに
+	// メインを出さない（どちらも別のスペース）。入れ子のサブモジュール・独立したリポジトリは今までどおり
+	// 外側のスペースに出る。git 拡張の待避の判定 (paradisRepositoryBelongsToFolder) と同じ規則。
+	test('keeps a nested worktree and its outer repository in their own spaces only', () => {
+		const main = root('/repos/main');
+		const worktree = root('/repos/main/.worktrees/a');
+		const submodule = root('/repos/main/vendor/sub');
+		const nested = root('/repos/main/tools/other');
+		const all = [main, worktree, submodule, nested];
+		const kinds = new Map([[main, 'repository'], [worktree, 'worktree'], [submodule, 'submodule'], [nested, 'repository']]);
+		const inScope = (folder: URI) => all.filter(repository => paradisIsScmRootInScope(repository, [folder], extUri, kinds.get(repository), all)).map(repository => repository.path);
+
+		assert.deepStrictEqual({
+			mainSpace: inScope(main),
+			worktreeSpace: inScope(worktree),
+			// ワークツリーの中のサブフォルダだけを開いたスペースも、そのワークツリーだけ。
+			worktreeSubfolder: inScope(root('/repos/main/.worktrees/a/src')),
+			// メインの中のサブフォルダだけを開いたスペースは、今までどおりメインに属する。
+			mainSubfolder: inScope(root('/repos/main/src')),
+			// ワークツリーのリポジトリがまだ登録されていなければ、外側のメインはスコープ内のまま
+			// （git 拡張がメインを待避してワークツリーを開くと、登録されて外れる）。
+			beforeWorktreeIsKnown: paradisIsScmRootInScope(main, [worktree], extUri, 'repository', [main]),
+		}, {
+			mainSpace: ['/repos/main', '/repos/main/vendor/sub', '/repos/main/tools/other'],
+			worktreeSpace: ['/repos/main/.worktrees/a'],
+			worktreeSubfolder: ['/repos/main/.worktrees/a'],
+			mainSubfolder: ['/repos/main'],
+			beforeWorktreeIsKnown: true,
+		});
+	});
+
+	test('keeps a worktree in a space whose folder is not a repository', () => {
+		// ワークツリーを並べて置くフォルダをスペースにしたときは、中のワークツリーをそのまま出す。
+		const worktree = root('/repos/worktrees/b');
+		assert.strictEqual(paradisIsScmRootInScope(worktree, [root('/repos/worktrees')], extUri, 'worktree', [root('/repos/main'), worktree]), true);
+	});
+
+	test('lists a child repository at the top level when its parent is not in the list', () => {
+		const main: { provider: { id: string; parentId?: string } } = { provider: { id: 'main' } };
+		const worktree = { provider: { id: 'worktree', parentId: 'main' } };
+		assert.deepStrictEqual({
+			withParent: paradisScmDisplayedParentId(worktree, [main, worktree]),
+			// ワークツリーのスペースでは外側のメインが絞り込みで外れる。親の下にしか並ばないと子ごと消える。
+			parentScopedOut: paradisScmDisplayedParentId(worktree, [worktree]),
+			topLevel: paradisScmDisplayedParentId(main, [main, worktree]),
+		}, { withParent: 'main', parentScopedOut: undefined, topLevel: undefined });
 	});
 
 	test('keeps a repository whose subfolder is the workspace folder', () => {
