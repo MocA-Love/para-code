@@ -390,25 +390,34 @@ function CodexApprovalBanner() {
 	const app = useApp();
 	const [hidden, setHidden] = useState(false);
 	const [busy, setBusy] = useState(false);
-	const missing = app.snapshot.runtime.codexApprovalMissing ?? [];
-	if (hidden || app.snapshot.runtime.agents !== 'para-code' || missing.length === 0) {
+	const runtime = app.snapshot.runtime;
+	const missing = runtime.codexApprovalMissing ?? [];
+	const writable = runtime.codexConfigPaths ?? [];
+	const manual = runtime.codexManualConfigs ?? [];
+	if (hidden || runtime.agents !== 'para-code' || missing.length === 0 || (writable.length === 0 && manual.length === 0)) {
 		return <div />;
 	}
 	const approve = async () => {
 		setBusy(true);
-		const result = await app.call('approveCodexTools', {}, { title: 'Codex の設定に許可を足しました', body: missing.join('、'), tone: 'green' });
+		const result = await app.call('approveCodexTools', {});
 		setBusy(false);
 		if (result) {
-			setHidden(true);
+			app.toast(result.path
+				? { title: 'Codex の設定に許可を足しました', body: result.path, tone: 'green' }
+				: { title: '足す必要のある設定はありませんでした', tone: 'green' });
 		}
 	};
 	return (
 		<div className="banner warn">
 			<Icon name="info" size={14} />
-			<span>Codex はボードへの報告（{missing.join('、')}）のたびに許可を求めます。Codex の設定（{(app.snapshot.runtime.codexConfigPaths ?? []).map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</span>
+			<span>
+				Codex はボードへの報告（{missing.join('、')}）のたびに許可を求めます。
+				{writable.length > 0 && <>Codex の設定（{writable.map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</>}
+				{manual.length > 0 && <> 次の設定は書き方を読み切れないので、<code>[mcp_servers.para-browser.tools.&lt;ツール名&gt;]</code> の節に <code>approval_mode = "approve"</code> を手で足してください: {manual.map((m, i) => <span key={m.path}>{i ? '、' : ''}<code>{m.path}</code>（{m.reason}）</span>)}</>}
+			</span>
 			<span className="grow" />
 			<button className="btn sm" onClick={() => setHidden(true)}>あとで</button>
-			<button className="btn sm primary" disabled={busy} onClick={() => void approve()}>設定に足す</button>
+			{writable.length > 0 && <button className="btn sm primary" disabled={busy} onClick={() => void approve()}>設定に足す</button>}
 		</div>
 	);
 }

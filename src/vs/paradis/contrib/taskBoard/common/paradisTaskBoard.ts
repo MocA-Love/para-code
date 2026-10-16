@@ -332,8 +332,10 @@ export interface ITaskBoardRuntime {
 	readonly codexApprovalMissing?: readonly string[];
 	/** 画像とモックの URL に付ける、読むだけの鍵（RPC には使えない）。 */
 	readonly assetKey?: string;
-	/** まだ常に許可になっていない Codex の設定ファイル（CODEX_HOME ごと。~/.codex と ~/.codex-* も見る）。 */
+	/** まだ常に許可になっていない Codex の設定ファイルのうち、ボードが書き足せるもの（CODEX_HOME ごと）。 */
 	readonly codexConfigPaths?: readonly string[];
+	/** まだ常に許可になっていないが、書き方を読み切れないので手で足してほしい設定ファイルと、その理由。 */
+	readonly codexManualConfigs?: readonly { readonly path: string; readonly reason: string }[];
 	/** シミュレーションの速さ（1 = 標準）。 */
 	readonly speed: number;
 	/** 作業場所の git 操作を実際に行うか。 */
