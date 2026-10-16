@@ -61,6 +61,8 @@ export const PARADIS_SPREADSHEET_PARSE_WORKER_RESOURCE_LIMITS = Object.freeze({ 
 export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 
 	private readonly queue: ParadisOfficeSemanticWorkerQueue<IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult>;
+	/** 走っている・待ち行列にある温める依頼。 */
+	private warming: Promise<ParadisSpreadsheetParseWorkerResult> | undefined;
 
 	constructor(
 		createWorker: () => IParadisSpreadsheetParseWorker,
@@ -101,8 +103,22 @@ export class ParadisSpreadsheetParseWorkerBackend extends Disposable {
 		}, token, { memoryKeys: [bytes] });
 	}
 
-	/** worker を起動し、exceljs と jszip を読み込ませておく。 */
+	/**
+	 * worker を起動し、exceljs と jszip を読み込ませておく。worker が既に動いている、または温める依頼が走っている・
+	 * 待っているときは積まない（タブを素早く行き来して待ち行列を埋め、続く解析が `busy` で本体へ回らないように）。
+	 */
 	warm(token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult> {
-		return this.queue.run(0, () => ({ request: {}, transfer: [] }), token);
+		if (this.warming) {
+			return this.warming;
+		}
+		if (this.queue.workerRunning) {
+			return Promise.resolve({ kind: 'warm' });
+		}
+		const warming = this.warming = this.queue.run(0, () => ({ request: {}, transfer: [] }), token).finally(() => {
+			if (this.warming === warming) {
+				this.warming = undefined;
+			}
+		});
+		return warming;
 	}
 }

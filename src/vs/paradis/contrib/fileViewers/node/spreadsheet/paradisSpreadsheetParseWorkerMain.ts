@@ -37,6 +37,7 @@ async function handle(id: number, request: IParadisSpreadsheetParseWorkerRun): P
 		result = { kind: 'error', message: error instanceof Error ? error.message : String(error) };
 		// 壊れた・対応していないブックで exceljs・jszip が投げるのは素の Error で、利用者のファイルの問題なので送らない。
 		// TypeError など、それ以外の例外はこちらの不具合の疑いがあるので種類だけ送る。
+		// この判定のため、worker の中で自前の `new Error(...)` を投げると Sentry には送られない（送りたい失敗は別の型で投げる）。
 		if (!(error instanceof Error) || error.constructor !== Error) {
 			cause = paradisOfficeWorkerFailureKind(error);
 		}
