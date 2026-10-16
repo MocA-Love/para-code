@@ -137,13 +137,14 @@ suite('ParadisMobileWorkspaceProvider', () => {
 	});
 
 	test('does not report a local path for a remote terminal', async () => {
-		let speculativeCalls = 0;
+		// getCwdResource は接続先の cwd も file: にして手元で exists する（SSH の接続先のパスを手元で stat し続けた）
+		const lookups: string[] = [];
 		assert.strictEqual(await paradisResolveLocalAgentPaneCwd({
 			remoteAuthority: 'ssh-remote+host',
-			getCwdResource: async () => undefined,
-			getSpeculativeCwd: async () => { speculativeCalls++; return '/remote/workspace'; },
+			getCwdResource: async () => { lookups.push('getCwdResource'); return URI.file('/home/example/project'); },
+			getSpeculativeCwd: async () => { lookups.push('getSpeculativeCwd'); return '/remote/workspace'; },
 		}), undefined);
-		assert.strictEqual(speculativeCalls, 0);
+		assert.deepStrictEqual(lookups, []);
 	});
 
 	suite('質問が描かれたかの照合', () => {

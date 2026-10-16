@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { Throttler } from '../../../../base/common/async.js';
+
 export type ParadisAgentCommandDeliveryResult = 'accepted' | 'stale' | 'ambiguous';
 
 export interface IParadisAgentCommandTimer {
@@ -23,12 +25,18 @@ interface IParadisAgentCommandDeliveryState {
 	startAccepted: boolean;
 	finishAccepted: boolean;
 	retryHandle?: unknown;
+	/** 続けて受け付けられなかった回数。試し直しの間隔を延ばすのに使い、受け付けられたら 0 に戻す。 */
+	retryAttempts: number;
+	/** この状態が最後に通知したとき、どの同期まで済んでいたか（{@link ParadisAgentCommandDeliveryCoordinator} の同期の番号）。 */
+	syncedThrough?: number;
 	cancelInFlight?: () => void;
 }
 
 export interface IParadisAgentCommandDeliveryCoordinatorOptions {
 	readonly timer?: IParadisAgentCommandTimer;
 	readonly retryDelayMs?: number;
+	/** 試し直しの間隔の上限。間隔は失敗のたびに倍になる。 */
+	readonly maxRetryDelayMs?: number;
 	readonly operationTimeoutMs?: number;
 	readonly syncRegistry: (token: string) => Promise<void>;
 	readonly onProvisionalChange: (token: string, active: boolean, generation: number) => void;
@@ -51,12 +59,21 @@ export class ParadisAgentCommandDeliveryCoordinator {
 	private readonly queues = new Map<string, Promise<void>>();
 	private readonly timer: IParadisAgentCommandTimer;
 	private readonly retryDelayMs: number;
+	private readonly maxRetryDelayMs: number;
 	private readonly operationTimeoutMs: number;
+	/**
+	 * 対応表の同期は全ペインぶんの作業フォルダを調べるので重い。同時に頼まれたら 1 回にまとめ、
+	 * 走っている最中に頼まれたぶんは、その後の 1 回にまとめる（頼んだ時点より後に始まった同期を待つ）。
+	 */
+	private readonly syncThrottler = new Throttler();
+	/** この配送役が頼んだ同期のうち、終わったものの数。 */
+	private completedSyncs = 0;
 	private disposed = false;
 
 	constructor(private readonly options: IParadisAgentCommandDeliveryCoordinatorOptions) {
 		this.timer = options.timer ?? defaultTimer;
 		this.retryDelayMs = options.retryDelayMs ?? 1_000;
+		this.maxRetryDelayMs = Math.max(this.retryDelayMs, options.maxRetryDelayMs ?? 30_000);
 		this.operationTimeoutMs = options.operationTimeoutMs ?? 15_000;
 	}
 
@@ -101,6 +118,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 			phase: 'starting',
 			startAccepted: false,
 			finishAccepted: false,
+			retryAttempts: 0,
 		};
 		this.states.set(token, state);
 		this.options.onProvisionalChange(token, true, generation);
@@ -114,6 +132,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 		}
 		state.phase = 'finishing';
 		state.notifyFinish = notify;
+		state.retryAttempts = 0;
 		this.cancelRetry(state);
 		this.options.onProvisionalChange(token, false, state.generation);
 		this.options.onGenerationEnded(token, state.generation);
@@ -146,6 +165,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 			this.disposeToken(token);
 		}
 		this.queues.clear();
+		this.syncThrottler.dispose();
 	}
 
 	private enqueue(state: IParadisAgentCommandDeliveryState): void {
@@ -174,6 +194,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 				return;
 			}
 			state.startAccepted = true;
+			state.retryAttempts = 0;
 			if (state.phase === 'starting') {
 				state.phase = 'running';
 			}
@@ -190,6 +211,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 			return;
 		}
 		state.finishAccepted = true;
+		state.retryAttempts = 0;
 		state.phase = 'finished';
 	}
 
@@ -205,7 +227,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 		});
 		const operation = (async (): Promise<ParadisAgentCommandDeliveryResult | undefined> => {
 			try {
-				await this.options.syncRegistry(state.token);
+				await this.syncRegistryFor(state);
 				if (!this.isCurrent(state)) {
 					return undefined;
 				}
@@ -224,16 +246,37 @@ export class ParadisAgentCommandDeliveryCoordinator {
 		}
 	}
 
+	/**
+	 * 通知の前に対応表を同期する。前回の通知の後に、別のペインのために同期が 1 回でも終わっていれば、
+	 * 対応表はそれ以上新しくならないので同期しない（stale・ambiguous で試し直しが重なっても、
+	 * 全ペインの同期は試し直しの 1 巡に 1 回で済む）。
+	 */
+	private async syncRegistryFor(state: IParadisAgentCommandDeliveryState): Promise<void> {
+		if (state.syncedThrough === undefined || state.syncedThrough === this.completedSyncs) {
+			await this.syncThrottler.queue(async () => {
+				try {
+					await this.options.syncRegistry(state.token);
+				} finally {
+					this.completedSyncs++;
+				}
+			});
+		}
+		state.syncedThrough = this.completedSyncs;
+	}
+
 	private scheduleRetry(state: IParadisAgentCommandDeliveryState): void {
 		if (!this.isCurrent(state) || state.retryHandle !== undefined) {
 			return;
 		}
+		// 受け付けられない間は、1 秒・2 秒・4 秒…と延ばす（上限つき）
+		const delayMs = Math.min(this.maxRetryDelayMs, this.retryDelayMs * 2 ** Math.min(state.retryAttempts, 30));
+		state.retryAttempts++;
 		state.retryHandle = this.timer.set(() => {
 			state.retryHandle = undefined;
 			if (this.isCurrent(state)) {
 				this.enqueue(state);
 			}
-		}, this.retryDelayMs);
+		}, delayMs);
 	}
 
 	private cancelRetry(state: IParadisAgentCommandDeliveryState): void {
