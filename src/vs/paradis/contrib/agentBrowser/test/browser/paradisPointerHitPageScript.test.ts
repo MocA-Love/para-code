@@ -12,10 +12,21 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { PARADIS_POINTER_HIT_PAGE_SCRIPT } from '../../common/paradisPointerHitPageScript.js';
 
 type PointerHit = (el: Element, hit: Element) => 'self' | 'child' | 'ancestor' | 'other';
+type PointerReaches = (el: Element, hit: Element, purpose: 'click' | 'fill') => boolean;
 
 /** ページの中と同じ定義を、このテストの文書で動かす。 */
 function pointerHit(): PointerHit {
 	return new Function(`${PARADIS_POINTER_HIT_PAGE_SCRIPT}\nreturn pointerHit;`)();
+}
+
+function pointerReaches(): PointerReaches {
+	return new Function(`${PARADIS_POINTER_HIT_PAGE_SCRIPT}\nreturn pointerReaches;`)();
+}
+
+/** 要素の中心で elementFromPoint が返す要素（click_by の hitAt と同じ点）。 */
+function landedAt(el: Element): Element {
+	const rect = el.getBoundingClientRect();
+	return mainWindow.document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)!;
 }
 
 suite('paradisPointerHitPageScript', () => {
@@ -59,6 +70,36 @@ suite('paradisPointerHitPageScript', () => {
 			hostOverShadowButton: 'child',
 			shadowButtonOverSlotted: 'ancestor',
 			hostOverItsShadowFrame: 'ancestor',
+		});
+	});
+
+	// 祖先が受けるのは目的の要素が pointer-events: none のときだけ。切り取られて見えない要素の点で祖先を押さない
+	test('an ancestor takes the click only for an element without pointer events, never for a field or a clipped element', () => {
+		root.id = 'root';
+		root.style.width = '400px';
+		root.style.height = '400px';
+		root.innerHTML = '<button id="save" style="width: 120px; height: 40px;"><span id="label" style="pointer-events: none;">Save</span></button>'
+			+ '<div id="clip" style="width: 100px; height: 60px; overflow: hidden;"><div style="height: 200px;"></div><button id="clipped" style="width: 80px; height: 30px;">Hidden</button></div>'
+			+ '<label id="wrap"><input id="field" style="width: 120px; pointer-events: none;"></label>';
+		const doc = mainWindow.document;
+		const reaches = pointerReaches();
+		const label = doc.getElementById('label')!;
+		const clipped = doc.getElementById('clipped')!;
+		const field = doc.getElementById('field')!;
+		assert.deepStrictEqual({
+			spanForClick: reaches(label, landedAt(label), 'click'),
+			spanForFill: reaches(label, landedAt(label), 'fill'),
+			buttonItself: reaches(doc.getElementById('save')!, landedAt(label), 'click'),
+			clippedLandsOn: landedAt(clipped).id || landedAt(clipped).localName,
+			clippedForClick: reaches(clipped, landedAt(clipped), 'click'),
+			fieldWithoutPointerForFill: reaches(field, landedAt(field), 'fill'),
+		}, {
+			spanForClick: true,
+			spanForFill: false,
+			buttonItself: true,
+			clippedLandsOn: 'root',
+			clippedForClick: false,
+			fieldWithoutPointerForFill: false,
 		});
 	});
 });

@@ -201,6 +201,15 @@ suite('Paradis browser observe', () => {
 		});
 	});
 
+	test('a page that does not answer is not said to have no dialog when list_pages could not be read', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: true, state: false };
+		const noAnswer = { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).' }], isError: true };
+		const { host } = fakeHost({ pages: [PAGES_ONE, PAGES_ONE, { content: [{ type: 'text', text: 'list_pages failed' }], isError: true }], read: noAnswer });
+		const before = await observer.before(host, options, 'changes', 2000);
+		assert.strictEqual(await observer.after(host, 'pane', options, before, 'changes', 2000), '[Page after the action] The page did not answer for 3 s after the action (it may be busy running scripts or loading); Para Code stopped waiting and did not read the changes. Para Code could not check whether a JavaScript dialog is open (list_pages did not answer); call list_pages to check. Check the page with take_snapshot or wait_until once it responds.');
+	});
+
 	test('a page that does not answer because a dialog opened is still reported as the dialog', async () => {
 		const observer = new ParadisBrowserObserver();
 		const options = { settle: true, state: false };

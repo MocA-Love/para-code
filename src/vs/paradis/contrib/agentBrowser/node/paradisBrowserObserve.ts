@@ -222,7 +222,8 @@ export class ParadisBrowserObserver {
 				pages = { pages: pages?.pages ?? [], dialog: settled.dialog };
 			} else if (settled.unresponsive) {
 				// 変化を読む評価も同じように止まるので読まない
-				parts.push(`[Page after the action] The page did not answer for ${UNRESPONSIVE_MS / 1000} s after the action (it may be busy running scripts or loading); Para Code stopped waiting and did not read the changes. No JavaScript dialog is open. Check the page with take_snapshot or wait_until once it responds.`);
+				const dialogNote = settled.unresponsive === 'noDialog' ? 'No JavaScript dialog is open.' : 'Para Code could not check whether a JavaScript dialog is open (list_pages did not answer); call list_pages to check.';
+				parts.push(`[Page after the action] The page did not answer for ${UNRESPONSIVE_MS / 1000} s after the action (it may be busy running scripts or loading); Para Code stopped waiting and did not read the changes. ${dialogNote} Check the page with take_snapshot or wait_until once it responds.`);
 			} else if (observe === 'snapshot') {
 				parts.push(`${settleHead(settled)} Page snapshot:`);
 				const snapshot = await host.snapshot().catch(() => undefined);
@@ -269,12 +270,12 @@ export class ParadisBrowserObserver {
 	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読むのは待たない評価（vendored の PARA-PATCH
 	 * `paraCodeObserve`）で、ダイアログが開いていれば断られる（閉じない）。
 	 */
-	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<{ readonly quiet: boolean; readonly waited: number; readonly navigated: boolean; readonly dialog?: string; readonly unresponsive?: boolean }> {
+	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<{ readonly quiet: boolean; readonly waited: number; readonly navigated: boolean; readonly dialog?: string; readonly unresponsive?: 'noDialog' | 'unchecked' }> {
 		const start = host.now();
 		let navigated = false;
 		let quiet = settleMs === 0;
 		let dialog: string | undefined;
-		let unresponsive = false;
+		let unresponsive: 'noDialog' | 'unchecked' | undefined;
 		while (settleMs > 0 && host.isCurrent()) {
 			const result = await host.evaluate(paradisObserveReadFunction(name)).catch(() => undefined);
 			const value = evaluated<{ age?: unknown; ready?: unknown; busy?: unknown; navigated?: unknown }>(result);
@@ -282,12 +283,14 @@ export class ParadisBrowserObserver {
 				const failure = paradisDialogOpenFailure(result);
 				if (failure !== undefined) {
 					// 開いているかは list_pages（vendored が記録した Page.javascriptDialogOpening）で確かめる。答えなかっただけで
-					// ダイアログの記録も無ければ、ページが応答していないと伝える（重いページをダイアログと取り違えない）
-					const listed = paradisParseListPages(await host.listPages().catch(() => undefined))?.dialog;
+					// ダイアログの記録も無ければ、ページが応答していないと伝える（重いページをダイアログと取り違えない）。
+					// list_pages が失敗・読めないときは、開いていないとは言い切らない
+					const listedPages = paradisParseListPages(await host.listPages().catch(() => undefined));
+					const listed = listedPages?.dialog;
 					if (listed !== undefined || failure === 'open') {
 						dialog = listed ?? 'a JavaScript dialog';
 					} else {
-						unresponsive = true;
+						unresponsive = listedPages === undefined ? 'unchecked' : 'noDialog';
 					}
 					break;
 				}
@@ -310,7 +313,7 @@ export class ParadisBrowserObserver {
 			}
 			await host.sleep(POLL_MS);
 		}
-		return { quiet, waited: host.now() - start, navigated, ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive ? { unresponsive } : {}) };
+		return { quiet, waited: host.now() - start, navigated, ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive !== undefined ? { unresponsive } : {}) };
 	}
 
 
