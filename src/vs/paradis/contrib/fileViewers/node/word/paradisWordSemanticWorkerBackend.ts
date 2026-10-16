@@ -11,11 +11,11 @@
 // 共通の paradisOfficeSemanticWorkerQueue.ts にある。worker が使えないときも shared process の中では解析しない
 // （表示は解析に頼っていないので、解析できないだけで済む）。
 
-import { Worker } from 'worker_threads';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import type { IParadisWordAnalysisResult, IParadisWordComparisonResult } from '../../common/word/paradisWordSemanticSummary.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 import type { IParadisWordSemanticBackend } from './paradisWordSemanticChannel.js';
 import type { ParadisWordSemanticWorkerResult, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
 
@@ -62,7 +62,7 @@ export class ParadisWordSemanticWorkerBackend extends Disposable implements IPar
 
 	/** 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。 */
 	static workerFactory(workerPath: string): () => IParadisWordSemanticWorker {
-		return () => new Worker(workerPath, { resourceLimits: PARADIS_WORD_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisWordSemanticWorker;
+		return () => createParadisOfficeWorker('word-semantic', workerPath, { resourceLimits: PARADIS_WORD_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisWordSemanticWorker;
 	}
 
 	get workerRunning(): boolean {

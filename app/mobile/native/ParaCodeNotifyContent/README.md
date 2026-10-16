@@ -32,6 +32,7 @@ PARA-CODE: fork-owned directory (Para Code).
    Info.plist の `NSExtensionPrincipalClass` が `$(PRODUCT_MODULE_NAME).NotificationViewController`）
 4. Deployment Target（16.4）、`MARKETING_VERSION`・`CURRENT_PROJECT_VERSION` をアプリと揃える（Info.plist はこの 2 つを参照する）
 5. アプリの「Embed Foundation Extensions」に `ParaCodeNotifyContent.appex` が入っていること
+6. ターゲットの Build Phases → Link Binary With Libraries に `UserNotificationsUI.framework` があること（テンプレートは入れるが、`project.pbxproj` を手で編集して作ると抜ける。無いと長押しで拡張が起動時に落ち、暗い板だけになる。ビルド後に `otool -L ParaCodeNotifyContent.appex/ParaCodeNotifyContent` に `UserNotificationsUI` が出ることを確かめる）
 
 ## Communication Notification（送り主のアイコン）のためのアプリ側の設定
 

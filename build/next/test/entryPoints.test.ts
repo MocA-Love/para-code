@@ -88,6 +88,16 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		lists: ['desktopEntryPoints'],
 	},
 	{
+		// fork の worker の共通の入口。asar の解決を登録してから本体を読む（createParadisWorker が起こす）
+		entry: 'vs/paradis/node/paradisWorkerBootstrap',
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
+	},
+	{
+		// Office v1 のチャネルが worker_threads で起動する worker（手元の shared process とリモートのサーバーの両方）
+		entry: 'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
+	},
+	{
 		// shared process が worker_threads で起動する、Excel のブックを表示用に解析する worker（同じくパスを指定して起動する）
 		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
 		lists: ['desktopEntryPoints'],

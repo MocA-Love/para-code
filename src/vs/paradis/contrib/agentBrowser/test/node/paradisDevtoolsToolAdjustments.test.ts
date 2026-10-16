@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisEvaluateHasDeadline, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptClickHint } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -282,6 +282,28 @@ suite('Paradis devtools tool adjustments', () => {
 			paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f' }),
 			paradisStripInternalDevtoolsArguments('click', { uid: '1_2', paraCodeObserve: true }),
 		], [{ function: 'f' }, { function: 'f' }, { uid: '1_2', paraCodeObserve: true }]);
+	});
+
+	// q.html Q379 の 4: 答えないページの評価を、puppeteer の既定の 180 秒ではなく締め切りで諦める
+	test('evaluate_script gets a hidden deadline only when the vendored server knows it, and an agent cannot send one', () => {
+		const source = readFileSync(FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/tools/script.js').fsPath, 'utf8');
+		const tool = { name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' }, paraCodeDeadlineMs: { type: 'number' } } } };
+		assert.deepStrictEqual({
+			patched: [source.includes('paraCodeDeadlineMs: zod.number().optional()'), source.includes('PARA_BROWSER_PAGE_UNRESPONSIVE')],
+			knows: [paradisEvaluateHasDeadline([tool]), paradisEvaluateHasDeadline([{ name: 'evaluate_script', inputSchema: { properties: {} } }])],
+			published: Object.keys((paradisAdjustDevtoolsToolDescriptor(tool).inputSchema as { properties: object }).properties),
+			kept: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeDeadlineMs: 11000 }, { evaluateDeadline: true }).args,
+			// 知らない vendored は未知の引数を断るので、締め切り無しの従来の評価に戻す
+			dropped: paradisPrepareDevtoolsToolCall('evaluate_script', { function: 'f', paraCodeDeadlineMs: 11000 }),
+			stripped: paradisStripInternalDevtoolsArguments('evaluate_script', { function: 'f', paraCodeDeadlineMs: 1 }),
+		}, {
+			patched: [true, true],
+			knows: [true, false],
+			published: ['function'],
+			kept: { function: 'f', paraCodeDeadlineMs: 11000 },
+			dropped: { args: { function: 'f' } },
+			stripped: { function: 'f' },
+		});
 	});
 
 });

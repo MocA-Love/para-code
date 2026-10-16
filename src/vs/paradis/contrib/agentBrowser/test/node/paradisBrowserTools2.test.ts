@@ -15,7 +15,7 @@ import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.j
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath } from '../../node/paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
 import { paradisParsePdfPageRange } from '../../node/paradisBrowserPdfText.js';
-import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
+import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_FILE_TOOL_NAMES, PARADIS_MCP_BROWSER_FILE_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 import { paradisRunSteps } from '../../node/paradisBrowserRunSteps.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from '../../node/paradisCdpNetworkActivity.js';

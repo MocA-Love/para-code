@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.12',
+		date: '2026-10-16',
+		items: [
+			{
+				icon: 'notifications-outline',
+				title: '通知を長押ししたとき、中身が出ずに暗い板だけになっていたのを直しました',
+				body: '長押しで、エージェントの最後の発言や承認待ちのコマンドが読めるようになります。',
+			},
+		],
+	},
+	{
 		version: '0.12.11',
 		date: '2026-10-15',
 		items: [

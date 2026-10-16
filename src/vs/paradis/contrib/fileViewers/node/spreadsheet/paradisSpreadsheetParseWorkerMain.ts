@@ -13,6 +13,7 @@
 
 import { parentPort } from 'worker_threads';
 import type { ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { packParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../paradisSpreadsheetService.js';
 import type { IParadisSpreadsheetParseWorkerRun, ParadisSpreadsheetParseWorkerResult } from './paradisSpreadsheetParseWorkerBackend.js';
@@ -21,6 +22,8 @@ const service = new ParadisSpreadsheetService();
 
 async function handle(id: number, request: IParadisSpreadsheetParseWorkerRun): Promise<void> {
 	let result: ParadisSpreadsheetParseWorkerResult;
+	// 想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+	let cause: string | undefined;
 	try {
 		if (request.bytes) {
 			const source = Buffer.from(request.bytes.buffer, request.bytes.byteOffset, request.bytes.byteLength);
@@ -32,8 +35,13 @@ async function handle(id: number, request: IParadisSpreadsheetParseWorkerRun): P
 		}
 	} catch (error) {
 		result = { kind: 'error', message: error instanceof Error ? error.message : String(error) };
+		// 壊れた・対応していないブックで exceljs・jszip が投げるのは素の Error で、利用者のファイルの問題なので送らない。
+		// TypeError など、それ以外の例外はこちらの不具合の疑いがあるので種類だけ送る。
+		if (!(error instanceof Error) || error.constructor !== Error) {
+			cause = paradisOfficeWorkerFailureKind(error);
+		}
 	}
-	parentPort?.postMessage({ kind: 'result', id, result });
+	parentPort?.postMessage({ kind: 'result', id, result, ...(cause ? { cause } : {}) });
 }
 
 // 解析は途中で止められないので、取り消しの知らせは受け流す（待ち行列の側で依頼を外す）。

@@ -90,9 +90,25 @@ async function main(): Promise<void> {
 		await page.setViewport({ width: 1680, height: 1000 });
 
 		console.log('desktop (dark)');
-		await step('セキュリティ: トークン無しは 401、別の Host は 403', async () => {
-			const noToken = await fetch(`${BASE}/`);
-			assert(noToken.status === 401, `no token: ${noToken.status}`);
+		await step('セキュリティ: データの口はトークン無しで 401、Cookie を使わない、別の Origin は 403', async () => {
+			// 画面のコードは鍵なしで配る。データの口（RPC・ヘルス・成果物・画像）は鍵が要る
+			const page0 = await fetch(`${BASE}/`);
+			assert(page0.status === 200, `app shell: ${page0.status}`);
+			const health = await fetch(`${BASE}/api/health`);
+			assert(health.status === 401, `health without token: ${health.status}`);
+			const rpc0 = await fetch(`${BASE}/api/rpc`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"method":"snapshot"}' });
+			assert(rpc0.status === 401, `rpc without token: ${rpc0.status}`);
+			const art = await fetch(`${BASE}/api/artifacts/x/y?k=wrong`);
+			assert(art.status === 401, `artifact with a wrong key: ${art.status}`);
+			// 鍵付きの URL を開いても Cookie は配らない（Cookie はポートを区別しない）
+			const withToken = await fetch(`${BASE}/?token=${TOKEN}`, { redirect: 'manual' });
+			assert(withToken.headers.get('set-cookie') === null, 'set-cookie on the token URL');
+			const snap = await fetch(`${BASE}/api/rpc`, { method: 'POST', headers: { 'x-taskboard-token': TOKEN, 'content-type': 'application/json' }, body: '{"method":"snapshot"}' }).then(r => r.json()) as { result: { runtime: { assetKey?: string } } };
+			const key = snap.result.runtime.assetKey ?? '';
+			const artOk = await fetch(`${BASE}/api/artifacts/x/y?k=${encodeURIComponent(key)}`);
+			assert(artOk.status !== 401, `artifact with the asset key: ${artOk.status}`);
+			const rpcWithAssetKey = await fetch(`${BASE}/api/rpc?k=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"method":"snapshot"}' });
+			assert(rpcWithAssetKey.status === 401, `rpc with only the asset key: ${rpcWithAssetKey.status}`);
 			const res = await fetch(`${BASE}/api/rpc`, { method: 'POST', headers: { 'x-taskboard-token': TOKEN, 'content-type': 'application/json', 'origin': 'https://evil.example' }, body: '{"method":"snapshot"}' });
 			assert(res.status === 403, `cross origin: ${res.status}`);
 		});
