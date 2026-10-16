@@ -15,6 +15,16 @@ const DIFF_STATS_POLL_INTERVAL_MS = 10_000;
 const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 const ISSUE_STATUS_POLL_INTERVAL_MS = 300_000;
 
+/**
+ * PR・Issue を問い合わせる対象の指紋。対象（URI とブランチ）と今いるスペースのどれかが変わったときだけ値が変わる。
+ * worktree の一覧の通知は中身が変わっていなくても来る（main の HEAD の書き換え、ピンの付け外しなど）ので、
+ * これを比べて、変わったときだけ PR・Issue を取り直す。
+ */
+export function paradisGithubTargetsFingerprint(targets: readonly { readonly uri: string; readonly branch: string | undefined }[], active: string | undefined): string {
+	const entries = targets.map(target => `${target.uri}\t${target.branch ?? ''}`).sort();
+	return JSON.stringify({ entries, active: active ?? null });
+}
+
 /** Workspaces view のポーリングを起動するスケジューラーの最小契約。 */
 export interface IParadisWorkspacesPollingScheduler extends IDisposable {
 	schedule(delay?: number): void;
@@ -27,6 +37,11 @@ export interface IParadisWorkspacesPollingSignals {
 	readonly onDidChangeVisibility: Event<boolean>;
 	readonly onDidChangeRepositories: Event<void>;
 	readonly onDidChangeWorktrees: Event<void>;
+	/**
+	 * PR・Issue を問い合わせる対象（worktree とそのブランチ、今いるスペース）が実際に変わったとき。渡すと、PR・Issue は
+	 * リポジトリ・worktree の通知（中身が変わっていなくても来る）では取り直さず、これでだけ取り直す。
+	 */
+	readonly onDidChangeGithubTargets?: Event<void>;
 }
 
 type SchedulerFactory = (runner: () => void, defaultDelay: number) => IParadisWorkspacesPollingScheduler;
@@ -87,8 +102,12 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		} : undefined;
 
 		this._register(signals.onDidChangeVisibility(() => this.setVisible(signals.isBodyVisible())));
-		this._register(signals.onDidChangeRepositories(() => this.requestRefresh(true)));
-		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh(true)));
+		const githubFollowsTargets = signals.onDidChangeGithubTargets !== undefined;
+		this._register(signals.onDidChangeRepositories(() => this.requestRefresh(true, !githubFollowsTargets)));
+		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh(true, !githubFollowsTargets)));
+		if (signals.onDidChangeGithubTargets !== undefined) {
+			this._register(signals.onDidChangeGithubTargets(() => this.requestGithubRefresh()));
+		}
 	}
 
 	/** controller 構築時の実可視状態で、初回ポーリングを一度だけ開始する。 */
@@ -186,25 +205,42 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		}
 	}
 
-	private requestRefresh(markInvalidated = false): void {
+	/** `includeGithub` が false なら diff だけを取り直す（PR・Issue は onDidChangeGithubTargets に任せる）。 */
+	private requestRefresh(markInvalidated = false, includeGithub = true): void {
 		if (!this.started) {
 			return;
 		}
+		const states = includeGithub ? this.allStates() : [this.diffStats];
 		if (!this.visible) {
 			if (markInvalidated) {
-				this.diffStats.invalidated = true;
-				this.prStatus.invalidated = true;
-				if (this.issueStatus !== undefined) {
-					this.issueStatus.invalidated = true;
+				for (const state of states) {
+					state.invalidated = true;
 				}
 			}
 			return;
 		}
-		this.requestImmediate(this.diffStats);
-		this.requestImmediate(this.prStatus);
-		if (this.issueStatus !== undefined) {
-			this.requestImmediate(this.issueStatus);
+		for (const state of states) {
+			this.requestImmediate(state);
 		}
+	}
+
+	/** PR・Issue の問い合わせ対象が変わった。非表示なら表示に戻ったときに取り直す。 */
+	private requestGithubRefresh(): void {
+		if (!this.started) {
+			return;
+		}
+		const states = this.issueStatus !== undefined ? [this.prStatus, this.issueStatus] : [this.prStatus];
+		for (const state of states) {
+			if (this.visible) {
+				this.requestImmediate(state);
+			} else {
+				state.invalidated = true;
+			}
+		}
+	}
+
+	private allStates(): IParadisWorkspacesPollState[] {
+		return this.issueStatus !== undefined ? [this.diffStats, this.prStatus, this.issueStatus] : [this.diffStats, this.prStatus];
 	}
 
 	private requestImmediate(state: IParadisWorkspacesPollState): void {
