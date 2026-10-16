@@ -269,7 +269,11 @@ export interface IBrowserViewWorkbenchService {
 	// PARA-PATCH: expose whenInitialized so callers can await the main-process existing-view snapshot (Para Browser MCP recovery hardening)
 	/**
 	 * Resolves after the desktop main-process snapshot of already existing views has converged.
-	 * The promise never rejects. Web implementations resolve immediately.
+	 * The promise never rejects. Web implementations resolve `true` immediately.
+	 *
+	 * Resolves `true` once the models for the existing views exist. Resolves `false` when the snapshot
+	 * could not be applied (building a model from it threw, which would throw again on a retry) or the
+	 * service was disposed before it arrived; callers must then not treat the views as initialized.
 	 */
 	readonly whenInitialized: Promise<boolean>;
 

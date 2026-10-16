@@ -21,6 +21,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -76,6 +77,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@IContextMenuService contextMenuService: IContextMenuService,
 		@IFileService private readonly fileService: IFileService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
@@ -87,7 +89,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		this._ledger = paradisParseResumeLedger(this.storageService.get(LEDGER_STORAGE_KEY, StorageScope.WORKSPACE), now);
 		this._restoredLedger = new Map(this._ledger);
 
-		this._register(paradisRegisterEditorTerminalOverlay(container => createParadisTerminalResumeBanner(container, this)));
+		this._register(paradisRegisterEditorTerminalOverlay(container => createParadisTerminalResumeBanner(container, this, contextMenuService)));
 		this._register(snapshotService.subscribe(outcome => {
 			if (outcome.snapshot !== undefined) {
 				this.onSnapshot(outcome.snapshot);
@@ -285,12 +287,12 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		return this._offers.get(instanceId)?.entry;
 	}
 
-	resume(instanceId: number): void {
+	resume(instanceId: number, dangerouslyBypassPermissions?: boolean): void {
 		if (this._resuming.has(instanceId)) {
 			return;
 		}
 		this._resuming.add(instanceId);
-		void this.resumeInConversationFolder(instanceId).catch(error => {
+		void this.resumeInConversationFolder(instanceId, dangerouslyBypassPermissions === true).catch(error => {
 			this.logService.error('[paradisTerminalResumeBanner] could not resume the conversation', error);
 		}).finally(() => this._resuming.delete(instanceId));
 	}
@@ -305,10 +307,10 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	 * 再開する方法（分岐と同じ）は取らない。元のタブが空のシェルとして残り、同じ会話のタブが2つに
 	 * 見えるため。
 	 */
-	private async resumeInConversationFolder(instanceId: number): Promise<void> {
+	private async resumeInConversationFolder(instanceId: number, dangerouslyBypassPermissions: boolean): Promise<void> {
 		const offer = this._offers.get(instanceId);
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
-		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume');
+		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions);
 		if (offer === undefined || instance === undefined || command === undefined) {
 			return;
 		}
@@ -399,9 +401,9 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		}
 	}
 
-	fork(instanceId: number): void {
+	fork(instanceId: number, dangerouslyBypassPermissions?: boolean): void {
 		const offer = this._offers.get(instanceId);
-		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'fork');
+		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'fork', dangerouslyBypassPermissions === true);
 		if (offer === undefined || command === undefined) {
 			return;
 		}
