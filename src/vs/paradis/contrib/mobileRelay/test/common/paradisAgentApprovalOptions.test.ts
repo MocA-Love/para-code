@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionsForMobile, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice, paradisParseApprovalOptions, paradisReadExpectedApprovalOption } from '../../common/paradisAgentApprovalOptions.js';
+import { paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionShownAs, paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisMobileApprovalOptionKey, paradisParseApprovalOptionChoice, paradisParseApprovalOptions, paradisReadExpectedApprovalOption, paradisSplitCodexFormOption } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentApprovalOptions (W2-21)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -137,6 +137,78 @@ suite('paradisAgentApprovalOptions (W2-21)', () => {
 			// モバイルへは番号と文言だけ（近道は送らない）
 			forMobileCodex: { n: 1, label: 'Yes, proceed (y)' },
 			forMobileCodexHidden: undefined,
+		});
+	});
+
+	// Codex の MCP のツールの許可のフォームは、画面で名前と説明が別の列に並ぶ。ボードとモバイルには名前を出す（古いアプリも名前をそのまま出す）
+	test('shows only the names of a Codex tool approval form, and still matches the screen when the phone answers with the name', () => {
+		const form = [
+			'  Field 1/1',
+			'  Allow the para-browser MCP server to run tool "click"?',
+			'  › 1. Allow                   Run the tool and continue',
+			'    2. Allow for this session  Run the tool and remember this choice for this',
+			'                               session',
+			'    3. Always allow            Run the tool and remember this choice for',
+			'                               future tool calls',
+			'    4. Cancel                  Cancel this tool call',
+			'  enter to submit | esc to cancel',
+		].join('\n');
+		const options = paradisParseApprovalOptions(form)!;
+		assert.deepStrictEqual({
+			split: [...options.map(option => paradisSplitCodexFormOption(option.label)), paradisSplitCodexFormOption('Yes, proceed (y)')],
+			forMobile: paradisApprovalOptionsForMobile('codex', options, true)?.map(option => option.label),
+			twoOnly: paradisApprovalOptionsForMobile('codex', [options[0], { n: 2, label: 'Cancel Cancel this tool call' }], true),
+			// 名前で答えたものは、フォームのときだけ名前で照らす。「Allow」が「Allow for this session」に当たらない
+			shownAs: [
+				paradisApprovalOptionShownAs(options[1].label, 'Allow for this session', true),
+				paradisApprovalOptionShownAs(options[1].label, 'Allow', true),
+				paradisApprovalOptionShownAs(options[1].label, 'Allow for this session', false),
+				paradisApprovalOptionShownAs(options[1].label, options[1].label, false),
+			],
+		}, {
+			split: [
+				{ label: 'Allow', detail: 'Run the tool and continue' },
+				{ label: 'Allow for this session', detail: 'Run the tool and remember this choice for this session' },
+				{ label: 'Always allow', detail: 'Run the tool and remember this choice for future tool calls' },
+				{ label: 'Cancel', detail: 'Cancel this tool call' },
+				{ label: 'Yes, proceed (y)' },
+			],
+			// 最後の「Cancel」はアプリの「拒否」（Esc）と同じなので渡さない
+			forMobile: ['Allow', 'Allow for this session', 'Always allow'],
+			// 許可と取り消しだけのフォームは、選択肢を渡さない（アプリは「許可 / 拒否」のまま）
+			twoOnly: undefined,
+			shownAs: [true, false, false, true],
+		});
+	});
+
+	// 名前はどのツールのフォームでも同じ。スマホで X の「常に許可」を押したとき、画面が Y のフォームなら送らない
+	test('sends a numbered option of a Codex tool approval form only when the form on screen is for the card\'s tool', () => {
+		const form = (tool: string) => [
+			`• Calling para-browser.${tool}`,
+			'  Field 1/1',
+			`  Allow the para-browser MCP server to run tool "${tool}"?`,
+			'  › 1. Allow                   Run the tool and continue',
+			'    2. Allow for this session  Run the tool and remember this choice for this session',
+			'    3. Always allow            Run the tool and remember this choice for future tool calls',
+			'    4. Cancel                  Cancel this tool call',
+			'  enter to submit | esc to cancel',
+		].join('\n');
+		const optionsOf = (screen: string) => screen.split('\n').slice(3).join('\n');
+		const piece = paradisApprovalScreenPiece('mcp__para-browser__click: {"uid":"1"}', 'codex');
+		const always = { n: 3, label: 'Always allow' };
+		assert.deepStrictEqual({
+			own: paradisMobileApprovalOptionKey('codex', form('click'), optionsOf(form('click')), always, piece),
+			otherTool: paradisMobileApprovalOptionKey('codex', form('click_by'), optionsOf(form('click_by')), always, piece),
+			noPiece: paradisMobileApprovalOptionKey('codex', form('click'), optionsOf(form('click')), always, undefined),
+			changedLabel: paradisMobileApprovalOptionKey('codex', form('click'), optionsOf(form('click')), { n: 3, label: 'Allow for this session' }, piece),
+			// コマンドの許可（フォームではない）は今までどおり、行末の近道を文言で確かめて送る
+			exec: paradisMobileApprovalOptionKey('codex', codexScreen, codexScreen, { n: 2, label: `Yes, and don't ask again for commands that start with 'touch p6-codex-made.txt' (p)` }, undefined),
+		}, {
+			own: '3',
+			otherTool: undefined,
+			noPiece: undefined,
+			changedLabel: undefined,
+			exec: 'p',
 		});
 	});
 

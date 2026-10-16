@@ -104,11 +104,13 @@ export function paradisSerializeResumeLedger(ledger: ReadonlyMap<string, IParadi
 
 /**
  * 会話を続ける（`resume`）／分岐する（`fork`、CLI の fork で会話ごと複製する）コマンド。
+ * `dangerouslyBypassPermissions` なら権限の確認を省くフラグを付ける（Claude Code は
+ * `--dangerously-skip-permissions`、Codex は `--dangerously-bypass-approvals-and-sandbox`）。
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork'): string | undefined {
-	return paradisAgentResumeCommandLine(agent, sessionId, mode);
+export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', dangerouslyBypassPermissions?: boolean): string | undefined {
+	return paradisAgentResumeCommandLine(agent, sessionId, mode, { dangerouslyBypassPermissions });
 }
 
 /**

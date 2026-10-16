@@ -13,8 +13,8 @@
 // (paradisCdpFilterProxy.ts) が複数paneでの同一Electronセッション共有を守るため拒否しているので、
 // ここではmainプロセス側で恒久的に配線する。呼び出し元は browserSession.ts の configure()（PARA-PATCH 1行）。
 
-import * as fs from 'fs';
 import { app, shell } from 'electron';
+import { Promises } from '../../../../base/node/pfs.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisConfigureBrowserDownloadsWithPath, paradisResolveBrowserDownloadsDirectory } from './paradisBrowserDownloadsCore.js';
 import { IParadisDownloadOrigin, ParadisBrowserDownloadsTracker } from './paradisBrowserDownloadsTracker.js';
@@ -47,7 +47,7 @@ export function paradisGetBrowserDownloadsTracker(configurationService: IConfigu
 			{
 				openPath: path => shell.openPath(path),
 				showItemInFolder: path => shell.showItemInFolder(path),
-				exists: path => fs.existsSync(path),
+				exists: path => Promises.exists(path),
 				ensureQuarantine: async (path, sourceUrl) => (await paradisEnsureDownloadQuarantine(path, sourceUrl)) !== 'failed',
 			},
 			() => paradisResolveBrowserDownloadsDirectory(configurationService, () => app.getPath('downloads')),

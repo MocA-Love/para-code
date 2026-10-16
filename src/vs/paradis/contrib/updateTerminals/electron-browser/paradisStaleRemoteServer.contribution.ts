@@ -18,7 +18,7 @@
 // まだ動いていれば、そちらのお知らせ（止められる）にまとめて重ねない。もう居なければ、今までどおり
 // 「開けません」だけを伝える。
 
-import { raceTimeout } from '../../../../base/common/async.js';
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -31,6 +31,9 @@ import { IStorageService, StorageScope } from '../../../../platform/storage/comm
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IParadisPtyHandoverService, PARADIS_PTY_HANDOVER_CHANNEL } from '../../ptyDaemon/common/paradisPtyHandover.js';
+import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../../ptyDaemon/common/paradisPtyDaemonStatus.js';
 import { paradisKeptTerminalsStorageKey, paradisParseKeptRemoteTerminals, paradisShouldReportStrandedTerminals } from '../../remoteTerminals/common/paradisRemoteTerminalShutdown.js';
 import { PARADIS_TERMINAL_RECONNECTION_GRACE_TIME } from '../../remoteTerminals/common/paradisTerminalGraceTime.js';
 import {
@@ -38,12 +41,16 @@ import {
 	IParadisStaleServersService,
 	PARADIS_STALE_SERVERS_CHANNEL,
 	paradisPlanStaleServerNotice,
+	paradisStaleServerHandoverMessage,
 	paradisStaleServerMessage,
 	paradisStaleServerResultMessage,
 } from '../common/paradisStaleServers.js';
 
 /** 探すのを待つ上限。ps を1回読むだけなので、普通は1秒もかからない。 */
 const SCAN_TIMEOUT_MS = 30_000;
+/** 止めた後に引き取りを聞き直す回数と間隔。 */
+const TAKE_OVER_RETRIES = 3;
+const TAKE_OVER_RETRY_MS = 1_000;
 
 class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribution {
 
@@ -57,6 +64,7 @@ class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribut
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILabelService private readonly labelService: ILabelService,
 		@ILogService private readonly logService: ILogService,
+		@IHostService private readonly hostService: IHostService,
 	) {
 		super();
 		const authority = this.environmentService.remoteAuthority;
@@ -81,8 +89,11 @@ class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribut
 			graceTime: PARADIS_TERMINAL_RECONNECTION_GRACE_TIME,
 		});
 
-		const scan = await this.scan();
-		const plan = paradisPlanStaleServerNotice({ staleServerCount: scan?.servers.length ?? 0, strandedShouldReport });
+		// 接続先の常駐にターミナルを預けているなら、前の版で残したものは今の版が引き取る
+		// （`paradisPtyReadopt.ts`）。「開けません」と伝えず、古い版のサーバーのお知らせも
+		// 「止めて引き継ぐ」の形にする。
+		const [scan, handover] = await Promise.all([this.scan(), this.keepsTerminalsAcrossUpdates()]);
+		const plan = paradisPlanStaleServerNotice({ staleServerCount: scan?.servers.length ?? 0, strandedShouldReport: strandedShouldReport && !handover });
 		const hostLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, authority) || authority;
 		if (plan === 'stranded') {
 			this.logService.info(`[paradisStaleRemoteServer] ${record?.count} terminal(s) were left on ${authority} by a different build (${record?.commit}); they cannot be reclaimed by this one (${this.productService.commit})`);
@@ -97,12 +108,59 @@ class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribut
 		if (plan !== 'staleServers' || !scan) {
 			return;
 		}
-		this.logService.info(`[paradisStaleRemoteServer] ${scan.servers.length} server(s) of older builds are running on ${authority}`);
-		this.notificationService.prompt(Severity.Warning, paradisStaleServerMessage(hostLabel, scan), [
+		this.logService.info(`[paradisStaleRemoteServer] ${scan.servers.length} server(s) of older builds are running on ${authority}${handover ? '; terminals kept in the daemon can be taken over' : ''}`);
+		this.notificationService.prompt(Severity.Warning, handover ? paradisStaleServerHandoverMessage(hostLabel, scan) : paradisStaleServerMessage(hostLabel, scan), [
 			// 「止めて掃除する」を既定（先頭）にしない。スリープ中の別の PC のものかもしれないため。
 			{ label: localize('paradis.staleServers.notNow', "今はしない"), run: () => { } },
-			{ label: localize('paradis.staleServers.stop', "止めて掃除する"), run: () => void this.stopAndClean(hostLabel, scan.servers.map(server => server.commit)) },
+			handover
+				? { label: localize('paradis.staleServers.stopAndTakeOver', "止めて引き継ぐ"), run: () => void this.stopAndClean(hostLabel, scan.servers.map(server => server.commit), true) }
+				: { label: localize('paradis.staleServers.stop', "止めて掃除する"), run: () => void this.stopAndClean(hostLabel, scan.servers.map(server => server.commit), false) },
 		]);
+	}
+
+	/** 接続先の常駐（`reattachAcrossUpdates`）が有効で動いているか。分からなければ false。 */
+	private async keepsTerminalsAcrossUpdates(): Promise<boolean> {
+		const connection = this.remoteAgentService.getConnection();
+		if (!connection) {
+			return false;
+		}
+		try {
+			const status = await raceTimeout(ProxyChannel.toService<IParadisPtyDaemonStatusService>(connection.getChannel(PARADIS_PTY_DAEMON_CHANNEL)).getStatus(), SCAN_TIMEOUT_MS);
+			return status?.enabled === true && status.running;
+		} catch (error) {
+			this.logService.trace('[paradisStaleRemoteServer] could not ask whether the remote keeps terminals across updates', error);
+			return false;
+		}
+	}
+
+	/**
+	 * 止めた古い版のサーバーが握っていた端末を、今の版の pty ホストに引き取らせる。引き取れたら
+	 * ウィンドウを再読み込みして、ふつうの復元の道で表示する（開いた後で増えた端末を、今の
+	 * ウィンドウへ差し込む道は upstream に無い）。
+	 */
+	private async takeOver(hostLabel: string): Promise<void> {
+		const connection = this.remoteAgentService.getConnection();
+		if (!connection) {
+			return;
+		}
+		const handover = ProxyChannel.toService<IParadisPtyHandoverService>(connection.getChannel(PARADIS_PTY_HANDOVER_CHANNEL));
+		try {
+			let run = await raceTimeout(handover.readopt('stale-stop'), SCAN_TIMEOUT_MS);
+			// 止めたサーバーの pty ホストが消えたことを常駐が知るのは、接続が切れたのを受けてから。
+			// 止め終わった直後だとまだ「見られている」ことがあるので、少し待って聞き直す。
+			for (let attempt = 1; run !== undefined && run.adopted === 0 && run.foreign > 0 && attempt <= TAKE_OVER_RETRIES; attempt++) {
+				await timeout(TAKE_OVER_RETRY_MS);
+				run = await raceTimeout(handover.readopt('stale-stop'), SCAN_TIMEOUT_MS);
+			}
+			if (!run || run.adopted === 0) {
+				this.logService.info(`[paradisStaleRemoteServer] nothing to take over on ${hostLabel}${run ? ` (${run.foreign} still watched by another server)` : ''}`);
+				return;
+			}
+			this.logService.info(`[paradisStaleRemoteServer] took over ${run.adopted} terminal(s) on ${hostLabel}; reloading to show them`);
+			await this.hostService.reload();
+		} catch (error) {
+			this.logService.warn('[paradisStaleRemoteServer] could not take over the terminals the stopped servers were holding', error);
+		}
 	}
 
 	private service(): IParadisStaleServersService | undefined {
@@ -122,7 +180,7 @@ class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribut
 	}
 
 	/** 通知に出した版だけを渡す。接続先はその場で選び直し、その積だけを止める（pid・パスは渡さない）。 */
-	private async stopAndClean(hostLabel: string, commits: readonly string[]): Promise<void> {
+	private async stopAndClean(hostLabel: string, commits: readonly string[], takeOver: boolean): Promise<void> {
 		const service = this.service();
 		if (!service) {
 			return;
@@ -130,6 +188,9 @@ class ParadisStaleRemoteServer extends Disposable implements IWorkbenchContribut
 		try {
 			const result = await service.stopAndClean(commits);
 			this.notificationService.notify({ severity: Severity.Info, message: paradisStaleServerResultMessage(hostLabel, result) });
+			if (takeOver && result.stoppedServers > 0) {
+				await this.takeOver(hostLabel);
+			}
 		} catch (error) {
 			this.logService.warn('[paradisStaleRemoteServer] could not stop the servers of older builds', error);
 			this.notificationService.notify({ severity: Severity.Warning, message: localize('paradis.staleServers.failed', "{0} の古い版のサーバーを止められませんでした。", hostLabel) });

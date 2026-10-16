@@ -16,6 +16,7 @@ import { IObjectTreeElement, ITreeDragAndDrop, ITreeDragOverReaction, ITreeNode,
 import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { createMarkdownLink, escapeMarkdownSyntaxTokens, MarkdownString } from '../../../../base/common/htmlContent.js';
@@ -25,6 +26,7 @@ import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ResourceMap } from '../../../../base/common/map.js';
+import { isEqual } from '../../../../base/common/resources.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
@@ -50,7 +52,7 @@ import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspac
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
-import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
+import { paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
@@ -1026,6 +1028,9 @@ export class ParadisWorkspacesView extends ViewPane {
 	 */
 	private readonly _issueLookupRequested = new Set<string>();
 	private readonly _pollingController: ParadisWorkspacesPollingController;
+	/** PR・Issue の問い合わせ対象（worktree・ブランチ・今いるスペース）が実際に変わったときだけ鳴る。 */
+	private readonly _onDidChangeGithubTargets = this._register(new Emitter<void>());
+	private _githubTargetsFingerprint: string | undefined;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
 	private readonly _updateTreeScheduler: RunOnceScheduler;
@@ -1072,6 +1077,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				onDidChangeVisibility: this.onDidChangeBodyVisibility,
 				onDidChangeRepositories: this.workspaceSwitchService.onDidChangeRepositories,
 				onDidChangeWorktrees: this.worktreeService.onDidChangeWorktrees,
+				onDidChangeGithubTargets: this._onDidChangeGithubTargets.event,
 			},
 			() => this.refreshDiffStats(),
 			() => this.refreshPrStatuses(),
@@ -1079,6 +1085,18 @@ export class ParadisWorkspacesView extends ViewPane {
 			undefined,
 			() => this.refreshIssueStatuses(),
 		));
+		// 一覧・worktree・スペースの通知は中身が変わらなくても来るので、問い合わせ対象が変わったときだけ PR・Issue を取り直す
+		this._githubTargetsFingerprint = this.githubTargetsFingerprint();
+		const checkGithubTargets = () => {
+			const fingerprint = this.githubTargetsFingerprint();
+			if (fingerprint !== this._githubTargetsFingerprint) {
+				this._githubTargetsFingerprint = fingerprint;
+				this._onDidChangeGithubTargets.fire();
+			}
+		};
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(checkGithubTargets));
+		this._register(this.worktreeService.onDidChangeWorktrees(checkGithubTargets));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(checkGithubTargets));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
 
@@ -1311,6 +1329,42 @@ export class ParadisWorkspacesView extends ViewPane {
 		return [...targets.values()];
 	}
 
+	/**
+	 * 今いるスペース（このウィンドウで開いているリポジトリ・worktree）の URI。PR・Issue の取得では、これだけを
+	 * 5分ごとに、ほかは15分ごとに取り直させる（使い回しは git チャネル側。paradisGithubLookupCache.ts）。
+	 */
+	private activePollTarget(): URI | undefined {
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		if (activeStateKey === undefined) {
+			return undefined;
+		}
+		for (const repository of this.workspaceSwitchService.repositories) {
+			if (repository.id === activeStateKey) {
+				return repository.uri;
+			}
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && worktreeStateKeyFor(worktree) === activeStateKey) {
+					return worktree.uri;
+				}
+			}
+		}
+		return undefined;
+	}
+
+	/** PR・Issue の問い合わせ対象の指紋（paradisGithubTargetsFingerprint）。 */
+	private githubTargetsFingerprint(): string {
+		const targets: { uri: string; branch: string | undefined }[] = [];
+		for (const repository of this.workspaceSwitchService.repositories) {
+			targets.push({ uri: repository.uri.toString(), branch: this.worktreeService.getRepositoryBranch(repository.id) });
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing) {
+					targets.push({ uri: worktree.uri.toString(), branch: worktree.branch });
+				}
+			}
+		}
+		return paradisGithubTargetsFingerprint(targets, this.activePollTarget()?.toString());
+	}
+
 	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
 	private async refreshDiffStats(): Promise<void> {
 		const targets = this.pollTargets();
@@ -1333,7 +1387,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		if (targets.length === 0) {
 			return;
 		}
-		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, targets);
+		// スペースの切り替えや worktree の変化でも全件を渡すが、gh が走るのは期限切れ・ブランチが変わったものだけ
+		// （今いるスペースは5分、ほかは15分。切り替えた先は5分より古ければその場で取り直す）
+		const active = this.activePollTarget();
+		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, targets, active !== undefined ? [active] : []);
 		if (result) {
 			this._prStatuses.clear();
 			for (const [path, status] of Object.entries(result)) {
@@ -1395,7 +1452,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		// ISSUE_STATUS_LOOKUPS_PER_CALL のコメント参照)。まだ一度も gh へ問い合わせていない
 		// URL を優先することで、会話が長引いて合計件数が上限を超えても、直近に検出した分から
 		// 遅れて解決されていく。
-		const requestTargets = paradisSelectIssueLookupBatch(targets, this._issueLookupAttempted, ISSUE_STATUS_LOOKUPS_PER_CALL);
+		const activeTarget = this.activePollTarget();
+		const requestTargets = paradisSelectIssueLookupBatch(targets, this._issueLookupAttempted, ISSUE_STATUS_LOOKUPS_PER_CALL)
+			// 今いるスペースの Issue は5分、ほかは15分より古ければ取り直す
+			.map(target => ({ ...target, active: activeTarget !== undefined && isEqual(URI.revive(target.resource), activeTarget) }));
 		if (requestTargets.length === 0) {
 			return;
 		}
