@@ -9,7 +9,7 @@
 import { type IPromptInputModel, PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 
 /**
- * Returns whether DownArrow may open terminal suggestions for the live prompt state.
+ * Returns whether the live prompt holds text that the command history panel may filter by.
  * Foreground commands keep ownership of their input even when shell integration retains the
  * executed command text in the prompt model.
  */

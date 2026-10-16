@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { commitRepositoriesForParking, IParadisParkingSnapshot, IParadisUnaccountedCandidate, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
+import { commitRepositoriesForParking, IParadisParkingSnapshot, IParadisUnaccountedCandidate, paradisHasWorkingTreeBetween, paradisRepositoryBelongsToFolder, selectRepositoriesForUnifiedParking, selectUnaccountedForParking } from '../paradisUnaccountedToPark';
 
 function candidate(root: string, rootRealPath?: string): IParadisUnaccountedCandidate {
 	return { repository: { root, rootRealPath } };
@@ -397,5 +397,93 @@ suite('selectUnaccountedForParking', () => {
 		open.reject(expectedError);
 		await handlerCompletion;
 		assert.deepStrictEqual(logged, [expectedError]);
+	});
+});
+
+/**
+ * 入れ子のワークツリー（メインのリポジトリの中に `git worktree add` したもの）。`.git` を持つフォルダの
+ * 集合で、git の「いちばん近い `.git` が持ち主」を再現する。
+ */
+function workingTreeBetween(dotGitFolders: readonly string[]) {
+	const posixDirname = (path: string) => path.slice(0, Math.max(path.lastIndexOf('/'), 1));
+	return paradisHasWorkingTreeBetween(folder => dotGitFolders.includes(folder), posixDirname, isDescendant, normalizedPathEquals);
+}
+
+suite('paradis nested worktree spaces', () => {
+	// メインのリポジトリと、その中に入れ子で置いたワークツリー A、入れ子のサブモジュール、入れ子の独立したリポジトリ。
+	const main = { root: '/w/main', kind: 'repository' };
+	const worktreeA = { root: '/w/main/.worktrees/a', kind: 'worktree' };
+	const submodule = { root: '/w/main/vendor/sub', kind: 'submodule' };
+	const nestedRepository = { root: '/w/main/tools/other', kind: 'repository' };
+	const between = workingTreeBetween(['/w/main', '/w/main/.worktrees/a', '/w/main/vendor/sub', '/w/main/tools/other']);
+	const belongs = (repository: typeof main, folder: string) => paradisRepositoryBelongsToFolder(repository, folder, isDescendant, normalizedPathEquals, between);
+
+	test('puts each repository only in its own space, while nested submodules and nested repositories stay with the outer space', () => {
+		assert.deepStrictEqual({
+			mainSpace: [main, worktreeA, submodule, nestedRepository].filter(repository => belongs(repository, '/w/main')).map(repository => repository.root),
+			worktreeSpace: [main, worktreeA, submodule, nestedRepository].filter(repository => belongs(repository, '/w/main/.worktrees/a')).map(repository => repository.root),
+			// リポジトリ内のサブフォルダだけを開いたスペースは、今までどおり外側のリポジトリに属する。
+			subfolderOfMain: belongs(main, '/w/main/src'),
+			subfolderOfWorktree: { main: belongs(main, '/w/main/.worktrees/a/src'), worktree: belongs(worktreeA, '/w/main/.worktrees/a/src') },
+		}, {
+			mainSpace: ['/w/main', '/w/main/vendor/sub', '/w/main/tools/other'],
+			worktreeSpace: ['/w/main/.worktrees/a'],
+			subfolderOfMain: true,
+			subfolderOfWorktree: { main: false, worktree: true },
+		});
+	});
+
+	test('parks the nested worktree when going back to the main space, and the main repository when going to the worktree space', () => {
+		const open = [main, worktreeA, submodule].map(repository => ({ repository }));
+		assert.deepStrictEqual({
+			toMain: selectUnaccountedForParking(open, ['/w/main'], isDescendant, normalizedPathEquals, between).map(candidate => candidate.repository.root),
+			toWorktree: selectUnaccountedForParking(open, ['/w/main/.worktrees/a'], isDescendant, normalizedPathEquals, between).map(candidate => candidate.repository.root),
+		}, {
+			toMain: ['/w/main/.worktrees/a'],
+			toWorktree: ['/w/main', '/w/main/vendor/sub'],
+		});
+	});
+
+	// 初めてワークツリー A のスペースへ行くとき、A のリポジトリはまだ開いていない。外側のメインを
+	// 待避しないと、フォルダが「開いているリポジトリ（メイン）の中」と見なされて A が開かれず、
+	// メインの変更が出ていた。`.git` の有無で決めるので、A が開く前でもメインを待避する。
+	test('parks the outer main repository on the first visit to a nested worktree space, before the worktree repository is open', async () => {
+		const mainCandidate = { repository: main };
+		const result = await commitRepositoriesForParking(
+			() => snapshot(['/w/main/.worktrees/a'], [mainCandidate]),
+			() => true,
+			folder => Promise.resolve(folder),
+			isDescendant,
+			normalizedPathEquals,
+			repositoriesToPark => repositoriesToPark.map(candidate => candidate.repository.root),
+			between,
+		);
+		assert.deepStrictEqual(result, { kind: 'committed', skippedParking: false, commitResult: ['/w/main'] });
+	});
+
+	// リポジトリでないフォルダ（ワークツリーを並べて置く場所など）をスペースにしたときは、中のワークツリーは
+	// 今までどおりそのスペースに属する。外すのは、間にメインの作業ツリーがあるときだけ。
+	test('keeps a worktree in a space whose folder is not a repository', () => {
+		const looseWorktree = { root: '/w/worktrees/b', kind: 'worktree' };
+		const looseBetween = workingTreeBetween(['/w/worktrees/b']);
+		assert.deepStrictEqual({
+			container: paradisRepositoryBelongsToFolder(looseWorktree, '/w/worktrees', isDescendant, normalizedPathEquals, looseBetween),
+			grandparent: paradisRepositoryBelongsToFolder(looseWorktree, '/w', isDescendant, normalizedPathEquals, looseBetween),
+			nestedUnderMainFromAbove: belongs(worktreeA, '/w'),
+		}, { container: true, grandparent: true, nestedUnderMainFromAbove: false });
+	});
+
+	test('finds a working tree anywhere between the outer root and the folder, but not the outer root itself', () => {
+		assert.deepStrictEqual({
+			atFolder: between('/w/main', '/w/main/.worktrees/a'),
+			aboveFolder: between('/w/main', '/w/main/.worktrees/a/src/deep'),
+			onlyOuter: between('/w/main', '/w/main/src/deep'),
+			sameFolder: between('/w/main', '/w/main'),
+			outside: between('/w/main', '/elsewhere'),
+			// 1 段上へずらした範囲: 外側を含めて、フォルダ自身は含めない。
+			includeOuter: between('/w/main', '/w/main/.worktrees/a', true),
+			includeOuterAboveRoot: between('/w', '/w/main/.worktrees/a', true),
+			includeOuterNothingAbove: between('/w/main/.worktrees', '/w/main/.worktrees/a', true),
+		}, { atFolder: true, aboveFolder: true, onlyOuter: false, sameFolder: false, outside: false, includeOuter: true, includeOuterAboveRoot: true, includeOuterNothingAbove: false });
 	});
 });

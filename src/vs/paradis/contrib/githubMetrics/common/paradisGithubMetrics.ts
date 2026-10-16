@@ -246,6 +246,18 @@ export interface IParadisGithubMetricsSnapshot {
 	readonly spaces: readonly IParadisGithubSpaceStat[];
 	readonly totals: IParadisGithubTotals;
 	readonly lastErrors: readonly IParadisGithubErrorEntry[];
+	/**
+	 * 枠を使い切ったため、定期の PR・Issue の取得を止めている資源と再開の時刻（paradisGithubRateLimitPause.ts）。
+	 * 止めていなければ無い。
+	 */
+	readonly rateLimitPauses?: readonly IParadisGithubRateLimitPauseEntry[];
+}
+
+/** 枠を使い切ったため gh を止めている資源と、再開する時刻。 */
+export interface IParadisGithubRateLimitPauseEntry {
+	readonly resource: IParadisGithubCallResource;
+	/** 再開する時刻（epoch ms）。 */
+	readonly until: number;
 }
 
 // ---------- レート枠ヘッダのパース ----------
@@ -750,17 +762,36 @@ export class ParadisGithubRateLimitHistory {
 				continue;
 			}
 			if (previous) {
-				const acrossReset = entry.remaining > previous.entry.remaining;
+				const acrossReset = paradisIsAcrossRateLimitReset(previous.entry, entry);
 				const consumed = acrossReset
 					// 枠がリセットされた区間。リセット後の消費分のみを数える
 					? Math.max(0, entry.limit - entry.remaining)
-					: previous.entry.remaining - entry.remaining;
+					// 窓の中で残量が増えて見えることがある（GitHub の数え直し）。消費は負にしない
+					: Math.max(0, previous.entry.remaining - entry.remaining);
 				deltas.push({ at: sample.at, spanMs: sample.at - previous.at, consumed, acrossReset });
 			}
 			previous = { at: sample.at, entry };
 		}
 		return deltas;
 	}
+}
+
+/**
+ * 新しい窓のリセット時刻は「窓が回った後の最初の呼び出し + 1時間」なので、窓が回ると前の窓のリセット時刻から
+ * 1時間近く先へ進む。これより小さい進みは同じ窓の揺れとみなす。
+ */
+const RATE_LIMIT_RESET_SHIFT_MS = 60_000;
+
+/**
+ * 2つのサンプルの間で枠がリセットされたか。リセット時刻の進みで決める。残量が増えたかで決めると、
+ * 同じ窓の中で残量が少し戻っただけの区間を「リセット後に limit-remaining 使った」と数え、数千の偽の山が立つ。
+ * リセット時刻が分からないサンプル（ヘッダに無かった）だけ、残量の増加で判断する。
+ */
+function paradisIsAcrossRateLimitReset(previous: IParadisGithubRateLimitEntry, current: IParadisGithubRateLimitEntry): boolean {
+	if (previous.resetAt > 0 && current.resetAt > 0) {
+		return current.resetAt - previous.resetAt >= RATE_LIMIT_RESET_SHIFT_MS;
+	}
+	return current.remaining > previous.remaining;
 }
 
 interface IConsumptionDelta {
@@ -893,6 +924,58 @@ export function paradisGithubCallSiteFromArgs(args: readonly string[]): string {
 		parts.push(slash >= 0 ? `${arg.slice(0, slash)}/…` : arg);
 	}
 	return parts.join(' ');
+}
+
+/**
+ * gh の引数から、その呼び出しが消費する資源を決める。`pr` / `issue` / `repo` と `api graphql` は GraphQL、
+ * それ以外（`run view`、`api <REST のパス>` など）は REST（core）。gh の高レベルのサブコマンドは
+ * レスポンスヘッダを出さないため、資源は呼び出し側で引数から決めるしかない。
+ */
+export function paradisGithubResourceFromArgs(args: readonly string[]): IParadisGithubCallResource {
+	switch (args[0]) {
+		case 'pr':
+		case 'issue':
+		case 'repo':
+			return 'graphql';
+		case 'api':
+			return args[1] === 'graphql' ? 'graphql' : 'core';
+		default:
+			return 'core';
+	}
+}
+
+/**
+ * Para Code の外（エージェントがターミナルで打った gh、拡張機能、ほかのアプリ）がアカウントの枠から使った量の推定。
+ * 枠の消費（アカウント全体）から、同じ窓で Para Code が送った呼び出しを引く。枠を使い切って断られた呼び出しは
+ * 点を消費しないので引かない。GraphQL は1回1点として数える（Para Code の問い合わせは小さいので最低の1点）。
+ * 枠の消費はサンプルを取っていた間しか分からず、Para Code の呼び出しは窓の全体を数えるため、
+ * 負になる分は0に丸める。枠の消費が分からなければ undefined。
+ */
+export function paradisGithubOtherConsumption(
+	consumption: readonly IParadisGithubConsumption[],
+	operations: readonly IParadisGithubOperationStat[],
+	resourceFilter: IParadisGithubCallResource | 'all',
+	window: '5m' | '1h',
+): number | undefined {
+	let total: number | undefined;
+	for (const item of consumption) {
+		if (resourceFilter !== 'all' && item.resource !== resourceFilter) {
+			continue;
+		}
+		const consumed = window === '5m' ? item.rolling5m : item.rolling1h;
+		if (consumed === undefined) {
+			continue;
+		}
+		let paraCode = 0;
+		for (const operation of operations) {
+			if (operation.resource === item.resource) {
+				const counts = window === '5m' ? operation.rolling5m : operation.rolling1h;
+				paraCode += counts.calls - counts.rateLimited;
+			}
+		}
+		total = (total ?? 0) + Math.max(0, consumed - paraCode);
+	}
+	return total;
 }
 
 /**

@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	IParadisTaskBoardExitWatch,
 	paradisIsTaskBoardTerminalId,
 	paradisParseTaskBoardAnswer,
 	paradisParseTaskBoardAskHumanArgs,
@@ -18,9 +19,15 @@ import {
 	paradisParseTaskBoardReply,
 	paradisParseTaskBoardSend,
 	paradisParseTaskBoardStatusReport,
+	paradisTaskBoardAgentExitConfirmed,
+	paradisTaskBoardApprovalChoices,
 	paradisTaskBoardBearerToken,
+	paradisTaskBoardConfirmAgentExit,
 	paradisTaskBoardHttpStatus,
 	paradisTaskBoardIsAllowedHost,
+	paradisTaskBoardIsLastingApproval,
+	paradisTaskBoardKeyBlockedOnApprovalForm,
+	paradisTaskBoardMissingTerminalExited,
 	paradisTaskBoardSamePath,
 	paradisTaskBoardSendBlock,
 	paradisTaskBoardSseData,
@@ -97,8 +104,34 @@ suite('ParadisTaskBoardBridge', () => {
 			paradisTaskBoardStatusFrom({ ...base, agentStatus: undefined, closed: true }),
 		];
 		assert.deepStrictEqual(statuses, ['working', 'permission', 'question', 'review', 'idle', 'question', 'exited', 'exited']);
-		assert.deepStrictEqual(statuses.map(paradisTaskBoardSendBlock), ['busy', 'permission', 'question', undefined, undefined, 'question', 'exited', 'exited']);
+		assert.deepStrictEqual(statuses.map(status => paradisTaskBoardSendBlock(status)), ['busy', 'permission', 'question', undefined, undefined, 'question', 'exited', 'exited']);
 		assert.deepStrictEqual(['busy', 'not-found', 'invalid', 'unavailable', 'failed', 'rejected'].map(code => paradisTaskBoardHttpStatus(code as never)), [409, 404, 400, 503, 500, 409]);
+	});
+
+	test('a shell in the foreground ends the agent only when it is seen again and stays for a while', () => {
+		const watch: IParadisTaskBoardExitWatch = { shellSeen: 0 };
+		// 0 秒: シェルに見えた / 1 秒: エージェントに戻った / 2 秒・4 秒: またシェル（続いて 2 秒）/ 6 秒: 続いて 4 秒
+		const flicker = [
+			paradisTaskBoardConfirmAgentExit(watch, true, 0),
+			paradisTaskBoardConfirmAgentExit(watch, false, 1_000),
+			paradisTaskBoardConfirmAgentExit(watch, true, 2_000),
+			paradisTaskBoardConfirmAgentExit(watch, true, 4_000),
+			paradisTaskBoardConfirmAgentExit(watch, true, 6_000),
+		];
+		// 一度だけ遅れて見た（間が空いても 1 回では決めない）
+		const once = paradisTaskBoardConfirmAgentExit({ shellSeen: 0 }, true, 60_000);
+		assert.deepStrictEqual({ flicker, once }, { flicker: [false, false, false, false, true], once: false });
+	});
+
+	test('a terminal whose instance was disposed is given a short time to come back on another instance', () => {
+		assert.deepStrictEqual([
+			// 破棄を見た: 5 秒待つ（同じペインが付け替え先で見つかれば、呼び出し側が印を消す）
+			paradisTaskBoardMissingTerminalExited({ missingSince: 0, disposedAt: 0 }, 4_999),
+			paradisTaskBoardMissingTerminalExited({ missingSince: 0, disposedAt: 0 }, 5_000),
+			// 破棄を見ていない（再読み込みの後の復元待ち）: 60 秒待つ
+			paradisTaskBoardMissingTerminalExited({ missingSince: 0 }, 29_000),
+			paradisTaskBoardMissingTerminalExited({ missingSince: 0 }, 60_000),
+		], [false, true, false, true]);
 	});
 
 	test('authentication helpers accept only the bridge host and a bearer token', () => {
@@ -162,5 +195,50 @@ suite('ParadisTaskBoardBridge', () => {
 			paradisTaskBoardSamePath('/Users/Example/Repo', '/users/example/repo', false),
 			paradisTaskBoardSamePath('C:\\work\\repo\\', 'C:/work/repo', true),
 		], [true, true, false, true]);
+	});
+
+	// ボードの HTTP の口は接続元を確かめないので、ペインの中のエージェントが自分のツールを恒久的に許可できる選択肢は出さない
+	test('leaves the lasting approvals and Cancel of a Codex tool approval form off the board, keeping the screen numbers', () => {
+		const options = [
+			{ n: 1, label: 'Allow Run the tool and continue' },
+			{ n: 2, label: 'Allow for this session Run the tool and remember this choice for this session' },
+			{ n: 3, label: 'Always allow Run the tool and remember this choice for future tool calls' },
+			{ n: 4, label: 'Cancel Cancel this tool call' },
+		];
+		assert.deepStrictEqual({
+			choices: paradisTaskBoardApprovalChoices(options),
+			lasting: options.map(option => paradisTaskBoardIsLastingApproval(option.label)),
+		}, {
+			// 恒久的な許可と、ボードの「拒否」と同じ「Cancel」を除く。残りが 1 つなので、ボードは「許可 / 拒否」のまま
+			choices: [options[0]],
+			lasting: [false, true, true, false],
+		});
+	});
+
+	test('reads whether the agent exit is confirmed without counting a look, and refuses to send while a shell is in front', () => {
+		const watch: IParadisTaskBoardExitWatch = { shellSeen: 0 };
+		paradisTaskBoardConfirmAgentExit(watch, true, 0);
+		// 見直し以外で何度読んでも、見た回数は進まない
+		const reads = [paradisTaskBoardAgentExitConfirmed(watch, true, 5_000), paradisTaskBoardAgentExitConfirmed(watch, true, 9_000)];
+		const seenAfterReads = watch.shellSeen;
+		paradisTaskBoardConfirmAgentExit(watch, true, 5_000);
+		assert.deepStrictEqual({
+			reads, seenAfterReads,
+			afterSecondLook: paradisTaskBoardAgentExitConfirmed(watch, true, 5_000),
+			notShell: paradisTaskBoardAgentExitConfirmed(watch, false, 5_000),
+			sendBlocks: [paradisTaskBoardSendBlock('idle', true), paradisTaskBoardSendBlock('review', true), paradisTaskBoardSendBlock('exited', true), paradisTaskBoardSendBlock('idle', false)],
+		}, {
+			reads: [false, false],
+			seenAfterReads: 1,
+			afterSecondLook: true,
+			notShell: false,
+			sendBlocks: ['busy', 'busy', 'exited', undefined],
+		});
+	});
+
+	// 許可のフォームが出ている間は、数字と Enter を `/v1/key` で送らない（エージェントが自分のツールの「常に許可」を確定しない）
+	test('blocks digits and Enter on a Codex tool approval form, and lets the other keys through', () => {
+		const keys = ['1', '3', '9', 'enter', 'escape', 'ctrl_c', 'up', 'down', 'tab'] as const;
+		assert.deepStrictEqual(keys.map(key => paradisTaskBoardKeyBlockedOnApprovalForm(key)), [true, true, true, true, false, false, false, false, false]);
 	});
 });

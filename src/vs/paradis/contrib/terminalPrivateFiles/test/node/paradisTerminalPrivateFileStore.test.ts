@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
@@ -105,5 +105,29 @@ suite('ParadisTerminalPrivateFileStore', () => {
 			info: readFileSync(join(latest, 'info.json'), 'utf8'),
 			infoMode: isWindows ? 0o600 : statSync(join(latest, 'info.json')).mode & 0o777,
 		}, { afterFive: 4, remaining: 1, info: '{"x":1}', infoMode: 0o600 });
+	});
+	test('prepares the command records file privately and keeps what is already in it', async () => {
+		const commands = join(root, 'commands');
+		const withCommands = new ParadisTerminalPrivateFileStore(join(root, 'screens'), join(root, 'logs', 'render'), () => clock, commands);
+		mkdirSync(commands, { mode: 0o755 });
+		writeFileSync(join(commands, 'commands.jsonl'), '{"c":"ls","t":1}\n', { mode: 0o644 });
+		chmodSync(commands, 0o755);
+		chmodSync(join(commands, 'commands.jsonl'), 0o644);
+		const file = await withCommands.ensureCommandRecordsFile();
+		const again = await withCommands.ensureCommandRecordsFile();
+		assert.deepStrictEqual({
+			file,
+			again,
+			content: readFileSync(file, 'utf8'),
+			fileMode: isWindows ? 0o600 : statSync(file).mode & 0o777,
+			dirMode: isWindows ? 0o700 : statSync(commands).mode & 0o777,
+		}, {
+			file: join(commands, 'commands.jsonl'),
+			again: join(commands, 'commands.jsonl'),
+			content: '{"c":"ls","t":1}\n',
+			fileMode: 0o600,
+			dirMode: 0o700,
+		});
+		await assert.rejects(store.ensureCommandRecordsFile());
 	});
 });

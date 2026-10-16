@@ -21,6 +21,9 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('codex resume 019f-thread'),
 			paradisInteractiveAgentCommand('codex fork 019f-thread'),
 			paradisInteractiveAgentCommand('codex fork --last'),
+			// Para Code が確認ありの権限を明示して打つ再開・分岐（paradisAgentResumeCommandLine）
+			paradisInteractiveAgentCommand('codex resume --sandbox workspace-write --ask-for-approval on-request 019f-thread'),
+			paradisInteractiveAgentCommand('codex fork --sandbox workspace-write --ask-for-approval on-request 019f-thread'),
 		], [
 			{ agent: 'codex', mode: 'new' },
 			{ agent: 'codex', mode: 'new' },
@@ -29,6 +32,8 @@ suite('ParadisAgentCliCommand', () => {
 			// fork の id は元の会話で、このペインの会話ではない（sessionId にしない）
 			{ agent: 'codex', mode: 'fork', forkedFromId: '019f-thread' },
 			{ agent: 'codex', mode: 'fork' },
+			{ agent: 'codex', mode: 'resume', sessionId: '019f-thread' },
+			{ agent: 'codex', mode: 'fork', forkedFromId: '019f-thread' },
 		]);
 	});
 

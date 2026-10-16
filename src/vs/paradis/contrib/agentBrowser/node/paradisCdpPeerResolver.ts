@@ -30,21 +30,85 @@
 // かかる）に、待ちを延ばして数回やり直す。確かめた結果が「子孫でない」ならやり直さない（通す範囲は広げない）。
 // 実機検証はmacOSのみ（Linux / Windows経路はコードレビュー品質、未検証）。
 
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
-import { promisify } from 'util';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-
-const execAsync = promisify(exec);
 
 const MAX_PARENT_WALK = 15;
 const EXEC_TIMEOUT_MS = 3000;
 /** 呼び出し元の分類のやり直しで、外部コマンド 1 本に待つ長さ（1 回目は {@link EXEC_TIMEOUT_MS}）。 */
 const CLASSIFY_RETRY_TIMEOUT_MS = 8000;
-/** 呼び出し元の分類に掛けてよい時間の合計（MCP の道具の呼び出しは数十秒まで待てる）。 */
-const CLASSIFY_BUDGET_MS = 15_000;
+/**
+ * 呼び出し元の分類に掛けてよい時間の合計。MCP の道具の呼び出しは数分まで待てる（Claude Code・Codex とも
+ * 300 秒にしている）。15 秒では、load average が 100 を超える機械で正しい呼び出し元を断ることがあった。
+ */
+const CLASSIFY_BUDGET_MS = 30_000;
 const CLASSIFY_RETRY_DELAY_MS = 250;
-const CLASSIFY_MAX_ATTEMPTS = 3;
+const CLASSIFY_MAX_ATTEMPTS = 4;
+
+/**
+ * コマンドをシェルで動かし、標準出力を返す。終了コードが 0 でなければ失敗にする。`timeoutMs` を過ぎても
+ * 終わらなければ止めて失敗にする。
+ *
+ * Node の `exec` の `timeout` は使わない。機械の負荷が高く、このプロセスが CPU を待たされている間に
+ * コマンドが終わると、待ちが明けたときに時計（timers）が終わりの知らせ（I/O）より先に回り、終わっている
+ * コマンドを時間切れとして扱う（呼び出し元を確かめられず断っていた）。時計が鳴ったら、終わりの知らせを
+ * 読む機会を 2 巡与えてから止める。
+ * `exec` の時間切れはシェルだけを止め、`lsof … || true` の lsof のような子を残す（やり直すたびに増える）。
+ * POSIX では別のプロセスグループで起こし、グループごと止める。
+ */
+export function paradisExecWithTimeout(command: string, timeoutMs: number, maxBuffer: number): Promise<{ readonly stdout: string }> {
+	return new Promise((resolve, reject) => {
+		const killGroup = process.platform !== 'win32';
+		const child = spawn(command, { shell: true, detached: killGroup, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+		let settled = false;
+		let stdout = '';
+		let size = 0;
+		let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+		const stop = () => {
+			try {
+				if (killGroup && child.pid !== undefined) {
+					process.kill(-child.pid, 'SIGTERM');
+				} else {
+					child.kill();
+				}
+			} catch {
+				// もう終わっている
+			}
+		};
+		const finish = (error: Error | undefined) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			clearTimeout(timer);
+			if (error) {
+				reject(error);
+			} else {
+				resolve({ stdout });
+			}
+		};
+		child.stdout?.setEncoding('utf8');
+		child.stdout?.on('data', (chunk: string) => {
+			size += Buffer.byteLength(chunk);
+			if (size > maxBuffer) {
+				stop();
+				finish(new Error('stdout maxBuffer exceeded'));
+				return;
+			}
+			stdout += chunk;
+		});
+		child.on('error', error => finish(error));
+		child.on('close', (code, signal) => finish(code === 0 ? undefined : new Error(`exited with ${code ?? signal}`)));
+		timer = setTimeout(() => setImmediate(() => setImmediate(() => {
+			if (settled) {
+				return;
+			}
+			stop();
+			finish(new Error(`timed out after ${timeoutMs} ms`));
+		})), timeoutMs);
+	});
+}
 
 /** 接続の相手やプロセスを読むコマンドが失敗・時間切れした（やり直せば読めるかもしれない）。 */
 export class ParadisPeerProbeError extends Error {
@@ -194,6 +258,15 @@ export interface IParadisPeerExpectation {
 	readonly tunnelPid?: number;
 }
 
+/** 呼び出し元を確かめられなかった理由（診断のログ用）。 */
+export type ParadisPeerUnknownReason =
+	/** 接続の持ち主やプロセス表を読むコマンドが、失敗・時間切れし続けた。 */
+	| 'probe-failed'
+	/** 接続の持ち主が見つからないままだった。 */
+	| 'owner-not-found'
+	/** 持ち主は見つかったが、期待したプロセス（シェルの子孫・戻り経路）ではなかった。 */
+	| 'not-expected';
+
 /** {@link paradisClassifyPeer} のやり直しの決め事（テストで時計と待ちを差し替える）。 */
 export interface IParadisClassifyPeerOptions {
 	/** 全体に掛けてよい時間。既定 {@link CLASSIFY_BUDGET_MS}。 */
@@ -202,6 +275,8 @@ export interface IParadisClassifyPeerOptions {
 	readonly sleep?: (ms: number) => Promise<void>;
 	/** 何回目の試し（0 から）に使う probe か。既定は実物の OS コマンド（やり直すほど待ちを延ばす）。 */
 	readonly probeFor?: (attempt: number, timeoutMs: number) => IParadisPeerProcessProbe;
+	/** `unknown` に決めたときに、その理由と試した回数を知らせる（診断用。判定は変えない）。 */
+	readonly onUnknown?: (reason: ParadisPeerUnknownReason, attempts: number) => void;
 }
 
 /**
@@ -233,28 +308,38 @@ export async function paradisClassifyPeer(
 	for (let attempt = 0; ; attempt++) {
 		const timeoutMs = Math.max(500, Math.min(attempt === 0 ? EXEC_TIMEOUT_MS : CLASSIFY_RETRY_TIMEOUT_MS, deadline - now()));
 		const attemptProbe = probe ?? options?.probeFor?.(attempt, timeoutMs) ?? paradisPeerProbeFor(clientPort, serverPort, timeoutMs, { processTable: true });
-		let outcome: { readonly kind: ParadisPeerKind; readonly retry: boolean };
+		let outcome: IParadisClassifyOutcome;
 		try {
 			outcome = await classifyPeerOnce(clientPort, serverPort, ownPid, expectation, attemptProbe);
 		} catch (error) {
 			if (!(error instanceof ParadisPeerProbeError)) {
 				throw error;
 			}
-			outcome = { kind: 'unknown', retry: true };
+			outcome = { kind: 'unknown', retry: true, reason: 'probe-failed' };
 		}
 		if (!outcome.retry || attempt + 1 >= CLASSIFY_MAX_ATTEMPTS || now() + CLASSIFY_RETRY_DELAY_MS >= deadline) {
+			if (outcome.kind === 'unknown') {
+				options?.onUnknown?.(outcome.reason ?? 'not-expected', attempt + 1);
+			}
 			return outcome.kind;
 		}
 		await sleep(CLASSIFY_RETRY_DELAY_MS);
 	}
 }
 
-/** 1 回分の照合。`retry` はやり直せば結果が変わりうるか（持ち主が見つからなかった）。 */
-async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: number, expectation: IParadisPeerExpectation, probe: IParadisPeerProcessProbe): Promise<{ readonly kind: ParadisPeerKind; readonly retry: boolean }> {
+/** 1 回分の照合の結果。`retry` はやり直せば結果が変わりうるか（持ち主が見つからなかった）。 */
+interface IParadisClassifyOutcome {
+	readonly kind: ParadisPeerKind;
+	readonly retry: boolean;
+	readonly reason?: ParadisPeerUnknownReason;
+}
+
+/** 1 回分の照合。 */
+async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: number, expectation: IParadisPeerExpectation, probe: IParadisPeerProcessProbe): Promise<IParadisClassifyOutcome> {
 	const peerPids = await probe.findPeerPids(clientPort, serverPort, ownPid);
 	if (peerPids.length === 0) {
 		// サーバーが接続を握っている最中なので、持ち主は居るはず。見えなかったのは読み取りの取りこぼし
-		return { kind: 'unknown', retry: true };
+		return { kind: 'unknown', retry: true, reason: 'owner-not-found' };
 	}
 	let verdict: ParadisPeerKind | undefined;
 	for (const peerPid of peerPids) {
@@ -268,7 +353,7 @@ async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: 
 			}
 		}
 		if (kind === 'unknown' || (verdict !== undefined && verdict !== kind)) {
-			return { kind: 'unknown', retry: false };
+			return { kind: 'unknown', retry: false, reason: 'not-expected' };
 		}
 		verdict = kind;
 	}
@@ -392,10 +477,7 @@ async function findPeerPidsViaLsof(clientPort: number, serverPort: number, ownPi
 	let stdout: string;
 	try {
 		// 一致が無いと lsof は 1 で終わるので `|| true` で成功にする（失敗として扱うのは起動の失敗と時間切れだけ）
-		({ stdout } = await execAsync(`lsof -nP -iTCP@127.0.0.1:${clientPort} -sTCP:ESTABLISHED 2>/dev/null || true`, {
-			timeout: timeoutMs,
-			maxBuffer: 1024 * 1024,
-		}));
+		({ stdout } = await paradisExecWithTimeout(`lsof -nP -iTCP@127.0.0.1:${clientPort} -sTCP:ESTABLISHED 2>/dev/null || true`, timeoutMs, 1024 * 1024));
 	} catch (error) {
 		throw new ParadisPeerProbeError(`lsof failed: ${error instanceof Error ? error.message.split('\n')[0] : 'unknown error'}`);
 	}
@@ -404,10 +486,7 @@ async function findPeerPidsViaLsof(clientPort: number, serverPort: number, ownPi
 
 /** `ss -Htnp` によるピアPID特定（Linux主経路）。送信元・宛先のアドレスとポートの両方で絞る。 */
 async function findPeerPidsViaSs(clientPort: number, serverPort: number, ownPid: number, timeoutMs: number): Promise<number[]> {
-	const { stdout } = await execAsync(`ss -Htnp state established "( src 127.0.0.1:${clientPort} and dst 127.0.0.1:${serverPort} )" 2>/dev/null || true`, {
-		timeout: timeoutMs,
-		maxBuffer: 1024 * 1024,
-	});
+	const { stdout } = await paradisExecWithTimeout(`ss -Htnp state established "( src 127.0.0.1:${clientPort} and dst 127.0.0.1:${serverPort} )" 2>/dev/null || true`, timeoutMs, 1024 * 1024);
 	return paradisParseSsPeerPids(stdout, clientPort, serverPort, ownPid);
 }
 
@@ -474,7 +553,7 @@ export function paradisParseProcessTable(stdout: string): ReadonlyMap<number, IP
 /** macOS のプロセス表を 1 回で読む。失敗・時間切れは {@link ParadisPeerProbeError}。 */
 async function readProcessTable(timeoutMs: number): Promise<ReadonlyMap<number, IParadisProcessInfo>> {
 	try {
-		const { stdout } = await execAsync('ps -A -o pid=,ppid=', { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
+		const { stdout } = await paradisExecWithTimeout('ps -A -o pid=,ppid=', timeoutMs, 4 * 1024 * 1024);
 		const table = paradisParseProcessTable(stdout);
 		if (table.size === 0) {
 			throw new Error('empty process table');
@@ -524,13 +603,13 @@ async function readWindowsPeerSnapshot(clientPort: number, serverPort: number, t
 	try {
 		// スクリプトは UTF-16LE の Base64 で渡す（cmd.exe を経由する引用の崩れを避ける）
 		const encoded = Buffer.from(script, 'utf16le').toString('base64');
-		const { stdout } = await execAsync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { timeout: timeoutMs * 2, maxBuffer: 8 * 1024 * 1024 });
+		const { stdout } = await paradisExecWithTimeout(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, timeoutMs * 2, 8 * 1024 * 1024);
 		const parsed = paradisParseWindowsPeerSnapshot(stdout);
 		if (parsed.peerPids.length > 0) {
 			return parsed;
 		}
 		// Get-NetTCPConnection が使えない環境（古い Windows など）は netstat で持ち主を探す
-		const { stdout: netstat } = await execAsync('netstat -ano -p TCP', { timeout: timeoutMs * 2, maxBuffer: 4 * 1024 * 1024 });
+		const { stdout: netstat } = await paradisExecWithTimeout('netstat -ano -p TCP', timeoutMs * 2, 4 * 1024 * 1024);
 		return { peerPids: paradisParseNetstatPeerPids(netstat, clientPort, serverPort, 0), processes: parsed.processes };
 	} catch {
 		return undefined;
@@ -561,10 +640,7 @@ async function readTokenFromEnv(pid: number): Promise<string | undefined> {
 	try {
 		// `ps eww` はコマンドラインの後ろに環境変数を連結して出力する（macOSでは
 		// 同一ユーザーのサードパーティバイナリのenvも読める。実機検証済み）。
-		const { stdout } = await execAsync(`ps eww -o command= -p ${pid} 2>/dev/null || true`, {
-			timeout: EXEC_TIMEOUT_MS,
-			maxBuffer: 4 * 1024 * 1024,
-		});
+		const { stdout } = await paradisExecWithTimeout(`ps eww -o command= -p ${pid} 2>/dev/null || true`, EXEC_TIMEOUT_MS, 4 * 1024 * 1024);
 		const match = stdout.match(TOKEN_PATTERN);
 		return match?.[1] ?? undefined;
 	} catch {
@@ -580,7 +656,7 @@ async function readProcessInfo(pid: number): Promise<IParadisProcessInfo | undef
 			// 親 PID と起動時刻（UTC の ticks）。親が死んでも ParentProcessId は更新されないので、
 			// 起動時刻で PID の使い回しを見分ける
 			const cmd = `powershell -NoProfile -NonInteractive -Command "$p = Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\" -ErrorAction SilentlyContinue; if ($p) { '{0} {1}' -f $p.ParentProcessId, $p.CreationDate.ToUniversalTime().Ticks }"`;
-			const { stdout } = await execAsync(cmd, { timeout: EXEC_TIMEOUT_MS * 2, maxBuffer: 1024 * 1024 });
+			const { stdout } = await paradisExecWithTimeout(cmd, EXEC_TIMEOUT_MS * 2, 1024 * 1024);
 			const [ppidText, ticksText] = stdout.trim().split(/\s+/);
 			const ppid = Number.parseInt(ppidText ?? '', 10);
 			const ticks = Number(ticksText);
@@ -608,7 +684,7 @@ async function readProcessInfo(pid: number): Promise<IParadisProcessInfo | undef
 		}
 	}
 	try {
-		const { stdout } = await execAsync(`ps -o ppid= -p ${pid} 2>/dev/null || true`, { timeout: EXEC_TIMEOUT_MS });
+		const { stdout } = await paradisExecWithTimeout(`ps -o ppid= -p ${pid} 2>/dev/null || true`, EXEC_TIMEOUT_MS, 1024 * 1024);
 		const ppid = Number.parseInt(stdout.trim(), 10);
 		// macOS / Linux では親が死ぬと子は 1（launchd / init）へ付け替えられるので、使い回しは起きない
 		return { ppid: Number.isFinite(ppid) && ppid > 0 ? ppid : undefined };

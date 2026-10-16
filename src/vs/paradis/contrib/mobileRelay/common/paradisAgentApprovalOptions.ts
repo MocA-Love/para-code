@@ -165,6 +165,111 @@ export function paradisParseApprovalOptions(screen: string): readonly IParadisAg
 	});
 }
 
+/**
+ * Codex の MCP のツールの許可（elicitation のフォーム。codex-cli 0.162.1 の `codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs`）の
+ * 見出しの行。実画面は `Field 1/1` / `Allow the para-browser MCP server to run tool "…"?` / 引数の行 / `› 1. Allow  Run the tool and continue`
+ * / … / `4. Cancel  Cancel this tool call` / `enter to submit | esc to cancel`。
+ */
+const CODEX_FORM_HEADING = /^\s*Field \d+\/\d+\s*$/;
+/** そのフォームの最初の選択肢（許可）。番号 1 の選択肢が `Allow` でないフォーム（MCP サーバーからの一般の質問）は許可として扱わない。 */
+const CODEX_FORM_ALLOW_OPTION = /^[\s│┃|]*(?:[❯›>▶]\s*)?1[.)]\s+Allow\b/;
+/** 番号 1 の選択肢の行（ラベルは問わない）。 */
+const FIRST_OPTION = /^[\s│┃|]*(?:[❯›>▶]\s*)?1[.)]\s+\S/;
+/** フォームの操作説明（空白を除いた小文字。`enter to submit | esc to cancel`）。 */
+const CODEX_FORM_FOOTER = 'entertosubmit|esctocancel';
+/** フォームを探す範囲（下端からの行数）。引数の行の分だけ背が高い。 */
+const CODEX_FORM_REGION_LINES = 40;
+
+/**
+ * `lines[index]` が Codex の MCP のツールの許可のフォームの見出し（`Field 1/1`）で、その後の最初の選択肢が `1. Allow` か。
+ */
+export function paradisCodexApprovalFormHeadingAt(lines: readonly string[], index: number): boolean {
+	if (!CODEX_FORM_HEADING.test(lines[index] ?? '')) {
+		return false;
+	}
+	for (let next = index + 1; next < lines.length; next++) {
+		const line = lines[next] ?? '';
+		if (FIRST_OPTION.test(line)) {
+			return CODEX_FORM_ALLOW_OPTION.test(line);
+		}
+	}
+	return false;
+}
+
+/**
+ * 画面の下端に Codex の MCP のツールの許可のフォームが出ているか。このフォームは `y` / `d` / `(esc)` の近道を持たず、
+ * 数字キーで選んでそのまま確定し、Esc で取り消す（`option_index_for_digit` と `dispatch_cancel`）。最下部に
+ * `enter to submit | esc to cancel` があり、その上に許可の見出しがあるときだけ true。
+ */
+export function paradisCodexApprovalFormShown(screen: string): boolean {
+	const lines = screen.split('\n');
+	while (lines.length > 0 && (lines[lines.length - 1] ?? '').trim().length === 0) {
+		lines.pop();
+	}
+	return codexApprovalFormStart(lines) !== undefined;
+}
+
+/** 下端の Codex の MCP のツールの許可のフォームの、見出しの行から最下部までの行。フォームが出ていなければ undefined。 */
+function codexApprovalFormStart(lines: readonly string[]): readonly string[] | undefined {
+	const footer = lines.slice(-2).join('').replace(/\s+/g, '').toLowerCase();
+	if (!footer.includes(CODEX_FORM_FOOTER)) {
+		return undefined;
+	}
+	const region = lines.slice(-CODEX_FORM_REGION_LINES);
+	for (let index = region.length - 1; index >= 0; index--) {
+		if (CODEX_FORM_HEADING.test(region[index] ?? '')) {
+			return paradisCodexApprovalFormHeadingAt(region, index) ? region.slice(index) : undefined;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * 画面の下端の Codex の MCP のツールの許可のフォームに、この一片（{@link paradisApprovalScreenPiece}）が見えているか。
+ * 見るのはフォームの見出しから下だけ（上に残る会話の本文や、前に出た別のツールの名前に当たらないように）。空白と大文字小文字は見ない。
+ */
+export function paradisCodexApprovalFormShows(screen: string, piece: string): boolean {
+	const lines = screen.split('\n');
+	while (lines.length > 0 && (lines[lines.length - 1] ?? '').trim().length === 0) {
+		lines.pop();
+	}
+	const form = codexApprovalFormStart(lines);
+	const compact = (text: string) => text.replace(/\s+/g, '').toLowerCase();
+	return form !== undefined && compact(piece).length > 0 && compact(form.join('')).includes(compact(piece));
+}
+
+/**
+ * 承認の中身（`Bash: npm test` の `npm test`、ファイル操作ならファイル名）から、確認の画面に出ているはずの
+ * 一片を作る。作れなければ undefined（確認の文言だけで判断する）。
+ *
+ * Codex の MCP のツール（hook のツール名が `mcp__<サーバー>__<ツール>`）は、許可のフォームの見出しに出る
+ * `run tool "<ツール>"`（codex-cli 0.162.1）を引用符ごと使う。中身は引数の JSON で画面に出ない。ツール名だけだと
+ * `click` が `click_by` の許可に当たる。Claude Code の MCP のツールの確認には、この文言が出ないので使わない。
+ */
+export function paradisApprovalScreenPiece(detail: string | undefined, agent: 'claude' | 'codex' = 'claude'): string | undefined {
+	if (detail === undefined) {
+		return undefined;
+	}
+	const mcpTool = agent === 'codex' ? /^mcp__.+?__(?<tool>[^\s:]+): /.exec(detail)?.groups?.tool : undefined;
+	if (mcpTool !== undefined) {
+		return `run tool "${mcpTool}"`;
+	}
+	const body = detail.replace(/^[A-Za-z_][\w.-]*: /, '').trim();
+	let source = body;
+	if (body.startsWith('{')) {
+		try {
+			const parsed = JSON.parse(body) as Record<string, unknown>;
+			const path = [parsed.file_path, parsed.path, parsed.notebook_path, parsed.url].find((value): value is string => typeof value === 'string' && value.length > 0);
+			source = path !== undefined ? path.split(/[\\/]/).filter(part => part.length > 0).pop() ?? '' : '';
+		} catch {
+			// 切り詰められた JSON。確認の文言だけで判断する。
+			source = '';
+		}
+	}
+	const piece = source.replace(/\s+/g, '').slice(0, 12);
+	return piece.length >= 3 ? piece : undefined;
+}
+
 /** 許可の確認の枠の中で、コマンドの上下に引かれる点線（Claude Code 2.1.289 の実画面: `╌╌╌…`）。 */
 const DASHED_RULE_LINE = /^[\s│┃|]*╌{8,}[\s│┃|]*$/;
 /** 理由を言わない定型の行（空白を除いた小文字）。警告として出さない。 */
@@ -244,9 +349,11 @@ export function paradisParseApprovalOptionChoice(choice: string): number | undef
  *   漏れ、次に出た同じ内容の許可を確定した。paradisAgentApprovalKeySequence の説明を参照）
  * - Codex は行末の近道（`(y)` / `(a)` / `(esc)`）を送る。近道の無い行は数字で確定するかを確かめていないので
  *   送らない（undefined。呼び出し側は断る）
+ * - ただし Codex の MCP のツールの許可のフォーム（`selectsByNumber`。{@link paradisCodexApprovalFormShown}）は数字で選んで
+ *   そのまま確定する（codex-cli 0.162.1 のソースで確認）ので、数字を送る
  */
-export function paradisApprovalOptionKey(agent: 'claude' | 'codex', option: IParadisAgentApprovalScreenOption): string | undefined {
-	if (agent === 'claude') {
+export function paradisApprovalOptionKey(agent: 'claude' | 'codex', option: IParadisAgentApprovalScreenOption, selectsByNumber = false): string | undefined {
+	if (agent === 'claude' || selectsByNumber) {
 		return String(option.n);
 	}
 	if (option.shortcut === undefined) {
@@ -255,18 +362,74 @@ export function paradisApprovalOptionKey(agent: 'claude' | 'codex', option: IPar
 	return option.shortcut === 'esc' ? '\u001b' : option.shortcut;
 }
 
+/** Codex の MCP のツールの許可のフォームの選択肢の名前（その後ろは説明）。長いものから照らす。 */
+const CODEX_FORM_OPTION_NAMES: readonly string[] = ['Allow for this session', 'Always allow', 'Allow', 'Deny', 'Cancel'];
+
+/**
+ * 画面から読んだ Codex の MCP のツールの許可のフォームの選択肢（`Allow for this session Run the tool and remember …`。
+ * 画面では名前と説明が別の列に並び、読むと 1 つの文言につながる）を、名前と説明に分ける。知らない形はそのまま名前にする。
+ */
+export function paradisSplitCodexFormOption(screenLabel: string): { readonly label: string; readonly detail?: string } {
+	for (const name of CODEX_FORM_OPTION_NAMES) {
+		if (screenLabel.startsWith(`${name} `)) {
+			return { label: name, detail: screenLabel.slice(name.length + 1).trim() };
+		}
+	}
+	return { label: screenLabel };
+}
+
+/**
+ * Codex の MCP のツールの許可のフォームの「Cancel」（取り消し）か。ボードとモバイルには出さず、既にある「拒否」（Esc。
+ * フォームでは同じく取り消しになる）に任せる。同じことをするボタンが 2 つ並ばないように。
+ */
+export function paradisIsCodexFormCancel(screenLabel: string): boolean {
+	return paradisSplitCodexFormOption(screenLabel).label === 'Cancel';
+}
+
+/**
+ * 画面の選択肢の文言（`screenLabel`）が、選んだときに見せた文言（`shownLabel`）と同じ選択肢か。Codex の MCP のツールの
+ * 許可のフォーム（`selectsByNumber`）では、名前だけを見せている（{@link paradisApprovalOptionsForMobile}）ので名前でも照らす。
+ */
+export function paradisApprovalOptionShownAs(screenLabel: string, shownLabel: string, selectsByNumber = false): boolean {
+	return paradisApprovalOptionLabelsMatch(screenLabel, shownLabel)
+		|| (selectsByNumber && paradisApprovalOptionLabelsMatch(paradisSplitCodexFormOption(screenLabel).label, shownLabel));
+}
+
+/**
+ * モバイルの番号の選択肢（`opt:<n>` と見せた文言 `expect`）で答えるときに送るキー。`promptOptions` は送る直前の画面の
+ * 許可の確認の見出しより後の行（paradisPermissionPromptParts の `options`）。確かめられなければ undefined（送らない）。
+ *
+ * Codex の MCP のツールの許可のフォームは、モバイルへ名前だけを見せている（{@link paradisApprovalOptionsForMobile}）ので名前でも
+ * 照らす。名前はどのツールのフォームでも同じなので、フォームがこの承認のもの（`piece` がフォームに見える）ことも確かめる。
+ * 確かめないと、スマホで X の「常に許可」を押したときに画面が Y のフォームだと、Y を恒久的に許可してしまう。
+ */
+export function paradisMobileApprovalOptionKey(agent: 'claude' | 'codex', screen: string, promptOptions: string, expect: IParadisAgentApprovalOption, piece: string | undefined): string | undefined {
+	const selectsByNumber = paradisCodexApprovalFormShown(screen);
+	if (selectsByNumber && (piece === undefined || !paradisCodexApprovalFormShows(screen, piece))) {
+		return undefined;
+	}
+	const option = paradisParseApprovalOptions(promptOptions)?.find(candidate => candidate.n === expect.n);
+	return option !== undefined && paradisApprovalOptionShownAs(option.label, expect.label, selectsByNumber) ? paradisApprovalOptionKey(agent, option, selectsByNumber) : undefined;
+}
+
 /**
  * モバイルへ渡してよい選択肢の一覧にする。Codex は全部の行に近道が無ければ出さない（1 つでも送れない行があると、
- * スマホで選べるのに送れない選択肢ができるため）。
+ * スマホで選べるのに送れない選択肢ができるため）。`selectsByNumber` は {@link paradisApprovalOptionKey} と同じ。
  */
-export function paradisApprovalOptionsForMobile(agent: 'claude' | 'codex', options: readonly IParadisAgentApprovalScreenOption[] | undefined): readonly IParadisAgentApprovalOption[] | undefined {
+export function paradisApprovalOptionsForMobile(agent: 'claude' | 'codex', options: readonly IParadisAgentApprovalScreenOption[] | undefined, selectsByNumber = false): readonly IParadisAgentApprovalOption[] | undefined {
 	if (options === undefined || options.length < 2) {
 		return undefined;
 	}
-	if (options.some(option => paradisApprovalOptionKey(agent, option) === undefined)) {
+	if (options.some(option => paradisApprovalOptionKey(agent, option, selectsByNumber) === undefined)) {
 		return undefined;
 	}
-	return options.map(option => ({ n: option.n, label: option.label }));
+	// MCP のツールの許可のフォームは名前だけを渡す（説明までつなぐとボタンが長すぎる。説明を載せる欄はアプリに無い）。
+	// 最後の「Cancel」は渡さない（アプリが必ず出す「拒否」と同じ。番号が 1 から続くよう、最後のときだけ外す）
+	const shown = selectsByNumber && options.length > 0 && paradisIsCodexFormCancel(options[options.length - 1].label) ? options.slice(0, -1) : options;
+	if (shown.length < 2) {
+		return undefined;
+	}
+	return shown.map(option => ({ n: option.n, label: selectsByNumber ? paradisSplitCodexFormOption(option.label).label : option.label }));
 }
 
 /**

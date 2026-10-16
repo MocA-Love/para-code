@@ -136,7 +136,8 @@ export class ElectronWebviewElement extends WebviewElement {
 			const options: FindInFrameOptions = { forward: !previous, findNext: false, matchCase: false };
 			this._webviewMainService.findInFrame(this.findTarget, this.id, value, options).then(found => {
 				// PARA-PATCH: the call that discovers the missing API also has to run the find itself.
-				if (!found && this._fallBackToWebviewFind()) {
+				// `undefined` (no frame this time) fails only this find and switches nothing.
+				if (found === false && this._fallBackToWebviewFind()) {
 					super.find(value, previous);
 				}
 			}, onUnexpectedError);
@@ -165,7 +166,7 @@ export class ElectronWebviewElement extends WebviewElement {
 			this._findStarted = true;
 			this._webviewMainService.findInFrame(this.findTarget, this.id, value, options).then(found => {
 				// PARA-PATCH: see find().
-				if (!found && this._fallBackToWebviewFind()) {
+				if (found === false && this._fallBackToWebviewFind()) {
 					super.updateFind(value);
 				}
 			}, onUnexpectedError);
@@ -190,7 +191,7 @@ export class ElectronWebviewElement extends WebviewElement {
 		}).then(stopped => {
 			// PARA-PATCH: see find(). `onDidStopFind` was already fired below; the base class fires it
 			// again here, which only re-disables the find widget buttons and happens once per webview.
-			if (!stopped && this._fallBackToWebviewFind()) {
+			if (stopped === false && this._fallBackToWebviewFind()) {
 				super.stopFind(keepSelection);
 			}
 		}, onUnexpectedError);

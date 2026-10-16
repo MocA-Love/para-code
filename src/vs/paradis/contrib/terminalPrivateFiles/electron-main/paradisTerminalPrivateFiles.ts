@@ -20,6 +20,8 @@ import { ParadisTerminalPrivateFileStore } from '../node/paradisTerminalPrivateF
 export const PARADIS_RENDER_EVIDENCE_FOLDER = 'paradisTerminalRender';
 /** 常駐の保存画面の置き場所（ユーザーデータの直下）。 */
 export const PARADIS_TERMINAL_SCREENS_FOLDER = 'paradisTerminalScreens';
+/** 実行したコマンドの記録の置き場所（ユーザーデータの直下）。 */
+export const PARADIS_TERMINAL_COMMANDS_FOLDER = 'paradisTerminalCommands';
 
 export function paradisRegisterTerminalPrivateFiles(
 	server: { registerChannel(name: string, channel: IServerChannel<string>): void },
@@ -29,6 +31,8 @@ export function paradisRegisterTerminalPrivateFiles(
 	const files = new ParadisTerminalPrivateFileStore(
 		join(environmentMainService.userDataPath, PARADIS_TERMINAL_SCREENS_FOLDER),
 		join(dirname(environmentMainService.logsHome.fsPath), PARADIS_RENDER_EVIDENCE_FOLDER),
+		Date.now,
+		join(environmentMainService.userDataPath, PARADIS_TERMINAL_COMMANDS_FOLDER),
 	);
 	server.registerChannel(PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL, ProxyChannel.fromService<string>(files, store));
 	return store;

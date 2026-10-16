@@ -30,6 +30,17 @@
 //     答えたペインでだけ状態を受ける。clear・前面のコマンドの終わり・長い無音で閉じる
 //  2. 状態の変化を 1 秒に数回までに間引き、それより速く変わるペインはしばらく無視する
 // ssh・WSL の先では前面のプログラムを確かめられないので、そこで偽の問い合わせと状態を書かれたら 2 の分しか防げない。
+//
+// Codex も 0.163.0 から、問い合わせ無しで `state=idle|working|blocked:app=codex` を書く（終わり・端末を外部の
+// プログラムに渡すとき・一時停止で app の無い `state=clear`）。2026-10-16 に 0.163.0 を PTY で実測した値:
+//   起動・再開   → working の後すぐ idle（依頼の前にも出る）
+//   作業中       → working（作業中の発言で応答を打ち切っても、同じターンのまま working が続く）
+//   許可待ち     → blocked（kind も msg も無い）。答えると working
+//   ターン完了   → idle（題名を作るために、もう一度 working → idle が続くことがある）
+//   `/exit`      → clear
+// `done` と `kind` が無いので、完了と、許可と質問の区別は取れない。問い合わせが無いので、前面のコマンドが Codex
+// （か ssh・WSL など）のときに届いた状態で受け付けを開く。hook も transcript も無いペインの作業中・許可待ちの補助にだけ使う
+// （{@link paradisCodexProgramStatusTransition}）。0.162.1 以前は書かないので、この読み取りでは何も変わらない。
 
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 
@@ -49,6 +60,8 @@ export interface IParadisProgramStatus {
 	readonly state: ParadisProgramState;
 	/** blocked の理由（permission / question / auth）。 */
 	readonly kind?: string;
+	/** Codex が書いた状態（`app=codex`。Codex の受け付けで届いた clear にも付ける）。Claude Code の状態には付けない。 */
+	readonly app?: 'codex';
 }
 
 const PROGRAM_STATES: ReadonlySet<string> = new Set<ParadisProgramState>(['working', 'blocked', 'done', 'idle', 'error', 'clear']);
@@ -66,8 +79,8 @@ function programStatusFields(data: string): Map<string, string> {
 }
 
 /**
- * OSC 7501 の中身（`7501;` の後ろ）を読む。問い合わせなら 'query'、会話そのもの（id 無し）の Claude Code の
- * 状態ならその状態、それ以外（サブエージェントの行、別のアプリ、知らない状態）は undefined。
+ * OSC 7501 の中身（`7501;` の後ろ）を読む。問い合わせなら 'query'、会話そのもの（id 無し）の Claude Code・Codex の
+ * 状態ならその状態（Codex は `app: 'codex'` 付き）、それ以外（サブエージェントの行、別のアプリ、知らない状態）は undefined。
  */
 export function paradisParseProgramStatus(data: string): IParadisProgramStatus | 'query' | undefined {
 	if (data.length > PARADIS_PROGRAM_STATUS_MAX_DATA_LENGTH) {
@@ -86,11 +99,12 @@ export function paradisParseProgramStatus(data: string): IParadisProgramStatus |
 	if (state === 'clear') {
 		return fields.has('id') ? undefined : { state: 'clear' };
 	}
-	if (fields.get('app') !== 'claude-code' || fields.has('id')) {
+	const app = fields.get('app');
+	if ((app !== 'claude-code' && app !== 'codex') || fields.has('id')) {
 		return undefined;
 	}
 	const kind = fields.get('kind');
-	return { state: state as ParadisProgramState, ...(kind !== undefined && kind.length > 0 ? { kind } : {}) };
+	return { state: state as ParadisProgramState, ...(kind !== undefined && kind.length > 0 ? { kind } : {}), ...(app === 'codex' ? { app } : {}) };
 }
 
 /** {@link paradisParseProgramStatus} が読まなかった理由。 */
@@ -103,7 +117,7 @@ export type ParadisProgramStatusDropReason =
 	| 'unknown-state'
 	/** サブエージェントの行（`id=` 付き）。 */
 	| 'subagent'
-	/** Claude Code 以外のアプリが書いたもの。 */
+	/** Claude Code・Codex 以外のアプリが書いたもの。 */
 	| 'other-app';
 
 /**
@@ -134,12 +148,12 @@ export function paradisCopyProgramStatus(value: unknown): IParadisProgramStatus 
 	if (typeof value !== 'object' || value === null) {
 		return undefined;
 	}
-	const { state, kind } = value as { state?: unknown; kind?: unknown };
+	const { state, kind, app } = value as { state?: unknown; kind?: unknown; app?: unknown };
 	if (typeof state !== 'string' || !PROGRAM_STATES.has(state)) {
 		return undefined;
 	}
 	const safeKind = typeof kind === 'string' && /^[a-z_-]{1,32}$/.test(kind) ? kind : undefined;
-	return { state: state as ParadisProgramState, ...(safeKind !== undefined ? { kind: safeKind } : {}) };
+	return { state: state as ParadisProgramState, ...(safeKind !== undefined ? { kind: safeKind } : {}), ...(app === 'codex' ? { app: 'codex' as const } : {}) };
 }
 
 /**
@@ -159,6 +173,33 @@ export function paradisProgramStatusToAgentStatus(status: IParadisProgramStatus)
 		case 'idle':
 		case 'clear':
 			return 'idle';
+	}
+}
+
+/**
+ * Codex の OSC の状態で、ペインの状態をどう変えるか（変えないなら undefined、'idle' は状態を消す）。hook が届いた
+ * ペインでは呼ばない（{@link paradisProgramStatusApplies}）。Codex の状態には完了も許可・質問の区別も無いので、
+ * ほかの出どころを上書きしない補助にとどめる:
+ * - blocked は、許可待ち・質問中でなければ許可待ち（permission）にする。質問中は transcript が知らせたものなので残す
+ * - 許可待ち・質問中の後の working は、答えて作業に戻った。idle・clear は、断った・取り消した（完了ではない）
+ * - それ以外の working と idle・clear は、transcript がターンの始まりと終わりを知らせていない（`transcriptBacked` でない）
+ *   ペインでだけ使う。終わりは完了と区別できないので、確認待ち（review）にはせず状態を消す（起動・再開の直後にも
+ *   working → idle が来るので、review にすると何もしていないのに「完了」が出る）
+ */
+export function paradisCodexProgramStatusTransition(previous: ParadisAgentStatus | undefined, state: ParadisProgramState, transcriptBacked: boolean): ParadisAgentStatus | 'idle' | undefined {
+	const waiting = previous === 'permission' || previous === 'question';
+	switch (state) {
+		case 'blocked':
+			return waiting ? undefined : 'permission';
+		case 'working':
+			return waiting || (!transcriptBacked && previous !== 'working') ? 'working' : undefined;
+		case 'idle':
+		case 'clear':
+			return waiting || (!transcriptBacked && previous === 'working') ? 'idle' : undefined;
+		case 'done':
+		case 'error':
+			// Codex は書かない（書くようになっても、どのターンの完了かを確かめられないので使わない）
+			return undefined;
 	}
 }
 
@@ -183,6 +224,20 @@ function commandName(commandLine: string): string | undefined {
 	}
 	const base = first.replace(/^.*[\\/]/, '').toLowerCase();
 	return base.length > 0 ? base : undefined;
+}
+
+function isCodexName(name: string | undefined): boolean {
+	return name !== undefined && /^codex(?:\.exe|\.cmd)?$/.test(name);
+}
+
+/**
+ * 問い合わせ無しで届いた Codex の状態で、受け付けを開いてよいか。シェル統合の nonce が合ったコマンド行か
+ * ターミナルのプロセス名が Codex か、中身を確かめられない ssh・WSL などなら開く（npm 版の Codex はプロセス名が
+ * `node` になるので、コマンド行で見分ける）。`trustedCommandLine` の約束は {@link paradisProgramStatusForeground} と同じ。
+ */
+export function paradisCodexProgramStatusForeground(trustedCommandLine: string | undefined, processName: string | undefined): boolean {
+	const names = [trustedCommandLine !== undefined ? commandName(trustedCommandLine) : undefined, processName !== undefined ? commandName(processName) : undefined];
+	return names.some(name => isCodexName(name) || (name !== undefined && PASSTHROUGH_COMMANDS.has(name)));
 }
 
 /**
@@ -219,14 +274,14 @@ const KNOWN_SHELLS: ReadonlySet<string> = new Set(['zsh', 'bash', 'sh', 'dash', 
  * 前面のプロセス名（pty が報告する題名。`/path/to/claude --resume` のような形でも来る）が変わったときに、
  * 受け付けを閉じるか。既知のシェルに戻ったら、シェル統合の有無によらず閉じる（Claude Code が落ちて
  * 「Relaunch Terminal」で同じターミナルに新しいシェルが立つと、シェル統合のコマンドの終わりが来ない）。
- * シェル統合が無いターミナルは、Claude Code でも ssh などでもなくなったら閉じる。
+ * シェル統合が無いターミナルは、Claude Code でも Codex でも ssh などでもなくなったら閉じる。
  */
 export function paradisProgramStatusClosesOnForeground(hasShellIntegration: boolean, processTitle: string | undefined): boolean {
 	const name = processTitle !== undefined ? commandName(processTitle)?.replace(/^-/, '').replace(/\.exe$/, '') : undefined;
 	if (name !== undefined && KNOWN_SHELLS.has(name)) {
 		return true;
 	}
-	return !hasShellIntegration && paradisProgramStatusForeground(undefined, processTitle) === undefined;
+	return !hasShellIntegration && paradisProgramStatusForeground(undefined, processTitle) === undefined && !isCodexName(name);
 }
 
 /**
@@ -288,6 +343,7 @@ export class ParadisProgramStatusGate {
 	private pending: IParadisProgramStatus | undefined;
 	/** Ctrl+Z で止めた Claude Code（題名）。同じ題名が前面に戻ったら、問い合わせ無しで受け付けを開き直す。 */
 	private held: { readonly identity: string; readonly until: number } | undefined;
+	private _app: 'claude-code' | 'codex' | undefined;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
@@ -295,16 +351,38 @@ export class ParadisProgramStatusGate {
 		return this.openUntil !== undefined && this.now() <= this.openUntil;
 	}
 
-	/** 問い合わせが来た。答えてよければ受け付けを開いて true。 */
+	/** 最後に受け付けを開いた相手（閉じた後も残す。閉じたときに送る clear を、どちらの状態か分けるため）。 */
+	get app(): 'claude-code' | 'codex' | undefined {
+		return this._app;
+	}
+
+	/** 問い合わせが来た。答えてよければ受け付けを Claude Code 用に開いて true。 */
 	query(foreground: ParadisProgramStatusForeground | undefined): boolean {
 		if (foreground === undefined) {
 			return false;
 		}
+		this.open('claude-code');
+		return true;
+	}
+
+	/**
+	 * 問い合わせ無しで Codex の状態が届いた。受け付けが開いていなくて、前面が Codex か ssh などなら（`foreground`）、
+	 * Codex 用に開いて true。Claude Code 用に開いている間は開き直さない（Claude Code の受け付けは clear で閉じる）。
+	 */
+	openForCodex(foreground: boolean): boolean {
+		if (!foreground || this.isOpen) {
+			return false;
+		}
+		this.open('codex');
+		return true;
+	}
+
+	private open(app: 'claude-code' | 'codex'): void {
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
 		this.pending = undefined;
 		this.held = undefined;
-		return true;
+		this._app = app;
 	}
 
 	/**
@@ -331,6 +409,7 @@ export class ParadisProgramStatusGate {
 		this.held = undefined;
 		this.openUntil = this.now() + PARADIS_PROGRAM_STATUS_WINDOW_MS;
 		this.lastKey = undefined;
+		this._app = 'claude-code';
 		return true;
 	}
 
@@ -354,6 +433,10 @@ export class ParadisProgramStatusGate {
 		const now = this.now();
 		if (this.openUntil === undefined || now > this.openUntil) {
 			this.openUntil = undefined;
+			return false;
+		}
+		// 開いた相手と違うアプリの状態は通さない（app の無い clear はどちらでも通す）
+		if (status.state !== 'clear' && (status.app ?? 'claude-code') !== this._app) {
 			return false;
 		}
 		if (status.state === 'clear') {
@@ -397,6 +480,16 @@ export class ParadisProgramStatusGate {
 	}
 }
 
+/** {@link ParadisProgramStatusTracker.receive} の結果。 */
+export interface IParadisProgramStatusReceipt {
+	/** 問い合わせ無しの Codex の状態で、受け付けを Codex 用に開いた。 */
+	readonly reopened: boolean;
+	/** 状態を受ける直前に受け付けが開いていたか（開き直した分を含む）。 */
+	readonly wasOpen: boolean;
+	/** shared process へ渡す状態。渡さないなら undefined。Codex の受け付けで届いた clear には `app: 'codex'` を付ける。 */
+	readonly send: IParadisProgramStatus | undefined;
+}
+
 /** 受け付けの変化を受けて、呼び出し側がすること。'clear' は shared process へ状態を消す知らせを送る。 */
 export type ParadisProgramStatusEffect = 'clear' | undefined;
 
@@ -425,11 +518,34 @@ export class ParadisProgramStatusTracker {
 		return true;
 	}
 
+	/** 問い合わせ無しで Codex の状態が届いた。受け付けを Codex 用に開いたら true。 */
+	codexStatus(trustedCommandLine: string | undefined, processTitle: string | undefined): boolean {
+		if (!this.gate.openForCodex(paradisCodexProgramStatusForeground(trustedCommandLine, processTitle))) {
+			return false;
+		}
+		this.openedBy = undefined;
+		return true;
+	}
+
+	/**
+	 * 状態が届いた。Codex の状態なら、受け付けを確かめる前に Codex 用に開けるかを見る（問い合わせが無いので、
+	 * 先に開かないと最初の状態を捨てる）。clear は受け付けで閉じる前に相手を読み、Codex のものなら印を付けて渡す。
+	 */
+	receive(status: IParadisProgramStatus, trustedCommandLine: string | undefined, processTitle: string | undefined): IParadisProgramStatusReceipt {
+		const reopened = status.app === 'codex' && !this.gate.isOpen && this.codexStatus(trustedCommandLine, processTitle);
+		const wasOpen = this.gate.isOpen;
+		const codexClear = status.state === 'clear' && this.gate.app === 'codex';
+		if (!this.gate.accept(status)) {
+			return { reopened, wasOpen, send: undefined };
+		}
+		return { reopened, wasOpen, send: codexClear ? { state: 'clear', app: 'codex' } : status };
+	}
+
 	/** pty の前面のプロセスの題名が変わった。 */
 	foregroundChanged(processTitle: string | undefined, hasShellIntegration: boolean): ParadisProgramStatusEffect {
 		const identity = paradisClaudeProcessIdentity(processTitle);
 		if (this.gate.isOpen) {
-			if (this.openedBy === undefined && identity !== undefined) {
+			if (this.openedBy === undefined && identity !== undefined && this.gate.app === 'claude-code') {
 				this.openedBy = identity;
 			}
 			// シェルへ戻ったのは、終わったのか Ctrl+Z で止めたのか分からない。止めた場合に備えて保留にする
