@@ -19,11 +19,11 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -34,7 +34,6 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
 import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -43,18 +42,14 @@ import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingMo
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
+import { PARADIS_ACTIVE_PAGE_SHARED, ParadisBrowserShareStateFeature } from './paradisBrowserShareState.js';
+import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 import { IParadisDialogPageMiss, ParadisDialogPageResult, paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
 import { resolveDialogPageModel, resolveToolbarPageModel } from './paradisDialogPageModelResolver.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const CATEGORY = localize2('paradis.category', "Para Code");
-
-/**
- * そのブラウザエディタのページが1つ以上のペインと共有中かどうか。エディタごとの context key
- * （ParadisBrowserShareStateFeature）なので、分割した画面でもツールバーごとに自分のページの状態が出る。
- */
-const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the page of this integrated browser editor is shared with a terminal pane."));
 
 const BROWSER_EDITOR_ACTIVE = ContextKeyExpr.equals('activeEditor', BrowserEditorInput.EDITOR_ID);
 
@@ -133,7 +128,10 @@ async function openBindingDialog(
 	));
 }
 
-/** ペインの印・コマンドパレットから開く。対象は画面に見えているタブ → ペインの共有先 → 最後に見たタブの順。 */
+/**
+ * ペインの印・コマンドパレットから開く。対象はペインの共有先（印の「〜を共有中 — クリックで管理」のとおり）→
+ * 画面に見えているタブ → 最後に見たタブの順。新しいページを足すのはブラウザのツールバーの共有ボタンの役目。
+ */
 function openPaneBindingDialog(accessor: ServicesAccessor, instanceId?: number): Promise<void> {
 	return openBindingDialog(accessor, instanceId !== undefined ? 'pane-mark' : 'palette', pageAccessor => resolveDialogPageModel(pageAccessor, instanceId), instanceId);
 }
@@ -406,34 +404,7 @@ class ParadisToolbarSharedAction extends Action2 {
 	}
 }
 
-/**
- * そのブラウザエディタのページが共有中かを、エディタごとの context key に出す。ツールバーの共有ボタンの
- * 表示（共有する／共有中）はこれで決まる。全体で 1 つの key にすると、分割した画面でアクティブな別の
- * タブの状態が、押そうとしているタブのツールバーに出てしまう。
- */
-class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
-	private readonly _shared: IContextKey<boolean>;
-
-	constructor(
-		editor: BrowserEditor,
-		@IContextKeyService contextKeyService: IContextKeyService,
-		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
-	) {
-		super(editor);
-		this._shared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
-	}
-
-	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
-		const update = () => this._shared.set(this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
-		store.add(this.bindingModel.onDidChange(update));
-		update();
-	}
-
-	override onModelDetached(): void {
-		this._shared.reset();
-	}
-}
-
+// ツールバーの共有ボタンの表示をエディタごとに出す（テストが副作用なしで読めるよう、登録はここで行う）。
 BrowserEditor.registerContribution(ParadisBrowserShareStateFeature);
 
 // --- ステータスバー + コンテキストキー + ペインインジケータのホスト ---

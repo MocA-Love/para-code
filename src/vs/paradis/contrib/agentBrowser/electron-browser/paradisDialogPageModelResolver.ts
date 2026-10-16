@@ -5,11 +5,13 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { EditorsOrder } from '../../../../workbench/common/editor.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisBrowserScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
@@ -37,12 +39,16 @@ function getBrowserInputsByRecency(editorService: IEditorService): BrowserEditor
 
 /**
  * バインディングダイアログの対象ページを解決する（ペインの印・コマンドパレットから開くとき）。
+ * 共有先のあるペインはその共有先、無ければ画面に見えているタブ、スペースのタブの順。
  * サービス参照は待機前に取得し、ServicesAccessor の呼び出し寿命を非同期処理へ持ち越さない。
  */
 export function resolveDialogPageModel(accessor: ServicesAccessor, instanceId?: number): Promise<ParadisDialogPageResult<IBrowserViewModel>> {
 	const browserViewWorkbenchService = accessor.get(IBrowserViewWorkbenchService);
 	const browserScopeService = accessor.get(IParadisBrowserScopeService);
 	const editorService = accessor.get(IEditorService);
+	const editorGroupsService = accessor.get(IEditorGroupsService);
+	// 印・コマンドを押したウィンドウ（押した時点で前面にある）。そのウィンドウのタブを先にする。
+	const openedFromWindowId = getActiveWindow().vscodeWindowId;
 	let exactPageId: string | undefined;
 	if (instanceId !== undefined) {
 		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
@@ -60,7 +66,14 @@ export function resolveDialogPageModel(accessor: ServicesAccessor, instanceId?: 
 		initializationBarrier: browserScopeService.initializationBarrier,
 		getVisibleCandidates: () => {
 			const visible = new Set(editorService.visibleEditors);
-			return getBrowserInputsByRecency(editorService).filter(input => visible.has(input)).map(toCandidate);
+			const inOpenedFromWindow = new Set(editorService.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)
+				.filter(({ groupId }) => editorGroupsService.getGroup(groupId)?.windowId === openedFromWindowId)
+				.map(({ editor }) => editor));
+			const onScreen = getBrowserInputsByRecency(editorService).filter(input => visible.has(input));
+			return [
+				...onScreen.filter(input => inOpenedFromWindow.has(input)),
+				...onScreen.filter(input => !inOpenedFromWindow.has(input)),
+			].map(toCandidate);
 		},
 		getContextualCandidates: () => {
 			// 作った順（Map の挿入順）ではなく最後に見た順。グループに無いビューはその後ろに足す。
