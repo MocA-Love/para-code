@@ -396,6 +396,11 @@ export interface IParadisBrowserScopeService {
 	readonly revision: number;
 	readonly onDidChangeStableScope: Event<IParadisBrowserStableScopeChangeEvent>;
 	resolveScope(viewId: string): ParadisBindingScope;
+	/**
+	 * そのビューが前のセッションから続いているものか（起動時に保存済みの所属があったか）。
+	 * 保存が壊れていて判断できないときは true（新しいタブ向けの既定を、復元したタブへ当てないため）。
+	 */
+	isCarriedOverView(viewId: string): boolean;
 }
 
 export interface IParadisTerminalScopeResolution {

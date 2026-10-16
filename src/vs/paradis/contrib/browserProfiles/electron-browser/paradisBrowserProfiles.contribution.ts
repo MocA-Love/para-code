@@ -21,8 +21,10 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { BrowserActionCategory } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { paradisShowCreateProfileDialog, paradisShowManageProfilesDialog } from './paradisBrowserProfileDialogs.js';
 import { IParadisBrowserProfilesService, ParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
+import { IParadisBrowserSpaceDefaultsService, ParadisBrowserSpaceDefaultsService } from './paradisBrowserSpaceDefaultsService.js';
 
 registerSingleton(IParadisBrowserProfilesService, ParadisBrowserProfilesService, InstantiationType.Delayed);
+registerSingleton(IParadisBrowserSpaceDefaultsService, ParadisBrowserSpaceDefaultsService, InstantiationType.Delayed);
 
 /**
  * コマンドパレットからプロファイルを選んで新しいタブで開く。
