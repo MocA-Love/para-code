@@ -65,7 +65,7 @@ import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
@@ -1625,7 +1625,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * ペインの Claude Code が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
+	 * ペインの Claude Code・Codex が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
 	 * paradisProgramStatus.contribution.ts）。hook が届いていないペイン（WSL・手で ssh した先など）の状態の補助に
 	 * だけ使い、hook が一度でも届いたペインでは何もしない。状態を書き換えたら true。
 	 */
@@ -1647,6 +1647,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		times.push(now);
 		this._programStatusTimes.set(token, times);
+		if (status.app === 'codex') {
+			return this._noteCodexProgramStatus(token, status.state, now);
+		}
 		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
 		// hook の実績（_agentHookTokens・_hookReportedTokens）には混ぜず、別の印で持つ
@@ -1670,6 +1673,27 @@ export class ParadisAgentBrowserService extends Disposable {
 			return false;
 		}
 		// 待ちや完了の後でない working は、新しいターンの始まり（完了の知らせを同じターンで二度出さないための印）
+		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
+			this._userTurnStarts.set(token, now);
+		}
+		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
+		return true;
+	}
+
+	/**
+	 * Codex の OSC 7501 の状態（完了も許可と質問の区別も無い）。状態の出どころにはせず（`_programStatusTokens` に
+	 * 載せない）、transcript から読んだターンの始まり・終わりもそのまま使う。transcript が一度でもターンを知らせた
+	 * ペイン（`_agentHookTokens`）では、許可待ちとその解除にだけ使う（paradisCodexProgramStatusTransition）。
+	 */
+	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, now: number): boolean {
+		const previous = this._paneStatuses.get(token);
+		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token));
+		if (next === undefined || next === previous?.status) {
+			return false;
+		}
+		if (next === 'idle') {
+			return this._paneStatuses.delete(token);
+		}
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
 			this._userTurnStarts.set(token, now);
 		}

@@ -946,6 +946,72 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.deepStrictEqual({ before, after, statuses }, { before: true, after: false, statuses: [{ token: 'late-hook', status: 'working' }] });
 	});
 
+	test('uses the Codex OSC 7501 state only as a helper: working and waiting where no transcript reports turns, and only the waiting where one does', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'osc-only' }, { token: 'transcript' }, { token: 'hooked' }]));
+		Reflect.get(fixture.service, '_hookReportedTokens').add('hooked');
+		Reflect.get(fixture.service, '_paneStatuses').set('hooked', { status: 'working', changedAt: 1 });
+		const note = (token: string, state: string) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, token, { state, app: 'codex' }); };
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		const service = fixture.service as unknown as { _settlePaneTurnEnded(token: string, at: number, cause: 'turn' | 'cli-exit'): void };
+		const steps: Record<string, string[]> = { 'osc-only': [], transcript: [] };
+		const record = async (token: 'osc-only' | 'transcript', step: string, changed: boolean) => { steps[token].push(`${step}: ${changed ? 'changed' : 'kept'} ${await status(token)}`); };
+		// What Codex 0.163.0 wrote in a PTY (2026-10-16): a working blip on start, a turn, a turn with an approval, then /exit.
+		for (const token of ['osc-only', 'transcript'] as const) {
+			await record(token, 'start blip', await note(token, 'working'));
+			await record(token, 'start blip ends', await note(token, 'idle'));
+			if (token === 'transcript') {
+				// The rollout reports the turn (what onParadisAgentTurnStarted does)
+				Reflect.get(fixture.service, '_agentHookTokens').add(token);
+				Reflect.get(fixture.service, '_paneStatuses').set(token, { status: 'working', changedAt: Date.now() });
+			}
+			await record(token, 'turn', await note(token, 'working'));
+			await record(token, 'approval', await note(token, 'blocked'));
+			await record(token, 'approved', await note(token, 'working'));
+			await record(token, 'turn ends', await note(token, 'idle'));
+			if (token === 'transcript') {
+				service._settlePaneTurnEnded(token, Date.now(), 'turn');
+				await record(token, 'rollout turn end', false);
+			}
+			await record(token, 'denied approval', (await note(token, 'blocked')) && (await note(token, 'idle')));
+			await record(token, 'exit', await note(token, 'clear'));
+		}
+		assert.deepStrictEqual({
+			steps,
+			hooked: { changed: await note('hooked', 'blocked'), status: await status('hooked') },
+			// Codex states never become the source the transcript defers to
+			readingOsc: ['osc-only', 'transcript'].filter(token => Reflect.get(fixture.service, '_programStatusTokens').has(token)),
+		}, {
+			steps: {
+				'osc-only': [
+					'start blip: changed working',
+					'start blip ends: changed idle',
+					'turn: changed working',
+					'approval: changed permission',
+					'approved: changed working',
+					'turn ends: changed idle',
+					'denied approval: changed idle',
+					'exit: kept idle',
+				],
+				transcript: [
+					'start blip: changed working',
+					'start blip ends: changed idle',
+					'turn: kept working',
+					'approval: changed permission',
+					'approved: changed working',
+					'turn ends: kept working',
+					'rollout turn end: kept review',
+					'denied approval: changed idle',
+					'exit: kept idle',
+				],
+			},
+			hooked: { changed: false, status: 'working' },
+			readingOsc: [],
+		});
+	});
+
 	test('keeps legacy status and hook-token list commands independently available', async () => {
 		const fixture = createFixture();
 		const connection = {};
