@@ -15,14 +15,15 @@ import { promises as fs } from 'fs';
 import { dirname, isAbsolute, join, relative, sep } from '../../../../base/common/path.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
-import { IParadisQuerySpec, paradisBuildQueryFunction, paradisIsLocatorError, paradisIsTransientEvaluateFailure, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 
 /** 1 回で撮れる要素の数。 */
 export const PARADIS_CAPTURE_MAX_ELEMENTS = 10;
 
 /** ツールの実行中にサービスから借りるもの。 */
 export interface IParadisBrowserCaptureCall {
-	evaluate(functionSource: string, uids: readonly string[]): Promise<unknown>;
+	/** 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。`deadlineMs` を過ぎても答えなければ失敗になる。 */
+	evaluate(functionSource: string, uids: readonly string[], deadlineMs?: number): Promise<unknown>;
 	isCurrent(): boolean;
 	/** 撮って base64 を返す。失敗は投げる（文は PARA_BROWSER_RETRYABLE などエージェントへ返せる形）。 */
 	capture(options: IParadisCdpScreenshotOptions): Promise<string>;
@@ -204,9 +205,13 @@ export class ParadisBrowserCapture {
 			return { ok: false, result: error(`${prefix}"index" must be a non-negative integer.`) };
 		}
 		const spec: IParadisQuerySpec = { ...locator.spec, mode: 'rect', ...(typeof index === 'number' ? { index } : {}) };
-		const result = await call.evaluate(paradisBuildQueryFunction(spec, locator.uids.length), locator.uids);
+		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, Date.now());
+		const result = await call.evaluate(paradisBuildQueryFunction(spec, locator.uids.length, undefined, notAfter), locator.uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED) };
+		}
+		if (paradisIsPageUnresponsive(result)) {
+			return { ok: false, result: error(`${prefix}${paradisPageUnresponsiveMessage(deadlineMs)}`) };
 		}
 		if ((result as { isError?: unknown } | undefined)?.isError === true) {
 			return { ok: false, result: paradisIsTransientEvaluateFailure(result) ? error('PARA_BROWSER_RETRYABLE: the page was navigating while the element was looked up. Retry once.') : result };

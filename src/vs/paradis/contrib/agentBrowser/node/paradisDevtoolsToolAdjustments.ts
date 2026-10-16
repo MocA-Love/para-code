@@ -86,9 +86,10 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			type: 'boolean',
 			description: 'Whether to include a page snapshot in the response once the text appears. Default is false (call take_snapshot when you need one).',
 		};
-	} else if (tool.name === 'evaluate_script' && properties.paraCodeObserve !== undefined) {
+	} else if (tool.name === 'evaluate_script' && (properties.paraCodeObserve !== undefined || properties.paraCodeDeadlineMs !== undefined)) {
 		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
 		delete properties.paraCodeObserve;
+		delete properties.paraCodeDeadlineMs;
 	} else if (tool.name === 'take_snapshot') {
 		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
 		delete properties.paraCodeRootRect;
@@ -108,9 +109,15 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 }
 
 /** 子プロセスへ渡す引数に戻す（足した引数を取り除き、wait_for の文字列を配列へ包む）。 */
-export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean; readonly evaluateObserve?: boolean }): IParadisPreparedDevtoolsCall {
+export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean; readonly evaluateObserve?: boolean; readonly evaluateDeadline?: boolean }): IParadisPreparedDevtoolsCall {
 	if (!isRecord(args)) {
 		return { args };
+	}
+	if (name === 'evaluate_script' && Object.hasOwn(args, 'paraCodeDeadlineMs') && options?.evaluateDeadline !== true) {
+		// PARA-PATCH が当たっていない vendored は知らない引数を断るので、締め切り無しの従来の評価に戻す（q.html Q379 の 4）
+		const rest = { ...args };
+		delete rest.paraCodeDeadlineMs;
+		return paradisPrepareDevtoolsToolCall(name, rest, options);
 	}
 	if (name === 'evaluate_script' && Object.hasOwn(args, 'paraCodeObserve') && options?.evaluateObserve !== true) {
 		// PARA-PATCH が当たっていない vendored では、従来の評価に戻さずに断る。従来の評価は dialogAction の既定が
@@ -242,14 +249,15 @@ export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
 
 /**
  * エージェントから来た内蔵の道具の引数から、Para Code だけが付ける内部の引数を取り除く（`evaluate_script` の
- * `paraCodeObserve`。ダイアログの処理と待ちを外した評価を、エージェントが勝手に使わないように）。
+ * `paraCodeObserve` と `paraCodeDeadlineMs`。ダイアログの処理と待ちを外した評価を、エージェントが勝手に使わないように）。
  */
 export function paradisStripInternalDevtoolsArguments(name: string, args: unknown): unknown {
-	if (name !== 'evaluate_script' || !isRecord(args) || !Object.hasOwn(args, 'paraCodeObserve')) {
+	if (name !== 'evaluate_script' || !isRecord(args) || (!Object.hasOwn(args, 'paraCodeObserve') && !Object.hasOwn(args, 'paraCodeDeadlineMs'))) {
 		return args;
 	}
 	const rest = { ...args };
 	delete rest.paraCodeObserve;
+	delete rest.paraCodeDeadlineMs;
 	return rest;
 }
 
@@ -260,6 +268,12 @@ export const PARADIS_OBSERVE_UNSUPPORTED_MESSAGE = 'PARA_BROWSER_OBSERVE_UNSUPPO
 export function paradisEvaluateObserves(tools: readonly unknown[]): boolean {
 	const tool = tools.find(candidate => isRecord(candidate) && candidate.name === 'evaluate_script');
 	return isRecord(tool) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeObserve !== undefined;
+}
+
+/** vendored の evaluate_script のスキーマが、締め切り付きの評価（`paraCodeDeadlineMs`、q.html Q379 の 4）を知っているか。 */
+export function paradisEvaluateHasDeadline(tools: readonly unknown[]): boolean {
+	const tool = tools.find(candidate => isRecord(candidate) && candidate.name === 'evaluate_script');
+	return isRecord(tool) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeDeadlineMs !== undefined;
 }
 
 /** vendored の take_snapshot のスキーマが、Para Code の測りの引数を知っているか（PARA-PATCH が当たっているか）。 */
