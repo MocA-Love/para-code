@@ -21,7 +21,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
 import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
-import { IParadisQuerySpec, paradisBuildQueryFunction, paradisIsLocatorError, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 
 /** 「探して操作する」ツールの名前。 */
@@ -30,8 +30,8 @@ export const PARADIS_BROWSER_ACT_TOOL_NAME_SET: ReadonlySet<string> = new Set(PA
 /** ツールの実行中にサービスから借りるもの。 */
 export interface IParadisBrowserActCall {
 	readonly signal?: AbortSignal;
-	/** 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。戻り値は MCP のツールの結果。 */
-	evaluate(functionSource: string, uids: readonly string[]): Promise<unknown>;
+	/** 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。`deadlineMs` を過ぎても答えなければ失敗になる。戻り値は MCP のツールの結果。 */
+	evaluate(functionSource: string, uids: readonly string[], deadlineMs?: number): Promise<unknown>;
 	/** 既存の入力の通り道で 1 つ送る。 */
 	dispatch(method: string, params: Record<string, unknown>): Promise<IParadisCdpInputDispatchResult>;
 	/** ingress lease が古ければ投げる。共有が変わっていたら false。await の後に呼ぶ。 */
@@ -139,9 +139,14 @@ export class ParadisBrowserActBy {
 
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
 	private async run(call: IParadisBrowserActCall, spec: IParadisQuerySpec, uids: readonly string[]): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult }> {
-		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length), uids);
+		// 答えないページを 180 秒待たない。遅れて動いた古い評価は値を書き込まない（q.html Q379 の 4）
+		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, Date.now());
+		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, undefined, notAfter), uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED) };
+		}
+		if (paradisIsPageUnresponsive(result)) {
+			return { ok: false, result: error(paradisPageUnresponsiveMessage(deadlineMs)) };
 		}
 		if ((result as { isError?: unknown } | undefined)?.isError === true) {
 			return { ok: false, result: paradisIsTransientEvaluateFailure(result) ? error('PARA_BROWSER_RETRYABLE: the page was navigating or reloading while the element was looked up. Retry once.') : result };
