@@ -21,21 +21,27 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	collectParadisFaviconHashes,
+	collectParadisNodeIds,
 	findParadisBookmarkByUrl,
 	findParadisNodeById,
 	findParadisParentFolderId,
+	flattenParadisBookmarks,
+	insertParadisNodeAt,
 	insertParadisNodeIntoFolder,
 	IParadisBookmark,
 	IParadisBookmarkFolder,
 	IParadisBookmarkImportStats,
 	isParadisBookmark,
 	isParadisBookmarkFolder,
+	moveParadisNodeTo,
 	moveParadisRootNode,
 	normalizeParadisBookmarkUrl,
+	ParadisBookmarkMoveError,
 	ParadisBookmarkNode,
 	ParadisFolderIconKey,
 	ParadisImportedNode,
 	removeParadisNodeFromTree,
+	renameParadisNode,
 	sanitizeParadisNodes,
 	syncParadisFaviconInTree,
 } from '../common/paradisBookmarkModel.js';
@@ -64,6 +70,8 @@ export interface IParadisFolderInput {
 	readonly title: string;
 	readonly icon?: ParadisFolderIconKey;
 	readonly color?: string;
+	/** Parent folder for a new folder; `undefined`/`null` (or a folder that does not exist) means the bar root. */
+	readonly parentFolderId?: string | null;
 }
 
 /**
@@ -101,7 +109,7 @@ export interface IParadisBookmarksService {
 	 */
 	updateBookmark(bookmarkId: string, input: IParadisBookmarkInput): IParadisBookmark | undefined;
 
-	/** Add a folder at the bar root. */
+	/** Add a folder at the end of `input.parentFolderId` (the bar root when omitted). */
 	addFolder(input: IParadisFolderInput): IParadisBookmarkFolder;
 
 	/** Update title/icon/color of a folder. */
@@ -110,8 +118,23 @@ export interface IParadisBookmarksService {
 	/** Remove a node (folders are removed with all their children). */
 	removeNode(nodeId: string): void;
 
+	/**
+	 * Put a removed node (with its original ids) back into `folderId` (the bar root when that folder is gone)
+	 * at `index`. Refuses when any id or bookmarked URL in the subtree exists again. Returns whether it was restored.
+	 */
+	restoreNode(node: ParadisBookmarkNode, folderId: string | null, index: number): boolean;
+
 	/** Root-level reorder: the active node takes the dropped-on node's position. */
 	moveNode(activeId: string, overId: string): void;
+
+	/** Rename a bookmark or a folder where it is. Returns `undefined` when the id is unknown. */
+	renameNode(nodeId: string, title: string): ParadisBookmarkNode | undefined;
+
+	/**
+	 * Move a bookmark or a folder into a folder (`null` = the bar root) at `index` (`undefined` = the end).
+	 * Returns why it refused, or `undefined` once moved.
+	 */
+	moveNodeTo(nodeId: string, folderId: string | null, index?: number): ParadisBookmarkMoveError | undefined;
 
 	/** Toggle a bookmark for the URL. Returns `true` when the bookmark now exists. */
 	toggleBookmark(input: IParadisBookmarkInput): boolean;
@@ -275,7 +298,7 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 			children: [],
 			createdAt: Date.now(),
 		};
-		this._setNodes([...this._nodes, folder]);
+		this._setNodes(this._insert(this._nodes, folder, input.parentFolderId ?? undefined));
 		return folder;
 	}
 
@@ -311,11 +334,43 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 		}
 	}
 
+	restoreNode(node: ParadisBookmarkNode, folderId: string | null, index: number): boolean {
+		const ids = collectParadisNodeIds(node);
+		const collides = (nodes: readonly ParadisBookmarkNode[]): boolean => nodes.some(existing => ids.has(existing.id) || (isParadisBookmarkFolder(existing) && collides(existing.children)));
+		// 消した後に同じ id や同じ URL が足されていたら戻さない（ブックマークは URL ごとに 1 つ）
+		if (collides(this._nodes) || flattenParadisBookmarks([node]).some(bookmark => findParadisBookmarkByUrl(this._nodes, bookmark.url))) {
+			return false;
+		}
+		const inserted = insertParadisNodeAt(this._nodes, node, folderId, index) ?? insertParadisNodeAt(this._nodes, node, null, index);
+		if (!inserted) {
+			return false;
+		}
+		this._setNodes(inserted);
+		return true;
+	}
+
 	moveNode(activeId: string, overId: string): void {
 		const next = moveParadisRootNode(this._nodes, activeId, overId);
 		if (next) {
 			this._setNodes(next);
 		}
+	}
+
+	renameNode(nodeId: string, title: string): ParadisBookmarkNode | undefined {
+		const result = renameParadisNode(this._nodes, nodeId, title);
+		if (result.renamed) {
+			this._setNodes(result.nodes);
+		}
+		return result.renamed;
+	}
+
+	moveNodeTo(nodeId: string, folderId: string | null, index?: number): ParadisBookmarkMoveError | undefined {
+		const result = moveParadisNodeTo(this._nodes, nodeId, folderId, index);
+		if (!result.ok) {
+			return result.error;
+		}
+		this._setNodes(result.nodes);
+		return undefined;
 	}
 
 	toggleBookmark(input: IParadisBookmarkInput): boolean {

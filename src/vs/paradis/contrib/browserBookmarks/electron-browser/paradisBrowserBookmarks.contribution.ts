@@ -8,7 +8,8 @@
 
 // ブックマークバー機能の登録エントリ。paradis.electron-browser.contribution.ts からの
 // import 1行で、サービス（singleton）・BrowserEditor contribution・設定スキーマ・
-// 各アクション（Cmd+D トグル / バー表示切替 / Netscape HTML import・export）が登録される。
+// 各アクション（Cmd+D トグル / バー表示切替 / Netscape HTML import・export）と、para-browser MCP の
+// ブックマークの道具の受け口が登録される。
 // 通常ウィンドウ専用（Agent Sessions ウィンドウには登録しない）。
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -46,6 +47,8 @@ import {
 	PARADIS_TOGGLE_BOOKMARK_COMMAND_ID,
 	ParadisBookmarksService,
 } from './paradisBookmarksService.js';
+// para-browser MCP のブックマークの道具（list_bookmarks・edit_bookmarks）の受け口
+import './paradisBookmarkMcpChannel.js';
 
 // BrowserEditor.registerContribution は上の paradisBookmarkBarFeature.js の
 // import（モジュール評価）時に実行される。
