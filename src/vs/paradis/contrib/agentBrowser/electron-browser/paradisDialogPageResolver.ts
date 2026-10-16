@@ -22,7 +22,7 @@ export interface IParadisDialogPageResolution<T> {
 	readonly exactPageId?: string;
 	readonly getKnownCandidate: (pageId: string) => IParadisDialogPageCandidate<T> | undefined;
 	readonly initializationBarrier: Promise<void>;
-	/** Browser pages on screen, most recently active first. */
+	/** Browser pages on screen, those in the window the dialog was opened from first, then most recently active first. */
 	readonly getVisibleCandidates: () => readonly IParadisDialogPageCandidate<T>[];
 	/** Every other browser page the user could mean, most recently active first. */
 	readonly getContextualCandidates: () => readonly IParadisDialogPageCandidate<T>[];
@@ -34,7 +34,7 @@ export type ParadisDialogPageStageMiss = 'none' | 'pending' | 'outOfScope' | 'un
 
 /** Why no page was found, stage by stage. Carries no page identity, so it can be reported as is. */
 export interface IParadisDialogPageMiss {
-	readonly exact: 'none' | 'missing';
+	readonly exact: 'none' | 'missing' | 'pending';
 	readonly visible: ParadisDialogPageStageMiss;
 	readonly contextual: ParadisDialogPageStageMiss;
 }
@@ -83,28 +83,38 @@ async function resolveFirstStable<T>(
 
 /**
  * Picks the page for a binding dialog opened without a page of its own (pane mark, command palette).
- * The page the user is looking at comes first, then the page the pane is already bound to, then the
- * most recently active page of the space. With no browser page on screen the existing binding is used
- * right away; everything else waits for BrowserView initialization.
+ * A pane that already shares a page opens that page: its mark says so ("shares A, click to manage"),
+ * and a new page is shared from the browser's toolbar instead. Otherwise the page the user is looking
+ * at comes first, then the most recently active page of the space. An existing binding whose model
+ * exists is used right away; everything else waits for BrowserView initialization.
  */
 export async function paradisResolveDialogPage<T>(resolution: IParadisDialogPageResolution<T>): Promise<ParadisDialogPageResult<T>> {
 	const exactCandidate = () => resolution.exactPageId !== undefined ? resolution.getKnownCandidate(resolution.exactPageId) : undefined;
 	const initialExact = exactCandidate();
-	if (initialExact?.page !== undefined && resolution.getVisibleCandidates().length === 0) {
+	if (initialExact?.page !== undefined) {
 		return { page: initialExact.page };
 	}
 
 	await resolution.initializationBarrier;
 
+	// The exact model may have appeared while the Main snapshot was converging. A page still being
+	// placed (a space switch) is not trusted; the next stages are.
+	let exactMiss: IParadisDialogPageMiss['exact'] = resolution.exactPageId === undefined ? 'none' : 'missing';
+	const exact = exactCandidate();
+	if (exact !== undefined) {
+		if (resolution.getStability(exact.id) === 'pending') {
+			exactMiss = 'pending';
+		} else {
+			const page = await resolveCandidate(exact);
+			if (page !== undefined && resolution.getStability(exact.id) !== 'pending') {
+				return { page };
+			}
+			exactMiss = page === undefined ? 'missing' : 'pending';
+		}
+	}
 	const visible = await resolveFirstStable(resolution.getVisibleCandidates(), resolution.getStability);
 	if (visible.page !== undefined) {
 		return { page: visible.page };
-	}
-	// The exact model may have appeared while the Main snapshot was converging.
-	const exact = exactCandidate();
-	const exactPage = exact !== undefined ? await resolveCandidate(exact) : undefined;
-	if (exactPage !== undefined) {
-		return { page: exactPage };
 	}
 	const contextual = await resolveFirstStable(resolution.getContextualCandidates(), resolution.getStability);
 	if (contextual.page !== undefined) {
@@ -112,7 +122,7 @@ export async function paradisResolveDialogPage<T>(resolution: IParadisDialogPage
 	}
 	return {
 		miss: {
-			exact: resolution.exactPageId === undefined ? 'none' : 'missing',
+			exact: exactMiss,
 			visible: visible.miss ?? 'none',
 			contextual: contextual.miss ?? 'none',
 		},

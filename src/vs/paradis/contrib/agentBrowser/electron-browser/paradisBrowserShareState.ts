@@ -1,0 +1,48 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { localize } from '../../../../nls.js';
+import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+
+/**
+ * そのブラウザエディタのページが1つ以上のペインと共有中かどうか。エディタごとの context key
+ * （ParadisBrowserShareStateFeature）なので、分割した画面でもツールバーごとに自分のページの状態が出る。
+ */
+export const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the page of this integrated browser editor is shared with a terminal pane."));
+
+/**
+ * そのブラウザエディタのページが共有中かを、エディタごとの context key に出す。ツールバーの共有ボタンの
+ * 表示（共有する／共有中）はこれで決まる。全体で 1 つの key にすると、分割した画面でアクティブな別の
+ * タブの状態が、押そうとしているタブのツールバーに出てしまう。
+ */
+export class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
+	private readonly _shared: IContextKey<boolean>;
+
+	constructor(
+		editor: BrowserEditor,
+		@IContextKeyService contextKeyService: IContextKeyService,
+		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
+	) {
+		super(editor);
+		this._shared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
+	}
+
+	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
+		const update = () => this._shared.set(this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
+		store.add(this.bindingModel.onDidChange(update));
+		update();
+	}
+
+	override onModelDetached(): void {
+		this._shared.reset();
+	}
+}
