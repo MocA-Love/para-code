@@ -2563,6 +2563,13 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。resume が来ないまま 1 分心拍が続いたら、取りこぼしとみなして数え直す。
 
+## fork の worker は共通の入口から起こす（2026-10-16、#419）
+
+npm パッケージを読む fork の worker_threads の worker（Word・Excel の詳しい解析、Office v1）は、`new Worker` ではなく `src/vs/paradis/node/paradisWorker.ts` の `createParadisWorker`（Office の worker は見張り付きの `createParadisOfficeWorker`）で起こす。asar の解決は登録したスレッドにしか効かず、配布版では 3 本とも `ERR_MODULE_NOT_FOUND 'yauzl'` で起動のたびに落ちていた（Office v1 は worker のファイル自体がパッケージに無かった）。入口の `paradisWorkerBootstrap.ts` が worker の中で解決を登録してから本体を読む。起動・読み込み・解析の失敗は Sentry の `office-workers`（`safe_worker`・`safe_stage`・`safe_kind`）へ 1 起動に 1 回ずつ届く。
+
+- **upstream 取り込みのたびに見比べる**: worker 用の解決（`paradisWorkerAsarResolution.ts`）は、ESM が `src/bootstrap-esm.ts` の `enableASARSupport`（`registerHooks`）、CommonJS の探し先が `src/bootstrap-node.ts` の `enableASARSupport`（`Module._resolveLookupPaths`）を写したもの。upstream がどちらかを変えたら、同じ変更を入れる
+- 新しい worker を足すときは、本体の入口を `build/next/index.ts` の入口一覧（REH でも使うなら `serverEntryPoints` にも）に載せ、`build/next/test/entryPoints.test.ts` にも足す。開発ビルドには `node_modules` があるので、この種の失敗はパッケージ版でしか再現しない
+
 ## Sentry で内蔵ブラウザのフォーカスと入力の失敗を調べる方法（2026-10-06）
 
 「スプレッドシートを開いていると、ほかへ移したフォーカスが 2、3 回戻ってくる」と「キー入力の準備の失敗がスプレッドシートで多い」を配布版で確かめるための計装です。判定は main の 1 か所（`agentBrowser/common/paradisBrowserFocusDiagnostics.ts`、配線は `electron-main/paradisBrowserFocusDiagnosticsMain.ts`）にあり、共有プロセスはエージェントの接続数・`Emulation.setFocusEmulationEnabled`・入力キュー・ツールの失敗を `noteExactViewDiagnostic` で main へ渡すだけです。送るのはホスト名・固定の語・回数・ミリ秒だけで、URL のパスとクエリ、ページの中身、入力した文字、会話は送りません。ホスト名のまま送るのは `KNOWN_PUBLIC_DOMAINS`（google.com・github.com など）の下のホストだけで、ほかの公開ホストは `other-public`、localhost・IP アドレス・ドットの無い名前・`.local` や `.corp` などは `localhost`・`ip-address`・`single-label`・`private-name` に畳みます（トンネルやプレビューの URL、所属先の名前を送らないため）。調べたいサイトが増えたらその一覧へ足します。ホスト名を止める設定は今はありません。
