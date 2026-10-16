@@ -304,6 +304,34 @@ suite('ParadisNotificationsService boundaries', () => {
 				});
 			});
 
+			test('keeps both changes when a rename overlaps saving a Myinstants import', async () => {
+				sinon.stub(globalThis, 'fetch').callsFake(async () => mp3Response());
+				const service = createServiceWithAssets();
+				const lost: number[] = [];
+				let renamed = 0;
+				// Start the rename after a varying number of turns so it overlaps each step of the import.
+				for (let turns = 0; turns < 120; turns++) {
+					writeFileSync(join(assetsDir, 'notification-custom.mp3'), 'old clip');
+					writeFileSync(join(assetsDir, 'notification-custom.json'), JSON.stringify({ name: 'Old', importedAt: 1 }));
+					const downloaded = await service.downloadMyinstantsAudio(MP3_URL);
+					assert.ok(downloaded.ok);
+					const imported = service.importMyinstantsAudio(downloaded.tempId, 'Fahhh');
+					for (let turn = 0; turn < turns; turn++) {
+						await new Promise<void>(resolve => setImmediate(resolve));
+					}
+					// While the import swaps the audio file there is briefly no custom audio, and the rename refuses.
+					const didRename = await service.renameCustomAudio('Renamed').then(() => true, () => false);
+					await imported;
+					if (didRename) {
+						renamed++;
+						if (readMetadata().sourceUrl !== MP3_URL) {
+							lost.push(turns);
+						}
+					}
+				}
+				assert.deepStrictEqual({ lost, renamedAtLeastOnce: renamed > 0 }, { lost: [], renamedAtLeastOnce: true });
+			});
+
 			test('still reads metadata written before the source URL field existed', async () => {
 				writeFileSync(join(assetsDir, 'notification-custom.wav'), 'legacy');
 				writeFileSync(join(assetsDir, 'notification-custom.json'), JSON.stringify({ name: 'Legacy', importedAt: 1 }));
