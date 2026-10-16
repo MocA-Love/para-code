@@ -995,6 +995,12 @@ export function launchErrorText(message: string | undefined): string {
 	if (/No Para Code window/i.test(message)) {
 		return 'Para Code のウィンドウが開いていません';
 	}
+	if (/Only remote \(SSH\) Para Code windows/i.test(message)) {
+		return 'Para Code のウィンドウが SSH の接続先のものしかありません。エージェントはこの PC で動くので、この PC のフォルダを開いた Para Code のウィンドウを開いてから、やり直してください';
+	}
+	if (/connected to a remote host/i.test(message)) {
+		return '起動先に選ばれた Para Code のウィンドウが SSH の接続先のものでした。この PC のフォルダを開いた Para Code のウィンドウを前に出してから、やり直してください';
+	}
 	return message;
 }
 

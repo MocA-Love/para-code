@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { addCodexApprovals, codexConfigCandidates, CodexConfigError, codexHomesFromSettings, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
+import { addCodexApprovals, codexConfigCandidates, CodexConfigError, codexHomesFromSettings, codexWriteRefusal, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
 
 const SERVER = '[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n';
 
@@ -28,6 +28,24 @@ describe('codex approval', () => {
 		expect(missingCodexApprovals(after)).toEqual([]);
 	});
 
+	test('reads the server name in quotes and a # inside a string the same way Para Code does', () => {
+		const before = `[mcp_servers."para-browser"] # mine\nurl = "http://127.0.0.1:1/#x"\n`;
+		const after = withCodexApprovals(before);
+		expect({ kept: after.startsWith(before), missing: missingCodexApprovals(after), again: withCodexApprovals(after) === after }).toEqual({ kept: true, missing: [], again: true });
+	});
+
+	test('replaces an approval_mode written with quoted keys instead of adding a second one, and refuses forms it cannot replace', () => {
+		const before = `[mcp_servers."para-browser"]\nurl = "http://x"\n[mcp_servers."para-browser".tools."board_ask_human"]\n"approval_mode" = "prompt"\n[mcp_servers.'para-browser'.tools.board_complete_step]\n'approval_mode' = 'approve'\n`;
+		const after = withCodexApprovals(before);
+		const refused = (text: string) => withCodexApprovals.bind(undefined, text);
+		expect({
+			modes: after.split('\n').filter(l => l.includes('approval_mode')),
+			missing: missingCodexApprovals(after),
+		}).toEqual({ modes: ['approval_mode = "approve"', `'approval_mode' = 'approve'`], missing: [] });
+		expect(refused(`${SERVER}[mcp_servers.para-browser.tools.board_ask_human]\napproval_mode.x = "prompt"\n`)).toThrow(CodexConfigError);
+		expect(refused(`${SERVER}[mcp_servers.para-browser.tools.board_ask_human]\napproval_mode = \"\"\"\nprompt\n\"\"\"\n`)).toThrow(CodexConfigError);
+	});
+
 	test('ignores header-like lines inside multi-line strings', () => {
 		const before = `developer_instructions = """\n[mcp_servers.para-browser]\nnot a table\n"""\n${SERVER}`;
 		const after = withCodexApprovals(before);
@@ -47,15 +65,17 @@ describe('codex approval', () => {
 		expect({
 			empty: refused(''),
 			quoted: refused('[mcp_servers."para-browser"]\nurl = "x"\n'),
+			broken: refused('[mcp_servers."para-browser]\nurl = "x"\n'),
 			dotted: refused(`${SERVER}tools.board_ask_human.approval_mode = "approve"\n`),
 			inline: refused(`${SERVER}tools = { board_ask_human = { approval_mode = "approve" } }\n`),
 			twice: refused(`${SERVER}${SERVER}`),
 			topLevelDotted: refused('mcp_servers.para-browser.url = "x"\n'),
 			toolsTable: refused(`${SERVER}[mcp_servers.para-browser.tools]\nboard_ask_human = { approval_mode = "prompt" }\n`),
 			fine: refused(SERVER),
-		}).toEqual({ empty: true, quoted: true, dotted: true, inline: true, twice: true, topLevelDotted: true, toolsTable: true, fine: false });
-		// 読めない書き方でも帯は出し続ける（押すと理由を出す）
-		expect(missingCodexApprovals('[mcp_servers."para-browser"]\n')).toEqual(['board_complete_step', 'board_ask_human']);
+		}).toEqual({ empty: true, quoted: false, broken: true, dotted: true, inline: true, twice: true, topLevelDotted: true, toolsTable: true, fine: false });
+		// 読めない書き方でも帯は出し続け、手で足す設定として理由を出す
+		expect(missingCodexApprovals('[mcp_servers."para-browser]\n')).toEqual(['board_complete_step', 'board_ask_human']);
+		expect({ broken: codexWriteRefusal('[mcp_servers."para-browser]\n')?.includes('見出し'), fine: codexWriteRefusal(SERVER) }).toEqual({ broken: true, fine: undefined });
 	});
 
 	test('writes a regular file with a backup, and refuses a symbolic link', async () => {
