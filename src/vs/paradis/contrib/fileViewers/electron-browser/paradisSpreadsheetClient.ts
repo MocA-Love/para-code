@@ -66,6 +66,14 @@ function withDrawings(sheet: IParadisSheetData, drawings: readonly IParadisDrawi
 		: rest;
 }
 
+/**
+ * shared process に、ブックの解析の worker を起動して温めておいてもらう（Excel のエディタを開いた・戻したとき）。
+ * 待たない。温められない（古い shared process など）ときも何もしない。
+ */
+export function warmSpreadsheetParser(sharedProcessService: ISharedProcessService): void {
+	sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call('warmParser').catch(() => undefined);
+}
+
 /** まだ描いていない EMF・WMF が残っているか（`convertSpreadsheetMetafiles` を頼む意味があるか）。 */
 export function hasPendingSpreadsheetMetafiles(workbook: IParadisWorkbookData): boolean {
 	return !!workbook.drawingsBySheet;

@@ -16,7 +16,6 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { localize } from '../../../../nls.js';
 import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import type { IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import type { ParadisSpreadsheetParseWorkerResult } from './spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
@@ -75,9 +74,6 @@ async function createParadisSpreadsheetParseWorkerBackend(): Promise<(IParadisSp
 	return factory ? new ParadisSpreadsheetParseWorkerBackend(factory) : undefined;
 }
 
-/** shared process が起動してから解析の worker を温めるまで。起動直後の混み合う時間を避ける。 */
-const PARSE_WARM_DELAY_MS = 15_000;
-
 /** 暗号化されたブック（CFB の入れ物）か。断る文言の翻訳は本体にしか無いので、worker へ送らず本体で解析する。 */
 function isCompoundFile(bytes: Uint8Array): boolean {
 	return bytes.length >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
@@ -89,7 +85,6 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	private diagnosticsPromise: Promise<IParadisSpreadsheetDiagnosticsBackend & Partial<IDisposable>> | undefined;
 	private metafilePromise: Promise<IParadisSpreadsheetMetafileBackend & Partial<IDisposable>> | undefined;
 	private parsePromise: Promise<(IParadisSpreadsheetParseBackend & Partial<IDisposable>) | undefined> | undefined;
-	private warmTimer: ReturnType<typeof setTimeout> | undefined;
 	private disposed = false;
 
 	constructor(
@@ -105,25 +100,9 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 
 	dispose(): void {
 		this.disposed = true;
-		if (this.warmTimer !== undefined) {
-			clearTimeout(this.warmTimer);
-			this.warmTimer = undefined;
-		}
 		void this.diagnosticsPromise?.then(backend => backend.dispose?.(), () => undefined);
 		void this.metafilePromise?.then(backend => backend.dispose?.(), () => undefined);
 		void this.parsePromise?.then(backend => backend?.dispose?.(), () => undefined);
-	}
-
-	/** `delayMs` たったら解析の worker を起動し、exceljs と jszip を読み込ませておく。 */
-	warmLater(delayMs: number): void {
-		if (this.disposed || this.warmTimer !== undefined) {
-			return;
-		}
-		this.warmTimer = setTimeout(async () => {
-			this.warmTimer = undefined;
-			const backend = await this.getParseBackend();
-			await backend?.warm(CancellationToken.None);
-		}, delayMs);
 	}
 
 	listen<T>(_ctx: string, event: string): Event<T> {
@@ -138,9 +117,16 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 			case 'collectSemanticDiagnostics': return this.collectSemanticDiagnostics(args[0], cancellationToken) as Promise<T>;
 			// 表示を返した後で、同じバイト列の EMF・WMF を worker で SVG にする。
 			case 'convertMetafiles': return this.convertMetafiles(args[0], cancellationToken) as Promise<T>;
+			// Excel のエディタを開いた・戻したときに呼ばれる。解析の worker を起動し、exceljs と jszip を読み込ませておく。
+			// 待たずに返す（温め終わるのを誰も待たない）。
+			case 'warmParser': this.warmParser(); return Promise.resolve(undefined as T);
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
+	}
+
+	private warmParser(): void {
+		void this.getParseBackend().then(backend => backend?.warm(CancellationToken.None));
 	}
 
 	/**
@@ -161,10 +147,8 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 					if (result.reason === 'cancelled') {
 						throw new CancellationError();
 					}
-					if (result.reason === 'limitExceeded') {
-						// 締め切り（2 分）を過ぎた、またはヒープの上限に達した。本体で解析し直すと本体ごと止まる・落ちる。
-						throw new Error(localize('paradis.spreadsheet.workbookTooLarge', "このブックは大きすぎるため開けませんでした。"));
-					}
+					// `failed`・`busy`・`limitExceeded`（締め切り・worker のヒープの上限）は、今までどおり本体で解析する。
+					// worker を入れる前は本体の解析に締め切りも上限も無く、開けていたブックを断らないため。
 					break;
 			}
 		}
@@ -238,7 +222,6 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
  */
 export function registerParadisSpreadsheet(server: IPCServer<string>): IDisposable {
 	const channel = new ParadisSpreadsheetChannel(undefined, undefined, undefined, createParadisSpreadsheetParseWorkerBackend);
-	channel.warmLater(PARSE_WARM_DELAY_MS);
 	server.registerChannel(PARADIS_SPREADSHEET_CHANNEL, channel);
 	return toDisposable(() => channel.dispose());
 }
