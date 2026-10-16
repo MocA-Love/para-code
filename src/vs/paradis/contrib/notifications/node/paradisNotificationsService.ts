@@ -582,6 +582,9 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 	/**
 	 * 着信音のジョブの前置き。鳴らせない（音量 0・ファイルが無い）なら undefined。aivis-mcp が前置きとして受け付けない
 	 * 大きさ（10MiB 超）なら 'direct'（Para Code が鳴らす）。
+	 *
+	 * ファイルの確認まで同期で行う。声の受け渡し（handOff）は `pendingRingtone` を読み、同じターンで消すか worker へ
+	 * 預ける。ここで await すると、その間に `startRingtone` / `onDropped` が同じ着信音をもう一度鳴らしうる。
 	 */
 	private _ringtonePrelude(ringtone: { readonly id: string; readonly volume: number }): IParadisIngestOpenOptions['prelude'] | 'direct' {
 		if (!(ringtone.volume > 0)) {
@@ -592,6 +595,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 			return undefined;
 		}
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- The ringtone handoff in the voice runner reads and clears pendingRingtone in the same turn; awaiting here would let startRingtone or onDropped play it a second time.
 			if (statSync(path).size > PARADIS_AIVIS_PRELUDE_MAX_BYTES) {
 				return 'direct';
 			}
@@ -898,7 +902,10 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		await this._playSoundFile(path, volume);
 	}
 
-	/** ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。 */
+	/**
+	 * ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。
+	 * {@link _ringtonePrelude} から同じターンで呼ばれるので同期のまま（理由はそちら）。
+	 */
 	private _resolveRingtonePath(ringtoneId: string): string | null {
 		if (this.testing.resolveRingtonePath) {
 			return this.testing.resolveRingtonePath(ringtoneId);
@@ -913,6 +920,7 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 				return null;
 			}
 			const path = FileAccess.asFileUri(`vs/paradis/contrib/notifications/browser/media/sounds/${filename}`).fsPath;
+			// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 			return existsSync(path) ? path : null;
 		}
 		return null;
@@ -926,14 +934,18 @@ export class ParadisNotificationsService extends Disposable implements IParadisL
 		}
 	}
 
+	/** 名前が `stem.` で始まる音源のうち最も新しいもの。{@link _resolveRingtonePath} 経由で着信音の前置きにも使うので同期のまま。 */
 	private _findFileByStem(stem: string, extensions: ReadonlySet<string>): string | null {
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		if (!existsSync(this._assetsDir)) {
 			return null;
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		const candidates = readdirSync(this._assetsDir).filter(file => file.startsWith(`${stem}.`) && extensions.has(extname(file).toLowerCase()));
 		if (candidates.length === 0) {
 			return null;
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Also resolves the custom ringtone for _ringtonePrelude, which must answer in the same turn (see there).
 		candidates.sort((a, b) => statSync(join(this._assetsDir, b)).mtimeMs - statSync(join(this._assetsDir, a)).mtimeMs);
 		return candidates[0] ?? null;
 	}
