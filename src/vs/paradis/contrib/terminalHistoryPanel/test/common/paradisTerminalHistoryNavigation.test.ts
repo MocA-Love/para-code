@@ -9,10 +9,12 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PromptInputState } from '../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
-import { IParadisHistoryNavigationState, PARADIS_INITIAL_NAVIGATION_STATE, ParadisTerminalInputKind, paradisCanOpenHistoryPanel, paradisClassifyTerminalInput, paradisNextNavigationState, paradisPromptTextWithoutGhost } from '../../common/paradisTerminalHistoryNavigation.js';
+import { IParadisHistoryNavigationState, PARADIS_EXTERNAL_PROMPT_CHANGE_MS, PARADIS_INITIAL_NAVIGATION_STATE, ParadisHistoryNavigationTracker, ParadisTerminalInputKind, paradisCanOpenHistoryPanel, paradisClassifyTerminalInput, paradisNextNavigationState, paradisPromptTextWithoutGhost } from '../../common/paradisTerminalHistoryNavigation.js';
 
 const UP = '\x1b[A';
 const DOWN = '\x1b[B';
+const LEFT = '\x1b[D';
+const RIGHT = '\x1b[C';
 
 /** 入力 1 回と、その後にシェルが出した入力行（ゴースト文字は `[...]` で囲む）。 */
 interface Step {
@@ -21,13 +23,18 @@ interface Step {
 	readonly prompt: string;
 }
 
-function toModel(prompt: string): { state: PromptInputState; value: string; ghostTextIndex: number } {
-	const ghostStart = prompt.indexOf('[');
-	if (ghostStart === -1) {
-		return { state: PromptInputState.Input, value: prompt, ghostTextIndex: -1 };
+/** 入力行。ゴースト文字は `[...]` で囲み、カーソルは `|` で示す（無ければ打った文字の末尾）。 */
+function toModel(prompt: string): { state: PromptInputState; value: string; ghostTextIndex: number; cursorIndex: number } {
+	let cursorIndex = prompt.indexOf('|');
+	let text = cursorIndex === -1 ? prompt : prompt.substring(0, cursorIndex) + prompt.substring(cursorIndex + 1);
+	const ghostStart = text.indexOf('[');
+	if (ghostStart !== -1) {
+		text = text.substring(0, ghostStart) + text.substring(ghostStart + 1).replace(/\]$/, '');
 	}
-	const value = prompt.substring(0, ghostStart) + prompt.substring(ghostStart + 1).replace(/\]$/, '');
-	return { state: PromptInputState.Input, value, ghostTextIndex: ghostStart };
+	if (cursorIndex === -1) {
+		cursorIndex = ghostStart === -1 ? text.length : ghostStart;
+	}
+	return { state: PromptInputState.Input, value: text, ghostTextIndex: ghostStart, cursorIndex };
 }
 
 /**
@@ -42,10 +49,9 @@ function play(initialPrompt: string, steps: readonly Step[], composing = false):
 		if (step.reset) {
 			state = paradisNextNavigationState(state, { kind: 'reset' });
 		} else {
-			state = paradisNextNavigationState(state, { kind: 'input', input: paradisClassifyTerminalInput(step.data ?? ''), promptText: paradisPromptTextWithoutGhost(toModel(prompt)) });
+			state = paradisNextNavigationState(state, { kind: 'input', data: step.data ?? '', promptText: paradisPromptTextWithoutGhost(toModel(prompt)) });
 		}
 		prompt = step.prompt;
-		state = paradisNextNavigationState(state, { kind: 'prompt', promptText: paradisPromptTextWithoutGhost(toModel(prompt)) });
 		result.push(paradisCanOpenHistoryPanel(state, toModel(prompt), undefined, composing));
 	}
 	return result;
@@ -80,8 +86,27 @@ suite('ParadisTerminalHistoryNavigation', () => {
 			backspace: '\x7f',
 			ctrlU: '\x15',
 			ctrlW: '\x17',
-			left: '\x1b[D',
-			right: '\x1b[C',
+			left: LEFT,
+			right: RIGHT,
+			leftApplicationMode: '\x1bOD',
+			leftRepeated: LEFT + LEFT,
+			home: '\x1b[H',
+			end: '\x1b[F',
+			homeVt: '\x1b[1~',
+			endVt: '\x1b[4~',
+			ctrlA: '\x01',
+			ctrlE: '\x05',
+			ctrlB: '\x02',
+			ctrlF: '\x06',
+			altB: '\x1bb',
+			altF: '\x1bf',
+			ctrlLeft: '\x1b[1;5D',
+			altRight: '\x1b[1;3C',
+			ctrlR: '\x12',
+			ctrlS: '\x13',
+			ctrlG: '\x07',
+			escape: '\x1b',
+			deleteKey: '\x1b[3~',
 			tab: '\t',
 			bracketedPaste: '\x1b[200~git log --oneline\x1b[201~',
 			plainPaste: 'git log --oneline',
@@ -111,8 +136,27 @@ suite('ParadisTerminalHistoryNavigation', () => {
 			backspace: ParadisTerminalInputKind.Edit,
 			ctrlU: ParadisTerminalInputKind.Edit,
 			ctrlW: ParadisTerminalInputKind.Edit,
-			left: ParadisTerminalInputKind.Edit,
-			right: ParadisTerminalInputKind.Edit,
+			left: ParadisTerminalInputKind.Cursor,
+			right: ParadisTerminalInputKind.Cursor,
+			leftApplicationMode: ParadisTerminalInputKind.Cursor,
+			leftRepeated: ParadisTerminalInputKind.Cursor,
+			home: ParadisTerminalInputKind.Cursor,
+			end: ParadisTerminalInputKind.Cursor,
+			homeVt: ParadisTerminalInputKind.Cursor,
+			endVt: ParadisTerminalInputKind.Cursor,
+			ctrlA: ParadisTerminalInputKind.Cursor,
+			ctrlE: ParadisTerminalInputKind.Cursor,
+			ctrlB: ParadisTerminalInputKind.Cursor,
+			ctrlF: ParadisTerminalInputKind.Cursor,
+			altB: ParadisTerminalInputKind.Cursor,
+			altF: ParadisTerminalInputKind.Cursor,
+			ctrlLeft: ParadisTerminalInputKind.Cursor,
+			altRight: ParadisTerminalInputKind.Cursor,
+			ctrlR: ParadisTerminalInputKind.Search,
+			ctrlS: ParadisTerminalInputKind.Search,
+			ctrlG: ParadisTerminalInputKind.Submit,
+			escape: ParadisTerminalInputKind.Escape,
+			deleteKey: ParadisTerminalInputKind.Edit,
 			tab: ParadisTerminalInputKind.Edit,
 			bracketedPaste: ParadisTerminalInputKind.Edit,
 			plainPaste: ParadisTerminalInputKind.Edit,
@@ -229,11 +273,11 @@ suite('ParadisTerminalHistoryNavigation', () => {
 	});
 
 	test('stays closed while a foreground command owns the input', () => {
-		const state = paradisNextNavigationState(PARADIS_INITIAL_NAVIGATION_STATE, { kind: 'input', input: ParadisTerminalInputKind.Edit, promptText: '' });
+		const state = paradisNextNavigationState(PARADIS_INITIAL_NAVIGATION_STATE, { kind: 'input', data: 'm', promptText: 'vi' });
 		assert.deepStrictEqual([
-			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Input, value: 'vim', ghostTextIndex: -1 }, 'vim', false),
-			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Execute, value: 'vim', ghostTextIndex: -1 }, undefined, false),
-			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Input, value: 'vim', ghostTextIndex: -1 }, undefined, false),
+			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Input, value: 'vim', ghostTextIndex: -1, cursorIndex: 3 }, 'vim', false),
+			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Execute, value: 'vim', ghostTextIndex: -1, cursorIndex: 3 }, undefined, false),
+			paradisCanOpenHistoryPanel(state, { state: PromptInputState.Input, value: 'vim', ghostTextIndex: -1, cursorIndex: 3 }, undefined, false),
 		], [false, false, true]);
 	});
 
@@ -247,5 +291,154 @@ suite('ParadisTerminalHistoryNavigation', () => {
 			{ data: UP, prompt: 'make' },
 			{ data: DOWN, prompt: 'ls' },
 		]), [true, true, false, false, false, true]);
+	});
+	test('keeps passing Down to the shell after moving the cursor on a recalled line (↑ ← → ↓)', () => {
+		assert.deepStrictEqual(play('', [
+			{ data: UP, prompt: 'git push origin main' },
+			{ data: LEFT, prompt: 'git push origin mai|n' },
+			{ data: RIGHT, prompt: 'git push origin main' },
+			{ data: '\x01', prompt: '|git push origin main' },
+			{ data: '\x05', prompt: 'git push origin main' },
+			{ data: '\x1b[H', prompt: '|git push origin main' },
+			{ data: '\x1b[F', prompt: 'git push origin main' },
+			{ data: '\x1bb', prompt: 'git push origin |main' },
+			{ data: '\x1bf', prompt: 'git push origin main' },
+			{ data: DOWN, prompt: '' },
+		]), [false, false, false, false, false, false, false, false, false, false]);
+	});
+
+	test('moving the cursor on a typed line keeps the line openable', () => {
+		assert.deepStrictEqual(play('', [
+			...typed('git'),
+			{ data: LEFT, prompt: 'gi|t' },
+			{ data: RIGHT, prompt: 'git' },
+		]), [true, true, true, true, true]);
+	});
+
+	test('does not take the end of a walk from an empty line, and only from the line shown when Down is pressed', () => {
+		// 空から遡って戻ったときは、打った文字が無いので開かない（打てば Edit で終わる）。
+		// 打った行から遡ったときは、↓ を押した時点の入力行が遡る前の行と同じときだけ開く。途中で届いた
+		// 描き直し（共通の頭だけ）で終わったことにはしない。
+		let state = paradisNextNavigationState(PARADIS_INITIAL_NAVIGATION_STATE, { kind: 'input', data: UP, promptText: '' });
+		state = paradisNextNavigationState(state, { kind: 'input', data: DOWN, promptText: 'ls' });
+		const fromEmpty = paradisCanOpenHistoryPanel(state, toModel('l'), undefined, false);
+		let typedState = paradisNextNavigationState(PARADIS_INITIAL_NAVIGATION_STATE, { kind: 'input', data: UP, promptText: 'git' });
+		typedState = paradisNextNavigationState(typedState, { kind: 'input', data: UP, promptText: 'git status' });
+		typedState = paradisNextNavigationState(typedState, { kind: 'input', data: DOWN, promptText: 'git stash pop' });
+		assert.deepStrictEqual({
+			fromEmpty,
+			partialRedraw: paradisCanOpenHistoryPanel(typedState, toModel('git'), undefined, false) && paradisCanOpenHistoryPanel(typedState, toModel('git status'), undefined, false),
+			settledOnNewerEntry: paradisCanOpenHistoryPanel(typedState, toModel('git status'), undefined, false),
+			settledOnTypedLine: paradisCanOpenHistoryPanel(typedState, toModel('git'), undefined, false),
+		}, {
+			fromEmpty: false,
+			partialRedraw: false,
+			settledOnNewerEntry: false,
+			settledOnTypedLine: true,
+		});
+	});
+
+	test('passes Down to the shell when the cursor is not on the last line of a multi-line command', () => {
+		assert.deepStrictEqual([
+			paradisCanOpenHistoryPanel(PARADIS_INITIAL_NAVIGATION_STATE, toModel('for f in *\ndo echo $f'), undefined, false),
+			paradisCanOpenHistoryPanel(PARADIS_INITIAL_NAVIGATION_STATE, toModel('for f in *|\ndo echo $f'), undefined, false),
+		], [true, false]);
+	});
+
+	test('treats a reverse search as a walk until the user edits the found line', () => {
+		assert.deepStrictEqual(play('', [
+			...typed('d'),
+			{ data: '\x12', prompt: 'docker compose up' },
+			{ data: 'o', prompt: 'docker compose up' },
+			{ data: 'c', prompt: 'docker compose up' },
+			{ data: RIGHT, prompt: 'docker compose up' },
+			{ data: DOWN, prompt: 'docker compose up' },
+			{ data: ' -d', prompt: 'docker compose up -d' },
+		]), [true, false, false, false, false, false, true]);
+		assert.deepStrictEqual(play('', [
+			...typed('d'),
+			{ data: '\x12', prompt: 'docker compose up' },
+			{ data: '\x07', prompt: 'd' },
+		]), [true, false, true]);
+	});
+
+	test('treats k and j after Esc as the vi history keys', () => {
+		assert.deepStrictEqual(play('', [
+			...typed('ls'),
+			{ data: '\x1b', prompt: 'ls' },
+			{ data: 'k', prompt: 'make test' },
+			{ data: 'j', prompt: 'ls' },
+			{ data: 'A', prompt: 'ls' },
+			{ data: ' -la', prompt: 'ls -la' },
+		]), [true, true, false, false, false, false, true]);
+	});
+});
+
+suite('ParadisHistoryNavigationTracker', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/** 入力・遅れて届く入力行・↓ を押した時点の判定を、届いた順に並べる。 */
+	type Event =
+		| { readonly kind: 'input'; readonly data: string; readonly at: number }
+		| { readonly kind: 'prompt'; readonly text: string; readonly at: number }
+		| { readonly kind: 'reset' }
+		| { readonly kind: 'check' };
+
+	function run(events: readonly Event[]): boolean[] {
+		const tracker = new ParadisHistoryNavigationTracker();
+		let prompt = '';
+		const result: boolean[] = [];
+		for (const event of events) {
+			if (event.kind === 'input') {
+				tracker.input(event.data, paradisPromptTextWithoutGhost(toModel(prompt)), event.at);
+			} else if (event.kind === 'prompt') {
+				prompt = event.text;
+				tracker.prompt(paradisPromptTextWithoutGhost(toModel(prompt)), event.at);
+			} else if (event.kind === 'reset') {
+				prompt = '';
+				tracker.reset();
+			} else {
+				result.push(tracker.canOpen(toModel(prompt), undefined, false));
+			}
+		}
+		return result;
+	}
+
+	test('decides from the line on screen when Down is pressed, not from a piece of a redraw', () => {
+		assert.deepStrictEqual(run([
+			{ kind: 'input', data: 'g', at: 0 }, { kind: 'prompt', text: 'g', at: 10 },
+			{ kind: 'input', data: 'i', at: 20 }, { kind: 'prompt', text: 'gi', at: 30 },
+			{ kind: 'input', data: 't', at: 40 }, { kind: 'prompt', text: 'git', at: 50 },
+			{ kind: 'check' },
+			{ kind: 'input', data: UP, at: 100 }, { kind: 'prompt', text: 'git status', at: 300 },
+			{ kind: 'check' },
+			{ kind: 'input', data: UP, at: 400 }, { kind: 'prompt', text: 'git log', at: 600 },
+			{ kind: 'input', data: DOWN, at: 700 }, { kind: 'prompt', text: 'git', at: 750 },
+			{ kind: 'check' },
+			{ kind: 'prompt', text: 'git status', at: 800 },
+			{ kind: 'check' },
+		]), [true, false, true, false]);
+	});
+
+	test('treats a line changed without user input as a possible walk until the user types', () => {
+		assert.deepStrictEqual(run([
+			{ kind: 'reset' },
+			{ kind: 'prompt', text: 'npm run build', at: 10_000 },
+			{ kind: 'check' },
+			{ kind: 'input', data: DOWN, at: 11_000 },
+			{ kind: 'check' },
+			{ kind: 'input', data: ' ', at: 12_000 }, { kind: 'prompt', text: 'npm run build ', at: 12_100 },
+			{ kind: 'check' },
+			{ kind: 'prompt', text: 'npm run build -- --watch', at: 12_100 + PARADIS_EXTERNAL_PROMPT_CHANGE_MS + 1 },
+			{ kind: 'check' },
+		]), [false, false, true, false]);
+	});
+
+	test('keeps a slow echo of typed text as typing', () => {
+		assert.deepStrictEqual(run([
+			{ kind: 'input', data: 'l', at: 0 }, { kind: 'prompt', text: 'l', at: PARADIS_EXTERNAL_PROMPT_CHANGE_MS },
+			{ kind: 'input', data: 's', at: PARADIS_EXTERNAL_PROMPT_CHANGE_MS + 10 }, { kind: 'prompt', text: 'ls', at: PARADIS_EXTERNAL_PROMPT_CHANGE_MS * 2 },
+			{ kind: 'check' },
+		]), [true]);
 	});
 });

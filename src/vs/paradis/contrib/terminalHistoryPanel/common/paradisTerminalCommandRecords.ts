@@ -7,8 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Para Code で実行したコマンドの記録（Q372）。履歴の一覧に時刻・場所・終了コード・回数を出すため、
-// シェル統合（OSC 633）が知らせたコマンドの終わりを、スペースの履歴フォルダの隣
-// （`<履歴フォルダ>/commands.jsonl`）に 1 行 1 件の JSON で書く。シェルの履歴ファイルには
+// シェル統合（OSC 633）が知らせたコマンドの終わりを、スペースの履歴フォルダの中
+// （`<履歴フォルダ>/commands.jsonl`）に 1 行 1 件の JSON で書く。シェルの HISTIGNORE・zshaddhistory・
+// HISTORY_IGNORE や履歴を切った設定は見ないので、シェルの履歴に残らないコマンドも記録に残る
+// （空白で始まるものだけは残さない）。シェルの履歴ファイルには
 // 時刻しか無い（zsh の EXTENDED_HISTORY のときだけ）ので、別に持つ。ここはその形と上限の純関数。
 
 /** 記録 1 件。 */
@@ -99,4 +101,13 @@ export function paradisParseCommandRecords(content: string): IParadisCommandReco
 export function paradisAppendCommandRecords(existing: readonly IParadisCommandRecord[], added: readonly IParadisCommandRecord[]): readonly IParadisCommandRecord[] {
 	const all = existing.concat(added);
 	return all.length > PARADIS_COMMAND_RECORDS_COMPACT_AT ? all.slice(all.length - PARADIS_COMMAND_RECORDS_MAX) : all;
+}
+
+/**
+ * 足した記録をどう書くか。ふだんは追記（別のウィンドウが同じファイルへ書いた分を消さない、接続先へ全体を
+ * 送り直さない）。件数が {@link PARADIS_COMMAND_RECORDS_COMPACT_AT} を超えるときと、追記できないときだけ
+ * 読み直して書き直す。
+ */
+export function paradisPlanCommandRecordsWrite(lineCount: number, addedCount: number, canAppend: boolean): 'append' | 'rewrite' {
+	return canAppend && lineCount + addedCount <= PARADIS_COMMAND_RECORDS_COMPACT_AT ? 'append' : 'rewrite';
 }

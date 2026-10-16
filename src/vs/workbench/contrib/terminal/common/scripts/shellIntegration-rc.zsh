@@ -83,6 +83,8 @@ fi
 # (0700), and do not pass it on.
 if [[ -n "${PARA_CODE_SPACE_HISTORY_DIR:-}" ]] && ( umask 077 && command mkdir -p -- "$PARA_CODE_SPACE_HISTORY_DIR" ) 2>/dev/null; then
 	command chmod 700 "$PARA_CODE_SPACE_HISTORY_DIR" 2>/dev/null
+	# PARA-PATCH: Para Code records the commands run here (time, cwd, exit code) in commands.jsonl next to the history; create it private (0600).
+	( umask 077 && : >>| "$PARA_CODE_SPACE_HISTORY_DIR/commands.jsonl" ) 2>/dev/null
 	HISTFILE="$PARA_CODE_SPACE_HISTORY_DIR/zsh_history"
 fi
 builtin unset PARA_CODE_SPACE_HISTORY_DIR PARA_CODE_SPACE_HISTORY_ID

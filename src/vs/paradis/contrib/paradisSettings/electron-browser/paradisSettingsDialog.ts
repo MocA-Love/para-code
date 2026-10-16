@@ -1096,7 +1096,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.historyPanel', "文字を打った後の ↓ で履歴の一覧を出す"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.historyPanelDesc', "打った文字で始まる履歴が、時刻・場所・終了コードと一緒に並びます。何も打っていないときと、↑ で履歴を遡っている間の ↑↓ はシェルの履歴のままです。"),
+		description: localize('paradis.settings.historyPanelDesc', "打った文字で始まる履歴が、時刻・場所・終了コードと一緒に並びます。何も打っていないときと、↑ で履歴を遡っている間の ↑↓ はシェルの履歴のままです。時刻などのために Para Code が実行したコマンドを記録します。シェルの履歴に残さない設定（HISTIGNORE など）のコマンドも記録に残るので、残したくないコマンドは先頭に空白を入れて実行してください。"),
 		keywords: 'terminal shell history panel down arrow recent command search',
 	},
 	{

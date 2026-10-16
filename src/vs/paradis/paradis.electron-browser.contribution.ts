@@ -15,6 +15,8 @@ import './contrib/sentry/electron-browser/paradisSentryRenderer.js';
 import './contrib/sentry/electron-browser/paradisUnhandledErrorReporter.contribution.js';
 // main プロセスの混雑の計測チャネルを、スペースの切り替えの計測へつなぐ（M1〜M4）
 import './contrib/mainLoad/electron-browser/paradisMainLoadProbe.contribution.js';
+// ターミナルの履歴の一覧（Q372）の、スペースに属さないターミナルの記録を本人だけが読めるファイルに置く
+import './contrib/terminalHistoryPanel/electron-browser/paradisTerminalCommandRecordsFile.contribution.js';
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
 import './contrib/windowTransparency/electron-browser/paradisFrostedGlassTint.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
