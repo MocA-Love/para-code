@@ -421,6 +421,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._input = previousInput;
 			this._options = previousOptions;
 			this._documentUrl = previousDocumentUrl;
+			// 取り消された入力の計測は捨てる（残すと、前の文書の次の描画がこの時刻からの時間として送られる）。
+			this._openTiming.clear();
 			return;
 		}
 
