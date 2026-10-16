@@ -11,7 +11,7 @@
 import assert from 'assert';
 import { EventEmitter } from 'events';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { isParadisSentryScrubbedWord, type ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisOfficeWorkerFailureKind, resetParadisOfficeWorkerFailureReportsForTest, watchParadisOfficeWorker, type IParadisWatchedOfficeWorker, type ParadisOfficeWorkerName } from '../../node/office/paradisOfficeWorkerDiagnostics.js';
 
 class FakeWorker extends EventEmitter implements IParadisWatchedOfficeWorker {
@@ -75,6 +75,21 @@ suite('Paradis Office worker diagnostics', () => {
 			{ safeExtra: { safe_worker: 'spreadsheet-semantic', safe_stage: 'analysis', safe_kind: 'TypeError' }, severity: 'error' },
 			{ safeExtra: { safe_worker: 'word-semantic', safe_stage: 'run', safe_kind: 'out-of-memory' }, severity: 'warning' },
 		]);
+	});
+
+	test('sends no key or fixed word that Sentry scrubs', () => {
+		const workers: ParadisOfficeWorkerName[] = ['word-semantic', 'spreadsheet-semantic', 'spreadsheet-parse', 'office-v1'];
+		for (const name of workers) {
+			const worker = watched(name);
+			worker.emit('error', errorWithCode('Cannot find package', 'ERR_MODULE_NOT_FOUND'));
+			watched(name).emit('exit', 2);
+			watched(name).emit('message', { cause: 'out-of-memory' });
+		}
+		const words = sent.flatMap(event => {
+			const { feature, operation, message, safeExtra } = event as { feature: string; operation: string; message: string; safeExtra: Record<string, unknown> };
+			return [feature, operation, message, ...Object.entries(safeExtra).flat().map(String)];
+		});
+		assert.deepStrictEqual({ sent: sent.length, scrubbed: words.filter(isParadisSentryScrubbedWord) }, { sent: 12, scrubbed: [] });
 	});
 
 	test('names failures without their messages', () => {
