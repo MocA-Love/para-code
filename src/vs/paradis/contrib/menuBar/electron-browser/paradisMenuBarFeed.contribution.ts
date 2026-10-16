@@ -48,6 +48,7 @@ import {
 	ParadisMenuBarRequest,
 	paradisMenuBarInboxFromSnapshot,
 	paradisMenuBarNeedsUsage,
+	paradisMenuBarSourceKey,
 	paradisReadMenuBarSettings,
 } from '../common/paradisMenuBar.js';
 import { paradisMenuBarAccountsFromLimits } from '../common/paradisMenuBarUsage.js';
@@ -150,14 +151,14 @@ class ParadisMenuBarFeed extends Disposable implements IWorkbenchContribution {
 		}
 	}
 
-	/** このウィンドウの出どころ（手元か、接続先の authority）。 */
+	/** このウィンドウの出どころ（手元か、ユーザー名を外した接続先）。 */
 	private source(): { readonly key: string; readonly label?: string; readonly remote: boolean } {
 		const connection = this.remoteAgentService.getConnection();
 		if (!connection) {
 			return { key: 'local', remote: false };
 		}
 		const label = this.labelService.getHostLabel(Schemas.vscodeRemote, connection.remoteAuthority);
-		return { key: connection.remoteAuthority, ...(label ? { label } : {}), remote: true };
+		return { key: paradisMenuBarSourceKey(connection.remoteAuthority), ...(label ? { label } : {}), remote: true };
 	}
 
 	private async fetchUsage(): Promise<void> {

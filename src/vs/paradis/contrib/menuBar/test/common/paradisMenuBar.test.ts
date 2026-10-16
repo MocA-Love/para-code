@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisLimitsAccount } from '../../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { ParadisNotificationInboxLedger } from '../../../notificationInbox/common/paradisNotificationInboxLedger.js';
-import { IParadisMenuBarAccount, IParadisMenuBarSettings, paradisMenuBarInboxFromSnapshot, paradisReadMenuBarSettings, paradisSanitizeMenuBarReport } from '../../common/paradisMenuBar.js';
+import { IParadisMenuBarAccount, IParadisMenuBarSettings, paradisMenuBarInboxFromSnapshot, paradisMenuBarNeedsUsage, paradisMenuBarSourceKey, paradisReadMenuBarSettings, paradisSanitizeMenuBarReport } from '../../common/paradisMenuBar.js';
 import { paradisRenderMenuBarBars, paradisRenderMenuBarMark } from '../../common/paradisMenuBarIcon.js';
 import { ParadisMenuBarMenuItem, paradisMenuBarMenuModel } from '../../common/paradisMenuBarModel.js';
 import {
@@ -159,6 +159,50 @@ suite('Paradis menu bar', () => {
 			nearLimit: ['C 86%'],
 			hot: [true, false],
 		});
+	});
+
+	test('marks old values in the title with ~', () => {
+		const merged = paradisMergeMenuBarUsage([
+			source('local', false, NOW, [account('claude', 'work-1', 42, 31, { active: true, fetchedAt: NOW - 20 * 60_000 }), account('codex', 'main', 18, 9, { active: true })]),
+		], true);
+		assert.deepStrictEqual(paradisMenuBarUsageTitle(merged, SETTINGS, NOW).map(segment => segment.text), ['C ~42%', 'X 18%']);
+	});
+
+	test('asks for the usage only while the menu bar shows it', () => {
+		const settings = (iconEnabled: boolean, title: string, menuUsage: boolean) => paradisReadMenuBarSettings(iconEnabled, key => key === 'paradis.menuBar.title' ? title : key === 'paradis.menuBar.menu.usage' ? menuUsage : undefined);
+		assert.deepStrictEqual({
+			iconOff: paradisMenuBarNeedsUsage(settings(false, 'usage', true)),
+			bellOnly: paradisMenuBarNeedsUsage(settings(true, 'attention', false)),
+			nothingBeside: paradisMenuBarNeedsUsage(settings(true, 'none', false)),
+			beside: paradisMenuBarNeedsUsage(settings(true, 'usage', false)),
+			inMenu: paradisMenuBarNeedsUsage(settings(true, 'none', true)),
+		}, { iconOff: false, bellOnly: false, nothingBeside: false, beside: true, inMenu: true });
+	});
+
+	test('treats the same host opened with and without a user name as one source', () => {
+		const hex = (value: string) => [...new TextEncoder().encode(value)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+		assert.deepStrictEqual([
+			paradisMenuBarSourceKey(undefined),
+			paradisMenuBarSourceKey('ssh-remote+dev-server'),
+			paradisMenuBarSourceKey('ssh-remote+me@Dev-Server'),
+			paradisMenuBarSourceKey(`ssh-remote+${hex(JSON.stringify({ hostName: 'dev-server', user: 'me' }))}`),
+			paradisMenuBarSourceKey('ssh-remote+cafe'),
+		], ['local', 'ssh-remote+dev-server', 'ssh-remote+dev-server', 'ssh-remote+dev-server', 'ssh-remote+cafe']);
+	});
+
+	test('shows the part after @ only for accounts whose names collide', () => {
+		const merged = paradisMergeMenuBarUsage([source('local', false, NOW, [
+			account('claude', 'work', 42, 31, { key: 'claude|a', domain: 'a.example', active: true }),
+			account('claude', 'work', 12, 20, { key: 'claude|b', domain: 'b.example' }),
+			account('claude', 'solo', 30, 50, { key: 'claude|c', domain: 'c.example' }),
+		])], true);
+		const menu = paradisMenuBarMenuModel({ inbox: { attentionCount: 0, blockingCount: 0, items: [], revision: 0 }, working: 0, accounts: merged, cost: undefined, now: NOW }, SETTINGS);
+		const submenu = menu.find((item): item is Extract<ParadisMenuBarMenuItem, { kind: 'submenu' }> => item.kind === 'submenu');
+		assert.deepStrictEqual(shape(submenu?.items ?? []).slice(0, 3), [
+			'work@a.example  5時間 42%・週 31%',
+			'work@b.example  5時間 12%・週 20%',
+			'solo  5時間 30%・週 50%',
+		]);
 	});
 
 	test('says when an exhausted account comes back, and how old the values are', () => {

@@ -87,7 +87,11 @@ export function paradisReadMenuBarSettings(iconEnabled: boolean, get: (key: stri
 	};
 }
 
-/** 使用量を取りに行く必要があるか（横にもメニューにも出さないなら取らない）。 */
+/**
+ * 使用量を取りに行く必要があるか。横にもメニューにも出さない（ベルだけの）ときは取らない。
+ * タイトルバーの使用量の設定（`paradis.limitsMonitor.enabled`）とは独立で、そちらがオフでも
+ * ここがオンなら取りに行く（設定の説明にもそう書いてある）。
+ */
 export function paradisMenuBarNeedsUsage(settings: IParadisMenuBarSettings): boolean {
 	return settings.iconEnabled && (settings.title === 'usage' || settings.menuUsage);
 }
@@ -134,6 +138,8 @@ export interface IParadisMenuBarAccount {
 	readonly key: string;
 	/** 表示名（メールの @ より前など）。 */
 	readonly name: string;
+	/** メールの @ より後ろ。表示名が同じアカウントが並んだときだけ見分けに添える。 */
+	readonly domain?: string;
 	/** その出どころで、いま使っているアカウントか。 */
 	readonly active: boolean;
 	readonly fiveHour?: IParadisMenuBarWindowUsage;
@@ -180,6 +186,35 @@ export type ParadisMenuBarRequest =
 	| { readonly type: 'openUsagePanel'; readonly windowId: number }
 	| { readonly type: 'openCostDashboard'; readonly windowId: number }
 	| { readonly type: 'openSettings'; readonly windowId: number };
+
+/**
+ * ウィンドウの出どころの鍵。手元は 'local'。接続先は同じホストを `host` と `user@host`（や
+ * Remote-SSH の 16 進の JSON の形）で開いても 1 つになるよう、ユーザー名を外して小文字にそろえる
+ * （今日のコストを二重に足さないため）。
+ */
+export function paradisMenuBarSourceKey(remoteAuthority: string | undefined): string {
+	if (!remoteAuthority) {
+		return 'local';
+	}
+	const plus = remoteAuthority.indexOf('+');
+	if (plus < 0) {
+		return remoteAuthority.toLowerCase();
+	}
+	const kind = remoteAuthority.slice(0, plus);
+	let host = remoteAuthority.slice(plus + 1);
+	if (/^(?:[0-9a-f]{2})+$/i.test(host)) {
+		try {
+			const decoded = JSON.parse(new TextDecoder().decode(new Uint8Array(host.match(/../g)!.map(pair => parseInt(pair, 16)))));
+			if (typeof decoded?.hostName === 'string') {
+				host = decoded.hostName;
+			}
+		} catch {
+			// 16 進に見えるだけのホスト名
+		}
+	}
+	host = host.slice(host.lastIndexOf('@') + 1);
+	return `${kind}+${host}`.toLowerCase();
+}
 
 export function paradisMenuBarInboxFromSnapshot(snapshot: IParadisInboxSnapshot): IParadisMenuBarInbox {
 	const entries = paradisInboxAttentionEntries(snapshot, Number.POSITIVE_INFINITY);
@@ -232,11 +267,13 @@ function sanitizeAccount(value: unknown): IParadisMenuBarAccount | undefined {
 	if (!provider || !key || !name) {
 		return undefined;
 	}
+	const domain = text(input.domain);
 	const fiveHour = sanitizeWindow(input.fiveHour);
 	const sevenDay = sanitizeWindow(input.sevenDay);
 	const fetchedAt = finite(input.fetchedAt);
 	return {
 		provider, key, name,
+		...(domain ? { domain } : {}),
 		active: input.active === true,
 		...(fiveHour ? { fiveHour } : {}),
 		...(sevenDay ? { sevenDay } : {}),

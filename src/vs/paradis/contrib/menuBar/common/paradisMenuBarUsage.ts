@@ -32,6 +32,13 @@ export function paradisMenuBarAccountName(email: string | undefined, fallback: s
 	return local && local.length > 0 ? local : fallback;
 }
 
+/** メールの @ より後ろ（小文字）。 */
+function emailDomain(email: string | undefined): string | undefined {
+	const at = email?.lastIndexOf('@') ?? -1;
+	const domain = at >= 0 ? email!.slice(at + 1).trim().toLowerCase() : '';
+	return domain.length > 0 ? domain : undefined;
+}
+
 function windowUsage(window: IParadisLimitsWindow | undefined): IParadisMenuBarWindowUsage | undefined {
 	if (!window || !Number.isFinite(window.usedPercent)) {
 		return undefined;
@@ -60,8 +67,10 @@ export function paradisMenuBarAccountsFromLimits(snapshot: IParadisMenuBarLimits
 		if (!fiveHour && !sevenDay) {
 			return;
 		}
+		const domain = emailDomain(account.email);
 		accounts.push({
 			provider, key, name, active,
+			...(domain ? { domain } : {}),
 			...(fiveHour ? { fiveHour } : {}),
 			...(sevenDay ? { sevenDay } : {}),
 			...(account.fetchedAt !== undefined && Number.isFinite(account.fetchedAt) ? { fetchedAt: account.fetchedAt } : {}),
@@ -93,6 +102,7 @@ export interface IParadisMenuBarMergedAccount {
 	readonly provider: ParadisMenuBarProvider;
 	readonly key: string;
 	readonly name: string;
+	readonly domain?: string;
 	/** このサービスで使用中（横に出す）のアカウント。サービスごとに多くても 1 つ。 */
 	readonly current: boolean;
 	readonly fiveHour?: IParadisMenuBarWindowUsage;
@@ -144,6 +154,7 @@ export function paradisMergeMenuBarUsage(sources: readonly IParadisMenuBarStored
 				provider,
 				key: entry.account.key,
 				name: entry.account.name,
+				...(entry.account.domain ? { domain: entry.account.domain } : {}),
 				current: entry === current,
 				...(entry.account.fiveHour ? { fiveHour: entry.account.fiveHour } : {}),
 				...(entry.account.sevenDay ? { sevenDay: entry.account.sevenDay } : {}),
@@ -223,13 +234,19 @@ export interface IParadisMenuBarTitleSegment {
 	readonly hot: boolean;
 }
 
-function percentText(percent: number | undefined): string {
-	return percent === undefined ? '-' : `${percent}%`;
+/** @param approximate 値が古いとき。`~42%` のように添える */
+function percentText(percent: number | undefined, approximate = false): string {
+	return percent === undefined ? '-' : `${approximate ? '~' : ''}${percent}%`;
+}
+
+function isStale(account: Pick<IParadisMenuBarMergedAccount, 'fetchedAt'>, now: number): boolean {
+	return now - account.fetchedAt > PARADIS_MENU_BAR_STALE_AFTER_MS;
 }
 
 /**
  * 横に出す使用量の文字。Claude Code（C）と Codex（X）の使用中のアカウントの値。アカウントが複数あるときは
  * 設定で「余裕のある数／アカウントの数」も出せる。使用中のアカウントが無いサービスは出さない。
+ * 値が古い（ウィンドウを閉じた・接続が切れた）ときは `C ~42%` のように ~ を添える。
  */
 export function paradisMenuBarUsageTitle(accounts: readonly IParadisMenuBarMergedAccount[], settings: Pick<IParadisMenuBarSettings, 'usageStyle' | 'usageWindow' | 'multipleAccounts'>, now: number): IParadisMenuBarTitleSegment[] {
 	const segments: IParadisMenuBarTitleSegment[] = [];
@@ -246,16 +263,17 @@ export function paradisMenuBarUsageTitle(accounts: readonly IParadisMenuBarMerge
 		const all = accounts.filter(account => account.provider === provider);
 		const available = `${all.filter(account => paradisMenuBarHasRoom(account, now)).length}/${all.length}`;
 		const letter = PROVIDER_LETTER[provider];
+		const value = percentText(percent, isStale(current, now));
 		const mode = all.length > 1 && settings.usageStyle !== 'nearLimit' ? settings.multipleAccounts : 'active';
 		switch (mode) {
 			case 'active':
-				segments.push({ text: `${letter} ${percentText(percent)}`, hot });
+				segments.push({ text: `${letter} ${value}`, hot });
 				break;
 			case 'available':
 				segments.push({ text: `${letter} ${available}`, hot: false });
 				break;
 			case 'both':
-				segments.push({ text: `${letter} ${percentText(percent)} ${available}`, hot });
+				segments.push({ text: `${letter} ${value} ${available}`, hot });
 				break;
 		}
 	}
@@ -304,8 +322,8 @@ export function paradisMenuBarStaleMinutes(accounts: readonly IParadisMenuBarMer
 	if (current.length === 0) {
 		return undefined;
 	}
-	const oldest = Math.min(...current.map(account => account.fetchedAt));
-	return now - oldest > PARADIS_MENU_BAR_STALE_AFTER_MS ? Math.floor((now - oldest) / 60_000) : undefined;
+	const oldest = current.reduce((min, account) => account.fetchedAt < min.fetchedAt ? account : min);
+	return isStale(oldest, now) ? Math.floor((now - oldest.fetchedAt) / 60_000) : undefined;
 }
 
 // ---- 今日のコスト ---------------------------------------------------------------------------
