@@ -154,6 +154,7 @@ describe('TaskBoardEngine', () => {
 		const { engine } = setup();
 		const id = engine.addTask({ title: 'T' });
 		engine.start(id, { agent: 'claude', stepId: 'pr' });
+		await flush(); // ドラフト PR も作業場所で動くので、準備を待つ
 		const pr = { owner: 'o', repo: 'r', number: 5, url: '', state: 'draft' as const, checks: 'pending' as const, review: 'none' as const };
 		engine.reportRunResult(id, engine.getTask(id)!.attempt, { ok: true, pr });
 		expect(engine.getTask(id)).toMatchObject({ step: 'bot', status: 'waiting' });
@@ -239,6 +240,18 @@ describe('TaskBoardEngine', () => {
 		await flush();
 		expect(ports.released[0]).toMatch(/^t-id\d+:wt:t-id\d+@\/tmp\/para\/id\d+-fix-the-thing$/);
 		expect(engine.getTask(other)!.status).toBe('working');
+	});
+
+	test('a worktree keeps its path after the board is restarted', async () => {
+		const flow: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, workspace: { kind: 'worktree', releaseOn: 'merged', maxRunning: 1 } };
+		const { engine } = setup(flow, 0);
+		const id = engine.addTask({ title: 'Fix the thing' });
+		engine.start(id, { agent: 'claude' });
+		await flush();
+		const before = engine.getSlots()[0].path;
+		const fresh = setup(flow, 0);
+		fresh.engine.restore(engine.serialize());
+		expect({ before: before.length > 0, after: fresh.engine.getSlots()[0].path }).toEqual({ before: true, after: before });
 	});
 
 	test('retry ignores the late report of the previous attempt and cancels the previous run', async () => {
@@ -380,6 +393,7 @@ describe('TaskBoardEngine', () => {
 		const old = { owner: 'o', repo: 'r', number: 150, url: '', state: 'merged' as const, checks: 'success' as const, review: 'approved' as const };
 		engine.reportPullRequest(id, old);
 		engine.start(id, { agent: 'claude', stepId: 'pr' });
+		await flush();
 		engine.reportRunResult(id, engine.getTask(id)!.attempt, { ok: true, pr: { owner: 'o', repo: 'r', number: 9001, url: '', state: 'draft', checks: 'pending', review: 'none', simulated: true } });
 		engine.reportPullRequest(id, old);
 		expect(engine.getTask(id)).toMatchObject({ step: 'bot', status: 'waiting', pr: { number: 9001 }, prOwned: true });

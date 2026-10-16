@@ -12,13 +12,16 @@ import {
 	findParadisParentFolderId,
 	flattenParadisBookmarks,
 	getParadisFolderOptions,
+	insertParadisNodeAt,
 	insertParadisNodeIntoFolder,
 	IParadisBookmark,
 	IParadisBookmarkFolder,
+	moveParadisNodeTo,
 	moveParadisRootNode,
 	normalizeParadisBookmarkUrl,
 	ParadisBookmarkNode,
 	removeParadisNodeFromTree,
+	renameParadisNode,
 	syncParadisFaviconInTree,
 } from '../../common/paradisBookmarkModel.js';
 
@@ -216,5 +219,52 @@ suite('Paradis bookmark model', () => {
 
 		assert.strictEqual(result.updated, false);
 		assert.strictEqual(result.nodes[0], tree[0]);
+	});
+
+	test('inserts at a position in a folder or at the bar, and refuses a folder that does not exist', () => {
+		const tree = [bookmark('a', 'https://a.example'), folder('f', [bookmark('b', 'https://b.example')])];
+		const ids = (nodes: readonly ParadisBookmarkNode[] | undefined) => nodes?.map(node => node.type === 'folder' ? `${node.id}[${node.children.map(child => child.id).join(',')}]` : node.id).join(',');
+		assert.deepStrictEqual({
+			barStart: ids(insertParadisNodeAt(tree, bookmark('n', 'https://n.example'), null, 0)),
+			folderEnd: ids(insertParadisNodeAt(tree, bookmark('n', 'https://n.example'), 'f')),
+			clamped: ids(insertParadisNodeAt(tree, bookmark('n', 'https://n.example'), 'f', 99)),
+			missing: ids(insertParadisNodeAt(tree, bookmark('n', 'https://n.example'), 'nowhere')),
+		}, { barStart: 'n,a,f[b]', folderEnd: 'a,f[b,n]', clamped: 'a,f[b,n]', missing: undefined });
+	});
+
+	test('renames by id where the node is, and falls back to the URL for an empty bookmark title', () => {
+		const tree = [folder('f', [bookmark('same', 'https://a.example'), bookmark('same-title', 'https://b.example')])];
+		const renamed = renameParadisNode(tree, 'same-title', '  New  ');
+		const emptied = renameParadisNode(tree, 'same', '');
+		assert.deepStrictEqual({
+			order: (renamed.nodes[0] as IParadisBookmarkFolder).children.map(node => `${node.id}:${node.title}`),
+			emptied: emptied.renamed?.title,
+			folder: renameParadisNode(tree, 'f', 'Docs').renamed?.title,
+			missing: renameParadisNode(tree, 'nowhere', 'x').renamed,
+		}, { order: ['same:same', 'same-title:New'], emptied: 'https://a.example', folder: 'Docs', missing: undefined });
+	});
+
+	test('moves between folders and within one at an index, and never moves a folder into itself', () => {
+		const tree = [bookmark('a', 'https://a.example'), bookmark('b', 'https://b.example'), folder('f', [folder('g', [])])];
+		const ids = (result: ReturnType<typeof moveParadisNodeTo>) => !result.ok ? result.error : result.nodes.map(node => node.type === 'folder' ? `${node.id}[${node.children.map(child => child.type === 'folder' ? `${child.id}[${child.children.map(grand => grand.id).join(',')}]` : child.id).join(',')}]` : node.id).join(',');
+		assert.deepStrictEqual({
+			intoFolder: ids(moveParadisNodeTo(tree, 'a', 'g')),
+			toBarIndex: ids(moveParadisNodeTo(tree, 'b', null, 0)),
+			sameFolderEnd: ids(moveParadisNodeTo(tree, 'a', null)),
+			outOfFolder: ids(moveParadisNodeTo(tree, 'g', null, 1)),
+			intoItself: ids(moveParadisNodeTo(tree, 'f', 'f')),
+			intoChild: ids(moveParadisNodeTo(tree, 'f', 'g')),
+			notFolder: ids(moveParadisNodeTo(tree, 'f', 'a')),
+			missing: ids(moveParadisNodeTo(tree, 'nowhere', null)),
+		}, {
+			intoFolder: 'b,f[g[a]]',
+			toBarIndex: 'b,a,f[g[]]',
+			sameFolderEnd: 'b,f[g[]],a',
+			outOfFolder: 'a,g[],b,f[]',
+			intoItself: 'into-itself',
+			intoChild: 'into-itself',
+			notFolder: 'folder-not-found',
+			missing: 'not-found',
+		});
 	});
 });
