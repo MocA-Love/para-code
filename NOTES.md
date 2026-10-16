@@ -528,6 +528,10 @@ tmux と同じ形の問題が Claude Code 2.1.289 の daemon にもあります�
 - plugin の codex でも、起動行に plugin が見えず（Windows で CommandLine が取れない等）、rollout がまだ無い最初の hook（Codex は最初のターンで rollout を作る）は判定できず、後継になりうる
 - 逆に、plugin が作った会話をペインで `codex resume` し、その hook が共有 daemon（ペインの外）から届くと、rollout の `originator` が `"Claude Code"` のままなので所有者のいない間は後継になれない
 - pid の無い hook（古いスクリプト・プロセス表が取れない）は daemon の会話と見分けられない。受け手が transcript の `sessionKind` で確かめるが、所有者の記録は先に届いた分岐先の transcript で決まりうる（その後のペインの hook は `invalid` で捨てられる）。pid の無いペインで分岐先を `--resume` し直したときは、最初のターンの行が書かれるまで分岐先として扱われる
+
+### pid の無いペイン（接続先）の所有者は、自分の SessionEnd の後の SessionStart へ移す（2026-10-16、#389）
+
+接続先のペインの hook は pid を持たないので、所有者は transcript だけで決まり、/resume・/clear・/branch で会話が替わると状態が出なくなっていた。今は所有者の会話から `SessionEnd` を受けた後の `SessionStart`（子エージェントのものを除く）で所有者を移す（Claude Code 2.1.301 は /resume・/branch の前に `reason: resume`、/clear の前に `reason: clear` の `SessionEnd` を送る。実測）。Codex は `SessionEnd` を送らないので、ツールが動いていない間の Codex の `SessionStart`（`source` が resume / clear / fork）だけで移す。既知の制限: Codex の起動し直し（`source: startup`）や、Codex を終えた後に同じペインで別のエージェントを起動した場合は、ペインを閉じるまで所有者が移らず状態が出ない。
 - daemon の会話の状態（許可待ち・完了）は、どのペインのタブにも出ない
 
 ### worktree の「このフォルダを信頼しますか」は元のリポジトリから引き継がれる（2026-09-27 実測、実装なし）
