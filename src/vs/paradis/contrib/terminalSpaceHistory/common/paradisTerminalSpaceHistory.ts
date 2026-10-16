@@ -138,6 +138,53 @@ export function paradisSpaceHistoryFile(instance: IParadisSpaceHistoryInstance, 
 	}
 }
 
+/** スペースの履歴フォルダの場所を答える口（スペース別履歴の contribution が1つ登録する）。 */
+export interface IParadisSpaceHistoryLocator {
+	/**
+	 * そのターミナルのスペースの履歴フォルダ（シェルから見たパス）。スペース別履歴を使っていない
+	 * ターミナルでは undefined。
+	 */
+	directoryOf(instance: IParadisSpaceHistoryInstance): string | undefined;
+	/**
+	 * すべてのスペースの履歴フォルダが並ぶ親（シェルから見たパス）。スペース別履歴を使っていない
+	 * ウィンドウでは undefined。
+	 */
+	root(): string | undefined;
+}
+let spaceHistoryLocator: IParadisSpaceHistoryLocator | undefined;
+
+export function paradisRegisterSpaceHistoryLocator(locator: IParadisSpaceHistoryLocator): IDisposable {
+	spaceHistoryLocator = locator;
+	return toDisposable(() => {
+		if (spaceHistoryLocator === locator) {
+			spaceHistoryLocator = undefined;
+		}
+	});
+}
+
+/** そのターミナルのスペースの履歴フォルダ。{@link IParadisSpaceHistoryLocator.directoryOf} を参照。 */
+export function paradisSpaceHistoryDirectoryOf(instance: IParadisSpaceHistoryInstance): string | undefined {
+	try {
+		return spaceHistoryLocator?.directoryOf(instance);
+	} catch {
+		return undefined;
+	}
+}
+
+/** すべてのスペースの履歴フォルダが並ぶ親。{@link IParadisSpaceHistoryLocator.root} を参照。 */
+export function paradisSpaceHistoryRoot(): string | undefined {
+	try {
+		return spaceHistoryLocator?.root();
+	} catch {
+		return undefined;
+	}
+}
+
+/** 履歴フォルダの名前（{@link paradisSpaceHistoryId} の形）か。 */
+export function paradisIsSpaceHistoryId(name: string): boolean {
+	return /^[0-9a-f]{16}$/.test(name);
+}
+
 /** fish が書く履歴ファイルの名前（fish のデータフォルダの中）。 */
 export function paradisFishHistoryFileName(historyId: string): string {
 	return `${PARADIS_FISH_HISTORY_SESSION_PREFIX}${historyId}_history`;

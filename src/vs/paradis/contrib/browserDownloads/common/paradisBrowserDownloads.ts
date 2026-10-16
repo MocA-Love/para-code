@@ -9,6 +9,7 @@
 // 内蔵ブラウザのダウンロード自動保存機能（paradis.browser.downloads.*）の設定キー・共有定数。
 
 import { Event } from '../../../../base/common/event.js';
+import { localize } from '../../../../nls.js';
 
 export const PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY = 'paradis.browser.downloads.enabled';
 export const PARADIS_BROWSER_DOWNLOADS_PATH_KEY = 'paradis.browser.downloads.path';
@@ -136,4 +137,49 @@ export function paradisAggregateDownloadProgress(items: readonly IParadisBrowser
 export function paradisHasNewlyFinished(previous: readonly IParadisBrowserDownloadItem[], next: readonly IParadisBrowserDownloadItem[]): boolean {
 	const before = new Map(previous.map(item => [item.id, item.state]));
 	return next.some(item => (item.state === 'completed' || item.state === 'interrupted') && before.get(item.id) !== item.state);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 一覧の日付の見出しと時刻（ダウンロードを始めた時刻 `startTime` を、Date のローカルの暦で読む）。
+// ---------------------------------------------------------------------------------------------
+
+function pad2(value: number): string {
+	return String(value).padStart(2, '0');
+}
+
+/** 暦日の鍵（ローカル）。同じ日の項目を同じ見出しに入れるのに使う。 */
+export function paradisDownloadDayKey(time: number): string {
+	const date = new Date(time);
+	return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+/**
+ * 見出しの文言。`now` と同じ日なら「今日」、前の日なら「昨日」、それより前は月日（年が違えば年も）。
+ * `now` は一覧を開いたときの時刻（開くたびに取り直す）。
+ */
+export function paradisFormatDownloadDay(time: number, now: number): string {
+	const key = paradisDownloadDayKey(time);
+	const today = new Date(now);
+	if (key === paradisDownloadDayKey(now)) {
+		return localize('paradis.browserDownloads.day.today', "今日");
+	}
+	if (key === paradisDownloadDayKey(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1).getTime())) {
+		return localize('paradis.browserDownloads.day.yesterday', "昨日");
+	}
+	const date = new Date(time);
+	return date.getFullYear() === today.getFullYear()
+		? localize('paradis.browserDownloads.day.sameYear', "{0}月{1}日", date.getMonth() + 1, date.getDate())
+		: localize('paradis.browserDownloads.day.otherYear', "{0}年{1}月{2}日", date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+/** 行の2行目の先頭に付ける時刻（HH:mm）。 */
+export function paradisFormatDownloadClock(time: number): string {
+	const date = new Date(time);
+	return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+/** ツールチップに出す開始の日時（YYYY/MM/DD HH:mm:ss）。 */
+export function paradisFormatDownloadStart(time: number): string {
+	const date = new Date(time);
+	return `${date.getFullYear()}/${pad2(date.getMonth() + 1)}/${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }

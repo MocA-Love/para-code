@@ -30,7 +30,7 @@ import { paradisRunPtyDaemonLifecycle } from '../../../paradis/contrib/ptyDaemon
 import { FileAccess } from '../../../base/common/network.js';
 import { paradisBootstrapPtyHost } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyHostBootstrap.js';
 import { paradisAwaitAdoption, paradisAwaitPtyDaemon, paradisPtyDaemonConnection } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
-import { paradisAdoptIntoPtyService } from '../../../paradis/contrib/ptyDaemon/node/paradisAdoptIntoPtyService.js';
+import { paradisAdoptAtStartup } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
 import { markNodeCompileCacheReady } from '../../../base/node/nodeCompileCache.js';
 
 startPtyHost();
@@ -158,7 +158,7 @@ async function startPtyHost() {
 	paradisAwaitAdoption(paradisJoiningDaemon.then(async joined => {
 		const paradisConnection = joined ? paradisPtyDaemonConnection() : undefined;
 		if (paradisConnection) {
-			await paradisAdoptIntoPtyService(ptyService, paradisConnection.host, logService);
+			await paradisAdoptAtStartup(ptyService, paradisConnection.host, logService);
 		}
 	}, error => logService.error('[ParadisPtyHost] could not join the daemon', error)));
 

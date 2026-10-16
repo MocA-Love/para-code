@@ -27,9 +27,15 @@ import { ShellIntegrationAddon } from '../common/xterm/shellIntegrationAddon.js'
 import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 // PARA-PATCH: pty daemon support; replaces the direct TerminalProcess import (see paradisTerminalProcessFactory.ts)
-import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
+import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
+// PARA-PATCH: hand terminals held by the pty daemon over between pty hosts (see paradisPtyReadopt.ts)
+import { paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
+import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
 import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
+// PARA-PATCH: reattach diagnostics (see paradisReattachTally.ts)
+import { paradisNoteAttached, paradisNoteRevived, paradisTakeReattachTally } from '../../../paradis/contrib/ptyDaemon/node/paradisReattachTally.js';
+import { IParadisReattachTally } from '../common/paradisReattachTally.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -327,6 +333,7 @@ export class PtyService extends Disposable implements IPtyService {
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
 		// PARA-PATCH: remember new id -> old id so listProcesses/layouts can report paradisRevivedFromPersistentProcessId
 		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
+		paradisNoteRevived(workspaceId, newId); // PARA-PATCH: count it for the reattach diagnostics (paradisReattachTally.ts)
 		// PARA-PATCH: also index by nonce so a restored editor tab can find this terminal (getRevivedPtyNewId)
 		const nonce = paradisTerminalIdentityNonce(terminal.processDetails.shellIntegrationNonce);
 		// PARA-PATCH: never over a terminal taken back from the daemon. That one is still running the
@@ -522,6 +529,10 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async reduceConnectionGraceTime(): Promise<void> {
 		for (const pty of this._ptys.values()) {
+			// PARA-PATCH: a terminal the pty daemon holds was left detached on purpose (another window, another space, across an update); Attach to Session and a reconnecting remote window must not end it in seconds
+			if (pty.paradisHeldByDaemon) {
+				continue;
+			}
 			pty.reduceGraceTime();
 		}
 	}
@@ -589,13 +600,33 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async start(id: number): Promise<ITerminalLaunchError | ITerminalLaunchResult | undefined> {
 		const pty = this._ptys.get(id);
+		// PARA-PATCH: a window took this pty (every attach path ends in start), so a revived one is not a stray copy
+		if (pty) {
+			paradisNoteAttached(id);
+		}
 		return pty ? pty.start() : { message: `Could not find pty with id "${id}"` };
+	}
+
+	// PARA-PATCH: what the startup reattach came to, for the window to report (paradisReattachTally.ts)
+	@traceRpc
+	async paradisTakeReattachTally(workspaceId: string): Promise<IParadisReattachTally | undefined> {
+		return paradisTakeReattachTally(workspaceId);
 	}
 
 	// PARA-PATCH: the app is quitting (or no longer is); closing terminals then leaves their background processes alone
 	@traceRpc
 	async paradisSetAppQuitting(quitting: boolean): Promise<void> {
 		paradisSetAppQuitting(quitting);
+	}
+
+	// PARA-PATCH: take back terminals another pty host was holding in the daemon, and report how handing them over went (see paradisPtyReadopt.ts)
+	@traceRpc
+	async paradisReadoptFromDaemon(trigger: ParadisPtyAdoptTrigger): Promise<IParadisPtyAdoptionRun | undefined> {
+		return paradisReadoptFromDaemon(trigger);
+	}
+	@traceRpc
+	async paradisTakeHandoverReport(): Promise<IParadisPtyHandoverReport | undefined> {
+		return paradisTakeHandoverReport();
 	}
 
 	@traceRpc
@@ -956,6 +987,8 @@ export class PtyService extends Disposable implements IPtyService {
 			// PARA-PATCH: tells readers keyed by persistent process id that this id says nothing about
 			// earlier sessions. See IProcessDetails#paradisAdopted.
 			...(persistentProcess.paradisAdopted ? { paradisAdopted: true } : {}),
+			// PARA-PATCH: the process outlives this pty host, see IProcessDetails#paradisHeldByDaemon
+			...(persistentProcess.paradisHeldByDaemon ? { paradisHeldByDaemon: true } : {}),
 			// PARA-PATCH: mobile relay recovery — include the validated pane token in process details
 			...(typeof paneToken === 'string' && paneToken.length > 0 && paneToken.length <= 200 ? { paradisPaneToken: paneToken } : {}),
 			...(revivedFromPersistentProcessId !== undefined ? { paradisRevivedFromPersistentProcessId: revivedFromPersistentProcessId } : {}),
@@ -1021,12 +1054,16 @@ class PersistentTerminalProcess extends Disposable {
 	private _title: string | undefined;
 	private _titleSource: TitleEventSource = TitleEventSource.Process;
 	private _serializer: ITerminalSerializer;
+	// PARA-PATCH: see _paradisReplaceScreen
+	private readonly _paradisScrollback: number;
 	private _wasRevived: boolean;
 	private _fixedDimensions: IFixedTerminalDimensions | undefined;
 
 	get pid(): number { return this._pid; }
 	/** PARA-CODE: Whether this was taken back from a daemon rather than started here. */
 	get paradisAdopted(): boolean { return this._paradisAdopted; }
+	/** PARA-CODE: Whether the process lives in a daemon that outlives this pty host. */
+	get paradisHeldByDaemon(): boolean { return this._terminalProcess.paradisHeldByDaemon === true; }
 	get shellLaunchConfig(): IShellLaunchConfig { return this._terminalProcess.shellLaunchConfig; }
 	get hasWrittenData(): boolean { return this._interactionState.value !== InteractionState.None; }
 	get title(): string { return this._title || this._terminalProcess.currentTitle; }
@@ -1098,6 +1135,8 @@ class PersistentTerminalProcess extends Disposable {
 			this._pid = paradisAdopt.pid;
 		}
 		this._wasRevived = reviveBuffer !== undefined;
+		// PARA-PATCH: kept to build a new screen when coming back to a terminal let go of in the daemon
+		this._paradisScrollback = reconnectConstants.scrollback;
 		this._serializer = new XtermSerializer(
 			cols,
 			rows,
@@ -1146,6 +1185,19 @@ class PersistentTerminalProcess extends Disposable {
 		}
 		this._disconnectRunner1.cancel();
 		this._disconnectRunner2.cancel();
+		// PARA-PATCH: come back to a process this host let go of in the daemon while no window had it.
+		// Its output since then never reached the serializer, so fill the screen in before the replay.
+		if (await this._terminalProcess.paradisComeBack?.((cols, rows) => this._paradisReplaceScreen(cols, rows))) {
+			this._bufferer.flushBuffer(this._persistentProcessId);
+			await this._serializer.paradisWhenWritten?.();
+		}
+	}
+
+	/** PARA-CODE: Start an empty screen, for coming back to a terminal let go of in the daemon. */
+	private _paradisReplaceScreen(cols: number, rows: number): IParadisPtyScreenSink {
+		const serializer = new XtermSerializer(cols, rows, this._paradisScrollback, this.unicodeVersion, undefined, this.processLaunchOptions.options.shellIntegration.nonce, undefined, this._logService);
+		this._serializer = serializer;
+		return { handleResize: (c, r) => serializer.handleResize(c, r), handleData: data => serializer.handleData(data), whenWritten: () => serializer.paradisWhenWritten() };
 	}
 
 	async detach(forcePersist?: boolean): Promise<void> {
@@ -1153,6 +1205,9 @@ class PersistentTerminalProcess extends Disposable {
 		// was replayed
 		if (this.shouldPersistTerminal && (this._interactionState.value !== InteractionState.None || forcePersist)) {
 			this._disconnectRunner1.schedule();
+			// PARA-PATCH: let go of the daemon's terminal while no window has it, so it keeps running
+			// past the high watermark and another pty host can take it over. See paradisDaemonTerminalProcess.ts.
+			void this._terminalProcess.paradisLetGo?.();
 		} else {
 			this.shutdown(true);
 		}
@@ -1384,6 +1439,11 @@ export class XtermSerializer implements ITerminalSerializer {
 		this._xterm.write(data);
 	}
 
+	// PARA-PATCH: resolves once everything written so far has been parsed, see PersistentTerminalProcess#attach
+	paradisWhenWritten(): Promise<void> {
+		return new Promise<void>(resolve => this._xterm.write('', () => resolve()));
+	}
+
 	handleResize(cols: number, rows: number): void {
 		this._xterm.resize(cols, rows);
 	}
@@ -1488,4 +1548,6 @@ interface ITerminalSerializer {
 	generateReplayEvent(normalBufferOnly?: boolean, restoreToLastReviveBuffer?: boolean): Promise<IPtyHostProcessReplayEvent>;
 	setUnicodeVersion?(version: '6' | '11'): void;
 	setNextCommandId?(commandLine: string, commandId: string): void;
+	// PARA-PATCH: see XtermSerializer#paradisWhenWritten
+	paradisWhenWritten?(): Promise<void>;
 }

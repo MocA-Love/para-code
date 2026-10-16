@@ -15,6 +15,8 @@ import './contrib/sentry/electron-browser/paradisSentryRenderer.js';
 import './contrib/sentry/electron-browser/paradisUnhandledErrorReporter.contribution.js';
 // main プロセスの混雑の計測チャネルを、スペースの切り替えの計測へつなぐ（M1〜M4）
 import './contrib/mainLoad/electron-browser/paradisMainLoadProbe.contribution.js';
+// ターミナルの履歴の一覧（Q372）の、スペースに属さないターミナルの記録を本人だけが読めるファイルに置く
+import './contrib/terminalHistoryPanel/electron-browser/paradisTerminalCommandRecordsFile.contribution.js';
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
 import './contrib/windowTransparency/electron-browser/paradisFrostedGlassTint.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
@@ -45,6 +47,8 @@ import './contrib/notifications/electron-browser/paradisAgentDictionarySync.cont
 import './contrib/notifications/electron-browser/paradisDictationAudioHold.contribution.js';
 import './contrib/dictation/browser/paradisDictationAvailability.contribution.js';
 import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
+import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
+import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
@@ -99,16 +103,19 @@ import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mob
 registerParadisRemoteTranscriptMirrorContribution();
 import './contrib/remoteTerminals/electron-browser/paradisRemoteTerminalShutdown.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonStatusBar.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisPtyHandover.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisPtyDaemonShutdown.contribution.js';
 import './contrib/updateTerminals/electron-browser/paradisUpdateTerminals.contribution.js';
 import './contrib/updateTerminals/electron-browser/paradisStaleRemoteServer.contribution.js';
 import './contrib/ptyDaemon/electron-browser/paradisTerminalScreens.contribution.js';
+import './contrib/ptyDaemon/electron-browser/paradisReattachDiagnostics.contribution.js';
 import './contrib/terminalCloseCleanup/electron-browser/paradisTerminalCloseCleanupQuit.contribution.js';
 import './contrib/terminalRenderer/electron-browser/paradisRenderRepair.contribution.js';
 import './contrib/terminalIme/browser/paradisTerminalImeInputGate.contribution.js';
 import './contrib/unfocusedDimming/electron-browser/paradisUnfocusedDimming.contribution.js';
 import './contrib/terminalResumeBanner/electron-browser/paradisTerminalResumeBanner.contribution.js';
 import './contrib/agentChat/electron-browser/paradisAgentChat.contribution.js';
+import './contrib/agentChat/electron-browser/paradisApprovalScreenSettle.contribution.js';
 import './contrib/claudeMod/electron-browser/paradisClaudeModConfigDir.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';

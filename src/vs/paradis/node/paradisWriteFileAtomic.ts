@@ -14,7 +14,8 @@
 // 自前で持っていた。違いはオプションで残し、置き場所をここ1つにした。
 
 import { randomUUID } from 'crypto';
-import { accessSync, chmodSync, constants as fsConstants, lstatSync, promises as fs, readlinkSync, realpathSync, renameSync, Stats, statSync, unlinkSync, writeFileSync } from 'fs';
+import { accessSync, chmodSync, constants as fsConstants, lstatSync, promises as fs, readlinkSync, realpath, realpathSync, renameSync, Stats, statSync, unlinkSync, writeFileSync } from 'fs';
+import { promisify } from 'util';
 import { basename, dirname, join, resolve } from '../../base/common/path.js';
 import { Promises as pfs } from '../../base/node/pfs.js';
 
@@ -28,8 +29,9 @@ const MAX_SYMLINK_HOPS = 40;
  * 書き込み先の実体。symlink を最後まで辿る（辿った先がまだ無い symlink も、リンク先へ書く）。
  * dotfiles をリポジトリから symlink している人の設定が、ただのファイルに化けないようにするため。
  */
-function resolveWriteTarget(filePath: string): string {
+function resolveWriteTargetSync(filePath: string): string {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync, which must not yield between its compare and its write.
 		return realpathSync(filePath);
 	} catch {
 		// 無いファイル、またはリンク先がまだ無い symlink（多段を含む）
@@ -37,10 +39,36 @@ function resolveWriteTarget(filePath: string): string {
 	let current = filePath;
 	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see above).
 			if (!lstatSync(current).isSymbolicLink()) {
 				return current;
 			}
+			// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see above).
 			current = resolve(dirname(current), readlinkSync(current));
+		} catch {
+			return current; // 辿った先が無い。ここへ新しく作る
+		}
+	}
+	return filePath;
+}
+
+/**
+ * {@link resolveWriteTargetSync} の非同期版（辿り方は同じ）。`fs.promises.realpath` は native の realpath で、
+ * Windows の subst ドライブなどで同期版と違う結果を返すので、同期版と同じ JS の実装（コールバック版）を使う。
+ */
+async function resolveWriteTarget(filePath: string): Promise<string> {
+	try {
+		return await promisify(realpath)(filePath);
+	} catch {
+		// 無いファイル、またはリンク先がまだ無い symlink（多段を含む）
+	}
+	let current = filePath;
+	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+		try {
+			if (!(await fs.lstat(current)).isSymbolicLink()) {
+				return current;
+			}
+			current = resolve(dirname(current), await fs.readlink(current));
 		} catch {
 			return current; // 辿った先が無い。ここへ新しく作る
 		}
@@ -56,8 +84,9 @@ function isNotFound(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
-function removeQuietly(filePath: string): void {
+function removeQuietlySync(filePath: string): void {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Used only by paradisWriteFileAtomicSync (see resolveWriteTargetSync).
 		unlinkSync(filePath);
 	} catch {
 		// 作れていなかった
@@ -80,9 +109,10 @@ function removeQuietly(filePath: string): void {
  * 所有者・ACL・拡張属性は一時ファイルへ引き継がない（NOTES.md の hook の節を参照）。
  */
 export function paradisWriteFileAtomicSync(filePath: string, content: string): void {
-	const target = resolveWriteTarget(filePath);
+	const target = resolveWriteTargetSync(filePath);
 	let stat: Stats | undefined;
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		stat = statSync(target);
 	} catch {
 		stat = undefined; // まだ無い（新規作成）
@@ -92,8 +122,10 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 			// root は accessSync が通ってしまうので、所有者の書き込みビットでも見る
 			throw Object.assign(new Error(`EACCES: permission denied, open '${target}'`), { code: 'EACCES', path: target });
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		accessSync(target, fsConstants.W_OK);
 		if (stat.nlink > 1) {
+			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 			writeFileSync(target, content);
 			return;
 		}
@@ -101,20 +133,25 @@ export function paradisWriteFileAtomicSync(filePath: string, content: string): v
 	const mode = stat ? stat.mode & 0o7777 : undefined;
 	const temp = temporaryPathFor(target);
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(temp, content, { mode: mode ?? 0o666, flag: 'wx' });
 		if (mode !== undefined) {
 			// writeFileSync の mode は umask で削られるので、元と同じになるよう当て直す
+			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 			chmodSync(temp, mode);
 		}
 	} catch {
-		removeQuietly(temp);
+		removeQuietlySync(temp);
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 		return;
 	}
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		renameSync(temp, target);
 	} catch {
-		removeQuietly(temp);
+		removeQuietlySync(temp);
+		// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write for hook setup; see the doc comment.
 		writeFileSync(target, content);
 	}
 }
@@ -166,7 +203,7 @@ export async function paradisWriteFileAtomic(path: string, content: Buffer | str
 			}
 		}
 	}
-	const target = options.rejectSymlink ? path : resolveWriteTarget(path);
+	const target = options.rejectSymlink ? path : await resolveWriteTarget(path);
 	let mode = options.forceMode ?? options.newFileMode ?? 0o600;
 	if (options.forceMode === undefined) {
 		try {

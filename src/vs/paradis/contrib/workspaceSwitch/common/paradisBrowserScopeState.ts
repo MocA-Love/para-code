@@ -56,6 +56,11 @@ export class ParadisBrowserScopeState extends Disposable {
 	private readonly _unscoped = new Set<string>();
 	private readonly _pending = new Set<string>();
 	private readonly _retiredBeforeInitialization = new Set<string>();
+	/**
+	 * 前のセッションから続いているビュー: 起動時に保存から読んだものと、初期化が終わる前から
+	 * あったもの（保存に所属が無いまま復元されたタブ）。初期化の後は増やさない。
+	 */
+	private readonly _carriedOver = new Set<string>();
 	private readonly _onDidChangeStableScope = this._register(new Emitter<IParadisBrowserStableScopeChangeEvent>());
 	readonly onDidChangeStableScope: Event<IParadisBrowserStableScopeChangeEvent> = this._onDidChangeStableScope.event;
 	readonly storageStatus: ParadisBrowserScopeStorageParseResult['kind'];
@@ -69,6 +74,7 @@ export class ParadisBrowserScopeState extends Disposable {
 		if (parsed.kind === 'valid') {
 			for (const [viewId, stateKey] of parsed.entries) {
 				this._viewRepositories.set(viewId, stateKey);
+				this._carriedOver.add(viewId);
 			}
 		}
 	}
@@ -87,7 +93,19 @@ export class ParadisBrowserScopeState extends Disposable {
 		return this._unscoped.has(viewId) ? { kind: 'unscoped' } : { kind: 'pending' };
 	}
 
+	/**
+	 * そのビューが前のセッションから続いているものか（このセッションで新しく作ったものではないか）。
+	 * 保存が壊れていて分からないときは true を返す（新しいタブ向けの処理を、復元したタブへ誤って
+	 * 当てないための安全側）。
+	 */
+	isCarriedOver(viewId: string): boolean {
+		return this.storageStatus === 'corrupt' || this._carriedOver.has(viewId);
+	}
+
 	markPending(viewId: string): void {
+		if (!this._initialized) {
+			this._carriedOver.add(viewId);
+		}
 		if (!this._viewRepositories.has(viewId) && !this._unscoped.has(viewId)) {
 			this._pending.add(viewId);
 		}

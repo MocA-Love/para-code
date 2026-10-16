@@ -123,6 +123,13 @@ export interface IParadisKeptRemoteTerminals {
 	readonly at: number;
 	/** 残した本数。最後に閉じたウィンドウのぶんで、ログの手掛かり用。 */
 	readonly count: number;
+	/**
+	 * 残したとき、接続先の常駐（`reattachAcrossUpdates`）に預けていたか。
+	 *
+	 * 預けていれば版が変わっても新しい版のサーバーが引き取るので、「開けません」と伝えない。
+	 * 古い版が書いた記録には無い（今までどおり伝える）。
+	 */
+	readonly acrossUpdates?: boolean;
 }
 
 export interface IParadisStrandedTerminalNoticeInput {
@@ -153,6 +160,10 @@ export function paradisShouldReportStrandedTerminals(input: IParadisStrandedTerm
 	if (!(record.count > 0)) {
 		return false;
 	}
+	if (record.acrossUpdates === true) {
+		// 常駐に預けてあった。新しい版のサーバーが引き取る（`paradisPtyReadopt.ts`）。
+		return false;
+	}
 	// 猶予が尽きていれば、更新していなくても同じように消えている。更新のせいだと伝えると
 	// かえって誤解させる。時計が巻き戻った場合 (now < at) も、判断できないので黙る。
 	const elapsed = now - record.at;
@@ -166,7 +177,9 @@ export function paradisParseKeptRemoteTerminals(raw: string | undefined): IParad
 	}
 	try {
 		const parsed = JSON.parse(raw) as IParadisKeptRemoteTerminals;
-		return typeof parsed?.commit === 'string' && typeof parsed.at === 'number' && typeof parsed.count === 'number' ? parsed : undefined;
+		return typeof parsed?.commit === 'string' && typeof parsed.at === 'number' && typeof parsed.count === 'number'
+			? { commit: parsed.commit, at: parsed.at, count: parsed.count, ...(parsed.acrossUpdates === true ? { acrossUpdates: true } : {}) }
+			: undefined;
 	} catch {
 		return undefined;
 	}

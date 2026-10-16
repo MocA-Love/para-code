@@ -69,8 +69,9 @@ export class ParadisSessionResumeRowMenu {
 	actions(session: IParadisResumeSession): IAction[] {
 		const local = this.client.isLocal(session.catalogId);
 		const run = (task: () => Promise<void>) => () => task().catch(error => this.report(error instanceof Error ? error.message : String(error), 'error'));
+		const resumeCommand = paradisResumeCommandLine(session, local ? isWindows : false);
 		return [
-			toAction({ id: 'paradis.sessionResume.copyResumeCommand', label: localize('paradis.sessionResume.copyResumeCommand', "再開コマンドをコピー"), run: run(() => this.copy(paradisResumeCommandLine(session, local ? isWindows : false))) }),
+			toAction({ id: 'paradis.sessionResume.copyResumeCommand', label: localize('paradis.sessionResume.copyResumeCommand', "再開コマンドをコピー"), enabled: resumeCommand !== undefined, run: run(() => this.copy(resumeCommand ?? '')) }),
 			toAction({ id: 'paradis.sessionResume.copySessionId', label: localize('paradis.sessionResume.copySessionId', "セッションIDをコピー"), run: run(() => this.copy(session.id)) }),
 			toAction({ id: 'paradis.sessionResume.copyLogPath', label: localize('paradis.sessionResume.copyLogPath', "ログのパスをコピー"), run: run(async () => this.copy((await this.client.details(session.catalogId)).transcriptPath)) }),
 			toAction({

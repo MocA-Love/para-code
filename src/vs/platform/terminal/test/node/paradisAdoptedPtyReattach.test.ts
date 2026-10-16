@@ -346,4 +346,17 @@ suite('Para Code adopted pty reattach', () => {
 		// the one list that shows them is the list someone reads to pick one out.
 		assert.deepStrictEqual({ pid: held?.pid, title: held?.title }, { pid: PID, title: TITLE });
 	});
+
+	test('shortening the grace (Attach to Session, a reconnecting remote window) spares terminals the daemon holds', async () => {
+		const pty = service();
+		const reduced: string[] = [];
+		(pty as unknown as { _ptys: Map<number, { paradisHeldByDaemon: boolean; reduceGraceTime(): void }> })._ptys = new Map([
+			[1, { paradisHeldByDaemon: true, reduceGraceTime: () => reduced.push('held by the daemon') }],
+			[2, { paradisHeldByDaemon: false, reduceGraceTime: () => reduced.push('in this pty host') }],
+		]);
+
+		await pty.reduceConnectionGraceTime();
+
+		assert.deepStrictEqual(reduced, ['in this pty host']);
+	});
 });

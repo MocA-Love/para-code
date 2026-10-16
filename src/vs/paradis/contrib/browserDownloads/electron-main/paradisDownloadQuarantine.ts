@@ -15,8 +15,9 @@
 // Linux には相当する仕組みが無いので何もしない。
 
 import { execFile } from 'child_process';
-import * as fs from 'fs';
+import { promises as fs } from 'fs';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { Promises } from '../../../../base/node/pfs.js';
 
 /** 外部コマンドを実行する口（テストでは偽物を渡す）。終了コードが 0 なら true。 */
 export type ParadisRunCommand = (file: string, args: readonly string[]) => Promise<boolean>;
@@ -24,8 +25,8 @@ export type ParadisRunCommand = (file: string, args: readonly string[]) => Promi
 export interface IParadisQuarantineHost {
 	readonly platform: NodeJS.Platform;
 	readonly run: ParadisRunCommand;
-	readonly exists: (path: string) => boolean;
-	readonly writeFile: (path: string, content: string) => void;
+	readonly exists: (path: string) => Promise<boolean>;
+	readonly writeFile: (path: string, content: string) => Promise<void>;
 	readonly now: () => number;
 }
 
@@ -38,8 +39,8 @@ function runCommand(file: string, args: readonly string[]): Promise<boolean> {
 export const paradisDefaultQuarantineHost: IParadisQuarantineHost = {
 	platform: process.platform,
 	run: runCommand,
-	exists: path => fs.existsSync(path),
-	writeFile: (path, content) => fs.writeFileSync(path, content),
+	exists: path => Promises.exists(path),
+	writeFile: (path, content) => fs.writeFile(path, content),
 	now: Date.now,
 };
 
@@ -75,12 +76,12 @@ export async function paradisEnsureDownloadQuarantine(path: string, sourceUrl: s
 		}
 		if (host.platform === 'win32') {
 			const stream = `${path}:Zone.Identifier`;
-			if (host.exists(stream)) {
+			if (await host.exists(stream)) {
 				return 'present';
 			}
 			const source = sanitizeSourceUrl(sourceUrl);
 			// ZoneId=3 はインターネット。Chrome が書くのと同じ形。
-			host.writeFile(stream, `[ZoneTransfer]\r\nZoneId=3\r\n${source ? `HostUrl=${source}\r\n` : ''}`);
+			await host.writeFile(stream, `[ZoneTransfer]\r\nZoneId=3\r\n${source ? `HostUrl=${source}\r\n` : ''}`);
 			return 'added';
 		}
 		return 'notApplicable';

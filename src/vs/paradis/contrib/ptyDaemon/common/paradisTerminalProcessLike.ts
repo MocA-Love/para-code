@@ -35,4 +35,36 @@ export interface IParadisTerminalProcessLike extends ITerminalChildProcess, IDis
 	/** 未確認の数え直し。繋ぎ直したときに前の相手の借金を持ち越さないための口。 */
 	clearUnacknowledgedChars(): void;
 	getWindowsPty(): IProcessReadyWindowsPty | undefined;
+
+	/**
+	 * 常駐が持っている端末か。持っていれば、このプロセス（pty ホスト）が終わっても走り続け、
+	 * 次に起きた pty ホストが引き取れる。upstream の `TerminalProcess` には無い（undefined）。
+	 */
+	readonly paradisHeldByDaemon?: boolean;
+	/**
+	 * 窓が離れたので、常駐から手を離す。**pty は止めない。**
+	 *
+	 * 離さないと、常駐は「まだ見られている」と思って 10 万文字で pty を止め、別のサーバー
+	 * （更新後の版）も引き取れない。常駐の端末だけが持つ（`paradisDaemonTerminalProcess.ts`）。
+	 */
+	paradisLetGo?(): Promise<void>;
+	/**
+	 * 手を離していた端末へ戻る。戻ったら true、手を離していなければ何もせず false。
+	 *
+	 * 離れている間の出力は画面の直列化へ届いていないので、差分だけを出力として流すか、
+	 * `replaceScreen` で新しい直列化を受け取って控え全体で作り直す。呼んだ側は、true が返ったら
+	 * 溜めている出力を直列化へ掃き出し、書き終わるのを待ってから窓へ画面を渡すこと。
+	 * 別の pty ホストへ移っていた・もう無かったときは終了を伝えてから例外を投げる（繋ぎ直しは
+	 * 失敗として扱われる）。
+	 */
+	paradisComeBack?(replaceScreen: (cols: number, rows: number) => IParadisPtyScreenSink): Promise<boolean>;
 }
+
+/** 作り直す画面の書き込み口（`PersistentTerminalProcess` の直列化）。 */
+export interface IParadisPtyScreenSink {
+	handleResize(cols: number, rows: number): void;
+	handleData(data: string): void;
+	/** それまでに書いた分が画面に反映されたら解決する。 */
+	whenWritten(): Promise<void>;
+}
+
