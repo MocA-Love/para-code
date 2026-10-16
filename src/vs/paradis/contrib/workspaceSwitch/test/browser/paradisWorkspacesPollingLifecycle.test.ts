@@ -9,7 +9,7 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisWorkspacesPollingScheduler, ParadisWorkspacesPollingController, ParadisWorkspacesPollingLifecycle } from '../../browser/paradisWorkspacesPollingLifecycle.js';
+import { IParadisWorkspacesPollingScheduler, paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController, ParadisWorkspacesPollingLifecycle } from '../../browser/paradisWorkspacesPollingLifecycle.js';
 
 suite('ParadisWorkspacesPollingLifecycle', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -137,6 +137,49 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		harness.clock.advance(0);
 
 		assert.deepStrictEqual(harness.counts().commands, { diff: 3, pr: 3 });
+	});
+
+	// 一覧・worktree の通知は中身が変わらなくても来る（main の HEAD の書き換え、ピンの付け外し）。PR は問い合わせ対象が
+	// 変わったときだけ取り直す（Q373）
+	test('with a GitHub target signal, list changes refresh only the diff and a target change only the PR', () => {
+		const harness = store.add(new PollingHarness(true, true));
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.repositories.fire();
+		harness.worktrees.fire();
+		harness.clock.advance(0);
+		const afterListChanges = harness.counts().commands;
+		harness.githubTargets.fire();
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual({ afterListChanges, afterTargetChange: harness.counts().commands }, {
+			afterListChanges: { diff: 2, pr: 1 },
+			afterTargetChange: { diff: 2, pr: 2 },
+		});
+	});
+
+	test('a GitHub target change while hidden refreshes the PR when the view returns', () => {
+		const harness = store.add(new PollingHarness(true, true));
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+		harness.fireVisibility(false, false);
+		harness.githubTargets.fire();
+
+		harness.fireVisibility(true, true);
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 2 });
+	});
+
+	test('fingerprints the GitHub targets by URI, branch and the current space, not by order', () => {
+		const a = { uri: 'file:///repo', branch: 'main' };
+		const b = { uri: 'file:///repo-wt', branch: 'feature' };
+		assert.deepStrictEqual({
+			reordered: paradisGithubTargetsFingerprint([a, b], 'file:///repo') === paradisGithubTargetsFingerprint([b, a], 'file:///repo'),
+			branchChanged: paradisGithubTargetsFingerprint([a, { ...b, branch: 'other' }], 'file:///repo') === paradisGithubTargetsFingerprint([a, b], 'file:///repo'),
+			switched: paradisGithubTargetsFingerprint([a, b], 'file:///repo-wt') === paradisGithubTargetsFingerprint([a, b], 'file:///repo'),
+		}, { reordered: true, branchChanged: false, switched: false });
 	});
 
 	test('hiding does not cancel running commands and hidden completion does not reschedule', () => {
@@ -372,19 +415,21 @@ class PollingHarness implements IDisposable {
 	readonly visibility = this.disposables.add(new Emitter<boolean>());
 	readonly repositories = this.disposables.add(new Emitter<void>());
 	readonly worktrees = this.disposables.add(new Emitter<void>());
+	readonly githubTargets = this.disposables.add(new Emitter<void>());
 	readonly clock = new FakeClock();
 	readonly lifecycle: ParadisWorkspacesPollingLifecycle;
 
 	private readonly commandCounts: Record<PollKind, number> = { diff: 0, pr: 0 };
 	private actualBodyVisible = false;
 
-	constructor(private readonly completeAutomatically = true) {
+	constructor(private readonly completeAutomatically = true, followGithubTargets = false) {
 		this.lifecycle = this.disposables.add(new ParadisWorkspacesPollingLifecycle(
 			{
 				isBodyVisible: () => this.actualBodyVisible,
 				onDidChangeVisibility: this.visibility.event,
 				onDidChangeRepositories: this.repositories.event,
 				onDidChangeWorktrees: this.worktrees.event,
+				...(followGithubTargets ? { onDidChangeGithubTargets: this.githubTargets.event } : {}),
 			},
 			() => this.refreshDiff(),
 			() => this.refreshPr(),
