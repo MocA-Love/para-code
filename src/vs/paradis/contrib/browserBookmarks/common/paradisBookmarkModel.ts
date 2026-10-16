@@ -259,6 +259,118 @@ export function moveParadisRootNode(nodes: readonly ParadisBookmarkNode[], activ
 	return nextNodes;
 }
 
+/** Whether `nodeId` is `node` itself or anywhere inside it. */
+function paradisNodeContains(node: ParadisBookmarkNode, nodeId: string): boolean {
+	return node.id === nodeId || (isParadisBookmarkFolder(node) && node.children.some(child => paradisNodeContains(child, nodeId)));
+}
+
+/**
+ * Insert a node into a folder (`null` = the bar root) at `index` (clamped; `undefined` = the end).
+ * Returns `undefined` when the folder does not exist.
+ */
+export function insertParadisNodeAt(nodes: readonly ParadisBookmarkNode[], nodeToInsert: ParadisBookmarkNode, folderId: string | null, index?: number): ParadisBookmarkNode[] | undefined {
+	const insertInto = (children: readonly ParadisBookmarkNode[]): ParadisBookmarkNode[] => {
+		const at = index === undefined ? children.length : Math.max(0, Math.min(index, children.length));
+		return [...children.slice(0, at), nodeToInsert, ...children.slice(at)];
+	};
+	if (folderId === null) {
+		return insertInto(nodes);
+	}
+	let inserted = false;
+	const visit = (source: readonly ParadisBookmarkNode[]): ParadisBookmarkNode[] => source.map((node): ParadisBookmarkNode => {
+		if (inserted || !isParadisBookmarkFolder(node)) {
+			return node;
+		}
+		if (node.id === folderId) {
+			inserted = true;
+			return { ...node, children: insertInto(node.children) };
+		}
+		const children = visit(node.children);
+		return inserted ? { ...node, children } : node;
+	});
+	const next = visit(nodes);
+	return inserted ? next : undefined;
+}
+
+/** Rename a bookmark or a folder where it is (its position and everything else stay). */
+export function renameParadisNode(nodes: readonly ParadisBookmarkNode[], nodeId: string, title: string): { nodes: ParadisBookmarkNode[]; renamed?: ParadisBookmarkNode } {
+	let renamed: ParadisBookmarkNode | undefined;
+	const visit = (source: readonly ParadisBookmarkNode[]): ParadisBookmarkNode[] => source.map((node): ParadisBookmarkNode => {
+		if (renamed) {
+			return node;
+		}
+		if (node.id === nodeId) {
+			renamed = isParadisBookmark(node) ? { ...node, title: title.trim() || node.url } : { ...node, title: title.trim() };
+			return renamed;
+		}
+		if (isParadisBookmarkFolder(node)) {
+			const children = visit(node.children);
+			return renamed ? { ...node, children } : node;
+		}
+		return node;
+	});
+	const next = visit(nodes);
+	return renamed ? { nodes: next, renamed } : { nodes: [...nodes] };
+}
+
+/** The bookmarks and folders inside a folder (not counting the folder itself). */
+export function countParadisDescendants(node: ParadisBookmarkNode): { readonly bookmarks: number; readonly folders: number } {
+	let bookmarks = 0;
+	let folders = 0;
+	const visit = (children: readonly ParadisBookmarkNode[]) => {
+		for (const child of children) {
+			if (isParadisBookmarkFolder(child)) {
+				folders++;
+				visit(child.children);
+			} else {
+				bookmarks++;
+			}
+		}
+	};
+	if (isParadisBookmarkFolder(node)) {
+		visit(node.children);
+	}
+	return { bookmarks, folders };
+}
+
+/** Every id in a subtree (the node itself included). */
+export function collectParadisNodeIds(node: ParadisBookmarkNode, into: Set<string> = new Set()): Set<string> {
+	into.add(node.id);
+	if (isParadisBookmarkFolder(node)) {
+		for (const child of node.children) {
+			collectParadisNodeIds(child, into);
+		}
+	}
+	return into;
+}
+
+/** Why {@link moveParadisNodeTo} refused a move. */
+export type ParadisBookmarkMoveError = 'not-found' | 'folder-not-found' | 'into-itself';
+
+/**
+ * Move a bookmark or a folder into another folder (`null` = the bar root) at `index` (clamped;
+ * `undefined` = the end). The index counts the destination's children without the moved node, so
+ * moving within one folder lands exactly at `index`. A folder cannot move into itself or its descendants.
+ */
+export function moveParadisNodeTo(nodes: readonly ParadisBookmarkNode[], nodeId: string, folderId: string | null, index?: number): { readonly ok: true; readonly nodes: ParadisBookmarkNode[] } | { readonly ok: false; readonly error: ParadisBookmarkMoveError } {
+	const node = findParadisNodeById(nodes, nodeId);
+	if (!node) {
+		return { ok: false, error: 'not-found' };
+	}
+	if (folderId !== null) {
+		const folder = findParadisNodeById(nodes, folderId);
+		if (!folder || !isParadisBookmarkFolder(folder)) {
+			return { ok: false, error: 'folder-not-found' };
+		}
+		if (paradisNodeContains(node, folderId)) {
+			return { ok: false, error: 'into-itself' };
+		}
+	}
+	const removed = removeParadisNodeFromTree(nodes, nodeId);
+	const inserted = insertParadisNodeAt(removed.nodes, node, folderId, index);
+	return inserted ? { ok: true, nodes: inserted } : { ok: false, error: 'folder-not-found' };
+}
+
 /** Write the given favicon hash onto every bookmark whose normalized URL matches. */
 export function syncParadisFaviconInTree(nodes: readonly ParadisBookmarkNode[], url: string, faviconHash: string): { nodes: ParadisBookmarkNode[]; updated: boolean } {
 	const normalizedUrl = normalizeParadisBookmarkUrl(url);
