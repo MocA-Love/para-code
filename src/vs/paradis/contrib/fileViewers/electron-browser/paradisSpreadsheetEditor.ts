@@ -44,6 +44,7 @@ import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, Parad
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import { ParadisOfficeOpenCache } from '../common/paradisOfficeOpenCache.js';
+import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
@@ -666,6 +667,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _metafileRequest = this._register(new MutableDisposable<IDisposable>());
 	/** ブックを表示しているあいだ、覚えておいた解析結果を手放させない。 */
 	private readonly _openCacheLease = this._register(new MutableDisposable());
+	/** 開いてから表が描かれるまでの計測（`setInput` で始め、最初に描けたら送る）。 */
+	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
+	/** いま開いているブックの大きさ（計測に添える）。 */
+	private _openBytes = 0;
 
 	constructor(
 		group: IEditorGroup,
@@ -773,6 +778,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
 		// 母数は「利用者が1つのブックを開いた」回数。同じブックならタブを往復しても増えない。
 		this._probe.beginOpen(resource.toString(), this._diagnosticEngine());
+		this._openTiming.value = startParadisViewerOpenTiming('excel');
+		this._openBytes = 0;
 		const fallbackViewState = this._currentSpreadsheetViewState();
 		const requestedViewState = spreadsheetViewStateFromOptions(options?.viewState, fallbackViewState);
 		this._currentResource = resource;
@@ -948,9 +955,30 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'rendered', generation: recoveryGeneration, hasExpectedRoot });
 		if (transition.state.phase === 'ready') {
 			this._probe.noteSuccess();
+			this._notePainted();
 		}
 		this._recoveryState = transition.state;
 		this._applyRecoveryEffects(transition.effects, resource, viewState);
+	}
+
+	/** 開いてから最初に表を描けたところ。DOM を作った次の描画の枠で記録する（表が画面に出る時点に近づける）。 */
+	private _notePainted(): void {
+		const timing = this._openTiming.value;
+		const host = this._bodyEl;
+		if (!timing || !host) {
+			return;
+		}
+		const sheet = this._sheets[this._activeSheetIndex];
+		const values = {
+			safe_size_kb: Math.round(this._openBytes / 1024),
+			safe_sheets: this._sheets.length,
+			safe_rows: sheet?.rows.length ?? 0,
+			safe_columns: sheet?.columnCount ?? 0,
+			safe_virtual: !!this._virtualHostEl,
+		};
+		// 描く前に別のブックへ移った・閉じたときは `_openTiming` が捨てられ、`painted` は何もしない。
+		// 読み直し（ファイルの変更）でもう一度ここへ来ても、`painted` は最初の 1 回しか送らない。
+		dom.getWindow(host).requestAnimationFrame(() => timing.painted(values));
 	}
 
 	private async _load(resource: URI, token: CancellationToken, viewState = this._currentSpreadsheetViewState(), recoveryGeneration = this._recoveryState.generation, preserveCommitted = false): Promise<boolean> {
@@ -970,6 +998,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			// 同じブックを前に解析していて、ファイルが変わっていなければ、覚えた結果を使う。
 			workbook = (await openSpreadsheetResource(this._fileService, this._sharedProcessService, resource, SPREADSHEET_OPEN_CACHE, (totalBytes, value) => {
 				this._probe.setBytes(totalBytes);
+				this._openBytes = totalBytes;
 				content = value;
 			})).workbook;
 		} catch (err) {
@@ -1888,6 +1917,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._semanticRequest.clear();
 		this._metafileRequest.clear();
 		this._openCacheLease.clear();
+		this._openTiming.clear();
 		this._probe.endOpen();
 		this._inputGeneration.invalidate();
 		this._loadGeneration++;

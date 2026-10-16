@@ -560,6 +560,7 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 	writeFileIfUnchanged(filePath, expected, content) {
 		let current: string | undefined;
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- Compare-and-write: the re-read, the compare and the write below must happen without yielding, so Para Code never writes an older snapshot over a newer one.
 			current = readFileSync(filePath, 'utf8');
 		} catch (error) {
 			if (!isFileNotFound(error)) {
