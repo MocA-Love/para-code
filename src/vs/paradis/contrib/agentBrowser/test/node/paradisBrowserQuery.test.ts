@@ -223,12 +223,12 @@ suite('paradisBrowserQuery (shared process)', () => {
 		const grown = await growing.query().call(growing.call(), 'scroll_to', { text: 'Row 30' });
 		assert.deepStrictEqual({
 			found: [isError(found), textOf(found).split('\n')[0], above.calls.map(call => [call.spec.checkOnly ?? null, call.spec.reset ?? null, call.spec.resetTo ?? null])],
-			missing: [isError(missing), nowhere.calls.map(call => call.spec.mode === 'scrollMiss' ? 'scrollMiss' : call.spec.restoreTo !== undefined ? `restore ${call.spec.restoreTo}` : call.spec.reset ? `reset ${call.spec.resetTo}` : call.spec.checkOnly ? 'check' : 'step')],
+			missing: [isError(missing), nowhere.calls.map(call => call.spec.mode === 'scrollMiss' ? 'scrollMiss' : call.spec.restoreTo !== undefined ? `restore ${call.spec.restoreTo} if still at ${call.spec.expectAt} in ${call.spec.expectContainer}` : call.spec.reset ? `reset ${call.spec.resetTo}` : call.spec.checkOnly ? 'check' : 'step')],
 			missingText: textOf(missing).split('\n'),
 			grown: [isError(grown), growing.calls.length],
 		}, {
 			found: [false, 'Found after 0 scroll step(s) (0px) in div.list after searching again from the start, and scrolled it into view.', [[false, null, null], [true, null, null], [null, true, 'start'], [false, null, null]]],
-			missing: [true, ['step', 'step', 'check', 'reset start', 'step', 'check', 'restore 400', 'scrollMiss']],
+			missing: [true, ['step', 'step', 'check', 'reset start', 'step', 'check', 'restore 400 if still at 400 in div.list', 'scrollMiss']],
 			missingText: [
 				'Not found: searched all of div.list (from where it was to the end, then from the start back to where it was) in 2 scroll step(s) (800px), and scrolled it back to where it was.',
 				'- "text" matches the text of elements, not what is typed or selected in a form field, and 1 form field holds it (for example {"tag":"input","name":"Company"}). Find the field by role and name instead.',
@@ -263,10 +263,26 @@ suite('paradisBrowserQuery (shared process)', () => {
 		});
 	});
 
-	test('the page function does nothing when it starts after its last start time', async () => {
-		const source = paradisBuildQueryFunction({ mode: 'text' }, 0, undefined, Date.now() - 1);
-		const run = new Function(`return (${source});`)() as () => Promise<Record<string, unknown>>;
-		assert.deepStrictEqual(await run(), { paraLate: true });
+	test('the page function does nothing when it starts after its last start time, but a page with a faked clock still runs it', async () => {
+		/** ページの関数を、その中から見える Date と performance を差し替えて動かす（このテストの大域は変えない）。 */
+		const runWith = (notAfter: number, clock: { readonly date: number; readonly monotonic: number }) => {
+			const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 0, intervalMs: 50 }, 0, undefined, notAfter);
+			const run = new Function('Date', 'performance', 'location', `return (${source});`)({ now: () => clock.date }, { timeOrigin: clock.monotonic, now: () => 0 }, { href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
+			return run();
+		};
+		const now = Date.now();
+		const day = 24 * 60 * 60 * 1000;
+		assert.deepStrictEqual({
+			late: await runWith(now - 1000, { date: now, monotonic: now }),
+			// fake timers・MockDate で Date だけが未来（q.html Q379 のレビュー）
+			futureDate: await runWith(now + 8000, { date: now + 2 * day, monotonic: now }),
+			// どちらの時計も 1 日より先なら信じない
+			futureClocks: await runWith(now + 8000, { date: now + 2 * day, monotonic: now + 2 * day }),
+		}, {
+			late: { paraLate: true },
+			futureDate: { met: true, url: 'about:blank' },
+			futureClocks: { met: true, url: 'about:blank' },
+		});
 	});
 
 	test('the element a tool looks at is shown to the cursor, but not one inside an iframe', async () => {

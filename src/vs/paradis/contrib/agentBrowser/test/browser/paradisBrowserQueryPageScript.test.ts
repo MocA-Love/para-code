@@ -38,7 +38,7 @@ suite('paradisBrowserQueryPageScript (scroll_to)', () => {
 		const atEnd = list.scrollTop;
 		const toStart = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', reset: true, text: 'nothing here' });
 		const atStart = list.scrollTop;
-		const restored = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', restoreTo: 300, text: 'nothing here' });
+		const restored = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', restoreTo: 300, expectAt: 0, expectContainer: 'div#q379-list', text: 'nothing here' });
 		assert.deepStrictEqual({
 			step: [step.before, step.position, step.moved, step.max, step.extent],
 			toEnd: [toEnd.before, atEnd],
@@ -49,6 +49,27 @@ suite('paradisBrowserQueryPageScript (scroll_to)', () => {
 			toEnd: [400, 900],
 			toStart: [900, 0],
 			restored: [true, 300],
+		});
+	});
+
+	// 探している間に利用者が動かした分や、別の領域は戻さない（q.html Q379 のレビュー）
+	test('scrolling back happens only when the container is still where the tool left it', async () => {
+		root.innerHTML = '<div id="q379-list" style="height: 100px; overflow: auto;"><div style="height: 1000px;"></div></div>';
+		const list = mainWindow.document.getElementById('q379-list')!;
+		list.scrollTop = 500;
+		const userMoved = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', restoreTo: 300, expectAt: 400, expectContainer: 'div#q379-list', text: 'nothing here' });
+		const afterUser = list.scrollTop;
+		const otherArea = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', restoreTo: 300, expectAt: 500, expectContainer: 'div.other', text: 'nothing here' });
+		const afterOther = list.scrollTop;
+		const ours = await runInPage({ mode: 'scroll', container: '#q379-list', direction: 'down', restoreTo: 300, expectAt: 500, expectContainer: 'div#q379-list', text: 'nothing here' });
+		assert.deepStrictEqual({
+			userMoved: [userMoved.restored, afterUser],
+			otherArea: [otherArea.restored, afterOther],
+			ours: [ours.restored, list.scrollTop],
+		}, {
+			userMoved: [false, 500],
+			otherArea: [false, 500],
+			ours: [true, 300],
 		});
 	});
 
