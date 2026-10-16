@@ -336,6 +336,72 @@ suite('ParadisSpreadsheetService', () => {
 		}]);
 	});
 
+	suite('shapes to the right of the shown columns', () => {
+		/** A callout like Excel's, anchored to one cell, `widthPx` wide; `flipH` turns its tail to the right. */
+		function callout(column: number, widthPx: number, flipH = false): string {
+			return `<xdr:oneCellAnchor><xdr:from><xdr:col>${column}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${widthPx * 9525}" cy="381000"/>`
+				+ `<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="${column + 2}" name="Callout"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr><a:xfrm${flipH ? ' flipH="1"' : ''}><a:off x="0" y="0"/><a:ext cx="${widthPx * 9525}" cy="381000"/></a:xfrm>`
+				+ '<a:prstGeom prst="wedgeRoundRectCallout"><a:avLst><a:gd name="adj1" fmla="val -62000"/><a:gd name="adj2" fmla="val 12000"/><a:gd name="adj3" fmla="val 16667"/></a:avLst></a:prstGeom>'
+				+ '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln w="9525"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></xdr:spPr>'
+				+ '<xdr:txBody><a:bodyPr wrap="square" anchor="t"/><a:lstStyle/><a:p><a:r><a:t>Check the boundary marks.</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData fPrintsWithSheet="0"/></xdr:oneCellAnchor>';
+		}
+
+		/** A sheet printing A1:E3 with 75px columns whose drawing holds `anchors` (none: no drawing part at all). */
+		async function calloutWorkbook(anchors: readonly string[] | undefined, printArea = true): Promise<string> {
+			const book = new ExcelJS.Workbook();
+			const sheet = book.addWorksheet('Form');
+			sheet.columns = Array.from({ length: 12 }, () => ({ width: 10 }));
+			for (let row = 1; row <= 3; row++) {
+				for (let column = 1; column <= 5; column++) {
+					sheet.getCell(row, column).value = `r${row}c${column}`;
+				}
+			}
+			if (printArea) {
+				sheet.pageSetup.printArea = 'A1:E3';
+			}
+			if (anchors) {
+				sheet.addImage(book.addImage({ buffer: Buffer.from(minimalPng(1, 1)) as unknown as ExcelJS.Buffer, extension: 'png' }), { tl: { col: 0, row: 0 }, ext: { width: 1, height: 1 } });
+			}
+			const zip = await JSZip.loadAsync(await book.xlsx.writeBuffer());
+			if (anchors) {
+				const name = Object.keys(zip.files).find(candidate => /^xl\/drawings\/drawing\d+\.xml$/.test(candidate))!;
+				zip.file(name, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' + anchors.join('') + '</xdr:wsDr>');
+			}
+			return Buffer.from(await zip.generateAsync({ type: 'uint8array' })).toString('base64');
+		}
+
+		async function shown(workbook: string) {
+			const sheet = (await new ParadisSpreadsheetService().parseWorkbook(workbook)).sheets[0];
+			return { columns: sheet.columnCount, widths: sheet.columnWidths, rows: sheet.rows.length, printArea: sheet.printArea, firstRow: sheet.rows[0].cells.map(cell => cell.value) };
+		}
+
+		test('extends the shown columns to the right edge of a callout outside the print area, keeping the print area and rows', async () => {
+			// G (0-based 6) + 140px ends inside H; with its tail turned right (12% of the width) it reaches into I.
+			deepStrictEqual([await shown(await calloutWorkbook([callout(6, 140)])), (await shown(await calloutWorkbook([callout(6, 140, true)]))).columns], [{
+				columns: 8,
+				widths: [75, 75, 75, 75, 75, 75, 75, 75],
+				rows: 3,
+				printArea: { minR: 1, maxR: 3, minC: 1, maxC: 5 },
+				firstRow: ['r1c1', 'r1c2', 'r1c3', 'r1c4', 'r1c5', '', '', ''],
+			}, 9]);
+		});
+
+		test('also extends a sheet without a print area, and stops at the column limit for a far-away shape', async () => {
+			deepStrictEqual([
+				(await shown(await calloutWorkbook([callout(6, 140)], false))).columns,
+				(await shown(await calloutWorkbook([callout(500, 140)]))).columns,
+			], [8, 5 + 64]);
+		});
+
+		test('keeps the shown columns when the shapes stay inside them or there are none', async () => {
+			deepStrictEqual([
+				(await shown(await calloutWorkbook([callout(1, 140)]))).columns,
+				(await shown(await calloutWorkbook(undefined))).columns,
+				(await shown(await calloutWorkbook(undefined, false))).columns,
+			], [5, 5, 5]);
+		});
+	});
+
 	test('rejects encrypted (CFB) workbooks with a descriptive message', async () => {
 		const service = new ParadisSpreadsheetService(async () => ({ ExcelJS, JSZip }));
 		// OLE2/CFB 標準シグネチャ(D0 CF 11 E0) + 適当な続き。zip ではないため exceljs も読めない。
