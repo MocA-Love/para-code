@@ -72,6 +72,28 @@ suite('paradisSpreadsheetExcelJsMerges', () => {
 		deepStrictEqual(fast, original);
 	});
 
+	test('does not compare each merge with every earlier merge while loading', async () => {
+		installParadisExcelJsMergeFastPath(ExcelJS);
+		const bytes = await mergedWorkbook();
+		const probe = new ExcelJS.Workbook().addWorksheet('probe');
+		probe.mergeCells('A1:B2');
+		const rangePrototype = Object.getPrototypeOf((probe as unknown as { _merges: Record<string, object> })._merges.A1) as { intersects(other: unknown): boolean };
+		const intersects = rangePrototype.intersects;
+		let comparisons = 0;
+		rangePrototype.intersects = function (this: unknown, other: unknown) {
+			comparisons++;
+			return intersects.call(this, other);
+		};
+		try {
+			const workbook = new ExcelJS.Workbook();
+			await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+		} finally {
+			rangePrototype.intersects = intersects;
+		}
+		// Without the fast path, exceljs compares the 301 merges pairwise (45,150 calls).
+		strictEqual(comparisons, 0);
+	});
+
 	test('reads the merge list in the order of worksheet.model.merges', async () => {
 		installParadisExcelJsMergeFastPath(ExcelJS);
 		const workbook = new ExcelJS.Workbook();
