@@ -18,6 +18,10 @@
 // 部分の末尾と一致したときにそれを使う。キーから組み立てられない操作（Tab の補完、カーソル移動、
 // 履歴の呼び出し）の後は、組み立てられていた間に覚えた「入力行の頭に付くプロンプトの残り」を
 // 入力行から外して使う。どちらも確かめられなければ undefined（一覧は開かず、↓ はシェルへ）。
+//
+// 打った文字が分からない間（つなぎ直したターミナル、前のコマンドの実行中に打った後など）は、
+// 「この時点の入力行のカーソルより前はこうだったはず」という見込みをキーで組み立て、入力行の
+// カーソルより前と同じになったときに打った文字にする。
 
 import { type IPromptInputModel, PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { PARADIS_EXTERNAL_PROMPT_CHANGE_MS, ParadisTerminalInputKind, paradisClassifyTerminalInput } from './paradisTerminalHistoryNavigation.js';
@@ -51,23 +55,24 @@ export function paradisPromptTextAfterCursor(model: PromptModel): string {
 
 /**
  * 送った 1 回分の入力で、カーソルより前の文字がどう変わるか。文字・貼り付けは足し、Backspace は
- * 末尾を消し、Delete と端末の応答は変えない。Enter・Ctrl+C で空に戻る。Ctrl+U も空にするが、逐次検索の
- * 最中かもしれないので、それまでの文字が分かっているときだけ。それ以外（Tab、カーソル移動、↑↓、
- * Ctrl+W、Ctrl+G（逐次検索を抜けると元の行に戻る）、Esc など、シェルによって結果が変わるもの）は
- * undefined（分からない）。
+ * 末尾を消し、Delete と端末の応答は変えない。それまでの文字が分かっているときの Enter・Ctrl+C・Ctrl+U
+ * は空に戻す。分からないときは、Enter・Ctrl+C でも分からないまま（補完のメニュー（oh-my-zsh の
+ * menu select、fzf-tab）では、Enter は候補を選ぶだけ、Ctrl+C はメニューを抜けるだけで行が残る。
+ * Ctrl+U は逐次検索の最中かもしれない）。それ以外（Tab、カーソル移動、↑↓、Ctrl+W、Ctrl+G（逐次検索を
+ * 抜けると元の行に戻る）、Esc など、シェルによって結果が変わるもの）は undefined（分からない）。
  */
 export function paradisApplyTypedInput(before: string | undefined, data: string): string | undefined {
 	const kind = paradisClassifyTerminalInput(data);
 	if (kind === ParadisTerminalInputKind.Ignore) {
 		return before;
 	}
-	if (data === '\x07') {
+	if (data === '\x07' || before === undefined) {
 		return undefined;
 	}
 	if (kind === ParadisTerminalInputKind.Submit) {
 		return '';
 	}
-	if (before === undefined || kind !== ParadisTerminalInputKind.Edit) {
+	if (kind !== ParadisTerminalInputKind.Edit) {
 		return undefined;
 	}
 	if (data === '\x15') {
@@ -101,6 +106,18 @@ function promptHeadOf(text: string, typed: string): string | undefined {
 	return trimmedText.endsWith(trimmedTyped) ? trimmedText.substring(0, trimmedText.length - trimmedTyped.length) : undefined;
 }
 
+/** 実行中のコマンド 1 つ分（実行の印から次のプロンプトまで）に打った文字。 */
+interface IRunningCommand {
+	/** 何か打った。 */
+	input: boolean;
+	/** 実行の印から打った文字（実行中のプログラムが読まずに残れば、次のプロンプトにシェルが出す）。 */
+	typed: string | undefined;
+	/** 終わりの印を受けた。 */
+	finished: boolean;
+	/** 終わりの印から打った文字（プログラムが読んだ分を除く）。 */
+	typedAfterFinish: string | undefined;
+}
+
 /**
  * 1 つのターミナルの「自分で打った文字」を追う。キーと入力行の変化を届いた順に渡し、
  * {@link resolve} で今の前方一致の文字を受け取る。時刻は呼び出し側が渡す。
@@ -108,14 +125,17 @@ function promptHeadOf(text: string, typed: string): string | undefined {
 export class ParadisTypedPrefixTracker {
 	/** 送ったキーから組み立てた、プロンプトの終わりからカーソルまで。分からなければ undefined。 */
 	private _typed: string | undefined;
+	/** {@link _typed} を空の入力行から組み立てた（カーソルの後ろに打った文字は無い）。 */
+	private _afterCursorEmpty = false;
 	/** 入力行の頭に付いているプロンプトの残り（組み立てた文字と一致したときに覚える）。 */
 	private _promptHead: string | undefined;
 	/** {@link _promptHead} を覚えたときの打った文字。 */
 	private _typedAtHead: string | undefined;
+	/** {@link _typed} が分からない間の、カーソルより前の文字の見込み（キーで組み立てる）。 */
+	private _guesses: string[] = [];
 	private _lastInputAt = Number.NEGATIVE_INFINITY;
 	/** コマンドの実行中（次のプロンプトまで）。打った文字は実行中のプログラムへ行く。 */
-	private _commandRunning = false;
-	private _inputWhileRunning = false;
+	private _running: IRunningCommand | undefined;
 
 	/** xterm.js の `onData`（ユーザーの入力）。 */
 	input(data: string, now: number): void {
@@ -123,63 +143,128 @@ export class ParadisTypedPrefixTracker {
 			return;
 		}
 		this._lastInputAt = now;
-		if (this._commandRunning) {
-			this._inputWhileRunning = true;
+		const running = this._running;
+		if (running) {
+			running.input = true;
+			running.typed = paradisApplyTypedInput(running.typed, data);
+			if (running.finished) {
+				running.typedAfterFinish = paradisApplyTypedInput(running.typedAfterFinish, data);
+			}
 			return;
 		}
 		this._typed = paradisApplyTypedInput(this._typed, data);
+		this._setGuesses(this._guesses.map(guess => paradisApplyTypedInput(guess, data)));
 	}
 
 	/** Para Code 自身が入力行を `line`（カーソルは末尾）に書き換えた。 */
 	wrote(line: string, now: number): void {
 		this._lastInputAt = now;
 		this._typed = line;
+		this._afterCursorEmpty = true;
+		this._guesses = [];
 	}
 
 	/**
 	 * シェルの入力行が変わった。打った文字と一致していれば、頭に付くプロンプトの残りを覚え直す。
 	 * 入力から時間が経っても一致しなければ、入力を通らずに書き換わった（補完の候補の挿入、ファイルの
-	 * ドロップなど）ので、組み立てた文字は捨てる。
+	 * ドロップなど）ので、組み立てた文字は捨てる。打った文字が分からなければ、見込みと比べる。
 	 */
 	prompt(model: PromptModel, now: number): void {
 		const text = paradisPromptTextBeforeCursor(model);
-		if (this._typed === undefined || text === undefined) {
+		if (text === undefined) {
 			return;
 		}
-		const head = promptHeadOf(text, this._typed);
-		if (head !== undefined) {
-			this._promptHead = head;
-			this._typedAtHead = this._typed;
-		} else if (now - this._lastInputAt > PARADIS_EXTERNAL_PROMPT_CHANGE_MS) {
+		if (this._typed !== undefined) {
+			const head = promptHeadOf(text, this._typed);
+			if (head !== undefined) {
+				this._promptHead = head;
+				this._typedAtHead = this._typed;
+				return;
+			}
+			if (now - this._lastInputAt <= PARADIS_EXTERNAL_PROMPT_CHANGE_MS) {
+				return;
+			}
 			this._typed = undefined;
 		}
+		this._matchGuesses(text);
+	}
+
+	/**
+	 * 入力行のカーソルより前の文字 `text` と見込みを比べ、同じになった見込みを打った文字にする。
+	 * カーソルより前が空（または覚えたプロンプトの残りだけ）なら、ここから打つ文字が打った文字になる。
+	 */
+	private _matchGuesses(text: string): void {
+		const head = this._promptHead;
+		if (text.length === 0 || text === head) {
+			this._setGuesses([...this._guesses, '']);
+			return;
+		}
+		for (const guess of this._guesses) {
+			// 空の見込みは、遅れて出る文字（前のコマンドの実行中に打った文字）と見分けられないので使わない。
+			if (guess.trim().length === 0) {
+				continue;
+			}
+			const before = promptHeadOf(text, guess);
+			if (before === '' || (before !== undefined && before === head)) {
+				this._typed = guess;
+				this._afterCursorEmpty = false;
+				this._promptHead = before;
+				this._typedAtHead = guess;
+				this._guesses = [];
+				return;
+			}
+		}
+	}
+
+	private _setGuesses(guesses: readonly (string | undefined)[]): void {
+		this._guesses = [...new Set(guesses.filter((guess): guess is string => guess !== undefined))];
 	}
 
 	/** コマンドが実行された。次のプロンプトまで、打った文字は数えない。 */
 	commandExecuted(): void {
-		this._commandRunning = true;
-		this._inputWhileRunning = false;
+		this._running = { input: false, typed: '', finished: false, typedAfterFinish: undefined };
 		this._typed = undefined;
+		this._afterCursorEmpty = false;
 		this._promptHead = undefined;
 		this._typedAtHead = undefined;
+		this._guesses = [];
+	}
+
+	/** コマンドが終わった。ここから次のプロンプトまでに打った文字は、シェルが受け取る。 */
+	commandFinished(): void {
+		if (this._running && !this._running.finished) {
+			this._running.finished = true;
+			this._running.typedAfterFinish = '';
+		}
 	}
 
 	/**
 	 * 新しいプロンプトが出た。実行中に打った文字はシェルに残っているか分からないので、そのときは
-	 * 分からないところから始める。
+	 * 「残った」「プログラムが読んだ」の両方を見込みにして、入力行と比べる。
 	 */
 	promptStarted(): void {
-		const unknown = this._commandRunning && this._inputWhileRunning;
-		this._commandRunning = false;
-		this._inputWhileRunning = false;
-		this._typed = unknown ? undefined : '';
+		const running = this._running;
+		this._running = undefined;
 		this._promptHead = undefined;
 		this._typedAtHead = undefined;
+		if (!running?.input) {
+			this._typed = '';
+			this._afterCursorEmpty = true;
+			this._guesses = [];
+			return;
+		}
+		this._typed = undefined;
+		this._afterCursorEmpty = false;
+		this._setGuesses([running.typed, running.finished ? running.typedAfterFinish : undefined]);
 	}
 
-	/** キーから組み立てた文字があり、カーソルはその末尾にある（カーソルを動かすキーを送っていない）。 */
-	get cursorAtEndOfTyped(): boolean {
-		return this._typed !== undefined;
+	/**
+	 * {@link resolve} がキーから組み立てた文字を返し、カーソルの後ろに打った文字が無い（後ろに見える
+	 * 薄い文字・右プロンプトは入力ではない）。入力行から読んだときは false。
+	 */
+	cursorAtEndOfTyped(model: PromptModel): boolean {
+		const text = paradisPromptTextBeforeCursor(model);
+		return this._afterCursorEmpty && this._typed !== undefined && text !== undefined && promptHeadOf(text, this._typed) !== undefined;
 	}
 
 	/**

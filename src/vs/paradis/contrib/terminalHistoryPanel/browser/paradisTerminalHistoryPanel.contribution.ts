@@ -22,7 +22,9 @@
 // （`workbench/contrib/terminal/common/terminal.ts` の PARA-PATCH）。
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Event } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
@@ -45,7 +47,7 @@ import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/comm
 import { paradisTerminalHistoryProvider } from '../../terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
 import { paradisIsSpaceHistoryId, paradisSpaceHistoryDirectoryOf, paradisSpaceHistoryRoot } from '../../terminalSpaceHistory/common/paradisTerminalSpaceHistory.js';
 import { IParadisCommandRecord, paradisShouldRecordCommand } from '../common/paradisTerminalCommandRecords.js';
-import { ParadisHistoryNavigationTracker, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
+import { PARADIS_EXTERNAL_PROMPT_CHANGE_MS, ParadisHistoryNavigationTracker, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
 import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel } from '../common/paradisTerminalHistoryPanelModel.js';
 import { ParadisTypedPrefixTracker, paradisPromptTextAfterCursor } from '../common/paradisTerminalTypedPrefix.js';
 import { IParadisTerminalCommandRecordService } from './paradisTerminalCommandRecordService.js';
@@ -103,6 +105,8 @@ class OpenPanel extends Disposable {
 	items: readonly IParadisHistoryPanelItem[] = [];
 	selectedIndex = 0;
 	home: string | undefined;
+	/** 選んだ履歴を、打った文字がシェルに出るのを待ってから入れようとしている。 */
+	accepting = false;
 	/** 見出しとキーの帯の高さ（px、前に描いたときの値）。 */
 	chromeHeight = PARADIS_HISTORY_PANEL_CHROME_HEIGHT;
 
@@ -204,10 +208,13 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		}));
 		store.add(commandDetection.onCommandFinished(command => {
 			this._navigation.reset();
+			this._typedPrefix.commandFinished();
 			this._updateCanOpen();
 			this._recordCommand(command);
 		}));
 		this._commandDetectionListeners.value = store;
+		// つなぎ直したターミナルは次のプロンプトの印を待たず、今の入力行から始める。
+		this._typedPrefix.prompt(model, Date.now());
 		this._updateCanOpen();
 	}
 
@@ -353,14 +360,43 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const panel = this._panel.value;
 		const model = this._commandDetection?.promptInputModel;
 		const item = panel?.items[panel.selectedIndex];
-		const typed = model && this._typedPrefix.resolve(model, Date.now());
-		if (!panel || !model || !item || typed === undefined) {
+		if (!panel || !model || !item) {
+			this._close(true);
+			return;
+		}
+		if (panel.accepting) {
+			// 前に押した分を待っている（もう一度押しても、打ちかけの行を実行しない）。
+			return;
+		}
+		if (this._typedPrefix.resolve(model, Date.now()) === undefined) {
+			// 一覧を開いた後に打った文字が、まだシェルに出ていない。出てから入れる。
+			panel.accepting = true;
+			void this._acceptWhenShown(panel, model, item, run);
+			return;
+		}
+		this._write(model, item, run);
+	}
+
+	private async _acceptWhenShown(panel: OpenPanel, model: IPromptInputModel, item: IParadisHistoryPanelItem, run: boolean): Promise<void> {
+		const deadline = Date.now() + PARADIS_EXTERNAL_PROMPT_CHANGE_MS;
+		while (this._typedPrefix.resolve(model, Date.now()) === undefined && Date.now() < deadline && !panel.cts.token.isCancellationRequested) {
+			const changed = Event.toPromise(model.onDidChangeInput, panel.store);
+			await raceTimeout(changed, deadline - Date.now(), () => changed.cancel());
+		}
+		if (this._panel.value === panel) {
+			this._write(model, item, run);
+		}
+	}
+
+	private _write(model: IPromptInputModel, item: IParadisHistoryPanelItem, run: boolean): void {
+		const typed = this._typedPrefix.resolve(model, Date.now());
+		if (typed === undefined) {
 			this._close(true);
 			return;
 		}
 		// キーから組み立てた文字のままなら、カーソルは打った文字の末尾にあり、その後ろの表示（薄い文字・
 		// 右プロンプト）は入力ではない。
-		const suffix = this._typedPrefix.cursorAtEndOfTyped ? '' : paradisPromptTextAfterCursor(model);
+		const suffix = this._typedPrefix.cursorAtEndOfTyped(model) ? '' : paradisPromptTextAfterCursor(model);
 		const prefix = typed.trimStart();
 		let edit: string;
 		let text: string;

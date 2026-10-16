@@ -43,19 +43,26 @@ type Event =
 	| { readonly kind: 'line'; readonly line: string; readonly at?: number }
 	| { readonly kind: 'started' }
 	| { readonly kind: 'executed' }
-	| { readonly kind: 'check'; readonly at?: number };
+	| { readonly kind: 'finished' }
+	| { readonly kind: 'check'; readonly at?: number }
+	| { readonly kind: 'cursorAtEnd' };
 
 const input = (data: string, at?: number): Event => ({ kind: 'input', data, at });
 const line = (text: string, at?: number): Event => ({ kind: 'line', line: text, at });
 const check = (at?: number): Event => ({ kind: 'check', at });
+const cursorAtEnd = (): Event => ({ kind: 'cursorAtEnd' });
 const STARTED: Event = { kind: 'started' };
 const EXECUTED: Event = { kind: 'executed' };
+const FINISHED: Event = { kind: 'finished' };
 
-/** 入力と入力行の変化を届いた順に流し、`check` の時点の前方一致の文字を並べる。 */
-function play(events: readonly Event[]): (string | undefined)[] {
+/**
+ * 入力と入力行の変化を届いた順に流し、`check` の時点の前方一致の文字と、`cursorAtEnd` の時点の
+ * 「カーソルの後ろは入力ではない」を並べる。
+ */
+function play(events: readonly Event[]): (string | boolean | undefined)[] {
 	const tracker = new ParadisTypedPrefixTracker();
 	let current = model('');
-	const result: (string | undefined)[] = [];
+	const result: (string | boolean | undefined)[] = [];
 	for (const event of events) {
 		switch (event.kind) {
 			case 'input':
@@ -71,8 +78,14 @@ function play(events: readonly Event[]): (string | undefined)[] {
 			case 'executed':
 				tracker.commandExecuted();
 				break;
+			case 'finished':
+				tracker.commandFinished();
+				break;
 			case 'check':
 				result.push(tracker.resolve(current, event.at ?? 0));
+				break;
+			case 'cursorAtEnd':
+				result.push(tracker.cursorAtEndOfTyped(current));
 				break;
 		}
 	}
@@ -104,7 +117,9 @@ suite('ParadisTerminalTypedPrefix', () => {
 			backspaceEmoji: ['echo 🙂', '\x7f'],
 			deleteKey: ['git', '\x1b[3~'],
 			enter: ['git', '\r'],
+			enterAfterUnknown: [undefined, '\r'],
 			ctrlC: ['git', '\x03'],
+			ctrlCAfterUnknown: [undefined, '\x03'],
 			ctrlU: ['git', '\x15'],
 			ctrlUAfterUnknown: [undefined, '\x15'],
 			ctrlG: ['git', '\x07'],
@@ -127,7 +142,9 @@ suite('ParadisTerminalTypedPrefix', () => {
 			backspaceEmoji: 'echo ',
 			deleteKey: 'git',
 			enter: '',
+			enterAfterUnknown: undefined,
 			ctrlC: '',
+			ctrlCAfterUnknown: undefined,
 			ctrlU: '',
 			ctrlUAfterUnknown: undefined,
 			ctrlG: undefined,
@@ -184,9 +201,31 @@ suite('ParadisTerminalTypedPrefix', () => {
 		]), ['git ch', 'git checkout ', 'git checkout m', 'git checkout ']);
 	});
 
+	test('does not take a line confirmed in a completion menu as the prompt', () => {
+		// oh-my-zsh の menu select・fzf-tab では、補完の候補を選ぶ Enter はコマンドを実行しない
+		// （実行の印も次のプロンプトも来ない）。続けて打った文字に、選んだ候補を付けたまま一致させる。
+		assert.deepStrictEqual(play([
+			STARTED,
+			line(PROMPT),
+			...typeOn(PROMPT, 'cd s'),
+			input(TAB), line(`${PROMPT}cd src/`),
+			input('\r'), line(`${PROMPT}cd src/`),
+			input('b'), line(`${PROMPT}cd src/b`),
+			check(),
+			cursorAtEnd(),
+			// 候補を選ばずに Ctrl+C で抜けても（fzf-tab は打っていた行に戻す）同じ。
+			input('\x7f'), line(`${PROMPT}cd src/`),
+			input('\x03'), line(`${PROMPT}cd src/`),
+			input('b'), line(`${PROMPT}cd src/b`),
+			check(),
+		]), ['cd src/b', false, 'cd src/b']);
+	});
+
 	test('learns the prompt even when the shell integration marks are missing (no prompt start)', () => {
 		// コマンドの開始の印が届かないまま入力行が読まれている（打ち始める前の行がプロンプトだけ）。
 		assert.deepStrictEqual(play([
+			STARTED,
+			...typeOn('', 'pwd'),
 			input('\r'), line(PROMPT),
 			...typeOn(PROMPT, 'ls'),
 			check(),
@@ -227,6 +266,51 @@ suite('ParadisTerminalTypedPrefix', () => {
 			check(210),
 			check(100 + PARADIS_EXTERNAL_PROMPT_CHANGE_MS + 1),
 		]), ['git ', 'git ', undefined, 'git checkout ']);
+	});
+
+	test('starts from the line of a terminal restored at an empty prompt', () => {
+		// 再読み込み・常駐のシェルへのつなぎ直しでは、次のプロンプトの印を待たずに入力行から始める。
+		assert.deepStrictEqual({
+			empty: play([line(''), ...typeOn('', 'git'), check(), cursorAtEnd()]),
+			withPrompt: play([line(PROMPT), ...typeOn(PROMPT, 'git'), check()]),
+			leftover: play([line('git st'), ...typeOn('', 'a', '', 'git st'), check()]),
+		}, {
+			empty: ['git', false],
+			withPrompt: [undefined],
+			leftover: [undefined],
+		});
+	});
+
+	test('follows what was typed before the next prompt when the shell shows it', () => {
+		const make = [STARTED, line(''), ...typeOn('', 'make'), input('\r'), EXECUTED];
+		assert.deepStrictEqual({
+			// SSH で、前のコマンドが終わってから次のプロンプトが届くまでに打った。
+			afterFinish: play([...make, FINISHED, input('l'), input('s'), STARTED, line(''), line('ls'), check(), ...typeOn('', ' -la', '', 'ls'), check()]),
+			// 実行中に打った文字を、次のプロンプトでシェルが出した。
+			echoed: play([...make, input('ls'), FINISHED, STARTED, line(''), line('ls'), check()]),
+			// 実行中のプログラムが読んだ（次のプロンプトは空のまま）。
+			consumed: play([...make, input('q'), FINISHED, STARTED, line(''), ...typeOn('', 'git'), check()]),
+			// 一部だけ読まれた。どちらとも合わないので開かない。
+			partlyConsumed: play([...make, input('abc'), FINISHED, STARTED, line(''), line('bc'), ...typeOn('', 'd', '', 'bc'), check()]),
+		}, {
+			afterFinish: ['ls', 'ls -la'],
+			echoed: ['ls'],
+			consumed: ['git'],
+			partlyConsumed: [undefined],
+		});
+	});
+
+	test('tells whether the text after the cursor is input only when the typed text came from the keys', () => {
+		assert.deepStrictEqual(play([
+			STARTED,
+			line(PROMPT),
+			...typeOn(PROMPT, 'git', 'checkout'),
+			cursorAtEnd(),
+			// 入力を通らずに入力行が変わり（カーソルの後ろに文字がある）、入力行から読んだ。
+			line(`${PROMPT}git ch|eckout`, 100),
+			check(100 + PARADIS_EXTERNAL_PROMPT_CHANGE_MS + 1),
+			cursorAtEnd(),
+		]), [true, 'git ch', false]);
 	});
 
 	test('does not count what was typed while a command was running', () => {
