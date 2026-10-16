@@ -48,6 +48,27 @@ suite('ParadisViewerOpenTiming', () => {
 		]);
 	});
 
+	test('counts the Excel and Word viewers on their own', () => {
+		const sent: ParadisSpanAttributes[] = [];
+		const counter = new ParadisViewerOpenCounter();
+		let clock = 0;
+		const options = { recorder: (attributes: ParadisSpanAttributes) => sent.push(attributes), counter, now: () => clock };
+
+		startParadisViewerOpenTiming('pdf', options).painted();
+		const excel = startParadisViewerOpenTiming('excel', options);
+		const word = startParadisViewerOpenTiming('word', options);
+		clock = 1063;
+		excel.painted({ safe_size_kb: 318, safe_sheets: 4, safe_rows: 120, safe_columns: 40, safe_virtual: false });
+		clock = 1100;
+		word.painted({ safe_size_kb: 24 });
+
+		deepStrictEqual(sent, [
+			{ safe_viewer: 'pdf', safe_open_ordinal: 1, safe_paint_ms: 0 },
+			{ safe_size_kb: 318, safe_sheets: 4, safe_rows: 120, safe_columns: 40, safe_virtual: false, safe_viewer: 'excel', safe_open_ordinal: 1, safe_paint_ms: 1063 },
+			{ safe_size_kb: 24, safe_viewer: 'word', safe_open_ordinal: 1, safe_paint_ms: 1100 },
+		]);
+	});
+
 	test('never throws, even when sending fails', () => {
 		const timing = startParadisViewerOpenTiming('image', { recorder: () => { throw new Error('offline'); }, counter: new ParadisViewerOpenCounter(), now: () => 0 });
 		timing.painted();

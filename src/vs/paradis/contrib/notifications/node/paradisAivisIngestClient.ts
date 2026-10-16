@@ -33,7 +33,7 @@
 // - worker の `failed` が 3 回続いたら、しばらく afplay に任せる（手放した件は鳴らし直さない）
 
 import { execFile, spawn } from 'child_process';
-import { readFileSync } from 'fs';
+import { promises as fs } from 'fs';
 import { connect } from 'net';
 import { homedir } from 'os';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -1577,12 +1577,12 @@ export function paradisAivisVersionProbeResult(error: { readonly killed?: boolea
 }
 
 /** aivis-mcp と同じ順（REDIS_URL → ~/.config/aivis-mcp/config.json → 既定）で Redis の URL を決める。 */
-function resolveRedisUrl(env: NodeJS.ProcessEnv): string {
+async function resolveRedisUrl(env: NodeJS.ProcessEnv): Promise<string> {
 	if (env.REDIS_URL) {
 		return env.REDIS_URL;
 	}
 	try {
-		const settings = JSON.parse(readFileSync(join(homedir(), '.config', 'aivis-mcp', 'config.json'), 'utf8')) as { redisUrl?: unknown };
+		const settings = JSON.parse(await fs.readFile(join(homedir(), '.config', 'aivis-mcp', 'config.json'), 'utf8')) as { redisUrl?: unknown };
 		if (typeof settings.redisUrl === 'string' && settings.redisUrl) {
 			return settings.redisUrl;
 		}
@@ -1610,14 +1610,14 @@ export function probeAivisMute(env: NodeJS.ProcessEnv): Promise<boolean | undefi
 	return probeAivisRedisKey(env, MUTE_KEY);
 }
 
-function probeAivisRedisKey(env: NodeJS.ProcessEnv, key: string): Promise<boolean | undefined> {
+async function probeAivisRedisKey(env: NodeJS.ProcessEnv, key: string): Promise<boolean | undefined> {
 	const commands: string[][] = [];
 	let host: string;
 	let port: number;
 	try {
-		const url = new URL(resolveRedisUrl(env));
+		const url = new URL(await resolveRedisUrl(env));
 		if (url.protocol !== 'redis:') {
-			return Promise.resolve(undefined);
+			return undefined;
 		}
 		if (url.password) {
 			commands.push(url.username ? ['AUTH', decodeURIComponent(url.username), decodeURIComponent(url.password)] : ['AUTH', decodeURIComponent(url.password)]);
@@ -1629,7 +1629,7 @@ function probeAivisRedisKey(env: NodeJS.ProcessEnv, key: string): Promise<boolea
 		host = (url.hostname || '127.0.0.1').replace(/^\[(?<address>.*)\]$/, '$<address>');
 		port = Number(url.port) || 6379;
 	} catch {
-		return Promise.resolve(undefined);
+		return undefined;
 	}
 	commands.push(['GET', key]);
 	return new Promise<boolean | undefined>(resolve => {
