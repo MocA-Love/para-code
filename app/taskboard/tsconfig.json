@@ -23,5 +23,5 @@
 			"@paradis-logos": ["../../src/vs/paradis/common/paradisAgentLogoPaths.ts"]
 		}
 	},
-	"include": ["src", "server", "test", "vite.config.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoard.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardFlow.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardEngine.ts", "../../src/vs/paradis/common/paradisAgentLogoPaths.ts"]
+	"include": ["src", "server", "test", "vite.config.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoard.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardFlow.ts", "../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardEngine.ts", "../../src/vs/paradis/common/paradisAgentLogoPaths.ts", "../../src/vs/paradis/contrib/agentBrowser/common/paradisTomlScan.ts"]
 }
