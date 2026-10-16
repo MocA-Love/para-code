@@ -144,6 +144,22 @@ export interface IParadisPtyAttachment {
 	 * ある。**黙って歯抜けの画面を見せない**ために、こぼれたかどうかは必ず返して画面に出す。
 	 */
 	readonly dropped: boolean;
+	/**
+	 * 控えへ書かれた総量（文字数）。控えを消すと 0 から数え直す。古い常駐は返さない。
+	 *
+	 * **同じ pty ホストが手を離して戻ってきたときに、差分だけを流すため。** 戻ってきた側は、
+	 * 手を離した時点で自分が受け取り終えていた量を知っている。これと比べれば、離れている間に
+	 * 増えた分が控えの末尾のどこからかが決まる。無いと、戻るたびに控え全体（最大 10MB）で
+	 * 画面を作り直すことになる。
+	 */
+	readonly written?: number;
+	/**
+	 * 控えの世代。控えを消すたびに 1 つ進む。古い常駐は返さない。
+	 *
+	 * {@link written} だけでは、離れている間に誰かが画面を消して書き直したことに気づけない
+	 * （消した後に同じ量より多く書かれると、差分の計算が成り立ったように見える）。
+	 */
+	readonly epoch?: number;
 }
 
 /** 常駐が押し付けてくるもの。 */
@@ -250,10 +266,18 @@ export interface IParadisPtyHost {
 	/**
 	 * `stopDescendants` は、閉じるときにそのターミナルから起動されて裏に残ったプロセスも止めるか（W2-32）。
 	 * 古い常駐はこの引数を知らずに無視する（今までどおりシェルだけを終わらせる）。
+	 *
+	 * `caller` は頼んだ側の名札（`attach` の `viewer` と同じもの）。渡すと、**別の相手が見ている
+	 * 端末には何もしない**。手を離した後の pty ホストが、猶予切れで、もう別のサーバーへ移った
+	 * 端末を終わらせないため。古い常駐はこの引数を知らずに無視する（今までどおり終わらせる）。
 	 */
-	kill(handle: number, signal?: string, stopDescendants?: boolean): Promise<void>;
-	/** 抱えるのをやめる。終わったものを片付ける合図。 */
-	release(handle: number): Promise<void>;
+	kill(handle: number, signal?: string, stopDescendants?: boolean, caller?: string): Promise<void>;
+	/**
+	 * 抱えるのをやめる。終わったものを片付ける合図。
+	 *
+	 * `caller` は {@link kill} と同じ。**別の相手が見ている端末は手放さない。**
+	 */
+	release(handle: number, caller?: string): Promise<void>;
 
 	setLayout(scopeId: string, layout: string): Promise<void>;
 	getLayout(scopeId: string): Promise<string | undefined>;

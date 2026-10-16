@@ -61,6 +61,11 @@ function recordingPtyService(): { service: IParadisAdoptionTarget; calls: Record
 	return { service, calls, layouts };
 }
 
+/** 本数の内訳だけを見る（引き取り直しのために足した項目は別のテストで見る）。 */
+function core(outcome: { readonly reachable: boolean; readonly adopted: number; readonly skipped: number }): { reachable: boolean; adopted: number; skipped: number } {
+	return { reachable: outcome.reachable, adopted: outcome.adopted, skipped: outcome.skipped };
+}
+
 suite('ParadisAdoptIntoPtyService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -92,7 +97,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 		const outcome = await paradisAdoptIntoPtyService(service, host, new NullLogService());
 
 		assert.deepStrictEqual(
-			{ outcome, calls },
+			{ outcome: core(outcome), calls },
 			{
 				outcome: { reachable: true, adopted: 1, skipped: 0 },
 				calls: [{
@@ -191,7 +196,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 		const outcome = await paradisAdoptIntoPtyService(service, host, new NullLogService());
 
 		assert.deepStrictEqual(
-			{ outcome, stillHeld: (await host.list()).length },
+			{ outcome: core(outcome), stillHeld: (await host.list()).length },
 			{
 				outcome: { reachable: true, adopted: 1, skipped: 1 },
 				// **常駐からは外さない。** 器を作れないだけで走っているプロセスを畳む理由が無い。
@@ -225,7 +230,7 @@ suite('ParadisAdoptIntoPtyService', () => {
 		const outcome = await paradisAdoptIntoPtyService(service, host, new NullLogService());
 
 		assert.deepStrictEqual(
-			{ outcome, nonce: seen[0]?.shellIntegration?.nonce },
+			{ outcome: core(outcome), nonce: seen[0]?.shellIntegration?.nonce },
 			{ outcome: { reachable: true, adopted: 1, skipped: 0 }, nonce: '' },
 		);
 	});

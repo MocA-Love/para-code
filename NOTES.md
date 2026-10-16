@@ -2104,6 +2104,53 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 
 既に開いている端末は生成時の値で `shouldPersist=true` のままなので「残す」と答えられるが、次回起動時は `_reconnectToLocalTerminals()` が走らないため、24時間の孤児になる。設定を触ってから再起動しない、という狭い条件。塞ぐなら常駐側の `prepare` でこの設定を見て `end` へ倒す（接続先側にも同じ穴がある）。
 
+### SSH 先で更新をまたいで端末を引き継ぐ（2026-10-16）
+
+「更新をまたいで繋ぎ直す」（`paradis.terminal.daemon.reattachAcrossUpdates`、MACHINE スコープ）は SSH 先でも薄い常駐を立てる作りだったが、更新すると端末が戻らなかった。原因はコードを通しで読んで確定した（実機では未確認）:
+
+1. 窓を閉じると renderer は `detachFromProcess` を呼ぶが、`PersistentTerminalProcess.detach()` は猶予タイマーを掛けるだけで、常駐から手を離す口が無かった。古い版のサーバー A の pty ホストは端末を見たまま（常駐の viewer のまま）残る
+2. A は `paradisServerTerminalLifetime.ts` が拾い直し待ちを理由に最大 24 時間 5 分延ばすので居座る
+3. 更新後の版のサーバー B の pty ホストは起動時に1回だけ引き取り、見られている端末を飛ばす。後から A を止めても引き取り直さない
+4. B の窓が自分の配置を保存すると、B はそのスペースの常駐の端末を持たないので、常駐の配置が B の分で上書きされ、A のタブ配置が失われる
+5. 窓を閉じている間も A が viewer なので、常駐は代わりに受け取らず、誰も ack しないまま 10 万文字（`HighWatermarkChars`）で pty が止まる。**手元でも、アプリを起動したまま窓だけ閉じたときに同じことが起きていた**
+
+直し方（すべて `ptyDaemon/` の fork 所有ファイルと、upstream への小さな PARA-PATCH）:
+
+- **窓が離れたら pty ホストも常駐から手を離す**（`paradisDaemonTerminalProcess.ts` の `paradisLetGo`、`ptyService.ts` の `PersistentTerminalProcess.detach()` から呼ぶ）。常駐が代わりに受け取るので走り切り、B も引き取れる
+- **同じ pty ホストへ戻ったら繋ぎ直す**（`paradisComeBack`、`PersistentTerminalProcess.attach()` から呼ぶ）。常駐が `attach` で返す控えの総量（`written`）と世代（`epoch`）を、手を離した時点の量と比べて、何もしない・差分だけ流す・控え全体で画面（`XtermSerializer`）を作り直す、を選ぶ（`common/paradisPtyReattachPlan.ts`）。窓の再読み込みはほぼ「何もしない」で済む
+- 戻ったら別の pty ホストが見ていた／常駐に無かった: 常駐には触れずに器を畳み、繋ぎ直しを失敗にする（upstream が新しいシェルを起こす）
+- 手を離した端末の猶予切れの終了は、別の pty ホストが見ていれば手を引く。`kill` と `release` に頼んだ側の名札（`caller`）を足し、新しい常駐は別の相手が見ている端末を終わらせない（古い常駐は引数を無視する。確かめてから頼むので、すき間は ms 単位）
+- 手を離している間に終わった端末は、その場で終了を伝えず、戻ってきて画面を渡してから 1.5 秒後に伝える（伝えると器が畳まれ、閉じている間に走り切った結果を読めない）
+- **引き取り直し**（`node/paradisPtyReadopt.ts`）: 飛ばした端末（別の相手が見ている）を覚え、30 秒ごとに空いたかを見て引き取る。古い版のサーバーを「止めて引き継ぐ」で止めた直後にも引き取り、引き取れたら窓を再読み込みして通常の復元で出す（`paradisStaleRemoteServer.contribution.ts`）。見回りで引き取ったときは「再読み込みすると表示されます」と知らせる
+- **配置の上書きを防ぐ**: 飛ばした端末が居るスペースは、起動時に常駐から読んだ配置のうち、その端末のタブを常駐へ書く配置の後ろへ足し続ける（`paradisMergeForeignLayout`）
+- 常駐が持っている端末は、サーバーの寿命延長の理由にしない（`IProcessDetails.paradisHeldByDaemon`）。A は窓が去って 5 分で終わり、次に起きたサーバーが引き取る
+- 常駐に預けていた端末について「前の版で残したターミナルは開けません」と伝えない（残したときの記録に `acrossUpdates` を足す。古い記録は今までどおり）
+- 通信の版（`PARADIS_PTY_PROTOCOL_VERSION`）は 2 のまま。足したのは省略可能な項目（`written`・`epoch`・`caller`）だけで、古い常駐と新しいアプリ、新しい常駐と古いアプリのどちらの組み合わせでも動く
+
+接続先のマシンでこの機能をオンにする方法（ユーザー向け）:
+
+1. SSH のウィンドウで設定を開き、「リモート [SSH: <接続先>]」のタブで「更新をまたいで繋ぎ直す」（`paradis.terminal.daemon.reattachAcrossUpdates`）にチェックを入れる。手元の「ユーザー」のタブでオンにしても接続先には効かない（MACHINE スコープの設定は接続先のマシン設定 `~/.para-code-server/data/Machine/settings.json` から読む）
+2. コマンドパレットで「ターミナル: PTY ホストの再起動」を実行する（いま開いているターミナルは起動し直しになる）。以前はサーバーが起き直すまで効かなかったが、設定が入った時点で環境変数を足すようにしたので、次に pty ホストが起きたときから常駐を使う
+3. 左下の常駐ターミナルの表示が「稼働中」になれば有効。接続先の `~/.para-code-server/data/ptyHost/` に `v2.json` とソケットができる
+
+調べて分かったこと（再調査不要）:
+
+- 接続先の `bin/<commit>` を消すのは Para Code の古い版の掃除（`paradisStaleServers.ts`）だけで、open-remote-ssh の `server-setup.sh` は他の版を消さない。掃除は引数（と Linux の `/proc/<pid>/exe`）にそのフォルダを含むプロセスがあれば消さないので、常駐（`bin/<旧 commit>/node .../bootstrap-fork`）の版は残る。したがって macOS の接続先で常駐が旧い版のフォルダの `spawn-helper` を使い続けても、新しい端末を起こせなくなることは無い
+- Windows の接続先では常駐を使わないようにした（手元と同じ名前付きパイプの偽装の理由。REH の経路には除外が無く、設定を入れると有効になっていた）
+- 端末の環境に入る窓ごとのポートファイルは、PC の machineId から作る `~/.para-code/<dir>/<sourceId>.json` で版に依存せず、新しい窓が繋いだときに書き直すので、引き継いだ端末の hook も届く
+- 「ターミナル: PTY ホストの再起動」: 新しい pty ホストは起動時に常駐の端末を引き取るが、窓は upstream の動き（`terminalProcessManager.ts` の `onPtyHostRestart`）で各タブに新しいシェルを起こす。引き取った端末は再読み込みで戻る（エディタのターミナルは nonce で元へ繋がる）
+- 複数の PC: 常駐の端末を見られるのは1つの pty ホストだけ。新しい版のサーバーが引き取った後、古い版のまま戻ってきた PC からは見えない（繋ぎ直しが失敗し、新しいシェルが起きる）。逆に古い版の PC が先に繋ぐと、そちらのサーバーが空いている端末を引き取る
+- 回線が落ちたなどで窓が離れる合図が届かなかったときは A が見たまま残るが、A は 5 分で終わる（寿命延長から外したため。ただし upstream の接続の猶予で拡張ホストが残る間は終わらない）。A が消えた時点で 30 秒以内に B が引き取る
+- 【既知の制限】B の窓が先に開いたあとで引き取り直したとき、A が持っていたエディタのターミナルは、窓が代わりに起こした空のシェル（同じ nonce）に置き換わって見える。再読み込みで元の端末へ繋がり、空のシェルは触っていなければ再読み込みで終わる
+
+Sentry（pty ホストにも REH にも SDK が無いので、pty ホストが数え、窓が 60 秒ごとに取りに行って送る。`common/paradisPtyHandover.ts`、`electron-browser/paradisPtyHandover.contribution.ts`）:
+
+- transaction `para.ptyHandover.adopt`（引き取り1回ごと）: `safe_trigger`（`startup`/`poll`/`stale-stop`）・`safe_adopted`・`safe_foreign`・`safe_failed`・`safe_finished`・`safe_layouts`・`safe_duration_ms`・`safe_reachable`
+- transaction `para.ptyHandover.reattach`（前回からの合計）: `safe_let_go`・`safe_unchanged`・`safe_tail`・`safe_rebuild`・`safe_rebuild_<理由>`・`safe_rebuild_chars`・`safe_rebuild_max_ms`・`safe_handed_off`・`safe_gone`・`safe_failed`・`safe_spared`・`safe_finished_away`
+- どちらにも `safe_protocol`・`safe_host_os`・`safe_remote`・`safe_foreign_held`
+- 失敗はまとめて1件の例外（`ptyHandover` / `failed:unreachable`・`failed:adopt`・`failed:come-back`・`failed:let-go`）。renderer ではメッセージの経路が繋がっていないため例外の経路で送る
+- 取ると数えた分は消えるので、同じ pty ホストを見ている窓が複数あっても二重に送らない。送る量は窓の開け閉めと更新のときだけで、1人1日あたり数件〜数十件の見込み
+
 ### 常駐の内部用の環境変数はシェルへ渡さない（2026-09-27）
 
 製品版のターミナルのシェルに `PARADIS_PTY_HOST_STATE_DIR=~/Library/Application Support/Para Code` が入っており、そこから開発版を起動すると、開発版のターミナルが製品版の常駐に作られていた。main が `process.env` に入れっぱなしにした値を pty ホストが継ぎ、`PtyService.getEnvironment()`（= `{ ...process.env }`）がターミナルの基底環境として renderer へ返していたのが経路。SSH 先ではサーバーの `process.env` から `buildUserEnvironment` 経由で同じように漏れる。

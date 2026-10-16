@@ -72,7 +72,9 @@ export interface IParadisTerminalOrigin {
 	readonly workspaceName: string;
 	readonly shouldPersist: boolean;
 }
-import { IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
+import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
+import { IParadisPtyLetGoMark, paradisPlanPtyReattach } from '../common/paradisPtyReattachPlan.js';
+import { paradisRecordFinishedWhileAway, paradisRecordLetGo, paradisRecordReattach, paradisRecordSpared } from './paradisPtyHandoverJournal.js';
 import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
@@ -90,6 +92,14 @@ const GRACEFUL_EXIT_TIMEOUT = 5_000;
 /** `shutdown(true)` のあと。すぐ死ぬはずなので短い。 */
 const IMMEDIATE_EXIT_TIMEOUT = 1_000;
 
+/**
+ * 手を離している間に終わった端末へ戻ったとき、終了を伝えるまで待つ時間。
+ *
+ * 戻ってきた窓はこの後で画面を受け取る（replay）。先に終了を伝えると、器が畳まれて窓が画面を
+ * 受け取れず、**閉じている間に走り切った結果を読む**という主目的の経路で肝心の画面が落ちる。
+ */
+const FINISHED_WHILE_AWAY_EXIT_DELAY = 1_500;
+
 /** こぼれたことの断り。**出力そのものと見分けが付く形**にする。 */
 function paradisDroppedNotice(): string {
 	return `\r\n\x1b[2m[${localize('paradis.ptyDaemon.droppedOutput', "earlier output was discarded while this terminal ran unattended")}]\x1b[0m\r\n`;
@@ -99,6 +109,9 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 
 	id = 0;
 	shouldPersist = false;
+
+	/** 常駐が持っている（このプロセスが終わっても走り続ける）。 */
+	readonly paradisHeldByDaemon = true;
 
 	private handle: number | undefined;
 	private pid = -1;
@@ -136,6 +149,31 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	private title = '';
 	private reportedTitle: string | undefined;
 	private lastCwd: string | undefined;
+
+	/**
+	 * 窓が離れたので常駐から手を離しているか（{@link paradisLetGo}）。
+	 *
+	 * 離している間、常駐は出力をこちらへ流さず、代わりに受け取ったことにして走らせ続ける。
+	 */
+	private lettingGo = false;
+	/** 手を離した時点で受け取り終えていた量。戻ってきたときに差分を決める。 */
+	private letGoMark: IParadisPtyLetGoMark | undefined;
+	/** 最後に繋いだときに常駐が返した量と世代、それ以降に受け取った量。 */
+	private attachedWritten: number | undefined;
+	private attachedEpoch: number | undefined;
+	private receivedSinceAttach = 0;
+	/** 戻っている最中に届いた出力。画面を埋め直してから流す（順番を守るため）。 */
+	private comingBack: string[] | undefined;
+	/**
+	 * もう自分のものではない（別の pty ホストが見ている・常駐に無い）。
+	 *
+	 * 立っていると、畳むときに常駐へ何も言わない。言うと、別のサーバーへ移った端末を
+	 * 手放させて（＝殺して）しまう。
+	 */
+	private handedOff = false;
+	/** 手を離している間に終わった。戻ってきたときに伝える。 */
+	private finishedWhileAway: { readonly code: number | undefined } | undefined;
+	private readonly finishedWhileAwayExit = this._register(new MutableDisposable());
 
 	constructor(
 		private readonly host: IParadisPtyHost,
@@ -199,7 +237,14 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 走っているものに繋ぎ直すだけ。起動先の検査もシェル統合の注入もしない
 			// (どちらも起こすときの話で、すでに起きているものには当てはまらない)。
 			this.adopt(this.adoptTarget.handle, this.adoptTarget.pid, this.adoptTarget.title);
-			this.emitAttachment(await this.host.attach(this.adoptTarget.handle, this.viewer));
+			let attachment: IParadisPtyAttachment;
+			try {
+				attachment = await this.attachInOrder(this.adoptTarget.handle);
+			} catch (error) {
+				return this.lostAdoption(this.adoptTarget.handle, error);
+			}
+			this.emitAttachment(attachment);
+			this.flushComingBack();
 			if (this.adoptTarget.exited) {
 				// **もう終わっている。** イベントを待っても来ないので、ここで言う。画面には
 				// 走り切った結果が出ているので、あとは終わったことが伝われば読める。
@@ -268,7 +313,8 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 繋ぐまでの間に出たものはここにしか無い。捨てると、消えるのは決まって
 			// 「シェルの起動直後」＝プロンプトと初期エスケープ列になり、症状は
 			// 「たまに1行目が出ない」という辿れない形になる。
-			this.emitAttachment(await this.host.attach(summary.handle, this.viewer));
+			this.emitAttachment(await this.attachInOrder(summary.handle));
+			this.flushComingBack();
 			if (this._store.isDisposed || this.exitFired) {
 				// 繋いでいる最中に閉じられた。**ここまで来ると `adopt()` は走り切っている**ので、
 				// 入れた対応を明示的に外してから手放す。
@@ -314,6 +360,14 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		// **配る側は1つ。** 端末ごとに常駐を購読すると、全端末の全出力が本数ぶんソケットを通る。
 		const stream = wiring.add(this.dispatch.listen(handle));
 		wiring.add(stream.onData(data => {
+			if (this.comingBack) {
+				// 繋いでいる最中。常駐は「控えを返す → 以後の出力」の順に送るが、同じ受信の塊に
+				// 両方が入っていると、出力のイベントが返事の処理（await の続き）より先に配られる。
+				// 先に流すと控えより新しい出力が先に画面へ入るので、控えを流してから流す。
+				this.comingBack.push(data);
+				return;
+			}
+			this.receivedSinceAttach += data.length;
 			this._onProcessData.fire(data);
 			this.childProcesses.value?.handleOutput();
 		}));
@@ -326,6 +380,17 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		}
 		wiring.add(stream.onExit(code => {
 			this.exited = true;
+			if (this.lettingGo) {
+				// **窓が居ない間に終わった。ここで伝えない。** 伝えると器が畳まれ、戻ってきた窓は
+				// 走り切った結果を読めない（`listProcesses` からも消える）。常駐は終わった端末も控え
+				// ごと残すので、戻ってきたときに画面を渡してから伝える（{@link paradisComeBack}）。
+				// 誰も戻らなければ、猶予切れの `shutdown` が片付ける。
+				if (!this.finishedWhileAway) {
+					paradisRecordFinishedWhileAway();
+				}
+				this.finishedWhileAway = { code };
+				return;
+			}
 			this.fireExitOnce(code);
 		}));
 
@@ -335,6 +400,194 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		// **引き取りでは常駐側が題名の変化を出さない**（向こうは既に同じ値を覚えているため）。
 		// ここで出しておかないと、更新をまたいだ直後だけタブ名が空になる。
 		this.reportTitle(title);
+	}
+
+	/**
+	 * 繋ぐ。返事の前に届いた出力は {@link flushComingBack} まで溜める。
+	 *
+	 * 繋いだ時点の量も覚える。手を離して戻るときの差分の起点になる。
+	 */
+	private async attachInOrder(handle: number): Promise<IParadisPtyAttachment> {
+		this.comingBack = [];
+		try {
+			const attachment = await this.host.attach(handle, this.viewer);
+			this.attachedWritten = attachment.written;
+			this.attachedEpoch = attachment.epoch;
+			this.receivedSinceAttach = 0;
+			return attachment;
+		} catch (error) {
+			// 繋げなかった。繋がっていないので出力は来ていない。
+			this.comingBack = undefined;
+			throw error;
+		}
+	}
+
+	/** 繋いでいる間に届いた出力を、控えの後ろへ流す。 */
+	private flushComingBack(): void {
+		const pending = this.comingBack ?? [];
+		this.comingBack = undefined;
+		for (const data of pending) {
+			this.receivedSinceAttach += data.length;
+			this._onProcessData.fire(data);
+			this.childProcesses.value?.handleOutput();
+		}
+	}
+
+	/**
+	 * 窓が離れたので、常駐から手を離す。**pty は止めない。**
+	 *
+	 * 窓の居ない pty ホストが見たままにしていると、2つ困る。
+	 *  1. 常駐は見られている間は代わりに受け取らないので、誰も ack しないまま 10 万文字で pty が
+	 *     止まる。閉じている間も走り切らせるという常駐の約束が、窓を閉じただけで覆る
+	 *  2. 別の pty ホスト（SSH 先で更新後に立つ新しい版のサーバー）が引き取れない。引き取りは
+	 *     見られている端末を飛ばす。古いサーバーは拾い直しを待って居座るので、ずっと戻らない
+	 *
+	 * 同じ pty ホストへ戻ってきたら {@link paradisComeBack} で繋ぎ直す。
+	 */
+	async paradisLetGo(): Promise<void> {
+		if (this.handle === undefined || this.lettingGo || this.exitFired || this.handedOff) {
+			return;
+		}
+		if (this.attachedWritten === undefined) {
+			// **古い常駐（控えの量を返さない）では手を離さない。** 戻るたびに控え全体（1本で最大
+			// 10MB）で画面を作り直すことになり、シェル統合の印もそこで消える。常駐は更新をまたいで
+			// 生き残るので、手元でもしばらくこの組み合わせが続く。今までどおり見たままにする。
+			return;
+		}
+		this.lettingGo = true;
+		try {
+			await this.host.detach(this.handle, this.viewer);
+			// **量は離れた後で決める。** 常駐は detach を受け取るまで出力を流し続け、その分はもう
+			// こちらの画面に入っている。同じ接続の上で「出力 → detach の返事」の順に届くので、
+			// 返事の後で数えればその分まで含む。先に決めると、戻ったときにその分を差分として
+			// もう一度流し、画面に二重に入る（TUI は崩れる）。
+			this.letGoMark = { written: this.attachedWritten + this.receivedSinceAttach, epoch: this.attachedEpoch };
+			paradisRecordLetGo(true);
+		} catch (error) {
+			// 常駐と話せない。繋がりが切れていれば、常駐の側で手放されている（接続が消えたら離す）。
+			// どこまで受け取ったか言い切れないので、戻ったときは控え全体で作り直す。
+			this.letGoMark = undefined;
+			paradisRecordLetGo(false);
+			this.logService.trace('[ParadisPtyDaemon] could not let go of the terminal', error);
+		}
+	}
+
+	/**
+	 * 手を離していた端末へ戻る。手を離していなければ何もしない。
+	 *
+	 * 戻れなかったとき:
+	 *  - 別の pty ホストが見ている（更新後の版のサーバーが引き取った）: 自分のものではなくなったので、
+	 *    常駐には触れずに終了を伝え、例外を投げる。窓は繋ぎ直しの失敗として扱う
+	 *  - 常駐にもう無い: 同じく終了を伝えて例外を投げる
+	 *  - 常駐と話せない: 例外を投げる（手を離したまま。次に戻ってきたときにもう一度試す）
+	 */
+	async paradisComeBack(replaceScreen: (cols: number, rows: number) => IParadisPtyScreenSink): Promise<boolean> {
+		if (!this.lettingGo || this.handle === undefined || this.exitFired) {
+			return false;
+		}
+		const handle = this.handle;
+		const startedAt = Date.now();
+		const mark = this.letGoMark;
+		let attachment: IParadisPtyAttachment;
+		try {
+			attachment = await this.attachInOrder(handle);
+		} catch (error) {
+			await this.explainFailedComeBack(handle, error);
+			throw error;
+		}
+		this.lettingGo = false;
+		this.letGoMark = undefined;
+		const plan = paradisPlanPtyReattach(mark, attachment);
+		let screenReady: Promise<void> = Promise.resolve();
+		if (plan.kind === 'unchanged') {
+			paradisRecordReattach('unchanged');
+		} else if (plan.kind === 'tail') {
+			this._onProcessData.fire(plan.data);
+			paradisRecordReattach('tail', { chars: plan.data.length });
+		} else {
+			const frames = attachment.frames;
+			const last = frames.at(-1);
+			const sink = replaceScreen(last?.cols ?? this.cols, last?.rows ?? this.rows);
+			let chars = 0;
+			if (attachment.dropped) {
+				sink.handleData(paradisDroppedNotice());
+			}
+			for (const frame of frames) {
+				sink.handleResize(frame.cols, frame.rows);
+				if (frame.data.length > 0) {
+					sink.handleData(frame.data);
+					chars += frame.data.length;
+				}
+			}
+			screenReady = sink.whenWritten().then(() => paradisRecordReattach('rebuild', { chars, durationMs: Date.now() - startedAt, reason: plan.reason }));
+		}
+		// 戻っている間に届いた分は、埋め直した後ろへ流す。
+		this.flushComingBack();
+		const finished = this.finishedWhileAway;
+		if (finished) {
+			this.finishedWhileAway = undefined;
+			// 窓が画面を受け取ってから伝える（{@link FINISHED_WHILE_AWAY_EXIT_DELAY}）。
+			void screenReady.then(() => {
+				if (!this._store.isDisposed) {
+					this.finishedWhileAwayExit.value = disposableTimeout(() => this.fireExitOnce(finished.code), FINISHED_WHILE_AWAY_EXIT_DELAY);
+				}
+			});
+		}
+		return true;
+	}
+
+	/**
+	 * 引き取った端末に繋げなかった。
+	 *
+	 * 同じ端末を2つの pty ホストが引き取ることがある（どちらも起動時に「誰も見ていない」のを
+	 * 見て器を作り、窓が開いた方から繋ぐ）。負けた側は、もう自分のものではないので常駐には
+	 * 触れない（畳むときに手放すと、勝った側の端末を殺す）。
+	 */
+	private async lostAdoption(handle: number, error: unknown): Promise<ITerminalLaunchError> {
+		this.wiring.clear();
+		if (this.origin) {
+			paradisForgetHandle(this.origin.id);
+		}
+		const summary = await this.host.list().then(summaries => summaries.find(candidate => candidate.handle === handle), () => undefined);
+		if (summary === undefined || summary.attached) {
+			this.handedOff = true;
+			paradisRecordReattach(summary === undefined ? 'gone' : 'handed-off');
+			this.logService.info('[ParadisPtyDaemon] another pty host opened this terminal first; leaving it to them');
+			return { message: localize('paradis.ptyDaemon.takenElsewhere', "このターミナルは別の Para Code のサーバーが開いています") };
+		}
+		// 誰も見ていないのに繋げなかった。**ここでも常駐には触れない。** 器はエラーのタブとして
+		// 残り、利用者がそれを閉じると kill が届いて、走っているもの（エージェント等）を止めてしまう。
+		// 繋がってはいないので離す手続きも要らない。引き取りは次の機会（起動時・古い版の停止後の
+		// 引き取り）に任せる。
+		this.handedOff = true;
+		paradisRecordReattach('failed');
+		this.logService.warn('[ParadisPtyDaemon] could not attach to a terminal taken back from the daemon; leaving it running in the daemon', error);
+		return { message: localize('paradis.ptyDaemon.adoptAttachFailed', "常駐のターミナルに繋げませんでした ({0})", String(error)) };
+	}
+
+	/** 戻れなかった理由を調べ、もう自分のものでなければ畳む。 */
+	private async explainFailedComeBack(handle: number, error: unknown): Promise<void> {
+		let summaries;
+		try {
+			summaries = await this.host.list();
+		} catch {
+			paradisRecordReattach('failed');
+			this.logService.warn('[ParadisPtyDaemon] could not come back to a terminal the daemon was holding', error);
+			return;
+		}
+		const summary = summaries.find(candidate => candidate.handle === handle);
+		if (summary !== undefined && !summary.attached) {
+			// 誰も見ていないのに繋げなかった。手を離したまま、次の機会にもう一度試す。
+			paradisRecordReattach('failed');
+			this.logService.warn('[ParadisPtyDaemon] could not come back to a terminal nobody else is watching', error);
+			return;
+		}
+		paradisRecordReattach(summary === undefined ? 'gone' : 'handed-off');
+		this.logService.info(summary === undefined
+			? '[ParadisPtyDaemon] the terminal is no longer held by the daemon'
+			: '[ParadisPtyDaemon] another pty host took the terminal over while this one had let go; leaving it to them');
+		this.handedOff = true;
+		this.fireExitOnce(undefined);
 	}
 
 	/**
@@ -467,11 +720,25 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			this.fireExitOnce(undefined);
 			return;
 		}
+		if (this.handedOff) {
+			this.fireExitOnce(undefined);
+			return;
+		}
+		const signal = immediate ? 'SIGKILL' : undefined;
 		// 閉じたときに裏のプロセスを止める（W2-32）かどうかも一緒に伝える。止める処理（表の撮影と
 		// SIGTERM / SIGKILL）は常駐の中で行う。常駐は pty を持ち、アプリより長く生きるので、アプリが
 		// 閉じる途中で落ちても最後まで届く。終了の依頼そのものは今までどおりすぐ送る。
 		// Para Code の終了で閉じられるときは止めない（常駐は印を知らないので、ここで決めて渡す）。
-		this.tell('shutdown', this.host.kill(this.handle, immediate ? 'SIGKILL' : undefined, paradisShouldStopDescendantsNow(paradisShouldStopBackgroundOnClose(this.env))));
+		const stopDescendants = paradisShouldStopDescendantsNow(paradisShouldStopBackgroundOnClose(this.env));
+		if (this.lettingGo) {
+			// **手を離している端末は、もう別の pty ホストが見ているかもしれない。** 猶予切れで
+			// 終わらせに来たのが、更新前の版のサーバーということがある（更新後の版がとっくに
+			// 引き取って使っている）。見られていれば手を引く。名札も渡すので、確かめた直後に
+			// 引き取られても新しい常駐は断る。
+			this.tell('shutdown', this.endUnlessTakenOver(this.handle, signal, stopDescendants));
+		} else {
+			this.tell('shutdown', this.host.kill(this.handle, signal, stopDescendants, this.viewer));
+		}
 		// **終わったことを必ず伝える。** SIGHUP を握り潰すプロセスだと exit が来ないことがあり、
 		// 来ないと器が畳まれず、タブが閉じないまま台帳に残り続ける。upstream も、pty が本当に
 		// 死んだかに関わらず最後は必ず exit を出す。
@@ -479,7 +746,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	}
 
 	input(data: string): void {
-		if (this.handle === undefined) {
+		if (this.handle === undefined || this.handedOff) {
 			return;
 		}
 		this.childProcesses.value?.handleInput();
@@ -487,9 +754,22 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 	}
 
 	sendSignal(signal: string): void {
-		if (this.handle !== undefined) {
-			this.tell('signal', this.host.kill(this.handle, signal));
+		if (this.handle !== undefined && !this.handedOff) {
+			this.tell('signal', this.host.kill(this.handle, signal, undefined, this.viewer));
 		}
+	}
+
+	/** 手を離した端末を終わらせる。別の pty ホストが見ていれば手を引く。 */
+	private async endUnlessTakenOver(handle: number, signal: string | undefined, stopDescendants: boolean): Promise<void> {
+		const summary = (await this.host.list()).find(candidate => candidate.handle === handle);
+		if (summary?.attached) {
+			paradisRecordSpared();
+			this.logService.info('[ParadisPtyDaemon] another pty host is watching a terminal this one let go of; not ending it');
+			this.handedOff = true;
+			this.fireExitOnce(undefined);
+			return;
+		}
+		await this.host.kill(handle, signal, stopDescendants, this.viewer);
 	}
 
 	async processBinary(data: string): Promise<void> {
@@ -651,12 +931,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		if (this.origin) {
 			paradisForgetHandle(this.origin.id);
 		}
-		if (this.handle !== undefined) {
+		if (this.handle !== undefined && !this.handedOff) {
 			// **終わったものは手放し、閉じただけなら残す。** ここを取り違えると、片方は
 			// 「閉じたら殺される」（常駐にした意味が消える）、もう片方は「終わった端末が
 			// 常駐に残り続け、次の起動でタブとして全部戻ってくる」になる。手放さないと
 			// 抱えている本数が減らないので、常駐が畳まれる判断も効かなくなる。
-			this.tell(this.exited ? 'release' : 'detach', this.exited ? this.host.release(this.handle) : this.host.detach(this.handle, this.viewer));
+			// 名札を渡すので、別の pty ホストが見ている端末は手放されない（新しい常駐の場合）。
+			this.tell(this.exited ? 'release' : 'detach', this.exited ? this.host.release(this.handle, this.viewer) : this.host.detach(this.handle, this.viewer));
 		}
 		super.dispose();
 	}
