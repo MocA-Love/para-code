@@ -555,7 +555,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			this.logService.info('[ParadisPtyDaemon] another pty host opened this terminal first; leaving it to them');
 			return { message: localize('paradis.ptyDaemon.takenElsewhere', "このターミナルは別の Para Code のサーバーが開いています") };
 		}
-		this.logService.warn('[ParadisPtyDaemon] could not attach to a terminal taken back from the daemon', error);
+		// 誰も見ていないのに繋げなかった。**ここでも常駐には触れない。** 器はエラーのタブとして
+		// 残り、利用者がそれを閉じると kill が届いて、走っているもの（エージェント等）を止めてしまう。
+		// 繋がってはいないので離す手続きも要らない。引き取りは次の機会（起動時・古い版の停止後の
+		// 引き取り）に任せる。
+		this.handedOff = true;
+		paradisRecordReattach('failed');
+		this.logService.warn('[ParadisPtyDaemon] could not attach to a terminal taken back from the daemon; leaving it running in the daemon', error);
 		return { message: localize('paradis.ptyDaemon.adoptAttachFailed', "常駐のターミナルに繋げませんでした ({0})", String(error)) };
 	}
 
