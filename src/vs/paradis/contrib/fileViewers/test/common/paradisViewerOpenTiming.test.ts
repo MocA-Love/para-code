@@ -69,6 +69,23 @@ suite('ParadisViewerOpenTiming', () => {
 		]);
 	});
 
+	test('counts the HTML viewer apart from Markdown, with whether it painted during the extra wait', () => {
+		const sent: ParadisSpanAttributes[] = [];
+		const counter = new ParadisViewerOpenCounter();
+		let clock = 0;
+		const options = { recorder: (attributes: ParadisSpanAttributes) => sent.push(attributes), counter, now: () => clock };
+
+		startParadisViewerOpenTiming('markdown', options).painted({ safe_after_extension: false });
+		const html = startParadisViewerOpenTiming('html', options);
+		clock = 9400;
+		html.painted({ safe_after_extension: true });
+
+		deepStrictEqual(sent, [
+			{ safe_after_extension: false, safe_viewer: 'markdown', safe_open_ordinal: 1, safe_paint_ms: 0 },
+			{ safe_after_extension: true, safe_viewer: 'html', safe_open_ordinal: 1, safe_paint_ms: 9400 },
+		]);
+	});
+
 	test('never throws, even when sending fails', () => {
 		const timing = startParadisViewerOpenTiming('image', { recorder: () => { throw new Error('offline'); }, counter: new ParadisViewerOpenCounter(), now: () => 0 });
 		timing.painted();
