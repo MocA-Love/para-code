@@ -1,0 +1,5 @@
+# PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+node_modules/
+dist/
+.data/
+test/e2e/out/
