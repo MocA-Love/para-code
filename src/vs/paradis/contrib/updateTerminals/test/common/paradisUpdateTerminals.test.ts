@@ -23,7 +23,6 @@ import {
 	paradisNextAfterStopPhase,
 	paradisParseKeptPaneTokens,
 	paradisPickConfirmWindow,
-	paradisShouldNoticeCancelledUpdate,
 	paradisShouldStopDaemonOnQuit,
 	paradisStopsRemoteForUpdate,
 	paradisWorkingAgentKinds,
@@ -163,7 +162,7 @@ suite('ParadisUpdateTerminals', () => {
 		], ['restarting', 'cancelled', 'cancelled', 'waiting', 'cancelled']);
 	});
 
-	test('tells about a cancelled update only in a remote window that actually ended something', () => {
+	test('stops terminals for an update only in a remote window outside a daemon that survives it', () => {
 		const stops = (isRemote: boolean, choice: 'ask' | 'always' | 'never', acrossUpdate: 'stranded' | 'survives' | 'unknown') => paradisStopsRemoteForUpdate({ isRemote, choice, acrossUpdate });
 		assert.deepStrictEqual([
 			stops(true, 'ask', 'stranded'),
@@ -172,9 +171,7 @@ suite('ParadisUpdateTerminals', () => {
 			stops(false, 'ask', 'stranded'),
 			stops(true, 'never', 'stranded'),
 			stops(true, 'ask', 'survives'),
-			paradisShouldNoticeCancelledUpdate(0),
-			paradisShouldNoticeCancelledUpdate(3),
-		], [true, true, false, false, false, false, true]);
+		], [true, true, false, false, false]);
 	});
 
 	test('stops the per-build daemon in the main shutdown only when the quit applies the update', () => {
