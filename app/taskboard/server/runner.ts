@@ -226,14 +226,13 @@ export class CommandRunner implements ITaskBoardRunPort {
 			return;
 		}
 		const found = parseJson<{ number: number; url: string; title: string; isDraft: boolean }[]>(existing.stdout)?.[0];
-		if (found) {
-			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.isDraft) });
-			return;
-		}
+		// PR がすでにあっても、作業場所の変更（差し戻しでの手直しなど）をコミットして送ってから、その PR を使う
 		if (place) {
 			// 未コミットの変更があれば、push する前に止めて人に決めてもらう（コミットはカードのボタンから）
 			await excludeBoardFiles(place).catch(() => undefined);
-			const changed = (await git(place, ['--no-optional-locks', 'status', '--porcelain']).catch(() => '')).split('\n').map(l => l.replace(/^[ MTADRCU?!]{1,2} /, '').trim()).filter(Boolean);
+			const porcelain = (await git(place, ['--no-optional-locks', 'status', '--porcelain']).catch(() => '')).split('\n').filter(Boolean);
+			const changed = porcelain.map(l => l.replace(/^[ MTADRCU?!]{1,2} /, '').trim()).filter(Boolean);
+			const newFiles = porcelain.filter(l => l.startsWith('??')).map(l => l.slice(2).trim());
 			// エージェントが参考に別のブランチへ切り替えたままなら、その履歴をタスクのブランチとして出さない
 			const current = await git(place, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '');
 			if (current !== branch) {
@@ -241,7 +240,7 @@ export class CommandRunner implements ITaskBoardRunPort {
 				return;
 			}
 			// 追跡していないファイル（.env や試作の残り）は勝手にコミットしない。ボードに任せるフローでも、それがあれば人に聞く
-			const untracked = (await git(place, ['--no-optional-locks', 'status', '--porcelain']).catch(() => '')).split('\n').some(l => l.startsWith('??'));
+			const untracked = newFiles.length > 0;
 			if (changed.length && engine.flowOf(task).workspace.commit === 'board' && !untracked) {
 				// ボードに任せるフロー: 追跡しているファイルの変更だけをまとめてコミットしてから進める
 				const message = task.issue ? `${task.title} (#${task.issue.number})` : task.title;
@@ -256,24 +255,40 @@ export class CommandRunner implements ITaskBoardRunPort {
 				}
 				engine.reportOutput(task.id, changed.map(f => `  コミットしました: ${f}`));
 			} else if (changed.length) {
-				engine.reportRunResult(task.id, attempt, { ok: false, detail: `作業場所に未コミットの変更が ${changed.length} 件あります。コミットするか決めてください`, uncommitted: changed });
+				engine.reportRunResult(task.id, attempt, { ok: false, detail: `作業場所に未コミットの変更が ${changed.length} 件あります。コミットするか決めてください`, uncommitted: changed, untracked: newFiles });
 				return;
 			}
 			const base = await defaultBase(place).catch(() => 'origin/main');
 			const ahead = Number(await git(place, ['rev-list', '--count', `${base}..HEAD`]).catch(() => '0'));
-			if (!ahead) {
+			if (!ahead && !found) {
 				fail(`${base} より先のコミットがありません`);
 				return;
 			}
 			await git(place, ['fetch', '--quiet', '--prune', 'origin']).catch(() => undefined);
-			const push = await this.exec(task, cwd, ['git', 'push', '--set-upstream', 'origin', `HEAD:refs/heads/${branch}`], false);
-			if (push.cancelled || !alive()) {
+			// リモートのブランチと比べて、手元に新しいコミットがあるときだけ送る。リモートだけが進んでいる（GitHub の
+			// Update branch など）なら送らずに使い、両方が進んでいれば取り込みを頼んで止まる
+			const remote = await git(place, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).then(() => true, () => false);
+			const count = (range: string) => git(place, ['rev-list', '--count', range]).then(Number, () => 0);
+			const localAhead = remote ? await count(`origin/${branch}..HEAD`) : ahead;
+			const remoteAhead = remote ? await count(`HEAD..origin/${branch}`) : 0;
+			if (localAhead > 0 && remoteAhead > 0) {
+				fail(`リモートの ${branch} に、手元に無いコミットが ${remoteAhead} 件あります。取り込んでからやり直してください`);
 				return;
 			}
-			if (push.code !== 0) {
-				fail('git push が失敗しました');
-				return;
+			if (localAhead > 0) {
+				const push = await this.exec(task, cwd, ['git', 'push', '--set-upstream', 'origin', `HEAD:refs/heads/${branch}`], false);
+				if (push.cancelled || !alive()) {
+					return;
+				}
+				if (push.code !== 0) {
+					fail('git push が失敗しました');
+					return;
+				}
 			}
+		}
+		if (found) {
+			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.isDraft) });
+			return;
 		}
 		const title = task.title;
 		const issue = task.issue;

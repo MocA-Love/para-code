@@ -75,7 +75,7 @@ import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMc
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
-import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
 import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptClickHint } from './paradisDevtoolsToolAdjustments.js';
@@ -3167,6 +3167,23 @@ export class ParadisAgentBrowserService extends Disposable {
 		return parts.join('\n\n');
 	}
 
+	/** 呼び出し元ペインが使えるタブ（今のタブと、利用者が共有したものの印つき）。一覧を取れなければ undefined。 */
+	private async _listPaneTabs(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): ReturnType<IParadisObserveHost['tabs']> {
+		const token = ingressLease.token;
+		const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
+			channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+			method: ParadisAgentTabMethod.List,
+			args: [token],
+			failureLabel: 'list_browser_tabs',
+			failureMessage: 'Failed to list the browser tabs in Para Code.',
+		}, signal);
+		if (!call.ok || !call.value.ok) {
+			return undefined;
+		}
+		const currentTabId = this._defaultTabId(token);
+		return call.value.tabs.map(tab => ({ tabId: tab.tabId, url: tab.url, title: tab.title, current: tab.tabId === currentTabId, shared: this._isUserSharedPage(token, tab.tabId) }));
+	}
+
 	/** プロバイダへ渡す、この呼び出し（ingress lease）に結び付いた機能。 */
 	private _toolCallContext(ingressLease: IParadisAgentBrowserIngressLease, socket: Socket | undefined): IParadisMcpToolCallContext {
 		return {
@@ -3180,6 +3197,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			// 状態の項目は既読（acknowledgePaneStatus）や idle で消えるので、印は状態とは別に引けるようにする
 			getUnconfirmedRelease: (paneToken: string) => this._unconfirmedReleaseOf(paneToken),
+			// tab_id を省いたら今のタブ。ペインが使えるタブの一覧に無いものは返さない（他のペインのタブを読ませない）
+			getPaneTab: async (tabId: string | undefined, signal?: AbortSignal): Promise<IParadisMcpPaneTab | undefined> => {
+				const tabs = await this._listPaneTabs(ingressLease, signal);
+				const tab = tabs?.find(candidate => tabId !== undefined ? candidate.tabId === tabId : candidate.current);
+				return tab ? { tabId: tab.tabId, url: tab.url, title: tab.title } : undefined;
+			},
 			getCursorIdentity: (paneToken: string): IParadisMcpCursorIdentity => {
 				const labelKey = this._paneCursorLabelKeys.get(paneToken);
 				const label = labelKey !== undefined ? this._cursorOwners.labelOf(labelKey) : undefined;
@@ -5095,7 +5118,6 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
 	private _observeHost(ingressLease: IParadisAgentBrowserIngressLease, tabLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): IParadisObserveHost {
-		const token = ingressLease.token;
 		return {
 			// 待たずに評価する（vendored の PARA-PATCH。ダイアログが開いていれば断られ、閉じない）
 			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal),
@@ -5103,20 +5125,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal)),
 			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
 			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), 30_000),
-			tabs: async () => {
-				const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
-					channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
-					method: ParadisAgentTabMethod.List,
-					args: [token],
-					failureLabel: 'list_browser_tabs',
-					failureMessage: 'Failed to list the browser tabs in Para Code.',
-				}, signal);
-				if (!call.ok || !call.value.ok) {
-					return undefined;
-				}
-				const currentTabId = this._defaultTabId(token);
-				return call.value.tabs.map(tab => ({ tabId: tab.tabId, url: tab.url, title: tab.title, current: tab.tabId === currentTabId, shared: this._isUserSharedPage(token, tab.tabId) }));
-			},
+			tabs: () => this._listPaneTabs(ingressLease, signal),
 			downloads: async () => {
 				const directory = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<string | null>('getAgentDownloadsDirectory').catch(() => null);
 				if (typeof directory !== 'string' || directory.length === 0) {

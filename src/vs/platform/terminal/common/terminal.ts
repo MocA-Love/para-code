@@ -20,6 +20,8 @@ import type { IDisposable } from '../../../base/common/lifecycle.js';
 import type { SingleOrMany } from '../../../base/common/types.js';
 // PARA-PATCH: types of the optional pty daemon handover methods on IPtyService
 import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
+// PARA-PATCH: the reattach tally that IPtyService#paradisTakeReattachTally answers with
+import type { IParadisReattachTally } from './paradisReattachTally.js';
 
 // PARA-PATCH: shared "do not attach" id, see paradisTerminalEditorRevive.ts and PtyService#getRevivedPtyNewId
 /**
@@ -387,6 +389,8 @@ export interface IPtyService {
 	// PARA-PATCH: hand terminals held by the pty daemon over between pty hosts (paradisPtyReadopt.ts); optional, a host that has none returns undefined
 	paradisReadoptFromDaemon?(trigger: ParadisPtyAdoptTrigger): Promise<IParadisPtyAdoptionRun | undefined>;
 	paradisTakeHandoverReport?(): Promise<IParadisPtyHandoverReport | undefined>;
+	// PARA-PATCH: what the startup revive and reattach came to, for the reattach diagnostics (paradisReattachTally.ts); optional, an older pty host has none
+	paradisTakeReattachTally?(workspaceId: string): Promise<IParadisReattachTally | undefined>;
 	detachFromProcess(id: number, forcePersist?: boolean): Promise<void>;
 	shutdownAll(): Promise<void>;
 
