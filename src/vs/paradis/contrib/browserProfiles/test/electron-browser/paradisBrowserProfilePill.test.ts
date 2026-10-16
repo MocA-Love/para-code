@@ -24,7 +24,7 @@ suite('ParadisBrowserProfilePill', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	/** 名前付きプロファイル（または組み込みスコープ）のページにピルを作り、要素と最後のホバーの文を返す。 */
-	function render(options: { readonly named: boolean; readonly agentConnected: boolean }): { readonly text: string; readonly classes: string[]; readonly children: string[]; readonly hover: string } {
+	function render(options: { readonly named: boolean; readonly agentConnected: boolean }): { readonly text: string; readonly classes: string[]; readonly children: string[]; readonly hover: string; readonly ariaLabel: string } {
 		const hovers: string[] = [];
 		const disposables = store.add(new DisposableStore());
 		const pill = disposables.add(new ParadisBrowserProfilePill(
@@ -50,12 +50,13 @@ suite('ParadisBrowserProfilePill', () => {
 			classes: [...element.classList].sort(),
 			children: [...element.children].map(child => child.className.split(' ')[0]),
 			hover: hovers.at(-1) ?? '',
+			ariaLabel: element.getAttribute('aria-label') ?? '',
 		};
 		disposables.dispose();
 		return result;
 	}
 
-	test('shows no agent badge in the pill and keeps the agent in the hover instead', () => {
+	test('shows no agent badge in the pill and keeps the agent in the hover and the aria label instead', () => {
 		assert.deepStrictEqual([
 			render({ named: true, agentConnected: true }),
 			render({ named: false, agentConnected: true }),
@@ -66,18 +67,21 @@ suite('ParadisBrowserProfilePill', () => {
 				classes: ['is-named', 'paradis-browser-profile-pill'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。',
+				ariaLabel: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。 変更するには選択してください。',
 			},
 			{
 				text: 'グローバル',
 				classes: ['paradis-browser-profile-pill'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザの保存スコープ: グローバル\nこのページにはエージェントがつながっています。',
+				ariaLabel: 'ブラウザの保存スコープ: グローバル\nこのページにはエージェントがつながっています。 変更するには選択してください。',
 			},
 			{
 				text: '仕事用',
 				classes: ['is-named', 'paradis-browser-profile-pill'],
 				children: ['pbp-pill-dot', 'pbp-pill-icon', 'pbp-pill-name', 'pbp-pill-chevron'],
 				hover: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。',
+				ariaLabel: 'ブラウザプロファイル「仕事用」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。 変更するには選択してください。',
 			},
 		]);
 	});
