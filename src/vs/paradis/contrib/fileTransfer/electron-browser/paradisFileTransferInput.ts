@@ -21,14 +21,14 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { PARADIS_FILE_TRANSFER_EDITOR_ID, PARADIS_FILE_TRANSFER_INPUT_TYPE_ID, ParadisTransferSide } from '../common/paradisFileTransfer.js';
 
 /**
- * ファイル転送のマーク（案3: codicon の `files` に `arrow-swap` を重ねる）。
- * フォントの 1 文字では作れないので、既定は `files` にして、`arrow-swap` は CSS の `::after` で重ねる
+ * ファイル転送のマーク（Q371 案 C: codicon の `folder` に `arrow-swap` を重ね、全体を真ん中にそろえる）。
+ * フォントの 1 文字では作れないので、既定は `folder` にして、`arrow-swap` は CSS の `::after` で重ねる
  * （media/paradisFileTransfer.css の `.codicon-paradis-file-transfer`）。利用者がアイコンのテーマで
  * 別のアイコンに差し替えた場合も、重ねる矢印はそのまま付く。
  */
 export const PARADIS_FILE_TRANSFER_ICON = registerIcon(
 	'paradis-file-transfer',
-	Codicon.files,
+	Codicon.folder,
 	localize('paradis.fileTransfer.icon', "ファイル転送のアイコン。"),
 );
 

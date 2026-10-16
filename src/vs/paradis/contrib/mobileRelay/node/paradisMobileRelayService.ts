@@ -1562,6 +1562,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	async settleAgentChatApprovalsOffScreen(token: string, interactionIds: readonly string[]): Promise<boolean> {
+		if (!paradisIsAgentChatToken(token) || !Array.isArray(interactionIds) || interactionIds.length > 20
+			|| !interactionIds.every(id => typeof id === 'string' && id.length <= 500)) {
+			// 確かめられないので、まだ待っているとみなす（ペインを作業中へ戻させない）
+			return true;
+		}
+		return this.agentChat.settleApprovalsOffScreen(token, interactionIds);
+	}
+
 	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
 		// 選択肢付きの承認は Codex のペイン専用 app-server から来ていた（それはやめた）。いま答えられるのは、
 		// Claude Code の mod（Claude Mods）が待っている承認の「以後は確認しない」だけ（キーでは渡せない）

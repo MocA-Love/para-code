@@ -49,7 +49,7 @@ function createShell(existing: ReadonlySet<string>, options: { readonly quaranti
 	const shell: IParadisDownloadsShell = {
 		openPath: async path => { opened.push(path); return ''; },
 		showItemInFolder: path => { shown.push(path); },
-		exists: path => existing.has(path),
+		exists: async path => existing.has(path),
 		ensureQuarantine: path => {
 			quarantined.push(path);
 			if (options.holdQuarantine) {
