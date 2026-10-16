@@ -22,7 +22,7 @@ import { IBranchProtectionProviderRegistry } from './branchProtection';
 import { ISourceControlHistoryItemDetailsProviderRegistry } from './historyItemDetailsProvider';
 import { RepositoryCache } from './repositoryCache';
 import { PARADIS_PARK_LIMIT_SETTING, ParadisRepositoryParkingLot, paradisResolveParkLimit } from './paradisRepositoryPark'; // PARA-PATCH: see paradisRepositoryPark.ts
-import { commitRepositoriesForParking } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
+import { commitRepositoriesForParking, paradisHasWorkingTreeBetween } from './paradisUnaccountedToPark'; // PARA-PATCH: see paradisUnaccountedToPark.ts
 
 class RepositoryPick implements QuickPickItem {
 	@memoize get label(): string {
@@ -298,11 +298,17 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 	// recursive watcher. See paradisRepositoryPark.ts.
 	private readonly _parkingLot: ParadisRepositoryParkingLot;
 
+	// PARA-PATCH: whether another working tree (a nested worktree, submodule or repository) sits between an
+	// outer repository and a workspace folder inside it, so the outer repository does not belong to that
+	// space. Synchronous like unpark below: the parking decision and the unpark run in one turn of the switch.
+	// eslint-disable-next-line local/code-no-sync-fs -- see the PARA-PATCH comment above.
+	private readonly _hasWorkingTreeBetween = paradisHasWorkingTreeBetween(folder => fs.existsSync(path.join(folder, '.git')), path.dirname, isDescendant, pathEquals);
+
 	private disposables: Disposable[] = [];
 
 	constructor(readonly git: Git, private readonly askpass: Askpass, private globalState: Memento, readonly workspaceState: Memento, private logger: LogOutputChannel, private readonly telemetryReporter: TelemetryReporter) {
 		// Repositories managers
-		this._parkingLot = new ParadisRepositoryParkingLot(logger, paradisResolveParkLimit(workspace.getConfiguration('git').get(PARADIS_PARK_LIMIT_SETTING))); // PARA-PATCH: see paradisRepositoryPark.ts
+		this._parkingLot = new ParadisRepositoryParkingLot(logger, paradisResolveParkLimit(workspace.getConfiguration('git').get(PARADIS_PARK_LIMIT_SETTING)), this._hasWorkingTreeBetween); // PARA-PATCH: see paradisRepositoryPark.ts
 		this._closedRepositoriesManager = new ClosedRepositoriesManager(workspaceState);
 		this._parentRepositoriesManager = new ParentRepositoriesManager(globalState);
 		this._unsafeRepositoriesManager = new UnsafeRepositoriesManager();
@@ -530,6 +536,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 					this.logger.trace(`[Model][onDidChangeWorkspaceFolders] Workspace folders: [${foldersToOpen.join(', ')}]`);
 					return foldersToOpen.map(folderPath => this.openRepository(folderPath));
 				},
+				this._hasWorkingTreeBetween,
 			);
 
 			if (parkingResult.kind === 'committed') {
@@ -970,7 +977,7 @@ export class Model implements IRepositoryResolver, IBranchProtectionProviderRegi
 
 			this.openRepositories = this.openRepositories.filter(e => e !== openRepository);
 			repository.setScopeActive(false);
-			this._parkingLot.park({ root: repository.root, rootRealPath: repository.rootRealPath, unpark, dispose });
+			this._parkingLot.park({ root: repository.root, rootRealPath: repository.rootRealPath, kind: repository.kind, unpark, dispose });
 			this._onDidCloseRepository.fire(repository);
 			updateMergeChanges();
 			updateOperationInProgressContext();

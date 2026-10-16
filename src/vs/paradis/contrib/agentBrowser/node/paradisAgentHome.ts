@@ -102,6 +102,7 @@ export function paradisSetConfiguredCodexHomes(raw: readonly unknown[]): void {
 
 function isSignedIn(codexHome: string): boolean {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Part of scanCodexHomes, which backs the synchronous paradisCodexHomes() that many callers read inline; the result is cached for 5 seconds.
 		return fs.statSync(join(codexHome, 'auth.json')).isFile();
 	} catch {
 		return false;
@@ -125,6 +126,7 @@ function scanCodexHomes(options: IParadisCodexHomesOptions): { readonly primary:
 	const found: string[] = [];
 	let entries: fs.Dirent[] = [];
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Backs the synchronous paradisCodexHomes() (see isSignedIn); cached for 5 seconds.
 		entries = fs.readdirSync(home, { withFileTypes: true });
 	} catch {
 		// 読めなければ既定のホームと設定分だけ
@@ -135,6 +137,7 @@ function scanCodexHomes(options: IParadisCodexHomesOptions): { readonly primary:
 		}
 		const candidate = join(home, entry.name);
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- Backs the synchronous paradisCodexHomes() (see isSignedIn); cached for 5 seconds.
 			if (entry.isDirectory() || (entry.isSymbolicLink() && fs.statSync(candidate).isDirectory())) {
 				found.push(candidate);
 			}

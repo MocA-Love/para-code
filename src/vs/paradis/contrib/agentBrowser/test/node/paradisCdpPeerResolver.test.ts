@@ -6,12 +6,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
+import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisPeerProcessProbe,
 	IParadisProcessInfo,
 	ParadisPeerProbeError,
+	ParadisPeerUnknownReason,
 	paradisClassifyPeer,
+	paradisExecWithTimeout,
 	paradisParseProcessTable,
 	paradisPeerIsOneOf,
 	paradisParseLsofPeerPids,
@@ -146,7 +152,7 @@ suite('paradisCdpPeerResolver', () => {
 		}, {
 			retried: ['descendant', ['probe 0 3000', 'sleep', 'probe 1 8000']],
 			negative: ['unknown', ['negative', 'probe 0 3000', 'sleep', 'probe 1 8000']],
-			gaveUp: ['unknown', 3],
+			gaveUp: ['unknown', 4],
 		});
 	});
 
@@ -160,6 +166,55 @@ suite('paradisCdpPeerResolver', () => {
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, late, { now: () => 0, sleep: async () => { } }),
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, noTime, { now: () => clock, sleep: async () => { } }),
 		], ['descendant', 'unknown']);
+	});
+
+	test('a caller that cannot be verified reports why, so the log can tell a slow machine from a foreign process', async () => {
+		const table: Record<number, IParadisProcessInfo> = { 70: { ppid: 50 }, 80: { ppid: 1 } };
+		const reasons: [ParadisPeerUnknownReason, number][] = [];
+		const onUnknown = (reason: ParadisPeerUnknownReason, attempts: number) => { reasons.push([reason, attempts]); };
+		const failing: IParadisPeerProcessProbe = { findPeerPids: async () => { throw new ParadisPeerProbeError('lsof timed out'); }, readProcess: async pid => table[pid], readTokenFromEnv: async () => undefined };
+		const results = [
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, failing, { now: () => 0, sleep: async () => { }, onUnknown }),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, probe([], table), { now: () => 0, sleep: async () => { }, onUnknown }),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, probe([80], table), { now: () => 0, sleep: async () => { }, onUnknown }),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, { ancestorPid: 50 }, probe([70], table), { now: () => 0, sleep: async () => { }, onUnknown }),
+		];
+		assert.deepStrictEqual({ results, reasons }, {
+			results: ['unknown', 'unknown', 'unknown', 'descendant'],
+			reasons: [['probe-failed', 4], ['owner-not-found', 4], ['not-expected', 1]],
+		});
+	});
+
+	(isWindows ? test.skip : test)('a command that ended while this process was starved of CPU is not taken for a timeout', async () => {
+		const finished = paradisExecWithTimeout('echo ok', 50, 1024 * 1024);
+		// A starved process on a busy machine: do not yield until the timer is overdue
+		const blockedUntil = Date.now() + 1_000;
+		while (Date.now() < blockedUntil) {
+			// busy wait
+		}
+		const tooSlow = paradisExecWithTimeout('sleep 5', 50, 1024 * 1024).then(() => 'finished', (error: Error) => error.message);
+		assert.deepStrictEqual({ finished: (await finished).stdout.trim(), tooSlow: await tooSlow }, { finished: 'ok', tooSlow: 'timed out after 50 ms' });
+	});
+
+	(isWindows ? test.skip : test)('a command that times out is stopped together with the programs its shell started', async () => {
+		const pidFile = join(tmpdir(), `paradis-exec-timeout-${process.pid}-${Date.now()}`);
+		try {
+			// The same shape as `lsof ... || true`: the shell waits for its child
+			const outcome = await paradisExecWithTimeout(`sleep 30 & echo $! > '${pidFile}'; wait; true`, 300, 1024 * 1024).then(() => 'finished', (error: Error) => error.message);
+			const childPid = Number.parseInt(await fs.readFile(pidFile, 'utf8'), 10);
+			let alive = true;
+			for (let waited = 0; alive && waited < 3_000; waited += 50) {
+				try {
+					process.kill(childPid, 0);
+					await new Promise(resolve => setTimeout(resolve, 50));
+				} catch {
+					alive = false;
+				}
+			}
+			assert.deepStrictEqual({ outcome, alive }, { outcome: 'timed out after 300 ms', alive: false });
+		} finally {
+			await fs.rm(pidFile, { force: true });
+		}
 	});
 
 	test('the process table of ps -A is read once, and a failed lookup of the tunnel peer is undefined', async () => {

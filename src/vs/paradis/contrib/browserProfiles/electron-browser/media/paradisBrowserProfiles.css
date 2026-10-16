@@ -14,16 +14,20 @@
 	1. Navbar pill (BrowserWidgetLocation.PostUrl)
 	============================================================ */
 
+/* The same frame as the zoom stepper next to it (paradisBrowserZoomIndicator.css): 1px border,
+	the small corner radius and 20px height, no fill. Both open choices, so they share one shape; the
+	share toggle (upstream) stays frameless. Whether an agent is connected is shown by the share toggle
+	and the page frame (upstream), and in the pill's hover and the dropdown rows. */
 .browser-root .paradis-browser-profile-pill {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 	flex-shrink: 0;
 	height: 20px;
-	padding: 0 7px 0 6px;
-	border: 1px solid transparent;
-	border-radius: var(--vscode-cornerRadius-circle, 9999px);
-	background-color: var(--vscode-editorWidget-background);
+	padding: 0 5px 0 6px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-small, 5px);
+	background-color: transparent;
 	color: var(--vscode-foreground);
 	font-family: inherit;
 	font-size: 11px;
@@ -80,20 +84,6 @@
 
 .browser-root .paradis-browser-profile-pill:not(.is-named) .pbp-pill-name {
 	color: var(--vscode-descriptionForeground);
-}
-
-/* Agent is driving this page. */
-.browser-root .paradis-browser-profile-pill.agent-controlled {
-	border-color: var(--vscode-focusBorder);
-}
-
-.browser-root .paradis-browser-profile-pill .pbp-pill-badge {
-	padding-left: 5px;
-	margin-left: 1px;
-	border-left: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
-	color: var(--vscode-textLink-foreground);
-	font-size: 10px;
-	font-weight: 600;
 }
 
 /* ============================================================
@@ -226,6 +216,66 @@
 	width: 16px;
 	flex-shrink: 0;
 	color: var(--vscode-textLink-foreground);
+}
+
+/* "Default for new tabs in this space" (Q364). The badge marks the row that new tabs will use; the pin
+	toggles it. The pin of the space's own default stays visible; the others appear on hover/focus so the
+	list does not read as a column of buttons. */
+.paradis-browser-profile-dropdown .pbp-default-badge {
+	flex-shrink: 0;
+	padding: 0 4px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-descriptionForeground);
+	font-size: 10px;
+	line-height: 15px;
+	white-space: nowrap;
+}
+
+/* Inherited from the main tree (Q370): fainter, so it reads as "in effect here, set elsewhere". */
+.paradis-browser-profile-dropdown .pbp-default-badge.is-inherited {
+	border-style: dashed;
+	opacity: 0.7;
+}
+
+.paradis-browser-profile-dropdown .pbp-row.is-focused .pbp-default-badge {
+	color: inherit;
+	border-color: currentColor;
+	opacity: 0.85;
+}
+
+.paradis-browser-profile-dropdown .pbp-pin {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	visibility: hidden;
+}
+
+.paradis-browser-profile-dropdown .pbp-row:hover .pbp-pin,
+.paradis-browser-profile-dropdown .pbp-row.is-focused .pbp-pin,
+.paradis-browser-profile-dropdown .pbp-pin.is-pinned {
+	visibility: visible;
+}
+
+.paradis-browser-profile-dropdown .pbp-row.is-focused .pbp-pin {
+	color: inherit;
+}
+
+.paradis-browser-profile-dropdown .pbp-pin.is-pinned {
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-browser-profile-dropdown .pbp-pin:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
 .paradis-browser-profile-dropdown .pbp-footer {

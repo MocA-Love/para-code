@@ -56,7 +56,7 @@ import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsReco
 import { PARADIS_CLAUDE_WORKFLOW_SUBAGENT_TYPE, paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
-import { IParadisAgentApprovalOption, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
+import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
@@ -2895,6 +2895,11 @@ class TranscriptTailer {
 		return -1;
 	}
 
+	/** 列にある承認の本文（{@link IParadisAgentInteraction} の `detail`）。無ければ undefined。 */
+	approvalDetail(interactionId: string): string | undefined {
+		return this.approvalQueue.find(entry => entry.interaction.id === interactionId)?.interaction.detail;
+	}
+
 	/** 承認を列から外す（該当が無ければ何もしない）。外したら true。 */
 	private removeApprovals(predicate: (entry: IParadisApprovalEntry) => boolean): boolean {
 		let removed = false;
@@ -3097,11 +3102,25 @@ class TranscriptTailer {
 	 * 受け付ける。承認そのものは、今までどおりツールの完了で列から外れるまで残す。
 	 */
 	markApprovalAnswered(interactionId: string): void {
-		this.enqueue(async () => {
+		this.markApprovalsAnswered(entry => entry.interaction.id === interactionId);
+	}
+
+	/**
+	 * 画面側が、これらの承認の確認が画面に出ていたのを見て、その後に確認が消えてエージェントが作業を続けているのを見た
+	 * （ターミナルのキーで答えた）。答え終えた印を付ける。画面で見ていない承認（まだ描かれていないもの）には付けない。
+	 * Codex は許可したツールが終わるまで hook を出さないので、これが無いと、ツールが動いている間ずっと承認が残り、
+	 * ペインが許可待ちのままになる。印を付け終えたら解ける（キューの他の処理の後）。
+	 */
+	markApprovalsSeenAnswered(interactionIds: readonly string[]): Promise<void> {
+		return this.markApprovalsAnswered(entry => interactionIds.includes(entry.interaction.id));
+	}
+
+	private markApprovalsAnswered(predicate: (entry: IParadisApprovalEntry) => boolean): Promise<void> {
+		return this.enqueue(async () => {
 			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
 				const entry = this.approvalQueue[index];
-				if (entry.interaction.id === interactionId && !entry.answered) {
+				if (!entry.answered && predicate(entry)) {
 					this.approvalQueue[index] = { ...entry, answered: true, key: `answered:${entry.key}:${index}:${Date.now()}` };
 					changed = true;
 				}
@@ -5779,15 +5798,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
+		// 画面は所有ウィンドウでしか読めない。Codex のキーは送る直前に画面で決め直すので、どの承認の確認かを確かめる一片を添える
+		// （MCP のツールの許可のフォームは、選択肢の名前がどのツールでも同じ。フォームへ数字を送るのは、この承認の確認だと
+		// 確かめられたときだけ）
+		const piece = agent === 'codex' && token !== undefined ? paradisApprovalScreenPiece(this.tailers.get(token)?.approvalDetail(msg.interactionId), 'codex') : undefined;
+		const approvalAnswer = { agent: agent === 'codex' ? 'codex' as const : 'claude' as const, ...(piece !== undefined ? { piece } : {}) };
 		if (validOption) {
 			// キーは送る直前に所有ウィンドウが画面を読み直して決める（Codex は行末の近道が要る）。ここでは
 			// 番号を仮に置き、確かめる文言を添える。
 			this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, [String(optionNumber)], undefined,
-				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: agent === 'codex' ? 'codex' : 'claude', ...(msg.promptHash !== undefined ? { promptHash: msg.promptHash } : {}) });
+				{ expectOption: { n: optionNumber, label: msg.optionLabel as string }, agent: approvalAnswer.agent, ...(msg.promptHash !== undefined ? { promptHash: msg.promptHash } : {}) },
+				approvalAnswer);
 			return;
 		}
-		const parts = paradisAgentApprovalKeySequence(agent === 'codex' ? 'codex' : 'claude', msg.choice as 'yes' | 'no');
-		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
+		const parts = paradisAgentApprovalKeySequence(approvalAnswer.agent, msg.choice as 'yes' | 'no');
+		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts, undefined, undefined, approvalAnswer);
 	}
 
 	/**
@@ -5823,6 +5848,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		readyMarker?: string,
 		/** 画面の番号付きの選択肢で答えたとき（W2-21）: 送る直前に確かめる番号と文言、キーを決めるためのエージェントの種類。 */
 		approvalOption?: { readonly expectOption: IParadisAgentApprovalOption; readonly agent: 'claude' | 'codex'; readonly promptHash?: string },
+		/** 許可・拒否で答えたとき: キーを決めるエージェントの種類と、どの承認の確認かを画面で確かめる一片。 */
+		approvalAnswer?: { readonly agent: 'claude' | 'codex'; readonly piece?: string },
 	): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -5857,6 +5884,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
 			...(readyMarker !== undefined ? { readyMarker } : {}),
 			...(approvalOption !== undefined ? { expectOption: approvalOption.expectOption, agent: approvalOption.agent, ...(approvalOption.promptHash !== undefined ? { expectPromptHash: approvalOption.promptHash } : {}) } : {}),
+			...(approvalAnswer !== undefined ? { agent: approvalAnswer.agent, ...(approvalAnswer.piece !== undefined ? { approvalPiece: approvalAnswer.piece } : {}) } : {}),
 		})));
 	}
 
@@ -7812,6 +7840,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.releaseInteractionClaim(entry.key, entry.claim);
 		}, 60_000);
 		this.desktopClaimTimers.add(timer);
+	}
+
+	/**
+	 * 画面側が、このペインで確認が出ていたのを見た承認（`interactionIds`）について、確認が消えてエージェントが作業を
+	 * 続けているのを見た（ターミナルのキーで答えた）。答え終えたものとして表から外す（{@link TranscriptTailer.markApprovalsSeenAnswered}）。
+	 * 印を付け終えた後に、まだ答えていない承認が残っていれば true（画面で見ていない次の承認が描かれるのを待っている。
+	 * 呼び出し側はペインを作業中へ戻さない）。
+	 */
+	async settleApprovalsOffScreen(token: string, interactionIds: readonly string[]): Promise<boolean> {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined) {
+			return false;
+		}
+		await tailer.markApprovalsSeenAnswered(interactionIds);
+		return tailer.hasAnyPendingApproval();
 	}
 
 	/** 見られているペインの指紋を比べ、変わったものだけを知らせる。 */

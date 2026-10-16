@@ -15,7 +15,7 @@
 //    同じ利用者の別の Para Code（製品版と開発版を並べて動かす場合など）が使っている最中のものを
 //    消さないよう、フォルダに作ったプロセスの PID を書いておき、そのプロセスが生きていれば残す
 
-import { promises as fs, lstatSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { promises as fs, lstatSync, mkdtempSync, rmSync, Stats, writeFileSync } from 'fs';
 import { join } from '../../../../base/common/path.js';
 
 const PREFIX = 'para-code-devtools-';
@@ -23,16 +23,28 @@ const OWNER_FILE = '.para-code-owner';
 /** 持ち主の印が無いもの（印を書く前の版が作ったもの）は、この時間より古ければ消す。 */
 const UNOWNED_STALE_MS = 24 * 60 * 60_000;
 
-function isOwnPrivateDirectory(path: string): boolean {
+function isOwnPrivateStat(stat: Stats): boolean {
+	if (!stat.isDirectory() || stat.isSymbolicLink()) {
+		return false;
+	}
+	if (process.platform === 'win32' || typeof process.getuid !== 'function') {
+		return true;
+	}
+	return stat.uid === process.getuid() && (stat.mode & 0o077) === 0;
+}
+
+function isOwnPrivateDirectorySync(path: string): boolean {
 	try {
-		const stat = lstatSync(path);
-		if (!stat.isDirectory() || stat.isSymbolicLink()) {
-			return false;
-		}
-		if (process.platform === 'win32' || typeof process.getuid !== 'function') {
-			return true;
-		}
-		return stat.uid === process.getuid() && (stat.mode & 0o077) === 0;
+		// eslint-disable-next-line local/code-no-sync-fs -- Used by ensure(), which the devtools proxy calls right before it spawns a child synchronously (see ensure).
+		return isOwnPrivateStat(lstatSync(path));
+	} catch {
+		return false;
+	}
+}
+
+async function isOwnPrivateDirectory(path: string): Promise<boolean> {
+	try {
+		return isOwnPrivateStat(await fs.lstat(path));
 	} catch {
 		return false;
 	}
@@ -59,26 +71,32 @@ export class ParadisDevtoolsTemporaryDirectory {
 		private readonly ownPid: number = process.pid,
 	) { }
 
-	/** 使える一時フォルダを返す。無くなっていれば作り直す。作れなければ undefined（次の呼び出しでまた試す）。 */
+	/**
+	 * 使える一時フォルダを返す。無くなっていれば作り直す。作れなければ undefined（次の呼び出しでまた試す）。
+	 * 同期なのは、proxy が子プロセスを起こす直前（同期の `_ensureChild` の中）で呼び、子をその場で台帳に載せるため。
+	 */
 	ensure(): string | undefined {
 		if (this._disposed) {
 			return undefined;
 		}
-		if (this._path !== undefined && isOwnPrivateDirectory(this._path)) {
+		if (this._path !== undefined && isOwnPrivateDirectorySync(this._path)) {
 			return this._path;
 		}
 		this._path = undefined;
 		let created: string;
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 			created = mkdtempSync(join(this.parent, PREFIX));
 		} catch {
 			return undefined;
 		}
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 			writeFileSync(join(created, OWNER_FILE), String(this.ownPid), { mode: 0o600 });
 		} catch {
 			// 持ち主の印が無いと、別の Para Code の起動時の掃除で使用中に消されうる。作ったものは片付けて諦める
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- ensure() must stay synchronous (see its doc comment).
 				rmSync(created, { recursive: true, force: true });
 			} catch {
 				// 次の起動の掃除（24 時間より古い印の無いもの）に任せる
@@ -116,7 +134,7 @@ export class ParadisDevtoolsTemporaryDirectory {
 				continue;
 			}
 			const path = join(parent, name);
-			if (!isOwnPrivateDirectory(path)) {
+			if (!await isOwnPrivateDirectory(path)) {
 				continue;
 			}
 			const owner = await fs.readFile(join(path, OWNER_FILE), 'utf8').then(text => Number.parseInt(text, 10), () => undefined);

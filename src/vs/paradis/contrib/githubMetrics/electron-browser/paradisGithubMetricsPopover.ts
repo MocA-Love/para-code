@@ -149,6 +149,17 @@ export class ParadisGithubMetricsPopover extends Disposable {
 			message.textContent = localize('paradis.githubMetrics.popover.partialError', "一部の値を更新できませんでした: {0}", snapshot.rateLimitError);
 		}
 
+		for (const pause of snapshot.rateLimitPauses ?? []) {
+			// 枠を使い切った資源は、ワークスペース一覧の PR・Issue の取得を止めている
+			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
+			this.addCountdown(
+				message,
+				pause.until,
+				remainingMs => localize('paradis.githubMetrics.popover.paused', "{0} の上限に達したため、プルリクエストと Issue の更新を止めています（{1}後に再開）", paradisGithubResourceLabel(pause.resource), paradisGithubFormatCountdown(remainingMs)),
+				localize('paradis.githubMetrics.popover.resumed', "プルリクエストと Issue の更新を再開します")
+			);
+		}
+
 		for (const entry of primary) {
 			this.renderLimitRow(entry);
 		}

@@ -113,6 +113,7 @@ export function createParadisComputerUseHelperHost(appRoot: string, userDataPath
 			...(isBuilt ? [] : [join(appRoot, '.build', 'paradis', 'computerUse', PARADIS_COMPUTER_USE_APP_NAME)]),
 		],
 		runtimeDirectory: join(userDataPath, 'paradis-computer-use'),
+		// eslint-disable-next-line local/code-no-sync-fs -- staticAvailability() and markDisabled() answer synchronously; this checks a few fixed paths inside the app bundle and the helper's socket.
 		exists: path => existsSync(path),
 		launch: (appPath, args, stderrFile) => new Promise<void>((resolve, reject) => {
 			// -n: 毎回新しいインスタンス / -g: 前面に出さない / -j: 隠して起動
