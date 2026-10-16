@@ -224,7 +224,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		return ok({
 			ok: true,
 			version: PARADIS_TASK_BOARD_BRIDGE_VERSION,
-			windows: windows.map(({ ctx, description }) => ({ id: ctx, focused: description.focused, repositories: description.repositories })),
+			windows: windows.map(({ ctx, description }) => ({ id: ctx, focused: description.focused, ...(description.remote ? { remote: true } : {}), repositories: description.repositories })),
 		});
 	}
 
@@ -259,7 +259,12 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (!(await this.options.directoryExists(request.repoPath))) {
 			return error('invalid', 'repoPath is not an existing folder.');
 		}
-		const windows = await this.describeWindows();
+		const described = await this.describeWindows();
+		// SSH のウィンドウは選ばない（IParadisTaskBoardWindowDescription.remote）
+		const windows = described.filter(({ description }) => description.remote !== true);
+		if (described.length > 0 && windows.length === 0) {
+			return error('unavailable', 'Only remote (SSH) Para Code windows are open. Open a local window to start agents from the task board.');
+		}
 		// そのリポジトリ（worktree を含む）を持つウィンドウ → 登録できるウィンドウのうちフォーカス中のもの → 登録できる最初のもの。
 		// 空のウィンドウや単一フォルダのウィンドウには登録できないので、最後の手段にする
 		const capable = windows.filter(({ description }) => description.canAddRepository !== false);
