@@ -13,6 +13,8 @@ import {
 	paradisCoerceGithubCallEvent,
 	paradisGithubCallSiteFromArgs,
 	paradisGithubFormatCountdown,
+	paradisGithubOtherConsumption,
+	paradisGithubResourceFromArgs,
 	paradisGithubSeverity,
 	paradisGithubWorstRemainingRatio,
 	paradisIsGithubNoPullRequestMessage,
@@ -138,6 +140,24 @@ suite('ParadisGithubMetrics', () => {
 			rateLimit: 'gh api rate_limit',
 			apiPath: 'gh api repos/…',
 			flagFirst: 'gh',
+		});
+	});
+
+	test('tells which budget a gh call spends from its arguments', () => {
+		assert.deepStrictEqual({
+			prView: paradisGithubResourceFromArgs(['pr', 'view', '--json', 'number']),
+			issueView: paradisGithubResourceFromArgs(['issue', 'view', '7', '--repo', 'o/r']),
+			repoView: paradisGithubResourceFromArgs(['repo', 'view', 'o/r', '--json', 'viewerDefaultMergeMethod']),
+			apiGraphql: paradisGithubResourceFromArgs(['api', 'graphql', '-f', 'query={viewer{login}}']),
+			apiRest: paradisGithubResourceFromArgs(['api', '--method', 'HEAD', 'user', '-i']),
+			runView: paradisGithubResourceFromArgs(['run', 'view', '--job', '77', '--log-failed']),
+		}, {
+			prView: 'graphql',
+			issueView: 'graphql',
+			repoView: 'graphql',
+			apiGraphql: 'graphql',
+			apiRest: 'core',
+			runView: 'core',
 		});
 	});
 
@@ -341,6 +361,52 @@ suite('ParadisGithubMetrics', () => {
 			rolling5m: 400,
 			perMinute: undefined,
 			hasEta: false,
+		});
+	});
+
+	test('treats a small rise of the remaining budget within the same window as no usage, not as a reset', () => {
+		const now = 10_000_000;
+		const history = new ParadisGithubRateLimitHistory();
+		const sample = (remaining: number) => [{ resource: 'graphql', limit: 5000, used: 5000 - remaining, remaining, resetAt: now + 1_800_000 }];
+
+		// リセット時刻が同じなら同じ窓。残量が戻って見えても「リセット後に 5000-4100 使った」とは数えない
+		history.record(sample(4000), now - 120_000);
+		history.record(sample(4100), now - 60_000);
+		history.record(sample(4050), now);
+
+		const [graphql] = history.consumption(now);
+		assert.deepStrictEqual({ rolling5m: graphql.rolling5m, series: graphql.series, perMinute: graphql.perMinute }, {
+			rolling5m: 50,
+			series: [0, 50],
+			perMinute: 25,
+		});
+	});
+
+	test('estimates what was spent outside Para Code by taking its own calls out of the account usage', () => {
+		const counts = (calls: number, rateLimited: number) => ({ calls, failures: rateLimited, rateLimited, avgDurationMs: 0, maxDurationMs: 0, lastRunAt: undefined });
+		const operation = (callSite: string, resource: 'core' | 'graphql', calls: number, rateLimited: number) => ({
+			callSite, resource, session: counts(calls, rateLimited), rolling5m: counts(calls, rateLimited), rolling1h: counts(calls * 10, rateLimited * 10),
+			lastRunAt: undefined, lastErrorAt: undefined, lastErrorMessage: undefined, topWorktreePath: undefined,
+		});
+		const consumption = [
+			{ resource: 'core', rolling5m: 59, rolling1h: 697, perMinute: 11.8, exhaustionEtaMs: undefined, series: [] },
+			{ resource: 'graphql', rolling5m: 1245, rolling1h: 8667, perMinute: 250, exhaustionEtaMs: undefined, series: [] },
+		];
+		const operations = [operation('gh pr view', 'graphql', 50, 20), operation('gh api user (rate limit probe)', 'core', 3, 0), operation('gh run view', 'core', 70, 0)];
+
+		assert.deepStrictEqual({
+			// 枠切れで断られた呼び出し(20)は点を使っていないので引かない: 1245 - 30
+			graphql5m: paradisGithubOtherConsumption(consumption, operations, 'graphql', '5m'),
+			// Para Code の方が多いときは 0 に丸める: core は 59 - 73 → 0
+			all5m: paradisGithubOtherConsumption(consumption, operations, 'all', '5m'),
+			all1h: paradisGithubOtherConsumption(consumption, operations, 'all', '1h'),
+			unknown: paradisGithubOtherConsumption([], operations, 'all', '5m'),
+		}, {
+			graphql5m: 1215,
+			all5m: 1215,
+			// core 697 - 730 → 0、graphql 8667 - (500 - 200)
+			all1h: 8367,
+			unknown: undefined,
 		});
 	});
 

@@ -39,6 +39,7 @@ import {
 	PARADIS_GITHUB_METRICS_CHANNEL,
 	PARADIS_GITHUB_MONITOR_SPACE,
 } from '../common/paradisGithubMetrics.js';
+import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../common/paradisGithubRateLimitPause.js';
 
 /**
  * レート枠の再取得を抑える最短間隔。renderer 側の最短ポーリング間隔（ダッシュボード表示中の60秒）
@@ -109,6 +110,8 @@ export class ParadisGithubMetricsService {
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		private readonly now: () => number = Date.now,
 		shellEnvResolver?: ParadisRawShellEnvResolver,
+		/** 枠を使い切ったときに worktree の gh を止める台帳。プローブの結果をここへ渡す。テストからのみ差し替える。 */
+		private readonly rateLimitPause: ParadisGithubRateLimitPause = paradisGithubRateLimitPause(),
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -133,6 +136,7 @@ export class ParadisGithubMetricsService {
 		const { operations, spaces, totals, lastErrors } = this.callLog.snapshot(now);
 		// 最後の取り直しで1つも取れず、前回の値を出しているときは古い値として示す。
 		const stale = this.rateLimits.length > 0 && this.consecutiveFailures > 0;
+		const rateLimitPauses = this.rateLimitPause.activePauses();
 		return {
 			...(this.accountLogin !== undefined ? { account: { login: this.accountLogin } } : {}),
 			...(this.rateLimitSucceededAt !== undefined ? { fetchedAt: this.rateLimitSucceededAt } : {}),
@@ -148,6 +152,7 @@ export class ParadisGithubMetricsService {
 			spaces,
 			totals,
 			lastErrors,
+			...(rateLimitPauses.length > 0 ? { rateLimitPauses } : {}),
 		};
 	}
 
@@ -225,6 +230,8 @@ export class ParadisGithubMetricsService {
 			// 履歴には取れたものだけを入れる。前回値を今回の時刻で入れ直すと、
 			// 実測していない区間を「消費0」として記録することになる
 			this.history.record(entries, finishedAt);
+			// 残量0ならリセット時刻まで worktree の PR・Issue の取得を止め、残量が戻っていれば再開させる
+			this.rateLimitPause.noteRateLimits(entries);
 			this.rateLimitSucceededAt = finishedAt;
 		}
 		// 片方だけ失敗したときも、その資源の値が古いままである理由を UI に出す

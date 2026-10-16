@@ -2633,6 +2633,17 @@ upstream由来の`pr.yml`/`pr-node-modules.yml`/`copilot-setup-steps.yml`（と�
 - 片方のプローブだけ失敗した回は、その資源の前回値を残す。ただしリセット時刻を過ぎた前回値は捨てる（窓が回った後の `remaining` は意味を持たず、残すとステータスバーの%と警告色が固まる）
 - 将来 GitHub が `/rate_limit` を直したとしても、ヘッダ方式のほうが正確（プローブ分のコストだけが差分）なので戻す必要はない
 
+### 枠切れ中の停止と、ウィンドウ・スマホをまたいだ使い回し（2026-10-16、Q373）
+
+- 内訳（呼び出し元・スペース）に出るのは Para Code 自身の gh（`paradisWorktreeGitChannel.ts` の `execGh()` とプローブ）だけ。エージェントがターミナルで打った gh や拡張機能の消費は枠の残量にしか現れないので、画面では「その他（エージェント・拡張など）」として、枠の消費から Para Code の送信（枠切れで断られた分を除く）を引いた推定を出す（`paradisGithubOtherConsumption()`）
+- `gh pr view` / `gh issue view` / `gh repo view` / `gh pr merge` は GraphQL の枠を使う。資源は引数から決める（`paradisGithubResourceFromArgs()`）。以前は全部 `core` で記録していた
+- 枠のリセットはリセット時刻の進み（60 秒以上）で判定する。残量が増えたかで判定すると、同じ窓で残量が少し戻っただけの区間を「リセット後に limit-remaining 使った」と数え、数千の偽の山が立っていた
+- gh が枠の上限で断られたら、その実行名前空間（手元 / WSL のディストロ）・資源の定期の PR・Issue の取得を、プローブが知っているリセット時刻まで止める（分からなければ 15 分。`paradisGithubRateLimitPause.ts`）。プローブが残量0を見たときも止め、残量を見たら解く。止めている間は最後に取れた状態を返す。止めるのは定期の取得（`getPrStatus` / `getIssueStatuses`）だけで、スマホの PR 詳細・マージ・失敗したジョブのログは利用者の操作なので止めない
+- PR の状態は「worktree のパス + 今のブランチ」、Issue は `owner/repo#number` をキーに git チャネル（shared process / 接続先のサーバー）で 270 秒使い回す（ポーリングの 5 分より短くして、呼び出し元が 1 つでも毎回取り直す）。同時の問い合わせは 1 本にまとめる。閉じた Issue は取り直さない
+- 取り直す間隔はスペースで変える。今いるスペース（そのウィンドウで開いているもの、スマホが最後に名指ししたもの）は 270 秒、ほかは 870 秒より古ければ取り直す（`paradisGithubStatusMaxAge()`。一覧とリレーの 5 分ごとの問い合わせが、それぞれ 5 分・15 分ごとになる）。一覧とリレーは全件を渡し、古さの判定は git チャネル側で行う（間隔を渡さない古いクライアントは全部 270 秒）
+- 一覧・worktree の通知は中身が変わらなくても来る（`ParadisWorktreeService.refresh()` は毎回鳴らし、main の HEAD の書き換えやピンの付け外しでも鳴る）。PR・Issue は「対象の URI・ブランチ・今いるスペース」の指紋（`paradisGithubTargetsFingerprint()`）が変わったときだけ取り直す。diff は従来どおり通知ごとに取り直す
+- 見送ったもの: ワークツリーごとの `gh pr view` を `gh pr list --state all` 1 本にまとめる案は、`pr list` がブランチの集合で絞れず（`--limit` 件で切れる）、`pr view` の PR の選び方（`refs/pull/N/head`、push 先の fork の owner、OPEN 優先、デフォルトブランチの除外）を Para Code で作り直すことになるため保留
+
 ## 他のブラウザからのログイン取り込み（browserProfiles/loginImport、2026-09-27、フェーズ7 B4）
 
 Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選んだドメインだけ内蔵ブラウザの名前付きプロファイルへ取り込む（q.html Q65・Q66 の回答 A）。実装は既存の `src/vs/paradis/contrib/browserProfiles/` へ足した。新しい contrib ディレクトリも app.ts への追加 import も作らず、channel は既存の `paradisRegisterBrowserProfiles` から一緒に立てている。
