@@ -469,6 +469,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					return {
 						instanceId: 9300,
 						persistentProcessId: attach?.id,
+						shellLaunchConfig: { ...(options?.config as IShellLaunchConfig | undefined) },
 						shellIntegrationNonce: shared.shellIntegrationNonce,
 						shouldPersist: true,
 						isDisposed: false,
