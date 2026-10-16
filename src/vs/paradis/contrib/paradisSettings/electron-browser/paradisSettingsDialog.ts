@@ -34,6 +34,17 @@ import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import {
+	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
+	PARADIS_MENU_BAR_MENU_USAGE_SETTING,
+	PARADIS_MENU_BAR_MENU_WORKING_COUNT_SETTING,
+	PARADIS_MENU_BAR_MULTIPLE_ACCOUNTS_SETTING,
+	PARADIS_MENU_BAR_PLAIN_MENU_SETTING,
+	PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+	PARADIS_MENU_BAR_TITLE_SETTING,
+	PARADIS_MENU_BAR_USAGE_STYLE_SETTING,
+	PARADIS_MENU_BAR_USAGE_WINDOW_SETTING,
+} from '../../menuBar/common/paradisMenuBar.js';
 
 const $ = dom.$;
 
@@ -101,6 +112,15 @@ const SECTIONS: readonly IParadisSettingsSectionSpec[] = [
 		navLabel: localize('paradis.settings.navNotif', "通知"),
 		// allow-any-unicode-next-line
 		heading: localize('paradis.settings.headNotif', "通知"),
+	},
+	{
+		id: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		// allow-any-unicode-next-line
+		navLabel: localize('paradis.settings.navMenuBar', "メニューバー"),
+		// allow-any-unicode-next-line
+		heading: localize('paradis.settings.headMenuBar', "メニューバー"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.descMenuBar', "画面の上端のメニューバーに Para Code のマークを出し、確認が必要なペインや使用量をウィンドウを開かずに見られるようにします。Windows では通知領域に出ます。"),
 	},
 	{
 		id: 'psd-sec-browser',
@@ -208,6 +228,8 @@ interface IParadisSettingRowSpec {
 	 * 表示はフォルダごとに実際に効いている値から作り、上書きされているときは説明にその旨を出す。
 	 */
 	readonly resourceScoped?: boolean;
+	/** オン/オフの設定をチェックの並びで 1 行にまとめる（メニューに出す項目など）。`key` は持たない。 */
+	readonly checks?: readonly { readonly key: string; readonly label: string }[];
 }
 
 const ROWS: readonly IParadisSettingRowSpec[] = [
@@ -739,14 +761,90 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
 		keywords: 'dock badge taskbar count unread',
 	},
+
+	// --- メニューバー ---
 	{
-		sectionId: 'psd-sec-notif',
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
 		key: 'paradis.notifications.menuBarIcon.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.menuBarIcon', "メニューバーに Para Code のアイコンを表示"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.menuBarIconDesc', "確認が必要なペインがあると赤い点が付き、メニューから最大 5 件のペインへ移動できます。Windows では通知領域に表示します。Linux では表示されません。"),
+		description: localize('paradis.settings.menuBarIconDesc', "確認が必要なペインがあると点が付きます。Linux では表示されません。"),
 		keywords: 'menu bar tray status item icon',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_TITLE_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarTitle', "アイコンの横に出すもの"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarTitleDesc', "使用量は Claude Code（C）と Codex（X）の使用率です。"),
+		keywords: 'menu bar title usage attention count',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_USAGE_STYLE_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarUsageStyle', "使用量の出し方"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarUsageStyleDesc', "「上限に近いときだけ」は 80% を超えたときだけ数字を出します。"),
+		keywords: 'menu bar usage text bars ring near limit',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_USAGE_WINDOW_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarUsageWindow', "横に出す枠"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarUsageWindowDesc', "メニューの中には 5 時間と週の両方を出します。"),
+		keywords: 'menu bar usage five hour weekly window',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_MULTIPLE_ACCOUNTS_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarMultipleAccounts', "アカウントが複数あるとき"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarMultipleAccountsDesc', "余裕のあるアカウントは、5 時間と週のどちらも 80% 未満のものです。メニューの中には全アカウントを出します。"),
+		keywords: 'menu bar accounts multiple available active',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarIncludeRemote', "SSH の接続先の使用量も合わせる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarIncludeRemoteDesc', "開いている接続先の分を手元と合わせて出します。同じアカウントは 1 つにまとめ、コストは足します。"),
+		keywords: 'menu bar ssh remote merge usage',
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarItems', "メニューに出す項目"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarItemsDesc', "要対応のペインはいつも出ます。"),
+		keywords: 'menu bar items usage cost working agents',
+		checks: [
+			{
+				key: PARADIS_MENU_BAR_MENU_USAGE_SETTING,
+				// allow-any-unicode-next-line
+				label: localize('paradis.settings.menuBarItemUsage', "使用量と今日のコスト"),
+			},
+			{
+				key: PARADIS_MENU_BAR_MENU_WORKING_COUNT_SETTING,
+				// allow-any-unicode-next-line
+				label: localize('paradis.settings.menuBarItemWorking', "作業中のエージェントの数"),
+			},
+		],
+	},
+	{
+		sectionId: PARADIS_MENU_BAR_SETTINGS_SECTION_ID,
+		key: PARADIS_MENU_BAR_PLAIN_MENU_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.menuBarPlain', "メニューを簡単な表示にする"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.menuBarPlainDesc', "行の 2 行目・小さなバー・数字の色を使いません。メニューの表示が崩れるときにオンにします。"),
+		keywords: 'menu bar plain simple fallback sublabel icon color',
 	},
 
 	// --- ブラウザ共有 ---
@@ -1320,7 +1418,9 @@ export class ParadisSettingsDialog extends Disposable {
 	/** 設定キーごとのコントロール更新関数 (外部変更を画面へ反映するため)。 */
 	private readonly _refreshers: (() => void)[] = [];
 
+	/** @param initialSectionId 開いたときに出す節（メニューバーのアイコンから開くときなど）。 */
 	constructor(
+		initialSectionId: string | undefined,
 		@ILayoutService layoutService: ILayoutService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
@@ -1406,7 +1506,11 @@ export class ParadisSettingsDialog extends Disposable {
 			},
 			close: () => this.dispose(),
 		}));
-		this._activateNavItem(SECTIONS[0].id);
+		const initialSection = SECTIONS.find(spec => spec.id === initialSectionId);
+		this._activateNavItem(initialSection?.id ?? SECTIONS[0].id);
+		if (initialSection) {
+			this._sections.get(initialSection.id)?.scrollIntoView({ block: 'start' });
+		}
 		modal.focus();
 	}
 
@@ -1476,12 +1580,14 @@ export class ParadisSettingsDialog extends Disposable {
 			if (spec.offWarning) {
 				this._buildOffWarning(main, spec.key, spec.offWarning);
 			}
+		} else if (spec.checks) {
+			this._buildChecks(main, spec.checks);
 		}
 
 		this._rows.push({
 			spec,
 			el: row,
-			searchText: [spec.label, spec.description ?? '', spec.key ?? '', spec.keywords ?? ''].join(' ').toLowerCase(),
+			searchText: [spec.label, spec.description ?? '', spec.key ?? '', spec.keywords ?? '', ...(spec.checks ?? []).flatMap(check => [check.label, check.key])].join(' ').toLowerCase(),
 		});
 	}
 
@@ -1618,6 +1724,25 @@ export class ParadisSettingsDialog extends Disposable {
 			this.dispose();
 			void this.commandService.executeCommand('workbench.action.openSettings', `@id:${key}`);
 		}));
+	}
+
+	/** オン/オフの設定をチェックの並びで出す。 */
+	private _buildChecks(main: HTMLElement, checks: readonly { readonly key: string; readonly label: string }[]): void {
+		const list = dom.append(main, $('.psd-checks'));
+		for (const check of checks) {
+			const item = dom.append(list, $('label.psd-check')) as HTMLLabelElement;
+			item.title = check.key;
+			const input = dom.append(item, $('input')) as HTMLInputElement;
+			input.type = 'checkbox';
+			dom.append(item, $('span')).textContent = check.label;
+			const sync = () => {
+				input.checked = this.configurationService.getValue<boolean>(check.key) === true;
+				input.disabled = !this._isRegistered(check.key);
+			};
+			sync();
+			this._refreshers.push(sync);
+			this._register(dom.addDisposableListener(input, 'change', () => void this._write(check.key, input.checked)));
+		}
 	}
 
 	/** オン/オフの設定がオフの間だけ、行の中に警告を出す。 */
