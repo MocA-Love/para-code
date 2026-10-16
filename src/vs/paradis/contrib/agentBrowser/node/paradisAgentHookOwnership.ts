@@ -28,7 +28,7 @@
 //     継承したトークンで所有者になるのを防ぐ。素の `codex` の共有 daemon や tmux 等は従来どおり後継になれる）
 // PIDが取れない場合（旧スクリプト・プロセス消滅・ps失敗）は fail-closed:
 // 既知の所有者と同じtranscriptへのイベントだけを通す。ただし接続先のペイン（hook が pid を持たない）では、
-// 所有者の /resume・/clear・起動し直しの SessionStart にだけ所有者を移す（classifyWithoutIdentity）。
+// 所有者の SessionEnd の後の SessionStart（/resume・/clear・起動し直し）にだけ所有者を移す（classifyWithoutIdentity）。
 
 import { exec } from 'child_process';
 import { statSync } from 'fs';
@@ -753,8 +753,12 @@ export interface IParadisHookClassifyInput {
 	readonly toolUseId?: string;
 }
 
-/** 会話を切り替える `SessionStart` の `source`（`startup` は新しい起動なので含めない）。 */
-const CONVERSATION_SWITCH_SOURCES: ReadonlySet<string> = new Set(['resume', 'clear', 'compact']);
+/**
+ * SessionEnd を送らない Codex で、会話を切り替えたとみなす `SessionStart` の `source`。`startup` は新しい起動、
+ * `compact` は同じ会話のまま（transcript が変わらない）なので含めない。Claude Code は /resume・/clear・/branch の前に
+ * 所有者の SessionEnd（`reason` が resume / clear）を送るので、`source` だけでは移さない。
+ */
+const CODEX_CONVERSATION_SWITCH_SOURCES: ReadonlySet<string> = new Set(['resume', 'clear', 'fork']);
 /** 所有者の会話で動いているツールを覚える上限。 */
 const MAX_TOOLS_IN_FLIGHT = 64;
 /** `tool_use_id` の無いツールの hook を数えるときのキー。 */
@@ -1092,10 +1096,11 @@ export class ParadisAgentHookOwnership {
 	 * フォールバック等）だけを通し、別transcriptへのrebindは拒否する。
 	 *
 	 * 例外として、hook がそもそも pid を持たない（接続先のペイン。`hook` を渡す）ときは、pid の無い所有者を
-	 * 会話の切り替えへ引き継ぐ。所有者の会話から SessionEnd を受けた後の SessionStart と、所有者のツールが
-	 * 動いていない間に届いた同じ種別のエージェントの `SessionStart`（`source` が resume / clear / compact）が対象。
-	 * サブエージェント・teammate の hook（`agent_id` 付き）と `source: startup`（ペインの中で起動した別の claude）
-	 * では移さない。ツールの実行中の `SessionStart` は、ツールが起動した別の `claude --resume` とみなして移さない。
+	 * 会話の切り替えへ引き継ぐ。所有者の会話から SessionEnd を受けた後の SessionStart（Claude Code の /resume・/clear・
+	 * /branch・起動し直し）と、SessionEnd を送らない Codex の所有者のツールが動いていない間に届いた Codex の
+	 * `SessionStart`（`source` が resume / clear / fork）が対象。サブエージェント・teammate の hook（`agent_id` 付き）では
+	 * 移さない。所有者の Claude Code が生きている間の `SessionStart` は、`source` が resume でも、ペインの中で起動した
+	 * 別の claude（背景のツールからの `claude -p --resume` など）とみなして移さない。
 	 */
 	private classifyWithoutIdentity(token: string, transcriptPath: string | undefined, at: number, eventKind: ParadisHookAgentKind | undefined, identityLoss: ParadisHookIdentityLoss, snapshotAgeMs: number | undefined, hook?: IParadisHookClassifyInput): IParadisHookClassification {
 		const owner = this.owners.get(token);
@@ -1130,8 +1135,8 @@ export class ParadisAgentHookOwnership {
 		if (owner.ended === true) {
 			return true;
 		}
-		return eventKind !== undefined && owner.agentKind === eventKind
-			&& hook.sessionSource !== undefined && CONVERSATION_SWITCH_SOURCES.has(hook.sessionSource)
+		return eventKind === 'codex' && owner.agentKind === 'codex'
+			&& hook.sessionSource !== undefined && CODEX_CONVERSATION_SWITCH_SOURCES.has(hook.sessionSource)
 			&& (owner.toolsInFlight?.length ?? 0) === 0;
 	}
 
