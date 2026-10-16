@@ -11,7 +11,8 @@ import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { unpackParadisWorkbookStyles } from '../../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { ParadisSpreadsheetService } from '../../node/paradisSpreadsheetService.js';
-import { ParadisSpreadsheetParseWorkerBackend } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
+import type { ParadisOfficeSemanticWorkerMessage } from '../../node/office/paradisOfficeSemanticWorkerQueue.js';
+import { ParadisSpreadsheetParseWorkerBackend, type IParadisSpreadsheetParseWorker, type IParadisSpreadsheetParseWorkerRun } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 const WORKER_PATH = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js').fsPath;
 
@@ -36,6 +37,24 @@ async function inventedWorkbook(): Promise<Buffer> {
 
 suite('ParadisSpreadsheetParseWorker', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('sends one warm request while one is waiting or running, and none while the worker is up', async () => {
+		const posted: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetParseWorkerRun>[] = [];
+		const listeners = new Map<string, ((value: never) => void)[]>();
+		const worker = {
+			postMessage: (message: ParadisOfficeSemanticWorkerMessage<IParadisSpreadsheetParseWorkerRun>) => { posted.push(message); },
+			on: (event: string, listener: (value: never) => void) => { listeners.set(event, [...(listeners.get(event) ?? []), listener]); return worker; },
+			terminate: async () => 0,
+		};
+		let created = 0;
+		const backend = disposables.add(new ParadisSpreadsheetParseWorkerBackend(() => { created++; return worker as unknown as IParadisSpreadsheetParseWorker; }));
+		const first = backend.warm(CancellationToken.None);
+		const second = backend.warm(CancellationToken.None);
+		const whileWaiting = posted.length;
+		for (const listener of listeners.get('message') ?? []) { listener({ kind: 'result', id: posted[0].id, result: { kind: 'warm' } } as never); }
+		const results = [await first, await second, await backend.warm(CancellationToken.None)];
+		deepStrictEqual({ whileWaiting, posted: posted.length, created, results }, { whileWaiting: 1, posted: 1, created: 1, results: [{ kind: 'warm' }, { kind: 'warm' }, { kind: 'warm' }] });
+	});
 
 	test('parses in the worker the same workbook the shared process parses, and reports what it cannot read', async () => {
 		// The Electron renderer test host cannot launch worker_threads. The node unit runner is the
