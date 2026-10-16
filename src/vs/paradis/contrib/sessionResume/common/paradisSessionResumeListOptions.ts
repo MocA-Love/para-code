@@ -111,8 +111,8 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
  * 扱うので、どれも2つ重ねる。
  */
 export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string {
-	// Codex は「ターミナルで再開」と同じく確認ありの権限を明示する（付けないと 0.163.0 から会話を始めたときの権限に戻る）
-	const resume = session.agent === 'claude' ? `claude --resume ${session.id}` : paradisAgentResumeCommandLine('codex', session.id, 'resume') ?? `codex resume ${session.id}`;
+	// 「ターミナルで再開」と同じく確認ありの権限を明示する（付けないと Claude Code は auto mode、Codex は 0.163.0 から会話を始めたときの権限になる）
+	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume') ?? (session.agent === 'claude' ? `claude --resume ${session.id}` : `codex resume ${session.id}`);
 	return windows
 		? `Set-Location -LiteralPath '${session.cwd.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'; ${resume}`
 		: `cd '${session.cwd.replace(/'/g, `'\\''`)}' && ${resume}`;
