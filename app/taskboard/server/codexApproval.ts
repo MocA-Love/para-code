@@ -3,6 +3,7 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { findTomlAssignment, type MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../../../src/vs/paradis/contrib/agentBrowser/common/paradisTomlScan.js';
 import { paraCodeDataDirectories } from './paraCode.js';
 
 /*
@@ -12,8 +13,9 @@ import { paraCodeDataDirectories } from './paraCode.js';
  *   [mcp_servers.para-browser.tools.board_complete_step]
  *   approval_mode = "approve"
  *
- * 設定はユーザーの物で、壊すと Codex がどのペインでも起動しなくなる。そのため、読み方に迷う書き方
- * （サーバー名の引用符、ドット付きのキー、インラインテーブル、para-browser の定義が無い等）を見つけたら
+ * 設定はユーザーの物で、壊すと Codex がどのペインでも起動しなくなる。行の読み方（コメント・引用符・複数行の
+ * 文字列）は Para Code 本体と同じ paradisTomlScan.ts を使う。読み方に迷う書き方（ドット付きのキー、インライン
+ * テーブル、approval_mode を複数行の文字列やドット付きで書いたもの、para-browser の定義が無い等）を見つけたら
  * 何も書かずに断り、手で足してもらう。
  */
 
@@ -33,48 +35,53 @@ export class CodexConfigError extends Error {
 
 interface IScannedLine {
 	readonly text: string;
-	/** 複数行の文字列の中の行（見出しやキーとして読まない）。 */
+	/** 行の頭が複数行の文字列の中（見出しやキーとして読まない）。 */
 	readonly inString: boolean;
+	/** コメントと複数行の文字列を除いた、キーと値の部分（前後の空白は除く）。 */
+	readonly code: string;
 }
 
-/** 行ごとに、複数行の文字列（""" / '''）の中かどうかを付ける。 */
+/** 行ごとに、Para Code 本体と同じ読み方（paradisTomlScan.ts）でキーと値の部分を取り出す。 */
 function scan(text: string): IScannedLine[] {
-	let open: '"""' | "'''" | undefined;
+	let multiline: MultilineDelimiter | undefined;
 	return text.split('\n').map(line => {
-		const inString = open !== undefined;
-		let rest = line;
-		for (; ;) {
-			if (open) {
-				const at = rest.indexOf(open);
-				if (at < 0) {
-					break;
-				}
-				rest = rest.slice(at + 3);
-				open = undefined;
-				continue;
-			}
-			const code = rest.replace(/#.*$/, '');
-			const dq = code.indexOf('"""');
-			const sq = code.indexOf("'''");
-			const at = dq < 0 ? sq : sq < 0 ? dq : Math.min(dq, sq);
-			if (at < 0) {
-				break;
-			}
-			open = rest.startsWith('"""', at) ? '"""' : "'''";
-			rest = rest.slice(at + 3);
-		}
-		return { text: line, inString };
+		const inString = multiline !== undefined;
+		const scanned = scanTomlLine(line.replace(/\r$/, ''), multiline);
+		multiline = scanned.multiline;
+		return { text: line, inString, code: scanned.code.trim() };
 	});
 }
 
 function isHeader(line: IScannedLine): boolean {
-	return !line.inString && /^\s*\[/.test(line.text);
+	return !line.inString && line.code.startsWith('[');
 }
 
-/** `[a.b.c]  # comment` の a.b.c。引用符を含む見出しは undefined（読み方に迷うので扱わない）。 */
-function headerName(line: IScannedLine): string | undefined {
-	const m = !line.inString ? /^\s*\[\s*([A-Za-z0-9_.-]+)\s*\]\s*(#.*)?$/.exec(line.text) : null;
-	return m?.[1];
+/** `[a."b".c]  # comment` のキーの並び。配列の表（`[[...]]`）と読めない見出しは undefined。 */
+function headerPath(line: IScannedLine): readonly string[] | undefined {
+	const code = line.code;
+	if (!isHeader(line) || code.startsWith('[[') || !code.endsWith(']')) {
+		return undefined;
+	}
+	return parseTomlKeyPath(code.slice(1, -1));
+}
+
+/** `key = value` の行のキーの並び（引用符付きのキーも読む）と値。代入でない行は undefined。 */
+function assignmentOf(line: IScannedLine): { readonly key: readonly string[]; readonly value: string } | undefined {
+	if (line.inString) {
+		return undefined;
+	}
+	const at = findTomlAssignment(line.code);
+	const key = at > 0 ? parseTomlKeyPath(line.code.slice(0, at)) : undefined;
+	return key ? { key, value: line.code.slice(at + 1).trim() } : undefined;
+}
+
+/** その行が approval_mode を書いているか（引用符付きのキー `"approval_mode"` も同じに見る）。 */
+function isApprovalMode(line: IScannedLine): boolean {
+	return assignmentOf(line)?.key[0] === 'approval_mode';
+}
+
+function samePath(a: readonly string[] | undefined, b: readonly string[]): boolean {
+	return a !== undefined && a.length === b.length && a.every((part, i) => part === b[i]);
 }
 
 interface IConfigShape {
@@ -85,41 +92,54 @@ interface IConfigShape {
 /** 書いてよい形かを確かめる。迷う書き方なら CodexConfigError。 */
 function inspect(text: string): IConfigShape {
 	const lines = scan(text);
+	const server = ['mcp_servers', SERVER];
 	let serverHeaders = 0;
 	let inServer = false;
 	const toolTables = new Map<string, { start: number; end: number }>();
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		if (line.inString) {
+		if (line.inString && line.code.length === 0) {
 			continue;
 		}
 		if (isHeader(line)) {
-			const name = headerName(line);
+			const name = headerPath(line);
 			if (name === undefined && line.text.includes(SERVER)) {
 				throw new CodexConfigError(`${SERVER} の見出しの書き方を読めません（${line.text.trim()}）`);
 			}
-			if (name === `mcp_servers.${SERVER}.tools`) {
+			if (samePath(name, [...server, 'tools'])) {
 				throw new CodexConfigError(`[mcp_servers.${SERVER}.tools] の中に書かれたツールの設定は読み方に迷うので、手で足してください`);
 			}
-			inServer = name === `mcp_servers.${SERVER}`;
+			inServer = samePath(name, server);
 			if (inServer) {
 				serverHeaders++;
 			}
-			const tool = name?.startsWith(`mcp_servers.${SERVER}.tools.`) ? name.slice(`mcp_servers.${SERVER}.tools.`.length) : undefined;
+			const tool = name && name.length === 4 && samePath(name.slice(0, 3), [...server, 'tools']) ? name[3] : undefined;
 			if (tool !== undefined) {
 				let end = i + 1;
 				while (end < lines.length && !isHeader(lines[end])) {
 					end++;
 				}
 				toolTables.set(tool, { start: i, end });
+				for (let j = i + 1; j < end; j++) {
+					const assignment = assignmentOf(lines[j]);
+					if (assignment?.key[0] !== 'approval_mode') {
+						continue;
+					}
+					// 差し替えると壊れる書き方（ドット付き・複数行の文字列）は断る
+					if (assignment.key.length !== 1 || (j + 1 < lines.length && lines[j + 1].inString)) {
+						throw new CodexConfigError(`${tool} の approval_mode の書き方を読めません（${lines[j].text.trim()}）`);
+					}
+				}
 			}
 			continue;
 		}
+		const assignment = findTomlAssignment(line.code);
+		const key = assignment > 0 ? parseTomlKeyPath(line.code.slice(0, assignment)) : undefined;
 		// 見出し以外の行で para-browser の設定を書いている（ドット付きのキー・インラインテーブル）
-		if (/^\s*mcp_servers\s*[.=]/.test(line.text) && line.text.includes(SERVER)) {
+		if (key?.[0] === 'mcp_servers' && (key.includes(SERVER) || line.code.slice(assignment).includes(SERVER))) {
 			throw new CodexConfigError(`${SERVER} がドット付きのキーかインラインテーブルで書かれています（${line.text.trim()}）`);
 		}
-		if (inServer && /^\s*tools\s*[.=]/.test(line.text)) {
+		if (inServer && key?.[0] === 'tools') {
 			throw new CodexConfigError(`${SERVER} の tools がドット付きのキーかインラインテーブルで書かれています（${line.text.trim()}）`);
 		}
 	}
@@ -131,7 +151,12 @@ function inspect(text: string): IConfigShape {
 	return { lines, toolTables };
 }
 
-const APPROVE_LINE = /^\s*approval_mode\s*=\s*"approve"\s*(#.*)?$/;
+/** 常に許可になっている行か（`approval_mode = "approve"`。キーと値の引用符の種類は問わない）。 */
+function isApproveLine(line: IScannedLine): boolean {
+	const assignment = assignmentOf(line);
+	return assignment !== undefined && assignment.key.length === 1 && assignment.key[0] === 'approval_mode'
+		&& (assignment.value === '"approve"' || assignment.value === "'approve'");
+}
 
 /** まだ常に許可になっていないボードのツール。読めない書き方なら全部を返す（帯を出し続け、押したら理由を出す）。 */
 export function missingCodexApprovals(text: string): string[] {
@@ -143,7 +168,7 @@ export function missingCodexApprovals(text: string): string[] {
 	}
 	return CODEX_BOARD_TOOLS.filter(tool => {
 		const range = shape.toolTables.get(tool);
-		return !range || !shape.lines.slice(range.start + 1, range.end).some(l => !l.inString && APPROVE_LINE.test(l.text));
+		return !range || !shape.lines.slice(range.start + 1, range.end).some(isApproveLine);
 	});
 }
 
@@ -156,7 +181,7 @@ export function withCodexApprovals(text: string): string {
 	const existing = missing.filter(t => shape.toolTables.has(t)).sort((a, b) => shape.toolTables.get(b)!.start - shape.toolTables.get(a)!.start);
 	for (const tool of existing) {
 		const range = shape.toolTables.get(tool)!;
-		const body = shape.lines.slice(range.start + 1, range.end).filter(l => l.inString || !/^\s*approval_mode\s*=/.test(l.text)).map(l => l.text);
+		const body = shape.lines.slice(range.start + 1, range.end).filter(l => !isApprovalMode(l)).map(l => l.text);
 		out.splice(range.start + 1, range.end - range.start - 1, 'approval_mode = "approve"', ...body);
 	}
 	for (const tool of missing.filter(t => !shape.toolTables.has(t))) {
@@ -245,15 +270,27 @@ async function settingsCodexHomes(): Promise<unknown[]> {
 	return [];
 }
 
-/** まだ常に許可になっていない設定ファイルと、足りないツール。 */
-export async function codexApprovalStates(): Promise<{ readonly path: string; readonly missing: readonly string[] }[]> {
+/** まだ常に許可になっていない設定ファイルと、足りないツール。`manual` は書けない理由（手で足してもらう）。 */
+export async function codexApprovalStates(): Promise<{ readonly path: string; readonly missing: readonly string[]; readonly manual?: string }[]> {
 	const states = await Promise.all((await codexConfigCandidates()).map(file => codexApprovalState(file)));
 	return states.filter(s => s.missing.length > 0);
 }
 
-export async function codexApprovalState(file = codexConfigPath()): Promise<{ readonly missing: readonly string[]; readonly path: string }> {
+export async function codexApprovalState(file = codexConfigPath()): Promise<{ readonly missing: readonly string[]; readonly path: string; readonly manual?: string }> {
 	const text = await fs.readFile(file, 'utf8').catch(() => '');
-	return { missing: missingCodexApprovals(text), path: file };
+	const missing = missingCodexApprovals(text);
+	const manual = missing.length ? codexWriteRefusal(text) : undefined;
+	return manual === undefined ? { missing, path: file } : { missing, path: file, manual };
+}
+
+/** ボードが書き足せない書き方なら、その理由。書けるなら undefined。 */
+export function codexWriteRefusal(text: string): string | undefined {
+	try {
+		inspect(text);
+		return undefined;
+	} catch (err) {
+		return err instanceof CodexConfigError ? err.message : String(err);
+	}
 }
 
 /**
