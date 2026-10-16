@@ -1,9 +1,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, realpathSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ITaskBoardRepositoryChoice } from '@engine/paradisTaskBoard.js';
+import { git } from './workspaces.js';
 
 /*
  * 上部のメニューで切り替えられるリポジトリの候補。
@@ -52,6 +53,27 @@ export async function boardPlaces(): Promise<{ readonly clones: readonly string[
 		}
 	}
 	return { clones, worktreeRoots };
+}
+
+/**
+ * ほかのボードが既定の置き場（`<リポジトリ>-worktrees`）に作ったワークツリーか。既定の置き場は個人設定に
+ * 記録されないので {@link boardPlaces} では分からない。`--git-common-dir` で本体のリポジトリを引いて確かめる。
+ * この置き場は Para Code 本体の「新しいスペース」の既定でもあるので、ボードが作業場所に置く持ち主の印
+ * （`.para/.task`）があるものだけをボードの作業場所とみなす。本体のリポジトリそのものは含めない。
+ */
+export async function isOtherBoardWorktree(toplevel: string): Promise<boolean> {
+	const real = (p: string) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+	const common = await git(toplevel, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 5000).catch(() => undefined);
+	if (!common || path.basename(common) !== '.git') {
+		return false;
+	}
+	const main = real(path.dirname(common));
+	if (main === real(toplevel)) {
+		return false;
+	}
+	const root = path.join(path.dirname(main), `${path.basename(main)}-worktrees`);
+	return real(toplevel).startsWith(`${real(root)}${path.sep}`)
+		&& await fs.access(path.join(toplevel, '.para', '.task')).then(() => true, () => false);
 }
 
 /** 開いたリポジトリを最近の一覧の先頭に入れる。 */

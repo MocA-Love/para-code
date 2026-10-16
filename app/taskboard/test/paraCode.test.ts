@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import type { ITaskBoardFlow, ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine, type ITaskBoardRunPort, type ITaskBoardWorkspacePort } from '@engine/paradisTaskBoardEngine.js';
-import { ParaCodeAgents, type ParaCodeBridgeEvent } from '../server/paraCode.js';
+import { launchErrorText, ParaCodeAgents, type ParaCodeBridgeEvent } from '../server/paraCode.js';
 import { CommandRunner } from '../server/runner.js';
 
 /* Para Code の bridge の代わり。届いた要求を記録し、SSE でイベントを流せる。 */
@@ -309,6 +309,20 @@ describe('ParaCodeBridgeClient', () => {
 	test('reconnects when Para Code accepts the event stream but never answers (for example while it is starting)', async () => {
 		const { bridge } = await setup(false, 2);
 		expect(bridge.connected).toBe(1);
+	});
+});
+
+describe('launchErrorText', () => {
+	test('turns the bridge refusals into what to do next', () => {
+		expect([
+			'No Para Code window is open.',
+			'Only remote (SSH) Para Code windows are open. Open a local window to start agents from the task board.',
+			'something else',
+		].map(m => launchErrorText(m).split('。')[0])).toEqual([
+			'Para Code のウィンドウが開いていません',
+			'Para Code のウィンドウが SSH の接続先のものしかありません',
+			'something else',
+		]);
 	});
 });
 
