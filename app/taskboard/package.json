@@ -1,0 +1,32 @@
+{
+	"name": "@para/taskboard",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Para Code task board: flow-driven parallel agent work. Dev server + web UI (later embedded in Para Code).",
+	"scripts": {
+		"dev": "tsx server/main.ts",
+		"build": "vite build",
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "vitest run",
+		"test:e2e": "tsx test/e2e/run.ts"
+	},
+	"dependencies": {
+		"dompurify": "^3.4.17",
+		"react": "^19.1.0",
+		"react-dom": "^19.1.0",
+		"ws": "^8.18.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.15.0",
+		"@types/react": "^19.1.0",
+		"@types/react-dom": "^19.1.0",
+		"@types/ws": "^8.18.0",
+		"@vitejs/plugin-react": "^4.4.0",
+		"puppeteer-core": "^24.8.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5.8.0",
+		"vite": "^6.3.0",
+		"vitest": "^3.1.0"
+	}
+}
