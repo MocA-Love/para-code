@@ -1549,7 +1549,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				return typeof value === 'string' ? value : undefined;
 			};
 			const transcriptPath = field('transcript_path');
-			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at });
+			// 控えには `source`・`agent_id`・ツールの hook が残らない（手元の版だけが控える）。イベント名だけでも、切断中の
+			// SessionEnd の後の SessionStart なら所有者を移せる。
+			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at, event: record.event });
 			if (!this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
 				return;
 			}
