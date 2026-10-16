@@ -5,7 +5,8 @@ import type { ITaskBoardFlow, ITaskBoardTask } from '@engine/paradisTaskBoard.js
 import { useTaskActions } from '../actions.js';
 import { useApp, type TabId } from '../context.js';
 import { ago, desiredStage, needs, stageMismatch, STATUS, stepName } from '../format.js';
-import { useNarrow, useNow, usePhone } from '../hooks.js';
+import { cachedRpc } from '../api.js';
+import { useAsync, useNarrow, useNow, usePhone } from '../hooks.js';
 import { Icon, type IconName } from '../icons.js';
 import { AgentTag, Avatar, CiIcon, DueChip, Elapsed, LabelChip, Menu, PrChip, Spinner, Status, tone } from './atoms.js';
 import { ArtifactsTab, IssueTab, MockTab, PlanTab, ProgressTab, PrTab, TerminalTab } from './tabs.js';
@@ -232,10 +233,7 @@ export function Panel() {
 					</div>
 					<div className="p-title">{shown.title} {shown.issue && <a href={shown.issue.url || undefined} target="_blank" rel="noreferrer">#{shown.issue.number}</a>}</div>
 					<div className="p-meta">
-						{shown.issue ? (shown.prOwned && shown.pr?.state === 'merged'
-							// ボードが作った PR は本文に Closes #n を書くので、マージされたら Issue も閉じている
-							? <span className="pill closed"><Icon name="check" size={14} />Closed</span>
-							: <span className="pill open"><Icon name="issue" size={14} />Open</span>) : <span className="pill task">ボードのタスク</span>}
+						{shown.issue ? <IssueStatePill task={shown} /> : <span className="pill task">ボードのタスク</span>}
 						<Status status={shown.status} />
 						{shown.step !== 'todo' && shown.step !== 'done' && <span>工程: {stepName(flow, shown.step)}</span>}
 						{shown.branch && shown.step !== 'todo' && <span className="branch">{shown.branch}</span>}
@@ -279,4 +277,13 @@ export function Panel() {
 			</aside>
 		</>
 	);
+}
+
+/** Issue の実際の状態（詳細を読めたら GitHub の値、読むまではボードの PR がマージ済みかで推す）。 */
+function IssueStatePill({ task }: { task: ITaskBoardTask }) {
+	const detail = useAsync(force => cachedRpc('issueDetail', { taskId: task.id }, 20000, force), [task.id, task.pr?.state]);
+	const closed = detail.data ? detail.data.state === 'closed' : task.prOwned === true && task.pr?.state === 'merged';
+	return closed
+		? <span className="pill closed"><Icon name="check" size={14} />Closed</span>
+		: <span className="pill open"><Icon name="issue" size={14} />Open</span>;
 }

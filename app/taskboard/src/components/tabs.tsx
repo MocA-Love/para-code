@@ -220,7 +220,14 @@ export function PrTab({ task }: { task: ITaskBoardTask }) {
 			{d.state === 'merged' ? (
 				<div className="merge-row"><span className="merge-ic merged"><Icon name="merge" /></span><div><div className="t">マージされました</div><div className="d">タスクは完了になります</div></div><span /></div>
 			) : d.state === 'draft' ? (
-				<div className="merge-row"><span className="merge-ic draft"><Icon name="pr" /></span><div><div className="t">ドラフトです</div><div className="d">フローが「マージ」の工程に着いたら、レビュー待ちにします（次の段階）</div></div><span /></div>
+				<>
+					{d.mergeable === 'conflicting' && <div className="merge-row"><span className="merge-ic ng"><Icon name="merge" /></span><div><div className="t">衝突があります</div><div className="d">{d.base} ← {d.head}。レビュー待ちにする前に、衝突を解消してください</div></div><span /></div>}
+					<div className="merge-row">
+						<span className="merge-ic draft"><Icon name="pr" /></span>
+						<div><div className="t">ドラフトです</div><div className="d">準備ができたら、レビュー待ちにしてレビューを受けます</div></div>
+						{d.simulated ? <span /> : <button className="btn sm" onClick={() => void app.call('prReady', { taskId: task.id }, { title: 'レビュー待ちにしました', body: `#${d.number}`, tone: 'green' }).then(() => detail.reload())}>レビュー待ちにする</button>}
+					</div>
+				</>
 			) : (
 				<div className="merge-row">
 					<span className={`merge-ic ${d.mergeable === 'conflicting' ? 'ng' : 'ok'}`}><Icon name="merge" /></span>
@@ -323,20 +330,21 @@ function CommitPrompt({ task, flow }: { task: ITaskBoardTask; flow: ITaskBoardFl
 	const [message, setMessage] = useState(() => task.issue ? `${task.title} (#${task.issue.number})` : task.title);
 	const [busy, setBusy] = useState(false);
 	const step = flow.steps.find(s => s.id === task.step);
-	const commit = async () => {
+	const commit = async (trackedOnly: boolean) => {
 		setBusy(true);
-		await app.call('commitAndRetry', { taskId: task.id, message, attempt: task.attempt }, { title: 'コミットして続けます', body: message, tone: 'green' });
+		await app.call('commitAndRetry', { taskId: task.id, message, attempt: task.attempt, trackedOnly }, { title: 'コミットして続けます', body: message, tone: 'green' });
 		setBusy(false);
 	};
 	return (
 		<div className="ask amber">
 			<div className="ask-h"><Icon name="warning" size={14} />コミットしていない変更があります</div>
 			<div className="ask-q">{step?.name ?? 'この工程'}の前に、作業場所の変更をコミットしますか。コミットすると、この工程をやり直します。</div>
-			<ul className="commit-files mono">{files.slice(0, 12).map(f => <li key={f}>{f}</li>)}{files.length > 12 && <li className="faint">ほか {files.length - 12} 件</li>}</ul>
+			<ul className="commit-files mono">{files.slice(0, 12).map(f => <li key={f}>{f}{task.untracked?.includes(f) && <span className="chip new-file">新規</span>}</li>)}{files.length > 12 && <li className="faint">ほか {files.length - 12} 件</li>}</ul>
 			<label className="faint" htmlFor="commit-msg">コミットのメッセージ</label>
 			<input id="commit-msg" className="input" value={message} onChange={e => setMessage(e.target.value)} />
 			<div className="ask-foot">
-				<button className="btn primary" disabled={busy || !message.trim()} onClick={() => void commit()}><Icon name="check" size={14} />コミットして続ける</button>
+				<button className="btn primary" disabled={busy || !message.trim()} onClick={() => void commit(false)}><Icon name="check" size={14} />すべてコミットして続ける</button>
+				<button className="btn" disabled={busy || !message.trim() || files.every(f => task.untracked?.includes(f))} onClick={() => void commit(true)} title="エージェントが新しく作ったファイルは入れず、もとからあるファイルの変更だけをコミットします">変更したファイルだけコミット</button>
 				{step?.onFail ? <button className="btn" onClick={() => actions.sendBack(task, step.onFail)}><Icon name="undo" size={14} />{stepName(flow, step.onFail)}へ戻す</button> : <button className="btn" onClick={() => actions.sendBack(task)}><Icon name="undo" size={14} />差し戻す</button>}
 				<button className="btn ghost" onClick={() => app.setTab('terminal')}>ターミナルを見る</button>
 			</div>
@@ -515,12 +523,23 @@ export function ProgressTab({ task, flow }: { task: ITaskBoardTask; flow: ITaskB
    ====================================================================== */
 
 function ArtifactText({ task, artifact, repoUrl }: { task: ITaskBoardTask; artifact: ITaskBoardArtifact; repoUrl?: string }) {
+	// HTML で書かれた計画は、モックと同じくスクリプトを止めた枠で見せる（文字として出すと CSS が並ぶ）
+	if (/\.html?$/i.test(artifact.path ?? '')) {
+		return <iframe className="plan-frame" sandbox="" src={artifactUrl(task.id, artifact.id)} title={artifact.title} />;
+	}
+	return <ArtifactMarkdown task={task} artifact={artifact} repoUrl={repoUrl} />;
+}
+
+function ArtifactMarkdown({ task, artifact, repoUrl }: { task: ITaskBoardTask; artifact: ITaskBoardArtifact; repoUrl?: string }) {
 	const text = useAsync(() => fetchText(artifactUrl(task.id, artifact.id)), [task.id, artifact.id, artifact.createdAt]);
 	if (text.loading && !text.data) {
 		return <Skeleton lines={6} />;
 	}
 	if (text.error) {
 		return <LoadError error={text.error} retry={text.reload} />;
+	}
+	if (/^\s*(<!doctype html|<html)/i.test(text.data ?? '')) {
+		return <iframe className="plan-frame" sandbox="" src={artifactUrl(task.id, artifact.id)} title={artifact.title} />;
 	}
 	return <Markdown source={text.data ?? ''} repoUrl={repoUrl} />;
 }
