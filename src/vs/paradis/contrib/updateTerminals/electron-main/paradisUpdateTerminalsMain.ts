@@ -148,21 +148,21 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 			return false;
 		}
 
-		// 答えたウィンドウすべてに止めさせる（止める対象はウィンドウが自分で選び直す。設定が
-		// `never` のものなどは何もしない）。合図が届くのを待ってから更新を続ける。
-		// この PC の常駐は、ここではなく終了処理に入ってから止める。
+		// 答えたウィンドウすべてに止める番号を控えさせる（止める対象はウィンドウが自分で選び直す。設定が
+		// `never` のものなどは何もしない）。止めるのは各ウィンドウの終了処理の中（UI の状態を保存した後。
+		// 先に止めるとタブが閉じて、畳まれたペインの形が保存される）。この PC の常駐も終了処理に入ってから止める。
 		await Promise.all(answered.map(async ({ window }) => {
 			try {
 				const done = await raceTimeout(this.windowService(window.id).stopForUpdate().then(() => true), STOP_TIMEOUT_MS);
 				if (!done) {
-					this.logService.warn(`[paradisUpdateTerminals] window ${window.id} did not finish stopping its terminals in time; updating anyway`);
+					this.logService.warn(`[paradisUpdateTerminals] window ${window.id} did not finish preparing to stop its terminals in time; updating anyway`);
 				}
 			} catch (error) {
-				this.logService.warn(`[paradisUpdateTerminals] window ${window.id} could not stop its terminals`, error);
+				this.logService.warn(`[paradisUpdateTerminals] window ${window.id} could not prepare to stop its terminals`, error);
 			}
 		}));
 
-		// 止めている間に更新の状態が変わっていたら、更新は行われない。止めたものは戻らないので知らせる。
+		// 控えている間に更新の状態が変わっていたら、更新は行われない。控えを取り消す。
 		if (this.updateService.state.type !== StateType.Ready) {
 			await this.cancelAfterStop(`the update is no longer ready ("${this.updateService.state.type}")`);
 			return false;
@@ -171,10 +171,10 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 		return true;
 	}
 
-	/** 止めた後で更新が行われなかったとき。全ウィンドウの合図を取り消し、止めたウィンドウは知らせる。 */
+	/** 「終わらせて更新」の後で更新が行われなかったとき。全ウィンドウの合図と控えを取り消す。 */
 	private async cancelAfterStop(reason: string): Promise<void> {
 		this.afterStop = undefined;
-		this.logService.warn(`[paradisUpdateTerminals] terminals were ended to update, but the update did not happen: ${reason}`);
+		this.logService.warn(`[paradisUpdateTerminals] terminals were to be ended to update, but the update did not happen: ${reason}`);
 		await Promise.all(this.windowsMainService.getWindows().filter(window => this.isConnected(window.id)).map(async window => {
 			try {
 				await raceTimeout(this.windowService(window.id).cancelUpdateQuit(), COLLECT_TIMEOUT_MS);

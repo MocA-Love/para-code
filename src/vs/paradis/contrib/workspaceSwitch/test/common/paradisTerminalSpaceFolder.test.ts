@@ -11,7 +11,7 @@ import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/com
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest, paradisWasTerminalShellRestarted } from '../../common/paradisTerminalLaunchPreparers.js';
+import { paradisPrepareRestartedTerminalLaunch, paradisRegisterRestartedTerminalCarryOver, paradisRegisterRestartedTerminalCwdResolver, paradisResetRestartedTerminalsForTest, paradisWasTerminalShellRestarted } from '../../common/paradisTerminalLaunchPreparers.js';
 import { paradisChangeDirectoryCommand, paradisPickRestartedShellScope, paradisReviewTerminalSpaces, paradisRestartedShellRecordScope, paradisSpaceFolderForBackend, paradisUpstreamCwdConfigured } from '../../common/paradisTerminalSpaceFolder.js';
 
 suite('paradisTerminalSpaceFolder', () => {
@@ -161,6 +161,49 @@ suite('paradisTerminalSpaceFolder', () => {
 			});
 		} finally {
 			registration.dispose();
+		}
+	});
+
+	test('starts a shell stopped for an update in its own folder with the name a person gave it, before asking for the space folder', async () => {
+		const asked: number[] = [];
+		const space = paradisRegisterRestartedTerminalCwdResolver(async launch => {
+			asked.push(launch.instanceId);
+			return URI.file('/Users/example/space-a');
+		});
+		const carryOver = paradisRegisterRestartedTerminalCarryOver(async launch => {
+			switch (launch.nonce) {
+				case 'stopped': return { cwd: URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/home/example/app' }), name: 'build' };
+				case 'folder-gone': return {};
+				default: return undefined;
+			}
+		});
+		try {
+			const stopped: IShellLaunchConfig = {};
+			const folderGone: IShellLaunchConfig = {};
+			const other: IShellLaunchConfig = {};
+			const named: IShellLaunchConfig = { name: 'kept by the caller' };
+			await paradisPrepareRestartedTerminalLaunch(stopped, 1, 'stopped', 'ssh-remote+host');
+			await paradisPrepareRestartedTerminalLaunch(folderGone, 2, 'folder-gone', 'ssh-remote+host');
+			await paradisPrepareRestartedTerminalLaunch(other, 3, 'other', 'ssh-remote+host');
+			await paradisPrepareRestartedTerminalLaunch(named, 4, 'stopped', 'ssh-remote+host');
+			assert.deepStrictEqual({
+				stopped: { cwd: stopped.cwd?.toString(), name: stopped.name },
+				folderGone: { cwd: folderGone.cwd?.toString(), name: folderGone.name },
+				other: { cwd: other.cwd?.toString(), name: other.name },
+				named: named.name,
+				asked,
+			}, {
+				stopped: { cwd: 'vscode-remote://ssh-remote%2Bhost/home/example/app', name: 'build' },
+				// 止めた時点のフォルダが無ければ、スペースのフォルダで起こす。
+				folderGone: { cwd: 'file:///Users/example/space-a', name: undefined },
+				other: { cwd: 'file:///Users/example/space-a', name: undefined },
+				// 呼び出し側が決めた名前には触らない。
+				named: 'kept by the caller',
+				asked: [2, 3],
+			});
+		} finally {
+			carryOver.dispose();
+			space.dispose();
 		}
 	});
 

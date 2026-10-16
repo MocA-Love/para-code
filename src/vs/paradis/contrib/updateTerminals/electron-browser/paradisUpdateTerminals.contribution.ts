@@ -11,7 +11,8 @@
 // main の関門（`electron-main/paradisUpdateTerminalsMain.ts`）から呼ばれて、
 //  - このウィンドウで取り残されるターミナルを答える（`collect`）
 //  - まとめた確認を出す（`confirm`、前面のウィンドウだけが呼ばれる）
-//  - 「終わらせて更新」なら、この PC が残したものだけを止め、合図が届くのを待って返す（`stopForUpdate`）
+//  - 「終わらせて更新」なら、この PC が残したもののうち止める番号を控える（`stopForUpdate`）。止めるのは
+//    このウィンドウの終了処理の中（UI の状態を保存した後。`common/paradisUpdateStopAfterSave.ts`）
 //
 // 加えて、更新が用意できた時点で「次に終了すると…のターミナルは終わります」と知らせ、Ready のまま
 // 普通に終了したとき（macOS では更新が当たる）は、終了の途中で尋ねずに止める。
@@ -23,8 +24,10 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -44,6 +47,7 @@ import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/p
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
+import { IParadisRestartedTerminalCarryOver, IParadisRestartedTerminalLaunch, paradisRegisterRestartedTerminalCarryOver } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../../ptyDaemon/common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../../ptyDaemon/common/paradisPtyDaemonSettingKey.js';
 import { PARADIS_KEEP_REMOTE_TERMINALS_KEY, paradisKeptPaneTokensStorageKey } from '../../remoteTerminals/common/paradisRemoteTerminalShutdown.js';
@@ -67,12 +71,12 @@ import {
 	paradisResolveUpdateConfirmAnswer,
 	paradisSelectOwnOrphans,
 	paradisSetRemoteTerminalsAcrossUpdate,
-	paradisShouldNoticeCancelledUpdate,
 	paradisStopsRemoteForUpdate,
 	paradisShouldNoticeReadyUpdate,
 	paradisUpdateAppliesOnQuitHere,
 	paradisUpdateQuitEndsTerminals,
 } from '../common/paradisUpdateTerminals.js';
+import { IParadisUpdateCarryOver, PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, ParadisRemoteUpdateStop, paradisDescribeUpdateCarryOver, paradisParseUpdateCarryOver, paradisSerializeUpdateCarryOver, paradisUpdateCarryOverFolderPath } from '../common/paradisUpdateStopAfterSave.js';
 import { IParadisUpdateTerminalsDialog, paradisShowUpdateTerminalsDialog } from './paradisUpdateTerminalsDialog.js';
 
 /** 接続先へ聞くときの上限。 */
@@ -90,10 +94,10 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 
 	private readonly main: IParadisUpdateTerminalsMainService;
 	private latestSnapshot: IParadisAgentStatusSnapshot | undefined;
-	/** 「終わらせて更新」で既に止めたか。止めたら終了の途中では止め直さない。 */
+	/** 「終わらせて更新」を押したか。押したら、終了の途中では Ready のまま終了する経路で止め直さない。 */
 	private stoppedForUpdate = false;
-	/** 「終わらせて更新」で実際に止めた本数。取り消されたときに知らせるかはこれで決める。 */
-	private endedForUpdate = 0;
+	/** 「終わらせて更新」で止める接続先の端末。止めるのは終了処理の中。 */
+	private readonly remoteUpdateStop: ParadisRemoteUpdateStop;
 	private dialog: IParadisUpdateTerminalsDialog | undefined;
 
 	constructor(
@@ -115,6 +119,13 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	) {
 		super();
 		this.main = ProxyChannel.toService<IParadisUpdateTerminalsMainService>(mainProcessService.getChannel(PARADIS_UPDATE_TERMINALS_MAIN_CHANNEL));
+		this.remoteUpdateStop = new ParadisRemoteUpdateStop({
+			shouldStop: () => this.environmentService.remoteAuthority !== undefined && paradisStopsRemoteForUpdate({ isRemote: true, choice: this.keepChoice(), acrossUpdate: paradisGetRemoteTerminalsAcrossUpdate() }),
+			collectIds: () => this.remoteTerminalIdsToStop(),
+			recordCarryOver: () => this.recordCarryOver(),
+			forgetCarryOver: () => this.storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE),
+			stop: ids => this.stopRemoteTerminals(ids),
+		});
 
 		const channelStore = this._register(new DisposableStore());
 		const surface: IParadisUpdateTerminalsWindowService = {
@@ -134,15 +145,24 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 		// 閉じるのが取り消されたら、「終わらせて更新」の合図も取り消す（取り消した後の普通の終了で、
 		// 尋ねずに終わらせないため）。
 		this._register(lifecycleService.onShutdownVeto(() => {
-			// 止めた後の取り消しは main が全ウィンドウへ知らせる（`cancelUpdateQuit`）。ここでは合図だけ消す。
+			// 止めた後の取り消しは main が全ウィンドウへ知らせる（`cancelUpdateQuit`）。ここでは合図と、
+			// 終了処理の中で止めるはずだった控えを消す。
 			paradisClearUpdateQuitApproved();
+			this.stoppedForUpdate = false;
+			this.remoteUpdateStop.disarm();
 		}));
 
 		// Ready のまま普通に終了したとき（macOS では更新が当たる）。終了の途中では確認を出せないので、
 		// 用意できた時点で知らせてあり、ここでは尋ねずに止める。止めるのは残すはずだったものだけ
 		// （`never` の設定のものは今までどおり閉じる処理が終わらせる）。
 		// この PC の常駐は main が終了処理の中で止める（先に止めると pty host が起こし直すため）。
+		//
+		// 「終わらせて更新」を押した後も、止めるのはここ。この合図は UI の状態の保存（`desktop.main.ts`）が
+		// 先に受け取るので、止めたタブが閉じても、閉じた形は保存されない。
 		this._register(lifecycleService.onWillShutdown(event => {
+			if (this.remoteUpdateStop.joinOnShutdown(event, { id: 'paradis.updateTerminals', label: localize('paradis.updateTerminals.joinLabel', "残したターミナルを終了しています") }, stopping => this.waitForStop(stopping))) {
+				return;
+			}
 			const authority = this.environmentService.remoteAuthority;
 			if (authority === undefined || event.reason !== ShutdownReason.QUIT || this.stoppedForUpdate) {
 				return;
@@ -156,7 +176,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 			if (!ends || this.keepChoice() === 'never') {
 				return;
 			}
-			event.join(this.stopOnQuit(authority), { id: 'paradis.updateTerminals', label: localize('paradis.updateTerminals.joinLabel', "残したターミナルを終了しています") });
+			event.join(this.stopOnQuit(), { id: 'paradis.updateTerminals', label: localize('paradis.updateTerminals.joinLabel', "残したターミナルを終了しています") });
 		}));
 
 		if (this.environmentService.remoteAuthority !== undefined) {
@@ -209,61 +229,72 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	async stopForUpdate(): Promise<void> {
 		paradisMarkUpdateQuitApproved(Date.now());
 		this.stoppedForUpdate = true;
-		const authority = this.environmentService.remoteAuthority;
-		this.endedForUpdate = 0;
-		// この PC の常駐は main が止める。ここで止めるのは接続先のものだけ。
-		if (authority === undefined || !paradisStopsRemoteForUpdate({ isRemote: true, choice: this.keepChoice(), acrossUpdate: paradisGetRemoteTerminalsAcrossUpdate() })) {
-			return;
-		}
-		this.endedForUpdate = await this.stopRemoteTerminals(authority);
+		// この PC の常駐は main が止める。ここで控えるのは接続先のものだけ。止めるのは終了処理の中。
+		await this.remoteUpdateStop.arm();
 	}
 
 	// --- 止める -----------------------------------------------------------------------------------
 
 	async cancelUpdateQuit(): Promise<void> {
+		// 止めるのは終了処理の中なので、ここまで来ていれば何も止めていない。控えを捨てるだけ。
 		paradisClearUpdateQuitApproved();
-		const ended = this.endedForUpdate;
 		this.stoppedForUpdate = false;
-		this.endedForUpdate = 0;
-		if (paradisShouldNoticeCancelledUpdate(ended)) {
-			this.notificationService.notify({
-				severity: Severity.Warning,
-				message: localize('paradis.updateTerminals.cancelled', "更新のために、残したターミナルを終わらせましたが、更新は行われませんでした。終わらせたターミナルは戻りません。"),
-			});
-		}
+		this.remoteUpdateStop.disarm();
 	}
 
-	private async stopOnQuit(authority: string): Promise<void> {
-		const stopping = this.stopRemoteTerminals(authority);
+	/** Ready のまま終了したとき。番号はその場で集める。 */
+	private async stopOnQuit(): Promise<void> {
+		await this.waitForStop(this.remoteTerminalIdsToStop().then(ids => this.stopRemoteTerminals(ids)));
+	}
+
+	/** 閉じる処理を長く止めないよう、上限まで待つ。 */
+	private async waitForStop(stopping: Promise<number>): Promise<void> {
 		const done = await raceTimeout(stopping.then(() => true, () => true), QUIT_STOP_TIMEOUT_MS);
 		if (!done) {
 			this.logService.warn('[paradisUpdateTerminals] could not finish ending the kept terminals before quitting to update');
 		}
 	}
 
+	/** 接続先で止める端末の番号。このウィンドウのものと、この PC が前に残したもの。 */
+	private async remoteTerminalIdsToStop(): Promise<number[]> {
+		const authority = this.environmentService.remoteAuthority;
+		if (authority === undefined) {
+			return [];
+		}
+		const liveIds = this.liveTerminals().map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined);
+		const orphans = await this.ownRemoteOrphans(authority, new Set(liveIds));
+		return [...new Set([...liveIds, ...orphans.map(details => details.id)])];
+	}
+
 	/**
-	 * 接続先で、このウィンドウのものと、この PC が前に残したものを止める。返事を待つ。
+	 * 接続先で、番号の端末を止める。返事を待ち、止めた本数（返事が来たもの）を返す。
 	 *
 	 * 1本の失敗で残りを見捨てない（止めている間にシェルが終わったものは「そんな pty は無い」で
 	 * 失敗する）。
 	 */
-	/** 止めた本数（返事が来たもの）を返す。 */
-	private async stopRemoteTerminals(authority: string): Promise<number> {
+	private async stopRemoteTerminals(ids: readonly number[]): Promise<number> {
 		const channel = this.remoteAgentService.getConnection()?.getChannel(REMOTE_TERMINAL_CHANNEL_NAME);
-		if (!channel) {
-			return 0;
-		}
-		const live = this.liveTerminals();
-		const liveIds = live.map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined);
-		const orphans = await this.ownRemoteOrphans(authority, new Set(liveIds));
-		const ids = [...new Set([...liveIds, ...orphans.map(details => details.id)])];
-		if (ids.length === 0) {
+		if (!channel || ids.length === 0) {
 			return 0;
 		}
 		const results = await Promise.allSettled(ids.map(id => channel.call(RemoteTerminalChannelRequest.Shutdown, [id, true])));
 		const failed = results.filter(result => result.status === 'rejected').length;
 		this.logService.info(`[paradisUpdateTerminals] ended ${ids.length - failed} terminal(s) on the remote before updating${failed > 0 ? ` (${failed} were already gone or could not be reached)` : ''}`);
 		return ids.length - failed;
+	}
+
+	/** このウィンドウのタブの引き継ぎを控える。保存は次の起動のため（終了処理の中では書けない）。 */
+	private recordCarryOver(): void {
+		const authority = this.environmentService.remoteAuthority;
+		if (authority === undefined) {
+			return;
+		}
+		const terminals = this.liveTerminals().map(instance => paradisDescribeUpdateCarryOver(instance)).filter((entry): entry is IParadisUpdateCarryOver => entry !== undefined);
+		if (terminals.length === 0) {
+			this.storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE);
+			return;
+		}
+		this.storageService.store(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, paradisSerializeUpdateCarryOver(authority, terminals, Date.now()), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	// --- 集める -----------------------------------------------------------------------------------
@@ -423,4 +454,50 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	}
 }
 
+/**
+ * 引き継ぎを返す。作業フォルダは接続先に今もあるときだけ渡す（無いフォルダではシェルが起動に失敗する。
+ * 渡さなければスペースのフォルダか upstream の既定で起きる）。
+ */
+async function resolveCarryOver(launch: IParadisRestartedTerminalLaunch, authority: string, carryOver: Map<string, IParadisUpdateCarryOver>, fileService: IFileService, logService: ILogService): Promise<IParadisRestartedTerminalCarryOver | undefined> {
+	const entry = launch.remoteAuthority === authority ? carryOver.get(launch.nonce) : undefined;
+	if (entry === undefined) {
+		return undefined;
+	}
+	carryOver.delete(launch.nonce);
+	let cwd: URI | undefined;
+	if (entry.cwd !== undefined) {
+		const folder = URI.from({ scheme: Schemas.vscodeRemote, authority, path: paradisUpdateCarryOverFolderPath(entry.cwd) });
+		const isFolder = await fileService.stat(folder).then(stat => stat.isDirectory, () => false);
+		if (isFolder) {
+			cwd = folder;
+		} else {
+			logService.info(`[paradisUpdateTerminals] the folder terminal ${launch.instanceId} was in before the update is gone; starting its new shell elsewhere`);
+		}
+	}
+	return { ...(cwd !== undefined ? { cwd } : {}), ...(entry.name !== undefined ? { name: entry.name } : {}) };
+}
+
+/** 更新の後の最初の起動で、前の起動が控えた引き継ぎを読む。タブの復元より先に登録する。 */
+class ParadisUpdateTerminalsCarryOver extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'paradis.updateTerminalsCarryOver';
+
+	constructor(
+		@IStorageService storageService: IStorageService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@IFileService fileService: IFileService,
+		@ILogService logService: ILogService,
+	) {
+		super();
+		// 読んだら置き場からは消す（次の起動へ持ち越さない）。
+		const authority = environmentService.remoteAuthority;
+		const carryOver = paradisParseUpdateCarryOver(storageService.get(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE), authority, Date.now());
+		storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (authority !== undefined && carryOver.size > 0) {
+			this._register(paradisRegisterRestartedTerminalCarryOver(launch => resolveCarryOver(launch, authority, carryOver, fileService, logService)));
+		}
+	}
+}
+
 registerWorkbenchContribution2(ParadisUpdateTerminalsWindow.ID, ParadisUpdateTerminalsWindow, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(ParadisUpdateTerminalsCarryOver.ID, ParadisUpdateTerminalsCarryOver, WorkbenchPhase.BlockRestore);
