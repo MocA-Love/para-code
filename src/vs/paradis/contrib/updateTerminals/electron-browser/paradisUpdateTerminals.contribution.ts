@@ -24,11 +24,11 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
+import { IProductService } from '../../../../platform/product/common/productService.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -47,7 +47,7 @@ import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/p
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
-import { IParadisRestartedTerminalCarryOver, IParadisRestartedTerminalLaunch, paradisRegisterRestartedTerminalCarryOver } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
+import { paradisRegisterRestartedTerminalCarryOver } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../../ptyDaemon/common/paradisPtyDaemonStatus.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../../ptyDaemon/common/paradisPtyDaemonSettingKey.js';
 import { PARADIS_KEEP_REMOTE_TERMINALS_KEY, paradisKeptPaneTokensStorageKey } from '../../remoteTerminals/common/paradisRemoteTerminalShutdown.js';
@@ -76,7 +76,7 @@ import {
 	paradisUpdateAppliesOnQuitHere,
 	paradisUpdateQuitEndsTerminals,
 } from '../common/paradisUpdateTerminals.js';
-import { IParadisUpdateCarryOver, PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, ParadisRemoteUpdateStop, paradisDescribeUpdateCarryOver, paradisParseUpdateCarryOver, paradisSerializeUpdateCarryOver, paradisUpdateCarryOverFolderPath } from '../common/paradisUpdateStopAfterSave.js';
+import { IParadisUpdateCarryOver, PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, ParadisRemoteUpdateStop, ParadisUpdateCarryOverReader, paradisDescribeUpdateCarryOver, paradisSerializeUpdateCarryOver } from '../common/paradisUpdateStopAfterSave.js';
 import { IParadisUpdateTerminalsDialog, paradisShowUpdateTerminalsDialog } from './paradisUpdateTerminalsDialog.js';
 
 /** 接続先へ聞くときの上限。 */
@@ -114,6 +114,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IUpdateService private readonly updateService: IUpdateService,
+		@IProductService private readonly productService: IProductService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -122,6 +123,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 		this.remoteUpdateStop = new ParadisRemoteUpdateStop({
 			shouldStop: () => this.environmentService.remoteAuthority !== undefined && paradisStopsRemoteForUpdate({ isRemote: true, choice: this.keepChoice(), acrossUpdate: paradisGetRemoteTerminalsAcrossUpdate() }),
 			collectIds: () => this.remoteTerminalIdsToStop(),
+			liveIds: () => this.liveRemoteTerminalIds(),
 			recordCarryOver: () => this.recordCarryOver(),
 			forgetCarryOver: () => this.storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE),
 			stop: ids => this.stopRemoteTerminals(ids),
@@ -261,9 +263,16 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 		if (authority === undefined) {
 			return [];
 		}
-		const liveIds = this.liveTerminals().map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined);
+		const liveIds = this.liveRemoteTerminalIds();
 		const orphans = await this.ownRemoteOrphans(authority, new Set(liveIds));
 		return [...new Set([...liveIds, ...orphans.map(details => details.id)])];
+	}
+
+	private liveRemoteTerminalIds(): number[] {
+		if (this.environmentService.remoteAuthority === undefined) {
+			return [];
+		}
+		return this.liveTerminals().map(instance => instance.persistentProcessId).filter((id): id is number => id !== undefined);
 	}
 
 	/**
@@ -294,7 +303,7 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 			this.storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE);
 			return;
 		}
-		this.storageService.store(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, paradisSerializeUpdateCarryOver(authority, terminals, Date.now()), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, paradisSerializeUpdateCarryOver(authority, this.productService.commit, terminals, Date.now()), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	// --- 集める -----------------------------------------------------------------------------------
@@ -454,29 +463,6 @@ class ParadisUpdateTerminalsWindow extends Disposable implements IWorkbenchContr
 	}
 }
 
-/**
- * 引き継ぎを返す。作業フォルダは接続先に今もあるときだけ渡す（無いフォルダではシェルが起動に失敗する。
- * 渡さなければスペースのフォルダか upstream の既定で起きる）。
- */
-async function resolveCarryOver(launch: IParadisRestartedTerminalLaunch, authority: string, carryOver: Map<string, IParadisUpdateCarryOver>, fileService: IFileService, logService: ILogService): Promise<IParadisRestartedTerminalCarryOver | undefined> {
-	const entry = launch.remoteAuthority === authority ? carryOver.get(launch.nonce) : undefined;
-	if (entry === undefined) {
-		return undefined;
-	}
-	carryOver.delete(launch.nonce);
-	let cwd: URI | undefined;
-	if (entry.cwd !== undefined) {
-		const folder = URI.from({ scheme: Schemas.vscodeRemote, authority, path: paradisUpdateCarryOverFolderPath(entry.cwd) });
-		const isFolder = await fileService.stat(folder).then(stat => stat.isDirectory, () => false);
-		if (isFolder) {
-			cwd = folder;
-		} else {
-			logService.info(`[paradisUpdateTerminals] the folder terminal ${launch.instanceId} was in before the update is gone; starting its new shell elsewhere`);
-		}
-	}
-	return { ...(cwd !== undefined ? { cwd } : {}), ...(entry.name !== undefined ? { name: entry.name } : {}) };
-}
-
 /** 更新の後の最初の起動で、前の起動が控えた引き継ぎを読む。タブの復元より先に登録する。 */
 class ParadisUpdateTerminalsCarryOver extends Disposable implements IWorkbenchContribution {
 
@@ -486,15 +472,13 @@ class ParadisUpdateTerminalsCarryOver extends Disposable implements IWorkbenchCo
 		@IStorageService storageService: IStorageService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IFileService fileService: IFileService,
+		@IProductService productService: IProductService,
 		@ILogService logService: ILogService,
 	) {
 		super();
-		// 読んだら置き場からは消す（次の起動へ持ち越さない）。
-		const authority = environmentService.remoteAuthority;
-		const carryOver = paradisParseUpdateCarryOver(storageService.get(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE), authority, Date.now());
-		storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE);
-		if (authority !== undefined && carryOver.size > 0) {
-			this._register(paradisRegisterRestartedTerminalCarryOver(launch => resolveCarryOver(launch, authority, carryOver, fileService, logService)));
+		const reader = ParadisUpdateCarryOverReader.read(storageService, environmentService.remoteAuthority, productService.commit, Date.now());
+		if (reader !== undefined) {
+			this._register(paradisRegisterRestartedTerminalCarryOver(launch => reader.resolve(launch, fileService, logService, Date.now())));
 		}
 	}
 }

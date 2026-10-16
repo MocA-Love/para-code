@@ -14,8 +14,13 @@
 // 引き継ぎ（作業フォルダ・手で付けた名前）を控えるだけにする。終了処理の中では端末が先に片付けられて
 // 一覧から消えていることがあるので、番号は押した時点のものを使う。
 
+import { Schemas } from '../../../../base/common/network.js';
+import { URI } from '../../../../base/common/uri.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { TitleEventSource } from '../../../../platform/terminal/common/terminal.js';
-import { IWillShutdownEventDefaultJoiner } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IWillShutdownEventDefaultJoiner, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IParadisRestartedTerminalCarryOver, IParadisRestartedTerminalLaunch } from '../../workspaceSwitch/common/paradisTerminalLaunchPreparers.js';
 import { paradisIsUpdateQuitApproved } from './paradisUpdateTerminals.js';
 
 /** 止めたタブを、更新の後に起こし直すシェルへ引き継ぐもの。 */
@@ -60,19 +65,30 @@ export const PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY = 'paradis.updateTerminals.ca
 /** これより古い引き継ぎは使わない（更新が行われず、ずっと後に開いたときに古い値を当てない）。 */
 const CARRY_OVER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * 起動してから引き継ぎを当てる期間。最初の復元で起こし直すシェルだけに当てる。同じ nonce の端末が
+ * 後で別の理由で起こし直されたときに、古いフォルダ・名前を当てない。
+ */
+const CARRY_OVER_RESOLVE_WINDOW_MS = 5 * 60 * 1000;
+
 interface IStoredCarryOver {
 	readonly at: number;
 	readonly authority: string;
+	/** 控えた版（`product.commit`）。版が変わっていなければ更新は行われていないので当てない。 */
+	readonly commit?: string;
 	readonly terminals: readonly IParadisUpdateCarryOver[];
 }
 
-export function paradisSerializeUpdateCarryOver(authority: string, terminals: readonly IParadisUpdateCarryOver[], now: number): string {
-	const stored: IStoredCarryOver = { at: now, authority, terminals };
+export function paradisSerializeUpdateCarryOver(authority: string, commit: string | undefined, terminals: readonly IParadisUpdateCarryOver[], now: number): string {
+	const stored: IStoredCarryOver = { at: now, authority, ...(commit !== undefined ? { commit } : {}), terminals };
 	return JSON.stringify(stored);
 }
 
-/** 読み戻す。接続先が違う・古い・壊れているときは空。nonce ごとに引ける形で返す。 */
-export function paradisParseUpdateCarryOver(raw: string | undefined, authority: string | undefined, now: number): Map<string, IParadisUpdateCarryOver> {
+/**
+ * 読み戻す。接続先が違う・古い・壊れている・版が変わっていない（更新が行われずに閉じた・再読み込み
+ * した）ときは空。nonce ごとに引ける形で返す。
+ */
+export function paradisParseUpdateCarryOver(raw: string | undefined, authority: string | undefined, commit: string | undefined, now: number): Map<string, IParadisUpdateCarryOver> {
 	const result = new Map<string, IParadisUpdateCarryOver>();
 	if (raw === undefined || authority === undefined) {
 		return result;
@@ -84,6 +100,9 @@ export function paradisParseUpdateCarryOver(raw: string | undefined, authority: 
 		return result;
 	}
 	if (typeof parsed?.at !== 'number' || parsed.authority !== authority || !Array.isArray(parsed.terminals) || now < parsed.at || now - parsed.at > CARRY_OVER_LIFETIME_MS) {
+		return result;
+	}
+	if (commit !== undefined && parsed.commit === commit) {
 		return result;
 	}
 	for (const terminal of parsed.terminals) {
@@ -108,12 +127,67 @@ export function paradisUpdateCarryOverFolderPath(cwd: string): string {
 	return path.startsWith('/') ? path : `/${path}`;
 }
 
+/** 作業フォルダが接続先にまだあるかを確かめる口（`IFileService` が満たす）。 */
+export interface IParadisCarryOverFolderProbe {
+	stat(resource: URI): Promise<{ readonly isDirectory: boolean }>;
+}
+
+/**
+ * 更新の後の最初の起動で、前の起動が控えた引き継ぎを当てる。読んだら置き場からは消す（次の起動へ
+ * 持ち越さない）。1つの端末に当てるのは1回だけで、起動から
+ * {@link CARRY_OVER_RESOLVE_WINDOW_MS} を過ぎたら当てない。
+ */
+export class ParadisUpdateCarryOverReader {
+
+	/** 置き場から読んで消す。当てるものが無ければ undefined。 */
+	static read(storageService: IStorageService, authority: string | undefined, commit: string | undefined, now: number): ParadisUpdateCarryOverReader | undefined {
+		const terminals = paradisParseUpdateCarryOver(storageService.get(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE), authority, commit, now);
+		storageService.remove(PARADIS_UPDATE_CARRY_OVER_STORAGE_KEY, StorageScope.WORKSPACE);
+		return authority !== undefined && terminals.size > 0 ? new ParadisUpdateCarryOverReader(authority, terminals, now) : undefined;
+	}
+
+	private constructor(
+		private readonly authority: string,
+		private readonly terminals: Map<string, IParadisUpdateCarryOver>,
+		private readonly readAt: number,
+	) { }
+
+	/**
+	 * そのタブの引き継ぎ。作業フォルダは接続先に今もあるときだけ渡す（無いフォルダではシェルが起動に
+	 * 失敗する。渡さなければスペースのフォルダか upstream の既定で起きる）。
+	 */
+	async resolve(launch: IParadisRestartedTerminalLaunch, probe: IParadisCarryOverFolderProbe, logService: ILogService, now: number): Promise<IParadisRestartedTerminalCarryOver | undefined> {
+		if (now < this.readAt || now - this.readAt > CARRY_OVER_RESOLVE_WINDOW_MS) {
+			this.terminals.clear();
+			return undefined;
+		}
+		const entry = launch.remoteAuthority === this.authority ? this.terminals.get(launch.nonce) : undefined;
+		if (entry === undefined) {
+			return undefined;
+		}
+		this.terminals.delete(launch.nonce);
+		let cwd: URI | undefined;
+		if (entry.cwd !== undefined) {
+			const folder = URI.from({ scheme: Schemas.vscodeRemote, authority: this.authority, path: paradisUpdateCarryOverFolderPath(entry.cwd) });
+			const isFolder = await probe.stat(folder).then(stat => stat.isDirectory, () => false);
+			if (isFolder) {
+				cwd = folder;
+			} else {
+				logService.info(`[paradisUpdateTerminals] the folder terminal ${launch.instanceId} was in before the update is gone; starting its new shell elsewhere`);
+			}
+		}
+		return { ...(cwd !== undefined ? { cwd } : {}), ...(entry.name !== undefined ? { name: entry.name } : {}) };
+	}
+}
+
 /** {@link ParadisRemoteUpdateStop} が使う、ウィンドウ側の操作。 */
 export interface IParadisRemoteUpdateStopHost {
 	/** このウィンドウで接続先の端末を止めるか（設定が `never` のもの、接続先の常駐の中のものは止めない）。 */
 	shouldStop(): boolean;
 	/** 止める端末の番号（このウィンドウのものと、この PC が前に残したもの）。 */
 	collectIds(): Promise<readonly number[]>;
+	/** 今このウィンドウにある接続先の端末の番号。終了処理の中で、控えた後に開いたものを足すのに使う。 */
+	liveIds(): readonly number[];
 	/** このウィンドウのタブの引き継ぎを控える。 */
 	recordCarryOver(): void;
 	/** 控えた引き継ぎを消す。 */
@@ -124,6 +198,7 @@ export interface IParadisRemoteUpdateStopHost {
 
 /** 終了処理の合図のうち、ここで使うもの。 */
 export interface IParadisUpdateStopShutdownEvent {
+	readonly reason: ShutdownReason;
 	join(promise: Promise<void>, joiner: IWillShutdownEventDefaultJoiner): void;
 }
 
@@ -169,13 +244,24 @@ export class ParadisRemoteUpdateStop {
 	 * 終了処理の中で、控えた番号を止める。UI の状態は同じ合図の中で先に保存されている
 	 * （`desktop.main.ts` の保存は、この contribution より前に合図を受け取る）。止める約束を閉じる処理へ
 	 * join する。控えていない・「終わらせて更新」の合図が切れていれば何もせず false。
+	 *
+	 * 止めるのはアプリの終了（`QUIT`）のときだけ。合図が生きている間でも、ウィンドウを閉じる・
+	 * 再読み込み（別のウィンドウが終了を取り消した、更新が黙って失敗した）では止めず、控えを捨てる
+	 * （残すはずの端末を、知らせずに止めない）。
+	 *
+	 * 止めるのは控えた番号と、今ある端末の番号の和。控えた後に開いた端末も更新で取り残されるため。
 	 */
 	joinOnShutdown(event: IParadisUpdateStopShutdownEvent, joiner: IWillShutdownEventDefaultJoiner, wrap: (stopping: Promise<number>) => Promise<void>): boolean {
-		const ids = this.armed;
-		this.armed = undefined;
-		if (ids === undefined || !paradisIsUpdateQuitApproved(this.now())) {
+		const armed = this.armed;
+		if (armed === undefined) {
 			return false;
 		}
+		if (event.reason !== ShutdownReason.QUIT || !paradisIsUpdateQuitApproved(this.now())) {
+			this.disarm();
+			return false;
+		}
+		this.armed = undefined;
+		const ids = [...new Set([...armed, ...this.host.liveIds()])];
 		if (ids.length > 0) {
 			event.join(wrap(this.host.stop(ids)), joiner);
 		}
