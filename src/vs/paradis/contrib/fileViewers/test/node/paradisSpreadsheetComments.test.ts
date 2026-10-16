@@ -94,6 +94,47 @@ suite('ParadisSpreadsheetComments', () => {
 		deepStrictEqual([[first.comments.length, first.omitted], [second.comments.length, second.omitted]], [[2, 1], [0, 4]]);
 	});
 
+	test('gives the saved box only to the notes set to show, and keeps hidden notes and thread copies as they are', () => {
+		const notes = `<comments xmlns="${S}"><authors><author>Sample</author><author>tc={00000000-0000-0000-0000-0000000000A1}</author></authors><commentList>`
+			+ ['B2', 'C5', 'E3', 'F7', 'H2'].map(ref => `<comment ref="${ref}" authorId="0"><text><t>${ref}</t></text></comment>`).join('')
+			+ `<comment ref="G9" authorId="1"><text><t>[Threaded comment] copy</t></text></comment></commentList></comments>`;
+		const thread = `<ThreadedComments xmlns="${TC}"><threadedComment ref="G9" dT="2026-09-30T10:12:00.00" personId="{00000000-0000-0000-0000-000000000001}" id="{00000000-0000-0000-0000-0000000000A1}"><text>Thread</text></threadedComment></ThreadedComments>`;
+		const shape = (row: number, column: number, style: string, clientData: string, fill = '#ffffe1') =>
+			`<v:shape id="_x0000_s${1025 + row}" type="#_x0000_t202" style='position:absolute;${style}' fillcolor="${fill}" o:insetmode="auto"><v:fill color2="${fill}"/><v:textbox><div style='text-align:left'></div></v:textbox>`
+			+ `<x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/>${clientData}<x:AutoFill>False</x:AutoFill><x:Row>${row}</x:Row><x:Column>${column}</x:Column></x:ClientData></v:shape>`;
+		const vml = `<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">`
+			+ `<o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>`
+			// B2: shown by x:Visible, placed by x:Anchor, with its own fill.
+			+ shape(1, 1, 'margin-left:80pt;margin-top:2pt;width:96pt;height:55.5pt;z-index:1;visibility:visible', '<x:Anchor>2, 15, 0, 10, 4, 20, 4, 6</x:Anchor><x:Visible/>', '#ccffcc [42]')
+			// C5: hidden (Excel's default).
+			+ shape(4, 2, 'margin-left:150pt;margin-top:40pt;width:108pt;height:59.25pt;z-index:2;visibility:hidden', '<x:Anchor>3, 15, 3, 2, 5, 31, 7, 16</x:Anchor>')
+			// E3: x:Visible says False even though the style says visible.
+			+ shape(2, 4, 'margin-left:300pt;width:108pt;height:59.25pt;visibility:visible', '<x:Anchor>5, 15, 1, 2, 7, 31, 5, 16</x:Anchor><x:Visible>False</x:Visible>')
+			// F7: shown by the style only, with a broken anchor, so the style places it.
+			+ shape(6, 5, 'margin-left:75pt;margin-top:15pt;width:1in;height:30pt;visibility:visible', '<x:Anchor>9, 0, 9, 0, 9, 0, 9, 0</x:Anchor>')
+			// H2: shown, but neither the anchor nor the style says where.
+			+ shape(1, 7, 'visibility:visible', '<x:Visible/>')
+			// G9: the copy of a thread stays a thread.
+			+ shape(8, 6, 'visibility:visible', '<x:Anchor>7, 15, 7, 2, 9, 31, 11, 16</x:Anchor><x:Visible/>')
+			// An old file's unclosed line break must not hide the rest.
+			+ '<v:shape id="_x0000_s2000" type="#_x0000_t201"><v:textbox><div>a<br>b</div></v:textbox><x:ClientData ObjectType="Button"><x:Anchor>0, 0, 0, 0, 1, 0, 1, 0</x:Anchor></x:ClientData></v:shape>'
+			+ '</xml>';
+		const px = (value: number) => value * 9525;
+		const read = (vmlDrawingXml?: string) => readParadisSpreadsheetComments({ commentsXml: notes, threadedCommentsXml: thread, personsXml: persons, vmlDrawingXml }).map(comment => [comment.ref, comment.kind, comment.shown]);
+		deepStrictEqual({ shown: read(vml), broken: read(vml.slice(0, -20)), none: read() }, {
+			shown: [
+				['B2', 'note', { from: { c: 2, co: px(15), r: 0, ro: px(10) }, to: { c: 4, co: px(20), r: 4, ro: px(6) }, fill: '#ccffcc' }],
+				['H2', 'note', undefined],
+				['E3', 'note', undefined],
+				['C5', 'note', undefined],
+				['F7', 'note', { from: { c: 0, co: px(100), r: 0, ro: px(20) }, ext: { cx: px(96), cy: px(40) }, fill: '#ffffe1' }],
+				['G9', 'thread', undefined],
+			],
+			broken: [['B2', 'note', undefined], ['H2', 'note', undefined], ['E3', 'note', undefined], ['C5', 'note', undefined], ['F7', 'note', undefined], ['G9', 'thread', undefined]],
+			none: [['B2', 'note', undefined], ['H2', 'note', undefined], ['E3', 'note', undefined], ['C5', 'note', undefined], ['F7', 'note', undefined], ['G9', 'thread', undefined]],
+		});
+	});
+
 	test('ignores parts it cannot read', () => {
 		deepStrictEqual(readParadisSpreadsheetComments({ commentsXml: '<comments', threadedCommentsXml: '' }), []);
 	});

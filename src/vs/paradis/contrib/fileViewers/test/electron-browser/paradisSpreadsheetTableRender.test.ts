@@ -8,7 +8,7 @@
 import { deepStrictEqual, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisRowData, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
-import { buildSheetTableDom } from '../../electron-browser/paradisSpreadsheetRender.js';
+import { buildSheetTableDom, buildShownNoteOverlay, PARADIS_ROW_NUM_COL_WIDTH } from '../../electron-browser/paradisSpreadsheetRender.js';
 
 function rows(count: number, columns: number, firstExcelRow = 1): IParadisRowData[] {
 	return Array.from({ length: count }, (_, index) => ({
@@ -119,6 +119,33 @@ suite('ParadisSpreadsheetTableRender', () => {
 		}));
 		const marked = Array.from(table.querySelectorAll<HTMLElement>('[data-paradis-comment-ref]')).map(cell => [cell.dataset.paradisCommentRef, cell.classList.contains('paradis-spreadsheet-comment-note'), cell.classList.contains('paradis-spreadsheet-comment-thread')]);
 		deepStrictEqual(marked, [['A1', true, false], ['B2', false, true]]);
+	});
+
+	test('draws only the notes set to show, at their saved box, with a leader line to the top right of their cell', () => {
+		const px = (value: number) => value * 9525;
+		const rowY = new Map([[1, 20], [2, 40], [3, 60], [4, 80], [5, 100]]);
+		const overlay = buildShownNoteOverlay([
+			{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [{ author: '', text: 'hidden' }] },
+			{ ref: 'B2', row: 1, column: 1, kind: 'note', entries: [{ author: 'Sample', text: 'Sample:\nfirst' }], shown: { from: { c: 2, co: px(5), r: 0, ro: px(4) }, to: { c: 4, co: 0, r: 3, ro: 0 } } },
+			{ ref: 'C4', row: 3, column: 2, kind: 'note', entries: [{ author: '', text: 'second' }], shown: { from: { c: 0, co: px(10), r: 0, ro: 0 }, ext: { cx: px(50), cy: px(30) }, fill: '#ccffcc' } },
+			{ ref: 'D1', row: 0, column: 3, kind: 'thread', entries: [{ author: '', text: 'thread' }] },
+		], rowY, [60, 60, 60, 60], 1, document)!;
+		const left = PARADIS_ROW_NUM_COL_WIDTH;
+		deepStrictEqual({
+			notes: Array.from(overlay.querySelectorAll<HTMLElement>('.paradis-spreadsheet-note')).map(note => [note.style.left, note.style.top, note.style.width, note.style.height, note.style.minHeight, note.style.backgroundColor, note.innerHTML]),
+			lines: Array.from(overlay.querySelectorAll('line')).map(line => ['x1', 'y1', 'x2', 'y2'].map(name => Number(line.getAttribute(name)))),
+			heads: overlay.querySelectorAll('polygon').length,
+			none: buildShownNoteOverlay([{ ref: 'A1', row: 0, column: 0, kind: 'note', entries: [{ author: '', text: 'hidden' }] }], rowY, [60], 1, document),
+		}, {
+			notes: [
+				[`${left + 125}px`, '24px', '115px', '56px', '56px', '', '<b>Sample:</b>\nfirst'],
+				[`${left + 10}px`, '20px', '50px', '30px', '30px', 'rgb(204, 255, 204)', 'second'],
+			],
+			// B2: from the box's top left (8px down) to the right edge of B at row 2. C4: from the right of the box, left of the cell.
+			lines: [[left + 125, 32, left + 120, 40], [left + 60, 28, left + 180, 80]],
+			heads: 2,
+			none: undefined,
+		});
 	});
 
 	test('leaves every cell untouched when the sheet has no table', () => {
