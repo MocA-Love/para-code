@@ -30,6 +30,9 @@ import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.
 import { IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
 import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
+// PARA-PATCH: reattach diagnostics (see paradisReattachTally.ts)
+import { paradisNoteAttached, paradisNoteRevived, paradisTakeReattachTally } from '../../../paradis/contrib/ptyDaemon/node/paradisReattachTally.js';
+import { IParadisReattachTally } from '../common/paradisReattachTally.js';
 import { IProductService } from '../../product/common/productService.js';
 import { join } from '../../../base/common/path.js';
 import { memoize } from '../../../base/common/decorators.js';
@@ -327,6 +330,7 @@ export class PtyService extends Disposable implements IPtyService {
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
 		// PARA-PATCH: remember new id -> old id so listProcesses/layouts can report paradisRevivedFromPersistentProcessId
 		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
+		paradisNoteRevived(workspaceId, newId); // PARA-PATCH: count it for the reattach diagnostics (paradisReattachTally.ts)
 		// PARA-PATCH: also index by nonce so a restored editor tab can find this terminal (getRevivedPtyNewId)
 		const nonce = paradisTerminalIdentityNonce(terminal.processDetails.shellIntegrationNonce);
 		// PARA-PATCH: never over a terminal taken back from the daemon. That one is still running the
@@ -589,7 +593,17 @@ export class PtyService extends Disposable implements IPtyService {
 	@traceRpc
 	async start(id: number): Promise<ITerminalLaunchError | ITerminalLaunchResult | undefined> {
 		const pty = this._ptys.get(id);
+		// PARA-PATCH: a window took this pty (every attach path ends in start), so a revived one is not a stray copy
+		if (pty) {
+			paradisNoteAttached(id);
+		}
 		return pty ? pty.start() : { message: `Could not find pty with id "${id}"` };
+	}
+
+	// PARA-PATCH: what the startup reattach came to, for the window to report (paradisReattachTally.ts)
+	@traceRpc
+	async paradisTakeReattachTally(workspaceId: string): Promise<IParadisReattachTally | undefined> {
+		return paradisTakeReattachTally(workspaceId);
 	}
 
 	// PARA-PATCH: the app is quitting (or no longer is); closing terminals then leaves their background processes alone

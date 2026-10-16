@@ -37,6 +37,32 @@ export async function paradisStatKind(path: string): Promise<ParadisPathKind> {
 	}
 }
 
+/** `exec` のうち使う形。テストで差し替える。 */
+export type ParadisExec = (command: string, options: { env: NodeJS.ProcessEnv }, callback: (error: Error | null, stdout: string, stderr: string) => void) => void;
+
+/**
+ * `lsof` で作業ディレクトリを引けなかったことを記録した pid。
+ *
+ * 引けない理由の多くは「シェルが居る場所がもう無い」（消した worktree の中で開いたままのシェル
+ * など）で、そのシェルが生きている限り毎回引けない。画面の保存は 5 分ごとに全部のターミナルの
+ * 作業ディレクトリを引くので、記録し続けると、1 本のために同じエラーが 5 分ごとに積もる
+ * （実機で 3 日に 134 回）。同じ pid では 1 回だけ記録する。pid は使い回されるが、取り違えても
+ * 失うのはログの 1 行だけなので、上限を超えたら忘れるだけにする。
+ */
+const cwdFailureReported = new Set<number>();
+const CWD_FAILURE_REPORTED_LIMIT = 1_000;
+
+function reportCwdFailureOnce(pid: number, logService: ILogService, error: Error | null, stdout: string, stderr: string): void {
+	if (cwdFailureReported.has(pid)) {
+		return;
+	}
+	if (cwdFailureReported.size >= CWD_FAILURE_REPORTED_LIMIT) {
+		cwdFailureReported.clear();
+	}
+	cwdFailureReported.add(pid);
+	logService.error('[ParadisPtyDaemon] lsof did not run successfully, it may not be on the $PATH? (not repeated for this process)', error, stdout, stderr);
+}
+
 /**
  * いまの作業ディレクトリ。取れなければ undefined（呼び出し側が起動時の場所へ倒す）。
  *
@@ -44,7 +70,7 @@ export async function paradisStatKind(path: string): Promise<ParadisPathKind> {
  * Big Sur 以降の Electron で spawn がスレッドを塞ぐ問題を避けるための upstream の判断で、
  * 理由ごと引き継いでいる。
  */
-export async function paradisReadCwd(pid: number, logService: ILogService): Promise<string | undefined> {
+export async function paradisReadCwd(pid: number, logService: ILogService, execImpl: ParadisExec = exec): Promise<string | undefined> {
 	// pid は「別のビルドの、別のプロセス」から届いた値。コマンドラインに混ぜる前に形を確かめる。
 	// 同じユーザー同士なので権限の境界ではないが、確かめるのが安い以上、確かめない理由が無い。
 	if (!Number.isInteger(pid) || pid <= 0) {
@@ -52,12 +78,12 @@ export async function paradisReadCwd(pid: number, logService: ILogService): Prom
 	}
 	if (isMacintosh) {
 		return new Promise<string | undefined>(resolve => {
-			exec(`lsof -OPln -p ${pid} | grep cwd`, { env: { ...process.env, LANG: 'en_US.UTF-8' } }, (error, stdout, stderr) => {
+			execImpl(`lsof -OPln -p ${pid} | grep cwd`, { env: { ...process.env, LANG: 'en_US.UTF-8' } }, (error, stdout, stderr) => {
 				if (!error && stdout !== '') {
 					resolve(stdout.substring(stdout.indexOf('/'), stdout.length - 1));
 					return;
 				}
-				logService.error('[ParadisPtyDaemon] lsof did not run successfully, it may not be on the $PATH?', error, stdout, stderr);
+				reportCwdFailureOnce(pid, logService, error, stdout, stderr);
 				resolve(undefined);
 			});
 		});
