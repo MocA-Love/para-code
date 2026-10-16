@@ -15,6 +15,7 @@
 import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest, ParadisWordSemanticWorkerRun } from './paradisWordSemanticWorkerProtocol.js';
+import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { ParadisWordSemanticService } from './paradisWordSemanticService.js';
 
 const service = new ParadisWordSemanticService();
@@ -28,8 +29,8 @@ async function handle(id: number, request: ParadisWordSemanticWorkerRun): Promis
 		reply = request.op === 'analyze'
 			? { kind: 'result', id, result: await service.analyze(request.bytes, cancellation.token) }
 			: { kind: 'result', id, result: await service.compare(request.original, request.modified, cancellation.token) };
-	} catch {
-		reply = { kind: 'result', id, result: { ok: false, code: 'failed' } };
+	} catch (error) {
+		reply = { kind: 'result', id, result: { ok: false, code: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {
 		active.delete(id);
 		cancellation.dispose();

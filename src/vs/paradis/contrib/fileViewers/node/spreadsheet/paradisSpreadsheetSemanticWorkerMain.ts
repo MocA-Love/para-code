@@ -16,6 +16,7 @@ import { parentPort } from 'worker_threads';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
 import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { collectParadisSpreadsheetSemanticDiagnostics, unavailableParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
 import type { IParadisSpreadsheetSemanticWorkerRun } from './paradisSpreadsheetSemanticWorkerBackend.js';
 
@@ -27,8 +28,8 @@ async function handle(id: number, request: IParadisSpreadsheetSemanticWorkerRun)
 	let reply: IParadisOfficeSemanticWorkerReply<IParadisSemanticDiagnosticsSummary>;
 	try {
 		reply = { kind: 'result', id, result: await collectParadisSpreadsheetSemanticDiagnostics(request.bytes, cancellation.token) };
-	} catch {
-		reply = { kind: 'result', id, result: unavailableParadisSpreadsheetSemanticDiagnostics('failed') };
+	} catch (error) {
+		reply = { kind: 'result', id, result: unavailableParadisSpreadsheetSemanticDiagnostics('failed'), cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {
 		active.delete(id);
 		cancellation.dispose();

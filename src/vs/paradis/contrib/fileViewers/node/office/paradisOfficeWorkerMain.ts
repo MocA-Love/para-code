@@ -10,6 +10,7 @@ import type { ParadisOfficeBudgetProfile } from '../../common/paradisOfficeProto
 import { createParadisOfficeNodeArchive } from './paradisOfficeNodeArchive.js';
 import { inspectOfficePackage } from '../../common/office/paradisOfficePackageCore.js';
 import { projectOfficeWorkerResult } from './paradisOfficeWorkerHost.js';
+import { paradisOfficeWorkerFailureKind } from './paradisOfficeWorkerDiagnostics.js';
 
 type WorkerOperation = 'inspect' | 'parse' | 'diff';
 
@@ -81,14 +82,14 @@ async function run(message: WorkerRunMessage): Promise<void> {
 		// projector clones that trusted graph directly; do not allocate a JSON wire copy first.
 		const value = projectOfficeWorkerResult('inspect', { inventory }, true);
 		if (!value) {
-			parentPort?.postMessage({ kind: 'failure', requestId: message.requestId });
+			parentPort?.postMessage({ kind: 'failure', requestId: message.requestId, cause: 'projection' });
 			return;
 		}
 		parentPort?.postMessage({ kind: 'result', requestId: message.requestId, value });
-	} catch {
+	} catch (error) {
 		parentPort?.postMessage(cancellation.token.isCancellationRequested
 			? { kind: 'cancelled', requestId: message.requestId }
-			: { kind: 'failure', requestId: message.requestId });
+			: { kind: 'failure', requestId: message.requestId, cause: paradisOfficeWorkerFailureKind(error) });
 	} finally {
 		cancellation.dispose();
 		if (active?.requestId === message.requestId) { active = undefined; }
