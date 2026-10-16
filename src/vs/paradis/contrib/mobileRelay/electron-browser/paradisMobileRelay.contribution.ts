@@ -392,11 +392,17 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 					&& lease.windowSession === request.windowSession
 					&& lease.rendererGeneration === request.rendererGeneration) {
 					await this.provider.syncAgentPaneRegistry();
+					// shared process が対応表を受け取り直したので、受け付けられずに待っている通知をすぐ送り直す
+					this.agentCommandCoordinator?.kick();
 				}
 			}).catch(err => this.logService.warn('[paradisMobileRelay] requested agent pane sync failed', err));
 		}));
 		Promise.all([terminalStateReady, this.provider.initialAgentPanesReady]).then(
-			() => markRendererReady(),
+			() => {
+				markRendererReady();
+				// 準備が整う前に検知したコマンドの通知は受け付けられずに待っているので、すぐ送り直す
+				this.agentCommandCoordinator?.kick();
+			},
 			err => this.logService.warn('[paradisMobileRelay] initial renderer state sync failed', err),
 		);
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
