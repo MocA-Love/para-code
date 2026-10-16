@@ -39,6 +39,7 @@ import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOf
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
 import { installParadisExcelJsMergeFastPath, paradisExcelJsMergeRanges } from './spreadsheet/paradisSpreadsheetExcelJsMerges.js';
 import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetSheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
+import { paradisDrawingRightmostColumn } from '../common/spreadsheet/paradisSpreadsheetDrawingExtent.js';
 import { evaluateLegacyConditionalFormatting, parseConditionalFormatRef, type IParadisLegacyCfBlock, type IParadisLegacyCfCellValue } from './spreadsheet/paradisSpreadsheetLegacyConditionalFormat.js';
 import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 import type { ParadisSpreadsheetColor } from '../common/spreadsheet/paradisSpreadsheetSemantic.js';
@@ -886,6 +887,32 @@ function getSheetDimensions(ws: ExcelJS.Worksheet): ISheetDims {
 	return { minR: 1, maxR: ws.rowCount || 1, minC: 1, maxC: ws.columnCount || 1 };
 }
 
+/** 図形の外枠が表示する列の右へはみ出すとき、延ばす列の数の上限（右の遠くに置いた図形で表が大きくなりすぎないように）。 */
+const MAX_DRAWING_EXTRA_COLUMNS = 64;
+
+/**
+ * 図形（吹き出しなど）の外枠が、表示する列（印刷範囲か使っている範囲）より右へはみ出すなら、外枠の右端が入る列まで
+ * 表示する列を延ばす。印刷範囲の右の余白に置いた吹き出しが、表の幅で切られて見えなくなるのを防ぐ。行は延ばさない。
+ * 印刷範囲そのもの（改ページ・ページ割り）は getSheetPrintArea から別に読むので変わらない。
+ */
+function extendSheetDimensionsToDrawings(dims: ISheetDims, ws: ExcelJS.Worksheet, drawings: readonly IParadisDrawingData[] | undefined, sheetProps: { defaultColWidth?: number; defaultRowHeight?: number } | undefined, maxDigitWidth: number): ISheetDims {
+	const xmls = (drawings ?? []).flatMap(drawing => drawing.omitted ? [] : [drawing.xml]);
+	if (xmls.length === 0) {
+		return dims;
+	}
+	const rightmost = paradisDrawingRightmostColumn(xmls, {
+		columnWidth: column => {
+			const col = ws.getColumn(column);
+			return col.hidden ? 0 : charWidthToPx(col.width, sheetProps?.defaultColWidth, maxDigitWidth);
+		},
+		rowHeight: row => {
+			const found = ws.findRow(row);
+			return found?.hidden ? 0 : rowHeightToPx(found?.height, sheetProps?.defaultRowHeight);
+		},
+	}, dims.maxC + MAX_DRAWING_EXTRA_COLUMNS);
+	return rightmost !== undefined && rightmost > dims.maxC ? { ...dims, maxC: rightmost } : dims;
+}
+
 function isNumericCell(cell: ExcelJS.Cell, numberCellType: ExcelJS.ValueType): boolean {
 	if (cell.type === numberCellType) {
 		return true;
@@ -1573,11 +1600,11 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 		workbook.eachSheet(worksheet => {
 			sheetIndex++;
-			const dims = getSheetDimensions(worksheet);
+			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
+			const dims = extendSheetDimensionsToDrawings(getSheetDimensions(worksheet), worksheet, extras.drawingsBySheet[sheetIndex], sheetProps, extras.maxDigitWidth);
 			const worksheetDataValidations = getWorksheetDataValidations(worksheet, extras.dataValidationRangesBySheet[sheetIndex] ?? []);
 			const mergeMap = buildMergeMap(worksheet);
 			const colCount = dims.maxC - dims.minC + 1;
-			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
 			const showGridLines = (worksheet.views?.[0] as { showGridLines?: boolean } | undefined)?.showGridLines ?? true;
 			const columnWidths: number[] = [];
 			const columnPrintWidthsPt: number[] = [];
