@@ -6,9 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from '../../../../base/common/path.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 
@@ -36,7 +36,7 @@ export async function paradisEnsureDefaultWorkspace<T extends IParadisWorkspaceL
 	resolve: (openable: { workspaceUri: URI }) => Promise<T | undefined>
 ): Promise<T[]> {
 	const configPath = join(homedir(), '.para-code', 'para.code-workspace');
-	if (!existsSync(configPath)) {
+	if (!await Promises.exists(configPath)) {
 		return paths;
 	}
 
