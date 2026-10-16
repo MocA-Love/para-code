@@ -23,13 +23,15 @@ import { paradisPtyHostDaemonEnv, paradisSpawnDaemon } from '../../node/paradisE
 suite('ParadisEnsurePtyHost', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('node として起こす。付け忘れるとアプリとして起動しようとする', () => {
-		const env = paradisPtyHostDaemonEnv({}, { VSCODE_ESM_ENTRYPOINT: 'somewhere' });
+	test('Electron の中では node として起こし、素の node（接続先）では付けない', () => {
+		const local = paradisPtyHostDaemonEnv({}, { VSCODE_ESM_ENTRYPOINT: 'somewhere' }, true);
+		const remote = paradisPtyHostDaemonEnv({ ELECTRON_RUN_AS_NODE: '1' }, { VSCODE_ESM_ENTRYPOINT: 'somewhere' }, false);
 
 		assert.deepStrictEqual(
-			{ runAsNode: env.ELECTRON_RUN_AS_NODE, entry: env.VSCODE_ESM_ENTRYPOINT },
+			{ local: [local.ELECTRON_RUN_AS_NODE, local.VSCODE_ESM_ENTRYPOINT], remote: [remote.ELECTRON_RUN_AS_NODE, remote.VSCODE_ESM_ENTRYPOINT] },
 			// ローカルの実行ファイルは Para Code 本体なので、無いと2つ目のアプリが起きようとする。
-			{ runAsNode: '1', entry: 'somewhere' },
+			// 接続先で付けると bootstrap-esm が 'fs' を Electron 専用の 'node:original-fs' へ向け、常駐が起きない。
+			{ local: ['1', 'somewhere'], remote: [undefined, 'somewhere'] },
 		);
 	});
 
