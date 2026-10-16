@@ -181,7 +181,8 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	/** 判定は {@link paradisIsScmRootInScope} と共有する ({@link ParadisScopedScmViewService} も同じ基準で一覧を絞る)。 */
 	private isInScope(repository: ISCMRepository): boolean {
 		const folders = this.contextService.getWorkspace().folders.map(folder => folder.uri);
-		return paradisIsScmRootInScope(repository.provider.rootUri, folders, this.uriIdentityService.extUri);
+		const roots = [...this.scmService.repositories].flatMap(other => other.provider.rootUri ? [other.provider.rootUri] : []);
+		return paradisIsScmRootInScope(repository.provider.rootUri, folders, this.uriIdentityService.extUri, repository.provider.contextValue.get(), roots);
 	}
 
 	/** reconcile の直列化フラグ。実行中の再スケジュールは末尾で1回だけ追い掛け実行する。 */

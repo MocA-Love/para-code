@@ -85,11 +85,33 @@
 	gap: var(--vscode-spacing-size60);
 }
 
-/* ボタンは upstream の monaco-text-button。横幅いっぱいに伸びる既定を打ち消して内容の幅にする。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button {
+/*
+ * ボタンは upstream の monaco-text-button。横幅いっぱいに伸びる既定を打ち消して内容の幅にする。
+ * 「このタブで再開」は upstream の分割ボタン（monaco-button-dropdown）の中に入るので、そちらも同じにする。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-text-button,
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-button-dropdown > .monaco-text-button {
 	width: auto;
 	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80);
 	font-size: var(--vscode-fontSize-label1);
+}
+
+/* 分割ボタンの ▾。upstream の既定（左右 4px）のまま、高さだけ隣のボタンに揃える。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-terminal-resume-banner .paradis-terminal-resume-banner-actions > .monaco-button-dropdown > .monaco-dropdown-button {
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/*
+ * ▾ のメニューの「権限確認なしで再開／分岐」。HTML のメニュー（window.menuStyle: custom）でだけ効き、
+ * ネイティブのメニューでは文言だけで危険と分かるようにしてある。
+ */
+.monaco-menu .paradis-terminal-resume-banner-menu-danger {
+	color: var(--vscode-errorForeground);
+}
+
+/* 選んでいる行は選択の背景の上に乗るので、赤字をやめてメニューの選択中の文字色に戻す。 */
+.monaco-menu .action-item.focused .paradis-terminal-resume-banner-menu-danger {
+	color: inherit;
 }
 
 /*

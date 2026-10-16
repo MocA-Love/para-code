@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンの件数と、
-// メニューバー（通知領域）のアイコンへの中身の受け渡し。数えるのは確認が必要なペインの数。
+// Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンの件数。数えるのは確認が必要な
+// ペインの数。メニューバー（通知領域）のアイコンへの中身の受け渡しは menuBar/ に移した。
 //
 // 件数は upstream の `INativeHostService.setApplicationBadge` で出す。main の DockBadgeManager
 // （windowImpl.ts）がウィンドウごとの数を足し合わせ、ウィンドウが閉じたらその分を外し、
@@ -18,12 +18,10 @@
 import { mainWindow } from '../../../../base/browser/window.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
 import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IApplicationBadge, INativeHostService } from '../../../../platform/native/common/native.js';
 import { contrastBorder } from '../../../../platform/theme/common/colors/baseColors.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -31,8 +29,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ACTIVITY_BAR_BADGE_BACKGROUND, ACTIVITY_BAR_BADGE_FOREGROUND } from '../../../../workbench/common/theme.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisNotificationsSettingsService } from '../../notifications/browser/paradisNotificationsSettings.js';
-import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, PARADIS_NOTIFICATION_MENU_BAR_SETTING, paradisInboxAttentionPaneCount, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
-import { IParadisTrayState, PARADIS_NOTIFICATION_TRAY_CHANNEL, ParadisTrayRequest, paradisTrayStateFromSnapshot } from '../common/paradisNotificationTray.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, paradisInboxAttentionPaneCount, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
 
 /** Windows のタスクバーの重ね絵は小さく描かれるので、2倍で描く。 */
 const WINDOWS_ICON_SIZE = 32;
@@ -43,10 +40,8 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 
 	/** -1 で始めて、最初の1回は必ず送る（前の renderer が残した数を上書きするため）。 */
 	private lastCount = -1;
-	private lastTraySignature = '';
 	/** おやすみモードの期限で件数を出し直すためのタイマー。 */
 	private readonly doNotDisturbExpiry = this._register(new MutableDisposable());
-	private readonly trayChannel: IChannel;
 
 	constructor(
 		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
@@ -54,13 +49,10 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IThemeService private readonly themeService: IThemeService,
-		@IMainProcessService mainProcessService: IMainProcessService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisNotificationsSettingsService private readonly notificationsSettingsService: IParadisNotificationsSettingsService,
 	) {
 		super();
-		this.trayChannel = mainProcessService.getChannel(PARADIS_NOTIFICATION_TRAY_CHANNEL);
-
 		const update = () => this.updateBadge();
 		this._register(this.inboxService.onDidChange(update));
 		this._register(this.paneTokenService.onDidChange(update));
@@ -68,10 +60,6 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_NOTIFICATION_DOCK_BADGE_SETTING)) {
 				update();
-			}
-			if (e.affectsConfiguration(PARADIS_NOTIFICATION_MENU_BAR_SETTING)) {
-				this.lastTraySignature = '';
-				this.pushTrayState();
 			}
 		}));
 		if (isWindows) {
@@ -81,11 +69,6 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		// Dock の件数はアプリ全体のものなので、このウィンドウの分を残して閉じない
 		this._register(toDisposable(() => this.setBadge(0, true)));
 		update();
-
-		// --- メニューバーのアイコン ---
-		this._register(this.inboxService.onDidChange(() => this.pushTrayState()));
-		this._register(this.trayChannel.listen<ParadisTrayRequest>('onDidRequest')(request => this.handleTrayRequest(request)));
-		this.pushTrayState();
 	}
 
 	private updateBadge(): void {
@@ -143,49 +126,6 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		context.textBaseline = 'middle';
 		context.fillText(count > 9 ? '9+' : String(count), half, half + 1);
 		return canvas.toDataURL('image/png');
-	}
-
-	// ---- メニューバーのアイコン ---------------------------------------------------------------------
-
-	private pushTrayState(): void {
-		// 設定がオフの間は送らない（アイコンが無いので、main で覚えておく意味も無い）。
-		// オンにした瞬間に設定の購読から送り直す。
-		if (this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_MENU_BAR_SETTING) !== true) {
-			return;
-		}
-		const state: IParadisTrayState = paradisTrayStateFromSnapshot(this.inboxService.snapshot);
-		const signature = JSON.stringify(state);
-		if (signature === this.lastTraySignature) {
-			return;
-		}
-		this.lastTraySignature = signature;
-		this.trayChannel.call<{ readonly hideIcon?: boolean } | undefined>('update', [state]).then(result => {
-			// ウィンドウが無い間にメニューの「アイコンを隠す」が押されていた
-			if (result?.hideIcon) {
-				void this.configurationService.updateValue(PARADIS_NOTIFICATION_MENU_BAR_SETTING, false);
-			}
-		}, error => this.logService.trace('[paradisNotificationInbox] tray update failed', String(error)));
-	}
-
-	private handleTrayRequest(request: ParadisTrayRequest): void {
-		if (request.windowId !== this.nativeHostService.windowId) {
-			return; // 別のウィンドウ宛て
-		}
-		switch (request.type) {
-			case 'reveal': {
-				const entry = this.inboxService.snapshot.entries.find(candidate => candidate.id === request.entryId);
-				if (entry) {
-					void this.inboxService.reveal(entry);
-				}
-				break;
-			}
-			case 'openInbox':
-				this.inboxService.requestOpenInbox();
-				break;
-			case 'hideIcon':
-				void this.configurationService.updateValue(PARADIS_NOTIFICATION_MENU_BAR_SETTING, false);
-				break;
-		}
 	}
 }
 

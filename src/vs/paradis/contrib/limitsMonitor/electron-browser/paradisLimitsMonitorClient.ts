@@ -50,6 +50,8 @@ import {
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
 export const PARADIS_LIMITS_SETTING_CODEX_HOMES = 'paradis.limitsMonitor.codexHomes';
+/** タイトルバーの使用量パネルを開く（メニューバーのアイコンなど、ほかの所から）。 */
+export const PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID = 'paradis.limitsMonitor.openPanel';
 
 export class ParadisLimitsMonitorClient {
 

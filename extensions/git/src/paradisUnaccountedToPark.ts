@@ -8,12 +8,85 @@
 // Kept free of any `vscode` import (unlike paradisRepositoryPark.ts) so selectUnaccountedForParking
 // can be unit tested outside the extension host.
 
+/** {@link paradisRepositoryBelongsToFolder} が判定に使うリポジトリの形。 */
+export interface IParadisRepositoryLocation {
+	readonly root: string;
+	readonly rootRealPath?: string;
+	/** `Repository.kind`。`'worktree'` はリンクされたワークツリー（`git worktree add` で作ったもの）。 */
+	readonly kind?: string;
+}
+
 /** {@link selectUnaccountedForParking} が判定に必要とする最小限の形。 */
 export interface IParadisUnaccountedCandidate {
-	readonly repository: {
-		readonly root: string;
-		readonly rootRealPath?: string;
+	readonly repository: IParadisRepositoryLocation;
+}
+
+/**
+ * `outerRoot` の中にある `folder` について、`folder` 自身か、`outerRoot` より下のその祖先に別の
+ * 作業ツリー（`.git` を持つフォルダ。入れ子のワークツリー・サブモジュール・独立したリポジトリ）があるか。
+ * `folder` と `outerRoot` が同じなら false。`includeOuter` なら範囲を 1 段上へずらし、`outerRoot`
+ * 自身を含めて `folder` 自身を含めない（フォルダの中のワークツリーより上に作業ツリーがあるか、を見る）。
+ */
+export type ParadisWorkingTreeBetween = (outerRoot: string, folder: string, includeOuter?: boolean) => boolean;
+
+/**
+ * {@link ParadisWorkingTreeBetween} を作る。`hasDotGit` はそのフォルダの直下に `.git`（ディレクトリでも
+ * ファイルでも）があるか。`folder` から `outerRoot` の手前まで親へたどって確かめる。
+ */
+export function paradisHasWorkingTreeBetween(
+	hasDotGit: (folder: string) => boolean,
+	dirname: (path: string) => string,
+	isDescendant: (parent: string, descendant: string) => boolean,
+	pathEquals: (a: string, b: string) => boolean,
+): ParadisWorkingTreeBetween {
+	return (outerRoot, folder, includeOuter = false) => {
+		if (pathEquals(folder, outerRoot) || !isDescendant(outerRoot, folder)) {
+			return false;
+		}
+		let current = includeOuter ? dirname(folder) : folder;
+		while (isDescendant(outerRoot, current)) {
+			const atOuter = pathEquals(current, outerRoot);
+			if (atOuter && !includeOuter) {
+				break;
+			}
+			if (hasDotGit(current)) {
+				return true;
+			}
+			const parent = dirname(current);
+			if (atOuter || parent === current) {
+				break;
+			}
+			current = parent;
+		}
+		return false;
 	};
+}
+
+/**
+ * リポジトリがワークスペースフォルダ（＝今のスペース）に属するか。git の「いちばん近い `.git` が持ち主」
+ * という規則に揃える。待避の判定（{@link selectUnaccountedForParking}・`ParadisRepositoryParkingLot.unparkForFolder`）
+ * と、SCM ビューの絞り込み（`src/vs/paradis/contrib/workspaceSwitch/common/paradisScmScope.ts` の
+ * `paradisIsScmRootInScope`）は同じ規則にする（別のビルド単位なので関数は共有できない。片方を変えたら
+ * もう片方も変えること）。
+ *
+ * - ルートとフォルダが同じ: 属する
+ * - フォルダがリポジトリの中にある（リポジトリ内のサブフォルダをスペースとして開いている）: 属する。
+ *   ただし、その間に別の作業ツリーがあれば（入れ子のワークツリーのスペース等）、外側のリポジトリは属さない
+ * - リポジトリがフォルダの中にある（入れ子のリポジトリ）: 属する。ただしリンクされたワークツリーは、
+ *   フォルダからワークツリーまでの間に別の作業ツリー（メイン）があれば、それ自体が別のスペースなので属さない
+ *   （入れ子のサブモジュール・独立したリポジトリ、リポジトリでないフォルダの中のワークツリーは今までどおり属する）
+ */
+export function paradisRepositoryBelongsToFolder(
+	repository: IParadisRepositoryLocation,
+	folder: string,
+	isDescendant: (parent: string, descendant: string) => boolean,
+	pathEquals: (a: string, b: string) => boolean,
+	hasWorkingTreeBetween: ParadisWorkingTreeBetween = () => false,
+): boolean {
+	const roots = repository.rootRealPath !== undefined ? [repository.root, repository.rootRealPath] : [repository.root];
+	return roots.some(root => pathEquals(folder, root)
+		|| (isDescendant(root, folder) && !hasWorkingTreeBetween(root, folder))
+		|| (isDescendant(folder, root) && !(repository.kind === 'worktree' && hasWorkingTreeBetween(folder, root, true))));
 }
 
 /** workspace 変更の最後に一度だけ parking を決めるための、VS Code 非依存 snapshot。 */
@@ -33,22 +106,17 @@ export type ParadisParkingCoordinatorResult<T> =
  * 現在のワークスペースフォルダのどれにも属さない（＝自動検出で開かれたまま取り残された）
  * 候補だけを選り分ける。`Model.onDidChangeWorkspaceFolders` から抽出した純粋な判定ロジック。
  *
- * `unparkForFolder`（`paradisRepositoryPark.ts`）と同じ双方向の包含チェック（フォルダがリポジトリの
- * 中にある／リポジトリがフォルダの中にある、のどちらでも一致とみなす）を使う。`rootRealPath` が
- * あればそれも候補に含め、シンボリックリンク越しの一致も見逃さない。
+ * 属するかは {@link paradisRepositoryBelongsToFolder}（`unparkForFolder` と同じ規則）で決める。
+ * `rootRealPath` があればそれも照合し、シンボリックリンク越しの一致も見逃さない。
  */
 export function selectUnaccountedForParking<T extends IParadisUnaccountedCandidate>(
 	candidates: readonly T[],
 	currentFolderPaths: readonly string[],
 	isDescendant: (parent: string, descendant: string) => boolean,
 	pathEquals: (a: string, b: string) => boolean = (a, b) => a === b,
+	hasWorkingTreeBetween: ParadisWorkingTreeBetween = () => false,
 ): T[] {
-	return candidates.filter(candidate => {
-		const roots = candidate.repository.rootRealPath !== undefined
-			? [candidate.repository.root, candidate.repository.rootRealPath]
-			: [candidate.repository.root];
-		return !currentFolderPaths.some(folder => roots.some(root => pathEquals(folder, root) || isDescendant(folder, root) || isDescendant(root, folder)));
-	});
+	return candidates.filter(candidate => !currentFolderPaths.some(folder => paradisRepositoryBelongsToFolder(candidate.repository, folder, isDescendant, pathEquals, hasWorkingTreeBetween)));
 }
 
 /**
@@ -63,6 +131,7 @@ export function selectRepositoriesForUnifiedParking<T extends IParadisUnaccounte
 	currentFolderPaths: readonly string[],
 	isDescendant: (parent: string, descendant: string) => boolean,
 	pathEquals: (a: string, b: string) => boolean = (a, b) => a === b,
+	hasWorkingTreeBetween: ParadisWorkingTreeBetween = () => false,
 ): T[] {
 	const seen = new Set<T['repository']>();
 	const candidates: T[] = [];
@@ -76,7 +145,7 @@ export function selectRepositoriesForUnifiedParking<T extends IParadisUnaccounte
 		candidates.push(candidate);
 	}
 
-	return selectUnaccountedForParking(candidates, currentFolderPaths, isDescendant, pathEquals);
+	return selectUnaccountedForParking(candidates, currentFolderPaths, isDescendant, pathEquals, hasWorkingTreeBetween);
 }
 
 function currentFoldersMatch(
@@ -115,6 +184,7 @@ export async function commitRepositoriesForParking<T extends IParadisUnaccounted
 	isDescendant: (parent: string, descendant: string) => boolean,
 	pathEquals: (a: string, b: string) => boolean,
 	commit: (repositoriesToPark: readonly T[], currentFolderPaths: readonly string[]) => R,
+	hasWorkingTreeBetween: ParadisWorkingTreeBetween = () => false,
 ): Promise<ParadisParkingCoordinatorResult<R>> {
 	const initialSnapshot = getSnapshot();
 	const realPaths = await Promise.all(initialSnapshot.currentFolderPaths.map(async folderPath => {
@@ -139,6 +209,7 @@ export async function commitRepositoriesForParking<T extends IParadisUnaccounted
 		[...latestSnapshot.currentFolderPaths, ...resolvedRealPaths],
 		isDescendant,
 		pathEquals,
+		hasWorkingTreeBetween,
 	);
 
 	const commitResult = commit(repositoriesToPark, latestSnapshot.currentFolderPaths);

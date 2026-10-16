@@ -26,7 +26,7 @@ import { IParadisDownloadsShell, ParadisBrowserDownloadsTracker } from '../../el
 const shell: IParadisDownloadsShell = {
 	openPath: async () => '',
 	showItemInFolder: () => { },
-	exists: () => true,
+	exists: async () => true,
 	ensureQuarantine: async () => true,
 };
 

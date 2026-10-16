@@ -14,7 +14,7 @@ import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { PARADIS_RENDER_EVIDENCE_MAX_AGE, PARADIS_RENDER_EVIDENCE_MAX_RECORDS, paradisRenderRecordName, paradisRenderRecordsToPrune } from '../../terminalRenderer/common/paradisRenderDesync.js';
 import { paradisEncodeTerminalScreens } from '../../ptyDaemon/common/paradisTerminalScreens.js';
-import { IParadisRenderEvidence, IParadisTerminalPrivateFiles, paradisIsSafeWorkspaceId, paradisStripTerminalStateSecrets } from '../common/paradisTerminalPrivateFiles.js';
+import { IParadisRenderEvidence, IParadisTerminalPrivateFiles, PARADIS_COMMAND_RECORDS_PRIVATE_FILE, paradisIsSafeWorkspaceId, paradisStripTerminalStateSecrets } from '../common/paradisTerminalPrivateFiles.js';
 
 /** 受け付ける大きさの上限（renderer から来る値なので、際限なく書かせない）。 */
 const MAX_SCREENS_LENGTH = 64 * 1024 * 1024;
@@ -41,12 +41,27 @@ export class ParadisTerminalPrivateFileStore implements IParadisTerminalPrivateF
 	/**
 	 * @param screensDir 保存画面のフォルダ（`<ユーザーデータ>/paradisTerminalScreens`）
 	 * @param evidenceDir 描画ずれの記録のフォルダ（`<ユーザーデータ>/logs/paradisTerminalRender`）
+	 * @param commandsDir 実行したコマンドの記録のフォルダ（`<ユーザーデータ>/paradisTerminalCommands`）
 	 */
 	constructor(
 		private readonly screensDir: string,
 		private readonly evidenceDir: string,
 		private readonly now: () => number = Date.now,
+		private readonly commandsDir?: string,
 	) { }
+
+	async ensureCommandRecordsFile(): Promise<string> {
+		if (this.commandsDir === undefined) {
+			throw new Error('no folder for the command records');
+		}
+		await ensurePrivateDir(this.commandsDir);
+		const file = join(this.commandsDir, PARADIS_COMMAND_RECORDS_PRIVATE_FILE);
+		// 'a' は既にあるファイルの中身を変えない。前の版が広い権限で作っていても絞る。
+		const handle = await fs.open(file, 'a', 0o600);
+		await handle.close();
+		await fs.chmod(file, 0o600);
+		return file;
+	}
 
 	private screensFile(workspaceId: string): string {
 		if (!paradisIsSafeWorkspaceId(workspaceId)) {

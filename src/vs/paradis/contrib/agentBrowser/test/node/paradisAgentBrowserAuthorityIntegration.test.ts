@@ -163,6 +163,7 @@ function createFixture(): {
 		_hookReportedTokens: new Set<string>(),
 		_programStatusTokens: new Set<string>(),
 		_programStatusTimes: new Map<string, number[]>(),
+		_codexProgramStatusEntries: new Map(),
 		_unconfirmedReleaseTokens: new Set<string>(),
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
@@ -754,6 +755,37 @@ suite('ParadisAgentBrowser authority integration', () => {
 		}
 	});
 
+	// 許可の確認が画面から消えて作業中になったのをウィンドウが見たら、許可待ちを作業中へ戻す。ウィンドウが見ていた許可待ち
+	// （changedAt）より後に別の許可要求で付け直された許可待ちと、許可待ちでないペインは触らない。
+	test('moves a permission wait back to working once the window saw the prompt leave the screen, but not a newer wait', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'answered' }, { token: 'asked-again' }, { token: 'done' }]));
+		const statuses: Map<string, { status: string; changedAt: number; cwd?: string }> = Reflect.get(fixture.service, '_paneStatuses');
+		statuses.set('answered', { status: 'permission', changedAt: 1_000, cwd: '/repo' });
+		statuses.set('asked-again', { status: 'permission', changedAt: 2_000 });
+		statuses.set('done', { status: 'review', changedAt: 1_000 });
+		const results = [
+			// 登録されていないウィンドウからは受け付けない
+			await fixture.service.settlePanePermissionOffScreen({}, 'asked-again', 2_000),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'answered', 1_000),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'asked-again', 1_500),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'done', 1_000),
+		];
+		assert.deepStrictEqual({
+			results,
+			statuses: [...statuses].map(([token, entry]) => ({ token, status: entry.status, cwd: entry.cwd })),
+		}, {
+			results: [false, true, false, false],
+			statuses: [
+				{ token: 'answered', status: 'working', cwd: '/repo' },
+				{ token: 'asked-again', status: 'permission', cwd: undefined },
+				{ token: 'done', status: 'review', cwd: undefined },
+			],
+		});
+	});
+
 	// レビュー M3: 知らないトークンの hook に「まだ同期していない」（503、控える）と答えるのは、起動とウィンドウの
 	// 接続の直後だけ。終わったペインと、猶予を過ぎて知らないペインは 404（控えない）。
 	test('tells a not-yet-synced pane from an unknown or retired one', () => {
@@ -944,6 +976,103 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const after = await fixture.service.notePaneProgramStatus(connection, 'late-hook', { state: 'done' });
 		const statuses = (await fixture.service.listPaneStatuses(connection)).map(entry => ({ token: entry.token, status: entry.status }));
 		assert.deepStrictEqual({ before, after, statuses }, { before: true, after: false, statuses: [{ token: 'late-hook', status: 'working' }] });
+	});
+
+	test('uses the Codex OSC 7501 state only as a helper: working and waiting where no transcript reports turns, and only the waiting where one does', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'osc-only' }, { token: 'transcript' }, { token: 'hooked' }]));
+		Reflect.get(fixture.service, '_hookReportedTokens').add('hooked');
+		Reflect.get(fixture.service, '_paneStatuses').set('hooked', { status: 'working', changedAt: 1 });
+		const note = (token: string, state: string) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, token, { state, app: 'codex' }); };
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		const service = fixture.service as unknown as { _settlePaneTurnEnded(token: string, at: number, cause: 'turn' | 'cli-exit'): void };
+		const steps: Record<string, string[]> = { 'osc-only': [], transcript: [] };
+		const record = async (token: 'osc-only' | 'transcript', step: string, changed: boolean) => { steps[token].push(`${step}: ${changed ? 'changed' : 'kept'} ${await status(token)}`); };
+		// What Codex 0.163.0 wrote in a PTY (2026-10-16): a working blip on start, a turn, a turn with an approval, then /exit.
+		for (const token of ['osc-only', 'transcript'] as const) {
+			await record(token, 'start blip', await note(token, 'working'));
+			await record(token, 'start blip ends', await note(token, 'idle'));
+			if (token === 'transcript') {
+				// The rollout reports the turn (what onParadisAgentTurnStarted does)
+				Reflect.get(fixture.service, '_agentHookTokens').add(token);
+				Reflect.get(fixture.service, '_paneStatuses').set(token, { status: 'working', changedAt: Date.now() });
+			}
+			await record(token, 'turn', await note(token, 'working'));
+			await record(token, 'approval', await note(token, 'blocked'));
+			await record(token, 'approved', await note(token, 'working'));
+			await record(token, 'turn ends', await note(token, 'idle'));
+			if (token === 'transcript') {
+				service._settlePaneTurnEnded(token, Date.now(), 'turn');
+				await record(token, 'rollout turn end', false);
+			}
+			await record(token, 'denied approval', (await note(token, 'blocked')) && (await note(token, 'idle')));
+			await record(token, 'exit', await note(token, 'clear'));
+		}
+		assert.deepStrictEqual({
+			steps,
+			hooked: { changed: await note('hooked', 'blocked'), status: await status('hooked') },
+			// Codex states never become the source the transcript defers to
+			readingOsc: ['osc-only', 'transcript'].filter(token => Reflect.get(fixture.service, '_programStatusTokens').has(token)),
+		}, {
+			steps: {
+				'osc-only': [
+					'start blip: changed working',
+					'start blip ends: changed idle',
+					'turn: changed working',
+					'approval: changed permission',
+					'approved: changed working',
+					'turn ends: changed idle',
+					'denied approval: changed idle',
+					'exit: kept idle',
+				],
+				transcript: [
+					'start blip: changed working',
+					'start blip ends: changed idle',
+					'turn: kept working',
+					'approval: changed permission',
+					'approved: changed working',
+					'turn ends: kept working',
+					'rollout turn end: kept review',
+					'denied approval: changed idle',
+					'exit: kept idle',
+				],
+			},
+			hooked: { changed: false, status: 'working' },
+			readingOsc: [],
+		});
+	});
+
+	test('the first hook of a Codex pane drops the working its OSC 7501 wrote, so the idle it then ignores does not leave the pane working', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'codex' }, { token: 'turn' }]));
+		const note = (token: string, state: string) => { Reflect.get(fixture.service, '_programStatusTimes').clear(); return fixture.service.notePaneProgramStatus(connection, token, { state, app: 'codex' }); };
+		const status = async (token: string) => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === token)?.status ?? 'idle';
+		// Codex starts: OSC working, then its SessionStart hook arrives before the OSC idle
+		await note('codex', 'working');
+		const hookBody = await sendHook(fixture.service, 'codex', 'SessionStart');
+		const idleTaken = await note('codex', 'idle');
+		// A status the hook itself wrote afterwards is not touched by a later hook
+		await note('turn', 'working');
+		await sendHook(fixture.service, 'turn', 'UserPromptSubmit');
+		await sendHook(fixture.service, 'turn', 'PostToolUse');
+		assert.deepStrictEqual({
+			hook: JSON.parse(hookBody),
+			idleTaken,
+			codex: await status('codex'),
+			turn: await status('turn'),
+			// what the renderer's status producer (and through it the phone) polls
+			snapshot: (await fixture.service.listAgentStatusSnapshot(connection)).paneStatuses.map(entry => `${entry.token}:${entry.status}`),
+		}, {
+			hook: { ok: false, reason: 'ignored event' },
+			idleTaken: false,
+			codex: 'idle',
+			turn: 'working',
+			snapshot: ['turn:working'],
+		});
 	});
 
 	test('keeps legacy status and hook-token list commands independently available', async () => {

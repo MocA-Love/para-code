@@ -35,7 +35,16 @@ export interface IParadisTerminalPrivateFiles {
 	sweepScreens(maxAge: number): Promise<void>;
 	/** 描画ずれの記録を1件書く（古いもの・期限切れを消してから）。書いたフォルダのパスを返す。 */
 	writeRenderEvidence(evidence: IParadisRenderEvidence): Promise<string | undefined>;
+	/**
+	 * スペースの履歴フォルダを持たないターミナルの、実行したコマンドの記録のファイル（Q372）を本人だけが
+	 * 読める形で用意し、そのパスを返す（無ければ空で作る。中身には触らない）。renderer はこのファイルに
+	 * 追記・書き直しをする（既存のファイルへの書き込みは権限を変えない）。
+	 */
+	ensureCommandRecordsFile(): Promise<string>;
 }
+
+/** {@link IParadisTerminalPrivateFiles.ensureCommandRecordsFile} のファイルの名前。 */
+export const PARADIS_COMMAND_RECORDS_PRIVATE_FILE = 'commands.jsonl';
 
 /** ワークスペース ID として受け付ける形（ファイル名になるので、パスを組み立てられる文字は通さない）。 */
 export function paradisIsSafeWorkspaceId(value: unknown): value is string {
