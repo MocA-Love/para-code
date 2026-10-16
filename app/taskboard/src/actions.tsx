@@ -91,6 +91,10 @@ export function useTaskActions() {
 			items.push({ label: '着手する…', icon: 'play', run: () => start(task) });
 		} else if (task.step !== 'done') {
 			items.push({ label: 'やり直す', icon: 'retry', run: () => void app.call('retry', { taskId: task.id, from: task.step, attempt: task.attempt }) });
+			if (app.snapshot.runtime.agents === 'para-code' && app.flowOf(task).steps.find(s => s.id === task.step)?.kind === 'agent') {
+				// エージェントが止まったのに「作業中」のまま固まったとき、ターミナルごと始め直す
+				items.push({ label: 'エージェントを起動し直す', icon: 'retry', run: () => void app.call('restartAgent', { taskId: task.id, attempt: task.attempt }, { title: 'エージェントを起動し直します', body: task.title, tone: 'blue' }) });
+			}
 			items.push({ label: '差し戻す…', icon: 'undo', run: () => sendBack(task) });
 			items.push({ label: '中止して未着手に戻す', icon: 'stop', danger: true, run: () => cancel(task) });
 		}

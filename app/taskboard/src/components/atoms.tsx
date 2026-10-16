@@ -169,7 +169,46 @@ export function Menu({ items, trigger, align = 'right', label }: { items: readon
 		const top = fitsBelow ? below : at.top - MENU_GAP - size.height >= MENU_GAP ? at.top - MENU_GAP - size.height : Math.max(MENU_GAP, window.innerHeight - MENU_GAP - size.height);
 		const left = align === 'left' ? at.left : at.right - size.width;
 		setPlace({ top, left: Math.max(MENU_GAP, Math.min(left, window.innerWidth - size.width - MENU_GAP)) });
-	}, [open, align, ref]);
+	}, [open, align, ref, items.length]);
+	// 開いたら最初の項目へ移る（メニューは body の末尾にあるので、Tab では届かない）。閉じたときにフォーカスが
+	// 行き場を失っていれば（Esc で閉じた等）、起点のボタンへ戻す
+	useEffect(() => {
+		if (open) {
+			pop.current?.querySelector<HTMLButtonElement>('button.mi:not(:disabled)')?.focus({ preventScroll: true });
+			return () => {
+				if (document.activeElement === document.body || document.activeElement === null) {
+					ref.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
+				}
+			};
+		}
+		return undefined;
+	}, [open, ref]);
+	const closeToTrigger = () => {
+		close();
+		ref.current?.querySelector<HTMLElement>('button')?.focus();
+	};
+	const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		const buttons = [...(pop.current?.querySelectorAll<HTMLButtonElement>('button.mi:not(:disabled)') ?? [])];
+		const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+		const move = (to: number) => {
+			e.preventDefault();
+			buttons[(to + buttons.length) % buttons.length]?.focus();
+		};
+		if (e.key === 'ArrowDown') {
+			move(at + 1);
+		} else if (e.key === 'ArrowUp') {
+			move(at - 1);
+		} else if (e.key === 'Home') {
+			move(0);
+		} else if (e.key === 'End') {
+			move(buttons.length - 1);
+		} else if (e.key === 'Tab' || e.key === 'Escape') {
+			// 起点のボタンへ戻して閉じる（キーボードで続けて操作できるように）
+			e.preventDefault();
+			e.stopPropagation();
+			closeToTrigger();
+		}
+	};
 	// 置いた場所がずれるので、スクロールや幅の変化では閉じる（メニューの中のスクロールは除く）
 	useEffect(() => {
 		if (!open) {
@@ -193,9 +232,9 @@ export function Menu({ items, trigger, align = 'right', label }: { items: readon
 		<div className="menu-wrap" ref={ref} onClick={e => e.stopPropagation()}>
 			{trigger(open, () => setOpen(o => !o))}
 			{open && createPortal(
-				<div ref={pop} className="menu" style={place} role="menu" aria-label={label} onClick={e => e.stopPropagation()}>
+				<div ref={pop} className="menu" style={place} role="menu" aria-label={label} onClick={e => e.stopPropagation()} onKeyDown={onKeyDown}>
 					{items.map((item, i) => item.separator ? <hr key={i} /> : item.header ? <div key={i} className="mh">{item.label}</div> : (
-						<button key={i} role="menuitem" className={`mi ${item.danger ? 'danger' : ''} ${item.on ? 'on' : ''}`} disabled={item.disabled} onClick={() => { close(); item.run?.(); }}>
+						<button key={i} role="menuitem" className={`mi ${item.danger ? 'danger' : ''} ${item.on ? 'on' : ''}`} disabled={item.disabled} onClick={() => { closeToTrigger(); item.run?.(); }}>
 							{item.icon && <Icon name={item.icon} />}{item.label}{item.sub && <span className="sub">{item.sub}</span>}
 						</button>
 					))}
