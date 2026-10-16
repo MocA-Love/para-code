@@ -5,8 +5,13 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 import * as assert from 'assert';
+import { RunOnceScheduler, timeout } from '../../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { DisposableMap } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
+import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisMobileRelayRendererLifecycle } from '../../electron-browser/paradisMobileRelayRendererLifecycle.js';
 import { IParadisMobileWarmLeaseScheduler, ParadisMobileWarmLeaseProvider, ParadisMobileWorkspaceProvider, paradisIsSgrMouseEncodingActive, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
@@ -146,6 +151,46 @@ suite('ParadisMobileWorkspaceProvider', () => {
 		}), undefined);
 		assert.deepStrictEqual(lookups, []);
 	});
+
+	test('batches agent pane syncs for cwd changes into one per 500ms', () => runWithFakedTimers({}, async () => {
+		const cwdChanged = new Emitter<string>();
+		let pushes = 0;
+		const fixture = Object.assign(Object.create(ParadisMobileWorkspaceProvider.prototype) as object, {
+			terminalService: {
+				instances: [{
+					instanceId: 1,
+					isDisposed: false,
+					capabilities: {
+						get: (capability: TerminalCapability) => capability === TerminalCapability.CwdDetection ? { onDidChangeCwd: cwdChanged.event } : undefined,
+						onDidAddCapability: Event.None,
+						onDidRemoveCapability: Event.None,
+					},
+					onDisposed: Event.None,
+				}],
+			},
+			terminalGroupService: { paradisParkedGroups: [] },
+			agentPaneCwdListeners: new DisposableMap<number>(),
+			pushAgentPanes: async () => { pushes++; },
+		}) as unknown as { refreshAgentPaneCwdListeners(): void; agentPaneCwdListeners: DisposableMap<number>; agentPaneCwdSyncScheduler: RunOnceScheduler; pushAgentPanes(): Promise<void> };
+		fixture.agentPaneCwdSyncScheduler = new RunOnceScheduler(() => { void fixture.pushAgentPanes(); }, 500);
+		fixture.refreshAgentPaneCwdListeners();
+
+		const counts: number[] = [];
+		for (let index = 0; index < 5; index++) {
+			cwdChanged.fire(`/home/example/project-${index}`);
+		}
+		counts.push(pushes);
+		await timeout(501);
+		counts.push(pushes);
+		cwdChanged.fire('/home/example/project');
+		await timeout(501);
+		counts.push(pushes);
+		assert.deepStrictEqual(counts, [0, 1, 2]);
+
+		fixture.agentPaneCwdSyncScheduler.dispose();
+		fixture.agentPaneCwdListeners.dispose();
+		cwdChanged.dispose();
+	}));
 
 	suite('質問が描かれたかの照合', () => {
 		test('折り返しの改行と空白を無視して目印を探す', () => {

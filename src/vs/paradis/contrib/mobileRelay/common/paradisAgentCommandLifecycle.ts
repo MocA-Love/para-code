@@ -27,7 +27,7 @@ interface IParadisAgentCommandDeliveryState {
 	retryHandle?: unknown;
 	/** 続けて受け付けられなかった回数。試し直しの間隔を延ばすのに使い、受け付けられたら 0 に戻す。 */
 	retryAttempts: number;
-	/** この状態が最後に通知したとき、どの同期まで済んでいたか（{@link ParadisAgentCommandDeliveryCoordinator} の同期の番号）。 */
+	/** この状態が最後に通知したとき、どの同期まで済んでいたか（{@link ParadisAgentCommandDeliveryCoordinator} の成功した同期の数）。 */
 	syncedThrough?: number;
 	cancelInFlight?: () => void;
 }
@@ -66,7 +66,7 @@ export class ParadisAgentCommandDeliveryCoordinator {
 	 * 走っている最中に頼まれたぶんは、その後の 1 回にまとめる（頼んだ時点より後に始まった同期を待つ）。
 	 */
 	private readonly syncThrottler = new Throttler();
-	/** この配送役が頼んだ同期のうち、終わったものの数。 */
+	/** この配送役が頼んだ同期のうち、成功したものの数。 */
 	private completedSyncs = 0;
 	private disposed = false;
 
@@ -247,18 +247,33 @@ export class ParadisAgentCommandDeliveryCoordinator {
 	}
 
 	/**
-	 * 通知の前に対応表を同期する。前回の通知の後に、別のペインのために同期が 1 回でも終わっていれば、
-	 * 対応表はそれ以上新しくならないので同期しない（stale・ambiguous で試し直しが重なっても、
-	 * 全ペインの同期は試し直しの 1 巡に 1 回で済む）。
+	 * 受け付けられずに試し直しを待っている通知を、待たずにすぐ送り直す（間隔も 1 秒へ戻す）。
+	 * 受け手の準備が整ったとき（renderer の準備ができた、shared process が同期を頼んできた）に呼ぶ。
+	 * 延ばした間隔のまま待つと、準備が整ってから届くまでに最大で間隔の分（上限 30 秒）遅れるため。
+	 */
+	kick(): void {
+		if (this.disposed) {
+			return;
+		}
+		for (const state of this.states.values()) {
+			if (state.retryHandle !== undefined) {
+				this.cancelRetry(state);
+				state.retryAttempts = 0;
+				this.enqueue(state);
+			}
+		}
+	}
+
+	/**
+	 * 通知の前に対応表を同期する。この状態が前回同期した後に、別のペインのための同期が 1 回でも
+	 * 成功していれば、対応表はそれ以上新しくならないので同期しない（stale・ambiguous で試し直しが
+	 * 重なっても、全ペインの同期は試し直しの 1 巡に 1〜2 回で済む）。
 	 */
 	private async syncRegistryFor(state: IParadisAgentCommandDeliveryState): Promise<void> {
 		if (state.syncedThrough === undefined || state.syncedThrough === this.completedSyncs) {
 			await this.syncThrottler.queue(async () => {
-				try {
-					await this.options.syncRegistry(state.token);
-				} finally {
-					this.completedSyncs++;
-				}
+				await this.options.syncRegistry(state.token);
+				this.completedSyncs++;
 			});
 		}
 		state.syncedThrough = this.completedSyncs;
