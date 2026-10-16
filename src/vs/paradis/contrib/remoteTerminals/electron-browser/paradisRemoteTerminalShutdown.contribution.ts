@@ -134,7 +134,7 @@ class ParadisRemoteTerminalShutdown extends Disposable implements IWorkbenchCont
 		if (commit === undefined) {
 			return;
 		}
-		const record: IParadisKeptRemoteTerminals = { commit, at: Date.now(), count };
+		const record: IParadisKeptRemoteTerminals = { commit, at: Date.now(), count, ...(paradisGetRemoteTerminalsAcrossUpdate() === 'survives' ? { acrossUpdates: true } : {}) };
 		this.storageService.store(paradisKeptTerminalsStorageKey(authority), JSON.stringify(record), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
