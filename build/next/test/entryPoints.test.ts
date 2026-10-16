@@ -87,6 +87,16 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		entry: 'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
 		lists: ['desktopEntryPoints'],
 	},
+	{
+		// fork の worker の共通の入口。asar の解決を登録してから本体を読む（createParadisWorker が起こす）
+		entry: 'vs/paradis/node/paradisWorkerBootstrap',
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
+	},
+	{
+		// Office v1 のチャネルが worker_threads で起動する worker（手元の shared process とリモートのサーバーの両方）
+		entry: 'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
+	},
 ];
 
 suite('Para Code entry points ship in the esbuild bundle', () => {
