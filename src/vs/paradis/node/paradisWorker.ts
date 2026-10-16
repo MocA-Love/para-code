@@ -19,12 +19,27 @@ import { PARADIS_WORKER_ENTRY_KEY } from './paradisWorkerAsarResolution.js';
 /** 共通の入口の場所（`out` からの相対）。 */
 export const PARADIS_WORKER_BOOTSTRAP_MODULE = 'vs/paradis/node/paradisWorkerBootstrap.js';
 
+/** 共通の入口を通して起こした worker。こちらから止めたかどうかを覚えておく（止めたときの終了コードは 1 になるため）。 */
+export class ParadisWorker extends Worker {
+	private stopRequested = false;
+
+	/** `terminate()` を呼んだか。 */
+	get terminateRequested(): boolean {
+		return this.stopRequested;
+	}
+
+	override terminate(): Promise<number> {
+		this.stopRequested = true;
+		return super.terminate();
+	}
+}
+
 /**
  * `entryPath`（worker の本体の入口の .js の絶対パス）を、共通の入口を通して worker で起こす。
  * `workerData` は共通の入口が使うので渡せない。
  */
-export function createParadisWorker(entryPath: string, options?: Omit<WorkerOptions, 'workerData'>): Worker {
-	return new Worker(FileAccess.asFileUri(PARADIS_WORKER_BOOTSTRAP_MODULE).fsPath, {
+export function createParadisWorker(entryPath: string, options?: Omit<WorkerOptions, 'workerData'>): ParadisWorker {
+	return new ParadisWorker(FileAccess.asFileUri(PARADIS_WORKER_BOOTSTRAP_MODULE).fsPath, {
 		...options,
 		workerData: { [PARADIS_WORKER_ENTRY_KEY]: pathToFileURL(entryPath).href },
 	});

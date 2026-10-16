@@ -11,9 +11,9 @@
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { createParadisWorker } from '../../../../node/paradisWorker.js';
 import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { PARADIS_SPREADSHEET_SEMANTIC_DIAGNOSTICS_DEADLINE_MS, unavailableParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
 
 /** worker へ送る依頼の中身。 */
@@ -62,7 +62,7 @@ export class ParadisSpreadsheetSemanticWorkerBackend extends Disposable {
 
 	/** 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。 */
 	static workerFactory(workerPath: string): () => IParadisSpreadsheetSemanticWorker {
-		return () => createParadisWorker(workerPath, { resourceLimits: PARADIS_SPREADSHEET_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetSemanticWorker;
+		return () => createParadisOfficeWorker('spreadsheet-semantic', workerPath, { resourceLimits: PARADIS_SPREADSHEET_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetSemanticWorker;
 	}
 
 	get workerRunning(): boolean {

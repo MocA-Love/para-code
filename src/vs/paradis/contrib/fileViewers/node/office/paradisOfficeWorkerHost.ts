@@ -7,12 +7,12 @@
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../../base/common/network.js';
-import { createParadisWorker } from '../../../../node/paradisWorker.js';
 import {
 	PARADIS_OFFICE_BUDGET_PROFILES,
 	type ParadisOfficeBudgetProfile,
 	validateOfficeChange,
 } from '../../common/paradisOfficeProtocol.js';
+import { createParadisOfficeWorker } from './paradisOfficeWorkerDiagnostics.js';
 
 export const PARADIS_OFFICE_WORKER_CANCEL_GRACE_MILLISECONDS = 250;
 export const PARADIS_OFFICE_WORKER_QUEUE_MILLISECONDS = 30_000;
@@ -157,7 +157,7 @@ function operationDeadline(operation: ParadisOfficeWorkerOperation, profile: Par
 
 function defaultWorker(): IOfficeWorker {
 	// Resolve from `out`: once bundled, `new URL(..., import.meta.url)` points next to the shared process entry.
-	const worker = createParadisWorker(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain.js').fsPath, {
+	const worker = createParadisOfficeWorker('office-v1', FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain.js').fsPath, {
 		resourceLimits: { maxOldGenerationSizeMb: 384, maxYoungGenerationSizeMb: 32, stackSizeMb: 8 },
 	});
 	return {
