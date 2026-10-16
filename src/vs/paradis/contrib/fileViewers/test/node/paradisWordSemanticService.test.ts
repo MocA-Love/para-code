@@ -15,6 +15,7 @@ import { ParadisWordSemanticChannel } from '../../node/word/paradisWordSemanticC
 import { ParadisWordSemanticService } from '../../node/word/paradisWordSemanticService.js';
 import { PARADIS_WORD_SEMANTIC_ANALYZE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_BYTES_LIMIT, PARADIS_WORD_SEMANTIC_QUEUE_DEADLINE_MS, PARADIS_WORD_SEMANTIC_QUEUE_LIMIT, ParadisWordSemanticWorkerBackend, type IParadisWordSemanticWorker } from '../../node/word/paradisWordSemanticWorkerBackend.js';
 import type { ParadisWordSemanticWorkerMessage, ParadisWordSemanticWorkerRequest } from '../../node/word/paradisWordSemanticWorkerProtocol.js';
+import { paradisOfficeWorkerFailureKind } from '../../node/office/paradisOfficeWorkerDiagnostics.js';
 import { buildOpcFixture } from '../common/paradisOfficeFixture.js';
 
 const wordNamespace = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -195,6 +196,24 @@ suite('ParadisWordSemanticService', () => {
 		]);
 		cancelled.dispose();
 		deepStrictEqual(codes.map(result => result.ok ? 'ok' : result.code), ['unsupported', 'invalid', 'cancelled']);
+	});
+
+	test('hands only unexpected exceptions to onUnexpectedError, as a kind the worker can report', async () => {
+		const service = new ParadisWordSemanticService();
+		const kinds: string[] = [];
+		const onUnexpectedError = (error: unknown) => kinds.push(paradisOfficeWorkerFailureKind(error));
+		// 最初の確認だけ通り、解析の途中で読むと TypeError を投げるトークン（想定外の例外の代わり）。
+		let reads = 0;
+		const broken = { get isCancellationRequested(): boolean { if (reads++ > 0) { throw new TypeError('boom'); } return false; }, onCancellationRequested: CancellationToken.None.onCancellationRequested };
+		const expected = await Promise.all([
+			service.analyze(new TextEncoder().encode('not a zip'), CancellationToken.None, onUnexpectedError),
+			service.compare(new TextEncoder().encode('not a zip'), new TextEncoder().encode('not a zip'), CancellationToken.None, onUnexpectedError),
+		]);
+		const unexpected = await service.analyze(await wordFixture({ title: 'Broken token' }), broken, onUnexpectedError);
+		deepStrictEqual({
+			codes: [...expected, unexpected].map(result => result.ok ? 'ok' : result.code),
+			kinds,
+		}, { codes: ['invalid', 'invalid', 'failed'], kinds: ['TypeError'] });
 	});
 
 	test('worker backend: one request at a time, run deadlines only for the running request, queue deadlines and limits for waiting ones, and no in-process retry', async () => {
