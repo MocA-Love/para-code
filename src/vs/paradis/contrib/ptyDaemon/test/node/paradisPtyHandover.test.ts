@@ -379,6 +379,25 @@ suite('Para pty daemon handover between pty hosts', () => {
 		);
 	});
 
+	test('引き取った端末に繋げなかったタブを閉じても、誰も見ていない常駐の端末は止めない', async () => {
+		const { host, ptys, disposables } = createHost();
+		const summary = await host.spawn({ file: '/bin/sh', args: [], env: {}, cwd: '/', cols: 80, rows: 24, term: 'xterm-256color', metadata: '{}' });
+		const target: IParadisAdoptTarget = { handle: summary.handle, pid: summary.pid, title: summary.title, exited: undefined };
+		const flaky = wrap(host, { attach: async () => { throw new Error('daemon busy'); } });
+		const b = createProcess(flaky, disposables, 'paradis-pty-host:2:b', { adoptTarget: target, withoutOrigin: true });
+		const exits: (number | undefined)[] = [];
+		store.add(b.onProcessExit(code => exits.push(code)));
+
+		const failed = await b.start();
+		b.shutdown(true);
+		await timeout(10);
+
+		assert.deepStrictEqual(
+			{ failedHasMessage: typeof (failed as { message?: unknown } | undefined)?.message === 'string', exits, killed: ptys[0].killed, held: (await host.list()).map(s => ({ alive: s.alive, attached: s.attached })) },
+			{ failedHasMessage: true, exits: [undefined], killed: undefined, held: [{ alive: true, attached: false }] },
+		);
+	});
+
 	test('別の pty ホストが見ていた端末を覚え、空いたら引き取り直す。それまで常駐の配置からそのタブを消さない', async () => {
 		const { host, disposables } = createHost();
 		// A: 更新前の版のサーバーの pty ホスト。番号の表を汚さないよう持ち主は渡さない（本番では別のプロセス）。
