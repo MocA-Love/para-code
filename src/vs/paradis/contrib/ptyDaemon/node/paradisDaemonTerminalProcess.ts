@@ -237,7 +237,13 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 走っているものに繋ぎ直すだけ。起動先の検査もシェル統合の注入もしない
 			// (どちらも起こすときの話で、すでに起きているものには当てはまらない)。
 			this.adopt(this.adoptTarget.handle, this.adoptTarget.pid, this.adoptTarget.title);
-			this.emitAttachment(await this.attachInOrder(this.adoptTarget.handle));
+			let attachment: IParadisPtyAttachment;
+			try {
+				attachment = await this.attachInOrder(this.adoptTarget.handle);
+			} catch (error) {
+				return this.lostAdoption(this.adoptTarget.handle, error);
+			}
+			this.emitAttachment(attachment);
 			this.flushComingBack();
 			if (this.adoptTarget.exited) {
 				// **もう終わっている。** イベントを待っても来ないので、ここで言う。画面には
@@ -442,13 +448,25 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 		if (this.handle === undefined || this.lettingGo || this.exitFired || this.handedOff) {
 			return;
 		}
+		if (this.attachedWritten === undefined) {
+			// **古い常駐（控えの量を返さない）では手を離さない。** 戻るたびに控え全体（1本で最大
+			// 10MB）で画面を作り直すことになり、シェル統合の印もそこで消える。常駐は更新をまたいで
+			// 生き残るので、手元でもしばらくこの組み合わせが続く。今までどおり見たままにする。
+			return;
+		}
 		this.lettingGo = true;
-		this.letGoMark = this.attachedWritten === undefined ? undefined : { written: this.attachedWritten + this.receivedSinceAttach, epoch: this.attachedEpoch };
 		try {
 			await this.host.detach(this.handle, this.viewer);
+			// **量は離れた後で決める。** 常駐は detach を受け取るまで出力を流し続け、その分はもう
+			// こちらの画面に入っている。同じ接続の上で「出力 → detach の返事」の順に届くので、
+			// 返事の後で数えればその分まで含む。先に決めると、戻ったときにその分を差分として
+			// もう一度流し、画面に二重に入る（TUI は崩れる）。
+			this.letGoMark = { written: this.attachedWritten + this.receivedSinceAttach, epoch: this.attachedEpoch };
 			paradisRecordLetGo(true);
 		} catch (error) {
 			// 常駐と話せない。繋がりが切れていれば、常駐の側で手放されている（接続が消えたら離す）。
+			// どこまで受け取ったか言い切れないので、戻ったときは控え全体で作り直す。
+			this.letGoMark = undefined;
 			paradisRecordLetGo(false);
 			this.logService.trace('[ParadisPtyDaemon] could not let go of the terminal', error);
 		}
@@ -516,6 +534,29 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			});
 		}
 		return true;
+	}
+
+	/**
+	 * 引き取った端末に繋げなかった。
+	 *
+	 * 同じ端末を2つの pty ホストが引き取ることがある（どちらも起動時に「誰も見ていない」のを
+	 * 見て器を作り、窓が開いた方から繋ぐ）。負けた側は、もう自分のものではないので常駐には
+	 * 触れない（畳むときに手放すと、勝った側の端末を殺す）。
+	 */
+	private async lostAdoption(handle: number, error: unknown): Promise<ITerminalLaunchError> {
+		this.wiring.clear();
+		if (this.origin) {
+			paradisForgetHandle(this.origin.id);
+		}
+		const summary = await this.host.list().then(summaries => summaries.find(candidate => candidate.handle === handle), () => undefined);
+		if (summary === undefined || summary.attached) {
+			this.handedOff = true;
+			paradisRecordReattach(summary === undefined ? 'gone' : 'handed-off');
+			this.logService.info('[ParadisPtyDaemon] another pty host opened this terminal first; leaving it to them');
+			return { message: localize('paradis.ptyDaemon.takenElsewhere', "このターミナルは別の Para Code のサーバーが開いています") };
+		}
+		this.logService.warn('[ParadisPtyDaemon] could not attach to a terminal taken back from the daemon', error);
+		return { message: localize('paradis.ptyDaemon.adoptAttachFailed', "常駐のターミナルに繋げませんでした ({0})", String(error)) };
 	}
 
 	/** 戻れなかった理由を調べ、もう自分のものでなければ畳む。 */
