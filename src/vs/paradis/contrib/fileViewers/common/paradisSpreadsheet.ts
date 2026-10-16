@@ -497,6 +497,20 @@ export interface IParadisCellComment {
 	readonly resolved?: boolean;
 	/** スレッドは最初の投稿と返信の順。メモは 1 件。 */
 	readonly entries: readonly IParadisCellCommentEntry[];
+	/** Excel で「表示」に設定したメモの吹き出し（VML の位置と大きさ）。隠す設定のメモとスレッドには無い。 */
+	readonly shown?: IParadisShownNoteBox;
+}
+
+/**
+ * 常に表示するメモの吹き出しの枠。左上は `from`、右下は `to`（VML の x:Anchor）か、`to` が無ければ大きさ `ext`
+ * （style の width・height）。オフセットと大きさは図形と同じ EMU。
+ */
+export interface IParadisShownNoteBox {
+	readonly from: IParadisRenderAnchor;
+	readonly to?: IParadisRenderAnchor;
+	readonly ext?: { readonly cx: number; readonly cy: number };
+	/** 塗りの色（`#rrggbb`）。無ければ Excel の既定の薄い黄色。 */
+	readonly fill?: string;
 }
 
 /** 1シート。 */
