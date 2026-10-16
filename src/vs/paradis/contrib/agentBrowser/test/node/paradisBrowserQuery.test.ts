@@ -8,7 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisLookedAtRect, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
-import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../node/paradisBrowserQueryPageScript.js';
+import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES, PARADIS_MCP_BROWSER_QUERY_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
 interface IResult {
@@ -36,6 +36,7 @@ function failed(message: string): unknown {
 class FakePage {
 	now = 0;
 	readonly calls: { readonly spec: Record<string, unknown>; readonly uids: readonly string[] }[] = [];
+	readonly deadlines: (number | undefined)[] = [];
 	current = true;
 	readonly looks: unknown[] = [];
 
@@ -43,7 +44,8 @@ class FakePage {
 
 	call(): IParadisBrowserQueryCall {
 		return {
-			evaluate: async (source, uids) => {
+			evaluate: async (source, uids, deadlineMs) => {
+				this.deadlines.push(deadlineMs);
 				const rest = source.slice(source.indexOf(PARADIS_BROWSER_QUERY_PAGE_SCRIPT) + PARADIS_BROWSER_QUERY_PAGE_SCRIPT.length);
 				const json = /^\)\((?<spec>\{.*?\}), \[/s.exec(rest)?.groups?.spec;
 				this.calls.push({ spec: json ? JSON.parse(json) : {}, uids });
@@ -186,10 +188,100 @@ suite('paradisBrowserQuery (shared process)', () => {
 		const missing = await end.query().call(end.call(), 'scroll_to', { text: 'Row 999' });
 		assert.deepStrictEqual({
 			found: [isError(found), textOf(found).split('\n')[0]],
-			missing: [isError(missing), textOf(missing).startsWith('Not found: reached the end of the page after 0 scroll step(s)'), end.calls.map(call => call.spec.checkOnly)],
+			missing: [isError(missing), textOf(missing).startsWith('Not found: reached the end of the page after 0 scroll step(s)'), end.calls.map(call => [call.spec.mode, call.spec.checkOnly])],
 		}, {
 			found: [false, 'Found after 2 scroll step(s) (800px) in div.list, and scrolled it into view.'],
-			missing: [true, true, [false, true]],
+			missing: [true, true, [['scroll', false], ['scroll', true], ['scrollMiss', undefined]]],
+		});
+	});
+
+	// q.html Q379 の 5: 目的が始めの位置より上にあると、下の端で失敗していた。見つからないときは位置を戻し、理由を添える
+	test('scroll_to searches again from the start when it began below it, scrolls back when nothing matches, and says why', async () => {
+		const above = new FakePage([
+			returned({ found: false, moved: 0, before: 900, max: 900, extent: 1500, container: 'div.list' }),
+			returned({ found: false, moved: 0, extent: 1500, container: 'div.list' }),
+			returned({ found: false, reset: true, before: 900, container: 'div.list' }),
+			returned({ found: true, matched: 1, element: { tag: 'li', text: 'Row 1' }, container: 'div.list' }),
+		]);
+		const found = await above.query().call(above.call(), 'scroll_to', { text: 'Row 1' });
+		const nowhere = new FakePage([
+			returned({ found: false, moved: 400, before: 400, position: 800, max: 800, extent: 1200, container: 'div.list' }),
+			returned({ found: false, moved: 0, before: 800, position: 800, max: 800, extent: 1200, container: 'div.list' }),
+			returned({ found: false, moved: 0, extent: 1200, container: 'div.list' }),
+			returned({ found: false, reset: true, before: 800, container: 'div.list' }),
+			returned({ found: false, moved: 400, before: 0, position: 400, max: 800, extent: 1200, container: 'div.list' }),
+			returned({ found: false, moved: 0, extent: 1200, container: 'div.list' }),
+			returned({ restored: true, container: 'div.list' }),
+			returned({ inField: { count: 1, first: { tag: 'input', name: 'Company' } }, collapsed: { count: 2, names: ['Details', 'More'] }, otherContainers: ['div.side'] }),
+		]);
+		const missing = await nowhere.query().call(nowhere.call(), 'scroll_to', { text: 'Acme' });
+		const growing = new FakePage([
+			returned({ found: false, moved: 0, before: 0, max: 0, extent: 600, container: 'div.list' }),
+			returned({ found: false, moved: 0, extent: 900, container: 'div.list' }),
+			returned({ found: true, matched: 1, element: { tag: 'li' }, container: 'div.list' }),
+		]);
+		const grown = await growing.query().call(growing.call(), 'scroll_to', { text: 'Row 30' });
+		assert.deepStrictEqual({
+			found: [isError(found), textOf(found).split('\n')[0], above.calls.map(call => [call.spec.checkOnly ?? null, call.spec.reset ?? null, call.spec.resetTo ?? null])],
+			missing: [isError(missing), nowhere.calls.map(call => call.spec.mode === 'scrollMiss' ? 'scrollMiss' : call.spec.restoreTo !== undefined ? `restore ${call.spec.restoreTo} if still at ${call.spec.expectAt} in ${call.spec.expectContainer}` : call.spec.reset ? `reset ${call.spec.resetTo}` : call.spec.checkOnly ? 'check' : 'step')],
+			missingText: textOf(missing).split('\n'),
+			grown: [isError(grown), growing.calls.length],
+		}, {
+			found: [false, 'Found after 0 scroll step(s) (0px) in div.list after searching again from the start, and scrolled it into view.', [[false, null, null], [true, null, null], [null, true, 'start'], [false, null, null]]],
+			missing: [true, ['step', 'step', 'check', 'reset start', 'step', 'check', 'restore 400 if still at 400 in div.list', 'scrollMiss']],
+			missingText: [
+				'Not found: searched all of div.list (from where it was to the end, then from the start back to where it was) in 2 scroll step(s) (800px), and scrolled it back to where it was.',
+				'- "text" matches the text of elements, not what is typed or selected in a form field, and 1 form field holds it (for example {"tag":"input","name":"Company"}). Find the field by role and name instead.',
+				'- 2 collapsed control(s) (aria-expanded="false") are on the page, for example "Details", "More". The element may be inside a section that is not rendered until it is expanded.',
+				'- Other scrollable areas: div.side. Give one as "container" if the wrong area was scrolled.',
+			],
+			grown: [false, 3],
+		});
+	});
+
+	// q.html Q379 の 4: ページが評価に答えないと 180 秒（puppeteer の既定）待ち、そのタブの後続も止めていた
+	test('a page that does not answer is given up after the slice plus ten seconds, and wait_until keeps checking until its own timeout', async () => {
+		const unresponsive = failed('PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not answer within 11000 ms.');
+		const recovering = new FakePage([unresponsive, unresponsive, returned({ met: true, matched: 1, visible: 1 })], 11000);
+		const met = await recovering.query().call(recovering.call(), 'wait_until', { text: 'Saved', timeout_seconds: 30 });
+		const stuck = new FakePage([unresponsive], 11000);
+		const timedOut = await stuck.query().call(stuck.call(), 'wait_until', { text: 'Saved', timeout_seconds: 20 });
+		const reading = new FakePage([unresponsive]);
+		const read = await reading.query().call(reading.call(), 'get_text', {});
+		const lateStart = new FakePage([returned({ paraLate: true })]);
+		const late = await lateStart.query().call(lateStart.call(), 'inspect_element', { selector: 'p' });
+		assert.deepStrictEqual({
+			met: [isError(met), textOf(met).startsWith('Condition met after'), recovering.deadlines],
+			timedOut: [isError(timedOut), stuck.calls.length, textOf(timedOut).includes('the page did not answer within 11 s')],
+			read: [isError(read), textOf(read).startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not answer within 10 s'), reading.deadlines],
+			late: [isError(late), textOf(late).startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE')],
+		}, {
+			met: [false, true, [11000, 11000, 11000]],
+			timedOut: [true, 2, true],
+			read: [true, true, [10000]],
+			late: [true, true],
+		});
+	});
+
+	test('the page function does nothing when it starts after its last start time, but a page with a faked clock still runs it', async () => {
+		/** ページの関数を、その中から見える Date と performance を差し替えて動かす（このテストの大域は変えない）。 */
+		const runWith = (notAfter: number, clock: { readonly date: number; readonly monotonic: number }) => {
+			const source = paradisBuildQueryFunction({ mode: 'wait', sliceMs: 0, intervalMs: 50 }, 0, undefined, notAfter);
+			const run = new Function('Date', 'performance', 'location', `return (${source});`)({ now: () => clock.date }, { timeOrigin: clock.monotonic, now: () => 0 }, { href: 'about:blank' }) as () => Promise<Record<string, unknown>>;
+			return run();
+		};
+		const now = Date.now();
+		const day = 24 * 60 * 60 * 1000;
+		assert.deepStrictEqual({
+			late: await runWith(now - 1000, { date: now, monotonic: now }),
+			// fake timers・MockDate で Date だけが未来（q.html Q379 のレビュー）
+			futureDate: await runWith(now + 8000, { date: now + 2 * day, monotonic: now }),
+			// どちらの時計も 1 日より先なら信じない
+			futureClocks: await runWith(now + 8000, { date: now + 2 * day, monotonic: now + 2 * day }),
+		}, {
+			late: { paraLate: true },
+			futureDate: { met: true, url: 'about:blank' },
+			futureClocks: { met: true, url: 'about:blank' },
 		});
 	});
 
