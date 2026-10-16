@@ -6,15 +6,13 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
-  - package-ecosystem: "devcontainers" # https://containers.dev/guide/dependabot
-    directory: "/"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "npm"
-    directory: "/extensions/markdown-language-features"
-    schedule:
-      interval: "daily"
-      time: "16:00"
-      timezone: "America/Los_Angeles"
-    allow:
-      - dependency-name: "@vscode/markdown-editor"
+    # PARA-PATCH: only update the fork's own workflows (.github/workflows/para-*.yml). Upstream workflows,
+    # the devcontainer and @vscode/markdown-editor are left to upstream so merges do not conflict. Each
+    # pattern excludes the names that first differ from the "para-" prefix at one position, so workflows
+    # upstream adds later stay excluded too (dependabot-core matches these with File.fnmatch, which supports [^...]).
+    exclude-paths:
+      - ".github/workflows/[^p]*"
+      - ".github/workflows/p[^a]*"
+      - ".github/workflows/pa[^r]*"
+      - ".github/workflows/par[^a]*"
+      - ".github/workflows/para[^-]*"
