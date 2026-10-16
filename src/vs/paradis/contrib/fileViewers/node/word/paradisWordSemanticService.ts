@@ -72,6 +72,19 @@ function failure(code: ParadisWordSemanticFailureCode): IParadisWordSemanticFail
 	return { ok: false, code };
 }
 
+/** 解析の失敗を結果にする。想定外の例外（`failed`）だけ `onUnexpectedError` へ渡す（worker が種類を Sentry へ送るため）。 */
+function failureOf(error: unknown, onUnexpectedError: ((error: unknown) => void) | undefined): IParadisWordSemanticFailure {
+	const code = failureCode(error);
+	if (code === 'failed') {
+		try {
+			onUnexpectedError?.(error);
+		} catch {
+			// 報告が結果を変えてはいけない。
+		}
+	}
+	return failure(code);
+}
+
 async function readAllParts(archive: IParadisOfficeArchive, token: CancellationToken, checkpoint: () => void): Promise<Map<string, Uint8Array>> {
 	const parts = new Map<string, Uint8Array>();
 	let total = 0;
@@ -118,7 +131,8 @@ async function readAllParts(archive: IParadisOfficeArchive, token: CancellationT
 export class ParadisWordSemanticService {
 	private readonly cache = new Map<string, Promise<ParsedWord>>();
 
-	async analyze(bytes: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordAnalysisResult> {
+	/** `onUnexpectedError` は、解析が想定外の例外で止まって `failed` を返すときにだけ呼ばれる。 */
+	async analyze(bytes: Uint8Array, token: CancellationToken = CancellationToken.None, onUnexpectedError?: (error: unknown) => void): Promise<IParadisWordAnalysisResult> {
 		if (!(bytes instanceof Uint8Array)) {
 			return failure('invalid');
 		}
@@ -138,12 +152,13 @@ export class ParadisWordSemanticService {
 					timings: { inspectMs: Math.round(parsed.inspectMs), parseMs: Math.round(parsed.parseMs), summarizeMs: Math.round(summarizeWatch.elapsed()) },
 				};
 			} catch (error) {
-				return failure(failureCode(error));
+				return failureOf(error, onUnexpectedError);
 			}
 		})();
 	}
 
-	async compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken = CancellationToken.None): Promise<IParadisWordComparisonResult> {
+	/** `onUnexpectedError` は {@link analyze} と同じ。 */
+	async compare(original: Uint8Array, modified: Uint8Array, token: CancellationToken = CancellationToken.None, onUnexpectedError?: (error: unknown) => void): Promise<IParadisWordComparisonResult> {
 		if (!(original instanceof Uint8Array) || !(modified instanceof Uint8Array)) {
 			return failure('invalid');
 		}
@@ -224,7 +239,7 @@ export class ParadisWordSemanticService {
 					timings: { parseMs: Math.round(parseMs), compareMs: Math.round(compareWatch.elapsed()) },
 				};
 			} catch (error) {
-				return failure(failureCode(error));
+				return failureOf(error, onUnexpectedError);
 			}
 		})();
 	}

@@ -25,10 +25,14 @@ async function handle(id: number, request: ParadisWordSemanticWorkerRun): Promis
 	const cancellation = new CancellationTokenSource();
 	active.set(id, cancellation);
 	let reply: ParadisWordSemanticWorkerMessage;
+	// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+	let cause: string | undefined;
+	const onUnexpectedError = (error: unknown) => { cause = paradisOfficeWorkerFailureKind(error); };
 	try {
-		reply = request.op === 'analyze'
-			? { kind: 'result', id, result: await service.analyze(request.bytes, cancellation.token) }
-			: { kind: 'result', id, result: await service.compare(request.original, request.modified, cancellation.token) };
+		const result = request.op === 'analyze'
+			? await service.analyze(request.bytes, cancellation.token, onUnexpectedError)
+			: await service.compare(request.original, request.modified, cancellation.token, onUnexpectedError);
+		reply = { kind: 'result', id, result, ...(cause ? { cause } : {}) };
 	} catch (error) {
 		reply = { kind: 'result', id, result: { ok: false, code: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {

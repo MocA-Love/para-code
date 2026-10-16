@@ -26,8 +26,11 @@ async function handle(id: number, request: IParadisSpreadsheetSemanticWorkerRun)
 	const cancellation = new CancellationTokenSource();
 	active.set(id, cancellation);
 	let reply: IParadisOfficeSemanticWorkerReply<IParadisSemanticDiagnosticsSummary>;
+	// 解析の中で握られた想定外の例外の種類。返事に載せて、shared process が Sentry へ送る。
+	let cause: string | undefined;
 	try {
-		reply = { kind: 'result', id, result: await collectParadisSpreadsheetSemanticDiagnostics(request.bytes, cancellation.token) };
+		const result = await collectParadisSpreadsheetSemanticDiagnostics(request.bytes, cancellation.token, error => { cause = paradisOfficeWorkerFailureKind(error); });
+		reply = { kind: 'result', id, result, ...(cause ? { cause } : {}) };
 	} catch (error) {
 		reply = { kind: 'result', id, result: unavailableParadisSpreadsheetSemanticDiagnostics('failed'), cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {
