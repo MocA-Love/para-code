@@ -158,7 +158,7 @@
         "0.163.0（PTY で実測）"
       ],
       "status": "ok",
-      "notes": "resume|fork <id>。--no-daemon と併用可。0.161.0 の resume / fork --help に --no-daemon あり（実測）。cli の resume_and_fork_preserve_no_daemon テストあり 0.162.1 の resume --help・fork --help に --no-daemon あり（実測）。 0.163.0 の resume・fork --help に --no-daemon あり（実測）。0.163.0 から cold resume でスレッドが持っていた権限（名前の無い permission profile、ネットワークの承認）を戻す。明示した上書きと managed の要件が優先（#53150・#53419、公式とソース）。Para Code は bypass を選ばない再開で権限のフラグを付けないので、bypass で始めた会話を「bypass なし」で再開しても bypass の権限に戻りうる → G11。 2026-10-16 に PTY で実測: bypass で始めた会話を 0.163.0 の resume（フラグなし）で開くと /status が Full Access（YOLO mode）、--sandbox workspace-write --ask-for-approval on-request を付けると Workspace (Ask for approval)。0.162.1 はフラグなしでも Workspace (Ask for approval)（設定の既定）。0.163.0 の fork（フラグなし）は Workspace (Ask for approval) で戻らなかった。Para Code は bypass を選ばない再開・分岐に --sandbox workspace-write --ask-for-approval on-request を付けるようにした（G11 を直した。0.162.1 の resume・fork --help にも両方のフラグあり）。"
+      "notes": "resume|fork <id>。--no-daemon と併用可。0.161.0 の resume / fork --help に --no-daemon あり（実測）。cli の resume_and_fork_preserve_no_daemon テストあり 0.162.1 の resume --help・fork --help に --no-daemon あり（実測）。 0.163.0 の resume・fork --help に --no-daemon あり（実測）。0.163.0 から cold resume でスレッドが持っていた権限（名前の無い permission profile、ネットワークの承認）を戻す。明示した上書きと managed の要件が優先（#53150・#53419、公式とソース）。Para Code は bypass を選ばない再開で権限のフラグを付けないので、bypass で始めた会話を「bypass なし」で再開しても bypass の権限に戻りうる → G11。 2026-10-16 に PTY で実測: bypass で始めた会話を 0.163.0 の resume（フラグなし）で開くと /status が Full Access（YOLO mode）、--sandbox workspace-write --ask-for-approval on-request を付けると Workspace (Ask for approval)。0.162.1 はフラグなしでも Workspace (Ask for approval)（設定の既定）。0.163.0 の fork（フラグなし）は Workspace (Ask for approval) で戻らなかった。Para Code は bypass を選ばない再開・分岐に --sandbox workspace-write --ask-for-approval on-request を付けるようにした（G11 を PR #398 で直した。0.162.1 の resume・fork --help にも両方のフラグあり）。"
     },
     {
       "id": "fork-tracking",
@@ -685,7 +685,7 @@
         "0.163.0（PTY で実測）"
       ],
       "status": "ok",
-      "notes": "0.163.0 から Codex も OSC 7501 を書く（#52725）。2026-10-16 に PTY で実測: 問い合わせ（7501;?）なしで書く。起動・再開の直後に working → idle（依頼の前にも出る）、依頼で working、ターンの終わりで idle（最初のターンの後に、題名を作るための working → idle がもう一度続いた）、承認待ちで state=blocked:app=codex（kind・msg なし）、断ると working → idle、/exit で state=clear（app なし）。作業中の発言（instant_interrupt）では working のまま。0.162.1 は書かない。Para Code は app=codex も読み、前面のコマンドが Codex か ssh・WSL などのときに届いた状態で受け付けを開く（Claude Code の受け付けとは相手を分け、互いの状態を通さない）。hook の届いたペインでは使わない。完了と許可・質問の区別が無いので、blocked は許可待ちに、許可待ち・質問中の後の working・idle は解除に使い、それ以外の working と idle は transcript がターンを知らせていないペインでだけ使う（idle は完了にせず状態を消す）。G12 を直した。iTerm2 にだけ書く OSC 21337 は Para Code の端末では出ない（TerminalName::Iterm2 のときだけ）。"
+      "notes": "0.163.0 から Codex も OSC 7501 を書く（#52725）。2026-10-16 に PTY で実測: 問い合わせ（7501;?）なしで書く。起動・再開の直後に working → idle（依頼の前にも出る）、依頼で working、ターンの終わりで idle（最初のターンの後に、題名を作るための working → idle がもう一度続いた）、承認待ちで state=blocked:app=codex（kind・msg なし）、断ると working → idle、/exit で state=clear（app なし）。作業中の発言（instant_interrupt）では working のまま。0.162.1 は書かない。Para Code は app=codex も読み、前面のコマンドが Codex か ssh・WSL などのときに届いた状態で受け付けを開く（Claude Code の受け付けとは相手を分け、互いの状態を通さない）。hook の届いたペインでは使わない。完了と許可・質問の区別が無いので、blocked は許可待ちに、許可待ち・質問中の後の working・idle は解除に使い、それ以外の working と idle は transcript がターンを知らせていないペインでだけ使う（idle は完了にせず状態を消す）。G12 を PR #398 で直した。iTerm2 にだけ書く OSC 21337 は Para Code の端末では出ない（TerminalName::Iterm2 のときだけ）。"
     }
   ],
   "gaps": [
