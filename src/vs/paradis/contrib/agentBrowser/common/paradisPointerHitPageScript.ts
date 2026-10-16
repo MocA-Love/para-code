@@ -11,9 +11,14 @@
 //
 // 親子は表示の木（flat tree）でたどる。shadow DOM の中の要素は host の子、slot へ割り当てた要素は slot の子として扱う
 // （Node.contains は shadow の境界を越えないため、カスタム要素の中のボタンを「覆われている」と取り違える）。
-// 祖先に当たるのは、目的の要素（または当たった点の中身）が pointer-events: none のときで、人が押しても同じ祖先が受ける。
+// 祖先に当たるのは、目的の要素が pointer-events: none のとき（人が押しても同じ祖先が受ける）と、目的の要素がその点で
+// 切り取られて見えないとき（overflow: hidden の外。押すと祖先を押してしまう）。後者は覆われている扱いにする。
 
-/** `pointerHit(el, hit)` を定義する文。'self' | 'child'（目的の要素の中）| 'ancestor'（目的の要素を含む）| 'other'。 */
+/**
+ * `pointerHit(el, hit)` と `pointerReaches(el, hit, purpose)` を定義する文。
+ * pointerHit は 'self' | 'child'（目的の要素の中）| 'ancestor'（目的の要素を含む）| 'other'。
+ * pointerReaches はその点を押して目的の要素を操作したことになるか。fill はフィールド自身がフォーカスを受ける必要があるので祖先では断る。
+ */
 export const PARADIS_POINTER_HIT_PAGE_SCRIPT = String.raw`
 	const flatParent = node => node.assignedSlot || node.parentElement || (node.parentNode && node.parentNode.host) || null;
 	const flatContains = (ancestor, node) => {
@@ -23,4 +28,9 @@ export const PARADIS_POINTER_HIT_PAGE_SCRIPT = String.raw`
 		return false;
 	};
 	const pointerHit = (el, hit) => hit === el ? 'self' : flatContains(el, hit) ? 'child' : flatContains(hit, el) ? 'ancestor' : 'other';
+	const pointerReaches = (el, hit, purpose) => {
+		const reach = pointerHit(el, hit);
+		if (reach === 'self' || reach === 'child') { return true; }
+		return reach === 'ancestor' && purpose !== 'fill' && getComputedStyle(el).pointerEvents === 'none';
+	};
 `;
