@@ -3,6 +3,7 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { paraCodeDataDirectories } from './paraCode.js';
 
 /*
  * Codex は MCP のツールを使うたびに許可のメニューを出す。ボードへの報告のツール 2 つだけは、
@@ -165,6 +166,89 @@ export function withCodexApprovals(text: string): string {
 		out.push('', `[mcp_servers.${SERVER}.tools.${tool}]`, 'approval_mode = "approve"');
 	}
 	return `${out.join('\n').replace(/\n*$/, '')}\n`;
+}
+
+/** `~` を展開した絶対パス。相対パスは使わない（Para Code の paradisNormalizeCodexHomePath と同じ）。 */
+function normalizeHome(raw: unknown, home: string): string | undefined {
+	if (typeof raw !== 'string' || raw.trim().length === 0) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	const expanded = trimmed === '~' || trimmed.startsWith('~/') ? path.join(home, trimmed.slice(1)) : trimmed;
+	return path.isAbsolute(expanded) ? path.resolve(expanded) : undefined;
+}
+
+/** Para Code の設定 `paradis.limitsMonitor.codexHomes` で足したホーム（読めなければ空）。 */
+export function codexHomesFromSettings(text: string): unknown[] {
+	const match = /"paradis\.limitsMonitor\.codexHomes"\s*:\s*(\[[^\]]*\])/.exec(text);
+	if (!match) {
+		return [];
+	}
+	try {
+		// 配列の中のコメントと末尾のカンマを外す（設定は JSONC）
+		const parsed: unknown = JSON.parse(match[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/,\s*\]$/, ']'));
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * 書き足す候補の設定ファイル。Para Code はペインごとに Codex のアカウント（CODEX_HOME）を変えられるので、
+ * Para Code が para-browser を入れるホームと同じものを見る: $CODEX_HOME、~/.codex、使用量パネルが作る
+ * ~/.codex-<数字>（~/.codex-backup のように手で作ったものは含めない）、設定 `paradis.limitsMonitor.codexHomes`。
+ * そのうち para-browser を登録しているものだけを返す。同じ実体（シンボリックリンク）は 1 つにまとめる。
+ */
+export async function codexConfigCandidates(env: NodeJS.ProcessEnv = process.env, home = os.homedir(), configured?: readonly unknown[]): Promise<string[]> {
+	const dirs: string[] = [];
+	const fromEnv = normalizeHome(env.CODEX_HOME, home);
+	if (fromEnv) {
+		dirs.push(fromEnv);
+	}
+	dirs.push(path.join(home, '.codex'));
+	const entries = (await fs.readdir(home, { withFileTypes: true }).catch(() => [])).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+	for (const entry of entries) {
+		if (/^\.codex-\d+$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink())) {
+			dirs.push(path.join(home, entry.name));
+		}
+	}
+	for (const raw of configured ?? await settingsCodexHomes()) {
+		const dir = normalizeHome(raw, home);
+		if (dir) {
+			dirs.push(dir);
+		}
+	}
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const dir of dirs) {
+		const real = await fs.realpath(dir).catch(() => undefined);
+		if (real === undefined || seen.has(real) || !(await fs.stat(real).then(st => st.isDirectory(), () => false))) {
+			continue;
+		}
+		seen.add(real);
+		const file = path.join(dir, 'config.toml');
+		const text = await fs.readFile(file, 'utf8').catch(() => undefined);
+		if (text !== undefined && text.split('\n').some(l => /^\s*\[\s*mcp_servers\.(para-browser|"para-browser")[\].]/.test(l))) {
+			out.push(file);
+		}
+	}
+	return out;
+}
+
+async function settingsCodexHomes(): Promise<unknown[]> {
+	for (const dir of paraCodeDataDirectories()) {
+		const text = await fs.readFile(path.join(dir, 'User', 'settings.json'), 'utf8').catch(() => undefined);
+		if (text !== undefined) {
+			return codexHomesFromSettings(text);
+		}
+	}
+	return [];
+}
+
+/** まだ常に許可になっていない設定ファイルと、足りないツール。 */
+export async function codexApprovalStates(): Promise<{ readonly path: string; readonly missing: readonly string[] }[]> {
+	const states = await Promise.all((await codexConfigCandidates()).map(file => codexApprovalState(file)));
+	return states.filter(s => s.missing.length > 0);
 }
 
 export async function codexApprovalState(file = codexConfigPath()): Promise<{ readonly missing: readonly string[]; readonly path: string }> {

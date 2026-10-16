@@ -130,7 +130,10 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	}
 
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void {
-		const portFilePath = this._getPortFilePath();
+		// SSH のウィンドウでも、手元のフォルダで開いたターミナル（タスクボードが起動したもの等）は手元で動く。
+		// ランチャーとポートファイルは、ウィンドウではなくターミナルが動く場所のものを渡す
+		const onWindowHost = paradisTerminalRunsOnWindowHost(shellLaunchConfig.cwd, this.environmentService.remoteAuthority);
+		const portFilePath = this._getPortFilePath(onWindowHost);
 		if (!portFilePath) {
 			// デスクトップ以外（userDataPathが無いWeb workbench等）では本機能は無効。
 			return;
@@ -152,12 +155,11 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			? restoredPaneToken(nonce, attachTarget.paradisPaneToken)
 			: paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
-		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime());
+		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(onWindowHost));
 		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はウィンドウの
 		// マシン（手元のウィンドウなら手元、SSH のウィンドウなら接続先）のホームを指すので、別のマシンで
 		// 動くターミナルには渡さない。
 		// 呼び出し側が CODEX_HOME を決めているとき（会話を、その会話のあるホームで再開する等）はそちらを使う。
-		const onWindowHost = paradisTerminalRunsOnWindowHost(shellLaunchConfig.cwd, this.environmentService.remoteAuthority);
 		const explicitCodexHome = shellLaunchConfig.env?.[PARADIS_CODEX_HOME_ENV_VAR];
 		const codexHome = typeof explicitCodexHome === 'string' && explicitCodexHome.length > 0
 			? explicitCodexHome
@@ -194,8 +196,8 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 	 * Windows では入れない。.ps1 / .cmd / .cjs の経路は、実行ポリシーが Restricted の PowerShell や
 	 * pnpm・自作のラッパーで入れた codex で起動しなくなるおそれがある（2026-09-30 のレビュー）。
 	 */
-	private _getCodexRuntime(): IParadisCodexPaneRuntime | undefined {
-		if (this.environmentService.remoteAuthority !== undefined) {
+	private _getCodexRuntime(onWindowHost: boolean): IParadisCodexPaneRuntime | undefined {
+		if (this.environmentService.remoteAuthority !== undefined && onWindowHost) {
 			return this._getRemoteCodexRuntime();
 		}
 		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
@@ -234,11 +236,11 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		return `${this.remoteHome.replace(/\/+$/, '')}/.para-code`;
 	}
 
-	private _getPortFilePath(): string | undefined {
+	private _getPortFilePath(onWindowHost: boolean): string | undefined {
 		// 接続先で動くエージェントが読むのは接続先のポートファイル。同じ内容のものを
 		// paradisRemoteAgentHooks.contribution.ts が置いている。この PC 専用の置き場を渡すので、
 		// 同じ接続先へ別の PC からも繋いでいても、hook はこのペインを開いた PC へ届く
-		const remoteParaCodeDirectory = this._getRemoteParaCodeDirectory();
+		const remoteParaCodeDirectory = onWindowHost ? this._getRemoteParaCodeDirectory() : undefined;
 		if (remoteParaCodeDirectory !== undefined) {
 			const sourceId = paradisRemoteHookSourceId((this.environmentService as IWorkbenchEnvironmentService & { readonly machineId?: string }).machineId);
 			return sourceId !== undefined

@@ -7,6 +7,7 @@ import * as assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { paradisWhenBrowserViewsInitialized } from '../../../workspaceSwitch/common/paradisBrowserViewsInitialized.js';
@@ -118,9 +119,11 @@ suite('ParadisAgentBrowserAuthoritySyncService', () => {
 				onDidSwitchScope: didSwitchScope.event,
 			} as unknown as IParadisWorkspaceSwitchService,
 			{ willShutdown: false, onWillShutdown: willShutdown.event } as unknown as ILifecycleService,
+			new NullLogService(),
 		));
 
 		return {
+			activeInstance, parkedInstance,
 			service, manifests, terminalBarrier, browserViewBarrier, browserScopeBarrier,
 			paneTokensChanged, terminalInstancesChanged, terminalConnectionChanged, processIdReady,
 			terminalGroupsChanged, browserViewsChanged, terminalScopeChanged, browserScopeChanged,
@@ -152,6 +155,38 @@ suite('ParadisAgentBrowserAuthoritySyncService', () => {
 		assert.ok(complete);
 		assert.strictEqual(complete.complete, true);
 		assert.ok(completeRevision > incompleteRevision);
+	});
+
+	test('sends local panes that share a shell process without the number until they stop sharing it, and keeps remote numbers', async () => {
+		const fixture = createFixture();
+		const panesOf = async () => {
+			const revision = await fixture.service.syncNow();
+			return fixture.manifests.find(manifest => manifest.revision === revision)?.panes;
+		};
+		fixture.parkedInstance.processId = 101;
+		const shared = await panesOf();
+		// 接続先のペインの番号は接続先のもので、手元の番号と重なっても外さない
+		Object.assign(fixture.parkedInstance, { remoteAuthority: 'ssh-remote+host' });
+		const remote = await panesOf();
+		Object.assign(fixture.parkedInstance, { remoteAuthority: undefined, processId: 202 });
+		const resolved = await panesOf();
+		assert.deepStrictEqual({ shared, remote, resolved }, {
+			shared: [
+				{ token: 'active-token', scope: { kind: 'managed', stateKey: 'space-a' } },
+				{ token: 'parked-token', scope: { kind: 'managed', stateKey: 'space-b' } },
+				{ token: 'pidless-token', scope: { kind: 'pending' } },
+			],
+			remote: [
+				{ token: 'active-token', shellPid: 101, scope: { kind: 'managed', stateKey: 'space-a' } },
+				{ token: 'parked-token', shellPid: 101, remoteAuthority: 'ssh-remote+host', scope: { kind: 'managed', stateKey: 'space-b' } },
+				{ token: 'pidless-token', scope: { kind: 'pending' } },
+			],
+			resolved: [
+				{ token: 'active-token', shellPid: 101, scope: { kind: 'managed', stateKey: 'space-a' } },
+				{ token: 'parked-token', shellPid: 202, scope: { kind: 'managed', stateKey: 'space-b' } },
+				{ token: 'pidless-token', scope: { kind: 'pending' } },
+			],
+		});
 	});
 
 	test('publishes a complete manifest after a late initial snapshot delivers a retained view and scope', async () => {

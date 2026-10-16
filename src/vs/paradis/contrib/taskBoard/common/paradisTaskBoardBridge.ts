@@ -647,6 +647,12 @@ export interface IParadisTaskBoardWindowDescription {
 	readonly focused: boolean;
 	/** リポジトリを登録できるか（Para Code のマルチリポジトリのワークスペースを開いているウィンドウだけ）。 */
 	readonly canAddRepository?: boolean;
+	/**
+	 * SSH などの接続先を開いているウィンドウ。ボードのターミナルは手元のフォルダで動くが、このウィンドウで作ると
+	 * 接続先用のランチャーとポートの場所が付き、Codex が共有サーバーへ相乗りして MCP と hook が別のペインへ流れる。
+	 * 起動先に選ばない。
+	 */
+	readonly remote?: boolean;
 	/** 登録リポジトリ（health に出す）。 */
 	readonly repositories: readonly IParadisTaskBoardWindowSpace[];
 	/** 登録リポジトリと、その worktree のスペース（起動先の選択に使う）。 */
