@@ -22,6 +22,13 @@ export const PARADIS_MCP_REQUEST_TIMEOUT_MS = 130_000;
 export const PARADIS_MCP_BODY_TIMEOUT_MS = 30_000;
 /** 本文を読まずに応答した要求の、残りの本文を読み捨てる上限。過ぎたら接続を切る。 */
 export const PARADIS_MCP_UNREAD_BODY_DRAIN_MS = 1_000;
+/**
+ * 使い終わった接続（keep-alive）を残しておく長さ。接続元のプロセスを確かめた結果は接続ごとに覚えるので、
+ * 接続が切れると次の道具の呼び出しで lsof / ps をやり直す。以前の 5 秒では、エージェントが考えている間
+ * （数十秒〜数分）に毎回切れ、高負荷の機械ではその照合が間に合わず呼び出しを断ることがあった。
+ * 接続を残しても、確かめた結果を使えるのはその接続を持つプロセスだけ（ペインのシェルが変われば覚えた結果は使わない）。
+ */
+export const PARADIS_MCP_KEEP_ALIVE_TIMEOUT_MS = 120_000;
 
 /** サーバーの時間の上限を設定する。 */
 export function paradisConfigureMcpHttpServer(server: http.Server): void {
@@ -30,7 +37,7 @@ export function paradisConfigureMcpHttpServer(server: http.Server): void {
 	server.maxRequestsPerSocket = 100;
 	server.headersTimeout = 10_000;
 	server.requestTimeout = PARADIS_MCP_REQUEST_TIMEOUT_MS;
-	server.keepAliveTimeout = 5_000;
+	server.keepAliveTimeout = PARADIS_MCP_KEEP_ALIVE_TIMEOUT_MS;
 	server.timeout = 300_000;
 }
 

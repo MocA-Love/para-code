@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { paradisApprovalOptionKey, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from './paradisAgentApprovalOptions.js';
+import { paradisApprovalOptionKey, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from './paradisAgentApprovalOptions.js';
 
 /**
  * モバイルからの AskUserQuestion 回答を、Claude Code のTUIへ流し込むキー列に変換する。
@@ -181,6 +181,8 @@ export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParad
  * Codex は `y` で許可。拒否のキーは版で違う: codex-cli 0.155.1 の画面は
  * `3. No, and tell Codex what to do differently (esc)` で Esc、それより前の版は `d`。画面の文字が
  * 渡されれば、選択肢の行の末尾の `(…)` から選ぶ（{@link paradisCodexApprovalDenyKey}）。
+ * 画面が MCP のツールの許可のフォーム（{@link paradisCodexApprovalFormShown}）なら、許可は `1`、拒否は Esc、
+ * 番号の選択肢はその数字（フォームには近道が無く、`y` / `d` は何もしない。codex-cli 0.162.1）。
  *
  * モバイルとデスクトップのチャット表示が同じ関数を使う（Codex の app-server 経由の承認は
  * キーではなく構造化された回答で返すので、ここは通らない）。
@@ -196,17 +198,34 @@ export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choic
 		if (agent === 'claude') {
 			return [String(optionNumber)];
 		}
-		const option = options?.screen !== undefined ? paradisParseApprovalOptions(options.screen)?.find(candidate => candidate.n === optionNumber) : undefined;
-		const key = option !== undefined ? paradisApprovalOptionKey('codex', option) : undefined;
+		const screen = options?.screen;
+		const option = screen !== undefined ? paradisParseApprovalOptions(screen)?.find(candidate => candidate.n === optionNumber) : undefined;
+		const key = option !== undefined && screen !== undefined ? paradisApprovalOptionKey('codex', option, paradisCodexApprovalFormShown(screen)) : undefined;
 		return key !== undefined ? [key] : [];
 	}
 	if (agent === 'codex') {
+		if (options?.screen !== undefined && paradisCodexApprovalFormShown(options.screen)) {
+			return [choice === 'yes' ? '1' : '\u001b'];
+		}
 		return [choice === 'yes' ? 'y' : paradisCodexApprovalDenyKey(options?.screen)];
 	}
 	if (choice === 'no') {
 		return ['\u001b'];
 	}
 	return options?.confirmWithEnter === true ? ['1', ENTER] : ['1'];
+}
+
+/**
+ * モバイルの許可・拒否（中継は画面を見られないので、Codex には `y` / `d` を送ってくる）を、送る直前の画面に合わせたキーにする。
+ * 拒否は画面の選択肢の近道から選ぶ。MCP のツールの許可のフォームには近道が無いので `1` / Esc にするが、それはフォームが
+ * この承認の確認だと確かめられた（`piece` がフォームに見えている）ときだけ。確かめられなければ `y` / `d` のまま返す
+ * （フォームでは何も起きない。カードと違うツールの許可を確定しないため）。
+ */
+export function paradisCodexMobileApprovalKeys(key: 'y' | 'd', screen: string, piece: string | undefined): string[] {
+	if (paradisCodexApprovalFormShown(screen) && (piece === undefined || !paradisCodexApprovalFormShows(screen, piece))) {
+		return [key];
+	}
+	return paradisAgentApprovalKeySequence('codex', key === 'y' ? 'yes' : 'no', { screen });
 }
 
 /**

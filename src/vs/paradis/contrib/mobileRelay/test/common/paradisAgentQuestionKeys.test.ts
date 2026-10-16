@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptions } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -201,6 +202,70 @@ suite('paradisAgentQuestionKeySequence', () => {
 			codexNoScreen: [],
 			codexMissing: [],
 			outOfRange: [],
+		});
+	});
+
+	// codex-cli 0.162.1 の MCP のツールの許可のフォーム。近道が無く、数字で選んでそのまま確定し、Esc で取り消す
+	test('answers a Codex tool approval form with digits and Esc instead of y and d, and offers its options to the phone as digits', () => {
+		const form = [
+			'• Calling para-browser.board_complete_step',
+			'  Field 1/1',
+			'  Allow the para-browser MCP server to run tool "board_complete_step"?',
+			'  summary: done',
+			'  › 1. Allow                   Run the tool and continue',
+			'    2. Allow for this session  Run the tool and remember this choice for this session',
+			'    3. Always allow            Run the tool and remember this choice for future tool calls',
+			'    4. Cancel                  Cancel this tool call',
+			'  enter to submit | esc to cancel',
+		].join('\n');
+		const options = paradisParseApprovalOptions(form);
+		assert.deepStrictEqual({
+			yes: paradisAgentApprovalKeySequence('codex', 'yes', { screen: form }),
+			no: paradisAgentApprovalKeySequence('codex', 'no', { screen: form }),
+			session: paradisAgentApprovalKeySequence('codex', 'opt:2', { screen: form }),
+			missing: paradisAgentApprovalKeySequence('codex', 'opt:5', { screen: form }),
+			// フォームでないと決められない画面（操作説明が無い）では、今までどおり近道を探す（無ければ送らない）
+			noFooter: paradisAgentApprovalKeySequence('codex', 'opt:2', { screen: form.replace('  enter to submit | esc to cancel', '') }),
+			forMobile: paradisApprovalOptionsForMobile('codex', options, paradisCodexApprovalFormShown(form))?.map(option => option.n),
+			forMobileWithoutForm: paradisApprovalOptionsForMobile('codex', options),
+		}, {
+			yes: ['1'],
+			no: ['\u001b'],
+			session: ['2'],
+			missing: [],
+			noFooter: [],
+			forMobile: [1, 2, 3],
+			forMobileWithoutForm: undefined,
+		});
+	});
+
+	// モバイルの許可・拒否（中継は `y` / `d` を送る）を、送る直前の画面で決め直す。フォームの `1` / Esc は、カードの承認の確認だと
+	// 確かめられたときだけ（別のツールの許可を確定しない）
+	test('turns the phone\'s y and d into 1 and Esc on a Codex tool approval form only when the form is for the card\'s tool', () => {
+		const form = (tool: string) => [
+			`• Calling para-browser.${tool}`,
+			'  Field 1/1',
+			`  Allow the para-browser MCP server to run tool "${tool}"?`,
+			'  › 1. Allow   Run the tool and continue',
+			'    2. Cancel  Cancel this tool call',
+			'  enter to submit | esc to cancel',
+		].join('\n');
+		const exec = ['Would you like to run the following command?', '› 1. Yes, proceed (y)', '  2. No, and tell Codex what to do differently (esc)', 'Press enter to confirm or esc to cancel'].join('\n');
+		const piece = paradisApprovalScreenPiece('mcp__para-browser__click: {"uid":"1"}', 'codex');
+		assert.deepStrictEqual({
+			ownYes: paradisCodexMobileApprovalKeys('y', form('click'), piece),
+			ownNo: paradisCodexMobileApprovalKeys('d', form('click'), piece),
+			otherTool: paradisCodexMobileApprovalKeys('y', form('click_by'), piece),
+			noPiece: paradisCodexMobileApprovalKeys('y', form('click'), undefined),
+			execYes: paradisCodexMobileApprovalKeys('y', exec, undefined),
+			execNo: paradisCodexMobileApprovalKeys('d', exec, undefined),
+		}, {
+			ownYes: ['1'],
+			ownNo: ['\u001b'],
+			otherTool: ['y'],
+			noPiece: ['y'],
+			execYes: ['y'],
+			execNo: ['\u001b'],
 		});
 	});
 });

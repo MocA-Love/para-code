@@ -63,7 +63,7 @@ import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_T
 import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.js';
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
-import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
+import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
@@ -704,6 +704,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
+	/** 接続元を確かめられなかった回数（ペインと理由の組ごと）。ログを初回と 2 の累乗の回だけに間引く。 */
+	private readonly _callerUnverifiedCounts = new Map<string, number>();
 	/**
 	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
@@ -3160,6 +3162,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const pane = this._paneShells.get(token);
 		if (!pane) {
+			this._noteCallerUnverified(token, 'pane-not-registered', 0);
 			return 'unverified';
 		}
 		// 手元のペインはシェルの子孫だけ、接続先のペインは Para Code が張った `ssh -R` そのものだけを認める。
@@ -3186,7 +3189,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			try {
 				// 負荷が高いと lsof / ps の起動が数秒かかる。照合はコマンドの失敗・時間切れのときだけ待ちを延ばして
 				// やり直す（paradisCdpPeerResolver.ts）。子孫でないと確かめられたものは通さない
-				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation);
+				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation, undefined, {
+					onUnknown: (reason, attempts) => this._noteCallerUnverified(token, reason, attempts),
+				});
 				return peer === 'descendant' && pane.remoteAuthority === undefined
 					? 'pane'
 					: peer === 'tunnel' && pane.remoteAuthority !== undefined
@@ -3217,6 +3222,26 @@ export class ParadisAgentBrowserService extends Disposable {
 		});
 		// 取り消された呼び出しは照合の終わりを待たない
 		return paradisCallerKindUnlessAborted(flight, signal);
+	}
+
+	/**
+	 * 接続元を確かめられなかったことを、ペインと理由の組ごとに初回と 2 の累乗の回だけログに出す（診断専用）。
+	 * 高負荷でコマンドが間に合わない（`probe-failed`）のか、ペインのシェルが分からない（`pane-not-registered`）のかを
+	 * 後から見分けるため。token そのものは出さない。
+	 */
+	private _noteCallerUnverified(token: string, reason: ParadisPeerUnknownReason | 'pane-not-registered', attempts: number): void {
+		this._runNonThrowingDiagnostic(() => {
+			const pane = this._tokenFingerprint(token);
+			const key = `${pane}|${reason}`;
+			if (!this._callerUnverifiedCounts.has(key) && this._callerUnverifiedCounts.size >= 256) {
+				this._callerUnverifiedCounts.clear();
+			}
+			const count = (this._callerUnverifiedCounts.get(key) ?? 0) + 1;
+			this._callerUnverifiedCounts.set(key, count);
+			if ((count & (count - 1)) === 0) {
+				this.logService.info(`[ParadisAgentBrowser] could not verify the caller of a request: reason=${reason} pane=${pane} attempts=${attempts} n=${count}`);
+			}
+		});
 	}
 
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
@@ -4372,6 +4397,25 @@ export class ParadisAgentBrowserService extends Disposable {
 			...(replayedPrompts.length > 0 ? { replayedPrompts: Object.freeze(replayedPrompts) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
+	}
+
+	/**
+	 * ウィンドウ側が、許可待ちのペインで許可の確認が画面から消え、エージェントが作業を続けているのを続けて見た
+	 * （ターミナルのキーで答えた。agentChat/browser/paradisApprovalScreenSettle.ts）。Codex は許可したツールが終わるまで
+	 * hook を出さないので、ここで作業中へ戻す。`since` はウィンドウが見ていた許可待ちの changedAt で、その後に別の
+	 * 許可要求が届いて付け直された許可待ちは解かない。
+	 */
+	async settlePanePermissionOffScreen(connection: object, token: string, since: number): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token)) {
+			return false;
+		}
+		const entry = this._paneStatuses.get(token);
+		if (entry?.status !== 'permission' || entry.changedAt !== since) {
+			return false;
+		}
+		this._unconfirmedReleaseTokens.add(token);
+		this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+		return true;
 	}
 
 	/** review 状態の確認遷移 (スコープを開いた時に workbench から呼ばれる) */
