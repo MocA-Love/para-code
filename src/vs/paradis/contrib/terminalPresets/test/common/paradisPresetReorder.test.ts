@@ -19,7 +19,11 @@ import {
 	paradisPlanPresetMoveToFolder,
 	paradisPlanPresetNest,
 	paradisPlanPresetStep,
+	IParadisPresetDropSpot,
+	paradisPresetDropSpot,
+	ParadisPresetDropTarget,
 	paradisPresetMoveFolderChoices,
+	paradisPresetPlaceOf,
 	paradisPresetReorderBlocked,
 	ParadisPresetMoveItem,
 	ParadisPresetMoveRefusal,
@@ -112,6 +116,16 @@ function outcome(userList: readonly IParadisPresetDefinition[], result: IParadis
 	const movePlan = plan(result);
 	const next = paradisMovePresetDefinitions(userList, movePlan, () => new Error('gone'));
 	return { stored: stored(next), display: display(resolve(next as IParadisPresetDefinition[], workspaceList)) };
+}
+
+/** ドロップで入る位置を読める形に。`user before Proxy/`、`in Proxy before end / into` など。 */
+function spotText(spot: IParadisPresetDropSpot): string {
+	const position = spot.position;
+	const name = (item: ParadisPresetMoveItem | undefined) => !item ? 'end' : item.kind === 'preset' ? item.preset.name : `${item.folder}/`;
+	const where = position.kind === 'top'
+		? `${position.scopeKey === USER_SCOPE ? 'user' : 'workspace'} before ${name(position.before)}`
+		: `in ${position.folder} before ${position.before?.name ?? 'end'}`;
+	return [where, spot.into ? 'into' : undefined, spot.hint].filter(part => !!part).join(' / ');
 }
 
 suite('paradisPresetReorder', () => {
@@ -258,6 +272,77 @@ suite('paradisPresetReorder', () => {
 			paradisPlanPresetMove(presets, presetItem(presets, 'Dev'), { kind: 'folder', scopeKey: USER_SCOPE, folder: 'Proxy', before: undefined }),
 			paradisPlanPresetMove(presets, proxyFolder, { kind: 'top', scopeKey: USER_SCOPE, before: presetItem(presets, 'O') }),
 		], ['unchanged', 'unchanged', 'unchanged', 'unchanged', 'unchanged']);
+	});
+
+	test('picks the drop position from where the pointer is on the row', () => {
+		const presets = resolve(sampleUserList());
+		const c = presetItem(presets, 'C');
+		const folderRow = (expanded: boolean): ParadisPresetDropTarget => ({ kind: 'folder', scopeKey: USER_SCOPE, folder: 'Proxy', expanded });
+		const presetRow = (name: string, leftOfIndent = false): ParadisPresetDropTarget => ({ kind: 'preset', preset: find(presets, name), leftOfIndent });
+		const spot = (target: ParadisPresetDropTarget, rel: number, item: ParadisPresetMoveItem = c) => spotText(paradisPresetDropSpot(presets, item, target, rel));
+		assert.deepStrictEqual({
+			folderTopQuarter: spot(folderRow(true), 0.1),
+			folderMiddle: spot(folderRow(true), 0.5),
+			folderBottomQuarterOpen: spot(folderRow(true), 0.9),
+			folderBottomQuarterClosed: spot(folderRow(false), 0.9),
+			draggedFolderOnItsRowLowerHalf: spot(folderRow(true), 0.6, proxyFolder),
+			rowAboveFolderLowerHalf: spot(presetRow('Prn (SSH)'), 0.7),
+			rowAboveFolderUpperHalf: spot(presetRow('Prn (SSH)'), 0.3),
+			memberUpperHalf: spot(presetRow('Prev'), 0.3),
+			memberLowerHalf: spot(presetRow('Prev'), 0.7),
+			lastMemberLowerHalfLeft: spot(presetRow('Dev', true), 0.7),
+			lastMemberLowerHalfRight: spot(presetRow('Dev', false), 0.7),
+			section: spot({ kind: 'section', scopeKey: USER_SCOPE }, 0.5),
+		}, {
+			folderTopQuarter: 'user before Proxy/',
+			folderMiddle: 'in Proxy before end / into',
+			folderBottomQuarterOpen: 'in Proxy before PRD',
+			folderBottomQuarterClosed: 'user before O',
+			draggedFolderOnItsRowLowerHalf: 'user before O',
+			rowAboveFolderLowerHalf: 'user before Proxy/',
+			rowAboveFolderUpperHalf: 'user before Prn (SSH)',
+			memberUpperHalf: 'in Proxy before Prev',
+			memberLowerHalf: 'in Proxy before Dev',
+			lastMemberLowerHalfLeft: 'user before O / afterFolder',
+			lastMemberLowerHalfRight: 'in Proxy before end / folderEnd',
+			section: 'user before C',
+		});
+	});
+
+	test('drops a dragged folder before or after another folder when it is held over that folder\'s rows, never inside', () => {
+		const presets = resolve([...sampleUserList(), userDefinition('Up', 'Docker'), userDefinition('Down', 'Docker')]);
+		const docker: ParadisPresetMoveItem = { kind: 'folder', scopeKey: USER_SCOPE, folder: 'Docker' };
+		const prev: ParadisPresetDropTarget = { kind: 'preset', preset: find(presets, 'Prev'), leftOfIndent: false };
+		assert.deepStrictEqual([
+			spotText(paradisPresetDropSpot(presets, docker, prev, 0.3)),
+			spotText(paradisPresetDropSpot(presets, docker, prev, 0.7)),
+			spotText(paradisPresetDropSpot(presets, docker, { kind: 'folder', scopeKey: USER_SCOPE, folder: 'Proxy', expanded: true }, 0.5)),
+		], ['user before Proxy/', 'user before O', 'user before O']);
+	});
+
+	test('keeps a drop on the border between two storage locations on the side of the dragged row', () => {
+		const presets = resolve(sampleUserList());
+		assert.deepStrictEqual([
+			// ユーザー設定の 1 件を .paracode.json の最後の行の下半分に重ねたら、ユーザー設定の先頭。
+			spotText(paradisPresetDropSpot(presets, presetItem(presets, 'O'), { kind: 'preset', preset: find(presets, 'Run'), leftOfIndent: false }, 0.7)),
+			// .paracode.json の 1 件をユーザー設定の見出しに重ねたら、.paracode.json の最後。
+			spotText(paradisPresetDropSpot(presets, presetItem(presets, 'SETUP'), { kind: 'section', scopeKey: USER_SCOPE }, 0.5)),
+		], ['user before C', 'workspace before end']);
+	});
+
+	test('tells where a row sits after a move, for the screen reader', () => {
+		const presets = resolve(sampleUserList());
+		assert.deepStrictEqual([
+			paradisPresetPlaceOf(presets, presetItem(presets, 'O')),
+			paradisPresetPlaceOf(presets, presetItem(presets, 'Prev')),
+			paradisPresetPlaceOf(presets, proxyFolder),
+			paradisPresetPlaceOf(presets, presetItem(presets, 'Run')),
+		], [
+			{ folder: undefined, index: 10, count: 10 },
+			{ folder: 'Proxy', index: 2, count: 3 },
+			{ folder: undefined, index: 9, count: 10 },
+			{ folder: undefined, index: 2, count: 2 },
+		]);
 	});
 
 	test('stops manual reordering while the list is narrowed by a search or a filter', () => {

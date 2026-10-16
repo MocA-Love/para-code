@@ -368,6 +368,7 @@ export interface IParadisPresetService {
 	 * プリセット 1 件、またはフォルダ 1 つ（中身ごと）を、同じ定義元の中の別の位置へ挿入する
 	 * （paradisPresetReorder.ts の paradisPlanPresetMove などで作った書き込み方を渡す）。間の行は 1 つずつずれる。
 	 * フォルダを動かすときは、一覧に出ていない中身（appliesTo が別リポジトリ等）も一緒に動かす。
+	 * 一覧を描いた後に定義が変わって対象を見失ったときは、swapPresets と同じく何もしない。
 	 */
 	movePresets(plan: IParadisPresetMovePlan): Promise<void>;
 }
