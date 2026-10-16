@@ -9,9 +9,9 @@
 // Excel の詳しい解析を worker で走らせる。待ち行列の守りは paradisOfficeSemanticWorkerQueue.ts にある。
 // worker が使えないときも shared process の中では解析しない（表示は解析に頼っていないので、解析できないだけで済む）。
 
-import { Worker } from 'worker_threads';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { createParadisWorker } from '../../../../node/paradisWorker.js';
 import type { IParadisSemanticDiagnosticsSummary } from '../../common/paradisSpreadsheet.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
 import { PARADIS_SPREADSHEET_SEMANTIC_DIAGNOSTICS_DEADLINE_MS, unavailableParadisSpreadsheetSemanticDiagnostics } from './paradisSpreadsheetSemanticDiagnostics.js';
@@ -62,7 +62,7 @@ export class ParadisSpreadsheetSemanticWorkerBackend extends Disposable {
 
 	/** 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。 */
 	static workerFactory(workerPath: string): () => IParadisSpreadsheetSemanticWorker {
-		return () => new Worker(workerPath, { resourceLimits: PARADIS_SPREADSHEET_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetSemanticWorker;
+		return () => createParadisWorker(workerPath, { resourceLimits: PARADIS_SPREADSHEET_SEMANTIC_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetSemanticWorker;
 	}
 
 	get workerRunning(): boolean {
