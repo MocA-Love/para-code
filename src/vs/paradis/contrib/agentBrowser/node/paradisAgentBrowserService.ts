@@ -883,6 +883,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
+				permitsRemoteFileInput: (key, files) => this._remoteFileTransfer.permitsFileInput(paradisPaneTokenOfScopeKey(key), files),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
 			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
@@ -6596,6 +6597,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			}, signal),
 			// 受け渡し用フォルダを本人だけのものにする（SSH の接続先だけ）
 			restrictFolder: (remoteFolder: string) => this._remoteTunnels.chmodPrivateFolder(remoteAuthority, remoteFolder),
+			// upload_file の間、このペインの CDP 接続にだけ写した一時ファイルを input へ入れさせる
+			paneToken: ingressLease.token,
 		};
 	}
 

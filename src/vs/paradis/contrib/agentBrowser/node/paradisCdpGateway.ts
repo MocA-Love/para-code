@@ -96,6 +96,8 @@ export interface IParadisCdpGatewayDelegate {
 	 * できないときは true。プロセス表を調べるので、手元のファイルに触れるコマンドが来たときにだけ呼ぶ。
 	 */
 	isTunnelPeer(remotePort: number, localPort: number): Promise<boolean>;
+	/** 接続先のペインの upload_file が写した一時ファイルだけを指す `DOM.setFileInputFiles` の `files` か。 */
+	permitsRemoteFileInput?(token: string, files: unknown): boolean;
 }
 
 /** Opaque service-owned authority captured before any token-local CDP state is touched. */
@@ -697,6 +699,7 @@ export class ParadisCdpGateway extends Disposable {
 			noteFocusEmulation: enabled => this._noteDiagnostic(() => this.delegate.noteFocusEmulation?.(token, enabled)),
 			closeInputConnection,
 			isRemotePane,
+			permitsRemoteFileInput: files => this.delegate.permitsRemoteFileInput?.(token, files) === true,
 			onOpen: ws => {
 				if (!isCurrentLease()) {
 					reservation?.releaseIfUnattached();
