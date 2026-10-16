@@ -12,7 +12,8 @@
 // 余計なことが起きるのは避ける。
 
 import { ISetTerminalLayoutInfoArgs } from '../../../../platform/terminal/common/terminalProcess.js';
-import { paradisLayoutToRemember } from './paradisTerminalLayout.js';
+import { paradisLayoutToRemember, paradisMergeForeignLayout } from './paradisTerminalLayout.js';
+import { paradisForeignLayoutFor } from './paradisPtyReadopt.js';
 import { paradisHandleOf, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
 
 /**
@@ -29,9 +30,15 @@ export function paradisRememberLayout(args: ISetTerminalLayoutInfoArgs): void {
 	// 増える一方になる（スペースを消しても常駐はそれを知らない）。`{"tabs":[]}` をそのまま
 	// 送っても「中身の無い配置」として残り続けるだけなので、**掃除の合図は空文字にする**。
 	// ただし、どれも `start()` の前で handle が分からないだけなら送らない（`paradisLayoutToRemember`）。
-	const layout = paradisLayoutToRemember(args, paradisHandleOf);
+	let layout = paradisLayoutToRemember(args, paradisHandleOf);
 	if (layout === undefined) {
 		return;
+	}
+	// 別の相手（更新前の版のサーバー）がまだ見ている端末のタブは、窓の配置に無くても残す。
+	// 残さないと、後で引き取れたときにタブ配置が戻らない（`paradisPtyReadopt.ts`）。
+	const foreign = paradisForeignLayoutFor(args.workspaceId);
+	if (foreign) {
+		layout = paradisMergeForeignLayout(args.workspaceId, layout, foreign.raw, foreign.handles);
 	}
 	connection.host.setLayout(args.workspaceId, layout).catch(() => { });
 }

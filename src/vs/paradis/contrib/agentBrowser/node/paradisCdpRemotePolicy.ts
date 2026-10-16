@@ -15,7 +15,8 @@
 //   - `Input.dispatchDragEvent` の `data.files`: 手元のパスのファイルをドロップする
 //   - `Page.navigate` で `file:` の URL を開く（開いたページは take_snapshot 等で読める）
 //   - `Page.handleFileChooser`（旧 API）の `files`、`DOM.getFileInfo`（ファイルの手元のパスを返す）
-// 手元のペインは今までどおり通す。
+// 手元のペインは今までどおり通す。接続先のペインの upload_file が接続先から写した一時ファイルだけを指す
+// `DOM.setFileInputFiles` は、その呼び出しの間だけ通す（判定は paradisCdpFilterProxy.ts の permitsRemoteFileInput）。
 //
 // 塞いでいないもの（NOTES.md に記録）:
 //   - `Page.navigateToHistoryEntry`: 戻る・進むに使うので断らない。タブの履歴に `file:` のページが

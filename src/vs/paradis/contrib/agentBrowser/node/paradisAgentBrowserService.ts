@@ -63,9 +63,9 @@ import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_LOCAL_T
 import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.js';
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
-import { paradisClassifyPeer, paradisPeerIsOneOf } from './paradisCdpPeerResolver.js';
+import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } from './paradisCdpPeerResolver.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
-import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
+import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
 import { ParadisToolCallLanes } from '../common/paradisToolCallLanes.js';
 import { ParadisCursorPacingLedger, paradisToolCursorRunKey, paradisWithToolCursorStatus } from './paradisCursorPacing.js';
 import { ParadisCursorOwners } from './paradisCursorOwners.js';
@@ -693,6 +693,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** OSC 7501 の状態を受けた時刻（ペインごとの直近 1 秒分）。速すぎる書き換えを断る。 */
 	private readonly _programStatusTimes = new Map<string, number[]>();
 	/**
+	 * Codex の OSC 7501 が書いたペインの状態（書いた値そのもの）。hook が初めて届いたとき、まだこの値のままなら消す
+	 * （起動直後の working の後、idle より先に SessionStart が届くと、idle は hook 優先で捨てられ working が残るため）。
+	 */
+	private readonly _codexProgramStatusEntries = new Map<string, IParadisPaneStatusEntry>();
+	/**
 	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
 	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
 	 * 信用しない（Enter を送らない）。確かめた hook が来たら外す。
@@ -704,6 +709,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
+	/** 接続元を確かめられなかった回数（ペインと理由の組ごと）。ログを初回と 2 の累乗の回だけに間引く。 */
+	private readonly _callerUnverifiedCounts = new Map<string, number>();
 	/**
 	 * ペインで動いている会話（hook の session_id）。再起動後に復元したタブから前の会話を続ける
 	 * ために renderer へ渡す。SessionEnd（会話を終えた）と TerminalExit（ペインが消えた）で消す。
@@ -858,6 +865,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(toDisposable(() => {
 			clearInterval(aliveTimer);
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- Runs while the shared process shuts down; the process can exit before an async write lands, and the next start reads this stamp.
 				writeFileSync(join(hookSpoolDir, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE), String(Date.now()), { mode: 0o600 });
 			} catch {
 				// フォルダが無い・書けない。次の起動は 1 時間以内の分だけを流す。
@@ -883,6 +891,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
 				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
+				permitsRemoteFileInput: (key, files) => this._remoteFileTransfer.permitsFileInput(paradisPaneTokenOfScopeKey(key), files),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
 			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
@@ -1549,7 +1558,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				return typeof value === 'string' ? value : undefined;
 			};
 			const transcriptPath = field('transcript_path');
-			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at });
+			// 控えには `source`・`agent_id`・ツールの hook が残らない（手元の版だけが控える）。イベント名だけでも、切断中の
+			// SessionEnd の後の SessionStart なら所有者を移せる。
+			const origin = await this._hookOwnership.classify({ token, hookPid: undefined, transcriptPath, at: record.at, event: record.event });
 			if (!this.isIngressLeaseCurrent(ingressLease) || this._hookReportedTokens.has(token)) {
 				return;
 			}
@@ -1622,7 +1633,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * ペインの Claude Code が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
+	 * ペインの Claude Code・Codex が OSC 7501（Program Status Protocol）で知らせた状態（renderer の端末が読んで送る。
 	 * paradisProgramStatus.contribution.ts）。hook が届いていないペイン（WSL・手で ssh した先など）の状態の補助に
 	 * だけ使い、hook が一度でも届いたペインでは何もしない。状態を書き換えたら true。
 	 */
@@ -1644,6 +1655,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		times.push(now);
 		this._programStatusTimes.set(token, times);
+		if (status.app === 'codex') {
+			return this._noteCodexProgramStatus(token, status.state, now);
+		}
 		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
 		// hook の実績（_agentHookTokens・_hookReportedTokens）には混ぜず、別の印で持つ
@@ -1672,6 +1686,42 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
 		return true;
+	}
+
+	/**
+	 * Codex の OSC 7501 の状態（完了も許可と質問の区別も無い）。状態の出どころにはせず（`_programStatusTokens` に
+	 * 載せない）、transcript から読んだターンの始まり・終わりもそのまま使う。transcript が一度でもターンを知らせた
+	 * ペイン（`_agentHookTokens`）では、許可待ちとその解除にだけ使う（paradisCodexProgramStatusTransition）。
+	 */
+	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, now: number): boolean {
+		const previous = this._paneStatuses.get(token);
+		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token));
+		if (next === undefined || next === previous?.status) {
+			return false;
+		}
+		if (next === 'idle') {
+			this._codexProgramStatusEntries.delete(token);
+			return this._paneStatuses.delete(token);
+		}
+		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
+			this._userTurnStarts.set(token, now);
+		}
+		const entry: IParadisPaneStatusEntry = { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) };
+		this._paneStatuses.set(token, entry);
+		this._codexProgramStatusEntries.set(token, entry);
+		return true;
+	}
+
+	/** hook が届いた。Codex の OSC が書いた状態がまだ残っていれば消す（hook が正本になるので、OSC の idle はもう来ない）。 */
+	private _forgetCodexProgramStatus(token: string): void {
+		const entry = this._codexProgramStatusEntries.get(token);
+		if (entry === undefined) {
+			return;
+		}
+		this._codexProgramStatusEntries.delete(token);
+		if (this._paneStatuses.get(token) === entry) {
+			this._paneStatuses.delete(token);
+		}
 	}
 
 	private _validateProjectedShellPids(windowCtx: string, manifest: IParadisBindingAuthorityManifest): void {
@@ -2099,6 +2149,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._hookReportedTokens.delete(token);
 		this._programStatusTokens.delete(token);
 		this._programStatusTimes.delete(token);
+		this._codexProgramStatusEntries.delete(token);
 		this._replayedPrompts.delete(token);
 		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
@@ -3160,6 +3211,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const pane = this._paneShells.get(token);
 		if (!pane) {
+			this._noteCallerUnverified(token, 'pane-not-registered', 0);
 			return 'unverified';
 		}
 		// 手元のペインはシェルの子孫だけ、接続先のペインは Para Code が張った `ssh -R` そのものだけを認める。
@@ -3186,7 +3238,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			try {
 				// 負荷が高いと lsof / ps の起動が数秒かかる。照合はコマンドの失敗・時間切れのときだけ待ちを延ばして
 				// やり直す（paradisCdpPeerResolver.ts）。子孫でないと確かめられたものは通さない
-				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation);
+				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation, undefined, {
+					onUnknown: (reason, attempts) => this._noteCallerUnverified(token, reason, attempts),
+				});
 				return peer === 'descendant' && pane.remoteAuthority === undefined
 					? 'pane'
 					: peer === 'tunnel' && pane.remoteAuthority !== undefined
@@ -3217,6 +3271,26 @@ export class ParadisAgentBrowserService extends Disposable {
 		});
 		// 取り消された呼び出しは照合の終わりを待たない
 		return paradisCallerKindUnlessAborted(flight, signal);
+	}
+
+	/**
+	 * 接続元を確かめられなかったことを、ペインと理由の組ごとに初回と 2 の累乗の回だけログに出す（診断専用）。
+	 * 高負荷でコマンドが間に合わない（`probe-failed`）のか、ペインのシェルが分からない（`pane-not-registered`）のかを
+	 * 後から見分けるため。token そのものは出さない。
+	 */
+	private _noteCallerUnverified(token: string, reason: ParadisPeerUnknownReason | 'pane-not-registered', attempts: number): void {
+		this._runNonThrowingDiagnostic(() => {
+			const pane = this._tokenFingerprint(token);
+			const key = `${pane}|${reason}`;
+			if (!this._callerUnverifiedCounts.has(key) && this._callerUnverifiedCounts.size >= 256) {
+				this._callerUnverifiedCounts.clear();
+			}
+			const count = (this._callerUnverifiedCounts.get(key) ?? 0) + 1;
+			this._callerUnverifiedCounts.set(key, count);
+			if ((count & (count - 1)) === 0) {
+				this.logService.info(`[ParadisAgentBrowser] could not verify the caller of a request: reason=${reason} pane=${pane} attempts=${attempts} n=${count}`);
+			}
+		});
 	}
 
 	/** サーバー起動完了後に、フォールバックを含む実際のlistenポートだけを返す。 */
@@ -4089,7 +4163,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				// ペインのシェルの pid は手元のペインのときだけ渡す（所有者の後継をシェルの子孫に絞る・`claude attach` の会話を
 				// 所有者にする判定に使う。接続先の pid は手元のプロセス表と照合できない）。
 				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
-				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid });
+				const hookOrigin = await this._hookOwnership.classify({
+					token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid,
+					event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
+				});
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
@@ -4148,6 +4225,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._hookReportedTokens.add(token);
 					// hook が届くペインは hook が正本（OSC 7501 の状態は使わない）
 					this._programStatusTokens.delete(token);
+					this._forgetCodexProgramStatus(token);
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);
@@ -4372,6 +4450,25 @@ export class ParadisAgentBrowserService extends Disposable {
 			...(replayedPrompts.length > 0 ? { replayedPrompts: Object.freeze(replayedPrompts) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),
 		});
+	}
+
+	/**
+	 * ウィンドウ側が、許可待ちのペインで許可の確認が画面から消え、エージェントが作業を続けているのを続けて見た
+	 * （ターミナルのキーで答えた。agentChat/browser/paradisApprovalScreenSettle.ts）。Codex は許可したツールが終わるまで
+	 * hook を出さないので、ここで作業中へ戻す。`since` はウィンドウが見ていた許可待ちの changedAt で、その後に別の
+	 * 許可要求が届いて付け直された許可待ちは解かない。
+	 */
+	async settlePanePermissionOffScreen(connection: object, token: string, since: number): Promise<boolean> {
+		if (!this._isEligibleToken(connection, token)) {
+			return false;
+		}
+		const entry = this._paneStatuses.get(token);
+		if (entry?.status !== 'permission' || entry.changedAt !== since) {
+			return false;
+		}
+		this._unconfirmedReleaseTokens.add(token);
+		this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+		return true;
 	}
 
 	/** review 状態の確認遷移 (スコープを開いた時に workbench から呼ばれる) */
@@ -6596,6 +6693,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			}, signal),
 			// 受け渡し用フォルダを本人だけのものにする（SSH の接続先だけ）
 			restrictFolder: (remoteFolder: string) => this._remoteTunnels.chmodPrivateFolder(remoteAuthority, remoteFolder),
+			// upload_file の間、このペインの CDP 接続にだけ写した一時ファイルを input へ入れさせる
+			paneToken: ingressLease.token,
 		};
 	}
 

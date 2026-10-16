@@ -179,6 +179,22 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		}
 	}
 
+	/**
+	 * 頼んできた相手とは別の誰かが、その端末を見ているか。
+	 *
+	 * **手を離した pty ホストは、もう持ち主ではない。** 窓を閉じたサーバーは端末から手を離す
+	 * （`paradisDaemonTerminalProcess.ts` の `paradisLetGo`）。その後で別のサーバー（更新後の版）が
+	 * 引き取って見ていることがあり、元のサーバーの猶予切れの終了がそれを殺してはいけない。
+	 * 名札を渡さない呼び出し（古いアプリ）は今までどおり通す。
+	 */
+	private watchedByOtherThan(handle: number, caller: string | undefined): boolean {
+		if (caller === undefined) {
+			return false;
+		}
+		const owner = this.ownerOf(handle);
+		return owner !== undefined && owner !== caller;
+	}
+
 	/** その端末を、まだ誰かが見ているか。 */
 	private isWatched(handle: number): boolean {
 		return this.ownerOf(handle) !== undefined;
@@ -236,9 +252,9 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 		this.holders.get(handle)?.clearScrollback();
 	}
 
-	async kill(handle: number, signal?: string, stopDescendants?: boolean): Promise<void> {
+	async kill(handle: number, signal?: string, stopDescendants?: boolean, caller?: string): Promise<void> {
 		const holder = this.holders.get(handle);
-		if (!holder) {
+		if (!holder || this.watchedByOtherThan(handle, caller)) {
 			return;
 		}
 		// 閉じるときに裏のプロセスも止める（W2-32）。表を撮ってからシェルを終わらせるので、終わらせるのは
@@ -261,11 +277,11 @@ export class ParadisPtyDaemonHost extends Disposable implements IParadisPtyHost 
 	 * まだ生きているものに対して呼ばれたら、殺してから外す。呼ぶ側が「もう要らない」と
 	 * 言っている以上、走らせたまま行方不明にする方が悪い。
 	 */
-	async release(handle: number): Promise<void> {
+	async release(handle: number, caller?: string): Promise<void> {
 		// 裏のプロセスを止めている最中なら、それが終わるまで手放さない（畳むとシェルの pid を見失う）。
 		await this.closing.get(handle);
 		const holder = this.holders.get(handle);
-		if (!holder) {
+		if (!holder || this.watchedByOtherThan(handle, caller)) {
 			return;
 		}
 		this.holders.delete(handle);

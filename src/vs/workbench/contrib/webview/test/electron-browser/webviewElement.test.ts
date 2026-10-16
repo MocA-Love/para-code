@@ -29,7 +29,8 @@ class TestElectronWebviewElement extends ElectronWebviewElement {
 suite('ElectronWebviewElement', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createWebview() {
+	// PARA-PATCH: `findResult` stands in for the main process's answer (see IWebviewManagerService.findInFrame).
+	function createWebview(findResult: () => boolean | undefined = () => true) {
 		const calls: { command: string; args: unknown }[] = [];
 		const instantiationService = workbenchInstantiationService(undefined, store);
 		const service: IWebviewManagerService = {
@@ -37,7 +38,7 @@ suite('ElectronWebviewElement', () => {
 			onFoundInFrame: Event.None,
 			setIgnoreMenuShortcuts: async () => { },
 			// PARA-PATCH: the fork's find calls report whether they ran (true = no window.find fallback)
-			findInFrame: async (...args) => { calls.push({ command: 'findInFrame', args }); return true; },
+			findInFrame: async (...args) => { calls.push({ command: 'findInFrame', args }); return findResult(); },
 			stopFindInFrame: async (...args) => { calls.push({ command: 'stopFindInFrame', args }); return true; },
 		};
 		const channel = ProxyChannel.fromService(service, store.add(new DisposableStore()));
@@ -127,6 +128,28 @@ suite('ElectronWebviewElement', () => {
 			}],
 			searchesAfterStop: [],
 			searchesAfterDisposal: [],
+		});
+	}));
+	// PARA-PATCH: a find whose webview frame is missing must fail only that find. Treating it like an
+	// Electron build without findInFrame switched every webview to the window.find fallback until quit.
+	test('a find that finds no frame does not switch webviews to the fallback find', () => runWithFakedTimers({}, async () => {
+		let frameMissing = true;
+		const first = createWebview(() => frameMissing ? undefined : true);
+		first.webview.updateFind('text');
+		await timeout(250);
+		frameMissing = false;
+		first.webview.find('text', false);
+		await timeout(0);
+		const second = createWebview();
+		second.webview.updateFind('more');
+		await timeout(250);
+
+		assert.deepStrictEqual({
+			first: first.calls.map(call => call.command),
+			second: second.calls.map(call => call.command),
+		}, {
+			first: ['findInFrame', 'findInFrame'],
+			second: ['findInFrame'],
 		});
 	}));
 });

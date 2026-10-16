@@ -39,7 +39,7 @@ export interface IParadisDownloadsShell {
 	/** 既定のアプリで開く。失敗したときは空でない文字列（エラー）を返す。 */
 	openPath(path: string): Promise<string>;
 	showItemInFolder(path: string): void;
-	exists(path: string): boolean;
+	exists(path: string): Promise<boolean>;
 	/**
 	 * 完了したファイルに OS の隔離の印（macOS の com.apple.quarantine、Windows の Zone.Identifier）が
 	 * 付いているか確かめ、無ければ付ける。開いたときに OS の警告（Gatekeeper / SmartScreen）を通させるため。
@@ -233,7 +233,7 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 		}
 		const path = entry.item.getSavePath();
 		// renderer 側でもボタンを出していないが、ここでも断る（renderer を信用しない）。
-		if (!path || entry.fromAgent || entry.quarantine !== 'ok' || !paradisIsOpenableDownload(basename(path)) || !this._shell.exists(path)) {
+		if (!path || entry.fromAgent || entry.quarantine !== 'ok' || !paradisIsOpenableDownload(basename(path)) || !await this._shell.exists(path)) {
 			return false;
 		}
 		return (await this._shell.openPath(path)) === '';
@@ -242,7 +242,7 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 	async showInFolder(id: string): Promise<boolean> {
 		const entry = this._find(id);
 		const path = entry?.item.getSavePath();
-		if (!path || !this._shell.exists(path)) {
+		if (!path || !await this._shell.exists(path)) {
 			return false;
 		}
 		this._shell.showItemInFolder(path);
@@ -280,7 +280,7 @@ export class ParadisBrowserDownloadsTracker extends Disposable implements IParad
 
 	async openDownloadsFolder(): Promise<boolean> {
 		const directory = this._downloadsDirectory();
-		if (!this._shell.exists(directory)) {
+		if (!await this._shell.exists(directory)) {
 			return false;
 		}
 		return (await this._shell.openPath(directory)) === '';

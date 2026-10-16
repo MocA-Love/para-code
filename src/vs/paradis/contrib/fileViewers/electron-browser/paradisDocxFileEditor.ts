@@ -53,6 +53,7 @@ import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } fr
 import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
+import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../common/paradisViewerOpenTiming.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
@@ -268,6 +269,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 開いてから文書が描かれるまでの計測（`setInput` で始め、最初に描けたら送る）。 */
+	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
+	/** いま開いている文書の大きさ（計測に添える）。 */
+	private _openBytes = 0;
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _accessibility: ParadisOfficeAccessibility | undefined;
@@ -385,6 +390,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		const invocationEpoch = ++this._inputEpoch;
+		// 配信先の登録を待つ時間も含めたいので、最初に始める。
+		this._openTiming.value = startParadisViewerOpenTiming('word');
+		this._openBytes = 0;
 		const previousInput = this._input;
 		const previousOptions = this._options;
 		const previousDocumentUrl = this._documentUrl;
@@ -413,6 +421,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._input = previousInput;
 			this._options = previousOptions;
 			this._documentUrl = previousDocumentUrl;
+			// 取り消された入力の計測は捨てる（残すと、前の文書の次の描画がこの時刻からの時間として送られる）。
+			this._openTiming.clear();
 			return;
 		}
 
@@ -626,6 +636,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 			});
 			if (transition.state.phase === 'ready') {
 				this._probe.noteSuccess();
+				// 開いてから最初に描けたところ（2 回目以降の描き直しでは何もしない）。
+				this._openTiming.value?.painted({ safe_size_kb: Math.round(this._openBytes / 1024) });
+				this._openTiming.clear();
 			}
 			this._recoveryState = transition.state;
 			if (this._currentResource) {
@@ -808,6 +821,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			try {
 				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
 				this._probe.setBytes(content.value.byteLength);
+				this._openBytes = content.value.byteLength;
 				semanticSource = content.value.buffer;
 				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
 				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
@@ -1617,6 +1631,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._openTiming.clear();
 		this._probe.endOpen();
 		this._assetSanitization.value?.cancel();
 		this._inputEpoch++;

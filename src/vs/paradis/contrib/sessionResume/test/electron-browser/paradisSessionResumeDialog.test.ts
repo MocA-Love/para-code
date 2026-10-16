@@ -677,8 +677,8 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const cases = [
 			{ agent: 'claude' as const, dangerous: false, command: 'claude --permission-mode manual --resume session-123' },
 			{ agent: 'claude' as const, dangerous: true, command: 'claude --dangerously-skip-permissions --resume session-123' },
-			{ agent: 'codex' as const, dangerous: false, command: 'codex resume session-123' },
-			{ agent: 'codex' as const, dangerous: true, command: 'codex --dangerously-bypass-approvals-and-sandbox resume session-123' },
+			{ agent: 'codex' as const, dangerous: false, command: 'codex resume --sandbox workspace-write --ask-for-approval on-request session-123' },
+			{ agent: 'codex' as const, dangerous: true, command: 'codex resume --dangerously-bypass-approvals-and-sandbox session-123' },
 		];
 		for (const testCase of cases) {
 			const fixture = createFixture();

@@ -53,6 +53,8 @@ interface IHarnessOptions {
 
 function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOptions = {}) {
 	const opened: IOpenedEditor[] = [];
+	/** openEditor に渡されたオプション（開いたファイルごと、呼ばれた順）。 */
+	const openOptions: { readonly resource: string; readonly options: unknown }[] = [];
 	let activeStateKey = options.activeStateKey;
 	const onDidSwitchScope = store.add(new Emitter<string>());
 	const onDidRetireScope = store.add(new Emitter<string>());
@@ -69,7 +71,8 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 	const namedGroups = (names: readonly string[]) => names.map(name => groupsByName.get(name)!);
 
 	const editorService = {
-		openEditor: async (editor: { resource: URI }, group: PreferredGroup) => {
+		openEditor: async (editor: { resource: URI; options?: unknown }, group: PreferredGroup) => {
+			openOptions.push({ resource: editor.resource.fsPath, options: editor.options });
 			if (options.openEditor) {
 				return options.openEditor();
 			}
@@ -120,6 +123,7 @@ function createHarness(store: Pick<DisposableStore, 'add'>, options: IHarnessOpt
 	return {
 		channel,
 		opened,
+		openOptions,
 		onDidSwitchScope,
 		onDidRetireScope,
 		preview: (path: string, token: string | undefined = 'pane-a') => channel.call<unknown>(undefined, 'previewFile', [token, path]),
@@ -263,6 +267,22 @@ suite('ParadisAgentPreviewChannel', () => {
 		assert.deepStrictEqual(harness.opened, [
 			{ resource: '/repos/a/second.md', group: 'main' },
 			{ resource: '/repos/a/first.html', group: 'main' },
+		]);
+	});
+
+	test('opens each file as a pinned tab so a file opened right after it does not replace it, queued ones included', async () => {
+		const harness = createHarness(store, { recordedStateKey: 'repo-a', activeStateKey: 'repo-a' });
+		await harness.preview('/repos/a/first.html');
+		await harness.preview('/repos/a/second.md');
+		harness.switchTo('repo-b');
+		await harness.preview('/repos/a/queued.pdf');
+		harness.switchTo('repo-a');
+		await settle();
+
+		assert.deepStrictEqual(harness.openOptions, [
+			{ resource: '/repos/a/first.html', options: { preserveFocus: true, pinned: true } },
+			{ resource: '/repos/a/second.md', options: { preserveFocus: true, pinned: true } },
+			{ resource: '/repos/a/queued.pdf', options: { preserveFocus: true, pinned: true } },
 		]);
 	});
 

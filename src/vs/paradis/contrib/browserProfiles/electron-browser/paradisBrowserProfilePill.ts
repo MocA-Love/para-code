@@ -62,7 +62,6 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 	private readonly _dotElement: HTMLElement;
 	private readonly _iconElement: HTMLElement;
 	private readonly _nameElement: HTMLElement;
-	private readonly _badgeElement: HTMLElement;
 	private readonly _hover: IManagedHover;
 	private readonly _dropdown = this._register(new MutableDisposable<ParadisBrowserProfileDropdown>());
 
@@ -84,14 +83,13 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		this._dotElement = dom.append(this._element, $('.pbp-pill-dot'));
 		this._iconElement = dom.append(this._element, $(`.pbp-pill-icon${ThemeIcon.asCSSSelector(Codicon.globe)}`));
 		this._nameElement = dom.append(this._element, $('.pbp-pill-name'));
-		this._badgeElement = dom.append(this._element, $('.pbp-pill-badge'));
 		dom.append(this._element, $(`.pbp-pill-chevron${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
 
 		this._hover = this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this._element, ''));
 		this._register(dom.addDisposableListener(this._element, dom.EventType.CLICK, () => this._toggleDropdown()));
 
 		this._register(this.profilesService.onDidChangeProfiles(() => this._render()));
-		// エージェントが操作を始めた / やめたときにバッジを出し入れする。
+		// エージェントがつながった / 外れたときにホバーの文を書き換える。
 		this._register(this.bindingModel.onDidChange(() => this._render()));
 
 		this._render();
@@ -142,18 +140,21 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		const fullName = profile ? profile.name : this._scopeLabel(session?.scope);
 		this._nameElement.textContent = paradisEllipsize(fullName, MAX_NAME_LENGTH);
 
-		const agentControlled = model !== undefined && (this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
-		this._element.classList.toggle('agent-controlled', agentControlled);
-		this._badgeElement.style.display = agentControlled ? '' : 'none';
-		this._badgeElement.textContent = agentControlled ? localize('paradis.browserProfiles.pill.agent', "Agent操作中") : '';
+		// ピルには出さない（ズームと同じ形にそろえた。Q365 A）。エージェントがつながっていることは隣の共有トグルとページの
+		// 枠（upstream）が示し、どのプロファイルのログインを使っているかはここのホバーとドロップダウンの行に残す
+		const agentConnected = model !== undefined && (this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
 
 		const description = profile
 			? localize('paradis.browserProfiles.pill.namedHover', "ブラウザプロファイル「{0}」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。", fullName)
 			: localize('paradis.browserProfiles.pill.scopeHover', "ブラウザの保存スコープ: {0}", fullName);
-		this._hover.update(agentControlled
-			? localize('paradis.browserProfiles.pill.hoverWithAgent', "{0}\nこのページはエージェントが操作中です。", description)
-			: description);
-		this._element.setAttribute('aria-label', localize('paradis.browserProfiles.pill.aria', "{0} 変更するには選択してください。", description));
+		// 読み上げにもホバーと同じ文を渡す（ピルからバッジを外したので、見えない人にはここでしか分からない）
+		const summary = !agentConnected
+			? description
+			: profile
+				? localize('paradis.browserProfiles.pill.hoverWithAgentProfile', "{0}\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。", description)
+				: localize('paradis.browserProfiles.pill.hoverWithAgentScope', "{0}\nこのページにはエージェントがつながっています。", description);
+		this._hover.update(summary);
+		this._element.setAttribute('aria-label', localize('paradis.browserProfiles.pill.aria', "{0} 変更するには選択してください。", summary));
 	}
 
 	private _scopeLabel(scope: string | undefined): string {

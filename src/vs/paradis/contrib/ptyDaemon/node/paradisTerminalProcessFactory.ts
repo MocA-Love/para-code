@@ -200,6 +200,21 @@ export function paradisHandleOf(id: number): number | undefined {
 	return handles.get(id);
 }
 
+/** このプロセスが引き取り済みの handle。引き取り直しで二重に載せないために使う。 */
+export function paradisKnownHandles(): ReadonlySet<number> {
+	return new Set(handles.values());
+}
+
+/** handle から番号を引く（{@link paradisHandleOf} の逆）。 */
+export function paradisIdOfHandle(handle: number): number | undefined {
+	for (const [id, known] of handles) {
+		if (known === handle) {
+			return id;
+		}
+	}
+	return undefined;
+}
+
 /**
  * ターミナル1本を作る。`ptyService.ts` の唯一の生成点から呼ばれる。
  *

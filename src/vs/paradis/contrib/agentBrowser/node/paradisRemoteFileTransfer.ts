@@ -12,7 +12,8 @@
 //
 //  - take_screenshot / take_snapshot の `filePath`: 手元の一時フォルダへ書かせ、接続先のそのパスへ書き戻す
 //  - upload_file の `filePath`: 接続先のファイルを読み、手元の一時ファイルにして渡す（ページが後から読むので
-//    すぐには消さず、一定時間後に消す）
+//    すぐには消さず、一定時間後に消す）。CDP ゲートウェイは接続先のペインの `DOM.setFileInputFiles` を断るので
+//    （paradisCdpRemotePolicy.ts）、この呼び出しの間だけ、写した一時ファイルに限って通す（permitsFileInput）
 //  - save_page_as_pdf / download_by_click: 手元のダウンロードフォルダに保存したものを、接続先のホームの `.para-code/browser-files` へ写す
 //
 // 一時ファイルは内蔵 chrome-devtools-mcp の一時フォルダ（子プロセスの roots。0700）の下に作る。
@@ -193,6 +194,11 @@ export interface IParadisRemoteFileTransferHost {
 	 * （WSL・コンテナ等）では無い。失敗しても受け渡しは止めない。
 	 */
 	restrictFolder?(remoteFolder: string): Promise<unknown>;
+	/**
+	 * 呼び出し元のペインのトークン。upload_file の間、このペインの CDP 接続にだけ、写した一時ファイルの
+	 * `DOM.setFileInputFiles` を許す（{@link ParadisRemoteFileTransfer.permitsFileInput}）。
+	 */
+	readonly paneToken?: string;
 }
 
 /** renderer が「受け渡し用フォルダの中に書いた」と返したときだけ、そのフォルダを本人だけのものにする（失敗は無視）。 */
@@ -205,6 +211,8 @@ async function restrictUserFolder(host: IParadisRemoteFileTransferHost, written:
 export class ParadisRemoteFileTransfer {
 
 	private readonly uploadStaging: ParadisFileDropStaging;
+	/** upload_file の呼び出し中の一時ファイル → 呼び出し元のペインのトークン。 */
+	private readonly inputsInFlight = new Map<string, string>();
 
 	constructor(
 		/** 内蔵 chrome-devtools-mcp の一時フォルダ（子プロセスの roots）。作れなければ undefined。 */
@@ -315,8 +323,23 @@ export class ParadisRemoteFileTransfer {
 		} catch {
 			return toolError(`${toolName} was not run: Para Code could not prepare a temporary copy of ${remotePath}. Retry.`);
 		}
-		const result = await callTool({ ...args, filePath: localPath });
-		return paradisReplacePathInToolResult(result, localPath, remotePath);
+		if (host.paneToken !== undefined) {
+			this.inputsInFlight.set(localPath, host.paneToken);
+		}
+		try {
+			const result = await callTool({ ...args, filePath: localPath });
+			return paradisReplacePathInToolResult(result, localPath, remotePath);
+		} finally {
+			this.inputsInFlight.delete(localPath);
+		}
+	}
+
+	/**
+	 * このペインの CDP 接続からの `DOM.setFileInputFiles` の `files` が、どれも今このペインの upload_file が写している
+	 * 一時ファイルか（中身は接続先から来たもので、手元の他のファイルには触れない）。
+	 */
+	permitsFileInput(paneToken: string, files: unknown): boolean {
+		return Array.isArray(files) && files.length > 0 && files.every(file => typeof file === 'string' && this.inputsInFlight.get(file) === paneToken);
 	}
 
 	/**
