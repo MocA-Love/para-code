@@ -20,7 +20,7 @@
 // zsh/bash 以外のシェルは従来どおり upstream の getShellFileHistory にフォールバックする。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { join } from '../../../../base/common/path.js';
 import { isWindows, OperatingSystem } from '../../../../base/common/platform.js';
@@ -61,6 +61,23 @@ interface IParadisTerminalHistoryFileRequest {
 interface IFileHistoryResult {
 	readonly sourceLabel: string;
 	readonly commands: readonly string[];
+}
+
+/** 履歴の一覧（Q372）が読む、そのターミナルの履歴。どれも古い順。 */
+export interface IParadisTerminalHistorySources {
+	/** そのスペースの履歴ファイル（スペース別履歴を使っていなければ undefined）。 */
+	readonly space: readonly string[] | undefined;
+	/** VS Code 内に残している、全ターミナル共通のコマンドの履歴。 */
+	readonly persisted: readonly string[];
+	/** シェルの全体の履歴ファイル（`~/.zsh_history` など）。 */
+	readonly shellFile: readonly string[] | undefined;
+}
+
+let activeProvider: ParadisTerminalHistoryCompletionProvider | undefined;
+
+/** 登録中の履歴の提供元（履歴の一覧から読むため）。 */
+export function paradisTerminalHistoryProvider(): ParadisTerminalHistoryCompletionProvider | undefined {
+	return activeProvider;
 }
 
 /** Provider-lifetime pure decoder/parser seams; callers retain ownership. */
@@ -182,6 +199,59 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 			}
 		}
 		return completions;
+	}
+
+	/**
+	 * 履歴の一覧（Q372、`terminalHistoryPanel`）が読む、そのターミナルの履歴。どれも古い順。
+	 * 補完と同じキャッシュを使う。
+	 */
+	async getHistorySources(instance: ITerminalInstance, token: CancellationToken): Promise<IParadisTerminalHistorySources | undefined> {
+		if (this._isDisposed || token.isCancellationRequested) {
+			return undefined;
+		}
+		const spaceResult = await this._getSpaceFileHistory(instance, token);
+		if (this._isDisposed || token.isCancellationRequested || spaceResult.kind === 'cancelled') {
+			return undefined;
+		}
+		const fileResult = await this._getFileHistory(instance.shellType, token);
+		if (this._isDisposed || token.isCancellationRequested || fileResult.kind === 'cancelled') {
+			return undefined;
+		}
+		const history = this._instantiationService.invokeFunction(getCommandHistory);
+		return {
+			space: spaceResult.value?.commands,
+			persisted: Array.from(history.entries, ([command]) => command),
+			shellFile: fileResult.value?.commands,
+		};
+	}
+
+	/**
+	 * スペースの履歴フォルダにある、別のスペースの履歴ファイル（zsh・bash）を読む。`path` はシェルから
+	 * 見たパス。補完と同じキャッシュを使う。
+	 */
+	async readHistoryFile(path: string, shellType: PosixShellType.Bash | PosixShellType.Zsh, token: CancellationToken): Promise<readonly string[] | undefined> {
+		const resource = await this.toResource(path, token);
+		if (resource === undefined || this._isDisposed || token.isCancellationRequested) {
+			return undefined;
+		}
+		const request: IParadisTerminalHistoryFileRequest = Object.freeze({ shellType, sourceLabel: path, resource });
+		const result = await this._fileHistoryCache.get(paradisTerminalHistoryCacheKey(shellType, resource), token, () => this._loadFileHistory(request));
+		return result.kind === 'completed' ? result.value?.commands : undefined;
+	}
+
+	/** シェルから見たパスを、このウィンドウから読み書きできる URI にする（接続先なら接続先のファイル）。 */
+	async toResource(path: string, token: CancellationToken): Promise<URI | undefined> {
+		const locationResult = await this._location.get(token);
+		if (this._isDisposed || token.isCancellationRequested || locationResult.kind === 'cancelled' || !locationResult.value) {
+			return undefined;
+		}
+		return URI.from({ scheme: locationResult.value.scheme, authority: locationResult.value.authority, path: URI.file(path).path });
+	}
+
+	/** 履歴を読むときのホーム（cwd を `~` で縮めるため）。 */
+	async home(token: CancellationToken): Promise<string | undefined> {
+		const locationResult = await this._location.get(token);
+		return locationResult.kind === 'completed' ? locationResult.value?.home : undefined;
 	}
 
 	/**
@@ -320,6 +390,12 @@ export class ParadisTerminalHistoryCompletionContribution extends Disposable imp
 		super();
 
 		const provider = this._register(instantiationService.createInstance(ParadisTerminalHistoryCompletionProvider, undefined));
+		activeProvider = provider;
+		this._register(toDisposable(() => {
+			if (activeProvider === provider) {
+				activeProvider = undefined;
+			}
+		}));
 		this._register(terminalCompletionService.registerTerminalCompletionProvider(
 			'para',
 			ParadisTerminalHistoryCompletionProvider.ID,

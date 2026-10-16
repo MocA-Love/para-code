@@ -220,6 +220,7 @@ function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined
 
 function isExistingFile(filePath: string): boolean {
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Part of the synchronous command-line parser (paradisHookAgentKindFromCommandLine) that its callers use inline; it stats only when a space-joined path matches an agent.
 		return statSync(filePath).isFile();
 	} catch {
 		return false;

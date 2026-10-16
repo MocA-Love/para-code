@@ -953,6 +953,22 @@ suite('ParadisWorktreeGitService', () => {
 			assert.deepStrictEqual(clones[0].kills, ['SIGKILL']);
 		});
 
+		test('refuses a second clone with the same id while the first is still preparing to start', async () => {
+			const clones: IFakeClone[] = [];
+			const service = createService(clones);
+			const request = { url: 'https://example.invalid/big.git', targetPath: freshTarget(), cloneId: 'a' };
+
+			// 2 回目は 1 回目が起動する前（行き先の確認を待っている間）に呼ぶ
+			const first = service.cloneRepository(request);
+			const second = service.cloneRepository({ ...request, targetPath: freshTarget() });
+			await assert.rejects(second, /Clone already running: a/);
+			await untilStarted(clones, 1);
+
+			clones[0].close(0);
+			await first;
+			assert.strictEqual(clones.length, 1);
+		});
+
 		test('still lets a client cancel its own clone by id', async () => {
 			const clones: IFakeClone[] = [];
 			const service = createService(clones);

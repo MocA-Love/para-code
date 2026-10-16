@@ -22,12 +22,13 @@
 // ターミナルが変わり、しかもどちらも正常に見える)。
 
 import { spawn } from 'child_process';
-import { closeSync, mkdirSync, openSync } from 'fs';
+import { promises as fs } from 'fs';
 import { createConnection } from 'net';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { join } from '../../../../base/common/path.js';
+import { Promises } from '../../../../base/node/pfs.js';
 import { removeDangerousEnvVariables } from '../../../../base/common/processes.js';
 import { IChannel, IChannelClient, getDelayedChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
@@ -222,7 +223,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			return;
 		}
 
-		this.spawnDaemon();
+		await this.spawnDaemon();
 
 		const deadline = Date.now() + CONNECT_TIMEOUT;
 		for (; ;) {
@@ -246,11 +247,11 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 * 通常のログへ書くので、このファイルはほとんど空のままになる。空でないときは、起動に
 	 * 失敗しているということ。
 	 */
-	private openDaemonLog(): number | 'ignore' {
+	private async openDaemonLog(): Promise<number | 'ignore'> {
 		try {
 			const dir = this.environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath;
-			mkdirSync(dir, { recursive: true });
-			return openSync(join(dir, 'paradis-ptydaemon-startup.log'), 'a');
+			await fs.mkdir(dir, { recursive: true });
+			return await Promises.open(join(dir, 'paradis-ptydaemon-startup.log'), 'a');
 		} catch (error) {
 			this.logService.warn('[ParadisPtyDaemon] could not open a startup log for the daemon', error);
 			return 'ignore';
@@ -263,7 +264,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 * `unref()` まで済ませて、以後は一切面倒を見ない。起きたかどうかは繋いで確かめる
 	 * (起動の成否をプロセスの側から知ろうとすると、それだけで親子の縁が残る)。
 	 */
-	private spawnDaemon(): void {
+	private async spawnDaemon(): Promise<void> {
 		const env: { [key: string]: string | undefined } = {
 			...process.env,
 			...paradisPtyDaemonEnv(this.paths, this.buildId),
@@ -287,7 +288,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		// 開いたままのデバッガポート**になる。
 		removeDangerousEnvVariables(env);
 
-		const logHandle = this.openDaemonLog();
+		const logHandle = await this.openDaemonLog();
 
 		// Snap の Linux では、アプリの起動時に注入されたライブラリパスがそのまま子へ伝わり、
 		// そこから起きるシェルにまで波及する。upstream の `ElectronPtyHostStarter` と同じ手順で、
@@ -311,19 +312,21 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 			env,
 		});
 		this.environmentMainService.restoreSnapExportedVariables();
-		// 渡し終えたら親側の口は閉じる。開いたままだと、常駐が死んでもこちらが掴み続ける。
-		if (logHandle !== 'ignore') {
-			try {
-				closeSync(logHandle);
-			} catch {
-				// 閉じられなくても起動には関わらない。
-			}
-		}
+		// 'error' の受け手は await より前に付ける。起動の失敗は次のティックで届くので、閉じるのを
+		// 待っている間に受け手が無いと、main が未処理の 'error' で落ちる。
 		child.on('error', error => {
 			this.logService.error('[ParadisPtyDaemon] failed to spawn the daemon process', error);
 			reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
 		});
 		child.unref();
+		// 渡し終えたら親側の口は閉じる。開いたままだと、常駐が死んでもこちらが掴み続ける。
+		if (logHandle !== 'ignore') {
+			try {
+				await Promises.close(logHandle);
+			} catch {
+				// 閉じられなくても起動には関わらない。
+			}
+		}
 	}
 
 	/**

@@ -52,6 +52,7 @@ export function paradisOriginalBackupPath(filePath: string): string {
 function writeOriginalBackupSync(filePath: string): void {
 	const originalPath = paradisOriginalBackupPath(filePath);
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		lstatSync(originalPath);
 		return;
 	} catch {
@@ -59,11 +60,14 @@ function writeOriginalBackupSync(filePath: string): void {
 	}
 	const temporary = `${originalPath}.${process.pid}.${randomUUID()}.tmp`;
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		copyFileSync(filePath, temporary);
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		linkSync(temporary, originalPath);
 	} catch {
 		// 既にある（EEXIST）・元が無い・リンクできない
 	} finally {
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		rmSync(temporary, { force: true });
 	}
 }
@@ -106,6 +110,7 @@ function refuseSymlinkedBackup(backupPath: string, isSymbolicLink: boolean): voi
 export function paradisWriteRollingBackupSync(filePath: string, options?: IParadisRollingBackupOptions): boolean {
 	const backupPath = paradisRollingBackupPath(filePath);
 	try {
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		refuseSymlinkedBackup(backupPath, lstatSync(backupPath).isSymbolicLink());
 	} catch (error) {
 		if (!isNotFound(error)) {
@@ -115,6 +120,7 @@ export function paradisWriteRollingBackupSync(filePath: string, options?: IParad
 	const temporary = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
 	try {
 		try {
+			// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 			copyFileSync(filePath, temporary);
 		} catch (error) {
 			if (isNotFound(error)) {
@@ -125,9 +131,11 @@ export function paradisWriteRollingBackupSync(filePath: string, options?: IParad
 		if (options?.keepOriginal) {
 			writeOriginalBackupSync(filePath);
 		}
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		renameSync(temporary, backupPath);
 		return true;
 	} finally {
+		// eslint-disable-next-line local/code-no-sync-fs -- Sync variant for the hook setup compare-and-write, which must not yield between its compare and its write.
 		rmSync(temporary, { force: true });
 	}
 }

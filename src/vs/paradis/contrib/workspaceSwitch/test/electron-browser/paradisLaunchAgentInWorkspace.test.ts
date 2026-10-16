@@ -161,7 +161,7 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		});
 		assert.deepStrictEqual({ launched, sent }, {
 			launched: { instanceId: 7, paneToken: 'pane-token-7' },
-			sent: ['codex resume 0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'],
+			sent: ['codex resume --sandbox workspace-write --ask-for-approval on-request 0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'],
 		});
 	});
 });
