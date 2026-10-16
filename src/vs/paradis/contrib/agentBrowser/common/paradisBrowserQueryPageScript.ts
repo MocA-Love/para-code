@@ -11,16 +11,20 @@
 // 補助関数の差し込み）を受けないよう、TypeScript の関数ではなく文字列で持つ。ページの中では
 // Para Code の名前空間や import は使えない。
 //
-// 呼び方: `(spec, els, predicate) => 結果`。
+// 呼び方: `(spec, els, predicate, notAfter) => 結果`。
 //   - spec: paradisBrowserQuery.ts の IParadisQuerySpec（JSON）
 //   - els: evaluate_script の uid 引数で受けた要素（spec.targetIndex / spec.withinIndex が指す）
 //   - predicate: wait_until の述語（無ければ undefined）。呼ぶと関数か値を返す
+//   - notAfter: この時刻（エポックからの ms）を過ぎてから動き始めたら何もせずに `{ paraLate: true }` を返す（無ければ undefined）
 // 戻り値は JSON にできる値だけにする（evaluate_script が JSON.stringify する）。
+// どの層の API も使わない文字列なので common に置き、ブラウザのテスト（test/browser）が実際の文書で動かせるようにしている。
 
-import { PARADIS_POINTER_HIT_PAGE_SCRIPT } from '../common/paradisPointerHitPageScript.js';
+import { PARADIS_POINTER_HIT_PAGE_SCRIPT } from './paradisPointerHitPageScript.js';
 
 /** ページの中で動かす関数の本体。 */
-export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, predicate) => {
+export const PARADIS_BROWSER_QUERY_PAGE_SCRIPT = String.raw`async (spec, els, predicate, notAfter) => {
+	// Started too late (the page did not answer in time): do nothing, so a stale step does not scroll or type (q.html Q379).
+	if (typeof notAfter === 'number' && Date.now() > notAfter) { return { paraLate: true }; }
 	const MAX_ELEMENTS = 20000;
 	const norm = value => String(value === null || value === undefined ? '' : value).replace(/\s+/g, ' ').trim();
 	const squash = value => String(value === null || value === undefined ? '' : value).replace(/\s+/g, '').toLowerCase();
@@ -337,33 +341,44 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 	}
 
 	// --- scroll_to (one step) -------------------------------------------------------------------
-	if (spec.mode === 'scroll') {
-		let container;
+	const pickContainer = () => {
 		if (spec.container) {
-			container = selectAll(document, spec.container, [])[0];
-			if (!container) { return { containerMissing: true }; }
-		} else {
-			const scope = scopeOf();
-			if (scope && scope !== document && scrollsAlong(scope)) {
-				container = scope;
-			} else {
-				let best = null;
-				let bestArea = 0;
-				for (const candidate of collect(document, [])) {
-					if (candidate === document.body || candidate === document.documentElement || !scrollsAlong(candidate)) { continue; }
-					const area = visibleArea(candidate);
-					if (area > bestArea) { best = candidate; bestArea = area; }
-				}
-				const page = pageScroller();
-				container = best && (!scrollsAlong(page) || bestArea > innerWidth * innerHeight * 0.3) ? best : page;
-			}
+			return selectAll(document, spec.container, [])[0] || null;
 		}
+		const scope = scopeOf();
+		if (scope && scope !== document && scrollsAlong(scope)) {
+			return scope;
+		}
+		let best = null;
+		let bestArea = 0;
+		for (const candidate of collect(document, [])) {
+			if (candidate === document.body || candidate === document.documentElement || !scrollsAlong(candidate)) { continue; }
+			const area = visibleArea(candidate);
+			if (area > bestArea) { best = candidate; bestArea = area; }
+		}
+		const page = pageScroller();
+		return best && (!scrollsAlong(page) || bestArea > innerWidth * innerHeight * 0.3) ? best : page;
+	};
+	const extentOf = el => isPageScroller(el) ? (vertical ? pageScroller().scrollHeight : pageScroller().scrollWidth) : (vertical ? el.scrollHeight : el.scrollWidth);
+	const maxPosition = el => Math.max(0, extentOf(el) - (isPageScroller(el) ? (vertical ? innerHeight : innerWidth) : (vertical ? el.clientHeight : el.clientWidth)));
+	const scrollToPosition = (el, position) => {
+		if (isPageScroller(el)) { window.scrollTo({ top: vertical ? position : scrollY, left: vertical ? scrollX : position, behavior: 'instant' }); }
+		else if (vertical) { el.scrollTop = position; }
+		else { el.scrollLeft = position; }
+	};
+	if (spec.mode === 'scroll') {
+		const container = pickContainer();
+		if (!container) { return { containerMissing: true }; }
 		const label = isPageScroller(container) ? 'the page' : shortLabel(container);
 		if (spec.reset) {
-			if (isPageScroller(container)) { window.scrollTo({ top: vertical ? 0 : scrollY, left: vertical ? scrollX : 0, behavior: 'instant' }); }
-			else if (vertical) { container.scrollTop = 0; }
-			else { container.scrollLeft = 0; }
-			return { found: false, reset: true, container: label };
+			// resetTo "end": the far end, for a search that goes up or left.
+			const before = scrollPosition(container);
+			scrollToPosition(container, spec.resetTo === 'end' ? maxPosition(container) : 0);
+			return { found: false, reset: true, container: label, before: Math.round(before) };
+		}
+		if (typeof spec.restoreTo === 'number') {
+			scrollToPosition(container, spec.restoreTo);
+			return { restored: true, container: label };
 		}
 		const found = find();
 		if (found === null && spec.withinIndex === undefined && !spec.container) {
@@ -377,7 +392,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			return { found: true, matched: found.length, element: describe(el), container: label };
 		}
 		if (spec.checkOnly) {
-			return { found: false, moved: 0, container: label };
+			return { found: false, moved: 0, container: label, extent: Math.round(extentOf(container)) };
 		}
 		const before = scrollPosition(container);
 		const size = isPageScroller(container) ? (vertical ? innerHeight : innerWidth) : (vertical ? container.clientHeight : container.clientWidth);
@@ -386,7 +401,34 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		const delta = { top: vertical ? sign * step : 0, left: vertical ? 0 : sign * step, behavior: 'instant' };
 		if (isPageScroller(container)) { window.scrollBy(delta); } else { container.scrollBy(delta); }
 		const after = scrollPosition(container);
-		return { found: false, moved: Math.round(after - before), position: Math.round(after), container: label };
+		return { found: false, moved: Math.round(after - before), before: Math.round(before), position: Math.round(after), max: Math.round(maxPosition(container)), extent: Math.round(extentOf(container)), container: label };
+	}
+
+	// --- scroll_to (why nothing was found) ------------------------------------------------------
+	// Run once after a miss: things that keep an element out of reach of scrolling.
+	if (spec.mode === 'scrollMiss') {
+		const all = collect(document, []);
+		const hints = {};
+		if (spec.text) {
+			const wanted = lower(spec.text);
+			const fields = all.filter(el => ((el.localName === 'input' || el.localName === 'textarea') && lower(el.value).includes(wanted))
+				|| (el.localName === 'select' && Array.from(el.selectedOptions || []).some(option => lower(option.textContent).includes(wanted))));
+			if (fields.length > 0) { hints.inField = { count: fields.length, first: describe(fields[0]) }; }
+		}
+		const collapsed = all.filter(el => el.getAttribute('aria-expanded') === 'false' && visible(el));
+		if (collapsed.length > 0) {
+			hints.collapsed = { count: collapsed.length, names: collapsed.slice(0, 3).map(el => cut(nameOf(el) || textOf(el), 60)) };
+		}
+		const dialog = all.find(el => ((el.localName === 'dialog' && el.open) || roleOf(el) === 'dialog' || roleOf(el) === 'alertdialog' || el.getAttribute('aria-modal') === 'true') && visible(el));
+		if (dialog) { hints.dialog = cut(nameOf(dialog) || textOf(dialog), 80); }
+		if (spec.role && spec.name) {
+			const role = lower(spec.role);
+			hints.sameRole = all.filter(el => roleOf(el) === role && visible(el)).map(el => cut(nameOf(el), 60)).filter(Boolean).slice(0, 8);
+		}
+		const used = pickContainer();
+		hints.otherContainers = all.filter(el => el !== used && el !== document.body && el !== document.documentElement && scrollsAlong(el) && visibleArea(el) > 0)
+			.sort((a, b) => visibleArea(b) - visibleArea(a)).slice(0, 3).map(shortLabel);
+		return hints;
 	}
 
 	// --- click_by / fill_by --------------------------------------------------------------------
