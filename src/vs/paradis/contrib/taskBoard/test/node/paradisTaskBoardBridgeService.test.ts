@@ -127,6 +127,17 @@ suite('ParadisTaskBoardBridgeService', () => {
 		assert.deepStrictEqual(router.calls.filter(call => call.method === 'launch').map(call => call.ctx), ['window:2']);
 	});
 
+	test('launch never picks a remote (SSH) window, and refuses when only remote windows are open', async () => {
+		const router = new FakeRouter();
+		router.descriptions['window:1'] = { focused: true, canAddRepository: true, remote: true, repositories: [], spaces: [{ path: '/other', name: 'other' }] };
+		router.descriptions['window:2'] = { focused: false, canAddRepository: true, repositories: [], spaces: [] };
+		const service = create(router);
+		await launch(service, '/other');
+		router.descriptions['window:2'] = { ...router.descriptions['window:2'], remote: true };
+		const refused = await service.handle('POST', '/v1/launch', new URLSearchParams(), { launchId: 'L2', repoPath: '/other', agent: 'claude', prompt: 'work' }) as { status: number };
+		assert.deepStrictEqual({ launched: router.calls.filter(call => call.method === 'launch').map(call => call.ctx), refused: refused.status }, { launched: ['window:2'], refused: 503 });
+	});
+
 	test('status events carry the launchId, only the owning window may report, and the window errors map to HTTP', async () => {
 		const router = new FakeRouter();
 		const service = create(router);

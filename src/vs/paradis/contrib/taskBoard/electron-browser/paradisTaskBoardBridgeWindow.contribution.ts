@@ -34,6 +34,7 @@ import { TerminalExitReason } from '../../../../platform/terminal/common/termina
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
@@ -220,6 +221,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this.bridge = sharedProcessService.getChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL);
@@ -318,7 +320,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		const spaces = paradisListSpaces(this.switchService.repositories, this.worktreeService)
 			.filter(space => space.uri.scheme === Schemas.file)
 			.map(space => ({ path: space.uri.fsPath, name: space.name }));
-		return { focused: this.hostService.hasFocus, canAddRepository: this.contextService.getWorkbenchState() === WorkbenchState.WORKSPACE, repositories, spaces };
+		return { focused: this.hostService.hasFocus, canAddRepository: this.contextService.getWorkbenchState() === WorkbenchState.WORKSPACE, remote: this.environmentService.remoteAuthority !== undefined, repositories, spaces };
 	}
 
 	// --- ターミナルの特定 ---------------------------------------------------------------------
@@ -581,6 +583,10 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 
 	private async launch(request: IParadisTaskBoardLaunchRequest, token: CancellationToken): Promise<Result<{ readonly terminal: string }>> {
 		await this.ready;
+		// SSH のウィンドウでは起動しない（IParadisTaskBoardWindowDescription.remote。接続口も選ばないが、念のため）
+		if (this.environmentService.remoteAuthority !== undefined) {
+			return paradisTaskBoardFail('unavailable', 'This Para Code window is connected to a remote host.');
+		}
 		const agent = this.modelCatalogService.getAgentTemplates().find(candidate => candidate.id === request.agent);
 		if (!agent) {
 			return paradisTaskBoardFail('invalid', `Agent "${request.agent}" is not configured in Para Code.`);
