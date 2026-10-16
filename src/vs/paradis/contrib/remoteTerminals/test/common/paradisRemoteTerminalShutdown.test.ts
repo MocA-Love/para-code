@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisRemoteTerminalShutdownInput, IParadisStrandedTerminalNoticeInput, paradisParseKeepRemoteTerminalsChoice, paradisPlanRemoteTerminalShutdown, paradisShouldReportStrandedTerminals } from '../../common/paradisRemoteTerminalShutdown.js';
+import { IParadisRemoteTerminalShutdownInput, IParadisStrandedTerminalNoticeInput, paradisParseKeepRemoteTerminalsChoice, paradisParseKeptRemoteTerminals, paradisPlanRemoteTerminalShutdown, paradisShouldReportStrandedTerminals } from '../../common/paradisRemoteTerminalShutdown.js';
 import { PARADIS_TERMINAL_RECONNECTION_GRACE_TIME, paradisTerminalReconnectionGraceTime } from '../../common/paradisTerminalGraceTime.js';
 
 suite('ParadisRemoteTerminalShutdown', () => {
@@ -131,6 +131,16 @@ suite('ParadisRemoteTerminalShutdown', () => {
 				shouldReport({ now: 1_000 + PARADIS_TERMINAL_RECONNECTION_GRACE_TIME + 1 }),
 				shouldReport({ now: 0 }),
 			], [true, false, false]);
+		});
+
+		// 接続先の常駐に預けていたものは、更新後の版のサーバーが引き取る（paradisPtyReadopt.ts）。
+		test('stays quiet when the terminals were kept in the daemon on the host', () => {
+			assert.deepStrictEqual([
+				shouldReport({ record: { commit: 'aaaaaaaa', at: 1_000, count: 3, acrossUpdates: true } }),
+				shouldReport({ record: paradisParseKeptRemoteTerminals(JSON.stringify({ commit: 'aaaaaaaa', at: 1_000, count: 3, acrossUpdates: true })) }),
+				// 古い版が書いた記録（印が無い）は今までどおり伝える。
+				shouldReport({ record: paradisParseKeptRemoteTerminals(JSON.stringify({ commit: 'aaaaaaaa', at: 1_000, count: 3 })) }),
+			], [false, false, true]);
 		});
 	});
 
