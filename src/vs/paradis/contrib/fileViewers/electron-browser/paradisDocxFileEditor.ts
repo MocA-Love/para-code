@@ -54,6 +54,7 @@ import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, para
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
+import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagnostics.js';
 import { sanitizeParadisDocxBytesForRenderer } from './paradisDocxDiffWebview.js';
 import { localize } from '../../../../nls.js';
@@ -71,6 +72,24 @@ import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from '
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
+
+/** 覚えておく 1 件分。消毒した文書と、その後の処理（図形・詳しい解析）に渡すバイト列。 */
+interface IParadisDocxOpenCacheValue {
+	/** 元のファイルの中身（詳しい解析に渡す）。 */
+	readonly source: Uint8Array;
+	/** 消毒した文書（図形の取り出しに渡す）と、それを HTML に埋める base64。 */
+	readonly sanitized: Uint8Array;
+	readonly inlineData: string;
+	readonly placeholders: readonly ParadisOfficePlaceholder[];
+	readonly exclusions: ParadisWordPackageExclusions;
+}
+
+/**
+ * 消毒した文書を、ウィンドウにつき 1 つ覚えておく。タブを戻したとき・表示の切り替え（倍率・表示モード）で
+ * 描き直すときに、読み込みと消毒を省く。文書は小さい（無圧縮で中央値 120 KB ほど）ので、最近の 8 件まで、
+ * 合計 48 MiB まで。Word のタブがどれも何も表示しなくなって 10 分たったら全部手放す。
+ */
+const DOCX_OPEN_CACHE = new ParadisOfficeOpenCache<IParadisDocxOpenCacheValue>({ maxEntries: 8, maxBytes: 48 * 1024 * 1024, idleMs: 10 * 60 * 1000 });
 
 const INCOMPLETE_WORD_MANIFEST: ParadisOfficeCompletenessManifest = Object.freeze({
 	expectedParts: 1, visitedParts: 0, parsedParts: 0, opaqueParts: 0, failedParts: 0, omittedParts: 0,
@@ -268,6 +287,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _assetSanitization = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 文書を表示しているあいだ、覚えておいた消毒済みの文書を手放させない。 */
+	private readonly _openCacheLease = this._register(new MutableDisposable());
 	private readonly _changeInspector = this._register(new MutableDisposable<ParadisWordChangeInspector>());
 	private readonly _findWidget = this._register(new MutableDisposable<ParadisOfficeFindWidget>());
 	private _accessibility: ParadisOfficeAccessibility | undefined;
@@ -472,6 +493,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			store.add(watcher);
 			store.add(watcher.onDidChange(e => {
 				if (e.contains(resource)) {
+					// 変わったファイルの消毒結果は使わない（更新時刻と大きさが変わらない書き換えもあるので、etag に頼らない）。
+					DOCX_OPEN_CACHE.delete(resource);
 					scheduleWatchRerender();
 				}
 			}));
@@ -806,14 +829,26 @@ export class ParadisDocxFileEditor extends EditorPane {
 		let semanticSource: Uint8Array | undefined;
 		if (decision === 'viewer') {
 			try {
-				const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-				this._probe.setBytes(content.value.byteLength);
-				semanticSource = content.value.buffer;
-				const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `docx_${generation}`, token);
-				inlineData = encodeBase64(VSBuffer.wrap(sanitized.bytes));
-				this._assetPlaceholders = sanitized.placeholders;
-				this._packageExclusions = paradisWordPackageExclusions(sanitized);
-				overlaySource = sanitized.bytes;
+				// 同じ文書を前に消毒していて、ファイルが変わっていなければ、覚えた結果を使う。
+				const read = await readParadisOfficeFile(this._fileService, resource, DOCX_OPEN_CACHE, PARADIS_DOCX_MAX_BYTES);
+				let document: IParadisDocxOpenCacheValue;
+				if (read.kind === 'cached') {
+					document = read.value;
+					this._probe.setBytes(document.source.byteLength);
+				} else {
+					const source = read.content.value.buffer;
+					this._probe.setBytes(source.byteLength);
+					const sanitized = await sanitizeParadisDocxBytesForRenderer(source, `docx_${generation}`, token);
+					const inline = encodeBase64(VSBuffer.wrap(sanitized.bytes));
+					document = { source, sanitized: sanitized.bytes, inlineData: inline, placeholders: sanitized.placeholders, exclusions: paradisWordPackageExclusions(sanitized) };
+					DOCX_OPEN_CACHE.set(resource, read.content.etag, document, source.byteLength + sanitized.bytes.byteLength + inline.length);
+				}
+				semanticSource = document.source;
+				inlineData = document.inlineData;
+				this._assetPlaceholders = document.placeholders;
+				this._packageExclusions = document.exclusions;
+				overlaySource = document.sanitized;
+				this._openCacheLease.value ??= DOCX_OPEN_CACHE.acquire();
 			} catch (error) {
 				// 理由を覚えておく。この先 `rejected` として画面に出るときに、これが原因欄になる
 				// （記録しないと「読めなかった」だけが残り、なぜ読めなかったのかが失われる）。
@@ -1619,6 +1654,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	override clearInput(): void {
 		this._probe.endOpen();
 		this._assetSanitization.value?.cancel();
+		this._openCacheLease.clear();
 		this._inputEpoch++;
 		this._inputDisposables.clear();
 		this._clearSemanticUi();
