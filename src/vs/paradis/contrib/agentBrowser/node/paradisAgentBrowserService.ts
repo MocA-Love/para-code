@@ -693,6 +693,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** OSC 7501 の状態を受けた時刻（ペインごとの直近 1 秒分）。速すぎる書き換えを断る。 */
 	private readonly _programStatusTimes = new Map<string, number[]>();
 	/**
+	 * Codex の OSC 7501 が書いたペインの状態（書いた値そのもの）。hook が初めて届いたとき、まだこの値のままなら消す
+	 * （起動直後の working の後、idle より先に SessionStart が届くと、idle は hook 優先で捨てられ working が残るため）。
+	 */
+	private readonly _codexProgramStatusEntries = new Map<string, IParadisPaneStatusEntry>();
+	/**
 	 * 許可待ち・質問中が hook ではなく transcript から解かれ、その後に確かめた hook がまだ来ていないペイン。
 	 * transcript は同じユーザーの別プロセスが追記できるので、これで解かれた状態を IDE 操作ツールは
 	 * 信用しない（Enter を送らない）。確かめた hook が来たら外す。
@@ -1692,13 +1697,28 @@ export class ParadisAgentBrowserService extends Disposable {
 			return false;
 		}
 		if (next === 'idle') {
+			this._codexProgramStatusEntries.delete(token);
 			return this._paneStatuses.delete(token);
 		}
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
 			this._userTurnStarts.set(token, now);
 		}
-		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
+		const entry: IParadisPaneStatusEntry = { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) };
+		this._paneStatuses.set(token, entry);
+		this._codexProgramStatusEntries.set(token, entry);
 		return true;
+	}
+
+	/** hook が届いた。Codex の OSC が書いた状態がまだ残っていれば消す（hook が正本になるので、OSC の idle はもう来ない）。 */
+	private _forgetCodexProgramStatus(token: string): void {
+		const entry = this._codexProgramStatusEntries.get(token);
+		if (entry === undefined) {
+			return;
+		}
+		this._codexProgramStatusEntries.delete(token);
+		if (this._paneStatuses.get(token) === entry) {
+			this._paneStatuses.delete(token);
+		}
 	}
 
 	private _validateProjectedShellPids(windowCtx: string, manifest: IParadisBindingAuthorityManifest): void {
@@ -2126,6 +2146,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._hookReportedTokens.delete(token);
 		this._programStatusTokens.delete(token);
 		this._programStatusTimes.delete(token);
+		this._codexProgramStatusEntries.delete(token);
 		this._replayedPrompts.delete(token);
 		this._hookSpoolCheckedTokens.delete(token);
 		this._unconfirmedReleaseTokens.delete(token);
@@ -4178,6 +4199,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._hookReportedTokens.add(token);
 					// hook が届くペインは hook が正本（OSC 7501 の状態は使わない）
 					this._programStatusTokens.delete(token);
+					this._forgetCodexProgramStatus(token);
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);

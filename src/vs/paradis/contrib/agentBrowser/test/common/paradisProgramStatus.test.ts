@@ -507,4 +507,37 @@ suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 			appAfterClose: 'codex',
 		});
 	});
+
+	test('receive opens the Codex gate before it checks the gate, and marks the clear that ends a Codex run', () => {
+		let now = 1_000_000;
+		const tracker = new ParadisProgramStatusTracker(new ParadisProgramStatusGate(() => now));
+		const receipts: unknown[] = [];
+		const feed = (sequence: string, commandLine: string | undefined, processTitle: string | undefined) => {
+			const parsed = paradisParseProgramStatus(sequence);
+			if (parsed !== undefined && parsed !== 'query') {
+				receipts.push(tracker.receive(parsed, commandLine, processTitle));
+			}
+			now += 300;
+		};
+		// What Codex 0.163.0 wrote: the start blip, a turn, then /exit
+		feed('state=working:app=codex', 'codex resume 019f-thread', 'node');
+		feed('state=idle:app=codex', 'codex resume 019f-thread', 'node');
+		feed('state=working:app=codex', 'codex resume 019f-thread', 'node');
+		feed('state=clear', 'codex resume 019f-thread', 'node');
+		// After the clear the gate is closed: a stray clear is not passed, the next Codex state reopens it
+		feed('state=clear', 'codex resume 019f-thread', 'node');
+		feed('state=working:app=codex', 'codex', 'node');
+		// Claude Code's clear is passed without the Codex mark
+		tracker.query('claude', '2.1.295');
+		feed('state=clear', 'claude', '2.1.295');
+		assert.deepStrictEqual(receipts, [
+			{ reopened: true, wasOpen: true, send: { state: 'working', app: 'codex' } },
+			{ reopened: false, wasOpen: true, send: { state: 'idle', app: 'codex' } },
+			{ reopened: false, wasOpen: true, send: { state: 'working', app: 'codex' } },
+			{ reopened: false, wasOpen: true, send: { state: 'clear', app: 'codex' } },
+			{ reopened: false, wasOpen: false, send: undefined },
+			{ reopened: true, wasOpen: true, send: { state: 'working', app: 'codex' } },
+			{ reopened: false, wasOpen: true, send: { state: 'clear' } },
+		]);
+	});
 });

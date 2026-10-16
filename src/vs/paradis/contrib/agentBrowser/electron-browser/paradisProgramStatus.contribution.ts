@@ -135,18 +135,15 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 					});
 				}
 			} else if (parsed !== undefined) {
-				if (parsed.app === 'codex' && !this.gate.isOpen) {
-					const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
-					if (this.tracker.codexStatus(trustedCommandLine, this.foregroundProcess)) {
-						this.endRun('reopened');
-						this.runStats.opened(undefined, 'codex');
-					}
+				const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
+				const { reopened, wasOpen, send } = this.tracker.receive(parsed, trustedCommandLine, this.foregroundProcess);
+				if (reopened) {
+					// 前の受け付けの後に数えた件数を先に送ってから数え直す
+					this.endRun('reopened');
+					this.runStats.opened(undefined, 'codex');
 				}
-				const wasOpen = this.gate.isOpen;
-				// Codex の受け付けで届いた clear は Codex のものとして送る（shared process は Claude Code の clear と扱いを分ける）
-				const codexClear = parsed.state === 'clear' && this.gate.app === 'codex';
-				if (this.gate.accept(parsed)) {
-					this.send(codexClear ? { state: 'clear', app: 'codex' } : parsed);
+				if (send !== undefined) {
+					this.send(send);
 					if (parsed.state === 'clear') {
 						this.endRun('clear-status');
 					}

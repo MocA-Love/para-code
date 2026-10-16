@@ -749,6 +749,7 @@ function createServiceFixture(generation: number): {
 		_hookSpoolCheckedTokens: new Set<string>(),
 		_programStatusTokens: new Set(),
 		_programStatusTimes: new Map(),
+		_codexProgramStatusEntries: new Map(),
 		_replayedPrompts: new Map<string, unknown>(),
 		_hookSpoolReplayAfter: 0,
 		_recentHookIds: new Set<string>(),
