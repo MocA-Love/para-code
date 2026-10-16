@@ -114,8 +114,11 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 	}
 	const bypass = options?.dangerouslyBypassPermissions === true;
 	if (agent === 'claude') {
-		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）
+		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）。
+		// 省くときは `--permission-mode` を付けない（`--dangerously-skip-permissions` は `--permission-mode bypassPermissions` と同じ意味で、
+		// 両方を付けたときにどちらが勝つかは公式の文書に無い）
 		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
 	}
-	return `codex ${bypass ? '--dangerously-bypass-approvals-and-sandbox ' : ''}${mode === 'fork' ? 'fork' : 'resume'} ${sessionId}`;
+	// `codex resume --help`・`codex fork --help` に載っている位置（サブコマンドの後ろ）に置く
+	return `codex ${mode === 'fork' ? 'fork' : 'resume'} ${bypass ? '--dangerously-bypass-approvals-and-sandbox ' : ''}${sessionId}`;
 }

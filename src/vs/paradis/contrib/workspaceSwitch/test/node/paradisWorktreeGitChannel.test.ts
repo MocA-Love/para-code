@@ -24,6 +24,8 @@ import { IPCServer } from '../../../../../base/parts/ipc/common/ipc.js';
 import { NativeParsedArgs } from '../../../../../platform/environment/common/argv.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { ParadisWorktreeGitChannel, ParadisWorktreeGitService, registerParadisWorktreeGit, registerParadisWorktreeGitForServer } from '../../node/paradisWorktreeGitChannel.js';
+import { ParadisGithubCallLog, paradisClearGithubCallSink, paradisSetGithubCallSink } from '../../../githubMetrics/common/paradisGithubMetrics.js';
+import { ParadisGithubRateLimitPause } from '../../../githubMetrics/common/paradisGithubRateLimitPause.js';
 
 interface IExecFileCall {
 	command: string;
@@ -668,6 +670,194 @@ suite('ParadisWorktreeGitService', () => {
 				first: 'line 100',
 				args: [['run', 'view', '--job', '77', '--log-failed', '-R', 'o/r']],
 			});
+		});
+	});
+
+	// 各ウィンドウの一覧とスマホのリレーは同じ worktree を5分ごとに別々に問い合わせる。ここで束ね、
+	// 枠を使い切ったら窓が回るまで gh を呼ばない（Q373）
+	suite('GitHub status lookups', () => {
+		const PR_JSON = JSON.stringify({ number: 12, title: 'Add sync', url: 'https://github.com/o/r/pull/12', state: 'OPEN', isDraft: false, headRefName: 'feature' });
+		const RATE_LIMITED = 'GraphQL: API rate limit already exceeded for user ID 1.';
+
+		function createHarness() {
+			const state = {
+				now: 1_000_000,
+				branch: 'feature',
+				ghCalls: [] as string[][],
+				respond: (_args: readonly string[]): { stdout?: string; error?: string } => ({ stdout: PR_JSON }),
+			};
+			const pause = new ParadisGithubRateLimitPause(() => state.now);
+			const execFile = ((command: string, args: readonly string[], _options: cp.ExecFileOptions, callback: (error: cp.ExecFileException | null, stdout: string, stderr: string) => void) => {
+				const response = command === 'git' ? { stdout: `${state.branch}\n` } : state.respond(args);
+				if (command !== 'git') {
+					state.ghCalls.push([...args]);
+				}
+				queueMicrotask(() => response.error !== undefined
+					? callback(Object.assign(new Error('exit 1'), { code: 1 }), '', response.error)
+					: callback(null, response.stdout ?? '', ''));
+				return {} as cp.ChildProcess;
+			}) as typeof cp.execFile;
+			const service = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, execFile, async () => ({}), false, undefined, undefined, pause, () => state.now);
+			return { service, pause, state };
+		}
+
+		test('records pr view and issue view against the GraphQL budget, not REST', async () => {
+			const log = new ParadisGithubCallLog(0);
+			paradisSetGithubCallSink(log);
+			try {
+				const harness = createHarness();
+				await harness.service.getPrStatus('/repo');
+				harness.state.respond = () => ({ stdout: JSON.stringify({ number: 7, title: 'Bug', url: 'https://github.com/o/r/issues/7', state: 'OPEN' }) });
+				await harness.service.getIssueStatuses('/repo', ['https://github.com/o/r/issues/7']);
+			} finally {
+				paradisClearGithubCallSink(log);
+			}
+
+			assert.deepStrictEqual(log.snapshot(Date.now()).operations.map(operation => [operation.callSite, operation.resource]).sort(), [
+				['gh issue view', 'graphql'],
+				['gh pr view', 'graphql'],
+			]);
+		});
+
+		test('reuses a PR status (and the lack of one) across callers until it expires or the branch changes', async () => {
+			const harness = createHarness();
+
+			const [first, second] = await Promise.all([harness.service.getPrStatus('/repo'), harness.service.getPrStatus('/repo')]);
+			await harness.service.getPrStatus('/repo');
+			harness.state.branch = 'other';
+			harness.state.respond = () => ({ error: 'no pull requests found for branch "other"' });
+			const none = await harness.service.getPrStatus('/repo');
+			await harness.service.getPrStatus('/repo');
+			const callsBeforeExpiry = harness.state.ghCalls.length;
+			harness.state.now += 270_000;
+			await harness.service.getPrStatus('/repo');
+
+			assert.deepStrictEqual({ first: first?.number, same: second === first, none, callsBeforeExpiry, callsAfterExpiry: harness.state.ghCalls.length }, {
+				first: 12,
+				same: true,
+				none: undefined,
+				// 同時の2本と期限内の1本で1回、ブランチを切り替えて1回（PR が無いことも使い回す）
+				callsBeforeExpiry: 2,
+				callsAfterExpiry: 3,
+			});
+		});
+
+		test('stops calling gh for PRs and issues until the reset once the GraphQL budget runs out, keeping the last known state', async () => {
+			const harness = createHarness();
+			const known = await harness.service.getPrStatus('/repo');
+			harness.state.now += 270_000;
+			harness.state.respond = () => ({ error: RATE_LIMITED });
+
+			const whileLimited = await harness.service.getPrStatus('/repo');
+			const callsAfterLimit = harness.state.ghCalls.length;
+			const otherWorktree = await harness.service.getPrStatus('/repo-2');
+			const issues = await harness.service.getIssueStatuses('/repo', ['https://github.com/o/r/issues/7']);
+			const pausedUntil = harness.pause.pausedUntilFor('', 'graphql');
+			harness.state.now += 15 * 60_000;
+			harness.state.respond = () => ({ stdout: PR_JSON });
+			await harness.service.getPrStatus('/repo-2');
+
+			assert.deepStrictEqual({
+				keptChip: whileLimited?.number === known?.number,
+				callsAfterLimit,
+				otherWorktree,
+				issues,
+				pausedUntil,
+				callsAfterResume: harness.state.ghCalls.length,
+			}, {
+				keptChip: true,
+				callsAfterLimit: 2,
+				// 止めている間は gh を呼ばない（取れたことのない worktree・Issue は空のまま）
+				otherWorktree: undefined,
+				issues: { resolved: {}, attempted: [] },
+				// 残量のプローブがまだリセット時刻を知らないので、15分だけ止める
+				pausedUntil: 1_000_000 + 270_000 + 15 * 60_000,
+				callsAfterResume: 3,
+			});
+		});
+
+		test('refetches the current space every 5 minutes and the others every 15, and only the new one after a switch', async () => {
+			const harness = createHarness();
+			const ACTIVE = 270_000;
+			const OTHER = 870_000;
+			const poll = async (activePath: string) => {
+				for (const path of ['/repo-a', '/repo-b', '/repo-c']) {
+					await harness.service.getPrStatus(path, path === activePath ? ACTIVE : OTHER);
+				}
+			};
+			const fetchedPaths = () => harness.state.ghCalls.length;
+
+			await poll('/repo-a');
+			const initial = fetchedPaths();
+			harness.state.now += 300_000;
+			await poll('/repo-a');
+			const after5 = fetchedPaths();
+			// 切り替え: 切り替えた先 (b) は5分より古いので取り直し、元のスペース (a) は15分まで使い回す
+			await poll('/repo-b');
+			const afterSwitch = fetchedPaths();
+			harness.state.now += 600_000;
+			await poll('/repo-b');
+
+			assert.deepStrictEqual({ initial, after5, afterSwitch, after15: fetchedPaths() }, {
+				initial: 3,
+				after5: 4,
+				afterSwitch: 5,
+				// 15分経った c と、今いるスペースの b。a は5分前に取ったばかりなので使い回す
+				after15: 7,
+			});
+		});
+
+		test('asks about closed issues only every two hours, so a reopened one comes back, and refreshes open ones after the lifetime', async () => {
+			const harness = createHarness();
+			const issue = (number: number, state: 'OPEN' | 'CLOSED') => JSON.stringify({ number, title: `Issue ${number}`, url: `https://github.com/o/r/issues/${number}`, state });
+			let firstState: 'OPEN' | 'CLOSED' = 'CLOSED';
+			harness.state.respond = args => ({ stdout: args[2] === '1' ? issue(1, firstState) : issue(2, 'OPEN') });
+			const urls = ['https://github.com/o/r/issues/1', 'https://github.com/o/r/issues/2'];
+
+			const first = await harness.service.getIssueStatuses('/repo', urls);
+			await harness.service.getIssueStatuses('/repo-2', urls);
+			harness.state.now += 270_000;
+			const later = await harness.service.getIssueStatuses('/repo', urls);
+			const callsBeforeReopen = harness.state.ghCalls.map(args => args[2]);
+			// #1 が開き直された。2時間たてば取り直して開いた状態に戻る
+			firstState = 'OPEN';
+			harness.state.now += 2 * 60 * 60_000 - 270_000;
+			const reopened = await harness.service.getIssueStatuses('/repo', urls);
+
+			assert.deepStrictEqual({
+				states: Object.values(first.resolved).map(status => status.state),
+				attempted: later.attempted,
+				callsBeforeReopen,
+				reopened: reopened.resolved[urls[0]]?.state,
+			}, {
+				states: ['closed', 'open'],
+				attempted: urls,
+				// 閉じた #1 は1回だけ。開いている #2 は期限が過ぎてから取り直す
+				callsBeforeReopen: ['1', '2', '2'],
+				reopened: 'open',
+			});
+		});
+
+		test('refetches the PR of a worktree right after it was merged from the phone, and reuses what the PR screen read', async () => {
+			const harness = createHarness();
+			const merged = JSON.stringify({ number: 12, title: 'Add sync', url: 'https://github.com/o/r/pull/12', state: 'MERGED', isDraft: false, headRefName: 'feature' });
+			const before = await harness.service.getPrStatus('/repo');
+			harness.state.respond = args => args[0] === 'repo'
+				? { stdout: JSON.stringify({ viewerDefaultMergeMethod: 'SQUASH', mergeCommitAllowed: true, squashMergeAllowed: true, rebaseMergeAllowed: true }) }
+				: args[1] === 'merge' ? { stdout: '' } : { stdout: merged };
+			await harness.service.mergePullRequest('/repo', { repo: 'o/r', number: 12, headSha: 'a'.repeat(40) });
+			const afterMerge = await harness.service.getPrStatus('/repo');
+			// スマホの PR の画面が読んだ状態は一覧でも使い回す（取り直さない）
+			await harness.service.getPullRequestDetail('/repo-2');
+			const callsBeforeList = harness.state.ghCalls.length;
+			const fromDetail = await harness.service.getPrStatus('/repo-2');
+
+			assert.deepStrictEqual({
+				before: before?.state,
+				afterMerge: afterMerge?.state,
+				fromDetail: fromDetail?.state,
+				listCallsAfterDetail: harness.state.ghCalls.length - callsBeforeList,
+			}, { before: 'open', afterMerge: 'merged', fromDetail: 'merged', listCallsAfterDetail: 0 });
 		});
 	});
 
