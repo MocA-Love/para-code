@@ -1064,11 +1064,14 @@ suite('ParadisAgentBrowser authority integration', () => {
 			idleTaken,
 			codex: await status('codex'),
 			turn: await status('turn'),
+			// what the renderer's status producer (and through it the phone) polls
+			snapshot: (await fixture.service.listAgentStatusSnapshot(connection)).paneStatuses.map(entry => `${entry.token}:${entry.status}`),
 		}, {
 			hook: { ok: false, reason: 'ignored event' },
 			idleTaken: false,
 			codex: 'idle',
 			turn: 'working',
+			snapshot: ['turn:working'],
 		});
 	});
 
