@@ -270,7 +270,7 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 	// PARA-PATCH: terminals here may belong to a daemon that outlives this server, so a client that
 	// updates and reconnects finds them still running. Same code as locally; only who starts the pty
 	// host differs. See vs/paradis/contrib/ptyDaemon.
-	paradisEnableRemotePtyHostDaemon(configurationService, environmentService.userDataPath, logService);
+	disposables.add(paradisEnableRemotePtyHostDaemon(configurationService, environmentService.userDataPath, logService));
 
 	// PARA-PATCH: terminals wait longer than the connection does. Losing the connection state costs
 	// a reconnect; losing a terminal costs whatever was running in it. See paradisTerminalGraceTime.ts.

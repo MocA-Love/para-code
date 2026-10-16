@@ -10,7 +10,7 @@
  * Colors are theme variables only, and sizes follow the Para Code dialogs (radius 8px / buttons 5px /
  * body 13px), so the tab does not look like a different app inside the editor area. */
 
-/* ---------- mark: codicon `files` with `arrow-swap` on top (plan 3) ---------- */
+/* ---------- mark: codicon `folder` with `arrow-swap` on top, centered as a whole (Q371 plan C) ---------- */
 
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer {
@@ -20,10 +20,47 @@
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::before,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::before {
 	display: inline-block;
-	transform: translate(-14%, -14%) scale(0.86);
+	/* The folder shrinks a little toward the upper left and the arrow sits over its lower right corner, so the
+	 * pair together stays in the middle of the glyph box (the folder alone would leave the arrow hanging out). */
+	transform: translate(-0.0875em, -0.106em) scale(0.9);
 }
 
-/* The arrow is cut out of the files glyph with a halo in the color of whatever is behind it. */
+/* The arrow sits on the folder in a gap cut out of the folder itself: the folder is masked by the codicon
+ * `arrow-swap` path, stroked so it is 1px wider than the arrow on every side. The gap is transparent, so it
+ * shows whatever is behind the mark (hover and selection fills, pill tabs, high contrast) without knowing
+ * its color. The mask lives in the folder's own box, before the folder's transform.
+ * The arrow is drawn 8px wide here (half of a 16px glyph, and the tab's 8px), so the stroke is 4 of its 16 units:
+ * 2 units = 1px on each side. */
+.monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::before,
+.monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::before {
+	mask-image: linear-gradient(black, black), url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='-2 -2 20 20'><path stroke='black' stroke-width='4' stroke-linejoin='round' d='M11.3536 1.64645C11.1583 1.45118 10.8417 1.45118 10.6464 1.64645C10.4512 1.84171 10.4512 2.15829 10.6464 2.35355L12.2929 4H2.5C2.22386 4 2 4.22386 2 4.5C2 4.77614 2.22386 5 2.5 5H12.2929L10.6464 6.64645C10.4512 6.84171 10.4512 7.15829 10.6464 7.35355C10.8417 7.54882 11.1583 7.54882 11.3536 7.35355L13.8536 4.85355C14.0488 4.65829 14.0488 4.34171 13.8536 4.14645L11.3536 1.64645ZM5.35355 9.35355C5.54882 9.15829 5.54882 8.84171 5.35355 8.64645C5.15829 8.45118 4.84171 8.45118 4.64645 8.64645L2.14645 11.1464C1.95118 11.3417 1.95118 11.6583 2.14645 11.8536L4.64645 14.3536C4.84171 14.5488 5.15829 14.5488 5.35355 14.3536C5.54882 14.1583 5.54882 13.8417 5.35355 13.6464L3.70711 12H13.5C13.7761 12 14 11.7761 14 11.5C14 11.2239 13.7761 11 13.5 11H3.70711L5.35355 9.35355Z'/></svg>");
+	mask-repeat: no-repeat;
+	mask-composite: exclude;
+}
+
+/* The activity bar draws the arrow 12px wide, so 1px is 1.33 of its units. */
+.monaco-workbench .activitybar .action-label.codicon.codicon-paradis-file-transfer::before {
+	mask-image: linear-gradient(black, black), url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='-2 -2 20 20'><path stroke='black' stroke-width='2.67' stroke-linejoin='round' d='M11.3536 1.64645C11.1583 1.45118 10.8417 1.45118 10.6464 1.64645C10.4512 1.84171 10.4512 2.15829 10.6464 2.35355L12.2929 4H2.5C2.22386 4 2 4.22386 2 4.5C2 4.77614 2.22386 5 2.5 5H12.2929L10.6464 6.64645C10.4512 6.84171 10.4512 7.15829 10.6464 7.35355C10.8417 7.54882 11.1583 7.54882 11.3536 7.35355L13.8536 4.85355C14.0488 4.65829 14.0488 4.34171 13.8536 4.14645L11.3536 1.64645ZM5.35355 9.35355C5.54882 9.15829 5.54882 8.84171 5.35355 8.64645C5.15829 8.45118 4.84171 8.45118 4.64645 8.64645L2.14645 11.1464C1.95118 11.3417 1.95118 11.6583 2.14645 11.8536L4.64645 14.3536C4.84171 14.5488 5.15829 14.5488 5.35355 14.3536C5.54882 14.1583 5.54882 13.8417 5.35355 13.6464L3.70711 12H13.5C13.7761 12 14 11.7761 14 11.5C14 11.2239 13.7761 11 13.5 11H3.70711L5.35355 9.35355Z'/></svg>");
+}
+
+/* Where the arrow (::after below) lands, in the folder's box before its translate(-0.0875em, -0.106em) scale(0.9)
+ * about the center: (0.2875em + 0.0875em) / 0.9 and (0.275em + 0.106em) / 0.9 right of and below the center, at
+ * 0.5em / 0.9 wide. The image is 20 / 16 of that because of the room left around the stroke. */
+.monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::before {
+	mask-size: 100% 100%, 0.6944em 0.6944em;
+	mask-position: 0 0, calc(50% + 0.4167em) calc(50% + 0.4233em);
+}
+
+/* Next to a name (tabs, Open Editors, the Ctrl+Tab list, breadcrumbs) the folder's box is the predefined file icon's:
+ * 16px with 3px padding on both sides, the glyph (1em of the label's font, 13px today) at the left of the content,
+ * and the transform turning about the box's center (11px), not the glyph's. With the arrow placed below (center
+ * 3px + 0.7846em right of the label's left edge and 0.2769em below its middle), that is 0.969em - 8.89px right of
+ * and 0.4254em below the box's center, 0.6154em / 0.9 wide (3.71px, 5.53px and 8.89px at 13px). */
+.monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::before {
+	mask-size: 100% 100%, 0.8547em 0.8547em;
+	mask-position: 0 0, calc(50% - 8.89px + 0.969em) calc(50% + 0.4254em);
+}
+
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after,
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
 	content: '\ebcb';
@@ -33,82 +70,31 @@
 	font-weight: normal;
 	font-size: 0.58em;
 	line-height: 1;
+	/* A name's label also styles ::after as the decoration badge (5px left margin, 75% opacity); undo both so the
+	 * arrow lands where it is placed below and is as strong as the folder. */
+	margin: 0;
+	opacity: 1;
 	pointer-events: none;
 }
 
-.monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after,
-.monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
-	text-shadow:
-		1px 0 0 var(--vscode-editor-background),
-		-1px 0 0 var(--vscode-editor-background),
-		0 1px 0 var(--vscode-editor-background),
-		0 -1px 0 var(--vscode-editor-background),
-		1px 1px 0 var(--vscode-editor-background),
-		-1px -1px 0 var(--vscode-editor-background),
-		1px -1px 0 var(--vscode-editor-background),
-		-1px 1px 0 var(--vscode-editor-background);
-}
-
-.monaco-workbench .activitybar .action-label.codicon.codicon-paradis-file-transfer::after {
-	text-shadow:
-		1px 0 0 var(--vscode-activityBar-background),
-		-1px 0 0 var(--vscode-activityBar-background),
-		0 1px 0 var(--vscode-activityBar-background),
-		0 -1px 0 var(--vscode-activityBar-background),
-		1px 1px 0 var(--vscode-activityBar-background),
-		-1px -1px 0 var(--vscode-activityBar-background),
-		1px -1px 0 var(--vscode-activityBar-background),
-		-1px 1px 0 var(--vscode-activityBar-background);
-}
-
-.monaco-workbench .part.titlebar .action-label.codicon.codicon-paradis-file-transfer::after {
-	text-shadow:
-		1px 0 0 var(--vscode-titleBar-activeBackground),
-		-1px 0 0 var(--vscode-titleBar-activeBackground),
-		0 1px 0 var(--vscode-titleBar-activeBackground),
-		0 -1px 0 var(--vscode-titleBar-activeBackground),
-		1px 1px 0 var(--vscode-titleBar-activeBackground),
-		-1px -1px 0 var(--vscode-titleBar-activeBackground),
-		1px -1px 0 var(--vscode-titleBar-activeBackground),
-		-1px 1px 0 var(--vscode-titleBar-activeBackground);
-}
-
-.monaco-workbench .tabs-container .tab.active .predefined-file-icon.codicon-paradis-file-transfer::after {
-	text-shadow:
-		1px 0 0 var(--vscode-tab-activeBackground),
-		-1px 0 0 var(--vscode-tab-activeBackground),
-		0 1px 0 var(--vscode-tab-activeBackground),
-		0 -1px 0 var(--vscode-tab-activeBackground),
-		1px 1px 0 var(--vscode-tab-activeBackground),
-		-1px -1px 0 var(--vscode-tab-activeBackground),
-		1px -1px 0 var(--vscode-tab-activeBackground),
-		-1px 1px 0 var(--vscode-tab-activeBackground);
-}
-
-.monaco-workbench .tabs-container .tab:not(.active) .predefined-file-icon.codicon-paradis-file-transfer::after {
-	text-shadow:
-		1px 0 0 var(--vscode-tab-inactiveBackground),
-		-1px 0 0 var(--vscode-tab-inactiveBackground),
-		0 1px 0 var(--vscode-tab-inactiveBackground),
-		0 -1px 0 var(--vscode-tab-inactiveBackground),
-		1px 1px 0 var(--vscode-tab-inactiveBackground),
-		-1px -1px 0 var(--vscode-tab-inactiveBackground),
-		1px -1px 0 var(--vscode-tab-inactiveBackground),
-		-1px 1px 0 var(--vscode-tab-inactiveBackground);
-}
-
-/* The label box is larger than the glyph (activity bar 48px, title bar 22px), so place the arrow from the center. */
+/* The label box is larger than the glyph (activity bar 48px, title bar 22px) and the glyph sits in its middle, so
+ * place the arrow from the center: half the glyph's size, its center 0.29 / 0.28 of the glyph right of and below
+ * the glyph's center (in the arrow's own em, which is half the glyph's). */
 .monaco-workbench .action-label.codicon.codicon-paradis-file-transfer::after {
-	left: 50%;
-	top: 50%;
-	transform: translate(-2%, -4%);
+	font-size: 0.5em;
+	left: calc(50% + 0.075em);
+	top: calc(50% + 0.05em);
 }
 
-/* In a tab the label also holds the name, so place the arrow from the icon at the start of the label. */
+/* Next to a name the glyph starts 3px into the label (the predefined file icon's padding) and is centered vertically.
+ * Half of a 13px glyph would be too small to read, so the arrow is 8 / 13 of it (8px), its center 0.2846em right of
+ * and 0.2769em below the glyph's center. In the arrow's own em (f = 0.6154 of the label's): left = 3px + 0.775f,
+ * top = 50% - 0.05f. Everything follows the label's font size, so the arrow stays on the folder wherever the
+ * label is drawn. */
 .monaco-workbench .predefined-file-icon.codicon-paradis-file-transfer::after {
-	left: 4px;
-	top: calc(50% - 3px);
-	font-size: 9px;
+	font-size: 0.6154em;
+	left: calc(3px + 0.775em);
+	top: calc(50% - 0.05em);
 }
 
 /* ---------- editor ---------- */

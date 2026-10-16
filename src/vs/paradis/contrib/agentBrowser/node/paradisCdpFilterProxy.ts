@@ -107,6 +107,11 @@ export interface IParadisBoundContext {
 	 * 同期で答える。
 	 */
 	isRemotePane(): boolean | Promise<boolean>;
+	/**
+	 * 接続先のペインの upload_file が写した手元の一時ファイルを、この接続の `DOM.setFileInputFiles` の `files` が
+	 * 指しているか（paradisRemoteFileTransfer.ts）。true なら接続先のペインからでも通す。
+	 */
+	permitsRemoteFileInput?(files: unknown): boolean;
 }
 
 /**
@@ -117,6 +122,9 @@ export interface IParadisBoundContext {
 function remotePaneDeniedMessage(ctx: IParadisBoundContext, method: string, params: Record<string, unknown> | undefined, resolved: boolean): string | undefined | Promise<void> {
 	const message = paradisRemotePaneCdpDeniedMessage(method, params);
 	if (message === undefined) {
+		return undefined;
+	}
+	if (method === 'DOM.setFileInputFiles' && permitsRemoteFileInput(ctx, params?.files)) {
 		return undefined;
 	}
 	let remote: boolean | Promise<boolean>;
@@ -130,6 +138,14 @@ function remotePaneDeniedMessage(ctx: IParadisBoundContext, method: string, para
 		return remote ? message : undefined;
 	}
 	return resolved ? message : remote.then(() => undefined, () => undefined);
+}
+
+function permitsRemoteFileInput(ctx: IParadisBoundContext, files: unknown): boolean {
+	try {
+		return ctx.permitsRemoteFileInput?.(files) === true;
+	} catch {
+		return false;
+	}
 }
 
 /**

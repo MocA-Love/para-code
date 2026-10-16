@@ -95,14 +95,17 @@ async function handle(request: ParadisActivityWorkerRequest): Promise<unknown> {
 			return queued(() => withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).update(request.files, { includeToolOutput: request.includeToolOutput }, () => generation > abortedThrough)));
 		}
 		case 'indexPrune':
+			// eslint-disable-next-line local/code-no-sync-fs -- Runs on this worker thread, not the shared process. The check and the open stay in one turn so a queued indexDelete cannot remove the files in between and leave an empty DB behind.
 			return queued(() => existsSync(request.dbPath) ? withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).prune(request.retentionThresholdMs, request.includeToolOutput)) : 0);
 		case 'indexSearch':
 			// 更新の列には並ばない。更新は別の接続で書いているので、読みは WAL で並行できる。
+			// eslint-disable-next-line local/code-no-sync-fs -- Worker thread; check and open in one turn (see indexPrune).
 			if (store?.path !== request.dbPath && !existsSync(request.dbPath)) {
 				return { terms: [], uncovered: request.catalogIds, matches: [] };
 			}
 			return withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).search(request.query, request.catalogIds));
 		case 'indexStats':
+			// eslint-disable-next-line local/code-no-sync-fs -- Worker thread; check and open in one turn (see indexPrune).
 			return existsSync(request.dbPath) ? withCorruptionRecovery(request.dbPath, () => openStore(request.dbPath).stats()) : { files: 0, messages: 0 };
 		case 'indexAbort':
 			abortedThrough = updateGeneration;
