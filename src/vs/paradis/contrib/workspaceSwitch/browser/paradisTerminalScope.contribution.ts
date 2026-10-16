@@ -32,7 +32,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IPar
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
-import { IParadisTerminalOrphanPty, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
+import { IParadisTerminalOrphanPty, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
@@ -811,6 +811,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// pty host に生きたまま台帳へ入らないため、両者がずれる
 		let complete = true;
 		const sharedPanelNonces = this.sharedPanelOrphanNonces();
+		const duplicatedNonces = paradisDuplicatedNonces(details);
 		for (const detail of details) {
 			// ループは1件ごとに `await instance.processReady` を挟むので、その間にユーザーの
 			// スペース切替が走り、同じ PTY を working set 側の revive が先に掴むことがある。
@@ -863,7 +864,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			try {
 				if (stateKey === undefined) {
 					// 所属が引けずにここまで来るのは共通ターミナルの孤児だけ（上の条件）。
-					if (!await this.reviveSharedPanelOrphan(detail)) {
+					if (!await this.reviveSharedPanelOrphan(detail, duplicatedNonces)) {
 						if (this._store.isDisposed) {
 							return false;
 						}
@@ -874,6 +875,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				// `detail.id` は listProcesses 由来＝**今世代の ID**。ここで findRevivedId を立てると
 				// `getRevivedPtyNewId` が旧 ID をキーにした `_revivedPtyIdMap` を引き、旧 ID 空間と
 				// 新 ID 空間の衝突で別の PTY へリダイレクトされ得る（この修正が塞いだ穴と同じもの）。
+				// 初回は今世代の番号のまま繋ぐ（照合付きにすると、同じ nonce の別の PTY へ繋ぎ替わることがある。
+				// 繋いでいる PTY は孤児の一覧に出ないので、重複を数え切れない）。繋げた後で、pty host の再起動後の
+				// relaunch 用に照合付きの attach 先へ差し替える（paradisOrphanAttachTarget）。
 				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: false } }, TerminalLocation.Editor);
 				await instance.processReady;
 				// 繋ぎ直しに失敗すると、upstream は黙って新しいシェルを起こす（`terminalProcessManager`）。
@@ -893,6 +897,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 					recordReattachFailure();
 					continue;
 				}
+				// pty host が再起動したときの relaunch は、この attach 先をそのまま使う。照合付きへ差し替える
+				instance.shellLaunchConfig.attachPersistentProcess = paradisOrphanAttachTarget(detail, !duplicatedNonces.has(detail.shellIntegrationNonce));
 				// 次の周回で listHeldPtyIds() を引き直すので、手元の集合へ足す必要は無い
 				// （park 台帳に入った時点で collectLiveInstances から見えるようになる）。
 				// park台帳への登録はterminalServiceのイベントに乗らないため、スコープ確定の
@@ -915,10 +921,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 *
 	 * @returns 元の PTY に繋ぎ直せたか。
 	 */
-	private async reviveSharedPanelOrphan(detail: IProcessDetails): Promise<boolean> {
+	private async reviveSharedPanelOrphan(detail: IProcessDetails, duplicatedNonces: ReadonlySet<string>): Promise<boolean> {
 		const instance = await this.terminalService.createTerminal({ config: { attachPersistentProcess: { ...detail, findRevivedId: false } }, location: TerminalLocation.Panel });
 		await instance.processReady;
 		if (!this._store.isDisposed && instance.persistentProcessId === detail.id) {
+			// pty host が再起動したときの relaunch は、この attach 先をそのまま使う。照合付きへ差し替える
+			instance.shellLaunchConfig.attachPersistentProcess = paradisOrphanAttachTarget(detail, !duplicatedNonces.has(detail.shellIntegrationNonce));
 			return true;
 		}
 		instance.dispose(TerminalExitReason.Shutdown);
