@@ -141,6 +141,7 @@ function databaseFiles(dbPath: string): string[] {
 /** 索引のファイル一式を消す（開いている接続は先に閉じること）。 */
 export function paradisRemoveIndexFiles(dbPath: string): void {
 	for (const file of databaseFiles(dbPath)) {
+		// eslint-disable-next-line local/code-no-sync-fs -- Runs on the activity worker thread next to the synchronous SQLite store. The worker closes the connection and removes the files in one turn, so an indexSearch that is not queued cannot reopen the DB halfway through.
 		rmSync(file, { force: true });
 	}
 }
@@ -233,6 +234,7 @@ export class ParadisSessionIndexStore {
 		}
 		for (const file of databaseFiles(this.dbPath)) {
 			try {
+				// eslint-disable-next-line local/code-no-sync-fs -- Called from the synchronous store methods (open, compact, update) on the activity worker thread; the files must be private before the next statement writes to them.
 				chmodSync(file, 0o600);
 			} catch { /* まだ無いファイル */ }
 		}

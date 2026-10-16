@@ -12,8 +12,13 @@
 // 動かない」という、ターミナルの仕組みからは遠い形で出る。
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { timeout } from '../../../../../base/common/async.js';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisPtyHostDaemonEnv } from '../../node/paradisEnsurePtyHost.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { paradisPtyHostDaemonEnv, paradisSpawnDaemon } from '../../node/paradisEnsurePtyHost.js';
 
 suite('ParadisEnsurePtyHost', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -55,5 +60,29 @@ suite('ParadisEnsurePtyHost', () => {
 				leftovers: [],
 			},
 		);
+	});
+
+	test('実行ファイルが無くても落ちない。起動の失敗は記録して、接続待ちの時間切れに任せる', async () => {
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-ensure-pty-host-'));
+		const errors: string[] = [];
+		const logService = new class extends NullLogService {
+			override error(message: string | Error): void {
+				errors.push(String(message));
+			}
+		};
+		try {
+			await paradisSpawnDaemon({
+				paths: { socketPath: join(dir, 'pty.sock'), ledgerDir: dir, ledgerFile: join(dir, 'ledger.json'), socketPathTooLong: false },
+				launch: { execPath: join(dir, 'missing-executable'), args: [], env: {} },
+				logService,
+			});
+			// 'error' は spawn の次のティックで届く
+			for (let i = 0; i < 100 && errors.length === 0; i++) {
+				await timeout(10);
+			}
+			assert.deepStrictEqual(errors, ['[ParadisPtyHost] failed to spawn the daemon process']);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -17,6 +17,8 @@ function delayForTuiPaste(): Promise<void> {
 /**
  * TUIの貼付け確定とEnterを分離し、待機中に対象が変わった場合は実行しない。
  * 目に見えない文字は貼る前に落とす（Claude Code はそれがあると Enter で送らず確認を出すため）。
+ * Codex 0.163.0 からは、作業中に送った発言が書きかけの応答をその場で打ち切る（`instant_interrupt` が既定。打ち切られた
+ * 応答は rollout に残らず、発言は同じターンの 2 つ目の依頼になる。2026-10-16 に実測）。Codex の既定に任せる。
  */
 export async function paradisSendAgentMessageToTui(
 	text: string,

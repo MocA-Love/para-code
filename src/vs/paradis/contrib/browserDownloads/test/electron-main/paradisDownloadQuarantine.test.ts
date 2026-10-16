@@ -19,8 +19,8 @@ function host(platform: NodeJS.Platform, options: { readonly hasMark: boolean })
 			// `xattr -p` succeeds only when the attribute is already there; `-w` always succeeds here.
 			return args[0] === '-p' ? options.hasMark : true;
 		},
-		exists: path => options.hasMark && path.endsWith(':Zone.Identifier'),
-		writeFile: (path, content) => written.push([path, content]),
+		exists: async path => options.hasMark && path.endsWith(':Zone.Identifier'),
+		writeFile: async (path, content) => { written.push([path, content]); },
 		now: () => 0x5f000000 * 1000,
 	};
 	return { value, commands, written };
