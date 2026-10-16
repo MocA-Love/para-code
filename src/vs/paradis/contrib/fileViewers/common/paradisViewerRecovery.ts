@@ -12,6 +12,9 @@
 /** 白紙を検知したときに取る手。 */
 export type ParadisViewerRecoveryAction = 'retry' | 'fallback';
 
+/** 描き終わるのを待つ時間が切れたときに取る手。`extend` は作り直さずにもう一度だけ待つ。 */
+export type ParadisViewerTimeoutAction = 'extend' | ParadisViewerRecoveryAction;
+
 /** Rendered が描き終わるのを待つ基本の上限。claim 済みの webview なら通常は 1 秒未満で戻る。 */
 export const PARADIS_VIEWER_CONTENT_TIMEOUT_MS = 8_000;
 
@@ -50,10 +53,19 @@ export function paradisViewerContentTimeout(htmlLength: number): number {
  * 作り直しを無制限に繰り返すと、webview が原因ではない不具合(生成した HTML 自体が壊れている等)で
  * 無限ループになり、CPU を焼いたまま画面は白紙のままになる。回数で頭打ちにして、最後は必ず
  * 中身が読める Raw へ倒す。
+ *
+ * webview から合図が 1 つも来ないまま時間が切れたときは、成功するまでに 1 回だけ、作り直さずに
+ * 同じ長さをもう一度待つ（`extend`）。機械が混んでいると webview のプロセスの起動だけで時間を
+ * 使い切る（paracode-165〜167 の白紙の報告は、1 件を除いて合図なし・8 秒ちょうどだった）。
+ * そこで作り直すと起動からやり直しになり、同じ理由でまた間に合わない。
  */
 export class ParadisViewerRecoveryPolicy {
 
 	private readonly failures: number[] = [];
+	/** 成功するまでの間に、もう延長を使ったか。 */
+	private extensionUsed = false;
+	/** いま待っているのが延長か。 */
+	private extendingWait = false;
 
 	constructor(
 		private readonly maxRetries: number = 2,
@@ -63,6 +75,7 @@ export class ParadisViewerRecoveryPolicy {
 
 	/** 白紙を1回記録し、次に取るべき手を返す。 */
 	recordFailure(): ParadisViewerRecoveryAction {
+		this.extendingWait = false;
 		const currentTime = this.now();
 		// 期限切れの失敗は捨てる。半日開いていたタブがたまたま2回失敗しただけで Raw に落ちないようにする。
 		for (let index = this.failures.length - 1; index >= 0; index--) {
@@ -74,9 +87,38 @@ export class ParadisViewerRecoveryPolicy {
 		return this.failures.length <= this.maxRetries ? 'retry' : 'fallback';
 	}
 
-	/** 描画が成功したので失敗の記録を捨てる。 */
-	recordSuccess(): void {
+	/**
+	 * 待つ時間が切れた。`signalSeen` は webview から何かしらの合図が届いていたか。
+	 *
+	 * 合図が無く、まだ延長を使っていなければ `extend` を返して失敗に数えない。それ以外は
+	 * {@link recordFailure} と同じ。
+	 */
+	recordTimeout(signalSeen: boolean): ParadisViewerTimeoutAction {
+		if (!signalSeen && !this.extensionUsed) {
+			this.extensionUsed = true;
+			this.extendingWait = true;
+			return 'extend';
+		}
+		return this.recordFailure();
+	}
+
+	/** いま待っているのが延長か（延長が切れて失敗を記録したら false に戻る）。 */
+	get extending(): boolean {
+		return this.extendingWait;
+	}
+
+	/** 新しい描画を送った。前の描画で始めた延長は、この描画の待ちには引き継がない。 */
+	renderStarted(): void {
+		this.extendingWait = false;
+	}
+
+	/** 描画が成功したので失敗の記録を捨てる。延長の最中に描けたなら true を返す。 */
+	recordSuccess(): boolean {
+		const rescued = this.extendingWait;
 		this.failures.length = 0;
+		this.extensionUsed = false;
+		this.extendingWait = false;
+		return rescued;
 	}
 
 	/**
@@ -88,5 +130,7 @@ export class ParadisViewerRecoveryPolicy {
 	 */
 	reset(): void {
 		this.failures.length = 0;
+		this.extensionUsed = false;
+		this.extendingWait = false;
 	}
 }
