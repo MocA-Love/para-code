@@ -19,6 +19,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
+import { unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
@@ -104,7 +105,8 @@ export function estimateParadisWorkbookBytes(workbook: IParadisWorkbookData, con
 async function parseSpreadsheetContent(sharedProcessService: ISharedProcessService, resource: URI, content: VSBuffer, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 	throwIfNotWorkbook(resource, content);
 	const base64 = encodeBase64(content);
-	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]);
+	// 解析の worker はセルの書式を表にまとめて返すので、ここで元の形に戻す（まとめていない形はそのまま）。
+	const raw = unpackParadisWorkbookStyles(await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData | IParadisPackedWorkbookData>('parseWorkbook', imagePixelBudget === undefined ? [base64] : [base64, imagePixelBudget]));
 
 	const drawings = raw.drawingsBySheet;
 	if (!drawings) {
@@ -124,6 +126,14 @@ function withDrawings(sheet: IParadisSheetData, drawings: readonly IParadisDrawi
 	return shapes.length > 0 || undrawn.length > 0
 		? { ...rest, ...(shapes.length > 0 ? { shapes } : {}), ...(undrawn.length > 0 ? { undrawnObjects: undrawn } : {}) }
 		: rest;
+}
+
+/**
+ * shared process に、ブックの解析の worker を起動して温めておいてもらう（Excel のエディタを開いた・戻したとき）。
+ * 待たない。温められない（古い shared process など）ときも何もしない。
+ */
+export function warmSpreadsheetParser(sharedProcessService: ISharedProcessService): void {
+	sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call('warmParser').catch(() => undefined);
 }
 
 /** まだ描いていない EMF・WMF が残っているか（`convertSpreadsheetMetafiles` を頼む意味があるか）。 */

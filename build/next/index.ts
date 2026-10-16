@@ -141,6 +141,8 @@ const desktopEntryPoints = [
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetSemanticWorkerMain',
 	// PARA-PATCH: worker thread the shared process starts to convert Excel EMF/WMF pictures to SVG (fileViewers)
 	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain',
+	// PARA-PATCH: worker thread the shared process starts to parse Excel workbooks for the viewer (fileViewers)
+	'vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain',
 ];
 
 const codeEntryPoints = [

@@ -1526,9 +1526,18 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 	constructor(private readonly runtimeLoader: SpreadsheetRuntimeLoader = loadSpreadsheetRuntime) { }
 
 	async parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
+		return this.parseWorkbookBytes(Buffer.from(base64Content, 'base64'), imagePixelBudget);
+	}
+
+	/** exceljs と jszip を先に読み込んでおく（最初のブックを開くときの待ちを減らす）。 */
+	async warm(): Promise<void> {
+		await this.getRuntime();
+	}
+
+	/** {@link parseWorkbook} と同じ。base64 にせずバイト列で受け取る（解析の worker が使う）。 */
+	async parseWorkbookBytes(source: Buffer, imagePixelBudget?: number): Promise<IParadisWorkbookData> {
 		const runtime = await this.getRuntime();
 		const workbook = new runtime.ExcelJS.Workbook();
-		const source = Buffer.from(base64Content, 'base64');
 		// CFB(Compound File Binary)コンテナ=暗号化ブック。zip ではないため jszip/exceljs からは
 		// 「central directory が見つからない」ような不親切なエラーで落ちる。先頭マジックで判別し、
 		// ビューア/差分がそのまま表示できる理由文言へ変換する(D0 CF 11 E0 = OLE2 標準シグネチャ)。
