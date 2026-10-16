@@ -80,6 +80,33 @@ const PARADIS_RESTARTED_TERMINAL_CWD_TIMEOUT_MS = 2_000;
 let restartedTerminalCwdResolver: ParadisRestartedTerminalCwdResolver | undefined;
 const restartedTerminalInstanceIds = new Set<number>();
 
+/**
+ * 止める前に控えておいた、そのタブの引き継ぎ。更新の前に「終わらせて更新」で止めたタブが、更新の後に
+ * 繋ぎ直せず新しいシェルになるとき、止めた時点の作業フォルダと手で付けた名前を戻す
+ * （`updateTerminals/common/paradisUpdateStopAfterSave.ts`）。
+ */
+export interface IParadisRestartedTerminalCarryOver {
+	/** 止めた時点の作業フォルダ。スペースのフォルダより先に使う。 */
+	readonly cwd?: URI;
+	/** 手で付けた名前。シェルからの題では上書きされなくなるので、手で付けたものだけを渡す。 */
+	readonly name?: string;
+}
+
+/** そのタブの引き継ぎを返す。無ければ undefined。 */
+export type ParadisRestartedTerminalCarryOverResolver = (launch: IParadisRestartedTerminalLaunch) => Promise<IParadisRestartedTerminalCarryOver | undefined>;
+
+let restartedTerminalCarryOverResolver: ParadisRestartedTerminalCarryOverResolver | undefined;
+
+/** 引き継ぎを返す関数を登録する（1つだけ。後から登録した方が勝つ）。 */
+export function paradisRegisterRestartedTerminalCarryOver(resolver: ParadisRestartedTerminalCarryOverResolver): IDisposable {
+	restartedTerminalCarryOverResolver = resolver;
+	return toDisposable(() => {
+		if (restartedTerminalCarryOverResolver === resolver) {
+			restartedTerminalCarryOverResolver = undefined;
+		}
+	});
+}
+
 /** 開始フォルダを決める関数を登録する（1つだけ。後から登録した方が勝つ）。 */
 export function paradisRegisterRestartedTerminalCwdResolver(resolver: ParadisRestartedTerminalCwdResolver): IDisposable {
 	restartedTerminalCwdResolver = resolver;
@@ -111,15 +138,36 @@ export function paradisForgetRestartedTerminal(instanceId: number): void {
  */
 export async function paradisPrepareRestartedTerminalLaunch(shellLaunchConfig: IShellLaunchConfig, instanceId: number, nonce: string, remoteAuthority: string | undefined): Promise<void> {
 	restartedTerminalInstanceIds.add(instanceId);
+	const launch: IParadisRestartedTerminalLaunch = { instanceId, nonce, remoteAuthority };
+	await applyCarryOver(shellLaunchConfig, launch);
 	const resolver = restartedTerminalCwdResolver;
 	// 呼び出し側が開始フォルダを決めているならそれを尊重する。
 	if (resolver === undefined || hasCwd(shellLaunchConfig)) {
 		return;
 	}
 	try {
-		const cwd = await raceTimeout(resolver({ instanceId, nonce, remoteAuthority }), PARADIS_RESTARTED_TERMINAL_CWD_TIMEOUT_MS);
+		const cwd = await raceTimeout(resolver(launch), PARADIS_RESTARTED_TERMINAL_CWD_TIMEOUT_MS);
 		if (cwd !== undefined && !hasCwd(shellLaunchConfig)) {
 			shellLaunchConfig.cwd = cwd;
+		}
+	} catch (error) {
+		onUnexpectedError(error);
+	}
+}
+
+/** 控えてあった引き継ぎを起動設定へ入れる。呼び出し側が決めた開始フォルダ・名前には触らない。 */
+async function applyCarryOver(shellLaunchConfig: IShellLaunchConfig, launch: IParadisRestartedTerminalLaunch): Promise<void> {
+	const resolver = restartedTerminalCarryOverResolver;
+	if (resolver === undefined) {
+		return;
+	}
+	try {
+		const carryOver = await raceTimeout(resolver(launch), PARADIS_RESTARTED_TERMINAL_CWD_TIMEOUT_MS);
+		if (carryOver?.cwd !== undefined && !hasCwd(shellLaunchConfig)) {
+			shellLaunchConfig.cwd = carryOver.cwd;
+		}
+		if (carryOver?.name !== undefined && !shellLaunchConfig.name) {
+			shellLaunchConfig.name = carryOver.name;
 		}
 	} catch (error) {
 		onUnexpectedError(error);
@@ -133,5 +181,6 @@ function hasCwd(shellLaunchConfig: IShellLaunchConfig): boolean {
 /** テスト用。モジュールの状態を初期化する。 */
 export function paradisResetRestartedTerminalsForTest(): void {
 	restartedTerminalCwdResolver = undefined;
+	restartedTerminalCarryOverResolver = undefined;
 	restartedTerminalInstanceIds.clear();
 }

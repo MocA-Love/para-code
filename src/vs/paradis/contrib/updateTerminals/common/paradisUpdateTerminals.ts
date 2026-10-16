@@ -104,11 +104,14 @@ export interface IParadisUpdateTerminalsWindowService {
 	collect(): Promise<IParadisUpdateWindowReport | undefined>;
 	/** まとめた確認を出す。答えが無ければ 30 秒で `later`。 */
 	confirm(summary: IParadisUpdateTerminalSummary): Promise<ParadisUpdateConfirmAnswer>;
-	/** 「終わらせて更新」が選ばれた。この PC が残したものを止め、合図が届くのを待って返す。 */
+	/**
+	 * 「終わらせて更新」が選ばれた。この PC が残したもののうち止める番号を控えて返す。止めるのは
+	 * そのウィンドウの終了処理の中（UI の状態を保存した後）。
+	 */
 	stopForUpdate(): Promise<void>;
 	/**
-	 * 止めた後で更新が行われなかった（終了が取り消された・Ready から外れた）。合図を取り消し、
-	 * このウィンドウで止めていたらそう知らせる。
+	 * 「終わらせて更新」の後で更新が行われなかった（終了が取り消された・Ready から外れた）。合図と
+	 * 控えを取り消す（まだ何も止めていない）。
 	 */
 	cancelUpdateQuit(): Promise<void>;
 }
@@ -197,15 +200,6 @@ export function paradisWorkingAgentKinds(summary: IParadisUpdateTerminalSummary)
  */
 export function paradisStopsRemoteForUpdate(input: { readonly isRemote: boolean; readonly choice: ParadisKeepTerminalsChoice; readonly acrossUpdate: ParadisTerminalsAcrossUpdate }): boolean {
 	return input.isRemote && input.choice !== 'never' && input.acrossUpdate !== 'survives';
-}
-
-/**
- * 止めた後で更新が行われなかったとき、このウィンドウで知らせるか。実際に1本以上止めたときだけ。
- * 止め直しを防ぐ旗（止めようとしたか）とは別に数える。何も止めていないウィンドウで「終わらせました」と
- * 言うと誤報になる。
- */
-export function paradisShouldNoticeCancelledUpdate(endedCount: number): boolean {
-	return endedCount > 0;
 }
 
 /** 枠の中での総数。 */
