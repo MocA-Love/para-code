@@ -425,7 +425,8 @@ export function paradisApprovalOptionsForMobile(agent: 'claude' | 'codex', optio
 	}
 	// MCP のツールの許可のフォームは名前だけを渡す（説明までつなぐとボタンが長すぎる。説明を載せる欄はアプリに無い）。
 	// 最後の「Cancel」は渡さない（アプリが必ず出す「拒否」と同じ。番号が 1 から続くよう、最後のときだけ外す）
-	const shown = selectsByNumber && options.length > 0 && paradisIsCodexFormCancel(options[options.length - 1].label) ? options.slice(0, -1) : options;
+	const last = options[options.length - 1];
+	const shown = selectsByNumber && last !== undefined && paradisIsCodexFormCancel(last.label) ? options.slice(0, -1) : options;
 	if (shown.length < 2) {
 		return undefined;
 	}
