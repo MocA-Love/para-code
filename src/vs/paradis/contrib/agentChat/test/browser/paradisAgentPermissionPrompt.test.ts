@@ -9,8 +9,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
-import { paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
 suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -106,5 +107,88 @@ suite('paradisPermissionPromptParts (W2-21 review M1 / M2)', () => {
 			warningOf(prompt('Bash command · from the general-purpose agent', 'cd ~/projects/demo && sh -c "rm -rf ./junk"', 'This command requires approval')),
 			warningOf(screen('git push origin main')),
 		], ['This shell -c script runs rm and could not be checked', undefined, undefined]);
+	});
+});
+
+suite('Codex permission prompts on screen (codex-cli 0.162.1)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/** 空行を詰めた画面（ボードの欄に貼り付けた形）。 */
+	const withoutBlankLines = (screen: string) => screen.split('\n').filter(line => line.trim().length > 0).join('\n');
+
+	test('finds a tall command approval whose heading is above the bottom 14 lines, and a tool approval form, with their own pieces', () => {
+		const screens = [CODEX_EXEC_APPROVAL_SCREEN, withoutBlankLines(CODEX_EXEC_APPROVAL_SCREEN), CODEX_MCP_APPROVAL_SCREEN, withoutBlankLines(CODEX_MCP_APPROVAL_SCREEN)];
+		assert.deepStrictEqual({
+			shown: screens.map(paradisScreenShowsPermissionPrompt),
+			// 理由の折り返し（`Git` / `管理領域`）をまたいでも一片が当たる
+			execPiece: paradisPromptRegionShows(CODEX_EXEC_APPROVAL_SCREEN, paradisApprovalScreenPiece(CODEX_EXEC_APPROVAL_DETAIL, 'codex')!),
+			mcpPiece: paradisApprovalScreenPiece(CODEX_MCP_APPROVAL_DETAIL, 'codex'),
+			// Claude Code の MCP のツールの確認にはこの文言が出ないので、Claude では作らない（中身の JSON からも作れない）
+			claudeMcpPiece: paradisApprovalScreenPiece(CODEX_MCP_APPROVAL_DETAIL),
+			mcpShown: paradisPromptRegionShows(CODEX_MCP_APPROVAL_SCREEN, paradisApprovalScreenPiece(CODEX_MCP_APPROVAL_DETAIL, 'codex')!),
+			// 同じサーバーの別のツールの許可とは取り違えない
+			otherTool: paradisPromptRegionShows(CODEX_MCP_APPROVAL_SCREEN, paradisApprovalScreenPiece('mcp__para-browser__board_ask_human: {}', 'codex')!),
+			execOptions: paradisParseApprovalOptions(paradisPermissionPromptParts(CODEX_EXEC_APPROVAL_SCREEN)!.options)?.map(option => option.label),
+			mcpContext: paradisPermissionPromptParts(CODEX_MCP_APPROVAL_SCREEN)!.context.split('\n').map(line => line.trim()),
+			mcpOptions: paradisParseApprovalOptions(paradisPermissionPromptParts(CODEX_MCP_APPROVAL_SCREEN)!.options)?.map(option => option.label),
+			form: [CODEX_MCP_APPROVAL_SCREEN, CODEX_EXEC_APPROVAL_SCREEN].map(paradisCodexApprovalFormShown),
+		}, {
+			shown: [true, true, true, true],
+			execPiece: true,
+			mcpPiece: 'run tool "board_complete_step"',
+			claudeMcpPiece: undefined,
+			mcpShown: true,
+			otherTool: false,
+			execOptions: ['Yes, proceed (y)', 'Yes, and don\'t ask again for commands that start with `rtk git add -- README.md` (p)', 'No, and tell Codex what to do differently (esc)'],
+			mcpContext: ['• Calling para-browser.board_complete_step', '+ Show details', 'Field 1/1'],
+			mcpOptions: ['Allow Run the tool and continue', 'Allow for this session Run the tool and remember this choice for this session', 'Always allow Run the tool and remember this choice for future tool calls', 'Cancel Cancel this tool call'],
+			form: [true, false],
+		});
+	});
+
+	test('does not widen the search without the Codex footer at the bottom, and ignores forms that do not ask to allow a tool', () => {
+		// 会話の本文に見出しと番号付きの箇条書きが残り、下に作業中の表示がある（操作説明が無いので下端の 14 行だけを見る）
+		const bodyAbove = ['  Would you like to run the following command?', '  1. Yes', '  2. No', ...Array.from({ length: 14 }, (_, index) => `  line ${index}`), CODEX_WORKING_SCREEN].join('\n');
+		// 許可ではない MCP サーバーからの質問（番号 1 が Allow でない）
+		const booleanForm = ['  Field 1/1', '  Pick a color', '  › 1. Red', '    2. Blue', '  enter to submit | esc to cancel'].join('\n');
+		// 操作説明が出ていない（確認が閉じた）画面に、閉じる前の見出しが残っている
+		const closed = CODEX_EXEC_APPROVAL_SCREEN.replace('  Press enter to confirm or esc to cancel', CODEX_WORKING_SCREEN);
+		assert.deepStrictEqual({
+			bodyAbove: paradisScreenShowsPermissionPrompt(bodyAbove),
+			booleanForm: [paradisScreenShowsPermissionPrompt(booleanForm), paradisCodexApprovalFormShown(booleanForm)],
+			closed: paradisScreenShowsPermissionPrompt(closed),
+			working: paradisScreenShowsAgentPrompt(CODEX_WORKING_SCREEN),
+		}, {
+			bodyAbove: false,
+			booleanForm: [false, false],
+			closed: false,
+			working: false,
+		});
+	});
+
+	test('tells the permission for `click` apart from `click_by`, and does not read the tool name from the conversation above the prompt', () => {
+		const form = (tool: string, above: readonly string[] = []) => [
+			...above,
+			`• Calling para-browser.${tool}`,
+			'  Field 1/1',
+			`  Allow the para-browser MCP server to run tool "${tool}"?`,
+			'  › 1. Allow   Run the tool and continue',
+			'    2. Cancel  Cancel this tool call',
+			'  enter to submit | esc to cancel',
+		].join('\n');
+		const click = paradisApprovalScreenPiece('mcp__para-browser__click: {"uid":"1"}', 'codex')!;
+		// 確認の上に、前に許可した `click` の呼び出しの行が残っている
+		const clickByUnderOldClick = form('click_by', ['• Called para-browser.click({"uid":"1"})', '  run tool "click" was allowed earlier', '', '', '']);
+		assert.deepStrictEqual({
+			piece: click,
+			onClick: [paradisPromptRegionShows(form('click'), click), paradisCodexApprovalFormShows(form('click'), click)],
+			onClickBy: [paradisPromptRegionShows(form('click_by'), click), paradisCodexApprovalFormShows(form('click_by'), click)],
+			oldLineAbove: [paradisPromptRegionShows(clickByUnderOldClick, click), paradisCodexApprovalFormShows(clickByUnderOldClick, click)],
+		}, {
+			piece: 'run tool "click"',
+			onClick: [true, true],
+			onClickBy: [false, false],
+			oldLineAbove: [false, false],
+		});
 	});
 });
