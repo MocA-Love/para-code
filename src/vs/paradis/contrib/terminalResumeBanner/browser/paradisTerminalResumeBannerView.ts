@@ -89,20 +89,23 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 			actions: [
 				toAction({
 					id: 'paradis.resumeBanner.resumeDangerously',
-					label: localize('paradis.resumeBanner.resumeDangerously', "権限の確認を飛ばして再開（{0}）", dangerousFlag),
+					label: localize('paradis.resumeBanner.resumeDangerously', "権限確認なしで再開（{0}）", dangerousFlag),
 					class: dangerClass,
 					run: () => host.resume(target, true),
 				}),
 				toAction({
 					id: 'paradis.resumeBanner.forkDangerously',
-					label: localize('paradis.resumeBanner.forkDangerously', "権限の確認を飛ばして分岐（{0}）", dangerousFlag),
+					label: localize('paradis.resumeBanner.forkDangerously', "権限確認なしで分岐（{0}）", dangerousFlag),
 					class: dangerClass,
 					run: () => host.fork(target, true),
 				}),
 			],
 		}));
 		resume.label = localize('paradis.resumeBanner.resume', "このタブで再開");
-		resume.dropdownButton.setTitle(localize('paradis.resumeBanner.moreResume', "権限の確認を飛ばして再開・分岐する"));
+		// setTitle はホバーだけを変え、読み上げ名は upstream の "More Actions..." のまま残るので、両方に入れる
+		const moreResume = localize('paradis.resumeBanner.moreResume', "権限確認なしで再開・分岐する");
+		resume.dropdownButton.setTitle(moreResume);
+		resume.dropdownButton.setAriaLabel(moreResume);
 		store.add(resume.onDidClick(() => host.resume(target)));
 		const fork = store.add(new Button(actions, { ...defaultButtonStyles, secondary: true, title: localize('paradis.resumeBanner.forkTitle', "前回の会話を複製して、新しいタブで別の会話として続けます") }));
 		fork.label = localize('paradis.resumeBanner.fork', "分岐");
