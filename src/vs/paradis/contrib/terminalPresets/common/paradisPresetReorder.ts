@@ -241,6 +241,107 @@ export function paradisPlanPresetMove(presets: readonly IParadisResolvedPreset[]
 	return plan;
 }
 
+/** ドラッグ中のポインタが重なっている一覧の要素（{@link paradisPresetDropSpot} の入力）。 */
+export type ParadisPresetDropTarget =
+	/** 保存先の見出し。 */
+	| { readonly kind: 'section'; readonly scopeKey: string }
+	/** フォルダの行。`expanded` は中身を開いて見せているか。 */
+	| { readonly kind: 'folder'; readonly scopeKey: string; readonly folder: string; readonly expanded: boolean }
+	/** プリセットの行。`leftOfIndent` はポインタがフォルダの中身の字下げより左にあるか（フォルダの中の行でだけ使う）。 */
+	| { readonly kind: 'preset'; readonly preset: IParadisResolvedPreset; readonly leftOfIndent: boolean };
+
+/** ドロップで入る位置。`into` はフォルダの行の中ほど（フォルダへ入れる）、`hint` は左右にずらすと位置が変わる所。 */
+export interface IParadisPresetDropSpot {
+	readonly position: ParadisPresetPosition;
+	readonly into: boolean;
+	readonly hint: 'folderEnd' | 'afterFolder' | undefined;
+}
+
+/**
+ * ドラッグ中のポインタの位置から、入る位置を決める。`rel` は重なっている行の中の縦の位置（上端 0・下端 1）。
+ *   - フォルダの外の行: 上半分なら前、下半分なら後ろ（すぐ下がフォルダならフォルダの前）
+ *   - フォルダの行: 上 1/4 はフォルダの前、中ほどはフォルダの中の最後、下 1/4 は開いていれば中の先頭、
+ *     閉じていればフォルダの後。フォルダを動かしているときは上半分・下半分で前後
+ *   - フォルダの中の行: 上半分・下半分で前後。最後の行の下半分では、ポインタが字下げより左ならフォルダの後、
+ *     右ならフォルダの中の最後。フォルダを動かしているときは、そのフォルダの前後（フォルダの中には入れない）
+ *   - 保存先の見出し: その保存先の先頭
+ * 保存先の境目（前の保存先の最後と次の保存先の先頭）は、つかんだものの保存先の側へ寄せる。
+ */
+export function paradisPresetDropSpot(presets: readonly IParadisResolvedPreset[], item: ParadisPresetMoveItem, target: ParadisPresetDropTarget, rel: number): IParadisPresetDropSpot {
+	const scopeKey = target.kind === 'preset' ? paradisPresetScopeKey(target.preset) : target.scopeKey;
+	const blocks = paradisPresetBlocks(presets, scopeKey);
+	const nextBlock = (current: ParadisPresetMoveItem) => blocks[blocks.findIndex(block => paradisPresetSameItem(block.item, current)) + 1]?.item;
+	const top = (before: ParadisPresetMoveItem | undefined): ParadisPresetPosition => ({ kind: 'top', scopeKey, before });
+	const membersOf = (folderItem: ParadisPresetMoveItem) => blocks.find(block => paradisPresetSameItem(block.item, folderItem))?.members ?? [];
+	let position: ParadisPresetPosition;
+	let into = false;
+	let hint: 'folderEnd' | 'afterFolder' | undefined;
+	if (target.kind === 'section') {
+		position = top(blocks[0]?.item);
+	} else if (target.kind === 'folder') {
+		const folderItem: ParadisPresetMoveItem = { kind: 'folder', scopeKey, folder: target.folder };
+		const members = membersOf(folderItem);
+		if (item.kind === 'folder') {
+			position = rel < 0.5 ? top(folderItem) : top(nextBlock(folderItem));
+		} else if (rel < 0.25) {
+			position = top(folderItem);
+		} else if (rel > 0.75) {
+			position = target.expanded && members.length > 0 ? { kind: 'folder', scopeKey, folder: target.folder, before: members[0] } : top(nextBlock(folderItem));
+		} else {
+			position = { kind: 'folder', scopeKey, folder: target.folder, before: undefined };
+			into = true;
+		}
+	} else {
+		const rowItem: ParadisPresetMoveItem = { kind: 'preset', preset: target.preset };
+		const folder = folderOf(target.preset);
+		if (!folder) {
+			position = rel < 0.5 ? top(rowItem) : top(nextBlock(rowItem));
+		} else {
+			const folderItem: ParadisPresetMoveItem = { kind: 'folder', scopeKey, folder };
+			const members = membersOf(folderItem);
+			const index = members.findIndex(member => member.key === target.preset.key);
+			if (item.kind === 'folder') {
+				position = rel < 0.5 ? top(folderItem) : top(nextBlock(folderItem));
+			} else if (rel < 0.5) {
+				position = { kind: 'folder', scopeKey, folder, before: target.preset };
+			} else if (index === members.length - 1) {
+				if (target.leftOfIndent) {
+					position = top(nextBlock(folderItem));
+					hint = 'afterFolder';
+				} else {
+					position = { kind: 'folder', scopeKey, folder, before: undefined };
+					hint = 'folderEnd';
+				}
+			} else {
+				position = { kind: 'folder', scopeKey, folder, before: members[index + 1] };
+			}
+		}
+	}
+	return { position: snapToOwnScope(presets, position, item), into, hint };
+}
+
+/**
+ * 保存先の境目で、前の保存先の最後と次の保存先の先頭は見た目では同じ場所なので、つかんだ
+ * ものの保存先の側として扱う（ユーザー設定の 1 件を .paracode.json の最後の行の下半分に重ねたら、
+ * ユーザー設定の先頭）。
+ */
+function snapToOwnScope(presets: readonly IParadisResolvedPreset[], position: ParadisPresetPosition, item: ParadisPresetMoveItem): ParadisPresetPosition {
+	const ownScopeKey = itemScopeKey(item);
+	if (position.kind !== 'top' || position.scopeKey === ownScopeKey) {
+		return position;
+	}
+	const scopeKeys = [...new Set(presets.map(preset => paradisPresetScopeKey(preset)))];
+	const at = scopeKeys.indexOf(position.scopeKey);
+	const firstBlock = paradisPresetBlocks(presets, position.scopeKey)[0]?.item;
+	if (!position.before && scopeKeys[at + 1] === ownScopeKey) {
+		return { kind: 'top', scopeKey: ownScopeKey, before: paradisPresetBlocks(presets, ownScopeKey)[0]?.item };
+	}
+	if (position.before && firstBlock && paradisPresetSameItem(position.before, firstBlock) && scopeKeys[at - 1] === ownScopeKey) {
+		return { kind: 'top', scopeKey: ownScopeKey, before: undefined };
+	}
+	return position;
+}
+
 /**
  * ↑↓・Alt+↑↓ の 1 歩。フォルダの外ではフォルダをひとまとまりとして飛び越え、フォルダの中では
  * 中身の間を動き、中の先頭で ↑・最後で ↓ を押すとフォルダの外（前・後ろ）へ出る。
@@ -319,6 +420,22 @@ export function paradisPresetMoveFolderChoices(presets: readonly IParadisResolve
 	return paradisPresetBlocks(presets, scopeKey)
 		.map(block => block.item.kind === 'folder' ? block.item.folder : undefined)
 		.filter((name): name is string => !!name && name !== own);
+}
+
+/**
+ * 一覧の中の位置（移動の後に読み上げる）。フォルダの中なら `folder` とその中で何番目か、外なら保存先の
+ * 塊の中で何番目か（1 から）。見つからなければ undefined。
+ */
+export function paradisPresetPlaceOf(presets: readonly IParadisResolvedPreset[], item: ParadisPresetMoveItem): { readonly folder: string | undefined; readonly index: number; readonly count: number } | undefined {
+	const blocks = paradisPresetBlocks(presets, itemScopeKey(item));
+	const folder = item.kind === 'preset' ? folderOf(item.preset) : undefined;
+	if (folder && item.kind === 'preset') {
+		const members = blocks.find(block => block.item.kind === 'folder' && block.item.folder === folder)?.members ?? [];
+		const index = members.findIndex(member => member.key === item.preset.key);
+		return index < 0 ? undefined : { folder, index: index + 1, count: members.length };
+	}
+	const index = blocks.findIndex(block => paradisPresetSameItem(block.item, item));
+	return index < 0 ? undefined : { folder: undefined, index: index + 1, count: blocks.length };
 }
 
 /**

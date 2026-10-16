@@ -37,6 +37,7 @@
 
 import './media/paradisPresetEditorDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon, getAllCodicons } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -81,12 +82,16 @@ import {
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
+	paradisApplyPresetMovePlan,
 	paradisPlanPresetMove,
 	paradisPlanPresetMoveToFolder,
 	paradisPlanPresetNest,
 	paradisPlanPresetStep,
 	paradisPresetBlocks,
+	paradisPresetDropSpot,
+	ParadisPresetDropTarget,
 	paradisPresetMoveFolderChoices,
+	paradisPresetPlaceOf,
 	paradisPresetReorderBlocked,
 	paradisPresetSameItem,
 	ParadisPresetMoveItem,
@@ -409,9 +414,14 @@ const STR_NAV_SOURCE_WORKSPACE = localize('paradis.presetEditor.navSourceWorkspa
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_HINTS = localize('paradis.presetEditor.navCaptionHints', "操作のヒント");
 // allow-any-unicode-next-line
-const strGripTitle = (name: string) => localize('paradis.presetEditor.gripTitle', "{0}: 左端をつかんでドラッグ、Alt+↑ / Alt+↓ で並び替え、Alt+→ / Alt+← でフォルダへ入れる・出す", name);
+const strGripTitle = (name: string) => localize('paradis.presetEditor.gripTitle', "{0}: 左端をつかんでドラッグ、Alt+↑ / Alt+↓ で並び替え、Alt+→ / Alt+← でフォルダへ入れる・出す。Enter で移動のメニュー", name);
 // allow-any-unicode-next-line
-const strFolderGripTitle = (name: string) => localize('paradis.presetEditor.folderGripTitle', "{0}: 左端をつかんでドラッグ、または Alt+↑ / Alt+↓ でフォルダごと並び替え", name);
+const strFolderGripTitle = (name: string) => localize('paradis.presetEditor.folderGripTitle', "{0}: 左端をつかんでドラッグ、または Alt+↑ / Alt+↓ でフォルダごと並び替え。Enter で移動のメニュー", name);
+// 並び替えの後に読み上げる新しい位置。
+// allow-any-unicode-next-line
+const strMovedTo = (name: string, index: number, count: number) => localize('paradis.presetEditor.movedTo', "{0} を {1} / {2} 番目へ移しました", name, index, count);
+// allow-any-unicode-next-line
+const strMovedToInFolder = (name: string, folder: string, index: number, count: number) => localize('paradis.presetEditor.movedToInFolder', "{0} を {1} フォルダの中の {2} / {3} 番目へ移しました", name, folder, index, count);
 // allow-any-unicode-next-line
 const STR_HINT_REORDER = localize('paradis.presetEditor.hintReorder', "行の左端 ⋮⋮ をドラッグすると、行の間に線が出てそこへ入ります。フォルダの行の中ほどに重ねるとフォルダに入ります。");
 // allow-any-unicode-next-line
@@ -559,10 +569,16 @@ class ParadisPresetEditorDialog extends Disposable {
 	/** ドラッグ中に挿入線・フォルダの強調を描く一覧の要素（list 直下の重ね絵）。 */
 	private readonly _dropIndicator = this._register(new MutableDisposable<DisposableStore>());
 	/**
-	 * 並び替えの後、描き直した一覧で手前へ戻すフォーカスの行き先。.paracode.json の手書きの
-	 * プリセットは位置由来のキーで、動かすとキーが変わるので、保存先と指紋で探す。
+	 * 並び替えの後、描き直した一覧で探す動かした行（新しい位置の読み上げと、`focus` ならフォーカスの
+	 * 戻し先）。.paracode.json の手書きのプリセットは位置由来のキーで、動かすとキーが変わるので、
+	 * 保存先と指紋で探す。同じ中身のプリセットが並ぶときのために、同じ指紋の中で何番目か（`ordinal`）も持つ。
 	 */
-	private _pendingFocus: { readonly scopeKey: string; readonly fingerprint?: string; readonly folder?: string } | undefined;
+	private _pendingMove: { readonly scopeKey: string; readonly fingerprint?: string; readonly ordinal?: number; readonly folder?: string; readonly focus: boolean } | undefined;
+	/**
+	 * 並び替えの書き込み中。書き込みが終わって一覧を描き直すまでの間に次の移動（連打・長押し）を
+	 * 受けると、古い並びから作った書き込み方を重ねて渡すことになり、対象を見失う。終わるまで受け付けない。
+	 */
+	private _moveInFlight = false;
 	/**
 	 * 編集フォームの dirty 判定。「フォームを開いた時点の値」と「現在値」を同じ形で読み取る
 	 * 関数を、編集ビュー（プリセット編集／フォルダ名変更／新規フォルダ）ごとに登録する。
@@ -753,7 +769,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			const plan = e.key === 'ArrowUp' || e.key === 'ArrowDown'
 				? paradisPlanPresetStep(presets, item, e.key === 'ArrowUp' ? -1 : 1)
 				: paradisPlanPresetNest(presets, item, e.key === 'ArrowRight');
-			this._applyMove(plan, item, true);
+			void this._applyMove(plan, item, true);
 		}));
 		// 右クリック（ContextMenu キー・Shift+F10 も同じイベントで来る）で並び替えのメニュー。
 		this._chromeStore.add(dom.addDisposableListener(this._contentEl, 'contextmenu', e => {
@@ -766,7 +782,8 @@ class ParadisPresetEditorDialog extends Disposable {
 				return;
 			}
 			e.preventDefault();
-			this._showMoveMenu(row, e, item);
+			// キーボード（メニューキー・Shift+F10）から開くと座標が 0,0 で来るので、行に寄せる。
+			this._showMoveMenu(e.clientX === 0 && e.clientY === 0 ? row : { x: e.clientX, y: e.clientY }, item);
 		}));
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -932,7 +949,10 @@ class ParadisPresetEditorDialog extends Disposable {
 	 * 読めない・壊れている等）も理由を出す。黙って何も起きないと、並べ替えが効かないようにしか見えない。
 	 * `keepFocus` はキーボード・右クリックから動かしたとき、描き直した一覧で同じ行へフォーカスを戻す。
 	 */
-	private _applyMove(plan: IParadisPresetMovePlan | ParadisPresetMoveRefusal, item: ParadisPresetMoveItem, keepFocus: boolean): void {
+	private async _applyMove(plan: IParadisPresetMovePlan | ParadisPresetMoveRefusal, item: ParadisPresetMoveItem, keepFocus: boolean): Promise<void> {
+		if (this._moveInFlight) {
+			return;
+		}
 		if (isParadisPresetMoveRefusal(plan)) {
 			const message = this._refusalMessage(plan, item);
 			if (message) {
@@ -940,41 +960,68 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 			return;
 		}
-		this._pendingFocus = !keepFocus ? undefined : item.kind === 'preset'
-			? { scopeKey: paradisPresetScopeKey(item.preset), fingerprint: paradisPresetFingerprint({ ...item.preset, folder: plan.folder }) }
-			: { scopeKey: item.scopeKey, folder: item.folder };
-		this.presetService.movePresets(plan).catch(error => {
-			this._pendingFocus = undefined;
+		if (item.kind === 'preset') {
+			const scopeKey = paradisPresetScopeKey(item.preset);
+			const fingerprint = paradisPresetFingerprint({ ...item.preset, folder: plan.folder });
+			const ordinal = paradisApplyPresetMovePlan(this._listPresets, plan)
+				.filter(preset => paradisPresetScopeKey(preset) === scopeKey && paradisPresetFingerprint(preset) === fingerprint)
+				.findIndex(preset => preset.key === item.preset.key);
+			this._pendingMove = { scopeKey, fingerprint, ordinal: Math.max(0, ordinal), focus: keepFocus };
+		} else {
+			this._pendingMove = { scopeKey: item.scopeKey, folder: item.folder, focus: keepFocus };
+		}
+		this._moveInFlight = true;
+		try {
+			await this.presetService.movePresets(plan);
+		} catch (error) {
+			this._pendingMove = undefined;
 			void this.dialogService.error(STR_REORDER_FAILED, error instanceof Error ? error.message : String(error));
-		});
+		} finally {
+			this._moveInFlight = false;
+		}
 	}
 
-	/** 描き直した一覧で、並び替えた行の grip へフォーカスを戻す（{@link _pendingFocus}）。 */
-	private _restorePendingFocus(): void {
-		const pending = this._pendingFocus;
+	/** 描き直した一覧で、並び替えた行の新しい位置を読み上げ、キーボードから動かしたなら grip へフォーカスを戻す（{@link _pendingMove}）。 */
+	private _restorePendingMove(): void {
+		const pending = this._pendingMove;
 		if (!pending) {
 			return;
 		}
-		this._pendingFocus = undefined;
+		this._pendingMove = undefined;
 		const elements = this._listElements;
-		const row = pending.folder !== undefined
-			? elements.folderRows.get(paradisListFolderKey(pending.scopeKey, pending.folder))
-			: [...this._rowPresets.values()]
-				.filter(preset => paradisPresetScopeKey(preset) === pending.scopeKey && paradisPresetFingerprint(preset) === pending.fingerprint)
-				.map(preset => elements.presetRows.get(preset.key))[0];
-		if (row) {
+		let row: HTMLElement | undefined;
+		let item: ParadisPresetMoveItem | undefined;
+		if (pending.folder !== undefined) {
+			row = elements.folderRows.get(paradisListFolderKey(pending.scopeKey, pending.folder));
+			item = { kind: 'folder', scopeKey: pending.scopeKey, folder: pending.folder };
+		} else {
+			// 描いた順ではなく保存先の配列の順（_listPresets）で数える。ordinal はその順で数えてある。
+			const preset = this._listPresets
+				.filter(candidate => paradisPresetScopeKey(candidate) === pending.scopeKey && paradisPresetFingerprint(candidate) === pending.fingerprint)[pending.ordinal ?? 0];
+			row = preset ? elements.presetRows.get(preset.key) : undefined;
+			item = preset ? { kind: 'preset', preset } : undefined;
+		}
+		if (!row || !item) {
+			return;
+		}
+		if (pending.focus) {
 			elements.grips.get(row)?.focus();
+		}
+		const place = paradisPresetPlaceOf(this._listPresets, item);
+		if (place) {
+			const name = item.kind === 'preset' ? item.preset.name : item.folder;
+			status(place.folder ? strMovedToInFolder(name, place.folder, place.index, place.count) : strMovedTo(name, place.index, place.count));
 		}
 	}
 
 	/** 右クリック（キーボードのメニューキーを含む）の並び替えメニュー。 */
-	private _showMoveMenu(row: HTMLElement, e: MouseEvent, item: ParadisPresetMoveItem): void {
+	private _showMoveMenu(anchor: HTMLElement | { readonly x: number; readonly y: number }, item: ParadisPresetMoveItem): void {
 		const presets = this._listPresets;
 		const up = paradisPlanPresetStep(presets, item, -1);
 		const down = paradisPlanPresetStep(presets, item, 1);
 		const actions: IAction[] = [
-			toAction({ id: 'paradis.presetEditor.moveUp', label: STR_MOVE_UP, enabled: !isParadisPresetMoveRefusal(up), run: () => this._applyMove(up, item, true) }),
-			toAction({ id: 'paradis.presetEditor.moveDown', label: STR_MOVE_DOWN, enabled: !isParadisPresetMoveRefusal(down), run: () => this._applyMove(down, item, true) }),
+			toAction({ id: 'paradis.presetEditor.moveUp', label: STR_MOVE_UP, enabled: !isParadisPresetMoveRefusal(up), run: () => void this._applyMove(up, item, true) }),
+			toAction({ id: 'paradis.presetEditor.moveDown', label: STR_MOVE_DOWN, enabled: !isParadisPresetMoveRefusal(down), run: () => void this._applyMove(down, item, true) }),
 		];
 		if (item.kind === 'preset') {
 			const folders = paradisPresetMoveFolderChoices(presets, item.preset);
@@ -987,21 +1034,19 @@ class ParadisPresetEditorDialog extends Disposable {
 					id: `paradis.presetEditor.moveToFolderNamed.${folder}`,
 					label: strMoveToFolder(folder),
 					class: ThemeIcon.asClassName(Codicon.folder),
-					run: () => this._applyMove(paradisPlanPresetMoveToFolder(presets, item.preset, folder), item, true),
+					run: () => void this._applyMove(paradisPlanPresetMoveToFolder(presets, item.preset, folder), item, true),
 				}));
 			}
 			if (inFolder) {
 				actions.push(toAction({
 					id: 'paradis.presetEditor.moveOutOfFolder',
 					label: STR_MOVE_OUT_OF_FOLDER,
-					run: () => this._applyMove(paradisPlanPresetNest(presets, item, false), item, true),
+					run: () => void this._applyMove(paradisPlanPresetNest(presets, item, false), item, true),
 				}));
 			}
 		}
-		// ポインタの位置に出す。キーボードから開いて座標が 0,0 で来たときは行に寄せる。
-		const fromKeyboard = e.clientX === 0 && e.clientY === 0;
 		this.contextMenuService.showContextMenu({
-			getAnchor: () => fromKeyboard ? row : { x: e.clientX, y: e.clientY },
+			getAnchor: () => anchor,
 			getActions: () => actions,
 		});
 	}
@@ -1078,7 +1123,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			this._renderPresetRow(list, first, { qualifiers, reorderBlocked });
 		}
 		this._wireListDragAndDrop(list);
-		this._restorePendingFocus();
+		this._restorePendingMove();
 	}
 
 	/** ヘッダーの「選択」トグルの見た目を現在の _selecting に合わせる。 */
@@ -1349,6 +1394,14 @@ class ParadisPresetEditorDialog extends Disposable {
 		if (this._selecting || !enabled) {
 			return;
 		}
+		// role=button なので Enter / Space で押せるようにする。押すと右クリックと同じ移動のメニューを行に寄せて出す。
+		this._viewStore.add(dom.addDisposableListener(grip, 'keydown', e => {
+			if ((e.key === 'Enter' || e.key === ' ') && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+				e.preventDefault();
+				e.stopPropagation();
+				this._showMoveMenu(row, item);
+			}
+		}));
 		this._viewStore.add(dom.addDisposableListener(grip, 'mousedown', () => {
 			row.draggable = true;
 			// ドラッグが始まらないまま grip の外で mouseup しても draggable を確実に解除する
@@ -1418,20 +1471,14 @@ class ParadisPresetEditorDialog extends Disposable {
 			const hit = this._dropHitAt(list, item, e);
 			this._dropIndicator.clear();
 			if (hit) {
-				this._applyMove(hit.plan, item, false);
+				void this._applyMove(hit.plan, item, false);
 			}
 		}));
 	}
 
 	/**
-	 * ドラッグ中のポインタの位置から、入る位置を決める。
-	 *   - フォルダの外の行: 上半分なら前、下半分なら後ろ
-	 *   - フォルダの行: 上 1/4 はフォルダの前、中ほどはフォルダの中の最後、下 1/4 は中の先頭（閉じて
-	 *     いればフォルダの後）。フォルダを動かしているときは上半分・下半分で前後
-	 *   - フォルダの中の行: 上半分・下半分で前後。最後の行の下半分では、ポインタが子の字下げより
-	 *     左ならフォルダの後、右ならフォルダの中の最後
-	 *   - 保存先の見出し: その保存先の先頭
-	 * 保存先の境目（前の保存先の最後と次の保存先の先頭）は、つかんだものの保存先の側へ寄せる。
+	 * ドラッグ中のポインタの位置から、入る位置を決める。ポインタに一番近い行（行の間の隙間でも）を
+	 * 選び、行の中の縦の位置と字下げとの左右から {@link paradisPresetDropSpot} で位置を決める。
 	 */
 	private _dropHitAt(list: HTMLElement, item: ParadisPresetMoveItem, e: DragEvent): IParadisPresetDropHit | undefined {
 		let target: HTMLElement | undefined;
@@ -1451,82 +1498,21 @@ class ParadisPresetEditorDialog extends Disposable {
 			return undefined;
 		}
 		const rel = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0;
-		const presets = this._listPresets;
-		const blocks = paradisPresetBlocks(presets, scopeKey);
-		const nextBlock = (current: ParadisPresetMoveItem) => blocks[blocks.findIndex(block => paradisPresetSameItem(block.item, current)) + 1]?.item;
-		const top = (before: ParadisPresetMoveItem | undefined): ParadisPresetPosition => ({ kind: 'top', scopeKey, before });
 		const rowItem = this._itemOfRow(target);
-		let position: ParadisPresetPosition;
-		let into = false;
-		let hint: 'folderEnd' | 'afterFolder' | undefined;
+		let dropTarget: ParadisPresetDropTarget;
 		if (target.classList.contains('ppe-section')) {
-			position = top(blocks[0]?.item);
+			dropTarget = { kind: 'section', scopeKey };
 		} else if (rowItem?.kind === 'folder') {
-			const members = blocks.find(block => paradisPresetSameItem(block.item, rowItem))?.members ?? [];
-			const expanded = this._listElements.folderChildren.has(paradisListFolderKey(scopeKey, rowItem.folder));
-			if (item.kind === 'folder') {
-				position = rel < 0.5 ? top(rowItem) : top(nextBlock(rowItem));
-			} else if (rel < 0.25) {
-				position = top(rowItem);
-			} else if (rel > 0.75) {
-				position = expanded && members.length > 0 ? { kind: 'folder', scopeKey, folder: rowItem.folder, before: members[0] } : top(nextBlock(rowItem));
-			} else {
-				position = { kind: 'folder', scopeKey, folder: rowItem.folder, before: undefined };
-				into = true;
-			}
+			dropTarget = { kind: 'folder', scopeKey, folder: rowItem.folder, expanded: this._listElements.folderChildren.has(paradisListFolderKey(scopeKey, rowItem.folder)) };
 		} else if (rowItem?.kind === 'preset') {
-			const folder = rowItem.preset.folder?.trim();
-			if (!folder) {
-				position = rel < 0.5 ? top(rowItem) : top(nextBlock(rowItem));
-			} else {
-				const folderItem: ParadisPresetMoveItem = { kind: 'folder', scopeKey, folder };
-				const members = blocks.find(block => paradisPresetSameItem(block.item, folderItem))?.members ?? [];
-				const index = members.findIndex(member => member.key === rowItem.preset.key);
-				if (item.kind === 'folder') {
-					position = top(nextBlock(folderItem));
-				} else if (rel < 0.5) {
-					position = { kind: 'folder', scopeKey, folder, before: rowItem.preset };
-				} else if (index === members.length - 1) {
-					const childrenLeft = target.parentElement?.getBoundingClientRect().left ?? rect.left;
-					if (e.clientX < childrenLeft) {
-						position = top(nextBlock(folderItem));
-						hint = 'afterFolder';
-					} else {
-						position = { kind: 'folder', scopeKey, folder, before: undefined };
-						hint = 'folderEnd';
-					}
-				} else {
-					position = { kind: 'folder', scopeKey, folder, before: members[index + 1] };
-				}
-			}
+			const childrenLeft = target.parentElement?.getBoundingClientRect().left ?? rect.left;
+			dropTarget = { kind: 'preset', preset: rowItem.preset, leftOfIndent: e.clientX < childrenLeft };
 		} else {
 			return undefined;
 		}
-		position = this._snapToOwnScope(position, item);
-		const plan = paradisPlanPresetMove(presets, item, position);
+		const { position, into, hint } = paradisPresetDropSpot(this._listPresets, item, dropTarget, rel);
+		const plan = paradisPlanPresetMove(this._listPresets, item, position);
 		return { position, plan, into, label: plan === 'otherScope' ? STR_MOVE_REFUSED_SCOPE : this._dropLabel(position, into, hint) };
-	}
-
-	/**
-	 * 保存先の境目で、前の保存先の最後と次の保存先の先頭は見た目では同じ場所なので、つかんだ
-	 * ものの保存先の側として扱う（ユーザー設定の 1 件を .paracode.json の最後の行の下半分に重ねたら、
-	 * ユーザー設定の先頭）。
-	 */
-	private _snapToOwnScope(position: ParadisPresetPosition, item: ParadisPresetMoveItem): ParadisPresetPosition {
-		const ownScopeKey = item.kind === 'preset' ? paradisPresetScopeKey(item.preset) : item.scopeKey;
-		if (position.kind !== 'top' || position.scopeKey === ownScopeKey) {
-			return position;
-		}
-		const scopeKeys = [...new Set(this._listPresets.map(preset => paradisPresetScopeKey(preset)))];
-		const at = scopeKeys.indexOf(position.scopeKey);
-		const firstBlock = paradisPresetBlocks(this._listPresets, position.scopeKey)[0]?.item;
-		if (!position.before && scopeKeys[at + 1] === ownScopeKey) {
-			return { kind: 'top', scopeKey: ownScopeKey, before: paradisPresetBlocks(this._listPresets, ownScopeKey)[0]?.item };
-		}
-		if (position.before && firstBlock && paradisPresetSameItem(position.before, firstBlock) && scopeKeys[at - 1] === ownScopeKey) {
-			return { kind: 'top', scopeKey: ownScopeKey, before: undefined };
-		}
-		return position;
 	}
 
 	/** 挿入線の横に出す「どこに入るか」。 */
@@ -1639,9 +1625,11 @@ class ParadisPresetEditorDialog extends Disposable {
 			btn.classList.toggle('disabled', disabled);
 			const reason = reorderBlocked ?? (plan && isParadisPresetMoveRefusal(plan) ? this._refusalMessage(plan, item) : undefined);
 			this._viewStore.add(this.hoverService.setupDelayedHover(btn, { content: reason ? `${ariaLabel}: ${reason}` : ariaLabel, container: this._backdrop }));
-			this._viewStore.add(dom.addDisposableListener(btn, 'click', () => {
+			this._viewStore.add(dom.addDisposableListener(btn, 'click', e => {
 				if (plan && !isParadisPresetMoveRefusal(plan)) {
-					this._applyMove(plan, item, false);
+					// Enter / Space で押したとき（detail が 0）は、描き直しで押したボタンごと消えて
+					// フォーカスが失われるので、動かした行の grip へ戻す。
+					void this._applyMove(plan, item, e.detail === 0);
 				}
 			}));
 		};
