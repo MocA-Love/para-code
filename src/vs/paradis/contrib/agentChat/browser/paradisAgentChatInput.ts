@@ -14,13 +14,14 @@
 
 import { localize } from '../../../../nls.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
+import { IParadisAgentApprovalOption, paradisApprovalOptionLabelsMatch, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentChatSource, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisQuestionReadyMarker } from '../common/paradisAgentQuestionMarker.js';
 import { paradisPendingCodexQuestion } from '../common/paradisAgentChatTimeline.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
-import { paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
+import { paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
 
 /** 入力先のターミナル（ITerminalInstance から要るところだけ。テストで差し替える）。 */
 export interface IParadisAgentChatTerminal {
@@ -196,7 +197,11 @@ export class ParadisAgentChatInput {
 			screen => paradisScreenShowsPermissionPrompt(screen) ? 'stop' : 'continue');
 	}
 
-	async answerApproval(instanceId: number, token: string, interactionId: string, choiceId: string): Promise<string | undefined> {
+	/**
+	 * 許可の確認に答える。`choiceId` は `yes` / `no`、または画面の番号の選択肢 `opt:<n>`（そのときは、選んだときに見せた
+	 * 文言 `expectOptionLabel` が要る。送る直前に、画面のその番号が同じ文言のままかを確かめる）。
+	 */
+	async answerApproval(instanceId: number, token: string, interactionId: string, choiceId: string, expectOptionLabel?: string): Promise<string | undefined> {
 		const terminal = this.dependencies.terminal(instanceId, token);
 		if (terminal === undefined) {
 			return localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません");
@@ -213,7 +218,8 @@ export class ParadisAgentChatInput {
 				? localize('paradisAgentChat.errorApprovalSendMod', "Claude Code へ回答を送れませんでした。ターミナルで答えてください")
 				: localize('paradisAgentChat.errorApprovalSend', "Codex へ回答を送れませんでした。ターミナルで答えてください");
 		}
-		if (choiceId !== 'yes' && choiceId !== 'no') {
+		const optionNumber = paradisParseApprovalOptionChoice(choiceId);
+		if (choiceId !== 'yes' && choiceId !== 'no' && (optionNumber === undefined || expectOptionLabel === undefined)) {
 			return localize('paradisAgentChat.errorApprovalChoice', "この選択肢はここからは選べません。ターミナルで答えてください");
 		}
 		const state = this.dependencies.session(token).state;
@@ -221,15 +227,19 @@ export class ParadisAgentChatInput {
 		const interaction = state?.interaction;
 		// 許可の確認の画面が出ていて、しかもそれがこのカードの承認だと確かめてから打鍵する（出ていなければ
 		// `1`+Enter が入力欄へ流れ、エージェントへの発言として送られる。別の承認なら、見ていないものを確定する）。
-		const piece = paradisApprovalScreenPiece(interaction?.kind === 'approval' ? interaction.detail : undefined);
-		const ready = (screen: string) => paradisScreenShowsPermissionPrompt(screen) && (piece === undefined || paradisPromptRegionShows(screen, piece));
+		const piece = paradisApprovalScreenPiece(interaction?.kind === 'approval' ? interaction.detail : undefined, agent);
+		// 番号の選択肢で答えるときは、その番号が選んだときと同じ文言で画面に出ていることも確かめる
+		const optionShown = (screen: string) => optionNumber === undefined || expectOptionLabel === undefined
+			|| paradisApprovalOptionAt(screen, optionNumber, expectOptionLabel);
+		const ready = (screen: string) => paradisScreenShowsPermissionPrompt(screen) && (piece === undefined || paradisPromptRegionShows(screen, piece)) && optionShown(screen);
 		// 各キーの前にも確かめる。`1` で確定して確認が消えたら、残りの Enter は送らずに終える（次に出た画面を
 		// 確定したり、入力欄の書きかけを送信したりしないように）。
 		// Claude は `1` だけで確定する（Enter は送らない。後から届いた Enter が次の許可を確定するため）。
-		// Codex の拒否のキーは、画面の選択肢の表記から選ぶ（版で違う）。
-		const keys = paradisAgentApprovalKeySequence(agent, choiceId, { screen: terminal.readScreen(), confirmWithEnter: false });
-		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, keys, ready,
-			(screen, keysSent) => ready(screen) ? 'continue' : keysSent > 0 ? 'done' : 'stop');
+		// Codex の拒否のキー・MCP のツールの許可のフォームのキーは、画面の選択肢の表記から選ぶ（版・画面で違う）。
+		// 最初の打鍵の直前に、確かめた画面でもう一度決める（待っている間に画面が変わることがある）。
+		const keysFor = (screen: string) => paradisAgentApprovalKeySequence(agent, choiceId as 'yes' | 'no' | `opt:${number}`, { screen, confirmWithEnter: false });
+		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, keysFor(terminal.readScreen()), ready,
+			(screen, keysSent) => ready(screen) ? 'continue' : keysSent > 0 ? 'done' : 'stop', keysFor);
 		if (error === undefined) {
 			this.answeredApprovals.add(`${token}\0${interactionId}`);
 		}
@@ -246,6 +256,8 @@ export class ParadisAgentChatInput {
 		ready: (screen: string) => boolean,
 		/** 各キーの直前に画面で確かめる。'done' なら残りを送らずに成功として終える。 */
 		checkScreen: (screen: string, keysSent: number) => 'continue' | 'done' | 'stop',
+		/** 最初のキーの直前に、確かめた画面でキー列を決め直す（数が変わったら送らない）。 */
+		rekey?: (screen: string) => readonly string[],
 	): Promise<string | undefined> {
 		if (parts.length === 0) {
 			return localize('paradisAgentChat.errorNoKeys', "送る内容がありません");
@@ -258,8 +270,10 @@ export class ParadisAgentChatInput {
 		let stopReason: string | undefined;
 		let finishedEarly = false;
 		let keysSent = 0;
+		// 送るキー（rekey で最初のキーの直前に決め直す。paradisSendAgentInteractionKeys はこの配列から順に送る）
+		const keys = [...parts];
 		try {
-			const outcome = await paradisSendAgentInteractionKeys(terminal, parts, this.keyDelay, {
+			const outcome = await paradisSendAgentInteractionKeys(terminal, keys, this.keyDelay, {
 				readScreen: () => terminal.readScreen(),
 				ready,
 				strict: true,
@@ -270,7 +284,8 @@ export class ParadisAgentChatInput {
 					stopReason = localize('paradisAgentChat.errorTerminalChanged', "送り先のターミナルが変わりました");
 					return false;
 				}
-				const screenCheck = checkScreen(terminal.readScreen(), keysSent);
+				const screen = terminal.readScreen();
+				const screenCheck = checkScreen(screen, keysSent);
 				if (screenCheck === 'done') {
 					finishedEarly = true;
 					return false;
@@ -288,6 +303,14 @@ export class ParadisAgentChatInput {
 					// ターミナル側で先に答えた・別の質問に変わった。消えた質問の跡地へ打鍵しない。
 					stopReason = localize('paradisAgentChat.errorInteractionChanged', "途中で回答待ちが終わったため、残りのキーを送りませんでした");
 					return false;
+				}
+				if (keysSent === 0 && rekey !== undefined) {
+					const next = rekey(screen);
+					if (next.length !== keys.length) {
+						stopReason = localize('paradisAgentChat.errorScreenChanged', "ターミナルの画面が変わったため、残りのキーを送りませんでした。ターミナルで確かめてください");
+						return false;
+					}
+					keys.splice(0, keys.length, ...next);
 				}
 				keysSent++;
 				return true;
@@ -312,28 +335,29 @@ function paradisQuestionTextPiece(text: string): string | undefined {
 	return piece.length >= 4 ? piece : undefined;
 }
 
+/** 画面の許可の確認の、番号 `n` の選択肢が `label` と同じ文言か。 */
+function paradisApprovalOptionAt(screen: string, n: number, label: string): boolean {
+	const prompt = paradisPermissionPromptParts(screen);
+	const option = prompt !== undefined ? paradisParseApprovalOptions(prompt.options)?.find(candidate => candidate.n === n) : undefined;
+	return option !== undefined && paradisApprovalOptionLabelsMatch(option.label, label);
+}
+
 /**
- * 承認の中身（`Bash: npm test` の `npm test`、ファイル操作ならファイル名）から、確認の画面に出ているはずの
- * 一片を作る。作れなければ undefined（確認の文言だけで判断する）。
+ * 画面に出ている Codex の MCP のツールの許可のフォームの選択肢（許可・このセッションでは許可・常に許可・キャンセル）。
+ * フォームが出ていて、しかもそれがこの承認（`detail`）の確認だと確かめられたときだけ返す。ボードがこの並びをそのまま
+ * 選択肢として出し、選ばれたら `opt:<n>` と文言で {@link ParadisAgentChatInput.answerApproval} へ渡す。
  */
-export function paradisApprovalScreenPiece(detail: string | undefined): string | undefined {
-	if (detail === undefined) {
+export function paradisCodexApprovalFormOptions(screen: string, detail: string | undefined): readonly IParadisAgentApprovalOption[] | undefined {
+	if (!paradisCodexApprovalFormShown(screen)) {
 		return undefined;
 	}
-	const body = detail.replace(/^[A-Za-z_][\w.-]*: /, '').trim();
-	let source = body;
-	if (body.startsWith('{')) {
-		try {
-			const parsed = JSON.parse(body) as Record<string, unknown>;
-			const path = [parsed.file_path, parsed.path, parsed.notebook_path, parsed.url].find((value): value is string => typeof value === 'string' && value.length > 0);
-			source = path !== undefined ? path.split(/[\\/]/).filter(part => part.length > 0).pop() ?? '' : '';
-		} catch {
-			// 切り詰められた JSON。確認の文言だけで判断する。
-			source = '';
-		}
+	const piece = paradisApprovalScreenPiece(detail, 'codex');
+	const prompt = paradisPermissionPromptParts(screen);
+	if (piece === undefined || prompt === undefined || !paradisPromptRegionShows(screen, piece)) {
+		return undefined;
 	}
-	const piece = source.replace(/\s+/g, '').slice(0, 12);
-	return piece.length >= 3 ? piece : undefined;
+	const options = paradisParseApprovalOptions(prompt.options);
+	return options !== undefined && options.length >= 2 ? options.map(option => ({ n: option.n, label: option.label })) : undefined;
 }
 
 /** シェルのプロセス名（ログインシェルの `-zsh` や Windows の `.exe` も含める）。 */

@@ -754,6 +754,37 @@ suite('ParadisAgentBrowser authority integration', () => {
 		}
 	});
 
+	// 許可の確認が画面から消えて作業中になったのをウィンドウが見たら、許可待ちを作業中へ戻す。ウィンドウが見ていた許可待ち
+	// （changedAt）より後に別の許可要求で付け直された許可待ちと、許可待ちでないペインは触らない。
+	test('moves a permission wait back to working once the window saw the prompt leave the screen, but not a newer wait', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'answered' }, { token: 'asked-again' }, { token: 'done' }]));
+		const statuses: Map<string, { status: string; changedAt: number; cwd?: string }> = Reflect.get(fixture.service, '_paneStatuses');
+		statuses.set('answered', { status: 'permission', changedAt: 1_000, cwd: '/repo' });
+		statuses.set('asked-again', { status: 'permission', changedAt: 2_000 });
+		statuses.set('done', { status: 'review', changedAt: 1_000 });
+		const results = [
+			// 登録されていないウィンドウからは受け付けない
+			await fixture.service.settlePanePermissionOffScreen({}, 'asked-again', 2_000),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'answered', 1_000),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'asked-again', 1_500),
+			await fixture.service.settlePanePermissionOffScreen(connection, 'done', 1_000),
+		];
+		assert.deepStrictEqual({
+			results,
+			statuses: [...statuses].map(([token, entry]) => ({ token, status: entry.status, cwd: entry.cwd })),
+		}, {
+			results: [false, true, false, false],
+			statuses: [
+				{ token: 'answered', status: 'working', cwd: '/repo' },
+				{ token: 'asked-again', status: 'permission', cwd: undefined },
+				{ token: 'done', status: 'review', cwd: undefined },
+			],
+		});
+	});
+
 	// レビュー M3: 知らないトークンの hook に「まだ同期していない」（503、控える）と答えるのは、起動とウィンドウの
 	// 接続の直後だけ。終わったペインと、猶予を過ぎて知らないペインは 404（控えない）。
 	test('tells a not-yet-synced pane from an unknown or retired one', () => {

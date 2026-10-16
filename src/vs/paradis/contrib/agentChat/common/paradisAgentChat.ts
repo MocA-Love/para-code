@@ -375,4 +375,10 @@ export interface IParadisAgentChatSource {
 	claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean>;
 	/** claim を返す。sent なら TUI が消費するまで（最長 60 秒）同じ interaction への回答を受け付けない。 */
 	releaseAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string, sent: boolean): Promise<void>;
+	/**
+	 * 画面に確認が出ていたのを見た承認（`interactionIds`）について、その確認が消え、エージェントが作業を続けているのを
+	 * 画面で見た（ターミナルのキーで答えた）。答え終えたものとして外し、その後もまだ答えていない承認が残っていれば true
+	 * （空の `interactionIds` で、残りがあるかだけを確かめられる）。古い shared process には無い。
+	 */
+	settleAgentChatApprovalsOffScreen?(token: string, interactionIds: readonly string[]): Promise<boolean>;
 }
