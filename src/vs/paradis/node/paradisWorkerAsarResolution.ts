@@ -15,8 +15,9 @@
 // （開発ビルドは `node_modules` があるので再現しない）。
 //
 // worker は `paradisWorkerBootstrap.ts` を入口にして起こし、そこでこのフックを登録してから本体を
-// 動的に import する。解決の手順は `src/bootstrap-esm.ts` の `enableASARSupport` と同じにしてある
-// （upstream のファイルはバンドルされて別の .js として残らず、process 向けの副作用もあるので import しない）。
+// 動的に import する。解決の手順は、ESM は `src/bootstrap-esm.ts`、CommonJS（`yauzl` の中の
+// `require('pend')` など）は `src/bootstrap-node.ts` の `enableASARSupport` と同じにしてある（upstream の
+// ファイルはバンドルされて別の .js として残らず、process 向けの副作用もあるので import しない）。
 // upstream がそちらを変えたら、ここも合わせること。
 
 import { createRequire, isBuiltin, registerHooks, type Module } from 'module';
@@ -91,6 +92,9 @@ export function registerParadisWorkerAsarResolution(appRoot: string, env: NodeJS
 	};
 
 	const resourcesPath = env.VSCODE_DEV ? undefined : normalizeDriveLetter(appRoot);
+	if (resourcesPath) {
+		addArchiveToCommonJSLookup(join(appRoot, 'node_modules'), normalizeDriveLetter);
+	}
 	const asarRequire = resourcesPath ? createRequire(join(appRoot, 'node_modules.asar', 'x.js')) : undefined;
 	trace?.(`tracing enabled (node ${process.versions.node}); resourcesPath=${resourcesPath}`);
 
@@ -189,4 +193,27 @@ export function registerParadisWorkerAsarResolution(appRoot: string, env: NodeJS
 		throw new Error('Failed to identify CommonJS module resolution conditions');
 	}
 	return true;
+}
+
+/**
+ * CommonJS の `require` の探し先で、`<appRoot>/node_modules` の直前に `node_modules.asar` を入れる
+ * （`bootstrap-node.ts` の `enableASARSupport` と同じ）。asar の中のパッケージが、同じ asar の中の
+ * 別のパッケージを `require` できるようにするため。
+ */
+function addArchiveToCommonJSLookup(nodeModulesPath: string, normalizeDriveLetter: (path: string) => string): void {
+	const target = normalizeDriveLetter(nodeModulesPath);
+	const Module = createRequire(import.meta.url)('module') as { _resolveLookupPaths: (request: string, parent: unknown) => string[] | null };
+	const originalResolveLookupPaths = Module._resolveLookupPaths;
+	Module._resolveLookupPaths = function (request: string, parent: unknown): string[] | null {
+		const paths = originalResolveLookupPaths(request, parent);
+		if (Array.isArray(paths)) {
+			for (let i = 0, len = paths.length; i < len; i++) {
+				if (normalizeDriveLetter(paths[i]) === target) {
+					paths.splice(i, 0, `${paths[i]}.asar`);
+					break;
+				}
+			}
+		}
+		return paths;
+	};
 }

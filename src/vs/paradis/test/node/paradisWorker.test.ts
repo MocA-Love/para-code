@@ -72,10 +72,13 @@ suite('Paradis worker bootstrap', () => {
 	test('a worker resolves packages from node_modules.asar only after registering the resolution', async function () {
 		await skipWithoutWorkers(this);
 		// appRoot/node_modules.asar/<package> と appRoot/out/<entry> の並びはパッケージ版と同じ。
-		const packageRoot = join(root, 'node_modules.asar', 'paradis-fake-package');
-		mkdirSync(packageRoot, { recursive: true });
-		writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'paradis-fake-package', type: 'module', exports: './index.js' }));
-		writeFileSync(join(packageRoot, 'index.js'), `export const origin = 'archive';\n`);
+		// ESM の import が asar の中の CommonJS のパッケージに届き、その中の require が同じ asar の別のパッケージに届くこと。
+		for (const [name, source] of [['paradis-fake-package', `exports.origin = require('paradis-fake-dependency').origin;\n`], ['paradis-fake-dependency', `exports.origin = 'archive';\n`]]) {
+			const packageRoot = join(root, 'node_modules.asar', name);
+			mkdirSync(packageRoot, { recursive: true });
+			writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name, main: 'index.js' }));
+			writeFileSync(join(packageRoot, 'index.js'), source);
+		}
 		mkdirSync(join(root, 'out'));
 		const entry = join(root, 'out', 'entry.mjs');
 		writeFileSync(entry, `export { origin } from 'paradis-fake-package';\n`);
