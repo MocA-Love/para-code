@@ -198,6 +198,90 @@ export function buildShapeOverlay(
 }
 
 /**
+ * Excel で「表示」に設定したメモ（`comment.shown`）を、保存された位置と大きさの吹き出しとして描き、元のセルの右上から
+ * 吹き出しへ引き出し線を引く。座標は図形と同じ makeAnchorResolver で求める。入りきらない文字は切り、マウスを載せると
+ * 全文を出す（CSS）。表示するメモが無ければ undefined。
+ */
+export function buildShownNoteOverlay(
+	comments: readonly IParadisCellComment[],
+	rowYByExcelRow: Map<number, number>,
+	columnWidths: readonly number[],
+	minCol: number,
+	doc: Document,
+): HTMLElement | undefined {
+	const shown = comments.filter(comment => comment.shown);
+	if (shown.length === 0) {
+		return undefined;
+	}
+	const anchorPos = makeAnchorResolver(rowYByExcelRow, columnWidths, minCol);
+	const layer = doc.createElement('div');
+	layer.className = 'paradis-spreadsheet-notes';
+	const lines = doc.createElementNS(SVG_NS, 'svg');
+	lines.setAttribute('class', 'paradis-spreadsheet-note-lines');
+	lines.setAttribute('aria-hidden', 'true');
+	layer.appendChild(lines);
+	for (const comment of shown) {
+		const box = comment.shown!;
+		const topLeft = anchorPos(box.from);
+		const bottomRight = box.to ? anchorPos(box.to) : { x: topLeft.x + emuToPx(box.ext?.cx ?? 0), y: topLeft.y + emuToPx(box.ext?.cy ?? 0) };
+		const width = Math.max(0, bottomRight.x - topLeft.x);
+		const height = Math.max(0, bottomRight.y - topLeft.y);
+		if (width === 0 || height === 0) {
+			continue;
+		}
+		// 元のセルの右上（次の列の左端）。
+		const cell = anchorPos({ c: comment.column + 1, co: 0, r: comment.row, ro: 0 });
+		const inside = cell.x >= topLeft.x && cell.x <= bottomRight.x && cell.y >= topLeft.y && cell.y <= bottomRight.y;
+		if (!inside) {
+			// 吹き出しがセルの左にあれば右上、それ以外は左上の付近へつなぐ。
+			const x = bottomRight.x < cell.x ? bottomRight.x : topLeft.x;
+			appendNoteLeader(lines, x, topLeft.y + Math.min(8, height / 2), cell.x, cell.y);
+		}
+		const note = dom.append(layer, $('div.paradis-spreadsheet-note'));
+		note.setAttribute('role', 'note');
+		note.style.left = `${topLeft.x}px`;
+		note.style.top = `${topLeft.y}px`;
+		note.style.width = `${width}px`;
+		// 高さは保存された大きさ。マウスを載せると CSS で全文の高さまで伸ばし、min-height でそれより縮めない。
+		note.style.height = `${height}px`;
+		note.style.minHeight = `${height}px`;
+		if (box.fill) {
+			note.style.backgroundColor = box.fill;
+		}
+		const entry = comment.entries[0];
+		const text = entry?.text ?? '';
+		// Excel はメモの先頭に「作成者:」を太字で書く。本文が同じ名前で始まるときは、その部分を太字にする。
+		const heading = entry?.author && text.startsWith(`${entry.author}:`) ? `${entry.author}:` : '';
+		if (heading) {
+			dom.append(note, $('b')).textContent = heading;
+		}
+		note.appendChild(doc.createTextNode(text.slice(heading.length)));
+	}
+	return layer;
+}
+
+/** 吹き出し（x1, y1）から元のセルの右上（x2, y2）への引き出し線。セルの側に小さな矢じりを付ける（Excel と同じ）。 */
+function appendNoteLeader(svg: SVGElement, x1: number, y1: number, x2: number, y2: number): void {
+	const doc = svg.ownerDocument;
+	const line = doc.createElementNS(SVG_NS, 'line');
+	line.setAttribute('x1', `${x1}`);
+	line.setAttribute('y1', `${y1}`);
+	line.setAttribute('x2', `${x2}`);
+	line.setAttribute('y2', `${y2}`);
+	svg.appendChild(line);
+	const length = Math.hypot(x2 - x1, y2 - y1);
+	if (length < 1) {
+		return;
+	}
+	const ux = (x2 - x1) / length, uy = (y2 - y1) / length;
+	const size = Math.min(6, length / 2);
+	const baseX = x2 - ux * size, baseY = y2 - uy * size;
+	const head = doc.createElementNS(SVG_NS, 'polygon');
+	head.setAttribute('points', [[x2, y2], [baseX - uy * size / 2, baseY + ux * size / 2], [baseX + uy * size / 2, baseY - ux * size / 2]].map(([x, y]) => `${x},${y}`).join(' '));
+	svg.appendChild(head);
+}
+
+/**
  * 図形を置く枠(px)。oneCellAnchor・absoluteAnchor は始点と大きさ(ext)、twoCellAnchor は始点と終点で決まる。
  * グループの中の図形は、その枠の中の割合(frame)で位置を決める。
  */

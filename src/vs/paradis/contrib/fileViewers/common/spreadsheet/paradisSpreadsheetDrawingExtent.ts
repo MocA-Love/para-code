@@ -9,10 +9,12 @@
 // 図形（drawing）の外枠が届く右端の列を求める。印刷範囲の右の余白に置いた吹き出しなどを見せるために、表示する
 // 列をそこまで延ばすのに使う。外枠は枠（アンカー）に、形の道筋（吹き出しのしっぽなど枠の外へ伸びる分）・反転・
 // 回転を足したもの。位置の求め方は renderer の makeAnchorResolver と同じ（列の左端 + オフセット、1px = 9525 EMU）。
+// 常に表示するメモの吹き出しも、同じく外枠が届く列（と行）まで延ばす。
 
 import type { ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../office/paradisOfficeCanonicalXml.js';
 import { paradisShapeGeometry } from './paradisPresetShapeGeometry.js';
+import type { IParadisShownNoteBox } from '../paradisSpreadsheet.js';
 
 type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
 
@@ -303,4 +305,44 @@ export function paradisDrawingRightmostColumn(xmls: readonly string[], metrics: 
 		column++;
 	}
 	return column;
+}
+
+/**
+ * 常に表示するメモの吹き出しの外枠の右下が入る列と行（どちらも 1 始まり）。吹き出しが無ければ undefined。
+ * 列は `maxColumn`、行は `maxRow` より先を数えず、そこで止める。
+ */
+export function paradisShownNotesExtent(boxes: readonly IParadisShownNoteBox[], metrics: IParadisDrawingExtentMetrics, maxColumn: number, maxRow: number): { readonly column: number; readonly row: number } | undefined {
+	if (boxes.length === 0) {
+		return undefined;
+	}
+	// 0 始まりの列 c（行 r）の左端（上端）。上限までだけ持つ。
+	const edges = (size: (index: number) => number, limit: number) => {
+		const starts: number[] = [0];
+		return (index: number): number => {
+			const target = Math.min(index, limit);
+			while (starts.length <= target) {
+				starts.push(starts[starts.length - 1] + Math.max(0, size(starts.length)));
+			}
+			return starts[target];
+		};
+	};
+	const columnLeft = edges(column => metrics.columnWidth(column), maxColumn);
+	const rowTop = edges(row => metrics.rowHeight(row), maxRow);
+	let right = 0;
+	let bottom = 0;
+	for (const box of boxes) {
+		const left = columnLeft(box.from.c) + box.from.co / EMU_PER_PX;
+		const top = rowTop(box.from.r) + box.from.ro / EMU_PER_PX;
+		right = Math.max(right, box.to ? columnLeft(box.to.c) + box.to.co / EMU_PER_PX : left + (box.ext?.cx ?? 0) / EMU_PER_PX);
+		bottom = Math.max(bottom, box.to ? rowTop(box.to.r) + box.to.ro / EMU_PER_PX : top + (box.ext?.cy ?? 0) / EMU_PER_PX);
+	}
+	// 外枠の端を含む列と行。端がちょうど境目なら、その手前で足りる。
+	const containing = (start: (index: number) => number, edge: number, limit: number) => {
+		let index = 1;
+		while (index < limit && start(index) < edge) {
+			index++;
+		}
+		return index;
+	};
+	return { column: containing(columnLeft, right, maxColumn), row: containing(rowTop, bottom, maxRow) };
 }

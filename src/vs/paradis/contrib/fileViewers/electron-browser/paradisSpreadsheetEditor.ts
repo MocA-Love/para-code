@@ -50,7 +50,7 @@ import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js'
 import { ParadisOfficeAccessibility, applyParadisOfficeGridMetadata, wireParadisOfficeTableGrid, wireParadisOfficeTabList, type ParadisOfficeTabEntry } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import type { ParadisOfficeSearchPage } from '../common/paradisOfficeSearch.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, commentKindsByCell, commentMarkerClass, describeSheetPageBreaks, getColumnLabel } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, buildShownNoteOverlay, commentKindsByCell, commentMarkerClass, describeSheetPageBreaks, getColumnLabel } from './paradisSpreadsheetRender.js';
 import { ParadisSpreadsheetBrokenImages } from './paradisSpreadsheetBrokenImages.js';
 import { spreadsheetBrokenImagePlaceholders, spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { createParadisSpreadsheetPrintDrawingBudget, paradisSpreadsheetPrintLayout, type IParadisSpreadsheetPrintLayout } from './paradisSpreadsheetPrintLayout.js';
@@ -333,6 +333,7 @@ export function shouldVirtualizeSpreadsheetSheet(sheet: IParadisSheetData): bool
 	if (sheet.rows.length * sheet.columnCount <= VIRTUAL_GRID_CELL_THRESHOLD
 		|| sheet.showGridLines === false
 		|| (sheet.shapes?.length ?? 0) > 0
+		|| sheet.comments?.some(comment => comment.shown)
 		|| (sheet.rowBreaks?.length ?? 0) > 0
 		|| (sheet.colBreaks?.length ?? 0) > 0
 		|| sheet.printArea !== undefined
@@ -617,6 +618,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _overflowCells: IParadisOverflowItem[] = [];
 	private _activeSheet: IParadisSheetData | undefined;
 	private _shapeOverlay: SVGElement | undefined;
+	private _noteOverlay: HTMLElement | undefined;
 	private _pageBreakOverlay: SVGElement | undefined;
 	private _pageLabelOverlay: SVGElement | undefined;
 	// フォント反映等の再フローで行高が変わると図形/改ページ線の固定Y座標が古くなるため、再測定・再配置トリガを張る。
@@ -1372,6 +1374,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._innerEl = undefined;
 		this._outerEl = undefined;
 		this._shapeOverlay = undefined;
+		this._noteOverlay = undefined;
 		this._pageBreakOverlay = undefined;
 		this._pageLabelOverlay = undefined;
 		dom.clearNode(this._bodyEl);
@@ -1504,6 +1507,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._shapeOverlay.remove();
 			this._shapeOverlay = undefined;
 		}
+		if (this._noteOverlay) {
+			this._noteOverlay.remove();
+			this._noteOverlay = undefined;
+		}
 		if (this._pageBreakOverlay) {
 			this._pageBreakOverlay.remove();
 			this._pageBreakOverlay = undefined;
@@ -1529,6 +1536,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				inner.appendChild(overlay);
 				this._shapeOverlay = overlay;
 			}
+		}
+		// 「表示」に設定したメモは、図形と同じ層の上に吹き出しとして出す。
+		const notes = sheet.comments ? buildShownNoteOverlay(sheet.comments, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument) : undefined;
+		if (notes) {
+			inner.appendChild(notes);
+			this._noteOverlay = notes;
 		}
 		const { rowLines, colLines, labels } = describeSheetPageBreaks(sheet);
 		const breaks = buildPageBreakOverlay(rowLines, colLines, sheet.printArea, labels, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
@@ -1943,6 +1956,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._headHeight = 0;
 		this._naturalTableHeight = 0;
 		this._shapeOverlay = undefined;
+		this._noteOverlay = undefined;
 		this._pageBreakOverlay = undefined;
 		this._pageLabelOverlay = undefined;
 		this._replaceToken = {};

@@ -692,6 +692,56 @@
 	z-index: 5;
 }
 
+/* allow-any-unicode-next-line */
+/* Excel で「表示」に設定したメモ。図形と同じ層に、保存された位置と大きさで出す。入りきらない文字は切り、マウスを載せると全文。 */
+.paradis-spreadsheet-notes {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	z-index: 5;
+}
+.paradis-spreadsheet-note-lines {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+.paradis-spreadsheet-note-lines line {
+	stroke: #000000;
+	stroke-width: 0.75;
+}
+.paradis-spreadsheet-note-lines polygon {
+	fill: #000000;
+}
+.paradis-spreadsheet-note {
+	position: absolute;
+	box-sizing: border-box;
+	padding: 2px 4px;
+	overflow: hidden;
+	pointer-events: auto;
+	background: #ffffe1;
+	border: 1px solid #000000;
+	box-shadow: 2px 2px 2px rgba(0, 0, 0, 0.35);
+	color: #000000;
+	font: 9pt/1.3 "MS PGothic", "Hiragino Sans", "Meiryo", Tahoma, sans-serif;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	text-align: left;
+}
+.paradis-spreadsheet-note:hover {
+	/* allow-any-unicode-next-line */
+	/* 保存された高さ（インライン）を外して全文まで伸ばす。min-height（保存された高さ）より縮めない。 */
+	height: auto !important;
+	max-height: 400px;
+	overflow: auto;
+	z-index: 1;
+}
+
 /* Header bar (viewer). Same tone as the diff toolbar. */
 .paradis-spreadsheet-header {
 	display: flex;
