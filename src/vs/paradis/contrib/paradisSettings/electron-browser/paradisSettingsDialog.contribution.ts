@@ -36,9 +36,10 @@ class ParadisOpenSettingsDialogAction extends Action2 {
 		});
 	}
 
-	run(accessor: ServicesAccessor): void {
+	/** @param sectionId 開いたときに出す節（例: メニューバーのアイコンから開くときの 'psd-sec-menubar'）。 */
+	run(accessor: ServicesAccessor, sectionId?: unknown): void {
 		activeDialog?.dispose();
-		activeDialog = accessor.get(IInstantiationService).createInstance(ParadisSettingsDialog);
+		activeDialog = accessor.get(IInstantiationService).createInstance(ParadisSettingsDialog, typeof sectionId === 'string' ? sectionId : undefined);
 	}
 }
 
