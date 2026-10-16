@@ -16,7 +16,7 @@ import { buildDemo, demoSlots } from './demo.js';
 import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
-import { addCodexApprovals, codexApprovalState, codexConfigPath, CodexConfigError } from './codexApproval.js';
+import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents } from './paraCode.js';
 import { boardPlaces, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
@@ -300,11 +300,12 @@ async function main(): Promise<void> {
 	}) : undefined;
 
 	// Codex の設定の許可の有無（起動時と、書き足したとき・1 分ごとに読み直す）
-	let codexMissing: readonly string[] = [];
+	// まだ常に許可になっていない Codex の設定（CODEX_HOME ごと）と、足りないツール
+	let codexPending: { readonly path: string; readonly missing: readonly string[] }[] = [];
 	const refreshCodexApproval = async () => {
-		const next = (await codexApprovalState()).missing;
-		if (next.join() !== codexMissing.join()) {
-			codexMissing = next;
+		const next = await codexApprovalStates();
+		if (JSON.stringify(next) !== JSON.stringify(codexPending)) {
+			codexPending = next;
 			broadcastSoon();
 		}
 	};
@@ -317,8 +318,8 @@ async function main(): Promise<void> {
 		agents: paraCodeMode ? 'para-code' as const : 'simulated' as const,
 		agentsConnected: paraCodeMode ? bridgeState.connected : undefined,
 		agentsDetail: paraCodeMode && !bridgeState.connected ? bridgeState.detail : undefined,
-		codexApprovalMissing: paraCodeMode ? codexMissing : undefined,
-		codexConfigPath: paraCodeMode ? codexConfigPath() : undefined,
+		codexApprovalMissing: paraCodeMode ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
+		codexConfigPaths: paraCodeMode ? codexPending.map(p => p.path) : undefined,
 		assetKey,
 		speed: sim.getSpeed(),
 		realWorkspaces,
@@ -583,12 +584,29 @@ async function main(): Promise<void> {
 			if (!paraCodeMode) {
 				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
 			}
-			await addCodexApprovals().catch(err => {
-				throw err instanceof CodexConfigError ? new TaskBoardError('invalid-state', err.message) : err;
-			});
-			await refreshCodexApproval();
-			return { path: codexConfigPath() };
+			// 足りない設定ファイルすべてに足す。読み方に迷う形のものは書かず、理由をまとめて返す
+			// 1 つが失敗（読めない形・権限・容量など）しても残りは試し、終わったら帯を出し直す
+			const refused: string[] = [];
+			const written: string[] = [];
+			try {
+				for (const pending of await codexApprovalStates()) {
+					try {
+						await addCodexApprovals(pending.path);
+						written.push(pending.path);
+					} catch (err) {
+						refused.push(`${pending.path}: ${err instanceof CodexConfigError ? err.message : `書き込めませんでした（${err instanceof Error ? err.message : String(err)}）`}`);
+					}
+				}
+			} finally {
+				await refreshCodexApproval();
+			}
+			if (refused.length) {
+				const done = written.length ? `足しました: ${written.join(', ')}。` : '';
+				throw new TaskBoardError('invalid-state', `${done}次は手で足してください。${refused.join(' / ')}`);
+			}
+			return { path: written.join(', ') };
 		},
+
 		pullFilePatch: async p => {
 			const task = engine.getTask(p.taskId);
 			if (!task?.pr) {
