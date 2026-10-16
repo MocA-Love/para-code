@@ -21,6 +21,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { GeneralShellType, ITerminalEnvironment, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 import { paradisSshHostFromAuthority } from '../../../common/paradisHostPath.js';
 import type { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import type { IParadisPresetMovePlan } from './paradisPresetReorder.js';
 
 /** ワークスペースフォルダ直下で認識する設定ファイル名。 */
 export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
@@ -362,6 +363,13 @@ export interface IParadisPresetService {
 	 * 保存先や定義元ファイルが異なる組み合わせでは何もしない。
 	 */
 	swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void>;
+
+	/**
+	 * プリセット 1 件、またはフォルダ 1 つ（中身ごと）を、同じ定義元の中の別の位置へ挿入する
+	 * （paradisPresetReorder.ts の paradisPlanPresetMove などで作った書き込み方を渡す）。間の行は 1 つずつずれる。
+	 * フォルダを動かすときは、一覧に出ていない中身（appliesTo が別リポジトリ等）も一緒に動かす。
+	 */
+	movePresets(plan: IParadisPresetMovePlan): Promise<void>;
 }
 
 // --- 識別 ----------------------------------------------------------------------------------------
