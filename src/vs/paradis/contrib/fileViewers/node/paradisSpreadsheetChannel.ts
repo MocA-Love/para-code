@@ -11,11 +11,15 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { CancellationError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
+import { localize } from '../../../../nls.js';
+import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSemanticDiagnosticsSummary, type IParadisSpreadsheetMetafileImages, type IParadisSpreadsheetService, type IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
+import type { IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
+import type { ParadisSpreadsheetParseWorkerResult } from './spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 /** 詳しい解析を受け持つ口（テストで差し替えられるように）。 */
 export interface IParadisSpreadsheetDiagnosticsBackend {
@@ -25,6 +29,12 @@ export interface IParadisSpreadsheetDiagnosticsBackend {
 /** EMF・WMF の変換を受け持つ口（テストで差し替えられるように）。 */
 export interface IParadisSpreadsheetMetafileBackend {
 	convert(bytes: Uint8Array, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages>;
+}
+
+/** 表示用の解析を受け持つ worker の口（テストで差し替えられるように）。 */
+export interface IParadisSpreadsheetParseBackend {
+	parse(bytes: Uint8Array, imagePixelBudget: number | undefined, token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult>;
+	warm(token: CancellationToken): Promise<ParadisSpreadsheetParseWorkerResult>;
 }
 
 /** ビューアが読む上限（PARADIS_SPREADSHEET_MAX_BYTES）と同じ。これより大きいものは worker へ送らない。 */
@@ -54,11 +64,32 @@ async function createMetafileWorkerBackend(): Promise<IParadisSpreadsheetMetafil
 	return new ParadisSpreadsheetMetafileWorkerBackend(ParadisSpreadsheetMetafileWorkerBackend.workerFactory(workerPath));
 }
 
+/**
+ * 表示用の解析も worker で行う（shared process 本体を止めないため）。worker の入口を同梱していない環境
+ * （SSH の接続先のサーバーなど）では `undefined` を返し、本体で解析する。
+ */
+async function createParadisSpreadsheetParseWorkerBackend(): Promise<(IParadisSpreadsheetParseBackend & IDisposable) | undefined> {
+	const { ParadisSpreadsheetParseWorkerBackend } = await import('./spreadsheet/paradisSpreadsheetParseWorkerBackend.js');
+	const workerPath = FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetParseWorkerMain.js').fsPath;
+	const factory = await ParadisSpreadsheetParseWorkerBackend.workerFactory(workerPath);
+	return factory ? new ParadisSpreadsheetParseWorkerBackend(factory) : undefined;
+}
+
+/** shared process が起動してから解析の worker を温めるまで。起動直後の混み合う時間を避ける。 */
+const PARSE_WARM_DELAY_MS = 15_000;
+
+/** 暗号化されたブック（CFB の入れ物）か。断る文言の翻訳は本体にしか無いので、worker へ送らず本体で解析する。 */
+function isCompoundFile(bytes: Uint8Array): boolean {
+	return bytes.length >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+}
+
 export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDisposable {
 
 	private servicePromise: Promise<IParadisSpreadsheetService> | undefined;
 	private diagnosticsPromise: Promise<IParadisSpreadsheetDiagnosticsBackend & Partial<IDisposable>> | undefined;
 	private metafilePromise: Promise<IParadisSpreadsheetMetafileBackend & Partial<IDisposable>> | undefined;
+	private parsePromise: Promise<(IParadisSpreadsheetParseBackend & Partial<IDisposable>) | undefined> | undefined;
+	private warmTimer: ReturnType<typeof setTimeout> | undefined;
 	private disposed = false;
 
 	constructor(
@@ -68,12 +99,31 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 		},
 		private readonly diagnosticsFactory: () => Promise<IParadisSpreadsheetDiagnosticsBackend & Partial<IDisposable>> = createWorkerBackend,
 		private readonly metafileFactory: () => Promise<IParadisSpreadsheetMetafileBackend & Partial<IDisposable>> = createMetafileWorkerBackend,
+		/** 表示用の解析の worker。既定では使わず、本体で解析する（shared process だけが worker を渡す）。 */
+		private readonly parseFactory: () => Promise<(IParadisSpreadsheetParseBackend & Partial<IDisposable>) | undefined> = async () => undefined,
 	) { }
 
 	dispose(): void {
 		this.disposed = true;
+		if (this.warmTimer !== undefined) {
+			clearTimeout(this.warmTimer);
+			this.warmTimer = undefined;
+		}
 		void this.diagnosticsPromise?.then(backend => backend.dispose?.(), () => undefined);
 		void this.metafilePromise?.then(backend => backend.dispose?.(), () => undefined);
+		void this.parsePromise?.then(backend => backend?.dispose?.(), () => undefined);
+	}
+
+	/** `delayMs` たったら解析の worker を起動し、exceljs と jszip を読み込ませておく。 */
+	warmLater(delayMs: number): void {
+		if (this.disposed || this.warmTimer !== undefined) {
+			return;
+		}
+		this.warmTimer = setTimeout(async () => {
+			this.warmTimer = undefined;
+			const backend = await this.getParseBackend();
+			await backend?.warm(CancellationToken.None);
+		}, delayMs);
 	}
 
 	listen<T>(_ctx: string, event: string): Event<T> {
@@ -84,13 +134,50 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			// 表示の投影だけを返す。第 2 引数は画像の画素の上限（数でなければ既定値）。診断の指定は通さない。
-			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]), typeof args[1] === 'number' ? args[1] : undefined)) as Promise<T>;
+			case 'parseWorkbook': return this.parseWorkbook(String(args[0]), typeof args[1] === 'number' ? args[1] : undefined, cancellationToken) as Promise<T>;
 			case 'collectSemanticDiagnostics': return this.collectSemanticDiagnostics(args[0], cancellationToken) as Promise<T>;
 			// 表示を返した後で、同じバイト列の EMF・WMF を worker で SVG にする。
 			case 'convertMetafiles': return this.convertMetafiles(args[0], cancellationToken) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
+	}
+
+	/**
+	 * worker が使えれば worker で解析し、セルの書式を表にまとめた形で返す（renderer が元の形に戻す）。
+	 * worker を起動できない・落ちた・混んでいるときは、今までどおり本体で解析する。
+	 */
+	private async parseWorkbook(base64: string, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | IParadisPackedWorkbookData> {
+		const backend = await this.getParseBackend();
+		const bytes = backend ? Buffer.from(base64, 'base64') : undefined;
+		if (backend && bytes && !isCompoundFile(bytes)) {
+			const result = await backend.parse(bytes, imagePixelBudget, token);
+			switch (result.kind) {
+				case 'workbook':
+					return result.workbook;
+				case 'error':
+					throw new Error(result.message);
+				case 'unavailable':
+					if (result.reason === 'cancelled') {
+						throw new CancellationError();
+					}
+					if (result.reason === 'limitExceeded') {
+						// 締め切り（2 分）を過ぎた、またはヒープの上限に達した。本体で解析し直すと本体ごと止まる・落ちる。
+						throw new Error(localize('paradis.spreadsheet.workbookTooLarge', "このブックは大きすぎるため開けませんでした。"));
+					}
+					break;
+			}
+		}
+		const service = await this.getService();
+		return service.parseWorkbook(base64, imagePixelBudget);
+	}
+
+	private getParseBackend(): Promise<(IParadisSpreadsheetParseBackend & Partial<IDisposable>) | undefined> {
+		if (this.disposed) {
+			return Promise.resolve(undefined);
+		}
+		const parsePromise = this.parsePromise ??= this.parseFactory().catch(() => undefined);
+		return parsePromise;
 	}
 
 	private async collectSemanticDiagnostics(value: unknown, token: CancellationToken): Promise<IParadisSemanticDiagnosticsSummary> {
@@ -150,7 +237,8 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisSpreadsheet(server: IPCServer<string>): IDisposable {
-	const channel = new ParadisSpreadsheetChannel();
+	const channel = new ParadisSpreadsheetChannel(undefined, undefined, undefined, createParadisSpreadsheetParseWorkerBackend);
+	channel.warmLater(PARSE_WARM_DELAY_MS);
 	server.registerChannel(PARADIS_SPREADSHEET_CHANNEL, channel);
 	return toDisposable(() => channel.dispose());
 }

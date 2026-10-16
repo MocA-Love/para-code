@@ -11,6 +11,7 @@ import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisSpreadsheetChannel } from '../../node/paradisSpreadsheetChannel.js';
 import type { IParadisSpreadsheetService, IParadisWorkbookData } from '../../common/paradisSpreadsheet.js';
+import type { ParadisSpreadsheetParseWorkerResult } from '../../node/spreadsheet/paradisSpreadsheetParseWorkerBackend.js';
 
 const workbook: IParadisWorkbookData = { sheets: [] };
 
@@ -145,5 +146,49 @@ suite('ParadisSpreadsheetChannel', () => {
 				{ images: {}, unavailableReason: 'tooLarge' },
 			],
 		});
+	});
+
+	test('parses in the worker when there is one, and in the shared process when the worker cannot', async () => {
+		const packed = { sheets: [], cellStyles: [] };
+		const replies: ParadisSpreadsheetParseWorkerResult[] = [
+			{ kind: 'workbook', workbook: packed },
+			{ kind: 'error', message: 'Cannot merge already merged cells' },
+			{ kind: 'unavailable', reason: 'failed' },
+			{ kind: 'unavailable', reason: 'busy' },
+			{ kind: 'unavailable', reason: 'limitExceeded' },
+		];
+		const sent: (string | number | undefined)[][] = [];
+		const parsedInProcess: string[] = [];
+		const channel = new ParadisSpreadsheetChannel(
+			async () => ({ parseWorkbook: async (input: string) => { parsedInProcess.push(input); return workbook; } }),
+			undefined,
+			undefined,
+			async () => ({
+				parse: async (bytes: Uint8Array, budget: number | undefined) => { sent.push([Buffer.from(bytes).toString('latin1'), budget]); return replies.shift()!; },
+				warm: async () => ({ kind: 'warm' }),
+			}),
+		);
+		const base64 = (text: string) => Buffer.from(text, 'latin1').toString('base64');
+		const outcomes: unknown[] = [];
+		for (const input of ['PK-1', 'PK-2', 'PK-3', 'PK-4', 'PK-5', '\xD0\xCF\x11\xE0-encrypted']) {
+			try {
+				outcomes.push(await channel.call('window:1', 'parseWorkbook', [base64(input), 9], CancellationToken.None));
+			} catch (error) {
+				outcomes.push((error as Error).message);
+			}
+		}
+		channel.dispose();
+		deepStrictEqual({ outcomes, sent, parsedInProcess }, {
+			outcomes: [packed, 'Cannot merge already merged cells', workbook, workbook, 'このブックは大きすぎるため開けませんでした。', workbook],
+			sent: [['PK-1', 9], ['PK-2', 9], ['PK-3', 9], ['PK-4', 9], ['PK-5', 9]],
+			parsedInProcess: [base64('PK-3'), base64('PK-4'), base64('\xD0\xCF\x11\xE0-encrypted')],
+		});
+	});
+
+	test('parses in the shared process when no worker is given', async () => {
+		const parsedInProcess: string[] = [];
+		const channel = new ParadisSpreadsheetChannel(async () => ({ parseWorkbook: async (input: string) => { parsedInProcess.push(input); return workbook; } }));
+		const result = await channel.call('window:1', 'parseWorkbook', ['UEs='], CancellationToken.None);
+		deepStrictEqual({ result, parsedInProcess }, { result: workbook, parsedInProcess: ['UEs='] });
 	});
 });
