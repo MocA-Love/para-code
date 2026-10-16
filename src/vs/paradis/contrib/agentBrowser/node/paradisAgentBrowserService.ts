@@ -5488,10 +5488,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			networkActivity: ignoreOlderThanMs => this._cdpGateway.getNetworkActivity(token, ignoreOlderThanMs),
 			// 枠だけを出す（名札の状態は道具の始まりと終わりの知らせが持つ）
 			noteLook: rect => this._noteCursorStatus(ingressLease, { rect }, binding),
-			evaluate: async (functionSource, uids) => {
+			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする。答えないページは
+					// 締め切りで諦める（`paraCodeDeadlineMs`。vendored が知らなければ proxy が外す。q.html Q379 の 4）
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -5535,9 +5536,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._requireIngressLease(ingressLease);
 				return this._bindingForKey(token) === binding;
 			},
-			evaluate: async (functionSource, uids) => {
+			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -5564,9 +5565,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._requireIngressLease(ingressLease);
 				return this._bindingForKey(token) === binding;
 			},
-			evaluate: async (functionSource, uids) => {
+			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss' }, signal);
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
