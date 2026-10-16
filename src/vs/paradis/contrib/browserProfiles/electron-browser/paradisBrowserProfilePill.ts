@@ -143,12 +143,14 @@ export class ParadisBrowserProfilePill extends BrowserEditorContribution {
 		const description = profile
 			? localize('paradis.browserProfiles.pill.namedHover', "ブラウザプロファイル「{0}」。Cookie と LocalStorage はこのプロファイルに保存され、次に開いたときも残ります。", fullName)
 			: localize('paradis.browserProfiles.pill.scopeHover', "ブラウザの保存スコープ: {0}", fullName);
-		this._hover.update(!agentConnected
+		// 読み上げにもホバーと同じ文を渡す（ピルからバッジを外したので、見えない人にはここでしか分からない）
+		const summary = !agentConnected
 			? description
 			: profile
 				? localize('paradis.browserProfiles.pill.hoverWithAgentProfile', "{0}\nこのページにはエージェントがつながっていて、このプロファイルのログイン状態を使っています。", description)
-				: localize('paradis.browserProfiles.pill.hoverWithAgentScope', "{0}\nこのページにはエージェントがつながっています。", description));
-		this._element.setAttribute('aria-label', localize('paradis.browserProfiles.pill.aria', "{0} 変更するには選択してください。", description));
+				: localize('paradis.browserProfiles.pill.hoverWithAgentScope', "{0}\nこのページにはエージェントがつながっています。", description);
+		this._hover.update(summary);
+		this._element.setAttribute('aria-label', localize('paradis.browserProfiles.pill.aria', "{0} 変更するには選択してください。", summary));
 	}
 
 	private _scopeLabel(scope: string | undefined): string {
