@@ -17,20 +17,27 @@
 //  - 外側クリック・スクロール・ウィンドウリサイズで閉じる
 //  - role="listbox" / role="option" / aria-selected / (ピル側の) aria-expanded
 //  - 画面端でのはみ出し回避（左右クランプ + 上下反転）
+// 各行の右端のピンで「このスペースの新しいタブの既定」を付け外しする（Q364 の案 A）。行そのものを
+// 押すのは今のタブの切り替え、ピンは次に開くタブの既定、と押す場所で分ける。キーボードでは
+// 行にフォーカスを置いて Ctrl+Enter（mac は Cmd+Enter）。
 // 色は `--vscode-*` トークンのみ。プロファイルの識別色だけは実データなのでそのまま塗る。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IParadisBrowserProfile } from '../common/paradisBrowserProfileModel.js';
 import { IParadisViewSessionInfo } from '../common/paradisBrowserProfileChannel.js';
+import { IParadisSpaceDefaultResolution, ParadisSpaceDefaultTarget, paradisSpaceDefaultTargetsEqual } from '../common/paradisBrowserSpaceDefaults.js';
 import { ParadisProfileTarget } from './paradisBrowserProfilesService.js';
 
 const $ = dom.$;
@@ -62,12 +69,23 @@ export interface IParadisBrowserProfileDropdownOptions {
 	readonly onManage: () => void;
 	/** 「他のブラウザから取り込む…」。名前付きプロファイルが使えるときだけ出す。 */
 	readonly onImport: () => void;
+	/**
+	 * このスペースの新しいタブの既定の付け外し。今のタブがスペースに属していない（スペースの
+	 * 管理外・所属が未確定）ときは渡されず、ピンを出さない。
+	 */
+	readonly spaceDefault?: {
+		/** 今の既定（親のスペースから引き継いだものを含む）。無ければ undefined。 */
+		readonly current: IParadisSpaceDefaultResolution | undefined;
+		readonly onToggle: (target: ParadisSpaceDefaultTarget) => void;
+	};
 }
 
 /** 行1つ分の内部表現。 */
 interface IDropdownRow {
 	readonly element: HTMLElement;
 	readonly run: () => void;
+	/** ピンを押したのと同じ操作（ピンの無い行では undefined）。 */
+	readonly pin?: () => void;
 }
 
 export class ParadisBrowserProfileDropdown extends Disposable {
@@ -82,6 +100,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 	constructor(
 		private readonly options: IParadisBrowserProfileDropdownOptions,
 		@ILayoutService layoutService: ILayoutService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -166,6 +185,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 				detail: details.join(' ・ '),
 				color: profile.color,
 				run: () => this.options.onSelect({ kind: 'profile', profileId: profile.id }),
+				pinTarget: { kind: 'profile', profileId: profile.id },
 			});
 			row.element.setAttribute('aria-label', localize(
 				'paradis.browserProfiles.dropdown.profileAria',
@@ -192,7 +212,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		separator.textContent = text;
 	}
 
-	private _appendScopeRow(scope: BrowserViewStorageScope, icon: ThemeIcon, label: string, detail: string): void {
+	private _appendScopeRow(scope: BrowserViewStorageScope.Global | BrowserViewStorageScope.Workspace | BrowserViewStorageScope.Ephemeral, icon: ThemeIcon, label: string, detail: string): void {
 		this._appendRow({
 			selected: this.options.current?.scope === scope,
 			stale: false,
@@ -200,6 +220,8 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 			detail,
 			icon,
 			run: () => this.options.onSelect({ kind: 'scope', scope }),
+			// 信頼していないワークスペースでは、どれを選んでもエフェメラルになるので既定も持たせない。
+			pinTarget: this.options.profilesEnabled ? { kind: 'scope', scope } : undefined,
 		});
 	}
 
@@ -221,11 +243,16 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		readonly color?: string;
 		readonly icon?: ThemeIcon;
 		readonly run: () => void;
+		/** この行をスペースの既定にするときの対象。ピンを出さない行では undefined。 */
+		readonly pinTarget?: ParadisSpaceDefaultTarget;
 	}): IDropdownRow {
 		const element = dom.append(this._listElement, $('.pbp-row'));
 		element.classList.toggle('is-selected', descriptor.selected);
 		element.classList.toggle('is-stale', descriptor.stale);
-		const row = this._prepareRow(element, descriptor.run);
+		const spaceDefault = this.options.spaceDefault;
+		const pinTarget = spaceDefault ? descriptor.pinTarget : undefined;
+		const pin = spaceDefault && pinTarget ? () => spaceDefault.onToggle(pinTarget) : undefined;
+		const row = this._prepareRow(element, descriptor.run, 'option', pin);
 		element.setAttribute('aria-selected', String(descriptor.selected));
 
 		if (descriptor.color) {
@@ -241,19 +268,54 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 		if (descriptor.detail) {
 			dom.append(main, $('.pbp-detail')).textContent = descriptor.detail;
 		}
+		if (spaceDefault && pinTarget && pin) {
+			this._appendPin(element, pinTarget, spaceDefault.current, pin);
+		}
 		if (descriptor.selected) {
 			dom.append(element, $(`.pbp-check${ThemeIcon.asCSSSelector(Codicon.check)}`));
 		}
 		return row;
 	}
 
+	/**
+	 * 既定の印とピン。自分の既定は印とピンを出しっぱなしにし、親から引き継いだ既定は印だけ
+	 * 出す（ピンはこのスペース自身の既定を付け外しするもので、引き継いだ既定は外せないため）。
+	 */
+	private _appendPin(element: HTMLElement, target: ParadisSpaceDefaultTarget, current: IParadisSpaceDefaultResolution | undefined, toggle: () => void): void {
+		const isDefault = paradisSpaceDefaultTargetsEqual(current?.target, target);
+		const isOwnDefault = isDefault && current?.inherited === false;
+		if (isDefault) {
+			const badge = dom.append(element, $('.pbp-default-badge'));
+			badge.classList.toggle('is-inherited', !isOwnDefault);
+			badge.textContent = isOwnDefault
+				? localize('paradis.browserProfiles.dropdown.spaceDefault', "このスペースの既定")
+				: localize('paradis.browserProfiles.dropdown.parentDefault', "メインツリーの既定");
+		}
+		const keyLabel = isMacintosh ? 'Cmd+Enter' : 'Ctrl+Enter';
+		const label = isOwnDefault
+			? localize('paradis.browserProfiles.dropdown.unpin', "このスペースの既定から外す（{0}）", keyLabel)
+			: localize('paradis.browserProfiles.dropdown.pin', "このスペースで新しく開くタブの既定にする（{0}）。開いているタブは変わりません。", keyLabel);
+		const button = dom.append(element, $(`button.pbp-pin${ThemeIcon.asCSSSelector(isOwnDefault ? Codicon.pinned : Codicon.pin)}`));
+		button.classList.toggle('is-pinned', isOwnDefault);
+		button.tabIndex = -1;
+		button.setAttribute('aria-label', label);
+		button.setAttribute('aria-pressed', String(isOwnDefault));
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), button, label));
+		this._register(dom.addDisposableListener(button, dom.EventType.MOUSE_DOWN, event => event.preventDefault()));
+		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, event => {
+			// 行のクリック（＝今のタブの切り替え）まで届かせない。
+			event.stopPropagation();
+			toggle();
+		}));
+	}
+
 	/** 行に共通の属性・イベントを付け、行一覧へ登録する。 */
-	private _prepareRow(element: HTMLElement, run: () => void, kind: 'option' | 'action' = 'option'): IDropdownRow {
+	private _prepareRow(element: HTMLElement, run: () => void, kind: 'option' | 'action' = 'option', pin?: () => void): IDropdownRow {
 		if (kind === 'option') {
 			element.setAttribute('role', 'option');
 		}
 		element.tabIndex = -1;
-		const row: IDropdownRow = { element, run };
+		const row: IDropdownRow = { element, run, pin };
 		this._rows.push(row);
 		const index = this._rows.length - 1;
 		this._register(dom.addDisposableListener(element, dom.EventType.MOUSE_DOWN, event => {
@@ -364,6 +426,13 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 				this._focusRow(this._rows.length - 1, true);
 				return;
 			case KeyCode.Enter:
+				keyboardEvent.preventDefault();
+				if (keyboardEvent.ctrlKey || keyboardEvent.metaKey) {
+					this._rows[this._focusedIndex]?.pin?.();
+					return;
+				}
+				this._rows[this._focusedIndex]?.run();
+				return;
 			case KeyCode.Space:
 				keyboardEvent.preventDefault();
 				this._rows[this._focusedIndex]?.run();

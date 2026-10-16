@@ -246,6 +246,8 @@ export interface ITaskBoardTask {
 	readonly stepPrompt?: string;
 	/** PR を作る工程が、作業場所の未コミットの変更で止まった（ファイルの一覧）。人がコミットするか決める。 */
 	readonly uncommitted?: readonly string[];
+	/** uncommitted のうち、git が追跡していない新しいファイル。 */
+	readonly untracked?: readonly string[];
 	readonly queuedAt?: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
@@ -328,6 +330,8 @@ export interface ITaskBoardRuntime {
 	readonly agentsDetail?: string;
 	/** Codex の設定で、まだ常に許可になっていないボードのツール（agents が para-code のとき）。 */
 	readonly codexApprovalMissing?: readonly string[];
+	/** 画像とモックの URL に付ける、読むだけの鍵（RPC には使えない）。 */
+	readonly assetKey?: string;
 	/** 書き足す先の Codex の設定（ボードのサーバーの CODEX_HOME から決まる）。 */
 	readonly codexConfigPath?: string;
 	/** シミュレーションの速さ（1 = 標準）。 */
@@ -506,7 +510,11 @@ export interface ITaskBoardRpc {
 	/** 軸の欄に選択肢を足す（無ければ欄を作る）。既存の選択肢と項目の値は保つ。 */
 	addProjectOptions: { params: { owner: string; project: number; fieldName: string; options: readonly ITaskBoardProjectOptionInput[] }; result: { created: boolean; added: readonly string[] } };
 	/** 作業場所の変更をすべてコミットし、止まった工程をやり直す（PR を作る工程が未コミットで止まったとき）。 */
-	commitAndRetry: { params: { taskId: string; message: string; attempt?: number }; result: { sha: string } };
+	commitAndRetry: { params: { taskId: string; message: string; attempt?: number; trackedOnly?: boolean }; result: { sha: string } };
+	/** エージェントのターミナルを閉じ、今の工程を新しいターミナルで始め直す（エージェントが止まって固まったとき）。 */
+	restartAgent: { params: { taskId: string; attempt?: number }; result: void };
+	/** タスクのドラフト PR を、レビュー待ち（Ready for review）にする（GitHub へ書き込む）。 */
+	prReady: { params: { taskId: string }; result: void };
 	/** 切り替えられるリポジトリの候補。 */
 	repositories: { params: Record<string, never>; result: { readonly current?: string; readonly items: readonly ITaskBoardRepositoryChoice[] } };
 	/** 別のリポジトリでボードを開き直す（サーバーが同じポートと鍵で起動し直し、画面は再接続する）。 */

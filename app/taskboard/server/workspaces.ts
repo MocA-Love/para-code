@@ -69,6 +69,24 @@ async function pushIfAhead(cwd: string, branch: string): Promise<void> {
 	}
 }
 
+/**
+ * 前のタスクの計画やモックを、次のタスクのエージェントが読まないように `.para/` を空にする。同じタスクが借り直したとき
+ * （差し戻しなど）は自分の分を残す。持ち主は `.para/.task` に書く。リポジトリが `.para/` を git で追跡していれば触らない。
+ */
+async function resetBoardFiles(cwd: string, taskId: string): Promise<void> {
+	if (await git(cwd, ['ls-files', '--', '.para']).catch(() => '')) {
+		return;
+	}
+	const dir = path.join(cwd, '.para');
+	const marker = path.join(dir, '.task');
+	if (await fs.readFile(marker, 'utf8').then(owner => owner.trim() === taskId, () => false)) {
+		return;
+	}
+	await fs.rm(dir, { recursive: true, force: true });
+	await fs.mkdir(dir, { recursive: true });
+	await fs.writeFile(marker, `${taskId}\n`);
+}
+
 async function branchExists(cwd: string, branch: string): Promise<boolean> {
 	return git(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
 }
@@ -145,14 +163,14 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 	}
 
 	prepare(task: ITaskBoardTask, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
-		return this.track(() => this.prepareNow(slot, branch));
+		return this.track(() => this.prepareNow(task.id, slot, branch));
 	}
 
 	release(task: ITaskBoardTask, slot: ITaskBoardSlot): Promise<void> {
 		return this.track(() => this.releaseNow(task, slot));
 	}
 
-	private async prepareNow(slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
+	private async prepareNow(taskId: string, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
 		if (slot.kind === 'worktree') {
 			const dir = this.worktreeDir(branch);
 			await git(this.repoPath, ['fetch', '--quiet', 'origin']);
@@ -177,6 +195,7 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 			throw new TaskBoardWorkspaceError(`${slot.name} is not a git checkout`, 'missing');
 		}
 		await excludeBoardFiles(slot.path);
+		await resetBoardFiles(slot.path, taskId);
 		if (await isDirty(slot.path)) {
 			throw new TaskBoardWorkspaceError(`${slot.name} has uncommitted changes`, 'dirty');
 		}
