@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ターミナルで Claude Code の OSC 7501（Program Status Protocol）に答え、届いた状態を shared process へ渡す。
+// Codex（0.163.0 から）は問い合わせ無しで状態を書くので、前面のコマンドが Codex（か ssh・WSL など）なら受け付けを開く。
 // shared process は、hook が届いていないペイン（WSL・手で ssh した先など）の状態の補助にだけ使う
 // （paradisAgentBrowserService.ts の notePaneProgramStatus）。問い合わせへの答えは pty へ書くので、ssh の
 // 先で動く Claude Code にも届く。
@@ -134,9 +135,18 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 					});
 				}
 			} else if (parsed !== undefined) {
+				if (parsed.app === 'codex' && !this.gate.isOpen) {
+					const trustedCommandLine = paradisTrustedCommandLine(this.instance.capabilities.get(TerminalCapability.CommandDetection)?.currentCommand);
+					if (this.tracker.codexStatus(trustedCommandLine, this.foregroundProcess)) {
+						this.endRun('reopened');
+						this.runStats.opened(undefined, 'codex');
+					}
+				}
 				const wasOpen = this.gate.isOpen;
+				// Codex の受け付けで届いた clear は Codex のものとして送る（shared process は Claude Code の clear と扱いを分ける）
+				const codexClear = parsed.state === 'clear' && this.gate.app === 'codex';
 				if (this.gate.accept(parsed)) {
-					this.send(parsed);
+					this.send(codexClear ? { state: 'clear', app: 'codex' } : parsed);
 					if (parsed.state === 'clear') {
 						this.endRun('clear-status');
 					}
@@ -164,7 +174,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	/** 受け付けを閉じた・保留にしたら、残った状態を消す。 */
 	private apply(effect: ParadisProgramStatusEffect, endedBy: ParadisProgramStatusRunEnd): void {
 		if (effect === 'clear') {
-			this.send({ state: 'clear' });
+			this.send({ state: 'clear', ...(this.gate.app === 'codex' ? { app: 'codex' as const } : {}) });
 			this.endRun(endedBy);
 		}
 	}
@@ -237,7 +247,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 				}
 			}, error => {
 				this.runStats.noteIpcFailure();
-				this.logService.warn('[paradisProgramStatus] could not pass the Claude Code status to the shared process', error);
+				this.logService.warn('[paradisProgramStatus] could not pass the agent status to the shared process', error);
 			});
 	}
 }

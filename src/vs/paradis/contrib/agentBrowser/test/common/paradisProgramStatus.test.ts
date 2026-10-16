@@ -7,9 +7,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisCodexProgramStatusForeground, paradisCodexProgramStatusTransition, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 
-suite('Para Browser Claude Code program status (OSC 7501)', () => {
+suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('reads the sequences Claude Code 2.1.295 wrote in a PTY, and ignores subagent rows and other apps', () => {
@@ -389,5 +389,122 @@ suite('Para Browser Claude Code program status (OSC 7501)', () => {
 			'version number after the exit: undefined',
 			'open after the exit: false',
 		]);
+	});
+
+	test('reads the unsolicited sequences Codex 0.163.0 wrote in a PTY, and keeps them apart from the Claude Code ones', () => {
+		// Measured on Codex 0.163.0 (2026-10-16): no query, no kind, no msg, and an app-less clear on /exit.
+		const inputs = ['state=idle:app=codex', 'state=working:app=codex', 'state=blocked:app=codex', 'state=clear', 'state=working:app=codex:id=x1'];
+		assert.deepStrictEqual({
+			parsed: inputs.map(paradisParseProgramStatus),
+			overIpc: [
+				paradisCopyProgramStatus({ state: 'blocked', app: 'codex' }),
+				paradisCopyProgramStatus({ state: 'working', app: 'claude-code' }),
+				paradisCopyProgramStatus({ state: 'working', app: 'other-cli' }),
+			],
+		}, {
+			parsed: [{ state: 'idle', app: 'codex' }, { state: 'working', app: 'codex' }, { state: 'blocked', app: 'codex' }, { state: 'clear' }, undefined],
+			overIpc: [{ state: 'blocked', app: 'codex' }, { state: 'working' }, { state: 'working' }],
+		});
+	});
+
+	test('the Codex state only helps: waiting always, working and its end only where no transcript reports turns, and never a completion', () => {
+		const previous = [undefined, 'working', 'permission', 'question', 'review'] as const;
+		const states = ['working', 'blocked', 'idle', 'clear', 'done'] as const;
+		const table = (transcriptBacked: boolean) => Object.fromEntries(states.map(state => [state, previous.map(before => paradisCodexProgramStatusTransition(before, state, transcriptBacked) ?? '-')]));
+		assert.deepStrictEqual({ withoutTranscript: table(false), withTranscript: table(true) }, {
+			// columns: (none), working, permission, question, review
+			withoutTranscript: {
+				working: ['working', '-', 'working', 'working', 'working'],
+				blocked: ['permission', 'permission', '-', '-', 'permission'],
+				idle: ['-', 'idle', 'idle', 'idle', '-'],
+				clear: ['-', 'idle', 'idle', 'idle', '-'],
+				done: ['-', '-', '-', '-', '-'],
+			},
+			withTranscript: {
+				working: ['-', '-', 'working', 'working', '-'],
+				blocked: ['permission', 'permission', '-', '-', 'permission'],
+				idle: ['-', '-', 'idle', 'idle', '-'],
+				clear: ['-', '-', 'idle', 'idle', '-'],
+				done: ['-', '-', '-', '-', '-'],
+			},
+		});
+	});
+
+	test('a Codex state opens the gate without a query only while Codex, or a command whose far side cannot be seen, runs in front', () => {
+		assert.deepStrictEqual({
+			codex: paradisCodexProgramStatusForeground('codex resume 019f-thread', 'node'),
+			codexPath: paradisCodexProgramStatusForeground('/opt/homebrew/bin/codex', undefined),
+			codexProcess: paradisCodexProgramStatusForeground(undefined, 'codex'),
+			windows: paradisCodexProgramStatusForeground(undefined, 'codex.exe'),
+			ssh: paradisCodexProgramStatusForeground('ssh dev-box', 'ssh'),
+			claude: paradisCodexProgramStatusForeground('claude', '2.1.295'),
+			cat: paradisCodexProgramStatusForeground('cat notes.txt', 'cat'),
+			untrusted: paradisCodexProgramStatusForeground(paradisTrustedCommandLine({ command: 'codex', isTrusted: false }), 'cat'),
+			// Claude Code's query is not answered for Codex
+			claudeQueryUnderCodex: paradisProgramStatusForeground('codex', 'codex'),
+			keepWhileCodexWithoutIntegration: paradisProgramStatusClosesOnForeground(false, 'codex'),
+			closeAtShell: paradisProgramStatusClosesOnForeground(true, 'zsh'),
+		}, {
+			codex: true,
+			codexPath: true,
+			codexProcess: true,
+			windows: true,
+			ssh: true,
+			claude: false,
+			cat: false,
+			untrusted: false,
+			claudeQueryUnderCodex: undefined,
+			keepWhileCodexWithoutIntegration: false,
+			closeAtShell: true,
+		});
+	});
+
+	test('a Codex gate and a Claude Code gate do not pass each other\'s states', () => {
+		let now = 1_000_000;
+		const tracker = new ParadisProgramStatusTracker(new ParadisProgramStatusGate(() => now));
+		const passed: string[] = [];
+		const feed = (label: string, sequence: string, commandLine?: string, processTitle?: string) => {
+			const parsed = paradisParseProgramStatus(sequence);
+			if (parsed === 'query') {
+				passed.push(`${label}: ${tracker.query(commandLine, processTitle) ? 'answered' : 'not answered'}`);
+			} else if (parsed !== undefined) {
+				const opened = parsed.app === 'codex' && !tracker.gate.isOpen && tracker.codexStatus(commandLine, processTitle);
+				passed.push(`${label}: ${opened ? 'opened, ' : ''}${tracker.gate.accept(parsed) ? 'passed' : 'dropped'}`);
+			}
+			now += 300;
+		};
+		feed('cat of a Codex state', 'state=blocked:app=codex', 'cat log.txt', 'cat');
+		feed('codex starts', 'state=working:app=codex', 'codex', 'node');
+		feed('codex idle', 'state=idle:app=codex', 'codex', 'node');
+		feed('a Claude Code state under Codex', 'state=blocked:app=claude-code:kind=permission', 'codex', 'node');
+		feed('codex waits', 'state=blocked:app=codex', 'codex', 'node');
+		feed('codex exits', 'state=clear', 'codex', 'node');
+		const codexApp = tracker.gate.app;
+		// Claude Code over ssh asks first; a Codex state there is not taken until Claude Code clears
+		feed('claude query over ssh', '?', 'ssh dev-box', 'ssh');
+		feed('a Codex state under Claude Code', 'state=working:app=codex', 'ssh dev-box', 'ssh');
+		feed('claude working', 'state=working:app=claude-code', 'ssh dev-box', 'ssh');
+		feed('claude clear', 'state=clear', 'ssh dev-box', 'ssh');
+		feed('codex over ssh', 'state=working:app=codex', 'ssh dev-box', 'ssh');
+		// The shell is back in front: the gate closes, as for Claude Code
+		const closed = tracker.foregroundChanged('zsh', true);
+		assert.deepStrictEqual({ passed, codexApp, closed, appAfterClose: tracker.gate.app }, {
+			passed: [
+				'cat of a Codex state: dropped',
+				'codex starts: opened, passed',
+				'codex idle: passed',
+				'a Claude Code state under Codex: dropped',
+				'codex waits: passed',
+				'codex exits: passed',
+				'claude query over ssh: answered',
+				'a Codex state under Claude Code: dropped',
+				'claude working: passed',
+				'claude clear: passed',
+				'codex over ssh: opened, passed',
+			],
+			codexApp: 'codex',
+			closed: 'clear',
+			appAfterClose: 'codex',
+		});
 	});
 });

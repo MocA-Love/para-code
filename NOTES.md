@@ -384,6 +384,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/app.json` | `expo.version` を `0.12.10` に（2026-10-10） | 画像を埋め込んだ大きな HTML のプレビューの配信 |
 | `app/mobile/app.json` | `expo.version` を `0.12.11` に（2026-10-15） | PC の入力欄の書きかけの帯（agent.pc-draft.v1）の配信 |
 | `resources/paradis/claude-mod/.claude-plugin/plugin.json` | `version` を `1.3.0` に上げた（`hooks/register.ts` の `MOD_VERSION` と揃える。`session.measure` の `context` を `measure` として送る版）（2026-10-06） | モバイルのセッションの輪のコンテキストの使用率を statusline と同じ値にする（無い版・古い Claude Code では transcript の usage から出す） |
+| `agent-cli-compat/claude-code.compat.json` / `codex-cli.compat.json` | fork が新しく置いた、Claude Code・Codex CLI の準拠台帳の機械向けの写し（同じ名前の `.md` と同じ内容。2026-10-16 に Codex 0.163.0 の G11・G12 を直した回で追加） | Para Code が依存する CLI の版・依存点・食い違いを `agent-cli-compat/check.mjs` で照合するため。upstream には無い |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 

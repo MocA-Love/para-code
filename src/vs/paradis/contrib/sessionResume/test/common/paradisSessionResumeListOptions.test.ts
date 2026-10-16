@@ -56,7 +56,7 @@ suite('ParadisSessionResumeListOptions', () => {
 			broken: { sort: 'updated', group: 'space', hideEmpty: false },
 			partial: { sort: 'title', group: 'space', hideEmpty: true },
 			posix: `cd '/work/it'\\''s' && claude --resume abc`,
-			windows: `Set-Location -LiteralPath 'C:\\work\\$(calc) it''s %TEMP% \u2019\u2019x\u2018\u2018\u201a\u201a\u201b\u201b'; codex resume def`,
+			windows: `Set-Location -LiteralPath 'C:\\work\\$(calc) it''s %TEMP% \u2019\u2019x\u2018\u2018\u201a\u201a\u201b\u201b'; codex resume --sandbox workspace-write --ask-for-approval on-request def`,
 		});
 	});
 

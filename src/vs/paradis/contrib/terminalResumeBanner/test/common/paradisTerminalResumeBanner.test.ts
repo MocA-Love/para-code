@@ -30,8 +30,8 @@ suite('paradisTerminalResumeBanner', () => {
 		}, {
 			claudeResume: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001',
 			claudeFork: 'claude --permission-mode manual --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
-			codexResume: 'codex resume 0199aaaa-0000-7000-8000-000000000002',
-			codexFork: 'codex fork 0199aaaa-0000-7000-8000-000000000002',
+			codexResume: 'codex resume --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002',
+			codexFork: 'codex fork --sandbox workspace-write --ask-for-approval on-request 0199aaaa-0000-7000-8000-000000000002',
 			claudeResumeSkipping: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001',
 			claudeForkSkipping: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-4000-8000-000000000001 --fork-session',
 			codexResumeSkipping: 'codex resume --dangerously-bypass-approvals-and-sandbox 0199aaaa-0000-7000-8000-000000000002',
