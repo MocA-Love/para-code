@@ -102,11 +102,16 @@
 }
 
 /*
- * ▾ のメニューの「権限の確認を飛ばして再開／分岐」。HTML のメニュー（window.menuStyle: custom）でだけ効き、
+ * ▾ のメニューの「権限確認なしで再開／分岐」。HTML のメニュー（window.menuStyle: custom）でだけ効き、
  * ネイティブのメニューでは文言だけで危険と分かるようにしてある。
  */
 .monaco-menu .paradis-terminal-resume-banner-menu-danger {
 	color: var(--vscode-errorForeground);
+}
+
+/* 選んでいる行は選択の背景の上に乗るので、赤字をやめてメニューの選択中の文字色に戻す。 */
+.monaco-menu .action-item.focused .paradis-terminal-resume-banner-menu-danger {
+	color: inherit;
 }
 
 /*
