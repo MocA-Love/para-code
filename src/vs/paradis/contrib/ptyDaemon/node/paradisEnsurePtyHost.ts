@@ -28,6 +28,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
 import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
@@ -218,8 +219,10 @@ function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
  * 親が消えても生き残らなければ意味が無いので、プロセスグループを分け、標準入出力は握らない。
  * ただし**捨てもしない**。前の常駐で、標準出力を捨てたせいで起動できない理由が一切残らず、
  * 「ターミナルが開かない」という症状だけを見て何時間も溶かしたことがある。
+ *
+ * export しているのは、起動に失敗してもプロセスが落ちないことをテストで確かめるため。
  */
-async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<void> {
+export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<void> {
 	const { paths, launch, logService } = options;
 	let stdio: 'ignore' | number = 'ignore';
 	try {
@@ -245,6 +248,12 @@ async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promis
 		detached: true,
 		stdio: ['ignore', stdio, stdio],
 		env,
+	});
+	// 起動の失敗（実行ファイルが無い等）は次のティックの 'error' で届く。受け手が無いとこのプロセスごと落ちるので、
+	// 閉じるのを待つより前に付ける。落とさずに記録し、呼び出し側の接続待ちが時間切れになってアプリの中の pty へ落ちる。
+	child.on('error', error => {
+		logService.error('[ParadisPtyHost] failed to spawn the daemon process', error);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
 	});
 	child.unref();
 	if (typeof stdio === 'number') {

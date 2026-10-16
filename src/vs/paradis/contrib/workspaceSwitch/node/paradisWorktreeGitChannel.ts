@@ -1130,6 +1130,13 @@ export class ParadisWorktreeGitService {
 	private readonly runningClones = new Map<string, IParadisRunningClone>();
 
 	/**
+	 * 受け付けたが、まだ起動していない clone の cloneId。起動前の確認（行き先・親ディレクトリ・環境変数）は
+	 * await を挟むので、その間に同じ cloneId の 2 回目が {@link runningClones} だけを見て通らないよう、
+	 * 受け付けた時点で席を取っておく。起動と同じターンで外す。
+	 */
+	private readonly startingClones = new Set<string>();
+
+	/**
 	 * プロセスが終わる直前に走行中の clone を始末する係。走行中の clone が1本も無い間は
 	 * 取り付けない（テストや、clone を一度も使わないプロセスに listener を残さないため）。
 	 */
@@ -1164,15 +1171,22 @@ export class ParadisWorktreeGitService {
 		if (this.shuttingDown) {
 			throw new CancellationError();
 		}
-		if (this.runningClones.has(cloneId)) {
+		if (this.runningClones.has(cloneId) || this.startingClones.has(cloneId)) {
 			throw new Error(`Clone already running: ${cloneId}`);
 		}
-		if (await Promises.exists(targetPath)) {
-			// allow-any-unicode-next-line
-			throw new Error(localize('paradis.repositoryClone.targetExists', "フォルダが既に存在します: {0}", targetPath));
+		this.startingClones.add(cloneId);
+		let env: NodeJS.ProcessEnv;
+		try {
+			if (await Promises.exists(targetPath)) {
+				// allow-any-unicode-next-line
+				throw new Error(localize('paradis.repositoryClone.targetExists', "フォルダが既に存在します: {0}", targetPath));
+			}
+			await fs.mkdir(dirname(targetPath), { recursive: true });
+			env = await this.cachedShellEnv.getEnv();
+		} finally {
+			// ここから下の起動（trackClone）までは await を挟まないので、席は runningClones へ切れ目なく移る
+			this.startingClones.delete(cloneId);
 		}
-		await fs.mkdir(dirname(targetPath), { recursive: true });
-		const env = await this.cachedShellEnv.getEnv();
 
 		try {
 			await new Promise<void>((resolve, reject) => {
