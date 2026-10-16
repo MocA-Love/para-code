@@ -8,6 +8,7 @@
 
 import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../../../../../platform/browserView/common/browserView.js';
@@ -22,6 +23,8 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { paradisResolveBrowserSessionOptions } from '../../common/paradisBrowserProfileRouting.js';
 import { ParadisBrowserProfilesService } from '../../electron-browser/paradisBrowserProfilesService.js';
+import { ParadisBrowserSpaceDefaultsService } from '../../electron-browser/paradisBrowserSpaceDefaultsService.js';
+import { IParadisBrowserScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, paradisWorktreeStateKey } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 const PROFILES_STORAGE_KEY = 'paradis.browser.profiles';
 const PROFILE_VIEWS_STORAGE_KEY = 'paradis.browser.profileViews';
@@ -29,11 +32,17 @@ const PROFILE_VIEWS_STORAGE_KEY = 'paradis.browser.profileViews';
 const FALLBACK_SCOPE = BrowserViewStorageScope.Global;
 const FALLBACK: IBrowserViewSessionOptions = { scope: FALLBACK_SCOPE };
 
+const SPACE_DEFAULTS_STORAGE_KEY = 'paradis.browser.spaceDefaults';
+const REPOSITORY = 'repo-shop-web';
+const WORKTREE_URI = URI.file('/Users/example/projects/shop-web-checkout');
+const WORKTREE = paradisWorktreeStateKey(WORKTREE_URI);
+
 suite('ParadisBrowserProfilesService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function createService(options?: { readonly trusted?: boolean }) {
 		const storage = store.add(new InMemoryStorageService());
+		const spaces = createSpaces(storage);
 		const cleared: string[] = [];
 		const openedViewIds: string[] = [];
 		const disposedViewIds: string[] = [];
@@ -94,8 +103,36 @@ suite('ParadisBrowserProfilesService', () => {
 			workspaceContextService,
 			workspaceTrustManagementService,
 			new NullLogService(),
+			spaces.spaceDefaults,
 		));
-		return { service, storage, cleared, openedViewIds, disposedViewIds };
+		return { service, storage, cleared, openedViewIds, disposedViewIds, ...spaces };
+	}
+
+	/**
+	 * スペースが1つ（shop-web）と、その worktree（feature-checkout）がある状態。ビューの所属と
+	 * 「前のセッションから続いているか」はテストが決める。
+	 */
+	function createSpaces(storage: InMemoryStorageService) {
+		const viewScopes = new Map<string, ParadisBindingScope>();
+		const carriedOver = new Set<string>();
+		const retire = store.add(new Emitter<string>());
+		const browserScopeService = {
+			resolveScope: (viewId: string) => viewScopes.get(viewId) ?? { kind: 'pending' },
+			isCarriedOverView: (viewId: string) => carriedOver.has(viewId),
+		} as unknown as IParadisBrowserScopeService;
+		const workspaceSwitchService = {
+			repositories: [{ id: REPOSITORY, name: 'shop-web', uri: URI.file('/Users/example/projects/shop-web') }],
+			onDidRetireScope: retire.event,
+		} as unknown as IParadisWorkspaceSwitchService;
+		const worktreeService = {
+			getDetectedWorktrees: (repositoryId: string) => repositoryId === REPOSITORY
+				? [{ repositoryId, name: 'shop-web-checkout', branch: 'feature-checkout', uri: WORKTREE_URI }]
+				: [],
+			getKnownWorktreeStateKeys: () => [],
+			getRepositoryBranch: () => 'main',
+		} as unknown as IParadisWorktreeService;
+		const spaceDefaults = store.add(new ParadisBrowserSpaceDefaultsService(storage, browserScopeService, workspaceSwitchService, worktreeService));
+		return { spaceDefaults, viewScopes, carriedOver, retire };
 	}
 
 	test('creating, renaming and re-colouring a profile keeps one persisted ledger', () => {
@@ -291,6 +328,7 @@ suite('ParadisBrowserProfilesService', () => {
 			{ getWorkbenchState: () => WorkbenchState.FOLDER } as unknown as IWorkspaceContextService,
 			{ isWorkspaceTrusted: () => true } as unknown as IWorkspaceTrustManagementService,
 			new NullLogService(),
+			createSpaces(restoredStorage).spaceDefaults,
 		));
 
 		assert.deepStrictEqual(
@@ -302,5 +340,74 @@ suite('ParadisBrowserProfilesService', () => {
 			[{ scope: BrowserViewStorageScope.Profile, profileId: created.profile.id }, FALLBACK],
 		);
 		assert.strictEqual(service.list().length, 1);
+	});
+
+	test('a new tab takes its space\'s default, a worktree inherits the main tree\'s, and restored or unplaced tabs do not', () => {
+		const { service, storage, spaceDefaults, viewScopes, carriedOver } = createService();
+		const work = service.create('Work', '#3fb950');
+		assert.ok(work.ok);
+		spaceDefaults.setDefault(REPOSITORY, { kind: 'profile', profileId: work.profile.id });
+		viewScopes.set('new-in-repository', { kind: 'managed', stateKey: REPOSITORY });
+		viewScopes.set('new-in-worktree', { kind: 'managed', stateKey: WORKTREE });
+		viewScopes.set('restored', { kind: 'managed', stateKey: REPOSITORY });
+		carriedOver.add('restored');
+
+		const profileSession = { scope: BrowserViewStorageScope.Profile, profileId: work.profile.id };
+		assert.deepStrictEqual({
+			routed: ['new-in-repository', 'new-in-worktree', 'restored', 'not-placed-yet'].map(viewId => paradisResolveBrowserSessionOptions(viewId, FALLBACK_SCOPE)),
+			// 当てた既定は対応表にも書く（再起動で復元したときも同じプロファイルで開き直すため）。
+			views: Object.keys(JSON.parse(storage.get(PROFILE_VIEWS_STORAGE_KEY, StorageScope.WORKSPACE)!)).sort(),
+			labels: [spaceDefaults.getSpaceLabel(REPOSITORY), spaceDefaults.getSpaceLabel(WORKTREE)],
+		}, {
+			routed: [profileSession, profileSession, FALLBACK, FALLBACK],
+			views: ['new-in-repository', 'new-in-worktree'],
+			labels: ['shop-web / main', 'shop-web / feature-checkout'],
+		});
+	});
+
+	test('a worktree\'s own default wins, and unpinning falls back to the main tree and then to the setting', () => {
+		const { spaceDefaults } = createService();
+		spaceDefaults.setDefault(REPOSITORY, { kind: 'scope', scope: BrowserViewStorageScope.Workspace });
+		spaceDefaults.setDefault(WORKTREE, { kind: 'scope', scope: BrowserViewStorageScope.Ephemeral });
+		const own = spaceDefaults.getDefault(WORKTREE);
+		spaceDefaults.setDefault(WORKTREE, undefined);
+		const inherited = spaceDefaults.getDefault(WORKTREE);
+		spaceDefaults.setDefault(REPOSITORY, undefined);
+		assert.deepStrictEqual([own, inherited, spaceDefaults.getDefault(WORKTREE)], [
+			{ target: { kind: 'scope', scope: BrowserViewStorageScope.Ephemeral }, inherited: false },
+			{ target: { kind: 'scope', scope: BrowserViewStorageScope.Workspace }, inherited: true },
+			undefined,
+		]);
+	});
+
+	test('an untrusted workspace ignores the space default', () => {
+		const { spaceDefaults, viewScopes } = createService({ trusted: false });
+		spaceDefaults.setDefault(REPOSITORY, { kind: 'scope', scope: BrowserViewStorageScope.Workspace });
+		viewScopes.set('new-in-repository', { kind: 'managed', stateKey: REPOSITORY });
+		assert.deepStrictEqual(paradisResolveBrowserSessionOptions('new-in-repository', FALLBACK_SCOPE), FALLBACK);
+	});
+
+	test('deleting a profile or retiring a space removes the defaults that depend on it', async () => {
+		const { service, storage, spaceDefaults, viewScopes, retire } = createService();
+		const work = service.create('Work', '#3fb950');
+		assert.ok(work.ok);
+		spaceDefaults.setDefault(REPOSITORY, { kind: 'profile', profileId: work.profile.id });
+		spaceDefaults.setDefault(WORKTREE, { kind: 'scope', scope: BrowserViewStorageScope.Ephemeral });
+
+		await service.remove(work.profile.id);
+		viewScopes.set('new-in-repository', { kind: 'managed', stateKey: REPOSITORY });
+		const afterRemove = {
+			table: JSON.parse(storage.get(SPACE_DEFAULTS_STORAGE_KEY, StorageScope.WORKSPACE)!),
+			routed: paradisResolveBrowserSessionOptions('new-in-repository', FALLBACK_SCOPE),
+		};
+		retire.fire(WORKTREE);
+
+		assert.deepStrictEqual({ afterRemove, afterRetire: storage.get(SPACE_DEFAULTS_STORAGE_KEY, StorageScope.WORKSPACE) }, {
+			afterRemove: {
+				table: { [WORKTREE]: { kind: 'scope', scope: BrowserViewStorageScope.Ephemeral } },
+				routed: FALLBACK,
+			},
+			afterRetire: undefined,
+		});
 	});
 });

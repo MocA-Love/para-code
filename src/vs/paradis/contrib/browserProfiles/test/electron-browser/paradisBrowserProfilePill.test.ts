@@ -19,6 +19,7 @@ import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { ParadisBrowserProfilePill } from '../../electron-browser/paradisBrowserProfilePill.js';
 import { IParadisBrowserProfilesService } from '../../electron-browser/paradisBrowserProfilesService.js';
+import { IParadisBrowserSpaceDefaultsService } from '../../electron-browser/paradisBrowserSpaceDefaultsService.js';
 
 suite('ParadisBrowserProfilePill', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -42,6 +43,7 @@ suite('ParadisBrowserProfilePill', () => {
 			{} as IInstantiationService,
 			{} as INotificationService,
 			{} as IWorkbenchEnvironmentService,
+			{} as IParadisBrowserSpaceDefaultsService,
 			{ setupManagedHover: () => ({ update: (content: string) => hovers.push(content), show: () => { }, hide: () => { }, dispose: () => { } }) } as unknown as IHoverService,
 		));
 		const element = pill.widgets[0].element;
