@@ -74,10 +74,7 @@ export class ParadisOfficeOpenCache<T> {
 			}
 			released = true;
 			if (--this._users === 0) {
-				this._idleTimer = setTimeout(() => {
-					this._idleTimer = undefined;
-					this.clear();
-				}, this._limits.idleMs);
+				this._scheduleIdle();
 			}
 		});
 	}
@@ -104,6 +101,11 @@ export class ParadisOfficeOpenCache<T> {
 		this._entries.set(key, { etag, value, bytes });
 		this._totalBytes += bytes;
 		this._evict(key);
+		// 覚えた後に表示されないこともある（読み込みが追い越された・描く前に失敗した）。誰も使っていなければ、
+		// ここから手放すまでの時間を数える（数えないと、ウィンドウを閉じるまで残る）。
+		if (this._users === 0 && this._idleTimer === undefined) {
+			this._scheduleIdle();
+		}
 	}
 
 	/**
@@ -149,6 +151,13 @@ export class ParadisOfficeOpenCache<T> {
 	/** 覚えているファイル（古い順）。テストで確かめる。 */
 	get resources(): readonly string[] {
 		return [...this._entries.keys()];
+	}
+
+	private _scheduleIdle(): void {
+		this._idleTimer = setTimeout(() => {
+			this._idleTimer = undefined;
+			this.clear();
+		}, this._limits.idleMs);
 	}
 
 	private _evict(keep: string): void {
