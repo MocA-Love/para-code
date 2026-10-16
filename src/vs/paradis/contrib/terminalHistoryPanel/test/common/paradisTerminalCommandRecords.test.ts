@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisCommandRecord, PARADIS_COMMAND_RECORD_MAX_LENGTH, PARADIS_COMMAND_RECORDS_COMPACT_AT, PARADIS_COMMAND_RECORDS_MAX, paradisAppendCommandRecords, paradisParseCommandRecords, paradisSerializeCommandRecord, paradisShouldRecordCommand } from '../../common/paradisTerminalCommandRecords.js';
+import { IParadisCommandRecord, PARADIS_COMMAND_RECORD_MAX_LENGTH, PARADIS_COMMAND_RECORDS_COMPACT_AT, PARADIS_COMMAND_RECORDS_MAX, paradisAppendCommandRecords, paradisParseCommandRecords, paradisPlanCommandRecordsWrite, paradisSerializeCommandRecord, paradisShouldRecordCommand } from '../../common/paradisTerminalCommandRecords.js';
 
 function records(count: number, from = 0): IParadisCommandRecord[] {
 	return Array.from({ length: count }, (_, i) => ({ command: `c${from + i}`, timestamp: from + i, cwd: undefined, exitCode: undefined, duration: undefined }));
@@ -89,6 +89,19 @@ suite('ParadisTerminalCommandRecords', () => {
 			overLength: PARADIS_COMMAND_RECORDS_MAX,
 			overFirst: `c${PARADIS_COMMAND_RECORDS_COMPACT_AT + 1 - PARADIS_COMMAND_RECORDS_MAX}`,
 			overLast: `c${PARADIS_COMMAND_RECORDS_COMPACT_AT}`,
+		});
+	});
+	test('appends until the compaction point and rewrites only to compact or when the file system cannot append', () => {
+		assert.deepStrictEqual({
+			empty: paradisPlanCommandRecordsWrite(0, 1, true),
+			atLimit: paradisPlanCommandRecordsWrite(PARADIS_COMMAND_RECORDS_COMPACT_AT - 2, 2, true),
+			overLimit: paradisPlanCommandRecordsWrite(PARADIS_COMMAND_RECORDS_COMPACT_AT - 1, 2, true),
+			noAppend: paradisPlanCommandRecordsWrite(0, 1, false),
+		}, {
+			empty: 'append',
+			atLimit: 'append',
+			overLimit: 'rewrite',
+			noAppend: 'rewrite',
 		});
 	});
 });

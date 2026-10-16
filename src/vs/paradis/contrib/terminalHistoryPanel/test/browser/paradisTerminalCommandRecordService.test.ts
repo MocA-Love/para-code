@@ -7,20 +7,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Schemas } from '../../../../../base/common/network.js';
-import { joinPath } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/virtualScheduling/runWithFakedTimers.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisTerminalCommandRecordService } from '../../browser/paradisTerminalCommandRecordService.js';
-import { IParadisCommandRecord, paradisParseCommandRecords } from '../../common/paradisTerminalCommandRecords.js';
+import { ParadisTerminalCommandRecordService, paradisRegisterCommonCommandRecordsFile } from '../../browser/paradisTerminalCommandRecordService.js';
+import { IParadisCommandRecord, paradisSerializeCommandRecord } from '../../common/paradisTerminalCommandRecords.js';
 
-const USER_DATA = URI.from({ scheme: Schemas.inMemory, path: '/User' });
+const COMMON_FILE = URI.from({ scheme: Schemas.inMemory, path: '/userData/paradisTerminalCommands/commands.jsonl' });
 
 function record(command: string, timestamp: number): IParadisCommandRecord {
 	return { command, timestamp, cwd: '/work', exitCode: 0, duration: 5 };
@@ -29,24 +28,43 @@ function record(command: string, timestamp: number): IParadisCommandRecord {
 suite('ParadisTerminalCommandRecordService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('keeps the records of terminals without a space history folder in the user data', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+	test('appends the records of terminals without a space history folder to the private file, keeping lines another window wrote', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const fileService = store.add(new FileService(new NullLogService()));
 		store.add(fileService.registerProvider(Schemas.inMemory, store.add(new InMemoryFileSystemProvider())));
-		const environmentService = { userRoamingDataHome: USER_DATA } as IEnvironmentService;
-		const service = store.add(new ParadisTerminalCommandRecordService(fileService, new NullLogService(), environmentService));
+		// main プロセスが用意したファイル（ここでは空のファイルを置いておく）。
+		await fileService.writeFile(COMMON_FILE, VSBuffer.fromString(''));
+		store.add(paradisRegisterCommonCommandRecordsFile(async () => COMMON_FILE));
+		const service = store.add(new ParadisTerminalCommandRecordService(fileService, new NullLogService()));
 
 		service.record(undefined, record('git status', 1));
-		service.record(undefined, record('npm test', 2));
 		const beforeFlush = await service.read(undefined, CancellationToken.None);
 		await new Promise(resolve => setTimeout(resolve, 2_000));
-		const content = (await fileService.readFile(joinPath(USER_DATA, 'paradis', 'terminalCommands.jsonl'))).value.toString();
+		// 別のウィンドウが追記した行。
+		await fileService.writeFile(COMMON_FILE, VSBuffer.fromString(paradisSerializeCommandRecord(record('make', 2)) + '\n'), { append: true });
+		service.record(undefined, record('npm test', 3));
+		await new Promise(resolve => setTimeout(resolve, 2_000));
+		const content = (await fileService.readFile(COMMON_FILE)).value.toString();
 
 		assert.deepStrictEqual({
 			beforeFlush: beforeFlush.map(r => r.command),
-			written: paradisParseCommandRecords(content),
+			written: content.trimEnd().split('\n').map(line => JSON.parse(line).c),
 		}, {
-			beforeFlush: ['git status', 'npm test'],
-			written: [record('git status', 1), record('npm test', 2)],
+			beforeFlush: ['git status'],
+			written: ['git status', 'make', 'npm test'],
 		});
+	}));
+
+	test('does not create the records file itself when the private file is not there', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider(Schemas.inMemory, store.add(new InMemoryFileSystemProvider())));
+		const service = store.add(new ParadisTerminalCommandRecordService(fileService, new NullLogService()));
+
+		// 共通のファイルを用意する口が無い（Web）、スペースのフォルダの記録を読む口も無い。
+		service.record(undefined, record('git status', 1));
+		service.record('/home/example/.para-code/terminal-history/0123456789abcdef', record('ls', 2));
+		await new Promise(resolve => setTimeout(resolve, 2_000));
+
+		const root = await fileService.resolve(URI.from({ scheme: Schemas.inMemory, path: '/' }));
+		assert.deepStrictEqual((root.children ?? []).map(child => child.name), []);
 	}));
 });

@@ -36,6 +36,7 @@ import { KeybindingWeight } from '../../../../platform/keybinding/common/keybind
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICommandDetectionCapability, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { IPromptInputModel } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { PosixShellType } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalContribution, ITerminalInstance, IXtermTerminal } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { registerActiveInstanceAction } from '../../../../workbench/contrib/terminal/browser/terminalActions.js';
@@ -44,7 +45,7 @@ import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/comm
 import { paradisTerminalHistoryProvider } from '../../terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
 import { paradisIsSpaceHistoryId, paradisSpaceHistoryDirectoryOf, paradisSpaceHistoryRoot } from '../../terminalSpaceHistory/common/paradisTerminalSpaceHistory.js';
 import { IParadisCommandRecord, paradisShouldRecordCommand } from '../common/paradisTerminalCommandRecords.js';
-import { IParadisHistoryNavigationState, PARADIS_INITIAL_NAVIGATION_STATE, paradisCanOpenHistoryPanel, paradisClassifyTerminalInput, paradisNextNavigationState, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
+import { ParadisHistoryNavigationTracker, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
 import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel } from '../common/paradisTerminalHistoryPanelModel.js';
 import { IParadisTerminalCommandRecordService } from './paradisTerminalCommandRecordService.js';
 import { PARADIS_HISTORY_PANEL_CHROME_HEIGHT, PARADIS_HISTORY_PANEL_ROW_HEIGHT, ParadisHistoryPanelScope, ParadisTerminalHistoryPanelWidget } from './paradisTerminalHistoryPanelWidget.js';
@@ -79,7 +80,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.historyPanel.enabled', "ターミナルで文字を打った後に ↓ キーを押すと、打った文字で始まる履歴の一覧を出します。何も打っていないときと、↑ キーで履歴を遡っている間の ↑↓ はシェルの履歴のままです。"),
+			markdownDescription: localize('paradis.terminal.historyPanel.enabled', "ターミナルで文字を打った後に ↓ キーを押すと、打った文字で始まる履歴の一覧を出します。何も打っていないときと、↑ キーで履歴を遡っている間の ↑↓ はシェルの履歴のままです。\n\n一覧に時刻・場所・終了コード・回数を出すため、Para Code で実行したコマンドを本人だけが読めるファイルに記録します。シェルの履歴に残さない設定（`HISTIGNORE`・`HISTORY_IGNORE`・`zshaddhistory` など）は見ないので、そうしたコマンドも記録に残ります。残したくないコマンドは先頭に空白を入れて実行してください。"),
 		},
 	},
 });
@@ -126,7 +127,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 	private readonly _panel = this._register(new MutableDisposable<OpenPanel>());
 	private _commandDetection: ICommandDetectionCapability | undefined;
 	private _xterm: RawXtermTerminal | undefined;
-	private _navigation: IParadisHistoryNavigationState = PARADIS_INITIAL_NAVIGATION_STATE;
+	private readonly _navigation = new ParadisHistoryNavigationTracker();
 
 	constructor(
 		private readonly _ctx: ITerminalContributionContext,
@@ -167,11 +168,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		this._xterm = xterm.raw;
 		this._register(xterm.raw.onData(data => {
 			const model = this._commandDetection?.promptInputModel;
-			this._navigation = paradisNextNavigationState(this._navigation, {
-				kind: 'input',
-				input: paradisClassifyTerminalInput(data),
-				promptText: model ? paradisPromptTextWithoutGhost(model) : '',
-			});
+			this._navigation.input(data, model ? paradisPromptTextWithoutGhost(model) : '', Date.now());
 			this._updateCanOpen();
 		}));
 		this._register(xterm.raw.onScroll(() => this._close(false)));
@@ -182,7 +179,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const store = new DisposableStore();
 		const model = commandDetection.promptInputModel;
 		const onPromptChanged = () => {
-			this._navigation = paradisNextNavigationState(this._navigation, { kind: 'prompt', promptText: paradisPromptTextWithoutGhost(model) });
+			this._navigation.prompt(paradisPromptTextWithoutGhost(model), Date.now());
 			this._updateCanOpen();
 			this._refilter();
 		};
@@ -190,12 +187,12 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		store.add(model.onDidChangeInput(onPromptChanged));
 		store.add(model.onDidFinishInput(onPromptChanged));
 		store.add(commandDetection.onCommandExecuted(() => {
-			this._navigation = paradisNextNavigationState(this._navigation, { kind: 'reset' });
+			this._navigation.reset();
 			this._close(false);
 			this._updateCanOpen();
 		}));
 		store.add(commandDetection.onCommandFinished(command => {
-			this._navigation = paradisNextNavigationState(this._navigation, { kind: 'reset' });
+			this._navigation.reset();
 			this._updateCanOpen();
 			this._recordCommand(command);
 		}));
@@ -211,7 +208,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		const commandDetection = this._commandDetection;
 		this._canOpenKey.set(this._isEnabled()
 			&& commandDetection !== undefined
-			&& paradisCanOpenHistoryPanel(this._navigation, commandDetection.promptInputModel, commandDetection.executingCommand, false));
+			&& this._navigation.canOpen(commandDetection.promptInputModel, commandDetection.executingCommand, false));
 	}
 
 	/**
@@ -241,10 +238,13 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		if (!xterm?.element || !model || !this._isEnabled()) {
 			return;
 		}
-		const typed = paradisPromptTextWithoutGhost(model);
-		if (typed.trim().length === 0) {
+		// ↓ を押した時点の入力行で確かめ直す（シェルの描き直しが遅れて届いた場合）。開けなければ ↓ は
+		// シェルのもの（このキーはシェルへ流れない設定なので、ここで渡す）。
+		if (!this._navigation.canOpen(model, this._commandDetection?.executingCommand, false)) {
+			this._forwardDown(xterm, model);
 			return;
 		}
+		const typed = paradisPromptTextWithoutGhost(model);
 		const directory = paradisSpaceHistoryDirectoryOf(this._ctx.instance);
 		const widget = this._instantiationService.createInstance(ParadisTerminalHistoryPanelWidget, xterm.element);
 		const panel = new OpenPanel(widget, typed, directory !== undefined && this._spaceHistoryShell() !== undefined ? 'space' : undefined);
@@ -261,6 +261,13 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 		this._visibleKey.set(true);
 		this._renderPanel();
 		void this._load(panel, directory);
+	}
+
+	private _forwardDown(xterm: RawXtermTerminal, model: IPromptInputModel): void {
+		const down = xterm.modes.applicationCursorKeysMode ? '\x1bOB' : '\x1b[B';
+		this._navigation.input(down, paradisPromptTextWithoutGhost(model), Date.now());
+		this._updateCanOpen();
+		void this._ctx.instance.sendText(down, false);
 	}
 
 	private _close(restore: boolean): void {
@@ -339,6 +346,8 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 			text = item.command;
 		}
 		this._close(false);
+		this._navigation.wrote(Date.now());
+		this._updateCanOpen();
 		const instance = this._ctx.instance;
 		void (async () => {
 			if (edit.length > 0) {
