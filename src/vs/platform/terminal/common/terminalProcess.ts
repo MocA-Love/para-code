@@ -79,6 +79,13 @@ export interface IProcessDetails {
 	 * instead, which is carried across.
 	 */
 	paradisAdopted?: boolean;
+	// PARA-PATCH: the process lives in the pty daemon, so it does not need this pty host (or server) to stay up
+	/**
+	 * PARA-CODE: Whether the process lives in a daemon that outlives the pty host holding it. If the
+	 * pty host goes away, the process keeps running and the next pty host takes it back, so nothing
+	 * has to be kept alive on its behalf (see paradisServerTerminalLifetime.ts).
+	 */
+	paradisHeldByDaemon?: boolean;
 	tabActions?: ITerminalTabAction[];
 }
 
