@@ -10,8 +10,9 @@ import assert from 'assert';
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IProcessDetails } from '../../../../../platform/terminal/common/terminalProcess.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
-import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource, paradisResolveRevivedTerminalEditorInput, paradisTerminalRestoreStateKey } from '../../browser/paradisTerminalEditorRevive.js';
+import { paradisClearTerminalReviveIndex, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource, paradisResolveRevivedTerminalEditorInput, paradisTerminalRestoreStateKey } from '../../browser/paradisTerminalEditorRevive.js';
 
 suite('paradisTerminalEditorRevive', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -206,5 +207,19 @@ suite('paradisTerminalEditorRevive', () => {
 			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(5, 'nonce-a')),
 			{ id: 5, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true },
 		);
+	});
+
+	// 取り戻した孤児の attach 先は端末に残り、pty host の再起動後の relaunch でも使われる。番号は振り直されるので、
+	// nonce がある端末は照合付きにする。nonce の無い端末と、同じ nonce の PTY が 2 本ある端末は番号のまま
+	test('reattaches a reclaimed orphan with its nonce checked only when the nonce is known and unique', () => {
+		const detail = (id: number, shellIntegrationNonce: string) => ({ id, pid: 0, shellIntegrationNonce } as unknown as IProcessDetails);
+		const details = [detail(4, 'nonce-a'), detail(5, 'nonce-b'), detail(6, 'nonce-b'), detail(7, '')];
+		const duplicated = paradisDuplicatedNonces(details);
+		assert.deepStrictEqual(details.map(d => paradisOrphanAttachTarget(d, !duplicated.has(d.shellIntegrationNonce))).map(t => ({ id: t.id, findRevivedId: t.findRevivedId, resolved: t.paradisResolvedToCurrentPtyId })), [
+			{ id: 4, findRevivedId: false, resolved: true },
+			{ id: 5, findRevivedId: false, resolved: undefined },
+			{ id: 6, findRevivedId: false, resolved: undefined },
+			{ id: 7, findRevivedId: false, resolved: undefined },
+		]);
 	});
 });

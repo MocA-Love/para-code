@@ -41,7 +41,8 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IDeserializedTerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../platform/terminal/common/terminal.js';
+import { IShellLaunchConfig, PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../platform/terminal/common/terminal.js';
+import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 
@@ -331,4 +332,36 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 	}
 
 	return { ...deserializedInput, findRevivedId: true };
+}
+
+/**
+ * 取り戻して繋げた孤児の端末に、pty host の再起動に備えて持たせる attach 先。
+ *
+ * attach 先は端末の `shellLaunchConfig` に残り、pty host が再起動すると upstream の relaunch がそのまま使う。
+ * 再起動で常駐 daemon から引き取り直すと番号は 1 から振り直されるので、番号だけの attach 先では別の端末を
+ * 掴み、待避中の端末と今のスペースの端末が同じシェルへ二重に繋がった（2026-10-17）。nonce があれば照合付き
+ * （`paradisResolvedToCurrentPtyId`）にして、pty host に nonce から新しい番号を引き直させる。
+ *
+ * 照合付きにしないもの: nonce の無い古い端末と、同じ nonce の PTY が孤児の一覧に 2 本以上あるもの（常駐が
+ * 元の端末と置き換えの空シェルを両方持っている等）。照合は nonce から番号を引き直すので、後者ではもう 1 本の
+ * 方へ繋ぎ替わりうる。どちらも番号のまま（以前と同じ）。初回の取り戻しには使わない（繋ぎ替わりを避けるため、
+ * 初回は番号のまま繋ぎ、繋げたことを確かめてから差し替える）。
+ */
+export function paradisOrphanAttachTarget(detail: IProcessDetails, nonceIsUnique: boolean): NonNullable<IShellLaunchConfig['attachPersistentProcess']> {
+	return nonceIsUnique && paradisTerminalIdentityNonce(detail.shellIntegrationNonce) !== undefined
+		? { ...detail, findRevivedId: false, paradisResolvedToCurrentPtyId: true }
+		: { ...detail, findRevivedId: false };
+}
+
+/** 一覧の中で 2 本以上の PTY が持っている nonce。 */
+export function paradisDuplicatedNonces(details: readonly IProcessDetails[]): ReadonlySet<string> {
+	const seen = new Set<string>();
+	const duplicated = new Set<string>();
+	for (const detail of details) {
+		const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
+		if (nonce !== undefined) {
+			(seen.has(nonce) ? duplicated : seen).add(nonce);
+		}
+	}
+	return duplicated;
 }
