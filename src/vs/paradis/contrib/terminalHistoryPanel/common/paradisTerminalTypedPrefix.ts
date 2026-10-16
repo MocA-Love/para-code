@@ -23,6 +23,10 @@
 // 「この時点の入力行のカーソルより前はこうだったはず」という見込みをキーで組み立て、入力行の
 // カーソルより前と同じになったときに打った文字にする。
 
+import { raceTimeout } from '../../../../base/common/async.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { Event } from '../../../../base/common/event.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { type IPromptInputModel, PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { PARADIS_EXTERNAL_PROMPT_CHANGE_MS, ParadisTerminalInputKind, paradisClassifyTerminalInput } from './paradisTerminalHistoryNavigation.js';
 
@@ -125,8 +129,6 @@ interface IRunningCommand {
 export class ParadisTypedPrefixTracker {
 	/** 送ったキーから組み立てた、プロンプトの終わりからカーソルまで。分からなければ undefined。 */
 	private _typed: string | undefined;
-	/** {@link _typed} を空の入力行から組み立てた（カーソルの後ろに打った文字は無い）。 */
-	private _afterCursorEmpty = false;
 	/** 入力行の頭に付いているプロンプトの残り（組み立てた文字と一致したときに覚える）。 */
 	private _promptHead: string | undefined;
 	/** {@link _promptHead} を覚えたときの打った文字。 */
@@ -160,7 +162,6 @@ export class ParadisTypedPrefixTracker {
 	wrote(line: string, now: number): void {
 		this._lastInputAt = now;
 		this._typed = line;
-		this._afterCursorEmpty = true;
 		this._guesses = [];
 	}
 
@@ -207,7 +208,6 @@ export class ParadisTypedPrefixTracker {
 			const before = promptHeadOf(text, guess);
 			if (before === '' || (before !== undefined && before === head)) {
 				this._typed = guess;
-				this._afterCursorEmpty = false;
 				this._promptHead = before;
 				this._typedAtHead = guess;
 				this._guesses = [];
@@ -224,7 +224,6 @@ export class ParadisTypedPrefixTracker {
 	commandExecuted(): void {
 		this._running = { input: false, typed: '', finished: false, typedAfterFinish: undefined };
 		this._typed = undefined;
-		this._afterCursorEmpty = false;
 		this._promptHead = undefined;
 		this._typedAtHead = undefined;
 		this._guesses = [];
@@ -249,22 +248,11 @@ export class ParadisTypedPrefixTracker {
 		this._typedAtHead = undefined;
 		if (!running?.input) {
 			this._typed = '';
-			this._afterCursorEmpty = true;
 			this._guesses = [];
 			return;
 		}
 		this._typed = undefined;
-		this._afterCursorEmpty = false;
 		this._setGuesses([running.typed, running.finished ? running.typedAfterFinish : undefined]);
-	}
-
-	/**
-	 * {@link resolve} がキーから組み立てた文字を返し、カーソルの後ろに打った文字が無い（後ろに見える
-	 * 薄い文字・右プロンプトは入力ではない）。入力行から読んだときは false。
-	 */
-	cursorAtEndOfTyped(model: PromptModel): boolean {
-		const text = paradisPromptTextBeforeCursor(model);
-		return this._afterCursorEmpty && this._typed !== undefined && text !== undefined && promptHeadOf(text, this._typed) !== undefined;
 	}
 
 	/**
@@ -296,4 +284,52 @@ export class ParadisTypedPrefixTracker {
 		// プロンプトが描き直されて頭の長さが変わると、残りが前に打った文字と繋がらなくなる。
 		return current.startsWith(known) || known.startsWith(current) ? typed : undefined;
 	}
+}
+
+/** 選んだ履歴を入力行へ入れるときに送るもの。 */
+export interface IParadisHistoryWrite {
+	/** 先に送る、入力行の今の文字を消すキー。 */
+	readonly edit: string;
+	/** 続けて送る文字。 */
+	readonly text: string;
+	/** 書いた後の、プロンプトの終わりからカーソルまで。 */
+	readonly line: string;
+}
+
+/**
+ * 打った文字 `typed` の入力行へ `command` を入れるときに送るもの。打った文字で始まる履歴なら足りない
+ * 分だけを書く。カーソルの後ろ（判定できた薄い文字を除く）に文字があれば、Delete で消してから
+ * 打った文字ごと書き直す（zsh-autopair の閉じ括弧・閉じ引用符はシェルの入力で、残すと二重になる。
+ * 右プロンプト・判定に漏れた薄い文字なら、行の末尾での Delete は何もしない）。
+ */
+export function paradisPlanHistoryWrite(model: PromptModel, typed: string, command: string): IParadisHistoryWrite {
+	const after = paradisPromptTextAfterCursor(model);
+	const prefix = typed.trimStart();
+	if (after.length === 0 && command.startsWith(prefix)) {
+		const text = command.substring(prefix.length);
+		return { edit: '', text, line: typed + text };
+	}
+	return { edit: '\x1b[3~'.repeat(after.length) + '\x7f'.repeat(typed.length), text: command, line: command };
+}
+
+/**
+ * `resolve` が打った文字を返すまで、入力行の変化 `onDidChange` のたびに確かめ直して待つ。`timeout` ms
+ * 経つか取り消されたら、その時点の値（undefined かもしれない）を返す。
+ */
+export async function paradisWaitForTypedText(resolve: () => string | undefined, onDidChange: Event<unknown>, timeout: number, token: CancellationToken): Promise<string | undefined> {
+	const deadline = Date.now() + timeout;
+	let typed = resolve();
+	while (typed === undefined && Date.now() < deadline && !token.isCancellationRequested) {
+		const store = new DisposableStore();
+		try {
+			await raceTimeout(new Promise<void>(resolve => {
+				store.add(onDidChange(() => resolve()));
+				store.add(token.onCancellationRequested(() => resolve()));
+			}), deadline - Date.now());
+		} finally {
+			store.dispose();
+		}
+		typed = resolve();
+	}
+	return typed;
 }

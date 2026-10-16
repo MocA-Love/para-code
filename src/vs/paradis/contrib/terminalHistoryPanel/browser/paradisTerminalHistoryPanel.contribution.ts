@@ -22,9 +22,7 @@
 // （`workbench/contrib/terminal/common/terminal.ts` の PARA-PATCH）。
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { Event } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
@@ -49,7 +47,7 @@ import { paradisIsSpaceHistoryId, paradisSpaceHistoryDirectoryOf, paradisSpaceHi
 import { IParadisCommandRecord, paradisShouldRecordCommand } from '../common/paradisTerminalCommandRecords.js';
 import { PARADIS_EXTERNAL_PROMPT_CHANGE_MS, ParadisHistoryNavigationTracker, paradisPromptTextWithoutGhost } from '../common/paradisTerminalHistoryNavigation.js';
 import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel } from '../common/paradisTerminalHistoryPanelModel.js';
-import { ParadisTypedPrefixTracker, paradisPromptTextAfterCursor } from '../common/paradisTerminalTypedPrefix.js';
+import { ParadisTypedPrefixTracker, paradisPlanHistoryWrite, paradisWaitForTypedText } from '../common/paradisTerminalTypedPrefix.js';
 import { IParadisTerminalCommandRecordService } from './paradisTerminalCommandRecordService.js';
 import { PARADIS_HISTORY_PANEL_CHROME_HEIGHT, PARADIS_HISTORY_PANEL_ROW_HEIGHT, ParadisHistoryPanelScope, ParadisTerminalHistoryPanelWidget } from './paradisTerminalHistoryPanelWidget.js';
 
@@ -378,11 +376,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 	}
 
 	private async _acceptWhenShown(panel: OpenPanel, model: IPromptInputModel, item: IParadisHistoryPanelItem, run: boolean): Promise<void> {
-		const deadline = Date.now() + PARADIS_EXTERNAL_PROMPT_CHANGE_MS;
-		while (this._typedPrefix.resolve(model, Date.now()) === undefined && Date.now() < deadline && !panel.cts.token.isCancellationRequested) {
-			const changed = Event.toPromise(model.onDidChangeInput, panel.store);
-			await raceTimeout(changed, deadline - Date.now(), () => changed.cancel());
-		}
+		await paradisWaitForTypedText(() => this._typedPrefix.resolve(model, Date.now()), model.onDidChangeInput, PARADIS_EXTERNAL_PROMPT_CHANGE_MS, panel.cts.token);
 		if (this._panel.value === panel) {
 			this._write(model, item, run);
 		}
@@ -394,22 +388,7 @@ export class ParadisTerminalHistoryPanelContribution extends Disposable implemen
 			this._close(true);
 			return;
 		}
-		// キーから組み立てた文字のままなら、カーソルは打った文字の末尾にあり、その後ろの表示（薄い文字・
-		// 右プロンプト）は入力ではない。
-		const suffix = this._typedPrefix.cursorAtEndOfTyped(model) ? '' : paradisPromptTextAfterCursor(model);
-		const prefix = typed.trimStart();
-		let edit: string;
-		let text: string;
-		let line: string;
-		if (suffix.length === 0 && item.command.startsWith(prefix)) {
-			edit = '';
-			text = item.command.substring(prefix.length);
-			line = typed + text;
-		} else {
-			edit = '\x1b[3~'.repeat(suffix.length) + '\x7f'.repeat(typed.length);
-			text = item.command;
-			line = item.command;
-		}
+		const { edit, text, line } = paradisPlanHistoryWrite(model, typed, item.command);
 		this._close(false);
 		const now = Date.now();
 		this._navigation.wrote(now);

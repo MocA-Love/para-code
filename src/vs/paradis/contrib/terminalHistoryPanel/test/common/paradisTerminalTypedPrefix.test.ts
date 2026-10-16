@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { importAMDNodeModule } from '../../../../../amdX.js';
 import { timeout } from '../../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -16,7 +17,7 @@ import type { ITerminalCommand } from '../../../../../platform/terminal/common/c
 import { PromptInputModel, PromptInputState } from '../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { TestXtermLogger } from '../../../../../platform/terminal/test/common/terminalTestHelpers.js';
 import { PARADIS_EXTERNAL_PROMPT_CHANGE_MS, paradisPromptTextWithoutGhost } from '../../common/paradisTerminalHistoryNavigation.js';
-import { ParadisTypedPrefixTracker, paradisApplyTypedInput, paradisPromptTextAfterCursor, paradisPromptTextBeforeCursor } from '../../common/paradisTerminalTypedPrefix.js';
+import { ParadisTypedPrefixTracker, paradisApplyTypedInput, paradisPlanHistoryWrite, paradisPromptTextAfterCursor, paradisPromptTextBeforeCursor, paradisWaitForTypedText } from '../../common/paradisTerminalTypedPrefix.js';
 
 /** 架空の p10k 風のプロンプト（シェル統合の入力行に混ざったときの見え方）。 */
 const PROMPT = '~/proj/demo !3 ?1 > ';
@@ -44,25 +45,20 @@ type Event =
 	| { readonly kind: 'started' }
 	| { readonly kind: 'executed' }
 	| { readonly kind: 'finished' }
-	| { readonly kind: 'check'; readonly at?: number }
-	| { readonly kind: 'cursorAtEnd' };
+	| { readonly kind: 'check'; readonly at?: number };
 
 const input = (data: string, at?: number): Event => ({ kind: 'input', data, at });
 const line = (text: string, at?: number): Event => ({ kind: 'line', line: text, at });
 const check = (at?: number): Event => ({ kind: 'check', at });
-const cursorAtEnd = (): Event => ({ kind: 'cursorAtEnd' });
 const STARTED: Event = { kind: 'started' };
 const EXECUTED: Event = { kind: 'executed' };
 const FINISHED: Event = { kind: 'finished' };
 
-/**
- * 入力と入力行の変化を届いた順に流し、`check` の時点の前方一致の文字と、`cursorAtEnd` の時点の
- * 「カーソルの後ろは入力ではない」を並べる。
- */
-function play(events: readonly Event[]): (string | boolean | undefined)[] {
+/** 入力と入力行の変化を届いた順に流し、`check` の時点の前方一致の文字を並べる。 */
+function play(events: readonly Event[]): (string | undefined)[] {
 	const tracker = new ParadisTypedPrefixTracker();
 	let current = model('');
-	const result: (string | boolean | undefined)[] = [];
+	const result: (string | undefined)[] = [];
 	for (const event of events) {
 		switch (event.kind) {
 			case 'input':
@@ -83,9 +79,6 @@ function play(events: readonly Event[]): (string | boolean | undefined)[] {
 				break;
 			case 'check':
 				result.push(tracker.resolve(current, event.at ?? 0));
-				break;
-			case 'cursorAtEnd':
-				result.push(tracker.cursorAtEndOfTyped(current));
 				break;
 		}
 	}
@@ -212,13 +205,12 @@ suite('ParadisTerminalTypedPrefix', () => {
 			input('\r'), line(`${PROMPT}cd src/`),
 			input('b'), line(`${PROMPT}cd src/b`),
 			check(),
-			cursorAtEnd(),
 			// 候補を選ばずに Ctrl+C で抜けても（fzf-tab は打っていた行に戻す）同じ。
 			input('\x7f'), line(`${PROMPT}cd src/`),
 			input('\x03'), line(`${PROMPT}cd src/`),
 			input('b'), line(`${PROMPT}cd src/b`),
 			check(),
-		]), ['cd src/b', false, 'cd src/b']);
+		]), ['cd src/b', 'cd src/b']);
 	});
 
 	test('learns the prompt even when the shell integration marks are missing (no prompt start)', () => {
@@ -271,11 +263,11 @@ suite('ParadisTerminalTypedPrefix', () => {
 	test('starts from the line of a terminal restored at an empty prompt', () => {
 		// 再読み込み・常駐のシェルへのつなぎ直しでは、次のプロンプトの印を待たずに入力行から始める。
 		assert.deepStrictEqual({
-			empty: play([line(''), ...typeOn('', 'git'), check(), cursorAtEnd()]),
+			empty: play([line(''), ...typeOn('', 'git'), check()]),
 			withPrompt: play([line(PROMPT), ...typeOn(PROMPT, 'git'), check()]),
 			leftover: play([line('git st'), ...typeOn('', 'a', '', 'git st'), check()]),
 		}, {
-			empty: ['git', false],
+			empty: ['git'],
 			withPrompt: [undefined],
 			leftover: [undefined],
 		});
@@ -292,25 +284,49 @@ suite('ParadisTerminalTypedPrefix', () => {
 			consumed: play([...make, input('q'), FINISHED, STARTED, line(''), ...typeOn('', 'git'), check()]),
 			// 一部だけ読まれた。どちらとも合わないので開かない。
 			partlyConsumed: play([...make, input('abc'), FINISHED, STARTED, line(''), line('bc'), ...typeOn('', 'd', '', 'bc'), check()]),
+			// 入力行の値の頭にプロンプトが入る（印が早く届く）と、どれとも比べられないので Enter まで開かない。
+			promptInLine: play([...make, FINISHED, input('ls'), STARTED, line(PROMPT), line(`${PROMPT}ls`), check(), ...typeOn(PROMPT, ' -la', '', 'ls'), check()]),
 		}, {
 			afterFinish: ['ls', 'ls -la'],
 			echoed: ['ls'],
 			consumed: ['git'],
 			partlyConsumed: [undefined],
+			promptInLine: [undefined, undefined],
 		});
 	});
 
-	test('tells whether the text after the cursor is input only when the typed text came from the keys', () => {
-		assert.deepStrictEqual(play([
-			STARTED,
-			line(PROMPT),
-			...typeOn(PROMPT, 'git', 'checkout'),
-			cursorAtEnd(),
-			// 入力を通らずに入力行が変わり（カーソルの後ろに文字がある）、入力行から読んだ。
-			line(`${PROMPT}git ch|eckout`, 100),
-			check(100 + PARADIS_EXTERNAL_PROMPT_CHANGE_MS + 1),
-			cursorAtEnd(),
-		]), [true, 'git ch', false]);
+	test('writes only the rest of a matching command unless something follows the cursor', () => {
+		const command = 'echo "hello"';
+		assert.deepStrictEqual({
+			rest: paradisPlanHistoryWrite(model('echo "he'), 'echo "he', command),
+			ghost: paradisPlanHistoryWrite(model('echo "he[llo"]'), 'echo "he', command),
+			// zsh-autopair が閉じ引用符を足し、カーソルは引用符の間にある（後ろの `"` もシェルの入力）。
+			autopair: paradisPlanHistoryWrite(model('echo "|"'), 'echo "', command),
+			other: paradisPlanHistoryWrite(model('ls'), 'ls', command),
+		}, {
+			rest: { edit: '', text: 'llo"', line: command },
+			ghost: { edit: '', text: 'llo"', line: command },
+			autopair: { edit: '\x1b[3~' + '\x7f'.repeat(6), text: command, line: command },
+			other: { edit: '\x7f\x7f', text: command, line: command },
+		});
+	});
+
+	test('waits for the typed text to show, and gives up after the timeout or when cancelled', async () => {
+		const changed = store.add(new Emitter<void>());
+		let typed: string | undefined = undefined;
+		const shown = paradisWaitForTypedText(() => typed, changed.event, 10_000, CancellationToken.None);
+		changed.fire();
+		typed = 'git';
+		changed.fire();
+		const cts = store.add(new CancellationTokenSource());
+		const cancelled = paradisWaitForTypedText(() => undefined, changed.event, 10_000, cts.token);
+		cts.cancel();
+		assert.deepStrictEqual({
+			shown: await shown,
+			cancelled: await cancelled,
+			timedOut: await paradisWaitForTypedText(() => undefined, changed.event, 10, CancellationToken.None),
+			listening: changed.hasListeners(),
+		}, { shown: 'git', cancelled: undefined, timedOut: undefined, listening: false });
 	});
 
 	test('does not count what was typed while a command was running', () => {
