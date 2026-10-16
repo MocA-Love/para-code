@@ -49,17 +49,22 @@ export class ParaCodeBridgeError extends Error {
 	}
 }
 
-/** bridge の情報ファイルの候補（新しい順に試す）。`--bridge` で場所を指定できる。 */
-export function bridgeFileCandidates(explicit?: string): string[] {
-	if (explicit) {
-		return [path.resolve(explicit)];
-	}
+/** Para Code のユーザーデータの場所の候補（配布版、開発版の順）。 */
+export function paraCodeDataDirectories(): string[] {
 	const home = os.homedir();
 	const base = process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support')
 		: process.platform === 'win32' ? (process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'))
 			: (process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'));
 	const roots = process.env.VSCODE_APPDATA ? [process.env.VSCODE_APPDATA, base] : [base];
-	return roots.flatMap(root => ['Para Code', 'code-oss-dev'].map(name => path.join(root, name, 'paradis-taskboard-bridge.json')));
+	return roots.flatMap(root => ['Para Code', 'code-oss-dev'].map(name => path.join(root, name)));
+}
+
+/** bridge の情報ファイルの候補（新しい順に試す）。`--bridge` で場所を指定できる。 */
+export function bridgeFileCandidates(explicit?: string): string[] {
+	if (explicit) {
+		return [path.resolve(explicit)];
+	}
+	return paraCodeDataDirectories().map(dir => path.join(dir, 'paradis-taskboard-bridge.json'));
 }
 
 function processAlive(pid: number | undefined): boolean {
