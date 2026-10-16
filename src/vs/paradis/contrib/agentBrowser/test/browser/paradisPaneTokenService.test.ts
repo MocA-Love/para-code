@@ -82,7 +82,7 @@ suite('Paradis pane token service', () => {
 	// ポートファイルは、この PC の印が作れればこの PC 専用のもの（同じ接続先へ別の PC からも繋いで
 	// いるとき、hook をこのペインを開いた PC へ届けるため）。作れなければ共有のもの。
 	test('puts only the host launcher on PATH and points the hooks at this PC\'s port file on the host', async () => {
-		const remoteEnvironment = async (machineId: string | undefined) => {
+		const remoteEnvironment = async (machineId: string | undefined, cwd?: URI) => {
 			const service = new ParadisPaneTokenService(
 				{ onDidCreateInstance: Event.None } as unknown as ITerminalInstanceService,
 				{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, remoteAuthority: 'ssh-remote+host', machineId } as unknown as IWorkbenchEnvironmentService,
@@ -92,13 +92,14 @@ suite('Paradis pane token service', () => {
 			);
 			try {
 				await new Promise(resolve => setTimeout(resolve, 0));
-				const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN } as IShellLaunchConfig;
+				const shellLaunchConfig = { shellIntegrationNonce: PANE_TOKEN, cwd } as IShellLaunchConfig;
 				service.prepareShellLaunchConfig(shellLaunchConfig);
 				return { ...shellLaunchConfig.env };
 			} finally {
 				service.dispose();
 			}
 		};
+		const localLauncher = join(APP_ROOT, 'resources', 'paradis', 'bin');
 		const launcher = {
 			PATH: '/home/test/.para-code/bin:${env:PATH}',
 			VSCODE_PATH_PREFIX: '/home/test/.para-code/bin:',
@@ -108,10 +109,19 @@ suite('Paradis pane token service', () => {
 		assert.deepStrictEqual({
 			withMachineId: await remoteEnvironment('machine-a'),
 			withoutMachineId: await remoteEnvironment(undefined),
+			// SSH のウィンドウで手元のフォルダに開いたターミナルは手元で動く。手元のランチャーとポートファイルを渡す
+			localFolderInRemoteWindow: await remoteEnvironment('machine-a', URI.file('/Users/test/project')),
 			otherMachineDiffers: paradisRemoteHookSourceId('machine-b') !== sourceId,
 		}, {
 			withMachineId: { PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN, PARA_CODE_MCP_PORT_FILE: `/home/test/.para-code/ports/${sourceId}.json`, ...launcher },
 			withoutMachineId: { PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN, PARA_CODE_MCP_PORT_FILE: '/home/test/.para-code/paradis-browser-mcp.json', ...launcher },
+			localFolderInRemoteWindow: {
+				PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
+				PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+				PATH: `${localLauncher}:\${env:PATH}`,
+				VSCODE_PATH_PREFIX: `${localLauncher}:`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: localLauncher,
+			},
 			otherMachineDiffers: true,
 		});
 		assert.ok(/^[0-9a-f]{16}$/.test(sourceId ?? ''));
