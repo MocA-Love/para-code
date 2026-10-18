@@ -254,6 +254,24 @@ describe('TaskBoardEngine', () => {
 		expect({ before: before.length > 0, after: fresh.engine.getSlots()[0].path }).toEqual({ before: true, after: before });
 	});
 
+	test('a question keeps where it came from after the board is restarted, and only a screen question closes when answered elsewhere', async () => {
+		const { engine } = setup();
+		const id = engine.addTask({ title: 'T' });
+		engine.start(id, { agent: 'codex' });
+		await flush();
+		const attempt = engine.getTask(id)!.attempt;
+		const asked = engine.reportQuestion(id, attempt, { text: 'Hallo?', options: [], origin: 'agent' })!;
+		const fresh = setup();
+		fresh.engine.restore(engine.serialize());
+		const restored = fresh.engine.getTask(id)!;
+		const origin = restored.question?.origin;
+		fresh.engine.reportQuestionAnsweredElsewhere(id, restored.attempt, asked);
+		const agentKept = fresh.engine.getTask(id)!.status;
+		const screen = fresh.engine.reportQuestion(id, restored.attempt, { kind: 'permission', text: 'Bash: gh', options: [], origin: 'screen' })!;
+		fresh.engine.reportQuestionAnsweredElsewhere(id, restored.attempt, screen);
+		expect({ origin, agentKept, after: fresh.engine.getTask(id)!.status }).toEqual({ origin: 'agent', agentKept: 'question', after: 'working' });
+	});
+
 	test('retry ignores the late report of the previous attempt and cancels the previous run', async () => {
 		const { engine, ports } = setup();
 		const id = engine.addTask({ title: 'T' });

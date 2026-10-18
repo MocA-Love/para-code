@@ -149,8 +149,25 @@ function success<T>(value: T): Result<T> {
 	return { ok: true, value };
 }
 
-/** ITerminalInstance を、チャットの入力が使う形へ写す（agentChat の写しと同じ規則）。 */
+/** 窓口の控え（ターミナルが閉じれば消える）。 */
+const chatTerminals = new WeakMap<ITerminalInstance, IParadisAgentChatTerminal>();
+
+/**
+ * 回答・送信に使うターミナルの窓口。同じターミナルには同じものを返す（ParadisAgentChatInput は送る前と各キーの
+ * 前に、送り先が同じものかを `!==` で比べる。毎回作ると必ず「送り先のターミナルが変わりました」で止まり、
+ * ボードからキーで答える許可と質問がすべて送れなかった）。
+ */
 function chatTerminalFor(instance: ITerminalInstance): IParadisAgentChatTerminal {
+	let terminal = chatTerminals.get(instance);
+	if (terminal === undefined) {
+		terminal = createChatTerminal(instance);
+		chatTerminals.set(instance, terminal);
+	}
+	return terminal;
+}
+
+/** ITerminalInstance を、チャットの入力が使う形へ写す（agentChat の写しと同じ規則）。 */
+function createChatTerminal(instance: ITerminalInstance): IParadisAgentChatTerminal {
 	return {
 		sendText: (text, shouldExecute, bracketedPasteMode) => instance.sendText(text, shouldExecute, bracketedPasteMode),
 		readScreen: () => paradisVisibleTerminalText(instance),
