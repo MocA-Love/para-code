@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import type { ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardWorkspaceError } from '@engine/paradisTaskBoardEngine.js';
-import { GitWorkspaces, inspectClones } from '../server/workspaces.js';
+import { GitWorkspaces, gitFetch, inspectClones } from '../server/workspaces.js';
 
 /*
  * 作業場所の git 操作を、使い捨ての git リポジトリで実際に動かして確かめる。
@@ -115,6 +115,28 @@ describe('GitWorkspaces', () => {
 		await ws.release(task('para/3-z'), wtSlot);
 		expect(existsSync(first.path)).toBe(false);
 	});
+
+	test('ワークツリー: 2 つのタスクを同時に始めても、両方の作業場所ができる（本体の fetch を取り合わない）', async () => {
+		// 本体の fetch が同時に何本走ったかを数える
+		let running = 0;
+		let most = 0;
+		const ws = new GitWorkspaces(main, path.join(root, 'wt'), async (cwd, args) => {
+			most = Math.max(most, ++running);
+			try {
+				return await gitFetch(cwd, args);
+			} finally {
+				running--;
+			}
+		});
+		// origin を進めて、同時に始めた 2 つの fetch がどちらも参照を書き換える状況にする
+		writeFileSync(path.join(cloneA, 'b.txt'), 'two\n');
+		run(cloneA, 'add', '.');
+		run(cloneA, 'commit', '--quiet', '-m', 'two');
+		run(cloneA, 'push', '--quiet', 'origin', 'HEAD:main');
+		const slotOf = (n: string): ITaskBoardSlot => ({ id: `wt:${n}`, name: n, path: '', kind: 'worktree' });
+		const made = await Promise.all(['para/5-a', 'para/6-b', 'para/7-c'].map((b, i) => ws.prepare({ ...task(), id: `t${i}` }, slotOf(b), b)));
+		expect({ branches: made.map(m => run(m.path, 'branch', '--show-current')), most }).toEqual({ branches: ['para/5-a', 'para/6-b', 'para/7-c'], most: 1 });
+	}, 20000);
 
 	test('ワークツリー: 同じ場所に関係ないディレクトリがあれば断る', async () => {
 		const ws = new GitWorkspaces(main, path.join(root, 'wt'));
