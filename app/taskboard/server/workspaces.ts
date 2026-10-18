@@ -24,6 +24,24 @@ export function git(cwd: string, args: readonly string[], timeout = 60000): Prom
 	});
 }
 
+/**
+ * `git fetch`。同じリポジトリ（とそのワークツリー）で別の fetch が参照を書いている間は「cannot lock ref」で
+ * 失敗するので、少し待ってやり直す。ボードの中の操作は {@link GitWorkspaces} が 1 本ずつにしているが、
+ * エージェントが自分の作業場所で走らせる fetch とはぶつかりうる。
+ */
+export async function gitFetch(cwd: string, args: readonly string[] = []): Promise<string> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await git(cwd, ['fetch', '--quiet', ...args, 'origin']);
+		} catch (err) {
+			if (attempt >= 4 || !/cannot lock ref|unable to (?:create|update) .*\.lock/i.test((err as Error).message)) {
+				throw err;
+			}
+			await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+		}
+	}
+}
+
 export async function remoteUrl(repoPath: string): Promise<string | undefined> {
 	return git(repoPath, ['remote', 'get-url', 'origin'], 5000).catch(() => undefined);
 }
@@ -53,14 +71,14 @@ export async function excludeBoardFiles(cwd: string): Promise<void> {
 }
 
 /** 今のブランチがタスクのブランチで、PR のブランチ（origin）より先のコミットがあれば push する。 */
-async function pushIfAhead(cwd: string, branch: string): Promise<void> {
+async function pushIfAhead(cwd: string, branch: string, fetch: (cwd: string, args?: readonly string[]) => Promise<string> = gitFetch): Promise<void> {
 	const current = await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
 	if (current !== branch) {
 		console.warn(`[taskboard] ${cwd} is on ${current}, not ${branch}; commits made there are not pushed before release`);
 		return;
 	}
 	// マージ後にリモートのブランチが消えていれば、作り直さない
-	await git(cwd, ['fetch', '--quiet', '--prune', 'origin']).catch(() => undefined);
+	await fetch(cwd, ['--prune']).catch(() => undefined);
 	if (!(await remoteBranchExists(cwd, branch))) {
 		return;
 	}
@@ -129,13 +147,30 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 	/** 止めた後（別のリポジトリで開き直した後など）は、作業場所に触らない。 */
 	private stopped = false;
 	private readonly inFlight = new Set<Promise<unknown>>();
+	/** 本体のリポジトリを書き換える操作（fetch・ワークツリーの追加と削除）を 1 本ずつにする。ワークツリーは参照と
+	 * `.git/worktrees` を本体と共有するので、2 つのタスクを同時に始めると fetch の参照のロックを取り合って失敗した。 */
+	private repoQueue: Promise<unknown> = Promise.resolve();
 
-	constructor(private readonly repoPath: string, private readonly worktreeRoot: string) { }
+	/** @param fetch テスト用。本体の fetch を差し替える（同時に走る本数を数えるため）。 */
+	constructor(private readonly repoPath: string, private readonly worktreeRoot: string, private readonly fetch: (cwd: string, args?: readonly string[]) => Promise<string> = gitFetch) { }
 
 	/** 以後の準備と返却を断り、進行中のものが終わるのを待つ（最大 waitMs）。 */
 	async stop(waitMs = 30000): Promise<void> {
 		this.stopped = true;
 		await Promise.race([Promise.allSettled([...this.inFlight]), new Promise(resolve => setTimeout(resolve, waitMs))]);
+	}
+
+	/** 鎖に並べる。中から inRepoQueue を呼ばないこと（前の仕事を待ち合って詰まる）。 */
+	private inRepoQueue<T>(work: () => Promise<T>): Promise<T> {
+		// 並んでいる間にボードが止まった（別のリポジトリで開き直した等）なら、古いリポジトリには触らない
+		const run = this.repoQueue.then(() => {
+			if (this.stopped) {
+				throw new TaskBoardWorkspaceError('the task board has stopped');
+			}
+			return work();
+		});
+		this.repoQueue = run.catch(() => undefined);
+		return run;
 	}
 
 	private track<T>(work: () => Promise<T>): Promise<T> {
@@ -172,24 +207,7 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 
 	private async prepareNow(taskId: string, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
 		if (slot.kind === 'worktree') {
-			const dir = this.worktreeDir(branch);
-			await git(this.repoPath, ['fetch', '--quiet', 'origin']);
-			if (existsSync(dir)) {
-				// 前回の作業場所が残っていれば、同じブランチのワークツリーである限り使い直す
-				if (await this.isWorktreeOf(dir, branch)) {
-					return { branch, path: dir };
-				}
-				throw new TaskBoardWorkspaceError(`${dir} already exists and is not the worktree of ${branch}`);
-			}
-			if (await branchExists(this.repoPath, branch)) {
-				await git(this.repoPath, ['worktree', 'add', dir, branch]);
-			} else if (await remoteBranchExists(this.repoPath, branch)) {
-				await git(this.repoPath, ['worktree', 'add', '--track', '-b', branch, dir, `origin/${branch}`]);
-			} else {
-				await git(this.repoPath, ['worktree', 'add', '--no-track', '-b', branch, dir, await defaultBase(this.repoPath)]);
-			}
-			await excludeBoardFiles(dir);
-			return { branch, path: dir };
+			return this.inRepoQueue(() => this.prepareWorktree(branch));
 		}
 		if (!existsSync(path.join(slot.path, '.git'))) {
 			throw new TaskBoardWorkspaceError(`${slot.name} is not a git checkout`, 'missing');
@@ -199,22 +217,46 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		if (await isDirty(slot.path)) {
 			throw new TaskBoardWorkspaceError(`${slot.name} has uncommitted changes`, 'dirty');
 		}
-		await git(slot.path, ['fetch', '--quiet', 'origin']);
+		await this.fetch(slot.path);
 		await switchTo(slot.path, branch);
 		return { branch, path: slot.path };
+	}
+
+	private async prepareWorktree(branch: string): Promise<{ branch: string; path: string }> {
+		const dir = this.worktreeDir(branch);
+		await this.fetch(this.repoPath);
+		if (existsSync(dir)) {
+			// 前回の作業場所が残っていれば、同じブランチのワークツリーである限り使い直す
+			if (await this.isWorktreeOf(dir, branch)) {
+				return { branch, path: dir };
+			}
+			throw new TaskBoardWorkspaceError(`${dir} already exists and is not the worktree of ${branch}`);
+		}
+		if (await branchExists(this.repoPath, branch)) {
+			await git(this.repoPath, ['worktree', 'add', dir, branch]);
+		} else if (await remoteBranchExists(this.repoPath, branch)) {
+			await git(this.repoPath, ['worktree', 'add', '--track', '-b', branch, dir, `origin/${branch}`]);
+		} else {
+			await git(this.repoPath, ['worktree', 'add', '--no-track', '-b', branch, dir, await defaultBase(this.repoPath)]);
+		}
+		await excludeBoardFiles(dir);
+		return { branch, path: dir };
 	}
 
 	private async releaseNow(task: ITaskBoardTask, slot: ITaskBoardSlot): Promise<void> {
 		// PR ができた後の工程でエージェントがコミットしたものは、返す前に PR のブランチへ送る（送らないと手元にだけ残る）
 		const place = slot.kind === 'worktree' ? slot.path || (task.branch ? this.worktreeDir(task.branch) : '') : slot.path;
 		if (task.pr && task.branch && place && existsSync(place)) {
-			await pushIfAhead(place, task.branch).catch(err => console.warn('[taskboard] push before release failed:', (err as Error).message));
+			// ワークツリーの中の fetch と push も本体と同じ参照を書くので、鎖に並べる
+			const branch = task.branch;
+			const push = () => pushIfAhead(place, branch, this.fetch);
+			await (slot.kind === 'worktree' ? this.inRepoQueue(push) : push()).catch(err => console.warn('[taskboard] push before release failed:', (err as Error).message));
 		}
 		if (slot.kind === 'worktree') {
 			const dir = slot.path || (task.branch ? this.worktreeDir(task.branch) : '');
 			// 消すのはボードが作ったワークツリーだけ。未コミットの変更があれば残す（--force は使わない）
 			if (dir && existsSync(dir) && task.branch && await this.isWorktreeOf(dir, task.branch) && !(await isDirty(dir))) {
-				await git(this.repoPath, ['worktree', 'remove', dir]);
+				await this.inRepoQueue(() => git(this.repoPath, ['worktree', 'remove', dir]));
 			}
 			return;
 		}
