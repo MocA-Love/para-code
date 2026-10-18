@@ -123,6 +123,7 @@ export interface ITaskBoardQuestionInput {
 	readonly text: string;
 	readonly options: readonly ITaskBoardQuestionOption[];
 	readonly allowText?: boolean;
+	readonly origin?: 'agent' | 'screen';
 }
 
 export interface ITaskBoardArtifactInput {
@@ -818,6 +819,7 @@ export class TaskBoardEngine {
 			options: input.options.slice(0, 9).map(o => ({ label: clip(o.label, 300), detail: o.detail ? clip(o.detail, 600) : undefined, artifactId: o.artifactId })),
 			allowText: input.allowText ?? true,
 			askedAt: this.now(),
+			...(input.origin ? { origin: input.origin } : {}),
 		};
 		task.question = question;
 		task.status = question.kind;
@@ -874,6 +876,22 @@ export class TaskBoardEngine {
 		}
 		task.status = 'stalled';
 		this.notice('stalled', task);
+		this.touch(task);
+	}
+
+	/**
+	 * ターミナルに出ていた質問・許可に、ボードの外（ターミナルのキーなど）で答えられた。出していた質問を閉じる。
+	 * エージェントが board_ask_human で聞いた質問（origin が agent）は人の回答を待つので閉じない。
+	 */
+	reportQuestionAnsweredElsewhere(taskId: string, attempt: number, questionId: string): void {
+		const task = this.live(taskId, attempt);
+		if (!task || task.question?.id !== questionId || task.question.origin === 'agent' || (task.status !== 'question' && task.status !== 'permission')) {
+			return;
+		}
+		task.question = undefined;
+		task.status = 'working';
+		task.activity = undefined;
+		this.activity(task, 'answer', 'ターミナルで答えられました');
 		this.touch(task);
 	}
 

@@ -254,6 +254,23 @@ describe('ParaCodeAgents', () => {
 		expect({ options: q.options.map(o => o.label), body: bridge.requests.find(r => r.route === '/v1/answer')!.body }).toEqual({ options: ['許可する', '拒否する'], body: { terminal: 't_1', kind: 'permission', allow: true } });
 	});
 
+	test('a permission answered in the terminal closes on the board, but an ask_human question stays open while the turn runs', async () => {
+		const { engine, bridge, id } = await setup();
+		engine.start(id, { agent: 'codex' });
+		await until(() => engine.getTask(id)!.activities.some(a => a.label.includes('始めました')));
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'permission', question: { text: 'Bash: gh issue view 9', options: [{ label: 'Yes' }, { label: 'No' }], allowText: false } });
+		await until(() => engine.getTask(id)!.status === 'permission');
+		// ターミナル（キー）で答えられ、エージェントが動き出した
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'working' });
+		await until(() => engine.getTask(id)!.status === 'working');
+		const afterTerminal = { status: engine.getTask(id)!.status, question: engine.getTask(id)!.question };
+		bridge.emit({ type: 'report', terminal: 't_1', replyId: 'q1', tool: 'ask_human', args: { question: 'de の挨拶は？', options: ['Hallo', 'Guten Tag'] } });
+		await until(() => engine.getTask(id)!.status === 'question');
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'working' });
+		await new Promise(resolve => setTimeout(resolve, 50));
+		expect({ afterTerminal, askHuman: engine.getTask(id)!.status }).toEqual({ afterTerminal: { status: 'working', question: undefined }, askHuman: 'question' });
+	});
+
 	test('a turn that ends without complete_step stalls the task; exit fails it; cancel closes the terminal', async () => {
 		const { engine, bridge, id } = await setup();
 		engine.start(id, { agent: 'claude' });

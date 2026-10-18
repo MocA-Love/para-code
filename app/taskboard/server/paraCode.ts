@@ -358,8 +358,6 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 	readonly client: ParaCodeBridgeClient;
 	/** ターミナルの id → 結び付いたタスク。起動中は `pending:<launchId>` で持つ。 */
 	private readonly links = new Map<string, ITerminalLink>();
-	/** ask_human で出した質問の id。回答は次のプロンプトとして送る（画面の選択肢ではない）。 */
-	private readonly mcpQuestions = new Set<string>();
 	/** 起動の返事より先に届いた、まだ結び付いていないターミナルのイベント（返事が来たら流し直す）。 */
 	private readonly early = new Map<string, ParaCodeBridgeEvent[]>();
 	/** 結び付いていないターミナルの最新の状態（つなぎ直しで結び直したときに反映する）。 */
@@ -604,7 +602,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 			this.engine.reportAnswerFailed(task.id, task.attempt, question, 'エージェントのターミナルが見つからないため、回答を送れませんでした');
 			return;
 		}
-		if (this.mcpQuestions.delete(question.id)) {
+		if (question.origin === 'agent') {
 			this.engine.reportOutput(task.id, [`› ${answer}`]);
 			// ask_human の回答は次のメッセージとして送る。ターンがまだ終わっていなければ預かる
 			link.outbox.push({ text: answer });
@@ -625,6 +623,10 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		const attempt = task.attempt;
 		void this.client.request('POST', '/v1/answer', body).catch((err: Error) => {
 			this.note(task.id, `回答を送れませんでした: ${err.message}`);
+			// 失敗が届く前にエージェントが先へ進んでいた（ターミナルで答えられた等）なら、質問を出し直さない
+			if (link.status !== question.kind) {
+				return;
+			}
 			this.engine.reportAnswerFailed(task.id, attempt, question, `回答を送れませんでした: ${err.message}`);
 		});
 	}
@@ -851,6 +853,24 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				if (task.status === 'stalled') {
 					engine.reportToolUse(task.id, link.attempt, '再開', undefined);
 				}
+				// 画面の質問・許可に、ターミナルで（またはボードの回答が届かなかった後に別の手段で）答えられて
+				// エージェントが動き出した。ボードに出したままにしない。ask_human の質問はターンの終わりを待つので閉じない。
+				// 画面に確認が残ったまま一瞬 working になることがあるので、少し待って確かめてから閉じる
+				if ((task.status === 'question' || task.status === 'permission') && task.question && task.question.origin !== 'agent') {
+					const attempt = link.attempt;
+					const questionId = task.question.id;
+					const confirm = () => {
+						if (this.links.get(link.terminal) === link && link.attempt === attempt && link.status === 'working') {
+							engine.reportQuestionAnsweredElsewhere(task.id, attempt, questionId);
+						}
+					};
+					const wait = this.options.timeouts?.stall ?? STALL_CONFIRM_MS;
+					if (wait <= 0) {
+						confirm();
+					} else {
+						setTimeout(confirm, wait).unref?.();
+					}
+				}
 				return;
 			case 'question':
 			case 'permission': {
@@ -864,6 +884,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				}
 				engine.reportQuestion(task.id, link.attempt, {
 					kind: status,
+					origin: 'screen',
 					text: question?.text || (status === 'permission' ? '許可を求めています（内容は Para Code のターミナルで確認してください）' : '質問しています（内容は Para Code のターミナルで確認してください）'),
 					options,
 					// 選択肢の無い質問は、文で答えられるようにする（答える手段が無くならないように）
@@ -918,10 +939,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				return;
 			}
 			const options = Array.isArray(args.options) ? args.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0).map(label => ({ label: label.trim() })) : [];
-			const id = engine.reportQuestion(task.id, attempt, { kind: 'question', text, options, allowText: args.allow_text !== false || !options.length });
-			if (id) {
-				this.mcpQuestions.add(id);
-			}
+			engine.reportQuestion(task.id, attempt, { kind: 'question', text, options, allowText: args.allow_text !== false || !options.length, origin: 'agent' });
 			await this.reply(replyId, true, '質問をボードに出しました。回答はユーザーから次のメッセージで届きます。ここでターンを終えて待ってください。');
 			return;
 		}
