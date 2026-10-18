@@ -139,6 +139,12 @@ export interface ITaskBoardQuestion {
 	/** 自分で書いて答えられるか。 */
 	readonly allowText: boolean;
 	readonly askedAt: number;
+	/**
+	 * 出どころ。`agent` はエージェントが board_ask_human で聞いたもの（回答は次の発言として送り、ターンの終わりを
+	 * 待つ）。それ以外はターミナルの画面・hook から拾った質問と許可（回答はキーで送り、ターミナルで答えられたら閉じる）。
+	 * 台帳に保存するので、ボードを開き直しても区別できる。
+	 */
+	readonly origin?: 'agent' | 'screen';
 }
 
 export type TaskBoardArtifactKind = 'plan' | 'mock' | 'screenshot' | 'report';
