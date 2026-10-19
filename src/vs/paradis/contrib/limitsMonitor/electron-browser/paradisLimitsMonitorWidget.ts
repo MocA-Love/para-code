@@ -33,6 +33,7 @@ import {
 	IParadisLimitsAccount,
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
+	paradisLimitsAccountNumber,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
@@ -118,6 +119,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private readonly hoverDelegate = getDefaultHoverDelegate('mouse');
 
 	private latestSnapshot: IParadisLimitsSnapshot | undefined;
+	/** メールアドレスを「Claude 1」のような番号に置き換えているか（スクリーンショット用。保存しない）。 */
+	private emailsMasked = false;
 	private isFetching = false;
 	private refreshRequested = false;
 	private readonly removingHomes = new Set<string>();
@@ -322,11 +325,50 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onRemoveAccount: account => void this.removeAccount(account),
 			isAccountHidden: account => this.isAccountHidden(account),
 			onToggleHiddenAccount: account => this.toggleHiddenAccount(account),
+			displayName: account => this.displayName(account),
+			displayNameForEmail: (provider, email) => this.displayNameForEmail(provider, email),
+			isEmailMasked: () => this.emailsMasked,
+			onToggleEmailMask: () => this.toggleEmailMask(),
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
 		this.reschedulePolling();
 		void this.poll(false);
+	}
+
+	/** 画面に出すアカウントの名前。メールを隠しているときは、同じプロバイダの中の番号にする。 */
+	private displayName(account: IParadisLimitsAccount): string {
+		if (this.emailsMasked && account.email !== undefined) {
+			const accounts = account.provider === 'claude' ? this.latestSnapshot?.claude.accounts : this.latestSnapshot?.codex.accounts;
+			return this.maskedName(account.provider, accounts ? paradisLimitsAccountNumber(account, accounts) : undefined);
+		}
+		return account.email ?? account.homeLabel ?? account.id;
+	}
+
+	private displayNameForEmail(provider: ParadisLimitsProvider, email: string): string {
+		if (!this.emailsMasked) {
+			return email;
+		}
+		const accounts = (provider === 'claude' ? this.latestSnapshot?.claude.accounts : this.latestSnapshot?.codex.accounts) ?? [];
+		const account = accounts.find(candidate => candidate.email?.toLowerCase() === email.toLowerCase());
+		return this.maskedName(provider, account ? paradisLimitsAccountNumber(account, accounts) : undefined);
+	}
+
+	private maskedName(provider: ParadisLimitsProvider, accountNumber: number | undefined): string {
+		if (accountNumber === undefined) {
+			return localize('paradis.limitsMonitor.maskedUnknownAccount', "（隠しているアカウント）");
+		}
+		return provider === 'claude'
+			? localize('paradis.limitsMonitor.maskedClaudeAccount', "Claude {0}", accountNumber)
+			: localize('paradis.limitsMonitor.maskedCodexAccount', "Codex {0}", accountNumber);
+	}
+
+	private toggleEmailMask(): void {
+		this.emailsMasked = !this.emailsMasked;
+		if (this.latestSnapshot) {
+			this.renderTrigger(this.latestSnapshot);
+			this.panel.value?.updateSnapshot(this.latestSnapshot);
+		}
 	}
 
 	private closePanel(): void {
@@ -360,11 +402,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				message: localize('paradis.limitsMonitor.unregisterConfirm', "この Claude アカウントの登録を削除しますか？"),
 				detail: this.client.connectedToRemote
 					? account.active
-						? localize('paradis.limitsMonitor.unregisterDetailActiveRemote', "接続先に保存した {0} の認証情報を削除します。いま接続先で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
-						: localize('paradis.limitsMonitor.unregisterDetailRemote', "接続先に保存した {0} の認証情報を削除します。接続先の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+						? localize('paradis.limitsMonitor.unregisterDetailActiveRemote', "接続先に保存した {0} の認証情報を削除します。いま接続先で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", this.displayName(account))
+						: localize('paradis.limitsMonitor.unregisterDetailRemote', "接続先に保存した {0} の認証情報を削除します。接続先の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", this.displayName(account))
 					: account.active
-						? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
-						: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id),
+						? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", this.displayName(account))
+						: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", this.displayName(account)),
 				primaryButton: localize('paradis.limitsMonitor.unregister', "登録を削除"),
 			});
 			if (!confirmed) {
@@ -392,7 +434,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		}
 		this.removingHomes.add(account.id);
 		try {
-			const accountName = account.email ?? localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
+			const accountName = account.email !== undefined ? this.displayName(account) : localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
 			const homeLabel = account.homeLabel ?? account.id;
 			const remote = this.client.connectedToRemote;
 			const { confirmed } = await this.dialogService.confirm({
@@ -542,7 +584,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private updateTriggerAria(accounts: readonly IParadisLimitsAccount[], hiddenCount: number): void {
 		const base = localize('paradis.limitsMonitor.triggerAria', "AI利用リミット");
 		const summaries = accounts.map(account => {
-			const name = account.email ?? account.homeLabel ?? account.id;
+			const name = this.displayName(account);
 			if (account.status !== 'ok') {
 				return `${name}: ${paradisLimitsStatusSummary(account)}`;
 			}
@@ -639,7 +681,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	 * 必要があった。なお表示はポーリング間隔ぶん（パネル非表示中は120秒）古くなりうる。
 	 */
 	private ringTooltip(account: IParadisLimitsAccount): string {
-		const name = account.email ?? account.homeLabel ?? account.id;
+		const name = this.displayName(account);
 		if (account.status !== 'ok') {
 			return `${name} — ${paradisLimitsStatusSummary(account)}`;
 		}
