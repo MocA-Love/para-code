@@ -60,6 +60,7 @@ import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprova
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
+import { paradisIsCodexNonUserSource, paradisIsCodexRootSource } from '../../sessionResume/common/paradisSessionTranscript.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
 import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger.js';
 import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisIsClaudeSessionIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
@@ -1080,7 +1081,9 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 		// 書くため、session_idと比べると子が必ずrootへ化ける（このペインのセッションが子の会話に
 		// 差し替わり、モバイルに「親セッションが切り替わりました」が出る）。
 		const ownThreadId = str(payload?.id) ?? sessionId;
-		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.thread_source) === 'subagent';
+		// 自動審査（guardian）・`/review`・記憶の整理なども、ユーザーの会話ではないので子と同じく root にしない
+		const threadSource = str(payload?.thread_source);
+		const spawnedAsSubagent = sourceSpawn !== undefined || threadSource === 'subagent' || threadSource === 'guardian_review' || paradisIsCodexNonUserSource(payload?.source);
 		const subagent = spawnedAsSubagent || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 		const forkedFromId = str(payload?.forked_from_id);
 		const historyBaseRaw = rec(payload?.history_base);
@@ -1131,11 +1134,13 @@ interface IParadisDirectoryWalkBudget {
  */
 const PARADIS_SESSION_SCAN_RECENT_MS = 5 * 60_000;
 
-/** state DBのsourceはSubAgentだけJSONで親thread情報を持つ。root探索では混在させない。 */
+/**
+ * state DB の source がユーザーの会話を指すか。サブエージェントに限らず、自動審査（guardian）・`/review`・
+ * 記憶の整理など Codex が起こしたスレッド（`subagent` / `internal`）も root 探索に混ぜない。
+ * 混ぜると、同じフォルダで更新された審査の会話がペインの会話として結ばれる。
+ */
 export function paradisIsCodexRootThreadSource(source: string): boolean {
-	try {
-		return rec(rec(rec(JSON.parse(source))?.subagent)?.thread_spawn) === undefined;
-	} catch { return true; }
+	return paradisIsCodexRootSource(source);
 }
 
 export interface IParadisCodexThreadSource {

@@ -74,14 +74,23 @@ export function paradisTranscriptFlattenText(value: unknown): string {
 	return parts.join('\n');
 }
 
-/** Codex の state DB の `source` 列が、サブエージェントではない（ユーザーが起動した）スレッドを指すか。 */
+/**
+ * Codex の `source`（session_meta の値、または state DB の列を JSON として読んだもの）が、ユーザーの会話ではない
+ * スレッドを指すか。`subagent`（サブエージェント・自動審査・`/review`・圧縮など）と `internal`（記憶の整理など）は
+ * どれもユーザーの会話ではない。`cli` / `vscode` / `exec` など文字列の値はユーザーが起動したもの。
+ */
+export function paradisIsCodexNonUserSource(source: unknown): boolean {
+	const record = paradisTranscriptRecord(source);
+	return record !== undefined && (record.subagent !== undefined || record.internal !== undefined);
+}
+
+/** Codex の state DB の `source` 列が、ユーザーが起動したスレッドを指すか（サブエージェントや自動審査などではない）。 */
 export function paradisIsCodexRootSource(source: string | undefined): boolean {
 	if (!source) {
 		return true;
 	}
 	try {
-		const parsed = paradisTranscriptRecord(JSON.parse(source));
-		return paradisTranscriptRecord(paradisTranscriptRecord(parsed?.subagent)?.thread_spawn) === undefined;
+		return !paradisIsCodexNonUserSource(JSON.parse(source));
 	} catch {
 		return true;
 	}
@@ -90,7 +99,7 @@ export function paradisIsCodexRootSource(source: string | undefined): boolean {
 export interface IParadisCodexSessionMeta {
 	readonly id: string;
 	readonly cwd: string;
-	/** サブエージェント（親スレッドから起動されたもの）なら true。 */
+	/** ユーザーの会話ではない（サブエージェント・自動審査・`/review` など、Codex が起こした）スレッドなら true。 */
 	readonly subagent: boolean;
 }
 
@@ -105,8 +114,9 @@ export function paradisParseCodexSessionMetaItem(item: Record<string, unknown> |
 	const sourceSpawn = paradisTranscriptRecord(paradisTranscriptRecord(paradisTranscriptRecord(payload.source)?.subagent)?.thread_spawn);
 	const parentThreadId = paradisTranscriptString(payload.parent_thread_id) ?? paradisTranscriptString(sourceSpawn?.parent_thread_id);
 	const ownThreadId = paradisTranscriptString(payload.id) ?? id;
-	const subagent = sourceSpawn !== undefined || paradisTranscriptString(payload.thread_source) === 'subagent'
-		|| (parentThreadId !== undefined && parentThreadId !== ownThreadId);
+	const threadSource = paradisTranscriptString(payload.thread_source);
+	const subagent = sourceSpawn !== undefined || threadSource === 'subagent' || threadSource === 'guardian_review'
+		|| paradisIsCodexNonUserSource(payload.source) || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 	return id && cwd ? { id, cwd, subagent } : undefined;
 }
 
