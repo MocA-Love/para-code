@@ -73,6 +73,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		// **握り潰さない。** 超えていると bind は必ず失敗し、症状は「毎回ターミナルが作り直される」
 		// だけになって原因に辿り着けない。
 		logService.error(`[ParadisPtyHost] socket path is too long for this platform: ${paths.socketPath}`);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'socket-path-too-long', new Error('socket path too long'), undefined, 'warning');
 		return undefined;
 	}
 
@@ -95,6 +96,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 	}
 
 	logService.error(`[ParadisPtyHost] the daemon did not come up at ${paths.socketPath}; terminals will run in this process`);
+	reportParadisDiagnosticError('owned', 'pty-daemon', 'not-up', new Error('the daemon did not come up'), undefined, 'warning');
 	return undefined;
 }
 
@@ -258,7 +260,7 @@ export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions):
 	// 閉じるのを待つより前に付ける。落とさずに記録し、呼び出し側の接続待ちが時間切れになってアプリの中の pty へ落ちる。
 	child.on('error', error => {
 		logService.error('[ParadisPtyHost] failed to spawn the daemon process', error);
-		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error, undefined, 'warning');
 	});
 	child.unref();
 	if (typeof stdio === 'number') {

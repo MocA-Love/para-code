@@ -36,6 +36,8 @@ import { PARADIS_TERMINAL_KEEP_BACKGROUND_ENV } from '../../../terminalCloseClea
 import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalProcess.js';
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { paradisTakePtyHandoverReport } from '../../node/paradisPtyHandoverJournal.js';
+import { paradisIsEmptyPtyHandoverReport } from '../../common/paradisPtyHandover.js';
+import { paradisRecordRelayedFailure, paradisTakeRelayedFailures } from '../../../sentry/common/paradisRelayedDiagnostics.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
 import { paradisAdoptTerminals } from '../../node/paradisTerminalAdoption.js';
 
@@ -439,6 +441,27 @@ suite('Para pty daemon handover between pty hosts', () => {
 			},
 			{ atStartup: [], kept: [[1]], run: { adopted: 1, foreign: 0 }, created: [1], restoredLayout: [[101]] },
 		);
+	});
+
+	test('pty ホストで出た失敗は記録の省略可能な欄に載り、無いときは欄ごと付けない', () => {
+		// 台帳はプロセスに1つ。ほかのスイートが残した分を捨てる。
+		paradisTakeRelayedFailures();
+		paradisRecordRelayedFailure('pty-daemon', 'not-up', new Error('the daemon did not come up'), 'warning');
+		const withFailure = paradisTakePtyHandoverReport({ daemon: false, foreignHeld: 0 });
+		const quiet = paradisTakePtyHandoverReport({ daemon: false, foreignHeld: 0 });
+
+		assert.deepStrictEqual({
+			failures: withFailure.failures,
+			empty: paradisIsEmptyPtyHandoverReport(withFailure),
+			// 古い窓が受け取る形を変えない。
+			quietHasField: Object.keys(quiet).includes('failures'),
+			quietEmpty: paradisIsEmptyPtyHandoverReport(quiet),
+		}, {
+			failures: [{ feature: 'pty-daemon', operation: 'not-up', errorName: 'Error', severity: 'warning', count: 1 }],
+			empty: false,
+			quietHasField: false,
+			quietEmpty: true,
+		});
 	});
 
 	test('Windows の接続先では常駐を使わない。それ以外では設定を後から入れても次の pty ホストから使う', () => {

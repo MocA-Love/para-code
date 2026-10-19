@@ -30,6 +30,8 @@ import { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigg
 import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from './paradisAdoptIntoPtyService.js';
 import { paradisRecordAdoptionRun, paradisTakePtyHandoverReport } from './paradisPtyHandoverJournal.js';
+import { paradisHasRelayedFailures } from '../../sentry/common/paradisRelayedDiagnostics.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAdoptedTerminal } from './paradisTerminalAdoption.js';
 import { paradisRecordAdoption } from './paradisReattachTally.js';
 import { paradisIdOfHandle, paradisKnownHandles, paradisPtyDaemonConnection } from './paradisTerminalProcessFactory.js';
@@ -73,13 +75,39 @@ export function paradisReadoptFromDaemon(trigger: ParadisPtyAdoptTrigger): Promi
 	return enqueue(() => run(trigger, ptyService, connection.host, log));
 }
 
+/**
+ * この pty host が持っていない番号の pty を頼まれた（upstream の `_throwIfNoPty`）。SSH 先で、もう無い
+ * ターミナルへ窓が題名を送ってくる等で起きる。件数だけを数え、窓が引き継ぎの記録と一緒に送る。
+ */
+export function paradisCountNoPty(): void {
+	reportParadisDiagnosticError('owned', 'pty-host', 'no-pty', new Error('no such pty'), undefined, 'warning');
+}
+
+/** 窓がターミナルへ繋ぎ直そうとして失敗した（upstream の `attachToProcess`）。番号が無ければ `no-pty` としても数える。 */
+export function paradisCountReconnectFailed(error: unknown): void {
+	reportParadisDiagnosticError('owned', 'pty-host', 'reconnect-failed', error, undefined, 'warning');
+}
+
 /** 前回からの記録。常駐を使っておらず、記録も無ければ undefined。 */
 export function paradisTakeHandoverReport(): IParadisPtyHandoverReport | undefined {
 	const daemon = paradisPtyDaemonConnection() !== undefined;
-	if (!daemon && target === undefined) {
+	// 常駐を使っていなくても、常駐が上がらなかった等の失敗は渡す（`paradisRelayedDiagnostics.ts`）。
+	if (!daemon && target === undefined && !paradisHasRelayedFailures()) {
 		return undefined;
 	}
 	return paradisTakePtyHandoverReport({ daemon, foreignHeld: foreign.size });
+}
+
+/** テスト用。起動時の引き取りで覚えた相手を忘れる。 */
+export function paradisResetReadopt(): void {
+	target = undefined;
+	logService = undefined;
+	foreign.clear();
+	foreignLayouts.clear();
+	if (pollTimer !== undefined) {
+		clearTimeout(pollTimer);
+		pollTimer = undefined;
+	}
 }
 
 /**
@@ -167,6 +195,9 @@ function schedulePoll(): void {
 	}
 	pollTimer = setTimeout(() => {
 		pollTimer = undefined;
-		void paradisReadoptFromDaemon('poll').catch(error => logService?.warn('[ParadisPtyHost] looking for terminals another pty host let go of failed', error));
+		void paradisReadoptFromDaemon('poll').catch(error => {
+			logService?.warn('[ParadisPtyHost] looking for terminals another pty host let go of failed', error);
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'readopt-poll-failed', error, undefined, 'warning');
+		});
 	}, PARADIS_READOPT_POLL_MS);
 }
