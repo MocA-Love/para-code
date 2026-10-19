@@ -47,10 +47,13 @@ const RETRY_SAFE_TOOLS: ReadonlySet<string> = new Set([
 /** 締め切り（`paraCodeTimeoutMs`）を付けるツール。evaluate_script はエージェントの `timeout` で変えられる（q.html Q394）。 */
 const TIMEOUT_TOOLS: ReadonlySet<string> = new Set(['evaluate_script', 'take_snapshot']);
 
-/** 締め切りの既定と、エージェントが選べる範囲（ms）。上限は proxy の 1 回の呼び出しの上限（300 秒）より手前。 */
+/**
+ * 締め切りの既定と、エージェントが選べる範囲（ms）。上限は 100 秒。Claude Code は 120 秒を超えた MCP の呼び出しを
+ * 裏に回すので、それより手前で普通の失敗を返す（wait_until の上限と同じ。q.html Q395）。
+ */
 export const PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS = 60_000;
 const MIN_TIMEOUT_MS = 1_000;
-const MAX_TIMEOUT_MS = 280_000;
+const MAX_TIMEOUT_MS = 100_000;
 
 /** 失敗が「要素が操作できるようにならなかった」としか言わない入力系のツール。 */
 const INPUT_TOOLS: ReadonlySet<string> = new Set([
@@ -104,7 +107,7 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			delete properties.paraCodeTimeoutMs;
 			properties.timeout = {
 				type: 'integer',
-				description: `Maximum time in milliseconds to wait for the script (default ${PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS}, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}). When the page does not answer in time, the call fails with PARA_BROWSER_PAGE_UNRESPONSIVE and the tab is free for other tools again.`,
+				description: `Maximum time in milliseconds to wait for the script (default ${PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS}, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}; Claude Code moves a tool call that runs longer than 120 seconds to the background). When the page does not answer in time, the call fails with PARA_BROWSER_PAGE_UNRESPONSIVE and the tab is free for other tools again.`,
 			};
 		}
 	} else if (tool.name === 'take_snapshot') {

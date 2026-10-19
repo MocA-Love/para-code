@@ -323,7 +323,7 @@ suite('Paradis devtools tool adjustments', () => {
 			},
 			evaluate: {
 				byDefault: evaluateArgs({}, both),
-				longer: evaluateArgs({ timeout: 120_000 }, both),
+				longer: evaluateArgs({ timeout: 90_000 }, both),
 				clamped: [evaluateArgs({ timeout: 10 }, both), evaluateArgs({ timeout: 900_000 }, both), evaluateArgs({ timeout: 'soon' }, both)],
 				// 知らない vendored は未知の引数を断るので、`timeout` を外して締め切り無しで評価する
 				unknown: evaluateArgs({ timeout: 120_000 }),
@@ -337,8 +337,8 @@ suite('Paradis devtools tool adjustments', () => {
 			published: { evaluate: ['function', 'timeout'], snapshot: ['verbose', 'offset', 'root'] },
 			evaluate: {
 				byDefault: { function: 'f', paraCodeTimeoutMs: PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS },
-				longer: { function: 'f', paraCodeTimeoutMs: 120_000 },
-				clamped: [{ function: 'f', paraCodeTimeoutMs: 1_000 }, { function: 'f', paraCodeTimeoutMs: 280_000 }, { function: 'f', paraCodeTimeoutMs: PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS }],
+				longer: { function: 'f', paraCodeTimeoutMs: 90_000 },
+				clamped: [{ function: 'f', paraCodeTimeoutMs: 1_000 }, { function: 'f', paraCodeTimeoutMs: 100_000 }, { function: 'f', paraCodeTimeoutMs: PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS }],
 				unknown: { function: 'f' },
 				internal: [{ function: 'f', paraCodeDeadlineMs: 11_000 }, { function: 'f', paraCodeObserve: true }],
 			},
