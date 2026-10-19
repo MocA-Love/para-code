@@ -57,7 +57,7 @@ function fakeSsh() {
 }
 
 /** 呼び出しごとに独立した偽の子プロセス。'stderr:data'/'close'/'exit' を後から起こせる。 */
-function fakeControlChild() {
+function fakeControlChild(pid?: number) {
 	const handlers = new Map<string, Array<(arg?: unknown) => void>>();
 	let killed = 0;
 	const on = (event: string, handler: (arg?: unknown) => void) => {
@@ -67,6 +67,7 @@ function fakeControlChild() {
 		stderr: { on: (event: string, handler: (chunk: Buffer) => void) => { if (event === 'data') { on('stderr:data', handler as (arg?: unknown) => void); } } },
 		stdout: { on: () => { } },
 		on,
+		pid,
 		kill: () => { killed++; }
 	} as unknown as ChildProcess;
 	return {
@@ -90,7 +91,7 @@ function fakeSshPerCall() {
 	const children: Array<ReturnType<typeof fakeControlChild>> = [];
 	const spawn = (args: string[]) => {
 		calls.push(args);
-		const entry = fakeControlChild();
+		const entry = fakeControlChild(1000 + children.length);
 		children.push(entry);
 		return entry.child;
 	};
@@ -103,6 +104,8 @@ function fakeSshPerCall() {
 		emitFixedPortSuccess: (port: number) => latest().emit('stderr:data', Buffer.from(`debug1: remote forward success for: listen ${port}, connect 127.0.0.1:47286\n`)),
 		/** 最後に起こした試行を終了させる。 */
 		closeLatest: (code: number | null) => latest().emit('close', code),
+		/** index 番目に起こした試行を終了させる。 */
+		closeAt: (index: number, code: number | null) => children[index].emit('close', code),
 		/** それぞれの試行が実際に kill されたか（確認が来ないまま時間切れになった、等）。 */
 		get killedCounts() { return children.map(c => c.killed); },
 	};
@@ -368,6 +371,129 @@ suite('ParadisRemoteAgentTunnel', () => {
 					`${preferredPort}:127.0.0.1:47286`,
 				]
 			);
+		} finally {
+			tunnels.dispose();
+			clock.restore();
+		}
+	});
+
+	test('keeps retrying the preferred port in the background after falling back, and switches back to it while keeping the dynamic ssh', async () => {
+		// 更新で前の版の ssh が終わったあとも、接続先が決定的候補の転送を数分つかんだまま残すことがある。
+		// 動的番号へ逃げたまま居座ると、決定的候補で動いていたエージェントが戻り経路を失ったままになる
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const ssh = fakeSshPerCall();
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn);
+		const announced: Array<number | undefined> = [];
+		const listener = tunnels.onDidChangePort(change => announced.push(change.port));
+		try {
+			const preferredPort = computeCandidateRemotePort('dev-pc');
+			const first = tunnels.ensure('ssh-remote+dev-pc', 47286);
+			ssh.emitFixedPortTaken(preferredPort); // 0: 使用中で弾かれる
+			ssh.closeLatest(255);
+			ssh.emitAllocatedPort(51234); // 1: 動的番号で張れる
+			assert.strictEqual(await first, 51234);
+
+			await clock.tickAsync(30_000); // 2: 裏で決定的候補を張りに行く
+			ssh.emitFixedPortTaken(preferredPort); // まだ使用中
+			ssh.closeLatest(255);
+			await clock.tickAsync(30_000); // 間隔は倍（60秒）になっているので、まだ試さない
+			const spawnsBeforeBackoff = ssh.calls.length;
+			await clock.tickAsync(30_000); // 3: 60秒経ったので、もう一度
+			ssh.emitFixedPortSuccess(preferredPort); // 空いた
+
+			const afterSwitch = {
+				announced: [...announced],
+				currentPort: tunnels.currentPort('ssh-remote+dev-pc'),
+				resolvedByLaterCaller: await tunnels.ensure('ssh-remote+dev-pc', 47286),
+				pids: tunnels.processPidsFor('ssh-remote+dev-pc'),
+				killedCounts: ssh.killedCounts,
+			};
+
+			// 残していた動的番号の ssh が終わっても、本線（決定的候補）には触れない
+			ssh.closeAt(1, 255);
+			await clock.tickAsync(10 * 60_000);
+			const afterDynamicClosed = {
+				currentPort: tunnels.currentPort('ssh-remote+dev-pc'),
+				pids: tunnels.processPidsFor('ssh-remote+dev-pc'),
+				spawnCount: ssh.calls.length,
+			};
+
+			assert.deepStrictEqual(
+				{
+					spawnsBeforeBackoff,
+					listenArgs: ssh.calls.map(args => args[args.indexOf('-R') + 1]),
+					retryLogLevel: ssh.calls[2].find(arg => arg.startsWith('LogLevel=')),
+					afterSwitch,
+					afterDynamicClosed,
+				},
+				{
+					spawnsBeforeBackoff: 3,
+					listenArgs: [
+						`${preferredPort}:127.0.0.1:47286`,
+						'0:127.0.0.1:47286',
+						`${preferredPort}:127.0.0.1:47286`,
+						`${preferredPort}:127.0.0.1:47286`,
+					],
+					retryLogLevel: 'LogLevel=DEBUG1',
+					afterSwitch: {
+						announced: [51234, preferredPort],
+						currentPort: preferredPort,
+						resolvedByLaterCaller: preferredPort,
+						// 動的番号で起動したエージェントのために、動的番号の ssh も照合の対象に残す
+						pids: [1003, 1001],
+						killedCounts: [1, 0, 1, 0],
+					},
+					afterDynamicClosed: { currentPort: preferredPort, pids: [1003], spawnCount: 4 },
+				}
+			);
+		} finally {
+			listener.dispose();
+			tunnels.dispose();
+			clock.restore();
+		}
+	});
+
+	test('stops every ssh, including the background retry, when the destination is closed', async () => {
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const ssh = fakeSshPerCall();
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn);
+		try {
+			const preferredPort = computeCandidateRemotePort('dev-pc');
+			const first = tunnels.ensure('ssh-remote+dev-pc', 47286);
+			ssh.emitFixedPortTaken(preferredPort);
+			ssh.closeLatest(255);
+			ssh.emitAllocatedPort(51234);
+			await first;
+			await clock.tickAsync(30_000); // 裏の張り直しが走っている最中に畳む
+
+			tunnels.close('ssh-remote+dev-pc');
+			await clock.tickAsync(10 * 60_000);
+
+			assert.deepStrictEqual(
+				{ spawnCount: ssh.calls.length, killedCounts: ssh.killedCounts, authorities: [...tunnels.authorities] },
+				{ spawnCount: 3, killedCounts: [1, 1, 1], authorities: [] }
+			);
+		} finally {
+			tunnels.dispose();
+			clock.restore();
+		}
+	});
+
+	test('does not retry the preferred port in the background when it fell back only because no confirmation came', async () => {
+		// 確認信号が構造的に出ない相手には、張り直しても成功しないので叩かない
+		const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const ssh = fakeSshPerCall();
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn);
+		try {
+			const first = tunnels.ensure('ssh-remote+dev-pc', 47286);
+			await clock.tickAsync(10_000); // ALLOCATION_TIMEOUT_MS
+			ssh.closeLatest(null);
+			await clock.tickAsync(5_000); // RETRY_DELAY_MS
+			ssh.emitAllocatedPort(51234);
+			assert.strictEqual(await first, 51234);
+
+			await clock.tickAsync(10 * 60_000);
+			assert.strictEqual(ssh.calls.length, 2);
 		} finally {
 			tunnels.dispose();
 			clock.restore();
