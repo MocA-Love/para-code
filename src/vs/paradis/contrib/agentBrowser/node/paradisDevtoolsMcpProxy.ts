@@ -40,7 +40,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
-import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline } from './paradisDevtoolsToolAdjustments.js';
+import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -245,6 +245,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	private _evaluateObserves = false;
 	/** vendored の evaluate_script が締め切り付きの評価（`paraCodeDeadlineMs`）を知っているか。tools/list を読むまでは false。 */
 	private _evaluateHasDeadline = false;
+	private _timeoutTools: ReadonlySet<string> = new Set();
 
 	/** vendored の evaluate_script が待たない評価（`paraCodeObserve`）を知っているか。tools/list を読むまでは false。 */
 	get evaluateObserves(): boolean {
@@ -303,6 +304,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			// vendored の evaluate_script が待たずに評価する引数を知っているか（操作の後の観測。paradisBrowserObserve.ts）
 			this._evaluateObserves = paradisEvaluateObserves(result.tools);
 			this._evaluateHasDeadline = paradisEvaluateHasDeadline(result.tools);
+			// evaluate_script・take_snapshot が締め切りの引数を知っているか（q.html Q394）
+			this._timeoutTools = paradisDevtoolsTimeoutTools(result.tools);
 			// wait_for / take_snapshot の引数は Para Code 側で足す・広げる（paradisDevtoolsToolAdjustments.ts）
 			this._toolsCache = Object.freeze(result.tools.map(tool => this._deepFreeze(paradisAdjustDevtoolsToolDescriptor(tool))));
 		}
@@ -347,7 +350,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const now = this.options.now ?? Date.now;
 		const budgetStartedAt = now();
 		const safeToolName = vendoredToolName.test(name) ? name : 'other';
-		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot, evaluateObserve: this._evaluateObserves, evaluateDeadline: this._evaluateHasDeadline });
+		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot, evaluateObserve: this._evaluateObserves, evaluateDeadline: this._evaluateHasDeadline, timeoutTools: this._timeoutTools });
 		if (prepared.refuse !== undefined) {
 			return { content: [{ type: 'text', text: prepared.refuse }], isError: true };
 		}

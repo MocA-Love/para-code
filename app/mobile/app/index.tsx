@@ -15,6 +15,7 @@ import { useLastSession } from '../src/features/home/lastSessionStore.js';
 import { PcActions } from '../src/features/home/pcActions.js';
 import { PcCard } from '../src/features/home/pcCard.js';
 import { useHomeUsage } from '../src/features/home/useHomeUsage.js';
+import { useUsageEmailMask } from '../src/features/usage/usageEmailMask.js';
 import { LaunchDrawer } from '../src/features/launch/launchDrawer.js';
 import { openSession } from '../src/features/pc/openSession.js';
 import { startStatusSinceTracking } from '../src/features/pc/statusSinceStore.js';
@@ -53,6 +54,7 @@ export default function HomeScreen() {
 	const lastSession = useLastSession(s => s.value);
 	const loadLastSession = useLastSession(s => s.load);
 	const usage = useHomeUsage();
+	const emailMasked = useUsageEmailMask(s => s.masked);
 	const now = useNow();
 	const column = useContentColumnStyle();
 	const [menuPcId, setMenuPcId] = useState<string | undefined>(undefined);
@@ -144,6 +146,7 @@ export default function HomeScreen() {
 						codex={usage.codex}
 						anyLimits={usage.anyLimits}
 						showChips={usage.multiple}
+						numbers={emailMasked ? usage.numbers : undefined}
 						now={now}
 						onPress={() => { haptic('move'); router.push(routes.settings('usage')); }}
 					/>

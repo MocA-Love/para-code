@@ -26,6 +26,7 @@ import { PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts
 import { IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, ParadisEncryptedFileClaudeSecretStore, ParadisKeychainClaudeSecretStore } from './paradisClaudeAccountStore.js';
 import { ParadisClaudeAccountService, ParadisClaudeAccountsChannel } from './paradisClaudeAccountService.js';
 import { ParadisSecurityCliKeychain } from './paradisClaudeKeychain.js';
+import { ParadisClaudeSwapBackupReader } from './paradisClaudeSwapBackups.js';
 import { ParadisClaudeLiveAuth } from './paradisClaudeLiveAuth.js';
 import { ParadisClaudeCliLoginRunner } from './paradisClaudeLogin.js';
 import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
@@ -87,6 +88,8 @@ ParadisSharedProcessContributions.register('claudeAccounts', ({ server, accessor
 		logService,
 		loginRunner: new ParadisClaudeCliLoginRunner(() => shellEnv.getEnv(), os.homedir(), message => logService.trace(`[ParadisClaudeAccounts] ${message}`)),
 		legacyCswapDirs: legacyCswapDirs(),
+		claudeSwapBackups: new ParadisClaudeSwapBackupReader(keychain),
+		claudeSwapRetiredPath: path.join(storageDir, 'claude-swap-retired.json'),
 	});
 	server.registerChannel(PARADIS_CLAUDE_ACCOUNTS_CHANNEL, new ParadisClaudeAccountsChannel(service));
 	return service;

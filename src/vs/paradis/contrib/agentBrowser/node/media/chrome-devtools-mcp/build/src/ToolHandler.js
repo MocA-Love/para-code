@@ -83,6 +83,8 @@ function buildUnknownArgumentsMessage(toolName, unknownArgumentNames, expectedAr
     return `Unknown ${unknownLabel} for tool "${toolName}": ${formatArgumentNames(unknownArgumentNames)}. ${expectedArguments} ${correction} and retry.`;
 }
 export class ToolHandler {
+    // PARA-PATCH (Para Code): see handle below (a static so tests can shorten it).
+    static paraCodeTimeoutGraceMs = 10000;
     tool;
     serverArgs;
     getContext;
@@ -111,7 +113,48 @@ export class ToolHandler {
     unknownArgumentNames(params) {
         return Object.keys(params).filter(key => !Object.hasOwn(this.inputSchema, key));
     }
+    // PARA-PATCH (Para Code): give up on the call after params.paraCodeTimeoutMs (an internal argument Para Code sets on
+    // evaluate_script and take_snapshot; never published in tools/list) plus a short grace, counted from when the call
+    // holds the tool mutex, and release the mutex then. A page that does not answer otherwise held this tab's tools for
+    // puppeteer's 180 s protocol timeout. evaluate_script gives up by itself at paraCodeTimeoutMs (tools/script.js); the
+    // grace keeps this a backstop for it. The abandoned call settles later on its own: its result is dropped and its
+    // response does not replace the page's text snapshot (McpResponse.handle). See NOTES.md "vendored chrome-devtools-mcp への変更".
     async handle(params) {
+        const timeoutMs = params?.paraCodeTimeoutMs;
+        if (typeof timeoutMs !== 'number' || !(timeoutMs > 0)) {
+            return await this.paraCodeHandleWithoutTimeout(params);
+        }
+        const waitMs = timeoutMs + ToolHandler.paraCodeTimeoutGraceMs;
+        const timedOut = Promise.withResolvers();
+        let guard;
+        let released = false;
+        let abandoned = false;
+        let timer;
+        const release = () => {
+            if (guard && !released) {
+                released = true;
+                guard.dispose();
+            }
+        };
+        try {
+            return await Promise.race([
+                this.paraCodeHandleWithoutTimeout(params, acquired => {
+                    guard = acquired;
+                    timer = setTimeout(() => {
+                        abandoned = true;
+                        timedOut.resolve({ content: [{ type: 'text', text: `PARA_BROWSER_PAGE_UNRESPONSIVE: ${this.tool.name} did not finish within ${waitMs} ms.` }], isError: true });
+                    }, waitMs);
+                    return { dispose: release, paraCodeAbandoned: () => abandoned };
+                }),
+                timedOut.promise,
+            ]);
+        }
+        finally {
+            clearTimeout(timer);
+            release();
+        }
+    }
+    async paraCodeHandleWithoutTimeout(params, paraCodeOnAcquired) {
         if (this.disabledReason) {
             return {
                 content: [
@@ -135,7 +178,9 @@ export class ToolHandler {
                 isError: true,
             };
         }
-        const guard = await this.toolMutex.acquire();
+        // PARA-PATCH (Para Code): see handle above.
+        const acquiredGuard = await this.toolMutex.acquire();
+        const guard = paraCodeOnAcquired ? paraCodeOnAcquired(acquiredGuard) : acquiredGuard;
         const startTime = Date.now();
         let success = false;
         try {
@@ -147,6 +192,8 @@ export class ToolHandler {
                 ? new SlimMcpResponse(this.serverArgs)
                 : new McpResponse(this.serverArgs);
             response.setRedactNetworkHeaders(this.serverArgs.redactNetworkHeaders);
+            // PARA-PATCH (Para Code): see handle above.
+            response.paraCodeAbandoned = guard.paraCodeAbandoned;
             try {
                 if (this.tool.verifyFilesSchema) {
                     for (const key of this.tool.verifyFilesSchema) {
