@@ -45,6 +45,7 @@ import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
 import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
+import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
 // 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 import './paradisClaudeAccountActions.js';
 
@@ -144,8 +145,15 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
 	) {
 		super();
+		this._register(this.emailMaskService.onDidChange(() => {
+			if (this.latestSnapshot) {
+				this.renderTrigger(this.latestSnapshot);
+				this.panel.value?.updateSnapshot(this.latestSnapshot);
+			}
+		}));
 
 		this.loadHiddenAccountIds();
 		// 同じプロファイルを2ウィンドウで開いていると、この台帳は両方から見える。片方だけが
@@ -273,11 +281,14 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	/** パネル(削除ボタンの隣の目アイコン)・非表示中リスト双方から呼ばれる、非表示状態の唯一の変更点。 */
-	private toggleHiddenAccount(account: IParadisLimitsAccount): void {
-		if (this.isAccountHidden(account)) {
-			this.hiddenAccounts.delete(account.id);
-		} else {
-			this.hiddenAccounts.set(account.id, account.email);
+	/** まとめたカードの複数のホームも、保存と描き直しは1回にする。 */
+	private toggleHiddenAccounts(accounts: readonly IParadisLimitsAccount[]): void {
+		for (const account of accounts) {
+			if (this.isAccountHidden(account)) {
+				this.hiddenAccounts.delete(account.id);
+			} else {
+				this.hiddenAccounts.set(account.id, account.email);
+			}
 		}
 		this.saveHiddenAccountIds();
 		if (this.latestSnapshot) {
@@ -323,7 +334,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onRelogin: account => this.openSetupDialog(account.provider, account),
 			onRemoveAccount: account => void this.removeAccount(account),
 			isAccountHidden: account => this.isAccountHidden(account),
-			onToggleHiddenAccount: account => this.toggleHiddenAccount(account),
+			onToggleHiddenAccounts: accounts => this.toggleHiddenAccounts(accounts),
+			displayName: account => this.emailMaskService.displayName(account),
+			displayNameForEmail: (provider, email) => this.emailMaskService.displayNameForEmail(provider, email),
+			isEmailMasked: () => this.emailMaskService.masked,
+			onToggleEmailMask: () => this.emailMaskService.toggle(),
 			scheduleRetry: (delayMs, run) => { this.pendingRetry.value = disposableTimeout(run, delayMs); },
 			cancelRetry: () => this.pendingRetry.clear(),
 		};
@@ -331,6 +346,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
 		this.reschedulePolling();
 		void this.poll(false);
+	}
+
+	/** 画面に出すアカウントの名前。メールを隠しているときは、同じプロバイダの中の番号にする。 */
+	private displayName(account: IParadisLimitsAccount): string {
+		return this.emailMaskService.displayName(account);
 	}
 
 	private closePanel(): void {
@@ -366,11 +386,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 				message: localize('paradis.limitsMonitor.unregisterConfirm', "この Claude アカウントの登録を削除しますか？"),
 				detail: this.client.connectedToRemote
 					? account.active
-						? localize('paradis.limitsMonitor.unregisterDetailActiveRemote', "接続先に保存した {0} の認証情報を削除します。いま接続先で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
-						: localize('paradis.limitsMonitor.unregisterDetailRemote', "接続先に保存した {0} の認証情報を削除します。接続先の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
+						? localize('paradis.limitsMonitor.unregisterDetailActiveRemote', "接続先に保存した {0} の認証情報を削除します。いま接続先で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", this.displayName(account))
+						: localize('paradis.limitsMonitor.unregisterDetailRemote', "接続先に保存した {0} の認証情報を削除します。接続先の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", this.displayName(account))
 					: account.active
-						? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", account.email ?? account.id)
-						: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", account.email ?? account.id),
+						? localize('paradis.limitsMonitor.unregisterDetailActive', "Para Code に保存した {0} の認証情報を削除します。いまこの PC で使っているアカウントなので、Claude のログインはそのまま残ります（ログアウトはしません）。切り替えに使うには、もう一度登録してください。", this.displayName(account))
+						: localize('paradis.limitsMonitor.unregisterDetail', "Para Code に保存した {0} の認証情報を削除します。この PC の Claude のログインは変わりません。切り替えに使うには、もう一度登録してください。", this.displayName(account)),
 				primaryButton: localize('paradis.limitsMonitor.unregister', "登録を削除"),
 			});
 			if (!confirmed) {
@@ -399,7 +419,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		}
 		this.removingHomes.add(account.id);
 		try {
-			const accountName = account.email ?? localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
+			const accountName = account.email !== undefined ? this.displayName(account) : localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
 			const homeLabel = account.homeLabel ?? account.id;
 			const remote = this.client.connectedToRemote;
 			const { confirmed } = await this.dialogService.confirm({
@@ -519,6 +539,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	private renderTrigger(snapshot: IParadisLimitsSnapshot): void {
+		this.emailMaskService.setSnapshot(snapshot);
 		this.maybeShowClaudeLegacyNotice(snapshot);
 		this.ringDisposables.clear();
 		dom.clearNode(this.button);
@@ -549,7 +570,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private updateTriggerAria(accounts: readonly IParadisLimitsAccount[], hiddenCount: number): void {
 		const base = localize('paradis.limitsMonitor.triggerAria', "AI利用リミット");
 		const summaries = accounts.map(account => {
-			const name = account.email ?? account.homeLabel ?? account.id;
+			const name = this.displayName(account);
 			if (account.status !== 'ok') {
 				return `${name}: ${paradisLimitsStatusSummary(account)}`;
 			}
@@ -646,7 +667,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	 * 必要があった。なお表示はポーリング間隔ぶん（パネル非表示中は120秒）古くなりうる。
 	 */
 	private ringTooltip(account: IParadisLimitsAccount): string {
-		const name = account.email ?? account.homeLabel ?? account.id;
+		const name = this.displayName(account);
 		if (account.status !== 'ok') {
 			return `${name} — ${paradisLimitsStatusSummary(account)}`;
 		}
