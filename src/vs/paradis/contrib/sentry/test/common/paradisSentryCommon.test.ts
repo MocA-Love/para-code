@@ -204,6 +204,29 @@ suite('ParadisSentryCommon', () => {
 		});
 	});
 
+	test('keeps the same key across releases, whose bundles rename classes and functions and whose SSH server folder is named after the commit', () => {
+		const key = (filename: string, functionName: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'Error' },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename, function: functionName }] } }] },
+		});
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const remote = (commit: string) => `~/.para-code-server/bin/${commit}/out/vs/platform/terminal/node/ptyHostMain.js`;
+		assert.deepStrictEqual({
+			method: [key(shared, 'TT._reportToolResultError'), key(shared, 'S0._reportToolResultError')],
+			bareMinified: [key(shared, 'r4e'), key(shared, 'L')],
+			named: key(shared, 'connectRelay'),
+			remote: [key(remote('4c5d2509dca713be9f12f7e6a72447b29a8ac7ff'), 'N._throwIfNoPty'), key(remote('0fc790f9ef3f32fe135a4e44e487bf303df4b956'), 'N._throwIfNoPty')],
+		}, {
+			method: [`owned|f|o|Error|${shared}|_reportToolResultError|Error`, `owned|f|o|Error|${shared}|_reportToolResultError|Error`],
+			bareMinified: [`owned|f|o|Error|${shared}|minified|Error`, `owned|f|o|Error|${shared}|minified|Error`],
+			named: `owned|f|o|Error|${shared}|connectRelay|Error`,
+			remote: [
+				'owned|f|o|Error|~/.para-code-server/bin/<commit>/out/vs/platform/terminal/node/ptyHostMain.js|_throwIfNoPty|Error',
+				'owned|f|o|Error|~/.para-code-server/bin/<commit>/out/vs/platform/terminal/node/ptyHostMain.js|_throwIfNoPty|Error',
+			],
+		});
+	});
+
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },

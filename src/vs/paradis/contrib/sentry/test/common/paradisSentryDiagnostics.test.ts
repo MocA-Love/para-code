@@ -13,6 +13,7 @@ import {
 	paradisSafeErrorExtra,
 	paradisSafeErrorName,
 	paradisSafeErrorTags,
+	markParadisErrorOrigin,
 	toParadisSentrySafeError,
 } from '../../common/paradisSentryDiagnostics.js';
 
@@ -128,7 +129,7 @@ suite('ParadisSentryDiagnostics', () => {
 			minifiedClassName: paradisSafeErrorName(new Xy()),
 			builtInClassName: paradisSafeErrorName(new Map()),
 		}, {
-			fileError: { safe_file_result: 'FILE_PERMISSION_DENIED', safe_errno: 'EACCES' },
+			fileError: { safe_file_result: 'FILE_PERMISSION_DENIED', safe_errno: 'EACCES', safe_inner_error_name: 'Error', safe_inner_message_hash: paradisErrorMessageHash(new Error(`EACCES: permission denied, open 'x'`)) },
 			nodeError: { safe_errno: 'EPIPE', safe_syscall: 'write' },
 			moduleError: { safe_errno: 'ERR_MODULE_NOT_FOUND' },
 			pathShapedCode: {},
@@ -139,6 +140,39 @@ suite('ParadisSentryDiagnostics', () => {
 			minifiedClassName: 'object',
 			builtInClassName: 'Map',
 		});
+	});
+
+	test('tells what a file operation error wraps, without reading the path', () => {
+		const fileError = (message: string) => paradisSafeErrorExtra(Object.assign(new Error(message), { fileOperationResult: 10 }));
+		assert.deepStrictEqual({
+			provider: fileError(`Unable to read file '/Users/alice/a (1).json' (Unavailable (FileSystemError): No provider is ready for '/Users/alice')`),
+			canceled: fileError(`Unable to read file '/Users/alice/theme.json' (Canceled: Canceled)`),
+			// The message is translated around the parentheses.
+			translated: fileError(`ファイル '/Users/alice/config.toml' を読み取れません (Error: Channel has been closed)`),
+			unknownProviderCode: fileError(`Unable to read file '/Users/alice/a' (Bogus (FileSystemError): x)`),
+			noParentheses: fileError('Unable to read file'),
+			// Only a file operation error's message is read this way.
+			notFileError: paradisSafeErrorExtra(new Error(`Unable to read file '/Users/alice/a' (Error: x)`)),
+		}, {
+			provider: { safe_file_result: 'FILE_OTHER_ERROR', safe_provider_code: 'Unavailable', safe_inner_message_hash: paradisErrorMessageHash(new Error(`No provider is ready for 'x'`)) },
+			canceled: { safe_file_result: 'FILE_OTHER_ERROR', safe_inner_error_name: 'Canceled', safe_inner_message_hash: paradisErrorMessageHash(new Error('Canceled')) },
+			translated: { safe_file_result: 'FILE_OTHER_ERROR', safe_inner_error_name: 'Error', safe_inner_message_hash: paradisErrorMessageHash(new Error('Channel has been closed')) },
+			unknownProviderCode: { safe_file_result: 'FILE_OTHER_ERROR', safe_inner_message_hash: paradisErrorMessageHash(new Error('x')) },
+			noParentheses: { safe_file_result: 'FILE_OTHER_ERROR' },
+			notFileError: {},
+		});
+	});
+
+	test('tags an error marked as relayed from the extension host, and keys it apart from the same error raised here', () => {
+		const relayed = new Error('write EPIPE');
+		markParadisErrorOrigin(relayed, 'extension-host');
+		const fingerprint = (error: Error) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'patched', 'para.feature': 'unhandled-error', 'para.operation': 'on-unexpected-error', ...paradisSafeErrorTags(error) },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'node:internal/timers', function: 'process.processImmediate' }] } }] },
+		});
+		const local = new Error('write EPIPE');
+		markParadisErrorOrigin('primitive', 'extension-host');
+		assert.deepStrictEqual({ relayed: paradisSafeErrorTags(relayed)['para.origin'], local: paradisSafeErrorTags(local)['para.origin'], apart: fingerprint(relayed) !== fingerprint(local) }, { relayed: 'extension-host', local: undefined, apart: true });
 	});
 
 	test('separates frame-less errors by a hash of their message, ignoring paths, quotes and numbers', () => {

@@ -217,16 +217,50 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// there the rest of the key says little, so errors from unrelated places (a Node error relayed over
 	// IPC, code outside `out/vs`) landed in one issue. Events with an own frame keep their existing key.
 	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) ? event.tags?.['para.error_message_hash'] : undefined;
+	// Errors relayed from the extension host (`para.origin`) get their own issues, apart from the
+	// workbench's own errors that happen to leave the same frames behind.
+	const origin = event.tags?.['para.origin'];
 	return [
 		event.tags?.['para.scope'] ?? 'unknown',
 		event.tags?.['para.feature'] ?? 'unknown',
 		event.tags?.['para.operation'] ?? 'unknown',
 		exception?.type ?? event.message ?? event.debug_meta?.images?.[0]?.code_file ?? 'Error',
-		topFrame?.filename ?? 'unknown',
-		topFrame?.function ?? 'unknown',
+		topFrame?.filename !== undefined ? paradisStableFrameFilename(topFrame.filename) : 'unknown',
+		topFrame?.function !== undefined ? paradisStableFunctionName(topFrame.function) : 'unknown',
 		...(errorName !== undefined ? [errorName] : []),
 		...(messageHash !== undefined ? [messageHash] : []),
+		...(origin !== undefined ? [origin] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
+}
+
+/**
+ * A bare function name this short is the minifier's (`L`, `xe`, `r4e`), renamed on every build.
+ * A real function this short (`run`) only loses its name from the key; its file and operation stay.
+ */
+const minifiedFunctionName = /^[A-Za-z_$][\w$]{0,2}$/;
+
+/**
+ * The part of a frame's function name that survives a release. The key is built in the client,
+ * before Sentry maps the frames back to the sources, so it sees the bundle's names: the minifier
+ * renames classes and top-level functions on every build (`TT._reportToolResultError` in one
+ * release, `S0._reportToolResultError` in the next), and every report became a new issue in every
+ * release. Only the method name after the last `.` is kept, and a minified bare name becomes
+ * `minified`.
+ */
+function paradisStableFunctionName(name: string): string {
+	const dot = name.lastIndexOf('.');
+	if (dot !== -1) {
+		return name.slice(dot + 1) || name;
+	}
+	return minifiedFunctionName.test(name) ? 'minified' : name;
+}
+
+/**
+ * The frame's file without the parts that change with every release: the SSH server's install folder
+ * is named after the build's commit (`~/.para-code-server/bin/<commit>/out/...`).
+ */
+function paradisStableFrameFilename(filename: string): string {
+	return filename.replace(/\/bin\/[0-9a-f]{40}\//g, '/bin/<commit>/');
 }
 
 /**

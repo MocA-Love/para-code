@@ -9,8 +9,8 @@
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { reportParadisDiagnosticError } from '../common/paradisSentryDiagnostics.js';
-import { paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
+import { markParadisErrorOrigin, reportParadisDiagnosticError } from '../common/paradisSentryDiagnostics.js';
+import { paradisIsExtensionHostRelay, paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
 
 /**
  * upstream の `Workbench`（`workbench/browser/workbench.ts`）は起動時に `setUnexpectedErrorHandler`
@@ -35,6 +35,10 @@ class ParadisUnhandledErrorReporterContribution extends Disposable implements IW
 		setUnexpectedErrorHandler(error => {
 			previousHandler(error);
 			try {
+				// 拡張ホストから届いた例外には印を付け、Para Code 自身の例外と別の issue にする。
+				if (paradisIsExtensionHostRelay(new Error().stack)) {
+					markParadisErrorOrigin(error, 'extension-host');
+				}
 				reportParadisDiagnosticError('patched', 'unhandled-error', 'on-unexpected-error', error, paradisUnhandledErrorSafeExtra(error));
 			} catch {
 				// Reporting must never break the handler chain it is piggybacking on.
