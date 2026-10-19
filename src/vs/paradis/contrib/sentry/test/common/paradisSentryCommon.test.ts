@@ -204,6 +204,59 @@ suite('ParadisSentryCommon', () => {
 		});
 	});
 
+	test('keeps the same key across releases, whose bundles rename classes and functions and whose SSH server folder is named after the commit', () => {
+		const key = (filename: string, functionName: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'Error' },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename, function: functionName }] } }] },
+		});
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const remote = (commit: string) => `~/.para-code-server/bin/${commit}/out/vs/platform/terminal/node/ptyHostMain.js`;
+		assert.deepStrictEqual({
+			method: [key(shared, 'TT._reportToolResultError'), key(shared, 'S0._reportToolResultError')],
+			bareMinified: [key(shared, 'r4e'), key(shared, 'L')],
+			named: key(shared, 'connectRelay'),
+			remote: [key(remote('4c5d2509dca713be9f12f7e6a72447b29a8ac7ff'), 'N._throwIfNoPty'), key(remote('0fc790f9ef3f32fe135a4e44e487bf303df4b956'), 'N._throwIfNoPty')],
+		}, {
+			method: [`owned|f|o|Error|${shared}|_reportToolResultError|Error`, `owned|f|o|Error|${shared}|_reportToolResultError|Error`],
+			bareMinified: [`owned|f|o|Error|${shared}|minified|Error`, `owned|f|o|Error|${shared}|minified|Error`],
+			named: `owned|f|o|Error|${shared}|connectRelay|Error`,
+			remote: [
+				'owned|f|o|Error|~/.para-code-server/bin/<commit>/out/vs/platform/terminal/node/ptyHostMain.js|_throwIfNoPty|Error',
+				'owned|f|o|Error|~/.para-code-server/bin/<commit>/out/vs/platform/terminal/node/ptyHostMain.js|_throwIfNoPty|Error',
+			],
+		});
+	});
+
+	test('adds the message hash to the key of a minified bare function, so different functions in one bundle do not share an issue', () => {
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const key = (functionName: string, messageHash: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'TypeError', 'para.error_message_hash': messageHash },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: shared, function: functionName }] } }] },
+		});
+		assert.deepStrictEqual({
+			minified: [key('r4e', 'aaaaaaaa'), key('L', 'bbbbbbbb')],
+			named: [key('connectRelay', 'aaaaaaaa'), key('connectRelay', 'bbbbbbbb')],
+		}, {
+			minified: [`owned|f|o|Error|${shared}|minified|TypeError|aaaaaaaa`, `owned|f|o|Error|${shared}|minified|TypeError|bbbbbbbb`],
+			named: [`owned|f|o|Error|${shared}|connectRelay|TypeError`, `owned|f|o|Error|${shared}|connectRelay|TypeError`],
+		});
+	});
+
+	test('adds the message hash to the key of a method name that many classes share, so their errors do not share an issue', () => {
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const key = (functionName: string, messageHash: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'TypeError', 'para.error_message_hash': messageHash },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: shared, function: functionName }] } }] },
+		});
+		assert.deepStrictEqual({
+			common: [key('TT.dispose', 'aaaaaaaa'), key('S0.dispose', 'bbbbbbbb')],
+			uncommon: [key('TT._reportToolResultError', 'aaaaaaaa'), key('S0._reportToolResultError', 'bbbbbbbb')],
+		}, {
+			common: [`owned|f|o|Error|${shared}|dispose|TypeError|aaaaaaaa`, `owned|f|o|Error|${shared}|dispose|TypeError|bbbbbbbb`],
+			uncommon: [`owned|f|o|Error|${shared}|_reportToolResultError|TypeError`, `owned|f|o|Error|${shared}|_reportToolResultError|TypeError`],
+		});
+	});
+
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },
