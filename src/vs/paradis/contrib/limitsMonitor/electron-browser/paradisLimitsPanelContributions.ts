@@ -44,6 +44,13 @@ export interface IParadisLimitsPanelContext {
 	trackFocus(element: HTMLElement, key: string): void;
 	/** パネルを閉じる（ダイアログを開く前など）。 */
 	closePanel(): void;
+	/**
+	 * `delayMs` 後に `run` を1回だけ動かす（パネルを閉じても残る。前の予約は取り消す）。切り替えを
+	 * 取得回数の上限で断られたときの自動のやり直しに使う。
+	 */
+	scheduleRetry(delayMs: number, run: () => void): void;
+	/** {@link scheduleRetry} の予約を取り消す（利用者が別の操作をしたとき）。 */
+	cancelRetry(): void;
 }
 
 /** プロバイダごとの部品。どのメソッドも省略できる。 */

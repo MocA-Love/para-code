@@ -18,7 +18,7 @@
 import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
-import { IntervalTimer } from '../../../../base/common/async.js';
+import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -118,6 +118,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private readonly hoverDelegate = getDefaultHoverDelegate('mouse');
 
 	private latestSnapshot: IParadisLimitsSnapshot | undefined;
+	/** 取得回数の上限で断られた Claude の切り替えの、自動のやり直しの予約（1つだけ）。 */
+	private readonly pendingRetry = this._register(new MutableDisposable());
 	private isFetching = false;
 	private refreshRequested = false;
 	private readonly removingHomes = new Set<string>();
@@ -322,6 +324,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onRemoveAccount: account => void this.removeAccount(account),
 			isAccountHidden: account => this.isAccountHidden(account),
 			onToggleHiddenAccount: account => this.toggleHiddenAccount(account),
+			scheduleRetry: (delayMs, run) => { this.pendingRetry.value = disposableTimeout(run, delayMs); },
+			cancelRetry: () => this.pendingRetry.clear(),
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
@@ -336,6 +340,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	private openSetupDialog(provider: ParadisLimitsProvider, reloginAccount: IParadisLimitsAccount | undefined): void {
+		// 別の操作をしたので、予約していた切り替えのやり直しはやめる。
+		this.pendingRetry.clear();
 		this.closePanel();
 		this.setupDialog.value = this.instantiationService.createInstance(ParadisLimitsSetupDialog, this.client, {
 			provider,
@@ -384,6 +390,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	private async removeAccount(account: IParadisLimitsAccount): Promise<void> {
+		this.pendingRetry.clear();
 		if (account.provider === 'claude') {
 			return this.removeClaudeAccount(account);
 		}

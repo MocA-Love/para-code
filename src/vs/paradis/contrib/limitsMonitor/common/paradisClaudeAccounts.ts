@@ -88,7 +88,19 @@ export interface IParadisClaudeSwitchResult {
 	readonly rolledBack?: boolean;
 	/** 診断用の補足（固定の英文。秘密の値は含めない）。 */
 	readonly detail?: string;
+	/** 'unverified' のとき、いまのアカウントの持ち主を確かめられなかった理由。古い接続先は送らない。 */
+	readonly unverifiedReason?: ParadisClaudeUnverifiedReason;
+	/** unverifiedReason が 'rate_limited' のとき、取り直せるまでの秒数（分からなければ undefined）。 */
+	readonly retryAfterS?: number;
 }
+
+/**
+ * いまのアカウントの持ち主を確かめられなかった理由。
+ * - network: 通信できなかった・応答を読めなかった
+ * - rate_limited: 呼び出し回数の上限（429）
+ * - owner_mismatch: 身元やトークンが確かめている間に変わった・別の登録のトークンと同じだった・持ち主が違った
+ */
+export type ParadisClaudeUnverifiedReason = 'network' | 'rate_limited' | 'owner_mismatch';
 
 /** いまログインしているアカウントを Para Code に登録した結果。 */
 export type ParadisClaudeRegisterOutcome =

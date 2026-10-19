@@ -163,17 +163,33 @@ suite('ParadisClaudeAccountService defenses', () => {
 		assert.deepStrictEqual({ afterFirst, afterSecond: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID) === bobLive }, { afterFirst: false, afterSecond: true });
 	});
 
-	test('switch stops when the outgoing account\'s newer token cannot be confirmed', async () => {
+	// 断った理由（通信・取得回数の上限・持ち主の不一致）を分けて返す。
+	test('switch stops when the outgoing account\'s newer token cannot be confirmed, and tells why', async () => {
 		const harness = await createHarness([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
 		const { aliceStored, aliceLive } = await aliceRefreshedByClaudeCode(harness);
 		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-1', 'bob-r1', harness.clock.now + HOUR));
+		const aliceAccess = JSON.parse(aliceLive).claudeAiOauth.accessToken as string;
 
-		const result = await harness.service.switchAccount(BOB);
+		harness.oauth.profileByToken.delete(aliceAccess);
+		const network = await harness.service.switchAccount(BOB);
+		harness.oauth.profileByToken.set(aliceAccess, { kind: 'unknown', rateLimited: true, retryAfterS: 120 });
+		const rateLimited = await harness.service.switchAccount(BOB);
+		harness.oauth.setProfile(aliceAccess, 'u-carol', 'carol@example.com');
+		const otherOwner = await harness.service.switchAccount(BOB);
+		const refused = { outcome: 'unverified', email: 'bob@example.com', previousEmail: 'alice@example.com' };
 		assert.deepStrictEqual({
-			result,
+			network,
+			rateLimited,
+			otherOwner,
 			live: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === aliceLive,
 			stored: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID) === aliceStored,
-		}, { result: { outcome: 'unverified', email: 'bob@example.com', previousEmail: 'alice@example.com' }, live: true, stored: true });
+		}, {
+			network: { ...refused, unverifiedReason: 'network', retryAfterS: undefined },
+			rateLimited: { ...refused, unverifiedReason: 'rate_limited', retryAfterS: 120 },
+			otherOwner: { ...refused, unverifiedReason: 'owner_mismatch', retryAfterS: undefined },
+			live: true,
+			stored: true,
+		});
 	});
 
 	test('switch proceeds without confirmation when the outgoing login was wiped by Claude Code', async () => {

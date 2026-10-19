@@ -70,6 +70,9 @@ export interface IParadisLimitsMonitorPanelOptions {
 	/** 非表示状態の真の保持者はウィジェット側(永続化する主体)。パネルは都度これを聞くだけ。 */
 	readonly isAccountHidden: (account: IParadisLimitsAccount) => boolean;
 	readonly onToggleHiddenAccount: (account: IParadisLimitsAccount) => void;
+	/** 差し込み部品の自動のやり直しの予約（持ち主はウィジェット。パネルを閉じても残す）。 */
+	readonly scheduleRetry: (delayMs: number, run: () => void) => void;
+	readonly cancelRetry: () => void;
 }
 
 export class ParadisLimitsMonitorPanel extends Disposable {
@@ -113,6 +116,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			redraw: () => this.redraw(),
 			trackFocus: (element, key) => this.focusTargets.set(key, element),
 			closePanel: () => options.onClose(),
+			scheduleRetry: (delayMs, run) => options.scheduleRetry(delayMs, run),
+			cancelRetry: () => options.cancelRetry(),
 		};
 		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
 
