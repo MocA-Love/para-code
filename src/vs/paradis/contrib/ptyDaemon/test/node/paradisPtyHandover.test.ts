@@ -37,7 +37,7 @@ import { ParadisDaemonTerminalProcess } from '../../node/paradisDaemonTerminalPr
 import { ParadisPtyDaemonHost } from '../../node/paradisPtyDaemonHost.js';
 import { paradisTakePtyHandoverReport } from '../../node/paradisPtyHandoverJournal.js';
 import { paradisIsEmptyPtyHandoverReport } from '../../common/paradisPtyHandover.js';
-import { paradisRecordRelayedFailure } from '../../../sentry/common/paradisRelayedDiagnostics.js';
+import { paradisRecordRelayedFailure, paradisTakeRelayedFailures } from '../../../sentry/common/paradisRelayedDiagnostics.js';
 import { IParadisPtyProcess } from '../../node/paradisPtyHolder.js';
 import { paradisAdoptTerminals } from '../../node/paradisTerminalAdoption.js';
 
@@ -444,6 +444,8 @@ suite('Para pty daemon handover between pty hosts', () => {
 	});
 
 	test('pty ホストで出た失敗は記録の省略可能な欄に載り、無いときは欄ごと付けない', () => {
+		// 台帳はプロセスに1つ。ほかのスイートが残した分を捨てる。
+		paradisTakeRelayedFailures();
 		paradisRecordRelayedFailure('pty-daemon', 'not-up', new Error('the daemon did not come up'), 'warning');
 		const withFailure = paradisTakePtyHandoverReport({ daemon: false, foreignHeld: 0 });
 		const quiet = paradisTakePtyHandoverReport({ daemon: false, foreignHeld: 0 });

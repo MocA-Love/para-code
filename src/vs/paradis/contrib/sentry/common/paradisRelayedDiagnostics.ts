@@ -37,7 +37,8 @@ const MAX_KINDS = 30;
 const MAX_COUNT = 1_000_000;
 const LABEL = /^[a-z0-9][a-z0-9:._-]{0,63}$/i;
 const ERROR_NAME = /^[A-Za-z_$][\w$]{0,49}$/;
-const ERRNO = /^E[A-Z0-9_]{1,30}$/;
+/** 送る側（`paradisSafeErrorExtra`）が通す errno と Node の `ERR_*` に揃える。 */
+const ERRNO = /^(?:E[A-Z0-9_]{1,30}|ERR_[A-Z0-9_]{1,45}|MODULE_NOT_FOUND)$/;
 const SEVERITIES: ReadonlySet<string> = new Set<ParadisDiagnosticSeverity>(['info', 'warning', 'error']);
 
 /** feature・operation はコードの固定の語のはず。そうでなければ中身を捨てて `other` にする。 */

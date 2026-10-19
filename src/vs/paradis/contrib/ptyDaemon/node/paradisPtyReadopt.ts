@@ -98,6 +98,18 @@ export function paradisTakeHandoverReport(): IParadisPtyHandoverReport | undefin
 	return paradisTakePtyHandoverReport({ daemon, foreignHeld: foreign.size });
 }
 
+/** テスト用。起動時の引き取りで覚えた相手を忘れる。 */
+export function paradisResetReadopt(): void {
+	target = undefined;
+	logService = undefined;
+	foreign.clear();
+	foreignLayouts.clear();
+	if (pollTimer !== undefined) {
+		clearTimeout(pollTimer);
+		pollTimer = undefined;
+	}
+}
+
 /**
  * そのスペースで別の相手が見ている端末と、その端末が載っていた配置。常駐へ配置を書くときに足す。
  */
