@@ -150,22 +150,25 @@ suite('ParadisLimitsMonitor', () => {
 			sameLineageHours: paradisLimitsPreviousValue({ ...held, statusDetail: 'same lineage as the current login', fetchedAt: now - 3 * 3600_000 - 1 }, now),
 			notYetDays: paradisLimitsPreviousValue({ ...held, statusDetail: undefined, fetchedAt: now - 2 * 86_400_000 }, now),
 			scopedOnly: paradisLimitsPreviousValue({ ...held, fiveHour: undefined, scoped: [{ usedPercent: 5, label: 'model' }] }, now)?.cause,
+			// 取得回数の上限で待っている間も前の値を薄く出す
+			rateLimited: paradisLimitsPreviousValue({ ...held, unavailableReason: 'rate_limited', statusDetail: undefined }, now),
 			// 古い PC（控えている間は値を送らない）・値の無いアカウント
 			noValue: paradisLimitsPreviousValue({ ...held, fiveHour: undefined }, now),
 			noFetchedAt: paradisLimitsPreviousValue({ ...held, fetchedAt: undefined }, now),
 			// 控えている以外の状態はいつもの説明文のまま
 			ok: paradisLimitsPreviousValue({ ...held, status: 'ok', unavailableReason: undefined }, now),
-			rateLimited: paradisLimitsPreviousValue({ ...held, unavailableReason: 'rate_limited' }, now),
+			apiKey: paradisLimitsPreviousValue({ ...held, unavailableReason: 'api_key' }, now),
 			relogin: paradisLimitsPreviousValue({ ...held, status: 'relogin_required', unavailableReason: undefined }, now),
 		}, {
 			shared: { age: { amount: 12, unit: 'minutes' }, cause: 'shared_with_claude_swap' },
 			sameLineageHours: { age: { amount: 3, unit: 'hours' }, cause: 'same_lineage' },
 			notYetDays: { age: { amount: 2, unit: 'days' }, cause: 'not_yet' },
 			scopedOnly: 'shared_with_claude_swap',
+			rateLimited: { age: { amount: 12, unit: 'minutes' }, cause: 'rate_limited' },
 			noValue: undefined,
 			noFetchedAt: undefined,
 			ok: undefined,
-			rateLimited: undefined,
+			apiKey: undefined,
 			relogin: undefined,
 		});
 	});

@@ -489,6 +489,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				return localize('paradis.limitsMonitor.previousValueSameLineage', "{0}・ログインの更新は Claude Code に任せています", age);
 			case 'not_yet':
 				return localize('paradis.limitsMonitor.previousValueNotYet', "{0}・取り直しています", age);
+			case 'rate_limited':
+				return localize('paradis.limitsMonitor.previousValueRateLimited', "{0}・取得回数の上限のため、しばらく待ってから取り直します", age);
 		}
 	}
 
