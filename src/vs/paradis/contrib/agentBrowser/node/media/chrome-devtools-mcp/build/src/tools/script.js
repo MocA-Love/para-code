@@ -140,7 +140,11 @@ Example with arguments: \`(el) => el.innerText\`
                 }
                 const evaluatable = await getPageOrFrame(page, frames);
                 const result = await mcpPage.waitForEventsAfterAction(async () => {
-                    // PARA-PATCH (Para Code): see paraCodeTimeoutMs in the schema above.
+                    // PARA-PATCH (Para Code): see paraCodeTimeoutMs in the schema above. A call that ToolHandler already gave
+                    // up on does not start the evaluation late.
+                    if (response.paraCodeAbandoned?.()) {
+                        return;
+                    }
                     await paraCodeWithTimeout(performEvaluation(evaluatable, fnString, args, response, {
                         filePath,
                         context,

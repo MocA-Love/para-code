@@ -12,10 +12,11 @@
 
 import assert from 'assert';
 import { execFile } from 'child_process';
+import { pathToFileURL } from 'url';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 
-const BUILD = FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src').toString();
+const BUILD = pathToFileURL(FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src').fsPath).href;
 
 /** 偽のページなどの部品（子の node で、各シナリオの前に置く）。 */
 const PRELUDE = `
@@ -35,7 +36,7 @@ const fakeResponse = (lines = []) => ({ appendResponseLine: line => lines.push(l
 function runInNode(scenario: string): Promise<unknown> {
 	const source = `${PRELUDE}\nconst out = await (async () => {\n${scenario}\n})();\nprocess.stdout.write(JSON.stringify(out));\nprocess.exit(0);`;
 	return new Promise((resolve, reject) => {
-		execFile(process.execPath, ['--input-type=module', '-e', source], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 30_000 }, (error, stdout, stderr) => {
+		execFile(process.execPath, ['--input-type=module', '-e', source], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 55_000 }, (error, stdout, stderr) => {
 			if (error) {
 				reject(new Error(`${error.message}\n${stderr}`));
 				return;
@@ -45,7 +46,9 @@ function runInNode(scenario: string): Promise<unknown> {
 	});
 }
 
-suite('Paradis vendored chrome-devtools-mcp timeouts', () => {
+suite('Paradis vendored chrome-devtools-mcp timeouts', function () {
+	// 子の node は、冷えた状態では 6.8MB の third_party/index.js を読むのに 5 秒を超え、混んだ PC では 1 件 25 秒を超えることがある
+	this.timeout(60_000);
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('ToolHandler gives up after paraCodeTimeoutMs plus the grace, counted from holding the mutex, and frees the mutex once', async () => {

@@ -84,7 +84,7 @@ function buildUnknownArgumentsMessage(toolName, unknownArgumentNames, expectedAr
 }
 export class ToolHandler {
     // PARA-PATCH (Para Code): see handle below (a static so tests can shorten it).
-    static paraCodeTimeoutGraceMs = 5000;
+    static paraCodeTimeoutGraceMs = 10000;
     tool;
     serverArgs;
     getContext;
