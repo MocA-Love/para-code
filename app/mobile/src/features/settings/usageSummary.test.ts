@@ -121,7 +121,7 @@ describe('accountName / accountWindows', () => {
 			withEmailMaskNote('2 台の PC の合計', false),
 			withEmailMaskNote('2 台の PC の合計', true),
 			withEmailMaskNote(undefined, true),
-		]).toEqual(['2 台の PC の合計', '2 台の PC の合計 · メールを番号で表示中', 'メールを番号で表示中']);
+		]).toEqual(['2 台の PC の合計', 'メールを番号で表示中 · 2 台の PC の合計', 'メールを番号で表示中']);
 	});
 
 	it('5時間 → 7日 → 追加の枠の順に並べる', () => {

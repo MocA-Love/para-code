@@ -51,12 +51,12 @@ export function accountName(account: RateLimitAccount, numbers?: AccountNumbers)
 	return account.email ?? account.homeLabel ?? account.id;
 }
 
-/** 使用量の画面のサブタイトルに、メールを番号で出していることを添える（戻し忘れに気付けるように）。 */
+/** 使用量の画面のサブタイトルの先頭に、メールを番号で出していることを添える（戻し忘れに気付けるように。1 行で切れるので先頭）。 */
 export function withEmailMaskNote(subtitle: string | undefined, masked: boolean): string | undefined {
 	if (!masked) {
 		return subtitle;
 	}
-	return subtitle !== undefined ? `${subtitle} · メールを番号で表示中` : 'メールを番号で表示中';
+	return subtitle !== undefined ? `メールを番号で表示中 · ${subtitle}` : 'メールを番号で表示中';
 }
 
 /** アカウントの枠（5時間・7日・追加の枠）を、見せる順に並べる。 */
