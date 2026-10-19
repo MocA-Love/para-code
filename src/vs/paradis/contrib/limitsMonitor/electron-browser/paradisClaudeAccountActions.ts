@@ -26,7 +26,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisClaudeSwitchResult } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeSwitchResult, paradisKnownUnverifiedReason } from '../common/paradisClaudeAccounts.js';
 import { IParadisLimitsAccount, IParadisLimitsLegacyAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
 
@@ -36,6 +36,8 @@ const $ = dom.$;
 const SWITCH_RETRY_DEFAULT_S = 60;
 /** 待ち時間ちょうどだと再び断られやすいので、少し足す。 */
 const SWITCH_RETRY_MARGIN_S = 5;
+/** これより長く待つよう言われたら、自動のやり直しは予約しない（setTimeout の上限より十分短くする）。 */
+const SWITCH_RETRY_MAX_S = 60 * 60;
 /** 切り替えた後、動いている Claude Code の数を待つ上限。 */
 const RUNNING_COUNT_TIMEOUT_MS = 5_000;
 
@@ -132,7 +134,8 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 
 	/**
 	 * 動いている Claude Code の数（エージェントの検出が hook から控えている、Claude の会話があるペイン）。
-	 * 切り替える前に起動したものは、開き直すまで前のアカウントのまま動く。数えられなければ undefined。
+	 * 切り替える前に起動したものは、開き直すまで前のアカウントのまま動く。ペインから ssh した先の会話は
+	 * 手元のログインを使わないので数えない。数えられなければ undefined。
 	 */
 	private countRunningClaudeCode(): Promise<number | undefined> {
 		return new Promise(resolve => {
@@ -151,7 +154,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			const subscription = this.agentStatusService.subscribe(outcome => {
 				const sessions = outcome.snapshot?.paneSessions;
 				if (sessions !== undefined) {
-					finish(new Set(sessions.filter(session => session.agent === 'claude').map(session => session.token)).size);
+					finish(new Set(sessions.filter(session => session.agent === 'claude' && !session.remote).map(session => session.token)).size);
 				}
 			});
 			if (done) {
@@ -214,11 +217,11 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		}
 		// 前に断られて予約していた自動のやり直しは、この操作で置き換える。
 		context.cancelRetry();
-		await this.runSwitch(account, email, context, false);
+		await this.runSwitch(account, context, false);
 	}
 
 	/** @param retried 取得回数の上限で断られた後の、自動のやり直しか。 */
-	private async runSwitch(account: IParadisLimitsAccount, email: string, context: IParadisLimitsPanelContext, retried: boolean): Promise<void> {
+	private async runSwitch(account: IParadisLimitsAccount, context: IParadisLimitsPanelContext, retried: boolean): Promise<void> {
 		this.switching = true;
 		context.requestRefresh(false);
 		let result: IParadisClaudeSwitchResult;
@@ -229,13 +232,14 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		} finally {
 			this.switching = false;
 		}
-		await this.reportSwitch(account, result, email, context, retried);
+		await this.reportSwitch(account, result, context, retried);
 		context.requestRefresh(false);
 	}
 
 	/** 断った理由を Sentry へ送る（固定の語だけ。メールやトークンは送らない）。 */
 	private reportRefusal(result: IParadisClaudeSwitchResult, remote: boolean, retried: boolean): void {
-		const reason = result.outcome === 'locked' ? 'lock_wait' : result.unverifiedReason ?? 'unknown';
+		// 接続先から返った値なので、知っている語のほかは 'unknown' に畳む。
+		const reason = result.outcome === 'locked' ? 'lock_wait' : paradisKnownUnverifiedReason(result.unverifiedReason) ?? 'unknown';
 		reportParadisDiagnosticError('owned', 'claude-accounts', 'switch-refused', new Error(`Claude account switch refused: ${reason}`), {
 			safe_outcome: result.outcome,
 			safe_reason: reason,
@@ -244,12 +248,13 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		}, 'warning');
 	}
 
-	private async reportSwitch(account: IParadisLimitsAccount, result: IParadisClaudeSwitchResult, email: string, context: IParadisLimitsPanelContext, retried: boolean): Promise<void> {
+	private async reportSwitch(account: IParadisLimitsAccount, result: IParadisClaudeSwitchResult, context: IParadisLimitsPanelContext, retried: boolean): Promise<void> {
 		const remote = context.client.connectedToRemote;
 		const previous = result.previousEmail !== undefined ? context.displayNameForEmail('claude', result.previousEmail) : '';
 		// 切り替え先は、返ってきたメール（無ければ押したカードの名前）。押したカードと同じメールなら、カードの名前を使う
-		// （同じメールで組織が違うアカウントがあると、メールからは番号を決められないため）。
-		const target = result.email === undefined || result.email.toLowerCase() === account.email?.toLowerCase() ? email : context.displayNameForEmail('claude', result.email);
+		// （同じメールで組織が違うアカウントがあると、メールからは番号を決められないため）。予約したやり直しの間に
+		// メールを番号に置き換える設定へ変わることがあるので、名前はこの時点で引き直す。
+		const target = result.email === undefined || result.email.toLowerCase() === account.email?.toLowerCase() ? context.displayName(account) : context.displayNameForEmail('claude', result.email);
 		switch (result.outcome) {
 			case 'switched': {
 				// 接続先の Claude Code は手元から数えられないので、手元を切り替えたときだけ数える。
@@ -287,15 +292,19 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 				return;
 			case 'unverified': {
 				this.reportRefusal(result, remote, retried);
-				switch (result.unverifiedReason) {
+				switch (paradisKnownUnverifiedReason(result.unverifiedReason)) {
 					case 'rate_limited': {
 						if (retried) {
 							this.notificationService.warn(localize('paradis.claudeAccounts.switchRateLimitedAgain', "自動でもう一度試しましたが、いま使っている {0} のログイン情報の確認の回数がまだ上限のため、切り替えませんでした。しばらくしてから切り替えてください。", previous));
 							return;
 						}
 						const waitS = (result.retryAfterS ?? SWITCH_RETRY_DEFAULT_S) + SWITCH_RETRY_MARGIN_S;
+						if (!(waitS <= SWITCH_RETRY_MAX_S)) {
+							this.notificationService.warn(localize('paradis.claudeAccounts.switchRateLimitedLong', "いま使っている {0} のログイン情報の確認の回数が上限に達したため、切り替えませんでした。しばらくしてからもう一度お試しください。", previous));
+							return;
+						}
 						this.notificationService.warn(localize('paradis.claudeAccounts.switchRateLimited', "いま使っている {0} のログイン情報の確認の回数が上限に達したため、切り替えませんでした。{1}分後に切り替えられます。その時刻を過ぎたら、自動でもう一度切り替えます（ほかの操作をしたら取り消します）。", previous, Math.ceil(waitS / 60)));
-						context.scheduleRetry(waitS * 1000, () => void this.runSwitch(account, email, context, true));
+						context.scheduleRetry(waitS * 1000, () => void this.runSwitch(account, context, true));
 						return;
 					}
 					case 'network':

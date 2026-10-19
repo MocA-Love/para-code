@@ -102,6 +102,11 @@ export interface IParadisClaudeSwitchResult {
  */
 export type ParadisClaudeUnverifiedReason = 'network' | 'rate_limited' | 'owner_mismatch';
 
+/** 接続先から返った unverifiedReason のうち、知っている語だけを返す（ほかは undefined）。 */
+export function paradisKnownUnverifiedReason(value: unknown): ParadisClaudeUnverifiedReason | undefined {
+	return value === 'network' || value === 'rate_limited' || value === 'owner_mismatch' ? value : undefined;
+}
+
 /** いまログインしているアカウントを Para Code に登録した結果。 */
 export type ParadisClaudeRegisterOutcome =
 	| 'registered'
