@@ -27,8 +27,13 @@ import * as path from '../../../../base/common/path.js';
 import { paradisParseClaudeOAuthBlob } from '../common/paradisClaudeUsage.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
-/** 今の版のキーチェーンのサービス名と、古い版（python の keyring）のサービス名。 */
-const CLAUDE_SWAP_KEYCHAIN_SERVICES = ['claude-swap', 'claude-code'];
+/** 今の版のキーチェーンのサービス名。 */
+const CLAUDE_SWAP_KEYCHAIN_SERVICE = 'claude-swap';
+/**
+ * 古い版（python の keyring）のサービス名。python が作った項目なので、`/usr/bin/security` で読むと
+ * 「キーチェーンへのアクセスを許可しますか」が出ることがある。
+ */
+const CLAUDE_SWAP_LEGACY_KEYCHAIN_SERVICE = 'claude-code';
 /** sequence.json の番号。パスとキーチェーンの名前へそのまま入るので形を確かめる。 */
 const SLOT_PATTERN = /^\d{1,6}$/;
 
@@ -48,6 +53,12 @@ export interface IParadisClaudeSwapBackupReader {
 }
 
 export class ParadisClaudeSwapBackupReader implements IParadisClaudeSwapBackupReader {
+
+	/**
+	 * 古い版のサービスの読み取りが失敗・時間切れになった（許可を求められて断られた・答えが無かった）。
+	 * 控えは定期的に読み直すので、その起動の間は読みに行かない（確認が何度も出ないように）。
+	 */
+	private legacyServiceUnavailable = false;
 
 	/** @param keychain macOS のときだけ渡す。 */
 	constructor(private readonly keychain: IParadisKeychain | undefined) { }
@@ -72,12 +83,21 @@ export class ParadisClaudeSwapBackupReader implements IParadisClaudeSwapBackupRe
 				}
 				const keychain = this.keychain;
 				if (keychain) {
-					for (const service of CLAUDE_SWAP_KEYCHAIN_SERVICES) {
-						try {
-							this.collect(backups, await keychain.read(service, `account-${name}-${email}${suffix}`));
-						} catch {
-							return undefined;
-						}
+					const account = `account-${name}-${email}${suffix}`;
+					try {
+						this.collect(backups, await keychain.read(CLAUDE_SWAP_KEYCHAIN_SERVICE, account));
+					} catch {
+						return undefined;
+					}
+					if (this.legacyServiceUnavailable) {
+						// 古い置き場所を読めないので、そこに控えがあるかもしれない（同じかもしれない側に倒す）。
+						return undefined;
+					}
+					try {
+						this.collect(backups, await keychain.read(CLAUDE_SWAP_LEGACY_KEYCHAIN_SERVICE, account));
+					} catch {
+						this.legacyServiceUnavailable = true;
+						return undefined;
 					}
 				}
 			}
