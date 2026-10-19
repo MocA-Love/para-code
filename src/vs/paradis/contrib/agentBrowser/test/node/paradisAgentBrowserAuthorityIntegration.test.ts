@@ -676,10 +676,10 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const connectionB = {};
 		fixture.service.registerRendererConnection('window:1', connectionA);
 		fixture.service.registerRendererConnection('window:2', connectionB);
-		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(1, true, [{ token: 'claude-a' }, { token: 'codex-a' }, { token: 'ended-a' }]));
+		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(1, true, [{ token: 'claude-a' }, { token: 'codex-a' }, { token: 'ended-a' }, { token: 'remote-a' }]));
 		await fixture.service.syncBindingAuthority(connectionB, authorityManifest(1, true, [{ token: 'claude-b' }]));
-		const record = (token: string, event: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd?: string) =>
-			Reflect.apply(Reflect.get(fixture.service, '_recordPaneSession'), fixture.service, [token, event, sessionId, transcriptPath, cwd]);
+		const record = (token: string, event: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd?: string, remote = false) =>
+			Reflect.apply(Reflect.get(fixture.service, '_recordPaneSession'), fixture.service, [token, event, sessionId, transcriptPath, cwd, remote]);
 		record('claude-a', 'UserPromptSubmit', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a');
 		// ツールが cd した後の hook。分岐は会話を始めたフォルダで行うので、最初の cwd を保つ。
 		record('claude-a', 'PostToolUse', 'session-claude', '/Users/example/.claude/projects/repo/session-claude.jsonl', '/repo/a/packages/web');
@@ -687,11 +687,14 @@ suite('ParadisAgentBrowser authority integration', () => {
 		record('ended-a', 'UserPromptSubmit', 'session-ended', '/Users/example/.claude/projects/repo/session-ended.jsonl');
 		record('ended-a', 'SessionEnd', 'session-ended', undefined);
 		record('claude-b', 'UserPromptSubmit', 'session-b', '/Users/example/.claude/projects/repo/session-b.jsonl');
+		// 手元のペインで ssh した先から届いた hook には、接続先の会話の印を付ける。
+		record('remote-a', 'UserPromptSubmit', 'session-remote', '/home/example/.claude/projects/repo/session-remote.jsonl', undefined, true);
 
 		const snapshot = await fixture.service.listAgentStatusSnapshot(connectionA);
 		assert.deepStrictEqual(snapshot.paneSessions?.map(session => ({ ...session, at: typeof session.at })), [
 			{ token: 'claude-a', agent: 'claude', sessionId: 'session-claude', cwd: '/repo/a', at: 'number' },
 			{ token: 'codex-a', agent: 'codex', sessionId: 'session-codex', at: 'number' },
+			{ token: 'remote-a', agent: 'claude', sessionId: 'session-remote', remote: true, at: 'number' },
 		]);
 	});
 
