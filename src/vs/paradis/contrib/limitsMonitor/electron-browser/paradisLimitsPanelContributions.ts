@@ -68,6 +68,12 @@ export interface IParadisLimitsPanelContribution extends IDisposable {
 	renderAccountBadges?(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined;
 
 	/**
+	 * このアカウント（Codex のホーム）が、いま使うものとして選ばれているか。同じアカウントの複数のホームを
+	 * 1枚にまとめるとき、選ばれているものを代表にする（切り替えやリセットは代表に効く）。
+	 */
+	isAccountSelected?(account: IParadisLimitsAccount): boolean;
+
+	/**
 	 * プロバイダの節の末尾（アカウントカードの後ろ）へ、独立したカード列や案内を足す。
 	 * 返した IDisposable は描き直すたびに破棄される。
 	 */

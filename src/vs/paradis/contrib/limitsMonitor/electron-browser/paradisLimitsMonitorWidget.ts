@@ -33,7 +33,6 @@ import {
 	IParadisLimitsAccount,
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
-	paradisLimitsAccountNumber,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsSeverity,
@@ -46,6 +45,7 @@ import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient, PARADIS_LIMITS_OPEN_PANEL_COMMAND_ID, PARADIS_LIMITS_SETTING_ENABLED } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsMonitorPanelOptions, ParadisLimitsMonitorPanel } from './paradisLimitsMonitorPanel.js';
 import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
+import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
 // 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 import './paradisClaudeAccountActions.js';
 
@@ -119,8 +119,6 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	private readonly hoverDelegate = getDefaultHoverDelegate('mouse');
 
 	private latestSnapshot: IParadisLimitsSnapshot | undefined;
-	/** メールアドレスを「Claude 1」のような番号に置き換えているか（スクリーンショット用。保存しない）。 */
-	private emailsMasked = false;
 	private isFetching = false;
 	private refreshRequested = false;
 	private readonly removingHomes = new Set<string>();
@@ -145,8 +143,15 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
 	) {
 		super();
+		this._register(this.emailMaskService.onDidChange(() => {
+			if (this.latestSnapshot) {
+				this.renderTrigger(this.latestSnapshot);
+				this.panel.value?.updateSnapshot(this.latestSnapshot);
+			}
+		}));
 
 		this.loadHiddenAccountIds();
 		// 同じプロファイルを2ウィンドウで開いていると、この台帳は両方から見える。片方だけが
@@ -274,11 +279,14 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	/** パネル(削除ボタンの隣の目アイコン)・非表示中リスト双方から呼ばれる、非表示状態の唯一の変更点。 */
-	private toggleHiddenAccount(account: IParadisLimitsAccount): void {
-		if (this.isAccountHidden(account)) {
-			this.hiddenAccounts.delete(account.id);
-		} else {
-			this.hiddenAccounts.set(account.id, account.email);
+	/** まとめたカードの複数のホームも、保存と描き直しは1回にする。 */
+	private toggleHiddenAccounts(accounts: readonly IParadisLimitsAccount[]): void {
+		for (const account of accounts) {
+			if (this.isAccountHidden(account)) {
+				this.hiddenAccounts.delete(account.id);
+			} else {
+				this.hiddenAccounts.set(account.id, account.email);
+			}
 		}
 		this.saveHiddenAccountIds();
 		if (this.latestSnapshot) {
@@ -324,11 +332,11 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onRelogin: account => this.openSetupDialog(account.provider, account),
 			onRemoveAccount: account => void this.removeAccount(account),
 			isAccountHidden: account => this.isAccountHidden(account),
-			onToggleHiddenAccount: account => this.toggleHiddenAccount(account),
-			displayName: account => this.displayName(account),
-			displayNameForEmail: (provider, email) => this.displayNameForEmail(provider, email),
-			isEmailMasked: () => this.emailsMasked,
-			onToggleEmailMask: () => this.toggleEmailMask(),
+			onToggleHiddenAccounts: accounts => this.toggleHiddenAccounts(accounts),
+			displayName: account => this.emailMaskService.displayName(account),
+			displayNameForEmail: (provider, email) => this.emailMaskService.displayNameForEmail(provider, email),
+			isEmailMasked: () => this.emailMaskService.masked,
+			onToggleEmailMask: () => this.emailMaskService.toggle(),
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
@@ -338,37 +346,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 	/** 画面に出すアカウントの名前。メールを隠しているときは、同じプロバイダの中の番号にする。 */
 	private displayName(account: IParadisLimitsAccount): string {
-		if (this.emailsMasked && account.email !== undefined) {
-			const accounts = account.provider === 'claude' ? this.latestSnapshot?.claude.accounts : this.latestSnapshot?.codex.accounts;
-			return this.maskedName(account.provider, accounts ? paradisLimitsAccountNumber(account, accounts) : undefined);
-		}
-		return account.email ?? account.homeLabel ?? account.id;
-	}
-
-	private displayNameForEmail(provider: ParadisLimitsProvider, email: string): string {
-		if (!this.emailsMasked) {
-			return email;
-		}
-		const accounts = (provider === 'claude' ? this.latestSnapshot?.claude.accounts : this.latestSnapshot?.codex.accounts) ?? [];
-		const account = accounts.find(candidate => candidate.email?.toLowerCase() === email.toLowerCase());
-		return this.maskedName(provider, account ? paradisLimitsAccountNumber(account, accounts) : undefined);
-	}
-
-	private maskedName(provider: ParadisLimitsProvider, accountNumber: number | undefined): string {
-		if (accountNumber === undefined) {
-			return localize('paradis.limitsMonitor.maskedUnknownAccount', "（隠しているアカウント）");
-		}
-		return provider === 'claude'
-			? localize('paradis.limitsMonitor.maskedClaudeAccount', "Claude {0}", accountNumber)
-			: localize('paradis.limitsMonitor.maskedCodexAccount', "Codex {0}", accountNumber);
-	}
-
-	private toggleEmailMask(): void {
-		this.emailsMasked = !this.emailsMasked;
-		if (this.latestSnapshot) {
-			this.renderTrigger(this.latestSnapshot);
-			this.panel.value?.updateSnapshot(this.latestSnapshot);
-		}
+		return this.emailMaskService.displayName(account);
 	}
 
 	private closePanel(): void {
@@ -554,6 +532,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 	}
 
 	private renderTrigger(snapshot: IParadisLimitsSnapshot): void {
+		this.emailMaskService.setSnapshot(snapshot);
 		this.maybeShowClaudeLegacyNotice(snapshot);
 		this.ringDisposables.clear();
 		dom.clearNode(this.button);

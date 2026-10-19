@@ -108,10 +108,18 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		return undefined;
 	}
 
-	/** 新しく開くターミナルで使うホームが、このカードのアカウント（同じアカウントのほかのホームを含む）か。 */
+	isAccountSelected(account: IParadisLimitsAccount): boolean {
+		this.ensureAccountsState();
+		return this.accountsState !== undefined && this.isSelected(this.accountsState, account);
+	}
+
+	/**
+	 * 新しく開くターミナルで使うホームが、このカードのホームか。同じアカウントの別のホームが選ばれていても
+	 * 「使用中」にはしない（そのホームが壊れていても正常に見えてしまうため。まとめたカードはパネルが
+	 * 選ばれているホームを代表にする）。
+	 */
 	private isSelected(state: IParadisCodexAccountsState, account: IParadisLimitsAccount): boolean {
-		const selected = paradisSelectedCodexHome(state);
-		return selected !== undefined && (selected.homePath === account.id || (account.duplicateHomeLabels ?? []).includes(selected.label));
+		return paradisSelectedCodexHome(state)?.homePath === account.id;
 	}
 
 	/** 裏の読み取りが終わったら描き直してもらう（取り直しはしない）。 */

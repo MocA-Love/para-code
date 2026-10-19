@@ -27,6 +27,7 @@ import { ParadisClaudeSetupErrorCode } from '../common/paradisClaudeAccounts.js'
 import { IParadisLimitsAccount, IParadisLimitsSetupState, ParadisLimitsProvider } from '../common/paradisLimitsMonitor.js';
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
+import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
 
 const $ = dom.$;
 
@@ -65,6 +66,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		private readonly options: IParadisLimitsSetupDialogOptions,
 		@ILayoutService layoutService: ILayoutService,
 		@IOpenerService private readonly openerService: IOpenerService,
+		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
 	) {
 		super();
 
@@ -306,7 +308,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.appendStep(
 			state.phase === 'done' ? 'done' : (waitingDuplicate ? 'now' : 'pending'),
 			localize('paradis.limitsSetup.stepRegister', "モニターに登録"),
-			waitingDuplicate ? localize('paradis.limitsSetup.duplicateNeedsDecision', "同じアカウントが既に登録されています") : (state.email ?? ''),
+			waitingDuplicate ? localize('paradis.limitsSetup.duplicateNeedsDecision', "同じアカウントが既に登録されています") : this.emailText(state.email),
 			undefined,
 		);
 
@@ -329,7 +331,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		dom.append(this.duplicateElement, $('.pls-duplicate-title')).textContent = localize('paradis.limitsSetup.duplicateTitle', "同じCodexアカウントです");
 		dom.append(this.duplicateElement, $('.pls-duplicate-message')).textContent = localize('paradis.limitsSetup.duplicateMessage', "通常は新しい保存先を残す必要はありません。必要な場合は重複したまま追加できます。");
 		if (state.email) {
-			this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateAccount', "アカウント"), state.email);
+			this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateAccount', "アカウント"), this.emailText(state.email));
 		}
 		this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateExistingHomes', "登録済み"), (state.duplicateHomeLabels ?? []).join(', '));
 		this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateNewHome', "新しい保存先"), state.homeLabel ?? '');
@@ -370,9 +372,14 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			this.options.reloginAccount
 				? localize('paradis.limitsSetup.claudeStepUpdate', "Para Code に保存し直す")
 				: localize('paradis.limitsSetup.claudeStepSave', "Para Code に保存"),
-			state.email ?? '',
+			this.emailText(state.email),
 			undefined,
 		);
+	}
+
+	/** ログインしたアカウントのメール（使用量パネルでメールを番号にしているときは伏せる）。 */
+	private emailText(email: string | undefined): string {
+		return email === undefined ? '' : this.emailMaskService.displayNameForEmail(this.options.provider, email);
 	}
 
 	private appendStep(status: 'pending' | 'now' | 'done', label: string, detail: string, url: string | undefined): void {

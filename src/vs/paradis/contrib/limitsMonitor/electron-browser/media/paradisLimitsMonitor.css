@@ -699,8 +699,13 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.paradis-limits-panel .plm-mask-btn[aria-pressed="true"] {
+.paradis-limits-panel .plm-mask-btn.on {
 	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-limits-panel .plm-mask-btn:focus-visible {
+	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .paradis-limits-panel .plm-mask-btn .codicon {
