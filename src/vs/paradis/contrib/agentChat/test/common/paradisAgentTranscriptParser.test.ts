@@ -405,4 +405,30 @@ suite('paradisAgentTranscriptParser', () => {
 			title: true,
 		});
 	});
+
+	test('turns a Codex visualization reference into a file link, but not inside a code block', () => {
+		const reference = '\uE200visualize\uE202{"path":"/Users/example/repo/tmp/mock 50%.html","mode":"wide"}\uE201';
+		const text = [
+			'Here is the mock.',
+			reference,
+			'::codex-inline-vis{file="/Users/example/repo/tmp/chart.html"}',
+			'\uE200visualize\uE202{"path":"relative.html"}\uE201',
+			'```',
+			reference,
+			'```',
+		].join('\n');
+		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
+			timestamp: '2026-10-19T00:00:00.000Z', type: 'response_item',
+			payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+		}));
+		assert.deepStrictEqual(parsed.messages.map(message => message.text), [[
+			'Here is the mock.',
+			'[可視化: mock 50%.html](</Users/example/repo/tmp/mock 50%25.html>)',
+			'[可視化: chart.html](</Users/example/repo/tmp/chart.html>)',
+			'可視化を表示できません',
+			'```',
+			reference,
+			'```',
+		].join('\n')]);
+	});
 });

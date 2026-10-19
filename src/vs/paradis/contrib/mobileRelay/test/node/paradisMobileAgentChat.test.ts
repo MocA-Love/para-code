@@ -837,6 +837,25 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsCodexRootThreadSource(JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'parent', depth: 1 } } })), false);
 	});
 
+	test('keeps Codex internal threads (auto-review, /review, memory) out of the root candidates', () => {
+		// 自動審査は同じ作業フォルダで保存されるので、root に数えると審査の会話がペインの会話として結ばれる
+		assert.deepStrictEqual([
+			{ subagent: { other: 'guardian' } },
+			{ subagent: 'review' },
+			{ subagent: 'compact' },
+			{ internal: 'memory_consolidation' },
+			'vscode',
+		].map(source => paradisIsCodexRootThreadSource(typeof source === 'string' ? source : JSON.stringify(source))), [false, false, false, false, true]);
+		const parse = (payload: object) => paradisParseCodexSessionMeta(JSON.stringify({ type: 'session_meta', payload: { cwd: '/workspace', id: 'thread-review', ...payload } }));
+		assert.deepStrictEqual([
+			parse({ source: { subagent: { other: 'guardian' } } }),
+			parse({ thread_source: 'guardian_review' }),
+		], [
+			{ cwd: '/workspace', sessionId: 'thread-review', subagent: true },
+			{ cwd: '/workspace', sessionId: 'thread-review', subagent: true },
+		]);
+	});
+
 	test('parses current Codex nested thread source', () => {
 		assert.deepStrictEqual(paradisParseCodexThreadSource(JSON.stringify({
 			subagent: { thread_spawn: { parent_thread_id: 'parent', depth: 3, agent_nickname: 'verifier', agent_role: 'reviewer' } },
