@@ -68,7 +68,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		return store;
 	}
 
-	renderProviderFooter(container: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot): IDisposable | undefined {
+	renderProviderFooter(container: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot, context: IParadisLimitsPanelContext): IDisposable | undefined {
 		const legacy = providerSnapshot.legacyAccounts ?? [];
 		if (legacy.length === 0) {
 			return undefined;
@@ -88,9 +88,11 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		);
 		const list = dom.append(details, $('ul.plm-legacy-list'));
 		for (const account of legacy) {
-			dom.append(list, $('li')).textContent = account.organizationName
+			// メールを番号に置き換えているときは、メールを含みうる組織名も出さない。
+			const name = context.displayNameForEmail('claude', account.email);
+			dom.append(list, $('li')).textContent = account.organizationName && name === account.email
 				? localize('paradis.claudeAccounts.legacyWithOrganization', "{0}（{1}）", account.email, account.organizationName)
-				: account.email;
+				: name;
 		}
 		return dom.addDisposableListener(details, 'toggle', () => {
 			this.legacyDetailsOpen = details.open;
@@ -136,12 +138,14 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 	private reportSwitch(result: IParadisClaudeSwitchResult, email: string, context: IParadisLimitsPanelContext): void {
 		const remote = context.client.connectedToRemote;
 		const previous = result.previousEmail !== undefined ? context.displayNameForEmail('claude', result.previousEmail) : '';
+		// 切り替え先は、返ってきたメール（無ければ押したカードの名前）。
+		const target = result.email !== undefined ? context.displayNameForEmail('claude', result.email) : email;
 		switch (result.outcome) {
 			case 'switched':
-				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", email));
+				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", target));
 				return;
 			case 'already_active':
-				this.notificationService.info(localize('paradis.claudeAccounts.alreadyActive', "すでに {0} を使っています。", email));
+				this.notificationService.info(localize('paradis.claudeAccounts.alreadyActive', "すでに {0} を使っています。", target));
 				return;
 			case 'busy':
 				this.notificationService.warn(localize('paradis.claudeAccounts.switchBusy', "ほかの切り替えが進行中です。終わってからもう一度お試しください。"));
@@ -155,7 +159,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 				this.notificationService.error(localize('paradis.claudeAccounts.switchNotFound', "切り替え先のアカウントが見つかりません。一覧を更新してからもう一度お試しください。"));
 				return;
 			case 'no_credentials':
-				this.notificationService.error(localize('paradis.claudeAccounts.switchNoCredentials', "{0} の保存済みの認証情報が使えません。カードの「再ログイン…」からログインし直してください。", email));
+				this.notificationService.error(localize('paradis.claudeAccounts.switchNoCredentials', "{0} の保存済みの認証情報が使えません。カードの「再ログイン…」からログインし直してください。", target));
 				return;
 			case 'unverified':
 				this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverified', "いま使っている {0} の最新のログイン情報を確認できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。通信できることを確かめ、しばらくしてからもう一度お試しください。", previous));
