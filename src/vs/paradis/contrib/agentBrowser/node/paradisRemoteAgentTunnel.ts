@@ -103,6 +103,17 @@ const ALLOCATION_TIMEOUT_MS = 10_000;
 const EXHAUSTED_RETRY_COOLDOWN_MS = 30_000;
 
 /**
+ * 決定的候補が使用中で動的番号へ逃げたあと、裏で決定的候補を張り直しに行く間隔の初期値と上限。
+ *
+ * 前の版の ssh が終わった直後は、接続先（Tailscale SSH 等）が決定的候補の転送を数分つかんだまま
+ * 残すことがある。そのまま動的番号に居座ると、更新前から決定的候補で動いていたエージェントが
+ * 戻り経路を失ったままになる。別の誰かが恒久的に使っている場合に ssh を叩き続けないよう、
+ * 失敗のたびに間隔を倍にし、上限で頭打ちにする。
+ */
+const PREFERRED_RETRY_INITIAL_DELAY_MS = 30_000;
+const PREFERRED_RETRY_MAX_DELAY_MS = 5 * 60_000;
+
+/**
  * 決定的候補ポートの範囲。Linux の既定の ephemeral 範囲（`net.ipv4.ip_local_port_range`
  * の既定値 32768-60999）と重ねると、接続先の無関係な outbound 接続に一時的に取られて
  * bind に失敗する頻度が上がってしまう。well-known（0-1023）でも Linux の既定 ephemeral でも
@@ -188,6 +199,23 @@ interface ITunnelEntry {
 	 * 構造的に得られない相手に対して、確認の出方がより確実な動的割当てへ逃がすための退路）。
 	 */
 	timedOutWaitingForConfirmation: boolean;
+	/**
+	 * 直近の決定的候補が「使用中」で弾かれ、動的番号へ逃げたなら true。動的番号が張れたら、
+	 * 裏で決定的候補の張り直し（`preferredChild`）を始める目印にする。時間切れで動的番号へ
+	 * 逃げた場合（確認信号が構造的に出ない相手）は立てない。
+	 */
+	preferredTaken: boolean;
+	/** 裏で決定的候補を張り直している ssh。張れたら `child` へ昇格する。 */
+	preferredChild: ChildProcess | undefined;
+	/** 次に決定的候補を張り直しに行くまでのタイマー。 */
+	preferredRetryTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 次の張り直しまでの間隔。失敗のたびに倍にし、上限で止める。 */
+	preferredRetryDelayMs: number;
+	/**
+	 * 決定的候補へ昇格する前に本線だった動的番号の ssh。動的番号で起動したエージェントの経路を
+	 * 切らないよう、この接続先が畳まれるまで残す（張り直しはしない）。
+	 */
+	retainedDynamicChild: ChildProcess | undefined;
 }
 
 /**
@@ -206,6 +234,9 @@ interface ITunnelEntry {
  * このため候補が弾かれたら、その接続に限って `ssh -N -R 0:...` に切り替え、sshd に空いている
  * 番号を選ばせる（衝突しない代わり、毎回番号が変わる）。通常の切断を1回でも経ると、次はまた
  * 決定的候補から試す（一時的な衝突だっただけかもしれないので、粘着させすぎない）。
+ * 動的番号で張れている間も、裏で決定的候補を間隔を延ばしながら張り直し続け、張れたら番号を
+ * 決定的候補へ戻す（`tryPreferredPort`）。動的番号の ssh は、その番号で起動したエージェントのために
+ * 接続先が畳まれるまで残す。
  *
  * 割り当てられた番号は ssh の stderr から拾う。動的割当てでは `Allocated port <N> for
  * remote forward to ...` が常に出る。固定候補は既定の LogLevel では成功時に何も出さないため、
@@ -271,13 +302,21 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
-	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID。張れていなければ undefined。
+	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID すべて。張れていなければ空。
 	 * 戻り経路から来た接続（接続先の hook と MCP）は、手元ではこのプロセスが相手になるので、
-	 * 接続元の確認はこの PID との一致で行う。
+	 * 接続元の確認はこの PID との一致で行う。本線に加え、決定的候補へ戻したあとも残している
+	 * 動的番号の ssh を含む（動的番号で起動したエージェントはそちらを通って来るため）。
 	 */
-	processPidFor(remoteAuthority: string): number | undefined {
-		const pid = this.tunnels.get(remoteAuthority)?.child?.pid;
-		return typeof pid === 'number' && pid > 0 ? pid : undefined;
+	processPidsFor(remoteAuthority: string): number[] {
+		const entry = this.tunnels.get(remoteAuthority);
+		const pids: number[] = [];
+		for (const child of [entry?.child, entry?.retainedDynamicChild]) {
+			const pid = child?.pid;
+			if (typeof pid === 'number' && pid > 0) {
+				pids.push(pid);
+			}
+		}
+		return pids;
 	}
 
 	/**
@@ -327,6 +366,8 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			child: undefined, retries: 0, retryTimer: undefined,
 			allocationTimer: undefined, disposed: false, remotePort: undefined, pending: [], exhausted: false, exhaustedAt: undefined,
 			useDynamicPort: false, retryImmediately: false, timedOutWaitingForConfirmation: false,
+			preferredTaken: false, preferredChild: undefined, preferredRetryTimer: undefined,
+			preferredRetryDelayMs: PREFERRED_RETRY_INITIAL_DELAY_MS, retainedDynamicChild: undefined,
 		};
 		this.tunnels.set(remoteAuthority, entry);
 		// resolver を pending へ積んでから start() を呼ぶこと（理由は上記コメントと同じ）
@@ -377,18 +418,134 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			clearTimeout(entry.retryTimer);
 			entry.retryTimer = undefined;
 		}
+		this.stopPreferredRetry(entry);
 		entry.child?.kill();
 		entry.child = undefined;
+		entry.retainedDynamicChild?.kill();
+		entry.retainedDynamicChild = undefined;
 		this.settle(entry, undefined);
 		this.tunnels.delete(remoteAuthority);
 	}
 
-	private start(remoteAuthority: string, entry: ITunnelEntry, port: number): void {
-		// まずユーザー×ホストから決まる候補を試す。一度でも使用中で弾かれたら、この接続に限って
-		// sshd に選ばせる（同じ番号を取り合って弾かれ続けない）。通常の切断を経ると close 側で
-		// false に戻すので、次の接続ではまた候補から試す
-		const listenPort = entry.useDynamicPort ? 0 : computeCandidateRemotePort(entry.host);
-		const args = [
+	/** 決定的候補の張り直しを止める（試行中の ssh も畳む）。間隔は初期値に戻す。 */
+	private stopPreferredRetry(entry: ITunnelEntry): void {
+		if (entry.preferredRetryTimer !== undefined) {
+			clearTimeout(entry.preferredRetryTimer);
+			entry.preferredRetryTimer = undefined;
+		}
+		const child = entry.preferredChild;
+		entry.preferredChild = undefined;
+		child?.kill();
+		entry.preferredRetryDelayMs = PREFERRED_RETRY_INITIAL_DELAY_MS;
+	}
+
+	/** 次の決定的候補の張り直しを予約する。既に予約・試行中なら何もしない。 */
+	private schedulePreferredRetry(entry: ITunnelEntry, port: number): void {
+		if (entry.disposed || entry.preferredRetryTimer !== undefined || entry.preferredChild !== undefined) {
+			return;
+		}
+		const delay = entry.preferredRetryDelayMs;
+		entry.preferredRetryDelayMs = Math.min(delay * 2, PREFERRED_RETRY_MAX_DELAY_MS);
+		entry.preferredRetryTimer = setTimeout(() => {
+			entry.preferredRetryTimer = undefined;
+			if (!entry.disposed) {
+				this.tryPreferredPort(entry, port);
+			}
+		}, delay);
+	}
+
+	/**
+	 * 動的番号で張れている間に、裏で決定的候補を張りに行く。張れたら本線をこちらへ切り替え、
+	 * 番号の変化を知らせる（接続先の設定は呼び出し側が決定的候補で書き直す）。前の本線（動的番号）は
+	 * その番号で起動したエージェントのために、接続先が畳まれるまで残す。
+	 *
+	 * 本線の再試行とは状態を分ける。ここでの失敗・時間切れは本線の番号も再試行回数も動かさない。
+	 */
+	private tryPreferredPort(entry: ITunnelEntry, port: number): void {
+		const listenPort = computeCandidateRemotePort(entry.host);
+		let child: ChildProcess;
+		try {
+			child = this.spawnSsh(this.tunnelArgs(entry.host, listenPort, port));
+		} catch (error) {
+			this.logService.trace(`[paradis] could not start retrying the preferred port on ${entry.host}`, error);
+			this.schedulePreferredRetry(entry, port);
+			return;
+		}
+		entry.preferredChild = child;
+		const timer = setTimeout(() => {
+			if (entry.preferredChild === child) {
+				child.kill();
+			}
+		}, ALLOCATION_TIMEOUT_MS);
+		child.on('error', error => {
+			this.logService.trace(`[paradis] retrying the preferred port on ${entry.host} could not start`, error);
+		});
+		let stderrBuffer = '';
+		const takenPattern = new RegExp(`remote port forwarding failed for listen port ${listenPort}\\b`);
+		const successPattern = new RegExp(`remote forward success for: listen [^,]*\\b${listenPort}\\b`);
+		child.stderr?.on('data', (chunk: Buffer) => {
+			stderrBuffer += chunk.toString();
+			let newlineIndex: number;
+			while ((newlineIndex = stderrBuffer.indexOf('\n')) >= 0) {
+				const line = stderrBuffer.slice(0, newlineIndex).trim();
+				stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+				if (line.length === 0) {
+					continue;
+				}
+				if (entry.child === child) {
+					// 昇格して本線になった後は、本線と同じく切断理由（debug 以外）を warn に残す
+					if (/^debug\d?:/.test(line)) {
+						this.logService.trace(`[paradis] return tunnel (${entry.host}): ${line}`);
+					} else {
+						this.logService.warn(`[paradis] return tunnel (${entry.host}): ${line}`);
+					}
+					continue;
+				}
+				if (entry.preferredChild !== child) {
+					continue;
+				}
+				if (successPattern.test(line)) {
+					clearTimeout(timer);
+					this.promotePreferred(entry, child, listenPort);
+				} else if (takenPattern.test(line)) {
+					child.kill();
+				} else {
+					this.logService.trace(`[paradis] return tunnel (${entry.host}, preferred retry): ${line}`);
+				}
+			}
+		});
+		child.on('close', code => {
+			clearTimeout(timer);
+			if (entry.child === child) {
+				// 昇格したあとの切断。本線として扱う
+				this.onTunnelClosed(entry, port, code);
+				return;
+			}
+			if (entry.preferredChild === child) {
+				entry.preferredChild = undefined;
+				this.schedulePreferredRetry(entry, port);
+			}
+		});
+	}
+
+	/** 張れた決定的候補の ssh を本線にし、それまでの本線（動的番号）は残す。 */
+	private promotePreferred(entry: ITunnelEntry, child: ChildProcess, listenPort: number): void {
+		this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is free again; switching back to it`);
+		entry.preferredChild = undefined;
+		entry.preferredTaken = false;
+		entry.preferredRetryDelayMs = PREFERRED_RETRY_INITIAL_DELAY_MS;
+		entry.useDynamicPort = false;
+		entry.retries = 0;
+		// 2本以上は残さない（昇格は動的番号の本線からしか起きないが、念のため）
+		entry.retainedDynamicChild?.kill();
+		entry.retainedDynamicChild = entry.child;
+		entry.child = child;
+		this.settle(entry, listenPort);
+	}
+
+	/** `ssh -N -R <listenPort>:127.0.0.1:<port>` の引数。 */
+	private tunnelArgs(host: string, listenPort: number, port: number): string[] {
+		return [
 			'-N',
 			'-R', `${listenPort}:127.0.0.1:${port}`,
 			// 利用者の ~/.ssh/config の ControlMaster に相乗りしない（相乗りすると戻り経路の接続を
@@ -409,8 +566,16 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			'-o', listenPort === 0 ? 'LogLevel=INFO' : 'LogLevel=DEBUG1',
 			'-o', 'ServerAliveInterval=30',
 			'-o', 'ServerAliveCountMax=3',
-			entry.host,
+			host,
 		];
+	}
+
+	private start(remoteAuthority: string, entry: ITunnelEntry, port: number): void {
+		// まずユーザー×ホストから決まる候補を試す。一度でも使用中で弾かれたら、この接続に限って
+		// sshd に選ばせる（同じ番号を取り合って弾かれ続けない）。通常の切断を経ると close 側で
+		// false に戻すので、次の接続ではまた候補から試す
+		const listenPort = entry.useDynamicPort ? 0 : computeCandidateRemotePort(entry.host);
+		const args = this.tunnelArgs(entry.host, listenPort, port);
 
 		let child: ChildProcess;
 		try {
@@ -472,9 +637,15 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 					if (allocated !== null) {
 						this.logService.info(`[paradis] return tunnel (${entry.host}): ${line}`);
 						const remotePort = Number(allocated[1]);
-						if (Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535) {
+						if (entry.child === child && Number.isInteger(remotePort) && remotePort > 0 && remotePort <= 65535) {
 							entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
 							this.settle(entry, remotePort);
+							if (entry.preferredTaken) {
+								// 決定的候補は使用中だっただけかもしれない（前の版の ssh の転送を接続先がまだ
+								// つかんでいる等）。動的番号で張ったまま、裏で決定的候補へ戻れるか試し続ける
+								this.logService.info(`[paradis] return tunnel (${entry.host}): will keep retrying the preferred port in the background`);
+								this.schedulePreferredRetry(entry, port);
+							}
 						}
 						continue;
 					}
@@ -485,16 +656,17 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 				// 成功／失敗の2パターンだけを個別に見て、それ以外の debug 行は warn で埋めずに
 				// trace へ落とす。ただし `Permission denied` 等の本物のエラーは debug 接頭辞を
 				// 持たないので、そちらは今までどおり warn に残す（診断性を落とさない）
-				if (fixedPortSuccessPattern.test(line)) {
+				if (entry.child === child && fixedPortSuccessPattern.test(line)) {
 					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is up`);
 					entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
 					this.settle(entry, listenPort);
-				} else if (fixedPortTakenPattern.test(line)) {
+				} else if (entry.child === child && fixedPortTakenPattern.test(line)) {
 					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is taken; falling back to a dynamic one`);
 					// ExitOnForwardFailure=yes によりこのプロセスはまもなく終了する。まだ生きていれば
 					// 確実に close させ、そちらで待たずに動的割当てへ切り替えて張り直す
 					entry.useDynamicPort = true;
 					entry.retryImmediately = true;
+					entry.preferredTaken = true;
 					child.kill();
 				} else if (/^debug\d?:/.test(line)) {
 					this.logService.trace(`[paradis] return tunnel (${entry.host}): ${line}`);
@@ -505,44 +677,59 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		});
 
 		child.on('close', code => {
-			if (entry.allocationTimer !== undefined) {
-				clearTimeout(entry.allocationTimer);
-				entry.allocationTimer = undefined;
-			}
-			entry.child = undefined;
-			// 張れていた経路が死んだ。古い番号のまま使わせない
-			entry.remotePort = undefined;
-			if (entry.disposed) {
+			if (entry.retainedDynamicChild === child) {
+				// 決定的候補へ戻したあとに残していた動的番号の ssh が終わっただけ。本線には触れない
+				entry.retainedDynamicChild = undefined;
 				return;
 			}
-			if (entry.retryImmediately) {
-				// 決定的候補が使用中で弾かれただけ。待たずに動的割当てで張り直す（リトライ回数は消費しない）
-				entry.retryImmediately = false;
-				entry.timedOutWaitingForConfirmation = false; // このケースでは意味を持たない値なので念のため揃える
-				this.start(remoteAuthority, entry, port);
-				return;
+			if (entry.child === child) {
+				this.onTunnelClosed(entry, port, code);
 			}
-			if (entry.retries >= MAX_RETRIES) {
-				this.logService.warn(`[paradis] gave up on the return tunnel to ${entry.host} (last exit code ${code})`);
-				entry.exhausted = true;
-				entry.exhaustedAt = Date.now();
-				this.settle(entry, undefined);
-				return;
-			}
-			entry.retries++;
-			// 通常の切断のうち、確認が一度でも取れていた（張れていた経路が後から切れた）なら、
-			// それは一時的な衝突だっただけかもしれないので、次はまた決定的候補から試す。
-			// 確認が一度も取れないまま時間切れになったのなら、固定候補の正の確認信号が構造的に
-			// 得られない相手（OpenSSH 以外の実装等）の可能性があるので、次は動的割当てへ逃がす
-			entry.useDynamicPort = entry.timedOutWaitingForConfirmation;
-			entry.timedOutWaitingForConfirmation = false;
-			entry.retryTimer = setTimeout(() => {
-				entry.retryTimer = undefined;
-				if (!entry.disposed) {
-					this.start(remoteAuthority, entry, port);
-				}
-			}, RETRY_DELAY_MS);
 		});
+	}
+
+	/** 本線の ssh が終わったときの後始末と、再試行の判断。 */
+	private onTunnelClosed(entry: ITunnelEntry, port: number, code: number | null): void {
+		if (entry.allocationTimer !== undefined) {
+			clearTimeout(entry.allocationTimer);
+			entry.allocationTimer = undefined;
+		}
+		entry.child = undefined;
+		// 張れていた経路が死んだ。古い番号のまま使わせない
+		entry.remotePort = undefined;
+		if (entry.disposed) {
+			return;
+		}
+		// 本線の再試行が決定的候補から試し直すので、裏の張り直しとは同じ番号を取り合わせない
+		this.stopPreferredRetry(entry);
+		if (entry.retryImmediately) {
+			// 決定的候補が使用中で弾かれただけ。待たずに動的割当てで張り直す（リトライ回数は消費しない）
+			entry.retryImmediately = false;
+			entry.timedOutWaitingForConfirmation = false; // このケースでは意味を持たない値なので念のため揃える
+			this.start(entry.remoteAuthority, entry, port);
+			return;
+		}
+		entry.preferredTaken = false;
+		if (entry.retries >= MAX_RETRIES) {
+			this.logService.warn(`[paradis] gave up on the return tunnel to ${entry.host} (last exit code ${code})`);
+			entry.exhausted = true;
+			entry.exhaustedAt = Date.now();
+			this.settle(entry, undefined);
+			return;
+		}
+		entry.retries++;
+		// 通常の切断のうち、確認が一度でも取れていた（張れていた経路が後から切れた）なら、
+		// それは一時的な衝突だっただけかもしれないので、次はまた決定的候補から試す。
+		// 確認が一度も取れないまま時間切れになったのなら、固定候補の正の確認信号が構造的に
+		// 得られない相手（OpenSSH 以外の実装等）の可能性があるので、次は動的割当てへ逃がす
+		entry.useDynamicPort = entry.timedOutWaitingForConfirmation;
+		entry.timedOutWaitingForConfirmation = false;
+		entry.retryTimer = setTimeout(() => {
+			entry.retryTimer = undefined;
+			if (!entry.disposed) {
+				this.start(entry.remoteAuthority, entry, port);
+			}
+		}, RETRY_DELAY_MS);
 	}
 
 	/**

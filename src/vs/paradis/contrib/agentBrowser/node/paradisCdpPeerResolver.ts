@@ -256,6 +256,11 @@ export interface IParadisPeerExpectation {
 	 * それらはリポジトリの設定やフックで利用者・エージェントのコードを走らせられるため）。
 	 */
 	readonly tunnelPid?: number;
+	/**
+	 * `tunnelPid` に加えて認める `ssh -R` の PID（決定的候補へ戻したあとも残している動的番号の ssh など）。
+	 * 照合の仕方は `tunnelPid` と同じで、接続を持つプロセスがどれか**そのもの**なら `tunnel`。
+	 */
+	readonly tunnelPids?: readonly number[];
 }
 
 /** 呼び出し元を確かめられなかった理由（診断のログ用）。 */
@@ -344,7 +349,7 @@ async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: 
 	let verdict: ParadisPeerKind | undefined;
 	for (const peerPid of peerPids) {
 		let kind: ParadisPeerKind = 'unknown';
-		if (expectation.tunnelPid !== undefined && peerPid === expectation.tunnelPid) {
+		if ((expectation.tunnelPid !== undefined && peerPid === expectation.tunnelPid) || expectation.tunnelPids?.includes(peerPid)) {
 			kind = 'tunnel';
 		} else if (expectation.ancestorPid !== undefined) {
 			const ancestorPid = expectation.ancestorPid;
