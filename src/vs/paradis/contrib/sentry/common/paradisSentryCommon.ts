@@ -219,7 +219,9 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// A minified bare name says nothing about which function threw (the bundle is one file, so the
 	// filename does not tell them apart either), so there the message hash joins the key as well.
 	const functionName = topFrame?.function !== undefined ? paradisStableFunctionName(topFrame.function) : 'unknown';
-	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) || functionName === 'minified' ? event.tags?.['para.error_message_hash'] : undefined;
+	// So does a method name that many classes share (`dispose`, `layout`): the class name is dropped
+	// from the key, so without the hash those methods of unrelated classes shared one issue.
+	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) || functionName === 'minified' || paradisCommonMethodNames.has(functionName) ? event.tags?.['para.error_message_hash'] : undefined;
 	// Errors relayed from the extension host (`para.origin`) get their own issues, apart from the
 	// workbench's own errors that happen to leave the same frames behind.
 	const origin = event.tags?.['para.origin'];
@@ -235,6 +237,12 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		...(origin !== undefined ? [origin] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
 }
+
+/**
+ * Method names that many unrelated classes define. The key keeps only the method name, so for these
+ * the message hash joins the key to tell the classes apart.
+ */
+const paradisCommonMethodNames = new Set(['dispose', 'layout', 'render', 'fire', 'update', 'refresh', 'run', 'focus', 'show', 'hide', 'get', 'set']);
 
 /**
  * A bare function name this short is the minifier's (`L`, `xe`, `r4e`), renamed on every build.
