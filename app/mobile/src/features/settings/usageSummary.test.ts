@@ -8,6 +8,7 @@ import type { RateLimitAccount, UsageDashboardResult } from '../../store.js';
 import {
 	accountHint,
 	accountName,
+	accountNumbers,
 	accountStatusMessage,
 	accountWindows,
 	formatUsd,
@@ -22,6 +23,7 @@ import {
 	resetCreditsSummary,
 	resetInLabel,
 	usageFootNote,
+	withEmailMaskNote,
 } from './usageSummary.js';
 
 const NOW = new Date(2026, 8, 26, 12, 0, 0).getTime();
@@ -97,6 +99,29 @@ describe('accountName / accountWindows', () => {
 		expect(accountName(account({ email: 'a@example.com', homeLabel: 'home' }))).toBe('a@example.com');
 		expect(accountName(account({ homeLabel: 'home' }))).toBe('home');
 		expect(accountName(account())).toBe('acc-1');
+	});
+
+	it('番号で出すときは provider ごとに渡した順で振り、同じメールは同じ番号にする', () => {
+		const accounts = [
+			account({ id: 'c1', email: 'user1@example.com' }),
+			account({ id: 'c2', email: 'user2@example.com' }),
+			account({ id: 'x1', provider: 'codex', email: 'user1@example.com' }),
+			account({ id: 'x2', provider: 'codex', email: 'User4@example.com' }),
+			account({ id: 'x3', provider: 'codex', email: 'user4@example.com' }),
+			account({ id: 'c3', homeLabel: '~/.claude-2' }),
+		];
+		const numbers = accountNumbers(accounts);
+		expect([...accounts, account({ id: 'c9', email: 'other@example.com' })].map(item => accountName(item, numbers))).toEqual([
+			'Claude 1', 'Claude 2', 'Codex 1', 'Codex 2', 'Codex 2', 'Claude 3', 'Claude',
+		]);
+	});
+
+	it('番号で出している間はサブタイトルに添える', () => {
+		expect([
+			withEmailMaskNote('2 台の PC の合計', false),
+			withEmailMaskNote('2 台の PC の合計', true),
+			withEmailMaskNote(undefined, true),
+		]).toEqual(['2 台の PC の合計', 'メールを番号で表示中 · 2 台の PC の合計', 'メールを番号で表示中']);
 	});
 
 	it('5時間 → 7日 → 追加の枠の順に並べる', () => {

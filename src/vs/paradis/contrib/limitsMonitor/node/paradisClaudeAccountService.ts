@@ -38,6 +38,9 @@
 // claude-swap (cswap) からの移行（cswap の撤去後は、アカウントを再ログインで登録し直してもらう、
 // という決定）: cswap の一覧（sequence.json）を読むだけで、書き込みも認証情報の取り込みもしない。
 // Para Code にまだ登録していないアカウントを並べて、登録し直しを案内する。
+// 控えのトークンの更新を控えるのは、cswap の控えと同じリフレッシュトークンを持っているときだけ
+// （{@link IParadisClaudeSwapBackupReader} でメモリの中で比べる）。パネルの「claude-swap はもう使わない」を
+// 押した後は cswap を見ない（案内も出さず、更新も控えない）。
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -82,7 +85,8 @@ import {
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, IParadisClaudeSecretStore, ParadisClaudeAccountRegistry, paradisIsClaudeAccountId } from './paradisClaudeAccountStore.js';
 import { ParadisKeychainError } from './paradisClaudeKeychain.js';
-import { paradisAcquireClaudeDirectoryLock, ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError } from './paradisClaudeLiveAuth.js';
+import { IParadisClaudeSwapBackupReader } from './paradisClaudeSwapBackups.js';
+import { paradisAcquireClaudeDirectoryLock, ParadisClaudeConfigUnreadableError, ParadisClaudeLiveAuth, ParadisClaudeLockTimeoutError, paradisWriteClaudeFileAtomically } from './paradisClaudeLiveAuth.js';
 import { paradisConnectionClientId, paradisIsConnectionClientAllowed } from '../../../common/paradisConnectionClient.js';
 import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
@@ -149,6 +153,10 @@ export interface IParadisClaudeAccountServiceOptions {
 	readonly tmpdir?: string;
 	/** claude-swap のデータのフォルダの候補（sequence.json を読むだけ）。 */
 	readonly legacyCswapDirs?: readonly string[];
+	/** claude-swap の控えのリフレッシュトークンを読む。無ければ同じかどうか確かめられないので、更新を控える。 */
+	readonly claudeSwapBackups?: IParadisClaudeSwapBackupReader;
+	/** 「claude-swap はもう使わない」を押した印のファイル。無ければ押せない。 */
+	readonly claudeSwapRetiredPath?: string;
 	readonly now?: () => number;
 	readonly random?: () => number;
 	/**
@@ -210,6 +218,10 @@ type ParadisClaudeLiveCheck =
 /** claude-swap の一覧の1件。 */
 interface IParadisClaudeLegacyEntry extends IParadisLimitsLegacyAccount {
 	readonly organizationUuid?: string;
+	/** sequence.json の番号（控えの名前に使われる）。 */
+	readonly slot: string;
+	/** その sequence.json があるフォルダ。 */
+	readonly dataDir: string;
 }
 
 /** 表示と取得の単位（登録したアカウント、または登録していないいまのログイン）。 */
@@ -241,6 +253,8 @@ export class ParadisClaudeAccountService extends Disposable {
 	private readonly random: () => number;
 	private readonly setupSessions = new Map<string, IParadisClaudeSetupSession>();
 	private readonly legacyCswapDirs: readonly string[];
+	private readonly claudeSwapBackups: IParadisClaudeSwapBackupReader | undefined;
+	private readonly claudeSwapRetiredPath: string | undefined;
 	private legacyCache: { readonly path: string; readonly mtimeMs: number; readonly accounts: readonly IParadisClaudeLegacyEntry[] } | undefined;
 	private readonly setupCleanupTimers = new Set<ReturnType<typeof setTimeout>>();
 	private readonly crossProcessLockPath: string | undefined;
@@ -284,6 +298,8 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.loginRunner = options.loginRunner;
 		this.tmpdir = options.tmpdir ?? os.tmpdir();
 		this.legacyCswapDirs = options.legacyCswapDirs ?? [];
+		this.claudeSwapBackups = options.claudeSwapBackups;
+		this.claudeSwapRetiredPath = options.claudeSwapRetiredPath;
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
 		this.crossProcessLockPath = options.crossProcessLockPath;
@@ -489,11 +505,14 @@ export class ParadisClaudeAccountService extends Disposable {
 			void this.pollDue();
 		}
 		const legacy = await this.readLegacyEntries();
-		return this.buildState(targets, this.unregisteredLegacyAccounts(targets, legacy));
+		return this.buildState(targets, this.unregisteredLegacyAccounts(targets, legacy), legacy.length > 0);
 	}
 
 	/** claude-swap の一覧（`sequence.json`）。読むだけで、claude-swap のデータには書き込まない。 */
 	private async readLegacyEntries(): Promise<readonly IParadisClaudeLegacyEntry[]> {
+		if (await this.isClaudeSwapRetired()) {
+			return [];
+		}
 		for (const dir of this.legacyCswapDirs) {
 			const sequencePath = path.join(dir, 'sequence.json');
 			let stat: fs.Stats;
@@ -508,9 +527,11 @@ export class ParadisClaudeAccountService extends Disposable {
 			let accounts: IParadisClaudeLegacyEntry[] = [];
 			try {
 				const parsed = JSON.parse(await fs.promises.readFile(sequencePath, 'utf8')) as { accounts?: Record<string, { email?: unknown; organizationName?: unknown; organizationUuid?: unknown }> };
-				for (const entry of Object.values(parsed.accounts ?? {})) {
+				for (const [slot, entry] of Object.entries(parsed.accounts ?? {})) {
 					if (entry && typeof entry.email === 'string' && entry.email.trim()) {
 						accounts.push({
+							slot,
+							dataDir: dir,
 							email: entry.email.trim(),
 							organizationName: typeof entry.organizationName === 'string' && entry.organizationName.trim() ? entry.organizationName.trim() : undefined,
 							organizationUuid: typeof entry.organizationUuid === 'string' && entry.organizationUuid.trim() ? entry.organizationUuid.trim() : undefined,
@@ -534,7 +555,39 @@ export class ParadisClaudeAccountService extends Disposable {
 			.map(entry => ({ email: entry.email, organizationName: entry.organizationName }));
 	}
 
-	private buildState(targets: readonly IParadisClaudeTarget[], legacyAccounts: readonly IParadisLimitsLegacyAccount[]): IParadisClaudeAccountsState {
+	private async isClaudeSwapRetired(): Promise<boolean> {
+		if (this.claudeSwapRetiredPath === undefined) {
+			return false;
+		}
+		try {
+			await fs.promises.stat(this.claudeSwapRetiredPath);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 「claude-swap はもう使わない」。以後は claude-swap の一覧を見ず、控えのトークンも更新する
+	 * （claude-swap で同じアカウントへ切り替えると、claude-swap 側でログインし直しが要ることがある）。
+	 */
+	async retireClaudeSwap(): Promise<void> {
+		if (this.claudeSwapRetiredPath === undefined) {
+			throw new Error('retiring claude-swap is not supported here');
+		}
+		await paradisWriteClaudeFileAtomically(this.claudeSwapRetiredPath, JSON.stringify({ version: 1, retiredAt: this.now() }));
+		this.legacyCache = undefined;
+		// 更新を控えていたアカウントをすぐ取り直す。
+		for (const state of this.usage.values()) {
+			if (state.statusDetail === PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP) {
+				state.nextPollAt = 0;
+			}
+		}
+		this.fireChange();
+		this.scheduleSoon();
+	}
+
+	private buildState(targets: readonly IParadisClaudeTarget[], legacyAccounts: readonly IParadisLimitsLegacyAccount[], claudeSwapPresent: boolean): IParadisClaudeAccountsState {
 		let oldestFetchedAt: number | undefined;
 		const accounts: IParadisLimitsAccount[] = targets.map(target => {
 			const state = this.usage.get(target.key);
@@ -560,7 +613,7 @@ export class ParadisClaudeAccountService extends Disposable {
 				fetchedAt: current?.fetchedAt,
 			};
 		});
-		return { claude: { accounts, legacyAccounts: legacyAccounts.length > 0 ? legacyAccounts : undefined }, oldestFetchedAt, switching: this.switching };
+		return { claude: { accounts, legacyAccounts: legacyAccounts.length > 0 ? legacyAccounts : undefined, ...(claudeSwapPresent ? { claudeSwapPresent } : {}) }, oldestFetchedAt, switching: this.switching };
 	}
 
 	private markDemand(): void {
@@ -686,12 +739,38 @@ export class ParadisClaudeAccountService extends Disposable {
 	}
 
 	/**
-	 * いまのログインをそのまま写して登録したアカウントで、claude-swap にも同じアカウントがあるか。
-	 * その場合、同じリフレッシュトークンの系列を claude-swap も持っているかもしれない。Para Code が
-	 * 控えのトークンを更新すると claude-swap 側の写しが無効になるので、更新しない。
+	 * いまのログインをそのまま写して登録したアカウントが、claude-swap の控えと同じリフレッシュトークンを
+	 * 持っているか。持っていれば Para Code が更新すると claude-swap 側の写しが無効になるので、更新しない。
+	 * 次のときも同じかもしれないとみなす:
+	 *  - claude-swap の控えを読めない・見つからない・確かめる手段が無い
+	 *  - claude-swap の控えの方が新しい（期限が遅い）。Claude Code が更新した後、Para Code が取り込む前に
+	 *    claude-swap で切り替えると、Para Code の写しは既に使われた古いトークンになっている
+	 * 以前は claude-swap に同じアカウントがあるだけで控えていたため、別のトークンになった後も
+	 * 使用量を取れないままだった。
 	 */
-	private sharesLineageWithCswap(record: IParadisClaudeAccountRecord, legacy: readonly IParadisClaudeLegacyEntry[]): boolean {
-		return record.copiedFromLiveLogin === true && legacy.some(entry => paradisClaudeIdentitiesMatch(recordIdentity(record), { email: entry.email, organizationUuid: entry.organizationUuid }));
+	private async sharesLineageWithCswap(record: IParadisClaudeAccountRecord, credentials: string, legacy: readonly IParadisClaudeLegacyEntry[]): Promise<boolean> {
+		if (record.copiedFromLiveLogin !== true) {
+			return false;
+		}
+		const entries = legacy.filter(entry => paradisClaudeIdentitiesMatch(recordIdentity(record), { email: entry.email, organizationUuid: entry.organizationUuid }));
+		if (entries.length === 0) {
+			return false;
+		}
+		const refreshToken = paradisClaudeRefreshToken(credentials);
+		if (refreshToken === undefined || this.claudeSwapBackups === undefined) {
+			return true;
+		}
+		const expiresAt = paradisParseClaudeOAuthBlob(credentials)?.expiresAt;
+		for (const entry of entries) {
+			const backups = await this.claudeSwapBackups.readBackups(entry.dataDir, entry.slot, entry.email);
+			if (backups === undefined || backups.length === 0 || backups.some(backup => backup.refreshToken === refreshToken)) {
+				return true;
+			}
+			if (typeof expiresAt !== 'number' || backups.some(backup => backup.expiresAt !== undefined && backup.expiresAt > expiresAt)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** 使用量を取ったトークンと身元が、いまのログインのままか（取っている間に変わっていないか）。 */
@@ -702,7 +781,8 @@ export class ParadisClaudeAccountService extends Disposable {
 
 	private async fetchTarget(target: IParadisClaudeTarget, state: IParadisClaudeUsageState, context: IParadisClaudePollContext): Promise<void> {
 		let credentials: string | undefined;
-		const sharedLineage = !target.active && target.record !== undefined && this.sharesLineageWithCswap(target.record, context.legacy);
+		// claude-swap と同じトークンか。更新しようとするときだけ確かめる（毎回キーチェーンを読まない）。
+		let sharedLineage = false;
 		if (target.active) {
 			const live = await this.liveAuth.readCredentials();
 			if (!live.value) {
@@ -735,8 +815,9 @@ export class ParadisClaudeAccountService extends Disposable {
 				return;
 			}
 			if (paradisIsClaudeTokenExpiring(credentials, this.now())) {
+				sharedLineage = await this.sharesLineageWithCswap(target.record, credentials, context.legacy);
 				if (sharedLineage) {
-					// claude-swap と共有しているかもしれない系列は更新しない。使用中に戻ったときに取り直す。
+					// claude-swap の控えと同じトークンは更新しない。使用中に戻ったときに取り直す。
 					this.setStatus(state, 'unavailable', SHARED_LINEAGE_RETRY_S, 'not_fetched', PARADIS_CLAUDE_DETAIL_SHARED_WITH_CLAUDE_SWAP);
 					return;
 				}
@@ -760,6 +841,9 @@ export class ParadisClaudeAccountService extends Disposable {
 
 		this.noteFetch(state);
 		let result = await this.oauth.fetchUsage(accessToken);
+		if (result.kind === 'http' && result.status === 401 && !target.active && target.record && credentials !== undefined) {
+			sharedLineage = await this.sharesLineageWithCswap(target.record, credentials, context.legacy);
+		}
 		if (result.kind === 'http' && result.status === 401 && !target.active && target.record && !sharedLineage) {
 			// 期限より前に失効していた。1回だけ更新して取り直す。
 			const refreshed = await this.refreshStoredCredentials(target.record, true, context.epoch);
@@ -1466,6 +1550,7 @@ export class ParadisClaudeAccountsChannel<TContext = string> implements IServerC
 			case 'registerLiveAccount': return this.service.registerLiveAccount() as Promise<T>;
 			case 'removeAccount': return this.service.removeAccount(String(args[0])) as Promise<T>;
 			case 'switchAccount': return this.service.switchAccount(String(args[0])) as Promise<T>;
+			case 'retireClaudeSwap': return this.service.retireClaudeSwap() as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

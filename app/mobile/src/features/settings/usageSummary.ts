@@ -12,9 +12,51 @@ import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits
  * （`legacy-screens/(settings)/ratelimit.tsx`）にあったものを、画面の外へ移した。
  */
 
-/** アカウントの見出し（メール → ホームの呼び名 → ID の順）。 */
-export function accountName(account: RateLimitAccount): string {
+/**
+ * メールを番号で出すときの番号（{@link accountNumbers} が作る）。鍵は provider と見出し（小文字）。
+ */
+export type AccountNumbers = ReadonlyMap<string, number>;
+
+function accountNumberKey(account: RateLimitAccount): string {
+	return `${account.provider}|${(account.email ?? account.homeLabel ?? account.id).trim().toLowerCase()}`;
+}
+
+/**
+ * スクリーンショット用に、メールの代わりに出す番号を振る。provider ごとに、渡した順で 1 から振り、同じメールは
+ * 同じ番号にする（Codex の同じメールの別ワークスペースも同じ番号）。ホームと使用量の画面で同じアカウントが同じ番号に
+ * なるよう、画面の並べ替えの前の、束ねた全アカウントの順で渡す。PC の番号とは揃えない。
+ */
+export function accountNumbers(accounts: readonly RateLimitAccount[]): AccountNumbers {
+	const numbers = new Map<string, number>();
+	const counts = { claude: 0, codex: 0 };
+	for (const account of accounts) {
+		const key = accountNumberKey(account);
+		if (!numbers.has(key)) {
+			numbers.set(key, ++counts[account.provider]);
+		}
+	}
+	return numbers;
+}
+
+/**
+ * アカウントの見出し（メール → ホームの呼び名 → ID の順）。`numbers` を渡すと「Claude 1」「Codex 2」のように番号で出す
+ * （番号の無いアカウントもメールは出さず provider の名前だけにする）。
+ */
+export function accountName(account: RateLimitAccount, numbers?: AccountNumbers): string {
+	if (numbers !== undefined) {
+		const provider = account.provider === 'claude' ? 'Claude' : 'Codex';
+		const number = numbers.get(accountNumberKey(account));
+		return number !== undefined ? `${provider} ${number}` : provider;
+	}
 	return account.email ?? account.homeLabel ?? account.id;
+}
+
+/** 使用量の画面のサブタイトルの先頭に、メールを番号で出していることを添える（戻し忘れに気付けるように。1 行で切れるので先頭）。 */
+export function withEmailMaskNote(subtitle: string | undefined, masked: boolean): string | undefined {
+	if (!masked) {
+		return subtitle;
+	}
+	return subtitle !== undefined ? `メールを番号で表示中 · ${subtitle}` : 'メールを番号で表示中';
 }
 
 /** アカウントの枠（5時間・7日・追加の枠）を、見せる順に並べる。 */

@@ -497,8 +497,12 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		while (hit && hit.shadowRoot) { const inner = hit.shadowRoot.elementFromPoint(x, y); if (!inner || inner === hit) { break; } hit = inner; }
 		if (!hit) { out.problem = 'nothing-at-point'; return out; }
 		// The element itself or something inside it (also inside its shadow root) takes the click. An ancestor takes it only when
-		// the element does not receive the pointer (pointer-events: none), as it would for a person; not when the element is clipped
-		// away at the point (the click would land on the ancestor), and never for a field, which must get focus itself.
+		// the element does not receive the pointer (pointer-events: none), as it would for a person, or when it is the link or button
+		// that holds the element (said so in the result, q.html Q396); not when the element is clipped away at the point (the click
+		// would land on the ancestor), and never for a field, which must get focus itself.
+		if (pointerHit(el, hit) === 'ancestor' && spec.purpose !== 'fill' && pointerControl(el, hit)) {
+			out.receivedBy = describe(hit);
+		}
 		if (!pointerReaches(el, hit, spec.purpose)) {
 			// A <label> for the element forwards the click to it.
 			const label = hit.closest ? hit.closest('label') : null;
@@ -552,6 +556,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		};
 		if (hit.problem) { out.problem = hit.problem; }
 		if (hit.coveredBy) { out.coveredBy = hit.coveredBy; }
+		if (hit.receivedBy) { out.receivedBy = hit.receivedBy; }
 		if (kind === 'select') { out.options = Array.from(target.options).slice(0, 50).map(option => ({ value: option.value, label: cut(option.label || option.text, 80) })); }
 		return out;
 	}
