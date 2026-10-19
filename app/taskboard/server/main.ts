@@ -217,6 +217,9 @@ interface IRestart {
 	readonly port: number;
 }
 
+/** 起動したときのリポジトリ。切り替えてから戻ってきたときは、起動時の引数（台帳・クローン・ワークツリーの置き場）を使う。 */
+let startupRepo: string | undefined;
+
 /**
  * ボードのサーバーを起こす。`restart` は、上部のメニューでリポジトリを切り替えたときに同じプロセスの中で
  * 開き直すためのもの（台帳・作業場所・クローンの指定・ブラウザを開くかは引き継がず、ポートと鍵だけ引き継ぐ）。
@@ -226,11 +229,16 @@ async function main(restart?: IRestart): Promise<void> {
 	// <img> とモックの <iframe> の URL に付ける、読むだけの鍵（スナップショットで画面へ渡す。早く作っておく）
 	const assetKey = randomBytes(24).toString('base64url');
 	const repoPath = demo ? undefined : await resolveRepo(restart?.repo);
+	if (!restart) {
+		startupRepo = repoPath;
+	}
+	// 起動したリポジトリへ戻ってきたら、起動時の引数をそのまま使う（別の台帳を開いて元のタスクが見えなくならないように）
+	const fresh = !restart || (repoPath !== undefined && repoPath === startupRepo);
 	const remote: IRepoSlug | undefined = repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
-	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), restart ? undefined : args.data));
+	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), fresh ? args.data : undefined));
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
-	const clones = args.clones && !restart ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
-	const worktreeRoot = (restart ? undefined : args['worktree-root']) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
+	const clones = args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
+	const worktreeRoot = (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
 	if (args.agents !== 'simulated' && args.agents !== 'para-code') {
 		throw new Error('--agents は simulated か para-code');
 	}
@@ -243,7 +251,7 @@ async function main(restart?: IRestart): Promise<void> {
 	if (args['real-workspaces'] && !repoPath) {
 		throw new Error('--real-workspaces needs --repo');
 	}
-	if (args.clones && !args.demo && !restart) {
+	if (args.clones && !args.demo && fresh) {
 		await store.saveSettings({ ...settings, clones });
 	}
 
@@ -873,8 +881,10 @@ async function main(restart?: IRestart): Promise<void> {
 			process.off('SIGINT', onSignal);
 			process.off('SIGTERM', onSignal);
 			log(`${switchTo} で開き直します`);
+			// 開き直せなければ終わる。途中まで起動したもの（エンジン・作業場所・タイマー）を残したまま元のリポジトリで
+			// 開き直すと、2 つのエンジンが同じ作業場所を使いうる
 			main({ repo: switchTo, token, port }).catch(err => {
-				console.error('[taskboard] failed to reopen:', err);
+				console.error(`[taskboard] failed to reopen ${switchTo}:`, err);
 				process.exit(1);
 			});
 			return;
