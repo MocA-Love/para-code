@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisLimitsAccount,
+	paradisLimitsAccountNumber,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsNotFetchedCause,
@@ -168,6 +169,22 @@ suite('ParadisLimitsMonitor', () => {
 			rateLimited: undefined,
 			relogin: undefined,
 		});
+	});
+
+	// メールを隠すときの番号は、同じアカウント（Codex は account_id、それ以外はメール）で同じになる。
+	test('numbers accounts for masked emails so that the same account keeps one number', () => {
+		const accounts = [
+			{ id: '/h/.codex-2', email: 'a@example.com', accountId: 'hash-a' },
+			{ id: '/h/.codex-4', email: 'b@example.com', accountId: 'hash-b' },
+			{ id: '/h/.codex', email: 'a@example.com', accountId: 'hash-a' },
+			{ id: 'claude-live', email: 'C@example.com' },
+			{ id: 'para-claude:x', email: 'c@example.com' },
+			{ id: 'no-email' },
+		];
+		assert.deepStrictEqual(
+			[...accounts, { id: 'missing', email: 'z@example.com' }].map(account => paradisLimitsAccountNumber(account, accounts)),
+			[1, 2, 1, 3, 3, 4, undefined],
+		);
 	});
 
 	// リセット時刻を過ぎた枠は、古い使用率を出さない。

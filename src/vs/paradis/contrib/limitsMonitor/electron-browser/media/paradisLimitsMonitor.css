@@ -200,6 +200,21 @@
 	white-space: nowrap;
 }
 
+/* Codex のホーム（メールの下の副題。同じアカウントのホームはまとめて並べる）。 */
+.paradis-limits-panel .plm-account-homes {
+	margin-top: 1px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* カードの下端の列で左に寄せるもの（Codex のリセット）。切り替えのボタンは右に残る。 */
+.paradis-limits-panel .plm-card-actions .plm-card-actions-start {
+	margin-right: auto;
+}
+
 /* 取得できていないカードは1行に縮める（理由とボタンは開いたときだけ）。 */
 .paradis-limits-panel .plm-account.compact:not(.expanded) .plm-account-top {
 	margin-bottom: 0;
@@ -266,20 +281,7 @@
 	color: #ffffff;
 }
 
-.paradis-limits-panel .plm-badge.duplicate {
-	background: var(--vscode-inputValidation-warningBackground, var(--vscode-badge-background));
-	color: var(--vscode-inputValidation-warningForeground, var(--vscode-badge-foreground));
-	border: var(--vscode-strokeThickness, 1px) solid var(--vscode-inputValidation-warningBorder, transparent);
-}
-
-.paradis-limits-panel .plm-account-actions {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	flex: none;
-}
-
-/* 削除ボタン(plm-account-delete)と非表示トグル(plm-account-hide)の共通の見た目。 */
+/* 右上の「…」（一覧から隠す・削除のメニュー）の見た目。 */
 .paradis-limits-panel .plm-account-icon-btn {
 	display: inline-flex;
 	align-items: center;
@@ -568,6 +570,7 @@
 }
 
 /* 次に切れる期限が今日・明日のときの1行。 */
+.paradis-limits-panel .plm-card-action-link.soon,
 .paradis-limits-panel .plm-card-action-note.soon {
 	color: var(--vscode-editorWarning-foreground, #f59e0b);
 }
@@ -676,6 +679,32 @@
 
 .paradis-limits-panel .plm-footer .plm-updated {
 	margin-left: auto;
+}
+
+/* メールを番号に切り替えるボタン（スクリーンショット用）。 */
+.paradis-limits-panel .plm-mask-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 6px;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.paradis-limits-panel .plm-mask-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-limits-panel .plm-mask-btn[aria-pressed="true"] {
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-limits-panel .plm-mask-btn .codicon {
+	font-size: 12px;
 }
 
 .paradis-limits-panel .plm-icon-btn {

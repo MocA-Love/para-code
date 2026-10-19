@@ -346,3 +346,21 @@ export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: 
 	}
 	return `${minutes}m`;
 }
+
+/**
+ * 同じアカウントかを見分ける鍵。Codex は account_id のハッシュ（同じアカウントが別のホームにもあるとき
+ * 1 つにまとめる）、それ以外はメール。どちらも無ければ ID。
+ */
+export function paradisLimitsAccountKey(account: Pick<IParadisLimitsAccount, 'id' | 'email' | 'accountId'>): string {
+	return account.accountId ?? account.email?.toLowerCase() ?? account.id;
+}
+
+/**
+ * メールを隠すときに代わりに出す番号（1 から）。同じプロバイダの一覧の中で、同じアカウントは同じ番号になる。
+ * 一覧に無ければ undefined。
+ */
+export function paradisLimitsAccountNumber(account: Pick<IParadisLimitsAccount, 'id' | 'email' | 'accountId'>, accounts: readonly Pick<IParadisLimitsAccount, 'id' | 'email' | 'accountId'>[]): number | undefined {
+	const keys = [...new Set(accounts.map(paradisLimitsAccountKey))];
+	const index = keys.indexOf(paradisLimitsAccountKey(account));
+	return index < 0 ? undefined : index + 1;
+}
