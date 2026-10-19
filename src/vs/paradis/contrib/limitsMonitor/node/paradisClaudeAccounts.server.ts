@@ -37,6 +37,7 @@ import { paradisConnectionClientId } from '../../../common/paradisConnectionClie
 import { ParadisServerContributions } from '../../../common/paradisProcessContributions.js';
 import { IParadisClaudeAccountsState, PARADIS_CLAUDE_ACCOUNTS_CHANNEL } from '../common/paradisClaudeAccounts.js';
 import { ParadisClaudeAccountRegistry, ParadisPlainFileClaudeSecretStore } from './paradisClaudeAccountStore.js';
+import { ParadisClaudeSwapBackupReader } from './paradisClaudeSwapBackups.js';
 import { ParadisClaudeAccountService, ParadisClaudeAccountsChannel } from './paradisClaudeAccountService.js';
 import { paradisSetClaudeHostStateSource } from './paradisClaudeHostUsage.js';
 import { ParadisClaudeLiveAuth } from './paradisClaudeLiveAuth.js';
@@ -99,6 +100,8 @@ ParadisServerContributions.register('claudeAccounts', ({ server, accessor }) => 
 		logService,
 		loginRunner: new ParadisClaudeCliLoginRunner(async () => ({ ...process.env }), homedir, message => logService.trace(`[ParadisClaudeAccounts] ${message}`)),
 		legacyCswapDirs: legacyCswapDirs(homedir),
+		claudeSwapBackups: new ParadisClaudeSwapBackupReader(undefined),
+		claudeSwapRetiredPath: path.join(storageDir, 'claude-swap-retired.json'),
 		crossProcessLockPath: path.join(storageDir, '.mutation.lock'),
 	}));
 	store.add(paradisSetClaudeHostStateSource(request => service.getState(request)));

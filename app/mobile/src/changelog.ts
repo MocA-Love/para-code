@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.13',
+		date: '2026-10-19',
+		items: [
+			{
+				icon: 'eye-off-outline',
+				title: 'スクリーンショット用に、使用量のアカウントのメールを「Claude 1」「Codex 2」のような番号で出せるようになりました',
+				body: '使用量の画面の右上の目のボタンで切り替えます。ホームのカードも同じ番号になります。保存しないので、アプリを終了すると表示に戻ります。',
+			},
+		],
+	},
+	{
 		version: '0.12.12',
 		date: '2026-10-16',
 		items: [

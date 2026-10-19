@@ -75,6 +75,8 @@ interface ILocated {
 	readonly y?: number;
 	readonly problem?: string;
 	readonly coveredBy?: Record<string, unknown>;
+	/** 目的の要素を包むリンク・ボタンがクリックを受ける（q.html Q396）。 */
+	readonly receivedBy?: Record<string, unknown>;
 	readonly options?: readonly { value: string; label: string }[];
 	readonly withinMissing?: boolean;
 	readonly noIndex?: boolean;
@@ -260,7 +262,7 @@ export class ParadisBrowserActBy {
 			return error(`click_by found the element but the click was not completed: ${failure}`);
 		}
 		const which = located.matched > 1 ? ` (${located.matched} elements matched${args.index === undefined ? '; used the first visible, enabled one' : `; used index ${args.index}`})` : '';
-		return text(`${args.double === true ? 'Double-clicked' : button === 'left' ? 'Clicked' : `${button === 'right' ? 'Right' : 'Middle'}-clicked`} at (${Math.round(located.x!)}, ${Math.round(located.y!)})${which}.\nElement: ${JSON.stringify(located.element)}`);
+		return text(`${args.double === true ? 'Double-clicked' : button === 'left' ? 'Clicked' : `${button === 'right' ? 'Right' : 'Middle'}-clicked`} at (${Math.round(located.x!)}, ${Math.round(located.y!)})${which}.\nElement: ${JSON.stringify(located.element)}${located.receivedBy !== undefined ? `\nThe click went to the link or button that holds the element: ${JSON.stringify(located.receivedBy)}` : ''}`);
 	}
 
 	private async fillBy(call: IParadisBrowserActCall, args: Record<string, unknown>): Promise<ToolResult> {
