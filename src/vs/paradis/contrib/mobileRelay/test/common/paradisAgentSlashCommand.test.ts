@@ -64,6 +64,19 @@ suite('ParadisAgentSlashCommand', () => {
 		], [true, true, false]);
 	});
 
+	test('sees the refused text in the Codex 0.164 composer, whose prompt marker becomes the slash', () => {
+		// Measured on Codex 0.164.0-alpha.3 (2026-10-20): `› /x` is drawn as `/ x`; the command list rows have no space after the slash.
+		const screen = (composer: string) => `› hello\n• Unrecognized command '/x'. Type "/" for a list of supported commands.\n${composer}\n  mock-model default · ~/project`;
+		assert.deepStrictEqual([
+			paradisCodexComposerHoldsCommand(screen('/ x foo bar'), 'x'),
+			paradisCodexComposerHoldsCommand(screen('/ x'), 'x'),
+			paradisCodexComposerHoldsCommand(screen('/ xyz foo'), 'x'),
+			paradisCodexComposerHoldsCommand(screen('/'), 'x'),
+			paradisCodexComposerHoldsCommand(screen('  /x         run x'), 'x'),
+			paradisCodexComposerHoldsCommand('/ a-rather-long-\n  command-name foo\n  mock-model default', 'a-rather-long-command-name'),
+		], [true, true, false, false, false, true]);
+	});
+
 	test('finds a refusal that a narrow pane wrapped onto several lines', () => {
 		const wrapped = '• Unrecognized command \'/a-rather-long-\n  command-name\'. Type "/" for a\n  list of supported commands.';
 		const wrappedAtSpace = '• Unrecognized\n  command \'/x\'.';

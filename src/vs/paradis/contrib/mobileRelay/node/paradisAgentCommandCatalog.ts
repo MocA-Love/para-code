@@ -68,6 +68,7 @@ interface MarkdownMetadata {
 
 const CODEX_BUILT_INS: readonly [string, string][] = [
 	['model', 'choose what model and reasoning effort to use'],
+	['presets', 'run or save reusable prompts and slash commands'],
 	['fast', 'toggle fast mode for lower-latency responses'],
 	['ide', 'include current selection, open files, and other IDE context'],
 	['permissions', 'choose what Codex is allowed to do'],

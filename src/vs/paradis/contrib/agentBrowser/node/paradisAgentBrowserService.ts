@@ -1656,7 +1656,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		times.push(now);
 		this._programStatusTimes.set(token, times);
 		if (status.app === 'codex') {
-			return this._noteCodexProgramStatus(token, status.state, now);
+			return this._noteCodexProgramStatus(token, status.state, status.kind, now);
 		}
 		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
@@ -1689,13 +1689,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * Codex の OSC 7501 の状態（完了も許可と質問の区別も無い）。状態の出どころにはせず（`_programStatusTokens` に
+	 * Codex の OSC 7501 の状態（0.163 は完了も許可と質問の区別も無い。0.164 から done・error と kind が付く）。状態の出どころにはせず（`_programStatusTokens` に
 	 * 載せない）、transcript から読んだターンの始まり・終わりもそのまま使う。transcript が一度でもターンを知らせた
 	 * ペイン（`_agentHookTokens`）では、許可待ちとその解除にだけ使う（paradisCodexProgramStatusTransition）。
 	 */
-	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, now: number): boolean {
+	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, kind: string | undefined, now: number): boolean {
 		const previous = this._paneStatuses.get(token);
-		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token));
+		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token), kind);
 		if (next === undefined || next === previous?.status) {
 			return false;
 		}
