@@ -15,6 +15,7 @@ import { IParadisLimitsAccount } from '../../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, ParadisClaudeAccountRegistry, ParadisKeychainClaudeSecretStore, PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE } from '../../node/paradisClaudeAccountStore.js';
 import { ParadisClaudeAccountService } from '../../node/paradisClaudeAccountService.js';
 import { ParadisClaudeLiveAuth, PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE } from '../../node/paradisClaudeLiveAuth.js';
+import { IParadisClaudeSwapBackupReader } from '../../node/paradisClaudeSwapBackups.js';
 import {
 	ParadisFakeClaudeOAuth,
 	ParadisMemoryKeychain,
@@ -61,7 +62,7 @@ suite('ParadisClaudeAccountService usage', () => {
 		cleanup = undefined;
 	});
 
-	async function createHarness(options: { platform?: NodeJS.Platform; records?: IParadisClaudeAccountRecord[]; legacyCswapDirs?: (home: string) => string[] } = {}): Promise<IHarness> {
+	async function createHarness(options: { platform?: NodeJS.Platform; records?: IParadisClaudeAccountRecord[]; legacyCswapDirs?: (home: string) => string[]; claudeSwapBackups?: IParadisClaudeSwapBackupReader } = {}): Promise<IHarness> {
 		const dirs = await paradisCreateClaudeTestHome();
 		cleanup = dirs.dispose;
 		const platform = options.platform ?? 'darwin';
@@ -81,6 +82,8 @@ suite('ParadisClaudeAccountService usage', () => {
 			now: () => harness.now,
 			random: () => 0.5,
 			legacyCswapDirs: options.legacyCswapDirs?.(dirs.home),
+			claudeSwapBackups: options.claudeSwapBackups,
+			claudeSwapRetiredPath: path.join(dirs.userData, 'paradis-claude-accounts', 'claude-swap-retired.json'),
 		}));
 		return Object.assign(harness, { home: dirs.home, userData: dirs.userData, keychain, oauth, service }) as IHarness;
 	}
@@ -279,6 +282,81 @@ suite('ParadisClaudeAccountService usage', () => {
 			rejected: held,
 			expiring: held,
 			refreshCalls: [],
+		});
+	});
+	/** bob を「いまのログインを写した登録」にし、claude-swap の一覧にも載せる。 */
+	async function createSharedBobHarness(claudeSwapBackups?: IParadisClaudeSwapBackupReader): Promise<IHarness> {
+		const harness = await createHarness({
+			records: [{ ...record(BOB_ID, 'u-bob', 'bob@example.com'), copiedFromLiveLogin: true }],
+			legacyCswapDirs: home => [path.join(home, '.claude-swap-backup')],
+			claudeSwapBackups,
+		});
+		const cswapDir = path.join(harness.home, '.claude-swap-backup');
+		await fs.promises.mkdir(cswapDir);
+		await fs.promises.writeFile(path.join(cswapDir, 'sequence.json'), JSON.stringify({ accounts: { '1': { email: 'bob@example.com', organizationUuid: 'org-1' } } }));
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('alice-live', 'alice-r', harness.now + 10 * HOUR));
+		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-a', 'bob-r', harness.now + 60_000));
+		harness.oauth.usageByToken.set('alice-live', { kind: 'ok', usage: paradisTestUsage(10) });
+		harness.oauth.refreshByToken.set('bob-r', { kind: 'ok', credentialsJson: paradisTestCredentials('bob-b', 'bob-r2', harness.now + 8 * HOUR) });
+		harness.oauth.usageByToken.set('bob-b', { kind: 'ok', usage: paradisTestUsage(40) });
+		return harness;
+	}
+
+	async function bobState(harness: IHarness): Promise<object> {
+		await poll(harness);
+		const state = await harness.service.getState(undefined);
+		const bob = state.claude.accounts.find(item => item.id === `para-claude:${BOB_ID}`)!;
+		return { status: bob.status, statusDetail: bob.statusDetail, fiveHour: bob.fiveHour?.usedPercent, claudeSwapPresent: state.claude.claudeSwapPresent };
+	}
+
+	// claude-swap に同じアカウントがあっても、控えのトークンが別物なら更新して使用量を取る。
+	test('refreshes a stand-by token only when claude-swap does not hold the same refresh token', async () => {
+		const backups = { tokens: ['bob-r'] as string[] | undefined, calls: [] as string[] };
+		const harness = await createSharedBobHarness({
+			readRefreshTokens: async (dataDir, slot, email) => {
+				backups.calls.push(`${path.basename(dataDir)} ${slot} ${email}`);
+				return backups.tokens;
+			},
+		});
+		const same = await bobState(harness);
+		const refreshCallsWhileSame = [...harness.oauth.refreshCalls];
+		// 読めないときも同じかもしれないとみなす
+		backups.tokens = undefined;
+		harness.now += 11 * 60_000;
+		const unreadable = await bobState(harness);
+		// claude-swap 側のトークンは別物になった
+		backups.tokens = ['bob-other'];
+		harness.now += 11 * 60_000;
+		const different = await bobState(harness);
+
+		assert.deepStrictEqual({ same, refreshCallsWhileSame, unreadable, different, refreshCalls: harness.oauth.refreshCalls, readerCalls: backups.calls.length }, {
+			same: { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true },
+			refreshCallsWhileSame: [],
+			unreadable: { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true },
+			different: { status: 'ok', statusDetail: undefined, fiveHour: 40, claudeSwapPresent: true },
+			refreshCalls: ['bob-r'],
+			readerCalls: 3,
+		});
+		assert.deepStrictEqual(backups.calls[0], '.claude-swap-backup 1 bob@example.com');
+	});
+
+	// 「claude-swap はもう使わない」を押したら、claude-swap を見ずに更新し、案内も出さない。
+	test('stops holding off and hides the claude-swap notice after claude-swap is retired', async () => {
+		const harness = await createSharedBobHarness();
+		const before = await bobState(harness);
+		const sequenceBefore = await fs.promises.readFile(path.join(harness.home, '.claude-swap-backup', 'sequence.json'), 'utf8');
+
+		await harness.service.retireClaudeSwap();
+		const after = await bobState(harness);
+		const legacyAccounts = (await harness.service.getState(undefined)).claude.legacyAccounts;
+
+		assert.deepStrictEqual({ before, after, legacyAccounts, refreshCalls: harness.oauth.refreshCalls, sequenceUnchanged: sequenceBefore === await fs.promises.readFile(path.join(harness.home, '.claude-swap-backup', 'sequence.json'), 'utf8') }, {
+			before: { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true },
+			after: { status: 'ok', statusDetail: undefined, fiveHour: 40, claudeSwapPresent: undefined },
+			legacyAccounts: undefined,
+			refreshCalls: ['bob-r'],
+			sequenceUnchanged: true,
 		});
 	});
 });
