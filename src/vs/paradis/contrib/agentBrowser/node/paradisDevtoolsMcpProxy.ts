@@ -35,6 +35,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { paradisPaneTokenOfScopeKey } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyBrowserToolErrorText } from '../common/paradisBrowserErrorReason.js';
+import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
@@ -575,6 +576,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		// Node の os.tmpdir() は POSIX で TMPDIR→TMP→TEMP、Windows で TEMP→TMP を読む
 		const temporaryEnv: NodeJS.ProcessEnv = ownTemporaryDirectory === undefined ? {} : { TMPDIR: ownTemporaryDirectory, TMP: ownTemporaryDirectory, TEMP: ownTemporaryDirectory };
 		const child = spawnChild(process.execPath, [
+			// 落ちたときの minidump に、どの子かの印を残す（paradisCrashRole.ts）
+			...paradisCrashRoleNodeArgs('devtools-mcp', !!process.versions.electron),
 			entryPath,
 			`--wsEndpoint=${wsEndpoint}`,
 			// テレメトリ送信（Google Clearcut / CrUX APIへのURL送信）は同梱コンポーネントとして無効化する

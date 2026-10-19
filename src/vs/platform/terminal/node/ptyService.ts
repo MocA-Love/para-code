@@ -28,8 +28,8 @@ import { formatMessageForTerminal } from '../common/terminalStrings.js';
 import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.js';
 // PARA-PATCH: pty daemon support; replaces the direct TerminalProcess import (see paradisTerminalProcessFactory.ts)
 import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
-// PARA-PATCH: hand terminals held by the pty daemon over between pty hosts (see paradisPtyReadopt.ts)
-import { paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
+// PARA-PATCH: hand terminals held by the pty daemon over between pty hosts, and count what went wrong for the window to report (see paradisPtyReadopt.ts)
+import { paradisCountNoPty, paradisCountReconnectFailed, paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
 import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
 import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
@@ -450,6 +450,7 @@ export class PtyService extends Disposable implements IPtyService {
 			this._logService.info(`Persistent process reconnection "${id}"`);
 		} catch (e) {
 			this._logService.warn(`Persistent process reconnection "${id}" failed`, e.message);
+			paradisCountReconnectFailed(e); // PARA-PATCH: count it for the window to report (paradisRelayedDiagnostics.ts)
 			throw e;
 		}
 	}
@@ -1001,6 +1002,7 @@ export class PtyService extends Disposable implements IPtyService {
 	private _throwIfNoPty(id: number): PersistentTerminalProcess {
 		const pty = this._ptys.get(id);
 		if (!pty) {
+			paradisCountNoPty(); // PARA-PATCH: count it for the window to report; the pty host has no Sentry (paradisRelayedDiagnostics.ts)
 			throw new ErrorNoTelemetry(`Could not find pty ${id} on pty host`);
 		}
 		return pty;
