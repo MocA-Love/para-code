@@ -242,6 +242,21 @@ suite('ParadisSentryCommon', () => {
 		});
 	});
 
+	test('adds the message hash to the key of a method name that many classes share, so their errors do not share an issue', () => {
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const key = (functionName: string, messageHash: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'TypeError', 'para.error_message_hash': messageHash },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: shared, function: functionName }] } }] },
+		});
+		assert.deepStrictEqual({
+			common: [key('TT.dispose', 'aaaaaaaa'), key('S0.dispose', 'bbbbbbbb')],
+			uncommon: [key('TT._reportToolResultError', 'aaaaaaaa'), key('S0._reportToolResultError', 'bbbbbbbb')],
+		}, {
+			common: [`owned|f|o|Error|${shared}|dispose|TypeError|aaaaaaaa`, `owned|f|o|Error|${shared}|dispose|TypeError|bbbbbbbb`],
+			uncommon: [`owned|f|o|Error|${shared}|_reportToolResultError|TypeError`, `owned|f|o|Error|${shared}|_reportToolResultError|TypeError`],
+		});
+	});
+
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },
