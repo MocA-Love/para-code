@@ -398,6 +398,13 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		label: localize('paradis.settings.agentLiveTitleBar', "タイトルバーに「エージェント一覧」ボタンを表示"),
 		keywords: 'agent live window titlebar list',
 	},
+	{
+		sectionId: 'psd-sec-space',
+		key: 'paradis.taskBoard.titleBar.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.taskBoardTitleBar', "タイトルバーに「タスクボード」ボタンを表示"),
+		keywords: 'task board taskboard kanban titlebar',
+	},
 
 	// --- レイアウトプリセット ---
 	{

@@ -1,0 +1,16 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * タイトルバーの「タスクボード」ボタン。枠・ラベル・バッジ・狭い幅でラベルを畳む決まりは、隣の「エージェント一覧」
+ * (agentLiveWindow/browser/media/paradisAgentLiveWindow.css と titlebarFit) のクラスをそのまま使う。ここはアイコンだけ。
+ */
+
+/* 3 列のかんばん（列ごとに高さの違うカード） */
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-icon.paradis-task-board-titlebar-icon {
+	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2h3.5v9H1.5zm4.75 0h3.5v6h-3.5zm4.75 0h3.5v11H11z'/></svg>");
+}
