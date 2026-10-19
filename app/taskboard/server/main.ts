@@ -21,8 +21,9 @@ import { ParaCodeAgents } from './paraCode.js';
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
-import { dataDir, Store, type ILocalSettings } from './store.js';
+import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
+import { commandPath } from './executables.js';
 
 /*
  * タスクボードの開発用ローカルサーバー。
@@ -131,9 +132,53 @@ const { values: args } = parseArgs({
 		quiet: { type: 'boolean', default: false },
 		agents: { type: 'string', default: 'simulated' },
 		bridge: { type: 'string' },
+		// Para Code が起動したボード。鍵は IPC で受け取り、起動の合図も IPC で返す（鍵付きの URL を出力しない）。
+		// 親（Para Code）との IPC が切れたら止まる
+		embedded: { type: 'boolean', default: false },
 	},
 	allowPositionals: false,
 });
+
+/** Para Code（親）とのやりとり。`--embedded` のときだけ使う。 */
+type EmbeddedMessage =
+	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
+	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string };
+
+// Para Code は Electron を Node として動かして（ELECTRON_RUN_AS_NODE）このサーバーを起こす。消さないと、工程のコマンド
+// （Electron を起動するテストなど）にも渡って Node として動いてしまう。Electron は起動のときしかこれを読まない
+if (args.embedded) {
+	delete process.env.ELECTRON_RUN_AS_NODE;
+}
+
+function tellParent(message: EmbeddedMessage, sent?: () => void): void {
+	if (args.embedded && process.send && process.connected) {
+		process.send(message, undefined, undefined, () => sent?.());
+	} else {
+		sent?.();
+	}
+}
+
+/** 今動いているボードを止める処理（main() が開くたびに差し替える）。Para Code との IPC が切れたら呼ぶ。 */
+let stopCurrent: (() => void) | undefined;
+
+/**
+ * Para Code から鍵を受け取る（最初の IPC のメッセージ）。コマンドラインや環境変数に載せると、`ps` や
+ * エージェントが走らせるコマンド（`process.env` を受け継ぐ）から読めてしまう。
+ */
+function receiveEmbeddedToken(): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error('Para Code did not send the key')), 30_000);
+		process.once('message', (message: unknown) => {
+			clearTimeout(timer);
+			const token = (message as { type?: unknown; token?: unknown } | undefined)?.type === 'init' ? (message as { token?: unknown }).token : undefined;
+			if (typeof token === 'string' && token.length >= 16) {
+				resolve(token);
+			} else {
+				reject(new Error('Para Code sent an invalid key'));
+			}
+		});
+	});
+}
 
 /** WebSocket のサブプロトコル。`taskboard.<鍵>` で鍵を送り、サーバーは `taskboard` を選ぶ。 */
 const WS_PROTOCOL = 'taskboard';
@@ -143,6 +188,12 @@ function log(...parts: unknown[]): void {
 	if (!args.quiet) {
 		console.log('[taskboard]', ...parts);
 	}
+}
+
+/** ワークツリーなら本体のリポジトリ（`--git-common-dir` の 1 つ上）。そうでなければそのまま。 */
+async function mainRepository(toplevel: string): Promise<string> {
+	const common = await git(toplevel, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 5000).catch(() => undefined);
+	return common && path.basename(common) === '.git' ? path.dirname(common) : toplevel;
 }
 
 async function resolveRepo(repo = args.repo): Promise<string | undefined> {
@@ -217,6 +268,9 @@ interface IRestart {
 	readonly port: number;
 }
 
+/** `--embedded` のとき、Para Code から受け取った鍵。 */
+let embeddedToken: string | undefined;
+
 /** 起動したときのリポジトリ。切り替えてから戻ってきたときは、起動時の引数（台帳・クローン・ワークツリーの置き場）を使う。 */
 let startupRepo: string | undefined;
 
@@ -228,7 +282,17 @@ async function main(restart?: IRestart): Promise<void> {
 	const demo = !restart && args.demo;
 	// <img> とモックの <iframe> の URL に付ける、読むだけの鍵（スナップショットで画面へ渡す。早く作っておく）
 	const assetKey = randomBytes(24).toString('base64url');
-	const repoPath = demo ? undefined : await resolveRepo(restart?.repo);
+	let repoPath = demo ? undefined : await resolveRepo(restart?.repo);
+	if (args.embedded && !restart && repoPath) {
+		// Para Code の今のスペースから開く。ワークツリー（Para Code の新しいスペースやボードの作業場所）なら本体のリポジトリで
+		// 開き、ボードのクローンなら断る（別の空の台帳と、ワークツリーのさらにワークツリーができてしまう）
+		repoPath = await mainRepository(repoPath);
+		const known = await boardPlaces();
+		const real = (p: string) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+		if (known.clones.map(real).includes(real(repoPath))) {
+			throw new TaskBoardError('invalid-params', 'これはタスクボードの作業場所（クローン）なので、リポジトリとしては開けません');
+		}
+	}
 	if (!restart) {
 		startupRepo = repoPath;
 	}
@@ -236,6 +300,10 @@ async function main(restart?: IRestart): Promise<void> {
 	const fresh = !restart || (repoPath !== undefined && repoPath === startupRepo);
 	const remote: IRepoSlug | undefined = repoPath ? parseRemote(await remoteUrl(repoPath)) : undefined;
 	const store = new Store(dataDir(repoPath ?? (demo ? 'demo' : undefined), fresh ? args.data : undefined));
+	// 同じリポジトリを開いているボードがほかにあれば断る（両方のエンジンが同じ台帳と作業場所を使ってしまう）
+	if (!demo) {
+		await store.lock(args.embedded ? 'embedded' : 'standalone');
+	}
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
 	const clones = args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
 	const worktreeRoot = (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
@@ -555,7 +623,7 @@ async function main(restart?: IRestart): Promise<void> {
 			if (!task?.pr || task.pr.simulated || task.pr.state !== 'draft') {
 				throw new TaskBoardError('invalid-state', 'ドラフトの PR がありません');
 			}
-			await new Promise<void>((resolve, reject) => execFile('gh', ['pr', 'ready', String(task.pr!.number), '--repo', `${task.pr!.owner}/${task.pr!.repo}`], { timeout: 30000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, err => err ? reject(new TaskBoardError('invalid-state', `gh pr ready が失敗しました: ${err.message}`)) : resolve()));
+			await new Promise<void>((resolve, reject) => execFile(commandPath('gh'), ['pr', 'ready', String(task.pr!.number), '--repo', `${task.pr!.owner}/${task.pr!.repo}`], { timeout: 30000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, err => err ? reject(new TaskBoardError('invalid-state', `gh pr ready が失敗しました: ${err.message}`)) : resolve()));
 			engine.reportPullRequest(task.id, { ...task.pr, state: 'open' });
 		},
 		repositories: async () => {
@@ -592,6 +660,12 @@ async function main(restart?: IRestart): Promise<void> {
 			const roots = [...known.worktreeRoots, ...(worktreeRoot ? [worktreeRoot] : [])].map(real);
 			if (places.includes(realTarget) || roots.some(root => realTarget.startsWith(`${root}${path.sep}`)) || await isOtherBoardWorktree(target)) {
 				throw new TaskBoardError('invalid-params', 'これはタスクボードの作業場所なので、リポジトリとしては開けません');
+			}
+			const other = await storeOwner(dataDir(target));
+			if (other) {
+				throw new TaskBoardError('invalid-state', other.mode === 'embedded'
+					? 'このリポジトリは Para Code が開いたタスクボードで開かれています'
+					: 'このリポジトリはほかのタスクボード（手で起動したもの）で開かれています');
 			}
 			// 返事を返してから、同じポートと鍵で起動し直す
 			setTimeout(() => void shutdown(target), 100);
@@ -638,7 +712,7 @@ async function main(restart?: IRestart): Promise<void> {
 
 	/* ---------------- HTTP ---------------- */
 
-	const token = restart?.token ?? args.token ?? randomBytes(24).toString('base64url');
+	const token = restart?.token ?? embeddedToken ?? args.token ?? randomBytes(24).toString('base64url');
 	let port = restart?.port ?? Number(args.port);
 	const allowedHosts = () => [`127.0.0.1:${port}`, `localhost:${port}`];
 	const safeEqual = (a: string | undefined, b: string) => {
@@ -723,6 +797,8 @@ async function main(restart?: IRestart): Promise<void> {
 		res.writeHead(200, {
 			'content-type': type,
 			'x-content-type-options': 'nosniff',
+			// 画面の HTML は鍵付きの URL で読まれるので、キャッシュに残さない
+			...(type.startsWith('text/html') ? { 'cache-control': 'no-store' } : {}),
 			'content-security-policy': `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; frame-src 'self'; connect-src 'self' ws://${req.headers.host}`,
 		});
 		res.end(await fs.readFile(file));
@@ -838,8 +914,14 @@ async function main(restart?: IRestart): Promise<void> {
 	});
 	port = (server.address() as { port: number }).port;
 	const address = `http://127.0.0.1:${port}/?token=${token}`;
-	console.log(`\n  タスクボード: ${address}\n  台帳: ${store.directory}${realWorkspaces ? '\n  作業場所: 実際に git を操作します' : ''}\n`);
-	if (args.open && !restart) {
+	if (args.embedded) {
+		// 鍵付きの URL は出さない（Para Code のログに残る）。開くのは Para Code のウィンドウ
+		tellParent({ type: 'ready', port, repo: repoPath });
+		log(`listening on 127.0.0.1:${port} (${store.directory})`);
+	} else {
+		console.log(`\n  タスクボード: ${address}\n  台帳: ${store.directory}${realWorkspaces ? '\n  作業場所: 実際に git を操作します' : ''}\n`);
+	}
+	if (args.open && !restart && !args.embedded) {
 		execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [address]);
 	}
 
@@ -894,9 +976,25 @@ async function main(restart?: IRestart): Promise<void> {
 	const onSignal = () => closing ? process.exit(0) : void shutdown();
 	process.on('SIGINT', onSignal);
 	process.on('SIGTERM', onSignal);
+	stopCurrent = onSignal;
 }
 
-main().catch(err => {
-	console.error('[taskboard] failed to start:', err);
-	process.exit(1);
+async function start(): Promise<void> {
+	if (args.embedded) {
+		if (!process.send) {
+			throw new Error('--embedded needs an IPC channel to Para Code');
+		}
+		// Para Code が落ちた・閉じた（IPC が切れた）ら止まる。リポジトリを切り替えている途中でも効くよう、ここで一度だけ付ける
+		process.once('disconnect', () => stopCurrent ? stopCurrent() : process.exit(0));
+		embeddedToken = await receiveEmbeddedToken();
+	}
+	await main();
+}
+
+start().catch(err => {
+	console.error('[taskboard] failed to start:', err instanceof StoreBusyError ? err.message : err);
+	// 送り終えてから終わる（Windows のパイプは非同期で、すぐ終わると返事が届かない）
+	tellParent(err instanceof StoreBusyError
+		? { type: 'failed', reason: 'busy', message: err.message }
+		: { type: 'failed', reason: 'error', message: err instanceof Error ? err.message : String(err) }, () => process.exit(1));
 });

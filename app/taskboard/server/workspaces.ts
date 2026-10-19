@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { execFile } from 'node:child_process';
+import { commandPath } from './executables.js';
 import { existsSync, promises as fs, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
@@ -14,7 +15,7 @@ import { TaskBoardWorkspaceError, type ITaskBoardWorkspacePort } from '@engine/p
 
 export function git(cwd: string, args: readonly string[], timeout = 60000): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile('git', ['-C', cwd, ...args], { timeout, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+		execFile(commandPath('git'), ['-C', cwd, ...args], { timeout, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
 			if (err) {
 				reject(new Error(`git ${args.join(' ')}: ${(stderr || err.message).trim().split('\n').slice(-3).join(' ')}`));
 				return;
