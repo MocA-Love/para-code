@@ -349,3 +349,31 @@ export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: 
 	}
 	return `${minutes}m`;
 }
+
+type ParadisLimitsAccountIdentityFields = Pick<IParadisLimitsAccount, 'id' | 'provider' | 'email' | 'accountId' | 'organizationName' | 'registrable'>;
+
+/**
+ * 同じアカウントかを見分ける鍵。Codex は account_id のハッシュ（同じアカウントが別のホームにもあるとき
+ * 1 つにまとめる）、Claude はメールと組織（同じメールで個人と組織を持つことがある）。どちらも無ければ ID。
+ */
+export function paradisLimitsAccountKey(account: ParadisLimitsAccountIdentityFields): string {
+	if (account.accountId !== undefined) {
+		return account.accountId;
+	}
+	const email = account.email?.toLowerCase();
+	if (email === undefined) {
+		return account.id;
+	}
+	return account.provider === 'claude' && account.organizationName !== undefined ? `${email}\n${account.organizationName}` : email;
+}
+
+/**
+ * メールを隠すときに代わりに出す番号（1 から）。同じプロバイダの一覧の中で、同じアカウントは同じ番号になる。
+ * 登録していないいまのログイン（出たり消えたりする）は最後に数え、ほかの番号をずらさない。一覧に無ければ undefined。
+ */
+export function paradisLimitsAccountNumber(account: ParadisLimitsAccountIdentityFields, accounts: readonly ParadisLimitsAccountIdentityFields[]): number | undefined {
+	const ordered = [...accounts.filter(candidate => !candidate.registrable), ...accounts.filter(candidate => candidate.registrable)];
+	const keys = [...new Set(ordered.map(paradisLimitsAccountKey))];
+	const index = keys.indexOf(paradisLimitsAccountKey(account));
+	return index < 0 ? undefined : index + 1;
+}
