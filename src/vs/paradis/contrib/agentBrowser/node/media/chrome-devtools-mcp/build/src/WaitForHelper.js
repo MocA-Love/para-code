@@ -27,7 +27,10 @@ export class WaitForHelper {
      * for the DOM to be stable before returning.
      */
     async waitForStableDom() {
-        const stableDomObserver = await this.#page.evaluateHandle(timeout => {
+        // PARA-PATCH (Para Code): bound setting up the observer by the same stable-DOM timeout. A page that does not
+        // answer (still loading over a slow connection, busy or frozen) otherwise held navigate_page / click / fill
+        // here for puppeteer's 180 s protocol timeout. See NOTES.md "vendored chrome-devtools-mcp への変更".
+        const pendingObserver = this.#page.evaluateHandle(timeout => {
             let timeoutId;
             function callback() {
                 clearTimeout(timeoutId);
@@ -50,6 +53,11 @@ export class WaitForHelper {
             });
             return domObserver;
         }, this.#stableDomFor);
+        const stableDomObserver = await Promise.race([pendingObserver, this.timeout(this.#stableDomTimeout).then(() => undefined)]);
+        if (stableDomObserver === undefined) {
+            void pendingObserver.then(handle => handle.dispose(), () => { });
+            throw new Error('Timeout');
+        }
         this.#abortController.signal.addEventListener('abort', async () => {
             try {
                 await stableDomObserver.evaluate(observer => {

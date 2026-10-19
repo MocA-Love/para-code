@@ -30,6 +30,9 @@ in the DevTools Elements panel (if any).`,
         // the agent's cursor can frame it without another evaluate_script holding the tab.
         // See NOTES.md "vendored chrome-devtools-mcp への変更".
         paraCodeRootRect: zod.string().optional(),
+        // PARA-PATCH (Para Code): internal argument set only by Para Code (never published in tools/list):
+        // ToolHandler.handle gives up after this many ms. See NOTES.md "vendored chrome-devtools-mcp への変更".
+        paraCodeTimeoutMs: zod.number().optional(),
     },
     blockedByDialog: true,
     verifyFilesSchema: ['filePath'],
