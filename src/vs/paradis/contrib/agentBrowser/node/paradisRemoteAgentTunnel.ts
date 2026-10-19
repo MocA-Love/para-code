@@ -497,7 +497,19 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			while ((newlineIndex = stderrBuffer.indexOf('\n')) >= 0) {
 				const line = stderrBuffer.slice(0, newlineIndex).trim();
 				stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
-				if (line.length === 0 || entry.preferredChild !== child) {
+				if (line.length === 0) {
+					continue;
+				}
+				if (entry.child === child) {
+					// 昇格して本線になった後は、本線と同じく切断理由（debug 以外）を warn に残す
+					if (/^debug\d?:/.test(line)) {
+						this.logService.trace(`[paradis] return tunnel (${entry.host}): ${line}`);
+					} else {
+						this.logService.warn(`[paradis] return tunnel (${entry.host}): ${line}`);
+					}
+					continue;
+				}
+				if (entry.preferredChild !== child) {
 					continue;
 				}
 				if (successPattern.test(line)) {
