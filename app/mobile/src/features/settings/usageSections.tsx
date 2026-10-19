@@ -8,7 +8,7 @@ import { haptic } from '../../haptics.js';
 import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
-import { accountHint, accountName, accountWindows, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
+import { accountHint, accountName, accountWindows, type AccountNumbers, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
 import { isWindowExpired, windowPercent } from '../usage/usageAggregate.js';
 
 /**
@@ -85,7 +85,7 @@ export function UsageSeparator() {
  * ログインしているアカウントだけが届く。「使用中」の印は付けず、行の補足にどの接続先のログインかを書く
  * （接続先の名前は上の接続先の選択にも出るので、見出しには重ねない）。
  */
-export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed, expandResets = false, metersPerRow = 2 }: {
+export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed, expandResets = false, metersPerRow = 2, numbers }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	snapshot: RateLimitProviderSnapshot | undefined;
@@ -96,6 +96,8 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 	expandResets?: boolean;
 	/** メーターを1行に何個並べるか（iPad で左右に並べた列が狭いときは 1）。 */
 	metersPerRow?: 1 | 2;
+	/** メールを番号で出すときの番号（`usageEmailMask.ts`）。 */
+	numbers?: AccountNumbers;
 }) {
 	const accounts = snapshot?.accounts ?? [];
 	const remoteHost = snapshot?.remoteHost;
@@ -111,14 +113,14 @@ export function ProviderUsageSection({ provider, title, snapshot, now, loading, 
 					{shown.map((account, index) => (
 						<View key={account.id}>
 							{index > 0 ? <UsageSeparator /> : null}
-							<AccountRow account={account} now={now} remoteHost={remoteHost} expandResets={expandResets} metersPerRow={metersPerRow} />
+							<AccountRow account={account} now={now} remoteHost={remoteHost} expandResets={expandResets} metersPerRow={metersPerRow} numbers={numbers} />
 						</View>
 					))}
-					<UnavailableAccountsGroup names={unavailable.map(accountName)} separated={shown.length > 0}>
+					<UnavailableAccountsGroup names={unavailable.map(account => accountName(account, numbers))} separated={shown.length > 0}>
 						{unavailable.map((account, index) => (
 							<Fragment key={account.id}>
 								{index > 0 ? <UsageSeparator /> : null}
-								<AccountRow account={account} now={now} remoteHost={remoteHost} metersPerRow={metersPerRow} />
+								<AccountRow account={account} now={now} remoteHost={remoteHost} metersPerRow={metersPerRow} numbers={numbers} />
 							</Fragment>
 						))}
 					</UnavailableAccountsGroup>
@@ -192,7 +194,7 @@ export function UnavailableAccountsGroup({ names, separated, children }: {
  * アカウント1行（見出し・補足・メーター）。全 PC の合計では、見えている PC のチップを `extra` に渡し、
  * オフラインの PC の最後の値なら `dimmed` で薄くする。
  */
-export function AccountRow({ account, now, remoteHost, extra, dimmed = false, expandResets = false, metersPerRow = 2 }: {
+export function AccountRow({ account, now, remoteHost, extra, dimmed = false, expandResets = false, metersPerRow = 2, numbers }: {
 	account: RateLimitAccount;
 	now: number;
 	remoteHost: RateLimitProviderSnapshot['remoteHost'];
@@ -203,6 +205,8 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 	expandResets?: boolean;
 	/** メーターを1行に何個並べるか（既定は2つ。iPad で左右に並べた列が狭いときは 1）。 */
 	metersPerRow?: 1 | 2;
+	/** メールを番号で出すときの番号（`usageEmailMask.ts`）。 */
+	numbers?: AccountNumbers;
 }) {
 	// 取りに行くのを控えている間は、前に取れた値を薄く出す（補足に古さと理由を書く）。
 	const previous = hasPreviousValue(account);
@@ -218,7 +222,7 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 	return (
 		<UsageRow trailing={inUse ? 'check' : undefined}>
 			<View style={[styles.accountBody, dimmed ? styles.dimmed : undefined]}>
-				<UsageRowTitle title={accountName(account)} hint={hint} />
+				<UsageRowTitle title={accountName(account, numbers)} hint={hint} />
 				{account.status === 'ok' && windows.length === 0 ? <Text style={styles.rowHint}>使用状況のデータがありません</Text> : null}
 				{showMeters ? (
 					<View style={[styles.meters, previous ? styles.dimmed : undefined]}>
