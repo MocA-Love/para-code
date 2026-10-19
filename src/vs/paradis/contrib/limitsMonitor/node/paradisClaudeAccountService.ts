@@ -736,7 +736,10 @@ export class ParadisClaudeAccountService extends Disposable {
 	/**
 	 * いまのログインをそのまま写して登録したアカウントが、claude-swap の控えと同じリフレッシュトークンを
 	 * 持っているか。持っていれば Para Code が更新すると claude-swap 側の写しが無効になるので、更新しない。
-	 * claude-swap の控えを読めない・確かめる手段が無いときは、同じかもしれないとみなす。
+	 * 次のときも同じかもしれないとみなす:
+	 *  - claude-swap の控えを読めない・見つからない・確かめる手段が無い
+	 *  - claude-swap の控えの方が新しい（期限が遅い）。Claude Code が更新した後、Para Code が取り込む前に
+	 *    claude-swap で切り替えると、Para Code の写しは既に使われた古いトークンになっている
 	 * 以前は claude-swap に同じアカウントがあるだけで控えていたため、別のトークンになった後も
 	 * 使用量を取れないままだった。
 	 */
@@ -752,9 +755,13 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (refreshToken === undefined || this.claudeSwapBackups === undefined) {
 			return true;
 		}
+		const expiresAt = paradisParseClaudeOAuthBlob(credentials)?.expiresAt;
 		for (const entry of entries) {
-			const tokens = await this.claudeSwapBackups.readRefreshTokens(entry.dataDir, entry.slot, entry.email);
-			if (tokens === undefined || tokens.includes(refreshToken)) {
+			const backups = await this.claudeSwapBackups.readBackups(entry.dataDir, entry.slot, entry.email);
+			if (backups === undefined || backups.length === 0 || backups.some(backup => backup.refreshToken === refreshToken)) {
+				return true;
+			}
+			if (typeof expiresAt !== 'number' || backups.some(backup => backup.expiresAt !== undefined && backup.expiresAt > expiresAt)) {
 				return true;
 			}
 		}

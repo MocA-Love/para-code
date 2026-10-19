@@ -15,7 +15,7 @@ import { IParadisLimitsAccount } from '../../common/paradisLimitsMonitor.js';
 import { IParadisClaudeAccountRecord, ParadisClaudeAccountRegistry, ParadisKeychainClaudeSecretStore, PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE } from '../../node/paradisClaudeAccountStore.js';
 import { ParadisClaudeAccountService } from '../../node/paradisClaudeAccountService.js';
 import { ParadisClaudeLiveAuth, PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE } from '../../node/paradisClaudeLiveAuth.js';
-import { IParadisClaudeSwapBackupReader } from '../../node/paradisClaudeSwapBackups.js';
+import { IParadisClaudeSwapBackupReader, IParadisClaudeSwapBackupToken } from '../../node/paradisClaudeSwapBackups.js';
 import {
 	ParadisFakeClaudeOAuth,
 	ParadisMemoryKeychain,
@@ -310,35 +310,38 @@ suite('ParadisClaudeAccountService usage', () => {
 		return { status: bob.status, statusDetail: bob.statusDetail, fiveHour: bob.fiveHour?.usedPercent, claudeSwapPresent: state.claude.claudeSwapPresent };
 	}
 
-	// claude-swap に同じアカウントがあっても、控えのトークンが別物なら更新して使用量を取る。
-	test('refreshes a stand-by token only when claude-swap does not hold the same refresh token', async () => {
-		const backups = { tokens: ['bob-r'] as string[] | undefined, calls: [] as string[] };
+	// claude-swap に同じアカウントがあっても、控えのトークンが別物で、claude-swap の方が新しくなければ更新して使用量を取る。
+	test('refreshes a stand-by token only when claude-swap does not hold the same or a newer refresh token', async () => {
+		const backups = { value: [{ refreshToken: 'bob-r', expiresAt: 1 }] as IParadisClaudeSwapBackupToken[] | undefined, calls: [] as string[] };
 		const harness = await createSharedBobHarness({
-			readRefreshTokens: async (dataDir, slot, email) => {
+			readBackups: async (dataDir, slot, email) => {
 				backups.calls.push(`${path.basename(dataDir)} ${slot} ${email}`);
-				return backups.tokens;
+				return backups.value;
 			},
 		});
-		const same = await bobState(harness);
-		const refreshCallsWhileSame = [...harness.oauth.refreshCalls];
-		// 読めないときも同じかもしれないとみなす
-		backups.tokens = undefined;
-		harness.now += 11 * 60_000;
-		const unreadable = await bobState(harness);
-		// claude-swap 側のトークンは別物になった
-		backups.tokens = ['bob-other'];
-		harness.now += 11 * 60_000;
-		const different = await bobState(harness);
+		const states: Record<string, object> = {};
+		const step = async (name: string, value: IParadisClaudeSwapBackupToken[] | undefined) => {
+			backups.value = value;
+			states[name] = await bobState(harness);
+			harness.now += 11 * 60_000;
+		};
+		await step('same', [{ refreshToken: 'bob-r', expiresAt: harness.now - HOUR }]);
+		// 読めないとき・見つからないときも同じかもしれないとみなす
+		await step('unreadable', undefined);
+		await step('none', []);
+		// claude-swap の方が新しい世代を持っている（Para Code の写しは既に使われた古いトークンかもしれない）
+		await step('newer', [{ refreshToken: 'bob-other', expiresAt: harness.now + 10 * HOUR }]);
+		const refreshCallsWhileHeld = [...harness.oauth.refreshCalls];
+		await step('older', [{ refreshToken: 'bob-other', expiresAt: harness.now - HOUR }, { refreshToken: 'bob-older' }]);
 
-		assert.deepStrictEqual({ same, refreshCallsWhileSame, unreadable, different, refreshCalls: harness.oauth.refreshCalls, readerCalls: backups.calls.length }, {
-			same: { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true },
-			refreshCallsWhileSame: [],
-			unreadable: { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true },
-			different: { status: 'ok', statusDetail: undefined, fiveHour: 40, claudeSwapPresent: true },
+		const held = { status: 'unavailable', statusDetail: 'shared with claude-swap', fiveHour: undefined, claudeSwapPresent: true };
+		assert.deepStrictEqual({ states, refreshCallsWhileHeld, refreshCalls: harness.oauth.refreshCalls, readerCalls: backups.calls.length, firstCall: backups.calls[0] }, {
+			states: { same: held, unreadable: held, none: held, newer: held, older: { status: 'ok', statusDetail: undefined, fiveHour: 40, claudeSwapPresent: true } },
+			refreshCallsWhileHeld: [],
 			refreshCalls: ['bob-r'],
-			readerCalls: 3,
+			readerCalls: 5,
+			firstCall: '.claude-swap-backup 1 bob@example.com',
 		});
-		assert.deepStrictEqual(backups.calls[0], '.claude-swap-backup 1 bob@example.com');
 	});
 
 	// 「claude-swap はもう使わない」を押したら、claude-swap を見ずに更新し、案内も出さない。
