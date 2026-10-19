@@ -9,7 +9,7 @@
 // 使用量パネル（paradisLimitsMonitorPanel.ts）へ、プロバイダごとの部品を差し込む口。
 //
 // パネル本体はアカウントカードの枠・メーター・状態の説明だけを描き、プロバイダ固有の操作
-// （Claude の「このアカウントを使う」、Codex のリセットクレジットや切り替えなど）はここに登録した
+// （Claude と Codex の「切り替える」、Codex のリセットクレジット、右上の「使用中」など）はここに登録した
 // 部品が描く。部品はパネルを開くたびに `IInstantiationService.createInstance` で作られ、
 // パネルを閉じると破棄されるので、コンストラクタでサービスを受け取れる。
 //
@@ -44,6 +44,10 @@ export interface IParadisLimitsPanelContext {
 	trackFocus(element: HTMLElement, key: string): void;
 	/** パネルを閉じる（ダイアログを開く前など）。 */
 	closePanel(): void;
+	/** 画面に出すアカウントの名前（メールを隠しているときは「Claude 1」のような番号）。 */
+	displayName(account: IParadisLimitsAccount): string;
+	/** 通知などに出すメールの代わりの名前（{@link displayName} と同じ決まり）。 */
+	displayNameForEmail(provider: ParadisLimitsProvider, email: string): string;
 }
 
 /** プロバイダごとの部品。どのメソッドも省略できる。 */
@@ -56,6 +60,18 @@ export interface IParadisLimitsPanelContribution extends IDisposable {
 	 * （パネルは表示中 30 秒ごとと、Claude の取得のたびに描き直す）。
 	 */
 	renderAccountActions?(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined;
+
+	/**
+	 * アカウントカードの右上の状態の列（「使用中」など）へ、バッジを足す。「…」のボタンの左に並ぶ。
+	 * 返した IDisposable はカードを描き直すたびに破棄される。
+	 */
+	renderAccountBadges?(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined;
+
+	/**
+	 * このアカウント（Codex のホーム）が、いま使うものとして選ばれているか。同じアカウントの複数のホームを
+	 * 1枚にまとめるとき、選ばれているものを代表にする（切り替えやリセットは代表に効く）。
+	 */
+	isAccountSelected?(account: IParadisLimitsAccount): boolean;
 
 	/**
 	 * プロバイダの節の末尾（アカウントカードの後ろ）へ、独立したカード列や案内を足す。

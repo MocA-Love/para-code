@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	IParadisLimitsAccount,
+	paradisLimitsAccountNumber,
 	paradisLimitsFormatCountdown,
 	paradisLimitsNeedsRelogin,
 	paradisLimitsNotFetchedCause,
@@ -170,6 +171,34 @@ suite('ParadisLimitsMonitor', () => {
 			ok: undefined,
 			apiKey: undefined,
 			relogin: undefined,
+		});
+	});
+
+	// メールを隠すときの番号は、同じアカウント（Codex は account_id、Claude はメールと組織）で同じになり、
+	// 登録していないいまのログインは最後に数える（出入りしてもほかの番号がずれない）。
+	test('numbers accounts for masked emails so that the same account keeps one number', () => {
+		const codex = [
+			{ id: '/h/.codex-2', provider: 'codex' as const, email: 'a@example.com', accountId: 'hash-a' },
+			{ id: '/h/.codex-4', provider: 'codex' as const, email: 'b@example.com', accountId: 'hash-b' },
+			{ id: '/h/.codex', provider: 'codex' as const, email: 'a@example.com', accountId: 'hash-a' },
+		];
+		const claude = [
+			{ id: 'claude-live', provider: 'claude' as const, email: 'new@example.com', registrable: true },
+			{ id: 'para-claude:x', provider: 'claude' as const, email: 'C@example.com', organizationName: 'Personal' },
+			{ id: 'para-claude:y', provider: 'claude' as const, email: 'c@example.com', organizationName: 'Team' },
+			{ id: 'para-claude:z', provider: 'claude' as const, email: 'c@example.com', organizationName: 'Personal' },
+			{ id: 'no-email', provider: 'claude' as const },
+		];
+		assert.deepStrictEqual({
+			codex: codex.map(account => paradisLimitsAccountNumber(account, codex)),
+			claude: claude.map(account => paradisLimitsAccountNumber(account, claude)),
+			withoutLive: claude.slice(1).map(account => paradisLimitsAccountNumber(account, claude.slice(1))),
+			missing: paradisLimitsAccountNumber({ id: 'missing', provider: 'claude', email: 'z@example.com' }, claude),
+		}, {
+			codex: [1, 2, 1],
+			claude: [4, 1, 2, 1, 3],
+			withoutLive: [1, 2, 1, 3],
+			missing: undefined,
 		});
 	});
 

@@ -8,7 +8,7 @@
 
 // 使用量パネルの Claude のアカウントカードに出す操作（paradisLimitsPanelContributions.ts の部品）。
 //  - 登録していない、いまのログイン: 「Para Code に登録」（ブラウザでのログインなしで登録する）
-//  - 登録した控えのアカウント: 「このアカウントを使う」（切替ボタンは使用量パネルの各カードに置く、
+//  - 登録した控えのアカウント: 「切り替える」（切替ボタンは使用量パネルの各カードに置く、
 //    という決定）。この PC 全体の Claude のログインを書き換えるので、押したら確認し、動いている
 //    Claude Code への影響を説明する
 //  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
@@ -63,7 +63,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			button.type = 'button';
 			button.textContent = this.switching
 				? localize('paradis.claudeAccounts.switching', "切り替え中…")
-				: localize('paradis.claudeAccounts.use', "このアカウントを使う");
+				: localize('paradis.claudeAccounts.switchAccount', "切り替える");
 			button.disabled = this.switching;
 			store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(account, context)));
 		}
@@ -105,9 +105,11 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		);
 		const list = dom.append(details, $('ul.plm-legacy-list'));
 		for (const account of legacy) {
-			dom.append(list, $('li')).textContent = account.organizationName
+			// メールを番号に置き換えているときは、メールを含みうる組織名も出さない。
+			const name = context.displayNameForEmail('claude', account.email);
+			dom.append(list, $('li')).textContent = account.organizationName && name === account.email
 				? localize('paradis.claudeAccounts.legacyWithOrganization', "{0}（{1}）", account.email, account.organizationName)
-				: account.email;
+				: name;
 		}
 		return dom.addDisposableListener(details, 'toggle', () => {
 			this.legacyDetailsOpen = details.open;
@@ -145,7 +147,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		if (this.switching) {
 			return;
 		}
-		const email = account.email ?? account.id;
+		const email = context.displayName(account);
 		const { confirmed } = await this.dialogService.confirm({
 			message: localize('paradis.claudeAccounts.switchConfirm', "Claude のアカウントを {0} に切り替えますか？", email),
 			detail: context.client.connectedToRemote
@@ -172,34 +174,39 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		} finally {
 			this.switching = false;
 		}
-		this.reportSwitch(result, email, context.client.connectedToRemote);
+		this.reportSwitch(result, email, context);
 		context.requestRefresh(false);
 	}
 
-	private reportSwitch(result: IParadisClaudeSwitchResult, email: string, remote: boolean): void {
+	/** @param email 画面に出す切り替え先の名前（メールを隠しているときは番号）。 */
+	private reportSwitch(result: IParadisClaudeSwitchResult, email: string, context: IParadisLimitsPanelContext): void {
+		const remote = context.client.connectedToRemote;
+		const previous = result.previousEmail !== undefined ? context.displayNameForEmail('claude', result.previousEmail) : '';
+		// 切り替え先は、返ってきたメール（無ければ押したカードの名前）。
+		const target = result.email !== undefined ? context.displayNameForEmail('claude', result.email) : email;
 		switch (result.outcome) {
 			case 'switched':
-				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", result.email ?? email));
+				this.notificationService.info(localize('paradis.claudeAccounts.switched', "Claude のアカウントを {0} に切り替えました。いま動いている Claude Code は、起動し直すと確実に新しいアカウントを使います。", target));
 				return;
 			case 'already_active':
-				this.notificationService.info(localize('paradis.claudeAccounts.alreadyActive', "すでに {0} を使っています。", result.email ?? email));
+				this.notificationService.info(localize('paradis.claudeAccounts.alreadyActive', "すでに {0} を使っています。", target));
 				return;
 			case 'busy':
 				this.notificationService.warn(localize('paradis.claudeAccounts.switchBusy', "ほかの切り替えが進行中です。終わってからもう一度お試しください。"));
 				return;
 			case 'unmanaged_live':
 				this.notificationService.warn(remote
-					? localize('paradis.claudeAccounts.unmanagedLiveRemote', "いま接続先でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", result.previousEmail ?? '')
-					: localize('paradis.claudeAccounts.unmanagedLive', "いまこの PC でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", result.previousEmail ?? ''));
+					? localize('paradis.claudeAccounts.unmanagedLiveRemote', "いま接続先でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", previous)
+					: localize('paradis.claudeAccounts.unmanagedLive', "いまこの PC でログインしている {0} は Para Code に登録されていないため、切り替えるとそのログインが失われます。先にそのアカウントのカードで「Para Code に登録」を押してください。", previous));
 				return;
 			case 'not_found':
 				this.notificationService.error(localize('paradis.claudeAccounts.switchNotFound', "切り替え先のアカウントが見つかりません。一覧を更新してからもう一度お試しください。"));
 				return;
 			case 'no_credentials':
-				this.notificationService.error(localize('paradis.claudeAccounts.switchNoCredentials', "{0} の保存済みの認証情報が使えません。カードの「再ログイン…」からログインし直してください。", result.email ?? email));
+				this.notificationService.error(localize('paradis.claudeAccounts.switchNoCredentials', "{0} の保存済みの認証情報が使えません。カードの「再ログイン…」からログインし直してください。", target));
 				return;
 			case 'unverified':
-				this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverified', "いま使っている {0} の最新のログイン情報を確認できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。通信できることを確かめ、しばらくしてからもう一度お試しください。", result.previousEmail ?? ''));
+				this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverified', "いま使っている {0} の最新のログイン情報を確認できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。通信できることを確かめ、しばらくしてからもう一度お試しください。", previous));
 				return;
 			case 'locked':
 				this.notificationService.warn(localize('paradis.claudeAccounts.switchLocked', "Claude Code がログインを更新している最中でした。数秒待ってからもう一度お試しください。"));
@@ -228,7 +235,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			switch (result.outcome) {
 				case 'registered':
 				case 'updated':
-					this.notificationService.info(localize('paradis.claudeAccounts.registered', "{0} を Para Code に登録しました。", result.email ?? ''));
+					this.notificationService.info(localize('paradis.claudeAccounts.registered', "{0} を Para Code に登録しました。", result.email !== undefined ? context.displayNameForEmail('claude', result.email) : ''));
 					break;
 				case 'no_live_login':
 					this.notificationService.warn(context.client.connectedToRemote
