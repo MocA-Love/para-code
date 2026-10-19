@@ -12,27 +12,39 @@
 // 確かめるためだけに使う。読んだ値はメモリの中で比べるだけで、保存・ログ・送信はしない。claude-swap の
 // データには書き込まない。
 //
-// claude-swap の控えの置き場所（claude_swap/credentials.py で確認）:
+// claude-swap の控えの置き場所（claude_swap/credentials.py・migrations.py で確認）:
 //  - ファイル: `<データのフォルダ>/credentials/.creds-<番号>-<メール>.enc`（中身は credentials JSON の base64）。
 //    1つ前の世代は末尾に `.prev` が付く。Linux・Windows はこちらだけ
 //  - macOS のキーチェーン: サービス名 `claude-swap`、アカウント名 `account-<番号>-<メール>`（1つ前は `.prev` 付き）
-// どちらにあっても拾う（多めに拾うほど「同じかもしれない」側に倒れる）。
+//  - 古い版が使っていた python の keyring（サービス名 `claude-code`）。キーチェーンへの移し替えに失敗すると
+//    このまま残る
+//  - どれも番号の代わりに `None` の付いた古い別名（`account-None-<メール>` など）がありうる
+// どこにあっても拾う（多めに拾うほど「同じかもしれない」側に倒れる）。sequence.json に載っているのに
+// 1つも見つからないときは、置き場所を知らない版かもしれないので「読めなかった」とする。
 
 import * as fs from 'fs';
 import * as path from '../../../../base/common/path.js';
-import { paradisClaudeRefreshToken } from '../common/paradisClaudeUsage.js';
+import { paradisParseClaudeOAuthBlob } from '../common/paradisClaudeUsage.js';
 import { IParadisKeychain } from './paradisClaudeKeychain.js';
 
-const CLAUDE_SWAP_KEYCHAIN_SERVICE = 'claude-swap';
+/** 今の版のキーチェーンのサービス名と、古い版（python の keyring）のサービス名。 */
+const CLAUDE_SWAP_KEYCHAIN_SERVICES = ['claude-swap', 'claude-code'];
 /** sequence.json の番号。パスとキーチェーンの名前へそのまま入るので形を確かめる。 */
 const SLOT_PATTERN = /^\d{1,6}$/;
 
+/** claude-swap の控え1つのうち、比べるのに使う部分。 */
+export interface IParadisClaudeSwapBackupToken {
+	readonly refreshToken: string;
+	/** アクセストークンの期限（epoch ms）。新しい世代ほど遅い。分からなければ undefined。 */
+	readonly expiresAt?: number;
+}
+
 export interface IParadisClaudeSwapBackupReader {
 	/**
-	 * claude-swap の控え（今の世代と1つ前）のリフレッシュトークン。控えが無ければ空。
-	 * 読めなかった（キーチェーンが開けない・ファイルが読めない）ときは undefined。
+	 * claude-swap の控え（今の世代・1つ前・古い置き場所と別名）のリフレッシュトークンと期限。
+	 * 読めなかった（キーチェーンが開けない・ファイルが読めない）とき、または1つも見つからなかったときは undefined。
 	 */
-	readRefreshTokens(dataDir: string, slot: string, email: string): Promise<readonly string[] | undefined>;
+	readBackups(dataDir: string, slot: string, email: string): Promise<readonly IParadisClaudeSwapBackupToken[] | undefined>;
 }
 
 export class ParadisClaudeSwapBackupReader implements IParadisClaudeSwapBackupReader {
@@ -40,38 +52,44 @@ export class ParadisClaudeSwapBackupReader implements IParadisClaudeSwapBackupRe
 	/** @param keychain macOS のときだけ渡す。 */
 	constructor(private readonly keychain: IParadisKeychain | undefined) { }
 
-	async readRefreshTokens(dataDir: string, slot: string, email: string): Promise<readonly string[] | undefined> {
+	async readBackups(dataDir: string, slot: string, email: string): Promise<readonly IParadisClaudeSwapBackupToken[] | undefined> {
 		if (!SLOT_PATTERN.test(slot) || email.length === 0 || /[\/\\]/.test(email) || email.includes('..')) {
 			return undefined;
 		}
-		const tokens: string[] = [];
-		for (const suffix of ['', '.prev']) {
-			let encoded: string | undefined;
-			try {
-				encoded = await fs.promises.readFile(path.join(dataDir, 'credentials', `.creds-${slot}-${email}.enc${suffix}`), 'utf8');
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-					return undefined;
-				}
-			}
-			if (encoded !== undefined) {
-				this.collect(tokens, Buffer.from(encoded.trim(), 'base64').toString('utf8'));
-			}
-			if (this.keychain) {
+		const backups: IParadisClaudeSwapBackupToken[] = [];
+		for (const name of [slot, 'None']) {
+			for (const suffix of ['', '.prev']) {
+				let encoded: string | undefined;
 				try {
-					this.collect(tokens, await this.keychain.read(CLAUDE_SWAP_KEYCHAIN_SERVICE, `account-${slot}-${email}${suffix}`));
-				} catch {
-					return undefined;
+					encoded = await fs.promises.readFile(path.join(dataDir, 'credentials', `.creds-${name}-${email}.enc${suffix}`), 'utf8');
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+						return undefined;
+					}
+				}
+				if (encoded !== undefined) {
+					this.collect(backups, Buffer.from(encoded.trim(), 'base64').toString('utf8'));
+				}
+				const keychain = this.keychain;
+				if (keychain) {
+					for (const service of CLAUDE_SWAP_KEYCHAIN_SERVICES) {
+						try {
+							this.collect(backups, await keychain.read(service, `account-${name}-${email}${suffix}`));
+						} catch {
+							return undefined;
+						}
+					}
 				}
 			}
 		}
-		return tokens;
+		return backups.length > 0 ? backups : undefined;
 	}
 
-	private collect(tokens: string[], credentialsJson: string | undefined): void {
-		const refreshToken = paradisClaudeRefreshToken(credentialsJson);
-		if (refreshToken !== undefined) {
-			tokens.push(refreshToken);
+	private collect(backups: IParadisClaudeSwapBackupToken[], credentialsJson: string | undefined): void {
+		const oauth = paradisParseClaudeOAuthBlob(credentialsJson);
+		const refreshToken = oauth?.refreshToken;
+		if (typeof refreshToken === 'string' && refreshToken.trim() !== '') {
+			backups.push({ refreshToken, expiresAt: typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined });
 		}
 	}
 }

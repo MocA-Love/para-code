@@ -22,33 +22,40 @@ suite('ParadisClaudeSwapBackupReader', () => {
 		cleanup = undefined;
 	});
 
-	test('collects the refresh tokens of the current and previous claude-swap backups from files and the keychain', async () => {
+	test('collects the refresh tokens of every claude-swap backup location and treats none found as unknown', async () => {
 		const dirs = await paradisCreateClaudeTestHome();
 		cleanup = dirs.dispose;
 		const dataDir = path.join(dirs.home, '.claude-swap-backup');
 		const credentialsDir = path.join(dataDir, 'credentials');
 		await fs.promises.mkdir(credentialsDir, { recursive: true });
 		const encode = (json: string) => Buffer.from(json, 'utf8').toString('base64');
-		await fs.promises.writeFile(path.join(credentialsDir, '.creds-2-bob@example.com.enc'), encode(paradisTestCredentials('a1', 'file-r', 1)));
-		await fs.promises.writeFile(path.join(credentialsDir, '.creds-2-bob@example.com.enc.prev'), encode(paradisTestCredentials('a0', 'file-prev', 1)));
+		await fs.promises.writeFile(path.join(credentialsDir, '.creds-2-bob@example.com.enc'), encode(paradisTestCredentials('a1', 'file-r', 10)));
+		await fs.promises.writeFile(path.join(credentialsDir, '.creds-2-bob@example.com.enc.prev'), encode(paradisTestCredentials('a0', 'file-prev', 5)));
 		const keychain = new ParadisMemoryKeychain();
-		keychain.set('claude-swap', 'account-2-bob@example.com', paradisTestCredentials('a2', 'keychain-r', 1));
+		keychain.set('claude-swap', 'account-2-bob@example.com', paradisTestCredentials('a2', 'keychain-r', 20));
 		keychain.set('claude-swap', 'account-2-bob@example.com.prev', 'not json');
+		// 古い版（python の keyring）の置き場所と、番号の代わりに None の付いた別名
+		keychain.set('claude-code', 'account-2-bob@example.com', paradisTestCredentials('a3', 'legacy-r', 30));
+		keychain.set('claude-code', 'account-None-carol@example.com', paradisTestCredentials('a4', 'alias-r', 40));
 		const reader = new ParadisClaudeSwapBackupReader(keychain);
+		const tokens = async (target: ParadisClaudeSwapBackupReader, slot: string, email: string) => (await target.readBackups(dataDir, slot, email))?.map(backup => `${backup.refreshToken}@${backup.expiresAt}`);
 
-		const found = await reader.readRefreshTokens(dataDir, '2', 'bob@example.com');
-		const missing = await reader.readRefreshTokens(dataDir, '3', 'carol@example.com');
-		const withoutKeychain = await new ParadisClaudeSwapBackupReader(undefined).readRefreshTokens(dataDir, '2', 'bob@example.com');
+		const found = await tokens(reader, '2', 'bob@example.com');
+		const alias = await tokens(reader, '3', 'carol@example.com');
+		// sequence.json に載っているのに1つも見つからない（置き場所を知らない版かもしれない）
+		const missing = await tokens(reader, '4', 'dave@example.com');
+		const withoutKeychain = await tokens(new ParadisClaudeSwapBackupReader(undefined), '2', 'bob@example.com');
 		// 番号やメールがパスとして怪しいときは読まない（読めない扱い）
-		const badSlot = await reader.readRefreshTokens(dataDir, '../2', 'bob@example.com');
-		const badEmail = await reader.readRefreshTokens(dataDir, '2', '../bob@example.com');
+		const badSlot = await tokens(reader, '../2', 'bob@example.com');
+		const badEmail = await tokens(reader, '2', '../bob@example.com');
 		keychain.locked = true;
-		const locked = await reader.readRefreshTokens(dataDir, '2', 'bob@example.com');
+		const locked = await tokens(reader, '2', 'bob@example.com');
 
-		assert.deepStrictEqual({ found, missing, withoutKeychain, badSlot, badEmail, locked }, {
-			found: ['file-r', 'keychain-r', 'file-prev'],
-			missing: [],
-			withoutKeychain: ['file-r', 'file-prev'],
+		assert.deepStrictEqual({ found, alias, missing, withoutKeychain, badSlot, badEmail, locked }, {
+			found: ['file-r@10', 'keychain-r@20', 'legacy-r@30', 'file-prev@5'],
+			alias: ['alias-r@40'],
+			missing: undefined,
+			withoutKeychain: ['file-r@10', 'file-prev@5'],
 			badSlot: undefined,
 			badEmail: undefined,
 			locked: undefined,
