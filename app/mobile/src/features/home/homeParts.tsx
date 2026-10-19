@@ -10,7 +10,7 @@ import { haptic } from '../../haptics.js';
 import { alpha, colors, radius, space, status, type } from '../../theme.js';
 import { Card, HeaderButton, Icon, Meter, MeterRow, SectionHeader, iconSize, useThemeColors } from '../../ui/index.js';
 import { ParaLogo } from '../pairing/paraLogo.js';
-import { accountName } from '../settings/usageSummary.js';
+import { accountName, type AccountNumbers } from '../settings/usageSummary.js';
 import { HOME_ACCOUNTS_PER_PROVIDER, isWindowExpired, windowPercent, type AggregatedAccount } from '../usage/usageAggregate.js';
 import { SeenOnChips } from '../usage/usageOverviewParts.js';
 
@@ -143,13 +143,15 @@ function QuickAction({ icon, label, onPress, disabled = false }: { icon: ReactNo
  * 全 PC の合計: アカウントごとに1行（同じアカウントを複数の PC で使っていても1行）で、PC が2台以上なら
  * どの PC から見えているかをチップで添える。オフラインの PC の最後の値は薄く出す。
  */
-export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, onPress }: {
+export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, numbers, onPress }: {
 	/** カードに出す順に並べたアカウント（`homeAccounts`）。provider ごとに先頭の数件だけ出し、残りは「ほか N 件」。 */
 	claude: readonly AggregatedAccount[];
 	codex: readonly AggregatedAccount[];
 	anyLimits: boolean;
 	showChips: boolean;
 	now: number;
+	/** メールを番号で出すときの番号（使用量の画面の切り替え。`usageEmailMask.ts`）。 */
+	numbers?: AccountNumbers;
 	onPress: () => void;
 }) {
 	const rows: { key: string; provider: 'claude' | 'codex'; item: AggregatedAccount | undefined; more: number }[] = [];
@@ -169,7 +171,7 @@ export function AccountUsageCard({ claude, codex, anyLimits, showChips, now, onP
 					<View style={styles.usageIcon}><ProviderLogo provider={row.provider} size={iconSize.lg} /></View>
 					<View style={[styles.usageInfo, row.item?.old === true ? styles.usageOld : undefined]}>
 						<Text style={styles.usageName} numberOfLines={1}>
-							{row.item !== undefined ? accountName(row.item.account) : !anyLimits ? '読み込み中…' : 'アカウントがありません'}
+							{row.item !== undefined ? accountName(row.item.account, numbers) : !anyLimits ? '読み込み中…' : 'アカウントがありません'}
 						</Text>
 						<MeterRow>
 							<Meter label="5時間" percent={windowPercent(currentWindows(row.item)?.fiveHour, now)} reset={isWindowExpired(currentWindows(row.item)?.fiveHour, now) ? EXPIRED_LABEL : undefined} />

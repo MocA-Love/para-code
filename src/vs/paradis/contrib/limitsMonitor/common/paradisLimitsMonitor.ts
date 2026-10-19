@@ -92,8 +92,8 @@ export function paradisLimitsAge(at: number, now: number): IParadisLimitsAge {
 }
 
 /**
- * 取りに行くのを控えている（'not_fetched'）が、前に取れた値を残しているアカウントの見せ方。
- * 前の値が無い・控えていないときは undefined（いつもの説明文を出す）。
+ * 取りに行くのを控えている（'not_fetched'）か、取得回数の上限で待っている（'rate_limited'）が、
+ * 前に取れた値を残しているアカウントの見せ方。前の値が無い・どちらでもないときは undefined（いつもの説明文を出す）。
  *
  * PC は claude-swap と共有しているかもしれない控えのアカウントのトークンを更新しない。その間も前に取れた
  * 値（枠と取得時刻）を残して送るので、カードは前の値を薄く出し、古さと控えている理由を添える。
@@ -101,17 +101,18 @@ export function paradisLimitsAge(at: number, now: number): IParadisLimitsAge {
  */
 export interface IParadisLimitsPreviousValue {
 	readonly age: IParadisLimitsAge;
-	readonly cause: ParadisLimitsNotFetchedCause;
+	readonly cause: ParadisLimitsNotFetchedCause | 'rate_limited';
 }
 
 export function paradisLimitsPreviousValue(account: Pick<IParadisLimitsAccount, 'status' | 'unavailableReason' | 'statusDetail' | 'fetchedAt' | 'fiveHour' | 'sevenDay' | 'scoped'>, now: number): IParadisLimitsPreviousValue | undefined {
-	if (account.status !== 'unavailable' || account.unavailableReason !== 'not_fetched' || account.fetchedAt === undefined || !Number.isFinite(account.fetchedAt)) {
+	if (account.status !== 'unavailable' || (account.unavailableReason !== 'not_fetched' && account.unavailableReason !== 'rate_limited') || account.fetchedAt === undefined || !Number.isFinite(account.fetchedAt)) {
 		return undefined;
 	}
 	if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
 		return undefined;
 	}
-	return { age: paradisLimitsAge(account.fetchedAt, now), cause: paradisLimitsNotFetchedCause(account.statusDetail) };
+	const cause = account.unavailableReason === 'rate_limited' ? 'rate_limited' : paradisLimitsNotFetchedCause(account.statusDetail);
+	return { age: paradisLimitsAge(account.fetchedAt, now), cause };
 }
 
 /**
@@ -192,6 +193,8 @@ export interface IParadisLimitsProviderSnapshot {
 	readonly accounts: readonly IParadisLimitsAccount[];
 	/** Claude: 移行の案内に出す claude-swap のアカウント（読み取り専用。書き込みはしない）。 */
 	readonly legacyAccounts?: readonly IParadisLimitsLegacyAccount[];
+	/** Claude: claude-swap の一覧が見つかり、まだ「claude-swap はもう使わない」を押していない。 */
+	readonly claudeSwapPresent?: boolean;
 	/** データ源自体が使えない場合の理由。accountsは空になる。 */
 	readonly sourceError?: string;
 	/**
@@ -345,4 +348,32 @@ export function paradisLimitsFormatCountdown(resetsAt: number | undefined, now: 
 		return `${hours}h ${minutes}m`;
 	}
 	return `${minutes}m`;
+}
+
+type ParadisLimitsAccountIdentityFields = Pick<IParadisLimitsAccount, 'id' | 'provider' | 'email' | 'accountId' | 'organizationName' | 'registrable'>;
+
+/**
+ * 同じアカウントかを見分ける鍵。Codex は account_id のハッシュ（同じアカウントが別のホームにもあるとき
+ * 1 つにまとめる）、Claude はメールと組織（同じメールで個人と組織を持つことがある）。どちらも無ければ ID。
+ */
+export function paradisLimitsAccountKey(account: ParadisLimitsAccountIdentityFields): string {
+	if (account.accountId !== undefined) {
+		return account.accountId;
+	}
+	const email = account.email?.toLowerCase();
+	if (email === undefined) {
+		return account.id;
+	}
+	return account.provider === 'claude' && account.organizationName !== undefined ? `${email}\n${account.organizationName}` : email;
+}
+
+/**
+ * メールを隠すときに代わりに出す番号（1 から）。同じプロバイダの一覧の中で、同じアカウントは同じ番号になる。
+ * 登録していないいまのログイン（出たり消えたりする）は最後に数え、ほかの番号をずらさない。一覧に無ければ undefined。
+ */
+export function paradisLimitsAccountNumber(account: ParadisLimitsAccountIdentityFields, accounts: readonly ParadisLimitsAccountIdentityFields[]): number | undefined {
+	const ordered = [...accounts.filter(candidate => !candidate.registrable), ...accounts.filter(candidate => candidate.registrable)];
+	const keys = [...new Set(ordered.map(paradisLimitsAccountKey))];
+	const index = keys.indexOf(paradisLimitsAccountKey(account));
+	return index < 0 ? undefined : index + 1;
 }

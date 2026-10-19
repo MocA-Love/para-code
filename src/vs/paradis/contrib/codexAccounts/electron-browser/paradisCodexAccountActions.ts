@@ -7,13 +7,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 使用量パネルの Codex のアカウントカードに出す操作（limitsMonitor の
-// paradisLimitsPanelContributions.ts の部品）。カード下端の右寄せの列へ次を並べる。
+// paradisLimitsPanelContributions.ts の部品）。
 //
-//  - リセットクレジット: 残数と期限、「使う…」ボタン（押すと確認ダイアログ）。二重消費は
-//    shared process の台帳が防ぐ（ここでの押下中フラグは見た目のためだけ）。残りが2回以上なら「期限」で
-//    1件ごとの期限の一覧を開け、一覧の行の「使う…」でどのリセットを使うかを選べる（`credit_id` で送る）
-//  - 切替: 「このアカウントを使う」ボタン、または「使用中」バッジ。使用率を見比べてから選べるよう
-//    カードの上に置く。選んだアカウントは、すべてのウィンドウで新しく開くターミナルから使われる
+//  - リセットクレジット（カード下端の左）: 残数と次の期限のリンク1つ。押すと期限ごとの一覧が開き、
+//    行の「使う…」でどのリセットを使うかを選べる（`credit_id` で送る。押すと確認ダイアログ）。期限の分からない
+//    分は「期限を選ばずに使う…」で使う。二重消費は shared process の台帳が防ぐ（ここでの押下中フラグは見た目のためだけ）
+//  - 切替（カード下端の右）: 「切り替える」ボタンと「新しいターミナルから」の添え書き。使っているアカウントは
+//    ボタンの代わりに右上へ「使用中」バッジを出す。選んだアカウントは、すべてのウィンドウで新しく開くターミナルから使われる
 //
 // 部品はパネルを開くたびに作られ、閉じると破棄される。残数と選択は shared process 側が
 // キャッシュしている。残りの読み取りは HTTP で、app-server を起こすのは「使う…」を押したときだけ。
@@ -96,6 +96,32 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		return store;
 	}
 
+	renderAccountBadges(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined {
+		this.context = context;
+		this.ensureAccountsState();
+		const state = this.accountsState;
+		if (state && this.isSelected(state, account)) {
+			const badge = dom.append(container, $('span.plm-badge.active'));
+			badge.textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
+			badge.title = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルの Codex はこのアカウントを使います");
+		}
+		return undefined;
+	}
+
+	isAccountSelected(account: IParadisLimitsAccount): boolean {
+		this.ensureAccountsState();
+		return this.accountsState !== undefined && this.isSelected(this.accountsState, account);
+	}
+
+	/**
+	 * 新しく開くターミナルで使うホームが、このカードのホームか。同じアカウントの別のホームが選ばれていても
+	 * 「使用中」にはしない（そのホームが壊れていても正常に見えてしまうため。まとめたカードはパネルが
+	 * 選ばれているホームを代表にする）。
+	 */
+	private isSelected(state: IParadisCodexAccountsState, account: IParadisLimitsAccount): boolean {
+		return paradisSelectedCodexHome(state)?.homePath === account.id;
+	}
+
 	/** 裏の読み取りが終わったら描き直してもらう（取り直しはしない）。 */
 	private redraw(): void {
 		if (!this._store.isDisposed) {
@@ -131,18 +157,17 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			// 選択をまだ読めていない・切替の対象にならない（ログインしていない）ホーム。
 			return;
 		}
-		if (paradisSelectedCodexHome(state)?.homePath === home.homePath) {
-			const badge = dom.append(container, $('span.plm-badge.active'));
-			badge.textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
-			badge.title = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルの Codex はこのアカウントを使います");
+		if (this.isSelected(state, account)) {
+			// 使っているアカウントは右上の「使用中」で示す（renderAccountBadges）。
 			return;
 		}
+		dom.append(container, $('span.plm-card-action-note')).textContent = localize('paradis.codexAccounts.switchFromNewTerminals', "新しいターミナルから");
 		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 		button.type = 'button';
 		button.disabled = this.switching;
 		button.textContent = this.switching
 			? localize('paradis.codexAccounts.switching', "切り替え中…")
-			: localize('paradis.codexAccounts.useThisAccount', "このアカウントを使う");
+			: localize('paradis.codexAccounts.switchAccount', "切り替える");
 		// SSH のウィンドウの選択は接続先のもので、同じ接続先を開いたウィンドウにだけ効く。
 		button.title = this.remoteAgentService.getConnection()
 			? localize('paradis.codexAccounts.useThisAccountHintRemote', "この接続先を開いているすべてのウィンドウで、接続先にこれから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです")
@@ -201,45 +226,44 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		const count = summary?.count ?? 0;
 		const rows = credits ? paradisCodexResetCreditRows(credits) : [];
 		const listable = summary?.listable === true;
-		const note = dom.append(container, $('span.plm-card-action-note'));
-		if (offer.pendingUnknown) {
-			note.textContent = localize('paradis.codexAccounts.resetPending', "前回のリセットの結果を確認できていません");
-		} else if (!summary || count === 0) {
-			note.textContent = localize('paradis.codexAccounts.resetNone', "枠のリセット: 残りなし");
-			return;
-		} else {
-			note.textContent = resetSummaryText(summary);
-			note.classList.toggle('soon', summary.nextDayOffset !== undefined && summary.nextDayOffset <= 1);
-		}
-		const open = listable && this.expiriesOpen.has(account.id);
-		if (listable) {
-			const toggle = dom.append(container, $('button.plm-card-action-link')) as HTMLButtonElement;
-			toggle.type = 'button';
-			this.context?.trackFocus(toggle, `codex-expiries:${account.id}`);
-			toggle.setAttribute('aria-expanded', String(open));
-			dom.append(toggle, $('span')).textContent = localize('paradis.codexAccounts.resetExpiries', "期限");
-			toggle.appendChild($(`span${ThemeIcon.asCSSSelector(open ? Codicon.chevronUp : Codicon.chevronDown)}`));
-			store.add(dom.addDisposableListener(toggle, 'click', () => {
-				if (this.expiriesOpen.has(account.id)) {
-					this.expiriesOpen.delete(account.id);
-				} else {
-					this.expiriesOpen.add(account.id);
-				}
-				this.context?.redraw();
-			}));
-		}
 		const busy = this.consuming.has(account.id);
-		const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
-		button.type = 'button';
-		button.disabled = busy;
-		button.textContent = busy
-			? localize('paradis.codexAccounts.resetBusy', "リセット中…")
-			: offer.pendingUnknown
-				? localize('paradis.codexAccounts.resetRetry', "結果を確認…")
-				: localize('paradis.codexAccounts.resetUse', "使う…");
-		store.add(dom.addDisposableListener(button, 'click', () => void this.consume(account, undefined)));
+		if (offer.pendingUnknown || !summary || count === 0) {
+			const note = dom.append(container, $('span.plm-card-action-note.plm-card-actions-start'));
+			if (!offer.pendingUnknown) {
+				note.textContent = localize('paradis.codexAccounts.resetNone', "枠のリセット: 残りなし");
+				return;
+			}
+			note.textContent = localize('paradis.codexAccounts.resetPending', "前回のリセットの結果を確認できていません");
+			const retry = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
+			retry.type = 'button';
+			retry.disabled = busy;
+			retry.textContent = busy
+				? localize('paradis.codexAccounts.resetBusy', "リセット中…")
+				: localize('paradis.codexAccounts.resetRetry', "結果を確認…");
+			store.add(dom.addDisposableListener(retry, 'click', () => void this.consume(account, undefined)));
+			return;
+		}
+		// 残数と次の期限を1つのリンクにし、押すと期限ごとの一覧（各行に「使う…」）を開く。
+		const open = this.expiriesOpen.has(account.id);
+		const toggle = dom.append(container, $('button.plm-card-action-link.plm-card-actions-start')) as HTMLButtonElement;
+		toggle.type = 'button';
+		toggle.classList.toggle('soon', summary.nextDayOffset !== undefined && summary.nextDayOffset <= 1);
+		this.context?.trackFocus(toggle, `codex-expiries:${account.id}`);
+		toggle.setAttribute('aria-expanded', String(open));
+		dom.append(toggle, $('span')).textContent = resetSummaryText(summary);
+		toggle.appendChild($(`span${ThemeIcon.asCSSSelector(open ? Codicon.chevronDown : Codicon.chevronRight)}`));
+		store.add(dom.addDisposableListener(toggle, 'click', () => {
+			if (this.expiriesOpen.has(account.id)) {
+				this.expiriesOpen.delete(account.id);
+			} else {
+				this.expiriesOpen.add(account.id);
+			}
+			this.context?.redraw();
+		}));
 		if (open) {
-			this.renderExpiries(container, store, account, rows, busy || offer.pendingUnknown === true);
+			// 期限の分からない分は ID で選べないので、「期限を選ばずに使う…」を足す（今までの「使う…」と同じ要求）。
+			const listed = listable ? rows : [];
+			this.renderExpiries(container, store, account, listed, busy, !listable || listed.some(row => row.kind === 'unknown'));
 		}
 	}
 
@@ -248,7 +272,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	 * 「使う…」を置き、その1件を選んで使えるようにする。結果の分からない前回の要求があるときは置かない
 	 * （次の操作はその要求の再送になるため）。
 	 */
-	private renderExpiries(container: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount, rows: readonly ParadisCodexResetCreditRow[], disabled: boolean): void {
+	private renderExpiries(container: HTMLElement, store: DisposableStore, account: IParadisLimitsAccount, rows: readonly ParadisCodexResetCreditRow[], disabled: boolean, includeAny: boolean): void {
 		const list = dom.append(container, $('ol.plm-reset-expiries'));
 		const now = Date.now();
 		for (const row of rows) {
@@ -283,6 +307,16 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 				store.add(dom.addDisposableListener(use, 'click', () => void this.consume(account, { id: creditId, expiresAt: row.kind === 'dated' ? row.expiresAt : undefined })));
 			}
 		}
+		if (includeAny) {
+			const item = dom.append(list, $('li.plm-reset-expiry'));
+			dom.append(item, $('span.plm-reset-expiry-label')).textContent = localize('paradis.codexAccounts.resetAny', "期限を選ばずに使う");
+			const use = dom.append(item, $('button.plm-card-action-btn.plm-reset-expiry-use')) as HTMLButtonElement;
+			use.type = 'button';
+			use.disabled = disabled;
+			this.context?.trackFocus(use, `codex-expiry-use:${account.id}:any`);
+			use.textContent = disabled ? localize('paradis.codexAccounts.resetBusy', "リセット中…") : localize('paradis.codexAccounts.resetUse', "使う…");
+			store.add(dom.addDisposableListener(use, 'click', () => void this.consume(account, undefined)));
+		}
 	}
 
 	/** @param credit 期限の一覧で選んだ1件。undefined ならどれを使うかを指定しない（今までどおり）。 */
@@ -294,7 +328,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		}
 		// 結果の分からない前回の要求があるときは、選んだものではなくその要求を送り直す（一覧の「使う…」は出していない）。
 		const chosen = offer.pendingUnknown ? undefined : credit;
-		const name = account.email ?? account.homeLabel ?? homePath;
+		const name = this.context?.displayName(account) ?? account.homeLabel ?? homePath;
 		const { confirmed } = await this.dialogService.confirm({
 			type: Severity.Warning,
 			message: offer.pendingUnknown

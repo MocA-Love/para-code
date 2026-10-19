@@ -10,11 +10,11 @@
 // paradisOfficeSemanticWorkerQueue.ts にある。worker が使えないときも shared process の中では変換しない
 // （EMF・WMF は代替表示の箱のままになるだけ）。
 
-import { Worker } from 'worker_threads';
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import type { IParadisSpreadsheetMetafileImages } from '../../common/paradisSpreadsheet.js';
 import { ownedParadisOfficeBytes, ParadisOfficeSemanticWorkerQueue, type IParadisOfficeSemanticWorker, type IParadisOfficeSemanticWorkerTimers } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { createParadisOfficeWorker } from '../office/paradisOfficeWorkerDiagnostics.js';
 import { PARADIS_SPREADSHEET_METAFILE_MILLISECONDS } from './paradisSpreadsheetMetafiles.js';
 
 /** worker へ送る依頼の中身。 */
@@ -61,9 +61,12 @@ export class ParadisSpreadsheetMetafileWorkerBackend extends Disposable {
 		}));
 	}
 
-	/** 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。 */
+	/**
+	 * 本物の worker_threads の Worker を作る関数。`workerPath` は worker 入口の .js の絶対パス。
+	 * 共通の入口から起こす（パッケージ版で jszip を node_modules.asar から読めるように）。起動・読み込みの失敗は Sentry へ送る。
+	 */
 	static workerFactory(workerPath: string): () => IParadisSpreadsheetMetafileWorker {
-		return () => new Worker(workerPath, { resourceLimits: PARADIS_SPREADSHEET_METAFILE_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetMetafileWorker;
+		return () => createParadisOfficeWorker('spreadsheet-metafile', workerPath, { resourceLimits: PARADIS_SPREADSHEET_METAFILE_WORKER_RESOURCE_LIMITS }) as unknown as IParadisSpreadsheetMetafileWorker;
 	}
 
 	convert(bytes: Uint8Array, token: CancellationToken): Promise<IParadisSpreadsheetMetafileImages> {

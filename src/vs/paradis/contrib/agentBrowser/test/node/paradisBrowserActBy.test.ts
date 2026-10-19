@@ -78,6 +78,17 @@ suite('paradisBrowserActBy (shared process)', () => {
 		});
 	});
 
+	// q.html Q396: 目的の要素を包むリンク・ボタンが受けるクリックは送り、そう添える
+	test('click_by clicks when the link holding the element takes the click, and says so', async () => {
+		const page = new FakePage({ locate: [{ ...button, element: { tag: 'p' }, receivedBy: { tag: 'a', role: 'link' } }] });
+		const result = await new ParadisBrowserActBy(() => 'ref').call(page.call(), 'click_by', { text: 'Title' });
+		assert.deepStrictEqual({ error: isError(result), last: textOf(result).split('\n').at(-1), sent: page.sent.length }, {
+			error: false,
+			last: 'The click went to the link or button that holds the element: {"tag":"a","role":"link"}',
+			sent: 3,
+		});
+	});
+
 	test('click_by frames the element it found before the cursor moves there to click', async () => {
 		const rect = { x: 30, y: 10, width: 40, height: 20 };
 		const page = new FakePage({ locate: [{ ...button, element: { ...button.element, rect } }] });
