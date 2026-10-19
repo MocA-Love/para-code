@@ -139,6 +139,9 @@
 			"terminalDataWriteEvent",
 			"contribRemoteHelp",
 			"contribViewsRemote"
+		],
+		"GitHub.vscode-pull-request-github": [
+			"authIssuers"
 		]
 	},
 	"remoteExtensionTips": {
