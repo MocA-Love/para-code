@@ -227,6 +227,21 @@ suite('ParadisSentryCommon', () => {
 		});
 	});
 
+	test('adds the message hash to the key of a minified bare function, so different functions in one bundle do not share an issue', () => {
+		const shared = 'app:///out/vs/code/electron-utility/sharedProcess/sharedProcessMain.js';
+		const key = (functionName: string, messageHash: string) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'owned', 'para.feature': 'f', 'para.operation': 'o', 'para.error_name': 'TypeError', 'para.error_message_hash': messageHash },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: shared, function: functionName }] } }] },
+		});
+		assert.deepStrictEqual({
+			minified: [key('r4e', 'aaaaaaaa'), key('L', 'bbbbbbbb')],
+			named: [key('connectRelay', 'aaaaaaaa'), key('connectRelay', 'bbbbbbbb')],
+		}, {
+			minified: [`owned|f|o|Error|${shared}|minified|TypeError|aaaaaaaa`, `owned|f|o|Error|${shared}|minified|TypeError|bbbbbbbb`],
+			named: [`owned|f|o|Error|${shared}|connectRelay|TypeError`, `owned|f|o|Error|${shared}|connectRelay|TypeError`],
+		});
+	});
+
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },

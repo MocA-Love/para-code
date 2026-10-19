@@ -179,14 +179,14 @@ suite('ParadisSentryDiagnostics', () => {
 		const hash = (message: string) => paradisErrorMessageHash(new Error(message));
 		const fingerprint = (error: Error) => {
 			const safe = toParadisSentrySafeError('unhandled-error', 'on-unexpected-error', error);
-			const frames = safe.stack?.includes('\n') ? [{ filename: 'app:///out/vs/x.js', function: 'f' }] : undefined;
+			const frames = safe.stack?.includes('\n') ? [{ filename: 'app:///out/vs/x.js', function: 'openChannel' }] : undefined;
 			return paradisSentryFingerprint({
 				tags: { 'para.scope': 'patched', 'para.feature': 'unhandled-error', 'para.operation': 'on-unexpected-error', ...paradisSafeErrorTags(error) },
 				exception: { values: [{ type: 'Error', stacktrace: frames ? { frames } : undefined }] },
 			});
 		};
 		const stackless = (message: string) => Object.assign(new Error(message), { stack: `Error: ${message}` });
-		const withFrame = (message: string) => Object.assign(new Error(message), { stack: `Error: ${message}\n    at f (app:///out/vs/base/x.js:1:1)` });
+		const withFrame = (message: string) => Object.assign(new Error(message), { stack: `Error: ${message}\n    at openChannel (app:///out/vs/base/x.js:1:1)` });
 
 		assert.deepStrictEqual({
 			samePathsGroupTogether: hash(`Cannot open '/Users/alice/a.txt' at line 3`) === hash(`Cannot open '/Users/bob/b.txt' at line 12`),
