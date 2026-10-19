@@ -102,4 +102,31 @@ suite('paradisPointerHitPageScript', () => {
 			fieldWithoutPointerForFill: false,
 		});
 	});
+
+	// q.html Q396: カード全体を押せるリンクが中の文字を覆う型は、そのリンクが受けるので押してよい。
+	// 目的の要素がボタンそのもの（あいだに別のボタンがある）なら、外のリンクが受けるのは取り違えなので断る
+	test('a link or button that holds the element takes the click, but not one around another button', () => {
+		const doc = mainWindow.document;
+		root.innerHTML = '<style>#card::after, #outer::after, #box::after { content: ""; position: absolute; inset: 0; }</style>'
+			+ '<a id="card" href="#card" style="position: relative; display: block; width: 300px; height: 80px;"><p id="title" style="margin: 0;">Title</p></a>'
+			+ '<a id="outer" href="#outer" style="position: relative; display: block; width: 300px; height: 80px;"><button id="inner" style="width: 120px; height: 40px;">Inner</button></a>'
+			+ '<div id="box" style="position: relative; width: 300px; height: 80px;"><p id="plain" style="margin: 0;">Plain</p></div>';
+		const reaches = pointerReaches();
+		const title = doc.getElementById('title')!;
+		const inner = doc.getElementById('inner')!;
+		const plain = doc.getElementById('plain')!;
+		assert.deepStrictEqual({
+			landsOn: [landedAt(title).id, landedAt(inner).id, landedAt(plain).id],
+			titleForClick: reaches(title, landedAt(title), 'click'),
+			titleForFill: reaches(title, landedAt(title), 'fill'),
+			buttonInLink: reaches(inner, landedAt(inner), 'click'),
+			plainAncestor: reaches(plain, landedAt(plain), 'click'),
+		}, {
+			landsOn: ['card', 'outer', 'box'],
+			titleForClick: true,
+			titleForFill: false,
+			buttonInLink: false,
+			plainAncestor: false,
+		});
+	});
 });

@@ -13,11 +13,14 @@
 // （Node.contains は shadow の境界を越えないため、カスタム要素の中のボタンを「覆われている」と取り違える）。
 // 祖先に当たるのは、目的の要素が pointer-events: none のとき（人が押しても同じ祖先が受ける）と、目的の要素がその点で
 // 切り取られて見えないとき（overflow: hidden の外。押すと祖先を押してしまう）。後者は覆われている扱いにする。
+// ただし祖先がリンクかボタンで、目的の要素とのあいだに別のリンク・ボタンが無いとき（カード全体を押せるリンクが中の文字を
+// 覆う型）は、人が押しても同じリンク・ボタンが受けるので押してよい（q.html Q396）。
 
 /**
  * `pointerHit(el, hit)` と `pointerReaches(el, hit, purpose)` を定義する文。
  * pointerHit は 'self' | 'child'（目的の要素の中）| 'ancestor'（目的の要素を含む）| 'other'。
  * pointerReaches はその点を押して目的の要素を操作したことになるか。fill はフィールド自身がフォーカスを受ける必要があるので祖先では断る。
+ * pointerControl は、祖先が受けるときにそれが目的の要素を包むリンク・ボタンか。
  */
 export const PARADIS_POINTER_HIT_PAGE_SCRIPT = String.raw`
 	const flatParent = node => node.assignedSlot || node.parentElement || (node.parentNode && node.parentNode.host) || null;
@@ -28,9 +31,11 @@ export const PARADIS_POINTER_HIT_PAGE_SCRIPT = String.raw`
 		return false;
 	};
 	const pointerHit = (el, hit) => hit === el ? 'self' : flatContains(el, hit) ? 'child' : flatContains(hit, el) ? 'ancestor' : 'other';
+	const pointerControlSelector = 'a[href], button, [role="button"], [role="link"]';
+	const pointerControl = (el, hit) => typeof hit.matches === 'function' && hit.matches(pointerControlSelector) && el.closest(pointerControlSelector) === hit;
 	const pointerReaches = (el, hit, purpose) => {
 		const reach = pointerHit(el, hit);
 		if (reach === 'self' || reach === 'child') { return true; }
-		return reach === 'ancestor' && purpose !== 'fill' && getComputedStyle(el).pointerEvents === 'none';
+		return reach === 'ancestor' && purpose !== 'fill' && (getComputedStyle(el).pointerEvents === 'none' || pointerControl(el, hit));
 	};
 `;

@@ -111,7 +111,42 @@ export class ToolHandler {
     unknownArgumentNames(params) {
         return Object.keys(params).filter(key => !Object.hasOwn(this.inputSchema, key));
     }
+    // PARA-PATCH (Para Code): give up on the call after params.paraCodeTimeoutMs (an internal argument Para Code sets on
+    // evaluate_script and take_snapshot; never published in tools/list), counted from when the call holds the tool
+    // mutex, and release the mutex then. A page that does not answer otherwise held this tab's tools for puppeteer's
+    // 180 s protocol timeout. The abandoned call settles later on its own; its result is dropped.
+    // See NOTES.md "vendored chrome-devtools-mcp への変更".
     async handle(params) {
+        const timeoutMs = params?.paraCodeTimeoutMs;
+        if (typeof timeoutMs !== 'number' || !(timeoutMs > 0)) {
+            return await this.paraCodeHandleWithoutTimeout(params);
+        }
+        const timedOut = Promise.withResolvers();
+        let guard;
+        let released = false;
+        let timer;
+        const release = () => {
+            if (guard && !released) {
+                released = true;
+                guard.dispose();
+            }
+        };
+        try {
+            return await Promise.race([
+                this.paraCodeHandleWithoutTimeout(params, acquired => {
+                    guard = acquired;
+                    timer = setTimeout(() => timedOut.resolve({ content: [{ type: 'text', text: `PARA_BROWSER_PAGE_UNRESPONSIVE: ${this.tool.name} did not finish within ${timeoutMs} ms.` }], isError: true }), timeoutMs);
+                    return { dispose: release };
+                }),
+                timedOut.promise,
+            ]);
+        }
+        finally {
+            clearTimeout(timer);
+            release();
+        }
+    }
+    async paraCodeHandleWithoutTimeout(params, paraCodeOnAcquired) {
         if (this.disabledReason) {
             return {
                 content: [
@@ -135,7 +170,9 @@ export class ToolHandler {
                 isError: true,
             };
         }
-        const guard = await this.toolMutex.acquire();
+        // PARA-PATCH (Para Code): see handle above.
+        const acquiredGuard = await this.toolMutex.acquire();
+        const guard = paraCodeOnAcquired ? paraCodeOnAcquired(acquiredGuard) : acquiredGuard;
         const startTime = Date.now();
         let success = false;
         try {

@@ -40,6 +40,9 @@ Example with arguments: \`(el) => el.innerText\`
             // page that does not answer does not hold this tool (and the tool mutex of this tab) for the 180 s protocol
             // timeout. Dialogs that open meanwhile are handled by dialogAction only until the call returns.
             paraCodeDeadlineMs: zod.number().optional(),
+            // PARA-PATCH (Para Code): internal argument set only by Para Code on the agent's own calls (never published in
+            // tools/list): ToolHandler.handle gives up after this many ms. See NOTES.md "vendored chrome-devtools-mcp への変更".
+            paraCodeTimeoutMs: zod.number().optional(),
             dialogAction: zod
                 .string()
                 .optional()

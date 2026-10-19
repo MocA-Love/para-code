@@ -17,6 +17,8 @@
 //     javascript: の URL は「Unable to navigate」と返りながら、今のページで実行される（台の腕で確かめた）。
 //     file: は従来どおり通す。接続先のペインの file: は paradisDevtoolsPathPolicy.ts が断る。手元のペインでどの
 //     ファイルを開くか（roots・.git の範囲）は確かめていない（q.html Q328）。view-source:file: は file: として扱わずに断る
+//   - evaluate_script・take_snapshot: 答えないページで puppeteer の 180 秒を待たないよう、vendored の内部の引数
+//     `paraCodeTimeoutMs` で締め切りを付ける。evaluate_script はエージェントが `timeout`（ms）で延ばせる（q.html Q394）
 // 子プロセスの zod は未知の引数を断るので、Para Code 側で足した引数は渡す前に必ず取り除く。
 
 import { paradisIsAllowedAgentTabUrl } from '../common/paradisAgentBrowserTabs.js';
@@ -41,6 +43,14 @@ const RETRY_SAFE_TOOLS: ReadonlySet<string> = new Set([
 	'get_network_request',
 	'emulate',
 ]);
+
+/** 締め切り（`paraCodeTimeoutMs`）を付けるツール。evaluate_script はエージェントの `timeout` で変えられる（q.html Q394）。 */
+const TIMEOUT_TOOLS: ReadonlySet<string> = new Set(['evaluate_script', 'take_snapshot']);
+
+/** 締め切りの既定と、エージェントが選べる範囲（ms）。上限は proxy の 1 回の呼び出しの上限（300 秒）より手前。 */
+export const PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS = 60_000;
+const MIN_TIMEOUT_MS = 1_000;
+const MAX_TIMEOUT_MS = 280_000;
 
 /** 失敗が「要素が操作できるようにならなかった」としか言わない入力系のツール。 */
 const INPUT_TOOLS: ReadonlySet<string> = new Set([
@@ -86,13 +96,21 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			type: 'boolean',
 			description: 'Whether to include a page snapshot in the response once the text appears. Default is false (call take_snapshot when you need one).',
 		};
-	} else if (tool.name === 'evaluate_script' && (properties.paraCodeObserve !== undefined || properties.paraCodeDeadlineMs !== undefined)) {
+	} else if (tool.name === 'evaluate_script' && (properties.paraCodeObserve !== undefined || properties.paraCodeDeadlineMs !== undefined || properties.paraCodeTimeoutMs !== undefined)) {
 		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
 		delete properties.paraCodeObserve;
 		delete properties.paraCodeDeadlineMs;
+		if (properties.paraCodeTimeoutMs !== undefined) {
+			delete properties.paraCodeTimeoutMs;
+			properties.timeout = {
+				type: 'integer',
+				description: `Maximum time in milliseconds to wait for the script (default ${PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS}, from ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS}). When the page does not answer in time, the call fails with PARA_BROWSER_PAGE_UNRESPONSIVE and the tab is free for other tools again.`,
+			};
+		}
 	} else if (tool.name === 'take_snapshot') {
 		// Para Code だけが付ける内部の引数（vendored の PARA-PATCH）。エージェントには見せない
 		delete properties.paraCodeRootRect;
+		delete properties.paraCodeTimeoutMs;
 		properties.offset = {
 			type: 'integer',
 			minimum: 0,
@@ -109,7 +127,7 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 }
 
 /** 子プロセスへ渡す引数に戻す（足した引数を取り除き、wait_for の文字列を配列へ包む）。 */
-export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean; readonly evaluateObserve?: boolean; readonly evaluateDeadline?: boolean }): IParadisPreparedDevtoolsCall {
+export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, options?: { readonly measureRoot?: boolean; readonly evaluateObserve?: boolean; readonly evaluateDeadline?: boolean; readonly timeoutTools?: ReadonlySet<string> }): IParadisPreparedDevtoolsCall {
 	if (!isRecord(args)) {
 		return { args };
 	}
@@ -125,6 +143,12 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		const rest = { ...args };
 		delete rest.paraCodeObserve;
 		return { args: rest, refuse: PARADIS_OBSERVE_UNSUPPORTED_MESSAGE };
+	}
+	if (name === 'evaluate_script' && !Object.hasOwn(args, 'paraCodeObserve') && !Object.hasOwn(args, 'paraCodeDeadlineMs')) {
+		// エージェントの評価。`timeout` は Para Code の引数（vendored は知らない）なので、締め切りの内部の引数へ置き換える。
+		// vendored が締め切りを知らなければ、従来どおり締め切り無しで評価する（q.html Q394）
+		const { timeout, ...rest } = args;
+		return { args: options?.timeoutTools?.has(name) === true ? { ...rest, paraCodeTimeoutMs: paradisDevtoolsTimeoutMs(timeout) } : rest };
 	}
 	if (name === 'navigate_page' && typeof args.url === 'string' && (args.type === undefined || args.type === 'url') && !paradisIsAllowedAgentTabUrl(args.url) && !isFileUrl(args.url)) {
 		// javascript: は今のページで動き、data: や内部のスキームはページを丸ごと差し替える。どれもエージェントに任せる理由が無い
@@ -144,9 +168,35 @@ export function paradisPrepareDevtoolsToolCall(name: string, args: unknown, opti
 		// root の要素の位置は vendored の take_snapshot の中で測る（エージェントのカーソルの枠。q.html Q297 の 3）。
 		// 別の evaluate_script で測るとタブの道具の順番を握り、次の道具を待たせるため。vendored が引数を知っている
 		// （tools/list のスキーマにある）ときだけ付ける。PARA-PATCH を当て忘れた vendored は知らない引数を断るため
-		return { args: snapshotRoot !== undefined && snapshotOffset === 0 && options?.measureRoot === true ? { ...rest, paraCodeRootRect: snapshotRoot } : rest, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
+		const measured = snapshotRoot !== undefined && snapshotOffset === 0 && options?.measureRoot === true ? { ...rest, paraCodeRootRect: snapshotRoot } : rest;
+		// AX ツリーを返さないページで 180 秒待たない（q.html Q394）。`paraCodeTimeoutMs` は Para Code だけが付ける
+		delete measured.paraCodeTimeoutMs;
+		return { args: options?.timeoutTools?.has(name) === true ? { ...measured, paraCodeTimeoutMs: PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS } : measured, snapshotOffset, ...(snapshotRoot !== undefined ? { snapshotRoot } : {}) };
 	}
 	return { args };
+}
+
+/** エージェントの `timeout`（ms）→ 締め切り。数でなければ既定、範囲の外は端に寄せる。 */
+function paradisDevtoolsTimeoutMs(timeout: unknown): number {
+	if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) {
+		return PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS;
+	}
+	return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(timeout)));
+}
+
+/** vendored の ToolHandler が締め切りで諦めたときの文（PARA-PATCH）。 */
+const TIMED_OUT_PATTERN = /^PARA_BROWSER_PAGE_UNRESPONSIVE: (?<tool>evaluate_script|take_snapshot) did not finish within (?<ms>\d+) ms\.$/;
+
+/** 締め切りで諦めた evaluate_script・take_snapshot の文を、エージェントが次の手を選べる文にする。 */
+function explainTimedOut(text: string): string {
+	const match = TIMED_OUT_PATTERN.exec(text);
+	if (!match?.groups) {
+		return text;
+	}
+	const seconds = Number(match.groups.ms) / 1000;
+	return match.groups.tool === 'evaluate_script'
+		? `PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within ${seconds} s (the page may be busy running scripts or loading, or frozen, or the script itself waits that long), so Para Code stopped waiting. The script may still run when the page answers. Other tools on this tab are not held up and take_screenshot still works. Pass a larger "timeout" (milliseconds) for a script that needs longer.`
+		: `PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not return its accessibility tree within ${seconds} s (it may be busy running scripts or loading, or frozen), so Para Code stopped waiting. Other tools on this tab are not held up and take_screenshot still works; retry when the page responds.`;
 }
 
 /** `file:` の URL か（URL として読んだときのスキームで決める。`view-source:file:` は含めない）。 */
@@ -200,6 +250,9 @@ export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadis
 		return result;
 	}
 	if (result.isError === true) {
+		if (TIMEOUT_TOOLS.has(name)) {
+			return mapTextParts(result, explainTimedOut);
+		}
 		if (recentRejection !== undefined && INPUT_TOOLS.has(name)) {
 			const reason = recentRejection;
 			return mapTextParts(result, text => text.includes('PARA_BROWSER_') ? text : `${text}\nPara Code refused the input during this call: ${reason}`);
@@ -226,22 +279,32 @@ export function paradisAdjustDevtoolsToolResult(name: string, prepared: IParadis
 /** evaluate_script の中の `.click()` を見分ける（文字列やコメントの中も拾うが、足すのは 1 行の案内だけ）。 */
 const SCRIPT_CLICK_PATTERN = /\.click\s*\(/;
 
+/** evaluate_script の中の `setTimeout(` を見分ける（同上）。 */
+const SCRIPT_WAIT_PATTERN = /\bsetTimeout\s*\(/;
+
 /** evaluate_script の中で `.click()` を使ったときに結果へ足す案内（q.html Q299 A の 1 段目）。 */
 export const PARADIS_SCRIPT_CLICK_HINT = 'Tip: use click_by (role + name, text or selector) instead of .click() in evaluate_script; it shows the user your cursor moving to the element, works with React/MUI, and explains why an element cannot be clicked.';
 
+/** evaluate_script の中で `setTimeout` を使ったときに結果へ足す案内（q.html Q397 A1）。 */
+export const PARADIS_SCRIPT_WAIT_HINT = 'Tip: to wait for the page, use wait_until (a selector, text or a JavaScript predicate, with network_idle_ms for requests) instead of setTimeout in evaluate_script; it checks in short slices without holding this tab and returns as soon as the condition holds.';
+
 /**
- * エージェントの evaluate_script の結果に、中で `.click()` を使っていたら案内を 1 行足す。それ以外の道具・
- * 失敗した結果・形の違う結果はそのまま返す。Para Code が中で使う evaluate_script には使わない（結果を読むため）。
+ * エージェントの evaluate_script の結果に、中で `.click()` や `setTimeout` を使っていたら案内を 1 行ずつ足す。
+ * それ以外の道具・失敗した結果・形の違う結果はそのまま返す。Para Code が中で使う evaluate_script には使わない（結果を読むため）。
  */
-export function paradisWithScriptClickHint(name: string, args: unknown, result: unknown): unknown {
+export function paradisWithScriptHints(name: string, args: unknown, result: unknown): unknown {
 	if (name !== 'evaluate_script' || !isRecord(result) || result.isError === true || !Array.isArray(result.content)) {
 		return result;
 	}
 	const source = isRecord(args) && typeof args.function === 'string' ? args.function : undefined;
-	if (source === undefined || !SCRIPT_CLICK_PATTERN.test(source)) {
+	if (source === undefined) {
 		return result;
 	}
-	return { ...result, content: [...result.content, { type: 'text', text: PARADIS_SCRIPT_CLICK_HINT }] };
+	const hints = [
+		...(SCRIPT_CLICK_PATTERN.test(source) ? [PARADIS_SCRIPT_CLICK_HINT] : []),
+		...(SCRIPT_WAIT_PATTERN.test(source) ? [PARADIS_SCRIPT_WAIT_HINT] : []),
+	];
+	return hints.length === 0 ? result : { ...result, content: [...result.content, ...hints.map(hint => ({ type: 'text', text: hint }))] };
 }
 
 /** vendored の take_snapshot が root の要素の位置を書く行の印（PARA-PATCH。tools/snapshot.js）。 */
@@ -252,12 +315,15 @@ export const PARADIS_SNAPSHOT_ROOT_RECT_MARKER = '[Para Code root rect] ';
  * `paraCodeObserve` と `paraCodeDeadlineMs`。ダイアログの処理と待ちを外した評価を、エージェントが勝手に使わないように）。
  */
 export function paradisStripInternalDevtoolsArguments(name: string, args: unknown): unknown {
-	if (name !== 'evaluate_script' || !isRecord(args) || (!Object.hasOwn(args, 'paraCodeObserve') && !Object.hasOwn(args, 'paraCodeDeadlineMs'))) {
+	if (!TIMEOUT_TOOLS.has(name) || !isRecord(args) || (!Object.hasOwn(args, 'paraCodeObserve') && !Object.hasOwn(args, 'paraCodeDeadlineMs') && !Object.hasOwn(args, 'paraCodeTimeoutMs'))) {
 		return args;
 	}
 	const rest = { ...args };
-	delete rest.paraCodeObserve;
-	delete rest.paraCodeDeadlineMs;
+	if (name === 'evaluate_script') {
+		delete rest.paraCodeObserve;
+		delete rest.paraCodeDeadlineMs;
+	}
+	delete rest.paraCodeTimeoutMs;
 	return rest;
 }
 
@@ -274,6 +340,11 @@ export function paradisEvaluateObserves(tools: readonly unknown[]): boolean {
 export function paradisEvaluateHasDeadline(tools: readonly unknown[]): boolean {
 	const tool = tools.find(candidate => isRecord(candidate) && candidate.name === 'evaluate_script');
 	return isRecord(tool) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeDeadlineMs !== undefined;
+}
+
+/** vendored のスキーマが締め切り（`paraCodeTimeoutMs`、q.html Q394）を知っているツールの名前。 */
+export function paradisDevtoolsTimeoutTools(tools: readonly unknown[]): ReadonlySet<string> {
+	return new Set(tools.filter(tool => isRecord(tool) && typeof tool.name === 'string' && TIMEOUT_TOOLS.has(tool.name) && isRecord(tool.inputSchema) && isRecord(tool.inputSchema.properties) && tool.inputSchema.properties.paraCodeTimeoutMs !== undefined).map(tool => (tool as { name: string }).name));
 }
 
 /** vendored の take_snapshot のスキーマが、Para Code の測りの引数を知っているか（PARA-PATCH が当たっているか）。 */
