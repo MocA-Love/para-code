@@ -216,7 +216,10 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// Only for an event with no own frame (none at all, or only the kept Node / dependency frames):
 	// there the rest of the key says little, so errors from unrelated places (a Node error relayed over
 	// IPC, code outside `out/vs`) landed in one issue. Events with an own frame keep their existing key.
-	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) ? event.tags?.['para.error_message_hash'] : undefined;
+	// A minified bare name says nothing about which function threw (the bundle is one file, so the
+	// filename does not tell them apart either), so there the message hash joins the key as well.
+	const functionName = topFrame?.function !== undefined ? paradisStableFunctionName(topFrame.function) : 'unknown';
+	const messageHash = topFrame === undefined || isParadisForeignKeptFrame(topFrame) || functionName === 'minified' ? event.tags?.['para.error_message_hash'] : undefined;
 	// Errors relayed from the extension host (`para.origin`) get their own issues, apart from the
 	// workbench's own errors that happen to leave the same frames behind.
 	const origin = event.tags?.['para.origin'];
@@ -226,7 +229,7 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		event.tags?.['para.operation'] ?? 'unknown',
 		exception?.type ?? event.message ?? event.debug_meta?.images?.[0]?.code_file ?? 'Error',
 		topFrame?.filename !== undefined ? paradisStableFrameFilename(topFrame.filename) : 'unknown',
-		topFrame?.function !== undefined ? paradisStableFunctionName(topFrame.function) : 'unknown',
+		functionName,
 		...(errorName !== undefined ? [errorName] : []),
 		...(messageHash !== undefined ? [messageHash] : []),
 		...(origin !== undefined ? [origin] : []),
