@@ -52,6 +52,16 @@ async function navigateWithInterception(page, action, allowListString, timeout) 
         await cleanupInterception();
     }
 }
+// PARA-PATCH (Para Code): a navigation timeout after the main frame committed the new document is not a failure;
+// the page keeps loading in the tab. Over a slow connection (an SSH-forwarded dev server) most navigations passed
+// the 10 s default before the load event and were reported as "Unable to navigate", while the page was open.
+// Returns the line to report, or undefined to keep the upstream line. See NOTES.md "vendored chrome-devtools-mcp への変更".
+function paraCodeStillLoadingLine(error, committed, done) {
+    if (!committed || error?.name !== 'TimeoutError') {
+        return undefined;
+    }
+    return `${done}, but the page had not finished loading when the timeout passed (${error.message}). It keeps loading in the tab; this is not an error. Wait for what you need with wait_until instead of navigating or reloading again.`;
+}
 export const listPages = defineTool(args => {
     return {
         name: 'list_pages',
@@ -241,6 +251,15 @@ export const navigatePage = definePageTool(args => {
                 initScriptId = identifier;
             }
             page.pptrPage.on('dialog', dialogHandler);
+            // PARA-PATCH (Para Code): see paraCodeStillLoadingLine. Page.frameNavigated fires when a frame commits a new
+            // document (not for same-document navigations); the main frame has no parentId.
+            let paraCodeCommitted = false;
+            const paraCodeOnFrameNavigated = (event) => {
+                if (!event.frame.parentId) {
+                    paraCodeCommitted = true;
+                }
+            };
+            page.pptrPage._client().on('Page.frameNavigated', paraCodeOnFrameNavigated);
             try {
                 await navigateWithInterception(page, async () => {
                     switch (request.params.type) {
@@ -253,7 +272,7 @@ export const navigatePage = definePageTool(args => {
                                 response.appendResponseLine(`Successfully navigated to ${request.params.url}.`);
                             }
                             catch (error) {
-                                response.appendResponseLine(`Unable to navigate in the selected page: ${error.message}.`);
+                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, `Navigated to ${request.params.url}`) ?? `Unable to navigate in the selected page: ${error.message}.`);
                             }
                             break;
                         case 'back':
@@ -262,7 +281,7 @@ export const navigatePage = definePageTool(args => {
                                 response.appendResponseLine(`Successfully navigated back to ${page.pptrPage.url()}.`);
                             }
                             catch (error) {
-                                response.appendResponseLine(`Unable to navigate back in the selected page: ${error.message}.`);
+                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, 'Navigated back') ?? `Unable to navigate back in the selected page: ${error.message}.`);
                             }
                             break;
                         case 'forward':
@@ -271,7 +290,7 @@ export const navigatePage = definePageTool(args => {
                                 response.appendResponseLine(`Successfully navigated forward to ${page.pptrPage.url()}.`);
                             }
                             catch (error) {
-                                response.appendResponseLine(`Unable to navigate forward in the selected page: ${error.message}.`);
+                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, 'Navigated forward') ?? `Unable to navigate forward in the selected page: ${error.message}.`);
                             }
                             break;
                         case 'reload':
@@ -283,7 +302,7 @@ export const navigatePage = definePageTool(args => {
                                 response.appendResponseLine(`Successfully reloaded the page.`);
                             }
                             catch (error) {
-                                response.appendResponseLine(`Unable to reload the selected page: ${error.message}.`);
+                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, 'Reloaded the page') ?? `Unable to reload the selected page: ${error.message}.`);
                             }
                             break;
                     }
@@ -291,6 +310,7 @@ export const navigatePage = definePageTool(args => {
             }
             finally {
                 page.pptrPage.off('dialog', dialogHandler);
+                page.pptrPage._client().off('Page.frameNavigated', paraCodeOnFrameNavigated);
                 if (initScriptId) {
                     await page.pptrPage
                         .removeScriptToEvaluateOnNewDocument(initScriptId)
