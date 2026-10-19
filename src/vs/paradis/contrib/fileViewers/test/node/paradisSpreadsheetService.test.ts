@@ -8,11 +8,15 @@
 import { deepStrictEqual, ok, rejects, strictEqual } from 'assert';
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { minimalJpeg, minimalPng } from '../common/paradisWordImageFixture.js';
 import { minimalBmp } from '../common/paradisOfficeBmpFixture.js';
 import { emfRecord, minimalEmf, ParadisMetafileBytes } from '../common/paradisOfficeMetafileFixture.js';
 import { convertParadisSpreadsheetMetafiles } from '../../node/spreadsheet/paradisSpreadsheetMetafiles.js';
+import { ParadisSpreadsheetMetafileWorkerBackend } from '../../node/spreadsheet/paradisSpreadsheetMetafileWorkerBackend.js';
+import { ParadisWorker } from '../../../../node/paradisWorker.js';
 import { collectParadisSpreadsheetSemanticDiagnostics } from '../../node/spreadsheet/paradisSpreadsheetSemanticDiagnostics.js';
 import { PARADIS_SPREADSHEET_SVG_IMAGE_COUNT, ParadisSpreadsheetService, applyTint, formatDateFallback, getCellDiagonalForTest, resolveIndexedColor } from '../../node/paradisSpreadsheetService.js';
 
@@ -217,6 +221,24 @@ suite('ParadisSpreadsheetService', () => {
 		const { bytes } = await picturesWorkbook();
 		const images = await convertParadisSpreadsheetMetafiles(bytes);
 		deepStrictEqual(Object.values(images).map(href => [href.slice(0, href.indexOf(';')), /<svg\b/.test(Buffer.from(href.slice(href.indexOf(',') + 1), 'base64').toString('utf8'))]), [['data:image/svg+xml', true]]);
+	});
+
+	test('converts the same EMF pictures in the metafile worker, started through the common worker entry', async function () {
+		// The Electron renderer test host cannot launch worker_threads. The node unit runner is the
+		// production execution boundary (the shared process) and runs this test.
+		if (process.type === 'renderer') { this.skip(); }
+		const { bytes } = await picturesWorkbook();
+		const inProcess = await convertParadisSpreadsheetMetafiles(bytes);
+		const workers: unknown[] = [];
+		const factory = ParadisSpreadsheetMetafileWorkerBackend.workerFactory(FileAccess.asFileUri('vs/paradis/contrib/fileViewers/node/spreadsheet/paradisSpreadsheetMetafileWorkerMain.js').fsPath);
+		const backend = new ParadisSpreadsheetMetafileWorkerBackend(() => { const worker = factory(); workers.push(worker); return worker; });
+		try {
+			const converted = await backend.convert(bytes, CancellationToken.None);
+			// Without the common entry the packaged build cannot resolve jszip in the worker; the reply would be `failed`.
+			deepStrictEqual({ converted, common: workers.map(worker => worker instanceof ParadisWorker) }, { converted: { images: { ...inProcess } }, common: [true] });
+		} finally {
+			backend.dispose();
+		}
 	});
 
 	test('rejects bytes that are not an xlsx archive', async () => {
