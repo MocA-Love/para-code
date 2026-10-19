@@ -9,7 +9,7 @@ import { formatRelativeTime } from '../../time.js';
 import { updatedAtLabel } from '../../usageFormat.js';
 import { Icon, Meter, MeterRow, iconSize } from '../../ui/index.js';
 import { AccountRow, UnavailableAccountsGroup, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../settings/usageSections.js';
-import { accountName, hasPreviousValue, providerEmptyMessage } from '../settings/usageSummary.js';
+import { accountName, hasPreviousValue, providerEmptyMessage, type AccountNumbers } from '../settings/usageSummary.js';
 import { DetailMessage } from '../settings/usageDetailParts.js';
 import {
 	entryKindLabel,
@@ -80,7 +80,7 @@ export function SeenOnChips({ chips }: { chips: readonly SeenOn[] }) {
  * Claude / Codex の束（全 PC の合計）。アカウントごとに1行で、見えている PC をチップで添える。
  * `showChips` は PC が2台以上のときだけ（1台なら PC の名前は要らない）。
  */
-export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2 }: {
+export function AggregatedProviderSection({ provider, title, accounts, emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2, numbers }: {
 	provider: 'claude' | 'codex';
 	title: string;
 	accounts: readonly AggregatedAccount[];
@@ -95,6 +95,8 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 	expandResets?: boolean;
 	/** メーターを1行に何個並べるか（iPad で左右に並べた列が狭いときは 1）。 */
 	metersPerRow?: 1 | 2;
+	/** メールを番号で出すときの番号（`usageEmailMask.ts`）。 */
+	numbers?: AccountNumbers;
 }) {
 	// 取得できていないアカウントは1行に畳む（接続先のログインと、控えている間の前の値を見せるものは畳まない）
 	const folded = (item: AggregatedAccount) => item.account.status === 'unavailable' && item.remoteHost === undefined && !hasPreviousValue(item.account);
@@ -108,6 +110,7 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 			dimmed={item.old}
 			expandResets={expandResets}
 			metersPerRow={metersPerRow}
+			numbers={numbers}
 			extra={showChips ? <SeenOnChips chips={item.seenOn} /> : undefined}
 		/>
 	);
@@ -125,7 +128,7 @@ export function AggregatedProviderSection({ provider, title, accounts, emptySnap
 							{row(item)}
 						</View>
 					))}
-					<UnavailableAccountsGroup names={unavailable.map(item => accountName(item.account))} separated={shown.length > 0}>
+					<UnavailableAccountsGroup names={unavailable.map(item => accountName(item.account, numbers))} separated={shown.length > 0}>
 						{unavailable.map((item, index) => (
 							<Fragment key={item.key}>
 								{index > 0 ? <UsageSeparator /> : null}
