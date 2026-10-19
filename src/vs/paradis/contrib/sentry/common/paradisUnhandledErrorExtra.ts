@@ -38,3 +38,12 @@ export function paradisUnhandledErrorSafeExtra(error: unknown): Record<string, s
 		return undefined;
 	}
 }
+
+/**
+ * 拡張ホストから届いた例外か。拡張ホストの例外は `MainThreadErrors.$onUnexpectedError` から同期で
+ * `onUnexpectedError` に入るので、ハンドラの中で取った呼び出し元のスタックにその名前が出る（RPC の
+ * 名前なので圧縮されても変わらない）。upstream のファイルは触らずに済む。
+ */
+export function paradisIsExtensionHostRelay(callerStack: string | undefined): boolean {
+	return callerStack !== undefined && /\$onUnexpectedError\b/.test(callerStack);
+}

@@ -10,7 +10,7 @@ import { transformErrorFromSerialization } from '../../../../../base/common/erro
 import { ListenerLeakError, ListenerRefusalError } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisSafeErrorExtra } from '../../common/paradisSentryDiagnostics.js';
-import { paradisUnhandledErrorSafeExtra } from '../../common/paradisUnhandledErrorExtra.js';
+import { paradisIsExtensionHostRelay, paradisUnhandledErrorSafeExtra } from '../../common/paradisUnhandledErrorExtra.js';
 
 suite('paradisUnhandledErrorSafeExtra', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,5 +32,11 @@ suite('paradisUnhandledErrorSafeExtra', () => {
 	test('an extension host error keeps its Node code through serialization, so every report gets safe_errno', () => {
 		const fromExtensionHost = transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'Cannot find module /Users/example/x.js', stack: '', noTelemetry: false, code: 'ERR_MODULE_NOT_FOUND' });
 		assert.deepStrictEqual(paradisSafeErrorExtra(fromExtensionHost), { safe_errno: 'ERR_MODULE_NOT_FOUND' });
+	});
+
+	test('tells an error the extension host relayed from one raised in the workbench by the caller stack', () => {
+		const relayed = 'Error\n    at ws.<anonymous> (app:///out/vs/workbench/workbench.desktop.main.js:1:1)\n    at Kx.onUnexpectedError (app:///out/vs/workbench/workbench.desktop.main.js:1:2)\n    at Ob.$onUnexpectedError (app:///out/vs/workbench/workbench.desktop.main.js:1:3)';
+		const local = 'Error\n    at ws.<anonymous> (app:///out/vs/workbench/workbench.desktop.main.js:1:1)\n    at Kx.onUnexpectedError (app:///out/vs/workbench/workbench.desktop.main.js:1:2)';
+		assert.deepStrictEqual([paradisIsExtensionHostRelay(relayed), paradisIsExtensionHostRelay(local), paradisIsExtensionHostRelay(undefined)], [true, false, false]);
 	});
 });

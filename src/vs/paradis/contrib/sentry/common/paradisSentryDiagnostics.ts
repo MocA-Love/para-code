@@ -365,6 +365,41 @@ export function paradisFileOperationResultName(error: unknown): string | undefin
 	}
 }
 
+/** `FileSystemProviderErrorCode`'s values. Only these are taken from a message as a provider code. */
+const fileSystemProviderErrorCodes = new Set([
+	'EntryExists', 'EntryNotFound', 'EntryNotADirectory', 'EntryIsADirectory', 'EntryExceedsStorageQuota',
+	'EntryTooLarge', 'EntryWriteLocked', 'NoPermissions', 'Unavailable', 'Unknown',
+]);
+
+/**
+ * What a `FileOperationError` wraps. The file service keeps only the text of the provider's error, in
+ * the last parentheses of its message (`Unable to read file '<path>' (<name>: <message>)`, translated
+ * around the parentheses), and `FILE_OTHER_ERROR` alone does not tell a provider that is not ready from
+ * a cancelled read. Sends the provider's code (`Unavailable`, from `<code> (FileSystemError)`) or the
+ * inner error's name (`Error`, `Canceled`), and a hash of the inner message made the same way as
+ * `para.error_message_hash`. The path is outside the parentheses and is never read.
+ */
+function paradisFileOperationReason(message: string | undefined): Record<`safe_${string}`, string> {
+	const inner = /\((?<inner>[^()]*(?:\([^()]*\)[^()]*)?)\)\s*$/.exec(message?.slice(-MAX_HASHED_MESSAGE_LENGTH) ?? '')?.groups?.inner;
+	if (inner === undefined) {
+		return {};
+	}
+	const reason: Record<`safe_${string}`, string> = {};
+	const named = /^(?<name>[A-Za-z_$][\w$]{0,49})(?<provider> \(FileSystemError\))?: (?<text>[\s\S]*)$/.exec(inner)?.groups;
+	if (named?.provider !== undefined) {
+		if (fileSystemProviderErrorCodes.has(named.name)) {
+			reason.safe_provider_code = named.name;
+		}
+	} else if (named !== undefined) {
+		reason.safe_inner_error_name = named.name;
+	}
+	const hash = paradisErrorMessageHash({ message: named?.text ?? inner });
+	if (hash !== undefined) {
+		reason.safe_inner_message_hash = hash;
+	}
+	return reason;
+}
+
 /**
  * Node's system error codes worth telling apart. Only these are ever extracted from a message, so a
  * word in a user's path that happens to look like one (`/Users/x/EFOO/`) is never sent.
@@ -408,6 +443,7 @@ export function paradisSafeErrorExtra(error: unknown): Record<`safe_${string}`, 
 		const fileResult = paradisFileOperationResultName(error);
 		if (fileResult !== undefined) {
 			extra.safe_file_result = fileResult;
+			Object.assign(extra, paradisFileOperationReason(readStringProperty(error, 'message')));
 		}
 		const code = readStringProperty(error, 'code');
 		const errno = code !== undefined && (knownErrnoCodes.has(code) || nodeErrorCode.test(code))
@@ -492,15 +528,34 @@ export function paradisDedupeFingerprint(errorTags: Record<string, string>): str
 	return ['para.dedupe', errorTags['para.error_name'] ?? '', errorTags['para.error_message_hash'] ?? ''];
 }
 
+/** Where a reported error was raised, when that is not the process that reports it. */
+export type ParadisErrorOrigin = 'extension-host';
+
+const errorOrigins = new WeakMap<object, ParadisErrorOrigin>();
+
+/**
+ * Marks `error` as raised in `origin` and relayed to this process, so its report carries the
+ * `para.origin` tag and gets its own issue. The extension host's errors reach the workbench's
+ * unexpected error handler with only Node's frames left (an extension's own files are not sent), and
+ * looked like the workbench's own errors. A primitive cannot be marked and is reported as before.
+ */
+export function markParadisErrorOrigin(error: unknown, origin: ParadisErrorOrigin): void {
+	if (typeof error === 'object' && error !== null) {
+		errorOrigins.set(error, origin);
+	}
+}
+
 /**
  * Tags every process adapter attaches to an explicit report. `para.error_message_hash` only joins the
- * grouping key when the event has no frames (see `paradisSentryFingerprint`).
+ * grouping key when the event has no frames (see `paradisSentryFingerprint`); `para.origin` always does.
  */
 export function paradisSafeErrorTags(error: unknown): Record<string, string> {
 	const messageHash = paradisErrorMessageHash(error);
+	const origin = typeof error === 'object' && error !== null ? errorOrigins.get(error) : undefined;
 	return {
 		'para.error_name': paradisSafeErrorName(error),
 		...(messageHash !== undefined ? { 'para.error_message_hash': messageHash } : {}),
+		...(origin !== undefined ? { 'para.origin': origin } : {}),
 	};
 }
 

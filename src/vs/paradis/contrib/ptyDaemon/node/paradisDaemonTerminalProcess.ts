@@ -75,6 +75,7 @@ export interface IParadisTerminalOrigin {
 import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../common/paradisTerminalProcessLike.js';
 import { IParadisPtyLetGoMark, paradisPlanPtyReattach } from '../common/paradisPtyReattachPlan.js';
 import { paradisRecordFinishedWhileAway, paradisRecordLetGo, paradisRecordReattach, paradisRecordSpared } from './paradisPtyHandoverJournal.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAdoptTarget, paradisForgetHandle, paradisRememberHandle } from './paradisTerminalProcessFactory.js';
 import { paradisReadCwd, paradisStatKind } from './paradisPtyIntrospection.js';
 
@@ -329,6 +330,7 @@ export class ParadisDaemonTerminalProcess extends Disposable implements IParadis
 			// 起こしはしたが繋げなかった。**常駐に置き去りにしない。** 残すと誰も見ていない
 			// holder が一覧にだけ残り、次の引き取りで身に覚えのないターミナルとして現れる。
 			this.logService.error('[ParadisPtyDaemon] could not attach to the terminal just started; releasing it', error);
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'attach-new-failed', error);
 			await this.host.release(summary.handle).catch(() => { });
 			return { message: localize('paradis.ptyDaemon.attachFailed', "The terminal started but could not be connected to ({0})", String(error)) };
 		}

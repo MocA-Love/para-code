@@ -41,6 +41,9 @@
 // `done` と `kind` が無いので、完了と、許可と質問の区別は取れない。問い合わせが無いので、前面のコマンドが Codex
 // （か ssh・WSL など）のときに届いた状態で受け付けを開く。hook も transcript も無いペインの作業中・許可待ちの補助にだけ使う
 // （{@link paradisCodexProgramStatusTransition}）。0.162.1 以前は書かないので、この読み取りでは何も変わらない。
+// 0.164.0-alpha からは、ターンの終わりに idle ではなく `done`（失敗は `error`）を書き、利用者のキー・貼り付け・クリックが
+// 来るまで保つ（その後 idle）。blocked には `kind=permission|question|auth` が付く。中断したターンと再開時の過去のターンの
+// 再生は idle のまま（2026-10-20 に 0.164.0-alpha.3 を PTY で実測: 依頼 → working → done、キー → idle）。
 
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 
@@ -178,18 +181,23 @@ export function paradisProgramStatusToAgentStatus(status: IParadisProgramStatus)
 
 /**
  * Codex の OSC の状態で、ペインの状態をどう変えるか（変えないなら undefined、'idle' は状態を消す）。hook が届いた
- * ペインでは呼ばない（{@link paradisProgramStatusApplies}）。Codex の状態には完了も許可・質問の区別も無いので、
- * ほかの出どころを上書きしない補助にとどめる:
- * - blocked は、許可待ち・質問中でなければ許可待ち（permission）にする。質問中は transcript が知らせたものなので残す
+ * ペインでは呼ばない（{@link paradisProgramStatusApplies}）。ほかの出どころを上書きしない補助にとどめる:
+ * - blocked は、`kind=question`（0.164 から）なら質問中、それ以外は許可待ち（permission）にする。すでに許可待ち・
+ *   質問中なら変えない（kind の無い 0.163 の blocked で、transcript が知らせた質問中を許可待ちに戻さない）
  * - 許可待ち・質問中の後の working は、答えて作業に戻った。idle・clear は、断った・取り消した（完了ではない）
  * - それ以外の working と idle・clear は、transcript がターンの始まりと終わりを知らせていない（`transcriptBacked` でない）
- *   ペインでだけ使う。終わりは完了と区別できないので、確認待ち（review）にはせず状態を消す（起動・再開の直後にも
- *   working → idle が来るので、review にすると何もしていないのに「完了」が出る）
+ *   ペインでだけ使う。0.163 の終わりの idle は完了と区別できないので、確認待ち（review）にはせず状態を消す（起動・
+ *   再開の直後にも working → idle が来るので、review にすると何もしていないのに「完了」が出る）
+ * - done・error（0.164 から。生きているターンの結果にだけ出る）は確認待ち（review）にする。transcript が終わりを
+ *   知らせるペインでは、許可待ち・質問中から終わったときだけ使う
  */
-export function paradisCodexProgramStatusTransition(previous: ParadisAgentStatus | undefined, state: ParadisProgramState, transcriptBacked: boolean): ParadisAgentStatus | 'idle' | undefined {
+export function paradisCodexProgramStatusTransition(previous: ParadisAgentStatus | undefined, state: ParadisProgramState, transcriptBacked: boolean, kind?: string): ParadisAgentStatus | 'idle' | undefined {
 	const waiting = previous === 'permission' || previous === 'question';
 	switch (state) {
 		case 'blocked':
+			if (kind === 'question') {
+				return previous === 'question' ? undefined : 'question';
+			}
 			return waiting ? undefined : 'permission';
 		case 'working':
 			return waiting || (!transcriptBacked && previous !== 'working') ? 'working' : undefined;
@@ -198,8 +206,7 @@ export function paradisCodexProgramStatusTransition(previous: ParadisAgentStatus
 			return waiting || (!transcriptBacked && previous === 'working') ? 'idle' : undefined;
 		case 'done':
 		case 'error':
-			// Codex は書かない（書くようになっても、どのターンの完了かを確かめられないので使わない）
-			return undefined;
+			return waiting || (!transcriptBacked && previous === 'working') ? 'review' : undefined;
 	}
 }
 
