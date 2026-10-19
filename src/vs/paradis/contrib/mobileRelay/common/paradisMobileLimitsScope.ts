@@ -68,7 +68,8 @@ export function paradisMobileLimitsAccount(account: IParadisLimitsAccount): IPar
 	if (fiveHour === undefined && sevenDay === undefined && scoped === undefined && fetchedAt === undefined) {
 		return account;
 	}
-	if (!paradisLimitsPreviousValue(account, 0)) {
+	// アプリが前の値を出すのは控えている間（'not_fetched'）だけ。取得回数の上限で待っている間の前の値は送らない。
+	if (account.unavailableReason !== 'not_fetched' || !paradisLimitsPreviousValue(account, 0)) {
 		return rest;
 	}
 	return {

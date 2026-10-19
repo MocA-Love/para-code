@@ -374,7 +374,8 @@ export class ParadisBrowserQuery {
 			return error(`"state": "${state}" needs a locator (selector, role + name, text or uid).`);
 		}
 		const count = numberIn(args, 'count', 1, 10_000, 1);
-		const timeoutSeconds = numberIn(args, 'timeout_seconds', 0.5, 120, 10);
+		// 上限は 100 秒。Claude Code は 120 秒を超えた MCP の呼び出しを裏に回し、エージェントには「まだ動いている」としか返らない（q.html Q395）
+		const timeoutSeconds = numberIn(args, 'timeout_seconds', 0.5, 100, 10);
 		const intervalMs = numberIn(args, 'interval_ms', 50, 2000, 200);
 		for (const value of [count, timeoutSeconds, intervalMs]) {
 			if (isError(value)) {

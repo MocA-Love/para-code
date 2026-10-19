@@ -16,7 +16,8 @@
 //    （利用者が別の操作をしたら取り消す）。切り替えた後は、前のアカウントのまま動いている Claude Code の
 //    数をエージェントの検出（hook）から数えて知らせる
 //  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
-//    案内（claude-swap のデータは読むだけ）。1文に縮め、注意書きと一覧は「詳しく」を開いたときだけ出す
+//    案内（claude-swap のデータは読むだけ）。1文に縮め、注意書きと一覧は「詳しく」を開いたときだけ出す。
+//    claude-swap の一覧がある間は「claude-swap はもう使わない」も出す（押すと案内ごと消える）
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -26,7 +27,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisClaudeSwitchResult } from '../common/paradisClaudeAccounts.js';
-import { IParadisLimitsAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
+import { IParadisLimitsAccount, IParadisLimitsLegacyAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
 
 const $ = dom.$;
@@ -45,6 +46,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 	/** 押した後、結果が返るまで同じボタンを押せなくする（描き直しをまたいで持つ）。 */
 	private registering = false;
 	private switching = false;
+	private retiringClaudeSwap = false;
 	/** claude-swap の案内の「詳しく」を開いているか（描き直しをまたいで持つ）。 */
 	private legacyDetailsOpen = false;
 
@@ -82,11 +84,26 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		return store;
 	}
 
-	renderProviderFooter(container: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot): IDisposable | undefined {
+	renderProviderFooter(container: HTMLElement, providerSnapshot: IParadisLimitsProviderSnapshot, context: IParadisLimitsPanelContext): IDisposable | undefined {
 		const legacy = providerSnapshot.legacyAccounts ?? [];
-		if (legacy.length === 0) {
+		if (legacy.length === 0 && !providerSnapshot.claudeSwapPresent) {
 			return undefined;
 		}
+		const store = new DisposableStore();
+		if (legacy.length > 0) {
+			store.add(this.renderLegacyNotice(container, legacy));
+		}
+		if (providerSnapshot.claudeSwapPresent) {
+			const button = dom.append(container, $('button.plm-card-action-link.plm-legacy-retire')) as HTMLButtonElement;
+			button.type = 'button';
+			button.textContent = localize('paradis.claudeAccounts.retireClaudeSwap', "claude-swap はもう使わない");
+			button.disabled = this.retiringClaudeSwap;
+			store.add(dom.addDisposableListener(button, 'click', () => void this.retireClaudeSwap(context)));
+		}
+		return store;
+	}
+
+	private renderLegacyNotice(container: HTMLElement, legacy: readonly IParadisLimitsLegacyAccount[]): IDisposable {
 		const details = dom.append(container, $('details.plm-legacy-notice')) as HTMLDetailsElement;
 		details.open = this.legacyDetailsOpen;
 		const summary = dom.append(details, $('summary'));
@@ -141,6 +158,35 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 				store.add(subscription);
 			}
 		});
+	}
+
+	private async retireClaudeSwap(context: IParadisLimitsPanelContext): Promise<void> {
+		if (this.retiringClaudeSwap) {
+			return;
+		}
+		const { confirmed } = await this.dialogService.confirm({
+			message: localize('paradis.claudeAccounts.retireClaudeSwapConfirm', "claude-swap をもう使わないことにしますか？"),
+			detail: localize(
+				'paradis.claudeAccounts.retireClaudeSwapDetail',
+				"claude-swap にも登録されているアカウントのログインも Para Code が更新し、使用量を表示し続けます。この後 claude-swap でそのアカウントに切り替えると、claude-swap でログインし直しが要ることがあります。claude-swap のデータは書き換えません。",
+			),
+			primaryButton: localize('paradis.claudeAccounts.retireClaudeSwapButton', "使わない"),
+		});
+		if (!confirmed) {
+			return;
+		}
+		// 別の操作をしたので、予約していた切り替えのやり直しはやめる。
+		context.cancelRetry();
+		this.retiringClaudeSwap = true;
+		context.redraw();
+		try {
+			await context.client.retireClaudeSwap();
+		} catch {
+			this.notificationService.error(localize('paradis.claudeAccounts.retireClaudeSwapFailed', "設定を保存できませんでした。もう一度お試しください。"));
+		} finally {
+			this.retiringClaudeSwap = false;
+		}
+		context.requestRefresh(false);
 	}
 
 	private async switchTo(account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): Promise<void> {
