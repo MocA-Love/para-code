@@ -13,6 +13,7 @@
 
 import { parentPort } from 'worker_threads';
 import type { IParadisOfficeSemanticWorkerReply, ParadisOfficeSemanticWorkerMessage } from '../office/paradisOfficeSemanticWorkerQueue.js';
+import { paradisOfficeWorkerFailureKind } from '../office/paradisOfficeWorkerDiagnostics.js';
 import type { IParadisSpreadsheetMetafileImages } from '../../common/paradisSpreadsheet.js';
 import { convertParadisSpreadsheetMetafiles } from './paradisSpreadsheetMetafiles.js';
 import type { IParadisSpreadsheetMetafileWorkerRun } from './paradisSpreadsheetMetafileWorkerBackend.js';
@@ -38,7 +39,10 @@ async function handle(id: number, request: IParadisSpreadsheetMetafileWorkerRun)
 		});
 		reply = { kind: 'result', id, result: { images } };
 	} catch (error) {
-		reply = { kind: 'result', id, result: { images: {}, unavailableReason: error instanceof MetafileCancelled ? 'cancelled' : 'failed' } };
+		reply = error instanceof MetafileCancelled
+			? { kind: 'result', id, result: { images: {}, unavailableReason: 'cancelled' } }
+			// 握った例外の種類を返事に載せて、shared process が Sentry へ送る。
+			: { kind: 'result', id, result: { images: {}, unavailableReason: 'failed' }, cause: paradisOfficeWorkerFailureKind(error) };
 	} finally {
 		running.delete(id);
 		cancelled.delete(id);
