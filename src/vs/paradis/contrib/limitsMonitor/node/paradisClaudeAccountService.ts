@@ -51,7 +51,7 @@ import * as path from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeStateRequest, IParadisClaudeSwitchResult, ParadisClaudeSetupErrorCode } from '../common/paradisClaudeAccounts.js';
+import { IParadisClaudeAccountsState, IParadisClaudeRegisterResult, IParadisClaudeStateRequest, IParadisClaudeSwitchResult, ParadisClaudeSetupErrorCode, ParadisClaudeUnverifiedReason } from '../common/paradisClaudeAccounts.js';
 import {
 	PARADIS_CLAUDE_RECENT_429_WINDOW_S,
 	PARADIS_CLAUDE_SERVE_TTL_S,
@@ -209,6 +209,11 @@ interface IParadisClaudeVerifiedLive {
 	/** `claudeAiOauth` だけの JSON。 */
 	readonly oauthOnly: string;
 }
+
+/** いまのログインの身元を確かめた結果。確かめられなかったときは理由を添える。 */
+type ParadisClaudeLiveCheck =
+	| { readonly kind: 'ok'; readonly live: IParadisClaudeVerifiedLive }
+	| { readonly kind: 'failed'; readonly reason: ParadisClaudeUnverifiedReason; readonly retryAfterS?: number };
 
 /** claude-swap の一覧の1件。 */
 interface IParadisClaudeLegacyEntry extends IParadisLimitsLegacyAccount {
@@ -932,14 +937,20 @@ export class ParadisClaudeAccountService extends Disposable {
 	 * 3. ほかの登録アカウントとして保存してあるトークンと同じ系列でないこと
 	 */
 	private async verifyLiveCredentials(expected: IParadisClaudeIdentity, liveHint?: string): Promise<IParadisClaudeVerifiedLive | undefined> {
+		const result = await this.checkLiveCredentials(expected, liveHint);
+		return result.kind === 'ok' ? result.live : undefined;
+	}
+
+	/** {@link verifyLiveCredentials} と同じ。確かめられなかったときは理由を返す（切り替えを断った理由を伝えるため）。 */
+	private async checkLiveCredentials(expected: IParadisClaudeIdentity, liveHint?: string): Promise<ParadisClaudeLiveCheck> {
 		const before = await this.liveAuth.readIdentity(true);
 		const live = await this.liveAuth.readCredentials();
 		const after = await this.liveAuth.readIdentity(true);
 		if (!live.value || !paradisIsUsableClaudeCredentials(live.value) || (liveHint !== undefined && live.value !== liveHint)) {
-			return undefined;
+			return { kind: 'failed', reason: 'owner_mismatch' };
 		}
 		if (!paradisClaudeIdentitiesMatch(before, expected) || !paradisClaudeIdentitiesMatch(after, expected)) {
-			return undefined;
+			return { kind: 'failed', reason: 'owner_mismatch' };
 		}
 		const oauthOnly = paradisClaudeOAuthOnly(live.value)!;
 		const refreshToken = paradisClaudeRefreshToken(oauthOnly);
@@ -950,14 +961,17 @@ export class ParadisClaudeAccountService extends Disposable {
 			}
 			const other = this.knownSecrets.get(record.id);
 			if (other !== undefined && paradisClaudeRefreshToken(other) === refreshToken) {
-				return undefined;
+				return { kind: 'failed', reason: 'owner_mismatch' };
 			}
 		}
 		const profile = await this.oauth.fetchProfile(paradisClaudeAccessToken(oauthOnly)!);
-		if (profile.kind !== 'ok' || !paradisClaudeIdentitiesMatch(profile.identity, expected)) {
-			return undefined;
+		if (profile.kind !== 'ok') {
+			return profile.rateLimited ? { kind: 'failed', reason: 'rate_limited', retryAfterS: profile.retryAfterS } : { kind: 'failed', reason: 'network' };
 		}
-		return { oauthOnly };
+		if (!paradisClaudeIdentitiesMatch(profile.identity, expected)) {
+			return { kind: 'failed', reason: 'owner_mismatch' };
+		}
+		return { kind: 'ok', live: { oauthOnly } };
 	}
 
 	/**
@@ -973,10 +987,10 @@ export class ParadisClaudeAccountService extends Disposable {
 		if (retryAt !== undefined && this.now() < retryAt) {
 			return;
 		}
-		const verified = await this.verifyLiveCredentials(recordIdentity(record), liveCredentials);
-		if (!verified) {
-			// 値は出さない。確かめ直すのは一定時間後（毎回の取得で profile API を呼ばない）。
-			this.logService.info('[ParadisClaudeAccounts] could not confirm the owner of the current Claude login; its refreshed token was not saved');
+		const checked = await this.checkLiveCredentials(recordIdentity(record), liveCredentials);
+		if (checked.kind === 'failed') {
+			// 値は出さない（理由は固定の語だけ）。確かめ直すのは一定時間後（毎回の取得で profile API を呼ばない）。
+			this.logService.info(`[ParadisClaudeAccounts] could not confirm the owner of the current Claude login (${checked.reason}); its refreshed token was not saved`);
 			this.adoptRetryAfter.set(record.id, this.now() + ADOPT_RETRY_AFTER_MS);
 			return;
 		}
@@ -986,7 +1000,7 @@ export class ParadisClaudeAccountService extends Disposable {
 			if (this.switching || epoch !== this.switchEpoch) {
 				return;
 			}
-			await this.adoptVerifiedCredentials(record, verified);
+			await this.adoptVerifiedCredentials(record, checked.live);
 		});
 	}
 
@@ -1105,7 +1119,12 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.switchEpoch++;
 		this.fireChange();
 		try {
-			return await this.serialize(() => this.doSwitch(accountId));
+			const result = await this.serialize(() => this.doSwitch(accountId));
+			if (result.outcome === 'unverified' || result.outcome === 'locked' || result.outcome === 'unmanaged_live' || result.outcome === 'no_credentials') {
+				// 断った理由を固定の語で残す（メールやトークンは出さない）。
+				this.logService.info(`[ParadisClaudeAccounts] switching the Claude account was refused: ${result.outcome}${result.unverifiedReason ? ` (${result.unverifiedReason})` : ''}`);
+			}
+			return result;
 		} catch (error) {
 			this.logService.error(`[ParadisClaudeAccounts] switching the Claude account failed: ${(error as Error).message}`);
 			return { outcome: 'failed', detail: 'unexpected' };
@@ -1174,10 +1193,11 @@ export class ParadisClaudeAccountService extends Disposable {
 				return { outcome: 'failed', email: target.email, rolledBack: true, detail: 'keychain' };
 			}
 			if (paradisClaudeOAuthOnly(liveBefore.value) !== outgoingStored) {
-				outgoingVerified = await this.verifyLiveCredentials(recordIdentity(outgoing));
-				if (!outgoingVerified) {
-					return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+				const checked = await this.checkLiveCredentials(recordIdentity(outgoing));
+				if (checked.kind === 'failed') {
+					return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email, unverifiedReason: checked.reason, retryAfterS: checked.retryAfterS };
 				}
+				outgoingVerified = checked.live;
 			}
 		}
 
@@ -1197,11 +1217,11 @@ export class ParadisClaudeAccountService extends Disposable {
 					const liveInLock = paradisClaudeOAuthOnly(live.value);
 					// ロックの外で確かめた後に持ち主やトークンが変わっていたら、確かめ直すためにやめる。
 					if (ownerInLock?.id !== outgoing.id) {
-						return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+						return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email, unverifiedReason: 'owner_mismatch' };
 					}
 					if (liveInLock !== outgoingStored) {
 						if (!outgoingVerified || liveInLock !== outgoingVerified.oauthOnly) {
-							return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email };
+							return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email, unverifiedReason: 'owner_mismatch' };
 						}
 						await this.adoptVerifiedCredentials(outgoing, outgoingVerified);
 					}

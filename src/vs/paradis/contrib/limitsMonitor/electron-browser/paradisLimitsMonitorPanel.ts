@@ -84,6 +84,9 @@ export interface IParadisLimitsMonitorPanelOptions {
 	readonly displayNameForEmail: (provider: ParadisLimitsProvider, email: string) => string;
 	readonly isEmailMasked: () => boolean;
 	readonly onToggleEmailMask: () => void;
+	/** 差し込み部品の自動のやり直しの予約（持ち主はウィジェット。パネルを閉じても残す）。 */
+	readonly scheduleRetry: (delayMs: number, run: () => void) => void;
+	readonly cancelRetry: () => void;
 }
 
 export class ParadisLimitsMonitorPanel extends Disposable {
@@ -133,6 +136,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			closePanel: () => options.onClose(),
 			displayName: account => options.displayName(account),
 			displayNameForEmail: (provider, email) => options.displayNameForEmail(provider, email),
+			scheduleRetry: (delayMs, run) => options.scheduleRetry(delayMs, run),
+			cancelRetry: () => options.cancelRetry(),
 		};
 		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
 
