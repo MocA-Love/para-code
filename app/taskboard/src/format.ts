@@ -22,7 +22,7 @@ export const STATUS: Record<TaskBoardStatus, { label: string; tone: Tone; need?:
 };
 
 export const KIND: Record<TaskBoardStepKind, { label: string; desc: string }> = {
-	agent: { label: 'AI', desc: 'エージェントが進め、board_complete_step で報告' },
+	agent: { label: 'AI', desc: 'エージェントが進め、終わったらボードに報告' },
 	human: { label: '人', desc: 'あなたの判断を待つ' },
 	run: { label: '自動', desc: 'コマンドを実行' },
 	wait: { label: '外部待ち', desc: 'GitHub の状態を見張る' },

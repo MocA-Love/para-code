@@ -3,7 +3,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { RefreshControl, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Activity, Cpu, Cuboid, GitPullRequest, Scissors, User } from 'lucide-react-native';
+import { Activity, Cpu, Cuboid, Eye, EyeOff, GitPullRequest, Scissors, User } from 'lucide-react-native';
 import { useAppStore, usePcResources } from '../../../src/appState.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
 import { USAGE_PROVIDER_COLUMN_GAP, usageMetersPerRowFor, usageProviderColumnWidthFor } from '../../../src/ipad/ipadLayout.js';
@@ -11,13 +11,13 @@ import { haptic } from '../../../src/haptics.js';
 import { alpha, colors, space, type } from '../../../src/theme.js';
 import { useNow } from '../../../src/time.js';
 import { staleValueLabel, todayCost, updatedAtLabel } from '../../../src/usageFormat.js';
-import { Icon, ListGroup, ListRow, Meter, MeterRow, iconSize } from '../../../src/ui/index.js';
+import { HeaderButton, Icon, ListGroup, ListRow, Meter, MeterRow, iconSize } from '../../../src/ui/index.js';
 import { GroupHeader, SettingsScreen } from '../../../src/features/settings/settingsScaffold.js';
 import { settingsRoutes, type UsageDetailPage } from '../../../src/features/settings/settingsRoutes.js';
 import { UsageHostPicker } from '../../../src/features/settings/usageHost.js';
 import { DetailMessage, DetailNotConnected, DetailRefreshButton } from '../../../src/features/settings/usageDetailParts.js';
 import { ProviderUsageSection, UsageBigValue, UsageRow, UsageRowTitle, UsageSection, UsageSeparator } from '../../../src/features/settings/usageSections.js';
-import { formatUsd, ratioPercent, recentDailyAverage, usageFootNote } from '../../../src/features/settings/usageSummary.js';
+import { accountNumbers, formatUsd, ratioPercent, recentDailyAverage, usageFootNote, withEmailMaskNote } from '../../../src/features/settings/usageSummary.js';
 import {
 	aggregateAccounts,
 	entryTitle,
@@ -38,6 +38,7 @@ import {
 	fetchNoteItems,
 } from '../../../src/features/usage/usageOverviewParts.js';
 import { useUsageAutoRefresh, useUsageOverview, useUsageStore } from '../../../src/features/usage/usageStore.js';
+import { useUsageEmailMask } from '../../../src/features/usage/usageEmailMask.js';
 import { useUsageScope } from '../../../src/features/usage/useUsageScope.js';
 import { VoiceUsageSection } from '../../../src/features/usage/voiceUsageSection.js';
 
@@ -113,6 +114,24 @@ function ProviderColumns({ claude, codex }: { claude: (layout: ProviderColumnLay
 	);
 }
 
+/** メールを番号で出す切り替え（スクリーンショット用。保存しない。ホームのカードも従う）。 */
+function EmailMaskButton() {
+	const masked = useUsageEmailMask(s => s.masked);
+	const toggle = useUsageEmailMask(s => s.toggle);
+	return (
+		<HeaderButton
+			icon={masked ? EyeOff : Eye}
+			label="メールを番号で表示"
+			round
+			active={masked}
+			onPress={() => {
+				haptic('tick');
+				toggle();
+			}}
+		/>
+	);
+}
+
 function useOpenDetail(source: string | undefined) {
 	const router = useRouter();
 	return (page: UsageDetailPage) => {
@@ -145,21 +164,28 @@ function UsageAllView() {
 	const onlineCount = entries.filter(entry => entry.online).length;
 	const subtitle = `${scopeCountLabel(entries)}の合計${onlineCount < entries.length ? `（オフライン ${entries.length - onlineCount}）` : ''}`;
 	const costValues = Object.fromEntries(cost.rows.map(row => [row.key, { value: row.today !== undefined ? formatUsd(row.today) : undefined, at: row.at }]));
+	const emailMasked = useUsageEmailMask(s => s.masked);
+	const numbers = emailMasked ? accountNumbers([...claude, ...codex].map(item => item.account)) : undefined;
 	const nothing = !anyOnline && entries.every(entry => entry.values.limits === undefined && entry.values.cost === undefined && entry.values.github === undefined && entry.values.voice === undefined);
 
 	return (
 		<SettingsScreen
 			title="使用量"
-			subtitle={subtitle}
-			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || !anyOnline} />}
+			subtitle={withEmailMaskNote(subtitle, emailMasked)}
+			right={(
+				<>
+					<EmailMaskButton />
+					<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || !anyOnline} />
+				</>
+			)}
 			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{nothing ? <DetailNotConnected /> : (
 				<>
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'limits')} now={now} />
 					<ProviderColumns
-						claude={layout => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips {...layout} />}
-						codex={layout => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips {...layout} />}
+						claude={layout => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
+						codex={layout => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
 					/>
 
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'cost')} now={now} />
@@ -288,13 +314,27 @@ function UsageSourceView() {
 	const loadingCost = overview.isLoading('cost', key);
 	const loadingGithub = overview.isLoading('github', key);
 	const notConnected = !online && limits === undefined && cost === undefined && github === undefined && values?.voice === undefined;
+	// 番号は全 PC の合計と同じ（束ねた全アカウントの順）。合計に無いこの出どころのアカウントは後ろに足す
+	const emailMasked = useUsageEmailMask(s => s.masked);
+	const numbers = emailMasked
+		? accountNumbers([
+			...[...aggregateAccounts(overview.entries, 'claude', now), ...aggregateAccounts(overview.entries, 'codex', now)].map(item => item.account),
+			...(limits?.value.claude?.accounts ?? []),
+			...(limits?.value.codex?.accounts ?? []),
+		])
+		: undefined;
 	const staleNote = (value: { value: { stale?: boolean }; at: number } | undefined) => (value?.value.stale === true ? value.at : undefined);
 
 	return (
 		<SettingsScreen
 			title="使用量"
-			subtitle={subtitle}
-			right={<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || !online} />}
+			subtitle={withEmailMaskNote(subtitle, emailMasked)}
+			right={(
+				<>
+					<EmailMaskButton />
+					<DetailRefreshButton onPress={() => { void onPullRefresh(); }} disabled={pullRefreshing || !online} />
+				</>
+			)}
 			refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { haptic('edge'); void onPullRefresh(); }} tintColor={colors.textDim} />}
 		>
 			{notConnected ? <DetailNotConnected /> : (
@@ -303,8 +343,8 @@ function UsageSourceView() {
 					<UsageFetchNote error={overview.errorOf(key, 'limits')} hasPrevious={limits !== undefined} staleAt={staleNote(limits)} now={now} />
 					{limits !== undefined && dimmed ? <DetailMessage tone="note">{staleValueLabel(limits.at, now)}</DetailMessage> : null}
 					<ProviderColumns
-						claude={layout => <ProviderUsageSection provider="claude" title="Claude" snapshot={limits?.value.claude} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} {...layout} />}
-						codex={layout => <ProviderUsageSection provider="codex" title="Codex" snapshot={limits?.value.codex} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} {...layout} />}
+						claude={layout => <ProviderUsageSection provider="claude" title="Claude" snapshot={limits?.value.claude} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} numbers={numbers} {...layout} />}
+						codex={layout => <ProviderUsageSection provider="codex" title="Codex" snapshot={limits?.value.codex} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} numbers={numbers} {...layout} />}
 					/>
 
 					<UsageFetchNote error={overview.errorOf(key, 'cost')} hasPrevious={cost !== undefined} staleAt={staleNote(cost)} now={now} />
