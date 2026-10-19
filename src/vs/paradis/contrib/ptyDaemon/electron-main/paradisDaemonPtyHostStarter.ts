@@ -42,6 +42,7 @@ import { IReconnectConstants } from '../../../../platform/terminal/common/termin
 import { IPtyHostConnection, IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { UtilityProcess } from '../../../../platform/utilityProcess/electron-main/utilityProcess.js';
 import { IpcMainEvent } from 'electron';
+import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { paradisPtyDaemonEnv, PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
@@ -295,6 +296,8 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		// 渡す間だけ外す。
 		this.environmentMainService.unsetSnapExportedVariables();
 		const child = spawn(process.execPath, [
+			// 落ちたときの minidump に、どの子かの印を残す（paradisCrashRole.ts）
+			...paradisCrashRoleNodeArgs('pty-daemon', true),
 			FileAccess.asFileUri('bootstrap-fork').fsPath,
 			'--type=ptyHost',
 			'--logsPath', this.environmentMainService.logsHome.with({ scheme: Schemas.file }).fsPath,

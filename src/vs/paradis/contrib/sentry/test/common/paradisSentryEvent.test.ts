@@ -10,7 +10,7 @@ import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisSentryFingerprint, type IParadisSentryEvent } from '../../common/paradisSentryCommon.js';
 import { paradisPrepareSentryEvent } from '../../common/paradisSentryEvent.js';
-import { createParadisTestMinidump } from './paradisMinidumpFixture.js';
+import { createParadisTestCrashpadMinidump, createParadisTestMinidump } from './paradisMinidumpFixture.js';
 
 suite('ParadisSentryEvent', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -202,6 +202,28 @@ suite('ParadisSentryEvent', () => {
 			foreign: null,
 			own: 'executable',
 			unreadable: 'unattributed',
+		});
+	});
+
+	test('tags a native crash with the role a Node-mode child of ours put on its crash keys, and nothing else', () => {
+		// A different message per event keeps each one out of the others' "10 minutes, 3 events" bucket.
+		const minidumpEvent = (message: string): IParadisSentryEvent => ({ platform: 'native', message, tags: { 'event.environment': 'native' } });
+		const attach = (objects: Record<string, string>) => ({ attachments: [{ attachmentType: 'event.minidump', data: createParadisTestCrashpadMinidump({ objects: { ptype: 'node', ...objects } }) }] });
+
+		const prepare = (message: string, objects: Record<string, string>) => {
+			const event = paradisPrepareSentryEvent(minidumpEvent(message), 'main', attach(objects));
+			return event ? event.tags?.['para.process_role'] ?? 'none' : 'dropped';
+		};
+		assert.deepStrictEqual({
+			daemon: prepare('role-daemon', { para_role: 'pty-host-daemon' }),
+			devtools: prepare('role-devtools', { para_role: 'devtools-mcp' }),
+			unknownValue: prepare('role-unknown', { para_role: '/Users/alice/secret' }),
+			unlabelled: prepare('role-unlabelled', {}),
+		}, {
+			daemon: 'pty-host-daemon',
+			devtools: 'devtools-mcp',
+			unknownValue: 'none',
+			unlabelled: 'none',
 		});
 	});
 });

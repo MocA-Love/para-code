@@ -18,6 +18,7 @@
 //
 // 中身は件数・時間・固定の語だけ。パス・スペース名・題名・画面の中身は入れない。
 
+import { IParadisRelayedFailure } from '../../sentry/common/paradisRelayedDiagnostics.js';
 import { ParadisPtyRebuildReason } from './paradisPtyReattachPlan.js';
 
 /** 接続先（REH）でこの記録を出すチャネル。手元では pty ホストへ直接聞く。 */
@@ -85,6 +86,11 @@ export interface IParadisPtyHandoverReport {
 	readonly spared: number;
 	/** 手を離している間に終わったので、戻ってくるまで終了を伝えずにおいた本数。 */
 	readonly finishedWhileAway: number;
+	/**
+	 * pty host（手元でも SSH 先でも）で出た明示の報告の種類と件数（`paradisRelayedDiagnostics.ts`）。
+	 * 省略可能なのは互換のため: 古い pty host は付けず、古い窓は読まずに捨てる。
+	 */
+	readonly failures?: readonly IParadisRelayedFailure[];
 }
 
 /** 接続先のチャネルの口。手元では同じものを `IPtyService` の省略可能なメソッドとして持つ。 */
@@ -99,6 +105,7 @@ export interface IParadisPtyHandoverService {
 export function paradisIsEmptyPtyHandoverReport(report: IParadisPtyHandoverReport): boolean {
 	const r = report.reattach;
 	return report.adoptions.length === 0
+		&& (report.failures?.length ?? 0) === 0
 		&& report.letGo === 0 && report.letGoFailed === 0
 		&& r.unchanged === 0 && r.tail === 0 && r.rebuild === 0 && r.handedOff === 0 && r.gone === 0 && r.failed === 0
 		&& report.spared === 0 && report.finishedWhileAway === 0;
