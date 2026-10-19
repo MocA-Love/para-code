@@ -3242,10 +3242,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		// 手元のペインはシェルの子孫だけ、接続先のペインは Para Code が張った `ssh -R` そのものだけを認める。
 		// どちらで確かめるかはペインの属性で決める（hook のクエリ `host=` のような名乗りでは決めない）
-		const tunnelPid = pane.remoteAuthority !== undefined ? this._remoteTunnels.processPidFor(pane.remoteAuthority) : undefined;
+		// 戻り経路の ssh は、決定的候補へ戻した直後は動的番号の ssh も残っているので 2 本ありうる
+		const tunnelPids = pane.remoteAuthority !== undefined ? this._remoteTunnels.processPidsFor(pane.remoteAuthority) : [];
 		const ancestorPid = pane.remoteAuthority === undefined && Number.isSafeInteger(pane.shellPid) && pane.shellPid > 1 ? pane.shellPid : undefined;
-		const expectation = { tunnelPid, ancestorPid };
-		const cacheKey = `${pane.remoteAuthority ?? ''}|${tunnelPid ?? ''}|${ancestorPid ?? ''}`;
+		const expectation = { tunnelPids, ancestorPid };
+		const cacheKey = `${pane.remoteAuthority ?? ''}|${tunnelPids.join(',')}|${ancestorPid ?? ''}`;
 		const cached = this._callerClassifications.get(socket);
 		const hit = cached?.get(token);
 		// シェルが入れ替わった・戻り経路が張り直された後は、前の判定を使わない
@@ -5745,9 +5746,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (tunnels === undefined || localPort !== this._port) {
 			return false;
 		}
-		const pids = tunnels.authorities
-			.map(authority => tunnels.processPidFor(authority))
-			.filter((pid): pid is number => pid !== undefined);
+		const pids = tunnels.authorities.flatMap(authority => tunnels.processPidsFor(authority));
 		if (pids.length === 0) {
 			return false;
 		}

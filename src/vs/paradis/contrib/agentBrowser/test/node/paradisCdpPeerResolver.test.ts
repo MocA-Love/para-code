@@ -80,6 +80,8 @@ suite('paradisCdpPeerResolver', () => {
 		};
 		const local = { ancestorPid: 50 };
 		const remote = { tunnelPid: 110 };
+		// 決定的候補へ戻した直後は、動的番号の ssh（111）も残っている
+		const remoteWithRetained = { tunnelPids: [110, 111] };
 		assert.deepStrictEqual([
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([70], table)),
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([70, 60], table)),
@@ -89,7 +91,9 @@ suite('paradisCdpPeerResolver', () => {
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remote, probe([130], table)),
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remote, probe([70], table)),
 			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, local, probe([], table)),
-		], ['descendant', 'descendant', 'unknown', 'unknown', 'tunnel', 'unknown', 'unknown', 'unknown']);
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remoteWithRetained, probe([111], table)),
+			await paradisClassifyPeer(49768, SERVER_PORT, OWN_PID, remoteWithRetained, probe([130], table)),
+		], ['descendant', 'descendant', 'unknown', 'unknown', 'tunnel', 'unknown', 'unknown', 'unknown', 'tunnel', 'unknown']);
 	});
 
 	test('Windows: one snapshot carries the connection owners and the process table', () => {
