@@ -41,7 +41,9 @@ Example with arguments: \`(el) => el.innerText\`
             // timeout. Dialogs that open meanwhile are handled by dialogAction only until the call returns.
             paraCodeDeadlineMs: zod.number().optional(),
             // PARA-PATCH (Para Code): internal argument set only by Para Code on the agent's own calls (never published in
-            // tools/list): ToolHandler.handle gives up after this many ms. See NOTES.md "vendored chrome-devtools-mcp への変更".
+            // tools/list). The evaluation gives up after this many ms inside waitForEventsAfterAction, so the helper aborts
+            // and removes its dialog handler (left behind, it would accept a confirm() that the next tool's click opens).
+            // ToolHandler.handle also gives up a little later as a backstop. See NOTES.md "vendored chrome-devtools-mcp への変更".
             paraCodeTimeoutMs: zod.number().optional(),
             dialogAction: zod
                 .string()
@@ -59,7 +61,7 @@ Example with arguments: \`(el) => el.innerText\`
         blockedByDialog: true,
         verifyFilesSchema: ['filePath'],
         handler: async (request, response, context) => {
-            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, paraCodeObserve, paraCodeDeadlineMs, } = request.params;
+            const { serviceWorkerId, args: uidArgs, function: fnString, pageId, dialogAction, filePath, paraCodeObserve, paraCodeDeadlineMs, paraCodeTimeoutMs, } = request.params;
             if (cliArgs?.categoryExtensions && serviceWorkerId) {
                 if (uidArgs && uidArgs.length > 0) {
                     throw new Error('args (element uids) cannot be used when evaluating in a service worker.');
@@ -138,10 +140,11 @@ Example with arguments: \`(el) => el.innerText\`
                 }
                 const evaluatable = await getPageOrFrame(page, frames);
                 const result = await mcpPage.waitForEventsAfterAction(async () => {
-                    await performEvaluation(evaluatable, fnString, args, response, {
+                    // PARA-PATCH (Para Code): see paraCodeTimeoutMs in the schema above.
+                    await paraCodeWithTimeout(performEvaluation(evaluatable, fnString, args, response, {
                         filePath,
                         context,
-                    });
+                    }), paraCodeTimeoutMs);
                 }, { handleDialog: dialogAction ?? 'accept' });
                 response.attachWaitForResult(result);
             }
@@ -151,6 +154,23 @@ Example with arguments: \`(el) => el.innerText\`
         },
     };
 });
+// PARA-PATCH (Para Code): reject after timeoutMs (see paraCodeTimeoutMs in the schema). The evaluation itself cannot be
+// cancelled; it settles later on its own (Promise.race keeps it handled).
+const paraCodeWithTimeout = async (work, timeoutMs) => {
+    if (typeof timeoutMs !== 'number' || !(timeoutMs > 0)) {
+        return await work;
+    }
+    let timer;
+    try {
+        return await Promise.race([
+            work,
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`PARA_BROWSER_PAGE_UNRESPONSIVE: evaluate_script did not finish within ${timeoutMs} ms.`)), timeoutMs); }),
+        ]);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+};
 const performEvaluation = async (evaluatable, fnString, args, response, options) => {
     const fn = await evaluatable.evaluateHandle(`(${fnString})`);
     try {
