@@ -56,8 +56,11 @@ export type ParadisClaudeRefreshResult =
 
 export type ParadisClaudeProfileResult =
 	| { readonly kind: 'ok'; readonly identity: IParadisClaudeIdentity }
-	/** 応答が無い・持ち主を読めない。確かめられなかったものとして扱う。 */
-	| { readonly kind: 'unknown' };
+	/**
+	 * 応答が無い・持ち主を読めない。確かめられなかったものとして扱う。呼び出し回数の上限（429）のときは
+	 * `rateLimited` と、分かれば取り直せるまでの秒数を添える。
+	 */
+	| { readonly kind: 'unknown'; readonly rateLimited?: boolean; readonly retryAfterS?: number };
 
 export interface IParadisClaudeOAuthClient {
 	fetchUsage(accessToken: string): Promise<ParadisClaudeUsageFetchResult>;
@@ -117,6 +120,9 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 				redirect: 'error',
 				signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
 			});
+			if (response.status === 429) {
+				return { kind: 'unknown', rateLimited: true, retryAfterS: paradisParseRetryAfterS(response.headers.get('retry-after'), this.now()) };
+			}
 			if (!response.ok) {
 				return { kind: 'unknown' };
 			}

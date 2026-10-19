@@ -13,6 +13,9 @@
 // 窓が取りに行く（`common/paradisPtyHandover.ts`）。この窓が SSH 先を開いていれば接続先の pty
 // ホスト（`paradisPtyHandover.server.ts` のチャネル）、そうでなければこの PC の pty ホストへ聞く。
 // 取ると数えた分は消えるので、同じ pty ホストを見ている他の窓と二重には送らない。
+//
+// pty ホストで出た明示の報告も、同じ記録の `failures` に種類と件数で載って
+// くる（`paradisRelayedDiagnostics.ts`）。1種類につき1件、ここから送る。
 
 import { disposableTimeout, IntervalTimer, raceTimeout } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -26,6 +29,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisRelayedFailureReports } from '../../sentry/common/paradisRelayedDiagnostics.js';
 import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisPtyHandoverReport,
@@ -109,6 +113,9 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 			// renderer ではメッセージの経路（`captureParadisDiagnosticMessage`）が繋がっていない
 			// （main だけ）。例外の経路で送り、理由は `safe_` の追加情報に載せる（例外そのものは捨てられる）。
 			reportParadisDiagnosticError('owned', 'ptyHandover', problem.operation, new Error('ptyHandover'), problem.data, 'warning');
+		}
+		for (const failure of paradisRelayedFailureReports(report.failures, { remote: this.remote, hostOs: report.platform })) {
+			reportParadisDiagnosticError('owned', failure.feature, failure.operation, failure.error, failure.data, failure.severity);
 		}
 		const late = paradisPtyLateAdoptions(report);
 		if (late > 0) {

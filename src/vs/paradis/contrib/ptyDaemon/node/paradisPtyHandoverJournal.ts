@@ -17,6 +17,7 @@
 import { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, IParadisPtyReattachCounts } from '../common/paradisPtyHandover.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 import { ParadisPtyRebuildReason } from '../common/paradisPtyReattachPlan.js';
+import { paradisTakeRelayedFailures } from '../../sentry/common/paradisRelayedDiagnostics.js';
 
 /** 窓が取りに来ないまま溜める引き取りの記録の上限。 */
 const MAX_ADOPTION_RUNS = 20;
@@ -108,6 +109,7 @@ export function paradisRecordFinishedWhileAway(): void {
  */
 export function paradisTakePtyHandoverReport(current: { readonly daemon: boolean; readonly foreignHeld: number }): IParadisPtyHandoverReport {
 	const counts: IParadisPtyReattachCounts = { ...reattach, rebuildReasons: { ...reattach.rebuildReasons } };
+	const failures = paradisTakeRelayedFailures();
 	const report: IParadisPtyHandoverReport = {
 		protocolVersion: PARADIS_PTY_PROTOCOL_VERSION,
 		platform: process.platform,
@@ -119,6 +121,7 @@ export function paradisTakePtyHandoverReport(current: { readonly daemon: boolean
 		reattach: counts,
 		spared,
 		finishedWhileAway,
+		...(failures.length > 0 ? { failures } : {}),
 	};
 	adoptions = [];
 	letGo = 0;

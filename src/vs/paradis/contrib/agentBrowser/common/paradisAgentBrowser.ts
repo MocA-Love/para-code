@@ -1034,6 +1034,8 @@ export interface IParadisAgentPaneSession {
 	readonly cwd?: string;
 	/** 最後に hook を受けた時刻 (epoch ms)。 */
 	readonly at: number;
+	/** 接続先（SSH 先など）で動いている会話。手元の会話には付かない。 */
+	readonly remote?: true;
 }
 
 /** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */
