@@ -4,10 +4,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardWorkspaceError } from '@engine/paradisTaskBoardEngine.js';
 import { GitWorkspaces, gitFetch, inspectClones } from '../server/workspaces.js';
+
+// 本物の git を何度も起こすので、マシンが混んでいると既定の 5 秒（準備は 10 秒）に収まらない
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 /*
  * 作業場所の git 操作を、使い捨ての git リポジトリで実際に動かして確かめる。
@@ -116,11 +119,13 @@ describe('GitWorkspaces', () => {
 		expect(existsSync(first.path)).toBe(false);
 	});
 
-	test('ワークツリー: 2 つのタスクを同時に始めても、両方の作業場所ができる（本体の fetch を取り合わない）', async () => {
+	test('ワークツリー: 同時に始めたタスクの作業場所は全部でき、本体の fetch は 1 本ずつで、まとめて 1 回で済む', async () => {
 		// 本体の fetch が同時に何本走ったかを数える
 		let running = 0;
 		let most = 0;
+		let fetches = 0;
 		const ws = new GitWorkspaces(main, path.join(root, 'wt'), async (cwd, args) => {
+			fetches++;
 			most = Math.max(most, ++running);
 			try {
 				return await gitFetch(cwd, args);
@@ -135,8 +140,10 @@ describe('GitWorkspaces', () => {
 		run(cloneA, 'push', '--quiet', 'origin', 'HEAD:main');
 		const slotOf = (n: string): ITaskBoardSlot => ({ id: `wt:${n}`, name: n, path: '', kind: 'worktree' });
 		const made = await Promise.all(['para/5-a', 'para/6-b', 'para/7-c'].map((b, i) => ws.prepare({ ...task(), id: `t${i}` }, slotOf(b), b)));
-		expect({ branches: made.map(m => run(m.path, 'branch', '--show-current')), most }).toEqual({ branches: ['para/5-a', 'para/6-b', 'para/7-c'], most: 1 });
-	}, 20000);
+		// 後から始めたタスクは、もう一度 fetch する
+		await ws.prepare({ ...task(), id: 't9' }, slotOf('para/8-d'), 'para/8-d');
+		expect({ branches: made.map(m => run(m.path, 'branch', '--show-current')), most, fetches }).toEqual({ branches: ['para/5-a', 'para/6-b', 'para/7-c'], most: 1, fetches: 2 });
+	});
 
 	test('ワークツリー: 同じ場所に関係ないディレクトリがあれば断る', async () => {
 		const ws = new GitWorkspaces(main, path.join(root, 'wt'));

@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import type { ITaskBoardFlow, ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine, type ITaskBoardRunPort, type ITaskBoardWorkspacePort } from '@engine/paradisTaskBoardEngine.js';
-import { launchErrorText, ParaCodeAgents, type ParaCodeBridgeEvent } from '../server/paraCode.js';
+import { launchErrorText, ParaCodeAgents, readablePromptText, type ParaCodeBridgeEvent } from '../server/paraCode.js';
 import { CommandRunner } from '../server/runner.js';
 
 /* Para Code の bridge の代わり。届いた要求を記録し、SSE でイベントを流せる。 */
@@ -254,6 +254,19 @@ describe('ParaCodeAgents', () => {
 		expect({ options: q.options.map(o => o.label), body: bridge.requests.find(r => r.route === '/v1/answer')!.body }).toEqual({ options: ['許可する', '拒否する'], body: { terminal: 't_1', kind: 'permission', allow: true } });
 	});
 
+	test('an MCP tool approval shows readable text and is not asked again when the same prompt is reported again', async () => {
+		const { engine, bridge, id } = await setup();
+		engine.start(id, { agent: 'codex' });
+		await until(() => engine.getTask(id)!.activities.some(a => a.label.includes('始めました')));
+		const question = { text: '操作の許可\nmcp__para_browser__list_browser_tabs: {}', options: [{ label: 'Yes' }, { label: 'No' }], allowText: false };
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'permission', question });
+		await until(() => engine.getTask(id)!.status === 'permission');
+		const first = engine.getTask(id)!.question!;
+		bridge.emit({ type: 'status', terminal: 't_1', status: 'permission', question });
+		await new Promise(resolve => setTimeout(resolve, 50));
+		expect({ text: first.text, same: engine.getTask(id)!.question!.id === first.id }).toEqual({ text: '操作の許可\npara_browser の list_browser_tabs', same: true });
+	});
+
 	test('a permission answered in the terminal closes on the board, but an ask_human question stays open while the turn runs', async () => {
 		const { engine, bridge, id } = await setup();
 		engine.start(id, { agent: 'codex' });
@@ -339,6 +352,20 @@ describe('launchErrorText', () => {
 			'Para Code のウィンドウが開いていません',
 			'Para Code のウィンドウが SSH の接続先のものしかありません',
 			'something else',
+		]);
+	});
+});
+
+describe('readablePromptText', () => {
+	test('turns an MCP tool approval into the server, the tool and its arguments, and keeps other lines', () => {
+		expect([
+			'操作の許可\nmcp__para_browser__preview_file: {"path":"/repo/.para/a.html"}',
+			'mcp__para_browser__list_browser_tabs: {}',
+			'Bash: npm test',
+		].map(readablePromptText)).toEqual([
+			'操作の許可\npara_browser の preview_file（path: /repo/.para/a.html）',
+			'para_browser の list_browser_tabs',
+			'Bash: npm test',
 		]);
 	});
 });
