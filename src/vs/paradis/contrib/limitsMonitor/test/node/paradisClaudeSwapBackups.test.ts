@@ -10,6 +10,7 @@ import assert from 'assert';
 import * as fs from 'fs';
 import * as path from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IParadisKeychain, ParadisKeychainError } from '../../node/paradisClaudeKeychain.js';
 import { ParadisClaudeSwapBackupReader } from '../../node/paradisClaudeSwapBackups.js';
 import { ParadisMemoryKeychain, paradisCreateClaudeTestHome, paradisTestCredentials } from './paradisClaudeTestUtils.js';
 
@@ -59,6 +60,35 @@ suite('ParadisClaudeSwapBackupReader', () => {
 			badSlot: undefined,
 			badEmail: undefined,
 			locked: undefined,
+		});
+	});
+	// 古い版（python の keyring）の項目は読むと許可の確認が出ることがある。断られたらその起動の間は読みに行かない。
+	test('stops reading the legacy keyring service for the session after it fails', async () => {
+		const dirs = await paradisCreateClaudeTestHome();
+		cleanup = dirs.dispose;
+		const reads: string[] = [];
+		const memory = new ParadisMemoryKeychain();
+		memory.set('claude-swap', 'account-2-bob@example.com', paradisTestCredentials('a1', 'keychain-r', 10));
+		const keychain: IParadisKeychain = {
+			read: async (service, account) => {
+				reads.push(service);
+				if (service === 'claude-code') {
+					throw new ParadisKeychainError('denied');
+				}
+				return memory.read(service, account);
+			},
+			write: (service, account, value) => memory.write(service, account, value),
+			delete: (service, account) => memory.delete(service, account),
+		};
+		const reader = new ParadisClaudeSwapBackupReader(keychain);
+		const dataDir = path.join(dirs.home, '.claude-swap-backup');
+
+		const first = await reader.readBackups(dataDir, '2', 'bob@example.com');
+		const second = await reader.readBackups(dataDir, '2', 'bob@example.com');
+		assert.deepStrictEqual({ first, second, legacyReads: reads.filter(service => service === 'claude-code').length }, {
+			first: undefined,
+			second: undefined,
+			legacyReads: 1,
 		});
 	});
 });
