@@ -29,6 +29,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisCodexLaunchHomeService } from '../browser/paradisCodexLaunchHomeService.js';
 import { IParadisCodexAccountsState, IParadisCodexHome, IParadisCodexPaneProcess, paradisCodexLaunchHomeFor, paradisLooksLikeRunningCodex, paradisRunningCodexHome } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
+import { IParadisLimitsEmailMaskService } from '../../limitsMonitor/electron-browser/paradisLimitsEmailMask.js';
 // 使用量パネルへ差し込む Codex の部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 // パネル側（limitsMonitor）からは読み込まない（差し込み口の依存を一方向に保つ）。
 import './paradisCodexAccountActions.js';
@@ -88,6 +89,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
@@ -128,7 +130,7 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 			return;
 		}
 		const state = await this.readState();
-		this.notificationService.info(localize('paradis.codexAccounts.openedBeforeSync', "起動直後に開いたターミナル {0} 個は、選んでいる Codex のアカウント（{1}）ではなく既定のアカウントで開いています。そこで Codex を使うときは、新しいターミナルを開いてください。", count, state ? accountName(state, next) : next));
+		this.notificationService.info(localize('paradis.codexAccounts.openedBeforeSync', "起動直後に開いたターミナル {0} 個は、選んでいる Codex のアカウント（{1}）ではなく既定のアカウントで開いています。そこで Codex を使うときは、新しいターミナルを開いてください。", count, state ? accountName(state, next, this.emailMaskService) : next));
 	}
 
 	private async notifyPanesOnPreviousAccount(previous: string | undefined, next: string | undefined): Promise<void> {
@@ -159,8 +161,8 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 			return;
 		}
 		const state = await this.readState();
-		const nextName = state ? accountName(state, next) : next ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
-		const previousName = state && previousHomes.size === 1 ? accountName(state, [...previousHomes][0]) : undefined;
+		const nextName = state ? accountName(state, next, this.emailMaskService) : next ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
+		const previousName = state && previousHomes.size === 1 ? accountName(state, [...previousHomes][0], this.emailMaskService) : undefined;
 		this.notificationService.info(previousName !== undefined
 			? localize('paradis.codexAccounts.switchedWithRunning', "Codex のアカウントを {0} に切り替えました。開いている Codex {1} 個は前のアカウント（{2}）のまま動いています。新しく開いたターミナルから切り替わります。", nextName, count, previousName)
 			: localize('paradis.codexAccounts.switchedWithRunningMixed', "Codex のアカウントを {0} に切り替えました。開いている Codex {1} 個は前のアカウントのまま動いています。新しく開いたターミナルから切り替わります。", nextName, count));
@@ -202,11 +204,12 @@ class ParadisCodexAccountsNotifications extends Disposable implements IWorkbench
 	}
 }
 
-function accountName(state: IParadisCodexAccountsState, homePath: string | undefined): string {
+/** 通知に出すアカウントの名前（使用量パネルでメールを番号にしているときは番号）。 */
+function accountName(state: IParadisCodexAccountsState, homePath: string | undefined, emailMask: IParadisLimitsEmailMaskService): string {
 	const home: IParadisCodexHome | undefined = homePath === undefined
 		? state.homes.find(candidate => candidate.isDefault)
 		: state.homes.find(candidate => candidate.homePath === homePath);
-	return home?.email ?? home?.label ?? homePath ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
+	return (home?.email !== undefined ? emailMask.displayNameForEmail('codex', home.email) : undefined) ?? home?.label ?? homePath ?? localize('paradis.codexAccounts.defaultHome', "既定のアカウント");
 }
 
 registerWorkbenchContribution2(ParadisCodexAccountsSync.ID, ParadisCodexAccountsSync, WorkbenchPhase.BlockStartup);
