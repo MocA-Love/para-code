@@ -47,17 +47,66 @@ async function writeJson(file: string, data: unknown): Promise<void> {
 	await fs.rename(tmp, file);
 }
 
+/** 台帳を開いているボード。同じリポジトリを 2 つのボードで開くと、両方のエンジンが同じ台帳と作業場所を使ってしまう。 */
+export interface IStoreOwner {
+	readonly pid: number;
+	/** 台帳の場所（断るときに、どの印かを伝えるため。書くときは入れない）。 */
+	readonly dir?: string;
+	/** Para Code が起動したボードか、手で起動したボード（pnpm dev 等）か。 */
+	readonly mode: 'embedded' | 'standalone';
+	readonly at: number;
+}
+
+/** ほかの生きているボードが台帳を開いている。 */
+export class StoreBusyError extends Error {
+	constructor(readonly owner: IStoreOwner) {
+		super(`another task board (pid ${owner.pid}, ${owner.mode}) has this repository open (${owner.dir})`);
+		this.name = 'StoreBusyError';
+	}
+}
+
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		// 権限が無いだけなら生きている
+		return (err as NodeJS.ErrnoException).code === 'EPERM';
+	}
+}
+
+/** 台帳のディレクトリを開いている、自分以外の生きているボード。 */
+export async function storeOwner(dir: string): Promise<IStoreOwner | undefined> {
+	try {
+		const owner = JSON.parse(await fs.readFile(path.join(dir, 'owner.json'), 'utf8')) as IStoreOwner;
+		return typeof owner?.pid === 'number' && owner.pid !== process.pid && alive(owner.pid) ? { ...owner, dir } : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export class Store {
 	private timer: NodeJS.Timeout | undefined;
 	private pending: (() => ITaskBoardPersisted) | undefined;
 	private writing: Promise<void> = Promise.resolve();
 	/** 閉じた後は書かない（別のリポジトリで開き直した後も、古いエンジンのタイマーが動き続けるため）。 */
 	private closed = false;
+	private locked = false;
 
 	constructor(private readonly dir: string) { }
 
 	get directory(): string {
 		return this.dir;
+	}
+
+	/** 台帳を自分のものにする。ほかの生きているボードが開いていれば StoreBusyError。閉じると手放す。 */
+	async lock(mode: IStoreOwner['mode']): Promise<void> {
+		const other = await storeOwner(this.dir);
+		if (other) {
+			throw new StoreBusyError(other);
+		}
+		await writeJson(path.join(this.dir, 'owner.json'), { pid: process.pid, mode, at: Date.now() } satisfies IStoreOwner);
+		this.locked = true;
 	}
 
 	loadState(): Promise<ITaskBoardPersisted | undefined> {
@@ -97,6 +146,14 @@ export class Store {
 		// 先に閉じてから書く（書いている間に予約された保存が、閉じた後に古い内容で書かないように）
 		this.closed = true;
 		await this.flush();
+		if (this.locked) {
+			this.locked = false;
+			const file = path.join(this.dir, 'owner.json');
+			const owner = await fs.readFile(file, 'utf8').then(text => JSON.parse(text) as IStoreOwner, () => undefined);
+			if (owner?.pid === process.pid) {
+				await fs.rm(file, { force: true });
+			}
+		}
 	}
 
 	flush(): Promise<void> {
