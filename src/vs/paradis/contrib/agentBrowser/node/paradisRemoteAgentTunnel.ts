@@ -302,18 +302,10 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
-	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID。張れていなければ undefined。
+	 * その接続先への戻り経路を張っている `ssh`（`-R` の本体）の PID すべて。張れていなければ空。
 	 * 戻り経路から来た接続（接続先の hook と MCP）は、手元ではこのプロセスが相手になるので、
-	 * 接続元の確認はこの PID との一致で行う。
-	 */
-	processPidFor(remoteAuthority: string): number | undefined {
-		const pid = this.tunnels.get(remoteAuthority)?.child?.pid;
-		return typeof pid === 'number' && pid > 0 ? pid : undefined;
-	}
-
-	/**
-	 * その接続先への戻り経路を張っている `ssh` の PID すべて。本線に加え、決定的候補へ戻したあとも
-	 * 残している動的番号の ssh を含む（動的番号で起動したエージェントはそちらを通って来るため）。
+	 * 接続元の確認はこの PID との一致で行う。本線に加え、決定的候補へ戻したあとも残している
+	 * 動的番号の ssh を含む（動的番号で起動したエージェントはそちらを通って来るため）。
 	 */
 	processPidsFor(remoteAuthority: string): number[] {
 		const entry = this.tunnels.get(remoteAuthority);
@@ -664,11 +656,11 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 				// 成功／失敗の2パターンだけを個別に見て、それ以外の debug 行は warn で埋めずに
 				// trace へ落とす。ただし `Permission denied` 等の本物のエラーは debug 接頭辞を
 				// 持たないので、そちらは今までどおり warn に残す（診断性を落とさない）
-				if (fixedPortSuccessPattern.test(line)) {
+				if (entry.child === child && fixedPortSuccessPattern.test(line)) {
 					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is up`);
 					entry.retries = 0; // 一度でも張れたら、次に切れたときはまた最初から数え直す
 					this.settle(entry, listenPort);
-				} else if (fixedPortTakenPattern.test(line)) {
+				} else if (entry.child === child && fixedPortTakenPattern.test(line)) {
 					this.logService.info(`[paradis] return tunnel (${entry.host}): preferred port ${listenPort} is taken; falling back to a dynamic one`);
 					// ExitOnForwardFailure=yes によりこのプロセスはまもなく終了する。まだ生きていれば
 					// 確実に close させ、そちらで待たずに動的割当てへ切り替えて張り直す
