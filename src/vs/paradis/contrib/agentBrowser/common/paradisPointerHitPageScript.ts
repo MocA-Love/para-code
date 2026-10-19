@@ -13,8 +13,9 @@
 // （Node.contains は shadow の境界を越えないため、カスタム要素の中のボタンを「覆われている」と取り違える）。
 // 祖先に当たるのは、目的の要素が pointer-events: none のとき（人が押しても同じ祖先が受ける）と、目的の要素がその点で
 // 切り取られて見えないとき（overflow: hidden の外。押すと祖先を押してしまう）。後者は覆われている扱いにする。
-// ただし祖先がリンクかボタンで、目的の要素とのあいだに別のリンク・ボタンが無いとき（カード全体を押せるリンクが中の文字を
-// 覆う型）は、人が押しても同じリンク・ボタンが受けるので押してよい（q.html Q396）。
+// ただし目的の要素が文字・見出し・画像・svg など対話できない要素で、祖先がそれを包むリンクかボタンで、あいだにも対話できる
+// 要素が無いとき（カード全体を押せるリンクが中の文字を覆う型）は、人が押しても同じリンク・ボタンが受けるので押してよい
+// （q.html Q396）。目的の要素がチェックボックス・タブ・選択肢などなら、外のリンクを押すと別の操作になるので断る。
 
 /**
  * `pointerHit(el, hit)` と `pointerReaches(el, hit, purpose)` を定義する文。
@@ -32,7 +33,15 @@ export const PARADIS_POINTER_HIT_PAGE_SCRIPT = String.raw`
 	};
 	const pointerHit = (el, hit) => hit === el ? 'self' : flatContains(el, hit) ? 'child' : flatContains(hit, el) ? 'ancestor' : 'other';
 	const pointerControlSelector = 'a[href], button, [role="button"], [role="link"]';
-	const pointerControl = (el, hit) => typeof hit.matches === 'function' && hit.matches(pointerControlSelector) && el.closest(pointerControlSelector) === hit;
+	const pointerInteractiveSelector = pointerControlSelector + ', input, select, textarea, summary, label, option, [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), '
+		+ ['checkbox', 'radio', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'combobox', 'textbox', 'searchbox', 'slider', 'spinbutton', 'treeitem', 'gridcell'].map(role => '[role="' + role + '"]').join(', ');
+	const pointerControl = (el, hit) => {
+		if (typeof hit.matches !== 'function' || !hit.matches(pointerControlSelector)) { return false; }
+		for (let node = el; node && node !== hit; node = node.parentElement) {
+			if (node.matches(pointerInteractiveSelector)) { return false; }
+		}
+		return el.closest(pointerControlSelector) === hit;
+	};
 	const pointerReaches = (el, hit, purpose) => {
 		const reach = pointerHit(el, hit);
 		if (reach === 'self' || reach === 'child') { return true; }

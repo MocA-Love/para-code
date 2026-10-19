@@ -272,7 +272,7 @@ export const navigatePage = definePageTool(args => {
                                 response.appendResponseLine(`Successfully navigated to ${request.params.url}.`);
                             }
                             catch (error) {
-                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, `Navigated to ${request.params.url}`) ?? `Unable to navigate in the selected page: ${error.message}.`);
+                                response.appendResponseLine(paraCodeStillLoadingLine(error, paraCodeCommitted, `Navigated to ${page.pptrPage.url()}`) ?? `Unable to navigate in the selected page: ${error.message}.`);
                             }
                             break;
                         case 'back':

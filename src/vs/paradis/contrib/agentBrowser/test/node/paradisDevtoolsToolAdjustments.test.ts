@@ -349,11 +349,12 @@ suite('Paradis devtools tool adjustments', () => {
 
 	test('a call the vendored server gave up on says what to do next, and other failures stay as they are', () => {
 		const timedOut = (tool: string, ms: number) => text(`PARA_BROWSER_PAGE_UNRESPONSIVE: ${tool} did not finish within ${ms} ms.`, true);
-		const evaluate = textOf(paradisAdjustDevtoolsToolResult('evaluate_script', { args: {} }, timedOut('evaluate_script', 60_000)));
-		const snapshot = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', { args: {} }, timedOut('take_snapshot', 60_000)));
+		// evaluate_script は action の中で失敗するので、vendored の応答では `Error: ` の後ろに来る
+		const evaluate = textOf(paradisAdjustDevtoolsToolResult('evaluate_script', { args: {} }, text('Error: PARA_BROWSER_PAGE_UNRESPONSIVE: evaluate_script did not finish within 60000 ms.', true)));
+		const snapshot = textOf(paradisAdjustDevtoolsToolResult('take_snapshot', { args: {} }, timedOut('take_snapshot', 65_000)));
 		assert.deepStrictEqual({
 			evaluate: [evaluate.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the script did not finish within 60 s'), evaluate.includes('larger "timeout"')],
-			snapshot: snapshot.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not return its accessibility tree within 60 s'),
+			snapshot: snapshot.startsWith('PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not return its accessibility tree within 65 s'),
 			other: textOf(paradisAdjustDevtoolsToolResult('evaluate_script', { args: {} }, text('Error: boom', true))),
 		}, { evaluate: [true, true], snapshot: true, other: 'Error: boom' });
 	});
@@ -362,14 +363,17 @@ suite('Paradis devtools tool adjustments', () => {
 	test('the vendored server still carries the PARA-PATCHes for the tool timeout, the bounded stable-DOM wait and the still-loading navigation', () => {
 		const read = (path: string) => readFileSync(FileAccess.asFileUri(`vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/${path}`).fsPath, 'utf8');
 		const handler = read('ToolHandler.js');
+		const response = read('McpResponse.js');
 		const wait = read('WaitForHelper.js');
 		const pages = read('tools/pages.js');
 		assert.deepStrictEqual({
 			handler: [handler.includes('params?.paraCodeTimeoutMs'), handler.includes('did not finish within'), handler.includes('paraCodeOnAcquired(acquiredGuard)')],
+			// 諦めた take_snapshot は、遅れて終わってもページのスナップショットを書き換えない
+			abandoned: response.includes('if (!this.paraCodeAbandoned?.()) {'),
 			schemas: [read('tools/script.js').includes('paraCodeTimeoutMs: zod.number().optional()'), read('tools/snapshot.js').includes('paraCodeTimeoutMs: zod.number().optional()')],
 			wait: wait.includes('Promise.race([pendingObserver, this.timeout(this.#stableDomTimeout)'),
 			pages: [pages.includes(`'Page.frameNavigated', paraCodeOnFrameNavigated`), (pages.match(/paraCodeStillLoadingLine\(error, paraCodeCommitted/g) ?? []).length],
-		}, { handler: [true, true, true], schemas: [true, true], wait: true, pages: [true, 4] });
+		}, { handler: [true, true, true], abandoned: true, schemas: [true, true], wait: true, pages: [true, 4] });
 	});
 
 });

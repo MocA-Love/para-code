@@ -187,8 +187,8 @@ function paradisDevtoolsTimeoutMs(timeout: unknown): number {
 	return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(timeout)));
 }
 
-/** vendored の ToolHandler が締め切りで諦めたときの文（PARA-PATCH）。 */
-const TIMED_OUT_PATTERN = /^PARA_BROWSER_PAGE_UNRESPONSIVE: (?<tool>evaluate_script|take_snapshot) did not finish within (?<ms>\d+) ms\.$/;
+/** vendored が締め切りで諦めたときの文（PARA-PATCH。evaluate_script は `Error: ` が前に付いた行で返る）。 */
+const TIMED_OUT_PATTERN = /PARA_BROWSER_PAGE_UNRESPONSIVE: (?<tool>evaluate_script|take_snapshot) did not finish within (?<ms>\d+) ms\./;
 
 /** 締め切りで諦めた evaluate_script・take_snapshot の文を、エージェントが次の手を選べる文にする。 */
 function explainTimedOut(text: string): string {
