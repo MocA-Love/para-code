@@ -260,7 +260,7 @@ export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions):
 	// 閉じるのを待つより前に付ける。落とさずに記録し、呼び出し側の接続待ちが時間切れになってアプリの中の pty へ落ちる。
 	child.on('error', error => {
 		logService.error('[ParadisPtyHost] failed to spawn the daemon process', error);
-		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error);
+		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error, undefined, 'warning');
 	});
 	child.unref();
 	if (typeof stdio === 'number') {

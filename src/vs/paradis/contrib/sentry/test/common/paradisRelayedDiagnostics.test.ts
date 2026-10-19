@@ -59,6 +59,7 @@ suite('ParadisRelayedDiagnostics', () => {
 	test('受け取った記録は形を確かめ直し、窓から送る例外には種類だけを持たせる', () => {
 		const reports = paradisRelayedFailureReports([
 			{ feature: 'pty-daemon', operation: 'spawn-failed', errorName: 'Error', errno: 'EACCES', severity: 'error', count: 4 },
+			{ feature: 'pty-daemon', operation: 'not-up', errorName: 'Error', errno: 'ERR_MODULE_NOT_FOUND', severity: 'warning', count: 1 },
 			{ feature: 'pty-host', operation: 'no-pty', errorName: 'ErrorNoTelemetry', severity: 'warning', count: 2_000_000 },
 			{ feature: '/Users/alice', operation: 'x y', errorName: 'has spaces', errno: '/tmp', severity: 'fatal', count: 1 },
 			{ feature: 'a', operation: 'b', errorName: 'Error', severity: 'error', count: 0 },
@@ -80,6 +81,12 @@ suite('ParadisRelayedDiagnostics', () => {
 				data: { safe_count: 4, safe_remote: true, safe_host_os: 'linux' },
 				tags: { 'para.error_name': 'Error' }, extra: { safe_errno: 'EACCES' },
 				sent: 'Error: Para Code diagnostic: pty-daemon.spawn-failed',
+			},
+			{
+				feature: 'pty-daemon', operation: 'not-up', severity: 'warning',
+				data: { safe_count: 1, safe_remote: true, safe_host_os: 'linux' },
+				tags: { 'para.error_name': 'Error' }, extra: { safe_errno: 'ERR_MODULE_NOT_FOUND' },
+				sent: 'Error: Para Code diagnostic: pty-daemon.not-up',
 			},
 			{
 				feature: 'pty-host', operation: 'no-pty', severity: 'warning',
