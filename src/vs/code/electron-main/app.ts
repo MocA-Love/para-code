@@ -60,6 +60,7 @@ import { paradisRegisterUpdateTerminals } from '../../paradis/contrib/updateTerm
 // PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage (see paradis/contrib/menuBar)
 import { paradisRegisterMenuBar } from '../../paradis/contrib/menuBar/electron-main/paradisMenuBarMain.js';
 import { paradisRegisterKeepAwake } from '../../paradis/contrib/keepAwake/electron-main/paradisKeepAwakeMain.js'; // PARA-PATCH: sleep prevention blockers owned per window (see paradis/contrib/keepAwake)
+import { paradisRegisterTaskBoardHost } from '../../paradis/contrib/taskBoard/electron-main/paradisTaskBoardHostMain.js'; // PARA-PATCH: open the bundled task board in its own window (see paradis/contrib/taskBoard)
 // PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
 import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
@@ -1584,6 +1585,7 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage, off by default (see paradis/contrib/menuBar)
 		disposables.add(paradisRegisterMenuBar(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
 		disposables.add(paradisRegisterKeepAwake(mainProcessElectronServer, accessor.get(IWindowsMainService))); // PARA-PATCH: stop a window's sleep prevention when it reloads, crashes and reopens, or closes (see paradis/contrib/keepAwake)
+		disposables.add(paradisRegisterTaskBoardHost(mainProcessElectronServer, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService)); // PARA-PATCH: start the bundled task board and open it in its own window (see paradis/contrib/taskBoard)
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。

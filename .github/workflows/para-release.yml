@@ -179,8 +179,28 @@ jobs:
           echo "SDK OK:"
           ls extensions/copilot/node_modules/@github/copilot/sdk | head
 
+      # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
+      # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
+      - name: Setup pnpm (task board)
+        # Pinned: this job holds release secrets (update access, Apple signing)
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.11.0
+
+      - name: Build the task board
+        run: node build/paradis/taskboard/buildTaskBoard.ts
+
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
+
+      - name: Verify the task board is in the package
+        shell: bash
+        run: |
+          BOARD="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/resources/paradis/taskboard"
+          if [ ! -f "$BOARD/server/main.mjs" ] || [ ! -f "$BOARD/dist/index.html" ]; then
+            echo "::error::the package does not contain the task board ($BOARD)"
+            exit 1
+          fi
 
       # Computer Use helper (B3), step 1 of 3. A universal Swift app built with swiftc; the same helper goes
       # into both the x64 and the arm64 package. Must run after "Package": the gulp task skips the helper on CI
@@ -413,8 +433,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
+      # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
+      - name: Setup pnpm (task board)
+        # Pinned: this job holds release secrets (update access, Apple signing)
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.11.0
+
+      - name: Build the task board
+        run: node build/paradis/taskboard/buildTaskBoard.ts
+
       - name: Package (vscode-win32-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
+
+      - name: Verify the task board is in the package
+        shell: bash
+        run: |
+          BOARD="$(dirname "$GITHUB_WORKSPACE")/VSCode-win32-${{ matrix.arch }}/resources/app/resources/paradis/taskboard"
+          if [ ! -f "$BOARD/server/main.mjs" ] || [ ! -f "$BOARD/dist/index.html" ]; then
+            echo "::error::the package does not contain the task board ($BOARD)"
+            exit 1
+          fi
 
       - name: Upload desktop source maps to Sentry
         run: node build/sentry/upload-desktop-sourcemaps.ts win32 "${{ matrix.arch }}"
@@ -504,8 +544,28 @@ jobs:
         env:
           VSCODE_CLI_PRODUCT_JSON: ${{ github.workspace }}/product.json
 
+      # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
+      # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
+      - name: Setup pnpm (task board)
+        # Pinned: this job holds release secrets (update access, Apple signing)
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.11.0
+
+      - name: Build the task board
+        run: node build/paradis/taskboard/buildTaskBoard.ts
+
       - name: Package (vscode-linux-x64-min)
         run: npm run gulp "vscode-linux-x64-min"
+
+      - name: Verify the task board is in the package
+        shell: bash
+        run: |
+          BOARD="$(dirname "$GITHUB_WORKSPACE")/VSCode-linux-x64/resources/app/resources/paradis/taskboard"
+          if [ ! -f "$BOARD/server/main.mjs" ] || [ ! -f "$BOARD/dist/index.html" ]; then
+            echo "::error::the package does not contain the task board ($BOARD)"
+            exit 1
+          fi
 
       - name: Upload desktop source maps to Sentry
         run: node build/sentry/upload-desktop-sourcemaps.ts linux x64

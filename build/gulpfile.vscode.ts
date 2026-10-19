@@ -349,6 +349,11 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		// Merged before the electron() stage so they land inside the app bundle; at runtime they are
 		// resolved relative to appRoot at resources/paradis/extensions/*.vsix and installed.
 		all = es.merge(all, gulp.src('resources/paradis/extensions/*.vsix', { base: '.', allowEmpty: true }));
+		// PARA-PATCH: the task board (app/taskboard) built by build/paradis/taskboard/buildTaskBoard.ts into
+		// .build/paradis/taskboard, shipped as resources/paradis/taskboard (server/main.mjs + dist/). The main process
+		// starts it from there (src/vs/paradis/contrib/taskBoard/electron-main/paradisTaskBoardHostMain.ts).
+		all = es.merge(all, gulp.src('.build/paradis/taskboard/**', { base: '.build/paradis/taskboard', dot: true, allowEmpty: true })
+			.pipe(rename(f => { f.dirname = `resources/paradis/taskboard/${f.dirname}`; })));
 		if (platform !== 'win32') {
 			all = es.merge(all, gulp.src('resources/paradis/bin/codex', { base: '.', allowEmpty: false }));
 			// PARA-PATCH: the Claude Code mod (Claude Mods) loaded into local terminals on macOS/Linux
