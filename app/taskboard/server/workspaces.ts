@@ -150,6 +150,9 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 	/** 本体のリポジトリを書き換える操作（fetch・ワークツリーの追加と削除）を 1 本ずつにする。ワークツリーは参照と
 	 * `.git/worktrees` を本体と共有するので、2 つのタスクを同時に始めると fetch の参照のロックを取り合って失敗した。 */
 	private repoQueue: Promise<unknown> = Promise.resolve();
+	/** ワークツリーの準備に配った番号と、成功した fetch がどの番号までの準備をまかなったか（時計は戻ることがあるので番号で比べる）。 */
+	private prepareTickets = 0;
+	private fetchedThrough = 0;
 
 	/** @param fetch テスト用。本体の fetch を差し替える（同時に走る本数を数えるため）。 */
 	constructor(private readonly repoPath: string, private readonly worktreeRoot: string, private readonly fetch: (cwd: string, args?: readonly string[]) => Promise<string> = gitFetch) { }
@@ -207,7 +210,8 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 
 	private async prepareNow(taskId: string, slot: ITaskBoardSlot, branch: string): Promise<{ branch: string; path: string }> {
 		if (slot.kind === 'worktree') {
-			return this.inRepoQueue(() => this.prepareWorktree(branch));
+			const ticket = ++this.prepareTickets;
+			return this.inRepoQueue(() => this.prepareWorktree(branch, ticket));
 		}
 		if (!existsSync(path.join(slot.path, '.git'))) {
 			throw new TaskBoardWorkspaceError(`${slot.name} is not a git checkout`, 'missing');
@@ -222,9 +226,16 @@ export class GitWorkspaces implements ITaskBoardWorkspacePort {
 		return { branch, path: slot.path };
 	}
 
-	private async prepareWorktree(branch: string): Promise<{ branch: string; path: string }> {
+	private async prepareWorktree(branch: string, ticket: number): Promise<{ branch: string; path: string }> {
 		const dir = this.worktreeDir(branch);
-		await this.fetch(this.repoPath);
+		// 同時に始めたタスクは並んで待つ。前のタスクの fetch が並んだ後に終わっていれば、その結果を使う。
+		// --prune: リモートで消えたブランチの参照を残すと、名前が衝突する（para/1 と para/1/x）ブランチを取れなくなる
+		if (this.fetchedThrough < ticket) {
+			// この fetch が始まるまでに並んだ準備は、この結果を使える
+			const covers = this.prepareTickets;
+			await this.fetch(this.repoPath, ['--prune']);
+			this.fetchedThrough = covers;
+		}
 		if (existsSync(dir)) {
 			// 前回の作業場所が残っていれば、同じブランチのワークツリーである限り使い直す
 			if (await this.isWorktreeOf(dir, branch)) {
