@@ -48,6 +48,13 @@ export interface IParadisLimitsPanelContext {
 	displayName(account: IParadisLimitsAccount): string;
 	/** 通知などに出すメールの代わりの名前（{@link displayName} と同じ決まり）。 */
 	displayNameForEmail(provider: ParadisLimitsProvider, email: string): string;
+	/**
+	 * `delayMs` 後に `run` を1回だけ動かす（パネルを閉じても残る。前の予約は取り消す）。切り替えを
+	 * 取得回数の上限で断られたときの自動のやり直しに使う。
+	 */
+	scheduleRetry(delayMs: number, run: () => void): void;
+	/** {@link scheduleRetry} の予約を取り消す（利用者が別の操作をしたとき）。 */
+	cancelRetry(): void;
 }
 
 /** プロバイダごとの部品。どのメソッドも省略できる。 */
