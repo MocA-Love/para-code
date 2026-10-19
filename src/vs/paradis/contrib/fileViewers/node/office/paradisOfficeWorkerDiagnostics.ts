@@ -18,7 +18,7 @@ import { createParadisWorker, type ParadisWorker } from '../../../../node/paradi
 import type { WorkerOptions } from 'worker_threads';
 
 /** どの worker か。 */
-export type ParadisOfficeWorkerName = 'word-semantic' | 'spreadsheet-semantic' | 'spreadsheet-parse' | 'office-v1';
+export type ParadisOfficeWorkerName = 'word-semantic' | 'spreadsheet-semantic' | 'spreadsheet-parse' | 'spreadsheet-metafile' | 'office-v1';
 
 /**
  * 失敗した段階。`create` は Worker を作れなかった、`load` は何も返さないうちに落ちた（入口や npm
