@@ -879,13 +879,13 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				const options = link.allowOnly ? ALLOW_OPTIONS : raw;
 				const open = task.status === status ? task.question : undefined;
 				// 同じ質問が続いて届いた（または中身の無い報告が来た）なら、出している質問をそのままにする
-				if (open && (!question || (open.text === question.text && open.options.map(o => o.label).join('\n') === options.map(o => o.label).join('\n')))) {
+				if (open && (!question || ((open.text === readablePromptText(question.text) || open.text === question.text) && open.options.map(o => o.label).join('\n') === options.map(o => o.label).join('\n')))) {
 					return;
 				}
 				engine.reportQuestion(task.id, link.attempt, {
 					kind: status,
 					origin: 'screen',
-					text: question?.text || (status === 'permission' ? '許可を求めています（内容は Para Code のターミナルで確認してください）' : '質問しています（内容は Para Code のターミナルで確認してください）'),
+					text: (question?.text ? readablePromptText(question.text) : '') || (status === 'permission' ? '許可を求めています（内容は Para Code のターミナルで確認してください）' : '質問しています（内容は Para Code のターミナルで確認してください）'),
 					options,
 					// 選択肢の無い質問は、文で答えられるようにする（答える手段が無くならないように）
 					allowText: status === 'question' && ((question?.allowText ?? true) || raw.length === 0),
@@ -1000,6 +1000,33 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		}
 		return result;
 	}
+}
+
+/**
+ * 許可の確認の文を、人が読める形にする。MCP のツールの許可は `mcp__<サーバー>__<ツール>: {引数の JSON}` の形で
+ * 届くので、「<サーバー> の <ツール>（キー: 値、…）」にする。引数は切らない。それ以外の行はそのまま。
+ */
+export function readablePromptText(text: string): string {
+	return text.split('\n').map(line => {
+		const m = /^mcp__(?<server>[A-Za-z0-9_-]+?)__(?<tool>[A-Za-z0-9_-]+):\s*(?<args>.*)$/.exec(line.trim());
+		if (!m?.groups) {
+			return line;
+		}
+		const server = m.groups.server;
+		let args = '';
+		try {
+			const parsed: unknown = JSON.parse(m.groups.args || '{}');
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+				args = Object.entries(parsed as Record<string, unknown>)
+					// 切らない（読まないまま許可しないよう、全文をボードに残す。長さは表示側で畳む）
+					.map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+					.join('、');
+			}
+		} catch {
+			args = m.groups.args;
+		}
+		return `${server} の ${m.groups.tool}${args ? `（${args}）` : ''}`;
+	}).join('\n');
 }
 
 /** 起動の失敗を、利用者が次に何をすればよいか分かる文にする。 */
