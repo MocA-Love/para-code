@@ -396,11 +396,16 @@ export class McpResponse {
             if (!this.#page) {
                 throw new Error('Response must have a page');
             }
-            this.#page.textSnapshot = await TextSnapshot.create(this.#page, {
+            // PARA-PATCH (Para Code): a call that ToolHandler.handle gave up on (paraCodeAbandoned) does not replace the
+            // page's snapshot when it finishes late: the uids of a newer snapshot would stop resolving.
+            // See NOTES.md "vendored chrome-devtools-mcp への変更".
+            const textSnapshot = await TextSnapshot.create(this.#page, {
                 verbose: this.#snapshotParams.verbose,
                 devtoolsData: this.#devToolsData,
             });
-            const textSnapshot = this.#page.textSnapshot;
+            if (!this.paraCodeAbandoned?.()) {
+                this.#page.textSnapshot = textSnapshot;
+            }
             if (textSnapshot) {
                 const formatter = new SnapshotFormatter(textSnapshot);
                 if (this.#snapshotParams.filePath) {
