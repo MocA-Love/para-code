@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useNow } from '../../time.js';
+import { accountNumbers, type AccountNumbers } from '../settings/usageSummary.js';
 import { aggregateAccounts, hasAnyLimits, homeAccounts, todayCostTotal, type AggregatedAccount } from '../usage/usageAggregate.js';
 import { USAGE_HOME_MAX_AGE_MS, useUsageAutoRefresh, useUsageOverview } from '../usage/usageStore.js';
 
@@ -16,6 +17,8 @@ export interface HomeUsage {
 	readonly cost: number | undefined;
 	/** 出どころ（PC・SSH の接続先）が2つ以上（アカウントに見えている PC のチップを添える）。 */
 	readonly multiple: boolean;
+	/** メールを番号で出すときの番号（並べ替える前の、束ねた全アカウントの順。使用量の画面と同じ番号になる）。 */
+	readonly numbers: AccountNumbers;
 }
 
 const HOME_KINDS = ['limits', 'cost'] as const;
@@ -36,12 +39,15 @@ export function useHomeUsage(): HomeUsage {
 	useUsageAutoRefresh(HOME_KINDS, undefined, HOME_REFRESH);
 	return useMemo(() => {
 		const entries = overview.entries;
+		const claude = aggregateAccounts(entries, 'claude', now);
+		const codex = aggregateAccounts(entries, 'codex', now);
 		return {
-			claude: homeAccounts(aggregateAccounts(entries, 'claude', now), now),
-			codex: homeAccounts(aggregateAccounts(entries, 'codex', now), now),
+			claude: homeAccounts(claude, now),
+			codex: homeAccounts(codex, now),
 			anyLimits: hasAnyLimits(entries),
 			cost: todayCostTotal(entries, now),
 			multiple: entries.length > 1,
+			numbers: accountNumbers([...claude, ...codex].map(item => item.account)),
 		};
 	}, [overview, now]);
 }
