@@ -360,8 +360,9 @@ export function paradisRewriteCodexVisualizations(text: string): string {
 			return '可視化を表示できません';
 		}
 		const name = (path.split(/[\\/]/).pop() ?? path).replace(/[[\]]/g, '');
-		// モバイルはリンク先を decodeURIComponent してから開くので、% と # と山括弧だけ逃がす
-		const destination = path.replace(/%/g, '%25').replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E');
+		// モバイルはリンク先を decodeURIComponent してから開くので、% と # と山括弧だけ逃がす。
+		// Windows の `\` は Markdown のエスケープとして消えるので `/` にする（モバイルは `\\` を戻さないため二重にはしない）
+		const destination = path.replace(/\\/g, '/').replace(/%/g, '%25').replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E');
 		return `[可視化: ${name}](<${destination}>)`;
 	}).join('\n');
 }
