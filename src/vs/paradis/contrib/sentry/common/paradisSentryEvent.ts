@@ -15,7 +15,8 @@ import {
 	paradisSanitizeSentryText,
 	paradisSentryFingerprint,
 } from './paradisSentryCommon.js';
-import { IParadisSentryAttachment, paradisMinidumpExecutablePath } from './paradisMinidumpModules.js';
+import { PARADIS_CRASH_ROLE_ANNOTATION, paradisIsCrashRole } from './paradisCrashRole.js';
+import { IParadisSentryAttachment, paradisMinidumpAnnotation, paradisMinidumpExecutablePath } from './paradisMinidumpModules.js';
 
 const limiter = new ParadisSentryRateLimiter();
 
@@ -88,6 +89,19 @@ function nativeOriginTag(event: IParadisSentryEvent, executablePath: string | un
 	return { 'para.native_origin': executablePath ? 'executable' : 'unattributed' };
 }
 
+/**
+ * The role a Node-mode child of ours put on its own crash keys (`paradisCrashRole.ts`), as the
+ * `para.process_role` tag. A dump without one is a child we did not label (an extension's
+ * language server, for instance) or another process type; only known roles are passed through.
+ */
+function nativeRoleTag(event: IParadisSentryEvent, hint: { readonly attachments?: readonly IParadisSentryAttachment[] } | undefined): Record<string, string> {
+	if (!isNativeEvent(event)) {
+		return {};
+	}
+	const role = paradisMinidumpAnnotation(hint?.attachments, PARADIS_CRASH_ROLE_ANNOTATION);
+	return role !== undefined && paradisIsCrashRole(role) ? { 'para.process_role': role } : {};
+}
+
 export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	incoming: T,
 	processType: string,
@@ -113,6 +127,7 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 		tags: {
 			...event.tags,
 			...nativeOriginTag(event, executablePath),
+			...nativeRoleTag(event, hint),
 			'para.scope': scope,
 			'process.type': processType,
 			[PARADIS_PREPARED_TAG]: '1',
