@@ -220,7 +220,7 @@ export function Panel() {
 				<div className="p-head">
 					<div className="crumb">
 						{phone && <button className="btn ghost icon sm" onClick={app.closeTask} aria-label="戻る"><Icon name="chevronLeft" /></button>}
-						<span className="crumb-path" style={{ display: 'contents' }}>
+						<span className="crumb-path">
 							<Icon name="board" size={13} /><span>{flow.name}</span><span className="sep">/</span>
 							<span className="ellipsis">{shown.issue ? `${shown.issue.owner}/${shown.issue.repo}` : 'ボードのタスク'}</span>
 						</span>

@@ -356,7 +356,9 @@ kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--line-
 @media (hover: none) { .card-ref .menu-btn { opacity: 1; } }
 .card-title { font-weight: 600; font-size: 13px; margin-top: 3px; line-height: 1.45; overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.card-ask { margin-top: 8px; padding: 7px 9px; border-radius: var(--r-sm); background: var(--red-weak); color: var(--red-text); font-size: 12px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* 3 行で切る。切る箱に余白を持たせると、4 行目の頭が下の余白にのぞくので、余白は外側の箱に持たせる */
+.card-ask { margin-top: 8px; padding: 7px 9px; border-radius: var(--r-sm); background: var(--red-weak); color: var(--red-text); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.card-ask .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .card-ask b { color: var(--red); font-weight: 600; margin-right: 4px; }
 .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card-note.err { color: var(--red); }
@@ -458,6 +460,8 @@ kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--line-
 .p-head { padding: 12px 22px 4px; min-width: 0; }
 .crumb { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 12px; min-width: 0; }
 .crumb .sep { opacity: .5; }
+.crumb-path { display: contents; }
+.crumb-path > span { white-space: nowrap; }
 .crumb .acts { margin-left: auto; display: flex; gap: 2px; align-items: center; }
 .p-title { font-size: 21px; font-weight: 650; line-height: 1.35; margin-top: 6px; overflow-wrap: anywhere; }
 .p-title a { color: var(--faint); font-weight: 400; }
@@ -853,6 +857,8 @@ kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--line-
 	.top .brand .bl { display: none; }
 	.top .picker { padding: 0 6px; }
 	.top .picker .ellipsis { max-width: 120px; }
+	/* 幅が足りないので、フローの名前と動作中の目盛りは出さない（右端の追加ボタンが切れていた） */
+	.top .picker .faint, .top .meter { display: none; }
 	.sim-chip .sl { display: none; }
 	.bar { padding: 0 12px; gap: 8px; }
 	.bar .search { max-width: none; }

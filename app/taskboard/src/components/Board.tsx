@@ -78,7 +78,7 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 				</div>
 			)}
 			{task.question && (task.status === 'question' || task.status === 'permission')
-				? <div className="card-ask"><b>{task.status === 'permission' ? '許可' : '質問'}</b>{task.question.text}</div>
+				? <div className="card-ask"><span className="clamp"><b>{task.status === 'permission' ? '許可' : '質問'}</b>{task.question.text}</span></div>
 				: task.status === 'approval' ? <div className="card-note">{task.artifacts.filter(a => a.stepId !== 'shots').length ? `成果物 ${task.artifacts.length} 件を確認してください` : '承認を待っています'}</div>
 					: activity && task.step !== 'todo' && task.step !== 'done' ? <div className={`card-note ${task.status === 'failed' ? 'err' : ''}`}>{activity}</div> : null}
 			{task.step !== 'todo' && (
