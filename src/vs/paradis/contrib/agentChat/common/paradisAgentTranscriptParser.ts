@@ -312,6 +312,61 @@ function parseCodexSubagentNotification(text: string, ts: number | undefined): I
 	return codexSubagentResultCard(name, paradisMaskCodexEncryptedPayloads(body.trim()), ts, ts !== undefined ? `codex-final:notification:${ts}:${stableTextHash(inner)}` : undefined, outcome);
 }
 
+/** Codex が可視化（HTML ファイル）を指す 1 行。私用領域の文字 U+E200 / U+E202 / U+E201 で JSON を囲む。 */
+const CODEX_VISUALIZATION_REFERENCE_PREFIX = '\uE200visualize\uE202';
+const CODEX_VISUALIZATION_REFERENCE_SUFFIX = '\uE201';
+/** 同じものの古い書き方（`::codex-inline-vis{file="..."}`）。 */
+const CODEX_VISUALIZATION_DIRECTIVE_PREFIX = '::codex-inline-vis{';
+
+/** 可視化の行が指すファイルの絶対パス。読めない・絶対パスでなければ undefined（Codex の TUI と同じ条件）。 */
+function codexVisualizationPath(line: string): string | undefined {
+	let path: string | undefined;
+	if (line.startsWith(CODEX_VISUALIZATION_DIRECTIVE_PREFIX)) {
+		path = /^file="(?<file>[^"]+)"$/.exec(line.slice(CODEX_VISUALIZATION_DIRECTIVE_PREFIX.length).replace(/\}$/, '').trim())?.groups?.file;
+	} else if (line.endsWith(CODEX_VISUALIZATION_REFERENCE_SUFFIX)) {
+		path = str(rec(safeJsonParse(line.slice(CODEX_VISUALIZATION_REFERENCE_PREFIX.length, -CODEX_VISUALIZATION_REFERENCE_SUFFIX.length)))?.path);
+	}
+	return path !== undefined && (path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')) ? path : undefined;
+}
+
+/**
+ * Codex の発言にある可視化の行を、ファイルを開くリンク（モバイルではファイルのカード）に書き換える。
+ * 書き換えないと私用領域の文字がそのまま出て、iOS では「?」の四角・船・歩く人の絵文字に見える。
+ * Codex の TUI と同じく、行の頭にあるものだけを対象にし、コードブロックの中は変えない。
+ */
+export function paradisRewriteCodexVisualizations(text: string): string {
+	if (!text.includes(CODEX_VISUALIZATION_REFERENCE_PREFIX) && !text.includes(CODEX_VISUALIZATION_DIRECTIVE_PREFIX)) {
+		return text;
+	}
+	let fence: string | undefined;
+	return text.split('\n').map(line => {
+		const trimmed = line.trim();
+		const marker = /^(?<marker>`{3,}|~{3,})/.exec(trimmed)?.groups?.marker;
+		if (fence !== undefined) {
+			if (marker !== undefined && marker[0] === fence[0] && marker.length >= fence.length && trimmed.slice(marker.length).trim().length === 0) {
+				fence = undefined;
+			}
+			return line;
+		}
+		if (marker !== undefined) {
+			fence = marker;
+			return line;
+		}
+		if (!trimmed.startsWith(CODEX_VISUALIZATION_REFERENCE_PREFIX) && !trimmed.startsWith(CODEX_VISUALIZATION_DIRECTIVE_PREFIX)) {
+			return line;
+		}
+		const path = codexVisualizationPath(trimmed);
+		if (path === undefined) {
+			return '可視化を表示できません';
+		}
+		const name = (path.split(/[\\/]/).pop() ?? path).replace(/[[\]]/g, '');
+		// モバイルはリンク先を decodeURIComponent してから開くので、% と # と山括弧だけ逃がす。
+		// Windows の `\` は Markdown のエスケープとして消えるので `/` にする（モバイルは `\\` を戻さないため二重にはしない）
+		const destination = path.replace(/\\/g, '/').replace(/%/g, '%25').replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E');
+		return `[可視化: ${name}](<${destination}>)`;
+	}).join('\n');
+}
+
 /**
  * サブエージェント同士・親とのやりとり（response_item の `agent_message`）。本文の頭に
  * `Message Type: FINAL_ANSWER|MESSAGE|NEW_TASK` / `Task name` / `Sender` / `Payload:` が並ぶ。
@@ -322,7 +377,7 @@ function parseCodexAgentMessage(payload: Record<string, unknown>, ts: number | u
 	const raw = parts.map(item => str(item?.text) ?? '').join('');
 	const header = /^Message Type: (?<type>[A-Z_]+)\n(?:[^\n]*\n)*?Payload:\n?/.exec(raw);
 	const messageType = header?.groups?.type;
-	const body = (header !== null ? raw.slice(header[0].length) : raw).trim();
+	const body = paradisRewriteCodexVisualizations((header !== null ? raw.slice(header[0].length) : raw).trim());
 	const author = str(payload.author);
 	const name = author?.split('/').filter(segment => segment.length > 0).at(-1);
 	if (body.length === 0 || paradisIsCodexEncryptedPayload(body)) {
@@ -1634,7 +1689,7 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 		if (trimmedText.length === 0) {
 			return [];
 		}
-		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
+		out.push({ role, kind: 'text', text: truncateText(role === 'assistant' ? paradisRewriteCodexVisualizations(text) : text, TEXT_LIMIT), ts });
 	} else if (ptype === 'agent_message') {
 		out.push(...parseCodexAgentMessage(payload, ts));
 	} else if (ptype === 'reasoning') {
