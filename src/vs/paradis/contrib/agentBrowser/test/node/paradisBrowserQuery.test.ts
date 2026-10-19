@@ -132,14 +132,18 @@ suite('paradisBrowserQuery (shared process)', () => {
 		const syntax = new FakePage([failed('SyntaxError: Unexpected token')]);
 		const broken = await syntax.query().call(syntax.call(), 'wait_until', { predicate: '() => (' });
 		const nothing = await syntax.query().call(syntax.call(), 'wait_until', {});
+		// Claude Code は 120 秒を超えた呼び出しを裏に回すので、上限は 100 秒（q.html Q395）
+		const tooLong = await syntax.query().call(syntax.call(), 'wait_until', { selector: '.toast', timeout_seconds: 120 });
 		assert.deepStrictEqual({
 			timedOut: [isError(timedOut), textOf(timedOut).startsWith('Timed out after 3s waiting for visible selector ".toast" (3 checks)'), textOf(timedOut).includes('"matched": 2')],
 			broken: [isError(broken), syntax.calls.length],
 			nothing: isError(nothing),
+			tooLong: [isError(tooLong), textOf(tooLong), syntax.calls.length],
 		}, {
 			timedOut: [true, true, true],
 			broken: [true, 1],
 			nothing: true,
+			tooLong: [true, '"timeout_seconds" must be a number from 0.5 to 100.', 1],
 		});
 	});
 
