@@ -237,6 +237,11 @@ export class ParadisLimitsMonitorClient {
 		return this.claudeChannel.call<IParadisClaudeSwitchResult>('switchAccount', [managedId]);
 	}
 
+	/** 「claude-swap はもう使わない」（SSH のウィンドウでは接続先のもの）。 */
+	retireClaudeSwap(): Promise<void> {
+		return this.claudeChannel.call<void>('retireClaudeSwap', []);
+	}
+
 	/** Claude アカウントの登録を消す（いまのログインはそのまま）。 */
 	removeClaudeAccount(managedId: string): Promise<boolean> {
 		return this.claudeChannel.call<boolean>('removeAccount', [managedId]);
