@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { commandPath } from './executables.js';
 import type { ITaskBoardPrRef, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardRunPort, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { defaultBase, excludeBoardFiles, git } from './workspaces.js';
@@ -127,13 +128,15 @@ export class CommandRunner implements ITaskBoardRunPort {
 			return Promise.resolve({ code: null, signal: null, cancelled: true, stdout: '' });
 		}
 		engine.reportOutput(task.id, [`${cwd} $ ${display}`]);
+		// Windows では作業フォルダ（リポジトリ）の git.exe や cmd.exe を拾わないよう、PATH から引いた絶対パスで起動する
 		const [file, args] = shell
-			? (process.platform === 'win32' ? ['cmd.exe', ['/d', '/s', '/c', command as string]] : ['/bin/sh', ['-c', command as string]])
-			: [(command as readonly string[])[0], (command as readonly string[]).slice(1)];
+			? (process.platform === 'win32' ? [commandPath('cmd.exe'), ['/d', '/s', '/c', command as string]] : ['/bin/sh', ['-c', command as string]])
+			: [commandPath((command as readonly string[])[0]), (command as readonly string[]).slice(1)];
 		return new Promise(resolve => {
 			const child = spawn(file, args as string[], {
 				cwd,
-				env: { ...process.env, ...this.options.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', CI: process.env.CI ?? '1' },
+				// NoDefaultCurrentDirectoryInExePath: Windows の cmd.exe と CreateProcess が、コマンドを作業フォルダから先に探さないように
+				env: { ...process.env, ...this.options.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', CI: process.env.CI ?? '1', NoDefaultCurrentDirectoryInExePath: '1' },
 				detached: process.platform !== 'win32',
 				stdio: ['ignore', 'pipe', 'pipe'],
 			});

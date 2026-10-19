@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { execFile } from 'node:child_process';
+import { commandPath } from './executables.js';
 import type { ITaskBoardRateLimit } from '@engine/paradisTaskBoard.js';
 
 /*
@@ -29,7 +30,7 @@ export type TokenProvider = () => Promise<string>;
 /** gh CLI からトークンを受け取る。gh が無い・未ログインなら失敗する。 */
 export function ghTokenProvider(): TokenProvider {
 	return () => new Promise((resolve, reject) => {
-		execFile('gh', ['auth', 'token'], { timeout: 10000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, (err, stdout) => {
+		execFile(commandPath('gh'), ['auth', 'token'], { timeout: 10000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, (err, stdout) => {
 			const token = stdout?.trim();
 			if (err || !token) {
 				reject(new GitHubError('gh auth token failed. Run `gh auth login` (scope: repo, read:project).', undefined, 'auth'));
