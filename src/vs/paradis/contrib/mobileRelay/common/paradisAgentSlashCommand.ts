@@ -94,20 +94,28 @@ export function paradisSlashCommandRejected(agent: 'claude' | 'codex', name: str
 }
 
 /**
- * Codex の入力欄（`\u203A` で始まる最後の行）に、断られたコマンドの文字がまだ残っているか。`/name` の直後が空白か
- * 行末のときだけ（`/name2` のような別の名前は数えない）。狭いペインで入力欄の行が折り返していても、続きの行の行頭の
- * 空白を除いてつないで見る。
+ * Codex の入力欄の行（最後のもの）に、断られたコマンドの文字がまだ残っているか。`/name` の直後が空白か行末のときだけ
+ * （`/name2` のような別の名前は数えない）。狭いペインで入力欄の行が折り返していても、続きの行の行頭の空白を除いて
+ * つないで見る。入力欄の行の形は 2 通り:
+ * - 0.163 まで: 印 `\u203A` の後に `/name …`
+ * - 0.164.0-alpha.3 から: 文字が `/` で始まると印そのものが `/` になり、本文は `name …`（実画面 `/ nonexistentxyz`、
+ *   2026-10-20 に実測）。コマンドの候補の一覧の行（`/model  choose …`）は `/` の直後に空白が無いので当たらない
  */
 export function paradisCodexComposerHoldsCommand(screen: string, name: string): boolean {
 	const lines = screen.split('\n');
 	for (let index = lines.length - 1; index >= 0; index--) {
 		const line = lines[index].trimStart();
-		if (!line.startsWith('\u203A')) {
+		let needle: string;
+		if (line.startsWith('\u203A')) {
+			needle = `/${name}`;
+		} else if (line === '/' || line.startsWith('/ ')) {
+			needle = name;
+		} else {
 			continue;
 		}
 		const rest = [line.slice(1).trimStart(), ...lines.slice(index + 1).map(next => next.trimStart())].join('\n');
 		let position = 0;
-		for (const char of `/${name}`) {
+		for (const char of needle) {
 			// 名前の途中で折り返した境目は飛ばす
 			while (rest.charAt(position) === '\n') {
 				position++;

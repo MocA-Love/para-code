@@ -15,6 +15,8 @@
 // どちらの場合も設定を知っている**ので、そこで決めて渡すのがいちばん素直で、判断が1箇所に済む。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.js';
+import { paradisRelayDiagnosticsFromThisProcess } from '../../sentry/common/paradisRelayedDiagnostics.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths, ParadisPtyHostPlatform } from '../common/paradisPtyHostPaths.js';
 import { paradisPtyDaemonEnv } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
@@ -40,6 +42,9 @@ export interface IParadisPtyHostBootstrapOptions {
  * 返すのは「常駐に繋がったか」だけ。引き取りは呼び出し側が `PtyService` を作った後に行う。
  */
 export async function paradisBootstrapPtyHost(options: IParadisPtyHostBootstrapOptions): Promise<boolean> {
+	// pty host には Sentry の SDK が無い（手元でも SSH 先でも）。ここで出る明示の報告は数えて溜め、
+	// 窓が引き継ぎの記録と一緒に取りに来る。常駐を使わない設定でも pty host はここを必ず通る。
+	paradisRelayDiagnosticsFromThisProcess();
 	const stateDir = options.env[PARADIS_PTY_HOST_STATE_DIR];
 	if (!stateDir) {
 		return false;
@@ -50,7 +55,8 @@ export async function paradisBootstrapPtyHost(options: IParadisPtyHostBootstrapO
 		paths,
 		launch: {
 			execPath: options.execPath,
-			args: [options.bootstrapPath],
+			// 落ちたときの minidump に、どの子かの印を残す（paradisCrashRole.ts）。SSH 先の素の node では何も足さない。
+			args: [...paradisCrashRoleNodeArgs('pty-host-daemon', !!process.versions.electron), options.bootstrapPath],
 			env: {
 				VSCODE_ESM_ENTRYPOINT: 'vs/paradis/contrib/ptyDaemon/node/paradisPtyHostDaemonEntry',
 				// 常駐が自分で置き場所を計算し直して、渡された値と突き合わせるために要る。

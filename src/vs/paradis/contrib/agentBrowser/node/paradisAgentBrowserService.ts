@@ -1578,7 +1578,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				continue;
 			}
 			accepted.push(record);
-			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'));
+			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'), this._paneShells.get(token)?.remoteAuthority !== undefined);
 		}
 		if (accepted.length === 0) {
 			return;
@@ -1656,7 +1656,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		times.push(now);
 		this._programStatusTimes.set(token, times);
 		if (status.app === 'codex') {
-			return this._noteCodexProgramStatus(token, status.state, now);
+			return this._noteCodexProgramStatus(token, status.state, status.kind, now);
 		}
 		const next = paradisProgramStatusToAgentStatus(status);
 		const previous = this._paneStatuses.get(token);
@@ -1689,13 +1689,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * Codex の OSC 7501 の状態（完了も許可と質問の区別も無い）。状態の出どころにはせず（`_programStatusTokens` に
+	 * Codex の OSC 7501 の状態（0.163 は完了も許可と質問の区別も無い。0.164 から done・error と kind が付く）。状態の出どころにはせず（`_programStatusTokens` に
 	 * 載せない）、transcript から読んだターンの始まり・終わりもそのまま使う。transcript が一度でもターンを知らせた
 	 * ペイン（`_agentHookTokens`）では、許可待ちとその解除にだけ使う（paradisCodexProgramStatusTransition）。
 	 */
-	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, now: number): boolean {
+	private _noteCodexProgramStatus(token: string, state: ParadisProgramState, kind: string | undefined, now: number): boolean {
 		const previous = this._paneStatuses.get(token);
-		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token));
+		const next = paradisCodexProgramStatusTransition(previous?.status, state, this._agentHookTokens.has(token), kind);
 		if (next === undefined || next === previous?.status) {
 			return false;
 		}
@@ -2054,8 +2054,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._releaseTokenQuarantine(token);
 	}
 
-	/** hook から、そのペインで動いている会話を控える（`_paneSessions`）。 */
-	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined): void {
+	/**
+	 * hook から、そのペインで動いている会話を控える（`_paneSessions`）。
+	 * @param remote 接続先から届いた hook か（`host=` 付き、または接続先のペイン）。
+	 */
+	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean): void {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
 			return;
@@ -2074,7 +2077,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
 		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
-		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}) });
+		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
 	}
 
 	/**
@@ -4252,7 +4255,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);
-				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd);
+				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined);
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,

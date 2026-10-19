@@ -8,6 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisCodexProgramStatusForeground, paradisCodexProgramStatusTransition, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { ParadisAgentStatus } from '../../common/paradisAgentBrowser.js';
 
 suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -407,9 +408,9 @@ suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 		});
 	});
 
-	test('the Codex state only helps: waiting always, working and its end only where no transcript reports turns, and never a completion', () => {
+	test('the Codex state only helps: waiting always, working and its end only where no transcript reports turns', () => {
 		const previous = [undefined, 'working', 'permission', 'question', 'review'] as const;
-		const states = ['working', 'blocked', 'idle', 'clear', 'done'] as const;
+		const states = ['working', 'blocked', 'idle', 'clear', 'done', 'error'] as const;
 		const table = (transcriptBacked: boolean) => Object.fromEntries(states.map(state => [state, previous.map(before => paradisCodexProgramStatusTransition(before, state, transcriptBacked) ?? '-')]));
 		assert.deepStrictEqual({ withoutTranscript: table(false), withTranscript: table(true) }, {
 			// columns: (none), working, permission, question, review
@@ -418,15 +419,41 @@ suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 				blocked: ['permission', 'permission', '-', '-', 'permission'],
 				idle: ['-', 'idle', 'idle', 'idle', '-'],
 				clear: ['-', 'idle', 'idle', 'idle', '-'],
-				done: ['-', '-', '-', '-', '-'],
+				done: ['-', 'review', 'review', 'review', '-'],
+				error: ['-', 'review', 'review', 'review', '-'],
 			},
 			withTranscript: {
 				working: ['-', '-', 'working', 'working', '-'],
 				blocked: ['permission', 'permission', '-', '-', 'permission'],
 				idle: ['-', '-', 'idle', 'idle', '-'],
 				clear: ['-', '-', 'idle', 'idle', '-'],
-				done: ['-', '-', '-', '-', '-'],
+				done: ['-', '-', 'review', 'review', '-'],
+				error: ['-', '-', 'review', 'review', '-'],
 			},
+		});
+	});
+
+	test('reads the Codex 0.164 sequences: a kept done after the turn, and the reason a prompt blocks', () => {
+		// Measured on Codex 0.164.0-alpha.3 (2026-10-20): request -> working -> done, which stays until a key press -> idle.
+		const inputs = ['state=working:app=codex', 'state=done:app=codex', 'state=idle:app=codex', 'state=blocked:app=codex:kind=question', 'state=error:app=codex'];
+		const statuses = inputs.map(paradisParseProgramStatus) as IParadisProgramStatus[];
+		let pane: ParadisAgentStatus | undefined;
+		const panes = statuses.map(status => {
+			const next = paradisCodexProgramStatusTransition(pane, status.state, false, status.kind);
+			pane = next === undefined ? pane : next === 'idle' ? undefined : next;
+			return pane ?? '-';
+		});
+		assert.deepStrictEqual({
+			parsed: statuses,
+			panes,
+			question: ['permission', 'question', 'review', undefined].map(before => paradisCodexProgramStatusTransition(before as ParadisAgentStatus | undefined, 'blocked', true, 'question') ?? '-'),
+			permissionKeepsQuestion: paradisCodexProgramStatusTransition('question', 'blocked', true, 'permission') ?? '-',
+		}, {
+			parsed: [{ state: 'working', app: 'codex' }, { state: 'done', app: 'codex' }, { state: 'idle', app: 'codex' }, { state: 'blocked', kind: 'question', app: 'codex' }, { state: 'error', app: 'codex' }],
+			// the idle after done (a key press acknowledged it) keeps the review; the next question and its failure follow
+			panes: ['working', 'review', 'review', 'question', 'review'],
+			question: ['question', '-', 'question', 'question'],
+			permissionKeepsQuestion: '-',
 		});
 	});
 

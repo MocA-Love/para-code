@@ -202,7 +202,7 @@ suite('ParadisAgentCommandCatalog', () => {
 		]);
 
 		const catalog = await paradisBuildAgentCommandCatalog('codex', cwd, { userHome, claudeConfigDir, codexHome });
-		assert.ok(catalog.some(item => item.name === 'fast' && item.source === 'built-in'));
+		assert.ok(['fast', 'presets'].every(name => catalog.some(item => item.name === name && item.source === 'built-in')));
 		assert.deepStrictEqual(catalog.find(item => item.name === 'prompts:draft-pr'), {
 			name: 'prompts:draft-pr', insertText: '/prompts:draft-pr', description: 'Draft PRを作成', argumentHint: 'FILES=', kind: 'prompt', source: 'user',
 		});
