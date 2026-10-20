@@ -126,11 +126,13 @@ function queryDisk(path: string, ops: IParadisDiskQueryOps): Promise<readonly [A
 	if (pendingDiskQueries.has(path)) {
 		return Promise.resolve(undefined);
 	}
-	const work = Promise.all([ops.statfs(path), ops.stat(path)] as const);
+	const statfsQuery = ops.statfs(path);
+	const statQuery = ops.stat(path);
 	pendingDiskQueries.add(path);
-	const settle = () => { pendingDiskQueries.delete(path); };
-	work.then(settle, settle);
-	return withTimeout(work, ops.timeoutMs);
+	// 記録を消すのは 2 つとも返ってから。`Promise.all` は片方が失敗した時点で決まるので、それを待つと
+	// `stat` だけすぐ失敗して `statfs` が返らないマウントで、返らない `statfs` が収集のたびに増える。
+	void Promise.allSettled([statfsQuery, statQuery]).then(() => { pendingDiskQueries.delete(path); });
+	return withTimeout(Promise.all([statfsQuery, statQuery] as const), ops.timeoutMs);
 }
 
 /**

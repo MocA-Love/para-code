@@ -98,6 +98,32 @@ suite('ParadisHostResources', () => {
 		});
 	});
 
+	test('keeps waiting for an unanswered statfs even when stat fails right away', async () => {
+		let answer: (() => void) | undefined;
+		let statfsCalls = 0;
+		const ops = {
+			statfs: () => {
+				statfsCalls++;
+				return new Promise<{ bsize: number; blocks: number; bavail: number }>(resolve => {
+					answer = () => resolve({ bsize: 4096, blocks: 10, bavail: 5 });
+				});
+			},
+			stat: async (): Promise<{ dev: number }> => { throw new Error('EIO'); },
+			timeoutMs: 1,
+		};
+		const path = '/paradis-test-half-answered-mount';
+
+		const results = [await paradisReadDiskVolumes([path], ops), await paradisReadDiskVolumes([path], ops), await paradisReadDiskVolumes([path], ops)];
+		const whilePending = statfsCalls;
+		answer!();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await paradisReadDiskVolumes([path], ops);
+		answer!();
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual({ results, whilePending, afterAnswer: statfsCalls }, { results: [[], [], []], whilePending: 1, afterAnswer: 2 });
+	});
+
 	test('falls back to a short two-point measurement when there is no previous sample', async () => {
 		const delays: number[] = [];
 		let clock = 0;
