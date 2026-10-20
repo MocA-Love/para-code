@@ -134,6 +134,12 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 		},
 	});
 	const sanitized = paradisSanitizeSentryEvent(withClassification);
+	// minidump は送信前のイベントにフレームが無く、下の key がどのクラッシュでも同じになる。
+	// fingerprint を付けると別々のクラッシュが 1 件の issue にまとまり、10分3件の枠も共有して
+	// 4件目以降が捨てられていた。Sentry がシンボル化した後のスタックで分類するのに任せる。
+	if (isNativeEvent(sanitized)) {
+		return sanitized;
+	}
 	const fingerprint = paradisSentryFingerprint(sanitized);
 	const decision = limiter.consume(fingerprint);
 	if (!decision.allowed) {

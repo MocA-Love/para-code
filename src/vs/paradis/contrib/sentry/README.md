@@ -50,7 +50,7 @@ Turning crash reporting off also turns Sentry off in main, renderer and the shar
 or `--disable-crash-reporter`. Main decides
 (`src/vs/platform/environment/common/paradisSentryOptOut.ts`) and passes the result down.
 
-Each process sends at most three copies of the same normalized error in a ten-minute window. Sentry
+Each process sends at most three copies of the same normalized error in a ten-minute window. Native minidumps are exempt and get no fingerprint of their own: before symbolication they have no frames, so a client-side key would merge unrelated crashes; Sentry groups them by the symbolicated stack. Sentry
 Spike Protection is also enabled on both projects.
 
 Desktop release builds inject Debug IDs before integrity checksums and packaging, then upload the
