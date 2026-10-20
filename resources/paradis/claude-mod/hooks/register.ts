@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.4.1';
+const MOD_VERSION = '1.4.2';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -84,6 +84,12 @@ let flushing = false;
 const pendingPermissions = new Map<string, { readonly toolUseId: string | undefined; readonly toolName: string }>();
 /** tool.check answered `ask`: `tool\0input` -> tool_use_ids, oldest first. */
 const askedCalls = new Map<string, string[]>();
+/**
+ * What tool.check told about an asked call (Claude Code 2.1.304 and later), by tool_use_id: `personOnly` when the
+ * verdict carries `decider: 'person'` (only the terminal's dialog can approve it; a PermissionRequest hook may only
+ * refuse), `readOnly` when `e.isReadOnly` is set. Older versions send neither, and nothing is kept.
+ */
+const askedTraits = new Map<string, { readonly personOnly: boolean; readonly readOnly: boolean }>();
 /**
  * A prompt from Para Code Mobile is being submitted. Only one at a time: another one handed over meanwhile is
  * refused at once (ack ok: false, reason: 'busy') and Para Code sends it with keys once the first one is
@@ -328,6 +334,20 @@ function rememberAsk(tool: string, input: unknown, toolUseId: string): void {
 			break;
 		}
 		askedCalls.delete(oldest.value);
+	}
+}
+
+function rememberTraits(toolUseId: string, personOnly: boolean, readOnly: boolean): void {
+	if (!personOnly && !readOnly) {
+		return;
+	}
+	askedTraits.set(toolUseId, { personOnly, readOnly });
+	while (askedTraits.size > MAX_REMEMBERED_ASKS) {
+		const oldest = askedTraits.keys().next();
+		if (oldest.done === true) {
+			break;
+		}
+		askedTraits.delete(oldest.value);
 	}
 }
 
@@ -749,6 +769,7 @@ export const register: Register = on => {
 		const verdict = await next(e);
 		if (active && verdict.decision === 'ask' && e.tool_use_id !== undefined) {
 			rememberAsk(e.tool, e.input, e.tool_use_id);
+			rememberTraits(e.tool_use_id, (verdict as { decider?: unknown }).decider === 'person', (e as { isReadOnly?: unknown }).isReadOnly === true);
 			emit($, { type: 'tool.check', toolUseId: e.tool_use_id, tool: e.tool });
 		}
 		return verdict;
@@ -843,9 +864,16 @@ export const register: Register = on => {
 		const sessionId = e.session_id;
 		const toolUseId = takeAskedCall(e.tool_name, e.tool_input);
 		const suggestions = Array.isArray(e.permission_suggestions) ? e.permission_suggestions : [];
+		const traits = toolUseId !== undefined ? askedTraits.get(toolUseId) : undefined;
+		if (toolUseId !== undefined) {
+			askedTraits.delete(toolUseId);
+		}
 		// denyMessage: this mod hands the refusal text Para Code sends back to Claude Code (older mods use a fixed one).
+		// personOnly: an allow from here would not count, so Para Code Mobile shows only the refusal and points to the PC.
 		const registered = await request($, 'permission', {
 			sessionId, toolName: e.tool_name, toolInput: e.tool_input, suggestions, denyMessage: true,
+			...(traits?.personOnly === true ? { personOnly: true } : {}),
+			...(traits?.readOnly === true ? { readOnly: true } : {}),
 			...(toolUseId !== undefined ? { toolUseId } : {}),
 			...(e.agent_id !== undefined ? { agentId: e.agent_id } : {}),
 		});

@@ -179,6 +179,21 @@
 				"answerVia": "mod"
 			},
 			"capabilities": { "agentActions": true, "claudeSettings": true }
+		},
+		"onPcDelta": {
+			"$comment": "PC の端末の確認の画面でしか許可できない承認（Claude Code 2.1.304 の mod の decider: person）。answerOn: pc のとき choices は拒否だけで、アプリは許可のボタンを出さずに PC で答えるよう案内する。readOnly は読むだけの呼び出し（tool.check の isReadOnly）。古いアプリは両方を捨て、拒否だけのカードを出す。",
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "claude", "epoch": "golden-agent-epoch", "rev": 8,
+			"messages": [
+				{ "rev": 8, "role": "assistant", "kind": "tool_use", "tool": "approval_request", "text": "Bash: Show the package manifest", "toolUseId": "approval-3", "ts": 1760000005000 }
+			],
+			"interaction": {
+				"kind": "approval", "id": "approval-3", "title": "操作の許可", "detail": "Bash: Show the package manifest",
+				"choices": [{ "id": "no", "label": "拒否", "tone": "deny" }],
+				"request": { "tool": "Bash", "kind": "bash", "command": "cat package.json", "description": "Show the package manifest" },
+				"answerVia": "mod",
+				"answerOn": "pc",
+				"readOnly": true
+			}
 		}
 	}
 }

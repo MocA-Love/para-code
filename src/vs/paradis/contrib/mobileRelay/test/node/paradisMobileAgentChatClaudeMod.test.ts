@@ -421,6 +421,34 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('an approval only the terminal dialog can allow (Claude Code 2.1.304 decider person) offers the refusal alone, refuses an allow from the phone, and marks a read-only call', () => withHarness(async harness => {
+		const input = { command: 'cat package.json' };
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_q', toolInput: input });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: input, payload: { permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'cat:*' }], behavior: 'allow', destination: 'session' }] } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_q', toolName: 'Bash', toolInput: input, suggestions: [], denyMessage: true, personOnly: true, readOnly: true });
+		type Card = { readonly answerOn?: string; readonly readOnly?: boolean; readonly answerVia?: string; readonly choices?: readonly { readonly id: string }[] };
+		const card = () => harness.tailer()?.currentInteraction() as Card | null | undefined;
+		await waitFor(() => card()?.answerOn === 'pc', 'the approval was not marked as answered on the PC');
+		const shown = { answerOn: card()?.answerOn, readOnly: card()?.readOnly, answerVia: card()?.answerVia, choices: card()?.choices?.map(choice => choice.id) };
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-pc', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'yes' });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-opt', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'opt:1', optionLabel: 'Yes' });
+		await waitFor(() => harness.sent.filter(message => message.t === 'action-result' && (message.requestId === 'allow-pc' || message.requestId === 'allow-opt')).length === 2, 'the allows were not answered');
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'deny-pc', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'no' });
+		assert.deepStrictEqual({
+			shown,
+			allows: harness.sent.filter(message => message.t === 'action-result' && (message.requestId === 'allow-pc' || message.requestId === 'allow-opt')).map(message => ({ status: message.status, code: message.code })),
+			reply: await waiting,
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			shown: { answerOn: 'pc', readOnly: true, answerVia: 'mod', choices: ['no'] },
+			allows: [{ status: 'rejected', code: 'invalid-answer' }, { status: 'rejected', code: 'invalid-answer' }],
+			reply: { state: 'answer', decision: 'deny' },
+			keys: 0,
+		});
+	}));
+
 	test('keeps the pane working after a refusal that carries an instruction (the phone or the terminal amend), and stops it on a plain refusal', () => withHarness(async harness => {
 		const access = harness.chat as unknown as { liveStates: Map<string, unknown>; activeTurnTokens: Set<string> };
 		const awaiting: number[] = [];
