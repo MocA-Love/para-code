@@ -27,7 +27,7 @@
 // ブラウザビュー」のフレームを返す（既存の画面録画/スクショ機能に影響を与えないための env
 // ゲート）。
 
-import { webContents as electronWebContents, WebFrameMain } from 'electron';
+import { BrowserWindow, webContents as electronWebContents, WebFrameMain } from 'electron';
 import { BrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { PARADIS_MIRROR_CAPTURE_ENV, ParadisBrowserMirrorCapture } from './paradisBrowserMirrorCaptureCore.js';
 
@@ -45,8 +45,13 @@ const capture = new ParadisBrowserMirrorCapture({
  * が `PARADIS_CDP_TARGET_CHANNEL` 経由で呼ぶ ParadisCdpTargetService.armMirrorCapture
  * （electron-main）から呼ばれる。
  */
-export function paradisArmMirrorCapture(targetId: string): void {
-	capture.arm(targetId);
+export function paradisArmMirrorCapture(targetId: string, windowId?: number, requestId?: string): void {
+	capture.arm(targetId, windowId, requestId);
+}
+
+/** 写しの準備をやめた要求の予約を取り消す。 */
+export function paradisDisarmMirrorCapture(windowId: number | undefined, requestId: string): void {
+	capture.disarm(windowId, requestId);
 }
 
 /**
@@ -59,7 +64,23 @@ export function paradisArmMirrorCapture(targetId: string): void {
  *
  * env のみが設定されている場合（ローカル検証用フォールバック）は「最初に見つかった
  * 内蔵ブラウザビュー」を対象にする。
+ *
+ * 予約は要求元のウィンドウごとに持つ。`requestFrame`（getDisplayMedia を呼んだフレーム）から
+ * ウィンドウを引き、そのウィンドウの予約だけを当てる。写しの予約がある・あったばかりの間に、当たる
+ * 予約の無い要求が来たら 'deny' を返す（取り違えた写しの要求を画面全体の取得へ落とさない）。
  */
-export function paradisResolveMirrorCaptureFrame(): WebFrameMain | 'deny' | undefined {
-	return capture.resolve();
+export function paradisResolveMirrorCaptureFrame(requestFrame?: WebFrameMain | null): WebFrameMain | 'deny' | undefined {
+	return capture.resolve(paradisWindowIdOfFrame(requestFrame));
+}
+
+function paradisWindowIdOfFrame(frame: WebFrameMain | null | undefined): number | undefined {
+	if (!frame) {
+		return undefined;
+	}
+	try {
+		const contents = electronWebContents.fromFrame(frame.top ?? frame);
+		return contents ? BrowserWindow.fromWebContents(contents)?.id : undefined;
+	} catch {
+		return undefined;
+	}
 }
