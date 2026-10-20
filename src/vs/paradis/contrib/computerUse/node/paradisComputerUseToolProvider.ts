@@ -617,6 +617,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			};
 			// 入力は全ペインで 1 本の列に並べる。状態の読み取りまで列の中で行い、次の入力と混ざらないようにする
 			const outcome = await this._inputQueue.queue(async (): Promise<IToolResult | 'needsForeground'> => {
+				// 列で待つ間に設定がオフになっていたら、何も送らずに断る（入口の確認だけでは、並んでいた入力が送られる）
+				if (!this._options.enabled()) {
+					return typing.typed > 0 ? refusal(`${DISABLED_MESSAGE} The first ${typing.typed} characters were already typed; do not retype them.`, 'disabled') : refusal(DISABLED_MESSAGE, 'disabled');
+				}
 				let typedSummary: Record<string, unknown> | undefined;
 				if (name === 'computer_type_text') {
 					const typed = await this._typeInChunks(app, params.text as string, extra, typing, signal);
@@ -732,6 +736,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		if (!call.ok) {
 			return errorResult(call.error, 'foreground_dialog_failed');
 		}
+		// 待つ間に設定がオフになっていたら、「このターミナルでは聞かない」も覚えない
+		if (!this._options.enabled()) {
+			return refusal(DISABLED_MESSAGE, 'disabled');
+		}
 		switch (paradisParseComputerUseForegroundOutcome(call.value)) {
 			case 'pane':
 				this._ledger.allowForeground(paneToken, app.bundleId);
@@ -770,6 +778,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 			throw new ParadisComputerUseHelperError('invalid_argument', `"text" is longer than ${TYPE_TEXT_MAX_LENGTH} characters; use computer_paste_text for long text.`);
 		}
 		for (let start = progress.typed; start < graphemes.length; start += TYPE_TEXT_CHUNK) {
+			// 塊を送るたびに設定を見直す。オフになったら残りを送らない
+			if (!this._options.enabled()) {
+				return { ok: false, error: refusal(`${DISABLED_MESSAGE} The first ${progress.typed} of ${graphemes.length} characters were already typed; the rest was not sent.`, 'disabled') };
+			}
 			const chunk = graphemes.slice(start, start + TYPE_TEXT_CHUNK);
 			// 承認の直後の前面化（`activateFirst`）は、塊が 3 段目（前面）で送られるまで付け続ける。送り直しの塊が 1 段目（AX）で
 			// 通ると前面化は起きないので、そこで外すと次の塊が前面の段に落ちて window_not_focused で止まる
@@ -921,6 +933,10 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 		diagnostics.approvalWaitMs += this._now() - askedAt;
 		if (!call.ok) {
 			return errorResult(call.error, 'approval_dialog_failed');
+		}
+		// 待つ間に設定がオフになっていたら、答えを台帳へ書かない（オフにしたときに消した許可を戻さない）
+		if (!this._options.enabled()) {
+			return refusal(DISABLED_MESSAGE, 'disabled');
 		}
 		const outcome = paradisParseComputerUseApprovalOutcome(call.value);
 		switch (outcome) {
