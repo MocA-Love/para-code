@@ -70,22 +70,27 @@ async function loadPc(pcId: string): Promise<void> {
 
 let saveChain: Promise<void> = Promise.resolve();
 
-/** その PC の預かりを保存する（順に書く）。 */
-function savePc(pcId: string): Promise<void> {
-	saveChain = saveChain.then(async () => {
+/** その PC の預かりを保存する（順に書く）。書けなかったら false（列は止めない）。 */
+function savePc(pcId: string): Promise<boolean> {
+	const saved = saveChain.then(async () => {
 		const key = agentSendQueueKey(pcId);
 		if (key === undefined || !useAgentSendQueue.getState().loaded.has(pcId)) {
-			return;
+			return true;
 		}
 		const items = useAgentSendQueue.getState().items.filter(item => item.pcId === pcId);
 		const store = createAgentSendOutboxStore(pcId);
 		if (items.length === 0) {
 			await store.clear();
-			return;
+			return true;
 		}
 		await store.save(toBase64Url(sealNotify(key, encoder.encode(serializeAgentSendQueue(pcId, items)))));
-	}).catch(error => console.warn('[agentSendQueue] failed to save', error));
-	return saveChain;
+		return true;
+	}).catch(error => {
+		console.warn('[agentSendQueue] failed to save', error);
+		return false;
+	});
+	saveChain = saved.then(() => undefined);
+	return saved;
 }
 
 function update(pcId: string, change: (items: readonly AgentSendQueueItem[]) => readonly AgentSendQueueItem[]): void {
@@ -115,7 +120,11 @@ export async function enqueueAgentSend(pcId: string, text: string, target: Agent
 	}
 	const item: AgentSendQueueItem = { id, pcId, createdAt: Date.now(), text, target, status: 'waiting' };
 	update(pcId, items => addAgentSendQueueItem(items, item));
-	await savePc(pcId);
+	if (!await savePc(pcId)) {
+		// 端末に書けなかった預かりは、アプリを終えると消える。預かったことにせず、入力欄に文を残してもらう
+		useAgentSendQueue.setState(state => ({ items: state.items.filter(candidate => candidate.id !== item.id) }));
+		throw new Error('送信を預かれませんでした（端末に保存できませんでした）。空き容量を確かめて、もう一度送ってください');
+	}
 	return item;
 }
 

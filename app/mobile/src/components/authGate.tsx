@@ -23,7 +23,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import { colors, type } from '../theme.js';
 import { AppLockContext } from '../appLock.js';
 import { onAppReauthenticationRequest, setAppLockedNow } from '../appLockState.js';
-import { foregroundAction, isAppLocked, lockedContentProps, type AuthGateState } from '../appLockPolicy.js';
+import { canLockDevice, foregroundAction, isAppLocked, lockedContentProps, type AuthGateState } from '../appLockPolicy.js';
 import { Button } from './button.js';
 
 type GateState = AuthGateState;
@@ -45,12 +45,12 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 		const attempt = ++attemptRef.current;
 		setState('authenticating');
 		try {
-			const hasHardware = await LocalAuthentication.hasHardwareAsync();
-			const enrolled = hasHardware && await LocalAuthentication.isEnrolledAsync();
+			// 生体を登録していなくても、パスコードがあればそれで解除させる（authenticateAsync は既定でパスコードへ回す）
+			const lockable = canLockDevice(await LocalAuthentication.getEnrolledLevelAsync());
 			if (attempt !== attemptRef.current) {
 				return;
 			}
-			if (!enrolled) {
+			if (!lockable) {
 				// 生体情報もパスコードも未設定の端末ではロックが成立しないため通す
 				setState('unlocked');
 				onUnlock?.();

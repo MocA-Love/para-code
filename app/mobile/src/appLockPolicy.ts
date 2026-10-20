@@ -23,6 +23,15 @@ export type GateForegroundAction =
 	/** 認証の途中で離れて戻った。固着していないか少し待って確かめる。 */
 	| 'watchStuck';
 
+/**
+ * 端末でアプリのロックが成り立つか。`level` は `expo-local-authentication` の `getEnrolledLevelAsync()` の値
+ * （0 = NONE、1 = SECRET（パスコード・PIN だけ）、2・3 = 生体）。パスコードだけの端末でもロックし、
+ * 生体もパスコードも無い端末だけ通す。
+ */
+export function canLockDevice(level: number): boolean {
+	return level > 0;
+}
+
 /** ロック中か（ロック画面で覆い、下の画面を操作させない）。 */
 export function isAppLocked(state: AuthGateState): boolean {
 	return state !== 'unlocked';

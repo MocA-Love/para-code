@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { foregroundAction, isAppLocked, lockedContentProps, lockedModalVisible, REAUTH_GRACE_MS, shouldRelock } from './appLockPolicy.js';
+import { canLockDevice, foregroundAction, isAppLocked, lockedContentProps, lockedModalVisible, REAUTH_GRACE_MS, shouldRelock } from './appLockPolicy.js';
 
 const MOBILE_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -23,6 +23,10 @@ function tsxFiles(dir: string): string[] {
 }
 
 describe('app lock policy', () => {
+	it('locks a device that has only a passcode, and lets through only a device with no lock at all', () => {
+		expect([0, 1, 2, 3].map(canLockDevice)).toEqual([false, true, true, true]);
+	});
+
 	it('re-locks only after the grace period has passed since leaving while unlocked', () => {
 		const left = 1_000_000;
 		expect([

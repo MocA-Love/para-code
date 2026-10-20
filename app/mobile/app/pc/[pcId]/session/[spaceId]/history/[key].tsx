@@ -95,7 +95,11 @@ export default function AgentHistorySessionScreen() {
 			const result = await resumeAndSend(pcId, sourceId, key, prompt);
 			// 依頼まで渡せたときだけ完了。会話は開けたが渡せなかった・確認待ちなどは注意として返す
 			haptic(result.delivered === true ? 'success' : 'warning');
-			setText('');
+			const movedToTerminal = result.terminalKey !== undefined && result.status !== 'needs-trust';
+			// 届かなかった（フォルダの信頼の確認待ちなど）ときは、入力欄の文を残す（PC で答えてから送り直せるように）
+			if (result.delivered === true || movedToTerminal) {
+				setText('');
+			}
 			if (result.terminalKey !== undefined && result.status !== 'needs-trust') {
 				if (result.delivered !== true) {
 					// 会話は開けたが依頼を渡せなかった・既に開いていた。開いた先の入力欄へ移して送り直してもらう。
