@@ -29,11 +29,10 @@ import './pullRequestActions.js';
 import './createSessionFromPullRequestAction.js';
 import './issueActions.js';
 
-// PARA-PATCH: tiered PR polling + one-shot settings migration (GitHub rate-limit work)
+// PARA-PATCH: tiered PR polling (GitHub rate-limit work)
 import { SessionGithubBackgroundRefreshScheduler } from './sessionGithubBackgroundPolling.js';
 import { startChangeDrivenReviewThreadsRefresh } from './sessionGithubReviewThreadsRefresh.js';
 import { SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
-import './sessionParaGithubSettingsMigration.js';
 
 const TRACE_PREFIX = '[PR-ICON-TRACE]';
 

@@ -34,6 +34,7 @@ import {
 	PARADIS_THEME_COLOR_INPUT_TYPE_ID,
 } from './paradisThemeColorEditorInput.js';
 import { ParadisScreenColorPicker, ParadisScreenPickResult } from './paradisScreenColorPicker.js';
+import './paradisThemeColorShutdownGuard.js';
 
 registerSingleton(IParadisThemeColorDraftService, ParadisThemeColorDraftService, InstantiationType.Delayed);
 
