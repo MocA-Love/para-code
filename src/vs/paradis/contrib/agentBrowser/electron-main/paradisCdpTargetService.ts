@@ -495,9 +495,15 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 * paradisBrowserMirrorCapture.ts のモジュール状態（app.ts の
 	 * setDisplayMediaRequestHandler が paradisResolveMirrorCaptureFrame() で消費する）。
 	 */
-	async armMirrorCapture(targetId: string): Promise<void> {
+	async armMirrorCapture(targetId: string, windowId?: number, requestId?: string): Promise<void> {
 		const { paradisArmMirrorCapture } = await import('../../browserMirror/electron-main/paradisBrowserMirrorCapture.js');
-		paradisArmMirrorCapture(targetId);
+		paradisArmMirrorCapture(targetId, windowId, requestId);
+	}
+
+	/** 写しの準備をやめた要求（offer を renderer へ渡さなかった）の予約を取り消す。 */
+	async disarmMirrorCapture(windowId: number | undefined, requestId: string): Promise<void> {
+		const { paradisDisarmMirrorCapture } = await import('../../browserMirror/electron-main/paradisBrowserMirrorCapture.js');
+		paradisDisarmMirrorCapture(windowId, requestId);
 	}
 
 	/** 購読の参照を1つ返す。最後の参照が消えたら endFrameSubscription する。 */

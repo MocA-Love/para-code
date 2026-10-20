@@ -26,6 +26,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			resolveTargetId: async () => null,
 			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
+			disarmMirrorCapture: async () => undefined,
 		};
 		const delivered: Uint8Array[] = [];
 		const logService = new NullLogService();
@@ -87,6 +88,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			resolveTargetId: async () => null,
 			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
+			disarmMirrorCapture: async () => undefined,
 		};
 		const delivered: Uint8Array[] = [];
 		const cdpCalls: string[] = [];
@@ -125,6 +127,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			resolveTargetId: async () => null,
 			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
+			disarmMirrorCapture: async () => undefined,
 		};
 		const logService = new NullLogService();
 		const upstream = new ParadisCdpUpstream('', logService);
@@ -390,6 +393,31 @@ suite('ParadisMobileBrowserMirror', () => {
 		]);
 	});
 
+	test('start の待ちの間に stop が来たら、写しを登録せず撮影も始めない', async () => {
+		const logService = new NullLogService();
+		const upstream = new ParadisCdpUpstream('', logService);
+		(upstream as unknown as { fetchJson: (path: string) => Promise<unknown> }).fetchJson = async () => [{ id: 't1', type: 'page', url: 'https://a.example/' }];
+		let releasePort: (port: number | undefined) => void = () => undefined;
+		(upstream as unknown as { resolvePort: () => Promise<number | undefined> }).resolvePort = () => new Promise(resolve => releasePort = resolve);
+		const mirror = store.add(new ParadisMobileBrowserMirror(upstream, undefined, undefined, logService));
+		const replies: { id?: string; t?: string; error?: string }[] = [];
+		const request = (body: object) => mirror.handleRequest('m', new TextEncoder().encode(JSON.stringify(body)), payload => replies.push(JSON.parse(new TextDecoder().decode(payload))));
+
+		const starting = request({ t: 'start', id: 'a', targetId: 't1' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		await request({ t: 'stop', id: 'b' });
+		releasePort(9222);
+		await starting;
+
+		assert.deepStrictEqual({
+			replies: replies.map(reply => [reply.id, reply.t ?? reply.error]),
+			sessions: (mirror as unknown as { sessions: Map<string, unknown> }).sessions.size,
+		}, {
+			replies: [['b', 'stopped'], ['a', 'stopped']],
+			sessions: 0,
+		});
+	});
+
 	test('フォーカスは広告したアプリにだけ見張り、前のミラーの分離ワールドを使い回し、止めるときにリスナーを外す', () => {
 		const logService = new NullLogService();
 		const mirror = store.add(new ParadisMobileBrowserMirror(new ParadisCdpUpstream('', logService), undefined, undefined, logService));
@@ -482,6 +510,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			resolveTargetId: async viewId => viewId === 'view-a' ? 'target-a' : null,
 			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
+			disarmMirrorCapture: async () => undefined,
 		};
 		const logService = new NullLogService();
 		const mirror = store.add(new ParadisMobileBrowserMirror(new ParadisCdpUpstream('', logService), subscription, undefined, logService));

@@ -75,7 +75,8 @@ suite('Paradis browser mirror capture', () => {
 		assert.strictEqual(capture.resolve(), 'deny');
 	});
 
-	test('consumes a successful arm exactly once', () => {
+	test('consumes a successful arm exactly once and denies unarmed requests until the guard window passes', () => {
+		const clock = sinon.useFakeTimers({ now: 1_000 });
 		const expectedFrame = Object.freeze({ target: 'one-shot' }) as unknown as WebFrameMain;
 		const { capture, targetWebContents } = createCaptureHarness();
 		targetWebContents.set('target-one-shot', webContentsWith(expectedFrame));
@@ -83,7 +84,42 @@ suite('Paradis browser mirror capture', () => {
 		capture.arm('target-one-shot');
 
 		assert.strictEqual(capture.resolve(), expectedFrame);
+		assert.strictEqual(capture.resolve(), 'deny');
+		clock.tick(30_000);
 		assert.strictEqual(capture.resolve(), undefined);
+	});
+
+	test('matches arms by requesting window and never lets another window fall through to full-screen capture', () => {
+		const frameA = Object.freeze({ target: 'a' }) as unknown as WebFrameMain;
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-a', webContentsWith(frameA));
+
+		capture.arm('target-a', 1, 'sid-a');
+
+		assert.deepStrictEqual([capture.resolve(2), capture.resolve(undefined), capture.resolve(1), capture.resolve(1)], ['deny', 'deny', frameA, 'deny']);
+	});
+
+	test('replaces the arm of the same request and denies every request when arms of one window overlap', () => {
+		const frameA = Object.freeze({ target: 'a' }) as unknown as WebFrameMain;
+		const frameB = Object.freeze({ target: 'b' }) as unknown as WebFrameMain;
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-a', webContentsWith(frameA));
+		targetWebContents.set('target-b', webContentsWith(frameB));
+
+		capture.arm('target-a', 1, 'sid-a');
+		capture.arm('target-b', 1, 'sid-a');
+		const replaced = capture.resolve(1);
+
+		capture.arm('target-a', 1, 'sid-a');
+		capture.arm('target-b', 1, 'sid-b');
+		const overlapped = [capture.resolve(1), capture.resolve(1), capture.resolve(1)];
+
+		capture.arm('target-a', 1, 'sid-a');
+		capture.arm('target-b', 1, 'sid-b');
+		capture.disarm(1, 'sid-a');
+		const afterDisarm = capture.resolve(1);
+
+		assert.deepStrictEqual({ replaced, overlapped, afterDisarm }, { replaced: frameB, overlapped: ['deny', 'deny', 'deny'], afterDisarm: frameB });
 	});
 
 	test('fails closed once after an armed request expires and consumes the arm', () => {
@@ -96,6 +132,8 @@ suite('Paradis browser mirror capture', () => {
 		clock.tick(15_001);
 
 		assert.strictEqual(capture.resolve(), 'deny');
+		assert.strictEqual(capture.resolve(), 'deny');
+		clock.tick(30_000);
 		assert.strictEqual(capture.resolve(), undefined);
 	});
 });

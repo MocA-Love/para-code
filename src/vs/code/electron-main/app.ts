@@ -348,7 +348,8 @@ export class CodeApplication extends Disposable {
 				// closed instead of falling through to full-screen capture (that would leak the
 				// whole desktop to the mobile device). Off by default; existing screen recording /
 				// screenshot flows are unaffected. See src/vs/paradis/contrib/browserMirror/.
-				const paradisMirrorFrame = paradisResolveMirrorCaptureFrame();
+				// The requesting frame picks the window whose reservation applies.
+				const paradisMirrorFrame = paradisResolveMirrorCaptureFrame(request.frame);
 				if (paradisMirrorFrame === 'deny') {
 					callback({});
 					return;
