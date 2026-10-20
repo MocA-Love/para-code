@@ -41,6 +41,7 @@ import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState }
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
+import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeardownTiming.js';
@@ -2540,11 +2541,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			} catch (error) {
 				this.logService.warn('[ParadisWorkspaceSwitch] Failed to count terminal editors for the working set', error);
 			}
+			// working set に載せない生きた端末の置き場所は、working set と同じ瞬間に控える (グループの id が揃う)。
+			// 入力はまだグループに残っている (外すのは保存の後)。
+			const livePlacements = this.collectLiveTerminalEditorPlacements(stateKey, excludedEditors);
 			const workingSet = this.editorGroupsService.saveWorkingSet(`paradis-workspace:${stateKey}`, {
 				excludeEditors: excludedEditors,
 				includeAuxiliaryWindows: false
 			});
 			this._workingSets.set(stateKey, workingSet);
+			this.storeTerminalEditorPlacements(stateKey, livePlacements);
 			if (restoreNonces === undefined) {
 				this._workingSetRestoreNonces.delete(stateKey);
 			} else {
@@ -2561,6 +2566,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
 			}
 		} else if (previousWorkingSet) {
+			this.storeTerminalEditorPlacements(stateKey, undefined);
 			this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
 			this._workingSets.delete(stateKey);
 			this._workingSetTerminals.delete(stateKey);
@@ -2568,6 +2574,53 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._workingSetRestoreNonces.delete(stateKey);
 		}
 		this.saveWorkingSets();
+	}
+
+	/**
+	 * working set に載せない生きたエディタの端末 (子プロセスが動いているもの) の置き場所。
+	 *
+	 * 置き場所はメモリの預け先にしか残らないので、ウィンドウを閉じると失う。閉じた後に開き直すと、
+	 * 端末は起動時の孤児の取り戻しでスペースへ戻るが、どこに開くかの手掛かりが無い。その手掛かりを
+	 * ここで控える (`paradisTerminalEditorPlacement.ts`)。持ち主が別のスペースの端末は、そのスペースの
+	 * 預け先へ回るので控えない (このスペースの working set のグループを指しても意味が無い)。
+	 */
+	private collectLiveTerminalEditorPlacements(stateKey: string, excludedEditors: readonly EditorInput[]): Map<string, IParadisTerminalEditorPlacement> {
+		const placements = new Map<string, IParadisTerminalEditorPlacement>();
+		for (const editor of excludedEditors) {
+			const instance = this.terminalInstanceForEditor(editor);
+			if (instance === undefined) {
+				continue;
+			}
+			const owner = this.availableOwnerScope(instance);
+			const nonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+			const group = this.editorGroupsService.mainPart.groups.find(candidate => candidate.contains(editor, { strictEquals: true }));
+			if ((owner !== undefined && owner !== stateKey) || nonce === undefined || group === undefined || placements.has(nonce)) {
+				continue;
+			}
+			placements.set(nonce, {
+				groupId: group.id,
+				index: group.getIndexOfEditor(editor),
+				active: group.activeEditor === editor,
+				pinned: group.isPinned(editor),
+				sticky: group.isSticky(editor),
+			});
+		}
+		return placements;
+	}
+
+	/** スペースの置き場所の台帳を書き換える。undefined か空なら消す。書けなければ台帳ごと消す (古い置き場所を残さない)。 */
+	private storeTerminalEditorPlacements(stateKey: string, placements: ReadonlyMap<string, IParadisTerminalEditorPlacement> | undefined): void {
+		const current = this.storageService.get(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (current === undefined && (placements === undefined || placements.size === 0)) {
+			return;
+		}
+		const raw = paradisUpdateTerminalEditorPlacements(current, stateKey, placements);
+		if (raw === undefined) {
+			this.logService.warn('[ParadisWorkspaceSwitch] The terminal editor placements did not fit in storage; forgetting them');
+			this.storageService.remove(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE);
+			return;
+		}
+		this.storageService.store(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	/**
@@ -2701,6 +2754,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private deleteWorkingSetFor(repositoryId: string): void {
+		this.storeTerminalEditorPlacements(repositoryId, undefined);
 		const existing = this._workingSets.get(repositoryId);
 		if (!existing) {
 			return;
