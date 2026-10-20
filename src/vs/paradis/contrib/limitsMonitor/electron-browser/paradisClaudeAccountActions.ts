@@ -310,6 +310,16 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 					case 'network':
 						this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverifiedNetwork', "通信できず、いま使っている {0} の最新のログイン情報を確認できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。通信できることを確かめてから、もう一度お試しください。", previous));
 						return;
+					case 'save_failed':
+						// キーチェーンを使うのは macOS だけ。ほかは暗号化したファイルに保存する（接続先も含む）。
+						if (remote) {
+							this.notificationService.warn(localize('paradis.claudeAccounts.switchSaveFailedRemote', "接続先で、いま使っている {0} の最新のログイン情報を保存先に書き込めなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。しばらくしてからもう一度お試しください。何度も失敗するときは、接続先のターミナルで claude を起動し、/login で切り替え先のアカウントにログインしてください（いまのアカウントは後でログインし直しが必要になります）。", previous));
+						} else if (result.detail === 'keychain') {
+							this.notificationService.warn(localize('paradis.claudeAccounts.switchSaveFailedKeychain', "いま使っている {0} の最新のログイン情報をキーチェーンに保存できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。Mac のロックを解除してから、もう一度お試しください。何度も失敗するときは、ターミナルで claude を起動し、/login で切り替え先のアカウントにログインしてください（いまのアカウントは後でログインし直しが必要になります）。", previous));
+						} else {
+							this.notificationService.warn(localize('paradis.claudeAccounts.switchSaveFailed', "いま使っている {0} の最新のログイン情報を保存先に書き込めなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。しばらくしてからもう一度お試しください。何度も失敗するときは、ターミナルで claude を起動し、/login で切り替え先のアカウントにログインしてください（いまのアカウントは後でログインし直しが必要になります）。", previous));
+						}
+						return;
 					case 'owner_mismatch':
 						this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverifiedOwner', "いま使っている {0} のログインが確かめている間に変わったか、持ち主を確かめられなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。しばらくしてからもう一度お試しください。", previous));
 						return;

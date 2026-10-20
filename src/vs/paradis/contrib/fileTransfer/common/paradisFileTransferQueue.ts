@@ -33,6 +33,7 @@ import { FileOperationError, FileOperationResult } from '../../../../platform/fi
 import { paradisNumberedName } from './paradisFileTransferListing.js';
 import {
 	IParadisConflictDecision,
+	IParadisTransferChild,
 	IParadisTransferError,
 	IParadisTransferFileSystem,
 	IParadisTransferItem,
@@ -46,6 +47,7 @@ import {
 	ParadisConflictResolver,
 	ParadisTransferConflictError,
 	ParadisTransferErrorKind,
+	ParadisTransferListingTruncatedError,
 	ParadisTransferSpecialFileError,
 } from './paradisFileTransferQueueTypes.js';
 
@@ -103,6 +105,8 @@ interface IScanPlan {
 	readonly directories: URI[];
 	readonly files: Array<{ readonly source: URI; readonly target: URI; readonly size: number }>;
 	readonly skipped: number;
+	/** 一覧が上限で打ち切られたフォルダーの数。 */
+	readonly truncatedFolders: number;
 }
 
 /** 置き換えると送り先が丸ごと替わる組み合わせか（ファイル ⇔ フォルダー、または送り先がリンク）。 */
@@ -245,7 +249,7 @@ export class ParadisTransferQueue extends Disposable {
 			return;
 		}
 		Object.assign(entry.item, {
-			state: 'waiting', totalBytes: undefined, doneBytes: 0, totalFiles: undefined, doneFiles: 0, skipped: 0, writesInPlace: false,
+			state: 'waiting', totalBytes: undefined, doneBytes: 0, totalFiles: undefined, doneFiles: 0, skipped: 0, truncatedFolders: 0, writesInPlace: false,
 			bytesPerSecond: undefined, remainingSeconds: undefined, error: undefined,
 		} satisfies Partial<MutableItem>);
 		entry.resolveConflict = resolveConflict;
@@ -377,7 +381,7 @@ export class ParadisTransferQueue extends Disposable {
 
 	private async listNames(directory: URI): Promise<Map<string, IParadisTransferStat>> {
 		const names = new Map<string, IParadisTransferStat>();
-		for (const child of await this.fileSystem.readDirectory(directory)) {
+		for (const child of (await this.listChildren(directory)).children) {
 			names.set(child.name, child);
 		}
 		return names;
@@ -400,6 +404,7 @@ export class ParadisTransferQueue extends Disposable {
 					totalFiles: undefined,
 					doneFiles: 0,
 					skipped: 0,
+					truncatedFolders: 0,
 					writesInPlace: false,
 					bytesPerSecond: undefined,
 					remainingSeconds: undefined,
@@ -462,16 +467,26 @@ export class ParadisTransferQueue extends Disposable {
 
 	private async execute(entry: IEntry, token: CancellationToken, runId: string): Promise<void> {
 		try {
-			if (!await this.prepareTarget(entry, token)) {
+			const prepared = await this.prepareTarget(entry, token);
+			if (prepared === undefined) {
 				return;
 			}
+			// 送り元を読み終えてから宛先を取り除く。先に消すと、送り元が読めない・接続が切れたときに
+			// 宛先だけが消えて失敗で終わる。
 			const plan = await this.scan(entry.item, token);
 			if (token.isCancellationRequested) {
 				return;
 			}
+			if (prepared.removeTarget) {
+				await this.fileSystem.removeForReplace(entry.item.target);
+				if (token.isCancellationRequested) {
+					return;
+				}
+			}
 			entry.item.totalBytes = plan.files.reduce((sum, file) => sum + file.size, 0);
 			entry.item.totalFiles = plan.files.length;
 			entry.item.skipped = plan.skipped;
+			entry.item.truncatedFolders = plan.truncatedFolders;
 			this._onDidChange.fire();
 			const completed = await this.copyAll(entry, plan, token, runId);
 			// 置き換えの途中で取り消しても、置き換えが済んでいれば「完了」と出す
@@ -495,49 +510,45 @@ export class ParadisTransferQueue extends Disposable {
 	}
 
 	/**
-	 * 実行の直前に送り先を確かめる。進めてよければ true。
+	 * 実行の直前に送り先を確かめる。進めてよければ答えを返す（進めないなら undefined）。
 	 * - 上書きしない項目で同名があれば、聞ける先があれば聞き、無ければ衝突として失敗にする
-	 * - 種類の違う同名は、専用の確認を経たときだけ取り除く（手元はゴミ箱へ）
+	 * - 種類の違う同名は、専用の確認を経たときだけ取り除く（手元はゴミ箱へ）。取り除くのはここではなく、
+	 *   送り元を読み終えた後（`removeTarget` を返す）
 	 */
-	private async prepareTarget(entry: IEntry, token: CancellationToken): Promise<boolean> {
+	private async prepareTarget(entry: IEntry, token: CancellationToken): Promise<{ readonly removeTarget: boolean } | undefined> {
+		const proceed = (removeTarget: boolean) => token.isCancellationRequested ? undefined : { removeTarget };
 		const existing = await this.fileSystem.stat(entry.item.target);
 		if (!existing || token.isCancellationRequested) {
-			return !token.isCancellationRequested;
+			return proceed(false);
 		}
 		const kindMismatch = paradisIsKindMismatch(entry.item.isDirectory, existing);
 		if (!entry.overwrite) {
 			const decision = await this.askAtRun(entry, existing, kindMismatch);
 			if (token.isCancellationRequested) {
-				return false;
+				return undefined;
 			}
 			if (decision.action === 'cancel' || decision.action === 'skip') {
 				this.finish(entry, 'cancelled', undefined);
-				return false;
+				return undefined;
 			}
 			if (decision.action === 'rename') {
 				const taken = await this.takenNames(entry);
 				entry.item.target = joinPath(dirname(entry.item.target), paradisFreeName(entry.item.name, taken));
-				return true;
+				return { removeTarget: false };
 			}
 			entry.overwrite = true;
 			entry.replaceKind = kindMismatch;
 		}
-		if (kindMismatch) {
-			if (!entry.replaceKind) {
-				throw new ParadisTransferConflictError(entry.item.target);
-			}
-			if (token.isCancellationRequested) {
-				return false;
-			}
-			await this.fileSystem.removeForReplace(entry.item.target);
+		if (kindMismatch && !entry.replaceKind) {
+			throw new ParadisTransferConflictError(entry.item.target);
 		}
-		return !token.isCancellationRequested;
+		return proceed(kindMismatch);
 	}
 
 	/** 送り先のフォルダーで使われている名前と、待ち行列の他の項目が作る予定の名前。 */
 	private async takenNames(self: IEntry): Promise<Set<string>> {
 		const directory = dirname(self.item.target);
-		const taken = new Set((await this.fileSystem.readDirectory(directory)).map(child => child.name));
+		const taken = new Set((await this.listChildren(directory)).children.map(child => child.name));
 		for (const entry of this.entries) {
 			if (entry !== self && extUri.isEqual(dirname(entry.item.target), directory)) {
 				taken.add(extUri.basename(entry.item.target));
@@ -591,14 +602,19 @@ export class ParadisTransferQueue extends Disposable {
 				throw new ParadisTransferSpecialFileError();
 			}
 			files.push({ source: item.source, target: item.target, size: stat.size });
-			return { directories, files, skipped };
+			return { directories, files, skipped, truncatedFolders: 0 };
 		}
+		let truncatedFolders = 0;
 		const pending: Array<{ source: URI; target: URI }> = [{ source: item.source, target: item.target }];
 		while (pending.length && !token.isCancellationRequested) {
 			const { source, target } = pending.shift()!;
 			let children;
 			try {
-				children = await this.fileSystem.readDirectory(source);
+				const listed = await this.listChildren(source);
+				children = listed.children;
+				if (listed.truncated) {
+					truncatedFolders++;
+				}
 			} catch (error) {
 				// 中の読めないフォルダーは飛ばす（一番上が読めなければ全体の失敗にする）
 				if (source !== item.source && paradisIsSkippableInsideFolder(paradisClassifyTransferError(error))) {
@@ -621,7 +637,19 @@ export class ParadisTransferQueue extends Disposable {
 				}
 			}
 		}
-		return { directories, files, skipped };
+		return { directories, files, skipped, truncatedFolders };
+	}
+
+	/** フォルダーの子の一覧。上限で打ち切られたときは、読めた分と打ち切ったことを返す。 */
+	private async listChildren(directory: URI): Promise<{ readonly children: readonly IParadisTransferChild[]; readonly truncated: boolean }> {
+		try {
+			return { children: await this.fileSystem.readDirectory(directory), truncated: false };
+		} catch (error) {
+			if (error instanceof ParadisTransferListingTruncatedError) {
+				return { children: error.children, truncated: true };
+			}
+			throw error;
+		}
 	}
 
 	/** 写す。最後まで済んだら true（最後の 1 件の置き換えの途中で取り消されても、置き換えが済んでいれば true）。 */

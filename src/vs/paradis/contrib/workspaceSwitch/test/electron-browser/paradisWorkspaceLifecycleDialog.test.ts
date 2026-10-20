@@ -13,7 +13,13 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { paradisSaveWorkspaceLifecycleConfig } from '../../electron-browser/paradisWorkspaceLifecycleDialog.js';
+import { openParadisWorkspaceLifecycleDialog, paradisSaveWorkspaceLifecycleConfig } from '../../electron-browser/paradisWorkspaceLifecycleDialog.js';
+import { DeferredPromise } from '../../../../../base/common/async.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
+import { IParadisWorkspaceRepository } from '../../common/paradisWorkspaceSwitch.js';
 import { IParadisWorkspaceLifecycleConfig } from '../../common/paradisWorkspaceLifecycle.js';
 
 suite('workspace lifecycle dialog', () => {
@@ -65,5 +71,39 @@ suite('workspace lifecycle dialog', () => {
 		const fixture = await createDialogSaveFixture('{ bad json');
 		await assert.rejects(fixture.save({ setupScript: 'bun install' }), /\.paracode\.json の内容が不正です/);
 		assert.strictEqual(fixture.writeCount, 0);
+	});
+
+	test('keeps the save button disabled until the existing scripts have been read', async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		await fileService.writeFile(URI.file('/repo/.paracode.json'), VSBuffer.fromString('{ "setupScript": "bun install" }'));
+		const reading = new DeferredPromise<void>();
+		const readFile = fileService.readFile.bind(fileService);
+		fileService.readFile = (async (...args: Parameters<typeof fileService.readFile>) => {
+			await reading.p;
+			return readFile(...args);
+		}) as typeof fileService.readFile;
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const accessor = {
+			get: (id: unknown) => id === IFileService ? fileService : id === ILayoutService ? { activeContainer: container } : undefined,
+		} as unknown as ServicesAccessor;
+		try {
+			openParadisWorkspaceLifecycleDialog(accessor, { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository);
+			const save = () => container.querySelector<HTMLButtonElement>('.pcw-btn-primary')!;
+			const setup = () => container.querySelector<HTMLTextAreaElement>('#paradis-lifecycle-setup-input')!;
+			const before = { saveDisabled: save().disabled, setupReadOnly: setup().readOnly };
+			reading.complete();
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const after = { saveDisabled: save().disabled, setupReadOnly: setup().readOnly, setup: setup().value };
+			container.querySelector<HTMLButtonElement>('.pcw-btn:not(.pcw-btn-primary)')!.click();
+			assert.deepStrictEqual({ before, after }, {
+				before: { saveDisabled: true, setupReadOnly: true },
+				after: { saveDisabled: false, setupReadOnly: false, setup: 'bun install' },
+			});
+		} finally {
+			container.remove();
+		}
 	});
 });
