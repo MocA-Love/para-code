@@ -15,16 +15,18 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { ActiveEditorDirtyContext, ResourceContextKey } from '../../../../workbench/common/contextkeys.js';
+import { ParadisTabIsDiffContext } from '../../../../workbench/services/editor/common/paradisTabContextKeys.js';
 
 export const PARADIS_EDITOR_DOWNLOAD_COMMAND_ID = 'paradis.editor.download';
 
 /**
- * タブの右クリックで出す条件: 接続先（`vscode-remote`）のファイルで、未保存の変更が無いタブ。
+ * タブの右クリックで出す条件: 接続先（`vscode-remote`）のファイルで、差分でも未保存の変更があるタブでもないもの。
  * タブの右クリックでは、これらの文脈キーは右クリックしたタブの値になる。
  */
 export const PARADIS_EDITOR_DOWNLOAD_WHEN = ContextKeyExpr.and(
 	ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeRemote),
 	ActiveEditorDirtyContext.negate(),
+	ParadisTabIsDiffContext.negate(),
 );
 
 /** 右クリックしたタブの様子（落としてよいかの判断に使う分だけ）。 */
@@ -32,15 +34,6 @@ export interface IParadisEditorDownloadTab {
 	/** 差分・左右に並べたエディタのタブか。 */
 	readonly sideBySide: boolean;
 	readonly dirty: boolean;
-}
-
-/**
- * Para Code のビューアの差分のタブか（Markdown・Word・Excel などの差分は upstream の差分の入力ではなく、
- * 旧版 `originalResource` と新版 `modifiedResource` の 2 つを持つ独自の入力になっている）。
- */
-export function paradisIsParadisDiffInput(editor: object): boolean {
-	const candidate = editor as { originalResource?: unknown; modifiedResource?: unknown };
-	return URI.isUri(candidate.originalResource) && URI.isUri(candidate.modifiedResource);
 }
 
 /** FileDownload へ渡す 1 件。 */
@@ -52,7 +45,7 @@ export interface IParadisEditorDownloadSource {
 
 /**
  * 落とすファイル。接続先のファイルのタブで、差分でも未保存の変更があるタブでもないときだけ返す
- * （メニューの条件では差分のタブを見分けられないので、押されたときにもう一度確かめる）。
+ * （メニューの条件でも外しているが、コマンドとして直接呼ばれたときのために押されたときにも確かめる）。
  */
 export function paradisEditorDownloadSource(resource: URI | undefined, tab: IParadisEditorDownloadTab | undefined): IParadisEditorDownloadSource | undefined {
 	if (!resource || resource.scheme !== Schemas.vscodeRemote || !tab || tab.sideBySide || tab.dirty) {
