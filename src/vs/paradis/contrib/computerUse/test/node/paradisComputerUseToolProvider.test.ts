@@ -868,6 +868,55 @@ suite('ParadisComputerUseToolProvider', () => {
 		});
 	});
 
+	test('drops input still waiting in the queue, and the rest of a long text, once Computer Use is turned off', async () => {
+		const { helper, ledger, state, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.finder', 'operate');
+		let release: () => void = () => { };
+		const firstHeld = new Promise<void>(resolve => release = resolve);
+		helper.onInput = async method => {
+			if (method === 'click') {
+				await firstHeld;
+			}
+			if (method === 'typeText') {
+				// 最初の塊を送った直後にオフにする
+				state.enabled = false;
+			}
+			return { typed: 1, method: 'keys', verified: true };
+		};
+		const context = createContext('pane', []).context;
+		const first = provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		const queued = provider.callTool('pane-b', 'computer_press_key', { app: 'Finder', key: 'escape', includeState: false }, undefined, context);
+		await new Promise(resolve => setTimeout(resolve, 20));
+		state.enabled = false;
+		ledger.clear();
+		release();
+		await Promise.all([first, queued]);
+		const queuedResult = text(await queued);
+		state.enabled = true;
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const typing = text(await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'a'.repeat(450), includeState: false }, undefined, context));
+		assert.deepStrictEqual({ inputs: helper.inputs.map(input => input.method), queuedResult, typing }, {
+			inputs: ['click', 'typeText'],
+			queuedResult: 'Computer Use is turned off in Para Code settings. Ask the user to turn it on if they want you to use other apps.',
+			typing: 'Computer Use is turned off in Para Code settings. Ask the user to turn it on if they want you to use other apps. The first 400 of 450 characters were already typed; the rest was not sent.',
+		});
+	});
+
+	test('does not record the answer or send input when Computer Use is turned off while the user answers', async () => {
+		const { helper, ledger, state, provider } = setup();
+		const { context } = createContext('pane', ['operate'], () => {
+			state.enabled = false;
+			ledger.clear();
+		});
+		const result = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return', includeState: false }, undefined, context);
+		assert.deepStrictEqual({ result: text(result), inputs: helper.inputs.length, grants: ledger.listForPane('pane-a') }, {
+			result: 'Computer Use is turned off in Para Code settings. Ask the user to turn it on if they want you to use other apps.',
+			inputs: 0,
+			grants: [],
+		});
+	});
+
 	test('returns the window state after an action and says when the clipboard was not restored', async () => {
 		const { helper, ledger, provider } = setup();
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');
