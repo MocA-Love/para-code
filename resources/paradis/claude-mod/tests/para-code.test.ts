@@ -181,6 +181,23 @@ describe('para-code mod', () => {
 		expect(recorded.find(entry => entry.op === 'permission')?.body.denyMessage).toBe(true);
 	});
 
+	test('an ask only the terminal dialog can allow, and a read-only call, are told to Para Code with the approval', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		fakeParaCode(on, { permission: () => ({ id: 'p5', wait: false }) }, recorded);
+		// Claude Code 2.1.304: another plugin answers ask with decider person; the engine marks a read-only call
+		on('tool.check', () => ({ decision: 'ask', decider: 'person' }));
+		on('classic.PermissionRequest', () => ({}));
+		await startSession($);
+		await $.tool.check({ tool: 'Bash', input: { command: 'cat a' }, tool_use_id: 'toolu_r', isReadOnly: true });
+		await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'cat a' } });
+		await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'touch b' } });
+		const registered = recorded.filter(entry => entry.op === 'permission').map(entry => ({ toolUseId: entry.body.toolUseId, personOnly: entry.body.personOnly, readOnly: entry.body.readOnly }));
+		expect(registered).toEqual([
+			{ toolUseId: 'toolu_r', personOnly: true, readOnly: true },
+			{ toolUseId: undefined, personOnly: undefined, readOnly: undefined },
+		]);
+	});
+
 	test('when Para Code does not wait (no phone connected) the terminal prompt alone decides', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		fakeParaCode(on, { permission: () => ({ id: 'p3', wait: false }) }, recorded);

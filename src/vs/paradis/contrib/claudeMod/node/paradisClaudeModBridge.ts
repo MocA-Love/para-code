@@ -121,6 +121,13 @@ export interface IParadisClaudeModPendingPermission {
 	readonly suggestions: readonly unknown[];
 	/** 拒否に添えた文を Claude Code へ渡せる mod か（登録に `denyMessage: true` を付けてくる版）。古い mod は固定の文で拒否する。 */
 	readonly acceptsDenyMessage: boolean;
+	/**
+	 * 端末の確認の画面でしか許可できない（Claude Code 2.1.304 の mod の `tool.check` の `decider: 'person'`。mod 1.4.2 以降が
+	 * 登録に `personOnly: true` を添える）。mod から許可を返しても効かず、拒否だけが効く。
+	 */
+	readonly personOnly: boolean;
+	/** 読むだけの呼び出し（Claude Code 2.1.304 の `tool.check` の `isReadOnly`。mod 1.4.2 以降）。 */
+	readonly readOnly: boolean;
 }
 
 export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId: string; readonly at: number } & (
@@ -676,6 +683,7 @@ export class ParadisClaudeModBridge {
 			permission: {
 				...this.sanitizedPermissionInput(toolName, request.toolInput, request.suggestions),
 				id: itemId, toolName, acceptsDenyMessage: request.denyMessage === true,
+				personOnly: request.personOnly === true, readOnly: request.readOnly === true,
 				...(toolUseId !== undefined ? { toolUseId } : {}),
 				...(agentId !== undefined ? { agentId } : {}),
 			},
@@ -978,11 +986,13 @@ export class ParadisClaudeModBridge {
 	/**
 	 * 承認の回答を mod へ渡す。`denyMessage` は拒否のときに Claude Code へ返す文（モデルが読む）で、受け取れる mod
 	 * （{@link IParadisClaudeModPendingPermission.acceptsDenyMessage}）にだけ渡す。受け取れない mod には false を返す
-	 * （黙って固定の文で拒否させない）。もう待っていなければ false。
+	 * （黙って固定の文で拒否させない）。もう待っていなければ false。端末の確認の画面でしか許可できない承認
+	 * （{@link IParadisClaudeModPendingPermission.personOnly}）の許可も false（mod から返しても Claude Code が受け付けない）。
 	 */
 	answerPermission(token: string, itemId: string, decision: 'allow' | 'deny', always: boolean, denyMessage?: string): boolean {
 		const item = this.pending.get(itemId);
 		if (item === undefined || item.kind !== 'permission' || item.token !== token || item.outcome !== undefined
+			|| (decision === 'allow' && item.permission?.personOnly === true)
 			|| (denyMessage !== undefined && (decision !== 'deny' || item.permission?.acceptsDenyMessage !== true))) {
 			return false;
 		}

@@ -146,6 +146,19 @@ suite('ParadisClaudeModBridge', () => {
 		]);
 	});
 
+	test('an approval only the terminal dialog can allow takes a refusal but not an allow', async () => {
+		const personOnly = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_p', personOnly: true, readOnly: true })).body.id as string;
+		const traits = bridge.pendingPermissions(TOKEN, SESSION).map(permission => ({ personOnly: permission.personOnly, readOnly: permission.readOnly }));
+		const allowed = bridge.answerPermission(TOKEN, personOnly, 'allow', false);
+		const denied = bridge.answerPermission(TOKEN, personOnly, 'deny', false);
+		assert.deepStrictEqual({ traits, allowed, denied, reply: (await call('wait', { id: personOnly })).body }, {
+			traits: [{ personOnly: true, readOnly: true }],
+			allowed: false,
+			denied: true,
+			reply: { state: 'answer', decision: 'deny' },
+		});
+	});
+
 	test('a written tool result or the end of the main turn settles what was still waiting', async () => {
 		const permission = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_1' })).body.id as string;
 		const question = (await call('question', { questions: QUESTIONS })).body.id as string;

@@ -486,6 +486,23 @@ const MOD_ROW_HOLD_MS = 300;
  * セッションを越えて残るものを含むときは「今回だけ」と「ルールを残す」をはっきり分ける。モバイルは選択肢が
  * 「許可 / 拒否」だけでないとき画面の選択肢を求めないので、答えは値のまま mod へ届く。
  */
+/** 端末の確認の画面でしか許可できない承認に、モバイルから許可を送ったときの断り。 */
+const PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE = 'この操作は PC の Claude Code の確認画面でしか許可できません。PC で答えてください';
+
+/**
+ * モバイルの承認の回答が許可か（`yes`・`always`、画面の番号の選択肢で文言が Yes で始まるもの）。文言の無い番号の選択肢は
+ * 確かめられないので許可とみなす。
+ */
+function paradisApprovalChoiceAllows(choice: string, optionLabel: string | undefined): boolean {
+	if (choice === 'yes' || choice === 'always') {
+		return true;
+	}
+	if (paradisParseApprovalOptionChoice(choice) === undefined) {
+		return false;
+	}
+	return optionLabel === undefined || /^yes\b/i.test(optionLabel.trim());
+}
+
 export function paradisModApprovalChoices(suggestions: readonly unknown[]): readonly IParadisAgentApprovalChoice[] {
 	const entries = suggestions.map(rec).filter((entry): entry is Record<string, unknown> => entry !== undefined);
 	const modes = paradisApprovalSuggestionLabels(entries.filter(entry => entry.type === 'setMode')) ?? [];
@@ -2821,8 +2838,10 @@ class TranscriptTailer {
 	/**
 	 * 承認のカードの選択肢を、mod が答えられるか（`resolve` が選択肢を返すか）で直す。答えられないものは「許可 / 拒否」。
 	 * `answerVia: 'mod'` は、mod が拒否に指示を添えられるときだけ付ける（それ以外は外す）。
+	 * `answerOn: 'pc'`（端末の確認の画面でしか許可できない）と `readOnly` は一度付いたら外さない（mod が待つのをやめても、
+	 * 端末の確認の画面の性質は変わらない）。`answerOn: 'pc'` の承認の選択肢は拒否だけにする。
 	 */
-	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => { readonly choices: readonly IParadisAgentApprovalChoice[]; readonly denyMessage: boolean } | undefined): void {
+	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => { readonly choices: readonly IParadisAgentApprovalChoice[]; readonly denyMessage: boolean; readonly personOnly?: boolean; readonly readOnly?: boolean } | undefined): void {
 		this.enqueue(async () => {
 			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
@@ -2831,11 +2850,20 @@ class TranscriptTailer {
 					continue;
 				}
 				const resolved = resolve(entry.interaction);
-				const choices = resolved?.choices ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				const answerOnPc = entry.interaction.answerOn === 'pc' || resolved?.personOnly === true;
+				const readOnly = entry.interaction.readOnly === true || resolved?.readOnly === true;
+				const offered = resolved?.choices ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				const choices = answerOnPc ? offered.filter(choice => choice.tone === 'deny') : offered;
 				const viaMod = resolved?.denyMessage === true;
-				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices) || (entry.interaction.answerVia === 'mod') !== viaMod) {
-					const { answerVia: _previous, ...rest } = entry.interaction;
-					this.approvalQueue[index] = { ...entry, interaction: { ...rest, choices, ...(viaMod ? { answerVia: 'mod' as const } : {}) } };
+				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices) || (entry.interaction.answerVia === 'mod') !== viaMod
+					|| (entry.interaction.answerOn === 'pc') !== answerOnPc || (entry.interaction.readOnly === true) !== readOnly) {
+					const { answerVia: _previous, answerOn: _answerOn, readOnly: _readOnly, ...rest } = entry.interaction;
+					this.approvalQueue[index] = {
+						...entry, interaction: {
+							...rest, choices, ...(viaMod ? { answerVia: 'mod' as const } : {}),
+							...(answerOnPc ? { answerOn: 'pc' as const } : {}), ...(readOnly ? { readOnly: true as const } : {}),
+						},
+					};
 					changed = true;
 				}
 			}
@@ -5773,6 +5801,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
 			return;
 		}
+		// 端末の確認の画面でしか許可できない承認（`answerOn: 'pc'`）は、モバイルからの許可を断る（古いアプリの古いカード・画面の選択肢から）
+		if (token !== undefined && session?.agent === 'claude' && this.tailers.get(token)?.approvalInteractions().find(card => card.id === msg.interactionId)?.answerOn === 'pc'
+			&& paradisApprovalChoiceAllows(msg.choice, msg.optionLabel)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE }, token);
+			return;
+		}
 		// mod（Claude Mods）が承認を待っていれば、キーを打たずに値で答える（「以後は確認しない」もここだけ）。
 		if (token !== undefined && session?.agent === 'claude') {
 			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch }, msg.message);
@@ -6921,7 +6955,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const cards = tailer.approvalInteractions();
 			tailer.updateModApprovals(interaction => {
 				const permission = this.matchModPermission(interaction, pending, cards);
-				return permission !== undefined ? { choices: paradisModApprovalChoices(permission.suggestions), denyMessage: permission.acceptsDenyMessage } : undefined;
+				return permission !== undefined ? { choices: paradisModApprovalChoices(permission.suggestions), denyMessage: permission.acceptsDenyMessage, personOnly: permission.personOnly, readOnly: permission.readOnly } : undefined;
 			});
 			const unmatched = pending.filter(permission => !cards.some(card => this.matchModPermission(card, [permission], cards) !== undefined));
 			if (unmatched.length === 0 || this.modApprovalTimers.has(token)) {
