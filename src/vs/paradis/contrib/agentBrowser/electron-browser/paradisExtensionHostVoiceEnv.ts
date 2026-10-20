@@ -18,6 +18,7 @@
 // インスタンススコープのトークンを shared process から受け取って渡す。
 
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { paradisApplyVoiceEnv } from '../common/paradisExtensionHostVoiceEnvCore.js';
 
@@ -29,6 +30,7 @@ export function paradisApplyExtensionHostVoiceEnv(
 	env: Record<string, unknown>,
 	userDataPath: string,
 	sharedProcessService: ISharedProcessService,
+	logService: ILogService,
 ): Promise<void> {
-	return paradisApplyVoiceEnv(env, userDataPath, () => sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string>('getVoiceIngressToken'));
+	return paradisApplyVoiceEnv(env, userDataPath, () => sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string>('getVoiceIngressToken'), logService);
 }
