@@ -47,7 +47,7 @@ import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MED
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension } from './paradisMarkdownMermaid.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
-import { ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
+import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -115,6 +115,9 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
 		this._zoom.createButtons(toolbar);
+		// .md の変更は自動で描き直すが、参照している画像だけを差し替えたときや変更の通知が届かないときのために、
+		// HTML と同じ位置に置く。同じ内容でも送り直し、画像も読み直す
+		this._register(createParadisViewerReloadButton(toolbar, () => this.requestRerender()));
 	}
 
 	// Mermaid ブロック（```mermaid```）を webview 内で mermaid.js に描画させ、スクロール位置の復元と

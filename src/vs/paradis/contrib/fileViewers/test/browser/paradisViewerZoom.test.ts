@@ -9,7 +9,7 @@
 import { deepStrictEqual } from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisViewerZoomControls, paradisViewerZoomScript } from '../../browser/paradisViewerZoom.js';
+import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomScript } from '../../browser/paradisViewerZoom.js';
 
 suite('ParadisViewerZoom', () => {
 
@@ -51,5 +51,18 @@ suite('ParadisViewerZoom', () => {
 			paradisViewerZoomScript('abc').startsWith('<script nonce="abc">'),
 			paradisViewerZoomScript().startsWith('<script>'),
 		], [true, true]);
+	});
+
+	test('the reload button asks the viewer to reload on every click, and stops after it is disposed', () => {
+		const toolbar = mainWindow.document.createElement('div');
+		let reloads = 0;
+		const listener = createParadisViewerReloadButton(toolbar, () => reloads++);
+		const button = toolbar.querySelector('button')!;
+		button.click();
+		button.click();
+		const whileShown = reloads;
+		listener.dispose();
+		button.click();
+		deepStrictEqual({ whileShown, afterDispose: reloads, title: button.title, icon: button.querySelector('.codicon-refresh') !== null }, { whileShown: 2, afterDispose: 2, title: '再読み込み', icon: true });
 	});
 });
