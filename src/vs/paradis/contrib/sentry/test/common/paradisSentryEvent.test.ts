@@ -166,8 +166,18 @@ suite('ParadisSentryEvent', () => {
 				'para.prepared': '1',
 			},
 			extra: undefined,
-			fingerprint: ['unknown|unknown|unknown|EXC_BAD_ACCESS|unknown|unknown'],
+			fingerprint: undefined,
 		});
+	});
+
+	test('leaves native crashes to Sentry\'s own grouping and never rate-limits them', () => {
+		// Before symbolication a minidump has no frames, so every crash produced the same key: one issue
+		// for unrelated crashes, and the fourth within ten minutes was dropped.
+		const minidumpEvent = (): IParadisSentryEvent => ({ platform: 'native', tags: { 'event.environment': 'native' } });
+		const prepared = [1, 2, 3, 4, 5].map(() => paradisPrepareSentryEvent(minidumpEvent(), 'main'));
+
+		assert.deepStrictEqual(prepared.map(event => ({ sent: event !== null, fingerprint: event?.fingerprint, suppressed: event?.extra?.suppressed_count })),
+			[1, 2, 3, 4, 5].map(() => ({ sent: true, fingerprint: undefined, suppressed: undefined })));
 	});
 
 	test('drops a foreign native crash before preparing it for Sentry', () => {
