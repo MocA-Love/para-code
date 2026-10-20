@@ -3256,8 +3256,9 @@ export class MobileController {
 	 * PC側のフォーカス中自動既読と同じ経路を通り、関連通知のdismissも走る。
 	 * 表示更新はPC側の権威的なstate再送で確定する。
 	 */
-	ackAgentStatus(terminalKey: string): void {
-		void this.sendTerm(terminalKey, { t: 'ackStatus' });
+	/** 確認済みを PC へ送る。送る列に載せられなかった（未確認の操作が多い・ターミナルが無い）ら false。 */
+	ackAgentStatus(terminalKey: string): Promise<boolean> {
+		return this.sendTerm(terminalKey, { t: 'ackStatus' });
 	}
 
 	/**
