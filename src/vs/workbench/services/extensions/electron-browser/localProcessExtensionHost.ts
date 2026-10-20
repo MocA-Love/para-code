@@ -240,7 +240,7 @@ export class NativeLocalProcessExtensionHost extends Disposable implements IExte
 		// PARA-PATCH: agents started by extensions (e.g. Codex from the ChatGPT extension) inherit this
 		// environment, and need it to hand generated speech back to Para Code. Logic lives in
 		// paradisExtensionHostVoiceEnv.ts
-		await paradisApplyExtensionHostVoiceEnv(env, this._environmentService.userDataPath, this._paradisSharedProcessService);
+		await paradisApplyExtensionHostVoiceEnv(env, this._environmentService.userDataPath, this._paradisSharedProcessService, this._logService);
 
 		if (this._environmentService.debugExtensionHost.env) {
 			objects.mixin(env, this._environmentService.debugExtensionHost.env);
