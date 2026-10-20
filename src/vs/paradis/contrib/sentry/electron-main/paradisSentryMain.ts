@@ -55,7 +55,7 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 	}
 
 	// クラッシュレポートを切っている（argv.json の enable-crash-reporter: false。telemetryLevel=off は
-	// upstream がここへ書き戻す。--disable-crash-reporter、--crash-reporter-directory）なら送らない。
+	// upstream がここへ書き戻す。--disable-crash-reporter）なら送らない。
 	// 判定は後から起動する shared process と window にも渡し、どのプロセスも Sentry を起こさない。
 	const optedOut = isParadisSentryOptedOut(crashReporting);
 	setParadisSentryDisabledEnv(process.env, optedOut);

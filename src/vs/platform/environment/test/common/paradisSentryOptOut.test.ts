@@ -19,10 +19,8 @@ suite('paradisSentryOptOut', () => {
 			{ enableCrashReporter: false },
 			{ enableCrashReporter: true, disableCrashReporter: true },
 			{ disableCrashReporter: false },
-			{ enableCrashReporter: true, crashReporterDirectory: '/crashes' },
-			{ enableCrashReporter: true, crashReporterDirectory: '' },
 		];
-		assert.deepStrictEqual(cases.map(isParadisSentryOptedOut), [false, false, true, true, false, true, false]);
+		assert.deepStrictEqual(cases.map(isParadisSentryOptedOut), [false, false, true, true, false]);
 	});
 
 	test('passes the decision through the environment and overwrites an inherited value', () => {
