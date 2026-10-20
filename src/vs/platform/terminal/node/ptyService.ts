@@ -847,12 +847,14 @@ export class PtyService extends Disposable implements IPtyService {
 	 * PARA-CODE: Whether a layout names every terminal a daemon is holding for its workspace.
 	 *
 	 * Holding none — the ordinary case, with the daemon off — makes this trivially true, so nothing
-	 * changes for anyone not using it.
+	 * changes for anyone not using it. Terminals that are not persisted (extension terminals, the
+	 * MCP terminal, tasks without reconnection) never appear in a saved layout, so they are not
+	 * counted either; one of them open would otherwise make every layout look partial.
 	 */
 	private _paradisLayoutAccountsForHeldTerminals(args: ISetTerminalLayoutInfoArgs): boolean {
 		const held = new Set<number>();
 		for (const [id, pty] of this._ptys) {
-			if (pty.workspaceId === args.workspaceId && paradisHandleOf(id) !== undefined) {
+			if (pty.workspaceId === args.workspaceId && pty.shouldPersistTerminal && paradisHandleOf(id) !== undefined) {
 				held.add(id);
 			}
 		}
