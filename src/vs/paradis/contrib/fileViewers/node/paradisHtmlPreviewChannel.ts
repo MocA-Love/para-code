@@ -31,7 +31,7 @@ export class ParadisHtmlPreviewChannel<TContext = string> implements IServerChan
 	async call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'mount': return await this.getService().mount(String(args[0])) as T;
+			case 'mount': return await this.getService().mount(String(args[0]), args[1] && typeof args[1] === 'object' && (args[1] as { pinned?: unknown }).pinned === true ? { pinned: true } : undefined) as T;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

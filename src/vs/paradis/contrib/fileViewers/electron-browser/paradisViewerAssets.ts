@@ -27,7 +27,7 @@ import { basename } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { IParadisPreviewMount, IParadisPreviewMountOptions, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 
 /**
@@ -40,10 +40,10 @@ import { paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 const PARADIS_PREVIEW_MOUNT_TIMEOUT_MS = 3_000;
 
 /** 期限つきで載せる。載せられなければ `undefined`（呼び出し側は従来経路へ倒す）。 */
-async function mountWithDeadline(sharedProcessService: ISharedProcessService, directory: URI): Promise<string | undefined> {
+async function mountWithDeadline(sharedProcessService: ISharedProcessService, directory: URI, options?: IParadisPreviewMountOptions): Promise<{ readonly url: string; readonly mount: IParadisPreviewMount } | undefined> {
 	try {
-		const located = await raceTimeout(paradisMountLocalPreview(sharedProcessService, directory), PARADIS_PREVIEW_MOUNT_TIMEOUT_MS);
-		return located ? paradisPreviewUrl(located.mount, located.port) : undefined;
+		const located = await raceTimeout(paradisMountLocalPreview(sharedProcessService, directory, options), PARADIS_PREVIEW_MOUNT_TIMEOUT_MS);
+		return located ? { url: paradisPreviewUrl(located.mount, located.port), mount: located.mount } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -58,8 +58,9 @@ export async function resolveParadisViewerLibBase(
 	sharedProcessService: ISharedProcessService,
 	libRoot: URI,
 ): Promise<string | undefined> {
-	const url = await mountWithDeadline(sharedProcessService, libRoot);
-	return url?.replace(/\/$/, '');
+	// ペインはこの URL を一度だけ決めて覚え続けるので、サーバの古いものから外す対象にしない
+	const mounted = await mountWithDeadline(sharedProcessService, libRoot, { pinned: true });
+	return mounted?.url.replace(/\/$/, '');
 }
 
 /**
@@ -79,7 +80,9 @@ export async function resolveParadisViewerDocumentUrl(
 	// だけでホーム全体が配信対象になる。サーバはファイルを渡されたらその1つしか返さない。
 	const mounted = await mountWithDeadline(sharedProcessService, documentResource);
 	// URL 組み立ては「フォルダー」を想定して末尾に `/` を足すので、ファイル名を足して整える。
-	return mounted ? `${mounted}${encodeURIComponent(basename(documentResource))}` : undefined;
+	// **名前はサーバが返したものを使う。** シンボリックリンクを渡すとサーバはリンク先の実体を載せ、
+	// その名前でしか返さない（リンク自身の名前で頼むと見つからず、ビューアに何も出ない）。
+	return mounted ? `${mounted.url}${encodeURIComponent(mounted.mount.file ?? basename(documentResource))}` : undefined;
 }
 
 /**
