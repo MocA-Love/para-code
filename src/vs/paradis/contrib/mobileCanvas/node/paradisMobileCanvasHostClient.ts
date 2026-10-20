@@ -62,6 +62,8 @@ interface IRuntimeManifest {
 	};
 	/** ランタイムの取得元。非同梱版で `asset` を解決するのに使う。 */
 	readonly distribution?: { readonly repository: string; readonly tag: string };
+	/** 同梱している Mobile Canvas の版。動いているホストのうち、これと同じ版のものを優先する。 */
+	readonly version?: string;
 }
 
 /** ホストが応答しない・起動できないなど、Mobile Canvas 側の都合で失敗したことを表す。 */
@@ -89,6 +91,10 @@ export class ParadisMobileCanvasHostClient {
 	private _starting: Promise<IHostMetadata> | undefined;
 	/** 実行ファイルの解決結果のキャッシュ（gunzip と sha256 検証を毎回やらないため）。 */
 	private _executable: Promise<string> | undefined;
+	/** 同梱の版のキャッシュ。 */
+	private _version: Promise<string | undefined> | undefined;
+	/** 同梱と同じ版のホストが記録を書いたディレクトリ（＝同梱のプロトコル版）。一度つながるまでは分からない。 */
+	private _bundledDir: string | undefined;
 
 	constructor(
 		private readonly _builtinExtensionsPath: string,
@@ -180,8 +186,8 @@ export class ParadisMobileCanvasHostClient {
 
 	private async _start(signal?: AbortSignal): Promise<IHostMetadata> {
 		// 既に誰か（Mobile Canvas の VS Code 拡張など）が起動しているホストがあればそれに乗る。
-		const existing = await this._readMetadata();
-		if (existing && await this._isHealthy(existing)) {
+		const existing = await this._findRunningHost();
+		if (existing) {
 			this._metadata = existing;
 			return existing;
 		}
@@ -204,39 +210,70 @@ export class ParadisMobileCanvasHostClient {
 				throw new CancellationError();
 			}
 			await delay(100);
-			const candidate = await this._readMetadata();
-			if (candidate && await this._isHealthy(candidate)) {
+			const candidate = await this._findRunningHost();
+			if (candidate) {
 				this._metadata = candidate;
 				return candidate;
 			}
 		}
+		// 同梱のホストが上がらなかった。同じプロトコル版の 2 つめの起動をホストが断ったのなら、そのプロトコル版で
+		// 別の版のホストが動いている。動いているのが 1 つだけならそれがその相手なので、それを使う。
+		const fallback = await paradisPickMobileCanvasHostAfterFailedStart(await this._readMetadata(), record => this._isHealthy(record.metadata));
+		if (fallback) {
+			this._logService.warn(`[paradis-mobile-canvas] the bundled host did not start; using the running host of version ${fallback.version || 'unknown'} in ${fallback.dir}`);
+			this._metadata = fallback.metadata;
+			return fallback.metadata;
+		}
 		throw new ParadisMobileCanvasUnavailableError('The Mobile Canvas host did not become ready within 20 seconds.');
 	}
 
+	/** 動いているホストを、記録を 1 件ずつ確かめて選ぶ（{@link paradisPickMobileCanvasHost}）。 */
+	private async _findRunningHost(): Promise<IHostMetadata | undefined> {
+		const version = await this._bundledVersion();
+		const found = await paradisPickMobileCanvasHost(await this._readMetadata(), version, record => this._isHealthy(record.metadata), this._bundledDir);
+		if (found && version !== undefined && found.version === version) {
+			this._bundledDir = found.dir;
+		}
+		return found?.metadata;
+	}
+
 	/**
-	 * `~/.mobile-canvas/hosts/v*​/host.json` を読む。プロトコル版ごとにディレクトリが分かれるため、
-	 * 版を決め打ちせず「読めたもの」を採用する（同梱版が上がってディレクトリ名が変わっても追従できる）。
+	 * `~/.mobile-canvas/hosts/v*​/host.json` を、プロトコル版の新しい順にすべて読む。プロトコル版ごとに
+	 * ディレクトリが分かれるため版を決め打ちしない（同梱版が上がってディレクトリ名が変わっても追従できる）。
+	 * 古い版の記録は、そのホストが止まっても残るので、どれが動いているかはここでは決めない。
 	 */
-	private async _readMetadata(): Promise<IHostMetadata | undefined> {
+	private async _readMetadata(): Promise<IParadisMobileCanvasHostRecord<IHostMetadata>[]> {
 		const hostsRoot = join(homedir(), '.mobile-canvas', 'hosts');
 		let entries: string[];
 		try {
 			entries = await readdir(hostsRoot);
 		} catch {
-			return undefined;
+			return [];
 		}
-		for (const entry of entries.sort().reverse()) {
+		const found: IParadisMobileCanvasHostRecord<IHostMetadata>[] = [];
+		for (const entry of paradisOrderMobileCanvasHostDirs(entries)) {
 			try {
 				const raw = await readFile(join(hostsRoot, entry, 'host.json'), 'utf8');
 				const metadata = normalizeMetadata(JSON.parse(raw));
 				if (metadata) {
-					return metadata;
+					found.push({ dir: entry, version: metadata.version, metadata });
 				}
 			} catch {
 				// 版ディレクトリが残っているだけで host.json が無いこともある。次を見る。
 			}
 		}
-		return undefined;
+		return found;
+	}
+
+	/** 同梱している Mobile Canvas の版。読めなければ undefined（版を問わず動いているものを選ぶ）。 */
+	private _bundledVersion(): Promise<string | undefined> {
+		this._version ??= readFile(join(this._builtinExtensionsPath, 'mobile-canvas-vscode', 'dist', 'runtimes', 'manifest.json'), 'utf8')
+			.then(raw => {
+				const version = (JSON.parse(raw) as IRuntimeManifest).version;
+				return typeof version === 'string' && version.length > 0 ? version : undefined;
+			})
+			.catch(() => undefined);
+		return this._version;
 	}
 
 	private async _isHealthy(metadata: IHostMetadata): Promise<boolean> {
@@ -345,6 +382,81 @@ export class ParadisMobileCanvasHostClient {
 		}
 		return Buffer.from(bytes);
 	}
+}
+
+/**
+ * `hosts` の下のディレクトリ名（`v<プロトコル版>`）を新しい順に並べる。版は数で比べる（文字で比べると
+ * `v9` が `v10` より新しくなる）。形の違う名前は後ろへ回し、名前の順に並べる。
+ */
+export function paradisOrderMobileCanvasHostDirs(entries: readonly string[]): string[] {
+	const protocolOf = (entry: string): number | undefined => {
+		const match = /^v(?<protocol>\d+)$/.exec(entry);
+		return match?.groups ? Number(match.groups.protocol) : undefined;
+	};
+	return [...entries].sort((a, b) => {
+		const pa = protocolOf(a);
+		const pb = protocolOf(b);
+		if (pa !== undefined && pb !== undefined) {
+			return pb - pa;
+		}
+		if (pa !== undefined || pb !== undefined) {
+			return pa !== undefined ? -1 : 1;
+		}
+		return a < b ? -1 : a > b ? 1 : 0;
+	});
+}
+
+/** `hosts/<dir>/host.json` の 1 件。 */
+export interface IParadisMobileCanvasHostRecord<M> {
+	/** プロトコル版のディレクトリ名（`v<N>`）。 */
+	readonly dir: string;
+	/** その記録を書いたホストの版。 */
+	readonly version: string;
+	readonly metadata: M;
+}
+
+/**
+ * 記録（新しい順）を 1 件ずつ確かめ、動いているホストを選ぶ。同梱と同じ版のものを優先する。
+ *
+ * 同じ版のものが動いていなければ、同梱と同じプロトコル版（同じディレクトリ）で動いている別の版を
+ * 代わりに使う。同梱のプロトコル版は同梱からは読めないので、同梱と同じ版のホストにつながったことのある
+ * ディレクトリ（`knownBundledDir`）をそれとみなす。分からないときと、別のプロトコル版しか動いていない
+ * ときは undefined を返し、同梱のホストを起動させる（status しか確かめないので、API の違いは見分けられない）。
+ * 同梱の版が分からなければ、動いているもののうち最初のもの。
+ */
+export async function paradisPickMobileCanvasHost<R extends IParadisMobileCanvasHostRecord<unknown>>(records: readonly R[], expectedVersion: string | undefined, isHealthy: (record: R) => Promise<boolean>, knownBundledDir?: string): Promise<R | undefined> {
+	const bundledDirs = new Set(records.filter(record => record.version === expectedVersion).map(record => record.dir));
+	if (knownBundledDir !== undefined) {
+		bundledDirs.add(knownBundledDir);
+	}
+	let fallback: R | undefined;
+	for (const record of records) {
+		const usable = expectedVersion === undefined || record.version === expectedVersion || (fallback === undefined && bundledDirs.has(record.dir));
+		if (!usable || !await isHealthy(record)) {
+			continue;
+		}
+		if (expectedVersion === undefined || record.version === expectedVersion) {
+			return record;
+		}
+		fallback = record;
+	}
+	return fallback;
+}
+
+/**
+ * 同梱のホストを起動して待っても上がらなかったときの逃げ道。ホストはプロトコル版ごとに 1 つしか動かない
+ * ので、同梱と同じプロトコル版で別の版のホストが動いていると、同梱のホストは上がらない。同梱のプロトコル版は
+ * 分からないが、動いているホストが 1 つだけなら、それが同梱のプロトコル版の場所にいるとみなして返す。
+ * 2 つ以上動いているときはどれか決められないので undefined。
+ */
+export async function paradisPickMobileCanvasHostAfterFailedStart<R extends IParadisMobileCanvasHostRecord<unknown>>(records: readonly R[], isHealthy: (record: R) => Promise<boolean>): Promise<R | undefined> {
+	const running: R[] = [];
+	for (const record of records) {
+		if (await isHealthy(record)) {
+			running.push(record);
+		}
+	}
+	return running.length === 1 ? running[0] : undefined;
 }
 
 function normalizeMetadata(raw: unknown): IHostMetadata | undefined {

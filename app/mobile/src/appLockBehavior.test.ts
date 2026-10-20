@@ -28,7 +28,8 @@ const harness = vi.hoisted(() => {
 	const auth = {
 		hasHardwareAsync: async () => true,
 		isEnrolledAsync: async () => true,
-		authenticateAsync: async () => ({ success: true }),
+		getEnrolledLevelAsync: async (): Promise<number> => 3,
+		authenticateAsync: async (): Promise<{ success: boolean }> => ({ success: true }),
 	};
 	return { animation, AnimatedValue, appStateListeners, keyboardListeners, auth, dismiss: { count: 0 } };
 });
@@ -156,6 +157,31 @@ describe('app lock behavior', () => {
 		act(() => renderer!.update(createElement(Probe, { open: false, locked: true })));
 		calls.push(close.mock.calls.length);
 		expect(calls).toEqual([0, 1, 1, 1]);
+	});
+
+	it('AuthGate asks for the passcode on a device with no Face ID enrolled, and lets through only a device with no lock at all', async () => {
+		const asked: string[] = [];
+		const authenticate = harness.auth.authenticateAsync;
+		harness.auth.authenticateAsync = async () => {
+			asked.push('asked');
+			return { success: false };
+		};
+		const lockedWith = async (level: number) => {
+			harness.auth.getEnrolledLevelAsync = async () => level;
+			let gate: ReactTestRenderer | undefined;
+			await act(async () => {
+				gate = create(createElement(AuthGate, null, createElement('Text', null, 'content')));
+			});
+			const locked = isAppLockedNow();
+			act(() => gate!.unmount());
+			return locked;
+		};
+		const passcodeOnly = await lockedWith(1);
+		const askedForPasscode = asked.length;
+		const noLock = await lockedWith(0);
+		harness.auth.authenticateAsync = authenticate;
+		harness.auth.getEnrolledLevelAsync = async () => 3;
+		expect({ passcodeOnly, askedForPasscode, noLock, askedTotal: asked.length }).toEqual({ passcodeOnly: true, askedForPasscode: 1, noLock: false, askedTotal: 1 });
 	});
 
 	it('AuthGate keeps the children mounted across a re-lock and hides them only after the first unlock', async () => {

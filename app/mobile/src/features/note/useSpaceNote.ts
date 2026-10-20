@@ -103,6 +103,11 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 		saveQueueRef.current = run.catch(() => undefined);
 		return run;
 	}, []);
+	/**
+	 * 読み込んだときに見ていた PC。保存はこの PC にだけ送る（通知などで別の PC へ移った後に、識別子が同じ別の PC の
+	 * メモへ書きかけを書き込まない）。
+	 */
+	const notePcRef = useRef<string | undefined>(undefined);
 	const pcHasCas = usePcCapability(NOTE_CAS_CAPABILITY);
 	const pcHasCasRef = useRef(pcHasCas);
 	pcHasCasRef.current = pcHasCas;
@@ -112,6 +117,8 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			return undefined;
 		}
 		const generation = ++generationRef.current;
+		const notePc = useAppStore.getState().activePcId;
+		notePcRef.current = notePc;
 		setLoading(true);
 		setError(undefined);
 		// 前のスペース（または読み直す前）の保存の応答はもう画面へ反映しない（`current()` が偽になる）ので、
@@ -158,8 +165,12 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 					// 版を比べられる PC なのに版がまだ無い（読み直しの途中）なら送らない（無条件の上書きで PC の変更を消さない）
 					const result = spaceNoteMissingBase(change, version, pcHasCasRef.current)
 						? { conflict: true }
-						: await useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, version, pcHasCasRef.current)).catch(() => undefined);
-					if (result?.conflict === true) {
+						: await useAppStore.getState().noteSet(wsId, trimmed, spaceNoteSetOptions(change, version, pcHasCasRef.current), notePc).catch(() => undefined);
+					if (result === undefined) {
+						// 書けなかった（接続が切れた・別の PC へ移った）。画面はもう無いので、書きかけをクリップボードへ逃がして知らせる
+						const copied = await writeClipboardText(trimmed);
+						useParaToast.getState().show({ key: 'space-note-failed', text: 'メモを保存できませんでした', sub: copied ? '書きかけはクリップボードにコピーしました。' : '書きかけをコピーできませんでした。', icon: 'alert-circle', tone: 'warn' }, 6_000);
+					} else if (result.conflict === true) {
 						const copied = await writeClipboardText(trimmed);
 						useParaToast.getState().show({ key: 'space-note-conflict', text: 'メモを保存しませんでした', sub: spaceNoteConflictMessage(spaceNoteConflictKind(change, copied)), icon: 'alert-circle', tone: 'warn' }, 6_000);
 					}
@@ -190,7 +201,7 @@ export function useSpaceNote(wsId: string | undefined): SpaceNoteController {
 			const missingBase = spaceNoteMissingBase(change, version, pcHasCas);
 			const send: Promise<SpaceNoteResult> = missingBase
 				? Promise.resolve({ ws: wsId, text: previous, conflict: true })
-				: useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, version, pcHasCas));
+				: useAppStore.getState().noteSet(wsId, next, spaceNoteSetOptions(change, version, pcHasCas), notePcRef.current);
 			return send.then(async (result: SpaceNoteResult) => {
 				if (missingBase) {
 					setReloadCount(count => count + 1);

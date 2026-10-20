@@ -123,9 +123,9 @@ suite('Para Code adopted pty reattach', () => {
 		return pty;
 	}
 
-	async function adopt(pty: PtyService, nonce: string, target?: { handle?: number; pid?: number; title?: string; exited?: { code: number | undefined } }): Promise<number> {
+	async function adopt(pty: PtyService, nonce: string, target?: { handle?: number; pid?: number; title?: string; exited?: { code: number | undefined }; shouldPersist?: boolean }): Promise<number> {
 		const id = await pty.createProcess(
-			SHELL, '/', 80, 24, '11', {}, {}, options(nonce), true, 'ws', 'para',
+			SHELL, '/', 80, 24, '11', {}, {}, options(nonce), target?.shouldPersist ?? true, 'ws', 'para',
 			undefined, undefined,
 			{ handle: target?.handle ?? HANDLE, pid: target?.pid ?? PID, title: target?.title ?? TITLE, exited: target?.exited },
 		);
@@ -265,6 +265,23 @@ suite('Para Code adopted pty reattach', () => {
 			// The daemon keeps the panel layout in its own handles; the editor terminal is not in it.
 			{ namingAnotherTerminal: [], told: [[[3]]] },
 		);
+	});
+
+	test('a terminal that is not persisted does not make the layout look partial', async () => {
+		// Extension terminals, the MCP terminal and tasks without reconnection are never saved in a
+		// layout. One of them open must not make the pty host throw away every layout the window sends.
+		const daemon = useDaemon();
+		const pty = service();
+		const panel = await adopt(pty, 'nonce-of-the-panel', { handle: 3 });
+		await adopt(pty, 'nonce-of-the-extension-terminal', { handle: 4, shouldPersist: false });
+		const layout = { workspaceId: 'ws', tabs: [{ isActive: true, activePersistentProcessId: panel, terminals: [{ relativeSize: 1, terminal: panel }] }], background: [] };
+
+		await pty.setTerminalLayoutInfo(layout);
+
+		assert.deepStrictEqual({
+			kept: (pty as unknown as { _workspaceLayoutInfos: Map<string, unknown> })._workspaceLayoutInfos.get('ws'),
+			told: daemon.layouts.length,
+		}, { kept: layout, told: 1 });
 	});
 
 	test('taking terminals back records the layout here without handing it to the daemon', async () => {

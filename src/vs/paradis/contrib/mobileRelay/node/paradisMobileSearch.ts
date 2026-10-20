@@ -37,23 +37,30 @@ function normalizeRgPath(path: string): string {
 	return slashed.startsWith('./') ? slashed.slice(2) : slashed;
 }
 
-function spawnRg(rgPath: string, args: string[], cwd: string, onLine: (line: string) => boolean | void, logService: ILogService): Promise<void> {
-	return new Promise<void>(resolve => {
-		const child = spawn(rgPath, args, { cwd });
+/**
+ * rg を起動して stdout を1行ずつ渡す。
+ * @returns 時間切れで打ち切ったら true（そこまでの結果は全件ではない）。
+ * エラー出力（読めないフォルダの警告など）は捨てる。読まずにパイプへ溜めると、満杯になったところで
+ * rg が書き込みで止まり、時間切れまで返ってこない。
+ */
+export function paradisSpawnRg(rgPath: string, args: string[], cwd: string, onLine: (line: string) => boolean | void, logService: ILogService, timeoutMs = SEARCH_TIMEOUT_MS): Promise<boolean> {
+	return new Promise<boolean>(resolve => {
+		const child = spawn(rgPath, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
 		let settled = false;
-		const finish = () => {
+		const finish = (timedOut: boolean) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve();
+				resolve(timedOut);
 			}
 		};
 		const timer = setTimeout(() => {
 			try {
 				child.kill();
 			} catch { /* ignore */ }
-			finish();
-		}, SEARCH_TIMEOUT_MS);
+			logService.warn(`[paradisMobileSearch] ripgrep did not finish in ${timeoutMs}ms; returning the partial results as truncated`);
+			finish(true);
+		}, timeoutMs);
 
 		let remainder = '';
 		child.stdout.setEncoding('utf8');
@@ -67,20 +74,20 @@ function spawnRg(rgPath: string, args: string[], cwd: string, onLine: (line: str
 					try {
 						child.kill();
 					} catch { /* ignore */ }
-					finish();
+					finish(false);
 					return;
 				}
 			}
 		});
 		child.on('error', err => {
 			logService.warn('[paradisMobileSearch] ripgrep spawn failed', err);
-			finish();
+			finish(false);
 		});
 		child.on('close', () => {
 			if (remainder.length > 0) {
 				onLine(remainder);
 			}
-			finish();
+			finish(false);
 		});
 	});
 }
@@ -100,7 +107,7 @@ export async function paradisSearchFiles(rootPath: string, query: string, maxRes
 	let scanned = 0;
 	let scanTruncated = false;
 
-	await spawnRg(rgPath, [...COMMON_ARGS, '--files'], rootPath, line => {
+	const timedOut = await paradisSpawnRg(rgPath, [...COMMON_ARGS, '--files'], rootPath, line => {
 		const path = normalizeRgPath(line.trim());
 		if (path.length === 0) {
 			return;
@@ -128,7 +135,7 @@ export async function paradisSearchFiles(rootPath: string, query: string, maxRes
 
 	ranked.sort((a, b) => a.rank - b.rank || a.path.length - b.path.length || (a.path < b.path ? -1 : 1));
 	const files = ranked.slice(0, maxResults).map(r => r.path);
-	return { files, truncated: scanTruncated || ranked.length > files.length };
+	return { files, truncated: timedOut || scanTruncated || ranked.length > files.length };
 }
 
 /**
@@ -155,7 +162,7 @@ export async function paradisSearchText(rootPath: string, query: string, maxResu
 		'--', '.',
 	];
 
-	await spawnRg(rgPath, args, rootPath, line => {
+	const timedOut = await paradisSpawnRg(rgPath, args, rootPath, line => {
 		let event: unknown;
 		try {
 			event = JSON.parse(line);
@@ -188,5 +195,5 @@ export async function paradisSearchText(rootPath: string, query: string, maxResu
 		return;
 	}, logService);
 
-	return { matches, truncated };
+	return { matches, truncated: truncated || timedOut };
 }
