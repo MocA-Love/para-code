@@ -24,7 +24,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IRemoteAuthorityResolverService } from '../../../../platform/remote/common/remoteAuthorityResolver.js';
 import { getRemoteTunnelGeneration, ITunnelService, RemoteTunnel } from '../../../../platform/tunnel/common/tunnel.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { IParadisPreviewMount, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
+import { IParadisPreviewMount, IParadisPreviewMountOptions, PARADIS_HTML_PREVIEW_CHANNEL } from '../common/paradisHtmlPreview.js';
 
 /** 載せた結果と、webview から実際に叩けるポート。 */
 export interface IParadisPreviewLocation {
@@ -36,9 +36,10 @@ export interface IParadisPreviewLocation {
 export async function paradisMountLocalPreview(
 	sharedProcessService: ISharedProcessService,
 	directory: URI,
+	options?: IParadisPreviewMountOptions,
 ): Promise<IParadisPreviewLocation> {
 	const mount = await sharedProcessService.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
-		.call<IParadisPreviewMount>('mount', [directory.fsPath]);
+		.call<IParadisPreviewMount>('mount', options ? [directory.fsPath, options] : [directory.fsPath]);
 	return { mount, port: mount.port };
 }
 

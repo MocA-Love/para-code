@@ -22,13 +22,26 @@ export const PARADIS_HTML_PREVIEW_CHANNEL = 'paradisHtmlPreview';
 export interface IParadisPreviewMount {
 	readonly port: number;
 	readonly token: string;
+	/**
+	 * ファイルを1つだけ載せたとき、サーバがそのファイルを返す名前。シンボリックリンクを渡すと
+	 * サーバはリンク先の実体を載せるので、リンク自身の名前ではなくこの名前で URL を作る。
+	 */
+	readonly file?: string;
+}
+
+export interface IParadisPreviewMountOptions {
+	/**
+	 * 古いものから外す対象にしない。ペインが一度だけ決めて覚え続ける URL（ビューアの同梱ライブラリ）に
+	 * 使う。外すとそのペインの次の文書が白紙になり、開き直しても直らない。
+	 */
+	readonly pinned?: boolean;
 }
 
 export interface IParadisHtmlPreviewService {
 	/**
 	 * フォルダーをサーバに載せ、その居場所を返す。同じフォルダーを何度渡しても同じ token を返す。
 	 */
-	mount(directory: string): Promise<IParadisPreviewMount>;
+	mount(directory: string, options?: IParadisPreviewMountOptions): Promise<IParadisPreviewMount>;
 }
 
 /**
