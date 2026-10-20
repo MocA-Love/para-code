@@ -84,6 +84,11 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 	private _saveBtn!: HTMLButtonElement;
 	private _cancelBtn!: HTMLButtonElement;
 	private _busy = false;
+	/**
+	 * 今のスクリプトを読み終えたか。読み終える前に保存すると、空の入力欄で既存のスクリプトを上書きして消すので、
+	 * それまで保存を押せなくする（読めなかったとき、ファイルが無いときを除き、ずっと押せない）。
+	 */
+	private _loaded = false;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -139,6 +144,8 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._setupInput.id = 'paradis-lifecycle-setup-input';
 		this._setupInput.rows = 3;
 		this._setupInput.spellcheck = false;
+		// 読み終えるまでは打てない（読んだ値で、打った文字を上書きしないため）
+		this._setupInput.readOnly = true;
 
 		const teardownLabel = dom.append(this._dialog, $('label.pcw-label')) as HTMLLabelElement;
 		teardownLabel.textContent = STR_TEARDOWN_LABEL;
@@ -147,6 +154,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._teardownInput.id = 'paradis-lifecycle-teardown-input';
 		this._teardownInput.rows = 3;
 		this._teardownInput.spellcheck = false;
+		this._teardownInput.readOnly = true;
 
 		this._errorEl = dom.append(this._dialog, $('.pcw-error'));
 
@@ -156,6 +164,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._cancelBtn, 'click', () => this.dispose()));
 		this._saveBtn = dom.append(footer, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
 		this._saveBtn.textContent = STR_SAVE;
+		this._saveBtn.disabled = true;
 		this._register(dom.addDisposableListener(this._saveBtn, 'click', () => void this._save()));
 	}
 
@@ -168,21 +177,30 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 			this._teardownInput.value = config.teardownScript ?? '';
 		} catch (error) {
 			if (toFileOperationResult(error as Error) !== FileOperationResult.FILE_NOT_FOUND) {
+				// 読めなかった。保存すると読めなかった中身を上書きしうるので、押せないままにする
 				this._errorEl.textContent = toErrorMessage(error);
+				return;
 			}
 		}
+		if (this._store.isDisposed) {
+			return;
+		}
+		this._loaded = true;
+		this._setupInput.readOnly = false;
+		this._teardownInput.readOnly = false;
+		this._saveBtn.disabled = this._busy;
 		this.focusInput();
 	}
 
 	private _setBusy(busy: boolean): void {
 		this._busy = busy;
-		this._saveBtn.disabled = busy;
+		this._saveBtn.disabled = busy || !this._loaded;
 		this._cancelBtn.disabled = busy;
 		this._saveBtn.textContent = busy ? STR_SAVING : STR_SAVE;
 	}
 
 	private async _save(): Promise<void> {
-		if (this._busy) {
+		if (this._busy || !this._loaded) {
 			return;
 		}
 		this._setBusy(true);

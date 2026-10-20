@@ -57,6 +57,8 @@ export function paradisQueueSummaryText(queue: ParadisTransferQueue): string {
 /** 行の「済んだ量」の文（状態ごと）。 */
 export function paradisQueueDoneText(item: IParadisTransferItem): string {
 	const skipped = (item.skipped > 0 ? ' · ' + localize('paradis.fileTransfer.queue.skipped', "{0} 件を飛ばしました", item.skipped) : '')
+		// 1 つのフォルダーの項目が上限（2 万件）を超えると、一覧が打ち切られて残りを送れない
+		+ ((item.truncatedFolders ?? 0) > 0 ? ' · ' + localize('paradis.fileTransfer.queue.truncated', "項目が多すぎるフォルダー {0} 件は一部しか送れていません", item.truncatedFolders) : '')
 		// 古い接続先などで一時ファイルを使えず、送り先を直接書き換えている（書いている間と失敗したときに出す）
 		+ (item.writesInPlace && item.state !== 'done' ? ' · ' + localize('paradis.fileTransfer.queue.inPlace', "送り先を直接書き換えます（途中で失敗すると元に戻りません）") : '');
 	switch (item.state) {
