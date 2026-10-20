@@ -14,6 +14,7 @@ import { ParadisPortListService, parseLsofOutput, parseNetstatOutput, registerPa
 const batchEntries: readonly IParadisPortEntry[] = [
 	{ port: 3000, proto: 'TCP', pid: 10, processName: 'node', address: '127.0.0.1', risky: false },
 	{ port: 3001, proto: 'TCP', pid: process.pid, processName: 'shared-process', address: '127.0.0.1', risky: false },
+	{ port: 9222, proto: 'TCP', pid: process.ppid, processName: 'para-code', address: '127.0.0.1', risky: false },
 ];
 
 interface ICapturedChannel {
@@ -33,10 +34,18 @@ suite('ParadisPortList - batch kill', () => {
 			pid => { signalled.push(pid); },
 		);
 
-		const result = await service.killAll([batchEntries[0], batchEntries[1]]);
+		const result = await service.killAll([batchEntries[0], batchEntries[1], batchEntries[2]]);
 		assert.strictEqual(collections, 1);
 		assert.deepStrictEqual(signalled, [10]);
-		assert.deepStrictEqual(result, { failed: 1 });
+		assert.deepStrictEqual(result, { failed: 2 });
+	});
+
+	test('refuses to kill Para Code itself (the main process that started the shared process)', async () => {
+		const signalled: number[] = [];
+		const service = new ParadisPortListService({} as never, async () => batchEntries, pid => { signalled.push(pid); });
+
+		await assert.rejects(service.kill(batchEntries[2]), /Para Code itself/);
+		assert.deepStrictEqual(signalled, []);
 	});
 
 	test('forwards a killAll IPC array to the registered channel', async () => {

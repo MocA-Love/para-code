@@ -105,23 +105,50 @@ async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | 
 	}
 }
 
+/** ディスクの照会に使う関数。テストで差し替える。 */
+export interface IParadisDiskQueryOps {
+	readonly statfs: (path: string) => Promise<{ readonly bsize: number | bigint; readonly blocks: number | bigint; readonly bavail: number | bigint }>;
+	readonly stat: (path: string) => Promise<{ readonly dev: number | bigint }>;
+	readonly timeoutMs: number;
+}
+
+const DEFAULT_DISK_QUERY_OPS: IParadisDiskQueryOps = { statfs, stat, timeoutMs: DISK_STAT_TIMEOUT_MS };
+
+/**
+ * まだ返っていない照会（パスごと）。`withTimeout` は待つのをやめるだけで、照会そのものは libuv の
+ * threadpool を掴んだまま残る。返事をしないマウントへ収集のたびに新しく照会を出すと、溜まった照会が
+ * threadpool を埋め、そのプロセスのファイルの読み書きが全部遅くなる。前の照会が返るまでは、そのパスに
+ * 次を出さない（読めなかったパスと同じく、その回は捨てる）。
+ */
+const pendingDiskQueries = new Set<string>();
+
+function queryDisk(path: string, ops: IParadisDiskQueryOps): Promise<readonly [Awaited<ReturnType<IParadisDiskQueryOps['statfs']>>, Awaited<ReturnType<IParadisDiskQueryOps['stat']>>] | undefined> {
+	if (pendingDiskQueries.has(path)) {
+		return Promise.resolve(undefined);
+	}
+	const work = Promise.all([ops.statfs(path), ops.stat(path)] as const);
+	pendingDiskQueries.add(path);
+	const settle = () => { pendingDiskQueries.delete(path); };
+	work.then(settle, settle);
+	return withTimeout(work, ops.timeoutMs);
+}
+
 /**
  * 指定パスが載っているボリュームの容量を読む。同じボリュームを指すパスは1件にまとめる
  * （判定にはデバイスID `Stats.dev` を使う。容量が同じ別ボリューム——同型の外付け2台や
  * 同サイズのパーティション——を1件に潰さないため）。
- * 読めなかったパス・時間内に応答しなかったパスは黙って捨てる（取り外し済みのworktree等）。
+ * 読めなかったパス・時間内に応答しなかったパス・前の照会がまだ返っていないパスは黙って捨てる
+ * （取り外し済みのworktree等）。
  */
-export async function paradisReadDiskVolumes(paths: readonly string[]): Promise<IParadisHostDiskVolume[]> {
+export async function paradisReadDiskVolumes(paths: readonly string[], ops: IParadisDiskQueryOps = DEFAULT_DISK_QUERY_OPS): Promise<IParadisHostDiskVolume[]> {
 	const volumes: IParadisHostDiskVolume[] = [];
 	const seen = new Set<number>();
 	for (const path of paths.slice(0, DISK_PATH_LIMIT)) {
-		const [stats, entry] = await Promise.all([
-			withTimeout(statfs(path), DISK_STAT_TIMEOUT_MS),
-			withTimeout(stat(path), DISK_STAT_TIMEOUT_MS),
-		]);
-		if (stats === undefined || entry === undefined) {
+		const answer = await queryDisk(path, ops);
+		if (answer === undefined) {
 			continue;
 		}
+		const [stats, entry] = answer;
 		const device = Number(entry.dev);
 		if (!Number.isFinite(device) || seen.has(device)) {
 			continue;
