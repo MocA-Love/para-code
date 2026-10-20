@@ -778,11 +778,21 @@ export class ParadisBrowserPageOpsController {
 		}
 		if (!entry.networkEnabled) {
 			entry.networkEnabled = true;
-			await entry.session.sendCommand('Network.enable', { maxTotalBufferSize: NETWORK_BUFFER_BYTES, maxResourceBufferSize: NETWORK_BUFFER_BYTES });
 			// 上書きしている間は、キャッシュの応答（Fetch を通らない）と Service Worker の応答（ページの
 			// セッションの Fetch を通らない）でルールとヘッダがすり抜けないようにする。どちらもこのタブだけ。
-			await entry.session.sendCommand('Network.setCacheDisabled', { cacheDisabled: true });
-			await entry.session.sendCommand('Network.setBypassServiceWorker', { bypass: true });
+			const enableCommands: readonly (readonly [string, object])[] = [
+				['Network.enable', { maxTotalBufferSize: NETWORK_BUFFER_BYTES, maxResourceBufferSize: NETWORK_BUFFER_BYTES }],
+				['Network.setCacheDisabled', { cacheDisabled: true }],
+				['Network.setBypassServiceWorker', { bypass: true }],
+			];
+			for (const [method, params] of enableCommands) {
+				await entry.session.sendCommand(method, params);
+				// 送っている間に共有が解かれたら、解いたときの戻しより後に届いた設定を戻して止める
+				if (state.disposed) {
+					await this.undoAbandonedNetwork(target, entry);
+					return;
+				}
+			}
 		}
 		// 追加ヘッダは相手の origin を見て付けるので、Network.setExtraHTTPHeaders（全部の要求に付く）は
 		// 使わず、Fetch で止めた要求ごとに足す。追加ヘッダがあればすべての要求を止める。
@@ -792,6 +802,26 @@ export class ParadisBrowserPageOpsController {
 				? [{ urlPattern: '*', requestStage: 'Request' }]
 				: state.rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
 		});
+		if (state.disposed) {
+			await this.undoAbandonedNetwork(target, entry);
+		}
+	}
+
+	/**
+	 * 共有が解かれた後に届いたネットワークの上書きを戻す。セッションが既に手放されたとき、
+	 * 次の共有の上書きが同じセッションで Network / Fetch を使っているときは触らない。
+	 */
+	private async undoAbandonedNetwork(target: IParadisPageOpsTarget, entry: ITargetSession): Promise<void> {
+		if (this.targetSessions.get(target) !== entry) {
+			return;
+		}
+		const current = this.states.get(target);
+		if (current && (current.extraHeaders !== undefined || current.rules.length > 0)) {
+			return;
+		}
+		entry.networkEnabled = false;
+		entry.fetchEnabled = false;
+		await this.sendTeardown(target, entry.session, NETWORK_TEARDOWN_COMMANDS);
 	}
 
 	/** このタブで有効にしたネットワークの上書きを戻す（セッションは次の上書きとハイライトのために残す）。 */
