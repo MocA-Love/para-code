@@ -40,6 +40,21 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.15',
+		date: '2026-10-21',
+		items: [
+			{
+				icon: 'lock-closed-outline',
+				title: 'Face ID を登録していない端末でも、パスコードでアプリのロックが掛かるようになりました',
+			},
+			{
+				icon: 'document-text-outline',
+				title: '送れなかったメモや依頼の文が、知らせなく消えないようにしました',
+				body: 'メモを閉じたときに保存できなかった書きかけはクリップボードへ逃がして知らせます。過去の会話の再開で届かなかった依頼の文と、端末に保存できなかったオフラインの依頼は入力欄に残します。ウィジェットで確認済みにした操作も、送れるまで送り直します。',
+			},
+		],
+	},
+	{
 		version: '0.12.14',
 		date: '2026-10-20',
 		items: [

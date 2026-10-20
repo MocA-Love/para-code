@@ -291,8 +291,14 @@ function processOutbox(state: AppStoreState): void {
 		alreadySent: sentOutbox,
 	});
 	for (const entry of plan.send) {
-		sentOutbox.add(outboxSentKey(entry));
-		state.ackAgentStatus(entry.key);
+		// 送っている間は同じものを送り直さない。送る列に載せられなかったら印を外し、次の機会に送り直す
+		const sentKey = outboxSentKey(entry);
+		sentOutbox.add(sentKey);
+		void state.ackAgentStatus(entry.key).catch(() => false).then(sent => {
+			if (!sent) {
+				sentOutbox.delete(sentKey);
+			}
+		});
 	}
 	if (plan.remove.length > 0) {
 		const removed = new Set(plan.remove.map(entry => `${entry.pcId}\u0000${entry.key}\u0000${entry.at}`));
