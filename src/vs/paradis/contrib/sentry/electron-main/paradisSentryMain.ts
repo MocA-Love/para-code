@@ -13,6 +13,7 @@ import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
 import type { IProductConfiguration } from '../../../../base/common/product.js';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
+import { IParadisCrashReportingInputs, isParadisSentryOptedOut, setParadisSentryDisabledEnv } from '../../../../platform/environment/common/paradisSentryOptOut.js';
 import { isParadisSentryDevelopmentBuild, PARADIS_SENTRY_DESKTOP_DSN, paradisSentryEnvironment, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticEventSink, configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
@@ -48,8 +49,18 @@ protocol.registerSchemesAsPrivileged = function paradisRecordingRegisterSchemesA
 	privilegedSchemeRecorder.add(customSchemes);
 };
 
-export function initializeParadisSentryMain(product: Pick<IProductConfiguration, 'commit' | 'paradisSentryRelease'>, onUnavailable: () => void): void {
+export function initializeParadisSentryMain(product: Pick<IProductConfiguration, 'commit' | 'paradisSentryRelease'>, crashReporting: IParadisCrashReportingInputs, onUnavailable: () => void): void {
 	if (sentry) {
+		return;
+	}
+
+	// クラッシュレポートを切っている（argv.json の enable-crash-reporter: false。telemetryLevel=off は
+	// upstream がここへ書き戻す。--disable-crash-reporter、--crash-reporter-directory）なら送らない。
+	// 判定は後から起動する shared process と window にも渡し、どのプロセスも Sentry を起こさない。
+	const optedOut = isParadisSentryOptedOut(crashReporting);
+	setParadisSentryDisabledEnv(process.env, optedOut);
+	if (optedOut) {
+		onUnavailable();
 		return;
 	}
 

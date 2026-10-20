@@ -569,6 +569,9 @@ export interface INativeWindowConfiguration extends IWindowConfiguration, Native
 	// (Para Code window transparency, a creation-time flag). Lets the renderer gate its translucency
 	// CSS on the real native state instead of the current setting value. See src/vs/paradis/contrib/windowTransparency.
 	paradisTransparentWindow?: boolean;
+
+	// PARA-PATCH: the main process turned Sentry off because crash reporting is off (see paradisSentryOptOut.ts).
+	paradisSentryDisabled?: boolean;
 }
 
 /**
