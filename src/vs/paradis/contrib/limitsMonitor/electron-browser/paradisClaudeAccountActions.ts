@@ -310,6 +310,9 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 					case 'network':
 						this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverifiedNetwork', "通信できず、いま使っている {0} の最新のログイン情報を確認できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。通信できることを確かめてから、もう一度お試しください。", previous));
 						return;
+					case 'save_failed':
+						this.notificationService.warn(localize('paradis.claudeAccounts.switchSaveFailed', "いま使っている {0} の最新のログイン情報をキーチェーンに保存できなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。Mac のロックを解除してから、もう一度お試しください。", previous));
+						return;
 					case 'owner_mismatch':
 						this.notificationService.warn(localize('paradis.claudeAccounts.switchUnverifiedOwner', "いま使っている {0} のログインが確かめている間に変わったか、持ち主を確かめられなかったため、切り替えませんでした。切り替えると、そのアカウントに再ログインが必要になるおそれがあります。しばらくしてからもう一度お試しください。", previous));
 						return;

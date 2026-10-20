@@ -192,6 +192,34 @@ suite('ParadisClaudeAccountService defenses', () => {
 		});
 	});
 
+	// 持ち主は確かめられても、その最新のトークンを保存できなければ切り替えない（切り替えると失われる）。
+	test('switch stops when the outgoing account\'s newer token cannot be saved, and switches once it can', async () => {
+		const harness = await createHarness([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
+		const { aliceStored, aliceLive } = await aliceRefreshedByClaudeCode(harness);
+		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, BOB_ID, paradisTestCredentials('bob-1', 'bob-r1', harness.clock.now + HOUR));
+		harness.oauth.setProfile('alice-2', 'u-alice', 'alice@example.com');
+
+		// 保存の 1 回だけが失敗する。
+		harness.keychain.failWrites = 1;
+		const refused = await harness.service.switchAccount(BOB);
+		const afterRefusal = {
+			live: harness.keychain.get(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER) === aliceLive,
+			stored: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID) === aliceStored,
+		};
+		const retried = await harness.service.switchAccount(BOB);
+		assert.deepStrictEqual({
+			refused,
+			afterRefusal,
+			retried: retried.outcome,
+			savedAfterRetry: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID) === aliceLive,
+		}, {
+			refused: { outcome: 'unverified', email: 'bob@example.com', previousEmail: 'alice@example.com', unverifiedReason: 'save_failed' },
+			afterRefusal: { live: true, stored: true },
+			retried: 'switched',
+			savedAfterRetry: true,
+		});
+	});
+
 	test('switch proceeds without confirmation when the outgoing login was wiped by Claude Code', async () => {
 		const harness = await createHarness([record(ALICE_ID, 'u-alice', 'alice@example.com'), record(BOB_ID, 'u-bob', 'bob@example.com')]);
 		harness.keychain.set(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID, paradisTestCredentials('alice-1', 'alice-r1', harness.clock.now + HOUR));
