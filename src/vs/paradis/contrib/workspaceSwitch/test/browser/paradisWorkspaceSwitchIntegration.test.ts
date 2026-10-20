@@ -45,6 +45,7 @@ import { TestContextService } from '../../../../../workbench/test/common/workben
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisHoldBackTerminalEditorReveal, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
+import { PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisParseTerminalEditorPlacements, paradisSerializeTerminalEditorPlacements } from '../../common/paradisTerminalEditorPlacement.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { paradisParseTerminalNonceScopeStorage } from '../../common/paradisTerminalNonceScope.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from '../../browser/paradisTerminalEditorRevive.js';
@@ -1294,6 +1295,139 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			});
 		} finally {
 			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('records where each live terminal sat, in ids the working set brings its groups back with', async () => {
+		const testDisposables = new DisposableStore();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const left = harness.parts.activeGroup;
+			const right = harness.parts.addGroup(left, GroupDirection.RIGHT);
+			const leftSaved = harness.createEditor('/workspace-a/left-saved.txt', false);
+			const leftLive = harness.createLiveTerminalEditor('/workspace-a/left-claude');
+			harness.addTerminal(leftLive, 911, 9011, 'nonce-placement-left');
+			const rightLive = harness.createLiveTerminalEditor('/workspace-a/right-watch');
+			harness.addTerminal(rightLive, 912, 9012, 'nonce-placement-right');
+			const rightSaved = harness.createEditor('/workspace-a/right-saved.txt', false);
+			await left.openEditor(leftSaved, { pinned: true });
+			await left.openEditor(leftLive, { pinned: true });
+			await right.openEditor(rightLive, { pinned: true });
+			await right.openEditor(rightSaved, { pinned: true });
+			await right.openEditor(rightLive, { pinned: true });
+			const groupIds = { left: left.id, right: right.id };
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const recorded = [...paradisParseTerminalEditorPlacements(harness.storageService.get(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE))]
+				.map(([stateKey, placements]) => [stateKey, [...placements]]);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			// 切り替えで作り直されたグループが、控えた id のまま戻っている (台帳はこの id でグループを引く)。
+			const groupsBack = harness.parts.groups.map(group => ({ id: group.id, editors: group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path) }));
+
+			assert.deepStrictEqual({ recorded, groupsBack }, {
+				recorded: [['space-a', [
+					['nonce-placement-left', { groupId: groupIds.left, index: 1, active: true, pinned: true, sticky: false }],
+					['nonce-placement-right', { groupId: groupIds.right, index: 0, active: true, pinned: true, sticky: false }],
+				]]],
+				groupsBack: [
+					{ id: groupIds.left, editors: ['/workspace-a/left-saved.txt', '/workspace-a/left-claude'] },
+					{ id: groupIds.right, editors: ['/workspace-a/right-watch', '/workspace-a/right-saved.txt'] },
+				],
+			});
+		} finally {
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('reopens terminals kept across a closed window in the group and position they were deposited from', async () => {
+		const testDisposables = new DisposableStore();
+		const keptInputs = new Map<string, TestFileEditorInput>();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			const ready = await createHarness(['space-a', 'space-b'], testDisposables);
+			harness = ready;
+			await ready.workspaceSwitchService.switchRepository('space-b');
+			const left = ready.parts.activeGroup;
+			const right = ready.parts.addGroup(left, GroupDirection.RIGHT);
+			await left.openEditor(ready.createEditor('/workspace-b/left-saved.txt', false), { pinned: true });
+			await right.openEditor(harness.createEditor('/workspace-b/right-first.txt', false), { pinned: true });
+			await right.openEditor(harness.createEditor('/workspace-b/right-last.txt', false), { pinned: true });
+			const groupIds = { left: left.id, right: right.id };
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const opened: (number | undefined)[] = [];
+			harness.installTerminalScope(async (instance, location) => {
+				opened.push(location?.paradisExactEditorGroup?.id);
+				const input = keptInputs.get(instance.resource.toString())!;
+				await (location?.paradisExactEditorGroup ?? ready.parts.activeGroup).openEditor(input, { pinned: true, inactive: location?.paradisInactive, preserveFocus: location?.preserveFocus });
+			}, { worktreeReady: true, connected: true });
+
+			// ウィンドウを閉じて開き直した後の姿: 生きていた端末は起動時の取り戻しで space-b へ待避され、
+			// 預け先 (メモリ) は無く、置き場所の控えだけが残っている。
+			const kept = (path: string, nonce: string): ITerminalInstance => {
+				const input = ready.createLiveTerminalEditor(path);
+				const ids = createUniqueTerminalIds();
+				const instance = {
+					instanceId: ids.instanceId,
+					persistentProcessId: ids.persistentProcessId,
+					shellIntegrationNonce: nonce,
+					resource: input.resource,
+					shellLaunchConfig: {},
+					processReady: Promise.resolve(),
+					shouldPersist: true,
+					isDisposed: false,
+					onDisposed: Event.None,
+					dispose: () => { },
+				} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+				keptInputs.set(input.resource.toString(), input);
+				assert.strictEqual(paradisParkTerminalEditorInstance(instance, 'space-b'), true);
+				return instance;
+			};
+			kept('/workspace-b/right-watch', 'nonce-kept-right');
+			kept('/workspace-b/left-claude', 'nonce-kept-left');
+			kept('/workspace-b/unknown', 'nonce-kept-unknown');
+			harness.storageService.store(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisSerializeTerminalEditorPlacements(new Map([
+				['space-b', new Map([
+					['nonce-kept-right', { groupId: groupIds.right, index: 1, active: true, pinned: true, sticky: false }],
+					['nonce-kept-left', { groupId: groupIds.left, index: 0, active: false, pinned: true, sticky: false }],
+				])],
+			]))!, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual({
+				opened,
+				groups: harness.parts.groups.map(group => ({
+					id: group.id,
+					editors: group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.path),
+					active: group.activeEditor?.resource?.path,
+				})),
+				ledgerLeft: harness.storageService.get(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE),
+			}, {
+				// 控えの無い端末は今までどおり今のグループへ。控えのある端末はグループを指定して開く。
+				opened: [undefined, groupIds.left, groupIds.right],
+				groups: [
+					{ id: groupIds.left, editors: ['/workspace-b/left-claude', '/workspace-b/left-saved.txt'], active: '/workspace-b/left-saved.txt' },
+					{ id: groupIds.right, editors: ['/workspace-b/right-first.txt', '/workspace-b/right-watch', '/workspace-b/right-last.txt', '/workspace-b/unknown'], active: '/workspace-b/right-watch' },
+				],
+				// 使った控えは消える (次に預けるときに書き直される)。
+				ledgerLeft: JSON.stringify({ version: 1, scopes: [] }),
+			});
+		} finally {
+			try {
+				paradisTakeParkedTerminalEditorInstancesForScope('space-b');
 				for (const group of harness?.parts.groups ?? []) {
 					await group.closeAllEditors();
 				}
