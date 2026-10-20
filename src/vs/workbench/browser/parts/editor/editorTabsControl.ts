@@ -51,6 +51,7 @@ import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DropdownMenuActionViewItem } from '../../../../base/browser/ui/dropdown/dropdownActionViewItem.js';
+import { paradisUpdateTabContextKeys } from '../../../services/editor/common/paradisTabContextKeys.js'; // PARA-PATCH: Para Code tab context keys (see onTabContextMenu)
 
 export class EditorCommandsContextActionRunner extends ActionRunner {
 
@@ -607,6 +608,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorCanSplitInGroupContext.set(editor.hasCapability(EditorInputCapabilities.CanSplitInGroup));
 		this.sideBySideEditorContext.set(editor.typeId === SideBySideEditorInput.ID);
 		applyAvailableEditorIds(this.editorAvailableEditorIds, editor, this.editorResolverService);
+		paradisUpdateTabContextKeys(this.contextMenuContextKeyService, editor); // PARA-PATCH: let tab menu items (e.g. Download...) hide on diff tabs
 
 		// Find target anchor
 		let anchor: HTMLElement | StandardMouseEvent = node;

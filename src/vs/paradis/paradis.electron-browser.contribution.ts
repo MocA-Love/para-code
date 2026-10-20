@@ -121,3 +121,4 @@ import './contrib/claudeMod/electron-browser/paradisClaudeModConfigDir.contribut
 import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';
 import './contrib/agentTabTitle/electron-browser/paradisClaudeTabTitlePin.contribution.js';
+import './contrib/editorDownload/electron-browser/paradisEditorDownload.contribution.js';
