@@ -22,7 +22,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
@@ -36,6 +36,7 @@ import { IParadisTerminalOrphanPty, paradisDuplicatedNonces, paradisOrphanAttach
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisParseTerminalActiveGroups, paradisTerminalGroupIdentity, paradisUpdateTerminalActiveGroup } from '../common/paradisTerminalActiveGroup.js';
+import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, ParadisTerminalEditorPlacements, paradisOrderTerminalEditorPlacements, paradisParseTerminalEditorPlacements, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisForgetSharedPanelNonce, paradisIsIdleEmptyShell, paradisIsSharedPanelShell, paradisParseSharedPanelNonces, paradisRememberSharedPanelNonce, paradisSharedPanelEnabledAtStartup, paradisShouldReviveSharedPanelOrphan } from '../../terminalSharedPanel/common/paradisTerminalSharedPanel.js';
 import { paradisIsPromptInputEmptyFor } from '../../terminalPromptInput/browser/paradisPromptInputEmpty.js';
@@ -2337,23 +2338,85 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			onUnexpectedError(new Error('Para Code could not park a terminal editor; reopening it so it stays visible'));
 			await this.terminalEditorService.openEditor(instance);
 		};
+		// 預けたときに置き場所を控えてあれば (ウィンドウを閉じる前に預けた生きた端末)、元のグループの元の位置へ
+		// 開く。控えが無い・グループが無いものは今までどおり今のグループへ開く。位置は小さい順に差し込む。
+		const placements = this.takeTerminalEditorPlacements(targetStateKey);
+		const placed: { readonly instance: ITerminalInstance; readonly placement: IParadisTerminalEditorPlacement }[] = [];
+		const unplaced: ITerminalInstance[] = [];
 		for (const instance of instances) {
-			if (instance.isDisposed) {
-				continue;
+			const nonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+			const placement = nonce === undefined ? undefined : placements.get(nonce);
+			if (placement === undefined) {
+				unplaced.push(instance);
+			} else {
+				placed.push({ instance, placement });
 			}
+		}
+		const open = async (instance: ITerminalInstance, placement: IParadisTerminalEditorPlacement | undefined): Promise<void> => {
+			if (instance.isDisposed) {
+				return;
+			}
+			let group: IEditorGroup | undefined;
 			try {
 				if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
 					await parkOrReopen(instance);
-					continue;
+					return;
 				}
-				await this.terminalEditorService.openEditor(instance);
+				group = placement === undefined ? undefined : this.editorGroupsService.mainPart.getGroup(placement.groupId);
+				await this.terminalEditorService.openEditor(instance, group === undefined
+					? undefined
+					: { viewColumn: group.id, paradisExactEditorGroup: group, preserveFocus: true, paradisInactive: true });
 			} catch (error) {
 				if (!instance.isDisposed) {
 					paradisParkTerminalEditorInstance(instance, targetStateKey);
 				}
 				onUnexpectedError(error);
+				return;
+			}
+			if (group === undefined || placement === undefined) {
+				return;
+			}
+			// 開いた後で位置・ピン留め・アクティブを戻す (既に開いている入力に index を渡すと、その位置へ動く)。
+			// ここで失敗しても端末は開けているので、待避へ戻さない (戻すと開いたタブと待避の両方に居ることになる)。
+			try {
+				await group.openEditor(this.terminalEditorService.getInputFromResource(instance.resource), {
+					index: placement.index,
+					pinned: placement.pinned,
+					sticky: placement.sticky,
+					inactive: !placement.active,
+					preserveFocus: true,
+				});
+			} catch (error) {
+				onUnexpectedError(error);
+			}
+		};
+		for (const instance of unplaced) {
+			await open(instance, undefined);
+		}
+		for (const { instance, placement } of paradisOrderTerminalEditorPlacements(placed)) {
+			await open(instance, placement);
+		}
+	}
+
+	/**
+	 * スペースの置き場所の控えを取り出して消す (使うのは閉じる前に預けた端末を開き直す 1 回だけ)。
+	 * 次に預けるときに書き直されるので、消しても失うものは無い。
+	 */
+	private takeTerminalEditorPlacements(stateKey: string): ParadisTerminalEditorPlacements {
+		const raw = this.storageService.get(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (raw === undefined) {
+			return new Map();
+		}
+		const placements = paradisParseTerminalEditorPlacements(raw).get(stateKey) ?? new Map();
+		if (placements.size > 0) {
+			const remaining = paradisUpdateTerminalEditorPlacements(raw, stateKey, undefined);
+			if (remaining === undefined) {
+				this.storageService.remove(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, StorageScope.WORKSPACE);
+			} else {
+				this.storageService.store(PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, remaining, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 			}
 		}
+		return placements;
 	}
 
 	/**
