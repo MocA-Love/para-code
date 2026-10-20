@@ -89,7 +89,8 @@ Menu.setApplicationMenu(null);
 
 // Configure crash reporter
 perf.mark('code/willStartCrashReporter');
-// PARA-PATCH: Sentry replaces Electron's crash reporter. It loads asynchronously (a
+// PARA-PATCH: Sentry replaces Electron's crash reporter and is off under the same opt-outs (see
+// paradisSentryOptOut.ts). It loads asynchronously (a
 // static import of '@sentry/electron/main' crashes packaged builds at ESM link time,
 // see paradisSentryMain.ts); if it fails to load, run the original upstream gate below
 // as fallback.
@@ -101,7 +102,7 @@ perf.mark('code/willStartCrashReporter');
 // * --disable-crash-reporter command line parameter is not set
 //
 // Disable crash reporting in all other cases.
-initializeParadisSentryMain(product, () => {
+initializeParadisSentryMain(product, { enableCrashReporter: argvConfig['enable-crash-reporter'], disableCrashReporter: args['disable-crash-reporter'] }, () => {
 	if (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter'])) {
 		configureCrashReporter();
 	}

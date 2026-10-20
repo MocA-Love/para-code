@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type * as SentryUtility from '@sentry/electron/utility';
+import { isParadisSentryDisabledByEnv } from '../../../../platform/environment/common/paradisSentryOptOut.js';
 import { isParadisSentryDevelopmentBuild } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, IParadisSpanOptions, ParadisDiagnosticSeverity, ParadisSpanAttributes, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
@@ -14,8 +15,9 @@ let sentry: typeof SentryUtility | undefined;
 
 // Builds run out of sources do not report (see isParadisSentryDevelopmentBuild); the shared process
 // inherits VSCODE_DEV from main, which skips its own init under the same test. Without the SDK, the
-// capture and span functions below fall through (`sentry` stays undefined).
-if (!isParadisSentryDevelopmentBuild(process.env)) {
+// capture and span functions below fall through (`sentry` stays undefined). The same goes when the
+// user turned crash reporting off: main decides that and passes it down in the environment.
+if (!isParadisSentryDevelopmentBuild(process.env) && !isParadisSentryDisabledByEnv(process.env)) {
 	// '@sentry/electron/utility' is loaded with a dynamic import so the bundler keeps it
 	// external and it resolves from node_modules.asar at runtime via the bootstrap loader
 	// hooks (a static import would get inlined into the shared-process bundle by the

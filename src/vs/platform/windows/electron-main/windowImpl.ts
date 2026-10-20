@@ -48,6 +48,8 @@ import { VSBuffer } from '../../../base/common/buffer.js';
 import { errorHandler } from '../../../base/common/errors.js';
 import { FocusMode, IApplicationBadge } from '../../native/common/native.js';
 import { Color } from '../../../base/common/color.js';
+// PARA-PATCH: Sentry opt-out decided by the main process (see paradisSentryOptOut.ts)
+import { isParadisSentryDisabledByEnv } from '../../environment/common/paradisSentryOptOut.js';
 
 export interface IWindowCreationOptions {
 	readonly state: IWindowState;
@@ -1379,6 +1381,8 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 		configuration.maximized = this._win.isMaximized();
 		// PARA-PATCH: forward the actual native transparency creation state to the renderer (Para Code window transparency)
 		configuration.paradisTransparentWindow = this.paradisTransparentWindow;
+		// PARA-PATCH: forward the main process's Sentry opt-out to the renderer (see paradisSentryOptOut.ts)
+		configuration.paradisSentryDisabled = isParadisSentryDisabledByEnv(process.env);
 		configuration.partsSplash = this.themeMainService.getWindowSplash(configuration.workspace);
 		configuration.zoomLevel = this.getZoomLevel();
 		configuration.isCustomZoomLevel = typeof this.customZoomLevel === 'number';
