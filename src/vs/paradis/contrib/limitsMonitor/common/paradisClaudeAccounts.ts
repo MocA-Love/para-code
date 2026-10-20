@@ -99,12 +99,13 @@ export interface IParadisClaudeSwitchResult {
  * - network: 通信できなかった・応答を読めなかった
  * - rate_limited: 呼び出し回数の上限（429）
  * - owner_mismatch: 身元やトークンが確かめている間に変わった・別の登録のトークンと同じだった・持ち主が違った
+ * - save_failed: 持ち主は確かめたが、その最新のトークンを保存できなかった（切り替えると失われる）
  */
-export type ParadisClaudeUnverifiedReason = 'network' | 'rate_limited' | 'owner_mismatch';
+export type ParadisClaudeUnverifiedReason = 'network' | 'rate_limited' | 'owner_mismatch' | 'save_failed';
 
 /** 接続先から返った unverifiedReason のうち、知っている語だけを返す（ほかは undefined）。 */
 export function paradisKnownUnverifiedReason(value: unknown): ParadisClaudeUnverifiedReason | undefined {
-	return value === 'network' || value === 'rate_limited' || value === 'owner_mismatch' ? value : undefined;
+	return value === 'network' || value === 'rate_limited' || value === 'owner_mismatch' || value === 'save_failed' ? value : undefined;
 }
 
 /** いまログインしているアカウントを Para Code に登録した結果。 */

@@ -1004,8 +1004,11 @@ export class ParadisClaudeAccountService extends Disposable {
 		});
 	}
 
-	/** 確かめ済みのトークンを保存する。{@link serialize} の中から呼ぶ。 */
-	private async adoptVerifiedCredentials(record: IParadisClaudeAccountRecord, verified: IParadisClaudeVerifiedLive): Promise<void> {
+	/**
+	 * 確かめ済みのトークンを保存する。{@link serialize} の中から呼ぶ。
+	 * @returns 保存できた・保存する必要が無かったら true、読み書きに失敗したら false。
+	 */
+	private async adoptVerifiedCredentials(record: IParadisClaudeAccountRecord, verified: IParadisClaudeVerifiedLive): Promise<boolean> {
 		try {
 			const stored = await this.readSecret(record.id);
 			// 保存してある方が新しい（再ログインした直後で、いまのログインは失効したまま）なら取り込まない。
@@ -1013,13 +1016,15 @@ export class ParadisClaudeAccountService extends Disposable {
 			const storedExpiresAt = paradisParseClaudeOAuthBlob(stored)?.expiresAt;
 			const liveExpiresAt = paradisParseClaudeOAuthBlob(verified.oauthOnly)?.expiresAt;
 			if (typeof storedExpiresAt === 'number' && typeof liveExpiresAt === 'number' && liveExpiresAt < storedExpiresAt) {
-				return;
+				return true;
 			}
 			if (stored !== verified.oauthOnly) {
 				await this.writeSecret(record.id, verified.oauthOnly);
 			}
+			return true;
 		} catch (error) {
 			this.logService.warn(`[ParadisClaudeAccounts] could not save the refreshed Claude login: ${(error as Error).message}`);
+			return false;
 		}
 	}
 
@@ -1223,7 +1228,10 @@ export class ParadisClaudeAccountService extends Disposable {
 						if (!outgoingVerified || liveInLock !== outgoingVerified.oauthOnly) {
 							return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email, unverifiedReason: 'owner_mismatch' };
 						}
-						await this.adoptVerifiedCredentials(outgoing, outgoingVerified);
+						// 保存できないまま切り替えると、その最新のリフレッシュトークンが失われる。
+						if (!await this.adoptVerifiedCredentials(outgoing, outgoingVerified)) {
+							return { outcome: 'unverified', email: target.email, previousEmail: outgoing.email, unverifiedReason: 'save_failed' };
+						}
 					}
 				}
 				const snapshot = await this.liveAuth.captureSnapshot();
