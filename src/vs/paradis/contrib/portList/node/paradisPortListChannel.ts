@@ -279,8 +279,10 @@ export class ParadisPortListService {
 			throw new Error(`Refusing to kill: invalid target (pid ${request.pid}, port ${request.port})`);
 		}
 		// shared process 自身を殺すと、そこにぶら下がる他の全チャネルも道連れになる。
-		if (request.pid === process.pid) {
-			throw new Error('Refusing to kill the process hosting this port list channel');
+		// 親 (Para Code の main) は CDP のために 127.0.0.1 で LISTEN しているので一覧に出る。殺すと全ウィンドウが
+		// 終わる。shared process は main が utilityProcess で起こすので、親は ppid で引ける (接続先の側と同じ守り)。
+		if (request.pid === process.pid || request.pid === process.ppid) {
+			throw new Error('Refusing to kill Para Code itself');
 		}
 		const entries = await this.collect();
 		const stillListening = entries.some(entry => entry.pid === request.pid && entry.port === request.port && entry.processName === request.processName);
@@ -293,7 +295,7 @@ export class ParadisPortListService {
 
 	async killAll(requests: readonly unknown[]): Promise<IParadisPortKillBatchResult> {
 		try {
-			return await executeParadisPortKillBatch(requests, this.collect, new Set([process.pid]), this.signal);
+			return await executeParadisPortKillBatch(requests, this.collect, new Set([process.pid, process.ppid]), this.signal);
 		} finally {
 			this.cached = undefined;
 		}
