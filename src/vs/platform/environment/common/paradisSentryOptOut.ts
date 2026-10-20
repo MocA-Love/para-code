@@ -19,20 +19,21 @@ export interface IParadisCrashReportingInputs {
 	readonly enableCrashReporter?: unknown;
 	/** `--disable-crash-reporter` on the command line. */
 	readonly disableCrashReporter?: boolean;
-	/** `--crash-reporter-directory` on the command line (upstream keeps crashes local, never uploads). */
-	readonly crashReporterDirectory?: string;
 }
 
 /**
  * Whether the user turned crash reporting off, so no process may initialize Sentry.
  *
  * Unlike upstream's gate (`argvConfig['enable-crash-reporter'] && ...`), a missing argv.json value
- * does not opt out: it is missing only on the first startup of a profile, before upstream has
- * written the mirrored telemetry level, and reporting the first run is wanted. Only an explicit
- * `false` opts out.
+ * does not opt out: it is missing only on the user's first startup (argv.json lives in the data
+ * folder under the home directory, not per profile), before upstream has written the mirrored
+ * telemetry level, and reporting the first run is wanted. Only an explicit `false` opts out.
+ *
+ * `--crash-reporter-directory` is not an opt-out here: the smoke tests (`test/automation`) pass it,
+ * and their packaged-build runs are meant to keep reporting under the `local` environment.
  */
 export function isParadisSentryOptedOut(inputs: IParadisCrashReportingInputs): boolean {
-	return inputs.enableCrashReporter === false || !!inputs.disableCrashReporter || !!inputs.crashReporterDirectory;
+	return inputs.enableCrashReporter === false || !!inputs.disableCrashReporter;
 }
 
 /**

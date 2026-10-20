@@ -38,7 +38,7 @@ const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 // init under the same test, so there would be nothing to forward renderer events to anyway. Without a
 // client, the capture and span functions below are no-ops, and the diagnostic reporter stays unset.
 // The same goes when the user turned crash reporting off: main decides that and passes it in the
-// window configuration (not the environment, which a Linux renderer forked from the zygote misses).
+// window configuration (not the environment, which a Linux renderer forked from the zygote may miss).
 if (!isParadisSentryDevelopmentBuild(env) && !(context.configuration() as INativeWindowConfiguration | undefined)?.paradisSentryDisabled) {
 	initializeParadisRendererSentry();
 	reportInsecureRendererContext();

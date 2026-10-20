@@ -47,7 +47,7 @@ nor sentry-cocoa reports.
 
 Turning crash reporting off also turns Sentry off in main, renderer and the shared process: argv.json
 `enable-crash-reporter: false` (upstream writes it from `telemetry.telemetryLevel` on each startup),
-`--disable-crash-reporter`, or `--crash-reporter-directory`. Main decides
+or `--disable-crash-reporter`. Main decides
 (`src/vs/platform/environment/common/paradisSentryOptOut.ts`) and passes the result down.
 
 Each process sends at most three copies of the same normalized error in a ten-minute window. Sentry
