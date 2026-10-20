@@ -23,13 +23,10 @@
 // フォルダーごと載せるので、スクリプトが動くと、クローンしただけのリポジトリの HTML が `.env` などを
 // fetch して外へ送れてしまう。信頼したワークスペースでは従来どおり動かす（タスクや拡張機能と同じ線引き）。
 
-import * as dom from '../../../../base/browser/dom.js';
-import { Codicon } from '../../../../base/common/codicons.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
 import { dirname, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
-import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -52,7 +49,7 @@ import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/b
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.js';
-import { createParadisViewerIconButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
+import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 import { paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
@@ -138,8 +135,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
 		this._zoom.createButtons(toolbar);
 
-		const refreshButton = createParadisViewerIconButton(toolbar, Codicon.refresh, localize('paradis.html.refresh', "再読み込み"));
-		this._register(dom.addDisposableListener(refreshButton, dom.EventType.CLICK, () => this.webview?.reload()));
+		// ページを読み込み直す（スクリプトの再実行、CSS・画像の取り直し）
+		this._register(createParadisViewerReloadButton(toolbar, () => this.webview?.reload()));
 	}
 
 	/**
