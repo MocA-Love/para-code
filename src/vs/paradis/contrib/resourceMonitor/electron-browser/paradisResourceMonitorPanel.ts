@@ -94,7 +94,7 @@ export class ParadisResourceMonitorPanel extends Disposable {
 	) {
 		super();
 
-		this.element = $('.paradis-resource-monitor-panel');
+		this.element = $('.paradis-resource-monitor-panel.paradis-overlay-popover');
 		this.element.tabIndex = -1;
 
 		const header = dom.append(this.element, $('.prm-header'));

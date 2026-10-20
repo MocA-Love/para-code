@@ -65,7 +65,7 @@ export class ParadisPortListPanel extends Disposable {
 	) {
 		super();
 
-		this.element = $('.paradis-port-list-panel');
+		this.element = $('.paradis-port-list-panel.paradis-overlay-popover');
 		this.element.tabIndex = -1;
 
 		const head = dom.append(this.element, $('.ppl-head'));

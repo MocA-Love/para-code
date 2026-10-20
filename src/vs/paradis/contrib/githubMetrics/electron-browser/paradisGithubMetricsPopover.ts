@@ -47,7 +47,7 @@ export interface IParadisGithubMetricsPopoverOptions {
  */
 export class ParadisGithubMetricsPopover extends Disposable {
 
-	readonly element = $('.paradis-ghm-popover');
+	readonly element = $('.paradis-ghm-popover.paradis-overlay-popover');
 
 	private readonly bodyElement: HTMLElement;
 	private readonly updatedElement: HTMLElement;

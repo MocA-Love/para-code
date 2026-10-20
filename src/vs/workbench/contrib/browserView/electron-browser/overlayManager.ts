@@ -63,6 +63,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// PARA-PATCH: the fork's notification inbox popover under the title bar bell (vs/paradis/contrib/notificationInbox).
 	{ className: 'paradis-notification-inbox-popover', type: BrowserOverlayType.QuickInput },
 	{ className: 'paradis-browser-downloads-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: the fork's browser downloads list (vs/paradis/contrib/browserDownloads)
+	{ className: 'paradis-overlay-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: shared marker class for the fork's anchored title bar / status bar panels
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

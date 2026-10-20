@@ -75,7 +75,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		super();
 		this.status = options.status;
 
-		this.element = $('.paradis-pty-daemon-popover');
+		this.element = $('.paradis-pty-daemon-popover.paradis-overlay-popover');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		layoutService.activeContainer.appendChild(this.element);
