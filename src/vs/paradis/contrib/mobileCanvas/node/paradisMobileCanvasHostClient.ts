@@ -93,6 +93,8 @@ export class ParadisMobileCanvasHostClient {
 	private _executable: Promise<string> | undefined;
 	/** 同梱の版のキャッシュ。 */
 	private _version: Promise<string | undefined> | undefined;
+	/** 同梱と同じ版のホストが記録を書いたディレクトリ（＝同梱のプロトコル版）。一度つながるまでは分からない。 */
+	private _bundledDir: string | undefined;
 
 	constructor(
 		private readonly _builtinExtensionsPath: string,
@@ -219,7 +221,12 @@ export class ParadisMobileCanvasHostClient {
 
 	/** 動いているホストを、記録を 1 件ずつ確かめて選ぶ（{@link paradisPickMobileCanvasHost}）。 */
 	private async _findRunningHost(): Promise<IHostMetadata | undefined> {
-		return paradisPickMobileCanvasHost(await this._readMetadata(), await this._bundledVersion(), metadata => this._isHealthy(metadata));
+		const version = await this._bundledVersion();
+		const found = await paradisPickMobileCanvasHost(await this._readMetadata(), version, record => this._isHealthy(record.metadata), this._bundledDir);
+		if (found && version !== undefined && found.version === version) {
+			this._bundledDir = found.dir;
+		}
+		return found?.metadata;
 	}
 
 	/**
@@ -227,7 +234,7 @@ export class ParadisMobileCanvasHostClient {
 	 * ディレクトリが分かれるため版を決め打ちしない（同梱版が上がってディレクトリ名が変わっても追従できる）。
 	 * 古い版の記録は、そのホストが止まっても残るので、どれが動いているかはここでは決めない。
 	 */
-	private async _readMetadata(): Promise<IHostMetadata[]> {
+	private async _readMetadata(): Promise<IParadisMobileCanvasHostRecord<IHostMetadata>[]> {
 		const hostsRoot = join(homedir(), '.mobile-canvas', 'hosts');
 		let entries: string[];
 		try {
@@ -235,13 +242,13 @@ export class ParadisMobileCanvasHostClient {
 		} catch {
 			return [];
 		}
-		const found: IHostMetadata[] = [];
+		const found: IParadisMobileCanvasHostRecord<IHostMetadata>[] = [];
 		for (const entry of paradisOrderMobileCanvasHostDirs(entries)) {
 			try {
 				const raw = await readFile(join(hostsRoot, entry, 'host.json'), 'utf8');
 				const metadata = normalizeMetadata(JSON.parse(raw));
 				if (metadata) {
-					found.push(metadata);
+					found.push({ dir: entry, version: metadata.version, metadata });
 				}
 			} catch {
 				// 版ディレクトリが残っているだけで host.json が無いこともある。次を見る。
@@ -391,20 +398,39 @@ export function paradisOrderMobileCanvasHostDirs(entries: readonly string[]): st
 	});
 }
 
+/** `hosts/<dir>/host.json` の 1 件。 */
+export interface IParadisMobileCanvasHostRecord<M> {
+	/** プロトコル版のディレクトリ名（`v<N>`）。 */
+	readonly dir: string;
+	/** その記録を書いたホストの版。 */
+	readonly version: string;
+	readonly metadata: M;
+}
+
 /**
- * 記録（新しい順）を 1 件ずつ確かめ、動いているホストを選ぶ。同梱と同じ版のものを優先し、無ければ
- * 動いているもののうち最初のもの。どれも動いていなければ undefined。
+ * 記録（新しい順）を 1 件ずつ確かめ、動いているホストを選ぶ。同梱と同じ版のものを優先する。
+ *
+ * 同じ版のものが動いていなければ、同梱と同じプロトコル版（同じディレクトリ）で動いている別の版を
+ * 代わりに使う。同梱のプロトコル版は同梱からは読めないので、同梱と同じ版のホストにつながったことのある
+ * ディレクトリ（`knownBundledDir`）をそれとみなす。分からないときと、別のプロトコル版しか動いていない
+ * ときは undefined を返し、同梱のホストを起動させる（status しか確かめないので、API の違いは見分けられない）。
+ * 同梱の版が分からなければ、動いているもののうち最初のもの。
  */
-export async function paradisPickMobileCanvasHost<T extends { readonly version: string }>(candidates: readonly T[], expectedVersion: string | undefined, isHealthy: (candidate: T) => Promise<boolean>): Promise<T | undefined> {
-	let fallback: T | undefined;
-	for (const candidate of candidates) {
-		if (!await isHealthy(candidate)) {
+export async function paradisPickMobileCanvasHost<R extends IParadisMobileCanvasHostRecord<unknown>>(records: readonly R[], expectedVersion: string | undefined, isHealthy: (record: R) => Promise<boolean>, knownBundledDir?: string): Promise<R | undefined> {
+	const bundledDirs = new Set(records.filter(record => record.version === expectedVersion).map(record => record.dir));
+	if (knownBundledDir !== undefined) {
+		bundledDirs.add(knownBundledDir);
+	}
+	let fallback: R | undefined;
+	for (const record of records) {
+		const usable = expectedVersion === undefined || record.version === expectedVersion || (fallback === undefined && bundledDirs.has(record.dir));
+		if (!usable || !await isHealthy(record)) {
 			continue;
 		}
-		if (expectedVersion === undefined || candidate.version === expectedVersion) {
-			return candidate;
+		if (expectedVersion === undefined || record.version === expectedVersion) {
+			return record;
 		}
-		fallback ??= candidate;
+		fallback = record;
 	}
 	return fallback;
 }
