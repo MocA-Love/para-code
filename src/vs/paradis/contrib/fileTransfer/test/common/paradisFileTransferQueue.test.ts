@@ -24,6 +24,7 @@ import {
 	IParadisTransferSource,
 	IParadisTransferStat,
 	ParadisTransferConflictError,
+	ParadisTransferListingTruncatedError,
 	ParadisTransferQueue,
 	paradisTransferTempName,
 } from '../../common/paradisFileTransferQueue.js';
@@ -544,6 +545,52 @@ suite('Paradis file transfer - queue', () => {
 			current: undefined,
 			states: ['done', 'done'],
 		});
+	});
+
+	test('replacing a different kind keeps the target when the source cannot be read', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		// 送り元はフォルダー、宛先は同名のファイル。送り元のフォルダーが読めない（接続切れなど）
+		fileSystem.addDirectory(joinPath(LOCAL, 'dist'));
+		fileSystem.failures.set(joinPath(LOCAL, 'dist').toString(), new FileOperationError('EACCES', FileOperationResult.FILE_PERMISSION_DENIED));
+		fileSystem.addFile(joinPath(REMOTE, 'dist'), 5);
+		const queue = createQueue(fileSystem);
+
+		await queue.enqueue(request([source('dist', true)]), async () => ({ action: 'overwrite', applyToAll: false }));
+		await settled(queue);
+
+		assert.deepStrictEqual({ removed: fileSystem.removed, kept: fileSystem.get(joinPath(REMOTE, 'dist'))?.isDirectory, state: queue.items[0].state }, {
+			removed: [],
+			kept: false,
+			state: 'error',
+		});
+	});
+
+	test('a folder listed only up to the limit still sends what was listed and says it is incomplete', async () => {
+		const fileSystem = new FakeFileSystem();
+		fileSystem.addDirectory(REMOTE);
+		fileSystem.addDirectory(joinPath(LOCAL, 'logs'));
+		fileSystem.addFile(joinPath(LOCAL, 'logs', 'a.log'), 10);
+		fileSystem.addFile(joinPath(LOCAL, 'logs', 'b.log'), 10);
+		// 一覧の上限で b.log より後が読めなかった
+		const readDirectory = fileSystem.readDirectory.bind(fileSystem);
+		fileSystem.readDirectory = async resource => {
+			const children = await readDirectory(resource);
+			if (resource.toString() === joinPath(LOCAL, 'logs').toString()) {
+				throw new ParadisTransferListingTruncatedError(children.filter(child => child.name === 'a.log'));
+			}
+			return children;
+		};
+		const queue = createQueue(fileSystem);
+
+		await queue.enqueue(request([source('logs', true)]), neverAsked);
+		await settled(queue);
+
+		assert.deepStrictEqual({
+			state: queue.items[0].state,
+			truncatedFolders: queue.items[0].truncatedFolders,
+			sent: [fileSystem.get(joinPath(REMOTE, 'logs', 'a.log')) !== undefined, fileSystem.get(joinPath(REMOTE, 'logs', 'b.log')) !== undefined],
+		}, { state: 'done', truncatedFolders: 1, sent: [true, false] });
 	});
 
 	test('an item waiting for a run-time conflict dialog does not hold a slot', async () => {

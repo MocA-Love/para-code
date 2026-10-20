@@ -163,17 +163,16 @@ export async function paradisCopyToDirectory(
 	}
 	const targets = sources.map(source => joinPath(targetDir, basename(source.uri)));
 
-	// 既存チェック → 一括上書き確認。未確認なら overwrite=false なので競合時は安全側で失敗する
-	const existingNames: string[] = [];
-	for (const target of targets) {
-		if (await services.fileService.exists(target)) {
-			existingNames.push(basename(target));
+	// 既存チェック → 一括上書き確認。上書きを許すのは確認に出した名前だけ。確認を待つ間に別のアプリが
+	// 作った同名は overwrite=false のまま写すので、安全側で失敗する（確認していないものを消さない）
+	const existing = new Set<number>();
+	for (let index = 0; index < targets.length; index++) {
+		if (await services.fileService.exists(targets[index])) {
+			existing.add(index);
 		}
 	}
-	let overwrite = false;
-	if (existingNames.length) {
-		overwrite = await confirmOverwrite(services, existingNames);
-		if (!overwrite) {
+	if (existing.size) {
+		if (!await confirmOverwrite(services, [...existing].map(index => basename(targets[index])))) {
 			return;
 		}
 	}
@@ -191,7 +190,7 @@ export async function paradisCopyToDirectory(
 			async () => {
 				for (let index = 0; index < sources.length; index++) {
 					try {
-						await services.fileService.copy(sources[index].uri, targets[index], overwrite);
+						await services.fileService.copy(sources[index].uri, targets[index], existing.has(index));
 					} catch (error) {
 						failedNames.push(sources[index].name);
 						firstError ??= error instanceof Error ? error : String(error);

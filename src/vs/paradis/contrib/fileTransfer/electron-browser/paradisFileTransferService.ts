@@ -63,6 +63,7 @@ import {
 	IParadisTransferStat,
 	ParadisConflictAction,
 	ParadisTransferQueue,
+	ParadisTransferListingTruncatedError,
 } from '../common/paradisFileTransferQueue.js';
 import { IParadisTransferMetadata, ParadisFileServiceTransferFileSystem } from '../browser/paradisFileTransferFileSystem.js';
 import { IParadisSftpEntry, paradisDirectTargetFor, paradisIsSafeSftpEntryName, paradisIsSftpResource, paradisSftpIdleMs, paradisSftpUri, PARADIS_SFTP_CHANNEL, PARADIS_SFTP_IDLE_SETTING, PARADIS_SFTP_SCHEME } from '../common/paradisSftp.js';
@@ -468,7 +469,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 	/** 待ち行列の下調べ用の一覧。権限のチャネルがあれば 1 往復で読む（無ければ undefined を返して IFileService に任せる）。 */
 	private async listForTransfer(resource: URI): Promise<readonly IParadisTransferChild[] | undefined> {
 		if (paradisIsSftpResource(resource)) {
-			let listing: { entries: IParadisSftpEntry[] };
+			let listing: { entries: IParadisSftpEntry[]; truncated: boolean };
 			try {
 				listing = await this.sftp.list(resource);
 			} catch (error) {
@@ -478,7 +479,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 				throw error;
 			}
 			// 送り先の外を指しうる名前は、shared process でも捨てているが、ここでも写さない
-			return listing.entries.filter(entry => paradisIsSafeSftpEntryName(entry.name)).map(entry => ({
+			return paradisTransferListing(listing.truncated, listing.entries.filter(entry => paradisIsSafeSftpEntryName(entry.name)).map(entry => ({
 				name: entry.name,
 				resource: joinPath(resource, entry.name),
 				isDirectory: entry.isDirectory,
@@ -487,7 +488,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 				special: entry.kind === 'other',
 				directoryLink: entry.kind === 'symlink' && entry.isDirectory,
 				isSymbolicLink: entry.kind === 'symlink',
-			}));
+			})));
 		}
 		const side = this.sideOf(resource);
 		const channel = side && await this.modesAvailable(side) ? this.modesChannel(side) : undefined;
@@ -503,7 +504,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 			}
 			throw error;
 		}
-		return listing.entries.map(entry => ({
+		return paradisTransferListing(listing.truncated, listing.entries.map(entry => ({
 			name: entry.name,
 			resource: joinPath(resource, entry.name),
 			isDirectory: entry.isDirectory,
@@ -513,7 +514,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 			special: entry.kind === 'other',
 			directoryLink: entry.kind === 'symlink' && entry.isDirectory,
 			isSymbolicLink: entry.kind === 'symlink',
-		}));
+		})));
 	}
 
 	// --- 転送 --------------------------------------------------------------------------------------
@@ -627,6 +628,17 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		void this.cleanupTemps();
 		return paradisSftpUri(host, result.home);
 	}
+}
+
+/**
+ * 待ち行列の下調べ用の一覧を返す。上限で打ち切られていれば、読めた分を持たせて投げる
+ * （黙って返すと、残りを送らないまま完了と出る）。
+ */
+function paradisTransferListing(truncated: boolean, children: IParadisTransferChild[]): IParadisTransferChild[] {
+	if (truncated) {
+		throw new ParadisTransferListingTruncatedError(children);
+	}
+	return children;
 }
 
 /** 待ち行列に積む送り元を、一覧の行から作る。 */
