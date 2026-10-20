@@ -99,7 +99,7 @@ class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
 				if (paradisCanCloseUnscopedAuxiliaryPart(part)) {
 					return undefined;
 				}
-				return localize('paradis.auxiliaryWindow.pendingClose', "このウィンドウがどのスペースのものか確定していないため、ターミナルや未保存の変更を守るために閉じるのを止めました。中のタブをメインウィンドウへ移してから閉じてください。");
+				return localize('paradis.auxiliaryWindow.pendingClose', "このウィンドウがどのスペースのものか確定していないため、ターミナルや未保存の変更を守るために閉じるのを止めました。中のタブをメインウィンドウへドラッグして移してから閉じてください。");
 			}
 			if (scope.kind !== 'managed' || scope.stateKey === workspaceSwitchService.activeStateKey) {
 				return undefined;
