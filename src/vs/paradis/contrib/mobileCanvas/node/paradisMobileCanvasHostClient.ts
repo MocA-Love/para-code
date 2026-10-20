@@ -216,6 +216,14 @@ export class ParadisMobileCanvasHostClient {
 				return candidate;
 			}
 		}
+		// 同梱のホストが上がらなかった。同じプロトコル版の 2 つめの起動をホストが断ったのなら、そのプロトコル版で
+		// 別の版のホストが動いている。動いているのが 1 つだけならそれがその相手なので、それを使う。
+		const fallback = await paradisPickMobileCanvasHostAfterFailedStart(await this._readMetadata(), record => this._isHealthy(record.metadata));
+		if (fallback) {
+			this._logService.warn(`[paradis-mobile-canvas] the bundled host did not start; using the running host of version ${fallback.version || 'unknown'} in ${fallback.dir}`);
+			this._metadata = fallback.metadata;
+			return fallback.metadata;
+		}
 		throw new ParadisMobileCanvasUnavailableError('The Mobile Canvas host did not become ready within 20 seconds.');
 	}
 
@@ -433,6 +441,22 @@ export async function paradisPickMobileCanvasHost<R extends IParadisMobileCanvas
 		fallback = record;
 	}
 	return fallback;
+}
+
+/**
+ * 同梱のホストを起動して待っても上がらなかったときの逃げ道。ホストはプロトコル版ごとに 1 つしか動かない
+ * ので、同梱と同じプロトコル版で別の版のホストが動いていると、同梱のホストは上がらない。同梱のプロトコル版は
+ * 分からないが、動いているホストが 1 つだけなら、それが同梱のプロトコル版の場所にいるとみなして返す。
+ * 2 つ以上動いているときはどれか決められないので undefined。
+ */
+export async function paradisPickMobileCanvasHostAfterFailedStart<R extends IParadisMobileCanvasHostRecord<unknown>>(records: readonly R[], isHealthy: (record: R) => Promise<boolean>): Promise<R | undefined> {
+	const running: R[] = [];
+	for (const record of records) {
+		if (await isHealthy(record)) {
+			running.push(record);
+		}
+	}
+	return running.length === 1 ? running[0] : undefined;
 }
 
 function normalizeMetadata(raw: unknown): IHostMetadata | undefined {

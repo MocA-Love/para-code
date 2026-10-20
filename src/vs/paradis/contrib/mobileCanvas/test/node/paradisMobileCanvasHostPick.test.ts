@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisOrderMobileCanvasHostDirs, paradisPickMobileCanvasHost } from '../../node/paradisMobileCanvasHostClient.js';
+import { paradisOrderMobileCanvasHostDirs, paradisPickMobileCanvasHost, paradisPickMobileCanvasHostAfterFailedStart } from '../../node/paradisMobileCanvasHostClient.js';
 
 suite('ParadisMobileCanvasHostPick', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -49,6 +49,23 @@ suite('ParadisMobileCanvasHostPick', () => {
 			unknownProtocol: undefined,
 			sameProtocolFallback: 'same-protocol',
 			anyVersionWhenUnknown: 'older-protocol',
+		});
+	});
+
+	test('when the bundled host does not start, the only running host is used, but not one of several', async () => {
+		const after = (candidates: ICandidate[]) => paradisPickMobileCanvasHostAfterFailedStart(candidates, async candidate => candidate.running).then(found => found?.name);
+		const stale = host('stale', 'v3', '0.2.0', false);
+		const otherVersion = host('other-version', 'v2', '0.1.15', true);
+		const olderProtocol = host('older-protocol', 'v1', '0.1.9', true);
+		assert.deepStrictEqual({
+			// Another extension's host holds the bundled protocol, so the bundled one refused to start.
+			onlyOne: await after([stale, otherVersion]),
+			ambiguous: await after([stale, otherVersion, olderProtocol]),
+			none: await after([stale]),
+		}, {
+			onlyOne: 'other-version',
+			ambiguous: undefined,
+			none: undefined,
 		});
 	});
 });
