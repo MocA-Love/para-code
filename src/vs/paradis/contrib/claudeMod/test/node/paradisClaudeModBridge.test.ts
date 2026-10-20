@@ -146,6 +146,36 @@ suite('ParadisClaudeModBridge', () => {
 		]);
 	});
 
+	test('an approval only the terminal dialog can allow takes a refusal but not an allow', async () => {
+		const personOnly = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_p', personOnly: true, readOnly: true })).body.id as string;
+		const traits = bridge.pendingPermissions(TOKEN, SESSION).map(permission => ({ personOnly: permission.personOnly, readOnly: permission.readOnly }));
+		const allowed = bridge.answerPermission(TOKEN, personOnly, 'allow', false);
+		const denied = bridge.answerPermission(TOKEN, personOnly, 'deny', false);
+		assert.deepStrictEqual({ traits, allowed, denied, reply: (await call('wait', { id: personOnly })).body }, {
+			traits: [{ personOnly: true, readOnly: true }],
+			allowed: false,
+			denied: true,
+			reply: { state: 'answer', decision: 'deny' },
+		});
+	});
+
+	test('an approval it did not wait for still tells whether only the terminal can allow it, until its result is written', async () => {
+		bridge.setPresence(() => 'connected');
+		bridge.setApprovalWait(() => 0);
+		const reply = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_n', personOnly: true })).body;
+		const plain = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_m' })).body;
+		const traits = () => bridge.permissionTraits(TOKEN, SESSION).map(permission => ({ toolUseId: permission.toolUseId, personOnly: permission.personOnly }));
+		const before = traits();
+		await call('event', { events: [{ type: 'tool-results', ids: ['toolu_n'], errorIds: [] }] });
+		assert.deepStrictEqual({ reply, plain, before, pending: bridge.pendingPermissions(TOKEN, SESSION).length, after: traits() }, {
+			reply: { wait: false },
+			plain: { wait: false },
+			before: [{ toolUseId: 'toolu_n', personOnly: true }],
+			pending: 0,
+			after: [],
+		});
+	});
+
 	test('a written tool result or the end of the main turn settles what was still waiting', async () => {
 		const permission = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_1' })).body.id as string;
 		const question = (await call('question', { questions: QUESTIONS })).body.id as string;

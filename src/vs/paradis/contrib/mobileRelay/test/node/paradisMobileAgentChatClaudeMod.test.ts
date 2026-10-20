@@ -421,6 +421,75 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('an approval only the terminal dialog can allow (Claude Code 2.1.304 decider person) offers the refusal alone, refuses an allow from the phone, and marks a read-only call', () => withHarness(async harness => {
+		const input = { command: 'cat package.json' };
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_q', toolInput: input });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: input, payload: { permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'cat:*' }], behavior: 'allow', destination: 'session' }] } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_q', toolName: 'Bash', toolInput: input, suggestions: [], denyMessage: true, personOnly: true, readOnly: true });
+		type Card = { readonly answerOn?: string; readonly readOnly?: boolean; readonly answerVia?: string; readonly choices?: readonly { readonly id: string }[] };
+		const card = () => harness.tailer()?.currentInteraction() as Card | null | undefined;
+		await waitFor(() => card()?.answerOn === 'pc', 'the approval was not marked as answered on the PC');
+		const shown = { answerOn: card()?.answerOn, readOnly: card()?.readOnly, answerVia: card()?.answerVia, choices: card()?.choices?.map(choice => choice.id) };
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-pc', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'yes' });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-opt', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'opt:1', optionLabel: 'Yes' });
+		await waitFor(() => harness.sent.filter(message => message.t === 'action-result' && (message.requestId === 'allow-pc' || message.requestId === 'allow-opt')).length === 2, 'the allows were not answered');
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'deny-pc', epoch: harness.tailer()!.epoch, interactionId: 'toolu_q', choice: 'no' });
+		assert.deepStrictEqual({
+			shown,
+			allows: harness.sent.filter(message => message.t === 'action-result' && (message.requestId === 'allow-pc' || message.requestId === 'allow-opt')).map(message => ({ status: message.status, code: message.code })),
+			reply: await waiting,
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			shown: { answerOn: 'pc', readOnly: true, answerVia: 'mod', choices: ['no'] },
+			allows: [{ status: 'rejected', code: 'invalid-answer' }, { status: 'rejected', code: 'invalid-answer' }],
+			reply: { state: 'answer', decision: 'deny' },
+			keys: 0,
+		});
+	}));
+
+	test('an approval only the terminal can allow is refused from the phone even when the mod did not wait, and before the card is marked', () => withHarness(async harness => {
+		type Card = { readonly answerOn?: string; readonly choices?: readonly { readonly id: string }[] };
+		const card = () => harness.tailer()?.currentInteraction() as Card | null | undefined;
+		const results = (requestId: string) => harness.sent.filter(message => message.t === 'action-result' && message.requestId === requestId).map(message => ({ status: message.status, code: message.code }));
+		// 1) モバイルが繋がっていない（待つ設定が 0 でも同じ）: mod は待たないが、知らせは残る
+		harness.bridge.setApprovalWait(() => 0);
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_u', toolInput: { command: 'cat a' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'cat a' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const unwaited = await harness.mod('permission', { toolUseId: 'toolu_u', toolName: 'Bash', toolInput: { command: 'cat a' }, suggestions: [], denyMessage: true, personOnly: true });
+		await waitFor(() => card()?.answerOn === 'pc', 'the card was not marked from an approval the mod did not wait for');
+		const shownUnwaited = { answerOn: card()?.answerOn, choices: card()?.choices?.map(choice => choice.id) };
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-u', epoch: harness.tailer()!.epoch, interactionId: 'toolu_u', choice: 'yes' });
+		await waitFor(() => results('allow-u').length === 1, 'the allow was not answered');
+		await appendFile(harness.transcriptPath, `${JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_u', name: 'Bash', input: { command: 'cat a' } }] } })}\n${JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_u', content: 'a', is_error: false }] } })}\n`);
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the first approval was not settled');
+		// 2) mod が待っていて、カードに印が付くより先に許可が届いた
+		harness.bridge.setApprovalWait(() => 600_000);
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_w', toolInput: { command: 'cat b' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'cat b' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.id === 'toolu_w', 'the second approval card was not shown');
+		const waited = await harness.mod('permission', { toolUseId: 'toolu_w', toolName: 'Bash', toolInput: { command: 'cat b' }, suggestions: [], denyMessage: true, personOnly: true });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'allow-w', epoch: harness.tailer()!.epoch, interactionId: 'toolu_w', choice: 'yes' });
+		await waitFor(() => results('allow-w').length === 1, 'the early allow was not answered');
+		assert.deepStrictEqual({
+			unwaited: unwaited.wait,
+			shownUnwaited,
+			allowUnwaited: results('allow-u'),
+			waited: waited.wait,
+			allowWaited: results('allow-w'),
+			keys: harness.actions.filter(action => action.t === 'action/interaction').length,
+		}, {
+			unwaited: false,
+			shownUnwaited: { answerOn: 'pc', choices: ['no'] },
+			allowUnwaited: [{ status: 'rejected', code: 'invalid-answer' }],
+			waited: true,
+			allowWaited: [{ status: 'rejected', code: 'invalid-answer' }],
+			keys: 0,
+		});
+	}));
+
 	test('keeps the pane working after a refusal that carries an instruction (the phone or the terminal amend), and stops it on a plain refusal', () => withHarness(async harness => {
 		const access = harness.chat as unknown as { liveStates: Map<string, unknown>; activeTurnTokens: Set<string> };
 		const awaiting: number[] = [];

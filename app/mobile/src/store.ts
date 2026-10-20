@@ -1590,6 +1590,10 @@ export interface AgentInteraction {
 	 */
 	request?: IParadisAgentApprovalRequest;
 	suggestionScope?: ParadisAgentApprovalSuggestionScope;
+	/** kind==='approval': `pc` なら PC の端末の確認の画面でしか許可できない（PC は拒否だけを選択肢に載せる。古い PC は付けない）。 */
+	answerOn?: 'pc';
+	/** kind==='approval': 読むだけの呼び出し（古い PC は付けない）。 */
+	readOnly?: true;
 }
 
 export interface AgentApprovalChoice {
@@ -1656,6 +1660,8 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
 		...(request !== undefined ? { request } : {}),
 		...(suggestionScope !== undefined ? { suggestionScope } : {}),
 		...(raw['answerVia'] === 'mod' ? { answerVia: 'mod' as const } : {}),
+		...(raw['answerOn'] === 'pc' ? { answerOn: 'pc' as const } : {}),
+		...(raw['readOnly'] === true ? { readOnly: true as const } : {}),
 	};
 }
 

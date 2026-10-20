@@ -480,6 +480,23 @@ const PARADIS_DEFAULT_APPROVAL_CHOICES: readonly IParadisAgentApprovalChoice[] =
 /** mod から受け取った行を、ファイルに同じ行が現れるのを待って保留する時間（ファイルの方が先なら mod の行は捨てる）。 */
 const MOD_ROW_HOLD_MS = 300;
 
+/** 端末の確認の画面でしか許可できない承認に、モバイルから許可を送ったときの断り。 */
+const PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE = 'この操作は PC の Claude Code の確認画面でしか許可できません。PC で答えてください';
+
+/**
+ * モバイルの承認の回答が許可か（`yes`・`always`、画面の番号の選択肢で文言が Yes で始まるもの）。文言の無い番号の選択肢は
+ * 確かめられないので許可とみなす。
+ */
+function paradisApprovalChoiceAllows(choice: string, optionLabel: string | undefined): boolean {
+	if (choice === 'yes' || choice === 'always') {
+		return true;
+	}
+	if (paradisParseApprovalOptionChoice(choice) === undefined) {
+		return false;
+	}
+	return optionLabel === undefined || /^yes\b/i.test(optionLabel.trim());
+}
+
 /**
  * mod（Claude Mods）が答えられ、「以後は確認しない」のルールも足せる承認の選択肢。`always` は mod が
  * PermissionRequest の permission_suggestions をそのまま返す。足されるルールを文言に出し、設定ファイルやモードのように
@@ -2821,8 +2838,10 @@ class TranscriptTailer {
 	/**
 	 * 承認のカードの選択肢を、mod が答えられるか（`resolve` が選択肢を返すか）で直す。答えられないものは「許可 / 拒否」。
 	 * `answerVia: 'mod'` は、mod が拒否に指示を添えられるときだけ付ける（それ以外は外す）。
+	 * `answerOn: 'pc'`（端末の確認の画面でしか許可できない）と `readOnly` は一度付いたら外さない（mod が待つのをやめても、
+	 * 端末の確認の画面の性質は変わらない）。`answerOn: 'pc'` の承認の選択肢は拒否だけにする。
 	 */
-	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => { readonly choices: readonly IParadisAgentApprovalChoice[]; readonly denyMessage: boolean } | undefined): void {
+	updateModApprovals(resolve: (interaction: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }>) => { readonly choices: readonly IParadisAgentApprovalChoice[]; readonly denyMessage: boolean; readonly personOnly?: boolean; readonly readOnly?: boolean } | undefined): void {
 		this.enqueue(async () => {
 			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
@@ -2831,11 +2850,20 @@ class TranscriptTailer {
 					continue;
 				}
 				const resolved = resolve(entry.interaction);
-				const choices = resolved?.choices ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				const answerOnPc = entry.interaction.answerOn === 'pc' || resolved?.personOnly === true;
+				const readOnly = entry.interaction.readOnly === true || resolved?.readOnly === true;
+				const offered = resolved?.choices ?? PARADIS_DEFAULT_APPROVAL_CHOICES;
+				const choices = answerOnPc ? offered.filter(choice => choice.tone === 'deny') : offered;
 				const viaMod = resolved?.denyMessage === true;
-				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices) || (entry.interaction.answerVia === 'mod') !== viaMod) {
-					const { answerVia: _previous, ...rest } = entry.interaction;
-					this.approvalQueue[index] = { ...entry, interaction: { ...rest, choices, ...(viaMod ? { answerVia: 'mod' as const } : {}) } };
+				if (JSON.stringify(entry.interaction.choices) !== JSON.stringify(choices) || (entry.interaction.answerVia === 'mod') !== viaMod
+					|| (entry.interaction.answerOn === 'pc') !== answerOnPc || (entry.interaction.readOnly === true) !== readOnly) {
+					const { answerVia: _previous, answerOn: _answerOn, readOnly: _readOnly, ...rest } = entry.interaction;
+					this.approvalQueue[index] = {
+						...entry, interaction: {
+							...rest, choices, ...(viaMod ? { answerVia: 'mod' as const } : {}),
+							...(answerOnPc ? { answerOn: 'pc' as const } : {}), ...(readOnly ? { readOnly: true as const } : {}),
+						},
+					};
 					changed = true;
 				}
 			}
@@ -5773,9 +5801,19 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
 			return;
 		}
+		// 端末の確認の画面でしか許可できない承認は、モバイルからの許可を断る（古いアプリの古いカード・画面の選択肢・通知から。
+		// カードに印が付く前でも、mod が知らせていれば断る。キーの経路へ流すと Enter で許可されてしまう）
+		if (token !== undefined && session?.agent === 'claude' && paradisApprovalChoiceAllows(msg.choice, msg.optionLabel) && this.isPersonOnlyApproval(token, msg.interactionId)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE }, token);
+			return;
+		}
 		// mod（Claude Mods）が承認を待っていれば、キーを打たずに値で答える（「以後は確認しない」もここだけ）。
 		if (token !== undefined && session?.agent === 'claude') {
 			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch }, msg.message);
+			if (viaMod === 'refused') {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE }, token);
+				return;
+			}
 			if (viaMod === 'answered' || viaMod === 'locked') {
 				this.sendTo(mobileId, viaMod === 'answered'
 					? { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }
@@ -6918,10 +6956,16 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			const pending = this.claudeModBridge.pendingPermissions(token, session.sessionId);
+			const traits = this.claudeModBridge.permissionTraits(token, session.sessionId);
 			const cards = tailer.approvalInteractions();
 			tailer.updateModApprovals(interaction => {
 				const permission = this.matchModPermission(interaction, pending, cards);
-				return permission !== undefined ? { choices: paradisModApprovalChoices(permission.suggestions), denyMessage: permission.acceptsDenyMessage } : undefined;
+				if (permission !== undefined) {
+					return { choices: paradisModApprovalChoices(permission.suggestions), denyMessage: permission.acceptsDenyMessage, personOnly: permission.personOnly, readOnly: permission.readOnly };
+				}
+				// mod が待たなかった（モバイルが繋がっていない・待つ設定が 0）承認も、印と許可の断りには使う
+				const unwaited = this.matchModPermission(interaction, traits, cards);
+				return unwaited !== undefined ? { choices: PARADIS_DEFAULT_APPROVAL_CHOICES, denyMessage: false, personOnly: unwaited.personOnly, readOnly: unwaited.readOnly } : undefined;
 			});
 			const unmatched = pending.filter(permission => !cards.some(card => this.matchModPermission(card, [permission], cards) !== undefined));
 			if (unmatched.length === 0 || this.modApprovalTimers.has(token)) {
@@ -7075,7 +7119,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * `denyMessage`（拒否に添える指示）は、指示を受け取れる mod が待っているときだけ渡す。渡せなければ 'none'
 	 * （呼び出し側は指示を落として Esc で拒否してはいけない）。
 	 */
-	private tryAnswerApprovalViaMod(token: string, interactionId: string, choice: string, optionLabel: string | undefined, mobile?: { readonly mobileId: string; readonly epoch: string }, denyMessage?: string): 'answered' | 'locked' | 'none' {
+	private tryAnswerApprovalViaMod(token: string, interactionId: string, choice: string, optionLabel: string | undefined, mobile?: { readonly mobileId: string; readonly epoch: string }, denyMessage?: string): 'answered' | 'locked' | 'refused' | 'none' {
 		const session = this.paneSessions.get(token);
 		const tailer = this.tailers.get(token);
 		if (session?.agent !== 'claude' || tailer === undefined || (mobile !== undefined && (tailer.epoch !== mobile.epoch || !this.hasSubscriber(token, mobile.mobileId)))) {
@@ -7097,6 +7141,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			return this.isModAnswerLocked(lockKey) ? 'locked' : 'none';
 		}
 		const permission = this.matchModPermission(interaction, this.claudeModBridge.pendingPermissions(token, session.sessionId), cards);
+		if (permission?.personOnly === true && decision.allow) {
+			// 端末の確認の画面でしか許可できない（mod から返しても効かない）。キーの経路へも流さない
+			return 'refused';
+		}
 		if (permission === undefined || (decision.always && !permission.hasSuggestions)
 			|| (denyMessage !== undefined && (decision.allow || !permission.acceptsDenyMessage))) {
 			return 'none';
@@ -7111,6 +7159,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.lockModAnswer(lockKey);
 		tailer.markApprovalAnswered(interactionId);
 		return 'answered';
+	}
+
+	/**
+	 * 端末の確認の画面でしか許可できない承認か。カードの印（`answerOn: 'pc'`）か、まだ印の付いていないカードに合う mod の知らせ
+	 * （待っているもの・待たなかったもの）で決める。
+	 */
+	private isPersonOnlyApproval(token: string, interactionId: string): boolean {
+		const session = this.paneSessions.get(token);
+		const cards = this.tailers.get(token)?.approvalInteractions() ?? [];
+		const card = cards.find(candidate => candidate.id === interactionId);
+		if (card === undefined || session?.agent !== 'claude') {
+			return false;
+		}
+		return card.answerOn === 'pc' || this.matchModPermission(card, this.claudeModBridge.permissionTraits(token, session.sessionId), cards)?.personOnly === true;
 	}
 
 	/** デスクトップのチャット表示の「以後は確認しない」（キーでは答えられないので mod へ渡す）。 */

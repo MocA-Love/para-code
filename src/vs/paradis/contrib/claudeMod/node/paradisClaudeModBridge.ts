@@ -39,6 +39,8 @@ const ALIVE_MS = 75_000;
 const ORPHAN_MS = 60_000;
 /** 質問の待ちの上限（PC の TUI と並んでいるので長くてよい）。 */
 const QUESTION_TTL_MS = 60 * 60_000;
+/** 待たなかった承認の性質（{@link ParadisClaudeModBridge.permissionTraits}）を覚えておく上限。結果が書かれた・ターンが終わったら先に消す。 */
+const PERMISSION_TRAITS_TTL_MS = 30 * 60_000;
 /** モバイルが繋がっていない状態が続いたら承認の待ちを打ち切るまで（一時的な切断は待つ）。 */
 const APPROVAL_PRESENCE_GRACE_MS = 30_000;
 /** 送った発言の受け取り（ack）を待つ上限。過ぎたら mod の中で待ち行列に入ったとみなす。 */
@@ -121,6 +123,13 @@ export interface IParadisClaudeModPendingPermission {
 	readonly suggestions: readonly unknown[];
 	/** 拒否に添えた文を Claude Code へ渡せる mod か（登録に `denyMessage: true` を付けてくる版）。古い mod は固定の文で拒否する。 */
 	readonly acceptsDenyMessage: boolean;
+	/**
+	 * 端末の確認の画面でしか許可できない（Claude Code 2.1.304 の mod の `tool.check` の `decider: 'person'`。mod 1.4.2 以降が
+	 * 登録に `personOnly: true` を添える）。mod から許可を返しても効かず、拒否だけが効く。
+	 */
+	readonly personOnly: boolean;
+	/** 読むだけの呼び出し（Claude Code 2.1.304 の `tool.check` の `isReadOnly`。mod 1.4.2 以降）。 */
+	readonly readOnly: boolean;
 }
 
 export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId: string; readonly at: number } & (
@@ -324,6 +333,11 @@ export class ParadisClaudeModBridge {
 	/** 会話（`token\0sessionId`）→ 送り主をそのペインのプロセスだと確かめた時刻。 */
 	private readonly callerVerifiedAt = new Map<string, number>();
 	private readonly pending = new Map<string, IPendingItem>();
+	/**
+	 * 待たなかった（`wait: false` を返した）承認のうち、端末の確認の画面でしか許可できない・読むだけのもの（mod の id → 中身）。
+	 * 待たなくてもカードの印と許可の断りに使う（モバイルが後から繋がった・待つ設定が 0 でも、許可がキーの経路へ流れないように）。
+	 */
+	private readonly unwaitedTraits = new Map<string, { readonly token: string; readonly sessionId: string; readonly expiresAt: number; readonly permission: IParadisClaudeModPendingPermission }>();
 	private readonly longPollsByToken = new Map<string, number>();
 	private longPolls = 0;
 	private presence: () => ParadisClaudeModPresence = () => 'off';
@@ -354,6 +368,7 @@ export class ParadisClaudeModBridge {
 			state.commandWaiter?.([]);
 		}
 		this.sessions.clear();
+		this.unwaitedTraits.clear();
 		this._onEvent.dispose();
 	}
 
@@ -663,22 +678,29 @@ export class ParadisClaudeModBridge {
 			return { status: 400, body: { error: 'bad request' } };
 		}
 		const waitMs = this.approvalWaitMs();
-		// 既定ではモバイルが繋がっているときだけ待つ。PC の許可プロンプトは並んで出ている
-		if (waitMs <= 0 || this.presence() !== 'connected' || this.countPending(token) >= MAX_PENDING_PER_TOKEN) {
-			return { status: 200, body: { wait: false } };
-		}
 		const itemId = randomUUID();
 		const toolUseId = id(request.toolUseId);
 		const agentId = id(request.agentId);
 		const now = this.now();
+		const permission = (): IParadisClaudeModPendingPermission => ({
+			...this.sanitizedPermissionInput(toolName, request.toolInput, request.suggestions),
+			id: itemId, toolName, acceptsDenyMessage: request.denyMessage === true,
+			personOnly: request.personOnly === true, readOnly: request.readOnly === true,
+			...(toolUseId !== undefined ? { toolUseId } : {}),
+			...(agentId !== undefined ? { agentId } : {}),
+		});
+		// 既定ではモバイルが繋がっているときだけ待つ。PC の許可プロンプトは並んで出ている
+		if (waitMs <= 0 || this.presence() !== 'connected' || this.countPending(token) >= MAX_PENDING_PER_TOKEN) {
+			if ((request.personOnly === true || request.readOnly === true) && [...this.unwaitedTraits.values()].filter(entry => entry.token === token).length < MAX_PENDING_PER_TOKEN) {
+				this.unwaitedTraits.set(itemId, { token, sessionId, expiresAt: now + PERMISSION_TRAITS_TTL_MS, permission: permission() });
+				this.ensureSweep();
+				this.fire({ token, sessionId, at: now, type: 'pending-changed', kind: 'permission' });
+			}
+			return { status: 200, body: { wait: false } };
+		}
 		this.pending.set(itemId, {
 			id: itemId, kind: 'permission', token, sessionId, expiresAt: now + waitMs, lastPollAt: now,
-			permission: {
-				...this.sanitizedPermissionInput(toolName, request.toolInput, request.suggestions),
-				id: itemId, toolName, acceptsDenyMessage: request.denyMessage === true,
-				...(toolUseId !== undefined ? { toolUseId } : {}),
-				...(agentId !== undefined ? { agentId } : {}),
-			},
+			permission: permission(),
 		});
 		this.ensureSweep();
 		this.fire({ token, sessionId, at: now, type: 'pending-changed', kind: 'permission' });
@@ -807,6 +829,11 @@ export class ParadisClaudeModBridge {
 			return;
 		}
 		const ids = new Set(toolUseIds);
+		for (const [key, entry] of [...this.unwaitedTraits]) {
+			if (entry.token === token && entry.sessionId === sessionId && entry.permission.toolUseId !== undefined && ids.has(entry.permission.toolUseId)) {
+				this.unwaitedTraits.delete(key);
+			}
+		}
 		for (const item of [...this.pending.values()]) {
 			const toolUseId = item.question?.toolUseId ?? item.permission?.toolUseId;
 			if (item.token === token && item.sessionId === sessionId && toolUseId !== undefined && ids.has(toolUseId)) {
@@ -816,6 +843,11 @@ export class ParadisClaudeModBridge {
 	}
 
 	private settleSession(token: string, sessionId: string, state: 'settled' | 'expired'): void {
+		for (const [key, entry] of [...this.unwaitedTraits]) {
+			if (entry.token === token && entry.sessionId === sessionId) {
+				this.unwaitedTraits.delete(key);
+			}
+		}
 		for (const item of [...this.pending.values()]) {
 			if (item.token === token && item.sessionId === sessionId) {
 				this.finish(item, { state });
@@ -894,6 +926,11 @@ export class ParadisClaudeModBridge {
 				}
 			}
 		}
+		for (const [key, entry] of [...this.unwaitedTraits]) {
+			if (now > entry.expiresAt) {
+				this.unwaitedTraits.delete(key);
+			}
+		}
 		for (const [key, state] of [...this.sessions]) {
 			if (state.commandWaiter === undefined && now - state.lastSeen > ALIVE_MS * 2) {
 				this.sessions.delete(key);
@@ -908,7 +945,7 @@ export class ParadisClaudeModBridge {
 				this.callerVerifiedAt.delete(key);
 			}
 		}
-		if (this.pending.size === 0 && this.sessions.size === 0 && this.sweepTimer !== undefined) {
+		if (this.pending.size === 0 && this.sessions.size === 0 && this.unwaitedTraits.size === 0 && this.sweepTimer !== undefined) {
 			clearInterval(this.sweepTimer);
 			this.sweepTimer = undefined;
 		}
@@ -953,6 +990,16 @@ export class ParadisClaudeModBridge {
 	}
 
 	/**
+	 * 端末の確認の画面でしか許可できない・読むだけの承認（{@link IParadisClaudeModPendingPermission.personOnly}・`readOnly`）。
+	 * 待っているもの（{@link pendingPermissions} と同じ）に加え、待たなかった（モバイルが繋がっていない・待つ設定が 0）ものも返す。
+	 * カードの印と、許可を断るかの判定にだけ使う（答える相手にはしない）。
+	 */
+	permissionTraits(token: string, sessionId: string | undefined): IParadisClaudeModPendingPermission[] {
+		const unwaited = [...this.unwaitedTraits.values()].filter(entry => entry.token === token && entry.sessionId === sessionId).map(entry => entry.permission);
+		return [...this.pendingPermissions(token, sessionId).filter(permission => permission.personOnly || permission.readOnly), ...unwaited];
+	}
+
+	/**
 	 * モバイルの回答を mod へ渡す。もう待っていなければ false（呼び出し側はキーの経路へ戻さない）。
 	 * `annotations` は質問文ごとの preview（選んだ選択肢のもの）とメモ（notes）。
 	 */
@@ -978,11 +1025,13 @@ export class ParadisClaudeModBridge {
 	/**
 	 * 承認の回答を mod へ渡す。`denyMessage` は拒否のときに Claude Code へ返す文（モデルが読む）で、受け取れる mod
 	 * （{@link IParadisClaudeModPendingPermission.acceptsDenyMessage}）にだけ渡す。受け取れない mod には false を返す
-	 * （黙って固定の文で拒否させない）。もう待っていなければ false。
+	 * （黙って固定の文で拒否させない）。もう待っていなければ false。端末の確認の画面でしか許可できない承認
+	 * （{@link IParadisClaudeModPendingPermission.personOnly}）の許可も false（mod から返しても Claude Code が受け付けない）。
 	 */
 	answerPermission(token: string, itemId: string, decision: 'allow' | 'deny', always: boolean, denyMessage?: string): boolean {
 		const item = this.pending.get(itemId);
 		if (item === undefined || item.kind !== 'permission' || item.token !== token || item.outcome !== undefined
+			|| (decision === 'allow' && item.permission?.personOnly === true)
 			|| (denyMessage !== undefined && (decision !== 'deny' || item.permission?.acceptsDenyMessage !== true))) {
 			return false;
 		}

@@ -1296,6 +1296,13 @@ export class ParadisAgentChatView extends Disposable {
 			store.add(addDisposableListener(back, EventType.CLICK, () => this._onDidRequestTerminal.fire()));
 			return card;
 		}
+		if (interaction.answerOn === 'pc') {
+			// 端末の確認の画面でしか許可できない（Claude Code の mod の `decider: 'person'`）。選択肢は拒否だけなので、許可はターミナルへ案内する
+			const back = append(footer, $('button.paradis-agent-chat-primary')) as HTMLButtonElement;
+			back.type = 'button';
+			back.textContent = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
+			store.add(addDisposableListener(back, EventType.CLICK, () => this._onDidRequestTerminal.fire()));
+		}
 		for (const choice of choices) {
 			const button = append(footer, $(choice.tone === 'approve' ? 'button.paradis-agent-chat-primary' : 'button.paradis-agent-chat-secondary')) as HTMLButtonElement;
 			button.type = 'button';
