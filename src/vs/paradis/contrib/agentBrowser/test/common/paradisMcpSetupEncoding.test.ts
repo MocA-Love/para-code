@@ -109,6 +109,35 @@ suite('Para Browser MCP setup encoding', () => {
 		assert.strictEqual(paradisUpsertCodexMcpToml(updated, 47286), updated);
 	});
 
+	test('does not take a header inside a multiline string, a comment or an array for the Codex section', () => {
+		const section = [
+			'[mcp_servers.para-browser]',
+			'url = "http://127.0.0.1:4100/"',
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			'tool_timeout_sec = 300',
+			'supports_parallel_tool_calls = true',
+		];
+		const basic = ['notes = """', '[mcp_servers.para-browser]', 'command = "old"', '"""', ''].join('\n');
+		const literal = ['notes = \'\'\'', '[mcp_servers.para-browser]', '\'\'\'', ''].join('\n');
+		const comment = ['# [mcp_servers.para-browser]', 'model = "gpt-5"', ''].join('\n');
+		const array = ['args = [', '  [mcp_servers.para-browser],', ']', ''].join('\n');
+		// 本物の節の後ろの複数行の文字列の中の見出しを、次の表の始まりと取り違えない（節の中身として差し替える）
+		const realThenString = ['[mcp_servers.para-browser]', 'command = "old"', 'note = """', '[tui]', '"""', '', '[other]', 'x = 1', ''].join('\n');
+		assert.deepStrictEqual({
+			basic: paradisUpsertCodexMcpToml(basic, 4100),
+			literal: paradisUpsertCodexMcpToml(literal, 4100),
+			comment: paradisUpsertCodexMcpToml(comment, 4100),
+			array: paradisUpsertCodexMcpToml(array, 4100),
+			realThenString: paradisUpsertCodexMcpToml(realThenString, 4100),
+		}, {
+			basic: [basic, ...section, ''].join('\n'),
+			literal: [literal, ...section, ''].join('\n'),
+			comment: [comment, ...section, ''].join('\n'),
+			array: [array, ...section, ''].join('\n'),
+			realThenString: [...section, '', '[other]', 'x = 1', ''].join('\n'),
+		});
+	});
+
 	test('appends the Codex section when there is none, keeping a blank line before it', () => {
 		assert.strictEqual(paradisUpsertCodexMcpToml('', 4100), [
 			'[mcp_servers.para-browser]',
