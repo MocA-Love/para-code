@@ -213,7 +213,7 @@ suite('ParadisClaudeAccountService defenses', () => {
 			retried: retried.outcome,
 			savedAfterRetry: harness.keychain.get(PARADIS_CLAUDE_ACCOUNTS_KEYCHAIN_SERVICE, ALICE_ID) === aliceLive,
 		}, {
-			refused: { outcome: 'unverified', email: 'bob@example.com', previousEmail: 'alice@example.com', unverifiedReason: 'save_failed' },
+			refused: { outcome: 'unverified', email: 'bob@example.com', previousEmail: 'alice@example.com', unverifiedReason: 'save_failed', detail: 'keychain' },
 			afterRefusal: { live: true, stored: true },
 			retried: 'switched',
 			savedAfterRetry: true,
