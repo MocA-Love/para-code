@@ -97,6 +97,7 @@ suite('Paradis file transfer - queue view', () => {
 			paradisQueueDoneText({ ...base, state: 'done', skipped: 2 }),
 			paradisQueueDoneText({ ...base, state: 'done', skipped: 0 }),
 			paradisQueueDoneText({ ...base, state: 'error', skipped: 0, writesInPlace: true, error: { kind: 'disconnected', message: '接続が切れました' } }),
-		], ['3 ファイル · 2 件を飛ばしました', '3 ファイル', '接続が切れました · 送り先を直接書き換えます（途中で失敗すると元に戻りません）']);
+			paradisQueueDoneText({ ...base, state: 'done', skipped: 0, truncatedFolders: 1 }),
+		], ['3 ファイル · 2 件を飛ばしました', '3 ファイル', '接続が切れました · 送り先を直接書き換えます（途中で失敗すると元に戻りません）', '3 ファイル · 項目が多すぎるフォルダー 1 件は一部しか送れていません']);
 	});
 });

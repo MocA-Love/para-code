@@ -231,6 +231,31 @@ suite('paradisRemoteHostsTransfer', () => {
 			strictEqual(await fileService.exists(uri('/dst/b.txt')), false, 'declining must abort the whole batch, not just the conflicting entry');
 		});
 
+		test('overwrites only the names that were confirmed, not a same name created while the dialog was open', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { services, fileService, dialogService } = await setup(disposables);
+			await fileService.writeFile(uri('/src/a.txt'), VSBuffer.fromString('new-a'));
+			await fileService.writeFile(uri('/src/b.txt'), VSBuffer.fromString('new-b'));
+			await fileService.writeFile(uri('/dst/a.txt'), VSBuffer.fromString('old-a'));
+			dialogService.setConfirmResult({ confirmed: true });
+			// 確認に答える間に、別のアプリが b.txt を作る
+			const confirm = dialogService.confirm.bind(dialogService);
+			dialogService.confirm = async confirmation => {
+				await fileService.writeFile(uri('/dst/b.txt'), VSBuffer.fromString('someone-else'));
+				return confirm(confirmation);
+			};
+
+			await paradisCopyToDirectory(services, [
+				{ uri: uri('/src/a.txt'), name: 'a.txt', isDirectory: false },
+				{ uri: uri('/src/b.txt'), name: 'b.txt', isDirectory: false },
+			], uri('/dst'));
+
+			deepStrictEqual([
+				(await fileService.readFile(uri('/dst/a.txt'))).value.toString(),
+				(await fileService.readFile(uri('/dst/b.txt'))).value.toString(),
+			], ['new-a', 'someone-else']);
+		});
+
 		test('keeps copying the rest when one source is missing, and warns with the failed name', async () => {
 			const disposables = store.add(new DisposableStore());
 			const { services, fileService, notificationService } = await setup(disposables);

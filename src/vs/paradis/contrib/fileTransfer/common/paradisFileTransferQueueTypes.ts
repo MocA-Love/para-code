@@ -66,6 +66,17 @@ export interface IParadisTransferFileSystem {
 	removeForReplace(resource: URI): Promise<void>;
 }
 
+/**
+ * フォルダーの一覧が上限で打ち切られた（項目が多すぎる）。読めた分は {@link children} に入っている。
+ * 一覧を読む側は、読めた分で続けたうえで、打ち切ったことを利用者へ知らせること。
+ */
+export class ParadisTransferListingTruncatedError extends Error {
+	constructor(readonly children: readonly IParadisTransferChild[]) {
+		super(localize('paradis.fileTransfer.error.listingTruncated', "フォルダーの項目が多すぎて、一部しか読めませんでした"));
+		this.name = 'ParadisTransferListingTruncatedError';
+	}
+}
+
 /** 送り先に同じ名前がある（または実行の直前にできた）。 */
 export class ParadisTransferConflictError extends Error {
 	constructor(readonly target: URI) {
@@ -177,6 +188,8 @@ export interface IParadisTransferItem {
 	readonly doneFiles: number;
 	/** 写さずに飛ばした項目（フォルダーを指すリンク・特殊なファイル・読めないファイル）。 */
 	readonly skipped: number;
+	/** 項目が多すぎて一覧が上限で打ち切られ、一部しか送れなかったフォルダーの数。無ければ undefined か 0。 */
+	readonly truncatedFolders?: number;
 	/** 送り先を直接書き換えた（一時名を使えなかった）ファイルがある。途中で失敗すると元に戻らない。 */
 	readonly writesInPlace: boolean;
 	/** 計れるだけの時間が経つまで undefined。 */
