@@ -159,6 +159,23 @@ suite('ParadisClaudeModBridge', () => {
 		});
 	});
 
+	test('an approval it did not wait for still tells whether only the terminal can allow it, until its result is written', async () => {
+		bridge.setPresence(() => 'connected');
+		bridge.setApprovalWait(() => 0);
+		const reply = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_n', personOnly: true })).body;
+		const plain = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_m' })).body;
+		const traits = () => bridge.permissionTraits(TOKEN, SESSION).map(permission => ({ toolUseId: permission.toolUseId, personOnly: permission.personOnly }));
+		const before = traits();
+		await call('event', { events: [{ type: 'tool-results', ids: ['toolu_n'], errorIds: [] }] });
+		assert.deepStrictEqual({ reply, plain, before, pending: bridge.pendingPermissions(TOKEN, SESSION).length, after: traits() }, {
+			reply: { wait: false },
+			plain: { wait: false },
+			before: [{ toolUseId: 'toolu_n', personOnly: true }],
+			pending: 0,
+			after: [],
+		});
+	});
+
 	test('a written tool result or the end of the main turn settles what was still waiting', async () => {
 		const permission = (await call('permission', { toolName: 'Bash', toolInput: {}, toolUseId: 'toolu_1' })).body.id as string;
 		const question = (await call('question', { questions: QUESTIONS })).body.id as string;

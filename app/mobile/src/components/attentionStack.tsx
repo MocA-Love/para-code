@@ -121,15 +121,28 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					onFreeText={actions.answerQuestionFreeText}
 				/>
 			) : approval ? (
-				<ApprovalCard
-					key={approval.id}
-					interactionId={approval.id}
-					onApprove={actions.approve}
-					title={approval.title}
-					detail={approval.detail ?? findLatestApprovalRequest(chat)}
-					choices={approval.choices}
-					refreshing={refreshing}
-				/>
+				<>
+					{approval.answerOn === 'pc' ? (
+						// PC の端末の確認の画面でしか許可できない（PC は拒否だけを選択肢に載せる）
+						<View style={styles.notice}>
+							<Text style={styles.noticeTitle}>PC で答えてください</Text>
+							<Text style={styles.noticeBody}>{approval.readOnly === true ? '読むだけの操作です。' : ''}この操作は PC の Claude Code の確認画面でしか許可できません。ここからは拒否だけできます</Text>
+						</View>
+					) : approval.readOnly === true ? (
+						<View style={styles.notice}>
+							<Text style={styles.noticeTitle}>読むだけの操作です</Text>
+						</View>
+					) : null}
+					<ApprovalCard
+						key={approval.id}
+						interactionId={approval.id}
+						onApprove={actions.approve}
+						title={approval.title}
+						detail={approval.detail ?? findLatestApprovalRequest(chat)}
+						choices={approval.choices}
+						refreshing={refreshing}
+					/>
+				</>
 			) : (
 				// 質問も承認も特定できないときに許可/拒否カードを出さない。以前は合成の
 				// `legacy:<epoch>` を interactionId にしていたためPC側の実IDと決して一致せず、
