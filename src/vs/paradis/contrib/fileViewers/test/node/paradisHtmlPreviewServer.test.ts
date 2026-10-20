@@ -10,7 +10,7 @@ import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
-import { isWindows } from '../../../../../base/common/platform.js';
+import { isLinux, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisHtmlPreviewServer, parseParadisByteRange, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
 
@@ -366,6 +366,94 @@ suite('ParadisHtmlPreviewServer', () => {
 				call.end();
 			});
 			strictEqual(exposed, 'Accept-Ranges, Content-Range, Content-Length, ETag');
+		});
+
+		(isWindows ? test.skip : test)('returns the name it serves a symlinked file under, so the viewer can build the URL', async () => {
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const root = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
+			await fs.writeFile(join(root, 'v3.pdf'), '%PDF-1.7', 'utf8');
+			await fs.symlink(join(root, 'v3.pdf'), join(root, 'latest.pdf'));
+
+			const mounted = await server.mount(join(root, 'latest.pdf'));
+			const base = `http://127.0.0.1:${mounted.port}/${mounted.token}/`;
+
+			deepStrictEqual({
+				file: mounted.file,
+				byServedName: (await fetch(`${base}${mounted.file}`)).status,
+				byLinkName: (await fetch(`${base}latest.pdf`)).status,
+			}, { file: 'v3.pdf', byServedName: 200, byLinkName: 404 });
+		});
+
+		test('never evicts a pinned mount, and evicts the oldest unpinned ones beyond the limit', async () => {
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const root = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
+			const files: string[] = [];
+			for (let i = 0; i < 66; i++) {
+				const file = join(root, `doc-${i}.pdf`);
+				await fs.writeFile(file, '%PDF', 'utf8');
+				files.push(file);
+			}
+
+			const library = await server.mount(join(root, 'assets'), { pinned: true });
+			const first = await server.mount(files[0]);
+			for (const file of files.slice(1)) {
+				await server.mount(file);
+			}
+			const status = async (token: string, path: string) => (await fetch(`http://127.0.0.1:${library.port}/${token}/${path}`)).status;
+
+			deepStrictEqual({
+				library: await status(library.token, 'app.js'),
+				oldestDocument: await status(first.token, 'doc-0.pdf'),
+			}, { library: 200, oldestDocument: 404 });
+		});
+
+		(isLinux ? test : test.skip)('closes the file when the client goes away in the middle of a response', async () => {
+			const disposables = store.add(new DisposableStore());
+			const server = disposables.add(new ParadisHtmlPreviewServer());
+			const root = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(root, { recursive: true, force: true }); } });
+			const big = join(root, 'big.pdf');
+			await fs.writeFile(big, Buffer.alloc(32 * 1024 * 1024, 1));
+			const mounted = await server.mount(big);
+			const realBig = await fs.realpath(big);
+			const openCount = async () => {
+				let count = 0;
+				for (const fd of await fs.readdir('/proc/self/fd')) {
+					try {
+						if (await fs.readlink(`/proc/self/fd/${fd}`) === realBig) {
+							count++;
+						}
+					} catch {
+						// 読んでいる間に閉じた fd
+					}
+				}
+				return count;
+			};
+
+			const { request } = await import('http');
+			for (let i = 0; i < 3; i++) {
+				await new Promise<void>(resolve => {
+					const call = request(`http://127.0.0.1:${mounted.port}/${mounted.token}/${mounted.file}`, response => {
+						response.once('data', () => {
+							call.destroy();
+							resolve();
+						});
+					});
+					call.on('error', () => resolve());
+					call.end();
+				});
+			}
+			let open = await openCount();
+			for (let i = 0; i < 50 && open > 0; i++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+				open = await openCount();
+			}
+
+			strictEqual(open, 0);
 		});
 
 		test('does not listen until something is mounted', async () => {

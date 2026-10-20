@@ -38,10 +38,11 @@
 // （このリポジトリの `code-no-http-import` ルールが要求する形）。
 import type * as http from 'http';
 import { createReadStream, promises as fs } from 'fs';
+import { pipeline } from 'stream';
 import { randomBytes } from 'crypto';
 import { basename, dirname, extname, join, sep } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IParadisHtmlPreviewService, IParadisPreviewMount } from '../common/paradisHtmlPreview.js';
+import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountOptions } from '../common/paradisHtmlPreview.js';
 
 /** 同時に載せておくフォルダーの上限。超えたら古いものから外す。 */
 const PARADIS_HTML_PREVIEW_MAX_MOUNTS = 64;
@@ -190,6 +191,11 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	private readonly _tokenByRoot = new Map<string, string>();
 	/** トークン → 配信範囲。`onlyFile` があるとそのファイル以外は返さない。 */
 	private readonly _rootByToken = new Map<string, { readonly root: string; readonly onlyFile: string | undefined }>();
+	/**
+	 * 古いものから外す対象にしない実パス（ビューアの同梱ライブラリ）。ペインはその URL を一度だけ決めて
+	 * 覚え続けるので、外すとそのペインの次の文書が白紙になる。数はビューアの種類ぶんしか増えない。
+	 */
+	private readonly _pinnedRoots = new Set<string>();
 
 	/**
 	 * フォルダーを載せる。**ファイルのパスを渡すと、そのファイルだけ**を載せる。
@@ -198,7 +204,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	 * 一度開くとホーム全体（`~/.ssh` を含む）が配信対象になっていた。1ファイルで済む呼び出しは
 	 * ファイルを渡すこと。
 	 */
-	async mount(directory: string): Promise<IParadisPreviewMount> {
+	async mount(directory: string, options?: IParadisPreviewMountOptions): Promise<IParadisPreviewMount> {
 		const resolved = await fs.realpath(directory);
 		const asFile = (await fs.stat(resolved)).isFile();
 		const root = asFile ? dirname(resolved) : resolved;
@@ -215,9 +221,13 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			this._rootByToken.set(token, { root, onlyFile: asFile ? basename(resolved) : undefined });
 		}
 		this._tokenByRoot.set(key, token);
+		if (options?.pinned) {
+			this._pinnedRoots.add(key);
+		}
 		this._evictOldMounts();
 
-		return { port, token };
+		// ファイル単位のときは、サーバが返す名前（シンボリックリンクならリンク先の名前）を知らせる。
+		return asFile ? { port, token, file: basename(resolved) } : { port, token };
 	}
 
 	override dispose(): void {
@@ -226,6 +236,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		this._listening = undefined;
 		this._tokenByRoot.clear();
 		this._rootByToken.clear();
+		this._pinnedRoots.clear();
 		super.dispose();
 	}
 
@@ -236,16 +247,18 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	}
 
 	private _evictOldMounts(): void {
-		while (this._tokenByRoot.size > PARADIS_HTML_PREVIEW_MAX_MOUNTS) {
-			const oldest = this._tokenByRoot.keys().next();
-			if (oldest.done) {
+		// 上限は外してよいもの（固定していないもの）だけで数える。
+		let excess = this._tokenByRoot.size - this._pinnedRoots.size - PARADIS_HTML_PREVIEW_MAX_MOUNTS;
+		for (const [key, token] of this._tokenByRoot) {
+			if (excess <= 0) {
 				return;
 			}
-			const token = this._tokenByRoot.get(oldest.value);
-			this._tokenByRoot.delete(oldest.value);
-			if (token !== undefined) {
-				this._rootByToken.delete(token);
+			if (this._pinnedRoots.has(key)) {
+				continue;
 			}
+			this._tokenByRoot.delete(key);
+			this._rootByToken.delete(token);
+			excess--;
 		}
 	}
 
@@ -376,14 +389,16 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			return;
 		}
 
+		// `pipeline` は、接続が途中で切れたら（プレビューを閉じた・別の文書へ替えた）読み出しも壊して
+		// ファイルを閉じる。`pipe` だと切れた後も読み出しが残り、開いたファイルが溜まる。
 		await new Promise<void>(resolve => {
 			const stream = createReadStream(target, range ? { start: range.start, end: range.end } : undefined);
-			stream.on('error', () => {
-				response.destroy();
+			pipeline(stream, response, error => {
+				if (error) {
+					response.destroy();
+				}
 				resolve();
 			});
-			stream.on('end', () => resolve());
-			stream.pipe(response);
 		});
 	}
 

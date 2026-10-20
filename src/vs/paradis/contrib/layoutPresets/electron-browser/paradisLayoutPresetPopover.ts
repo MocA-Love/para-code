@@ -102,7 +102,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 		anchorPosition: AnchorPosition.BELOW,
 		render: (container: HTMLElement): IDisposable => {
 			const disposables = new DisposableStore();
-			const popover = dom.append(container, $('.paradis-layout-popover'));
+			const popover = dom.append(container, $('.paradis-layout-popover.paradis-overlay-popover'));
 
 			// allow-any-unicode-next-line
 			dom.append(popover, $('.paradis-layout-popover-title')).textContent = localize('paradis.layoutPresets.popover.title', "レイアウトプリセットを適用");

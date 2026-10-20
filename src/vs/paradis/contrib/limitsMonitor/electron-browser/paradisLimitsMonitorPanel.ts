@@ -141,7 +141,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		};
 		this.contributions = ParadisLimitsPanelContributions.getAll().map(contribution => this._register(instantiationService.createInstance(contribution)));
 
-		this.element = $('.paradis-limits-panel');
+		this.element = $('.paradis-limits-panel.paradis-overlay-popover');
 		this.element.tabIndex = -1;
 
 		this.bodyElement = dom.append(this.element, $('.plm-body'));
