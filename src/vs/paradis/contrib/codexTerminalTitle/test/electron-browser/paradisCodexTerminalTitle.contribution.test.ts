@@ -192,6 +192,36 @@ suite('ParadisCodexTerminalTitle', () => {
 		});
 	});
 
+	suite('addTerminalTitleToTuiSection inside strings, comments and arrays', () => {
+		const title = `terminal_title = ["app-name", "thread-title"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
+		test('does not take a [tui] inside a multiline string, a comment or an array for the table', () => {
+			const basic = 'notes = """\n[tui]\nterminal_title = "in text"\n"""\n';
+			const literal = 'notes = \'\'\'\n[tui]\n\'\'\'\n';
+			const comment = '# [tui]\nmodel = "x"\n';
+			const array = 'args = [\n  [tui],\n]\n';
+			// 本物の [tui] の中の複数行の文字列にある行は、キーとも次の表とも見ない
+			const inside = '[tui]\nnote = """\nterminal_title = "in text"\n[profiles.a]\n"""\n';
+			deepStrictEqual({
+				basic: addTerminalTitleToTuiSection(basic),
+				literal: addTerminalTitleToTuiSection(literal),
+				comment: addTerminalTitleToTuiSection(comment),
+				array: addTerminalTitleToTuiSection(array),
+				inside: addTerminalTitleToTuiSection(inside),
+				// 文字列の中の tui = … は最上位の定義ではない
+				stringTopLevel: addTerminalTitleToTuiSection('notes = """\ntui = 1\n"""\n'),
+				removeInString: removeParadisTerminalTitleFromTuiSection(`[tui]\nnote = """\n${title}\n"""\n`),
+			}, {
+				basic: `${basic.trimEnd()}\n\n[tui]\n${title}\n`,
+				literal: `${literal.trimEnd()}\n\n[tui]\n${title}\n`,
+				comment: `${comment.trimEnd()}\n\n[tui]\n${title}\n`,
+				array: `${array.trimEnd()}\n\n[tui]\n${title}\n`,
+				inside: `[tui]\n${title}\n${inside.slice('[tui]\n'.length)}`,
+				stringTopLevel: `notes = """\ntui = 1\n"""\n\n[tui]\n${title}\n`,
+				removeInString: `[tui]\nnote = """\n${title}\n"""\n`,
+			});
+		});
+	});
+
 	suite('removeParadisTerminalTitleFromTuiSection', () => {
 		const title = `terminal_title = ["app-name", "thread-title"] ${PARADIS_CODEX_TERMINAL_TITLE_MARKER}`;
 		test('removes only the value Para Code wrote', () => {

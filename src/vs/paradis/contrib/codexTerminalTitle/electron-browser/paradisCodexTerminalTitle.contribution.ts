@@ -30,6 +30,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisRemoteUserHome } from '../../agentBrowser/common/paradisRemoteUserHome.js';
+import { ITomlLineInfo, scanTomlLines } from '../../agentBrowser/common/paradisTomlScan.js';
 import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
 import { ParadisCodexAccountsClient } from '../../codexAccounts/electron-browser/paradisCodexAccountsClient.js';
 import type { IParadisCodexHome } from '../../codexAccounts/common/paradisCodexAccounts.js';
@@ -513,30 +514,49 @@ interface ITuiSection {
 	/** `[tui]` の見出し行の直後（見出しが改行で終わらないときは undefined）。 */
 	readonly start: number | undefined;
 	readonly end: number;
+	/** 表の中身の行（見出しの次の行から、次の見出しの手前まで）の番号。 */
+	readonly bodyLines: readonly number[];
+	readonly lines: readonly string[];
+	readonly infos: readonly ITomlLineInfo[];
+	/** 各行の先頭の位置。 */
+	readonly offsets: readonly number[];
 }
 
 /**
  * config.toml の `[tui]` 表の範囲。`tui` が別の書き方（最上位の dotted key `tui.x = 1` や inline table
  * `tui = { ... }`）で定義済みなら 'defined-elsewhere'（`[tui]` を足すと二重定義になり、TOML として
- * 読めなくなって Codex が起動しない）。
+ * 読めなくなって Codex が起動しない）。見出しとキーは複数行の文字列・配列・コメントの外の行だけで探す
+ * （説明文の中の `[tui]` を表と取り違えて、文字列の途中へ書き込まない）。
  */
 function findTuiSection(config: string): ITuiSection | 'defined-elsewhere' | undefined {
-	const firstTable = /^[\t ]*\[/m.exec(config);
-	const topLevel = firstTable === null ? config : config.slice(0, firstTable.index);
-	if (/^[\t ]*(?:tui|"tui"|'tui')[\t ]*[.=]/m.test(topLevel)) {
+	const lines = config.split('\n');
+	const infos = scanTomlLines(lines);
+	const offsets: number[] = [];
+	let offset = 0;
+	for (const line of lines) {
+		offsets.push(offset);
+		offset += line.length + 1;
+	}
+	const firstTable = infos.findIndex(info => info.header !== undefined);
+	if (infos.slice(0, firstTable < 0 ? infos.length : firstTable).some(info => info.key?.[0] === 'tui')) {
 		return 'defined-elsewhere';
 	}
-	const headerMatch = /^[\t ]*\[[\t ]*(?:tui|"tui"|'tui')[\t ]*\][^\n]*(?:\n|$)/m.exec(config);
-	if (!headerMatch) {
+	const header = infos.findIndex(info => info.header?.array === false && info.header.path?.length === 1 && info.header.path[0] === 'tui');
+	if (header < 0) {
 		return undefined;
 	}
-	const headerEnd = headerMatch.index + headerMatch[0].length;
-	if (!headerMatch[0].endsWith('\n')) {
-		return { start: undefined, end: headerEnd };
+	if (header === lines.length - 1) {
+		return { start: undefined, end: config.length, bodyLines: [], lines, infos, offsets };
 	}
-	// TOML allows indentation before a table header, as the header patterns above do.
-	const nextSectionMatch = /^[\t ]*\[/m.exec(config.slice(headerEnd));
-	return { start: headerEnd, end: nextSectionMatch === null ? config.length : headerEnd + nextSectionMatch.index };
+	let next = header + 1;
+	while (next < lines.length && infos[next].header === undefined) {
+		next++;
+	}
+	const bodyLines: number[] = [];
+	for (let index = header + 1; index < next; index++) {
+		bodyLines.push(index);
+	}
+	return { start: offsets[header + 1], end: next < lines.length ? offsets[next] : config.length, bodyLines, lines, infos, offsets };
 }
 
 /**
@@ -555,7 +575,7 @@ export function addTerminalTitleToTuiSection(config: string): string {
 		// `[tui]` is the last line and has no line break; the key has to go on a line of its own.
 		return `${config}\n${TERMINAL_TITLE_LINE}\n`;
 	}
-	if (/^[\t ]*(?:terminal_title|"terminal_title"|'terminal_title')[\t ]*=/m.test(config.slice(section.start, section.end))) {
+	if (section.bodyLines.some(index => section.infos[index].key?.[0] === 'terminal_title')) {
 		return config;
 	}
 	return `${config.slice(0, section.start)}${TERMINAL_TITLE_LINE}\n${config.slice(section.start)}`;
@@ -573,14 +593,14 @@ export function removeParadisTerminalTitleFromTuiSection(config: string): string
 	}
 	const escapedMarker = PARADIS_CODEX_TERMINAL_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const items = PARADIS_CODEX_TERMINAL_TITLE_ITEMS.map(item => `[\\t ]*"${item}"[\\t ]*`).join(',');
-	const ownedLine = new RegExp(`^[\\t ]*terminal_title[\\t ]*=[\\t ]*\\[${items}\\][\\t ]*${escapedMarker}[\\t ]*(?:\\r?\\n|$)`, 'm');
-	const body = config.slice(section.start, section.end);
-	const match = ownedLine.exec(body);
-	if (!match) {
+	const ownedLine = new RegExp(`^[\\t ]*terminal_title[\\t ]*=[\\t ]*\\[${items}\\][\\t ]*${escapedMarker}[\\t ]*\\r?$`);
+	const owned = section.bodyLines.find(index => !section.infos[index].continued && ownedLine.test(section.lines[index]));
+	if (owned === undefined) {
 		return config;
 	}
-	const lineStart = section.start + match.index;
-	return `${config.slice(0, lineStart)}${config.slice(lineStart + match[0].length)}`;
+	const lineStart = section.offsets[owned];
+	const lineEnd = owned + 1 < section.lines.length ? section.offsets[owned + 1] : config.length;
+	return `${config.slice(0, lineStart)}${config.slice(lineEnd)}`;
 }
 
 type ParadisCodexConfigStep = 'stat' | 'read' | 'write';
