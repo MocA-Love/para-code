@@ -40,6 +40,8 @@ class FakeSession implements ICDPConnection {
 	private nextScript = 1;
 	/** When set, commands with this method fail (the tab did not accept them). */
 	failing: string | undefined;
+	/** When set, the reply to a command waits for the returned promise (the command itself already took effect). */
+	replyGate: ((method: string) => Promise<void> | undefined) | undefined;
 
 	async sendCommand(method: string, params?: unknown): Promise<unknown> {
 		this.commands.push({ method, params });
@@ -65,6 +67,7 @@ class FakeSession implements ICDPConnection {
 				return { identifier };
 			}
 		}
+		await this.replyGate?.(method);
 		return {};
 	}
 
@@ -97,6 +100,8 @@ class FakeTarget implements IParadisPageOpsTarget {
 	destroyed = false;
 	url = 'https://example.com/';
 	zoom = 1;
+	/** Handed to every session this tab attaches (see {@link FakeSession.replyGate}). */
+	replyGate: ((method: string) => Promise<void> | undefined) | undefined;
 
 	constructor(readonly storage: FakeStorage = new FakeStorage()) { }
 
@@ -121,6 +126,7 @@ class FakeTarget implements IParadisPageOpsTarget {
 	readonly debugger = {
 		attach: async (): Promise<ICDPConnection> => {
 			const session = new FakeSession();
+			session.replyGate = this.replyGate;
 			this.sessions.push(session);
 			return session;
 		},
@@ -365,6 +371,24 @@ suite('ParadisBrowserPageOpsController', () => {
 			controller.activeTargetCount,
 			stale.ok ? 'ok' : stale.reason,
 		], ['ownedByAnotherPane', 'ownedByAnotherPane', false, 0, 'stale']);
+		controller.releaseTarget(target);
+		await flush();
+	});
+
+	test('releasing the sharing while the overrides are being turned on leaves no cache or service worker bypass behind', async () => {
+		const controller = new ParadisBrowserPageOpsController();
+		const target = createTarget();
+		let reply: () => void = () => { };
+		const held = new Promise<void>(resolve => reply = resolve);
+		target.replyGate = method => method === 'Network.enable' ? held : undefined;
+		const applying = controller.apply(target, OWNER, 3, { rules: rules([{ url_pattern: '*/ads/*', action: 'block' }]) });
+		await flush();
+		controller.releaseOwner(OWNER, 4);
+		await flush();
+		reply();
+		const result = await applying;
+		await flush();
+		assert.deepStrictEqual([result.ok ? 'ok' : result.reason, target.hasLeftovers(), controller.activeTargetCount], ['unavailable', false, 0]);
 		controller.releaseTarget(target);
 		await flush();
 	});
