@@ -13,7 +13,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 
@@ -105,4 +105,13 @@ export function createParadisViewerIconButton(parent: HTMLElement, icon: ThemeIc
 	button.title = title;
 	dom.append(button, dom.$(`span${ThemeIcon.asCSSSelector(icon)}`));
 	return button;
+}
+
+/**
+ * ビューアのツールバーに置く「再読み込み」のボタン（HTML と Markdown で同じ見た目・同じ位置）。
+ * 何を読み直すかはビューアごとに違うので、押したときの動きは呼ぶ側が渡す。返す値でクリックの購読を外す。
+ */
+export function createParadisViewerReloadButton(parent: HTMLElement, onReload: () => void): IDisposable {
+	const button = createParadisViewerIconButton(parent, Codicon.refresh, localize('paradis.viewer.reload', "再読み込み"));
+	return dom.addDisposableListener(button, dom.EventType.CLICK, () => onReload());
 }
