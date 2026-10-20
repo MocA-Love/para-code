@@ -7,7 +7,7 @@
 // PARA-CODE: MCPセットアップの自動設定と手動スニペットで共有する、注入耐性のあるpure encoder。
 
 import { PARADIS_PANE_TOKEN_ENV_VAR } from './paradisAgentBrowser.js';
-import { findTomlAssignment, MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from './paradisTomlScan.js';
+import { findTomlAssignment, MultilineDelimiter, parseTomlKeyPath, scanTomlLine, scanTomlLines } from './paradisTomlScan.js';
 
 // 以前からここから読んでいる所のために、切り出した道具をそのまま出し直す
 export { findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisTomlScan.js';
@@ -79,11 +79,14 @@ function couldDefineMcpServers(code: string): boolean {
  */
 export function inspectParadisMcpTomlSection(source: string): ParadisMcpTomlSectionInspection {
 	let multiline: MultilineDelimiter | undefined;
-	for (const line of source.split(/\r?\n/)) {
-		const scanned = scanTomlLine(line, multiline);
+	const lines = source.split(/\r?\n/);
+	// 複数行の配列の中の行（`[` で始まる要素）を見出しと取り違えない
+	const infos = scanTomlLines(lines);
+	for (let index = 0; index < lines.length; index++) {
+		const scanned = scanTomlLine(lines[index], multiline);
 		multiline = scanned.multiline;
 		const code = scanned.code.trim();
-		if (code.length === 0) {
+		if (code.length === 0 || infos[index].continued) {
 			continue;
 		}
 		if (code.startsWith('[[')) {
@@ -230,8 +233,11 @@ export function paradisUpsertCodexMcpToml(source: string, port: number): string 
 	].join('\n');
 
 	const lines = source.split('\n');
+	// 見出しは文字列・配列の外の行だけで探す（複数行の文字列の中の `[mcp_servers.para-browser]` を節と取り違えない）。
+	// 空白やコメントを挟んだ書き方は差し替えず、下の inspect で「既にある」と扱う
+	const infos = scanTomlLines(lines);
 	const header = /^\s*\[mcp_servers\.(?:para-browser|"para-browser"|'para-browser')\]\s*$/;
-	const start = lines.findIndex(line => header.test(line));
+	const start = lines.findIndex((line, index) => !infos[index].continued && header.test(line));
 	if (start < 0) {
 		// 見出しが見つからないのに節は在る、という書き方がある（`[ mcp_servers . "para-browser" ]`
 		// のように空白やコメントを挟んだもの）。ここで足すと同じテーブルを二重に定義してしまい、
@@ -244,7 +250,7 @@ export function paradisUpsertCodexMcpToml(source: string, port: number): string 
 	}
 	// 次のテーブルが始まる手前までが、この節の中身
 	let end = start + 1;
-	while (end < lines.length && !/^\s*\[/.test(lines[end])) {
+	while (end < lines.length && infos[end].header === undefined) {
 		end++;
 	}
 	// 次のテーブルとの間に置かれていた空行は本文ではなく区切りなので残す。

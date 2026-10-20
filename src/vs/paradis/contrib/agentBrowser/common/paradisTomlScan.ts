@@ -177,3 +177,74 @@ export function findTomlAssignment(code: string): number {
 	}
 	return -1;
 }
+
+/** {@link scanTomlLines} が読んだ 1 行。 */
+export interface ITomlLineInfo {
+	/** 前の行の複数行の文字列・配列の続き（この行の頭は文字列か値の中）。 */
+	readonly continued: boolean;
+	/** 表の見出し（`[a.b]`・`[[a.b]]`）。`path` は読めない書き方なら undefined。続きの行には付けない。 */
+	readonly header?: { readonly path: readonly string[] | undefined; readonly array: boolean };
+	/** `key = value` のキー（dotted key は分けたもの）。続きの行・見出しには付けない。 */
+	readonly key?: readonly string[];
+}
+
+/** 引用の外にある `[` と `]` の差（複数行にわたる配列の深さを数える）。 */
+function bracketDelta(code: string): number {
+	let quote: '"' | '\x27' | undefined;
+	let delta = 0;
+	for (let index = 0; index < code.length; index++) {
+		const char = code[index];
+		if (quote !== undefined) {
+			if (quote === '"' && char === '\\') {
+				index++;
+			} else if (char === quote) {
+				quote = undefined;
+			}
+			continue;
+		}
+		if (char === '"' || char === '\x27') {
+			quote = char;
+		} else if (char === '[') {
+			delta++;
+		} else if (char === ']') {
+			delta--;
+		}
+	}
+	return delta;
+}
+
+/**
+ * config.toml を行ごとに読み、見出しとキーの行を見分ける。複数行の文字列（`"""`・`\x27\x27\x27`）と複数行の配列の中の行、
+ * コメントは見出しにもキーにもしない（行の正規表現で `[tui]` などを探すと、説明文の中の行を設定と取り違える）。
+ */
+export function scanTomlLines(lines: readonly string[]): ITomlLineInfo[] {
+	const result: ITomlLineInfo[] = [];
+	let multiline: MultilineDelimiter | undefined;
+	let arrayDepth = 0;
+	for (const line of lines) {
+		const continued = multiline !== undefined || arrayDepth > 0;
+		const scanned = scanTomlLine(line, multiline);
+		multiline = scanned.multiline;
+		const code = scanned.code.trim();
+		if (continued) {
+			arrayDepth = Math.max(0, arrayDepth + bracketDelta(code));
+			result.push({ continued: true });
+			continue;
+		}
+		if (code.startsWith('[')) {
+			const array = code.startsWith('[[');
+			const inner = array ? (code.endsWith(']]') ? code.slice(2, -2) : undefined) : (code.endsWith(']') ? code.slice(1, -1) : undefined);
+			result.push({ continued: false, header: { path: inner !== undefined ? parseTomlKeyPath(inner) : undefined, array } });
+			continue;
+		}
+		const assignment = findTomlAssignment(code);
+		if (assignment < 0) {
+			result.push({ continued: false });
+			continue;
+		}
+		arrayDepth = Math.max(0, bracketDelta(code.slice(assignment + 1)));
+		const key = parseTomlKeyPath(code.slice(0, assignment));
+		result.push({ continued: false, ...(key !== undefined ? { key } : {}) });
+	}
+	return result;
+}
