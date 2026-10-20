@@ -17,30 +17,18 @@
 // ペイントークンはペインの所有権を持つため拡張機能ホストへは渡さない。代わりに音声取込だけに使える
 // インスタンススコープのトークンを shared process から受け取って渡す。
 
-import { join } from '../../../../base/common/path.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_VOICE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { paradisApplyVoiceEnv } from '../common/paradisExtensionHostVoiceEnvCore.js';
 
 /**
  * 拡張機能ホストへ渡す環境変数へ、ポートファイルのパスと音声取込トークンを足す。
- * 取得に失敗しても拡張機能ホストの起動は止めない（音声がスマホへ届かないだけ）。
+ * 取得に失敗しても、返事が来なくても、拡張機能ホストの起動は止めない（音声がスマホへ届かないだけ）。
  */
-export async function paradisApplyExtensionHostVoiceEnv(
+export function paradisApplyExtensionHostVoiceEnv(
 	env: Record<string, unknown>,
 	userDataPath: string,
 	sharedProcessService: ISharedProcessService,
 ): Promise<void> {
-	if (userDataPath.length === 0) {
-		return;
-	}
-	try {
-		const token = await sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string>('getVoiceIngressToken');
-		if (typeof token !== 'string' || token.length === 0) {
-			return;
-		}
-		env[PARADIS_MCP_PORT_FILE_ENV_VAR] = join(userDataPath, PARADIS_MCP_PORT_FILE_NAME);
-		env[PARADIS_VOICE_TOKEN_ENV_VAR] = token;
-	} catch {
-		// shared processが未起動・切断中でも拡張機能ホストは通常どおり起動させる。
-	}
+	return paradisApplyVoiceEnv(env, userDataPath, () => sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<string>('getVoiceIngressToken'));
 }
