@@ -176,6 +176,12 @@ export class ParadisMobileBrowserMirror extends Disposable {
 
 	/** mobileId → 稼働中のミラーセッション。 */
 	private readonly sessions = new Map<string, MirrorSession>();
+	/**
+	 * mobileId ごとの start の世代。止める操作（stopSession）のたびに進め、start は登録の前にこれを見る。
+	 * start は対象の確かめと CDP のポート探しを待ってからセッションを登録するので、その待ちの間に届いた stop は
+	 * 消すセッションがまだ無い。世代で失効させないと、止めたはずの写しが登録されて 250ms ごとの撮影が残る。
+	 */
+	private readonly startGenerations = new Map<string, number>();
 	/** カーソルの写しの viewId → targetId（引き直しの往復を毎回しない）。 */
 	private readonly cursorTargets = new Map<string, string>();
 
@@ -270,6 +276,12 @@ export class ParadisMobileBrowserMirror extends Disposable {
 
 	/** モバイル切断時に呼ぶ（ポーリング・プッシュ購読を止めてCDP接続を閉じる）。 */
 	stopSession(mobileId: string): void {
+		this.startGenerations.set(mobileId, (this.startGenerations.get(mobileId) ?? 0) + 1);
+		this.disposeSession(mobileId);
+	}
+
+	/** 登録済みのセッションだけを畳む。始まる途中の start は取り消さない（{@link stopSession} を使う）。 */
+	private disposeSession(mobileId: string): void {
 		const session = this.sessions.get(mobileId);
 		if (session) {
 			this.sessions.delete(mobileId);
@@ -346,8 +358,11 @@ export class ParadisMobileBrowserMirror extends Disposable {
 					});
 				reply({ id: msg.id, t: 'targets', ...(allowed !== undefined ? { scoped: true } : {}), targets });
 			} else if (msg.t === 'start') {
+				// 前の写しを止め、この start の世代を取る。以降の待ちの間に stop が来たら登録しない
+				this.stopSession(mobileId);
+				const generation = this.startGenerations.get(mobileId);
 				const targetId = await this.validateStartTarget(msg);
-				await this.start(mobileId, targetId, send, msg.frameEncoding === BROWSER_JPEG_BINARY_ENCODING);
+				await this.start(mobileId, targetId, send, msg.frameEncoding === BROWSER_JPEG_BINARY_ENCODING, generation);
 				reply({ id: msg.id, t: 'started' });
 			} else if (msg.t === 'stop') {
 				this.stopSession(mobileId);
@@ -394,12 +409,15 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		return targetId;
 	}
 
-	private async start(mobileId: string, targetId: string, send: (payload: Uint8Array) => void, binaryFrames = false): Promise<void> {
-		this.stopSession(mobileId);
+	private async start(mobileId: string, targetId: string, send: (payload: Uint8Array) => void, binaryFrames: boolean, generation: number | undefined): Promise<void> {
 		const port = await this.upstream.resolvePort();
+		if (this.startGenerations.get(mobileId) !== generation) {
+			throw new Error('stopped');
+		}
 		if (!port) {
 			throw new Error('ブラウザのCDPエンドポイントが見つかりません');
 		}
+		this.disposeSession(mobileId);
 		const socket = new WebSocket(`ws://127.0.0.1:${port}/devtools/page/${targetId}`);
 		const session: MirrorSession = {
 			socket, targetId, nextId: 1, viewWidth: 0, viewHeight: 0,

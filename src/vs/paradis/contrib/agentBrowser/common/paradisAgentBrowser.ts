@@ -400,9 +400,12 @@ export interface IParadisCdpFrameSubscription {
 	/**
 	 * WebRTCミラー用: 次の1回の getDisplayMedia が指定targetIdのWebContentsView単体を
 	 * キャプチャするよう electron-main を arm する（one-shot、TTL付き）。
-	 * モバイルの webrtc-offer 受信時に shared process から呼ぶ。
+	 * モバイルの webrtc-offer 受信時に shared process から呼ぶ。`windowId` は getDisplayMedia を呼ぶ
+	 * workbench ウィンドウ、`requestId` は要求（offer のセッション）の識別子で、予約はこの組ごとに持つ。
 	 */
-	armMirrorCapture(targetId: string): Promise<void>;
+	armMirrorCapture(targetId: string, windowId?: number, requestId?: string): Promise<void>;
+	/** 写しの準備をやめた要求（offer を renderer へ渡さなかった）の予約を取り消す。 */
+	disarmMirrorCapture(windowId: number | undefined, requestId: string): Promise<void>;
 }
 
 /**
