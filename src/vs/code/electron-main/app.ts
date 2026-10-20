@@ -244,10 +244,6 @@ type OSProxyConfigClassification = {
  * even if the user starts many instances (e.g. from the command line).
  */
 export class CodeApplication extends Disposable {
-	// PARA-PATCH: relaunch the app once (with a cooldown) when the Shared Process crashes, to restore mobile relay one-shot IPC channels
-	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY = 'paracode.sharedProcessCrashRelaunchAt';
-	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_COOLDOWN = 5 * 60 * 1000;
-
 	private static readonly SECURITY_PROTOCOL_HANDLING_CONFIRMATION_SETTING_KEY = {
 		[Schemas.file]: 'security.promptForLocalFileProtocolHandling' as const,
 		[Schemas.vscodeRemote]: 'security.promptForRemoteFileProtocolHandling' as const
@@ -256,9 +252,6 @@ export class CodeApplication extends Disposable {
 	private windowsMainService: IWindowsMainService | undefined;
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
-	// PARA-PATCH: state for the Shared Process crash auto-relaunch (see recoverFromSharedProcessCrash)
-	private sharedProcessCrashRecoveryTriggered = false;
-	private applicationShutdownStarted = false;
 
 	constructor(
 		private readonly mainProcessNodeIpcServer: NodeIPCServer,
@@ -599,11 +592,7 @@ export class CodeApplication extends Disposable {
 	private registerListeners(): void {
 
 		// Dispose on shutdown
-		// PARA-PATCH: remember that shutdown started so a Shared Process exit during quit does not trigger the crash auto-relaunch
-		Event.once(this.lifecycleMainService.onWillShutdown)(() => {
-			this.applicationShutdownStarted = true;
-			this.dispose();
-		});
+		Event.once(this.lifecycleMainService.onWillShutdown)(() => this.dispose());
 
 		// Contextmenu via IPC support
 		registerContextMenuListener();
@@ -1264,11 +1253,7 @@ export class CodeApplication extends Disposable {
 	private setupSharedProcess(machineId: string, sqmId: string, devDeviceId: string): { sharedProcessReady: Promise<MessagePortClient>; sharedProcessClient: Promise<MessagePortClient> } {
 		const sharedProcess = this._register(this.mainInstantiationService.createInstance(SharedProcess, machineId, sqmId, devDeviceId));
 
-		// PARA-PATCH: also relaunch the app after a Shared Process crash (see recoverFromSharedProcessCrash)
-		this._register(sharedProcess.onDidCrash(() => {
-			this.windowsMainService?.sendToFocused('vscode:reportSharedProcessCrash');
-			this.recoverFromSharedProcessCrash();
-		}));
+		this._register(sharedProcess.onDidCrash(() => this.windowsMainService?.sendToFocused('vscode:reportSharedProcessCrash')));
 
 		const sharedProcessClient = (async () => {
 			this.logService.trace('Main->SharedProcess#connect');
@@ -1287,26 +1272,6 @@ export class CodeApplication extends Disposable {
 		})();
 
 		return { sharedProcessReady, sharedProcessClient };
-	}
-
-	// PARA-PATCH: relaunch once per cooldown after a Shared Process crash so the mobile relay one-shot IPC channels come back
-	private recoverFromSharedProcessCrash(): void {
-		if (this.applicationShutdownStarted || this.sharedProcessCrashRecoveryTriggered) {
-			return;
-		}
-		const now = Date.now();
-		const previous = this.stateService.getItem<number>(CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY, 0);
-		if (now - previous < CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_COOLDOWN) {
-			this.logService.error('[paradisMobileRelay] Shared Process crashed again during the relaunch cooldown; automatic relaunch was suppressed');
-			return;
-		}
-		this.sharedProcessCrashRecoveryTriggered = true;
-		this.stateService.setItem(CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY, now);
-		this.logService.error('[paradisMobileRelay] Shared Process crashed; relaunching the application to restore one-shot IPC channels');
-		this.lifecycleMainService.relaunch().catch(error => {
-			this.sharedProcessCrashRecoveryTriggered = false;
-			this.logService.error('[paradisMobileRelay] failed to relaunch after Shared Process crash', error);
-		});
 	}
 
 	private async initServices(machineId: string, sqmId: string, devDeviceId: string, sharedProcessReady: Promise<MessagePortClient>): Promise<IInstantiationService> {
@@ -1567,8 +1532,11 @@ export class CodeApplication extends Disposable {
 		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
 		disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), this.environmentMainService.userDataPath)); // PARA-PATCH: integrated browser Design Mode (see paradis/contrib/browserDesignMode)
 
-		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon)
-		disposables.add(paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService, this.logService));
+		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon).
+		// This one, updateTerminals and taskBoardHost act on onWillShutdown, so they stay out of `disposables`:
+		// this application disposes itself inside its own onWillShutdown listener, which would unsubscribe
+		// them before the event reaches them. They live until the process exits.
+		paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService, this.logService);
 
 		// PARA-PATCH: on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
 		disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
@@ -1580,12 +1548,12 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: what the pty daemon is holding, for the status bar entry that makes terminals
 		// running outside the app visible (see paradis/contrib/ptyDaemon)
 		disposables.add(paradisRegisterPtyDaemonStatus(mainProcessElectronServer, accessor.get(ILocalPtyService), this.configurationService, this.environmentMainService, this.productService, this.logService));
-		disposables.add(paradisRegisterUpdateTerminals(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IDialogMainService), this.configurationService, this.environmentMainService, this.productService, accessor.get(IUpdateService), this.lifecycleMainService, this.logService)); // PARA-PATCH: ask before ending terminals kept on remotes / the pty daemon when restarting to update (see paradis/contrib/updateTerminals)
+		paradisRegisterUpdateTerminals(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IDialogMainService), this.configurationService, this.environmentMainService, this.productService, accessor.get(IUpdateService), this.lifecycleMainService, this.logService); // PARA-PATCH: ask before ending terminals kept on remotes / the pty daemon when restarting to update (see paradis/contrib/updateTerminals). Not in `disposables`: see the health beacon above
 
 		// PARA-PATCH: menu bar (tray) icon with the notification inbox and agent usage, off by default (see paradis/contrib/menuBar)
 		disposables.add(paradisRegisterMenuBar(mainProcessElectronServer, accessor.get(IWindowsMainService), this.configurationService, this.logService));
 		disposables.add(paradisRegisterKeepAwake(mainProcessElectronServer, accessor.get(IWindowsMainService))); // PARA-PATCH: stop a window's sleep prevention when it reloads, crashes and reopens, or closes (see paradis/contrib/keepAwake)
-		disposables.add(paradisRegisterTaskBoardHost(mainProcessElectronServer, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService)); // PARA-PATCH: start the bundled task board and open it in its own window (see paradis/contrib/taskBoard)
+		paradisRegisterTaskBoardHost(mainProcessElectronServer, this.configurationService, this.environmentMainService, this.lifecycleMainService, this.logService); // PARA-PATCH: start the bundled task board and open it in its own window (see paradis/contrib/taskBoard). Not in `disposables`: see the health beacon above
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
