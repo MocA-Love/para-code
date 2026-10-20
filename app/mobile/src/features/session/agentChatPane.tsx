@@ -277,14 +277,17 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			onApprove={approvalOptions?.approve ?? actions.approve}
 			title={approval.title}
 			detail={approval.detail ?? findLatestApprovalRequest(chat)}
-			choices={approvalOptions?.choices ?? approval.choices}
-			{...(approvalOptions !== undefined ? { screenLabels: approvalOptions.labels } : {})}
+			// PC でしか許可できない承認は、画面の番号付きの選択肢（許可を含む）を使わず PC が載せた拒否だけにする
+			choices={approval.answerOn === 'pc' ? approval.choices : approvalOptions?.choices ?? approval.choices}
+			{...(approvalOptions !== undefined && approval.answerOn !== 'pc' ? { screenLabels: approvalOptions.labels } : {})}
 			{...(approval.request !== undefined ? { request: approval.request } : {})}
 			{...(approvalOptions?.warning !== undefined ? { warning: approvalOptions.warning } : {})}
 			{...(approval.suggestions !== undefined ? { suggestions: approval.suggestions } : {})}
 			{...(approval.suggestionScope !== undefined ? { suggestionScope: approval.suggestionScope } : {})}
 			{...(canDenyWithMessage ? { onDenyWithMessage: actions.denyWithMessage, onRequestDenyMessage: requestFreeText } : {})}
 			denyMessageActive={activeAnswerRequest?.mode === 'deny'}
+			answerOnPc={approval.answerOn === 'pc'}
+			readOnly={approval.readOnly === true}
 			refreshing={refreshing}
 		/>
 	) : approvalUnavailable ? (

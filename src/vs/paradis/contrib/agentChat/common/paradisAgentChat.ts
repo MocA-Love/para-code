@@ -248,6 +248,13 @@ export type IParadisAgentInteraction =
 		readonly suggestionScope?: ParadisAgentApprovalSuggestionScope;
 		/** `mod`: Claude Code の mod が待っていて、拒否に指示を添えられる（`action/answerApproval` の `message`）。 */
 		readonly answerVia?: 'mod';
+		/**
+		 * `pc`: PC の端末の確認の画面でしか許可できない（Claude Code 2.1.304 の mod の `decider: 'person'`）。`choices` は拒否だけに
+		 * なり、許可の回答は断る。古いアプリは知らない項目として捨て、拒否だけのカードを出す。
+		 */
+		readonly answerOn?: 'pc';
+		/** 読むだけの呼び出し（Claude Code 2.1.304 の `tool.check` の `isReadOnly`）。カードに印を出すだけ。 */
+		readonly readOnly?: true;
 	};
 
 export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {

@@ -50,7 +50,7 @@ const DENY_WITH_MESSAGE_ID = 'deny-with-message';
  * ボタンは許可を左（縦に積むときは上）に置き、「以後は確認しない」は足されるルールを添えた 2 番手、拒否は「拒否」1 つ。
  * iPad の広い幅（カードの実際の幅で決める）では、コマンドを左、説明・札・警告を右に並べる（ツリーの形は変えない）。
  */
-export function PermissionCard({ interactionId, onApprove, title, detail, choices, screenLabels, request, warning, suggestions, suggestionScope, onDenyWithMessage, onRequestDenyMessage, denyMessageActive, refreshing }: {
+export function PermissionCard({ interactionId, onApprove, title, detail, choices, screenLabels, request, warning, suggestions, suggestionScope, onDenyWithMessage, onRequestDenyMessage, denyMessageActive, answerOnPc, readOnly, refreshing }: {
 	interactionId: string;
 	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
@@ -71,6 +71,10 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	onRequestDenyMessage?: (request: QuestionFreeTextRequest | undefined) => void;
 	/** コンポーザーがこの承認への指示の入力になっているか。 */
 	denyMessageActive?: boolean;
+	/** PC の端末の確認の画面でしか許可できない（PC の `answerOn: 'pc'`）。許可のボタンを出さず、拒否だけにする。 */
+	answerOnPc?: boolean;
+	/** 読むだけの呼び出し（PC の `readOnly`）。印を出すだけ。 */
+	readOnly?: boolean;
 	refreshing: boolean;
 }) {
 	const submission = useAnswerSubmission(interactionId);
@@ -89,10 +93,15 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	const markOverflow = useCallback(() => setOverflow(true), []);
 	const locked = isSubmissionLocked(submission.state);
 	const disabled = locked || refreshing;
-	const effectiveChoices: readonly AgentApprovalChoice[] = choices ?? [
+	const offeredChoices: readonly AgentApprovalChoice[] = choices ?? [
 		{ id: 'yes', label: '許可', tone: 'approve' },
 		{ id: 'no', label: '拒否', tone: 'deny' },
 	];
+	const denyOnly = useMemo(() => {
+		const denies = offeredChoices.filter(choice => choice.tone === 'deny');
+		return denies.length > 0 ? denies : [{ id: 'no', label: '拒否', tone: 'deny' as const }];
+	}, [offeredChoices]);
+	const effectiveChoices = answerOnPc === true ? denyOnly : offeredChoices;
 	const buttons = useMemo(() => {
 		const list = approvalButtons(effectiveChoices, { ...(screenLabels !== undefined ? { screenLabels } : {}), ...(suggestions !== undefined ? { suggestions } : {}), ...(suggestionScope !== undefined ? { scope: suggestionScope } : {}) });
 		if (onDenyWithMessage === undefined || onRequestDenyMessage === undefined || !effectiveChoices.some(choice => choice.id === 'no')) {
@@ -139,6 +148,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 				<Icon icon={ShieldQuestion} size={headIconSize} color={theme.accent} />
 				<Text style={cardStyles.title}>{heading}</Text>
 			</View>
+			{readOnly === true ? <View style={styles.chips}><Text style={cardStyles.chip}>読むだけ</Text></View> : null}
 			{sender !== undefined ? (
 				<Text style={styles.from}>送り元: <Text style={styles.fromName}>{sender.name}</Text>（{sender.role}）</Text>
 			) : null}
@@ -166,6 +176,12 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 					<ApprovalBody request={request} detail={detail} overflow={overflow} onOverflow={markOverflow} onOpenFull={openFull} linkHitSlop={linkHitSlop} accent={theme.accent} />
 				</View>
 			</View>
+			{answerOnPc === true && !locked ? (
+				<View style={styles.alert}>
+					<Text style={styles.alertTitle}>PC で答えてください</Text>
+					<Text style={styles.alertText}>この操作は PC の Claude Code の確認画面でしか許可できません。ここからは拒否だけできます</Text>
+				</View>
+			) : null}
 			{locked ? (
 				<SubmissionStatus state={submission.state} onRetry={submission.retry} onReselect={submission.reset} />
 			) : buttons.length > 0 ? (

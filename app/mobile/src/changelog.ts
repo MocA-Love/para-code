@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.14',
+		date: '2026-10-20',
+		items: [
+			{
+				icon: 'shield-checkmark-outline',
+				title: 'PC でしか許可できない確認を見分けて出すようになりました',
+				body: 'Claude Code の設定で PC の画面でしか許可できない確認は、「PC で答えてください」と出して拒否だけを選べるようにしました。読むだけの操作の確認には「読むだけ」の印を付けます。',
+			},
+		],
+	},
+	{
 		version: '0.12.13',
 		date: '2026-10-19',
 		items: [
