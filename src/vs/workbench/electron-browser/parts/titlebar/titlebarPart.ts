@@ -182,19 +182,23 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		const targetWindow = getWindow(parent);
 		const targetWindowId = getWindowId(targetWindow);
 
-		// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
-		this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
-		// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
-		this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
-		// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
-		this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
+		// PARA-PATCH: auxiliary windows show only the title and the window controls, so the left-side
+		// status widgets below go to the main window only
+		if (targetWindowId === mainWindow.vscodeWindowId) {
+			// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
+			this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
+			// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
+			this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
+			// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
+			this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
 
-		// PARA-PATCH: local/remote listening-port list, grouped with the other left-side
-		// status widgets instead of the right side (right side ended up isolated next to
-		// the window controls depending on whether actionToolBarElement existed yet).
-		this.paradisPortListWidget.value = createParadisPortListWidget(this.instantiationService, this.leftContent);
-		// PARA-PATCH: fold the widgets above by the title bar's own width so they never overlap the command center
-		this.paradisTitlebarFit.value = createParadisTitlebarFit(this.rootContainer, this.leftContent);
+			// PARA-PATCH: local/remote listening-port list, grouped with the other left-side
+			// status widgets instead of the right side (right side ended up isolated next to
+			// the window controls depending on whether actionToolBarElement existed yet).
+			this.paradisPortListWidget.value = createParadisPortListWidget(this.instantiationService, this.leftContent);
+			// PARA-PATCH: fold the widgets above by the title bar's own width so they never overlap the command center
+			this.paradisTitlebarFit.value = createParadisTitlebarFit(this.rootContainer, this.leftContent);
+		}
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {

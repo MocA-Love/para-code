@@ -503,7 +503,8 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 		this.createTitle();
 
 		// Center-Adjacent Toolbar
-		if (hasCustomTitlebar(this.configurationService, this.titleBarStyle)) {
+		// PARA-PATCH: auxiliary windows show only the title and the window controls (no agent/browser list pills)
+		if (hasCustomTitlebar(this.configurationService, this.titleBarStyle) && !this.isAuxiliary) {
 			const centerAdjacentToolBarElement = append(this.rightContent, $('div.center-adjacent-toolbar-container'));
 			this.centerAdjacentToolBarElement = centerAdjacentToolBarElement;
 			const centerAdjacentToolBar = this.centerAdjacentToolBarDisposable.add(this.instantiationService.createInstance(MenuWorkbenchToolBar, centerAdjacentToolBarElement, MenuId.TitleBarAdjacentCenter, {
@@ -780,6 +781,16 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 				}
 
 				actions.primary.push(GLOBAL_ACTIVITY_TITLE_ACTION);
+			}
+
+			// PARA-PATCH: auxiliary windows show only the title and the window controls (compact /
+			// always on top, contributed to the layout menu), not the editor or global title bar actions
+			if (this.isAuxiliary) {
+				actions.primary.length = 0;
+				actions.secondary.length = 0;
+				if (this.layoutToolbarMenu) {
+					fillInActionBarActions(this.layoutToolbarMenu.getActions(), actions, group => group === 'navigation');
+				}
 			}
 
 			this.actionToolBar.setActions(prepareActions(actions.primary), prepareActions(actions.secondary));

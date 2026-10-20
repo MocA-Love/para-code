@@ -50,6 +50,7 @@ import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCr
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { ParadisWorktreeCreateProgressStore } from './paradisWorktreeCreateProgressStore.js';
 import { ParadisAuxiliaryWindowScopeService } from './paradisAuxiliaryWindowScopeService.js';
+import { paradisCanCloseUnscopedAuxiliaryPart } from './paradisAuxiliaryWindowClosePolicy.js';
 import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
 import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
 import { ParadisSpaceNotesService } from './paradisSpaceNotesService.js';
@@ -95,7 +96,10 @@ class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
 		this._register(paradisRegisterAuxiliaryWindowCloseHandler(part => {
 			const scope = auxiliaryWindowScopeService.resolvePart(part);
 			if (scope.kind === 'pending') {
-				return localize('paradis.auxiliaryWindow.pendingClose', "このウィンドウの元のスペースはまだ復元中です。");
+				if (paradisCanCloseUnscopedAuxiliaryPart(part)) {
+					return undefined;
+				}
+				return localize('paradis.auxiliaryWindow.pendingClose', "このウィンドウがどのスペースのものか確定していないため、ターミナルや未保存の変更を守るために閉じるのを止めました。中のタブをメインウィンドウへ移してから閉じてください。");
 			}
 			if (scope.kind !== 'managed' || scope.stateKey === workspaceSwitchService.activeStateKey) {
 				return undefined;
