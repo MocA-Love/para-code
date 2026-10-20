@@ -45,6 +45,11 @@ the packaged build still report, under the `local` environment. On mobile, `__DE
 `enabled: false` and `enableNative: false` (`app/mobile/src/sentryRuntime.ts`), so neither the JS SDK
 nor sentry-cocoa reports.
 
+Turning crash reporting off also turns Sentry off in main, renderer and the shared process: argv.json
+`enable-crash-reporter: false` (upstream writes it from `telemetry.telemetryLevel` on each startup),
+`--disable-crash-reporter`, or `--crash-reporter-directory`. Main decides
+(`src/vs/platform/environment/common/paradisSentryOptOut.ts`) and passes the result down.
+
 Each process sends at most three copies of the same normalized error in a ten-minute window. Sentry
 Spike Protection is also enabled on both projects.
 
