@@ -18,7 +18,7 @@
 // ウィンドウ reload でピアは消えるが、モバイル側が確立タイムアウトで既存の
 // JPEG ミラーへフォールバックするため致命的ではない。
 
-import { getActiveWindow } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -89,6 +89,9 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly logService: ILogService,
+		// main は予約を要求元のウィンドウで引くので、予約したウィンドウ（このワークベンチのメインウィンドウ）
+		// から呼ぶ。前面の別ウィンドウから呼ぶと予約に当たらず断られる。テストは偽物を渡す
+		private readonly getDisplayMedia: (options: DisplayMediaStreamOptions) => Promise<MediaStream> = options => mainWindow.navigator.mediaDevices.getDisplayMedia(options),
 	) {
 		super();
 		this._register({ dispose: () => this.stopAll() });
@@ -142,9 +145,12 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 		return sid !== undefined && current !== undefined && sid !== current;
 	}
 
-	/** すべてのピアを破棄する（モバイル全切断・dispose 時）。 */
+	/**
+	 * すべてのピアを破棄する（モバイル全切断・dispose 時）。getDisplayMedia を待っている途中の
+	 * offer（まだ peers に無い）も世代を進めて失効させ、止めた後に写しが始まらないようにする。
+	 */
 	stopAll(): void {
-		for (const mobileId of [...this.peers.keys()]) {
+		for (const mobileId of new Set([...this.peers.keys(), ...this.offerGen.keys()])) {
 			this.stopPeer(mobileId);
 		}
 	}
@@ -160,8 +166,7 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 			// shared process が offer 転送前に electron-main を arm 済みなので、
 			// ここでの getDisplayMedia は対象 WebContentsView 単体のトラックを返す
 			// （arm が解決できない場合は main 側が fail-closed で拒否 → ここで throw）。
-			const mediaDevices = getActiveWindow().navigator.mediaDevices;
-			stream = await mediaDevices.getDisplayMedia({ video: true, audio: false });
+			stream = await this.getDisplayMedia({ video: true, audio: false });
 		} catch (err) {
 			this.logService.warn('[paradisWebrtc] getDisplayMedia failed', err);
 			// モバイル側はこれを既存の JPEG ミラーへの無音フォールバック起点にするだけなので、
@@ -179,6 +184,13 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 		if (!track) {
 			stream.getTracks().forEach(t => t.stop());
 			this.send(mobileId, { t: 'webrtc-error', id, error: 'no video track' });
+			return;
+		}
+		if (paradisIsWholeScreenCapture(track)) {
+			// main の取り違え対策をすり抜けて画面全体が来た。デスクトップ全体をスマホへ送らないよう捨てる
+			stream.getTracks().forEach(t => t.stop());
+			reportParadisDiagnosticError('owned', 'browser-mirror', 'resolve-denied', new Error('mirror capture returned a whole screen'), { safe_reason: 'monitor-surface' }, 'info');
+			this.send(mobileId, { t: 'webrtc-error', id, error: 'unexpected capture surface' });
 			return;
 		}
 
@@ -270,4 +282,12 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 			mobileId,
 		});
 	}
+}
+
+/**
+ * 写しの映像が画面全体（displaySurface が monitor）か。写しは内蔵ブラウザのビュー単体を取るので、
+ * monitor が来たら取り違え（予約の無い要求が画面全体の取得へ進んだ）とみなす。
+ */
+export function paradisIsWholeScreenCapture(track: Pick<MediaStreamTrack, 'getSettings'>): boolean {
+	return (track.getSettings() as MediaTrackSettings & { displaySurface?: string }).displaySurface === 'monitor';
 }

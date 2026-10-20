@@ -3989,14 +3989,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				return;
 			}
 			this.webrtcRendererLeases.set(mobileId, { sid, owner });
-			if (this.cdpFrames) {
-				try {
-					await this.cdpFrames.armMirrorCapture(signal.targetId);
-				} catch (err) {
-					this.logService.warn('[paradisMobileRelay] webrtc arm failed', err);
+			// 写しの予約が取れなければ offer を renderer へ渡さない。予約の無い getDisplayMedia は main で
+			// 画面全体の取得へ進みうるため（予約できなかった要求を写しに使わない）。アプリは確立の時間切れで
+			// JPEG の写しへ戻る
+			if (this.cdpFrames === undefined) {
+				this.webrtcRendererLeases.delete(mobileId);
+				return;
+			}
+			try {
+				await this.cdpFrames.armMirrorCapture(signal.targetId, owner.windowId, sid);
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] webrtc arm failed', err);
+				if (this.webrtcRendererLeases.get(mobileId)?.sid === sid) {
+					this.webrtcRendererLeases.delete(mobileId);
 				}
+				return;
 			}
 			if (this.webrtcRendererLeases.get(mobileId)?.sid !== sid) {
+				// 予約の間に次の offer か stop が来た。この要求は renderer へ渡さないので予約も取り消す
+				this.cdpFrames.disarmMirrorCapture(owner.windowId, sid).catch(err => this.logService.warn('[paradisMobileRelay] webrtc disarm failed', err));
 				return;
 			}
 		} else {
@@ -4013,6 +4024,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}, `webrtc:${owner.windowId}`);
 		if (delivered !== true) {
 			this.webrtcRendererLeases.delete(mobileId);
+			if (signal.t === 'webrtc-offer' && typeof signal.sid === 'string') {
+				this.cdpFrames?.disarmMirrorCapture(owner.windowId, signal.sid).catch(err => this.logService.warn('[paradisMobileRelay] webrtc disarm failed', err));
+			}
 			return;
 		}
 		if (signal.t === 'webrtc-stop') {
