@@ -16,10 +16,11 @@ import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/c
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MultipleEditorsSelectedInGroupContext } from '../../../../workbench/common/contextkeys.js';
-import { EditorResourceAccessor, IEditorCommandsContext, isDiffEditorInput, isEditorCommandsContext, isSideBySideEditorInput, SideBySideEditor } from '../../../../workbench/common/editor.js';
+import { EditorResourceAccessor, IEditorCommandsContext, isEditorCommandsContext, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { FileDownload } from '../../../../workbench/contrib/files/browser/fileImportExport.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { PARADIS_EDITOR_DOWNLOAD_COMMAND_ID, PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource, paradisIsParadisDiffInput } from '../common/paradisEditorDownload.js';
+import { paradisIsDiffTab } from '../../../../workbench/services/editor/common/paradisTabContextKeys.js';
+import { PARADIS_EDITOR_DOWNLOAD_COMMAND_ID, PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../common/paradisEditorDownload.js';
 
 registerAction2(class ParadisEditorDownloadAction extends Action2 {
 	constructor() {
@@ -48,7 +49,7 @@ registerAction2(class ParadisEditorDownloadAction extends Action2 {
 		const group = commandsContext ? editorGroupsService.getGroup(commandsContext.groupId) : undefined;
 		const editor = group && commandsContext?.editorIndex !== undefined ? group.getEditorByIndex(commandsContext.editorIndex) : group?.activeEditor ?? undefined;
 		const target = URI.isUri(resource) ? resource : EditorResourceAccessor.getOriginalUri(editor, { supportSideBySide: SideBySideEditor.PRIMARY });
-		const source = paradisEditorDownloadSource(target, editor ? { sideBySide: isSideBySideEditorInput(editor) || isDiffEditorInput(editor) || paradisIsParadisDiffInput(editor), dirty: editor.isDirty() } : undefined);
+		const source = paradisEditorDownloadSource(target, editor ? { sideBySide: paradisIsDiffTab(editor), dirty: editor.isDirty() } : undefined);
 		if (!source) {
 			notificationService.info(localize('paradis.editorDownload.unavailable', "差分のタブや未保存の変更があるタブはダウンロードできません。ファイルのタブを保存してから選んでください。"));
 			return;

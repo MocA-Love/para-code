@@ -10,7 +10,8 @@ import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
-import { PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource, paradisIsParadisDiffInput } from '../../common/paradisEditorDownload.js';
+import { paradisIsDiffTab } from '../../../../../workbench/services/editor/common/paradisTabContextKeys.js';
+import { PARADIS_EDITOR_DOWNLOAD_WHEN, paradisEditorDownloadSource } from '../../common/paradisEditorDownload.js';
 
 function context(values: Record<string, unknown>): IContext {
 	return { getValue: <T>(key: string) => values[key] as T };
@@ -22,11 +23,11 @@ suite('Paradis editor download', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('the tab menu shows the entry only for saved files of the remote host', () => {
-		const cases: Array<[string, boolean]> = [['vscode-remote', false], ['vscode-remote', true], ['file', false], ['untitled', false], ['vscode-terminal', false], ['git', false]];
+	test('the tab menu shows the entry only for saved files of the remote host, never on a diff tab', () => {
+		const cases: Array<[string, boolean, boolean]> = [['vscode-remote', false, false], ['vscode-remote', true, false], ['vscode-remote', false, true], ['file', false, false], ['untitled', false, false], ['vscode-terminal', false, false], ['git', false, false]];
 		assert.deepStrictEqual(
-			cases.map(([scheme, dirty]) => PARADIS_EDITOR_DOWNLOAD_WHEN?.evaluate(context({ resourceScheme: scheme, activeEditorIsDirty: dirty }))),
-			[true, false, false, false, false, false],
+			cases.map(([scheme, dirty, diff]) => PARADIS_EDITOR_DOWNLOAD_WHEN?.evaluate(context({ resourceScheme: scheme, activeEditorIsDirty: dirty, paradisTabIsDiff: diff }))),
+			[true, false, false, false, false, false, false],
 		);
 	});
 
@@ -49,12 +50,12 @@ suite('Paradis editor download', () => {
 		});
 	});
 
-	test('recognizes the diff inputs of the Para Code viewers', () => {
+	test('treats the diff inputs of the Para Code viewers as diff tabs', () => {
 		const original = REMOTE.with({ scheme: 'git' });
 		assert.deepStrictEqual([
-			paradisIsParadisDiffInput({ originalResource: original, modifiedResource: REMOTE }),
-			paradisIsParadisDiffInput({ resource: REMOTE }),
-			paradisIsParadisDiffInput({ originalResource: 'not a uri', modifiedResource: REMOTE }),
+			paradisIsDiffTab({ originalResource: original, modifiedResource: REMOTE }),
+			paradisIsDiffTab({ resource: REMOTE }),
+			paradisIsDiffTab({ originalResource: 'not a uri', modifiedResource: REMOTE }),
 		], [true, false, false]);
 	});
 });
