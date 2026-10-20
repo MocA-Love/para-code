@@ -330,7 +330,8 @@ interface AppState extends StoreState {
 	/** ターミナルを削除する（PC側の実インスタンスも閉じる。呼び出し側で確認済みの前提）。 */
 	closeTerminal(terminalKey: string): void;
 	/** エージェントの「レビュー」状態を確認済みにする（ステータスバッジのポップオーバーから）。 */
-	ackAgentStatus(terminalKey: string): void;
+	/** 確認済みを PC へ送る（送る列に載せられなかったら false）。 */
+	ackAgentStatus(terminalKey: string): Promise<boolean>;
 	/**
 	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
 	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
@@ -434,7 +435,8 @@ interface AppState extends StoreState {
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
 	noteGet(ws: string): Promise<SpaceNoteResult>;
 	/** スペースのメモ本文を更新する。 */
-	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions): Promise<SpaceNoteResult>;
+	/** `pcId` を渡すと、その PC が見ている PC でなければ書かずに断る（書き始めた PC 以外へ書かない）。 */
+	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions, pcId?: string): Promise<SpaceNoteResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
 	/** `htmlImages` を立てると、PC が対応していれば HTML の埋め込み画像を抜いた本文を返す（{@link FsReadResult.htmlImages}）。 */
@@ -2021,7 +2023,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	ackAgentStatus(terminalKey: string) {
-		controller?.ackAgentStatus(terminalKey);
+		return controller?.ackAgentStatus(terminalKey) ?? Promise.resolve(false);
 	},
 
 	togglePin(key: string) {
@@ -2436,9 +2438,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.noteGet(ws);
 	},
 
-	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions) {
+	noteSet(ws: string, text: string, options?: SpaceNoteSetOptions, pcId?: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
+		if ((pcId !== undefined && pcId !== activePcId) || !isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.noteSet(ws, text, options);
 	},
 
