@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisComputerUseBlockReason, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
 import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 import { PARADIS_COMPUTER_USE_TOOLS } from '../../node/paradisComputerUseToolProvider.js';
@@ -53,11 +53,13 @@ suite('ParadisComputerUse common', () => {
 	test('reads the setting, status and approval answers defensively', () => {
 		assert.deepStrictEqual({
 			enabled: [paradisComputerUseEnabled(true), paradisComputerUseEnabled('true'), paradisComputerUseEnabled(undefined)],
+			confirmForeground: [paradisComputerUseConfirmForeground(undefined), paradisComputerUseConfirmForeground(true), paradisComputerUseConfirmForeground(false), paradisComputerUseConfirmForeground('false')],
 			status: paradisParseComputerUseStatus({ enabled: true, availability: 'ok', helperVersion: '0.1.0', permissions: { accessibility: true, screenRecording: false }, extra: 1 }),
 			badStatus: paradisParseComputerUseStatus({ enabled: true, availability: 'great' }),
 			outcomes: [paradisParseComputerUseApprovalOutcome({ outcome: 'read' }), paradisParseComputerUseApprovalOutcome({ outcome: 'approved' }), paradisParseComputerUseApprovalOutcome('read')],
 		}, {
 			enabled: [true, false, false],
+			confirmForeground: [true, true, false, true],
 			status: { enabled: true, availability: 'ok', helperVersion: '0.1.0', permissions: { accessibility: true, screenRecording: false } },
 			badStatus: undefined,
 			outcomes: ['read', undefined, undefined],

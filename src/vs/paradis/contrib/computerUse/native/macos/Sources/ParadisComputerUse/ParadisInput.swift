@@ -24,7 +24,8 @@
 //    送り、離した直後に修飾キーの解放の flagsChanged を 1 つ送って、OS に ⌘ などが押されたままの状態を残さない
 //    （`paradisModifierPress`・`paradisModifierRelease`）。押したボタンとキーは、止めるときも必ず離す
 //  - クリックとキーは HID のタップへ送る（`postToPid` では AppKit に届かないアプリがあるため。Orca と同じ）。
-//    スクロールだけは目的のプロセスへ直接送る
+//    スクロールだけは目的のプロセスへ直接送り、実カーソルも動かさない。クリックとドラッグの後は、利用者がマウスを
+//    動かしていなければ実カーソルを操作の前の位置へ戻す（`paradisPointerRestoreTarget`）
 //  - 貼り付け（Q100、レビュー M6）: クリップボードを退避し、空にしてから文字を入れて ⌘V を送る。貼り付け先の値に
 //    文字が入ったのを確かめてから戻す。確かめられなければ 3 秒待ってから戻す。戻す前にほかが書き換えていたら
 //    （変更回数で判断）戻さない。退避した中身がパスワードマネージャーの印（Concealed / Transient）付きなら、戻さずに空のままにする
@@ -99,6 +100,12 @@ extension ParadisDesktop {
 		if paradisPasteMenuItemAt(point) {
 			throw ParadisHelperError(code: "key_blocked", message: "Paste menu items are never clicked; use pasteText")
 		}
+		// 送り終えたら（止めたときも）、利用者がマウスを動かしていなければ実カーソルを操作の前の位置へ戻す
+		let pointerBefore = paradisPointerLocation()
+		let pointerStarted = Date()
+		defer {
+			restorePointer(pointerBefore, lastSent: point, since: pointerStarted)
+		}
 		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: paradisNeutralEventFlags(systemBefore: systemBefore)))
 		usleep(40_000)
 		let (downType, upType, cgButton): (CGEventType, CGEventType, CGMouseButton) = button == .left
@@ -157,13 +164,19 @@ extension ParadisDesktop {
 		let (start, window) = try resolvePoint(pid: pid, windowId: windowId, target: from)
 		let (end, _) = try resolvePoint(pid: pid, windowId: windowId, target: to)
 		try pointerFence(pid: pid, point: start)
+		// ボタンを離した後に（下の defer より後に走る）、利用者がマウスを動かしていなければ実カーソルを操作の前の位置へ戻す
+		let pointerBefore = paradisPointerLocation()
+		let pointerStarted = Date()
+		var current = start
+		defer {
+			restorePointer(pointerBefore, lastSent: current, since: pointerStarted)
+		}
 		try post(paradisMouseEvent(.mouseMoved, at: start, button: .left, flags: flags))
 		usleep(40_000)
 		try pointerFence(pid: pid, point: start)
 		try post(paradisMouseEvent(.leftMouseDown, at: start, button: .left, flags: flags))
 		let neutral = ParadisModifierPress(flags: flags, added: [])
 		paradisPressedInput.pressMouse(upType: .leftMouseUp, point: start, button: .left, press: neutral)
-		var current = start
 		// 途中で止めても、イベントを作れずに抜けても、押したボタンは必ず離す（レビュー L7）
 		defer {
 			usleep(30_000)
@@ -192,7 +205,7 @@ extension ParadisDesktop {
 		let window = try windowInfo(pid: pid, windowId: windowId)
 		let point = try target.map { try resolvePoint(pid: pid, windowId: windowId, target: $0).0 } ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
 		try pointerFence(pid: pid, point: point)
-		try post(paradisMouseEvent(.mouseMoved, at: point, button: .left, flags: paradisNeutralEventFlags(systemBefore: CGEventSource.flagsState(.hidSystemState))))
+		// 実カーソルは動かさない（HID への mouseMoved は送らない）。ホイールのイベントの位置だけで的を指す
 		if let cursor {
 			ParadisCursorOverlay.shared.followPointer(cursor, at: point, click: false)
 		}
@@ -208,7 +221,7 @@ extension ParadisDesktop {
 			event.postToPid(pid)
 			usleep(16_000)
 		}
-		return ["scrolled": true, "point": paradisWindowPointJson(point, window.bounds)]
+		return ["scrolled": true, "point": paradisWindowPointJson(point, window.bounds), "routeNotes": [paradisPointerlessScrollNote]]
 	}
 
 	// MARK: - キーボード
@@ -522,6 +535,25 @@ extension ParadisDesktop {
 		event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
 		event.post(tap: .cghidEventTap)
 	}
+
+	/**
+	 * 実カーソルを操作の前の位置へ戻す（`paradisPointerRestoreTarget` が戻すと決めたときだけ）。少し待ってから
+	 * 戻すのは、離したボタンをアプリがその位置で処理し終えるため。戻すのはイベントを送らないワープで、ホバーは起こさない。
+	 */
+	private func restorePointer(_ saved: CGPoint?, lastSent: CGPoint, since: Date) {
+		usleep(50_000)
+		guard let target = paradisPointerRestoreTarget(saved: saved, current: paradisPointerLocation(), lastSent: lastSent, physicalPointerSinceStart: inputMonitor.physicalPointerInput(since: since)) else {
+			return
+		}
+		CGWarpMouseCursorPosition(target)
+		// ワープの後に物理的なマウスの動きが一瞬止まらないよう、マウスとカーソルの結び付きを戻す
+		CGAssociateMouseAndMouseCursorPosition(1)
+	}
+}
+
+/** 今の実カーソルの位置（画面の左上を原点とするグローバル座標。CGEvent の位置と同じ）。 */
+private func paradisPointerLocation() -> CGPoint? {
+	return CGEvent(source: nil)?.location
 }
 
 // MARK: - 利用者の入力の見張り（Q101、レビュー M2・N6・N7）
@@ -599,6 +631,18 @@ final class ParadisInputMonitor {
 			lock.unlock()
 		}
 		return paradisPhysicalModifierChange(tapStartedAt: tap == nil ? nil : startedAt, lastPhysicalFlagsChanged: lastPhysicalFlagsChanged, since: since)
+	}
+
+	/**
+	 * ある時刻より後に、物理的なマウスの入力を見たか（見張りが動いていなければ nil）。判定は修飾キーの
+	 * `paradisPhysicalModifierChange` と同じ。
+	 */
+	func physicalPointerInput(since: Date) -> Bool? {
+		lock.lock()
+		defer {
+			lock.unlock()
+		}
+		return paradisPhysicalModifierChange(tapStartedAt: tap == nil ? nil : startedAt, lastPhysicalFlagsChanged: lastPointer, since: since)
 	}
 
 	func reenable() {
