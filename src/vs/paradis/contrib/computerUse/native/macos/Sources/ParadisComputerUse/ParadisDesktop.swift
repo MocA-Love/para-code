@@ -42,6 +42,8 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	let inputMonitor = ParadisInputMonitor()
 	/** 2 段目（背面への入力）。未送信で対応できない操作は前面経路へ譲る（ParadisInputRoutes.swift）。 */
 	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
+	/** 一覧外の要素への AXPress の記録（同じ要素をもう一度クリックしたら本物のクリックへ譲る）。 */
+	let unlistedPressMemory = ParadisUnlistedPressMemory()
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）

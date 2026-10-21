@@ -29,10 +29,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING]: {
 			type: 'boolean',
-			default: false,
+			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			restricted: true,
-			markdownDescription: localize('paradis.computerUse.confirmForegroundInput', "Computer Use の操作のうち、アプリを前面に出してマウスポインタとキーボードを実際に動かすもの（ドラッグ・スクロール・キー操作・貼り付けと、アクセシビリティで押せない部品のクリックなど）の前に、毎回あなたの承認を求めます。ボタンを押す・値を変える・欄へ文字を入れるなど、アクセシビリティで送れる操作はマウスもポインタも動かさず、アプリを前面にも出さないので、この確認は出ません。"),
+			markdownDescription: localize('paradis.computerUse.confirmForegroundInput', "エージェントがアプリを前面に出して、あなたのマウスポインタやキーボードを実際に動かす前に、確認のダイアログを出します。ボタンを押す・欄へ文字を入れるなど、ポインタを動かさずに済む操作では確認は出ません。オフにすると、確認なしで前面に出して操作します。"),
 		},
 		[PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING]: {
 			type: 'boolean',

@@ -840,6 +840,20 @@ suite('ParadisComputerUseToolProvider', () => {
 		});
 	});
 
+	test('points to accessibility before bringing the app forward when the app is not in front', async () => {
+		const { helper, ledger, provider } = setup();
+		const { context } = createContext('pane', []);
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('window_not_focused', 'the application is not in front'); };
+		const message = text(await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return', includeState: false }, undefined, context));
+		assert.deepStrictEqual({
+			elementNumber: message.includes('click an element number from computer_get_app_state'),
+			setValue: message.includes('computer_set_value'),
+			activateLast: message.includes('Call computer_activate_app only when'),
+			oldAdvice: message.includes('Call computer_activate_app, then try again'),
+		}, { elementNumber: true, setValue: true, activateLast: true, oldAdvice: false });
+	});
+
 	test('sends input from all panes one at a time', async () => {
 		const { helper, ledger, provider } = setup();
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');

@@ -156,6 +156,7 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		let plan = paradisAccessibilityClickPlan(button: button, clickCount: clickCount, modifiers: modifiers, chain: chain.map(paradisAXFacts), targetIsFrontmost: targetIsFrontmost)
 		let element: AXUIElement
 		let actionName: String
+		var unlisted = false
 		switch plan {
 		case .none(let reason):
 			return .fellThrough(reason)
@@ -165,6 +166,19 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		case .focus(let depth):
 			element = chain[depth]
 			actionName = "AXFocused"
+		case .pressUnlisted(let depth):
+			element = chain[depth]
+			actionName = "AXPress"
+			unlisted = true
+		}
+		// 一覧外の要素を直前に AXPress で押していたら（何も起きなかったので同じ要素をもう一度クリックした）、本物のクリックへ譲る
+		let unlistedKey = "\(pid):\(CFHash(element))"
+		if unlisted {
+			if desktop.unlistedPressMemory.shouldSkip(key: unlistedKey, now: Date()) {
+				return .fellThrough("the same element was pressed through accessibility a moment ago; sending a real click instead")
+			}
+		} else {
+			desktop.unlistedPressMemory.forget()
 		}
 		// メニューの「ペースト」は、⌘V と同じく利用者のクリップボードを貼るので押さない（レビュー N11）
 		if paradisIsPasteMenuElement(element) {
@@ -209,8 +223,11 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			usleep(paradisAXSettleMicroseconds)
 			verified = actionName == "AXPress" && uncertainError == nil ? paradisAXPressCheck(role: role, before: before, after: paradisAXValueText(paradisCopy(element, kAXValueAttribute))).verified : nil
 		}
-		if uncertainError != nil {
+		if uncertainError != nil || unlisted {
 			verified = nil
+		}
+		if unlisted {
+			desktop.unlistedPressMemory.record(key: unlistedKey, now: Date())
 		}
 		let focusPreserved = paradisFocusPreserved(before: focusBefore, after: paradisFocusSnapshot())
 		// 背面のアプリでメニューが開いてしまったら（押したボタンがメニューを出したなど）、利用者の打鍵が項目を選ばないよう閉じる
@@ -263,6 +280,10 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		if uncertainError != nil {
 			let note = "The app did not confirm the action in time; it may or may not have happened. Read the state before trying again."
 			result["note"] = [result["note"] as? String, note].compactMap { $0 }.joined(separator: " ")
+		}
+		if unlisted {
+			result["standardControl"] = false
+			result["note"] = [result["note"] as? String, paradisUnlistedPressNote(role: role)].compactMap { $0 }.joined(separator: " ")
 		}
 		return .done(result)
 	}
