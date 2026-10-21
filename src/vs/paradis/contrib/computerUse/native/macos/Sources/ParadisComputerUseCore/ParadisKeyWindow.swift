@@ -121,12 +121,22 @@ func paradisKeyPrimeRefusal(targetIsFrontmost: Bool, focus: ParadisKeyFocus, tar
 }
 
 /**
- * 終わった後にキーを戻してよいか。替えていないなら戻さない。今のキーウィンドウが目的のウィンドウのままで、前面のアプリが
- * 操作の前と同じときだけ戻す（操作の間に利用者がそのアプリへ移った・別のウィンドウを選んだなら、その選択を奪わない）。
+ * 終わった後にキーを戻してよいか。替えていないなら戻さない。今のキーウィンドウが目的のウィンドウのままで、今の前面の
+ * アプリが目的のアプリでないときだけ戻す（操作の間に利用者がそのアプリへ移った・別のウィンドウを選んだなら、その選択を
+ * 奪わない。無関係なアプリの間の行き来では戻す）。`switchInterrupted` は、替えている最中に利用者が目的のアプリへ移った
+ * （何も送らずに譲る）ときで、利用者の打鍵が目的のウィンドウへ入らないよう、前面を問わず戻す。
  */
-func paradisShouldRestoreKey(primed: ParadisKeyPrime, currentFocusWindow: UInt32?, target: UInt32, frontmostBefore: Int32?, frontmostNow: Int32?) -> Bool {
-	guard primed != .alreadyKey else {
+func paradisShouldRestoreKey(primed: ParadisKeyPrime, currentFocusWindow: UInt32?, target: UInt32, targetPid: Int32, frontmostNow: Int32?, switchInterrupted: Bool = false) -> Bool {
+	guard primed != .alreadyKey, currentFocusWindow == target else {
 		return false
 	}
-	return currentFocusWindow == target && frontmostBefore != nil && frontmostBefore == frontmostNow
+	return switchInterrupted || (frontmostNow != nil && frontmostNow != targetPid)
+}
+
+/**
+ * 替えた後に読んだ前面のアプリが、替える前と同じか。違えば（替えている間に利用者が別のアプリ、特に目的のアプリへ移った）
+ * 何も送らずに戻して譲る。
+ */
+func paradisFrontmostUnchangedDuringSwitch(before: Int32?, after: Int32?) -> Bool {
+	return before != nil && before == after
 }
