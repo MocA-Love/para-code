@@ -576,6 +576,32 @@ suite('ParadisComputerUseToolProvider', () => {
 		});
 	});
 
+	test('keeps realPointer when a real click is sent again after the user approves', async () => {
+		const { helper, ledger, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.onInput = async (_method, params) => {
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'realPointer was requested');
+			}
+			return { clicked: true, route: 'foreground' };
+		};
+		const { context } = createContext('pane', ['once']);
+		const result = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 1, realPointer: true, includeState: false }, undefined, context) as IResult;
+		const invalid = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 1, realPointer: 'yes', includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			route: JSON.parse((result.content[0] as { text: string }).text).route,
+			sent: helper.inputs.map(input => ({ method: input.method, realPointer: input.params.realPointer, allowForeground: input.params.allowForeground, activateFirst: input.params.activateFirst })),
+			invalid: text(invalid),
+		}, {
+			route: 'foreground',
+			sent: [
+				{ method: 'click', realPointer: true, allowForeground: false, activateFirst: undefined },
+				{ method: 'click', realPointer: true, allowForeground: undefined, activateFirst: true },
+			],
+			invalid: '"realPointer" must be true or false.',
+		});
+	});
+
 	test('types the rest of the text after the user approves when accessibility stops working mid-text', async () => {
 		const { helper, ledger, provider } = setup({ confirmForeground: true });
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');
@@ -838,6 +864,20 @@ suite('ParadisComputerUseToolProvider', () => {
 				'A menu is open in the app while it is not in front: either the user is using it, or it is a menu that Para Code opened and could not close',
 			],
 		});
+	});
+
+	test('points to accessibility before bringing the app forward when the app is not in front', async () => {
+		const { helper, ledger, provider } = setup();
+		const { context } = createContext('pane', []);
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('window_not_focused', 'the application is not in front'); };
+		const message = text(await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return', includeState: false }, undefined, context));
+		assert.deepStrictEqual({
+			elementNumber: message.includes('click an element number from computer_get_app_state'),
+			setValue: message.includes('computer_set_value'),
+			activateLast: message.includes('Call computer_activate_app only when'),
+			oldAdvice: message.includes('Call computer_activate_app, then try again'),
+		}, { elementNumber: true, setValue: true, activateLast: true, oldAdvice: false });
 	});
 
 	test('sends input from all panes one at a time', async () => {

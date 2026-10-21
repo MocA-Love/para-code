@@ -111,7 +111,9 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 		const detail = [
 			localize('paradis.computerUse.foreground.app', "アプリ: {0}（{1}）", appName, bundleId),
 			...(action ? [localize('paradis.computerUse.foreground.action', "操作: {0}", action)] : []),
-			localize('paradis.computerUse.foreground.pointer', "このアプリを前面に出し、実際のマウスポインタを動かしてクリックやキー入力を送ります。その間にあなたがマウスやキーボードを使うと、エージェントの操作は止まります。"),
+			prompt.action === 'scroll'
+				? localize('paradis.computerUse.foreground.scrollPointer', "このアプリを前面に出してスクロールします（マウスポインタは動かしません）。その間にあなたがマウスやキーボードを使うと、エージェントの操作は止まります。")
+				: localize('paradis.computerUse.foreground.pointer', "このアプリを前面に出し、実際のマウスポインタを動かしてクリックやキー入力を送ります。その間にあなたがマウスやキーボードを使うと、エージェントの操作は止まります。"),
 			localize('paradis.computerUse.foreground.scope', "「このターミナルでは今後も許可」を選ぶと、Para Code を終了するまで、このターミナルからのこのアプリへの操作では聞きません。ボタンを押す・値を変える・欄へ文字を入れるなど、ポインタを動かさずに送れる操作では、この確認は出ません。"),
 		];
 		const request: IParadisAgentApprovalRequest = {

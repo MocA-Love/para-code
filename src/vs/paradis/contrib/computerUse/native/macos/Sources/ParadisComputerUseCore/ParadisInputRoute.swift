@@ -90,6 +90,11 @@ struct ParadisInputOptions: Equatable {
 	var activateFirst: Bool = false
 	/** 独自のカーソル。nil なら出さない（設定でオフ、または古い shared process）。 */
 	var cursor: ParadisCursorOwnerSpec? = nil
+	/**
+	 * 1・2 段目を飛ばして 3 段目（前面に出して実カーソルで送る）にする。エージェントが明示したときだけ（AXPress に
+	 * 反応しなかった部品を本物のクリックで押すため）。3 段目は目的のアプリを前面に出してから送る。
+	 */
+	var realPointer: Bool = false
 }
 
 // MARK: - 段の約束
@@ -143,6 +148,10 @@ final class ParadisUnavailableBackgroundRoute: ParadisInputRoute {
 func paradisRouteInput(_ action: ParadisInputAction, pid: Int32, routes: [ParadisInputRoute], options: ParadisInputOptions) throws -> [String: Any] {
 	var skipped: [String] = []
 	for route in routes {
+		if options.realPointer && !route.requiresForeground {
+			skipped.append("\(route.kind.rawValue): realPointer was requested")
+			continue
+		}
 		if case .unavailable(let reason) = route.availability(of: action, pid: pid) {
 			skipped.append("\(route.kind.rawValue): \(reason)")
 			continue
@@ -153,8 +162,12 @@ func paradisRouteInput(_ action: ParadisInputAction, pid: Int32, routes: [Paradi
 		switch try route.perform(action, pid: pid, options: options) {
 		case .done(var result):
 			result["route"] = route.kind.rawValue
-			if !skipped.isEmpty && route.kind != .accessibility {
-				result["routeNotes"] = skipped
+			// 段が自分で書いた注意（前面のスクロールなど）は、飛ばした理由の後ろに残す
+			let notes = (route.kind != .accessibility ? skipped : []) + ((result["routeNotes"] as? [String]) ?? [])
+			if notes.isEmpty {
+				result.removeValue(forKey: "routeNotes")
+			} else {
+				result["routeNotes"] = notes
 			}
 			return result
 		case .fellThrough(let reason):
@@ -163,6 +176,12 @@ func paradisRouteInput(_ action: ParadisInputAction, pid: Int32, routes: [Paradi
 	}
 	throw ParadisHelperError(code: "input_unsupported", message: skipped.isEmpty ? "no way to send \(action.name)" : skipped.joined(separator: "; "))
 }
+
+/**
+ * 3 段目のスクロールの注意。実カーソルを動かさず、ホイールのイベントの位置だけで的を指すので、実カーソルの下だけを
+ * スクロールするアプリでは効かないことがある。
+ */
+let paradisPointerlessScrollNote = "foreground: the scroll was sent at the target point without moving the real mouse pointer; an app that scrolls only the area under the pointer may not have scrolled. Read the window again to check."
 
 // MARK: - 1 段目: AX で何を押すか
 
@@ -182,6 +201,12 @@ enum ParadisAXClickPlan: Equatable {
 	case perform(action: String, depth: Int)
 	/** 文字の欄へフォーカスを移し、キャレットを末尾に置く（`AXFocused` を書く）。 */
 	case focus(depth: Int)
+	/**
+	 * 一覧（`paradisPressableRoles`）に無い役割の要素の AXPress（ウェブの中身の押せる `AXGroup`、表の行など）。
+	 * 押しても何も起きない要素もあり、読み戻しでは確かめられないので、結果にそう書く（`paradisUnlistedPressNote`）。
+	 * 本物のクリックが要るときは、エージェントが `realPointer` を付けて送り直す。
+	 */
+	case pressUnlisted(depth: Int)
 	case none(String)
 }
 
@@ -196,6 +221,14 @@ let paradisTextInputRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboB
 
 /** 中身だけの要素（ここに当たったら親の部品を見る。ボタンの中の文字や絵など）。 */
 private let paradisPassiveRoles: Set<String> = ["AXStaticText", "AXImage", "AXGroup", "AXUnknown"]
+
+/**
+ * AXPress を持っていても一覧外として押さない、入れ物の役割（押すと中身のどこが押されたか分からない・ページ全体が反応しうる）。
+ */
+let paradisUnpressableContainerRoles: Set<String> = [
+	"AXApplication", "AXWindow", "AXSheet", "AXDrawer", "AXWebArea", "AXScrollArea", "AXScrollBar", "AXSplitGroup", "AXSplitter",
+	"AXList", "AXTable", "AXOutline", "AXBrowser", "AXToolbar", "AXTabGroup", "AXLayoutArea", "AXMenuBar", "AXMenu",
+]
 
 /** 押すとメニューを開く部品（ポップアップ・メニューボタン）。 */
 let paradisMenuOpeningRoles: Set<String> = ["AXPopUpButton", "AXMenuButton"]
@@ -213,7 +246,9 @@ let paradisAXClickChainLimit = 4
 
 /**
  * クリックを AX の操作に置き換えられるか（1 段目）。置き換えられるのは、修飾キーの無い 1 回のクリックだけ。
- *  - 左: 押せる部品の AXPress。文字の欄なら AXFocused を書く
+ *  - 左: 押せる部品の AXPress。文字の欄なら AXFocused を書く。一覧に無い役割でも AXPress を持つ要素は
+ *    `pressUnlisted`（入れ物の役割は除く）。中身だけの役割（文字・絵・`AXGroup`）で AXPress を持つものは、親に一覧の
+ *    部品があればそちらを押し、無ければ最初に見つけたものを押す
  *  - 右: AXShowMenu を受け付ける要素
  * 当たった要素が中身だけ（ボタンの中の文字など）のときは、親を `paradisAXClickChainLimit` までたどる。
  * 使えない（無効になっている）部品は置き換えない（3 段目のクリックに任せる）。
@@ -237,6 +272,8 @@ private func paradisAccessibilityClickPlanIgnoringMenus(button: ParadisMouseButt
 	guard !chain.isEmpty else {
 		return .none("no accessibility element at the target")
 	}
+	// 中身だけの役割で AXPress を持つ、最初の要素（親に一覧の部品が無いときに押す）
+	var passiveCandidate: Int?
 	for (depth, facts) in chain.prefix(paradisAXClickChainLimit).enumerated() {
 		if facts.enabled == false {
 			return .none("the element is disabled")
@@ -249,6 +286,17 @@ private func paradisAccessibilityClickPlanIgnoringMenus(button: ParadisMouseButt
 			if paradisTextInputRoles.contains(facts.role) || facts.subrole == "AXSearchField" {
 				return facts.focusSettable ? .focus(depth: depth) : .none("the text field does not accept focus through accessibility")
 			}
+			let pressable = facts.actions.contains("AXPress") && !paradisUnpressableContainerRoles.contains(facts.role)
+			if paradisPassiveRoles.contains(facts.role) {
+				if pressable && passiveCandidate == nil {
+					passiveCandidate = depth
+				}
+				continue
+			}
+			if let passiveCandidate {
+				return .pressUnlisted(depth: passiveCandidate)
+			}
+			return pressable ? .pressUnlisted(depth: depth) : .none("\(facts.role) does not accept AXPress")
 		case .right:
 			if facts.actions.contains("AXShowMenu") {
 				return .perform(action: "AXShowMenu", depth: depth)
@@ -258,7 +306,15 @@ private func paradisAccessibilityClickPlanIgnoringMenus(button: ParadisMouseButt
 			return .none("\(facts.role) does not accept \(button == .left ? "AXPress" : "AXShowMenu")")
 		}
 	}
+	if let passiveCandidate {
+		return .pressUnlisted(depth: passiveCandidate)
+	}
 	return .none("no element near the target accepts \(button == .left ? "AXPress" : "AXShowMenu")")
+}
+
+/** 一覧外の要素を AXPress で押した結果に添える説明（押しても何も起きないことがあるため）。 */
+func paradisUnlistedPressNote(role: String) -> String {
+	return "AXPress was sent to an element that is not a standard control (\(role)); the app may have ignored it. Read the window again to check. If nothing changed, call computer_click again with \"realPointer\": true to send a real click (it moves the user's mouse pointer and brings the app forward)."
 }
 
 /**
@@ -727,6 +783,12 @@ func paradisParseInputOptions(_ params: [String: Any]) throws -> ParadisInputOpt
 			throw ParadisHelperError.invalidArgument("\"activateFirst\" must be true or false")
 		}
 		options.activateFirst = number.boolValue
+	}
+	if let raw = params["realPointer"] {
+		guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+			throw ParadisHelperError.invalidArgument("\"realPointer\" must be true or false")
+		}
+		options.realPointer = number.boolValue
 	}
 	options.cursor = paradisParseCursorOwner(params["cursor"])
 	return options
