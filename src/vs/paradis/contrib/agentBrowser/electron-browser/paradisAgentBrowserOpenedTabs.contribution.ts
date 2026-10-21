@@ -15,14 +15,17 @@
 // 孫（開いたタブから開いたタブ）も、開いたタブが許可済みなら同じく許可される。
 //
 // 許可は別枠の上限（PARADIS_OPENED_TAB_LIMIT）で数え、元のタブが使えなくなったら shared process が外す。
-// ここで付けた共有の印（エージェントを共有相手に加えたもの）は、許可がすべて外れたら下ろし、ユーザーが印を
-// 外したら（共有ボタン）許可も外す。
+// ここで付けた共有の印（エージェントを共有相手に加えたもの）は shared process の台帳に覚えさせ、許可がすべて
+// 外れたら下ろす。台帳と許可はどちらも shared process の状態なので、renderer の控えの遅れや再読み込みをまたいでも
+// 印だけが残らない。ユーザーが印を外したら（共有ボタン）許可も外す。
 
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 
@@ -31,31 +34,42 @@ function isShared(model: IBrowserViewModel): boolean {
 	return model.sharingState === BrowserViewSharingState.Shared;
 }
 
+/** shared process の印の台帳の 1 件。 */
+interface IOpenedTabShareMark {
+	readonly viewId: string;
+	readonly inUse: boolean;
+}
+
 class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisAgentBrowserOpenedTabs';
 
 	/** 見たことのあるタブ（新しく開いたタブだけを扱う）。 */
 	private readonly _seen = new Set<string>();
 	private _ready = false;
-	/** ここで共有の印を付けたタブ → その見張り。許可が付いたのを一度見たか（{@link _reconcile} が早すぎる下ろしをしない）。 */
-	private readonly _marked = this._register(new DisposableMap<string, DisposableStore>());
-	private readonly _grantSeen = new Set<string>();
+	/** ここで共有の印を付けたタブ → ユーザーが印を外すのの見張り（このウィンドウの今の世代の分だけ）。 */
+	private readonly _watchers = this._register(new DisposableMap<string, DisposableStore>());
+	/** {@link _reconcile} の実行中か、実行中にもう一度頼まれたか。 */
+	private _reconciling: Promise<void> | undefined;
+	private _reconcileAgain = false;
 
 	constructor(
 		@IBrowserViewWorkbenchService private readonly _browserViews: IBrowserViewWorkbenchService,
 		@IParadisAgentBrowserTabsService private readonly _tabs: IParadisAgentBrowserTabsService,
 		@IParadisAgentBrowserBindingModel private readonly _bindingModel: IParadisAgentBrowserBindingModel,
+		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
 		this._register(this._browserViews.onDidChangeBrowserViews(() => this._scan()));
 		this._register(this._bindingModel.onDidChange(() => this._reconcile()));
-		// 起動時にもう開いていたタブは扱わない（再読み込みの前の許可は shared process が外している）
+		// 起動時にもう開いていたタブは扱わない（再読み込みの前の許可は shared process が外している）。
+		// 再読み込みの前に付けた印は、台帳と突き合わせて下ろす
 		void this._browserViews.whenInitialized.then(() => {
 			for (const id of this._browserViews.getKnownBrowserViews().keys()) {
 				this._seen.add(id);
 			}
 			this._ready = true;
+			this._reconcile();
 		});
 	}
 
@@ -67,8 +81,7 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 		for (const id of [...this._seen]) {
 			if (!known.has(id)) {
 				this._seen.delete(id);
-				this._grantSeen.delete(id);
-				this._marked.deleteAndDispose(id);
+				this._watchers.deleteAndDispose(id);
 			}
 		}
 		for (const [id, input] of known) {
@@ -95,44 +108,87 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 			}
 		}
 		if (granted && !sharedBefore && isShared(model) && this._seen.has(input.id)) {
-			this._watchMarked(input.id, model);
+			// 印を付けたことを台帳へ。台帳に載らなかったら、外し損ねないよう今下ろす
+			if (await this._call<boolean>('markOpenedTabShared', [input.id]) === true) {
+				this._watchUnshare(input.id, model);
+			} else {
+				await this._unshare(model);
+			}
+			this._reconcile();
 		}
 	}
 
 	/** ここで付けた共有の印を、ユーザーが外したら（共有ボタン）許可も外す。 */
-	private _watchMarked(viewId: string, model: IBrowserViewModel): void {
+	private _watchUnshare(viewId: string, model: IBrowserViewModel): void {
 		const store = new DisposableStore();
 		store.add(model.onDidChangeSharingState(state => {
-			if (state !== BrowserViewSharingState.Shared && this._marked.has(viewId)) {
-				this._marked.deleteAndDispose(viewId);
-				this._grantSeen.delete(viewId);
+			if (state !== BrowserViewSharingState.Shared && this._watchers.has(viewId)) {
+				this._watchers.deleteAndDispose(viewId);
 				for (const token of this._bindingModel.getAgentTabOwnersForPage(viewId)) {
 					void this._bindingModel.revokeAgentTab(token, viewId);
 				}
+				void this._call('forgetOpenedTabShareMark', [viewId]);
 			}
 		}));
-		this._marked.set(viewId, store);
-		this._reconcile();
+		this._watchers.set(viewId, store);
 	}
 
-	/** 許可がすべて外れた（元のタブの共有を外した・閉じた）タブの、ここで付けた共有の印を下ろす。 */
+	/**
+	 * 台帳の印のうち、どのペインも使っていない（許可がすべて外れた）タブ・もう無いタブの印を下ろして台帳から外す。
+	 * 判定は shared process の状態だけで行う（renderer の控えの遅れに左右されない）。
+	 */
 	private _reconcile(): void {
-		for (const viewId of [...this._marked.keys()]) {
-			const inUse = this._bindingModel.getAgentTabOwnersForPage(viewId).length > 0 || this._bindingModel.getBindingsForPage(viewId).length > 0;
-			if (inUse) {
-				this._grantSeen.add(viewId);
+		if (!this._ready) {
+			return;
+		}
+		if (this._reconciling) {
+			this._reconcileAgain = true;
+			return;
+		}
+		this._reconciling = this._doReconcile().catch(error => this._logService.debug('[ParadisAgentBrowserOpenedTabs] could not reconcile share marks', error)).finally(() => {
+			this._reconciling = undefined;
+			if (this._reconcileAgain && !this._store.isDisposed) {
+				this._reconcileAgain = false;
+				this._reconcile();
+			}
+		});
+	}
+
+	private async _doReconcile(): Promise<void> {
+		const marks = await this._call<IOpenedTabShareMark[]>('listOpenedTabShareMarks', []);
+		if (!Array.isArray(marks) || this._store.isDisposed) {
+			return;
+		}
+		const known = this._browserViews.getKnownBrowserViews();
+		for (const mark of marks) {
+			const input = known.get(mark.viewId);
+			if (mark.inUse && input) {
 				continue;
 			}
-			if (!this._grantSeen.has(viewId)) {
-				// 許可の控えがまだ届いていない
-				continue;
+			this._watchers.deleteAndDispose(mark.viewId);
+			const model = input?.model;
+			if (model) {
+				await this._unshare(model);
 			}
-			this._marked.deleteAndDispose(viewId);
-			this._grantSeen.delete(viewId);
-			const model = this._browserViews.getKnownBrowserViews().get(viewId)?.model;
-			if (model?.sharingState === BrowserViewSharingState.Shared) {
-				void model.setSharedWithAgent(false).catch(error => this._logService.debug('[ParadisAgentBrowserOpenedTabs] could not unshare an opened tab', error));
+			await this._call('forgetOpenedTabShareMark', [mark.viewId]);
+		}
+	}
+
+	private async _unshare(model: IBrowserViewModel): Promise<void> {
+		if (isShared(model)) {
+			try {
+				await model.setSharedWithAgent(false);
+			} catch (error) {
+				this._logService.debug('[ParadisAgentBrowserOpenedTabs] could not unshare an opened tab', error);
 			}
+		}
+	}
+
+	private async _call<T>(method: string, args: unknown[]): Promise<T | undefined> {
+		try {
+			return await this._sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<T>(method, args);
+		} catch {
+			return undefined;
 		}
 	}
 }

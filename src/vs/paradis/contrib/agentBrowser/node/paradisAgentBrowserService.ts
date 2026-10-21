@@ -377,6 +377,8 @@ const PARADIS_DESKTOP_CURSOR_VIEW = 'desktop';
 const MAX_PANE_CURSOR_LABEL_KEYS = 256;
 /** 上限で共有しなかった開いたタブを、ペインごとに覚えておく数（list_browser_tabs で知らせる分）。 */
 const MAX_SKIPPED_OPENED_TABS = 20;
+/** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
+const MAX_OPENED_TAB_SHARE_MARKS = 256;
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。Para Code を再起動（自動アップデートの適用を含む）すると、起動後に Para Code が同じペインと同じページの共有を戻すかユーザーに尋ね、承認されれば張り直します（ユーザーがそのスペースを開いたときに尋ねます）。戻らない場合（ページやペインを閉じた、ユーザーが共有を外した、戻さないと答えた）は、ユーザーにもう一度共有してもらってください。それでも届かない場合は、このCLIをペインで起動し直してから再共有してください。';
 
 /**
@@ -567,6 +569,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * list_browser_tabs でエージェントへ知らせる。ペインごとに {@link MAX_SKIPPED_OPENED_TABS} 件まで覚える。
 	 */
 	private readonly _skippedOpenedTabs = new Map<string, Set<string>>();
+	/**
+	 * renderer が開いたタブへ付けた共有の印（エージェントを共有相手に加えた）の台帳（windowCtx → viewId）。renderer の
+	 * 再読み込みをまたいで残し、許可が外れたタブの印を renderer が下ろせるようにする（{@link listOpenedTabShareMarks}）。
+	 */
+	private readonly _openedTabShareMarks = new Map<string, Set<string>>();
 	/**
 	 * ツールやゲートウェイが使ったタブのスコープ（token → viewId → そのとき裏にあった entry の世代）。共有の付け替えや
 	 * 許可の増減のたびに今の解決と比べ、変わったスコープの子プロセスと接続だけを切る（{@link _reconcileTabScopes}）。
@@ -2004,6 +2011,7 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private _cleanupRemainingWindowState(windowCtx: string, preservedTokens: ReadonlySet<string>): void {
 		this._dropAgentTabGrants(grant => grant.windowCtx === windowCtx);
+		this._openedTabShareMarks.delete(windowCtx);
 		for (const [token, binding] of [...this._bindings]) {
 			if (binding.windowCtx === windowCtx && !preservedTokens.has(token)) {
 				this._bindings.delete(token);
@@ -2652,6 +2660,43 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._skippedOpenedTabs.get(request.token)?.delete(request.viewId);
 		}
 		return result;
+	}
+
+	/** renderer から: 開いたタブへ共有の印を付けた（許可が外れたら下ろす対象として覚える）。 */
+	async markOpenedTabShared(connection: object, viewId: string): Promise<boolean> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		if (!paradisIsValidAgentTabId(viewId)) {
+			return false;
+		}
+		let marks = this._openedTabShareMarks.get(windowCtx);
+		if (marks === undefined) {
+			marks = new Set();
+			this._openedTabShareMarks.set(windowCtx, marks);
+		}
+		if (!marks.has(viewId) && marks.size >= MAX_OPENED_TAB_SHARE_MARKS) {
+			return false;
+		}
+		marks.add(viewId);
+		return true;
+	}
+
+	/** renderer から: 印を付けたタブと、そのタブを今どれかのペインが使っているか（許可か共有）。 */
+	async listOpenedTabShareMarks(connection: object): Promise<{ readonly viewId: string; readonly inUse: boolean }[]> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const inUse = (viewId: string) => [...this._bindings.values()].some(binding => binding.windowCtx === windowCtx && binding.pageId === viewId)
+			|| [...this._agentTabGrants.values()].some(grants => grants.get(viewId)?.windowCtx === windowCtx);
+		return [...(this._openedTabShareMarks.get(windowCtx) ?? [])].map(viewId => ({ viewId, inUse: inUse(viewId) }));
+	}
+
+	/** renderer から: 印を下ろした（またはタブが無くなった）ので台帳から外す。 */
+	async forgetOpenedTabShareMark(connection: object, viewId: string): Promise<boolean> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const marks = this._openedTabShareMarks.get(windowCtx);
+		const removed = marks?.delete(viewId) ?? false;
+		if (marks?.size === 0) {
+			this._openedTabShareMarks.delete(windowCtx);
+		}
+		return removed;
 	}
 
 	private async _resolveOpenerViewId(windowId: number, viewId: string): Promise<string | undefined> {
