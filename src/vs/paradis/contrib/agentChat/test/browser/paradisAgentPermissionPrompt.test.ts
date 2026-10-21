@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
@@ -189,6 +189,66 @@ suite('Codex permission prompts on screen (codex-cli 0.162.1)', () => {
 			onClick: [true, true],
 			onClickBy: [false, false],
 			oldLineAbove: [false, false],
+		});
+	});
+});
+
+suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const RULE = '─'.repeat(60);
+	// 2.1.306 の実画面（`--resume` で 5 時間使っていない会話を開いた直後）。上に会話の本文が残る
+	const resumePrompt = [
+		'❯ Say hi in one word.',
+		'',
+		'● Hi.',
+		'',
+		RULE,
+		'  Resume this conversation?',
+		'',
+		'  This conversation has been inactive for 5h and is 800k tokens long. Resuming it will use about 73% of your 5-hour',
+		'  usage limit.',
+		'',
+		'  ❯ 1. Resume',
+		'    2. Start a new conversation  Claude can look this one up if you refer to it later',
+		'',
+		'  Enter to confirm · Esc to resume',
+		'',
+	].join('\n');
+	// 狭いペインで見出しと選択肢が折り返した形
+	const narrow = [
+		RULE,
+		'  Resume this',
+		'  conversation?',
+		'',
+		'  This conversation has been inactive for 5h',
+		'  and is 800k tokens long.',
+		'',
+		'  ❯ 1. Resume',
+		'    2. Start a new',
+		'    conversation',
+		'',
+		'  Enter to confirm · Esc to resume',
+	].join('\n');
+	// 「Resume」を選んだ後: 確認の文言が会話の本文に残っていても、下に入力欄が出ていれば確認ではない
+	const answered = [
+		'● You asked: "Resume this conversation?" or "Start a new conversation"?',
+		'',
+		RULE,
+		'❯ ',
+		RULE,
+		'  ⏵⏵ auto mode on (shift+tab to cycle)',
+	].join('\n');
+
+	test('finds the prompt, also when it wraps, and not once the prompt box is back', () => {
+		assert.deepStrictEqual({
+			resume: [paradisScreenShowsClaudeResumePrompt(resumePrompt), paradisScreenShowsAgentPrompt(resumePrompt), paradisScreenShowsPermissionPrompt(resumePrompt)],
+			narrow: paradisScreenShowsClaudeResumePrompt(narrow),
+			answered: [paradisScreenShowsClaudeResumePrompt(answered), paradisScreenShowsAgentPrompt(answered)],
+		}, {
+			resume: [true, true, false],
+			narrow: true,
+			answered: [false, false],
 		});
 	});
 });
