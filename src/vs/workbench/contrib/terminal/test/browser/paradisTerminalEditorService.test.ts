@@ -107,6 +107,42 @@ suite('Paradis TerminalEditorService exact group', () => {
 		assert.strictEqual(service.activeInstance, undefined);
 	});
 
+	test('an inactive open into the exact group succeeds without a pane when the group holds the editor', async () => {
+		// editorGroupView.doShowEditor returns no pane for an inactive open into a group that already has editors
+		const instance = createInstance(6);
+		const held: URI[] = [];
+		const heldInput = { resource: instance.resource } as TerminalEditorInput;
+		const group = { id: 15, findEditors: (resource: URI) => held.some(r => r.toString() === resource.toString()) ? [heldInput] : [] } as Partial<IEditorGroup> as IEditorGroup;
+		const service = createService(
+			() => {
+				held.push(instance.resource);
+				return Promise.resolve(undefined);
+			},
+			() => group,
+		);
+
+		await service.openEditor(instance, { viewColumn: group.id, paradisExactEditorGroup: group, preserveFocus: true, paradisInactive: true });
+
+		assert.strictEqual(getActiveRequest(service), undefined);
+	});
+
+	test('a pane-less open into the exact group still fails when the group does not hold the editor or the open was active', async () => {
+		const group = { id: 16, findEditors: () => [] } as Partial<IEditorGroup> as IEditorGroup;
+		const heldGroup = { id: 17, findEditors: () => [{} as TerminalEditorInput] } as Partial<IEditorGroup> as IEditorGroup;
+		let liveGroup = group;
+		const service = createService(() => Promise.resolve(undefined), () => liveGroup);
+
+		await assert.rejects(
+			service.openEditor(createInstance(7), { viewColumn: group.id, paradisExactEditorGroup: group, paradisInactive: true }),
+			/did not open in the exact destination group/,
+		);
+		liveGroup = heldGroup;
+		await assert.rejects(
+			service.openEditor(createInstance(8), { viewColumn: heldGroup.id, paradisExactEditorGroup: heldGroup }),
+			/did not open in the exact destination group/,
+		);
+	});
+
 	function createService(
 		openEditor: (...args: unknown[]) => Promise<IEditorPane | undefined>,
 		getGroup: () => IEditorGroup | undefined,
