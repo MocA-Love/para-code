@@ -45,7 +45,7 @@ suite('paradisOfficeDiffSide', () => {
 			truncatedWorkingTreeFile: { original: 'document', modified: '0 bytes' },
 			bothMissing: { error: 'not found' },
 			tooLarge: { error: 'too large' },
-			brokenOtherSide: { error: 'not found' },
+			brokenOtherSide: { error: 'unreadable' },
 		});
 	});
 });

@@ -33,7 +33,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -61,7 +61,7 @@ import {
 	ParadisDocxWebviewMessage,
 } from '../common/paradisDocx.js';
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
-import { IParadisWordDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisWordDiffBytes } from '../common/paradisOfficeDiffSide.js';
+import { describeParadisOfficeReadFailure, IParadisWordDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisWordDiffBytes } from '../common/paradisOfficeDiffSide.js';
 import type { ParadisOfficeChange, ParadisOfficeCompletenessManifest, ParadisOfficeOutcome, ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
@@ -754,13 +754,9 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source, exclusions: paradisWordPackageExclusions(sanitized) };
 	}
 
-	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる場合だけ専用の案内を出す。 */
+	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる・見つからない場合は専用の案内を出す。 */
 	private _describeError(error: unknown): string {
-		if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_TOO_LARGE) {
-			// allow-any-unicode-next-line
-			return localize('paradis.docxDiff.tooLarge', "ファイルが大きすぎるため比較できません");
-		}
-		return error instanceof Error ? error.message : String(error);
+		return describeParadisOfficeReadFailure(error) ?? (error instanceof Error ? error.message : String(error));
 	}
 
 	private _onWebviewMessage(message: ParadisDocxWebviewMessage): void {
