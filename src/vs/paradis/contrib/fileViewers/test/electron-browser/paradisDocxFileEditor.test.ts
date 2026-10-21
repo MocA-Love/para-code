@@ -29,6 +29,7 @@ import { getParadisDocxRenderDecision, isParadisDocxHeader, ParadisDocxFileEdito
 import { buildParadisDocxDiffHtml, sanitizeParadisDocxBytesForRenderer } from '../../electron-browser/paradisDocxDiffWebview.js';
 import { ParadisDocxInput } from '../../electron-browser/paradisDocxInput.js';
 import { parseParadisOfficeXml } from '../../common/office/paradisOfficeCanonicalXml.js';
+import { paradisEmptyDocxBytes } from '../../common/paradisOfficeDiffSide.js';
 
 interface IDocxEditorSnapshot {
 	readonly watcherResources: readonly string[];
@@ -477,6 +478,18 @@ suite('ParadisDocxFileEditor', () => {
 			},
 		};
 	}
+
+	test('renders the empty document used for a missing side of the Word diff as one page', async () => {
+		const docx = await loadActualDocxPreview();
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(paradisEmptyDocxBytes(), 'empty-side');
+		const body = document.createElement('div');
+		const styles = document.createElement('div');
+		const arrayBuffer = sanitized.bytes.buffer.slice(sanitized.bytes.byteOffset, sanitized.bytes.byteOffset + sanitized.bytes.byteLength) as ArrayBuffer;
+
+		await docx.renderAsync(arrayBuffer, body, styles, { ignoreFonts: true, renderAltChunks: false });
+
+		deepStrictEqual({ sections: body.querySelectorAll('section').length, text: body.textContent }, { sections: 1, text: '' });
+	});
 
 	test('reads only the DOCX header and rejects empty and corrupt input', async () => {
 		const options: { length: number }[] = [];

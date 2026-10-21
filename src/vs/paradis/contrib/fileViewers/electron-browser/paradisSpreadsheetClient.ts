@@ -15,9 +15,10 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import { unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
@@ -207,37 +208,48 @@ export class ParadisSpreadsheetNotWorkbookError extends Error {
 }
 
 /** 差分の片側を読んだ結果。`absent` は、その版にファイルがそもそも無かった（追加・削除されたファイル）こと。 */
-export interface IParadisSpreadsheetDiffSide {
+export interface IParadisSpreadsheetDiffSide extends IParadisOfficeDiffSide {
 	readonly wb: IParadisWorkbookData;
-	readonly error?: unknown;
-	readonly absent?: boolean;
 }
 
 /**
- * 読み込みの失敗が「その版にファイルが無い」ことを表すか。git の旧版は、その版に無いファイルを
- * `FILE_NOT_FOUND` で返し、最初のコミットより前（空のツリー）は 0 バイトで返す。0 バイトを「無い」と
- * 見なすのは `git:` の側だけ。作業ツリーで 0 バイトに切り詰められたブックは xlsx ではないエラーのままにする。
+ * 読み込みの失敗が「その版にファイルが無い」ことを表すか（`paradisOfficeDiffSide.ts` の決まり）。
+ * 0 バイトを「無い」と見なすのは `git:` の側だけ。作業ツリーで 0 バイトに切り詰められたブックは xlsx ではないエラーのままにする。
  * `readBytes` は読み出せた大きさ（読み出す前に失敗したら `undefined`）。
  */
 export function isParadisSpreadsheetSideAbsent(resource: URI, error: unknown, readBytes: number | undefined): boolean {
-	if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
-		return true;
-	}
-	return resource.scheme === 'git' && readBytes === 0 && error instanceof ParadisSpreadsheetNotWorkbookError;
+	return isParadisOfficeRevisionMissing(error)
+		|| (isParadisOfficeEmptyGitRevision(resource, readBytes) && error instanceof ParadisSpreadsheetNotWorkbookError);
 }
 
 /**
  * 左右の結果から、差分を止める失敗だけを残す。片側だけが無く、もう片側を読めたときは、無い側を
  * 空のブックとして比べる（全部が追加・削除として見える）。両側とも無い、または本当に読めなかった
  * （壊れている・大きすぎる等）ときは失敗のまま返す。
- * git はリポジトリが見つからないときも `FILE_NOT_FOUND` を返すので、両側が `git:` の比較（Staged Changes 等）では
- * 両側とも失敗してエラーになる。新版が作業ツリーのファイル（Uncommitted Changes）のときは新版が読めるため、
- * リポジトリが見つからない場合も旧版が無いのと区別できず、全部が追加として見える。
  */
 export function resolveParadisSpreadsheetDiffSides(original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide): { readonly original: IParadisSpreadsheetDiffSide; readonly modified: IParadisSpreadsheetDiffSide } {
-	const asEmpty = (side: IParadisSpreadsheetDiffSide, other: IParadisSpreadsheetDiffSide): IParadisSpreadsheetDiffSide =>
-		side.absent && other.error === undefined ? { wb: { sheets: [] }, absent: true } : side;
-	return { original: asEmpty(original, modified), modified: asEmpty(modified, original) };
+	return resolveParadisOfficeDiffSides(original, modified, () => ({ wb: { sheets: [] }, absent: true }));
+}
+
+/** 差分の片側を読む。失敗は投げずに `error` に入れ、その版にファイルが無いかどうかも添える。 */
+export async function loadParadisSpreadsheetDiffSide(
+	fileService: IFileService,
+	sharedProcessService: ISharedProcessService,
+	resource: URI,
+	onSourceBytes?: (totalBytes: number) => void,
+	imagePixelBudget?: number,
+): Promise<IParadisSpreadsheetDiffSide> {
+	let readBytes: number | undefined;
+	try {
+		return {
+			wb: await parseSpreadsheetResource(fileService, sharedProcessService, resource, totalBytes => {
+				readBytes = totalBytes;
+				onSourceBytes?.(totalBytes);
+			}, imagePixelBudget),
+		};
+	} catch (error) {
+		return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) };
+	}
 }
 
 /** ZIP のローカルファイルヘッダー（PK\x03\x04）。パスワード付きのブック（CFB、D0 CF 11 E0）は shared process が理由を返す。 */
