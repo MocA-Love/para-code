@@ -988,7 +988,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.computerUseConfirmForeground', "マウスとキーボードを動かす前に確認する"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.computerUseConfirmForegroundDesc', "アプリを前面に出してマウスポインタとキーボードを実際に動かす操作の前に、毎回承認を求めます。ボタンを押す・値を変える・欄へ文字を入れるなど、アクセシビリティで送れる操作はポインタを動かさず前面にも出さないので、確認は出ません。"),
+		description: localize('paradis.settings.computerUseConfirmForegroundDesc', "エージェントがアプリを前面に出して、あなたのマウスポインタやキーボードを実際に動かす前に確認します。ポインタを動かさずに済む操作（ボタンを押す・欄へ文字を入れるなど）では確認は出ません。"),
 		keywords: 'computer use confirm foreground mouse pointer keyboard approval accessibility',
 	},
 	{

@@ -46,7 +46,7 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
-import { parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError } from './paradisSpreadsheetClient.js';
+import { IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
@@ -959,25 +959,30 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
 		}
 		try {
-			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
+			// パース失敗(暗号化・破損・サイズ超過)を空ブックとして握りつぶすと、
 			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
-			// 明示して差分の表示自体を止める(Word 差分と同じ挙動)。
+			// 明示して差分の表示自体を止める(Word 差分と同じ挙動)。例外は、その版にファイルが無い側
+			// (`resolveParadisSpreadsheetDiffSides`)。git 参照やリポジトリが見つからない場合もここに含まれうる。
 			// 左右の合計を大きさとして持つ。比較の重さは両方の合計で決まる。
 			let sourceBytes = 0;
-			const loadSide = async (resource: URI): Promise<{ wb: IParadisWorkbookData; error?: unknown }> => {
+			const loadSide = async (resource: URI): Promise<IParadisSpreadsheetDiffSide> => {
+				let readBytes: number | undefined;
 				try {
 					return {
 						// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
 						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, totalBytes => {
+							readBytes = totalBytes;
 							sourceBytes += totalBytes;
 							this._probe.setBytes(sourceBytes);
 						}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2),
 					};
 				} catch (error) {
-					return { wb: { sheets: [] }, error };
+					return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) };
 				}
 			};
-			const [origResult, modResult] = await Promise.all([loadSide(original), loadSide(modified)]);
+			// 追加・削除されたファイルは片側の版にファイルが無い。それは失敗ではなく、空のブックとの差分として出す。
+			const sides = await Promise.all([loadSide(original), loadSide(modified)]);
+			const { original: origResult, modified: modResult } = resolveParadisSpreadsheetDiffSides(sides[0], sides[1]);
 			// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
 			if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._modifiedResource, modified)) {
 				// 追い越された結果。この世代はもう誰も待っていないので見張りも解く。
