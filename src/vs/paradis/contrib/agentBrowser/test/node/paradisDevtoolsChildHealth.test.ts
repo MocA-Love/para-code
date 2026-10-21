@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAppendStderrTail, paradisDevtoolsArgsCarryUid, paradisDevtoolsRecycleReason, paradisParseV8FatalStderr, paradisReadProcessRssMib } from '../../node/paradisDevtoolsChildHealth.js';
+import { paradisAppendStderrTail, paradisDevtoolsRecycleReason, paradisNewUidTag, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from '../../node/paradisDevtoolsChildHealth.js';
 
 suite('paradisDevtoolsChildHealth', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -46,15 +46,40 @@ suite('paradisDevtoolsChildHealth', () => {
 		], ['memory', 'age', 'calls', undefined]);
 	});
 
-	test('finds the uids in the arguments of the input tools', () => {
+	test('marks the uids a child answers with, in text and in structured content, without touching other text', () => {
+		const result = {
+			content: [{ type: 'text', text: '## Latest page snapshot\nuid=2_4 button "Pay 3_5"\n  uid=2_5 StaticText "uid=x"\nElement uid "2_9" not found. Element with uid 2_8 no longer exists.' }],
+			structuredContent: { snapshot: { id: '2_4', children: [{ id: '2_5', name: '3_5' }] }, snapshotFilePath: '/tmp/a_1' },
+		};
+		assert.deepStrictEqual(paradisTagChildUids(result, 'k3f9'), {
+			content: [{ type: 'text', text: '## Latest page snapshot\nuid=k3f9.2_4 button "Pay 3_5"\n  uid=k3f9.2_5 StaticText "uid=x"\nElement uid "k3f9.2_9" not found. Element with uid k3f9.2_8 no longer exists.' }],
+			structuredContent: { snapshot: { id: 'k3f9.2_4', children: [{ id: 'k3f9.2_5', name: '3_5' }] }, snapshotFilePath: '/tmp/a_1' },
+		});
+		assert.strictEqual(paradisTagSnapshotFileText('uid=1_1 main\n  uid=1_2 link "uid=1_9"', 'k3f9'), 'uid=k3f9.1_1 main\n  uid=k3f9.1_2 link "uid=k3f9.1_9"');
+	});
+
+	test('takes the mark off the uids of this child anywhere in the arguments, and calls any other mark stale', () => {
 		assert.deepStrictEqual([
-			paradisDevtoolsArgsCarryUid({ uid: '1_2' }),
-			paradisDevtoolsArgsCarryUid({ from_uid: '1_2', to_uid: '1_3' }),
-			paradisDevtoolsArgsCarryUid({ elements: [{ uid: '1_2', value: 'x' }] }),
-			paradisDevtoolsArgsCarryUid({ function: '() => 1', args: [] }),
-			paradisDevtoolsArgsCarryUid({ uid: '' }),
-			paradisDevtoolsArgsCarryUid(undefined),
-		], [true, true, true, false, false, false]);
+			paradisUntagUids({ uid: 'k3f9.2_4', value: '3_5' }, 'k3f9'),
+			paradisUntagUids({ function: '(a, b) => 1', args: ['k3f9.2_4', 'k3f9.2_5'] }, 'k3f9'),
+			paradisUntagUids({ root: 'k3f9.2_4' }, 'k3f9'),
+			paradisUntagUids({ elements: [{ uid: 'a000.2_4', value: 'x' }] }, 'k3f9'),
+			paradisUntagUids({ uid: 'k3f9.2_4' }, undefined),
+			paradisUntagUids({ uid: '2_4', text: 'k3f9 2_4' }, 'k3f9'),
+		], [
+			{ value: { uid: '2_4', value: '3_5' }, stale: false },
+			{ value: { function: '(a, b) => 1', args: ['2_4', '2_5'] }, stale: false },
+			{ value: { root: '2_4' }, stale: false },
+			{ value: { elements: [{ uid: 'a000.2_4', value: 'x' }] }, stale: true },
+			{ value: { uid: 'k3f9.2_4' }, stale: true },
+			{ value: { uid: '2_4', text: 'k3f9 2_4' }, stale: false },
+		]);
+	});
+
+	test('gives the next child a different mark', () => {
+		const sequence = [0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, 0.5, 0.5];
+		const tags = [paradisNewUidTag(undefined, () => 0), paradisNewUidTag('aaaa', () => sequence.shift() ?? 0)];
+		assert.deepStrictEqual({ tags, shape: tags.every(tag => /^[a-z][a-z0-9]{3}$/.test(tag)) }, { tags: ['aaaa', 'nsss'], shape: true });
 	});
 
 	test('reads the RSS in MiB from ps, and gives up on Windows or a failure', async () => {

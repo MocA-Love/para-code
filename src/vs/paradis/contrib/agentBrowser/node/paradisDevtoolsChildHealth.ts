@@ -108,41 +108,111 @@ export function paradisAppendStderrTail(tail: string, chunk: string): string {
 	return joined.length > STDERR_TAIL_CHARS ? joined.slice(joined.length - STDERR_TAIL_CHARS) : joined;
 }
 
-/** uid を受けるツールの引数名（click の `uid`、drag の `from_uid` / `to_uid`、fill_form の `elements[].uid` など）。 */
-const UID_ARGUMENT_KEYS = new Set(['uid', 'from_uid', 'to_uid']);
+// --- uid の世代の印 ---
+// vendored の uid は `<スナップショットの番号>_<連番>` で、子プロセスごとに番号を 1 から数え直す（TextSnapshot.js）。
+// 入れ替えた後に古い uid がそのまま通ると、新しい子プロセスの別の要素に当たりうる。そこで子プロセスの答えに出る
+// uid に子プロセスごとの印を付けて返し（`2_4` → `k3f9.2_4`）、要求の中の印付きの uid は、印が今の子プロセスの
+// ものなら外して渡し、違えば子プロセスへ渡さずに断る。引数の名前ではなく「印付きの uid の形の文字列」で見るので、
+// evaluate_script の args、take_snapshot の root、今後増える引数も同じに扱える。
 
-/** 引数のどこかに take_snapshot の uid が入っているか（3 段まで見る）。 */
-export function paradisDevtoolsArgsCarryUid(args: unknown, depth = 0): boolean {
-	if (depth > 3 || typeof args !== 'object' || args === null) {
-		return false;
-	}
-	if (Array.isArray(args)) {
-		return args.some(item => paradisDevtoolsArgsCarryUid(item, depth + 1));
-	}
-	for (const [key, value] of Object.entries(args)) {
-		if (UID_ARGUMENT_KEYS.has(key) && typeof value === 'string' && value.length > 0) {
-			return true;
+/** vendored の uid の形。 */
+const RAW_UID = /^\d+_\d+$/;
+/** 印付きの uid の形（印は英小文字で始まる 4 文字）。 */
+const TAGGED_UID = /^(?<tag>[a-z][a-z0-9]{3})\.(?<uid>\d+_\d+)$/;
+/** 文の中の uid（`uid=2_4`、`uid "2_4"`、`uid 2_4`）。 */
+const TEXT_UID = /(?<prefix>\buid(?:=|\s"|\s))(?<uid>\d+_\d+)(?![\w.])/g;
+/** スナップショットのファイルの中の uid。 */
+const FILE_UID = /(?<prefix>\buid=)(?<uid>\d+_\d+)(?![\w.])/g;
+
+/** 子プロセスの印を作る（前の印とは必ず変える）。 */
+export function paradisNewUidTag(previous: string | undefined, random: () => number = Math.random): string {
+	const letters = 'abcdefghijklmnopqrstuvwxyz';
+	const alphabet = letters + '0123456789';
+	for (; ;) {
+		let tag = letters[Math.floor(random() * letters.length) % letters.length];
+		for (let index = 0; index < 3; index++) {
+			tag += alphabet[Math.floor(random() * alphabet.length) % alphabet.length];
 		}
-		if (typeof value === 'object' && paradisDevtoolsArgsCarryUid(value, depth + 1)) {
-			return true;
+		if (tag !== previous) {
+			return tag;
 		}
 	}
-	return false;
+}
+
+/** 子プロセスの答えの中の uid に印を付けた写しを返す（元の値は変えない）。 */
+export function paradisTagChildUids(value: unknown, tag: string, key?: string): unknown {
+	if (typeof value === 'string') {
+		if (key !== undefined && /(?:^|_)u?id$/i.test(key) && RAW_UID.test(value)) {
+			return `${tag}.${value}`;
+		}
+		return value.includes('uid') ? value.replace(TEXT_UID, (_match, prefix: string, uid: string) => `${prefix}${tag}.${uid}`) : value;
+	}
+	if (Array.isArray(value)) {
+		return value.map(item => paradisTagChildUids(item, tag, key));
+	}
+	if (typeof value === 'object' && value !== null) {
+		const copy: Record<string, unknown> = {};
+		for (const [entryKey, entryValue] of Object.entries(value)) {
+			copy[entryKey] = paradisTagChildUids(entryValue, tag, entryKey);
+		}
+		return copy;
+	}
+	return value;
+}
+
+/** スナップショットのファイルの中身の uid に印を付ける。 */
+export function paradisTagSnapshotFileText(text: string, tag: string): string {
+	return text.replace(FILE_UID, (_match, prefix: string, uid: string) => `${prefix}${tag}.${uid}`);
+}
+
+/**
+ * 要求の中の印付きの uid から印を外した写しを返す。印が `tag` と違う uid があれば `stale`（`tag` が無い＝
+ * 子プロセスがまだ無いときは、印付きの uid はどれも古い）。印の無い文字列はそのまま渡す。
+ */
+export function paradisUntagUids(value: unknown, tag: string | undefined): { readonly value: unknown; readonly stale: boolean } {
+	let stale = false;
+	const walk = (item: unknown): unknown => {
+		if (typeof item === 'string') {
+			const match = TAGGED_UID.exec(item);
+			if (!match?.groups) {
+				return item;
+			}
+			if (match.groups.tag !== tag) {
+				stale = true;
+				return item;
+			}
+			return match.groups.uid;
+		}
+		if (Array.isArray(item)) {
+			return item.map(walk);
+		}
+		if (typeof item === 'object' && item !== null) {
+			const copy: Record<string, unknown> = {};
+			for (const [entryKey, entryValue] of Object.entries(item)) {
+				copy[entryKey] = walk(entryValue);
+			}
+			return copy;
+		}
+		return item;
+	};
+	const untagged = walk(value);
+	return { value: untagged, stale };
 }
 
 /** 子プロセスを入れ替えた理由（エージェントへの案内の言い方を変える）。 */
 export type ParadisDevtoolsReplacedReason = 'recycled' | 'exited' | 'idle';
 
-function describeReplacement(reason: ParadisDevtoolsReplacedReason): string {
+function describeReplacement(reason: ParadisDevtoolsReplacedReason | undefined): string {
 	switch (reason) {
+		case undefined: return 'Para Code started its embedded DevTools bridge again';
 		case 'recycled': return 'Para Code restarted its embedded DevTools bridge to free memory';
 		case 'exited': return 'Para Code\'s embedded DevTools bridge stopped and was started again';
 		case 'idle': return 'Para Code\'s embedded DevTools bridge was stopped while unused and started again';
 	}
 }
 
-/** 入れ替えの後、新しい take_snapshot の前に uid を使う呼び出しへ返す文。子プロセスへは渡さない。 */
-export function paradisDevtoolsStaleUidMessage(reason: ParadisDevtoolsReplacedReason): string {
+/** 前の子プロセスの uid を使う呼び出しへ返す文。子プロセスへは渡さない。 */
+export function paradisDevtoolsStaleUidMessage(reason: ParadisDevtoolsReplacedReason | undefined): string {
 	return `PARA_BROWSER_STALE_UID: ${describeReplacement(reason)}, so the element uids from your earlier take_snapshot are no longer valid. The page, its tabs and the login state are unchanged. Call take_snapshot again and use the new uids.`;
 }
 
