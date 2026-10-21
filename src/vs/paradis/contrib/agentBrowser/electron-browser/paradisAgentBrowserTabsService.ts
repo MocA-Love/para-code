@@ -71,6 +71,7 @@ import {
 	PARADIS_AGENT_APPROVAL_GUARD_MS,
 	ParadisAgentTabLedger,
 	ParadisAgentTabTargetFailure,
+	ParadisOpenedTabGrantResult,
 	paradisIsAllowedAgentTabUrl,
 	paradisSanitizeAgentPageRequestReason,
 	paradisSanitizeDisplayText,
@@ -203,6 +204,12 @@ export interface IParadisAgentBrowserTabsService {
 	 * タブのスペースが決まるのを少し待ってから行う。失敗しても例外は投げず false を返す。
 	 */
 	bindTab(token: string, input: BrowserEditorInput): Promise<boolean>;
+
+	/**
+	 * 共有したページ（または許可したタブ）から開いたタブを、そのペインから tab_id で使えるようにする（共有は付け替えない）。
+	 * 許可できたら、ページの共有相手へエージェントを加える（共有の印が付き、ユーザーが止められる）。失敗しても例外は投げない。
+	 */
+	shareOpenedTab(token: string, input: BrowserEditorInput): Promise<ParadisOpenedTabGrantResult>;
 
 	/**
 	 * エージェントの求めをユーザーに承認してもらう（ページの共有、ユーザーのプロファイルを使うなど）。
@@ -557,6 +564,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		for (const viewId of this._ledger.agentTabsOf(token)) {
 			add(this._agentInputs.get(viewId));
 		}
+		// 共有したページ・許可したタブから開いたタブ（許可の控え。エージェントが自分で開いたタブとは重ならない）
+		for (const viewId of this._bindingModel.getAgentTabsForToken(token)) {
+			add(known.get(viewId));
+		}
 		return { ok: true, tabs, openedCount: this.openedCount(token) };
 	}
 
@@ -568,10 +579,12 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		// 選べるのは自分が開いたタブと、今このペインに共有されているタブ（共有し直さずに current にする）だけ。
 		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
 		const isShared = this._isSharedWith(token, tabId);
-		if (!input || !(this.isOpenedBy(token, tabId) || isShared)) {
+		// 共有したページから開いたタブは許可済み（共有し直さずに current にする）
+		const isGranted = !this.isOpenedBy(token, tabId) && this._bindingModel.getAgentTabsForToken(token).includes(tabId);
+		if (!input || !(this.isOpenedBy(token, tabId) || isShared || isGranted)) {
 			return { ok: false, reason: 'unknownTab' };
 		}
-		if (isShared) {
+		if (isShared || isGranted) {
 			return { ok: true, tab: this._describe(token, input), bound: true };
 		}
 		const bound = await this.bindTab(token, input);
@@ -938,6 +951,21 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	// #endregion
 
+	async shareOpenedTab(token: string, input: BrowserEditorInput): Promise<ParadisOpenedTabGrantResult> {
+		try {
+			const model = await input.resolve();
+			await this._waitForStableScope(input.id);
+			const result = await this._bindingModel.grantOpenedTab(model, token);
+			if (result === 'granted') {
+				await this._shareApproved(model);
+			}
+			return result;
+		} catch (error) {
+			this._logService.warn('[ParadisAgentBrowserTabs] could not share a tab opened from a shared page with the pane', error);
+			return 'notEligible';
+		}
+	}
+
 	async bindTab(token: string, input: BrowserEditorInput): Promise<boolean> {
 		return (await this._bindTabForPageId(token, input)) !== false;
 	}
@@ -1014,11 +1042,13 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private _describe(token: string, input: BrowserEditorInput): IParadisAgentTabInfo {
 		const openedByAgent = this.isOpenedBy(token, input.id);
 		const active = this._isSharedWith(token, input.id);
+		// 共有したページから開いたタブ（許可済み）も、そのペインが使えるので全部見せる
+		const usable = openedByAgent || active || this._bindingModel.getAgentTabsForToken(token).includes(input.id);
 		return {
 			tabId: input.id,
 			// 共有していないユーザーのタブは、どこのサイトかだけを見せる（パスやクエリに個人の情報が載りうる）。
-			url: openedByAgent || active ? input.url ?? '' : paradisUrlOrigin(input.url),
-			title: openedByAgent || active ? input.title || input.getName() : '',
+			url: usable ? input.url ?? '' : paradisUrlOrigin(input.url),
+			title: usable ? input.title || input.getName() : '',
 			openedByAgent,
 			active,
 		};

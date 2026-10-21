@@ -41,6 +41,22 @@ export const PARADIS_AGENT_TAB_LIMIT = 5;
  */
 export const PARADIS_USER_SHARED_PAGE_LIMIT = 10;
 
+/**
+ * 共有したページ・許可したタブから開いたタブ（target=_blank・window.open・Ctrl/Cmd/中クリック・右クリックの
+ * 「新しいタブで開く」、別ウィンドウを含む）を、1 ペインへ自動で共有しておける上限。孫（開いたタブから開いたタブ）も
+ * 数える。エージェントが自分で開くタブ（{@link PARADIS_AGENT_TAB_LIMIT}）とも、ユーザーが共有するページ
+ * （{@link PARADIS_USER_SHARED_PAGE_LIMIT}）とも別枠。超えたぶんは共有しない（list_browser_tabs で知らせる）。
+ */
+export const PARADIS_OPENED_TAB_LIMIT = 10;
+
+/** 開いたタブの自動の共有（grantOpenedTab）の結果。 */
+export type ParadisOpenedTabGrantResult =
+	| 'granted'
+	/** そのペインの {@link PARADIS_OPENED_TAB_LIMIT} に達していた。 */
+	| 'limitReached'
+	/** 開いた元のタブがそのペインで使えない、スペースが違う、ペインやタブが確かめられないなど。 */
+	| 'notEligible';
+
 /** 共有が {@link PARADIS_USER_SHARED_PAGE_LIMIT} に達して断られたときのエラーの先頭の印（shared process → renderer）。 */
 export const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK = 'PARA_BROWSER_SHARED_PAGE_LIMIT';
 
