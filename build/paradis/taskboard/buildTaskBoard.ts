@@ -34,7 +34,10 @@ function pnpm(args: readonly string[]): void {
 /** 画面とサーバーをビルドして `out` に置く。 */
 export async function paradisBuildTaskBoard(out: string): Promise<void> {
 	if (!existsSync(join(PARADIS_TASK_BOARD_APP, 'node_modules'))) {
-		pnpm(['install', '--frozen-lockfile']);
+		// app/taskboard は app/pnpm-workspace.yaml に入っておらず、自分の lockfile を持つ。pnpm は親の
+		// ワークスペースを見つけるとそちらを入れてしまい（app/taskboard/.npmrc の ignore-workspace は、
+		// ワークスペースを探す前には読まれない）、ここの node_modules ができない。
+		pnpm(['install', '--frozen-lockfile', '--ignore-workspace']);
 	}
 	pnpm(['run', 'build']);
 	rmSync(out, { recursive: true, force: true });
