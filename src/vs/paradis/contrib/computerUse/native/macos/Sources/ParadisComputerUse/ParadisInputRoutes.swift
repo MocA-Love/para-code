@@ -112,11 +112,11 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 				return .unavailable("clicks with modifier keys need real input")
 			}
 			return clickCount == 1 ? .available : .unavailable("double and triple clicks need real input")
-		case .setValue, .typeText:
+		case .setValue, .typeText, .scroll:
 			return .available
 		case .activate:
 			return .unavailable("bringing an app forward changes the user's focus")
-		case .drag, .scroll, .pasteText, .pressChord:
+		case .drag, .pasteText, .pressChord:
 			return .unavailable("\(action.name) needs real input")
 		}
 	}
@@ -129,6 +129,8 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			return try setValue(pid: pid, windowId: windowId, target: target, change: change, cursor: options.cursor)
 		case .typeText(let text, let units):
 			return try typeText(pid: pid, text: text, count: units.count, cursor: options.cursor)
+		case .scroll(let windowId, let target, let direction, let pages):
+			return try scroll(pid: pid, windowId: windowId, target: target, direction: direction, pages: pages, cursor: options.cursor)
 		default:
 			return .fellThrough("\(action.name) needs real input")
 		}
@@ -425,6 +427,61 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		result["focusPreserved"] = focusPreserved
 		if !focusPreserved {
 			result["note"] = "The user's focus changed while typing (the app may have brought a window forward)."
+		}
+		return .done(result)
+	}
+
+	// MARK: スクロール
+
+	/**
+	 * スクロールバーの値（D1）、だめなら端の外の要素を見える位置へ寄せる（D2）。どちらも使えなければ次の段（背面・前面の
+	 * ホイール）へ譲る。どの手で動かしたか（概算か）を `routeNotes` に書く（ParadisAXScrolling.swift）。
+	 */
+	private func scroll(pid: Int32, windowId: UInt32, target: ParadisPointerTarget?, direction: ParadisScrollDirection, pages: Double, cursor: ParadisCursorOwnerSpec?) throws -> ParadisRouteOutcome {
+		let window: ParadisAXTargetWindow
+		switch try targetWindow(pid: pid, windowId: windowId) {
+		case .success(let found):
+			window = found
+		case .failure(let reason):
+			return .fellThrough(reason.message)
+		}
+		try fence(pid: pid)
+		let hit: AXUIElement
+		switch try resolveElement(pid: pid, window: window, target: target ?? .point(x: Double(window.bounds.width / 2), y: Double(window.bounds.height / 2))) {
+		case .success(let element):
+			hit = element
+		case .failure(let reason):
+			return .fellThrough(reason.message)
+		}
+		let extent = Double(paradisScrollIsVertical(direction) ? window.bounds.height : window.bounds.width)
+		let distance = paradisScrollDistance(pages: pages, extent: extent)
+		let point = paradisFrame(hit).map { CGPoint(x: $0.midX, y: $0.midY) } ?? CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+		try glideCursor(cursor, to: point, pid: pid)
+		let focusBefore = paradisFocusSnapshot()
+		guard let outcome = paradisScrollWithScrollBar(hit: hit, direction: direction, distance: distance, pages: pages)
+			?? paradisScrollByRevealing(hit: hit, windowBounds: window.bounds, direction: direction, distance: distance) else {
+			return .fellThrough("no scroll bar or element past the edge accepts accessibility scrolling here")
+		}
+		if let cursor {
+			ParadisCursorOverlay.shared.ripple(cursor, at: point)
+		}
+		var result: [String: Any] = [
+			"scrolled": !outcome.atEnd,
+			"axAction": outcome.method.rawValue,
+			// 量を見積もった手（ページのアクション・寄せる）は、求めた量だけ動いたとは言えない
+			"verified": outcome.approximate ? false : !outcome.atEnd,
+			"focusPreserved": paradisFocusPreserved(before: focusBefore, after: paradisFocusSnapshot()),
+			"point": paradisWindowPointJson(point, window.bounds),
+			"routeNotes": [outcome.atEnd ? "accessibility: the scroll bar of the \(outcome.role) is already at the end" : paradisAXScrollNote(outcome.method, role: outcome.role, approximate: outcome.approximate)],
+		]
+		if outcome.approximate {
+			result["approximate"] = true
+		}
+		if let moved = outcome.moved, !outcome.atEnd {
+			result["moved"] = (moved * 10).rounded() / 10
+		}
+		if outcome.atEnd {
+			result["note"] = "The view is already at the end in that direction, so nothing scrolled."
 		}
 		return .done(result)
 	}

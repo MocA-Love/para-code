@@ -155,7 +155,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_scroll',
-		description: `Scroll a window of an app, at an element or point (default: the window's center). ${OPERATE_NOTE}`,
+		description: `Scroll a window of an app, at an element or point (default: the window's center). Para Code first scrolls through accessibility without moving the mouse pointer: it sets the value of the scroll bar, or (in Chrome, Electron and other web content) reveals an element just past the edge, so the distance is approximate ("approximate": true; "routeNotes" says which way was used). Otherwise it sends wheel input to the window. ${OPERATE_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -175,7 +175,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_type_text',
-		description: `Type text into the focused field of an app (up to 4000 characters). Newlines are always inserted as line breaks and never press Return; tabs are not allowed. To submit, or to move to the next field, use computer_press_key with return or tab. Para Code inserts the text through accessibility when the field allows it, without bringing the app forward (to pick the field first, computer_click it); otherwise it tries background keys in a single, exactly identified focused window, or uses foreground input and pastes the text through the clipboard (when an input method such as Japanese input is active, or the text has line breaks) or sends keys. It reads the field back and reports whether the text arrived, whether the app changed it (autocorrect, smart quotes, formatting), or that it could not confirm. ${OPERATE_NOTE}`,
+		description: `Type text into the focused field of an app (up to 4000 characters). Newlines are always inserted as line breaks and never press Return; tabs are not allowed. To submit, or to move to the next field, use computer_press_key with return or tab. Para Code inserts the text through accessibility when the field allows it, without bringing the app forward (to pick the field first, computer_click it); otherwise it tries background keys to the window (Para Code makes that window the app's key window without bringing the app forward, checks it, and gives key back afterwards), or uses foreground input and pastes the text through the clipboard (when an input method such as Japanese input is active, or the text has line breaks) or sends keys. It reads the field back and reports whether the text arrived, whether the app changed it (autocorrect, smart quotes, formatting), or that it could not confirm. ${OPERATE_NOTE}`,
 		inputSchema: { type: 'object', properties: { app: APP_ARGUMENT, windowId: WINDOW_ID_ARGUMENT, windowIndex: WINDOW_INDEX_ARGUMENT, text: { type: 'string' }, includeState: INCLUDE_STATE_ARGUMENT }, required: ['app', 'text'] },
 		annotations: OPERATE,
 	},
