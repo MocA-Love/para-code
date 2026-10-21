@@ -89,7 +89,7 @@ import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputReda
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexMobileApprovalKeys } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -101,6 +101,14 @@ import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsReco
 
 /** Codex の入力欄に残った文字の印を持つ上限（PC で消した後に確かめる機会が無くても、いつまでも断り続けない）。 */
 const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
+/**
+ * PC の Claude Code に「Resume this conversation?」の確認が出ている間に届いた発言への断り（code と文）。キーで打つと文字は
+ * 捨てられ、Enter が「Resume」を選んで、送れた扱いのまま文が消える（Claude Code 2.1.306 の実画面で確かめた）。
+ */
+const CLAUDE_RESUME_PROMPT_CODE = 'resume-prompt';
+const CLAUDE_RESUME_PROMPT_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。PC で選んでから送り直してください';
+/** 同じ確認が出ている間の「閉じる」（Esc）への断り。 */
+const CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。Esc を送るとそのまま再開して使用量を多く使うので、PC で選んでください';
 
 // 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
 export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -1548,6 +1556,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown };
 		let interactionAccepted = false;
+		// 発言の Enter を打ち終えた（この後の例外は「送れなかった」と返さない。送信 ID を忘れさせて二重に送らせないため）
+		let messageTyped = false;
 		try {
 			msg = JSON.parse(payload.toString());
 		} catch {
@@ -1601,6 +1611,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					this.codexComposerResidue.delete(instance);
 				}
+				if (msg.agent === 'claude' && paradisScreenShowsClaudeResumePrompt(paradisVisibleTerminalText(instance))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, CLAUDE_RESUME_PROMPT_MESSAGE);
+					return;
+				}
 				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';
 				const outcome = await paradisSendAgentMessageToTui(
 					msg.text as string,
@@ -1610,6 +1624,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						return currentInstance === instance && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
 					},
 				);
+				messageTyped = outcome.executed;
 				if (!outcome.executed) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
 					return;
@@ -1625,6 +1640,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 			} else if (closePanel) {
+				// 再開の確認では Esc が「Resume」を選ぶ（5 時間の使用量を大きく使う）。打たずに PC で選んでもらう
+				if (paradisScreenShowsClaudeResumePrompt(paradisVisibleTerminalText(instance))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE);
+					return;
+				}
 				await instance.sendText('\x1b', false);
 			} else if (claudeSetting) {
 				// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
@@ -1748,6 +1768,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
 		} catch {
+			if (messageTyped) {
+				// 文は Enter まで届いている（後の画面の確かめで失敗した）。断りを返すと送り直しで二重に送られる
+				this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
+				return;
+			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
 		} finally {
 			// Claude Code の設定も終わりを知らせる（shared process が、よけていた PC の入力欄の書きかけを戻す）

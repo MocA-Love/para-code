@@ -227,6 +227,22 @@ const PARADIS_AUTHORITY_NOTIFY_LANE = 'notify';
 const PARADIS_MOBILE_SEND_BUSY_MESSAGE = 'PC の送信が混み合っています。少し待ってからもう一度お試しください';
 
 /** renderer 1 つ分の権限の列の鍵（その renderer からの IPC の順を保つ）。 */
+/** 所有ウィンドウが返す発言の結果（`{"t":"action-result",…}`。ParadisMobileWorkspaceProvider.sendAgentActionResult）の先頭と、読む大きさの上限。 */
+const WINDOW_ACTION_RESULT_PREFIX = new TextEncoder().encode('{"t":"action-result"');
+const WINDOW_ACTION_RESULT_MAX_BYTES = 4096;
+
+function paradisStartsWithBytes(bytes: Uint8Array, prefix: Uint8Array): boolean {
+	if (bytes.byteLength < prefix.byteLength) {
+		return false;
+	}
+	for (let index = 0; index < prefix.byteLength; index++) {
+		if (bytes[index] !== prefix[index]) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function paradisRendererLane(lease: { readonly windowId: number }): string {
 	return `renderer:${lease.windowId}`;
 }
@@ -1593,6 +1609,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		});
 	}
 
+	/**
+	 * 所有ウィンドウがアプリへ返す発言の断り（`action-result` の `rejected`）を見て、打たずに断った発言の送信 ID を忘れさせる
+	 * （{@link ParadisMobileAgentChat.noteWindowSendRejected}）。ほかのフレームは中を読まない（先頭の形だけで見分ける）。
+	 */
+	private noteWindowAgentActionResult(lease: IParadisMobileWindowLease, mobileId: string, bytes: Uint8Array): void {
+		if (bytes.byteLength > WINDOW_ACTION_RESULT_MAX_BYTES || !paradisStartsWithBytes(bytes, WINDOW_ACTION_RESULT_PREFIX)) {
+			return;
+		}
+		let result: { status?: unknown; requestId?: unknown; token?: unknown; consumed?: unknown };
+		try {
+			result = JSON.parse(new TextDecoder().decode(bytes));
+		} catch {
+			return;
+		}
+		if (result.status === 'rejected' && result.consumed !== true && typeof result.requestId === 'string' && typeof result.token === 'string') {
+			this.agentChat.noteWindowSendRejected(mobileId, result.requestId, result.token, lease.windowId, lease.windowSession);
+		}
+	}
+
 	async validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, lease: IParadisMobileWindowLease): Promise<boolean> {
 		return await this.withCurrentRegisteredLease(lease, async () => this.agentChat.validateClaimedAction(mobileId, requestId, token, epoch, terminalId, lease.windowId, lease.windowSession)) ?? false;
 	}
@@ -2704,6 +2739,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				const session = this.sessions.get(mobileId);
 				if (!session?.hasCurrentProtocol) {
 					return { handles: [] };
+				}
+				if (ch === Channels.Agent) {
+					this.noteWindowAgentActionResult(lease, mobileId, bytes);
 				}
 				if (metrics.enabled) {
 					const now = metrics.now();

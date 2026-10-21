@@ -700,7 +700,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 			return paradisTaskBoardFail(block, this.blockMessage(block));
 		}
 		const chat = chatTerminalFor(resolved.instance);
-		if (paradisScreenShowsAgentPrompt(chat.readScreen())) {
+		if (paradisScreenShowsAgentPrompt(chat.readScreen(), this.session(resolved.token).state?.agent)) {
 			// allow-any-unicode-next-line
 			return paradisTaskBoardFail('question', localize('paradis.taskBoard.promptOnScreen', "ターミナルに確認の画面が出ています。先に答えてください"));
 		}
