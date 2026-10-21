@@ -1149,6 +1149,127 @@ do {
 	check(paradisPointerRestoreTarget(saved: sent, current: sent, lastSent: sent, physicalPointerSinceStart: false) == nil, "does not move a pointer that started at the target")
 }
 
+// MARK: - 1 段目のスクロール（D1 スクロールバー・D2 見える位置へ寄せる）
+
+do {
+	check(paradisScrollDistance(pages: 1, extent: 500) == 400 && paradisScrollDistance(pages: 1, extent: 10) == 80, "scrolls the same distance as the wheel routes")
+
+	// D1: 中身の大きさが分かれば距離から値を出す
+	let bar = ParadisScrollBarFacts(value: 0.5, contentLength: 2_100, viewportLength: 500)
+	check(paradisScrollBarPlan(bar, direction: .down, distance: 400, pages: 1) == ParadisScrollBarPlan(value: 0.75, approximate: false), "moves the scroll bar by the distance over the scrollable length")
+	check(paradisScrollBarPlan(bar, direction: .up, distance: 400, pages: 1) == ParadisScrollBarPlan(value: 0.25, approximate: false), "moves the scroll bar back for up")
+	check(paradisScrollBarPlan(bar, direction: .down, distance: 4_000, pages: 10) == ParadisScrollBarPlan(value: 1, approximate: false), "stops at the end of the scroll bar")
+	check(paradisScrollBarPlan(ParadisScrollBarFacts(value: 1), direction: .down, distance: 400, pages: 1) == nil, "reports the end when the scroll bar cannot move")
+	// 分からなければ 1 ページを AXValueIncrement、無ければ範囲の 1/10 とみなす（概算）
+	check(paradisScrollBarPlan(ParadisScrollBarFacts(value: 0.25, increment: 0.125), direction: .right, distance: 400, pages: 2) == ParadisScrollBarPlan(value: 0.5, approximate: true), "uses AXValueIncrement per page without the content size")
+	let tenth = paradisScrollBarPlan(ParadisScrollBarFacts(value: 0.5), direction: .left, distance: 400, pages: 1)
+	check(tenth?.approximate == true && abs((tenth?.value ?? 0) - 0.4) < 1e-9, "uses a tenth of the range per page without an increment")
+	check(paradisScrollBarPlan(ParadisScrollBarFacts(value: 0, minValue: 1, maxValue: 1), direction: .down, distance: 400, pages: 1) == nil, "does not scroll a bar without a range")
+	check(paradisScrollBarMoved(before: 0.5, after: 0.6, direction: .down) && !paradisScrollBarMoved(before: 0.5, after: 0.5, direction: .down) && !paradisScrollBarMoved(before: 0.5, after: nil, direction: .up) && paradisScrollBarMoved(before: 0.5, after: 0.4, direction: .left), "checks that the scroll bar moved the right way")
+	check(paradisScrollPageAction(.down) == "AXScrollDownByPage" && paradisScrollPageAction(.left) == "AXScrollLeftByPage" && paradisScrollBarStepAction(.right) == "AXIncrement" && paradisScrollBarStepAction(.up) == "AXDecrement", "names the scroll actions")
+	check(paradisScrollPageCount(pages: 0.2) == 1 && paradisScrollPageCount(pages: 2.6) == 3 && paradisScrollPageCount(pages: 40) == 10, "performs one to ten page actions")
+
+	// D2（Cua Driver の reveal_scroll のテストを写したもの）
+	let viewport = CGRect(x: 0, y: 100, width: 800, height: 500)
+	func row(_ y: CGFloat) -> CGRect { CGRect(x: 10, y: y, width: 600, height: 40) }
+	let rows = (0..<30).map { row(100 + 50 * CGFloat($0)) }
+	check(paradisPickRevealTarget(viewport: viewport, direction: .down, distance: 360, candidates: rows).map { rows[$0] } == row(900), "reveals the row closest to the distance below the edge")
+	let around = (-10..<10).map { row(100 + 50 * CGFloat($0)) }
+	check(paradisPickRevealTarget(viewport: viewport, direction: .up, distance: 120, candidates: around).map { around[$0] } == row(0), "mirrors down for up")
+	let columns = (0..<20).map { CGRect(x: 100 * CGFloat($0), y: 200, width: 90, height: 40) }
+	check(paradisPickRevealTarget(viewport: viewport, direction: .right, distance: 120, candidates: columns).map { columns[$0].minX } == 800, "mirrors down for right")
+	check(paradisPickRevealTarget(viewport: viewport, direction: .left, distance: 120, candidates: columns) == nil, "picks nothing left of the start")
+	check(paradisPickRevealTarget(viewport: viewport, direction: .down, distance: 120, candidates: [row(120), row(300), row(550)]) == nil, "picks nothing when everything is visible")
+	check(paradisPickRevealTarget(viewport: viewport, direction: .down, distance: 120, candidates: [CGRect(x: 0, y: 100, width: 800, height: 3_000)]) == nil, "never reveals a page-sized wrapper")
+
+	// Chromium の端に寄せた細い枠
+	var nodes: [(rect: CGRect, leaf: Bool)] = (0..<13).map { (CGRect(x: 518, y: 301 + 45 * CGFloat($0), width: 600, height: 41), true) }
+	nodes.append((CGRect(x: 518, y: 300, width: 700, height: 590), false))
+	let firstClamped = nodes.count
+	for _ in 0..<100 {
+		nodes.append((CGRect(x: 518, y: 889, width: 600, height: 1), true))
+	}
+	let chromium = CGRect(x: 500, y: 290, width: 800, height: 600)
+	check(paradisPickClamped(viewport: chromium, direction: .down, distance: 360, nodes: nodes) == ParadisClampedPick(index: firstClamped + 1, rows: 2, pitch: 45), "counts the clamped slivers as the content past the edge")
+	check(paradisPickClamped(viewport: chromium, direction: .down, distance: 600, nodes: nodes)?.rows == 7, "moves about seven rows for a page")
+	check(paradisPickClamped(viewport: chromium, direction: .down, distance: 100_000, nodes: nodes)?.index == firstClamped + 99, "picks the last row for a long distance")
+	check(paradisPickClamped(viewport: chromium, direction: .up, distance: 360, nodes: nodes) == nil, "picks nothing above the start")
+	var above: [(rect: CGRect, leaf: Bool)] = (0..<5).map { _ in (CGRect(x: 518, y: 290, width: 600, height: 1), true) }
+	above.append(contentsOf: (0..<13).map { (CGRect(x: 518, y: 301 + 45 * CGFloat($0), width: 600, height: 41), true) })
+	check(paradisPickClamped(viewport: chromium, direction: .up, distance: 90, nodes: above)?.index == 4 && paradisPickClamped(viewport: chromium, direction: .up, distance: 480, nodes: above)?.index == 0, "counts up from the nearest sliver above")
+
+	let visible = CGRect(x: 518, y: 301, width: 600, height: 41)
+	check(paradisContentMoved(before: visible, after: visible) == false && paradisContentMoved(before: visible, after: CGRect(x: 518, y: 260, width: 600, height: 41)) == true, "sees whether a visible element moved")
+	check(paradisContentMoved(before: visible, after: CGRect(x: 518, y: 222, width: 600, height: 1)) == true && paradisContentMoved(before: visible, after: nil) == true && paradisContentMoved(before: nil, after: visible) == nil, "counts an element that left the view as moved")
+
+	let frame = CGRect(x: 0, y: 100, width: 300, height: 128)
+	check(paradisPastEdge(frame: frame, direction: .down, rect: CGRect(x: 0, y: 240, width: 300, height: 16)) && paradisPastEdge(frame: frame, direction: .down, rect: CGRect(x: 0, y: 227, width: 300, height: 1)), "finds content past the bottom edge of an inner scroller")
+	check(!paradisPastEdge(frame: frame, direction: .down, rect: CGRect(x: 0, y: 110, width: 300, height: 16)) && !paradisPastEdge(frame: frame, direction: .up, rect: CGRect(x: 0, y: 110, width: 300, height: 16)) && paradisPastEdge(frame: frame, direction: .up, rect: CGRect(x: 0, y: 60, width: 300, height: 16)), "does not count visible content as past the edge")
+
+	check(paradisRevealMoved(before: row(900), after: row(560), direction: .down) == 340 && paradisRevealMoved(before: row(0), after: row(200), direction: .up) == 200, "measures how far a revealed element moved")
+	check(paradisClampedRevealMoved(viewport: chromium, after: CGRect(x: 518, y: 600, width: 600, height: 41), direction: .down, pick: ParadisClampedPick(index: 0, rows: 2, pitch: 45)) == 335, "estimates the move of a revealed sliver")
+	check(paradisAXScrollNote(.revealElement, role: "AXWebArea", approximate: true) == "accessibility: scrolled without the pointer; revealed an element past the edge of the AXWebArea (AXScrollToVisible); the distance is approximate", "says how the view was scrolled")
+	check(paradisAXScrollNote(.scrollBarValue, role: "AXScrollArea", approximate: false) == "accessibility: scrolled without the pointer; set the value of the scroll bar of the AXScrollArea", "does not call an exact scroll approximate")
+}
+
+// MARK: - 背面のキーの前にキーウィンドウにする（E1・E2）
+
+do {
+	let focus = paradisFocusRecord(windowId: 0x01020304, focus: true)
+	let defocus = paradisFocusRecord(windowId: 0x01020304, focus: false)
+	check(focus.count == 0xF8 && focus[0x04] == 0xF8 && focus[0x08] == 0x0D && Array(focus[0x3C..<0x40]) == [0x04, 0x03, 0x02, 0x01] && focus[0x8A] == 0x01 && defocus[0x8A] == 0x02, "builds the focus and defocus records")
+	check(focus.enumerated().allSatisfy { [0x04, 0x08, 0x3C, 0x3D, 0x3E, 0x3F, 0x8A].contains($0.offset) || $0.element == 0 }, "leaves the other bytes of a focus record zero")
+	let makeKey = paradisMakeKeyRecord(windowId: 7, kind: 0x02)
+	check(makeKey.count == 0xF8 && makeKey[0x08] == 0x02 && makeKey[0x3A] == 0x10 && makeKey[0x3C] == 7 && makeKey[0x20..<0x30].allSatisfy { $0 == 0xFF } && makeKey[0x30] == 0, "builds the make-key record")
+
+	check(ParadisKeyFocus(window: 7, elementWindow: 7).routes(to: 7) && !ParadisKeyFocus(window: 7, elementWindow: 9).routes(to: 7) && !ParadisKeyFocus(window: 7, elementWindow: nil).routes(to: 7), "needs both the focused window and the focused element in the target")
+
+	// 読み直しの並びを順に返す偽物
+	func prime(_ reads: [ParadisKeyFocus], records: Bool = true, ax: Bool = true) -> (Result<ParadisKeyPrime, ParadisHelperError>, posted: Int, axWrites: Int) {
+		var index = 0
+		var posted = 0
+		var axWrites = 0
+		let result = paradisPrimeWindowKey(target: 7, focus: {
+			let read = reads[min(index, reads.count - 1)]
+			index += 1
+			return read
+		}, keyRecords: {
+			posted += 1
+			return records
+		}, axFocus: {
+			axWrites += 1
+			return ax
+		})
+		return (result, posted, axWrites)
+	}
+	let other = ParadisKeyFocus(window: 9, elementWindow: 9)
+	let target = ParadisKeyFocus(window: 7, elementWindow: 7)
+	func code(_ result: Result<ParadisKeyPrime, ParadisHelperError>) -> String {
+		switch result {
+		case .success(let how): return how.rawValue
+		case .failure(let failure): return failure.code
+		}
+	}
+	let already = prime([target])
+	check(code(already.0) == "alreadyKey" && already.posted == 0 && already.axWrites == 0, "sends nothing when the window is already key")
+	let first = prime([other, target])
+	check(code(first.0) == "keyRecords" && first.posted == 1 && first.axWrites == 0, "makes the window key with the records")
+	let second = prime([other, other, target])
+	check(code(second.0) == "keyRecords" && second.posted == 2, "sends the records a second time")
+	let ax = prime([other, other, other, target])
+	check(code(ax.0) == "axFocusedWindow" && ax.posted == 2 && ax.axWrites == 1, "falls back to AXFocusedWindow")
+	let noRecords = prime([other, target], records: false)
+	check(code(noRecords.0) == "axFocusedWindow" && noRecords.posted == 2, "uses AXFocusedWindow when the records cannot be sent")
+	let refused = prime([other], ax: false)
+	check(code(refused.0) == "window_not_key", "refuses when the window cannot be confirmed as key")
+	let split = prime([ParadisKeyFocus(window: 7, elementWindow: 9)])
+	check(code(split.0) == "window_not_key" && split.posted == 2, "refuses when the focused element is in another window")
+
+	check(paradisKeyRestoreTarget(target: 7, previous: 9, orderBefore: [9, 7, 5], onScreenNow: [7, 9, 5]) == 9, "gives key back to the previous window")
+	check(paradisKeyRestoreTarget(target: 7, previous: 9, orderBefore: [9, 5, 7], onScreenNow: [7, 5]) == 5, "gives key to the frontmost earlier window when the previous one is gone")
+	check(paradisKeyRestoreTarget(target: 7, previous: nil, orderBefore: [7], onScreenNow: [7]) == nil, "gives key back to nothing when no other window is left")
+}
+
 // MARK: - 応答の形
 
 do {
