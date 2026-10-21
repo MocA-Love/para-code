@@ -8,7 +8,10 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { FileOperationError, FileOperationResult } from '../../../../../platform/files/common/files.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
+import { IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from '../../electron-browser/paradisSpreadsheetClient.js';
 import { buildShapeDiffOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
 import { buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
 import { IParadisPageLayout } from '../../common/paradisSpreadsheetPageLayout.js';
@@ -470,5 +473,36 @@ suite('paradisSpreadsheetDiff', () => {
 			{ changes: diff.changes.length, lines: diff.originalRowLines.length, labels: diff.originalLabels.length },
 			{ changes: 0, lines: 0, labels: 0 },
 		);
+	});
+
+	test('compares an added or deleted workbook against an empty book but keeps real read failures', () => {
+		const loaded: IParadisSpreadsheetDiffSide = { wb: { sheets: [sheet([cell('a')])] } };
+		const gitResource = URI.from({ scheme: 'git', path: '/repo/book.xlsx' });
+		const failed = (error: unknown, readBytes?: number, resource = gitResource): IParadisSpreadsheetDiffSide => ({ wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) });
+		const notFound = () => failed(new FileOperationError('not found', FileOperationResult.FILE_NOT_FOUND));
+		const summarize = (original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide) => {
+			const sides = resolveParadisSpreadsheetDiffSides(original, modified);
+			const failedSides = [sides.original.error !== undefined && 'original', sides.modified.error !== undefined && 'modified'].filter(Boolean);
+			return failedSides.length > 0 ? { failedSides } : { sheets: buildDiffSheets(sides.original.wb.sheets, sides.modified.wb.sheets).map(s => s.sheetStatus) };
+		};
+		deepStrictEqual({
+			added: summarize(notFound(), loaded),
+			deleted: summarize(loaded, notFound()),
+			beforeFirstCommit: summarize(failed(new ParadisSpreadsheetNotWorkbookError(false), 0), loaded),
+			truncatedWorkingTreeFile: summarize(loaded, failed(new ParadisSpreadsheetNotWorkbookError(false), 0, URI.file('/repo/book.xlsx'))),
+			bothMissing: summarize(notFound(), notFound()),
+			tooLarge: summarize(failed(new FileOperationError('too large', FileOperationResult.FILE_TOO_LARGE)), loaded),
+			notWorkbook: summarize(failed(new ParadisSpreadsheetNotWorkbookError(false), 120), loaded),
+			brokenOtherSide: summarize(notFound(), failed(new Error('corrupt zip'), 300)),
+		}, {
+			added: { sheets: ['added'] },
+			deleted: { sheets: ['removed'] },
+			beforeFirstCommit: { sheets: ['added'] },
+			truncatedWorkingTreeFile: { failedSides: ['modified'] },
+			bothMissing: { failedSides: ['original', 'modified'] },
+			tooLarge: { failedSides: ['original'] },
+			notWorkbook: { failedSides: ['original'] },
+			brokenOtherSide: { failedSides: ['original', 'modified'] },
+		});
 	});
 });
