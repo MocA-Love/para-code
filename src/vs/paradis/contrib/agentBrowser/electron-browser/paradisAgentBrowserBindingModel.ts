@@ -33,6 +33,7 @@ import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } f
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisRemoteMcpSetupController } from './paradisRemoteMcpSetup.js';
+import { ParadisOpenedTabGrantResult } from '../common/paradisAgentBrowserTabs.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 
 export const IParadisAgentBrowserBindingModel = createDecorator<IParadisAgentBrowserBindingModel>('paradisAgentBrowserBindingModel');
@@ -116,6 +117,18 @@ export interface IParadisAgentBrowserBindingModel {
 
 	/** {@link grantAgentTab} の許可を外す（タブを閉じた・ユーザーが共有を止めた）。 */
 	revokeAgentTab(token: string, viewId: string): Promise<void>;
+
+	/**
+	 * そのタブを開いた元のタブ（main が覚えている）を tab_id で使えるペインのトークン。開いたタブを
+	 * {@link grantOpenedTab} で同じペインへ共有するのに使う。分からなければ空。
+	 */
+	openerPanesOf(viewId: string): Promise<readonly string[]>;
+
+	/**
+	 * 共有したページ（または許可したタブ）から開いたタブを、共有を付け替えずにそのペインから tab_id で使えるようにする
+	 * （{@link grantAgentTab} と同じ確かめ方で、別枠の上限）。開いた元のタブは shared process が main に確かめる。
+	 */
+	grantOpenedTab(model: IBrowserViewModel, token: string): Promise<ParadisOpenedTabGrantResult>;
 
 	/**
 	 * 指定ペインから、そのページの共有だけを外す（ほかに共有しているページは残す）。current を外したら、
@@ -769,13 +782,30 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	async grantAgentTab(model: IBrowserViewModel, token: string): Promise<boolean> {
+		return await this._grantTab(model, token, 'grantAgentTab') === 'granted';
+	}
+
+	async openerPanesOf(viewId: string): Promise<readonly string[]> {
+		try {
+			const tokens = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<unknown>('openerPanesOf', [viewId]);
+			return Array.isArray(tokens) ? tokens.filter((token): token is string => typeof token === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	async grantOpenedTab(model: IBrowserViewModel, token: string): Promise<ParadisOpenedTabGrantResult> {
+		return this._grantTab(model, token, 'grantOpenedTab');
+	}
+
+	private async _grantTab(model: IBrowserViewModel, token: string, method: 'grantAgentTab' | 'grantOpenedTab'): Promise<ParadisOpenedTabGrantResult> {
 		// 共有の世代が同時に動いた（別のタブの共有が成立した等）ときは、取り直して 1 回だけやり直す
 		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
 				paradisRequireBindingScopeEligibility(this.getBindEligibility(model, token));
 				// ネットワークの制限が有効な間は、そのまま共有できるタブ（Agent の保存領域）だけ（共有と同じ扱い）
 				if (this.agentNetworkFilterService.isEnabled() && !model.isDirectlyShareable) {
-					return false;
+					return 'notEligible';
 				}
 				const revision = await this.authoritySyncService.syncNow();
 				this._captureBindScope(model, token);
@@ -788,16 +818,23 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 					viewId: model.id,
 					pageInfo: { url: model.url, title: model.title },
 				};
-				if (await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<boolean>('grantAgentTab', [request])) {
-					this._agentTabGrants.set(model.id, token);
+				const answer = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<unknown>(method, [request]);
+				const result: ParadisOpenedTabGrantResult = answer === true || answer === 'granted' ? 'granted' : answer === 'limitReached' ? 'limitReached' : 'notEligible';
+				if (result === 'granted') {
+					// 開いたタブは複数のペインへ許可しうる。ペインごとの一覧は shared process から取った控え（_agentTabOwnersByPage）で見る
+					if (method === 'grantAgentTab') {
+						this._agentTabGrants.set(model.id, token);
+					}
 					void this._refreshFromBackend(true).catch(() => undefined);
-					return true;
+				}
+				if (result !== 'notEligible' || method === 'grantOpenedTab') {
+					return result;
 				}
 			} catch {
-				return false;
+				return 'notEligible';
 			}
 		}
-		return false;
+		return 'notEligible';
 	}
 
 	async revokeAgentTab(token: string, viewId: string): Promise<void> {
@@ -1156,6 +1193,15 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				this._agentTabGrants.delete(pageId);
 			} else if (!input.model?.isDirectlyShareable) {
 				void this.revokeAgentTab(token, pageId);
+			}
+		}
+		// 共有したページから開いたタブの許可（複数のペインへ張りうる）も同じ条件で外す
+		for (const [pageId, tokens] of this._agentTabOwnersByPage) {
+			const input = knownViews.get(pageId);
+			if (!this._agentTabGrants.has(pageId) && input && !input.model?.isDirectlyShareable) {
+				for (const token of tokens) {
+					void this.revokeAgentTab(token, pageId);
+				}
 			}
 		}
 		for (const pageId of new Set(bindings.map(binding => binding.pageId))) {

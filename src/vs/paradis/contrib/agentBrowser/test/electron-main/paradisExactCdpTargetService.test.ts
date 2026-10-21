@@ -917,4 +917,27 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(await service.setExactViewBackgroundThrottling(exact, false), true);
 		assert.strictEqual(current.counters.focus, 0);
 	});
+
+	test('remembers which tab opened a tab only for the window it is in, and forgets it when the tab closes', async () => {
+		const child = createTestView();
+		const closeListeners: (() => void)[] = [];
+		const childView = Object.assign(Object.create(child.view as object) as object, {
+			onDidClose: (listener: () => void) => {
+				closeListeners.push(listener);
+				return { dispose: () => closeListeners.splice(closeListeners.indexOf(listener), 1) };
+			},
+		}) as unknown as BrowserView;
+		const registry = createRegistry({ child: childView });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease');
+		(Reflect.get(service, 'recordOpener') as (view: BrowserView, childId: string, parentId: string) => void).call(service, childView, 'child', 'parent');
+		const whileOpen = [await service.getOpenerViewId(1, 'child'), await service.getOpenerViewId(2, 'child'), await service.getOpenerViewId(1, 'other'), await service.getOpenerViewId('1', 'child')];
+		for (const listener of [...closeListeners]) {
+			listener();
+		}
+		assert.deepStrictEqual({ whileOpen, afterClose: await service.getOpenerViewId(1, 'child'), listeners: closeListeners.length }, {
+			whileOpen: ['parent', null, null, null],
+			afterClose: null,
+			listeners: 0,
+		});
+	});
 });

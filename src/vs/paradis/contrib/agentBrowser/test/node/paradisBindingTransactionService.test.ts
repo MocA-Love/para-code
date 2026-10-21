@@ -13,7 +13,7 @@ import {
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
-import { PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface IPreparedDescriptor {
@@ -56,6 +56,8 @@ function createFixture(): {
 	readonly authority: ParadisBindingAuthority<string, object, IPreparedDescriptor, ITestBinding>;
 	readonly mainCalls: { readonly command: string; readonly args: readonly unknown[] }[];
 	readonly gatewayCalls: { readonly command: string; readonly token: string }[];
+	/** main が覚えている「開いたタブ → 開いた元のタブ」。 */
+	readonly openers: Map<string, string>;
 	setResolveExact(operation: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null>): void;
 	setThrottlingOperation(operation: (descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean) => Promise<boolean>): void;
 } {
@@ -73,12 +75,14 @@ function createFixture(): {
 	const coordinator = new ParadisExactViewBackgroundThrottlingCoordinator();
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const gatewayCalls: { command: string; token: string }[] = [];
+	const openers = new Map<string, string>();
 	let resolveExact: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
+		_skippedOpenedTabs: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
@@ -138,6 +142,7 @@ function createFixture(): {
 						case 'setExactViewBackgroundThrottling': return throttlingOperation(args[0] as IParadisExactBrowserViewDescriptor, args[1] as boolean);
 						case 'captureExactViewScreenshot': return 'image-data';
 						case 'isExactViewVisible': return false;
+						case 'getOpenerViewId': return openers.get(args[1] as string) ?? null;
 						default: throw new Error(`legacy or unexpected Main call: ${command}`);
 					}
 				},
@@ -153,6 +158,7 @@ function createFixture(): {
 		authority,
 		mainCalls,
 		gatewayCalls,
+		openers,
 		setResolveExact: operation => resolveExact = operation,
 		setThrottlingOperation: operation => throttlingOperation = operation,
 	};
@@ -470,7 +476,7 @@ suite('Paradis binding transaction service', () => {
 suite('Paradis binding transaction service: several pages shared with one pane', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab'];
+	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
 	const viewOf = (viewId: string) => Object.freeze({ windowId: 1, viewId, targetId: `target-${viewId}`, viewLease: `lease-${viewId}` });
 
 	async function setup() {
@@ -699,6 +705,84 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		assert.deepStrictEqual({ listed: await listed(reloaded), agentTabs: await fixture.service.listAgentTabGrants(reloaded) }, {
 			listed: ['view-b', 'view-a+'],
 			agentTabs: [],
+		});
+	});
+
+	const openedRequest = (viewId: string) => ({ revision: 1, token: 'token', viewId, pageInfo: { url: `https://${viewId}.test`, title: viewId } });
+
+	test('a tab opened from a shared page, and a tab opened from that tab, are usable by tab_id until the page is unshared', async () => {
+		const { fixture, connection, share, generationOf, usable } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-0', 'view-a');
+		fixture.openers.set('opened-1', 'opened-0');
+		const panes = await fixture.service.openerPanesOf(connection, 'opened-0');
+		const granted = [await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), await fixture.service.grantOpenedTab(connection, openedRequest('opened-1'))];
+		const whileShared = { usable: [usable('opened-0'), usable('opened-1')], grants: (await fixture.service.listAgentTabGrants(connection)).map(grant => grant.pageId) };
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-a')), true);
+		assert.deepStrictEqual({
+			panes,
+			granted,
+			whileShared,
+			afterUnshare: { usable: [usable('opened-0'), usable('opened-1')], grants: await fixture.service.listAgentTabGrants(connection) },
+		}, {
+			panes: ['token'],
+			granted: ['granted', 'granted'],
+			whileShared: { usable: [true, true], grants: ['opened-0', 'opened-1'] },
+			afterUnshare: { usable: [false, false], grants: [] },
+		});
+	});
+
+	test('a tab opened from a page, and the tab the agent opened it from, are no longer usable once that page or tab closes', async () => {
+		const { fixture, connection, sync, share, usable } = await setup();
+		await share('view-a');
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		fixture.openers.set('opened-0', 'view-a');
+		fixture.openers.set('opened-1', 'agent-tab');
+		const granted = [await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), await fixture.service.grantOpenedTab(connection, openedRequest('opened-1'))];
+		// 共有したページとエージェントのタブが閉じた（manifest から消えた）
+		await sync(connection, { views: views.filter(viewId => viewId !== 'view-a' && viewId !== 'agent-tab') });
+		assert.deepStrictEqual({ granted, usable: [usable('opened-0'), usable('opened-1')], grants: await fixture.service.listAgentTabGrants(connection) }, {
+			granted: ['granted', 'granted'],
+			usable: [false, false],
+			grants: [],
+		});
+	});
+
+	test('a tab is not shared when its opener is unknown or not usable by the pane', async () => {
+		const { fixture, connection, share } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-1', 'view-b');
+		assert.deepStrictEqual({
+			unknownPanes: await fixture.service.openerPanesOf(connection, 'opened-0'),
+			unknown: await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')),
+			notUsablePanes: await fixture.service.openerPanesOf(connection, 'opened-1'),
+			notUsable: await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')),
+			grants: await fixture.service.listAgentTabGrants(connection),
+		}, { unknownPanes: [], unknown: 'notEligible', notUsablePanes: [], notUsable: 'notEligible', grants: [] });
+	});
+
+	test('opened tabs have their own limit apart from the agent\'s own tabs, and the ones over it are remembered for list_browser_tabs', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		const results: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_LIMIT; index++) {
+			fixture.openers.set(`opened-${index}`, 'view-a');
+			results.push(await fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`)));
+		}
+		const agentTab = await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } });
+		const skipped = (Reflect.get(fixture.service, '_skippedOpenedTabIds') as (token: string) => string[]).call(fixture.service, 'token');
+		assert.deepStrictEqual({
+			granted: results.filter(result => result === 'granted').length,
+			last: results[PARADIS_OPENED_TAB_LIMIT],
+			agentTab,
+			skipped,
+			overLimitUsable: usable(`opened-${PARADIS_OPENED_TAB_LIMIT}`),
+		}, {
+			granted: PARADIS_OPENED_TAB_LIMIT,
+			last: 'limitReached',
+			agentTab: true,
+			skipped: [`opened-${PARADIS_OPENED_TAB_LIMIT}`],
+			overLimitUsable: false,
 		});
 	});
 });

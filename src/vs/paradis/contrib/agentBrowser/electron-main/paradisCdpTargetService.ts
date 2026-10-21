@@ -191,6 +191,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	private frameKeepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	/** Concrete BrowserView object → opaque lease. Weak keys must never be reversed into strong view references. */
 	private readonly viewLeases = new WeakMap<object, string>();
+	/**
+	 * 子タブの viewId → 開いた元のタブの viewId。子タブは target=_blank・window.open・Ctrl/Cmd/中クリック・
+	 * 右クリックの「新しいタブで開く」で開いたタブ（別ウィンドウで開いたものを含む）。共有したページから開いたタブを
+	 * 同じペインへ共有するのに使う（{@link getOpenerViewId}）。子タブが閉じたら外す。
+	 */
+	private readonly openerViewIds = new Map<string, string>();
 	private readonly _onDidFrame = new Emitter<IParadisCdpFrameEvent>();
 	/** beginFrameSubscription 由来のフレーム（base64 JPEG）。全購読ターゲット共通、targetIdで振り分ける。 */
 	readonly onDidFrame: Event<IParadisCdpFrameEvent> = this._onDidFrame.event;
@@ -305,10 +311,47 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			const parent = this.browserViewMainService.tryGetBrowserView(parentViewId);
 			if (child && parent && !child.webContents.isDestroyed() && !parent.webContents.isDestroyed()) {
 				paradisRecordChildWebContents(child.webContents, parent.webContents);
+				this.recordOpener(child, childViewId, parentViewId);
 			}
 		} catch {
 			// ビューが既に閉じている。
 		}
+	}
+
+	private recordOpener(child: BrowserView, childViewId: string, parentViewId: string): void {
+		if (childViewId === parentViewId || this.openerViewIds.has(childViewId)) {
+			return;
+		}
+		this.openerViewIds.set(childViewId, parentViewId);
+		const closeListener = child.onDidClose(() => {
+			closeListener.dispose();
+			this.openerViewIds.delete(childViewId);
+		});
+	}
+
+	/**
+	 * そのタブを開いた元のタブの viewId（{@link openerViewIds}）。タブがそのウィンドウのものでない・元のタブが
+	 * 分からないときは null。shared process が、共有したページから開いたタブを同じペインへ共有してよいか確かめるのに使う。
+	 */
+	async getOpenerViewId(windowIdValue: unknown, viewIdValue: unknown): Promise<string | null> {
+		const windowId = paradisParseExactBrowserViewWindowId(windowIdValue);
+		const viewId = paradisParseExactBrowserViewId(viewIdValue);
+		if (windowId === undefined || viewId === undefined) {
+			return null;
+		}
+		const opener = this.openerViewIds.get(viewId);
+		if (opener === undefined) {
+			return null;
+		}
+		try {
+			const view = this.browserViewMainService.tryGetBrowserView(viewId);
+			if (!view || view.webContents.isDestroyed() || view.host.windowId !== windowId) {
+				return null;
+			}
+		} catch {
+			return null;
+		}
+		return opener;
 	}
 
 	/**

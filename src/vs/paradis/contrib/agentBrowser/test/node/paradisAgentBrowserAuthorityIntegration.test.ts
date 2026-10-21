@@ -127,6 +127,7 @@ function createFixture(): {
 		_bindings: bindings,
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
+		_skippedOpenedTabs: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
