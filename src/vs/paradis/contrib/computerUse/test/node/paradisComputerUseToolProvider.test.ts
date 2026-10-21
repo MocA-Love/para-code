@@ -576,6 +576,32 @@ suite('ParadisComputerUseToolProvider', () => {
 		});
 	});
 
+	test('keeps realPointer when a real click is sent again after the user approves', async () => {
+		const { helper, ledger, provider } = setup({ confirmForeground: true });
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.onInput = async (_method, params) => {
+			if (params.allowForeground === false) {
+				throw new ParadisComputerUseHelperError('foreground_needs_approval', 'realPointer was requested');
+			}
+			return { clicked: true, route: 'foreground' };
+		};
+		const { context } = createContext('pane', ['once']);
+		const result = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 1, realPointer: true, includeState: false }, undefined, context) as IResult;
+		const invalid = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', elementIndex: 1, realPointer: 'yes', includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			route: JSON.parse((result.content[0] as { text: string }).text).route,
+			sent: helper.inputs.map(input => ({ method: input.method, realPointer: input.params.realPointer, allowForeground: input.params.allowForeground, activateFirst: input.params.activateFirst })),
+			invalid: text(invalid),
+		}, {
+			route: 'foreground',
+			sent: [
+				{ method: 'click', realPointer: true, allowForeground: false, activateFirst: undefined },
+				{ method: 'click', realPointer: true, allowForeground: undefined, activateFirst: true },
+			],
+			invalid: '"realPointer" must be true or false.',
+		});
+	});
+
 	test('types the rest of the text after the user approves when accessibility stops working mid-text', async () => {
 		const { helper, ledger, provider } = setup({ confirmForeground: true });
 		ledger.set('pane-a', 'com.apple.Notes', 'operate');

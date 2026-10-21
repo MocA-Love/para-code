@@ -90,6 +90,11 @@ struct ParadisInputOptions: Equatable {
 	var activateFirst: Bool = false
 	/** 独自のカーソル。nil なら出さない（設定でオフ、または古い shared process）。 */
 	var cursor: ParadisCursorOwnerSpec? = nil
+	/**
+	 * 1・2 段目を飛ばして 3 段目（前面に出して実カーソルで送る）にする。エージェントが明示したときだけ（AXPress に
+	 * 反応しなかった部品を本物のクリックで押すため）。3 段目は目的のアプリを前面に出してから送る。
+	 */
+	var realPointer: Bool = false
 }
 
 // MARK: - 段の約束
@@ -143,6 +148,10 @@ final class ParadisUnavailableBackgroundRoute: ParadisInputRoute {
 func paradisRouteInput(_ action: ParadisInputAction, pid: Int32, routes: [ParadisInputRoute], options: ParadisInputOptions) throws -> [String: Any] {
 	var skipped: [String] = []
 	for route in routes {
+		if options.realPointer && !route.requiresForeground {
+			skipped.append("\(route.kind.rawValue): realPointer was requested")
+			continue
+		}
 		if case .unavailable(let reason) = route.availability(of: action, pid: pid) {
 			skipped.append("\(route.kind.rawValue): \(reason)")
 			continue
@@ -195,6 +204,7 @@ enum ParadisAXClickPlan: Equatable {
 	/**
 	 * 一覧（`paradisPressableRoles`）に無い役割の要素の AXPress（ウェブの中身の押せる `AXGroup`、表の行など）。
 	 * 押しても何も起きない要素もあり、読み戻しでは確かめられないので、結果にそう書く（`paradisUnlistedPressNote`）。
+	 * 本物のクリックが要るときは、エージェントが `realPointer` を付けて送り直す。
 	 */
 	case pressUnlisted(depth: Int)
 	case none(String)
@@ -304,35 +314,7 @@ private func paradisAccessibilityClickPlanIgnoringMenus(button: ParadisMouseButt
 
 /** 一覧外の要素を AXPress で押した結果に添える説明（押しても何も起きないことがあるため）。 */
 func paradisUnlistedPressNote(role: String) -> String {
-	return "AXPress was sent to an element that is not a standard control (\(role)); the app may have ignored it. Read the window again to check. If nothing changed, click the same element again: Para Code then sends a real click instead of AXPress."
-}
-
-/** 一覧外の要素を AXPress で押したのを覚えておく時間（この間に同じ要素をもう一度クリックしたら AXPress を使わない）。 */
-let paradisUnlistedPressRetrySeconds: TimeInterval = 60
-
-/**
- * 一覧外の要素への AXPress の記録。押しても何も起きなかったとき、エージェントが同じ要素をもう一度クリックすれば
- * 本物のクリック（2 段目・3 段目）へ譲る。要求は 1 本の接続で順に処理するので鍵は要らない。
- */
-final class ParadisUnlistedPressMemory {
-	private var last: (key: String, at: Date)?
-
-	/** 直前に同じ要素を AXPress で押していれば true を返し、記録を消す（2 回目は本物のクリックにする）。 */
-	func shouldSkip(key: String, now: Date) -> Bool {
-		guard let last, last.key == key, now.timeIntervalSince(last.at) < paradisUnlistedPressRetrySeconds, now >= last.at else {
-			return false
-		}
-		self.last = nil
-		return true
-	}
-
-	func record(key: String, now: Date) {
-		last = (key, now)
-	}
-
-	func forget() {
-		last = nil
-	}
+	return "AXPress was sent to an element that is not a standard control (\(role)); the app may have ignored it. Read the window again to check. If nothing changed, call computer_click again with \"realPointer\": true to send a real click (it moves the user's mouse pointer and brings the app forward)."
 }
 
 /**
@@ -801,6 +783,12 @@ func paradisParseInputOptions(_ params: [String: Any]) throws -> ParadisInputOpt
 			throw ParadisHelperError.invalidArgument("\"activateFirst\" must be true or false")
 		}
 		options.activateFirst = number.boolValue
+	}
+	if let raw = params["realPointer"] {
+		guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+			throw ParadisHelperError.invalidArgument("\"realPointer\" must be true or false")
+		}
+		options.realPointer = number.boolValue
 	}
 	options.cursor = paradisParseCursorOwner(params["cursor"])
 	return options
