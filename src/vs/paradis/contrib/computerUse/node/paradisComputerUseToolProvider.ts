@@ -123,7 +123,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 	},
 	{
 		name: 'computer_click',
-		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link or menu item presses it through accessibility (AXPress), and a single left click on a text field focuses it with the caret at the end: the mouse pointer does not move and the app stays where it is. Clicks that open a menu (a pop-up or menu button, or a right click on an element with a context menu) go through accessibility only while the app is in front, because an open menu takes the keyboard focus; otherwise those menu controls need the foreground route. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other left clicks try window-targeted background delivery first. Unsupported input uses the foreground route. A sent event is not proof that the control acted; inspect the returned state before retrying. ${OPERATE_NOTE}`,
+		description: `Click in a window of an app: left or right button, single, double or triple click, optionally with modifier keys. Give an element number from computer_get_app_state (preferred), or x and y. A single left click on a button, checkbox, radio button, link or menu item presses it through accessibility (AXPress), and a single left click on a text field focuses it with the caret at the end: the mouse pointer does not move and the app stays where it is. Other elements that accept AXPress (such as clickable parts of a web page) are pressed the same way and the result says "standardControl": false; if nothing changed, click again with "realPointer": true to send a real click instead. Clicks that open a menu (a pop-up or menu button, or a right click on an element with a context menu) go through accessibility only while the app is in front, because an open menu takes the keyboard focus; otherwise those menu controls need the foreground route. The result says what was done ("axAction"), whether it could be confirmed ("verified", for example a checkbox that changed; null when the control has no state to read back) and whether the user's focus stayed the same ("focusPreserved"). Other left clicks try window-targeted background delivery first. Unsupported input uses the foreground route. A sent event is not proof that the control acted; inspect the returned state before retrying. ${OPERATE_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -136,6 +136,7 @@ export const PARADIS_COMPUTER_USE_TOOLS: readonly IParadisMcpToolDefinition[] = 
 				button: { type: 'string', enum: ['left', 'right'], description: 'The mouse button (default left).' },
 				clickCount: { type: 'integer', description: '1 for a click, 2 for a double click, 3 for a triple click (default 1).' },
 				modifiers: { type: 'array', items: { type: 'string', enum: ['cmd', 'shift', 'option', 'control'] }, description: 'Modifier keys held during the click.' },
+				realPointer: { type: 'boolean', description: 'Send a real click with the user\'s mouse pointer instead of accessibility or background input (default false). It brings the app forward and moves the pointer, and the user may have to approve it. Use it only when an accessibility press did nothing.' },
 				includeState: INCLUDE_STATE_ARGUMENT,
 			},
 			required: ['app'],
@@ -1101,7 +1102,10 @@ function operateParams(name: string, args: Record<string, unknown>): Record<stri
 			if (args.elementIndex === undefined && (args.x === undefined || args.y === undefined)) {
 				throw new ParadisComputerUseHelperError('invalid_argument', 'Give "elementIndex" from computer_get_app_state, or "x" and "y".');
 			}
-			return pick(['elementIndex', 'x', 'y', 'button', 'clickCount', 'modifiers']);
+			if (args.realPointer !== undefined && typeof args.realPointer !== 'boolean') {
+				throw new ParadisComputerUseHelperError('invalid_argument', '"realPointer" must be true or false.');
+			}
+			return pick(['elementIndex', 'x', 'y', 'button', 'clickCount', 'modifiers', 'realPointer']);
 		case 'computer_drag':
 			if (!isObject(args.from) || !isObject(args.to)) {
 				throw new ParadisComputerUseHelperError('invalid_argument', '"from" and "to" must each have "elementIndex", or "x" and "y".');
@@ -1299,7 +1303,7 @@ function formatHelperError(error: unknown): string {
 			case 'focus_changed':
 				return `The foreground app changed, so Para Code stopped background input. Read the app state before continuing.${progressOf(error)}`;
 			case 'window_not_focused':
-				return `The app is not in front (or another app took focus), so Para Code stopped before sending input. Call computer_activate_app, then try again.${progressOf(error)}`;
+				return `The app is not in front (or another app took focus), so Para Code stopped before sending input. Prefer actions that work without bringing the app forward: click an element number from computer_get_app_state (buttons, links and text fields are operated through accessibility), or use computer_set_value for fields, sliders and checkboxes. Call computer_activate_app only when the action needs the real mouse pointer or keyboard (such as a drag or a shortcut); it takes over the user's screen.${progressOf(error)}`;
 			case 'point_obscured':
 				return `Another window or panel covers the target, so Para Code did not send input there.${progressOf(error)}`;
 			case 'system_dialog':

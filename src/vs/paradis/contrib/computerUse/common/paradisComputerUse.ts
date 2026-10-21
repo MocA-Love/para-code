@@ -30,13 +30,14 @@ export function paradisComputerUseEnabled(value: unknown): boolean {
 }
 
 /**
- * 前面に出して実カーソルとキーボードを使う送り方（3 段目）の前に、利用者の承認を取るか（既定オフ = 今までどおり
- * 承認済みのアプリにはそのまま送る）。アクセシビリティで送れる操作（1 段目）には効かない。
+ * 前面に出して実カーソルとキーボードを使う送り方（3 段目）の前に、利用者の承認を取るか（既定オン。オフにすると
+ * 承認済みのアプリにはそのまま送る）。アクセシビリティ・背面で送れる操作（1・2 段目）には効かない。
  */
 export const PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING = 'paradis.computerUse.confirmForegroundInput';
 
+/** スキーマは画面側でしか登録されないので、shared process では明示のオフ（false）だけをオフにする（既定オン）。 */
 export function paradisComputerUseConfirmForeground(value: unknown): boolean {
-	return value === true;
+	return value !== false;
 }
 
 /** エージェントの独自のカーソル（名前の札つき）を画面に出すか（既定オン）。 */
