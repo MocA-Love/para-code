@@ -615,7 +615,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 						host: view.host,
 						owner: view.owner,
 						session: view.session.id,
-					}, { preserveFocus: true, background: true }, 'browserLinkBackground');
+					}, { preserveFocus: true, background: true, parentViewId: view.id }, 'browserLinkBackground'); // PARA-PATCH: remember the opener so a tab opened from a page shared with an agent pane is shared with it too (see paradisCdpTargetService.getOpenerViewId)
 				}
 			}));
 			menu.append(new MenuItem({
@@ -645,7 +645,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 						host: view.host,
 						owner: view.owner,
 						session: view.session.id,
-					}, { preserveFocus: true, background: true }, 'browserLinkBackground');
+					}, { preserveFocus: true, background: true, parentViewId: view.id }, 'browserLinkBackground'); // PARA-PATCH: remember the opener so a tab opened from a page shared with an agent pane is shared with it too (see paradisCdpTargetService.getOpenerViewId)
 				}
 			}));
 			menu.append(new MenuItem({
