@@ -18,7 +18,7 @@ import { InMemoryStorageService, IStorageService, StorageScope } from '../../../
 import { paradisMobileDiffIdentity, paradisParseMobilePorcelainStatus, paradisWithMobileLineCounts } from '../../common/paradisMobileDiffReview.js';
 import { PARADIS_MOBILE_REVIEW_STORAGE_KEY } from '../../common/paradisMobileReviewStore.js';
 import { PARADIS_MOBILE_HOST_NO_RESPONSE_MESSAGE, PARADIS_MOBILE_STATUS_DEADLINE_MS } from '../../common/paradisMobileHostDeadline.js';
-import { paradisReviewNotesTargetVerdict } from '../../electron-browser/paradisMobileAgentPromptDelivery.js';
+import { paradisPromptDeliveryScreenShowsPrompt, paradisReviewNotesTargetVerdict } from '../../electron-browser/paradisMobileAgentPromptDelivery.js';
 // 差分レビューの処理を登録表へ載せる（副作用 import）
 import '../../electron-browser/paradisMobileDiffReviewRequests.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
@@ -390,6 +390,26 @@ suite('ParadisMobileDiffReviewRequests', () => {
 			paradisReviewNotesTargetVerdict({ ...ready, parked: true }),
 			paradisReviewNotesTargetVerdict({ ...ready, isAgent: false }),
 		], ['ready', 'ready', 'busy', 'busy', 'not-running', 'parked', 'not-agent']);
+	});
+
+	test('does not hand a request to a Claude Code pane holding the Resume this conversation? prompt, and only judges it when the foreground is Claude Code', () => {
+		// Claude Code 2.1.306 の実画面の下端（出ている間は打った文字が捨てられ、Enter が Resume を選ぶ）
+		const resumePrompt = [
+			'  Resume this conversation?',
+			'',
+			'  This conversation has been inactive for 5h and is 800k tokens long.',
+			'',
+			'  ❯ 1. Resume',
+			'    2. Start a new conversation',
+			'',
+			'  Enter to confirm · Esc to resume',
+		].join('\n');
+		assert.deepStrictEqual([
+			paradisPromptDeliveryScreenShowsPrompt(resumePrompt, 'claude --resume 0123'),
+			paradisPromptDeliveryScreenShowsPrompt(resumePrompt, 'codex'),
+			// シェル統合が無く前面のコマンドが分からない
+			paradisPromptDeliveryScreenShowsPrompt(resumePrompt, undefined),
+		], [true, false, false]);
 	});
 
 	test('strips terminal control characters from the request, refuses a second send in flight, and does not mark notes edited meanwhile as sent', async () => {

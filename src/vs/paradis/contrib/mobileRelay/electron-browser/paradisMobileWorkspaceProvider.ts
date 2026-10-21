@@ -1556,6 +1556,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown };
 		let interactionAccepted = false;
+		// 発言の Enter を打ち終えた（この後の例外は「送れなかった」と返さない。送信 ID を忘れさせて二重に送らせないため）
+		let messageTyped = false;
 		try {
 			msg = JSON.parse(payload.toString());
 		} catch {
@@ -1622,6 +1624,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						return currentInstance === instance && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
 					},
 				);
+				messageTyped = outcome.executed;
 				if (!outcome.executed) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
 					return;
@@ -1765,6 +1768,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
 		} catch {
+			if (messageTyped) {
+				// 文は Enter まで届いている（後の画面の確かめで失敗した）。断りを返すと送り直しで二重に送られる
+				this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
+				return;
+			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
 		} finally {
 			// Claude Code の設定も終わりを知らせる（shared process が、よけていた PC の入力欄の書きかけを戻す）
