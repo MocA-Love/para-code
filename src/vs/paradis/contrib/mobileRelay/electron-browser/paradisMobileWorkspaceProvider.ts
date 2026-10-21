@@ -107,6 +107,8 @@ const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
  */
 const CLAUDE_RESUME_PROMPT_CODE = 'resume-prompt';
 const CLAUDE_RESUME_PROMPT_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。PC で選んでから送り直してください';
+/** 同じ確認が出ている間の「閉じる」（Esc）への断り。 */
+const CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。Esc を送るとそのまま再開して使用量を多く使うので、PC で選んでください';
 
 // 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
 export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -1635,6 +1637,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 			} else if (closePanel) {
+				// 再開の確認では Esc が「Resume」を選ぶ（5 時間の使用量を大きく使う）。打たずに PC で選んでもらう
+				if (paradisScreenShowsClaudeResumePrompt(paradisVisibleTerminalText(instance))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE);
+					return;
+				}
 				await instance.sendText('\x1b', false);
 			} else if (claudeSetting) {
 				// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
