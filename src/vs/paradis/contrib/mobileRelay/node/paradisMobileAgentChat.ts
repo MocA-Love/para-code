@@ -3707,7 +3707,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
 	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly claudeSetting?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
-	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly sendKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
 	private readonly questionNotifyCounts = new Map<string, number>();
@@ -5949,6 +5949,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(pending.interaction !== undefined ? { interaction: pending.interaction } : {}),
 			...(pending.interactionKey !== undefined ? { interactionKey: pending.interactionKey } : {}), timer: completedTimer,
 			...(pending.requirePrompt === true ? { requirePrompt: true } : {}),
+			...(pending.sendKey !== undefined ? { sendKey: pending.sendKey } : {}),
 		});
 		const currentTailer = this.tailers.get(token);
 		const owner = this.ownerForPane(pending.terminalId, token);
@@ -5987,6 +5988,19 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.releaseInteractionClaim(completed.interactionKey, key);
 		return 'completed';
+	}
+
+	/**
+	 * 所有ウィンドウが発言を打たずに断った（Claude Code の再開の確認・Codex の入力欄の残り・送る前にセッションが変わった など）。
+	 * その返事はウィンドウからアプリへ直接届くので、ここで送信 ID を忘れる（覚えたままだと、アプリの待ち行列が同じ ID で
+	 * 送り直したときに打たずに「受け付け済み」と返し、文が届かないまま預かりから消える）。貼り付けた後の断り（`consumed`）は
+	 * 入力欄に文が残っているので忘れない。
+	 */
+	noteWindowSendRejected(mobileId: string, requestId: string, token: string, windowId: number, windowSession: string): void {
+		const completed = this.completedActions.get(this.actionKey(mobileId, requestId));
+		if (completed !== undefined && completed.token === token && completed.windowId === windowId && completed.windowSession === windowSession) {
+			this.forgetSendId(completed.sendKey);
+		}
 	}
 
 	validateClaimedAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number, windowSession: string): boolean {
