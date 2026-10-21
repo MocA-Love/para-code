@@ -17,6 +17,8 @@ import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/p
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { paradisCanPasteMultiline } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { paradisScreenShowsAgentPrompt, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisAgentPromptQuotingError } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisConfiguredAgents, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -144,6 +146,16 @@ function isInSpaceAgent(services: IParadisAgentPromptServices, instance: ITermin
 	return stateKey === ws && services.agentStatusStore.isAgentInstance(instance.instanceId);
 }
 
+/**
+ * 依頼を渡す前に見る、画面の確認（許可・質問、Claude Code なら再開の確認）。エージェントの種類はシェル統合の前面のコマンド
+ * から取る（`paradisTerminalRunsAgent` と同じ）。分からないときは Claude Code の再開の確認を見ない（Codex の本文に同じ文言が
+ * 出ても断らないため）。
+ */
+export function paradisPromptDeliveryScreenShowsPrompt(screen: string, executingCommand: string | undefined): boolean {
+	const agent = executingCommand !== undefined ? paradisInteractiveAgentCommand(executingCommand)?.agent : undefined;
+	return paradisScreenShowsAgentPrompt(screen, agent);
+}
+
 function verdictOf(services: IParadisAgentPromptServices, instance: ITerminalInstance | undefined, ws: string): ParadisReviewNotesTargetVerdict {
 	if (instance === undefined || instance.isDisposed) {
 		return 'not-agent';
@@ -153,7 +165,7 @@ function verdictOf(services: IParadisAgentPromptServices, instance: ITerminalIns
 		status: services.agentStatusStore.getInstanceStatus(instance.instanceId),
 		parked: instance.xterm === undefined,
 		canPasteMultiline: paradisCanPasteMultiline(instance),
-		screenShowsPrompt: paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance)),
+		screenShowsPrompt: paradisPromptDeliveryScreenShowsPrompt(paradisVisibleTerminalText(instance), instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand),
 	});
 }
 
