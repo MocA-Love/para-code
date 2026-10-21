@@ -1265,6 +1265,20 @@ do {
 	let split = prime([ParadisKeyFocus(window: 7, elementWindow: 9)])
 	check(code(split.0) == "window_not_key" && split.posted == 2, "refuses when the focused element is in another window")
 
+	// 目的のアプリが前面で、利用者がその別のウィンドウで作業中なら替えない
+	check(paradisKeyPrimeRefusal(targetIsFrontmost: true, focus: other, target: 7)?.code == "window_in_use", "does not switch the key window of the app the user is working in")
+	check(paradisKeyPrimeRefusal(targetIsFrontmost: true, focus: target, target: 7) == nil, "sends to the app in front when the target window is already key")
+	check(paradisKeyPrimeRefusal(targetIsFrontmost: false, focus: other, target: 7) == nil, "switches the key window of an app in the background")
+	check(paradisKeyPrimeRefusal(targetIsFrontmost: true, focus: ParadisKeyFocus(window: 7, elementWindow: 9), target: 7)?.code == "window_in_use", "does not switch when the user's focused element is in another window of the app in front")
+
+	// 戻すのは、今のキーが目的のウィンドウのままで、前面のアプリが変わっていないときだけ
+	check(paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: 7, target: 7, frontmostBefore: 50, frontmostNow: 50), "gives key back after sending")
+	check(paradisShouldRestoreKey(primed: .axFocusedWindow, currentFocusWindow: 7, target: 7, frontmostBefore: 50, frontmostNow: 50), "gives key back after AXFocusedWindow")
+	check(!paradisShouldRestoreKey(primed: .alreadyKey, currentFocusWindow: 7, target: 7, frontmostBefore: 50, frontmostNow: 50), "gives nothing back when nothing was switched")
+	check(!paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: 7, target: 7, frontmostBefore: 50, frontmostNow: 100), "does not take the window back after the user moved to the app")
+	check(!paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: 9, target: 7, frontmostBefore: 50, frontmostNow: 50), "keeps the window the user picked in the meantime")
+	check(!paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: 7, target: 7, frontmostBefore: nil, frontmostNow: nil), "does not give key back when the front app is unknown")
+
 	check(paradisKeyRestoreTarget(target: 7, previous: 9, orderBefore: [9, 7, 5], onScreenNow: [7, 9, 5]) == 9, "gives key back to the previous window")
 	check(paradisKeyRestoreTarget(target: 7, previous: 9, orderBefore: [9, 5, 7], onScreenNow: [7, 5]) == 5, "gives key to the frontmost earlier window when the previous one is gone")
 	check(paradisKeyRestoreTarget(target: 7, previous: nil, orderBefore: [7], onScreenNow: [7]) == nil, "gives key back to nothing when no other window is left")

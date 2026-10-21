@@ -5,7 +5,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 1 段目（AX）のスクロールの計算（OS に触れない部分。実体は ParadisAXScrollRoute.swift）。
+// 1 段目（AX）のスクロールの計算（OS に触れない部分。実体は ParadisAXScrolling.swift と ParadisInputRoutes.swift の `scroll`）。
 //
 //  - D1 スクロールバー: 軸の合うスクロールバーの `AXValue` を書く。中身の大きさが分かれば動かす量から値を出し、
 //    分からなければ 1 ページを `AXValueIncrement`（無ければ範囲の 1/10）とみなす（概算）
