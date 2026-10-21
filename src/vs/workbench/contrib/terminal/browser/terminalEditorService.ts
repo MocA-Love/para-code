@@ -208,7 +208,9 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 				const editorPane = await request.promise;
 				if (exactGroup) {
 					assertParadisExactEditorGroup(this._editorGroupsService, exactGroup, editorOptions.viewColumn);
-					if (!editorPane || editorPane.group !== exactGroup) {
+					// An inactive open never returns a pane (editorGroupView.doShowEditor), so whether the group now holds the editor is what tells it opened there
+					const opened = editorPane ? editorPane.group === exactGroup : !!editorOptions.paradisInactive && exactGroup.findEditors(resource).length > 0;
+					if (!opened) {
 						throw new Error('The terminal editor did not open in the exact destination group.');
 					}
 				}

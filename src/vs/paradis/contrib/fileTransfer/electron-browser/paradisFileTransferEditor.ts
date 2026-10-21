@@ -32,6 +32,7 @@ import { PARADIS_FILE_TRANSFER_EDITOR_ID, ParadisTransferSide } from '../common/
 import { IParadisTransferItem } from '../common/paradisFileTransferQueue.js';
 import { ParadisFileTransferInput } from './paradisFileTransferInput.js';
 import { ParadisFileTransferPane } from './paradisFileTransferPane.js';
+import { paradisIsExternalFileDrag } from './paradisFileTransferPaneDnd.js';
 import { ParadisFileTransferQueueView } from './paradisFileTransferQueueView.js';
 import { IParadisFileTransferService } from './paradisFileTransferService.js';
 import './media/paradisFileTransfer.css';
@@ -53,6 +54,8 @@ export class ParadisFileTransferEditor extends EditorPane {
 	private orientation: Orientation | undefined;
 	private dimension: dom.Dimension | undefined;
 	private readonly inputStore = this._register(new DisposableStore());
+	/** 前面にある間だけ、エディタグループ（タブの列を含む）に付ける外部ファイルの止め。 */
+	private readonly groupDropGuard = this._register(new MutableDisposable<DisposableStore>());
 	private initialized = false;
 	/** 読み直しを済ませた（終わった）転送の項目。 */
 	private readonly settledItems = new Set<number>();
@@ -97,6 +100,55 @@ export class ParadisFileTransferEditor extends EditorPane {
 		this.root.appendChild(this.queueView.element);
 		this._register(this.queueView.onDidChangeHeight(() => this.relayout()));
 		this._register(this.transferService.queue.onDidChange(() => this.refreshAfterTransfers()));
+		this.registerExternalDropGuard(this.root);
+	}
+
+	/**
+	 * Finder などアプリの外から来たファイルを、この画面の上ではエディタ領域へ渡さない。渡すとエディタ領域が
+	 * フォルダーをこのウィンドウで開き直し（接続先のウィンドウが手元のフォルダーに入れ替わる）、ファイルはタブで開く。
+	 * 受けるのは右の表（の DnD）だけで、ここは表の後で走って止めるだけ。表どうしのドラッグは `Files` を持たないので素通しする。
+	 */
+	private registerExternalDropGuard(root: HTMLElement): void {
+		const guard = (event: DragEvent) => {
+			if (!paradisIsExternalFileDrag(event)) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer && event.type !== dom.EventType.DRAG_LEAVE) {
+				const accepts = this.panes.get('remote')?.acceptsExternalDropAt(dom.isHTMLElement(event.target) ? event.target : null);
+				event.dataTransfer.dropEffect = accepts ? 'copy' : 'none';
+			}
+		};
+		// dragleave も止める（エディタ領域の入った・出たの数え方が片寄らないように）
+		for (const type of [dom.EventType.DRAG_ENTER, dom.EventType.DRAG_OVER, dom.EventType.DRAG_LEAVE, dom.EventType.DROP]) {
+			this._register(dom.addDisposableListener(root, type, guard));
+		}
+	}
+
+	/**
+	 * タブの列などグループの別の所を通って入ると、エディタ領域が dragenter でグループの上に覆いを重ね、
+	 * その後のドラッグは覆い宛てになってこの画面に届かない（落とすとウィンドウが入れ替わる）。
+	 * この画面が前面にある間は、グループで `Files` の dragenter・dragleave を止めて覆いを作らせない。
+	 * タブの列自身の処理は子の要素で先に済んでいる。グループの要素は表示中にしか辿れないので、表示のたびに付け直す。
+	 */
+	protected override setEditorVisible(visible: boolean): void {
+		super.setEditorVisible(visible);
+		const group = visible ? this.root?.closest<HTMLElement>('.editor-group-container') : undefined;
+		if (!group) {
+			this.groupDropGuard.clear();
+			return;
+		}
+		const store = new DisposableStore();
+		const guard = (event: DragEvent) => {
+			if (paradisIsExternalFileDrag(event)) {
+				event.stopPropagation();
+			}
+		};
+		for (const type of [dom.EventType.DRAG_ENTER, dom.EventType.DRAG_LEAVE]) {
+			store.add(dom.addDisposableListener(group, type, guard));
+		}
+		this.groupDropGuard.value = store;
 	}
 
 	/**
