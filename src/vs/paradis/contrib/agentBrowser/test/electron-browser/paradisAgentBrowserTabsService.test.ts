@@ -94,6 +94,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		getPanes: () => [{ token: 'pane-token', title: 'cla\u202eude \u001b[31m' }],
 		getBindingForToken: () => binding.pageId === undefined ? undefined : { pageId: binding.pageId },
 		getBindingsForToken: () => [...(binding.pageId === undefined ? [] : [binding.pageId]), ...(binding.more ?? [])].map(pageId => ({ pageId })),
+		getAgentTabsForToken: () => [],
 		sharePageWithPane: (model: { id: string; sharingState?: string }) => {
 			binding.sharingAtBind = model.sharingState;
 			return new Promise<string | undefined>(resolve => binding.resolveBind = bound => resolve(bound ? binding.replacementPageId ?? model.id : undefined));
@@ -375,7 +376,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 	function setup() {
 		const disposables = store.add(new DisposableStore());
 		const bindingChanges = disposables.add(new Emitter<void>());
-		const state = { bound: undefined as string | undefined, more: [] as string[], binds: [] as string[], grants: [] as string[], revokes: [] as string[] };
+		const state = { bound: undefined as string | undefined, more: [] as string[], binds: [] as string[], grants: [] as string[], revokes: [] as string[], openedGrants: [] as string[] };
 		const views = new Map<string, BrowserEditorInput>();
 		const sharing = new Map<string, Emitter<BrowserViewSharingState>>();
 		const tab = (id: string) => {
@@ -390,6 +391,12 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			onDidChange: bindingChanges.event,
 			getBindingForToken: (token: string) => token === TOKEN && state.bound !== undefined ? { token, pageId: state.bound } : undefined,
 			getBindingsForToken: (token: string) => token === TOKEN ? [...(state.bound !== undefined ? [state.bound] : []), ...state.more].map(pageId => ({ token, pageId })) : [],
+			// 許可の控え（エージェントのタブと、共有したページから開いたタブ）
+			getAgentTabsForToken: (token: string) => token === TOKEN ? [...state.grants, ...state.openedGrants] : [],
+			grantOpenedTab: async (model: IBrowserViewModel) => {
+				state.openedGrants.push(model.id);
+				return 'granted';
+			},
 			// 共有は追加: 前の current は 2 枚目以降に残る
 			sharePageWithPane: async (model: IBrowserViewModel, token: string) => {
 				state.binds.push(model.id);
@@ -437,6 +444,30 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 		};
 		return { service, state, tab, bind, listed, sharing, views, disposables };
 	}
+
+	test('a tab opened from a shared page is listed with its full address and selected without sharing it again', async () => {
+		const { service, state, tab, bind } = setup();
+		bind('page');
+		tab('page');
+		const opened = tab('opened');
+		const result = await service.shareOpenedTab(TOKEN, opened);
+		const listedTabs = service.listTabs(TOKEN);
+		const selected = await service.selectTab(TOKEN, 'opened');
+		assert.deepStrictEqual({
+			result,
+			tabs: listedTabs.ok ? listedTabs.tabs : [],
+			selected: selected.ok ? { tabId: selected.tab.tabId, bound: selected.bound } : selected,
+			binds: state.binds,
+		}, {
+			result: 'granted',
+			tabs: [
+				{ tabId: 'page', url: 'https://page.example', title: 'page', openedByAgent: false, active: true },
+				{ tabId: 'opened', url: 'https://opened.example', title: 'opened', openedByAgent: false, active: false },
+			],
+			selected: { tabId: 'opened', bound: true },
+			binds: [],
+		});
+	});
 
 	// 共有を止めてから binding model の通知が届くまでの間に選び直されても、承認なしでは共有し直さない（M22）
 	test('an approved profile tab stopped by the user cannot be re-selected before the change notification arrives', async () => {
