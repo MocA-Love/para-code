@@ -280,7 +280,36 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
  * ハイライト中の選択肢を確定してしまうのを防ぐため。
  */
 export function paradisScreenShowsAgentPrompt(screen: string): boolean {
-	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen);
+	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen) || paradisScreenShowsClaudeResumePrompt(screen);
+}
+
+/** Claude Code の再開の確認の見出しと、2 つめの選択肢（空白を除いた小文字）。 */
+const CLAUDE_RESUME_PROMPT_HEADING = 'resumethisconversation?';
+const CLAUDE_RESUME_PROMPT_NEW_OPTION = 'startanewconversation';
+
+/**
+ * 画面の下端に、Claude Code の「Resume this conversation?」の確認が出ているか。
+ *
+ * 長く使っていない会話を `--resume`・`--continue`・`/resume` で開き直したとき、5 時間の使用量のうちどれだけを使うかを出して
+ * 「Resume」か「Start a new conversation」かを選ばせる。2.1.306 の実画面:
+ * `Resume this conversation?` / `This conversation has been inactive for 5h and is 800k tokens long. …` /
+ * `❯ 1. Resume` / `2. Start a new conversation  Claude can look this one up if you refer to it later` /
+ * `Enter to confirm · Esc to resume`。この確認は入力欄の代わりに出て、出ている間に打った文字は捨てられ、Enter は
+ * カーソルのある「Resume」を選ぶ（文はどこにも届かない）。見出しの後ろに 2 つめの選択肢があり、入力欄が出ていないときだけ true。
+ */
+export function paradisScreenShowsClaudeResumePrompt(screen: string): boolean {
+	const lines = promptRegion(screen);
+	for (let index = lines.length - 1; index >= 0; index--) {
+		// 見出しが折り返しでまたがっても、見出しの終わる行で止まる（permissionHeadingEndsAt と同じ）
+		const from = Math.max(0, index - PROMPT_HEADING_SPAN_LINES + 1);
+		if (!compact(lines.slice(from, index + 1).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING) || compact(lines.slice(from, index).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING)) {
+			continue;
+		}
+		const after = lines.slice(index + 1);
+		const idleInput = after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
+		return !idleInput && compact(after.join('')).includes(CLAUDE_RESUME_PROMPT_NEW_OPTION);
+	}
+	return false;
 }
 
 /**
