@@ -234,7 +234,13 @@ export function isParadisSpreadsheetSideAbsent(resource: URI, error: unknown, re
  * 両側とも失敗してエラーになる。新版が作業ツリーのファイル（Uncommitted Changes）のときは新版が読めるため、
  * リポジトリが見つからない場合も旧版が無いのと区別できず、全部が追加として見える。
  */
-export function resolveParadisSpreadsheetDiffSides(/** ZIP のローカルファイルヘッダー（PK\x03\x04）。パスワード付きのブック（CFB、D0 CF 11 E0）は shared process が理由を返す。 */
+export function resolveParadisSpreadsheetDiffSides(original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide): { readonly original: IParadisSpreadsheetDiffSide; readonly modified: IParadisSpreadsheetDiffSide } {
+	const asEmpty = (side: IParadisSpreadsheetDiffSide, other: IParadisSpreadsheetDiffSide): IParadisSpreadsheetDiffSide =>
+		side.absent && other.error === undefined ? { wb: { sheets: [] }, absent: true } : side;
+	return { original: asEmpty(original, modified), modified: asEmpty(modified, original) };
+}
+
+/** ZIP のローカルファイルヘッダー（PK\x03\x04）。パスワード付きのブック（CFB、D0 CF 11 E0）は shared process が理由を返す。 */
 function throwIfNotWorkbook(resource: URI, content: VSBuffer): void {
 	const bytes = content.buffer;
 	const zip = bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04;
