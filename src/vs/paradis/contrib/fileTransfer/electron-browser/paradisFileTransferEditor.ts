@@ -32,6 +32,7 @@ import { PARADIS_FILE_TRANSFER_EDITOR_ID, ParadisTransferSide } from '../common/
 import { IParadisTransferItem } from '../common/paradisFileTransferQueue.js';
 import { ParadisFileTransferInput } from './paradisFileTransferInput.js';
 import { ParadisFileTransferPane } from './paradisFileTransferPane.js';
+import { paradisIsExternalFileDrag } from './paradisFileTransferPaneDnd.js';
 import { ParadisFileTransferQueueView } from './paradisFileTransferQueueView.js';
 import { IParadisFileTransferService } from './paradisFileTransferService.js';
 import './media/paradisFileTransfer.css';
@@ -97,6 +98,30 @@ export class ParadisFileTransferEditor extends EditorPane {
 		this.root.appendChild(this.queueView.element);
 		this._register(this.queueView.onDidChangeHeight(() => this.relayout()));
 		this._register(this.transferService.queue.onDidChange(() => this.refreshAfterTransfers()));
+		this.registerExternalDropGuard(this.root);
+	}
+
+	/**
+	 * Finder などアプリの外から来たファイルを、この画面の上ではエディタ領域へ渡さない。渡すとエディタ領域が
+	 * フォルダーをこのウィンドウで開き直し（接続先のウィンドウが手元のフォルダーに入れ替わる）、ファイルはタブで開く。
+	 * 受けるのは右の表（の DnD）だけで、ここは表の後で走って止めるだけ。表どうしのドラッグは `Files` を持たないので素通しする。
+	 */
+	private registerExternalDropGuard(root: HTMLElement): void {
+		const guard = (event: DragEvent) => {
+			if (!paradisIsExternalFileDrag(event)) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer && event.type !== dom.EventType.DRAG_LEAVE) {
+				const accepts = this.panes.get('remote')?.acceptsExternalDropAt(dom.isHTMLElement(event.target) ? event.target : null);
+				event.dataTransfer.dropEffect = accepts ? 'copy' : 'none';
+			}
+		};
+		// dragleave も止める（エディタ領域の入った・出たの数え方が片寄らないように）
+		for (const type of [dom.EventType.DRAG_ENTER, dom.EventType.DRAG_OVER, dom.EventType.DRAG_LEAVE, dom.EventType.DROP]) {
+			this._register(dom.addDisposableListener(root, type, guard));
+		}
 	}
 
 	/**
