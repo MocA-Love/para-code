@@ -34,7 +34,7 @@ import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } fr
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
-import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
+import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -128,6 +128,12 @@ interface IBindingEntry {
 	 * ユーザーが共有した後で別のページが current になった）。ユーザーの共有を外したら、許可へ戻す。
 	 */
 	readonly agentTab?: true;
+	/**
+	 * 共有したページ・許可したタブから開いたタブ（target=_blank・window.open など）の許可で、開いた元のタブの viewId。
+	 * 元のタブがそのペインで使えなくなったら（共有を外した・閉じた）、この許可も外す（{@link _pruneOpenedTabGrants}）。
+	 * エージェントのタブの上限（PARADIS_AGENT_TAB_LIMIT）ではなく {@link PARADIS_OPENED_TAB_LIMIT} で数える。
+	 */
+	readonly openedFrom?: string;
 }
 
 interface IPreparedBindingDescriptor {
@@ -172,7 +178,7 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** 1 ペインへの共有が上限（{@link PARADIS_USER_SHARED_PAGE_LIMIT}）に達したときのエラー。renderer は先頭の印（`paradisIsSharedPageLimitError`）で見分ける。 */
 const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR = `${PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK}: this terminal pane already has the maximum number of shared pages`;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab; list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to 10); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
@@ -369,6 +375,10 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 const PARADIS_DESKTOP_CURSOR_VIEW = 'desktop';
 /** `set_cursor_label` を最後に呼んだ持ち主を覚えるペインの数の上限（溢れたら古いものから捨てる）。 */
 const MAX_PANE_CURSOR_LABEL_KEYS = 256;
+/** 上限で共有しなかった開いたタブを、ペインごとに覚えておく数（list_browser_tabs で知らせる分）。 */
+const MAX_SKIPPED_OPENED_TABS = 20;
+/** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
+const MAX_OPENED_TAB_SHARE_MARKS = 256;
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。Para Code を再起動（自動アップデートの適用を含む）すると、起動後に Para Code が同じペインと同じページの共有を戻すかユーザーに尋ね、承認されれば張り直します（ユーザーがそのスペースを開いたときに尋ねます）。戻らない場合（ページやペインを閉じた、ユーザーが共有を外した、戻さないと答えた）は、ユーザーにもう一度共有してもらってください。それでも届かない場合は、このCLIをペインで起動し直してから再共有してください。';
 
 /**
@@ -449,7 +459,7 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
-const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes exactly one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page only ever see one page; list_browser_tabs shows the tabs you can use. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
+const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
 export class ParadisDevtoolsGenerationCoordinator {
@@ -554,6 +564,16 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _agentTabGrants = new Map<string, Map<string, IBindingEntry>>();
 	/** tab_id を省いたときに使うタブ（open_browser_tab・select_browser_tab が動かす）。無ければ共有のページ。 */
 	private readonly _selectedTabs = new Map<string, string>();
+	/**
+	 * 共有したページから開いたのに、{@link PARADIS_OPENED_TAB_LIMIT} に達していて共有しなかったタブ（token → viewId）。
+	 * list_browser_tabs でエージェントへ知らせる。ペインごとに {@link MAX_SKIPPED_OPENED_TABS} 件まで覚える。
+	 */
+	private readonly _skippedOpenedTabs = new Map<string, Set<string>>();
+	/**
+	 * renderer が開いたタブへ付けた共有の印（エージェントを共有相手に加えた）の台帳（windowCtx → viewId）。renderer の
+	 * 再読み込みをまたいで残し、許可が外れたタブの印を renderer が下ろせるようにする（{@link listOpenedTabShareMarks}）。
+	 */
+	private readonly _openedTabShareMarks = new Map<string, Set<string>>();
 	/**
 	 * ツールやゲートウェイが使ったタブのスコープ（token → viewId → そのとき裏にあった entry の世代）。共有の付け替えや
 	 * 許可の増減のたびに今の解決と比べ、変わったスコープの子プロセスと接続だけを切る（{@link _reconcileTabScopes}）。
@@ -1991,6 +2011,7 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private _cleanupRemainingWindowState(windowCtx: string, preservedTokens: ReadonlySet<string>): void {
 		this._dropAgentTabGrants(grant => grant.windowCtx === windowCtx);
+		this._openedTabShareMarks.delete(windowCtx);
 		for (const [token, binding] of [...this._bindings]) {
 			if (binding.windowCtx === windowCtx && !preservedTokens.has(token)) {
 				this._bindings.delete(token);
@@ -2269,6 +2290,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 上書きを片付け、裏の entry が変わったスコープだけを切り直す（ほかのタブの接続は切らない）。
 	 */
 	private _reconcileTabScopes(token: string): void {
+		this._pruneOpenedTabGrants(token);
 		const selected = this._selectedTabs.get(token);
 		if (selected !== undefined && this._scopeBinding(token, selected) === undefined) {
 			this._selectedTabs.delete(token);
@@ -2303,6 +2325,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** ペインが片付いた。許可・選んだタブ・タブのスコープをすべて外す。 */
 	private _forgetAgentTabState(token: string): void {
 		this._selectedTabs.delete(token);
+		this._skippedOpenedTabs.delete(token);
 		const grants = this._agentTabGrants.get(token);
 		if (grants !== undefined) {
 			this._agentTabGrants.delete(token);
@@ -2350,7 +2373,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** そのタブが、そのペインのエージェントが自分で開いたタブ（許可）か。 */
 	private _isAgentOwnTab(token: string, tabId: string): boolean {
 		const grant = this._agentTabGrants.get(token)?.get(tabId);
-		return grant !== undefined && (!grant.userShared || grant.agentTab === true);
+		return grant !== undefined && ((!grant.userShared && grant.openedFrom === undefined) || grant.agentTab === true);
 	}
 
 	/** ユーザーの共有を外した後に残す許可（エージェントのタブでもあった entry だけ）。 */
@@ -2456,7 +2479,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._agentTabGrants.set(token, grants);
 		}
 		// エージェントが自分で開いたタブの許可を持っていれば、その印を残す（共有を外したら許可へ戻す）
-		const agentTab = grants.get(entry.pageId)?.userShared === undefined && grants.has(entry.pageId);
+		const existing = grants.get(entry.pageId);
+		const agentTab = existing !== undefined && existing.userShared === undefined && existing.openedFrom === undefined;
 		grants.set(entry.pageId, Object.freeze({ ...entry, userShared: true, ...(agentTab ? { agentTab: true } : {}) }));
 		return this._backgroundThrottlingCoordinator.setBinding(paradisAgentTabScopeKey(token, entry.pageId), entry.exactView);
 	}
@@ -2593,22 +2617,174 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 確かめ方は prepareBind と同じ（ペインとタブが同じウィンドウ・同じスコープ、exactView を main で固定）。
 	 */
 	async grantAgentTab(connection: object, request: IParadisGrantAgentTabRequest): Promise<boolean> {
+		return await this._grantTab(connection, request, undefined) === 'granted';
+	}
+
+	/**
+	 * renderer から: そのタブを開いた元のタブ（main が覚えている）を tab_id で使えるペインのうち、このウィンドウのもの。
+	 * renderer はこの一覧のペインそれぞれへ {@link grantOpenedTab} を頼む。元のタブが分からなければ空。
+	 */
+	async openerPanesOf(connection: object, viewId: string): Promise<string[]> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const parsedWindow = parseRendererWindowContext(windowCtx);
+		if (parsedWindow === undefined || !paradisIsValidAgentTabId(viewId)) {
+			return [];
+		}
+		const opener = await this._resolveOpenerViewId(parsedWindow.windowId, viewId);
+		if (opener === undefined) {
+			return [];
+		}
+		const eligibleTokens = this._currentEligibleTokens(connection);
+		return [...eligibleTokens].filter(token => this._isOpenerUsable(token, opener, windowCtx));
+	}
+
+	/**
+	 * renderer から: 共有したページ（または許可したタブ）から開いたタブを、そのペインが tab_id で使えるようにする。
+	 * 開いた元のタブは renderer の言い分ではなく main に聞き、そのペインが今それを使えるときだけ許可する（許可の範囲を
+	 * 広げない）。確かめ方は {@link grantAgentTab} と同じで、数える枠だけ {@link PARADIS_OPENED_TAB_LIMIT} の別枠。
+	 */
+	async grantOpenedTab(connection: object, request: IParadisGrantAgentTabRequest): Promise<ParadisOpenedTabGrantResult> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const parsedWindow = parseRendererWindowContext(windowCtx);
+		if (parsedWindow === undefined || !paradisIsValidAgentTabId(request.viewId)) {
+			return 'notEligible';
+		}
+		const opener = await this._resolveOpenerViewId(parsedWindow.windowId, request.viewId);
+		if (opener === undefined || !this._isOpenerUsable(request.token, opener, windowCtx)) {
+			return 'notEligible';
+		}
+		const result = await this._grantTab(connection, request, opener);
+		if (result === 'limitReached') {
+			this._noteSkippedOpenedTab(request.token, request.viewId);
+		} else if (result === 'granted') {
+			this._skippedOpenedTabs.get(request.token)?.delete(request.viewId);
+		}
+		return result;
+	}
+
+	/** renderer から: 開いたタブへ共有の印を付けた（許可が外れたら下ろす対象として覚える）。 */
+	async markOpenedTabShared(connection: object, viewId: string): Promise<boolean> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		if (!paradisIsValidAgentTabId(viewId)) {
+			return false;
+		}
+		let marks = this._openedTabShareMarks.get(windowCtx);
+		if (marks === undefined) {
+			marks = new Set();
+			this._openedTabShareMarks.set(windowCtx, marks);
+		}
+		if (!marks.has(viewId) && marks.size >= MAX_OPENED_TAB_SHARE_MARKS) {
+			return false;
+		}
+		marks.add(viewId);
+		return true;
+	}
+
+	/** renderer から: 印を付けたタブと、そのタブを今どれかのペインが使っているか（許可か共有）。 */
+	async listOpenedTabShareMarks(connection: object): Promise<{ readonly viewId: string; readonly inUse: boolean }[]> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const inUse = (viewId: string) => [...this._bindings.values()].some(binding => binding.windowCtx === windowCtx && binding.pageId === viewId)
+			|| [...this._agentTabGrants.values()].some(grants => grants.get(viewId)?.windowCtx === windowCtx);
+		return [...(this._openedTabShareMarks.get(windowCtx) ?? [])].map(viewId => ({ viewId, inUse: inUse(viewId) }));
+	}
+
+	/** renderer から: 印を下ろした（またはタブが無くなった）ので台帳から外す。 */
+	async forgetOpenedTabShareMark(connection: object, viewId: string): Promise<boolean> {
+		const windowCtx = this._requireCurrentRendererConnection(connection);
+		const marks = this._openedTabShareMarks.get(windowCtx);
+		const removed = marks?.delete(viewId) ?? false;
+		if (marks?.size === 0) {
+			this._openedTabShareMarks.delete(windowCtx);
+		}
+		return removed;
+	}
+
+	private async _resolveOpenerViewId(windowId: number, viewId: string): Promise<string | undefined> {
+		try {
+			const opener = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<unknown>('getOpenerViewId', [windowId, viewId]);
+			return paradisIsValidAgentTabId(opener) && opener !== viewId ? opener : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** そのペインが、開いた元のタブを今 tab_id で使えるか（共有・許可・開いたタブの許可のどれでもよい。同じウィンドウだけ）。 */
+	private _isOpenerUsable(token: string, opener: string, windowCtx: string): boolean {
+		if (this._faultedTokens.has(token) || this._terminalExitedTokens.has(token)) {
+			return false;
+		}
+		const entry = this._scopeBinding(token, opener);
+		return entry !== undefined && entry.windowCtx === windowCtx;
+	}
+
+	private _noteSkippedOpenedTab(token: string, viewId: string): void {
+		let skipped = this._skippedOpenedTabs.get(token);
+		if (skipped === undefined) {
+			skipped = new Set();
+			this._skippedOpenedTabs.set(token, skipped);
+		}
+		skipped.delete(viewId);
+		skipped.add(viewId);
+		while (skipped.size > MAX_SKIPPED_OPENED_TABS) {
+			skipped.delete(skipped.values().next().value as string);
+		}
+	}
+
+	/** 上限で共有しなかった開いたタブのうち、まだそのペインのウィンドウにあるもの（list_browser_tabs 用）。 */
+	private _skippedOpenedTabIds(token: string): string[] {
+		const skipped = this._skippedOpenedTabs.get(token);
+		if (skipped === undefined) {
+			return [];
+		}
+		for (const viewId of [...skipped]) {
+			if (!this._bindingAuthority.isViewOwnedWithToken(token, viewId) || this._scopeBinding(token, viewId) !== undefined) {
+				skipped.delete(viewId);
+			}
+		}
+		if (skipped.size === 0) {
+			this._skippedOpenedTabs.delete(token);
+		}
+		return [...skipped];
+	}
+
+	/**
+	 * 開いたタブの許可のうち、開いた元のタブをそのペインがもう使えないもの（共有を外した・閉じた）を外す。孫は親が
+	 * 外れたら次の周で外れるので、変わらなくなるまで繰り返す。
+	 */
+	private _pruneOpenedTabGrants(token: string): void {
+		for (let changed = true; changed;) {
+			changed = false;
+			for (const grant of [...(this._agentTabGrants.get(token)?.values() ?? [])]) {
+				if (grant.openedFrom !== undefined && !grant.userShared && this._scopeBinding(token, grant.openedFrom) === undefined) {
+					changed = this._deleteAgentTabGrant(token, grant.pageId) || changed;
+				}
+			}
+		}
+	}
+
+	/** 開いたタブの許可の数（そのペインの {@link PARADIS_OPENED_TAB_LIMIT} の枠）。 */
+	private _openedTabGrantCount(token: string): number {
+		return [...(this._agentTabGrants.get(token)?.values() ?? [])].filter(grant => grant.openedFrom !== undefined && !grant.userShared).length;
+	}
+
+	/** {@link grantAgentTab}・{@link grantOpenedTab} の本体。`openedFrom` があれば開いたタブの許可として別枠で数える。 */
+	private async _grantTab(connection: object, request: IParadisGrantAgentTabRequest, openedFrom: string | undefined): Promise<ParadisOpenedTabGrantResult> {
 		const windowCtx = this._requireCurrentRendererConnection(connection);
 		const parsedWindow = parseRendererWindowContext(windowCtx);
 		const pageInfo = copySharedPageInfo(request.pageInfo);
 		const { token, viewId } = request;
 		if (parsedWindow === undefined || pageInfo === undefined || !paradisIsValidAgentTabId(viewId)
 			|| this._faultedTokens.has(token) || this._terminalExitedTokens.has(token)) {
-			return false;
+			return 'notEligible';
 		}
 		let snapshot: IParadisBindingPrepareSnapshot;
 		try {
 			snapshot = this._bindingAuthority.capturePrepareSnapshot(connection, request.revision, token, viewId);
 		} catch {
-			return false;
+			return 'notEligible';
 		}
 		if (this._pendingBindPreparations >= MAX_PENDING_BIND_PREPARATIONS) {
-			return false;
+			return 'notEligible';
 		}
 		let exactView: IParadisExactBrowserViewDescriptor | undefined;
 		this._pendingBindPreparations++;
@@ -2618,33 +2794,43 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._requireCurrentRendererConnection(connection);
 			exactView = paradisParseExactBrowserViewDescriptor(resolved);
 		} catch {
-			return false;
+			return 'notEligible';
 		} finally {
 			this._pendingBindPreparations--;
 		}
 		if (exactView === undefined || exactView.windowId !== parsedWindow.windowId || exactView.viewId !== viewId
 			|| !this._bindingAuthority.isPrepareSnapshotCurrent(snapshot)
 			|| this._faultedTokens.has(token) || this._terminalExitedTokens.has(token)) {
-			return false;
+			return 'notEligible';
 		}
 		const grants = this._agentTabGrants.get(token);
 		const existing = grants?.get(viewId);
 		// ユーザーがこのペインへ共有しているページなら、もう tab_id で使える（共有の印を消さない）
 		if (existing !== undefined && (existing.userShared || JSON.stringify(existing.exactView) === JSON.stringify(exactView))) {
-			return true;
+			return 'granted';
 		}
-		const agentGrantCount = [...(grants?.values() ?? [])].filter(grant => !grant.userShared || grant.agentTab).length;
-		if (existing === undefined
-			&& (agentGrantCount >= PARADIS_AGENT_TAB_LIMIT
-				|| this._bindings.size + this._quarantinedBindings.size + this._agentTabGrantCount() >= MAX_EXTERNAL_BINDINGS)) {
-			return false;
+		// 開いた元のタブが待っている間に使えなくなっていたら許可しない
+		if (openedFrom !== undefined && !this._isOpenerUsable(token, openedFrom, windowCtx)) {
+			return 'notEligible';
+		}
+		if (existing === undefined) {
+			// 開いたタブは別枠で数える（エージェントが自分で開くタブの枠を使わない）
+			const limitReached = openedFrom !== undefined
+				? this._openedTabGrantCount(token) >= PARADIS_OPENED_TAB_LIMIT
+				: [...(grants?.values() ?? [])].filter(grant => (!grant.userShared && grant.openedFrom === undefined) || grant.agentTab).length >= PARADIS_AGENT_TAB_LIMIT;
+			if (limitReached) {
+				return 'limitReached';
+			}
+			if (this._bindings.size + this._quarantinedBindings.size + this._agentTabGrantCount() >= MAX_EXTERNAL_BINDINGS) {
+				return 'notEligible';
+			}
 		}
 		const key = paradisAgentTabScopeKey(token, viewId);
 		try {
 			this._backgroundThrottlingCoordinator.assertCanSetBinding(this._throttlingRegistry(), key, exactView);
 		} catch {
 			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] grantAgentTab: coordinator/registry mismatch for pane ${this._tokenFingerprint(token)}; not granting`));
-			return false;
+			return 'notEligible';
 		}
 		const generation = ++this._nextBindingGeneration;
 		const grant: IBindingEntry = Object.freeze({
@@ -2655,6 +2841,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			boundAt: Date.now(),
 			exactView,
 			scope: snapshot.scope,
+			...(openedFrom !== undefined ? { openedFrom } : {}),
 		});
 		let tokenGrants = grants;
 		if (tokenGrants === undefined) {
@@ -2664,8 +2851,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		tokenGrants.set(viewId, grant);
 		this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.setBinding(key, exactView));
 		this._reconcileTabScopes(token);
-		this._runNonThrowingDiagnostic(() => this.logService.debug(`[ParadisAgentBrowser] Granted an agent tab to pane ${this._tokenFingerprint(token)} generation=${generation}`));
-		return true;
+		this._runNonThrowingDiagnostic(() => this.logService.debug(`[ParadisAgentBrowser] Granted ${openedFrom !== undefined ? 'an opened tab' : 'an agent tab'} to pane ${this._tokenFingerprint(token)} generation=${generation}`));
+		return 'granted';
 	}
 
 	/** renderer から: エージェントのタブの許可を外す（タブを閉じた・ユーザーが共有を止めた）。 */
@@ -6259,8 +6446,21 @@ export class ParadisAgentBrowserService extends Disposable {
 					current: tab.tabId === currentTabId,
 					// tab_id で使えるか（ユーザーのタブは共有されている間だけ）
 					usable: this._scopeBinding(token, tab.tabId) !== undefined,
+					// 共有したページ・許可したタブから開いたタブなら、開いた元のタブ
+					...(this._agentTabGrants.get(token)?.get(tab.tabId)?.openedFrom !== undefined ? { openedFrom: this._agentTabGrants.get(token)?.get(tab.tabId)?.openedFrom } : {}),
 				}));
-				return this._toolText(JSON.stringify({ tabs, openedByYou: call.value.openedCount, limit: PARADIS_AGENT_TAB_LIMIT, hint: 'Pass a usable tabId as tab_id to any browser tool to act on that tab; give each subagent its own tab_id. The user can share several pages with this pane (shared: true); each of them is usable by its tabId, and the one shared most recently is the current tab unless you open or select another.' }, null, 2));
+				const notShared = this._skippedOpenedTabIds(token);
+				return this._toolText(JSON.stringify({
+					tabs,
+					openedByYou: call.value.openedCount,
+					limit: PARADIS_AGENT_TAB_LIMIT,
+					openedFromTabs: this._openedTabGrantCount(token),
+					openedFromTabsLimit: PARADIS_OPENED_TAB_LIMIT,
+					...(notShared.length > 0 ? { notSharedOpenedTabs: notShared } : {}),
+					hint: 'Pass a usable tabId as tab_id to any browser tool to act on that tab; give each subagent its own tab_id. The user can share several pages with this pane (shared: true); each of them is usable by its tabId, and the one shared most recently is the current tab unless you open or select another.'
+						+ ` A tab or window that one of your usable tabs opens (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab") is shared with this pane automatically and shows openedFrom; up to ${PARADIS_OPENED_TAB_LIMIT} such tabs, apart from your own tabs. It stops being usable when the tab that opened it is no longer usable.`
+						+ (notShared.length > 0 ? ` notSharedOpenedTabs lists tabs your tabs opened that were not shared because that limit was reached; they are not usable, ask the user to close tabs or share one with request_browser_page.` : ''),
+				}, null, 2));
 			}
 			case 'select_browser_tab':
 			case 'close_browser_tab': {
