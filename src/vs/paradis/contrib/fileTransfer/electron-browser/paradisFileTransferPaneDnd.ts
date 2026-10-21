@@ -7,14 +7,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 2 画面のファイル転送の左右の間のドラッグ＆ドロップ。反対側の表から来た行だけを受け、
-// 同じ側の中の移動はエクスプローラーの仕事として引き受けない。
+// 同じ側の中の移動はエクスプローラーの仕事として引き受けない。Finder などアプリの外から来たファイルは、
+// 外部のファイルを受ける側（接続先）だけがアップロードとして受ける。
 
-import { IDragAndDropData } from '../../../../base/browser/dnd.js';
+import { DataTransfers, IDragAndDropData } from '../../../../base/browser/dnd.js';
 import { IListDragAndDrop, IListDragOverReaction, ListDragOverEffectPosition, ListDragOverEffectType } from '../../../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData } from '../../../../base/browser/ui/list/listView.js';
+import { basename } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { containsDragType, getPathForFile } from '../../../../platform/dnd/browser/dnd.js';
 import { IParadisPaneEntry } from '../common/paradisFileTransferListing.js';
+import { IParadisTransferSource } from '../common/paradisFileTransferQueueTypes.js';
 
 /** ドロップを受ける側（片側の画面）。 */
 export interface IParadisPaneDropTarget {
@@ -25,6 +29,45 @@ export interface IParadisPaneDropTarget {
 	showDropCaption(targetDirectory: URI, count: number): void;
 	hideDropCaption(): void;
 	receive(entries: readonly IParadisPaneEntry[], targetDirectory: URI): void;
+	/** アプリの外（Finder など）から来たファイルを受けるか（接続先の側だけ）。 */
+	acceptsExternalFiles(): boolean;
+	/** アプリの外から落とされたファイル・フォルダー（手元の絶対パス）を受ける。 */
+	receiveExternalFiles(paths: readonly string[], targetDirectory: URI): void;
+}
+
+/** アプリの外（Finder など）からファイルを持ってきたドラッグか。表どうしのドラッグは `Files` を持たない。 */
+export function paradisIsExternalFileDrag(event: DragEvent | undefined): boolean {
+	return !!event && containsDragType(event, DataTransfers.FILES);
+}
+
+/**
+ * 落とされたファイルの手元のパス。パスの取れないもの（ブラウザーの中の画像など）は飛ばし、重ねては数えない。
+ * `NativeDragAndDropData.files` は大きさも種類も無いもの（フォルダー・空のファイル）を落とすので、元の `FileList` を渡す。
+ */
+export function paradisExternalDropPaths(files: ArrayLike<File> | undefined, getPath: (file: File) => string | undefined): string[] {
+	const paths: string[] = [];
+	if (!files) {
+		return paths;
+	}
+	for (let i = 0; i < files.length; i++) {
+		const path = getPath(files[i]);
+		if (path && !paths.includes(path)) {
+			paths.push(path);
+		}
+	}
+	return paths;
+}
+
+/** 落とされた手元のパスと、その stat から転送の元を作る（左の表から送るときと同じ形）。 */
+export function paradisExternalTransferSource(path: string, stat: { readonly isDirectory: boolean; readonly size?: number; readonly mtime?: number }): IParadisTransferSource {
+	const resource = URI.file(path);
+	return {
+		resource,
+		name: basename(resource),
+		isDirectory: stat.isDirectory,
+		size: stat.isDirectory ? undefined : stat.size,
+		mtime: stat.mtime,
+	};
 }
 
 /** 反対側の表から来た行。違うもの（同じ側・ファイルの外部ドロップ）なら undefined。 */
@@ -36,7 +79,7 @@ export function paradisDroppedEntries(data: IDragAndDropData, owns: (resource: U
 	return elements.length > 0 && elements.every(element => element && URI.isUri(element.resource) && !owns(element.resource)) ? elements : undefined;
 }
 
-export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget): IListDragAndDrop<IParadisPaneEntry> {
+export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget, getPath: (file: File) => string | undefined = getPathForFile): IListDragAndDrop<IParadisPaneEntry> {
 	const targetDirectoryOf = (element: IParadisPaneEntry | undefined): URI | undefined =>
 		element?.isDirectory ? element.resource : target.location;
 	return {
@@ -49,14 +92,17 @@ export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget): IL
 				originalEvent.dataTransfer.effectAllowed = 'copy';
 			}
 		},
-		onDragOver: (data, targetElement, targetIndex): boolean | IListDragOverReaction => {
-			const sources = paradisDroppedEntries(data, resource => target.owns(resource));
+		onDragOver: (data, targetElement, targetIndex, _targetSector, originalEvent): boolean | IListDragOverReaction => {
 			const targetDirectory = targetDirectoryOf(targetElement);
-			if (!sources || !targetDirectory || !target.canReceive()) {
+			// dragover の間は外から来たファイルの中身を読めない（数は items で分かる）
+			const count = paradisIsExternalFileDrag(originalEvent)
+				? (target.acceptsExternalFiles() ? originalEvent?.dataTransfer?.items.length ?? 0 : 0)
+				: paradisDroppedEntries(data, resource => target.owns(resource))?.length ?? 0;
+			if (!count || !targetDirectory || !target.canReceive()) {
 				target.hideDropCaption();
 				return false;
 			}
-			target.showDropCaption(targetDirectory, sources.length);
+			target.showDropCaption(targetDirectory, count);
 			return {
 				accept: true,
 				effect: { type: ListDragOverEffectType.Copy, position: ListDragOverEffectPosition.Over },
@@ -64,11 +110,22 @@ export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget): IL
 			};
 		},
 		onDragLeave: () => target.hideDropCaption(),
-		drop: (data, targetElement) => {
+		drop: (data, targetElement, _targetIndex, _targetSector, originalEvent) => {
 			target.hideDropCaption();
-			const sources = paradisDroppedEntries(data, resource => target.owns(resource));
 			const targetDirectory = targetDirectoryOf(targetElement);
-			if (sources && targetDirectory && target.canReceive()) {
+			if (!targetDirectory || !target.canReceive()) {
+				return;
+			}
+			if (paradisIsExternalFileDrag(originalEvent)) {
+				// DataTransfer はイベントを返すと読めなくなるので、ここでパスを取り切る
+				const paths = target.acceptsExternalFiles() ? paradisExternalDropPaths(originalEvent?.dataTransfer?.files, getPath) : [];
+				if (paths.length) {
+					target.receiveExternalFiles(paths, targetDirectory);
+				}
+				return;
+			}
+			const sources = paradisDroppedEntries(data, resource => target.owns(resource));
+			if (sources) {
 				target.receive(sources, targetDirectory);
 			}
 		},
