@@ -959,9 +959,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "差分を読み込み中..."));
 		}
 		try {
-			// パース失敗(暗号化・破損・サイズ超過・git参照消失)を空ブックとして握りつぶすと、
+			// パース失敗(暗号化・破損・サイズ超過)を空ブックとして握りつぶすと、
 			// 「全行追加/削除/変更なし」という静かな誤差分になってしまう。失敗した側と理由を
-			// 明示して差分の表示自体を止める(Word 差分と同じ挙動)。
+			// 明示して差分の表示自体を止める(Word 差分と同じ挙動)。例外は、その版にファイルが無い側
+			// (`resolveParadisSpreadsheetDiffSides`)。git 参照やリポジトリが見つからない場合もここに含まれうる。
 			// 左右の合計を大きさとして持つ。比較の重さは両方の合計で決まる。
 			let sourceBytes = 0;
 			const loadSide = async (resource: URI): Promise<IParadisSpreadsheetDiffSide> => {
@@ -976,7 +977,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 						}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2),
 					};
 				} catch (error) {
-					return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(error, readBytes) };
+					return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) };
 				}
 			};
 			// 追加・削除されたファイルは片側の版にファイルが無い。それは失敗ではなく、空のブックとの差分として出す。

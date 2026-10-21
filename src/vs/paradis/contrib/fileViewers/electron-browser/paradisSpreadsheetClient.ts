@@ -215,29 +215,26 @@ export interface IParadisSpreadsheetDiffSide {
 
 /**
  * 読み込みの失敗が「その版にファイルが無い」ことを表すか。git の旧版は、その版に無いファイルを
- * `FILE_NOT_FOUND` で返し、最初のコミットより前（空のツリー）は 0 バイトで返す。
+ * `FILE_NOT_FOUND` で返し、最初のコミットより前（空のツリー）は 0 バイトで返す。0 バイトを「無い」と
+ * 見なすのは `git:` の側だけ。作業ツリーで 0 バイトに切り詰められたブックは xlsx ではないエラーのままにする。
  * `readBytes` は読み出せた大きさ（読み出す前に失敗したら `undefined`）。
  */
-export function isParadisSpreadsheetSideAbsent(error: unknown, readBytes: number | undefined): boolean {
+export function isParadisSpreadsheetSideAbsent(resource: URI, error: unknown, readBytes: number | undefined): boolean {
 	if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
 		return true;
 	}
-	return readBytes === 0 && error instanceof ParadisSpreadsheetNotWorkbookError;
+	return resource.scheme === 'git' && readBytes === 0 && error instanceof ParadisSpreadsheetNotWorkbookError;
 }
 
 /**
  * 左右の結果から、差分を止める失敗だけを残す。片側だけが無く、もう片側を読めたときは、無い側を
  * 空のブックとして比べる（全部が追加・削除として見える）。両側とも無い、または本当に読めなかった
- * （壊れている・大きすぎる等）ときは失敗のまま返す。git のリポジトリが見つからないときも
- * `FILE_NOT_FOUND` になるので、もう片側が読めたことを条件にしている。
+ * （壊れている・大きすぎる等）ときは失敗のまま返す。
+ * git はリポジトリが見つからないときも `FILE_NOT_FOUND` を返すので、両側が `git:` の比較（Staged Changes 等）では
+ * 両側とも失敗してエラーになる。新版が作業ツリーのファイル（Uncommitted Changes）のときは新版が読めるため、
+ * リポジトリが見つからない場合も旧版が無いのと区別できず、全部が追加として見える。
  */
-export function resolveParadisSpreadsheetDiffSides(original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide): { readonly original: IParadisSpreadsheetDiffSide; readonly modified: IParadisSpreadsheetDiffSide } {
-	const asEmpty = (side: IParadisSpreadsheetDiffSide, other: IParadisSpreadsheetDiffSide): IParadisSpreadsheetDiffSide =>
-		side.absent && other.error === undefined ? { wb: { sheets: [] }, absent: true } : side;
-	return { original: asEmpty(original, modified), modified: asEmpty(modified, original) };
-}
-
-/** ZIP のローカルファイルヘッダー（PK\x03\x04）。パスワード付きのブック（CFB、D0 CF 11 E0）は shared process が理由を返す。 */
+export function resolveParadisSpreadsheetDiffSides(/** ZIP のローカルファイルヘッダー（PK\x03\x04）。パスワード付きのブック（CFB、D0 CF 11 E0）は shared process が理由を返す。 */
 function throwIfNotWorkbook(resource: URI, content: VSBuffer): void {
 	const bytes = content.buffer;
 	const zip = bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04;

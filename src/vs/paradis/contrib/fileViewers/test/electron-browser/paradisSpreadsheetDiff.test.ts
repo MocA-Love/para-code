@@ -8,6 +8,7 @@
 
 import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { FileOperationError, FileOperationResult } from '../../../../../platform/files/common/files.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from '../../electron-browser/paradisSpreadsheetClient.js';
@@ -476,7 +477,8 @@ suite('paradisSpreadsheetDiff', () => {
 
 	test('compares an added or deleted workbook against an empty book but keeps real read failures', () => {
 		const loaded: IParadisSpreadsheetDiffSide = { wb: { sheets: [sheet([cell('a')])] } };
-		const failed = (error: unknown, readBytes?: number): IParadisSpreadsheetDiffSide => ({ wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(error, readBytes) });
+		const gitResource = URI.from({ scheme: 'git', path: '/repo/book.xlsx' });
+		const failed = (error: unknown, readBytes?: number, resource = gitResource): IParadisSpreadsheetDiffSide => ({ wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) });
 		const notFound = () => failed(new FileOperationError('not found', FileOperationResult.FILE_NOT_FOUND));
 		const summarize = (original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide) => {
 			const sides = resolveParadisSpreadsheetDiffSides(original, modified);
@@ -487,6 +489,7 @@ suite('paradisSpreadsheetDiff', () => {
 			added: summarize(notFound(), loaded),
 			deleted: summarize(loaded, notFound()),
 			beforeFirstCommit: summarize(failed(new ParadisSpreadsheetNotWorkbookError(false), 0), loaded),
+			truncatedWorkingTreeFile: summarize(loaded, failed(new ParadisSpreadsheetNotWorkbookError(false), 0, URI.file('/repo/book.xlsx'))),
 			bothMissing: summarize(notFound(), notFound()),
 			tooLarge: summarize(failed(new FileOperationError('too large', FileOperationResult.FILE_TOO_LARGE)), loaded),
 			notWorkbook: summarize(failed(new ParadisSpreadsheetNotWorkbookError(false), 120), loaded),
@@ -495,6 +498,7 @@ suite('paradisSpreadsheetDiff', () => {
 			added: { sheets: ['added'] },
 			deleted: { sheets: ['removed'] },
 			beforeFirstCommit: { sheets: ['added'] },
+			truncatedWorkingTreeFile: { failedSides: ['modified'] },
 			bothMissing: { failedSides: ['original', 'modified'] },
 			tooLarge: { failedSides: ['original'] },
 			notWorkbook: { failedSides: ['original'] },
