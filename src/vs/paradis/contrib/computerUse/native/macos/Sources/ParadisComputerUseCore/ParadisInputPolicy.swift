@@ -374,7 +374,7 @@ private let paradisScrollStepPixels = 80.0
  * （`paradisNaturalScrollingIsOn`、ParadisInput.swift）。
  */
 func paradisScrollSteps(direction: ParadisScrollDirection, pages: Double, extent: Double, naturalScrolling: Bool) -> [(dx: Int32, dy: Int32)] {
-	let total = max(1, pages * max(extent, 100) * 0.8)
+	let total = paradisScrollDistance(pages: pages, extent: extent)
 	let count = min(100, max(1, Int((total / paradisScrollStepPixels).rounded(.up))))
 	let step = Int32((total / Double(count)).rounded())
 	// 受け取ったアプリに届けたい縦の値（正で上へ）を、WindowServer の反転の分だけ逆にしておく

@@ -10,6 +10,13 @@ Copyright (c) 2025 Cua AI, Inc.
 - https://github.com/trycua/cua/blob/2e4736b3ebff61ef99e8c0c74270b5cd75894643/libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs
 - https://github.com/trycua/cua/blob/2e4736b3ebff61ef99e8c0c74270b5cd75894643/libs/cua-driver/rust/crates/platform-macos/src/input/mouse.rs
 
+`ParadisKeyWindow.swift` and `ParadisBackgroundTransport.swift` follow the in-app key-window event records
+(`post_window_key_records`, `prime_exact_window_key`, `restore_target`) of Cua Driver, and
+`ParadisAXScroll.swift` and `ParadisAXScrolling.swift` port its accessibility reveal scroll (`reveal_scroll`).
+
+- https://github.com/trycua/cua/blob/fca21937bc4e1420a23d544d11dbdf987f0266e6/libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs
+- https://github.com/trycua/cua/blob/fca21937bc4e1420a23d544d11dbdf987f0266e6/libs/cua-driver/rust/crates/platform-macos/src/ax/reveal_scroll.rs
+
 ## MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

@@ -86,10 +86,6 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		if let reason = paradisAccessibilityWindowSkipReason(onScreen: info.onScreen, minimized: (paradisCopy(window, kAXMinimizedAttribute) as? NSNumber)?.boolValue != false, appHidden: paradisAppIsHidden(pid)) {
 			return .fellThrough(reason)
 		}
-		// キーは PID 宛てなので、同じプロセスの複数ウィンドウには送らない。
-		if keyboard && (windows.count != 1 || paradisElement(application, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId) != windowId) {
-			return .fellThrough("background keys need one unambiguous focused window")
-		}
 		let point = try resolvePoint(pid: pid, windowId: windowId, bounds: info.bounds, target: pointer)
 		var hit: AXUIElement?
 		if !keyboard {
@@ -105,6 +101,24 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		if let hit, paradisIsPasteMenuElement(hit) { throw ParadisHelperError(code: "key_blocked", message: "use pasteText for pasting") }
 		if !keyboard, let hit, paradisBackgroundClickOpensMenu(roles: paradisAXClickAncestors(hit).map { paradisCopy($0, kAXRoleAttribute) as? String ?? "AXUnknown" }) {
 			return .fellThrough("menu controls need foreground input")
+		}
+		// キーは PID 宛てなので、目的のウィンドウをそのアプリのキーウィンドウにし、確かめてから送る（ParadisKeyWindow.swift）。
+		// 確かめられなければ何も送らずに次の段へ。替えたキーウィンドウは、終わったら（止めたときも）元へ戻す
+		var keyScope: ParadisWindowKeyScope?
+		if keyboard {
+			switch ParadisWindowKeyScope.enter(pid: pid, windowId: windowId, window: window, application: application, transport: transport) {
+			case .success(let scope):
+				keyScope = scope
+				// 替えた直後から、SIGTERM でも戻せるようにしておく（下で取引の後始末と一緒に登録し直す）
+				ParadisBackgroundCleanup.shared.install { scope.restore() }
+			case .failure(let failure):
+				return .fellThrough("\(failure.code): \(failure.message)")
+			}
+		}
+		defer {
+			// 途中で譲ったときは、登録した後始末ごと戻す（取引まで進んだときは、下の後始末が先に済ませている）
+			ParadisBackgroundCleanup.shared.run()
+			keyScope?.restore()
 		}
 		if keyboard, let failure = keyboardTargetFailure(pid: pid, windowId: windowId) {
 			if failure.code == "key_blocked" { throw failure }
@@ -124,12 +138,20 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		if menuWasOpen { throw ParadisHelperError(code: "menu_open", message: "the target already has an open menu") }
 		let before = paradisFocusSnapshot()
 		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
+		// キーウィンドウを替えている間に前面のアプリが変わった（⌘Tab で目的のアプリへ移られたなど）なら、何も送らずに戻して譲る
+		if let keyScope, !paradisFrontmostUnchangedDuringSwitch(before: keyScope.frontmostBefore, after: originalPid) {
+			keyScope.restoreAfterInterruption()
+			return .fellThrough("focus_changed: the front app changed while the key window was being switched")
+		}
 		if case .click(_, _, _, let count, _) = action,
 			!paradisBackgroundSingleClickSupported(clickCount: count, usesChromium: restrictedSingleClick, targetIsFrontmost: originalPid == pid && before.focusedWindowId == windowId) {
 			return .fellThrough("Chromium can discard the first background click; use accessibility or foreground input")
 		}
 		let transaction = ParadisBackgroundTransaction(transport: transport, pid: pid, windowId: windowId, started: started, bounds: info.bounds, originalPid: originalPid, modifiers: modifierState)
-		ParadisBackgroundCleanup.shared.install { transaction.finish() }
+		ParadisBackgroundCleanup.shared.install {
+			transaction.finish()
+			keyScope?.restore()
+		}
 		defer { ParadisBackgroundCleanup.shared.run() }
 		var result: [String: Any] = ["verified": NSNull()]
 		do {
@@ -280,10 +302,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		}
 		if keyboard {
 			if let failure = keyboardTargetFailure(pid: pid, windowId: windowId) { throw failure }
-			let app = AXUIElementCreateApplication(pid)
-			AXUIElementSetMessagingTimeout(app, 0.3)
-			guard paradisElements(app, kAXWindowsAttribute).count == 1,
-				paradisElement(app, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId) == windowId else {
+			guard paradisKeyFocus(pid: pid).routes(to: windowId) else {
 				throw ParadisHelperError(code: "window_not_focused", message: "the exact keyboard target changed")
 			}
 		}
@@ -374,5 +393,149 @@ private final class ParadisBackgroundTransaction {
 		release()
 		do { try modifiers.releaseCurrent() }
 		catch { modifierReleaseError = "The helper could not release its modifier state." }
+	}
+}
+
+// MARK: - キーウィンドウ（E1・E2。手順の計算は Core の ParadisKeyWindow.swift）
+
+/** アプリのフォーカスのあるウィンドウと、フォーカスのある要素が属するウィンドウ。 */
+func paradisKeyFocus(pid: Int32) -> ParadisKeyFocus {
+	let application = AXUIElementCreateApplication(pid)
+	AXUIElementSetMessagingTimeout(application, 0.3)
+	let window = paradisElement(application, kAXFocusedWindowAttribute).flatMap(paradisBackgroundWindowId)
+	let elementWindow = paradisElement(application, kAXFocusedUIElementAttribute).flatMap { paradisElement($0, kAXWindowAttribute) }.flatMap(paradisBackgroundWindowId)
+	return ParadisKeyFocus(window: window, elementWindow: elementWindow)
+}
+
+/** 目的のウィンドウをキーウィンドウにしている間。`restore` で元へ戻す（何度呼んでも 1 回だけ）。 */
+final class ParadisWindowKeyScope {
+	private let lock = NSLock()
+	private let pid: Int32
+	private let started: Double?
+	private let target: UInt32
+	private let previous: UInt32?
+	private let orderBefore: [UInt32]
+	private let primed: ParadisKeyPrime
+	/** 替える前の前面のアプリ。 */
+	let frontmostBefore: Int32?
+	/** 替えている間に前面のアプリが変わったので、前面を問わず戻す。 */
+	private var interrupted = false
+	private let application: AXUIElement
+	private let transport: ParadisBackgroundTransport
+	private var restored = false
+
+	private init(pid: Int32, target: UInt32, previous: UInt32?, orderBefore: [UInt32], primed: ParadisKeyPrime, frontmostBefore: Int32?, application: AXUIElement, transport: ParadisBackgroundTransport) {
+		self.pid = pid
+		self.started = paradisProcessStart(pid)
+		self.target = target
+		self.previous = previous
+		self.orderBefore = orderBefore
+		self.primed = primed
+		self.frontmostBefore = frontmostBefore
+		self.application = application
+		self.transport = transport
+	}
+
+	/** 目的のウィンドウをキーウィンドウにして確かめる。E1 を 2 回まで、だめなら E2。確かめられなければ `window_not_key`。 */
+	static func enter(pid: Int32, windowId: UInt32, window: AXUIElement, application: AXUIElement, transport: ParadisBackgroundTransport) -> Result<ParadisWindowKeyScope, ParadisHelperError> {
+		let focusBefore = paradisKeyFocus(pid: pid)
+		let previous = focusBefore.window
+		let frontmostBefore = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+		// 目的のアプリが前面で、利用者がその別のウィンドウで作業中なら替えない
+		if let refusal = paradisKeyPrimeRefusal(targetIsFrontmost: frontmostBefore == pid, focus: focusBefore, target: windowId) {
+			return .failure(refusal)
+		}
+		let orderBefore = paradisWindowInfos(pid: pid).filter { $0.onScreen }.map { $0.windowId }
+		let primed = paradisPrimeWindowKey(
+			target: windowId,
+			focus: { paradisKeyFocus(pid: pid) },
+			keyRecords: {
+				guard transport.keyRecordsAvailable, transport.postKeyWindowRecords(pid: pid, current: previous, target: windowId) else {
+					return false
+				}
+				paradisAwaitKeyFocus(pid: pid, target: windowId, budget: 0.4)
+				return true
+			},
+			axFocus: {
+				let written = paradisSetFocusedWindow(application: application, window: window)
+				if written {
+					paradisAwaitKeyFocus(pid: pid, target: windowId, budget: 0.2)
+				}
+				return written
+			}
+		)
+		switch primed {
+		case .success(let how):
+			return .success(ParadisWindowKeyScope(pid: pid, target: windowId, previous: previous, orderBefore: orderBefore, primed: how, frontmostBefore: frontmostBefore, application: application, transport: transport))
+		case .failure(let failure):
+			// 確かめられなくても途中でキーウィンドウが目的のウィンドウへ替わっていたら、E1 と E2 の両方の手で元へ戻しておく
+			// （前面のアプリが変わっていない＝利用者がそのアプリへ移っていないときだけ）
+			let frontmostNow = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+			if let previous, paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: windowId, targetPid: pid, frontmostNow: frontmostNow, switchInterrupted: !paradisFrontmostUnchangedDuringSwitch(before: frontmostBefore, after: frontmostNow)) {
+				if transport.keyRecordsAvailable {
+					_ = transport.postKeyWindowRecords(pid: pid, current: windowId, target: previous)
+				}
+				if let back = paradisElements(application, kAXWindowsAttribute).first(where: { paradisBackgroundWindowId($0) == previous }) {
+					_ = paradisSetFocusedWindow(application: application, window: back)
+				}
+			}
+			return .failure(failure)
+		}
+	}
+
+	/** 替えている間に前面のアプリが変わった（何も送らずに譲る）。前面を問わず戻す。 */
+	func restoreAfterInterruption() {
+		lock.lock()
+		interrupted = true
+		lock.unlock()
+		restore()
+	}
+
+	func restore() {
+		lock.lock()
+		defer {
+			lock.unlock()
+		}
+		guard !restored else {
+			return
+		}
+		restored = true
+		guard primed != .alreadyKey, started != nil, paradisProcessStart(pid) == started else {
+			return
+		}
+		// 送ったキーをアプリが処理し終えるのを少し待ってから、今の状態を確かめて戻す
+		usleep(100_000)
+		guard paradisShouldRestoreKey(primed: primed, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: target, targetPid: pid, frontmostNow: paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier }), switchInterrupted: interrupted) else {
+			return
+		}
+		let onScreenNow = paradisWindowInfos(pid: pid).filter { $0.onScreen }.map { $0.windowId }
+		guard let back = paradisKeyRestoreTarget(target: target, previous: previous, orderBefore: orderBefore, onScreenNow: onScreenNow) else {
+			return
+		}
+		switch primed {
+		case .alreadyKey:
+			break
+		case .keyRecords:
+			_ = transport.postKeyWindowRecords(pid: pid, current: target, target: back)
+		case .axFocusedWindow:
+			if let window = paradisElements(application, kAXWindowsAttribute).first(where: { paradisBackgroundWindowId($0) == back }) {
+				_ = paradisSetFocusedWindow(application: application, window: window)
+			}
+		}
+	}
+}
+
+/** E2 の手: アプリの `AXFocusedWindow` を書き、書けなければそのウィンドウの `AXMain` を立てる（替えるときも戻すときも同じ）。 */
+private func paradisSetFocusedWindow(application: AXUIElement, window: AXUIElement) -> Bool {
+	return AXUIElementSetAttributeValue(application, kAXFocusedWindowAttribute as CFString, window) == .success
+		|| AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue) == .success
+}
+
+/** アプリのフォーカスが目的のウィンドウに落ち着くまで、最長 `budget` 秒待つ（判断は呼び出し側が読み直して行う）。 */
+private func paradisAwaitKeyFocus(pid: Int32, target: UInt32, budget: TimeInterval) {
+	usleep(paradisKeyRecordSettleMicroseconds)
+	let deadline = Date().addingTimeInterval(budget)
+	while !paradisKeyFocus(pid: pid).routes(to: target) && Date() < deadline {
+		usleep(40_000)
 	}
 }
