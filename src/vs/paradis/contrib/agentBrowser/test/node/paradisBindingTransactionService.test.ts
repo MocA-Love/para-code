@@ -83,6 +83,7 @@ function createFixture(): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
@@ -745,6 +746,29 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			granted: ['granted', 'granted'],
 			usable: [false, false],
 			grants: [],
+		});
+	});
+
+	test('the share mark ledger tells when no pane uses a marked tab any more, even across a renderer reload', async () => {
+		const { fixture, connection, sync, share, generationOf } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-0', 'view-a');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), 'granted');
+		assert.strictEqual(await fixture.service.markOpenedTabShared(connection, 'opened-0'), true);
+		const granted = await fixture.service.listOpenedTabShareMarks(connection);
+		// 許可が控えに届く前に元のページの共有が外れた
+		assert.strictEqual(await fixture.service.unbindIfCurrent(connection, 'token', await generationOf('view-a')), true);
+		const afterUnshare = await fixture.service.listOpenedTabShareMarks(connection);
+		const reloaded = {};
+		assert.strictEqual(fixture.service.registerRendererConnection('window:1', reloaded), true);
+		await sync(reloaded);
+		const afterReload = await fixture.service.listOpenedTabShareMarks(reloaded);
+		assert.strictEqual(await fixture.service.forgetOpenedTabShareMark(reloaded, 'opened-0'), true);
+		assert.deepStrictEqual({ granted, afterUnshare, afterReload, forgotten: await fixture.service.listOpenedTabShareMarks(reloaded) }, {
+			granted: [{ viewId: 'opened-0', inUse: true }],
+			afterUnshare: [{ viewId: 'opened-0', inUse: false }],
+			afterReload: [{ viewId: 'opened-0', inUse: false }],
+			forgotten: [],
 		});
 	});
 
