@@ -404,6 +404,15 @@ do {
 	check(viaForeground?["route"] as? String == "foreground" && foreground2.performed == ["click"], "falls through to the foreground route")
 	check((viaForeground?["routeNotes"] as? [String]) == ["accessibility: AXGroup does not accept AXPress", "background: background input is not available in this version"], "says why the earlier routes were skipped")
 
+	// 段が自分で書いた注意（前面のスクロール）は、飛ばした理由の後ろに残す
+	let scroll = ParadisInputAction.scroll(windowId: 7, target: nil, direction: .down, pages: 1)
+	let axScroll = FakeRoute(.accessibility, availability: .unavailable("scroll needs real input")) { .done([:]) }
+	let foregroundScroll = FakeRoute(.foreground, requiresForeground: true) { .done(["scrolled": true, "routeNotes": [paradisPointerlessScrollNote]]) }
+	let viaScroll = try? paradisRouteInput(scroll, pid: 100, routes: [axScroll, background, foregroundScroll], options: ParadisInputOptions())
+	check((viaScroll?["routeNotes"] as? [String]) == ["accessibility: scroll needs real input", "background: background input is not available in this version", paradisPointerlessScrollNote], "keeps the note of the route after the skipped routes")
+	let axOnly = FakeRoute(.accessibility) { .done(["clicked": true]) }
+	check((try? paradisRouteInput(click, pid: 100, routes: [axOnly], options: ParadisInputOptions()))?.keys.contains("routeNotes") == false, "writes no empty route notes")
+
 	// 3 段目に来ても、前面に出してよいと言われていなければ何も送らない
 	let ax3 = FakeRoute(.accessibility, availability: .unavailable("drag needs real input")) { .done([:]) }
 	let foreground3 = foreground()
@@ -559,6 +568,38 @@ do {
 	check(paradisAccessibilityClickPlan(button: .right, clickCount: 1, modifiers: [], chain: [button], targetIsFrontmost: true) == .none("AXButton does not accept AXShowMenu"), "right clicks need AXShowMenu")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [], targetIsFrontmost: true) == .none("no accessibility element at the target"), "needs an element")
 	check(paradisPressableRoles.isSuperset(of: ["AXButton", "AXCheckBox", "AXRadioButton", "AXLink", "AXMenuItem", "AXPopUpButton"]), "knows the usual pressable controls")
+
+	// 一覧に無い役割でも AXPress を持つ要素は押す（入れ物は除く）。中身だけの役割は、親に一覧の部品があればそちらを押す
+	let pressableGroup = ParadisAXElementFacts(role: "AXGroup", actions: ["AXPress"])
+	let pressableText = ParadisAXElementFacts(role: "AXStaticText", actions: ["AXPress"])
+	let pressableRow = ParadisAXElementFacts(role: "AXRow", actions: ["AXPress"])
+	let pressableCell = ParadisAXElementFacts(role: "AXCell", actions: ["AXPress", "AXShowMenu"])
+	let webArea = ParadisAXElementFacts(role: "AXWebArea", actions: ["AXPress"])
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [pressableGroup], targetIsFrontmost: false) == .pressUnlisted(depth: 0), "presses a web group that accepts AXPress")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, pressableGroup, group], targetIsFrontmost: false) == .pressUnlisted(depth: 1), "climbs from a label to a pressable group")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [pressableText, button], targetIsFrontmost: false) == .perform(action: "AXPress", depth: 1), "prefers the listed button around a pressable label")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [pressableText, row], targetIsFrontmost: false) == .pressUnlisted(depth: 0), "presses the label when its parent does not accept AXPress")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [pressableRow], targetIsFrontmost: false) == .pressUnlisted(depth: 0), "presses a row that accepts AXPress")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [pressableCell, pressableRow], targetIsFrontmost: false) == .pressUnlisted(depth: 0), "presses the hit cell before its row")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [webArea], targetIsFrontmost: false) == .none("AXWebArea does not accept AXPress"), "never presses a whole web area")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, webArea], targetIsFrontmost: false) == .none("AXWebArea does not accept AXPress"), "does not climb into a container")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXGroup", actions: ["AXPress"], enabled: false)], targetIsFrontmost: false) == .none("the element is disabled"), "leaves a disabled group to real input")
+	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [pressableGroup], targetIsFrontmost: false) == .none("double and triple clicks need real input"), "double clicks on a group need real input")
+	check(paradisUnlistedPressNote(role: "AXGroup").contains("(AXGroup)") && paradisUnlistedPressNote(role: "AXGroup").contains("click the same element again"), "tells the agent how to get a real click")
+
+	// 一覧外の AXPress の後に同じ要素をもう一度クリックしたら、本物のクリックへ譲る（1 回だけ）
+	let memory = ParadisUnlistedPressMemory()
+	let pressedAt = Date(timeIntervalSince1970: 1_000)
+	check(!memory.shouldSkip(key: "1:5", now: pressedAt), "presses an element the first time")
+	memory.record(key: "1:5", now: pressedAt)
+	check(!memory.shouldSkip(key: "1:6", now: pressedAt.addingTimeInterval(1)), "presses a different element")
+	check(memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(5)), "sends a real click on the second click of the same element")
+	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(6)), "goes back to AXPress after the real click")
+	memory.record(key: "1:5", now: pressedAt)
+	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(paradisUnlistedPressRetrySeconds + 1)), "forgets an old press")
+	memory.record(key: "1:5", now: pressedAt)
+	memory.forget()
+	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(1)), "forgets after another kind of click")
 
 	// メニューを開く操作は、目的のアプリが前面のときだけ 1 段目で送る（レビュー 重大 2）
 	let popUp = ParadisAXElementFacts(role: "AXPopUpButton", actions: ["AXShowMenu", "AXPress"])
@@ -1092,6 +1133,20 @@ do {
 	check(small.width == 800 && small.height == 600, "keeps a small image")
 	let tall = paradisBoundedSize(width: 0, height: 5000, maxLongEdge: 1000)
 	check(tall.width == 1 && tall.height == 1000, "keeps both edges at least 1")
+}
+
+// MARK: - 3 段目の後に実カーソルを戻すか
+
+do {
+	let saved = CGPoint(x: 100, y: 200)
+	let sent = CGPoint(x: 500, y: 300)
+	check(paradisPointerRestoreTarget(saved: saved, current: sent, lastSent: sent, physicalPointerSinceStart: false) == saved, "puts the pointer back where it was")
+	check(paradisPointerRestoreTarget(saved: saved, current: CGPoint(x: 500.5, y: 300), lastSent: sent, physicalPointerSinceStart: nil) == saved, "puts the pointer back without input monitoring when it has not moved")
+	check(paradisPointerRestoreTarget(saved: saved, current: CGPoint(x: 520, y: 300), lastSent: sent, physicalPointerSinceStart: false) == nil, "leaves the pointer where the user moved it")
+	check(paradisPointerRestoreTarget(saved: saved, current: sent, lastSent: sent, physicalPointerSinceStart: true) == nil, "leaves the pointer alone after the user touched the mouse")
+	check(paradisPointerRestoreTarget(saved: nil, current: sent, lastSent: sent, physicalPointerSinceStart: false) == nil, "does nothing without the earlier position")
+	check(paradisPointerRestoreTarget(saved: saved, current: nil, lastSent: sent, physicalPointerSinceStart: false) == nil, "does nothing without the current position")
+	check(paradisPointerRestoreTarget(saved: sent, current: sent, lastSent: sent, physicalPointerSinceStart: false) == nil, "does not move a pointer that started at the target")
 }
 
 // MARK: - 応答の形
