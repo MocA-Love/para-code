@@ -46,7 +46,7 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
 import { spreadsheetUndrawnPlaceholders } from './paradisSpreadsheetDrawings.js';
 import { PARADIS_WORD_DOCUMENT_IMAGE_PIXELS } from '../common/word/paradisWordImageInspection.js';
-import { IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, parseSpreadsheetResource, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from './paradisSpreadsheetClient.js';
+import { loadParadisSpreadsheetDiffSide, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
@@ -965,21 +965,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			// (`resolveParadisSpreadsheetDiffSides`)。git 参照やリポジトリが見つからない場合もここに含まれうる。
 			// 左右の合計を大きさとして持つ。比較の重さは両方の合計で決まる。
 			let sourceBytes = 0;
-			const loadSide = async (resource: URI): Promise<IParadisSpreadsheetDiffSide> => {
-				let readBytes: number | undefined;
-				try {
-					return {
-						// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
-						wb: await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource, totalBytes => {
-							readBytes = totalBytes;
-							sourceBytes += totalBytes;
-							this._probe.setBytes(sourceBytes);
-						}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2),
-					};
-				} catch (error) {
-					return { wb: { sheets: [] }, error, absent: isParadisSpreadsheetSideAbsent(resource, error, readBytes) };
-				}
-			};
+			// 左右の 2 冊を同じ画面に描くので、画像の画素の上限を半分ずつにする。
+			const loadSide = (resource: URI) => loadParadisSpreadsheetDiffSide(this._fileService, this._sharedProcessService, resource, totalBytes => {
+				sourceBytes += totalBytes;
+				this._probe.setBytes(sourceBytes);
+			}, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2);
 			// 追加・削除されたファイルは片側の版にファイルが無い。それは失敗ではなく、空のブックとの差分として出す。
 			const sides = await Promise.all([loadSide(original), loadSide(modified)]);
 			const { original: origResult, modified: modResult } = resolveParadisSpreadsheetDiffSides(sides[0], sides[1]);

@@ -466,6 +466,11 @@ export interface IParadisExactBrowserViewDescriptor {
  */
 export interface IParadisCdpExactViewService {
 	resolveExactViewDescriptor(windowId: unknown, viewId: unknown): Promise<IParadisExactBrowserViewDescriptor | null>;
+	/**
+	 * そのタブを開いた元のタブの viewId（target=_blank・window.open・Ctrl/Cmd/中クリック・右クリックの
+	 * 「新しいタブで開く」で開いたタブ）。そのウィンドウのタブでない・元のタブが分からなければ null。
+	 */
+	getOpenerViewId(windowId: unknown, viewId: unknown): Promise<string | null>;
 	isExactViewVisible(descriptor: unknown): Promise<boolean | null>;
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;

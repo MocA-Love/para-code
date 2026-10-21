@@ -94,6 +94,26 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.grantAgentTab(this.rendererConnection, requirePrepareBindRequest(args[0])) as Promise<T>;
 			}
+			// 共有したページ（または許可したタブ）から開いたタブを、同じペインへ共有する
+			case 'openerPanesOf': {
+				const args = requireArgs(arg, 1);
+				return this.service.openerPanesOf(this.rendererConnection, requireToken(args[0])) as Promise<T>;
+			}
+			case 'grantOpenedTab': {
+				const args = requireArgs(arg, 1);
+				return this.service.grantOpenedTab(this.rendererConnection, requirePrepareBindRequest(args[0])) as Promise<T>;
+			}
+			case 'markOpenedTabShared': {
+				const args = requireArgs(arg, 1);
+				return this.service.markOpenedTabShared(this.rendererConnection, requireToken(args[0])) as Promise<T>;
+			}
+			case 'listOpenedTabShareMarks':
+				requireArgs(arg, 0);
+				return this.service.listOpenedTabShareMarks(this.rendererConnection) as Promise<T>;
+			case 'forgetOpenedTabShareMark': {
+				const args = requireArgs(arg, 1);
+				return this.service.forgetOpenedTabShareMark(this.rendererConnection, requireToken(args[0])) as Promise<T>;
+			}
 			case 'revokeAgentTab': {
 				const args = requireArgs(arg, 2);
 				return this.service.revokeAgentTab(this.rendererConnection, requireToken(args[0]), requireToken(args[1])) as Promise<T>;

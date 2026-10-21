@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { URI } from '../../../../../base/common/uri.js';
 import { FileOperationError, FileOperationResult } from '../../../../../platform/files/common/files.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
-import { IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from '../../electron-browser/paradisSpreadsheetClient.js';
+import { describeParadisSpreadsheetDiffSideFailure, IParadisSpreadsheetDiffSide, isParadisSpreadsheetSideAbsent, ParadisSpreadsheetNotWorkbookError, resolveParadisSpreadsheetDiffSides } from '../../electron-browser/paradisSpreadsheetClient.js';
 import { buildShapeDiffOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
 import { buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
 import { IParadisPageLayout } from '../../common/paradisSpreadsheetPageLayout.js';
@@ -504,5 +504,19 @@ suite('paradisSpreadsheetDiff', () => {
 			notWorkbook: { failedSides: ['original'] },
 			brokenOtherSide: { failedSides: ['original', 'modified'] },
 		});
+	});
+
+	test('describes an unreadable diff side without file paths, git URIs or internal English messages', () => {
+		deepStrictEqual([
+			new FileOperationError(`Unable to read file '/Users/example/book.xlsx' that is too large to open`, FileOperationResult.FILE_TOO_LARGE),
+			new FileOperationError('Unable to read file \'git:/repo/book.xlsx?{"path":"/repo/book.xlsx","ref":"HEAD"}\' (Error: Unable to resolve nonexistent file)', FileOperationResult.FILE_NOT_FOUND),
+			new Error('ENOPRO: No file system provider found for resource \'git:/repo/book.xlsx\''),
+			new ParadisSpreadsheetNotWorkbookError(false),
+		].map(describeParadisSpreadsheetDiffSideFailure), [
+			'ファイルが大きすぎるため比較できません',
+			'ファイルが見つかりません',
+			'読み込めませんでした（壊れている、またはパスワードで保護されている可能性があります）',
+			new ParadisSpreadsheetNotWorkbookError(false).message,
+		]);
 	});
 });
