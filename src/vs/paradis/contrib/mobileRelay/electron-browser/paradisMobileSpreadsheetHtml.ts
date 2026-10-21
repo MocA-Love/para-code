@@ -16,10 +16,11 @@ import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../../fileViewers/common/paradisSpreadsheet.js';
-import { parseSpreadsheetResource } from '../../fileViewers/electron-browser/paradisSpreadsheetClient.js';
+import { describeParadisSpreadsheetDiffSideFailure, loadParadisSpreadsheetDiffSide, parseSpreadsheetResource, resolveParadisSpreadsheetDiffSides } from '../../fileViewers/electron-browser/paradisSpreadsheetClient.js';
 import { IParadisDiffCell, IParadisDiffRow, IParadisShapeRender, buildDiffSheets, buildShapeDiff } from '../../fileViewers/electron-browser/paradisSpreadsheetDiff.js';
 import {
 	IParadisOverflowItem,
@@ -584,7 +585,8 @@ export async function renderSpreadsheetMobileSheet(fileService: IFileService, sh
 /**
  * xlsx の差分(旧版 vs 新版)を縦積みの静的HTMLへレンダリングする。
  * PC版差分ビューアと同じセル差分計算(buildDiffSheets)・色分け・図形差分を使う。
- * originalResource が読めない場合(新規追加ファイル等)は空ブックとの比較になる。
+ * 片側の版にファイルが無い場合(新規追加・削除したファイル)は空ブックとの比較になる。壊れている・大きすぎる等で
+ * 読めなかったときは、読めなかった側と理由を載せたエラーを投げる(モバイルにはエラーとして表示される)。
  */
 export async function renderSpreadsheetDiffMobileHtml(
 	fileService: IFileService,
@@ -594,11 +596,19 @@ export async function renderSpreadsheetDiffMobileHtml(
 	originalLabel: string,
 	modifiedLabel: string,
 ): Promise<string> {
-	const emptyWorkbook: IParadisWorkbookData = { sheets: [] };
-	const [original, modified] = await Promise.all([
-		parseSpreadsheetResource(fileService, sharedProcessService, originalResource).catch(() => emptyWorkbook),
-		parseSpreadsheetResource(fileService, sharedProcessService, modifiedResource).catch(() => emptyWorkbook),
+	const sides = await Promise.all([
+		loadParadisSpreadsheetDiffSide(fileService, sharedProcessService, originalResource),
+		loadParadisSpreadsheetDiffSide(fileService, sharedProcessService, modifiedResource),
 	]);
+	const resolved = resolveParadisSpreadsheetDiffSides(sides[0], sides[1]);
+	const reasons = [[resolved.original, originalLabel], [resolved.modified, modifiedLabel]] as const;
+	const failures = reasons.filter(([side]) => side.error !== undefined)
+		.map(([side, label]) => localize('paradis.mobile.spreadsheetDiff.sideFailed', "{0}: {1}", label, describeParadisSpreadsheetDiffSideFailure(side.error)));
+	if (failures.length > 0) {
+		throw new Error(localize('paradis.mobile.spreadsheetDiff.failed', "差分を表示できません。{0}", failures.join(' / ')));
+	}
+	const original = resolved.original.wb;
+	const modified = resolved.modified.wb;
 	const css = await loadSpreadsheetCss(fileService);
 	const diffSheets = buildDiffSheets(original.sheets, modified.sheets);
 	if (diffSheets.length === 0) {
