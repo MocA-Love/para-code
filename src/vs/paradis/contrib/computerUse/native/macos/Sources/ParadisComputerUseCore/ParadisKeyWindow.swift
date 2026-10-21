@@ -107,3 +107,26 @@ func paradisKeyRestoreTarget(target: UInt32, previous: UInt32?, orderBefore: [UI
 	}
 	return orderBefore.first(where: present)
 }
+
+/**
+ * キーウィンドウを替えてはいけないときの理由（無ければ nil）。目的のアプリが前面で、フォーカスのあるウィンドウが目的の
+ * ウィンドウでなければ、利用者がそのアプリの別のウィンドウで作業中なので替えない（替えると利用者の打鍵が目的の
+ * ウィンドウへ入る）。前面でも、目的のウィンドウがすでにキーなら替えずに送れるので止めない。
+ */
+func paradisKeyPrimeRefusal(targetIsFrontmost: Bool, focus: ParadisKeyFocus, target: UInt32) -> ParadisHelperError? {
+	guard targetIsFrontmost, !focus.routes(to: target) else {
+		return nil
+	}
+	return ParadisHelperError(code: "window_in_use", message: "the app is in front and the user is working in another of its windows, so Para Code does not switch its key window")
+}
+
+/**
+ * 終わった後にキーを戻してよいか。替えていないなら戻さない。今のキーウィンドウが目的のウィンドウのままで、前面のアプリが
+ * 操作の前と同じときだけ戻す（操作の間に利用者がそのアプリへ移った・別のウィンドウを選んだなら、その選択を奪わない）。
+ */
+func paradisShouldRestoreKey(primed: ParadisKeyPrime, currentFocusWindow: UInt32?, target: UInt32, frontmostBefore: Int32?, frontmostNow: Int32?) -> Bool {
+	guard primed != .alreadyKey else {
+		return false
+	}
+	return currentFocusWindow == target && frontmostBefore != nil && frontmostBefore == frontmostNow
+}

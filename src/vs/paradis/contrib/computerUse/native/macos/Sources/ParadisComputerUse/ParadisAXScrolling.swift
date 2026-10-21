@@ -31,6 +31,8 @@ private let paradisScrollMaxAscent = 40
 /** D2 でたどる子孫の数と深さの上限。 */
 private let paradisRevealMaxNodes = 2_000
 private let paradisRevealMaxDepth = 80
+/** D2 全体（入れ物を探す・子孫をたどる）にかける時間の上限（応答の遅いアプリで要求の締め切りを越えないように）。 */
+private let paradisRevealBudgetSeconds: TimeInterval = 1.5
 /** AX の書き込みの後、アプリが反映するのを待つ時間。 */
 private let paradisScrollSettleMicroseconds: UInt32 = 150_000
 
@@ -161,8 +163,12 @@ private func paradisScrollByPageAction(area: AXUIElement, bar: AXUIElement?, dir
  * 動く量は概算。どれも動かなければ nil。
  */
 func paradisScrollByRevealing(hit: AXUIElement, windowBounds: CGRect, direction: ParadisScrollDirection, distance: Double) -> ParadisAXScrollOutcome? {
-	for (container, role) in paradisRevealCandidates(hit, direction: direction) {
-		if let outcome = paradisReveal(in: container, role: role, windowBounds: windowBounds, direction: direction, distance: distance) {
+	let deadline = Date().addingTimeInterval(paradisRevealBudgetSeconds)
+	for (container, role) in paradisRevealCandidates(hit, direction: direction, deadline: deadline) {
+		guard Date() < deadline else {
+			return nil
+		}
+		if let outcome = paradisReveal(in: container, role: role, windowBounds: windowBounds, direction: direction, distance: distance, deadline: deadline) {
 			return outcome
 		}
 	}
@@ -170,11 +176,11 @@ func paradisScrollByRevealing(hit: AXUIElement, windowBounds: CGRect, direction:
 }
 
 /** 試す入れ物を内側から順に。スクロールする役割の入れ物が見つからなければ空。 */
-private func paradisRevealCandidates(_ hit: AXUIElement, direction: ParadisScrollDirection) -> [(AXUIElement, String)] {
+private func paradisRevealCandidates(_ hit: AXUIElement, direction: ParadisScrollDirection, deadline: Date) -> [(AXUIElement, String)] {
 	var candidates: [(AXUIElement, String)] = []
 	var current: AXUIElement? = hit
 	for _ in 0..<paradisScrollMaxAscent {
-		guard let element = current, let role = paradisRole(element) else {
+		guard let element = current, let role = paradisRole(element), Date() < deadline else {
 			return []
 		}
 		if paradisScrollContainerRoles.contains(role) {
@@ -202,7 +208,7 @@ private func paradisClipsPastEdge(_ element: AXUIElement, direction: ParadisScro
 	}
 }
 
-private func paradisReveal(in container: AXUIElement, role: String, windowBounds: CGRect, direction: ParadisScrollDirection, distance: Double) -> ParadisAXScrollOutcome? {
+private func paradisReveal(in container: AXUIElement, role: String, windowBounds: CGRect, direction: ParadisScrollDirection, distance: Double, deadline: Date) -> ParadisAXScrollOutcome? {
 	guard let frame = paradisFrame(container) else {
 		return nil
 	}
@@ -215,7 +221,7 @@ private func paradisReveal(in container: AXUIElement, role: String, windowBounds
 	var nodes: [(rect: CGRect, leaf: Bool)] = []
 	var stack: [(AXUIElement, Int)] = paradisElements(container, kAXChildrenAttribute).reversed().map { ($0, 1) }
 	var visited = 0
-	while let item = stack.popLast(), visited < paradisRevealMaxNodes {
+	while let item = stack.popLast(), visited < paradisRevealMaxNodes, Date() < deadline {
 		let (element, depth) = item
 		visited += 1
 		let rect = paradisFrame(element)
