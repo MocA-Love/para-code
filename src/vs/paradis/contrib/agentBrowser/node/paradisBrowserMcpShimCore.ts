@@ -71,7 +71,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes exactly one page (the page shared with this pane, or the tab given by tab_id), so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes one page (the page shared with this pane, or the tab given by tab_id) plus the pages that page opened with a target=_blank link or window.open, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -230,7 +230,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'list_browser_tabs',
-		description: 'List the browser tabs this terminal pane can use, each with its tabId (the tab_id for the browser tools), URL and title: the tabs you opened with open_browser_tab or open_browser_profile, and the user tab currently shared with this pane (if any). Shows which one the user shared ("shared"), which one is this pane\'s current tab ("current": the one the browser tools act on when tab_id is omitted) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools only ever see one tab; use tab_id, or this tool and select_browser_tab.',
+		description: 'List the browser tabs this terminal pane can use, each with its tabId (the tab_id for the browser tools), URL and title: the tabs you opened with open_browser_tab or open_browser_profile, the user tabs currently shared with this pane (if any), and the tabs and windows those tabs opened (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab"; shown with "openedFrom", shared automatically up to a limit). Shows which one the user shared ("shared"), which one is this pane\'s current tab ("current": the one the browser tools act on when tab_id is omitted) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools see only one tab and the pages it opened with a target=_blank link or window.open; use tab_id, or this tool and select_browser_tab.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{

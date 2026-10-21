@@ -33,7 +33,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { FileOperationError, FileOperationResult, IFileService } from '../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -61,6 +61,7 @@ import {
 	ParadisDocxWebviewMessage,
 } from '../common/paradisDocx.js';
 import { buildDocxDiff } from '../common/paradisDocxDiff.js';
+import { describeParadisOfficeReadFailure, IParadisWordDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisWordDiffBytes } from '../common/paradisOfficeDiffSide.js';
 import type { ParadisOfficeChange, ParadisOfficeCompletenessManifest, ParadisOfficeOutcome, ParadisOfficePlaceholder } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
 import { ParadisOfficeViewerProbe } from '../common/paradisOfficeProbe.js';
@@ -662,9 +663,11 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		// 読み出しと消毒も返ってこないことがある区間なので、webview を作る前から見張る。
 		this._probe.armSource(recoveryGeneration);
 		try {
+			// 追加・削除されたファイルは片側の版にファイルが無い。それは失敗ではなく、空の文書との差分として出す。
+			const sources = resolveParadisWordDiffBytes(...await Promise.all([this._readSide(original), this._readSide(modified)]));
 			const [originalPackage, modifiedPackage] = await Promise.all([
-				this._readDocument(original, sanitization.token),
-				this._readDocument(modified, sanitization.token),
+				this._prepareDocument(sources.original, sanitization.token),
+				this._prepareDocument(sources.modified, sanitization.token),
 			]);
 			if (loadGeneration !== this._loadGeneration || this._disposed || sanitization.token.isCancellationRequested
 				|| !isEqual(this._originalResource, original) || !isEqual(this._modifiedResource, modified)) {
@@ -733,22 +736,27 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		);
 	}
 
-	private async _readDocument(resource: URI, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array; readonly exclusions: ParadisWordPackageExclusions }> {
-		// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
-		const content = await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } });
-		// 差分は 2 つの文書を同じ webview に描くので、画像の画素の上限を半分ずつにする。
-		const sanitized = await sanitizeParadisDocxBytesForRenderer(content.value.buffer, `diff_${this._loadGeneration}`, token, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2);
-		const bytes = sanitized.bytes;
-		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source: content.value.buffer, exclusions: paradisWordPackageExclusions(sanitized) };
+	/** 片側を読む。失敗は投げずに `error` に入れ、その版にファイルが無いかどうかも添える。 */
+	private async _readSide(resource: URI): Promise<IParadisWordDiffSide> {
+		try {
+			// 上限は readFile に渡す。読み切ってから判定すると、巨大なファイルを一度メモリに載せてしまう。
+			const bytes = (await this._fileService.readFile(resource, { limits: { size: PARADIS_DOCX_MAX_BYTES } })).value.buffer;
+			return isParadisOfficeEmptyGitRevision(resource, bytes.byteLength) ? { bytes, absent: true } : { bytes };
+		} catch (error) {
+			return { error, absent: isParadisOfficeRevisionMissing(error) };
+		}
 	}
 
-	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる場合だけ専用の案内を出す。 */
+	private async _prepareDocument(source: Uint8Array, token: CancellationToken): Promise<{ readonly buffer: ArrayBuffer; readonly placeholders: readonly ParadisOfficePlaceholder[]; readonly source: Uint8Array; readonly exclusions: ParadisWordPackageExclusions }> {
+		// 差分は 2 つの文書を同じ webview に描くので、画像の画素の上限を半分ずつにする。
+		const sanitized = await sanitizeParadisDocxBytesForRenderer(source, `diff_${this._loadGeneration}`, token, PARADIS_WORD_DOCUMENT_IMAGE_PIXELS / 2);
+		const bytes = sanitized.bytes;
+		return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, placeholders: sanitized.placeholders, source, exclusions: paradisWordPackageExclusions(sanitized) };
+	}
+
+	/** 例外を利用者に見せる文言にする。ファイルが大きすぎる・見つからない場合は専用の案内を出す。 */
 	private _describeError(error: unknown): string {
-		if (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_TOO_LARGE) {
-			// allow-any-unicode-next-line
-			return localize('paradis.docxDiff.tooLarge', "ファイルが大きすぎるため比較できません");
-		}
-		return error instanceof Error ? error.message : String(error);
+		return describeParadisOfficeReadFailure(error) ?? (error instanceof Error ? error.message : String(error));
 	}
 
 	private _onWebviewMessage(message: ParadisDocxWebviewMessage): void {
