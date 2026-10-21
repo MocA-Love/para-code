@@ -138,6 +138,11 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 		if menuWasOpen { throw ParadisHelperError(code: "menu_open", message: "the target already has an open menu") }
 		let before = paradisFocusSnapshot()
 		guard let originalPid = before.frontmostPid else { return .fellThrough("the foreground app is unknown") }
+		// キーウィンドウを替えている間に前面のアプリが変わった（⌘Tab で目的のアプリへ移られたなど）なら、何も送らずに戻して譲る
+		if let keyScope, !paradisFrontmostUnchangedDuringSwitch(before: keyScope.frontmostBefore, after: originalPid) {
+			keyScope.restoreAfterInterruption()
+			return .fellThrough("focus_changed: the front app changed while the key window was being switched")
+		}
 		if case .click(_, _, _, let count, _) = action,
 			!paradisBackgroundSingleClickSupported(clickCount: count, usesChromium: restrictedSingleClick, targetIsFrontmost: originalPid == pid && before.focusedWindowId == windowId) {
 			return .fellThrough("Chromium can discard the first background click; use accessibility or foreground input")
@@ -412,7 +417,9 @@ final class ParadisWindowKeyScope {
 	private let orderBefore: [UInt32]
 	private let primed: ParadisKeyPrime
 	/** 替える前の前面のアプリ。 */
-	private let frontmostBefore: Int32?
+	let frontmostBefore: Int32?
+	/** 替えている間に前面のアプリが変わったので、前面を問わず戻す。 */
+	private var interrupted = false
 	private let application: AXUIElement
 	private let transport: ParadisBackgroundTransport
 	private var restored = false
@@ -463,7 +470,8 @@ final class ParadisWindowKeyScope {
 		case .failure(let failure):
 			// 確かめられなくても途中でキーウィンドウが目的のウィンドウへ替わっていたら、E1 と E2 の両方の手で元へ戻しておく
 			// （前面のアプリが変わっていない＝利用者がそのアプリへ移っていないときだけ）
-			if let previous, paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: windowId, frontmostBefore: frontmostBefore, frontmostNow: paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier })) {
+			let frontmostNow = paradisOnMain { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+			if let previous, paradisShouldRestoreKey(primed: .keyRecords, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: windowId, targetPid: pid, frontmostNow: frontmostNow, switchInterrupted: !paradisFrontmostUnchangedDuringSwitch(before: frontmostBefore, after: frontmostNow)) {
 				if transport.keyRecordsAvailable {
 					_ = transport.postKeyWindowRecords(pid: pid, current: windowId, target: previous)
 				}
@@ -473,6 +481,14 @@ final class ParadisWindowKeyScope {
 			}
 			return .failure(failure)
 		}
+	}
+
+	/** 替えている間に前面のアプリが変わった（何も送らずに譲る）。前面を問わず戻す。 */
+	func restoreAfterInterruption() {
+		lock.lock()
+		interrupted = true
+		lock.unlock()
+		restore()
 	}
 
 	func restore() {
@@ -489,7 +505,7 @@ final class ParadisWindowKeyScope {
 		}
 		// 送ったキーをアプリが処理し終えるのを少し待ってから、今の状態を確かめて戻す
 		usleep(100_000)
-		guard paradisShouldRestoreKey(primed: primed, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: target, frontmostBefore: frontmostBefore, frontmostNow: paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier })) else {
+		guard paradisShouldRestoreKey(primed: primed, currentFocusWindow: paradisKeyFocus(pid: pid).window, target: target, targetPid: pid, frontmostNow: paradisOnMain({ NSWorkspace.shared.frontmostApplication?.processIdentifier }), switchInterrupted: interrupted) else {
 			return
 		}
 		let onScreenNow = paradisWindowInfos(pid: pid).filter { $0.onScreen }.map { $0.windowId }
