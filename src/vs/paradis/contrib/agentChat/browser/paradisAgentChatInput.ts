@@ -99,7 +99,7 @@ export class ParadisAgentChatInput {
 			return localize('paradisAgentChat.errorCodexQuestion', "Codex が質問しています。ターミナルで答えてください");
 		}
 		// hook が届かない構成・中継が見落とした確認画面にも Enter を送らない。
-		if (paradisScreenShowsAgentPrompt(terminal.readScreen())) {
+		if (paradisScreenShowsAgentPrompt(terminal.readScreen(), state.agent)) {
 			return localize('paradisAgentChat.errorPromptOnScreen', "ターミナルに確認の画面が出ています。ターミナルで答えてから送ってください");
 		}
 		if (text.includes('\n') && !terminal.bracketedPasteMode()) {

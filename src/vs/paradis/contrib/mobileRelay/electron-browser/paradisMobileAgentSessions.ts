@@ -193,7 +193,7 @@ function requireString(value: unknown, name: string, limit: number): string {
 }
 
 /** 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、再開の確認で止まっていれば 'resume-prompt'、待ちきれなければ 'timeout'。 */
-async function waitForAgentReady(instance: ITerminalInstance): Promise<'ready' | 'trust' | 'resume-prompt' | 'timeout' | 'gone'> {
+async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex'): Promise<'ready' | 'trust' | 'resume-prompt' | 'timeout' | 'gone'> {
 	const deadline = Date.now() + RESUME_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		if (instance.isDisposed) {
@@ -205,7 +205,7 @@ async function waitForAgentReady(instance: ITerminalInstance): Promise<'ready' |
 			return 'trust';
 		}
 		// 長く使っていない会話では、Claude Code が再開してよいかを聞く（PC で選ぶまで入力欄が出ない）
-		if (paradisScreenShowsClaudeResumePrompt(screen)) {
+		if (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen)) {
 			return 'resume-prompt';
 		}
 		if (state === 'ready') {
@@ -329,11 +329,11 @@ interface IResumeReply {
  * Codex だとシェル統合で確かめられ（エージェントが抜けてシェルに戻っていたら、依頼がコマンドとして実行される）、確認や
  * 質問の画面が出ておらず、複数行なら貼り付けの囲みが有効なこと。
  */
-function canDeliverPrompt(instance: ITerminalInstance, prompt: string): boolean {
+function canDeliverPrompt(instance: ITerminalInstance, prompt: string, agent: 'claude' | 'codex'): boolean {
 	return !instance.isDisposed
 		&& paradisTerminalRunsAgent(instance)
 		&& (!prompt.includes('\n') || paradisCanPasteMultiline(instance))
-		&& !paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance));
+		&& !paradisScreenShowsAgentPrompt(paradisVisibleTerminalText(instance), agent);
 }
 
 async function resumeFromMobile(
@@ -372,7 +372,7 @@ async function resumeFromMobile(
 		const instance = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).find(candidate => candidate.instanceId === launched.instanceId);
 		terminalKey = tools.identityService.getTerminalKey(launched.instanceId);
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started', ...(terminalKey !== undefined ? { terminalKey } : {}) });
-		const readiness = instance !== undefined ? await waitForAgentReady(instance) : 'gone';
+		const readiness = instance !== undefined ? await waitForAgentReady(instance, session.agent) : 'gone';
 		// 通知は準備の結果が分かってから出す（L6。開いたタブがまだ空のシェルのうちに「表示」を押させない）。
 		notifyResumed(tools, space, session, instance);
 		let delivered = false;
@@ -380,7 +380,7 @@ async function resumeFromMobile(
 			const outcome = await paradisSendAgentMessageToTui(
 				prompt,
 				(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
-				async () => canDeliverPrompt(instance, prompt),
+				async () => canDeliverPrompt(instance, prompt, session.agent),
 			);
 			delivered = outcome.executed;
 		}

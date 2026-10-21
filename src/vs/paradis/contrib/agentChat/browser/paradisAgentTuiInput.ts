@@ -277,39 +277,43 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 /**
  * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
  * デスクトップのチャット表示が文を送る前に使う。送った文の Enter が許可の既定の「Yes」や、質問の
- * ハイライト中の選択肢を確定してしまうのを防ぐため。
+ * ハイライト中の選択肢を確定してしまうのを防ぐため。`agent` が `'claude'` のときは、Claude Code の再開の確認
+ * （{@link paradisScreenShowsClaudeResumePrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
  */
-export function paradisScreenShowsAgentPrompt(screen: string): boolean {
-	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen) || paradisScreenShowsClaudeResumePrompt(screen);
+export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex'): boolean {
+	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen)
+		|| (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen));
 }
 
-/** Claude Code の再開の確認の見出しと、2 つめの選択肢（空白を除いた小文字）。 */
+/** Claude Code の再開の確認の見出し（空白を除いた小文字）。 */
 const CLAUDE_RESUME_PROMPT_HEADING = 'resumethisconversation?';
-const CLAUDE_RESUME_PROMPT_NEW_OPTION = 'startanewconversation';
+/**
+ * 再開の確認の操作説明（空白を除いた小文字）。`--resume` などで開き直したときは `Enter to confirm · Esc to resume`、
+ * 使っていない間に出る型（2.1.306 では旗で止まっている）は Esc の説明が `dismiss` になる（バイナリの文字列）。
+ */
+const CLAUDE_RESUME_PROMPT_FOOTER = /entertoconfirm\u00b7escto(?:resume|dismiss)/;
 
 /**
- * 画面の下端に、Claude Code の「Resume this conversation?」の確認が出ているか。
+ * 画面の最下部に、Claude Code の「Resume this conversation?」の確認が出ているか。Claude Code のペインでだけ使うこと
+ * （文言だけで見るので、Codex の画面の本文に同じ文が出ると当たる）。
  *
  * 長く使っていない会話を `--resume`・`--continue`・`/resume` で開き直したとき、5 時間の使用量のうちどれだけを使うかを出して
  * 「Resume」か「Start a new conversation」かを選ばせる。2.1.306 の実画面:
  * `Resume this conversation?` / `This conversation has been inactive for 5h and is 800k tokens long. …` /
  * `❯ 1. Resume` / `2. Start a new conversation  Claude can look this one up if you refer to it later` /
  * `Enter to confirm · Esc to resume`。この確認は入力欄の代わりに出て、出ている間に打った文字は捨てられ、Enter は
- * カーソルのある「Resume」を選ぶ（文はどこにも届かない）。見出しの後ろに 2 つめの選択肢があり、入力欄が出ていないときだけ true。
+ * カーソルのある「Resume」を選ぶ（文はどこにも届かない）。
+ *
+ * 最下部（末尾の 2 行。狭いペインでは折り返す）の操作説明を基準にし（Codex の {@link showsCodexPromptFooter} と同じ形）、
+ * その上の {@link CODEX_PROMPT_REGION_LINES} 行の中に見出しがあれば true。狭いペインで本文が折り返して確認が背高に
+ * なっても見出しを取りこぼさない。操作説明が最下部にある限り確認がそこに出ているので、上の会話の本文とは取り違えない。
  */
 export function paradisScreenShowsClaudeResumePrompt(screen: string): boolean {
-	const lines = promptRegion(screen);
-	for (let index = lines.length - 1; index >= 0; index--) {
-		// 見出しが折り返しでまたがっても、見出しの終わる行で止まる（permissionHeadingEndsAt と同じ）
-		const from = Math.max(0, index - PROMPT_HEADING_SPAN_LINES + 1);
-		if (!compact(lines.slice(from, index + 1).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING) || compact(lines.slice(from, index).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING)) {
-			continue;
-		}
-		const after = lines.slice(index + 1);
-		const idleInput = after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
-		return !idleInput && compact(after.join('')).includes(CLAUDE_RESUME_PROMPT_NEW_OPTION);
+	const lines = screenLines(screen);
+	if (!CLAUDE_RESUME_PROMPT_FOOTER.test(compact(lines.slice(-2).join('')))) {
+		return false;
 	}
-	return false;
+	return compact(lines.slice(-CODEX_PROMPT_REGION_LINES).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING);
 }
 
 /**

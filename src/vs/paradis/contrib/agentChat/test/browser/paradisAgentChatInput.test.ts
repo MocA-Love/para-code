@@ -269,7 +269,7 @@ suite('ParadisAgentChatInput', () => {
 			shells: ['zsh', '-zsh', 'bash', 'pwsh.exe', 'fish'].map(paradisIsShellProcessName),
 			agents: ['claude', 'node', 'codex', 'cc', 'npx'].map(paradisIsShellProcessName),
 			screens: [PERMISSION_SCREEN, 'Would you like to proceed?\n❯ 1. Yes, and auto-accept edits', 'Do you want to proceed?\n\n> ', EXIT_PLAN_SCREEN, BODY_LIST_SCREEN].map(paradisScreenShowsPermissionPrompt),
-			questionScreens: [CODEX_QUESTION_SCREEN, BODY_LIST_SCREEN].map(paradisScreenShowsAgentPrompt),
+			questionScreens: [CODEX_QUESTION_SCREEN, BODY_LIST_SCREEN].map(screen => paradisScreenShowsAgentPrompt(screen)),
 		}, {
 			locked: true,
 			sent: [],

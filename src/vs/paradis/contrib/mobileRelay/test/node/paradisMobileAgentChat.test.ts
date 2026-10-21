@@ -305,6 +305,47 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('hands a re-send with the same id to the window again once the window refused the first one without typing', async () => {
+		const token = 'pane-send-refused';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'send-refused.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const actions: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'UserPromptSubmit', sessionId: 'session-send-refused', transcriptPath, cwd: '/workspace', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the pane session was not established');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const epoch = access.tailers.get(token)!.epoch;
+			sent.length = 0;
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-1', text: '続きをお願い', sendId: 'send-abc' });
+			assert.strictEqual(chat.claimSendMessageAction('mobile-1', 'send-1', token, epoch, 1, 'window-session'), 'claimed');
+			// 別のウィンドウからの断りでは忘れない。所有ウィンドウが打たずに断ったら忘れる
+			chat.noteWindowSendRejected('mobile-1', 'send-1', token, 2, 'other-window-session');
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-2', text: '続きをお願い', sendId: 'send-abc' });
+			chat.noteWindowSendRejected('mobile-1', 'send-1', token, 1, 'window-session');
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-3', text: '続きをお願い', sendId: 'send-abc' });
+			await waitFor(() => sent.length >= 1 && actions.filter(action => action.t === 'action/sendMessage').length >= 2, 'the re-sends were not handled');
+			assert.deepStrictEqual({
+				dispatched: actions.filter(action => action.t === 'action/sendMessage').map(action => action.requestId),
+				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+			}, {
+				dispatched: ['send-1', 'send-3'],
+				reply: [{ requestId: 'send-2', status: 'accepted', code: 'duplicate' }],
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('uses the production five-minute directory walk budget', () => {
 		const clock = sinon.useFakeTimers({ now: 1_000 });
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());

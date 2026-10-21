@@ -215,40 +215,57 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 		'  Enter to confirm · Esc to resume',
 		'',
 	].join('\n');
-	// 狭いペインで見出しと選択肢が折り返した形
+	// 幅 40 桁前後: 本文と選択肢が折り返し、見出しが下から 14 行より上に出る
 	const narrow = [
-		RULE,
-		'  Resume this',
-		'  conversation?',
+		'─'.repeat(40),
+		'  Resume this conversation?',
 		'',
-		'  This conversation has been inactive for 5h',
-		'  and is 800k tokens long.',
+		'  This conversation has been inactive',
+		'  for 5h and is 800k tokens long.',
+		'  Resuming it will use about 73% of',
+		'  your 5-hour usage limit.',
 		'',
 		'  ❯ 1. Resume',
-		'    2. Start a new',
-		'    conversation',
+		'    2. Start a new conversation',
+		'       Claude can look this one up if',
+		'       you refer to it later',
 		'',
-		'  Enter to confirm · Esc to resume',
+		'',
+		'',
+		'  Enter to confirm · Esc to',
+		'  resume',
 	].join('\n');
-	// 「Resume」を選んだ後: 確認の文言が会話の本文に残っていても、下に入力欄が出ていれば確認ではない
+	// 答えた後: 見出しと 2 つめの選択肢が会話の本文に別々の行で残り、下に入力欄が出ている
 	const answered = [
-		'● You asked: "Resume this conversation?" or "Start a new conversation"?',
+		'● The dialog said:',
+		'  Resume this conversation?',
+		'  2. Start a new conversation',
 		'',
 		RULE,
 		'❯ ',
 		RULE,
 		'  ⏵⏵ auto mode on (shift+tab to cycle)',
 	].join('\n');
+	// Codex のペインで、同じ文言と操作説明が会話の本文として最下部に出ている
+	const codex = [
+		'• Claude Code shows this when you resume an old conversation:',
+		'  Resume this conversation?',
+		'  1. Resume',
+		'  2. Start a new conversation',
+		'  Enter to confirm · Esc to resume',
+	].join('\n');
 
-	test('finds the prompt, also when it wraps, and not once the prompt box is back', () => {
+	test('finds the prompt by its footer, also when it is tall in a narrow pane, only for Claude Code, and not once the prompt box is back', () => {
 		assert.deepStrictEqual({
-			resume: [paradisScreenShowsClaudeResumePrompt(resumePrompt), paradisScreenShowsAgentPrompt(resumePrompt), paradisScreenShowsPermissionPrompt(resumePrompt)],
-			narrow: paradisScreenShowsClaudeResumePrompt(narrow),
-			answered: [paradisScreenShowsClaudeResumePrompt(answered), paradisScreenShowsAgentPrompt(answered)],
+			resume: [paradisScreenShowsClaudeResumePrompt(resumePrompt), paradisScreenShowsAgentPrompt(resumePrompt, 'claude'), paradisScreenShowsAgentPrompt(resumePrompt), paradisScreenShowsPermissionPrompt(resumePrompt)],
+			narrow: [paradisScreenShowsClaudeResumePrompt(narrow), paradisScreenShowsAgentPrompt(narrow, 'claude')],
+			answered: [paradisScreenShowsClaudeResumePrompt(answered), paradisScreenShowsAgentPrompt(answered, 'claude')],
+			codex: [paradisScreenShowsAgentPrompt(codex, 'codex'), paradisScreenShowsAgentPrompt(codex)],
 		}, {
-			resume: [true, true, false],
-			narrow: true,
+			resume: [true, true, false, false],
+			narrow: [true, true],
 			answered: [false, false],
+			codex: [false, false],
 		});
 	});
 });
