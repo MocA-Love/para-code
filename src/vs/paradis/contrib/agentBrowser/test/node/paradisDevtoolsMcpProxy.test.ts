@@ -1334,4 +1334,142 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			},
 		});
 	});
+
+	suite('recycling and lost children', () => {
+		const tools = { tools: [{ name: 'take_snapshot' }, { name: 'click' }, { name: 'list_console_messages' }] };
+
+		async function waitUntil(condition: () => boolean): Promise<void> {
+			for (let attempt = 0; attempt < 200 && !condition(); attempt++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			assert.ok(condition(), 'condition was not met in time');
+		}
+
+		function textOf(result: unknown): string[] {
+			return ((result as { content?: { text?: string }[] }).content ?? []).map(part => part.text ?? '');
+		}
+
+		test('recycles an idle child over the memory limit, refuses old uids until the next take_snapshot, and notes the lost records once', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools });
+			let rssMib = 2048;
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				healthIntervalMs: 5,
+				recycleQuietMs: 0,
+				readRssMib: async () => rssMib,
+			}));
+			const { result, reports } = await withRecordedReports(async () => {
+				await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+				await waitUntil(() => fixture.children[0].killCount === 1);
+				rssMib = 100;
+				const staleClick = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'click', { uid: '1_4' });
+				const consoleAfter = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'list_console_messages', {});
+				const consoleAgain = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'list_console_messages', {});
+				await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+				const freshClick = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'click', { uid: '1_4' });
+				return { staleClick, consoleAfter, consoleAgain, freshClick };
+			});
+			assert.deepStrictEqual({
+				childCount: fixture.children.length,
+				staleClick: { isError: (result.staleClick as { isError?: boolean }).isError, text: textOf(result.staleClick)[0].startsWith('PARA_BROWSER_STALE_UID: Para Code restarted its embedded DevTools bridge to free memory') },
+				newChildCalls: fixture.children[1].requests.filter(request => request.method === 'tools/call').map(request => (request.params as { name?: string }).name),
+				consoleAfter: textOf(result.consoleAfter).map(text => text.startsWith('Note: Para Code restarted') ? 'note' : text),
+				consoleAgain: textOf(result.consoleAgain),
+				freshClick: textOf(result.freshClick),
+				recycled: reports.filter(report => report.operation === 'devtools-child-recycled').map(report => ({ ...report.extra, duration_ms: typeof report.extra?.duration_ms })),
+			}, {
+				childCount: 2,
+				staleClick: { isError: true, text: true },
+				newChildCalls: ['list_console_messages', 'list_console_messages', 'take_snapshot', 'click'],
+				consoleAfter: ['ok', 'note'],
+				consoleAgain: ['ok'],
+				freshClick: ['ok'],
+				recycled: [{ duration_ms: 'number', safe_recycle_reason: 'memory', safe_calls: 1, safe_rss_mib: 2048 }],
+			});
+		});
+
+		test('never recycles while a call is waiting for the child', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools, hangToolCalls: 1 });
+			let checks = 0;
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				healthIntervalMs: 5,
+				recycleQuietMs: 0,
+				readRssMib: async () => { checks++; return 4096; },
+			}));
+			const call = proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+			await fixture.waitForHungToolCalls(1);
+			await waitUntil(() => checks >= 5);
+			const killedWhileWaiting = fixture.children[0].killCount;
+			fixture.children[0].respondToPendingToolCalls();
+			const result = await call;
+			await waitUntil(() => fixture.children[0].killCount === 1);
+			assert.deepStrictEqual({ killedWhileWaiting, text: textOf(result) }, { killedWhileWaiting: 0, text: ['late'] });
+		});
+
+		test('calls a read-only tool again on a new child when its child dies, and reports the pending tool and the V8 heap figures only', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools, hangToolCalls: 1 });
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				stderrSettleMs: 1000,
+				readRssMib: async () => undefined,
+			}));
+			const { result, reports } = await withRecordedReports(async () => {
+				const call = proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+				await fixture.waitForHungToolCalls(1);
+				const stderr = fixture.children[0].child.stderr as PassThrough;
+				stderr.write('private /Users/alice/project\n[71190:0x1]  11921000 ms: Mark-Compact 4049.2 (4130.5) -> 4033.1 (4131.0) MB, pooled: 0 MB\n');
+				stderr.write('FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n');
+				fixture.children[0].child.emit('exit', null, 'SIGABRT');
+				stderr.end();
+				const retried = await call;
+				// The exit report waits for the rest of stderr, which has ended
+				await new Promise(resolve => setTimeout(resolve, 20));
+				return retried;
+			});
+			assert.deepStrictEqual({
+				text: textOf(result),
+				childCount: fixture.children.length,
+				reports: [...reports].sort((a, b) => a.operation.localeCompare(b.operation)).map(report => ({ operation: report.operation, extra: { ...report.extra, ...(report.extra?.duration_ms !== undefined ? { duration_ms: typeof report.extra.duration_ms } : {}) } })),
+			}, {
+				text: ['ok'],
+				childCount: 2,
+				reports: [{
+					operation: 'devtools-child-exited',
+					extra: { duration_ms: 'number', safe_pending_count: 1, safe_pending_tool: 'take_snapshot', safe_calls: 1, signal: 'SIGABRT', safe_oom_kind: 'heap-limit', safe_heap_before_mib: 4049, safe_heap_after_mib: 4033 },
+				}, {
+					operation: 'devtools-child-exited-retry',
+					extra: { safe_tool_name: 'take_snapshot', safe_retry_succeeded: true },
+				}],
+			});
+			assert.ok(!JSON.stringify(reports).includes('alice'));
+		});
+
+		test('does not call a tool with side effects again when its child dies', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools, hangToolCalls: 1 });
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				stderrSettleMs: 1,
+				readRssMib: async () => undefined,
+			}));
+			const call = proxy.tryCallTool('secret-token', 1, 'ws://one', 'click', { uid: '1_2' });
+			await fixture.waitForHungToolCalls(1);
+			fixture.children[0].child.emit('exit', null, 'SIGABRT');
+			const result = await call;
+			const next = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'click', { uid: '1_2' });
+			assert.deepStrictEqual({
+				first: textOf(result),
+				next: textOf(next).map(text => text.startsWith('PARA_BROWSER_STALE_UID: Para Code\'s embedded DevTools bridge stopped and was started again') ? 'stale' : text),
+				childCount: fixture.children.length,
+			}, {
+				first: ['chrome-devtools tool "click" failed: PARA_BROWSER_RETRYABLE: embedded DevTools bridge terminated; retry'],
+				next: ['stale'],
+				childCount: 1,
+			});
+		});
+	});
 });
