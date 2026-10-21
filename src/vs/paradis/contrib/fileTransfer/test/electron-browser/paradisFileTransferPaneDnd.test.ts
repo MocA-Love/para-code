@@ -37,6 +37,8 @@ function dragEvent(type: 'dragover' | 'drop', external: boolean): DragEvent {
 	if (external) {
 		dataTransfer.items.add(new File(['x'], 'a.txt'));
 		dataTransfer.items.add(new File([], 'folder'));
+		// Finder は名前などの文字列も一緒に持ってくることがある（ファイルの数には入れない）
+		dataTransfer.setData('text/plain', 'a.txt');
 	} else {
 		dataTransfer.setData('text/plain', localEntry.resource.toString());
 	}
@@ -49,17 +51,18 @@ suite('Paradis file transfer - pane drag and drop', () => {
 
 	test('accepts external files only on the remote side, and keeps the drag between the tables', () => {
 		const results: Record<string, { readonly over: boolean; readonly log: readonly string[] }> = {};
-		const cases: [string, 'local' | 'remote', boolean, boolean][] = [
+		const cases: [string, 'local' | 'remote', boolean, boolean, boolean?][] = [
 			['remote / external', 'remote', true, true],
+			['remote / external / no local path', 'remote', true, true, true],
 			['remote / external / disconnected', 'remote', false, true],
 			['local / external', 'local', true, true],
 			['remote / from the left table', 'remote', true, false],
 			['local / from the left table (same side)', 'local', true, false],
 		];
-		for (const [name, side, canReceive, external] of cases) {
+		for (const [name, side, canReceive, external, noPath] of cases) {
 			const log: string[] = [];
 			// フォルダーには大きさも種類も無いが、パスは取れる
-			const dnd = createParadisPaneDragAndDrop(dropTarget(side, canReceive, log), file => `/Users/example/${file.name}`);
+			const dnd = createParadisPaneDragAndDrop(dropTarget(side, canReceive, log), file => noPath ? '' : `/Users/example/${file.name}`);
 			const data: IDragAndDropData = external ? new NativeDragAndDropData() : new ElementsDragAndDropData([localEntry]);
 			const reaction = dnd.onDragOver!(data, undefined, undefined, undefined, dragEvent('dragover', external));
 			dnd.drop(data, undefined, undefined, undefined, dragEvent('drop', external));
@@ -67,6 +70,7 @@ suite('Paradis file transfer - pane drag and drop', () => {
 		}
 		assert.deepStrictEqual(results, {
 			'remote / external': { over: true, log: ['caption 2', 'external /Users/example/a.txt,/Users/example/folder -> /home/dev/project'] },
+			'remote / external / no local path': { over: true, log: ['caption 2', 'external  -> /home/dev/project'] },
 			'remote / external / disconnected': { over: false, log: [] },
 			'local / external': { over: false, log: [] },
 			'remote / from the left table': { over: true, log: ['caption 1', 'entries a.txt -> /home/dev/project'] },
