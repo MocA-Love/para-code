@@ -112,8 +112,12 @@ export function paradisAppendStderrTail(tail: string, chunk: string): string {
 // vendored の uid は `<スナップショットの番号>_<連番>` で、子プロセスごとに番号を 1 から数え直す（TextSnapshot.js）。
 // 入れ替えた後に古い uid がそのまま通ると、新しい子プロセスの別の要素に当たりうる。そこで子プロセスの答えに出る
 // uid に子プロセスごとの印を付けて返し（`2_4` → `k3f9.2_4`）、要求の中の印付きの uid は、印が今の子プロセスの
-// ものなら外して渡し、違えば子プロセスへ渡さずに断る。引数の名前ではなく「印付きの uid の形の文字列」で見るので、
-// evaluate_script の args、take_snapshot の root、今後増える引数も同じに扱える。
+// ものなら外して渡し、そのキーで前に出した印なら子プロセスへ渡さずに断る。引数の名前ではなく「印付きの uid の形の
+// 文字列」で見るので、evaluate_script の args、take_snapshot の root、今後増える引数も同じに扱える。出したことの無い
+// 印の形の文字列（fill の `ver1.2_3` など）は普通の文字列としてそのまま渡す。
+// execute_3p_developer_tool / execute_webmcp_tool は JSON の `"uid": "1_2"` で uid を返す（McpPage.js）ので印が
+// 付かないが、どちらも vendored の既定で無効（--categoryExperimentalThirdParty / --categoryExperimentalWebmcp）で、
+// Para Code は有効にしていない。有効にするときは JSON の uid にも印を付けること。
 
 /** vendored の uid の形。 */
 const RAW_UID = /^\d+_\d+$/;
@@ -124,8 +128,11 @@ const TEXT_UID = /(?<prefix>\buid(?:=|\s"|\s))(?<uid>\d+_\d+)(?![\w.])/g;
 /** スナップショットのファイルの中の uid。 */
 const FILE_UID = /(?<prefix>\buid=)(?<uid>\d+_\d+)(?![\w.])/g;
 
-/** 子プロセスの印を作る（前の印とは必ず変える）。 */
-export function paradisNewUidTag(previous: string | undefined, random: () => number = Math.random): string {
+/** そのキーで覚えておく、前に出した印の数（これより古い印の uid は普通の文字列として渡り、vendored が見つけられずに断る）。 */
+export const PARADIS_UID_TAG_HISTORY = 8;
+
+/** 子プロセスの印を作る（そのキーで前に出した印とは必ず変える）。 */
+export function paradisNewUidTag(used: readonly string[], random: () => number = Math.random): string {
 	const letters = 'abcdefghijklmnopqrstuvwxyz';
 	const alphabet = letters + '0123456789';
 	for (; ;) {
@@ -133,7 +140,7 @@ export function paradisNewUidTag(previous: string | undefined, random: () => num
 		for (let index = 0; index < 3; index++) {
 			tag += alphabet[Math.floor(random() * alphabet.length) % alphabet.length];
 		}
-		if (tag !== previous) {
+		if (!used.includes(tag)) {
 			return tag;
 		}
 	}
@@ -166,15 +173,16 @@ export function paradisTagSnapshotFileText(text: string, tag: string): string {
 }
 
 /**
- * 要求の中の印付きの uid から印を外した写しを返す。印が `tag` と違う uid があれば `stale`（`tag` が無い＝
- * 子プロセスがまだ無いときは、印付きの uid はどれも古い）。印の無い文字列はそのまま渡す。
+ * 要求の中の印付きの uid から印を外した写しを返す。uid として扱うのは、文字列全体が `<印>.<数字>_<数字>` で、
+ * 印がそのキーで出した印（`issued`）のどれかのときだけ。印が `tag`（今の子プロセス）なら外し、ほかの出した印なら
+ * `stale`（`tag` が無い＝子プロセスがまだ無いときは、出した印はどれも古い）。それ以外の文字列はそのまま渡す。
  */
-export function paradisUntagUids(value: unknown, tag: string | undefined): { readonly value: unknown; readonly stale: boolean } {
+export function paradisUntagUids(value: unknown, tag: string | undefined, issued: readonly string[]): { readonly value: unknown; readonly stale: boolean } {
 	let stale = false;
 	const walk = (item: unknown): unknown => {
 		if (typeof item === 'string') {
 			const match = TAGGED_UID.exec(item);
-			if (!match?.groups) {
+			if (!match?.groups || !issued.includes(match.groups.tag)) {
 				return item;
 			}
 			if (match.groups.tag !== tag) {

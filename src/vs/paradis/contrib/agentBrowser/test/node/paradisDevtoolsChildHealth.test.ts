@@ -58,14 +58,16 @@ suite('paradisDevtoolsChildHealth', () => {
 		assert.strictEqual(paradisTagSnapshotFileText('uid=1_1 main\n  uid=1_2 link "uid=1_9"', 'k3f9'), 'uid=k3f9.1_1 main\n  uid=k3f9.1_2 link "uid=k3f9.1_9"');
 	});
 
-	test('takes the mark off the uids of this child anywhere in the arguments, and calls any other mark stale', () => {
+	test('takes the mark off the uids of this child anywhere in the arguments, calls an earlier mark stale, and leaves marks it never gave alone', () => {
+		const issued = ['a000', 'k3f9'];
 		assert.deepStrictEqual([
-			paradisUntagUids({ uid: 'k3f9.2_4', value: '3_5' }, 'k3f9'),
-			paradisUntagUids({ function: '(a, b) => 1', args: ['k3f9.2_4', 'k3f9.2_5'] }, 'k3f9'),
-			paradisUntagUids({ root: 'k3f9.2_4' }, 'k3f9'),
-			paradisUntagUids({ elements: [{ uid: 'a000.2_4', value: 'x' }] }, 'k3f9'),
-			paradisUntagUids({ uid: 'k3f9.2_4' }, undefined),
-			paradisUntagUids({ uid: '2_4', text: 'k3f9 2_4' }, 'k3f9'),
+			paradisUntagUids({ uid: 'k3f9.2_4', value: '3_5' }, 'k3f9', issued),
+			paradisUntagUids({ function: '(a, b) => 1', args: ['k3f9.2_4', 'k3f9.2_5'] }, 'k3f9', issued),
+			paradisUntagUids({ root: 'k3f9.2_4' }, 'k3f9', issued),
+			paradisUntagUids({ elements: [{ uid: 'a000.2_4', value: 'x' }] }, 'k3f9', issued),
+			paradisUntagUids({ uid: 'k3f9.2_4' }, undefined, issued),
+			paradisUntagUids({ uid: '2_4', text: 'k3f9 2_4' }, 'k3f9', issued),
+			paradisUntagUids({ uid: 'k3f9.2_4', value: 'ver1.2_3', text: 'test.10_2' }, 'k3f9', issued),
 		], [
 			{ value: { uid: '2_4', value: '3_5' }, stale: false },
 			{ value: { function: '(a, b) => 1', args: ['2_4', '2_5'] }, stale: false },
@@ -73,12 +75,13 @@ suite('paradisDevtoolsChildHealth', () => {
 			{ value: { elements: [{ uid: 'a000.2_4', value: 'x' }] }, stale: true },
 			{ value: { uid: 'k3f9.2_4' }, stale: true },
 			{ value: { uid: '2_4', text: 'k3f9 2_4' }, stale: false },
+			{ value: { uid: '2_4', value: 'ver1.2_3', text: 'test.10_2' }, stale: false },
 		]);
 	});
 
 	test('gives the next child a different mark', () => {
 		const sequence = [0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0.5, 0.5, 0.5];
-		const tags = [paradisNewUidTag(undefined, () => 0), paradisNewUidTag('aaaa', () => sequence.shift() ?? 0)];
+		const tags = [paradisNewUidTag([], () => 0), paradisNewUidTag(['aaaa'], () => sequence.shift() ?? 0)];
 		assert.deepStrictEqual({ tags, shape: tags.every(tag => /^[a-z][a-z0-9]{3}$/.test(tag)) }, { tags: ['aaaa', 'nsss'], shape: true });
 	});
 

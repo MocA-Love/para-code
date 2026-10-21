@@ -1337,7 +1337,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 	});
 
 	suite('recycling and lost children', () => {
-		const tools = { tools: [{ name: 'take_snapshot' }, { name: 'click' }, { name: 'list_console_messages' }, { name: 'evaluate_script' }] };
+		const tools = { tools: [{ name: 'take_snapshot' }, { name: 'click' }, { name: 'list_console_messages' }, { name: 'evaluate_script' }, { name: 'fill' }, { name: 'type_text' }] };
 
 		async function waitUntil(condition: () => boolean): Promise<void> {
 			for (let attempt = 0; attempt < 200 && !condition(); attempt++) {
@@ -1421,6 +1421,21 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				oldClick: true,
 				newClick: ['ok'],
 				secondChildCalls: [{}, { uid: '1_4' }],
+			});
+		});
+
+		test('passes typed text that only looks like a marked uid unchanged', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools, toolCallResults: [{ content: [{ type: 'text', text: 'uid=1_2 textbox "Version"' }] }] });
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn, newUidTag: used => used.includes('vera') ? 'verb' : 'vera' }));
+			const uid = /uid=(?<uid>\S+)/.exec(textOf(await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {}))[0])?.groups?.uid ?? '';
+			const fill = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'fill', { uid, value: 'ver1.2_3' });
+			const typed = await proxy.tryCallTool('secret-token', 1, 'ws://one', 'type_text', { text: 'test.10_2' });
+			assert.deepStrictEqual({
+				results: [textOf(fill), textOf(typed)],
+				sent: fixture.children[0].requests.filter(request => request.method === 'tools/call').map(request => (request.params as { arguments?: unknown }).arguments),
+			}, {
+				results: [['ok'], ['ok']],
+				sent: [{}, { uid: '1_2', value: 'ver1.2_3' }, { text: 'test.10_2' }],
 			});
 		});
 

@@ -41,7 +41,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
-import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
+import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
@@ -144,7 +144,7 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	/** 子プロセスが落ちたあと、標準エラーの残りを待つ時間（テスト用）。 */
 	readonly stderrSettleMs?: number;
 	/** 子プロセスの uid の印を作る（テスト用。既定は {@link paradisNewUidTag}）。 */
-	readonly newUidTag?: (previous: string | undefined) => string;
+	readonly newUidTag?: (used: readonly string[]) => string;
 }
 
 /** {@link IParadisDevtoolsMcpProxyOptions.resolveRoots} の結果。 */
@@ -299,8 +299,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	private readonly _inFlight = new Map<string, number>();
 	/** 子プロセスを入れ替えたキー（uid と記録が新しい子プロセスに無いことを、エージェントに分かる形で伝える）。 */
 	private readonly _replaced = new Map<string, IReplacedState>();
-	/** キーごとの、最後に起こした子プロセスの uid の印（次の子プロセスには別の印を付ける）。 */
-	private readonly _lastUidTags = new Map<string, string>();
+	/** キーごとの、子プロセスに付けた uid の印（古い順、{@link PARADIS_UID_TAG_HISTORY} 個まで。この印の uid だけを uid として扱う）。 */
+	private readonly _issuedUidTags = new Map<string, string[]>();
 	/** 落ちた子プロセスの標準エラーの残りを待っている後片付け（dispose で打ち切る）。 */
 	private readonly _stderrSettlers = new Set<() => void>();
 	private _disposed = false;
@@ -421,7 +421,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const live = this._children.get(token);
 		const liveTag = live !== undefined && !live.killed && live.generation === generation && live.wsEndpoint === wsEndpoint ? live.uidTag : undefined;
-		if (paradisUntagUids(args, liveTag).stale) {
+		if (paradisUntagUids(args, liveTag, this._issuedUidTags.get(token) ?? []).stale) {
 			// 前の子プロセスの uid（新しい子プロセスは数え直すので、同じ uid が別の要素を指すこともある）。
 			// 子プロセスを起こさず、取り直せば使えることを伝える
 			return this._staleUidResult(token);
@@ -540,7 +540,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 
 	/** tools/call を送り、呼び出しの回数・最後に使った時刻・応答待ちのツール名を子プロセスに控える。 */
 	private async _trackedToolCall(token: string, entry: IChildEntry, name: string, safeToolName: string, toolArgs: unknown, timeoutMs: number, signal: AbortSignal | undefined): Promise<unknown> {
-		const untagged = paradisUntagUids(toolArgs ?? {}, entry.uidTag);
+		const untagged = paradisUntagUids(toolArgs ?? {}, entry.uidTag, this._issuedUidTags.get(token) ?? []);
 		if (untagged.stale) {
 			throw new ParadisDevtoolsStaleUidError();
 		}
@@ -832,7 +832,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		this._snapshots.forget(token);
 		this._snapshotBaselines.forget(token);
 		this._replaced.delete(token);
-		this._lastUidTags.delete(token);
+		this._issuedUidTags.delete(token);
 		this._generationHighWatermarks.delete(token);
 	}
 
@@ -851,7 +851,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._generationHighWatermarks.clear();
 		this._replaced.clear();
-		this._lastUidTags.clear();
+		this._issuedUidTags.clear();
 		for (const settle of [...this._stderrSettlers]) {
 			settle();
 		}
@@ -959,9 +959,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			stderrTail: '',
 			stderrDataListener: undefined,
 			keepStderrOpen: false,
-			uidTag: (this.options.newUidTag ?? paradisNewUidTag)(this._lastUidTags.get(token)),
+			uidTag: (this.options.newUidTag ?? paradisNewUidTag)(this._issuedUidTags.get(token) ?? []),
 		};
-		this._lastUidTags.set(token, entry.uidTag);
+		const issuedTags = [...(this._issuedUidTags.get(token) ?? []), entry.uidTag].slice(-PARADIS_UID_TAG_HISTORY);
+		this._issuedUidTags.set(token, issuedTags);
 		this._childSlots.add(entry);
 
 		entry.stdoutDataListener = (chunk: Buffer) => this._onStdout(token, entry, chunk);
