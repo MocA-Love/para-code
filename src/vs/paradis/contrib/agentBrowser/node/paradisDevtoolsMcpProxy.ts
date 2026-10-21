@@ -28,6 +28,7 @@
 
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import { createHash } from 'crypto';
+import { promises as fsPromises } from 'fs';
 import { tmpdir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -40,7 +41,8 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
-import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools } from './paradisDevtoolsToolAdjustments.js';
+import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
+import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -80,6 +82,12 @@ const ROOTS_RETRY_DELAY_MS = 2_000;
 const MAX_ROOTS_RETRIES = 5;
 const RESOURCE_LIMIT_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge resource limit reached; retry';
 const TERMINATED_ERROR_MESSAGE = 'PARA_BROWSER_RETRYABLE: embedded DevTools bridge terminated; retry';
+/** 落ちた子プロセスの標準エラーの残りを待つ時間の上限。 */
+const STDERR_SETTLE_MS = 1_000;
+/** 答えの uid に印を付けないツール（vendored の uid を出さず、ページの中身をそのまま返すもの）。 */
+const UNTAGGED_RESULT_TOOLS: ReadonlySet<string> = new Set(['evaluate_script', 'list_network_requests', 'get_network_request']);
+/** 印を付け直すスナップショットのファイルの大きさの上限。 */
+const MAX_TAGGED_SNAPSHOT_FILE_BYTES = 64 * 1024 * 1024;
 
 /** MCP `tools/list` が返すツール記述子（未知フィールドはそのまま透過する）。 */
 export interface IParadisProxiedTool {
@@ -125,6 +133,18 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	 * 共有中のタブのフォーカス診断（Sentry のパンくずとまとめのイベント）へ回す。
 	 */
 	readonly onToolFailure?: (token: string, failure: { readonly tool: string; readonly errorKind: string; readonly gateReason?: string }) => void;
+	/** 子プロセスを作り直す目安（テスト用。既定 {@link PARADIS_DEVTOOLS_RECYCLE_LIMITS}）。 */
+	readonly recycleLimits?: IParadisDevtoolsRecycleLimits;
+	/** 最後の呼び出しからこれだけ経つまでは作り直さない（テスト用）。 */
+	readonly recycleQuietMs?: number;
+	/** RSS を測り、作り直すかを確かめる間隔（テスト用）。 */
+	readonly healthIntervalMs?: number;
+	/** 子プロセスの RSS（MiB）を読む（テスト用。既定は `ps`）。 */
+	readonly readRssMib?: (pid: number | undefined) => Promise<number | undefined>;
+	/** 子プロセスが落ちたあと、標準エラーの残りを待つ時間（テスト用）。 */
+	readonly stderrSettleMs?: number;
+	/** 子プロセスの uid の印を作る（テスト用。既定は {@link paradisNewUidTag}）。 */
+	readonly newUidTag?: (used: readonly string[]) => string;
 }
 
 /** {@link IParadisDevtoolsMcpProxyOptions.resolveRoots} の結果。 */
@@ -167,6 +187,33 @@ interface IChildEntry {
 	killTimer: ReturnType<typeof setTimeout> | undefined;
 	idleTimer: ReturnType<typeof setTimeout> | undefined;
 	killed: boolean;
+	/** 起動した時刻（作り直しの寿命に使う）。 */
+	readonly bornAt: number;
+	/** 受けたツール呼び出しの回数。 */
+	calls: number;
+	/** 最後にツール呼び出しが始まった・終わった時刻。 */
+	lastActivityAt: number;
+	/** 今受けているツールの名前（Sentry に載せる固定の名前。落ちたときに応答待ちだったもの）。 */
+	readonly activeTools: string[];
+	/** 最後に測った RSS と、その最大（MiB）。 */
+	rssMib: number | undefined;
+	peakRssMib: number | undefined;
+	healthTimer: ReturnType<typeof setInterval> | undefined;
+	healthCheckRunning: boolean;
+	/** 標準エラーの末尾（外へは出さない。V8 のメモリ不足の数値だけを抜く）。 */
+	stderrTail: string;
+	stderrDataListener: ((chunk: Buffer) => void) | undefined;
+	/** 落ちたあと、標準エラーの残りを読み終えるまで閉じない。 */
+	keepStderrOpen: boolean;
+	/** この子プロセスの uid に付ける印（paradisDevtoolsChildHealth.ts の「uid の世代の印」）。 */
+	readonly uidTag: string;
+}
+
+/** 子プロセスを入れ替えたあとの、そのキーの様子。 */
+interface IReplacedState {
+	readonly reason: ParadisDevtoolsReplacedReason;
+	/** 次に記録を読むツールの結果へ、記録が消えた旨を 1 行添える。 */
+	recordsNote: boolean;
 }
 
 class StaleParadisDevtoolsGenerationError extends Error {
@@ -178,6 +225,20 @@ class StaleParadisDevtoolsGenerationError extends Error {
 class ParadisDevtoolsResourceLimitError extends Error {
 	constructor() {
 		super(RESOURCE_LIMIT_ERROR_MESSAGE);
+	}
+}
+
+/** 子プロセスが自分から（こちらが止めたのではなく）終わり、応答待ちの呼び出しが答えを失った。 */
+class ParadisDevtoolsChildExitedError extends Error {
+	constructor() {
+		super(TERMINATED_ERROR_MESSAGE);
+	}
+}
+
+/** 要求の uid の印が、呼び出す子プロセスのものでない（前の子プロセスの uid）。 */
+class ParadisDevtoolsStaleUidError extends Error {
+	constructor() {
+		super('PARA_BROWSER_STALE_UID');
 	}
 }
 
@@ -234,6 +295,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	/** kill要求済みでも実process exit/errorを観測するまではslotを占有する。 */
 	private readonly _childSlots = new Set<IChildEntry>();
 	private readonly _generationHighWatermarks = new Map<string, number>();
+	/** キーごとの、今走っている tryCallTool の数（0 のときだけ作り直す）。 */
+	private readonly _inFlight = new Map<string, number>();
+	/** 子プロセスを入れ替えたキー（uid と記録が新しい子プロセスに無いことを、エージェントに分かる形で伝える）。 */
+	private readonly _replaced = new Map<string, IReplacedState>();
+	/** キーごとの、子プロセスに付けた uid の印（古い順、{@link PARADIS_UID_TAG_HISTORY} 個まで。この印の uid だけを uid として扱う）。 */
+	private readonly _issuedUidTags = new Map<string, string[]>();
+	/** 落ちた子プロセスの標準エラーの残りを待っている後片付け（dispose で打ち切る）。 */
+	private readonly _stderrSettlers = new Set<() => void>();
 	private _disposed = false;
 	/**
 	 * ツール一覧のキャッシュ（除外前の生リスト）。同じvendoredバイナリ＋同じフラグで起動する
@@ -346,14 +415,35 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (!known) {
 			return undefined;
 		}
-		const startedAt = Date.now();
-		const now = this.options.now ?? Date.now;
-		const budgetStartedAt = now();
-		const safeToolName = vendoredToolName.test(name) ? name : 'other';
 		const prepared = paradisPrepareDevtoolsToolCall(name, args, { measureRoot: this._measuresSnapshotRoot, evaluateObserve: this._evaluateObserves, evaluateDeadline: this._evaluateHasDeadline, timeoutTools: this._timeoutTools });
 		if (prepared.refuse !== undefined) {
 			return { content: [{ type: 'text', text: prepared.refuse }], isError: true };
 		}
+		const live = this._children.get(token);
+		const liveTag = live !== undefined && !live.killed && live.generation === generation && live.wsEndpoint === wsEndpoint ? live.uidTag : undefined;
+		if (paradisUntagUids(args, liveTag, this._issuedUidTags.get(token) ?? []).stale) {
+			// 前の子プロセスの uid（新しい子プロセスは数え直すので、同じ uid が別の要素を指すこともある）。
+			// 子プロセスを起こさず、取り直せば使えることを伝える
+			return this._staleUidResult(token);
+		}
+		this._inFlight.set(token, (this._inFlight.get(token) ?? 0) + 1);
+		try {
+			return await this._callProxiedTool(token, generation, wsEndpoint, name, args, prepared, signal, snapshotDiff);
+		} finally {
+			const remaining = (this._inFlight.get(token) ?? 1) - 1;
+			if (remaining > 0) {
+				this._inFlight.set(token, remaining);
+			} else {
+				this._inFlight.delete(token);
+			}
+		}
+	}
+
+	private async _callProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, prepared: ReturnType<typeof paradisPrepareDevtoolsToolCall>, signal: AbortSignal | undefined, snapshotDiff: ParadisSnapshotDiffMode | undefined): Promise<unknown> {
+		const startedAt = Date.now();
+		const now = this.options.now ?? Date.now;
+		const budgetStartedAt = now();
+		const safeToolName = vendoredToolName.test(name) ? name : 'other';
 		const measuresRoot = this._isRecord(prepared.args) && prepared.args.paraCodeRootRect !== undefined;
 		const snapshotCacheUsable = paradisSnapshotCacheUsable(name, prepared);
 		const snapshotEpoch = this._snapshots.epoch(token);
@@ -370,9 +460,23 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const callTimeoutMs = this.options.callTimeoutMs ?? CALL_TIMEOUT_MS;
 		try {
-			const entry = this._ensureChild(token, generation, wsEndpoint);
-			await this._awaitReady(token, entry, signal);
-			let result = await this._request(token, entry, 'tools/call', { name, arguments: prepared.args ?? {} }, callTimeoutMs, signal);
+			const first = await this._callChildOnce(token, generation, wsEndpoint, name, safeToolName, prepared.args, callTimeoutMs, signal).catch(async error => {
+				// 子プロセスが答える前に落ちた（メモリ不足など）。読むだけのツールは新しい子プロセスで 1 回だけ呼び直す。
+				// uid を使う呼び出しは、新しい子プロセスの印と合わないので取り直しの案内になる（_trackedToolCall）
+				const retryBudgetMs = callTimeoutMs - (now() - budgetStartedAt);
+				if (!(error instanceof ParadisDevtoolsChildExitedError) || !paradisDevtoolsToolIsRetrySafe(name) || signal?.aborted || retryBudgetMs <= 0) {
+					throw error;
+				}
+				this._debug(`[ParadisDevtoolsProxy] ${safeToolName} lost its child for pane ${this._tokenFingerprint(token)}; retrying once on a new one`);
+				const retried = await this._callChildOnce(token, generation, wsEndpoint, name, safeToolName, prepared.args, retryBudgetMs, signal);
+				reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-exited-retry', new Error('chrome-devtools-mcp tool retried after the child exited'), {
+					safe_tool_name: safeToolName,
+					safe_retry_succeeded: !(this._isRecord(retried.result) && retried.result.isError === true),
+				}, 'info');
+				return retried;
+			});
+			const entry = first.producer;
+			let result = first.result;
 			// 結果を返した子プロセス（再試行したら 2 回目のもの）。スナップショットの控えはこれに結び付ける。
 			let producer = entry;
 			const remainingMs = callTimeoutMs - (now() - budgetStartedAt);
@@ -388,7 +492,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				// 起動を待つ間に使い切ったら、呼び直さずに 1 回目の結果を返す。
 				const retryBudgetMs = callTimeoutMs - (now() - budgetStartedAt);
 				if (retryBudgetMs > 0) {
-					result = await this._request(token, retryEntry, 'tools/call', { name, arguments: prepared.args ?? {} }, retryBudgetMs, signal);
+					result = await this._trackedToolCall(token, retryEntry, name, safeToolName, prepared.args, retryBudgetMs, signal);
 					producer = retryEntry;
 					reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-target-closed-retry', new Error('chrome-devtools-mcp tool retried after Target closed'), {
 						safe_tool_name: safeToolName,
@@ -416,11 +520,216 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			// vendored の validatePath に断られたときは、許された場所とパス無しで呼ぶ手を添える
 			const returned = paradisDevtoolsExplainRootsDenial(adjusted, entry.lastRoots) ?? { content: [] };
 			paradisAttachSnapshotRootRect(returned, measured?.rect);
+			this._noteReplacementAfterCall(token, name, returned);
 			return returned;
 		} catch (error) {
+			if (error instanceof ParadisDevtoolsStaleUidError) {
+				return this._staleUidResult(token);
+			}
 			this._reportToolCallFailure(token, safeToolName, error, Date.now() - startedAt, signal);
 			return this._toolCallError(name, error);
 		}
+	}
+
+	/** 子プロセスを用意して 1 回呼ぶ。落ちたときは {@link ParadisDevtoolsChildExitedError} で失敗する。 */
+	private async _callChildOnce(token: string, generation: number, wsEndpoint: string, name: string, safeToolName: string, toolArgs: unknown, timeoutMs: number, signal: AbortSignal | undefined): Promise<{ readonly result: unknown; readonly producer: IChildEntry }> {
+		const entry = this._ensureChild(token, generation, wsEndpoint);
+		await this._awaitReady(token, entry, signal);
+		return { result: await this._trackedToolCall(token, entry, name, safeToolName, toolArgs, timeoutMs, signal), producer: entry };
+	}
+
+	/** tools/call を送り、呼び出しの回数・最後に使った時刻・応答待ちのツール名を子プロセスに控える。 */
+	private async _trackedToolCall(token: string, entry: IChildEntry, name: string, safeToolName: string, toolArgs: unknown, timeoutMs: number, signal: AbortSignal | undefined): Promise<unknown> {
+		const untagged = paradisUntagUids(toolArgs ?? {}, entry.uidTag, this._issuedUidTags.get(token) ?? []);
+		if (untagged.stale) {
+			throw new ParadisDevtoolsStaleUidError();
+		}
+		entry.calls++;
+		entry.lastActivityAt = this._now();
+		entry.activeTools.push(safeToolName);
+		try {
+			const raw = await this._request(token, entry, 'tools/call', { name, arguments: untagged.value }, timeoutMs, signal);
+			if (UNTAGGED_RESULT_TOOLS.has(name)) {
+				return raw;
+			}
+			const tagged = paradisTagChildUids(raw, entry.uidTag);
+			if (name === 'take_snapshot') {
+				await this._tagSnapshotFile(tagged, entry.uidTag);
+			}
+			return tagged;
+		} finally {
+			const index = entry.activeTools.indexOf(safeToolName);
+			if (index >= 0) {
+				entry.activeTools.splice(index, 1);
+			}
+			entry.lastActivityAt = this._now();
+		}
+	}
+
+	/** 入れ替えの後、最初に記録を読むツールの結果へ、入れ替えの前の記録が無いことを 1 回だけ添える。 */
+	private _noteReplacementAfterCall(token: string, name: string, returned: unknown): void {
+		const state = this._replaced.get(token);
+		if (state === undefined || !state.recordsNote || !paradisDevtoolsReadsRecords(name) || !this._isRecord(returned) || !Array.isArray(returned.content)) {
+			return;
+		}
+		returned.content.push({ type: 'text', text: paradisDevtoolsRecordsResetNote(state.reason) });
+		this._replaced.delete(token);
+	}
+
+	/** 前の子プロセスの uid を使う呼び出しへ返す結果。 */
+	private _staleUidResult(token: string): unknown {
+		return { content: [{ type: 'text', text: paradisDevtoolsStaleUidMessage(this._replaced.get(token)?.reason) }], isError: true };
+	}
+
+	/**
+	 * `filePath` に保存したスナップショットの uid にも印を付ける（エージェントがファイルから読んだ uid を
+	 * 前の子プロセスの要素と取り違えないように）。保存先は vendored の答えの `snapshotFilePath`。
+	 */
+	private async _tagSnapshotFile(result: unknown, tag: string): Promise<void> {
+		if (!this._isRecord(result) || result.isError === true || !this._isRecord(result.structuredContent)) {
+			return;
+		}
+		const path = result.structuredContent.snapshotFilePath;
+		if (typeof path !== 'string' || path.length === 0) {
+			return;
+		}
+		try {
+			const stat = await fsPromises.stat(path);
+			if (!stat.isFile() || stat.size > MAX_TAGGED_SNAPSHOT_FILE_BYTES) {
+				return;
+			}
+			const text = await fsPromises.readFile(path, 'utf8');
+			const tagged = paradisTagSnapshotFileText(text, tag);
+			if (tagged !== text) {
+				await fsPromises.writeFile(path, tagged, 'utf8');
+			}
+		} catch {
+			this._warn('[ParadisDevtoolsProxy] Could not mark the uids in a saved snapshot file');
+		}
+	}
+
+	/** そのキーの子プロセスを、エージェントの知らないうちに入れ替えた（作り直した・落ちた・使われず止めた）。 */
+	private _markReplaced(token: string, entry: IChildEntry, reason: ParadisDevtoolsReplacedReason): void {
+		if (this._children.get(token) !== entry) {
+			return;
+		}
+		this._replaced.set(token, { reason, recordsNote: true });
+		this._snapshots.forget(token);
+		this._snapshotBaselines.forget(token);
+	}
+
+	/** RSS を測り、溜まっていれば合間に作り直す。 */
+	private async _checkHealth(token: string, entry: IChildEntry): Promise<void> {
+		if (entry.killed || entry.healthCheckRunning) {
+			return;
+		}
+		entry.healthCheckRunning = true;
+		try {
+			const rssMib = await (this.options.readRssMib ?? paradisReadProcessRssMib)(entry.child.pid);
+			if (entry.killed) {
+				return;
+			}
+			if (rssMib !== undefined) {
+				entry.rssMib = rssMib;
+				entry.peakRssMib = Math.max(entry.peakRssMib ?? 0, rssMib);
+			}
+			this._recycleIfDue(token, entry);
+		} catch {
+			// 測れなくても子プロセスはそのまま使う
+		} finally {
+			entry.healthCheckRunning = false;
+		}
+	}
+
+	/**
+	 * 応答待ちの呼び出しが無く、しばらく呼ばれていない合間だけ作り直す。呼び出しの最中には作り直さない。
+	 * 作り直した子プロセスは止めるだけで、次の呼び出しが新しい子プロセスを起こす（_ensureChild）。
+	 */
+	private _recycleIfDue(token: string, entry: IChildEntry): void {
+		if (entry.killed || this._disposed || this._children.get(token) !== entry) {
+			return;
+		}
+		if (entry.pending.size > 0 || entry.activeTools.length > 0 || (this._inFlight.get(token) ?? 0) > 0) {
+			return;
+		}
+		const now = this._now();
+		if (now - entry.lastActivityAt < (this.options.recycleQuietMs ?? PARADIS_DEVTOOLS_RECYCLE_QUIET_MS)) {
+			return;
+		}
+		const ageMs = now - entry.bornAt;
+		const reason = paradisDevtoolsRecycleReason({ rssMib: entry.rssMib, ageMs, calls: entry.calls }, this.options.recycleLimits ?? PARADIS_DEVTOOLS_RECYCLE_LIMITS);
+		if (reason === undefined) {
+			return;
+		}
+		this._debug(`[ParadisDevtoolsProxy] Recycling chrome-devtools-mcp for pane ${entry.tokenFingerprint} generation=${entry.generation} (${reason})`);
+		reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-recycled', new Error('chrome-devtools-mcp recycled while idle'), {
+			duration_ms: ageMs,
+			safe_recycle_reason: reason,
+			safe_calls: entry.calls,
+			...(entry.rssMib !== undefined ? { safe_rss_mib: entry.rssMib } : {}),
+		}, 'info');
+		this._markReplaced(token, entry, 'recycled');
+		this._killChild(token, entry, `recycled (${reason})`);
+	}
+
+	/**
+	 * 落ちた子プロセスを Sentry へ送る。V8 は落ちる直前に標準エラーへ書くが、終了の知らせの方が先に届くことがあるので、
+	 * 標準エラーが閉じる（か少し待つ）まで待ってから、その末尾の数値だけを載せる。
+	 */
+	private _reportUnexpectedExit(entry: IChildEntry, code: number | null, signal: NodeJS.Signals | null): void {
+		const extra: Record<string, string | number> = {
+			duration_ms: Date.now() - entry.spawnedAt,
+			safe_pending_count: entry.pending.size,
+			safe_pending_tool: entry.activeTools[0] ?? 'none',
+			safe_calls: entry.calls,
+			...(entry.rssMib !== undefined ? { safe_rss_mib: entry.rssMib } : {}),
+			...(entry.peakRssMib !== undefined ? { safe_peak_rss_mib: entry.peakRssMib } : {}),
+			...(typeof code === 'number' ? { exit_code: code } : {}),
+			...(signal ? { signal } : {}),
+		};
+		const stderr = entry.child.stderr;
+		const report = (): void => {
+			entry.keepStderrOpen = false;
+			if (entry.stderrDataListener) {
+				stderr.removeListener('data', entry.stderrDataListener);
+				entry.stderrDataListener = undefined;
+			}
+			try {
+				stderr.destroy();
+			} catch {
+				// 既に閉じていれば無視
+			}
+			const fatal = paradisParseV8FatalStderr(entry.stderrTail);
+			entry.stderrTail = '';
+			reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-exited', new Error('chrome-devtools-mcp exited unexpectedly'), {
+				...extra,
+				...(fatal ? { safe_oom_kind: fatal.kind } : {}),
+				...(fatal?.heapBeforeMib !== undefined ? { safe_heap_before_mib: fatal.heapBeforeMib } : {}),
+				...(fatal?.heapAfterMib !== undefined ? { safe_heap_after_mib: fatal.heapAfterMib } : {}),
+			});
+		};
+		if (stderr.readableEnded || stderr.destroyed) {
+			report();
+			return;
+		}
+		const finish = (): void => {
+			if (this._stderrSettlers.delete(finish)) {
+				clearTimeout(timer);
+				stderr.removeListener('end', finish);
+				stderr.removeListener('close', finish);
+				report();
+			}
+		};
+		this._stderrSettlers.add(finish);
+		entry.keepStderrOpen = true;
+		stderr.once('end', finish);
+		stderr.once('close', finish);
+		const timer = setTimeout(finish, this.options.stderrSettleMs ?? STDERR_SETTLE_MS);
+	}
+
+	/** 作り直しの寿命・合間を測る時計（呼び出しの持ち時間の `options.now` とは別。そちらの読みを減らさないため）。 */
+	private _now(): number {
+		return Date.now();
 	}
 
 	/** Transport succeeded but the tool itself failed (`result.isError`): the text stays with the agent, the bucket goes to Sentry. */
@@ -522,6 +831,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._snapshots.forget(token);
 		this._snapshotBaselines.forget(token);
+		this._replaced.delete(token);
+		this._issuedUidTags.delete(token);
 		this._generationHighWatermarks.delete(token);
 	}
 
@@ -539,6 +850,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._killChild(token, entry, 'service disposed');
 		}
 		this._generationHighWatermarks.clear();
+		this._replaced.clear();
+		this._issuedUidTags.clear();
+		for (const settle of [...this._stderrSettlers]) {
+			settle();
+		}
 		this._snapshots.clear();
 		this._snapshotBaselines.clear();
 		this._toolsCache = undefined;
@@ -632,13 +948,31 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			killTimer: undefined,
 			idleTimer: undefined,
 			killed: false,
+			bornAt: this._now(),
+			calls: 0,
+			lastActivityAt: this._now(),
+			activeTools: [],
+			rssMib: undefined,
+			peakRssMib: undefined,
+			healthTimer: undefined,
+			healthCheckRunning: false,
+			stderrTail: '',
+			stderrDataListener: undefined,
+			keepStderrOpen: false,
+			uidTag: (this.options.newUidTag ?? paradisNewUidTag)(this._issuedUidTags.get(token) ?? []),
 		};
+		const issuedTags = [...(this._issuedUidTags.get(token) ?? []), entry.uidTag].slice(-PARADIS_UID_TAG_HISTORY);
+		this._issuedUidTags.set(token, issuedTags);
 		this._childSlots.add(entry);
 
 		entry.stdoutDataListener = (chunk: Buffer) => this._onStdout(token, entry, chunk);
 		child.stdout.on('data', entry.stdoutDataListener);
-		// 子プロセスのstderrは秘密情報を含み得るため、内容を保持・表示せずdrainだけ行う。
-		child.stderr.resume();
+		// 子プロセスのstderrは秘密情報を含み得るため、表示も送信もしない。末尾だけを手元に置き、落ちたときに
+		// V8 のメモリ不足の行から数値だけを抜く（paradisParseV8FatalStderr）。
+		entry.stderrDataListener = (chunk: Buffer) => {
+			entry.stderrTail = paradisAppendStderrTail(entry.stderrTail, chunk.toString('utf8'));
+		};
+		child.stderr.on('data', entry.stderrDataListener);
 		entry.processErrorListener = (error: Error) => {
 			this._warn(`[ParadisDevtoolsProxy] chrome-devtools-mcp process error for pane ${tokenFingerprint} generation=${generation}`);
 			// spawn failures (ENOENT, EACCES) never reach the exit listener's report; `code` is the errno name only.
@@ -653,14 +987,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			if (!entry.killed) {
 				this._debug(`[ParadisDevtoolsProxy] chrome-devtools-mcp for pane ${tokenFingerprint} generation=${generation} exited (code=${code}, signal=${signal})`);
 				// Not one of our kills (idle, retire, generation change): the bridge died under the agent.
-				reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-exited', new Error('chrome-devtools-mcp exited unexpectedly'), {
-					duration_ms: Date.now() - entry.spawnedAt,
-					safe_pending_count: entry.pending.size,
-					...(typeof code === 'number' ? { exit_code: code } : {}),
-					...(signal ? { signal } : {}),
-				});
+				this._reportUnexpectedExit(entry, code, signal);
+				this._markReplaced(token, entry, 'exited');
+				// 応答待ちの呼び出しは、読むだけのツールなら新しい子プロセスで呼び直す（tryCallTool）
+				this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`, new ParadisDevtoolsChildExitedError());
+			} else {
+				this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`);
 			}
-			this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`);
 			this._releaseChildSlot(entry);
 		};
 		entry.processCloseListener = (code, signal) => {
@@ -672,6 +1005,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		child.on('close', entry.processCloseListener);
 		this._children.set(token, entry);
 		this._resetIdleTimer(token, entry);
+		entry.healthTimer = setInterval(() => void this._checkHealth(token, entry), this._limit(this.options.healthIntervalMs, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS));
 
 		// initialize ハンドシェイク（応答確認後に initialized 通知を送る）
 		entry.ready = this._request(token, entry, 'initialize', {
@@ -1002,6 +1336,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		entry.idleTimer = setTimeout(() => {
 			this._debug(`[ParadisDevtoolsProxy] Killing idle chrome-devtools-mcp for pane ${entry.tokenFingerprint} generation=${entry.generation}`);
+			this._markReplaced(token, entry, 'idle');
 			this._killChild(token, entry, 'idle timeout');
 		}, IDLE_KILL_MS);
 	}
@@ -1044,6 +1379,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			clearTimeout(entry.rootsRetryTimer);
 			entry.rootsRetryTimer = undefined;
 		}
+		if (entry.healthTimer !== undefined) {
+			clearInterval(entry.healthTimer);
+			entry.healthTimer = undefined;
+		}
 		if (entry.stdoutDataListener) {
 			entry.child.stdout.removeListener('data', entry.stdoutDataListener);
 			entry.stdoutDataListener = undefined;
@@ -1066,7 +1405,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 		}
 		entry.pending.clear();
-		for (const stream of [entry.child.stdin, entry.child.stdout, entry.child.stderr]) {
+		if (!entry.keepStderrOpen && entry.stderrDataListener) {
+			entry.child.stderr.removeListener('data', entry.stderrDataListener);
+			entry.stderrDataListener = undefined;
+			entry.stderrTail = '';
+		}
+		// 落ちた子プロセスの標準エラーは、残りを読み終えるまで閉じない（_reportUnexpectedExit が閉じる）
+		for (const stream of entry.keepStderrOpen ? [entry.child.stdin, entry.child.stdout] : [entry.child.stdin, entry.child.stdout, entry.child.stderr]) {
 			try {
 				stream.destroy();
 			} catch {

@@ -226,6 +226,11 @@ export function paradisShouldRetryDevtoolsToolAfterTargetClosed(name: string, re
 	return text !== undefined && /Target closed|Session closed|Connection closed|Session with given id not found/i.test(text);
 }
 
+/** 読むだけで、もう 1 回呼んでも副作用が重ならないツールか（子プロセスが落ちたときの呼び直しに使う）。 */
+export function paradisDevtoolsToolIsRetrySafe(name: string): boolean {
+	return RETRY_SAFE_TOOLS.has(name);
+}
+
 function firstErrorText(result: unknown): string | undefined {
 	if (!isRecord(result) || result.isError !== true || !Array.isArray(result.content)) {
 		return undefined;
