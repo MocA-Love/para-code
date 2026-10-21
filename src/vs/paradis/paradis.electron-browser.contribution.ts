@@ -22,6 +22,7 @@ import './contrib/windowTransparency/electron-browser/paradisFrostedGlassTint.co
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentPreview.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserTabs.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentBrowserOpenedTabs.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserBindingRestore.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentNotes.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowserCursorSettings.contribution.js';
