@@ -12,6 +12,7 @@
 
 import { decodeBase64 } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { FileOperationResult, toFileOperationResult } from '../../../../platform/files/common/files.js';
 
 /** 差分の片側を読んだ結果のうち、無い側の判定に使う部分。 */
@@ -45,6 +46,25 @@ export function resolveParadisOfficeDiffSides<T extends IParadisOfficeDiffSide>(
 	return { original: asEmpty(original, modified), modified: asEmpty(modified, original) };
 }
 
+/**
+ * 読み込みの失敗のうち、理由を利用者向けの文に置き換えられるもの（大きすぎる・見つからない）の文。
+ * それ以外は `undefined`（呼び出し側が扱いを決める）。英語の内部メッセージにはファイルのパスや URI が入るので、
+ * そのまま見せない。
+ */
+export function describeParadisOfficeReadFailure(error: unknown): string | undefined {
+	if (!(error instanceof Error)) {
+		return undefined;
+	}
+	switch (toFileOperationResult(error)) {
+		case FileOperationResult.FILE_TOO_LARGE:
+			return localize('paradis.officeDiff.tooLarge', "ファイルが大きすぎるため比較できません");
+		case FileOperationResult.FILE_NOT_FOUND:
+			return localize('paradis.officeDiff.notFound', "ファイルが見つかりません");
+		default:
+			return undefined;
+	}
+}
+
 /** Word の差分の片側。`bytes` は読めた中身（空のツリーなら 0 バイト）。 */
 export interface IParadisWordDiffSide extends IParadisOfficeDiffSide {
 	readonly bytes?: Uint8Array;
@@ -56,13 +76,12 @@ export interface IParadisWordDiffSide extends IParadisOfficeDiffSide {
  */
 export function resolveParadisWordDiffBytes(original: IParadisWordDiffSide, modified: IParadisWordDiffSide): { readonly original: Uint8Array; readonly modified: Uint8Array } {
 	const sides = resolveParadisOfficeDiffSides(original, modified, () => ({ bytes: paradisEmptyDocxBytes(), absent: true }));
-	const bytesOf = (side: IParadisWordDiffSide): Uint8Array => {
-		if (side.error !== undefined) {
-			throw side.error;
-		}
-		return side.bytes ?? new Uint8Array(0);
-	};
-	return { original: bytesOf(sides.original), modified: bytesOf(sides.modified) };
+	// 両側とも読めないときは、無いのではなく本当に読めなかった側の理由を先に出す（「見つかりません」で隠さない）。
+	const failed = [sides.original, sides.modified].filter(side => side.error !== undefined).sort((a, b) => Number(!!a.absent) - Number(!!b.absent));
+	if (failed.length > 0) {
+		throw failed[0].error;
+	}
+	return { original: sides.original.bytes ?? new Uint8Array(0), modified: sides.modified.bytes ?? new Uint8Array(0) };
 }
 
 /** 段落が 1 つだけの最小の .docx（A4）。無い側の文書として描く。 */

@@ -20,7 +20,7 @@ import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../../fileViewers/common/paradisSpreadsheet.js';
-import { loadParadisSpreadsheetDiffSide, parseSpreadsheetResource, resolveParadisSpreadsheetDiffSides } from '../../fileViewers/electron-browser/paradisSpreadsheetClient.js';
+import { describeParadisSpreadsheetDiffSideFailure, loadParadisSpreadsheetDiffSide, parseSpreadsheetResource, resolveParadisSpreadsheetDiffSides } from '../../fileViewers/electron-browser/paradisSpreadsheetClient.js';
 import { IParadisDiffCell, IParadisDiffRow, IParadisShapeRender, buildDiffSheets, buildShapeDiff } from '../../fileViewers/electron-browser/paradisSpreadsheetDiff.js';
 import {
 	IParadisOverflowItem,
@@ -603,7 +603,7 @@ export async function renderSpreadsheetDiffMobileHtml(
 	const resolved = resolveParadisSpreadsheetDiffSides(sides[0], sides[1]);
 	const reasons = [[resolved.original, originalLabel], [resolved.modified, modifiedLabel]] as const;
 	const failures = reasons.filter(([side]) => side.error !== undefined)
-		.map(([side, label]) => localize('paradis.mobile.spreadsheetDiff.sideFailed', "{0}: {1}", label, side.error instanceof Error ? side.error.message : String(side.error)));
+		.map(([side, label]) => localize('paradis.mobile.spreadsheetDiff.sideFailed', "{0}: {1}", label, describeParadisSpreadsheetDiffSideFailure(side.error)));
 	if (failures.length > 0) {
 		throw new Error(localize('paradis.mobile.spreadsheetDiff.failed', "差分を表示できません。{0}", failures.join(' / ')));
 	}

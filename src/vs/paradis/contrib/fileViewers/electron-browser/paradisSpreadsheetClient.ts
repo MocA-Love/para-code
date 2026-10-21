@@ -18,7 +18,7 @@ import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisDrawingData, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
-import { IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
+import { describeParadisOfficeReadFailure, IParadisOfficeDiffSide, isParadisOfficeEmptyGitRevision, isParadisOfficeRevisionMissing, resolveParadisOfficeDiffSides } from '../common/paradisOfficeDiffSide.js';
 import { ParadisOfficeOpenCache, readParadisOfficeFile } from '../common/paradisOfficeOpenCache.js';
 import { unpackParadisWorkbookStyles, type IParadisPackedWorkbookData } from '../common/spreadsheet/paradisSpreadsheetStyleTable.js';
 import { parseDrawingObjects } from './paradisSpreadsheetDrawings.js';
@@ -229,6 +229,19 @@ export function isParadisSpreadsheetSideAbsent(resource: URI, error: unknown, re
  */
 export function resolveParadisSpreadsheetDiffSides(original: IParadisSpreadsheetDiffSide, modified: IParadisSpreadsheetDiffSide): { readonly original: IParadisSpreadsheetDiffSide; readonly modified: IParadisSpreadsheetDiffSide } {
 	return resolveParadisOfficeDiffSides(original, modified, () => ({ wb: { sheets: [] }, absent: true }));
+}
+
+/**
+ * 片側を読めなかった理由を、ファイルのパスや URI を含まない文にする（スマホへ返す差分のエラー用）。
+ * 内部のメッセージにはファイルのパスや `git:` の URI（query の JSON ごと）、英語の文が入るので載せない。
+ * 大きすぎる・見つからないは決まった文に、xlsx でないファイルは既存の日本語の理由に、それ以外は「読み込めませんでした」に丸める。
+ */
+export function describeParadisSpreadsheetDiffSideFailure(error: unknown): string {
+	if (error instanceof ParadisSpreadsheetNotWorkbookError) {
+		return error.message;
+	}
+	return describeParadisOfficeReadFailure(error)
+		?? localize('paradis.spreadsheet.diffSideUnreadable', "読み込めませんでした（壊れている、またはパスワードで保護されている可能性があります）");
 }
 
 /** 差分の片側を読む。失敗は投げずに `error` に入れ、その版にファイルが無いかどうかも添える。 */
