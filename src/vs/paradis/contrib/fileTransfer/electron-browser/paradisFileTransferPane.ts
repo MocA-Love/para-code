@@ -33,6 +33,7 @@ import { ParadisTransferSide } from '../common/paradisFileTransfer.js';
 import { paradisIsSftpResource } from '../common/paradisSftp.js';
 import { IParadisPaneEntry, paradisFilterEntries, paradisFormatSize, paradisIsHiddenName, paradisSortEntries } from '../common/paradisFileTransferListing.js';
 import { paradisClassifyTransferError, ParadisTransferErrorKind } from '../common/paradisFileTransferQueue.js';
+import { IParadisTransferSource } from '../common/paradisFileTransferQueueTypes.js';
 import { createParadisPaneDragAndDrop, paradisExternalTransferSource } from './paradisFileTransferPaneDnd.js';
 import { paradisHandleFilterKey, ParadisFileTransferPaneOperations } from './paradisFileTransferPaneOperations.js';
 import { ParadisFileTransferPaneTable } from './paradisFileTransferPaneTable.js';
@@ -197,9 +198,10 @@ export class ParadisFileTransferPane extends Disposable {
 		return this.side === 'remote' && this.canReceive();
 	}
 
-	/** その場所（ドラッグの下の要素）で、アプリの外から来たファイルを受けるか。 */
-	acceptsExternalDropAt(node: Node | null): boolean {
-		return !!node && this.tableHost.contains(node) && this.acceptsExternalFiles();
+	/** その場所（ドラッグの下の要素）で、アプリの外から来たファイルを受けるか。受けるのは表の行の領域だけ（列の見出しは受けない）。 */
+	acceptsExternalDropAt(element: HTMLElement | null): boolean {
+		const list = element?.closest('.monaco-list');
+		return !!list && this.tableHost.contains(list) && this.acceptsExternalFiles();
 	}
 
 	private createOperationsContext() {
@@ -686,10 +688,32 @@ export class ParadisFileTransferPane extends Disposable {
 		}
 	}
 
-	/** アプリの外から落とされた手元のファイル・フォルダーを、左の表から送るときと同じ列に積む。 */
+	/**
+	 * アプリの外から落とされた手元のファイル・フォルダーを、左の表から送るときと同じ列に積む。
+	 * 調べられなかったもの（消えた・読めない）は飛ばして知らせ、残りは送る。
+	 */
 	private async uploadExternalFiles(paths: readonly string[], targetDirectory: URI): Promise<void> {
+		if (!paths.length) {
+			this.notificationService.info(localize('paradis.fileTransfer.externalNoPath', "送れるのは Finder などから持ってきた、このマシンのファイルとフォルダーだけです。"));
+			return;
+		}
+		const stats = await Promise.allSettled(paths.map(path => this.fileService.stat(URI.file(path))));
+		const sources: IParadisTransferSource[] = [];
+		const failed: string[] = [];
+		stats.forEach((result, index) => {
+			if (result.status === 'fulfilled') {
+				sources.push(paradisExternalTransferSource(paths[index], result.value));
+			} else {
+				failed.push(basename(URI.file(paths[index])));
+			}
+		});
+		if (failed.length) {
+			this.notificationService.warn(localize('paradis.fileTransfer.externalStatFailed', "次の項目は読めなかったので送りません: {0}", failed.join(', ')));
+		}
+		if (!sources.length) {
+			return;
+		}
 		try {
-			const sources = await Promise.all(paths.map(async path => paradisExternalTransferSource(path, await this.fileService.stat(URI.file(path)))));
 			await this.transferService.transfer(sources, targetDirectory, this.side);
 		} catch (error) {
 			this.notificationService.error(error);

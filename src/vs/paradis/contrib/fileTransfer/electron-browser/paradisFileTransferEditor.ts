@@ -54,6 +54,8 @@ export class ParadisFileTransferEditor extends EditorPane {
 	private orientation: Orientation | undefined;
 	private dimension: dom.Dimension | undefined;
 	private readonly inputStore = this._register(new DisposableStore());
+	/** 前面にある間だけ、エディタグループ（タブの列を含む）に付ける外部ファイルの止め。 */
+	private readonly groupDropGuard = this._register(new MutableDisposable<DisposableStore>());
 	private initialized = false;
 	/** 読み直しを済ませた（終わった）転送の項目。 */
 	private readonly settledItems = new Set<number>();
@@ -122,6 +124,31 @@ export class ParadisFileTransferEditor extends EditorPane {
 		for (const type of [dom.EventType.DRAG_ENTER, dom.EventType.DRAG_OVER, dom.EventType.DRAG_LEAVE, dom.EventType.DROP]) {
 			this._register(dom.addDisposableListener(root, type, guard));
 		}
+	}
+
+	/**
+	 * タブの列などグループの別の所を通って入ると、エディタ領域が dragenter でグループの上に覆いを重ね、
+	 * その後のドラッグは覆い宛てになってこの画面に届かない（落とすとウィンドウが入れ替わる）。
+	 * この画面が前面にある間は、グループで `Files` の dragenter・dragleave を止めて覆いを作らせない。
+	 * タブの列自身の処理は子の要素で先に済んでいる。グループの要素は表示中にしか辿れないので、表示のたびに付け直す。
+	 */
+	protected override setEditorVisible(visible: boolean): void {
+		super.setEditorVisible(visible);
+		const group = visible ? this.root?.closest<HTMLElement>('.editor-group-container') : undefined;
+		if (!group) {
+			this.groupDropGuard.clear();
+			return;
+		}
+		const store = new DisposableStore();
+		const guard = (event: DragEvent) => {
+			if (paradisIsExternalFileDrag(event)) {
+				event.stopPropagation();
+			}
+		};
+		for (const type of [dom.EventType.DRAG_ENTER, dom.EventType.DRAG_LEAVE]) {
+			store.add(dom.addDisposableListener(group, type, guard));
+		}
+		this.groupDropGuard.value = store;
 	}
 
 	/**

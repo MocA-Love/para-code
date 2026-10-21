@@ -31,13 +31,27 @@ export interface IParadisPaneDropTarget {
 	receive(entries: readonly IParadisPaneEntry[], targetDirectory: URI): void;
 	/** アプリの外（Finder など）から来たファイルを受けるか（接続先の側だけ）。 */
 	acceptsExternalFiles(): boolean;
-	/** アプリの外から落とされたファイル・フォルダー（手元の絶対パス）を受ける。 */
+	/** アプリの外から落とされたファイル・フォルダー（手元の絶対パス）を受ける。パスが取れなければ空で呼ぶ。 */
 	receiveExternalFiles(paths: readonly string[], targetDirectory: URI): void;
 }
 
 /** アプリの外（Finder など）からファイルを持ってきたドラッグか。表どうしのドラッグは `Files` を持たない。 */
 export function paradisIsExternalFileDrag(event: DragEvent | undefined): boolean {
 	return !!event && containsDragType(event, DataTransfers.FILES);
+}
+
+/** dragover の間に分かる、持ってきたファイルの数（文字列などの項目は数えない）。 */
+export function paradisExternalFileCount(items: DataTransferItemList | undefined): number {
+	let count = 0;
+	if (!items) {
+		return count;
+	}
+	for (let i = 0; i < items.length; i++) {
+		if (items[i].kind === 'file') {
+			count++;
+		}
+	}
+	return count;
 }
 
 /**
@@ -96,7 +110,7 @@ export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget, get
 			const targetDirectory = targetDirectoryOf(targetElement);
 			// dragover の間は外から来たファイルの中身を読めない（数は items で分かる）
 			const count = paradisIsExternalFileDrag(originalEvent)
-				? (target.acceptsExternalFiles() ? originalEvent?.dataTransfer?.items.length ?? 0 : 0)
+				? (target.acceptsExternalFiles() ? paradisExternalFileCount(originalEvent?.dataTransfer?.items) : 0)
 				: paradisDroppedEntries(data, resource => target.owns(resource))?.length ?? 0;
 			if (!count || !targetDirectory || !target.canReceive()) {
 				target.hideDropCaption();
@@ -118,9 +132,9 @@ export function createParadisPaneDragAndDrop(target: IParadisPaneDropTarget, get
 			}
 			if (paradisIsExternalFileDrag(originalEvent)) {
 				// DataTransfer はイベントを返すと読めなくなるので、ここでパスを取り切る
-				const paths = target.acceptsExternalFiles() ? paradisExternalDropPaths(originalEvent?.dataTransfer?.files, getPath) : [];
-				if (paths.length) {
-					target.receiveExternalFiles(paths, targetDirectory);
+				if (target.acceptsExternalFiles()) {
+					// パスが 1 件も取れなくても渡す（受ける側が「送れない」と知らせる）
+					target.receiveExternalFiles(paradisExternalDropPaths(originalEvent?.dataTransfer?.files, getPath), targetDirectory);
 				}
 				return;
 			}
