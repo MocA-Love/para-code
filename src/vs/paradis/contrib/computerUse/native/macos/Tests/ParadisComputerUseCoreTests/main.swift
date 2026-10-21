@@ -410,6 +410,19 @@ do {
 	let foregroundScroll = FakeRoute(.foreground, requiresForeground: true) { .done(["scrolled": true, "routeNotes": [paradisPointerlessScrollNote]]) }
 	let viaScroll = try? paradisRouteInput(scroll, pid: 100, routes: [axScroll, background, foregroundScroll], options: ParadisInputOptions())
 	check((viaScroll?["routeNotes"] as? [String]) == ["accessibility: scroll needs real input", "background: background input is not available in this version", paradisPointerlessScrollNote], "keeps the note of the route after the skipped routes")
+	// realPointer なら 1・2 段目を飛ばして 3 段目。前面の承認が要るときは何も送らずに止まる
+	var realPointer = ParadisInputOptions()
+	realPointer.realPointer = true
+	let axSkipped = FakeRoute(.accessibility) { .done(["clicked": true]) }
+	let foregroundReal = foreground()
+	let viaReal = try? paradisRouteInput(click, pid: 100, routes: [axSkipped, background, foregroundReal], options: realPointer)
+	check(viaReal?["route"] as? String == "foreground" && axSkipped.performed.isEmpty && foregroundReal.performed == ["click"], "sends a real click when realPointer is requested")
+	check((viaReal?["routeNotes"] as? [String]) == ["accessibility: realPointer was requested", "background: realPointer was requested"], "says that realPointer skipped the earlier routes")
+	realPointer.allowForeground = false
+	let axSkipped2 = FakeRoute(.accessibility) { .done(["clicked": true]) }
+	check(routeErrorCode { try paradisRouteInput(click, pid: 100, routes: [axSkipped2, background, foreground()], options: realPointer) } == "foreground_needs_approval" && axSkipped2.performed.isEmpty, "asks before a requested real click")
+	check((try? paradisParseInputOptions(["realPointer": true]))?.realPointer == true && (try? paradisParseInputOptions([:]))?.realPointer == false, "reads realPointer")
+	check(routeErrorCode { try paradisParseInputOptions(["realPointer": 1]) } == "invalid_argument", "refuses a realPointer that is not a boolean")
 	let axOnly = FakeRoute(.accessibility) { .done(["clicked": true]) }
 	check((try? paradisRouteInput(click, pid: 100, routes: [axOnly], options: ParadisInputOptions()))?.keys.contains("routeNotes") == false, "writes no empty route notes")
 
@@ -585,21 +598,8 @@ do {
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [text, group, webArea], targetIsFrontmost: false) == .none("AXWebArea does not accept AXPress"), "does not climb into a container")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 1, modifiers: [], chain: [ParadisAXElementFacts(role: "AXGroup", actions: ["AXPress"], enabled: false)], targetIsFrontmost: false) == .none("the element is disabled"), "leaves a disabled group to real input")
 	check(paradisAccessibilityClickPlan(button: .left, clickCount: 2, modifiers: [], chain: [pressableGroup], targetIsFrontmost: false) == .none("double and triple clicks need real input"), "double clicks on a group need real input")
-	check(paradisUnlistedPressNote(role: "AXGroup").contains("(AXGroup)") && paradisUnlistedPressNote(role: "AXGroup").contains("click the same element again"), "tells the agent how to get a real click")
+	check(paradisUnlistedPressNote(role: "AXGroup").contains("(AXGroup)") && paradisUnlistedPressNote(role: "AXGroup").contains("\"realPointer\": true"), "tells the agent how to get a real click")
 
-	// 一覧外の AXPress の後に同じ要素をもう一度クリックしたら、本物のクリックへ譲る（1 回だけ）
-	let memory = ParadisUnlistedPressMemory()
-	let pressedAt = Date(timeIntervalSince1970: 1_000)
-	check(!memory.shouldSkip(key: "1:5", now: pressedAt), "presses an element the first time")
-	memory.record(key: "1:5", now: pressedAt)
-	check(!memory.shouldSkip(key: "1:6", now: pressedAt.addingTimeInterval(1)), "presses a different element")
-	check(memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(5)), "sends a real click on the second click of the same element")
-	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(6)), "goes back to AXPress after the real click")
-	memory.record(key: "1:5", now: pressedAt)
-	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(paradisUnlistedPressRetrySeconds + 1)), "forgets an old press")
-	memory.record(key: "1:5", now: pressedAt)
-	memory.forget()
-	check(!memory.shouldSkip(key: "1:5", now: pressedAt.addingTimeInterval(1)), "forgets after another kind of click")
 
 	// メニューを開く操作は、目的のアプリが前面のときだけ 1 段目で送る（レビュー 重大 2）
 	let popUp = ParadisAXElementFacts(role: "AXPopUpButton", actions: ["AXShowMenu", "AXPress"])

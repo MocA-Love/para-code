@@ -54,7 +54,8 @@ final class ParadisForegroundRoute: ParadisInputRoute {
 	}
 
 	func perform(_ action: ParadisInputAction, pid: Int32, options: ParadisInputOptions) throws -> ParadisRouteOutcome {
-		if options.activateFirst {
+		// 承認の直後の送り直し、またはエージェントが実カーソルを明示したとき（前面でなければ前面に出してから送る）
+		if options.activateFirst || options.realPointer {
 			// 承認ダイアログのボタンを押した直後（Para Code が前面で、そのクリックが直前の入力に入る）。入力が止むのを
 			// 待って目的のアプリを前面に出す。前面に出すこと自体が求めた操作なら、それで終わり
 			let windowId: UInt32?
@@ -171,15 +172,6 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 			actionName = "AXPress"
 			unlisted = true
 		}
-		// 一覧外の要素を直前に AXPress で押していたら（何も起きなかったので同じ要素をもう一度クリックした）、本物のクリックへ譲る
-		let unlistedKey = "\(pid):\(CFHash(element))"
-		if unlisted {
-			if desktop.unlistedPressMemory.shouldSkip(key: unlistedKey, now: Date()) {
-				return .fellThrough("the same element was pressed through accessibility a moment ago; sending a real click instead")
-			}
-		} else {
-			desktop.unlistedPressMemory.forget()
-		}
 		// メニューの「ペースト」は、⌘V と同じく利用者のクリップボードを貼るので押さない（レビュー N11）
 		if paradisIsPasteMenuElement(element) {
 			throw ParadisHelperError(code: "key_blocked", message: "Paste menu items are never clicked; use pasteText")
@@ -225,9 +217,6 @@ final class ParadisAccessibilityRoute: ParadisInputRoute {
 		}
 		if uncertainError != nil || unlisted {
 			verified = nil
-		}
-		if unlisted {
-			desktop.unlistedPressMemory.record(key: unlistedKey, now: Date())
 		}
 		let focusPreserved = paradisFocusPreserved(before: focusBefore, after: paradisFocusSnapshot())
 		// 背面のアプリでメニューが開いてしまったら（押したボタンがメニューを出したなど）、利用者の打鍵が項目を選ばないよう閉じる
