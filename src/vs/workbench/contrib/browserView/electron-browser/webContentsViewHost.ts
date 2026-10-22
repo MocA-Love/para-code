@@ -15,6 +15,7 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBrowserViewModel } from '../common/browserView.js';
 import { BrowserOverlayManager, BrowserOverlayType } from './overlayManager.js';
+import { ParadisBrowserContainerFocusGuard, paradisWatchBrowserContainerFocus } from '../../../../paradis/contrib/agentBrowser/browser/paradisBrowserContainerFocusGuard.js'; // PARA-PATCH: keep a click elsewhere in the workbench from sending focus back into the page (Para Code)
 
 const originalHtmlElementFocus = HTMLElement.prototype.focus;
 
@@ -42,6 +43,8 @@ export class WebContentsViewHost extends Disposable {
 	private _showPendingLayout = false;
 	private _pushingBounds = false;
 	private _paradisBoundsPusher: (() => boolean) | undefined;
+	// PARA-PATCH: tells a re-activation focus after a click elsewhere from a deliberate one (Para Code)
+	private readonly _paradisFocusGuard = new ParadisBrowserContainerFocusGuard();
 
 	get screenshotElement(): HTMLElement { return this._placeholderScreenshot; }
 	get pauseElement(): HTMLElement { return this._overlayPauseElement; }
@@ -70,7 +73,13 @@ export class WebContentsViewHost extends Disposable {
 
 	onContainerCreated(container: HTMLElement): void {
 		this._container = container;
-		this._register(addDisposableListener(container, EventType.FOCUS, () => this.tryFocus()));
+		// PARA-PATCH: the document regaining focus re-delivers `focus` to the container; ignore it when the user pressed outside the container (Para Code)
+		this._register(addDisposableListener(container, EventType.FOCUS, () => {
+			if (this._paradisFocusGuard.noteContainerFocusEvent(this.targetWindow.document.hasFocus())) {
+				this.tryFocus(true);
+			}
+		}));
+		this._register(paradisWatchBrowserContainerFocus(this.targetWindow, container, this._paradisFocusGuard, () => this._cancelFocusTimeout()));
 		this._register(addDisposableListener(container, EventType.BLUR, () => this._cancelFocusTimeout()));
 		this._register(registerExternalFocusChecker(() => ({
 			hasFocus: this._model?.focused ?? false,
@@ -105,9 +114,13 @@ export class WebContentsViewHost extends Disposable {
 		this._paradisBoundsPusher = pusher;
 	}
 
-	tryFocus(): boolean {
+	// PARA-PATCH: optional `paradisFromFocusEvent` marks the container's own focus event; any other call is a deliberate focus (Para Code)
+	tryFocus(paradisFromFocusEvent?: boolean): boolean {
 		if (!this._model?.url) {
 			return false;
+		}
+		if (!paradisFromFocusEvent) {
+			this._paradisFocusGuard.noteDeliberateFocus();
 		}
 		this._container?.focus();
 		if (this._focusTimeout || !this._model) {
@@ -115,6 +128,7 @@ export class WebContentsViewHost extends Disposable {
 		}
 		this._focusTimeout = setTimeout(() => {
 			this._focusTimeout = undefined;
+			this._paradisFocusGuard.notePendingFocusSettled(); // PARA-PATCH (Para Code)
 			const targetDocument = this.targetWindow.document;
 			if (!targetDocument.hasFocus() || targetDocument.activeElement !== this._container) {
 				return;
@@ -140,6 +154,12 @@ export class WebContentsViewHost extends Disposable {
 		this._setBackgroundImage(model.screenshot);
 		this._modelStore.add(model.onDidChangeVisibility(() => void this._captureScreenshot()));
 		this._modelStore.add(model.onDidKeyCommand(event => void this._handleKeyEvent(event)));
+		// PARA-PATCH: the page taking focus (the user clicked it) is a deliberate focus (Para Code)
+		this._modelStore.add(model.onDidChangeFocus(({ focused }) => {
+			if (focused) {
+				this._paradisFocusGuard.noteDeliberateFocus();
+			}
+		}));
 		// PARA-PATCH: restartScreenshot is the second argument (the first is the fork's boundsArePushed)
 		this._modelStore.add(model.onDidNavigate(() => this._refresh(false, true)));
 		this._modelStore.add(model.onDidChangeLoadingState(() => this._refresh(false, true)));
@@ -217,7 +237,8 @@ export class WebContentsViewHost extends Disposable {
 			this._showPendingLayout = false;
 			void this._model.setVisible(true);
 			const targetDocument = this.targetWindow.document;
-			if (targetDocument.hasFocus() && targetDocument.activeElement === this._container) {
+			// PARA-PATCH: not when the user's last press was outside the container (Para Code)
+			if (targetDocument.hasFocus() && targetDocument.activeElement === this._container && this._paradisFocusGuard.mayFocusOnShow()) {
 				this.tryFocus();
 			}
 		} else {
@@ -312,6 +333,7 @@ export class WebContentsViewHost extends Disposable {
 	}
 
 	private _cancelFocusTimeout(): void {
+		this._paradisFocusGuard.notePendingFocusSettled(); // PARA-PATCH (Para Code)
 		if (this._focusTimeout) {
 			clearTimeout(this._focusTimeout);
 			this._focusTimeout = undefined;
