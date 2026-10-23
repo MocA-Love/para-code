@@ -26,6 +26,8 @@
 // 起動時に読んだ A の分を足し続ける（`paradisTerminalLayoutStore.ts`）。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { PARADIS_ENDED_PTY_ID, paradisIsIntentionalMissingPtyId } from '../../../../platform/terminal/common/paradisEndedPty.js';
+import { PARADIS_PTY_HOST_STATE_DIR } from '../common/paradisPtyHostPaths.js';
 import { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../common/paradisPtyHandover.js';
 import { IParadisPtyHost } from '../common/paradisPtyProtocol.js';
 import { IParadisAdoptionTarget, paradisAdoptIntoPtyService } from './paradisAdoptIntoPtyService.js';
@@ -46,6 +48,12 @@ let logService: ILogService | undefined;
 const foreign = new Map<number, string>();
 /** 飛ばした端末が居るスペースの、起動時に常駐が持っていた配置（handle で書かれたもの）。 */
 const foreignLayouts = new Map<string, string>();
+
+/**
+ * 最後の引き取りが、常駐の端末を残らず見渡せたか。届かなかった・引き取りに失敗した端末があった回は
+ * false。まだ一度も走っていなければ undefined。
+ */
+let lastRunSawEverything: boolean | undefined;
 
 /** 引き取りは1本ずつ走らせる。並ぶと同じ端末を二重に載せる。 */
 let queue: Promise<unknown> = Promise.resolve();
@@ -78,14 +86,45 @@ export function paradisReadoptFromDaemon(trigger: ParadisPtyAdoptTrigger): Promi
 /**
  * この pty host が持っていない番号の pty を頼まれた（upstream の `_throwIfNoPty`）。SSH 先で、もう無い
  * ターミナルへ窓が題名を送ってくる等で起きる。件数だけを数え、窓が引き継ぎの記録と一緒に送る。
+ *
+ * fork がわざと返した存在しない番号（`paradisEndedPty.ts`）は数えない。繋がないと決めた結果で、
+ * 繋ぎ直しの失敗ではない。理由ごとの件数は窓の側が送る（`paradisEndedTerminalRestore.contribution.ts`）。
  */
-export function paradisCountNoPty(): void {
+export function paradisCountNoPty(id: number): void {
+	if (paradisIsIntentionalMissingPtyId(id)) {
+		return;
+	}
 	reportParadisDiagnosticError('owned', 'pty-host', 'no-pty', new Error('no such pty'), undefined, 'warning');
 }
 
 /** 窓がターミナルへ繋ぎ直そうとして失敗した（upstream の `attachToProcess`）。番号が無ければ `no-pty` としても数える。 */
-export function paradisCountReconnectFailed(error: unknown): void {
+export function paradisCountReconnectFailed(error: unknown, id: number): void {
+	if (paradisIsIntentionalMissingPtyId(id)) {
+		return;
+	}
 	reportParadisDiagnosticError('owned', 'pty-host', 'reconnect-failed', error, undefined, 'warning');
+}
+
+/**
+ * nonce の端末がこの pty host のどこにも居ないときの `getRevivedPtyNewId` の答え。
+ *
+ * **終わっていると言い切れるときだけ** `PARADIS_ENDED_PTY_ID` を返し、それ以外は今まで通り
+ * undefined（窓は保存していた番号で繋ぎに行き、失敗すれば新しいシェルになる）。言い切れないのは、
+ * 常駐を使うはずなのに引き取りがまだ走っていない・常駐に届かなかった・引き取りに失敗した端末が
+ * ある・別の pty host が見ている端末がある、のどれか。どれも端末が常駐の側で生きている見込みがあり、
+ * そこで「終わった」と答えると窓は生きた端末のタブを閉じてしまう。
+ *
+ * @param liveNonces この pty host が今持っている全端末の nonce（呼び出し側で正規化済みのもの）。
+ */
+export function paradisAnswerForMissingNonce(nonce: string, liveNonces: Iterable<string | undefined>): number | undefined {
+	for (const live of liveNonces) {
+		if (live === nonce) {
+			return undefined;
+		}
+	}
+	const daemonExpected = !!process.env[PARADIS_PTY_HOST_STATE_DIR];
+	const sawEverything = lastRunSawEverything ?? !daemonExpected;
+	return sawEverything && foreign.size === 0 ? PARADIS_ENDED_PTY_ID : undefined;
 }
 
 /** 前回からの記録。常駐を使っておらず、記録も無ければ undefined。 */
@@ -102,6 +141,7 @@ export function paradisTakeHandoverReport(): IParadisPtyHandoverReport | undefin
 export function paradisResetReadopt(): void {
 	target = undefined;
 	logService = undefined;
+	lastRunSawEverything = undefined;
 	foreign.clear();
 	foreignLayouts.clear();
 	if (pollTimer !== undefined) {
@@ -150,6 +190,7 @@ async function run(trigger: ParadisPtyAdoptTrigger, ptyService: IParadisAdoption
 	if (trigger !== 'poll' || result.adopted > 0 || result.failed > 0 || !result.reachable) {
 		paradisRecordAdoptionRun(result);
 	}
+	lastRunSawEverything = outcome.reachable && outcome.failed === 0;
 	if (outcome.reachable) {
 		await rememberForeign(outcome.foreign, host, log);
 	}

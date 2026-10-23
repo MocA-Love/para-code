@@ -31,6 +31,7 @@ import { IHistoryService } from '../../../services/history/common/history.js';
 import { getWorkspaceForTerminal } from '../common/terminalEnvironment.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { IStatusbarService } from '../../../services/statusbar/browser/statusbar.js';
+import { paradisNoteRevivedPtyAnswer } from '../../../../paradis/contrib/workspaceSwitch/common/paradisEndedTerminalRestore.js'; // PARA-PATCH: see attachToRevivedProcess
 
 export class RemoteTerminalBackendContribution implements IWorkbenchContribution {
 	static ID = 'remoteTerminalBackend';
@@ -230,8 +231,9 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 
 	// PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means, the same way the local
 	// backend does. Without it a restored tab on a remote host attaches to whatever holds its old
-	// number now. See PtyService#getRevivedPtyNewId.
-	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
+	// number now. See PtyService#getRevivedPtyNewId. `pid` follows upstream's ITerminalBackend
+	// signature; like upstream, the remote backend does not check it.
+	async attachToRevivedProcess(id: number, _pid: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		if (!this._remoteTerminalChannel) {
 			throw new Error(`Cannot create remote terminal when there is no remote!`);
 		}
@@ -248,7 +250,7 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
 				}
 			}
-			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
+			const newId = paradisNoteRevivedPtyAnswer(paradisExpectedNonce, await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce)) ?? id; // PARA-PATCH: keep the answer for the restart that follows a failed attach (paradisEndedTerminalRestore.ts)
 			return await this.attachToProcess(newId);
 		} catch (e) {
 			this._logService.trace(`Couldn't attach to process ${e.message}`);

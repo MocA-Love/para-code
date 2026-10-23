@@ -117,6 +117,17 @@ export function paradisRegisterRestartedTerminalCwdResolver(resolver: ParadisRes
 	});
 }
 
+/** 繋ぎ直しに失敗して新しいシェルを起こすことになった、と知らせを受ける関数。同期で、起動は止めない。 */
+export type ParadisRestartedTerminalListener = (launch: IParadisRestartedTerminalLaunch) => void;
+
+const restartedTerminalListeners = new Set<ParadisRestartedTerminalListener>();
+
+/** 新しいシェルを起こす直前に呼ばれる関数を登録する。返り値を dispose すると外れる。 */
+export function paradisRegisterRestartedTerminalListener(listener: ParadisRestartedTerminalListener): IDisposable {
+	restartedTerminalListeners.add(listener);
+	return toDisposable(() => restartedTerminalListeners.delete(listener));
+}
+
 /**
  * このセッションで、繋ぎ直しに失敗してシェルを起こし直した端末か。
  *
@@ -139,6 +150,13 @@ export function paradisForgetRestartedTerminal(instanceId: number): void {
 export async function paradisPrepareRestartedTerminalLaunch(shellLaunchConfig: IShellLaunchConfig, instanceId: number, nonce: string, remoteAuthority: string | undefined): Promise<void> {
 	restartedTerminalInstanceIds.add(instanceId);
 	const launch: IParadisRestartedTerminalLaunch = { instanceId, nonce, remoteAuthority };
+	for (const listener of [...restartedTerminalListeners]) {
+		try {
+			listener(launch);
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+	}
 	await applyCarryOver(shellLaunchConfig, launch);
 	const resolver = restartedTerminalCwdResolver;
 	// 呼び出し側が開始フォルダを決めているならそれを尊重する。
