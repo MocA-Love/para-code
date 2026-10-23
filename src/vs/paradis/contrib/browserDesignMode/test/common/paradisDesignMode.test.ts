@@ -77,13 +77,15 @@ suite('paradisDesignMode', () => {
 		], [undefined, undefined, undefined]);
 	});
 
-	test('URL は http(s)/file だけ残し、クエリとフラグメントを落とす', () => {
+	test('URL は http(s)/file だけ残し、ユーザー名・パスワード・クエリ・フラグメントを落とす', () => {
 		assert.deepStrictEqual([
 			paradisDesignSanitizeUrl('javascript:alert(1)'),
 			paradisDesignSanitizeUrl('file:///tmp/a.html?x=1'),
 			paradisDesignSanitizeUrl('not a url'),
 			paradisDesignSanitizeUrl('about:blank'),
-		], ['', 'file:///tmp/a.html', '', 'about:blank']);
+			paradisDesignSanitizeUrl('https://user:pass@example.com:8080/a?token=1#top'),
+			paradisDesignSanitizeUrl('http://user@example.com/'),
+		], ['', 'file:///tmp/a.html', '', 'about:blank', 'https://example.com:8080/a', 'http://example.com/']);
 	});
 
 	test('切り抜き範囲をビューポートの内側へ収める', () => {

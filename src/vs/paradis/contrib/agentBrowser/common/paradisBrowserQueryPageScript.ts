@@ -164,6 +164,9 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		}
 		const scope = scopeOf();
 		if (scope === null) { return null; }
+		return findIn(scope);
+	};
+	const findIn = scope => {
 		let list = spec.selector ? selectAll(scope, spec.selector, []) : undefined;
 		if (spec.role) {
 			const role = lower(spec.role);
@@ -176,6 +179,250 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			list = narrowed ? hits : hits.filter(el => !hits.some(other => other !== el && el.contains(other)));
 		}
 		return Array.from(new Set(list || []));
+	};
+
+	// --- what is close to a locator that matched nothing ----------------------------------------
+	// Run once, only after a miss (click_by / fill_by / get_text found nothing, or wait_until timed out). Reads the
+	// DOM once within NEAR_BUDGET_MS (past it, or on any error, there are no candidates and the miss is reported as
+	// before), returns at most NEAR_MAX candidates of at most NEAR_CUT characters (NEAR_EXACT_CUT, uncut, with
+	// "exact"), each checked to match as given, and never reads what is typed in a form field (the value of input /
+	// textarea / select, the content of contenteditable) or attributes of elements that are not shown.
+	const NEAR_MAX = 5;
+	const NEAR_CUT = spec.exact ? 200 : 60;
+	const NEAR_BUDGET_MS = 250;
+	const NEAR_STOP = { nearStop: true };
+	const clock = () => typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+	let nearUntil = Infinity;
+	/** Call in loops: stops the whole search for candidates when it takes too long. */
+	const keepWithinBudget = index => { if ((index & 127) === 0 && clock() > nearUntil) { throw NEAR_STOP; } };
+	/** Attributes used to identify elements; only these are searched for similar values of a selector. */
+	const IDENTIFYING_ATTRIBUTES = new Set(['name', 'role', 'aria-label', 'data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy']);
+	const NOT_SHOWN = 'head, meta, script, style, template, noscript, [aria-hidden="true"], input[type="hidden"], input[type="password"]';
+	const NEAR_SOURCE_MAX = 300;
+	const NEAR_ATTRIBUTES = ['aria-label', 'title', 'alt', 'placeholder'];
+	const FIELD_TAGS = new Set(['input', 'textarea', 'select']);
+	const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template']);
+	const NAMED_ROLES = new Set(['button', 'link', 'heading', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'checkbox', 'radio', 'switch', 'treeitem', 'textbox', 'searchbox', 'combobox', 'listbox', 'spinbutton', 'slider', 'dialog', 'cell', 'columnheader', 'rowheader', 'gridcell']);
+	const fold = value => {
+		let text = String(value === null || value === undefined ? '' : value);
+		try { text = text.normalize('NFKC'); } catch { /* keep as is */ }
+		return text.replace(/\s+/g, '').toLowerCase();
+	};
+	/** Pairs of neighbouring characters, with the start and the end marked (so "Item 3" is closer to "Itme 3" than "Item 1" is). */
+	const pairsOf = value => { const padded = ' ' + value + ' '; const out = new Map(); for (let i = 0; i < padded.length - 1; i++) { const pair = padded.slice(i, i + 2); out.set(pair, (out.get(pair) || 0) + 1); } return out; };
+	/** How close a candidate is to the wanted text (0-1). Both are folded (NFKC, no spaces, lower case). */
+	const closeness = (wanted, wantedPairs, candidate) => {
+		if (!candidate || !wanted) { return 0; }
+		if (candidate.includes(wanted)) { return 1; }
+		if (candidate.length >= 2 && wanted.includes(candidate)) { return 0.5 + 0.4 * candidate.length / wanted.length; }
+		const pairs = pairsOf(candidate);
+		let shared = 0;
+		for (const [pair, count] of wantedPairs) { shared += Math.min(count, pairs.get(pair) || 0); }
+		return 2 * shared / (wanted.length + 1 + candidate.length + 1);
+	};
+	const inField = el => !!(el.closest && el.closest('input, textarea, select')) || !!el.isContentEditable;
+	/** Its text (and so its name) may hold what the user typed: it is or holds a contenteditable or a text area. */
+	const holdsTyping = el => !!el.isContentEditable || !!(el.querySelector && el.querySelector('[contenteditable]:not([contenteditable="false"]), textarea'));
+	const ownText = el => { let out = ''; for (const node of el.childNodes) { if (node.nodeType === 3) { out += node.nodeValue; } } return norm(out); };
+	/** The element itself or a close ancestor with a role that has a name: how to give it as role + name. */
+	const namedControl = el => {
+		let current = el;
+		for (let depth = 0; current && depth < 4; depth++) {
+			if (current.nodeType === 1 && NAMED_ROLES.has(roleOf(current))) { return current; }
+			current = current.parentElement;
+		}
+		return undefined;
+	};
+	/** Cut to NEAR_CUT characters; with "exact" a longer value is left out (a cut value would not match exactly). */
+	const truncate = value => { const text = norm(value); return text.length > NEAR_CUT ? (spec.exact ? '' : text.slice(0, NEAR_CUT)) : text; };
+	/** Elements in the pool whose text or name is close to "wanted", as locators that can be given as they are. */
+	const closeCandidates = (pool, wanted, role) => {
+		const folded = fold(wanted);
+		if (!folded) { return []; }
+		const wantedPairs = pairsOf(folded);
+		const scored = [];
+		for (let index = 0; index < pool.length; index++) {
+			keepWithinBudget(index);
+			const el = pool[index];
+			if (SKIP_TAGS.has(el.localName)) { continue; }
+			if (role) {
+				const value = nameOf(el);
+				const score = closeness(folded, wantedPairs, fold(value.slice(0, NEAR_SOURCE_MAX)));
+				if (score >= 0.35) { scored.push({ el, score, source: 'name', value }); }
+				continue;
+			}
+			if (!FIELD_TAGS.has(el.localName) && !inField(el)) {
+				const value = ownText(el);
+				if (value && value.length <= NEAR_SOURCE_MAX) {
+					const score = closeness(folded, wantedPairs, fold(value));
+					if (score >= 0.35) { scored.push({ el, score, source: 'text', value }); }
+				}
+			}
+			for (const attribute of NEAR_ATTRIBUTES) {
+				const value = norm(el.getAttribute(attribute));
+				if (value && value.length <= NEAR_SOURCE_MAX) {
+					const score = closeness(folded, wantedPairs, fold(value));
+					if (score >= 0.35) { scored.push({ el, score, source: 'attribute', value }); }
+				}
+			}
+		}
+		scored.sort((a, b) => b.score - a.score);
+		const out = [];
+		const seen = new Set();
+		for (let index = 0; index < scored.length; index++) {
+			keepWithinBudget(index);
+			const entry = scored[index];
+			if (out.length >= NEAR_MAX) { break; }
+			if (!visible(entry.el) || holdsTyping(entry.el) || (entry.el.closest && entry.el.closest(NOT_SHOWN))) { continue; }
+			const control = role ? entry.el : namedControl(entry.el);
+			const candidate = {};
+			if (control && !holdsTyping(control)) {
+				// Only a name that finds the element again as given (the same comparison as the search).
+				const name = truncate(nameOf(control));
+				if (name && matches(nameOf(control), name)) { candidate.role = roleOf(control); candidate.name = name; }
+			}
+			if (entry.source === 'text') {
+				// The text the search compares (innerText, and textContent without spaces), not only the element's own text
+				// nodes: "Total: <b>3</b> items" is offered as "Total: 3 items", which matches, not "Total: items".
+				const text = truncate(textOf(entry.el));
+				if (text && squash(entry.el.textContent).includes(squash(text)) && matches(textOf(entry.el), text)) { candidate.text = text; }
+			}
+			if (!candidate.name && !candidate.text) { continue; }
+			const key = JSON.stringify(candidate);
+			if (seen.has(key)) { continue; }
+			seen.add(key);
+			out.push(candidate);
+		}
+		return out;
+	};
+	const countSafe = (root, selector) => { try { return selectAll(root, selector, []).length; } catch { return -1; } };
+	/** Same-origin frames that can be searched, and how many cannot (cross-origin). */
+	const framesOf = () => {
+		const out = { documents: [], crossOrigin: 0 };
+		for (const frame of Array.from(document.querySelectorAll('iframe, frame')).slice(0, 20)) {
+			let inner = null;
+			try { inner = frame.contentDocument; } catch { inner = null; }
+			if (inner && inner.documentElement) { out.documents.push(inner); } else { out.crossOrigin++; }
+		}
+		return out;
+	};
+	/** Why a CSS selector matches nothing: the parts that match nothing, similar ids / classes / attribute values that exist. */
+	const selectorHints = (scope, selector, all) => {
+		const out = {};
+		// Attribute values and :not(...) may hold spaces, ">", "~", "," and dots: set them aside while splitting.
+		const kept = [];
+		const masked = selector.trim().replace(/\[[^\]]*\]|\([^)]*\)/g, part => { kept.push(part); return '\u0001' + (kept.length - 1) + '\u0001'; });
+		if (masked.includes(',')) { return out; }
+		const unmask = value => value.replace(/\u0001(?<index>\d+)\u0001/g, (...args) => kept[Number(args[args.length - 1].index)]);
+		const compounds = masked.split(/\s*[>+~]\s*|\s+/).filter(Boolean).map(unmask);
+		const last = compounds[compounds.length - 1];
+		if (compounds.length > 1 && last) {
+			const count = countSafe(scope, last);
+			if (count > 0) { out.lastPart = { part: last.slice(0, 80), count }; }
+		}
+		const tokens = Array.from(new Set((masked.match(/#[\w-]+|\.[\w-]+/g) || []).concat(kept.filter(part => part[0] === '[')))).slice(0, 12);
+		const missing = tokens.filter(token => countSafe(document, token) === 0);
+		if (missing.length > 0) { out.missingParts = missing.slice(0, NEAR_MAX).map(token => token.slice(0, 80)); }
+		const similar = [];
+		for (const token of missing) {
+			if (similar.length >= NEAR_MAX) { break; }
+			let kind; let wanted; let attribute;
+			if (token[0] === '#') { kind = 'id'; wanted = token.slice(1); }
+			else if (token[0] === '.') { kind = 'class'; wanted = token.slice(1); }
+			else {
+				const parts = /^\[\s*(?<name>[\w:-]+)\s*(?:[~|^$*]?=\s*["']?(?<value>[^"'\]]*)["']?\s*(?:[is])?)?\s*\]$/.exec(token);
+				if (!parts || !parts.groups || !parts.groups.value || !IDENTIFYING_ATTRIBUTES.has(lower(parts.groups.name))) { continue; }
+				kind = 'attribute'; attribute = parts.groups.name; wanted = parts.groups.value;
+			}
+			const folded = fold(wanted);
+			const wantedPairs = pairsOf(folded);
+			/** value -> the elements that have it (a few each), from elements that are not hidden markup. */
+			const holders = new Map();
+			const add = (value, el) => { const list = holders.get(value); if (!list) { holders.set(value, [el]); } else if (list.length < 20) { list.push(el); } };
+			for (let index = 0; index < all.length && holders.size <= 5000; index++) {
+				keepWithinBudget(index);
+				const el = all[index];
+				if (el.closest(NOT_SHOWN)) { continue; }
+				if (kind === 'id') { if (el.id) { add(el.id, el); } }
+				else if (kind === 'class') { if (el.classList) { for (const name of el.classList) { add(name, el); } } }
+				else { const value = el.getAttribute(attribute); if (value) { add(value, el); } }
+			}
+			const ranked = Array.from(holders.keys()).filter(value => value.length <= 120).map(value => ({ value, score: closeness(folded, wantedPairs, fold(value)) })).filter(entry => entry.score >= 0.5).sort((a, b) => b.score - a.score);
+			let offered = 0;
+			for (let index = 0; index < ranked.length && offered < 3; index++) {
+				keepWithinBudget(index);
+				const entry = ranked[index];
+				// Only values shown on the screen (not those of hidden elements).
+				const count = holders.get(entry.value).filter(visible).length;
+				if (count === 0) { continue; }
+				const written = kind === 'id' ? '#' + entry.value : kind === 'class' ? '.' + entry.value : '[' + attribute + '="' + entry.value + '"]';
+				similar.push({ instead: token.slice(0, 80), selector: written.slice(0, 80), count });
+				offered++;
+			}
+		}
+		if (similar.length > 0) { out.similar = similar.slice(0, NEAR_MAX); }
+		return out;
+	};
+	const nearMiss = () => {
+		nearUntil = clock() + NEAR_BUDGET_MS;
+		try {
+			return nearMissWithin();
+		} catch {
+			// Too slow (NEAR_STOP) or anything unexpected: no candidates, the miss is reported as before.
+			return undefined;
+		} finally {
+			nearUntil = Infinity;
+		}
+	};
+	const nearMissWithin = () => {
+		if (spec.targetIndex !== undefined) { return undefined; }
+		const scope = scopeOf();
+		if (scope === null) { return undefined; }
+		const out = {};
+		const all = collect(document, []);
+		let pool;
+		if (spec.selector) {
+			const selected = (() => { try { return selectAll(scope, spec.selector, []); } catch { return null; } })();
+			if (selected === null) { return undefined; }
+			if (selected.length === 0) {
+				Object.assign(out, selectorHints(scope, spec.selector, all));
+			} else if (spec.role || spec.text) {
+				out.selectorMatches = selected.length;
+				pool = Array.from(new Set(selected.concat(selected.slice(0, 200).flatMap(el => collect(el, []))))).slice(0, MAX_ELEMENTS);
+			}
+		}
+		if (!spec.selector || pool) {
+			pool = pool || (scope === document ? all : collect(scope, []));
+			if (spec.role) {
+				const role = lower(spec.role);
+				const sameRole = pool.filter(el => roleOf(el) === role);
+				out.roleCount = sameRole.length;
+				if (spec.name) { out.candidates = closeCandidates(sameRole.slice(0, 2000), spec.name, true); }
+				if (spec.name && out.candidates.length < NEAR_MAX) {
+					const others = closeCandidates(pool, spec.name, false).filter(candidate => candidate.role !== role || !candidate.name);
+					out.candidates = out.candidates.concat(others).slice(0, NEAR_MAX);
+				}
+			} else if (spec.text) {
+				out.candidates = closeCandidates(pool, spec.text, false);
+			}
+		}
+		if (scope !== document) {
+			keepWithinBudget(0);
+			const outside = findIn(document);
+			if (outside && outside.length > 0) { out.outsideWithin = outside.length; }
+		}
+		keepWithinBudget(0);
+		const frames = framesOf();
+		let inFrames = 0;
+		for (const inner of frames.documents) {
+			try {
+				if (spec.selector) { if (!pool) { inFrames += inner.querySelectorAll(spec.selector).length; } }
+				else if (spec.text && inner.body && squash(inner.body.textContent).includes(squash(spec.text))) { inFrames++; }
+			} catch { /* a frame being unloaded */ }
+		}
+		if (inFrames > 0) { out.inFrames = inFrames; }
+		if (frames.crossOrigin > 0) { out.crossOriginFrames = frames.crossOrigin; }
+		return out;
 	};
 
 	const pageScroller = () => document.scrollingElement || document.documentElement;
@@ -249,6 +496,11 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		}
 	}
 
+	// --- wait_until timed out without a match: what is close to the locator (one read) ---------
+	if (spec.mode === 'nearMiss') {
+		return { near: nearMiss() || null };
+	}
+
 	// --- get_text -------------------------------------------------------------------------------
 	if (spec.mode === 'text') {
 		const found = hasLocator ? find() : [document.body || document.documentElement];
@@ -258,7 +510,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			? picked.map((el, index) => '[' + index + '] ' + shortLabel(el) + '\n' + textOf(el))
 			: picked.map(textOf);
 		const combined = parts.join('\n\n');
-		return { matched: found.length, returned: picked.length, total: combined.length, part: combined.slice(spec.offset, spec.offset + spec.maxChars), element: picked.length === 1 ? describe(picked[0]) : undefined };
+		return { matched: found.length, returned: picked.length, total: combined.length, part: combined.slice(spec.offset, spec.offset + spec.maxChars), element: picked.length === 1 ? describe(picked[0]) : undefined, near: hasLocator && found.length === 0 ? nearMiss() : undefined };
 	}
 
 	// --- inspect_element ------------------------------------------------------------------------
@@ -517,7 +769,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 	if (spec.mode === 'locate') {
 		const found = find();
 		if (found === null) { return { withinMissing: true }; }
-		if (found.length === 0) { return { matched: 0 }; }
+		if (found.length === 0) { return { matched: 0, near: nearMiss() }; }
 		let el;
 		if (spec.index !== undefined) {
 			el = found[spec.index];
