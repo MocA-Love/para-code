@@ -985,7 +985,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.userAgentParaCodeToken', "サイトに Para Code だと名乗る"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は新しく開いたタブから反映されます。"),
+		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は開いているタブにも反映されます。"),
 		keywords: 'browser user agent useragent paracode token chrome',
 	},
 	{

@@ -91,6 +91,7 @@ import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
+import { PARADIS_HUMAN_CHECK_POLL_MS, PARADIS_HUMAN_CHECK_TOOLS, ParadisHumanCheckTracker, paradisHumanCheckNotice, paradisParseHumanCheckObservation } from '../common/paradisBrowserHumanCheck.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -842,6 +843,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _siteNotesShown = new Map<string, Set<string>>();
 	/** 詰まった後にうまくいったときの 1 行（Q327 B）を添えるための、タブごとの記録。 */
 	private readonly _siteNudges = new ParadisSiteNudges();
+	/** タブごとに、最後に伝えた人の確認の様子（paradisBrowserHumanCheck.ts）。 */
+	private readonly _humanChecks = new ParadisHumanCheckTracker();
+	/** 通知を出している間のタブの見回り（キーは「ペイン\nタブ」、値は止める関数）。 */
+	private readonly _humanCheckPolls = new Map<string, () => void>();
 	/** サイトの手順（E3）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _siteRecipesEnabled: (() => boolean) | undefined;
 	/** サイトの手順の置き場（paradisBrowserSiteRecipes.ts）。 */
@@ -2165,6 +2170,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// サイトメモを添え終えた控え（E4）
 		this._siteNotesShown?.delete(token);
 		this._siteNudges?.forget(token);
+		this._forgetHumanChecks(token);
 		this._siteNoteSpaces?.delete(token);
 		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
 		this._browserObserver.forget(token);
@@ -4807,6 +4813,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
 				this._siteNotesShown?.delete(ingressLease.token);
 				this._siteNudges?.forget(ingressLease.token);
+				this._forgetHumanChecks(ingressLease.token);
 				this._siteNoteSpaces?.delete(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
@@ -4942,29 +4949,159 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (refusal !== undefined) {
 				return refusal;
 			}
-			const siteNotes = !nested && this._siteNotesEnabled?.() === true;
-			const siteRecipes = !nested && this._siteRecipesEnabled?.() === true;
-			if (siteNotes && PARADIS_SITE_NOTE_TOOL_NAMES.has(name)) {
-				return await this._siteNoteTool(ingressLease, name, params?.arguments, socket, signal);
-			}
-			if (siteRecipes && PARADIS_SITE_RECIPE_TOOL_NAMES.has(name)) {
-				return await this._siteRecipeTool(ingressLease, name, params?.arguments, socket, signal);
-			}
-			if ((siteNotes || siteRecipes) && PARADIS_SITE_NUDGE_ACTION_TOOLS.has(name)) {
-				// 詰まった後にうまくいったら、分かったことを残せると 1 行添える（Q327 B）
-				const result = PARADIS_SITE_NOTE_HINT_TOOLS.has(name)
-					? await this._withSiteHints(ingressLease, name, params?.arguments, await this._callToolDispatch(ingressLease, name, params, signal, socket, nested), { notes: siteNotes, recipes: siteRecipes }, signal)
-					: await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
-				return this._withSiteNudge(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes });
-			}
-			if ((siteNotes || siteRecipes) && PARADIS_SITE_NOTE_HINT_TOOLS.has(name)) {
-				// そのサイトを初めて使った結果に、残されたメモ（E4）と保存した手順の名前（E3）を添える
-				const result = await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
-				return await this._withSiteHints(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes }, signal);
-			}
-			return await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
+			const result = await this._callToolRouted(ingressLease, name, params, signal, socket, nested);
+			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
+			return nested ? result : await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal);
 		} finally {
 			pacing.dispose();
+		}
+	}
+
+	/** {@link _callTool} の続き（サイトメモ・手順・観測を添えるかを決めて道具を呼ぶ）。 */
+	private async _callToolRouted(ingressLease: IParadisAgentBrowserIngressLease, name: string, params: { name?: unknown; arguments?: unknown } | undefined, signal: AbortSignal | undefined, socket: Socket | undefined, nested: boolean | undefined): Promise<unknown> {
+		const siteNotes = !nested && this._siteNotesEnabled?.() === true;
+		const siteRecipes = !nested && this._siteRecipesEnabled?.() === true;
+		if (siteNotes && PARADIS_SITE_NOTE_TOOL_NAMES.has(name)) {
+			return await this._siteNoteTool(ingressLease, name, params?.arguments, socket, signal);
+		}
+		if (siteRecipes && PARADIS_SITE_RECIPE_TOOL_NAMES.has(name)) {
+			return await this._siteRecipeTool(ingressLease, name, params?.arguments, socket, signal);
+		}
+		if ((siteNotes || siteRecipes) && PARADIS_SITE_NUDGE_ACTION_TOOLS.has(name)) {
+			// 詰まった後にうまくいったら、分かったことを残せると 1 行添える（Q327 B）
+			const result = PARADIS_SITE_NOTE_HINT_TOOLS.has(name)
+				? await this._withSiteHints(ingressLease, name, params?.arguments, await this._callToolDispatch(ingressLease, name, params, signal, socket, nested), { notes: siteNotes, recipes: siteRecipes }, signal)
+				: await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
+			return this._withSiteNudge(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes });
+		}
+		if ((siteNotes || siteRecipes) && PARADIS_SITE_NOTE_HINT_TOOLS.has(name)) {
+			// そのサイトを初めて使った結果に、残されたメモ（E4）と保存した手順の名前（E3）を添える
+			const result = await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
+			return await this._withSiteHints(ingressLease, name, params?.arguments, result, { notes: siteNotes, recipes: siteRecipes }, signal);
+		}
+		return await this._callToolDispatch(ingressLease, name, params, signal, socket, nested);
+	}
+
+	/**
+	 * タブを操作・移動させる道具の後に、人の確認（Cloudflare）が出ていないかを見る（paradisBrowserHumanCheck.ts）。
+	 * 伝える必要があれば結果の末尾に 1 文足し、ユーザーへの通知を出す・閉じる。
+	 * 見られなかったとき（共有が無い・main が答えない）は結果を変えない。
+	 */
+	private async _withHumanCheck(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+		if (!PARADIS_HUMAN_CHECK_TOOLS.has(name) || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content) || signal?.aborted) {
+			return result;
+		}
+		try {
+			const token = ingressLease.token;
+			const tabId = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token);
+			const binding = tabId !== undefined ? this._scopeBinding(token, tabId) : this._bindings.get(token);
+			if (!binding) {
+				return result;
+			}
+			const key = `${token}\n${binding.pageId}`;
+			const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<unknown>('detectExactViewHumanCheck', [binding.exactView, this._humanChecks.has(key)]);
+			if (!this.isIngressLeaseCurrent(ingressLease)) {
+				return result;
+			}
+			// 見られなかった（unknown）ときは状態を変えない
+			const update = this._humanChecks.observe(key, paradisParseHumanCheckObservation(raw));
+			if (update.notify !== undefined) {
+				this._sendHumanCheckNote(token, binding.pageId, update.notify);
+				this._startHumanCheckPoll(token, binding);
+			} else if (update.close) {
+				this._sendHumanCheckNote(token, binding.pageId, null);
+			}
+			if (update.notice === undefined) {
+				return result;
+			}
+			const typed = result as { content: unknown[] };
+			return { ...typed, content: [...typed.content, { type: 'text', text: paradisHumanCheckNotice(update.notice, binding.pageId) }] };
+		} catch {
+			return result;
+		}
+	}
+
+	/**
+	 * ユーザーへの人の確認の通知を出す（`kind`）・閉じる（null）。つなぎ直し・ペインの終了のときにも呼ぶので、
+	 * ingress lease を求めずにペインのウィンドウへ直接送る。届かなくても何もしない。
+	 */
+	private _sendHumanCheckNote(token: string, tabId: string, kind: string | null): void {
+		try {
+			const remoteWindowCtx = this._remotePaneWindows.get(token);
+			const windowCtx = this._paneShells.get(token)?.windowCtx ?? remoteWindowCtx;
+			if (windowCtx === undefined || !this.ipcServer.connections.some(connection => connection.ctx === windowCtx)) {
+				return;
+			}
+			const channel = this.ipcServer.getChannel(PARADIS_AGENT_BROWSER_TABS_CHANNEL, client => client.ctx === windowCtx);
+			void channel.call(ParadisAgentTabMethod.NoteHumanCheck, [token, tabId, kind]).catch(() => undefined);
+		} catch {
+			// 通知は道具の結果を変えない
+		}
+	}
+
+	/**
+	 * 通知を出している間、そのタブを {@link PARADIS_HUMAN_CHECK_POLL_MS} ごとに見直す。エージェントが別のタブを待っている・
+	 * 止まっているときも、通ったら通知を閉じる（次の道具の結果に「通った」を足す）。共有が外れたら閉じて止める。
+	 */
+	private _startHumanCheckPoll(token: string, binding: IBindingEntry): void {
+		const key = `${token}\n${binding.pageId}`;
+		if (this._humanCheckPolls.has(key)) {
+			return;
+		}
+		let running = false;
+		const stop = () => {
+			clearInterval(timer);
+			if (this._humanCheckPolls.get(key) === stop) {
+				this._humanCheckPolls.delete(key);
+			}
+		};
+		const timer = setInterval(async () => {
+			if (running) {
+				return;
+			}
+			running = true;
+			try {
+				if (await this._pollHumanCheckOnce(token, binding)) {
+					stop();
+				}
+			} finally {
+				running = false;
+			}
+		}, PARADIS_HUMAN_CHECK_POLL_MS);
+		this._humanCheckPolls.set(key, stop);
+	}
+
+	/** 見回りの 1 回。見回りをやめるなら true。 */
+	private async _pollHumanCheckOnce(token: string, binding: IBindingEntry): Promise<boolean> {
+		const key = `${token}\n${binding.pageId}`;
+		if (!this._humanChecks.isNotified(key)) {
+			return true;
+		}
+		if (this._scopeBinding(token, binding.pageId) !== binding) {
+			this._humanChecks.forgetTab(key);
+			this._sendHumanCheckNote(token, binding.pageId, null);
+			return true;
+		}
+		const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+			.call<unknown>('detectExactViewHumanCheck', [binding.exactView, true]).catch(() => undefined);
+		// 確かに無いと分かったときだけ閉じる（時間切れ・読み込み中・失敗の unknown では何も変えない）
+		if (paradisParseHumanCheckObservation(raw).state === 'none' && this._humanChecks.markPassed(key)) {
+			this._sendHumanCheckNote(token, binding.pageId, null);
+			return true;
+		}
+		return false;
+	}
+
+	/** そのペインの人の確認の控えを忘れ、出している通知を閉じる（つなぎ直し・ペインの終了）。 */
+	private _forgetHumanChecks(token: string): void {
+		for (const tabId of this._humanChecks?.forget(token) ?? []) {
+			this._sendHumanCheckNote(token, tabId, null);
+		}
+		for (const [key, stop] of [...this._humanCheckPolls ?? []]) {
+			if (key.startsWith(`${token}\n`)) {
+				stop();
+			}
 		}
 	}
 
@@ -7310,6 +7447,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// observe an invalid authority synchronously and cannot refresh into a replacement owner.
 		this._serverDisposed = true;
 		this._authorityFaulted = true;
+		for (const stop of [...this._humanCheckPolls?.values() ?? []]) {
+			stop();
+		}
 		for (const controller of [...this._activeRequestControllers]) {
 			try {
 				controller.abort();

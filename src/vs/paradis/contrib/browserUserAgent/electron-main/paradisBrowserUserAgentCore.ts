@@ -34,8 +34,9 @@ function apply(entry: IConfiguredSession, session: Session, configurationService
 
 /**
  * 内蔵ブラウザ用の Electron セッションの UA を Chrome 風に書き換える。
- * `paradis.browser.userAgent.includeParaCodeToken` の変更は、以後に開くタブへ反映する
- * （Electron の仕様で、既に開いている WebContents の UA は変わらない）。
+ * `paradis.browser.userAgent.includeParaCodeToken` を変えると、セッションの UA を組み立て直す。Electron の仕様で
+ * 既に開いている WebContents の UA は変わらないので、開いているタブへの当て直しは paradisChromeIdentity.ts が行う
+ * （この購読の後に届く）。
  */
 export function paradisConfigureBrowserUserAgentWithAppName(session: Session, configurationService: IConfigurationService, appName: string): void {
 	if (configuredSessions.has(session)) {

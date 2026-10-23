@@ -17,6 +17,7 @@ import { IMainProcessService } from '../../../../../platform/ipc/common/mainProc
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../../platform/native/common/native.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
+import { INotification, INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewEditorOpenOptions, IBrowserViewOwner } from '../../../../../platform/browserView/common/browserView.js';
 import { BrowserViewSharingState, IBrowserViewOpenHandler, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
@@ -48,6 +49,17 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 	const assigned: [string, string][] = [];
 	const opened: { id: string; inactive: boolean | undefined; preserveFocus: boolean | undefined; group: number }[] = [];
 	const handlers: IBrowserViewOpenHandler[] = [];
+	const switched: string[] = [];
+	const notifications: { message: string; actions: string[]; run: () => unknown; closed: boolean }[] = [];
+	const notificationService = {
+		notify: (notification: INotification) => {
+			const onDidClose = store.add(new Emitter<void>());
+			const primary = notification.actions?.primary ?? [];
+			const entry = { message: String(notification.message), actions: primary.map(action => action.label), run: () => primary[0]?.run(), closed: false };
+			notifications.push(entry);
+			return { onDidClose: onDidClose.event, close: () => { if (!entry.closed) { entry.closed = true; onDidClose.fire(); } } };
+		},
+	} as unknown as INotificationService;
 	const group = { id: 1, editors: [] as BrowserEditorInput[], contains: (editor: BrowserEditorInput) => group.editors.includes(editor), isEmpty: true };
 	const part = {
 		getSize: () => ({ width: 1600, height: 900 }),
@@ -127,6 +139,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 			onDidChange: Event.None,
 			getBindingsForToken: () => [],
 			getAgentTabsForToken: () => [],
+			getPanes: () => [],
 			grantAgentTab: async () => true,
 			revokeAgentTab: async () => undefined,
 		} as unknown as IParadisAgentBrowserBindingModel,
@@ -144,6 +157,12 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 			get isSwitching() { return switchState.isSwitching; },
 			repositories: [{ id: 'space-a', name: 'a' }, { id: PANE_SPACE, name: 'b' }],
 			onDidSwitchScope: onDidSwitchScope.event,
+			switchToStateKey: async (stateKey: string) => {
+				switched.push(stateKey);
+				switchState.activeStateKey = stateKey;
+				onDidSwitchScope.fire(stateKey);
+				await timeout(5);
+			},
 		} as unknown as IParadisWorkspaceSwitchService,
 		{ getWorktrees: () => [] } as unknown as IParadisWorktreeService,
 		{ getPinnedParts: () => [] } as unknown as IParadisAuxiliaryWindowScopeService,
@@ -155,6 +174,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 		{ getValue: () => undefined } as unknown as IConfigurationService,
 		{ onWillShutdown: onWillShutdown.event } as unknown as ILifecycleService,
 		{ getContainer: () => undefined } as unknown as IWorkbenchLayoutService,
+		notificationService,
 	));
 
 	/** ユーザーがペインのスペースへ戻る（切り替えの完了を通知し、置く処理が走るのを待つ）。 */
@@ -170,7 +190,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 		const allowed = handlers.every(handler => handler.shouldOpenEditor(child.input, { type: 'user' } as IBrowserViewOwner, editorOptions));
 		return { child, allowed };
 	};
-	return { service, switchState, tabs, assigned, opened, handlers, onWillShutdown, switchBack, openChild };
+	return { service, switchState, tabs, assigned, opened, handlers, onWillShutdown, switchBack, openChild, notifications, switched };
 }
 
 suite('ParadisAgentBrowserTabsService tabs for a space that is not on screen', () => {
@@ -290,6 +310,36 @@ suite('ParadisAgentBrowserTabsService tabs for a space that is not on screen', (
 			closed: [false, false, false, false, false, true, true],
 			closedWaitingPages: 2,
 			again: undefined,
+		});
+	});
+
+	test('notifies about a Cloudflare check on the agent tab and opens the tab, switching to its space, only when the user asks', async () => {
+		const harness = createHarness(store.add(new DisposableStore()));
+		await harness.service.openTab(TOKEN, undefined, false);
+		harness.service.noteHumanCheck(TOKEN, 'view-1', 'page');
+		const openedBeforeClick = harness.opened.length;
+		// 見えていないスペースのタブ: 押したときにそのスペースへ切り替えて開く
+		await harness.notifications[0].run();
+		const switched = [...harness.switched];
+		// 種類が変わったら出し直す
+		harness.service.noteHumanCheck(TOKEN, 'view-1', 'widget');
+		// 通った
+		harness.service.noteHumanCheck(TOKEN, 'view-1', undefined);
+		// このペインのタブでないものには出さない
+		harness.service.noteHumanCheck(TOKEN, 'someone-else', 'page');
+		assert.deepStrictEqual({
+			openedBeforeClick,
+			switched,
+			openedAfterClick: harness.opened.map(entry => entry.id),
+			notifications: harness.notifications.map(n => ({ actions: n.actions.length, closed: n.closed, mentionsCloudflare: n.message.includes('Cloudflare') })),
+		}, {
+			openedBeforeClick: 0,
+			switched: [PANE_SPACE],
+			openedAfterClick: ['view-1', 'view-1'],
+			notifications: [
+				{ actions: 1, closed: true, mentionsCloudflare: true },
+				{ actions: 1, closed: true, mentionsCloudflare: true },
+			],
 		});
 	});
 });

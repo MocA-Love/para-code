@@ -134,11 +134,12 @@ export function paradisSerializeClientHintBrands(list: readonly IParadisUserAgen
  * 既定の UA（`Electron/` 入り）のとき。後者は Service Worker のリクエストで、Electron はセッションの UA ではなく
  * アプリ全体の既定の UA を付けるので、User-Agent もこの内蔵ブラウザの UA に直す。
  * デバイスのエミュレーション（スマホの UA など）中のリクエストは、その UA に合った値のまま残す。
+ * `rewriteDefaultUserAgent` が false のとき（端末のエミュレーション中）は、後者を直さない。
  * 変えるものが無ければ undefined。
  */
-export function paradisRewriteClientHintHeaders(headers: Record<string, string>, expectedUserAgent: string, fullVersion: string): Record<string, string> | undefined {
+export function paradisRewriteClientHintHeaders(headers: Record<string, string>, expectedUserAgent: string, fullVersion: string, rewriteDefaultUserAgent = true): Record<string, string> | undefined {
 	const userAgentKey = Object.keys(headers).find(k => k.toLowerCase() === 'user-agent');
-	if (!userAgentKey || (headers[userAgentKey] !== expectedUserAgent && !/\sElectron\//.test(headers[userAgentKey]))) {
+	if (!userAgentKey || (headers[userAgentKey] !== expectedUserAgent && !(rewriteDefaultUserAgent && /\sElectron\//.test(headers[userAgentKey])))) {
 		return undefined;
 	}
 	const lists = paradisChromeBrandLists(fullVersion);
