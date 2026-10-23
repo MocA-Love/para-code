@@ -28,7 +28,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisClaudeResumeScreenPrompt, paradisScreenShowsAgentPrompt, paradisVisibleTerminalText, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCollectAllTerminalInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneSession } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -192,8 +192,8 @@ function requireString(value: unknown, name: string, limit: number): string {
 	return value;
 }
 
-/** 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、再開の確認で止まっていれば 'resume-prompt'、待ちきれなければ 'timeout'。 */
-async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex'): Promise<'ready' | 'trust' | 'resume-prompt' | 'timeout' | 'gone'> {
+/** 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、開き直した直後の確認で止まっていればその種類、待ちきれなければ 'timeout'。 */
+async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex'): Promise<'ready' | 'trust' | { readonly resumePrompt: ParadisClaudeResumeScreenPrompt } | 'timeout' | 'gone'> {
 	const deadline = Date.now() + RESUME_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		if (instance.isDisposed) {
@@ -205,8 +205,9 @@ async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 
 			return 'trust';
 		}
 		// 長く使っていない会話では、Claude Code が再開してよいかを聞く（PC で選ぶまで入力欄が出ない）
-		if (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen)) {
-			return 'resume-prompt';
+		const resumePrompt = agent === 'claude' ? paradisClaudeResumeScreenPrompt(screen) : undefined;
+		if (resumePrompt !== undefined) {
+			return { resumePrompt };
 		}
 		if (state === 'ready') {
 			return 'ready';
@@ -389,8 +390,8 @@ async function resumeFromMobile(
 			reply({ status: 'needs-trust', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'PC でフォルダを信頼するかの確認が出ています。PC で答えてから送ってください' });
 			return;
 		}
-		if (readiness === 'resume-prompt') {
-			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。PC で選んでから、会話の画面から送ってください' });
+		if (typeof readiness === 'object') {
+			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: `PC の Claude Code で${PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES[readiness.resumePrompt]}が出ています。PC で選んでから、会話の画面から送ってください` });
 			return;
 		}
 		reply({
