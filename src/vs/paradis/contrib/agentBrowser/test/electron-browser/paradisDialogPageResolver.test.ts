@@ -25,6 +25,7 @@ import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBrowserShareStateFeature } from '../../electron-browser/paradisBrowserShareState.js';
+import { paradisShareButtonCount, paradisShareButtonEntries } from '../../electron-browser/paradisBrowserShareButton.js';
 import { IParadisDialogPageCandidate, paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisGetPaneQuickPickState, paradisResolveDialogPage, paradisResolveToolbarPage, paradisRunDialogBind } from '../../electron-browser/paradisDialogPageResolver.js';
 import { resolveDialogPageModel, resolveToolbarPageModel } from '../../electron-browser/paradisDialogPageModelResolver.js';
 
@@ -318,6 +319,23 @@ suite('paradisResolveDialogPage', () => {
 		}
 		assert.deepStrictEqual(restored, ['A']);
 		store.dispose();
+	});
+
+	// ボタンの数: 台帳のペイン。台帳に無いのに共有の印があれば Copilot だけと共有（1 件）。印が付かない状態では数えない
+	test('counts the panes of the ledger, and a page shared only with Copilot as one entry', () => {
+		const pane = { token: 'pane', kind: 'user' as const };
+		const cases = [
+			paradisShareButtonEntries([pane], BrowserViewSharingState.Shared),
+			paradisShareButtonEntries([], BrowserViewSharingState.Shared),
+			paradisShareButtonEntries([], BrowserViewSharingState.Available),
+			paradisShareButtonEntries([], BrowserViewSharingState.Unavailable),
+		];
+		assert.deepStrictEqual(cases.map(entries => ({ copilot: entries.copilot, count: paradisShareButtonCount(entries) })), [
+			{ copilot: false, count: 1 },
+			{ copilot: true, count: 1 },
+			{ copilot: false, count: 0 },
+			{ copilot: false, count: 0 },
+		]);
 	});
 
 	test('catches dialog bind failures and reports them without rejecting', async () => {

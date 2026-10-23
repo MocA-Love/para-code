@@ -13,7 +13,11 @@
 // 共有したページから開いたタブのペインも数える）、共有が無いときはバッジを出さない。
 //
 // 共有が無いときに押すと、今までどおり共有のダイアログを開く。共有があるときは一覧（ペインの名前・エージェント・
-// 共有の種類と、ペインごとの「共有を解く」、「ほかのペインと共有」）を開く。押しても共有は解けない。
+// 共有の種類と、ペインごとの「共有を解く」、「ほかのペインと共有」）を開く。押しても共有は解けない。行の「共有を解く」は、
+// そのペインがこのページを使う経路（共有・エージェントが自分で開いたタブの許可・そこから開いたタブ）を一度に外す。
+//
+// Copilot（upstream のチャットのツール）だけと共有したページ（para-browser の台帳に無いのに共有の印が付いている）は、
+// アドレスバーの upstream の表示を隠したので、ここに「Copilot と共有」の行を 1 つ出して解けるようにする。
 //
 // 一覧は自前の DOM なので、内蔵ブラウザのネイティブビューの上に出すために、overlayManager.ts の共通の印
 // `paradis-overlay-popover` を付ける（upstream のファイルは触らない）。閉じ方はダウンロードの一覧
@@ -36,10 +40,15 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { BrowserViewSharingState, IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel, IParadisPageShare, IParadisPaneDescriptor, ParadisPageShareKind, ParadisPaneAgentKind } from './paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 
 const $ = dom.$;
+
+/** 一覧の Copilot の行の印（ペインのトークンと重ならない）。 */
+const COPILOT_ROW_KEY = 'copilot';
 
 /** 一覧の幅。狭いウィンドウでは左右をクランプして内側に収める。 */
 const POPOVER_WIDTH = 340;
@@ -73,11 +82,29 @@ function agentLabel(kind: ParadisPaneAgentKind): string {
 	}
 }
 
+/**
+ * ボタンと一覧に出すもの。para-browser の台帳のペインと、Copilot だけと共有しているか（台帳に無いのに共有の印が付いて
+ * いる。台帳にペインがあるときは、印はそのために付いたものとして数えない）。
+ */
+export interface IParadisShareButtonEntries {
+	readonly shares: readonly IParadisPageShare[];
+	readonly copilot: boolean;
+}
+
+export function paradisShareButtonEntries(shares: readonly IParadisPageShare[], sharingState: BrowserViewSharingState | undefined): IParadisShareButtonEntries {
+	return { shares, copilot: shares.length === 0 && sharingState === BrowserViewSharingState.Shared };
+}
+
+/** ボタンに出す数。 */
+export function paradisShareButtonCount(entries: IParadisShareButtonEntries): number {
+	return entries.shares.length + (entries.copilot ? 1 : 0);
+}
+
 /** ボタンのホバーと読み上げの文言。 */
 export function paradisShareButtonLabel(count: number): string {
 	return count === 0
 		? localize('paradis.shareButton.unshared', "エージェントと共有")
-		: localize('paradis.shareButton.shared', "エージェントと共有中: {0} 個のペイン（クリックで一覧）", count);
+		: localize('paradis.shareButton.shared', "エージェントと共有中: {0} 件（クリックで一覧）", count);
 }
 
 /**
@@ -88,6 +115,8 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	private _hover: IManagedHover | undefined;
 	private _badge: HTMLElement | undefined;
 	private readonly _editorListener = this._register(new MutableDisposable());
+	private readonly _modelListener = this._register(new MutableDisposable());
+	private _popover: ParadisBrowserSharePopover | undefined;
 
 	constructor(
 		action: IAction,
@@ -113,6 +142,14 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		this._badge = dom.append(this.element, $('span.paradis-browser-share-badge'));
 		this._badge.setAttribute('aria-hidden', 'true');
 		this._hover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.element, ''));
+		// Enter / Space は ActionBar がアクションを直接走らせ、onClick を通らない。一覧を開けるよう、先にここで受ける
+		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_DOWN, event => {
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			if (keyboardEvent.keyCode === KeyCode.Enter || keyboardEvent.keyCode === KeyCode.Space) {
+				dom.EventHelper.stop(event, true);
+				this.onClick(event);
+			}
+		}));
 		this._watchEditor();
 		this._update();
 	}
@@ -124,7 +161,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	}
 
 	override onClick(event: dom.EventLike): void {
-		if (this._shares().length === 0) {
+		if (paradisShareButtonCount(this._entries()) === 0) {
 			// 共有が無ければ、今までどおり共有のダイアログ（アクションの本体）を開く
 			super.onClick(event);
 			return;
@@ -137,39 +174,56 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		return this._context instanceof BrowserEditor ? this._context : undefined;
 	}
 
-	private _pageId(): string | undefined {
-		return this._editor?.model?.id;
-	}
-
-	private _shares(): readonly IParadisPageShare[] {
-		const pageId = this._pageId();
-		return pageId === undefined ? [] : this._bindingModel.getPageShares(pageId);
+	private _entries(): IParadisShareButtonEntries {
+		const model = this._editor?.model;
+		return model ? paradisShareButtonEntries(this._bindingModel.getPageShares(model.id), model.sharingState) : { shares: [], copilot: false };
 	}
 
 	private _watchEditor(): void {
-		this._editorListener.value = this._editor?.onDidChangeModel(() => this._update());
+		this._editorListener.value = this._editor?.onDidChangeModel(() => {
+			// 別のページになった・エディタを閉じた: 前のページの一覧は閉じる
+			this._popover?.close();
+			this._watchModel();
+			this._update();
+		});
+		this._watchModel();
+	}
+
+	private _watchModel(): void {
+		this._modelListener.value = this._editor?.model?.onDidChangeSharingState(() => this._update());
 	}
 
 	private _togglePopover(): void {
 		const element = this.element;
-		const pageId = this._pageId();
-		if (!element || pageId === undefined) {
+		const model = this._editor?.model;
+		if (!element || !model) {
 			return;
 		}
 		const targetWindow = dom.getWindow(element);
 		const existing = openPopovers.get(targetWindow);
 		if (existing) {
 			existing.close();
-			return;
+			if (existing === this._popover) {
+				return;
+			}
 		}
-		const popover: ParadisBrowserSharePopover = this._instantiationService.createInstance(ParadisBrowserSharePopover, element, pageId,
+		const popover: ParadisBrowserSharePopover = this._instantiationService.createInstance(ParadisBrowserSharePopover, element, model,
 			() => this.actionRunner.run(this.action, this._context),
 			() => {
 				if (openPopovers.get(popover.targetWindow) === popover) {
 					openPopovers.delete(popover.targetWindow);
 				}
+				if (this._popover === popover) {
+					this._popover = undefined;
+				}
 			});
+		this._popover = popover;
 		openPopovers.set(popover.targetWindow, popover);
+	}
+
+	override dispose(): void {
+		this._popover?.close();
+		super.dispose();
 	}
 
 	private _update(): void {
@@ -177,7 +231,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		if (!element) {
 			return;
 		}
-		const count = this._shares().length;
+		const count = paradisShareButtonCount(this._entries());
 		element.classList.toggle('checked', count > 0);
 		element.setAttribute('aria-haspopup', count > 0 ? 'dialog' : 'false');
 		if (this._badge) {
@@ -205,10 +259,11 @@ class ParadisBrowserSharePopover extends Disposable {
 
 	constructor(
 		private readonly _anchor: HTMLElement,
-		private readonly _pageId: string,
+		private readonly _model: IBrowserViewModel,
 		private readonly _shareWithOtherPane: () => void,
 		private readonly _onDidClose: () => void,
 		@IParadisAgentBrowserBindingModel private readonly _bindingModel: IParadisAgentBrowserBindingModel,
+		@IParadisAgentBrowserTabsService private readonly _tabsService: IParadisAgentBrowserTabsService,
 		@ILayoutService layoutService: ILayoutService,
 	) {
 		super();
@@ -238,6 +293,7 @@ class ParadisBrowserSharePopover extends Disposable {
 
 		this._render();
 		this._register(this._bindingModel.onDidChange(() => this._render()));
+		this._register(this._model.onDidChangeSharingState(() => this._render()));
 
 		this._container.appendChild(this._element);
 		this._anchor.setAttribute('aria-expanded', 'true');
@@ -254,8 +310,8 @@ class ParadisBrowserSharePopover extends Disposable {
 		if (this._disposed) {
 			return;
 		}
-		const shares = this._bindingModel.getPageShares(this._pageId);
-		if (shares.length === 0) {
+		const entries = paradisShareButtonEntries(this._bindingModel.getPageShares(this._model.id), this._model.sharingState);
+		if (paradisShareButtonCount(entries) === 0) {
 			this.close();
 			return;
 		}
@@ -265,7 +321,22 @@ class ParadisBrowserSharePopover extends Disposable {
 		this._rowStore.value = store;
 		dom.clearNode(this._list);
 		this._rowButtons = [];
-		for (const share of shares) {
+		if (entries.copilot) {
+			const row = dom.append(this._list, $('.pbs-row'));
+			row.setAttribute('role', 'listitem');
+			dom.append(row, $(`span.pbs-icon${ThemeIcon.asCSSSelector(Codicon.copilot)}`));
+			const text = dom.append(row, $('.pbs-text'));
+			const name = localize('paradis.shareButton.copilotName', "Copilot");
+			dom.append(text, $('.pbs-name')).textContent = name;
+			dom.append(text, $('.pbs-kind')).textContent = localize('paradis.shareButton.kindCopilot', "Copilot のチャットと共有");
+			const button = dom.append(row, $<HTMLButtonElement>('button.pbs-unshare'));
+			button.textContent = localize('paradis.shareButton.unshare', "共有を解く");
+			button.dataset.token = COPILOT_ROW_KEY;
+			button.setAttribute('aria-label', localize('paradis.shareButton.unshareAria', "{0} との共有を解く", name));
+			store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this._run(button, () => this._model.setSharedWithAgent(false))));
+			this._rowButtons.push(button);
+		}
+		for (const share of entries.shares) {
 			const pane = panes.get(share.token);
 			const row = dom.append(this._list, $('.pbs-row'));
 			row.setAttribute('role', 'listitem');
@@ -280,7 +351,8 @@ class ParadisBrowserSharePopover extends Disposable {
 			button.textContent = localize('paradis.shareButton.unshare', "共有を解く");
 			button.dataset.token = share.token;
 			button.setAttribute('aria-label', localize('paradis.shareButton.unshareAria', "{0} との共有を解く", name));
-			store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this._unshare(share, button)));
+			// そのペインがこのページを使う経路（共有・自分で開いたタブの許可・そこから開いたタブ）を一度に外す
+			store.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => this._run(button, () => this._tabsService.unsharePageFromPane(share.token, this._model.id))));
 			this._rowButtons.push(button);
 		}
 		if (focusedToken !== undefined) {
@@ -292,17 +364,11 @@ class ParadisBrowserSharePopover extends Disposable {
 		}
 	}
 
-	private async _unshare(share: IParadisPageShare, button: HTMLButtonElement): Promise<void> {
+	private async _run(button: HTMLButtonElement, operation: () => Promise<unknown>): Promise<void> {
 		button.disabled = true;
 		this._message.hidden = true;
 		try {
-			// 共有は台帳から外す（upstream の共有の印だけを外すと、エージェントは使い続けられる）
-			if (share.kind === 'user') {
-				await this._bindingModel.unbindPageFromToken(this._pageId, share.token);
-			} else {
-				await this._bindingModel.revokeAgentTab(share.token, this._pageId);
-				await this._bindingModel.releaseShareMarkIfUnused(this._pageId);
-			}
+			await operation();
 		} catch (error) {
 			if (!this._disposed) {
 				button.disabled = false;

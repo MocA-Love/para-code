@@ -320,6 +320,14 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		assert.deepStrictEqual(fixture.sharingCalls, [true]);
 	});
 
+	// ユーザーの操作から外すときは、shared process に届かなかったことを呼び出し元へ返す（既定では握りつぶす）
+	test('reports a failed grant revocation only when asked to', async () => {
+		// この fixture の shared process は revokeAgentTab を知らず、投げる
+		const fixture = createFixture();
+		await fixture.bindingModel.revokeAgentTab('token', 'view-a');
+		await assert.rejects(fixture.bindingModel.revokeAgentTab('token', 'view-a', { throwOnFailure: true }), /unexpected command: revokeAgentTab/);
+	});
+
 	// 許可を外した後、ほかに使うペインが無ければ共有の印を下ろす（使うペインが残っていれば残す）
 	test('releases the share mark of a page only when no pane shares or uses it any more', async () => {
 		let grants: { token: string; pageId: string }[] = [{ token: 'other', pageId: 'view-a' }];
