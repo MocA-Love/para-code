@@ -428,7 +428,9 @@ function ApprovalBanner({ agent }: { agent: 'codex' | 'claude' }) {
 				{board.length > 0 && shots.length > 0 && 'と、'}
 				{shots.length > 0 && <>スクショの工程で画面を読む・撮るだけのツール（{toolList(shots)}）</>}
 				を使うたびに許可を求めます。
-				{writable.length > 0 && <>{name} の設定（{writable.map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。クリック・入力・スクリプトの実行・ページの移動・ファイルの書き込みをするツールは、今までどおり毎回聞きます。</>}
+				{writable.length > 0 && <>{name} の設定（{writable.map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</>}
+				{shots.length > 0 && <> 撮るツールは、撮った画像やスナップショットをスペースの中か一時フォルダにファイルとして書きます（既にあるファイルは上書きしません）。</>}
+				{' '}許可はこの PC の {name} のすべてのセッションに効きます。取り消すときは、設定から該当の行を手で消してください。クリック・入力・スクリプトの実行・ページの移動をするツールは、今までどおり毎回聞きます。
 				{manual.length > 0 && <> 次の設定は書き方を読み切れないので、{agent === 'codex'
 					? <><code>[mcp_servers.para-browser.tools.&lt;ツール名&gt;]</code> の節に <code>approval_mode = "approve"</code> を</>
 					: <><code>permissions.allow</code> に <code>"mcp__para-browser__&lt;ツール名&gt;"</code> を</>} 手で足してください: {manual.map((m, i) => <span key={m.path}>{i ? '、' : ''}<code>{m.path}</code>（{m.reason}）</span>)}</>}

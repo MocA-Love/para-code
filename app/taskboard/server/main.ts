@@ -406,6 +406,8 @@ async function main(restart?: IRestart): Promise<void> {
 		timers.push(setInterval(() => void refreshClaudeApproval(), 60000).unref());
 	}
 
+	/** タスクの担当か、フローの工程の担当に Claude Code がいるか。 */
+	const claudeInUse = () => engine.getTasks().some(t => t.agent === 'claude') || engine.getFlows().some(f => f.steps.some(step => step.agent === 'claude'));
 	const runtime = () => ({
 		agents: paraCodeMode ? 'para-code' as const : 'simulated' as const,
 		agentsConnected: paraCodeMode ? bridgeState.connected : undefined,
@@ -413,9 +415,10 @@ async function main(restart?: IRestart): Promise<void> {
 		codexApprovalMissing: paraCodeMode ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
 		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
 		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
-		claudeApprovalMissing: paraCodeMode ? [...new Set(claudePending.flatMap(p => p.missing))] : undefined,
-		claudeConfigPaths: paraCodeMode ? claudePending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
-		claudeManualConfigs: paraCodeMode ? claudePending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
+		// Claude Code の帯は、ボードが Claude Code の担当を使うときだけ出す（~/.claude は Para Code の hook の設置でも作られるので、有無では決めない）
+		claudeApprovalMissing: paraCodeMode && claudeInUse() ? [...new Set(claudePending.flatMap(p => p.missing))] : undefined,
+		claudeConfigPaths: paraCodeMode && claudeInUse() ? claudePending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
+		claudeManualConfigs: paraCodeMode && claudeInUse() ? claudePending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		assetKey,
 		speed: sim.getSpeed(),
 		realWorkspaces,

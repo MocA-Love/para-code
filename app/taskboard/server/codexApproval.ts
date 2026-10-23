@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -320,7 +321,7 @@ export async function addCodexApprovals(file = codexConfigPath()): Promise<void>
 		return;
 	}
 	await fs.copyFile(file, `${file}.taskboard.bak`);
-	const temp = `${file}.taskboard-${process.pid}`;
+	const temp = `${file}.taskboard-${process.pid}-${randomBytes(4).toString('hex')}`;
 	await fs.writeFile(temp, next, { mode: stat.mode & 0o777 });
 	try {
 		if (await fs.readFile(file, 'utf8') !== text) {

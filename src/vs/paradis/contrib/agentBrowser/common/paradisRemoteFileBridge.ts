@@ -22,7 +22,7 @@
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { posix } from '../../../../base/common/path.js';
 
-/** 接続先へ書く。引数は `[token, remoteAuthority, path, VSBuffer]`、結果は {@link ParadisRemoteFileWriteResult}。 */
+/** 接続先へ書く。引数は `[token, remoteAuthority, path, VSBuffer, exclusive?]`（exclusive が true なら既にあるものを上書きしない）、結果は {@link ParadisRemoteFileWriteResult}。 */
 export const PARADIS_REMOTE_FILE_WRITE_METHOD = 'paradisWriteRemoteFile';
 
 /** 接続先のホームの {@link PARADIS_REMOTE_FILE_USER_FOLDER} へ、重ならない名前で書く。引数は `[token, remoteAuthority, fileName, VSBuffer]`。 */
@@ -61,6 +61,8 @@ export type ParadisRemoteFileFailure =
 	| 'parentMissing'
 	/** 既にあるものがふつうのファイルでない（フォルダ以外。デバイスなど）。 */
 	| 'notAFile'
+	/** 書く側: 上書きしない書き方（撮る系のツールの保存）で、既に何かがある。 */
+	| 'alreadyExists'
 	/** ペインがまだこのウィンドウの台帳に無い（復元中など）。 */
 	| 'paneUnresolved'
 	/** 読む側: ファイルが無い。 */
