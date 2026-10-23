@@ -71,7 +71,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes one page (the page shared with this pane, or the tab given by tab_id) plus the pages that page opened with a target=_blank link or window.open, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: one endpoint exposes one page (the page shared with this pane, or the tab given by tab_id) plus the pages that page opened with a target=_blank link or window.open, so new_page, resize_page and close_page are not supported (use the set_viewport tool, or the emulate tool, to change the viewport, and open_browser_tab / close_browser_tab plus the tab_id argument of the browser tools to work with several tabs).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -224,13 +224,14 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 				background: { type: 'boolean', description: 'Open the tab without bringing it to the front of its editor group (default false). Tools still work on a background tab.' },
 				private: { type: 'boolean', description: 'Open the tab in browser storage used by this terminal pane only (in memory, not shared with other panes, the user or your other non-private tabs). Needed for set_extra_http_headers, set_http_credentials and set_request_rules. Default false.' },
 				label: { type: 'string', description: 'Optional short name for your task shown on your cursor in this tab (2-12 characters, full-width counts as 2), same as set_cursor_label.' },
+				viewport: { type: 'string', description: 'Optional page size to open the tab at, same as set_viewport: the name of a saved size from list_viewports (for example "iPhone 15"), "WIDTHxHEIGHT" (for example "1366x768"), or "auto" to follow the editor size. Omit to use the user\'s default size.' },
 			},
 			additionalProperties: false,
 		},
 	},
 	{
 		name: 'list_browser_tabs',
-		description: 'List the browser tabs this terminal pane can use, each with its tabId (the tab_id for the browser tools), URL and title: the tabs you opened with open_browser_tab or open_browser_profile, the user tabs currently shared with this pane (if any), and the tabs and windows those tabs opened (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab"; shown with "openedFrom", shared automatically up to a limit). Shows which one the user shared ("shared"), which one is this pane\'s current tab ("current": the one the browser tools act on when tab_id is omitted) and which ones you opened (only those can be closed). Note: the chrome-devtools list_pages / select_page tools see only one tab and the pages it opened with a target=_blank link or window.open; use tab_id, or this tool and select_browser_tab.',
+		description: 'List the browser tabs this terminal pane can use, each with its tabId (the tab_id for the browser tools), URL and title: the tabs you opened with open_browser_tab or open_browser_profile, the user tabs currently shared with this pane (if any), and the tabs and windows those tabs opened (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab"; shown with "openedFrom", shared automatically up to a limit). Shows which one the user shared ("shared"), which one is this pane\'s current tab ("current": the one the browser tools act on when tab_id is omitted) and which ones you opened (only those can be closed). Each tab also shows its page size ("viewport": the saved size name if any, width and height in CSS pixels, mobile, and fit: true while it follows the editor size); change it with set_viewport. Note: the chrome-devtools list_pages / select_page tools see only one tab and the pages it opened with a target=_blank link or window.open; use tab_id, or this tool and select_browser_tab.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -245,6 +246,23 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 			required: ['tabId'],
 			additionalProperties: false,
 		},
+	},
+	{
+		name: 'set_viewport',
+		description: 'Show a browser tab at a fixed page size (viewport), for example to check a layout at a laptop or phone size. Pass the name of a saved size from list_viewports (phone sizes also apply touch input and a mobile user agent), "WIDTHxHEIGHT" in CSS pixels (100-9999), or "auto" to follow the editor size again. Para Code shrinks a size larger than the editor to fit, so the whole page stays visible; PNG/JPEG screenshots of the visible page are still returned at the page size in CSS pixels, so a point in the image is the same point for click_at. The change shows on the size chip in the address bar (the user is not asked to confirm) and stays until you or the user change it. Prefer this to the emulate tool for the viewport size: both change the same state, but a size set with emulate is undone when your connection closes.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				viewport: { type: 'string', description: 'A saved size name from list_viewports, "WIDTHxHEIGHT" (for example "1366x768"), or "auto".' },
+			},
+			required: ['viewport'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'list_viewports',
+		description: 'List the page sizes the user saved in Para Code (name, width x height, and whether it is a phone size), and the user\'s default size for new tabs. Pass a name to set_viewport or to the viewport argument of open_browser_tab.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
 		name: 'set_cursor_label',

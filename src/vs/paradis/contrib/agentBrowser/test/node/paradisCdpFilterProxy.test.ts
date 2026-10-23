@@ -1695,6 +1695,64 @@ suite('Paradis CDP screenshot filter', () => {
 			rejections: ['PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout (waiting for DOM.scrollIntoViewIfNeeded on session primary- (still attached))'],
 		});
 	});
+
+	test('folds viewport emulation on the bound page into the Device Emulation state instead of sending it to Chromium, and undoes it when the connection closes', async () => {
+		const applied: Array<{ method: string; params: unknown }> = [];
+		let released = 0;
+		const fixture = await createOpenBrowserProxyFixture(context({
+			applyBoundPageEmulation: async (method, params) => {
+				applied.push({ method, params });
+				return true;
+			},
+			releaseBoundPageEmulation: () => released++,
+		}));
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Emulation.setDeviceMetricsOverride', params: { width: 390, height: 844, deviceScaleFactor: 1, mobile: true } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'session-1', method: 'Emulation.clearDeviceMetricsOverride' })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'session-1', method: 'Emulation.setTouchEmulationEnabled', params: { enabled: true } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 4, sessionId: 'session-1', method: 'Page.reload', params: {} })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const forwarded = (parseSent(fixture.upstream) as Array<{ method: string }>).map(frame => frame.method);
+		const answered = (parseSent(fixture.client) as Array<{ id: number; result?: unknown }>).filter(frame => frame.id === 1 || frame.id === 2);
+		fixture.client.emit('close');
+		assert.deepStrictEqual({ applied, forwarded, answered, released }, {
+			applied: [
+				{ method: 'Emulation.setDeviceMetricsOverride', params: { width: 390, height: 844, deviceScaleFactor: 1, mobile: true } },
+				{ method: 'Emulation.clearDeviceMetricsOverride', params: undefined },
+				{ method: 'Emulation.setTouchEmulationEnabled', params: { enabled: true } },
+			],
+			forwarded: ['Page.reload'],
+			answered: [{ id: 1, sessionId: 'session-1', result: {} }, { id: 2, sessionId: 'session-1', result: {} }],
+			released: 1,
+		});
+	});
+
+	test('answers device metrics sent to a session other than the shared page itself without sending them to Chromium', async () => {
+		const applied: string[] = [];
+		const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async method => { applied.push(method); return true; }, releaseBoundPageEmulation: () => undefined }));
+		publishAllowedSession(fixture, 'session-1');
+		// an out-of-process iframe of the shared page, attached through its session
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ sessionId: 'session-1', method: 'Target.attachedToTarget', params: { sessionId: 'child-1', targetInfo: { targetId: 'frame-1', type: 'iframe' } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 5, sessionId: 'child-1', method: 'Emulation.setDeviceMetricsOverride', params: { width: 390, height: 844 } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const response = parseSent(fixture.client).find(frame => (frame as { id?: number }).id === 5);
+		assert.deepStrictEqual({ forwarded: fixture.upstream.sent.length, response }, { forwarded: 0, response: { id: 5, sessionId: 'child-1', result: {} } });
+	});
+
+	test('answers viewport emulation with a retryable error and still does not send it to Chromium when Para Code cannot apply it', async () => {
+		const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => false, releaseBoundPageEmulation: () => undefined }));
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 7, sessionId: 'session-1', method: 'Emulation.setDeviceMetricsOverride', params: { width: 1350, height: 940 } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const response = parseSent(fixture.client).find(frame => (frame as { id?: number }).id === 7) as { error?: { message?: string } } | undefined;
+		assert.deepStrictEqual({ forwarded: fixture.upstream.sent.length, retryable: response?.error?.message?.startsWith('PARA_BROWSER_RETRYABLE:') }, { forwarded: 0, retryable: true });
+	});
 });
 
 /** Chromium does not set openerId for an OOPIF or a worker attached through a session, so neither does this. */

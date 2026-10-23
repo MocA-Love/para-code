@@ -38,6 +38,7 @@
 //     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
+import { paradisIsCdpEmulationMethod, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
 import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
@@ -99,6 +100,13 @@ export interface IParadisBoundContext {
 	noteInputRejection?(message: string): void;
 	/** 共有中のタブへ `Emulation.setFocusEmulationEnabled` が送られた（フォーカス診断用。転送は止めない）。 */
 	noteFocusEmulation?(enabled: boolean): void;
+	/**
+	 * 共有中のタブへの大きさの命令（paradisBrowserViewportCdp.ts）を、main で upstream の Device Emulation の
+	 * 状態へ畳み込む。扱えたら true。Chromium へそのまま流すと枠とページの大きさがずれるので、中継は流さない。
+	 */
+	applyBoundPageEmulation?(method: string, params: unknown): Promise<boolean>;
+	/** この接続が命令で付けた大きさを戻す（接続が閉じたとき。その後に変わっていれば戻さない）。 */
+	releaseBoundPageEmulation?(): void;
 	closeInputConnection(): void;
 	/**
 	 * この接続が接続先（SSH・WSL・コンテナ）のペインのものか、戻り経路から来たか。true のときは手元の
@@ -830,7 +838,7 @@ function sharedStateDeniedMessage(method: string): string | undefined {
  * resize_page が原因不明のエラーで失敗するため、-32000 で「なぜ使えないか・代わりに
  * 何を使うべきか」をLLMが読める形で返す。
  */
-const LAYOUT_MANAGED_DENIED_MESSAGE = 'the Para Code embedded browser view is laid out by the workbench, so its window/content size cannot be changed over CDP (the resize_page tool is not supported). To change the page viewport, use the emulate tool (Emulation.setDeviceMetricsOverride) instead.';
+const LAYOUT_MANAGED_DENIED_MESSAGE = 'the Para Code embedded browser view is laid out by the workbench, so its window/content size cannot be changed over CDP (the resize_page tool is not supported). To change the page viewport, use the set_viewport tool of the para-browser server (or the emulate tool) instead.';
 const LAYOUT_MANAGED_DENIED_METHODS = new Set([
 	'Browser.getWindowForTarget',
 	'Browser.getWindowBounds',
@@ -1255,6 +1263,26 @@ export async function paradisResolveCaptureScreenshotRequest(
 	}
 }
 
+/**
+ * 共有中のタブへの大きさの命令を main へ渡し、クライアントへ返す CDP の応答を作る。main が扱えなかったときも
+ * Chromium へは流さない（流すと device が空のまま枠とページの大きさがずれ、静止画が透けて二重に見える）。
+ */
+export async function paradisResolveViewportEmulationRequest(
+	request: { readonly id: number; readonly sessionId?: string; readonly method: string; readonly params?: unknown },
+	ctx: IParadisBoundContext,
+): Promise<unknown> {
+	const head = { id: request.id, ...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}) };
+	let handled = false;
+	try {
+		handled = await ctx.applyBoundPageEmulation!(request.method, request.params);
+	} catch {
+		handled = false;
+	}
+	return handled
+		? { ...head, result: {} }
+		: { ...head, error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: Para Code could not apply ${request.method} to the shared page (it may have been closed or re-shared). Retry once.` } };
+}
+
 export interface IParadisCaptureScreenshotDispatch {
 	readonly isActive: () => boolean;
 	/**
@@ -1386,6 +1414,7 @@ export function paradisProxyPageUpgrade(
 			closed = true;
 			resolveConnectionClosed();
 			ctx.closeInputConnection();
+			ctx.releaseBoundPageEmulation?.();
 			pending.length = 0;
 			pendingBytes = 0;
 			clearForwardedRequestBarriers(forwardedRequestBarriers);
@@ -1502,6 +1531,20 @@ export function paradisProxyPageUpgrade(
 			}
 			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
 				noteFocusEmulation(ctx, msg.params);
+			}
+			if (msg.sessionId === undefined && ctx.applyBoundPageEmulation && paradisIsCdpEmulationMethod(msg.method)) {
+				void paradisResolveViewportEmulationRequest({ id: msg.id, method: msg.method, params: msg.params }, ctx).then(response => {
+					if (!closed && ctx.boundTargetIds().has(targetId)) {
+						sendToClient(response);
+					}
+				});
+				return;
+			}
+			if (msg.sessionId !== undefined && paradisIsCdpViewportMethod(msg.method)) {
+				// 子のセッション（iframe など）への大きさの命令は流さない。upstream もセッションを問わず止めている
+				// （そのまま流すと Electron が落ちることがある。browserViewDebugger.ts）
+				sendToClient({ id: msg.id, sessionId: msg.sessionId, result: {} });
+				return;
 			}
 			if (msg.method.startsWith('Input.')) {
 				let paramsJson: string;
@@ -1974,6 +2017,7 @@ export async function paradisProxyBrowserUpgrade(
 			closed = true;
 			resolveConnectionClosed();
 			ctx.closeInputConnection();
+			ctx.releaseBoundPageEmulation?.();
 			ctx.networkActivity?.forgetConnection(networkConnection);
 			pendingRequests.clear();
 			internalPending.clear();
@@ -2232,6 +2276,24 @@ export async function paradisProxyBrowserUpgrade(
 				const isBoundPrimary = sessionTargetId !== undefined && ctx.boundTargetIds().has(sessionTargetId);
 				if (isBoundPrimary && message.method === 'Emulation.setFocusEmulationEnabled') {
 					noteFocusEmulation(ctx, message.params);
+				}
+				if (!isBoundPrimary && paradisIsCdpViewportMethod(message.method)) {
+					// 共有中のタブ本体以外（ポップアップ・自動で共有した子・OOPIF）への大きさの命令は流さない。upstream も
+					// セッションを問わず止めている（そのまま流すと Electron が落ちることがある。browserViewDebugger.ts）
+					sendToClient({ id: message.id, sessionId: message.sessionId, result: {} });
+					return;
+				}
+				if (isBoundPrimary && ctx.applyBoundPageEmulation && paradisIsCdpEmulationMethod(message.method)) {
+					if (!registerClientRequest(message, sessionTargetId)) {
+						return;
+					}
+					const requestSessionId = message.sessionId;
+					void paradisResolveViewportEmulationRequest({ id: message.id, sessionId: requestSessionId, method: message.method, params: message.params }, ctx).then(response => {
+						if (!closed && pendingRequests.get(message.id)?.sessionId === requestSessionId) {
+							completeLocalRequest(message.id, requestSessionId, response);
+						}
+					});
+					return;
 				}
 				if (message.method.startsWith('Input.')) {
 					if (!isBoundPrimary || sessionTargetId === undefined) {

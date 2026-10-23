@@ -15,6 +15,7 @@ import { StringSHA1 } from '../../../../base/common/hash.js';
 import { URI } from '../../../../base/common/uri.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 import { paradisParseOwnerLabel } from './paradisCursorOverlay.js';
+import type { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
 
 /**
  * ターミナルのPTY環境へ注入する、ペインを一意に識別するトークンの環境変数名。
@@ -464,6 +465,15 @@ export interface IParadisExactBrowserViewDescriptor {
  * shared processからElectron Mainへ呼ぶexact BrowserView操作。
  * モバイルミラー専用のIParadisCdpFrameSubscriptionとは意図的に分離する。
  */
+/** {@link IParadisCdpExactViewService.applyExactViewEmulation} の結果。 */
+export interface IParadisExactViewEmulationResult {
+	readonly handled: true;
+	/** 変える前の device。device が無かった（エディタに合わせていた）ときは null。 */
+	readonly previous: IBrowserDeviceProfile | null;
+	/** 変えたか（clear で戻すものが無かった・setVisibleSize は false）。 */
+	readonly changed: boolean;
+}
+
 export interface IParadisCdpExactViewService {
 	resolveExactViewDescriptor(windowId: unknown, viewId: unknown): Promise<IParadisExactBrowserViewDescriptor | null>;
 	/**
@@ -474,6 +484,15 @@ export interface IParadisCdpExactViewService {
 	isExactViewVisible(descriptor: unknown): Promise<boolean | null>;
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
+	/**
+	 * エージェントが CDP で送った大きさの命令（`Emulation.setDeviceMetricsOverride` など。
+	 * paradisBrowserViewportCdp.ts）を、upstream の Device Emulation の状態へ畳み込む。`owner` は CDP の
+	 * 接続ごとの識別子（切れたときに戻すため）。扱えたら `handled: true` と、変える前の device（chip の「何から」）を
+	 * 返す（中継は Chromium へ流さずに成功を返す）。扱えなければ false。
+	 */
+	applyExactViewEmulation(descriptor: unknown, owner: unknown, method: unknown, params: unknown): Promise<IParadisExactViewEmulationResult | false>;
+	/** CDP の接続が切れた。その接続が命令で付けた大きさを、付ける前へ戻す（その後に変わっていなければ）。 */
+	releaseExactViewEmulation(descriptor: unknown, owner: unknown): Promise<void>;
 	/**
 	 * `pacing`（省略可、`IParadisCursorPacing`）は、カーソルの演出のために待ってよいかの指示。
 	 * 省略すると今までどおり、移動のたびにカーソルが着くまで待つ。
