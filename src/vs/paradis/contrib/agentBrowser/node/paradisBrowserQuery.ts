@@ -773,8 +773,11 @@ export function paradisScrollMissHints(value: Record<string, unknown>): string[]
 	return lines;
 }
 
-function nearString(value: unknown): string | undefined {
-	return typeof value === 'string' && value.length > 0 ? value.slice(0, 80) : undefined;
+/** 候補の文字の長さの上限。ページの関数は 60 文字（"exact" のときは切らずに 200 文字まで）で返すので、ふつうは切らない。 */
+const NEAR_MISS_TEXT_MAX = 200;
+
+function nearString(value: unknown, max = 80): string | undefined {
+	return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
 }
 
 function nearCount(value: unknown): number | undefined {
@@ -787,14 +790,14 @@ const NEAR_MISS_MAX = 5;
 /**
  * 探した要素が無かったとき（click_by / fill_by / get_text の「該当なし」、wait_until の時間切れ）に、ページを 1 回
  * 読んだ結果（ページの関数の `nearMiss`）を文にする。似た文字・名前の要素はそのまま渡せる指定の形で数件まで、
- * selector は当たらない部分と、ページにある似た id・class・属性の値。フォームの入力値は件数だけで、中身は出さない。
+ * selector は当たらない部分と、ページに見えている似た id・class・識別用の属性の値。フォームの入力値は出さない。
  */
 export function paradisNearMissHints(value: unknown, args: Record<string, unknown>): string[] {
 	if (!isRecord(value)) {
 		return [];
 	}
 	const lines: string[] = [];
-	const missingParts = Array.isArray(value.missingParts) ? value.missingParts.map(nearString).filter((part): part is string => part !== undefined).slice(0, NEAR_MISS_MAX) : [];
+	const missingParts = Array.isArray(value.missingParts) ? value.missingParts.map(part => nearString(part)).filter((part): part is string => part !== undefined).slice(0, NEAR_MISS_MAX) : [];
 	if (missingParts.length > 0) {
 		lines.push(`- Nothing on the page has ${missingParts.map(part => JSON.stringify(part)).join(', ')}, so the selector matches nothing.`);
 	}
@@ -825,8 +828,8 @@ export function paradisNearMissHints(value: unknown, args: Record<string, unknow
 	if (Array.isArray(value.candidates)) {
 		const written = value.candidates.filter(isRecord).slice(0, NEAR_MISS_MAX).map(candidate => {
 			const role = nearString(candidate.role);
-			const name = nearString(candidate.name);
-			const text = nearString(candidate.text);
+			const name = nearString(candidate.name, NEAR_MISS_TEXT_MAX);
+			const text = nearString(candidate.text, NEAR_MISS_TEXT_MAX);
 			const ways = [role !== undefined && name !== undefined ? JSON.stringify({ role, name }) : undefined, text !== undefined ? JSON.stringify({ text }) : undefined].filter((way): way is string => way !== undefined);
 			return ways.length > 0 ? `  ${ways.join(' or ')}` : undefined;
 		}).filter((line): line is string => line !== undefined);
@@ -835,10 +838,6 @@ export function paradisNearMissHints(value: unknown, args: Record<string, unknow
 		} else if (wanted !== undefined) {
 			lines.push(`- Nothing visible on the page has a text or name close to ${JSON.stringify(wanted.slice(0, 80))}, so it is probably not on this screen (yet).`);
 		}
-	}
-	const inFields = nearCount(value.inFields);
-	if (inFields !== undefined) {
-		lines.push(`- ${inFields} form field(s) hold this text as their value; "text" matches the text of elements, not what is typed in a field. Find the field by role and name instead.`);
 	}
 	const outsideWithin = nearCount(value.outsideWithin);
 	if (outsideWithin !== undefined) {
