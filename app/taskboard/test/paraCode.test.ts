@@ -10,6 +10,7 @@ import type { ITaskBoardFlow, ITaskBoardSlot, ITaskBoardTask } from '@engine/par
 import { TaskBoardEngine, type ITaskBoardRunPort, type ITaskBoardWorkspacePort } from '@engine/paradisTaskBoardEngine.js';
 import { launchErrorText, ParaCodeAgents, readablePromptText, type ParaCodeBridgeEvent } from '../server/paraCode.js';
 import { CommandRunner } from '../server/runner.js';
+import { GitHubError } from '../server/github.js';
 
 /* Para Code の bridge の代わり。届いた要求を記録し、SSE でイベントを流せる。 */
 class FakeBridge {
@@ -689,6 +690,27 @@ describe('CommandRunner', () => {
 			pushed: '',
 			ghCreate: false,
 		});
+	}, 20000);
+
+	test('draft-pr that hits the GitHub rate limit says so and when it resumes', async () => {
+		const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-pr-'));
+		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+		execFileSync('git', ['init', '-q', '-b', 'para/1-x'], { cwd: dir });
+		const resumeAt = new Date(2030, 0, 1, 9, 30).getTime();
+		const github = {
+			findOpenPullRequest: () => Promise.reject(new GitHubError('GitHub rate limit (429)', 429, 'budget', resumeAt)),
+			createDraftPullRequest: () => Promise.reject(new Error('not called')),
+		};
+		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
+		let engine!: TaskBoardEngine;
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => dir, repoPath: dir, repo: { owner: 'o', repo: 'code' }, github });
+		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: (_t, _s, branch) => Promise.resolve({ branch }), release: () => Promise.resolve() } });
+		engine.setFlows([flow], 'f', true);
+		engine.setPoolSlots([{ id: 's1', name: 'w', path: dir, kind: 'clone-pool' }]);
+		const id = engine.addTask({ title: 'X' });
+		engine.start(id, { agent: 'claude' });
+		await until(() => engine.getTask(id)!.status === 'failed');
+		expect(engine.getTask(id)!.error).toBe('PR を探せませんでした: GitHub の利用上限に当たったので呼び出しを止めています（09:30 ごろ再開）。再開した後にやり直してください');
 	}, 20000);
 
 	test('cancelling while draft-pr is checking for an existing PR stops before push and create', async () => {

@@ -164,7 +164,8 @@ export class GitHubSync {
 
 	getState(): ITaskBoardGitHubState {
 		const c = this.options.client;
-		return { ...this.state, rest: c.rest, graphql: c.graphqlLimit ?? this.state.graphql, requestCount: c.requestCount, login: c.login, avatarUrl: c.avatarUrl };
+		const pausedUntil = c.pausedUntil();
+		return { ...this.state, rest: c.rest, graphql: c.graphqlLimit ?? this.state.graphql, requestCount: c.requestCount, login: c.login, avatarUrl: c.avatarUrl, pausedUntil: pausedUntil || undefined };
 	}
 
 	get login(): string | undefined {
@@ -357,7 +358,12 @@ export class GitHubSync {
 		}
 		const engine = this.options.engine;
 		// 名前の形がおかしいものは最初から外す（1 件で問い合わせ全体が失敗しないように）
+		// 60 秒ごとに見るのは、外部待ちの工程にいるものと、このタスクの PR（マージ・クローズで完了にする判定は
+		// どの工程でも効くので、e2e などの途中でマージ・クローズされても 60 秒以内に気付けるように）
 		const waiting = (t: ITaskBoardTask) => {
+			if (t.prOwned) {
+				return true;
+			}
 			const step = engine.flowOf(t).steps.find(s => s.id === t.step);
 			return step?.kind === 'wait' || step?.kind === 'human' && step.gate === 'merge';
 		};
