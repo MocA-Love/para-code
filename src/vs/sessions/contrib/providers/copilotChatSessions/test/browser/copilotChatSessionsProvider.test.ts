@@ -2114,6 +2114,47 @@ suite('CopilotChatSessionsProvider', () => {
 		});
 	});
 
+	// PARA-PATCH: a finished turn forgets a cached "no PR" and looks the branch up again (Para Code)
+	test('cloud session looks its branch PR up again after a turn ends when the last lookup found none', async () => {
+		const resource = URI.from({ scheme: AgentSessionProviders.Cloud, path: '/session-1' });
+		const gitHubService = new class extends TestGitHubService {
+			nextNumber: number | undefined;
+			readonly forgotten: string[] = [];
+			override findPullRequestNumberByHeadBranch = async (): Promise<number | undefined> => {
+				this.lookupCalls++;
+				return this.nextNumber;
+			};
+			override paradisForgetPullRequestNumberMiss = (owner: string, repo: string, branch: string) => {
+				this.forgotten.push(`${owner}/${repo}#${branch}`);
+			};
+		}();
+		const metadata = { owner: 'owner', name: 'repo', branch: 'feature' };
+		model.addSession(createMockAgentSession(resource, { providerType: AgentSessionProviders.Cloud, metadata, completedAt: 1 }));
+
+		const provider = createProvider(disposables, model, { gitHubService });
+		const gitHubInfoObs = provider.getSessions()[0].workspace.get()!.folders[0].gitRepository!.gitHubInfo;
+		disposables.add(autorun(reader => gitHubInfoObs.read(reader)));
+		await timeout(0);
+		gitHubService.nextNumber = 42;
+		model.replaceSession(createMockAgentSession(resource, { providerType: AgentSessionProviders.Cloud, metadata, completedAt: 1, title: 'Same Turn' }));
+		await timeout(0);
+		const afterUnrelatedUpdate = gitHubService.lookupCalls;
+		model.replaceSession(createMockAgentSession(resource, { providerType: AgentSessionProviders.Cloud, metadata, completedAt: 2 }));
+		await timeout(0);
+
+		assert.deepStrictEqual({
+			afterUnrelatedUpdate,
+			lookupCalls: gitHubService.lookupCalls,
+			forgotten: gitHubService.forgotten,
+			pullRequestNumber: gitHubInfoObs.get()?.pullRequest?.number,
+		}, {
+			afterUnrelatedUpdate: 1,
+			lookupCalls: 2,
+			forgotten: ['owner/repo#feature'],
+			pullRequestNumber: 42,
+		});
+	});
+
 	// ---- Session wrappers -------
 
 	test('each session has exactly one chat initially', () => {
