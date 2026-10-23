@@ -101,3 +101,137 @@ suite('paradisBrowserQueryPageScript (scroll_to)', () => {
 		});
 	});
 });
+
+// q.html Q448 の ③④: 該当なし・時間切れのときに添える近い候補（ページを 1 回読むだけ。数件まで、入力値は出さない）
+suite('paradisBrowserQueryPageScript (close matches after a miss)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let root: HTMLElement;
+	setup(() => {
+		root = mainWindow.document.createElement('div');
+		root.style.cssText = 'position: fixed; left: 0; top: 0; width: 400px; z-index: 2147483647; background: white;';
+		mainWindow.document.body.appendChild(root);
+	});
+	teardown(() => root.remove());
+
+	test('a text that matches nothing lists visible elements with similar text as locators, but never what is typed in a field', async () => {
+		root.innerHTML = [
+			'<button>保存する</button>',
+			'<span>保存して閉じる</span>',
+			'<div style="display: none;">保存しよう</div>',
+			'<input aria-label="メール" value="保存しまsecret@example.com">',
+			'<div contenteditable="true">保存し ま typed by the user</div>',
+		].join('');
+		const located = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', text: '保存しま' });
+		const near = located.near as { candidates: unknown[] };
+		assert.deepStrictEqual({
+			matched: located.matched,
+			candidates: near.candidates,
+			leaks: /secret@example\.com|typed by the user|inFields/.test(JSON.stringify(located)),
+		}, {
+			matched: 0,
+			candidates: [{ text: '保存して閉じる' }, { role: 'button', name: '保存する', text: '保存する' }],
+			leaks: false,
+		});
+	});
+
+	// レビュー: 自分の文字だけで候補を作ると "Total: <span>3</span> items" から当たらない "Total: items" を出していた
+	test('a text candidate is the text the search compares, so each candidate finds an element when given as it is', async () => {
+		root.innerHTML = [
+			'<div>Q448 Total: <span>3</span> items</div>',
+			'<p>Q448 Total<br>count</p>',
+			`<a href="#q448">Q448 Total amount ${'z'.repeat(80)}</a>`,
+		].join('');
+		const near = (await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', text: 'Q448 Totals' })).near as { candidates: Record<string, string>[] };
+		const exactNear = (await runInPage({ mode: 'nearMiss', role: 'link', name: `Q448 Total amount ${'z'.repeat(79)}`, exact: true })).near as { candidates: Record<string, string>[] };
+		const found: boolean[] = [];
+		const locators: Record<string, unknown>[] = [
+			...near.candidates.map(candidate => candidate.text !== undefined ? { text: candidate.text } : { role: candidate.role, name: candidate.name }),
+			...exactNear.candidates.filter(candidate => candidate.role !== undefined).map(candidate => ({ role: candidate.role, name: candidate.name, exact: true })),
+		];
+		for (const locator of locators) {
+			const result = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', ...locator });
+			found.push((result.matched as number) > 0);
+		}
+		assert.deepStrictEqual({
+			texts: near.candidates.map(candidate => candidate.text).filter(text => text !== undefined && !text.includes('amount')),
+			found: found.every(Boolean) && found.length > 2,
+			exactName: exactNear.candidates[0].name.length,
+		}, {
+			texts: ['Q448 Total: 3 items', 'Q448 Total count'],
+			found: true,
+			exactName: 98,
+		});
+	});
+
+	test('candidates are capped and cut, and role + name lists the elements of that role with a close name', async () => {
+		root.innerHTML = Array.from({ length: 12 }, (_, index) => `<button>Q448 Item ${index} ${'x'.repeat(index === 0 ? 100 : 0)}</button>`).join('');
+		const many = await runInPage({ mode: 'text', text: 'Q448 Item 99', offset: 0, maxChars: 100 });
+		const byRole = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', role: 'button', name: 'Q448 Itme 3' });
+		const candidates = (many.near as { candidates: { text?: string; name?: string }[] }).candidates;
+		const roleNear = byRole.near as { candidates: { role?: string; name?: string }[]; roleCount: number };
+		assert.deepStrictEqual({
+			count: candidates.length,
+			longest: Math.max(...candidates.map(candidate => Math.max(candidate.text?.length ?? 0, candidate.name?.length ?? 0))) <= 60,
+			roleFirst: roleNear.candidates[0],
+			roleCountAtLeast12: roleNear.roleCount >= 12,
+			roleCandidates: roleNear.candidates.length <= 5,
+		}, {
+			count: 5,
+			longest: true,
+			roleFirst: { role: 'button', name: 'Q448 Item 3' },
+			roleCountAtLeast12: true,
+			roleCandidates: true,
+		});
+	});
+
+	test('role + name never lists the name of an element that is being edited', async () => {
+		root.innerHTML = [
+			'<h2 contenteditable="true">Q448 打った見出し</h2>',
+			'<div role="gridcell"><span contenteditable="true">Q448 打ったセル</span></div>',
+			'<h2>Q448 見出しの例</h2>',
+		].join('');
+		const heading = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', role: 'heading', name: 'Q448 打った見出しx' });
+		const cell = await runInPage({ mode: 'nearMiss', role: 'gridcell', name: 'Q448 打ったセルx' });
+		assert.deepStrictEqual({
+			heading: (heading.near as { candidates: unknown[] }).candidates,
+			leaks: /打った/.test(JSON.stringify([heading, cell])),
+		}, {
+			heading: [{ role: 'heading', name: 'Q448 見出しの例' }],
+			leaks: false,
+		});
+	});
+
+	test('a selector that matches nothing says which parts are missing, similar ids, classes and attribute values, and when only the last part matches', async () => {
+		root.innerHTML = [
+			'<button id="q448-save-button" class="q448-primary" data-testid="q448-save-draft">Save</button>',
+			'<div class="q448-list"></div>',
+			'<div class="q448-row"></div><div class="q448-row"></div>',
+			'<input type="password" data-testid="q448-pass-1234">',
+			'<div style="display: none;" data-testid="q448-hidden-token"></div>',
+			'<div aria-hidden="true"><span data-testid="q448-hidden-tokens"></span></div>',
+			'<div data-secret="q448-hidden-token"></div>',
+		].join('');
+		const byId = await runInPage({ mode: 'nearMiss', selector: '#q448-save-btn' });
+		const byParts = await runInPage({ mode: 'nearMiss', selector: '.q448-list > .q448-row' });
+		const byAttribute = await runInPage({ mode: 'nearMiss', selector: 'button[data-testid="q448-save-drafts"]' });
+		const byPassword = await runInPage({ mode: 'nearMiss', selector: '[data-testid="q448-pass-123"]' });
+		const byHidden = await runInPage({ mode: 'nearMiss', selector: '[data-testid="q448-hidden-toke"]' });
+		const byOtherAttribute = await runInPage({ mode: 'nearMiss', selector: '[data-secret="q448-hidden-toke"]' });
+		assert.deepStrictEqual({
+			byId: byId.near,
+			byParts: byParts.near,
+			byAttribute: byAttribute.near,
+			byPassword: byPassword.near,
+			byHidden: byHidden.near,
+			byOtherAttribute: byOtherAttribute.near,
+		}, {
+			byId: { missingParts: ['#q448-save-btn'], similar: [{ instead: '#q448-save-btn', selector: '#q448-save-button', count: 1 }] },
+			byParts: { lastPart: { part: '.q448-row', count: 2 } },
+			byAttribute: { missingParts: ['[data-testid="q448-save-drafts"]'], similar: [{ instead: '[data-testid="q448-save-drafts"]', selector: '[data-testid="q448-save-draft"]', count: 1 }] },
+			byPassword: { missingParts: ['[data-testid="q448-pass-123"]'] },
+			byHidden: { missingParts: ['[data-testid="q448-hidden-toke"]'] },
+			byOtherAttribute: { missingParts: ['[data-secret="q448-hidden-toke"]'] },
+		});
+	});
+});

@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisLookedAtRect, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
+import { IParadisBrowserQueryCall, ParadisBrowserQuery, paradisBuildQueryFunction, paradisLookedAtRect, paradisNearMissHints, paradisParseQueryLocator } from '../../node/paradisBrowserQuery.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES, PARADIS_MCP_BROWSER_QUERY_TOOLS } from '../../node/paradisBrowserQueryTools.js';
 
@@ -254,6 +254,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 				'- "text" matches the text of elements, not what is typed or selected in a form field, and 1 form field holds it (for example {"tag":"input","name":"Company"}). Find the field by role and name instead.',
 				'- 2 collapsed control(s) (aria-expanded="false") are on the page, for example "Details", "More". The element may be inside a section that is not rendered until it is expanded.',
 				'- Other scrollable areas: div.side. Give one as "container" if the wrong area was scrolled.',
+				'- div.list was searched over its whole scrollable range, so no element matching text "Acme" is in this area of the screen now. It may be on another page or tab, appear only after an action (a tab, a filter, a search), or be in another scrollable area.',
 			],
 			grown: [false, 3],
 		});
@@ -346,6 +347,76 @@ suite('paradisBrowserQuery (shared process)', () => {
 			network: { inflight: 0, quietMs: 600, longLivedIgnored: 1 },
 			timedOut: [true, true],
 			needsIdle: true,
+		});
+	});
+
+	// q.html Q448 の ③: 時間切れの後にページを 1 回だけ読み、待っていたものに近い候補を添える。待ち方・回数は変えない
+	test('wait_until adds close matches after a timeout without a match, and says when the matches are not visible', async () => {
+		const waiting = returned({ met: false, matched: 0, visible: 0 });
+		const near = returned({ near: { candidates: [{ role: 'button', name: 'Save draft', text: 'Save draft' }, { text: 'Saved' }] } });
+		const page = new FakePage([waiting, waiting, waiting, near]);
+		const timedOut = await page.query().call(page.call(), 'wait_until', { text: 'Save drafts', timeout_seconds: 3 });
+		const hidden = new FakePage([returned({ met: false, matched: 2, visible: 0 })]);
+		const notVisible = await hidden.query().call(hidden.call(), 'wait_until', { selector: '.toast', timeout_seconds: 2 });
+		const lines = textOf(timedOut).split('\n');
+		assert.deepStrictEqual({
+			first: lines[0],
+			hints: lines.slice(lines.indexOf('}') + 1),
+			modes: page.calls.map(call => call.spec.mode),
+			nearDeadline: page.deadlines[3],
+			notVisible: [hidden.calls.map(call => call.spec.mode), textOf(notVisible).split('\n').pop()],
+		}, {
+			first: 'Timed out after 3s waiting for visible text "Save drafts" (3 checks).',
+			hints: [
+				'- Close matches visible on the page now (give one of these as the locator):',
+				'  {"role":"button","name":"Save draft"} or {"text":"Save draft"}',
+				'  {"text":"Saved"}',
+			],
+			modes: ['wait', 'wait', 'wait', 'nearMiss'],
+			nearDeadline: 3000,
+			notVisible: [['wait', 'wait'], '- 2 element(s) match, but none is visible (hidden, zero size or not rendered yet). Use state "attached" to wait for it in the DOM, or check why with inspect_element.'],
+		});
+	});
+
+	// q.html Q448 の ④: 候補は 5 件まで、1 件 80 文字まで。selector は当たらない部分と似たもの
+	test('close matches are capped, cut, and explain a selector that matches nothing', () => {
+		const many = paradisNearMissHints({ candidates: Array.from({ length: 8 }, (_, index) => ({ text: `Row ${index} ${'y'.repeat(300)}` })) }, { text: 'Row 9' });
+		const selector = paradisNearMissHints({ missingParts: ['#save-btn'], similar: [{ instead: '#save-btn', selector: '#save-button', count: 1 }], lastPart: { part: '.row', count: 3 }, crossOriginFrames: 2 }, { selector: '#list #save-btn' });
+		const nothing = paradisNearMissHints({ candidates: [], roleCount: 0 }, { role: 'button', name: 'Send' });
+		assert.deepStrictEqual({
+			many: [many.length, Math.max(...many.slice(1).map(line => line.length))],
+			selector,
+			nothing,
+		}, {
+			many: [6, 2 + JSON.stringify({ text: 'x'.repeat(200) }).length],
+			selector: [
+				'- Nothing on the page has "#save-btn", so the selector matches nothing.',
+				'- Similar ones that are on the page: "#save-button" (1 element(s)) instead of "#save-btn".',
+				'- Its last part ".row" alone matches 3 element(s); the parts before it rule them out.',
+				'- The page has 2 cross-origin iframe(s), which cannot be searched; the element may be inside one (take_snapshot shows their content).',
+			],
+			nothing: [
+				'- No element with role "button" is in the searched area.',
+				'- Nothing visible on the page has a text or name close to "Send", so it is probably not on this screen (yet).',
+			],
+		});
+	});
+
+	test('get_text adds close matches when nothing matches, and scroll_to says "not in this area" only after searching all of it', async () => {
+		const page = new FakePage([returned({ matched: 0, returned: 0, total: 0, part: '', near: { candidates: [{ text: 'Total: 1,200' }] } })]);
+		const read = await page.query().call(page.call(), 'get_text', { text: 'Totals' });
+		const limited = new FakePage([returned({ found: false, moved: 400, before: 0, position: 400, max: 4000, extent: 4400, container: 'div.list' }), returned({ found: false, moved: 0, container: 'div.list' }), returned({})]);
+		const cut = await limited.query().call(limited.call(), 'scroll_to', { text: 'Row 999', max_steps: 1 });
+		assert.deepStrictEqual({
+			read: [isError(read), textOf(read).split('\n')],
+			cut: [isError(cut), textOf(cut).includes('whole scrollable range')],
+		}, {
+			read: [true, [
+				'No element matches text "Totals". Check with take_snapshot, or wait for it with wait_until.',
+				'- Close matches visible on the page now (give one of these as the locator):',
+				'  {"text":"Total: 1,200"}',
+			]],
+			cut: [true, false],
 		});
 	});
 
