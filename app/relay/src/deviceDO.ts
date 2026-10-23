@@ -18,7 +18,7 @@
 import { PARADIS_PUSH_ID_PATTERN, PARADIS_RELAY_CLOSE_CODE, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
 import { PUSH_EXPIRATION_SECONDS, sendApnsNotification, type ApnsEnv, type ApnsJwtCache, type ApnsSendResult } from './apns.js';
 import { pushRetryDelayMs, PUSH_MAX_RETRIES } from './pushRetry.js';
-import { extractToken, hashToken, randomTokenB64u, subprotocolAuthHeader, timingSafeEqualHex } from './auth.js';
+import { extractToken, hashToken, pairingKeyFingerprint, randomTokenB64u, subprotocolAuthHeader, timingSafeEqualHex } from './auth.js';
 
 interface DeviceRecord {
 	pcPublicKey: string; // base64url
@@ -647,6 +647,15 @@ export class DeviceDO implements DurableObject {
 			// PCが「どのペアリングのメッセージか」を検証できるようにする（C-2）。
 			const pairId = tag.slice('pair:'.length);
 			if (msg.type === 'pairing-msg') {
+				// そのソケットが最初に名乗った鍵の指紋を覚える（承認でPCが添える指紋と突き合わせ、資格情報を
+				// 渡すソケットを1つに決めるため）。ハイバネーションを越えて残るようソケットの添付に置く。
+				if (pairSocketKey(ws) === undefined && typeof msg.data === 'string') {
+					const keyFingerprint = await pairingKeyFingerprint(msg.data);
+					// 指紋を求める間に同じソケットの次の pairing-msg が先に覚えていれば、そちらが最初
+					if (keyFingerprint !== undefined && pairSocketKey(ws) === undefined) {
+						ws.serializeAttachment({ keyFingerprint, at: Date.now() } satisfies PairSocketKey);
+					}
+				}
 				this.sendToPc({ type: 'pairing-msg', data: msg.data, pairId });
 			}
 			return;
@@ -671,7 +680,7 @@ export class DeviceDO implements DurableObject {
 
 		if (tag === 'pc') {
 			if (msg.type === 'pairing-approve') {
-				await this.approvePairing(msg.pairId, msg.name);
+				await this.approvePairing(msg.pairId, msg.name, msg.keyFingerprint);
 			} else if (msg.type === 'pairing-reject') {
 				this.sendToTag(`pair:${msg.pairId}`, { type: 'error', message: 'pairing rejected' });
 				// 拒否したペアリングは即座に無効化する。pending を残したままだと、PCが後から
@@ -879,13 +888,32 @@ export class DeviceDO implements DurableObject {
 		}
 	}
 
-	private async approvePairing(pairId: string, name: string): Promise<void> {
+	private async approvePairing(pairId: string, name: string, keyFingerprint: unknown): Promise<void> {
 		// C-1: 承認対象の pairId が実在する（PCが発行し、まだ有効な）ことを確認する。
 		this.cleanupPairings();
 		const pending = this.sql.exec('SELECT pairId FROM pending WHERE pairId = ?', pairId).toArray()[0];
 		if (!pending) {
 			this.sendToPc({ type: 'error', message: 'unknown or expired pairId' });
 			return;
+		}
+		const sockets = this.state.getWebSockets(`pair:${pairId}`);
+		// 指紋を添えるPCなら、確認の番号(SAS)を出した鍵を最初に名乗ったソケットだけに資格情報を渡す。QR を
+		// 見ただけで SAS を確かめていない端末が同じ pairId でつないでいても、資格情報を受け取れない。
+		// 指紋を送らない旧PCは今までどおり pairId のソケット全部へ送る。
+		let recipients = sockets;
+		if (keyFingerprint !== undefined) {
+			const confirmed = typeof keyFingerprint === 'string' && /^[0-9a-f]{64}$/.test(keyFingerprint)
+				? sockets
+					.map(ws => ({ ws, key: pairSocketKey(ws) }))
+					.filter((entry): entry is { ws: WebSocket; key: PairSocketKey } => entry.key?.keyFingerprint === keyFingerprint)
+					.sort((a, b) => a.key.at - b.key.at)[0]
+				: undefined;
+			if (confirmed === undefined) {
+				// 確かめた鍵のソケットが居ない（閉じた・形が違う）。資格情報は作らず、pending も残す
+				this.sendToPc({ type: 'error', message: 'no pairing socket holds the confirmed key' });
+				return;
+			}
+			recipients = [confirmed.ws];
 		}
 		// C-1: ペアリングトークンを1回限りにする（承認後は即失効）。
 		this.sql.exec('DELETE FROM pending WHERE pairId = ?', pairId);
@@ -896,8 +924,11 @@ export class DeviceDO implements DurableObject {
 		this.sql.exec('INSERT INTO mobiles (mobileId, name, tokenHash, createdAt, lastSeenAt) VALUES (?, ?, ?, ?, ?)', mobileId, name || 'device', tokenHash, Date.now(), Date.now());
 		const deviceId = this.state.id.toString();
 		// C-1: 資格情報は承認対象の pairId ソケットにのみ渡す（全pairソケットへのブロードキャストは
-		// mobileToken 漏洩になる）。
-		this.sendToTag(`pair:${pairId}`, { type: 'paired', deviceId, mobileId, mobileToken });
+		// mobileToken 漏洩になる）。指紋があれば、その中でも確かめた鍵のソケット1つだけ。
+		const paired = encodeRelayControl({ type: 'paired', deviceId, mobileId, mobileToken });
+		for (const ws of recipients) {
+			try { ws.send(paired); } catch { /* ignore */ }
+		}
 		// PCへも mobileId を通知する（PCは直前のpairing-msgで得たモバイル公開鍵を
 		// この mobileId に紐付けて保存し、以後のデータ接続の相手鍵とする）。mobileTokenは
 		// モバイル専用の秘密なのでPCには送らず空にする。
@@ -906,8 +937,9 @@ export class DeviceDO implements DurableObject {
 		// TTL掃除の対象にならない。モバイル側の PairingClient は 'paired' を受けたら自己closeする
 		// が、強制終了・half-open 等でそれが起きないと hibernated WS として残り続ける。用が済んだ
 		// ソケットはサーバ側からも閉じる（失効ソケットと同じ扱い）。
-		for (const ws of this.state.getWebSockets(`pair:${pairId}`)) {
-			try { ws.close(1000, 'paired'); } catch { /* ignore */ }
+		// 資格情報を渡さなかった同じ pairId のソケットも閉じる（承認の後は pending が無く、もう使えない）。
+		for (const ws of sockets) {
+			try { ws.close(1000, recipients.includes(ws) ? 'paired' : 'not confirmed'); } catch { /* ignore */ }
 		}
 	}
 
@@ -968,4 +1000,24 @@ export class DeviceDO implements DurableObject {
 /** PCが付けてきた collapseId / threadId を検証する。形が外れていれば使わない（プッシュ自体は送る）。 */
 function pushIdOrUndefined(value: unknown): string | undefined {
 	return typeof value === 'string' && PARADIS_PUSH_ID_PATTERN.test(value) ? value : undefined;
+}
+
+/** ペアリングソケットが最初の pairing-msg で名乗った鍵（ソケットの添付に置く）。 */
+interface PairSocketKey {
+	readonly keyFingerprint: string;
+	readonly at: number;
+}
+
+function pairSocketKey(ws: WebSocket): PairSocketKey | undefined {
+	let attached: unknown;
+	try {
+		attached = ws.deserializeAttachment();
+	} catch {
+		return undefined;
+	}
+	if (attached === null || typeof attached !== 'object') {
+		return undefined;
+	}
+	const { keyFingerprint, at } = attached as { keyFingerprint?: unknown; at?: unknown };
+	return typeof keyFingerprint === 'string' && typeof at === 'number' ? { keyFingerprint, at } : undefined;
 }
