@@ -16,6 +16,7 @@
  * このコマンドが登録されていれば委譲する (webビルドでは未登録なので従来のフォルダ選択になる)。
  */
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+import { paradisRedactSecrets } from '../../../common/paradisSecretRedaction.js';
 
 export const PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID = 'paradis.workspaceSwitch.addRepositoryFlow';
 
@@ -104,6 +105,14 @@ export function paradisParseGitUrl(value: string): IParadisParsedGitUrl | undefi
 		return name ? { name } : undefined;
 	}
 	return undefined;
+}
+
+/**
+ * ログに書く git clone の文から資格情報を伏せる。URL の `user:pass@` やトークンだけの `token@`（`https://ghp_…@github.com`）は
+ * `***@` にし、git の stderr がそのまま写した URL や、文の中のトークンも同じ規則（`paradisRedactSecrets`）で伏せる。
+ */
+export function paradisRedactCloneLogText(text: string): string {
+	return paradisRedactSecrets(text.replace(/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]+@/gi, '$1***@'));
 }
 
 /** git clone --progress の stderr 1行分の解析結果。 */

@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisRedactSecretsWithMarker } from '../../../common/paradisSecretRedaction.js';
+
 export type ParadisSentryScope = 'owned' | 'patched' | 'unknown';
 
 export interface IParadisSentryFrame {
@@ -89,6 +91,8 @@ const PARADIS_SENTRY_RATE_LIMIT_MAX_EVENTS = 3;
  */
 const PARADIS_SENTRY_RATE_LIMIT_MAX_ENTRIES = 500;
 const PARADIS_SENTRY_MAX_TEXT_LENGTH = 2_000;
+/** 伏せる前に切るときの余白。境目にかかった値を切る前の形で伏せられる長さにする。 */
+const PARADIS_SENTRY_REDACTION_MARGIN = 1_024;
 
 /**
  * Extra/breadcrumb payload keys that carry no user content and may be sent as-is. Everything else
@@ -177,22 +181,54 @@ export class ParadisSentryRateLimiter {
 
 /**
  * Removes credentials and local identity from text while retaining error semantics.
+ *
+ * 秘密の形（トークン・`KEY=値`・Bearer / Basic・URL の認証情報など）は通知と同じ規則（`paradisRedactSecretsWithMarker`）で伏せる。
+ * 身元の情報（メールアドレス・ホームのパス・WSL のパス・ホームの外のパス・SSH の接続先）はここだけで伏せる。
+ * ファイル名・行番号・`out/vs/...` から先のモジュールの位置は、調べるのに要るので残す。
  */
 export function paradisSanitizeSentryText(value: string): string {
-	const normalized = value
-		.replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [Filtered]')
-		.replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|DSN)[A-Z0-9_]*)\s*=\s*[^\s,;]+/g, '$1=[Filtered]')
-		.replace(/\b(token|secret|password|passwd|api[_-]?key|authorization)\s*=\s*[^\s,;&#]+/gi, '$1=[Filtered]')
-		.replace(/\/Users\/[^/\\\s]+/g, '~')
-		.replace(/\/home\/[^/\\\s]+/g, '~')
-		.replace(/[A-Za-z]:\\Users\\[^\\/\s]+/gi, '~')
+	// 余白を付けて先に切ってから伏せ、伏せた後に 2,000 字へ切る。送るのは先頭の 2,000 字だけなので、それより後ろを読む
+	// 理由が無い。余白を付けるのは、2,000 字の境目にかかったメールやトークン（`alice@exa…`）を、切る前の形で伏せるため。
+	// 余白の境目に残ったトークンの断片は、末尾の `…` を手がかりに共有の規則が伏せる。
+	const head = value.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH + PARADIS_SENTRY_REDACTION_MARGIN ? value : `${value.slice(0, PARADIS_SENTRY_MAX_TEXT_LENGTH + PARADIS_SENTRY_REDACTION_MARGIN)}…`;
+	const redacted = paradisRedactSecretsWithMarker(head
+		// URL は先にホストとパスだけにする（検索部分・`#` 以降・認証情報を落とす）。後のメールの規則が `user@host` を拾わないように
 		.replace(/\b(?:https?|wss?):\/\/[^\s]+/gi, rawUrl => paradisSanitizeUrl(rawUrl))
 		// ファイル転送で SSH 直接開いたホストの URI は、ホスト名とパスごと伏せる
-		.replace(/\bparadis-sftp:\/\/[^\s'"]+/gi, 'paradis-sftp://[Filtered]');
+		.replace(/\bparadis-sftp:\/\/[^\s'"]+/gi, 'paradis-sftp://[Filtered]'), '[Filtered]')
+		.replace(/\b(Bearer)\s+(?!(?:authentication|authorization|auth|realm|scheme|tokens?|header|credentials?|access|login|is|was|failed|error|required)\b(?![-._~+/=]))[A-Za-z0-9._~+/=-]+/gi, '$1 [Filtered]')
+		.replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|DSN)[A-Z0-9_]*)\s*=\s*[^\s,;]+/g, '$1=[Filtered]')
+		.replace(/\b(token|secret|password|passwd|api[_-]?key|authorization)\s*=\s*[^\s,;&#]+/gi, '$1=[Filtered]')
+		// SSH の接続先（`vscode-remote://ssh-remote+<host>/...`、`%2B` は URI に符号化された `+`）と、コンテナの接続先
+		// （`dev-container+<hex>`・`attached-container+<hex>`。hex を戻すと `{"hostPath":"/Users/<名前>"}` が読める）
+		.replace(/\b(ssh-remote|dev-container|attached-container)(\+|%2B)[^\s/\\'"`,;()[\]]+/gi, '$1$2[host]')
+		// WSL のパス（`\\wsl.localhost\<distro>\home\<user>`、JSON に書かれて二重になった区切り、`\` を `/` に直したもの）
+		.replace(/(?:\\{2,}|\/{2})wsl(?:\$|\.localhost)(?:\\+|\/)[^\\/\s'"]+(?:\\+|\/)home(?:\\+|\/)[^\\/\s'"]+/gi, '~')
+		// Windows のホーム（`C:\Users\<user>`、二重の区切りと `/` の区切りも）
+		.replace(/(?<![A-Za-z0-9+.-])[A-Za-z]:(?:\\+|\/)Users(?:\\+|\/)[^\\/\s'"]+/gi, '~')
+		.replace(/\\+(?:Users|home)\\+[^\\/\s'"]+/gi, '~')
+		.replace(/\/Users\/[^/\\\s]+/g, '~')
+		.replace(/\/home\/[^/\\\s]+/g, '~')
+		// ホームの外のパス（外付けディスク・マウント先・C: 以外のドライブ）は、ファイル名か `out/vs/...` から先だけ残す
+		// 引用符で囲まれたもの（Node の ENOENT などの形）は、空白を含むフォルダ名（`/Volumes/My Passport/...`）ごと縮める
+		.replace(/(['"])((?:\/(?:Volumes|mnt|media|run\/media)\/|[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/)))[^'"\n]{0,1024})\1/gi, (_match, quote: string, path: string) => `${quote}${paradisShortenOutsideHomePath(path)}${quote}`)
+		.replace(/(?<![\w.~-])\/(?:Volumes|mnt|media|run\/media)\/[^\s'"`()<>,;]+/g, paradisShortenOutsideHomePath)
+		.replace(/(?<![A-Za-z0-9+.\\-])[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/))[^\s'"`()<>,;|*?]+/gi, paradisShortenOutsideHomePath)
+		// メールアドレス（`git@github.com` のような SSH の宛先も、接続先の名前として同じに伏せる）
+		.replace(/\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z][A-Za-z0-9-]{0,62}(?:\.[A-Za-z0-9-]{1,63}){0,8}\.[A-Za-z]{2,24}\b/g, '[email]');
+	return redacted.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH ? redacted : `${redacted.slice(0, PARADIS_SENTRY_MAX_TEXT_LENGTH)}…`;
+}
 
-	return normalized.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH
-		? normalized
-		: `${normalized.slice(0, PARADIS_SENTRY_MAX_TEXT_LENGTH)}…`;
+/** ホームの外のパスを、`out/vs/...`・`src/vs/...`・`node_modules/...` から先か、ファイル名だけにする。 */
+function paradisShortenOutsideHomePath(path: string): string {
+	const segments = path.split(/[\\/]+/);
+	for (let index = 0; index < segments.length - 1; index++) {
+		const segment = segments[index];
+		if (segment === 'node_modules' || ((segment === 'out' || segment === 'src') && segments[index + 1] === 'vs')) {
+			return `[path]/${segments.slice(index).join('/')}`;
+		}
+	}
+	return `[path]/${segments[segments.length - 1]}`;
 }
 
 /**
