@@ -6697,7 +6697,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'unknownTab':
 				return 'There is no tab with that tabId that this terminal pane may use. You can only select tabs you opened (and the page currently shared with this pane); call list_browser_tabs to see them. To use a user tab, call request_browser_page.';
 			case 'revokedByUser':
-				return 'The user stopped sharing that tab with this terminal pane, so you can no longer use it, even though you opened it. Continue without it, open a new tab with open_browser_tab, or ask the user to share it with this pane again (request_browser_page).';
+				return 'The user stopped sharing that tab with this terminal pane, so you can no longer use it, even though you opened it. Continue without it, open a new tab with open_browser_tab, or ask the user to share it with this pane again from the share button of the integrated browser toolbar.';
 			case 'tabNotVisible':
 				return 'That tab was not closed because it is in a space that is not on screen (Para Code keeps such tabs until the space is shown again). Leave it open, or ask the user to switch to that space and call this tool again.';
 			case 'notOwned':
