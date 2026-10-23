@@ -69,6 +69,7 @@ import {
 } from '../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
 import { paradisMarkAgentContextMenuInput } from './paradisAgentContextMenu.js';
+import { paradisDetectHumanCheck } from './paradisBrowserHumanCheck.js';
 import { createHash } from 'crypto';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
@@ -719,6 +720,17 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		} catch {
 			return null;
 		}
+	}
+
+	/** 人の確認（Cloudflare）が出ているか。ビューが無ければ null（paradisBrowserHumanCheck.ts）。 */
+	async detectExactViewHumanCheck(descriptorValue: unknown, alreadyReported: unknown): Promise<string | null> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		const view = descriptor !== undefined ? this.resolveExistingExactView(descriptor) : undefined;
+		if (!descriptor || !view) {
+			return null;
+		}
+		const kind = await paradisDetectHumanCheck(view.webContents, alreadyReported === true);
+		return kind !== undefined && this.resolveExistingExactView(descriptor) === view ? kind : null;
 	}
 
 	/** Screenshot from the exact object, with authority revalidated after the await. */

@@ -58,6 +58,7 @@ suite('ParadisChromeClientHints', () => {
 			emulatedDevice: paradisRewriteClientHintHeaders({ 'User-Agent': 'Mozilla/5.0 (iPhone)', 'sec-ch-ua': electronBrands }, GENUINE_UA, '150.0.7871.250'),
 			serviceWorker: paradisRewriteClientHintHeaders({ 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36', 'sec-ch-ua': electronBrands }, GENUINE_UA, '150.0.7871.250'),
 			noHints: paradisRewriteClientHintHeaders({ 'User-Agent': GENUINE_UA }, GENUINE_UA, '150.0.7871.250'),
+			serviceWorkerWhileEmulating: paradisRewriteClientHintHeaders({ 'User-Agent': 'Mozilla/5.0 (Macintosh) Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36', 'sec-ch-ua': electronBrands }, GENUINE_UA, '150.0.7871.250', false),
 		}, {
 			rewritten: {
 				'User-Agent': GENUINE_UA,
@@ -68,6 +69,7 @@ suite('ParadisChromeClientHints', () => {
 			emulatedDevice: undefined,
 			serviceWorker: { 'User-Agent': GENUINE_UA, 'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"' },
 			noHints: undefined,
+			serviceWorkerWhileEmulating: undefined,
 		});
 	});
 
