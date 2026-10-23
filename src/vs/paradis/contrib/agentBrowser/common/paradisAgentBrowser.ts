@@ -982,6 +982,8 @@ export type IParadisGrantAgentTabRequest = IParadisPrepareBindRequest;
 export interface IParadisAgentTabGrant {
 	readonly token: string;
 	readonly pageId: string;
+	/** 共有したページ（または許可したタブ）から開いたタブの許可。無ければエージェントが自分で開いたタブ。 */
+	readonly opened?: true;
 }
 
 /** Short-lived authority ticket. The exact BrowserView descriptor remains backend-private. */
