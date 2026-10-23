@@ -23,7 +23,7 @@ import { paradisJoinTruncatedMiddle, paradisNormalizeCommandOutput, paradisTrunc
 export function paradisRedactMobileCommandOutput(raw: string): string {
 	const normalized = paradisNormalizeCommandOutput(raw)
 		.replace(/-----BEGIN (?<kind>[A-Z ]*)PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '-----BEGIN $<kind>PRIVATE KEY----- ***')
-		.replace(/(?<scheme>[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]{1,256}(?::[^\s/@]{0,256})?@/gi, '$<scheme>***@')
+		.replace(/(?<scheme>[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, '$<scheme>***@')
 		// Azure の接続文字列（`AccountKey=…;`・`SharedAccessKey=…`・SAS の `sig=…`）
 		.replace(/\b(?<name>AccountKey|SharedAccessKey|SharedAccessSignature|sig)=(?<value>[^;&\s"']+)/gi, '$<name>=***')
 		// Slack の Incoming Webhook（URL そのものが資格情報）

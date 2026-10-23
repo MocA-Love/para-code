@@ -37,7 +37,7 @@ const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk
 function buildSecretPatterns(marker: string): readonly [RegExp, string][] {
 	return [
 		// URL に埋め込んだ認証情報（https://user:pass@host）と、キーだけのもの（Sentry の DSN など）
-		[/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/:@]{1,256}:[^\s/@]{1,256}@/gi, `$1${marker}@`],
+		[/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${marker}@`],
 		[/\b(https?:\/\/)[0-9a-f]{16,}@/gi, `$1${marker}@`],
 		// Webhook の URL（パスそのものが秘密）
 		[/\b(https:\/\/hooks\.slack\.com\/services\/)[A-Za-z0-9/]+/g, `$1${marker}`],
