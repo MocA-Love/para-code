@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
@@ -266,6 +266,55 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 			narrow: [true, true],
 			answered: [false, false],
 			codex: [false, false],
+		});
+	});
+
+	// 2.1.309 の実画面（`--resume` で 5 時間使っていない会話を開いた直後。旗 tengu_gleaming_fair のとき）
+	const sessionAge = [
+		'❯ Say hi in one word.',
+		'',
+		'● Hi.',
+		'',
+		RULE,
+		'  This session is 4h 59m old and 300k tokens.',
+		'',
+		'  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a',
+		'  summary.',
+		'',
+		'  ❯ 1. Resume from summary (recommended)',
+		'    2. Resume full session as-is',
+		'    3. Don\'t ask me again',
+		'',
+		'  Enter to confirm · Esc to cancel',
+	].join('\n');
+	// 2.1.309 のバイナリの文字列から組んだ形（実画面は出せていない）
+	const newerModel = [
+		RULE,
+		'  You\u2019re resuming an Opus 5 session. Continue with Opus 5.5?',
+		'',
+		'  ❯ 1. Keep Opus 5',
+		'    2. Continue with Opus 5.5',
+		'',
+		'  Enter to confirm · Esc to cancel',
+	].join('\n');
+	// 同じ汎用の操作説明の、ほかの確認（全画面表示のお誘い）。会話の本文に古いセッションの確認の文言が残っていても当たらない
+	const otherDialog = [
+		'● Earlier the screen said: This session is 4h 59m old and 300k tokens.',
+		'',
+		RULE,
+		'  Try the new fullscreen renderer?',
+		'  ❯ 1. Yes, try it',
+		'    2. Not now',
+		'  Enter to confirm · Esc to cancel',
+	].join('\n');
+
+	test('tells the three prompts shown right after reopening a conversation apart, and not other dialogs with the same footer', () => {
+		assert.deepStrictEqual({
+			kinds: [resumePrompt, narrow, sessionAge, newerModel, otherDialog, answered].map(paradisClaudeResumeScreenPrompt),
+			agent: [paradisScreenShowsAgentPrompt(sessionAge, 'claude'), paradisScreenShowsAgentPrompt(sessionAge, 'codex'), paradisScreenShowsAgentPrompt(newerModel, 'claude'), paradisScreenShowsAgentPrompt(otherDialog, 'claude')],
+		}, {
+			kinds: ['resume', 'resume', 'session-age', 'newer-model', undefined, undefined],
+			agent: [true, false, true, false],
 		});
 	});
 });

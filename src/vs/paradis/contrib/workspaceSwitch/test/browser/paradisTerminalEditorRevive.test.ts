@@ -12,6 +12,8 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IProcessDetails } from '../../../../../platform/terminal/common/terminalProcess.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
+import { PARADIS_ENDED_PTY_ID } from '../../../../../platform/terminal/common/paradisEndedPty.js';
+import { paradisNoteRevivedPtyAnswer, paradisResetEndedTerminalRestoreNotes, paradisTakeRestartedTerminalOutcome } from '../../common/paradisEndedTerminalRestore.js';
 import { paradisClearTerminalReviveIndex, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource, paradisResolveRevivedTerminalEditorInput, paradisTerminalRestoreStateKey } from '../../browser/paradisTerminalEditorRevive.js';
 
 suite('paradisTerminalEditorRevive', () => {
@@ -38,6 +40,87 @@ suite('paradisTerminalEditorRevive', () => {
 		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
 		return disposables;
 	}
+
+	teardown(() => paradisResetEndedTerminalRestoreNotes());
+
+	test('a terminal that ended while its space was away is opened on the ended id and classified as ended', async () => {
+		register(new Map(), new Set());
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		assert.deepStrictEqual({
+			resolved: paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
+			outcome: paradisTakeRestartedTerminalOutcome('nonce-a'),
+		}, {
+			resolved: { id: PARADIS_ENDED_PTY_ID, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: false },
+			outcome: { reason: 'ended', workingSet: { stateKey: 'worktree:target', indexTimedOut: false, endedWhileAway: true } },
+		});
+	});
+
+	test('a live orphan with the nonce wins over the ended ledger', async () => {
+		register(new Map([['nonce-a', 77]]), new Set());
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		assert.deepStrictEqual(
+			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
+			{ id: 77, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: false, paradisResolvedToCurrentPtyId: true });
+	});
+
+	test('the ended ledger is not trusted when the orphan index could not be checked', async () => {
+		// 索引が引けない回は、台帳の nonce が実は生きていても気づけない。近道せず pty host の答えに任せる。
+		collectUnexpectedErrors();
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => { throw new Error('pty host unavailable'); },
+			listHeldPtyIds: () => new Set<number>(),
+		}));
+		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		assert.deepStrictEqual(
+			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
+			{ id: 12, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true });
+	});
+
+	test('the ended ledger is not trusted when the held ids are unknown', async () => {
+		collectUnexpectedErrors();
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => new Map(),
+			listHeldPtyIds: () => { throw new Error('no live instances'); },
+		}));
+		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
+		assert.deepStrictEqual({ id: resolved.id, outcome: paradisTakeRestartedTerminalOutcome('nonce-a').reason }, { id: -1, outcome: 'ambiguous' });
+	});
+
+	test('only the pty host saying "ended" makes a restored tab ended; no answer stays not-found', async () => {
+		register(new Map(), new Set());
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a', 'nonce-b']) });
+		paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
+		paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(13, 'nonce-b'));
+		paradisNoteRevivedPtyAnswer('nonce-a', PARADIS_ENDED_PTY_ID);
+		paradisNoteRevivedPtyAnswer('nonce-b', undefined);
+
+		assert.deepStrictEqual({
+			a: paradisTakeRestartedTerminalOutcome('nonce-a'),
+			b: paradisTakeRestartedTerminalOutcome('nonce-b'),
+			unknown: paradisTakeRestartedTerminalOutcome('nonce-c'),
+		}, {
+			a: { reason: 'ended', workingSet: { stateKey: 'worktree:target', indexTimedOut: false } },
+			b: { reason: 'not-found', workingSet: { stateKey: 'worktree:target', indexTimedOut: false } },
+			unknown: { reason: 'not-found', workingSet: undefined },
+		});
+	});
+
+	test('a refused id is classified as ambiguous, not as a failure', async () => {
+		register(new Map(), new Set([12]));
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']) });
+		paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
+
+		assert.deepStrictEqual(paradisTakeRestartedTerminalOutcome('nonce-a'), { reason: 'ambiguous', workingSet: { stateKey: 'worktree:target', indexTimedOut: false, ambiguous: true } });
+	});
 
 	test('rewrites the stale id to the current one when the nonce identifies an orphan pty', async () => {
 		register(new Map([['nonce-a', 77]]), new Set());

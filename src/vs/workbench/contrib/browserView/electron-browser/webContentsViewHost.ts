@@ -101,7 +101,7 @@ export class WebContentsViewHost extends Disposable {
 		// PARA-PATCH: bounds are now current, so a show we held back can go ahead.
 		if (this._showPendingLayout && !this._pushingBounds) {
 			this._showPendingLayout = false;
-			this._refresh(true);
+			this._refresh(false, true);
 		}
 	}
 
@@ -160,9 +160,8 @@ export class WebContentsViewHost extends Disposable {
 				this._paradisFocusGuard.noteDeliberateFocus();
 			}
 		}));
-		// PARA-PATCH: restartScreenshot is the second argument (the first is the fork's boundsArePushed)
-		this._modelStore.add(model.onDidNavigate(() => this._refresh(false, true)));
-		this._modelStore.add(model.onDidChangeLoadingState(() => this._refresh(false, true)));
+		this._modelStore.add(model.onDidNavigate(() => this._refresh(true)));
+		this._modelStore.add(model.onDidChangeLoadingState(() => this._refresh(true)));
 		this._modelStore.add(model.onWillDispose(() => this._detachModel(true)));
 		this._modelStore.add(model.onDidChangeVisibility(({ visible }) => this._paradisCoverPlaceholder(visible))); // PARA-PATCH: see _paradisCoverPlaceholder
 		this._refresh();
@@ -202,7 +201,7 @@ export class WebContentsViewHost extends Disposable {
 	 * @param boundsArePushed the caller already pushed current bounds to main, so the page
 	 * can be shown without laying out again (PARA-PATCH).
 	 */
-	private _refresh(boundsArePushed = false, restartScreenshot = false): void { // PARA-PATCH: fork's boundsArePushed first; upstream's restartScreenshot moved to the second argument
+	private _refresh(restartScreenshot = false, boundsArePushed = false): void { // PARA-PATCH: fork's optional boundsArePushed added after upstream's restartScreenshot
 		if (restartScreenshot) {
 			this._screenshotSequence++;
 		}

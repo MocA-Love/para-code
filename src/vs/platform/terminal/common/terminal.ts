@@ -381,7 +381,11 @@ export interface IPtyService {
 		workspaceId: string,
 		workspaceName: string
 	): Promise<number>;
-	attachToProcess(id: number): Promise<void>;
+	/**
+	 * Attaches to a persistent process, failing if `pid` is provided and differs from its process ID.
+	 * Persistent process IDs restart with the pty host, so a saved ID can later belong to another process.
+	 */
+	attachToProcess(id: number, pid?: number): Promise<void>;
 	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	// PARA-PATCH: tell the pty host that the app is quitting, so closing terminals leaves their background processes alone (paradisTerminalCloseCleanupQuit.ts)
@@ -1245,8 +1249,13 @@ export interface ITerminalBackend extends ITerminalBackendPtyServiceContribution
 	readonly onDidRequestDetach: Event<{ requestId: number; workspaceId: string; instanceId: number }>;
 
 	attachToProcess(id: number): Promise<ITerminalChildProcess | undefined>;
-	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
-	attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined>;
+	/**
+	 * Attaches to the process revived for a restored terminal, otherwise to its original process. The
+	 * local backend refuses an original process whose pid differs from `pid`, unless `pid` is 0 (unknown).
+	 */
+	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService.
+	// When it is a valid nonce it decides, and `pid` is not checked.
+	attachToRevivedProcess(id: number, pid: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined>;
 	listProcesses(): Promise<IProcessDetails[]>;
 	getLatency(): Promise<IPtyHostLatencyMeasurement[]>;
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;

@@ -59,6 +59,7 @@ import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.j
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
 import './paradisTerminalScope.contribution.js';
 import './paradisUnattributedTerminals.contribution.js';
+import './paradisEndedTerminalRestore.contribution.js';
 import './paradisScmInputScope.contribution.js';
 import './paradisScmRepoScope.contribution.js';
 
