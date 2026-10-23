@@ -115,7 +115,7 @@ const ACT_TARGET_PROPERTIES = {
 export const PARADIS_MCP_BROWSER_ACT_TOOLS = [
 	{
 		name: 'click_by',
-		description: 'Find an element of the page shared with this terminal pane by role + name, visible text, CSS selector or uid (optionally inside "within"), scroll it into view and click its center with trusted mouse input (the same input as click). Use this instead of take_snapshot followed by click, or instead of element.click() in evaluate_script. When the element cannot be clicked, nothing is sent and the reason is returned the way inspect_element describes it: not found (with close matches on the page to try instead), hidden or zero size, disabled, inside an iframe, or covered by another element (with the covering element). Input is refused while the user is using that page.',
+		description: 'Find an element of the page shared with this terminal pane by role + name, visible text, CSS selector or uid (optionally inside "within"), scroll it into view and click its center with trusted mouse input (the same input as click). Use this instead of take_snapshot followed by click, or instead of element.click() in evaluate_script. When the element cannot be clicked, nothing is sent and the reason is returned the way inspect_element describes it: not found (with how many matched, and close matches on the page to try instead), hidden or zero size, disabled, inside an iframe, or covered by another element (with the covering element). Input is refused while the user is using that page.',
 		inputSchema: {
 			type: 'object',
 			properties: {

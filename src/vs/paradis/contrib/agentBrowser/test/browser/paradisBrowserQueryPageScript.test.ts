@@ -158,6 +158,23 @@ suite('paradisBrowserQueryPageScript (close matches after a miss)', () => {
 		});
 	});
 
+	test('role + name never lists the name of an element that is being edited', async () => {
+		root.innerHTML = [
+			'<h2 contenteditable="true">Q448 打った見出し</h2>',
+			'<div role="gridcell"><span contenteditable="true">Q448 打ったセル</span></div>',
+			'<h2>Q448 見出しの例</h2>',
+		].join('');
+		const heading = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', role: 'heading', name: 'Q448 打った見出しx' });
+		const cell = await runInPage({ mode: 'nearMiss', role: 'gridcell', name: 'Q448 打ったセルx' });
+		assert.deepStrictEqual({
+			heading: (heading.near as { candidates: unknown[] }).candidates,
+			leaks: /打った/.test(JSON.stringify([heading, cell])),
+		}, {
+			heading: [{ role: 'heading', name: 'Q448 見出しの例' }],
+			leaks: false,
+		});
+	});
+
 	test('a selector that matches nothing says which parts are missing, similar ids, classes and attribute values, and when only the last part matches', async () => {
 		root.innerHTML = [
 			'<button id="q448-save-button" class="q448-primary" data-testid="q448-save-draft">Save</button>',

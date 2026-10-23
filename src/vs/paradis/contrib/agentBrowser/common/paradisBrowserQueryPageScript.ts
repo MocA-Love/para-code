@@ -210,6 +210,8 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		return 2 * shared / (wanted.length + 1 + candidate.length + 1);
 	};
 	const inField = el => !!(el.closest && el.closest('input, textarea, select')) || !!el.isContentEditable;
+	/** Its text (and so its name) may hold what the user typed: it is or holds a contenteditable or a text area. */
+	const holdsTyping = el => !!el.isContentEditable || !!(el.querySelector && el.querySelector('[contenteditable]:not([contenteditable="false"]), textarea'));
 	const ownText = el => { let out = ''; for (const node of el.childNodes) { if (node.nodeType === 3) { out += node.nodeValue; } } return norm(out); };
 	/** The element itself or a close ancestor with a role that has a name: how to give it as role + name. */
 	const namedControl = el => {
@@ -255,10 +257,10 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		const seen = new Set();
 		for (const entry of scored) {
 			if (out.length >= NEAR_MAX) { break; }
-			if (!visible(entry.el)) { continue; }
+			if (!visible(entry.el) || holdsTyping(entry.el)) { continue; }
 			const control = role ? entry.el : namedControl(entry.el);
 			const candidate = {};
-			if (control) {
+			if (control && !holdsTyping(control)) {
 				const name = truncate(nameOf(control));
 				if (name) { candidate.role = roleOf(control); candidate.name = name; }
 			}
