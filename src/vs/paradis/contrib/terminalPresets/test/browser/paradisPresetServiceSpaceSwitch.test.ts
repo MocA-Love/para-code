@@ -21,7 +21,7 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { ICreateTerminalOptions, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
-import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisPresetService } from '../../browser/paradisPresetService.js';
 import { IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
 
@@ -71,6 +71,14 @@ suite('ParadisPresetService space switch', () => {
 			upcastPartial<IWorkbenchEnvironmentService>({ remoteAuthority: undefined }),
 			upcastPartial<IParadisAgentStatusStore>({}),
 			upcastPartial<IParadisAuxiliaryWindowScopeService>({ resolveGroup: () => ({ kind: 'managed', stateKey: pinnedTo ?? state.activeStateKey }) }),
+			upcastPartial<IParadisWorkspaceSwitchService>({
+				get activeStateKey() { return state.activeStateKey; },
+				repositories: [
+					upcastPartial<IParadisWorkspaceRepository>({ id: 'space-a', name: 'a', uri: URI.file('/repos/a') }),
+					upcastPartial<IParadisWorkspaceRepository>({ id: 'space-c', name: 'c', uri: URI.file('/repos/c') }),
+				],
+			}),
+			upcastPartial<IParadisWorktreeService>({ getWorktrees: () => [] }),
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];
@@ -105,8 +113,14 @@ suite('ParadisPresetService space switch', () => {
 		]);
 	});
 
-	test('terminals opened in a window pinned to another space belong to that space', async () => {
-		const log = await runAcrossSwitch('space-c');
-		assert.deepStrictEqual(log.filter(entry => entry.startsWith('scope:')), ['scope:1:space-c', 'scope:2:space-c']);
+	test('terminals opened in a window pinned to another space belong to that space and start in its folder', async () => {
+		assert.deepStrictEqual(await runAcrossSwitch('space-c'), [
+			'terminal:1:/repos/c/server',
+			'scope:1:space-c',
+			'send:1:npm run server',
+			'terminal:2:/repos/c',
+			'scope:2:space-c',
+			'send:2:npm run web',
+		]);
 	});
 });
