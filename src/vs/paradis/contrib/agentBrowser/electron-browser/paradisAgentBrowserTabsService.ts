@@ -75,6 +75,8 @@ import {
 	IParadisSelectAgentTabResult,
 	PARADIS_AGENT_APPROVAL_DEADLINE_MS,
 	PARADIS_AGENT_APPROVAL_GUARD_MS,
+	PARADIS_MAX_WAITING_CHILDREN,
+	PARADIS_MAX_WAITING_CHILDREN_PER_TAB,
 	ParadisAgentTabLedger,
 	ParadisAgentTabTargetFailure,
 	ParadisOpenedTabGrantResult,
@@ -298,6 +300,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * 入っていないので、閉じる・終了するときはここから直接捨てる（捨てないと誰にも見えないビューが main に残る）。
 	 */
 	private readonly _pendingTabs = new Map<string, IParadisPendingAgentTab>();
+	/** ペイン → 上限を超えたので閉じた子ページの数（次の list_browser_tabs で知らせて 0 に戻す）。 */
+	private readonly _closedWaitingPages = new Map<string, number>();
 	/** {@link _pendingTabs} があるときだけ、スペースの切り替えと終了を見張る。 */
 	private readonly _pendingWatch = this._register(new MutableDisposable<DisposableStore>());
 
@@ -582,6 +586,17 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * 出さずに待たせ、親と一緒に置く。記録できなければ子ページを閉じる（今見ているスペースに見えないビューを残さない）。
 	 */
 	private _keepChildForHiddenSpace(child: BrowserEditorInput, parent: IParadisPendingAgentTab): void {
+		// 広告などが window.open を繰り返しても、見えないビューが増え続けないようにする
+		const root = this._waitingRoot(parent);
+		const waitingChildren = [...this._pendingTabs.values()].filter(pending => pending.kind === 'child' && !pending.input.isDisposed());
+		const underRoot = waitingChildren.filter(pending => this._waitingRoot(pending) === root).length;
+		if (underRoot >= PARADIS_MAX_WAITING_CHILDREN_PER_TAB || waitingChildren.length >= PARADIS_MAX_WAITING_CHILDREN) {
+			if (root.kind === 'own') {
+				this._closedWaitingPages.set(root.token, (this._closedWaitingPages.get(root.token) ?? 0) + 1);
+			}
+			child.dispose(true);
+			return;
+		}
 		if (!this._browserScopeService.assignNewViewToScope(child.id, parent.stateKey)) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not keep a page opened from a tab in a space that is not on screen; closing it');
 			child.dispose(true);
@@ -606,6 +621,21 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const size = paradisEstimateHiddenAgentTabSize(dimension.width, dimension.height, this._configurationService.getValue<number>(PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING));
 		const origin = this._layoutService.getContainer(mainWindow, Parts.EDITOR_PART)?.getBoundingClientRect();
 		await model.layout({ windowId: mainWindow.vscodeWindowId, x: origin?.left ?? 0, y: origin?.top ?? 0, width: size.width, height: size.height, zoomFactor: getZoomFactor(mainWindow), cornerRadius: 0 });
+	}
+
+	/** 待っている子ページの元をたどった、エージェントが開いたタブ（たどれなければその子自身）。 */
+	private _waitingRoot(pending: IParadisPendingAgentTab): IParadisPendingAgentTab {
+		let current = pending;
+		const seen = new Set<string>();
+		while (current.kind === 'child' && !seen.has(current.input.id)) {
+			seen.add(current.input.id);
+			const parent = this._pendingTabs.get(current.parentViewId);
+			if (!parent) {
+				break;
+			}
+			current = parent;
+		}
+		return current;
 	}
 
 	/** そのスペースがもう画面に出ていれば（待たせている間に戻られた）、待っているタブを置く。 */
@@ -810,7 +840,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		for (const viewId of this._bindingModel.getAgentTabsForToken(token)) {
 			add(known.get(viewId));
 		}
-		return { ok: true, tabs, openedCount: this.openedCount(token) };
+		const closedWaitingPages = this._closedWaitingPages.get(token);
+		this._closedWaitingPages.delete(token);
+		return { ok: true, tabs, openedCount: this.openedCount(token), ...(closedWaitingPages ? { closedWaitingPages } : {}) };
 	}
 
 	async selectTab(token: string | undefined, tabId: string): Promise<IParadisSelectAgentTabResult> {

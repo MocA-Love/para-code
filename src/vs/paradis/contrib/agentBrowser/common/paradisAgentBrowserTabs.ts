@@ -78,6 +78,11 @@ export const PARADIS_AGENT_APPROVAL_DEADLINE_MS = 50_000;
 /** shared process 側で承認付きの呼び出しを待つ上限。renderer の締め切りより少し長い。 */
 export const PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS = 55_000;
 
+/** 画面に出ていないスペースで待っているタブ 1 つ（とその子孫）が開いた子ページを待たせる上限。超えた子はすぐ閉じる。 */
+export const PARADIS_MAX_WAITING_CHILDREN_PER_TAB = 5;
+/** 画面に出ていないスペースで待たせる子ページの、ウィンドウ全体の上限。 */
+export const PARADIS_MAX_WAITING_CHILDREN = 20;
+
 /** 承認ダイアログが出てからこの時間内の「承認」は、打ちかけの Enter とみなして聞き直す。 */
 export const PARADIS_AGENT_APPROVAL_GUARD_MS = 1_000;
 
@@ -136,6 +141,11 @@ export type IParadisOpenAgentTabResult = IParadisAgentTabResult<{
 export type IParadisListAgentTabsResult = IParadisAgentTabResult<{
 	readonly tabs: readonly IParadisAgentTabInfo[];
 	readonly openedCount: number;
+	/**
+	 * 前回の一覧の後に、画面に出ていないスペースで待っているこのペインのタブが開いた子ページのうち、
+	 * 待たせる数の上限を超えたので閉じた数（0 なら省く）。
+	 */
+	readonly closedWaitingPages?: number;
 }>;
 
 export type IParadisSelectAgentTabResult = IParadisAgentTabResult<{

@@ -164,7 +164,8 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 		await timeout(5);
 	};
 	const openChild = (parentId: string) => {
-		const child = createTab(`child-of-${parentId}`);
+		const base = `child-of-${parentId}`;
+		const child = createTab(known.has(base) || tabs.some(tab => tab.input.id === base) ? `${base}-${tabs.length}` : base);
 		const editorOptions: IBrowserViewEditorOpenOptions = { pinned: true, parentViewId: parentId, auxiliaryWindow: { x: 0, y: 0, width: 400, height: 300 } };
 		const allowed = handlers.every(handler => handler.shouldOpenEditor(child.input, { type: 'user' } as IBrowserViewOwner, editorOptions));
 		return { child, allowed };
@@ -266,6 +267,29 @@ suite('ParadisAgentBrowserTabsService tabs for a space that is not on screen', (
 				{ id: 'view-1', inactive: false, preserveFocus: true, group: 1 },
 				{ id: 'child-of-view-1', inactive: true, preserveFocus: true, group: 1 },
 			],
+		});
+	});
+
+	test('closes pages beyond the limit that a waiting tab opens, and tells the agent in the next tab list', async () => {
+		const harness = createHarness(store.add(new DisposableStore()));
+		await harness.service.openTab(TOKEN, undefined, false);
+		const children = [];
+		for (let index = 0; index < 7; index++) {
+			// 子が開いた孫も、同じ元のタブの分として数える
+			children.push(harness.openChild(index === 0 || index % 2 === 1 ? 'view-1' : 'child-of-view-1'));
+		}
+		const listed = harness.service.listTabs(TOKEN);
+		const listedAgain = harness.service.listTabs(TOKEN);
+		assert.deepStrictEqual({
+			allowed: children.map(entry => entry.allowed),
+			closed: children.map(entry => entry.child.disposals.length > 0),
+			closedWaitingPages: listed.ok ? listed.closedWaitingPages : undefined,
+			again: listedAgain.ok ? listedAgain.closedWaitingPages : undefined,
+		}, {
+			allowed: [false, false, false, false, false, false, false],
+			closed: [false, false, false, false, false, true, true],
+			closedWaitingPages: 2,
+			again: undefined,
 		});
 	});
 });
