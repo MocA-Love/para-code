@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import * as http from 'node:http';
 import os from 'node:os';
@@ -502,6 +502,25 @@ describe('ParaCodeAgents: interruptions', () => {
 	});
 });
 
+/** draft-pr が使う GitHub の口の偽物。呼ばれた順に calls へ残す。 */
+function fakeGitHub(existing: { number: number; title: string } | undefined, listDelayMs = 0) {
+	const calls: string[] = [];
+	const github = {
+		async findOpenPullRequest(owner: string, repo: string, branch: string) {
+			calls.push(`list ${owner}/${repo} ${branch}`);
+			if (listDelayMs) {
+				await new Promise(r => setTimeout(r, listDelayMs));
+			}
+			return existing ? { number: existing.number, url: `https://github.com/${owner}/${repo}/pull/${existing.number}`, title: existing.title, draft: true } : undefined;
+		},
+		async createDraftPullRequest(owner: string, repo: string, head: string, title: string, body: string) {
+			calls.push(`create ${owner}/${repo} ${head} ${title} ${body.split('\n')[0]}`);
+			return { number: 42, url: `https://github.com/${owner}/${repo}/pull/42`, title, draft: true };
+		},
+	};
+	return { github, calls };
+}
+
 describe('CommandRunner', () => {
 	test('runs the command in the workspace and fails on a non-zero exit code', async () => {
 		const { engine, bridge, id } = await setup(true);
@@ -532,27 +551,22 @@ describe('CommandRunner', () => {
 		run(work, 'fetch', '-q', 'origin');
 		run(work, 'switch', '-q', '-c', 'para/7-x');
 		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'x');
-		const bin = path.join(dir, 'bin');
-		mkdirSync(bin);
-		const log = path.join(dir, 'gh.log');
-		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$2" in list) echo '[]';; create) echo 'https://github.com/o/code/pull/42';; esac\n`);
-		chmodSync(path.join(bin, 'gh'), 0o755);
+		const { github, calls } = fakeGitHub(undefined);
 
 		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
 		let engine!: TaskBoardEngine;
-		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, github });
 		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: (_t, _s, branch) => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
 		engine.setFlows([flow], 'f', true);
 		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
 		engine.syncIntake([{ issue: { owner: 'o', repo: 'issues', number: 7, url: '' }, title: 'X', labels: [], assignees: [] }]);
 		engine.start('gh:o/issues#7', { agent: 'claude' });
 		await until(() => engine.getTask('gh:o/issues#7')!.pr !== undefined, 4000);
-		const calls = readFileSync(log, 'utf8');
 		expect({
 			pr: engine.getTask('gh:o/issues#7')!.pr?.number,
 			pushed: run(origin, 'branch', '--list', 'para/7-x').toString().trim(),
-			create: calls.includes('pr create --repo o/code --head para/7-x --draft --title=X --body=Closes o/issues#7'),
-		}).toEqual({ pr: 42, pushed: 'para/7-x', create: true });
+			calls,
+		}).toEqual({ pr: 42, pushed: 'para/7-x', calls: ['list o/code para/7-x', 'create o/code para/7-x X Closes o/issues#7'] });
 	}, 20000);
 
 	test('draft-pr pushes new commits to an existing PR instead of skipping them', async () => {
@@ -572,14 +586,10 @@ describe('CommandRunner', () => {
 		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'first');
 		run(work, 'push', '-q', 'origin', 'para/7-x');
 		run(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'rework');
-		const bin = path.join(dir, 'bin');
-		mkdirSync(bin);
-		const log = path.join(dir, 'gh.log');
-		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$2" in list) echo '[{"number":42,"url":"https://github.com/o/code/pull/42","title":"X","isDraft":true}]';; create) echo 'https://github.com/o/code/pull/43';; esac\n`);
-		chmodSync(path.join(bin, 'gh'), 0o755);
+		const { github, calls } = fakeGitHub({ number: 42, title: 'X' });
 		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
 		let engine!: TaskBoardEngine;
-		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, github });
 		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: () => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
 		engine.setFlows([flow], 'f', true);
 		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
@@ -590,7 +600,7 @@ describe('CommandRunner', () => {
 		expect({
 			pr: engine.getTask(id)!.pr?.number,
 			remoteHead: run(origin, 'log', '-1', '--format=%s', 'para/7-x').toString().trim(),
-			created: readFileSync(log, 'utf8').includes('pr create'),
+			created: calls.some(c => c.startsWith('create')),
 		}).toEqual({ pr: 42, remoteHead: 'rework', created: false });
 	}, 20000);
 
@@ -619,13 +629,10 @@ describe('CommandRunner', () => {
 		if (localCommit) {
 			commit(work, 'local');
 		}
-		const bin = path.join(dir, 'bin');
-		mkdirSync(bin);
-		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\ncase "$2" in list) echo '[{"number":42,"url":"https://github.com/o/code/pull/42","title":"X","isDraft":true}]';; esac\n`);
-		chmodSync(path.join(bin, 'gh'), 0o755);
+		const { github } = fakeGitHub({ number: 42, title: 'X' });
 		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
 		let engine!: TaskBoardEngine;
-		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, github });
 		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: () => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
 		engine.setFlows([flow], 'f', true);
 		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
@@ -661,14 +668,10 @@ describe('CommandRunner', () => {
 		mkdirSync(path.join(work, '.para'));
 		writeFileSync(path.join(work, '.para', 'plan.md'), 'plan');
 		writeFileSync(path.join(work, 'a.txt'), 'a');
-		const bin = path.join(dir, 'bin');
-		mkdirSync(bin);
-		const log = path.join(dir, 'gh.log');
-		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$2" in list) echo '[]';; create) echo 'https://github.com/o/code/pull/42';; esac\n`);
-		chmodSync(path.join(bin, 'gh'), 0o755);
+		const { github, calls } = fakeGitHub(undefined);
 		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
 		let engine!: TaskBoardEngine;
-		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => work, repoPath: work, repo: { owner: 'o', repo: 'code' }, github });
 		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: () => Promise.resolve({ branch: 'para/7-x' }), release: () => Promise.resolve() } });
 		engine.setFlows([flow], 'f', true);
 		engine.setPoolSlots([{ id: 's1', name: 'w', path: work, kind: 'clone-pool' }]);
@@ -680,7 +683,7 @@ describe('CommandRunner', () => {
 		rmSync(path.join(work, 'a.txt'));
 		engine.retry(id);
 		await until(() => engine.getTask(id)!.status === 'failed' && !engine.getTask(id)!.uncommitted, 10000);
-		expect({ ...dirty, error: engine.getTask(id)!.error, pushed: run(origin, 'branch', '--list', 'para/7-x').toString().trim(), ghCreate: existsSync(log) && readFileSync(log, 'utf8').includes('pr create') }).toEqual({
+		expect({ ...dirty, error: engine.getTask(id)!.error, pushed: run(origin, 'branch', '--list', 'para/7-x').toString().trim(), ghCreate: calls.some(c => c.startsWith('create')) }).toEqual({
 			uncommitted: ['a.txt'],
 			error: 'origin/main より先のコミットがありません',
 			pushed: '',
@@ -693,22 +696,18 @@ describe('CommandRunner', () => {
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		execFileSync('git', ['init', '-q', '-b', 'para/1-x'], { cwd: dir });
 		execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'x'], { cwd: dir });
-		const bin = path.join(dir, 'bin');
-		mkdirSync(bin);
-		const log = path.join(dir, 'gh.log');
-		writeFileSync(path.join(bin, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\ncase "$2" in list) sleep 2; echo '[]';; create) echo 'https://github.com/o/code/pull/42';; esac\n`);
-		chmodSync(path.join(bin, 'gh'), 0o755);
+		const { github, calls } = fakeGitHub(undefined, 2000);
 		const flow = { ...FLOW, steps: [{ id: 'pr', name: 'PR', kind: 'run', run: 'draft-pr' }] } as unknown as ITaskBoardFlow;
 		let engine!: TaskBoardEngine;
-		const runner = new CommandRunner({ engine: () => engine, placePath: () => dir, repoPath: dir, repo: { owner: 'o', repo: 'code' }, env: { PATH: `${bin}:${process.env.PATH}` } });
+		const runner = new CommandRunner({ engine: () => engine, placePath: () => dir, repoPath: dir, repo: { owner: 'o', repo: 'code' }, github });
 		engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner, workspaces: { prepare: (_t, _s, branch) => Promise.resolve({ branch }), release: () => Promise.resolve() } });
 		engine.setFlows([flow], 'f', true);
 		engine.setPoolSlots([{ id: 's1', name: 'w', path: dir, kind: 'clone-pool' }]);
 		const id = engine.addTask({ title: 'X' });
 		engine.start(id, { agent: 'claude' });
-		await until(() => { try { return readFileSync(log, 'utf8').includes('pr list'); } catch { return false; } });
+		await until(() => calls.length > 0);
 		engine.cancel(id);
 		await new Promise(r => setTimeout(r, 2500));
-		expect({ step: engine.getTask(id)!.step, calls: readFileSync(log, 'utf8').trim().split('\n').map(l => l.split(' ').slice(0, 2).join(' ')) }).toEqual({ step: 'todo', calls: ['pr list'] });
+		expect({ step: engine.getTask(id)!.step, calls: calls.map(c => c.split(' ')[0]) }).toEqual({ step: 'todo', calls: ['list'] });
 	}, 20000);
 });
