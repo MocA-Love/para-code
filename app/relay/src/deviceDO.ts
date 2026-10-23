@@ -191,14 +191,22 @@ export class DeviceDO implements DurableObject {
 			for (const ws of this.state.getWebSockets(`m:${mobileId}`)) {
 				try { ws.close(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'expired'); } catch { /* ignore */ }
 			}
-			if (this.state.getWebSockets('pc').length > 0) {
-				this.sendToPc({ type: 'mobile-revoked', mobileId });
-			} else {
-				this.sql.exec('INSERT OR REPLACE INTO pc_notices (mobileId, at) VALUES (?, ?)', mobileId, now);
-			}
+			this.noticeMobileRevoked(mobileId, now);
 		}
-		this.sql.exec('DELETE FROM pc_notices WHERE mobileId NOT IN (SELECT mobileId FROM pc_notices ORDER BY at DESC LIMIT ?)', MAX_PENDING_PC_NOTICES);
 		return expired;
+	}
+
+	/**
+	 * PC に mobile-revoked を伝える。PC がつながっていなければ pc_notices に積み、次に PC がつながったときに送る
+	 * （PC の台帳から外すため。失効の掃除とスマホ自身の解除で同じ扱いにする）。
+	 */
+	private noticeMobileRevoked(mobileId: string, now: number = Date.now()): void {
+		if (this.state.getWebSockets('pc').length > 0) {
+			this.sendToPc({ type: 'mobile-revoked', mobileId });
+			return;
+		}
+		this.sql.exec('INSERT OR REPLACE INTO pc_notices (mobileId, at) VALUES (?, ?)', mobileId, now);
+		this.sql.exec('DELETE FROM pc_notices WHERE mobileId NOT IN (SELECT mobileId FROM pc_notices ORDER BY at DESC LIMIT ?)', MAX_PENDING_PC_NOTICES);
 	}
 
 	/** PC がつながったとき、つながっていない間に失効させたモバイルを伝える。 */
@@ -438,8 +446,8 @@ export class DeviceDO implements DurableObject {
 		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
 			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
 		}
-		// PC側にも通知し、PCの登録デバイス一覧から取り除けるようにする。
-		this.sendToPc({ type: 'mobile-revoked', mobileId: body.mobileId });
+		// PC側にも通知し、PCの登録デバイス一覧から取り除けるようにする（PC がつながっていなければ次につながったときに）。
+		this.noticeMobileRevoked(body.mobileId);
 		return Response.json({ ok: true });
 	}
 
