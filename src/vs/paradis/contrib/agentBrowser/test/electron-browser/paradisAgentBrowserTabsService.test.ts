@@ -25,6 +25,7 @@ import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchServic
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
@@ -135,6 +136,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		nativeHostService,
 		{} as IConfigurationService,
 		{} as ILifecycleService,
+		{} as IWorkbenchLayoutService,
 	);
 	return { service, shown, binding, attention, onDidFocusWindow, onDidBlurWindow };
 }
@@ -438,6 +440,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			{ onDidFocusMainOrAuxiliaryWindow: Event.None, onDidBlurMainOrAuxiliaryWindow: Event.None } as unknown as INativeHostService,
 			{} as IConfigurationService,
 			{} as ILifecycleService,
+			{} as IWorkbenchLayoutService,
 		));
 		// 共有先が変わったと binding model が知らせる（実物は 100ms まとめてから届く）
 		const bind = (pageId: string | undefined) => {
