@@ -41,6 +41,41 @@ export const IParadisAgentBrowserBindingModel = createDecorator<IParadisAgentBro
 /** ペインで動いているエージェントCLIのベストエフォート判定結果。 */
 export type ParadisPaneAgentKind = 'claude' | 'codex' | 'shell';
 
+/** ページをそのペインが使える理由。 */
+export type ParadisPageShareKind = 'user' | 'agentTab' | 'openedTab';
+
+/** ページを使えるペイン 1 つ分（ツールバーの共有のボタンの数と一覧に使う）。 */
+export interface IParadisPageShare {
+	readonly token: string;
+	readonly kind: ParadisPageShareKind;
+}
+
+/**
+ * ページの共有（バインド）と許可から、ペインごとの共有の一覧を作る。ユーザーの共有が先、許可は後に並べ、
+ * 同じペインは 1 回だけ（ユーザーの共有を優先）。
+ */
+export function paradisCollectPageShares(
+	bindings: readonly { readonly token: string }[],
+	grantOwners: readonly string[],
+	isOpenedGrant: (token: string) => boolean,
+): IParadisPageShare[] {
+	const result: IParadisPageShare[] = [];
+	const seen = new Set<string>();
+	for (const binding of bindings) {
+		if (!seen.has(binding.token)) {
+			seen.add(binding.token);
+			result.push({ token: binding.token, kind: 'user' });
+		}
+	}
+	for (const token of grantOwners) {
+		if (!seen.has(token)) {
+			seen.add(token);
+			result.push({ token, kind: isOpenedGrant(token) ? 'openedTab' : 'agentTab' });
+		}
+	}
+	return result;
+}
+
 /** バインディングUIに表示する1ターミナルペイン分の情報。 */
 export interface IParadisPaneDescriptor {
 	readonly instanceId: number;
@@ -94,6 +129,12 @@ export interface IParadisAgentBrowserBindingModel {
 	/** そのページを、エージェントのタブとして使っているペインのトークン（キャッシュ）。 */
 	getAgentTabOwnersForPage(pageId: string): readonly string[];
 
+	/**
+	 * そのページを使えるペインと、使える理由（ユーザーの共有・エージェントが自分で開いたタブ・共有したページから
+	 * 開いたタブ）の一覧（キャッシュ）。1 つのペインは 1 回だけ並び、ユーザーの共有を優先する。
+	 */
+	getPageShares(pageId: string): readonly IParadisPageShare[];
+
 	/** shared processから最新状態を再取得する。 */
 	refresh(): Promise<void>;
 
@@ -117,6 +158,12 @@ export interface IParadisAgentBrowserBindingModel {
 
 	/** {@link grantAgentTab} の許可を外す（タブを閉じた・ユーザーが共有を止めた）。 */
 	revokeAgentTab(token: string, viewId: string): Promise<void>;
+
+	/**
+	 * そのページを使うペインが残っていなければ（共有も許可も無ければ）、ページの共有の印を下ろす。台帳は
+	 * shared process から取り直してから見る。
+	 */
+	releaseShareMarkIfUnused(pageId: string): Promise<void>;
 
 	/**
 	 * そのタブを開いた元のタブ（main が覚えている）を tab_id で使えるペインのトークン。開いたタブを
@@ -308,6 +355,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	/** shared process から取った許可の一覧（共有の表示用）。token → viewId と viewId → token。 */
 	private _agentTabsByToken: ReadonlyMap<string, readonly string[]> = new Map();
 	private _agentTabOwnersByPage: ReadonlyMap<string, readonly string[]> = new Map();
+	/** 許可のうち、共有したページから開いたタブのもの（`token\0pageId`）。 */
+	private _openedTabGrantKeys: ReadonlySet<string> = new Set();
 	private _bindingsByPageId: ReadonlyMap<string, readonly IParadisPaneBinding[]> = new Map();
 	private _seenTokens = new Set<string>();
 	private readonly _poller: ParadisAgentBrowserBindingPoller;
@@ -640,6 +689,18 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		return this._agentTabOwnersByPage.get(pageId) ?? [];
 	}
 
+	getPageShares(pageId: string): readonly IParadisPageShare[] {
+		return paradisCollectPageShares(this.getBindingsForPage(pageId), this.getAgentTabOwnersForPage(pageId), token => this._openedTabGrantKeys.has(`${token}\0${pageId}`));
+	}
+
+	/**
+	 * そのページを、共有が無くてもエージェントがタブとして使っているか（このウィンドウで許可したもの、または
+	 * shared process の許可の一覧に載っているもの）。共有の印を下ろしてよいかの判定に使う。
+	 */
+	private _pageHasAgentTabGrant(pageId: string): boolean {
+		return this._agentTabGrants.has(pageId) || this.getAgentTabOwnersForPage(pageId).length > 0;
+	}
+
 	getBindingForToken(token: string): IParadisPaneBinding | undefined {
 		return this._bindingByToken.get(token);
 	}
@@ -691,11 +752,17 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				if (agentTabGrants !== undefined) {
 					const agentTabsByToken = new Map<string, string[]>();
 					const agentTabOwnersByPage = new Map<string, string[]>();
+					const openedTabGrantKeys = new Set<string>();
 					for (const grant of agentTabGrants) {
+						if (grant.opened) {
+							openedTabGrantKeys.add(`${grant.token}\0${grant.pageId}`);
+						}
 						agentTabsByToken.set(grant.token, [...(agentTabsByToken.get(grant.token) ?? []), grant.pageId]);
 						agentTabOwnersByPage.set(grant.pageId, [...(agentTabOwnersByPage.get(grant.pageId) ?? []), grant.token]);
 					}
-					agentTabsChanged = JSON.stringify([...agentTabsByToken]) !== JSON.stringify([...this._agentTabsByToken]);
+					agentTabsChanged = JSON.stringify([...agentTabsByToken]) !== JSON.stringify([...this._agentTabsByToken])
+						|| JSON.stringify([...openedTabGrantKeys]) !== JSON.stringify([...this._openedTabGrantKeys]);
+					this._openedTabGrantKeys = openedTabGrantKeys;
 					this._agentTabsByToken = agentTabsByToken;
 					this._agentTabOwnersByPage = agentTabOwnersByPage;
 				}
@@ -850,6 +917,15 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		}
 	}
 
+	async releaseShareMarkIfUnused(pageId: string): Promise<void> {
+		await this._runSerializedForPageAndTokens(pageId, [], async () => {
+			const exact = await this._refreshFromBackend(true);
+			if (exact) {
+				await this._unsharePagesWithoutBindings([pageId], exact);
+			}
+		});
+	}
+
 	private async _waitForStableBrowserScope(viewId: string): Promise<void> {
 		if (this.browserScopeService.resolveScope(viewId).kind !== 'pending') {
 			return;
@@ -997,7 +1073,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	private async _rollbackSharingAfterDefinitePreCommitFailure(model: IBrowserViewModel): Promise<void> {
 		const bindings = await this._refreshFromBackend();
-		if (bindings && !bindings.some(binding => binding.pageId === model.id)) {
+		// エージェントのタブの許可が付いたページは、共有が無くてもエージェントが使っている（印を残す）
+		if (bindings && !bindings.some(binding => binding.pageId === model.id) && !this._pageHasAgentTabGrant(model.id)) {
 			await model.setSharedWithAgent(false);
 		}
 	}
@@ -1048,7 +1125,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 			return;
 		}
 		for (const pageId of affectedPageIds) {
-			if (bindings.some(candidate => candidate.pageId === pageId)) {
+			if (bindings.some(candidate => candidate.pageId === pageId) || this._pageHasAgentTabGrant(pageId)) {
 				continue;
 			}
 			const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model;
@@ -1137,7 +1214,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		try {
 			for (const pageId of pageIds) {
 				// エージェントのタブの許可が付いたページは、共有が無くてもエージェントが使っている
-				if (bindings.some(binding => binding.pageId === pageId) || this._agentTabGrants.has(pageId)) {
+				if (bindings.some(binding => binding.pageId === pageId) || this._pageHasAgentTabGrant(pageId)) {
 					continue;
 				}
 				const model = this.browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model;

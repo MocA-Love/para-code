@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -14,7 +14,7 @@ import { ServicesAccessor } from '../../../../../platform/instantiation/common/i
 import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 import { IEditorIdentifier } from '../../../../../workbench/common/editor.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
+import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
@@ -23,6 +23,7 @@ import { IParadisBrowserScopeService, ParadisBindingScopeEligibilityError } from
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBrowserShareStateFeature } from '../../electron-browser/paradisBrowserShareState.js';
 import { IParadisDialogPageCandidate, paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisGetPaneQuickPickState, paradisResolveDialogPage, paradisResolveToolbarPage, paradisRunDialogBind } from '../../electron-browser/paradisDialogPageResolver.js';
 import { resolveDialogPageModel, resolveToolbarPageModel } from '../../electron-browser/paradisDialogPageModelResolver.js';
@@ -272,13 +273,13 @@ suite('paradisResolveDialogPage', () => {
 			contextKeyService,
 			upcastPartial<IParadisAgentBrowserBindingModel>({
 				onDidChange: onDidChangeBindings.event,
-				getBindingsForPage: (pageId: string) => sharedPages.has(pageId) ? [upcastPartial<IParadisPaneBinding>({ pageId })] : [],
-				getAgentTabOwnersForPage: () => [],
+				getPageShares: (pageId: string) => sharedPages.has(pageId) ? [{ token: 'pane', kind: 'user' as const }] : [],
 			}),
+			upcastPartial<IParadisAgentBrowserTabsService>({}),
 		));
 		const shared = () => contextKeyService.getContextKeyValue('paradisActivePageShared');
 		const states: unknown[] = [];
-		onDidChangeModel.fire({ model: upcastPartial<IBrowserViewModel>({ id: 'B' }), isNew: true });
+		onDidChangeModel.fire({ model: upcastPartial<IBrowserViewModel>({ id: 'B', onDidChangeSharingState: Event.None }), isNew: true });
 		states.push(shared());
 		sharedPages.add('B');
 		onDidChangeBindings.fire();
@@ -286,6 +287,36 @@ suite('paradisResolveDialogPage', () => {
 		onDidChangeModel.fire({ model: undefined, isNew: false });
 		states.push(shared());
 		assert.deepStrictEqual(states, [false, true, false]);
+		store.dispose();
+	});
+
+	// 共有中のページから共有の印だけが外れたら付け直す。Copilot のチャットが使えないだけ（Unavailable）のときは何もしない
+	test('restores the share mark of a shared page when only the mark was removed, but not while sharing is unavailable', async () => {
+		const store = new DisposableStore();
+		const onDidChangeModel = store.add(new Emitter<{ model: IBrowserViewModel | undefined; isNew: boolean }>());
+		const onDidChangeSharingState = store.add(new Emitter<BrowserViewSharingState>());
+		const model = { id: 'A', sharingState: BrowserViewSharingState.Shared, onDidChangeSharingState: onDidChangeSharingState.event };
+		let bound = true;
+		const restored: string[] = [];
+		store.add(new ParadisBrowserShareStateFeature(
+			upcastPartial<BrowserEditor>({ onDidChangeModel: onDidChangeModel.event }),
+			new MockContextKeyService(),
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: Event.None,
+				refresh: async () => { },
+				getPageShares: () => [],
+				getBindingsForPage: () => bound ? [upcastPartial<IParadisPaneBinding>({ pageId: 'A' })] : [],
+			}),
+			upcastPartial<IParadisAgentBrowserTabsService>({ restoreShareMark: async (target: IBrowserViewModel) => { restored.push(target.id); } }),
+		));
+		onDidChangeModel.fire({ model: upcastPartial<IBrowserViewModel>(model), isNew: true });
+		for (const [state, isBound] of [[BrowserViewSharingState.Unavailable, true], [BrowserViewSharingState.Available, true], [BrowserViewSharingState.Available, false]] as const) {
+			bound = isBound;
+			model.sharingState = state;
+			onDidChangeSharingState.fire(state);
+			await timeout(0);
+		}
+		assert.deepStrictEqual(restored, ['A']);
 		store.dispose();
 	});
 
