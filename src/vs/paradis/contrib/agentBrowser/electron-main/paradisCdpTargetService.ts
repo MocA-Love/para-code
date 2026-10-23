@@ -14,12 +14,13 @@
 import * as electron from 'electron';
 import type { NativeImage, WebContents } from 'electron';
 import { timeout } from '../../../../base/common/async.js';
+import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
-import { ParadisAgentEmulationLedger, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisParseTouchEmulation, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
@@ -188,8 +189,11 @@ const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 	/** エージェントが CDP の命令で付けた大きさ（切断時に戻すため）。 */
 	private readonly agentEmulation = new ParadisAgentEmulationLedger();
-	/** エージェントが `Emulation.setEmulatedMedia` で付けた指定（ビューごと。device の pointer と合わせて送る）。 */
-	private readonly agentMedia = new Map<string, { readonly owner: string; readonly params: unknown }>();
+	/**
+	 * エージェントが CDP で付けた色（`setEmulatedMedia`）とタッチの指定（ビューごと）。device の決める値と合わせて送り、
+	 * upstream が上書きした後にも送り直す。持ち主は最後に送った CDP の接続で、その接続が切れたら外す。
+	 */
+	private readonly agentOverrides = new Map<string, { readonly owner: string; readonly media: unknown; readonly touch: boolean | undefined; readonly watch: IDisposable }>();
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
 	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
@@ -878,10 +882,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 
 	/**
 	 * エージェントの CDP の命令のうち、upstream の Device Emulation と取り合うもの（paradisBrowserViewportCdp.ts）を
-	 * main で扱う。大きさは device へ畳み込み、タッチと `setEmulatedMedia` は device と食い違わないように合わせて送る:
-	 *  - `setTouchEmulationEnabled`: device がある間は device（mobile）が決めるので受けるだけにする。無ければそのまま送る
-	 *  - `setEmulatedMedia`: エージェントの指定（`prefers-color-scheme` など）を覚え、device の `pointer` と合わせて送る。
-	 *    upstream は device を変えるたびに features を `pointer` だけで上書きするので、device を変えた後に送り直す
+	 * main で扱う。大きさは device へ畳み込む。タッチと `setEmulatedMedia` はエージェントの指定として覚え
+	 * （{@link agentOverrides}）、device と合わせて送る。upstream は device を変えるたび・別プロセスへの移動のたびに
+	 * タッチと features（`pointer` だけ）を送り直してエージェントの指定を上書きするので、その後にも送り直す
+	 * （{@link watchAgentOverrides}）。
 	 */
 	async applyExactViewEmulation(descriptorValue: unknown, ownerValue: unknown, methodValue: unknown, paramsValue: unknown): Promise<IParadisExactViewEmulationResult | false> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
@@ -895,25 +899,23 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const previous = view.emulator.device ?? null;
 		switch (methodValue) {
 			case 'Emulation.setDeviceMetricsOverride':
+				// 送り直しは device の変化を見張っている側（watchAgentOverrides）が受け持つ
 				await view.emulator.setDevice(this.agentEmulation.apply(descriptor.viewId, ownerValue, view.emulator.device, paramsValue));
-				await this.reapplyAgentMedia(descriptor.viewId, view, true);
 				return { handled: true, previous, changed: true };
 			case 'Emulation.clearDeviceMetricsOverride': {
 				const release = this.agentEmulation.release(descriptor.viewId, ownerValue, view.emulator.device);
 				if (release.kind === 'restore') {
 					await view.emulator.setDevice(release.device);
-					await this.reapplyAgentMedia(descriptor.viewId, view, true);
 				}
 				return { handled: true, previous, changed: release.kind === 'restore' };
 			}
 			case 'Emulation.setTouchEmulationEnabled':
-				if (!view.emulator.device) {
-					await view.debugger.sendCommandRaw(methodValue, paramsValue ?? {}, undefined);
-				}
+				this.setAgentOverride(descriptor.viewId, view, ownerValue, { touch: paradisParseTouchEmulation(paramsValue) });
+				await this.sendAgentOverrides(descriptor.viewId, view, false);
 				return { handled: true, previous, changed: false };
 			case 'Emulation.setEmulatedMedia':
-				this.agentMedia.set(descriptor.viewId, { owner: ownerValue, params: paramsValue });
-				await this.reapplyAgentMedia(descriptor.viewId, view, false);
+				this.setAgentOverride(descriptor.viewId, view, ownerValue, { media: paramsValue ?? {} });
+				await this.sendAgentOverrides(descriptor.viewId, view, false);
 				return { handled: true, previous, changed: false };
 			default:
 				// Emulation.setVisibleSize: 表示の大きさは workbench が決める。流さずに受けるだけ
@@ -928,10 +930,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		// 共有を解いた後でも戻せるよう、ビューの貸し出し（lease）までは確かめない。同じビューなら戻す
 		const view = this.browserViewMainService.tryGetBrowserView(descriptor.viewId);
-		const media = this.agentMedia.get(descriptor.viewId);
-		const dropMedia = media?.owner === ownerValue;
-		if (dropMedia) {
-			this.agentMedia.delete(descriptor.viewId);
+		const overrides = this.agentOverrides.get(descriptor.viewId);
+		const dropOverrides = overrides?.owner === ownerValue;
+		if (dropOverrides) {
+			this.clearAgentOverrides(descriptor.viewId);
 		}
 		if (!view) {
 			this.agentEmulation.release(descriptor.viewId, ownerValue, undefined);
@@ -941,28 +943,82 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (release.kind === 'restore') {
 			await view.emulator.setDevice(release.device);
 		}
-		if (dropMedia || release.kind === 'restore') {
-			// エージェントの色などの指定を外し、device の pointer だけに戻す
-			await this.reapplyAgentMedia(descriptor.viewId, view, release.kind === 'restore', true);
+		if (dropOverrides) {
+			// エージェントの色・タッチの指定を外し、device の決める値（device が無ければ既定）に戻す
+			await this.sendAgentOverrides(descriptor.viewId, view, release.kind === 'restore', overrides);
 		}
 	}
 
+	/** エージェントの指定を足す。初めてのビューなら、upstream の送り直しの後に送り直す見張りを付ける。 */
+	private setAgentOverride(viewId: string, view: BrowserView, owner: string, change: { readonly media?: unknown; readonly touch?: boolean }): void {
+		const current = this.agentOverrides.get(viewId);
+		const next = {
+			owner,
+			media: change.media !== undefined ? change.media : current?.media,
+			touch: change.touch !== undefined ? change.touch : current?.touch,
+			watch: current?.watch ?? this.watchAgentOverrides(viewId, view),
+		};
+		this.agentOverrides.set(viewId, next);
+	}
+
+	private clearAgentOverrides(viewId: string): void {
+		this.agentOverrides.get(viewId)?.watch.dispose();
+		this.agentOverrides.delete(viewId);
+	}
+
 	/**
-	 * エージェントの `setEmulatedMedia` の指定を、device の `pointer` と合わせて送る。`afterDeviceChange` のときは、
-	 * upstream が device の変更に続けて非同期に送る `setEmulatedMedia`（pointer だけ）の後になるよう、同じ
-	 * セッションへの命令を 1 往復挟んでから送る（CDP の命令は順に処理される）。
+	 * upstream がエージェントの指定を上書きする 2 つの経路を見張る: device が変わったとき（chip・set_viewport・
+	 * emulate・帯）と、別プロセスへの移動（`did-navigate` で upstream が emulation を当て直す）。どちらも upstream の
+	 * 送り直しは非同期なので、その後になるよう待ってから送り直す（{@link sendAgentOverrides}）。
 	 */
-	private async reapplyAgentMedia(viewId: string, view: BrowserView, afterDeviceChange: boolean, force = false): Promise<void> {
-		const media = this.agentMedia.get(viewId);
-		if (!media && !force) {
+	private watchAgentOverrides(viewId: string, view: BrowserView): IDisposable {
+		const resend = () => {
+			if (this.agentOverrides.has(viewId) && this.browserViewMainService.tryGetBrowserView(viewId) === view) {
+				void this.sendAgentOverrides(viewId, view, true);
+			}
+		};
+		const store = new DisposableStore();
+		store.add(view.emulator.onDidChange(resend));
+		try {
+			view.webContents.on('did-navigate', resend);
+			store.add(toDisposable(() => {
+				try {
+					view.webContents.removeListener('did-navigate', resend);
+				} catch {
+					// ビューが先に消えた
+				}
+			}));
+		} catch {
+			// ビューが消えかけている
+		}
+		store.add(view.onDidClose(() => this.clearAgentOverrides(viewId)));
+		return store;
+	}
+
+	/**
+	 * エージェントの `setEmulatedMedia` とタッチの指定を、device の決める値と合わせて送る。`afterUpstream` のときは、
+	 * upstream が device の変更に続けて非同期に送るタッチ・`setEmulatedMedia` の後になるよう、同じセッションへの
+	 * 命令を 2 往復挟んでから送る（CDP の命令は順に処理される）。`released` は外したばかりの指定（既定へ戻すため）。
+	 */
+	private async sendAgentOverrides(viewId: string, view: BrowserView, afterUpstream: boolean, released?: { readonly media?: unknown; readonly touch?: boolean }): Promise<void> {
+		const overrides = released ? undefined : this.agentOverrides.get(viewId);
+		const media = overrides?.media ?? (released?.media !== undefined ? {} : undefined);
+		const touch = overrides?.touch ?? (released?.touch !== undefined ? false : undefined);
+		if (media === undefined && touch === undefined) {
 			return;
 		}
 		try {
-			if (afterDeviceChange) {
+			if (afterUpstream) {
 				await view.debugger.sendCommandRaw('Page.getFrameTree', {}, undefined);
 				await view.debugger.sendCommandRaw('Page.getFrameTree', {}, undefined);
 			}
-			await view.debugger.sendCommandRaw('Emulation.setEmulatedMedia', paradisMergeEmulatedMedia(media?.params, view.emulator.device), undefined);
+			const device = view.emulator.device;
+			if (media !== undefined) {
+				await view.debugger.sendCommandRaw('Emulation.setEmulatedMedia', paradisMergeEmulatedMedia(media, device), undefined);
+			}
+			if (touch !== undefined) {
+				await view.debugger.sendCommandRaw('Emulation.setTouchEmulationEnabled', paradisEffectiveTouchEmulation(touch, device), undefined);
+			}
 		} catch {
 			// 送れなくても大きさの変更は済んでいる
 		}

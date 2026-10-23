@@ -111,7 +111,27 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 	const throttlingValues: boolean[] = [];
 	const captureOptions: unknown[] = [];
 	const inputCalls: Array<{ method: string; params: unknown; sessionId: string | undefined }> = [];
+	const deviceListeners = new Set<() => void>();
+	const navigateListeners = new Set<() => void>();
 	const webContents = {
+		on: (event: string, listener: () => void) => {
+			if (event === 'did-navigate') {
+				navigateListeners.add(listener);
+			}
+		},
+		removeListener: (event: string, listener: () => void) => {
+			if (event === 'did-navigate') {
+				navigateListeners.delete(listener);
+			}
+		},
+		emitDidNavigate: () => {
+			for (const listener of [...navigateListeners]) {
+				listener();
+			}
+		},
+		get navigateListenerCount() {
+			return navigateListeners.size;
+		},
 		isDestroyed: () => {
 			counters.destroyed++;
 			if (state.throwDestroyed) {
@@ -206,8 +226,16 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 			},
 			setDevice: async (device: ITestViewState['emulatedDevice']) => {
 				state.emulatedDevice = device;
+				for (const listener of [...deviceListeners]) {
+					listener();
+				}
+			},
+			onDidChange: (listener: () => void) => {
+				deviceListeners.add(listener);
+				return { dispose: () => deviceListeners.delete(listener) };
 			},
 		},
+		onDidClose: () => ({ dispose: () => undefined }),
 	};
 	return { view: view as unknown as BrowserView, state, counters, throttlingValues, captureOptions, inputCalls };
 }
@@ -623,20 +651,58 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		});
 	});
 
-	test('keeps the agent colour scheme across a size change, leaves touch to the device, and drops the colour scheme when that connection is released', async () => {
+	test('sends the agent colour scheme and touch again after every size change and cross-process navigation, and drops them when that connection is released', async () => {
 		const current = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
 		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
-		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
-		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setDeviceMetricsOverride', { width: 390, height: 844, mobile: true });
-		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setTouchEmulationEnabled', { enabled: false });
+		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+		const sent = () => {
+			const calls = current.inputCalls.filter(call => call.method !== 'Page.getFrameTree').map(call => [call.method, call.params]);
+			current.inputCalls.length = 0;
+			return calls;
+		};
+		const wc = current.view.webContents as unknown as { emitDidNavigate(): void; readonly navigateListenerCount: number };
+		const dark = { features: [{ name: 'prefers-color-scheme', value: 'dark' }] };
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setEmulatedMedia', dark);
+		const first = sent();
+		// a desktop size with touch only (Puppeteer hasTouch without isMobile)
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setDeviceMetricsOverride', { width: 1366, height: 768, mobile: false });
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setTouchEmulationEnabled', { enabled: true });
+		await settle();
+		const desktopTouch = sent();
+		// the user picks a phone size on the chip (main sees only the device change)
+		await current.view.emulator.setDevice({ width: 390, height: 844, mobile: true });
+		await settle();
+		const chip = sent();
+		wc.emitDidNavigate();
+		await settle();
+		const navigated = sent();
 		await service.releaseExactViewEmulation(exact, 'cdp-1');
-		assert.deepStrictEqual(current.inputCalls.filter(call => call.method !== 'Page.getFrameTree').map(call => [call.method, call.params]), [
-			['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }] }],
-			['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'coarse' }] }],
-			['Emulation.setEmulatedMedia', { media: '', features: [] }],
-		]);
+		await settle();
+		const released = sent();
+		assert.deepStrictEqual({ first, desktopTouch, chip, navigated, released, listeners: wc.navigateListenerCount }, {
+			first: [['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }] }]],
+			desktopTouch: [
+				['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'fine' }] }],
+				['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'fine' }] }],
+				['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+			],
+			chip: [
+				['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'coarse' }] }],
+				['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+			],
+			navigated: [
+				['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'coarse' }] }],
+				['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+			],
+			// the chip size stays (the user changed it after the agent), only the agent's colour scheme and touch go
+			released: [
+				['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'pointer', value: 'coarse' }] }],
+				['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+			],
+			listeners: 0,
+		});
 	});
 
 	test('a move right before a press is sent without waiting, and a WebP capture hides the cursor until it ends', async () => {

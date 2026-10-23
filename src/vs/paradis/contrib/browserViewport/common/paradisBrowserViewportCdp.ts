@@ -206,3 +206,18 @@ export function paradisEmulatedScreenshotSize(
 	}
 	return { width: Math.max(1, Math.round(image.width * factor)), height: Math.max(1, Math.round(image.height * factor)) };
 }
+
+/** `Emulation.setTouchEmulationEnabled` の `enabled`。読めなければ false。 */
+export function paradisParseTouchEmulation(params: unknown): boolean {
+	return !!params && typeof params === 'object' && (params as { enabled?: unknown }).enabled === true;
+}
+
+/**
+ * エージェントのタッチの指定と device を合わせた `setTouchEmulationEnabled` の引数。モバイルの device ではタッチは
+ * 常に入れる（upstream と同じ）。パソコンの大きさの device でも、エージェントが入れたタッチは入れる（Puppeteer の
+ * `hasTouch` だけを付けた emulate）。
+ */
+export function paradisEffectiveTouchEmulation(agentTouch: boolean, device: IBrowserDeviceProfile | undefined): { enabled: boolean; maxTouchPoints: number } {
+	const enabled = agentTouch || !!device?.mobile;
+	return { enabled, maxTouchPoints: enabled ? 5 : 1 };
+}

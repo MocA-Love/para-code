@@ -840,6 +840,9 @@ function sharedStateDeniedMessage(method: string): string | undefined {
  * 何を使うべきか」をLLMが読める形で返す。
  */
 const LAYOUT_MANAGED_DENIED_MESSAGE = 'the Para Code embedded browser view is laid out by the workbench, so its window/content size cannot be changed over CDP (the resize_page tool is not supported). To change the page viewport, use the set_viewport tool of the para-browser server (or the emulate tool) instead.';
+/** 共有中のタブが開いた別のページ（ポップアップなど）のセッションへ大きさの命令が来たときの答え。 */
+const PARADIS_CHILD_PAGE_VIEWPORT_MESSAGE = 'Para Code cannot change the page size (viewport) of this page from this session: it is a tab or window opened by the shared page. Call list_browser_tabs, then call set_viewport (or emulate) with that tab\'s tab_id.';
+
 const LAYOUT_MANAGED_DENIED_METHODS = new Set([
 	'Browser.getWindowForTarget',
 	'Browser.getWindowBounds',
@@ -2284,9 +2287,16 @@ export async function paradisProxyBrowserUpgrade(
 					noteFocusEmulation(ctx, message.params);
 				}
 				if (!isBoundPrimary && paradisIsCdpViewportMethod(message.method)) {
-					// 共有中のタブ本体以外（ポップアップ・自動で共有した子・OOPIF）への大きさの命令は流さない。upstream も
-					// セッションを問わず止めている（そのまま流すと Electron が落ちることがある。browserViewDebugger.ts）
-					sendToClient({ id: message.id, sessionId: message.sessionId, result: {} });
+					// 共有中のタブ本体以外への大きさの命令は流さない。upstream もセッションを問わず止めている（そのまま
+					// 流すと Electron が落ちることがある。browserViewDebugger.ts）。
+					//  - 別のページ（ポップアップ・自動で共有した子）: 何も変わらないので、分かるエラーで断る
+					//  - iframe（OOPIF）・worker: 親のページの大きさに従うので、成功として受ける（Puppeteer は setViewport を
+					//    OOPIF のセッションにも送り、断ると emulate そのものが失敗する）
+					if (sessionTargetId !== undefined && childToParent.has(sessionTargetId)) {
+						rejectRequest(message, PARADIS_CHILD_PAGE_VIEWPORT_MESSAGE);
+					} else {
+						sendToClient({ id: message.id, sessionId: message.sessionId, result: {} });
+					}
 					return;
 				}
 				if (isBoundPrimary && ctx.applyBoundPageEmulation && paradisIsCdpEmulationMethod(message.method)) {
