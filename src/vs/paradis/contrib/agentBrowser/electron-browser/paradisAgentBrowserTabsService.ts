@@ -38,6 +38,9 @@ import { CancellationToken, CancellationTokenSource } from '../../../../base/com
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { toAction } from '../../../../base/common/actions.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { ParadisHumanCheckKind } from '../common/paradisBrowserHumanCheck.js';
 import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -284,10 +287,17 @@ export interface IParadisAgentBrowserTabsService {
 	selectTab(token: string | undefined, tabId: string): Promise<IParadisSelectAgentTabResult>;
 	closeTab(token: string | undefined, tabId: string): Promise<IParadisCloseAgentTabResult>;
 	requestPage(token: string | undefined, reason: string | undefined, urlHint: string | undefined, cancellation?: CancellationToken): Promise<IParadisAgentPageRequestResult>;
+	/**
+	 * そのペインが使うタブに人の確認（Cloudflare）が出た（`kind`）・通った（undefined）。出たら通知を出し、
+	 * 通った・タブが閉じたら消す。タブを前面に出すのは、ユーザーが通知のボタンを押したときだけ。
+	 */
+	noteHumanCheck(token: string | undefined, tabId: string, kind: ParadisHumanCheckKind | undefined): void;
 }
 
 export class ParadisAgentBrowserTabsService extends Disposable implements IParadisAgentBrowserTabsService {
 	declare readonly _serviceBrand: undefined;
+	/** 出している人の確認の通知（キーは「ペイン\nタブ」）。 */
+	private readonly _humanCheckNotices = this._register(new DisposableMap<string, DisposableStore>());
 
 	/** main のブラウザビュー（共有相手の設定に使う）。 */
 	private readonly _browserViews: IBrowserViewService;
@@ -341,6 +351,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
@@ -1367,6 +1378,45 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		} finally {
 			store.dispose();
 		}
+	}
+
+	noteHumanCheck(token: string | undefined, tabId: string, kind: ParadisHumanCheckKind | undefined): void {
+		if (token === undefined) {
+			return;
+		}
+		const key = `${token}\n${tabId}`;
+		this._humanCheckNotices.deleteAndDispose(key);
+		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
+		if (kind === undefined || !input || !(this.isOpenedBy(token, tabId) || this._isSharedWith(token, tabId) || this._bindingModel.getAgentTabsForToken(token).includes(tabId))) {
+			return;
+		}
+		const title = paradisSanitizeDisplayText(input.title || input.getName(), PANE_TITLE_MAX_LENGTH) || paradisUrlOrigin(input.url);
+		// タブが今のスペースのエディタにあるときだけ「タブを開く」を出す（見えていないスペースのタブは前に出せない）
+		const group = this._editorGroupsService.groups.find(candidate => candidate.contains(input));
+		const store = new DisposableStore();
+		const handle = this._notificationService.notify({
+			severity: Severity.Warning,
+			sticky: true,
+			message: kind === 'page'
+				? localize('paradis.agentTabs.humanCheck.page', "{0} のエージェントが使っているタブ「{1}」に、Cloudflare の確認（Verify you are human）が出ています。エージェントは待っています。タブを開いて確認を通してください。", this._describePane(token), title)
+				: localize('paradis.agentTabs.humanCheck.widget', "{0} のエージェントが使っているタブ「{1}」で、Cloudflare の確認（Verify you are human）が終わっていません。エージェントは待っています。タブを開いて確認を通してください。", this._describePane(token), title),
+			actions: group ? {
+				primary: [toAction({
+					id: 'paradis.agentTabs.humanCheck.reveal',
+					label: localize('paradis.agentTabs.humanCheck.reveal', "タブを開く"),
+					run: () => this._editorService.openEditor(input, { pinned: true }, group),
+				})],
+			} : undefined,
+		});
+		store.add(toDisposable(() => handle.close()));
+		store.add(handle.onDidClose(() => {
+			if (this._humanCheckNotices.get(key) === store) {
+				this._humanCheckNotices.deleteAndLeak(key);
+				store.dispose();
+			}
+		}));
+		store.add(input.onWillDispose(() => this._humanCheckNotices.deleteAndDispose(key)));
+		this._humanCheckNotices.set(key, store);
 	}
 
 	private _describe(token: string, input: BrowserEditorInput): IParadisAgentTabInfo {

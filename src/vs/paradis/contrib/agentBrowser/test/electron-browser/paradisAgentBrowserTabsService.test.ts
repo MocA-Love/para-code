@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
@@ -137,6 +138,7 @@ function createService(answers: IAnswer[], binding: IFakeBinding = { pageId: und
 		{} as IConfigurationService,
 		{} as ILifecycleService,
 		{} as IWorkbenchLayoutService,
+		new TestNotificationService(),
 	);
 	return { service, shown, binding, attention, onDidFocusWindow, onDidBlurWindow };
 }
@@ -453,6 +455,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			{} as IConfigurationService,
 			{} as ILifecycleService,
 			{} as IWorkbenchLayoutService,
+			new TestNotificationService(),
 		));
 		// 共有先が変わったと binding model が知らせる（実物は 100ms まとめてから届く）
 		const bind = (pageId: string | undefined) => {

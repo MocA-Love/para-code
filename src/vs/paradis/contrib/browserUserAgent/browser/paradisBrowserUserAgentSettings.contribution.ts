@@ -24,7 +24,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// APPLICATION スコープ: 適用は electron-main の BrowserSession が行い、main プロセスは
 			// 既定プロファイルの settings.json しか読まないため（browserDownloads と同じ理由）。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.browser.userAgent.includeParaCodeToken', "内蔵ブラウザがサイトに送る User-Agent に `ParaCode/<バージョン>` を含めるかどうかを制御します。既定では含めず、通常の Chrome と同じ形で名乗ります。変更は新しく開いたタブから反映されます。")
+			markdownDescription: localize('paradis.browser.userAgent.includeParaCodeToken', "内蔵ブラウザがサイトに送る User-Agent に `ParaCode/<バージョン>` を含めるかどうかを制御します。既定では含めず、通常の Chrome と同じ形で名乗ります。変更は開いているタブにも反映されます。")
 		}
 	}
 });

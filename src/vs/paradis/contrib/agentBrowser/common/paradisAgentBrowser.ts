@@ -482,6 +482,11 @@ export interface IParadisCdpExactViewService {
 	 */
 	getOpenerViewId(windowId: unknown, viewId: unknown): Promise<string | null>;
 	isExactViewVisible(descriptor: unknown): Promise<boolean | null>;
+	/**
+	 * タブに人の確認（Cloudflare の確認ページ・Turnstile）が出ていれば種類（`page` / `widget`）、無ければ null
+	 * （paradisBrowserHumanCheck.ts）。`alreadyReported` が true なら待たずに 1 回だけ見る。
+	 */
+	detectExactViewHumanCheck(descriptor: unknown, alreadyReported: unknown): Promise<string | null>;
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
 	/**

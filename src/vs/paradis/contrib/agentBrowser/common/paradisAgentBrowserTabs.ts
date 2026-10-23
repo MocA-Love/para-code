@@ -29,6 +29,8 @@ export const ParadisAgentTabMethod = {
 	Select: 'selectTab',
 	Close: 'closeTab',
 	RequestPage: 'requestPage',
+	/** タブに人の確認（Cloudflare）が出た・通った（paradisBrowserHumanCheck.ts）。args: [token, tabId, kind | null] */
+	NoteHumanCheck: 'noteHumanCheck',
 } as const;
 
 /** 1ペインのエージェントが同時に開いておけるタブの上限。 */

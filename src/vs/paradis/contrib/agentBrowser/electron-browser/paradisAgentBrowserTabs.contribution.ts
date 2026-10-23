@@ -18,6 +18,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { PARADIS_AGENT_BROWSER_TABS_CHANNEL, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { paradisIsPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
+import { paradisParseHumanCheckKind } from '../common/paradisBrowserHumanCheck.js';
 
 /** shared process から届く呼び出しを {@link IParadisAgentBrowserTabsService} へ流すだけのチャネル。 */
 export class ParadisAgentBrowserTabsChannel implements IServerChannel {
@@ -43,6 +44,9 @@ export class ParadisAgentBrowserTabsChannel implements IServerChannel {
 				return this._tabs.closeTab(token, text(1) ?? '') as Promise<T>;
 			case ParadisAgentTabMethod.RequestPage:
 				return this._tabs.requestPage(token, text(1), text(2), cancellationToken) as Promise<T>;
+			case ParadisAgentTabMethod.NoteHumanCheck:
+				this._tabs.noteHumanCheck(token, text(1) ?? '', paradisParseHumanCheckKind(args[2]));
+				return undefined as T;
 		}
 		throw new Error(`Method not found: ${command}`);
 	}
