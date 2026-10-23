@@ -13,7 +13,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisChannelHostResolver } from '../../workspaceSwitch/electron-browser/paradisWorktreeGitChannelClient.js';
 import { paradisParseMobilePorcelainStatus } from '../common/paradisMobileDiffReview.js';
-import { paradisRedactMobileCommandOutput } from '../common/paradisMobileOutputRedaction.js';
+import { paradisRedactMobileCommandOutput, paradisRedactMobileCommandOutputWithin } from '../common/paradisMobileOutputRedaction.js';
 import {
 	IParadisMobileBranchSync,
 	IParadisMobileCommitFailure,
@@ -30,7 +30,6 @@ import {
 	paradisMobilePushPlan,
 	paradisParseMobileBranchSync,
 	paradisSummarizeMobileCommitFailure,
-	paradisTruncateMiddle,
 } from '../common/paradisMobileScmSync.js';
 import { ParadisMobileSendGate, paradisAgentPromptServices, paradisDeliverAgentPrompt, paradisParseAgentPromptTarget } from './paradisMobileAgentPromptDelivery.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
@@ -344,7 +343,7 @@ async function indexTree(context: IParadisMobileRequestContext): Promise<string 
 
 async function replyCommitFailure(context: IParadisMobileRequestContext, ws: string, message: string, stderr: string, stdout: string, attemptedRestore: boolean, restored: boolean, indexChanged = false): Promise<void> {
 	// フックの出力には秘密値（環境変数の中身・トークン）が出ることがある。スマホに出す前と依頼文に載せる前に伏せる
-	const output = paradisTruncateMiddle(paradisRedactMobileCommandOutput([stderr.trim(), stdout.trim()].filter(part => part.length > 0).join('\n')), PARADIS_MOBILE_COMMIT_OUTPUT_LIMIT);
+	const output = paradisRedactMobileCommandOutputWithin([stderr.trim(), stdout.trim()].filter(part => part.length > 0).join('\n'), PARADIS_MOBILE_COMMIT_OUTPUT_LIMIT);
 	const { kind, summary } = paradisSummarizeMobileCommitFailure(output);
 	const [branch, files] = await Promise.all([
 		context.runGit(['rev-parse', '--abbrev-ref', 'HEAD']).then(result => result.code === 0 ? result.stdout.trim() : undefined, () => undefined),

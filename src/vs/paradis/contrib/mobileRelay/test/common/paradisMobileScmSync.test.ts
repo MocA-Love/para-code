@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisRedactMobileCommandOutput, paradisRedactMobileReplyError } from '../../common/paradisMobileOutputRedaction.js';
+import { paradisRedactMobileCommandOutput, paradisRedactMobileCommandOutputWithin, paradisRedactMobileReplyError } from '../../common/paradisMobileOutputRedaction.js';
 import {
 	paradisBuildCommitFixPrompt,
 	paradisClassifyMobileSyncFailure,
@@ -149,6 +149,22 @@ suite('ParadisMobileScmSync', () => {
 			kept: redacted.includes('error kept'),
 			url: redacted.includes('https://***@github.com/o/r.git'),
 		}, { leaked: false, kept: true, url: true });
+	});
+
+	test('cuts long hook output before redacting it, with the same shape and no secret split at the cut', () => {
+		const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123';
+		const raw = [`GITHUB_TOKEN=${secret}`, 'a.'.repeat(60_000), `token ${secret}`, 'error at a.ts:1'].join('\n');
+		const started = Date.now();
+		const output = paradisRedactMobileCommandOutputWithin(raw, 12_000);
+		const elapsed = Date.now() - started;
+		assert.deepStrictEqual({
+			leaked: output.includes('ghp_'),
+			length: output.length,
+			omitted: output.includes(`[…${raw.length - 12_000} 文字を省略…]`),
+			head: output.startsWith('GITHUB_TOKEN=***\n'),
+			tail: output.endsWith('token ***\nerror at a.ts:1'),
+			fast: elapsed < 1_000,
+		}, { leaked: false, length: paradisTruncateMiddle(raw, 12_000).length, omitted: true, head: true, tail: true, fast: true });
 	});
 
 	test('redacts only the error field of a reply and keeps other fields untouched', () => {
