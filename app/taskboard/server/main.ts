@@ -16,6 +16,7 @@ import { buildDemo, demoSlots } from './demo.js';
 import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
+import { addClaudeApprovals, claudeApprovalStates, ClaudeConfigError } from './claudeApproval.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents } from './paraCode.js';
 import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
@@ -390,9 +391,20 @@ async function main(restart?: IRestart): Promise<void> {
 			broadcastSoon();
 		}
 	};
+	// Claude Code のユーザーの設定（settings.json）で、まだ許可されていないものと、足りないツール
+	let claudePending: { readonly path: string; readonly missing: readonly string[]; readonly manual?: string }[] = [];
+	const refreshClaudeApproval = async () => {
+		const next = await claudeApprovalStates();
+		if (JSON.stringify(next) !== JSON.stringify(claudePending)) {
+			claudePending = next;
+			broadcastSoon();
+		}
+	};
 	if (paraCodeMode) {
 		void refreshCodexApproval();
+		void refreshClaudeApproval();
 		timers.push(setInterval(() => void refreshCodexApproval(), 60000).unref());
+		timers.push(setInterval(() => void refreshClaudeApproval(), 60000).unref());
 	}
 
 	const runtime = () => ({
@@ -402,6 +414,9 @@ async function main(restart?: IRestart): Promise<void> {
 		codexApprovalMissing: paraCodeMode ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
 		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
 		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
+		claudeApprovalMissing: paraCodeMode ? [...new Set(claudePending.flatMap(p => p.missing))] : undefined,
+		claudeConfigPaths: paraCodeMode ? claudePending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
+		claudeManualConfigs: paraCodeMode ? claudePending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		assetKey,
 		speed: sim.getSpeed(),
 		realWorkspaces,
@@ -693,6 +708,34 @@ async function main(restart?: IRestart): Promise<void> {
 				}
 			} finally {
 				await refreshCodexApproval();
+			}
+			if (refused.length) {
+				const done = written.length ? `足しました: ${written.join(', ')}。` : '';
+				throw new TaskBoardError('invalid-state', `${done}次は手で足してください。${refused.join(' / ')}`);
+			}
+			return { path: written.join(', ') };
+		},
+		approveClaudeTools: async () => {
+			if (!paraCodeMode) {
+				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
+			}
+			// Codex と同じく、足りない settings.json すべてに足し、読めない形のものは書かずに理由をまとめて返す
+			const refused: string[] = [];
+			const written: string[] = [];
+			try {
+				for (const pending of await claudeApprovalStates()) {
+					if (pending.manual !== undefined) {
+						continue;
+					}
+					try {
+						await addClaudeApprovals(pending.path);
+						written.push(pending.path);
+					} catch (err) {
+						refused.push(`${pending.path}: ${err instanceof ClaudeConfigError ? err.message : `書き込めませんでした（${err instanceof Error ? err.message : String(err)}）`}`);
+					}
+				}
+			} finally {
+				await refreshClaudeApproval();
 			}
 			if (refused.length) {
 				const done = written.length ? `足しました: ${written.join(', ')}。` : '';
