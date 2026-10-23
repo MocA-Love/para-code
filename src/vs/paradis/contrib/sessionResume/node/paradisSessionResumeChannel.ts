@@ -22,6 +22,7 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
+import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
@@ -685,7 +686,7 @@ export class ParadisSessionResumeService {
 
 	private async collectClaude(space: IParadisResumeSpace<string>, claudeHome: string, matchCwd: string, target: IParadisResumeSession[]): Promise<void> {
 		const resolvedCwd = await fs.realpath(space.cwd).catch(() => matchCwd);
-		const slug = (matchCwd === space.cwd ? resolvedCwd : matchCwd).replace(/[^a-zA-Z0-9]/g, '-');
+		const slug = paradisClaudeProjectSlug(matchCwd === space.cwd ? resolvedCwd : matchCwd);
 		const directory = join(claudeHome, 'projects', slug);
 		let names: string[];
 		try {

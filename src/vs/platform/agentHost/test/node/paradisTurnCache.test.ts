@@ -14,11 +14,16 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { FileService } from '../../../files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../log/common/log.js';
+import { IProductService } from '../../../product/common/productService.js';
 import { AgentSession } from '../../common/agent.js';
 import { MessageKind } from '../../common/state/protocol/channels-chat/state.js';
 import { ParadisTurnCache, type IParadisTurnCacheKey, type IParadisTurnCacheStamp } from '../../node/paradisTurnCache.js';
 import { SessionDataService } from '../../node/sessionDataService.js';
 import type { Turn } from '../../common/state/sessionState.js';
+
+function product(version: string, commit: string | undefined): IProductService {
+	return { _serviceBrand: undefined, version, commit } as Partial<IProductService> as IProductService;
+}
 
 /** `Turn`'s `resource` fields are the protocol `URI` (a plain string), never a `URI` class instance. */
 function fakeTurn(id: string, resource: string): Turn {
@@ -52,7 +57,7 @@ suite('ParadisTurnCache', () => {
 		fileService = disposables.add(new FileService(new NullLogService()));
 		disposables.add(fileService.registerProvider(Schemas.inMemory, disposables.add(new InMemoryFileSystemProvider())));
 		sessionDataService = new SessionDataService(basePath, fileService, new NullLogService());
-		cache = new ParadisTurnCache('test-fmt-1', sessionDataService, fileService, new NullLogService());
+		cache = new ParadisTurnCache('test-fmt-1', sessionDataService, fileService, new NullLogService(), product('1.0.0', 'commit-a'));
 	});
 
 	teardown(() => disposables.clear());
@@ -134,9 +139,23 @@ suite('ParadisTurnCache', () => {
 		cache.write(routing, key, stamp, [fakeTurn('turn-1', attachmentResource)]);
 		await cache.whenIdle();
 
-		const otherFormatCache = new ParadisTurnCache('test-fmt-2', sessionDataService, fileService, new NullLogService());
+		const otherFormatCache = new ParadisTurnCache('test-fmt-2', sessionDataService, fileService, new NullLogService(), product('1.0.0', 'commit-a'));
 		const result = await otherFormatCache.read(routing, key, stamp);
 		assert.strictEqual(result, undefined);
+	});
+
+	test('read misses when the entry was written by another product build', async () => {
+		// The cached turns hold localized labels shaped by the build that wrote them; the display language
+		// is folded into the same format string (it is fixed per process, so it is not varied here).
+		cache.write(routing, key, stamp, [fakeTurn('turn-1', attachmentResource)]);
+		await cache.whenIdle();
+
+		const read = (version: string, commit: string | undefined) => new ParadisTurnCache('test-fmt-1', sessionDataService, fileService, new NullLogService(), product(version, commit)).read(routing, key, stamp);
+		assert.deepStrictEqual({
+			sameBuild: (await read('1.0.0', 'commit-a'))?.length,
+			otherVersion: await read('1.1.0', 'commit-a'),
+			otherCommit: await read('1.0.0', 'commit-b'),
+		}, { sameBuild: 1, otherVersion: undefined, otherCommit: undefined });
 	});
 
 	test('read misses (not throws) on corrupt JSON', async () => {

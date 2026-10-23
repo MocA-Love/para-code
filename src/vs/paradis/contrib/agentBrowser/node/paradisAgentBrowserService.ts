@@ -92,6 +92,7 @@ import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBro
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
 import { PARADIS_HUMAN_CHECK_POLL_MS, PARADIS_HUMAN_CHECK_TOOLS, ParadisHumanCheckTracker, paradisHumanCheckNotice, paradisParseHumanCheckObservation } from '../common/paradisBrowserHumanCheck.js';
+import { ParadisSubagentToolUses, paradisToolUseIdOfCall } from '../common/paradisSubagentToolCalls.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -845,6 +846,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _siteNudges = new ParadisSiteNudges();
 	/** タブごとに、最後に伝えた人の確認の様子（paradisBrowserHumanCheck.ts）。 */
 	private readonly _humanChecks = new ParadisHumanCheckTracker();
+	/** Claude Code のサブエージェントの中から呼ばれたツール（PreToolUse の hook の `agent_id`。paradisSubagentToolCalls.ts）。 */
+	private readonly _subagentToolUses = new ParadisSubagentToolUses();
 	/** 通知を出している間のタブの見回り（キーは「ペイン\nタブ」、値は止める関数）。 */
 	private readonly _humanCheckPolls = new Map<string, () => void>();
 	/** サイトの手順（E3）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
@@ -4437,6 +4440,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			let ownerUnverified = false;
 			if (eventType === 'TerminalExit') {
 				this._hookOwnership.clear(token);
+				this._subagentToolUses.forget(token);
 			} else if (eventType) {
 				const pidParam = url.searchParams.get('pid');
 				const parsedPid = pidParam !== null && /^\d{1,10}$/.test(pidParam) ? Number.parseInt(pidParam, 10) : undefined;
@@ -4475,6 +4479,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					res.end(JSON.stringify({ ok: false, reason: 'origin rejected' }));
 					return;
 				}
+				// 子の中の PreToolUse を覚える（この呼び出しに長い待ちを許すため）。hook は送り終わるまで待たれるので、
+				// 同じ tool_use の `tools/call` より先にここへ来る
+				this._subagentToolUses.noteHook(token, eventType, toolName, toolUseId, stringField('agent_id') !== undefined);
 				if (hookOrigin.origin === 'background') {
 					// Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）。daemon を最初に起こした
 					// ペインの token を持っているだけで、そのペインの会話でも子エージェントでもない。ペインの状態・
@@ -4936,6 +4943,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
+	 * この `tools/call` が Claude Code のサブエージェントの中から来たと確かめられたか（paradisSubagentToolCalls.ts）。
+	 * 確かめられないとき（Codex・hook の届かないペイン・run_steps の中の手順など）は false（main と同じ短い上限）。
+	 */
+	private _isSubagentCall(ingressLease: IParadisAgentBrowserIngressLease, params: unknown): boolean {
+		return this._subagentToolUses.isFromSubagent(ingressLease.token, paradisToolUseIdOfCall(params));
+	}
+
+	/**
 	 * ツールの呼び出し。呼び出しの間に届く入力（vendored のツールならゲートウェイ経由）に、カーソルの
 	 * 演出のために待ってよいかを伝えるため、どのツールの呼び出しかを台帳に載せる。
 	 */
@@ -4951,7 +4966,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const result = await this._callToolRouted(ingressLease, name, params, signal, socket, nested);
 			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
-			return nested ? result : await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal);
+			return nested ? result : await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params));
 		} finally {
 			pacing.dispose();
 		}
@@ -4987,7 +5002,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 伝える必要があれば結果の末尾に 1 文足し、ユーザーへの通知を出す・閉じる。
 	 * 見られなかったとき（共有が無い・main が答えない）は結果を変えない。
 	 */
-	private async _withHumanCheck(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+	private async _withHumanCheck(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, signal: AbortSignal | undefined, fromSubagent: boolean): Promise<unknown> {
 		if (!PARADIS_HUMAN_CHECK_TOOLS.has(name) || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content) || signal?.aborted) {
 			return result;
 		}
@@ -5016,7 +5031,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				return result;
 			}
 			const typed = result as { content: unknown[] };
-			return { ...typed, content: [...typed.content, { type: 'text', text: paradisHumanCheckNotice(update.notice, binding.pageId) }] };
+			return { ...typed, content: [...typed.content, { type: 'text', text: paradisHumanCheckNotice(update.notice, binding.pageId, fromSubagent) }] };
 		} catch {
 			return result;
 		}
@@ -5454,18 +5469,21 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callToolObserved(ingressLease: IParadisAgentBrowserIngressLease, name: string, params: { name?: unknown; arguments?: unknown } | undefined, options: IParadisObserveOptions, signal?: AbortSignal, socket?: Socket): Promise<unknown> {
 		const taken = paradisTakeObserveArguments(params?.arguments);
+		// 子からの呼び出しの印（`_meta` の tool_use の id）を、組み直した呼び出しにも残す
+		const meta = (params as { _meta?: unknown } | undefined)?._meta;
+		const withMeta = <T extends object>(call: T): T => meta !== undefined ? { ...call, _meta: meta } : call;
 		const scoped = this._scopeToolCall(ingressLease, taken.rest);
 		const tabLease = scoped.ok ? scoped.lease : undefined;
 		const tabKey = tabLease !== undefined ? this._pageKeyOf(tabLease) : undefined;
 		const binding = tabKey !== undefined ? this._bindingForKey(tabKey) : undefined;
 		if (!scoped.ok || tabLease === undefined || tabKey === undefined || binding === undefined) {
-			return this._callToolInner(ingressLease, { name, arguments: taken.rest }, signal, socket);
+			return this._callToolInner(ingressLease, withMeta({ name, arguments: taken.rest }), signal, socket);
 		}
 		// 操作に使うタブを固定する（tab_id を省いた呼び出しも、今決めたタブへ）
 		const restArgs = isExactRecord(taken.rest) ? taken.rest : {};
-		const call = scoped.tabId !== undefined && !Object.hasOwn(restArgs, PARADIS_TAB_ID_ARGUMENT)
+		const call = withMeta(scoped.tabId !== undefined && !Object.hasOwn(restArgs, PARADIS_TAB_ID_ARGUMENT)
 			? { name, arguments: { ...restArgs, [PARADIS_TAB_ID_ARGUMENT]: scoped.tabId } }
-			: { name, arguments: taken.rest };
+			: { name, arguments: taken.rest });
 		const host = this._observeHost(ingressLease, tabLease, signal);
 		const observeBefore = async () => {
 			try {
@@ -5509,7 +5527,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const result = await this._callToolInner(ingressLease, call, signal, socket, tabKey);
 			return { value: await observeAfter(before, result) };
 		}, signal);
-		return observed !== undefined ? observed.value : this._callToolInner(ingressLease, { name, arguments: taken.rest }, signal, socket);
+		return observed !== undefined ? observed.value : this._callToolInner(ingressLease, withMeta({ name, arguments: taken.rest }), signal, socket);
 	}
 
 	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
@@ -5560,7 +5578,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		if (!TOOLS.some(t => t.name === name)) {
 			// PARA-PATCH: 登録されたツールプロバイダに先に当てる（自分のツールでなければundefinedを返す約束）
-			const context = this._toolCallContext(ingressLease, socket);
+			const context: IParadisMcpToolCallContext = { ...this._toolCallContext(ingressLease, socket), fromSubagent: this._isSubagentCall(ingressLease, params) };
 			for (const provider of this._allToolProviders()) {
 				const result = await provider.callTool(token, name, params?.arguments, signal, context);
 				this._requireIngressLease(ingressLease);
@@ -5810,7 +5828,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 
 		if (PARADIS_BROWSER_QUERY_TOOL_NAME_SET.has(name)) {
-			return this._callBrowserQueryTool(pageLease, binding, name, toolArguments, signal);
+			return this._callBrowserQueryTool(pageLease, binding, name, toolArguments, signal, this._isSubagentCall(ingressLease, params));
 		}
 
 		if (name === 'capture_screenshot') {
@@ -5885,12 +5903,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 読む・待つツール（paradisBrowserQuery.ts）を呼ぶ。ページで動かすのは内蔵 chrome-devtools-mcp の
 	 * evaluate_script と同じ経路なので、接続元の確認も evaluate_script と同じ（トークンと ingress lease）。
 	 */
-	private async _callBrowserQueryTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+	private async _callBrowserQueryTool(ingressLease: IParadisAgentBrowserIngressLease, binding: IBindingEntry, name: string, args: unknown, signal: AbortSignal | undefined, fromSubagent: boolean): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		// タブのスコープキー（tab_id を解決していなければペインのトークン）
 		const token = this._pageKeyOf(ingressLease);
 		return this._withToolCursorStatus(ingressLease, name, () => this._browserQuery.call({
 			signal,
+			fromSubagent,
 			isCurrent: () => {
 				this._requireIngressLease(ingressLease);
 				return this._bindingForKey(token) === binding;
