@@ -136,10 +136,11 @@ suite('ParadisBrowserUserAgent', () => {
 
 		const sent: string[] = [];
 		const tabUserAgents: string[] = [];
+		let tabUserAgent = userAgent;
 		const onDidChangeDevice = store.add(new Emitter<unknown>());
 		const emulation: { device?: { userAgent?: string } } = {};
 		const view: IParadisChromeIdentityView = {
-			webContents: { session, getUserAgent: () => userAgent, isDestroyed: () => false, setUserAgent: (ua: string) => tabUserAgents.push(ua) } as unknown as IParadisChromeIdentityView['webContents'],
+			webContents: { session, getUserAgent: () => tabUserAgent, getURL: () => 'https://m.example.com/app', isDestroyed: () => false, setUserAgent: (ua: string) => { tabUserAgent = ua; tabUserAgents.push(ua); } } as unknown as IParadisChromeIdentityView['webContents'],
 			debugger: {
 				knownTargets: new Map(),
 				onSessionCreated: Event.None,
@@ -160,9 +161,11 @@ suite('ParadisBrowserUserAgent', () => {
 		await timeout(0);
 		const afterRace = [...sent];
 
-		const serviceWorkerHeaders = { 'User-Agent': 'Mozilla/5.0 (Macintosh) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36' };
+		const serviceWorkerHeaders = { 'User-Agent': 'Mozilla/5.0 (Macintosh) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36', 'Referer': 'https://m.example.com/sw.js' };
 		let duringEmulation: Record<string, string> | undefined = {};
 		headerListener!({ requestHeaders: serviceWorkerHeaders }, response => duringEmulation = response.requestHeaders);
+		let otherOriginDuringEmulation: Record<string, string> | undefined;
+		headerListener!({ requestHeaders: { ...serviceWorkerHeaders, 'Referer': 'https://other.example.com/sw.js' } }, response => otherOriginDuringEmulation = response.requestHeaders);
 		emulation.device = undefined;
 		onDidChangeDevice.fire(undefined);
 		await timeout(0);
@@ -174,19 +177,29 @@ suite('ParadisBrowserUserAgent', () => {
 		userAgent = paraCodeUserAgent;
 		onDidChangeEnabled.fire();
 		await timeout(0);
+		// その後に端末のエミュレーションを入れて外すと、upstream はタブを作った時点の UA に戻す。今の UA にそろえ直す
+		emulation.device = { userAgent: 'Mozilla/5.0 (iPhone)' };
+		onDidChangeDevice.fire(emulation.device);
+		tabUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
+		emulation.device = undefined;
+		onDidChangeDevice.fire(undefined);
+		await timeout(0);
 
 		assert.deepStrictEqual({
 			afterRace,
 			duringEmulation,
+			otherOriginDuringEmulation: otherOriginDuringEmulation?.['User-Agent'],
 			afterEmulation: afterEmulation?.['User-Agent'],
 			afterSetting: sent.slice(afterRace.length),
 			tabUserAgents,
 		}, {
 			afterRace: ['cleared'],
 			duringEmulation: undefined,
+			otherOriginDuringEmulation: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
 			afterEmulation: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
-			afterSetting: ['chrome', 'cleared'],
-			tabUserAgents: [paraCodeUserAgent],
+			// 端末を入れてすぐ外したので、入れたときの送信は古くなって捨てる
+			afterSetting: ['chrome', 'cleared', 'cleared'],
+			tabUserAgents: [paraCodeUserAgent, paraCodeUserAgent],
 		});
 	});
 });

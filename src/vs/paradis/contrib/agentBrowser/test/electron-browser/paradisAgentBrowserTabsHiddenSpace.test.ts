@@ -49,6 +49,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 	const assigned: [string, string][] = [];
 	const opened: { id: string; inactive: boolean | undefined; preserveFocus: boolean | undefined; group: number }[] = [];
 	const handlers: IBrowserViewOpenHandler[] = [];
+	const switched: string[] = [];
 	const notifications: { message: string; actions: string[]; run: () => unknown; closed: boolean }[] = [];
 	const notificationService = {
 		notify: (notification: INotification) => {
@@ -156,6 +157,12 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 			get isSwitching() { return switchState.isSwitching; },
 			repositories: [{ id: 'space-a', name: 'a' }, { id: PANE_SPACE, name: 'b' }],
 			onDidSwitchScope: onDidSwitchScope.event,
+			switchToStateKey: async (stateKey: string) => {
+				switched.push(stateKey);
+				switchState.activeStateKey = stateKey;
+				onDidSwitchScope.fire(stateKey);
+				await timeout(5);
+			},
 		} as unknown as IParadisWorkspaceSwitchService,
 		{ getWorktrees: () => [] } as unknown as IParadisWorktreeService,
 		{ getPinnedParts: () => [] } as unknown as IParadisAuxiliaryWindowScopeService,
@@ -183,7 +190,7 @@ function createHarness(store: DisposableStore, options: { readonly layoutGate?: 
 		const allowed = handlers.every(handler => handler.shouldOpenEditor(child.input, { type: 'user' } as IBrowserViewOwner, editorOptions));
 		return { child, allowed };
 	};
-	return { service, switchState, tabs, assigned, opened, handlers, onWillShutdown, switchBack, openChild, notifications };
+	return { service, switchState, tabs, assigned, opened, handlers, onWillShutdown, switchBack, openChild, notifications, switched };
 }
 
 suite('ParadisAgentBrowserTabsService tabs for a space that is not on screen', () => {
@@ -306,30 +313,33 @@ suite('ParadisAgentBrowserTabsService tabs for a space that is not on screen', (
 		});
 	});
 
-	test('notifies about a Cloudflare check on the agent tab and offers to open the tab only where it can be shown', async () => {
+	test('notifies about a Cloudflare check on the agent tab and opens the tab, switching to its space, only when the user asks', async () => {
 		const harness = createHarness(store.add(new DisposableStore()));
 		await harness.service.openTab(TOKEN, undefined, false);
-		// 見えていないスペースのタブ: 通知だけ（タブを開くボタンは出さない）
 		harness.service.noteHumanCheck(TOKEN, 'view-1', 'page');
-		await harness.switchBack();
-		// 戻った後: 種類が変わったので出し直し、ボタンを出す
+		const openedBeforeClick = harness.opened.length;
+		// 見えていないスペースのタブ: 押したときにそのスペースへ切り替えて開く
+		await harness.notifications[0].run();
+		const switched = [...harness.switched];
+		// 種類が変わったら出し直す
 		harness.service.noteHumanCheck(TOKEN, 'view-1', 'widget');
-		const openedBefore = harness.opened.length;
-		await harness.notifications[1].run();
-		const reopened = harness.opened.length - openedBefore;
 		// 通った
 		harness.service.noteHumanCheck(TOKEN, 'view-1', undefined);
 		// このペインのタブでないものには出さない
 		harness.service.noteHumanCheck(TOKEN, 'someone-else', 'page');
 		assert.deepStrictEqual({
+			openedBeforeClick,
+			switched,
+			openedAfterClick: harness.opened.map(entry => entry.id),
 			notifications: harness.notifications.map(n => ({ actions: n.actions.length, closed: n.closed, mentionsCloudflare: n.message.includes('Cloudflare') })),
-			reopened,
 		}, {
+			openedBeforeClick: 0,
+			switched: [PANE_SPACE],
+			openedAfterClick: ['view-1', 'view-1'],
 			notifications: [
-				{ actions: 0, closed: true, mentionsCloudflare: true },
+				{ actions: 1, closed: true, mentionsCloudflare: true },
 				{ actions: 1, closed: true, mentionsCloudflare: true },
 			],
-			reopened: 1,
 		});
 	});
 });

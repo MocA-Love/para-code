@@ -26,6 +26,9 @@ export type ParadisHumanCheckKind = 'page' | 'widget';
 /** 確認の候補を見つけてから、まだ残っているかを確かめ直すまで待つ時間。 */
 export const PARADIS_HUMAN_CHECK_GRACE_MS = 2_000;
 
+/** 通知を出している間、タブを見直す間隔。 */
+export const PARADIS_HUMAN_CHECK_POLL_MS = 5_000;
+
 /** Cloudflare の確認の枠の origin。 */
 export const PARADIS_HUMAN_CHECK_FRAME_ORIGIN = 'https://challenges.cloudflare.com';
 
@@ -72,70 +75,131 @@ export function paradisParseHumanCheckKind(value: unknown): ParadisHumanCheckKin
 	return value === 'page' || value === 'widget' ? value : undefined;
 }
 
-/** 確認が出たときに道具の結果へ足す文（エージェント向け、英語）。 */
-export function paradisHumanCheckNotice(kind: ParadisHumanCheckKind, tabId: string | undefined): string {
-	const where = tabId !== undefined ? `The tab ${JSON.stringify(tabId)}` : 'This tab';
-	const what = kind === 'page'
-		? 'shows a Cloudflare check page ("Verify you are human") instead of the site'
-		: 'has a Cloudflare Turnstile check ("Verify you are human") that has not passed';
-	return `PARA_BROWSER_HUMAN_CHECK: ${where} ${what}. A person has to pass it: do not click it, solve it or try to get around it, and do not reload the page in a loop. Para Code has shown the user a notification for this tab. Tell the user that the tab needs them to complete the check, then wait: call wait_until${tabId !== undefined ? ` with tab_id ${JSON.stringify(tabId)},` : ''} predicate ${JSON.stringify(PARADIS_HUMAN_CHECK_WAIT_PREDICATE)} and timeout_seconds 100, and call it again if it times out. Continue the task after it returns.`;
+/** 道具の結果に足す文の種類。 */
+export type ParadisHumanCheckNoticeKind = 'page' | 'widget' | 'widgetBlocked' | 'passed';
+
+/** 送信のような操作（押す・キー）。ページの中の Turnstile が残ったままこれをしたら、人に頼む。 */
+const SUBMIT_LIKE_TOOLS: ReadonlySet<string> = new Set(['click', 'click_by', 'click_at', 'press_key', 'mouse_action', 'run_steps']);
+
+function waitInstruction(tabId: string | undefined): string {
+	return `wait: call wait_until${tabId !== undefined ? ` with tab_id ${JSON.stringify(tabId)},` : ''} predicate ${JSON.stringify(PARADIS_HUMAN_CHECK_WAIT_PREDICATE)} and timeout_seconds 100, and call it again if it times out. Continue the task after it returns.`;
 }
 
-/** 確認が通ったときに 1 回だけ足す文。 */
-export function paradisHumanCheckPassedNotice(tabId: string | undefined): string {
-	return `PARA_BROWSER_HUMAN_CHECK_PASSED: The Cloudflare check on ${tabId !== undefined ? `the tab ${JSON.stringify(tabId)}` : 'this tab'} has passed. You can continue.`;
+/** 道具の結果に足す文（エージェント向け、英語）。 */
+export function paradisHumanCheckNotice(kind: ParadisHumanCheckNoticeKind, tabId: string | undefined): string {
+	const tab = tabId !== undefined ? `the tab ${JSON.stringify(tabId)}` : 'this tab';
+	switch (kind) {
+		case 'page':
+			return `PARA_BROWSER_HUMAN_CHECK: ${tab} shows a Cloudflare check page ("Verify you are human") instead of the site. A person has to pass it: do not click it, solve it or try to get around it, and do not reload the page in a loop. Para Code has shown the user a notification for this tab. Tell the user that the tab needs them to complete the check, then ${waitInstruction(tabId)}`;
+		case 'widget':
+			return `PARA_BROWSER_HUMAN_CHECK: ${tab} has a Cloudflare Turnstile check ("Verify you are human") inside the page that has not passed yet. It is usually part of a form and often passes by itself: you can keep filling in the form, but do not click the check, solve it or try to get around it. If it still has not passed when you are about to send the form, or the form cannot be sent because of it, ask the user to complete the check in the tab, then ${waitInstruction(tabId)}`;
+		case 'widgetBlocked':
+			return `PARA_BROWSER_HUMAN_CHECK: The Cloudflare Turnstile check on ${tab} still has not passed after your last action. Para Code has shown the user a notification for this tab. Ask the user to complete the check, then ${waitInstruction(tabId)}`;
+		case 'passed':
+			return `PARA_BROWSER_HUMAN_CHECK_PASSED: The Cloudflare check on ${tab} has passed. You can continue.`;
+	}
 }
 
-/** 変化（伝える必要があるとき）。 */
-export type ParadisHumanCheckTransition =
-	| { readonly type: 'appeared'; readonly kind: ParadisHumanCheckKind }
-	| { readonly type: 'passed' };
+/** {@link ParadisHumanCheckTracker.observe} の答え。 */
+export interface IParadisHumanCheckUpdate {
+	/** 道具の結果に足す文。 */
+	readonly notice?: ParadisHumanCheckNoticeKind;
+	/** ユーザーへ出す通知（出す種類）。 */
+	readonly notify?: ParadisHumanCheckKind;
+	/** 出していた通知を閉じる。 */
+	readonly close?: boolean;
+}
+
+interface IParadisHumanCheckState {
+	/** 今出ている確認（通ったのを見回りで見つけたときは undefined で、次の道具の結果に「通った」を足す）。 */
+	readonly kind: ParadisHumanCheckKind | undefined;
+	/** ユーザーへ通知を出しているか。 */
+	readonly notified: boolean;
+}
 
 /** 覚えておくタブの数の上限。 */
 const MAX_TABS = 256;
 
 /**
- * タブごとに、最後に伝えた確認の様子を覚える。同じ様子が続く間は何も足さない（エージェント自身の wait_until が
- * 毎回同じ文を受け取らないように）。キーは「ペイン\nタブ」。
+ * タブごとに、伝えた確認の様子を覚える。キーは「ペイン\nタブ」。
+ * - 確認ページ: 出たらエージェントに「待つ」と伝え、ユーザーに通知する
+ * - ページの中の Turnstile: 出たらエージェントには「入力は続けてよい、送る前に人に頼む」とだけ伝える。残ったまま
+ *   送信のような操作をしたら、そこで初めてユーザーに通知し、エージェントに人に頼むよう伝える
+ * - 同じ様子が続く間は何も足さない（エージェント自身の wait_until が毎回同じ文を受け取らないように）
+ * - 通ったら 1 回だけ「通った」を足し、通知を閉じる
  */
 export class ParadisHumanCheckTracker {
-	private readonly reported = new Map<string, ParadisHumanCheckKind>();
+	private readonly states = new Map<string, IParadisHumanCheckState>();
 
-	observe(key: string, kind: ParadisHumanCheckKind | undefined): ParadisHumanCheckTransition | undefined {
-		const previous = this.reported.get(key);
+	observe(key: string, kind: ParadisHumanCheckKind | undefined, tool: string): IParadisHumanCheckUpdate {
+		const previous = this.states.get(key);
 		if (kind === undefined) {
 			if (previous === undefined) {
-				return undefined;
+				return {};
 			}
-			this.reported.delete(key);
-			return { type: 'passed' };
+			this.states.delete(key);
+			return { notice: 'passed', close: previous.notified };
 		}
-		if (previous === kind) {
-			return undefined;
-		}
-		this.reported.delete(key);
-		this.reported.set(key, kind);
-		while (this.reported.size > MAX_TABS) {
-			const oldest = this.reported.keys().next();
-			if (oldest.done) {
-				break;
+		if (previous?.kind === kind) {
+			if (kind === 'widget' && !previous.notified && SUBMIT_LIKE_TOOLS.has(tool)) {
+				this.set(key, { kind, notified: true });
+				return { notice: 'widgetBlocked', notify: 'widget' };
 			}
-			this.reported.delete(oldest.value);
+			return {};
 		}
-		return { type: 'appeared', kind };
+		const notify = kind === 'page';
+		this.set(key, { kind, notified: notify });
+		return { notice: kind, ...(notify ? { notify: kind } : {}), ...(previous?.notified && !notify ? { close: true } : {}) };
+	}
+
+	/** 通知を出している間の見回りで、確認が通ったのを見つけた。通知を出していたら true（閉じる）。 */
+	markPassed(key: string): boolean {
+		const previous = this.states.get(key);
+		if (previous?.kind === undefined) {
+			return false;
+		}
+		this.set(key, { kind: undefined, notified: false });
+		return previous.notified;
 	}
 
 	/** そのタブで確認を伝えたまま（まだ通っていない）か。 */
 	has(key: string): boolean {
-		return this.reported.has(key);
+		return this.states.get(key)?.kind !== undefined;
 	}
 
-	/** そのペインのタブを忘れる（エージェントがつながり直したとき）。 */
-	forget(pane: string): void {
-		for (const key of [...this.reported.keys()]) {
+	/** そのタブだけを忘れる（共有が外れた）。 */
+	forgetTab(key: string): void {
+		this.states.delete(key);
+	}
+
+	/** ユーザーへ通知を出しているか。 */
+	isNotified(key: string): boolean {
+		return this.states.get(key)?.notified === true;
+	}
+
+	/** そのペインのタブを忘れる（エージェントがつながり直した・ペインが終わった）。通知を出していたタブを返す。 */
+	forget(pane: string): string[] {
+		const notifiedTabs: string[] = [];
+		for (const [key, state] of [...this.states]) {
 			if (key.startsWith(`${pane}\n`)) {
-				this.reported.delete(key);
+				if (state.notified) {
+					notifiedTabs.push(key.slice(pane.length + 1));
+				}
+				this.states.delete(key);
 			}
+		}
+		return notifiedTabs;
+	}
+
+	private set(key: string, state: IParadisHumanCheckState): void {
+		this.states.delete(key);
+		this.states.set(key, state);
+		while (this.states.size > MAX_TABS) {
+			const oldest = this.states.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			this.states.delete(oldest.value);
 		}
 	}
 }
