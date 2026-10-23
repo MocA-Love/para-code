@@ -26,14 +26,15 @@ function profile(id: string, name: string, extra: Partial<IParadisBrowserProfile
 	return { id, name, color: '#3fb950', createdAt: 1, lastUsedAt: 2, ...extra };
 }
 
-function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true) {
+/** `onStats` は main へ数を聞いている間に起きることを差し込む口。 */
+function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true, onStats?: () => void) {
 	const calls: string[] = [];
 	const registrations: string[] = [];
 	const profilesService = {
 		list: () => profiles,
 		findByName: (name: string) => profiles.find(candidate => candidate.name === name),
 		canUseProfiles: () => true,
-		getProfileStats: async () => ({ cookieCount: 3, openViewCount: 0 }),
+		getProfileStats: async () => { onStats?.(); return { cookieCount: 3, openViewCount: 0 }; },
 		getProfileForView: () => undefined,
 		create: (name: string, color: string, options?: IParadisCreateProfileOptions) => {
 			const created = profile(`00000000000${profiles.length}`, name, { color, ...(options?.createdByAgent ? { createdByAgent: true, agentOwner: options.agentOwner } : {}) });
@@ -139,6 +140,15 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 			[created.ok, profiles[1].agentOwner === paradisAgentOwnerMark('pane-a'), results, calls],
 			[true, true, [{ ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, true], [`remove:${profiles[1].id}`]],
 		);
+	});
+
+	// main へ開いているタブの数を聞いている間に、ユーザーが自分用として使い始めたら消さない（A61）。
+	test('does not delete a profile the user claimed while the open tabs were being counted', async () => {
+		const profiles = [profile('b1c2d3e4f506', 'scratch', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') })];
+		const { channel, calls } = createChannel(profiles, 'denied', true, () => { profiles[0] = profile('b1c2d3e4f506', 'scratch'); });
+		store.add(channel);
+		const result = await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch']);
+		assert.deepStrictEqual([result, calls], [{ ok: false, reason: 'unknownProfile' }, []]);
 	});
 
 	test('checks the tab limit before asking for approval', async () => {
