@@ -19,7 +19,7 @@ import {
 	paradisViewportDevice,
 	paradisViewportSpecMatches,
 } from '../../common/paradisBrowserViewport.js';
-import { ParadisAgentEmulationLedger, paradisFoldDeviceMetricsOverride } from '../../common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEmulatedScreenshotSize, paradisFoldDeviceMetricsOverride, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../common/paradisBrowserViewportCdp.js';
 import { paradisFormatSetViewportResult, paradisViewportForAgent } from '../../common/paradisBrowserViewportTools.js';
 
 const SIZES: readonly IParadisViewportSize[] = [
@@ -182,6 +182,47 @@ suite('paradisBrowserViewportCdp', () => {
 			kept: { kind: 'keep' },
 			otherOwner: { kind: 'keep' },
 			remaining: 1,
+		});
+	});
+
+	test('two connections in turn: the size from before the first one comes back once the last owner closes, whichever closes first', () => {
+		const original = { width: 1366, height: 768 };
+		const run = (firstToClose: 'a' | 'b') => {
+			const ledger = new ParadisAgentEmulationLedger();
+			let device: ReturnType<typeof paradisFoldDeviceMetricsOverride> | undefined = original;
+			device = ledger.apply('view', 'a', device, { width: 390, height: 844 });
+			device = ledger.apply('view', 'b', device, { width: 412, height: 915 });
+			for (const owner of firstToClose === 'a' ? ['a', 'b'] : ['b', 'a']) {
+				const release = ledger.release('view', owner, device);
+				if (release.kind === 'restore') {
+					device = release.device;
+				}
+			}
+			return device;
+		};
+		assert.deepStrictEqual({ aFirst: run('a'), bFirst: run('b') }, { aFirst: original, bFirst: original });
+	});
+
+	test('keeps the agent colour scheme next to the pointer the device decides, and scales input and screenshots to the page', () => {
+		assert.deepStrictEqual({
+			mobile: paradisMergeEmulatedMedia({ features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'fine' }] }, { width: 390, height: 844, mobile: true }),
+			noDevice: paradisMergeEmulatedMedia({ media: 'print', features: [{ name: 'prefers-color-scheme', value: 'dark' }] }, undefined),
+			cleared: paradisMergeEmulatedMedia(undefined, { width: 1366, height: 768 }),
+			input: paradisScaleCdpInputCoordinates({ type: 'mouseWheel', x: 10, y: 20, deltaY: 100, touchPoints: [{ x: 2, y: 4 }] }, 0.5),
+			unscaled: paradisScaleCdpInputCoordinates({ x: 10, y: 20 }, 1),
+			// 1920x1080 drawn at 31% on a DPR 2 screen -> 1190x670 image, returned at the page size
+			viewport: paradisEmulatedScreenshotSize({ width: 1190, height: 670 }, { width: 1920, height: 1080 }, undefined),
+			rect: paradisEmulatedScreenshotSize({ width: 62, height: 31 }, { width: 1920, height: 1080 }, { width: 100, height: 50 }),
+			same: paradisEmulatedScreenshotSize({ width: 390, height: 844 }, { width: 390, height: 844 }, undefined),
+		}, {
+			mobile: { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'coarse' }] },
+			noDevice: { media: 'print', features: [{ name: 'prefers-color-scheme', value: 'dark' }] },
+			cleared: { media: '', features: [{ name: 'pointer', value: 'fine' }] },
+			input: { type: 'mouseWheel', x: 5, y: 10, deltaY: 50, touchPoints: [{ x: 1, y: 2 }] },
+			unscaled: { x: 10, y: 20 },
+			viewport: { width: 1920, height: 1081 },
+			rect: { width: 100, height: 50 },
+			same: undefined,
 		});
 	});
 });

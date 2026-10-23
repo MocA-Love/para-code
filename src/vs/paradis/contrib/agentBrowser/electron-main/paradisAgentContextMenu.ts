@@ -75,7 +75,7 @@ export function paradisContextMenuInputSource(method: string, params: Readonly<R
  * エージェントが送る入力に印を付ける。メニューを開きうる入力でなければ何もしない。
  * `zoomFactor` はタブの拡大率（`context-menu` の座標が拡大後で届いても突き合わせられるように）。
  */
-export function paradisMarkAgentContextMenuInput(webContents: object, method: string, params: Readonly<Record<string, unknown>>, zoomFactor: number, now: number = Date.now()): void {
+export function paradisMarkAgentContextMenuInput(webContents: object, method: string, params: Readonly<Record<string, unknown>>, zoomFactor: number, now: number = Date.now(), emulationScale: number = 1): void {
 	const source = paradisContextMenuInputSource(method, params);
 	if (source === undefined) {
 		return;
@@ -85,6 +85,14 @@ export function paradisMarkAgentContextMenuInput(webContents: object, method: st
 		points.push({ x: params.x, y: params.y });
 		if (Number.isFinite(zoomFactor) && zoomFactor > 0 && zoomFactor !== 1) {
 			points.push({ x: params.x * zoomFactor, y: params.y * zoomFactor });
+		}
+		// 縮小して描いているタブ（Device Emulation）では、配送する座標を倍率に合わせて直す。`context-menu` の
+		// 座標がどちらの空間で来ても突き合うよう、直した後の点も持つ（Para Code）
+		if (Number.isFinite(emulationScale) && emulationScale > 0 && Math.abs(emulationScale - 1) > 1e-6) {
+			points.push({ x: params.x * emulationScale, y: params.y * emulationScale });
+			if (Number.isFinite(zoomFactor) && zoomFactor > 0 && zoomFactor !== 1) {
+				points.push({ x: params.x * emulationScale * zoomFactor, y: params.y * emulationScale * zoomFactor });
+			}
 		}
 	}
 	const list = (marks.get(webContents) ?? []).filter(mark => now - mark.at <= MARK_LIFETIME_MS);

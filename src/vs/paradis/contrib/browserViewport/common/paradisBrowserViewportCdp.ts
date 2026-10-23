@@ -35,6 +35,30 @@ export function paradisIsCdpViewportMethod(method: string): boolean {
 	return PARADIS_CDP_VIEWPORT_METHODS.has(method);
 }
 
+/**
+ * 共有中のタブ本体への命令のうち、main が扱うもの。大きさの命令に加えて、upstream の Device Emulation が同じ状態を
+ * 送り直して取り合う 2 つ（タッチと `setEmulatedMedia`。browserViewEmulator.ts の `_applyTouchAndMedia`）。
+ */
+export function paradisIsCdpEmulationMethod(method: string): boolean {
+	return PARADIS_CDP_VIEWPORT_METHODS.has(method) || method === 'Emulation.setTouchEmulationEnabled' || method === 'Emulation.setEmulatedMedia';
+}
+
+/**
+ * エージェントの `setEmulatedMedia` の指定に、device が決める `pointer` を重ねる（device が無ければ指定のまま）。
+ * upstream は device を変えるたびに features を `pointer` だけで上書きするので、エージェントの
+ * `prefers-color-scheme` などが消えないよう、こちらで合わせてから送る。
+ */
+export function paradisMergeEmulatedMedia(agentParams: unknown, device: IBrowserDeviceProfile | undefined): { media: string; features: { name: string; value: string }[] } {
+	const p = (agentParams && typeof agentParams === 'object' ? agentParams : {}) as { media?: unknown; features?: unknown };
+	const features = Array.isArray(p.features)
+		? p.features.filter((feature): feature is { name: string; value: string } => !!feature && typeof feature === 'object' && typeof feature.name === 'string' && typeof feature.value === 'string' && feature.name !== 'pointer')
+		: [];
+	if (device) {
+		features.push({ name: 'pointer', value: device.mobile ? 'coarse' : 'fine' });
+	}
+	return { media: typeof p.media === 'string' ? p.media : '', features: features.map(feature => ({ name: feature.name, value: feature.value })) };
+}
+
 function positiveNumber(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
@@ -93,13 +117,14 @@ export class ParadisAgentEmulationLedger {
 	private readonly _records = new Map<string, IAgentEmulationRecord>();
 
 	/**
-	 * 命令で device を付ける前に呼ぶ。付ける device を返す。別の接続の記録や、その後に大きさが変わった
-	 * 記録は捨てて、今の device を「付ける前」として持ち直す。
+	 * 命令で device を付ける前に呼ぶ。付ける device を返す。今の device が前の記録で付けたもののままなら、その
+	 * 「付ける前」を引き継ぐ（別の接続が上書きしても、最後の持ち主が切れたときに元の大きさへ戻るように）。持ち主は
+	 * 最後に命令を送った接続になる。その後に利用者などが大きさを変えていたら、今の device を「付ける前」にする。
 	 */
 	apply(viewId: string, owner: string, current: IBrowserDeviceProfile | undefined, params: unknown): IBrowserDeviceProfile {
 		const next = paradisFoldDeviceMetricsOverride(current, params);
 		const record = this._records.get(viewId);
-		const previous = record && record.owner === owner && paradisDevicesEqual(record.applied, current) ? record.previous : current;
+		const previous = record && paradisDevicesEqual(record.applied, current) ? record.previous : current;
 		this._records.set(viewId, { owner, previous, applied: next });
 		return next;
 	}
@@ -154,4 +179,30 @@ export function paradisScaleCdpInputCoordinates<T>(params: T, scale: number): T 
 			: point);
 	}
 	return scaled as T;
+}
+
+/**
+ * 縮小して描いているタブの撮影（ビューの面を写した画像）を、ページの CSS の大きさに揃えるときの大きさ。倍率は
+ * 縦横同じなので、決めている幅（無ければ高さ）、または写す範囲（pageRect）の幅との比で両方を直す。揃える必要が
+ * 無い（ほぼ同じ大きさ）・分からないときは undefined。
+ */
+export function paradisEmulatedScreenshotSize(
+	image: { readonly width: number; readonly height: number },
+	device: IBrowserDeviceProfile,
+	pageRect: { readonly width: number; readonly height: number } | undefined,
+): { readonly width: number; readonly height: number } | undefined {
+	if (!(image.width > 0) || !(image.height > 0)) {
+		return undefined;
+	}
+	const factor = pageRect && pageRect.width > 0
+		? pageRect.width / image.width
+		: device.width
+			? device.width / image.width
+			: device.height
+				? device.height / image.height
+				: undefined;
+	if (factor === undefined || !Number.isFinite(factor) || Math.abs(factor - 1) < 0.01) {
+		return undefined;
+	}
+	return { width: Math.max(1, Math.round(image.width * factor)), height: Math.max(1, Math.round(image.height * factor)) };
 }
