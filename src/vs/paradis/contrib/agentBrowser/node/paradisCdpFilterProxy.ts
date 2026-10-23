@@ -39,6 +39,7 @@
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
 import { paradisIsCdpEmulationMethod, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { paradisNeutralizeDefaultUserAgentOverride } from '../../browserUserAgent/common/paradisChromeClientHints.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
 import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
@@ -1529,6 +1530,11 @@ export function paradisProxyPageUpgrade(
 				}
 				return;
 			}
+			// LLM の接続が送る Electron の既定の UA は、Para Code が付けた Chrome の UA と Client Hints を消すので、この接続の上書きを外す形にする
+			const neutralUserAgentParams = paradisNeutralizeDefaultUserAgentOverride(msg.method, msg.params);
+			if (neutralUserAgentParams) {
+				data = Buffer.from(JSON.stringify({ ...msg, params: neutralUserAgentParams }));
+			}
 			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
 				noteFocusEmulation(ctx, msg.params);
 			}
@@ -2366,7 +2372,9 @@ export async function paradisProxyBrowserUpgrade(
 					forwardClientRequest(message, sessionTargetId, { ...message, params: rewrittenParams });
 					return;
 				}
-				forwardClientRequest(message, sessionTargetId);
+				// ページ単位の接続と同じく、Electron の既定の UA の上書きはこの接続の上書きを外す形にする
+				const neutralUserAgentParams = paradisNeutralizeDefaultUserAgentOverride(message.method, message.params);
+				forwardClientRequest(message, sessionTargetId, neutralUserAgentParams ? { ...message, params: neutralUserAgentParams } : undefined);
 				return;
 			}
 
