@@ -87,6 +87,8 @@ const BINDING_CHANGED = 'PARA_BROWSER_RETRYABLE: the page shared with this termi
 
 /** wait_until の 1 回の evaluate でページの中に留まる上限。 */
 export const PARADIS_WAIT_UNTIL_SLICE_MS = 1000;
+/** wait_until の時間切れの後に、近い候補を 1 回だけ読む評価の締め切り（答えないページで待ちを長引かせない）。 */
+const NEAR_MISS_DEADLINE_MS = 3000;
 /** 1 回の評価の締め切りに、区切りの長さへ足す余裕。健全なページなら評価は区切りのうちに返る。 */
 export const PARADIS_EVALUATE_DEADLINE_MARGIN_MS = 10_000;
 /**
@@ -106,7 +108,7 @@ const DEFAULT_STYLES = ['display', 'visibility', 'opacity', 'position', 'z-index
 
 /** ページの中で使う引数（JSON にしてページの関数へ埋め込む）。 */
 export interface IParadisQuerySpec {
-	readonly mode: 'wait' | 'text' | 'inspect' | 'scroll' | 'scrollMiss' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
+	readonly mode: 'wait' | 'nearMiss' | 'text' | 'inspect' | 'scroll' | 'scrollMiss' | 'locate' | 'focusField' | 'selectOption' | 'setValue' | 'readField' | 'rect';
 	readonly selector?: string;
 	readonly role?: string;
 	readonly name?: string;
@@ -328,8 +330,9 @@ export class ParadisBrowserQuery {
 	}
 
 	/** 1 回 evaluate する。値か、エージェントへ返す失敗。 */
-	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean; unresponsive?: boolean }> {
-		const { deadlineMs, notAfter } = paradisEvaluateDeadline(spec, this.now());
+	private async run(call: IParadisBrowserQueryCall, spec: IParadisQuerySpec, uids: readonly string[], predicate?: string, shortDeadlineMs?: number): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; result: ToolResult; transient: boolean; unresponsive?: boolean }> {
+		const now = this.now();
+		const { deadlineMs, notAfter } = shortDeadlineMs !== undefined ? { deadlineMs: shortDeadlineMs, notAfter: now + shortDeadlineMs - LATE_START_GUARD_MS / 2 } : paradisEvaluateDeadline(spec, now);
 		const result = await call.evaluate(paradisBuildQueryFunction(spec, uids.length, predicate, notAfter), uids, deadlineMs);
 		if (!call.isCurrent()) {
 			return { ok: false, result: error(BINDING_CHANGED), transient: false };
@@ -462,7 +465,29 @@ export class ParadisBrowserQuery {
 		const what = [locator.given ? `${state} ${describeLocator(args)}` : '', predicate !== undefined ? 'predicate truthy' : '', networkIdleMs !== undefined ? `network idle for ${networkIdleMs}ms` : ''].filter(Boolean).join(' and ');
 		const network = lastNetwork !== undefined ? `\nNetwork at the last check: ${lastNetwork.inflight} request(s) in flight${lastNetwork.pendingUrls.length > 0 ? ` (${lastNetwork.pendingUrls.join(', ')})` : ''}, quiet for ${lastNetwork.quietMs ?? 0}ms.` : '';
 		const seen = (lastUnresponsiveMs !== undefined ? `\nAt the last check the page did not answer within ${lastUnresponsiveMs / 1000} s (it may be busy running scripts or loading, or frozen); take_screenshot still works.` : last !== undefined ? `\nLast check: ${JSON.stringify(last, null, 2)}` : lastFailure !== undefined ? '\nThe page was still navigating or reloading at the last check.' : '') + network;
-		return error(`Timed out after ${timeoutSeconds}s waiting for ${what} (${checks} checks).${seen}`);
+		const hints = lastUnresponsiveMs === undefined && lastFailure === undefined ? await this.waitMissHints(call, locator, args, state, last) : [];
+		return error(`Timed out after ${timeoutSeconds}s waiting for ${what} (${checks} checks).${seen}${hints.length > 0 ? `\n${hints.join('\n')}` : ''}`);
+	}
+
+	/**
+	 * wait_until が時間切れになったとき、待っていた要素に近いもの（似た文字・名前、selector が当たらない理由）を
+	 * 1 回だけ読んで文にする。待ち方・時間・成功の判定は変えず、結果の文を足すだけ。最後の確認でページが答えなかった・
+	 * 遷移中だったときは呼ばない（締め切りの分だけ待ちが延びるため）。読めなければ何も足さない。
+	 */
+	private async waitMissHints(call: IParadisBrowserQueryCall, locator: ILocator, args: Record<string, unknown>, state: unknown, last: Record<string, unknown> | undefined): Promise<string[]> {
+		if (!locator.given || locator.spec.targetIndex !== undefined || (state !== 'visible' && state !== 'attached') || last === undefined || last.withinMissing === true || call.signal?.aborted) {
+			return [];
+		}
+		if (typeof last.matched === 'number' && last.matched > 0) {
+			return state === 'visible' && last.visible === 0
+				? [`- ${last.matched} element(s) match, but none is visible (hidden, zero size or not rendered yet). Use state "attached" to wait for it in the DOM, or check why with inspect_element.`]
+				: [];
+		}
+		if (last.matched !== 0) {
+			return [];
+		}
+		const outcome = await this.run(call, { ...locator.spec, mode: 'nearMiss' }, locator.uids, undefined, NEAR_MISS_DEADLINE_MS);
+		return outcome.ok ? paradisNearMissHints(outcome.value.near, args) : [];
 	}
 
 	private async getText(call: IParadisBrowserQueryCall, args: Record<string, unknown>): Promise<ToolResult> {
@@ -494,7 +519,7 @@ export class ParadisBrowserQuery {
 			return error(`Nothing matches the container (${describeLocator({ within: args.within, within_uid: args.within_uid })}).`);
 		}
 		if (locator.given && value.matched === 0) {
-			return error(`No element matches ${describeLocator(args)}. Check with take_snapshot, or wait for it with wait_until.`);
+			return error([`No element matches ${describeLocator(args)}. Check with take_snapshot, or wait for it with wait_until.`, ...paradisNearMissHints(value.near, args)].join('\n'));
 		}
 		const total = typeof value.total === 'number' ? value.total : 0;
 		const raw = typeof value.part === 'string' ? value.part : '';
@@ -616,7 +641,8 @@ export class ParadisBrowserQuery {
 			this.look(call, value);
 			return text(`${where}${restarted ? ' after searching again from the ' + origin : ''}, and scrolled it into view.\n${JSON.stringify({ matched: value.matched, element: value.element }, null, 2)}`);
 		};
-		const notFound = async (message: string): Promise<ToolResult> => {
+		/** `wholeRange`: the whole scrollable range of the area was searched (not cut short by max_steps). */
+		const notFound = async (message: string, wholeRange: boolean): Promise<ToolResult> => {
 			let restored = false;
 			if (startPosition !== undefined && lastWritten !== undefined) {
 				const restore = await this.run(call, { ...base, restoreTo: startPosition, expectAt: lastWritten.position, expectContainer: lastWritten.container }, locator.uids);
@@ -624,7 +650,8 @@ export class ParadisBrowserQuery {
 			}
 			const hints = await this.run(call, { ...base, mode: 'scrollMiss' }, locator.uids);
 			const lines = [`${message}${restored ? ', and scrolled it back to where it was' : ''}.`];
-			if (firstExtent !== undefined && lastExtent !== undefined && lastExtent !== firstExtent) {
+			const grew = firstExtent !== undefined && lastExtent !== undefined && lastExtent !== firstExtent;
+			if (grew) {
 				lines.push(`- The content of ${String(lastContainer)} changed size while searching (${firstExtent}px -> ${lastExtent}px), so it may still be loading. Wait for it with wait_until, then retry.`);
 			}
 			lines.push(...(hints.ok ? paradisScrollMissHints(hints.value) : []));
@@ -632,6 +659,10 @@ export class ParadisBrowserQuery {
 				lines[0] += restarted
 					? ' Give "container" if the wrong area was scrolled, or check the locator with take_snapshot.'
 					: ' Try "from_start": true, the other direction, or give "container" if the wrong area was scrolled.';
+			}
+			if (wholeRange && !grew) {
+				// q.html Q360-5: 見つからない件の大半は、探した文字・名前がその画面に無いもの。道具の取りこぼしと読み違えないよう、そう書く
+				lines.push(`- ${String(lastContainer)} was searched over its whole scrollable range, so no element matching ${describeLocator(args)} is in this area of the screen now. It may be on another page or tab, appear only after an action (a tab, a filter, a search), or be in another scrollable area.`);
 			}
 			return error(lines.join('\n'));
 		};
@@ -660,11 +691,11 @@ export class ParadisBrowserQuery {
 				return found(value, `Found after ${steps} scroll step(s) (${scrolled}px) in ${String(value.container)}`);
 			}
 			if (finishing) {
-				return notFound(`Not found: searched all of ${String(lastContainer)} (from where it was to the ${backwards ? 'start' : 'end'}, then from the ${origin} back to where it was) in ${steps} scroll step(s) (${scrolled}px)`);
+				return notFound(`Not found: searched all of ${String(lastContainer)} (from where it was to the ${backwards ? 'start' : 'end'}, then from the ${origin} back to where it was) in ${steps} scroll step(s) (${scrolled}px)`, true);
 			}
 			const moved = typeof value.moved === 'number' ? value.moved : 0;
 			if (atLimit) {
-				return notFound(`Not found after ${steps} scroll step(s) (${scrolled}px) in ${String(lastContainer)}. Raise max_steps, give "container", or check the locator with take_snapshot`);
+				return notFound(`Not found after ${steps} scroll step(s) (${scrolled}px) in ${String(lastContainer)}. Raise max_steps, give "container", or check the locator with take_snapshot`, false);
 			}
 			if (moved === 0) {
 				// 端に着いた。描画を待ってから最後にもう一度だけ探す。
@@ -700,7 +731,7 @@ export class ParadisBrowserQuery {
 					}
 					continue;
 				}
-				return notFound(`Not found: reached the ${backwards ? 'start' : 'end'} of ${String(lastContainer)} after ${steps} scroll step(s) (${scrolled}px)`);
+				return notFound(`Not found: reached the ${backwards ? 'start' : 'end'} of ${String(lastContainer)} after ${steps} scroll step(s) (${scrolled}px)`, true);
 			}
 			steps++;
 			scrolled += Math.abs(moved);
@@ -746,6 +777,87 @@ export function paradisScrollMissHints(value: Record<string, unknown>): string[]
 		if (others.length > 0) {
 			lines.push(`- Other scrollable areas: ${others.join(', ')}. Give one as "container" if the wrong area was scrolled.`);
 		}
+	}
+	return lines;
+}
+
+/** 候補の文字の長さの上限。ページの関数は 60 文字（"exact" のときは切らずに 200 文字まで）で返すので、ふつうは切らない。 */
+const NEAR_MISS_TEXT_MAX = 200;
+
+function nearString(value: unknown, max = 80): string | undefined {
+	return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
+}
+
+function nearCount(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+/** 近い候補として文に載せる件数の上限（ページの関数も同じ数までしか返さない）。 */
+const NEAR_MISS_MAX = 5;
+
+/**
+ * 探した要素が無かったとき（click_by / fill_by / get_text の「該当なし」、wait_until の時間切れ）に、ページを 1 回
+ * 読んだ結果（ページの関数の `nearMiss`）を文にする。似た文字・名前の要素はそのまま渡せる指定の形で数件まで、
+ * selector は当たらない部分と、ページに見えている似た id・class・識別用の属性の値。フォームの入力値は出さない。
+ */
+export function paradisNearMissHints(value: unknown, args: Record<string, unknown>): string[] {
+	if (!isRecord(value)) {
+		return [];
+	}
+	const lines: string[] = [];
+	const missingParts = Array.isArray(value.missingParts) ? value.missingParts.map(part => nearString(part)).filter((part): part is string => part !== undefined).slice(0, NEAR_MISS_MAX) : [];
+	if (missingParts.length > 0) {
+		lines.push(`- Nothing on the page has ${missingParts.map(part => JSON.stringify(part)).join(', ')}, so the selector matches nothing.`);
+	}
+	const similar = Array.isArray(value.similar) ? value.similar.filter(isRecord).slice(0, NEAR_MISS_MAX) : [];
+	const similarText = similar.map(entry => {
+		const selector = nearString(entry.selector);
+		const instead = nearString(entry.instead);
+		const count = nearCount(entry.count);
+		return selector !== undefined && instead !== undefined && count !== undefined ? `${JSON.stringify(selector)} (${count} element(s)) instead of ${JSON.stringify(instead)}` : undefined;
+	}).filter((entry): entry is string => entry !== undefined);
+	if (similarText.length > 0) {
+		lines.push(`- Similar ones that are on the page: ${similarText.join(', ')}.`);
+	}
+	const lastPart = isRecord(value.lastPart) ? value.lastPart : undefined;
+	const lastPartName = nearString(lastPart?.part);
+	const lastPartCount = nearCount(lastPart?.count);
+	if (lastPartName !== undefined && lastPartCount !== undefined) {
+		lines.push(`- Its last part ${JSON.stringify(lastPartName)} alone matches ${lastPartCount} element(s); the parts before it rule them out.`);
+	}
+	const selectorMatches = nearCount(value.selectorMatches);
+	if (selectorMatches !== undefined) {
+		lines.push(`- The selector alone matches ${selectorMatches} element(s), but none of them has the ${typeof args.role === 'string' ? 'role and name' : 'text'} asked for.`);
+	}
+	if (value.roleCount === 0 && typeof args.role === 'string') {
+		lines.push(`- No element with role ${JSON.stringify(args.role)} is in the searched area.`);
+	}
+	const wanted = typeof args.name === 'string' ? args.name : typeof args.text === 'string' ? args.text : undefined;
+	if (Array.isArray(value.candidates)) {
+		const written = value.candidates.filter(isRecord).slice(0, NEAR_MISS_MAX).map(candidate => {
+			const role = nearString(candidate.role);
+			const name = nearString(candidate.name, NEAR_MISS_TEXT_MAX);
+			const text = nearString(candidate.text, NEAR_MISS_TEXT_MAX);
+			const ways = [role !== undefined && name !== undefined ? JSON.stringify({ role, name }) : undefined, text !== undefined ? JSON.stringify({ text }) : undefined].filter((way): way is string => way !== undefined);
+			return ways.length > 0 ? `  ${ways.join(' or ')}` : undefined;
+		}).filter((line): line is string => line !== undefined);
+		if (written.length > 0) {
+			lines.push('- Close matches visible on the page now (give one of these as the locator):', ...written);
+		} else if (wanted !== undefined) {
+			lines.push(`- Nothing visible on the page has a text or name close to ${JSON.stringify(wanted.slice(0, 80))}, so it is probably not on this screen (yet).`);
+		}
+	}
+	const outsideWithin = nearCount(value.outsideWithin);
+	if (outsideWithin !== undefined) {
+		lines.push(`- ${outsideWithin} element(s) match outside the "within" container; the container may be the wrong one.`);
+	}
+	const inFrames = nearCount(value.inFrames);
+	if (inFrames !== undefined) {
+		lines.push(`- ${inFrames} match(es) are inside an iframe, which this tool does not search. Use take_snapshot and pass the uid.`);
+	}
+	const crossOrigin = nearCount(value.crossOriginFrames);
+	if (crossOrigin !== undefined && !lines.some(line => line.startsWith('- Close matches'))) {
+		lines.push(`- The page has ${crossOrigin} cross-origin iframe(s), which cannot be searched; the element may be inside one (take_snapshot shows their content).`);
 	}
 	return lines;
 }
