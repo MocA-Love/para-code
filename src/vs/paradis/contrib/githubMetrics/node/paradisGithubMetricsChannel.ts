@@ -32,6 +32,7 @@ import {
 	paradisCoerceGithubCallEvent,
 	paradisIsGithubRateLimitMessage,
 	paradisParseGhRateLimitHeaders,
+	paradisRecordGithubCall,
 	paradisSetGithubCallSink,
 	paradisTruncateGithubErrorMessage,
 	ParadisGithubCallLog,
@@ -40,6 +41,8 @@ import {
 	PARADIS_GITHUB_MONITOR_SPACE,
 } from '../common/paradisGithubMetrics.js';
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../common/paradisGithubRateLimitPause.js';
+import { IParadisGithubTransportCall, paradisSetGithubTransportCallHook } from '../../../../platform/github/common/paradisGithubCallHook.js';
+import { RequestError } from '../../../../platform/github/common/types.js';
 
 /**
  * レート枠の再取得を抑える最短間隔。renderer 側の最短ポーリング間隔（ダッシュボード表示中の60秒）
@@ -374,7 +377,28 @@ export class ParadisGithubMetricsChannel<TContext = string> implements IServerCh
 export function registerParadisGithubMetrics(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisGithubMetricsService(logService, configurationService, args);
 	server.registerChannel(PARADIS_GITHUB_METRICS_CHANNEL, new ParadisGithubMetricsChannel(service));
-	return { dispose: () => service.dispose() };
+	// upstream の GitHub 通信（Agent Sessions ウィンドウの PR 機能など）は 1.143 から shared process の
+	// GitHubTransport を通る。同じプロセスなので、ここで1要求ごとに記録する。
+	const transportHook = paradisSetGithubTransportCallHook(call => paradisRecordGithubTransportCall(call));
+	return { dispose: () => { transportHook.dispose(); service.dispose(); } };
+}
+
+/** GitHubTransport の1要求をダッシュボードの記録へ写す。download（生ファイルの取得）は数えない。 */
+function paradisRecordGithubTransportCall(call: IParadisGithubTransportCall): void {
+	const resource = call.kind === 'GraphQL' ? 'graphql' : call.kind === 'REST' ? 'core' : undefined;
+	if (resource === undefined) {
+		return;
+	}
+	const error = call.error;
+	paradisRecordGithubCall({
+		at: Date.now(),
+		callSite: `${call.kind} ${call.operation}`,
+		resource,
+		durationMs: call.durationMs,
+		success: error === undefined,
+		rateLimited: error instanceof RequestError && error.kind === 'rateLimit',
+		errorMessage: error === undefined ? undefined : paradisTruncateGithubErrorMessage(error instanceof Error ? error.message : String(error)),
+	});
 }
 
 /**
