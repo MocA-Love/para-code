@@ -88,6 +88,13 @@ export interface IParadisCdpGatewayDelegate {
 	noteAgentCdpConnections?(token: string, connections: number): void;
 	/** このペインの接続が共有中のタブへ `Emulation.setFocusEmulationEnabled` を送った（フォーカス診断用）。 */
 	noteFocusEmulation?(token: string, enabled: boolean): void;
+	/**
+	 * 共有中のタブへの大きさの命令を、main で upstream の Device Emulation の状態へ畳み込む（Chromium へは
+	 * 流さない）。`connection` は CDP の接続ごとの印（切れたときに戻すため）。扱えたら true。
+	 */
+	applyBoundPageEmulation?(token: string, connection: object, method: string, params: unknown): Promise<boolean>;
+	/** CDP の接続が切れた。その接続が命令で付けた大きさを戻す。 */
+	releaseBoundPageEmulation?(connection: object): void;
 	/** 接続先（SSH・WSL・コンテナ）のペインか（ペインの `remoteAuthority`）。台帳に無いトークンも true。 */
 	isRemotePane(token: string): boolean;
 	/**
@@ -697,6 +704,10 @@ export class ParadisCdpGateway extends Disposable {
 			},
 			noteInputRejection: message => this.delegate.noteInputRejection?.(token, message),
 			noteFocusEmulation: enabled => this._noteDiagnostic(() => this.delegate.noteFocusEmulation?.(token, enabled)),
+			...(this.delegate.applyBoundPageEmulation ? {
+				applyBoundPageEmulation: async (method: string, params: unknown) => isCurrentLease() && await this.delegate.applyBoundPageEmulation!(token, inputConnection, method, params),
+				releaseBoundPageEmulation: () => this.delegate.releaseBoundPageEmulation?.(inputConnection),
+			} : {}),
 			closeInputConnection,
 			isRemotePane,
 			permitsRemoteFileInput: files => this.delegate.permitsRemoteFileInput?.(token, files) === true,

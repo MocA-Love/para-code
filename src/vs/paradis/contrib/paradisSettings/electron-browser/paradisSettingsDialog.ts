@@ -971,6 +971,17 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.userAgentParaCodeTokenDesc', "オフのときは通常の Chrome と同じ User-Agent を送ります。変更は新しく開いたタブから反映されます。"),
 		keywords: 'browser user agent useragent paracode token chrome',
 	},
+	{
+		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.viewport.default',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserViewportDefault', "新しいタブのページの大きさ"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserViewportDefaultDesc', "保存した大きさの名前（例: ノート PC）か 1366x768 の形で書きます。空欄ならエディタの大きさに合わせます。スペースごとの既定は、アドレスバーの大きさの表示から付けられます。"),
+		// allow-any-unicode-next-line
+		placeholder: localize('paradis.settings.browserViewportDefaultPlaceholder', "(エディタに合わせる)"),
+		keywords: 'browser viewport size resolution device emulation width height default',
+	},
 
 	// --- Computer Use ---
 	{

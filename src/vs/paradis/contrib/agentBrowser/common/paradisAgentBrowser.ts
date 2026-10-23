@@ -475,6 +475,14 @@ export interface IParadisCdpExactViewService {
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
 	/**
+	 * エージェントが CDP で送った大きさの命令（`Emulation.setDeviceMetricsOverride` など。
+	 * paradisBrowserViewportCdp.ts）を、upstream の Device Emulation の状態へ畳み込む。`owner` は CDP の
+	 * 接続ごとの識別子（切れたときに戻すため）。扱えたら true（中継は Chromium へ流さずに成功を返す）。
+	 */
+	applyExactViewEmulation(descriptor: unknown, owner: unknown, method: unknown, params: unknown): Promise<boolean>;
+	/** CDP の接続が切れた。その接続が命令で付けた大きさを、付ける前へ戻す（その後に変わっていなければ）。 */
+	releaseExactViewEmulation(descriptor: unknown, owner: unknown): Promise<void>;
+	/**
 	 * `pacing`（省略可、`IParadisCursorPacing`）は、カーソルの演出のために待ってよいかの指示。
 	 * 省略すると今までどおり、移動のたびにカーソルが着くまで待つ。
 	 */

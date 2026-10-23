@@ -19,6 +19,7 @@ import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
+import { ParadisAgentEmulationLedger, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
@@ -184,6 +185,8 @@ function paradisReportAutomationKeyFailure(phase: 'register' | 'activate', reaso
 const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
+	/** エージェントが CDP の命令で付けた大きさ（切断時に戻すため）。 */
+	private readonly agentEmulation = new ParadisAgentEmulationLedger();
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
 	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
@@ -847,6 +850,49 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/** Apply background throttling only to the concrete object named by the exact descriptor. */
+	async applyExactViewEmulation(descriptorValue: unknown, ownerValue: unknown, methodValue: unknown, paramsValue: unknown): Promise<boolean> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		if (descriptor === undefined || typeof ownerValue !== 'string' || typeof methodValue !== 'string' || !paradisIsCdpViewportMethod(methodValue)) {
+			return false;
+		}
+		const view = this.resolveExistingExactView(descriptor);
+		if (!view) {
+			return false;
+		}
+		switch (methodValue) {
+			case 'Emulation.setDeviceMetricsOverride':
+				await view.emulator.setDevice(this.agentEmulation.apply(descriptor.viewId, ownerValue, view.emulator.device, paramsValue));
+				return true;
+			case 'Emulation.clearDeviceMetricsOverride': {
+				const release = this.agentEmulation.release(descriptor.viewId, ownerValue, view.emulator.device);
+				if (release.kind === 'restore') {
+					await view.emulator.setDevice(release.device);
+				}
+				return true;
+			}
+			default:
+				// Emulation.setVisibleSize: 表示の大きさは workbench が決める。流さずに受けるだけ
+				return true;
+		}
+	}
+
+	async releaseExactViewEmulation(descriptorValue: unknown, ownerValue: unknown): Promise<void> {
+		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
+		if (descriptor === undefined || typeof ownerValue !== 'string') {
+			return;
+		}
+		// 共有を解いた後でも戻せるよう、ビューの貸し出し（lease）までは確かめない。同じビューなら戻す
+		const view = this.browserViewMainService.tryGetBrowserView(descriptor.viewId);
+		if (!view) {
+			this.agentEmulation.release(descriptor.viewId, ownerValue, undefined);
+			return;
+		}
+		const release = this.agentEmulation.release(descriptor.viewId, ownerValue, view.emulator.device);
+		if (release.kind === 'restore') {
+			await view.emulator.setDevice(release.device);
+		}
+	}
+
 	async setExactViewBackgroundThrottling(descriptorValue: unknown, enabledValue: unknown): Promise<boolean> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		if (descriptor === undefined || typeof enabledValue !== 'boolean') {
