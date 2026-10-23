@@ -23,29 +23,34 @@ const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
  * 項目名の後の値。ただし3桁までの数字のすぐ後に日本語などが続くもの（`パスワード: 8文字以上`・`トークン=3件`）は
  * 数を書いた文なので伏せない。数字でない値は、後ろに日本語や句点が続いても（`password=hunter2で接続できました`）伏せる。
  * 省略記号（…）で切れた数字は、切り詰めた値の断片なので伏せる。
+ * `undefined`・`null`・`true`・`false`・`none` と括弧だけの値（`Unexpected token: }`）は、エラーの文に出る語で秘密ではないので伏せない。
  */
-const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|(?!\\d{1,3}[^\\x00-\\x7F\\u2026])${VALUE})`;
+const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|(?!\\d{1,3}[^\\x00-\\x7F\\u2026])(?!(?:undefined|null|true|false|none)(?![!#-%(-:<-_a-{}~])|[{}()[\\]<>]+(?![!#-%(-:<-_a-{}~]))${VALUE})`;
 
 /** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
 const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
 
+/**
+ * 規則は長い文でも時間が文の長さに比例して収まるように書く。`.` や `-` を含む文字の並びを `*` で読むと、空白の無い
+ * 長い文（`a.a.a.…`）で読み始めの位置ごとに末尾まで読み直して 2 乗の時間になるので、繰り返しには上限（`{0,64}` など）を付ける。
+ */
 function buildSecretPatterns(marker: string): readonly [RegExp, string][] {
 	return [
 		// URL に埋め込んだ認証情報（https://user:pass@host）と、キーだけのもの（Sentry の DSN など）
-		[/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${marker}@`],
+		[/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/:@]{1,256}:[^\s/@]{1,256}@/gi, `$1${marker}@`],
 		[/\b(https?:\/\/)[0-9a-f]{16,}@/gi, `$1${marker}@`],
 		// Webhook の URL（パスそのものが秘密）
 		[/\b(https:\/\/hooks\.slack\.com\/services\/)[A-Za-z0-9/]+/g, `$1${marker}`],
 		[/\b(https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/)[A-Za-z0-9/_-]+/g, `$1${marker}`],
 		// PEM の秘密鍵（1行に畳まれて届くので、ヘッダーより後ろを全部伏せる）
 		[/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/g, `$1 ${marker}`],
-		// Authorization ヘッダー・Bearer / Basic の値
-		[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${marker}`],
+		// Authorization ヘッダー・Bearer / Basic の値（`Basic authentication failed` のような説明の語は値ではない）
+		[/\b(Bearer|Basic)\s+(?!(?:authentication|authorization|auth|realm|scheme|tokens?|header|credentials?|access|login|is|was|failed|error|required)\b(?![-._~+/=]))[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${marker}`],
 		// 大文字の環境変数（STRIPE_SECRET_KEY=... / OPENAI_KEY=... / SENTRY_DSN=...）
 		[new RegExp(`\\b([A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASS(?:WORD)?|PWD|DSN|CREDENTIALS?))(\\s*=\\s*)${QUOTED_OR_VALUE}`, 'g'), `$1$2${marker}`],
 		// api_key: ... / password=... / secret_key_base: ... など（右辺だけ伏せる）。全角のコロン・等号（\uFF1A \uFF1D）も区切りとして読む
-		// `max_tokens` などトークンの数（`tokens`）は秘密ではないので除く
-		[new RegExp(`\\b([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token(?!s\\b)|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]*)(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${marker}`],
+		// `max_tokens` などトークンの数（`tokens`）と `tokenizer`・`tokenIsValid` のような語は秘密ではないので除く
+		[new RegExp(`\\b([A-Za-z0-9_.-]{0,64}(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|secret|token(?!s\\b|iz|is)|passw(?:or)?d|pwd|credentials?|authorization)[A-Za-z0-9_]{0,64})(["']?\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${marker}`],
 		// 日本語の項目名（パスワード：hunter2 / トークン=abc123）。値は ASCII だけなので「パスワード：必須」のような文は伏せない
 		// allow-any-unicode-next-line
 		[new RegExp(`(パスワード|パスフレーズ|暗証番号|トークン|シークレット|秘密鍵|API\\s?キー|アクセスキー)(\\s*[:=\\uFF1A\\uFF1D]\\s*)${QUOTED_OR_STANDALONE_VALUE}`, 'gi'), `$1$2${marker}`],
@@ -54,8 +59,8 @@ function buildSecretPatterns(marker: string): readonly [RegExp, string][] {
 		// --password xxx / --api-key=xxx などのコマンドライン引数（行頭か空白の直後のものだけ）
 		[new RegExp(`(^|\\s)(--?(?:[a-z0-9-]*-)?(?:api-key|access-key|secret-key|secret|token|password|passwd|pass)(?:=|\\s+))${QUOTED_OR_VALUE}`, 'gi'), `$1$2${marker}`],
 		// mysql -phunter2（値を空けずに付ける形）と docker login -p hunter2
-		[new RegExp(`\\b((?:mysql|mysqldump|mariadb|mysqladmin)\\b[^|;&]*?\\s-p)${VALUE}`, 'g'), `$1${marker}`],
-		[new RegExp(`\\b(login\\b[^|;&]*?\\s-p\\s+)${QUOTED_OR_VALUE}`, 'g'), `$1${marker}`],
+		[new RegExp(`\\b((?:mysql|mysqldump|mariadb|mysqladmin)\\b[^|;&]{0,256}?\\s-p)${VALUE}`, 'g'), `$1${marker}`],
+		[new RegExp(`\\b(login\\b[^|;&]{0,256}?\\s-p\\s+)${QUOTED_OR_VALUE}`, 'g'), `$1${marker}`],
 		// curl -u user:pass
 		[new RegExp(`(^|\\s)(-u|--user)(\\s+|=)([^\\s:"']+):${VALUE}`, 'g'), `$1$2$3$4:${marker}`],
 		// よく知られた形のトークン
@@ -71,8 +76,8 @@ function buildSecretPatterns(marker: string): readonly [RegExp, string][] {
 		[/\bhf_[A-Za-z0-9]{20,}/g, marker],
 		[/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, marker],
 		// 中継が長い文を切り詰めたとき（末尾が省略記号）、境目で既知の接頭辞の断片だけが残っていれば伏せる
-		[new RegExp(`\\b${KNOWN_TOKEN_PREFIXES}[A-Za-z0-9_-]*(?=\\u2026$)`, 'g'), marker],
-		[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]*(?=…$)/gi, `$1 ${marker}`],
+		[new RegExp(`\\b${KNOWN_TOKEN_PREFIXES}[A-Za-z0-9_-]{0,256}(?=\\u2026$)`, 'g'), marker],
+		[/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{0,256}(?=…$)/gi, `$1 ${marker}`],
 	];
 }
 

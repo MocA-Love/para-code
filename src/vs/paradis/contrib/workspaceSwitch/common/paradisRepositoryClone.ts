@@ -112,7 +112,7 @@ export function paradisParseGitUrl(value: string): IParadisParsedGitUrl | undefi
  * `***@` にし、git の stderr がそのまま写した URL や、文の中のトークンも同じ規則（`paradisRedactSecrets`）で伏せる。
  */
 export function paradisRedactCloneLogText(text: string): string {
-	return paradisRedactSecrets(text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1***@'));
+	return paradisRedactSecrets(text.replace(/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]{1,256}@/gi, '$1***@'));
 }
 
 /** git clone --progress の stderr 1行分の解析結果。 */

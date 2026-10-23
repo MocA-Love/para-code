@@ -15,6 +15,7 @@ import {
 	paradisSanitizeSentryText,
 	paradisSentryFingerprint,
 } from '../../common/paradisSentryCommon.js';
+import { paradisRedactSecrets } from '../../../../common/paradisSecretRedaction.js';
 
 suite('ParadisSentryCommon', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -78,6 +79,15 @@ suite('ParadisSentryCommon', () => {
 			'node:internal/fs/promises:12',
 			'typescript@5.4.2 @sentry/core@8.1.0',
 			'https://github.com/org/repo/pull/1?token=x#fragment',
+			// コンテナの接続先（hex を戻すとホームのパスが読める）
+			'vscode-remote://dev-container+7b22686f737450617468223a222f55736572732f616c696365227d/workspaces/app',
+			'vscode-remote://attached-container+7b22636f6e7461696e65724e616d65223a22617070227d/app',
+			// キー名に token / basic を含むだけの語と、秘密ではない値は残す
+			'cancellationToken: undefined',
+			'tokenizer: textmate',
+			'SyntaxError: Unexpected token: }',
+			'Basic authentication failed',
+			'Bearer authentication is required',
 		];
 
 		assert.deepStrictEqual(rows.map(row => [row, paradisSanitizeSentryText(row)]), [
@@ -109,7 +119,30 @@ suite('ParadisSentryCommon', () => {
 			['node:internal/fs/promises:12', 'node:internal/fs/promises:12'],
 			['typescript@5.4.2 @sentry/core@8.1.0', 'typescript@5.4.2 @sentry/core@8.1.0'],
 			['https://github.com/org/repo/pull/1?token=x#fragment', 'https://github.com/org/repo/pull/1'],
+			['vscode-remote://dev-container+7b22686f737450617468223a222f55736572732f616c696365227d/workspaces/app', 'vscode-remote://dev-container+[host]/workspaces/app'],
+			['vscode-remote://attached-container+7b22636f6e7461696e65724e616d65223a22617070227d/app', 'vscode-remote://attached-container+[host]/app'],
+			['cancellationToken: undefined', 'cancellationToken: undefined'],
+			['tokenizer: textmate', 'tokenizer: textmate'],
+			['SyntaxError: Unexpected token: }', 'SyntaxError: Unexpected token: }'],
+			['Basic authentication failed', 'Basic authentication failed'],
+			['Bearer authentication is required', 'Bearer authentication is required'],
 		]);
+	});
+
+	test('cuts long text before redacting it and keeps the time proportional to the length', () => {
+		// `.` や `-` が細かく続く空白の無い文は、繰り返しに上限の無い規則だと読み始めの位置ごとに末尾まで読み直す
+		const texts = ['a.', 'a-', 'a.b-', 'x.token', 'mysql ', 'sk-', 'a.b@c', 'a://'].map(unit => unit.repeat(Math.ceil(100_000 / unit.length)).slice(0, 100_000));
+		const started = Date.now();
+		const sanitized = texts.map(text => paradisSanitizeSentryText(text));
+		texts.forEach(text => paradisRedactSecrets(text));
+		const elapsed = Date.now() - started;
+		const cut = paradisSanitizeSentryText(`${'x'.repeat(1_990)} ghp_abcdefghijklmnopqrstuvwxyz0123456789`);
+
+		assert.deepStrictEqual({
+			fast: elapsed < 2_000,
+			bounded: sanitized.every(text => text.length <= 2_100),
+			cut: cut.endsWith(' [Filtered]…'),
+		}, { fast: true, bounded: true, cut: true });
 	});
 
 	test('applies the same rules to tags, breadcrumbs and automatically captured error text', () => {

@@ -185,16 +185,20 @@ export class ParadisSentryRateLimiter {
  * ファイル名・行番号・`out/vs/...` から先のモジュールの位置は、調べるのに要るので残す。
  */
 export function paradisSanitizeSentryText(value: string): string {
-	const normalized = paradisRedactSecretsWithMarker(value
+	// 先に切ってから伏せる。伏せる規則は文の長さに比例して動くように書いてあるが、送るのは先頭の 2,000 字だけなので、
+	// それより後ろを読む理由が無い。境目に残ったトークンの断片は、末尾の `…` を手がかりに共有の規則が伏せる。
+	const truncated = value.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH ? value : `${value.slice(0, PARADIS_SENTRY_MAX_TEXT_LENGTH)}…`;
+	return paradisRedactSecretsWithMarker(truncated
 		// URL は先にホストとパスだけにする（検索部分・`#` 以降・認証情報を落とす）。後のメールの規則が `user@host` を拾わないように
 		.replace(/\b(?:https?|wss?):\/\/[^\s]+/gi, rawUrl => paradisSanitizeUrl(rawUrl))
 		// ファイル転送で SSH 直接開いたホストの URI は、ホスト名とパスごと伏せる
 		.replace(/\bparadis-sftp:\/\/[^\s'"]+/gi, 'paradis-sftp://[Filtered]'), '[Filtered]')
-		.replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [Filtered]')
+		.replace(/\b(Bearer)\s+(?!(?:authentication|authorization|auth|realm|scheme|tokens?|header|credentials?|access|login|is|was|failed|error|required)\b(?![-._~+/=]))[A-Za-z0-9._~+/=-]+/gi, '$1 [Filtered]')
 		.replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASS|DSN)[A-Z0-9_]*)\s*=\s*[^\s,;]+/g, '$1=[Filtered]')
 		.replace(/\b(token|secret|password|passwd|api[_-]?key|authorization)\s*=\s*[^\s,;&#]+/gi, '$1=[Filtered]')
-		// SSH の接続先（`vscode-remote://ssh-remote+<host>/...`、`%2B` は URI に符号化された `+`）
-		.replace(/\bssh-remote(\+|%2B)[^\s/\\'"`,;()[\]]+/gi, 'ssh-remote$1[host]')
+		// SSH の接続先（`vscode-remote://ssh-remote+<host>/...`、`%2B` は URI に符号化された `+`）と、コンテナの接続先
+		// （`dev-container+<hex>`・`attached-container+<hex>`。hex を戻すと `{"hostPath":"/Users/<名前>"}` が読める）
+		.replace(/\b(ssh-remote|dev-container|attached-container)(\+|%2B)[^\s/\\'"`,;()[\]]+/gi, '$1$2[host]')
 		// WSL のパス（`\\wsl.localhost\<distro>\home\<user>`、JSON に書かれて二重になった区切り、`\` を `/` に直したもの）
 		.replace(/(?:\\{2,}|\/{2})wsl(?:\$|\.localhost)(?:\\+|\/)[^\\/\s'"]+(?:\\+|\/)home(?:\\+|\/)[^\\/\s'"]+/gi, '~')
 		// Windows のホーム（`C:\Users\<user>`、二重の区切りと `/` の区切りも）
@@ -204,15 +208,11 @@ export function paradisSanitizeSentryText(value: string): string {
 		.replace(/\/home\/[^/\\\s]+/g, '~')
 		// ホームの外のパス（外付けディスク・マウント先・C: 以外のドライブ）は、ファイル名か `out/vs/...` から先だけ残す
 		// 引用符で囲まれたもの（Node の ENOENT などの形）は、空白を含むフォルダ名（`/Volumes/My Passport/...`）ごと縮める
-		.replace(/(['"])((?:\/(?:Volumes|mnt|media|run\/media)\/|[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/)))[^'"\n]*)\1/gi, (_match, quote: string, path: string) => `${quote}${paradisShortenOutsideHomePath(path)}${quote}`)
+		.replace(/(['"])((?:\/(?:Volumes|mnt|media|run\/media)\/|[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/)))[^'"\n]{0,1024})\1/gi, (_match, quote: string, path: string) => `${quote}${paradisShortenOutsideHomePath(path)}${quote}`)
 		.replace(/(?<![\w.~-])\/(?:Volumes|mnt|media|run\/media)\/[^\s'"`()<>,;]+/g, paradisShortenOutsideHomePath)
 		.replace(/(?<![A-Za-z0-9+.\\-])[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/))[^\s'"`()<>,;|*?]+/gi, paradisShortenOutsideHomePath)
 		// メールアドレス（`git@github.com` のような SSH の宛先も、接続先の名前として同じに伏せる）
-		.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b/g, '[email]');
-
-	return normalized.length <= PARADIS_SENTRY_MAX_TEXT_LENGTH
-		? normalized
-		: `${normalized.slice(0, PARADIS_SENTRY_MAX_TEXT_LENGTH)}…`;
+		.replace(/\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z][A-Za-z0-9-]{0,62}(?:\.[A-Za-z0-9-]{1,63}){0,8}\.[A-Za-z]{2,24}\b/g, '[email]');
 }
 
 /** ホームの外のパスを、`out/vs/...`・`src/vs/...`・`node_modules/...` から先か、ファイル名だけにする。 */
