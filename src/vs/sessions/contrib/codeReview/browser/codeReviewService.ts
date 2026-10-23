@@ -232,7 +232,7 @@ export class CodeReviewService extends Disposable implements ICodeReviewService 
 			const context = activeReviewContext.read(reader);
 			for (const pullRequest of context?.pullRequests ?? []) {
 				const reviewThreadsRef = reader.store.add(this._gitHubService.createPullRequestReviewThreadsModelReference(pullRequest.owner, pullRequest.repo, pullRequest.number));
-				void reviewThreadsRef.object.refresh();
+				void reviewThreadsRef.object.refresh(false, { priority: 'visible' });
 				// PARA-PATCH: refresh review threads when the pull request changes instead of a fixed GraphQL poll (GitHub rate limit, see sessionGithubReviewThreadsRefresh.ts)
 				const pullRequestRef = reader.store.add(this._gitHubService.createPullRequestModelReference(pullRequest.owner, pullRequest.repo, pullRequest.number));
 				reader.store.add(startChangeDrivenReviewThreadsRefresh(reviewThreadsRef.object, derived(r => pullRequestRef.object.pullRequest.read(r)?.updatedAt), this._logService));
