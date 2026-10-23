@@ -239,9 +239,8 @@ export class GitHubSync {
 		const engine = this.options.engine;
 		const flow = engine.getActiveFlow();
 		try {
-			if (!this.options.client.login) {
-				await this.options.client.init();
-			}
+			// 取り込みは担当（ログイン名）で絞るので、先にアカウントの切り替えを確かめてからログイン名を読む
+			await this.options.client.refreshAccount();
 			const { items, label, complete } = await this.fetchIntake(flow);
 			const result = engine.syncIntake(items, complete);
 			for (const item of items) {

@@ -186,6 +186,12 @@ export class GitHubClient {
 		return this.initPromise;
 	}
 
+	/** gh のアカウントの切り替えを確かめ（5 分ごと）、自分のログイン名を返す。変わっていれば読み直す。 */
+	async refreshAccount(): Promise<string> {
+		await this.currentToken();
+		return this.init();
+	}
+
 	private async currentToken(force = false): Promise<string> {
 		if (!force && this.token && this.now() - this.tokenAt < TOKEN_RECHECK_MS) {
 			if (this.token === this.rejectedToken) {
