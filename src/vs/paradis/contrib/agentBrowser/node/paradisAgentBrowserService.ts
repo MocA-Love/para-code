@@ -91,7 +91,7 @@ import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { ParadisBrowserSiteStoreFullError } from './paradisBrowserSiteStore.js';
 import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeText } from './paradisBrowserSiteNudge.js';
-import { PARADIS_HUMAN_CHECK_POLL_MS, PARADIS_HUMAN_CHECK_TOOLS, ParadisHumanCheckTracker, paradisHumanCheckNotice, paradisParseHumanCheckKind } from '../common/paradisBrowserHumanCheck.js';
+import { PARADIS_HUMAN_CHECK_POLL_MS, PARADIS_HUMAN_CHECK_TOOLS, ParadisHumanCheckTracker, paradisHumanCheckNotice, paradisParseHumanCheckObservation } from '../common/paradisBrowserHumanCheck.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
@@ -5000,11 +5000,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			const key = `${token}\n${binding.pageId}`;
 			const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-				.call<string | null>('detectExactViewHumanCheck', [binding.exactView, this._humanChecks.has(key)]);
+				.call<unknown>('detectExactViewHumanCheck', [binding.exactView, this._humanChecks.has(key)]);
 			if (!this.isIngressLeaseCurrent(ingressLease)) {
 				return result;
 			}
-			const update = this._humanChecks.observe(key, paradisParseHumanCheckKind(raw), name);
+			// 見られなかった（unknown）ときは状態を変えない
+			const update = this._humanChecks.observe(key, paradisParseHumanCheckObservation(raw));
 			if (update.notify !== undefined) {
 				this._sendHumanCheckNote(token, binding.pageId, update.notify);
 				this._startHumanCheckPoll(token, binding);
@@ -5061,20 +5062,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			running = true;
 			try {
-				if (!this._humanChecks.isNotified(key)) {
-					stop();
-					return;
-				}
-				if (this._scopeBinding(token, binding.pageId) !== binding) {
-					this._humanChecks.forgetTab(key);
-					this._sendHumanCheckNote(token, binding.pageId, null);
-					stop();
-					return;
-				}
-				const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
-					.call<string | null>('detectExactViewHumanCheck', [binding.exactView, true]).catch(() => undefined);
-				if (raw !== undefined && paradisParseHumanCheckKind(raw) === undefined && this._humanChecks.markPassed(key)) {
-					this._sendHumanCheckNote(token, binding.pageId, null);
+				if (await this._pollHumanCheckOnce(token, binding)) {
 					stop();
 				}
 			} finally {
@@ -5082,6 +5070,27 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}, PARADIS_HUMAN_CHECK_POLL_MS);
 		this._humanCheckPolls.set(key, stop);
+	}
+
+	/** 見回りの 1 回。見回りをやめるなら true。 */
+	private async _pollHumanCheckOnce(token: string, binding: IBindingEntry): Promise<boolean> {
+		const key = `${token}\n${binding.pageId}`;
+		if (!this._humanChecks.isNotified(key)) {
+			return true;
+		}
+		if (this._scopeBinding(token, binding.pageId) !== binding) {
+			this._humanChecks.forgetTab(key);
+			this._sendHumanCheckNote(token, binding.pageId, null);
+			return true;
+		}
+		const raw = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+			.call<unknown>('detectExactViewHumanCheck', [binding.exactView, true]).catch(() => undefined);
+		// 確かに無いと分かったときだけ閉じる（時間切れ・読み込み中・失敗の unknown では何も変えない）
+		if (paradisParseHumanCheckObservation(raw).state === 'none' && this._humanChecks.markPassed(key)) {
+			this._sendHumanCheckNote(token, binding.pageId, null);
+			return true;
+		}
+		return false;
 	}
 
 	/** そのペインの人の確認の控えを忘れ、出している通知を閉じる（つなぎ直し・ペインの終了）。 */
