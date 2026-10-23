@@ -401,6 +401,12 @@ export interface IParadisBrowserScopeService {
 	 * 保存が壊れていて判断できないときは true（新しいタブ向けの既定を、復元したタブへ当てないため）。
 	 */
 	isCarriedOverView(viewId: string): boolean;
+	/**
+	 * このセッションで作ったばかりのビューを、指定のスペースのものとして記録し直す。エージェントが
+	 * 画面に出ていない自分のスペースへタブを開くときに使う（作った直後は今見えているスペースに付くため）。
+	 * 切り替えの最中は何もせず false を返す。
+	 */
+	assignNewViewToScope(viewId: string, stateKey: string): boolean;
 }
 
 export interface IParadisTerminalScopeResolution {

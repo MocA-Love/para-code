@@ -32,6 +32,7 @@ import './media/paradisAgentApproval.css';
 import { raceCancellation, raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
@@ -42,6 +43,8 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { EditorActivation } from '../../../../platform/editor/common/editor.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -49,8 +52,11 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { EditorsOrder } from '../../../../workbench/common/editor.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
 	IParadisAuxiliaryWindowScopeService,
@@ -69,6 +75,8 @@ import {
 	IParadisSelectAgentTabResult,
 	PARADIS_AGENT_APPROVAL_DEADLINE_MS,
 	PARADIS_AGENT_APPROVAL_GUARD_MS,
+	PARADIS_MAX_WAITING_CHILDREN,
+	PARADIS_MAX_WAITING_CHILDREN_PER_TAB,
 	ParadisAgentTabLedger,
 	ParadisAgentTabTargetFailure,
 	ParadisOpenedTabGrantResult,
@@ -77,6 +85,7 @@ import {
 	paradisSanitizeDisplayText,
 	paradisUrlOrigin,
 } from '../common/paradisAgentBrowserTabs.js';
+import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisPredictSplitWidth } from '../common/paradisAgentTabPlacement.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { ParadisNativeWindowFocus } from './paradisNativeWindowFocus.js';
 
@@ -169,6 +178,23 @@ export const IParadisAgentBrowserTabsService = createDecorator<IParadisAgentBrow
 export type IParadisAgentTabTarget =
 	| { readonly ok: true; readonly group: IEditorGroup }
 	| { readonly ok: false; readonly reason: ParadisAgentTabTargetFailure };
+
+/**
+ * open_browser_tab の開く先。ペインのスペースが画面に出ていれば、その領域のエディタ部分。出ていなければ
+ * そのスペースの状態キー（タブは窓へ隠したまま付けておき、スペースに戻ったときに置く）。
+ */
+type ParadisAgentOpenTarget =
+	| { readonly ok: true; readonly kind: 'visible'; readonly parts: readonly IEditorPart[] }
+	| { readonly ok: true; readonly kind: 'hidden'; readonly stateKey: string }
+	| { readonly ok: false; readonly reason: ParadisAgentTabTargetFailure };
+
+/**
+ * 画面に出ていないスペースへ開き、戻ったら置くタブ。`own` はエージェントが open_browser_tab で開いたもの、
+ * `child` はそのタブ（または待っている子）のページがリンク・window.open で開いたもの（親の隣に置く）。
+ */
+type IParadisPendingAgentTab =
+	| { readonly kind: 'own'; readonly token: string; readonly stateKey: string; readonly input: BrowserEditorInput; readonly background: boolean }
+	| { readonly kind: 'child'; readonly parentViewId: string; readonly stateKey: string; readonly input: BrowserEditorInput };
 
 /**
  * エージェントが開いたタブの台帳。プロファイルの MCP（paradisBrowserProfileMcp.contribution.ts）も
@@ -269,6 +295,15 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private readonly _approvalQueue = new Sequencer();
 	private readonly _windowFocus: ParadisNativeWindowFocus;
 	private _approvalSerial = 0;
+	/**
+	 * viewId → 画面に出ていないスペースへ開き、まだエディタに置いていないタブ。どの working set にも
+	 * 入っていないので、閉じる・終了するときはここから直接捨てる（捨てないと誰にも見えないビューが main に残る）。
+	 */
+	private readonly _pendingTabs = new Map<string, IParadisPendingAgentTab>();
+	/** ペイン → 上限を超えたので閉じた子ページの数（次の list_browser_tabs で知らせて 0 に戻す）。 */
+	private readonly _closedWaitingPages = new Map<string, number>();
+	/** {@link _pendingTabs} があるときだけ、スペースの切り替えと終了を見張る。 */
+	private readonly _pendingWatch = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
 		@IBrowserViewWorkbenchService private readonly _browserViewWorkbenchService: IBrowserViewWorkbenchService,
@@ -286,6 +321,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@ILogService private readonly _logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 	) {
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
@@ -370,6 +408,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	private _forgetView(viewId: string): void {
+		this._pendingTabs.delete(viewId);
 		const owner = this._ledger.ownerOf(viewId);
 		if (owner !== undefined && !this._ledger.isApprovedProfileTab(viewId)) {
 			void this._bindingModel.revokeAgentTab(owner, viewId);
@@ -419,6 +458,22 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	// #region ペイン → 開く先
 
 	resolveTarget(token: string | undefined): IParadisAgentTabTarget {
+		const where = this._resolveOpenTarget(token);
+		if (!where.ok) {
+			return where;
+		}
+		if (where.kind === 'hidden') {
+			return { ok: false, reason: 'spaceNotVisible' };
+		}
+		const partSet = new Set(where.parts);
+		const group = this._editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)
+			.find(candidate => partSet.has(this._editorGroupsService.getPart(candidate)))
+			?? where.parts[0].activeGroup;
+		return { ok: true, group };
+	}
+
+	/** ペイン → そのスペースが見えているエディタ部分（無ければ、画面に出ていないスペースの状態キー）。 */
+	private _resolveOpenTarget(token: string | undefined): ParadisAgentOpenTarget {
 		if (this._workspaceSwitchService.isSwitching) {
 			return { ok: false, reason: 'switching' };
 		}
@@ -445,20 +500,227 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			stateKey = this._workspaceSwitchService.activeStateKey;
 		}
 		if (stateKey === undefined) {
-			return { ok: true, group: this._editorGroupsService.mainPart.activeGroup };
+			return { ok: true, kind: 'visible', parts: [this._editorGroupsService.mainPart] };
 		}
 		const parts: readonly IEditorPart[] = this._workspaceSwitchService.activeStateKey === stateKey
 			? [this._editorGroupsService.mainPart]
 			: [...this._auxiliaryWindowScopeService.getPinnedParts(stateKey)];
 		if (!parts.length) {
 			const reachable = paradisListSpaces(this._workspaceSwitchService.repositories, this._worktreeService).some(entry => entry.space === stateKey);
-			return { ok: false, reason: reachable ? 'spaceNotVisible' : 'unreachableSpace' };
+			return reachable ? { ok: true, kind: 'hidden', stateKey } : { ok: false, reason: 'unreachableSpace' };
 		}
+		return { ok: true, kind: 'visible', parts };
+	}
+
+	/**
+	 * 見えている領域で、エージェントのタブを置く（paradisAgentTabPlacement.ts の決め方）。ターミナルの
+	 * フォーカスは奪わない。分割したのに開けなかったときは、作った空のグループを消す。
+	 */
+	private async _placeTab(token: string, input: BrowserEditorInput, parts: readonly IEditorPart[], background: boolean): Promise<void> {
 		const partSet = new Set(parts);
-		const group = this._editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)
-			.find(candidate => partSet.has(this._editorGroupsService.getPart(candidate)))
-			?? parts[0].activeGroup;
-		return { ok: true, group };
+		const groups = this._editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)
+			.filter(candidate => partSet.has(this._editorGroupsService.getPart(candidate)));
+		const instanceId = this._paneTokenService.getInstanceForToken(token);
+		const sizing = this._configurationService.getValue<ParadisEditorSplitSizing>('workbench.editor.splitSizing');
+		const infos: IParadisAgentTabGroupInfo[] = groups.map(group => {
+			const width = this._editorGroupsService.getPart(group).getSize(group).width;
+			const hasPaneTerminal = instanceId !== undefined && group.editors.some(editor => editor instanceof TerminalEditorInput && editor.terminalInstance?.instanceId === instanceId);
+			return {
+				id: group.id,
+				width,
+				hasPaneTerminal,
+				hasTerminal: group.editors.some(editor => editor instanceof TerminalEditorInput),
+				hasOwnAgentTab: group.editors.some(editor => editor instanceof BrowserEditorInput && editor.id !== input.id && this._ledger.isOpenedBy(token, editor.id)),
+				...(hasPaneTerminal ? { splitWidth: paradisPredictSplitWidth(width, this._rowWidths(group), sizing) } : {}),
+			};
+		});
+		const placement = paradisChooseAgentTabPlacement(infos, this._configurationService.getValue<number>(PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING));
+		// preserveFocus だけではグループが前に出ることがあるので、グループの順も変えない
+		const options = { pinned: true, preserveFocus: true, activation: EditorActivation.PRESERVE };
+		if (placement?.kind === 'split') {
+			const base = groups.find(group => group.id === placement.besideGroupId)!;
+			const split = this._editorGroupsService.getPart(base).addGroup(base, GroupDirection.RIGHT);
+			try {
+				await this._editorService.openEditor(input, { ...options, inactive: background }, split);
+			} finally {
+				if (split.isEmpty) {
+					this._editorGroupsService.getPart(split).removeGroup(split);
+				}
+			}
+			return;
+		}
+		const group = (placement ? groups.find(candidate => candidate.id === placement.groupId) : undefined) ?? parts[0].activeGroup;
+		await this._editorService.openEditor(input, { ...options, inactive: background || (placement?.inactive ?? false) }, group);
+	}
+
+	/** そのグループと同じ横の並びにあるグループの幅（左右へたどる。そのグループを含む）。 */
+	private _rowWidths(group: IEditorGroup): number[] {
+		const part = this._editorGroupsService.getPart(group);
+		const row = [group];
+		for (const direction of [GroupDirection.LEFT, GroupDirection.RIGHT]) {
+			let current: IEditorGroup | undefined = group;
+			while ((current = part.findGroup({ direction }, current)) !== undefined && !row.includes(current)) {
+				row.push(current);
+			}
+		}
+		return row.map(candidate => part.getSize(candidate).width);
+	}
+
+	/**
+	 * 画面に出ていないスペースへ開いたタブを、そのスペースのものとして記録して待たせる。スペースに戻ったら
+	 * {@link _placePendingTabs} が置く。待たせる前に、そのスペースへもう戻っていたらすぐ置く。
+	 */
+	private async _keepForHiddenSpace(token: string, input: BrowserEditorInput, stateKey: string, background: boolean): Promise<void> {
+		if (!this._browserScopeService.assignNewViewToScope(input.id, stateKey)) {
+			throw new Error('could not assign the new tab to the space of the pane');
+		}
+		// 先に台帳へ載せる（layout を待つ間にそのスペースへ戻られても、切り替えの通知で置ける）
+		this._pendingTabs.set(input.id, { kind: 'own', token, stateKey, input, background });
+		this._watchPendingTabs();
+		await this._layoutHidden(input);
+		this._placePendingTabsIfShown(stateKey);
+	}
+
+	/**
+	 * 待っているタブのページが開いた子ページ。親と同じスペースに記録し、エディタ（補助ウィンドウを含む）へは
+	 * 出さずに待たせ、親と一緒に置く。記録できなければ子ページを閉じる（今見ているスペースに見えないビューを残さない）。
+	 */
+	private _keepChildForHiddenSpace(child: BrowserEditorInput, parent: IParadisPendingAgentTab): void {
+		// 広告などが window.open を繰り返しても、見えないビューが増え続けないようにする
+		const root = this._waitingRoot(parent);
+		const waitingChildren = [...this._pendingTabs.values()].filter(pending => pending.kind === 'child' && !pending.input.isDisposed());
+		const underRoot = waitingChildren.filter(pending => this._waitingRoot(pending) === root).length;
+		if (underRoot >= PARADIS_MAX_WAITING_CHILDREN_PER_TAB || waitingChildren.length >= PARADIS_MAX_WAITING_CHILDREN) {
+			if (root.kind === 'own') {
+				this._closedWaitingPages.set(root.token, (this._closedWaitingPages.get(root.token) ?? 0) + 1);
+			}
+			child.dispose(true);
+			return;
+		}
+		if (!this._browserScopeService.assignNewViewToScope(child.id, parent.stateKey)) {
+			this._logService.warn('[ParadisAgentBrowserTabs] could not keep a page opened from a tab in a space that is not on screen; closing it');
+			child.dispose(true);
+			return;
+		}
+		// 待っている間に閉じられた子は、置くときと終了時に isDisposed で飛ばす
+		this._pendingTabs.set(child.id, { kind: 'child', parentViewId: parent.input.id, stateKey: parent.stateKey, input: child });
+		void this._layoutHidden(child).catch(error => this._logService.debug('[ParadisAgentBrowserTabs] could not lay out a hidden page opened from a waiting tab', error));
+		this._placePendingTabsIfShown(parent.stateKey);
+	}
+
+	/**
+	 * 窓へ付いたまま隠れているビューに大きさを与える。main のビューは作られたときから窓に付いて隠れているが、
+	 * 一度も layout されていないと隠れている間の描画の小突き（`nudgeHiddenFrame`）が働かず、待ちや操作が
+	 * 遅れる。隠れたままのビューを layout しても表には出ない（表示を求められるまで隠したまま）。
+	 * 撮影と描画の小突きは一瞬だけ表に出すので、位置はエディタ領域に合わせる（窓の左上に置くと、その一瞬に
+	 * タイトルバーやアクティビティバーの上へ描かれる）。戻って実際に置いたときに本当の大きさへ直る。
+	 */
+	private async _layoutHidden(input: BrowserEditorInput): Promise<void> {
+		const model = await input.resolve();
+		const dimension = this._editorGroupsService.mainPart.contentDimension;
+		const size = paradisEstimateHiddenAgentTabSize(dimension.width, dimension.height, this._configurationService.getValue<number>(PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING));
+		const origin = this._layoutService.getContainer(mainWindow, Parts.EDITOR_PART)?.getBoundingClientRect();
+		await model.layout({ windowId: mainWindow.vscodeWindowId, x: origin?.left ?? 0, y: origin?.top ?? 0, width: size.width, height: size.height, zoomFactor: getZoomFactor(mainWindow), cornerRadius: 0 });
+	}
+
+	/** 待っている子ページの元をたどった、エージェントが開いたタブ（たどれなければその子自身）。 */
+	private _waitingRoot(pending: IParadisPendingAgentTab): IParadisPendingAgentTab {
+		let current = pending;
+		const seen = new Set<string>();
+		while (current.kind === 'child' && !seen.has(current.input.id)) {
+			seen.add(current.input.id);
+			const parent = this._pendingTabs.get(current.parentViewId);
+			if (!parent) {
+				break;
+			}
+			current = parent;
+		}
+		return current;
+	}
+
+	/** そのスペースがもう画面に出ていれば（待たせている間に戻られた）、待っているタブを置く。 */
+	private _placePendingTabsIfShown(stateKey: string): void {
+		if (!this._workspaceSwitchService.isSwitching && this._workspaceSwitchService.activeStateKey === stateKey) {
+			void this._placePendingTabs(stateKey);
+		}
+	}
+
+	private _watchPendingTabs(): void {
+		if (this._pendingWatch.value) {
+			return;
+		}
+		const store = new DisposableStore();
+		// 完了の通知の中では置かず、切り替えの後片付け（パネルの開閉など）が済んでから置く
+		let handle: ReturnType<typeof setTimeout> | undefined;
+		store.add(toDisposable(() => clearTimeout(handle)));
+		store.add(this._workspaceSwitchService.onDidSwitchScope(stateKey => {
+			clearTimeout(handle);
+			handle = setTimeout(() => void this._placePendingTabs(stateKey), 0);
+		}));
+		// 待っているタブのページが開いた子ページは、upstream に任せると、親がエディタに無いので置かれないか
+		// （親のグループが見つからない）、新しいウィンドウの指定なら今見ているスペースに補助ウィンドウが出る
+		store.add(this._browserViewWorkbenchService.registerOpenHandler({
+			shouldOpenEditor: (child, _owner, options) => {
+				const parent = options.parentViewId !== undefined ? this._pendingTabs.get(options.parentViewId) : undefined;
+				if (!parent || child.id === parent.input.id) {
+					return true;
+				}
+				this._keepChildForHiddenSpace(child, parent);
+				return false;
+			},
+		}));
+		// 再読み込み・終了では捨てる。どの working set にも入っていないので、残すと誰にも見えないビューになる
+		store.add(this._lifecycleService.onWillShutdown(() => {
+			for (const pending of [...this._pendingTabs.values()]) {
+				pending.input.dispose(true);
+			}
+			this._pendingTabs.clear();
+		}));
+		this._pendingWatch.value = store;
+	}
+
+	/**
+	 * そのスペースに戻ったら、待たせていたタブを置く（子ページは親を置いた後に、親のグループの裏へ）。
+	 * 置けなかったタブは捨てる（台帳から外したまま残すと、どこにも置かれず終了時にも捨てられないビューになる）。
+	 */
+	private async _placePendingTabs(stateKey: string): Promise<void> {
+		const waiting = [...this._pendingTabs.values()].filter(pending => pending.stateKey === stateKey);
+		// 親を先に置く（子は親のグループへ置くため）
+		waiting.sort((a, b) => (a.kind === 'own' ? 0 : 1) - (b.kind === 'own' ? 0 : 1));
+		for (const pending of waiting) {
+			// 置く前にまた切り替わった・戻ってきていない、なら次に戻ったときに置く
+			if (this._workspaceSwitchService.isSwitching || this._workspaceSwitchService.activeStateKey !== stateKey) {
+				return;
+			}
+			if (this._pendingTabs.get(pending.input.id) !== pending) {
+				continue;
+			}
+			this._pendingTabs.delete(pending.input.id);
+			if (pending.input.isDisposed()) {
+				continue;
+			}
+			try {
+				if (pending.kind === 'own') {
+					await this._placeTab(pending.token, pending.input, [this._editorGroupsService.mainPart], pending.background);
+				} else {
+					await this._placeChildTab(pending.input, pending.parentViewId);
+				}
+			} catch (error) {
+				this._logService.warn('[ParadisAgentBrowserTabs] could not place a tab opened while its space was not on screen; closing it', error);
+				pending.input.dispose(true);
+			}
+		}
+		if (this._pendingTabs.size === 0) {
+			this._pendingWatch.clear();
+		}
+	}
+
+	/** 子ページを、親のあるグループ（無ければメインの今のグループ）の裏のタブとして置く。 */
+	private async _placeChildTab(child: BrowserEditorInput, parentViewId: string): Promise<void> {
+		const parent = this._browserViewWorkbenchService.getKnownBrowserViews().get(parentViewId);
+		const group = (parent ? this._editorGroupsService.groups.find(candidate => candidate.contains(parent)) : undefined)
+			?? this._editorGroupsService.mainPart.activeGroup;
+		await this._editorService.openEditor(child, { pinned: true, preserveFocus: true, inactive: true, activation: EditorActivation.PRESERVE }, group);
 	}
 
 	/** そのグループ群（＝ペインのスペースが見えている領域）に開いているブラウザのタブ。新しく使った順。 */
@@ -490,9 +752,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (!paradisIsAllowedAgentTabUrl(target)) {
 			return { ok: false, reason: 'invalidUrl' };
 		}
-		const resolved = this.resolveTarget(token);
-		if (!resolved.ok) {
-			return resolved;
+		const where = this._resolveOpenTarget(token);
+		if (!where.ok) {
+			return where;
 		}
 		const slot = this.reserveSlot(token);
 		if (!slot) {
@@ -512,7 +774,11 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				initialAudiences: [{ type: 'agent' }],
 			});
 			this.registerAgentTab(token, input);
-			await this._editorService.openEditor(input, { pinned: true, preserveFocus: true, inactive: background }, resolved.group);
+			if (where.kind === 'visible') {
+				await this._placeTab(token, input, where.parts, background);
+			} else {
+				await this._keepForHiddenSpace(token, input, where.stateKey, background);
+			}
 		} catch (error) {
 			this._logService.warn('[ParadisAgentBrowserTabs] could not open a tab for the agent', error);
 			if (input) {
@@ -538,7 +804,13 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		}
 		// 読み込みの通知はモデルへ遅れて届くので、まだ空のページに見えるときは開くよう頼んだ URL を返す。
 		const tab = this._describe(token, input);
-		return { ok: true, tab: !tab.url || tab.url === 'about:blank' ? { ...tab, url: target } : tab, bound, openedCount: this.openedCount(token) };
+		return {
+			ok: true,
+			tab: !tab.url || tab.url === 'about:blank' ? { ...tab, url: target } : tab,
+			bound,
+			openedCount: this.openedCount(token),
+			...(where.kind === 'hidden' ? { spaceNotVisible: true } : {}),
+		};
 	}
 
 	listTabs(token: string | undefined): IParadisListAgentTabsResult {
@@ -568,7 +840,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		for (const viewId of this._bindingModel.getAgentTabsForToken(token)) {
 			add(known.get(viewId));
 		}
-		return { ok: true, tabs, openedCount: this.openedCount(token) };
+		const closedWaitingPages = this._closedWaitingPages.get(token);
+		this._closedWaitingPages.delete(token);
+		return { ok: true, tabs, openedCount: this.openedCount(token), ...(closedWaitingPages ? { closedWaitingPages } : {}) };
 	}
 
 	async selectTab(token: string | undefined, tabId: string): Promise<IParadisSelectAgentTabResult> {
@@ -606,6 +880,11 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		// エディタを通さずに捨てると、スペースを戻したときの復元が壊れる。
 		if (this._workspaceSwitchService.isSwitching) {
 			return { ok: false, reason: 'switching' };
+		}
+		// 画面に出ていないスペースへ開いて、まだ置いていないタブは working set に入っていないので、そのまま捨てられる
+		if (this._pendingTabs.has(tabId)) {
+			input.dispose(true);
+			return { ok: true, openedCount: this.openedCount(token) };
 		}
 		const groups = this._editorGroupsService.groups.filter(group => group.contains(input));
 		if (groups.length === 0) {
