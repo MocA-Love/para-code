@@ -31,14 +31,16 @@ suite('paradis command detection restore', () => {
 	}
 
 	/** 切り離す前のターミナルでプロンプトを出し、`command` を入力する（`execute` なら実行まで進める）。 */
-	async function serializeAfterTyping(command: string, execute: boolean): Promise<ISerializedCommandDetectionCapability> {
+	async function serializeAfterTyping(command: string, execute: boolean, commandLineFromShell = true): Promise<ISerializedCommandDetectionCapability> {
 		const { xterm, capability } = await createTerminal();
 		capability.handlePromptStart();
 		await writeP(xterm, '$ ');
 		capability.handleCommandStart();
 		await writeP(xterm, command);
 		if (execute) {
-			capability.setCommandLine(command, true);
+			if (commandLineFromShell) {
+				capability.setCommandLine(command, true);
+			}
 			capability.handleCommandExecuted();
 			await writeP(xterm, '\r\n');
 		}
@@ -64,6 +66,14 @@ suite('paradis command detection restore', () => {
 			afterRestore: { executing: 'sleep 1000', trusted: true },
 			afterFinish: { executing: undefined, finished: [['sleep 1000', 0]] },
 		});
+	});
+
+	test('keeps a running command that did not come from OSC 633;E untrusted', async () => {
+		const { capability } = await restore(await serializeAfterTyping('sleep 1000', true, false), '$ sleep 1000\r\n');
+		assert.deepStrictEqual(
+			{ executing: capability.executingCommand, trusted: capability.executingCommandObject?.isTrusted },
+			{ executing: 'sleep 1000', trusted: false },
+		);
 	});
 
 	test('does not mark a command that was only typed at the prompt as running', async () => {
