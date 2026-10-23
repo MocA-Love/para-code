@@ -578,6 +578,30 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(fixture.client.closeCalls, 1);
 	});
 
+	test('replaces the Electron default user agent override of the agent connection with no override', async () => {
+		const electronUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) ParaCode/1.142.0 Chrome/150.0.7871.250 Electron/43.7.7 Safari/537.36';
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Network.setUserAgentOverride', params: { userAgent: electronUA } })));
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Network.setUserAgentOverride', params: { userAgent: 'Mozilla/5.0 (iPhone)' } })));
+
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'session-1', method: 'Network.setUserAgentOverride', params: { userAgent: electronUA, userAgentMetadata: { platform: 'macOS' } } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual({
+			page: (parseSent(page.upstream) as Array<{ id: number; params: unknown }>).map(frame => ({ id: frame.id, params: frame.params })),
+			browser: (parseSent(browser.upstream) as Array<{ id: number; params: unknown }>).map(frame => ({ id: frame.id, params: frame.params })),
+		}, {
+			page: [{ id: 1, params: { userAgent: '' } }, { id: 2, params: { userAgent: 'Mozilla/5.0 (iPhone)' } }],
+			browser: [{ id: 3, params: { userAgent: '' } }],
+		});
+	});
+
 	test('page proxy forwards every frame as a text WebSocket frame (never binary)', () => {
 		const fixture = createProxyFixture(context());
 		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);

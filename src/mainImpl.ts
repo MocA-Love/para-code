@@ -402,6 +402,10 @@ function configureCommandlineSwitchesSync(cliArgs: NativeParsedArgs) {
 	if (!app.commandLine.hasSwitch('remote-debugging-port') && !app.commandLine.hasSwitch('remote-debugging-pipe')) {
 		app.commandLine.appendSwitch('remote-debugging-port', '0');
 		app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+		// PARA-PATCH: Chromium treats `--remote-debugging-port=0` as "launched by ChromeDriver" and sets
+		// navigator.webdriver = true in every page. The port is only for the agentBrowser gateway, so keep pages
+		// looking like a browser a person uses. Appended to the existing value (a second switch would replace it).
+		app.commandLine.appendSwitch('disable-blink-features', `${app.commandLine.getSwitchValue('disable-blink-features')},AutomationControlled`);
 	}
 
 	// Use portal version 4 that supports current_folder option

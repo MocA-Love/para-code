@@ -14,7 +14,9 @@
 
 import { app } from 'electron';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY } from '../common/paradisBrowserUserAgent.js';
 import { paradisConfigureBrowserUserAgentWithAppName } from './paradisBrowserUserAgentCore.js';
+import { paradisInstallChromeClientHintHeaders } from './paradisChromeIdentity.js';
 
 /**
  * 内蔵ブラウザ用のElectronセッションのUser-AgentをChrome風に書き換える。
@@ -22,4 +24,6 @@ import { paradisConfigureBrowserUserAgentWithAppName } from './paradisBrowserUse
  */
 export function paradisApplyChromeLikeUserAgent(session: Electron.Session, configurationService: IConfigurationService): void {
 	paradisConfigureBrowserUserAgentWithAppName(session, configurationService, app.getName());
+	// Client Hints（brands）も Chrome の値にそろえる。Para Code と名乗る設定のときは Electron のまま。
+	paradisInstallChromeClientHintHeaders(session, () => configurationService.getValue<boolean>(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY) !== true);
 }
