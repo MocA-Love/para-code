@@ -220,7 +220,7 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			this.notificationService.warn(localize(
 				'paradis.layoutPresets.windowScopePending',
 				// allow-any-unicode-next-line
-				"このウィンドウがどのスペースのものか、まだ決まっていません。少し待ってから、もう一度レイアウトを適用してください。",
+				"このウィンドウがどのスペースのものか決まっていないため、レイアウトを適用できません。少し待ってからもう一度適用してください。それでも同じ場合は、このウィンドウを閉じて開き直してください。",
 			));
 			return;
 		}
@@ -234,7 +234,7 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		}
 		// 閉じる確認の間にスペースが切り替わったら、切り替え先の画面を組み替えない。
 		if (!this._isStillOnTarget(part, target)) {
-			this._notifyStoppedBySpaceSwitch(preset.name);
+			this._notifyStoppedBySpaceSwitch(preset.name, false);
 			return;
 		}
 
@@ -261,7 +261,7 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			// 前の枠を待っている間にスペースが切り替わったら、残りの枠は開かない。開くと
 			// 切り替え先の画面に、始めたスペースのターミナルやファイルが混ざる。
 			if (!this._isStillOnTarget(part, target)) {
-				this._notifyStoppedBySpaceSwitch(preset.name);
+				this._notifyStoppedBySpaceSwitch(preset.name, true);
 				return;
 			}
 			try {
@@ -336,14 +336,22 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		return scope.kind === 'managed' ? scope.stateKey === target.stateKey : scope.kind === 'unscoped' && target.stateKey === undefined;
 	}
 
-	private _notifyStoppedBySpaceSwitch(presetName: string): void {
+	/** @param started 枠を組んで開き始めた後か。前なら何も開いていない。 */
+	private _notifyStoppedBySpaceSwitch(presetName: string, started: boolean): void {
 		this.logService.info(`[ParadisLayoutPresets] stopped applying '${presetName}' because the space of the target window changed`);
-		this.notificationService.info(localize(
-			'paradis.layoutPresets.stoppedBySpaceSwitch',
-			// allow-any-unicode-next-line
-			"スペースが切り替わったので、レイアウト「{0}」の残りの枠は開きませんでした。",
-			presetName,
-		));
+		this.notificationService.info(started
+			? localize(
+				'paradis.layoutPresets.stoppedBySpaceSwitch',
+				// allow-any-unicode-next-line
+				"スペースが切り替わったので、レイアウト「{0}」の残りの枠は開きませんでした。",
+				presetName,
+			)
+			: localize(
+				'paradis.layoutPresets.notAppliedBySpaceSwitch',
+				// allow-any-unicode-next-line
+				"スペースが切り替わったので、レイアウト「{0}」は適用しませんでした。",
+				presetName,
+			));
 	}
 
 	private async _fillSlot(group: IEditorGroup, slot: IParadisLayoutSlot, presetName: string, target: IParadisLayoutApplyTarget): Promise<void> {

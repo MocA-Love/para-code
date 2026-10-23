@@ -35,7 +35,8 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisSpaceFolderForBackend } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
@@ -177,6 +178,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 	) {
 		super();
 
@@ -1093,10 +1096,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		// フォルダの基準とターミナルの所属は起動を始めた時点のものを使う。タスクごとに今のフォルダと
 		// スペースを読むと、2 つ目以降のコマンドが切り替え先のリポジトリで動く。所属は、ターミナルを
 		// 開くウィンドウのスペース（別のスペースに固定した補助ウィンドウならそのスペース。作成時の
-		// 既定のタグ付けと同じ決め方）を始めた時点で控える。
-		const base = options?.cwd ?? this._presetBaseFolder(preset);
+		// 既定のタグ付けと同じ決め方）を始めた時点で控え、基準フォルダもそのスペースのものにする。
+		// cwd を明示して渡すので、固定ウィンドウ用に cwd を直す処理（paradisTerminalSpaceCwd）は効かない。
 		const launchScope = this.auxiliaryWindowScopeService.resolveGroup(this.editorGroupsService.activeGroup);
 		const stateKey = options?.stateKey ?? (launchScope.kind === 'managed' ? launchScope.stateKey : undefined);
+		const base = options?.cwd ?? this._launchBaseFolder(preset, launchScope.kind === 'managed' ? launchScope.stateKey : undefined);
 
 		if (layout === 'current' || layout === 'smart') {
 			// 全タスクのコマンドを連結してアクティブなターミナルへ送る（旧 current-terminal 相当）。
@@ -1307,6 +1311,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return undefined;
 		}
 		return joinPath(folder, this._normalizeRelativeCwd(cwd));
+	}
+
+	/**
+	 * 実行を始めるときの基準フォルダ。ターミナルを開くウィンドウが今のスペースとは別のスペースに
+	 * 固定されていれば、そのスペースのフォルダ（引けなければ今のフォルダ）。
+	 */
+	private _launchBaseFolder(preset: IParadisResolvedPreset, windowStateKey: string | undefined): URI | undefined {
+		if (windowStateKey !== undefined && windowStateKey !== this.workspaceSwitchService.activeStateKey) {
+			const spaces = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService).map(entry => ({ stateKey: entry.space, uri: entry.uri }));
+			const folder = paradisSpaceFolderForBackend(windowStateKey, spaces, this.environmentService.remoteAuthority);
+			if (folder !== undefined) {
+				return folder;
+			}
+		}
+		return this._presetBaseFolder(preset);
 	}
 
 	/** 相対 cwd の基準になる今のフォルダ。ワークスペースのプリセットは、その設定ファイルがあるフォルダ。 */

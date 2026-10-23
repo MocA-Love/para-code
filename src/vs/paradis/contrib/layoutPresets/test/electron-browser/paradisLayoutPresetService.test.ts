@@ -38,7 +38,7 @@ suite('ParadisLayoutPresetService', () => {
 		],
 	};
 
-	function createService(options: { aux?: ParadisBindingScope }) {
+	function createService(options: { aux?: ParadisBindingScope; onCloseAllEditors?: (state: { activeStateKey: string; isSwitching: boolean; folder: URI }) => void }) {
 		const state = { activeStateKey: 'space-a', isSwitching: false, folder: URI.file('/repos/a') };
 		const repositories: IParadisWorkspaceRepository[] = [
 			upcastPartial<IParadisWorkspaceRepository>({ id: 'space-a', name: 'a', uri: URI.file('/repos/a') }),
@@ -47,7 +47,7 @@ suite('ParadisLayoutPresetService', () => {
 		const log: string[] = [];
 		const processReady: DeferredPromise<void>[] = [];
 		const makePart = (windowId: number): IEditorPart => {
-			const groups = [0, 1, 2].map(index => upcastPartial<IEditorGroup>({ id: windowId * 10 + index, windowId, focus: () => { } }));
+			const groups = [0, 1, 2].map(index => upcastPartial<IEditorGroup>({ id: windowId * 10 + index, windowId, focus: () => { }, closeAllEditors: (async () => { options.onCloseAllEditors?.(state); return true; }) as IEditorGroup['closeAllEditors'] }));
 			return upcastPartial<IEditorPart>({
 				windowId,
 				groups,
@@ -144,6 +144,13 @@ suite('ParadisLayoutPresetService', () => {
 			'terminal:2:/repos/c/app',
 			'file:/repos/c/README.md',
 		]);
+	});
+
+	test('says nothing was applied when the space switches while confirming to close the editors', async () => {
+		const { service, log } = createService({ onCloseAllEditors: state => switchToSpaceB(state) });
+		await service.applyPreset(preset, { mode: ParadisLayoutApplyMode.Replace });
+		// allow-any-unicode-next-line
+		assert.deepStrictEqual(log, ['info:スペースが切り替わったので、レイアウト「work」は適用しませんでした。']);
 	});
 
 	test('does not apply to a window whose space is not known yet', async () => {
