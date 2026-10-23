@@ -167,6 +167,7 @@ export class WebContentsViewHost extends Disposable {
 		this._modelStore.add(model.onDidChangeVisibility(({ visible }) => this._paradisCoverPlaceholder(visible))); // PARA-PATCH: see _paradisCoverPlaceholder
 		this._refresh();
 		void this._captureScreenshot();
+		this._paradisCoverPlaceholder(model.visible); // PARA-PATCH: a model attached while already shown skips _refresh's show branch
 	}
 
 	private _detachModel(modelDisposing = false): void {

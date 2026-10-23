@@ -338,6 +338,11 @@ export const ParadisViewportMcpMethod = {
 	Set: 'setViewport',
 	/** 引数は [tabId の配列]。tabId → {@link IParadisViewportState} を返す（分からないタブは載らない）。 */
 	Describe: 'describeViewports',
+	/**
+	 * 引数は [ペインのトークン, tabId, 変える前の device（無ければ null）]。エージェントが CDP の命令（emulate など）で
+	 * 大きさを変えたことを知らせる（chip の強調とホバーを set_viewport と同じにする）。
+	 */
+	NoteAgentEmulation: 'noteAgentEmulation',
 } as const;
 
 export interface IParadisListViewportsResult {

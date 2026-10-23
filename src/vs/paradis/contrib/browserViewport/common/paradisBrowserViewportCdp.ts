@@ -129,3 +129,29 @@ export class ParadisAgentEmulationLedger {
 		return this._records.size;
 	}
 }
+
+/**
+ * エージェントの `Input.*` の座標を、縮めて描いているページ（Device Emulation の倍率）に合わせる。upstream は
+ * BrowserViewDebugger の横取り（browserViewEmulator.ts の `_scaleInputCoordinates`）で同じことをしているが、
+ * fork の入力の経路（paradisCdpTargetService.ts の dispatchExactViewInput）は `sendCommandRaw` で横取りを通らない。
+ * 直さないと、縮小して全体を見せているタブで click_by などが倍率の分ずれた所を押す。元の params は変えない。
+ */
+export function paradisScaleCdpInputCoordinates<T>(params: T, scale: number): T {
+	if (!params || typeof params !== 'object' || !Number.isFinite(scale) || scale <= 0 || Math.abs(scale - 1) < 1e-6) {
+		return params;
+	}
+	const source = params as Record<string, unknown>;
+	const scaled: Record<string, unknown> = { ...source };
+	for (const key of ['x', 'y', 'deltaX', 'deltaY', 'xDistance', 'yDistance']) {
+		const value = source[key];
+		if (typeof value === 'number' && Number.isFinite(value)) {
+			scaled[key] = value * scale;
+		}
+	}
+	if (Array.isArray(source.touchPoints)) {
+		scaled.touchPoints = source.touchPoints.map(point => point && typeof point === 'object'
+			? { ...point, ...(typeof point.x === 'number' ? { x: point.x * scale } : {}), ...(typeof point.y === 'number' ? { y: point.y * scale } : {}) }
+			: point);
+	}
+	return scaled as T;
+}
