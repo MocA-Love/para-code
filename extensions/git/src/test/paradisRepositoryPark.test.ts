@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { IParadisParkedRepository, PARADIS_DEFAULT_PARK_LIMIT, ParadisParkedRefreshGate, ParadisRepositoryParkingLot, paradisResolveParkLimit } from '../paradisRepositoryPark';
+import { IParadisParkedRepository, PARADIS_DEFAULT_PARK_LIMIT, ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard, ParadisRepositoryParkingLot, paradisResolveParkLimit } from '../paradisRepositoryPark';
 
 /** 呼ばれた回数だけ数える待避エントリ。 */
 function createEntry(root: string, log: string[], rootRealPath?: string): IParadisParkedRepository {
@@ -279,5 +279,75 @@ suite('ParadisParkedRefreshGate', () => {
 			// 待避中の要求では一度も作り直さない (別スペースの変更をリソースグループへ戻さない)。
 			refreshes: ['active'],
 		});
+	});
+});
+
+suite('ParadisParkedStatusWriteGuard', () => {
+
+	/**
+	 * `Repository` の待避と状態の更新の順番だけを写した模型。`status()` は git の結果を待ってから
+	 * リソースグループへ書き戻す。git の結果はテストが好きな順で返す。
+	 */
+	function createRepository() {
+		const guard = new ParadisParkedStatusWriteGuard();
+		const pending: { resolve: (changes: string[]) => void }[] = [];
+		const repository = {
+			active: true,
+			groups: ['a.txt'],
+			async status(): Promise<void> {
+				const ticket = guard.begin();
+				const changes = await new Promise<string[]>(resolve => pending.push({ resolve }));
+				if (!guard.canApply(ticket, repository.active)) {
+					return;
+				}
+				repository.groups = changes;
+			},
+			park(): void {
+				repository.active = false;
+				guard.invalidate();
+				repository.groups = [];
+			},
+			unpark(): Promise<void> {
+				repository.active = true;
+				return repository.status();
+			},
+		};
+		return { repository, pending };
+	}
+
+	test('a status that was running when the repository was parked does not refill its groups', async () => {
+		const { repository, pending } = createRepository();
+		const running = repository.status();
+		repository.park();
+		pending[0].resolve(['a.txt', 'b.txt']);
+		await running;
+		assert.deepStrictEqual(repository.groups, []);
+	});
+
+	test('switching away, back and away again before git answers leaves the parked groups empty', async () => {
+		const { repository, pending } = createRepository();
+		// A で走っていた更新、B へ (待避)、A へ (復帰で更新)、もう一度 B へ (待避)。
+		const running = repository.status();
+		repository.park();
+		const unparkStatus = repository.unpark();
+		repository.park();
+		pending[0].resolve(['a.txt', 'b.txt']);
+		pending[1].resolve(['a.txt', 'c.txt']);
+		await Promise.all([running, unparkStatus]);
+		const whileParked = repository.groups;
+		// 戻ってきたときの更新は書き戻す。
+		const back = repository.unpark();
+		pending[2].resolve(['a.txt', 'd.txt']);
+		await back;
+		assert.deepStrictEqual({ whileParked, afterUnpark: repository.groups }, { whileParked: [], afterUnpark: ['a.txt', 'd.txt'] });
+	});
+
+	test('a status that starts while parked does not write either', async () => {
+		const { repository, pending } = createRepository();
+		repository.park();
+		const running = repository.status();
+		pending[0].resolve(['a.txt']);
+		await running;
+		assert.deepStrictEqual(repository.groups, []);
 	});
 });

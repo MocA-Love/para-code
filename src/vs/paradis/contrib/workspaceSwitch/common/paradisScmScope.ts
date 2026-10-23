@@ -57,3 +57,30 @@ export function paradisScmDisplayedParentId(repository: { readonly provider: { r
 	const parentId = repository.provider.parentId;
 	return parentId !== undefined && repositories.some(candidate => candidate.provider.id === parentId) ? parentId : undefined;
 }
+
+/** `paradisScmRepositoriesInSpace` が読む SCM リポジトリの最小面。 */
+export interface IParadisScopedScmRepository {
+	readonly provider: {
+		readonly rootUri?: URI;
+		readonly contextValue: { get(): string | undefined };
+	};
+}
+
+/**
+ * 登録済みの SCM リポジトリのうち、このフォルダのスペースに属するものだけを返す。
+ *
+ * git 拡張は待避中のリポジトリも SCM に登録したままにする（入力欄の文字も残る）。スペース切り替えで
+ * コミットメッセージを退避・書き戻すときに全件を見ると、別スペースのリポジトリの文字が今のスペースの
+ * 下書きとして保存され、後でそのリポジトリへ書き戻される（コミットして空にした入力欄に古いメッセージが
+ * 戻る）。所属の規則は `paradisIsScmRootInScope` と同じ。表示の絞り込みの設定とは関係なく常に絞る。
+ */
+export function paradisScmRepositoriesInSpace<T extends IParadisScopedScmRepository>(repositories: Iterable<T>, folders: readonly URI[], extUri: IExtUri): T[] {
+	const all = [...repositories];
+	const roots: URI[] = [];
+	for (const repository of all) {
+		if (repository.provider.rootUri) {
+			roots.push(repository.provider.rootUri);
+		}
+	}
+	return all.filter(repository => paradisIsScmRootInScope(repository.provider.rootUri, folders, extUri, repository.provider.contextValue.get(), roots));
+}
