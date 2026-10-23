@@ -24,11 +24,14 @@ const LOW_WATER = 150;
 const TIMEOUT_MS = 20000;
 /** トークンを gh から受け取り直す間隔（アカウントの切り替えに追従するため）。 */
 const TOKEN_RECHECK_MS = 5 * 60 * 1000;
+/** 401 で断られた後、gh から受け取り直すまでの間隔（`gh auth login` し直したらすぐ使えるように短くする）。 */
+const REJECTED_RECHECK_MS = 15 * 1000;
 /** GitHub が待つ時間を示さなかった上限の拒否で、最低限待つ時間（本体と同じ）。 */
 const UNHINTED_COOLDOWN_MS = 60 * 1000;
 
 export class GitHubError extends Error {
-	constructor(message: string, readonly status?: number, readonly kind: 'auth' | 'budget' | 'network' | 'api' | 'graphql' = 'api') {
+	/** kind が budget のとき、呼び出しを再開する時刻。 */
+	constructor(message: string, readonly status?: number, readonly kind: 'auth' | 'budget' | 'network' | 'api' | 'graphql' = 'api', readonly until?: number) {
 		super(redactGitHubSecrets(message));
 		this.name = 'GitHubError';
 	}
@@ -159,6 +162,11 @@ export class GitHubClient {
 		return b?.remaining !== undefined && b.limit !== undefined && b.resetAt !== undefined ? { remaining: b.remaining, limit: b.limit, resetAt: b.resetAt } : undefined;
 	}
 
+	/** 上限で止めている枠のうち、いちばん遅い再開の時刻（止めていなければ 0）。画面に出す。 */
+	pausedUntil(): number {
+		return Math.max(this.blockedUntil('core'), this.blockedUntil('graphql'), this.blockedUntil('search'));
+	}
+
 	/** その枠を止めている期限（止めていなければ 0）。見張りが黙って見送るのに使う。 */
 	blockedUntil(resource: 'core' | 'graphql' | 'search'): number {
 		const t = this.now();
@@ -193,7 +201,7 @@ export class GitHubClient {
 	}
 
 	private async currentToken(force = false): Promise<string> {
-		if (!force && this.token && this.now() - this.tokenAt < TOKEN_RECHECK_MS) {
+		if (!force && this.token && this.now() - this.tokenAt < (this.token === this.rejectedToken ? REJECTED_RECHECK_MS : TOKEN_RECHECK_MS)) {
 			if (this.token === this.rejectedToken) {
 				throw new GitHubError('GitHub rejected the token (401). Run `gh auth login` again.', 401, 'auth');
 			}
@@ -265,14 +273,14 @@ export class GitHubClient {
 	private checkBudget(resource: string): void {
 		const t = this.now();
 		if (t < this.accountBlockedUntil) {
-			throw new GitHubError(`GitHub asked us to slow down (secondary rate limit); waiting until ${new Date(this.accountBlockedUntil).toISOString()}`, undefined, 'budget');
+			throw new GitHubError(`GitHub asked us to slow down (secondary rate limit); waiting until ${new Date(this.accountBlockedUntil).toISOString()}`, undefined, 'budget', this.accountBlockedUntil);
 		}
 		const b = this.buckets.get(resource);
 		if (b?.blockedUntil !== undefined && t < b.blockedUntil) {
-			throw new GitHubError(`GitHub ${resource} rate limit; waiting until ${new Date(b.blockedUntil).toISOString()}`, undefined, 'budget');
+			throw new GitHubError(`GitHub ${resource} rate limit; waiting until ${new Date(b.blockedUntil).toISOString()}`, undefined, 'budget', b.blockedUntil);
 		}
 		if (b?.remaining !== undefined && b.remaining < LOW_WATER && b.resetAt !== undefined && t < b.resetAt) {
-			throw new GitHubError(`GitHub ${resource} API budget is low (${b.remaining} left); waiting until ${new Date(b.resetAt).toISOString()}`, undefined, 'budget');
+			throw new GitHubError(`GitHub ${resource} API budget is low (${b.remaining} left); waiting until ${new Date(b.resetAt).toISOString()}`, undefined, 'budget', b.resetAt);
 		}
 	}
 
@@ -355,7 +363,7 @@ export class GitHubClient {
 			const text = res.status === 304 || buffer ? '' : await res.text();
 			const until = this.updateFromResponse(resource, res, text);
 			if (until !== undefined) {
-				throw new GitHubError(`GitHub rate limit (${res.status}); waiting until ${new Date(until).toISOString()}`, res.status, 'budget');
+				throw new GitHubError(`GitHub rate limit (${res.status}); waiting until ${new Date(until).toISOString()}`, res.status, 'budget', until);
 			}
 			return { status: res.status, text, binary: buffer, headers: res.headers };
 		} catch (err) {
@@ -410,7 +418,7 @@ export class GitHubClient {
 			bucket.remaining = 0;
 			bucket.blockedUntil = Math.max(bucket.blockedUntil ?? 0, hinted !== undefined && hinted > t ? hinted : t + UNHINTED_COOLDOWN_MS);
 			this.buckets.set('graphql', bucket);
-			throw new GitHubError(`GitHub GraphQL rate limit; waiting until ${new Date(bucket.blockedUntil).toISOString()}`, res.status, 'budget');
+			throw new GitHubError(`GitHub GraphQL rate limit; waiting until ${new Date(bucket.blockedUntil).toISOString()}`, res.status, 'budget', bucket.blockedUntil);
 		}
 		if (res.status >= 400 && !json.data) {
 			throw new GitHubError(`GitHub GraphQL ${res.status}: ${json.errors?.[0]?.message ?? res.text.slice(0, 200)}`, res.status);

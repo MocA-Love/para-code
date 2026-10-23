@@ -5,7 +5,7 @@ import { commandPath } from './executables.js';
 import type { ITaskBoardPrRef, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardRunPort, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { defaultBase, excludeBoardFiles, git } from './workspaces.js';
-import type { GitHubClient } from './github.js';
+import { GitHubError, type GitHubClient } from './github.js';
 
 /*
  * 自動（run）工程を実際に走らせる（`--agents para-code` のとき）。
@@ -232,7 +232,7 @@ export class CommandRunner implements ITaskBoardRunPort {
 			found = await github.findOpenPullRequest(repo.owner, repo.repo, branch);
 		} catch (err) {
 			if (alive()) {
-				fail(`PR を探せませんでした: ${(err as Error).message}`);
+				fail(`PR を探せませんでした: ${githubReason(err)}`);
 			}
 			return;
 		}
@@ -312,7 +312,7 @@ export class CommandRunner implements ITaskBoardRunPort {
 			created = await github.createDraftPullRequest(repo.owner, repo.repo, branch, title, body);
 		} catch (err) {
 			if (alive()) {
-				fail(`PR を作れませんでした: ${(err as Error).message}`);
+				fail(`PR を作れませんでした: ${githubReason(err)}`);
 			}
 			return;
 		}
@@ -322,6 +322,15 @@ export class CommandRunner implements ITaskBoardRunPort {
 		engine.reportOutput(task.id, [`  ${created.existed ? '既存の PR を使います' : 'ドラフト PR を作りました'}: ${created.url}`]);
 		engine.reportRunResult(task.id, attempt, { ok: true, detail: created.existed ? `#${created.number}（既存）` : `#${created.number}`, pr: prRef(repo, created.number, created.url, created.title, created.draft) });
 	}
+}
+
+/** GitHub の失敗の理由。上限で止めているときは、そうと分かる文にする。 */
+function githubReason(err: unknown): string {
+	if (err instanceof GitHubError && err.kind === 'budget') {
+		const at = err.until ? new Date(err.until).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : undefined;
+		return `GitHub の利用上限に当たったので呼び出しを止めています${at ? `（${at} ごろ再開）` : ''}。再開した後にやり直してください`;
+	}
+	return (err as Error).message;
 }
 
 function prRef(repo: { owner: string; repo: string }, number: number, url: string, title: string, draft: boolean): ITaskBoardPrRef {

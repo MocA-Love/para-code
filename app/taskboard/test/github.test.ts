@@ -148,7 +148,7 @@ describe('GitHubClient: トークン', () => {
 		});
 	});
 
-	test('取り直しても同じトークンなら認証のエラーにし、5 分の間は送らず gh も呼ばない', async () => {
+	test('取り直しても同じトークンなら認証のエラーにし、15 秒の間は送らず gh も呼ばない（その後は取り直す）', async () => {
 		let now = 0;
 		let asked = 0;
 		const { fetchLike, calls } = fakeFetch(() => ({ status: 401, body: '{}' }));
@@ -156,7 +156,7 @@ describe('GitHubClient: トークン', () => {
 		const first = await client.get('/user').catch((e: GitHubError) => e.kind);
 		const second = await client.get('/user').catch((e: GitHubError) => e.kind);
 		const before = { sent: calls.length, asked };
-		now += 5 * 60 * 1000 + 1;
+		now += 15 * 1000 + 1;
 		await client.get('/user').catch(() => undefined);
 		expect({ first, second, before, after: { sent: calls.length, asked } }).toEqual({ first: 'auth', second: 'auth', before: { sent: 1, asked: 2 }, after: { sent: 1, asked: 3 } });
 	});
@@ -251,5 +251,49 @@ describe('GitHubClient: PR', () => {
 		const client = new GitHubClient({ token: async () => 't', fetch: fetchLike });
 		await client.markPullRequestReady('o', 'code', 42);
 		expect(calls.map(c => JSON.parse(c.body!).variables)).toEqual([{ owner: 'o', repo: 'code', number: 42 }, { id: 'PR_1' }]);
+	});
+});
+
+const ports = () => ({ startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { }, run() { }, cancel() { }, prepare: (_t: unknown, _s: unknown, branch: string) => Promise.resolve({ branch }), release: () => Promise.resolve() });
+
+describe('GitHubSync: 見張りと上限の表示', () => {
+	test('60 秒の見張りは外部待ちの工程のほか、どの工程でもこのタスクの PR（マージ・クローズで完了にする）を見る', async () => {
+		const { fetchLike, calls } = fakeFetch((_url, init) => {
+			const query: string = JSON.parse(init.body!).query;
+			return query.includes('viewer') ? ok({ viewer: { login: 'me' } }) : query.includes('search(') ? ok({ search: { issueCount: 0, nodes: [] }, rateLimit: { remaining: 4999, limit: 5000, resetAt: '2030-01-01T00:00:00Z', cost: 1 } }) : ok({ rateLimit: { remaining: 4999, limit: 5000, resetAt: '2030-01-01T00:00:00Z', cost: 1 } });
+		});
+		const client = new GitHubClient({ token: async () => 't', fetch: fetchLike });
+		const p = ports();
+		const engine = new TaskBoardEngine({ clock: Date.now, newId: () => Math.random().toString(36).slice(2), agents: p, runner: p, workspaces: p } as unknown as ConstructorParameters<typeof TaskBoardEngine>[0]);
+		engine.setFlows([{ ...TASK_BOARD_DEFAULT_FLOW, intake: { source: 'github-issues', owner: 'o', repo: 'r' } }], TASK_BOARD_DEFAULT_FLOW.id, true);
+		engine.setPoolSlots([1, 2].map(i => ({ id: `s${i}`, name: `c${i}`, path: `/c/${i}`, kind: 'clone-pool' as const })));
+		const sync = new GitHubSync({ client, engine, repo: { owner: 'o', repo: 'r' }, onState: () => undefined, intervalMs: 1e9, prIntervalMs: 1e9 });
+		await sync.start();
+		const issue = (n: number) => ({ issue: { owner: 'o', repo: 'r', number: n, url: '' }, title: `I${n}`, labels: [], assignees: ['me'] });
+		const pr = (n: number) => ({ owner: 'o', repo: 'r', number: n, url: '', title: '', state: 'open' as const, checks: 'none' as const, review: 'none' as const });
+		engine.syncIntake([issue(1), issue(2)]);
+		// #2 の PR は着手前に付いた（このタスクのものではない）。#1 の PR は着手後に付いた（このタスクのもの）
+		engine.reportPullRequest('gh:o/r#2', pr(20));
+		engine.start('gh:o/r#1', { agent: 'claude' });
+		engine.start('gh:o/r#2', { agent: 'claude' });
+		await tick();
+		engine.reportPullRequest('gh:o/r#1', pr(10));
+		const before = calls.length;
+		await sync.refreshPullRequests([], true);
+		sync.dispose();
+		const watched = calls.slice(before).map(c => JSON.parse(c.body!).variables);
+		expect({ owned: [engine.getTask('gh:o/r#1')!.prOwned, engine.getTask('gh:o/r#2')!.prOwned], watched }).toEqual({ owned: [true, false], watched: [{ o0: 'o', r0: 'r', n0: 10 }] });
+	});
+
+	test('上限で止めている間は、再開の時刻を状態に出す', async () => {
+		const now = 7_000_000;
+		const { fetchLike } = fakeFetch(url => url.endsWith('/graphql') ? ok({ viewer: { login: 'me' } }) : { status: 429, headers: { 'retry-after': '90' }, body: '{}' });
+		const client = new GitHubClient({ token: async () => 't', fetch: fetchLike, now: () => now });
+		const p = ports();
+		const engine = new TaskBoardEngine({ clock: Date.now, newId: () => 'x', agents: p, runner: p, workspaces: p } as unknown as ConstructorParameters<typeof TaskBoardEngine>[0]);
+		const sync = new GitHubSync({ client, engine, repo: undefined, onState: () => undefined });
+		const before = sync.getState().pausedUntil;
+		const error = await client.get('/repos/o/r').catch((e: GitHubError) => ({ kind: e.kind, until: e.until }));
+		expect({ before, error, after: sync.getState().pausedUntil }).toEqual({ before: undefined, error: { kind: 'budget', until: now + 90_000 }, after: now + 90_000 });
 	});
 });
