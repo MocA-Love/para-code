@@ -127,7 +127,7 @@ export function getParadisSentryRelease(version: string, commit: string | undefi
 
 /** {@link getParadisSentryRelease} for the ref GitHub Actions runs on (`GITHUB_REF_TYPE` / `GITHUB_REF_NAME`). */
 export function getParadisSentryReleaseFromEnv(version: string, commit: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
-	return getParadisSentryRelease(version, commit, { refType: env['GITHUB_REF_TYPE'] ?? '', refName: env['GITHUB_REF_NAME'] ?? '' });
+	return getParadisSentryRelease(version, commit, { refType: env.GITHUB_REF_TYPE ?? '', refName: env.GITHUB_REF_NAME ?? '' });
 }
 
 const PARADIS_STABLE_TAG_NUMBER_PATTERN = /-paracode-(?<number>\d+)$/;

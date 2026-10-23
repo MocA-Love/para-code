@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { fail, strictEqual } from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -203,45 +204,42 @@ suite('Workbench - TerminalService', () => {
 			(terminalService as unknown as { _primaryBackend: Partial<ITerminalBackend> })._primaryBackend = backend;
 		});
 
-		test('should not update pty host metadata for custom pty terminals', async () => {
+		test('should not update pty host metadata for custom pty terminals', () => runWithFakedTimers({}, async () => {
 			const instance = createTerminalInstance({ customPtyImplementation: true });
 
-			await runWithFakedTimers({}, async () => {
-				updateTitle(terminalService, instance);
-				updateIcon(terminalService, instance, false);
-			});
+			updateTitle(terminalService, instance);
+			updateIcon(terminalService, instance, false);
+			await timeout(500);
 
 			strictEqual(backend.titleUpdateCount, 0);
 			strictEqual(backend.iconUpdateCount, 0);
-		});
+		}));
 
-		test('should update pty host metadata for regular pty terminals', async () => {
+		test('should update pty host metadata for regular pty terminals', () => runWithFakedTimers({}, async () => {
 			const instance = createTerminalInstance();
 
-			await runWithFakedTimers({}, async () => {
-				updateTitle(terminalService, instance);
-				updateIcon(terminalService, instance, true);
-			});
+			updateTitle(terminalService, instance);
+			updateIcon(terminalService, instance, true);
+			await timeout(500);
 
 			strictEqual(backend.titleUpdateCount, 1);
 			strictEqual(backend.iconUpdateCount, 1);
 			strictEqual(backend.lastTitle, 'terminal title');
 			strictEqual(backend.lastIconUserInitiated, true);
-		});
+		}));
 
 		// PARA-PATCH: automatic Codex titles — test that the persistent title is sent while a transient title shows
-		test('should persist the underlying title while a transient title is displayed', async () => {
+		test('should persist the underlying title while a transient title is displayed', () => runWithFakedTimers({}, async () => {
 			const instance = createTerminalInstance();
 			(instance as { transientTitle?: string }).transientTitle = 'Codex task';
 			(instance as { persistentTitle?: string }).persistentTitle = 'codex | thread-id';
 			(instance as { persistentTitleSource?: TitleEventSource }).persistentTitleSource = TitleEventSource.Sequence;
 
-			await runWithFakedTimers({}, async () => {
-				updateTitle(terminalService, instance);
-			});
+			updateTitle(terminalService, instance);
+			await timeout(500);
 
 			strictEqual(backend.lastTitle, 'codex | thread-id');
-		});
+		}));
 	});
 });
 
