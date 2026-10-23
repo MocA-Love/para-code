@@ -12,7 +12,7 @@ import { Worker } from 'worker_threads';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCdpScreenshotOptions } from '../../common/paradisAgentBrowser.js';
-import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath } from '../../node/paradisBrowserCapture.js';
+import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisCaptureSavePath, paradisWriteCaptureFile } from '../../node/paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader, paradisDecodeText, paradisParseA1Range, paradisParseDelimited, paradisZipUncompressedSize } from '../../node/paradisBrowserDownloadReader.js';
 import { paradisParsePdfPageRange } from '../../node/paradisBrowserPdfText.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../../common/paradisBrowserQueryPageScript.js';
@@ -175,6 +175,26 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 			git: true,
 			relative: true,
 		});
+	});
+
+	test('capture_screenshot saves a new file but never overwrites an existing file or a symbolic link', async () => {
+		const folder = await fs.mkdtemp(join(tmpdir(), 'paradis-capture-save-'));
+		try {
+			await fs.writeFile(join(folder, 'old.png'), 'old');
+			await fs.symlink(join(folder, 'old.png'), join(folder, 'link.png'));
+			const data = new TextEncoder().encode('png');
+			const fresh = await paradisWriteCaptureFile(join(folder, 'shots', 'new.png'), data);
+			const existing = await paradisWriteCaptureFile(join(folder, 'old.png'), data);
+			const link = await paradisWriteCaptureFile(join(folder, 'link.png'), data);
+			assert.deepStrictEqual({
+				fresh,
+				existing: !existing.ok && existing.message.includes('already exists'),
+				link: !link.ok && link.message.includes('already exists'),
+				files: { fresh: await fs.readFile(join(folder, 'shots', 'new.png'), 'utf8'), old: await fs.readFile(join(folder, 'old.png'), 'utf8') },
+			}, { fresh: { ok: true }, existing: true, link: true, files: { fresh: 'png', old: 'old' } });
+		} finally {
+			await fs.rm(folder, { recursive: true, force: true });
+		}
 	});
 
 	test('read_download reads csv and xlsx ranges in the download folder only', async () => {
