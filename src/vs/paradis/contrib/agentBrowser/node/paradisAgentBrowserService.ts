@@ -380,7 +380,7 @@ const MAX_SKIPPED_OPENED_TABS = 20;
 /** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
 const MAX_OPENED_TAB_SHARE_MARKS = 256;
 /** 使えるタブが無いまま（共有も open_browser_tab もせずに）ブラウザのツールを呼んだときの答え。次の一手だけを短く書く。 */
-const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use. Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead.';
+const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use (or the tab_id you passed is not one of its tabs; see list_browser_tabs). Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead.';
 
 /**
  * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`

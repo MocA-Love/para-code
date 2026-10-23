@@ -55,6 +55,7 @@ import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchServic
 import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import {
@@ -318,6 +319,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 	) {
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
@@ -553,8 +555,11 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const model = await input.resolve();
 		const dimension = this._editorGroupsService.mainPart.contentDimension;
 		const size = paradisEstimateHiddenAgentTabSize(dimension.width, dimension.height, this._configurationService.getValue<number>(PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING));
-		// 隠れたままのビューを最初に layout しても表に出ない（main は表示を求められるまで隠したまま）
-		await model.layout({ windowId: mainWindow.vscodeWindowId, x: 0, y: 0, width: size.width, height: size.height, zoomFactor: getZoomFactor(mainWindow), cornerRadius: 0 });
+		// 隠れたままのビューを最初に layout しても表に出ない（main は表示を求められるまで隠したまま）。
+		// スクリーンショットと描画の小突きは一瞬だけ表に出すので、位置はエディタ領域に合わせる
+		// （窓の左上に置くと、その一瞬にタイトルバーやアクティビティバーの上へ描かれる）
+		const origin = this._layoutService.getContainer(mainWindow, Parts.EDITOR_PART)?.getBoundingClientRect();
+		await model.layout({ windowId: mainWindow.vscodeWindowId, x: origin?.left ?? 0, y: origin?.top ?? 0, width: size.width, height: size.height, zoomFactor: getZoomFactor(mainWindow), cornerRadius: 0 });
 		this._pendingTabs.set(input.id, { token, stateKey, input, background });
 		this._watchPendingTabs();
 	}
