@@ -22,25 +22,27 @@ suite('paradisSubagentToolCalls', () => {
 		], ['toolu_01AbC', undefined, undefined, undefined, undefined]);
 	});
 
-	test('only a PreToolUse hook from a subagent of the same pane marks the call', () => {
+	test('only a PreToolUse hook of an MCP tool from a subagent of the same pane marks the call', () => {
 		let now = 1_000;
 		const uses = new ParadisSubagentToolUses(() => now);
-		uses.noteHook('pane-a', 'PreToolUse', 'toolu_child', true);
-		uses.noteHook('pane-a', 'PreToolUse', 'toolu_main', false);
-		uses.noteHook('pane-a', 'PostToolUse', 'toolu_post', true);
+		uses.noteHook('pane-a', 'PreToolUse', 'mcp__para-browser__wait_until', 'toolu_child', true);
+		uses.noteHook('pane-a', 'PreToolUse', 'mcp__para-browser__wait_until', 'toolu_main', false);
+		uses.noteHook('pane-a', 'PreToolUse', 'Bash', 'toolu_bash', true);
+		uses.noteHook('pane-a', 'PostToolUse', 'mcp__para-browser__wait_until', 'toolu_post', true);
 		const marked = {
 			child: uses.isFromSubagent('pane-a', 'toolu_child'),
 			main: uses.isFromSubagent('pane-a', 'toolu_main'),
 			post: uses.isFromSubagent('pane-a', 'toolu_post'),
+			notMcp: uses.isFromSubagent('pane-a', 'toolu_bash'),
 			otherPane: uses.isFromSubagent('pane-b', 'toolu_child'),
 			noId: uses.isFromSubagent('pane-a', undefined),
 		};
 		now += 16 * 60_000;
 		const expired = uses.isFromSubagent('pane-a', 'toolu_child');
-		uses.noteHook('pane-a', 'PreToolUse', 'toolu_again', true);
+		uses.noteHook('pane-a', 'PreToolUse', 'mcp__para-browser__wait_until', 'toolu_again', true);
 		uses.forget('pane-a');
 		assert.deepStrictEqual({ marked, expired, forgotten: uses.isFromSubagent('pane-a', 'toolu_again') }, {
-			marked: { child: true, main: false, post: false, otherPane: false, noId: false },
+			marked: { child: true, main: false, post: false, notMcp: false, otherPane: false, noId: false },
 			expired: false,
 			forgotten: false,
 		});
