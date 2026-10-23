@@ -25,6 +25,7 @@
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from './paradisAgentChoiceMenu.js';
 import type { ParadisAgentStartupScreenState } from './paradisAgentStartupScreen.js';
+import { PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from '../../agentBrowser/common/paradisSubagentToolCalls.js';
 
 /** ウィンドウが shared process の IPCServer へ登録するチャネル名。 */
 export const PARADIS_AGENT_IDE_CHANNEL = 'paradisAgentIde';
@@ -84,6 +85,11 @@ export const PARADIS_AGENT_IDE_MAX_SCROLLBACK_LINES = 500;
  */
 export const PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS = 50;
 export const PARADIS_AGENT_IDE_MAX_WAIT_SECONDS = 240;
+/**
+ * Claude Code のサブエージェントの中からと確かめられた呼び出しの待ちの上限（秒。paradisSubagentToolCalls.ts）。子の呼び出しは
+ * 2 分で裏に回されず、Para Code が書くサーバーごとの `timeout`（300 秒）まで待てる。
+ */
+export const PARADIS_AGENT_IDE_SUBAGENT_MAX_WAIT_SECONDS = PARADIS_SUBAGENT_WAIT_MAX_SECONDS;
 
 /** 1回に送れる文字数の上限。長い指示はファイルに書いてパスを渡させる。 */
 export const PARADIS_AGENT_IDE_MAX_INPUT_LENGTH = 8_000;
@@ -424,14 +430,14 @@ export const PARADIS_AGENT_IDE_TOOLS: readonly IParadisAgentIdeToolDefinition[] 
 	},
 	{
 		name: 'wait_for_terminal',
-		description: `Wait until a terminal reaches a state, then return its status and the end of its screen. until="agent_stopped": the agent's turn ended ("reason": "stopped") or it now waits for a permission/question answer ("reason": "needs_input"); if it never started working, it returns "reason": "no_agent_status" after 5 seconds (90 seconds for a terminal you just launched) - that does NOT mean it finished (use until="text" for terminals whose list_terminals "agent" is false). An agent you launched without a prompt returns "reason": "ready" once its empty input box shows. An agent stopped at its startup folder-trust dialog returns "reason": "needs_input" with "blocked_by": "trust_dialog" (only the user can answer it). Codex waiting in a menu (its Plan-mode "Implement this plan?" menu, its update notice, its model notice, its hooks review) returns "reason": "needs_choice" with "choice_menu" (kind: plan_implement, update, model_switch or hooks_review, and the options shown) - never answer it yourself: tell the user which terminal waits and let them choose. until="needs_input": the agent waits for a permission or question answer, or for a choice in a menu ("reason": "needs_choice"). until="text": the given text is on the visible screen (plain substring, case-sensitive; text already on screen matches immediately). Returns "met": false with "timed_out": true when the time runs out - call it again. Keep timeout_seconds below your MCP client's tool timeout (default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}, maximum ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS}).`,
+		description: `Wait until a terminal reaches a state, then return its status and the end of its screen. until="agent_stopped": the agent's turn ended ("reason": "stopped") or it now waits for a permission/question answer ("reason": "needs_input"); if it never started working, it returns "reason": "no_agent_status" after 5 seconds (90 seconds for a terminal you just launched) - that does NOT mean it finished (use until="text" for terminals whose list_terminals "agent" is false). An agent you launched without a prompt returns "reason": "ready" once its empty input box shows. An agent stopped at its startup folder-trust dialog returns "reason": "needs_input" with "blocked_by": "trust_dialog" (only the user can answer it). Codex waiting in a menu (its Plan-mode "Implement this plan?" menu, its update notice, its model notice, its hooks review) returns "reason": "needs_choice" with "choice_menu" (kind: plan_implement, update, model_switch or hooks_review, and the options shown) - never answer it yourself: tell the user which terminal waits and let them choose. until="needs_input": the agent waits for a permission or question answer, or for a choice in a menu ("reason": "needs_choice"). until="text": the given text is on the visible screen (plain substring, case-sensitive; text already on screen matches immediately). Returns "met": false with "timed_out": true when the time runs out - call it again. Keep timeout_seconds below your MCP client's tool timeout (default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}, maximum ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS}; a call from a Claude Code subagent (started with the Agent tool) may use up to ${PARADIS_AGENT_IDE_SUBAGENT_MAX_WAIT_SECONDS}, because Claude Code does not move it to the background).`,
 		inputSchema: {
 			type: 'object',
 			properties: {
 				terminal: TERMINAL_ARGUMENT,
 				until: { type: 'string', enum: ['agent_stopped', 'needs_input', 'text'] },
 				text: { type: 'string', maxLength: PARADIS_AGENT_IDE_MAX_WAIT_TEXT_LENGTH, description: 'Required when until="text".' },
-				timeout_seconds: { type: 'integer', minimum: 1, maximum: PARADIS_AGENT_IDE_MAX_WAIT_SECONDS, description: `Default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}.` },
+				timeout_seconds: { type: 'integer', minimum: 1, maximum: PARADIS_AGENT_IDE_SUBAGENT_MAX_WAIT_SECONDS, description: `Default ${PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS}. Values above ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS} are lowered to ${PARADIS_AGENT_IDE_MAX_WAIT_SECONDS} unless the call comes from a Claude Code subagent.` },
 			},
 			required: ['terminal', 'until'],
 			additionalProperties: false,
@@ -575,7 +581,7 @@ function optionalInteger(args: Args, key: string, min: number, max: number, fall
  * ツール名と引数を、ウィンドウへ渡す要求へ直す。形が合わないものはここで弾き、
  * エージェントがそのまま読めるエラー文を返す。
  */
-export function paradisParseAgentIdeCall(name: string, rawArgs: unknown): ParadisAgentIdeParsedCall | { readonly kind: 'error'; readonly error: string } {
+export function paradisParseAgentIdeCall(name: string, rawArgs: unknown, options?: { readonly fromSubagent?: boolean }): ParadisAgentIdeParsedCall | { readonly kind: 'error'; readonly error: string } {
 	if (rawArgs !== undefined && rawArgs !== null && (typeof rawArgs !== 'object' || Array.isArray(rawArgs))) {
 		return { kind: 'error', error: 'Tool arguments must be an object.' };
 	}
@@ -607,7 +613,9 @@ export function paradisParseAgentIdeCall(name: string, rawArgs: unknown): Paradi
 			if (until !== 'agent_stopped' && until !== 'needs_input' && until !== 'text') {
 				return { kind: 'error', error: '"until" must be one of "agent_stopped", "needs_input", "text".' };
 			}
-			const timeoutSeconds = optionalInteger(args, 'timeout_seconds', 1, PARADIS_AGENT_IDE_MAX_WAIT_SECONDS, PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS);
+			// サブエージェントの中からと確かめられたときだけ長い上限（main の会話は今のまま）
+			const maxWaitSeconds = options?.fromSubagent === true ? PARADIS_AGENT_IDE_SUBAGENT_MAX_WAIT_SECONDS : PARADIS_AGENT_IDE_MAX_WAIT_SECONDS;
+			const timeoutSeconds = optionalInteger(args, 'timeout_seconds', 1, maxWaitSeconds, PARADIS_AGENT_IDE_DEFAULT_WAIT_SECONDS);
 			if (timeoutSeconds instanceof Error) { return fail(timeoutSeconds); }
 			if (until === 'text') {
 				// 探す文字列は前後の空白も意味を持ちうるので trim しない
