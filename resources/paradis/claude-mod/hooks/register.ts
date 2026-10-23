@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.4.2';
+const MOD_VERSION = '1.4.3';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -555,7 +555,7 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
 	if (id !== undefined && command.kind === 'draftFill') {
 		if (typeof command.text === 'string' && command.text.length <= MAX_DRAFT_FILL_CHARS) {
 			// `append` puts a draft back without removing what the person typed in the meantime
-			await fillDraft($, sessionId, id, command.text, command.mode === 'append' ? 'append' : 'replace');
+			await fillDraft($, sessionId, id, command.text, command.mode === 'append' ? 'append' : 'replace', generation);
 		}
 		return;
 	}
@@ -617,8 +617,14 @@ async function runCommand($: Engine, sessionId: string, command: Json, generatio
  * Replaces (or appends to) the prompt box's text for Para Code. Para Code only asks while it knows the box's text (draft.ts
  * tells it on Claude Code 2.1.300 and later), so this never guesses what is in the box.
  */
-async function fillDraft($: Engine, sessionId: string, id: string, text: string, mode: 'replace' | 'append'): Promise<void> {
+async function fillDraft($: Engine, sessionId: string, id: string, text: string, mode: 'replace' | 'append', generation: number): Promise<void> {
 	try {
+		// The session moved on (a new session.start, /clear) since this was handed over: the text was for the old
+		// session's box, and writing it would replace the new session's draft.
+		if (generation !== pumpGeneration || !active || await $.session.id() !== sessionId) {
+			await request($, 'ack', { sessionId, id, ok: false, reason: 'stale' });
+			return;
+		}
 		const filled = await $.prompt.fill({ text, mode });
 		await request($, 'ack', { sessionId, id, ok: filled.isFilled, ...(filled.isFilled ? {} : { reason: filled.refusal === 'dialog' ? 'panel-open' : 'refused' }) });
 	} catch (error) {

@@ -474,6 +474,35 @@ describe('para-code mod', () => {
 		});
 	});
 
+	test('a draft fill handed over for a session that has since changed is refused as stale, not written', async ($, on) => {
+		const recorded: IRecorded[] = [];
+		let session = 'session-1';
+		let handed = false;
+		const clock = fakeParaCode(on, {
+			commands: () => {
+				if (handed) {
+					return { commands: [] };
+				}
+				handed = true;
+				// /clear while the command poll was open: the text was for the old session's prompt box
+				session = 'session-2';
+				return { commands: [{ id: 'f9', kind: 'draftFill', text: 'for the old session' }] };
+			},
+		}, recorded, true, () => session);
+		const fills: unknown[] = [];
+		on('prompt.fill', ($, e) => {
+			fills.push({ text: e.text, mode: e.mode });
+			return { isFilled: true };
+		});
+		await startSession($);
+		await clock.advance(1);
+		await clock.settle();
+		expect({ fills, acks: recorded.filter(entry => entry.op === 'ack').map(entry => entry.body) }).toEqual({
+			fills: [],
+			acks: [{ sessionId: 'session-1', id: 'f9', ok: false, reason: 'stale' }],
+		});
+	});
+
 	test('a new session forgets a send of the old one', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		let restarted = false;
