@@ -927,7 +927,7 @@ export interface IParadisTerminalBusySignals {
 	/** 代替画面（全画面のプログラム）を表示中か。 */
 	readonly alternateBuffer: boolean;
 	/**
-	 * この画面がシェル統合（OSC 633）を実際に受け取っていて、実行中のコマンドの情報が今の状態を
+	 * この画面がシェル統合の印（OSC 633 か OSC 133）を実際に受け取っていて、実行中のコマンドの情報が今の状態を
 	 * 表しているか。接続し直した直後は再生された画面だけで、終わりの印も始まりの印も届いていない。
 	 */
 	readonly commandStateLive: boolean;
@@ -945,7 +945,7 @@ export interface IParadisTerminalBusySignals {
  *
  * シェル統合が今の状態を表していれば、その「実行中か」を信じる（常駐の子プロセスを持つだけの
  * シェルを忙しい扱いにしないため。エージェントが終わった後のシェルもここで空きになる）。表して
- * いないとき（接続し直した後・シェル統合が無い・OSC 633 を出さない）は確かめようがないので、
+ * いないとき（接続し直した後・シェル統合が無い）は確かめようがないので、
  * エージェントのペインか子プロセスがいれば忙しいとみなす（取り違えるより新規に倒す）。
  */
 export function paradisIsTerminalBusy(signals: IParadisTerminalBusySignals): boolean {

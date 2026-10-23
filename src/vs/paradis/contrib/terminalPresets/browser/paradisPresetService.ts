@@ -1056,8 +1056,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	/**
 	 * ターミナルが今コマンドを実行中（busy）か。判定は {@link paradisIsTerminalBusy}。シェル統合の
-	 * 「実行中のコマンド」は、接続し直した直後（再生された画面には OSC 633 が含まれない）や
-	 * シェル統合が OSC 633 を出さない構成では今の状態を表さないので、その間は子プロセスと
+	 * 「実行中のコマンド」は、接続し直した直後（再生された画面にはシェル統合の印が含まれない）や
+	 * シェル統合の印を出さない構成では今の状態を表さないので、その間は子プロセスと
 	 * エージェントの hook で確かめる。
 	 */
 	private _isTerminalBusy(instance: ITerminalInstance): boolean {
@@ -1065,7 +1065,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		const xterm = instance.xterm;
 		return paradisIsTerminalBusy({
 			alternateBuffer: xterm?.raw.buffer.active.type === 'alternate',
-			commandStateLive: commandDetection !== undefined && xterm?.shellIntegration.status === ShellIntegrationStatus.VSCode,
+			// OSC 133 だけを出すシェルでも、実行の印（C）で入力欄からコマンドを取るので信じてよい。
+			// 接続し直した直後は、再生された画面に印が無いので Off のまま
+			commandStateLive: commandDetection !== undefined && xterm !== undefined && xterm.shellIntegration.status !== ShellIntegrationStatus.Off,
 			executingCommand: commandDetection?.executingCommand !== undefined,
 			agentPane: this.agentStatusStore.isAgentInstance(instance.instanceId),
 			hasChildProcesses: instance.hasChildProcesses,

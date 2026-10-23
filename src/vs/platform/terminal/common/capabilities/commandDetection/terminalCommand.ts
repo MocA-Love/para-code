@@ -323,7 +323,7 @@ export class PartialTerminalCommand implements ICurrentPartialCommand {
 			executedX: running ? this.commandExecutedX : undefined,
 			command: running ? this.command ?? '' : '',
 			commandLineConfidence: running ? this.commandLineConfidence ?? 'low' : 'low',
-			isTrusted: running ? this.isTrusted ?? true : true,
+			isTrusted: running ? !!this.isTrusted : true,
 			cwd,
 			exitCode: undefined,
 			commandStartLineContent: undefined,
