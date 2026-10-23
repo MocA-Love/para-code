@@ -21,7 +21,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisCdpInputDispatchResult } from '../common/paradisAgentBrowser.js';
 import type { IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
-import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
+import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisLookedAtRect, paradisNearMissHints, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAMES } from './paradisBrowserQueryTools.js';
 
 /** 「探して操作する」ツールの名前。 */
@@ -80,6 +80,8 @@ interface ILocated {
 	readonly options?: readonly { value: string; label: string }[];
 	readonly withinMissing?: boolean;
 	readonly noIndex?: boolean;
+	/** 何も当たらなかったときに、ページが 1 回読んだ近い候補（{@link paradisNearMissHints} が文にする）。 */
+	readonly near?: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -187,7 +189,9 @@ export class ParadisBrowserActBy {
 		}
 		if (located.matched === 0) {
 			call.noteCursor?.({ status: 'missing' });
-			return { ok: false, result: error(`${tool}: no element matches ${describeLocator(args)}. Check with take_snapshot or get_text, wait for it with wait_until, or bring it into view with scroll_to.`) };
+			// 近い候補（似た文字・名前、selector が当たらない理由）を同じ評価で読んで添える。判定と動きは変えない
+			const hints = paradisNearMissHints(located.near, args);
+			return { ok: false, result: error([`${tool}: no element matches ${describeLocator(args)}. Check with take_snapshot or get_text, wait for it with wait_until, or bring it into view with scroll_to.`, ...hints].join('\n')) };
 		}
 		if (located.noIndex === true) {
 			return { ok: false, result: error(`${tool}: only ${located.matched} element(s) match ${describeLocator(args)}, so there is no index ${index}.`) };

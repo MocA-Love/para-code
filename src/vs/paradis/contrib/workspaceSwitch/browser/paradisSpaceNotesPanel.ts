@@ -704,6 +704,18 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		if (stateKey === undefined) {
 			return;
 		}
+		// メニューを開いている間にスマホやエージェントがメモを書き換えると、行番号の指す先が変わりうる。
+		// 開いたときのメモの本文を控え、選んだ時点でも同じ本文のときだけ操作する
+		// (同じ文言の項目が上に足されると行の中身だけでは見分けられないため、本文全体で比べる)
+		const openedText = this.notesService.read(stateKey);
+		const ifUnchanged = (run: () => void): void => {
+			if (this.notesService.read(stateKey) !== openedText) {
+				// allow-any-unicode-next-line
+				this.notificationService.info(localize('paradis.spaceNotes.task.changed', "メニューを開いている間にメモが書き換えられたため、操作していません。いまの表示を確かめて、もう一度選んでください。"));
+				return;
+			}
+			run();
+		};
 		// どの行に対するメニューなのかを、開いているあいだ見えるようにする
 		row.classList.add('context-open');
 		this.contextMenuService.showContextMenu({
@@ -719,7 +731,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 						: localize('paradis.spaceNotes.task.done', "完了にする"),
 					undefined,
 					true,
-					async () => this.notesService.toggleTask(stateKey, line.index)
+					async () => ifUnchanged(() => this.notesService.toggleTask(stateKey, line.index))
 				),
 				new Separator(),
 				new Action(
@@ -728,7 +740,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 					localize('paradis.spaceNotes.task.edit', "この項目を編集"),
 					undefined,
 					true,
-					async () => this.startEditingTask(line.index)
+					async () => ifUnchanged(() => this.startEditingTask(line.index))
 				),
 				new Action(
 					'paradis.spaceNotes.task.copy',
@@ -745,7 +757,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 					localize('paradis.spaceNotes.task.delete', "削除"),
 					undefined,
 					true,
-					async () => this.notesService.removeTask(stateKey, line.index)
+					async () => ifUnchanged(() => this.notesService.removeTask(stateKey, line.index))
 				)
 			]
 		});

@@ -20,6 +20,7 @@ interface IExtracted {
 	readonly htmlSnippet: string;
 	readonly nearbyText: readonly string[];
 	readonly accessibleName: string;
+	readonly attributes: Readonly<Record<string, string>>;
 }
 
 interface IDesignApi {
@@ -120,5 +121,11 @@ suite('paradisDesignModePageScript', () => {
 			name: 'Buy now',
 			leaked: false,
 		});
+	});
+
+	// main の整形と同じく、ページ側でもリンクの URL からユーザー名とパスワードを落とす（A64）。
+	test('リンクの URL からユーザー名・パスワード・クエリ・フラグメントを落とす', () => {
+		const link = add(fixture, 'a', 'Open', '', { href: 'https://user:hunter2@example.com/a?x=1#top' });
+		assert.deepStrictEqual(extract(link).attributes.href, 'https://example.com/a');
 	});
 });

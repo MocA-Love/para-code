@@ -558,9 +558,10 @@ export class ParadisClaudeModBridge {
 						if (agentId === undefined) {
 							state.busy = false;
 							this.releaseHeldBusy(state);
-							// ターンが終わった（Esc を含む）。残った待ちに答える相手はもう居ない
-							this.settleSession(token, sessionId, 'settled');
 						}
+						// ターンが終わった（Esc を含む）。残った待ちに答える相手はもう居ない。片付けるのはそのターンの持ち主の
+						// 待ちだけ（本会話の応答が終わっても、裏で動くサブエージェントの承認・質問はまだ答えられる）
+						this.settleSession(token, sessionId, 'settled', { agentId });
 						this.fire({ ...base, type: 'turn.complete', turnId, aborted: event.aborted === true, ...(agentId !== undefined ? { agentId } : {}), ...(text(event.reason, 20) !== undefined ? { reason: text(event.reason, 20) } : {}) });
 					}
 					break;
@@ -842,14 +843,19 @@ export class ParadisClaudeModBridge {
 		}
 	}
 
-	private settleSession(token: string, sessionId: string, state: 'settled' | 'expired'): void {
+	/**
+	 * 会話の待ちを決着させる。`owner` を渡したときは、その持ち主（`agentId` が undefined なら本会話、あればその
+	 * サブエージェント・teammate）の待ちだけを決着させる。渡さなければ会話の待ちを全部決着させる（会話が去ったとき）。
+	 */
+	private settleSession(token: string, sessionId: string, state: 'settled' | 'expired', owner?: { readonly agentId: string | undefined }): void {
+		const owned = (agentId: string | undefined) => owner === undefined || agentId === owner.agentId;
 		for (const [key, entry] of [...this.unwaitedTraits]) {
-			if (entry.token === token && entry.sessionId === sessionId) {
+			if (entry.token === token && entry.sessionId === sessionId && owned(entry.permission.agentId)) {
 				this.unwaitedTraits.delete(key);
 			}
 		}
 		for (const item of [...this.pending.values()]) {
-			if (item.token === token && item.sessionId === sessionId) {
+			if (item.token === token && item.sessionId === sessionId && owned(item.question?.agentId ?? item.permission?.agentId)) {
 				this.finish(item, { state });
 			}
 		}
