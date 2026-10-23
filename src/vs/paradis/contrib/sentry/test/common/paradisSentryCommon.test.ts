@@ -36,9 +36,90 @@ suite('ParadisSentryCommon', () => {
 		assert.ok(!sanitized.includes('Alice'));
 		assert.ok(!sanitized.includes('?token='));
 		assert.ok(!sanitized.includes('#fragment'));
-		assert.ok(sanitized.includes('Authorization: Bearer [Filtered]'));
+		assert.ok(sanitized.includes('Authorization: [Filtered] [Filtered]'));
 		assert.ok(sanitized.includes('OPENAI_API_KEY=[Filtered]'));
 		assert.ok(sanitized.includes('~/projects/private/file.ts'));
+	});
+
+	test('redacts identity and secret shapes in every form they arrive in, and keeps what an investigation needs', () => {
+		const rows = [
+			// Windows のパス: 二重の区切り（JSON の中）と `/` の区切り
+			'open C:\\\\Users\\\\Alice\\\\repo\\\\a.ts',
+			'open C:/Users/Alice/repo/a.ts',
+			// WSL のパス（UNC）: 一重・二重の区切りと、`/` に直したもの
+			'open \\\\wsl.localhost\\Ubuntu\\home\\alice\\repo\\a.ts',
+			'open \\\\\\\\wsl$\\\\Ubuntu\\\\home\\\\alice\\\\x.ts',
+			'open //wsl.localhost/Ubuntu/home/alice/repo/a.ts',
+			'open /mnt/c/Users/alice/a.ts',
+			// `=` の無いトークン・Basic 認証
+			'push failed: ghp_abcdefghijklmnopqrstuvwxyz0123456789',
+			'key sk-ant-api03-abcdefghijklmnopqrstuv rejected',
+			'Authorization: Basic dXNlcjpwYXNzd29yZA==',
+			// メールアドレスと SSH の宛先
+			'mail alice.smith@example.co.jp failed',
+			'fetch git@github.com:org/repo.git failed',
+			// ホームの外のパス（ファイル名と `out/vs/...` から先は残す）
+			`ENOENT: no such file or directory, open '/Volumes/SSD/clients/acme/report.xlsx'`,
+			'at x (/Volumes/SSD/para-code/out/vs/paradis/contrib/a.js:12:3)',
+			'D:\\work\\acme\\src\\x.ts:4:2',
+			'file:///D:/work/acme/a.ts',
+			// SSH の接続先
+			'vscode-remote://ssh-remote+prod-db.internal/home/alice/x.ts',
+			'vscode-remote://ssh-remote%2Bprod-db.internal/srv/app',
+			// 残すもの
+			`ENOENT: no such file or directory, open '/home/alice/x/package.json'`,
+			'SyntaxError: Unexpected token } in JSON at position 4',
+			'file-viewers',
+			'at paradisWorktreeGitChannel.ts:1269:7',
+			'app:///out/vs/paradis/contrib/sentry/common/paradisSentryCommon.js:12:3',
+			'C:\\Program Files\\Para Code\\resources\\app\\out\\main.js',
+			'node:internal/fs/promises:12',
+			'typescript@5.4.2 @sentry/core@8.1.0',
+			'https://github.com/org/repo/pull/1?token=x#fragment',
+		];
+
+		assert.deepStrictEqual(rows.map(row => [row, paradisSanitizeSentryText(row)]), [
+			['open C:\\\\Users\\\\Alice\\\\repo\\\\a.ts', 'open ~\\\\repo\\\\a.ts'],
+			['open C:/Users/Alice/repo/a.ts', 'open ~/repo/a.ts'],
+			['open \\\\wsl.localhost\\Ubuntu\\home\\alice\\repo\\a.ts', 'open ~\\repo\\a.ts'],
+			['open \\\\\\\\wsl$\\\\Ubuntu\\\\home\\\\alice\\\\x.ts', 'open ~\\\\x.ts'],
+			['open //wsl.localhost/Ubuntu/home/alice/repo/a.ts', 'open ~/repo/a.ts'],
+			['open /mnt/c/Users/alice/a.ts', 'open [path]/a.ts'],
+			['push failed: ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'push failed: [Filtered]'],
+			['key sk-ant-api03-abcdefghijklmnopqrstuv rejected', 'key [Filtered] rejected'],
+			['Authorization: Basic dXNlcjpwYXNzd29yZA==', 'Authorization: [Filtered] [Filtered]'],
+			['mail alice.smith@example.co.jp failed', 'mail [email] failed'],
+			['fetch git@github.com:org/repo.git failed', 'fetch [email]:org/repo.git failed'],
+			[`ENOENT: no such file or directory, open '/Volumes/SSD/clients/acme/report.xlsx'`, `ENOENT: no such file or directory, open '[path]/report.xlsx'`],
+			['at x (/Volumes/SSD/para-code/out/vs/paradis/contrib/a.js:12:3)', 'at x ([path]/out/vs/paradis/contrib/a.js:12:3)'],
+			['D:\\work\\acme\\src\\x.ts:4:2', '[path]/x.ts:4:2'],
+			['file:///D:/work/acme/a.ts', 'file:///[path]/a.ts'],
+			['vscode-remote://ssh-remote+prod-db.internal/home/alice/x.ts', 'vscode-remote://ssh-remote+[host]~/x.ts'],
+			['vscode-remote://ssh-remote%2Bprod-db.internal/srv/app', 'vscode-remote://ssh-remote%2B[host]/srv/app'],
+			[`ENOENT: no such file or directory, open '/home/alice/x/package.json'`, `ENOENT: no such file or directory, open '~/x/package.json'`],
+			['SyntaxError: Unexpected token } in JSON at position 4', 'SyntaxError: Unexpected token } in JSON at position 4'],
+			['file-viewers', 'file-viewers'],
+			['at paradisWorktreeGitChannel.ts:1269:7', 'at paradisWorktreeGitChannel.ts:1269:7'],
+			['app:///out/vs/paradis/contrib/sentry/common/paradisSentryCommon.js:12:3', 'app:///out/vs/paradis/contrib/sentry/common/paradisSentryCommon.js:12:3'],
+			['C:\\Program Files\\Para Code\\resources\\app\\out\\main.js', 'C:\\Program Files\\Para Code\\resources\\app\\out\\main.js'],
+			['node:internal/fs/promises:12', 'node:internal/fs/promises:12'],
+			['typescript@5.4.2 @sentry/core@8.1.0', 'typescript@5.4.2 @sentry/core@8.1.0'],
+			['https://github.com/org/repo/pull/1?token=x#fragment', 'https://github.com/org/repo/pull/1'],
+		]);
+	});
+
+	test('applies the same rules to tags, breadcrumbs and automatically captured error text', () => {
+		const event = paradisSanitizeSentryEvent({
+			tags: { 'para.feature': 'file-viewers', unsafe: 'mail alice@example.test' },
+			breadcrumbs: [{ category: 'para.workspace', message: 'open \\\\wsl.localhost\\Ubuntu\\home\\alice\\repo' }],
+			exception: { values: [{ type: 'Error', value: 'clone ghp_abcdefghijklmnopqrstuvwxyz0123456789 from ssh-remote+prod-db failed' }] },
+		});
+
+		assert.deepStrictEqual([event.tags, event.breadcrumbs?.map(breadcrumb => breadcrumb.message), event.exception?.values?.[0].value], [
+			{ 'para.feature': 'file-viewers', unsafe: 'mail [email]' },
+			['open ~\\repo'],
+			'clone [Filtered] from ssh-remote+[host] failed',
+		]);
 	});
 
 	test('redacts the host and path of files opened directly over SSH', () => {
