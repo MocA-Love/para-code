@@ -36,6 +36,8 @@ import { AUTOMATIC_MERGED_SESSION_CLEANUP_SETTINGS_QUERY } from '../../github/co
 import { createSessionArchiveTour, SESSION_ARCHIVE_TOUR_ID } from '../../onboardingTours/browser/tours/sessionArchiveTour.js';
 import { getSessionArchiveOnboardingTargetId } from '../../sessions/browser/views/sessionsList.js';
 import { SessionsView, SessionsViewId } from '../../sessions/browser/views/sessionsView.js';
+// PARA-PATCH: stop GitHub polling while the window is in the background (sessionGithubWindowActivity.ts)
+import { paradisStartPollingWhileWindowActive } from '../../github/browser/sessionGithubWindowActivity.js';
 
 export const SESSION_ARCHIVE_NUDGE_SETTING = 'chat.agentSessions.archiveNudge.enabled';
 
@@ -377,7 +379,7 @@ export class SessionArchiveNudge extends Disposable {
 			return pullRequests.read(reader)?.map(pullRequest => {
 				const model = reader.store.add(gitHubService.createPullRequestModelReference(pullRequest.owner, pullRequest.repo, pullRequest.number)).object;
 				void model.refresh({ priority: 'visible' });
-				reader.store.add(model.startPolling());
+				reader.store.add(paradisStartPollingWhileWindowActive(model)); // PARA-PATCH: see sessionGithubWindowActivity.ts
 				return model;
 			});
 		});
