@@ -27,7 +27,7 @@ import { FileOperationResult, IFileService, toFileOperationResult } from '../../
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { GeneralShellType, ITerminalEnvironment, paradisTerminalIdentityNonce, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, ITerminalEnvironment, paradisTerminalIdentityNonce, ShellIntegrationStatus, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -65,6 +65,7 @@ import {
 	paradisBuildInsertCommandsText,
 	paradisAgentPromptAvailability,
 	ParadisAgentPromptAvailability,
+	paradisIsTerminalBusy,
 	paradisThrowIfAgentAwaitingAnswer,
 	IParadisPresetFileContent,
 	paradisParsePresetFileForUpdate,
@@ -1054,22 +1055,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	// --- 実行 ------------------------------------------------------------------------------------
 
 	/**
-	 * ターミナルが今コマンドを実行中（busy）か。CommandDetection capability（shell integration）が
-	 * 生えていれば executingCommand を信頼する——OS のプロセスツリーだけを見る hasChildProcesses は、
-	 * powerlevel10k の gitstatusd のような常駐子プロセスを持つだけで true になり、shell integration
-	 * が効いている環境でも常時 busy 判定になってしまう（smart レイアウトが実質「常に新規作成」に
-	 * 堕落する）。capability 自体が存在しない（shell integration 非対応）場合にのみ
-	 * hasChildProcesses へフォールバックする。
-	 *
-	 * 制限: shell integration が部分的にしか効かない環境（capability は生えるが executingCommand が
-	 * 更新されない構成）では busy を見逃す可能性がある。
+	 * ターミナルが今コマンドを実行中（busy）か。判定は {@link paradisIsTerminalBusy}。シェル統合の
+	 * 「実行中のコマンド」は、接続し直した直後（再生された画面には OSC 633 が含まれない）や
+	 * シェル統合が OSC 633 を出さない構成では今の状態を表さないので、その間は子プロセスと
+	 * エージェントの hook で確かめる。
 	 */
 	private _isTerminalBusy(instance: ITerminalInstance): boolean {
 		const commandDetection = instance.capabilities.get(TerminalCapability.CommandDetection);
-		if (commandDetection) {
-			return commandDetection.executingCommand !== undefined;
-		}
-		return instance.hasChildProcesses;
+		const xterm = instance.xterm;
+		return paradisIsTerminalBusy({
+			alternateBuffer: xterm?.raw.buffer.active.type === 'alternate',
+			commandStateLive: commandDetection !== undefined && xterm?.shellIntegration.status === ShellIntegrationStatus.VSCode,
+			executingCommand: commandDetection?.executingCommand !== undefined,
+			agentPane: this.agentStatusStore.isAgentInstance(instance.instanceId),
+			hasChildProcesses: instance.hasChildProcesses,
+		});
 	}
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
