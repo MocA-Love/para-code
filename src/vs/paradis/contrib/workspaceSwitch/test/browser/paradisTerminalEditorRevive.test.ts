@@ -65,6 +65,36 @@ suite('paradisTerminalEditorRevive', () => {
 			{ id: 77, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: false, paradisResolvedToCurrentPtyId: true });
 	});
 
+	test('the ended ledger is not trusted when the orphan index could not be checked', async () => {
+		// 索引が引けない回は、台帳の nonce が実は生きていても気づけない。近道せず pty host の答えに任せる。
+		collectUnexpectedErrors();
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => { throw new Error('pty host unavailable'); },
+			listHeldPtyIds: () => new Set<number>(),
+		}));
+		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		assert.deepStrictEqual(
+			paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a')),
+			{ id: 12, pid: 0, shellIntegrationNonce: 'nonce-a', findRevivedId: true });
+	});
+
+	test('the ended ledger is not trusted when the held ids are unknown', async () => {
+		collectUnexpectedErrors();
+		const disposables = store.add(new DisposableStore());
+		disposables.add(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: async () => new Map(),
+			listHeldPtyIds: () => { throw new Error('no live instances'); },
+		}));
+		disposables.add({ dispose: () => paradisClearTerminalReviveIndex() });
+		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a']), endedNonces: new Set(['nonce-a']) });
+
+		const resolved = paradisResolveRevivedTerminalEditorInput(paradisCreateDeserializedTerminalEditorInput(12, 'nonce-a'));
+		assert.deepStrictEqual({ id: resolved.id, outcome: paradisTakeRestartedTerminalOutcome('nonce-a').reason }, { id: -1, outcome: 'ambiguous' });
+	});
+
 	test('only the pty host saying "ended" makes a restored tab ended; no answer stays not-found', async () => {
 		register(new Map(), new Set());
 		await paradisRefreshTerminalReviveIndex('worktree:target', { expectedNonces: new Set(['nonce-a', 'nonce-b']) });

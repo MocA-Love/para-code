@@ -25,13 +25,11 @@
 // 件数: どの理由で新しいシェルになったかを、切り替え1回ぶんにまとめて送る。pty host の側の
 // `pty-host.reconnect-failed` は、fork がわざと繋がなかった分を数えなくなった（`paradisEndedPty.ts`）。
 
-import { raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
-import { Event } from '../../../../base/common/event.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
@@ -40,8 +38,9 @@ import { ParadisDiagnosticSeverity, reportParadisDiagnosticError } from '../../s
 import { IParadisRestartedTerminalOutcome, ParadisRestartedTerminalReason, paradisTakeRestartedTerminalOutcome } from '../common/paradisEndedTerminalRestore.js';
 import { IParadisRestartedTerminalLaunch, paradisForgetRestartedTerminal, paradisRegisterRestartedTerminalListener } from '../common/paradisTerminalLaunchPreparers.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { paradisCloseEndedTerminalWhenSafe } from './paradisEndedTerminalClose.js';
 
-/** シェルの準備と、切り替えの終わりを待つ上限。過ぎたら閉じずに残す（空のシェルのタブになるだけ）。 */
+/** シェルの準備と、切り替えの終わりを待つ上限。過ぎたら閉じずに残す（空のシェルのタブになるだけ。`paradisEndedTerminalClose.ts`）。 */
 const PARADIS_ENDED_TERMINAL_CLOSE_WAIT_MS = 10_000;
 /** 件数をまとめる間。1回の切り替えで戻るタブを1件の報告にする。 */
 const PARADIS_RESTART_REPORT_DELAY_MS = 3_000;
@@ -120,23 +119,15 @@ class ParadisEndedTerminalRestoreContribution extends Disposable implements IWor
 		if (instance === undefined) {
 			return;
 		}
-		try {
-			// 起こしかけたシェルの準備を待ってから終わらせる。途中で破棄すると準備の後始末が宙に浮く。
-			await raceTimeout(instance.processReady, PARADIS_ENDED_TERMINAL_CLOSE_WAIT_MS);
-			// 切り替えの途中でタブを閉じると、適用中の working set とぶつかる。終わってから閉じる。
-			if (this.workspaceSwitchService.isSwitching) {
-				await raceTimeout(Event.toPromise(this.workspaceSwitchService.onDidSwitchScope), PARADIS_ENDED_TERMINAL_CLOSE_WAIT_MS);
+		const closed = await paradisCloseEndedTerminalWhenSafe(instance, this.workspaceSwitchService, PARADIS_ENDED_TERMINAL_CLOSE_WAIT_MS);
+		if (!closed || this._store.isDisposed) {
+			if (!closed) {
+				this.logService.info(`[paradisEndedTerminalRestore] terminal ${instanceId} had ended, but its tab stays as a new shell: the shell or the switch did not settle in time`);
 			}
-		} catch (error) {
-			// 準備に失敗したシェルは upstream が畳む。閉じる相手が居ないだけ。
-			this.logService.trace('[paradisEndedTerminalRestore] the replacement shell did not start', error);
-		}
-		if (instance.isDisposed || this._store.isDisposed) {
 			return;
 		}
-		this.logService.info(`[paradisEndedTerminalRestore] terminal ${instanceId} had ended while its space was away; closing its tab instead of showing an empty shell`);
+		this.logService.info(`[paradisEndedTerminalRestore] terminal ${instanceId} had ended while its space was away; closed its tab instead of showing an empty shell`);
 		paradisForgetRestartedTerminal(instanceId);
-		instance.dispose(TerminalExitReason.User);
 		this.tallyFor('ended').closed++;
 		this.closedSinceNotice++;
 		this.noticeScheduler.schedule();

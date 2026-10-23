@@ -73,6 +73,11 @@ interface IParadisTerminalReviveContext {
 	orphanPtyByNonce: ReadonlyMap<string, IParadisTerminalOrphanPty>;
 	/** 孤児の索引の問い合わせが締め切りで打ち切られたか。理由の数え分けにだけ使う。 */
 	indexTimedOut: boolean;
+	/**
+	 * 孤児の索引を最後まで引けたか（打ち切り・失敗・問い合わせ先なし・skip では false）。
+	 * 終わった端末の台帳で近道してよいのは、生きた孤児が同じ nonce で居ないと確かめられたときだけ。
+	 */
+	orphansChecked: boolean;
 }
 
 type ParadisTerminalRestoreResolution =
@@ -201,6 +206,7 @@ export async function paradisRefreshTerminalReviveIndex(
 		endedNonces: options?.endedNonces,
 		orphanPtyByNonce: new Map(),
 		indexTimedOut: false,
+		orphansChecked: false,
 	};
 	// 復元先にターミナルエディタが1つも無いと分かっている場合、索引は誰も引かない。本番では
 	// 最も遅い60件のうち58件で孤児が0、半分が締め切り（500ms）に張り付いており、pty host の
@@ -241,6 +247,7 @@ export async function paradisRefreshTerminalReviveIndex(
 		);
 		context.orphanPtyByNonce = resolved ?? new Map();
 		context.indexTimedOut = resolved === undefined;
+		context.orphansChecked = resolved !== undefined;
 		// 索引が空のまま進む回がどれだけあるかは、復元の質に直結する（空だと nonce で引けず
 		// 従来経路に落ちる）。締め切り切れと「孤児が本当にいない」は結果が同じで区別できない
 		// ので、打ち切りかどうかを明示的に残す。
@@ -328,10 +335,14 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 		}
 	}
 
-	// 離れている間に終わったのを見ていた端末は、pty host に聞くまでもなく終わっている。生きた孤児が
-	// 同じ nonce で引けた場合は上で繋いでいるので、ここに来るのは本当に居ないものだけ。繋がない番号で
+	// 離れている間に終わったのを見ていた端末は、pty host に聞くまでもなく終わっている。繋がない番号で
 	// 開かせ、新しいシェルを起こす直前にタブを閉じさせる（`paradisEndedTerminalRestore.contribution.ts`）。
-	if (nonce !== undefined && restoreContext?.endedNonces?.has(nonce) === true) {
+	//
+	// **近道してよいのは、孤児の索引を最後まで引けて、同じ nonce の生きた孤児が居なかったときだけ。**
+	// 台帳に載った nonce が後で生き返ることがある（常駐との接続が切れて終了に見えた端末を、後で常駐から
+	// 引き取り直した。閉じ損ねて同じ nonce のまま残った新しいシェル）。索引が打ち切られた・掴んでいる
+	// 番号が分からないときは確かめようがないので、pty host の答え（`findRevivedId: true` の経路）に任せる。
+	if (nonce !== undefined && restoreContext?.endedNonces?.has(nonce) === true && restoreContext.orphansChecked && !heldPtyIdsUnknown) {
 		paradisNoteWorkingSetRevive(nonce, { stateKey: restoreContext.targetStateKey, indexTimedOut: restoreContext.indexTimedOut, endedWhileAway: true });
 		return { ...deserializedInput, id: PARADIS_ENDED_PTY_ID, findRevivedId: false };
 	}
