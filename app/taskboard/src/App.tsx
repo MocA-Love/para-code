@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ITaskBoardRepositoryChoice, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardRpcMethod } from '@engine/paradisTaskBoard.js';
+import { PARADIS_TASK_BOARD_SCREENSHOT_TOOLS } from '@engine/paradisTaskBoardToolApprovals.js';
 import { connect, onNotice, reconnectNow, rpc, RpcError, useBoard } from './api.js';
 import { Board, Dock } from './components/Board.js';
 import { AddTaskDialog, ConfirmDialog, ShortcutsDialog } from './components/dialogs.js';
@@ -381,30 +382,40 @@ function Shell({ snapshot, theme, setTheme }: { snapshot: ITaskBoardSnapshot; th
 function ConnectionBanner() {
 	const { connection } = useBoard();
 	if (connection === 'open' || connection === 'connecting') {
-		return <CodexApprovalBanner />;
+		return <div><ApprovalBanner agent="codex" /><ApprovalBanner agent="claude" /></div>;
 	}
 	return <div className="banner warn"><Spinner small t="amber" />サーバーとの接続が切れました。再接続しています…<span className="grow" /><button className="btn sm" onClick={reconnectNow}>今すぐ再接続</button></div>;
 }
 
-/** Codex がボードへの報告のたびに許可を求める設定のままなら、常に許可にするかを聞く。 */
-function CodexApprovalBanner() {
+function toolList(tools: readonly string[]): ReactNode {
+	return tools.map((t, i) => <span key={t}>{i ? '、' : ''}<code>{t}</code></span>);
+}
+
+/**
+ * Codex・Claude Code がボードへの報告や、スクショの工程の読むだけ・撮るだけのツールのたびに許可を求める設定のままなら、
+ * 常に許可にするかを聞く。何を許可するかが分かるように、足りないツールの名前を全部出す。
+ */
+function ApprovalBanner({ agent }: { agent: 'codex' | 'claude' }) {
 	const app = useApp();
 	const [hidden, setHidden] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const runtime = app.snapshot.runtime;
-	const missing = runtime.codexApprovalMissing ?? [];
-	const writable = runtime.codexConfigPaths ?? [];
-	const manual = runtime.codexManualConfigs ?? [];
+	const missing = (agent === 'codex' ? runtime.codexApprovalMissing : runtime.claudeApprovalMissing) ?? [];
+	const writable = (agent === 'codex' ? runtime.codexConfigPaths : runtime.claudeConfigPaths) ?? [];
+	const manual = (agent === 'codex' ? runtime.codexManualConfigs : runtime.claudeManualConfigs) ?? [];
 	if (hidden || runtime.agents !== 'para-code' || missing.length === 0 || (writable.length === 0 && manual.length === 0)) {
 		return <div />;
 	}
+	const name = agent === 'codex' ? 'Codex' : 'Claude Code';
+	const board = missing.filter(t => !(PARADIS_TASK_BOARD_SCREENSHOT_TOOLS as readonly string[]).includes(t));
+	const shots = missing.filter(t => (PARADIS_TASK_BOARD_SCREENSHOT_TOOLS as readonly string[]).includes(t));
 	const approve = async () => {
 		setBusy(true);
-		const result = await app.call('approveCodexTools', {});
+		const result = await app.call(agent === 'codex' ? 'approveCodexTools' : 'approveClaudeTools', {});
 		setBusy(false);
 		if (result) {
 			app.toast(result.path
-				? { title: 'Codex の設定に許可を足しました', body: result.path, tone: 'green' }
+				? { title: `${name} の設定に許可を足しました`, body: result.path, tone: 'green' }
 				: { title: '足す必要のある設定はありませんでした', tone: 'green' });
 		}
 	};
@@ -412,9 +423,17 @@ function CodexApprovalBanner() {
 		<div className="banner warn">
 			<Icon name="info" size={14} />
 			<span>
-				Codex はボードへの報告（{missing.join('、')}）のたびに許可を求めます。
-				{writable.length > 0 && <>Codex の設定（{writable.map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</>}
-				{manual.length > 0 && <> 次の設定は書き方を読み切れないので、<code>[mcp_servers.para-browser.tools.&lt;ツール名&gt;]</code> の節に <code>approval_mode = "approve"</code> を手で足してください: {manual.map((m, i) => <span key={m.path}>{i ? '、' : ''}<code>{m.path}</code>（{m.reason}）</span>)}</>}
+				{name} は、
+				{board.length > 0 && <>ボードへの報告（{toolList(board)}）</>}
+				{board.length > 0 && shots.length > 0 && 'と、'}
+				{shots.length > 0 && <>スクショの工程で画面を読む・撮るだけのツール（{toolList(shots)}）</>}
+				を使うたびに許可を求めます。
+				{writable.length > 0 && <>{name} の設定（{writable.map((p, i) => <code key={p}>{i ? '、' : ''}{p}</code>)}）に、この {missing.length} つだけを常に許可する設定を足しますか。</>}
+				{shots.length > 0 && <> 撮るツールは、撮った画像やスナップショットをスペースの中か一時フォルダにファイルとして書きます（既にあるファイルは上書きしません）。</>}
+				{' '}許可はこの PC の {name} のすべてのセッションに効きます。取り消すときは、設定から該当の行を手で消してください。クリック・入力・スクリプトの実行・ページの移動をするツールは、今までどおり毎回聞きます。
+				{manual.length > 0 && <> 次の設定は書き方を読み切れないので、{agent === 'codex'
+					? <><code>[mcp_servers.para-browser.tools.&lt;ツール名&gt;]</code> の節に <code>approval_mode = "approve"</code> を</>
+					: <><code>permissions.allow</code> に <code>"mcp__para-browser__&lt;ツール名&gt;"</code> を</>} 手で足してください: {manual.map((m, i) => <span key={m.path}>{i ? '、' : ''}<code>{m.path}</code>（{m.reason}）</span>)}</>}
 			</span>
 			<span className="grow" />
 			<button className="btn sm" onClick={() => setHidden(true)}>あとで</button>
