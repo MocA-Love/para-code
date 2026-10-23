@@ -308,7 +308,8 @@ export const PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES: Readonly<Record<ParadisC
  * - `session-age`: 操作説明は汎用の `Enter to confirm · Esc to cancel`。見出し `This session is 4h 59m old and 300k tokens.` と
  *   選択肢 `Resume full session as-is` がそろうときだけ（2.1.309 の実画面）。旗 `tengu_gleaming_fair`（または要約の用意が
  *   できた `_reuse`）があり、最後の発言から 70 分以上・10 万トークン以上のときに出る。
- * - `newer-model`: 操作説明は汎用の `Enter to confirm · Esc to cancel`（推測: 同じ確認の枠を使う）。見出しは
+ * - `newer-model`: 操作説明は汎用の `Enter to confirm · Esc to cancel`（2.1.309 のバイナリで、この確認も古いセッションの確認と同じ
+ *   確認の部品に題名と `onCancel` だけを渡して描いており、操作説明を差し替えていないことを確かめた）。見出しは
  *   `You’re resuming an Opus 5 session. Continue with Opus 5.5?`、選択肢は `Keep …` と `Continue with …`（2.1.309 の
  *   バイナリの文字列。旗 `tengu_hidden_volcano` が `form: "dialog"` のときだけ出るので、実画面は出せていない）。
  */

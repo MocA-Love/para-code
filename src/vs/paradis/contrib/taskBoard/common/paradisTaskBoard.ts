@@ -324,6 +324,8 @@ export interface ITaskBoardGitHubState {
 	/** 取り込み元の表示名（例: `owner の Projects #3`）。 */
 	readonly sourceLabel?: string;
 	readonly requestCount?: number;
+	/** GitHub の上限で呼び出しを止めているとき、再開する時刻。 */
+	readonly pausedUntil?: number;
 }
 
 export type TaskBoardAgentMode = 'simulated' | 'para-code';
