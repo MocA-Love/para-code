@@ -922,6 +922,42 @@ export function paradisThrowIfAgentAwaitingAnswer(
 	}
 }
 
+/** {@link paradisIsTerminalBusy} が見るターミナルの状態。 */
+export interface IParadisTerminalBusySignals {
+	/** 代替画面（全画面のプログラム）を表示中か。 */
+	readonly alternateBuffer: boolean;
+	/**
+	 * この画面がシェル統合の印（OSC 633 か OSC 133）を実際に受け取っていて、実行中のコマンドの情報が今の状態を
+	 * 表しているか。接続し直した直後は再生された画面だけで、終わりの印も始まりの印も届いていない。
+	 */
+	readonly commandStateLive: boolean;
+	/** シェル統合が「コマンドを実行中」と見ているか。 */
+	readonly executingCommand: boolean;
+	/** Claude Code / Codex の hook が届いたペインか（エージェントが終わった後も残ることがある）。 */
+	readonly agentPane: boolean;
+	/** シェルに子プロセスがいるか（常駐の子プロセスでも true になる）。 */
+	readonly hasChildProcesses: boolean;
+}
+
+/**
+ * 「空いていれば実行・忙しければ新規」でアクティブなターミナルへ送ってよいかの判定。true なら
+ * 送らずに新しいターミナルを作る。
+ *
+ * シェル統合が今の状態を表していれば、その「実行中か」を信じる（常駐の子プロセスを持つだけの
+ * シェルを忙しい扱いにしないため。エージェントが終わった後のシェルもここで空きになる）。表して
+ * いないとき（接続し直した後・シェル統合が無い）は確かめようがないので、
+ * エージェントのペインか子プロセスがいれば忙しいとみなす（取り違えるより新規に倒す）。
+ */
+export function paradisIsTerminalBusy(signals: IParadisTerminalBusySignals): boolean {
+	if (signals.alternateBuffer) {
+		return true;
+	}
+	if (signals.commandStateLive) {
+		return signals.executingCommand;
+	}
+	return signals.agentPane || signals.hasChildProcesses;
+}
+
 /**
  * 旧形式（commands + launchMode）・新形式（tasks + layout）を「タスク列＋レイアウト」に正規化する。
  * 旧形式の読み替え:

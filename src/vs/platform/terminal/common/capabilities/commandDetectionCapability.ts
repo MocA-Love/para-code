@@ -493,6 +493,16 @@ export class CommandDetectionCapability extends Disposable implements ICommandDe
 				this._currentCommand.commandStartMarker = e.startLine !== undefined ? this._terminal.registerMarker(e.startLine - (buffer.baseY + buffer.cursorY)) : undefined;
 				this._currentCommand.commandStartX = e.startX;
 				this._currentCommand.promptStartMarker = e.promptStartLine !== undefined ? this._terminal.registerMarker(e.promptStartLine - (buffer.baseY + buffer.cursorY)) : undefined;
+				// PARA-PATCH: restore the command that was running when the terminal was serialized, so
+				// executingCommand stays set after attaching again (the replay carries no OSC 633;E/C).
+				const executedMarker = e.command && e.executedLine !== undefined ? this._terminal.registerMarker(e.executedLine - (buffer.baseY + buffer.cursorY)) : undefined;
+				if (executedMarker) {
+					this._currentCommand.commandExecutedMarker = executedMarker;
+					this._currentCommand.commandExecutedX = e.executedX;
+					this._currentCommand.command = e.command;
+					this._currentCommand.commandLineConfidence = e.commandLineConfidence;
+					this._currentCommand.isTrusted = e.isTrusted;
+				}
 				this._cwd = e.cwd;
 				// eslint-disable-next-line local/code-no-dangerous-type-assertions
 				this._onCommandStarted.fire({ marker } as ITerminalCommand);
