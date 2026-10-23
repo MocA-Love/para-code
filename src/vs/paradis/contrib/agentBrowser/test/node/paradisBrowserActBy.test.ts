@@ -120,6 +120,33 @@ suite('paradisBrowserActBy (shared process)', () => {
 		});
 	});
 
+	// q.html Q448 の ④: 該当なしのとき、同じ評価で読んだ近い候補を指定の形で添える。何も送らない
+	test('click_by and fill_by list close matches when nothing matches, and send nothing', async () => {
+		const near = { candidates: [{ role: 'button', name: 'Save draft', text: 'Save draft' }], selectorMatches: 2 };
+		const click = new FakePage({ locate: [{ matched: 0, near }] });
+		const fill = new FakePage({ locate: [{ matched: 0, near: { candidates: [{ role: 'textbox', name: 'Email address' }] } }] });
+		const actBy = new ParadisBrowserActBy(() => 'ref');
+		const clicked = await actBy.call(click.call(), 'click_by', { selector: 'button', text: 'Save drafts' });
+		const filled = await actBy.call(fill.call(), 'fill_by', { role: 'textbox', name: 'Mail', value: 'a@example.com' });
+		assert.deepStrictEqual({
+			clicked: [isError(clicked), textOf(clicked).split('\n')],
+			filled: [isError(filled), textOf(filled).split('\n').slice(1)],
+			sent: [...click.sent, ...fill.sent, ...click.modes, ...fill.modes],
+		}, {
+			clicked: [true, [
+				'click_by: no element matches selector "button", text "Save drafts". Check with take_snapshot or get_text, wait for it with wait_until, or bring it into view with scroll_to.',
+				'- The selector alone matches 2 element(s), but none of them has the text asked for.',
+				'- Close matches visible on the page now (give one of these as the locator):',
+				'  {"role":"button","name":"Save draft"} or {"text":"Save draft"}',
+			]],
+			filled: [true, [
+				'- Close matches visible on the page now (give one of these as the locator):',
+				'  {"role":"textbox","name":"Email address"}',
+			]],
+			sent: ['locate', 'locate'],
+		});
+	});
+
 	test('fill_by selects the old content and inserts the text, then reports the value', async () => {
 		const page = new FakePage({ locate: [field], focusField: [{ focused: true, value: 'old', empty: false }], readField: [{ value: 'new@example.com' }] });
 		const result = await new ParadisBrowserActBy(() => 'ref').call(page.call(), 'fill_by', { role: 'textbox', name: 'Email', value: 'new@example.com', submit: true });
