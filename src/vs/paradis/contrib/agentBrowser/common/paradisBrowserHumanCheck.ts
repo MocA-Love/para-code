@@ -38,8 +38,35 @@ export const PARADIS_HUMAN_CHECK_TOOLS: ReadonlySet<string> = new Set([
 	'type_text', 'press_key', 'hover', 'drag', 'mouse_action', 'handle_dialog', 'wait_until', 'wait_for', 'run_steps', 'take_snapshot', 'take_screenshot',
 ]);
 
-/** ページの中（isolated world）で動かして、確認の様子を返す式。DOM だけを読み、何も変えない。 */
+/**
+ * ページの中（isolated world）で動かして、確認の様子を返す式。DOM を読むだけで、ページの見た目や動きは変えない。
+ *
+ * 初めて動かしたとき、その文書に「送信に当たる操作」を数える聞き手を置く（isolated world の中だけの値。ページの
+ * スクリプトからは見えない）。数えるのは、form の submit、送信ボタン（`type=submit`・type の無い form の中の
+ * button・`input[type=submit|image]`）や Turnstile と同じ form の中のボタンのクリック、form の中の入力欄
+ * （textarea を除く）での Enter。入力欄へのフォーカスのクリック・Tab・fill は数えない。
+ */
 export const PARADIS_HUMAN_CHECK_PAGE_PROBE = `(() => {
+	const state = window.__paradisHumanCheck || (window.__paradisHumanCheck = (() => {
+		const counter = { submits: 0 };
+		const turnstileForm = form => !!form && !!form.querySelector('input[name="cf-turnstile-response"]');
+		const isSubmitControl = element => {
+			if (element instanceof HTMLButtonElement) {
+				return (element.type === 'submit' && !!element.form) || turnstileForm(element.form);
+			}
+			return element instanceof HTMLInputElement && (element.type === 'submit' || element.type === 'image');
+		};
+		document.addEventListener('submit', () => { counter.submits++; }, true);
+		document.addEventListener('click', event => {
+			const target = event.target instanceof Element ? event.target.closest('button, input') : null;
+			if (target && isSubmitControl(target)) { counter.submits++; }
+		}, true);
+		document.addEventListener('keydown', event => {
+			const target = event.target;
+			if (event.key === 'Enter' && target instanceof HTMLInputElement && !!target.form && !['button', 'checkbox', 'radio', 'file', 'submit', 'image', 'reset'].includes(target.type)) { counter.submits++; }
+		}, true);
+		return counter;
+	})());
 	const page = Array.from(document.scripts).some(s => !s.src && s.textContent.includes('_cf_chl_opt'));
 	const inputs = Array.from(document.querySelectorAll('input[name="cf-turnstile-response"]'));
 	const unsolvedVisible = inputs.some(input => {
@@ -49,7 +76,7 @@ export const PARADIS_HUMAN_CHECK_PAGE_PROBE = `(() => {
 		const rect = box.getBoundingClientRect();
 		return rect.width > 0 && rect.height > 0 && getComputedStyle(box).visibility !== 'hidden';
 	});
-	return { page, unsolvedVisible };
+	return { page, unsolvedVisible, submits: state.submits };
 })()`;
 
 /**
@@ -58,19 +85,45 @@ export const PARADIS_HUMAN_CHECK_PAGE_PROBE = `(() => {
  */
 export const PARADIS_HUMAN_CHECK_WAIT_PREDICATE = `() => !Array.from(document.scripts).some(s => !s.src && s.textContent.includes('_cf_chl_opt')) && !Array.from(document.querySelectorAll('input[name="cf-turnstile-response"]')).some(i => { const b = i.parentElement; const r = b && b.getBoundingClientRect(); return !i.value && !!r && r.width > 0 && r.height > 0 && getComputedStyle(b).visibility !== 'hidden'; })`;
 
-/** {@link PARADIS_HUMAN_CHECK_PAGE_PROBE} の戻り値から種類を決める。形が違えば undefined。 */
-export function paradisClassifyHumanCheckProbe(value: unknown): ParadisHumanCheckKind | undefined {
+/**
+ * 見た結果。`none` は確認が無い、`check` は確認があり、`unknown` は見られなかった（ページが時間内に答えない・
+ * 読み込み中・失敗）。`unknown` のときは、知らせた状態も通知も変えない（まだ通っていないのに閉じないように）。
+ * `submits` は、その文書で数えた送信に当たる操作の数。
+ */
+export type ParadisHumanCheckObservation =
+	| { readonly state: 'none' }
+	| { readonly state: 'check'; readonly kind: ParadisHumanCheckKind; readonly submits: number }
+	| { readonly state: 'unknown' };
+
+/** {@link PARADIS_HUMAN_CHECK_PAGE_PROBE} の戻り値を読む。形が違えば unknown。 */
+export function paradisClassifyHumanCheckProbe(value: unknown): ParadisHumanCheckObservation {
 	if (typeof value !== 'object' || value === null) {
-		return undefined;
+		return { state: 'unknown' };
 	}
-	const probe = value as { page?: unknown; unsolvedVisible?: unknown };
+	const probe = value as { page?: unknown; unsolvedVisible?: unknown; submits?: unknown };
+	const submits = typeof probe.submits === 'number' && Number.isFinite(probe.submits) ? probe.submits : 0;
 	if (probe.page === true) {
-		return 'page';
+		return { state: 'check', kind: 'page', submits };
 	}
-	return probe.unsolvedVisible === true ? 'widget' : undefined;
+	return probe.unsolvedVisible === true ? { state: 'check', kind: 'widget', submits } : { state: 'none' };
 }
 
-/** 種類を main から受け取ったときの検証。 */
+/** main から受け取った {@link ParadisHumanCheckObservation} の検証。形が違えば unknown。 */
+export function paradisParseHumanCheckObservation(value: unknown): ParadisHumanCheckObservation {
+	if (typeof value !== 'object' || value === null) {
+		return { state: 'unknown' };
+	}
+	const v = value as { state?: unknown; kind?: unknown; submits?: unknown };
+	if (v.state === 'none') {
+		return { state: 'none' };
+	}
+	if (v.state === 'check' && (v.kind === 'page' || v.kind === 'widget')) {
+		return { state: 'check', kind: v.kind, submits: typeof v.submits === 'number' && Number.isFinite(v.submits) ? v.submits : 0 };
+	}
+	return { state: 'unknown' };
+}
+
+/** 種類を受け取ったときの検証（renderer への通知）。 */
 export function paradisParseHumanCheckKind(value: unknown): ParadisHumanCheckKind | undefined {
 	return value === 'page' || value === 'widget' ? value : undefined;
 }
@@ -78,8 +131,6 @@ export function paradisParseHumanCheckKind(value: unknown): ParadisHumanCheckKin
 /** 道具の結果に足す文の種類。 */
 export type ParadisHumanCheckNoticeKind = 'page' | 'widget' | 'widgetBlocked' | 'passed';
 
-/** 送信のような操作（押す・キー）。ページの中の Turnstile が残ったままこれをしたら、人に頼む。 */
-const SUBMIT_LIKE_TOOLS: ReadonlySet<string> = new Set(['click', 'click_by', 'click_at', 'press_key', 'mouse_action', 'run_steps']);
 
 function waitInstruction(tabId: string | undefined): string {
 	return `wait: call wait_until${tabId !== undefined ? ` with tab_id ${JSON.stringify(tabId)},` : ''} predicate ${JSON.stringify(PARADIS_HUMAN_CHECK_WAIT_PREDICATE)} and timeout_seconds 100, and call it again if it times out. Continue the task after it returns.`;
@@ -115,6 +166,8 @@ interface IParadisHumanCheckState {
 	readonly kind: ParadisHumanCheckKind | undefined;
 	/** ユーザーへ通知を出しているか。 */
 	readonly notified: boolean;
+	/** 最後に見たときの、送信に当たる操作の数（増えたら、確認が残ったまま送ろうとした）。 */
+	readonly submits: number;
 }
 
 /** 覚えておくタブの数の上限。 */
@@ -124,31 +177,37 @@ const MAX_TABS = 256;
  * タブごとに、伝えた確認の様子を覚える。キーは「ペイン\nタブ」。
  * - 確認ページ: 出たらエージェントに「待つ」と伝え、ユーザーに通知する
  * - ページの中の Turnstile: 出たらエージェントには「入力は続けてよい、送る前に人に頼む」とだけ伝える。残ったまま
- *   送信のような操作をしたら、そこで初めてユーザーに通知し、エージェントに人に頼むよう伝える
+ *   送信に当たる操作（ページの中で数えたもの。{@link PARADIS_HUMAN_CHECK_PAGE_PROBE}）が増えたら、そこで初めて
+ *   ユーザーに通知し、エージェントに人に頼むよう伝える
  * - 同じ様子が続く間は何も足さない（エージェント自身の wait_until が毎回同じ文を受け取らないように）
  * - 通ったら 1 回だけ「通った」を足し、通知を閉じる
  */
 export class ParadisHumanCheckTracker {
 	private readonly states = new Map<string, IParadisHumanCheckState>();
 
-	observe(key: string, kind: ParadisHumanCheckKind | undefined, tool: string): IParadisHumanCheckUpdate {
+	observe(key: string, observation: ParadisHumanCheckObservation): IParadisHumanCheckUpdate {
+		if (observation.state === 'unknown') {
+			return {};
+		}
 		const previous = this.states.get(key);
-		if (kind === undefined) {
+		if (observation.state === 'none') {
 			if (previous === undefined) {
 				return {};
 			}
 			this.states.delete(key);
 			return { notice: 'passed', close: previous.notified };
 		}
+		const { kind, submits } = observation;
 		if (previous?.kind === kind) {
-			if (kind === 'widget' && !previous.notified && SUBMIT_LIKE_TOOLS.has(tool)) {
-				this.set(key, { kind, notified: true });
+			if (kind === 'widget' && !previous.notified && submits > previous.submits) {
+				this.set(key, { kind, notified: true, submits });
 				return { notice: 'widgetBlocked', notify: 'widget' };
 			}
+			this.set(key, { ...previous, submits });
 			return {};
 		}
 		const notify = kind === 'page';
-		this.set(key, { kind, notified: notify });
+		this.set(key, { kind, notified: notify, submits });
 		return { notice: kind, ...(notify ? { notify: kind } : {}), ...(previous?.notified && !notify ? { close: true } : {}) };
 	}
 
@@ -158,7 +217,7 @@ export class ParadisHumanCheckTracker {
 		if (previous?.kind === undefined) {
 			return false;
 		}
-		this.set(key, { kind: undefined, notified: false });
+		this.set(key, { kind: undefined, notified: false, submits: 0 });
 		return previous.notified;
 	}
 

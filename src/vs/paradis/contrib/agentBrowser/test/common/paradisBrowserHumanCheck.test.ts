@@ -7,53 +7,84 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_HUMAN_CHECK_WAIT_PREDICATE, ParadisHumanCheckTracker, paradisClassifyHumanCheckProbe, paradisHumanCheckNotice } from '../../common/paradisBrowserHumanCheck.js';
+import { PARADIS_HUMAN_CHECK_WAIT_PREDICATE, ParadisHumanCheckTracker, paradisClassifyHumanCheckProbe, paradisHumanCheckNotice, paradisParseHumanCheckObservation } from '../../common/paradisBrowserHumanCheck.js';
 
 suite('ParadisBrowserHumanCheck', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('classifies the page probe', () => {
-		assert.deepStrictEqual([
-			paradisClassifyHumanCheckProbe({ page: true, unsolvedVisible: true }),
-			paradisClassifyHumanCheckProbe({ page: false, unsolvedVisible: true }),
-			paradisClassifyHumanCheckProbe({ page: false, unsolvedVisible: false }),
-			paradisClassifyHumanCheckProbe(undefined),
-		], ['page', 'widget', undefined, undefined]);
+	test('classifies the page probe and the observation sent from main', () => {
+		assert.deepStrictEqual({
+			probe: [
+				paradisClassifyHumanCheckProbe({ page: true, unsolvedVisible: true, submits: 2 }),
+				paradisClassifyHumanCheckProbe({ page: false, unsolvedVisible: true }),
+				paradisClassifyHumanCheckProbe({ page: false, unsolvedVisible: false }),
+				// 時間切れ（raceTimeout の undefined）は「無い」ではなく unknown
+				paradisClassifyHumanCheckProbe(undefined),
+			],
+			parsed: [
+				paradisParseHumanCheckObservation({ state: 'check', kind: 'widget', submits: 1 }),
+				paradisParseHumanCheckObservation({ state: 'none' }),
+				paradisParseHumanCheckObservation(null),
+				paradisParseHumanCheckObservation('page'),
+			],
+		}, {
+			probe: [
+				{ state: 'check', kind: 'page', submits: 2 },
+				{ state: 'check', kind: 'widget', submits: 0 },
+				{ state: 'none' },
+				{ state: 'unknown' },
+			],
+			parsed: [
+				{ state: 'check', kind: 'widget', submits: 1 },
+				{ state: 'none' },
+				{ state: 'unknown' },
+				{ state: 'unknown' },
+			],
+		});
 	});
 
 	test('stops the agent at a check page, but lets it fill a form with Turnstile until it tries to send', () => {
 		const tracker = new ParadisHumanCheckTracker();
 		const page = 'pane\npage-tab';
 		const form = 'pane\nform-tab';
+		const none = { state: 'none' } as const;
+		const unknown = { state: 'unknown' } as const;
+		const check = (kind: 'page' | 'widget', submits = 0) => ({ state: 'check', kind, submits }) as const;
 		assert.deepStrictEqual({
 			page: [
-				tracker.observe(page, undefined, 'navigate_page'),
-				tracker.observe(page, 'page', 'navigate_page'),
-				tracker.observe(page, 'page', 'wait_until'),
-				tracker.observe(page, undefined, 'wait_until'),
-				tracker.observe(page, undefined, 'take_snapshot'),
+				tracker.observe(page, none),
+				tracker.observe(page, check('page')),
+				tracker.observe(page, check('page')),
+				// 見られなかったときは何も変えない（通ったことにしない）
+				tracker.observe(page, unknown),
+				tracker.isNotified(page),
+				tracker.observe(page, none),
+				tracker.observe(page, none),
 			],
 			form: [
-				tracker.observe(form, 'widget', 'navigate_page'),
-				tracker.observe(form, 'widget', 'fill_by'),
-				tracker.observe(form, 'widget', 'click_by'),
-				tracker.observe(form, 'widget', 'click_by'),
+				tracker.observe(form, check('widget')),
+				// 入力欄のクリック・Tab・fill（送信に当たる操作が増えない）では止めない
+				tracker.observe(form, check('widget')),
+				tracker.observe(form, check('widget')),
+				// 送信に当たる操作が増えたのに残っている
+				tracker.observe(form, check('widget', 1)),
+				tracker.observe(form, check('widget', 2)),
 				tracker.isNotified(form),
 				// 見回りで通ったのを見つけた: 通知を閉じ、次の道具の結果に「通った」を足す
 				tracker.markPassed(form),
-				tracker.observe(form, undefined, 'wait_until'),
+				tracker.observe(form, none),
 			],
 		}, {
-			page: [{}, { notice: 'page', notify: 'page' }, {}, { notice: 'passed', close: true }, {}],
-			form: [{ notice: 'widget' }, {}, { notice: 'widgetBlocked', notify: 'widget' }, {}, true, true, { notice: 'passed', close: false }],
+			page: [{}, { notice: 'page', notify: 'page' }, {}, {}, true, { notice: 'passed', close: true }, {}],
+			form: [{ notice: 'widget' }, {}, {}, { notice: 'widgetBlocked', notify: 'widget' }, {}, true, true, { notice: 'passed', close: false }],
 		});
 	});
 
 	test('forgets a pane and returns the tabs whose notification must be closed', () => {
 		const tracker = new ParadisHumanCheckTracker();
-		tracker.observe('pane\na', 'page', 'navigate_page');
-		tracker.observe('pane\nb', 'widget', 'navigate_page');
-		tracker.observe('other\nc', 'page', 'navigate_page');
+		tracker.observe('pane\na', { state: 'check', kind: 'page', submits: 0 });
+		tracker.observe('pane\nb', { state: 'check', kind: 'widget', submits: 0 });
+		tracker.observe('other\nc', { state: 'check', kind: 'page', submits: 0 });
 		assert.deepStrictEqual({ closed: tracker.forget('pane'), kept: tracker.has('other\nc'), forgotten: tracker.has('pane\na') }, { closed: ['a'], kept: true, forgotten: false });
 	});
 
