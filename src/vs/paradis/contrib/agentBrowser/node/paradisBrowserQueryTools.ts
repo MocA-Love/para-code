@@ -204,7 +204,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 				padding: { type: 'number', description: 'CSS pixels of margin around each element (0-200, default 0).' },
 				format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format (default png).' },
 				quality: { type: 'number', description: 'jpeg only: quality 0-100.' },
-				saveTo: { type: 'string', description: 'Absolute path of the image file to write, inside the folder of this terminal pane\'s space or the temporary folder. The images are then not returned inline.' },
+				saveTo: { type: 'string', description: 'Absolute path of the image file to write, inside the folder of this terminal pane\'s space or the temporary folder. The images are then not returned inline. An existing file is never overwritten: choose a new file name for each capture, for example by adding -2.' },
 			},
 			additionalProperties: false,
 		},
