@@ -11,6 +11,10 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisViewportSize,
 	paradisDescribeViewport,
+	paradisInitialViewportSpec,
+	paradisParseViewportViewSpecs,
+	paradisRememberViewportViewSpec,
+	paradisViewportTargetSpec,
 	paradisParseViewportDimensions,
 	paradisParseViewportSizes,
 	paradisResolveViewportDefault,
@@ -19,7 +23,7 @@ import {
 	paradisViewportDevice,
 	paradisViewportSpecMatches,
 } from '../../common/paradisBrowserViewport.js';
-import { ParadisAgentEmulationLedger, paradisEmulatedScreenshotSize, paradisFoldDeviceMetricsOverride, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisParseTouchEmulation, paradisFoldDeviceMetricsOverride, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../common/paradisBrowserViewportCdp.js';
 import { paradisFormatSetViewportResult, paradisViewportForAgent } from '../../common/paradisBrowserViewportTools.js';
 
 const SIZES: readonly IParadisViewportSize[] = [
@@ -136,6 +140,29 @@ suite('paradisBrowserViewport', () => {
 		assert.deepStrictEqual(['  社内　PC ', 'auto', '', 'x'.repeat(41)].map(name => paradisSanitizeViewportName(name)), ['社内 PC', undefined, undefined, undefined]);
 	});
 
+	test('remembers the last size of each tab, so a tab left at the editor size does not get the default again', () => {
+		const specs = paradisParseViewportViewSpecs(JSON.stringify([['a', ''], ['b', 'iPhone 15'], ['bad'], 'junk']));
+		paradisRememberViewportViewSpec(specs, 'c', '1366x768', 2);
+		paradisRememberViewportViewSpec(specs, 'b', '', 2);
+		assert.deepStrictEqual({
+			specs: [...specs],
+			// left at the editor size: nothing to apply, and do not write the default over it
+			fit: paradisInitialViewportSpec('', 'ノート PC'),
+			// a size lost by a restart comes back
+			sized: paradisInitialViewportSpec('iPhone 15', 'ノート PC'),
+			fresh: paradisInitialViewportSpec(undefined, 'ノート PC'),
+			targets: [paradisViewportTargetSpec({ kind: 'fit' }), paradisViewportTargetSpec({ kind: 'size', size: SIZES[0] }), paradisViewportTargetSpec({ kind: 'size', size: { width: 800, height: 600 } })],
+			broken: paradisParseViewportViewSpecs('{'),
+		}, {
+			specs: [['c', '1366x768'], ['b', '']],
+			fit: { spec: '', remember: false },
+			sized: { spec: 'iPhone 15', remember: false },
+			fresh: { spec: 'ノート PC', remember: true },
+			targets: ['', '社内 PC', '800x600'],
+			broken: new Map(),
+		});
+	});
+
 	test('shapes the LLM answers', () => {
 		assert.deepStrictEqual({
 			viewport: paradisViewportForAgent({ fit: true, width: 1240, height: 860, mobile: false }),
@@ -183,6 +210,22 @@ suite('paradisBrowserViewportCdp', () => {
 			otherOwner: { kind: 'keep' },
 			remaining: 1,
 		});
+	});
+
+	test('touch follows the agent on a desktop size and is always on for a phone size', () => {
+		assert.deepStrictEqual([
+			paradisEffectiveTouchEmulation(true, { width: 1366, height: 768 }),
+			paradisEffectiveTouchEmulation(false, { width: 390, height: 844, mobile: true }),
+			paradisEffectiveTouchEmulation(false, undefined),
+			paradisParseTouchEmulation({ enabled: true }),
+			paradisParseTouchEmulation(undefined),
+		], [
+			{ enabled: true, maxTouchPoints: 5 },
+			{ enabled: true, maxTouchPoints: 5 },
+			{ enabled: false, maxTouchPoints: 1 },
+			true,
+			false,
+		]);
 	});
 
 	test('two connections in turn: the size from before the first one comes back once the last owner closes, whichever closes first', () => {
