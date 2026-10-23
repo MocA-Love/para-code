@@ -191,6 +191,20 @@ suite('ParadisClaudeModBridge', () => {
 		});
 	});
 
+	test('the end of the main turn leaves a background subagent\'s approval waiting, and its own turn end settles it', async () => {
+		await call('event', { events: [{ type: 'hello', version: '1' }, { type: 'turn.start', turnId: 't1' }] });
+		const child = (await call('permission', { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_c', agentId: 'a-child', denyMessage: true })).body.id as string;
+		const main = (await call('permission', { toolName: 'Bash', toolInput: { command: 'pwd' }, toolUseId: 'toolu_m', denyMessage: true })).body.id as string;
+		const mainWait = call('wait', { id: main });
+		await call('event', { events: [{ type: 'turn.complete', turnId: 't1', aborted: false }] });
+		const afterMainTurn = bridge.pendingPermissions(TOKEN, SESSION).map(permission => permission.agentId);
+		const childWait = call('wait', { id: child });
+		await call('event', { events: [{ type: 'turn.complete', turnId: 't2', agentId: 'a-child', aborted: false }] });
+		assert.deepStrictEqual({ main: (await mainWait).body, afterMainTurn, child: (await childWait).body, left: bridge.pendingPermissions(TOKEN, SESSION).length }, {
+			main: { state: 'settled' }, afterMainTurn: ['a-child'], child: { state: 'settled' }, left: 0,
+		});
+	});
+
 	test('drops approvals once the phone has been away for a while', async () => {
 		let presence: 'connected' | 'enabled' = 'connected';
 		bridge.setPresence(() => presence);

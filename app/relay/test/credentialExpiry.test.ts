@@ -101,3 +101,28 @@ describe('mobile credential expiry (W2-35)', () => {
 		expect(left).toBe(0);
 	});
 });
+
+describe('self-revoke while the PC is away', () => {
+	it('tells the PC that the mobile left when it next connects', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const now = Date.now();
+		await insertMobile(deviceId, 'leaving', 'token-leaving', now - DAY, now - DAY);
+		// PC がつながっていない間に、スマホが自分でペアリングを解除する
+		const res = await SELF.fetch(`https://relay/device/${deviceId}/mobile/self-revoke`, {
+			method: 'POST',
+			headers: { authorization: 'Bearer token-leaving' },
+			body: JSON.stringify({ mobileId: 'leaving' }),
+		});
+		expect(res.ok).toBe(true);
+		const pcRes = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`, { headers: { Upgrade: 'websocket' } });
+		const pcWs = pcRes.webSocket!;
+		const messages: string[] = [];
+		pcWs.addEventListener('message', event => messages.push(event.data as string));
+		pcWs.accept();
+		openSockets.push(pcWs);
+		await new Promise(resolve => setTimeout(resolve, 50));
+		const revoked = messages.map(text => decodeRelayControl(text)).filter(msg => msg.type === 'mobile-revoked').map(msg => (msg as { mobileId: string }).mobileId);
+		const left = await runInDurableObject(deviceStub(deviceId), (_instance, state) => state.storage.sql.exec('SELECT COUNT(*) AS n FROM pc_notices').toArray()[0]!.n);
+		expect({ revoked, rows: (await mobileRows(deviceId)).length, left }).toEqual({ revoked: ['leaving'], rows: 0, left: 0 });
+	});
+});

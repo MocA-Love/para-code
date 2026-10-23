@@ -67,6 +67,23 @@ function display(title: string | undefined): string {
 	return paradisBindingRestoreDisplayName(title, localize('paradis.bookmarks.mcp.unknownCaller', "不明"));
 }
 
+/** フォルダの中にある節（フォルダそのものは含まない）の id。 */
+function descendantIds(node: ParadisBookmarkNode): Set<string> {
+	const ids = new Set<string>();
+	const visit = (children: readonly ParadisBookmarkNode[]) => {
+		for (const child of children) {
+			ids.add(child.id);
+			if (isParadisBookmarkFolder(child)) {
+				visit(child.children);
+			}
+		}
+	};
+	if (isParadisBookmarkFolder(node)) {
+		visit(node.children);
+	}
+	return ids;
+}
+
 function fail(error: string): ParadisBookmarkToolResult {
 	return { ok: false, error };
 }
@@ -216,6 +233,7 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 		if (inside.bookmarks + inside.folders > 0 && !recursive) {
 			return fail(`That folder contains ${inside.bookmarks} bookmarks and ${inside.folders} folders. Pass "recursive": true to delete it with everything inside, after checking with list_bookmarks that this is what the user wants.`);
 		}
+		const approvedIds = descendantIds(target);
 		const title = display(target.title);
 		const isFolder = isParadisBookmarkFolder(target);
 		const request: IParadisAgentApprovalRequest = {
@@ -238,6 +256,10 @@ export class ParadisBookmarkMcpChannel implements IServerChannel {
 		const current = findParadisNodeById(this.bookmarks.nodes, id);
 		if (!current) {
 			return fail(MOVE_ERRORS['not-found']);
+		}
+		// 承認を待つ間に足されたものは、ユーザーが消してよいと答えた中身に入っていないので、消さずに断る。
+		if ([...descendantIds(current)].some(childId => !approvedIds.has(childId))) {
+			return fail('Bookmarks or folders were added to that folder while the user was approving, so nothing was deleted. Call list_bookmarks and ask again if the user still wants to delete it.');
 		}
 		const removedInside = countParadisDescendants(current);
 		const parentId = findParadisParentFolderId(this.bookmarks.nodes, id);
