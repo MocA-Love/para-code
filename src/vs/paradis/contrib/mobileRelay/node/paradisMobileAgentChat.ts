@@ -41,6 +41,7 @@ import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadis
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisExtractIssueUrls } from '../../../common/paradisIssueDetection.js';
 import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
+import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
 import { paradisBuildAgentCommandCatalog, paradisBuiltInAgentCommands, paradisLegacyAgentCommandCatalog, paradisNormalizeModCommandList, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisSlashCommand, PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotAliasMessage, paradisClaudeModelSwitch, paradisParseSlashCommand, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
@@ -1616,7 +1617,7 @@ async function paradisClaudeProjectDirForCwd(cwd: string, homes: IParadisAgentHo
 			resolvedCwd = await fs.realpath(cwd);
 		} catch { /* 消えたディレクトリ等は文字面で試す */ }
 	}
-	return join(homes.claude, 'projects', resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-'));
+	return join(homes.claude, 'projects', paradisClaudeProjectSlug(resolvedCwd));
 }
 
 /** Claude の transcript のファイル名から会話 id（小文字）を返す。サブエージェントの記録は対象外。 */

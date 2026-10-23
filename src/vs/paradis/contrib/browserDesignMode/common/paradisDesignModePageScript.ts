@@ -98,6 +98,8 @@ const INSTALL_SCRIPT = `(function () {
 		try {
 			var url = new URL(value, document.baseURI);
 			if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'file:') { return ''; }
+			url.username = '';
+			url.password = '';
 			url.search = '';
 			url.hash = '';
 			return url.href;

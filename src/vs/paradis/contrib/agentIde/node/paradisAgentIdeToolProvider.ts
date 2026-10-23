@@ -147,7 +147,7 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		if (!PARADIS_AGENT_IDE_TOOL_NAMES.has(name)) {
 			return undefined;
 		}
-		const parsed = paradisParseAgentIdeCall(name, args);
+		const parsed = paradisParseAgentIdeCall(name, args, { fromSubagent: context?.fromSubagent === true });
 		switch (parsed.kind) {
 			case 'error':
 				return toolError(parsed.error);

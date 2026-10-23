@@ -20,6 +20,8 @@
 //   ほとんどの確認は人が触らなくても数秒で通るので、通る途中を知らせない
 // 地域で変わる文言（「Just a moment...」など）は見ない。
 
+import { PARADIS_MAIN_WAIT_MAX_SECONDS, PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from './paradisSubagentToolCalls.js';
+
 /** 人の確認の種類。page は Cloudflare の確認ページ（サイトの代わりに出る）、widget はページの中の Turnstile。 */
 export type ParadisHumanCheckKind = 'page' | 'widget';
 
@@ -132,20 +134,24 @@ export function paradisParseHumanCheckKind(value: unknown): ParadisHumanCheckKin
 export type ParadisHumanCheckNoticeKind = 'page' | 'widget' | 'widgetBlocked' | 'passed';
 
 
-function waitInstruction(tabId: string | undefined): string {
-	return `wait: call wait_until${tabId !== undefined ? ` with tab_id ${JSON.stringify(tabId)},` : ''} predicate ${JSON.stringify(PARADIS_HUMAN_CHECK_WAIT_PREDICATE)} and timeout_seconds 100, and call it again if it times out. Continue the task after it returns.`;
+function waitInstruction(tabId: string | undefined, fromSubagent: boolean): string {
+	const seconds = fromSubagent ? PARADIS_SUBAGENT_WAIT_MAX_SECONDS : PARADIS_MAIN_WAIT_MAX_SECONDS;
+	return `wait: call wait_until${tabId !== undefined ? ` with tab_id ${JSON.stringify(tabId)},` : ''} predicate ${JSON.stringify(PARADIS_HUMAN_CHECK_WAIT_PREDICATE)} and timeout_seconds ${seconds}, and call it again if it times out. Continue the task after it returns.`;
 }
 
-/** 道具の結果に足す文（エージェント向け、英語）。 */
-export function paradisHumanCheckNotice(kind: ParadisHumanCheckNoticeKind, tabId: string | undefined): string {
+/**
+ * 道具の結果に足す文（エージェント向け、英語）。`fromSubagent` は、この呼び出しが Claude Code のサブエージェントの中から来たと
+ * 確かめられたとき（待つ道具を長い上限で呼ぶよう案内する。paradisSubagentToolCalls.ts）。
+ */
+export function paradisHumanCheckNotice(kind: ParadisHumanCheckNoticeKind, tabId: string | undefined, fromSubagent = false): string {
 	const tab = tabId !== undefined ? `the tab ${JSON.stringify(tabId)}` : 'this tab';
 	switch (kind) {
 		case 'page':
-			return `PARA_BROWSER_HUMAN_CHECK: ${tab} shows a Cloudflare check page ("Verify you are human") instead of the site. A person has to pass it: do not click it, solve it or try to get around it, and do not reload the page in a loop. Para Code has shown the user a notification for this tab. Tell the user that the tab needs them to complete the check, then ${waitInstruction(tabId)}`;
+			return `PARA_BROWSER_HUMAN_CHECK: ${tab} shows a Cloudflare check page ("Verify you are human") instead of the site. A person has to pass it: do not click it, solve it or try to get around it, and do not reload the page in a loop. Para Code has shown the user a notification for this tab. Tell the user that the tab needs them to complete the check, then ${waitInstruction(tabId, fromSubagent)}`;
 		case 'widget':
-			return `PARA_BROWSER_HUMAN_CHECK: ${tab} has a Cloudflare Turnstile check ("Verify you are human") inside the page that has not passed yet. It is usually part of a form and often passes by itself: you can keep filling in the form, but do not click the check, solve it or try to get around it. If it still has not passed when you are about to send the form, or the form cannot be sent because of it, ask the user to complete the check in the tab, then ${waitInstruction(tabId)}`;
+			return `PARA_BROWSER_HUMAN_CHECK: ${tab} has a Cloudflare Turnstile check ("Verify you are human") inside the page that has not passed yet. It is usually part of a form and often passes by itself: you can keep filling in the form, but do not click the check, solve it or try to get around it. If it still has not passed when you are about to send the form, or the form cannot be sent because of it, ask the user to complete the check in the tab, then ${waitInstruction(tabId, fromSubagent)}`;
 		case 'widgetBlocked':
-			return `PARA_BROWSER_HUMAN_CHECK: The Cloudflare Turnstile check on ${tab} still has not passed after your last action. Para Code has shown the user a notification for this tab. Ask the user to complete the check, then ${waitInstruction(tabId)}`;
+			return `PARA_BROWSER_HUMAN_CHECK: The Cloudflare Turnstile check on ${tab} still has not passed after your last action. Para Code has shown the user a notification for this tab. Ask the user to complete the check, then ${waitInstruction(tabId, fromSubagent)}`;
 		case 'passed':
 			return `PARA_BROWSER_HUMAN_CHECK_PASSED: The Cloudflare check on ${tab} has passed. You can continue.`;
 	}

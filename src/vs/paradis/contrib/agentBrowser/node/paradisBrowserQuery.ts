@@ -23,6 +23,7 @@
 import type { IParadisCursorRect } from '../common/paradisCursorOverlay.js';
 import { PARADIS_BROWSER_QUERY_PAGE_SCRIPT } from '../common/paradisBrowserQueryPageScript.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAMES } from './paradisBrowserQueryTools.js';
+import { PARADIS_MAIN_WAIT_MAX_SECONDS, PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from '../common/paradisSubagentToolCalls.js';
 import type { IParadisNetworkActivitySnapshot } from './paradisCdpNetworkActivity.js';
 
 /** 「読む・待つ」ツールの名前。 */
@@ -31,6 +32,8 @@ export const PARADIS_BROWSER_QUERY_TOOL_NAME_SET: ReadonlySet<string> = new Set(
 /** ツールの実行中にサービスから借りるもの。 */
 export interface IParadisBrowserQueryCall {
 	readonly signal?: AbortSignal;
+	/** Claude Code のサブエージェントの中からと確かめられた呼び出し（待ちの上限を長くする。paradisSubagentToolCalls.ts）。 */
+	readonly fromSubagent?: boolean;
 	/**
 	 * 内蔵 chrome-devtools-mcp の evaluate_script を呼ぶ。`uids` は関数の引数に渡す要素。`deadlineMs` を過ぎても
 	 * ページが答えなければ {@link PARADIS_PAGE_UNRESPONSIVE} の失敗になる。戻り値は MCP のツールの結果（失敗は isError）。
@@ -377,8 +380,13 @@ export class ParadisBrowserQuery {
 			return error(`"state": "${state}" needs a locator (selector, role + name, text or uid).`);
 		}
 		const count = numberIn(args, 'count', 1, 10_000, 1);
-		// 上限は 100 秒。Claude Code は 120 秒を超えた MCP の呼び出しを裏に回し、エージェントには「まだ動いている」としか返らない（q.html Q395）
-		const timeoutSeconds = numberIn(args, 'timeout_seconds', 0.5, 100, 10);
+		// 上限は 100 秒。Claude Code は main の会話の 120 秒を超えた MCP の呼び出しを裏に回し、エージェントには「まだ動いている」
+		// としか返らない（q.html Q395）。サブエージェントの呼び出しは裏に回されないので、確かめられたときだけ長くする
+		const maxTimeoutSeconds = call.fromSubagent === true ? PARADIS_SUBAGENT_WAIT_MAX_SECONDS : PARADIS_MAIN_WAIT_MAX_SECONDS;
+		const timeoutSeconds = numberIn(args, 'timeout_seconds', 0.5, maxTimeoutSeconds, 10);
+		if (isError(timeoutSeconds) && call.fromSubagent !== true && typeof args.timeout_seconds === 'number' && args.timeout_seconds > PARADIS_MAIN_WAIT_MAX_SECONDS && args.timeout_seconds <= PARADIS_SUBAGENT_WAIT_MAX_SECONDS) {
+			return error(`"timeout_seconds" must be a number from 0.5 to ${PARADIS_MAIN_WAIT_MAX_SECONDS} here. Up to ${PARADIS_SUBAGENT_WAIT_MAX_SECONDS} is allowed only for calls from a Claude Code subagent. Call wait_until again with ${PARADIS_MAIN_WAIT_MAX_SECONDS} or less.`);
+		}
 		const intervalMs = numberIn(args, 'interval_ms', 50, 2000, 200);
 		for (const value of [count, timeoutSeconds, intervalMs]) {
 			if (isError(value)) {

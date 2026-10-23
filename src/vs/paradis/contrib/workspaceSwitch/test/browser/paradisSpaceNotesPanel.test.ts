@@ -143,6 +143,38 @@ suite('ParadisSpaceNotesPanel', () => {
 			line: '- [ ] renamed',
 		});
 	});
+
+	test('does not toggle or remove another task when the note changes while the menu is open', () => {
+		const contextMenu = new TestContextMenuService();
+		const notification = new TestNotificationService();
+		const { notes, panel, body } = createPanel(store, contextMenu as Partial<IContextMenuService> as IContextMenuService, notification as Partial<INotificationService> as INotificationService);
+		panel.setSpace('worktree:a', 'a', undefined);
+
+		const runAfterInsert = (taskIndex: number, inserted: string, id: string) => {
+			checkAt(body, taskIndex).parentElement!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+			// メニューを開いている間に、別の場所から先頭へ 1 行足される
+			notes.write('worktree:a', `${inserted}\n${notes.read('worktree:a')}`);
+			contextMenu.run(id);
+		};
+		runAfterInsert(1, '- [ ] inserted', 'paradis.spaceNotes.task.toggle');
+		// 足された行が選んだ項目と同じ文言で、同じ行番号に同じ中身が来ても消さない
+		runAfterInsert(0, '- [ ] inserted', 'paradis.spaceNotes.task.delete');
+		const changed = notes.read('worktree:a').split('\n').slice(0, 4);
+
+		// 変わっていなければ、選んだ項目に効く
+		checkAt(body, 3).parentElement!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+		contextMenu.run('paradis.spaceNotes.task.toggle');
+
+		assert.deepStrictEqual({
+			changed,
+			infos: notification.infos.length,
+			toggled: notes.read('worktree:a').split('\n')[3],
+		}, {
+			changed: ['- [ ] inserted', '- [ ] inserted', '- [ ] task 0', '- [ ] task 1'],
+			infos: 2,
+			toggled: '- [x] task 1',
+		});
+	});
 });
 
 suite('ParadisSpaceNotesPanel editing while the note changes elsewhere', () => {
@@ -294,6 +326,11 @@ function finishEditing(editor: HTMLTextAreaElement): void {
 /** 最後に出た知らせの文と選択肢を控え、選択肢を名前で押せるようにする。 */
 class TestNotificationService implements Partial<INotificationService> {
 	prompts: { readonly message: string; readonly choices: readonly IPromptChoice[] }[] = [];
+	infos: string[] = [];
+
+	info(message: string): void {
+		this.infos.push(message);
+	}
 
 	prompt(_severity: Severity, message: string, choices: IPromptChoice[]): INotificationHandle {
 		this.prompts.push({ message, choices });
