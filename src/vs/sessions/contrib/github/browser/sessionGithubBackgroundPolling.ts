@@ -9,12 +9,13 @@ import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IObservable } from '../../../../base/common/observable.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { ApiRequestOptions } from '../../../../platform/github/common/client/request.js';
 
 const LOG_PREFIX = '[SessionGithubBackgroundRefreshScheduler]';
 
-/** Anything with a `refresh` method — satisfied by all sessions GitHub models. */
+/** Anything with a `refresh` method taking request options — satisfied by the sessions pull request model. */
 export interface ISessionGithubRefreshable {
-	refresh(): Promise<void>;
+	refresh(options?: ApiRequestOptions): Promise<void>;
 }
 
 /**
@@ -124,7 +125,8 @@ export class SessionGithubBackgroundRefreshScheduler extends Disposable {
 		}
 
 		candidateEntry.lastRefreshAt = now;
-		candidate.refresh().catch(err => {
+		// The shared GitHub engine schedules by priority; this tier is background work.
+		candidate.refresh({ priority: 'background' }).catch(err => {
 			// Model refreshes swallow fetch errors internally; this only guards
 			// against unexpected synchronous throws turning into unhandled rejections.
 			this._logService.trace(`${LOG_PREFIX} Background refresh failed`, err);

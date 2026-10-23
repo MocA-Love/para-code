@@ -14,7 +14,7 @@ import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
 import { buildDemo, demoSlots } from './demo.js';
 import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
-import { GitHubClient, GitHubError, ghTokenProvider } from './github.js';
+import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents } from './paraCode.js';
@@ -23,7 +23,6 @@ import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { dataDir, Store, StoreBusyError, storeOwner, type ILocalSettings } from './store.js';
 import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from './workspaces.js';
-import { commandPath } from './executables.js';
 
 /*
  * タスクボードの開発用ローカルサーバー。
@@ -358,7 +357,9 @@ async function main(restart?: IRestart): Promise<void> {
 			broadcastSoon();
 		},
 	}) : undefined;
-	const commandRunner = paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote }) : undefined;
+	const useGitHub = !demo && !args['no-github'];
+	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
+	const commandRunner = paraCodeMode ? new CommandRunner({ engine: () => engine, placePath, repoPath: repoPath!, repo: remote, github: client }) : undefined;
 	const gitWorkspaces = realWorkspaces ? new GitWorkspaces(repoPath!, worktreeRoot) : undefined;
 	/** 止めるときに解除するタイマー（開き直した後も古いエンジンが動き出さないように）。 */
 	const timers: NodeJS.Timeout[] = [];
@@ -370,8 +371,6 @@ async function main(restart?: IRestart): Promise<void> {
 		workspaces: gitWorkspaces ?? sim,
 	});
 
-	const useGitHub = !demo && !args['no-github'];
-	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
 	const sync = client ? new GitHubSync({
 		client,
 		engine,
@@ -421,7 +420,7 @@ async function main(restart?: IRestart): Promise<void> {
 	});
 
 	// 認証は時間がかかることがあるので、フロー（個人のフォルダにログイン名が要る）の読み込みと並べて待つ
-	const loginPromise = client ? client.init().catch(err => { log('GitHub:', err.message); return undefined; }) : Promise.resolve(args.login ?? (demo ? 'you' : undefined));
+	const loginPromise = client ? client.init().catch(err => { log('GitHub:', redactGitHubSecrets(err.message)); return undefined; }) : Promise.resolve(args.login ?? (demo ? 'you' : undefined));
 	const login = await loginPromise;
 	const loaded = await loadFlows(repoPath, login);
 	for (const problem of loaded.problems) {
@@ -623,7 +622,12 @@ async function main(restart?: IRestart): Promise<void> {
 			if (!task?.pr || task.pr.simulated || task.pr.state !== 'draft') {
 				throw new TaskBoardError('invalid-state', 'ドラフトの PR がありません');
 			}
-			await new Promise<void>((resolve, reject) => execFile(commandPath('gh'), ['pr', 'ready', String(task.pr!.number), '--repo', `${task.pr!.owner}/${task.pr!.repo}`], { timeout: 30000, env: { ...process.env, GH_PROMPT_DISABLED: '1' } }, err => err ? reject(new TaskBoardError('invalid-state', `gh pr ready が失敗しました: ${err.message}`)) : resolve()));
+			if (!client) {
+				throw new TaskBoardError('invalid-state', 'GitHub につないで起動したときだけ使えます');
+			}
+			await client.markPullRequestReady(task.pr.owner, task.pr.repo, task.pr.number).catch((err: Error) => {
+				throw new TaskBoardError('invalid-state', `PR をレビュー可能にできませんでした: ${err.message}`);
+			});
 			engine.reportPullRequest(task.id, { ...task.pr, state: 'open' });
 		},
 		repositories: async () => {
@@ -845,9 +849,9 @@ async function main(restart?: IRestart): Promise<void> {
 				} catch (err) {
 					const code = err instanceof TaskBoardError ? err.code : err instanceof GitHubError ? 'github' : err instanceof SyntaxError ? 'invalid-params' : 'internal';
 					if (code === 'internal') {
-						console.error('[taskboard] rpc failed:', err);
+						console.error('[taskboard] rpc failed:', redactGitHubSecrets(String((err as Error)?.stack ?? err)));
 					}
-					json(res, 200, { ok: false, error: { code, message: (err as Error).message } });
+					json(res, 200, { ok: false, error: { code, message: redactGitHubSecrets((err as Error).message) } });
 				}
 				return;
 			}

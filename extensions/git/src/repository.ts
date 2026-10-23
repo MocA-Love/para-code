@@ -38,7 +38,7 @@ import { getSafeNotificationMessage } from './notification';
 import { GitQuickDiffProvider, StagedResourceQuickDiffProvider } from './quickDiffProvider';
 import { resolveWorktreeIncludePaths, sanitizeWorktreeIncludePatterns } from './worktreeInclude';
 import { createWorktreeSymlink, filterWorktreeSymlinkFolders, getWorktreeSymlinkFolderCandidates, type WorktreeSymlinkStatus } from './worktreeSymlink';
-import { ParadisParkedRefreshGate } from './paradisRepositoryPark'; // PARA-PATCH: see paradisUpdateModelStateUnlessParked()
+import { ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard } from './paradisRepositoryPark'; // PARA-PATCH: see paradisUpdateModelStateUnlessParked() and _updateModelState()
 
 const timeout = (millis: number) => new Promise(c => setTimeout(c, millis));
 
@@ -2751,6 +2751,10 @@ export class Repository implements Disposable {
 		await this.run(Operation.RebaseAbort, async () => await this.repository.rebaseAbort());
 	}
 
+	async rebaseContinue(): Promise<void> {
+		await this.run(Operation.RebaseContinue, () => this.repository.rebaseContinue());
+	}
+
 	checkIgnore(filePaths: string[]): Promise<Set<string>> {
 		return this.run(Operation.CheckIgnore, () => {
 			return new Promise<Set<string>>((resolve, reject) => {
@@ -3027,6 +3031,7 @@ export class Repository implements Disposable {
 	}
 
 	private async _updateModelState(optimisticResourcesGroups?: GitResourceGroups, cancellationToken?: CancellationToken): Promise<void> {
+		const paradisStatusTicket = this._paradisStatusWriteGuard.begin(); // PARA-PATCH: see ParadisParkedStatusWriteGuard
 		try {
 			// Optimistically update resource groups
 			if (optimisticResourcesGroups) {
@@ -3071,6 +3076,11 @@ export class Repository implements Disposable {
 				await Promise.all([
 					this.getStatus(cancellationToken),
 					this.getRefs({}, cancellationToken)]);
+
+			// PARA-PATCH: drop the result if the repository was parked while git ran (see ParadisParkedStatusWriteGuard).
+			if (!this._paradisStatusWriteGuard.canApply(paradisStatusTicket, this._scopeActive)) {
+				return;
+			}
 
 			this._refs = refs;
 			this._updateResourceGroupsState(resourceGroups);
@@ -3279,9 +3289,10 @@ export class Repository implements Disposable {
 	}
 
 	private async getRebaseCommit(): Promise<Commit | undefined> {
-		const rebaseHeadPath = path.join(this.repository.root, '.git', 'REBASE_HEAD');
-		const rebaseApplyPath = path.join(this.repository.root, '.git', 'rebase-apply');
-		const rebaseMergePath = path.join(this.repository.root, '.git', 'rebase-merge');
+		// Linked worktrees and submodules keep their rebase state in their own git directory, not in <root>/.git.
+		const rebaseHeadPath = path.join(this.repository.dotGit.path, 'REBASE_HEAD');
+		const rebaseApplyPath = path.join(this.repository.dotGit.path, 'rebase-apply');
+		const rebaseMergePath = path.join(this.repository.dotGit.path, 'rebase-merge');
 
 		try {
 			const [rebaseApplyExists, rebaseMergePathExists, rebaseHead] = await Promise.all([
@@ -3299,12 +3310,12 @@ export class Repository implements Disposable {
 	}
 
 	private isMergeInProgress(): Promise<boolean> {
-		const mergeHeadPath = path.join(this.repository.root, '.git', 'MERGE_HEAD');
+		const mergeHeadPath = path.join(this.repository.dotGit.path, 'MERGE_HEAD');
 		return new Promise<boolean>(resolve => fs.exists(mergeHeadPath, resolve));
 	}
 
 	private isCherryPickInProgress(): Promise<boolean> {
-		const cherryPickHeadPath = path.join(this.repository.root, '.git', 'CHERRY_PICK_HEAD');
+		const cherryPickHeadPath = path.join(this.repository.dotGit.path, 'CHERRY_PICK_HEAD');
 		return new Promise<boolean>(resolve => fs.exists(cherryPickHeadPath, resolve));
 	}
 
@@ -3382,6 +3393,9 @@ export class Repository implements Disposable {
 	/** PARA-PATCH: see paradisUpdateModelStateUnlessParked() and ParadisParkedRefreshGate. */
 	private readonly _paradisParkedRefreshGate = new ParadisParkedRefreshGate();
 
+	/** PARA-PATCH: see _updateModelState() and ParadisParkedStatusWriteGuard. */
+	private readonly _paradisStatusWriteGuard = new ParadisParkedStatusWriteGuard();
+
 	/** PARA-PATCH: see startFileWatchers(). */
 	private stopFileWatchers(): void {
 		this._fileWatcherDisposables = dispose(this._fileWatcherDisposables);
@@ -3403,6 +3417,10 @@ export class Repository implements Disposable {
 
 		if (!active) {
 			this.stopFileWatchers();
+			// A status that is already running would write this repository's changes back after the
+			// groups below are emptied. Stop its git work and void its result (ParadisParkedStatusWriteGuard).
+			this.updateModelStateCancellationTokenSource?.cancel();
+			this._paradisStatusWriteGuard.invalidate();
 			// Always clear the resource states. The SourceControl stays registered with scm while
 			// parked, so consumers that read ISCMService directly (search's "modified files only",
 			// chat repository info; the SCM view itself is scoped by paradisScopedScmViewService)

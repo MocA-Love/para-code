@@ -5,12 +5,13 @@ import { commandPath } from './executables.js';
 import type { ITaskBoardPrRef, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardRunPort, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { defaultBase, excludeBoardFiles, git } from './workspaces.js';
+import { GitHubError, type GitHubClient } from './github.js';
 
 /*
  * 自動（run）工程を実際に走らせる（`--agents para-code` のとき）。
  *
  * - command: 作業場所で `sh -c <command>`（Windows は cmd /c）。終了コード 0 で完了。出力はターミナル欄へ流す
- * - draft-pr: ブランチを push し、`gh pr create --draft` で PR を作る。同じブランチの PR が既にあれば、それを使う
+ * - draft-pr: ブランチを push し、GitHub の API（github.ts）でドラフト PR を作る。同じブランチの PR が既にあれば、それを使う
  *
  * やり直し・差し戻しで cancel が来たら、プロセスのグループごと止める。
  */
@@ -31,7 +32,9 @@ export interface ICommandRunnerOptions {
 	readonly repoPath: string;
 	/** PR を作るリポジトリ（origin）。 */
 	readonly repo: { readonly owner: string; readonly repo: string } | undefined;
-	/** テスト用に gh / git の場所を差し替える。 */
+	/** PR を探す・作る口。GitHub につないでいないときは無い（draft-pr は失敗にする）。 */
+	readonly github?: Pick<GitHubClient, 'findOpenPullRequest' | 'createDraftPullRequest'>;
+	/** テスト用に git の場所を差し替える。 */
 	readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -215,20 +218,27 @@ export class CommandRunner implements ITaskBoardRunPort {
 			const current = engine.getTask(task.id);
 			return current?.attempt === attempt && current.status === 'working';
 		};
-		if (!repo || !branch) {
-			fail(!repo ? 'PR を作るリポジトリ（origin）が分かりません' : 'ブランチがありません');
+		const github = this.options.github;
+		if (!repo || !branch || !github) {
+			fail(!repo ? 'PR を作るリポジトリ（origin）が分かりません' : !branch ? 'ブランチがありません' : 'GitHub につないでいないので PR を作れません');
 			return;
 		}
 		const cwd = place ?? this.options.repoPath;
-		const slug = `${repo.owner}/${repo.repo}`;
 		if (!alive()) {
 			return;
 		}
-		const existing = await this.exec(task, cwd, ['gh', 'pr', 'list', '--repo', slug, '--head', branch, '--state', 'open', '--json', 'number,url,title,isDraft', '--limit', '1'], false);
-		if (existing.cancelled || !alive()) {
+		let found: { number: number; url: string; title: string; draft: boolean } | undefined;
+		try {
+			found = await github.findOpenPullRequest(repo.owner, repo.repo, branch);
+		} catch (err) {
+			if (alive()) {
+				fail(`PR を探せませんでした: ${githubReason(err)}`);
+			}
 			return;
 		}
-		const found = parseJson<{ number: number; url: string; title: string; isDraft: boolean }[]>(existing.stdout)?.[0];
+		if (!alive()) {
+			return;
+		}
 		// PR がすでにあっても、作業場所の変更（差し戻しでの手直しなど）をコミットして送ってから、その PR を使う
 		if (place) {
 			// 未コミットの変更があれば、push する前に止めて人に決めてもらう（コミットはカードのボタンから）
@@ -290,35 +300,39 @@ export class CommandRunner implements ITaskBoardRunPort {
 			}
 		}
 		if (found) {
-			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.isDraft) });
+			engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${found.number}（既存）`, pr: prRef(repo, found.number, found.url, found.title, found.draft) });
 			return;
 		}
 		const title = task.title;
 		const issue = task.issue;
 		const closes = issue ? (issue.owner === repo.owner && issue.repo === repo.repo ? `Closes #${issue.number}` : `Closes ${issue.owner}/${issue.repo}#${issue.number}`) : '';
 		const body = [closes, 'タスクボードが作ったドラフト PR です。'].filter(Boolean).join('\n\n');
-		const created = await this.exec(task, cwd, ['gh', 'pr', 'create', '--repo', slug, '--head', branch, '--draft', `--title=${title}`, `--body=${body}`], false);
-		if (created.cancelled || !alive()) {
+		let created: Awaited<ReturnType<GitHubClient['createDraftPullRequest']>>;
+		try {
+			created = await github.createDraftPullRequest(repo.owner, repo.repo, branch, title, body);
+		} catch (err) {
+			if (alive()) {
+				fail(`PR を作れませんでした: ${githubReason(err)}`);
+			}
 			return;
 		}
-		const url = created.stdout.match(/https:\/\/\S+\/pull\/(?<n>\d+)/);
-		if (created.code !== 0 || !url?.groups) {
-			fail('gh pr create が失敗しました');
+		if (!alive()) {
 			return;
 		}
-		const number = Number(url.groups.n);
-		engine.reportRunResult(task.id, attempt, { ok: true, detail: `#${number}`, pr: prRef(repo, number, url[0], title, true) });
+		engine.reportOutput(task.id, [`  ${created.existed ? '既存の PR を使います' : 'ドラフト PR を作りました'}: ${created.url}`]);
+		engine.reportRunResult(task.id, attempt, { ok: true, detail: created.existed ? `#${created.number}（既存）` : `#${created.number}`, pr: prRef(repo, created.number, created.url, created.title, created.draft) });
 	}
+}
+
+/** GitHub の失敗の理由。上限で止めているときは、そうと分かる文にする。 */
+function githubReason(err: unknown): string {
+	if (err instanceof GitHubError && err.kind === 'budget') {
+		const at = err.until ? new Date(err.until).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : undefined;
+		return `GitHub の利用上限に当たったので呼び出しを止めています${at ? `（${at} ごろ再開）` : ''}。再開した後にやり直してください`;
+	}
+	return (err as Error).message;
 }
 
 function prRef(repo: { owner: string; repo: string }, number: number, url: string, title: string, draft: boolean): ITaskBoardPrRef {
 	return { owner: repo.owner, repo: repo.repo, number, url, title, state: draft ? 'draft' : 'open', checks: 'pending', review: 'none' };
-}
-
-function parseJson<T>(text: string): T | undefined {
-	try {
-		return JSON.parse(text) as T;
-	} catch {
-		return undefined;
-	}
 }
