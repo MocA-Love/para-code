@@ -35,6 +35,8 @@ import { paraInstallBrowserViewLoadWatchdog } from './paraBrowserViewLoadWatchdo
 import { ParaBrowserViewCaptureNudge } from './paraBrowserViewFrameNudge.js';
 // PARA-PATCH: import the fork's focus-request marker, so focus diagnostics can tell a Para Code focus from one the page took (Para Code browser focus diagnostics)
 import { paraNoteBrowserViewFocusRequest } from './paraBrowserViewFocusRequest.js';
+// PARA-PATCH: import the fork's genuine Chrome identity, which gives every tab the UA and Client Hints of Google Chrome (Para Code)
+import { paradisAttachChromeIdentity } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisChromeIdentity.js';
 
 // PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation). The ack is answered on the page's main thread, so a page busy for a moment after a click must not fail the key (1s failed about 8% of agent keystrokes)
 const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 2_500;
@@ -282,6 +284,7 @@ export class BrowserView extends Disposable {
 		// PARA-PATCH: drop stale automation key expectations when the debugger detaches so recovery starts clean (Para Browser MCP automation input isolation)
 		this._register(this.debugger.onDidDetach(() => this.clearAutomationKeyExpectations()));
 		this.emulator = this._register(new BrowserViewEmulator(this, this.logService));
+		this._register(paradisAttachChromeIdentity(this)); // PARA-PATCH: present the UA and Client Hints of Google Chrome over CDP (Para Code genuine Chrome identity)
 		this.inspector = this._register(new BrowserViewInspector(this));
 
 		const fireRemoteStatus = () => this._onDidChangeRemoteStatus.fire(this.session.remote.isRemote);

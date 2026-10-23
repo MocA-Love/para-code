@@ -20,12 +20,18 @@ export const PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY = 'paradis.browser.userAge
  * - `Electron/x.y.z` は常に消す（Google などが埋め込みブラウザとしてログインを拒否するため）。
  * - `<アプリ名>/<バージョン>`（例 `ParaCode/1.139.1`）は `includeAppToken` が false のとき消す。
  *   Electron は UA にアプリ名を空白を除いて入れるので、ここでも空白を除いた名前で照合する。
+ * - `includeAppToken` が false のときは、`Chrome/150.0.7871.250` を `Chrome/150.0.0.0` にする。Google Chrome は
+ *   UA の版を major だけにしている（User-Agent Reduction）ので、細かい版が付いていると Chrome に見えない。
+ *   細かい版は Client Hints の fullVersionList で渡す（paradisChromeClientHints.ts）。
  */
 export function paradisBuildBrowserUserAgent(originalUA: string, appName: string, includeAppToken: boolean): string {
 	let userAgent = originalUA.replace(/\sElectron\/\S+/g, '');
 	const appToken = appName.replace(/\s/g, '');
 	if (!includeAppToken && appToken) {
 		userAgent = userAgent.replace(new RegExp(`\\s${escapeRegExpCharacters(appToken)}/\\S+`, 'g'), '');
+	}
+	if (!includeAppToken) {
+		userAgent = userAgent.replace(/\bChrome\/(?<major>\d+)(?:\.\d+){3}\b/g, 'Chrome/$<major>.0.0.0');
 	}
 	return userAgent.trim();
 }
