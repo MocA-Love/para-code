@@ -100,6 +100,13 @@ export interface IGitHubService {
 	 */
 	findPullRequestNumberByHeadBranch(owner: string, repo: string, branch: string): Promise<number | undefined>;
 
+	/**
+	 * PARA-PATCH: forget a cached "no PR" (or failed) lookup for the branch so the next
+	 * `findPullRequestNumberByHeadBranch` asks GitHub again. Call it when the branch may
+	 * have been pushed or got a PR. A resolved PR number or a lookup in flight is kept.
+	 */
+	paradisForgetPullRequestNumberMiss?(owner: string, repo: string, branch: string): void;
+
 	getRecentAssignedIssues(owner: string, repo: string, token: CancellationToken, options?: ApiRequestOptions): Promise<readonly IGitHubRecentIssue[]>;
 	getRecentAuthoredPullRequests(owner: string, repo: string, token: CancellationToken, options?: ApiRequestOptions): Promise<readonly IGitHubRecentPullRequest[]>;
 	getPullRequestReviewThreads(owner: string, repo: string, pullRequestNumber: number, token: CancellationToken, options?: ApiRequestOptions): Promise<readonly IGitHubRecentPullRequestReviewThread[]>;
@@ -377,6 +384,15 @@ export class GitHubService extends Disposable implements IGitHubService {
 			this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch cache HIT for ${key}`);
 		}
 		return promise.catch(() => undefined);
+	}
+
+	// PARA-PATCH: drop only the entries the TTL cache above holds back (see IGitHubService)
+	paradisForgetPullRequestNumberMiss(owner: string, repo: string, branch: string): void {
+		const key = `${owner}/${repo}#${branch}`;
+		if (this._findPRByBranchCacheExpiry.delete(key)) {
+			this._logService.trace(`${TRACE_PREFIX} [GitHubService] forgetting the cached NO pr result for ${key}`);
+			this._findPRByBranchCache.delete(key);
+		}
 	}
 
 	private async _fetchPullRequestNumberByHeadBranch(owner: string, repo: string, branch: string): Promise<number | undefined> {
