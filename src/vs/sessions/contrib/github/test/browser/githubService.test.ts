@@ -28,9 +28,11 @@ suite('GitHubService', () => {
 	const store = new DisposableStore();
 	let service: GitHubService;
 	let domainCalls: { operation: string; args: readonly unknown[] }[];
+	let listedPullRequestNumbers: readonly number[]; // PARA-PATCH: lets a test return "no PR" (Para Code)
 
 	setup(() => {
 		domainCalls = [];
+		listedPullRequestNumbers = [42];
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(ILogService, new NullLogService());
 		instantiationService.stub(IStorageService, store.add(new TestStorageService()));
@@ -62,7 +64,7 @@ suite('GitHubService', () => {
 					pullRequests: upcastPartial<IGitHubAccountClient['pullRequests']>({
 						list: async (repository, _signal, options) => {
 							domainCalls.push({ operation: 'pullRequests.list', args: [repository, options] });
-							return [upcastPartial<PullRequestSummary>({ number: 42 })];
+							return listedPullRequestNumbers.map(number => upcastPartial<PullRequestSummary>({ number }));
 						},
 					}),
 				});
@@ -89,6 +91,22 @@ suite('GitHubService', () => {
 				{ operation: 'content.getContent', args: ['o', 'r', 'dir/file #.txt', { query: { ref: 'feature/branch' } }] },
 				{ operation: 'pullRequests.list', args: [{ owner: 'o', name: 'r' }, { priority: 'background', query: { head: 'o:feature/branch', state: 'all', sort: 'updated', direction: 'desc', per_page: 1 } }] },
 			],
+		});
+	});
+
+	// PARA-PATCH: a forgotten "no PR" result is looked up again; a found number is kept (Para Code)
+	test('paradisForgetPullRequestNumberMiss makes the next branch lookup ask GitHub again', async () => {
+		listedPullRequestNumbers = [];
+		const miss = await service.findPullRequestNumberByHeadBranch('o', 'r', 'feature');
+		listedPullRequestNumbers = [42];
+		const cachedMiss = await service.findPullRequestNumberByHeadBranch('o', 'r', 'feature');
+		service.paradisForgetPullRequestNumberMiss('o', 'r', 'feature');
+		const found = await service.findPullRequestNumberByHeadBranch('o', 'r', 'feature');
+		listedPullRequestNumbers = [];
+		service.paradisForgetPullRequestNumberMiss('o', 'r', 'feature');
+		const kept = await service.findPullRequestNumberByHeadBranch('o', 'r', 'feature');
+		assert.deepStrictEqual({ miss, cachedMiss, found, kept, lookups: domainCalls.filter(call => call.operation === 'pullRequests.list').length }, {
+			miss: undefined, cachedMiss: undefined, found: 42, kept: 42, lookups: 2,
 		});
 	});
 
