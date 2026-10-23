@@ -5,14 +5,14 @@
 
 import { isFirefox } from '../../browser.js';
 import { EventType as TouchEventType, Gesture } from '../../touch.js';
-import { $, addDisposableListener, append, clearNode, Dimension, EventHelper, EventLike, EventType, getActiveElement, getWindow, IDomNodePagePosition, isAncestor, isInShadowDOM } from '../../dom.js';
+import { $, addDisposableListener, append, clearNode, Dimension, EventHelper, EventLike, EventType, getActiveElement, getWindow, IDomNodePagePosition, isAncestor, isInShadowDOM, ModifierKeyEmitter } from '../../dom.js';
 import { createStyleSheet } from '../../domStylesheets.js';
 import { StandardKeyboardEvent } from '../../keyboardEvent.js';
 import { StandardMouseEvent } from '../../mouseEvent.js';
 import { ActionBar, ActionsOrientation, IActionViewItemProvider } from '../actionbar/actionbar.js';
 import { ActionViewItem, BaseActionViewItem, IActionViewItemOptions } from '../actionbar/actionViewItems.js';
 import { DomScrollableElement } from '../scrollbar/scrollableElement.js';
-import { EmptySubmenuAction, IAction, IActionRunner, Separator, SubmenuAction } from '../../../common/actions.js';
+import { EmptySubmenuAction, getActionForAltMode, IAction, IActionRunner, Separator, SubmenuAction } from '../../../common/actions.js';
 import { RunOnceScheduler } from '../../../common/async.js';
 import { Codicon } from '../../../common/codicons.js';
 import { getCodiconFontCharacters } from '../../../common/codiconsUtil.js';
@@ -311,6 +311,19 @@ export class Menu extends ActionBar {
 		this.viewItems.filter(item => !(item instanceof MenuSeparatorActionViewItem)).forEach((item, index, array) => {
 			(item as BaseMenuActionViewItem).updatePositionInSet(index + 1, array.length);
 		});
+
+		this._register(ModifierKeyEmitter.getInstance().event(() => {
+			this.mnemonics.clear();
+			for (const item of this.viewItems) {
+				if (item instanceof BaseMenuActionViewItem) {
+					item.updateAlternativeAction();
+					if (options.enableMnemonics) {
+						this._registerMnemonic(item);
+					}
+				}
+			}
+			this.scrollableElement.scanDomNode();
+		}));
 	}
 
 	private initializeOrUpdateStyleSheet(container: HTMLElement, style: IMenuStyles): void {
@@ -403,24 +416,15 @@ export class Menu extends ActionBar {
 			const menuActionViewItem = new SubmenuMenuActionViewItem(action, action.actions, parentData, { ...options, submenuIds: new Set([...(options.submenuIds || []), action.id]) }, this.menuStyles);
 
 			if (options.enableMnemonics) {
-				const mnemonic = menuActionViewItem.getMnemonic();
-				if (mnemonic && menuActionViewItem.isEnabled()) {
-					const actionViewItems = this.mnemonics.get(mnemonic);
-					if (actionViewItems !== undefined) {
-						actionViewItems.push(menuActionViewItem);
-					} else {
-						this.mnemonics.set(mnemonic, [menuActionViewItem]);
-					}
-				}
+				this._registerMnemonic(menuActionViewItem);
 			}
 
 			return menuActionViewItem;
 		} else {
-			const keybindingLabel = options.getKeyBinding?.(action)?.getLabel();
 			const menuItemOptions: IMenuItemOptions = {
 				enableMnemonics: options.enableMnemonics,
 				useEventAsContext: options.useEventAsContext,
-				keybinding: keybindingLabel,
+				getKeyBinding: options.getKeyBinding,
 				// PARA-PATCH: upstream drops action.class entirely for normal HTML menu items,
 				// which makes per-item styling (e.g. the workspace list's color dots) impossible.
 				// Opt in to icon rendering only for actions that explicitly mark themselves with
@@ -431,24 +435,29 @@ export class Menu extends ActionBar {
 			const menuActionViewItem = new BaseMenuActionViewItem(options.context, action, menuItemOptions, this.menuStyles);
 
 			if (options.enableMnemonics) {
-				const mnemonic = menuActionViewItem.getMnemonic();
-				if (mnemonic && menuActionViewItem.isEnabled()) {
-					const actionViewItems = this.mnemonics.get(mnemonic);
-					if (actionViewItems !== undefined) {
-						actionViewItems.push(menuActionViewItem);
-					} else {
-						this.mnemonics.set(mnemonic, [menuActionViewItem]);
-					}
-				}
+				this._registerMnemonic(menuActionViewItem);
 			}
 
 			return menuActionViewItem;
+		}
+	}
+
+	private _registerMnemonic(item: BaseMenuActionViewItem): void {
+		const mnemonic = item.getMnemonic();
+		if (mnemonic && item.isEnabled()) {
+			const items = this.mnemonics.get(mnemonic);
+			if (items) {
+				items.push(item);
+			} else {
+				this.mnemonics.set(mnemonic, [item]);
+			}
 		}
 	}
 }
 
 interface IMenuItemOptions extends IActionViewItemOptions {
 	readonly enableMnemonics?: boolean;
+	readonly getKeyBinding?: IMenuOptions['getKeyBinding'];
 }
 
 class BaseMenuActionViewItem extends BaseActionViewItem {
@@ -463,6 +472,12 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 	private check: HTMLElement | undefined;
 	private mnemonic: string | undefined;
 	private cssClass: string;
+	private _displayedAction: IAction;
+	private _keybinding: HTMLElement | undefined;
+
+	override get action(): IAction {
+		return this._displayedAction;
+	}
 
 	constructor(ctx: unknown, action: IAction, options: IMenuItemOptions, protected readonly menuStyle: IMenuStyles) {
 		options = {
@@ -473,6 +488,7 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 		};
 		super(action, action, options);
 
+		this._displayedAction = getActionForAltMode(action, ModifierKeyEmitter.getInstance().keyStatus);
 		this.options = options;
 		this.cssClass = '';
 
@@ -562,8 +578,8 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 
 		this.label = append(this.item, $('span.action-label'));
 
-		if (this.options.label && this.options.keybinding) {
-			append(this.item, $('span.keybinding')).textContent = this.options.keybinding;
+		if (this.options.label && (this.options.getKeyBinding || this.options.keybinding)) {
+			this._keybinding = append(this.item, $('span.keybinding'));
 		}
 
 		// Adds mouse up listener to actually run the action
@@ -576,6 +592,17 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 		this.updateChecked();
 
 		this.applyStyle();
+	}
+
+	updateAlternativeAction(): void {
+		const action = getActionForAltMode(this._action, ModifierKeyEmitter.getInstance().keyStatus);
+		if (action !== this._displayedAction) {
+			this._displayedAction = action;
+			this.updateLabel();
+			this.updateClass();
+			this.updateEnabled();
+			this.updateChecked();
+		}
 	}
 
 	override blur(): void {
@@ -605,6 +632,14 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 
 		if (this.options.label) {
 			clearNode(this.label);
+			this.mnemonic = undefined;
+			this.item?.removeAttribute('aria-keyshortcuts');
+			this.label.removeAttribute('aria-label');
+			if (this._keybinding) {
+				const keybinding = this.options.getKeyBinding?.(this.action)?.getLabel() ?? this.options.keybinding;
+				this._keybinding.textContent = keybinding ?? '';
+				this._keybinding.hidden = !keybinding;
+			}
 
 			let label = stripIcons(this.action.label);
 			if (label) {
@@ -641,7 +676,8 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 						this.label.textContent = replaceDoubleEscapes(label).trim();
 					}
 
-					this.item?.setAttribute('aria-keyshortcuts', (!!matches[1] ? matches[1] : matches[3]).toLocaleLowerCase());
+					this.mnemonic = (!!matches[1] ? matches[1] : matches[3]).toLocaleLowerCase();
+					this.item?.setAttribute('aria-keyshortcuts', this.mnemonic);
 				} else {
 					this.label.textContent = label.replace(/&&/g, '&').trim();
 				}
@@ -654,8 +690,8 @@ class BaseMenuActionViewItem extends BaseActionViewItem {
 	}
 
 	protected override updateClass(): void {
-		if (this.cssClass && this.item) {
-			this.item.classList.remove(...this.cssClass.split(' '));
+		if (this.cssClass && this.label) {
+			this.label.classList.remove(...this.cssClass.split(' '));
 		}
 		if (this.options.icon && this.label) {
 			this.cssClass = this.action.class || '';
@@ -827,10 +863,14 @@ class SubmenuMenuActionViewItem extends BaseMenuActionViewItem {
 			}
 		}));
 
-		this._register(this.parentData.parent.onScroll(() => {
+		this._register(this.parentData.parent.onScroll(e => {
 			if (this.parentData.submenu === this.mysubmenu) {
-				this.parentData.parent.focus(false);
-				this.cleanupExistingSubmenu(true);
+				if (e.scrollTopChanged || e.scrollLeftChanged) {
+					this.parentData.parent.focus(false);
+					this.cleanupExistingSubmenu(true);
+				} else {
+					this._layoutSubmenu();
+				}
 			}
 		}));
 	}
@@ -918,8 +958,6 @@ class SubmenuMenuActionViewItem extends BaseMenuActionViewItem {
 
 			// Set the top value of the menu container before construction
 			// This allows the menu constructor to calculate the proper max height
-			const computedStyles = getWindow(this.parentData.parent.domNode).getComputedStyle(this.parentData.parent.domNode);
-			const paddingTop = parseFloat(computedStyles.paddingTop || '0') || 0;
 			this.submenuContainer.style.position = 'fixed';
 			this.submenuContainer.style.top = '0';
 			this.submenuContainer.style.left = '0';
@@ -928,22 +966,7 @@ class SubmenuMenuActionViewItem extends BaseMenuActionViewItem {
 
 			this.parentData.submenu = new Menu(this.submenuContainer, this.submenuActions.length ? this.submenuActions : [new EmptySubmenuAction()], this.submenuOptions, this.menuStyle);
 
-			// layout submenu
-			const entryBox = this.element.getBoundingClientRect();
-			const entryBoxUpdated = {
-				top: entryBox.top - paddingTop,
-				left: entryBox.left,
-				height: entryBox.height + 2 * paddingTop,
-				width: entryBox.width
-			};
-
-			const viewBox = this.submenuContainer.getBoundingClientRect();
-
-			const window = getWindow(this.element);
-			const { top, left } = this.calculateSubmenuMenuLayout(new Dimension(window.innerWidth, window.innerHeight), Dimension.lift(viewBox), entryBoxUpdated, this.expandDirection);
-			// subtract offsets caused by transform parent
-			this.submenuContainer.style.left = `${left - viewBox.left}px`;
-			this.submenuContainer.style.top = `${top - viewBox.top}px`;
+			this._layoutSubmenu();
 
 			this.submenuDisposables.add(addDisposableListener(this.submenuContainer, EventType.KEY_UP, e => {
 				const event = new StandardKeyboardEvent(e);
@@ -976,6 +999,28 @@ class SubmenuMenuActionViewItem extends BaseMenuActionViewItem {
 		} else {
 			this.parentData.submenu.focus(false);
 		}
+	}
+
+	private _layoutSubmenu(): void {
+		if (!this.element || !this.submenuContainer) {
+			return;
+		}
+		this.submenuContainer.style.top = '0';
+		this.submenuContainer.style.left = '0';
+		const window = getWindow(this.element);
+		const computedStyles = window.getComputedStyle(this.parentData.parent.domNode);
+		const paddingTop = parseFloat(computedStyles.paddingTop || '0') || 0;
+		const entryBox = this.element.getBoundingClientRect();
+		const entryBoxUpdated = {
+			top: entryBox.top - paddingTop,
+			left: entryBox.left,
+			height: entryBox.height + 2 * paddingTop,
+			width: entryBox.width
+		};
+		const viewBox = this.submenuContainer.getBoundingClientRect();
+		const { top, left } = this.calculateSubmenuMenuLayout(new Dimension(window.innerWidth, window.innerHeight), Dimension.lift(viewBox), entryBoxUpdated, this.expandDirection);
+		this.submenuContainer.style.left = `${left - viewBox.left}px`;
+		this.submenuContainer.style.top = `${top - viewBox.top}px`;
 	}
 
 	private updateAriaExpanded(value: string): void {
@@ -1265,6 +1310,10 @@ ${formatRule(Codicon.menuSubmenu)}
 	justify-content: center;
 }
 
+.monaco-menu-container {
+	border-radius: var(--vscode-cornerRadius-large);
+}
+
 /* Context Menu */
 
 .context-view.monaco-menu-container {
@@ -1273,7 +1322,6 @@ ${formatRule(Codicon.menuSubmenu)}
 	border: none;
 	-webkit-app-region: no-drag;
 	box-shadow: var(${CONTEXT_VIEW_MENU_MOTION_SHADOW_VARIABLE});
-	border-radius: var(--vscode-cornerRadius-large);
 	overflow: hidden;
 }
 

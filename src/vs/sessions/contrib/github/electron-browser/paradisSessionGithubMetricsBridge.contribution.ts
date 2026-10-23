@@ -6,9 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Agent Sessionsウィンドウ自身のGitHub API呼び出し（sessionGithubRequestGate.ts、browser層）を
+// 1.143.1 の取り込みで sessionGithubRequestGate.ts を畳んだため、現在 paradisRecordRemoteGithubCall を呼ぶ箇所は無い
+// （upstream が GitHub 通信を shared process の共通エンジンへ移し、renderer に要求ごとの口が無くなった）。
+// Agent Sessions ウィンドウの通信は、shared process の GitHubTransport から直接記録している
+// （platform/github/common/paradisGithubCallHook.ts と githubMetrics/node/paradisGithubMetricsChannel.ts）。
+// 転送の口は、renderer から記録したい呼び出しが再び出てきたときのために残している。以下は畳む前の説明。
+// Agent Sessionsウィンドウ自身のGitHub API呼び出し（旧 sessionGithubRequestGate.ts、browser層）を
 // GitHub API Usageダッシュボード（src/vs/paradis/contrib/githubMetrics、shared process側）へ転送する橋渡し。
-// sessionGithubRequestGate.ts は renderer(browser層)なので shared process の callLog を直接叩けない。
+// 旧 sessionGithubRequestGate.ts は renderer(browser層)なので shared process の callLog を直接叩けない。
 // electron-browser層のこのcontributionだけが ISharedProcessService を持てるため、
 // paradisSetGithubCallTransport() でIPC転送関数を差し込む（web版Agent Sessionsではこのファイルが
 // ロードされないため、転送先未設定のまま=no-opになる。paradisRecordRemoteGithubCall側で安全に処理される）。
