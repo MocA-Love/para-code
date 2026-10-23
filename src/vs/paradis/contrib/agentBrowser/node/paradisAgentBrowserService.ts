@@ -36,7 +36,7 @@ import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOT
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { IParadisListViewportsResult, IParadisSetViewportResult, IParadisViewportState, PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL, ParadisViewportMcpMethod } from '../../browserViewport/common/paradisBrowserViewport.js';
 import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewportForAgent } from '../../browserViewport/common/paradisBrowserViewportTools.js';
-import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
+import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_MAX_WAITING_CHILDREN, PARADIS_MAX_WAITING_CHILDREN_PER_TAB, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -381,7 +381,8 @@ const MAX_PANE_CURSOR_LABEL_KEYS = 256;
 const MAX_SKIPPED_OPENED_TABS = 20;
 /** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
 const MAX_OPENED_TAB_SHARE_MARKS = 256;
-const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。自分用のタブが要るなら open_browser_tab で開けます（承認不要）。ユーザーのタブ（ログイン済みのページなど）を使いたいなら request_browser_page でユーザーに共有を頼めます。ユーザー側から共有する場合は、Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。Para Code を再起動（自動アップデートの適用を含む）すると、起動後に Para Code が同じペインと同じページの共有を戻すかユーザーに尋ね、承認されれば張り直します（ユーザーがそのスペースを開いたときに尋ねます）。戻らない場合（ページやペインを閉じた、ユーザーが共有を外した、戻さないと答えた）は、ユーザーにもう一度共有してもらってください。それでも届かない場合は、このCLIをペインで起動し直してから再共有してください。';
+/** 使えるタブが無いまま（共有も open_browser_tab もせずに）ブラウザのツールを呼んだときの答え。次の一手だけを短く書く。 */
+const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use (or the tab_id you passed is not one of its tabs; see list_browser_tabs). Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead. After Para Code restarts, it asks the user whether to share the pages that were shared before; until they answer, call request_browser_page or open_browser_tab.';
 
 /**
  * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`
@@ -6497,7 +6498,10 @@ export class ParadisAgentBrowserService extends Disposable {
 				const shared = usable
 					? `It is now this pane's current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${tabId}" to keep using it after other tabs are opened or selected (for example from a subagent).`
 					: 'It could NOT be made usable from this terminal pane yet, so the browser tools do not target it - retry with select_browser_tab.';
-				let opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
+				const hidden = call.value.spaceNotVisible
+					? ' The user is looking at another space right now, so the tab was opened in this pane\'s space without showing it; you can still use it, and the user will see it when they switch back to that space. If Para Code is reloaded or restarted before then, this tab is closed and its tab_id stops working.'
+					: '';
+				let opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared}${hidden} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
 				const viewport = text('viewport');
 				if (viewport !== undefined) {
 					// 開いてから大きさを当てる（開けたことは変わらないので、当てられなくてもエラーにはしない）
@@ -6545,9 +6549,11 @@ export class ParadisAgentBrowserService extends Disposable {
 					openedFromTabs: this._openedTabGrantCount(token),
 					openedFromTabsLimit: PARADIS_OPENED_TAB_LIMIT,
 					...(notShared.length > 0 ? { notSharedOpenedTabs: notShared } : {}),
+					...(call.value.closedWaitingPages ? { closedWaitingPages: call.value.closedWaitingPages } : {}),
 					hint: 'Pass a usable tabId as tab_id to any browser tool to act on that tab; give each subagent its own tab_id. The user can share several pages with this pane (shared: true); each of them is usable by its tabId, and the one shared most recently is the current tab unless you open or select another.'
 						+ ` A tab or window that one of your usable tabs opens (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab") is shared with this pane automatically and shows openedFrom; up to ${PARADIS_OPENED_TAB_LIMIT} such tabs, apart from your own tabs. It stops being usable when the tab that opened it is no longer usable.`
-						+ (notShared.length > 0 ? ` notSharedOpenedTabs lists tabs your tabs opened that were not shared because that limit was reached; they are not usable, ask the user to close tabs or share one with request_browser_page.` : ''),
+						+ (notShared.length > 0 ? ` notSharedOpenedTabs lists tabs your tabs opened that were not shared because that limit was reached; they are not usable, ask the user to close tabs or share one with request_browser_page.` : '')
+						+ (call.value.closedWaitingPages ? ` closedWaitingPages is how many new tabs or windows your tabs opened while their space was not on screen were closed right away, because at most ${PARADIS_MAX_WAITING_CHILDREN_PER_TAB} such pages per tab (and ${PARADIS_MAX_WAITING_CHILDREN} in total) are kept until the user switches back; open the page with navigate_page instead if you need it.` : ''),
 				}, null, 2));
 			}
 			case 'select_browser_tab':
@@ -6679,7 +6685,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'paneUnresolved':
 				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space it belongs to. Retry in a few seconds.';
 			case 'spaceNotVisible':
-				return 'The space this terminal pane belongs to is not on screen right now, so a tab opened there would not be visible or controllable. Ask the user to switch back to that space, then call this tool again.';
+				return 'The user is looking at another space, and this needs the space of this terminal pane on screen. Use a tab of your own instead (open_browser_tab works while the space is not shown), or ask the user to switch to this pane\'s space and call this tool again.';
 			case 'unreachableSpace':
 				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list).';
 			case 'limitReached':
@@ -6691,7 +6697,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'unknownTab':
 				return 'There is no tab with that tabId that this terminal pane may use. You can only select tabs you opened (and the page currently shared with this pane); call list_browser_tabs to see them. To use a user tab, call request_browser_page.';
 			case 'tabNotVisible':
-				return 'That tab is in a space that is not on screen right now, so it was not closed. Ask the user to switch back to that space, then call this tool again.';
+				return 'That tab was not closed because it is in a space that is not on screen (Para Code keeps such tabs until the space is shown again). Leave it open, or ask the user to switch to that space and call this tool again.';
 			case 'notOwned':
 				return 'That tab was not opened by you, so it cannot be closed from here. Ask the user to close it if needed.';
 		}
@@ -6855,7 +6861,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'profileNotShareable':
 				return `Agent network filtering (the chat.agent.networkFilter setting) is enabled, and pages in named browser profiles such as "${requestedProfile}" do not enforce that network policy, so Para Code does not share them with agents. No page was opened. Ask the user to disable agent network filtering, or to share a page from Para Code and log in there.`;
 			case 'spaceNotVisible':
-				return 'The space this terminal pane belongs to is not on screen right now, so opening a page there would not be visible or controllable. Ask the user to switch back to that space, then call this tool again.';
+				return 'No page was opened: a browser profile can only be opened while the space of this terminal pane is on screen, and the user is looking at another space. Ask the user to switch to this pane\'s space and call this tool again, or use open_browser_tab (it works while the space is not shown) if a login is not needed.';
 			case 'unreachableSpace':
 				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to open the page.';
 			case 'openFailed':
