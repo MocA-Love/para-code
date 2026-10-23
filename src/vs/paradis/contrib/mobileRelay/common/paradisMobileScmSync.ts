@@ -289,9 +289,19 @@ export function paradisTruncateMiddle(value: string, limit: number): string {
 	if (value.length <= limit) {
 		return value;
 	}
+	const { head, tail } = paradisTruncateMiddleSplit(limit);
+	return paradisJoinTruncatedMiddle(value.slice(0, head), value.length - limit, value.slice(value.length - tail));
+}
+
+/** {@link paradisTruncateMiddle} が残す先頭と末尾の長さ。 */
+export function paradisTruncateMiddleSplit(limit: number): { readonly head: number; readonly tail: number } {
 	const head = Math.floor(limit * 0.35);
-	const tail = limit - head;
-	return `${value.slice(0, head)}\n[…${value.length - limit} 文字を省略…]\n${value.slice(value.length - tail)}`;
+	return { head, tail: limit - head };
+}
+
+/** {@link paradisTruncateMiddle} の形（先頭・省略した文字数・末尾）につなぐ。 */
+export function paradisJoinTruncatedMiddle(head: string, omitted: number, tail: string): string {
+	return `${head}\n[…${omitted} 文字を省略…]\n${tail}`;
 }
 
 /**

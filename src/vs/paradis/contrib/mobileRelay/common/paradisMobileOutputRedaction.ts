@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { paradisRedactSecrets } from '../../notificationInbox/common/paradisNotificationInbox.js';
-import { paradisNormalizeCommandOutput } from './paradisMobileScmSync.js';
+import { paradisJoinTruncatedMiddle, paradisNormalizeCommandOutput, paradisTruncateMiddle, paradisTruncateMiddleSplit } from './paradisMobileScmSync.js';
 
 /**
  * コマンドの出力（コミットのフック・git の push・CI のログ）から秘密らしい値を伏せる（Orca W2-15 / W2-36）。
@@ -23,12 +23,32 @@ import { paradisNormalizeCommandOutput } from './paradisMobileScmSync.js';
 export function paradisRedactMobileCommandOutput(raw: string): string {
 	const normalized = paradisNormalizeCommandOutput(raw)
 		.replace(/-----BEGIN (?<kind>[A-Z ]*)PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '-----BEGIN $<kind>PRIVATE KEY----- ***')
-		.replace(/(?<scheme>[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, '$<scheme>***@')
+		.replace(/(?<scheme>[a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@:]{1,256}(?::[^\s/@]{0,256})?@/gi, '$<scheme>***@')
 		// Azure の接続文字列（`AccountKey=…;`・`SharedAccessKey=…`・SAS の `sig=…`）
 		.replace(/\b(?<name>AccountKey|SharedAccessKey|SharedAccessSignature|sig)=(?<value>[^;&\s"']+)/gi, '$<name>=***')
 		// Slack の Incoming Webhook（URL そのものが資格情報）
 		.replace(/https:\/\/hooks\.slack(?:-gov)?\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_-]+/g, 'https://hooks.slack.com/***');
 	return normalized.split('\n').map(line => paradisRedactSecrets(line)).join('\n');
+}
+
+/**
+ * 伏せる前に切る余白。切り目で割れた秘密が、捨てる余白の中に収まる長さにする（4096 ビットの RSA の秘密鍵の PEM が 3,300 字ほど）。
+ */
+const TRUNCATE_BEFORE_REDACT_MARGIN = 4_096;
+
+/**
+ * 長い出力を、先頭と末尾を残して `limit` 字に切ってから伏せ字を当てる（形は `paradisTruncateMiddle` と同じ）。
+ * 先に切るのは、伏せる時間を出力の長さでなく `limit` で決めるため。先頭と末尾は余白を付けて切ってから伏せ、
+ * 余白を捨てるので、切り目で割れた秘密の断片は残さない。
+ */
+export function paradisRedactMobileCommandOutputWithin(raw: string, limit: number): string {
+	if (raw.length <= limit + 2 * TRUNCATE_BEFORE_REDACT_MARGIN) {
+		return paradisTruncateMiddle(paradisRedactMobileCommandOutput(raw), limit);
+	}
+	const { head, tail } = paradisTruncateMiddleSplit(limit);
+	const redactedHead = paradisRedactMobileCommandOutput(raw.slice(0, head + TRUNCATE_BEFORE_REDACT_MARGIN)).slice(0, head);
+	const redactedTail = paradisRedactMobileCommandOutput(raw.slice(raw.length - tail - TRUNCATE_BEFORE_REDACT_MARGIN));
+	return paradisJoinTruncatedMiddle(redactedHead, raw.length - limit, redactedTail.slice(Math.max(0, redactedTail.length - tail)));
 }
 
 /**
