@@ -18,11 +18,11 @@
 import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
-import { constants as fsConstants, promises as fsPromises, writeFileSync } from 'fs';
+import { promises as fsPromises, writeFileSync } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -75,7 +75,7 @@ import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/pa
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
-import { IParadisDevtoolsPathCaller, paradisCaptureExistsReason, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
+import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
@@ -94,7 +94,7 @@ import { PARADIS_SITE_NUDGE_ACTION_TOOLS, ParadisSiteNudges, paradisSiteNudgeTex
 import { PARADIS_HUMAN_CHECK_POLL_MS, PARADIS_HUMAN_CHECK_TOOLS, ParadisHumanCheckTracker, paradisHumanCheckNotice, paradisParseHumanCheckObservation } from '../common/paradisBrowserHumanCheck.js';
 import { ParadisSubagentToolUses, paradisToolUseIdOfCall } from '../common/paradisSubagentToolCalls.js';
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
-import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal } from './paradisBrowserCapture.js';
+import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisWriteCaptureFile } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
@@ -6055,30 +6055,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (refusal !== undefined) {
 			return { ok: false, message: refusal };
 		}
-		try {
-			await fsPromises.mkdir(dirname(path), { recursive: true });
-			// 確かめたのはフォルダまで。撮った画像は既にあるもの（ファイル・シンボリックリンクとも）を上書きしない
-			// （スペースの中の既存のファイルを確認なしに書き換えないため。q.html Q413）。O_EXCL で作るときにも確かめる
-			const existing = await fsPromises.lstat(path).catch(() => undefined);
-			if (existing !== undefined) {
-				return { ok: false, message: paradisCaptureExistsReason(path) };
-			}
-			const handle = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), 0o644).catch((error: NodeJS.ErrnoException) => {
-				if (error.code === 'EEXIST') {
-					return undefined;
-				}
-				throw error;
-			});
-			if (handle === undefined) {
-				return { ok: false, message: paradisCaptureExistsReason(path) };
-			}
-			try {
-				await handle.writeFile(data);
-			} finally {
-				await handle.close();
-			}
-		} catch {
-			return { ok: false, message: `Para Code could not write ${path} (permissions, a symbolic link, or the disk is full).` };
+		// 確かめたのはフォルダまで。既にあるもの（ファイル・シンボリックリンクとも）は上書きしない（paradisBrowserCapture.ts）
+		const written = await paradisWriteCaptureFile(path, data);
+		if (!written.ok) {
+			return written;
 		}
 		this._requireIngressLease(ingressLease);
 		return { ok: true, path };

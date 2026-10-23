@@ -11,10 +11,11 @@
 // 同じ electron-main の撮影（captureExactViewScreenshot）を直接呼ぶ。保存はサービスに任せる
 // （手元のペインは roots の中だけ、接続先のペインは接続先のパスへ書き戻す既存の経路）。
 
-import { promises as fs } from 'fs';
+import { constants as fsConstants, promises as fs } from 'fs';
 import { dirname, isAbsolute, join, relative, sep } from '../../../../base/common/path.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
+import { paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
 import { IParadisQuerySpec, paradisBuildQueryFunction, paradisEvaluateDeadline, paradisIsLocatorError, paradisIsPageUnresponsive, paradisIsTransientEvaluateFailure, paradisPageUnresponsiveMessage, paradisParseEvaluateValue, paradisParseQueryLocator } from './paradisBrowserQuery.js';
 
 /** 1 回で撮れる要素の数。 */
@@ -69,6 +70,36 @@ export function paradisCaptureSavePath(saveTo: string, index: number, count: num
  * `.git` などの中は断る。まだ無いフォルダは、実在する一番近い祖先の realpath で見る（シンボリックリンクで
  * 外へ出ないように）。断るときはその文を返す。
  */
+/**
+ * capture_screenshot の `saveTo` を手元に書く（場所は {@link paradisCaptureLocalPathRefusal} で確かめた後）。既にあるもの
+ * （ファイル・シンボリックリンクとも）は上書きせずに断る。確かめた後に作られたものも `O_EXCL` で断る（q.html Q413）。
+ */
+export async function paradisWriteCaptureFile(path: string, data: Uint8Array): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+	try {
+		await fs.mkdir(dirname(path), { recursive: true });
+		if (await fs.lstat(path).then(() => true, () => false)) {
+			return { ok: false, message: paradisCaptureExistsReason(path) };
+		}
+		const handle = await fs.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), 0o644).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === 'EEXIST') {
+				return undefined;
+			}
+			throw error;
+		});
+		if (handle === undefined) {
+			return { ok: false, message: paradisCaptureExistsReason(path) };
+		}
+		try {
+			await handle.writeFile(data);
+		} finally {
+			await handle.close();
+		}
+		return { ok: true };
+	} catch {
+		return { ok: false, message: `Para Code could not write ${path} (permissions, a symbolic link, or the disk is full).` };
+	}
+}
+
 export async function paradisCaptureLocalPathRefusal(path: string, roots: readonly string[], realpath: (path: string) => Promise<string> = p => fs.realpath(p)): Promise<string | undefined> {
 	if (!isAbsolute(path)) {
 		return `"saveTo" must be an absolute path (got ${JSON.stringify(path)}).`;

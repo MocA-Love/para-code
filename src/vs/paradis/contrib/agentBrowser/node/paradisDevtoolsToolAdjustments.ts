@@ -79,7 +79,22 @@ export interface IParadisPreparedDevtoolsCall {
 	readonly refuse?: string;
 }
 
-/** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる（他はそのまま）。 */
+/**
+ * 撮る系のツールの保存先の説明に足す文。保存は既にあるファイルを上書きしないので（paradisDevtoolsPathPolicy.ts の
+ * paradisDevtoolsCaptureOverwriteRefusal）、最初の保存で断られないよう、前もって伝える。
+ */
+export const PARADIS_CAPTURE_NO_OVERWRITE_NOTE = 'An existing file is never overwritten (the extension is changed to match the format first, and that path must not exist yet): choose a new file name for each capture, for example by adding -2.';
+
+/** filePath の説明に {@link PARADIS_CAPTURE_NO_OVERWRITE_NOTE} を足す（take_screenshot・take_snapshot）。 */
+function withCaptureNoOverwriteNote(properties: IJsonSchemaObject): void {
+	const filePath = properties.filePath;
+	if (isRecord(filePath)) {
+		const described = typeof filePath.description === 'string' ? `${filePath.description} ` : '';
+		properties.filePath = { ...filePath, description: `${described}${PARADIS_CAPTURE_NO_OVERWRITE_NOTE}` };
+	}
+}
+
+/** tools/list で公開するスキーマ。wait_for と take_snapshot の引数を足す・広げる。take_screenshot・take_snapshot の filePath の説明に上書きしないことを足す（他はそのまま）。 */
 export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: string; readonly description?: string; readonly inputSchema?: unknown }>(tool: T): T {
 	if (!isRecord(tool.inputSchema) || !isRecord(tool.inputSchema.properties)) {
 		return tool;
@@ -123,6 +138,9 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			type: 'string',
 			description: 'uid of an element from an earlier snapshot. Only that element and its descendants are returned (for example one dialog, form or table), which keeps the response short. The uids stay the same as in the full snapshot. Not combined with filePath.',
 		};
+		withCaptureNoOverwriteNote(properties);
+	} else if (tool.name === 'take_screenshot' && properties.filePath !== undefined) {
+		withCaptureNoOverwriteNote(properties);
 	} else {
 		return tool;
 	}
