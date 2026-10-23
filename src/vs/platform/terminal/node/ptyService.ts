@@ -164,11 +164,11 @@ export class PtyService extends Disposable implements IPtyService {
 	readonly onDidChangeProperty = this._traceEvent('_onDidChangeProperty', this._onDidChangeProperty.event);
 
 	private _traceEvent<T>(name: string, event: Event<T>): Event<T> {
-		event(e => {
+		this._register(event(e => {
 			if (this._logService.getLevel() === LogLevel.Trace) {
 				this._logService.trace(`[RPC Event] PtyService#${name}.fire(${JSON.stringify(e)})`);
 			}
-		});
+		}));
 		return event;
 	}
 
@@ -441,12 +441,16 @@ export class PtyService extends Disposable implements IPtyService {
 	}
 
 	@traceRpc
-	async attachToProcess(id: number): Promise<void> {
+	async attachToProcess(id: number, pid?: number): Promise<void> {
 		// PARA-PATCH: a window reconnects before the daemon's terminals have been taken back, so the
 		// id it asks for does not exist yet. See paradisTerminalProcessFactory.ts.
 		await paradisAdoptionSettled();
 		try {
-			await this._throwIfNoPty(id).attach();
+			const persistentProcess = this._throwIfNoPty(id);
+			if (pid !== undefined && persistentProcess.pid !== pid) {
+				throw new ErrorNoTelemetry(`Pty ${id} has pid ${persistentProcess.pid}, expected ${pid}`);
+			}
+			await persistentProcess.attach();
 			this._logService.info(`Persistent process reconnection "${id}"`);
 		} catch (e) {
 			this._logService.warn(`Persistent process reconnection "${id}" failed`, e.message);

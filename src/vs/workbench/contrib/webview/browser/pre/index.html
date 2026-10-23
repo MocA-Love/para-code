@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-Vtdcj70ZLjLM2kkKC7kEi4/tTfuMTstFsdTPS3QUhi4=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-OWI6CercO3cAuAls7OCT1P4J6TjgqORLZrUZC4lDjHA=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -1255,6 +1255,9 @@
 				}
 			});
 
+			/** @type {WeakMap<Document, HTMLElement>} */
+			const lastFocusedElements = new WeakMap();
+
 			// propagate focus
 			hostMessaging.onMessage('focus', () => {
 				const activeFrame = getActiveFrame();
@@ -1440,6 +1443,12 @@
 
 						contentWindow.addEventListener('scroll', handleInnerScroll);
 						contentWindow.addEventListener('wheel', handleWheel);
+						contentWindow.addEventListener('focusin', () => {
+							const focused = /** @type {HTMLElement | null} */ (contentDocument.activeElement);
+							if (focused && focused !== contentDocument.body && focused !== contentDocument.documentElement) {
+								lastFocusedElements.set(contentDocument, focused);
+							}
+						});
 
 						if (wasFocused) {
 							contentWindow.focus();
@@ -1588,7 +1597,13 @@
 				if (!target) {
 					return;
 				}
-				assertIsDefined(target.contentDocument).execCommand(data);
+				const contentDocument = assertIsDefined(target.contentDocument);
+				const lastFocused = lastFocusedElements.get(contentDocument);
+				if ((contentDocument.activeElement === contentDocument.body || contentDocument.activeElement === contentDocument.documentElement)
+					&& lastFocused?.isConnected && lastFocused.ownerDocument === contentDocument) {
+					lastFocused.focus({ preventScroll: true });
+				}
+				contentDocument.execCommand(data);
 			});
 
 			/** @type {string | undefined} */

@@ -26,7 +26,8 @@ import { GitHubClient, GitHubError } from './github.js';
  * GitHub との同期（読むだけ。フェーズ 2 では GitHub へ書き込まない）。
  * - 取り込み: 5 分ごと（と「今すぐ同期」）に、担当が自分の未着手を Projects か Issue 検索から読む
  * - PR: Issue を閉じる PR（closedByPullRequestsReferences）をタスクに結び付け、
- *   工程が外部待ち・マージ待ちのタスクの PR だけを 60 秒ごとに読み直す
+ *   工程が外部待ち（wait 工程・マージ待ち）のタスクの PR だけを 60 秒ごとに読み直す。ほかの進行中のタスクの PR は取り込みのときに読む
+ * - GraphQL が上限で止まっている間は、60 秒ごとの見張りを黙って見送る
  * - 詳細（Issue の本文・経過、PR のチェック・レビュー・ファイル）は画面が開いたときだけ読み、30 秒覚える
  */
 
@@ -153,11 +154,18 @@ export class GitHubSync {
 	private readonly detailCache = new Map<string, { at: number; value: unknown }>();
 	private disposed = false;
 
-	constructor(private readonly options: IGitHubSyncOptions) { }
+	constructor(private readonly options: IGitHubSyncOptions) {
+		// gh でアカウントが切り替わったら、前のアカウントで読んだ詳細を見せない
+		options.client.onDidChangeAccount(() => {
+			this.detailCache.clear();
+			this.projectMeta.clear();
+		});
+	}
 
 	getState(): ITaskBoardGitHubState {
 		const c = this.options.client;
-		return { ...this.state, rest: c.rest, graphql: c.graphqlLimit ?? this.state.graphql, requestCount: c.requestCount, login: c.login, avatarUrl: c.avatarUrl };
+		const pausedUntil = c.pausedUntil();
+		return { ...this.state, rest: c.rest, graphql: c.graphqlLimit ?? this.state.graphql, requestCount: c.requestCount, login: c.login, avatarUrl: c.avatarUrl, pausedUntil: pausedUntil || undefined };
 	}
 
 	get login(): string | undefined {
@@ -171,7 +179,11 @@ export class GitHubSync {
 
 	async start(): Promise<void> {
 		// PR の見張りは、最初の接続に失敗しても動かしておく（後の同期でつながったら効き始める）
-		this.prTimer = setInterval(() => void this.refreshPullRequests().catch(err => this.fail(err)), this.options.prIntervalMs ?? PR_INTERVAL);
+		this.prTimer = setInterval(() => {
+			if (!this.options.client.blockedUntil('graphql')) {
+				void this.refreshPullRequests([], true).catch(err => this.fail(err));
+			}
+		}, this.options.prIntervalMs ?? PR_INTERVAL);
 		this.set({ mode: 'connecting', error: undefined });
 		try {
 			await this.options.client.init();
@@ -228,9 +240,8 @@ export class GitHubSync {
 		const engine = this.options.engine;
 		const flow = engine.getActiveFlow();
 		try {
-			if (!this.options.client.login) {
-				await this.options.client.init();
-			}
+			// 取り込みは担当（ログイン名）で絞るので、先にアカウントの切り替えを確かめてからログイン名を読む
+			await this.options.client.refreshAccount();
 			const { items, label, complete } = await this.fetchIntake(flow);
 			const result = engine.syncIntake(items, complete);
 			for (const item of items) {
@@ -340,14 +351,23 @@ export class GitHubSync {
 		return { items, complete };
 	}
 
-	/** 工程が進行中で、本物の PR があるタスクの PR を読み直す。 */
-	async refreshPullRequests(extraTaskIds: readonly string[] = []): Promise<void> {
+	/** 工程が進行中で、本物の PR があるタスクの PR を読み直す。watchOnly なら外部待ちの工程にいるものだけ。 */
+	async refreshPullRequests(extraTaskIds: readonly string[] = [], watchOnly = false): Promise<void> {
 		if (this.state.mode !== 'ok') {
 			return;
 		}
 		const engine = this.options.engine;
 		// 名前の形がおかしいものは最初から外す（1 件で問い合わせ全体が失敗しないように）
-		const tasks = engine.getTasks().filter(t => t.pr && !t.pr.simulated && NAME_RE.test(t.pr.owner) && NAME_RE.test(t.pr.repo) && (t.step !== TASK_BOARD_TODO && t.step !== TASK_BOARD_DONE || extraTaskIds.includes(t.id)) && t.pr.state !== 'merged' && t.pr.state !== 'closed').slice(0, 40);
+		// 60 秒ごとに見るのは、外部待ちの工程にいるものと、このタスクの PR（マージ・クローズで完了にする判定は
+		// どの工程でも効くので、e2e などの途中でマージ・クローズされても 60 秒以内に気付けるように）
+		const waiting = (t: ITaskBoardTask) => {
+			if (t.prOwned) {
+				return true;
+			}
+			const step = engine.flowOf(t).steps.find(s => s.id === t.step);
+			return step?.kind === 'wait' || step?.kind === 'human' && step.gate === 'merge';
+		};
+		const tasks = engine.getTasks().filter(t => t.pr && !t.pr.simulated && NAME_RE.test(t.pr.owner) && NAME_RE.test(t.pr.repo) && (t.step !== TASK_BOARD_TODO && t.step !== TASK_BOARD_DONE && (!watchOnly || waiting(t)) || extraTaskIds.includes(t.id)) && t.pr.state !== 'merged' && t.pr.state !== 'closed').slice(0, 40);
 		if (!tasks.length) {
 			return;
 		}

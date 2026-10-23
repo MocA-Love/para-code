@@ -9,7 +9,12 @@ import { IntervalTimer } from '../../../../base/common/async.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { autorun, IObservable } from '../../../../base/common/observable.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ISessionGithubRefreshable } from './sessionGithubBackgroundPolling.js';
+import { ApiRequestOptions } from '../../../../platform/github/common/client/request.js';
+
+/** The review threads model's `refresh` shape (`force` first, then request options). */
+export interface ISessionGithubReviewThreadsRefreshable {
+	refresh(force?: boolean, options?: ApiRequestOptions): Promise<void>;
+}
 
 const LOG_PREFIX = '[SessionGithubReviewThreadsRefresh]';
 
@@ -50,7 +55,7 @@ export interface ISessionGithubReviewThreadsRefreshOptions {
  * they still reflect immediately.
  */
 export function startChangeDrivenReviewThreadsRefresh(
-	model: ISessionGithubRefreshable,
+	model: ISessionGithubReviewThreadsRefreshable,
 	/** Pull request change token — the model's `updatedAt`, or `undefined` before it has data. */
 	changeTokenObs: IObservable<string | undefined>,
 	logService: ILogService,
@@ -67,7 +72,8 @@ export function startChangeDrivenReviewThreadsRefresh(
 	const refresh = (reason: string): void => {
 		lastRefreshAt = now();
 		logService.trace(`${LOG_PREFIX} Refreshing review threads (${reason})`);
-		model.refresh().catch(err => {
+		// The active session's review threads are on screen: the engine's 'visible' lane.
+		model.refresh(false, { priority: 'visible' }).catch(err => {
 			// Model refreshes swallow fetch errors internally; this only guards
 			// against unexpected synchronous throws becoming unhandled rejections.
 			logService.trace(`${LOG_PREFIX} Review thread refresh failed`, err);

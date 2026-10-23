@@ -230,8 +230,9 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 
 	// PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means, the same way the local
 	// backend does. Without it a restored tab on a remote host attaches to whatever holds its old
-	// number now. See PtyService#getRevivedPtyNewId.
-	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
+	// number now. See PtyService#getRevivedPtyNewId. `pid` follows upstream's ITerminalBackend
+	// signature; like upstream, the remote backend does not check it.
+	async attachToRevivedProcess(id: number, _pid: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		if (!this._remoteTerminalChannel) {
 			throw new Error(`Cannot create remote terminal when there is no remote!`);
 		}
