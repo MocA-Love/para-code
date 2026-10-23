@@ -28,6 +28,7 @@ import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchServic
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
 
 /** 共有の印が付いているか（await をまたいで読み直すので関数にする）。 */
 function isShared(model: IBrowserViewModel): boolean {
@@ -122,7 +123,7 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 	private _watchUnshare(viewId: string, model: IBrowserViewModel): void {
 		const store = new DisposableStore();
 		store.add(model.onDidChangeSharingState(state => {
-			if (state !== BrowserViewSharingState.Shared && this._watchers.has(viewId)) {
+			if (paradisIsShareMarkRemoved(state) && this._watchers.has(viewId)) {
 				this._watchers.deleteAndDispose(viewId);
 				for (const token of this._bindingModel.getAgentTabOwnersForPage(viewId)) {
 					void this._bindingModel.revokeAgentTab(token, viewId);

@@ -12,6 +12,8 @@ import { IContextKey, IContextKeyService, RawContextKey } from '../../../../plat
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
 
 /**
  * そのブラウザエディタのページが1つ以上のペインと共有中かどうか。エディタごとの context key
@@ -23,6 +25,10 @@ export const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisAct
  * そのブラウザエディタのページが共有中かを、エディタごとの context key に出す。ツールバーの共有ボタンの
  * 表示（共有する／共有中）はこれで決まる。全体で 1 つの key にすると、分割した画面でアクティブな別の
  * タブの状態が、押そうとしているタブのツールバーに出てしまう。
+ *
+ * 共有中のページから共有の印（upstream の agent audience。ページの枠の表示に使われる）だけが外れたときは、
+ * 印を付け直す。共有の正は para-browser の台帳で、ゲートウェイは印を見ずにつなぐため、印だけ外れると
+ * 「枠は消えたがエージェントは操作できる」食い違いになる。
  */
 export class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
 	private readonly _shared: IContextKey<boolean>;
@@ -31,15 +37,29 @@ export class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
 		editor: BrowserEditor,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
+		@IParadisAgentBrowserTabsService private readonly tabsService: IParadisAgentBrowserTabsService,
 	) {
 		super(editor);
 		this._shared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
 	}
 
 	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
-		const update = () => this._shared.set(this.bindingModel.getBindingsForPage(model.id).length > 0 || this.bindingModel.getAgentTabOwnersForPage(model.id).length > 0);
+		const update = () => this._shared.set(this.bindingModel.getPageShares(model.id).length > 0);
 		store.add(this.bindingModel.onDidChange(update));
+		store.add(model.onDidChangeSharingState(state => {
+			if (paradisIsShareMarkRemoved(state) && this.bindingModel.getBindingsForPage(model.id).length > 0) {
+				void this._restoreShareMark(model, store);
+			}
+		}));
 		update();
+	}
+
+	private async _restoreShareMark(model: IBrowserViewModel, store: DisposableStore): Promise<void> {
+		// 共有を外す操作の途中（台帳が先に減って、続けて印を下ろす）と取り違えないよう、台帳を取り直してから見る
+		await this.bindingModel.refresh(true);
+		if (!store.isDisposed && paradisIsShareMarkRemoved(model.sharingState) && this.bindingModel.getBindingsForPage(model.id).length > 0) {
+			await this.tabsService.restoreShareMark(model);
+		}
 	}
 
 	override onModelDetached(): void {

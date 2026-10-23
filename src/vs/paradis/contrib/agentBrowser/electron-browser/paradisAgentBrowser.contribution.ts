@@ -19,8 +19,9 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
+import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
@@ -43,6 +44,7 @@ import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserA
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { PARADIS_ACTIVE_PAGE_SHARED, ParadisBrowserShareStateFeature } from './paradisBrowserShareState.js';
+import { closeAllBrowserSharePopovers, ParadisBrowserShareActionViewItem } from './paradisBrowserShareButton.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 import { IParadisDialogPageMiss, ParadisDialogPageResult, paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
@@ -356,6 +358,10 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 // menu 付き Action2 を登録するだけで済む（upstreamファイルは変更しない）。
 // 動的ラベルはメニュー登録では表現できないため、未共有/共有中で `when` の異なる2つの
 // アクションを登録し、共有中側は toggled でハイライト表示する。
+// ツールバーでの見た目（共有しているペインの数のバッジ・押したときの一覧）は ParadisBrowserShareActionViewItem
+// （paradisBrowserShareButton.ts）が描く。グループは upstream のタブのグループ（1_tabs）の直後に置く。ツールバーは
+// 幅が足りないと後ろの項目から「…」へ畳むので、前に置くほど共有の状態が最後まで見える。
+const PARADIS_SHARE_TOOLBAR_GROUP = '2_paradisShare';
 
 class ParadisToolbarShareAction extends Action2 {
 	static readonly ID = 'paradis.agentBrowser.toolbarShare';
@@ -367,7 +373,7 @@ class ParadisToolbarShareAction extends Action2 {
 			icon: Codicon.plug,
 			menu: {
 				id: MenuId.BrowserActionsToolbar,
-				group: '3_tools',
+				group: PARADIS_SHARE_TOOLBAR_GROUP,
 				order: 0,
 				when: PARADIS_ACTIVE_PAGE_SHARED.negate(),
 			},
@@ -391,7 +397,7 @@ class ParadisToolbarSharedAction extends Action2 {
 			toggled: PARADIS_ACTIVE_PAGE_SHARED,
 			menu: {
 				id: MenuId.BrowserActionsToolbar,
-				group: '3_tools',
+				group: PARADIS_SHARE_TOOLBAR_GROUP,
 				order: 0,
 				when: PARADIS_ACTIVE_PAGE_SHARED,
 			},
@@ -406,6 +412,27 @@ class ParadisToolbarSharedAction extends Action2 {
 
 // ツールバーの共有ボタンの表示をエディタごとに出す（テストが副作用なしで読めるよう、登録はここで行う）。
 BrowserEditor.registerContribution(ParadisBrowserShareStateFeature);
+
+/** ツールバーの共有のボタンを、数のバッジと一覧を持つ自前の描画にする。 */
+class ParadisBrowserShareButtonContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisBrowserShareButton';
+
+	constructor(
+		@IActionViewItemService actionViewItemService: IActionViewItemService,
+		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
+	) {
+		super();
+		for (const id of [ParadisToolbarShareAction.ID, ParadisToolbarSharedAction.ID]) {
+			this._register(actionViewItemService.register(MenuId.BrowserActionsToolbar, id, (action, options, instantiationService) =>
+				instantiationService.createInstance(ParadisBrowserShareActionViewItem, action, options)));
+		}
+		// スペースを切り替えるときは閉じる（一覧は前のスペースのページについてのもの）
+		this._register(workspaceSwitchService.onWillSwitchScope(() => closeAllBrowserSharePopovers()));
+		this._register(toDisposable(() => closeAllBrowserSharePopovers()));
+	}
+}
+
+registerWorkbenchContribution2(ParadisBrowserShareButtonContribution.ID, ParadisBrowserShareButtonContribution, WorkbenchPhase.AfterRestored);
 
 // --- ステータスバー + コンテキストキー + ペインインジケータのホスト ---
 
