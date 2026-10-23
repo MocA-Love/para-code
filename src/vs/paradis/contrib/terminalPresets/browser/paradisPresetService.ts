@@ -35,7 +35,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
@@ -176,7 +176,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
-		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 	) {
 		super();
 
@@ -1091,9 +1091,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 		// タスクを順に起こす間（ターミナルのプロセスの準備を待つ）にスペースが切り替わっても、作業
 		// フォルダの基準とターミナルの所属は起動を始めた時点のものを使う。タスクごとに今のフォルダと
-		// スペースを読むと、2 つ目以降のコマンドが切り替え先のリポジトリで動く。
+		// スペースを読むと、2 つ目以降のコマンドが切り替え先のリポジトリで動く。所属は、ターミナルを
+		// 開くウィンドウのスペース（別のスペースに固定した補助ウィンドウならそのスペース。作成時の
+		// 既定のタグ付けと同じ決め方）を始めた時点で控える。
 		const base = options?.cwd ?? this._presetBaseFolder(preset);
-		const stateKey = options?.stateKey ?? this.workspaceSwitchService.activeStateKey;
+		const launchScope = this.auxiliaryWindowScopeService.resolveGroup(this.editorGroupsService.activeGroup);
+		const stateKey = options?.stateKey ?? (launchScope.kind === 'managed' ? launchScope.stateKey : undefined);
 
 		if (layout === 'current' || layout === 'smart') {
 			// 全タスクのコマンドを連結してアクティブなターミナルへ送る（旧 current-terminal 相当）。

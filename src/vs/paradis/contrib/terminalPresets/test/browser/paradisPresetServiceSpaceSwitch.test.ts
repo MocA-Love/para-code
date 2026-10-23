@@ -21,14 +21,18 @@ import { IWorkspaceTrustManagementService } from '../../../../../platform/worksp
 import { ICreateTerminalOptions, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisPresetService } from '../../browser/paradisPresetService.js';
 import { IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
 
 suite('ParadisPresetService space switch', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('later commands of a multi-command preset run in the space and folder it started in', async () => {
+	/**
+	 * 1 つ目のターミナルの準備を待っている間に、メインのウィンドウのスペースを A から B へ切り替える。
+	 * `pinnedTo` を渡すと、プリセットを実行するグループはそのスペースに固定した補助ウィンドウにある。
+	 */
+	async function runAcrossSwitch(pinnedTo?: string): Promise<string[]> {
 		const state = { activeStateKey: 'space-a', folders: [] as URI[] };
 		const log: string[] = [];
 		const processReady: DeferredPromise<void>[] = [];
@@ -66,7 +70,7 @@ suite('ParadisPresetService space switch', () => {
 			store.add(new InMemoryStorageService()),
 			upcastPartial<IWorkbenchEnvironmentService>({ remoteAuthority: undefined }),
 			upcastPartial<IParadisAgentStatusStore>({}),
-			upcastPartial<IParadisWorkspaceSwitchService>({ get activeStateKey() { return state.activeStateKey; } }),
+			upcastPartial<IParadisAuxiliaryWindowScopeService>({ resolveGroup: () => ({ kind: 'managed', stateKey: pinnedTo ?? state.activeStateKey }) }),
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];
@@ -81,15 +85,17 @@ suite('ParadisPresetService space switch', () => {
 
 		const running = service.runPreset(preset);
 		await Promise.resolve();
-		// 1 つ目のターミナルの準備を待っている間に、スペースを B へ切り替える。
 		state.activeStateKey = 'space-b';
 		state.folders = [URI.file('/repos/b')];
 		processReady[0].complete();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		processReady[1].complete();
 		await running;
+		return log;
+	}
 
-		assert.deepStrictEqual(log, [
+	test('later commands of a multi-command preset run in the space and folder it started in', async () => {
+		assert.deepStrictEqual(await runAcrossSwitch(), [
 			'terminal:1:/repos/a/server',
 			'scope:1:space-a',
 			'send:1:npm run server',
@@ -97,5 +103,10 @@ suite('ParadisPresetService space switch', () => {
 			'scope:2:space-a',
 			'send:2:npm run web',
 		]);
+	});
+
+	test('terminals opened in a window pinned to another space belong to that space', async () => {
+		const log = await runAcrossSwitch('space-c');
+		assert.deepStrictEqual(log.filter(entry => entry.startsWith('scope:')), ['scope:1:space-c', 'scope:2:space-c']);
 	});
 });
