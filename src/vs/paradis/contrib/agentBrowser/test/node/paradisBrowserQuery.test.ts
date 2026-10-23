@@ -145,21 +145,21 @@ suite('paradisBrowserQuery (shared process)', () => {
 			timedOut: [true, true, true],
 			broken: [true, 1],
 			nothing: true,
-			tooLong: [true, '"timeout_seconds" must be a number from 0.5 to 100 here. Up to 280 is allowed only for calls from a Claude Code subagent. Call wait_until again with 100 or less.', 1],
+			tooLong: [true, '"timeout_seconds" must be a number from 0.5 to 100 here. Up to 250 is allowed only for calls from a Claude Code subagent. Call wait_until again with 100 or less.', 1],
 			wayTooLong: '"timeout_seconds" must be a number from 0.5 to 100.',
 		});
 	});
 
-	test('wait_until waits up to 280 seconds for a call from a Claude Code subagent', async () => {
+	test('wait_until waits up to 250 seconds for a call from a Claude Code subagent', async () => {
 		const page = new FakePage([returned({ met: false, matched: 0, visible: 0 })], 10_000);
-		const timedOut = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 280 });
-		const tooLong = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 281 });
+		const timedOut = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 250 });
+		const tooLong = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 251 });
 		assert.deepStrictEqual({
-			timedOut: [isError(timedOut), textOf(timedOut).startsWith('Timed out after 280s')],
+			timedOut: [isError(timedOut), textOf(timedOut).startsWith('Timed out after 250s')],
 			tooLong: textOf(tooLong),
 		}, {
 			timedOut: [true, true],
-			tooLong: '"timeout_seconds" must be a number from 0.5 to 280.',
+			tooLong: '"timeout_seconds" must be a number from 0.5 to 250.',
 		});
 	});
 

@@ -30,9 +30,10 @@ export const PARADIS_MAIN_WAIT_MAX_SECONDS = 100;
 
 /**
  * 子からの呼び出しで使う待ちの上限（秒）。Para Code が Claude Code に書くサーバーごとの `timeout`（300 秒、
- * paradisMcpSetupEncoding.ts）と、ページの関数 1 回分の待ちに余裕を残す。
+ * paradisMcpSetupEncoding.ts）より、締め切りの後に足される時間の分だけ短くする: 最後のページの確認が答えないときの
+ * 待ち（最大 11 秒程度、paradisBrowserQuery.ts）、時間切れの後の読み取り（最大 3 秒）、同じタブの待ち行列と観測。
  */
-export const PARADIS_SUBAGENT_WAIT_MAX_SECONDS = 280;
+export const PARADIS_SUBAGENT_WAIT_MAX_SECONDS = 250;
 
 /** 覚えておく時間。PreToolUse から `tools/call` までは通常すぐなので、長く残す必要はない。 */
 const REMEMBER_MS = 15 * 60_000;
@@ -66,9 +67,9 @@ export class ParadisSubagentToolUses {
 
 	constructor(private readonly _now: () => number = Date.now) { }
 
-	/** hook を 1 つ受けた。子の中の PreToolUse だけを覚える。 */
-	noteHook(paneToken: string, event: string | undefined, toolUseId: string | undefined, fromSubagent: boolean): void {
-		if (event !== 'PreToolUse' || !fromSubagent || toolUseId === undefined || !TOOL_USE_ID_PATTERN.test(toolUseId)) {
+	/** hook を 1 つ受けた。子の中の MCP のツール（`mcp__` で始まる。para-browser のものを含む）の PreToolUse だけを覚える。 */
+	noteHook(paneToken: string, event: string | undefined, toolName: string | undefined, toolUseId: string | undefined, fromSubagent: boolean): void {
+		if (event !== 'PreToolUse' || !fromSubagent || toolName === undefined || !toolName.startsWith('mcp__') || toolUseId === undefined || !TOOL_USE_ID_PATTERN.test(toolUseId)) {
 			return;
 		}
 		const key = this._key(paneToken, toolUseId);

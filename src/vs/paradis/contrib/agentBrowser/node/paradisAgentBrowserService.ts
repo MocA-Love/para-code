@@ -4481,7 +4481,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				// 子の中の PreToolUse を覚える（この呼び出しに長い待ちを許すため）。hook は送り終わるまで待たれるので、
 				// 同じ tool_use の `tools/call` より先にここへ来る
-				this._subagentToolUses.noteHook(token, eventType, toolUseId, stringField('agent_id') !== undefined);
+				this._subagentToolUses.noteHook(token, eventType, toolName, toolUseId, stringField('agent_id') !== undefined);
 				if (hookOrigin.origin === 'background') {
 					// Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）。daemon を最初に起こした
 					// ペインの token を持っているだけで、そのペインの会話でも子エージェントでもない。ペインの状態・

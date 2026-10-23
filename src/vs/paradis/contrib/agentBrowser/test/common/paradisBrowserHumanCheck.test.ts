@@ -99,7 +99,7 @@ suite('ParadisBrowserHumanCheck', () => {
 			widgetLetsFormContinue: widget.includes('you can keep filling in the form'),
 			passed: paradisHumanCheckNotice('passed', 'tab-1').startsWith('PARA_BROWSER_HUMAN_CHECK_PASSED:'),
 			mainWaits100: notice.includes('timeout_seconds 100,'),
-			subagentWaits280: paradisHumanCheckNotice('page', 'tab-1', true).includes('timeout_seconds 280,'),
-		}, { marker: true, predicate: true, tab: true, noBypass: true, widgetLetsFormContinue: true, passed: true, mainWaits100: true, subagentWaits280: true });
+			subagentWaits250: paradisHumanCheckNotice('page', 'tab-1', true).includes('timeout_seconds 250,'),
+		}, { marker: true, predicate: true, tab: true, noBypass: true, widgetLetsFormContinue: true, passed: true, mainWaits100: true, subagentWaits250: true });
 	});
 });

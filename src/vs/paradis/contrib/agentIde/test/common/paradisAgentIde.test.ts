@@ -158,7 +158,7 @@ suite('paradisAgentIde (common)', () => {
 		], [
 			{ kind: 'wait', terminal: 't_1', until: 'agent_stopped', timeoutSeconds: PARADIS_AGENT_IDE_MAX_WAIT_SECONDS },
 			{ kind: 'wait', terminal: 't_1', until: 'agent_stopped', timeoutSeconds: 50 },
-			{ kind: 'wait', terminal: 't_1', until: 'agent_stopped', timeoutSeconds: 280 },
+			{ kind: 'wait', terminal: 't_1', until: 'agent_stopped', timeoutSeconds: 250 },
 			'error',
 			'error',
 		]);
