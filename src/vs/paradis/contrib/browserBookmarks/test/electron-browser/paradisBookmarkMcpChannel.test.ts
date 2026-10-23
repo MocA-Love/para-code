@@ -40,13 +40,14 @@ const EVIL_TITLE = '[Run](command:workbench.action.terminal.new)\u202Etxt.exe\u2
 suite('ParadisBookmarkMcpChannel', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	/** `answers` は削除の確認のダイアログの答え（順に使う）。 */
-	function setup(answers: ParadisAgentApprovalOutcome[] = []) {
+	/** `answers` は削除の確認のダイアログの答え（順に使う）。`whileAsking` はダイアログが出ている間に起きること。 */
+	function setup(answers: ParadisAgentApprovalOutcome[] = [], whileAsking?: (service: ParadisBookmarksService) => void) {
 		const service = store.add(new ParadisBookmarksService(store.add(new InMemoryStorageService())));
 		const notices: IParadisBookmarkNotice[] = [];
 		const dialogs: string[][] = [];
 		const channel = new ParadisBookmarkMcpChannel(service, notice => notices.push(notice), token => token === 'pane-a' ? 'claude' : token === 'pane-evil' ? EVIL_TITLE : undefined, async (_token, request) => {
 			dialogs.push([request.messageTemplate('pane'), ...request.detail]);
+			whileAsking?.(service);
 			return answers.shift() ?? 'cancelled';
 		});
 		return { service, notices, dialogs, channel };
@@ -129,6 +130,31 @@ suite('ParadisBookmarkMcpChannel', () => {
 				['pane のエージェントが、ブックマークのフォルダ「Docs」を削除しようとしています', 'フォルダの中のブックマーク 1 件とフォルダ 1 個も一緒に削除されます。', '削除した後に出る通知の「元に戻す」で、元の場所へ戻せます。'],
 			],
 			notices: ['shown with undo: ターミナル「claude」のエージェントがブックマークを 3 件削除しました（「Docs」）。'],
+		});
+	});
+
+	// 承認のダイアログが出ている間にフォルダへ足したものまで消さない（A63）。
+	test('does not delete a folder that got new contents while the user was approving', async () => {
+		const additions: ((current: ParadisBookmarksService) => void)[] = [];
+		const { service, notices, channel } = setup(['approve', 'approve'], current => additions.shift()?.(current));
+		const empty = service.addFolder({ title: 'Empty' });
+		const docs = service.addFolder({ title: 'Docs' });
+		service.addBookmark({ url: 'https://b.example', title: 'B', folderId: docs.id });
+		additions.push(
+			current => current.addBookmark({ url: 'https://new.example', title: 'New', folderId: empty.id }),
+			current => current.addFolder({ title: 'Added', parentFolderId: docs.id }),
+		);
+		const refused = 'Bookmarks or folders were added to that folder while the user was approving, so nothing was deleted. Call list_bookmarks and ask again if the user still wants to delete it.';
+		assert.deepStrictEqual({
+			empty: error(await channel.handle('pane-a', { op: 'delete', id: empty.id, recursive: false })),
+			docs: error(await channel.handle('pane-a', { op: 'delete', id: docs.id, recursive: true })),
+			tree: titles(service.nodes),
+			notices,
+		}, {
+			empty: refused,
+			docs: refused,
+			tree: 'Empty[New],Docs[B,Added[]]',
+			notices: [],
 		});
 	});
 

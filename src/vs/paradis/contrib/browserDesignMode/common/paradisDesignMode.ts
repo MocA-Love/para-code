@@ -148,7 +148,7 @@ export function paradisDesignContainsSecret(value: string): boolean {
 }
 
 /**
- * URL からクエリとフラグメントを落とす。http(s) / file 以外（javascript: 等）は空にする。
+ * URL からユーザー名・パスワード・クエリ・フラグメントを落とす。http(s) / file 以外（javascript: 等）は空にする。
  * 解析できない値をそのまま返すと javascript: などが残るので、空へ倒す。
  */
 export function paradisDesignSanitizeUrl(value: unknown): string {
@@ -163,6 +163,8 @@ export function paradisDesignSanitizeUrl(value: unknown): string {
 		if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'file:') {
 			return '';
 		}
+		url.username = '';
+		url.password = '';
 		url.search = '';
 		url.hash = '';
 		return url.href;
