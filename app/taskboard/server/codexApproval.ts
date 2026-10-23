@@ -4,11 +4,13 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { findTomlAssignment, type MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../../../src/vs/paradis/contrib/agentBrowser/common/paradisTomlScan.js';
+import { PARADIS_TASK_BOARD_SCREENSHOT_TOOLS } from '../../../src/vs/paradis/contrib/taskBoard/common/paradisTaskBoardToolApprovals.js';
 import { paraCodeDataDirectories } from './paraCode.js';
 
 /*
- * Codex は MCP のツールを使うたびに許可のメニューを出す。ボードへの報告のツール 2 つだけは、
- * ユーザーが画面で頼んだときに Codex の設定へ「常に許可」を書き足す（メニューの Always allow と同じ形）。
+ * Codex は MCP のツールを使うたびに許可のメニューを出す。ボードへの報告のツール 2 つと、スクショの工程が使う
+ * 読むだけ・撮るだけのツール（PARADIS_TASK_BOARD_SCREENSHOT_TOOLS）だけは、ユーザーが画面で頼んだときに
+ * Codex の設定へ「常に許可」を書き足す（メニューの Always allow と同じ形）。
  *
  *   [mcp_servers.para-browser.tools.board_complete_step]
  *   approval_mode = "approve"
@@ -20,6 +22,8 @@ import { paraCodeDataDirectories } from './paraCode.js';
  */
 
 export const CODEX_BOARD_TOOLS = ['board_complete_step', 'board_ask_human'] as const;
+/** 帯で常に許可にするツールの全部（ボードへの報告と、スクショの工程の読むだけ・撮るだけのツール）。 */
+export const CODEX_APPROVAL_TOOLS: readonly string[] = [...CODEX_BOARD_TOOLS, ...PARADIS_TASK_BOARD_SCREENSHOT_TOOLS];
 const SERVER = 'para-browser';
 
 export function codexConfigPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -158,15 +162,15 @@ function isApproveLine(line: IScannedLine): boolean {
 		&& (assignment.value === '"approve"' || assignment.value === "'approve'");
 }
 
-/** まだ常に許可になっていないボードのツール。読めない書き方なら全部を返す（帯を出し続け、押したら理由を出す）。 */
+/** まだ常に許可になっていない帯のツール。読めない書き方なら全部を返す（帯を出し続け、押したら理由を出す）。 */
 export function missingCodexApprovals(text: string): string[] {
 	let shape: IConfigShape;
 	try {
 		shape = inspect(text);
 	} catch {
-		return [...CODEX_BOARD_TOOLS];
+		return [...CODEX_APPROVAL_TOOLS];
 	}
-	return CODEX_BOARD_TOOLS.filter(tool => {
+	return CODEX_APPROVAL_TOOLS.filter(tool => {
 		const range = shape.toolTables.get(tool);
 		return !range || !shape.lines.slice(range.start + 1, range.end).some(isApproveLine);
 	});

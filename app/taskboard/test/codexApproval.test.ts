@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { addCodexApprovals, codexConfigCandidates, CodexConfigError, codexHomesFromSettings, codexWriteRefusal, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
+import { addCodexApprovals, CODEX_APPROVAL_TOOLS, codexConfigCandidates, CodexConfigError, codexHomesFromSettings, codexWriteRefusal, missingCodexApprovals, withCodexApprovals } from '../server/codexApproval.js';
 
 const SERVER = '[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n';
 
@@ -12,12 +12,24 @@ describe('codex approval', () => {
 	const dirs: string[] = [];
 	afterEach(() => dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })));
 
-	test('appends both tool tables after the server and keeps the rest of the file', () => {
+	test('appends a table for the board tools and the screenshot tools after the server and keeps the rest of the file', () => {
 		const before = `${SERVER}\n[other]\nx = 1\n`;
 		const after = withCodexApprovals(before);
-		expect(after).toBe(`${before}\n[mcp_servers.para-browser.tools.board_complete_step]\napproval_mode = "approve"\n\n[mcp_servers.para-browser.tools.board_ask_human]\napproval_mode = "approve"\n`);
+		expect(CODEX_APPROVAL_TOOLS).toEqual(['board_complete_step', 'board_ask_human', 'list_browser_tabs', 'get_shared_page', 'take_screenshot', 'capture_screenshot', 'take_snapshot', 'get_text', 'inspect_element', 'preview_file']);
+		expect(after).toBe(`${before}${CODEX_APPROVAL_TOOLS.map(tool => `\n[mcp_servers.para-browser.tools.${tool}]\napproval_mode = "approve"\n`).join('')}`);
 		expect(missingCodexApprovals(after)).toEqual([]);
 		expect(withCodexApprovals(after)).toBe(after);
+	});
+
+	test('a config that already allows only the board tools asks for the screenshot tools alone', () => {
+		const before = `${SERVER}\n[mcp_servers.para-browser.tools.board_complete_step]\napproval_mode = "approve"\n\n[mcp_servers.para-browser.tools.board_ask_human]\napproval_mode = "approve"\n`;
+		const after = withCodexApprovals(before);
+		expect({
+			missing: missingCodexApprovals(before),
+			kept: after.startsWith(before),
+			tables: after.match(/^\[mcp_servers\.para-browser\.tools\./gm)?.length,
+			again: withCodexApprovals(after) === after,
+		}).toEqual({ missing: CODEX_APPROVAL_TOOLS.slice(2), kept: true, tables: CODEX_APPROVAL_TOOLS.length, again: true });
 	});
 
 	test('replaces another approval mode inside an existing table, even when the header has a comment', () => {
@@ -39,7 +51,8 @@ describe('codex approval', () => {
 		const after = withCodexApprovals(before);
 		const refused = (text: string) => withCodexApprovals.bind(undefined, text);
 		expect({
-			modes: after.split('\n').filter(l => l.includes('approval_mode')),
+			// 既にあった 2 つの節は差し替えだけ（後ろにスクショの工程のツールの節が足される）
+			modes: after.split('\n').filter(l => l.includes('approval_mode')).slice(0, 2),
 			missing: missingCodexApprovals(after),
 		}).toEqual({ modes: ['approval_mode = "approve"', `'approval_mode' = 'approve'`], missing: [] });
 		expect(refused(`${SERVER}[mcp_servers.para-browser.tools.board_ask_human]\napproval_mode.x = "prompt"\n`)).toThrow(CodexConfigError);
@@ -74,7 +87,7 @@ describe('codex approval', () => {
 			fine: refused(SERVER),
 		}).toEqual({ empty: true, quoted: false, broken: true, dotted: true, inline: true, twice: true, topLevelDotted: true, toolsTable: true, fine: false });
 		// 読めない書き方でも帯は出し続け、手で足す設定として理由を出す
-		expect(missingCodexApprovals('[mcp_servers."para-browser]\n')).toEqual(['board_complete_step', 'board_ask_human']);
+		expect(missingCodexApprovals('[mcp_servers."para-browser]\n')).toEqual(CODEX_APPROVAL_TOOLS);
 		expect({ broken: codexWriteRefusal('[mcp_servers."para-browser]\n')?.includes('見出し'), fine: codexWriteRefusal(SERVER) }).toEqual({ broken: true, fine: undefined });
 	});
 

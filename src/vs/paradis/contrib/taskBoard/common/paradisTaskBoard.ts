@@ -334,7 +334,7 @@ export interface ITaskBoardRuntime {
 	readonly agentsConnected?: boolean;
 	/** つながっていない理由。 */
 	readonly agentsDetail?: string;
-	/** Codex の設定で、まだ常に許可になっていないボードのツール（agents が para-code のとき）。 */
+	/** Codex の設定で、まだ常に許可になっていない帯のツール（ボードへの報告と、スクショの工程の読むだけ・撮るだけのツール。agents が para-code のとき）。 */
 	readonly codexApprovalMissing?: readonly string[];
 	/** 画像とモックの URL に付ける、読むだけの鍵（RPC には使えない）。 */
 	readonly assetKey?: string;
@@ -342,6 +342,12 @@ export interface ITaskBoardRuntime {
 	readonly codexConfigPaths?: readonly string[];
 	/** まだ常に許可になっていないが、書き方を読み切れないので手で足してほしい設定ファイルと、その理由。 */
 	readonly codexManualConfigs?: readonly { readonly path: string; readonly reason: string }[];
+	/** Claude Code のユーザーの設定（settings.json の permissions.allow）で、まだ許可されていない帯のツール。 */
+	readonly claudeApprovalMissing?: readonly string[];
+	/** まだ許可されていない Claude Code の settings.json のうち、ボードが書き足せるもの。 */
+	readonly claudeConfigPaths?: readonly string[];
+	/** まだ許可されていないが、形を読み切れないので手で足してほしい settings.json と、その理由。 */
+	readonly claudeManualConfigs?: readonly { readonly path: string; readonly reason: string }[];
 	/** シミュレーションの速さ（1 = 標準）。 */
 	readonly speed: number;
 	/** 作業場所の git 操作を実際に行うか。 */
@@ -529,6 +535,7 @@ export interface ITaskBoardRpc {
 	switchRepository: { params: { path: string }; result: void };
 	/** Codex の設定に、ボードへの報告のツールを常に許可する設定を書き足す。 */
 	approveCodexTools: { params: Record<string, never>; result: { path: string } };
+	approveClaudeTools: { params: Record<string, never>; result: { path: string } };
 }
 
 export type TaskBoardRpcMethod = keyof ITaskBoardRpc;
