@@ -34,6 +34,8 @@ import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } fr
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 // PARA-CODE: named browser profiles MCP tool (vs/paradis/contrib/browserProfiles)
 import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, IParadisSwitchProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CHANNEL, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_PANE_OWNED_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD, ParadisOpenProfileFailure, ParadisProfileManageFailure } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
+import { IParadisListViewportsResult, IParadisSetViewportResult, IParadisViewportState, PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL, ParadisViewportMcpMethod } from '../../browserViewport/common/paradisBrowserViewport.js';
+import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewportForAgent } from '../../browserViewport/common/paradisBrowserViewportTools.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
@@ -408,6 +410,7 @@ const PARADIS_TAB_SCOPED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'upload_file_to_drop_zone',
 	'get_cdp_endpoint',
 	'set_cursor_label',
+	'set_viewport',
 ]);
 
 /**
@@ -439,6 +442,8 @@ const PARADIS_AGENT_PROFILE_TOOL_NAMES: ReadonlySet<string> = new Set(['list_bro
 const PARADIS_CALLER_VERIFIED_TOOL_NAMES: ReadonlySet<string> = new Set([
 	'open_browser_profile', 'create_browser_profile', 'switch_browser_profile', 'delete_browser_profile',
 	'open_browser_tab', 'select_browser_tab', 'close_browser_tab', 'request_browser_page',
+	// ユーザーが共有したタブの見た目も変えるので、接続元を確かめる（確認のダイアログは出さない: Q451）
+	'set_viewport',
 ]);
 
 /** 追加のブラウザ操作（B7）で接続元を確かめられなかったときの文。 */
@@ -459,7 +464,7 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
-const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
+const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. resize_page is not supported because the embedded browser is laid out by the workbench - use the set_viewport tool (or the emulate tool) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
 export class ParadisDevtoolsGenerationCoordinator {
@@ -749,6 +754,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _portFilePath: string;
 	private readonly _mcpInstanceId = randomUUID();
 	private readonly _mcpServiceStartedAt = Date.now();
+	/** CDP の接続ごとの、大きさの命令を当てたビュー（切れたときに戻すため）。 */
+	private readonly _emulationConnections = new WeakMap<object, { readonly owner: string; readonly views: Map<string, IParadisExactBrowserViewDescriptor> }>();
+	private _emulationOwnerSequence = 0;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
 	private readonly _devtoolsProxy: ParadisDevtoolsMcpProxy;
@@ -909,6 +917,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
 				noteFocusEmulation: (token, enabled) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', focusEmulation: enabled }),
+				applyBoundPageEmulation: (key, connection, method, params) => this._applyBoundPageEmulation(key, connection, method, params),
+				releaseBoundPageEmulation: connection => this._releaseBoundPageEmulation(connection),
 				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
 				permitsRemoteFileInput: (key, files) => this._remoteFileTransfer.permitsFileInput(paradisPaneTokenOfScopeKey(key), files),
@@ -3072,6 +3082,47 @@ export class ParadisAgentBrowserService extends Disposable {
 		return this.isIngressLeaseCurrent(ingressLease) && this._bindingForKey(key) === binding
 			? binding.exactView.targetId
 			: undefined;
+	}
+
+	/**
+	 * CDP ゲートウェイからの大きさの命令（emulate・lighthouse_audit の `Emulation.setDeviceMetricsOverride` など）の委譲。
+	 * main で upstream の Device Emulation の状態へ畳み込む（paradisBrowserViewportCdp.ts）。接続ごとに、命令を
+	 * 当てたビューを控え、接続が切れたら戻させる（{@link _releaseBoundPageEmulation}）。
+	 */
+	private async _applyBoundPageEmulation(key: string, connection: object, method: string, params: unknown): Promise<boolean> {
+		const token = paradisPaneTokenOfScopeKey(key);
+		if (this.captureIngressLease(token) === undefined) {
+			return false;
+		}
+		const binding = this._bindingForKey(key);
+		if (!binding) {
+			return false;
+		}
+		let entry = this._emulationConnections.get(connection);
+		if (!entry) {
+			entry = { owner: `cdp-${++this._emulationOwnerSequence}`, views: new Map() };
+			this._emulationConnections.set(connection, entry);
+		}
+		entry.views.set(binding.exactView.viewId, binding.exactView);
+		try {
+			return await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<boolean>('applyExactViewEmulation', [binding.exactView, entry.owner, method, params]) === true;
+		} catch {
+			return false;
+		}
+	}
+
+	private _releaseBoundPageEmulation(connection: object): void {
+		const entry = this._emulationConnections.get(connection);
+		if (!entry) {
+			return;
+		}
+		this._emulationConnections.delete(connection);
+		for (const exactView of entry.views.values()) {
+			this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call('releaseExactViewEmulation', [exactView, entry.owner])
+				.catch(() => undefined);
+		}
 	}
 
 	/**
@@ -5553,6 +5604,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._agentTabTool(ingressLease, name, toolArgs, signal);
 		}
 
+		if (name === 'list_viewports') {
+			return this._listViewports(ingressLease, signal);
+		}
+
 		if (name === 'get_session_health') {
 			// バインド有無・接続の生死そのものを切り分けるためのツールなので、バインド必須の
 			// ガード（この直後の `if (!binding)`）より前で扱う。
@@ -5588,6 +5643,16 @@ export class ParadisAgentBrowserService extends Disposable {
 		const binding = this._bindingForKey(this._pageKeyOf(pageLease));
 		if (!binding) {
 			return this._toolError(NOT_BOUND_MESSAGE);
+		}
+
+		if (name === 'set_viewport') {
+			const toolArgs = toolArguments && typeof toolArguments === 'object' ? toolArguments as Record<string, unknown> : {};
+			const spec = typeof toolArgs.viewport === 'string' ? toolArgs.viewport : undefined;
+			if (spec === undefined) {
+				return this._toolError('set_viewport requires viewport: a saved size name from list_viewports, "WIDTHxHEIGHT" (for example "1366x768"), or "auto".');
+			}
+			const result = await this._setViewport(ingressLease, binding.pageId, spec, signal);
+			return result.error !== undefined ? this._toolError(result.error) : this._toolText(result.text ?? '');
 		}
 
 		if (PARADIS_BROWSER_QUERY_TOOL_NAME_SET.has(name)) {
@@ -6416,7 +6481,13 @@ export class ParadisAgentBrowserService extends Disposable {
 				const shared = usable
 					? `It is now this pane's current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${tabId}" to keep using it after other tabs are opened or selected (for example from a subagent).`
 					: 'It could NOT be made usable from this terminal pane yet, so the browser tools do not target it - retry with select_browser_tab.';
-				const opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
+				let opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
+				const viewport = text('viewport');
+				if (viewport !== undefined) {
+					// 開いてから大きさを当てる（開けたことは変わらないので、当てられなくてもエラーにはしない）
+					const sized = await this._setViewport(ingressLease, tabId, viewport, signal);
+					opened = `${opened} ${sized.error !== undefined ? `The page size was NOT changed: ${sized.error}` : sized.text}`;
+				}
 				const openLabel = toolArgs.label;
 				return this._toolText(openLabel === undefined ? opened : `${opened} ${this._setCursorLabel(token, this._scopeBinding(token, tabId), openLabel)}`);
 			}
@@ -6449,9 +6520,10 @@ export class ParadisAgentBrowserService extends Disposable {
 					// 共有したページ・許可したタブから開いたタブなら、開いた元のタブ
 					...(this._agentTabGrants.get(token)?.get(tab.tabId)?.openedFrom !== undefined ? { openedFrom: this._agentTabGrants.get(token)?.get(tab.tabId)?.openedFrom } : {}),
 				}));
+				const viewports = await this._describeViewports(ingressLease, tabs.filter(tab => tab.usable).map(tab => tab.tabId), signal);
 				const notShared = this._skippedOpenedTabIds(token);
 				return this._toolText(JSON.stringify({
-					tabs,
+					tabs: tabs.map(tab => viewports[tab.tabId] !== undefined ? { ...tab, viewport: paradisViewportForAgent(viewports[tab.tabId]) } : tab),
 					openedByYou: call.value.openedCount,
 					limit: PARADIS_AGENT_TAB_LIMIT,
 					openedFromTabs: this._openedTabGrantCount(token),
@@ -6531,6 +6603,48 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	/** set_viewport と open_browser_tab の viewport の実体。判断と当てる処理はペインのウィンドウ（paradisBrowserViewportMcp.contribution.ts）が持つ。 */
+	private async _setViewport(ingressLease: IParadisAgentBrowserIngressLease, tabId: string, spec: string, signal?: AbortSignal): Promise<{ readonly text?: string; readonly error?: string }> {
+		const call = await this._callOwningWindow<IParadisSetViewportResult>(ingressLease, {
+			channelName: PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL,
+			method: ParadisViewportMcpMethod.Set,
+			args: [ingressLease.token, tabId, spec],
+			failureLabel: 'set_viewport',
+			failureMessage: 'Failed to change the page size in Para Code.',
+		}, signal);
+		if (!call.ok) {
+			return { error: typeof call.error === 'string' ? call.error : 'PARA_BROWSER_RETRYABLE: Failed to change the page size in Para Code.' };
+		}
+		return paradisFormatSetViewportResult(tabId, spec, call.value);
+	}
+
+	private async _listViewports(ingressLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const call = await this._callOwningWindow<IParadisListViewportsResult>(ingressLease, {
+			channelName: PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL,
+			method: ParadisViewportMcpMethod.List,
+			args: [],
+			failureLabel: 'list_viewports',
+			failureMessage: 'Failed to list the page sizes in Para Code.',
+		}, signal);
+		return call.ok ? this._toolText(paradisFormatViewportList(call.value)) : this._toolError(call.error);
+	}
+
+	/** list_browser_tabs に載せる各タブの大きさ。取れなければ空（一覧そのものは返す）。 */
+	private async _describeViewports(ingressLease: IParadisAgentBrowserIngressLease, tabIds: readonly string[], signal?: AbortSignal): Promise<Record<string, IParadisViewportState>> {
+		if (tabIds.length === 0) {
+			return {};
+		}
+		const call = await this._callOwningWindow<Record<string, IParadisViewportState>>(ingressLease, {
+			channelName: PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL,
+			method: ParadisViewportMcpMethod.Describe,
+			args: [tabIds],
+			failureLabel: 'list_browser_tabs',
+			failureMessage: 'Failed to read the page sizes in Para Code.',
+		}, signal);
+		return call.ok && call.value && typeof call.value === 'object' ? call.value : {};
 	}
 
 	/** そのタブを、tab_id を省いたときの既定にする。そのペインが今使えるタブでなければ false。 */
