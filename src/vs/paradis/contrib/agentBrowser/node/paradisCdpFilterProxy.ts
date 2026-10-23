@@ -38,7 +38,7 @@
 //     2 つを続けて送ると再開が効かず、webview の service worker が起動途中のまま固まり、
 //     画像プレビューが 60 秒止まった末に表示されなくなる（{@link ParadisOutOfScopeAttachRelease}）。
 
-import { paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { paradisIsCdpEmulationMethod, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import { ParadisNetworkActivity, paradisRootTargetOfSession } from './paradisCdpNetworkActivity.js';
 import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
@@ -1532,12 +1532,18 @@ export function paradisProxyPageUpgrade(
 			if (msg.method === 'Emulation.setFocusEmulationEnabled' && msg.sessionId === undefined) {
 				noteFocusEmulation(ctx, msg.params);
 			}
-			if (msg.sessionId === undefined && ctx.applyBoundPageEmulation && paradisIsCdpViewportMethod(msg.method)) {
+			if (msg.sessionId === undefined && ctx.applyBoundPageEmulation && paradisIsCdpEmulationMethod(msg.method)) {
 				void paradisResolveViewportEmulationRequest({ id: msg.id, method: msg.method, params: msg.params }, ctx).then(response => {
 					if (!closed && ctx.boundTargetIds().has(targetId)) {
 						sendToClient(response);
 					}
 				});
+				return;
+			}
+			if (msg.sessionId !== undefined && paradisIsCdpViewportMethod(msg.method)) {
+				// 子のセッション（iframe など）への大きさの命令は流さない。upstream もセッションを問わず止めている
+				// （そのまま流すと Electron が落ちることがある。browserViewDebugger.ts）
+				sendToClient({ id: msg.id, sessionId: msg.sessionId, result: {} });
 				return;
 			}
 			if (msg.method.startsWith('Input.')) {
@@ -2271,7 +2277,13 @@ export async function paradisProxyBrowserUpgrade(
 				if (isBoundPrimary && message.method === 'Emulation.setFocusEmulationEnabled') {
 					noteFocusEmulation(ctx, message.params);
 				}
-				if (isBoundPrimary && ctx.applyBoundPageEmulation && paradisIsCdpViewportMethod(message.method)) {
+				if (!isBoundPrimary && paradisIsCdpViewportMethod(message.method)) {
+					// 共有中のタブ本体以外（ポップアップ・自動で共有した子・OOPIF）への大きさの命令は流さない。upstream も
+					// セッションを問わず止めている（そのまま流すと Electron が落ちることがある。browserViewDebugger.ts）
+					sendToClient({ id: message.id, sessionId: message.sessionId, result: {} });
+					return;
+				}
+				if (isBoundPrimary && ctx.applyBoundPageEmulation && paradisIsCdpEmulationMethod(message.method)) {
 					if (!registerClientRequest(message, sessionTargetId)) {
 						return;
 					}

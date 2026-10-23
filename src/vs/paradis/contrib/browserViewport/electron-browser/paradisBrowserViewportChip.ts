@@ -122,7 +122,7 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		return [{ location: BrowserWidgetLocation.PostUrl, element: this._element, order: WIDGET_ORDER }];
 	}
 
-	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore, isNew: boolean): void {
+	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
 		this._dropdown.clear();
 		this._highlight.clear();
 		store.add(model.onDidChangeDevice(device => {
@@ -132,9 +132,10 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 			this._render();
 		}));
 		store.add(model.onDidChangeZoom(() => this._measure()));
-		// 既定は新しく開いたタブにだけ当てる（paradisBrowserViewportService.ts の claimDefaultApplication）
-		const claimed = this.viewportService.claimDefaultApplication(model.id);
-		if (isNew && claimed && !model.device) {
+		// 既定はタブごとに 1 回だけ当てる（paradisBrowserViewportService.ts の claimDefaultApplication）。`isNew` では
+		// 見分けない: createBrowserView で作ったタブ（エージェントのタブ・見えていないスペースで開いたタブ）は、
+		// エディタに出る前にモデルができているので `isNew` が false になる
+		if (this.viewportService.claimDefaultApplication(model.id) && !model.device) {
 			this._applyDefault(model);
 		}
 		this._render();

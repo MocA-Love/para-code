@@ -249,7 +249,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'set_viewport',
-		description: 'Show a browser tab at a fixed page size (viewport), for example to check a layout at a laptop or phone size. Pass the name of a saved size from list_viewports (phone sizes also apply touch input and a mobile user agent), "WIDTHxHEIGHT" in CSS pixels (100-9999), or "auto" to follow the editor size again. Para Code shrinks a size larger than the editor to fit, so the whole page stays visible; screenshots and coordinates use the page size. The change shows on the size chip in the address bar (the user is not asked to confirm) and stays until you or the user change it. Prefer this to the emulate tool for the viewport size: both change the same state, but a size set with emulate is undone when your connection closes.',
+		description: 'Show a browser tab at a fixed page size (viewport), for example to check a layout at a laptop or phone size. Pass the name of a saved size from list_viewports (phone sizes also apply touch input and a mobile user agent), "WIDTHxHEIGHT" in CSS pixels (100-9999), or "auto" to follow the editor size again. Para Code shrinks a size larger than the editor to fit, so the whole page stays visible; PNG/JPEG screenshots of the visible page are still returned at the page size in CSS pixels, so a point in the image is the same point for click_at. The change shows on the size chip in the address bar (the user is not asked to confirm) and stays until you or the user change it. Prefer this to the emulate tool for the viewport size: both change the same state, but a size set with emulate is undone when your connection closes.',
 		inputSchema: {
 			type: 'object',
 			properties: {

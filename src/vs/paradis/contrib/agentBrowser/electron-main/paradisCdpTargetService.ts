@@ -14,12 +14,12 @@
 import * as electron from 'electron';
 import type { NativeImage, WebContents } from 'electron';
 import { timeout } from '../../../../base/common/async.js';
-import { encodeBase64 } from '../../../../base/common/buffer.js';
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
-import { ParadisAgentEmulationLedger, paradisIsCdpViewportMethod, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
@@ -188,6 +188,8 @@ const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 	/** エージェントが CDP の命令で付けた大きさ（切断時に戻すため）。 */
 	private readonly agentEmulation = new ParadisAgentEmulationLedger();
+	/** エージェントが `Emulation.setEmulatedMedia` で付けた指定（ビューごと。device の pointer と合わせて送る）。 */
+	private readonly agentMedia = new Map<string, { readonly owner: string; readonly params: unknown }>();
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
 	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
@@ -732,7 +734,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		await this.cursorOverlay.hideForCapture(view);
 		let captured = false;
 		try {
-			const buffer = await view.captureScreenshot(options);
+			const buffer = this.normalizeEmulatedScreenshot(view, await view.captureScreenshot(options), options);
 			captured = this.resolveExistingExactView(descriptor) === view;
 			return captured ? encodeBase64(buffer) : null;
 		} catch (error) {
@@ -750,6 +752,30 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			if (this.cursorOverlay.afterCapture(view, captured, paradisCursorCaptureRange(options))) {
 				this._onDidChangeAgentCursor.fire({ viewId: descriptor.viewId, kind: 'captured' });
 			}
+		}
+	}
+
+	/**
+	 * 縮小して描いているタブ（Device Emulation）の、見えている範囲の撮影を、ページの CSS の大きさ（エミュレート
+	 * した幅×高さ）の画像に揃える。upstream の撮影はビューの面（縮めた枠 × 画面の DPR）を写すので、そのままだと
+	 * 画像の座標とページの座標（click_at などが使う）が倍率の分ずれる。ページ全体・ページの外まで写す撮影は CDP が
+	 * ページの座標で撮るので触らない。直せないときは元の画像を返す。
+	 */
+	private normalizeEmulatedScreenshot(view: BrowserView, buffer: VSBuffer, options: IParadisCdpScreenshotOptions): VSBuffer {
+		const device = view.emulator.device;
+		if (!device || options.fullPage || options.captureBeyondViewport) {
+			return buffer;
+		}
+		try {
+			const image = electron.nativeImage.createFromBuffer(Buffer.from(buffer.buffer));
+			const target = paradisEmulatedScreenshotSize(image.getSize(), device, options.pageRect);
+			if (!target) {
+				return buffer;
+			}
+			const resized = image.resize({ width: target.width, height: target.height, quality: 'best' });
+			return VSBuffer.wrap(options.format === 'png' ? resized.toPNG() : resized.toJPEG(options.quality ?? 80));
+		} catch {
+			return buffer;
 		}
 	}
 
@@ -850,10 +876,16 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 	}
 
-	/** Apply background throttling only to the concrete object named by the exact descriptor. */
+	/**
+	 * エージェントの CDP の命令のうち、upstream の Device Emulation と取り合うもの（paradisBrowserViewportCdp.ts）を
+	 * main で扱う。大きさは device へ畳み込み、タッチと `setEmulatedMedia` は device と食い違わないように合わせて送る:
+	 *  - `setTouchEmulationEnabled`: device がある間は device（mobile）が決めるので受けるだけにする。無ければそのまま送る
+	 *  - `setEmulatedMedia`: エージェントの指定（`prefers-color-scheme` など）を覚え、device の `pointer` と合わせて送る。
+	 *    upstream は device を変えるたびに features を `pointer` だけで上書きするので、device を変えた後に送り直す
+	 */
 	async applyExactViewEmulation(descriptorValue: unknown, ownerValue: unknown, methodValue: unknown, paramsValue: unknown): Promise<IParadisExactViewEmulationResult | false> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
-		if (descriptor === undefined || typeof ownerValue !== 'string' || typeof methodValue !== 'string' || !paradisIsCdpViewportMethod(methodValue)) {
+		if (descriptor === undefined || typeof ownerValue !== 'string' || typeof methodValue !== 'string' || !paradisIsCdpEmulationMethod(methodValue)) {
 			return false;
 		}
 		const view = this.resolveExistingExactView(descriptor);
@@ -864,14 +896,25 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		switch (methodValue) {
 			case 'Emulation.setDeviceMetricsOverride':
 				await view.emulator.setDevice(this.agentEmulation.apply(descriptor.viewId, ownerValue, view.emulator.device, paramsValue));
+				await this.reapplyAgentMedia(descriptor.viewId, view, true);
 				return { handled: true, previous, changed: true };
 			case 'Emulation.clearDeviceMetricsOverride': {
 				const release = this.agentEmulation.release(descriptor.viewId, ownerValue, view.emulator.device);
 				if (release.kind === 'restore') {
 					await view.emulator.setDevice(release.device);
+					await this.reapplyAgentMedia(descriptor.viewId, view, true);
 				}
 				return { handled: true, previous, changed: release.kind === 'restore' };
 			}
+			case 'Emulation.setTouchEmulationEnabled':
+				if (!view.emulator.device) {
+					await view.debugger.sendCommandRaw(methodValue, paramsValue ?? {}, undefined);
+				}
+				return { handled: true, previous, changed: false };
+			case 'Emulation.setEmulatedMedia':
+				this.agentMedia.set(descriptor.viewId, { owner: ownerValue, params: paramsValue });
+				await this.reapplyAgentMedia(descriptor.viewId, view, false);
+				return { handled: true, previous, changed: false };
 			default:
 				// Emulation.setVisibleSize: 表示の大きさは workbench が決める。流さずに受けるだけ
 				return { handled: true, previous, changed: false };
@@ -885,6 +928,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		// 共有を解いた後でも戻せるよう、ビューの貸し出し（lease）までは確かめない。同じビューなら戻す
 		const view = this.browserViewMainService.tryGetBrowserView(descriptor.viewId);
+		const media = this.agentMedia.get(descriptor.viewId);
+		const dropMedia = media?.owner === ownerValue;
+		if (dropMedia) {
+			this.agentMedia.delete(descriptor.viewId);
+		}
 		if (!view) {
 			this.agentEmulation.release(descriptor.viewId, ownerValue, undefined);
 			return;
@@ -893,8 +941,34 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (release.kind === 'restore') {
 			await view.emulator.setDevice(release.device);
 		}
+		if (dropMedia || release.kind === 'restore') {
+			// エージェントの色などの指定を外し、device の pointer だけに戻す
+			await this.reapplyAgentMedia(descriptor.viewId, view, release.kind === 'restore', true);
+		}
 	}
 
+	/**
+	 * エージェントの `setEmulatedMedia` の指定を、device の `pointer` と合わせて送る。`afterDeviceChange` のときは、
+	 * upstream が device の変更に続けて非同期に送る `setEmulatedMedia`（pointer だけ）の後になるよう、同じ
+	 * セッションへの命令を 1 往復挟んでから送る（CDP の命令は順に処理される）。
+	 */
+	private async reapplyAgentMedia(viewId: string, view: BrowserView, afterDeviceChange: boolean, force = false): Promise<void> {
+		const media = this.agentMedia.get(viewId);
+		if (!media && !force) {
+			return;
+		}
+		try {
+			if (afterDeviceChange) {
+				await view.debugger.sendCommandRaw('Page.getFrameTree', {}, undefined);
+				await view.debugger.sendCommandRaw('Page.getFrameTree', {}, undefined);
+			}
+			await view.debugger.sendCommandRaw('Emulation.setEmulatedMedia', paradisMergeEmulatedMedia(media?.params, view.emulator.device), undefined);
+		} catch {
+			// 送れなくても大きさの変更は済んでいる
+		}
+	}
+
+	/** Apply background throttling only to the concrete object named by the exact descriptor. */
 	async setExactViewBackgroundThrottling(descriptorValue: unknown, enabledValue: unknown): Promise<boolean> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		if (descriptor === undefined || typeof enabledValue !== 'boolean') {
@@ -1182,11 +1256,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			} catch {
 				zoomFactor = 1;
 			}
-			paradisMarkAgentContextMenuInput(view.webContents, command.method, command.params as Readonly<Record<string, unknown>>, zoomFactor);
+			// 縮小して描いているタブでは座標を倍率に合わせる（upstream の横取りを通らない経路のため）
+			const emulationScale = view.emulator.device ? view.emulator.emulatedScaleFactor : 1;
+			paradisMarkAgentContextMenuInput(view.webContents, command.method, command.params as Readonly<Record<string, unknown>>, zoomFactor, Date.now(), emulationScale);
 			let result: unknown;
 			try {
-				// 縮小して描いているタブでは座標を倍率に合わせる（upstream の横取りを通らない経路のため）
-				const params = view.emulator.device ? paradisScaleCdpInputCoordinates(command.params, view.emulator.emulatedScaleFactor) : command.params;
+				const params = paradisScaleCdpInputCoordinates(command.params, emulationScale);
 				result = await view.debugger.sendCommandRaw(command.method, params, undefined);
 			} catch {
 				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView debugger input dispatch did not complete' };
