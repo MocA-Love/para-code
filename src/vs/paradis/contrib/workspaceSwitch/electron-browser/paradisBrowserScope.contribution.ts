@@ -104,6 +104,19 @@ export class ParadisBrowserScopeService extends Disposable implements IParadisBr
 		return this._state.isCarriedOver(viewId);
 	}
 
+	assignNewViewToScope(viewId: string, stateKey: string): boolean {
+		if (!this._state.initialized || this.workspaceSwitchService.isSwitching || this._state.isCarriedOver(viewId)
+			|| !this.browserViewWorkbenchService.getKnownBrowserViews().has(viewId)) {
+			return false;
+		}
+		this._pendingCreatedDuringSwitch.delete(viewId);
+		this._initialPendingViewIds.delete(viewId);
+		this._state.tagManaged(viewId, stateKey, 'reassign');
+		this._persist();
+		this._filterChanged.fire();
+		return true;
+	}
+
 	private async _initialize(): Promise<void> {
 		// IBrowserViewWorkbenchService guarantees this promise is non-rejecting. Keep the defensive
 		// catch so a third-party/test implementation cannot strand binding UI forever.

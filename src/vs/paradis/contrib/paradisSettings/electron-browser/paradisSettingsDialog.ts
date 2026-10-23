@@ -878,6 +878,23 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.agentBrowser.agentTabMinSplitWidth',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentTabMinSplitWidth', "エージェントのタブを横に分割して開く最小の幅"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentTabMinSplitWidthDesc', "エージェントが自分でタブを開くとき、ブラウザがこの幅を取れるならターミナルの横に分割して開きます。取れないときは、ほかのグループにタブとして足します。"),
+		keywords: 'agent browser tab open split width placement terminal',
+		choices: [
+			{ value: 400, label: '400px' },
+			{ value: 500, label: '500px' },
+			// allow-any-unicode-next-line
+			{ value: 600, label: localize('paradis.settings.agentTabMinSplitWidth600', "600px（既定）") },
+			{ value: 800, label: '800px' },
+			{ value: 1000, label: '1000px' },
+		],
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.agentBrowser.settleAfterAction',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.settleAfterAction', "（試験的）操作の後にページが落ち着くのを待つ"),
