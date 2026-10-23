@@ -129,6 +129,8 @@ export type IParadisOpenAgentTabResult = IParadisAgentTabResult<{
 	readonly bound: boolean;
 	/** このペインが開いているタブの数（上限と一緒に知らせる）。 */
 	readonly openedCount: number;
+	/** ペインのスペースが画面に出ていないので、タブはそのスペースに戻ったときに表示される。 */
+	readonly spaceNotVisible?: boolean;
 }>;
 
 export type IParadisListAgentTabsResult = IParadisAgentTabResult<{
