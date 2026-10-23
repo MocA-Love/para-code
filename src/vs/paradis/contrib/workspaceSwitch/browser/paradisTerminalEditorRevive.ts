@@ -318,7 +318,7 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 	}
 
 	// 索引で引けなかった入力を新規端末へ倒すのは、身元が**まったく**定まらないときだけにする。
-	// nonce がある入力の行き先（`findRevivedId: true` → `attachToRevivedProcess(id, nonce)` →
+	// nonce がある入力の行き先（`findRevivedId: true` → `attachToRevivedProcess(id, pid, nonce)` →
 	// `PtyService.getRevivedPtyNewId`）は、この fork が既に nonce 照合を入れてあり、別端末を
 	// 指していれば `PARADIS_UNRESOLVABLE_PTY_ID` を返す fail-closed 経路。世代跨ぎの取り違えは
 	// そこで塞がれるので、ここで重ねて塞ぐ必要はない。
