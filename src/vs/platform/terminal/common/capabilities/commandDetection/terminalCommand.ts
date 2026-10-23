@@ -311,16 +311,19 @@ export class PartialTerminalCommand implements ICurrentPartialCommand {
 			return undefined;
 		}
 
+		// PARA-PATCH: keep a command that is running (executed, not finished) so a terminal that
+		// is attached again still knows what runs in it (tab status, preset busy check, agent detection).
+		const running = this.commandExecutedMarker !== undefined && this.command ? this.commandExecutedMarker : undefined;
 		return {
 			promptStartLine: this.promptStartMarker?.line,
 			startLine: this.commandStartMarker.line,
 			startX: this.commandStartX,
 			endLine: undefined,
-			executedLine: undefined,
-			executedX: undefined,
-			command: '',
-			commandLineConfidence: 'low',
-			isTrusted: true,
+			executedLine: running?.line,
+			executedX: running ? this.commandExecutedX : undefined,
+			command: running ? this.command ?? '' : '',
+			commandLineConfidence: running ? this.commandLineConfidence ?? 'low' : 'low',
+			isTrusted: running ? !!this.isTrusted : true,
 			cwd,
 			exitCode: undefined,
 			commandStartLineContent: undefined,
