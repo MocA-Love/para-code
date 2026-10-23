@@ -51,8 +51,11 @@ export type RelayControlMessage =
 	// ペアリングソケット⇔PCソケット間の中継（dataはE2Eハンドシェイクの断片、base64url）。
 	// PC→pairing方向では省略、pairing→PC方向ではリレーが送信元pairIdを付与する。
 	| { readonly type: 'pairing-msg'; readonly data: string; readonly pairId?: string }
-	// PC→リレー: 指定したpairIdのペアリングを承認し、モバイル用の資格情報を発行せよ
-	| { readonly type: 'pairing-approve'; readonly pairId: string; readonly name: string }
+	// PC→リレー: 指定したpairIdのペアリングを承認し、モバイル用の資格情報を発行せよ。
+	// keyFingerprint は任意（旧PCは送らない、旧リレーは読まずに無視する）。PCが確認の番号(SAS)を
+	// 出した要求のモバイル長期公開鍵の SHA-256（16進64桁小文字）。付いていればリレーは、その鍵の
+	// pairing-msg を最初に送ったペアリングソケットにだけ資格情報を渡し、同じ pairId の他のソケットは閉じる。
+	| { readonly type: 'pairing-approve'; readonly pairId: string; readonly name: string; readonly keyFingerprint?: string }
 	// PC→リレー: ペアリングを拒否
 	| { readonly type: 'pairing-reject'; readonly pairId: string }
 	// リレー→ペアリングソケット: 承認完了。モバイルはこの資格情報で以後 ws/mobile に接続する

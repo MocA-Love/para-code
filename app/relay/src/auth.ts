@@ -2,9 +2,33 @@
 
 /** トークンのハッシュ化と検証（リレーは生トークンを保存しない）。 */
 
+import { fromBase64Url } from '@para/protocol';
+
 export async function hashToken(token: string): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
 	return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * ペアリングの pairing-msg（base64url の JSON `{ pub, name }`）が名乗るモバイル長期公開鍵の指紋
+ * （32 バイトの鍵の SHA-256、16進64桁小文字）。PC が承認に添える keyFingerprint と同じ作り方。
+ * 形が違えば undefined。
+ */
+export async function pairingKeyFingerprint(data: string): Promise<string | undefined> {
+	try {
+		const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(data))) as { pub?: unknown };
+		if (typeof payload.pub !== 'string') {
+			return undefined;
+		}
+		const pub = fromBase64Url(payload.pub);
+		if (pub.length !== 32) {
+			return undefined;
+		}
+		const digest = await crypto.subtle.digest('SHA-256', pub as BufferSource);
+		return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+	} catch {
+		return undefined;
+	}
 }
 
 /** タイミング攻撃を避ける固定時間比較。 */
