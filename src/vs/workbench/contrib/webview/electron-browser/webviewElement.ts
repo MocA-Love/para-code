@@ -6,7 +6,6 @@
 import { getWindow } from '../../../../base/browser/dom.js';
 import { isAuxiliaryWindow } from '../../../../base/browser/window.js';
 import { Delayer } from '../../../../base/common/async.js';
-// PARA-PATCH: used by the find fallback below.
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -48,6 +47,7 @@ export class ElectronWebviewElement extends WebviewElement {
 	private readonly _webviewKeyboardHandler: WindowIgnoreMenuShortcutsManager;
 
 	private _findStarted: boolean = false;
+	private _findSelectionRetained: boolean = false;
 	private _cachedHtmlContent: string | undefined;
 
 	private readonly _webviewMainService: IWebviewManagerService;
@@ -81,7 +81,7 @@ export class ElectronWebviewElement extends WebviewElement {
 
 		if (initInfo.options.enableFindWidget) {
 			this._register(this.onDidHtmlChange((newContent) => {
-				if (this._findStarted && this._cachedHtmlContent !== newContent) {
+				if ((this._findStarted || this._findSelectionRetained) && this._cachedHtmlContent !== newContent) {
 					this.stopFind(false);
 					this._cachedHtmlContent = newContent;
 				}
@@ -94,6 +94,8 @@ export class ElectronWebviewElement extends WebviewElement {
 	}
 
 	override dispose(): void {
+		this.stopFind(false);
+
 		// Make sure keyboard handler knows it closed (#71800)
 		this._webviewKeyboardHandler.didBlur();
 
@@ -164,13 +166,13 @@ export class ElectronWebviewElement extends WebviewElement {
 
 		this._iframeDelayer.trigger(() => {
 			this._findStarted = true;
-			this._webviewMainService.findInFrame(this.findTarget, this.id, value, options).then(found => {
+			return this._webviewMainService.findInFrame(this.findTarget, this.id, value, options).then(found => {
 				// PARA-PATCH: see find().
 				if (found === false && this._fallBackToWebviewFind()) {
 					super.updateFind(value);
 				}
-			}, onUnexpectedError);
-		});
+			});
+		}).catch(onUnexpectedError);
 	}
 
 	public override stopFind(keepSelection?: boolean): void {
@@ -178,23 +180,27 @@ export class ElectronWebviewElement extends WebviewElement {
 			return;
 		}
 		this._iframeDelayer.cancel();
-		this._findStarted = false;
 
 		// PARA-PATCH: see find(). The base class fires `onDidStopFind` itself.
 		if (ElectronWebviewElement._findInFrameUnsupported) {
+			this._findStarted = false;
 			super.stopFind(keepSelection);
 			return;
 		}
 
-		this._webviewMainService.stopFindInFrame(this.findTarget, this.id, {
-			keepSelection
-		}).then(stopped => {
-			// PARA-PATCH: see find(). `onDidStopFind` was already fired below; the base class fires it
-			// again here, which only re-disables the find widget buttons and happens once per webview.
-			if (stopped === false && this._fallBackToWebviewFind()) {
-				super.stopFind(keepSelection);
-			}
-		}, onUnexpectedError);
+		if (this._findStarted || (this._findSelectionRetained && !keepSelection)) {
+			this._webviewMainService.stopFindInFrame(this.findTarget, this.id, {
+				keepSelection
+			}).then(stopped => {
+				// PARA-PATCH: see find(). `onDidStopFind` was already fired below; the base class fires it
+				// again here, which only re-disables the find widget buttons and happens once per webview.
+				if (stopped === false && this._fallBackToWebviewFind()) {
+					super.stopFind(keepSelection);
+				}
+			}, onUnexpectedError);
+			this._findSelectionRetained = !!keepSelection;
+		}
+		this._findStarted = false;
 		this._onDidStopFind.fire();
 	}
 
