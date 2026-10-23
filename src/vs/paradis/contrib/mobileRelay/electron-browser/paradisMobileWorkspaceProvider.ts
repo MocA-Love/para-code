@@ -89,7 +89,7 @@ import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputReda
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { paradisCodexMobileApprovalKeys } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -102,13 +102,18 @@ import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsReco
 /** Codex の入力欄に残った文字の印を持つ上限（PC で消した後に確かめる機会が無くても、いつまでも断り続けない）。 */
 const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
 /**
- * PC の Claude Code に「Resume this conversation?」の確認が出ている間に届いた発言への断り（code と文）。キーで打つと文字は
- * 捨てられ、Enter が「Resume」を選んで、送れた扱いのまま文が消える（Claude Code 2.1.306 の実画面で確かめた）。
+ * PC の Claude Code に、会話を開き直した直後の確認（再開の確認・古いセッションの確認・モデルの確認）が出ている間に届いた
+ * 発言への断り（code と文）。キーで打つと文字は捨てられ、Enter が選択肢を選んで、送れた扱いのまま文が消える
+ * （Claude Code 2.1.306・2.1.309 の実画面で確かめた）。
  */
 const CLAUDE_RESUME_PROMPT_CODE = 'resume-prompt';
-const CLAUDE_RESUME_PROMPT_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。PC で選んでから送り直してください';
-/** 同じ確認が出ている間の「閉じる」（Esc）への断り。 */
-const CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE = 'PC の Claude Code で「Resume this conversation?」（会話を再開するか、新しい会話にするか）の確認が出ています。Esc を送るとそのまま再開して使用量を多く使うので、PC で選んでください';
+function claudeResumePromptMessage(kind: ParadisClaudeResumeScreenPrompt): string {
+	return `PC の Claude Code で${PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES[kind]}が出ています。PC で選んでから送り直してください`;
+}
+/** 同じ確認が出ている間の「閉じる」（Esc）への断り。Esc も選択の 1 つ（再開の確認・古いセッションの確認では、そのまま全部を読み直して再開する）。 */
+function claudeResumePromptCloseMessage(kind: ParadisClaudeResumeScreenPrompt): string {
+	return `PC の Claude Code で${PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES[kind]}が出ています。Esc もこの確認への答えになるので、PC で選んでください`;
+}
 
 // 画面の目印の照合は、デスクトップのチャット表示と共有するため agentChat/browser へ切り出した。
 export { paradisScreenShowsMarker } from '../../agentChat/browser/paradisAgentTuiInput.js';
@@ -1611,8 +1616,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					this.codexComposerResidue.delete(instance);
 				}
-				if (msg.agent === 'claude' && paradisScreenShowsClaudeResumePrompt(paradisVisibleTerminalText(instance))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, CLAUDE_RESUME_PROMPT_MESSAGE);
+				const resumePrompt = msg.agent === 'claude' ? paradisClaudeResumeScreenPrompt(paradisVisibleTerminalText(instance)) : undefined;
+				if (resumePrompt !== undefined) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptMessage(resumePrompt));
 					return;
 				}
 				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';
@@ -1640,9 +1646,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 			} else if (closePanel) {
-				// 再開の確認では Esc が「Resume」を選ぶ（5 時間の使用量を大きく使う）。打たずに PC で選んでもらう
-				if (paradisScreenShowsClaudeResumePrompt(paradisVisibleTerminalText(instance))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, CLAUDE_RESUME_PROMPT_CLOSE_MESSAGE);
+				// 会話を開き直した直後の確認では Esc も答えになる（再開の確認では「Resume」を選び、5 時間の使用量を大きく使う）。
+				// 打たずに PC で選んでもらう
+				const resumePrompt = paradisClaudeResumeScreenPrompt(paradisVisibleTerminalText(instance));
+				if (resumePrompt !== undefined) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptCloseMessage(resumePrompt));
 					return;
 				}
 				await instance.sendText('\x1b', false);
