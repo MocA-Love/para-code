@@ -15,6 +15,7 @@ import { Disposable, DisposableStore, toDisposable } from '../../../../base/comm
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { paradisCanUseWindowTransparency } from '../../../../platform/window/common/paradisWindowTransparency.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
@@ -76,8 +77,9 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		lifecycleService.when(LifecyclePhase.Restored).then(() => this.applyStyles());
 
 		// 「設定はONだがウィンドウは不透明のまま」（例: 設定ON後にリロードだけした、workspace設定に書いた等）の
-		// 場合、起動時に再起動が必要である旨を案内する。
-		if (this.isEnabled() && !this.nativeTransparent) {
+		// 場合、起動時に再起動が必要である旨を案内する。Windows で native タイトルバーのときは再起動しても
+		// 透過にならない (windowImpl.ts と同じ判定) ので案内しない。
+		if (this.isEnabled() && this.canUseTransparency() && !this.nativeTransparent) {
 			this.promptRestart(true);
 		}
 
@@ -94,6 +96,11 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		// 既定ON。レジストリ既定値 (true) が解決されるため通常 `=== true` でも同じだが、
 		// mainプロセス側の生成時判定 (windowImpl.ts) と同じ「未設定=有効」の式に揃えておく。
 		return this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY) !== false;
+	}
+
+	/** main プロセスがウィンドウを作るときと同じ「透過を使えるか」の判定。 */
+	private canUseTransparency(): boolean {
+		return paradisCanUseWindowTransparency(this.configurationService);
 	}
 
 	private getOpacity(): number {
@@ -158,8 +165,10 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 
 		// ネイティブウィンドウの実状態と現在の設定が食い違う＝透過状態を反映するにはアプリの再起動が必要
 		// （`transparent` は生成時フラグで、ウィンドウの再読み込みでは決して反映されない）。
-		if (enabled !== this.nativeTransparent) {
-			this.promptRestart(enabled);
+		// 透過を使えない環境では、再起動しても不透明のままなので有効にしたときは案内しない。
+		const wanted = enabled && this.canUseTransparency();
+		if (wanted !== this.nativeTransparent) {
+			this.promptRestart(wanted);
 		}
 	}
 
