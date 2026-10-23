@@ -10,6 +10,8 @@ import { DeferredPromise } from '../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { ILogService, NullLogService } from '../../../log/common/log.js';
 import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../common/terminal.js';
+import { PARADIS_ENDED_PTY_ID } from '../../common/paradisEndedPty.js';
+import { PARADIS_PTY_HOST_STATE_DIR } from '../../../../paradis/contrib/ptyDaemon/common/paradisPtyHostPaths.js';
 import { PtyService } from '../../node/ptyService.js';
 
 /**
@@ -82,15 +84,48 @@ suite('Para Code revived pty identity', () => {
 		deepStrictEqual(resolved, PARADIS_UNRESOLVABLE_PTY_ID);
 	});
 
-	test('an id with no terminal behind it is left to fail on attach', async () => {
-		// Nothing to steal, and upstream already answers a failed attach with a fresh shell.
+	test('a nonce no terminal carries any more is reported as ended', async () => {
+		// Nothing to steal and nothing to find: the window closes the tab rather than opening an empty shell.
 		const resolved = await resolve({
-			live: new Map(),
+			live: new Map([[3, 'nonce-of-someone-else']]),
+			id: 84,
+			nonce: 'nonce-of-the-tab',
+		});
+
+		deepStrictEqual(resolved, PARADIS_ENDED_PTY_ID);
+	});
+
+	test('a nonce still carried under another id is not reported as ended', async () => {
+		// A shell started after a failed attach keeps the tab's nonce but is not in the revive table.
+		const resolved = await resolve({
+			live: new Map([[3, 'nonce-of-the-tab']]),
 			id: 84,
 			nonce: 'nonce-of-the-tab',
 		});
 
 		deepStrictEqual(resolved, undefined);
+	});
+
+	test('an id with no terminal behind it is left to fail on attach while daemon terminals may not have been taken back', async () => {
+		// This pty host is meant to share a daemon but never got to take its terminals back, so a
+		// missing nonce may still be running there. Saying "ended" would close a live terminal's tab.
+		const previous = process.env[PARADIS_PTY_HOST_STATE_DIR];
+		process.env[PARADIS_PTY_HOST_STATE_DIR] = 'state-dir';
+		try {
+			const resolved = await resolve({
+				live: new Map(),
+				id: 84,
+				nonce: 'nonce-of-the-tab',
+			});
+
+			deepStrictEqual(resolved, undefined);
+		} finally {
+			if (previous === undefined) {
+				delete process.env[PARADIS_PTY_HOST_STATE_DIR];
+			} else {
+				process.env[PARADIS_PTY_HOST_STATE_DIR] = previous;
+			}
+		}
 	});
 
 	test('a stale revive entry does not outvote the terminal that holds the id now', async () => {
