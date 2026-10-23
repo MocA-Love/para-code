@@ -19,7 +19,7 @@ import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
-import { ParadisAgentEmulationLedger, paradisIsCdpViewportMethod } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisIsCdpViewportMethod, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
@@ -39,6 +39,7 @@ import {
 	paradisParseExactCdpScreenshotOptions,
 	paradisParseCdpInputCommand,
 	paradisParsePageScriptOwner,
+	IParadisExactViewEmulationResult,
 } from '../common/paradisAgentBrowser.js';
 import {
 	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
@@ -850,7 +851,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/** Apply background throttling only to the concrete object named by the exact descriptor. */
-	async applyExactViewEmulation(descriptorValue: unknown, ownerValue: unknown, methodValue: unknown, paramsValue: unknown): Promise<boolean> {
+	async applyExactViewEmulation(descriptorValue: unknown, ownerValue: unknown, methodValue: unknown, paramsValue: unknown): Promise<IParadisExactViewEmulationResult | false> {
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		if (descriptor === undefined || typeof ownerValue !== 'string' || typeof methodValue !== 'string' || !paradisIsCdpViewportMethod(methodValue)) {
 			return false;
@@ -859,20 +860,21 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!view) {
 			return false;
 		}
+		const previous = view.emulator.device ?? null;
 		switch (methodValue) {
 			case 'Emulation.setDeviceMetricsOverride':
 				await view.emulator.setDevice(this.agentEmulation.apply(descriptor.viewId, ownerValue, view.emulator.device, paramsValue));
-				return true;
+				return { handled: true, previous, changed: true };
 			case 'Emulation.clearDeviceMetricsOverride': {
 				const release = this.agentEmulation.release(descriptor.viewId, ownerValue, view.emulator.device);
 				if (release.kind === 'restore') {
 					await view.emulator.setDevice(release.device);
 				}
-				return true;
+				return { handled: true, previous, changed: release.kind === 'restore' };
 			}
 			default:
 				// Emulation.setVisibleSize: 表示の大きさは workbench が決める。流さずに受けるだけ
-				return true;
+				return { handled: true, previous, changed: false };
 		}
 	}
 
@@ -1183,7 +1185,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			paradisMarkAgentContextMenuInput(view.webContents, command.method, command.params as Readonly<Record<string, unknown>>, zoomFactor);
 			let result: unknown;
 			try {
-				result = await view.debugger.sendCommandRaw(command.method, command.params, undefined);
+				// 縮小して描いているタブでは座標を倍率に合わせる（upstream の横取りを通らない経路のため）
+				const params = view.emulator.device ? paradisScaleCdpInputCoordinates(command.params, view.emulator.emulatedScaleFactor) : command.params;
+				result = await view.debugger.sendCommandRaw(command.method, params, undefined);
 			} catch {
 				return { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: BrowserView debugger input dispatch did not complete' };
 			}

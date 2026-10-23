@@ -17,6 +17,7 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -59,6 +60,14 @@ class ParadisBrowserViewportMcpChannel implements IServerChannel {
 					typeof args[1] === 'string' ? args[1] : '',
 					typeof args[2] === 'string' ? args[2] : '',
 				) as T;
+			case ParadisViewportMcpMethod.NoteAgentEmulation: {
+				const model = typeof args[1] === 'string' ? this.browserViewWorkbenchService.getKnownBrowserViews().get(args[1])?.model : undefined;
+				if (model) {
+					const previous = args[2] && typeof args[2] === 'object' ? args[2] as IBrowserDeviceProfile : undefined;
+					await this.viewportService.noteAgentEmulation(model, this._agentLabel(typeof args[0] === 'string' ? args[0] : undefined), previous);
+				}
+				return undefined as T;
+			}
 			case ParadisViewportMcpMethod.Describe:
 				return this._describe(Array.isArray(args[0]) ? args[0].filter((id): id is string => typeof id === 'string') : []) as T;
 		}

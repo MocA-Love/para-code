@@ -18,7 +18,9 @@
 //    workspace 設定に書くと利用者のリポジトリの .vscode を汚し、1 つのウィンドウでスペースを切り替える使い方にも合わない）
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { raceTimeout } from '../../../../base/common/async.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -48,6 +50,10 @@ import {
 	paradisResolveViewportDefault,
 	paradisViewportDevice,
 } from '../common/paradisBrowserViewport.js';
+import { paradisDevicesEqual } from '../common/paradisBrowserViewportCdp.js';
+
+/** CDP の命令で変わった device が renderer に届くのを待つ上限。 */
+const AGENT_EMULATION_SETTLE_MS = 1000;
 
 /** エージェントが大きさを変えた記録（chip の強調とホバーに使う）。 */
 export interface IParadisViewportAgentChange {
@@ -109,6 +115,11 @@ export interface IParadisBrowserViewportService {
 	getPaneSize(viewId: string): { readonly width: number; readonly height: number } | undefined;
 
 	getAgentChange(viewId: string): IParadisViewportAgentChange | undefined;
+	/**
+	 * エージェントが CDP の命令（emulate など）で大きさを変えた。device は main が変えるので、renderer に変化が
+	 * 届くのを少し待ってから記録する。
+	 */
+	noteAgentEmulation(model: IBrowserViewModel, agentLabel: string, previousDevice: IBrowserDeviceProfile | undefined): Promise<void>;
 }
 
 export class ParadisBrowserViewportService extends Disposable implements IParadisBrowserViewportService {
@@ -327,6 +338,20 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 
 	getAgentChange(viewId: string): IParadisViewportAgentChange | undefined {
 		return this._agentChanges.get(viewId);
+	}
+
+	async noteAgentEmulation(model: IBrowserViewModel, agentLabel: string, previousDevice: IBrowserDeviceProfile | undefined): Promise<void> {
+		if (paradisDevicesEqual(model.device, previousDevice)) {
+			const store = new DisposableStore();
+			try {
+				await raceTimeout(Event.toPromise(model.onDidChangeDevice, store), AGENT_EMULATION_SETTLE_MS);
+			} finally {
+				store.dispose();
+			}
+		}
+		const previous = paradisDescribeViewport(previousDevice, this._sizes, this._paneSizes.get(model.id));
+		this._agentChanges.set(model.id, { agentLabel, previous, next: this.describe(model), at: Date.now() });
+		this._onDidAgentChange.fire(model.id);
 	}
 
 	// #endregion
