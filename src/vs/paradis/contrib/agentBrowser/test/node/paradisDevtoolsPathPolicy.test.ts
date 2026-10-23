@@ -10,7 +10,7 @@ import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsExplainRootsDenial, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from '../../node/paradisDevtoolsPathPolicy.js';
+import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisDevtoolsCaptureOutputPath, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsExplainRootsDenial, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsRoots, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from '../../node/paradisDevtoolsPathPolicy.js';
 
 const REMOTE = { paneKnown: true, remote: true };
 const LOCAL = { paneKnown: true, remote: false };
@@ -99,6 +99,38 @@ suite('ParadisDevtoolsPathPolicy', () => {
 			plain: await refusal({ filePath: '/repos/a/out/shot.png' }),
 			relative: await refusal({ filePath: 'hooks/pre-commit' }),
 		}, { newFileInLinkedFolder: true, linkedFile: true, plain: undefined, relative: undefined });
+	});
+
+	test('a capture never overwrites an existing file at the path it saves to after changing the extension', async () => {
+		const existing = new Set(['/repo/requirements.txt', '/repo/src/foo.png', '/repo/shot.webp']);
+		const lstat = async (path: string) => {
+			if (!existing.has(path)) {
+				throw new Error('ENOENT');
+			}
+			return {};
+		};
+		const refused = async (tool: string, args: unknown) => (await paradisDevtoolsCaptureOverwriteRefusal(tool, args, lstat))?.split(' already exists')[0];
+		assert.deepStrictEqual({
+			paths: [
+				paradisDevtoolsCaptureOutputPath('take_snapshot', { filePath: '/repo/requirements.md' }),
+				paradisDevtoolsCaptureOutputPath('take_screenshot', { filePath: '/repo/src/foo.ts' }),
+				paradisDevtoolsCaptureOutputPath('take_screenshot', { filePath: '/repo/shot', format: 'jpeg' }),
+				paradisDevtoolsCaptureOutputPath('take_screenshot', { filePath: 'relative.png' }),
+				paradisDevtoolsCaptureOutputPath('evaluate_script', { filePath: '/repo/out.json' }),
+			],
+			snapshotOverText: await refused('take_snapshot', { filePath: '/repo/requirements.md' }),
+			screenshotOverSource: await refused('take_screenshot', { filePath: '/repo/src/foo.ts' }),
+			webp: await refused('take_screenshot', { filePath: '/repo/shot.png', format: 'webp' }),
+			fresh: await refused('take_screenshot', { filePath: '/repo/new.png' }),
+			inline: await refused('take_screenshot', {}),
+		}, {
+			paths: ['/repo/requirements.txt', '/repo/src/foo.png', '/repo/shot.jpeg', undefined, undefined],
+			snapshotOverText: 'take_snapshot was not run: /repo/requirements.txt',
+			screenshotOverSource: 'take_screenshot was not run: /repo/src/foo.png',
+			webp: 'take_screenshot was not run: /repo/shot.webp',
+			fresh: undefined,
+			inline: undefined,
+		});
 	});
 
 	test('explains the refusal and the inline alternative to a remote agent', () => {

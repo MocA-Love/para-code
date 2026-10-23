@@ -83,12 +83,15 @@ export class ParadisRemoteFileBridge {
 		return target.ok ? { ok: true } : target;
 	}
 
-	async write(token: string, remoteAuthority: string, path: string, data: VSBuffer): Promise<ParadisRemoteFileWriteResult> {
+	/**
+	 * @param exclusive 既にあるもの（ふつうのファイルも）を上書きしない（撮る系のツールの保存。q.html Q413）
+	 */
+	async write(token: string, remoteAuthority: string, path: string, data: VSBuffer, exclusive?: boolean): Promise<ParadisRemoteFileWriteResult> {
 		if (data.byteLength > this.maxBytes) {
 			return { ok: false, reason: 'tooLarge' };
 		}
-		const target = await this.resolveWriteTarget(token, remoteAuthority, this.resource(remoteAuthority, path));
-		return target.ok ? this.writeAndVerify(target, data) : target;
+		const target = await this.resolveWriteTarget(token, remoteAuthority, this.resource(remoteAuthority, path), exclusive === true);
+		return target.ok ? this.writeAndVerify(target, data, exclusive === true) : target;
 	}
 
 	/**
@@ -169,11 +172,19 @@ export class ParadisRemoteFileBridge {
 	 * 書いた後にファイル自身の realpath で場所を確かめ直す。外れていたら失敗を返し、ログを残す。何も消さない
 	 * （確かめた後でフォルダがリンクに差し替えられると、書いた先は外の既存のファイルでありうるため）。
 	 */
-	private async writeAndVerify(target: IWriteTarget, data: VSBuffer): Promise<ParadisRemoteFileWriteResult> {
+	private async writeAndVerify(target: IWriteTarget, data: VSBuffer, exclusive = false): Promise<ParadisRemoteFileWriteResult> {
 		const { resource, folders } = target;
 		try {
-			await this.fileService.writeFile(resource, data);
+			if (exclusive) {
+				// 確かめた後に作られたものも上書きしない
+				await this.fileService.createFile(resource, data, { overwrite: false });
+			} else {
+				await this.fileService.writeFile(resource, data);
+			}
 		} catch (error) {
+			if (exclusive && error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_MODIFIED_SINCE) {
+				return { ok: false, reason: 'alreadyExists' };
+			}
 			return this.failed('ioFailed', resource, error);
 		}
 		const real = await this.fileService.realpath(resource).catch(() => undefined);
@@ -192,7 +203,7 @@ export class ParadisRemoteFileBridge {
 	 * フォルダであること（途中のフォルダは作らない）。親フォルダ（ファイルが在ればファイル自身）の realpath も
 	 * 許された場所の下で、`.git` などの中でないこと。在るものはふつうのファイルに限る。
 	 */
-	private async resolveWriteTarget(token: string, remoteAuthority: string, resource: URI | undefined): Promise<IWriteTarget | Failure> {
+	private async resolveWriteTarget(token: string, remoteAuthority: string, resource: URI | undefined, exclusive = false): Promise<IWriteTarget | Failure> {
 		if (resource === undefined) {
 			return { ok: false, reason: 'invalidPath' };
 		}
@@ -211,6 +222,9 @@ export class ParadisRemoteFileBridge {
 			const stat = await this.fileService.stat(resource).catch(() => undefined);
 			let probe = resource;
 			if (stat !== undefined) {
+				if (exclusive) {
+					return { ok: false, reason: 'alreadyExists' };
+				}
 				if (stat.isDirectory) {
 					return { ok: false, reason: 'isDirectory' };
 				}

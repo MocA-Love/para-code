@@ -53,6 +53,10 @@ class FakeWindow {
 			case PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD:
 				return { ok: true, value: this.refuseWrite ? { ok: false, reason: 'outsideAllowedFolders' } : { ok: true } };
 			case PARADIS_REMOTE_FILE_WRITE_METHOD:
+				// args[2]: true のときは既にあるものを上書きしない（撮る系のツールの保存）
+				if (args[2] === true && this.files.has(path)) {
+					return { ok: true, value: { ok: false, reason: 'alreadyExists' } };
+				}
 				this.files.set(path, (args[1] as VSBuffer).buffer);
 				return { ok: true, value: { ok: true, path } };
 			case PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD:
@@ -131,6 +135,16 @@ suite('ParadisRemoteFileTransfer', () => {
 			localLeftovers: [],
 			restricted: [],
 		});
+	});
+
+	test('does not overwrite an existing remote file with a capture, also after the extension is changed', async () => {
+		window.files.set('/home/example/shot.png', new TextEncoder().encode('old'));
+		const result = await transfer.callTool('take_screenshot', 'output', { filePath: '/home/example/shot.ts' }, host(), fakeScreenshot);
+		assert.deepStrictEqual({
+			isError: (result as IResult).isError === true,
+			explains: texts(result).includes('/home/example/shot.png already exists'),
+			kept: new TextDecoder().decode(window.files.get('/home/example/shot.png')),
+		}, { isError: true, explains: true, kept: 'old' });
 	});
 
 	test('refuses before taking the screenshot when the remote path may not be written, and rejects relative paths', async () => {

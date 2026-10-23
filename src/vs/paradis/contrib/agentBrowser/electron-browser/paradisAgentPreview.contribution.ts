@@ -156,7 +156,7 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 						return invalid as T;
 					}
 					return (command === PARADIS_REMOTE_FILE_WRITE_METHOD
-						? this.remoteFiles.write(token, remoteAuthority, path, data)
+						? this.remoteFiles.write(token, remoteAuthority, path, data, args[4] === true)
 						: this.remoteFiles.writeTemporary(token, remoteAuthority, path, data)) as Promise<T>;
 				}
 			}
