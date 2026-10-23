@@ -290,3 +290,36 @@ export class ParadisParkedRefreshGate {
 		this._deferred = false;
 	}
 }
+
+/**
+ * 待避の前に走り始めた `git status` の結果を、待避の後に書き戻させない札。
+ *
+ * `setScopeActive(false)` はリソースグループを空にするが、その時点で走っている状態の更新
+ * (`_updateModelState()`) は git の結果を待っている。そのまま書き戻すと、空にしたグループが
+ * 別スペースの変更で埋まり、`ISCMService` を直接読む消費者 (検索の「変更されたファイルのみ」、
+ * チャットのリポジトリ情報) へ漏れる。`status()` は `@throttle` なので、A→B→A→B と素早く
+ * 行き来すると、復帰で予約された `status()` が次の待避の後に始まることもある (始めた時点で
+ * 既に待避中)。
+ *
+ * 更新を始めるときに札を取り (`begin()`)、待避のたびに札を無効にし (`invalidate()`)、書き戻す
+ * 直前に「札がまだ有効で、今アクティブか」を確かめる (`canApply()`)。
+ */
+export class ParadisParkedStatusWriteGuard {
+
+	private _epoch = 0;
+
+	/** 状態の更新を始めるときに取る札。 */
+	begin(): number {
+		return this._epoch;
+	}
+
+	/** 待避したときに呼ぶ。それまでに取った札はすべて無効になる。 */
+	invalidate(): void {
+		this._epoch++;
+	}
+
+	/** 結果を書き戻してよいか。待避中、または待避を挟んで取った札なら false。 */
+	canApply(ticket: number, active: boolean): boolean {
+		return active && ticket === this._epoch;
+	}
+}

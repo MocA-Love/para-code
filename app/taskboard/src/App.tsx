@@ -204,6 +204,7 @@ function FilterBar({ query, setQuery, onlyMine, setOnlyMine }: { query: string; 
 				{gh.mode === 'ok' && <>
 					<span className="lbl">{gh.sourceLabel}</span>
 					<span>{gh.syncing ? '同期しています' : gh.lastSyncAt ? `同期 ${ago(gh.lastSyncAt, now)}` : ''}</span>
+					{gh.pausedUntil && gh.pausedUntil > now && <span style={{ color: 'var(--amber)' }} className="ellipsis" title={gh.error}>GitHub の上限で止めています（{new Date(gh.pausedUntil).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })} ごろ再開）</span>}
 					{limit && <span className="api num" title="GitHub API（GraphQL）の残り。1 時間ごとに戻ります">API 残り {number(limit.remaining)} / {number(limit.limit)}</span>}
 				</>}
 				{gh.mode !== 'off' && <button className="btn ghost sm" disabled={syncing || gh.syncing} onClick={async () => { setSyncing(true); await app.call('sync', {}); setSyncing(false); }}>{syncing || gh.syncing ? <Spinner small /> : <Icon name="sync" size={13} />}今すぐ同期</button>}

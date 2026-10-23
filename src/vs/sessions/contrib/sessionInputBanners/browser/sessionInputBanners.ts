@@ -27,6 +27,8 @@ import { ISessionsProvidersService } from '../../../services/sessions/browser/se
 import { getGitHubPullRequestRefs, IGitHubPullRequestRef, SessionStatus } from '../../../services/sessions/common/session.js';
 import { getSessionAgentMergeConfigurationObservable } from '../../../browser/sessionAgentMerge.js';
 import { ISessionInputBanner, ISessionInputBannerAction, SessionInputBannerWidget } from './sessionInputBannerWidget.js';
+// PARA-PATCH: stop GitHub polling while the window is in the background (sessionGithubWindowActivity.ts)
+import { paradisStartPollingWhileWindowActive } from '../../github/browser/sessionGithubWindowActivity.js';
 
 const STORAGE_KEY_DISMISSED = 'sessions.inputBanners.dismissedItems';
 const LEGACY_STORAGE_KEY_CI_DISMISSED = 'sessions.inputBanners.ci.dismissed';
@@ -244,8 +246,8 @@ export class SessionInputBanners extends Disposable {
 			for (const pullRequest of getGitHubPullRequestRefs(gitHubInfo)) {
 				const prModelRef = reader.store.add(this.gitHubService.createPullRequestModelReference(pullRequest.owner, pullRequest.repo, pullRequest.number));
 				const prModel = prModelRef.object;
-				void prModel.refresh();
-				reader.store.add(prModel.startPolling());
+				void prModel.refresh({ priority: 'visible' });
+				reader.store.add(paradisStartPollingWhileWindowActive(prModel)); // PARA-PATCH: see sessionGithubWindowActivity.ts
 				const livePullRequest = prModel.pullRequest.read(reader);
 				if (!livePullRequest || livePullRequest.state !== GitHubPullRequestState.Open) {
 					continue;
@@ -254,8 +256,8 @@ export class SessionInputBanners extends Disposable {
 					continue;
 				}
 				const ciModelRef = reader.store.add(this.gitHubService.createPullRequestCIModelReference(pullRequest.owner, pullRequest.repo, pullRequest.number, livePullRequest.headSha));
-				void ciModelRef.object.refresh();
-				reader.store.add(ciModelRef.object.startPolling());
+				void ciModelRef.object.refresh(false, { priority: 'visible' });
+				reader.store.add(paradisStartPollingWhileWindowActive(ciModelRef.object)); // PARA-PATCH: see sessionGithubWindowActivity.ts
 			}
 		}));
 	}
