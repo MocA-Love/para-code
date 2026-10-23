@@ -42,9 +42,9 @@ import {
 	ParadisViewportTarget,
 	paradisFindViewportSize,
 	paradisFormatViewportDimensions,
-	paradisResolveViewportSpec,
 	paradisSanitizeViewportName,
 	paradisViewportSpecMatches,
+	paradisViewportTargetSpec,
 } from '../common/paradisBrowserViewport.js';
 import { IParadisViewportDefaultMarks, ParadisBrowserViewportDropdown } from './paradisBrowserViewportDropdown.js';
 import { paradisShowViewportManager } from './paradisBrowserViewportManager.js';
@@ -132,11 +132,12 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 			this._render();
 		}));
 		store.add(model.onDidChangeZoom(() => this._measure()));
-		// 既定はタブごとに 1 回だけ当てる（paradisBrowserViewportService.ts の claimDefaultApplication）。`isNew` では
+		// 既定（または控えておいた大きさ）はタブごとに 1 回だけ当てる（paradisBrowserViewportService.ts の takeInitialViewport）。`isNew` では
 		// 見分けない: createBrowserView で作ったタブ（エージェントのタブ・見えていないスペースで開いたタブ）は、
 		// エディタに出る前にモデルができているので `isNew` が false になる
-		if (this.viewportService.claimDefaultApplication(model.id) && !model.device) {
-			this._applyDefault(model);
+		const initial = this.viewportService.takeInitialViewport(model);
+		if (initial) {
+			this._run(this.viewportService.apply(model, initial, { kind: 'default' }));
 		}
 		this._render();
 	}
@@ -173,14 +174,6 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		}
 	}
 
-	private _applyDefault(model: IBrowserViewModel): void {
-		const { spec } = this.viewportService.resolveDefaultForView(model.id);
-		const target = paradisResolveViewportSpec(spec, this.viewportService.getSizes());
-		if (target?.kind === 'size') {
-			this._run(this.viewportService.apply(model, target, { kind: 'default' }));
-		}
-	}
-
 	private _applyUser(target: ParadisViewportTarget): void {
 		const model = this.editor.model;
 		if (model) {
@@ -201,14 +194,6 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 		}
 		const named = state.name !== undefined ? paradisFindViewportSize(this.viewportService.getSizes(), state.name) : undefined;
 		return named ? { kind: 'size', size: named } : { kind: 'size', size: { width: state.width ?? 0, height: state.height ?? 0 } };
-	}
-
-	/** 既定に書く指定。エディタに合わせるは空文字、名前付きは名前、それ以外は「幅x高さ」。 */
-	private _specOf(target: ParadisViewportTarget): string {
-		if (target.kind === 'fit') {
-			return '';
-		}
-		return target.size.name ?? `${target.size.width}x${target.size.height}`;
 	}
 
 	private _marksFor(target: ParadisViewportTarget): IParadisViewportDefaultMarks {
@@ -327,11 +312,11 @@ export class ParadisBrowserViewportChip extends BrowserEditorContribution {
 			onSaveCurrent: close(() => void this._saveCurrent(state)),
 			onSetGlobalDefault: close(() => {
 				const marks = this._marksFor(current);
-				this._run(this.viewportService.setGlobalDefault(marks.global ? '' : this._specOf(current)));
+				this._run(this.viewportService.setGlobalDefault(marks.global ? '' : paradisViewportTargetSpec(current)));
 			}),
 			onToggleSpaceDefault: close(() => {
 				if (stateKey !== undefined) {
-					this.viewportService.setSpaceDefault(stateKey, this._marksFor(current).space ? undefined : this._specOf(current));
+					this.viewportService.setSpaceDefault(stateKey, this._marksFor(current).space ? undefined : paradisViewportTargetSpec(current));
 				}
 			}),
 			onToggleBand: close(() => this._setBandShown(!this._bandShown)),

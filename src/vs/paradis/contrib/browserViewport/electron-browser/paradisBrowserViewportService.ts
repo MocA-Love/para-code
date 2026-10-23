@@ -41,6 +41,12 @@ import {
 	PARADIS_VIEWPORT_SIZE_LIMIT,
 	PARADIS_VIEWPORT_SIZES_STORAGE_KEY,
 	PARADIS_VIEWPORT_SPACE_DEFAULTS_STORAGE_KEY,
+	PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY,
+	paradisInitialViewportSpec,
+	paradisParseViewportViewSpecs,
+	paradisRememberViewportViewSpec,
+	paradisResolveViewportSpec,
+	paradisViewportTargetSpec,
 	ParadisViewportDefaultSource,
 	ParadisViewportTarget,
 	paradisDescribeViewport,
@@ -99,12 +105,13 @@ export interface IParadisBrowserViewportService {
 	/** そのタブに当てる既定と、どこで決めたものか。 */
 	resolveDefaultForView(viewId: string): { readonly spec: string; readonly source: ParadisViewportDefaultSource };
 	/**
-	 * 新しく開いたタブへ既定を当ててよいか。1 つのタブにつき 1 回だけ true を返す（同じタブを別の
-	 * グループへ動かしたり、スペースを行き来して開き直したりしたときに、利用者やエージェントが
-	 * 変えた大きさを既定で潰さないため）。前のセッションから復元したタブには当てる（大きさは保存されないので、
-	 * 当てないと再起動のたびにエディタの大きさへ戻ってしまう）。
+	 * このウィンドウで初めてそのタブのページに触れたときに当てる大きさ。2 回目以降と、もう大きさが付いている
+	 * タブでは undefined（同じタブを別のグループへ動かしたり、スペースを行き来したり、帯を閉じたりしたときに、
+	 * 利用者やエージェントが変えた大きさを潰さないため）。最後に当てた大きさの控え（APPLICATION ストレージ）が
+	 * あればそれを、無ければ既定を返す。控えがあるので、再読み込み・別ウィンドウへの移動の後も既定は当たり直らず、
+	 * 再起動で失われた大きさは戻る。
 	 */
-	claimDefaultApplication(viewId: string): boolean;
+	takeInitialViewport(model: IBrowserViewModel): ParadisViewportTarget | undefined;
 
 	/** 大きさを当てる。エージェントのときは記録を残して知らせる。 */
 	apply(model: IBrowserViewModel, target: ParadisViewportTarget, origin: ParadisViewportOrigin): Promise<void>;
@@ -134,7 +141,10 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 	private _spaceDefaults: Map<string, string>;
 	private readonly _paneSizes = new Map<string, { readonly width: number; readonly height: number }>();
 	private readonly _agentChanges = new Map<string, IParadisViewportAgentChange>();
+	/** このウィンドウで初めて触れたときの処理を済ませたタブ（{@link takeInitialViewport}）。 */
 	private readonly _defaultClaimed = new Set<string>();
+	/** タブごとに最後に当てた大きさの控え（paradisBrowserViewport.ts）。 */
+	private _viewSpecs: Map<string, string>;
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -145,6 +155,7 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 	) {
 		super();
 		this._sizes = this._readSizes();
+		this._viewSpecs = paradisParseViewportViewSpecs(this.storageService.get(PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY, StorageScope.APPLICATION));
 		this._spaceDefaults = paradisParseViewportSpaceDefaults(this.storageService.get(PARADIS_VIEWPORT_SPACE_DEFAULTS_STORAGE_KEY, StorageScope.WORKSPACE));
 
 		// 別のウィンドウで直した一覧・既定を読み直す（読み直さないと古い表で上書きしてしまう）
@@ -158,6 +169,12 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 			if (event.external) {
 				this._spaceDefaults = paradisParseViewportSpaceDefaults(this.storageService.get(PARADIS_VIEWPORT_SPACE_DEFAULTS_STORAGE_KEY, StorageScope.WORKSPACE));
 				this._onDidChange.fire();
+			}
+		}));
+		// 別のウィンドウが書いた控えを読み直す（タブを別ウィンドウへ移したとき、移す前の控えを見るため）
+		this._register(this.storageService.onDidChangeValue(StorageScope.APPLICATION, PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY, this._store)(event => {
+			if (event.external) {
+				this._viewSpecs = paradisParseViewportViewSpecs(this.storageService.get(PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY, StorageScope.APPLICATION));
 			}
 		}));
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
@@ -274,12 +291,28 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 		return paradisResolveViewportDefault(this._spaceDefaults, stateKey, stateKey !== undefined ? this._parentStateKey(stateKey) : undefined, this.getGlobalDefault());
 	}
 
-	claimDefaultApplication(viewId: string): boolean {
-		if (this._defaultClaimed.has(viewId)) {
-			return false;
+	takeInitialViewport(model: IBrowserViewModel): ParadisViewportTarget | undefined {
+		if (this._defaultClaimed.has(model.id)) {
+			return undefined;
 		}
-		this._defaultClaimed.add(viewId);
-		return true;
+		this._defaultClaimed.add(model.id);
+		if (model.device) {
+			return undefined;
+		}
+		const initial = paradisInitialViewportSpec(this._viewSpecs.get(model.id), this.resolveDefaultForView(model.id).spec);
+		if (initial.remember) {
+			this._rememberViewSpec(model.id, initial.spec);
+		}
+		const target = paradisResolveViewportSpec(initial.spec, this._sizes);
+		return target?.kind === 'size' ? target : undefined;
+	}
+
+	private _rememberViewSpec(viewId: string, spec: string): void {
+		if (this._viewSpecs.get(viewId) === spec) {
+			return;
+		}
+		paradisRememberViewportViewSpec(this._viewSpecs, viewId, spec);
+		this.storageService.store(PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY, JSON.stringify([...this._viewSpecs]), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	/** worktree のスペースなら親（メインツリー）の状態キー（paradisBrowserSpaceDefaultsService.ts と同じ判定）。 */
@@ -314,6 +347,7 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 	async apply(model: IBrowserViewModel, target: ParadisViewportTarget, origin: ParadisViewportOrigin): Promise<void> {
 		const previous = this.describe(model);
 		this._defaultClaimed.add(model.id);
+		this._rememberViewSpec(model.id, paradisViewportTargetSpec(target));
 		await model.setDevice(target.kind === 'fit' ? undefined : paradisViewportDevice(target.size));
 		if (origin.kind === 'agent') {
 			this._agentChanges.set(model.id, { agentLabel: origin.agentLabel, previous, next: this.describe(model), at: Date.now() });
