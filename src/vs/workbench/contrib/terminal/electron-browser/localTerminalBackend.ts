@@ -45,6 +45,9 @@ import { paradisTakeSavedTerminalScreens } from '../../../../paradis/contrib/pty
 // PARA-PATCH: editor terminals wait for the startup revive before resolving their revived id (see vs/paradis/contrib/ptyDaemon)
 import { ParadisReviveGate } from '../../../../paradis/contrib/ptyDaemon/common/paradisReviveGate.js';
 import { paradisNoteRevivedPtyAnswer } from '../../../../paradis/contrib/workspaceSwitch/common/paradisEndedTerminalRestore.js'; // PARA-PATCH: see attachToRevivedProcess
+// PARA-PATCH: decides whether the pid check on reattach applies (see attachToRevivedProcess)
+// eslint-disable-next-line no-duplicate-imports
+import { paradisTerminalIdentityNonce } from '../../../../platform/terminal/common/terminal.js';
 
 export class LocalTerminalBackendContribution implements IWorkbenchContribution {
 
@@ -60,7 +63,7 @@ export class LocalTerminalBackendContribution implements IWorkbenchContribution 
 	}
 }
 
-class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBackend {
+export class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBackend {
 	readonly remoteAuthority = undefined;
 
 	private readonly _ptys: Map<number, LocalPty> = new Map();
@@ -227,10 +230,10 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 		return pty;
 	}
 
-	async attachToProcess(id: number): Promise<ITerminalChildProcess | undefined> {
+	async attachToProcess(id: number, pid?: number): Promise<ITerminalChildProcess | undefined> {
 		await this._connectToDirectProxy();
 		try {
-			await this._proxy.attachToProcess(id);
+			await this._proxy.attachToProcess(id, pid);
 			const pty = new LocalPty(id, true, this._proxy);
 			this._ptys.set(id, pty);
 			return pty;
@@ -240,8 +243,9 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 		return undefined;
 	}
 
-	// PARA-PATCH: `paradisExpectedNonce` keeps a restored editor tab from attaching to another terminal
-	async attachToRevivedProcess(id: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
+	// PARA-PATCH: `paradisExpectedNonce` keeps a restored editor tab from attaching to another terminal.
+	// Upstream's `pid` is kept as the second parameter; the Para Code parameters follow it.
+	async attachToRevivedProcess(id: number, pid: number, paradisExpectedNonce?: string, paradisRequireOrphanClaim?: boolean): Promise<ITerminalChildProcess | undefined> {
 		await this._connectToDirectProxy();
 		// PARA-PATCH: asking before the startup revive is done misses the revived pty, starts an empty shell and leaves the revived one unclaimed.
 		// Remote windows never revive through this backend, so they do not wait.
@@ -263,8 +267,16 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
 				}
 			}
-			const newId = paradisNoteRevivedPtyAnswer(paradisExpectedNonce, await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce)) ?? id; // PARA-PATCH: keep the answer for the restart that follows a failed attach (paradisEndedTerminalRestore.ts)
-			return await this.attachToProcess(newId);
+			const newId = paradisNoteRevivedPtyAnswer(paradisExpectedNonce, await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce)); // PARA-PATCH: keep the answer for the restart that follows a failed attach (paradisEndedTerminalRestore.ts)
+			if (newId !== undefined) {
+				return await this.attachToProcess(newId);
+			}
+			// The original ID may belong to another window's process after a pty host restart.
+			// PARA-PATCH: a valid nonce already proved the id (the pty host answers with an id that cannot
+			// exist when it names another terminal), so the pid is only checked without one. A terminal a
+			// pty daemon took back may report a different pid, and that must not refuse the right process.
+			const pidToMatch = paradisTerminalIdentityNonce(paradisExpectedNonce) === undefined && pid > 0 ? pid : undefined;
+			return await this.attachToProcess(id, pidToMatch);
 		} catch (e) {
 			this._logService.warn(`Couldn't attach to process ${e.message}`);
 		}
