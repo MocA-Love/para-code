@@ -2958,7 +2958,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - 差分にするのは素の take_snapshot だけ。`root`・`filePath`・`verbose`・`offset` の呼び出しは今までどおりで、控えも変えない。Para Code が中で使う take_snapshot（観測など）も差分にしない
 - MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
 - tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
-- 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない
+- 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない（`filePath` への保存は既にあるファイルを上書きしないので、保存のたびに新しい名前（`snapshot-2.txt` など）を付ける。2026-10-24、q.html Q413）
 
 ## モバイルの HTML の埋め込み画像は 1 枚ずつ送る（mobileRelay、2026-10-10、Q325 A）
 

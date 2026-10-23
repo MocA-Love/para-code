@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SCRIPT_WAIT_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisDevtoolsTimeoutTools, paradisEvaluateHasDeadline, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptHints } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { PARADIS_CAPTURE_NO_OVERWRITE_NOTE, PARADIS_OBSERVE_UNSUPPORTED_MESSAGE, PARADIS_DEVTOOLS_DEFAULT_TIMEOUT_MS, PARADIS_SCRIPT_CLICK_HINT, PARADIS_SCRIPT_WAIT_HINT, PARADIS_SNAPSHOT_MAX_CHARS, PARADIS_SNAPSHOT_ROOT_RECT_MARKER, ParadisSnapshotCache, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisDevtoolsTimeoutTools, paradisEvaluateHasDeadline, paradisEvaluateObserves, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisSnapshotSubtree, paradisStripInternalDevtoolsArguments, paradisTakeSnapshotRootRect, paradisWithScriptHints } from '../../node/paradisDevtoolsToolAdjustments.js';
 import { ParadisInputRejectionLog } from '../../node/paradisInputRejectionLog.js';
 
 function text(value: string, isError = false): unknown {
@@ -65,6 +65,15 @@ suite('Paradis devtools tool adjustments', () => {
 			stripped: '# wait_for response\nElement matching one of ["Attachments"] found.\n(Snapshot omitted. Call take_snapshot, or pass includeSnapshot: true, when you need element uids.)',
 			kept: '# wait_for response\nElement matching one of ["Attachments"] found.\n## Latest page snapshot\nuid=1_0 RootWebArea',
 		});
+	});
+
+	test('tells agents that take_screenshot and take_snapshot never overwrite the file in filePath', () => {
+		const filePathOf = (name: string) => ((paradisAdjustDevtoolsToolDescriptor({ name, inputSchema: { type: 'object', properties: { filePath: { type: 'string', description: 'Where to save.' } } } }).inputSchema as { properties: Record<string, { description?: string }> }).properties.filePath.description);
+		assert.deepStrictEqual([filePathOf('take_screenshot'), filePathOf('take_snapshot'), filePathOf('evaluate_script')], [
+			`Where to save. ${PARADIS_CAPTURE_NO_OVERWRITE_NOTE}`,
+			`Where to save. ${PARADIS_CAPTURE_NO_OVERWRITE_NOTE}`,
+			'Where to save.',
+		]);
 	});
 
 	test('publishes the widened wait_for and take_snapshot schemas and leaves other tools alone', () => {
