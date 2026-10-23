@@ -53,7 +53,7 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 	},
 	{
 		name: 'get_text',
-		description: 'Read the visible text (innerText) of an element of the page shared with this terminal pane, or of the whole page when no locator is given. Cheaper than take_snapshot when you only need the words. With all: true, returns the text of every match (lists, table rows). Long text is cut at max_chars; pass offset for the next part.',
+		description: 'Read the visible text (innerText) of an element of the page shared with this terminal pane, or of the whole page when no locator is given. Cheaper than take_snapshot when you only need the words. With all: true, returns the text of every match (lists, table rows). Long text is cut at max_chars; pass offset for the next part. When nothing matches, close matches on the page are listed.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -80,7 +80,7 @@ export const PARADIS_MCP_BROWSER_QUERY_TOOLS = [
 	},
 	{
 		name: 'scroll_to',
-		description: 'Scroll the page shared with this terminal pane until an element is found, then bring it into view. Works with virtualized (lazy-rendered) lists that only create rows near the visible area: the scroll container is moved step by step and searched again after each step, until the element appears or the end is reached. If it started partway and reaches the end, it searches once more from the start; when the element is not found it scrolls back to where it was and says what may keep it out of reach (a form field holding the text, collapsed sections, an open dialog, other scroll areas). Scrolls with scripts (scrollIntoView / scrollBy), not with the mouse wheel, so it works while the user is using the page. Give "container" for the list to scroll; by default the largest scrollable area of the page is used.',
+		description: 'Scroll the page shared with this terminal pane until an element is found, then bring it into view. Works with virtualized (lazy-rendered) lists that only create rows near the visible area: the scroll container is moved step by step and searched again after each step, until the element appears or the end is reached. If it started partway and reaches the end, it searches once more from the start; when the element is not found it scrolls back to where it was and says what may keep it out of reach (a form field holding the text, collapsed sections, an open dialog, other scroll areas), and when the whole scrollable range was searched, that the element is not in that area of the screen. Scrolls with scripts (scrollIntoView / scrollBy), not with the mouse wheel, so it works while the user is using the page. Give "container" for the list to scroll; by default the largest scrollable area of the page is used.',
 		inputSchema: {
 			type: 'object',
 			properties: {

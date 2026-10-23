@@ -183,10 +183,21 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 
 	// --- what is close to a locator that matched nothing ----------------------------------------
 	// Run once, only after a miss (click_by / fill_by / get_text found nothing, or wait_until timed out). Reads the
-	// DOM once, returns at most NEAR_MAX candidates of at most NEAR_CUT characters, and never reads what is typed in
-	// a form field (the value of input / textarea / select, the content of contenteditable): only the number of fields.
+	// DOM once within NEAR_BUDGET_MS (past it, or on any error, there are no candidates and the miss is reported as
+	// before), returns at most NEAR_MAX candidates of at most NEAR_CUT characters (NEAR_EXACT_CUT, uncut, with
+	// "exact"), each checked to match as given, and never reads what is typed in a form field (the value of input /
+	// textarea / select, the content of contenteditable) or attributes of elements that are not shown.
 	const NEAR_MAX = 5;
-	const NEAR_CUT = 60;
+	const NEAR_CUT = spec.exact ? 200 : 60;
+	const NEAR_BUDGET_MS = 250;
+	const NEAR_STOP = { nearStop: true };
+	const clock = () => typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+	let nearUntil = Infinity;
+	/** Call in loops: stops the whole search for candidates when it takes too long. */
+	const keepWithinBudget = index => { if ((index & 127) === 0 && clock() > nearUntil) { throw NEAR_STOP; } };
+	/** Attributes used to identify elements; only these are searched for similar values of a selector. */
+	const IDENTIFYING_ATTRIBUTES = new Set(['name', 'role', 'aria-label', 'data-testid', 'data-test-id', 'data-test', 'data-qa', 'data-cy']);
+	const NOT_SHOWN = 'head, meta, script, style, template, noscript, [aria-hidden="true"], input[type="hidden"], input[type="password"]';
 	const NEAR_SOURCE_MAX = 300;
 	const NEAR_ATTRIBUTES = ['aria-label', 'title', 'alt', 'placeholder'];
 	const FIELD_TAGS = new Set(['input', 'textarea', 'select']);
@@ -222,14 +233,17 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		}
 		return undefined;
 	};
-	const truncate = value => { const text = norm(value); return text.length > NEAR_CUT ? text.slice(0, NEAR_CUT) : text; };
+	/** Cut to NEAR_CUT characters; with "exact" a longer value is left out (a cut value would not match exactly). */
+	const truncate = value => { const text = norm(value); return text.length > NEAR_CUT ? (spec.exact ? '' : text.slice(0, NEAR_CUT)) : text; };
 	/** Elements in the pool whose text or name is close to "wanted", as locators that can be given as they are. */
 	const closeCandidates = (pool, wanted, role) => {
 		const folded = fold(wanted);
 		if (!folded) { return []; }
 		const wantedPairs = pairsOf(folded);
 		const scored = [];
-		for (const el of pool) {
+		for (let index = 0; index < pool.length; index++) {
+			keepWithinBudget(index);
+			const el = pool[index];
 			if (SKIP_TAGS.has(el.localName)) { continue; }
 			if (role) {
 				const value = nameOf(el);
@@ -255,16 +269,24 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		scored.sort((a, b) => b.score - a.score);
 		const out = [];
 		const seen = new Set();
-		for (const entry of scored) {
+		for (let index = 0; index < scored.length; index++) {
+			keepWithinBudget(index);
+			const entry = scored[index];
 			if (out.length >= NEAR_MAX) { break; }
-			if (!visible(entry.el) || holdsTyping(entry.el)) { continue; }
+			if (!visible(entry.el) || holdsTyping(entry.el) || (entry.el.closest && entry.el.closest(NOT_SHOWN))) { continue; }
 			const control = role ? entry.el : namedControl(entry.el);
 			const candidate = {};
 			if (control && !holdsTyping(control)) {
+				// Only a name that finds the element again as given (the same comparison as the search).
 				const name = truncate(nameOf(control));
-				if (name) { candidate.role = roleOf(control); candidate.name = name; }
+				if (name && matches(nameOf(control), name)) { candidate.role = roleOf(control); candidate.name = name; }
 			}
-			if (entry.source === 'text') { candidate.text = truncate(entry.value); }
+			if (entry.source === 'text') {
+				// The text the search compares (innerText, and textContent without spaces), not only the element's own text
+				// nodes: "Total: <b>3</b> items" is offered as "Total: 3 items", which matches, not "Total: items".
+				const text = truncate(textOf(entry.el));
+				if (text && squash(entry.el.textContent).includes(squash(text)) && matches(textOf(entry.el), text)) { candidate.text = text; }
+			}
 			if (!candidate.name && !candidate.text) { continue; }
 			const key = JSON.stringify(candidate);
 			if (seen.has(key)) { continue; }
@@ -309,28 +331,50 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			else if (token[0] === '.') { kind = 'class'; wanted = token.slice(1); }
 			else {
 				const parts = /^\[\s*(?<name>[\w:-]+)\s*(?:[~|^$*]?=\s*["']?(?<value>[^"'\]]*)["']?\s*(?:[is])?)?\s*\]$/.exec(token);
-				if (!parts || !parts.groups || !parts.groups.value || lower(parts.groups.name) === 'value') { continue; }
+				if (!parts || !parts.groups || !parts.groups.value || !IDENTIFYING_ATTRIBUTES.has(lower(parts.groups.name))) { continue; }
 				kind = 'attribute'; attribute = parts.groups.name; wanted = parts.groups.value;
 			}
 			const folded = fold(wanted);
 			const wantedPairs = pairsOf(folded);
-			const counts = new Map();
-			for (const el of all) {
-				if (kind === 'id') { if (el.id) { counts.set(el.id, (counts.get(el.id) || 0) + 1); } }
-				else if (kind === 'class') { if (el.classList) { for (const name of el.classList) { counts.set(name, (counts.get(name) || 0) + 1); } } }
-				else if (!(el.localName === 'input' && lower(el.getAttribute('type')) === 'password')) { const value = el.getAttribute(attribute); if (value) { counts.set(value, (counts.get(value) || 0) + 1); } }
-				if (counts.size > 5000) { break; }
+			/** value -> the elements that have it (a few each), from elements that are not hidden markup. */
+			const holders = new Map();
+			const add = (value, el) => { const list = holders.get(value); if (!list) { holders.set(value, [el]); } else if (list.length < 20) { list.push(el); } };
+			for (let index = 0; index < all.length && holders.size <= 5000; index++) {
+				keepWithinBudget(index);
+				const el = all[index];
+				if (el.closest(NOT_SHOWN)) { continue; }
+				if (kind === 'id') { if (el.id) { add(el.id, el); } }
+				else if (kind === 'class') { if (el.classList) { for (const name of el.classList) { add(name, el); } } }
+				else { const value = el.getAttribute(attribute); if (value) { add(value, el); } }
 			}
-			const ranked = Array.from(counts.keys()).filter(value => value.length <= 120).map(value => ({ value, score: closeness(folded, wantedPairs, fold(value)) })).filter(entry => entry.score >= 0.5).sort((a, b) => b.score - a.score).slice(0, 3);
-			for (const entry of ranked) {
+			const ranked = Array.from(holders.keys()).filter(value => value.length <= 120).map(value => ({ value, score: closeness(folded, wantedPairs, fold(value)) })).filter(entry => entry.score >= 0.5).sort((a, b) => b.score - a.score);
+			let offered = 0;
+			for (let index = 0; index < ranked.length && offered < 3; index++) {
+				keepWithinBudget(index);
+				const entry = ranked[index];
+				// Only values shown on the screen (not those of hidden elements).
+				const count = holders.get(entry.value).filter(visible).length;
+				if (count === 0) { continue; }
 				const written = kind === 'id' ? '#' + entry.value : kind === 'class' ? '.' + entry.value : '[' + attribute + '="' + entry.value + '"]';
-				similar.push({ instead: token.slice(0, 80), selector: written.slice(0, 80), count: counts.get(entry.value) });
+				similar.push({ instead: token.slice(0, 80), selector: written.slice(0, 80), count });
+				offered++;
 			}
 		}
 		if (similar.length > 0) { out.similar = similar.slice(0, NEAR_MAX); }
 		return out;
 	};
 	const nearMiss = () => {
+		nearUntil = clock() + NEAR_BUDGET_MS;
+		try {
+			return nearMissWithin();
+		} catch {
+			// Too slow (NEAR_STOP) or anything unexpected: no candidates, the miss is reported as before.
+			return undefined;
+		} finally {
+			nearUntil = Infinity;
+		}
+	};
+	const nearMissWithin = () => {
 		if (spec.targetIndex !== undefined) { return undefined; }
 		const scope = scopeOf();
 		if (scope === null) { return undefined; }
@@ -360,14 +404,14 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 				}
 			} else if (spec.text) {
 				out.candidates = closeCandidates(pool, spec.text, false);
-				const wanted = lower(spec.text);
-				out.inFields = all.filter(el => ((el.localName === 'input' && !isSecretInput(el)) || el.localName === 'textarea') && lower(el.value).includes(wanted)).length;
 			}
 		}
 		if (scope !== document) {
+			keepWithinBudget(0);
 			const outside = findIn(document);
 			if (outside && outside.length > 0) { out.outsideWithin = outside.length; }
 		}
+		keepWithinBudget(0);
 		const frames = framesOf();
 		let inFrames = 0;
 		for (const inner of frames.documents) {
@@ -380,7 +424,6 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		if (frames.crossOrigin > 0) { out.crossOriginFrames = frames.crossOrigin; }
 		return out;
 	};
-	const isSecretInput = el => lower(el.getAttribute('type')) === 'password';
 
 	const pageScroller = () => document.scrollingElement || document.documentElement;
 	const isPageScroller = el => el === pageScroller() || el === document.documentElement || el === document.body;

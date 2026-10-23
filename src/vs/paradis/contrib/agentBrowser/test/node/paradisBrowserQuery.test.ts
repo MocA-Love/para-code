@@ -337,7 +337,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 	// q.html Q448 の ③: 時間切れの後にページを 1 回だけ読み、待っていたものに近い候補を添える。待ち方・回数は変えない
 	test('wait_until adds close matches after a timeout without a match, and says when the matches are not visible', async () => {
 		const waiting = returned({ met: false, matched: 0, visible: 0 });
-		const near = returned({ near: { candidates: [{ role: 'button', name: 'Save draft', text: 'Save draft' }, { text: 'Saved' }], inFields: 1 } });
+		const near = returned({ near: { candidates: [{ role: 'button', name: 'Save draft', text: 'Save draft' }, { text: 'Saved' }] } });
 		const page = new FakePage([waiting, waiting, waiting, near]);
 		const timedOut = await page.query().call(page.call(), 'wait_until', { text: 'Save drafts', timeout_seconds: 3 });
 		const hidden = new FakePage([returned({ met: false, matched: 2, visible: 0 })]);
@@ -355,7 +355,6 @@ suite('paradisBrowserQuery (shared process)', () => {
 				'- Close matches visible on the page now (give one of these as the locator):',
 				'  {"role":"button","name":"Save draft"} or {"text":"Save draft"}',
 				'  {"text":"Saved"}',
-				'- 1 form field(s) hold this text as their value; "text" matches the text of elements, not what is typed in a field. Find the field by role and name instead.',
 			],
 			modes: ['wait', 'wait', 'wait', 'nearMiss'],
 			nearDeadline: 3000,
@@ -365,7 +364,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 
 	// q.html Q448 の ④: 候補は 5 件まで、1 件 80 文字まで。selector は当たらない部分と似たもの
 	test('close matches are capped, cut, and explain a selector that matches nothing', () => {
-		const many = paradisNearMissHints({ candidates: Array.from({ length: 8 }, (_, index) => ({ text: `Row ${index} ${'y'.repeat(100)}` })) }, { text: 'Row 9' });
+		const many = paradisNearMissHints({ candidates: Array.from({ length: 8 }, (_, index) => ({ text: `Row ${index} ${'y'.repeat(300)}` })) }, { text: 'Row 9' });
 		const selector = paradisNearMissHints({ missingParts: ['#save-btn'], similar: [{ instead: '#save-btn', selector: '#save-button', count: 1 }], lastPart: { part: '.row', count: 3 }, crossOriginFrames: 2 }, { selector: '#list #save-btn' });
 		const nothing = paradisNearMissHints({ candidates: [], roleCount: 0 }, { role: 'button', name: 'Send' });
 		assert.deepStrictEqual({
@@ -373,7 +372,7 @@ suite('paradisBrowserQuery (shared process)', () => {
 			selector,
 			nothing,
 		}, {
-			many: [6, 2 + JSON.stringify({ text: 'x'.repeat(80) }).length],
+			many: [6, 2 + JSON.stringify({ text: 'x'.repeat(200) }).length],
 			selector: [
 				'- Nothing on the page has "#save-btn", so the selector matches nothing.',
 				'- Similar ones that are on the page: "#save-button" (1 element(s)) instead of "#save-btn".',
