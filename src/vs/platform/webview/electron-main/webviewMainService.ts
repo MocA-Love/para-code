@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { WebContents, webContents, WebFrameMain } from 'electron';
+import electron, { WebContents, WebFrameMain } from 'electron';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { hasKey } from '../../../base/common/types.js';
@@ -12,7 +12,8 @@ import { WebviewProtocolProvider } from './webviewProtocolProvider.js';
 // PARA-PATCH: look a missing webview frame up once more before failing a find.
 import { paradisFindWebviewFrame } from '../common/paradisWebviewFind.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
-import { IFileService } from '../../files/common/files.js';
+import { IInstantiationService } from '../../instantiation/common/instantiation.js';
+import { ILogService } from '../../log/common/log.js';
 
 export class WebviewMainService extends Disposable implements IWebviewManagerService {
 
@@ -22,39 +23,31 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 	public readonly onFoundInFrame = this._onFoundInFrame.event;
 
 	constructor(
-		@IFileService fileService: IFileService,
+		@IInstantiationService instantiationService: IInstantiationService,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this._register(new WebviewProtocolProvider(fileService));
+		this._register(instantiationService.createInstance(WebviewProtocolProvider));
 	}
 
 	public async setIgnoreMenuShortcuts(id: WebviewWebContentsId | WebviewWindowId, enabled: boolean): Promise<void> {
 		const contents = this.getWebContents(id);
+		if (!contents) {
+			throw new Error(hasKey(id, { windowId: true }) ? `Invalid windowId: ${id.windowId}` : `Invalid webContentsId: ${id.webContentsId}`);
+		}
 		if (!contents.isDestroyed()) {
 			contents.setIgnoreMenuShortcuts(enabled);
 		}
 	}
 
-	private getWebContents(id: WebviewWebContentsId | WebviewWindowId): WebContents {
-		let contents: WebContents | undefined;
-
+	private getWebContents(id: WebviewWebContentsId | WebviewWindowId): WebContents | undefined {
 		if (hasKey(id, { windowId: true })) {
-			const { windowId } = id;
-			const window = this.windowsMainService.getWindowById(windowId);
-			if (!window?.win) {
-				throw new Error(`Invalid windowId: ${windowId}`);
-			}
-			contents = window.win.webContents;
-		} else {
-			const { webContentsId } = id;
-			contents = webContents.fromId(webContentsId);
-			if (!contents) {
-				throw new Error(`Invalid webContentsId: ${webContentsId}`);
-			}
+			const window = this.windowsMainService.getWindowById(id.windowId)?.win;
+			return window && !window.isDestroyed() ? window.webContents : undefined;
 		}
 
-		return contents;
+		return electron.webContents.fromId(id.webContentsId);
 	}
 
 	// PARA-PATCH: returns `false` when this Electron build has no `findInFrame`, so the caller can
@@ -120,12 +113,31 @@ export class WebviewMainService extends Disposable implements IWebviewManagerSer
 		}
 	}
 
-	private getFrameByName(id: WebviewWebContentsId | WebviewWindowId, frameName: string): WebFrameMain {
-		const frame = this.getWebContents(id).mainFrame.framesInSubtree.find(frame => {
-			return frame.name === frameName;
+	private getFrameByName(id: WebviewWebContentsId | WebviewWindowId, frameName: string): WebFrameMain | undefined {
+		const contents = this.getWebContents(id);
+		if (!contents || contents.isDestroyed()) {
+			this.logService.trace('[WebviewMainService] Skipping find request for unavailable web contents', id);
+			return undefined;
+		}
+
+		const mainFrame = contents.mainFrame;
+		if (!mainFrame || mainFrame.isDestroyed()) {
+			this.logService.trace('[WebviewMainService] Skipping find request for an unavailable main frame', id);
+			return undefined;
+		}
+
+		// Electron can fail to convert the entire subtree while a descendant is pending deletion.
+		const framesInSubtree = mainFrame.framesInSubtree;
+		if (!framesInSubtree) {
+			this.logService.warn('[WebviewMainService] Frame subtree unavailable for find request', id);
+			return undefined;
+		}
+
+		const frame = framesInSubtree.find(frame => {
+			return !frame.isDestroyed() && !frame.detached && frame.name === frameName;
 		});
 		if (!frame) {
-			throw new Error(`Unknown frame: ${frameName}`);
+			this.logService.trace('[WebviewMainService] Skipping find request for a missing frame', id, frameName);
 		}
 		return frame;
 	}

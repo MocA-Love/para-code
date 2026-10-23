@@ -269,3 +269,16 @@
 .monaco-workbench.paradis-transparent.modern-ui .part .monaco-pane-view .pane > .pane-header:not(:hover) {
 	background-color: transparent !important;
 }
+
+/* Modern UI editor title (tab strip). Upstream 1.143 dropped its own `.title.tabs { background-color:
+	transparent !important }` rule from modernUI/browser/media/tabs.css and now paints the title with
+	`--modern-ui-editor-title-background` (the editor background), plus a tabs-background gradient for
+	non-Connected tabs; editorGroupView.ts reads the same variable in its inline style. That made the
+	tab strip opaque in a transparent window. Clear all three so the translucent `.part.editor` layer
+	shows through again, as it did before 1.143. Scoped to `.modern-ui-tabs`, so legacy tabs keep their
+	current look. */
+.monaco-workbench.paradis-transparent.modern-ui-tabs .part.editor > .content .editor-group-container > .title {
+	--modern-ui-editor-title-background: transparent;
+	background-color: transparent !important;
+	background-image: none !important;
+}
