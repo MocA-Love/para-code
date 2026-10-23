@@ -34,7 +34,7 @@ import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
-import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
+import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_GIT_NETWORK_SUBCOMMANDS, paradisRestrictedGitArgsError } from '../common/paradisGitRestrictedArgs.js';
 import { PARADIS_PR_DETAIL_FIELDS, PARADIS_PR_FAILED_LOG_JOBS, ParadisPullRequestLookup, paradisParseGhPullRequestDetail, paradisPickMergeMethod, paradisTailFailedJobLog } from '../../mobileRelay/common/paradisMobilePullRequest.js';
@@ -1266,7 +1266,7 @@ export class ParadisWorktreeGitService {
 					} else if (code === 0) {
 						settle();
 					} else {
-						this.logService.warn(`[ParadisWorktreeGit] git clone ${url} failed (exit ${code}): ${errorLines.join(' / ')}`);
+						this.logService.warn(paradisRedactCloneLogText(`[ParadisWorktreeGit] git clone ${url} failed (exit ${code}): ${errorLines.join(' / ')}`));
 						// allow-any-unicode-next-line
 						settle(new Error(errorLines.join('\n') || localize('paradis.repositoryClone.failed', "git clone が失敗しました (exit {0})。", String(code))));
 					}

@@ -35,6 +35,19 @@ export const PARA_BROWSER_VIEW_LOAD_TIMEOUT = 60_000;
 const PARA_ERR_TIMED_OUT = -7;
 
 /**
+ * The page as written to the log: without the query, the fragment or the credentials, which can
+ * hold sign-in values. Non-hierarchical URLs (`data:`, `blob:`) keep only their scheme.
+ */
+function paraLoggableURL(url: string): string {
+	try {
+		const parsed = new URL(url);
+		return parsed.host ? `${parsed.protocol}//${parsed.host}${parsed.pathname}` : parsed.protocol;
+	} catch {
+		return '[unparsable URL]';
+	}
+}
+
+/**
  * Stop main-frame loads that stall before the response ever begins, and report
  * them through `onStall` so they surface as an ordinary load error.
  *
@@ -85,7 +98,7 @@ export function paraInstallBrowserViewLoadWatchdog(
 				return;
 			}
 
-			logService.warn(`[ParaBrowserView] ${url} did not commit within ${timeoutMs}ms; stopping the load and reporting it as a timeout.`);
+			logService.warn(`[ParaBrowserView] ${paraLoggableURL(url)} did not commit within ${timeoutMs}ms; stopping the load and reporting it as a timeout.`);
 
 			// Report before stopping. `stop()` makes Chromium emit
 			// `did-fail-load` with ERR_ABORTED, which the view treats as a

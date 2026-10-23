@@ -7,7 +7,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisParseGitUrl } from '../../common/paradisRepositoryClone.js';
+import { paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisParseGitUrl, paradisRedactCloneLogText } from '../../common/paradisRepositoryClone.js';
 
 suite('ParadisRepositoryClone', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -52,6 +52,20 @@ suite('ParadisRepositoryClone', () => {
 		]) {
 			assert.strictEqual(paradisParseGitUrl(value), undefined, JSON.stringify(value));
 		}
+	});
+
+	test('redacts credentials from a clone log line, including the URL that git echoes back', () => {
+		const rows = [
+			'git clone https://alice:hunter2@example.com/org/repo.git failed (exit 128): fatal: unable to access \'https://alice:hunter2@example.com/org/repo.git/\'',
+			'git clone https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/org/repo.git failed (exit 128): fatal: Authentication failed',
+			'git clone git@github.com:org/repo.git failed (exit 128): fatal: Could not read from remote repository.',
+		];
+
+		assert.deepStrictEqual(rows.map(paradisRedactCloneLogText), [
+			'git clone https://***@example.com/org/repo.git failed (exit 128): fatal: unable to access \'https://***@example.com/org/repo.git/\'',
+			'git clone https://***@github.com/org/repo.git failed (exit 128): fatal: Authentication failed',
+			'git clone git@github.com:org/repo.git failed (exit 128): fatal: Could not read from remote repository.',
+		]);
 	});
 
 	test('parses git clone --progress stderr lines', () => {
