@@ -203,6 +203,8 @@ export function paradisSanitizeSentryText(value: string): string {
 		.replace(/\/Users\/[^/\\\s]+/g, '~')
 		.replace(/\/home\/[^/\\\s]+/g, '~')
 		// ホームの外のパス（外付けディスク・マウント先・C: 以外のドライブ）は、ファイル名か `out/vs/...` から先だけ残す
+		// 引用符で囲まれたもの（Node の ENOENT などの形）は、空白を含むフォルダ名（`/Volumes/My Passport/...`）ごと縮める
+		.replace(/(['"])((?:\/(?:Volumes|mnt|media|run\/media)\/|[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/)))[^'"\n]*)\1/gi, (_match, quote: string, path: string) => `${quote}${paradisShortenOutsideHomePath(path)}${quote}`)
 		.replace(/(?<![\w.~-])\/(?:Volumes|mnt|media|run\/media)\/[^\s'"`()<>,;]+/g, paradisShortenOutsideHomePath)
 		.replace(/(?<![A-Za-z0-9+.\\-])[A-Za-z]:(?:\\+|\/)(?!(?:Windows|Program Files|Program Files \(x86\)|ProgramData)(?:\\|\/))[^\s'"`()<>,;|*?]+/gi, paradisShortenOutsideHomePath)
 		// メールアドレス（`git@github.com` のような SSH の宛先も、接続先の名前として同じに伏せる）

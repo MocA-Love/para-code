@@ -56,11 +56,13 @@ suite('ParadisSentryCommon', () => {
 			'key sk-ant-api03-abcdefghijklmnopqrstuv rejected',
 			'Authorization: Basic dXNlcjpwYXNzd29yZA==',
 			// メールアドレスと SSH の宛先
-			'mail alice.smith@example.co.jp failed',
+			'mail alice.smith@mail.example.test failed',
 			'fetch git@github.com:org/repo.git failed',
 			// ホームの外のパス（ファイル名と `out/vs/...` から先は残す）
 			`ENOENT: no such file or directory, open '/Volumes/SSD/clients/acme/report.xlsx'`,
 			'at x (/Volumes/SSD/para-code/out/vs/paradis/contrib/a.js:12:3)',
+			`EACCES: permission denied, open '/Volumes/My Passport/clients/acme/report.xlsx'`,
+			`ENOENT: no such file or directory, scandir "D:\\My Folder\\acme\\docs"`,
 			'D:\\work\\acme\\src\\x.ts:4:2',
 			'file:///D:/work/acme/a.ts',
 			// SSH の接続先
@@ -88,10 +90,12 @@ suite('ParadisSentryCommon', () => {
 			['push failed: ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'push failed: [Filtered]'],
 			['key sk-ant-api03-abcdefghijklmnopqrstuv rejected', 'key [Filtered] rejected'],
 			['Authorization: Basic dXNlcjpwYXNzd29yZA==', 'Authorization: [Filtered] [Filtered]'],
-			['mail alice.smith@example.co.jp failed', 'mail [email] failed'],
+			['mail alice.smith@mail.example.test failed', 'mail [email] failed'],
 			['fetch git@github.com:org/repo.git failed', 'fetch [email]:org/repo.git failed'],
 			[`ENOENT: no such file or directory, open '/Volumes/SSD/clients/acme/report.xlsx'`, `ENOENT: no such file or directory, open '[path]/report.xlsx'`],
 			['at x (/Volumes/SSD/para-code/out/vs/paradis/contrib/a.js:12:3)', 'at x ([path]/out/vs/paradis/contrib/a.js:12:3)'],
+			[`EACCES: permission denied, open '/Volumes/My Passport/clients/acme/report.xlsx'`, `EACCES: permission denied, open '[path]/report.xlsx'`],
+			[`ENOENT: no such file or directory, scandir "D:\\My Folder\\acme\\docs"`, `ENOENT: no such file or directory, scandir "[path]/docs"`],
 			['D:\\work\\acme\\src\\x.ts:4:2', '[path]/x.ts:4:2'],
 			['file:///D:/work/acme/a.ts', 'file:///[path]/a.ts'],
 			['vscode-remote://ssh-remote+prod-db.internal/home/alice/x.ts', 'vscode-remote://ssh-remote+[host]~/x.ts'],
