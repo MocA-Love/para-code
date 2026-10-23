@@ -13,6 +13,8 @@ import { paradisResetReadopt, paradisTakeHandoverReport } from '../../node/parad
 import { paradisUsePtyDaemon } from '../../node/paradisTerminalProcessFactory.js';
 import { paradisRelayDiagnosticsFromThisProcess, paradisTakeRelayedFailures } from '../../../sentry/common/paradisRelayedDiagnostics.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../../platform/terminal/common/terminal.js';
+import { PARADIS_ENDED_PTY_ID } from '../../../../../platform/terminal/common/paradisEndedPty.js';
 
 /**
  * The pty host has no Sentry SDK, so the failures the window cannot otherwise see (a pty id the host
@@ -58,5 +60,12 @@ suite('PtyService relayed failures', () => {
 				{ feature: 'pty-host', operation: 'reconnect-failed', errorName: 'CodeExpectedError', severity: 'warning', count: 1 },
 			],
 		});
+	});
+
+	test('attaching to an id the fork hands out on purpose (-1, -2) is not counted as a failure', async () => {
+		await rejects(emptyService().attachToProcess(PARADIS_UNRESOLVABLE_PTY_ID));
+		await rejects(emptyService().attachToProcess(PARADIS_ENDED_PTY_ID));
+
+		deepStrictEqual(paradisTakeHandoverReport(), undefined);
 	});
 });

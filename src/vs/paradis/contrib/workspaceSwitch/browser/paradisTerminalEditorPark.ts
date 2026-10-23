@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IDeserializedTerminalEditorInput, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -51,6 +52,27 @@ import { paradisIsTerminalRestoreInputAmbiguous, paradisTerminalRestoreStateKey 
  */
 const parkedInstances = new Map<string, { readonly instance: ITerminalInstance; readonly stateKey: string; readonly onDisposedListener: IDisposable }>();
 
+const parkedEndedListeners = new Set<(nonce: string, stateKey: string) => void>();
+
+/**
+ * パーク中のエディタのターミナルのプロセスが終わったら呼ばれる関数を登録する。
+ * 退役・取り出しで破棄したものは呼ばない（その前に台帳から外している）。
+ */
+export function paradisRegisterParkedTerminalEditorEndedListener(listener: (nonce: string, stateKey: string) => void): IDisposable {
+	parkedEndedListeners.add(listener);
+	return toDisposable(() => parkedEndedListeners.delete(listener));
+}
+
+function notifyParkedTerminalEditorEnded(nonce: string, stateKey: string): void {
+	for (const listener of [...parkedEndedListeners]) {
+		try {
+			listener(nonce, stateKey);
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+	}
+}
+
 /**
  * インスタンスを shell integration nonce をキーにパークする。
  * PTY ID 未確定・非永続・nonce 不正のインスタンスは登録しない。
@@ -82,6 +104,11 @@ export function paradisParkTerminalEditorInstance(instance: ITerminalInstance, s
 	const onDisposedListener = instance.onDisposed(() => {
 		if (parkedInstances.get(nonce)?.instance === instance) {
 			parkedInstances.delete(nonce);
+			// 離れている間にシェルが終わった。そのスペースの保存状態にはタブが残っているので、戻ったときに
+			// 空のシェルで開き直さないよう知らせる（`paradisWorkspaceSwitchService` の終わった端末の台帳）。
+			if (instance.exitReason === TerminalExitReason.Process) {
+				notifyParkedTerminalEditorEnded(nonce, stateKey);
+			}
 		}
 		onDisposedListener.dispose();
 	});

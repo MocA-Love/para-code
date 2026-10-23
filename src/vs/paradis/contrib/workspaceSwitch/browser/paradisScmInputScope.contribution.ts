@@ -8,8 +8,11 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISCMRepository, ISCMService } from '../../../../workbench/contrib/scm/common/scm.js';
+import { paradisScmRepositoriesInSpace } from '../common/paradisScmScope.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
 /** 状態キー (リポジトリID or worktreeキー) → { SCMルートURI文字列 → 入力途中のコミットメッセージ } */
@@ -23,7 +26,7 @@ type ISerializedScmInputs = Record<string, Record<string, string>>;
  * (調査レポート: 唯一の即時復元されない状態)。切り替え直前 (onWillSwitchRepository) に退避し、
  * 切り替え後に SCM リポジトリが再登録され次第復元する。
  */
-class ParadisScmInputScope extends Disposable implements IWorkbenchContribution {
+export class ParadisScmInputScope extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisScmInputScope';
 
@@ -36,6 +39,8 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 		@ISCMService private readonly scmService: ISCMService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
+		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 	) {
 		super();
 
@@ -55,8 +60,10 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 			return;
 		}
 
+		// 切り替え直前なので、フォルダはまだ切り替え元のスペースのもの。待避中の別スペースの
+		// リポジトリは SCM に残っているので、ここで絞らないとその文字まで切り替え元の下書きになる。
 		const entries: Record<string, string> = {};
-		for (const repository of this.scmService.repositories) {
+		for (const repository of this.repositoriesInCurrentSpace()) {
 			const rootUri = repository.provider.rootUri;
 			if (rootUri && repository.input.value) {
 				entries[rootUri.toString()] = repository.input.value;
@@ -102,6 +109,11 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 		if (!rootUri) {
 			return;
 		}
+		// 今のスペースのリポジトリにだけ書き戻す。待避中の別スペースのリポジトリへ入れると、
+		// そこでコミットして空にした入力欄に古いメッセージが戻る。
+		if (!this.repositoriesInCurrentSpace().includes(repository)) {
+			return;
+		}
 
 		const value = this._pendingRestore[rootUri.toString()];
 		if (value !== undefined && !repository.input.value) {
@@ -111,6 +123,12 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 				this._pendingRestore = undefined;
 			}
 		}
+	}
+
+	/** 今のワークスペースフォルダ（＝今のスペース）に属する SCM リポジトリ。 */
+	private repositoriesInCurrentSpace(): ISCMRepository[] {
+		const folders = this.contextService.getWorkspace().folders.map(folder => folder.uri);
+		return paradisScmRepositoriesInSpace(this.scmService.repositories, folders, this.uriIdentityService.extUri);
 	}
 
 	private loadAll(): ISerializedScmInputs {
