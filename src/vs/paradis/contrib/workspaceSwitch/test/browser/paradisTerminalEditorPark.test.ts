@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TerminalExitReason } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
-import { paradisAreAllParkedForScope, paradisHoldBackTerminalEditorReveal, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorRevealGuard, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisHoldBackTerminalEditorReveal, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource } from '../../browser/paradisTerminalEditorRevive.js';
 
 interface IFakeTerminalInstance {
@@ -43,6 +43,27 @@ suite('paradisTerminalEditorPark', () => {
 		} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
 		return { instance, disposedWith };
 	}
+
+	test('a parked shell that ends is reported with its space; one retired or taken back is not', () => {
+		const ended: [string, string][] = [];
+		store.add(paradisRegisterParkedTerminalEditorEndedListener((nonce, stateKey) => ended.push([nonce, stateKey])));
+		const withExitReason = (fake: IFakeTerminalInstance) => {
+			Object.defineProperty(fake.instance, 'exitReason', { get: () => fake.disposedWith[0] });
+			return fake;
+		};
+		const exited = withExitReason(createFakeInstance(31, 131));
+		const retired = withExitReason(createFakeInstance(32, 132));
+		const takenBack = withExitReason(createFakeInstance(33, 133));
+		paradisParkTerminalEditorInstance(exited.instance, 'worktree:A');
+		paradisParkTerminalEditorInstance(retired.instance, 'worktree:B');
+		paradisParkTerminalEditorInstance(takenBack.instance, 'worktree:A');
+
+		exited.instance.dispose(TerminalExitReason.Process);
+		paradisRetireParkedTerminalEditorInstances('worktree:B');
+		paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(133, 'nonce-33'))?.dispose(TerminalExitReason.Process);
+
+		assert.deepStrictEqual(ended, [['nonce-31', 'worktree:A']]);
+	});
 
 	test('parked instance can be taken back by shell integration nonce (working set revive path)', () => {
 		const fake = createFakeInstance(1, 101);

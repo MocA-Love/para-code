@@ -630,6 +630,7 @@ class AgentSessionAdapter implements ICopilotChatSession {
 	private readonly _pullRequestBranch: ReturnType<typeof observableValue<string | undefined>>;
 	private readonly _pullRequestNumberFromBranch: IObservable<IObservable<{ readonly value?: number | undefined }> | undefined>;
 	private readonly _pullRequestNumberCache = new Map<string, IObservable<{ readonly value?: number | undefined }>>();
+	private readonly _paradisPullRequestLookupRetry = observableValue(this, 0); // PARA-PATCH: see _paradisRetryPullRequestLookupAfterTurn
 	readonly gitHubInfo: IObservable<IGitHubInfo | undefined>;
 	private readonly _artifacts: ISettableObservable<readonly ISessionArtifact[]>;
 	readonly artifacts: IObservable<readonly ISessionArtifact[]>;
@@ -662,6 +663,7 @@ class AgentSessionAdapter implements ICopilotChatSession {
 		this._pullRequestNumberFromBranch = derived(this, reader => {
 			const base = this._baseGitHubInfo.read(reader);
 			const branch = this._pullRequestBranch.read(reader);
+			this._paradisPullRequestLookupRetry.read(reader); // PARA-PATCH: look the PR up again after a turn (see _paradisRetryPullRequestLookupAfterTurn)
 			if (base?.pullRequest || !base || !branch) {
 				return undefined;
 			}
@@ -764,6 +766,7 @@ class AgentSessionAdapter implements ICopilotChatSession {
 	 * Update reactive properties from a refreshed agent session.
 	 */
 	update(session: IAgentSession): boolean {
+		this._paradisRetryPullRequestLookupAfterTurn(session); // PARA-PATCH (Para Code)
 		let changed = false;
 		transaction(tx => {
 			const artifacts = this._extractIssueArtifacts(session);
@@ -791,6 +794,23 @@ class AgentSessionAdapter implements ICopilotChatSession {
 			changed = setIfChanged(this._pullRequestBranch, pullRequestBranch, tx) || changed;
 		});
 		return changed;
+	}
+
+	/**
+	 * PARA-PATCH: a finished turn may have pushed the branch or opened its PR. When the last
+	 * lookup found no PR, forget that result (the GitHub service keeps "no PR" for 10 minutes)
+	 * and look again, so a new PR shows without waiting for that time. A found number or a
+	 * lookup in flight stays in `_pullRequestNumberCache` and is left alone.
+	 */
+	private _paradisRetryPullRequestLookupAfterTurn(session: IAgentSession): void {
+		const lastTurnEnd = session.timing.lastRequestEnded ? new Date(session.timing.lastRequestEnded) : undefined;
+		const base = this._baseGitHubInfo.get();
+		const branch = this._pullRequestBranch.get();
+		if (!lastTurnEnd || dateEquals(this._lastTurnEnd.get(), lastTurnEnd) || !base || base.pullRequest || !branch || this._pullRequestNumberCache.has(`${base.owner}/${base.repo}@${branch}`)) {
+			return;
+		}
+		this._gitHubService.paradisForgetPullRequestNumberMiss?.(base.owner, base.repo, branch);
+		this._paradisPullRequestLookupRetry.set(this._paradisPullRequestLookupRetry.get() + 1, undefined);
 	}
 
 	private _pullRequestNumberForBranch(owner: string, repo: string, branch: string): IObservable<{ readonly value?: number | undefined }> {

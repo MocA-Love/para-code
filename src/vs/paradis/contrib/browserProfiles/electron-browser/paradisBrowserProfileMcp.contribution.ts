@@ -406,6 +406,11 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		if (stats.openViewCount > ownTabs) {
 			return { ok: false, reason: 'inUse' };
 		}
+		// main の答えを待つ間に、ユーザーが自分用として使い始めた（印が外れた）・消されたなら消さない。
+		const current = this.profilesService.list().find(candidate => candidate.id === profile.id);
+		if (!current || !isOwnProfile(current, token)) {
+			return { ok: false, reason: 'unknownProfile' };
+		}
 		await this.profilesService.remove(profile.id);
 		return { ok: true, profileName: profile.name };
 	}
