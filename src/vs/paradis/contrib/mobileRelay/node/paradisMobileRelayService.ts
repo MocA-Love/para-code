@@ -81,6 +81,7 @@ import { ParadisBackgroundSessionWatch, ParadisRecentTrustedNotifies } from '../
 import { ParadisPushOutbox } from '../common/paradisPushOutbox.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisClassifyRevokeResponse, paradisEnqueueRevoke, paradisRevokeRetried, paradisSanitizeRevokeOutbox, type IParadisRelayRevokeEntry } from '../common/paradisRelayRevokeOutbox.js';
+import { ParadisPairingOfferSlot } from '../common/paradisMobilePairingOffer.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
@@ -173,6 +174,8 @@ const RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS = 5;
  * 30秒間隔で永久に再試行していたため、トークンが失効すると再起動しても直らないのに
  * ユーザーには「なぜか繋がらない」としか見えなかった。
  */
+/** スマホが名前を名乗らなかったときの端末名。 */
+const PAIRING_DEFAULT_DEVICE_NAME = 'モバイルデバイス';
 const RELAY_AUTH_PROBE_AFTER_ATTEMPTS = 3;
 /** 認証切れが確定した後の再接続間隔。復帰は再ペアリングでしか起きないので長く取る。 */
 const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
@@ -952,11 +955,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private pairing: {
 		pairId: string;
 		pairingToken: Uint8Array;
-		mobilePubKey?: Uint8Array;
-		proposedName: string;
-		// SAS表示済み（awaiting-approval発火済み）。これ以降は mobilePubKey を凍結し、
-		// 別の公開鍵を持つpairing-msgでの上書きを禁じる（C-2: SASすり替え防止）。
-		sasShown: boolean;
+		// SAS を出す要求は最初の1件だけ。その要求の鍵・名前・SAS を要求ごとに持ち、後から来た
+		// pairing-msg では書き換えない（C-2: SASすり替え防止。SAS の計算を待つ間に来た要求も含む）。
+		offers: ParadisPairingOfferSlot;
 	} | undefined;
 
 	private readonly statePath: string;
@@ -2313,7 +2314,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		const body = await res.json() as { pairId: string; pairingToken: string; expiresAt: number };
 		const pairingToken = fromBase64Url(body.pairingToken);
-		this.pairing = { pairId: body.pairId, pairingToken, proposedName: 'モバイルデバイス', sasShown: false };
+		this.pairing = { pairId: body.pairId, pairingToken, offers: new ParadisPairingOfferSlot() };
 
 		const pairingUri = encodePairingUri({
 			version: 1,
@@ -2329,10 +2330,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async approvePairing(): Promise<void> {
-		if (!this.pairing || !this.pairing.mobilePubKey) {
+		const shown = this.pairing?.offers.shown;
+		if (!this.pairing || !shown) {
 			throw new Error('no pairing awaiting approval');
 		}
-		this.sendControl({ type: 'pairing-approve', pairId: this.pairing.pairId, name: this.pairing.proposedName });
+		this.sendControl({ type: 'pairing-approve', pairId: this.pairing.pairId, name: shown.name ?? PAIRING_DEFAULT_DEVICE_NAME });
 		// 実際の mobiles への追加は relay からの 'paired'(mobileId) 受信時に行う。
 	}
 
@@ -4189,10 +4191,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (pairId !== undefined && pairId !== this.pairing.pairId) {
 			return;
 		}
-		// C-2: 既にSASを表示した後は相手鍵を凍結し、別鍵での上書き（SASすり替え）を禁じる。
-		if (this.pairing.sasShown) {
-			return;
-		}
+		const pairing = this.pairing;
+		const identity = this.identity;
 		// pairing-msg の中身: モバイルの長期公開鍵(base64url JSON)。
 		try {
 			const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(dataB64))) as { pub?: string; name?: string };
@@ -4203,25 +4203,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (mobilePubKey.length !== 32) {
 				return;
 			}
-			this.pairing.mobilePubKey = mobilePubKey;
-			if (typeof payload.name === 'string' && payload.name.length > 0) {
-				this.pairing.proposedName = payload.name.slice(0, 64);
+			const name = typeof payload.name === 'string' && payload.name.length > 0 ? payload.name.slice(0, 64) : undefined;
+			// C-2: SAS を出すのは最初の要求だけ。承認するのは「SAS を表示した要求の鍵」ちょうど（後の要求は無視する）。
+			const shown = await pairing.offers.offer({ pubKey: mobilePubKey, ...(name !== undefined ? { name } : {}) }, pubKey => deriveSasCode(identity, pubKey, pairing.pairingToken));
+			if (shown === undefined || this.pairing !== pairing) {
+				return;
 			}
-			const sasCode = await deriveSasCode(this.identity, mobilePubKey, this.pairing.pairingToken);
-			// C-2: SAS表示以降は相手鍵を凍結する（承認するのは「今SASを表示した鍵」ちょうど）。
-			this.pairing.sasShown = true;
-			this._onPairingEvent.fire({ kind: 'awaiting-approval', sasCode, proposedName: this.pairing.proposedName });
+			this._onPairingEvent.fire({ kind: 'awaiting-approval', sasCode: shown.sasCode, proposedName: shown.name ?? PAIRING_DEFAULT_DEVICE_NAME });
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] bad pairing message', err);
 		}
 	}
 
 	private async onPaired(mobileId: string): Promise<void> {
-		if (!this.pairing || !this.pairing.mobilePubKey) {
+		const shown = this.pairing?.offers.shown;
+		if (!this.pairing || !shown) {
 			return;
 		}
-		const name = this.uniqueName(this.pairing.proposedName);
-		this.state.mobiles.push({ mobileId, name, pubKey: toBase64Url(this.pairing.mobilePubKey) });
+		const name = this.uniqueName(shown.name ?? PAIRING_DEFAULT_DEVICE_NAME);
+		this.state.mobiles.push({ mobileId, name, pubKey: toBase64Url(shown.pubKey) });
 		await this.save();
 		this.pairing = undefined;
 		this._onPairingEvent.fire({ kind: 'paired', deviceName: name });
