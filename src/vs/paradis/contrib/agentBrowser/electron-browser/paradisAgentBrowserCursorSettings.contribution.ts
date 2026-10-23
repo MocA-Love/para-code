@@ -9,6 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_DEFAULT, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING } from '../common/paradisAgentTabPlacement.js';
 import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 
 // 共通の 'paradis' セクションへプロパティを追加する（windowTransparency の設定登録と同じ id/title を
@@ -69,6 +70,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.snapshotDiff', "（試験的）エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。")
+		},
+		// 置き場所はタブを開くウィンドウ（renderer）が決めるので、ウィンドウごとに読む
+		[PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING]: {
+			type: 'number',
+			default: PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_DEFAULT,
+			minimum: 0,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.agentTabMinSplitWidth', "エージェントが自分でブラウザのタブを開くとき、ターミナルの横に分割して開くのは、分割後のブラウザがこの幅（px）以上を取れるときだけにします。取れないときは分割せず、ターミナルの無いグループ（無ければターミナルの裏）にタブとして足します。")
 		}
 	}
 });
