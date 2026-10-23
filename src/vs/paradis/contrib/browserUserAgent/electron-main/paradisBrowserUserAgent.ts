@@ -13,6 +13,7 @@
 // 呼び出し元は browserSession.ts の configure()（PARA-PATCH 1行）。
 
 import { app } from 'electron';
+import { Event } from '../../../../base/common/event.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY } from '../common/paradisBrowserUserAgent.js';
 import { paradisConfigureBrowserUserAgentWithAppName } from './paradisBrowserUserAgentCore.js';
@@ -25,5 +26,9 @@ import { paradisInstallChromeClientHintHeaders } from './paradisChromeIdentity.j
 export function paradisApplyChromeLikeUserAgent(session: Electron.Session, configurationService: IConfigurationService): void {
 	paradisConfigureBrowserUserAgentWithAppName(session, configurationService, app.getName());
 	// Client Hints（brands）も Chrome の値にそろえる。Para Code と名乗る設定のときは Electron のまま。
-	paradisInstallChromeClientHintHeaders(session, () => configurationService.getValue<boolean>(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY) !== true);
+	paradisInstallChromeClientHintHeaders(
+		session,
+		() => configurationService.getValue<boolean>(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY) !== true,
+		Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_BROWSER_UA_INCLUDE_APP_TOKEN_KEY)),
+	);
 }
