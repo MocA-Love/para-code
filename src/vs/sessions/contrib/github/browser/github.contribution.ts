@@ -32,7 +32,7 @@ import './issueActions.js';
 // PARA-PATCH: tiered PR polling (GitHub rate-limit work)
 import { SessionGithubBackgroundRefreshScheduler } from './sessionGithubBackgroundPolling.js';
 import { startChangeDrivenReviewThreadsRefresh } from './sessionGithubReviewThreadsRefresh.js';
-import { SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
+import { paradisPublishGithubWindowActivity, SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
 
 const TRACE_PREFIX = '[PR-ICON-TRACE]';
 
@@ -81,7 +81,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 	private readonly _backgroundRefreshScheduler: SessionGithubBackgroundRefreshScheduler;
 
 	// PARA-PATCH: suspends this window's polling while nobody is looking at it —
-	// the request gate is per window, so N windows would otherwise cost N budgets.
+	// every window polls on its own, so N windows would otherwise cost N times the traffic.
 	private readonly _windowActivity: SessionGithubWindowActivity;
 
 	constructor(
@@ -96,6 +96,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 
 		// PARA-PATCH: see field declaration
 		this._windowActivity = this._register(new SessionGithubWindowActivity(hostService));
+		this._register(paradisPublishGithubWindowActivity(this._windowActivity.isActive)); // PARA-PATCH: other pollers in this window stop in the background too
 		this._backgroundRefreshScheduler = this._register(new SessionGithubBackgroundRefreshScheduler(this._logService, undefined, this._windowActivity.isActive));
 
 		const activeSessionResourceObs = derivedOpts<URI | undefined>({ equalsFn: isEqual }, reader => {

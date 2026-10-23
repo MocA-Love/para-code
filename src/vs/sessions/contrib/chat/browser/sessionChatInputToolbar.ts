@@ -56,6 +56,8 @@ import { SessionCanvasesControl } from '../../canvases/browser/sessionCanvasesCo
 import { createIssueHover, getIssueStatus } from '../../github/browser/issueHover.js';
 import { createPullRequestHover, getPullRequestChecksStatusLabel } from '../../github/browser/pullRequestHover.js';
 import { ChatPillHoverCache, createChatPillHover } from '../../../../workbench/browser/chatPillHover.js';
+// PARA-PATCH: stop GitHub polling while the window is in the background (sessionGithubWindowActivity.ts)
+import { paradisStartPollingWhileWindowActive } from '../../github/browser/sessionGithubWindowActivity.js';
 
 const copiedLabel = localize('sessionChatPills.copied', "Copied");
 const copiedToClipboardStatus = localize('sessionChatPills.copiedToClipboard', "Copied to clipboard");
@@ -509,7 +511,7 @@ export class SessionChatInputToolbar extends Disposable {
 				const shouldPoll = derived(this, pollReader => model.issue.read(pollReader)?.state !== GitHubIssueState.Closed);
 				reader.store.add(autorun(pollReader => {
 					if (shouldPoll.read(pollReader)) {
-						pollReader.store.add(model.startPolling());
+						pollReader.store.add(paradisStartPollingWhileWindowActive(model)); // PARA-PATCH: see sessionGithubWindowActivity.ts
 					}
 				}));
 			}
