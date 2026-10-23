@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
+import { TASK_BOARD_DEFAULT_FLOW } from '@engine/paradisTaskBoardFlow.js';
 import { GitHubClient, GitHubError, classifyRateLimit, redactGitHubSecrets, type FetchLike } from '../server/github.js';
 import { GitHubSync } from '../server/githubSync.js';
 
@@ -172,6 +173,26 @@ describe('GitHubClient: トークン', () => {
 		now += 5 * 60 * 1000;
 		await client.get('/repos/o/r');
 		expect(calls.map(c => `${c.auth.replace('Bearer ', '')} ${c.etag ?? '-'}`)).toEqual(['first-token-a -', 'first-token-a "e"', 'second-token-b -']);
+	});
+
+	test('取り込みの前にアカウントの切り替えを確かめ、新しいログイン名で絞る', async () => {
+		let now = 0;
+		let token = 'first-token-a';
+		const { fetchLike, calls } = fakeFetch((_url, init) => {
+			const query: string = JSON.parse(init.body!).query;
+			return query.includes('viewer') ? ok({ viewer: { login: token.startsWith('first') ? 'alice' : 'bob' } }) : ok({ search: { issueCount: 0, nodes: [] }, rateLimit: { remaining: 4999, limit: 5000, resetAt: '2030-01-01T00:00:00Z', cost: 1 } });
+		});
+		const client = new GitHubClient({ token: async () => token, fetch: fetchLike, now: () => now });
+		const engine = new TaskBoardEngine({ clock: Date.now, newId: () => 'x', agents: { startStep() { }, answer() { }, sendInput() { }, sendKey() { }, stop() { } }, runner: { run() { }, cancel() { } }, workspaces: { prepare: () => Promise.resolve({}), release: () => Promise.resolve() } } as unknown as ConstructorParameters<typeof TaskBoardEngine>[0]);
+		engine.setFlows([{ ...TASK_BOARD_DEFAULT_FLOW, intake: { source: 'github-issues', owner: 'o', repo: 'r' } }], TASK_BOARD_DEFAULT_FLOW.id, true);
+		const sync = new GitHubSync({ client, engine, repo: { owner: 'o', repo: 'r' }, onState: () => undefined, intervalMs: 1e9, prIntervalMs: 1e9 });
+		await sync.start();
+		token = 'second-token-b';
+		now += 5 * 60 * 1000 + 1;
+		await sync.syncNow();
+		sync.dispose();
+		const searches = calls.map(c => JSON.parse(c.body!)).filter(b => !b.query.includes('viewer')).map(b => JSON.stringify(b.variables));
+		expect({ first: searches[0].includes('alice'), last: searches[searches.length - 1].includes('bob'), login: client.login }).toEqual({ first: true, last: true, login: 'bob' });
 	});
 });
 
