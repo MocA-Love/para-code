@@ -362,3 +362,66 @@ export type ParadisSetViewportFailure =
 export type IParadisSetViewportResult =
 	| { readonly ok: true; readonly previous: IParadisViewportState; readonly viewport: IParadisViewportState }
 	| { readonly ok: false; readonly reason: ParadisSetViewportFailure };
+
+// ---------------------------------------------------------------------------------------------
+// タブ（ビュー）ごとに最後に当てた大きさの控え。既定を 1 回だけ当てる印を兼ねる。
+// ウィンドウのメモリだけに持つと、再読み込みや別ウィンドウへ移した後に「エディタに合わせる」にしていた
+// タブへ既定が当たり直り、再起動のたびに選んだ大きさが既定へ戻る（大きさはビューと一緒には保存されない）。
+// ---------------------------------------------------------------------------------------------
+
+/** タブごとの控えを置くストレージキー（APPLICATION スコープ。ビューの ID は UUID なのでウィンドウをまたいで一意）。 */
+export const PARADIS_VIEWPORT_VIEW_SPECS_STORAGE_KEY = 'paradis.browser.viewport.viewSpecs';
+
+/** 控えておくタブの数の上限（古いものから消す）。 */
+export const PARADIS_VIEWPORT_VIEW_SPECS_LIMIT = 500;
+
+/** 大きさを、既定や控えに書く指定にする。エディタに合わせるは空文字、名前付きは名前、それ以外は「幅x高さ」。 */
+export function paradisViewportTargetSpec(target: ParadisViewportTarget): string {
+	if (target.kind === 'fit') {
+		return '';
+	}
+	return target.size.name ?? `${target.size.width}x${target.size.height}`;
+}
+
+/** 控えを読む（壊れていれば空）。並びは古い順。 */
+export function paradisParseViewportViewSpecs(raw: string | undefined): Map<string, string> {
+	const result = new Map<string, string>();
+	if (!raw) {
+		return result;
+	}
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (Array.isArray(parsed)) {
+			for (const entry of parsed) {
+				if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+					result.set(entry[0], entry[1]);
+				}
+			}
+		}
+	} catch {
+		// 壊れた値は空として扱う
+	}
+	return result;
+}
+
+/** 控えへ 1 件書く（新しいものを末尾へ。上限を超えたら古いものから消す）。 */
+export function paradisRememberViewportViewSpec(specs: Map<string, string>, viewId: string, spec: string, limit: number = PARADIS_VIEWPORT_VIEW_SPECS_LIMIT): void {
+	specs.delete(viewId);
+	specs.set(viewId, spec);
+	while (specs.size > limit) {
+		const oldest = specs.keys().next().value;
+		if (oldest === undefined) {
+			break;
+		}
+		specs.delete(oldest);
+	}
+}
+
+/**
+ * このウィンドウで初めてタブのページに触れたとき、大きさが付いていない（device が無い）タブへ当てる指定。
+ * 控えがあればそれ（再起動で失われた大きさを戻す。エディタに合わせるなら何も当てない）、無ければ既定。
+ * `remember` が true なら、返した指定を控えへ書く（既定を当てたことの印）。
+ */
+export function paradisInitialViewportSpec(remembered: string | undefined, defaultSpec: string): { readonly spec: string; readonly remember: boolean } {
+	return remembered !== undefined ? { spec: remembered, remember: false } : { spec: defaultSpec, remember: true };
+}

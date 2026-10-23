@@ -1743,6 +1743,18 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.deepStrictEqual({ forwarded: fixture.upstream.sent.length, response }, { forwarded: 0, response: { id: 5, sessionId: 'child-1', result: {} } });
 	});
 
+	test('refuses device metrics sent to a popup the shared page opened, with an error the agent can act on', async () => {
+		const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => true, releaseBoundPageEmulation: () => undefined }));
+		publishAllowedSession(fixture, 'session-1');
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId: 'popup-1', targetInfo: { targetId: 'popup-target', type: 'page', openerId: 'target-1' } } })));
+		fixture.client.sent.length = 0;
+		fixture.upstream.sent.length = 0;
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 6, sessionId: 'popup-1', method: 'Emulation.setDeviceMetricsOverride', params: { width: 390, height: 844 } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const response = parseSent(fixture.client).find(frame => (frame as { id?: number }).id === 6) as { error?: { message?: string } } | undefined;
+		assert.deepStrictEqual({ forwarded: fixture.upstream.sent.length, mentionsSetViewport: response?.error?.message?.includes('set_viewport') }, { forwarded: 0, mentionsSetViewport: true });
+	});
+
 	test('answers viewport emulation with a retryable error and still does not send it to Chromium when Para Code cannot apply it', async () => {
 		const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => false, releaseBoundPageEmulation: () => undefined }));
 		publishAllowedSession(fixture, 'session-1');
