@@ -94,6 +94,15 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
 	return new Uint8Array(await subtle.digest('SHA-256', data as BufferSource));
 }
 
+/**
+ * ペアリングの承認に添える、モバイル長期公開鍵の指紋（32 バイトの鍵の SHA-256、16進64桁小文字）。
+ * リレー（app/relay/src/auth.ts の pairingKeyFingerprint）は pairing-msg が名乗る鍵から同じ値を作り、
+ * 一致したソケットにだけ資格情報を渡す。
+ */
+export async function pairingKeyFingerprint(publicKey: Uint8Array): Promise<string> {
+	return [...await sha256(publicKey)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function nonceFor(counter: bigint): Uint8Array {
 	const nonce = new Uint8Array(NONCE_LENGTH);
 	let v = counter;

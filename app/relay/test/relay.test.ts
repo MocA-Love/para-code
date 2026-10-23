@@ -3,6 +3,7 @@
 import { SELF } from 'cloudflare:test';
 import { PARADIS_RELAY_CLOSE_CODE, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, generateIdentity, mobileIdFromString, packPcData, toBase64Url, unpackPcData } from '@para/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { pairingKeyFingerprint } from '../src/auth.js';
 
 /**
  * WebSocketを開通と同時に全受信メッセージをバッファするラッパ。
@@ -160,6 +161,70 @@ describe('relay pairing + routing', () => {
 		pcWs.send(packPcData(mobileIdFromString(paired.mobileId), new Uint8Array([1, 2, 3])));
 		const back = new Uint8Array(await mobileWs.next() as ArrayBuffer);
 		expect(Array.from(back)).toEqual([1, 2, 3]);
+	});
+
+	it('hands the credentials only to the socket that sent the key the PC confirmed, and closes the others', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const offer = (pub: Uint8Array) => toBase64Url(new TextEncoder().encode(JSON.stringify({ pub: toBase64Url(pub), name: 'phone' })));
+		const fingerprint = async (pub: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', pub))].map(b => b.toString(16).padStart(2, '0')).join('');
+		const confirmedKey = generateIdentity().publicKey;
+		const onlookerKey = generateIdentity().publicKey;
+		// QR を見ただけの端末が、同じ pairId で先につないで別の鍵を名乗る
+		const onlooker = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		onlooker.send(encodeRelayControl({ type: 'pairing-msg', data: offer(onlookerKey) }));
+		await pcWs.next();
+		const confirmed = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		confirmed.send(encodeRelayControl({ type: 'pairing-msg', data: offer(confirmedKey) }));
+		await pcWs.next();
+
+		// 鍵の合わない指紋では資格情報を作らず、pending も残す（正しい指紋で承認し直せる）
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'phone', keyFingerprint: 'f'.repeat(64) }));
+		const refused = decodeRelayControl(await pcWs.next() as string);
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'phone', keyFingerprint: await fingerprint(confirmedKey) }));
+		const paired = decodeRelayControl(await confirmed.next() as string);
+		const pcPaired = decodeRelayControl(await pcWs.next() as string);
+		const onlookerClose = await onlooker.closed();
+		const onlookerMessages: string[] = [];
+		for (;;) {
+			const next = await onlooker.next(50).catch(() => undefined);
+			if (next === undefined) {
+				break;
+			}
+			onlookerMessages.push(decodeRelayControl(next as string).type);
+		}
+		expect({
+			refused,
+			paired: paired.type,
+			pcPaired: pcPaired.type,
+			onlooker: { code: onlookerClose.code, reason: onlookerClose.reason, messages: onlookerMessages },
+		}).toEqual({
+			refused: { type: 'error', message: 'no pairing socket holds the confirmed key' },
+			paired: 'paired',
+			pcPaired: 'paired',
+			onlooker: { code: 1000, reason: 'not confirmed', messages: [] },
+		});
+	});
+
+	it('derives the key fingerprint the PC sends (SHA-256 of the raw key, lowercase hex)', async () => {
+		// src/vs/paradis/contrib/mobileRelay/test/common/paradisMobilePairingFingerprint.test.ts と同じ値
+		expect([
+			await pairingKeyFingerprint('eyJwdWIiOiJBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBIn0'),
+			await pairingKeyFingerprint('aGVsbG8'),
+		]).toEqual(['66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925', undefined]);
+	});
+
+	it('without a fingerprint (an older PC) hands the credentials to every socket of the pairId as before', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const first = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		const second = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		first.send(encodeRelayControl({ type: 'pairing-msg', data: toBase64Url(new TextEncoder().encode(JSON.stringify({ pub: toBase64Url(generateIdentity().publicKey) }))) }));
+		await pcWs.next();
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'phone' }));
+		expect([decodeRelayControl(await first.next() as string).type, decodeRelayControl(await second.next() as string).type]).toEqual(['paired', 'paired']);
 	});
 
 	it('lets a mobile self-revoke its own credentials (and notifies the pc)', async () => {

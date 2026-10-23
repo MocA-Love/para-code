@@ -28,6 +28,7 @@ import {
 	deriveSasCode,
 	generatePersistableIdentity,
 	importIdentity,
+	pairingKeyFingerprint,
 	respondHandshake,
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
@@ -2329,10 +2330,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async approvePairing(): Promise<void> {
-		if (!this.pairing || !this.pairing.mobilePubKey) {
+		const pairing = this.pairing;
+		const mobilePubKey = pairing?.mobilePubKey;
+		if (!pairing || !mobilePubKey) {
 			throw new Error('no pairing awaiting approval');
 		}
-		this.sendControl({ type: 'pairing-approve', pairId: this.pairing.pairId, name: this.pairing.proposedName });
+		// 確認の番号(SAS)を出した要求の鍵の指紋を添える。リレーはその鍵を名乗ったソケットにだけ資格情報を渡す
+		// （同じ QR でつないだだけの端末には渡らない）。指紋を読まない旧リレーは今までどおり全部へ送る
+		const keyFingerprint = await pairingKeyFingerprint(mobilePubKey);
+		if (this.pairing !== pairing) {
+			throw new Error('no pairing awaiting approval');
+		}
+		this.sendControl({ type: 'pairing-approve', pairId: pairing.pairId, name: pairing.proposedName, keyFingerprint });
 		// 実際の mobiles への追加は relay からの 'paired'(mobileId) 受信時に行う。
 	}
 

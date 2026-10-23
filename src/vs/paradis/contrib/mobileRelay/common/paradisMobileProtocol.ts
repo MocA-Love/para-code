@@ -188,7 +188,7 @@ export const MOBILE_ID_LENGTH = 16;
 
 export type RelayControlMessage =
 	| { readonly type: 'pairing-msg'; readonly data: string; readonly pairId?: string }
-	| { readonly type: 'pairing-approve'; readonly pairId: string; readonly name: string }
+	| { readonly type: 'pairing-approve'; readonly pairId: string; readonly name: string; readonly keyFingerprint?: string }
 	| { readonly type: 'pairing-reject'; readonly pairId: string }
 	| { readonly type: 'paired'; readonly deviceId: string; readonly mobileId: string; readonly mobileToken: string }
 	| { readonly type: 'presence'; readonly peer: 'pc' | 'mobile'; readonly mobileId?: string; readonly online: boolean }
