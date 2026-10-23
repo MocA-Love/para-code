@@ -101,3 +101,84 @@ suite('paradisBrowserQueryPageScript (scroll_to)', () => {
 		});
 	});
 });
+
+// q.html Q448 の ③④: 該当なし・時間切れのときに添える近い候補（ページを 1 回読むだけ。数件まで、入力値は出さない）
+suite('paradisBrowserQueryPageScript (close matches after a miss)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let root: HTMLElement;
+	setup(() => {
+		root = mainWindow.document.createElement('div');
+		root.style.cssText = 'position: fixed; left: 0; top: 0; width: 400px; z-index: 2147483647; background: white;';
+		mainWindow.document.body.appendChild(root);
+	});
+	teardown(() => root.remove());
+
+	test('a text that matches nothing lists visible elements with similar text as locators, but never what is typed in a field', async () => {
+		root.innerHTML = [
+			'<button>保存する</button>',
+			'<span>保存して閉じる</span>',
+			'<div style="display: none;">保存しよう</div>',
+			'<input aria-label="メール" value="保存しまsecret@example.com">',
+			'<div contenteditable="true">保存し ま typed by the user</div>',
+		].join('');
+		const located = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', text: '保存しま' });
+		const near = located.near as { candidates: unknown[]; inFields: number };
+		assert.deepStrictEqual({
+			matched: located.matched,
+			candidates: near.candidates,
+			inFields: near.inFields,
+			leaks: /secret@example\.com|typed by the user/.test(JSON.stringify(located)),
+		}, {
+			matched: 0,
+			candidates: [{ text: '保存して閉じる' }, { role: 'button', name: '保存する', text: '保存する' }],
+			inFields: 1,
+			leaks: false,
+		});
+	});
+
+	test('candidates are capped and cut, and role + name lists the elements of that role with a close name', async () => {
+		root.innerHTML = Array.from({ length: 12 }, (_, index) => `<button>Q448 Item ${index} ${'x'.repeat(index === 0 ? 100 : 0)}</button>`).join('');
+		const many = await runInPage({ mode: 'text', text: 'Q448 Item 99', offset: 0, maxChars: 100 });
+		const byRole = await runInPage({ mode: 'locate', purpose: 'click', ref: 'q448', role: 'button', name: 'Q448 Itme 3' });
+		const candidates = (many.near as { candidates: { text?: string; name?: string }[] }).candidates;
+		const roleNear = byRole.near as { candidates: { role?: string; name?: string }[]; roleCount: number };
+		assert.deepStrictEqual({
+			count: candidates.length,
+			longest: Math.max(...candidates.map(candidate => Math.max(candidate.text?.length ?? 0, candidate.name?.length ?? 0))) <= 60,
+			roleFirst: roleNear.candidates[0],
+			roleCountAtLeast12: roleNear.roleCount >= 12,
+			roleCandidates: roleNear.candidates.length <= 5,
+		}, {
+			count: 5,
+			longest: true,
+			roleFirst: { role: 'button', name: 'Q448 Item 3' },
+			roleCountAtLeast12: true,
+			roleCandidates: true,
+		});
+	});
+
+	test('a selector that matches nothing says which parts are missing, similar ids, classes and attribute values, and when only the last part matches', async () => {
+		root.innerHTML = [
+			'<button id="q448-save-button" class="q448-primary" data-testid="q448-save-draft">Save</button>',
+			'<div class="q448-list"></div>',
+			'<div class="q448-row"></div><div class="q448-row"></div>',
+			'<input type="password" data-testid="q448-pass-1234">',
+		].join('');
+		const byId = await runInPage({ mode: 'nearMiss', selector: '#q448-save-btn' });
+		const byParts = await runInPage({ mode: 'nearMiss', selector: '.q448-list > .q448-row' });
+		const byAttribute = await runInPage({ mode: 'nearMiss', selector: 'button[data-testid="q448-save-drafts"]' });
+		const byPassword = await runInPage({ mode: 'nearMiss', selector: '[data-testid="q448-pass-123"]' });
+		assert.deepStrictEqual({
+			byId: byId.near,
+			byParts: byParts.near,
+			byAttribute: byAttribute.near,
+			byPassword: byPassword.near,
+		}, {
+			byId: { missingParts: ['#q448-save-btn'], similar: [{ instead: '#q448-save-btn', selector: '#q448-save-button', count: 1 }] },
+			byParts: { lastPart: { part: '.q448-row', count: 2 } },
+			byAttribute: { missingParts: ['[data-testid="q448-save-drafts"]'], similar: [{ instead: '[data-testid="q448-save-drafts"]', selector: '[data-testid="q448-save-draft"]', count: 1 }] },
+			byPassword: { missingParts: ['[data-testid="q448-pass-123"]'] },
+		});
+	});
+});
