@@ -7,11 +7,11 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisAgentTabGroupInfo, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisNormalizeMinSplitWidth } from '../../common/paradisAgentTabPlacement.js';
+import { IParadisAgentTabGroupInfo, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisNormalizeMinSplitWidth, paradisPredictSplitWidth } from '../../common/paradisAgentTabPlacement.js';
 
 function group(id: number, width: number, options: Partial<Omit<IParadisAgentTabGroupInfo, 'id' | 'width'>> = {}): IParadisAgentTabGroupInfo {
 	const hasPaneTerminal = options.hasPaneTerminal ?? false;
-	return { id, width, hasPaneTerminal, hasTerminal: options.hasTerminal ?? hasPaneTerminal, hasOwnAgentTab: options.hasOwnAgentTab ?? false };
+	return { id, width, hasPaneTerminal, hasTerminal: options.hasTerminal ?? hasPaneTerminal, hasOwnAgentTab: options.hasOwnAgentTab ?? false, ...(options.splitWidth !== undefined ? { splitWidth: options.splitWidth } : {}) };
 }
 
 suite('Paradis agent tab placement', () => {
@@ -40,6 +40,8 @@ suite('Paradis agent tab placement', () => {
 			// 最小幅を下げれば、狭くても分割する
 			lowerMinimum: paradisChooseAgentTabPlacement([group(1, 800, { hasPaneTerminal: true }), group(2, 800)], 400),
 			noGroups: paradisChooseAgentTabPlacement([], 600),
+			// 均等に割り直す設定で、分割後が 533px にしかならないなら分割しない
+			distributedTooNarrow: paradisChooseAgentTabPlacement([group(1, 1400, { hasPaneTerminal: true, splitWidth: 533 }), group(2, 200)], 600),
 		}, {
 			split: { kind: 'split', besideGroupId: 1 },
 			ownTab: { kind: 'group', groupId: 2, inactive: false, rule: 'ownTab' },
@@ -52,6 +54,7 @@ suite('Paradis agent tab placement', () => {
 			belowMinimum: { kind: 'group', groupId: 1, inactive: true, rule: 'terminalOnly' },
 			lowerMinimum: { kind: 'split', besideGroupId: 1 },
 			noGroups: undefined,
+			distributedTooNarrow: { kind: 'group', groupId: 2, inactive: false, rule: 'widestFree' },
 		});
 	});
 
@@ -67,5 +70,23 @@ suite('Paradis agent tab placement', () => {
 			[paradisEstimateHiddenAgentTabSize(1600, 900.6, 600), paradisEstimateHiddenAgentTabSize(1000, 700, 600), paradisEstimateHiddenAgentTabSize(0, 0, 600)],
 			[{ width: 800, height: 900 }, { width: 1000, height: 700 }, { width: 1, height: 1 }],
 		);
+	});
+
+	test('predicts the width of a split from the editor split sizing setting', () => {
+		assert.deepStrictEqual({
+			split: paradisPredictSplitWidth(1400, [1400, 200], 'split'),
+			distribute: paradisPredictSplitWidth(1400, [1400, 200], 'distribute'),
+			autoUneven: paradisPredictSplitWidth(1400, [1400, 200], 'auto'),
+			autoEven: paradisPredictSplitWidth(800, [800, 801], 'auto'),
+			autoAlone: paradisPredictSplitWidth(1600, [1600], undefined),
+			noRow: paradisPredictSplitWidth(1600, [], 'distribute'),
+		}, {
+			split: 700,
+			distribute: 533,
+			autoUneven: 700,
+			autoEven: 533,
+			autoAlone: 800,
+			noRow: 800,
+		});
 	});
 });

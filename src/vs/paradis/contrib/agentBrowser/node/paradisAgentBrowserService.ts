@@ -380,7 +380,7 @@ const MAX_SKIPPED_OPENED_TABS = 20;
 /** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
 const MAX_OPENED_TAB_SHARE_MARKS = 256;
 /** 使えるタブが無いまま（共有も open_browser_tab もせずに）ブラウザのツールを呼んだときの答え。次の一手だけを短く書く。 */
-const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use (or the tab_id you passed is not one of its tabs; see list_browser_tabs). Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead.';
+const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use (or the tab_id you passed is not one of its tabs; see list_browser_tabs). Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead. After Para Code restarts, it asks the user whether to share the pages that were shared before; until they answer, call request_browser_page or open_browser_tab.';
 
 /**
  * para固有の静的ツール定義。以前はこのファイルと `paradisBrowserMcpShim.ts`
@@ -6418,7 +6418,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					? `It is now this pane's current tab, so the browser tools act on it when you omit tab_id; pass tab_id "${tabId}" to keep using it after other tabs are opened or selected (for example from a subagent).`
 					: 'It could NOT be made usable from this terminal pane yet, so the browser tools do not target it - retry with select_browser_tab.';
 				const hidden = call.value.spaceNotVisible
-					? ' The user is looking at another space right now, so the tab was opened in this pane\'s space without showing it; you can still use it, and the user will see it when they switch back to that space.'
+					? ' The user is looking at another space right now, so the tab was opened in this pane\'s space without showing it; you can still use it, and the user will see it when they switch back to that space. If Para Code is reloaded or restarted before then, this tab is closed and its tab_id stops working.'
 					: '';
 				const opened = `Opened tab ${tabId} (${call.value.tab.url || 'about:blank'}). ${shared}${hidden} You have ${call.value.openedCount} of ${PARADIS_AGENT_TAB_LIMIT} tabs of your own open.`;
 				const openLabel = toolArgs.label;

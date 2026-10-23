@@ -469,4 +469,59 @@ suite('ParadisBrowserScopeService', () => {
 		assert.deepStrictEqual(JSON.parse(userCloseWrites[0]), { version: 1, entries: [] });
 		assert.deepStrictEqual(await run(true), []);
 	});
+
+	test('assignNewViewToScope moves a new view to the given space, and refuses unknown views, carried-over views and views during a switch', async () => {
+		const browserChanges = store.add(new Emitter<void>());
+		const known = new Map<string, BrowserEditorInput>([['carried', fakeInput('carried')]]);
+		const switchState = { activeStateKey: 'space-a', isSwitching: false };
+		const stored: string[] = [];
+		const service = store.add(new ParadisBrowserScopeService(
+			{
+				whenInitialized: Promise.resolve(true), onDidChangeBrowserViews: browserChanges.event,
+				getKnownBrowserViews: () => known, getContextualBrowserViews: () => known,
+				registerContextualFilter: () => ({ dispose() { } }),
+			} as unknown as IBrowserViewWorkbenchService,
+			{
+				get activeStateKey() { return switchState.activeStateKey; },
+				get isSwitching() { return switchState.isSwitching; },
+				onDidChangeRepositories: Event.None, onDidRetireScope: Event.None,
+				onWillSwitchScope: Event.None, onDidSwitchScope: Event.None,
+			} as unknown as IParadisWorkspaceSwitchService,
+			{ get: () => JSON.stringify({ version: 1, entries: [{ viewId: 'carried', stateKey: 'space-a' }] }), store: (_key: string, value: string) => { stored.push(value); } } as never,
+			{ willShutdown: false, onWillShutdown: Event.None } as unknown as ILifecycleService,
+		));
+		await service.initializationBarrier;
+
+		known.set('new-view', fakeInput('new-view'));
+		browserChanges.fire();
+		const taggedOnCreate = service.resolveScope('new-view');
+		const assigned = service.assignNewViewToScope('new-view', 'space-b');
+		const unknown = service.assignNewViewToScope('missing', 'space-b');
+		const carried = service.assignNewViewToScope('carried', 'space-b');
+		known.set('during-switch', fakeInput('during-switch'));
+		browserChanges.fire();
+		switchState.isSwitching = true;
+		const duringSwitch = service.assignNewViewToScope('during-switch', 'space-b');
+		switchState.isSwitching = false;
+
+		assert.deepStrictEqual({
+			taggedOnCreate,
+			assigned,
+			newView: service.resolveScope('new-view'),
+			unknown,
+			carried,
+			carriedScope: service.resolveScope('carried'),
+			duringSwitch,
+			persisted: stored.length > 0 && stored[stored.length - 1].includes('"space-b"'),
+		}, {
+			taggedOnCreate: { kind: 'managed', stateKey: 'space-a' },
+			assigned: true,
+			newView: { kind: 'managed', stateKey: 'space-b' },
+			unknown: false,
+			carried: false,
+			carriedScope: { kind: 'managed', stateKey: 'space-a' },
+			duringSwitch: false,
+			persisted: true,
+		});
+	});
 });
