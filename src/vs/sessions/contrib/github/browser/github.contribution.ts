@@ -22,7 +22,7 @@ import { GitHubPullRequestState } from '../common/types.js';
 import { getSessionGitHubReferences } from '../common/sessionGitHubReferences.js';
 import { getPullRequestKey } from '../common/utils.js';
 import { AUTO_DELETE_MARKED_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING, AUTO_MARK_AS_DONE_MERGED_SESSIONS_AFTER_DAYS_SETTING } from '../common/sessionLifecycleSettings.js';
-import { GitHubService, IGitHubService } from './githubService.js';
+import { GitHubService, IGitHubService, isGitHubReferenceSupported } from './githubService.js';
 import { IPullRequestIconCache, PullRequestIconCache } from './pullRequestIconCache.js';
 
 import './pullRequestActions.js';
@@ -32,7 +32,7 @@ import './issueActions.js';
 // PARA-PATCH: tiered PR polling (GitHub rate-limit work)
 import { SessionGithubBackgroundRefreshScheduler } from './sessionGithubBackgroundPolling.js';
 import { startChangeDrivenReviewThreadsRefresh } from './sessionGithubReviewThreadsRefresh.js';
-import { SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
+import { paradisPublishGithubWindowActivity, SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
 
 const TRACE_PREFIX = '[PR-ICON-TRACE]';
 
@@ -81,7 +81,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 	private readonly _backgroundRefreshScheduler: SessionGithubBackgroundRefreshScheduler;
 
 	// PARA-PATCH: suspends this window's polling while nobody is looking at it —
-	// the request gate is per window, so N windows would otherwise cost N budgets.
+	// every window polls on its own, so N windows would otherwise cost N times the traffic.
 	private readonly _windowActivity: SessionGithubWindowActivity;
 
 	constructor(
@@ -96,6 +96,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 
 		// PARA-PATCH: see field declaration
 		this._windowActivity = this._register(new SessionGithubWindowActivity(hostService));
+		this._register(paradisPublishGithubWindowActivity(this._windowActivity.isActive)); // PARA-PATCH: other pollers in this window stop in the background too
 		this._backgroundRefreshScheduler = this._register(new SessionGithubBackgroundRefreshScheduler(this._logService, undefined, this._windowActivity.isActive));
 
 		const activeSessionResourceObs = derivedOpts<URI | undefined>({ equalsFn: isEqual }, reader => {
@@ -117,7 +118,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 			}
 
 			const model = this._gitHubService.activeSessionPullRequestObs.read(reader);
-			model?.refresh();
+			model?.refresh({ priority: 'visible' });
 		}));
 
 		// Pull request CI model
@@ -133,7 +134,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				return;
 			}
 
-			model.refresh();
+			model.refresh(false, { priority: 'visible' });
 			reader.store.add(model.startPolling());
 		}));
 
@@ -248,7 +249,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 					return { kind: 'archived' };
 				}
 
-				const { pullRequests } = getSessionGitHubReferences(session, reader);
+				const pullRequests = getSessionGitHubReferences(session, reader).pullRequests.filter(ref => isGitHubReferenceSupported(ref.uri, this._gitHubService.enterpriseHost));
 				if (pullRequests.length === 0) {
 					const workspace = session.workspace.read(reader);
 					if (!workspace) {
@@ -379,7 +380,7 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 			this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting CI polling for ${owner}/${repo}#${prNumber}@${ciTarget.headSha}`);
 
 			const ciModelRef = statusReader.store.add(this._gitHubService.createPullRequestCIModelReference(owner, repo, prNumber, ciTarget.headSha));
-			ciModelRef.object.refresh();
+			ciModelRef.object.refresh(false, { priority: 'visible' }); // PARA-PATCH: the active session's CI is visible work (upstream request lanes)
 			statusReader.store.add(ciModelRef.object.startPolling());
 		}));
 	}
