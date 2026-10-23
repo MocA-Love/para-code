@@ -277,43 +277,69 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 /**
  * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
  * デスクトップのチャット表示が文を送る前に使う。送った文の Enter が許可の既定の「Yes」や、質問の
- * ハイライト中の選択肢を確定してしまうのを防ぐため。`agent` が `'claude'` のときは、Claude Code の再開の確認
- * （{@link paradisScreenShowsClaudeResumePrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
+ * ハイライト中の選択肢を確定してしまうのを防ぐため。`agent` が `'claude'` のときは、会話を開き直した直後の Claude Code の確認
+ * （{@link paradisClaudeResumeScreenPrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
  */
 export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex'): boolean {
 	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen)
 		|| (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen));
 }
 
-/** Claude Code の再開の確認の見出し（空白を除いた小文字）。 */
-const CLAUDE_RESUME_PROMPT_HEADING = 'resumethisconversation?';
 /**
- * 再開の確認の操作説明（空白を除いた小文字）。`--resume` などで開き直したときは `Enter to confirm · Esc to resume`、
- * 使っていない間に出る型（2.1.306 では旗で止まっている）は Esc の説明が `dismiss` になる（バイナリの文字列）。
+ * 会話を開き直した直後・送る前に Claude Code が出す確認の種類（2.1.309 の `_promptStaleResume` が順に出す 3 つ）。
+ * - `resume`: 「Resume this conversation?」（5 時間の使用量のうちどれだけを使うか）
+ * - `session-age`: 「This session is … old and … tokens.」（要約から再開するか、そのまま再開するか）
+ * - `newer-model`: 「You’re resuming an … session. Continue with …?」（同じ系統の新しいモデルへ切り替えるか）
  */
-const CLAUDE_RESUME_PROMPT_FOOTER = /entertoconfirm\u00b7escto(?:resume|dismiss)/;
+export type ParadisClaudeResumeScreenPrompt = 'resume' | 'session-age' | 'newer-model';
+
+/** 断りの文に入れる、確認の呼び名。 */
+export const PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES: Readonly<Record<ParadisClaudeResumeScreenPrompt, string>> = {
+	'resume': '「Resume this conversation?」（会話を再開するか、新しい会話にするか）の再開の確認',
+	'session-age': '「This session is ... old」（要約から再開するか、そのまま再開するか）の古いセッションの確認',
+	'newer-model': '「You\'re resuming ... session」（新しいモデルに切り替えて再開するか）のモデルの確認',
+};
 
 /**
- * 画面の最下部に、Claude Code の「Resume this conversation?」の確認が出ているか。Claude Code のペインでだけ使うこと
- * （文言だけで見るので、Codex の画面の本文に同じ文が出ると当たる）。
+ * 確認ごとの、最下部（末尾の 2 行）の操作説明と、その上で探す見出し（どちらも空白を除いた小文字）。
  *
- * 長く使っていない会話を `--resume`・`--continue`・`/resume` で開き直したとき、5 時間の使用量のうちどれだけを使うかを出して
- * 「Resume」か「Start a new conversation」かを選ばせる。2.1.306 の実画面:
- * `Resume this conversation?` / `This conversation has been inactive for 5h and is 800k tokens long. …` /
- * `❯ 1. Resume` / `2. Start a new conversation  Claude can look this one up if you refer to it later` /
- * `Enter to confirm · Esc to resume`。この確認は入力欄の代わりに出て、出ている間に打った文字は捨てられ、Enter は
- * カーソルのある「Resume」を選ぶ（文はどこにも届かない）。
+ * - `resume`: 操作説明は `Enter to confirm · Esc to resume`（使っていない間に出る型は `Esc to dismiss`）。見出しは
+ *   `Resume this conversation?`（2.1.306 の実画面）。
+ * - `session-age`: 操作説明は汎用の `Enter to confirm · Esc to cancel`。見出し `This session is 4h 59m old and 300k tokens.` と
+ *   選択肢 `Resume full session as-is` がそろうときだけ（2.1.309 の実画面）。旗 `tengu_gleaming_fair`（または要約の用意が
+ *   できた `_reuse`）があり、最後の発言から 70 分以上・10 万トークン以上のときに出る。
+ * - `newer-model`: 操作説明は汎用の `Enter to confirm · Esc to cancel`（推測: 同じ確認の枠を使う）。見出しは
+ *   `You’re resuming an Opus 5 session. Continue with Opus 5.5?`、選択肢は `Keep …` と `Continue with …`（2.1.309 の
+ *   バイナリの文字列。旗 `tengu_hidden_volcano` が `form: "dialog"` のときだけ出るので、実画面は出せていない）。
+ */
+const CLAUDE_RESUME_SCREEN_PROMPTS: readonly { readonly kind: ParadisClaudeResumeScreenPrompt; readonly footer: RegExp; readonly body: readonly RegExp[] }[] = [
+	{ kind: 'resume', footer: /entertoconfirm\u00b7escto(?:resume|dismiss)/, body: [/resumethisconversation\?/] },
+	{ kind: 'session-age', footer: /entertoconfirm\u00b7esctocancel/, body: [/thissessionis.{1,40}oldand.{1,20}tokens\./, /resumefullsessionas-is/] },
+	{ kind: 'newer-model', footer: /entertoconfirm\u00b7esctocancel/, body: [/you[\u2019']reresuminga.{1,60}session\.continuewith.{1,60}\?/, /keep.{1,60}continuewith/] },
+];
+
+/**
+ * 画面の最下部に、会話を開き直した直後の Claude Code の確認（{@link ParadisClaudeResumeScreenPrompt}）が出ていれば、その種類。
+ * Claude Code のペインでだけ使うこと（文言だけで見るので、Codex の画面の本文に同じ文が出ると当たる）。
+ *
+ * どの確認も入力欄の代わりに出て、出ている間に打った文字は捨てられ、Enter はカーソルのある選択肢（再開・要約から再開・
+ * 新しいモデル）を選ぶ（文はどこにも届かない。2.1.306 と 2.1.309 の実画面で確かめた）。Esc も選択の 1 つで、再開の確認と
+ * 古いセッションの確認ではそのまま全部を読み直して再開する。
  *
  * 最下部（末尾の 2 行。狭いペインでは折り返す）の操作説明を基準にし（Codex の {@link showsCodexPromptFooter} と同じ形）、
- * その上の {@link CODEX_PROMPT_REGION_LINES} 行の中に見出しがあれば true。狭いペインで本文が折り返して確認が背高に
- * なっても見出しを取りこぼさない。操作説明が最下部にある限り確認がそこに出ているので、上の会話の本文とは取り違えない。
+ * その上の {@link CODEX_PROMPT_REGION_LINES} 行の中に見出しと選択肢があれば当たる。狭いペインで本文が折り返して確認が
+ * 背高になっても取りこぼさない。操作説明が最下部にある限り確認がそこに出ているので、上の会話の本文とは取り違えない。
  */
-export function paradisScreenShowsClaudeResumePrompt(screen: string): boolean {
+export function paradisClaudeResumeScreenPrompt(screen: string): ParadisClaudeResumeScreenPrompt | undefined {
 	const lines = screenLines(screen);
-	if (!CLAUDE_RESUME_PROMPT_FOOTER.test(compact(lines.slice(-2).join('')))) {
-		return false;
-	}
-	return compact(lines.slice(-CODEX_PROMPT_REGION_LINES).join('')).includes(CLAUDE_RESUME_PROMPT_HEADING);
+	const footer = compact(lines.slice(-2).join(''));
+	const region = compact(lines.slice(-CODEX_PROMPT_REGION_LINES).join(''));
+	return CLAUDE_RESUME_SCREEN_PROMPTS.find(prompt => prompt.footer.test(footer) && prompt.body.every(body => body.test(region)))?.kind;
+}
+
+/** {@link paradisClaudeResumeScreenPrompt} のどれかが出ているか。 */
+export function paradisScreenShowsClaudeResumePrompt(screen: string): boolean {
+	return paradisClaudeResumeScreenPrompt(screen) !== undefined;
 }
 
 /**
