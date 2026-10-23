@@ -39,7 +39,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWor
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
-import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
 import { paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
@@ -75,6 +75,8 @@ interface ISerializedWorkingSetEntry {
 	readonly terminalEditors?: number;
 	/** Exact terminal identities serialized in this Working Set, used to scope synchronous revive. */
 	readonly terminalNonces?: readonly string[];
+	/** そのうち、離れている間にプロセスが終わった端末（`terminalNonces` の部分集合）。 */
+	readonly endedTerminalNonces?: readonly string[];
 }
 
 interface ISerializedActiveEntry {
@@ -298,6 +300,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private readonly _workingSetTerminalNonces = new Map<string, ReadonlySet<string>>();
 	/** Persisted identities of the terminal editor inputs that belong to each Working Set. */
 	private readonly _workingSetRestoreNonces = new Map<string, ReadonlySet<string>>();
+	/**
+	 * working set に載ったまま、離れている間にプロセスが終わった端末の nonce（スコープごと）。永続化する。
+	 *
+	 * working set の中身（直列化されたエディタ入力）は upstream の持ち物で、ここからは1つだけ消せない。
+	 * 代わりに「この入力はもう終わっている」と控え、戻ったときの解決役が空のシェルにせず閉じる
+	 * （`paradisTerminalEditorRevive.ts`）。次にそのスペースを離れて保存し直せば、入力ごと消える。
+	 * `_workingSets` と生死を揃えること。
+	 */
+	private readonly _workingSetEndedNonces = new Map<string, ReadonlySet<string>>();
 
 	/** 切り替え処理の直列化 (連打時に退避と復元が交錯して状態が壊れるのを防ぐ) */
 	private readonly _switchSequencer = new Sequencer();
@@ -408,6 +419,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 		this._repositories = this.loadRepositories();
 		this.loadWorkingSets();
+		this._register(paradisRegisterParkedTerminalEditorEndedListener((nonce, stateKey) => this.noteWorkingSetTerminalEnded(nonce, stateKey)));
 		this._activeEntry = this.loadActiveEntry();
 		const loadedRetirementJournal = ParadisScopeRetirementJournal.load(
 			this.storageService.get(ParadisWorkspaceSwitchService.RETIREMENT_JOURNAL_STORAGE_KEY, StorageScope.WORKSPACE)
@@ -1910,6 +1922,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 							parkedCount: expectedNonces?.size,
 							expectedCount: restoreTerminals,
 							expectedNonces: this._workingSetRestoreNonces.get(stateKey),
+							endedNonces: this._workingSetEndedNonces.get(stateKey),
 						});
 					});
 					// 索引の待ち（最大 500ms）の間に開かれた端末を、適用の直前にもう一度拾う。ここでは待たない。
@@ -2549,6 +2562,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				includeAuxiliaryWindows: false
 			});
 			this._workingSets.set(stateKey, workingSet);
+			this._workingSetEndedNonces.delete(stateKey);
 			this.storeTerminalEditorPlacements(stateKey, livePlacements);
 			if (restoreNonces === undefined) {
 				this._workingSetRestoreNonces.delete(stateKey);
@@ -2572,6 +2586,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._workingSetTerminals.delete(stateKey);
 			this._workingSetTerminalNonces.delete(stateKey);
 			this._workingSetRestoreNonces.delete(stateKey);
+			this._workingSetEndedNonces.delete(stateKey);
 		}
 		this.saveWorkingSets();
 	}
@@ -2765,6 +2780,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._workingSetTerminals.delete(repositoryId);
 		this._workingSetTerminalNonces.delete(repositoryId);
 		this._workingSetRestoreNonces.delete(repositoryId);
+		this._workingSetEndedNonces.delete(repositoryId);
 		this.saveWorkingSets();
 	}
 
@@ -2852,6 +2868,23 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 
+	/**
+	 * 離れている間に、working set に載っている端末のプロセスが終わった。戻ったときに空のシェルで
+	 * 開き直さないよう控えて、保存し直す。今いるスペースの端末や、working set に載っていない端末
+	 * （預け先へ退避した生きた端末など）は対象外。
+	 */
+	private noteWorkingSetTerminalEnded(nonce: string, stateKey: string): void {
+		if (stateKey === this.activeStateKey || this._workingSetRestoreNonces.get(stateKey)?.has(nonce) !== true) {
+			return;
+		}
+		const ended = this._workingSetEndedNonces.get(stateKey);
+		if (ended?.has(nonce)) {
+			return;
+		}
+		this._workingSetEndedNonces.set(stateKey, new Set([...(ended ?? []), nonce]));
+		this.saveWorkingSets();
+	}
+
 	private loadWorkingSets(): void {
 		const raw = this.storageService.get(ParadisWorkspaceSwitchService.WORKING_SETS_STORAGE_KEY, StorageScope.WORKSPACE);
 		if (!raw) {
@@ -2871,6 +2904,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 						&& new Set(terminalNonces).size === terminalNonces.length
 						&& (entry.terminalEditors === undefined || entry.terminalEditors === terminalNonces.length)) {
 						this._workingSetRestoreNonces.set(entry.repositoryId, new Set(terminalNonces));
+						const ended = Array.isArray(entry.endedTerminalNonces)
+							? entry.endedTerminalNonces.map(paradisTerminalIdentityNonce).filter((nonce): nonce is string => nonce !== undefined && terminalNonces.includes(nonce))
+							: [];
+						if (ended.length > 0) {
+							this._workingSetEndedNonces.set(entry.repositoryId, new Set(ended));
+						}
 					}
 				}
 			}
@@ -2883,11 +2922,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		const serialized: ISerializedWorkingSetEntry[] = [];
 		for (const [repositoryId, workingSet] of this._workingSets) {
 			const terminalNonces = this._workingSetRestoreNonces.get(repositoryId);
+			const endedTerminalNonces = terminalNonces === undefined ? undefined : this._workingSetEndedNonces.get(repositoryId);
 			serialized.push({
 				repositoryId,
 				workingSet,
 				terminalEditors: this._workingSetTerminals.get(repositoryId),
 				terminalNonces: terminalNonces === undefined ? undefined : [...terminalNonces],
+				...(endedTerminalNonces !== undefined && endedTerminalNonces.size > 0 ? { endedTerminalNonces: [...endedTerminalNonces] } : {}),
 			});
 		}
 		this.storageService.store(ParadisWorkspaceSwitchService.WORKING_SETS_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);

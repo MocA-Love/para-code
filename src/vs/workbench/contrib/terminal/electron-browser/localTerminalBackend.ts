@@ -44,6 +44,7 @@ import { DisposableStore, MutableDisposable } from '../../../../base/common/life
 import { paradisTakeSavedTerminalScreens } from '../../../../paradis/contrib/ptyDaemon/electron-browser/paradisTerminalScreenRestore.js';
 // PARA-PATCH: editor terminals wait for the startup revive before resolving their revived id (see vs/paradis/contrib/ptyDaemon)
 import { ParadisReviveGate } from '../../../../paradis/contrib/ptyDaemon/common/paradisReviveGate.js';
+import { paradisNoteRevivedPtyAnswer } from '../../../../paradis/contrib/workspaceSwitch/common/paradisEndedTerminalRestore.js'; // PARA-PATCH: see attachToRevivedProcess
 
 export class LocalTerminalBackendContribution implements IWorkbenchContribution {
 
@@ -262,7 +263,7 @@ class LocalTerminalBackend extends BaseTerminalBackend implements ITerminalBacke
 					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
 				}
 			}
-			const newId = await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
+			const newId = paradisNoteRevivedPtyAnswer(paradisExpectedNonce, await this._proxy.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce)) ?? id; // PARA-PATCH: keep the answer for the restart that follows a failed attach (paradisEndedTerminalRestore.ts)
 			return await this.attachToProcess(newId);
 		} catch (e) {
 			this._logService.warn(`Couldn't attach to process ${e.message}`);
