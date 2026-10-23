@@ -75,7 +75,7 @@ import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/pa
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
-import { IParadisDevtoolsPathCaller, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
+import { IParadisDevtoolsPathCaller, paradisCaptureExistsReason, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
@@ -5608,6 +5608,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					if (versionControl !== undefined) {
 						return this._toolError(versionControl);
 					}
+					// 撮る系のツールは、拡張子を付け替えた後の保存先に既にあるファイルを上書きしない
+					const overwrite = await paradisDevtoolsCaptureOverwriteRefusal(name, devtoolsArgs);
+					this._requireIngressLease(ingressLease);
+					if (overwrite !== undefined) {
+						return this._toolError(overwrite);
+					}
 				}
 				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 				const devtoolsResult = paradisWithScriptHints(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiff?.mode)));
@@ -6032,12 +6038,21 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		try {
 			await fsPromises.mkdir(dirname(path), { recursive: true });
-			// 確かめたのはフォルダまで。ファイル自体がシンボリックリンク（外を指しうる）なら書かない
+			// 確かめたのはフォルダまで。撮った画像は既にあるもの（ファイル・シンボリックリンクとも）を上書きしない
+			// （スペースの中の既存のファイルを確認なしに書き換えないため。q.html Q413）。O_EXCL で作るときにも確かめる
 			const existing = await fsPromises.lstat(path).catch(() => undefined);
-			if (existing !== undefined && !existing.isFile()) {
-				return { ok: false, message: `${path} already exists and is not a regular file (for example a symbolic link), so Para Code does not overwrite it. Choose another path.` };
+			if (existing !== undefined) {
+				return { ok: false, message: paradisCaptureExistsReason(path) };
 			}
-			const handle = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o644);
+			const handle = await fsPromises.open(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0), 0o644).catch((error: NodeJS.ErrnoException) => {
+				if (error.code === 'EEXIST') {
+					return undefined;
+				}
+				throw error;
+			});
+			if (handle === undefined) {
+				return { ok: false, message: paradisCaptureExistsReason(path) };
+			}
 			try {
 				await handle.writeFile(data);
 			} finally {

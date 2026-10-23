@@ -21,7 +21,7 @@
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { pathToFileURL, fileURLToPath } from 'url';
-import { dirname, isAbsolute } from '../../../../base/common/path.js';
+import { dirname, extname, isAbsolute, resolve } from '../../../../base/common/path.js';
 import { paradisIsLocalFileUrl } from './paradisCdpRemotePolicy.js';
 import { paradisPathHasVersionControlSegment } from '../common/paradisRemoteFileBridge.js';
 
@@ -266,4 +266,41 @@ export function paradisDevtoolsExplainRootsDenial(result: unknown, roots: readon
 		};
 	});
 	return changed ? { ...(result as object), content } : result;
+}
+
+/**
+ * `take_screenshot`・`take_snapshot` が `filePath` に保存するときの、実際の保存先。vendored の `ensureExtension` と同じく
+ * 拡張子を形式のもの（スナップショットは `.txt`、スクリーンショットは `.png`・`.jpeg`・`.webp`）に付け替える。
+ * 撮る系でない・`filePath` が無い・相対パスなら undefined（相対パスは子プロセスの作業フォルダが分からない）。
+ */
+export function paradisDevtoolsCaptureOutputPath(toolName: string, args: unknown): string | undefined {
+	if (toolName !== 'take_screenshot' && toolName !== 'take_snapshot') {
+		return undefined;
+	}
+	const record = args && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {};
+	const filePath = record.filePath;
+	if (typeof filePath !== 'string' || !isAbsolute(filePath)) {
+		return undefined;
+	}
+	const extension = toolName === 'take_snapshot' ? '.txt' : record.format === 'jpeg' ? '.jpeg' : record.format === 'webp' ? '.webp' : '.png';
+	const resolved = resolve(filePath);
+	return `${resolved.slice(0, resolved.length - extname(resolved).length)}${extension}`;
+}
+
+/**
+ * 撮る系のツール（`take_screenshot`・`take_snapshot`）は、保存先に既にあるものを上書きしない。スペースの中の
+ * ソースや `requirements.txt`、前に撮った画像を、確認なしに書き換えないため（タスクボードで常に許可にできる
+ * ツールなので、許可の有無に頼らない。q.html Q413）。在れば断る文を返す。
+ */
+export async function paradisDevtoolsCaptureOverwriteRefusal(toolName: string, args: unknown, lstat: (path: string) => Promise<unknown> = path => fs.lstat(path)): Promise<string | undefined> {
+	const output = paradisDevtoolsCaptureOutputPath(toolName, args);
+	if (output === undefined || await lstat(output).then(() => false, () => true)) {
+		return undefined;
+	}
+	return `${toolName} was not run: ${paradisCaptureExistsReason(output)}`;
+}
+
+/** 撮る系のツールが既にあるファイルへ保存しようとしたときの理由（接続先へ書くときと capture_screenshot でも使う）。 */
+export function paradisCaptureExistsReason(path: string): string {
+	return `${path} already exists, and the browser tools never overwrite an existing file when they save a capture (the file extension is changed to match the format, so a different name can still point at an existing file). Choose a file name that does not exist yet, for example by adding -2.`;
 }

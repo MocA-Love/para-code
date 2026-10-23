@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
-import { addClaudeApprovals, CLAUDE_APPROVAL_TOOLS, ClaudeConfigError, claudeSettingsCandidates, claudeWriteRefusal, missingClaudeApprovals, withClaudeApprovals } from '../server/claudeApproval.js';
+import { addClaudeApprovals, CLAUDE_APPROVAL_TOOLS, claudeApprovalState, ClaudeConfigError, claudeSettingsCandidates, claudeWriteRefusal, missingClaudeApprovals, withClaudeApprovals } from '../server/claudeApproval.js';
 
 const RULES = CLAUDE_APPROVAL_TOOLS.map(tool => `mcp__para-browser__${tool}`);
 
@@ -48,6 +48,12 @@ describe('claude approval', () => {
 		const link = path.join(dir, 'linked.json');
 		symlinkSync(file, link);
 		const linkRefused = await addClaudeApprovals(link).then(() => false, err => err instanceof ClaudeConfigError);
+		const raw = path.join(dir, 'raw.json');
+		writeFileSync(raw, '{}');
+		const rawLink = path.join(dir, 'raw-link.json');
+		symlinkSync(raw, rawLink);
+		const linkState = await claudeApprovalState(rawLink);
+		expect(linkState.manual).toContain('シンボリックリンク');
 		expect({
 			approved: missingClaudeApprovals(readFileSync(file, 'utf8')),
 			model: JSON.parse(readFileSync(file, 'utf8')).model,

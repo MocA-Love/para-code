@@ -71,6 +71,14 @@ function createFileService(fs: IFakeFileSystem) {
 			fs.beforeWrite?.();
 			fs.files.set(realpathOf(resource.path), { data: data.buffer, mtime: NOW });
 		},
+		createFile: async (resource: URI, data: VSBuffer) => {
+			fs.beforeWrite?.();
+			const path = realpathOf(resource.path);
+			if (fs.files.has(path) || fs.folders.has(path) || fs.special.has(path)) {
+				throw new FileOperationError(`exists: ${resource.path}`, FileOperationResult.FILE_MODIFIED_SINCE);
+			}
+			fs.files.set(path, { data: data.buffer, mtime: NOW });
+		},
 		createFolder: async (resource: URI) => {
 			let path = realpathOf(resource.path);
 			while (path.length > 1) {
@@ -140,6 +148,27 @@ suite('ParadisRemoteFileBridge', () => {
 				special: { ok: false, reason: 'notAFile' },
 			},
 			written: [`${USER_FOLDER}/shot.png`, '/home/example/repo/out/shot.png'],
+		});
+	});
+
+	test('an exclusive write (a capture) never replaces an existing file, also one created after the check', async () => {
+		const { bridge, fs } = createBridge();
+		fs.files.set('/home/example/repo/out/old.png', { data: new TextEncoder().encode('old'), mtime: NOW });
+		const existing = await bridge.write('pane', AUTHORITY, '/home/example/repo/out/old.png', data, true);
+		fs.beforeWrite = () => fs.files.set('/home/example/repo/out/raced.png', { data: new TextEncoder().encode('raced'), mtime: NOW });
+		const raced = await bridge.write('pane', AUTHORITY, '/home/example/repo/out/raced.png', data, true);
+		fs.beforeWrite = undefined;
+		const fresh = await bridge.write('pane', AUTHORITY, '/home/example/repo/out/new.png', data, true);
+		assert.deepStrictEqual({
+			existing,
+			raced,
+			fresh,
+			kept: [...['old.png', 'raced.png']].map(name => new TextDecoder().decode(fs.files.get(`/home/example/repo/out/${name}`)!.data)),
+		}, {
+			existing: { ok: false, reason: 'alreadyExists' },
+			raced: { ok: false, reason: 'alreadyExists' },
+			fresh: { ok: true, path: '/home/example/repo/out/new.png' },
+			kept: ['old', 'raced'],
 		});
 	});
 

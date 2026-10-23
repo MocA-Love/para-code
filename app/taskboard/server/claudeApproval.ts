@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -133,7 +134,9 @@ export async function claudeSettingsCandidates(env: NodeJS.ProcessEnv = process.
 export async function claudeApprovalState(file: string): Promise<{ readonly path: string; readonly missing: readonly string[]; readonly manual?: string }> {
 	const text = await fs.readFile(file, 'utf8').catch(() => '');
 	const missing = missingClaudeApprovals(text);
-	const manual = missing.length ? claudeWriteRefusal(text) : undefined;
+	// シンボリックリンク（dotfiles の管理など）は書かないので、はじめから手で足す案内にする
+	const link = await fs.lstat(file).then(st => !st.isFile(), () => false);
+	const manual = missing.length ? (link ? 'settings.json が通常のファイルではない（シンボリックリンクなど）ので、ボードは書きません' : claudeWriteRefusal(text)) : undefined;
 	return manual === undefined ? { missing, path: file } : { missing, path: file, manual };
 }
 
@@ -165,7 +168,7 @@ export async function addClaudeApprovals(file: string): Promise<void> {
 	if (stat) {
 		await fs.copyFile(file, `${file}.taskboard.bak`);
 	}
-	const temp = `${file}.taskboard-${process.pid}`;
+	const temp = `${file}.taskboard-${process.pid}-${randomBytes(4).toString('hex')}`;
 	await fs.writeFile(temp, next, { mode: stat ? stat.mode & 0o777 : 0o600 });
 	try {
 		const now = await fs.readFile(file, 'utf8').catch((err: NodeJS.ErrnoException) => err.code === 'ENOENT' ? '' : Promise.reject(err));

@@ -37,7 +37,7 @@ import {
 	paradisNormalizeRemoteFilePath,
 	paradisReplaceRemoteFileExtension,
 } from '../common/paradisRemoteFileBridge.js';
-import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS } from './paradisDevtoolsPathPolicy.js';
+import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
 import { ParadisFileDropStaging, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
 
 /** upload_file の一時ファイルを残す時間。ページはファイルを選んだ後で読む（送信時など）ので、すぐには消さない。 */
@@ -169,6 +169,8 @@ export function paradisRemoteFileFailureMessage(reason: ParadisRemoteFileFailure
 			return `The folder of ${path} does not exist on your machine, and Para Code does not create folders there. Choose a path in a folder that already exists (or ~/${PARADIS_REMOTE_FILE_USER_FOLDER}).`;
 		case 'notAFile':
 			return `${path} exists but is not a regular file.`;
+		case 'alreadyExists':
+			return paradisCaptureExistsReason(path);
 		case 'paneUnresolved':
 			return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which folders it may use. Retry in a few seconds.';
 		case 'notFound':
@@ -289,7 +291,8 @@ export class ParadisRemoteFileTransfer {
 			} catch {
 				return toolError(`${toolName} ran, but Para Code could not read the result it saved, so nothing was written to your machine. Retry, or call ${toolName} without \`filePath\`.`);
 			}
-			const written = await host.callWindow<ParadisRemoteFileWriteResult>(PARADIS_REMOTE_FILE_WRITE_METHOD, [finalRemotePath, VSBuffer.wrap(data)]);
+			// 撮る系のツール（take_screenshot・take_snapshot・capture_screenshot）の保存は、既にあるものを上書きしない（q.html Q413）
+			const written = await host.callWindow<ParadisRemoteFileWriteResult>(PARADIS_REMOTE_FILE_WRITE_METHOD, [finalRemotePath, VSBuffer.wrap(data), true]);
 			if (!written.ok) {
 				return toolError(`${toolName} ran, but the file could not be written to your machine: ${written.error}`);
 			}

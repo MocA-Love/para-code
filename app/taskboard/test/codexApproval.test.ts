@@ -15,7 +15,7 @@ describe('codex approval', () => {
 	test('appends a table for the board tools and the screenshot tools after the server and keeps the rest of the file', () => {
 		const before = `${SERVER}\n[other]\nx = 1\n`;
 		const after = withCodexApprovals(before);
-		expect(CODEX_APPROVAL_TOOLS).toEqual(['board_complete_step', 'board_ask_human', 'list_browser_tabs', 'get_shared_page', 'take_screenshot', 'capture_screenshot', 'take_snapshot', 'get_text', 'inspect_element', 'preview_file']);
+		expect(CODEX_APPROVAL_TOOLS).toEqual(['board_complete_step', 'board_ask_human', 'list_browser_tabs', 'get_shared_page', 'take_screenshot', 'capture_screenshot', 'take_snapshot', 'get_text', 'inspect_element']);
 		expect(after).toBe(`${before}${CODEX_APPROVAL_TOOLS.map(tool => `\n[mcp_servers.para-browser.tools.${tool}]\napproval_mode = "approve"\n`).join('')}`);
 		expect(missingCodexApprovals(after)).toEqual([]);
 		expect(withCodexApprovals(after)).toBe(after);
