@@ -132,18 +132,34 @@ suite('paradisBrowserQuery (shared process)', () => {
 		const syntax = new FakePage([failed('SyntaxError: Unexpected token')]);
 		const broken = await syntax.query().call(syntax.call(), 'wait_until', { predicate: '() => (' });
 		const nothing = await syntax.query().call(syntax.call(), 'wait_until', {});
-		// Claude Code は 120 秒を超えた呼び出しを裏に回すので、上限は 100 秒（q.html Q395）
+		// Claude Code は main の会話の 120 秒を超えた呼び出しを裏に回すので、上限は 100 秒（q.html Q395）
 		const tooLong = await syntax.query().call(syntax.call(), 'wait_until', { selector: '.toast', timeout_seconds: 120 });
+		const wayTooLong = await syntax.query().call(syntax.call(), 'wait_until', { selector: '.toast', timeout_seconds: 300 });
 		assert.deepStrictEqual({
 			timedOut: [isError(timedOut), textOf(timedOut).startsWith('Timed out after 3s waiting for visible selector ".toast" (3 checks)'), textOf(timedOut).includes('"matched": 2')],
 			broken: [isError(broken), syntax.calls.length],
 			nothing: isError(nothing),
 			tooLong: [isError(tooLong), textOf(tooLong), syntax.calls.length],
+			wayTooLong: textOf(wayTooLong),
 		}, {
 			timedOut: [true, true, true],
 			broken: [true, 1],
 			nothing: true,
-			tooLong: [true, '"timeout_seconds" must be a number from 0.5 to 100.', 1],
+			tooLong: [true, '"timeout_seconds" must be a number from 0.5 to 100 here. Up to 280 is allowed only for calls from a Claude Code subagent. Call wait_until again with 100 or less.', 1],
+			wayTooLong: '"timeout_seconds" must be a number from 0.5 to 100.',
+		});
+	});
+
+	test('wait_until waits up to 280 seconds for a call from a Claude Code subagent', async () => {
+		const page = new FakePage([returned({ met: false, matched: 0, visible: 0 })], 10_000);
+		const timedOut = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 280 });
+		const tooLong = await page.query().call({ ...page.call(), fromSubagent: true }, 'wait_until', { selector: '.toast', timeout_seconds: 281 });
+		assert.deepStrictEqual({
+			timedOut: [isError(timedOut), textOf(timedOut).startsWith('Timed out after 280s')],
+			tooLong: textOf(tooLong),
+		}, {
+			timedOut: [true, true],
+			tooLong: '"timeout_seconds" must be a number from 0.5 to 280.',
 		});
 	});
 
