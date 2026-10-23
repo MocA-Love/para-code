@@ -6,9 +6,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { VSBuffer } from '../../../base/common/buffer.js';
+import { language } from '../../../base/common/platform.js';
 import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { IFileService } from '../../files/common/files.js';
+import { IProductService } from '../../product/common/productService.js';
 import { ISessionDataService } from '../common/sessionDataService.js';
 import type { Turn } from '../common/state/sessionState.js';
 
@@ -62,13 +64,25 @@ export class ParadisTurnCache {
 
 	private readonly _writeQueue = new Map<string, Promise<void>>();
 
+	/**
+	 * What a cache entry must have been built with to be reused: the caller's format version plus the
+	 * display language and the product build. The cached turns carry localized strings (tool labels etc.)
+	 * and are shaped by the replay mapper of the build that wrote them, so a language switch or an
+	 * update (upstream or a Para Code release, which changes the commit) must miss instead of showing
+	 * stale text or an old shape.
+	 */
+	private readonly _formatVersion: string;
+
 	constructor(
 		/** Bump whenever the replay mapper's output shape changes, so stale entries miss instead of rendering a malformed transcript. */
-		private readonly _formatVersion: string,
+		formatVersion: string,
 		@ISessionDataService private readonly _sessionDataService: ISessionDataService,
 		@IFileService private readonly _fileService: IFileService,
 		@ILogService private readonly _logService: ILogService,
-	) { }
+		@IProductService productService: IProductService,
+	) {
+		this._formatVersion = [formatVersion, language, productService.version, productService.commit ?? ''].join('|');
+	}
 
 	async read(routingUri: URI, key: IParadisTurnCacheKey, stamp: IParadisTurnCacheStamp): Promise<readonly Turn[] | undefined> {
 		try {

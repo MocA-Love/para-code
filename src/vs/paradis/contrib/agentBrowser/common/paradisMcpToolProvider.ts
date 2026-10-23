@@ -109,6 +109,11 @@ export interface IParadisMcpPaneAgentStatus {
  * 持っているので、ここから借りる（プロバイダが自前でウィンドウを探すと取り違えうる）。
  */
 export interface IParadisMcpToolCallContext {
+	/**
+	 * この呼び出しが Claude Code のサブエージェントの中から来たと確かめられたか（paradisSubagentToolCalls.ts）。
+	 * 確かめられないときは false か省略（main の会話と同じ短い待ちの上限を使う）。
+	 */
+	readonly fromSubagent?: boolean;
 	/** 呼び出し元ペインを所有するウィンドウの IPC チャネルを1回呼ぶ。 */
 	callOwningWindow<T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>>;
 	/**

@@ -38,6 +38,8 @@ import { defaultBrowserWindowOptions, getAllWindowsExcludingOffscreen, IWindowsM
 import { ISingleFolderWorkspaceIdentifier, IWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, toWorkspaceIdentifier } from '../../workspace/common/workspace.js';
 import { IWorkspacesManagementMainService } from '../../workspaces/electron-main/workspacesManagementMainService.js';
 import { IWindowState, ICodeWindow, ILoadEvent, WindowMode, WindowError, LoadReason, defaultWindowState, IBaseWindow } from '../../window/electron-main/window.js';
+// PARA-PATCH: shared "can this window be transparent" check, also used by the renderer's restart prompt.
+import { paradisCanUseWindowTransparency } from '../../window/common/paradisWindowTransparency.js';
 import { IPolicyService } from '../../policy/common/policy.js';
 import { IUserDataProfile } from '../../userDataProfile/common/userDataProfile.js';
 import { IStateService } from '../../state/node/state.js';
@@ -811,7 +813,7 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			// configuration registry which the main process cannot see, so "unset" must mean enabled here too.
 			// Transparent Electron windows on Windows require a frameless window. Disable the renderer's
 			// translucent CSS as well by reporting the actual creation state for native-titlebar windows.
-			const paradisTransparencySupported = !isWindows || !hasNativeTitlebar(this.configurationService);
+			const paradisTransparencySupported = paradisCanUseWindowTransparency(this.configurationService);
 			const paradisTransparencyEnabled = !config.isSessionsWindow
 				&& paradisTransparencySupported
 				&& this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') !== false;
