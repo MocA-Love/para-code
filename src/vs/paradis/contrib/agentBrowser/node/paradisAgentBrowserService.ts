@@ -2898,7 +2898,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			for (const grant of grants.values()) {
 				// ユーザーが共有したページは listBindings に載せる（ここはエージェントのタブだけ）
 				if (grant.windowCtx === windowCtx && (!grant.userShared || grant.agentTab)) {
-					result.push({ token, pageId: grant.pageId });
+					result.push(grant.openedFrom !== undefined && !grant.userShared ? { token, pageId: grant.pageId, opened: true } : { token, pageId: grant.pageId });
 				}
 			}
 		}

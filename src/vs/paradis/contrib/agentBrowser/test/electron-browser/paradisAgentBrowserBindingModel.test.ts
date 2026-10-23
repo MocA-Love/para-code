@@ -299,6 +299,38 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		});
 	});
 
+	// ツールバーの共有のボタンの数と一覧: ユーザーの共有を先に、許可は種類（自分で開いた・開いたタブ）を付けて、ペインごとに 1 回
+	test('lists the panes that can use a page with the kind of sharing, each pane once and the user\'s share first', async () => {
+		const fixture = createFixture({ listAgentTabGrants: async () => [{ token: 'own', pageId: 'view-a' }, { token: 'child', pageId: 'view-a', opened: true }, { token: 'token', pageId: 'view-a' }] });
+		await fixture.bindingModel.bindPageToPane(fixture.model, 'token');
+		await fixture.bindingModel.refresh();
+		assert.deepStrictEqual({ page: fixture.bindingModel.getPageShares('view-a'), other: fixture.bindingModel.getPageShares('view-b') }, {
+			page: [{ token: 'token', kind: 'user' }, { token: 'own', kind: 'agentTab' }, { token: 'child', kind: 'openedTab' }],
+			other: [],
+		});
+	});
+
+	// 共有の失敗を巻き戻すとき、エージェントがタブとして使っているページの共有の印は残す（下ろすと、枠は消えるのに使える状態になる）
+	test('keeps the share mark when rolling back a failed share of a page an agent uses as its tab', async () => {
+		const fixture = createFixture({
+			prepare: async () => { throw new Error('prepare failed'); },
+			listAgentTabGrants: async () => [{ token: 'other', pageId: 'view-a' }],
+		});
+		await assert.rejects(fixture.bindingModel.bindPageToPane(fixture.model, 'token'), /prepare failed/);
+		assert.deepStrictEqual(fixture.sharingCalls, [true]);
+	});
+
+	// 許可を外した後、ほかに使うペインが無ければ共有の印を下ろす（使うペインが残っていれば残す）
+	test('releases the share mark of a page only when no pane shares or uses it any more', async () => {
+		let grants: { token: string; pageId: string }[] = [{ token: 'other', pageId: 'view-a' }];
+		const fixture = createFixture({ listAgentTabGrants: async () => grants });
+		await fixture.bindingModel.releaseShareMarkIfUnused('view-a');
+		const whileUsed = [...fixture.sharingCalls];
+		grants = [];
+		await fixture.bindingModel.releaseShareMarkIfUnused('view-a');
+		assert.deepStrictEqual({ whileUsed, afterRevoke: fixture.sharingCalls }, { whileUsed: [], afterRevoke: [false] });
+	});
+
 	// 読んだ世代で外す直前に、そのページが current へ繰り上がって世代が変わっても、取り直した世代で 1 回だけやり直す
 	test('retries unsharing a page once with its new generation when it was promoted right after the read', async () => {
 		const scope = { kind: 'managed' as const, stateKey: 'space-a' };

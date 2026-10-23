@@ -87,6 +87,7 @@ import {
 } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisPredictSplitWidth } from '../common/paradisAgentTabPlacement.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
 import { ParadisNativeWindowFocus } from './paradisNativeWindowFocus.js';
 
 /** 共有相手を加えた後、モデルが共有済みになるのを待つ上限。 */
@@ -205,6 +206,12 @@ export interface IParadisAgentBrowserTabsService {
 
 	/** 呼び出し元ペインのスペースが見えているエディタ領域のグループ。 */
 	resolveTarget(token: string | undefined): IParadisAgentTabTarget;
+
+	/**
+	 * 共有中のページの共有の印（upstream の agent audience）を、upstream の確認を出さずに付け直す。直接共有できない
+	 * ページ（ネットワークの制限）には何もしない。
+	 */
+	restoreShareMark(model: IBrowserViewModel): Promise<void>;
 
 	/** そのペインのエージェントが開いていて、まだ開いているタブの数。 */
 	openedCount(token: string): number;
@@ -363,7 +370,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			const modelListener = listeners.add(new MutableDisposable());
 			const watch = (model: IBrowserViewModel) => {
 				modelListener.value = model.onDidChangeSharingState(state => {
-					if (state !== BrowserViewSharingState.Shared && !this._agentMoves.has(token) && this._ledger.isOpenedBy(token, input.id)) {
+					if (paradisIsShareMarkRemoved(state) && !this._agentMoves.has(token) && this._ledger.isOpenedBy(token, input.id)) {
 						void this._bindingModel.revokeAgentTab(token, input.id);
 					}
 				});
@@ -381,7 +388,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			const watch = (model: IBrowserViewModel) => {
 				modelListener.value = model.onDidChangeSharingState(state => {
 					const owner = this._ledger.ownerOf(input.id);
-					if (state !== BrowserViewSharingState.Shared && owner !== undefined && !this._agentMoves.has(owner)) {
+					if (paradisIsShareMarkRemoved(state) && owner !== undefined && !this._agentMoves.has(owner)) {
 						this.revokeApprovedProfileTab(input.id);
 					}
 				});
@@ -1289,6 +1296,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	 * ネットワークの制限でそのまま共有できないタブ（`isDirectlyShareable` が false）には何もしない。
 	 * その場合は upstream の流れ（共有用のタブを開き直す確認）に任せる。
 	 */
+	restoreShareMark(model: IBrowserViewModel): Promise<void> {
+		return this._shareApproved(model);
+	}
+
 	private async _shareApproved(model: IBrowserViewModel): Promise<void> {
 		if (model.sharingState !== BrowserViewSharingState.Available || !model.isDirectlyShareable) {
 			return;

@@ -540,6 +540,17 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 		});
 	});
 
+	// Copilot のチャットが一時的に使えない（Unavailable）・ネットワークの制限（Blocked）は、ユーザーが共有を止めたのではない
+	test('keeps the grant of an own tab while sharing is only unavailable or blocked by the network policy', async () => {
+		const { service, state, tab, sharing } = setup();
+		service.registerAgentTab(TOKEN, tab('own'));
+		await service.selectTab(TOKEN, 'own');
+		await timeout(0);
+		sharing.get('own')!.fire(BrowserViewSharingState.Unavailable);
+		sharing.get('own')!.fire(BrowserViewSharingState.BlockedByNetworkPolicy);
+		assert.deepStrictEqual({ grants: state.grants, revokes: state.revokes }, { grants: ['own'], revokes: [] });
+	});
+
 	// 1 つのペインへ複数のページを共有できる。list_browser_tabs には全部が載り、2 枚目以降も共有し直さずに選べる
 	test('lists every page shared with the pane and selects a second shared page without sharing it again', async () => {
 		const { service, state, tab, bind } = setup();
