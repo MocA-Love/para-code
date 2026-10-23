@@ -1387,26 +1387,24 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const key = `${token}\n${tabId}`;
 		this._humanCheckNotices.deleteAndDispose(key);
 		const input = this._browserViewWorkbenchService.getKnownBrowserViews().get(tabId);
-		if (kind === undefined || !input || !(this.isOpenedBy(token, tabId) || this._isSharedWith(token, tabId) || this._bindingModel.getAgentTabsForToken(token).includes(tabId))) {
+		if (kind === undefined || !input || !this._isUsableBy(token, tabId)) {
 			return;
 		}
 		const title = paradisSanitizeDisplayText(input.title || input.getName(), PANE_TITLE_MAX_LENGTH) || paradisUrlOrigin(input.url);
-		// タブが今のスペースのエディタにあるときだけ「タブを開く」を出す（見えていないスペースのタブは前に出せない）
-		const group = this._editorGroupsService.groups.find(candidate => candidate.contains(input));
 		const store = new DisposableStore();
 		const handle = this._notificationService.notify({
 			severity: Severity.Warning,
 			sticky: true,
 			message: kind === 'page'
 				? localize('paradis.agentTabs.humanCheck.page', "{0} のエージェントが使っているタブ「{1}」に、Cloudflare の確認（Verify you are human）が出ています。エージェントは待っています。タブを開いて確認を通してください。", this._describePane(token), title)
-				: localize('paradis.agentTabs.humanCheck.widget', "{0} のエージェントが使っているタブ「{1}」で、Cloudflare の確認（Verify you are human）が終わっていません。エージェントは待っています。タブを開いて確認を通してください。", this._describePane(token), title),
-			actions: group ? {
+				: localize('paradis.agentTabs.humanCheck.widget', "{0} のエージェントが使っているタブ「{1}」で、フォームの Cloudflare の確認（Verify you are human）が終わっていないため、エージェントが先へ進めません。タブを開いて確認を通してください。", this._describePane(token), title),
+			actions: {
 				primary: [toAction({
 					id: 'paradis.agentTabs.humanCheck.reveal',
 					label: localize('paradis.agentTabs.humanCheck.reveal', "タブを開く"),
-					run: () => this._editorService.openEditor(input, { pinned: true }, group),
+					run: () => this._revealHumanCheckTab(input),
 				})],
-			} : undefined,
+			},
 		});
 		store.add(toDisposable(() => handle.close()));
 		store.add(handle.onDidClose(() => {
@@ -1416,7 +1414,41 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			}
 		}));
 		store.add(input.onWillDispose(() => this._humanCheckNotices.deleteAndDispose(key)));
+		// 共有を外した・ペインが終わったなど、このペインのタブでなくなったら閉じる
+		store.add(this._bindingModel.onDidChange(() => {
+			if (!this._isUsableBy(token, tabId)) {
+				this._humanCheckNotices.deleteAndDispose(key);
+			}
+		}));
 		this._humanCheckNotices.set(key, store);
+	}
+
+	/** そのペインが使えるタブか（自分で開いた・共有された・共有したページから開いた）。 */
+	private _isUsableBy(token: string, tabId: string): boolean {
+		return this.isOpenedBy(token, tabId) || this._isSharedWith(token, tabId) || this._bindingModel.getAgentTabsForToken(token).includes(tabId);
+	}
+
+	/**
+	 * 通知の「タブを開く」。押した時点でタブを探す。今のエディタに無く、タブが別のスペースのものなら、そのスペースへ
+	 * 切り替えてから開く（ユーザーが押したときだけ。勝手に前面へは出さない）。
+	 */
+	private async _revealHumanCheckTab(input: BrowserEditorInput): Promise<void> {
+		if (input.isDisposed()) {
+			return;
+		}
+		let group = this._editorGroupsService.groups.find(candidate => candidate.contains(input));
+		if (!group) {
+			const scope = this._browserScopeService.resolveScope(input.id);
+			const stateKey = scope.kind === 'managed' ? scope.stateKey : undefined;
+			if (stateKey !== undefined && stateKey !== this._workspaceSwitchService.activeStateKey) {
+				await this._workspaceSwitchService.switchToStateKey(stateKey);
+				if (input.isDisposed()) {
+					return;
+				}
+				group = this._editorGroupsService.groups.find(candidate => candidate.contains(input));
+			}
+		}
+		await this._editorService.openEditor(input, { pinned: true }, group);
 	}
 
 	private _describe(token: string, input: BrowserEditorInput): IParadisAgentTabInfo {

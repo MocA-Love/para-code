@@ -36,8 +36,11 @@ interface IParadisChromeIdentitySession {
 	readonly isEnabled: () => boolean;
 	/** {@link isEnabled} が変わったかもしれない（設定が変わった）。セッションの UA を直した後に届く。 */
 	readonly onDidChangeEnabled: Event<unknown>;
-	/** 端末のエミュレーションで UA を選んでいるタブ。1 つでもある間は Service Worker の UA を直さない。 */
-	readonly emulatingViews: Set<object>;
+	/**
+	 * 端末のエミュレーションで UA を選んでいるタブの、今の origin を返す関数。その origin から来た（Origin・Referer が
+	 * 同じ）Service Worker の要求は UA を直さない。
+	 */
+	readonly emulatingViews: Map<object, () => string | undefined>;
 }
 
 /** セッションごとの状態。 */
@@ -106,17 +109,40 @@ export function paradisInstallChromeClientHintHeaders(session: Pick<Session, 'ge
 	if (sessionStates.has(session)) {
 		return;
 	}
-	const state: IParadisChromeIdentitySession = { isEnabled, onDidChangeEnabled, emulatingViews: new Set() };
+	const state: IParadisChromeIdentitySession = { isEnabled, onDidChangeEnabled, emulatingViews: new Map() };
 	sessionStates.set(session, state);
 	if (prefetchNativeHints) {
 		void readNativeClientHints(); // 最初のタブを開く前に読み始めておく
 	}
 	session.webRequest.onBeforeSendHeaders({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
-		// 端末のエミュレーション中は、どのタブのものか分からない Service Worker の UA を直さない（スマホの UA を
-		// 選んだタブの Service Worker がデスクトップの Chrome を名乗らないように）
-		const requestHeaders = isEnabled() ? paradisRewriteClientHintHeaders(details.requestHeaders, session.getUserAgent(), chromeVersion, state.emulatingViews.size === 0) : undefined;
+		// 端末のエミュレーション中のタブと同じ origin から来た Service Worker の要求は UA を直さない（スマホの UA を
+		// 選んだタブの Service Worker がデスクトップの Chrome を名乗らないように）。Service Worker の要求は
+		// どのタブのものか分からないので、Origin・Referer で見分ける
+		const requestHeaders = isEnabled() ? paradisRewriteClientHintHeaders(details.requestHeaders, session.getUserAgent(), chromeVersion, !isFromEmulatedOrigin(state, details.requestHeaders, details.referrer)) : undefined;
 		callback(requestHeaders ? { requestHeaders } : {});
 	});
+}
+
+function originOf(url: string | undefined): string | undefined {
+	if (!url) {
+		return undefined;
+	}
+	try {
+		const origin = new URL(url).origin;
+		return origin === 'null' ? undefined : origin;
+	} catch {
+		return undefined;
+	}
+}
+
+/** 要求が、端末のエミュレーション中のタブと同じ origin から来たか。 */
+function isFromEmulatedOrigin(state: IParadisChromeIdentitySession, headers: Record<string, string>, referrer: string | undefined): boolean {
+	if (state.emulatingViews.size === 0) {
+		return false;
+	}
+	const header = (name: string) => Object.entries(headers).find(([key]) => key.toLowerCase() === name)?.[1];
+	const requestOrigin = originOf(header('origin')) ?? originOf(header('referer')) ?? originOf(referrer);
+	return requestOrigin !== undefined && [...state.emulatingViews.values()].some(current => current() === requestOrigin);
 }
 
 /** {@link paradisAttachChromeIdentity} が使う BrowserView の部分。 */
@@ -191,7 +217,7 @@ export function paradisAttachChromeIdentity(view: IParadisChromeIdentityView, op
 	const applyAll = () => void send([undefined, ...iframeSessions.keys()], ++generation);
 	const noteDevice = () => {
 		if (view.emulator.device?.userAgent) {
-			state.emulatingViews.add(view);
+			state.emulatingViews.set(view, () => view.webContents.isDestroyed() ? undefined : originOf(view.webContents.getURL()));
 		} else {
 			state.emulatingViews.delete(view);
 		}
@@ -206,6 +232,11 @@ export function paradisAttachChromeIdentity(view: IParadisChromeIdentityView, op
 	}));
 	store.add(view.emulator.onDidChange(() => {
 		noteDevice();
+		// upstream の emulator は、端末の UA を外すとタブを作った時点の UA に戻す。その後に「Para Code と名乗る」を
+		// 切り替えていたら古いので、セッションの今の UA にそろえる
+		if (!view.emulator.device?.userAgent && !view.webContents.isDestroyed() && view.webContents.getUserAgent() !== session.getUserAgent()) {
+			view.webContents.setUserAgent(session.getUserAgent());
+		}
 		applyAll();
 	}));
 	store.add(state.onDidChangeEnabled(() => {
