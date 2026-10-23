@@ -136,13 +136,21 @@ suite('ParadisSentryCommon', () => {
 		const sanitized = texts.map(text => paradisSanitizeSentryText(text));
 		texts.forEach(text => paradisRedactSecrets(text));
 		const elapsed = Date.now() - started;
-		const cut = paradisSanitizeSentryText(`${'x'.repeat(1_990)} ghp_abcdefghijklmnopqrstuvwxyz0123456789`);
+		// 2,000 字の境目にかかった値も、切る前の形で伏せる
+		const cut = [`${'x'.repeat(1_990)} ghp_abcdefghijklmnopqrstuvwxyz0123456789`, `${'x'.repeat(1_995)} alice@example.test`].map(text => paradisSanitizeSentryText(text));
+		const credential = 'c'.repeat(300);
 
 		assert.deepStrictEqual({
 			fast: elapsed < 2_000,
-			bounded: sanitized.every(text => text.length <= 2_100),
-			cut: cut.endsWith(' [Filtered]…'),
-		}, { fast: true, bounded: true, cut: true });
+			bounded: sanitized.every(text => text.length <= 2_001),
+			cut,
+			longCredential: [paradisSanitizeSentryText(`git://user:${credential}@example.com/repo`), paradisRedactSecrets(`git://user:${credential}@example.com/repo`)],
+		}, {
+			fast: true,
+			bounded: true,
+			cut: [`${'x'.repeat(1_990)} [Filtered`.slice(0, 2_000) + '…', `${'x'.repeat(1_995)} [ema…`],
+			longCredential: ['git://[Filtered]@example.com/repo', 'git://***@example.com/repo'],
+		});
 	});
 
 	test('applies the same rules to tags, breadcrumbs and automatically captured error text', () => {
