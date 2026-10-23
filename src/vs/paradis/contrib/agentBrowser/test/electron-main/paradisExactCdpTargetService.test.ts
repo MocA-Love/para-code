@@ -48,6 +48,9 @@ interface ITestViewState {
 	automationFailureDetail?: IBrowserViewAutomationKeyFailureDetail;
 	onActivateAutomation?: () => void;
 	onInput?: () => void;
+	/** Device Emulation state of the fake view (upstream BrowserViewEmulator). */
+	emulatedDevice?: { readonly width?: number; readonly height?: number; readonly mobile?: boolean; readonly deviceScaleFactor?: number; readonly userAgent?: string };
+	emulatedScale?: number;
 }
 
 interface ITestViewCounters {
@@ -194,6 +197,17 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 				: undefined;
 		},
 		captureAutomationInputFocusAuthority: () => state.focusAuthority,
+		emulator: {
+			get device() {
+				return state.emulatedDevice;
+			},
+			get emulatedScaleFactor() {
+				return state.emulatedScale ?? 1;
+			},
+			setDevice: async (device: ITestViewState['emulatedDevice']) => {
+				state.emulatedDevice = device;
+			},
+		},
 	};
 	return { view: view as unknown as BrowserView, state, counters, throttlingValues, captureOptions, inputCalls };
 }
@@ -576,6 +590,55 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(await service.setExactViewBackgroundThrottling(exact, false), false);
 	});
 
+	test('scales agent input to a page that is drawn shrunk by Device Emulation, and leaves an unemulated page alone', async () => {
+		const current = createTestView({ emulatedDevice: { width: 1920, height: 1080 }, emulatedScale: 0.5 });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 100, y: 40, button: 'left', clickCount: 1 }));
+		current.state.emulatedDevice = undefined;
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mouseReleased', x: 100, y: 40, button: 'left', clickCount: 1 }));
+		assert.deepStrictEqual(current.inputCalls.map(call => call.params), [
+			{ type: 'mousePressed', x: 50, y: 20, button: 'left', clickCount: 1 },
+			{ type: 'mouseReleased', x: 100, y: 40, button: 'left', clickCount: 1 },
+		]);
+	});
+
+	test('folds CDP device metrics into Device Emulation and puts the user size back when that connection is released', async () => {
+		const current = createTestView({ emulatedDevice: { width: 1366, height: 768 } });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const handled = await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setDeviceMetricsOverride', { width: 390, height: 844, mobile: true, deviceScaleFactor: 1 });
+		const emulated = current.state.emulatedDevice;
+		const otherOwner = await service.releaseExactViewEmulation(exact, 'cdp-2').then(() => current.state.emulatedDevice);
+		await service.releaseExactViewEmulation(exact, 'cdp-1');
+		const refused = await service.applyExactViewEmulation(exact, 'cdp-1', 'Page.navigate', {});
+		assert.deepStrictEqual({ handled, emulated, otherOwner, restored: current.state.emulatedDevice, refused }, {
+			handled: { handled: true, previous: { width: 1366, height: 768 }, changed: true },
+			emulated: { width: 390, height: 844, mobile: true },
+			otherOwner: { width: 390, height: 844, mobile: true },
+			restored: { width: 1366, height: 768 },
+			refused: false,
+		});
+	});
+
+	test('keeps the agent colour scheme across a size change, leaves touch to the device, and drops the colour scheme when that connection is released', async () => {
+		const current = createTestView();
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setDeviceMetricsOverride', { width: 390, height: 844, mobile: true });
+		await service.applyExactViewEmulation(exact, 'cdp-1', 'Emulation.setTouchEmulationEnabled', { enabled: false });
+		await service.releaseExactViewEmulation(exact, 'cdp-1');
+		assert.deepStrictEqual(current.inputCalls.filter(call => call.method !== 'Page.getFrameTree').map(call => [call.method, call.params]), [
+			['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }] }],
+			['Emulation.setEmulatedMedia', { media: '', features: [{ name: 'prefers-color-scheme', value: 'dark' }, { name: 'pointer', value: 'coarse' }] }],
+			['Emulation.setEmulatedMedia', { media: '', features: [] }],
+		]);
+	});
+
 	test('a move right before a press is sent without waiting, and a WebP capture hides the cursor until it ends', async () => {
 		const current = createTestView();
 		const registry = createRegistry({ 'view-1': current.view });
@@ -631,6 +694,21 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', JSON.stringify({ type: 'mousePressed', x: 40, y: 40, button: 'left', clickCount: 1, modifiers: 2 }));
 		const controlClick = paradisConsumeAgentContextMenuSuppression(wc, { x: 50, y: 50, menuSourceType: 'mouse' });
 		assert.deepStrictEqual([afterMove, userElsewhere, agentMenu, userSamePointLater, controlClick], [false, false, true, false, true]);
+	});
+
+	test('on a page drawn shrunk by Device Emulation, the agent context menu is suppressed at the point in either coordinate space', async () => {
+		const current = createTestView({ emulatedDevice: { width: 1920, height: 1080 }, emulatedScale: 0.5 });
+		Object.assign(current.view.webContents, { getZoomFactor: () => 1 });
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const wc = current.view.webContents;
+		const press = JSON.stringify({ type: 'mousePressed', x: 100, y: 40, button: 'right', clickCount: 1 });
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', press);
+		const pageSpace = paradisConsumeAgentContextMenuSuppression(wc, { x: 100, y: 40, menuSourceType: 'mouse' });
+		await service.dispatchExactViewInput(exact, 'Input.dispatchMouseEvent', press);
+		const shrunkSpace = paradisConsumeAgentContextMenuSuppression(wc, { x: 50, y: 20, menuSourceType: 'mouse' });
+		assert.deepStrictEqual([pageSpace, shrunkSpace], [true, true]);
 	});
 
 	test('network overrides are refused unless the tab uses browser storage of the calling pane alone', async () => {

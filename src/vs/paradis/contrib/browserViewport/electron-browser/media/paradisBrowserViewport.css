@@ -1,0 +1,270 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* upstream の Device Emulation の帯は、device を立てた瞬間に出る（インラインの display を書き換える）。
+	大きさは chip に出すので、chip が載っているエディタでは隠し、一覧の「細かい設定の帯を表示」か upstream の
+	コマンドで開いたときだけ出す。upstream 取り込み時は `.browser-emulation-toolbar` が残っているかを確認する
+	（名前が変わっても型検査は通り、chip で選ぶたびに帯が出るように戻るだけになる）。 */
+.monaco-workbench .browser-root:not(.paradis-viewport-band-shown):has(.paradis-browser-viewport-chip) .browser-emulation-toolbar {
+	display: none !important;
+}
+
+/* 1. アドレスバーの中の chip。形はプロファイルの chip・倍率と同じ（高さ 20px、角 small、11px）。
+	詰まったら縮む（入れ物は右端から刈られる）。 */
+.monaco-workbench .browser-root .paradis-browser-viewport-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 1 auto;
+	min-width: 0;
+	height: 20px;
+	padding: 0 5px 0 6px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: var(--vscode-cornerRadius-small, 5px);
+	background-color: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: 11px;
+	line-height: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	cursor: pointer;
+	transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip[aria-expanded='true'] {
+	background-color: var(--vscode-list-activeSelectionBackground);
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ページが無い間も枠は残す（display を切ると URL ボックスの幅が変わって隣が動く）。 */
+.monaco-workbench .browser-root .paradis-browser-viewport-chip.is-detached {
+	visibility: hidden;
+}
+
+/* エージェントが変えた直後の数秒だけ、枠を強調する。 */
+.monaco-workbench .browser-root .paradis-browser-viewport-chip.is-agent-changed {
+	border-color: var(--vscode-focusBorder);
+	box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip .pbv-chip-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-weight: 600;
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip.is-fit .pbv-chip-name {
+	font-weight: normal;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip .pbv-chip-dimensions {
+	flex-shrink: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip.is-fit .pbv-chip-dimensions {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .browser-root .paradis-browser-viewport-chip .pbv-chip-chevron {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+/* 2. 押したときの一覧（共通の印 paradis-overlay-popover でネイティブのビューを一時的に止める）。 */
+.paradis-browser-viewport-dropdown {
+	position: absolute;
+	z-index: 2550;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	font-size: 12px;
+}
+
+.monaco-workbench .paradis-browser-viewport-dropdown[tabindex="-1"]:focus {
+	outline: none;
+}
+
+.paradis-browser-viewport-dropdown .pbv-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.paradis-browser-viewport-dropdown .pbv-separator {
+	padding: 6px 12px 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-browser-viewport-dropdown .pbv-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	cursor: pointer;
+	outline: none;
+}
+
+.paradis-browser-viewport-dropdown .pbv-row.is-focused {
+	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
+}
+
+.monaco-workbench .paradis-browser-viewport-dropdown .pbv-row[tabindex="-1"]:focus {
+	outline: none;
+}
+
+.monaco-workbench.hc-black .paradis-browser-viewport-dropdown .pbv-row.is-focused,
+.monaco-workbench.hc-light .paradis-browser-viewport-dropdown .pbv-row.is-focused {
+	outline: 1px dotted var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
+	outline-offset: -1px;
+}
+
+.paradis-browser-viewport-dropdown .pbv-check,
+.paradis-browser-viewport-dropdown .pbv-icon {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	flex-shrink: 0;
+}
+
+.paradis-browser-viewport-dropdown .pbv-check {
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-browser-viewport-dropdown .pbv-icon {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-viewport-dropdown .pbv-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-viewport-dropdown .pbv-badge {
+	flex-shrink: 0;
+	padding: 0 4px;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	color: var(--vscode-descriptionForeground);
+	font-size: 10px;
+	line-height: 15px;
+	white-space: nowrap;
+}
+
+.paradis-browser-viewport-dropdown .pbv-row.is-focused .pbv-badge {
+	color: inherit;
+	border-color: currentColor;
+}
+
+.paradis-browser-viewport-dropdown .pbv-detail {
+	flex-shrink: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-browser-viewport-dropdown .pbv-row.is-focused .pbv-detail {
+	color: inherit;
+}
+
+/* 自由入力の行（幅 × 高さ 適用）。 */
+.paradis-browser-viewport-dropdown .pbv-custom {
+	gap: 6px;
+	padding-left: 32px;
+	cursor: default;
+}
+
+.paradis-browser-viewport-dropdown .pbv-number {
+	width: 64px;
+	height: 22px;
+	padding: 0 4px;
+	box-sizing: border-box;
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-browser-viewport-dropdown .pbv-number:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-browser-viewport-dropdown .pbv-number.is-invalid {
+	border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+}
+
+.paradis-browser-viewport-dropdown .pbv-times {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-browser-viewport-dropdown .pbv-apply {
+	height: 22px;
+	padding: 0 8px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-family: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.paradis-browser-viewport-dropdown .pbv-apply:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.paradis-browser-viewport-dropdown .pbv-footer {
+	flex-shrink: 0;
+	padding: 4px 0;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.paradis-browser-viewport-dropdown .pbv-row.pbv-action {
+	width: 100%;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: inherit;
+	text-align: left;
+}
+
+.paradis-browser-viewport-dropdown .pbv-row.pbv-action.is-focused {
+	background-color: var(--vscode-quickInputList-focusBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-quickInputList-focusForeground, var(--vscode-list-activeSelectionForeground));
+}

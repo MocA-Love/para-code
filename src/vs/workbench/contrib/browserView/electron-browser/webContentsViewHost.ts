@@ -164,8 +164,10 @@ export class WebContentsViewHost extends Disposable {
 		this._modelStore.add(model.onDidNavigate(() => this._refresh(false, true)));
 		this._modelStore.add(model.onDidChangeLoadingState(() => this._refresh(false, true)));
 		this._modelStore.add(model.onWillDispose(() => this._detachModel(true)));
+		this._modelStore.add(model.onDidChangeVisibility(({ visible }) => this._paradisCoverPlaceholder(visible))); // PARA-PATCH: see _paradisCoverPlaceholder
 		this._refresh();
 		void this._captureScreenshot();
+		this._paradisCoverPlaceholder(model.visible); // PARA-PATCH: a model attached while already shown skips _refresh's show branch
 	}
 
 	private _detachModel(modelDisposing = false): void {
@@ -179,6 +181,7 @@ export class WebContentsViewHost extends Disposable {
 		this._modelStore.clear();
 		this._screenshotHandle.clear();
 		this._cancelFocusTimeout();
+		this._paradisCoverPlaceholder(false); // PARA-PATCH: see _paradisCoverPlaceholder
 		this._setBackgroundImage(undefined);
 		this._refresh();
 	}
@@ -235,7 +238,7 @@ export class WebContentsViewHost extends Disposable {
 				return;
 			}
 			this._showPendingLayout = false;
-			void this._model.setVisible(true);
+			void this._model.setVisible(true).then(() => this._paradisCoverPlaceholder(true)); // PARA-PATCH: see _paradisCoverPlaceholder
 			const targetDocument = this.targetWindow.document;
 			// PARA-PATCH: not when the user's last press was outside the container (Para Code)
 			if (targetDocument.hasFocus() && targetDocument.activeElement === this._container && this._paradisFocusGuard.mayFocusOnShow()) {
@@ -244,6 +247,7 @@ export class WebContentsViewHost extends Disposable {
 		} else {
 			// PARA-PATCH: hiding cancels a show that was waiting for layout
 			this._showPendingLayout = false;
+			this._paradisCoverPlaceholder(false); // PARA-PATCH: put the placeholder back before the native view hides
 			void this._captureScreenshot();
 			this.targetWindow.requestAnimationFrame(() => {
 				if (this._model && !this._shouldShowPage()) {
@@ -312,6 +316,27 @@ export class WebContentsViewHost extends Disposable {
 			const handle = setTimeout(() => void this._captureScreenshot(true), 5000); // PARA-PATCH: was 1000
 			this._screenshotHandle.value = toDisposable(() => clearTimeout(handle));
 		}
+	}
+
+	/**
+	 * PARA-PATCH: hide the placeholder screenshot while the native view is confirmed shown (the
+	 * show resolved, or main reported it visible), one frame later so the page has painted. The
+	 * native view normally covers the placeholder, but whenever the page draws smaller than the
+	 * container (CDP device metrics sent past the emulator, a page mid-resize) the stale, stretched
+	 * screenshot showed through the gap and the page looked doubled. It comes back the moment the
+	 * view is about to hide, so switching tabs or spaces still shows the screenshot, not a blank.
+	 */
+	private _paradisCoverPlaceholder(nativeShown: boolean): void {
+		if (!nativeShown) {
+			this._placeholderScreenshot.style.visibility = '';
+			return;
+		}
+		const model = this._model;
+		this.targetWindow.requestAnimationFrame(() => {
+			if (model && this._model === model && model.visible && this._shouldShowPage()) {
+				this._placeholderScreenshot.style.visibility = 'hidden';
+			}
+		});
 	}
 
 	private _setBackgroundImage(buffer: VSBuffer | undefined): void {
