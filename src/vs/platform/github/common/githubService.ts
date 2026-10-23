@@ -26,6 +26,8 @@ import { GitHubRequestTelemetry } from './githubRequestTelemetry.js';
 import { RequestQueue } from './requestQueue.js';
 import { GitHubRateLimitCoordinator } from './githubRateLimitCoordinator.js';
 import { systemRequestScheduler } from './scheduler.js';
+// PARA-PATCH: keep the remaining quota for interactive requests (paradisGithubQuotaReserve.ts)
+import { paradisGithubQuotaReserveDelay } from './paradisGithubQuotaReserve.js';
 import { GitHubBootstrapReadOptions, GitHubRestResponse, GitHubTransport, IGitHubTransport } from './githubTransport.js';
 import { GitHubAuthorizationContext, GitHubBootstrapClientOptions, GitHubClientOptions, GitHubCredentialChange, GitHubRequestError, GitHubServiceOptions, IGitHubCredentialProvider, IGitHubEndpointProvider } from './githubTypes.js';
 import { BootstrapAccount } from './types.js';
@@ -118,7 +120,8 @@ export class GitHubService extends Disposable implements IGitHubService {
 		super();
 		this._telemetry = this._register(new GitHubRequestTelemetry(_options.telemetrySource ?? 'other', systemRequestScheduler, telemetryService, _logService, _options.onDidChangeTelemetryLevel));
 		this._rateLimits = this._register(new GitHubRateLimitCoordinator(systemRequestScheduler));
-		this._queue = this._register(new RequestQueue(systemRequestScheduler, context => this._rateLimits.getRequestDelay(context.account, context.resource), undefined, this._telemetry));
+		// PARA-PATCH: low-priority requests also wait while the quota is nearly spent (paradisGithubQuotaReserve.ts)
+		this._queue = this._register(new RequestQueue(systemRequestScheduler, context => Math.max(this._rateLimits.getRequestDelay(context.account, context.resource), paradisGithubQuotaReserveDelay(this._rateLimits, context, systemRequestScheduler.now())), undefined, this._telemetry));
 		if (_options.credentialProvider) {
 			this._register(_options.credentialProvider.onDidChange(change => this._invalidateClients(change)));
 		}
