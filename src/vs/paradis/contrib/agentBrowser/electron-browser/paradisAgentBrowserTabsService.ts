@@ -226,6 +226,14 @@ export interface IParadisAgentBrowserTabsService {
 	isOpenedBy(token: string, viewId: string): boolean;
 
 	/**
+	 * ユーザーが、そのペインからそのページを使えなくする（ツールバーの共有のボタンの一覧の「共有を解く」）。共有・
+	 * エージェントが自分で開いたタブの許可を一度に外し（そこから開いたタブの許可は shared process が続けて外す）、
+	 * 使うペインが残っていなければ共有の印も下ろす。エージェントが自分で開いたタブなら、以後エージェントが選び直しても
+	 * 許可を付け直さない（使うにはユーザーの共有が要る）。外せなかったら投げる。
+	 */
+	unsharePageFromPane(token: string, pageId: string): Promise<void>;
+
+	/**
 	 * ユーザーがそのページの共有を止めた（「ブラウザページの共有を解除」・共有ダイアログのスイッチ）。
 	 * 承認を得て開いたユーザーのプロファイルのタブなら、エージェントの台帳から外す（次に使うときは承認し直し）。
 	 */
@@ -285,6 +293,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	private readonly _browserViews: IBrowserViewService;
 	/** 誰がどのタブを開いたか。 */
 	private readonly _ledger = new ParadisAgentTabLedger();
+	/** ユーザーが共有を解いた、エージェントが自分で開いたタブ（viewId → ペイン）。エージェントが選び直しても許可を付け直さない。 */
+	private readonly _userRevokedTabs = new Map<string, string>();
 	/** viewId → エージェントが開いたタブ（閉じるときと一覧に使う）。 */
 	private readonly _agentInputs = new Map<string, BrowserEditorInput>();
 	private readonly _agentTabListeners = this._register(new DisposableMap<string, IDisposable>());
@@ -416,6 +426,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	private _forgetView(viewId: string): void {
 		this._pendingTabs.delete(viewId);
+		this._userRevokedTabs.delete(viewId);
 		const owner = this._ledger.ownerOf(viewId);
 		if (owner !== undefined && !this._ledger.isApprovedProfileTab(viewId)) {
 			void this._bindingModel.revokeAgentTab(owner, viewId);
@@ -868,6 +879,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (isShared || isGranted) {
 			return { ok: true, tab: this._describe(token, input), bound: true };
 		}
+		if (this._isRevokedByUser(token, tabId)) {
+			return { ok: false, reason: 'revokedByUser' };
+		}
 		const bound = await this.bindTab(token, input);
 		return { ok: true, tab: this._describe(token, input), bound };
 	}
@@ -1259,6 +1273,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	/** {@link bindTab} の本体。実際に共有（または許可）したページの ID を返す。できなければ false。 */
 	private async _bindTabForPageId(token: string, input: BrowserEditorInput): Promise<string | false> {
 		const grant = this._usesGrant(token, input.id);
+		if (grant && this._isRevokedByUser(token, input.id)) {
+			// ユーザーが共有を解いた自分のタブは、エージェントの求めでは許可し直さない
+			return false;
+		}
 		try {
 			return await this._asAgentMove(token, async () => {
 				const model = await input.resolve();
@@ -1282,6 +1300,28 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	}
 
 	/** そのペインが自分で開いたタブ（承認済みのユーザーのプロファイルのタブを除く）は、共有ではなく許可で使う。 */
+	/** ユーザーがそのペインとの共有を解いた、そのペインのエージェントが自分で開いたタブか。 */
+	private _isRevokedByUser(token: string, viewId: string): boolean {
+		return this._userRevokedTabs.get(viewId) === token && this._ledger.isOpenedBy(token, viewId);
+	}
+
+	async unsharePageFromPane(token: string, pageId: string): Promise<void> {
+		if (this._bindingModel.getBindingsForPage(pageId).some(binding => binding.token === token)) {
+			await this._bindingModel.unbindPageFromToken(pageId, token);
+		}
+		// 共有の裏に、同じペインの自分のタブの許可が残っていることがある（共有を外すと許可へ戻る）。取り直してから見る
+		await this._bindingModel.refresh(true);
+		const ownTab = this._ledger.isOpenedBy(token, pageId);
+		if (ownTab) {
+			// 外す前に印を付ける（外している間にエージェントが選び直しても、付け直させない）
+			this._userRevokedTabs.set(pageId, token);
+		}
+		if (ownTab || this._bindingModel.getAgentTabOwnersForPage(pageId).includes(token)) {
+			await this._bindingModel.revokeAgentTab(token, pageId, { throwOnFailure: true });
+		}
+		await this._bindingModel.releaseShareMarkIfUnused(pageId);
+	}
+
 	private _usesGrant(token: string, viewId: string): boolean {
 		return this._ledger.isOpenedBy(token, viewId) && !this._ledger.isApprovedProfileTab(viewId);
 	}

@@ -382,7 +382,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 	function setup() {
 		const disposables = store.add(new DisposableStore());
 		const bindingChanges = disposables.add(new Emitter<void>());
-		const state = { bound: undefined as string | undefined, more: [] as string[], binds: [] as string[], grants: [] as string[], revokes: [] as string[], openedGrants: [] as string[] };
+		const state = { bound: undefined as string | undefined, more: [] as string[], binds: [] as string[], grants: [] as string[], revokes: [] as string[], openedGrants: [] as string[], unbinds: [] as string[], released: [] as string[] };
 		const views = new Map<string, BrowserEditorInput>();
 		const sharing = new Map<string, Emitter<BrowserViewSharingState>>();
 		const tab = (id: string) => {
@@ -398,7 +398,7 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			getBindingForToken: (token: string) => token === TOKEN && state.bound !== undefined ? { token, pageId: state.bound } : undefined,
 			getBindingsForToken: (token: string) => token === TOKEN ? [...(state.bound !== undefined ? [state.bound] : []), ...state.more].map(pageId => ({ token, pageId })) : [],
 			// 許可の控え（エージェントのタブと、共有したページから開いたタブ）
-			getAgentTabsForToken: (token: string) => token === TOKEN ? [...state.grants, ...state.openedGrants] : [],
+			getAgentTabsForToken: (token: string) => token === TOKEN ? [...state.grants, ...state.openedGrants].filter(pageId => !state.revokes.includes(pageId)) : [],
 			grantOpenedTab: async (model: IBrowserViewModel) => {
 				state.openedGrants.push(model.id);
 				return 'granted';
@@ -420,6 +420,18 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			},
 			revokeAgentTab: async (_token: string, viewId: string) => {
 				state.revokes.push(viewId);
+			},
+			getBindingsForPage: (pageId: string) => state.bound === pageId || state.more.includes(pageId) ? [{ token: TOKEN, pageId }] : [],
+			unbindPageFromToken: async (pageId: string) => {
+				state.unbinds.push(pageId);
+				state.bound = state.bound === pageId ? undefined : state.bound;
+				state.more = state.more.filter(candidate => candidate !== pageId);
+			},
+			refresh: async () => { },
+			// 許可の控え（外したものは除く。state.grants は付けた順の記録）
+			getAgentTabOwnersForPage: (pageId: string) => (state.grants.includes(pageId) || state.openedGrants.includes(pageId)) && !state.revokes.includes(pageId) ? [TOKEN] : [],
+			releaseShareMarkIfUnused: async (pageId: string) => {
+				state.released.push(pageId);
 			},
 		} as unknown as IParadisAgentBrowserBindingModel;
 		const service = disposables.add(new ParadisAgentBrowserTabsService(
@@ -537,6 +549,38 @@ suite('ParadisAgentBrowserTabsService approved profile tabs', () => {
 			binds: [],
 			grants: ['own'],
 			revokes: ['own'],
+		});
+	});
+
+	// 一覧の「共有を解く」で外した自分のタブは、エージェントが選び直しても許可を付け直さず、ユーザーに解かれたと伝える
+	test('an own tab the user unshared from the list is not granted again when the agent selects it', async () => {
+		const { service, state, tab } = setup();
+		service.registerAgentTab(TOKEN, tab('own'));
+		await service.selectTab(TOKEN, 'own');
+		await service.unsharePageFromPane(TOKEN, 'own');
+		const reselected = await service.selectTab(TOKEN, 'own');
+		assert.deepStrictEqual({ reselected, grants: state.grants, revokes: state.revokes, released: state.released }, {
+			reselected: { ok: false, reason: 'revokedByUser' },
+			// 最初の 1 回だけ（選び直しても付け直さない）
+			grants: ['own'],
+			revokes: ['own'],
+			released: ['own'],
+		});
+	});
+
+	// ユーザーが共有した自分のタブ: 1 回の「共有を解く」で、共有も裏の自分のタブの許可も外す
+	test('unsharing a pane from the list removes both the user share and the own tab grant hidden behind it', async () => {
+		const { service, state, tab, bind } = setup();
+		service.registerAgentTab(TOKEN, tab('own'));
+		await service.selectTab(TOKEN, 'own');
+		bind('own');
+		await service.unsharePageFromPane(TOKEN, 'own');
+		assert.deepStrictEqual({ bound: state.bound, unbinds: state.unbinds, grants: state.grants, revokes: state.revokes, released: state.released }, {
+			bound: undefined,
+			unbinds: ['own'],
+			grants: ['own'],
+			revokes: ['own'],
+			released: ['own'],
 		});
 	});
 

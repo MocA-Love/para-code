@@ -56,7 +56,7 @@ export class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
 
 	private async _restoreShareMark(model: IBrowserViewModel, store: DisposableStore): Promise<void> {
 		// 共有を外す操作の途中（台帳が先に減って、続けて印を下ろす）と取り違えないよう、台帳を取り直してから見る
-		await this.bindingModel.refresh();
+		await this.bindingModel.refresh(true);
 		if (!store.isDisposed && paradisIsShareMarkRemoved(model.sharingState) && this.bindingModel.getBindingsForPage(model.id).length > 0) {
 			await this.tabsService.restoreShareMark(model);
 		}

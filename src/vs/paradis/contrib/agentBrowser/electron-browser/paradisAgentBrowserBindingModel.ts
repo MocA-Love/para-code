@@ -135,8 +135,8 @@ export interface IParadisAgentBrowserBindingModel {
 	 */
 	getPageShares(pageId: string): readonly IParadisPageShare[];
 
-	/** shared processから最新状態を再取得する。 */
-	refresh(): Promise<void>;
+	/** shared processから最新状態を再取得する。`force` なら、ほかの取得と束ねずに今の状態を読み直す。 */
+	refresh(force?: boolean): Promise<void>;
 
 	/**
 	 * ページをペインへ共有（バインド）する。既存の共有フロー（確認ダイアログ +
@@ -156,8 +156,11 @@ export interface IParadisAgentBrowserBindingModel {
 	 */
 	grantAgentTab(model: IBrowserViewModel, token: string): Promise<boolean>;
 
-	/** {@link grantAgentTab} の許可を外す（タブを閉じた・ユーザーが共有を止めた）。 */
-	revokeAgentTab(token: string, viewId: string): Promise<void>;
+	/**
+	 * {@link grantAgentTab} の許可を外す（タブを閉じた・ユーザーが共有を止めた）。shared process に届かなかったときは、
+	 * 既定では握りつぶし（次の見直しでもう一度外しに行く）、`throwOnFailure` なら投げる（ユーザーの操作に結果を返すとき）。
+	 */
+	revokeAgentTab(token: string, viewId: string, options?: { readonly throwOnFailure?: boolean }): Promise<void>;
 
 	/**
 	 * そのページを使うペインが残っていなければ（共有も許可も無ければ）、ページの共有の印を下ろす。台帳は
@@ -723,8 +726,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		return this._requiresFastRefresh() || this._refreshRetryRequired;
 	}
 
-	async refresh(): Promise<void> {
-		await this._refreshFromBackend();
+	async refresh(force?: boolean): Promise<void> {
+		await this._refreshFromBackend(force);
 	}
 
 	/** Returns the exact fresh binding snapshot, independent of concurrent cache refreshes. */
@@ -904,16 +907,19 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		return 'notEligible';
 	}
 
-	async revokeAgentTab(token: string, viewId: string): Promise<void> {
+	async revokeAgentTab(token: string, viewId: string, options?: { readonly throwOnFailure?: boolean }): Promise<void> {
 		try {
 			await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<boolean>('revokeAgentTab', [token, viewId]);
 			if (this._agentTabGrants.get(viewId) === token) {
 				this._agentTabGrants.delete(viewId);
 			}
 			void this._refreshFromBackend(true).catch(() => undefined);
-		} catch {
+		} catch (error) {
 			// 届かなかったら控えを残す（ネットワークの制限の見直しが次の更新でもう一度外しに行く）。ビューが消えれば
 			// shared process 側でも外れる（manifest の retire）。
+			if (options?.throwOnFailure) {
+				throw error;
+			}
 		}
 	}
 
