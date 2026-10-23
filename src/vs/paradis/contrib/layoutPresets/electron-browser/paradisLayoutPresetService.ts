@@ -33,10 +33,12 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { GroupOrientation, GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisPresetTitleConfig } from '../../terminalPresets/browser/paradisPresetService.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisSpaceFolderForBackend } from '../../workspaceSwitch/common/paradisTerminalSpaceFolder.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisApplyLayoutPresetOptions,
 	IParadisLayoutPresetDefinition,
@@ -57,6 +59,20 @@ import {
 // allow-any-unicode-next-line
 const STR_PRESET_GONE = localize('paradis.layoutPresets.gone', "このレイアウトプリセットは見つかりませんでした。設定が別の場所で変更された可能性があります。一覧を開き直してください。");
 
+/**
+ * 適用を始めた時点の、配置先のウィンドウのスペースとフォルダ。
+ *
+ * 枠を埋め切るまでには実時間で十数秒かかりうる（ターミナルのプロセス起動を待つ）。その間に
+ * スペースが切り替わっても、作業フォルダ・ファイルの基準・ターミナルの所属は始めた時点のものを使う。
+ * 配置先が別のスペースに固定した補助ウィンドウなら、メインのスペースではなくそのウィンドウのスペースを使う。
+ */
+interface IParadisLayoutApplyTarget {
+	/** ターミナルを紐付けるスペース。スペースを扱わないウィンドウでは undefined（既定のタグ付けに任せる）。 */
+	readonly stateKey: string | undefined;
+	/** 相対パスの基準と、cwd 未指定のターミナルの作業フォルダ。 */
+	readonly folder: URI | undefined;
+}
+
 export class ParadisLayoutPresetService extends Disposable implements IParadisLayoutPresetService {
 
 	declare readonly _serviceBrand: undefined;
@@ -74,6 +90,9 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -192,17 +211,30 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			return;
 		}
 		const part = this._targetPart;
-		// 枠を埋め切るまでには実時間で十数秒かかりうる。ターミナルの所属スペースは
-		// createTerminal を呼んだ**その瞬間の**アクティブスコープで決まるので、途中で
-		// ユーザーがスペースを切り替えると2枠目以降だけ別スペースに紐づく。始めた時点の
-		// スペースを控えて、作った端末を明示的にそこへ付け替える。
-		const stateKey = this.workspaceSwitchService.activeStateKey;
+		// ターミナルの所属スペースは createTerminal を呼んだ**その瞬間の**アクティブスコープで
+		// 決まり、作業フォルダも今のフォルダから解決される。途中でユーザーがスペースを切り替えると
+		// 2枠目以降だけ別スペースに紐づき、別のリポジトリで動く。始めた時点の配置先のスペースと
+		// フォルダを控えて使い、作った端末を明示的にそこへ付け替える。
+		const target = this._resolveApplyTarget(part);
+		if (target === undefined) {
+			this.notificationService.warn(localize(
+				'paradis.layoutPresets.windowScopePending',
+				// allow-any-unicode-next-line
+				"このウィンドウがどのスペースのものか、まだ決まっていません。少し待ってから、もう一度レイアウトを適用してください。",
+			));
+			return;
+		}
 
 		if (options.mode === ParadisLayoutApplyMode.Replace && !await this._closeAllEditors(part)) {
 			// 未保存の変更で閉じるのを取り消されたら、グリッドは組み替えずにここで止める。
 			// ただし**それより前のグループで閉じ終わったタブは戻らない**（エディタを閉じる操作に
 			// 取り消しは無い）。全部閉じられるかを先に確かめる手段が無いので、ここは
 			// 「これ以上壊さない」までしかできない。
+			return;
+		}
+		// 閉じる確認の間にスペースが切り替わったら、切り替え先の画面を組み替えない。
+		if (!this._isStillOnTarget(part, target)) {
+			this._notifyStoppedBySpaceSwitch(preset.name);
 			return;
 		}
 
@@ -226,8 +258,14 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			if (part.getGroup(group.id) !== group) {
 				continue;
 			}
+			// 前の枠を待っている間にスペースが切り替わったら、残りの枠は開かない。開くと
+			// 切り替え先の画面に、始めたスペースのターミナルやファイルが混ざる。
+			if (!this._isStillOnTarget(part, target)) {
+				this._notifyStoppedBySpaceSwitch(preset.name);
+				return;
+			}
 			try {
-				await this._fillSlot(group, slot, preset.name, stateKey);
+				await this._fillSlot(group, slot, preset.name, target);
 			} catch (error) {
 				// 1つの枠の失敗で残りを開かないのは損なので、続行して最後にまとめて知らせる。
 				this.logService.warn(`[ParadisLayoutPresets] failed to fill slot ${index} (${slot.kind})`, error);
@@ -264,18 +302,62 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		return true;
 	}
 
-	private async _fillSlot(group: IEditorGroup, slot: IParadisLayoutSlot, presetName: string, stateKey: string | undefined): Promise<void> {
-		switch (slot.kind) {
-			case 'terminal':
-				return this._openTerminal(group, slot, presetName, stateKey);
-			case 'browser':
-				return this._openBrowser(group, slot);
-			case 'file':
-				return this._openFile(group, slot);
+	/**
+	 * 配置先のウィンドウのスペースとフォルダ。所属がまだ決まっていない補助ウィンドウでは undefined。
+	 * メインのスペースへ倒すと、別のスペースに固定したウィンドウにメインのスペースの端末が作られうる。
+	 */
+	private _resolveApplyTarget(part: IEditorPart): IParadisLayoutApplyTarget | undefined {
+		const mainFolder = this.contextService.getWorkspace().folders[0]?.uri;
+		if (part === this.editorGroupsService.mainPart) {
+			return { stateKey: this.workspaceSwitchService.activeStateKey, folder: mainFolder };
+		}
+		const scope = this.auxiliaryWindowScopeService.resolvePart(part);
+		switch (scope.kind) {
+			case 'managed': {
+				if (scope.stateKey === this.workspaceSwitchService.activeStateKey && !this.workspaceSwitchService.isSwitching) {
+					return { stateKey: scope.stateKey, folder: mainFolder };
+				}
+				const spaces = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService).map(entry => ({ stateKey: entry.space, uri: entry.uri }));
+				return { stateKey: scope.stateKey, folder: paradisSpaceFolderForBackend(scope.stateKey, spaces, this.environmentService.remoteAuthority) };
+			}
+			case 'unscoped':
+				return { stateKey: undefined, folder: mainFolder };
+			case 'pending':
+				return undefined;
 		}
 	}
 
-	private async _openTerminal(group: IEditorGroup, slot: IParadisLayoutSlot, presetName: string, stateKey: string | undefined): Promise<void> {
+	/** 配置先のウィンドウが、まだ適用を始めた時点のスペースを見せているか。 */
+	private _isStillOnTarget(part: IEditorPart, target: IParadisLayoutApplyTarget): boolean {
+		if (part === this.editorGroupsService.mainPart) {
+			return !this.workspaceSwitchService.isSwitching && this.workspaceSwitchService.activeStateKey === target.stateKey;
+		}
+		const scope = this.auxiliaryWindowScopeService.resolvePart(part);
+		return scope.kind === 'managed' ? scope.stateKey === target.stateKey : scope.kind === 'unscoped' && target.stateKey === undefined;
+	}
+
+	private _notifyStoppedBySpaceSwitch(presetName: string): void {
+		this.logService.info(`[ParadisLayoutPresets] stopped applying '${presetName}' because the space of the target window changed`);
+		this.notificationService.info(localize(
+			'paradis.layoutPresets.stoppedBySpaceSwitch',
+			// allow-any-unicode-next-line
+			"スペースが切り替わったので、レイアウト「{0}」の残りの枠は開きませんでした。",
+			presetName,
+		));
+	}
+
+	private async _fillSlot(group: IEditorGroup, slot: IParadisLayoutSlot, presetName: string, target: IParadisLayoutApplyTarget): Promise<void> {
+		switch (slot.kind) {
+			case 'terminal':
+				return this._openTerminal(group, slot, presetName, target);
+			case 'browser':
+				return this._openBrowser(group, slot);
+			case 'file':
+				return this._openFile(group, slot, target.folder);
+		}
+	}
+
+	private async _openTerminal(group: IEditorGroup, slot: IParadisLayoutSlot, presetName: string, target: IParadisLayoutApplyTarget): Promise<void> {
 		const name = slot.name?.trim() || presetName;
 		// 既知の制限: この名前は `titleTemplate` として渡るが、ターミナルの復元情報
 		// （IPtyHostAttachTarget）には含まれないため、**ウィンドウをリロードすると `zsh` 等に戻る**。
@@ -285,7 +367,7 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		// エージェントCLIの判別が全部効かなくなる。paradisPresetTitleConfig のコメント参照）。
 		const instance = await this.terminalService.createTerminal({
 			config: paradisPresetTitleConfig(name),
-			cwd: this._resolveCwd(slot.cwd),
+			cwd: this._resolveCwd(slot.cwd, target.folder),
 			location: { viewColumn: group.id },
 			// 目的の枠をグループIDではなくオブジェクト同一性で保証する。ここを view column の
 			// 数値解決に任せると、生成中に別のグループが増減したときに隣の枠へ入りうる。
@@ -296,10 +378,10 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 			skipContributedProfileCheck: true,
 		});
 
-		if (stateKey) {
+		if (target.stateKey) {
 			// 生成〜表示のあいだにユーザーが別スペースへ切り替えても、既定の（生成時点で
 			// アクティブなスコープへの）暗黙タグ付けを明示的に上書きし、始めたスペースへ紐付ける。
-			this.terminalScopeService.assignInstanceScope(instance.instanceId, stateKey);
+			this.terminalScopeService.assignInstanceScope(instance.instanceId, target.stateKey);
 		}
 
 		const command = slot.command?.trim();
@@ -323,8 +405,8 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 		}, group);
 	}
 
-	private async _openFile(group: IEditorGroup, slot: IParadisLayoutSlot): Promise<void> {
-		const resource = this._resolveFile(slot.path);
+	private async _openFile(group: IEditorGroup, slot: IParadisLayoutSlot, folder: URI | undefined): Promise<void> {
+		const resource = this._resolveFile(slot.path, folder);
 		if (!resource) {
 			return;
 		}
@@ -332,12 +414,11 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 	}
 
 	/**
-	 * 作業ディレクトリを解決する。相対はワークスペースフォルダ基準。
+	 * 作業ディレクトリを解決する。相対は適用を始めた時点のスペースのフォルダ基準。
 	 * 絶対指定でも基準フォルダと同じ名前空間で解決する（リモートや UNC のワークスペースで
 	 * ローカルの file: を強制すると開けない cwd になる）。
 	 */
-	private _resolveCwd(spec: string | undefined): URI | undefined {
-		const folder = this.contextService.getWorkspace().folders[0]?.uri;
+	private _resolveCwd(spec: string | undefined, folder: URI | undefined): URI | undefined {
 		const cwd = spec?.trim();
 		if (!cwd) {
 			return folder;
@@ -349,12 +430,11 @@ export class ParadisLayoutPresetService extends Disposable implements IParadisLa
 	}
 
 	/** ファイル枠のパスを解決する。可搬性のため保存はワークスペースフォルダ相対を推奨している。 */
-	private _resolveFile(spec: string | undefined): URI | undefined {
+	private _resolveFile(spec: string | undefined, folder: URI | undefined): URI | undefined {
 		const path = spec?.trim();
 		if (!path) {
 			return undefined;
 		}
-		const folder = this.contextService.getWorkspace().folders[0]?.uri;
 		if (isAbsolute(path)) {
 			return (folder && paradisResolveExternalPath(folder, path)) ?? URI.file(path);
 		}
