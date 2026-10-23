@@ -31,6 +31,7 @@ import { IHistoryService } from '../../../services/history/common/history.js';
 import { getWorkspaceForTerminal } from '../common/terminalEnvironment.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { IStatusbarService } from '../../../services/statusbar/browser/statusbar.js';
+import { paradisNoteRevivedPtyAnswer } from '../../../../paradis/contrib/workspaceSwitch/common/paradisEndedTerminalRestore.js'; // PARA-PATCH: see attachToRevivedProcess
 
 export class RemoteTerminalBackendContribution implements IWorkbenchContribution {
 	static ID = 'remoteTerminalBackend';
@@ -248,7 +249,7 @@ class RemoteTerminalBackend extends BaseTerminalBackend implements ITerminalBack
 					this._logService.warn(`Couldn't claim the orphan process, falling back to the nonce lookup: ${claimError.message}`);
 				}
 			}
-			const newId = await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce) ?? id;
+			const newId = paradisNoteRevivedPtyAnswer(paradisExpectedNonce, await this._remoteTerminalChannel.getRevivedPtyNewId(this._getWorkspaceId(), id, paradisExpectedNonce)) ?? id; // PARA-PATCH: keep the answer for the restart that follows a failed attach (paradisEndedTerminalRestore.ts)
 			return await this.attachToProcess(newId);
 		} catch (e) {
 			this._logService.trace(`Couldn't attach to process ${e.message}`);

@@ -29,7 +29,7 @@ import { IPtyHostProcessReplayEvent } from '../common/capabilities/capabilities.
 // PARA-PATCH: pty daemon support; replaces the direct TerminalProcess import (see paradisTerminalProcessFactory.ts)
 import { IParadisPtyScreenSink, IParadisTerminalProcessLike } from '../../../paradis/contrib/ptyDaemon/common/paradisTerminalProcessLike.js';
 // PARA-PATCH: hand terminals held by the pty daemon over between pty hosts, and count what went wrong for the window to report (see paradisPtyReadopt.ts)
-import { paradisCountNoPty, paradisCountReconnectFailed, paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
+import { paradisAnswerForMissingNonce, paradisCountNoPty, paradisCountReconnectFailed, paradisReadoptFromDaemon, paradisTakeHandoverReport } from '../../../paradis/contrib/ptyDaemon/node/paradisPtyReadopt.js';
 import type { IParadisPtyAdoptionRun, IParadisPtyHandoverReport, ParadisPtyAdoptTrigger } from '../../../paradis/contrib/ptyDaemon/common/paradisPtyHandover.js';
 import { IParadisAdoptTarget, paradisAdoptionSettled, paradisCreateTerminalProcess, paradisHandleOf, paradisSetAppQuitting } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalProcessFactory.js';
 import { paradisRememberLayout } from '../../../paradis/contrib/ptyDaemon/node/paradisTerminalLayoutStore.js';
@@ -450,7 +450,7 @@ export class PtyService extends Disposable implements IPtyService {
 			this._logService.info(`Persistent process reconnection "${id}"`);
 		} catch (e) {
 			this._logService.warn(`Persistent process reconnection "${id}" failed`, e.message);
-			paradisCountReconnectFailed(e); // PARA-PATCH: count it for the window to report (paradisRelayedDiagnostics.ts)
+			paradisCountReconnectFailed(e, id); // PARA-PATCH: count it for the window to report (paradisRelayedDiagnostics.ts)
 			throw e;
 		}
 	}
@@ -786,8 +786,9 @@ export class PtyService extends Disposable implements IPtyService {
 				}
 				// The id names somebody else's terminal. Answering with an id that cannot exist makes
 				// the attach fail, which upstream handles by launching a fresh shell — far better than
-				// stealing a live process. An id with nothing behind it fails either way.
-				return this._ptys.has(id) ? PARADIS_UNRESOLVABLE_PTY_ID : undefined;
+				// stealing a live process. An id with nothing behind it fails either way; when no
+				// terminal anywhere carries the nonce, say it has ended (paradisPtyReadopt.ts).
+				return this._ptys.has(id) ? PARADIS_UNRESOLVABLE_PTY_ID : paradisAnswerForMissingNonce(expectedNonce, Array.from(this._ptys.keys(), ptyId => this._paradisNonceOf(ptyId)));
 			}
 			return this._revivedPtyIdMap.get(this._getRevivingProcessId(workspaceId, id))?.newId;
 		} catch (e) {
@@ -1004,7 +1005,7 @@ export class PtyService extends Disposable implements IPtyService {
 	private _throwIfNoPty(id: number): PersistentTerminalProcess {
 		const pty = this._ptys.get(id);
 		if (!pty) {
-			paradisCountNoPty(); // PARA-PATCH: count it for the window to report; the pty host has no Sentry (paradisRelayedDiagnostics.ts)
+			paradisCountNoPty(id); // PARA-PATCH: count it for the window to report; the pty host has no Sentry (paradisRelayedDiagnostics.ts)
 			throw new ErrorNoTelemetry(`Could not find pty ${id} on pty host`);
 		}
 		return pty;

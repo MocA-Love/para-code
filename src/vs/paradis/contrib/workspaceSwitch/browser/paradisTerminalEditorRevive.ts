@@ -42,9 +42,11 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IDeserializedTerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IShellLaunchConfig, PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../platform/terminal/common/terminal.js';
+import { PARADIS_ENDED_PTY_ID } from '../../../../platform/terminal/common/paradisEndedPty.js';
 import { IProcessDetails } from '../../../../platform/terminal/common/terminalProcess.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisNoteRevivedPtyAnswer, paradisNoteWorkingSetRevive } from '../common/paradisEndedTerminalRestore.js';
 
 /** 索引取得に許す時間。取れなければ諦めて安全側（空）へ倒す。 */
 const PARADIS_REVIVE_INDEX_TIMEOUT_MS = 500;
@@ -66,7 +68,11 @@ interface IParadisTerminalReviveContext {
 	readonly handle: IDisposable;
 	readonly targetStateKey: string;
 	readonly expectedNonces: ReadonlySet<string> | undefined;
+	/** 離れている間に終わったのを見ていた端末の nonce（`paradisWorkspaceSwitchService` の台帳）。 */
+	readonly endedNonces: ReadonlySet<string> | undefined;
 	orphanPtyByNonce: ReadonlyMap<string, IParadisTerminalOrphanPty>;
+	/** 孤児の索引の問い合わせが締め切りで打ち切られたか。理由の数え分けにだけ使う。 */
+	indexTimedOut: boolean;
 }
 
 type ParadisTerminalRestoreResolution =
@@ -171,6 +177,8 @@ export async function paradisRefreshTerminalReviveIndex(
 		readonly blockReason?: 'no-ledger' | 'unknown-expected' | 'count-short' | 'not-all-parked';
 		/** Exact terminal inputs serialized in the target Working Set. Legacy data is represented by undefined. */
 		readonly expectedNonces?: ReadonlySet<string>;
+		/** 離れている間にプロセスが終わったと分かっている端末の nonce。 */
+		readonly endedNonces?: ReadonlySet<string>;
 	},
 ): Promise<IDisposable> {
 	let expectedNonces: Set<string> | undefined;
@@ -190,7 +198,9 @@ export async function paradisRefreshTerminalReviveIndex(
 		handle,
 		targetStateKey,
 		expectedNonces,
+		endedNonces: options?.endedNonces,
 		orphanPtyByNonce: new Map(),
+		indexTimedOut: false,
 	};
 	// 復元先にターミナルエディタが1つも無いと分かっている場合、索引は誰も引かない。本番では
 	// 最も遅い60件のうち58件で孤児が0、半分が締め切り（500ms）に張り付いており、pty host の
@@ -230,6 +240,7 @@ export async function paradisRefreshTerminalReviveIndex(
 			PARADIS_REVIVE_INDEX_TIMEOUT_MS,
 		);
 		context.orphanPtyByNonce = resolved ?? new Map();
+		context.indexTimedOut = resolved === undefined;
 		// 索引が空のまま進む回がどれだけあるかは、復元の質に直結する（空だと nonce で引けず
 		// 従来経路に落ちる）。締め切り切れと「孤児が本当にいない」は結果が同じで区別できない
 		// ので、打ち切りかどうかを明示的に残す。
@@ -317,6 +328,14 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 		}
 	}
 
+	// 離れている間に終わったのを見ていた端末は、pty host に聞くまでもなく終わっている。生きた孤児が
+	// 同じ nonce で引けた場合は上で繋いでいるので、ここに来るのは本当に居ないものだけ。繋がない番号で
+	// 開かせ、新しいシェルを起こす直前にタブを閉じさせる（`paradisEndedTerminalRestore.contribution.ts`）。
+	if (nonce !== undefined && restoreContext?.endedNonces?.has(nonce) === true) {
+		paradisNoteWorkingSetRevive(nonce, { stateKey: restoreContext.targetStateKey, indexTimedOut: restoreContext.indexTimedOut, endedWhileAway: true });
+		return { ...deserializedInput, id: PARADIS_ENDED_PTY_ID, findRevivedId: false };
+	}
+
 	// 索引で引けなかった入力を新規端末へ倒すのは、身元が**まったく**定まらないときだけにする。
 	// nonce がある入力の行き先（`findRevivedId: true` → `attachToRevivedProcess(id, nonce)` →
 	// `PtyService.getRevivedPtyNewId`）は、この fork が既に nonce 照合を入れてあり、別端末を
@@ -328,9 +347,19 @@ export function paradisResolveRevivedTerminalEditorInput(deserializedInput: IDes
 	// 遅いだけの回に生きているシェルのセッションを黙って捨てることになり、この索引が防ごうと
 	// している取り違えより実害が大きい。塞ぐのは身元を一意に決められない `ambiguous` だけ。
 	if (restoreResolution.kind === 'ambiguous' || heldPtyIdsUnknown || heldPtyIds?.has(deserializedInput.id) === true) {
+		// 取り違えを避けるために繋がない。繋ぎ直しの失敗としては数えない（理由は `ambiguous`）。
+		paradisNoteRevivedPtyAnswer(nonce, PARADIS_UNRESOLVABLE_PTY_ID);
+		if (restoreContext !== undefined) {
+			paradisNoteWorkingSetRevive(nonce, { stateKey: restoreContext.targetStateKey, indexTimedOut: restoreContext.indexTimedOut, ambiguous: true });
+		}
 		return { ...deserializedInput, id: PARADIS_UNRESOLVABLE_PTY_ID, findRevivedId: false };
 	}
 
+	// 行き先の pty host が「終わっている」と答えたら、タブを閉じるのはこの手がかりがあるときだけ
+	// （スペースの保存状態から戻したタブ）。
+	if (restoreContext !== undefined) {
+		paradisNoteWorkingSetRevive(nonce, { stateKey: restoreContext.targetStateKey, indexTimedOut: restoreContext.indexTimedOut });
+	}
 	return { ...deserializedInput, findRevivedId: true };
 }
 
