@@ -91,6 +91,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// 各拡張固有の What's New / Welcome ページは、設定が用意されているものはここで無効化し、
 		// 設定が無いもの（Dependi / Deno）は paradisSuppressExtensionWelcomeTabs.contribution.ts で閉じる。
 		'workbench.welcomePage.walkthroughs.openOnInstall': false,
+		// upstream 1.143 から、macOS の「シェルコマンドを PATH にインストール」が先に「GitHub Copilot CLI も入れるか」を聞き、
+		// Yes でアプリ同梱の `bin/copilot-shim/copilot` を起動する。この shim は Microsoft の Azure Pipelines だけが
+		// 作って同梱するもので、Para Code の配布物（para-release.yml・gulp）には入らないため、Yes は必ずエラーになる。
+		// 既定を false にして、質問・コマンドパレットの「optionally 'copilot'」表記・Copilot 拡張のターミナルの PATH 追加
+		// （shim が無ければどのみち外れる）をまとめて止める。自分で入れた Copilot CLI はこの設定と関係なく動く。
+		'chat.copilotCliCommand.enabled': false,
+		// upstream 1.143 で既定が false→true になり、GitHub に未サインインだとようこそページの「Agents window」の
+		// ボタンが「Sign in to GitHub」に置き換わるようになった。Para Code では 1.142（paracode-171）までと同じ表示に戻す。
+		'chat.welcomePage.signIn.enabled': false,
 		'gitlens.showWhatsNewAfterUpgrades': false,
 		'go.showWelcome': false,
 		'dependi.extras.silenceUpdateMessages': true,
