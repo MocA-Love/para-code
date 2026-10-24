@@ -1462,6 +1462,11 @@ ${formatRule(Codicon.menuSubmenu)}
 	max-height: 100%;
 }
 
+/* PARA-PATCH: menu items without a shortcut keep an empty span.keybinding with the hidden attribute; the display: inline-block rule above beats [hidden] and its 2em padding widens every menu. */
+.monaco-menu .monaco-action-bar.vertical .keybinding[hidden] {
+	display: none;
+}
+
 .monaco-menu .monaco-action-bar.vertical .menu-item-check {
 	font-size: inherit;
 	width: 2em;
