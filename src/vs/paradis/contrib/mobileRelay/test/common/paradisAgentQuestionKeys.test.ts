@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
 import { paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptions } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
@@ -266,6 +266,131 @@ suite('paradisAgentQuestionKeySequence', () => {
 			noPiece: ['y'],
 			execYes: ['y'],
 			execNo: ['\u001b'],
+		});
+	});
+
+	test('複数選択の問いは、チェックの数字を打ち終えて送信ボタンへ降りる前に画面で確かめる箇所を返す（キー列は変えない）', () => {
+		const questions = [multi(4), single(3), multi(3)];
+		const answers = [{ kind: 'multi' as const, indices: [2, 0] }, { kind: 'option' as const, index: 1 }, { kind: 'multi' as const, indices: [1, 2] }];
+		const plan = paradisAgentQuestionKeyPlan(questions, answers);
+		assert.deepStrictEqual({
+			sameParts: plan.parts.join('|') === paradisAgentQuestionKeySequence(questions, answers).join('|'),
+			checks: plan.checks,
+			partsAtChecks: plan.checks.map(check => plan.parts[check.beforePart] === DOWN && plan.parts[check.beforePart - 1] === String(check.checked[check.checked.length - 1])),
+			textInMulti: paradisAgentQuestionKeyPlan([multi(2)], [{ kind: 'text', optionCount: 2, text: 'A, x' }]).checks,
+		}, {
+			sameParts: true,
+			checks: [{ beforePart: 2, checked: [1, 3], optionCount: 4 }, { beforePart: 11, checked: [2, 3], optionCount: 3 }],
+			partsAtChecks: [true, true],
+			textInMulti: [],
+		});
+	});
+
+	// Claude Code 2.1.310 の複数選択の画面（偽の API サーバーで出したもの）。先頭の数字が入力欄へ吸われ、Apple だけが抜けた状態
+	test('画面の複数選択のチェックを読み、送るつもりのものと比べる', () => {
+		const screen = [
+			'\u276f ask me questions',
+			'\u2190  \u2610 Fruits  \u2610 Size  \u2610 Toppings  \u2714 Submit  \u2192',
+			'Which fruits do you want?',
+			'  1. [ ] Apple',
+			'         red',
+			'  2. [ ] Banana',
+			'\u276f 3. [\u2714] Cherry',
+			'  4. [ ] Durian',
+			'  5. [ ] Type something',
+			'     Next',
+			'  6. Chat about this',
+		].join('\n');
+		const check = { beforePart: 2, checked: [1, 3], optionCount: 4 };
+		assert.deepStrictEqual({
+			visible: paradisVisibleQuestionChecks(screen, 4),
+			missing: paradisQuestionChecksVerdict(paradisVisibleQuestionChecks(screen, 4), check),
+			ok: paradisQuestionChecksVerdict([1, 3], check),
+			extra: paradisQuestionChecksVerdict([1, 2, 3], check),
+			unreadable: [paradisVisibleQuestionChecks('Which fruits?\n  1. [ ] Apple', 4), paradisQuestionChecksVerdict(undefined, check)],
+			read: paradisReadQuestionKeyChecks([check, { beforePart: 99, checked: [1], optionCount: 4 }, { beforePart: 1, checked: [5], optionCount: 4 }, 'x'], 10),
+		}, {
+			visible: [3],
+			missing: { kind: 'missing', missing: [1] },
+			ok: { kind: 'ok' },
+			extra: { kind: 'extra' },
+			unreadable: [undefined, { kind: 'unreadable' }],
+			read: [check],
+		});
+	});
+
+	/**
+	 * 打鍵が `latencyMs` 遅れて画面に反映される偽の端末（SSH の往復の代わり）。数字はチェックのトグル。
+	 * `swallow` の数字は反映されない（入力欄へ吸われた）。`flicker` なら読むたびに 1 番が付いたり外れたりする。
+	 */
+	function fakeScreen(options: { readonly latencyMs: number; readonly typed: readonly number[]; readonly swallow?: readonly number[]; readonly ignoreRetype?: boolean; readonly flicker?: boolean; readonly unreadable?: boolean; readonly stale?: boolean }) {
+		let now = 0;
+		let reads = 0;
+		const events: { readonly at: number; readonly optionNumber: number }[] = options.typed
+			.filter(optionNumber => !(options.swallow ?? []).includes(optionNumber))
+			.map(optionNumber => ({ at: options.latencyMs, optionNumber }));
+		const sent: string[] = [];
+		const render = () => {
+			const checked = new Set<number>();
+			for (const event of events) {
+				if (event.at <= now) {
+					checked.has(event.optionNumber) ? checked.delete(event.optionNumber) : checked.add(event.optionNumber);
+				}
+			}
+			if (options.flicker && reads % 2 === 0) {
+				checked.has(1) ? checked.delete(1) : checked.add(1);
+			}
+			reads++;
+			if (options.unreadable) {
+				return 'Which fruits?';
+			}
+			return ['Which fruits?', ...[1, 2, 3, 4].map(n => `  ${n}. [${checked.has(n) ? '\u2714' : ' '}] Option ${n}`), '  5. [ ] Type something'].join('\n');
+		};
+		// キー列の最後の数字を打ってから delayMs（300）経ってから確かめ始める
+		now = 300;
+		return {
+			sent,
+			screen: {
+				read: render,
+				send: async (key: string) => {
+					sent.push(key);
+					if (!options.ignoreRetype) {
+						events.push({ at: now + options.latencyMs, optionNumber: Number(key) });
+					}
+				},
+				wait: async (ms: number) => { now += ms; },
+				stillCurrent: async () => !options.stale,
+			},
+		};
+	}
+
+	test('画面が落ち着いてから確かめ、落ち着いた画面で抜けていたときだけ打ち直す（反映が遅いだけのチェックは打ち直さない）', async () => {
+		const check = { beforePart: 2, checked: [1, 3], optionCount: 4 };
+		const run = async (options: Parameters<typeof fakeScreen>[0]) => {
+			const fake = fakeScreen(options);
+			const outcome = await paradisConfirmQuestionChecks(fake.screen, check, 300);
+			return { outcome, sent: fake.sent };
+		};
+		assert.deepStrictEqual({
+			slowSsh: await run({ latencyMs: 500, typed: [1, 3] }),
+			verySlowSsh: await run({ latencyMs: 1_100, typed: [1, 3] }),
+			fast: await run({ latencyMs: 20, typed: [1, 3] }),
+			swallowedOnSlowSsh: await run({ latencyMs: 500, typed: [1, 3], swallow: [1] }),
+			extra: await run({ latencyMs: 20, typed: [1, 2, 3] }),
+			retypeNotTaken: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], ignoreRetype: true }),
+			flicker: await run({ latencyMs: 20, typed: [1, 3], flicker: true }),
+			unreadable: await run({ latencyMs: 20, typed: [1, 3], unreadable: true }),
+			answeredOnPcWhileWaiting: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], stale: true }),
+		}, {
+			slowSsh: { outcome: 'ok', sent: [] },
+			verySlowSsh: { outcome: 'ok', sent: [] },
+			fast: { outcome: 'ok', sent: [] },
+			swallowedOnSlowSsh: { outcome: 'retyped', sent: ['1'] },
+			extra: { outcome: 'extra', sent: [] },
+			retypeNotTaken: { outcome: 'still-missing', sent: ['1'] },
+			flicker: { outcome: 'unsettled', sent: [] },
+			unreadable: { outcome: 'unreadable', sent: [] },
+			answeredOnPcWhileWaiting: { outcome: 'stale', sent: [] },
 		});
 	});
 });

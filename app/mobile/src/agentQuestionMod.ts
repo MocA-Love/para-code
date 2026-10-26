@@ -73,6 +73,28 @@ export function partialQuestionAnswers(answers: readonly (AgentQuestionAnswer | 
 	return answers.map((answer, index) => attachQuestionNotes(answer, notes[index] ?? '', takesNotes(index)) ?? null);
 }
 
+/**
+ * 複数選択の質問の回答を、チェックした選択肢と「その他」の文から作る（どちらも無ければ undefined）。
+ *
+ * TUI は複数選択でチェックと「その他」の文を一緒に受け、`Apple, Banana, also kiwi` のようにラベルと文を `, ` でつないで
+ * 返す（Claude Code 2.1.310 で実測）。アプリの回答の形にはチェックと文を一緒に持つものが無いので、「その他」の文があるときは
+ * チェックしたラベルを文の前に足し、文の回答として送る（mod の経路では TUI と同じ文字列がエージェントへ届く）。
+ * 文を送るだけにすると、チェックが黙って捨てられる。
+ */
+export function multiSelectAnswer(options: readonly { readonly label: string }[], indices: readonly number[], otherText: string): AgentQuestionAnswer | undefined {
+	const picked = [...new Set(indices)].filter(index => options[index] !== undefined).sort((a, b) => a - b);
+	const text = otherText.trim();
+	if (text.length > 0) {
+		return { kind: 'text', optionCount: options.length, text: [...picked.map(index => options[index]!.label), text].join(', ') };
+	}
+	return picked.length > 0 ? { kind: 'multi', indices: picked } : undefined;
+}
+
+/** 送る回答に、選択肢を選ばずメモだけのもの（エージェントには「選択肢を選んでいない」と伝わる）があるか。 */
+export function hasNotesOnlyAnswer(answers: readonly (AgentQuestionAnswer | undefined)[]): boolean {
+	return answers.some(answer => answer?.kind === 'notes');
+}
+
 /** preview の 1 行。`heading` は `#` の見出し（記号を外して太字で出す）。 */
 export interface PreviewLine {
 	readonly text: string;
