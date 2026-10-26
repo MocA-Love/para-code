@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
 import { paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptions } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
@@ -266,6 +266,56 @@ suite('paradisAgentQuestionKeySequence', () => {
 			noPiece: ['y'],
 			execYes: ['y'],
 			execNo: ['\u001b'],
+		});
+	});
+
+	test('複数選択の問いは、チェックの数字を打ち終えて送信ボタンへ降りる前に画面で確かめる箇所を返す（キー列は変えない）', () => {
+		const questions = [multi(4), single(3), multi(3)];
+		const answers = [{ kind: 'multi' as const, indices: [2, 0] }, { kind: 'option' as const, index: 1 }, { kind: 'multi' as const, indices: [1, 2] }];
+		const plan = paradisAgentQuestionKeyPlan(questions, answers);
+		assert.deepStrictEqual({
+			sameParts: plan.parts.join('|') === paradisAgentQuestionKeySequence(questions, answers).join('|'),
+			checks: plan.checks,
+			partsAtChecks: plan.checks.map(check => plan.parts[check.beforePart] === DOWN && plan.parts[check.beforePart - 1] === String(check.checked[check.checked.length - 1])),
+			textInMulti: paradisAgentQuestionKeyPlan([multi(2)], [{ kind: 'text', optionCount: 2, text: 'A, x' }]).checks,
+		}, {
+			sameParts: true,
+			checks: [{ beforePart: 2, checked: [1, 3], optionCount: 4 }, { beforePart: 11, checked: [2, 3], optionCount: 3 }],
+			partsAtChecks: [true, true],
+			textInMulti: [],
+		});
+	});
+
+	// Claude Code 2.1.310 の複数選択の画面（偽の API サーバーで出したもの）。先頭の数字が入力欄へ吸われ、Apple だけが抜けた状態
+	test('画面の複数選択のチェックを読み、送るつもりのものと比べる', () => {
+		const screen = [
+			'\u276f ask me questions',
+			'\u2190  \u2610 Fruits  \u2610 Size  \u2610 Toppings  \u2714 Submit  \u2192',
+			'Which fruits do you want?',
+			'  1. [ ] Apple',
+			'         red',
+			'  2. [ ] Banana',
+			'\u276f 3. [\u2714] Cherry',
+			'  4. [ ] Durian',
+			'  5. [ ] Type something',
+			'     Next',
+			'  6. Chat about this',
+		].join('\n');
+		const check = { beforePart: 2, checked: [1, 3], optionCount: 4 };
+		assert.deepStrictEqual({
+			visible: paradisVisibleQuestionChecks(screen, 4),
+			missing: paradisQuestionChecksVerdict(paradisVisibleQuestionChecks(screen, 4), check),
+			ok: paradisQuestionChecksVerdict([1, 3], check),
+			extra: paradisQuestionChecksVerdict([1, 2, 3], check),
+			unreadable: [paradisVisibleQuestionChecks('Which fruits?\n  1. [ ] Apple', 4), paradisQuestionChecksVerdict(undefined, check)],
+			read: paradisReadQuestionKeyChecks([check, { beforePart: 99, checked: [1], optionCount: 4 }, { beforePart: 1, checked: [5], optionCount: 4 }, 'x'], 10),
+		}, {
+			visible: [3],
+			missing: { kind: 'missing', missing: [1] },
+			ok: { kind: 'ok' },
+			extra: { kind: 'extra' },
+			unreadable: [undefined, { kind: 'unreadable' }],
+			read: [check],
 		});
 	});
 });

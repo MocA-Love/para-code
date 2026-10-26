@@ -2,8 +2,8 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	askQuestionFeatures, attachQuestionNotes, formatQuestionPreview, partialQuestionAnswers, previewNeedsFullView, questionHasPreview,
-	questionOutcomeFromResult, questionTakesNotes, showOtherOption,
+	askQuestionFeatures, attachQuestionNotes, formatQuestionPreview, hasNotesOnlyAnswer, multiSelectAnswer, partialQuestionAnswers, previewNeedsFullView,
+	questionHasPreview, questionOutcomeFromResult, questionTakesNotes, showOtherOption,
 } from './agentQuestionMod.js';
 
 const withPreview = { options: [{ label: 'Toast', preview: '# Toast' }, { label: 'Inline' }] };
@@ -85,5 +85,24 @@ describe('agentQuestionMod', () => {
 			{ kind: 'withdrawn' },
 			undefined,
 		]);
+	});
+
+	it('複数選択の「その他」は、チェックしたラベルを文の前に足した文の回答にする（TUI と同じ「Apple, Banana, also kiwi」）', () => {
+		const fruits = [{ label: 'Apple' }, { label: 'Banana' }, { label: 'Cherry' }];
+		expect({
+			both: multiSelectAnswer(fruits, [1, 0, 1], '  also kiwi '),
+			textOnly: multiSelectAnswer(fruits, [], 'also kiwi'),
+			checksOnly: multiSelectAnswer(fruits, [2, 0], ''),
+			outOfRange: multiSelectAnswer(fruits, [5], 'x'),
+			none: multiSelectAnswer(fruits, [], '   '),
+			notesOnly: [hasNotesOnlyAnswer([{ kind: 'option', index: 0 }, { kind: 'notes', notes: 'n' }]), hasNotesOnlyAnswer([{ kind: 'option', index: 0, notes: 'n' }, undefined])],
+		}).toEqual({
+			both: { kind: 'text', optionCount: 3, text: 'Apple, Banana, also kiwi' },
+			textOnly: { kind: 'text', optionCount: 3, text: 'also kiwi' },
+			checksOnly: { kind: 'multi', indices: [0, 2] },
+			outOfRange: { kind: 'text', optionCount: 3, text: 'x' },
+			none: undefined,
+			notesOnly: [true, false],
+		});
 	});
 });
