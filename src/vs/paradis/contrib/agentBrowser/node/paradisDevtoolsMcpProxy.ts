@@ -43,6 +43,7 @@ import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDir
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
 import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
+import { IParadisDevtoolsCallOrigin, paradisDevtoolsCallOriginExtra } from './paradisDevtoolsCallOrigin.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -399,7 +400,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	 * MCPツールエラー（`isError: true` のcontent）を返し、プロトコルエラーにはしない。
 	 * @param snapshotDiff エージェントの take_snapshot を前回との差分にするか（paradisBrowserSnapshotDiff.ts）。省くと従来どおり。
 	 */
-	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal, snapshotDiff?: ParadisSnapshotDiffMode): Promise<unknown | undefined> {
+	/**
+	 * @param origin 何のための呼び出しか（エージェントが呼んだ道具・Para Code の見張り）。失敗の報告にだけ使う（paradisDevtoolsCallOrigin.ts）。
+	 */
+	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal, snapshotDiff?: ParadisSnapshotDiffMode, origin?: IParadisDevtoolsCallOrigin): Promise<unknown | undefined> {
 		let known: boolean;
 		try {
 			known = (await this._listTools(token, generation, wsEndpoint, signal)).some(tool => tool.name === name);
@@ -428,7 +432,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._inFlight.set(token, (this._inFlight.get(token) ?? 0) + 1);
 		try {
-			return await this._callProxiedTool(token, generation, wsEndpoint, name, args, prepared, signal, snapshotDiff);
+			return await this._callProxiedTool(token, generation, wsEndpoint, name, args, prepared, signal, snapshotDiff, origin);
 		} finally {
 			const remaining = (this._inFlight.get(token) ?? 1) - 1;
 			if (remaining > 0) {
@@ -439,7 +443,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 	}
 
-	private async _callProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, prepared: ReturnType<typeof paradisPrepareDevtoolsToolCall>, signal: AbortSignal | undefined, snapshotDiff: ParadisSnapshotDiffMode | undefined): Promise<unknown> {
+	private async _callProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, prepared: ReturnType<typeof paradisPrepareDevtoolsToolCall>, signal: AbortSignal | undefined, snapshotDiff: ParadisSnapshotDiffMode | undefined, origin: IParadisDevtoolsCallOrigin | undefined): Promise<unknown> {
 		const startedAt = Date.now();
 		const now = this.options.now ?? Date.now;
 		const budgetStartedAt = now();
@@ -484,7 +488,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				// The CDP connection or the page's session went away under the call (a rebind sweep, a
 				// detach, a transport error). chrome-devtools-mcp reconnects on its next call when it sees
 				// the browser disconnected, so one more try of a read-only tool usually succeeds.
-				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
+				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt, origin);
 				this._debug(`[ParadisDevtoolsProxy] ${safeToolName} failed with a closed target for pane ${entry.tokenFingerprint}; retrying once`);
 				const retryEntry = this._ensureChild(token, generation, wsEndpoint);
 				await this._awaitReady(token, retryEntry, signal);
@@ -498,10 +502,10 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 						safe_tool_name: safeToolName,
 						safe_retry_succeeded: !(this._isRecord(result) && result.isError === true),
 					}, 'info');
-					this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
+					this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt, origin);
 				}
 			} else {
-				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt);
+				this._reportToolResultError(token, safeToolName, result, Date.now() - startedAt, origin);
 			}
 			// root の位置の行は、控える前・エージェントへ返す前に取り除き、位置は返す結果に結び付ける
 			const measured = measuresRoot ? paradisTakeSnapshotRootRect(result) : undefined;
@@ -526,7 +530,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			if (error instanceof ParadisDevtoolsStaleUidError) {
 				return this._staleUidResult(token);
 			}
-			this._reportToolCallFailure(token, safeToolName, error, Date.now() - startedAt, signal);
+			this._reportToolCallFailure(token, safeToolName, error, Date.now() - startedAt, signal, origin);
 			return this._toolCallError(name, error);
 		}
 	}
@@ -733,7 +737,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	}
 
 	/** Transport succeeded but the tool itself failed (`result.isError`): the text stays with the agent, the bucket goes to Sentry. */
-	private _reportToolResultError(token: string, safeToolName: string, result: unknown, durationMs: number): void {
+	private _reportToolResultError(token: string, safeToolName: string, result: unknown, durationMs: number, origin?: IParadisDevtoolsCallOrigin): void {
 		if (!this._isRecord(result) || result.isError !== true) {
 			return;
 		}
@@ -743,10 +747,15 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		// window; otherwise an agent's ordinary mis-clicks would crowd out a real transport fault.
 		const kind = first ? classifyToolErrorText(first.text) : 'other';
 		const gate = first ? paradisClassifyBrowserToolErrorText(first.text) : undefined;
-		reportParadisDiagnosticError('owned', 'agent-browser', `devtools-tool-error-${kind}`, new Error('chrome-devtools-mcp tool returned isError'), {
+		// Para Code's own watcher (the observation around an action) gets its own operation: the agent never sees
+		// those failures, and they would crowd the agents' real failures out of the rate-limit window (q.html Q462 D1).
+		const operation = origin?.internal !== undefined ? `devtools-observe-error-${kind}` : `devtools-tool-error-${kind}`;
+		reportParadisDiagnosticError('owned', 'agent-browser', operation, new Error('chrome-devtools-mcp tool returned isError'), {
 			duration_ms: durationMs,
 			safe_tool_name: safeToolName,
 			safe_error_kind: kind,
+			// The tool the agent called (wait_until, click_by, ...) when it ran this one inside (q.html Q462 D2).
+			...paradisDevtoolsCallOriginExtra(origin),
 			// Whether Para Code's own input gate refused it (PARA_BROWSER_*), and which CDP method failed.
 			...gate,
 		}, 'info');
@@ -762,7 +771,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 	}
 
-	private _reportToolCallFailure(token: string, safeToolName: string, error: unknown, durationMs: number, signal: AbortSignal | undefined): void {
+	private _reportToolCallFailure(token: string, safeToolName: string, error: unknown, durationMs: number, signal: AbortSignal | undefined, origin?: IParadisDevtoolsCallOrigin): void {
 		if (signal?.aborted || error instanceof StaleParadisDevtoolsGenerationError || error instanceof ParadisDevtoolsResourceLimitError) {
 			return;
 		}
@@ -772,6 +781,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 					duration_ms: durationMs,
 					safe_tool_name: safeToolName,
 					safe_rpc_code: error.rpcCode,
+					...paradisDevtoolsCallOriginExtra(origin),
 				}, 'warning');
 				this._noteToolFailure(token, safeToolName, 'rpc-error', undefined);
 			}
@@ -783,6 +793,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				duration_ms: durationMs,
 				safe_tool_name: safeToolName,
 				safe_method: message.startsWith('tools/call') ? 'tools/call' : message.startsWith('initialize') ? 'initialize' : 'other',
+				...paradisDevtoolsCallOriginExtra(origin),
 			}, 'warning');
 			this._noteToolFailure(token, safeToolName, 'call-timeout', undefined);
 		}
