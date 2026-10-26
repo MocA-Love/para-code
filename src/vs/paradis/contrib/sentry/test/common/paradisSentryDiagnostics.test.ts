@@ -175,6 +175,22 @@ suite('ParadisSentryDiagnostics', () => {
 		assert.deepStrictEqual({ relayed: paradisSafeErrorTags(relayed)['para.origin'], local: paradisSafeErrorTags(local)['para.origin'], apart: fingerprint(relayed) !== fingerprint(local) }, { relayed: 'extension-host', local: undefined, apart: true });
 	});
 
+	test('sends the extension identifier of a relayed error as a tag that does not change its grouping key', () => {
+		const withId = new Error('write EPIPE');
+		markParadisErrorOrigin(withId, 'extension-host', 'github.vscode-pull-request-github');
+		const withoutId = new Error('write EPIPE');
+		markParadisErrorOrigin(withoutId, 'extension-host');
+		const fingerprint = (error: Error) => paradisSentryFingerprint({
+			tags: { 'para.scope': 'patched', 'para.feature': 'unhandled-error', 'para.operation': 'on-unexpected-error', ...paradisSafeErrorTags(error) },
+			exception: { values: [{ type: 'Error', stacktrace: { frames: [{ filename: 'node:internal/timers', function: 'process.processImmediate' }] } }] },
+		});
+		assert.deepStrictEqual({
+			withId: paradisSafeErrorTags(withId)['para.extension_id'],
+			withoutId: paradisSafeErrorTags(withoutId)['para.extension_id'],
+			sameKey: fingerprint(withId) === fingerprint(withoutId),
+		}, { withId: 'github.vscode-pull-request-github', withoutId: undefined, sameKey: true });
+	});
+
 	test('separates frame-less errors by a hash of their message, ignoring paths, quotes and numbers', () => {
 		const hash = (message: string) => paradisErrorMessageHash(new Error(message));
 		const fingerprint = (error: Error) => {
