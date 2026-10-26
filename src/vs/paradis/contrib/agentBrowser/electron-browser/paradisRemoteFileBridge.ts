@@ -15,8 +15,8 @@
 // 先に置ける）。読む側は加えて接続先の一時フォルダを許す。`.git`・`.hg`・`.svn` の中は読み書きとも断る。
 //
 // シンボリックリンクで外へ・`.git` の中へ出ていないかは、パスそのものに加えて、書く前に親フォルダ（ファイルが
-// 在ればファイル自身）の realpath で、書いた後にファイル自身の realpath で確かめる。途中のフォルダは作らない
-// （親フォルダが無ければ断る）。作るのは受け渡し用フォルダだけ。既にあるものはふつうのファイルのときだけ扱う。
+// 在ればファイル自身）の realpath で、書いた後にファイル自身の realpath で確かめる。途中のフォルダは、受け渡し用
+// フォルダの中でだけ作る（それ以外で親フォルダが無ければ断る）。先頭の `~/` は接続先のホームへ展開する。既にあるものはふつうのファイルのときだけ扱う。
 // 失敗の詳細は log にだけ残し、IPC では理由の種類だけを返す（パスや例外の文を shared process へ渡さない）。
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -34,6 +34,8 @@ import {
 	PARADIS_REMOTE_FILE_COPY_TTL_MS,
 	PARADIS_REMOTE_FILE_MAX_BYTES,
 	PARADIS_REMOTE_FILE_USER_FOLDER,
+	IParadisRemoteFileFolders,
+	paradisExpandRemoteHomePath,
 	paradisNormalizeRemoteFilePath,
 	paradisPathHasVersionControlSegment,
 } from '../common/paradisRemoteFileBridge.js';
@@ -60,6 +62,8 @@ interface IAllowedFolders {
 	readonly real: readonly URI[];
 	/** 接続先のホームの受け渡し用フォルダ（環境が取れなければ undefined）。 */
 	readonly userFolder: URI | undefined;
+	/** 読む側で許した接続先の一時フォルダ（読む側でなければ・環境が取れなければ undefined）。 */
+	readonly temporaryFolder?: URI;
 }
 
 interface IWriteTarget {
@@ -78,8 +82,14 @@ export class ParadisRemoteFileBridge {
 		private readonly now: () => number = Date.now,
 	) { }
 
+	/** 接続先の場所（道具の説明に書く）。取れなければ空。 */
+	async folders(remoteAuthority: string): Promise<IParadisRemoteFileFolders> {
+		const remote = await this.host.remoteFolders(remoteAuthority).catch(() => undefined);
+		return remote !== undefined && remote.tmpDir.scheme === Schemas.vscodeRemote && remote.tmpDir.authority === remoteAuthority ? { temporaryFolder: remote.tmpDir.path } : {};
+	}
+
 	async checkWrite(token: string, remoteAuthority: string, path: string): Promise<ParadisRemoteFileCheckResult> {
-		const target = await this.resolveWriteTarget(token, remoteAuthority, this.resource(remoteAuthority, path));
+		const target = await this.resolveWriteTarget(token, remoteAuthority, await this.resource(remoteAuthority, path));
 		return target.ok ? { ok: true } : target;
 	}
 
@@ -90,7 +100,7 @@ export class ParadisRemoteFileBridge {
 		if (data.byteLength > this.maxBytes) {
 			return { ok: false, reason: 'tooLarge' };
 		}
-		const target = await this.resolveWriteTarget(token, remoteAuthority, this.resource(remoteAuthority, path), exclusive === true);
+		const target = await this.resolveWriteTarget(token, remoteAuthority, await this.resource(remoteAuthority, path), exclusive === true);
 		return target.ok ? this.writeAndVerify(target, data, exclusive === true) : target;
 	}
 
@@ -120,7 +130,7 @@ export class ParadisRemoteFileBridge {
 
 	async read(token: string, remoteAuthority: string, path: string, maxBytes: number): Promise<ParadisRemoteFileReadResult<VSBuffer>> {
 		const limit = Math.min(this.maxBytes, Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : this.maxBytes);
-		const resource = this.resource(remoteAuthority, path);
+		const resource = await this.resource(remoteAuthority, path);
 		if (resource === undefined) {
 			return { ok: false, reason: 'invalidPath' };
 		}
@@ -132,7 +142,7 @@ export class ParadisRemoteFileBridge {
 			return folders;
 		}
 		if (!folders.value.literal.some(folder => isEqualOrParent(resource, folder))) {
-			return { ok: false, reason: 'outsideAllowedFolders' };
+			return this.outsideForRead(folders.value);
 		}
 		try {
 			const stat = await this.fileService.stat(resource);
@@ -148,7 +158,7 @@ export class ParadisRemoteFileBridge {
 			const real = await this.fileService.realpath(resource);
 			const placement = this.placement(real, folders.value);
 			if (placement !== undefined || real === undefined) {
-				return { ok: false, reason: placement ?? 'outsideAllowedFolders' };
+				return placement === 'versionControlFolder' ? { ok: false, reason: placement } : this.outsideForRead(folders.value);
 			}
 			const content = await this.fileService.readFile(real, { limits: { size: limit } });
 			return { ok: true, data: content.value, name: basename(resource) };
@@ -233,9 +243,16 @@ export class ParadisRemoteFileBridge {
 				}
 			} else {
 				probe = dirname(resource);
-				const parent = await this.fileService.stat(probe).catch(() => undefined);
+				let parent: { readonly isDirectory: boolean } | 'refused' | undefined = await this.fileService.stat(probe).catch(() => undefined);
+				if (parent === undefined && folders.userFolder !== undefined && isEqualOrParent(probe, folders.userFolder)) {
+					// 受け渡し用フォルダ（Para Code 自身の場所）の中に限って、無いフォルダを作る（q.html Q461 の 3 の C）
+					parent = await this.createFoldersInUserFolder(probe, folders);
+				}
+				if (parent === 'refused') {
+					return { ok: false, reason: 'outsideAllowedFolders' };
+				}
 				if (parent === undefined || !parent.isDirectory) {
-					// 途中のフォルダは作らない。エージェントに、在るフォルダを選ばせる
+					// それ以外の場所では途中のフォルダは作らない。エージェントに、在るフォルダを選ばせる
 					return { ok: false, reason: 'parentMissing' };
 				}
 			}
@@ -249,6 +266,42 @@ export class ParadisRemoteFileBridge {
 		}
 	}
 
+	/**
+	 * 受け渡し用フォルダの中の、無いフォルダ `folder` を作る。作る前に、在る一番近い祖先の realpath が許された場所の
+	 * 下にあることを確かめる（中のシンボリックリンクから外へフォルダを作らない）。作った後の確かめは呼び出し元が
+	 * 今までどおり行う。祖先が外を指していれば `refused`。作れなければ undefined。
+	 */
+	private async createFoldersInUserFolder(folder: URI, folders: IAllowedFolders): Promise<{ readonly isDirectory: boolean } | 'refused' | undefined> {
+		let ancestor = dirname(folder);
+		for (let depth = 0; depth < 64 && folders.userFolder !== undefined && isEqualOrParent(ancestor, folders.userFolder); depth++) {
+			const stat = await this.fileService.stat(ancestor).catch(() => undefined);
+			if (stat !== undefined) {
+				if (!stat.isDirectory) {
+					return undefined;
+				}
+				if (this.placement(await this.fileService.realpath(ancestor).catch(() => undefined), folders) !== undefined) {
+					return 'refused';
+				}
+				try {
+					await this.fileService.createFolder(folder);
+					return await this.fileService.stat(folder);
+				} catch (error) {
+					this.logService.warn(`[ParadisRemoteFileBridge] could not create ${folder.toString()}`, error);
+					return undefined;
+				}
+			}
+			ancestor = dirname(ancestor);
+		}
+		return undefined;
+	}
+
+	/** 読む側で、許された場所の外として断る（読んでよい一時フォルダがあれば、そのパスを添える）。 */
+	private outsideForRead(folders: IAllowedFolders): ParadisRemoteFileReadResult<VSBuffer> {
+		return folders.temporaryFolder !== undefined
+			? { ok: false, reason: 'outsideAllowedFolders', temporaryFolder: folders.temporaryFolder.path }
+			: { ok: false, reason: 'outsideAllowedFolders' };
+	}
+
 	/** realpath が許された場所の下にあり、`.git` などの中でないか。問題があればその理由。 */
 	private placement(real: URI | undefined, folders: IAllowedFolders): ParadisRemoteFileFailure | undefined {
 		if (real === undefined || !folders.real.some(folder => isEqualOrParent(real, folder))) {
@@ -257,8 +310,15 @@ export class ParadisRemoteFileBridge {
 		return paradisPathHasVersionControlSegment(real.path) ? 'versionControlFolder' : undefined;
 	}
 
-	private resource(remoteAuthority: string, path: string): URI | undefined {
-		const normalized = paradisNormalizeRemoteFilePath(path);
+	/** エージェントが渡したパスの URI。先頭の `~/` は接続先のホームへ展開する（q.html Q461 の 3 の D）。 */
+	private async resource(remoteAuthority: string, path: string): Promise<URI | undefined> {
+		let expanded: string | undefined = path;
+		if (path.startsWith('~/')) {
+			const remote = await this.host.remoteFolders(remoteAuthority).catch(() => undefined);
+			const home = remote !== undefined && remote.userHome.scheme === Schemas.vscodeRemote && remote.userHome.authority === remoteAuthority ? remote.userHome.path : undefined;
+			expanded = paradisExpandRemoteHomePath(path, home);
+		}
+		const normalized = expanded === undefined ? undefined : paradisNormalizeRemoteFilePath(expanded);
 		return normalized === undefined ? undefined : URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: normalized });
 	}
 
@@ -291,8 +351,10 @@ export class ParadisRemoteFileBridge {
 				userFolder = candidate;
 			}
 		}
+		let temporaryFolder: URI | undefined;
 		if (forRead && remote !== undefined && sameRemote(remote.tmpDir)) {
 			literal.push(remote.tmpDir);
+			temporaryFolder = remote.tmpDir;
 		}
 		for (const folder of literal) {
 			if (folder === candidate) {
@@ -305,7 +367,7 @@ export class ParadisRemoteFileBridge {
 				real.push(resolved);
 			}
 		}
-		return { ok: true, value: { literal, real, userFolder } };
+		return { ok: true, value: { literal, real, userFolder, temporaryFolder } };
 	}
 
 	/** 受け渡し用フォルダの古い写しを消す（失敗は無視。次に写すときにまた試す）。 */

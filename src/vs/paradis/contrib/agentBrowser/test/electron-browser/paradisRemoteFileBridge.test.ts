@@ -242,7 +242,7 @@ suite('ParadisRemoteFileBridge', () => {
 			racedFileLeft: swapped.fs.files.has('/home/example/raced.png'),
 		}, {
 			write: { ok: false, reason: 'outsideAllowedFolders' },
-			read: { ok: false, reason: 'outsideAllowedFolders' },
+			read: { ok: false, reason: 'outsideAllowedFolders', temporaryFolder: '/tmp' },
 			racedWrite: { ok: false, reason: 'outsideAllowedFolders' },
 			racedFileLeft: true,
 		});
@@ -266,9 +266,35 @@ suite('ParadisRemoteFileBridge', () => {
 			fromTemporary: true,
 			tooLarge: { ok: false, reason: 'tooLarge' },
 			missing: { ok: false, reason: 'notFound' },
-			outside: { ok: false, reason: 'outsideAllowedFolders' },
+			outside: { ok: false, reason: 'outsideAllowedFolders', temporaryFolder: '/tmp' },
 			folder: { ok: false, reason: 'isDirectory' },
 			special: { ok: false, reason: 'notAFile' },
+		});
+	});
+
+	test('expands a leading ~/ to the remote home and creates missing folders only inside the user folder', async () => {
+		const { bridge, fs } = createBridge({ links: new Map([[`${USER_FOLDER}/out-link`, '/etc']]) });
+		fs.folders.add('/etc');
+		const results = {
+			tildeNested: await bridge.write('pane', AUTHORITY, '~/.para-code/browser-files/run-1/shots/a.png', data),
+			absoluteNested: await bridge.write('pane', AUTHORITY, `${USER_FOLDER}/run-2/b.png`, data),
+			tildeSpace: await bridge.write('pane', AUTHORITY, '~/repo/out/c.png', data),
+			missingInSpace: await bridge.write('pane', AUTHORITY, '~/repo/out/new/d.png', data),
+			throughLink: await bridge.write('pane', AUTHORITY, `${USER_FOLDER}/out-link/new/e.png`, data),
+			otherUser: await bridge.write('pane', AUTHORITY, '~other/f.png', data),
+			tildeRead: await bridge.read('pane', AUTHORITY, '~/repo/data.csv', 1024).then(read => read.ok ? read.name : read),
+		};
+		assert.deepStrictEqual({ results, createdOutside: fs.folders.has('/etc/new') || fs.folders.has('/home/example/repo/out/new') }, {
+			results: {
+				tildeNested: { ok: true, path: `${USER_FOLDER}/run-1/shots/a.png`, userFolder: USER_FOLDER },
+				absoluteNested: { ok: true, path: `${USER_FOLDER}/run-2/b.png`, userFolder: USER_FOLDER },
+				tildeSpace: { ok: true, path: '/home/example/repo/out/c.png' },
+				missingInSpace: { ok: false, reason: 'parentMissing' },
+				throughLink: { ok: false, reason: 'outsideAllowedFolders' },
+				otherUser: { ok: false, reason: 'invalidPath' },
+				tildeRead: 'data.csv',
+			},
+			createdOutside: false,
 		});
 	});
 

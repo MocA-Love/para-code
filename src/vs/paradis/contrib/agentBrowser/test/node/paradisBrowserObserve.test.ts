@@ -141,6 +141,30 @@ suite('Paradis browser observe', () => {
 		});
 	});
 
+	test('with tab_id, the browser state lists only that tab and the tabs that changed since the last report', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const tab = (tabId: string, url: string, current = false) => ({ tabId, url, title: tabId, current, shared: false });
+		let tabs = [tab('t1', 'http://127.0.0.1/a', true), tab('t2', 'http://127.0.0.1/b'), tab('t3', 'http://127.0.0.1/c')];
+		const report = async () => {
+			const { host } = fakeHost({ pages: [PAGES_ONE] });
+			const withTabs: IParadisObserveHost = { ...host, tabs: async () => tabs };
+			const before = await observer.before(withTabs, options, 'changes', 2000);
+			return observer.after(withTabs, 'pane\nt2', options, before, 'changes', 2000, 't2');
+		};
+		const first = await report();
+		const same = await report();
+		tabs = [tab('t1', 'http://127.0.0.1/a2', true), tab('t2', 'http://127.0.0.1/b'), tab('t3', 'http://127.0.0.1/c'), tab('t4', 'http://127.0.0.1/d')];
+		const othersChanged = await report();
+		const afterwards = await report();
+		assert.deepStrictEqual({ first, same, othersChanged, afterwards }, {
+			first: '[Browser state]\nYour tab: t2 "t2" http://127.0.0.1/b (2 other tabs not shown; list_browser_tabs lists all)',
+			same: undefined,
+			othersChanged: '[Browser state]\nYour tab and tabs that changed: t1 (current) "t1" http://127.0.0.1/a2; t2 "t2" http://127.0.0.1/b; t4 "t4" http://127.0.0.1/d (1 other tab not shown; list_browser_tabs lists all)',
+			afterwards: undefined,
+		});
+	});
+
 	test('pages are not reported as opened when the list before the action was empty', async () => {
 		const observer = new ParadisBrowserObserver();
 		const options = { settle: false, state: true };
