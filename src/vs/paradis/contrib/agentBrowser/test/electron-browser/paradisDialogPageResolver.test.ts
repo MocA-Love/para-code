@@ -25,7 +25,7 @@ import { IParadisPaneBinding } from '../../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from '../../electron-browser/paradisAgentBrowserTabsService.js';
 import { ParadisBrowserShareStateFeature } from '../../electron-browser/paradisBrowserShareState.js';
-import { paradisShareButtonCount, paradisShareButtonEntries } from '../../electron-browser/paradisBrowserShareButton.js';
+import { paradisShareButtonCount, paradisShareButtonEntries } from '../../electron-browser/paradisBrowserShareCount.js';
 import { IParadisDialogPageCandidate, paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisGetPaneQuickPickState, paradisResolveDialogPage, paradisResolveToolbarPage, paradisRunDialogBind } from '../../electron-browser/paradisDialogPageResolver.js';
 import { resolveDialogPageModel, resolveToolbarPageModel } from '../../electron-browser/paradisDialogPageModelResolver.js';
 
@@ -286,6 +286,38 @@ suite('paradisResolveDialogPage', () => {
 		onDidChangeBindings.fire();
 		states.push(shared());
 		onDidChangeModel.fire({ model: undefined, isNew: false });
+		states.push(shared());
+		assert.deepStrictEqual(states, [false, true, false]);
+		store.dispose();
+	});
+
+	// 共有中かどうかはボタンに出す数と同じ数え方: Copilot だけと共有したページも共有中で、共有の印の変化にも追いつく
+	test('counts a page shared only with Copilot as shared, and follows changes of the share mark', () => {
+		const store = new DisposableStore();
+		const onDidChangeModel = store.add(new Emitter<{ model: IBrowserViewModel | undefined; isNew: boolean }>());
+		const onDidChangeSharingState = store.add(new Emitter<BrowserViewSharingState>());
+		const contextKeyService = new MockContextKeyService();
+		const model = { id: 'A', sharingState: BrowserViewSharingState.Available, onDidChangeSharingState: onDidChangeSharingState.event };
+		store.add(new ParadisBrowserShareStateFeature(
+			upcastPartial<BrowserEditor>({ onDidChangeModel: onDidChangeModel.event }),
+			contextKeyService,
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: Event.None,
+				refresh: async () => { },
+				getPageShares: () => [],
+				getBindingsForPage: () => [],
+			}),
+			upcastPartial<IParadisAgentBrowserTabsService>({}),
+		));
+		const shared = () => contextKeyService.getContextKeyValue('paradisActivePageShared');
+		const states: unknown[] = [];
+		onDidChangeModel.fire({ model: upcastPartial<IBrowserViewModel>(model), isNew: true });
+		states.push(shared());
+		model.sharingState = BrowserViewSharingState.Shared;
+		onDidChangeSharingState.fire(BrowserViewSharingState.Shared);
+		states.push(shared());
+		model.sharingState = BrowserViewSharingState.Available;
+		onDidChangeSharingState.fire(BrowserViewSharingState.Available);
 		states.push(shared());
 		assert.deepStrictEqual(states, [false, true, false]);
 		store.dispose();
