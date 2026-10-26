@@ -193,6 +193,8 @@ interface IParadisListedTool {
 }
 /** tools/list のスキーマを控えるペインの数の上限（古いものから忘れる。忘れたペインは次の呼び出しで作り直す）。 */
 const MAX_LISTED_TOOL_SCHEMA_PANES = 256;
+/** 内蔵の道具を含められなかったスキーマの控えを使う時間（過ぎたら作り直す）。 */
+const PARTIAL_TOOL_SCHEMAS_TTL_MS = 30_000;
 /** tools/list で接続先の一時フォルダを窓に聞くときの待ち時間の上限。 */
 const REMOTE_FILE_FOLDERS_TIMEOUT_MS = 3_000;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
@@ -879,7 +881,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペインごとに、最後に tools/list で見せた道具のスキーマ（名前 → inputSchema）。tools/call の引数を突き合わせる
 	 * （paradisToolArgumentCheck.ts）。まだ一覧を見せていないペイン（Para Code を開き直した後など）は、最初の呼び出しで作る。
 	 */
-	private readonly _listedToolSchemas = new Map<string, ReadonlyMap<string, unknown>>();
+	private readonly _listedToolSchemas = new Map<string, { readonly schemas: ReadonlyMap<string, unknown>; readonly expiresAt?: number }>();
 	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
@@ -4900,9 +4902,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
 		const folders = remoteAuthority !== undefined && !forArguments ? await this._remoteFileFolders(ingressLease, remoteAuthority, signal) : undefined;
 		const described: readonly IParadisListedTool[] = remoteAuthority !== undefined ? paradisDescribeToolsForRemotePane(withRecipes, folders) : withRecipes;
-		if (!forArguments || devtoolsTools.length > 0) {
-			this._rememberListedToolSchemas(ingressLease.token, described);
-		}
+		// 引数の突き合わせのために作った一覧に内蔵の道具が無かった（子プロセスが起きていない・共有が無い）ときも控えるが、
+		// 少し経ったら作り直す（毎回作り直さず、後から使えるようになった内蔵の道具も見られるように）
+		this._rememberListedToolSchemas(ingressLease.token, described, forArguments && devtoolsTools.length === 0 ? Date.now() + PARTIAL_TOOL_SCHEMAS_TTL_MS : undefined);
 		return described;
 	}
 
@@ -4923,12 +4925,13 @@ export class ParadisAgentBrowserService extends Disposable {
 		return typeof temporaryFolder === 'string' && temporaryFolder.startsWith('/') && temporaryFolder.length <= 4096 ? { temporaryFolder } : {};
 	}
 
-	private _rememberListedToolSchemas(token: string, tools: readonly IParadisListedTool[]): void {
+	/** @param expiresAt この時刻を過ぎたら控えを使わずに作り直す（内蔵の道具を含められなかった一覧）。 */
+	private _rememberListedToolSchemas(token: string, tools: readonly IParadisListedTool[], expiresAt?: number): void {
 		if (this._listedToolSchemas === undefined) {
 			return;
 		}
 		this._listedToolSchemas.delete(token);
-		this._listedToolSchemas.set(token, new Map(tools.map(tool => [tool.name, tool.inputSchema])));
+		this._listedToolSchemas.set(token, { schemas: new Map(tools.map(tool => [tool.name, tool.inputSchema])), ...(expiresAt !== undefined ? { expiresAt } : {}) });
 		while (this._listedToolSchemas.size > MAX_LISTED_TOOL_SCHEMA_PANES) {
 			const oldest = this._listedToolSchemas.keys().next();
 			if (oldest.done) {
@@ -4947,7 +4950,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			return undefined;
 		}
 		let schema: unknown;
-		const remembered = this._listedToolSchemas?.get(ingressLease.token);
+		const entry = this._listedToolSchemas?.get(ingressLease.token);
+		const remembered = entry !== undefined && (entry.expiresAt === undefined || Date.now() < entry.expiresAt) ? entry.schemas : undefined;
 		if (remembered !== undefined) {
 			if (!remembered.has(name)) {
 				return undefined;

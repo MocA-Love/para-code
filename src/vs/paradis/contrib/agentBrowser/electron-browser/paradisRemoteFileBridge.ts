@@ -40,6 +40,9 @@ import {
 	paradisPathHasVersionControlSegment,
 } from '../common/paradisRemoteFileBridge.js';
 
+/** 受け渡し用フォルダの古い写しを消すときに、中のフォルダをたどる深さの上限。 */
+const MAX_SWEEP_DEPTH = 8;
+
 /** ファイル名に使えない文字（区切り・制御文字）。 */
 const UNSAFE_FILE_NAME = /[\\/\u0000-\u001f\u007f]/;
 
@@ -372,17 +375,44 @@ export class ParadisRemoteFileBridge {
 
 	/** 受け渡し用フォルダの古い写しを消す（失敗は無視。次に写すときにまた試す）。 */
 	private async sweepOldCopies(userFolder: URI): Promise<void> {
+		await this.sweepFolder(userFolder, this.now() - PARADIS_REMOTE_FILE_COPY_TTL_MS, 0);
+	}
+
+	/**
+	 * `folder` の中の `cutoff` より古いファイルを消す。中のフォルダ（エージェントの保存先として作ったもの）も同じように
+	 * 見て、空になった古いフォルダは消す。シンボリックリンクはたどらない。消せたら（空のフォルダだったら）true。
+	 */
+	private async sweepFolder(folder: URI, cutoff: number, depth: number): Promise<boolean> {
+		let listing;
 		try {
-			const listing = await this.fileService.resolve(userFolder, { resolveMetadata: true });
-			const cutoff = this.now() - PARADIS_REMOTE_FILE_COPY_TTL_MS;
-			for (const child of listing.children ?? []) {
-				if (child.isFile && child.mtime < cutoff) {
-					await this.fileService.del(child.resource).catch(() => undefined);
-				}
-			}
+			listing = await this.fileService.resolve(folder, { resolveMetadata: true });
 		} catch {
 			// まだ無い・読めない。消すものは無い
+			return false;
 		}
+		let remaining = 0;
+		for (const child of listing.children ?? []) {
+			if (child.isSymbolicLink) {
+				remaining++;
+			} else if (child.isFile) {
+				if (child.mtime < cutoff) {
+					await this.fileService.del(child.resource).catch(() => remaining++);
+				} else {
+					remaining++;
+				}
+			} else if (child.isDirectory && depth < MAX_SWEEP_DEPTH) {
+				const removed = await this.sweepFolder(child.resource, cutoff, depth + 1);
+				if (!removed) {
+					remaining++;
+				}
+			} else {
+				remaining++;
+			}
+		}
+		if (depth === 0 || remaining > 0 || listing.mtime === undefined || listing.mtime >= cutoff) {
+			return false;
+		}
+		return this.fileService.del(folder).then(() => true, () => false);
 	}
 
 	private failed(reason: ParadisRemoteFileFailure, resource: URI, error: unknown): Failure {

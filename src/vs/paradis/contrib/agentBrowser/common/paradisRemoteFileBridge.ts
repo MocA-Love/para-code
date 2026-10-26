@@ -202,6 +202,10 @@ export function paradisExpandRemoteHomePath(path: string, userHomePath: string |
 	if (!path.startsWith('~/')) {
 		return path;
 	}
+	// posix.join は `..` を潰すので、展開する前に断る（`~/../../etc/passwd` が後の検査を素通りしないように）
+	if (path.slice(2).split('/').some(segment => segment === '..')) {
+		return undefined;
+	}
 	return userHomePath === undefined || !userHomePath.startsWith('/') ? undefined : posix.join(userHomePath, path.slice(2));
 }
 

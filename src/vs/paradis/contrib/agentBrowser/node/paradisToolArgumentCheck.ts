@@ -14,6 +14,9 @@
 
 import { PARADIS_TAB_ID_ARGUMENT } from '../common/paradisAgentTabScope.js';
 
+/** `tabId` を受け、`tab_id` も別名として受ける道具（サービスが両方を読む。説明に「tab_id also works」）。 */
+const TAB_ID_ALIAS_TOOLS: ReadonlySet<string> = new Set(['switch_browser_profile']);
+
 /** 断るときに添える、受け付ける引数の名前の数の上限。 */
 const MAX_LISTED_ARGUMENTS = 30;
 
@@ -153,8 +156,9 @@ export function paradisToolArgumentProblem(toolName: string, inputSchema: unknow
 	for (const [key, value] of Object.entries(args)) {
 		if (!Object.hasOwn(properties, key)) {
 			// tab_id は instructions が「どの道具にも渡す」と勧めている。受けない道具（サイトメモなど）でも今までどおり
-			// 通す（使われないだけ）。タブを `tabId` で受ける道具では取り違えなので断る
-			if (inputSchema.additionalProperties !== false || (key === PARADIS_TAB_ID_ARGUMENT && !Object.hasOwn(properties, 'tabId'))) {
+			// 通す（使われないだけ）。タブを `tabId` で受ける道具では、tabId も渡したとき・tab_id を別名として受ける道具の
+			// ときだけ通し、それ以外は取り違えなので断る
+			if (inputSchema.additionalProperties !== false || (key === PARADIS_TAB_ID_ARGUMENT && (!Object.hasOwn(properties, 'tabId') || Object.hasOwn(args, 'tabId') || TAB_ID_ALIAS_TOOLS.has(toolName)))) {
 				continue;
 			}
 			const suggested = closestArgument(key, known);
