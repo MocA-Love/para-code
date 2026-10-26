@@ -41,10 +41,11 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { BrowserViewSharingState, IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
-import { IParadisAgentBrowserBindingModel, IParadisPageShare, IParadisPaneDescriptor, ParadisPageShareKind, ParadisPaneAgentKind } from './paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor, ParadisPageShareKind, ParadisPaneAgentKind } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { IParadisShareButtonEntries, paradisShareButtonCount, paradisShareButtonEntries } from './paradisBrowserShareCount.js';
 
 const $ = dom.$;
 
@@ -81,24 +82,6 @@ function agentLabel(kind: ParadisPaneAgentKind): string {
 		case 'codex': return localize('paradis.shareButton.agentCodex', "Codex");
 		case 'shell': return localize('paradis.shareButton.agentShell', "ターミナル");
 	}
-}
-
-/**
- * ボタンと一覧に出すもの。para-browser の台帳のペインと、Copilot だけと共有しているか（台帳に無いのに共有の印が付いて
- * いる。台帳にペインがあるときは、印はそのために付いたものとして数えない）。
- */
-export interface IParadisShareButtonEntries {
-	readonly shares: readonly IParadisPageShare[];
-	readonly copilot: boolean;
-}
-
-export function paradisShareButtonEntries(shares: readonly IParadisPageShare[], sharingState: BrowserViewSharingState | undefined): IParadisShareButtonEntries {
-	return { shares, copilot: shares.length === 0 && sharingState === BrowserViewSharingState.Shared };
-}
-
-/** ボタンに出す数。 */
-export function paradisShareButtonCount(entries: IParadisShareButtonEntries): number {
-	return entries.shares.length + (entries.copilot ? 1 : 0);
 }
 
 /** ボタンの本体のホバーと読み上げの文言。 */
@@ -202,7 +185,8 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	}
 
 	override onClick(event: dom.EventLike): void {
-		this._activate(this._isListPart('target' in event ? event.target : undefined) ? 'list' : 'main', event);
+		// クリック・タップの EventLike は DOM のイベント（GestureEvent も Event）で、押した要素は target にある
+		this._activate(this._isListPart((event as Partial<Event>).target) ? 'list' : 'main', event);
 	}
 
 	override focus(fromRight?: boolean): void {
@@ -342,6 +326,10 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		if (count === 0 && dom.isActiveElement(listButton)) {
 			// ▾ を隠す前に、フォーカスを本体へ移す（隠れた要素にフォーカスが残ると、キーボードで迷子になる）
 			this._focusPart('main');
+		} else if (count === 0 && listButton.tabIndex === 0) {
+			// フォーカスは無くても、タブで止まる所が隠れた ▾ に残らないよう本体へ戻す
+			listButton.tabIndex = -1;
+			main.tabIndex = 0;
 		}
 		listButton.hidden = count === 0;
 		const listLabel = paradisShareListButtonLabel(count);

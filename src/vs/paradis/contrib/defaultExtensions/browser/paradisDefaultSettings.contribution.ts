@@ -76,9 +76,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.foreground': '#FFFFFF',
 				'statusBar.noFolderBackground': '#09AFD9',
 				'statusBar.noFolderForeground': '#FFFFFF',
-				// 数のバッジ（アクティビティバー・内蔵ブラウザの共有ボタン）の白い文字は #09AFD9 の上で読みにくい
-				// （明るさの比 2.58）。Houston と同じく黒い文字にする（比 8.15）
-				'activityBarBadge.foreground': '#000000'
+				// 数のバッジの白い文字は、テーマの水色 #09AFD9（badge.background は不透明度 F0 の同じ色）の上で読みにくい
+				// （明るさの比 2.58）。Houston と同じく黒い文字にする（比 8.15）。同じ水色のバッジはすべてそろえる
+				'activityBarBadge.foreground': '#000000',
+				'badge.foreground': '#000000',
+				'agentsBadge.foreground': '#000000',
+				'agentsUnreadBadge.foreground': '#000000'
 			},
 			'[Light 2026]': {
 				// Light 2026 のブランドアクセントは白背景とのコントラスト確保のため #0598BD（テーマ内の debugging 色と同値）

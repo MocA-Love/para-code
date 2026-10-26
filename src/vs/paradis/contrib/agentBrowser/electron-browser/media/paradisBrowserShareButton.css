@@ -37,7 +37,7 @@
 
 /* The chevron (opens the pane list) is shown only while the page is shared. It stays narrow so the
 	shared button grows by as little as possible before the toolbar folds items into "...". */
-.monaco-workbench .paradis-browser-share-item .paradis-browser-share-list-button {
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-share-item .paradis-browser-share-list-button {
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -48,7 +48,7 @@
 	border-radius: 0 var(--vscode-cornerRadius-medium) var(--vscode-cornerRadius-medium) 0;
 }
 
-.monaco-workbench .paradis-browser-share-item .paradis-browser-share-list-button[hidden] {
+.monaco-workbench .monaco-action-bar .action-item.paradis-browser-share-item .paradis-browser-share-list-button[hidden] {
 	display: none;
 }
 
