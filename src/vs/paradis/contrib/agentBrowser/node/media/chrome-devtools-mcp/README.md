@@ -25,7 +25,7 @@ node build/src/bin/chrome-devtools-mcp.js --version  # 動作確認
 # .eslint-allowed-javascript-files の当ディレクトリ分を再生成すること（手順は同ファイル内コメント参照）
 ```
 
-Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`）、`build/src/McpResponse.js`（`handle`）、
+Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`・`detectOpenDevToolsWindows`）、`build/src/McpResponse.js`（`handle`）、
 `build/src/ToolHandler.js`（`handle`）、`build/src/WaitForHelper.js`（`waitForStableDom`）、`build/src/tools/pages.js`（`navigate_page`・`handle_dialog`）、
 `build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）。
 更新したら当て直すこと（理由と内容は NOTES.md「vendored chrome-devtools-mcp への変更」）。
