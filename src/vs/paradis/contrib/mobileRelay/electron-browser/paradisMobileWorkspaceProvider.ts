@@ -1746,11 +1746,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						stopped.reason = { code: 'stale-session', message: '操作対象のターミナルが変わりました' };
 						return false;
 					}
-					const check = questionChecks.find(candidate => candidate.beforePart === keyIndex);
-					if (check !== undefined && !(await this.confirmQuestionChecks(instance, check, msg.delayMs as number))) {
-						stopped.reason = { code: 'checks-mismatch', message: '複数選択のチェックが PC の画面と合わなかったため、送信の手前で止めました。PC の画面で確かめて回答してください' };
-						return false;
-					}
 					const continuation = await this.continueAgentInteraction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
 					if (continuation === 'completed') {
 						stopped.reason = { code: 'interaction-completed', message: '回答対象は別の操作で完了しました' };
@@ -1772,6 +1767,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 							return false;
 						}
 						parts = paradisCodexMobileApprovalKeys(codexApprovalKey, screen, approvalPiece);
+					}
+					// 答える相手がまだこの質問だと確かめてから、画面のチェックを見る（打ち直しが別の画面へ落ちないように）
+					const check = questionChecks.find(candidate => candidate.beforePart === keyIndex);
+					if (check !== undefined && !(await this.confirmQuestionChecks(instance, check, msg.delayMs as number))) {
+						stopped.reason = { code: 'checks-mismatch', message: '複数選択のチェックが PC の画面と合わなかったため、送信の手前で止めました。PC の画面で確かめて回答してください' };
+						return false;
 					}
 					return true;
 				});
