@@ -34,6 +34,15 @@ export const PARADIS_REMOTE_FILE_READ_METHOD = 'paradisReadRemoteFile';
 /** 書く前に、書いてよい場所かだけを確かめる（撮影などの重い処理の前に断るため）。引数は `[token, remoteAuthority, path]`。 */
 export const PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD = 'paradisCheckRemoteFileWrite';
 
+/** 接続先の読み書きしてよい場所を聞く。引数は `[token, remoteAuthority]`、結果は {@link IParadisRemoteFileFolders}。 */
+export const PARADIS_REMOTE_FILE_FOLDERS_METHOD = 'paradisRemoteFileFolders';
+
+/** 接続先の場所（道具の説明に書く）。取れなかったものは入らない。 */
+export interface IParadisRemoteFileFolders {
+	/** 読み込みに使ってよい、接続先の Para Code のサーバーの一時フォルダ（TMPDIR。/tmp とは限らない）。 */
+	readonly temporaryFolder?: string;
+}
+
 /** 接続先のホームの下の、受け渡し用のフォルダ（ユーザー専用の場所。写しはここに置き、古いものは消す）。 */
 export const PARADIS_REMOTE_FILE_USER_FOLDER = '.para-code/browser-files';
 
@@ -85,10 +94,14 @@ export type ParadisRemoteFileCheckResult =
 	| { readonly ok: true }
 	| { readonly ok: false; readonly reason: ParadisRemoteFileFailure };
 
-/** 読んだ結果。renderer の中では VSBuffer、shared process では Uint8Array として扱う。 */
+/**
+ * 読んだ結果。renderer の中では VSBuffer、shared process では Uint8Array として扱う。`temporaryFolder` は
+ * 許された場所の外（`outsideAllowedFolders`）で断ったときだけ入る、読んでよい接続先の一時フォルダのパス
+ * （エージェントへの文に書く。/tmp とは限らない）。
+ */
 export type ParadisRemoteFileReadResult<TData = Uint8Array> =
 	| { readonly ok: true; readonly data: TData; readonly name: string }
-	| { readonly ok: false; readonly reason: ParadisRemoteFileFailure };
+	| { readonly ok: false; readonly reason: ParadisRemoteFileFailure; readonly temporaryFolder?: string };
 
 /** 読んだ中身を IPC で運ぶときの形の印（{@link paradisEncodeRemoteFileReadResult}）。 */
 const REMOTE_FILE_READ_WIRE_TAG = 'paradis-remote-file-read/1';
@@ -117,7 +130,10 @@ export function paradisDecodeRemoteFileReadResult(value: unknown): ParadisRemote
 	}
 	const record = value as { readonly ok?: unknown; readonly reason?: unknown; readonly data?: unknown; readonly name?: unknown };
 	if (record.ok === false && typeof record.reason === 'string') {
-		return { ok: false, reason: record.reason as ParadisRemoteFileFailure };
+		const temporaryFolder = (value as { readonly temporaryFolder?: unknown }).temporaryFolder;
+		return typeof temporaryFolder === 'string' && temporaryFolder.length > 0 && temporaryFolder.length <= 4096
+			? { ok: false, reason: record.reason as ParadisRemoteFileFailure, temporaryFolder }
+			: { ok: false, reason: record.reason as ParadisRemoteFileFailure };
 	}
 	// IPC を通らない呼び出し（同じプロセスの中）では、元の形のまま届く
 	const bytes = remoteFileBytes(record.data);
@@ -176,4 +192,20 @@ export function paradisNormalizeRemoteFilePath(path: unknown): string | undefine
 export function paradisReplaceRemoteFileExtension(remotePath: string, extension: string): string {
 	const current = posix.extname(remotePath);
 	return `${remotePath.slice(0, remotePath.length - current.length)}${extension}`;
+}
+
+/**
+ * 先頭の `~/` を接続先のホーム（`vscode-remote://` の URI のパス部分）に展開する。`~/` で始まらないパスはそのまま返す。
+ * ホームが分からなければ undefined。`~user/` の形は展開しない（そのまま返し、絶対パスでないので断られる）。
+ */
+export function paradisExpandRemoteHomePath(path: string, userHomePath: string | undefined): string | undefined {
+	if (!path.startsWith('~/')) {
+		return path;
+	}
+	return userHomePath === undefined || !userHomePath.startsWith('/') ? undefined : posix.join(userHomePath, path.slice(2));
+}
+
+/** エージェントが渡したパスの形が受けられるか（`~/` で始まるものは、残りを絶対パスとして見る）。 */
+export function paradisIsAcceptableRemoteFilePath(path: unknown): path is string {
+	return typeof path === 'string' && paradisNormalizeRemoteFilePath(path.startsWith('~/') ? path.slice(1) : path) !== undefined;
 }

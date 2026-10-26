@@ -235,3 +235,30 @@ suite('paradisBrowserQueryPageScript (close matches after a miss)', () => {
 		});
 	});
 });
+
+suite('paradisBrowserQueryPageScript (covered)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	let root: HTMLElement;
+	setup(() => {
+		root = mainWindow.document.createElement('div');
+		root.style.cssText = 'position: fixed; left: 0; top: 0; width: 400px; height: 200px; z-index: 2147483646; background: white;';
+		mainWindow.document.body.appendChild(root);
+	});
+	teardown(() => root.remove());
+
+	// q.html Q461 の 5: 名前の無い SVG の path に覆われたら、名前のある一番近い祖先を添える
+	test('a covering element without id, class or name comes with its closest named ancestor', async () => {
+		root.innerHTML = [
+			'<button id="q461-target" style="position: absolute; left: 20px; top: 20px; width: 100px; height: 40px;">Save</button>',
+			'<div class="q461-tour-layer" style="position: absolute; left: 0; top: 0; width: 400px; height: 200px; z-index: 10;"><svg width="400" height="200"><path d="M0 0H400V200H0Z" fill="black"></path></svg></div>',
+		].join('');
+		const located = await runInPage({ mode: 'locate', selector: '#q461-target', purpose: 'click', ref: 'q461' });
+		const covered = located.coveredBy as { tag?: string; inside?: unknown } | undefined;
+		assert.deepStrictEqual({ problem: located.problem, tag: covered?.tag, inside: covered?.inside }, {
+			problem: 'covered',
+			tag: 'path',
+			inside: { tag: 'div', classes: ['q461-tour-layer'] },
+		});
+	});
+});

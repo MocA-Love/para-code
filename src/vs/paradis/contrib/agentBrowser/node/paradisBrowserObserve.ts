@@ -190,6 +190,8 @@ function evaluated<T>(result: unknown): T | undefined {
 export class ParadisBrowserObserver {
 	/** ペイン（とタブ）ごとに、前回報告した状態の鍵。 */
 	private readonly _lastState = new Map<string, string>();
+	/** ペイン（とタブ）ごとに、前回見たタブの一覧（tabId → 中身の鍵）。tab_id を渡した呼び出しで、変わったタブを選ぶ。 */
+	private readonly _lastTabs = new Map<string, ReadonlyMap<string, string>>();
 
 	/** 操作の前に呼ぶ。E1 なら記録を始め、I1 ならページとダウンロードの一覧を控える。 */
 	async before(host: IParadisObserveHost, options: IParadisObserveOptions, observe: 'changes' | 'none' | 'snapshot', settleMs: number): Promise<IBefore> {
@@ -211,8 +213,12 @@ export class ParadisBrowserObserver {
 		return { name, installed, url, title, pages, downloads };
 	}
 
-	/** 操作が成功した後に呼ぶ。添える文（無ければ undefined）。 */
-	async after(host: IParadisObserveHost, stateKey: string, options: IParadisObserveOptions, before: IBefore, observe: 'changes' | 'none' | 'snapshot', settleMs: number): Promise<string | undefined> {
+	/**
+	 * 操作が成功した後に呼ぶ。添える文（無ければ undefined）。
+	 * @param ownTabId 呼び出しが tab_id を渡したときのそのタブ。タブの一覧はそのタブと、前回から変わったタブだけにする
+	 * （並列のサブエージェントに、ほかのタブを毎回並べない。q.html Q461 の 4）。
+	 */
+	async after(host: IParadisObserveHost, stateKey: string, options: IParadisObserveOptions, before: IBefore, observe: 'changes' | 'none' | 'snapshot', settleMs: number, ownTabId?: string): Promise<string | undefined> {
 		const parts: string[] = [];
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
 		// 記録を始められたときだけページを読む（ダイアログ・未対応の vendored・評価の失敗では読まない）
@@ -246,7 +252,7 @@ export class ParadisBrowserObserver {
 			}
 		}
 		if (options.state) {
-			const state = await this._state(host, stateKey, before, pages);
+			const state = await this._state(host, stateKey, before, pages, ownTabId);
 			if (state) {
 				parts.push(state);
 			}
@@ -261,6 +267,11 @@ export class ParadisBrowserObserver {
 		for (const key of [...this._lastState.keys()]) {
 			if (paradisPaneTokenOfScopeKey(key) === paneToken) {
 				this._lastState.delete(key);
+			}
+		}
+		for (const key of [...this._lastTabs.keys()]) {
+			if (paradisPaneTokenOfScopeKey(key) === paneToken) {
+				this._lastTabs.delete(key);
 			}
 		}
 	}
@@ -318,12 +329,23 @@ export class ParadisBrowserObserver {
 
 
 
-	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined): Promise<string | undefined> {
+	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined): Promise<string | undefined> {
 		const tabs = await host.tabs().catch(() => undefined);
 		const downloadsAfter = await host.downloads().catch(() => undefined);
 		const lines: string[] = [];
-		if (tabs && tabs.length > 0) {
-			lines.push(`Your tabs: ${tabs.map(tab => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url}`).join('; ')}`);
+		const tabLine = (tab: NonNullable<typeof tabs>[number]) => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url}`;
+		const tabKey = (tab: NonNullable<typeof tabs>[number]) => JSON.stringify([tab.url, tab.title, tab.current, tab.shared]);
+		const previousTabs = this._lastTabs.get(stateKey);
+		if (tabs !== undefined) {
+			this._lastTabs.set(stateKey, new Map(tabs.map(tab => [tab.tabId, tabKey(tab)])));
+		}
+		// tab_id を渡した呼び出しでは、自分のタブと、前回から変わった（新しく現れた）タブだけを出す
+		const ownTab = ownTabId !== undefined ? tabs?.find(tab => tab.tabId === ownTabId) : undefined;
+		const shownTabs = ownTab === undefined || tabs === undefined ? tabs : tabs.filter(tab => tab === ownTab || (previousTabs !== undefined && previousTabs.get(tab.tabId) !== tabKey(tab)));
+		if (tabs && shownTabs && shownTabs.length > 0) {
+			const others = tabs.length - shownTabs.length;
+			const label = ownTab !== undefined ? (shownTabs.length > 1 ? 'Your tab and tabs that changed' : 'Your tab') : 'Your tabs';
+			lines.push(`${label}: ${shownTabs.map(tabLine).join('; ')}${others > 0 ? ` (${others} other ${others === 1 ? 'tab' : 'tabs'} not shown; list_browser_tabs lists all)` : ''}`);
 		}
 		const beforeIndexes = new Set((before.pages?.pages ?? []).map(page => page.index));
 		// 操作の前の一覧が取れなかった（ダイアログが開いていると空になる）ときは、開いたページを数えない
@@ -349,8 +371,10 @@ export class ParadisBrowserObserver {
 			lines.push(`Open dialog: ${pages.dialog}. Handle it with handle_dialog before anything else on this page.`);
 		}
 		// 新しいダウンロードとページは毎回伝える。タブの一覧だけが前回と同じなら省く
-		const key = JSON.stringify([tabs?.map(tab => [tab.tabId, tab.url, tab.title, tab.current]), pages?.pages.map(page => [page.index, page.url, page.selected])]);
-		const unchanged = this._lastState.get(stateKey) === key && opened.length === 0 && newDownloads.length === 0 && pages?.dialog === undefined;
+		// tab_id を渡した呼び出しでは自分のタブだけで比べ、ほかのタブが変わったときは毎回伝える
+		const changedOthers = ownTab !== undefined && (shownTabs?.length ?? 0) > 1;
+		const key = JSON.stringify([(ownTab !== undefined ? [ownTab] : tabs)?.map(tab => [tab.tabId, tab.url, tab.title, tab.current]), pages?.pages.map(page => [page.index, page.url, page.selected])]);
+		const unchanged = this._lastState.get(stateKey) === key && !changedOthers && opened.length === 0 && newDownloads.length === 0 && pages?.dialog === undefined;
 		this._lastState.set(stateKey, key);
 		if (unchanged || lines.length === 0) {
 			return undefined;

@@ -139,6 +139,29 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 		if (window.top !== window || el.ownerDocument !== document) { out.inIframe = true; }
 		return out;
 	};
+	// The covering element, and when it has no id, class or name (an SVG path of a tour overlay, for example), the closest ancestor
+	// that has one, so the caller can tell what covers the element without a screenshot (q.html Q461 5).
+	const describeCover = el => {
+		const out = describe(el);
+		if (out.id || out.classes || out.name) { return out; }
+		let parent = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+		for (let depth = 0; parent && depth < 30; depth++) {
+			const classes = typeof parent.className === 'string' ? parent.className.trim().split(/\s+/).filter(Boolean).slice(0, 4) : (parent.className && typeof parent.className.baseVal === 'string' ? parent.className.baseVal.trim().split(/\s+/).filter(Boolean).slice(0, 4) : []);
+			const name = cut(nameOf(parent), 100);
+			if (parent.id || classes.length > 0 || name) {
+				const inside = { tag: parent.localName };
+				if (parent.id) { inside.id = parent.id; }
+				if (classes.length > 0) { inside.classes = classes; }
+				const role = roleOf(parent);
+				if (role) { inside.role = role; }
+				if (name) { inside.name = name; }
+				out.inside = inside;
+				break;
+			}
+			parent = parent.parentElement || (parent.getRootNode && parent.getRootNode().host) || null;
+		}
+		return out;
+	};
 	const shortLabel = el => {
 		let label = el.localName;
 		if (el.id) { label += '#' + el.id; }
@@ -541,7 +564,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			else if (reach === 'self') { pointer[label] = 'self'; }
 			else if (reach === 'child') { pointer[label] = 'self (child ' + shortLabel(hit) + ')'; }
 			else if (reach === 'ancestor') { pointer[label] = 'ancestor ' + shortLabel(hit) + ' (this element does not receive the pointer here)'; }
-			else { pointer[label] = { coveredBy: describe(hit) }; }
+			else { pointer[label] = { coveredBy: describeCover(hit) }; }
 		}
 		const ancestors = [];
 		let parent = el.parentElement || (root && root.host) || null;
@@ -760,7 +783,7 @@ ${PARADIS_POINTER_HIT_PAGE_SCRIPT}
 			const label = hit.closest ? hit.closest('label') : null;
 			if (!(label && el.labels && Array.from(el.labels).includes(label))) {
 				out.problem = 'covered';
-				out.coveredBy = describe(hit);
+				out.coveredBy = describeCover(hit);
 			}
 		}
 		return out;
