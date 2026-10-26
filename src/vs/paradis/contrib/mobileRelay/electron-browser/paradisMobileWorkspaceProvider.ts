@@ -1770,9 +1770,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					}
 					// 答える相手がまだこの質問だと確かめてから、画面のチェックを見る（打ち直しが別の画面へ落ちないように）
 					const check = questionChecks.find(candidate => candidate.beforePart === keyIndex);
-					if (check !== undefined && !(await this.confirmQuestionChecks(instance, check, msg.delayMs as number))) {
-						stopped.reason = { code: 'checks-mismatch', message: '複数選択のチェックが PC の画面と合わなかったため、送信の手前で止めました。PC の画面で確かめて回答してください' };
-						return false;
+					if (check !== undefined) {
+						const stillCurrent = async () => this.findAuthoritativePaneInstance(msg.id as number, msg.token as string) === instance
+							&& await this.continueAgentInteraction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number) === 'valid';
+						const confirmed = await this.confirmQuestionChecks(instance, check, msg.delayMs as number, stillCurrent);
+						if (confirmed === 'stale') {
+							stopped.reason = { code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' };
+							return false;
+						}
+						if (!confirmed) {
+							stopped.reason = { code: 'checks-mismatch', message: '複数選択のチェックが PC の画面と合わなかったため、送信の手前で止めました。PC の画面で確かめて回答してください' };
+							return false;
+						}
 					}
 					return true;
 				});
@@ -1800,13 +1809,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
-	/** 複数選択の問いのチェックを画面で確かめる（paradisConfirmQuestionChecks）。送信ボタンへ降りてよいときだけ true。 */
-	private async confirmQuestionChecks(instance: ITerminalInstance, check: IParadisAgentQuestionKeyCheck, delayMs: number): Promise<boolean> {
+	/**
+	 * 複数選択の問いのチェックを画面で確かめる（paradisConfirmQuestionChecks）。送信ボタンへ降りてよいときだけ true。
+	 * 打ち直す直前に答える相手が変わっていたら 'stale'。
+	 */
+	private async confirmQuestionChecks(instance: ITerminalInstance, check: IParadisAgentQuestionKeyCheck, delayMs: number, stillCurrent: () => Promise<boolean>): Promise<boolean | 'stale'> {
 		const outcome = await paradisConfirmQuestionChecks({
 			read: () => paradisVisibleTerminalText(instance),
 			send: key => instance.sendText(key, false),
 			wait: ms => new Promise<void>(resolve => setTimeout(resolve, ms)),
+			stillCurrent,
 		}, check, delayMs);
+		if (outcome === 'stale') {
+			this.logService.info('[paradisMobileRelay] the question changed while checking the multi-select checks; not retyping');
+			return 'stale';
+		}
 		if (outcome === 'unreadable') {
 			this.logService.warn('[paradisMobileRelay] could not read the multi-select checks on the screen; sending as before');
 		} else if (outcome === 'retyped') {
