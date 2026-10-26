@@ -87,7 +87,7 @@ import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead
 import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncated, paradisLimitMobileDiff } from '../common/paradisMobileDiffLimit.js';
 import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
-import { paradisCodexMobileApprovalKeys } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisReadQuestionKeyChecks } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1559,7 +1559,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown; questionChecks?: unknown };
 		let interactionAccepted = false;
 		// 発言の Enter を打ち終えた（この後の例外は「送れなかった」と返さない。送信 ID を忘れさせて二重に送らせないため）
 		let messageTyped = false;
@@ -1717,6 +1717,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// （paradisSendAgentInteractionKeys。待ちの間に PC で答えられた・別の質問に変わった場合に、
 				// 消えた質問の跡地へ打鍵しないため）。
 				const stopped: { reason?: { readonly code: string; readonly message: string } } = {};
+				// 複数選択の問いは、送信ボタンへ降りる前にチェックを画面で確かめる（paradisAgentQuestionKeyPlan）
+				const questionChecks = interactionKind === 'question' ? paradisReadQuestionKeyChecks(msg.questionChecks, parts.length) : [];
+				let keyIndex = -1;
 				const sendTarget = expectOption === undefined && codexApprovalKey === undefined ? instance : {
 					// 送る直前に確かめたキー（Codex は行末の近道・フォームの番号）へ差し替えて送る。
 					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
@@ -1737,6 +1740,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					strict: false,
 					source: 'mobile',
 				}, async () => {
+					keyIndex++;
 					const currentInstance = this.findAuthoritativePaneInstance(msg.id as number, msg.token as string);
 					if (currentInstance !== instance) {
 						stopped.reason = { code: 'stale-session', message: '操作対象のターミナルが変わりました' };
@@ -1764,6 +1768,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						}
 						parts = paradisCodexMobileApprovalKeys(codexApprovalKey, screen, approvalPiece);
 					}
+					// 答える相手がまだこの質問だと確かめてから、画面のチェックを見る（打ち直しが別の画面へ落ちないように）
+					const check = questionChecks.find(candidate => candidate.beforePart === keyIndex);
+					if (check !== undefined) {
+						const stillCurrent = async () => this.findAuthoritativePaneInstance(msg.id as number, msg.token as string) === instance
+							&& await this.continueAgentInteraction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number) === 'valid';
+						const confirmed = await this.confirmQuestionChecks(instance, check, msg.delayMs as number, stillCurrent);
+						if (confirmed === 'stale') {
+							stopped.reason = { code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' };
+							return false;
+						}
+						if (!confirmed) {
+							stopped.reason = { code: 'checks-mismatch', message: '複数選択のチェックが PC の画面と合わなかったため、送信の手前で止めました。PC の画面で確かめて回答してください' };
+							return false;
+						}
+					}
 					return true;
 				});
 				if (sent !== 'sent') {
@@ -1788,6 +1807,31 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
 			}
 		}
+	}
+
+	/**
+	 * 複数選択の問いのチェックを画面で確かめる（paradisConfirmQuestionChecks）。送信ボタンへ降りてよいときだけ true。
+	 * 打ち直す直前に答える相手が変わっていたら 'stale'。
+	 */
+	private async confirmQuestionChecks(instance: ITerminalInstance, check: IParadisAgentQuestionKeyCheck, delayMs: number, stillCurrent: () => Promise<boolean>): Promise<boolean | 'stale'> {
+		const outcome = await paradisConfirmQuestionChecks({
+			read: () => paradisVisibleTerminalText(instance),
+			send: key => instance.sendText(key, false),
+			wait: ms => new Promise<void>(resolve => setTimeout(resolve, ms)),
+			stillCurrent,
+		}, check, delayMs);
+		if (outcome === 'stale') {
+			this.logService.info('[paradisMobileRelay] the question changed while checking the multi-select checks; not retyping');
+			return 'stale';
+		}
+		if (outcome === 'unreadable') {
+			this.logService.warn('[paradisMobileRelay] could not read the multi-select checks on the screen; sending as before');
+		} else if (outcome === 'retyped') {
+			this.logService.info('[paradisMobileRelay] retyped multi-select checks the TUI did not take');
+		} else if (outcome !== 'ok') {
+			this.logService.warn(`[paradisMobileRelay] multi-select checks did not match the screen (${outcome}); stopped before the submit button`);
+		}
+		return outcome === 'ok' || outcome === 'retyped' || outcome === 'unreadable';
 	}
 
 	/**
