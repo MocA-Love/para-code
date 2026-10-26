@@ -366,10 +366,12 @@ export interface IParadisQuestionCheckScreen {
 	send(key: string): Promise<void>;
 	/** `ms` だけ待つ。 */
 	wait(ms: number): Promise<void>;
+	/** 答える相手がまだこの質問か（打ち直す直前に確かめる。待つあいだに PC で答えられたり、質問が変わったりするため）。 */
+	stillCurrent(): Promise<boolean>;
 }
 
 /** {@link paradisConfirmQuestionChecks} の結果。`ok` と `unreadable` のときだけ送信ボタンへ降りてよい。 */
-export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'still-missing';
+export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'still-missing' | 'stale';
 
 /** 画面が落ち着いたとみなすまでに読む回数の上限（2 回続けて同じなら落ち着いた）。 */
 const QUESTION_CHECK_MAX_READS = 6;
@@ -426,6 +428,9 @@ export async function paradisConfirmQuestionChecks(screen: IParadisQuestionCheck
 	const verdict = paradisQuestionChecksVerdict(second.visible, check);
 	if (verdict.kind !== 'missing') {
 		return verdict.kind;
+	}
+	if (!(await screen.stillCurrent())) {
+		return 'stale';
 	}
 	for (const optionNumber of verdict.missing) {
 		await screen.send(String(optionNumber));

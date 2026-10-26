@@ -323,7 +323,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 	 * 打鍵が `latencyMs` 遅れて画面に反映される偽の端末（SSH の往復の代わり）。数字はチェックのトグル。
 	 * `swallow` の数字は反映されない（入力欄へ吸われた）。`flicker` なら読むたびに 1 番が付いたり外れたりする。
 	 */
-	function fakeScreen(options: { readonly latencyMs: number; readonly typed: readonly number[]; readonly swallow?: readonly number[]; readonly ignoreRetype?: boolean; readonly flicker?: boolean; readonly unreadable?: boolean }) {
+	function fakeScreen(options: { readonly latencyMs: number; readonly typed: readonly number[]; readonly swallow?: readonly number[]; readonly ignoreRetype?: boolean; readonly flicker?: boolean; readonly unreadable?: boolean; readonly stale?: boolean }) {
 		let now = 0;
 		let reads = 0;
 		const events: { readonly at: number; readonly optionNumber: number }[] = options.typed
@@ -359,6 +359,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 					}
 				},
 				wait: async (ms: number) => { now += ms; },
+				stillCurrent: async () => !options.stale,
 			},
 		};
 	}
@@ -379,6 +380,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 			retypeNotTaken: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], ignoreRetype: true }),
 			flicker: await run({ latencyMs: 20, typed: [1, 3], flicker: true }),
 			unreadable: await run({ latencyMs: 20, typed: [1, 3], unreadable: true }),
+			answeredOnPcWhileWaiting: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], stale: true }),
 		}, {
 			slowSsh: { outcome: 'ok', sent: [] },
 			verySlowSsh: { outcome: 'ok', sent: [] },
@@ -388,6 +390,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 			retypeNotTaken: { outcome: 'still-missing', sent: ['1'] },
 			flicker: { outcome: 'unsettled', sent: [] },
 			unreadable: { outcome: 'unreadable', sent: [] },
+			answeredOnPcWhileWaiting: { outcome: 'stale', sent: [] },
 		});
 	});
 });
