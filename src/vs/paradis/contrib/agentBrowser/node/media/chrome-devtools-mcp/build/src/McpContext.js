@@ -542,7 +542,16 @@ export class McpContext {
             // Some Electron apps still use older version
             // Fall back to not exposing DevTools at all.
             try {
-                if (await page.hasDevTools()) {
+                // PARA-PATCH (Para Code): give up after a few seconds. On a page whose renderer is busy or frozen the
+                // query got no reply until puppeteer's 180 s protocol timeout, and every tool that lists the pages
+                // (handle_dialog, list_pages, ...) waited for it (q.html Q461 2). Not answering counts as no DevTools.
+                // See NOTES.md "vendored chrome-devtools-mcp への変更".
+                let paraCodeTimer;
+                const paraCodeHasDevTools = await Promise.race([
+                    page.hasDevTools(),
+                    new Promise(resolve => { paraCodeTimer = setTimeout(() => resolve(false), 3000); }),
+                ]).finally(() => clearTimeout(paraCodeTimer));
+                if (paraCodeHasDevTools) {
                     mcpPage.devToolsPage = await page.openDevTools();
                 }
                 else {
