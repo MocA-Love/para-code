@@ -40,6 +40,25 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.16',
+		date: '2026-10-26',
+		items: [
+			{
+				icon: 'checkbox-outline',
+				title: '複数選択の質問で「その他」に書いて答えたとき、チェックした選択肢も一緒に送るようにしました',
+				body: 'これまでは書いた文だけが送られ、チェックが知らせなく外れていました。チェックした選択肢と書いた文を、PC で答えたときと同じ形でまとめて送ります。',
+			},
+			{
+				icon: 'chatbubble-ellipses-outline',
+				title: '選択肢を選ばずにメモだけで答えるときは、送る前に確かめるようにしました',
+			},
+			{
+				icon: 'hand-left-outline',
+				title: '複数の質問のカードで続けて素早くタップしたとき、先に付けたチェックが外れることがあったのを直しました',
+			},
+		],
+	},
+	{
 		version: '0.12.15',
 		date: '2026-10-21',
 		items: [
