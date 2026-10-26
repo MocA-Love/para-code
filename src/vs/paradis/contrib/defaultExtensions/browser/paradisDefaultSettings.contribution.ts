@@ -58,6 +58,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'textLink.activeForeground': '#23C0E7',
 				'inputOption.activeBackground': '#09AFD933',
 				'inputOption.activeBorder': '#09AFD9',
+				// Houston の文字色 #17191e は元の不透明な水色 #54b9ff の上に置く前提の黒で、上の薄い背景の上では
+				// 見えない（検索欄の Aa などの切り替え）。Houston の入力欄の文字色と同じ明るい色にする
+				'inputOption.activeForeground': '#eef0f9',
 				'tab.activeBorderTop': '#09AFD9',
 				'panelTitle.activeBorder': '#09AFD9',
 				'statusBar.background': '#09AFD9',
@@ -72,7 +75,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.background': '#09AFD9',
 				'statusBar.foreground': '#FFFFFF',
 				'statusBar.noFolderBackground': '#09AFD9',
-				'statusBar.noFolderForeground': '#FFFFFF'
+				'statusBar.noFolderForeground': '#FFFFFF',
+				// 数のバッジ（アクティビティバー・内蔵ブラウザの共有ボタン）の白い文字は #09AFD9 の上で読みにくい
+				// （明るさの比 2.58）。Houston と同じく黒い文字にする（比 8.15）
+				'activityBarBadge.foreground': '#000000'
 			},
 			'[Light 2026]': {
 				// Light 2026 のブランドアクセントは白背景とのコントラスト確保のため #0598BD（テーマ内の debugging 色と同値）

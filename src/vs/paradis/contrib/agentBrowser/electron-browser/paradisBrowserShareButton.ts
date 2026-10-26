@@ -12,9 +12,10 @@
 // このページを使えるペインの数をバッジで出し（ユーザーが共有したペインのほか、エージェントが自分で開いたタブ・
 // 共有したページから開いたタブのペインも数える）、共有が無いときはバッジを出さない。
 //
-// 共有が無いときに押すと、今までどおり共有のダイアログを開く。共有があるときは一覧（ペインの名前・エージェント・
-// 共有の種類と、ペインごとの「共有を解く」、「ほかのペインと共有」）を開く。押しても共有は解けない。行の「共有を解く」は、
-// そのペインがこのページを使う経路（共有・エージェントが自分で開いたタブの許可・そこから開いたタブ）を一度に外す。
+// ボタンは本体と ▾ の 2 つに分かれる。本体を押すと、共有中でも未共有でも共有のダイアログを開く。▾ は共有があるときだけ
+// 出て、押すと一覧（ペインの名前・エージェント・共有の種類と、ペインごとの「共有を解く」、「ほかのペインと共有」）を開く。
+// 押しても共有は解けない。行の「共有を解く」は、そのペインがこのページを使う経路（共有・エージェントが自分で開いたタブの
+// 許可・そこから開いたタブ）を一度に外す。キーボードでは本体と ▾ の間を左右の矢印で動き、Enter / Space で押す。
 //
 // Copilot（upstream のチャットのツール）だけと共有したページ（para-browser の台帳に無いのに共有の印が付いている）は、
 // アドレスバーの upstream の表示を隠したので、ここに「Copilot と共有」の行を 1 つ出して解けるようにする。
@@ -22,7 +23,7 @@
 // 一覧は自前の DOM なので、内蔵ブラウザのネイティブビューの上に出すために、overlayManager.ts の共通の印
 // `paradis-overlay-popover` を付ける（upstream のファイルは触らない）。閉じ方はダウンロードの一覧
 // （paradisBrowserDownloadsPopover.ts）と同じで、外側クリック・Esc・リサイズ・ウィンドウのフォーカス喪失で閉じ、
-// 閉じたらボタンへフォーカスを戻す。
+// 閉じたら ▾ へフォーカスを戻す。
 
 import './media/paradisBrowserShareButton.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -100,11 +101,27 @@ export function paradisShareButtonCount(entries: IParadisShareButtonEntries): nu
 	return entries.shares.length + (entries.copilot ? 1 : 0);
 }
 
-/** ボタンのホバーと読み上げの文言。 */
+/** ボタンの本体のホバーと読み上げの文言。 */
 export function paradisShareButtonLabel(count: number): string {
 	return count === 0
 		? localize('paradis.shareButton.unshared', "エージェントと共有")
-		: localize('paradis.shareButton.shared', "エージェントと共有中: {0} 件（クリックで一覧）", count);
+		: localize('paradis.shareButton.sharedOpensDialog', "エージェントと共有中: {0} 件（クリックで共有の設定）", count);
+}
+
+/** ▾ のホバーと読み上げの文言。 */
+export function paradisShareListButtonLabel(count: number): string {
+	return localize('paradis.shareButton.listButton', "このページを使えるペインの一覧（{0} 件）", count);
+}
+
+/** ボタンのどちらを押したか。 */
+export type ParadisShareButtonPart = 'main' | 'list';
+
+/**
+ * 押したときに開くもの。本体はいつもダイアログ。▾ は共有があるときだけ一覧で、共有が無くなった直後に押された
+ * ときは（▾ を隠す前の取りこぼし）ダイアログを開く。
+ */
+export function paradisShareButtonTarget(part: ParadisShareButtonPart, count: number): 'dialog' | 'list' {
+	return part === 'list' && count > 0 ? 'list' : 'dialog';
 }
 
 /**
@@ -112,7 +129,10 @@ export function paradisShareButtonLabel(count: number): string {
  */
 export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 
-	private _hover: IManagedHover | undefined;
+	private _main: HTMLElement | undefined;
+	private _listButton: HTMLElement | undefined;
+	private _mainHover: IManagedHover | undefined;
+	private _listHover: IManagedHover | undefined;
 	private _badge: HTMLElement | undefined;
 	private readonly _editorListener = this._register(new MutableDisposable());
 	private readonly _modelListener = this._register(new MutableDisposable());
@@ -135,19 +155,40 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 			return;
 		}
 		this.element.classList.add('paradis-browser-share-item');
-		this.element.tabIndex = 0;
-		this.element.role = 'button';
-		this.element.setAttribute('aria-expanded', 'false');
-		dom.append(this.element, $(`span.action-label.paradis-browser-share-glyph${ThemeIcon.asCSSSelector(Codicon.plug)}`));
-		this._badge = dom.append(this.element, $('span.paradis-browser-share-badge'));
+
+		// 本体（ダイアログを開く）。ツールバーの中のタブで止まる所はここ 1 つ
+		const main = this._main = dom.append(this.element, $('span.paradis-browser-share-main'));
+		main.tabIndex = 0;
+		main.role = 'button';
+		main.setAttribute('aria-haspopup', 'dialog');
+		dom.append(main, $(`span.action-label.paradis-browser-share-glyph${ThemeIcon.asCSSSelector(Codicon.plug)}`));
+		this._badge = dom.append(main, $('span.paradis-browser-share-badge'));
 		this._badge.setAttribute('aria-hidden', 'true');
-		this._hover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.element, ''));
-		// Enter / Space は ActionBar がアクションを直接走らせ、onClick を通らない。一覧を開けるよう、先にここで受ける
+
+		// ▾（一覧を開く）。共有があるときだけ出す。本体から右の矢印で移る
+		const listButton = this._listButton = dom.append(this.element, $(`span.paradis-browser-share-list-button${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
+		listButton.tabIndex = -1;
+		listButton.role = 'button';
+		listButton.setAttribute('aria-haspopup', 'dialog');
+		listButton.setAttribute('aria-expanded', 'false');
+
+		this._mainHover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), main, ''));
+		this._listHover = this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), listButton, ''));
+
+		// Enter / Space は ActionBar がアクションを直接走らせ、onClick を通らない。▾ で一覧を開けるよう、先にここで受ける。
+		// 左右の矢印は本体と ▾ の間を動く（端からはみ出す向きは ActionBar に任せて、隣の項目へ移る）
 		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_DOWN, event => {
 			const keyboardEvent = new StandardKeyboardEvent(event);
+			const onList = this._isListPart(event.target);
 			if (keyboardEvent.keyCode === KeyCode.Enter || keyboardEvent.keyCode === KeyCode.Space) {
 				dom.EventHelper.stop(event, true);
-				this.onClick(event);
+				this._activate(onList ? 'list' : 'main', event);
+			} else if (keyboardEvent.keyCode === KeyCode.RightArrow && !onList && this._isListVisible()) {
+				dom.EventHelper.stop(event, true);
+				this._focusPart('list');
+			} else if (keyboardEvent.keyCode === KeyCode.LeftArrow && onList) {
+				dom.EventHelper.stop(event, true);
+				this._focusPart('main');
 			}
 		}));
 		this._watchEditor();
@@ -161,13 +202,67 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	}
 
 	override onClick(event: dom.EventLike): void {
-		if (paradisShareButtonCount(this._entries()) === 0) {
-			// 共有が無ければ、今までどおり共有のダイアログ（アクションの本体）を開く
+		this._activate(this._isListPart('target' in event ? event.target : undefined) ? 'list' : 'main', event);
+	}
+
+	override focus(fromRight?: boolean): void {
+		this._focusPart(fromRight && this._isListVisible() ? 'list' : 'main');
+	}
+
+	override isFocused(): boolean {
+		return !!this.element && dom.isAncestorOfActiveElement(this.element);
+	}
+
+	override blur(): void {
+		this._main?.blur();
+		this._listButton?.blur();
+		if (this._main) {
+			this._main.tabIndex = -1;
+		}
+		if (this._listButton) {
+			this._listButton.tabIndex = -1;
+		}
+	}
+
+	override setFocusable(focusable: boolean): void {
+		if (this._main) {
+			this._main.tabIndex = focusable ? 0 : -1;
+		}
+		if (!focusable && this._listButton) {
+			this._listButton.tabIndex = -1;
+		}
+	}
+
+	private _activate(part: ParadisShareButtonPart, event: dom.EventLike): void {
+		if (paradisShareButtonTarget(part, paradisShareButtonCount(this._entries())) === 'dialog') {
+			// 共有のダイアログ（アクションの本体）を開く。一覧が開いていれば先に閉じる
+			this._popover?.close();
 			super.onClick(event);
 			return;
 		}
 		dom.EventHelper.stop(event, true);
 		this._togglePopover();
+	}
+
+	private _isListPart(target: unknown): boolean {
+		return !!this._listButton && dom.isHTMLElement(target) && this._listButton.contains(target);
+	}
+
+	private _isListVisible(): boolean {
+		return !!this._listButton && !this._listButton.hidden;
+	}
+
+	private _focusPart(part: ParadisShareButtonPart): void {
+		const target = part === 'list' ? this._listButton : this._main;
+		const other = part === 'list' ? this._main : this._listButton;
+		if (!target) {
+			return;
+		}
+		target.tabIndex = 0;
+		if (other) {
+			other.tabIndex = -1;
+		}
+		target.focus();
 	}
 
 	private get _editor(): BrowserEditor | undefined {
@@ -194,12 +289,12 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	}
 
 	private _togglePopover(): void {
-		const element = this.element;
+		const anchor = this._listButton;
 		const model = this._editor?.model;
-		if (!element || !model) {
+		if (!anchor || !model) {
 			return;
 		}
-		const targetWindow = dom.getWindow(element);
+		const targetWindow = dom.getWindow(anchor);
 		const existing = openPopovers.get(targetWindow);
 		if (existing) {
 			existing.close();
@@ -207,14 +302,17 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 				return;
 			}
 		}
-		const popover: ParadisBrowserSharePopover = this._instantiationService.createInstance(ParadisBrowserSharePopover, element, model,
+		const popover: ParadisBrowserSharePopover = this._instantiationService.createInstance(ParadisBrowserSharePopover, anchor, model,
 			() => this.actionRunner.run(this.action, this._context),
-			() => {
+			hadFocus => {
 				if (openPopovers.get(popover.targetWindow) === popover) {
 					openPopovers.delete(popover.targetWindow);
 				}
 				if (this._popover === popover) {
 					this._popover = undefined;
+				}
+				if (hadFocus && anchor.isConnected) {
+					this._focusPart(this._isListVisible() ? 'list' : 'main');
 				}
 			});
 		this._popover = popover;
@@ -228,18 +326,27 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 
 	private _update(): void {
 		const element = this.element;
-		if (!element) {
+		const main = this._main;
+		const listButton = this._listButton;
+		if (!element || !main || !listButton) {
 			return;
 		}
 		const count = paradisShareButtonCount(this._entries());
 		element.classList.toggle('checked', count > 0);
-		element.setAttribute('aria-haspopup', count > 0 ? 'dialog' : 'false');
 		if (this._badge) {
 			this._badge.textContent = count > 0 ? String(count) : '';
 		}
 		const label = paradisShareButtonLabel(count);
-		element.setAttribute('aria-label', label);
-		this._hover?.update(label);
+		main.setAttribute('aria-label', label);
+		this._mainHover?.update(label);
+		if (count === 0 && dom.isActiveElement(listButton)) {
+			// ▾ を隠す前に、フォーカスを本体へ移す（隠れた要素にフォーカスが残ると、キーボードで迷子になる）
+			this._focusPart('main');
+		}
+		listButton.hidden = count === 0;
+		const listLabel = paradisShareListButtonLabel(count);
+		listButton.setAttribute('aria-label', listLabel);
+		this._listHover?.update(listLabel);
 	}
 }
 
@@ -261,7 +368,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		private readonly _anchor: HTMLElement,
 		private readonly _model: IBrowserViewModel,
 		private readonly _shareWithOtherPane: () => void,
-		private readonly _onDidClose: () => void,
+		private readonly _onDidClose: (hadFocus: boolean) => void,
 		@IParadisAgentBrowserBindingModel private readonly _bindingModel: IParadisAgentBrowserBindingModel,
 		@IParadisAgentBrowserTabsService private readonly _tabsService: IParadisAgentBrowserTabsService,
 		@ILayoutService layoutService: ILayoutService,
@@ -448,11 +555,10 @@ class ParadisBrowserSharePopover extends Disposable {
 		}
 		this._disposed = true;
 		this._anchor.setAttribute('aria-expanded', 'false');
-		if (this._anchor.isConnected && dom.isAncestorOfActiveElement(this._element)) {
-			this._anchor.focus();
-		}
+		// フォーカスはボタンへ戻す（戻し先は ▾ が隠れていれば本体。ボタンの側が決める）
+		const hadFocus = dom.isAncestorOfActiveElement(this._element);
 		this._element.remove();
 		super.dispose();
-		this._onDidClose();
+		this._onDidClose(hadFocus);
 	}
 }
