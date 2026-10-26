@@ -152,4 +152,17 @@ suite('ParadisBrowserShareActionViewItem', () => {
 		onDidChangeBindings.fire();
 		assert.deepStrictEqual({ listHidden: snapshot().listHidden, mainFocused: mainWindow.document.activeElement === part('.paradis-browser-share-main') }, { listHidden: true, mainFocused: true });
 	});
+
+	// ▾ がタブで止まる所のままフォーカスが外れていても、隠すときは本体をタブで止まる所に戻す
+	test('gives the tab stop back to the main part when the chevron hides without focus', () => {
+		share();
+		item.focus(true);
+		part('.paradis-browser-share-list-button').blur();
+		shares = [];
+		onDidChangeBindings.fire();
+		assert.deepStrictEqual(
+			{ main: part('.paradis-browser-share-main').tabIndex, list: part('.paradis-browser-share-list-button').tabIndex },
+			{ main: 0, list: -1 },
+		);
+	});
 });
