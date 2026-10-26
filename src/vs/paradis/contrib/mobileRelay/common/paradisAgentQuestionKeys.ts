@@ -118,14 +118,38 @@ export function paradisAgentQuestionKeySequence(
 	questions: readonly IParadisAgentQuestionShape[],
 	answers: readonly ParadisAgentQuestionAnswer[],
 ): string[] {
+	return paradisAgentQuestionKeyPlan(questions, answers).parts;
+}
+
+/**
+ * 複数選択の問いで、チェックの数字を打ち終えて送信ボタンへ降りる前に、画面で確かめるチェック。
+ *
+ * 選択肢リストがキーを受け付ける前に届いた数字は入力欄へ吸われ、そのチェックだけが黙って抜けたまま次へ進む
+ * （Claude Code 2.1.310 で、先頭の選択肢のラベルが出た直後に流すと再現した）。打ち直すか止めるかは流す側が決める。
+ */
+export interface IParadisAgentQuestionKeyCheck {
+	/** この添字の `parts` を流す直前に確かめる。 */
+	readonly beforePart: number;
+	/** チェックが付いているはずの選択肢の番号（1 始まり、昇順）。 */
+	readonly checked: readonly number[];
+	/** 「その他」を除いた選択肢の数。 */
+	readonly optionCount: number;
+}
+
+/** {@link paradisAgentQuestionKeySequence} のキー列と、その途中で確かめるチェック（{@link IParadisAgentQuestionKeyCheck}）。 */
+export function paradisAgentQuestionKeyPlan(
+	questions: readonly IParadisAgentQuestionShape[],
+	answers: readonly ParadisAgentQuestionAnswer[],
+): { readonly parts: string[]; readonly checks: IParadisAgentQuestionKeyCheck[] } {
 	const parts: string[] = [];
+	const checks: IParadisAgentQuestionKeyCheck[] = [];
 	for (const [index, answer] of answers.entries()) {
 		const question = questions[index];
 		if (question === undefined) {
 			continue;
 		}
 		if (answer.kind === 'text' && question.hasPreview === true) {
-			return [];
+			return { parts: [], checks: [] };
 		}
 		if (answer.kind === 'option') {
 			// 数字だけで確定し、次の質問へ自動で進む。Enterは送らない。
@@ -139,9 +163,11 @@ export function paradisAgentQuestionKeySequence(
 		if (answer.kind === 'multi') {
 			// 数字はトグルのみ（フォーカスは動かない）。スペースは「フォーカス中の項目」を
 			// トグルしてしまうので送らない。
-			for (const optionIndex of [...new Set(answer.indices)].sort((a, b) => a - b)) {
-				parts.push(String(optionIndex + 1));
+			const checked = [...new Set(answer.indices)].sort((a, b) => a - b).map(optionIndex => optionIndex + 1);
+			for (const optionNumber of checked) {
+				parts.push(String(optionNumber));
 			}
+			checks.push({ beforePart: parts.length, checked, optionCount: question.optionCount });
 			parts.push(...downsToSubmitButton(question.optionCount), ENTER);
 			continue;
 		}
@@ -158,7 +184,45 @@ export function paradisAgentQuestionKeySequence(
 	if (parts.length > 0 && paradisAgentQuestionNeedsReviewSubmit(questions)) {
 		parts.push(ENTER);
 	}
-	return parts;
+	return { parts, checks };
+}
+
+/**
+ * 画面に出ている複数選択の問いの、チェックの付いた選択肢の番号（1 始まり）。読めなければ undefined。
+ *
+ * Claude Code 2.1.310 の複数選択の行は `❯ 1. [✔] Apple` / `  2. [ ] Banana`（フォーカスの印 `❯` は 1 行だけ）。
+ * 「その他」の行も `5. [ ] Type something` と同じ形で並ぶので、`optionCount` より大きい番号は数えない。
+ * 会話の上の方に同じ形の行が残っていても取り違えないよう、1 番から始まるいちばん下のまとまりを読む。
+ */
+export function paradisVisibleQuestionChecks(screen: string, optionCount: number): number[] | undefined {
+	let block: Map<number, boolean> | undefined;
+	let last: Map<number, boolean> | undefined;
+	for (const line of screen.split(/\r?\n/)) {
+		const row = /^\s*(?:[\u276f\u203a>]\s*)?(?<number>\d{1,2})\.\s+\[(?<mark>.)\]/u.exec(line);
+		if (row?.groups === undefined) {
+			continue;
+		}
+		const optionNumber = Number(row.groups.number);
+		if (optionNumber === 1) {
+			block = new Map();
+			last = block;
+		}
+		block?.set(optionNumber, (row.groups.mark ?? ' ').trim().length > 0);
+	}
+	if (last === undefined) {
+		return undefined;
+	}
+	const checked: number[] = [];
+	for (let optionNumber = 1; optionNumber <= optionCount; optionNumber++) {
+		const mark = last.get(optionNumber);
+		if (mark === undefined) {
+			return undefined;
+		}
+		if (mark) {
+			checked.push(optionNumber);
+		}
+	}
+	return checked;
 }
 
 /**
@@ -254,4 +318,42 @@ export function paradisCodexApprovalDenyKey(screen: string | undefined): string 
 		}
 	}
 	return 'd';
+}
+
+/** 中継から届いた {@link IParadisAgentQuestionKeyCheck} の並びを読む（形が違うものは捨てる）。`partCount` はキー列の長さ。 */
+export function paradisReadQuestionKeyChecks(value: unknown, partCount: number): IParadisAgentQuestionKeyCheck[] {
+	if (!Array.isArray(value) || value.length > 4) {
+		return [];
+	}
+	const checks: IParadisAgentQuestionKeyCheck[] = [];
+	for (const item of value) {
+		const candidate = typeof item === 'object' && item !== null ? item as { beforePart?: unknown; checked?: unknown; optionCount?: unknown } : undefined;
+		const beforePart = candidate?.beforePart;
+		const optionCount = candidate?.optionCount;
+		const checked = candidate?.checked;
+		if (typeof beforePart !== 'number' || !Number.isInteger(beforePart) || beforePart < 0 || beforePart >= partCount
+			|| typeof optionCount !== 'number' || !Number.isInteger(optionCount) || optionCount < 1 || optionCount > 9
+			|| !Array.isArray(checked) || checked.length === 0
+			|| !checked.every(number => typeof number === 'number' && Number.isInteger(number) && number >= 1 && number <= optionCount)) {
+			continue;
+		}
+		checks.push({ beforePart, checked: [...new Set(checked as number[])].sort((a, b) => a - b), optionCount });
+	}
+	return checks;
+}
+
+/**
+ * 画面のチェック（{@link paradisVisibleQuestionChecks}）が送るつもりのものと合うか。`missing` は打ち直せば直る（数字はトグル）。
+ * `extra` は付いているはずの無いチェック（PC で誰かが触った等）で、打ち直すと別のものを外しかねないので止める。
+ * 画面を読めなければ `unreadable`（今までどおり流す）。
+ */
+export function paradisQuestionChecksVerdict(visible: readonly number[] | undefined, check: IParadisAgentQuestionKeyCheck): { readonly kind: 'ok' } | { readonly kind: 'extra' } | { readonly kind: 'unreadable' } | { readonly kind: 'missing'; readonly missing: number[] } {
+	if (visible === undefined) {
+		return { kind: 'unreadable' };
+	}
+	if (visible.some(number => !check.checked.includes(number))) {
+		return { kind: 'extra' };
+	}
+	const missing = check.checked.filter(number => !visible.includes(number));
+	return missing.length > 0 ? { kind: 'missing', missing } : { kind: 'ok' };
 }

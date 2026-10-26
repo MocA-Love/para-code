@@ -5,11 +5,13 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Check, CircleHelp, Square, SquareCheck } from 'lucide-react-native';
 import type { AgentQuestionShape } from '../../agentQuestionKeys.js';
 import {
-	attachQuestionNotes, partialQuestionAnswers, questionHasPreview, questionTakesNotes, showOtherOption, type AskQuestionFeatures,
+	attachQuestionNotes, hasNotesOnlyAnswer, multiSelectAnswer, partialQuestionAnswers, questionHasPreview, questionTakesNotes, showOtherOption,
+	type AskQuestionFeatures,
 } from '../../agentQuestionMod.js';
 import { isSubmissionLocked } from '../../components/answerSubmission.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
+import { paraAlert } from '../../paraAlert.js';
 import type { QuestionGroupAnswer } from '../../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../../hooks/useAnswerSubmission.js';
 import { useIsRegularWidth } from '../../hooks/useSizeClass.js';
@@ -38,6 +40,21 @@ type ClarifyQuestions = (interactionId: string, response: string | undefined, an
 /** 「質問に答えずに話す」の依頼の ID（その他の回答の依頼と分ける）。 */
 export function clarifyRequestId(interactionId: string): string {
 	return `${interactionId}:clarify`;
+}
+
+/**
+ * 選択肢を選ばずメモだけの回答があれば、送る前に確かめる。エージェントには「選択肢を選んでいない」と伝わるうえ、
+ * iPad の 2 列では選んでいない選択肢の preview も出るので、選んだつもりのまま送りやすい。無ければすぐ送る。
+ */
+function confirmNotesOnly(answers: readonly (QuestionGroupAnswer | undefined)[], send: () => void): void {
+	if (!hasNotesOnlyAnswer(answers)) {
+		send();
+		return;
+	}
+	paraAlert.alert('選択肢を選ばずに送りますか', 'メモだけを送ります。エージェントには「選択肢を選んでいない」と伝わります。', [
+		{ text: 'キャンセル', style: 'cancel' },
+		{ text: 'メモだけ送る', onPress: send },
+	]);
 }
 
 /**
@@ -95,8 +112,8 @@ export function AskCard({ message, refreshing, features, onSubmit, onClarify, on
 			safe_has_preview: questionHasPreview(message),
 		}));
 	// コンポーザーからの回答は依頼したあとで非同期に届く。送る時点の最新の値で送る。
-	const latestRef = useRef({ submit, onSubmit, onClarify, question, refreshing, notes, takesNotes });
-	latestRef.current = { submit, onSubmit, onClarify, question, refreshing, notes, takesNotes };
+	const latestRef = useRef({ submit, onSubmit, onClarify, question, refreshing, notes, takesNotes, options, toggled });
+	latestRef.current = { submit, onSubmit, onClarify, question, refreshing, notes, takesNotes, options, toggled };
 	const requestFreeText = () => {
 		if (interactionId === undefined) {
 			return;
@@ -111,7 +128,14 @@ export function AskCard({ message, refreshing, features, onSubmit, onClarify, on
 				if (latest.refreshing) {
 					return Promise.resolve({ status: 'rejected', message: REFRESHING_MESSAGE });
 				}
-				const textAnswer = attachQuestionNotes({ kind: 'text', optionCount: latest.question.optionCount, text }, latest.notes, latest.takesNotes)!;
+				// 複数選択では、チェックした選択肢も一緒に送る（文だけにするとチェックが黙って捨てられる。multiSelectAnswer）
+				const base = latest.question.multiSelect
+					? multiSelectAnswer(latest.options, [...latest.toggled], text)
+					: { kind: 'text' as const, optionCount: latest.question.optionCount, text };
+				if (base === undefined) {
+					return Promise.resolve({ status: 'rejected', message: '回答を入力してください' });
+				}
+				const textAnswer = attachQuestionNotes(base, latest.notes, latest.takesNotes)!;
 				return latest.submit('text', () => latestRef.current.onSubmit(interactionId, [latestRef.current.question], [textAnswer]));
 			},
 		});
@@ -169,9 +193,11 @@ export function AskCard({ message, refreshing, features, onSubmit, onClarify, on
 		if (interactionId === undefined || answer === undefined) {
 			return;
 		}
-		haptic('commit');
 		const sending = answer;
-		void submit(sending.kind, () => onSubmit(interactionId, [question], [sending]));
+		confirmNotesOnly([sending], () => {
+			haptic('commit');
+			void submit(sending.kind, () => onSubmit(interactionId, [question], [sending]));
+		});
 	};
 	if (clarifying || withdrawing.active) {
 		return (
@@ -225,7 +251,7 @@ export function AskCard({ message, refreshing, features, onSubmit, onClarify, on
 			{!interactive ? <Text style={cardStyles.hint}>この質問はモバイルから安全に回答できません。ターミナル表示で回答してください</Text> : null}
 			{interactive && refreshing ? <Text style={cardStyles.hint}>{REFRESHING_MESSAGE}</Text> : null}
 			{error !== undefined ? <Text style={cardStyles.error}>{error}</Text> : null}
-			{!disabled && freeTextActive ? <Text style={cardStyles.hint}>下の入力欄に回答を入力して送信してください</Text> : null}
+			{!disabled && freeTextActive ? <Text style={cardStyles.hint}>{multiSelect && toggled.size > 0 ? `下の入力欄に入力して送信すると、チェックした${toggled.size}件と一緒に送ります` : '下の入力欄に回答を入力して送信してください'}</Text> : null}
 			{!disabled && !freeTextActive && options.length > 0 ? <Text style={cardStyles.hint}>{multiSelect ? 'タップで選び「回答する」で送信します' : '選んでから「回答する」で送信します'}</Text> : null}
 		</View>
 	);
@@ -255,6 +281,8 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	// メモは質問ごとに 1 つ（TUI と同じ。他の選択肢へ移っても残る）
 	const [notes, setNotes] = useState<string[]>(() => messages.map(() => ''));
+	// 複数選択の質問の「その他」の文。チェック（`answers` の `multi`）と別に持ち、送るときに合わせる（multiSelectAnswer）
+	const [otherTexts, setOtherTexts] = useState<string[]>(() => messages.map(() => ''));
 	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
 	const submission = useAnswerSubmission(`open:${interactionId ?? ''}`);
 	const locked = isSubmissionLocked(submission.state);
@@ -270,16 +298,28 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 		const m = messages[index];
 		return m !== undefined && questionTakesNotes(m, features);
 	};
-	const finalAnswers = messages.map((_, index) => attachQuestionNotes(answers[index], notes[index] ?? '', takesNotes(index)));
+	/** 質問ごとの回答。複数選択はチェックと「その他」の文を 1 つの回答にする。 */
+	const composeAnswers = (raw: readonly (QuestionGroupAnswer | undefined)[], others: readonly string[]) => latestRef.current.messages.map((m, index) => {
+		if (m.multiSelect !== true) {
+			return raw[index];
+		}
+		const value = raw[index];
+		return multiSelectAnswer(m.options ?? [], value?.kind === 'multi' ? value.indices : [], others[index] ?? '');
+	});
+	const latestRef = useRef({ messages, refreshing, onClarify, submit: submission.run });
+	latestRef.current = { messages, refreshing, onClarify, submit: submission.run };
+	const composed = composeAnswers(answers, otherTexts);
+	const finalAnswers = messages.map((_, index) => attachQuestionNotes(composed[index], notes[index] ?? '', takesNotes(index)));
 	const answeredCount = finalAnswers.filter(answer => answer !== undefined).length;
 	const allAnswered = answeredCount === messages.length;
 	const answersRef = useRef(answers);
 	answersRef.current = answers;
-	const latestRef = useRef({ messages, refreshing, onClarify, submit: submission.run });
-	latestRef.current = { messages, refreshing, onClarify, submit: submission.run };
+	const otherTextsRef = useRef(otherTexts);
+	otherTextsRef.current = otherTexts;
 	useEffect(() => {
 		setAnswers(previous => messages.map((_, index) => previous[index]));
 		setNotes(previous => messages.map((_, index) => previous[index] ?? ''));
+		setOtherTexts(previous => messages.map((_, index) => previous[index] ?? ''));
 		setStep(previous => Math.min(previous, Math.max(0, messages.length - 1)));
 	}, [messages.length]);
 
@@ -298,6 +338,7 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 	const toggledIndices = currentAnswer?.kind === 'multi' ? currentAnswer.indices : [];
 	const stepRequestId = (index: number) => `${interactionId ?? ''}:${index}`;
 	const otherSelected = freeTextActiveId === stepRequestId(step);
+	const currentOtherText = multiSelect ? (otherTexts[step] ?? '') : '';
 
 	const requestFreeText = () => {
 		if (interactionId === undefined || current === undefined) {
@@ -305,6 +346,11 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 		}
 		haptic('tick');
 		const index = step;
+		if (multiSelect && currentOtherText.length > 0 && !otherSelected) {
+			// 複数選択の「その他」は TUI と同じくチェックの 1 つ。入力済みならもう一度押すと外す
+			setOtherTexts(previous => previous.map((value, i) => (i === index ? '' : value)));
+			return;
+		}
 		onRequestFreeText({
 			id: stepRequestId(index),
 			prompt: current.text,
@@ -313,6 +359,13 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 				const latest = latestRef.current;
 				if (latest.refreshing) {
 					return Promise.resolve({ status: 'rejected', message: REFRESHING_MESSAGE });
+				}
+				if (latest.messages[index]?.multiSelect === true) {
+					// チェックは残したまま文を控える（送るときに合わせる）
+					const nextOthers = otherTextsRef.current.map((value, i) => (i === index ? text.trim() : value));
+					setOtherTexts(nextOthers);
+					advance(index, composeAnswers(answersRef.current, nextOthers));
+					return Promise.resolve({ status: 'accepted' });
 				}
 				const optionCount = latest.messages[index]?.options?.length ?? 0;
 				const next = answersRef.current.map((value, i) => (i === index ? { kind: 'text' as const, optionCount, text } : value));
@@ -345,7 +398,7 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 			return;
 		}
 		withdrawing.start();
-		const partial = partialQuestionAnswers(answers, notes, takesNotes);
+		const partial = partialQuestionAnswers(composed, notes, takesNotes);
 		void submission.run(() => onClarify(interactionId, undefined, partial)).then(result => {
 			if (result.status !== 'rejected') {
 				onRequestFreeText(undefined);
@@ -358,10 +411,18 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 			onRequestFreeText(undefined);
 		}
 		if (multiSelect) {
-			const next = toggledIndices.includes(optionIndex)
-				? toggledIndices.filter(value => value !== optionIndex)
-				: [...toggledIndices, optionIndex].sort((a, b) => a - b);
-			setAnswers(previous => previous.map((value, i) => (i === step ? (next.length > 0 ? { kind: 'multi', indices: next } : undefined) : value)));
+			// 描いた時点の値ではなく前の値から作る（描き直しの前に続けてタップすると、先のタップが戻るため）
+			const index = step;
+			setAnswers(previous => previous.map((value, i) => {
+				if (i !== index) {
+					return value;
+				}
+				const toggled = value?.kind === 'multi' ? value.indices : [];
+				const next = toggled.includes(optionIndex)
+					? toggled.filter(item => item !== optionIndex)
+					: [...toggled, optionIndex].sort((a, b) => a - b);
+				return next.length > 0 ? { kind: 'multi', indices: next } : undefined;
+			}));
 		} else {
 			const next = answers.map((value, i) => (i === step ? { kind: 'option' as const, index: optionIndex } : value));
 			setAnswers(next);
@@ -375,10 +436,13 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 		if (interactionId === undefined || !allAnswered) {
 			return;
 		}
+		confirmNotesOnly(finalAnswers, () => sendAll(interactionId));
+	};
+	const sendAll = (id: string) => {
 		haptic('commit');
 		const picked = finalAnswers.filter((answer): answer is QuestionGroupAnswer => answer !== undefined);
 		void submission.run(() => startMobileSpan('agentQuestion', 'submit-group', () =>
-			onSubmit(interactionId, questions, picked).then(result => {
+			onSubmit(id, questions, picked).then(result => {
 				setMobileSpanAttributes({ safe_status: result.status });
 				return result;
 			}), {
@@ -435,10 +499,10 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 					other={interactive && showOtherOption(current, features) ? (
 						<OptionButton
 							label="その他（入力して回答）"
-							description={currentAnswer?.kind === 'text' ? currentAnswer.text : undefined}
-							selected={otherSelected || currentAnswer?.kind === 'text'}
+							description={multiSelect ? (currentOtherText.length > 0 ? currentOtherText : undefined) : currentAnswer?.kind === 'text' ? currentAnswer.text : undefined}
+							selected={otherSelected || (multiSelect ? currentOtherText.length > 0 : currentAnswer?.kind === 'text')}
 							disabled={disabled}
-							hint="下の入力欄が、この質問への回答の入力に切り替わります"
+							hint={multiSelect && currentOtherText.length > 0 ? 'もう一度押すと、入力した回答を外します' : '下の入力欄が、この質問への回答の入力に切り替わります'}
 							onPress={requestFreeText}
 						/>
 					) : undefined}
@@ -450,7 +514,7 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 				<Button label={`回答を送信（${answeredCount}/${messages.length}）`} disabled={!allAnswered || refreshing} onPress={submitAll} />
 			) : null}
 			{features.chat && interactive && !locked ? <ChatAboutQuestionLink disabled={disabled} onPress={requestClarify} /> : null}
-			{!disabled && otherSelected ? <Text style={cardStyles.hint}>下の入力欄に回答を入力して送信してください</Text> : null}
+			{!disabled && otherSelected ? <Text style={cardStyles.hint}>{multiSelect && toggledIndices.length > 0 ? `下の入力欄に入力すると、チェックした${toggledIndices.length}件と一緒に回答になります` : '下の入力欄に回答を入力して送信してください'}</Text> : null}
 			{!disabled ? <Text style={cardStyles.hint}>すべての質問に回答してから送信されます（1問ずつは送信されません）</Text> : null}
 			{!interactive ? <Text style={cardStyles.hint}>この質問はターミナル表示で回答してください</Text> : null}
 			{interactive && refreshing ? <Text style={cardStyles.hint}>{REFRESHING_MESSAGE}</Text> : null}

@@ -3,7 +3,7 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { questionHasPreview } from '../agentQuestionMod.js';
+import { multiSelectAnswer, questionHasPreview } from '../agentQuestionMod.js';
 import type { AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import { useAnswerSubmission } from '../hooks/useAnswerSubmission.js';
@@ -107,8 +107,13 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 		}));
 	// コンポーザーからの回答は依頼したあとで非同期に届く。そのあいだに質問の形（選択肢の数など）や
 	// 送り先が差し替わっても、依頼した時点の値ではなく送る時点の最新の値で送る（QuestionGroupCard の answersRef と同じ）。
-	const latestRef = useRef({ submit, onFreeText, question, refreshing });
-	latestRef.current = { submit, onFreeText, question, refreshing };
+	const latestRef = useRef({ submit, onFreeText, question, refreshing, options, toggled });
+	latestRef.current = { submit, onFreeText, question, refreshing, options, toggled };
+	/** 複数選択では、チェックした選択肢のラベルを「その他」の文の前に足す（文だけにするとチェックが黙って捨てられる。multiSelectAnswer）。 */
+	const withChecks = (text: string, latest: { readonly question: AgentQuestionShape; readonly options: typeof options; readonly toggled: ReadonlySet<number> }) => {
+		const answer = latest.question.multiSelect ? multiSelectAnswer(latest.options, [...latest.toggled], text) : undefined;
+		return answer?.kind === 'text' ? answer.text : text;
+	};
 	const requestFreeText = () => {
 		if (interactionId === undefined || onRequestFreeText === undefined) {
 			return;
@@ -123,7 +128,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 				if (latest.refreshing === true) {
 					return Promise.resolve({ status: 'rejected', message: REFRESHING_MESSAGE });
 				}
-				return latest.submit('text', () => latestRef.current.onFreeText(interactionId, latestRef.current.question, text));
+				return latest.submit('text', () => latestRef.current.onFreeText(interactionId, latestRef.current.question, withChecks(text, latestRef.current)));
 			},
 		});
 	};
@@ -205,7 +210,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 						disabled={freeText.trim().length === 0 || interactionId === undefined}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: freeText.trim().length === 0 || interactionId === undefined }}
-						onPress={() => { if (interactionId !== undefined) { haptic('commit'); void submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
+						onPress={() => { if (interactionId !== undefined) { haptic('commit'); void submit('text', () => onFreeText(interactionId, question, withChecks(freeText.trim(), latestRef.current))); } }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color={colors.onPrimary} />
