@@ -58,10 +58,13 @@ const installedExtensionFolder = /^(?<id>[a-z0-9][a-z0-9-]{0,63}\.[a-z0-9][a-z0-
 const builtinExtensionFolder = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 
 /**
- * スタックの中の `.../<親の親>/<親>/extensions/<フォルダー>/` の部分。区切りは `/` と `\`
+ * スタックの中の `.../<親の親>/<親>/extensions/<フォルダー>/` の部分。区切りは `/` と `\`。`extensions` の直前も区切りに限る
  * （`file:///c%3A/...` の形も `/` で分かれる）。
  */
-const extensionFolderInStack = /(?:(?<grandparent>[^\\/\s()]+)[\\/]+(?<parent>[^\\/\s()]+)[\\/]+)?extensions[\\/]+(?<folder>[^\\/\s()]+)[\\/]/gi;
+const extensionFolderInStack = /(?:(?<grandparent>[^\\/\s()]+)[\\/]+(?<parent>[^\\/\s()]+)[\\/]+)?(?<=[\\/])extensions[\\/]+(?<folder>[^\\/\s()]+)[\\/]/gi;
+
+/** 照合する 1 行の長さの上限。`/` を含まない長い 1 語で正規表現の手間が長さの 2 乗に増えないようにする（paradisSentryDiagnostics.ts と同じ値）。 */
+const MAX_STACK_LINE_LENGTH = 1_000;
 
 /** スタックの文字列を読む。getter が投げても落ちない。 */
 export function paradisErrorStack(error: unknown): string | undefined {
@@ -87,7 +90,7 @@ export function paradisExtensionIdFromStack(stack: string | undefined): string |
 	}
 	// フレームの行（`    at ...`）だけを読む。例外の文に書かれたパスで別の拡張にしないため。
 	// 先頭だけ読む（拡張ホストは 100 フレームまで送る。正規表現の手間を長さに比例させるため）
-	const frames = stack.slice(0, 20_000).split('\n').filter(line => /^\s*at\s/.test(line)).join('\n');
+	const frames = stack.slice(0, 20_000).split('\n').filter(line => /^\s*at\s/.test(line)).map(line => line.slice(0, MAX_STACK_LINE_LENGTH)).join('\n');
 	for (const match of frames.matchAll(extensionFolderInStack)) {
 		const { grandparent, parent, folder } = match.groups ?? {};
 		if (folder === undefined) {
