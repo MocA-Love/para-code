@@ -231,6 +231,7 @@ export function AskCard({ message, refreshing, features, onSubmit, onClarify, on
 					<OptionButton
 						label="その他（入力して回答）"
 						selected={freeTextActive}
+						multiSelect={multiSelect}
 						disabled={disabled}
 						hint="下の入力欄が、この質問への回答の入力に切り替わります"
 						onPress={requestFreeText}
@@ -498,9 +499,10 @@ export function AskGroupCard({ messages, refreshing, features, onSubmit, onClari
 					notesLost={!takesNotes(step) && questionHasPreview(current) && (notes[step] ?? '').trim().length > 0}
 					other={interactive && showOtherOption(current, features) ? (
 						<OptionButton
-							label="その他（入力して回答）"
+							label={multiSelect && currentOtherText.length > 0 && !otherSelected ? 'その他（もう一度押すと外します）' : 'その他（入力して回答）'}
 							description={multiSelect ? (currentOtherText.length > 0 ? currentOtherText : undefined) : currentAnswer?.kind === 'text' ? currentAnswer.text : undefined}
 							selected={otherSelected || (multiSelect ? currentOtherText.length > 0 : currentAnswer?.kind === 'text')}
+							multiSelect={multiSelect}
 							disabled={disabled}
 							hint={multiSelect && currentOtherText.length > 0 ? 'もう一度押すと、入力した回答を外します' : '下の入力欄が、この質問への回答の入力に切り替わります'}
 							onPress={requestFreeText}

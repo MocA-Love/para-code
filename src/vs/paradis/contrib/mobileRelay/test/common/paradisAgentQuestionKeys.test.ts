@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
 import { paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptions } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
@@ -316,6 +316,78 @@ suite('paradisAgentQuestionKeySequence', () => {
 			extra: { kind: 'extra' },
 			unreadable: [undefined, { kind: 'unreadable' }],
 			read: [check],
+		});
+	});
+
+	/**
+	 * 打鍵が `latencyMs` 遅れて画面に反映される偽の端末（SSH の往復の代わり）。数字はチェックのトグル。
+	 * `swallow` の数字は反映されない（入力欄へ吸われた）。`flicker` なら読むたびに 1 番が付いたり外れたりする。
+	 */
+	function fakeScreen(options: { readonly latencyMs: number; readonly typed: readonly number[]; readonly swallow?: readonly number[]; readonly ignoreRetype?: boolean; readonly flicker?: boolean; readonly unreadable?: boolean }) {
+		let now = 0;
+		let reads = 0;
+		const events: { readonly at: number; readonly optionNumber: number }[] = options.typed
+			.filter(optionNumber => !(options.swallow ?? []).includes(optionNumber))
+			.map(optionNumber => ({ at: options.latencyMs, optionNumber }));
+		const sent: string[] = [];
+		const render = () => {
+			const checked = new Set<number>();
+			for (const event of events) {
+				if (event.at <= now) {
+					checked.has(event.optionNumber) ? checked.delete(event.optionNumber) : checked.add(event.optionNumber);
+				}
+			}
+			if (options.flicker && reads % 2 === 0) {
+				checked.has(1) ? checked.delete(1) : checked.add(1);
+			}
+			reads++;
+			if (options.unreadable) {
+				return 'Which fruits?';
+			}
+			return ['Which fruits?', ...[1, 2, 3, 4].map(n => `  ${n}. [${checked.has(n) ? '\u2714' : ' '}] Option ${n}`), '  5. [ ] Type something'].join('\n');
+		};
+		// キー列の最後の数字を打ってから delayMs（300）経ってから確かめ始める
+		now = 300;
+		return {
+			sent,
+			screen: {
+				read: render,
+				send: async (key: string) => {
+					sent.push(key);
+					if (!options.ignoreRetype) {
+						events.push({ at: now + options.latencyMs, optionNumber: Number(key) });
+					}
+				},
+				wait: async (ms: number) => { now += ms; },
+			},
+		};
+	}
+
+	test('画面が落ち着いてから確かめ、落ち着いた画面で抜けていたときだけ打ち直す（反映が遅いだけのチェックは打ち直さない）', async () => {
+		const check = { beforePart: 2, checked: [1, 3], optionCount: 4 };
+		const run = async (options: Parameters<typeof fakeScreen>[0]) => {
+			const fake = fakeScreen(options);
+			const outcome = await paradisConfirmQuestionChecks(fake.screen, check, 300);
+			return { outcome, sent: fake.sent };
+		};
+		assert.deepStrictEqual({
+			slowSsh: await run({ latencyMs: 500, typed: [1, 3] }),
+			verySlowSsh: await run({ latencyMs: 1_100, typed: [1, 3] }),
+			fast: await run({ latencyMs: 20, typed: [1, 3] }),
+			swallowedOnSlowSsh: await run({ latencyMs: 500, typed: [1, 3], swallow: [1] }),
+			extra: await run({ latencyMs: 20, typed: [1, 2, 3] }),
+			retypeNotTaken: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], ignoreRetype: true }),
+			flicker: await run({ latencyMs: 20, typed: [1, 3], flicker: true }),
+			unreadable: await run({ latencyMs: 20, typed: [1, 3], unreadable: true }),
+		}, {
+			slowSsh: { outcome: 'ok', sent: [] },
+			verySlowSsh: { outcome: 'ok', sent: [] },
+			fast: { outcome: 'ok', sent: [] },
+			swallowedOnSlowSsh: { outcome: 'retyped', sent: ['1'] },
+			extra: { outcome: 'extra', sent: [] },
+			retypeNotTaken: { outcome: 'still-missing', sent: ['1'] },
+			flicker: { outcome: 'unsettled', sent: [] },
+			unreadable: { outcome: 'unreadable', sent: [] },
 		});
 	});
 });
