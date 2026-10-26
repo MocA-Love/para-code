@@ -531,17 +531,26 @@ export function paradisDedupeFingerprint(errorTags: Record<string, string>): str
 /** Where a reported error was raised, when that is not the process that reports it. */
 export type ParadisErrorOrigin = 'extension-host';
 
-const errorOrigins = new WeakMap<object, ParadisErrorOrigin>();
+interface IParadisErrorOriginMark {
+	readonly origin: ParadisErrorOrigin;
+	readonly extensionId: string | undefined;
+}
+
+const errorOrigins = new WeakMap<object, IParadisErrorOriginMark>();
 
 /**
  * Marks `error` as raised in `origin` and relayed to this process, so its report carries the
  * `para.origin` tag and gets its own issue. The extension host's errors reach the workbench's
  * unexpected error handler with only Node's frames left (an extension's own files are not sent), and
  * looked like the workbench's own errors. A primitive cannot be marked and is reported as before.
+ *
+ * `extensionId` is the public identifier of the extension whose file is the top frame of the relayed
+ * stack (`paradisExtensionIdFromStack`), sent as `para.extension_id`. It is a tag only, not part of the
+ * grouping key, so the existing issues keep their history.
  */
-export function markParadisErrorOrigin(error: unknown, origin: ParadisErrorOrigin): void {
+export function markParadisErrorOrigin(error: unknown, origin: ParadisErrorOrigin, extensionId?: string): void {
 	if (typeof error === 'object' && error !== null) {
-		errorOrigins.set(error, origin);
+		errorOrigins.set(error, { origin, extensionId });
 	}
 }
 
@@ -551,11 +560,12 @@ export function markParadisErrorOrigin(error: unknown, origin: ParadisErrorOrigi
  */
 export function paradisSafeErrorTags(error: unknown): Record<string, string> {
 	const messageHash = paradisErrorMessageHash(error);
-	const origin = typeof error === 'object' && error !== null ? errorOrigins.get(error) : undefined;
+	const mark = typeof error === 'object' && error !== null ? errorOrigins.get(error) : undefined;
 	return {
 		'para.error_name': paradisSafeErrorName(error),
 		...(messageHash !== undefined ? { 'para.error_message_hash': messageHash } : {}),
-		...(origin !== undefined ? { 'para.origin': origin } : {}),
+		...(mark !== undefined ? { 'para.origin': mark.origin } : {}),
+		...(mark?.extensionId !== undefined ? { 'para.extension_id': mark.extensionId } : {}),
 	};
 }
 
