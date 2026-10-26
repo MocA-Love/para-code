@@ -86,10 +86,28 @@ function createFileService(fs: IFakeFileSystem) {
 				path = path.slice(0, path.lastIndexOf('/')) || '/';
 			}
 		},
-		resolve: async (resource: URI) => ({
-			children: [...fs.files].filter(([path]) => path.startsWith(`${resource.path}/`)).map(([path, file]) => ({ resource: resource.with({ path }), isFile: true, mtime: file.mtime })),
-		}),
-		del: async (resource: URI) => { fs.files.delete(realpathOf(resource.path)); },
+		resolve: async (resource: URI) => {
+			const direct = (path: string) => path.startsWith(`${resource.path}/`) && !path.slice(resource.path.length + 1).includes('/');
+			return {
+				// Folders in the fake have no time of their own: they count as old
+				mtime: 0,
+				children: [
+					...[...fs.files].filter(([path]) => direct(path)).map(([path, file]) => ({ resource: resource.with({ path }), isFile: true, isDirectory: false, mtime: file.mtime })),
+					...[...fs.folders].filter(direct).map(path => ({ resource: resource.with({ path }), isFile: false, isDirectory: true, mtime: 0 })),
+				],
+			};
+		},
+		del: async (resource: URI) => {
+			const path = realpathOf(resource.path);
+			if (fs.folders.has(path)) {
+				if ([...fs.files.keys(), ...fs.folders].some(other => other.startsWith(`${path}/`))) {
+					throw new Error(`not empty: ${path}`);
+				}
+				fs.folders.delete(path);
+				return;
+			}
+			fs.files.delete(path);
+		},
 	} as unknown as IFileService;
 }
 
@@ -242,7 +260,7 @@ suite('ParadisRemoteFileBridge', () => {
 			racedFileLeft: swapped.fs.files.has('/home/example/raced.png'),
 		}, {
 			write: { ok: false, reason: 'outsideAllowedFolders' },
-			read: { ok: false, reason: 'outsideAllowedFolders' },
+			read: { ok: false, reason: 'outsideAllowedFolders', temporaryFolder: '/tmp' },
 			racedWrite: { ok: false, reason: 'outsideAllowedFolders' },
 			racedFileLeft: true,
 		});
@@ -266,9 +284,35 @@ suite('ParadisRemoteFileBridge', () => {
 			fromTemporary: true,
 			tooLarge: { ok: false, reason: 'tooLarge' },
 			missing: { ok: false, reason: 'notFound' },
-			outside: { ok: false, reason: 'outsideAllowedFolders' },
+			outside: { ok: false, reason: 'outsideAllowedFolders', temporaryFolder: '/tmp' },
 			folder: { ok: false, reason: 'isDirectory' },
 			special: { ok: false, reason: 'notAFile' },
+		});
+	});
+
+	test('expands a leading ~/ to the remote home and creates missing folders only inside the user folder', async () => {
+		const { bridge, fs } = createBridge({ links: new Map([[`${USER_FOLDER}/out-link`, '/etc']]) });
+		fs.folders.add('/etc');
+		const results = {
+			tildeNested: await bridge.write('pane', AUTHORITY, '~/.para-code/browser-files/run-1/shots/a.png', data),
+			absoluteNested: await bridge.write('pane', AUTHORITY, `${USER_FOLDER}/run-2/b.png`, data),
+			tildeSpace: await bridge.write('pane', AUTHORITY, '~/repo/out/c.png', data),
+			missingInSpace: await bridge.write('pane', AUTHORITY, '~/repo/out/new/d.png', data),
+			throughLink: await bridge.write('pane', AUTHORITY, `${USER_FOLDER}/out-link/new/e.png`, data),
+			otherUser: await bridge.write('pane', AUTHORITY, '~other/f.png', data),
+			tildeRead: await bridge.read('pane', AUTHORITY, '~/repo/data.csv', 1024).then(read => read.ok ? read.name : read),
+		};
+		assert.deepStrictEqual({ results, createdOutside: fs.folders.has('/etc/new') || fs.folders.has('/home/example/repo/out/new') }, {
+			results: {
+				tildeNested: { ok: true, path: `${USER_FOLDER}/run-1/shots/a.png`, userFolder: USER_FOLDER },
+				absoluteNested: { ok: true, path: `${USER_FOLDER}/run-2/b.png`, userFolder: USER_FOLDER },
+				tildeSpace: { ok: true, path: '/home/example/repo/out/c.png' },
+				missingInSpace: { ok: false, reason: 'parentMissing' },
+				throughLink: { ok: false, reason: 'outsideAllowedFolders' },
+				otherUser: { ok: false, reason: 'invalidPath' },
+				tildeRead: 'data.csv',
+			},
+			createdOutside: false,
 		});
 	});
 
@@ -277,12 +321,18 @@ suite('ParadisRemoteFileBridge', () => {
 		const { bridge, fs } = createBridge();
 		fs.files.set(`${USER_FOLDER}/old-report.pdf`, { data: new Uint8Array(1), mtime: NOW - PARADIS_REMOTE_FILE_COPY_TTL_MS - 1 });
 		fs.files.set(`${USER_FOLDER}/recent-report.pdf`, { data: new Uint8Array(1), mtime: NOW - 1000 });
+		// Folders an agent saved into: an old one is emptied and removed, one with a recent file stays
+		fs.folders.add(USER_FOLDER).add(`${USER_FOLDER}/run-1`).add(`${USER_FOLDER}/run-1/shots`).add(`${USER_FOLDER}/run-2`);
+		fs.files.set(`${USER_FOLDER}/run-1/shots/old.png`, { data: new Uint8Array(1), mtime: NOW - PARADIS_REMOTE_FILE_COPY_TTL_MS - 1 });
+		fs.files.set(`${USER_FOLDER}/run-2/recent.png`, { data: new Uint8Array(1), mtime: NOW - 1000 });
 		const copied = await bridge.writeTemporary('pane', AUTHORITY, 'Example Page.pdf', data);
 		assert.deepStrictEqual({
 			unresolved: await unresolved.bridge.writeTemporary('pane', AUTHORITY, 'a.pdf', data),
 			copied: copied.ok && /^\/home\/example\/\.para-code\/browser-files\/[0-9a-f]{8}-Example Page\.pdf$/.test(copied.path) && fs.files.has(copied.path),
 			oldRemoved: !fs.files.has(`${USER_FOLDER}/old-report.pdf`),
 			recentKept: fs.files.has(`${USER_FOLDER}/recent-report.pdf`),
+			oldFolderRemoved: !fs.files.has(`${USER_FOLDER}/run-1/shots/old.png`) && !fs.folders.has(`${USER_FOLDER}/run-1`),
+			recentFolderKept: fs.files.has(`${USER_FOLDER}/run-2/recent.png`) && fs.folders.has(`${USER_FOLDER}/run-2`),
 			badName: await bridge.writeTemporary('pane', AUTHORITY, '../escape.pdf', data),
 			noHome: await bridge.writeTemporary('pane', 'ssh-remote+other', 'a.pdf', data),
 		}, {
@@ -290,6 +340,8 @@ suite('ParadisRemoteFileBridge', () => {
 			copied: true,
 			oldRemoved: true,
 			recentKept: true,
+			oldFolderRemoved: true,
+			recentFolderKept: true,
 			badName: { ok: false, reason: 'invalidPath' },
 			noHome: { ok: false, reason: 'noTemporaryFolder' },
 		});

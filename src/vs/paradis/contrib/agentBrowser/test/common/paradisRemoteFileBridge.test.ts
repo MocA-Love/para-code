@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisNormalizeRemoteFilePath, paradisPathHasVersionControlSegment, paradisReplaceRemoteFileExtension } from '../../common/paradisRemoteFileBridge.js';
+import { paradisExpandRemoteHomePath, paradisIsAcceptableRemoteFilePath, paradisNormalizeRemoteFilePath, paradisPathHasVersionControlSegment, paradisReplaceRemoteFileExtension } from '../../common/paradisRemoteFileBridge.js';
 
 suite('paradisRemoteFileBridge (common)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -42,6 +42,24 @@ suite('paradisRemoteFileBridge (common)', () => {
 			undefined,
 			undefined,
 		]);
+	});
+
+	test('expands a leading ~/ to the remote home and accepts it only with an absolute rest', () => {
+		assert.deepStrictEqual({
+			expanded: paradisExpandRemoteHomePath('~/.para-code/browser-files/a.png', '/home/example'),
+			absolute: paradisExpandRemoteHomePath('/home/example/a.png', '/home/example'),
+			noHome: paradisExpandRemoteHomePath('~/a.png', undefined),
+			otherUser: paradisExpandRemoteHomePath('~other/a.png', '/home/example'),
+			traversal: paradisExpandRemoteHomePath('~/../../etc/passwd', '/home/example'),
+			acceptable: ['~/a.png', '/a.png', '~other/a.png', '~/../a.png', 'a.png', 42].map(path => paradisIsAcceptableRemoteFilePath(path)),
+		}, {
+			expanded: '/home/example/.para-code/browser-files/a.png',
+			absolute: '/home/example/a.png',
+			noHome: undefined,
+			otherUser: '~other/a.png',
+			traversal: undefined,
+			acceptable: [true, true, false, false, false, false],
+		});
 	});
 
 	test('finds .git, .hg and .svn segments with either separator and any case', () => {

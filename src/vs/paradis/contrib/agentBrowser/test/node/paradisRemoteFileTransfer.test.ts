@@ -63,6 +63,10 @@ class FakeWindow {
 				this.files.set(`/home/example/.para-code/browser-files/${path}`, (args[1] as VSBuffer).buffer);
 				return { ok: true, value: { ok: true, path: `/home/example/.para-code/browser-files/${path}`, userFolder: '/home/example/.para-code/browser-files' } };
 			case PARADIS_REMOTE_FILE_READ_METHOD: {
+				if (path.startsWith('/tmp/')) {
+					// The remote server's temporary folder is TMPDIR, not /tmp
+					return { ok: true, value: paradisEncodeRemoteFileReadResult({ ok: false, reason: 'outsideAllowedFolders', temporaryFolder: '/var/tmp/server-example' }) };
+				}
 				const data = this.files.get(path);
 				return { ok: true, value: paradisEncodeRemoteFileReadResult(data === undefined ? { ok: false, reason: 'notFound' } : { ok: true, data: VSBuffer.wrap(data), name: path.split('/').pop() ?? 'upload' }) };
 			}
@@ -247,6 +251,25 @@ suite('ParadisRemoteFileTransfer', () => {
 		} finally {
 			broken.dispose();
 		}
+	});
+
+	test('names the temporary folder the remote server reads from when it refuses /tmp, and accepts ~/ paths', async () => {
+		window.files.set('~/report.csv', new TextEncoder().encode('a,b'));
+		const tmp = await transfer.callTool('upload_file', 'input', { uid: '1_2', filePath: '/tmp/report.csv' }, host(), async () => ({ content: [] }));
+		const home = await transfer.callTool('upload_file', 'input', { uid: '1_2', filePath: '~/report.csv' }, host(), async () => ({ content: [{ type: 'text', text: 'uploaded' }] }));
+		const otherUser = await transfer.callTool('upload_file', 'input', { uid: '1_2', filePath: '~other/report.csv' }, host(), async () => ({ content: [] }));
+		const described = paradisDescribeToolsForRemotePane([{ name: 'upload_file', inputSchema: { type: 'object', properties: { filePath: { type: 'string' } } } }], { temporaryFolder: '/var/tmp/server-example' });
+		assert.deepStrictEqual({
+			tmp: [(tmp as IResult).isError, texts(tmp).includes('/var/tmp/server-example (the temporary folder of the Para Code server on your machine')],
+			home: [(home as IResult).isError === true, texts(home)],
+			otherUser: [(otherUser as IResult).isError, texts(otherUser).includes('starts with ~/')],
+			description: ((described[0].inputSchema as unknown as { properties: Record<string, { description: string }> }).properties.filePath.description).includes('/var/tmp/server-example'),
+		}, {
+			tmp: [true, true],
+			home: [false, 'uploaded'],
+			otherUser: [true, true],
+			description: true,
+		});
 	});
 
 	test('describes path arguments as paths on the remote machine', () => {
