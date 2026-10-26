@@ -357,3 +357,83 @@ export function paradisQuestionChecksVerdict(visible: readonly number[] | undefi
 	const missing = check.checked.filter(number => !visible.includes(number));
 	return missing.length > 0 ? { kind: 'missing', missing } : { kind: 'ok' };
 }
+
+/** {@link paradisConfirmQuestionChecks} が画面とのやり取りに使うもの（テストでは偽物を渡す）。 */
+export interface IParadisQuestionCheckScreen {
+	/** 今の画面の文字。 */
+	read(): string;
+	/** 1 打鍵を送る。 */
+	send(key: string): Promise<void>;
+	/** `ms` だけ待つ。 */
+	wait(ms: number): Promise<void>;
+}
+
+/** {@link paradisConfirmQuestionChecks} の結果。`ok` と `unreadable` のときだけ送信ボタンへ降りてよい。 */
+export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'still-missing';
+
+/** 画面が落ち着いたとみなすまでに読む回数の上限（2 回続けて同じなら落ち着いた）。 */
+const QUESTION_CHECK_MAX_READS = 6;
+/** 読む間隔の下限。`delayMs` が 0 でも、画面へ届くまでの間を空ける。 */
+const QUESTION_CHECK_MIN_INTERVAL_MS = 150;
+/**
+ * 落ち着いた画面でチェックが抜けていたとき、打ち直す前にもう一度待つ時間。往復が読む間隔の 2 倍を超えると、
+ * まだ届いていないだけの画面でも 2 回続けて同じに読めてしまうため。抜けたときだけ掛かる。
+ */
+const QUESTION_CHECK_MISSING_GRACE_MS = 1_000;
+
+/**
+ * 画面のチェックを、`intervalMs` を空けて 2 回続けて同じに読めるまで読む。落ち着かなければ undefined。
+ * 打鍵の反映は SSH の往復だけ遅れるので、1 回読んだだけで「抜けた」と決めない（まだ届いていないチェックを打ち直すと、
+ * 数字はトグルなので外れてしまう）。
+ */
+async function settledQuestionChecks(screen: IParadisQuestionCheckScreen, optionCount: number, intervalMs: number): Promise<{ readonly visible: number[] | undefined } | undefined> {
+	let previous: string | undefined;
+	for (let read = 0; read < QUESTION_CHECK_MAX_READS; read++) {
+		if (read > 0) {
+			await screen.wait(intervalMs);
+		}
+		const visible = paradisVisibleQuestionChecks(screen.read(), optionCount);
+		const key = visible === undefined ? 'unreadable' : visible.join(',');
+		if (key === previous) {
+			return { visible };
+		}
+		previous = key;
+	}
+	return undefined;
+}
+
+/**
+ * 複数選択の問いのチェックが、送るつもりのものと画面で合っているかを確かめる。選択肢リストがキーを受け付ける前に届いた数字は
+ * 入力欄へ吸われ、そのチェックだけが黙って抜ける（Claude Code 2.1.310 で再現）。画面が落ち着いてから（2 回続けて同じに読めてから）
+ * 判断し、落ち着いた画面で抜けていて、{@link QUESTION_CHECK_MISSING_GRACE_MS} 待って読み直しても抜けていたときだけ、抜けた数字を
+ * 1 回打ち直す。打ち直した後も、落ち着いた画面で合ったときだけ進める。
+ */
+export async function paradisConfirmQuestionChecks(screen: IParadisQuestionCheckScreen, check: IParadisAgentQuestionKeyCheck, delayMs: number): Promise<ParadisQuestionChecksOutcome> {
+	const intervalMs = Math.max(delayMs, QUESTION_CHECK_MIN_INTERVAL_MS);
+	const first = await settledQuestionChecks(screen, check.optionCount, intervalMs);
+	if (first === undefined) {
+		return 'unsettled';
+	}
+	const firstVerdict = paradisQuestionChecksVerdict(first.visible, check);
+	if (firstVerdict.kind !== 'missing') {
+		return firstVerdict.kind;
+	}
+	await screen.wait(QUESTION_CHECK_MISSING_GRACE_MS);
+	const second = await settledQuestionChecks(screen, check.optionCount, intervalMs);
+	if (second === undefined) {
+		return 'unsettled';
+	}
+	const verdict = paradisQuestionChecksVerdict(second.visible, check);
+	if (verdict.kind !== 'missing') {
+		return verdict.kind;
+	}
+	for (const optionNumber of verdict.missing) {
+		await screen.send(String(optionNumber));
+		await screen.wait(intervalMs);
+	}
+	const after = await settledQuestionChecks(screen, check.optionCount, intervalMs);
+	if (after === undefined) {
+		return 'unsettled';
+	}
+	return paradisQuestionChecksVerdict(after.visible, check).kind === 'ok' ? 'retyped' : 'still-missing';
+}

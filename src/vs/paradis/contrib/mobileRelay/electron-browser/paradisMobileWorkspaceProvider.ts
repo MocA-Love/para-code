@@ -87,7 +87,7 @@ import { paradisReadMobileScmStatus } from '../common/paradisMobileScmStatusRead
 import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncated, paradisLimitMobileDiff } from '../common/paradisMobileDiffLimit.js';
 import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
-import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisReadQuestionKeyChecks } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1800,37 +1800,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
-	/**
-	 * 複数選択の問いのチェックが、送るつもりのものと画面で合っているかを確かめる。選択肢リストがキーを受け付ける前に届いた数字は
-	 * 入力欄へ吸われ、そのチェックだけが黙って抜ける（Claude Code 2.1.310 で再現）ので、抜けた数字を 1 回だけ打ち直す。
-	 * 付いているはずの無いチェックがある、または打ち直しても合わなければ false（送信ボタンへ降りない）。画面を読めなければ
-	 * 今までどおり true。
-	 */
+	/** 複数選択の問いのチェックを画面で確かめる（paradisConfirmQuestionChecks）。送信ボタンへ降りてよいときだけ true。 */
 	private async confirmQuestionChecks(instance: ITerminalInstance, check: IParadisAgentQuestionKeyCheck, delayMs: number): Promise<boolean> {
-		for (let attempt = 0; attempt < 2; attempt++) {
-			const verdict = paradisQuestionChecksVerdict(paradisVisibleQuestionChecks(paradisVisibleTerminalText(instance), check.optionCount), check);
-			if (verdict.kind === 'ok') {
-				return true;
-			}
-			if (verdict.kind === 'unreadable') {
-				this.logService.warn('[paradisMobileRelay] could not read the multi-select checks on the screen; sending as before');
-				return true;
-			}
-			if (verdict.kind === 'extra') {
-				this.logService.warn('[paradisMobileRelay] the screen has a multi-select check that was not asked for; stopped before the submit button');
-				return false;
-			}
-			if (attempt > 0) {
-				this.logService.warn('[paradisMobileRelay] multi-select checks were still missing after retyping; stopped before the submit button');
-				return false;
-			}
-			this.logService.info(`[paradisMobileRelay] retyping ${verdict.missing.length} multi-select check(s) the TUI did not take`);
-			for (const optionNumber of verdict.missing) {
-				await instance.sendText(String(optionNumber), false);
-				await new Promise<void>(resolve => setTimeout(resolve, delayMs));
-			}
+		const outcome = await paradisConfirmQuestionChecks({
+			read: () => paradisVisibleTerminalText(instance),
+			send: key => instance.sendText(key, false),
+			wait: ms => new Promise<void>(resolve => setTimeout(resolve, ms)),
+		}, check, delayMs);
+		if (outcome === 'unreadable') {
+			this.logService.warn('[paradisMobileRelay] could not read the multi-select checks on the screen; sending as before');
+		} else if (outcome === 'retyped') {
+			this.logService.info('[paradisMobileRelay] retyped multi-select checks the TUI did not take');
+		} else if (outcome !== 'ok') {
+			this.logService.warn(`[paradisMobileRelay] multi-select checks did not match the screen (${outcome}); stopped before the submit button`);
 		}
-		return false;
+		return outcome === 'ok' || outcome === 'retyped' || outcome === 'unreadable';
 	}
 
 	/**
