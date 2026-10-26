@@ -96,6 +96,8 @@ import { ParadisSubagentToolUses, paradisToolUseIdOfCall } from '../common/parad
 import { PARADIS_SITE_RECIPE_TOOL_NAMES, PARADIS_SITE_RECIPE_TOOLS, ParadisSiteRecipesStore, paradisCheckSiteRecipe, paradisFormatSiteRecipesHint, paradisFormatSiteRecipesList, paradisSiteRecipeNotFound, paradisSiteRecipeSteps, paradisSiteRecipesDefaultPath } from './paradisBrowserSiteRecipes.js';
 import { ParadisBrowserCapture, paradisCaptureLocalPathRefusal, paradisWriteCaptureFile } from './paradisBrowserCapture.js';
 import { ParadisBrowserDownloadReader } from './paradisBrowserDownloadReader.js';
+import { paradisToolArgumentProblem } from './paradisToolArgumentCheck.js';
+import { IParadisRemoteFileFolders, PARADIS_REMOTE_FILE_FOLDERS_METHOD } from '../common/paradisRemoteFileBridge.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
 import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -182,8 +184,19 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** 1 ペインへの共有が上限（{@link PARADIS_USER_SHARED_PAGE_LIMIT}）に達したときのエラー。renderer は先頭の印（`paradisIsSharedPageLimitError`）で見分ける。 */
 const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR = `${PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK}: this terminal pane already has the maximum number of shared pages`;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to 10); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. For example, wait_until takes timeout_seconds (in seconds), not timeout or timeout_ms. Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to 10); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
+/** tools/list で返す道具の、引数の突き合わせに使う部分。 */
+interface IParadisListedTool {
+	readonly name: string;
+	readonly inputSchema?: unknown;
+}
+/** tools/list のスキーマを控えるペインの数の上限（古いものから忘れる。忘れたペインは次の呼び出しで作り直す）。 */
+const MAX_LISTED_TOOL_SCHEMA_PANES = 256;
+/** 内蔵の道具を含められなかったスキーマの控えを使う時間（過ぎたら作り直す）。 */
+const PARTIAL_TOOL_SCHEMAS_TTL_MS = 30_000;
+/** tools/list で接続先の一時フォルダを窓に聞くときの待ち時間の上限。 */
+const REMOTE_FILE_FOLDERS_TIMEOUT_MS = 3_000;
 /** Claude Code の mod の受付のペインあたりの上限（長いポーリングの上限 16 本 + 観測の送信）。 */
 const MAX_ACTIVE_MOD_REQUESTS_PER_TOKEN = 24;
 /**
@@ -864,6 +877,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _runStepsFlowEnabled: (() => boolean) | undefined;
 	/** 操作の結果に添える、操作の後のページとブラウザの状態（paradisBrowserObserve.ts）。 */
 	private readonly _browserObserver = new ParadisBrowserObserver();
+	/**
+	 * ペインごとに、最後に tools/list で見せた道具のスキーマ（名前 → inputSchema）。tools/call の引数を突き合わせる
+	 * （paradisToolArgumentCheck.ts）。まだ一覧を見せていないペイン（Para Code を開き直した後など）は、最初の呼び出しで作る。
+	 */
+	private readonly _listedToolSchemas = new Map<string, { readonly schemas: ReadonlyMap<string, unknown>; readonly expiresAt?: number }>();
 	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
@@ -2175,6 +2193,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._siteNudges?.forget(token);
 		this._forgetHumanChecks(token);
 		this._siteNoteSpaces?.delete(token);
+		this._listedToolSchemas?.delete(token);
 		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
 		this._browserObserver.forget(token);
 		this._runNonThrowingCleanup('agent-tabs', () => this._forgetAgentTabState(token));
@@ -4838,38 +4857,124 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			case 'ping':
 				return {};
-			case 'tools/list': {
-				// para固有ツール＋内蔵chrome-devtools-mcpのツール（子プロセスが起動できない場合は
-				// para固有ツールのみに縮退し、一覧自体は失敗させない）
-				const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
-				this._requireIngressLease(ingressLease);
-				// take_snapshot を差分にする設定（既定は無効）が有効なら、全体を取る `full` と説明を足す
-				const tools = this._snapshotDiffEnabled?.() === true ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
-				// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
-				const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
-				// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
-				const listed = [
-					...TOOLS.map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
-					...provided,
-					...tools.map(tool => paradisWithTabIdArgument(tool)),
-				];
-				// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
-				// 操作の後に待つ・状態を添える設定（既定は無効）が有効なら、その引数と説明を足す
-				const observeSettings = this._observeSettings?.();
-				const observedTools = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
-				// 手順書の run_steps（E6）は、設定が有効なときだけ説明と引数を替える
-				const observed = this._runStepsFlowEnabled?.() === true ? observedTools.map(tool => paradisRunStepsFlowDescriptor(tool)) : observedTools;
-				// サイトメモの道具（E4）は、設定が有効なときだけ一覧に出す
-				const withNotes = this._siteNotesEnabled?.() === true ? [...observed, ...PARADIS_SITE_NOTE_TOOLS] : observed;
-				// サイトの手順の道具（E3）も、設定が有効なときだけ一覧に出す。run_recipe はタブを選べる
-				const withRecipes = this._siteRecipesEnabled?.() === true ? [...withNotes, ...PARADIS_SITE_RECIPE_TOOLS.map(tool => tool.name === 'run_recipe' ? paradisWithTabIdArgument(tool) : tool)] : withNotes;
-				return { tools: this._paneRemoteAuthorityOf(ingressLease.token) !== undefined ? paradisDescribeToolsForRemotePane(withRecipes) : withRecipes };
-			}
+			case 'tools/list':
+				return { tools: await this._listTools(ingressLease, signal) };
 			case 'tools/call':
 				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, socket);
 			default:
 				throw new JsonRpcMethodError(-32601, `Method not found: ${rpc.method}`);
 		}
+	}
+
+	/**
+	 * tools/list の中身。para 固有の道具、プロバイダの道具、内蔵 chrome-devtools-mcp の道具を、設定に合わせた
+	 * 引数と説明で返す。返したスキーマはペインごとに控え、tools/call の引数の突き合わせに使う。
+	 */
+	/**
+	 * @param forArguments 引数の突き合わせのためだけに作る（説明は使わないので、接続先の一時フォルダを窓に聞かない）。
+	 * 内蔵の道具を一覧に含められなかったときは控えない（次の呼び出しでまた作る）。
+	 */
+	private async _listTools(ingressLease: IParadisAgentBrowserIngressLease, signal: AbortSignal | undefined, forArguments = false): Promise<readonly IParadisListedTool[]> {
+		// para固有ツール＋内蔵chrome-devtools-mcpのツール（子プロセスが起動できない場合は
+		// para固有ツールのみに縮退し、一覧自体は失敗させない）
+		const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
+		this._requireIngressLease(ingressLease);
+		// take_snapshot を差分にする設定（既定は無効）が有効なら、全体を取る `full` と説明を足す
+		const tools = this._snapshotDiffEnabled?.() === true ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
+		// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
+		const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
+		// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
+		const listed = [
+			...TOOLS.map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
+			...provided,
+			...tools.map(tool => paradisWithTabIdArgument(tool)),
+		];
+		// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
+		// 操作の後に待つ・状態を添える設定（既定は無効）が有効なら、その引数と説明を足す
+		const observeSettings = this._observeSettings?.();
+		const observedTools = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
+		// 手順書の run_steps（E6）は、設定が有効なときだけ説明と引数を替える
+		const observed = this._runStepsFlowEnabled?.() === true ? observedTools.map(tool => paradisRunStepsFlowDescriptor(tool)) : observedTools;
+		// サイトメモの道具（E4）は、設定が有効なときだけ一覧に出す
+		const withNotes = this._siteNotesEnabled?.() === true ? [...observed, ...PARADIS_SITE_NOTE_TOOLS] : observed;
+		// サイトの手順の道具（E3）も、設定が有効なときだけ一覧に出す。run_recipe はタブを選べる
+		const withRecipes = this._siteRecipesEnabled?.() === true ? [...withNotes, ...PARADIS_SITE_RECIPE_TOOLS.map(tool => tool.name === 'run_recipe' ? paradisWithTabIdArgument(tool) : tool)] : withNotes;
+		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
+		const folders = remoteAuthority !== undefined && !forArguments ? await this._remoteFileFolders(ingressLease, remoteAuthority, signal) : undefined;
+		const described: readonly IParadisListedTool[] = remoteAuthority !== undefined ? paradisDescribeToolsForRemotePane(withRecipes, folders) : withRecipes;
+		// 引数の突き合わせのために作った一覧に内蔵の道具が無かった（子プロセスが起きていない・共有が無い）ときも控えるが、
+		// 少し経ったら作り直す（毎回作り直さず、後から使えるようになった内蔵の道具も見られるように）
+		this._rememberListedToolSchemas(ingressLease.token, described, forArguments && devtoolsTools.length === 0 ? Date.now() + PARTIAL_TOOL_SCHEMAS_TTL_MS : undefined);
+		return described;
+	}
+
+	/**
+	 * 接続先の読み込みに使ってよい一時フォルダ（upload_file の説明に書く。q.html Q461 の 3 の A）。窓が答えなければ
+	 * 一覧を待たせずに空で返す（説明は「/tmp とは限らない」とだけ書く）。
+	 */
+	private async _remoteFileFolders(ingressLease: IParadisAgentBrowserIngressLease, remoteAuthority: string, signal: AbortSignal | undefined): Promise<IParadisRemoteFileFolders> {
+		const result = await this._callOwningWindow<unknown>(ingressLease, {
+			channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
+			method: PARADIS_REMOTE_FILE_FOLDERS_METHOD,
+			args: [ingressLease.token, remoteAuthority],
+			failureLabel: 'remote file folders',
+			failureMessage: '',
+			timeoutMs: REMOTE_FILE_FOLDERS_TIMEOUT_MS,
+		}, signal);
+		const temporaryFolder = result.ok && typeof result.value === 'object' && result.value !== null ? (result.value as { readonly temporaryFolder?: unknown }).temporaryFolder : undefined;
+		return typeof temporaryFolder === 'string' && temporaryFolder.startsWith('/') && temporaryFolder.length <= 4096 ? { temporaryFolder } : {};
+	}
+
+	/** @param expiresAt この時刻を過ぎたら控えを使わずに作り直す（内蔵の道具を含められなかった一覧）。 */
+	private _rememberListedToolSchemas(token: string, tools: readonly IParadisListedTool[], expiresAt?: number): void {
+		if (this._listedToolSchemas === undefined) {
+			return;
+		}
+		this._listedToolSchemas.delete(token);
+		this._listedToolSchemas.set(token, { schemas: new Map(tools.map(tool => [tool.name, tool.inputSchema])), ...(expiresAt !== undefined ? { expiresAt } : {}) });
+		while (this._listedToolSchemas.size > MAX_LISTED_TOOL_SCHEMA_PANES) {
+			const oldest = this._listedToolSchemas.keys().next();
+			if (oldest.done) {
+				break;
+			}
+			this._listedToolSchemas.delete(oldest.value);
+		}
+	}
+
+	/**
+	 * エージェントが渡した引数が、見せたスキーマに合わなければ断る結果（q.html Q461 の 1 の A）。合えば undefined。
+	 * スキーマを控えていないペインでは一覧を作ってから見る。一覧を作れなかった・その道具が一覧に無いときは見ない。
+	 */
+	private async _toolArgumentRefusal(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+		if (args === undefined || name.length === 0) {
+			return undefined;
+		}
+		let schema: unknown;
+		const entry = this._listedToolSchemas?.get(ingressLease.token);
+		const remembered = entry !== undefined && (entry.expiresAt === undefined || Date.now() < entry.expiresAt) ? entry.schemas : undefined;
+		if (remembered !== undefined) {
+			if (!remembered.has(name)) {
+				return undefined;
+			}
+			schema = remembered.get(name);
+		} else {
+			let built: readonly IParadisListedTool[];
+			try {
+				built = await this._listTools(ingressLease, signal, true);
+			} catch (error) {
+				if (error instanceof ParadisIngressLeaseError) {
+					throw error;
+				}
+				return undefined;
+			}
+			const tool = built.find(candidate => candidate.name === name);
+			if (tool === undefined) {
+				return undefined;
+			}
+			schema = tool.inputSchema;
+		}
+		const problem = paradisToolArgumentProblem(name, schema, args);
+		return problem !== undefined ? this._toolError(problem) : undefined;
 	}
 
 	/**
@@ -4963,6 +5068,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			const refusal = await this._callerRefusalBeforeLane(ingressLease, name, socket, signal);
 			if (refusal !== undefined) {
 				return refusal;
+			}
+			// 知らない引数・型の違う値は、黙って捨てずに断る（run_steps の中の手順は run_steps の手順ごとに見る）
+			const argumentRefusal = nested ? undefined : await this._toolArgumentRefusal(ingressLease, name, params?.arguments, signal);
+			if (argumentRefusal !== undefined) {
+				return argumentRefusal;
 			}
 			const result = await this._callToolRouted(ingressLease, name, params, signal, socket, nested);
 			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
@@ -5484,6 +5594,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const call = withMeta(scoped.tabId !== undefined && !Object.hasOwn(restArgs, PARADIS_TAB_ID_ARGUMENT)
 			? { name, arguments: { ...restArgs, [PARADIS_TAB_ID_ARGUMENT]: scoped.tabId } }
 			: { name, arguments: taken.rest });
+		// tab_id を渡した呼び出しには、ブラウザの状態のタブの一覧を自分のタブと変わったタブだけにする（q.html Q461 の 4）
+		const ownTabId = Object.hasOwn(restArgs, PARADIS_TAB_ID_ARGUMENT) ? scoped.tabId : undefined;
 		const host = this._observeHost(ingressLease, tabLease, signal);
 		const observeBefore = async () => {
 			try {
@@ -5499,7 +5611,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			let note: string | undefined;
 			try {
-				note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs);
+				note = await this._browserObserver.after(host, tabKey, options, before, taken.observe, taken.settleMs, ownTabId);
 			} catch {
 				note = undefined;
 			}
@@ -5661,10 +5773,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					signal,
 					// 決まった時間の待ち（sleep_ms）と条件の確かめ直しの間は、取り消されたらすぐ抜ける
 					sleep: (ms: number) => paradisSleepUnlessAborted(ms, signal),
-					callTool: (stepName: string, stepArgs: Record<string, unknown>) => this._callTool(ingressLease, {
-						name: stepName,
-						arguments: pinnedTabId !== undefined && !Object.hasOwn(stepArgs, PARADIS_TAB_ID_ARGUMENT) ? { ...stepArgs, [PARADIS_TAB_ID_ARGUMENT]: pinnedTabId } : stepArgs,
-					}, signal, socket, true),
+					callTool: async (stepName: string, stepArgs: Record<string, unknown>) => {
+						const stepArguments = pinnedTabId !== undefined && !Object.hasOwn(stepArgs, PARADIS_TAB_ID_ARGUMENT) ? { ...stepArgs, [PARADIS_TAB_ID_ARGUMENT]: pinnedTabId } : stepArgs;
+						// 手順の引数も、ひとつずつ呼んだときと同じように突き合わせる（保存した手順の run_recipe では見ない）
+						const stepRefusal = await this._toolArgumentRefusal(ingressLease, stepName, stepArguments, signal);
+						return stepRefusal ?? this._callTool(ingressLease, { name: stepName, arguments: stepArguments }, signal, socket, true);
+					},
 				};
 				// 手順書（参照・expect・for_each・repeat_until）は設定が有効なときだけ（E6。paradisBrowserRunStepsFlow.ts）
 				return this._runStepsFlowEnabled?.() === true ? paradisRunStepsFlow(runStepsCall, toolArguments) : paradisRunSteps(runStepsCall, toolArguments);
