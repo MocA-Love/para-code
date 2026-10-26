@@ -494,6 +494,23 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.ok(!JSON.stringify(reports).includes('alice'));
 	});
 
+	// q.html Q462 D1・D2
+	test('reports the tool the agent called, and the observation around an action under its own operation', async () => {
+		const failed = { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).' }], isError: true };
+		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: [failed, failed, failed] });
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		const { reports } = await withRecordedReports(async () => [
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'Not A Safe Name!' }),
+		]);
+		assert.deepStrictEqual(reports.map(report => ({ operation: report.operation, agentTool: report.extra?.safe_agent_tool, internal: report.extra?.safe_internal })), [
+			{ operation: 'devtools-tool-error-dialog', agentTool: 'wait_until', internal: undefined },
+			{ operation: 'devtools-observe-error-dialog', agentTool: 'click_by', internal: 'observe' },
+			{ operation: 'devtools-tool-error-dialog', agentTool: undefined, internal: undefined },
+		]);
+	});
+
 	test('reports JSON-RPC errors and timeouts with their code and method only', async () => {
 		const fixture = createFakeDevtoolsChildren({ toolCallErrors: ['Invalid arguments token=secret'], hangToolCalls: 1 });
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn, callTimeoutMs: 10 }));

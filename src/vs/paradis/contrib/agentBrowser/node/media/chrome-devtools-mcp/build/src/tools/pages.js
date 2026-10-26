@@ -62,6 +62,37 @@ function paraCodeStillLoadingLine(error, committed, done) {
     }
     return `${done}, but the page had not finished loading when the timeout passed (${error.message}). It keeps loading in the tab; this is not an error. Wait for what you need with wait_until instead of navigating or reloading again.`;
 }
+// PARA-PATCH (Para Code): how long handle_dialog waits for the browser to take the answer. In Para Code a beforeunload
+// dialog is closed by the browser itself (it never blocks a navigation), so the record of the dialog can outlive it.
+// Answering a dialog that is gone, on a page whose renderer is busy, got no reply until puppeteer's 180 s protocol
+// timeout, and the error was swallowed (q.html Q461 2: 184 s per call). See NOTES.md "vendored chrome-devtools-mcp への変更".
+const PARA_CODE_DIALOG_ANSWER_TIMEOUT_MS = 5000;
+async function paraCodeAnswerDialog(answer) {
+    let timer;
+    try {
+        return await Promise.race([
+            answer().then(() => 'answered', err => {
+                // Likely already handled by the user outside of MCP, or closed by the browser.
+                logger?.(err);
+                return 'gone';
+            }),
+            new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), PARA_CODE_DIALOG_ANSWER_TIMEOUT_MS); }),
+        ]);
+    }
+    finally {
+        clearTimeout(timer);
+    }
+}
+function paraCodeUnansweredDialogLine(dialog, outcome) {
+    const kind = dialog.type();
+    const what = outcome === 'timeout'
+        ? `The browser did not take the answer within ${PARA_CODE_DIALOG_ANSWER_TIMEOUT_MS / 1000} s (the page may be busy or frozen)`
+        : 'The dialog was already closed';
+    const next = kind === 'beforeunload'
+        ? ' Para Code closes beforeunload dialogs by itself, so the navigation goes on without an answer; it may still be loading. Wait for the page with wait_until instead of calling handle_dialog again.'
+        : ' Check the page with take_snapshot or wait_until.';
+    return `${what}; the dialog is no longer recorded as open.${next}`;
+}
 export const listPages = defineTool(args => {
     return {
         name: 'list_pages',
@@ -387,27 +418,17 @@ export const handleDialog = definePageTool({
         if (!dialog) {
             throw new Error('No open dialog found');
         }
+        // PARA-PATCH (Para Code): answer the dialog within a few seconds (paraCodeAnswerDialog) instead of waiting for
+        // puppeteer's 180 s protocol timeout, and say so when the browser did not take the answer. See paraCodeAnswerDialog.
         switch (request.params.action) {
             case 'accept': {
-                try {
-                    await dialog.accept(request.params.promptText);
-                }
-                catch (err) {
-                    // Likely already handled by the user outside of MCP.
-                    logger?.(err);
-                }
-                response.appendResponseLine('Successfully accepted the dialog');
+                const outcome = await paraCodeAnswerDialog(() => dialog.accept(request.params.promptText));
+                response.appendResponseLine(outcome === 'answered' ? 'Successfully accepted the dialog' : paraCodeUnansweredDialogLine(dialog, outcome));
                 break;
             }
             case 'dismiss': {
-                try {
-                    await dialog.dismiss();
-                }
-                catch (err) {
-                    // Likely already handled.
-                    logger?.(err);
-                }
-                response.appendResponseLine('Successfully dismissed the dialog');
+                const outcome = await paraCodeAnswerDialog(() => dialog.dismiss());
+                response.appendResponseLine(outcome === 'answered' ? 'Successfully dismissed the dialog' : paraCodeUnansweredDialogLine(dialog, outcome));
                 break;
             }
         }
