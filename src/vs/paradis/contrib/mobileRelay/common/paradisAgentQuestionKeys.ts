@@ -370,18 +370,33 @@ export interface IParadisQuestionCheckScreen {
 	stillCurrent(): Promise<boolean>;
 }
 
-/** {@link paradisConfirmQuestionChecks} の結果。`ok` と `unreadable` のときだけ送信ボタンへ降りてよい。 */
-export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'still-missing' | 'stale';
+/**
+ * {@link paradisConfirmQuestionChecks} の結果。`ok`・`retyped`・`unreadable` のときだけ送信ボタンへ降りてよい。
+ * `stale` は答える相手が変わった。`unconfirmed` は最後に打った数字のチェックが待っても画面に出なかった（前のキーが処理済みだと
+ * 言えないので、抜けたとも決めずに止める）。
+ */
+export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'unconfirmed' | 'still-missing' | 'stale';
 
 /** 画面が落ち着いたとみなすまでに読む回数の上限（2 回続けて同じなら落ち着いた）。 */
 const QUESTION_CHECK_MAX_READS = 6;
 /** 読む間隔の下限。`delayMs` が 0 でも、画面へ届くまでの間を空ける。 */
 const QUESTION_CHECK_MIN_INTERVAL_MS = 150;
+/** 最後に打った数字のチェックが画面に出るのを待つ長さ（打ち直しの前と後で 1 回ずつ）。往復が長い SSH でも届くように取る。 */
+const QUESTION_CHECK_KEY_WAIT_MS = 4_000;
+
+function questionCheckIntervalMs(delayMs: number): number {
+	return Math.max(delayMs, QUESTION_CHECK_MIN_INTERVAL_MS);
+}
+
 /**
- * 落ち着いた画面でチェックが抜けていたとき、打ち直す前にもう一度待つ時間。往復が読む間隔の 2 倍を超えると、
- * まだ届いていないだけの画面でも 2 回続けて同じに読めてしまうため。抜けたときだけ掛かる。
+ * {@link paradisConfirmQuestionChecks} が掛けうる時間の上限（ミリ秒）。打鍵を流す側の後で回答を確かめる処理は、この分だけ遅らせて見に行く。
+ * 落ち着くまで読む分と最後の数字を待つ分を、打ち直しの前と後で 1 回ずつ、それに打ち直す数字の分を足す。
  */
-const QUESTION_CHECK_MISSING_GRACE_MS = 1_000;
+export function paradisQuestionChecksMaxWaitMs(checks: readonly IParadisAgentQuestionKeyCheck[], delayMs: number): number {
+	const intervalMs = questionCheckIntervalMs(delayMs);
+	const phaseMs = QUESTION_CHECK_KEY_WAIT_MS + QUESTION_CHECK_MAX_READS * intervalMs;
+	return checks.reduce((total, check) => total + 2 * phaseMs + check.checked.length * intervalMs, 0);
+}
 
 /**
  * 画面のチェックを、`intervalMs` を空けて 2 回続けて同じに読めるまで読む。落ち着かなければ undefined。
@@ -405,29 +420,51 @@ async function settledQuestionChecks(screen: IParadisQuestionCheckScreen, option
 }
 
 /**
+ * 落ち着いた画面に、最後に打った数字 `lastKey` のチェックが見えるまで待つ。TUI はキーを届いた順に処理するので、それが見えれば
+ * その前の数字も処理済みで、そのとき抜けているチェックは本当に抜けている（往復の長さに頼らない）。
+ * 画面を読めない・付いているはずの無いチェックがあるときは、待たずにその画面を返す。
+ */
+async function checksAfterKey(screen: IParadisQuestionCheckScreen, check: IParadisAgentQuestionKeyCheck, lastKey: number, intervalMs: number): Promise<{ readonly visible: number[] | undefined } | 'unsettled' | 'unconfirmed'> {
+	for (let waitedMs = 0; ; waitedMs += intervalMs) {
+		const settled = await settledQuestionChecks(screen, check.optionCount, intervalMs);
+		if (settled === undefined) {
+			return 'unsettled';
+		}
+		const visible = settled.visible;
+		if (visible === undefined || visible.includes(lastKey) || visible.some(number => !check.checked.includes(number))) {
+			return settled;
+		}
+		if (waitedMs >= QUESTION_CHECK_KEY_WAIT_MS) {
+			return 'unconfirmed';
+		}
+		await screen.wait(intervalMs);
+	}
+}
+
+/**
  * 複数選択の問いのチェックが、送るつもりのものと画面で合っているかを確かめる。選択肢リストがキーを受け付ける前に届いた数字は
- * 入力欄へ吸われ、そのチェックだけが黙って抜ける（Claude Code 2.1.310 で再現）。画面が落ち着いてから（2 回続けて同じに読めてから）
- * 判断し、落ち着いた画面で抜けていて、{@link QUESTION_CHECK_MISSING_GRACE_MS} 待って読み直しても抜けていたときだけ、抜けた数字を
- * 1 回打ち直す。打ち直した後も、落ち着いた画面で合ったときだけ進める。
+ * 入力欄へ吸われ、そのチェックだけが黙って抜ける（Claude Code 2.1.310 で再現）。
+ *
+ * 抜けを確定するのは、落ち着いた画面に最後に打った数字のチェックが見えているとき（{@link checksAfterKey}）だけ。そのときだけ、
+ * 答える相手がまだこの質問だと確かめてから抜けた数字を 1 回打ち直す。打ち直した後も、最後に打ち直した数字が見えてから判断する。
+ * 「合った」と返す直前にも、答える相手を確かめ直す。
  */
 export async function paradisConfirmQuestionChecks(screen: IParadisQuestionCheckScreen, check: IParadisAgentQuestionKeyCheck, delayMs: number): Promise<ParadisQuestionChecksOutcome> {
-	const intervalMs = Math.max(delayMs, QUESTION_CHECK_MIN_INTERVAL_MS);
-	const first = await settledQuestionChecks(screen, check.optionCount, intervalMs);
-	if (first === undefined) {
-		return 'unsettled';
+	const intervalMs = questionCheckIntervalMs(delayMs);
+	const lastTyped = check.checked[check.checked.length - 1];
+	if (lastTyped === undefined) {
+		return 'ok';
 	}
-	const firstVerdict = paradisQuestionChecksVerdict(first.visible, check);
-	if (firstVerdict.kind !== 'missing') {
-		return firstVerdict.kind;
+	const first = await checksAfterKey(screen, check, lastTyped, intervalMs);
+	if (typeof first === 'string') {
+		return first;
 	}
-	await screen.wait(QUESTION_CHECK_MISSING_GRACE_MS);
-	const second = await settledQuestionChecks(screen, check.optionCount, intervalMs);
-	if (second === undefined) {
-		return 'unsettled';
+	const verdict = paradisQuestionChecksVerdict(first.visible, check);
+	if (verdict.kind === 'extra') {
+		return 'extra';
 	}
-	const verdict = paradisQuestionChecksVerdict(second.visible, check);
 	if (verdict.kind !== 'missing') {
-		return verdict.kind;
+		return await screen.stillCurrent() ? verdict.kind : 'stale';
 	}
 	if (!(await screen.stillCurrent())) {
 		return 'stale';
@@ -436,9 +473,12 @@ export async function paradisConfirmQuestionChecks(screen: IParadisQuestionCheck
 		await screen.send(String(optionNumber));
 		await screen.wait(intervalMs);
 	}
-	const after = await settledQuestionChecks(screen, check.optionCount, intervalMs);
-	if (after === undefined) {
-		return 'unsettled';
+	const after = await checksAfterKey(screen, check, verdict.missing[verdict.missing.length - 1]!, intervalMs);
+	if (typeof after === 'string') {
+		return after;
 	}
-	return paradisQuestionChecksVerdict(after.visible, check).kind === 'ok' ? 'retyped' : 'still-missing';
+	if (paradisQuestionChecksVerdict(after.visible, check).kind !== 'ok') {
+		return 'still-missing';
+	}
+	return await screen.stillCurrent() ? 'retyped' : 'stale';
 }
