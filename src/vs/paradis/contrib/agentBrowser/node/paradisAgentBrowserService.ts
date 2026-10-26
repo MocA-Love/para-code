@@ -184,7 +184,7 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** 1 ペインへの共有が上限（{@link PARADIS_USER_SHARED_PAGE_LIMIT}）に達したときのエラー。renderer は先頭の印（`paradisIsSharedPageLimitError`）で見分ける。 */
 const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR = `${PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK}: this terminal pane already has the maximum number of shared pages`;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. For example, wait_until takes timeout_seconds (in seconds), not timeout or timeout_ms. Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to 10); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Calls on different tabs run in parallel; calls on the same tab run one at a time. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. For example, wait_until takes timeout_seconds (in seconds), not timeout or timeout_ms. Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to 5 tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to 10); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time. Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** tools/list で返す道具の、引数の突き合わせに使う部分。 */
 interface IParadisListedTool {
@@ -882,6 +882,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * （paradisToolArgumentCheck.ts）。まだ一覧を見せていないペイン（Para Code を開き直した後など）は、最初の呼び出しで作る。
 	 */
 	private readonly _listedToolSchemas = new Map<string, { readonly schemas: ReadonlyMap<string, unknown>; readonly expiresAt?: number }>();
+	/** 呼び出しの lease → エージェントが呼んだ道具の名前（内蔵の道具の失敗の報告に載せる。q.html Q462 の D2）。 */
+	private readonly _leaseAgentTools = new WeakMap<IParadisAgentBrowserIngressLease, string>();
 	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
@@ -2307,6 +2309,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		const scoped: IParadisAgentBrowserIngressLease = Object.freeze({ token, pageKey });
 		this._ingressLeaseStates.set(scoped, ownerLease);
+		const agentTool = this._leaseAgentTools?.get(ingressLease);
+		if (agentTool !== undefined) {
+			this._leaseAgentTools.set(scoped, agentTool);
+		}
 		return { ok: true, lease: scoped, args: taken.rest, tabId };
 	}
 
@@ -5061,6 +5067,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _callTool(ingressLease: IParadisAgentBrowserIngressLease, params: { name?: unknown; arguments?: unknown } | undefined, signal?: AbortSignal, socket?: Socket, nested?: boolean): Promise<unknown> {
 		const name = typeof params?.name === 'string' ? params.name : '';
+		if (!nested) {
+			// 中で使う内蔵の道具の失敗の報告に、エージェントが呼んだ道具の名前を載せる（paradisDevtoolsCallOrigin.ts、q.html Q462 の D2）。
+			// lease は呼び出しごとに作られ、タブのスコープの lease へも引き継ぐ（_scopeToolCall）
+			this._leaseAgentTools?.set(ingressLease, name);
+		}
 		const pacing = this._cursorPacing.begin(ingressLease.token, name, params?.arguments);
 		try {
 			// 呼び出し元の照合（負荷が高いと最大 15 秒）は、タブの列に並ぶ前に済ませる。列の中で待つと、確かめられない
@@ -5645,10 +5656,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** 観測（paradisBrowserObserve.ts）に貸す、タブの道具・通信・タブの一覧・ダウンロードの保存先。 */
 	private _observeHost(ingressLease: IParadisAgentBrowserIngressLease, tabLease: IParadisAgentBrowserIngressLease, signal?: AbortSignal): IParadisObserveHost {
 		return {
-			// 待たずに評価する（vendored の PARA-PATCH。ダイアログが開いていれば断られ、閉じない）
-			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal),
-			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal),
-			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal)),
+			// 待たずに評価する（vendored の PARA-PATCH。ダイアログが開いていれば断られ、閉じない）。観測の呼び出しの失敗は、
+			// エージェントの道具の失敗とは別の名前で報告する（paradisDevtoolsCallOrigin.ts、q.html Q462 の D1）
+			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal, true, undefined, 'observe'),
+			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal, true, undefined, 'observe'),
+			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal, true, undefined, 'observe')),
 			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
 			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), 30_000),
 			tabs: () => this._listPaneTabs(ingressLease, signal),
@@ -6328,7 +6340,10 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
-	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode): Promise<unknown> {
+	/**
+	 * @param internal Para Code 自身の見張りの呼び出し（失敗をエージェントの道具の失敗とは別の名前で報告する。q.html Q462 の D1）。
+	 */
+	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode, internal?: 'observe'): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		// 子プロセスと世代はタブのスコープキーごと（tab_id を解決していなければペインのトークン）。別のタブの
 		// 子プロセスは別なので、別のタブへの呼び出しは並行に走る
@@ -6350,7 +6365,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!binding) {
 					return this._toolError(NOT_BOUND_MESSAGE);
 				}
-				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal, snapshotDiff);
+				const agentTool = this._leaseAgentTools?.get(ingressLease);
+				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal, snapshotDiff, { ...(agentTool !== undefined ? { agentTool } : {}), ...(internal !== undefined ? { internal } : {}) });
 				this._requireIngressLease(ingressLease);
 				const current = this._bindingForKey(token);
 				if (current !== binding || !this._devtoolsGenerationCoordinator.isCurrentGeneration(token, generation)) {
