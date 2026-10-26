@@ -55,7 +55,7 @@ import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzip
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
 import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
 import { PARADIS_CLAUDE_WORKFLOW_SUBAGENT_TYPE, paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
-import { IParadisAgentQuestionKeyCheck, paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan } from '../common/paradisAgentQuestionKeys.js';
+import { IParadisAgentQuestionKeyCheck, paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisQuestionChecksMaxWaitMs } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
 import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
@@ -5713,7 +5713,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 出るのを待ってから流すための目印を渡す。
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts,
 			paradisQuestionReadyMarker(questions[0]), undefined, undefined, plan.checks);
-		this.scheduleQuestionSettleCheck(token, msg.interactionId, questions.length, parts.length);
+		this.scheduleQuestionSettleCheck(token, msg.interactionId, questions.length, parts.length, paradisQuestionChecksMaxWaitMs(plan.checks, 300));
 	}
 
 	/**
@@ -5763,7 +5763,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「モバイルでは送れたのに TUI が動いていない」を捉えるための唯一の指標。送信そのものは
 	 * 成功扱いになるので、これが false のときだけ段取りの前提が崩れている。
 	 */
-	private scheduleQuestionSettleCheck(token: string | undefined, interactionId: string, questionCount: number, keyPartCount: number): void {
+	private scheduleQuestionSettleCheck(token: string | undefined, interactionId: string, questionCount: number, keyPartCount: number, checksWaitMs = 0): void {
 		if (token === undefined) {
 			return;
 		}
@@ -5776,8 +5776,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		// これで分ければ、「早く答えたものだけ落ちている＝レース」なのかが一目で分かる。
 		const msSinceQuestion = this.msSinceQuestionFirstSeen(token, interactionId);
 		// キーは delayMs=300 の間隔で1つずつ流れる。全部届いてから見ないと「まだ残っている」と
-		// 誤って読むため、列の長さぶん待ってから確かめる。
-		const waitMs = Math.min(QUESTION_SETTLE_MAX_WAIT_MS, keyPartCount * 300 + 3_000);
+		// 誤って読むため、列の長さぶん待ってから確かめる。複数選択のチェックを画面で確かめる分（paradisConfirmQuestionChecks）は、
+		// 上限とは別に足す（確認が長引いたぶん答えが済むのも遅れ、先に見ると「未回答」と記録してしまう）
+		const waitMs = Math.min(QUESTION_SETTLE_MAX_WAIT_MS, keyPartCount * 300 + 3_000) + checksWaitMs;
 		const timer = setTimeout(() => {
 			this.questionSettleTimers.delete(timer);
 			const current = this.tailers.get(token);

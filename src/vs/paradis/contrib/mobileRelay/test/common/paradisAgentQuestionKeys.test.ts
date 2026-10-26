@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
+import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisAgentQuestionKeySequence, paradisCodexApprovalDenyKey, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisQuestionChecksMaxWaitMs, paradisQuestionChecksVerdict, paradisReadQuestionKeyChecks, paradisVisibleQuestionChecks } from '../../common/paradisAgentQuestionKeys.js';
 import { paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptions } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentQuestionKeySequence', () => {
@@ -364,7 +364,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 		};
 	}
 
-	test('画面が落ち着いてから確かめ、落ち着いた画面で抜けていたときだけ打ち直す（反映が遅いだけのチェックは打ち直さない）', async () => {
+	test('最後に打った数字のチェックが見えてから抜けを確かめ、抜けていたときだけ打ち直す（反映が遅いだけのチェックは打ち直さない）', async () => {
 		const check = { beforePart: 2, checked: [1, 3], optionCount: 4 };
 		const run = async (options: Parameters<typeof fakeScreen>[0]) => {
 			const fake = fakeScreen(options);
@@ -376,21 +376,31 @@ suite('paradisAgentQuestionKeySequence', () => {
 			verySlowSsh: await run({ latencyMs: 1_100, typed: [1, 3] }),
 			fast: await run({ latencyMs: 20, typed: [1, 3] }),
 			swallowedOnSlowSsh: await run({ latencyMs: 500, typed: [1, 3], swallow: [1] }),
+			twoSecondSsh: await run({ latencyMs: 2_000, typed: [1, 3] }),
+			swallowedOnTwoSecondSsh: await run({ latencyMs: 2_000, typed: [1, 3], swallow: [1] }),
+			lastKeySwallowed: await run({ latencyMs: 20, typed: [1, 3], swallow: [3] }),
 			extra: await run({ latencyMs: 20, typed: [1, 2, 3] }),
 			retypeNotTaken: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], ignoreRetype: true }),
 			flicker: await run({ latencyMs: 20, typed: [1, 3], flicker: true }),
 			unreadable: await run({ latencyMs: 20, typed: [1, 3], unreadable: true }),
 			answeredOnPcWhileWaiting: await run({ latencyMs: 20, typed: [1, 3], swallow: [1], stale: true }),
+			answeredOnPcBeforeOk: await run({ latencyMs: 20, typed: [1, 3], stale: true }),
+			maxWaitMs: paradisQuestionChecksMaxWaitMs([check, { beforePart: 9, checked: [2], optionCount: 3 }], 300),
 		}, {
 			slowSsh: { outcome: 'ok', sent: [] },
 			verySlowSsh: { outcome: 'ok', sent: [] },
 			fast: { outcome: 'ok', sent: [] },
 			swallowedOnSlowSsh: { outcome: 'retyped', sent: ['1'] },
+			twoSecondSsh: { outcome: 'ok', sent: [] },
+			swallowedOnTwoSecondSsh: { outcome: 'retyped', sent: ['1'] },
+			lastKeySwallowed: { outcome: 'unconfirmed', sent: [] },
 			extra: { outcome: 'extra', sent: [] },
-			retypeNotTaken: { outcome: 'still-missing', sent: ['1'] },
+			retypeNotTaken: { outcome: 'unconfirmed', sent: ['1'] },
 			flicker: { outcome: 'unsettled', sent: [] },
 			unreadable: { outcome: 'unreadable', sent: [] },
 			answeredOnPcWhileWaiting: { outcome: 'stale', sent: [] },
+			answeredOnPcBeforeOk: { outcome: 'stale', sent: [] },
+			maxWaitMs: 2 * (2 * (4_000 + 6 * 300)) + 3 * 300,
 		});
 	});
 });
