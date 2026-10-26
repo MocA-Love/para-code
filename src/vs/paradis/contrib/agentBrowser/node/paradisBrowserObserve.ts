@@ -342,10 +342,14 @@ export class ParadisBrowserObserver {
 		// tab_id を渡した呼び出しでは、自分のタブと、前回から変わった（新しく現れた）タブだけを出す
 		const ownTab = ownTabId !== undefined ? tabs?.find(tab => tab.tabId === ownTabId) : undefined;
 		const shownTabs = ownTab === undefined || tabs === undefined ? tabs : tabs.filter(tab => tab === ownTab || (previousTabs !== undefined && previousTabs.get(tab.tabId) !== tabKey(tab)));
+		// 前回あって今は無いタブ（閉じたタブ）も、変わったタブとして伝える
+		const closedTabIds = ownTab !== undefined && tabs !== undefined && previousTabs !== undefined ? [...previousTabs.keys()].filter(tabId => !tabs.some(tab => tab.tabId === tabId)) : [];
 		if (tabs && shownTabs && shownTabs.length > 0) {
 			const others = tabs.length - shownTabs.length;
-			const label = ownTab !== undefined ? (shownTabs.length > 1 ? 'Your tab and tabs that changed' : 'Your tab') : 'Your tabs';
-			lines.push(`${label}: ${shownTabs.map(tabLine).join('; ')}${others > 0 ? ` (${others} other ${others === 1 ? 'tab' : 'tabs'} not shown; list_browser_tabs lists all)` : ''}`);
+			const changed = shownTabs.length > 1 || closedTabIds.length > 0;
+			const label = ownTab !== undefined ? (changed ? 'Your tab and tabs that changed' : 'Your tab') : 'Your tabs';
+			const entries = [...shownTabs.map(tabLine), ...closedTabIds.map(tabId => `${tabId} (closed)`)];
+			lines.push(`${label}: ${entries.join('; ')}${others > 0 ? ` (${others} other ${others === 1 ? 'tab' : 'tabs'} not shown; list_browser_tabs lists all)` : ''}`);
 		}
 		const beforeIndexes = new Set((before.pages?.pages ?? []).map(page => page.index));
 		// 操作の前の一覧が取れなかった（ダイアログが開いていると空になる）ときは、開いたページを数えない
@@ -372,7 +376,7 @@ export class ParadisBrowserObserver {
 		}
 		// 新しいダウンロードとページは毎回伝える。タブの一覧だけが前回と同じなら省く
 		// tab_id を渡した呼び出しでは自分のタブだけで比べ、ほかのタブが変わったときは毎回伝える
-		const changedOthers = ownTab !== undefined && (shownTabs?.length ?? 0) > 1;
+		const changedOthers = ownTab !== undefined && ((shownTabs?.length ?? 0) > 1 || closedTabIds.length > 0);
 		const key = JSON.stringify([(ownTab !== undefined ? [ownTab] : tabs)?.map(tab => [tab.tabId, tab.url, tab.title, tab.current]), pages?.pages.map(page => [page.index, page.url, page.selected])]);
 		const unchanged = this._lastState.get(stateKey) === key && !changedOthers && opened.length === 0 && newDownloads.length === 0 && pages?.dialog === undefined;
 		this._lastState.set(stateKey, key);
