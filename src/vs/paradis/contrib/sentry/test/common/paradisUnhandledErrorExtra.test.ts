@@ -69,6 +69,18 @@ suite('paradisUnhandledErrorSafeExtra', () => {
 		});
 	});
 
+	test('takes extensions only as a whole folder name and reads at most 1,000 characters of a frame line', () => {
+		assert.deepStrictEqual({
+			suffixFolder: paradisExtensionIdFromStack('Error: x\n\tat run (/Users/example/my-extensions/acme.secret-1.0.0/main.js:1:1)'),
+			pastLineLimit: paradisExtensionIdFromStack(`Error: x\n\tat run (/${'a'.repeat(1_000)}/.para-code/extensions/pub.name-1.0.0/main.js:1:1)`),
+			longWord: paradisExtensionIdFromStack(`Error: x\n\tat ${'a'.repeat(20_000)}`),
+		}, {
+			suffixFolder: undefined,
+			pastLineLimit: undefined,
+			longWord: undefined,
+		});
+	});
+
 	test('reads the stack of a relayed error and survives a throwing getter', () => {
 		const relayed = transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'x', stack: 'Error: x\n\tat a (/Users/example/.para-code/extensions/pub.name-1.0.0/a.js:1:1)', noTelemetry: false });
 		const throwing = Object.defineProperty({}, 'stack', { get() { throw new Error('no'); } });
