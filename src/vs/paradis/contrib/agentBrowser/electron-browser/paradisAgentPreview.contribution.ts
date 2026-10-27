@@ -51,7 +51,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { GroupsOrder, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPreviewFileResult, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, ParadisPreviewFileFailure } from '../common/paradisAgentBrowser.js';
-import { ParadisRemoteFileCheckResult, paradisEncodeRemoteFileReadResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../common/paradisRemoteFileBridge.js';
+import { IParadisRemoteFileFolders, ParadisRemoteFileCheckResult, paradisEncodeRemoteFileReadResult, PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD, PARADIS_REMOTE_FILE_FOLDERS_METHOD, PARADIS_REMOTE_FILE_READ_METHOD, PARADIS_REMOTE_FILE_WRITE_METHOD, PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD } from '../common/paradisRemoteFileBridge.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ParadisRemoteFileBridge } from './paradisRemoteFileBridge.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
@@ -135,6 +135,11 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 		if (command === PARADIS_AGENT_PANE_ROOTS_METHOD) {
 			const args = Array.isArray(arg) ? arg : [];
 			return this._paneRoots(typeof args[0] === 'string' ? args[0] : undefined) as T;
+		}
+		if (command === PARADIS_REMOTE_FILE_FOLDERS_METHOD) {
+			const args = Array.isArray(arg) ? arg : [];
+			const none: IParadisRemoteFileFolders = {};
+			return (typeof args[1] === 'string' && args[1].length > 0 ? this.remoteFiles.folders(args[1]) : Promise.resolve(none)) as Promise<T>;
 		}
 		if (command === PARADIS_REMOTE_FILE_WRITE_METHOD || command === PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD || command === PARADIS_REMOTE_FILE_READ_METHOD || command === PARADIS_REMOTE_FILE_CHECK_WRITE_METHOD) {
 			const args = Array.isArray(arg) ? arg : [];

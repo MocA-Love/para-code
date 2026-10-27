@@ -33,8 +33,9 @@ import {
 	PARADIS_REMOTE_FILE_READ_METHOD,
 	PARADIS_REMOTE_FILE_WRITE_METHOD,
 	PARADIS_REMOTE_FILE_WRITE_TEMPORARY_METHOD,
+	IParadisRemoteFileFolders,
 	paradisDecodeRemoteFileReadResult,
-	paradisNormalizeRemoteFilePath,
+	paradisIsAcceptableRemoteFilePath,
 	paradisReplaceRemoteFileExtension,
 } from '../common/paradisRemoteFileBridge.js';
 import { PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS, paradisCaptureExistsReason } from './paradisDevtoolsPathPolicy.js';
@@ -64,10 +65,20 @@ export function paradisRemoteFileToolDirection(toolName: string, pathArguments: 
 }
 
 /** 接続先のペインへ返す `initialize` の `instructions` に足す説明。 */
-export const PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS = 'This terminal pane runs on a remote machine (SSH, WSL, container) while the browser runs on the machine of Para Code. File paths you give to take_screenshot, take_snapshot and upload_file (`filePath`) and to preview_file (`path`) are absolute paths on YOUR machine: Para Code copies the file between your machine and the browser (up to ' + PARADIS_REMOTE_FILE_MAX_BYTES_LABEL + '). It writes only inside the folder of this pane\'s space or ~/' + PARADIS_REMOTE_FILE_USER_FOLDER + ' (never into .git, .hg or .svn), and reads from those or the system temporary folder. save_page_as_pdf and download_by_click save on the Para Code machine and also copy the file to ~/' + PARADIS_REMOTE_FILE_USER_FOLDER + ' on your machine (copies older than a day are removed); the response tells you that path. Other path arguments (for example evaluate_script `filePath`, performance traces, lighthouse_audit `outputDirPath`) are not available here; omit them to get results inline.';
+export const PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS = 'This terminal pane runs on a remote machine (SSH, WSL, container) while the browser runs on the machine of Para Code. File paths you give to take_screenshot, take_snapshot and upload_file (`filePath`) and to preview_file (`path`) are absolute paths on YOUR machine (a leading ~/ means your home folder there): Para Code copies the file between your machine and the browser (up to ' + PARADIS_REMOTE_FILE_MAX_BYTES_LABEL + '). It writes only inside the folder of this pane\'s space or ~/' + PARADIS_REMOTE_FILE_USER_FOLDER + ' (never into .git, .hg or .svn; inside ~/' + PARADIS_REMOTE_FILE_USER_FOLDER + ' it creates missing folders), and reads from those or the temporary folder of the Para Code server on your machine (its TMPDIR, which is not always /tmp; the upload_file description names it). save_page_as_pdf and download_by_click save on the Para Code machine and also copy the file to ~/' + PARADIS_REMOTE_FILE_USER_FOLDER + ' on your machine (copies older than a day are removed); the response tells you that path. Other path arguments (for example evaluate_script `filePath`, performance traces, lighthouse_audit `outputDirPath`) are not available here; omit them to get results inline.';
 
-const REMOTE_OUTPUT_PATH_DESCRIPTION = `Absolute path on the machine this agent runs on (not the Para Code machine), inside the folder of this terminal pane's space or ~/${PARADIS_REMOTE_FILE_USER_FOLDER} (not /tmp, not inside .git/.hg/.svn). Para Code writes the file there (up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}); relative paths are not accepted. An existing file is never overwritten: choose a new file name for each capture, for example by adding -2.`;
-const REMOTE_INPUT_PATH_DESCRIPTION = `Absolute path of a file on the machine this agent runs on (not the Para Code machine), inside the folder of this terminal pane's space, ~/${PARADIS_REMOTE_FILE_USER_FOLDER} or the system temporary folder (for example /tmp), up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}. Para Code reads it and gives it to the page; relative paths are not accepted.`;
+const REMOTE_OUTPUT_PATH_DESCRIPTION = `Absolute path on the machine this agent runs on (not the Para Code machine; a leading ~/ is your home folder there), inside the folder of this terminal pane's space or ~/${PARADIS_REMOTE_FILE_USER_FOLDER} (not /tmp, not inside .git/.hg/.svn; missing folders are created only inside ~/${PARADIS_REMOTE_FILE_USER_FOLDER}). Para Code writes the file there (up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}); relative paths are not accepted. An existing file is never overwritten: choose a new file name for each capture, for example by adding -2.`;
+/** upload_file の `filePath` の説明。`temporaryFolder` は接続先の Para Code のサーバーの一時フォルダ（分かれば）。 */
+function remoteInputPathDescription(temporaryFolder: string | undefined): string {
+	return `Absolute path of a file on the machine this agent runs on (not the Para Code machine; a leading ~/ is your home folder there), inside the folder of this terminal pane's space, ~/${PARADIS_REMOTE_FILE_USER_FOLDER} or ${remoteTemporaryFolderLabel(temporaryFolder)}, up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}. Para Code reads it and gives it to the page; relative paths are not accepted.`;
+}
+
+/** 読み込みに使ってよい接続先の一時フォルダの書き方。分からなければ、/tmp とは限らないことだけ書く。 */
+function remoteTemporaryFolderLabel(temporaryFolder: string | undefined): string {
+	return temporaryFolder !== undefined
+		? `${temporaryFolder} (the temporary folder of the Para Code server on your machine; other folders such as /tmp are refused unless they are inside it)`
+		: 'the temporary folder of the Para Code server on your machine (its TMPDIR, which is not always /tmp)';
+}
 const REMOTE_UNAVAILABLE_PATH_DESCRIPTION = 'Not available to agents in a remote window (SSH, WSL, container): this path would be on the machine running Para Code. Omit it; where the tool supports it the result is returned inline.';
 const REMOTE_PREVIEW_PATH_DESCRIPTION = 'Absolute path of the file on the machine this agent runs on (relative paths are rejected because this server does not share your working directory).';
 const REMOTE_SAVED_FILE_NOTE = ` From this terminal pane (a remote machine) the file is also copied to ~/${PARADIS_REMOTE_FILE_USER_FOLDER} on your machine (up to ${PARADIS_REMOTE_FILE_MAX_BYTES_LABEL}), and the response gives that path.`;
@@ -103,11 +114,11 @@ function withPropertyDescriptions<T extends IParadisDescribedTool>(tool: T, desc
  * 接続先のペインへ返すツールの一覧。パスの引数の説明を「エージェントの機械のパス」「使えない」に書き換える
  * （vendored の説明は「current working directory からの相対パス」で、手元のパスとして読まれる）。
  */
-export function paradisDescribeToolsForRemotePane<T extends IParadisDescribedTool>(tools: readonly T[]): T[] {
+export function paradisDescribeToolsForRemotePane<T extends IParadisDescribedTool>(tools: readonly T[], folders?: IParadisRemoteFileFolders): T[] {
 	return tools.map(tool => {
 		const direction = REMOTE_FILE_TOOLS.get(tool.name);
 		if (direction !== undefined) {
-			return withPropertyDescriptions(tool, new Map([['filePath', direction === 'output' ? REMOTE_OUTPUT_PATH_DESCRIPTION : REMOTE_INPUT_PATH_DESCRIPTION]]));
+			return withPropertyDescriptions(tool, new Map([['filePath', direction === 'output' ? REMOTE_OUTPUT_PATH_DESCRIPTION : remoteInputPathDescription(folders?.temporaryFolder)]]));
 		}
 		const pathArguments = PARADIS_DEVTOOLS_LOCAL_PATH_ARGUMENTS.get(tool.name);
 		if (pathArguments !== undefined) {
@@ -157,16 +168,19 @@ function toolError(text: string): unknown {
 }
 
 /** renderer が返した理由を、エージェントが次に何をすればよいか分かる英文にする。 */
-export function paradisRemoteFileFailureMessage(reason: ParadisRemoteFileFailure | undefined, path: string): string {
+/**
+ * @param temporaryFolder 読む側で断ったときに renderer が添えた、読んでよい接続先の一時フォルダ。
+ */
+export function paradisRemoteFileFailureMessage(reason: ParadisRemoteFileFailure | undefined, path: string, temporaryFolder?: string): string {
 	switch (reason) {
 		case 'invalidPath':
-			return `${path} is not usable: give an absolute path on the machine this agent runs on with "/" separators (relative paths are not accepted because Para Code cannot see your working directory), without ".." segments or backslashes.`;
+			return `${path} is not usable: give an absolute path on the machine this agent runs on with "/" separators, or one that starts with ~/ for your home folder there (relative paths are not accepted because Para Code cannot see your working directory), without ".." segments or backslashes.`;
 		case 'outsideAllowedFolders':
-			return `${path} is outside the folders Para Code may use for this terminal pane on your machine. Write inside the folder of this pane's space or ~/${PARADIS_REMOTE_FILE_USER_FOLDER}; files to read may also be in the system temporary folder (for example /tmp).`;
+			return `${path} is outside the folders Para Code may use for this terminal pane on your machine. Write inside the folder of this pane's space or ~/${PARADIS_REMOTE_FILE_USER_FOLDER}; files to read may also be in ${remoteTemporaryFolderLabel(temporaryFolder)}.`;
 		case 'versionControlFolder':
 			return `${path} is inside a .git, .hg or .svn folder (directly or through a symbolic link), which Para Code never reads or writes for the browser tools. Choose another path.`;
 		case 'parentMissing':
-			return `The folder of ${path} does not exist on your machine, and Para Code does not create folders there. Choose a path in a folder that already exists (or ~/${PARADIS_REMOTE_FILE_USER_FOLDER}).`;
+			return `The folder of ${path} does not exist on your machine, and Para Code creates missing folders only inside ~/${PARADIS_REMOTE_FILE_USER_FOLDER}. Choose a path in a folder that already exists, or one inside ~/${PARADIS_REMOTE_FILE_USER_FOLDER}.`;
 		case 'notAFile':
 			return `${path} exists but is not a regular file.`;
 		case 'alreadyExists':
@@ -240,9 +254,9 @@ export class ParadisRemoteFileTransfer {
 		callTool: (args: Record<string, unknown>) => Promise<unknown>,
 	): Promise<unknown> {
 		const requested = args.filePath;
-		const remotePath = paradisNormalizeRemoteFilePath(requested);
 		const shown = typeof requested === 'string' ? requested : String(requested);
-		if (remotePath === undefined || typeof requested !== 'string') {
+		// 先頭の ~/ は renderer が接続先のホームへ展開する
+		if (!paradisIsAcceptableRemoteFilePath(requested)) {
 			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage('invalidPath', shown)}`);
 		}
 		return direction === 'output'
@@ -300,7 +314,8 @@ export class ParadisRemoteFileTransfer {
 				return toolError(`${toolName} ran, but the file could not be written to your machine: ${paradisRemoteFileFailureMessage(written.value.reason, finalRemotePath)}`);
 			}
 			await restrictUserFolder(host, written.value);
-			return appendText(rewritten, `The file was written to ${finalRemotePath} on the machine this agent runs on (Para Code copied it there from the browser).`);
+			// ~/ で渡されたときは、展開した後のパスを伝える
+			return appendText(rewritten, `The file was written to ${written.value.path} on the machine this agent runs on (Para Code copied it there from the browser).`);
 		} finally {
 			await fs.rm(folder, { recursive: true, force: true }).catch(() => undefined);
 		}
@@ -316,7 +331,7 @@ export class ParadisRemoteFileTransfer {
 			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage('ioFailed', remotePath)}`);
 		}
 		if (!value.ok) {
-			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage(value.reason, remotePath)}`);
+			return toolError(`${toolName} was not run: ${paradisRemoteFileFailureMessage(value.reason, remotePath, value.temporaryFolder)}`);
 		}
 		const bytes = Buffer.from(value.data.buffer, value.data.byteOffset, value.data.byteLength);
 		const name = paradisSanitizeFileDropName(value.name) ?? paradisSanitizeFileDropName(basename(remotePath.replace(/\\/g, '/'))) ?? 'upload';

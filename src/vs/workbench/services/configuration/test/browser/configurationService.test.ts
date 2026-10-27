@@ -52,6 +52,7 @@ import { NullPolicyService } from '../../../../../platform/policy/common/policy.
 import { FilePolicyService } from '../../../../../platform/policy/common/filePolicyService.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { paradisOverrideFolderConfigurationParkingForTest } from '../../../../../paradis/contrib/workspaceSwitch/common/paradisFolderConfigurationParking.js'; // PARA-PATCH: see the para: test in the Multiroot suite
+import { mainWindow } from '../../../../../base/browser/window.js'; // PARA-PATCH: see the para: Unknown folder test in the Multiroot suite
 import { UserDataProfileService } from '../../../userDataProfile/common/userDataProfileService.js';
 import { IUserDataProfileService } from '../../../userDataProfile/common/userDataProfile.js';
 import { TasksSchemaProperties } from '../../../../contrib/tasks/common/tasks.js';
@@ -2735,8 +2736,11 @@ suite('WorkspaceConfigurationService - Profiles', () => {
 /** PARA-PATCH: an InMemoryFileSystemProvider that records the paths it reads (see the para: test in the Multiroot suite). */
 class ParadisReadRecordingFileSystemProvider extends InMemoryFileSystemProvider {
 	readonly reads: string[] = [];
+	/** Holds a read until the returned promise settles (the para: race test below). */
+	holdRead: ((path: string) => Promise<void> | undefined) | undefined;
 	override async readFile(resource: URI): Promise<Uint8Array> {
 		this.reads.push(resource.path);
+		await this.holdRead?.(resource.path);
 		return super.readFile(resource);
 	}
 }
@@ -3549,6 +3553,62 @@ suite('WorkspaceConfigurationService-Multiroot', () => {
 			paradisOverrideFolderConfigurationParkingForTest(undefined);
 		}
 	}));
+
+	// PARA-PATCH: two folder changes overlapping (a space switch adds a folder while the workspace file is reloaded) must run one after the other (onFoldersChanged)
+	test('para: a folder change that starts while a new folder is still loading waits for it instead of throwing Unknown folder', async () => {
+		const workspaceService = <WorkspaceService>testObject;
+		const key = 'configurationService.workspace.testResourceSetting';
+		const [folderA, folderB] = workspaceService.getWorkspace().folders.map(folder => folder.uri);
+		const folderC = joinPath(ROOT, 'c');
+		await fileService.writeFile(joinPath(folderC, '.vscode', 'settings.json'), VSBuffer.fromString(`{ "${key}": "c" }`));
+		const configResource = workspaceService.getWorkspace().configuration!;
+
+		// The workspace file reload reaches onFoldersChanged from an event listener that does not catch, so the
+		// error only shows up as an unhandled rejection.
+		const unhandled: string[] = [];
+		const onUnhandled = (event: PromiseRejectionEvent) => {
+			unhandled.push(String(event.reason));
+			event.preventDefault();
+		};
+		mainWindow.addEventListener('unhandledrejection', onUnhandled);
+		const held = new DeferredPromise<void>();
+		const release = new DeferredPromise<void>();
+		paradisFileSystemProvider.holdRead = path => {
+			if (!path.startsWith(joinPath(folderC, '.vscode').path)) {
+				return undefined;
+			}
+			held.complete();
+			return release.p;
+		};
+		try {
+			const adding = workspaceService.addFolders([{ uri: folderC }]);
+			await held.p;
+			// While folder c is still loading, the workspace file goes back to a and b and is reloaded.
+			await fileService.writeFile(configResource, VSBuffer.fromString(JSON.stringify({ folders: [{ path: folderA.path }, { path: folderB.path }] }, null, '\t')));
+			const reloading = testObject.reloadConfiguration(ConfigurationTarget.WORKSPACE);
+			// Let the reload reach the folder change while folder c is still held.
+			await timeout(50);
+			paradisFileSystemProvider.holdRead = undefined;
+			release.complete();
+			const outcomes = await Promise.allSettled([adding, reloading]);
+			await timeout(10);
+
+			assert.deepStrictEqual({
+				outcomes: outcomes.map(outcome => outcome.status === 'rejected' ? String(outcome.reason) : outcome.status),
+				unhandled,
+				folders: workspaceService.getWorkspace().folders.map(folder => folder.uri.path),
+				valueOfC: testObject.getValue(key, { resource: folderC }),
+			}, {
+				outcomes: ['fulfilled', 'fulfilled'],
+				unhandled: [],
+				folders: [folderA.path, folderB.path],
+				valueOfC: 'isSet',
+			});
+		} finally {
+			paradisFileSystemProvider.holdRead = undefined;
+			mainWindow.removeEventListener('unhandledrejection', onUnhandled);
+		}
+	});
 
 });
 

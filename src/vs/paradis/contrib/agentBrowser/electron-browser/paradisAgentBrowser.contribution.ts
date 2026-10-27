@@ -358,7 +358,7 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 // menu 付き Action2 を登録するだけで済む（upstreamファイルは変更しない）。
 // 動的ラベルはメニュー登録では表現できないため、未共有/共有中で `when` の異なる2つの
 // アクションを登録し、共有中側は toggled でハイライト表示する。
-// ツールバーでの見た目（共有しているペインの数のバッジ・押したときの一覧）は ParadisBrowserShareActionViewItem
+// ツールバーでの見た目（共有しているペインの数のバッジ・共有中に出る ▾ と一覧）は ParadisBrowserShareActionViewItem
 // （paradisBrowserShareButton.ts）が描く。グループは upstream のタブのグループ（1_tabs）の直後に置く。ツールバーは
 // 幅が足りないと後ろの項目から「…」へ畳むので、前に置くほど共有の状態が最後まで見える。
 const PARADIS_SHARE_TOOLBAR_GROUP = '2_paradisShare';

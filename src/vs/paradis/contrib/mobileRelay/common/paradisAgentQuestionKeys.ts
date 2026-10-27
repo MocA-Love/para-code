@@ -118,14 +118,38 @@ export function paradisAgentQuestionKeySequence(
 	questions: readonly IParadisAgentQuestionShape[],
 	answers: readonly ParadisAgentQuestionAnswer[],
 ): string[] {
+	return paradisAgentQuestionKeyPlan(questions, answers).parts;
+}
+
+/**
+ * 複数選択の問いで、チェックの数字を打ち終えて送信ボタンへ降りる前に、画面で確かめるチェック。
+ *
+ * 選択肢リストがキーを受け付ける前に届いた数字は入力欄へ吸われ、そのチェックだけが黙って抜けたまま次へ進む
+ * （Claude Code 2.1.310 で、先頭の選択肢のラベルが出た直後に流すと再現した）。打ち直すか止めるかは流す側が決める。
+ */
+export interface IParadisAgentQuestionKeyCheck {
+	/** この添字の `parts` を流す直前に確かめる。 */
+	readonly beforePart: number;
+	/** チェックが付いているはずの選択肢の番号（1 始まり、昇順）。 */
+	readonly checked: readonly number[];
+	/** 「その他」を除いた選択肢の数。 */
+	readonly optionCount: number;
+}
+
+/** {@link paradisAgentQuestionKeySequence} のキー列と、その途中で確かめるチェック（{@link IParadisAgentQuestionKeyCheck}）。 */
+export function paradisAgentQuestionKeyPlan(
+	questions: readonly IParadisAgentQuestionShape[],
+	answers: readonly ParadisAgentQuestionAnswer[],
+): { readonly parts: string[]; readonly checks: IParadisAgentQuestionKeyCheck[] } {
 	const parts: string[] = [];
+	const checks: IParadisAgentQuestionKeyCheck[] = [];
 	for (const [index, answer] of answers.entries()) {
 		const question = questions[index];
 		if (question === undefined) {
 			continue;
 		}
 		if (answer.kind === 'text' && question.hasPreview === true) {
-			return [];
+			return { parts: [], checks: [] };
 		}
 		if (answer.kind === 'option') {
 			// 数字だけで確定し、次の質問へ自動で進む。Enterは送らない。
@@ -139,9 +163,11 @@ export function paradisAgentQuestionKeySequence(
 		if (answer.kind === 'multi') {
 			// 数字はトグルのみ（フォーカスは動かない）。スペースは「フォーカス中の項目」を
 			// トグルしてしまうので送らない。
-			for (const optionIndex of [...new Set(answer.indices)].sort((a, b) => a - b)) {
-				parts.push(String(optionIndex + 1));
+			const checked = [...new Set(answer.indices)].sort((a, b) => a - b).map(optionIndex => optionIndex + 1);
+			for (const optionNumber of checked) {
+				parts.push(String(optionNumber));
 			}
+			checks.push({ beforePart: parts.length, checked, optionCount: question.optionCount });
 			parts.push(...downsToSubmitButton(question.optionCount), ENTER);
 			continue;
 		}
@@ -158,7 +184,45 @@ export function paradisAgentQuestionKeySequence(
 	if (parts.length > 0 && paradisAgentQuestionNeedsReviewSubmit(questions)) {
 		parts.push(ENTER);
 	}
-	return parts;
+	return { parts, checks };
+}
+
+/**
+ * 画面に出ている複数選択の問いの、チェックの付いた選択肢の番号（1 始まり）。読めなければ undefined。
+ *
+ * Claude Code 2.1.310 の複数選択の行は `❯ 1. [✔] Apple` / `  2. [ ] Banana`（フォーカスの印 `❯` は 1 行だけ）。
+ * 「その他」の行も `5. [ ] Type something` と同じ形で並ぶので、`optionCount` より大きい番号は数えない。
+ * 会話の上の方に同じ形の行が残っていても取り違えないよう、1 番から始まるいちばん下のまとまりを読む。
+ */
+export function paradisVisibleQuestionChecks(screen: string, optionCount: number): number[] | undefined {
+	let block: Map<number, boolean> | undefined;
+	let last: Map<number, boolean> | undefined;
+	for (const line of screen.split(/\r?\n/)) {
+		const row = /^\s*(?:[\u276f\u203a>]\s*)?(?<number>\d{1,2})\.\s+\[(?<mark>.)\]/u.exec(line);
+		if (row?.groups === undefined) {
+			continue;
+		}
+		const optionNumber = Number(row.groups.number);
+		if (optionNumber === 1) {
+			block = new Map();
+			last = block;
+		}
+		block?.set(optionNumber, (row.groups.mark ?? ' ').trim().length > 0);
+	}
+	if (last === undefined) {
+		return undefined;
+	}
+	const checked: number[] = [];
+	for (let optionNumber = 1; optionNumber <= optionCount; optionNumber++) {
+		const mark = last.get(optionNumber);
+		if (mark === undefined) {
+			return undefined;
+		}
+		if (mark) {
+			checked.push(optionNumber);
+		}
+	}
+	return checked;
 }
 
 /**
@@ -254,4 +318,167 @@ export function paradisCodexApprovalDenyKey(screen: string | undefined): string 
 		}
 	}
 	return 'd';
+}
+
+/** 中継から届いた {@link IParadisAgentQuestionKeyCheck} の並びを読む（形が違うものは捨てる）。`partCount` はキー列の長さ。 */
+export function paradisReadQuestionKeyChecks(value: unknown, partCount: number): IParadisAgentQuestionKeyCheck[] {
+	if (!Array.isArray(value) || value.length > 4) {
+		return [];
+	}
+	const checks: IParadisAgentQuestionKeyCheck[] = [];
+	for (const item of value) {
+		const candidate = typeof item === 'object' && item !== null ? item as { beforePart?: unknown; checked?: unknown; optionCount?: unknown } : undefined;
+		const beforePart = candidate?.beforePart;
+		const optionCount = candidate?.optionCount;
+		const checked = candidate?.checked;
+		if (typeof beforePart !== 'number' || !Number.isInteger(beforePart) || beforePart < 0 || beforePart >= partCount
+			|| typeof optionCount !== 'number' || !Number.isInteger(optionCount) || optionCount < 1 || optionCount > 9
+			|| !Array.isArray(checked) || checked.length === 0
+			|| !checked.every(number => typeof number === 'number' && Number.isInteger(number) && number >= 1 && number <= optionCount)) {
+			continue;
+		}
+		checks.push({ beforePart, checked: [...new Set(checked as number[])].sort((a, b) => a - b), optionCount });
+	}
+	return checks;
+}
+
+/**
+ * 画面のチェック（{@link paradisVisibleQuestionChecks}）が送るつもりのものと合うか。`missing` は打ち直せば直る（数字はトグル）。
+ * `extra` は付いているはずの無いチェック（PC で誰かが触った等）で、打ち直すと別のものを外しかねないので止める。
+ * 画面を読めなければ `unreadable`（今までどおり流す）。
+ */
+export function paradisQuestionChecksVerdict(visible: readonly number[] | undefined, check: IParadisAgentQuestionKeyCheck): { readonly kind: 'ok' } | { readonly kind: 'extra' } | { readonly kind: 'unreadable' } | { readonly kind: 'missing'; readonly missing: number[] } {
+	if (visible === undefined) {
+		return { kind: 'unreadable' };
+	}
+	if (visible.some(number => !check.checked.includes(number))) {
+		return { kind: 'extra' };
+	}
+	const missing = check.checked.filter(number => !visible.includes(number));
+	return missing.length > 0 ? { kind: 'missing', missing } : { kind: 'ok' };
+}
+
+/** {@link paradisConfirmQuestionChecks} が画面とのやり取りに使うもの（テストでは偽物を渡す）。 */
+export interface IParadisQuestionCheckScreen {
+	/** 今の画面の文字。 */
+	read(): string;
+	/** 1 打鍵を送る。 */
+	send(key: string): Promise<void>;
+	/** `ms` だけ待つ。 */
+	wait(ms: number): Promise<void>;
+	/** 答える相手がまだこの質問か（打ち直す直前に確かめる。待つあいだに PC で答えられたり、質問が変わったりするため）。 */
+	stillCurrent(): Promise<boolean>;
+}
+
+/**
+ * {@link paradisConfirmQuestionChecks} の結果。`ok`・`retyped`・`unreadable` のときだけ送信ボタンへ降りてよい。
+ * `stale` は答える相手が変わった。`unconfirmed` は最後に打った数字のチェックが待っても画面に出なかった（前のキーが処理済みだと
+ * 言えないので、抜けたとも決めずに止める）。
+ */
+export type ParadisQuestionChecksOutcome = 'ok' | 'unreadable' | 'retyped' | 'extra' | 'unsettled' | 'unconfirmed' | 'still-missing' | 'stale';
+
+/** 画面が落ち着いたとみなすまでに読む回数の上限（2 回続けて同じなら落ち着いた）。 */
+const QUESTION_CHECK_MAX_READS = 6;
+/** 読む間隔の下限。`delayMs` が 0 でも、画面へ届くまでの間を空ける。 */
+const QUESTION_CHECK_MIN_INTERVAL_MS = 150;
+/** 最後に打った数字のチェックが画面に出るのを待つ長さ（打ち直しの前と後で 1 回ずつ）。往復が長い SSH でも届くように取る。 */
+const QUESTION_CHECK_KEY_WAIT_MS = 4_000;
+
+function questionCheckIntervalMs(delayMs: number): number {
+	return Math.max(delayMs, QUESTION_CHECK_MIN_INTERVAL_MS);
+}
+
+/**
+ * {@link paradisConfirmQuestionChecks} が掛けうる時間の上限（ミリ秒）。打鍵を流す側の後で回答を確かめる処理は、この分だけ遅らせて見に行く。
+ * 落ち着くまで読む分と最後の数字を待つ分を、打ち直しの前と後で 1 回ずつ、それに打ち直す数字の分を足す。
+ */
+export function paradisQuestionChecksMaxWaitMs(checks: readonly IParadisAgentQuestionKeyCheck[], delayMs: number): number {
+	const intervalMs = questionCheckIntervalMs(delayMs);
+	const phaseMs = QUESTION_CHECK_KEY_WAIT_MS + QUESTION_CHECK_MAX_READS * intervalMs;
+	return checks.reduce((total, check) => total + 2 * phaseMs + check.checked.length * intervalMs, 0);
+}
+
+/**
+ * 画面のチェックを、`intervalMs` を空けて 2 回続けて同じに読めるまで読む。落ち着かなければ undefined。
+ * 打鍵の反映は SSH の往復だけ遅れるので、1 回読んだだけで「抜けた」と決めない（まだ届いていないチェックを打ち直すと、
+ * 数字はトグルなので外れてしまう）。
+ */
+async function settledQuestionChecks(screen: IParadisQuestionCheckScreen, optionCount: number, intervalMs: number): Promise<{ readonly visible: number[] | undefined } | undefined> {
+	let previous: string | undefined;
+	for (let read = 0; read < QUESTION_CHECK_MAX_READS; read++) {
+		if (read > 0) {
+			await screen.wait(intervalMs);
+		}
+		const visible = paradisVisibleQuestionChecks(screen.read(), optionCount);
+		const key = visible === undefined ? 'unreadable' : visible.join(',');
+		if (key === previous) {
+			return { visible };
+		}
+		previous = key;
+	}
+	return undefined;
+}
+
+/**
+ * 落ち着いた画面に、最後に打った数字 `lastKey` のチェックが見えるまで待つ。TUI はキーを届いた順に処理するので、それが見えれば
+ * その前の数字も処理済みで、そのとき抜けているチェックは本当に抜けている（往復の長さに頼らない）。
+ * 画面を読めない・付いているはずの無いチェックがあるときは、待たずにその画面を返す。
+ */
+async function checksAfterKey(screen: IParadisQuestionCheckScreen, check: IParadisAgentQuestionKeyCheck, lastKey: number, intervalMs: number): Promise<{ readonly visible: number[] | undefined } | 'unsettled' | 'unconfirmed'> {
+	for (let waitedMs = 0; ; waitedMs += intervalMs) {
+		const settled = await settledQuestionChecks(screen, check.optionCount, intervalMs);
+		if (settled === undefined) {
+			return 'unsettled';
+		}
+		const visible = settled.visible;
+		if (visible === undefined || visible.includes(lastKey) || visible.some(number => !check.checked.includes(number))) {
+			return settled;
+		}
+		if (waitedMs >= QUESTION_CHECK_KEY_WAIT_MS) {
+			return 'unconfirmed';
+		}
+		await screen.wait(intervalMs);
+	}
+}
+
+/**
+ * 複数選択の問いのチェックが、送るつもりのものと画面で合っているかを確かめる。選択肢リストがキーを受け付ける前に届いた数字は
+ * 入力欄へ吸われ、そのチェックだけが黙って抜ける（Claude Code 2.1.310 で再現）。
+ *
+ * 抜けを確定するのは、落ち着いた画面に最後に打った数字のチェックが見えているとき（{@link checksAfterKey}）だけ。そのときだけ、
+ * 答える相手がまだこの質問だと確かめてから抜けた数字を 1 回打ち直す。打ち直した後も、最後に打ち直した数字が見えてから判断する。
+ * 「合った」と返す直前にも、答える相手を確かめ直す。
+ */
+export async function paradisConfirmQuestionChecks(screen: IParadisQuestionCheckScreen, check: IParadisAgentQuestionKeyCheck, delayMs: number): Promise<ParadisQuestionChecksOutcome> {
+	const intervalMs = questionCheckIntervalMs(delayMs);
+	const lastTyped = check.checked[check.checked.length - 1];
+	if (lastTyped === undefined) {
+		return 'ok';
+	}
+	const first = await checksAfterKey(screen, check, lastTyped, intervalMs);
+	if (typeof first === 'string') {
+		return first;
+	}
+	const verdict = paradisQuestionChecksVerdict(first.visible, check);
+	if (verdict.kind === 'extra') {
+		return 'extra';
+	}
+	if (verdict.kind !== 'missing') {
+		return await screen.stillCurrent() ? verdict.kind : 'stale';
+	}
+	if (!(await screen.stillCurrent())) {
+		return 'stale';
+	}
+	for (const optionNumber of verdict.missing) {
+		await screen.send(String(optionNumber));
+		await screen.wait(intervalMs);
+	}
+	const after = await checksAfterKey(screen, check, verdict.missing[verdict.missing.length - 1]!, intervalMs);
+	if (typeof after === 'string') {
+		return after;
+	}
+	if (paradisQuestionChecksVerdict(after.visible, check).kind !== 'ok') {
+		return 'still-missing';
+	}
+	return await screen.stillCurrent() ? 'retyped' : 'stale';
 }
