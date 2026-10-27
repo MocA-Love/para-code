@@ -24,14 +24,15 @@ export function agentLogoKind(terminal: { readonly agent?: boolean; readonly tit
 		return 'terminal';
 	}
 	const source = (chatAgent ?? terminal.title ?? '').toLowerCase();
-	if (source.includes('opencode')) {
-		return 'opencode';
-	}
 	if (source.includes('claude')) {
 		return 'claude';
 	}
 	if (source.includes('codex')) {
 		return 'codex';
+	}
+	// OpenCode のタブ名は `OpenCode` か `OC | <題名>`
+	if (source.includes('opencode') || /^oc\s*\|/.test(source)) {
+		return 'opencode';
 	}
 	return 'agent';
 }

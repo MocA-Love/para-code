@@ -9,7 +9,7 @@ import { createRequire } from 'module';
 import { homedir } from 'os';
 import { isAbsolute, join, resolve } from '../../../../base/common/path.js';
 import { paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
-import { IParadisOpenCodeCliDatabase, paradisOpenCodeCliRegistry, paradisValidateOpenCodeDatabasePath } from '../../agentBrowser/node/paradisOpenCodeCliRegistry.js';
+import { IParadisOpenCodeCliDatabase, paradisOpenCodeCliRegistry, paradisOpenCodeXdgDataRoot, paradisValidateOpenCodeDatabasePath } from '../../agentBrowser/node/paradisOpenCodeCliRegistry.js';
 import { PARADIS_OPENCODE_COMMAND } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
@@ -85,7 +85,8 @@ export async function paradisOpenCodeDatabasePaths(env: NodeJS.ProcessEnv = proc
 		}
 	};
 	const realHome = await fs.realpath(home).catch(() => home);
-	const realData = env.XDG_DATA_HOME !== undefined && isAbsolute(env.XDG_DATA_HOME) ? await fs.realpath(env.XDG_DATA_HOME).catch(() => env.XDG_DATA_HOME) : undefined;
+	const xdg = paradisOpenCodeXdgDataRoot(env);
+	const realData = xdg !== undefined ? await fs.realpath(xdg).catch(() => xdg) : undefined;
 	for (const database of remembered) {
 		if (paradisValidateOpenCodeDatabasePath(database.path, env, home) === undefined) {
 			continue;
@@ -93,7 +94,8 @@ export async function paradisOpenCodeDatabasePaths(env: NodeJS.ProcessEnv = proc
 		const real = await fs.realpath(database.path).catch(() => undefined);
 		const isFile = real !== undefined && await fs.stat(real).then(stat => stat.isFile(), () => false);
 		if (isFile && [realHome, realData].some(root => root !== undefined && paradisValidateOpenCodeDatabasePath(real, { XDG_DATA_HOME: root }, realHome) !== undefined)) {
-			add(database.path, database.command, database.label);
+			// 確かめた実体のパスで開く（確かめた後で symlink を差し替えられても、確かめていない場所は読まない）
+			add(real, database.cli, database.label);
 		}
 	}
 	const roots = [...new Set([join(env.XDG_DATA_HOME || join(home, '.local', 'share'), 'opencode'), join(home, '.local', 'share', 'opencode')])];
@@ -110,23 +112,39 @@ export async function paradisOpenCodeDatabasePaths(env: NodeJS.ProcessEnv = proc
 	return result;
 }
 
-/** Read top-level sessions in the requested working directories from either SQLite schema. */
-export async function listOpenCodeSessions(dbPath: string, directories: readonly string[], includeArchived = false, limit = 600, cli: ParadisOpenCodeCli = PARADIS_OPENCODE_COMMAND): Promise<readonly IParadisOpenCodeSession[]> {
-	if (directories.length === 0) { return []; }
+/** Open an OpenCode database read-only for `use`, and close it afterwards (one handle for a whole listing). */
+export async function paradisWithOpenCodeDatabase<T>(dbPath: string, use: (database: DatabaseSync) => T): Promise<T> {
 	const database = openDatabase(dbPath);
-	try {
-		const table = hasTable(database, 'session_v2') ? 'session_v2' : hasTable(database, 'session') ? 'session' : undefined;
-		if (table === undefined) { return []; }
-		const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => text(row.name)));
-		const archived = columns.has('time_archived') ? 'time_archived' : 'NULL';
-		const metadata = columns.has('metadata') ? 'metadata' : 'NULL';
-		const rows = database.prepare(`SELECT id, title, directory, time_created, time_updated, ${archived} AS archived, ${metadata} AS metadata FROM ${table} WHERE parent_id IS NULL AND directory IN (${directories.map(() => '?').join(',')}) ${includeArchived || !columns.has('time_archived') ? '' : 'AND time_archived IS NULL'} ORDER BY time_updated DESC LIMIT ?`).all(...directories, Math.max(1, Math.min(600, limit)));
-		return rows.flatMap(row => {
-			const id = text(row.id);
-			if (!/^ses_[A-Za-z0-9_-]+$/.test(id)) { return []; }
-			return [{ id, title: text(row.title), cwd: text(row.directory), createdAt: timestamp(row.time_created) ?? 0, updatedAt: timestamp(row.time_updated) ?? 0, archived: row.archived !== null, cli } satisfies IParadisOpenCodeSession];
-		});
-	} finally { database.close(); }
+	try { return use(database); } finally { database.close(); }
+}
+
+/**
+ * The working directories as OpenCode may have stored them. On Windows OpenCode keeps directories with `/` instead of `\`,
+ * so both forms are matched.
+ */
+function directoryForms(directories: readonly string[]): readonly string[] {
+	return [...new Set(directories.flatMap(directory => [directory, directory.replace(/\\/g, '/')]))];
+}
+
+/** Read top-level sessions in the requested working directories from either SQLite schema. */
+export function listOpenCodeSessionsIn(database: DatabaseSync, directories: readonly string[], includeArchived = false, limit = 600, cli: ParadisOpenCodeCli = PARADIS_OPENCODE_COMMAND): readonly IParadisOpenCodeSession[] {
+	if (directories.length === 0) { return []; }
+	const table = hasTable(database, 'session_v2') ? 'session_v2' : hasTable(database, 'session') ? 'session' : undefined;
+	if (table === undefined) { return []; }
+	const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => text(row.name)));
+	const archived = columns.has('time_archived') ? 'time_archived' : 'NULL';
+	const forms = directoryForms(directories);
+	const rows = database.prepare(`SELECT id, title, directory, time_created, time_updated, ${archived} AS archived FROM ${table} WHERE parent_id IS NULL AND directory IN (${forms.map(() => '?').join(',')}) ${includeArchived || !columns.has('time_archived') ? '' : 'AND time_archived IS NULL'} ORDER BY time_updated DESC LIMIT ?`).all(...forms, Math.max(1, Math.min(600, limit)));
+	return rows.flatMap(row => {
+		const id = text(row.id);
+		if (!/^ses_[A-Za-z0-9_-]+$/.test(id)) { return []; }
+		return [{ id, title: text(row.title), cwd: text(row.directory), createdAt: timestamp(row.time_created) ?? 0, updatedAt: timestamp(row.time_updated) ?? 0, archived: row.archived !== null, cli } satisfies IParadisOpenCodeSession];
+	});
+}
+
+/** {@link listOpenCodeSessionsIn} on a database file. */
+export function listOpenCodeSessions(dbPath: string, directories: readonly string[], includeArchived = false, limit = 600, cli: ParadisOpenCodeCli = PARADIS_OPENCODE_COMMAND): Promise<readonly IParadisOpenCodeSession[]> {
+	return directories.length === 0 ? Promise.resolve([]) : paradisWithOpenCodeDatabase(dbPath, database => listOpenCodeSessionsIn(database, directories, includeArchived, limit, cli));
 }
 
 function messageParts(id: string, role: 'user' | 'assistant', parts: readonly unknown[], ts?: number): IParadisOpenCodeMessage[] {
@@ -147,34 +165,44 @@ function messageParts(id: string, role: 'user' | 'assistant', parts: readonly un
 }
 
 /** Stable message/part IDs allow the mobile tailer to reconcile polling without duplicating text. */
-export async function readOpenCodeMessages(dbPath: string, sessionId: string, limit = 400, direction: 'asc' | 'desc' = 'desc'): Promise<readonly IParadisOpenCodeMessage[]> {
+export function readOpenCodeMessagesIn(database: DatabaseSync, sessionId: string, limit = 400, direction: 'asc' | 'desc' = 'desc'): readonly IParadisOpenCodeMessage[] {
 	if (!/^ses_[A-Za-z0-9_-]+$/.test(sessionId)) { throw new Error('Invalid OpenCode session id.'); }
-	const database = openDatabase(dbPath);
-	try {
-		const count = Math.max(1, Math.min(2000, limit));
-		// 本家 1.19 の DB は `session_message` の表を持つが行は無く、会話は `message`/`part` にある。表の有無ではなく
-		// そのセッションの行の有無で読む表を決める（両方の表を持つ DB で、セッションごとに置き場所が違うことがある）。
-		const inSessionMessages = hasTable(database, 'session_message')
-			&& database.prepare('SELECT 1 FROM session_message WHERE session_id = ? LIMIT 1').get(sessionId) !== undefined;
-		if (inSessionMessages) {
-			const rows = database.prepare(`SELECT id, type, data, time_created FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ${direction === 'asc' ? 'ASC' : 'DESC'} LIMIT ?`).all(sessionId, count);
-			if (direction === 'desc') { rows.reverse(); }
-			return rows.flatMap((row): IParadisOpenCodeMessage[] => {
-				const data = decode(row.data);
-				const ts = timestamp(row.time_created);
-				if (row.type === 'user') { return text(data.text) ? [{ id: text(row.id), role: 'user', kind: 'message', text: text(data.text).slice(0, 256 * 1024), ts }] : []; }
-				return row.type === 'assistant' && Array.isArray(data.content) ? messageParts(text(row.id), 'assistant', data.content, ts) : [];
-			});
-		}
-		if (!hasTable(database, 'message') || !hasTable(database, 'part')) { return []; }
-		const order = direction === 'asc' ? 'ASC' : 'DESC';
-		const rows = database.prepare(`SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ${order}, id ${order} LIMIT ?`).all(sessionId, count);
+	const count = Math.max(1, Math.min(2000, limit));
+	const order = direction === 'asc' ? 'ASC' : 'DESC';
+	// 本家 1.19 の DB は `session_message` の表を持つが行は無く、会話は `message`/`part` にある。表の有無ではなく
+	// そのセッションの行の有無で読む表を決める（両方の表を持つ DB で、セッションごとに置き場所が違うことがある）。
+	const inSessionMessages = hasTable(database, 'session_message')
+		&& database.prepare('SELECT 1 FROM session_message WHERE session_id = ? LIMIT 1').get(sessionId) !== undefined;
+	if (inSessionMessages) {
+		const rows = database.prepare(`SELECT id, type, data, time_created FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ${order} LIMIT ?`).all(sessionId, count);
 		if (direction === 'desc') { rows.reverse(); }
 		return rows.flatMap((row): IParadisOpenCodeMessage[] => {
-			const role = decode(row.data).role;
-			if (role !== 'user' && role !== 'assistant') { return []; }
-			const parts = database.prepare('SELECT id, data FROM part WHERE message_id = ? AND session_id = ? ORDER BY time_created, id').all(text(row.id), sessionId).map(part => ({ ...decode(part.data), id: text(part.id) }));
-			return messageParts(text(row.id), role, parts, timestamp(row.time_created));
+			const data = decode(row.data);
+			const ts = timestamp(row.time_created);
+			if (row.type === 'user') { return text(data.text) ? [{ id: text(row.id), role: 'user', kind: 'message', text: text(data.text).slice(0, 256 * 1024), ts }] : []; }
+			return row.type === 'assistant' && Array.isArray(data.content) ? messageParts(text(row.id), 'assistant', data.content, ts) : [];
 		});
-	} finally { database.close(); }
+	}
+	if (!hasTable(database, 'message') || !hasTable(database, 'part')) { return []; }
+	const rows = database.prepare(`SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ${order}, id ${order} LIMIT ?`).all(sessionId, count);
+	if (direction === 'desc') { rows.reverse(); }
+	// 選んだ発言の部品をまとめて 1 回で引く（発言ごとに引かない）
+	const parts = new Map<string, Record<string, unknown>[]>();
+	for (const part of database.prepare(`SELECT id, message_id, data FROM part WHERE session_id = ? AND message_id IN (SELECT id FROM message WHERE session_id = ? ORDER BY time_created ${order}, id ${order} LIMIT ?) ORDER BY time_created, id`).all(sessionId, sessionId, count)) {
+		const messageId = text(part.message_id);
+		const list = parts.get(messageId) ?? [];
+		list.push({ ...decode(part.data), id: text(part.id) });
+		parts.set(messageId, list);
+	}
+	return rows.flatMap((row): IParadisOpenCodeMessage[] => {
+		const role = decode(row.data).role;
+		if (role !== 'user' && role !== 'assistant') { return []; }
+		return messageParts(text(row.id), role, parts.get(text(row.id)) ?? [], timestamp(row.time_created));
+	});
+}
+
+/** {@link readOpenCodeMessagesIn} on a database file. */
+export async function readOpenCodeMessages(dbPath: string, sessionId: string, limit = 400, direction: 'asc' | 'desc' = 'desc'): Promise<readonly IParadisOpenCodeMessage[]> {
+	if (!/^ses_[A-Za-z0-9_-]+$/.test(sessionId)) { throw new Error('Invalid OpenCode session id.'); }
+	return paradisWithOpenCodeDatabase(dbPath, database => readOpenCodeMessagesIn(database, sessionId, limit, direction));
 }

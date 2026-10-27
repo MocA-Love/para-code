@@ -12,7 +12,7 @@
 // Claude Code / Codex は終了してシェルに戻っている。そのタブで何の会話が動いていたかを、
 // ペイントークン（シェル統合の nonce。再起動をまたいで変わらない）ごとに控えておく。
 
-import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand, paradisOpenCodeTitleCommand } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
+import { paradisIsOpenCodeResumeCli, paradisOpenCodeTitleCommand, paradisOpenCodeTitleText } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { DeferredPromise, raceTimeout, timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
@@ -84,7 +84,7 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 		// 前の版はトークンをそのままキーにしていた。読んだ時点でハッシュへ置き換える。
 		result.set(LEDGER_KEY_PATTERN.test(token) ? token : paradisResumeLedgerKey(token), {
 			agent,
-			...(cli === PARADIS_OPENCODE_COMMAND || paradisIsOpenCodeCompatibleCommand(cli) ? { cli } : {}),
+			...(paradisIsOpenCodeResumeCli(cli) ? { cli } : {}),
 			sessionId,
 			at,
 			...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}),
@@ -121,8 +121,7 @@ export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: s
  * 付けるので落とす。シェル名・エージェント名だけのもの、Codex のスレッド ID は名前として使わない。
  */
 export function paradisResumeTitleFromTab(title: string): string | undefined {
-	const openCodeCommand = paradisOpenCodeTitleCommand(title);
-	const withoutCommand = openCodeCommand !== undefined ? title.replace(/^\s*[^\s|]+\s*\|?\s*/, '') : title;
+	const withoutCommand = paradisOpenCodeTitleText(title) ?? title;
 	const trimmed = withoutCommand.replace(/^[⠀-⣿✀-➿•·●*\s]+/u, '').trim();
 	if (trimmed.length === 0
 		|| /^(zsh|bash|fish|sh|pwsh|powershell|cmd|node|claude|claude code|codex|opencode)$/i.test(trimmed)

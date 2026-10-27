@@ -87,12 +87,22 @@ suite('ParadisOpenCodeHistory', () => {
 		}, { legacyRows: ['Original request', 'Completed answer'], newRows: ['Newer schema request'], missing: [] });
 	});
 
+	test('matches a Windows working directory that OpenCode stored with forward slashes', async () => {
+		populate();
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(dbPath);
+		try {
+			database.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('ses_windows', 'Windows', 'C:/work/app', null, 1, 2, null, '{}');
+		} finally { database.close(); }
+		assert.deepStrictEqual((await listOpenCodeSessions(dbPath, ['C:\\work\\app'])).map(session => session.id), ['ses_windows']);
+	});
+
 	test('redacts credential tool inputs before forwarding history to another surface', async () => {
 		populate();
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
-			database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)').run('msg_credentials', 'ses_one', 'assistant', 3, 13, JSON.stringify({ content: [{ type: 'tool', id: 'credentials', name: 'mcp__para_browser__set_http_credentials', state: { status: 'completed', input: { password: 'fixture-private-value' } } }] }));
+			database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)').run('msg_credentials', 'ses_one', 'assistant', 3, 13, JSON.stringify({ content: [{ type: 'tool', id: 'credentials', name: 'para-browser_set_http_credentials', state: { status: 'completed', input: { password: 'fixture-private-value' } } }] }));
 		} finally { database.close(); }
 		assert.strictEqual(JSON.stringify(await readOpenCodeMessages(dbPath, 'ses_one')).includes('fixture-private-value'), false);
 	});
@@ -113,14 +123,14 @@ suite('ParadisOpenCodeHistory', () => {
 		await fs.writeFile(join(root, 'outside', 'escape.db'), '');
 		await fs.symlink(join(root, 'outside', 'escape.db'), join(home, '.example', 'data', 'linked.db'));
 		const remembered = [
-			{ path: join(home, '.example', 'data', 'opencode-local.db'), command: 'example-cli', label: 'Example CLI' },
-			{ path: join(home, '.example', 'data', 'missing.db'), command: 'example-cli' },
-			{ path: join(home, '.example', 'data', 'linked.db'), command: 'example-cli' },
-			{ path: join(root, 'outside', 'escape.db'), command: 'example-cli' },
+			{ path: join(home, '.example', 'data', 'opencode-local.db'), cli: '/opt/example/bin/example-cli', label: 'Example CLI' },
+			{ path: join(home, '.example', 'data', 'missing.db'), cli: '/opt/example/bin/example-cli' },
+			{ path: join(home, '.example', 'data', 'linked.db'), cli: '/opt/example/bin/example-cli' },
+			{ path: join(root, 'outside', 'escape.db'), cli: '/opt/example/bin/example-cli' },
 		];
 		const listed = (await paradisOpenCodeDatabasePaths({}, home, remembered)).map(database => [database.path.slice(home.length + 1), database.cli, database.label]);
 		assert.deepStrictEqual(listed, [
-			['.example/data/opencode-local.db', 'example-cli', 'Example CLI'],
+			['.example/data/opencode-local.db', '/opt/example/bin/example-cli', 'Example CLI'],
 			['.local/share/opencode/opencode-local.db', 'opencode', undefined],
 			['.local/share/opencode/opencode.db', 'opencode', undefined],
 		]);
@@ -137,17 +147,17 @@ suite('ParadisOpenCodeHistory', () => {
 		} finally { database.close(); }
 		const service = new ParadisSessionResumeService({
 			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
-			openCodeDatabases: async () => [{ path: dbPath, cli: 'example-cli' }, { path: copyPath, cli: 'opencode' }],
+			openCodeDatabases: async () => [{ path: dbPath, cli: '/opt/example/bin/example-cli' }, { path: copyPath, cli: 'opencode' }],
 		}, new NullLogService());
 		const sessions = await service.list({ spaces: [{ stateKey: 'project', name: 'Project', cwd: '/project', current: true }] });
-		assert.deepStrictEqual(sessions.map(session => [session.id, session.cli, session.updatedAt]).sort(), [['ses_one', 'example-cli', 30], ['ses_two', 'opencode', 99]]);
+		assert.deepStrictEqual(sessions.map(session => [session.id, session.cli, session.updatedAt]).sort(), [['ses_one', '/opt/example/bin/example-cli', 30], ['ses_two', 'opencode', 99]]);
 	});
 
 	test('desktop catalog keeps sessions in one database distinct and supports preview/search/resume details', async () => {
 		populate();
 		const service = new ParadisSessionResumeService({
 			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
-			openCodeDatabases: async () => [{ path: dbPath, cli: 'example-cli' }],
+			openCodeDatabases: async () => [{ path: dbPath, cli: '/opt/example/bin/example-cli' }],
 		}, new NullLogService());
 		const sessions = await service.list({ spaces: [{ stateKey: 'project', name: 'Project', cwd: '/project', current: true }] });
 		const selected = sessions.find(session => session.id === 'ses_one')!;

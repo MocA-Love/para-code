@@ -1064,7 +1064,7 @@ export interface IParadisAgentPaneStatus {
 export interface IParadisAgentPaneSession {
 	readonly token: string;
 	readonly agent: 'claude' | 'codex' | 'opencode';
-	/** OpenCode の会話を再開するコマンド（`opencode` か、ブリッジに登録した互換 CLI が名乗ったコマンド）。 */
+	/** OpenCode の会話を再開するもの（`opencode` か、確かめて覚えた互換 CLI の実行ファイルの絶対パス）。 */
 	readonly cli?: string;
 	readonly sessionId: string;
 	/** hook が最後に報告した作業ディレクトリ。 */

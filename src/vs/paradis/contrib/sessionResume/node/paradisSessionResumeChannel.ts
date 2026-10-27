@@ -24,7 +24,7 @@ import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrow
 import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, readOpenCodeMessages } from './paradisOpenCodeHistory.js';
+import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, paradisWithOpenCodeDatabase, readOpenCodeMessages, readOpenCodeMessagesIn } from './paradisOpenCodeHistory.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
 	paradisIsCodexRootSource as isCodexRootSource,
@@ -404,17 +404,30 @@ export class ParadisSessionResumeService {
 				}
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
+		// 一覧の見出し（最後の発言）は、DB ごとに 1 回だけ開いて読む
+		const byDatabase = new Map<string, { readonly database: IParadisOpenCodeDatabase; readonly saved: IParadisOpenCodeSession[] }>();
 		for (const { database, saved } of openCodeSessions.values()) {
+			const group = byDatabase.get(database.path) ?? { database, saved: [] };
+			group.saved.push(saved);
+			byDatabase.set(database.path, group);
+		}
+		for (const { database, saved: savedSessions } of byDatabase.values()) {
 			const dbPath = database.path;
 			try {
-				const space = request.spaces.find(space => normalizePath(space.cwd) === normalizePath(saved.cwd));
-				if (!space) { continue; }
-				const messages = await readOpenCodeMessages(dbPath, saved.id, 2);
-				const latest = [...messages].reverse().find(message => message.kind === 'message');
-				this.addSession({ id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
-					preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
-					currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
-				}, dbPath, dirname(dbPath), sessions);
+				const previews = await paradisWithOpenCodeDatabase(dbPath, handle => savedSessions.map(saved => {
+					try { return readOpenCodeMessagesIn(handle, saved.id, 2); } catch { return undefined; }
+				}));
+				savedSessions.forEach((saved, index) => {
+					const messages = previews[index];
+					// normalizePath は `\\` と `/` を揃える（Windows で OpenCode が `/` で持つディレクトリも同じ場所になる）
+					const space = request.spaces.find(space => normalizePath(space.cwd) === normalizePath(saved.cwd));
+					if (!space || messages === undefined) { return; }
+					const latest = [...messages].reverse().find(message => message.kind === 'message');
+					this.addSession({ id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
+						preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
+						currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
+					}, dbPath, dirname(dbPath), sessions);
+				});
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
 		const homesSeen = new Set<string>();

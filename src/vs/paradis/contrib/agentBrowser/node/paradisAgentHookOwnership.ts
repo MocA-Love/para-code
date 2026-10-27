@@ -438,27 +438,6 @@ export function paradisHookAgentKindFromCommandLine(command: string): ParadisHoo
 	return agentMatchOfCommand(command, 0)?.kind;
 }
 
-/**
- * プロセスの起動行が、`program` そのもの（`program …`・`/path/program`）か、ランタイム（node・bun・deno）が実行する
- * `program` のスクリプト（`bun run …/program.ts`）か。OpenCode 互換 CLI が名乗ったコマンド名を確かめるのに使う。
- */
-export function paradisCommandLineRunsProgram(command: string, program: string): boolean {
-	const tokens = tokenizeCommandLine(command);
-	const nameOf = (token: ICommandLineToken) => normalizedBasename(token.value).replace(/\.(ts|mts|cts)$/, '');
-	if (tokens.length === 0) {
-		return false;
-	}
-	if (nameOf(tokens[0]) === program) {
-		return true;
-	}
-	if (!SCRIPT_RUNTIME_BASENAMES.has(normalizedBasename(tokens[0].value))) {
-		return false;
-	}
-	// ランタイムの後の、オプションでない最初の語（bun / deno の `run` は飛ばす）
-	const script = tokens.slice(1).find(token => !token.value.startsWith('-') && token.value !== 'run');
-	return script !== undefined && nameOf(script) === program;
-}
-
 // Claude Code の daemon の形（2.1.289 で実測）。`/fork` の分岐先と `claude --bg` の会話は、元のペインの
 // claude ではなく次の連なりの末端が動かす:
 //   claude（daemon を最初に起こしたペインの claude）→ `claude daemon run …` → `claude bg-pty-host --bg-pty-host … -- <本体> --bg-spare …`
@@ -874,12 +853,6 @@ export class ParadisAgentHookOwnership {
 	/** ペイン終了時に所有権を破棄する。 */
 	clear(token: string): void {
 		this.owners.delete(token);
-	}
-
-	/** 手元のプロセス表で、`pid` のプロセスが `program` を動かしているか（{@link paradisCommandLineRunsProgram}）。 */
-	async processRunsProgram(pid: number, program: string): Promise<boolean> {
-		const info = (await this.inspector.snapshot().catch(() => undefined))?.get(pid);
-		return info !== undefined && paradisCommandLineRunsProgram(info.command, program);
 	}
 
 	async classify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {

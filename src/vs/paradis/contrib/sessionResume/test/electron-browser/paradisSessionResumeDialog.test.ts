@@ -45,7 +45,7 @@ suite('ParadisSessionResumeDialog', () => {
 
 	test('lists OpenCode separately and hides unsupported permission bypass actions', async () => {
 		const client = new TestResumeClient();
-		client.listResult = async () => [{ ...testSession('ses_saved', 'Saved OpenCode', 'opencode'), cli: 'example-cli', cliLabel: 'Example CLI' }];
+		client.listResult = async () => [{ ...testSession('ses_saved', 'Saved OpenCode', 'opencode'), cli: '/opt/example/bin/example-cli', cliLabel: 'Example CLI' }];
 		const fixture = createRefreshFixture(client);
 		try {
 			await fixture.load();
@@ -659,8 +659,8 @@ suite('paradisResumeAgentInWorkspace', () => {
 	test('resumes an OpenCode conversation with its original CLI in the selected working directory', async () => {
 		const fixture = createFixture();
 		fixture.ready.complete();
-		await paradisResumeAgentInWorkspace(fixture.accessor, { ...request('claude'), agent: 'opencode', cli: 'example-cli', sessionId: 'ses_saved' });
-		assert.strictEqual(fixture.events.at(-1), 'send:example-cli --session ses_saved:true');
+		await paradisResumeAgentInWorkspace(fixture.accessor, { ...request('claude'), agent: 'opencode', cli: '/opt/example/bin/example-cli', sessionId: 'ses_saved' });
+		assert.strictEqual(fixture.events.at(-1), 'send:/opt/example/bin/example-cli --session ses_saved:true');
 	});
 
 	test('resumes a Codex conversation in the home it was found in', async () => {

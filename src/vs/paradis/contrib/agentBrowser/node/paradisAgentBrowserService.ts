@@ -47,7 +47,7 @@ import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } f
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { paradisOpenCodeBridge } from './paradisOpenCodeBridge.js';
-import { paradisOpenCodeCliRegistry } from './paradisOpenCodeCliRegistry.js';
+import { paradisOpenCodeCliRegistry, paradisResolveProcessExecutable, paradisVerifyOpenCodeCliProcess } from './paradisOpenCodeCliRegistry.js';
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
@@ -754,6 +754,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** 印が付いたまま、hook の接続元を確かめられなかったペイン（tmux・WSL など）。IDE 操作ツールの Enter は利用者に任せる。 */
 	private readonly _unconfirmableTokens = new Set<string>();
 	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
+	/** プロセスの実行ファイルの実体（テストは差し替える）。 */
+	private readonly _resolveProcessExecutable: (pid: number) => Promise<string | undefined> = paradisResolveProcessExecutable;
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
@@ -4128,6 +4130,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 手元の Claude Code の `claude --version` の出力（確かめられなければ undefined）。renderer の mod の準備が、入力欄の mod を
 	 * 読ませてよい版かを決めるのに使う。5 分は前の結果を返す（失敗した結果は使い回さない）。
 	 */
+	/** 覚えた OpenCode 互換 CLI（コマンド名・実行ファイル・DB の場所）を全部忘れる。 */
+	async forgetOpenCodeCompatibleClis(): Promise<void> {
+		await paradisOpenCodeCliRegistry.forgetAll();
+	}
+
 	async getClaudeVersion(): Promise<string | undefined> {
 		const now = Date.now();
 		if (this._claudeVersion === undefined || now - this._claudeVersion.at > 5 * 60_000) {
@@ -4446,9 +4453,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			// ブリッジ対応の OpenCode 互換 CLI は、自分のコマンド名（再開に使う）と表示名を名乗る。`cli` は名乗りの古い形
 			const declaredCli = stringField('cli_command') ?? stringField('cli');
 			const cli = paradisIsOpenCodeCompatibleCommand(declaredCli) ? declaredCli : PARADIS_OPENCODE_COMMAND;
-			// 再開に使うのは、確かめて覚えたコマンドだけ（確かめられない名乗りは `opencode` で再開する）。SessionStart で確かめる前に決めるので、
-			// 下で覚えた後に読み直す
-			const resumeCli = () => paradisOpenCodeCliRegistry.list().some(entry => entry.command === cli) ? cli : PARADIS_OPENCODE_COMMAND;
+			// 再開に使うのは、確かめて覚えた実行ファイルの絶対パスだけ（確かめられない名乗りは `opencode` で再開する）。SessionStart で
+			// 確かめる前に決めるので、下で覚えた後に読み直す
+			const resumeCli = () => paradisOpenCodeCliRegistry.executableOf(cli) ?? PARADIS_OPENCODE_COMMAND;
 			const cliLabel = paradisNormalizeOpenCodeCliLabel(stringField('cli_label'));
 			const sessionId = stringField('session_id');
 			const transcriptPath = stringField('transcript_path');
@@ -4573,18 +4580,19 @@ export class ParadisAgentBrowserService extends Disposable {
 				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
 				// 名乗った互換 CLI のコマンドは、持ち主の確認の間だけプロセスの判定に入れる（そのプロセスがペインの中に居ないと
 				// 持ち主にならない）。確かめられたら覚える
-				// 名乗りを確かめられるのは手元のペインだけ（hook の pid のプロセスがそのコマンドを動かしていること）
-				const learnsCli = agentKind === 'opencode' && eventType === 'SessionStart' && cli !== PARADIS_OPENCODE_COMMAND && hookPid !== undefined
-					&& await this._hookOwnership.processRunsProgram(hookPid, cli);
-				const endOpenCodeTrial = learnsCli ? paradisOpenCodeCliRegistry.beginTrial(cli) : () => { };
+				// 名乗りを確かめられるのは手元のペインだけ。hook の pid のプロセスの実行ファイルの実体が、名乗ったコマンドの名前で、
+				// ランタイムやシェルではないこと（起動行は名乗り放題なので見ない）
+				const cliExecutable = agentKind === 'opencode' && eventType === 'SessionStart' && cli !== PARADIS_OPENCODE_COMMAND && hookPid !== undefined
+					? await paradisVerifyOpenCodeCliProcess(hookPid, cli, this._resolveProcessExecutable) : undefined;
+				const endOpenCodeTrial = cliExecutable !== undefined ? paradisOpenCodeCliRegistry.beginTrial(cli) : () => { };
 				let hookOrigin: Awaited<ReturnType<ParadisAgentHookOwnership['classify']>>;
 				try {
 					hookOrigin = await this._hookOwnership.classify({
 						token, hookPid, transcriptPath: agentKind === 'opencode' && transcriptPath && sessionId ? `${transcriptPath}#${sessionId}` : transcriptPath, agentKind, at: Date.now(), sessionId, paneShellPid,
 						event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
 					});
-					if (learnsCli && hookOrigin.origin === 'owner') {
-						await paradisOpenCodeCliRegistry.remember({ command: cli, ...(cliLabel !== undefined ? { label: cliLabel } : {}), ...(transcriptPath ? { databasePath: transcriptPath } : {}) });
+					if (cliExecutable !== undefined && hookOrigin.origin === 'owner') {
+						await paradisOpenCodeCliRegistry.remember({ command: cli, executable: cliExecutable, ...(cliLabel !== undefined ? { label: cliLabel } : {}), ...(transcriptPath ? { databasePath: transcriptPath } : {}) });
 					}
 				} finally {
 					endOpenCodeTrial();

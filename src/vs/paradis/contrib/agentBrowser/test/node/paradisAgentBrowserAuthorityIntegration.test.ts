@@ -273,6 +273,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		fixture.service.registerRendererConnection('window:1', connection);
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'opencode-test', shellPid: 100, ...(remoteAuthority ? { remoteAuthority } : {}) }]));
 		Reflect.set(fixture.service, '_classifyCaller', async () => remoteAuthority ? 'tunnel' : 'pane');
+		// The process 200 really runs the compatible CLI's executable (a fake process table; nothing is executed)
+		Reflect.set(fixture.service, '_resolveProcessExecutable', async (pid: number) => pid === 200 ? '/opt/example/bin/example-cli' : pid === 210 ? '/usr/bin/bun' : undefined);
 		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({ snapshot: async () => new Map([
 			[100, { pid: 100, ppid: 1, command: 'zsh', startKey: 'shell' }],
 			[200, { pid: 200, ppid: 100, command: 'example-cli', startKey: 'owner' }],
@@ -364,16 +366,33 @@ suite('ParadisAgentBrowser authority integration', () => {
 			const snapshot = await fixture.service.listAgentStatusSnapshot(fixture.connection);
 			assert.deepStrictEqual({
 				impostor: [impostor.statusCode, JSON.parse(impostor.body).ok], afterImpostor,
-				learned: paradisOpenCodeCliRegistry.list().map(cli => [cli.command, cli.label, cli.databases]),
+				learned: paradisOpenCodeCliRegistry.list().map(cli => [cli.command, cli.executable, cli.label, cli.databases]),
 				session: Reflect.get(fixture.service, '_paneSessions').get('opencode-test')?.cli,
 				published: snapshot.openCodeCommands,
 			}, {
 				impostor: [200, false], afterImpostor: [],
-				learned: [['example-cli', 'Example CLI', []]],
-				session: 'example-cli',
+				learned: [['example-cli', '/opt/example/bin/example-cli', 'Example CLI', []]],
+				session: '/opt/example/bin/example-cli',
 				published: ['example-cli'],
 			});
 		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('OpenCode hooks hide the credentials of its MCP tool name (server and tool joined by one underscore)', async () => {
+		const fixture = await openCodeFixture();
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => { if (event.token === 'opencode-test') { events.push(event); } });
+		try {
+			assert.strictEqual((await fixture.start()).statusCode, 200);
+			await fixture.request('/agent-hook?pane=opencode-test&event=PermissionRequest&pid=200', {
+				agent_kind: 'opencode', cli_command: 'example-cli', session_id: 'ses_saved', transcript_path: '/data/opencode.db', cwd: '/project', opencode_request_id: 'per_login',
+				tool_name: 'para-browser_set_http_credentials', tool_input: { origin: 'https://intranet.example.com', username: 'u', password: 'fixture-private-value' },
+			});
+			const permission = events.find(event => event.event === 'PermissionRequest');
+			assert.deepStrictEqual({ input: permission?.toolInput, leaked: JSON.stringify(events).includes('fixture-private-value') }, {
+				input: { origin: 'https://intranet.example.com', username: 'u', password: '[hidden]' }, leaked: false,
+			});
+		} finally { listener.dispose(); paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
 	});
 
 	test('OpenCode SSH identity comes from the registered pane, never the caller host query', async () => {

@@ -17,16 +17,18 @@ suite('paradisTerminalResumeBanner', () => {
 
 	test('restores OpenCode CLI choice and titles without borrowing another agent permission flags', () => {
 		const now = Date.now();
-		const entry = { agent: 'opencode' as const, cli: 'example-cli', sessionId: 'ses_saved', cwd: '/project', at: now };
+		const entry = { agent: 'opencode' as const, cli: '/opt/example/bin/example-cli', sessionId: 'ses_saved', cwd: '/project', at: now };
 		const ledger = new Map([[paradisResumeLedgerKey('pane'), entry]]);
 		assert.deepStrictEqual({
-			resume: paradisResumeCommandLine('opencode', 'ses_saved', 'resume', false, 'example-cli'),
+			resume: paradisResumeCommandLine('opencode', 'ses_saved', 'resume', false, '/opt/example/bin/example-cli'),
+			bareName: paradisResumeCommandLine('opencode', 'ses_saved', 'resume', false, 'example-cli'),
 			unsafeCommand: paradisResumeCommandLine('opencode', 'ses_saved', 'resume', false, 'bash; rm'),
 			fork: paradisResumeCommandLine('opencode', 'ses_saved', 'fork'),
 			unsafe: paradisResumeCommandLine('opencode', 'ses_saved', 'resume', true),
-			title: paradisResumeTitleFromTab('opencode | Fix the parser'),
+			title: paradisResumeTitleFromTab('OC | Fix the parser'),
+			bareTitle: paradisResumeTitleFromTab('OpenCode'),
 			ledger: [...paradisParseResumeLedger(paradisSerializeResumeLedger(ledger), now).values()],
-		}, { resume: 'example-cli --session ses_saved', unsafeCommand: undefined, fork: 'opencode --session ses_saved --fork', unsafe: undefined, title: 'Fix the parser', ledger: [entry] });
+		}, { resume: '/opt/example/bin/example-cli --session ses_saved', bareName: undefined, unsafeCommand: undefined, fork: 'opencode --session ses_saved --fork', unsafe: undefined, title: 'Fix the parser', bareTitle: undefined, ledger: [entry] });
 	});
 
 	test('builds resume and CLI fork commands, with or without skipping permission checks, only for ids that cannot be read as options', () => {
