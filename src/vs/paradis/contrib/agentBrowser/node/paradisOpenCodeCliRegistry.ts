@@ -77,8 +77,22 @@ export function paradisValidateOpenCodeDatabasePath(path: unknown, env: NodeJS.P
 }
 
 /**
- * プロセスの実行ファイルの実体のパス（Linux は `/proc/<pid>/exe`、macOS は `ps -o comm=` の実行パスを realpath したもの）。
- * 取れなければ undefined。起動行（argv）は名乗り放題なので使わない。
+ * `lsof -a -p <pid> -d txt -Fn` の出力から、実際に動いている実行ファイルのパス（最初の `n` 行）を取り出す。
+ * 形が違う・パスが無ければ undefined。
+ */
+export function paradisParseLsofExecutable(stdout: string): string | undefined {
+	for (const line of stdout.split('\n')) {
+		if (line.startsWith('n')) {
+			const path = line.slice(1).trim();
+			return isAbsolute(path) ? path : undefined;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * プロセスの実行ファイルの実体のパス（Linux は `/proc/<pid>/exe`、macOS は `lsof` の txt の最初の行を realpath したもの）。
+ * 取れなければ undefined（lsof が無い・失敗したときも）。起動行（argv）や `ps -o comm=`（argv[0] になりうる）は名乗り放題なので使わない。
  */
 export async function paradisResolveProcessExecutable(pid: number): Promise<string | undefined> {
 	if (!Number.isSafeInteger(pid) || pid < 2) {
@@ -90,8 +104,9 @@ export async function paradisResolveProcessExecutable(pid: number): Promise<stri
 			return isAbsolute(target) ? await fs.realpath(target).catch(() => target) : undefined;
 		}
 		if (isMacintosh) {
-			const path = await new Promise<string>((resolve, reject) => execFile('/bin/ps', ['-o', 'comm=', '-p', String(pid)], { timeout: 3000 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
-			return isAbsolute(path) ? await fs.realpath(path) : undefined;
+			const stdout = await new Promise<string>((resolve, reject) => execFile('/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'txt', '-Fn'], { timeout: 3000 }, (error, out) => error ? reject(error) : resolve(out)));
+			const path = paradisParseLsofExecutable(stdout);
+			return path !== undefined ? await fs.realpath(path) : undefined;
 		}
 	} catch {
 		// 取れない（プロセスが終わった・権限が無い）

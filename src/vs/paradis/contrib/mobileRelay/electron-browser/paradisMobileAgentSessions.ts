@@ -406,8 +406,12 @@ async function resumeFromMobile(
 		// 通知は準備の結果が分かってから出す（L6。開いたタブがまだ空のシェルのうちに「表示」を押させない）。
 		notifyResumed(tools, space, session, instance);
 		let delivered = false;
+		/** OpenCode が依頼を受け取ったのに結果が返らなかった（届いたかもしれない）。 */
+		let unconfirmed = false;
 		if (readiness === 'ready' && instance !== undefined && session.agent === 'opencode' && openCodeToken !== undefined) {
-			delivered = await tools.agentChatSource.sendOpenCodeAgentMessage?.(openCodeToken, session.id, prompt) ?? false;
+			const result = await tools.agentChatSource.sendOpenCodeAgentMessage?.(openCodeToken, session.id, prompt) ?? false;
+			delivered = result === true;
+			unconfirmed = result === 'unconfirmed';
 		} else if (readiness === 'ready' && instance !== undefined && session.agent !== 'opencode') {
 			const tuiAgent = session.agent;
 			const outcome = await paradisSendAgentMessageToTui(
@@ -432,7 +436,7 @@ async function resumeFromMobile(
 		}
 		reply({
 			status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered,
-			...(delivered ? {} : { message: '会話は再開しましたが、依頼を渡せませんでした。会話の画面から送ってください' }),
+			...(delivered ? {} : { message: unconfirmed ? '会話は再開して依頼を渡しましたが、届いたかを確かめられませんでした。送り直す前に会話の画面で確かめてください' : '会話は再開しましたが、依頼を渡せませんでした。会話の画面から送ってください' }),
 		});
 	} catch (error) {
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'failed', ...(terminalKey !== undefined ? { terminalKey } : {}) });

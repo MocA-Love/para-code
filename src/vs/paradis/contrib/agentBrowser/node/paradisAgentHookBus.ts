@@ -23,6 +23,8 @@ export interface IParadisAgentHookEvent {
 	readonly token: string;
 	readonly agentKind?: 'claude' | 'codex' | 'opencode';
 	readonly cli?: string;
+	/** OpenCode の会話を再開できない（確かめられなかった互換 CLI の会話）。 */
+	readonly resumable?: false;
 	/** hookイベント名（SessionStart / Stop / PermissionRequest 等、CLI固有の生の名前）。 */
 	readonly event: string;
 	/** hook stdin JSON の session_id（Claude Code / Codex とも全イベントで入る）。 */

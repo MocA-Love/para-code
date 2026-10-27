@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisIsOpenCodeCompatibleCommand, paradisIsOpenCodeProgram, paradisIsOpenCodeResumeCli, paradisOpenCodeTitleCommand, paradisSetOpenCodeCompatibleCommands } from '../../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
-import { PARADIS_OPENCODE_CLI_TTL_MS, ParadisOpenCodeCliRegistry, paradisOpenCodeXdgDataRoot, paradisValidateOpenCodeDatabasePath, paradisVerifyOpenCodeCliProcess } from '../../node/paradisOpenCodeCliRegistry.js';
+import { PARADIS_OPENCODE_CLI_TTL_MS, ParadisOpenCodeCliRegistry, paradisOpenCodeXdgDataRoot, paradisParseLsofExecutable, paradisValidateOpenCodeDatabasePath, paradisVerifyOpenCodeCliProcess } from '../../node/paradisOpenCodeCliRegistry.js';
 
 suite('ParadisOpenCodeCliRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -36,6 +36,15 @@ suite('ParadisOpenCodeCliRegistry', () => {
 			shallowXdg: [undefined, undefined, '/data/x'],
 			shallowXdgPath: undefined,
 		});
+	});
+
+	test('reads the running executable from the first name line of lsof -a -p <pid> -d txt -Fn', () => {
+		assert.deepStrictEqual([
+			paradisParseLsofExecutable('p4242\nftxt\nn/Users/example/.local/share/example/releases/1.0/example-cli\nftxt\nn/usr/lib/dyld\n'),
+			paradisParseLsofExecutable('p4242\n'),
+			paradisParseLsofExecutable(''),
+			paradisParseLsofExecutable('p4242\nftxt\nnrelative/example-cli\n'),
+		], ['/Users/example/.local/share/example/releases/1.0/example-cli', undefined, undefined, undefined]);
 	});
 
 	test('verifies a declared command by the real executable and never by a runtime or shell', async () => {

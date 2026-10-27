@@ -6,6 +6,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { paradisRedactToolInputSecrets } from '../common/paradisBrowserPageOps.js';
 import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOpenCodeHistory.js';
 
 export interface IParadisOpenCodeRegistration {
@@ -13,7 +14,7 @@ export interface IParadisOpenCodeRegistration {
 	readonly dbPath: string;
 	readonly cwd: string;
 	/** What resumes the session (`opencode`, or the absolute path of a verified compatible CLI). */
-	readonly cli: string;
+	readonly cli?: string;
 	readonly pid?: number;
 	readonly authority?: string;
 }
@@ -67,7 +68,10 @@ function parseMessageRow(value: unknown): IParadisOpenCodeMessage | undefined {
 		if (!name) {
 			return undefined;
 		}
-		const input = boundedString(value!.input, MAX_ROW_TEXT);
+		// 入力は文字列でもオブジェクトでも受ける（オブジェクトは資格情報を伏せてから文字列にする）
+		const rawInput = value!.input;
+		const input = typeof rawInput === 'string' ? rawInput.slice(0, MAX_ROW_TEXT)
+			: rawInput !== null && typeof rawInput === 'object' ? JSON.stringify(paradisRedactToolInputSecrets(name, rawInput)).slice(0, MAX_ROW_TEXT) : undefined;
 		const output = boundedString(value!.output, MAX_ROW_TEXT);
 		const status = boundedString(value!.status, 32);
 		tool = { name, ...(input !== undefined ? { input } : {}), ...(output !== undefined ? { output } : {}), ...(status !== undefined ? { status } : {}) };

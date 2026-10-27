@@ -127,6 +127,15 @@ suite('ParadisAgentChatInput', () => {
 		});
 	});
 
+	test('asks to check on the PC when OpenCode took a message but never answered, instead of reporting a failed send', async () => {
+		const fixture = setup({ agent: 'opencode', sessionId: 'ses_saved' });
+		fixture.source.sendOpenCodeAgentMessage = async () => 'unconfirmed';
+		const failed = setup({ agent: 'opencode', sessionId: 'ses_saved' });
+		failed.source.sendOpenCodeAgentMessage = async () => false;
+		const [unconfirmed, rejected] = [await fixture.input.sendMessage(1, 't', 'continue'), await failed.input.sendMessage(1, 't', 'continue')];
+		assert.deepStrictEqual({ unconfirmed: unconfirmed?.includes('PC のターミナルで確かめて'), rejected: rejected?.includes('送れませんでした'), sent: [...fixture.terminal.sent, ...failed.terminal.sent] }, { unconfirmed: true, rejected: true, sent: [] });
+	});
+
 	test('does not type into OpenCode when its API is unavailable or its session identity is missing', async () => {
 		const fixture = setup({ agent: 'opencode', sessionId: 'ses_saved' });
 		assert.notStrictEqual(await fixture.input.sendMessage(1, 't', 'continue'), undefined);

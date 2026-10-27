@@ -84,6 +84,7 @@ suite('ParadisOpenCodeBridge', () => {
 			{ id: 'm2', role: 'system', kind: 'message', text: 'bad role' },
 			{ id: 't1', role: 'assistant', kind: 'tool', text: '', tool: { name: 'read', input: '{"path":"a"}', output: 'ok', status: 'completed', secret: 'dropped' } },
 			{ id: 't2', role: 'assistant', kind: 'tool', text: '', tool: { input: 'no name' } },
+			{ id: 't3', role: 'assistant', kind: 'tool', text: '', tool: { name: 'para-browser_set_http_credentials', input: { origin: 'https://intranet.example.com', password: 'fixture-private-value' }, status: 'completed' } },
 			'not a row',
 		] });
 		await post('/opencode-bridge/result', { id: requests[1].id, sessionId: 'ses_a', ok: true, value: [
@@ -96,6 +97,7 @@ suite('ParadisOpenCodeBridge', () => {
 			history: [
 				{ id: 'm1', role: 'user', kind: 'message', text: 'Hello', ts: 1 },
 				{ id: 't1', role: 'assistant', kind: 'tool', text: '', tool: { name: 'read', input: '{"path":"a"}', output: 'ok', status: 'completed' } },
+				{ id: 't3', role: 'assistant', kind: 'tool', text: '', tool: { name: 'para-browser_set_http_credentials', input: '{"origin":"https://intranet.example.com","password":"[hidden]"}', status: 'completed' } },
 			],
 			commands: [{ name: 'review', description: 'Review', source: 'built-in' }],
 		});
