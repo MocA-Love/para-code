@@ -20,6 +20,8 @@ import { ParadisSubagentToolUses } from '../../common/paradisSubagentToolCalls.j
 import { ParadisRemoteFileTransfer } from '../../node/paradisRemoteFileTransfer.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
 import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
+import { paradisOpenCodeBridge } from '../../node/paradisOpenCodeBridge.js';
+import { paradisOpenCodeCliRegistry } from '../../node/paradisOpenCodeCliRegistry.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
@@ -44,9 +46,11 @@ class TestRequest extends EventEmitter {
 	destroyed = false;
 	destroyCalls = 0;
 
-	constructor(readonly method: string, readonly url: string) {
+	constructor(readonly method: string, readonly url: string, readonly body = '{}') {
 		super();
 	}
+
+	async *[Symbol.asyncIterator](): AsyncIterableIterator<Buffer> { yield Buffer.from(this.body); }
 
 	destroy(): void {
 		this.destroyCalls++;
@@ -262,6 +266,126 @@ function createFixture(): {
 }
 
 suite('ParadisAgentBrowser authority integration', () => {
+	async function openCodeFixture(remoteAuthority?: string) {
+		paradisOpenCodeCliRegistry.clear();
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'opencode-test', shellPid: 100, ...(remoteAuthority ? { remoteAuthority } : {}) }]));
+		Reflect.set(fixture.service, '_classifyCaller', async () => remoteAuthority ? 'tunnel' : 'pane');
+		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({ snapshot: async () => new Map([
+			[100, { pid: 100, ppid: 1, command: 'zsh', startKey: 'shell' }],
+			[200, { pid: 200, ppid: 100, command: 'example-cli', startKey: 'owner' }],
+			[210, { pid: 210, ppid: 200, command: 'opencode', startKey: 'child' }],
+		]) }));
+		const request = async (url: string, body?: Readonly<Record<string, unknown>>, method = 'POST') => {
+			const req = new TestRequest(method, url, JSON.stringify(body ?? {}));
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, req, response) as Promise<void>;
+			if (url.startsWith('/agent-hook')) { req.emit('data', Buffer.from(req.body)); req.emit('end'); }
+			await pending;
+			return response;
+		};
+		const start = (extra: Readonly<Record<string, unknown>> = {}, suffix = '') => request(`/agent-hook?pane=opencode-test&event=SessionStart&pid=200${suffix}`, {
+			agent_kind: 'opencode', cli_command: 'example-cli', cli_label: 'Example CLI', session_id: 'ses_saved', transcript_path: '/data/opencode.db', cwd: '/project', ...extra,
+		});
+		return { ...fixture, connection, request, start };
+	}
+
+	test('OpenCode capability negotiation works before registration without creating agent state', async () => {
+		const fixture = await openCodeFixture();
+		try {
+			const response = await fixture.request('/opencode-bridge/capabilities?pane=opencode-test&pid=200', undefined, 'GET');
+			assert.deepStrictEqual({ status: response.statusCode, body: JSON.parse(response.body), registration: paradisOpenCodeBridge.getRegistration('opencode-test'), sessions: Reflect.get(fixture.service, '_paneSessions').size }, {
+				status: 200, body: { protocol: 1, agent: 'opencode' }, registration: undefined, sessions: 0,
+			});
+			const unknown = await fixture.start({ agent_kind: 'unsupported-agent' });
+			assert.strictEqual(unknown.statusCode, 404);
+			assert.strictEqual(Reflect.get(fixture.service, '_paneSessions').size, 0);
+		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('OpenCode capability negotiation retries only panes awaiting startup synchronization', async () => {
+		const fixture = await openCodeFixture();
+		Reflect.get(fixture.service, '_terminalExitedTokens').add('exited');
+		Reflect.get(fixture.service, '_faultedTokens').add('faulted');
+		const capability = (token: string) => fixture.request(`/opencode-bridge/capabilities?pane=${token}&pid=200`, undefined, 'GET');
+		assert.strictEqual((await capability('pending')).statusCode, 503);
+		assert.strictEqual((await capability('exited')).statusCode, 404);
+		assert.strictEqual((await capability('faulted')).statusCode, 404);
+		Reflect.set(fixture.service, '_hookSyncGraceSince', Date.now() - 61_000);
+		assert.strictEqual((await capability('pending')).statusCode, 404);
+		assert.strictEqual(paradisOpenCodeBridge.getRegistration('pending'), undefined);
+	});
+
+	test('OpenCode registers the exact session before publishing hooks and rejects stale SID/PID/token/owner RPC', async () => {
+		const fixture = await openCodeFixture();
+		const seen: boolean[] = [];
+		const listener = onParadisAgentHookEvent(event => { if (event.token === 'opencode-test') { seen.push(paradisOpenCodeBridge.hasSession(event.token, event.sessionId ?? '')); } });
+		try {
+			assert.strictEqual((await fixture.start()).statusCode, 200);
+			assert.deepStrictEqual(seen, [true]);
+			for (const query of ['pane=wrong&pid=200&session_id=ses_saved', 'pane=opencode-test&pid=200&session_id=ses_old', 'pane=opencode-test&pid=201&session_id=ses_saved']) {
+				for (const operation of ['poll', 'result']) {
+					assert.strictEqual((await fixture.request(`/opencode-bridge/${operation}?${query}`, { session_id: 'ses_saved' })).statusCode, 404);
+				}
+			}
+			const valid = await fixture.request('/opencode-bridge/poll?pane=opencode-test&pid=200&session_id=ses_saved', { session_id: 'ses_saved' });
+			assert.deepStrictEqual({ code: valid.statusCode, body: JSON.parse(valid.body) }, { code: 200, body: { requests: [] } });
+			paradisOpenCodeBridge.register('opencode-test', { sessionId: 'ses_saved', dbPath: '/data/opencode.db', cwd: '/project', cli: 'opencode', pid: 210 });
+			assert.strictEqual((await fixture.request('/opencode-bridge/poll?pane=opencode-test&pid=210&session_id=ses_saved', { session_id: 'ses_saved' })).statusCode, 404);
+		} finally { listener.dispose(); paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('OpenCode bridge polls reuse a recent owner verdict only for the same registration', async () => {
+		const fixture = await openCodeFixture();
+		const ownership: ParadisAgentHookOwnership = Reflect.get(fixture.service, '_hookOwnership');
+		const classify = ownership.classify.bind(ownership);
+		let classified = 0;
+		Reflect.set(ownership, 'classify', (input: Parameters<ParadisAgentHookOwnership['classify']>[0]) => { classified++; return classify(input); });
+		try {
+			assert.strictEqual((await fixture.start()).statusCode, 200);
+			const before = classified;
+			const poll = () => fixture.request('/opencode-bridge/poll?pane=opencode-test&pid=200&session_id=ses_saved', { session_id: 'ses_saved' });
+			const statuses = [(await poll()).statusCode, (await poll()).statusCode, (await poll()).statusCode];
+			const cachedPolls = classified - before;
+			paradisOpenCodeBridge.register('opencode-test', { sessionId: 'ses_saved', dbPath: '/data/opencode.db', cwd: '/project', cli: 'example-cli', pid: 200 });
+			statuses.push((await poll()).statusCode);
+			assert.deepStrictEqual({ statuses, cachedPolls, afterRegistration: classified - before }, { statuses: [200, 200, 200, 200], cachedPolls: 1, afterRegistration: 2 });
+		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('OpenCode-compatible CLIs are learned only when their declared command is the verified owner process', async () => {
+		const fixture = await openCodeFixture();
+		try {
+			const impostor = await fixture.start({ cli_command: 'other-cli' });
+			const afterImpostor = paradisOpenCodeCliRegistry.commands();
+			assert.strictEqual((await fixture.start()).statusCode, 200);
+			const snapshot = await fixture.service.listAgentStatusSnapshot(fixture.connection);
+			assert.deepStrictEqual({
+				impostor: [impostor.statusCode, JSON.parse(impostor.body).ok], afterImpostor,
+				learned: paradisOpenCodeCliRegistry.list().map(cli => [cli.command, cli.label, cli.databases]),
+				session: Reflect.get(fixture.service, '_paneSessions').get('opencode-test')?.cli,
+				published: snapshot.openCodeCommands,
+			}, {
+				impostor: [200, false], afterImpostor: [],
+				learned: [['example-cli', 'Example CLI', []]],
+				session: 'example-cli',
+				published: ['example-cli'],
+			});
+		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('OpenCode SSH identity comes from the registered pane, never the caller host query', async () => {
+		const fixture = await openCodeFixture('ssh-remote+trusted');
+		const events: IParadisAgentHookEvent[] = [];
+		const listener = onParadisAgentHookEvent(event => { if (event.token === 'opencode-test') { events.push(event); } });
+		try {
+			await fixture.start({}, '&host=untrusted');
+			assert.deepStrictEqual({ remoteHostId: events[0]?.remoteHostId, authority: paradisOpenCodeBridge.getRegistration('opencode-test')?.authority }, { remoteHostId: 'ssh-remote-trusted', authority: 'ssh-remote+trusted' });
+		} finally { listener.dispose(); paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('global channel exposes only strict zero-argument gateway endpoint', async () => {

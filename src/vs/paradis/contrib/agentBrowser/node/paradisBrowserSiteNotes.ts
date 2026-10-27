@@ -33,7 +33,7 @@ export interface IParadisSiteNote {
 	readonly text: string;
 	/** 書いた日（YYYY-MM-DD、利用者の暦）。 */
 	readonly date: string;
-	readonly agent?: 'claude' | 'codex';
+	readonly agent?: 'claude' | 'codex' | 'opencode';
 	/** 書いたときのリポジトリの HEAD（短い形）。 */
 	readonly commit?: string;
 }
@@ -81,7 +81,7 @@ export class ParadisSiteNotesStore {
 		return this.store.list(space, origin);
 	}
 
-	write(space: string, origin: string, text: string, meta: { readonly agent?: 'claude' | 'codex'; readonly commit?: string }): Promise<IParadisSiteNote> {
+	write(space: string, origin: string, text: string, meta: { readonly agent?: 'claude' | 'codex' | 'opencode'; readonly commit?: string }): Promise<IParadisSiteNote> {
 		const note: IParadisSiteNote = {
 			id: generateUuid().slice(0, 8),
 			text: text.trim().slice(0, MAX_NOTE_CHARS),

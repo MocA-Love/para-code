@@ -23,8 +23,8 @@
  */
 
 /** 通知に出すエージェントの呼び名。 */
-export function paradisAgentLabel(agent: 'claude' | 'codex'): string {
-	return agent === 'codex' ? 'Codex' : 'Claude';
+export function paradisAgentLabel(agent: 'claude' | 'codex' | 'opencode'): string {
+	return agent === 'opencode' ? 'OpenCode' : agent === 'codex' ? 'Codex' : 'Claude';
 }
 
 /**

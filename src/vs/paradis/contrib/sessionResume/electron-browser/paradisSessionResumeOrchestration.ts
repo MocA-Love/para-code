@@ -7,12 +7,13 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import type { IParadisResumeAgentInWorkspaceRequest } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { ParadisResumeAgent } from '../common/paradisSessionResume.js';
+import { ParadisResumeAgent, ParadisResumeCli } from '../common/paradisSessionResume.js';
 
 export interface IParadisSessionResumeEditorTarget {
 	readonly rootUri: URI;
 	readonly stateKey: string;
 	readonly agent: ParadisResumeAgent;
+	readonly cli?: ParadisResumeCli;
 	readonly sessionId: string;
 	readonly currentSpace: boolean;
 	/** Codex の会話が見つかったホーム（既定のホームを含む）。 */
@@ -57,6 +58,7 @@ export async function paradisResumeSessionFromEditor(
 		rootUri: target.rootUri,
 		stateKey: target.stateKey,
 		agent: target.agent,
+		...(target.cli !== undefined ? { cli: target.cli } : {}),
 		sessionId: target.sessionId,
 		dangerouslyBypassPermissions: options.dangerouslyBypassPermissions,
 		...(target.codexHome !== undefined ? { codexHome: target.codexHome } : {}),

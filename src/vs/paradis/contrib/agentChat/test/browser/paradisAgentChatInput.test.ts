@@ -106,8 +106,35 @@ suite('ParadisAgentChatInput', () => {
 		const terminal = new FakeTerminal();
 		const session = disposables.add(new ParadisAgentChatSession('t', source, new NullLogService()));
 		const input = new ParadisAgentChatInput({ source, terminal: () => terminal, session: () => session }, 0, 300);
-		return { input, terminal, claims, setView: (next: Partial<IParadisAgentChatView>) => { current = { ...current, ...next }; } };
+		return { input, terminal, source, claims, setView: (next: Partial<IParadisAgentChatView>) => { current = { ...current, ...next }; } };
 	}
+
+	test('sends OpenCode messages and exact pending answers through the API without any PTY fallback', async () => {
+		const question = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'Choose a plan', toolUseId: 'opencode:req_question', questionGroup: 'opencode:req_question', options: [{ label: 'First' }] };
+		const fixture = setup({ agent: 'opencode', sessionId: 'ses_saved' });
+		const calls: string[] = [];
+		fixture.source.sendOpenCodeAgentMessage = async (_token, sid, text) => { calls.push(`message:${sid}:${text}`); return true; };
+		fixture.source.answerOpenCodeAgentQuestions = async (_token, sid, id) => { calls.push(`question:${sid}:${id}`); return true; };
+		fixture.source.answerOpenCodeAgentApproval = async (_token, sid, id, choice) => { calls.push(`approval:${sid}:${id}:${choice}`); return false; };
+		fixture.terminal.paste = false;
+		assert.strictEqual(await fixture.input.sendMessage(1, 't', 'two\nlines'), undefined);
+		fixture.setView({ interaction: { kind: 'question', id: 'opencode:req_question' }, pendingQuestions: [question] });
+		assert.strictEqual(await fixture.input.answerQuestions(1, 't', 'opencode:req_question', [{ kind: 'option', index: 0 }]), undefined);
+		fixture.setView({ interaction: { kind: 'approval', id: 'opencode:req_permission', detail: 'bash' } });
+		assert.notStrictEqual(await fixture.input.answerApproval(1, 't', 'opencode:req_permission', 'yes'), undefined);
+		assert.deepStrictEqual({ calls, sent: fixture.terminal.sent, claims: fixture.claims }, {
+			calls: ['message:ses_saved:two\nlines', 'question:ses_saved:opencode:req_question', 'approval:ses_saved:opencode:req_permission:yes'], sent: [], claims: [],
+		});
+	});
+
+	test('does not type into OpenCode when its API is unavailable or its session identity is missing', async () => {
+		const fixture = setup({ agent: 'opencode', sessionId: 'ses_saved' });
+		assert.notStrictEqual(await fixture.input.sendMessage(1, 't', 'continue'), undefined);
+		fixture.setView({ sessionId: undefined });
+		fixture.source.sendOpenCodeAgentMessage = async () => { throw new Error('Must not send without session identity'); };
+		assert.notStrictEqual(await fixture.input.sendMessage(1, 't', 'continue'), undefined);
+		assert.deepStrictEqual(fixture.terminal.sent, []);
+	});
 
 	test('sends a message only while the agent is in front and nothing waits for an answer, without control characters', async () => {
 		const { input, terminal, setView } = setup({});

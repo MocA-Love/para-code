@@ -21,6 +21,8 @@ import { paradisRedactToolInputSecrets } from '../common/paradisBrowserPageOps.j
 export interface IParadisAgentHookEvent {
 	/** ペイントークン（PARA_CODE_TERMINAL_PANE_ID）。ターミナルペインの識別子。 */
 	readonly token: string;
+	readonly agentKind?: 'claude' | 'codex' | 'opencode';
+	readonly cli?: string;
 	/** hookイベント名（SessionStart / Stop / PermissionRequest 等、CLI固有の生の名前）。 */
 	readonly event: string;
 	/** hook stdin JSON の session_id（Claude Code / Codex とも全イベントで入る）。 */
@@ -128,7 +130,7 @@ export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.ev
  */
 export interface IParadisAgentNestedHookEvent extends IParadisAgentHookEvent {
 	/** 子エージェントの種別（プロセスコマンドライン由来。不明なら undefined）。 */
-	readonly nestedAgent: 'claude' | 'codex' | undefined;
+	readonly nestedAgent: 'claude' | 'codex' | 'opencode' | undefined;
 	/**
 	 * Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）の hook。daemon を最初に起こした
 	 * ペインの token を持って届くが、そのペインの子エージェントではない。transcript を「どのペインの会話でもない」

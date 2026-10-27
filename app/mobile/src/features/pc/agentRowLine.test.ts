@@ -52,6 +52,8 @@ describe('ロゴと経過時間', () => {
 	test('会話の写しのエージェント名、無ければ名前から推し量る', () => {
 		expect(agentLogoKind({ agent: true, title: 'shell' }, 'codex')).toBe('codex');
 		expect(agentLogoKind({ agent: true, title: 'Claude Code' }, undefined)).toBe('claude');
+		expect(agentLogoKind({ agent: true }, 'opencode')).toBe('opencode');
+		expect(agentLogoKind({ agent: true, title: 'opencode | Fix the parser' }, undefined)).toBe('opencode');
 		expect(agentLogoKind({ agent: true, title: 'my agent' }, undefined)).toBe('agent');
 		expect(agentLogoKind({ agent: false, title: 'claude' }, undefined)).toBe('terminal');
 	});

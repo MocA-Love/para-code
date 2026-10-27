@@ -87,6 +87,10 @@ export class ParadisAgentChatInput {
 		if (state === undefined) {
 			return localize('paradisAgentChat.errorNoSession', "エージェントの会話が見つかりません");
 		}
+		// 取り直したら OpenCode だった。OpenCode の入力欄へは打鍵しない（会話への送信は API の経路だけ）
+		if (state.agent === 'opencode') {
+			return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
+		}
 		// 終わったエージェントへ送ると、文がシェルでコマンドとして実行される。
 		const foreground = terminal.foreground();
 		if (state.agentExited || foreground === 'shell') {
@@ -119,6 +123,20 @@ export class ParadisAgentChatInput {
 		const text = paradisBuildPresetInsertText(rawText, true);
 		if (text === undefined) {
 			return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+		}
+		const session = this.dependencies.session(token);
+		// OpenCode（または種類がまだ分からない会話）だけは送る前に写しを取り直し、会話の ID が今のものか確かめる。
+		// Claude Code・Codex は今までどおり、下の確認の中で 1 回だけ取り直す
+		if (session.state === undefined || session.state.agent === 'opencode') {
+			await session.refresh();
+		}
+		const state = session.state;
+		if (state?.agent === 'opencode') {
+			if (this.dependencies.terminal(instanceId, token) !== terminal || state.agentExited || !state.sessionId || state.interaction !== null) {
+				return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
+			}
+			const sent = await this.dependencies.source.sendOpenCodeAgentMessage?.(token, state.sessionId, text).catch(() => false);
+			return sent ? undefined : localize('paradisAgentChat.errorOpenCodeSend', "OpenCode へ送れませんでした。接続を確かめてください");
 		}
 		const reason = await this.messageBlockReason(instanceId, token, terminal, text);
 		if (reason !== undefined) {
@@ -177,6 +195,15 @@ export class ParadisAgentChatInput {
 		if (!matches) {
 			return localize('paradisAgentChat.errorQuestionChanged', "質問の選択肢が変わりました。もう一度選んでください");
 		}
+		const state = this.dependencies.session(token).state;
+		if (state?.agent === 'opencode') {
+			if (!state.sessionId || this.dependencies.terminal(instanceId, token) !== terminal) {
+				return localize('paradisAgentChat.errorQuestionGone', "この質問はもう回答を待っていません");
+			}
+			const answered = await this.dependencies.source.answerOpenCodeAgentQuestions?.(token, state.sessionId, group, answers).catch(() => false);
+			void this.dependencies.session(token).refresh();
+			return answered ? undefined : localize('paradisAgentChat.errorOpenCodeAnswer', "OpenCode へ回答を送れませんでした。接続を確かめてください");
+		}
 		// 選択肢が画面に出ていると確かめられない質問（選択肢が欠けて届いた・偽の hook 等）には打鍵しない。
 		const marker = paradisQuestionReadyMarker(questions[0]);
 		if (marker === undefined) {
@@ -209,6 +236,15 @@ export class ParadisAgentChatInput {
 		if (!(await this.interactionStillPending(token, 'approval', interactionId))) {
 			return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
 		}
+		const openCode = this.dependencies.session(token).state;
+		if (openCode?.agent === 'opencode') {
+			if (!openCode.sessionId || this.dependencies.terminal(instanceId, token) !== terminal) {
+				return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
+			}
+			const answered = await this.dependencies.source.answerOpenCodeAgentApproval?.(token, openCode.sessionId, interactionId, choiceId).catch(() => false);
+			void this.dependencies.session(token).refresh();
+			return answered ? undefined : localize('paradisAgentChat.errorOpenCodeAnswer', "OpenCode へ回答を送れませんでした。接続を確かめてください");
+		}
 		if (paradisIsCodexDaemonApprovalInteraction(interactionId) || choiceId === 'always') {
 			// Codex の app-server 経由の承認と、Claude Code の mod が待つ承認の「以後は確認しない」は、キーではなく
 			// 構造化された回答で返す（モバイルと同じ経路）。
@@ -224,6 +260,7 @@ export class ParadisAgentChatInput {
 		}
 		const state = this.dependencies.session(token).state;
 		const agent = state?.agent ?? 'claude';
+		if (agent === 'opencode') { return localize('paradisAgentChat.errorTerminalChanged', "送り先のターミナルが変わりました"); }
 		const interaction = state?.interaction;
 		// 許可の確認の画面が出ていて、しかもそれがこのカードの承認だと確かめてから打鍵する（出ていなければ
 		// `1`+Enter が入力欄へ流れ、エージェントへの発言として送られる。別の承認なら、見ていないものを確定する）。
