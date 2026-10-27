@@ -13,7 +13,7 @@ import type { AgentChatState } from '../../store.js';
  */
 
 /** 行の頭に出すロゴの種類。 */
-export type AgentLogoKind = 'claude' | 'codex' | 'agent' | 'terminal';
+export type AgentLogoKind = 'claude' | 'codex' | 'opencode' | 'agent' | 'terminal';
 
 /**
  * ロゴを決める。会話の写しがあればそのエージェント名、無ければターミナルの名前から推し量る
@@ -24,6 +24,9 @@ export function agentLogoKind(terminal: { readonly agent?: boolean; readonly tit
 		return 'terminal';
 	}
 	const source = (chatAgent ?? terminal.title ?? '').toLowerCase();
+	if (source.includes('opencode')) {
+		return 'opencode';
+	}
 	if (source.includes('claude')) {
 		return 'claude';
 	}

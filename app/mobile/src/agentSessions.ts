@@ -31,7 +31,7 @@ export const AGENT_RESUME_PROMPT_LIMIT = 20_000;
 /** 過去の会話 1 件（PC の `agentSessions` の 1 件）。 */
 export interface AgentPastSession {
 	readonly key: string;
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	readonly title: string;
 	readonly preview?: string;
 	readonly previewRole?: 'user' | 'assistant';
@@ -87,7 +87,7 @@ function parsePastSession(value: unknown): AgentPastSession | undefined {
 	const key = str(raw['key'], 64);
 	const title = str(raw['title'], 400);
 	const updatedAt = num(raw['updatedAt']);
-	if (key === undefined || !KEY_PATTERN.test(key) || (raw['agent'] !== 'claude' && raw['agent'] !== 'codex') || title === undefined || updatedAt === undefined) {
+	if (key === undefined || !KEY_PATTERN.test(key) || (raw['agent'] !== 'claude' && raw['agent'] !== 'codex' && raw['agent'] !== 'opencode') || title === undefined || updatedAt === undefined) {
 		return undefined;
 	}
 	const preview = str(raw['preview'], 600);

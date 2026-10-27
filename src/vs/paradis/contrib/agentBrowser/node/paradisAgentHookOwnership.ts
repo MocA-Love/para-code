@@ -30,6 +30,7 @@
 // 既知の所有者と同じtranscriptへのイベントだけを通す。ただし接続先のペイン（hook が pid を持たない）では、
 // 所有者の SessionEnd の後の SessionStart（/resume・/clear・起動し直し）にだけ所有者を移す（classifyWithoutIdentity）。
 
+import { paradisIsOpenCodeProgram } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { exec } from 'child_process';
 import { statSync } from 'fs';
 import { open } from 'fs/promises';
@@ -62,7 +63,7 @@ function defaultClaudeJobsReader(): Promise<readonly IParadisClaudeJob[]> {
 	return cachedClaudeJobsReader(paradisClaudeConfigDir());
 }
 
-export type ParadisHookAgentKind = 'claude' | 'codex';
+export type ParadisHookAgentKind = 'claude' | 'codex' | 'opencode';
 
 export type ParadisHookOrigin = 'owner' | 'nested' | 'invalid' | 'background';
 
@@ -109,6 +110,9 @@ interface IOwnerRecord {
 
 /** transcript_path からエージェント種別を判定する（mobileRelay 側の判定と同一規約）。 */
 export function paradisHookAgentKindForTranscript(transcriptPath: string): ParadisHookAgentKind {
+	if (/[\\/]opencode(?:-[\w.-]+)?\.db(?:#ses_[A-Za-z0-9_-]+)?$/.test(transcriptPath)) {
+		return 'opencode';
+	}
 	// アカウントを切り替えると ~/.codex-2 のような別ホームに書かれるので、その形も Codex とみなす。
 	if (/[\\/]\.codex(?:-[\w.]+)?[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
 		return 'codex';
@@ -212,6 +216,11 @@ function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined
 	if (basename === 'claude') {
 		return 'claude';
 	}
+	// OpenCode と、Para Code が覚えた OpenCode 互換 CLI（ブリッジに登録したときに名乗ったコマンド）。開発中のチェックアウトから
+	// `bun run …/<コマンド>.ts` で動かすことがあるので、TypeScript の拡張子はこれらにだけ外して見る
+	if (paradisIsOpenCodeProgram(basename.replace(/\.(ts|mts|cts)$/, ''))) {
+		return 'opencode';
+	}
 	if (basename === 'codex') {
 		return 'codex';
 	}
@@ -287,7 +296,7 @@ function launcherMatch(kind: ParadisHookAgentKind | undefined): IAgentCommandMat
  * ランチャーだけが起動役の形になる。
  */
 function runtimeScriptMatch(kind: ParadisHookAgentKind | undefined): IAgentCommandMatch | undefined {
-	return kind === 'claude' ? { kind, launcher: false } : launcherMatch(kind);
+	return kind !== undefined && kind !== 'codex' ? { kind, launcher: false } : launcherMatch(kind);
 }
 
 /** `command` の先頭のプログラムを解釈してエージェントを判定する。 */
@@ -427,6 +436,27 @@ function agentMatchOfTokens(command: string, tokens: readonly ICommandLineToken[
  */
 export function paradisHookAgentKindFromCommandLine(command: string): ParadisHookAgentKind | undefined {
 	return agentMatchOfCommand(command, 0)?.kind;
+}
+
+/**
+ * プロセスの起動行が、`program` そのもの（`program …`・`/path/program`）か、ランタイム（node・bun・deno）が実行する
+ * `program` のスクリプト（`bun run …/program.ts`）か。OpenCode 互換 CLI が名乗ったコマンド名を確かめるのに使う。
+ */
+export function paradisCommandLineRunsProgram(command: string, program: string): boolean {
+	const tokens = tokenizeCommandLine(command);
+	const nameOf = (token: ICommandLineToken) => normalizedBasename(token.value).replace(/\.(ts|mts|cts)$/, '');
+	if (tokens.length === 0) {
+		return false;
+	}
+	if (nameOf(tokens[0]) === program) {
+		return true;
+	}
+	if (!SCRIPT_RUNTIME_BASENAMES.has(normalizedBasename(tokens[0].value))) {
+		return false;
+	}
+	// ランタイムの後の、オプションでない最初の語（bun / deno の `run` は飛ばす）
+	const script = tokens.slice(1).find(token => !token.value.startsWith('-') && token.value !== 'run');
+	return script !== undefined && nameOf(script) === program;
 }
 
 // Claude Code の daemon の形（2.1.289 で実測）。`/fork` の分岐先と `claude --bg` の会話は、元のペインの
@@ -732,6 +762,8 @@ export interface IParadisHookRejectionDetail {
 export interface IParadisHookClassifyInput {
 	readonly token: string;
 	readonly hookPid: number | undefined;
+	/** Explicit identity for database-backed OpenCode conversations. */
+	readonly agentKind?: ParadisHookAgentKind;
 	readonly transcriptPath: string | undefined;
 	readonly at: number;
 	/** hook の会話 id（`claude attach <id>` の会話との照合に使う）。 */
@@ -844,6 +876,12 @@ export class ParadisAgentHookOwnership {
 		this.owners.delete(token);
 	}
 
+	/** 手元のプロセス表で、`pid` のプロセスが `program` を動かしているか（{@link paradisCommandLineRunsProgram}）。 */
+	async processRunsProgram(pid: number, program: string): Promise<boolean> {
+		const info = (await this.inspector.snapshot().catch(() => undefined))?.get(pid);
+		return info !== undefined && paradisCommandLineRunsProgram(info.command, program);
+	}
+
 	async classify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
 		try {
 			return await this.doClassify(input);
@@ -855,7 +893,7 @@ export class ParadisAgentHookOwnership {
 
 	private async doClassify(input: IParadisHookClassifyInput): Promise<IParadisHookClassification> {
 		const { token, hookPid, transcriptPath, at } = input;
-		const eventKind = transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined;
+		const eventKind = input.agentKind ?? (transcriptPath !== undefined ? paradisHookAgentKindForTranscript(transcriptPath) : undefined);
 		if (hookPid === undefined) {
 			return this.classifyWithoutIdentity(token, transcriptPath, at, eventKind, 'no-pid', undefined, input);
 		}
@@ -1136,7 +1174,7 @@ export class ParadisAgentHookOwnership {
 		if (owner.ended === true) {
 			return true;
 		}
-		return eventKind === 'codex' && owner.agentKind === 'codex'
+		return (eventKind === 'codex' || eventKind === 'opencode') && owner.agentKind === eventKind
 			&& hook.sessionSource !== undefined && CODEX_CONVERSATION_SWITCH_SOURCES.has(hook.sessionSource)
 			&& (owner.toolsInFlight?.length ?? 0) === 0;
 	}

@@ -24,6 +24,8 @@ import { TerminalCapability, type ICwdDetectionCapability } from '../../../../..
 import { PromptInputState } from '../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { TerminalCapabilityStore } from '../../../../../platform/terminal/common/capabilities/terminalCapabilityStore.js';
 import { GeneralShellType, ITerminalChildProcess, ITerminalProfile, PosixShellType, remoteResolverTerminal, TitleEventSource, type IShellLaunchConfig, type ITerminalBackend, type ITerminalProcessOptions } from '../../../../../platform/terminal/common/terminal.js';
+// PARA-PATCH: learned OpenCode-compatible commands for the title tests.
+import { paradisSetOpenCodeCompatibleCommands } from '../../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustRequestService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { Workspace } from '../../../../../platform/workspace/test/common/testWorkspace.js';
@@ -454,6 +456,37 @@ suite('Workbench - TerminalInstance', () => {
 				title: 'next-title',
 				titleSource: TitleEventSource.Sequence
 			});
+		});
+
+		// PARA-PATCH: OpenCode and the OpenCode-compatible CLIs Para Code has learned identify themselves through OSC titles.
+		test('should detect OpenCode and learned compatible OSC titles and release the agent when the parent shell returns', async () => {
+			const instance = await createTerminalInstance() as TerminalInstance;
+			const handleShellTypeChange = (shellType: GeneralShellType | PosixShellType | undefined) => (instance as unknown as Record<string, (value: GeneralShellType | PosixShellType | undefined) => void>)['_handleShellTypeChange'](shellType);
+			await instance.rename('');
+			await writeP(instance.xterm!.raw, '\x1b]0;opencode | Fix the parser\x07');
+			strictEqual(instance.shellType, GeneralShellType.Opencode);
+			handleShellTypeChange(GeneralShellType.Node);
+			strictEqual(instance.shellType, GeneralShellType.Opencode);
+			handleShellTypeChange(PosixShellType.Zsh);
+			strictEqual(instance.shellType, PosixShellType.Zsh);
+			paradisSetOpenCodeCompatibleCommands(['example-cli']);
+			try {
+				await writeP(instance.xterm!.raw, '\x1b]0;example-cli | Fix the parser\x07');
+				strictEqual(instance.shellType, GeneralShellType.Opencode);
+			} finally {
+				paradisSetOpenCodeCompatibleCommands([]);
+			}
+		});
+
+		test('should not detect OpenCode from an unrelated OSC title or an unlearned command', async () => {
+			const instance = await createTerminalInstance() as TerminalInstance;
+			await instance.rename('');
+			await writeP(instance.xterm!.raw, '\x1b]0;Review opencode notes\x07');
+			strictEqual(instance.shellType, undefined);
+			await writeP(instance.xterm!.raw, '\x1b]0;opencode-tools\x07');
+			strictEqual(instance.shellType, undefined);
+			await writeP(instance.xterm!.raw, '\x1b]0;example-cli | Fix the parser\x07');
+			strictEqual(instance.shellType, undefined);
 		});
 
 		test('should preserve agent shell type detected from sequence until the parent shell returns', async () => {
@@ -960,6 +993,20 @@ suite('Workbench - TerminalInstance', () => {
 			strictEqual(terminalLabelComputer.title, 'my-sequence');
 			strictEqual(terminalLabelComputer.description, 'cwd');
 		});
+		// PARA-PATCH: OpenCode follows OSC titles on preset terminals while preserving user overrides.
+		for (const scenario of [
+			{ name: 'prefer the OpenCode OSC title over a preset name', enabled: true, shellType: GeneralShellType.Opencode, staticTitle: undefined, expected: 'opencode | Fix the parser' },
+			{ name: 'keep the preset name when OpenCode titles are disabled', enabled: false, shellType: GeneralShellType.Opencode, staticTitle: undefined, expected: 'My Preset' },
+			{ name: 'keep a manual title when OpenCode is running', enabled: true, shellType: GeneralShellType.Opencode, staticTitle: 'Manual title', expected: 'Manual title' },
+			{ name: 'restore the preset name after OpenCode returns to the shell', enabled: true, shellType: PosixShellType.Zsh, staticTitle: undefined, expected: 'My Preset' },
+		]) {
+			test(`should ${scenario.name}`, () => {
+				const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: scenario.enabled } } } });
+				terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: scenario.shellType, sequence: 'opencode | Fix the parser', processName: 'opencode', staticTitle: scenario.staticTitle, shellLaunchConfig: { titleTemplate: 'My Preset' } }));
+				strictEqual(terminalLabelComputer.title, scenario.expected);
+			});
+		}
+
 		test('should use ${sequence} for agent CLI shell types', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: true } } } });
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: GeneralShellType.Copilot, sequence: 'Copilot Agent', processName: 'copilot' }));

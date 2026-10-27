@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { ParadisAgentQuestionAnswer } from '../common/paradisAgentQuestionKeys.js';
 import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
@@ -1554,6 +1555,24 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.agentChat.getDesktopChat(token, validCursor);
 	}
 
+	async sendOpenCodeAgentMessage(token: string, sessionId: string, text: string): Promise<boolean> {
+		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
+			&& typeof text === 'string' && text.trim().length > 0 && text.length <= 20_000
+			? this.agentChat.sendOpenCodeMessage(token, sessionId, text) : false;
+	}
+
+	async answerOpenCodeAgentApproval(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<boolean> {
+		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
+			&& typeof interactionId === 'string' && interactionId.length <= 500 && typeof choiceId === 'string'
+			? this.agentChat.answerOpenCodeApproval(token, sessionId, interactionId, choiceId) : false;
+	}
+
+	async answerOpenCodeAgentQuestions(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<boolean> {
+		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
+			&& typeof interactionId === 'string' && interactionId.length <= 500 && Array.isArray(answers) && answers.length <= 100
+			? this.agentChat.answerOpenCodeQuestions(token, sessionId, interactionId, answers) : false;
+	}
+
 	async getAgentChatFullText(token: string, epoch: string, rev: number): Promise<string | undefined> {
 		return paradisIsAgentChatToken(token) && typeof epoch === 'string' && Number.isSafeInteger(rev) ? this.agentChat.getDesktopChatFullText(token, epoch, rev) : undefined;
 	}
@@ -1753,7 +1772,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
-	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex' | 'opencode'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
 		// 本文には質問文の原文を入れ、`category: 'question'` を付けて出口へ渡す。種類の言葉・Markdown の除去・
 		// 伏せ字・長さの調整は出口（composeNotifyVariants）がまとめて行う（プッシュの 3800B に収まるまで削るのも出口）。
 		const body = info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS);
@@ -1983,7 +2002,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (resolution === undefined) {
 			return undefined;
 		}
-		const agent = pane?.agent ?? (record.agent === 'claude' || record.agent === 'codex' ? record.agent : undefined);
+		const agent = pane?.agent ?? (record.agent === 'claude' || record.agent === 'codex' || record.agent === 'opencode' ? record.agent : undefined);
 		const agentLabel = agent !== undefined ? paradisAgentLabel(agent) : undefined;
 		const title = typeof record.title === 'string' ? record.title : '';
 		// タブ名は PC の状態のターミナル名を正とする（renderer の通知は副題にターミナル名を入れてくるので、無ければそれ）。

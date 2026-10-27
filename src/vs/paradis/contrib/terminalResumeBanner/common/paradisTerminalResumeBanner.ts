@@ -12,11 +12,12 @@
 // Claude Code / Codex は終了してシェルに戻っている。そのタブで何の会話が動いていたかを、
 // ペイントークン（シェル統合の nonce。再起動をまたいで変わらない）ごとに控えておく。
 
+import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand, paradisOpenCodeTitleCommand } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { DeferredPromise, raceTimeout, timeout } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisCodexThreadIdFromTerminalTitle } from '../../codexTerminalTitle/common/paradisCodexTerminalTitle.js';
 
 const LEDGER_KEY_PATTERN = /^[0-9a-f]{40}$/;
@@ -35,6 +36,7 @@ export function paradisResumeLedgerKey(token: string): string {
 /** 1つのタブで最後に動いていた会話。 */
 export interface IParadisResumeLedgerEntry {
 	readonly agent: ParadisResumeAgent;
+	readonly cli?: ParadisResumeCli;
 	readonly sessionId: string;
 	/** 会話を始めたフォルダ（hook が報告したもの）。分岐のターミナルをここで開く。 */
 	readonly cwd?: string;
@@ -50,7 +52,7 @@ export const PARADIS_RESUME_LEDGER_MAX_ENTRIES = 200;
 export const PARADIS_RESUME_LEDGER_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
 function isAgent(value: unknown): value is ParadisResumeAgent {
-	return value === 'claude' || value === 'codex';
+	return value === 'claude' || value === 'codex' || value === 'opencode';
 }
 
 /** 保存した台帳を読む。壊れた行は捨て、期限切れと上限超えも落とす。 */
@@ -72,7 +74,7 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 		if (typeof item !== 'object' || item === null) {
 			continue;
 		}
-		const { token, agent, sessionId, cwd, title, at } = item as Record<string, unknown>;
+		const { token, agent, sessionId, cwd, title, at, cli } = item as Record<string, unknown>;
 		if (typeof token !== 'string' || token.length === 0 || token.length > 200
 			|| !isAgent(agent)
 			|| typeof sessionId !== 'string' || !PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)
@@ -82,6 +84,7 @@ export function paradisParseResumeLedger(raw: string | undefined, now: number): 
 		// 前の版はトークンをそのままキーにしていた。読んだ時点でハッシュへ置き換える。
 		result.set(LEDGER_KEY_PATTERN.test(token) ? token : paradisResumeLedgerKey(token), {
 			agent,
+			...(cli === PARADIS_OPENCODE_COMMAND || paradisIsOpenCodeCompatibleCommand(cli) ? { cli } : {}),
 			sessionId,
 			at,
 			...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}),
@@ -109,8 +112,8 @@ export function paradisSerializeResumeLedger(ledger: ReadonlyMap<string, IParadi
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', dangerouslyBypassPermissions?: boolean): string | undefined {
-	return paradisAgentResumeCommandLine(agent, sessionId, mode, { dangerouslyBypassPermissions });
+export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', dangerouslyBypassPermissions?: boolean, cli?: ParadisResumeCli): string | undefined {
+	return paradisAgentResumeCommandLine(agent, sessionId, mode, { dangerouslyBypassPermissions, cli });
 }
 
 /**
@@ -118,9 +121,12 @@ export function paradisResumeCommandLine(agent: ParadisResumeAgent, sessionId: s
  * 付けるので落とす。シェル名・エージェント名だけのもの、Codex のスレッド ID は名前として使わない。
  */
 export function paradisResumeTitleFromTab(title: string): string | undefined {
-	const trimmed = title.replace(/^[⠀-⣿✀-➿•·●*\s]+/u, '').trim();
+	const openCodeCommand = paradisOpenCodeTitleCommand(title);
+	const withoutCommand = openCodeCommand !== undefined ? title.replace(/^\s*[^\s|]+\s*\|?\s*/, '') : title;
+	const trimmed = withoutCommand.replace(/^[⠀-⣿✀-➿•·●*\s]+/u, '').trim();
 	if (trimmed.length === 0
-		|| /^(zsh|bash|fish|sh|pwsh|powershell|cmd|node|claude|claude code|codex)$/i.test(trimmed)
+		|| /^(zsh|bash|fish|sh|pwsh|powershell|cmd|node|claude|claude code|codex|opencode)$/i.test(trimmed)
+		|| paradisOpenCodeTitleCommand(trimmed) === trimmed.toLowerCase()
 		|| /^(?:codex \| )?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
 		return undefined;
 	}

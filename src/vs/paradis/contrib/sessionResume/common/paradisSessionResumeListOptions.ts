@@ -9,7 +9,7 @@
 // セッション履歴の一覧上部のツールバー（並び順・グループ・空を隠す）の設定と、その並べ替え・分け方。
 
 import { localize } from '../../../../nls.js';
-import { IParadisResumeSearchResult, IParadisResumeSession, paradisAgentResumeCommandLine } from './paradisSessionResume.js';
+import { IParadisResumeSearchResult, IParadisResumeSession, paradisAgentResumeCommandLine, paradisResumeAgentLabel } from './paradisSessionResume.js';
 
 export type ParadisResumeSortOrder = 'updated' | 'created' | 'title';
 export type ParadisResumeGrouping = 'space' | 'folder' | 'agent';
@@ -77,7 +77,7 @@ export function paradisGroupResumeSessions(sessions: readonly IParadisResumeSess
 		if (!group) {
 			group = grouping === 'folder'
 				? { title: folderName(session.cwd), tooltip: session.cwd, sessions: [] }
-				: { title: session.agent === 'claude' ? 'Claude Code' : 'Codex', sessions: [] };
+				: { title: paradisResumeAgentLabel(session.agent), sessions: [] };
 			groups.set(key, group);
 		}
 		group.sessions.push(session);
@@ -113,8 +113,8 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
  * 再開の部分は「ターミナルで再開」と同じ {@link paradisAgentResumeCommandLine}（確認ありの権限を明示する。付けないと
  * Claude Code は auto mode、Codex は 0.163.0 から会話を始めたときの権限になる）。ID が検証に通らなければ undefined。
  */
-export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd'>, windows: boolean): string | undefined {
-	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume');
+export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd' | 'cli'>, windows: boolean): string | undefined {
+	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume', { cli: session.cli });
 	if (resume === undefined) {
 		return undefined;
 	}

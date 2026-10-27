@@ -32,12 +32,14 @@ suite('ParadisAgentSessionStore', () => {
 			store.persist([
 				{ token: 'pane-1', agent: 'claude', transcriptPath: '/home/user/.claude/projects/p/s.jsonl', sessionId: 'session-1', savedAt: Date.now() },
 				{ token: 'pane-2', agent: 'codex', transcriptPath: '/home/user/.codex/sessions/r.jsonl', savedAt: Date.now() },
+				{ token: 'pane-3', agent: 'opencode', transcriptPath: '/data/opencode/opencode.db', sessionId: 'ses_example', savedAt: Date.now() },
 			]);
 			await store.flush();
 			const reloaded = await new ParadisAgentSessionStore(filePath, new NullLogService()).load();
 			assert.deepStrictEqual(reloaded.map(entry => [entry.token, entry.agent, entry.transcriptPath, entry.sessionId]), [
 				['pane-1', 'claude', '/home/user/.claude/projects/p/s.jsonl', 'session-1'],
 				['pane-2', 'codex', '/home/user/.codex/sessions/r.jsonl', undefined],
+				['pane-3', 'opencode', '/data/opencode/opencode.db', 'ses_example'],
 			]);
 		});
 	});

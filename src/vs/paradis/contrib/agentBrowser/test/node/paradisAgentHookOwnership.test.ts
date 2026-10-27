@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisSetOpenCodeCompatibleCommands } from '../../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisClaudeJob } from '../../node/paradisClaudeJobNames.js';
@@ -46,6 +47,33 @@ suite('ParadisAgentHookOwnership', () => {
 	function ownershipWith(tree: Map<number, IParadisHookProcessInfo>): ParadisAgentHookOwnership {
 		return new ParadisAgentHookOwnership({ snapshot: async () => tree });
 	}
+
+	test('recognizes opencode and learned OpenCode-compatible commands without matching arguments or lookalike executables', () => {
+		const commands = [
+			'example-cli --session ses_saved', '/usr/local/bin/opencode', 'bun run /project/packages/cli/example-cli.ts',
+			'node /usr/local/lib/node_modules/opencode-ai/bin/opencode', 'echo example-cli', 'example-cli-helper', 'bun run /project/tools/claude.ts',
+		];
+		paradisSetOpenCodeCompatibleCommands([]);
+		const before = commands.map(paradisHookAgentKindFromCommandLine);
+		paradisSetOpenCodeCompatibleCommands(['example-cli']);
+		try {
+			assert.deepStrictEqual({ before, learned: commands.map(paradisHookAgentKindFromCommandLine) }, {
+				before: [undefined, 'opencode', undefined, 'opencode', undefined, undefined, undefined],
+				learned: ['opencode', 'opencode', 'opencode', 'opencode', undefined, undefined, undefined],
+			});
+		} finally { paradisSetOpenCodeCompatibleCommands([]); }
+	});
+
+	test('keeps database-backed OpenCode sessions separate from nested agents and other sessions over SSH', async () => {
+		const tree = new Map([[100, proc(100, 1, 'zsh')], [200, proc(200, 100, 'opencode')], [210, proc(210, 200, 'opencode')]]);
+		const registry = ownershipWith(tree);
+		const first = { token: 'pane', hookPid: 200, transcriptPath: '/data/opencode.db#ses_one', agentKind: 'opencode' as const, sessionId: 'ses_one', at: 1, event: 'SessionStart' };
+		assert.strictEqual((await registry.classify(first)).origin, 'owner');
+		assert.strictEqual((await registry.classify({ ...first, hookPid: 210, transcriptPath: '/data/opencode.db#ses_child', sessionId: 'ses_child', at: 2 })).origin, 'nested');
+		const remote = ownershipWith(new Map());
+		assert.strictEqual((await remote.classify({ ...first, hookPid: undefined })).origin, 'owner');
+		assert.strictEqual((await remote.classify({ ...first, hookPid: undefined, transcriptPath: '/data/opencode.db#ses_other', sessionId: 'ses_other', event: 'Stop', at: 2 })).origin, 'invalid');
+	});
 
 	test('classifies the command line agent kind without matching path fragments', () => {
 		assert.deepStrictEqual([

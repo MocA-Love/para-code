@@ -15,6 +15,7 @@
 // （app/mobile/src/store.ts の AgentChatMessage 等）が知らない値を無視できるかを確かめること。
 
 import { Event } from '../../../../base/common/event.js';
+import type { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import type { IParadisAgentApprovalRequest, ParadisAgentApprovalSuggestionScope } from '../../mobileRelay/common/paradisAgentApprovalRequest.js';
 
 /** デスクトップのチャット表示（エディタエリアのターミナルタブを ⌘⇧J でチャットに切り替える）を使うか。 */
@@ -30,7 +31,7 @@ export interface IParadisAgentApprovalChoice {
 }
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
-export type ParadisAgentKind = 'claude' | 'codex';
+export type ParadisAgentKind = 'claude' | 'codex' | 'opencode';
 
 /** kind==='question' の選択肢1件。 */
 export interface IParadisAgentQuestionOption {
@@ -301,6 +302,8 @@ export interface IParadisAgentChatCursor {
 
 /** デスクトップのチャット表示が引く、1ペイン分の会話の写し。 */
 export interface IParadisAgentChatView {
+	/** Exact OpenCode identity for PC-side API controls; never included in mobile snapshots. */
+	readonly sessionId?: string;
 	readonly token: string;
 	readonly agent: ParadisAgentKind;
 	/** 会話の読み取りを始め直すたびに変わる識別子。変わったら手元の履歴は捨てる。 */
@@ -370,6 +373,10 @@ export interface IParadisAgentChatSource {
 	getAgentChatImage(token: string, epoch: string, rev: number, index: number): Promise<IParadisAgentChatImageData | undefined>;
 	/** そのペインのエージェントで使えるスラッシュコマンド。 */
 	getAgentChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]>;
+	/** Send once to an exact OpenCode session through its registered frontend, without PTY keys. */
+	sendOpenCodeAgentMessage?(token: string, sessionId: string, text: string): Promise<boolean>;
+	answerOpenCodeAgentQuestions?(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<boolean>;
+	answerOpenCodeAgentApproval?(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<boolean>;
 	/**
 	 * Codex の app-server 経由の承認（id が `codex:` で始まるもの）に答える。キーを打つ承認は
 	 * 画面側が TUI へ打鍵するので、ここは通らない。答えられたら true。

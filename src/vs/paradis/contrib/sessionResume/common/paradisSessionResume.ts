@@ -6,12 +6,19 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
-export type ParadisResumeAgent = 'claude' | 'codex';
+export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode';
+/** The command that resumes an OpenCode session: `opencode`, or the command of a bridge-capable OpenCode-compatible CLI. */
+export type ParadisResumeCli = string;
+
+export function paradisResumeAgentLabel(agent: ParadisResumeAgent): string {
+	return agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : 'OpenCode';
+}
 
 /**
  * transcript を探す対象の空間。
@@ -46,6 +53,9 @@ export interface IParadisResumeSession {
 	readonly catalogId: string;
 	readonly id: string;
 	readonly agent: ParadisResumeAgent;
+	readonly cli?: ParadisResumeCli;
+	/** The display name an OpenCode-compatible CLI declared (shown next to “OpenCode”). */
+	readonly cliLabel?: string;
 	readonly title: string;
 	readonly preview: string;
 	readonly latestMessage?: IParadisResumeLatestMessage;
@@ -108,9 +118,16 @@ export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean }): string | undefined {
+export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli }): string | undefined {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
 		return undefined;
+	}
+	if (agent === 'opencode') {
+		// Neither OpenCode CLI exposes the other agents' bypass flags.
+		if (options?.dangerouslyBypassPermissions === true) { return undefined; }
+		const cli = options?.cli ?? PARADIS_OPENCODE_COMMAND;
+		if (cli !== PARADIS_OPENCODE_COMMAND && !paradisIsOpenCodeCompatibleCommand(cli)) { return undefined; }
+		return `${cli} --session ${sessionId}${mode === 'fork' ? ' --fork' : ''}`;
 	}
 	const bypass = options?.dangerouslyBypassPermissions === true;
 	if (agent === 'claude') {

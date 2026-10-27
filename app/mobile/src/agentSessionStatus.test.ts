@@ -42,12 +42,14 @@ describe('agentSessionStatus', () => {
 			parseAgentSessionStatus({ ...claude, cache: { ...claude.cache, partial: true }, extra: 1 }),
 			parseAgentSessionStatus({ agent: 'codex', cache: { requests: 3, hits: 1, misses: 0, expected: 1, cold: 1, hitRatio: 2 }, context: { window: 272_000, percent: 31.4 } }),
 			parseAgentSessionStatus({ agent: 'claude', cache: { requests: 'x' }, context: { window: 0, percent: 3 } }),
+			parseAgentSessionStatus({ agent: 'opencode' }),
 			parseAgentSessionStatus({ agent: 'gemini' }),
 			parseAgentSessionStatus(undefined),
 		]).toEqual([
 			{ ...claude, cache: { ...claude.cache, partial: true } },
 			{ agent: 'codex', cache: { requests: 3, hits: 1, misses: 0, expected: 1, cold: 1 }, context: { window: 272_000, percent: 31, source: 'transcript' } },
 			{ agent: 'claude' },
+			{ agent: 'opencode' },
 			undefined,
 			undefined,
 		]);

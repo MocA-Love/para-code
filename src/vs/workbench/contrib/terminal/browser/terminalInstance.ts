@@ -49,6 +49,8 @@ import { TerminalCapabilityStoreMultiplexer } from '../../../../platform/termina
 import { IEnvironmentVariableCollection, IMergedEnvironmentVariableCollection } from '../../../../platform/terminal/common/environmentVariable.js';
 import { deserializeEnvironmentVariableCollections } from '../../../../platform/terminal/common/environmentVariableShared.js';
 import { GeneralShellType, IProcessDataEvent, IProcessPropertyMap, IReconnectionProperties, IShellLaunchConfig, ITerminalDimensionsOverride, ITerminalLaunchError, ITerminalLogService, PosixShellType, ProcessPropertyType, remoteResolverTerminal, ShellIntegrationStatus, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalSettingId, TerminalShellType, TitleEventSource, WindowsShellType, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
+// PARA-PATCH: OpenCode-compatible CLI title matching (fork-owned helper).
+import { paradisOpenCodeTitlePattern } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { formatMessageForTerminal } from '../../../../platform/terminal/common/terminalStrings.js';
 import { editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { getIconRegistry } from '../../../../platform/theme/common/iconRegistry.js';
@@ -136,7 +138,10 @@ const shellIntegrationSupportedShellTypes: (PosixShellType | GeneralShellType | 
 /**
  * Patterns for detecting agent CLIs from the OSC title they emit.
  */
-const agentCliTitlePatterns: ReadonlyMap<GeneralShellType, RegExp> = new Map([
+// PARA-PATCH: the OpenCode entry is a matcher that also knows the OpenCode-compatible commands Para Code has learned.
+const agentCliTitlePatterns: ReadonlyMap<GeneralShellType, { test(title: string): boolean }> = new Map([
+	// PARA-PATCH: detect OpenCode from its OSC title (`opencode | <title>`, or a learned compatible command).
+	[GeneralShellType.Opencode, paradisOpenCodeTitlePattern],
 	[GeneralShellType.Claude, /claude\s*code/i],
 	// PARA-PATCH: Detect Codex when Para Code supplies an OSC title for the terminal.
 	// Upstream keeps this commented out because codex does not report an osc title on its own.
@@ -2861,6 +2866,8 @@ export class TerminalLabelComputer extends Disposable {
 	 * than the configured template or a static profile name.
 	 */
 	static readonly agentCliShellTypes: ReadonlySet<GeneralShellType> = new Set([
+		// PARA-PATCH: allow OpenCode OSC titles to override command preset names.
+		GeneralShellType.Opencode,
 		GeneralShellType.Claude,
 		GeneralShellType.Codex,
 		GeneralShellType.CommandCode,

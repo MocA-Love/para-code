@@ -13,7 +13,7 @@ import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 import { Limiter } from '../../../../base/common/async.js';
-import { basename, isAbsolute, join, resolve } from '../../../../base/common/path.js';
+import { basename, dirname, isAbsolute, join, resolve } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
@@ -24,6 +24,7 @@ import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrow
 import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, readOpenCodeMessages } from './paradisOpenCodeHistory.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
 	paradisIsCodexRootSource as isCodexRootSource,
@@ -309,6 +310,7 @@ export class ParadisSessionResumeService {
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
 	private readonly resolveAgentHomes: typeof paradisResolveAgentHomes;
+	private readonly openCodeDatabases: () => Promise<readonly IParadisOpenCodeDatabase[]>;
 	private readonly readBoundedFile: typeof readBoundedFile;
 	private readonly beforeSummaryRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
@@ -316,6 +318,7 @@ export class ParadisSessionResumeService {
 	constructor(
 		dependencies: {
 			readonly resolveAgentHomes?: typeof paradisResolveAgentHomes;
+			readonly openCodeDatabases?: () => Promise<readonly IParadisOpenCodeDatabase[]>;
 			readonly readBoundedFile?: typeof readBoundedFile;
 			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
 			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
@@ -324,6 +327,7 @@ export class ParadisSessionResumeService {
 		@ILogService private readonly logService: ILogService,
 	) {
 		this.resolveAgentHomes = dependencies?.resolveAgentHomes ?? paradisResolveAgentHomes;
+		this.openCodeDatabases = dependencies?.openCodeDatabases ?? (() => paradisOpenCodeDatabasePaths());
 		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
@@ -387,6 +391,32 @@ export class ParadisSessionResumeService {
 
 	private async collectList(request: INormalizedParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
 		const sessions: IParadisResumeSession[] = [];
+		// 同じ会話が複数の DB に写っていることがある（互換 CLI が本家の DB から写したものなど）。session id で 1 件にまとめ、
+		// 後から更新された方を採る。同じなら先に挙げた DB（覚えた互換 CLI の DB が先）を採る
+		const openCodeSessions = new Map<string, { readonly database: IParadisOpenCodeDatabase; readonly saved: IParadisOpenCodeSession }>();
+		for (const database of await this.openCodeDatabases()) {
+			try {
+				for (const saved of await listOpenCodeSessions(database.path, request.spaces.map(space => space.cwd), request.includeArchived, undefined, database.cli)) {
+					const previous = openCodeSessions.get(saved.id);
+					if (previous === undefined || saved.updatedAt > previous.saved.updatedAt) {
+						openCodeSessions.set(saved.id, { database, saved });
+					}
+				}
+			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
+		}
+		for (const { database, saved } of openCodeSessions.values()) {
+			const dbPath = database.path;
+			try {
+				const space = request.spaces.find(space => normalizePath(space.cwd) === normalizePath(saved.cwd));
+				if (!space) { continue; }
+				const messages = await readOpenCodeMessages(dbPath, saved.id, 2);
+				const latest = [...messages].reverse().find(message => message.kind === 'message');
+				this.addSession({ id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
+					preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
+					currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
+				}, dbPath, dirname(dbPath), sessions);
+			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
+		}
 		const homesSeen = new Set<string>();
 		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
@@ -470,8 +500,13 @@ export class ParadisSessionResumeService {
 		if (cached?.revision === revision) {
 			return cached.promise ?? Promise.resolve(cached.message);
 		}
-		const promise = readFileTail(entry.transcriptPath, entry.allowedRoot, LAST_MESSAGE_TAIL_BYTES, this.beforeSummaryRead)
-			.then(tail => extractLatestMessage(tail, entry.session.agent) ?? null)
+		const promise = (entry.session.agent === 'opencode'
+			? readOpenCodeMessages(entry.transcriptPath, entry.session.id, 2).then(messages => {
+				const message = [...messages].reverse().find(message => message.kind === 'message');
+				return message ? { role: message.role, text: clipped(message.text, LAST_MESSAGE_CHARS) } : null;
+			})
+			: readFileTail(entry.transcriptPath, entry.allowedRoot, LAST_MESSAGE_TAIL_BYTES, this.beforeSummaryRead)
+			.then(tail => extractLatestMessage(tail, entry.session.agent) ?? null))
 			.then(message => {
 				this.rememberLatestMessage(catalogId, revision, message);
 				return message;
@@ -503,6 +538,10 @@ export class ParadisSessionResumeService {
 			throw new Error('Session is no longer available.');
 		}
 		entry.touchedAt = Date.now();
+		if (entry.session.agent === 'opencode') {
+			const messages = await readOpenCodeMessages(entry.transcriptPath, entry.session.id, 2000, 'asc');
+			return { transcriptPath: entry.transcriptPath, firstPrompt: messages.find(message => message.role === 'user' && message.kind === 'message')?.text };
+		}
 		const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 		let firstPrompt: string | undefined;
 		for (const line of data.text.split('\n')) {
@@ -521,14 +560,14 @@ export class ParadisSessionResumeService {
 			throw new Error('Session is no longer available.');
 		}
 		entry.touchedAt = Date.now();
-		const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
-		const messages: IParadisResumeMessage[] = [];
-		for (const line of data.text.split('\n')) {
-			const message = parseLine(line, entry.session.agent);
-			if (message) {
-				messages.push(message);
-			}
-		}
+		const data = entry.session.agent === 'opencode' ? { text: '', truncated: false }
+			: await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
+		const messages: IParadisResumeMessage[] = entry.session.agent === 'opencode'
+			? (await readOpenCodeMessages(entry.transcriptPath, entry.session.id, 2000)).filter(message => message.kind === 'message').map(message => ({ role: message.role, text: message.text, timestamp: message.ts }))
+			: data.text.split('\n').flatMap(line => {
+				const message = parseLine(line, entry.session.agent);
+				return message ? [message] : [];
+			});
 		const terms = rawQuery?.trim().toLocaleLowerCase().slice(0, 200).split(/\s+/).filter(Boolean) ?? [];
 		let visible: readonly IParadisResumeMessage[];
 		if (terms.length === 0) {
@@ -621,6 +660,9 @@ export class ParadisSessionResumeService {
 			if (cachedAfterWait !== undefined) {
 				return cachedAfterWait;
 			}
+			if (entry.session.agent === 'opencode') {
+				return (await readOpenCodeMessages(entry.transcriptPath, entry.session.id, 2000)).map(message => message.text).join('\n').slice(-MAX_SEARCH_TEXT_CHARS);
+			}
 			const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 			const parts: string[] = [];
 			for (const line of data.text.split('\n')) {
@@ -657,7 +699,7 @@ export class ParadisSessionResumeService {
 		if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(session.id) || !isAbsolute(transcriptPath) || !pathInside(allowedRoot, transcriptPath)) {
 			return;
 		}
-		const catalogId = paradisSessionCatalogId(session.agent, transcriptPath);
+		const catalogId = paradisSessionCatalogId(session.agent, session.agent === 'opencode' ? `${transcriptPath}#${session.id}` : transcriptPath);
 		const complete: IParadisResumeSession = { ...session, catalogId };
 		const previous = this.catalog.get(catalogId);
 		if (previous?.session.updatedAt !== complete.updatedAt) {

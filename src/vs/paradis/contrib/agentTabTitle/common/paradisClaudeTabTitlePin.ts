@@ -27,7 +27,7 @@ import { GeneralShellType, PosixShellType, TerminalShellType, WindowsShellType }
 
 /** ペインで動いている会話（状態のスナップショットの `paneSessions` の1件）のうち、判断に使うもの。 */
 export interface IParadisTitlePinSession {
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	readonly sessionId: string;
 	/** 最後に hook を受けた時刻 (epoch ms)。 */
 	readonly at: number;
