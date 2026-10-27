@@ -125,6 +125,17 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		for (const session of snapshot.paneSessions ?? []) {
 			const instance = this.findInstanceByToken(session.token);
 			const key = paradisResumeLedgerKey(session.token);
+			// 再開できない会話（確かめられなかった OpenCode 互換 CLI）は案内しない。そのタブの前の会話も、もう最後の会話ではない
+			if (session.resumable === false) {
+				if (this._ledger.delete(key)) {
+					this._dirtyTokens.add(key);
+					this._persistScheduler.schedule();
+				}
+				if (instance !== undefined) {
+					this.withdrawOffer(instance.instanceId);
+				}
+				continue;
+			}
 			const previous = this._ledger.get(key);
 			const title = (instance === undefined ? undefined : paradisResumeTitleFromTab(instance.title))
 				?? (previous?.sessionId === session.sessionId ? previous.title : undefined);

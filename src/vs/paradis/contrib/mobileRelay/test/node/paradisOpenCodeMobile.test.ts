@@ -206,6 +206,45 @@ suite('Paradis OpenCode mobile', () => {
 		}
 	});
 
+	test('waits for a reply to stop growing even when Para Code restarted mid-turn and never saw the turn start', async () => {
+		const sandbox = sinon.createSandbox();
+		sandbox.stub(paradisOpenCodeBridge, 'hasSession').callsFake((token, sid) => token === 'pane-a' && sid === 'ses_alpha');
+		sandbox.stub(paradisOpenCodeBridge, 'databasePath').returns('/registered/opencode.db');
+		let reply: string | undefined;
+		sandbox.stub(paradisOpenCodeBridge, 'readMessages').callsFake(async () => [
+			{ id: 'msg_user', role: 'user', kind: 'message', text: 'Start' },
+			...(reply !== undefined ? [{ id: 'msg_reply', role: 'assistant' as const, kind: 'message' as const, text: reply }] : []),
+		]);
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat((_mobile, bytes) => sent.push(JSON.parse(new TextDecoder().decode(bytes))), () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { epoch: string; messages: readonly { text: string }[] }> };
+		try {
+			chat.setEagerTailing(true);
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-a' }]);
+			fireParadisAgentHookEvent({ token: 'pane-a', sessionId: 'ses_alpha', transcriptPath: '/untrusted/payload.db', cwd: '/workspace', event: 'SessionStart', at: Date.now(), payload: { agent_kind: 'opencode' } });
+			await waitFor(() => access.tailers.size === 1);
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token: 'pane-a' })));
+			await waitFor(() => sent.some(frame => frame.t === 'snapshot'));
+			const tailer = access.tailers.get('pane-a')!;
+			clearInterval(Reflect.get(tailer, 'pollTimer') as ReturnType<typeof setInterval>);
+			const poll = () => (Reflect.get(tailer, 'readOpenCodeHistory') as (emit: boolean) => Promise<void>).call(tailer, true);
+			const epoch = tailer.epoch;
+			// No UserPromptSubmit was seen: only the reply's own changes tell that it is still growing
+			for (const next of ['Hel', 'Hello', 'Hello world', 'Hello world']) {
+				reply = next;
+				await poll();
+			}
+			assert.deepStrictEqual({
+				epochKept: tailer.epoch === epoch, snapshots: sent.filter(frame => frame.t === 'snapshot').length,
+				deltas: sent.filter(frame => frame.t === 'delta').flatMap(frame => (frame.messages as { text: string }[]).map(message => message.text)),
+				history: tailer.messages.map(message => message.text),
+			}, { epochKept: true, snapshots: 1, deltas: ['Hello world'], history: ['Start', 'Hello world'] });
+		} finally {
+			chat.dispose();
+			sandbox.restore();
+		}
+	});
+
 	test('lets a failed answer be retried and keeps a growing reply out of the history until it settles', async () => {
 		const sandbox = sinon.createSandbox();
 		sandbox.stub(paradisOpenCodeBridge, 'hasSession').callsFake((token, sid) => token === 'pane-a' && sid === 'ses_alpha');

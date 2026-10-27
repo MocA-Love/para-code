@@ -74,7 +74,7 @@ import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claud
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
-import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
@@ -2131,6 +2131,8 @@ class TranscriptTailer {
 	private openCodePollPending = false;
 	/** 送り済みの発言（鍵と中身の指紋）。frontend の返す範囲は動くので、位置ではなく鍵で突き合わせる。 */
 	private openCodeCommitted: { readonly key: string; readonly fingerprint: string }[] = [];
+	/** 前回読んだときの最後の発言（鍵と指紋）。ターンの始まりを見ていなくても、伸びている途中の発言を確定させないため。 */
+	private openCodeTrailing: string | undefined;
 	private async readOpenCodeHistory(emit: boolean): Promise<void> {
 		if (this.openCodeSessionId === undefined || this.openCodeToken === undefined) { return; }
 		this.openCodePollPending = true;
@@ -2158,13 +2160,19 @@ class TranscriptTailer {
 				push(row.id, { role: row.role, kind: row.kind === 'thinking' ? 'thinking' : 'text', text: truncateText(row.text, TEXT_LIMIT), ...time }, true);
 			}
 		}
-		// 確定するのは先頭から続く「もう変わらない」発言だけ。ターンの途中では、最後のエージェントの発言は伸びるかもしれないので待つ
-		// （ターンが終わるか、後ろに次の発言が来たら確定する）。動いているツールより後ろも、順を崩さないよう待つ
+		// 確定するのは先頭から続く「もう変わらない」発言だけ。最後のエージェントの発言は伸びるかもしれないので、ターンの途中か、
+		// 前回読んだときから変わっている間は待つ（ターンが終わるか、1 回の読み取りの間変わらないか、後ろに次の発言が来たら確定する。
+		// ターンの途中で Para Code が起き直して UserPromptSubmit を見ていなくても、伸びている間は確定しない）。動いているツールより
+		// 後ろも、順を崩さないよう待つ
+		const trailingEntry = entries.at(-1);
+		const trailingMark = trailingEntry !== undefined ? `${trailingEntry.key}\0${trailingEntry.fingerprint}` : undefined;
+		const trailingChanged = trailingMark !== this.openCodeTrailing;
+		this.openCodeTrailing = trailingMark;
 		let settledCount = 0;
 		while (settledCount < entries.length) {
 			const entry = entries[settledCount];
 			const last = settledCount === entries.length - 1;
-			if (!entry.final || (turnActive && last && entry.message.role === 'assistant')) {
+			if (!entry.final || ((turnActive || trailingChanged) && last && entry.message.role === 'assistant')) {
 				break;
 			}
 			settledCount++;
@@ -3687,6 +3695,8 @@ interface IPaneSessionInfo {
 	 * ものと区別するために持つ。引き継ぎ分は、動いている証拠が付くまで外へ出さない。
 	 */
 	readonly restoredFromDisk?: boolean;
+	/** 再開できない会話（確かめられなかった OpenCode 互換 CLI）。モバイルへ再開の宛先（resumeKey）を渡さない。 */
+	readonly resumable?: false;
 }
 
 interface ICommandCatalogContext {
@@ -8591,7 +8601,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** Desktop and resume operations share the same session and owner checks as mobile controls. */
-	private async performOpenCodeDesktopAction(token: string, sessionId: string, perform: () => Promise<ParadisOpenCodeActionOutcome>, interaction?: IParadisAgentInteraction): Promise<boolean> {
+	private async performOpenCodeDesktopAction(token: string, sessionId: string, perform: () => Promise<ParadisOpenCodeActionOutcome>, interaction?: IParadisAgentInteraction): Promise<ParadisOpenCodeDesktopActionResult> {
 		const session = this.paneSessions.get(token);
 		const terminalId = this.terminalIdForToken(token);
 		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
@@ -8618,7 +8628,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const accepted = outcome === 'accepted';
 		if (accepted && interaction?.kind === 'approval') { tailer?.clearApprovalRequest(interaction.id, false); }
 		if (accepted && interaction?.kind === 'question') { tailer?.clearPendingQuestions(interaction.id); }
-		return accepted;
+		return outcome === 'unknown' ? 'unconfirmed' : accepted;
 	}
 
 	/** 再開した OpenCode の会話が登録され、入力を待っているか（会話の中身は読まない）。 */
@@ -8632,17 +8642,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		return !this.desktopExitedTokens.has(token) && tailer.currentInteraction() === null ? 'ready' : 'pending';
 	}
 
-	async sendOpenCodeMessage(token: string, sessionId: string, text: string): Promise<boolean> {
+	async sendOpenCodeMessage(token: string, sessionId: string, text: string): Promise<ParadisOpenCodeDesktopActionResult> {
 		return this.performOpenCodeDesktopAction(token, sessionId, () => paradisOpenCodeBridge.sendMessage(token, sessionId, text));
 	}
 
-	async answerOpenCodeApproval(token: string, sessionId: string, interactionId: string, choice: string): Promise<boolean> {
+	async answerOpenCodeApproval(token: string, sessionId: string, interactionId: string, choice: string): Promise<ParadisOpenCodeDesktopActionResult> {
 		const response = choice === 'yes' ? 'once' : choice === 'always' ? 'always' : choice === 'no' ? 'reject' : undefined;
 		if (response === undefined || !interactionId.startsWith('opencode:')) { return false; }
 		return this.performOpenCodeDesktopAction(token, sessionId, () => paradisOpenCodeBridge.answerPermission(token, sessionId, interactionId.slice('opencode:'.length), response), { kind: 'approval', id: interactionId });
 	}
 
-	async answerOpenCodeQuestions(token: string, sessionId: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
+	async answerOpenCodeQuestions(token: string, sessionId: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<ParadisOpenCodeDesktopActionResult> {
 		const questions = this.tailers.get(token)?.pendingQuestionMessages(interactionId) ?? [];
 		if (!interactionId.startsWith('opencode:') || questions.length !== answers.length || answers.length === 0
 			|| !answers.every(isValidAgentQuestionAnswer) || !answers.every((answer, index) => paradisQuestionAnswerFits(questions[index], answer) && answer.kind !== 'notes' && answer.notes === undefined)) { return false; }
@@ -8737,11 +8747,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.recordDesktopInteraction(event);
 		this.rememberAgentEvidence(event.token);
 		const previous = this.paneSessions.get(event.token);
-		if (previous?.agent !== 'opencode' || previous.sessionId !== sessionId || previous.transcriptPath !== transcriptPath) {
+		if (previous?.agent !== 'opencode' || previous.sessionId !== sessionId || previous.transcriptPath !== transcriptPath || (event.resumable === false) !== (previous.resumable === false)) {
 			this.disposeTailer(event.token);
 			this.clearLiveState(event.token);
 			this.activityTrackers.delete(event.token);
-			const session: IPaneSessionInfo = { token: event.token, agent: 'opencode', transcriptPath, sessionId };
+			const session: IPaneSessionInfo = { token: event.token, agent: 'opencode', transcriptPath, sessionId, ...(event.resumable === false ? { resumable: false as const } : {}) };
 			this.paneSessions.set(event.token, session);
 			this.retiredSessions.delete(event.token);
 			this.persistSessions();
@@ -9630,7 +9640,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const model = tailer.model;
 		const effort = tailer.effort;
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
-		const sessionId = this.paneSessions.get(token)?.sessionId;
+		const paneSession = this.paneSessions.get(token);
+		const sessionId = paneSession?.resumable === false ? undefined : paneSession?.sessionId;
 		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
 		// 走っている Codex へ設定を渡す口が無いので、Codex のモデルはモバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない

@@ -362,15 +362,18 @@ suite('ParadisAgentBrowser authority integration', () => {
 		try {
 			const impostor = await fixture.start({ cli_command: 'other-cli' });
 			const afterImpostor = paradisOpenCodeCliRegistry.commands();
+			// An unverified compatible CLI's conversation is never resumed with `opencode --session` (which would create an empty one)
+			const impostorSession = Reflect.get(fixture.service, '_paneSessions').get('opencode-test');
 			assert.strictEqual((await fixture.start()).statusCode, 200);
 			const snapshot = await fixture.service.listAgentStatusSnapshot(fixture.connection);
 			assert.deepStrictEqual({
 				impostor: [impostor.statusCode, JSON.parse(impostor.body).ok], afterImpostor,
+				impostorSession: [impostorSession?.cli, impostorSession?.resumable],
 				learned: paradisOpenCodeCliRegistry.list().map(cli => [cli.command, cli.executable, cli.label, cli.databases]),
 				session: Reflect.get(fixture.service, '_paneSessions').get('opencode-test')?.cli,
 				published: snapshot.openCodeCommands,
 			}, {
-				impostor: [200, false], afterImpostor: [],
+				impostor: [200, false], afterImpostor: [], impostorSession: [undefined, false],
 				learned: [['example-cli', '/opt/example/bin/example-cli', 'Example CLI', []]],
 				session: '/opt/example/bin/example-cli',
 				published: ['example-cli'],

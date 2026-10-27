@@ -86,7 +86,7 @@ import { paradisClassifyRevokeResponse, paradisEnqueueRevoke, paradisRevokeRetri
 import { ParadisPairingOfferSlot } from '../common/paradisMobilePairingOffer.js';
 import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInsightSource } from '../../agentInsights/common/paradisAgentInsights.js';
-import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView, ParadisOpenCodeDesktopActionResult } from '../../agentChat/common/paradisAgentChat.js';
 import {
 	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
@@ -1555,7 +1555,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.agentChat.getDesktopChat(token, validCursor);
 	}
 
-	async sendOpenCodeAgentMessage(token: string, sessionId: string, text: string): Promise<boolean> {
+	async sendOpenCodeAgentMessage(token: string, sessionId: string, text: string): Promise<ParadisOpenCodeDesktopActionResult> {
 		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
 			&& typeof text === 'string' && text.trim().length > 0 && text.length <= 20_000
 			? this.agentChat.sendOpenCodeMessage(token, sessionId, text) : false;
@@ -1565,13 +1565,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return paradisIsAgentChatToken(token) && typeof resumeKey === 'string' && resumeKey.length <= 64 ? this.agentChat.openCodeReadiness(token, resumeKey) : 'unregistered';
 	}
 
-	async answerOpenCodeAgentApproval(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<boolean> {
+	async answerOpenCodeAgentApproval(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<ParadisOpenCodeDesktopActionResult> {
 		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
 			&& typeof interactionId === 'string' && interactionId.length <= 500 && typeof choiceId === 'string'
 			? this.agentChat.answerOpenCodeApproval(token, sessionId, interactionId, choiceId) : false;
 	}
 
-	async answerOpenCodeAgentQuestions(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<boolean> {
+	async answerOpenCodeAgentQuestions(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<ParadisOpenCodeDesktopActionResult> {
 		return paradisIsAgentChatToken(token) && typeof sessionId === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sessionId)
 			&& typeof interactionId === 'string' && interactionId.length <= 500 && Array.isArray(answers) && answers.length <= 100
 			? this.agentChat.answerOpenCodeQuestions(token, sessionId, interactionId, answers) : false;

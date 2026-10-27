@@ -753,9 +753,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _unconfirmedReleaseTokens = new Set<string>();
 	/** 印が付いたまま、hook の接続元を確かめられなかったペイン（tmux・WSL など）。IDE 操作ツールの Enter は利用者に任せる。 */
 	private readonly _unconfirmableTokens = new Set<string>();
-	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
 	/** プロセスの実行ファイルの実体（テストは差し替える）。 */
 	private readonly _resolveProcessExecutable: (pid: number) => Promise<string | undefined> = paradisResolveProcessExecutable;
+	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
@@ -2128,7 +2128,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * hook から、そのペインで動いている会話を控える（`_paneSessions`）。
 	 * @param remote 接続先から届いた hook か（`host=` 付き、または接続先のペイン）。
 	 */
-	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string): void {
+	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string | null): void {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
 			return;
@@ -2147,7 +2147,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
 		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
-		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? { cli: cli ?? previous?.cli ?? 'opencode' } : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
+		// OpenCode の会話は、再開するもの（`opencode` か覚えた互換 CLI）が決まらなければ（null）再開できない会話として載せる
+		const resumeCli = agent !== 'opencode' ? undefined : cli === null ? null : cli ?? (previous?.sessionId === sessionId && previous.resumable === false ? null : previous?.cli ?? PARADIS_OPENCODE_COMMAND);
+		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
 	}
 
 	/**
@@ -4126,15 +4128,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		return paradisClaudeConfigDir();
 	}
 
-	/**
-	 * 手元の Claude Code の `claude --version` の出力（確かめられなければ undefined）。renderer の mod の準備が、入力欄の mod を
-	 * 読ませてよい版かを決めるのに使う。5 分は前の結果を返す（失敗した結果は使い回さない）。
-	 */
 	/** 覚えた OpenCode 互換 CLI（コマンド名・実行ファイル・DB の場所）を全部忘れる。 */
 	async forgetOpenCodeCompatibleClis(): Promise<void> {
 		await paradisOpenCodeCliRegistry.forgetAll();
 	}
 
+	/**
+	 * 手元の Claude Code の `claude --version` の出力（確かめられなければ undefined）。renderer の mod の準備が、入力欄の mod を
+	 * 読ませてよい版かを決めるのに使う。5 分は前の結果を返す（失敗した結果は使い回さない）。
+	 */
 	async getClaudeVersion(): Promise<string | undefined> {
 		const now = Date.now();
 		if (this._claudeVersion === undefined || now - this._claudeVersion.at > 5 * 60_000) {
@@ -4453,9 +4455,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			// ブリッジ対応の OpenCode 互換 CLI は、自分のコマンド名（再開に使う）と表示名を名乗る。`cli` は名乗りの古い形
 			const declaredCli = stringField('cli_command') ?? stringField('cli');
 			const cli = paradisIsOpenCodeCompatibleCommand(declaredCli) ? declaredCli : PARADIS_OPENCODE_COMMAND;
-			// 再開に使うのは、確かめて覚えた実行ファイルの絶対パスだけ（確かめられない名乗りは `opencode` で再開する）。SessionStart で
-			// 確かめる前に決めるので、下で覚えた後に読み直す
-			const resumeCli = () => paradisOpenCodeCliRegistry.executableOf(cli) ?? PARADIS_OPENCODE_COMMAND;
+			// 再開に使うのは、`opencode` か、確かめて覚えた実行ファイルの絶対パスだけ。確かめられない互換 CLI の名乗りは undefined
+			// （再開できない会話として扱う。本家の `opencode --session <id>` は、その会話が無いと空の会話を黙って作るので代わりに使わない）。
+			// SessionStart で確かめる前に決めるので、下で覚えた後に読み直す
+			const resumeCli = () => cli === PARADIS_OPENCODE_COMMAND ? cli : paradisOpenCodeCliRegistry.executableOf(cli);
 			const cliLabel = paradisNormalizeOpenCodeCliLabel(stringField('cli_label'));
 			const sessionId = stringField('session_id');
 			const transcriptPath = stringField('transcript_path');
@@ -4625,7 +4628,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					// ペインの token を持っているだけで、そのペインの会話でも子エージェントでもない。ペインの状態・
 					// 通知・子エージェントの一覧には出さず、transcript を照合の候補から外すためにだけ知らせる。
 					fireParadisAgentNestedHookEvent({
-						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? { cli: resumeCli() } : {}),
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind, background: true,
 					});
@@ -4636,7 +4639,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				if (hookOrigin.origin === 'nested') {
 					fireParadisAgentNestedHookEvent({
-						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? { cli: resumeCli() } : {}),
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind,
 					});
@@ -4665,15 +4668,15 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (agentKind === 'opencode' && eventType === 'SessionStart' && sessionId && transcriptPath && cwd) {
 					const pane = this._paneShells.get(token);
 					const pidValue = Number(url.searchParams.get('pid'));
-					paradisOpenCodeBridge.register(token, { sessionId, dbPath: transcriptPath, cwd, cli: resumeCli(),
+					paradisOpenCodeBridge.register(token, { sessionId, dbPath: transcriptPath, cwd, ...(resumeCli() !== undefined ? { cli: resumeCli() } : {}),
 						...(Number.isSafeInteger(pidValue) && pidValue > 1 ? { pid: pidValue } : {}),
 						...(pane?.remoteAuthority !== undefined ? { authority: pane.remoteAuthority } : {}),
 					});
 				}
 				if (eventType === 'SessionEnd' || eventType === 'TerminalExit') { paradisOpenCodeBridge.unregister(token); }
-				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined, agentKind, agentKind === 'opencode' ? resumeCli() : undefined);
+				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined, agentKind, agentKind === 'opencode' ? (resumeCli() ?? null) : undefined);
 				fireParadisAgentHookEvent({
-					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? { cli: resumeCli() } : {}),
+					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 					remoteHostId, ...(ownerUnverified ? { ownerUnverified: true } : {}), at: Date.now(),
 				});

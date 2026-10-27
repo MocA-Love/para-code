@@ -136,6 +136,9 @@ export class ParadisAgentChatInput {
 				return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
 			}
 			const sent = await this.dependencies.source.sendOpenCodeAgentMessage?.(token, state.sessionId, text).catch(() => false);
+			if (sent === 'unconfirmed') {
+				return localize('paradisAgentChat.errorOpenCodeUnconfirmed', "OpenCode が結果を返しませんでした。届いたかを PC のターミナルで確かめてください（もう一度送ると二重になることがあります）");
+			}
 			return sent ? undefined : localize('paradisAgentChat.errorOpenCodeSend', "OpenCode へ送れませんでした。接続を確かめてください");
 		}
 		const reason = await this.messageBlockReason(instanceId, token, terminal, text);
@@ -202,6 +205,9 @@ export class ParadisAgentChatInput {
 			}
 			const answered = await this.dependencies.source.answerOpenCodeAgentQuestions?.(token, state.sessionId, group, answers).catch(() => false);
 			void this.dependencies.session(token).refresh();
+			if (answered === 'unconfirmed') {
+				return localize('paradisAgentChat.errorOpenCodeAnswerUnconfirmed', "OpenCode が結果を返しませんでした。回答が届いたかを PC のターミナルで確かめてください");
+			}
 			return answered ? undefined : localize('paradisAgentChat.errorOpenCodeAnswer', "OpenCode へ回答を送れませんでした。接続を確かめてください");
 		}
 		// 選択肢が画面に出ていると確かめられない質問（選択肢が欠けて届いた・偽の hook 等）には打鍵しない。
@@ -243,6 +249,9 @@ export class ParadisAgentChatInput {
 			}
 			const answered = await this.dependencies.source.answerOpenCodeAgentApproval?.(token, openCode.sessionId, interactionId, choiceId).catch(() => false);
 			void this.dependencies.session(token).refresh();
+			if (answered === 'unconfirmed') {
+				return localize('paradisAgentChat.errorOpenCodeAnswerUnconfirmed', "OpenCode が結果を返しませんでした。回答が届いたかを PC のターミナルで確かめてください");
+			}
 			return answered ? undefined : localize('paradisAgentChat.errorOpenCodeAnswer', "OpenCode へ回答を送れませんでした。接続を確かめてください");
 		}
 		if (paradisIsCodexDaemonApprovalInteraction(interactionId) || choiceId === 'always') {

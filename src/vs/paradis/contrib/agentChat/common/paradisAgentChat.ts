@@ -300,6 +300,12 @@ export interface IParadisAgentChatCursor {
 	readonly rev: number;
 }
 
+/**
+ * PC から OpenCode へ渡した操作の結果。`unconfirmed` は、OpenCode が受け取ったのに結果が返らなかった（動いたかもしれない）。
+ * 送り直すと二重になりうるので、PC のターミナルで確かめてもらう。
+ */
+export type ParadisOpenCodeDesktopActionResult = boolean | 'unconfirmed';
+
 /** デスクトップのチャット表示が引く、1ペイン分の会話の写し。 */
 export interface IParadisAgentChatView {
 	/** Exact OpenCode identity for PC-side API controls; never included in mobile snapshots. */
@@ -374,9 +380,9 @@ export interface IParadisAgentChatSource {
 	/** そのペインのエージェントで使えるスラッシュコマンド。 */
 	getAgentChatCommands(token: string): Promise<readonly IParadisAgentChatCommand[]>;
 	/** Send once to an exact OpenCode session through its registered frontend, without PTY keys. */
-	sendOpenCodeAgentMessage?(token: string, sessionId: string, text: string): Promise<boolean>;
-	answerOpenCodeAgentQuestions?(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<boolean>;
-	answerOpenCodeAgentApproval?(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<boolean>;
+	sendOpenCodeAgentMessage?(token: string, sessionId: string, text: string): Promise<ParadisOpenCodeDesktopActionResult>;
+	answerOpenCodeAgentQuestions?(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<ParadisOpenCodeDesktopActionResult>;
+	answerOpenCodeAgentApproval?(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<ParadisOpenCodeDesktopActionResult>;
 	/**
 	 * Whether the pane's OpenCode session with this resume key is registered and waiting for input (a small answer for the
 	 * resume readiness poll, instead of the whole conversation).
