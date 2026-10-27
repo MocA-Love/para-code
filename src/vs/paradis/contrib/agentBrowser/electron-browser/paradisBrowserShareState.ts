@@ -13,6 +13,7 @@ import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/com
 import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
+import { paradisShareButtonCount, paradisShareButtonEntries } from './paradisBrowserShareCount.js';
 import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
 
 /**
@@ -44,9 +45,12 @@ export class ParadisBrowserShareStateFeature extends BrowserEditorContribution {
 	}
 
 	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
-		const update = () => this._shared.set(this.bindingModel.getPageShares(model.id).length > 0);
+		// ボタンに出す数と同じ数え方にする（Copilot だけと共有したページも共有中）。ツールバーは表示するアクションが
+		// 入れ替わるときに幅を測り直すので、▾ が出る・消えるときに必ず入れ替わるようにする
+		const update = () => this._shared.set(paradisShareButtonCount(paradisShareButtonEntries(this.bindingModel.getPageShares(model.id), model.sharingState)) > 0);
 		store.add(this.bindingModel.onDidChange(update));
 		store.add(model.onDidChangeSharingState(state => {
+			update();
 			if (paradisIsShareMarkRemoved(state) && this.bindingModel.getBindingsForPage(model.id).length > 0) {
 				void this._restoreShareMark(model, store);
 			}

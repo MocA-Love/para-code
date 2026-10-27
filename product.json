@@ -141,7 +141,8 @@
 			"contribViewsRemote"
 		],
 		"GitHub.vscode-pull-request-github": [
-			"authIssuers"
+			"authIssuers",
+			"commentingRangeHint"
 		]
 	},
 	"remoteExtensionTips": {

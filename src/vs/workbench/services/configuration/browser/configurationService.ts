@@ -8,7 +8,7 @@ import { Event, Emitter } from '../../../../base/common/event.js';
 import { ResourceMap } from '../../../../base/common/map.js';
 import { equals } from '../../../../base/common/objects.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { Queue, Barrier, Promises, Delayer, Throttler } from '../../../../base/common/async.js';
+import { Queue, Barrier, Promises, Delayer, Throttler, Sequencer } from '../../../../base/common/async.js'; // PARA-PATCH: Sequencer, see onFoldersChanged
 import { IJSONContributionRegistry, Extensions as JSONExtensions } from '../../../../platform/jsonschemas/common/jsonContributionRegistry.js';
 import { IWorkspaceContextService, Workspace as BaseWorkspace, WorkbenchState, IWorkspaceFolder, IWorkspaceFoldersChangeEvent, WorkspaceFolder, toWorkspaceFolder, isWorkspaceFolder, IWorkspaceFoldersWillChangeEvent, IEmptyWorkspaceIdentifier, ISingleFolderWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, IWorkspaceIdentifier, IAnyWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js';
 import { ConfigurationModel, ConfigurationChangeEvent, mergeChanges } from '../../../../platform/configuration/common/configurationModels.js';
@@ -86,6 +86,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	private readonly workspaceConfiguration: WorkspaceConfiguration;
 	private cachedFolderConfigs: DisposableMap<URI, FolderConfiguration> = this._register(new DisposableMap(new ResourceMap()));
 	private readonly paradisParkedFolderConfigs = this._register(new ParadisFolderConfigurationParking<FolderConfiguration>()); // PARA-PATCH: see onFoldersChanged
+	private readonly paradisFoldersChangedSequencer = new Sequencer(); // PARA-PATCH: see onFoldersChanged
 	private readonly workspaceEditingQueue: Queue<void>;
 
 	private readonly _onDidChangeConfiguration: Emitter<IConfigurationChangeEvent> = this._register(new Emitter<IConfigurationChangeEvent>());
@@ -967,7 +968,16 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		this.updateRestrictedSettings();
 	}
 
-	private async onFoldersChanged(): Promise<IConfigurationChange> {
+	// PARA-PATCH: run one folder change at a time. The folder update queue (doUpdateFolders) and the
+	// workspace file reload (onWorkspaceConfigurationChanged) both get here, and a Para Code space switch
+	// can start the second while the first is still loading a new folder's configuration. That folder is
+	// already in cachedFolderConfigs but not yet in _configuration, so removing it threw 'Unknown folder'
+	// (Sentry PARA-CODE-DESKTOP-M2) and skipped the rest of the change.
+	private onFoldersChanged(): Promise<IConfigurationChange> {
+		return this.paradisFoldersChangedSequencer.queue(() => this.paradisDoOnFoldersChanged());
+	}
+
+	private async paradisDoOnFoldersChanged(): Promise<IConfigurationChange> { // PARA-PATCH: renamed from onFoldersChanged, body unchanged
 		const changes: IConfigurationChange[] = [];
 
 		// Remove the configurations of deleted folders
