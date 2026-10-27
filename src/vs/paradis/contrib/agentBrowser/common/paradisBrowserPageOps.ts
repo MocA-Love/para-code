@@ -939,8 +939,11 @@ export interface IParadisCdpPageOpsService {
 
 // --- 資格情報を表示に出さない -------------------------------------------------------------------
 
-/** 資格情報を引数に持つツール（MCP のサーバー名が前に付いていても当てる）。 */
-const PARADIS_SECRET_BEARING_TOOL = /(?:^|__|\.|\/)set_http_credentials$/;
+/**
+ * 資格情報を引数に持つツール（MCP のサーバー名が前に付いていても当てる）。Claude Code は `mcp__<server>__<tool>`、
+ * OpenCode は `<server>_<tool>`（`_` が 1 本）、ほかに `.` や `/` でつなぐ CLI もあるので、どの区切りの後ろでも当てる。
+ */
+const PARADIS_SECRET_BEARING_TOOL = /(?:^|[_./:-])set_http_credentials$/;
 const PARADIS_HIDDEN_SECRET = '[hidden]';
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {

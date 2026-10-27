@@ -463,7 +463,10 @@ suite('Workbench - TerminalInstance', () => {
 			const instance = await createTerminalInstance() as TerminalInstance;
 			const handleShellTypeChange = (shellType: GeneralShellType | PosixShellType | undefined) => (instance as unknown as Record<string, (value: GeneralShellType | PosixShellType | undefined) => void>)['_handleShellTypeChange'](shellType);
 			await instance.rename('');
-			await writeP(instance.xterm!.raw, '\x1b]0;opencode | Fix the parser\x07');
+			await writeP(instance.xterm!.raw, '\x1b]0;OpenCode\x07');
+			strictEqual(instance.shellType, GeneralShellType.Opencode);
+			handleShellTypeChange(PosixShellType.Zsh);
+			await writeP(instance.xterm!.raw, '\x1b]0;OC | Fix the parser\x07');
 			strictEqual(instance.shellType, GeneralShellType.Opencode);
 			handleShellTypeChange(GeneralShellType.Node);
 			strictEqual(instance.shellType, GeneralShellType.Opencode);
@@ -484,6 +487,8 @@ suite('Workbench - TerminalInstance', () => {
 			await writeP(instance.xterm!.raw, '\x1b]0;Review opencode notes\x07');
 			strictEqual(instance.shellType, undefined);
 			await writeP(instance.xterm!.raw, '\x1b]0;opencode-tools\x07');
+			strictEqual(instance.shellType, undefined);
+			await writeP(instance.xterm!.raw, '\x1b]0;OC notes\x07');
 			strictEqual(instance.shellType, undefined);
 			await writeP(instance.xterm!.raw, '\x1b]0;example-cli | Fix the parser\x07');
 			strictEqual(instance.shellType, undefined);
@@ -995,14 +1000,14 @@ suite('Workbench - TerminalInstance', () => {
 		});
 		// PARA-PATCH: OpenCode follows OSC titles on preset terminals while preserving user overrides.
 		for (const scenario of [
-			{ name: 'prefer the OpenCode OSC title over a preset name', enabled: true, shellType: GeneralShellType.Opencode, staticTitle: undefined, expected: 'opencode | Fix the parser' },
+			{ name: 'prefer the OpenCode OSC title over a preset name', enabled: true, shellType: GeneralShellType.Opencode, staticTitle: undefined, expected: 'OC | Fix the parser' },
 			{ name: 'keep the preset name when OpenCode titles are disabled', enabled: false, shellType: GeneralShellType.Opencode, staticTitle: undefined, expected: 'My Preset' },
 			{ name: 'keep a manual title when OpenCode is running', enabled: true, shellType: GeneralShellType.Opencode, staticTitle: 'Manual title', expected: 'Manual title' },
 			{ name: 'restore the preset name after OpenCode returns to the shell', enabled: true, shellType: PosixShellType.Zsh, staticTitle: undefined, expected: 'My Preset' },
 		]) {
 			test(`should ${scenario.name}`, () => {
 				const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: scenario.enabled } } } });
-				terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: scenario.shellType, sequence: 'opencode | Fix the parser', processName: 'opencode', staticTitle: scenario.staticTitle, shellLaunchConfig: { titleTemplate: 'My Preset' } }));
+				terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: scenario.shellType, sequence: 'OC | Fix the parser', processName: 'opencode', staticTitle: scenario.staticTitle, shellLaunchConfig: { titleTemplate: 'My Preset' } }));
 				strictEqual(terminalLabelComputer.title, scenario.expected);
 			});
 		}

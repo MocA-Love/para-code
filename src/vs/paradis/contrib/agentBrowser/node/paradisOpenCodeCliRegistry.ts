@@ -7,40 +7,57 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ブリッジ対応の OpenCode 互換 CLI が、セッションを登録するとき（SessionStart）に名乗ったコマンド名・表示名・会話の DB の
-// 場所を、持ち主の確認が済んだものだけ覚えておく台帳。置き場所は利用者のプロファイル（userData）で、リポジトリには何も
-// 書かない。覚えたコマンド名は、ターミナルのタイトル・プロセスの判定・再開のコマンドで `opencode` と同じに扱い、DB は
-// セッション履歴の一覧で本家 OpenCode の既定の場所と一緒に探す。
+// 場所を、持ち主の確認と実行ファイルの確認が済んだものだけ覚えておく台帳。置き場所は利用者のプロファイル（userData）で、
+// リポジトリには何も書かない。覚えたコマンド名は、ターミナルのタイトル・プロセスの判定で `opencode` と同じに扱い、
+// 再開には覚えた実行ファイルの絶対パスを使い、DB はセッション履歴の一覧で本家 OpenCode の既定の場所と一緒に探す。
+// 最後に名乗ってから 30 日たったものは使わない。コマンド（paradis.openCode.forgetCompatibleClis）で全部忘れられる。
 
+import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
-import { basename, isAbsolute, normalize, relative } from '../../../../base/common/path.js';
-import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand, paradisNormalizeOpenCodeCliLabel, paradisSetOpenCodeCompatibleCommands } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
+import { basename, dirname, isAbsolute, normalize, relative } from '../../../../base/common/path.js';
+import { isLinux, isMacintosh } from '../../../../base/common/platform.js';
+import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpenCodeCompatibleCommand, paradisIsRuntimeOrShellProgram, paradisNormalizeOpenCodeCliLabel, paradisSetOpenCodeCompatibleCommands } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** 覚えておく CLI の数と、1 つの CLI について覚える DB の数。 */
 const MAX_CLIS = 8;
 const MAX_DATABASES_PER_CLI = 4;
 const MAX_PATH_LENGTH = 1024;
+/** 最後に名乗ってからこの時間がたった CLI は使わない（読み込みのときに捨てる）。 */
+export const PARADIS_OPENCODE_CLI_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 覚えた CLI 1 つ。 */
 export interface IParadisOpenCodeCli {
 	readonly command: string;
+	/** 実行ファイルの実体の絶対パス（再開に使う）。 */
+	readonly executable: string;
 	readonly label?: string;
 	/** 会話の DB（新しく見たものが先）。 */
 	readonly databases: readonly string[];
 	readonly seenAt: number;
 }
 
-/** 会話の DB と、その会話を再開するコマンド。 */
+/** 会話の DB と、その会話を再開するもの（覚えた実行ファイルの絶対パス）。 */
 export interface IParadisOpenCodeCliDatabase {
 	readonly path: string;
-	readonly command: string;
+	readonly cli: string;
 	readonly label?: string;
 }
 
 function isInside(root: string, path: string): boolean {
 	const rel = relative(root, path);
 	return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/** XDG のデータの置き場。`/` のような浅い場所（1 段以下）は、ほぼ何でも含んでしまうので使わない。 */
+export function paradisOpenCodeXdgDataRoot(env: NodeJS.ProcessEnv): string | undefined {
+	const value = env.XDG_DATA_HOME;
+	if (value === undefined || !isAbsolute(value)) {
+		return undefined;
+	}
+	const root = normalize(value);
+	return root.split(/[\\/]/).filter(Boolean).length >= 2 ? root : undefined;
 }
 
 /**
@@ -54,27 +71,69 @@ export function paradisValidateOpenCodeDatabasePath(path: unknown, env: NodeJS.P
 	if (!/^[\w.-]+\.db$/.test(basename(path))) {
 		return undefined;
 	}
-	const roots = [home, ...(env.XDG_DATA_HOME !== undefined && isAbsolute(env.XDG_DATA_HOME) ? [normalize(env.XDG_DATA_HOME)] : [])];
+	const xdg = paradisOpenCodeXdgDataRoot(env);
+	const roots = [home, ...(xdg !== undefined ? [xdg] : [])];
 	return roots.some(root => isInside(root, path)) ? path : undefined;
 }
 
-function parseCli(value: unknown): IParadisOpenCodeCli | undefined {
+/**
+ * プロセスの実行ファイルの実体のパス（Linux は `/proc/<pid>/exe`、macOS は `ps -o comm=` の実行パスを realpath したもの）。
+ * 取れなければ undefined。起動行（argv）は名乗り放題なので使わない。
+ */
+export async function paradisResolveProcessExecutable(pid: number): Promise<string | undefined> {
+	if (!Number.isSafeInteger(pid) || pid < 2) {
+		return undefined;
+	}
+	try {
+		if (isLinux) {
+			const target = (await fs.readlink(`/proc/${pid}/exe`)).replace(/ \(deleted\)$/, '');
+			return isAbsolute(target) ? await fs.realpath(target).catch(() => target) : undefined;
+		}
+		if (isMacintosh) {
+			const path = await new Promise<string>((resolve, reject) => execFile('/bin/ps', ['-o', 'comm=', '-p', String(pid)], { timeout: 3000 }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
+			return isAbsolute(path) ? await fs.realpath(path) : undefined;
+		}
+	} catch {
+		// 取れない（プロセスが終わった・権限が無い）
+	}
+	return undefined;
+}
+
+/**
+ * 名乗ったコマンドが、そのプロセスの実行ファイルの名前と一致するか確かめ、一致すれば実行ファイルの絶対パスを返す。
+ * 実行ファイルがランタイム（node・bun・deno・python など）やシェルなら覚えない（スクリプトの名前は名乗り放題なので）。
+ */
+export async function paradisVerifyOpenCodeCliProcess(pid: number, command: string, resolveExecutable: (pid: number) => Promise<string | undefined> = paradisResolveProcessExecutable): Promise<string | undefined> {
+	if (!paradisIsOpenCodeCompatibleCommand(command) || command === PARADIS_OPENCODE_COMMAND) {
+		return undefined;
+	}
+	const executable = await resolveExecutable(pid);
+	if (executable === undefined || paradisIsRuntimeOrShellProgram(basename(executable)) || basename(executable) !== command || !paradisIsOpenCodeCliExecutable(executable)) {
+		return undefined;
+	}
+	return executable;
+}
+
+function parseCli(value: unknown, now: number): IParadisOpenCodeCli | undefined {
 	const raw = value as Partial<Record<keyof IParadisOpenCodeCli, unknown>> | null;
-	if (raw === null || typeof raw !== 'object' || !paradisIsOpenCodeCompatibleCommand(raw.command) || typeof raw.seenAt !== 'number' || !Number.isFinite(raw.seenAt)) {
+	if (raw === null || typeof raw !== 'object' || !paradisIsOpenCodeCompatibleCommand(raw.command) || !paradisIsOpenCodeCliExecutable(raw.executable)
+		|| basename(raw.executable) !== raw.command || typeof raw.seenAt !== 'number' || !Number.isFinite(raw.seenAt) || now - raw.seenAt >= PARADIS_OPENCODE_CLI_TTL_MS) {
 		return undefined;
 	}
 	const label = paradisNormalizeOpenCodeCliLabel(raw.label);
 	const databases = Array.isArray(raw.databases) ? [...new Set(raw.databases.map(path => paradisValidateOpenCodeDatabasePath(path)).filter((path): path is string => path !== undefined))].slice(0, MAX_DATABASES_PER_CLI) : [];
-	return { command: raw.command, ...(label !== undefined ? { label } : {}), databases, seenAt: raw.seenAt };
+	return { command: raw.command, executable: raw.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: raw.seenAt };
 }
 
 export class ParadisOpenCodeCliRegistry {
 	private clis: IParadisOpenCodeCli[] = [];
-	/** 持ち主の確認の間だけ、名乗ったコマンドを判定に入れる（確認できなければ外す）。 */
+	/** 持ち主の確認の間だけ、名乗ったコマンドをプロセスの判定に入れる（確認できなければ外す）。commands() には出さない。 */
 	private readonly trial = new Map<string, number>();
 	private storePath: string | undefined;
 	private loading: Promise<void> | undefined;
 	private writing: Promise<void> = Promise.resolve();
+
+	constructor(private readonly now: () => number = Date.now) { }
 
 	/** 保存先を決めて読み込む（shared process で 1 回。接続先のサーバーでは呼ばないので、覚えた CLI は無い）。 */
 	initialize(storePath: string): Promise<void> {
@@ -85,7 +144,8 @@ export class ParadisOpenCodeCliRegistry {
 		this.loading = (async () => {
 			try {
 				const parsed = JSON.parse(await fs.readFile(storePath, 'utf8')) as { readonly clis?: unknown };
-				const clis = Array.isArray(parsed.clis) ? parsed.clis.map(parseCli).filter((cli): cli is IParadisOpenCodeCli => cli !== undefined) : [];
+				const now = this.now();
+				const clis = Array.isArray(parsed.clis) ? parsed.clis.map(cli => parseCli(cli, now)).filter((cli): cli is IParadisOpenCodeCli => cli !== undefined) : [];
 				const seen = new Set<string>();
 				this.clis = clis.filter(cli => !seen.has(cli.command) && seen.add(cli.command)).slice(0, MAX_CLIS);
 			} catch {
@@ -96,19 +156,25 @@ export class ParadisOpenCodeCliRegistry {
 		return this.loading;
 	}
 
-	/** 覚えた CLI（新しく見たものが先）。 */
+	/** 覚えた CLI（期限の切れていないもの。新しく見たものが先）。 */
 	list(): readonly IParadisOpenCodeCli[] {
-		return this.clis;
+		const now = this.now();
+		return this.clis.filter(cli => now - cli.seenAt < PARADIS_OPENCODE_CLI_TTL_MS);
 	}
 
-	/** 判定に使うコマンド名（覚えたものと、確認中のもの）。 */
+	/** タブ名の判定などに配るコマンド名（覚えたものだけ。確認中のものは入れない）。 */
 	commands(): readonly string[] {
-		return [...new Set([...this.clis.map(cli => cli.command), ...this.trial.keys()])];
+		return this.list().map(cli => cli.command);
 	}
 
-	/** 覚えた DB と、その会話を再開するコマンド。 */
+	/** 覚えた実行ファイル（再開に使う）。無ければ undefined。 */
+	executableOf(command: string): string | undefined {
+		return this.list().find(cli => cli.command === command)?.executable;
+	}
+
+	/** 覚えた DB と、その会話を再開する実行ファイル。 */
 	databases(): readonly IParadisOpenCodeCliDatabase[] {
-		return this.clis.flatMap(cli => cli.databases.map(path => ({ path, command: cli.command, ...(cli.label !== undefined ? { label: cli.label } : {}) })));
+		return this.list().flatMap(cli => cli.databases.map(path => ({ path, cli: cli.executable, ...(cli.label !== undefined ? { label: cli.label } : {}) })));
 	}
 
 	/**
@@ -138,25 +204,34 @@ export class ParadisOpenCodeCliRegistry {
 	}
 
 	/**
-	 * 持ち主の確認が済んだ CLI を覚える。名前が使えなければ何もしない。DB は確かめて通ったものだけを足す（接続先のペインの
-	 * DB は手元のパスではないので、呼ぶ側が渡さない）。
+	 * 持ち主の確認と実行ファイルの確認が済んだ CLI を覚える。名前・実行ファイルが使えなければ何もしない。DB は確かめて
+	 * 通ったものだけを足す。
 	 */
-	async remember(input: { readonly command: string; readonly label?: string; readonly databasePath?: string }, now = Date.now()): Promise<void> {
+	async remember(input: { readonly command: string; readonly executable: string; readonly label?: string; readonly databasePath?: string }): Promise<void> {
 		await this.loading;
-		if (!paradisIsOpenCodeCompatibleCommand(input.command) || input.command === PARADIS_OPENCODE_COMMAND) {
+		if (!paradisIsOpenCodeCompatibleCommand(input.command) || input.command === PARADIS_OPENCODE_COMMAND || !paradisIsOpenCodeCliExecutable(input.executable) || basename(input.executable) !== input.command) {
 			return;
 		}
-		const previous = this.clis.find(cli => cli.command === input.command);
+		const now = this.now();
+		const previous = this.list().find(cli => cli.command === input.command);
 		const label = paradisNormalizeOpenCodeCliLabel(input.label) ?? previous?.label;
 		const database = paradisValidateOpenCodeDatabasePath(input.databasePath);
 		const databases = [...new Set([...(database !== undefined ? [database] : []), ...(previous?.databases ?? [])])].slice(0, MAX_DATABASES_PER_CLI);
-		const next: IParadisOpenCodeCli = { command: input.command, ...(label !== undefined ? { label } : {}), databases, seenAt: now };
-		const unchanged = previous !== undefined && previous.label === next.label && previous.databases.length === next.databases.length
+		const next: IParadisOpenCodeCli = { command: input.command, executable: input.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: now };
+		const unchanged = previous !== undefined && previous.executable === next.executable && previous.label === next.label && previous.databases.length === next.databases.length
 			&& previous.databases.every((path, index) => path === next.databases[index]) && now - previous.seenAt < 24 * 60 * 60 * 1000;
 		if (unchanged) {
 			return;
 		}
 		this.clis = [next, ...this.clis.filter(cli => cli.command !== input.command)].slice(0, MAX_CLIS);
+		this.publish();
+		await this.persist();
+	}
+
+	/** 覚えたものを全部忘れ、保存したものも消す（コマンド paradis.openCode.forgetCompatibleClis）。 */
+	async forgetAll(): Promise<void> {
+		await this.loading;
+		this.clis = [];
 		this.publish();
 		await this.persist();
 	}
@@ -171,7 +246,7 @@ export class ParadisOpenCodeCliRegistry {
 	}
 
 	private publish(): void {
-		paradisSetOpenCodeCompatibleCommands(this.commands());
+		paradisSetOpenCodeCompatibleCommands([...new Set([...this.commands(), ...this.trial.keys()])]);
 	}
 
 	private persist(): Promise<void> {
@@ -179,8 +254,11 @@ export class ParadisOpenCodeCliRegistry {
 		if (storePath === undefined) {
 			return Promise.resolve();
 		}
-		const content = JSON.stringify({ version: 1, clis: this.clis });
-		this.writing = this.writing.then(() => paradisWriteFileAtomic(storePath, content, { newFileMode: 0o600, forceMode: 0o600, rejectSymlink: true })).catch(() => { /* 覚えられなくても、今の起動の間は使える */ });
+		const content = JSON.stringify({ version: 2, clis: this.clis });
+		this.writing = this.writing
+			.then(() => fs.mkdir(dirname(storePath), { recursive: true }))
+			.then(() => paradisWriteFileAtomic(storePath, content, { newFileMode: 0o600, forceMode: 0o600, rejectSymlink: true }))
+			.catch(() => { /* 覚えられなくても、今の起動の間は使える */ });
 		return this.writing;
 	}
 }

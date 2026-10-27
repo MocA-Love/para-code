@@ -6,14 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCompatibleCommand } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
+import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
 export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode';
-/** The command that resumes an OpenCode session: `opencode`, or the command of a bridge-capable OpenCode-compatible CLI. */
+/** What resumes an OpenCode session: `opencode`, or the absolute path of a remembered bridge-capable OpenCode-compatible CLI. */
 export type ParadisResumeCli = string;
 
 export function paradisResumeAgentLabel(agent: ParadisResumeAgent): string {
@@ -126,7 +126,8 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 		// Neither OpenCode CLI exposes the other agents' bypass flags.
 		if (options?.dangerouslyBypassPermissions === true) { return undefined; }
 		const cli = options?.cli ?? PARADIS_OPENCODE_COMMAND;
-		if (cli !== PARADIS_OPENCODE_COMMAND && !paradisIsOpenCodeCompatibleCommand(cli)) { return undefined; }
+		// `opencode` か、覚えた互換 CLI の実行ファイルの絶対パス（引用符の要らない文字だけ）
+		if (!paradisIsOpenCodeResumeCli(cli)) { return undefined; }
 		return `${cli} --session ${sessionId}${mode === 'fork' ? ' --fork' : ''}`;
 	}
 	const bypass = options?.dangerouslyBypassPermissions === true;

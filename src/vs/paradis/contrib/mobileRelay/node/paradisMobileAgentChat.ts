@@ -67,7 +67,8 @@ import { ParadisDirectoryWalkLedger } from '../common/paradisDirectoryWalkLedger
 import { IParadisClaudeTranscriptPrefixMatch, ParadisHookTranscriptSightings, paradisClaudeTranscriptIsBackground, paradisClaudeTranscriptSessionKind, paradisFindClaudeTranscriptByIdPrefix, paradisIsClaudeSessionIdPrefix, paradisListClaudeTranscriptsByIdPrefixAcrossProjects } from './paradisClaudeBackgroundSessions.js';
 import { paradisClaudeAttachNameQuery, paradisReadClaudeJobs, paradisSelectClaudeJobByName } from '../../agentBrowser/node/paradisClaudeJobNames.js';
 import type { IParadisOpenCodeMessage } from '../../sessionResume/node/paradisOpenCodeHistory.js';
-import { paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
+import { ParadisOpenCodeActionOutcome, paradisOpenCodeBridge } from '../../agentBrowser/node/paradisOpenCodeBridge.js';
+import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { ParadisClaudeModBridge, paradisClaudeModBridge, paradisClaudeModWaitForPrevious, ParadisClaudeModEvent, IParadisClaudeModPendingPermission, IParadisClaudeModPendingQuestion } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claudeMod/common/paradisClaudeMod.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -1892,6 +1893,8 @@ interface ITailerDelegate {
 	onProgress(progress: ITranscriptProgress): void;
 	/** OpenCode の生成中の最後の発言（履歴へ入れる前）。undefined なら先出しをやめる。 */
 	onOpenCodeStreaming?(text: string | undefined): void;
+	/** OpenCode のターンが動いているか（最後のエージェントの発言を確定させないため）。 */
+	isOpenCodeTurnActive?(): boolean;
 	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
 	onAdvisors?(messages: readonly IParadisAgentChatMessage[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
@@ -2128,60 +2131,68 @@ class TranscriptTailer {
 	private openCodePollPending = false;
 	/** 送り済みの発言（鍵と中身の指紋）。frontend の返す範囲は動くので、位置ではなく鍵で突き合わせる。 */
 	private openCodeCommitted: { readonly key: string; readonly fingerprint: string }[] = [];
-	/** 最後の発言を前回見たときの鍵と指紋。変わり続けている（生成中の）間は履歴へ入れない。 */
-	private openCodeTrailing: string | undefined;
 	private async readOpenCodeHistory(emit: boolean): Promise<void> {
 		if (this.openCodeSessionId === undefined || this.openCodeToken === undefined) { return; }
 		this.openCodePollPending = true;
 		let rows: readonly IParadisOpenCodeMessage[];
 		try { rows = await paradisOpenCodeBridge.readMessages(this.openCodeToken, this.openCodeSessionId); }
 		finally { this.openCodePollPending = false; }
-		const entries: { readonly key: string; readonly fingerprint: string; readonly message: Omit<IParadisAgentChatMessage, 'rev'> }[] = [];
-		const push = (key: string, message: Omit<IParadisAgentChatMessage, 'rev'>) => entries.push({ key, fingerprint: JSON.stringify(message), message });
+		if (this.disposed) { return; }
+		const turnActive = this.delegate.isOpenCodeTurnActive?.() === true;
+		const entries: { readonly key: string; readonly fingerprint: string; readonly message: Omit<IParadisAgentChatMessage, 'rev'>; readonly final: boolean }[] = [];
+		const push = (key: string, message: Omit<IParadisAgentChatMessage, 'rev'>, final: boolean) => entries.push({ key, fingerprint: JSON.stringify(message), message, final });
 		for (const row of rows) {
 			const time = row.ts !== undefined ? { ts: row.ts } : {};
 			if (row.kind === 'tool' && row.tool !== undefined) {
-				const input = typeof row.tool.input === 'string' ? row.tool.input : row.tool.input !== undefined ? JSON.stringify(row.tool.input) : row.text;
-				push(`${row.id}\0use`, { role: 'assistant', kind: 'tool_use', text: truncateText(input, TOOL_TEXT_LIMIT), tool: row.tool.name, toolUseId: row.id, ...time });
-				// 動いている間は結果の行を出さない（出力が後から書き換わる）。終わったら出力が空でも出す
-				if (row.tool.output !== undefined && (row.tool.output.length > 0 || row.tool.status === 'completed' || row.tool.status === 'error')) {
-					push(`${row.id}\0result`, { role: 'tool', kind: 'tool_result', text: truncateText(row.tool.output, TOOL_TEXT_LIMIT), toolUseId: row.id, ...(row.tool.status === 'error' ? { isError: true } : {}), ...time });
+				// 動いている間のツールは、入力も出力も履歴へ入れない（後から書き換わる）。終わったら入力と結果をまとめて入れる。
+				// 動いている様子は hook の生成中の表示（live）で見せる
+				const done = row.tool.status === 'completed' || row.tool.status === 'error';
+				const raw = row.tool.input !== undefined ? row.tool.input : row.text;
+				// 資格情報（set_http_credentials の password）は画面へ出さない
+				const input = typeof raw === 'string' ? paradisRedactToolArgumentsText(row.tool.name, raw) : JSON.stringify(paradisRedactToolInputSecrets(row.tool.name, raw));
+				push(`${row.id}\0use`, { role: 'assistant', kind: 'tool_use', text: truncateText(input, TOOL_TEXT_LIMIT), tool: row.tool.name, toolUseId: row.id, ...time }, done);
+				if (done) {
+					push(`${row.id}\0result`, { role: 'tool', kind: 'tool_result', text: truncateText(row.tool.output ?? '', TOOL_TEXT_LIMIT), toolUseId: row.id, ...(row.tool.status === 'error' ? { isError: true } : {}), ...time }, true);
 				}
 			} else {
-				push(row.id, { role: row.role, kind: row.kind === 'thinking' ? 'thinking' : 'text', text: truncateText(row.text, TEXT_LIMIT), ...time });
+				push(row.id, { role: row.role, kind: row.kind === 'thinking' ? 'thinking' : 'text', text: truncateText(row.text, TEXT_LIMIT), ...time }, true);
 			}
 		}
-		if (this.disposed) { return; }
-		const added = emit ? this.openCodeAppended(entries) : undefined;
+		// 確定するのは先頭から続く「もう変わらない」発言だけ。ターンの途中では、最後のエージェントの発言は伸びるかもしれないので待つ
+		// （ターンが終わるか、後ろに次の発言が来たら確定する）。動いているツールより後ろも、順を崩さないよう待つ
+		let settledCount = 0;
+		while (settledCount < entries.length) {
+			const entry = entries[settledCount];
+			const last = settledCount === entries.length - 1;
+			if (!entry.final || (turnActive && last && entry.message.role === 'assistant')) {
+				break;
+			}
+			settledCount++;
+		}
+		const settled = entries.slice(0, settledCount);
+		const trailing = entries.at(-1);
+		const streaming = settledCount < entries.length && trailing !== undefined && trailing.message.role === 'assistant' && trailing.message.kind === 'text' ? trailing.message.text : undefined;
+		const added = emit ? this.openCodeAppended(settled) : undefined;
 		if (added !== undefined) {
-			const last = entries.at(-1);
-			const held = last !== undefined && last.message.role !== 'user' && added.at(-1) === last && this.openCodeTrailing !== `${last.key}\0${last.fingerprint}`;
-			this.openCodeTrailing = last !== undefined ? `${last.key}\0${last.fingerprint}` : undefined;
-			const settled = held ? added.slice(0, -1) : added;
 			// 生成中の最後の発言は、履歴ではなく生成中の表示（live）で先に見せる
-			this.delegate.onOpenCodeStreaming?.(held && last.message.role === 'assistant' && last.message.kind === 'text' ? last.message.text : undefined);
-			if (settled.length === 0) { return; }
-			this.openCodeCommitted.push(...settled.map(entry => ({ key: entry.key, fingerprint: entry.fingerprint })));
+			this.delegate.onOpenCodeStreaming?.(streaming);
+			if (added.length === 0) { return; }
+			this.openCodeCommitted.push(...added.map(entry => ({ key: entry.key, fingerprint: entry.fingerprint })));
 			this.openCodeCommitted.splice(0, Math.max(0, this.openCodeCommitted.length - MESSAGE_RING_LIMIT));
-			const messages = settled.map(entry => ({ ...entry.message, rev: this.rev++ }));
+			const messages = added.map(entry => ({ ...entry.message, rev: this.rev++ }));
 			this.messages.push(...messages);
 			this.trimRing();
 			this.delegate.onAppended();
 			this.delegate.onDelta(messages);
 			return;
 		}
-		// 初回、または送り済みの発言が変わった・消えた（巻き戻し・要約など）。読み直して全量を送る。
+		// 初回、または送り済みの発言が変わった・消えた・間に別の発言が入った（巻き戻し・要約など）。読み直して全量を送る。
+		// 発言を差し替える電文は無いので、確定済みの発言が変わったときはこれしかない（上の待ち方で、伸びている途中の発言は確定しない）。
 		// Preserve live request cards, whose identities belong to the frontend's pending API requests.
 		const requests = this.messages.filter(message => message.kind === 'question' && message.toolUseId !== undefined && this.pendingQuestions.has(message.toolUseId)
 			|| message.tool === 'approval_request' && this.approvalQueue.some(entry => entry.interaction.id === message.toolUseId));
-		// 最後の発言は生成の途中かもしれない。ここでも確定せず、次に読んで変わっていなければ追記として入れる
-		// （確定してから伸びると、伸びるたびにこの読み直しへ戻ってしまう）
-		// 利用者の発言は伸びないので待たない
-		const last = entries.at(-1);
-		const settled = last !== undefined && last.message.role !== 'user' ? entries.slice(0, -1) : entries;
-		this.openCodeTrailing = last !== undefined ? `${last.key}\0${last.fingerprint}` : undefined;
 		this.openCodeCommitted = settled.slice(-MESSAGE_RING_LIMIT).map(entry => ({ key: entry.key, fingerprint: entry.fingerprint }));
-		if (emit) { this.delegate.onOpenCodeStreaming?.(last !== undefined && last.message.role === 'assistant' && last.message.kind === 'text' ? last.message.text : undefined); }
+		if (emit) { this.delegate.onOpenCodeStreaming?.(streaming); }
 		this.epoch = newEpoch();
 		this.rev = 0;
 		this.messages.splice(0, this.messages.length, ...[...settled.map(entry => entry.message), ...requests].slice(-MESSAGE_RING_LIMIT).map(message => ({ ...message, rev: this.rev++ })));
@@ -2190,9 +2201,9 @@ class TranscriptTailer {
 	}
 
 	/**
-	 * 新しく読んだ発言のうち、送り済みの後ろに足されたもの。送り済みの発言が中身を変えた・途中で消えた・順が変わったら
-	 * undefined（読み直す）。frontend は直近の一定数だけを返すので、先頭から外れた送り済みと、送り済みより前に
-	 * 現れた古い発言は見ない。
+	 * 新しく確定した発言のうち、送り済みの後ろに足されたもの。送り済みの発言が中身を変えた・途中で消えた・順が変わった・
+	 * 送り済みの間に新しい発言が入ったら undefined（読み直す）。frontend は直近の一定数だけを返すので、先頭から外れた
+	 * 送り済みと、送り済みより前に現れた古い発言は見ない。
 	 */
 	private openCodeAppended<T extends { readonly key: string; readonly fingerprint: string }>(entries: readonly T[]): readonly T[] | undefined {
 		const index = new Map(entries.map((entry, position) => [entry.key, position]));
@@ -2200,15 +2211,18 @@ class TranscriptTailer {
 		if (first === -1) {
 			return this.openCodeCommitted.length === 0 ? entries : undefined;
 		}
-		let position = -1;
-		for (const committed of this.openCodeCommitted.slice(first)) {
-			const found = index.get(committed.key);
-			if (found === undefined || found <= position || entries[found].fingerprint !== committed.fingerprint) {
+		const committed = this.openCodeCommitted.slice(first);
+		const start = index.get(committed[0].key)!;
+		if (start + committed.length > entries.length) {
+			return undefined;
+		}
+		for (let offset = 0; offset < committed.length; offset++) {
+			const entry = entries[start + offset];
+			if (entry.key !== committed[offset].key || entry.fingerprint !== committed[offset].fingerprint) {
 				return undefined;
 			}
-			position = found;
 		}
-		return entries.slice(position + 1);
+		return entries.slice(start + committed.length);
 	}
 
 	/** ~/.claude/settings.json の effortLevel を、transcript由来の値が無い場合の既定として適用する。 */
@@ -5960,7 +5974,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		if (token !== undefined && session?.agent === 'opencode') {
 			const response = msg.choice === 'yes' ? 'once' : msg.choice === 'always' ? 'always' : msg.choice === 'no' ? 'reject' : undefined;
-			this.dispatchOpenCodeAction(mobileId, msg, token, () => response !== undefined && msg.message === undefined ? paradisOpenCodeBridge.answerPermission(token, session.sessionId ?? '', msg.interactionId.slice('opencode:'.length), response) : Promise.resolve(false), { kind: 'approval', id: msg.interactionId });
+			this.dispatchOpenCodeAction(mobileId, msg, token, () => response !== undefined && msg.message === undefined ? paradisOpenCodeBridge.answerPermission(token, session.sessionId ?? '', msg.interactionId.slice('opencode:'.length), response) : Promise.resolve<ParadisOpenCodeActionOutcome>('rejected'), { kind: 'approval', id: msg.interactionId });
 			return;
 		}
 		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
@@ -6313,7 +6327,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * - それ以外: ファイルから組み立てる
 	 */
 	private agentCommandCatalog(token: string, session: IPaneSessionInfo, cwd: string): Promise<readonly IParadisAgentCommandOption[]> {
-		if (session.agent === 'opencode') { return paradisOpenCodeBridge.listCommands(token, session.sessionId ?? '').then(commands => commands.map(command => ({ ...command, insertText: `/${command.name}`, kind: 'command' as const }))); }
+		if (session.agent === 'opencode') {
+			// 一覧は frontend から届く。橋渡しで確かめた項目だけを、知っている形に詰め直す
+			return paradisOpenCodeBridge.listCommands(token, session.sessionId ?? '').then(commands => commands.map(command => ({
+				name: command.name, description: command.description, source: command.source, insertText: `/${command.name}`, kind: 'command' as const,
+				...(command.argumentHint !== undefined ? { argumentHint: command.argumentHint } : {}),
+			})));
+		}
 		const agent = session.agent;
 		const remote = this.isRemoteAgentPane(token);
 		const codexVersion = agent === 'codex' ? this.tailers.get(token)?.cliVersion : undefined;
@@ -8571,7 +8591,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** Desktop and resume operations share the same session and owner checks as mobile controls. */
-	private async performOpenCodeDesktopAction(token: string, sessionId: string, perform: () => Promise<boolean>, interaction?: IParadisAgentInteraction): Promise<boolean> {
+	private async performOpenCodeDesktopAction(token: string, sessionId: string, perform: () => Promise<ParadisOpenCodeActionOutcome>, interaction?: IParadisAgentInteraction): Promise<boolean> {
 		const session = this.paneSessions.get(token);
 		const terminalId = this.terminalIdForToken(token);
 		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
@@ -8592,11 +8612,24 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 届かなかった回答の印は外す（残すと 60 秒間、同じ確認に答え直せない）
 		const release = () => { if (claim !== undefined) { this.openCodeActions.delete(claim); } };
 		if (!await this.authorizeOwner(owner).catch(() => false) || !valid()) { release(); return false; }
-		const accepted = await perform().catch(() => false);
-		if (!accepted) { release(); }
+		const outcome = await perform().catch((): ParadisOpenCodeActionOutcome => 'rejected');
+		// frontend が受け取ったのに結果が来なかったときは、動いたかもしれないので印を残す（同じ確認へ二重に答えない）
+		if (outcome === 'rejected') { release(); }
+		const accepted = outcome === 'accepted';
 		if (accepted && interaction?.kind === 'approval') { tailer?.clearApprovalRequest(interaction.id, false); }
 		if (accepted && interaction?.kind === 'question') { tailer?.clearPendingQuestions(interaction.id); }
 		return accepted;
+	}
+
+	/** 再開した OpenCode の会話が登録され、入力を待っているか（会話の中身は読まない）。 */
+	openCodeReadiness(token: string, resumeKey: string): 'ready' | 'pending' | 'unregistered' {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		if (session?.agent !== 'opencode' || session.sessionId === undefined || !PARADIS_RESUME_SESSION_ID_PATTERN.test(session.sessionId)
+			|| paradisAgentSessionKey('opencode', session.sessionId) !== resumeKey || !paradisOpenCodeBridge.hasSession(token, session.sessionId) || tailer === undefined) {
+			return 'unregistered';
+		}
+		return !this.desktopExitedTokens.has(token) && tailer.currentInteraction() === null ? 'ready' : 'pending';
 	}
 
 	async sendOpenCodeMessage(token: string, sessionId: string, text: string): Promise<boolean> {
@@ -8623,7 +8656,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		mobileId: string,
 		msg: Extract<AgentInbound, { t: 'action/sendMessage' | 'action/answerQuestion' | 'action/answerApproval' | 'action/interrupt' }>,
 		token: string,
-		perform: () => Promise<boolean>,
+		perform: () => Promise<ParadisOpenCodeActionOutcome>,
 		interaction?: IParadisAgentInteraction,
 	): void {
 		const tailer = this.tailers.get(token);
@@ -8641,6 +8674,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& this.openCodeOwnerIsCurrent(msg.id, token, owner)
 			&& (interaction === undefined ? (msg.t === 'action/interrupt' || tailer.currentInteraction() === null) && !this.desktopExitedTokens.has(token) : tailer.hasPendingInteraction(interaction));
 		const reject = () => this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '対象の会話または確認が変わりました。もう一度確認してください' }, token);
+		// 同じ送信（sendId）を送っている最中に送り直してきた。Claude Code の経路と同じく、受け付け済みと答える
+		if (msg.t === 'action/sendMessage' && msg.sendId !== undefined && dedupeKey !== key && this.openCodeActions.has(dedupeKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token);
+			return;
+		}
 		if (!valid() || this.openCodeActions.has(dedupeKey) || this.openCodeActions.has(key) || this.openCodeActions.size >= 256) { reject(); return; }
 		this.openCodeActions.set(key, now);
 		this.openCodeActions.set(dedupeKey, now);
@@ -8648,9 +8686,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		const fail = () => { this.openCodeActions.delete(key); this.openCodeActions.delete(dedupeKey); reject(); };
 		void (async () => {
 			if (owner === undefined || !await this.authorizeOwner(owner).catch(() => false) || !valid()) { fail(); return; }
-			const accepted = await perform().catch(() => false);
-			if (!accepted) { fail(); return; }
+			const outcome = await perform().catch((): ParadisOpenCodeActionOutcome => 'rejected');
+			if (outcome === 'rejected') { fail(); return; }
 			if (msg.t === 'action/sendMessage' && msg.sendId !== undefined) { this.rememberSendId(`${mobileId}\0${msg.sendId}`); }
+			if (outcome === 'unknown') {
+				// frontend は受け取ったが結果が返らなかった。動いたかもしれないので印は残し（同じ送信・同じ回答を二度渡さない）、
+				// 利用者には届いたかを会話で確かめてもらう
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'OpenCode が結果を返しませんでした。届いたかを会話で確かめてください' }, token);
+				return;
+			}
 			if (interaction?.kind === 'approval') { tailer?.clearApprovalRequest(interaction.id, false); }
 			if (interaction?.kind === 'question') { tailer?.clearPendingQuestions(interaction.id); }
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
@@ -9721,6 +9765,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			onOpenCodeStreaming: text => this.updateOpenCodeStreaming(token, text),
+			isOpenCodeTurnActive: () => this.activeTurnTokens.has(token),
 			onAdvisors: messages => this.applyAdvisorMessages(token, messages),
 			onCodexActivityTimeline: events => {
 				const tracker = this.activityTracker(token);

@@ -32,11 +32,40 @@ const RESERVED_COMMANDS: ReadonlySet<string> = new Set([
 	'node', 'bun', 'bunx', 'deno', 'npx', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'ruby', 'perl', 'env', 'sudo', 'doas',
 	'ssh', 'tmux', 'screen', 'zellij', 'script', 'nohup', 'time', 'timeout', 'exec', 'xargs',
 	'claude', 'codex', 'copilot', 'gemini', 'commandcode', 'code', 'code-oss', 'cursor',
+	// OpenCode's own title prefix (`OC | <title>`), never a command of another CLI
+	'oc',
 ]);
 
 /** Whether `name` may be remembered as the command of an OpenCode-compatible CLI. */
 export function paradisIsOpenCodeCompatibleCommand(name: unknown): name is string {
 	return typeof name === 'string' && COMMAND_PATTERN.test(name) && !RESERVED_COMMANDS.has(name);
+}
+
+/** Whether a program file name is a script runtime or a shell (never remembered as an OpenCode-compatible CLI). */
+export function paradisIsRuntimeOrShellProgram(name: string): boolean {
+	const lower = name.toLowerCase().replace(/\.exe$/, '');
+	return RESERVED_COMMANDS.has(lower) || /^(?:python|pypy|ruby|perl|php|lua|node|bun|deno|java|dotnet)[\d.]*$/.test(lower);
+}
+
+/**
+ * The absolute path of a remembered OpenCode-compatible CLI, safe to put on a command line without quoting: a normalized
+ * POSIX path of plain characters whose file name is a valid compatible command.
+ */
+export function paradisIsOpenCodeCliExecutable(path: unknown): path is string {
+	if (typeof path !== 'string' || path.length > 512 || !/^\/[A-Za-z0-9._@+/-]+$/.test(path) || path.endsWith('/')) {
+		return false;
+	}
+	const segments = path.split('/').slice(1);
+	if (segments.some(segment => segment === '' || segment === '.' || segment === '..')) {
+		return false;
+	}
+	const name = segments[segments.length - 1];
+	return paradisIsOpenCodeCompatibleCommand(name) && !paradisIsRuntimeOrShellProgram(name);
+}
+
+/** What may resume an OpenCode session: `opencode`, or the absolute path of a remembered compatible CLI. */
+export function paradisIsOpenCodeResumeCli(value: unknown): value is string {
+	return value === PARADIS_OPENCODE_COMMAND || paradisIsOpenCodeCliExecutable(value);
 }
 
 /** A display name sent by the CLI: one short line without control characters. */
@@ -69,13 +98,37 @@ export function paradisIsOpenCodeProgram(basename: string): boolean {
 }
 
 /**
- * The command that an OSC title starts with (`opencode` or a learned command, followed by `|` or nothing), or undefined.
+ * The command that an OSC title belongs to, or undefined.
+ *
+ * - OpenCode itself sets `OpenCode` (home, or a session without a title) and `OC | <title>` (packages/tui/src/app.tsx).
+ *   Both give `opencode`. `opencode | <title>` is accepted too.
+ * - A learned OpenCode-compatible CLI sets `<command> | <title>` or just `<command>`.
+ *
  * Titles that only mention the name elsewhere (`Review opencode notes`) or a longer name (`opencode-tools`) do not match.
  */
 export function paradisOpenCodeTitleCommand(title: string): string | undefined {
-	const match = /^\s*([^\s|]+)\s*(?:\||$)/.exec(title);
-	const command = match?.[1].toLowerCase();
-	return command !== undefined && paradisIsOpenCodeProgram(command) ? command : undefined;
+	const match = /^\s*([^\s|]+)\s*(\|)?/.exec(title);
+	if (match === null) {
+		return undefined;
+	}
+	const head = match[1].toLowerCase();
+	const piped = match[2] !== undefined;
+	const rest = title.slice(match[0].length);
+	if (!piped && rest.trim().length > 0) {
+		return undefined;
+	}
+	if (head === 'oc') {
+		return piped ? PARADIS_OPENCODE_COMMAND : undefined;
+	}
+	return paradisIsOpenCodeProgram(head) ? head : undefined;
+}
+
+/** The part of an OpenCode title after its `<command> |` / `OC |` prefix (empty for a bare `OpenCode`), or undefined. */
+export function paradisOpenCodeTitleText(title: string): string | undefined {
+	if (paradisOpenCodeTitleCommand(title) === undefined) {
+		return undefined;
+	}
+	return title.replace(/^\s*[^\s|]+\s*\|?\s*/, '').trim();
 }
 
 /** For the terminal's title patterns: matches the titles {@link paradisOpenCodeTitleCommand} accepts. */

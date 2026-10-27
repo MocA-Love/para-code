@@ -400,9 +400,8 @@ async function resumeFromMobile(
 		const openCodeToken = session.agent === 'opencode' ? launched.paneToken : undefined;
 		const readiness = instance !== undefined ? await waitForAgentReady(instance, session.agent, session.agent === 'opencode' ? async () => {
 			if (openCodeToken === undefined) { return 'unregistered'; }
-			const chat = await tools.agentChatSource.getAgentChat(openCodeToken, undefined);
-			if (chat?.agent !== 'opencode' || chat.info?.resumeKey !== key) { return 'unregistered'; }
-			return chat.agentExited !== true && chat.interaction === null ? 'ready' : 'pending';
+			// 500ms ごとに聞くので、会話の全量ではなく準備の状態だけを聞く
+			return await tools.agentChatSource.getOpenCodeReadiness?.(openCodeToken, key) ?? 'unregistered';
 		} : undefined) : 'gone';
 		// 通知は準備の結果が分かってから出す（L6。開いたタブがまだ空のシェルのうちに「表示」を押させない）。
 		notifyResumed(tools, space, session, instance);

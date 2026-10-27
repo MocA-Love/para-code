@@ -378,6 +378,11 @@ export interface IParadisAgentChatSource {
 	answerOpenCodeAgentQuestions?(token: string, sessionId: string, interactionId: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<boolean>;
 	answerOpenCodeAgentApproval?(token: string, sessionId: string, interactionId: string, choiceId: string): Promise<boolean>;
 	/**
+	 * Whether the pane's OpenCode session with this resume key is registered and waiting for input (a small answer for the
+	 * resume readiness poll, instead of the whole conversation).
+	 */
+	getOpenCodeReadiness?(token: string, resumeKey: string): Promise<'ready' | 'pending' | 'unregistered'>;
+	/**
 	 * Codex の app-server 経由の承認（id が `codex:` で始まるもの）に答える。キーを打つ承認は
 	 * 画面側が TUI へ打鍵するので、ここは通らない。答えられたら true。
 	 */

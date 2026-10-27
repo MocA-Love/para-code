@@ -167,6 +167,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'getClaudeVersion':
 				requireArgs(arg, 0);
 				return this.service.getClaudeVersion() as Promise<T>;
+			// 覚えた OpenCode 互換 CLI を忘れる（コマンド paradis.openCode.forgetCompatibleClis）
+			case 'forgetOpenCodeCompatibleClis':
+				requireArgs(arg, 0);
+				return this.service.forgetOpenCodeCompatibleClis() as Promise<T>;
 			case 'getVoiceIngressToken':
 				requireArgs(arg, 0);
 				return this.service.getVoiceIngressToken() as Promise<T>;
