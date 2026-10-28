@@ -28,7 +28,7 @@ type Engine = EngineInterface;
 type Json = Record<string, unknown>;
 
 const MOD_PROTOCOL = '1';
-const MOD_VERSION = '1.4.3';
+const MOD_VERSION = '1.4.4';
 /**
  * What this mod can do beyond the first version, sent with every wait for commands (Para Code may have
  * restarted since hello): `commands.list` answers `commandList` with `$.command.list()`, `command.run` runs a
@@ -86,8 +86,9 @@ const pendingPermissions = new Map<string, { readonly toolUseId: string | undefi
 const askedCalls = new Map<string, string[]>();
 /**
  * What tool.check told about an asked call (Claude Code 2.1.304 and later), by tool_use_id: `personOnly` when the
- * verdict carries `decider: 'person'` (only the terminal's dialog can approve it; a PermissionRequest hook may only
- * refuse), `readOnly` when `e.isReadOnly` is set. Older versions send neither, and nothing is kept.
+ * verdict marks the ask as the person's (only the terminal's dialog can approve it; a PermissionRequest hook may only
+ * refuse, see {@link isPersonOnlyVerdict}), `readOnly` when `e.isReadOnly` is set. Older versions send neither, and
+ * nothing is kept.
  */
 const askedTraits = new Map<string, { readonly personOnly: boolean; readonly readOnly: boolean }>();
 /**
@@ -335,6 +336,15 @@ function rememberAsk(tool: string, input: unknown, toolUseId: string): void {
 		}
 		askedCalls.delete(oldest.value);
 	}
+}
+
+/**
+ * Whether a settled tool.check verdict says only the terminal's dialog can approve the ask. Claude Code 2.1.304 to
+ * 2.1.306 hand `decider: 'person'` through to `next`; 2.1.307 and later settle it into `plugin: ''` and drop
+ * `decider` (seen in the settle function of 2.1.307 and 2.1.312; not in the changelog). Both are read.
+ */
+function isPersonOnlyVerdict(verdict: object): boolean {
+	return (verdict as { decider?: unknown }).decider === 'person' || (verdict as { plugin?: unknown }).plugin === '';
 }
 
 function rememberTraits(toolUseId: string, personOnly: boolean, readOnly: boolean): void {
@@ -775,7 +785,7 @@ export const register: Register = on => {
 		const verdict = await next(e);
 		if (active && verdict.decision === 'ask' && e.tool_use_id !== undefined) {
 			rememberAsk(e.tool, e.input, e.tool_use_id);
-			rememberTraits(e.tool_use_id, (verdict as { decider?: unknown }).decider === 'person', (e as { isReadOnly?: unknown }).isReadOnly === true);
+			rememberTraits(e.tool_use_id, isPersonOnlyVerdict(verdict), (e as { isReadOnly?: unknown }).isReadOnly === true);
 			emit($, { type: 'tool.check', toolUseId: e.tool_use_id, tool: e.tool });
 		}
 		return verdict;
