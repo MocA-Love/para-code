@@ -11,9 +11,9 @@ import {
 	IParadisPrepareBindRequest,
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
-import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
+import { PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
-import { PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface IPreparedDescriptor {
@@ -58,6 +58,8 @@ function createFixture(): {
 	readonly gatewayCalls: { readonly command: string; readonly token: string }[];
 	/** main が覚えている「開いたタブ → 開いた元のタブ」。 */
 	readonly openers: Map<string, string>;
+	/** 開いたタブの短い間の連続を数える時計（ms）。 */
+	readonly clock: { now: number };
 	setResolveExact(operation: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null>): void;
 	setThrottlingOperation(operation: (descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean) => Promise<boolean>): void;
 } {
@@ -76,6 +78,7 @@ function createFixture(): {
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const gatewayCalls: { command: string; token: string }[] = [];
 	const openers = new Map<string, string>();
+	const clock = { now: 0 };
 	let resolveExact: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
@@ -83,6 +86,7 @@ function createFixture(): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabBursts: new ParadisOpenedTabBurstGuard(() => clock.now),
 		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
@@ -160,6 +164,7 @@ function createFixture(): {
 		mainCalls,
 		gatewayCalls,
 		openers,
+		clock,
 		setResolveExact: operation => resolveExact = operation,
 		setThrottlingOperation: operation => throttlingOperation = operation,
 	};
@@ -477,7 +482,7 @@ suite('Paradis binding transaction service', () => {
 suite('Paradis binding transaction service: several pages shared with one pane', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
+	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', ...Array.from({ length: PARADIS_USER_SHARED_PAGE_LIMIT }, (_, index) => `shared-${index}`), 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
 	const viewOf = (viewId: string) => Object.freeze({ windowId: 1, viewId, targetId: `target-${viewId}`, viewLease: `lease-${viewId}` });
 
 	async function setup() {
@@ -772,6 +777,27 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('when the share mark ledger of the window is full, the opened tab is not left usable without its mark', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-0', 'view-a');
+		fixture.openers.set('opened-1', 'opened-0');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), 'granted');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')), 'granted');
+		const marks = Reflect.get(fixture.service, '_openedTabShareMarks') as Map<string, Set<string>>;
+		marks.set('window:1', new Set(Array.from({ length: PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS }, (_, index) => `marked-${index}`)));
+		assert.deepStrictEqual({
+			marked: await fixture.service.markOpenedTabShared(connection, 'opened-0'),
+			usable: [usable('view-a'), usable('opened-0'), usable('opened-1')],
+			grants: (await fixture.service.listAgentTabGrants(connection)).map(grant => grant.pageId),
+		}, {
+			marked: false,
+			// 孫（opened-0 から開いた opened-1）も一緒に外れる
+			usable: [true, false, false],
+			grants: [],
+		});
+	});
+
 	test('a tab is not shared when its opener is unknown or not usable by the pane', async () => {
 		const { fixture, connection, share } = await setup();
 		await share('view-a');
@@ -790,6 +816,8 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		await share('view-a');
 		const results: string[] = [];
 		for (let index = 0; index <= PARADIS_OPENED_TAB_LIMIT; index++) {
+			// 短い間の連続の上限には当たらない間隔で開く
+			fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
 			fixture.openers.set(`opened-${index}`, 'view-a');
 			results.push(await fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`)));
 		}
@@ -807,6 +835,35 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			agentTab: true,
 			skipped: [`opened-${PARADIS_OPENED_TAB_LIMIT}`],
 			overLimitUsable: false,
+		});
+	});
+
+	test('a page that opens many tabs at once gets only some of them shared, and more after a while', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		const grant = async (index: number) => {
+			fixture.openers.set(`opened-${index}`, 'view-a');
+			return fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`));
+		};
+		const burst: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			burst.push(await grant(index));
+		}
+		fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
+		const later = await grant(PARADIS_OPENED_TAB_BURST_LIMIT + 1);
+		const skipped = (Reflect.get(fixture.service, '_skippedOpenedTabIds') as (token: string) => string[]).call(fixture.service, 'token');
+		assert.deepStrictEqual({
+			granted: burst.filter(result => result === 'granted').length,
+			last: burst[PARADIS_OPENED_TAB_BURST_LIMIT],
+			later,
+			skipped,
+			overBurstUsable: usable(`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`),
+		}, {
+			granted: PARADIS_OPENED_TAB_BURST_LIMIT,
+			last: 'limitReached',
+			later: 'granted',
+			skipped: [`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`],
+			overBurstUsable: false,
 		});
 	});
 });
