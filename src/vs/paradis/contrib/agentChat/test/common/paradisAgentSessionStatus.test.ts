@@ -16,6 +16,7 @@ import {
 	paradisClaudeContextWindow,
 	paradisCodexContextPercent,
 } from '../../common/paradisAgentSessionStatus.js';
+import { newParseSignals, parseClaudeLine } from '../../common/paradisAgentTranscriptParser.js';
 
 const T0 = Date.parse('2026-10-06T10:00:00.000Z');
 
@@ -145,6 +146,14 @@ suite('ParadisAgentSessionStatus', () => {
 			fromMod: { tokens: 142_800, window: 1_000_000, percent: 14, source: 'mod' },
 			windows: [200_000, 1_000_000],
 		});
+	});
+
+	test('an interrupted or failed reply (model <synthetic>) does not replace the model the window is read from', () => {
+		const signals = newParseSignals();
+		const assistant = (uuid: string, model: string) => ({ type: 'assistant', uuid, timestamp: at(0), message: { role: 'assistant', model, content: [{ type: 'text', text: 'hi' }] } });
+		parseClaudeLine(assistant('a1', 'claude-opus-4-7'), signals);
+		parseClaudeLine(assistant('a2', '<synthetic>'), signals);
+		assert.deepStrictEqual([signals.model, paradisClaudeContextWindow(signals.model, 140_000)], ['claude-opus-4-7', 200_000]);
 	});
 
 	test('the Claude window is 1M by default and 200K only for model names before 5.x', () => {
