@@ -37,6 +37,7 @@ import { inspectParadisWordRasterImageWithReason, PARADIS_WORD_DOCUMENT_IMAGE_PI
 import { inspectParadisOfficeBmp } from '../common/office/paradisOfficeBmpInspection.js';
 import { sanitizeOfficeSvg, type ParadisSanitizedSvg } from '../common/paradisOfficeSanitizer.js';
 import { normalizeWorkbookForExcelJs } from './spreadsheet/paradisSpreadsheetExcelJsPackage.js';
+import { unprefixWorkbookSpreadsheetMl } from './spreadsheet/paradisSpreadsheetPrefixedXml.js';
 import { installParadisExcelJsMergeFastPath, paradisExcelJsMergeRanges } from './spreadsheet/paradisSpreadsheetExcelJsMerges.js';
 import { createParadisSpreadsheetCommentBudget, readParadisSpreadsheetSheetComments } from './spreadsheet/paradisSpreadsheetComments.js';
 import { paradisDrawingRightmostColumn, paradisShownNotesExtent, type IParadisDrawingExtentMetrics } from '../common/spreadsheet/paradisSpreadsheetDrawingExtent.js';
@@ -1604,7 +1605,9 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		}
 		// exceljs は部品名の型と相対 Target を前提にする。絶対 Target や別名のコメント部品があると、
 		// ブック全体が開けなくなるので、そのときだけ exceljs の想定する並びへ直してから渡す。
-		const buffer = await normalizeWorkbookForExcelJs(source, runtime.JSZip);
+		// OpenXML SDK などが書く `<x:workbook>` のような接頭辞付きの要素名は exceljs も自前の読み取りも
+		// 読めないので、接頭辞の付いた部品があるときだけ、接頭辞の無い形にそろえてから渡す。
+		const buffer = await normalizeWorkbookForExcelJs(await unprefixWorkbookSpreadsheetMl(source, runtime.JSZip), runtime.JSZip);
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
