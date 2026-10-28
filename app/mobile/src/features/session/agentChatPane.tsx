@@ -29,6 +29,8 @@ import { EmptyState } from '../../ui/index.js';
 import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js';
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
+import { ASYNC_FREE_TEXT_PREFIX, AsyncQuestionCard } from './asyncQuestionCard.js';
+import { groupAsyncQuestions, isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestions.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
 import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
@@ -213,6 +215,23 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	);
 	const pinnedId = pinned !== undefined ? questionRowId(pinned) : undefined;
 	const questionWithoutRow = interactionKind === 'question' && pinned === undefined;
+	// Codex の非同期の質問（agent.async-questions.v1）。承認・質問の枠とは別に、答えるか閉じるまで残る。出すのは最初の呼び出しの
+	// まだ送っていない問いだけ（承認・質問のカードがあればそちらを先に出す）
+	const asyncSupported = usePcCapability(PcCapability.AgentAsyncQuestions);
+	const asyncQuestions = asyncSupported && chatReady ? chat?.asyncQuestions : undefined;
+	const asyncHidden = useAsyncQuestionDrafts(useShallow(s => ({ sent: s.sent, dismissed: s.dismissed })));
+	const pruneAsyncDrafts = useAsyncQuestionDrafts(s => s.prune);
+	const asyncIdsKey = (asyncQuestions ?? []).map(question => question.id).join('\n');
+	useEffect(() => {
+		if (asyncQuestions !== undefined) {
+			pruneAsyncDrafts(asyncQuestions.map(question => question.id));
+		}
+	}, [asyncIdsKey, pruneAsyncDrafts]);
+	const asyncGroup = useMemo(() => {
+		const now = Date.now();
+		return groupAsyncQuestions((asyncQuestions ?? []).filter(question => !isAsyncQuestionHidden(asyncHidden, question.id, now)))[0];
+	}, [asyncQuestions, asyncHidden]);
+	const asyncVisibleIds = useMemo(() => new Set((asyncGroup ?? []).map(question => question.id)), [asyncGroup]);
 
 	// 「その他（入力して回答）」でコンポーザーを回答入力に切り替える依頼。固定している質問のときだけ有効。
 	const composerRef = useRef<SessionComposerHandle>(null);
@@ -238,7 +257,10 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	// 許可のカードの「拒否して指示を書く」は、その承認が表に出ている間だけ有効
 	const activeAnswerRequest = answerRequest !== undefined && (answerRequest.mode === 'deny'
 		? approval !== undefined && answerRequest.id === approval.id
-		: pinnedId !== undefined && (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`)))
+		: answerRequest.id.startsWith(ASYNC_FREE_TEXT_PREFIX)
+			// 非同期の質問の答えの入力は、その問いのカードが出ている間だけ
+			? approval === undefined && pinned === undefined && asyncVisibleIds.has(answerRequest.id.slice(ASYNC_FREE_TEXT_PREFIX.length))
+			: pinnedId !== undefined && (answerRequest.id === pinnedId || answerRequest.id.startsWith(`${pinnedId}:`)))
 		? answerRequest
 		: undefined;
 	const clarifying = activeAnswerRequest?.mode === 'clarify';
@@ -319,10 +341,21 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	) : questionWithoutRow ? (
 		<Notice title="質問の内容を読み込んでいます…" body="表示されない場合は、ターミナル表示で回答してください" />
 	) : undefined;
+	// 承認・質問のカードが無いときだけ、非同期の質問のカードを同じ場所に出す
+	const asyncCard = card === undefined && asyncGroup !== undefined ? (
+		<AsyncQuestionCard
+			key={asyncGroup[0]?.callId}
+			questions={asyncGroup}
+			working={working}
+			onSend={sendText}
+			onRequestFreeText={requestFreeText}
+			freeTextActiveId={activeAnswerRequest?.id}
+		/>
+	) : undefined;
 	const showQuickReplies = shouldShowQuickReplies({
 		agentStatus: terminal.agentStatus,
 		working,
-		hasPinnedCard: card !== undefined,
+		hasPinnedCard: card !== undefined || asyncCard !== undefined,
 		chatReady,
 		answering: activeAnswerRequest !== undefined,
 	});
@@ -352,11 +385,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					/>
 				)}
 				<View style={[styles.bottom, column]}>
-					{card !== undefined ? (
+					{card !== undefined || asyncCard !== undefined ? (
 						<ScrollView ref={cardScrollRef} style={[styles.cardScroll, { maxHeight: cardMaxHeight }]} contentContainerStyle={styles.cardContent} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 							<View ref={cardContentRef} collapsable={false}>
 								<PinnedCardScrollContext.Provider value={cardScroll}>
 									{card}
+									{asyncCard ?? null}
 								</PinnedCardScrollContext.Provider>
 							</View>
 						</ScrollView>

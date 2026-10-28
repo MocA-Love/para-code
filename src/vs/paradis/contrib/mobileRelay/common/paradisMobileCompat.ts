@@ -244,6 +244,13 @@ export const ParadisMobileCapability = {
 	 * fs の `htmlImage`（`token`・`index`）で 1 枚ずつ取り寄せる。抜く画像が無い・どちらかが古いときは、今までどおり本文だけを送る。
 	 */
 	FsHtmlImages: 'fs.html-images.v1',
+	/**
+	 * agent の snapshot / delta の任意項目 `asyncQuestions`（Codex の非同期の質問 `request_user_input_async` のうち、まだ答えて
+	 * いないもの。`paradisCodexAsyncQuestions.ts`）と、会話のメッセージの任意項目 `questionReplies`（返信の発言を読んだもの）。
+	 * PC は Codex の会話で変わったときだけ載せ、全部答えたら空の配列を送る。答えはアプリが決まった形の発言に組み立て、
+	 * 普通の `action/sendMessage` で送る（古い PC でも同じ発言として届く）。アプリは PC が広告しているときだけ専用のカードを出す。
+	 */
+	AgentAsyncQuestions: 'agent.async-questions.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -303,6 +310,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BrowserCursor,
 	ParadisMobileCapability.AgentTeams,
 	ParadisMobileCapability.FsHtmlImages,
+	ParadisMobileCapability.AgentAsyncQuestions,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
@@ -332,6 +340,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsHtmlImages,
 	// PC はこれを見て、PC の入力欄の書きかけ（`pcDraft`）を送る（古いアプリには送らない）。
 	ParadisMobileCapability.AgentPcDraft,
+	// 非同期の質問のカード。PC は広告の有無に関わらず `asyncQuestions` を載せる（古いアプリは無視する）。
+	ParadisMobileCapability.AgentAsyncQuestions,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

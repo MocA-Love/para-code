@@ -19,6 +19,7 @@ import { IMarkdownRendererService, MarkdownRendererService } from '../../../../.
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { NullOpenerService } from '../../../../../platform/opener/test/common/nullOpenerService.js';
 import { ParadisAgentQuestionAnswer } from '../../../mobileRelay/common/paradisAgentQuestionKeys.js';
+import { paradisCodexAsyncQuestionItemId, paradisParseCodexAsyncReply } from '../../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
@@ -102,6 +103,45 @@ suite('ParadisAgentChatView', () => {
 	test('shows the OpenCode identity in its own conversation header', async () => {
 		const { container } = await createView([{ token: 'pane', agent: 'opencode', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
 		assert.strictEqual(container.querySelector('.paradis-agent-chat-header-agent')?.textContent, 'OpenCode');
+	});
+
+	test('shows the Codex async questions as a card apart from the interaction, sends only the answered one as a reply, and draws a reply message as question and answer', async () => {
+		const q0 = paradisCodexAsyncQuestionItemId('call_1', 0);
+		const q1 = paradisCodexAsyncQuestionItemId('call_1', 1);
+		const { host, container } = await createView([{
+			token: 'pane', agent: 'codex', epoch: 'e', rev: 2, reset: true, busy: true, live: null, interaction: null,
+			messages: [
+				{ rev: 0, role: 'user', kind: 'text', text: '<send_user_message_question_reply>…', questionReplies: [{ question: '前の質問', answer: 'はい' }] },
+				{ rev: 1, role: 'assistant', kind: 'text', text: '作業を続けています' },
+			],
+			asyncQuestions: [
+				{ id: q0, callId: 'call_1', index: 0, count: 2, title: 'どのブランチに入れますか？', options: ['main', 'release/1.2'] },
+				{ id: q1, callId: 'call_1', index: 1, count: 2, title: '接頭辞は？' },
+			],
+		}]);
+		const text = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map(element => element.textContent);
+		const before = {
+			reply: text('.paradis-agent-chat-question-reply'),
+			card: text('.paradis-agent-chat-card.async .paradis-agent-chat-card-title'),
+			question: text('.paradis-agent-chat-card.async .paradis-agent-chat-question-text'),
+			submit: container.querySelector<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')?.textContent,
+		};
+		container.querySelectorAll<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-option')[1].click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		// 1 問目を選ぶと 2 問目へ進む。2 問目は答えずに送る
+		const afterPick = text('.paradis-agent-chat-card.async .paradis-agent-chat-question-text');
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-card.async .paradis-agent-chat-primary')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ before, afterPick, sent: host.sent.map(sent => paradisParseCodexAsyncReply(sent)?.map(reply => [reply.itemId, reply.answer])) }, {
+			before: {
+				reply: ['回答: 前の質問はい'],
+				card: ['Codex からの 2 つの質問作業は続いています'],
+				question: ['どのブランチに入れますか？'],
+				submit: '回答を送る（0/2）',
+			},
+			afterPick: ['接頭辞は？'],
+			sent: [[[q0, 'release/1.2']]],
+		});
 	});
 
 	test('renders the conversation, a tool row with its diff card and the pending question, and answers through the host', async () => {

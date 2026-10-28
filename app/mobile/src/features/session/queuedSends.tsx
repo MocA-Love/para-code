@@ -11,6 +11,7 @@ import { haptic } from '../../haptics.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, Button, DrawerCaption, DrawerTitle } from '../../ui/index.js';
+import { displaySentText } from '../../asyncQuestions.js';
 
 /** 行の点の大きさ。 */
 const DOT = 8;
@@ -96,7 +97,7 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 					return (
 						<View key={item.id} style={styles.row}>
 							{item.target.title !== undefined ? <Text style={styles.target} numberOfLines={1}>{item.target.title}</Text> : null}
-							<Text style={styles.body} numberOfLines={4} selectable>{item.text}</Text>
+							<Text style={styles.body} numberOfLines={4} selectable>{displaySentText(item.text)}</Text>
 							<Text style={[styles.status, item.status === 'failed' || item.status === 'expired' ? styles.statusError : undefined]}>{agentSendStatusText(item)}</Text>
 							<View style={styles.actions}>
 								{item.status === 'needs-confirm' && terminalOpen ? (

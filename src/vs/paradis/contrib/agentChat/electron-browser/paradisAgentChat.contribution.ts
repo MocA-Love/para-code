@@ -56,6 +56,7 @@ import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentCha
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import '../browser/media/paradisAgentChat.css';
 
 const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -507,7 +508,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	async sendMessage(instanceId: number, token: string, text: string): Promise<string | undefined> {
 		const error = await this.input.sendMessage(instanceId, token, text);
-		if (error === undefined) {
+		// 非同期の質問への返信（カードから送った決まった形の発言）は、入力欄の履歴に残さない
+		if (error === undefined && paradisParseCodexAsyncReply(text) === undefined) {
 			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
 		return error;

@@ -81,6 +81,8 @@ import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsFor
 import { IParadisAgentSessionStatus, paradisClaudeTranscriptModel, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
 import { IParadisAgentTeam, ParadisAgentTeamTracker, ParadisTeamApprovals, paradisTeamActivityText, paradisTeamsForStoppedPane } from '../../agentChat/common/paradisAgentTeams.js';
+import { ParadisCodexAsyncQuestionLedger } from '../../agentChat/common/paradisCodexAsyncQuestionLedger.js';
+import { IParadisCodexAsyncQuestion, PARADIS_CODEX_ASYNC_QUESTION_TOOL, paradisCodexAsyncQuestionsFromArguments, paradisParseCodexAsyncReply } from '../common/paradisCodexAsyncQuestions.js';
 import { IParadisTeamConfigReadState, IParadisTeamMemberReadState, paradisNewTeamMemberReadState, paradisReadClaudeTeamConfig, paradisReadClaudeTeamMember } from './paradisClaudeTeamFiles.js';
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { ParadisMobileCapability } from '../common/paradisMobileCompat.js';
@@ -194,8 +196,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField & IParadisAgentAsyncQuestionsField
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true }; monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number; panel?: IParadisAgentPanel | null; pcDraft?: IParadisAgentPcDraft | null; sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField & IParadisAgentAsyncQuestionsField
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[]; format?: 2 }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
@@ -328,6 +330,14 @@ const TEAM_REFRESH_RUNNING_MS = 10_000;
 interface IParadisAgentTeamsField {
 	teams?: readonly IParadisAgentTeam[];
 	teamsAt?: number;
+}
+
+/**
+ * snapshot / delta の任意項目（Codex のセッションだけ。agent.async-questions.v1）。まだ答えていない非同期の質問の全部。
+ * 変わったときだけ載せ、全部答えたら空の配列を送る。
+ */
+interface IParadisAgentAsyncQuestionsField {
+	asyncQuestions?: readonly IParadisCodexAsyncQuestion[];
 }
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
@@ -1897,6 +1907,11 @@ interface ITailerDelegate {
 	isOpenCodeTurnActive?(): boolean;
 	/** ライブ追記で Advisor の呼び出し・結果（`advisor` の付いたメッセージ）を読んだ。 */
 	onAdvisors?(messages: readonly IParadisAgentChatMessage[]): void;
+	/**
+	 * Codex の非同期の質問の台帳が変わった（足された・答えた・読み直した）。`added` はライブで初めて知った質問（通知に使う。
+	 * 初回読み込み・読み直しでは空）。
+	 */
+	onAsyncQuestions?(added: readonly IParadisCodexAsyncQuestion[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
@@ -2033,6 +2048,11 @@ class TranscriptTailer {
 	private readonly backgroundWorkflowRuns = new Map<string, string>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
 	readonly pendingQuestions = new Set<string>();
+	/**
+	 * Codex の非同期の質問（request_user_input_async）のまだ答えていないもの。pendingQuestions・interaction とは別に持ち、
+	 * ターンの終わりや普通の発言では消さない（返信の発言を読んだときだけ消す）。
+	 */
+	readonly asyncQuestions = new ParadisCodexAsyncQuestionLedger();
 	/** mod（Claude Mods）が待っていて値で答えられる質問のカード（questionGroup ?? toolUseId）。`answerVia` の元。 */
 	private modQuestionIds: ReadonlySet<string> = new Set<string>();
 	/** Claude Code の Monitor の一覧（epoch ごと。モバイルのコンポーザーのピルに出す）。 */
@@ -2519,6 +2539,8 @@ class TranscriptTailer {
 				this.backgroundTaskKinds.clear();
 				this.backgroundWorkflowRuns.clear();
 				this.pendingQuestions.clear();
+				// 読み直しで今の rollout から作り直す（送るのは onEpochReset の snapshot）
+				this.asyncQuestions.clear();
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
 				this.workflows.clear();
@@ -3680,6 +3702,42 @@ class TranscriptTailer {
 		if (signals.turnEnded !== undefined) {
 			this.approvalDeniedInTurn = false;
 		}
+		if (this.agent === 'codex' && (signals.codexAsyncQuestions.length > 0 || signals.codexAsyncAnswered.length > 0)) {
+			const before = this.asyncQuestions.revision;
+			const added = this.asyncQuestions.addConfirmed(signals.codexAsyncQuestions);
+			this.asyncQuestions.answer(signals.codexAsyncAnswered);
+			if (this.asyncQuestions.revision !== before) {
+				this.delegate.onAsyncQuestions?.(live ? added : []);
+			}
+		}
+	}
+
+	/** PreToolUse hook で受けた非同期の質問を仮に足す（rollout に書かれる前に知らせるため）。 */
+	addAsyncQuestionsFromHook(toolUseId: string | undefined, toolInput: unknown, at: number): void {
+		const questions = this.agent === 'codex' ? paradisCodexAsyncQuestionsFromArguments(toolUseId, toolInput, at) : undefined;
+		if (questions === undefined) {
+			return;
+		}
+		const before = this.asyncQuestions.revision;
+		const added = this.asyncQuestions.addProvisional(questions);
+		if (this.asyncQuestions.revision !== before) {
+			this.delegate.onAsyncQuestions?.(added);
+		}
+	}
+
+	/** 非同期の質問の呼び出しが失敗した（PostToolUseFailure）。rollout で確かめていない仮の質問を外す。 */
+	dropAsyncQuestionsFromHook(toolUseId: string): void {
+		if (this.asyncQuestions.dropProvisional(toolUseId)) {
+			this.delegate.onAsyncQuestions?.([]);
+		}
+	}
+
+	/** UserPromptSubmit hook の発言が返信の形なら、答えた質問を外す（rollout を待たずに消すため）。 */
+	answerAsyncQuestionsFromPrompt(prompt: string): void {
+		const replies = this.agent === 'codex' ? paradisParseCodexAsyncReply(prompt) : undefined;
+		if (replies !== undefined && this.asyncQuestions.answer(replies.filter(reply => reply.callId !== undefined).map(reply => reply.itemId))) {
+			this.delegate.onAsyncQuestions?.([]);
+		}
 	}
 }
 
@@ -3909,6 +3967,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly workflowReads = new WeakMap<TranscriptTailer, { readonly epoch: string; readonly runs: Map<string, IParadisWorkflowRunReadState> }>();
 	/** 最後に送ったチームの一覧の印（epoch・版・許可待ち・ペインの停止。変わったときだけ delta に載せる）。 */
 	private readonly teamsSent = new Map<string, string>();
+	/** 最後に送った非同期の質問の一覧の印（epoch・台帳の版。変わったときだけ delta に載せる）。 */
+	private readonly asyncQuestionsSent = new Map<string, string>();
 	/** チームのファイルを読み直す予約（ペインごと）。 */
 	private readonly teamRefreshTimers = new Map<string, { readonly timer: ReturnType<typeof setTimeout>; readonly at: number }>();
 	/** チームのファイルを読んでいる最中のペイン。 */
@@ -6516,7 +6576,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
@@ -6526,6 +6586,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
 					...this.monitorsField(token, tailer, true),
 					...this.sessionStatusField(token, tailer, true),
+					...this.asyncQuestionsField(token, tailer, true),
 					...this.panelField(token),
 					...pcDraft,
 				}, token, owner);
@@ -7924,6 +7985,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			live: this.liveStates.get(token) ?? null,
 			interaction,
 			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
+			...(tailer.agent === 'codex' ? { asyncQuestions: tailer.asyncQuestions.pending() } : {}),
 			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
 			...(this.desktopExitedTokens.has(token) ? { agentExited: true } : {}),
 		};
@@ -8208,6 +8270,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			tailer.epoch, tailer.rev, this.liveRevisions.get(token) ?? 0,
 			interaction === null ? '' : `${interaction.kind}:${interaction.id}:${interaction.kind === 'approval' ? interaction.choices?.length ?? 0 : ''}`,
 			info?.model ?? '', info?.effort ?? '',
+			tailer.asyncQuestions.revision,
 			this.activeTurnTokens.has(token) ? 'busy' : 'idle',
 			this.desktopExitedTokens.has(token) ? 'exited' : '',
 		].join('\0');
@@ -9598,6 +9661,22 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectLiveQuestions(event.toolInput, !mobileWants);
 		}
 
+		// Codex の非同期の質問（request_user_input_async）。rollout の item_completed が正で、ここは早く知るための補助
+		// （tool_use_id が call_id。rollout が同じ呼び出しを書いたら同じ質問として扱う）。返信の発言は UserPromptSubmit の
+		// prompt にも来るので、rollout を待たずに答えた質問を外す。
+		if (info.agent === 'codex' && (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			if (event.event === 'PreToolUse' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolInput !== undefined) {
+				this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).addAsyncQuestionsFromHook(event.toolUseId, event.toolInput, event.at);
+			} else if (event.event === 'PostToolUseFailure' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolUseId !== undefined) {
+				this.tailers.get(event.token)?.dropAsyncQuestionsFromHook(event.toolUseId);
+			} else if (event.event === 'UserPromptSubmit') {
+				const prompt = str(event.payload?.prompt);
+				if (prompt !== undefined) {
+					this.tailers.get(event.token)?.answerAsyncQuestionsFromPrompt(prompt);
+				}
+			}
+		}
+
 		// 承認要求のライブ検出: Codex は承認要求を rollout に書かず、Claude もプロンプト
 		// 表示中は transcript に現れないため、PermissionRequest hook の tool_name / tool_input
 		// から内容カードを注入する（モバイルの承認バーに「何を承認するのか」を添える）。
@@ -9733,7 +9812,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.panelField(token) });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token) });
 				}
 				// 読み直したカードを mod の待ちと突き合わせ直す（変われば delta で answerVia を送り直す）
 				this.refreshModQuestions(token);
@@ -9768,6 +9847,13 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			},
 			onSessionStatus: () => this.pushSessionStatusIfChanged(token),
+			onAsyncQuestions: added => {
+				this.pushAsyncQuestionsIfChanged(token);
+				this.scheduleDesktopInsightCheck();
+				if (added.length > 0) {
+					this.notifyAsyncQuestions(token, tailer, added);
+				}
+			},
 			onWorkflows: live => {
 				if (live) {
 					this.pushWorkflowsIfChanged(token);
@@ -9992,6 +10078,27 @@ export class ParadisMobileAgentChat extends Disposable {
 		return seenAt === undefined ? undefined : Date.now() - seenAt;
 	}
 
+	/**
+	 * Codex の非同期の質問を、AskUserQuestion の質問と同じ「質問」の通知で知らせる（出口・PC を見ているときに鳴らさない設定も同じ）。
+	 * 1 回の呼び出しにつき 1 回（台帳が初めて知った呼び出しだけを渡す）。
+	 */
+	private notifyAsyncQuestions(token: string, tailer: TranscriptTailer, questions: readonly IParadisCodexAsyncQuestion[]): void {
+		const terminalId = this.terminalIdForToken(token);
+		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
+		const text = questions.map(question => question.title).join('\n\n');
+		if (terminalId === undefined || owner === undefined || text.trim().length === 0) {
+			return;
+		}
+		void this.authorizeOwner(owner).then(authorized => {
+			const current = this.ownerForPane(terminalId, token);
+			if (!authorized || current === undefined || !this.samePaneOwner(current, owner) || this.tailers.get(token) !== tailer) {
+				return;
+			}
+			const ws = this.tokenToWorkspace.get(token);
+			this.onQuestion({ terminalId, agent: tailer.agent, text, ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
+		}).catch(error => this.logService.warn('[paradisAgentChat] async question notify failed', error));
+	}
+
 	private notifyQuestionForCurrentOwner(token: string, tailer: TranscriptTailer, terminalId: number, message: IParadisAgentChatMessage): void {
 		const owner = this.ownerForPane(terminalId, token);
 		if (owner === undefined) {
@@ -10120,7 +10227,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 「停止（推定）」にして送る。推定は tailer のメモリにしか無く、作り直すと再生で running に戻るため、
 	 * 送るたびにここで判定する。
 	 */
-	private monitorsField(token: string, tailer: TranscriptTailer, full = false): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField {
+	private monitorsField(token: string, tailer: TranscriptTailer, full = false): { monitors?: readonly IParadisAgentMonitor[]; monitorsAt?: number } & IParadisAgentShellsField & IParadisAgentWorkflowsField & IParadisAgentTeamsField & IParadisAgentAsyncQuestionsField {
 		if (tailer.agent !== 'claude') {
 			return {};
 		}
@@ -10322,6 +10429,38 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const field = this.teamsField(token, tailer, false);
 		if (field.teams !== undefined) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+		}
+	}
+
+	/**
+	 * snapshot / delta に載せる非同期の質問（agent.async-questions.v1。Codex だけ）。snapshot と購読の応答（`full`）以外は、
+	 * 前に送ったものから変わったときだけ載せる。古いアプリは知らない項目として無視する。
+	 */
+	private asyncQuestionsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentAsyncQuestionsField {
+		if (tailer.agent !== 'codex') {
+			return {};
+		}
+		const signature = `${tailer.epoch}\0${tailer.asyncQuestions.revision}`;
+		if (!full && (this.asyncQuestionsSent.get(token) ?? `${tailer.epoch}\0${0}`) === signature) {
+			return {};
+		}
+		// 1 台宛ての応答（購読の開始）では覚えない。他の端末へまだ届いていない変化を、次の delta で取りこぼさないため
+		if (!full) {
+			this.asyncQuestionsSent.set(token, signature);
+		}
+		return { asyncQuestions: tailer.asyncQuestions.pending() };
+	}
+
+	/** 非同期の質問の一覧が前に送ったものから変わっていれば、空 delta で届ける。 */
+	private pushAsyncQuestionsIfChanged(token: string): void {
+		const tailer = this.tailers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		if (tailer === undefined || tailer.agent !== 'codex' || terminalId === undefined) {
+			return;
+		}
+		const field = this.asyncQuestionsField(token, tailer, false);
+		if (field.asyncQuestions !== undefined) {
 			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
 		}
 	}

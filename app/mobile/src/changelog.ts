@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.18',
+		date: '2026-10-28',
+		items: [
+			{
+				icon: 'help-circle-outline',
+				title: 'Codex が作業を止めずに出す質問に、モバイルから答えられるようになりました',
+				body: '質問は会話の下のカードに出て、ターンが終わっても答えるまで残ります。答えた質問だけを送ることもでき、送った答えは会話に「回答: 質問 → 答え」の形で出ます。',
+			},
+		],
+	},
+	{
 		version: '0.12.17',
 		date: '2026-10-27',
 		items: [

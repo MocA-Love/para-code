@@ -152,6 +152,39 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
+/* Codex の非同期の質問のカード（呼び出しごとに 1 枚）と、その返信の発言 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-async:not(:empty) {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.async .paradis-agent-chat-card-title > .paradis-agent-chat-question-header {
+	margin-left: auto;
+	font-weight: normal;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-replies {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-reply-question {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question-reply-answer {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-notice {
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);
