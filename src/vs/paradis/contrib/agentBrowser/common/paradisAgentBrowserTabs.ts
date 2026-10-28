@@ -44,7 +44,7 @@ export const PARADIS_AGENT_TAB_LIMIT = 50;
  * （{@link PARADIS_AGENT_TAB_LIMIT}）とは別枠。共有したページは裏にあっても描画を止めない（背景の描画止めを外す）
  * ので、その数を 1 ペインあたりで抑える。
  */
-export const PARADIS_USER_SHARED_PAGE_LIMIT = 10;
+export const PARADIS_USER_SHARED_PAGE_LIMIT = 50;
 
 /**
  * 共有したページ・許可したタブから開いたタブ（target=_blank・window.open・Ctrl/Cmd/中クリック・右クリックの
