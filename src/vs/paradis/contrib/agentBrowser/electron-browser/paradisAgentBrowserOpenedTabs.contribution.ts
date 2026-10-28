@@ -19,6 +19,7 @@
 // 外れたら下ろす。台帳と許可はどちらも shared process の状態なので、renderer の控えの遅れや再読み込みをまたいでも
 // 印だけが残らない。ユーザーが印を外したら（共有ボタン）許可も外す。
 
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -26,6 +27,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { BrowserViewSharingState, IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { PARADIS_OPENED_TAB_BURST_RETRIES, PARADIS_OPENED_TAB_BURST_WINDOW_MS } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
 import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
@@ -41,7 +43,7 @@ interface IOpenedTabShareMark {
 	readonly inUse: boolean;
 }
 
-class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisAgentBrowserOpenedTabs';
 
 	/** 見たことのあるタブ（新しく開いたタブだけを扱う）。 */
@@ -49,6 +51,10 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 	private _ready = false;
 	/** ここで共有の印を付けたタブ → ユーザーが印を外すのの見張り（このウィンドウの今の世代の分だけ）。 */
 	private readonly _watchers = this._register(new DisposableMap<string, DisposableStore>());
+	/** 連続の上限で断られたタブ → 頼み直しの時計（タブが閉じたら止める）。 */
+	private readonly _retries = this._register(new DisposableMap<string>());
+	/** ユーザーが共有の印を外したタブ。もう自動では共有しない（頼み直しでも共有を戻さない）。 */
+	private readonly _unsharedByUser = new Set<string>();
 	/** {@link _reconcile} の実行中か、実行中にもう一度頼まれたか。 */
 	private _reconciling: Promise<void> | undefined;
 	private _reconcileAgain = false;
@@ -83,6 +89,8 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 			if (!known.has(id)) {
 				this._seen.delete(id);
 				this._watchers.deleteAndDispose(id);
+				this._retries.deleteAndDispose(id);
+				this._unsharedByUser.delete(id);
 			}
 		}
 		for (const [id, input] of known) {
@@ -93,20 +101,39 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 		}
 	}
 
-	private async _shareOpenedTab(input: BrowserEditorInput): Promise<void> {
-		const tokens = await this._bindingModel.openerPanesOf(input.id);
-		if (tokens.length === 0) {
+	/**
+	 * 開いたタブを、元のタブを使えるペインへ共有する。`retry` は連続の上限で断られたペインへの頼み直し（何回目か）。
+	 * 頼み直しでも、元のタブを使えるペインは聞き直す（その間に共有が外れたペインへは広げない）。
+	 */
+	private async _shareOpenedTab(input: BrowserEditorInput, retry?: { readonly tokens: readonly string[]; readonly attempt: number }): Promise<void> {
+		const openerPanes = await this._bindingModel.openerPanesOf(input.id);
+		const tokens = retry === undefined ? openerPanes : retry.tokens.filter(token => openerPanes.includes(token));
+		if (tokens.length === 0 || !this._seen.has(input.id) || this._unsharedByUser.has(input.id)) {
 			return;
 		}
 		const model = await input.resolve();
 		const sharedBefore = isShared(model);
 		let granted = false;
+		const bursting: string[] = [];
 		for (const token of tokens) {
+			if (this._unsharedByUser.has(input.id)) {
+				return;
+			}
 			const result = await this._tabs.shareOpenedTab(token, input);
 			granted = granted || result === 'granted';
 			if (result === 'limitReached') {
 				this._logService.debug('[ParadisAgentBrowserOpenedTabs] a pane reached the limit of tabs opened from its pages; not sharing the new tab');
+			} else if (result === 'burstLimited') {
+				bursting.push(token);
 			}
+		}
+		const attempt = (retry?.attempt ?? 0) + 1;
+		if (bursting.length > 0 && attempt <= PARADIS_OPENED_TAB_BURST_RETRIES && this._seen.has(input.id) && !this._unsharedByUser.has(input.id) && !this._store.isDisposed) {
+			// 短い間に開きすぎた。窓が空いたら頼み直す
+			this._retries.set(input.id, disposableTimeout(() => {
+				this._retries.deleteAndDispose(input.id);
+				void this._shareOpenedTab(input, { tokens: bursting, attempt }).catch(error => this._logService.debug('[ParadisAgentBrowserOpenedTabs] could not share an opened tab again', error));
+			}, PARADIS_OPENED_TAB_BURST_WINDOW_MS));
 		}
 		if (granted && !sharedBefore && isShared(model) && this._seen.has(input.id)) {
 			// 印を付けたことを台帳へ。台帳に載らなかったら、外し損ねないよう今下ろす
@@ -125,6 +152,9 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 		store.add(model.onDidChangeSharingState(state => {
 			if (paradisIsShareMarkRemoved(state) && this._watchers.has(viewId)) {
 				this._watchers.deleteAndDispose(viewId);
+				// 連続の上限で待っているペインへの頼み直しで、外した共有を戻さない
+				this._retries.deleteAndDispose(viewId);
+				this._unsharedByUser.add(viewId);
 				for (const token of this._bindingModel.getAgentTabOwnersForPage(viewId)) {
 					void this._bindingModel.revokeAgentTab(token, viewId);
 				}

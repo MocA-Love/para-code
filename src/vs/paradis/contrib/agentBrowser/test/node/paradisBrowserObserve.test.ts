@@ -168,6 +168,34 @@ suite('Paradis browser observe', () => {
 		});
 	});
 
+	test('without tab_id, the browser state lists at most 10 tabs with the current one first and shortens long addresses', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const tabs = Array.from({ length: 150 }, (_, index) => ({ tabId: `t${index}`, url: `http://127.0.0.1/${index === 0 ? 'x'.repeat(300) : index}`, title: `t${index}`, current: index === 149, shared: false }));
+		const { host } = fakeHost({ pages: [PAGES_ONE] });
+		const withTabs: IParadisObserveHost = { ...host, tabs: async () => tabs };
+		const before = await observer.before(withTabs, options, 'changes', 2000);
+		const listed = ['t149 (current) "t149" http://127.0.0.1/149', `t0 "t0" http://127.0.0.1/${'x'.repeat(200 - 'http://127.0.0.1/'.length)}...`, ...Array.from({ length: 8 }, (_, index) => `t${index + 1} "t${index + 1}" http://127.0.0.1/${index + 1}`)];
+		assert.strictEqual(await observer.after(withTabs, 'pane', options, before, 'changes', 2000), `[Browser state]\nYour tabs: ${listed.join('; ')} (140 other tabs not shown; list_browser_tabs lists all)`);
+	});
+
+	test('with tab_id and many changed tabs, a closed tab is still listed right after the own and current tabs', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: false, state: true };
+		const tab = (tabId: string, url: string, current = false) => ({ tabId, url, title: tabId, current, shared: false });
+		let tabs = [tab('t0', 'http://127.0.0.1/0', true), tab('own', 'http://127.0.0.1/own'), tab('gone', 'http://127.0.0.1/gone'), ...Array.from({ length: 12 }, (_, index) => tab(`c${index}`, `http://127.0.0.1/c${index}`))];
+		const report = async () => {
+			const { host } = fakeHost({ pages: [PAGES_ONE] });
+			const withTabs: IParadisObserveHost = { ...host, tabs: async () => tabs };
+			const before = await observer.before(withTabs, options, 'changes', 2000);
+			return observer.after(withTabs, 'pane\nown', options, before, 'changes', 2000, 'own');
+		};
+		await report();
+		tabs = tabs.filter(entry => entry.tabId !== 'gone').map(entry => entry.tabId.startsWith('c') ? { ...entry, url: `${entry.url}/next` } : entry);
+		const listed = ['own "own" http://127.0.0.1/own', 'gone (closed)', ...Array.from({ length: 8 }, (_, index) => `c${index} "c${index}" http://127.0.0.1/c${index}/next`)];
+		assert.strictEqual(await report(), `[Browser state]\nYour tab and tabs that changed: ${listed.join('; ')} (5 other tabs not shown; list_browser_tabs lists all)`);
+	});
+
 	test('pages are not reported as opened when the list before the action was empty', async () => {
 		const observer = new ParadisBrowserObserver();
 		const options = { settle: false, state: true };
