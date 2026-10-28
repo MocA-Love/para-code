@@ -42,7 +42,7 @@ export interface ApprovalOptionsReply {
  * Codex の app-server 経由の承認は PC が構造化した選択肢を最初から付けてくる。
  */
 export function shouldRequestApprovalOptions(interaction: AgentInteraction | undefined): boolean {
-	if (interaction?.kind !== 'approval' || interaction.id.startsWith('codex:') || interaction.id.startsWith('codex-status:')) {
+	if (interaction?.kind !== 'approval' || interaction.id.startsWith('codex:') || interaction.id.startsWith('codex-status:') || interaction.id.startsWith('opencode:')) {
 		return false;
 	}
 	const ids = (interaction.choices ?? []).map(choice => choice.id).sort();
@@ -54,7 +54,7 @@ export function shouldRequestApprovalOptions(interaction: AgentInteraction | und
  * 答えられる承認は、PC が広告した選択肢のまま答えるが、警告は画面にしか無いので読みに行く（agent.approval.detail.v1）。
  */
 export function shouldRequestApprovalWarningOnly(interaction: AgentInteraction | undefined): boolean {
-	if (interaction?.kind !== 'approval' || interaction.id.startsWith('codex:') || interaction.id.startsWith('codex-status:')) {
+	if (interaction?.kind !== 'approval' || interaction.id.startsWith('codex:') || interaction.id.startsWith('codex-status:') || interaction.id.startsWith('opencode:')) {
 		return false;
 	}
 	return !shouldRequestApprovalOptions(interaction) && (interaction.choices ?? []).some(choice => choice.id === 'always');

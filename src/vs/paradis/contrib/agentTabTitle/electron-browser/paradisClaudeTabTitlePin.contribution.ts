@@ -13,6 +13,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { GeneralShellType } from '../../../../platform/terminal/common/terminal.js';
+import { paradisSetOpenCodeCompatibleCommands } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
@@ -48,6 +49,8 @@ class ParadisClaudeTabTitlePinContribution extends Disposable implements IWorkbe
 				return;
 			}
 			this.sessions = new Map((outcome.snapshot.paneSessions ?? []).map(session => [session.token, session]));
+			// タブ名の判定（terminalInstance.ts の PARA-PATCH）と再開の案内が、覚えた OpenCode 互換 CLI のタイトルも見分けるように
+			paradisSetOpenCodeCompatibleCommands(outcome.snapshot.openCodeCommands ?? []);
 			this.updateAll();
 		}));
 		// 前面のプロセスが変わったら（Claude を起動した・シェルへ戻った）、次のスナップショットを待たずに決める

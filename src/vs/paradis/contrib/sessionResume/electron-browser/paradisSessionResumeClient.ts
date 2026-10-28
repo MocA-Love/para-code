@@ -13,7 +13,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisResolveHostPath } from '../../../common/paradisHostPath.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSessionDetails, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisResumeListRequest, IParadisResumeOpenCodeDatabase, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSessionDetails, IParadisResumeSpace, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 const MAX_MERGED_SESSIONS = 600;
 
@@ -97,7 +98,9 @@ export class ParadisSessionResumeClient {
 			attempts.push({ channel: local, local: true, promise: this.callList(local, localSpaces, request.includeArchived) });
 		}
 		if (remote !== undefined && remoteSpaces.length > 0) {
-			attempts.push({ channel: remote.channel, local: false, promise: this.callList(remote.channel, remoteSpaces, request.includeArchived) });
+			// 接続先で確かめて覚えた OpenCode 互換 CLI の DB は手元の Para Code が覚えているので、接続先へ渡す（接続先で確かめ直してから読む）
+			const openCodeDatabases = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<readonly IParadisResumeOpenCodeDatabase[]>('listOpenCodeCompatibleDatabases', [remote.remoteAuthority]).catch(() => []);
+			attempts.push({ channel: remote.channel, local: false, promise: openCodeDatabases.then(databases => this.callList(remote.channel, remoteSpaces, request.includeArchived, databases)) });
 		}
 		const results = await Promise.allSettled(attempts.map(attempt => attempt.promise));
 		const sessions: IParadisResumeSession[] = [];
@@ -138,8 +141,8 @@ export class ParadisSessionResumeClient {
 		return sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_MERGED_SESSIONS);
 	}
 
-	private async callList(channel: IChannel, spaces: readonly IParadisResumeSpace[], includeArchived: boolean | undefined): Promise<readonly IParadisResumeSession[]> {
-		const request: IParadisResumeListRequest = { spaces, includeArchived };
+	private async callList(channel: IChannel, spaces: readonly IParadisResumeSpace[], includeArchived: boolean | undefined, openCodeDatabases?: readonly IParadisResumeOpenCodeDatabase[]): Promise<readonly IParadisResumeSession[]> {
+		const request: IParadisResumeListRequest = { spaces, includeArchived, ...(openCodeDatabases !== undefined && openCodeDatabases.length > 0 ? { openCodeDatabases } : {}) };
 		return channel.call<readonly IParadisResumeSession[]>('list', [request]);
 	}
 

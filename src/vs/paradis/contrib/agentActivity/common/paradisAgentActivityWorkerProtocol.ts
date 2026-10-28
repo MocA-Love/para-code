@@ -9,11 +9,12 @@
 // shared process 本体と、会話ログを読む worker（別スレッド）の間でやりとりする電文。
 
 import { ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
-import { IParadisActivityFileSummary } from './paradisAgentActivity.js';
+import { IParadisActivityFileSummary, ParadisActivityAgent } from './paradisAgentActivity.js';
 
 export interface IParadisActivityParseFile {
 	readonly path: string;
-	readonly agent: ParadisResumeAgent;
+	/** OpenCode の会話は SQLite にあり、この worker の読む会話ログではない。 */
+	readonly agent: ParadisActivityAgent;
 	/** Claude Code のサブエージェント用ファイル（`subagents/` の下）なら true。 */
 	readonly subagentFile: boolean;
 }

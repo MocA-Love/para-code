@@ -22,7 +22,8 @@ import { promises as fsPromises, writeFileSync } from 'fs';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { isAbsolute, join } from '../../../../base/common/path.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { basename, isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -45,7 +46,10 @@ import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsR
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
-import { ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
+import { paradisOpenCodeBridge } from './paradisOpenCodeBridge.js';
+import { IParadisOpenCodeCliDatabase, paradisNormalizeOpenCodeCliAuthority, paradisOpenCodeCliRegistry, paradisResolveProcessExecutable, paradisVerifyOpenCodeCliProcess } from './paradisOpenCodeCliRegistry.js';
+import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpenCodeCompatibleCommand, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
@@ -179,6 +183,26 @@ const MAX_EXTERNAL_BINDINGS = PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDI
 const MAX_RENDERER_WINDOWS = 4096;
 const MAX_PANE_TOKEN_LENGTH = 200;
 const MAX_HOOK_EVENT_LENGTH = 200;
+/** OpenCode のブリッジの持ち主の判定を使い回す時間（プロセス表の控えの 2 秒より長く、pid の再利用より十分短い）。 */
+const OPENCODE_OWNER_VERDICT_TTL_MS = 10_000;
+/** 接続先で確かめてもらう頼みを持っておく時間（担当のウィンドウが無ければ、そのうち捨てる）。 */
+const REMOTE_OPENCODE_VERIFICATION_TTL_MS = 2 * 60_000;
+
+/** 接続先で確かめてもらう OpenCode 互換 CLI の名乗り。 */
+interface IRemoteOpenCodeVerification {
+	readonly id: string;
+	readonly authority: string;
+	readonly pid: number;
+	readonly command: string;
+	readonly label?: string;
+	readonly databasePath?: string;
+	readonly token: string;
+	readonly sessionId: string;
+	readonly at: number;
+	readonly takenAt?: number;
+}
+/** ブリッジ対応の OpenCode 互換 CLI の台帳（userData の中）。 */
+const PARADIS_OPENCODE_CLI_REGISTRY_FILE_NAME = 'paradis-opencode-compatible-clis.json';
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** 1 ペインへの共有が上限（{@link PARADIS_USER_SHARED_PAGE_LIMIT}）に達したときのエラー。renderer は先頭の印（`paradisIsSharedPageLimitError`）で見分ける。 */
@@ -756,6 +780,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _unconfirmedReleaseTokens = new Set<string>();
 	/** 印が付いたまま、hook の接続元を確かめられなかったペイン（tmux・WSL など）。IDE 操作ツールの Enter は利用者に任せる。 */
 	private readonly _unconfirmableTokens = new Set<string>();
+	/** プロセスの実行ファイルの実体（テストは差し替える）。 */
+	private readonly _resolveProcessExecutable: (pid: number) => Promise<string | undefined> = paradisResolveProcessExecutable;
 	/** 接続（keep-alive）ごとの、接続元プロセスの分類の結果。接続が消えれば一緒に消える。 */
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
@@ -921,6 +947,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		super();
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
 		this._hookSpoolDir = join(this._userDataPath, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
+		void paradisOpenCodeCliRegistry.initialize(join(this._userDataPath, PARADIS_OPENCODE_CLI_REGISTRY_FILE_NAME));
 		this._hookSpoolPruned = paradisPruneAgentHookSpool(this._hookSpoolDir)
 			.then(() => paradisStampAgentHookSpoolAlive(this._hookSpoolDir))
 			.then(previous => { this._hookSpoolReplayAfter = previous ?? 0; })
@@ -2128,7 +2155,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * hook から、そのペインで動いている会話を控える（`_paneSessions`）。
 	 * @param remote 接続先から届いた hook か（`host=` 付き、または接続先のペイン）。
 	 */
-	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean): void {
+	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string | null): void {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
 			return;
@@ -2137,9 +2164,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			return;
 		}
 		const previous = this._paneSessions.get(token);
-		const agent = transcriptPath !== undefined
+		const agent = agentKind ?? (transcriptPath !== undefined
 			? paradisHookAgentKindForTranscript(transcriptPath)
-			: previous?.agent;
+			: previous?.agent);
 		if (agent === undefined) {
 			return;
 		}
@@ -2147,7 +2174,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
 		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
 		const nextCwd = previous?.sessionId === sessionId ? (previous.cwd ?? cwd) : cwd;
-		this._paneSessions.set(token, { agent, sessionId, at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
+		// OpenCode の会話は、再開するもの（`opencode` か覚えた互換 CLI）が決まらなければ（null）再開できない会話として載せる
+		const resumeCli = agent !== 'opencode' ? undefined : cli === null ? null : cli ?? (previous?.sessionId === sessionId && previous.resumable === false ? null : previous?.cli ?? PARADIS_OPENCODE_COMMAND);
+		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(remote ? { remote: true } : {}) });
 	}
 
 	/**
@@ -2217,6 +2246,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._userTurnStarts.delete(token);
 		this._announcedReviews.delete(token);
 		paradisClaudeModBridge.forgetToken(token);
+		paradisOpenCodeBridge.unregister(token);
 		this._paneSessions.delete(token);
 		this._activityApprovalTokens.delete(token);
 		this._awaitingUserTokens.delete(token);
@@ -3923,6 +3953,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		// v2スクリプトは hook stdin JSON をそのまま POST body に載せる (session_id /
 		// transcript_path をモバイルのエージェントチャットミラーが使う)。旧v1スクリプトの
 		// GET (bodyなし) も引き続き受理する。
+		if ((req.method === 'POST' && /^\/opencode-bridge\/(?:poll|result)(?:\?|$)/.test(req.url ?? ''))
+			|| (req.method === 'GET' && /^\/opencode-bridge\/capabilities(?:\?|$)/.test(req.url ?? ''))) {
+			return this._handleOpenCodeBridge(req, res);
+		}
 		if ((req.method === 'GET' || req.method === 'POST') && (req.url ?? '').startsWith('/agent-hook')) {
 			return this._handleAgentHook(req, res);
 		}
@@ -4142,6 +4176,79 @@ export class ParadisAgentBrowserService extends Disposable {
 		return paradisClaudeConfigDir();
 	}
 
+	/** 接続先で確かめてもらう OpenCode 互換 CLI の名乗り（id → 頼み）。担当のウィンドウが取りに来て、結果を返す。 */
+	private readonly _remoteOpenCodeVerifications = new Map<string, IRemoteOpenCodeVerification>();
+
+	private _requestRemoteOpenCodeCliVerification(request: Omit<IRemoteOpenCodeVerification, 'id' | 'at' | 'takenAt'>): void {
+		const now = Date.now();
+		for (const [id, pending] of this._remoteOpenCodeVerifications) {
+			if (now - pending.at > REMOTE_OPENCODE_VERIFICATION_TTL_MS
+				|| (pending.authority === request.authority && pending.pid === request.pid && pending.command === request.command)) {
+				this._remoteOpenCodeVerifications.delete(id);
+			}
+		}
+		if (this._remoteOpenCodeVerifications.size >= 32) {
+			return;
+		}
+		const id = generateUuid();
+		this._remoteOpenCodeVerifications.set(id, { ...request, id, at: now });
+	}
+
+	/** その接続先に繋いでいるウィンドウが、確かめる頼みを取りに来る（同じ頼みは 20 秒は別のウィンドウへ渡さない）。 */
+	async takeOpenCodeCliVerifications(authority: string): Promise<readonly { readonly id: string; readonly pid: number; readonly command: string; readonly databasePath?: string }[]> {
+		const normalized = paradisNormalizeOpenCodeCliAuthority(authority);
+		const now = Date.now();
+		const taken: { readonly id: string; readonly pid: number; readonly command: string; readonly databasePath?: string }[] = [];
+		for (const [id, pending] of this._remoteOpenCodeVerifications) {
+			if (now - pending.at > REMOTE_OPENCODE_VERIFICATION_TTL_MS) {
+				this._remoteOpenCodeVerifications.delete(id);
+			} else if (normalized !== undefined && pending.authority === normalized && (pending.takenAt === undefined || now - pending.takenAt > 20_000)) {
+				this._remoteOpenCodeVerifications.set(id, { ...pending, takenAt: now });
+				taken.push({ id, pid: pending.pid, command: pending.command, ...(pending.databasePath !== undefined ? { databasePath: pending.databasePath } : {}) });
+			}
+		}
+		return taken;
+	}
+
+	/** 接続先で確かめた結果。確かめられたら覚え、まだ同じ会話ならそのペインの会話を再開できる会話にする。 */
+	async reportOpenCodeCliVerification(id: string, result: unknown): Promise<void> {
+		const pending = this._remoteOpenCodeVerifications.get(id);
+		if (pending === undefined || pending.takenAt === undefined) {
+			return;
+		}
+		this._remoteOpenCodeVerifications.delete(id);
+		const value = result as { readonly executable?: unknown; readonly databasePath?: unknown } | null;
+		if (value === null || typeof value !== 'object' || !paradisIsOpenCodeCliExecutable(value.executable) || basename(value.executable) !== pending.command) {
+			return;
+		}
+		await paradisOpenCodeCliRegistry.remember({
+			command: pending.command, executable: value.executable, authority: pending.authority,
+			...(pending.label !== undefined ? { label: pending.label } : {}), ...(typeof value.databasePath === 'string' ? { databasePath: value.databasePath } : {}),
+		});
+		const executable = paradisOpenCodeCliRegistry.executableOf(pending.command, pending.authority);
+		const session = this._paneSessions.get(pending.token);
+		if (executable !== undefined && session?.agent === 'opencode' && session.sessionId === pending.sessionId) {
+			const { resumable: _resumable, ...rest } = session;
+			this._paneSessions.set(pending.token, { ...rest, cli: executable });
+			const registration = paradisOpenCodeBridge.getRegistration(pending.token);
+			if (registration?.sessionId === pending.sessionId) {
+				paradisOpenCodeBridge.register(pending.token, { ...registration, cli: executable });
+			}
+		}
+	}
+
+	/** その接続先で確かめて覚えた OpenCode 互換 CLI の DB（SSH のウィンドウのセッション履歴が、接続先の REH へ渡す）。 */
+	async listOpenCodeCompatibleDatabases(authority: string): Promise<readonly IParadisOpenCodeCliDatabase[]> {
+		await paradisOpenCodeCliRegistry.ready();
+		const normalized = paradisNormalizeOpenCodeCliAuthority(authority);
+		return normalized === undefined ? [] : paradisOpenCodeCliRegistry.databases(normalized);
+	}
+
+	/** 覚えた OpenCode 互換 CLI（コマンド名・実行ファイル・DB の場所）を全部忘れる。 */
+	async forgetOpenCodeCompatibleClis(): Promise<void> {
+		await paradisOpenCodeCliRegistry.forgetAll();
+	}
+
 	/**
 	 * 手元の Claude Code の `claude --version` の出力（確かめられなければ undefined）。renderer の mod の準備が、入力欄の mod を
 	 * 読ませてよい版かを決めるのに使う。5 分は前の結果を返す（失敗した結果は使い回さない）。
@@ -4336,6 +4443,58 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
+	/** Route session-bound OpenCode RPC through the same pane and process ownership checks as hooks. */
+	private async _handleOpenCodeBridge(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const token = this._extractToken(req);
+		const lease = token === undefined ? undefined : this.captureIngressLease(token);
+		const registration = token === undefined ? undefined : paradisOpenCodeBridge.getRegistration(token);
+		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+		if (lease === undefined) {
+			if (req.method === 'GET' && url.pathname === '/opencode-bridge/capabilities' && token !== undefined && this._isHookTokenPossiblyUnsynced(token)) {
+				res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+				res.end(JSON.stringify({ error: 'Pane not synced yet.' }));
+				return;
+			}
+			this._sendIngressRejected(res);
+			return;
+		}
+		if (req.method === 'GET' && url.pathname === '/opencode-bridge/capabilities') {
+			const caller = await this._classifyCaller(lease.token, req.socket as Socket);
+			if (caller === 'unverified' || !this.isIngressLeaseCurrent(lease)) { this._sendIngressRejected(res); return; }
+			res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			res.end(JSON.stringify({ protocol: 1, agent: 'opencode' }));
+			return;
+		}
+		if (registration === undefined) { this._sendIngressRejected(res); return; }
+		const sessionId = url.searchParams.get('session_id');
+		const pidText = url.searchParams.get('pid');
+		const pid = pidText !== null && /^\d{1,10}$/.test(pidText) ? Number(pidText) : undefined;
+		if (sessionId !== registration.sessionId || pid === undefined || pid < 2 || registration.pid !== pid) { this._sendIngressRejected(res); return; }
+		const reservation = this._reserveIngressRequest(lease.token, 'hook');
+		if (reservation === undefined) { this._sendIngressCapacityRejected(res); return; }
+		try {
+			const pane = this._paneShells.get(lease.token);
+			const caller = await this._classifyCaller(lease.token, req.socket as Socket);
+			// ブリッジ対応の CLI は 400ms ごとに呼ぶ。持ち主の判定（プロセス表の照合）は、同じ登録・同じ pid・同じペインのシェルの間だけ
+			// 短い間使い回す。呼び出し元の照合（`_classifyCaller`）とリースの確認は毎回行う
+			const verdictKey = `${pid}|${pane?.shellPid ?? ''}|${pane?.remoteAuthority ?? ''}`;
+			const now = Date.now();
+			let owner = paradisOpenCodeBridge.hasOwnerVerdict(lease.token, registration, verdictKey, now - OPENCODE_OWNER_VERDICT_TTL_MS);
+			if (!owner) {
+				const origin = await this._hookOwnership.classify({
+					token: lease.token, hookPid: pane?.remoteAuthority === undefined ? pid : undefined,
+					transcriptPath: `${registration.dbPath}#${sessionId}`, sessionId, agentKind: 'opencode',
+					paneShellPid: pane?.remoteAuthority === undefined ? pane?.shellPid : undefined, at: now,
+				});
+				owner = origin.origin === 'owner';
+				paradisOpenCodeBridge.setOwnerVerdict(lease.token, registration, owner ? { key: verdictKey, at: now } : undefined);
+			}
+			if (caller === 'unverified' || !owner || !this.isIngressLeaseCurrent(lease)
+				|| paradisOpenCodeBridge.getRegistration(lease.token) !== registration) { this._sendIngressRejected(res); return; }
+			await paradisOpenCodeBridge.handleHttp(req, res, lease.token);
+		} finally { reservation.dispose(); }
+	}
+
 	private async _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		const requestedToken = this._extractToken(req);
 		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
@@ -4365,7 +4524,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// transcript_path は接続先のディスクのもので、手元では開けない（同じ綴りが手元にあっても別物）。
 		// 印の無い hook は従来どおり手元のものとして扱う（旧版のスクリプトが残っていても壊さない）。
 		const remoteHostParam = url.searchParams.get(PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM);
-		const remoteHostId = paradisIsAgentHookRemoteHostId(remoteHostParam) ? remoteHostParam : undefined;
+		const suppliedRemoteHostId = paradisIsAgentHookRemoteHostId(remoteHostParam) ? remoteHostParam : undefined;
 		if (eventType.length > MAX_HOOK_EVENT_LENGTH) {
 			res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 			res.end(JSON.stringify({ error: 'Agent hook rejected.' }));
@@ -4405,9 +4564,34 @@ export class ParadisAgentBrowserService extends Disposable {
 				const value = hookPayload?.[name];
 				return typeof value === 'string' ? value : undefined;
 			};
+			const declaredAgentKind = stringField('agent_kind');
+			if (declaredAgentKind !== undefined && declaredAgentKind !== 'opencode') { this._sendIngressRejected(res); return; }
+			const agentKind = declaredAgentKind === 'opencode' ? 'opencode' : undefined;
+			const remoteHostId = agentKind === 'opencode' ? paradisAgentHookRemoteHostId(this._paneShells.get(token)?.remoteAuthority) : suppliedRemoteHostId;
+			// ブリッジ対応の OpenCode 互換 CLI は、自分のコマンド名（再開に使う）と表示名を名乗る。`cli` は名乗りの古い形
+			const declaredCli = stringField('cli_command') ?? stringField('cli');
+			const cli = paradisIsOpenCodeCompatibleCommand(declaredCli) ? declaredCli : PARADIS_OPENCODE_COMMAND;
+			// 再開に使うのは、`opencode` か、確かめて覚えた実行ファイルの絶対パスだけ。確かめられない互換 CLI の名乗りは undefined
+			// （再開できない会話として扱う。本家の `opencode --session <id>` は、その会話が無いと空の会話を黙って作るので代わりに使わない）。
+			// SessionStart で確かめる前に決めるので、下で覚えた後に読み直す
+			// SSH などの接続先のペインは、その接続先で確かめて覚えたものを使う
+			const cliAuthority = this._paneShells.get(token)?.remoteAuthority !== undefined ? paradisNormalizeOpenCodeCliAuthority(this._paneShells.get(token)?.remoteAuthority) : undefined;
+			const resumeCli = () => cli === PARADIS_OPENCODE_COMMAND ? cli : paradisOpenCodeCliRegistry.executableOf(cli, cliAuthority);
+			const cliLabel = paradisNormalizeOpenCodeCliLabel(stringField('cli_label'));
 			const sessionId = stringField('session_id');
 			const transcriptPath = stringField('transcript_path');
 			const cwd = stringField('cwd');
+			if (agentKind === 'opencode') {
+				if (!sessionId || !/^ses_[A-Za-z0-9_-]+$/.test(sessionId) || !transcriptPath || !isAbsolute(transcriptPath) || !cwd || !isAbsolute(cwd)) {
+					this._sendIngressRejected(res);
+					return;
+				}
+				const current = paradisOpenCodeBridge.getRegistration(token);
+				if (eventType !== 'SessionStart' && current !== undefined && current.sessionId !== sessionId) {
+					this._sendIngressRejected(res);
+					return;
+				}
+			}
 			const hookMessage = stringField('message');
 			const toolName = stringField('tool_name');
 			const toolInput = hookPayload?.tool_input;
@@ -4443,7 +4627,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const initiallyChecksPendingRelease = !initiallyInWait && eventType !== '' && eventType !== 'TerminalExit'
 				&& this._unconfirmedReleaseTokens.has(token) && !this._unconfirmableTokens.has(token);
 			let callerUnverified: boolean | undefined;
-			if (initiallyInWait || entersWait || initiallyChecksPendingRelease) {
+			if (initiallyInWait || entersWait || initiallyChecksPendingRelease || (agentKind === 'opencode' && eventType === 'SessionStart')) {
 				const caller = await this._classifyCaller(token, req.socket as Socket);
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
@@ -4451,6 +4635,10 @@ export class ParadisAgentBrowserService extends Disposable {
 					return;
 				}
 				callerUnverified = caller === 'unverified';
+				if (agentKind === 'opencode' && eventType === 'SessionStart' && callerUnverified) {
+					this._sendIngressRejected(res);
+					return;
+				}
 			}
 			// 確かめている間に状態が変わっていることがある（本物の許可要求と偽の hook が競る）。決めるのは今の状態で。
 			// 確かめなかったときは間に await が無いので、最初に読んだ状態と同じ
@@ -4511,10 +4699,31 @@ export class ParadisAgentBrowserService extends Disposable {
 				// ペインのシェルの pid は手元のペインのときだけ渡す（所有者の後継をシェルの子孫に絞る・`claude attach` の会話を
 				// 所有者にする判定に使う。接続先の pid は手元のプロセス表と照合できない）。
 				const paneShellPid = hookPid !== undefined ? paneShell?.shellPid : undefined;
-				const hookOrigin = await this._hookOwnership.classify({
-					token, hookPid, transcriptPath, at: Date.now(), sessionId, paneShellPid,
-					event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
-				});
+				// 名乗った互換 CLI のコマンドは、持ち主の確認の間だけプロセスの判定に入れる（そのプロセスがペインの中に居ないと
+				// 持ち主にならない）。確かめられたら覚える
+				// 名乗りを確かめられるのは手元のペインだけ。hook の pid のプロセスの実行ファイルの実体が、名乗ったコマンドの名前で、
+				// ランタイムやシェルではないこと（起動行は名乗り放題なので見ない）
+				const cliExecutable = agentKind === 'opencode' && eventType === 'SessionStart' && cli !== PARADIS_OPENCODE_COMMAND && hookPid !== undefined
+					? await paradisVerifyOpenCodeCliProcess(hookPid, cli, this._resolveProcessExecutable) : undefined;
+				const endOpenCodeTrial = cliExecutable !== undefined ? paradisOpenCodeCliRegistry.beginTrial(cli) : () => { };
+				let hookOrigin: Awaited<ReturnType<ParadisAgentHookOwnership['classify']>>;
+				try {
+					hookOrigin = await this._hookOwnership.classify({
+						token, hookPid, transcriptPath: agentKind === 'opencode' && transcriptPath && sessionId ? `${transcriptPath}#${sessionId}` : transcriptPath, agentKind, at: Date.now(), sessionId, paneShellPid,
+						event: eventType, sessionSource: stringField('source'), fromSubagent: stringField('agent_id') !== undefined, toolUseId,
+					});
+					if (cliExecutable !== undefined && hookOrigin.origin === 'owner') {
+						await paradisOpenCodeCliRegistry.remember({ command: cli, executable: cliExecutable, ...(cliLabel !== undefined ? { label: cliLabel } : {}), ...(transcriptPath ? { databasePath: transcriptPath } : {}) });
+					}
+					// 接続先のペインの名乗りは、手元のプロセス表では確かめられない。接続先に繋いでいるウィンドウを通して、接続先の
+					// REH サーバーに実行ファイルと DB を確かめてもらう（結果が来たら覚え、この会話を再開できる会話にする）
+					if (agentKind === 'opencode' && eventType === 'SessionStart' && hookOrigin.origin === 'owner' && cli !== PARADIS_OPENCODE_COMMAND
+						&& cliAuthority !== undefined && parsedPid !== undefined && sessionId) {
+						this._requestRemoteOpenCodeCliVerification({ authority: cliAuthority, pid: parsedPid, command: cli, ...(cliLabel !== undefined ? { label: cliLabel } : {}), ...(transcriptPath ? { databasePath: transcriptPath } : {}), token, sessionId });
+					}
+				} finally {
+					endOpenCodeTrial();
+				}
 				if (!this.isIngressLeaseCurrent(ingressLease)) {
 					this._noteAgentHookIngressDrop(req, token, 'lease-lost', 404);
 					this._sendIngressRejected(res);
@@ -4543,7 +4752,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					// ペインの token を持っているだけで、そのペインの会話でも子エージェントでもない。ペインの状態・
 					// 通知・子エージェントの一覧には出さず、transcript を照合の候補から外すためにだけ知らせる。
 					fireParadisAgentNestedHookEvent({
-						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind, background: true,
 					});
@@ -4554,7 +4763,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				if (hookOrigin.origin === 'nested') {
 					fireParadisAgentNestedHookEvent({
-						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 						remoteHostId, at: Date.now(), nestedAgent: hookOrigin.agentKind,
 					});
@@ -4580,9 +4789,18 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				// 本物の hook が届いたら、控えから流し直して画面の確認を待っていたものは古い（W2-20）。
 				this._replayedPrompts.delete(token);
-				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined);
+				if (agentKind === 'opencode' && eventType === 'SessionStart' && sessionId && transcriptPath && cwd) {
+					const pane = this._paneShells.get(token);
+					const pidValue = Number(url.searchParams.get('pid'));
+					paradisOpenCodeBridge.register(token, { sessionId, dbPath: transcriptPath, cwd, ...(resumeCli() !== undefined ? { cli: resumeCli() } : {}),
+						...(Number.isSafeInteger(pidValue) && pidValue > 1 ? { pid: pidValue } : {}),
+						...(pane?.remoteAuthority !== undefined ? { authority: pane.remoteAuthority } : {}),
+					});
+				}
+				if (eventType === 'SessionEnd' || eventType === 'TerminalExit') { paradisOpenCodeBridge.unregister(token); }
+				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined, agentKind, agentKind === 'opencode' ? (resumeCli() ?? null) : undefined);
 				fireParadisAgentHookEvent({
-					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
+					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
 					remoteHostId, ...(ownerUnverified ? { ownerUnverified: true } : {}), at: Date.now(),
 				});
@@ -4777,6 +4995,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const paneSessions = [...this._paneSessions]
 			.filter(([token]) => eligibleTokens.has(token))
 			.map(([token, session]) => Object.freeze({ token, ...session }));
+		const openCodeCommands = paradisOpenCodeCliRegistry.allCommands();
 		// 次の状態が付いたペインは、もう「止まって待っている」ではない
 		for (const token of [...this._awaitingUserTokens]) {
 			if (this._paneStatuses.has(token)) {
@@ -4797,6 +5016,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
 			...(paneSessions.length > 0 ? { paneSessions: Object.freeze(paneSessions) } : {}),
+			...(openCodeCommands.length > 0 ? { openCodeCommands: Object.freeze([...openCodeCommands]) } : {}),
 			...(awaitingUserTokens.length > 0 ? { awaitingUserTokens: Object.freeze(awaitingUserTokens) } : {}),
 			...(replayedPrompts.length > 0 ? { replayedPrompts: Object.freeze(replayedPrompts) } : {}),
 			...(agentHookTokenIssueUrls.length > 0 ? { agentHookTokenIssueUrls: Object.freeze(agentHookTokenIssueUrls) } : {}),

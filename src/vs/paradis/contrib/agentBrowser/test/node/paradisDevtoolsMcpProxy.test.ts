@@ -496,7 +496,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 
 	// q.html Q462 D1・D2
 	test('reports the tool the agent called, and the observation around an action under its own operation', async () => {
-		const failed = { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).' }], isError: true };
+		const failed = { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: a JavaScript dialog is open on the page.' }], isError: true };
 		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: [failed, failed, failed] });
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
 		const { reports } = await withRecordedReports(async () => [
@@ -508,6 +508,29 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			{ operation: 'devtools-tool-error-dialog', agentTool: 'wait_until', internal: undefined },
 			{ operation: 'devtools-observe-error-dialog', agentTool: 'click_by', internal: 'observe' },
 			{ operation: 'devtools-tool-error-dialog', agentTool: undefined, internal: undefined },
+		]);
+	});
+
+	test('counts a page that did not answer as unresponsive, apart from a dialog that is open', async () => {
+		const texts = [
+			'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).',
+			'PARA_BROWSER_PAGE_UNRESPONSIVE: evaluate_script did not finish within 11000 ms.',
+			'PARA_BROWSER_PAGE_UNRESPONSIVE: the page did not answer within 11 s (it may be busy running scripts or loading, or frozen), so Para Code stopped waiting.',
+			'PARA_BROWSER_DIALOG_OPEN: a JavaScript dialog is open on the page.',
+		];
+		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: texts.map(text => ({ content: [{ type: 'text', text }], isError: true })) });
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		const { reports } = await withRecordedReports(async () => [
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by' }),
+		]);
+		assert.deepStrictEqual(reports.map(report => ({ operation: report.operation, kind: report.extra?.safe_error_kind })), [
+			{ operation: 'devtools-observe-error-unresponsive', kind: 'unresponsive' },
+			{ operation: 'devtools-tool-error-unresponsive', kind: 'unresponsive' },
+			{ operation: 'devtools-tool-error-unresponsive', kind: 'unresponsive' },
+			{ operation: 'devtools-tool-error-dialog', kind: 'dialog' },
 		]);
 	});
 

@@ -58,6 +58,7 @@ import './contrib/fileViewers/electron-browser/paradisDocxViewer.contribution.js
 import './contrib/fileViewers/electron-browser/paradisOfficeDesktopSourceService.js';
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
 import './contrib/browserProfiles/electron-browser/paradisBrowserProfiles.contribution.js';
+import './contrib/browserLoadStall/electron-browser/paradisBrowserLoadStall.contribution.js';
 import './contrib/browserProfiles/electron-browser/paradisBrowserProfileMcp.contribution.js';
 import './contrib/browserDownloads/electron-browser/paradisBrowserDownloads.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
@@ -76,6 +77,7 @@ import './contrib/usageDashboard/electron-browser/paradisUsageDashboard.contribu
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
 import './contrib/rtk/electron-browser/paradisRtk.contribution.js';
 import './contrib/sessionResume/electron-browser/paradisSessionResume.contribution.js';
+import './contrib/sessionResume/electron-browser/paradisRemoteOpenCodeCliVerifier.contribution.js';
 import './contrib/agentActivity/electron-browser/paradisSessionIndex.contribution.js';
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
