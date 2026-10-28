@@ -8,9 +8,11 @@
 
 import { errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { markParadisErrorOrigin, reportParadisDiagnosticError } from '../common/paradisSentryDiagnostics.js';
-import { paradisErrorStack, paradisExtensionIdFromStack, paradisIsExtensionHostRelay, paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
+import { paradisIsExtensionHostRelay, paradisRelayedExtensionId, paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
 
 /**
  * upstream の `Workbench`（`workbench/browser/workbench.ts`）は起動時に `setUnexpectedErrorHandler`
@@ -29,7 +31,7 @@ class ParadisUnhandledErrorReporterContribution extends Disposable implements IW
 
 	static readonly ID = 'workbench.contrib.paradisUnhandledErrorReporter';
 
-	constructor() {
+	constructor(@IExtensionService private readonly extensionService: IExtensionService) {
 		super();
 		const previousHandler = errorHandler.getUnexpectedErrorHandler();
 		setUnexpectedErrorHandler(error => {
@@ -38,13 +40,19 @@ class ParadisUnhandledErrorReporterContribution extends Disposable implements IW
 				// 拡張ホストから届いた例外には印を付け、Para Code 自身の例外と別の issue にする。
 				if (paradisIsExtensionHostRelay(new Error().stack)) {
 					// どの拡張の例外かは識別子だけを送る（パスは送らない）。
-					markParadisErrorOrigin(error, 'extension-host', paradisExtensionIdFromStack(paradisErrorStack(error)));
+					markParadisErrorOrigin(error, 'extension-host', paradisRelayedExtensionId(error, extensionId => this.isInstalledExtension(extensionId)));
 				}
 				reportParadisDiagnosticError('patched', 'unhandled-error', 'on-unexpected-error', error, paradisUnhandledErrorSafeExtra(error));
 			} catch {
 				// Reporting must never break the handler chain it is piggybacking on.
 			}
 		});
+	}
+
+	/** 登録されていて、開発中（`--extensionDevelopmentPath`）でない拡張か。 */
+	private isInstalledExtension(extensionId: string): boolean {
+		const extension = this.extensionService.extensions.find(candidate => ExtensionIdentifier.equals(candidate.identifier, extensionId));
+		return extension !== undefined && !extension.isUnderDevelopment;
 	}
 }
 

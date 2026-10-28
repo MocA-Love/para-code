@@ -59,7 +59,7 @@ import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine, paradisResumeAgentLabel } from '../../sessionResume/common/paradisSessionResume.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 
 /**
@@ -555,6 +555,7 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	readonly rootUri: URI;
 	readonly stateKey: string;
 	readonly agent: ParadisResumeAgent;
+	readonly cli?: ParadisResumeCli;
 	readonly sessionId: string;
 	readonly dangerouslyBypassPermissions?: boolean;
 	/**
@@ -589,7 +590,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		? { cwd: request.rootUri, location, ...(codexHome !== undefined ? { config: { env: { CODEX_HOME: codexHome } } } : {}) }
 		: {
 			config: {
-				name: request.agent === 'claude' ? 'Claude Code' : 'Codex',
+				name: paradisResumeAgentLabel(request.agent),
 				executable: 'wsl.exe',
 				// cwdとdistroはargv/位置引数で渡す。シェル文字列へ埋め込まない。
 				args: ['-d', wsl.distro, '-e', 'sh', '-c', 'cd -- "$0" && exec "${SHELL:-/bin/bash}" -l', wsl.linuxCwd],
@@ -604,7 +605,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		terminalService.setActiveInstance(instance);
 	}
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
-	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions });
+	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli });
 	if (command === undefined) {
 		throw new Error('Invalid agent session id.');
 	}

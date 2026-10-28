@@ -529,6 +529,8 @@ export type AgentMessageSendResult =
 	| { readonly status: 'rejected'; readonly message?: string; readonly code?: string }
 	| { readonly status: 'consumed'; readonly message?: string };
 
+/** OpenCode の停止を頼んだが、PC ではもう終わっていた（PC の `PARADIS_OPENCODE_EXITED_CODE`）。 */
+const AGENT_OPENCODE_EXITED_CODE = 'agent-exited';
 /** 送ったスラッシュコマンドをエージェントが断ったときの code（PC の `PARADIS_SLASH_COMMAND_REJECTED_CODE`）。 */
 export const AGENT_SLASH_COMMAND_REJECTED_CODE = 'unknown-command';
 /** モバイルから開いた Claude Code の画面が PC で開いたまま（端末を開いて Esc で閉じる）。 */
@@ -2752,8 +2754,28 @@ export class MobileController {
 		return stream;
 	}
 
+	/**
+	 * Interrupt the exact OpenCode session through its API; never send Ctrl+C to its prompt. When OpenCode has already
+	 * exited (no session on the PC, or the PC answers `agent-exited`), the Ctrl+C goes to the shell left in the terminal.
+	 */
+	private async interruptOpenCodeAgent(terminalKey: string, sendToShell: () => Promise<boolean>): Promise<boolean> {
+		const chat = this.state.agentChats.get(terminalKey);
+		if (chat?.none === true) {
+			return sendToShell();
+		}
+		if (!this.isLiveAvailable() || chat?.agent !== 'opencode' || chat.capabilities?.agentActions !== true) {
+			return false;
+		}
+		const result = await this.sendAgentActionResult(terminalKey, { t: 'action/interrupt', token: this.agentToken(terminalKey), epoch: chat.epoch }, 30_000);
+		if (result.status === 'rejected' && result.code === AGENT_OPENCODE_EXITED_CODE) {
+			return sendToShell();
+		}
+		return result.status === 'accepted';
+	}
+
 	/** ターミナルへ入力を送る。 */
 	sendInput(terminalKey: string, data: string): Promise<boolean> {
+		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode') { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data })); }
 		return this.sendTerm(terminalKey, { t: 'input', data });
 	}
 
@@ -2770,6 +2792,16 @@ export class MobileController {
 	}
 
 	sendLiveInput(terminalKey: string, data: string): boolean {
+		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode' && this.state.agentChats.get(terminalKey)?.none !== true) {
+			if (!this.isLiveAvailable()) { return false; }
+			// 停止を頼んだ後で OpenCode がもう終わっていたと分かったら、Ctrl+C は下と同じ確かめ方でシェルへ渡す
+			void this.interruptOpenCodeAgent(terminalKey, async () => this.sendLiveInputToTerminal(terminalKey, data));
+			return true;
+		}
+		return this.sendLiveInputToTerminal(terminalKey, data);
+	}
+
+	private sendLiveInputToTerminal(terminalKey: string, data: string): boolean {
 		const rendererTarget = this.rendererTargetFor(terminalKey);
 		// legacy TUI fallbackのキー列は遅延配送しない。durable outbox処理が先行中なら
 		// 新しいinteractionへ誤注入するよりfail closedで呼び出し側に再試行させる。
@@ -2799,6 +2831,7 @@ export class MobileController {
 	 * `sendLiveInput`（エージェントの操作のキー列）と違い、durable な操作が保存を待っている間も捨てずに列で待つ。
 	 */
 	sendLiveKeys(terminalKey: string, data: string): Promise<boolean> {
+		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode') { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data }, false)); }
 		return this.sendTerm(terminalKey, { t: 'input', data }, false);
 	}
 

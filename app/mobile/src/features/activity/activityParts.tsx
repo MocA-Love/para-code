@@ -80,13 +80,13 @@ export function useActivityRoute(): ActivityRoute {
 }
 
 /** 会話の CLI の種類（agent チャネルの `agent` は文字列で届く）。 */
-export function chatProvider(chat: AgentChatState | undefined): 'claude' | 'codex' | undefined {
-	return chat?.agent === 'codex' ? 'codex' : chat?.agent === 'claude' ? 'claude' : undefined;
+export function chatProvider(chat: AgentChatState | undefined): 'claude' | 'codex' | 'opencode' | undefined {
+	return chat?.agent === 'opencode' ? 'opencode' : chat?.agent === 'codex' ? 'codex' : chat?.agent === 'claude' ? 'claude' : undefined;
 }
 
 /** 呼び名（Claude Code / Codex）。 */
-export function providerLabel(provider: 'claude' | 'codex' | undefined): string {
-	return provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude Code' : 'エージェント';
+export function providerLabel(provider: 'claude' | 'codex' | 'opencode' | undefined): string {
+	return provider === 'opencode' ? 'OpenCode' : provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude Code' : 'エージェント';
 }
 
 /** 数字の並び（モックの `.stats`）。 */
@@ -113,7 +113,7 @@ const INDENT = 16;
 export function ActivityAgentRow({ agent, depth, fallbackProvider, now, onOpen }: {
 	agent: AgentActivityAgent;
 	depth: number;
-	fallbackProvider: 'claude' | 'codex' | undefined;
+	fallbackProvider: 'claude' | 'codex' | 'opencode' | undefined;
 	now: number;
 	onOpen: (agent: AgentActivityAgent) => void;
 }) {

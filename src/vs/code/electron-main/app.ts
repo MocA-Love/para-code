@@ -69,6 +69,7 @@ import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRel
 import { paradisResetWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerReset.js';
 import { paradisWatchWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerWatch.js';
 import { paradisRegisterDesignMode } from '../../paradis/contrib/browserDesignMode/electron-main/paradisDesignModeMain.js'; // PARA-PATCH: integrated browser Design Mode picker and image store channel
+import { paradisRegisterBrowserLoadStall } from '../../paradis/contrib/browserLoadStall/electron-main/paradisBrowserLoadStallMain.js'; // PARA-PATCH: integrated browser "still waiting" question channel and stalled-load diagnostics
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -1533,6 +1534,7 @@ export class CodeApplication extends Disposable {
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
 		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
 		disposables.add(paradisRegisterDesignMode(mainProcessElectronServer, accessor.get(IBrowserViewMainService), this.environmentMainService.userDataPath)); // PARA-PATCH: integrated browser Design Mode (see paradis/contrib/browserDesignMode)
+		disposables.add(paradisRegisterBrowserLoadStall(mainProcessElectronServer)); // PARA-PATCH: integrated browser "still waiting" question (see paradis/contrib/browserLoadStall)
 
 		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon).
 		// This one, updateTerminals and taskBoardHost act on onWillShutdown, so they stay out of `disposables`:

@@ -42,7 +42,8 @@ import { toAction } from '../../../../base/common/actions.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { ParadisHumanCheckKind } from '../common/paradisBrowserHumanCheck.js';
 import { BrowserViewStorageScope, IBrowserViewService, ipcBrowserViewChannelName } from '../../../../platform/browserView/common/browserView.js';
-import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { PARADIS_BROWSER_LOAD_STALL_CHANNEL } from '../../browserLoadStall/common/paradisBrowserLoadStall.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -301,6 +302,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	/** main のブラウザビュー（共有相手の設定に使う）。 */
 	private readonly _browserViews: IBrowserViewService;
+	/** 読み込みの見張り（main）へ、エージェントが開いたタブを知らせる窓口。 */
+	private readonly _loadStall: IChannel;
 	/** 誰がどのタブを開いたか。 */
 	private readonly _ledger = new ParadisAgentTabLedger();
 	/** ユーザーが共有を解いた、エージェントが自分で開いたタブ（viewId → ペイン）。エージェントが選び直しても許可を付け直さない。 */
@@ -356,6 +359,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
 		this._browserViews = ProxyChannel.toService<IBrowserViewService>(mainProcessService.getChannel(ipcBrowserViewChannelName));
+		this._loadStall = mainProcessService.getChannel(PARADIS_BROWSER_LOAD_STALL_CHANNEL);
 		this._register(this._bindingModel.onDidChange(() => this._reconcileApprovedProfileTabs()));
 	}
 
@@ -383,6 +387,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return;
 		}
 		this._agentInputs.set(input.id, input);
+		this._markAgentTab(input.id, true);
 		const listeners = new DisposableStore();
 		listeners.add(input.onWillDispose(() => this._forgetView(input.id)));
 		if (!options?.approvedProfile) {
@@ -427,8 +432,18 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 	revokeApprovedProfileTab(pageId: string): void {
 		if (this._ledger.revokeApprovedProfileTab(pageId)) {
 			this._agentInputs.delete(pageId);
+			this._markAgentTab(pageId, false);
 			this._agentTabListeners.deleteAndDispose(pageId);
 		}
+	}
+
+	/**
+	 * エージェントが開いたタブかどうかを、読み込みの見張り（main）へ知らせる。見張りはそのタブで 60 秒応答が
+	 * 無いとき人に聞かずに止める（押す人がいないため）。保存領域では見分けられない（エージェントは名前付き
+	 * プロファイルのタブも開き、人の「Open and Share」の複製はエージェントの保存領域にある）。
+	 */
+	private _markAgentTab(viewId: string, agentTab: boolean): void {
+		this._loadStall.call('setAgentTab', [viewId, agentTab]).catch(error => this._logService.debug('[ParadisAgentBrowserTabs] could not tell the load watchdog about an agent tab', error));
 	}
 
 	isOpenedBy(token: string, viewId: string): boolean {
@@ -444,6 +459,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		}
 		this._ledger.forget(viewId);
 		this._agentInputs.delete(viewId);
+		this._markAgentTab(viewId, false);
 		this._agentTabListeners.deleteAndDispose(viewId);
 	}
 
@@ -459,6 +475,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		);
 		for (const viewId of dropped) {
 			this._agentInputs.delete(viewId);
+			this._markAgentTab(viewId, false);
 			this._agentTabListeners.deleteAndDispose(viewId);
 		}
 	}
