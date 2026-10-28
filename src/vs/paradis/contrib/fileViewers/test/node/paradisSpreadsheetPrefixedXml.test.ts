@@ -117,6 +117,37 @@ suite('ParadisSpreadsheetPrefixedXml', () => {
 		], [true, true, undefined, true, false, undefined]);
 	});
 
+	test('stays linear on markup that never closes, and leaves such a part alone', async () => {
+		const hostile = [
+			'<'.repeat(200_000),
+			`<x:a xmlns:x="${MAIN}">${'<!--'.repeat(50_000)}`,
+			`<x:a xmlns:x="${MAIN}">${'<?'.repeat(100_000)}`,
+			`<x:a xmlns:x="${MAIN}">${'<!'.repeat(100_000)}`,
+			`<x:a xmlns:x="${MAIN}" b="${'<'.repeat(200_000)}"/>`,
+			`<x:a xmlns:x="${MAIN}">${'<x:b c="1"'.repeat(20_000)}`,
+		];
+		const original = await inventedWorkbook();
+		const zip = await JSZip.loadAsync(original);
+		zip.file('xl/evil.xml', '<'.repeat(64 * 1024));
+		zip.file('xl/evil2.xml', `<x:a xmlns:x="${MAIN}">${'<'.repeat(200_000)}`);
+		const withHostileParts = Buffer.from(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+
+		const started = Date.now();
+		const results = hostile.map(xml => unprefixSpreadsheetMlXml(xml));
+		const heads = hostile.map(xml => rootBindsSpreadsheetMlPrefix(xml));
+		const scanned = Date.now() - started;
+		const workbook = await new ParadisSpreadsheetService().parseWorkbookBytes(withHostileParts);
+		const opened = Date.now() - started - scanned;
+
+		deepStrictEqual({ results, heads, sheets: workbook.sheets.map(sheet => sheet.name) }, {
+			results: hostile.map(() => undefined),
+			heads: [false, true, true, true, false, true],
+			sheets: ['Form', 'Table'],
+		});
+		// Before the scan was linear, these took 31 seconds (the 64 KiB part) and 156 seconds (200K `<`).
+		ok(scanned < 1000 && opened < 3000, `scanned in ${scanned}ms, opened in ${opened}ms`);
+	});
+
 	test('opens a workbook with x: prefixes the same as the one without, including what the viewer reads itself', async () => {
 		const original = await inventedWorkbook();
 		const { bytes, parts } = await prefixed(original);
