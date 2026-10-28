@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ParaBrowserViewLoadStallOutcome } from '../../../../../platform/browserView/common/paraBrowserViewLoadStall.js';
 import { paradisSanitizeSentryEvent } from '../../../sentry/common/paradisSentryCommon.js';
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
-import { paradisBrowserRemoteKind, paradisBuildBrowserLoadStallEvent, paradisClassifyBrowserUrl } from '../../common/paradisBrowserLoadStall.js';
+import { paradisBrowserLoadStallElapsed, paradisBrowserRemoteKind, paradisBuildBrowserLoadStallEvent, paradisClassifyBrowserUrl } from '../../common/paradisBrowserLoadStall.js';
 
 suite('paradisBrowserLoadStall', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -63,6 +63,11 @@ suite('paradisBrowserLoadStall', () => {
 			'other/none',
 			'other/none',
 		]);
+	});
+
+	test('counts the elapsed time from when the question was asked, not from when it was received', () => {
+		const stall = { elapsedMs: 60_000, askedAt: 1_000_000, waits: 0 };
+		assert.deepStrictEqual([1_000_000, 1_005_000, 999_000].map(now => paradisBrowserLoadStallElapsed(stall, now)), [60_000, 65_000, 60_000]);
 	});
 
 	test('keeps only the kind of remote, never the host after the plus', () => {

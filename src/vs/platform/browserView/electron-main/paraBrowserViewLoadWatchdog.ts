@@ -136,7 +136,11 @@ export function paraRespondToBrowserViewLoadStall(viewId: string, response: Para
 export interface IParaBrowserViewLoadWatchdogOptions {
 	/** The id the renderer knows the view by; the question is looked up by it. */
 	readonly viewId: string;
-	readonly context: () => Omit<IParaBrowserViewLoadStallContext, 'agentTab'>;
+	/**
+	 * Read at each expiry. `agentOwner`: the view is owned by an agent (upstream's open_browser tool
+	 * and the tabs those open), which the agent tab ledger never sees.
+	 */
+	readonly context: () => Omit<IParaBrowserViewLoadStallContext, 'agentTab'> & { readonly agentOwner: boolean };
 	readonly timeoutMs?: number;
 	readonly now?: () => number;
 }
@@ -244,24 +248,24 @@ export function paraInstallBrowserViewLoadWatchdog(
 				finish('abandoned');
 				return;
 			}
+			// Read on every expiry: the ledger may mark the tab, or the owner change, after the load started.
+			let agentOwner = false;
+			try {
+				const { remoteAuthority, tunnelProxy, agentOwner: owned } = options.context();
+				agentOwner = owned;
+				episode.context = { remoteAuthority, tunnelProxy, agentTab: false };
+			} catch {
+				episode.context ??= { remoteAuthority: undefined, tunnelProxy: false, agentTab: false };
+			}
 			if (!episode.sample) {
-				try {
-					const { remoteAuthority, tunnelProxy } = options.context();
-					episode.context = { remoteAuthority, tunnelProxy, agentTab: false };
-				} catch {
-					episode.context = { remoteAuthority: undefined, tunnelProxy: false, agentTab: false };
-				}
 				try {
 					episode.sample = reporter?.sample(webContents) ?? {};
 				} catch {
 					episode.sample = {};
 				}
 			}
-			// Read on every expiry: the ledger may mark the tab after the load started.
-			const agentTab = agentTabs.has(viewId);
-			if (episode.context) {
-				episode.context = { ...episode.context, agentTab };
-			}
+			const agentTab = agentTabs.has(viewId) || agentOwner;
+			episode.context = { ...episode.context, agentTab };
 			if (agentTab) {
 				stop('agent-stopped');
 				return;
@@ -271,7 +275,8 @@ export function paraInstallBrowserViewLoadWatchdog(
 				return;
 			}
 			logService.info(`[ParaBrowserView] ${paraLoggableURL(episode.url)} has not committed after ${now() - episode.startedAt}ms; asking whether to keep waiting.`);
-			setStall({ elapsedMs: Math.max(0, now() - episode.startedAt), waits: episode.waits });
+			const askedAt = now();
+			setStall({ elapsedMs: Math.max(0, askedAt - episode.startedAt), askedAt, waits: episode.waits });
 		}, timeoutMs);
 	};
 

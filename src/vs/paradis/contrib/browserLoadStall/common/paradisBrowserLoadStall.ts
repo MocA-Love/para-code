@@ -24,6 +24,11 @@ export interface IParadisBrowserLoadStallChange {
 	readonly stall: IParaBrowserViewLoadStall | undefined;
 }
 
+/** 読み込みを始めてから `now` までの時間。質問を出した時刻より前の時計には戻らない。 */
+export function paradisBrowserLoadStallElapsed(stall: IParaBrowserViewLoadStall, now: number): number {
+	return stall.elapsedMs + Math.max(0, now - stall.askedAt);
+}
+
 export type ParadisBrowserUrlScheme = 'http' | 'https' | 'other';
 export type ParadisBrowserUrlHostKind = 'loopback' | 'private-network' | 'public' | 'none';
 
