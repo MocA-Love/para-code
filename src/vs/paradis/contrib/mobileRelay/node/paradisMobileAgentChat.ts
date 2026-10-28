@@ -8747,7 +8747,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.recordDesktopInteraction(event);
 		this.rememberAgentEvidence(event.token);
 		const previous = this.paneSessions.get(event.token);
-		if (previous?.agent !== 'opencode' || previous.sessionId !== sessionId || previous.transcriptPath !== transcriptPath || (event.resumable === false) !== (previous.resumable === false)) {
+		if (previous?.agent === 'opencode' && previous.sessionId === sessionId && previous.transcriptPath === transcriptPath && (event.resumable === false) !== (previous.resumable === false)) {
+			// 同じ会話で、再開できるかだけが変わった（接続先で名乗りを確かめられた）。会話の写しは読み直さない
+			const { resumable: _resumable, ...rest } = previous;
+			this.paneSessions.set(event.token, event.resumable === false ? { ...rest, resumable: false } : rest);
+			this.persistSessions();
+			this.pushInfoToSubscribers(event.token);
+		} else if (previous?.agent !== 'opencode' || previous.sessionId !== sessionId || previous.transcriptPath !== transcriptPath) {
 			this.disposeTailer(event.token);
 			this.clearLiveState(event.token);
 			this.activityTrackers.delete(event.token);

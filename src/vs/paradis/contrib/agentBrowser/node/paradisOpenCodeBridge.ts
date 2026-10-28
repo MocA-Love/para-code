@@ -109,7 +109,8 @@ export class ParadisOpenCodeBridge {
 
 	register(token: string, registration: IParadisOpenCodeRegistration): void {
 		const previous = this.owners.get(token);
-		if (previous && previous.registration.sessionId === registration.sessionId && previous.registration.dbPath === registration.dbPath && previous.registration.pid === registration.pid && previous.registration.authority === registration.authority && previous.registration.cli === registration.cli) {
+		// 再開に使うもの（cli）だけが変わった（接続先で名乗りを確かめた）なら、待っている要求を捨てずに書き換える
+		if (previous && previous.registration.sessionId === registration.sessionId && previous.registration.dbPath === registration.dbPath && previous.registration.pid === registration.pid && previous.registration.authority === registration.authority) {
 			previous.registration = { ...registration };
 			previous.verdict = undefined;
 			return;

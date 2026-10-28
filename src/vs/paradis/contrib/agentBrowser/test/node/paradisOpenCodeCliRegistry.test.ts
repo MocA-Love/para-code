@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisIsOpenCodeCompatibleCommand, paradisIsOpenCodeProgram, paradisIsOpenCodeResumeCli, paradisOpenCodeTitleCommand, paradisSetOpenCodeCompatibleCommands } from '../../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
-import { PARADIS_OPENCODE_CLI_TTL_MS, ParadisOpenCodeCliRegistry, paradisOpenCodeXdgDataRoot, paradisParseLsofExecutable, paradisValidateOpenCodeDatabasePath, paradisVerifyOpenCodeCliProcess } from '../../node/paradisOpenCodeCliRegistry.js';
+import { PARADIS_OPENCODE_CLI_TTL_MS, ParadisOpenCodeCliRegistry, paradisOpenCodeXdgDataRoot, paradisParseLsofExecutable, paradisVerifyOpenCodeCliOnThisHost, paradisValidateOpenCodeDatabasePath, paradisVerifyOpenCodeCliProcess } from '../../node/paradisOpenCodeCliRegistry.js';
 
 suite('ParadisOpenCodeCliRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -102,6 +102,56 @@ suite('ParadisOpenCodeCliRegistry', () => {
 			expired: { list: 0, afterReload: 0 },
 			forgotten: [[], false],
 		});
+	});
+
+	test('keeps CLIs verified on a remote machine apart from this machine, and reloads them per authority', async () => {
+		const storePath = join(root, 'clis.json');
+		const registry = new ParadisOpenCodeCliRegistry(() => 10);
+		await registry.initialize(storePath);
+		await registry.remember({ command: 'example-cli', executable: '/home/remote/.local/bin/example-cli', label: 'Example CLI', databasePath: '/home/remote/.example/data/opencode-local.db', authority: 'SSH-Remote+Host' });
+		await registry.remember({ command: 'example-cli', executable: '/opt/example/bin/example-cli' });
+		await registry.remember({ command: 'other-cli', executable: '/opt/x/other-cli', databasePath: 'relative.db', authority: 'ssh-remote+host' });
+		await registry.remember({ command: 'bad-cli', executable: '/opt/x/bad-cli', authority: 'bad authority' });
+		const reloaded = new ParadisOpenCodeCliRegistry(() => 10);
+		await reloaded.initialize(storePath);
+		assert.deepStrictEqual({
+			local: reloaded.list().map(cli => [cli.command, cli.executable]),
+			remote: reloaded.list('ssh-remote+host').map(cli => [cli.command, cli.executable, cli.databases]),
+			localCommands: reloaded.commands(),
+			allCommands: [...reloaded.allCommands()].sort(),
+			remoteExecutable: reloaded.executableOf('example-cli', 'SSH-REMOTE+HOST'),
+			remoteDatabases: reloaded.databases('ssh-remote+host'),
+			localDatabases: reloaded.databases(),
+		}, {
+			local: [['example-cli', '/opt/example/bin/example-cli']],
+			remote: [['other-cli', '/opt/x/other-cli', []], ['example-cli', '/home/remote/.local/bin/example-cli', ['/home/remote/.example/data/opencode-local.db']]],
+			localCommands: ['example-cli'],
+			allCommands: ['example-cli', 'other-cli'],
+			remoteExecutable: '/home/remote/.local/bin/example-cli',
+			remoteDatabases: [{ path: '/home/remote/.example/data/opencode-local.db', cli: '/home/remote/.local/bin/example-cli', label: 'Example CLI' }],
+			localDatabases: [],
+		});
+	});
+
+	test('verifies a declared CLI and its database on this machine (what the SSH host runs for a remote pane)', async () => {
+		const home = join(root, 'home');
+		await fs.mkdir(join(home, '.example', 'data'), { recursive: true });
+		await fs.writeFile(join(home, '.example', 'data', 'opencode-local.db'), '');
+		await fs.writeFile(join(root, 'escape.db'), '');
+		await fs.symlink(join(root, 'escape.db'), join(home, '.example', 'data', 'linked.db'));
+		const resolve = async (pid: number) => pid === 1 ? '/home/example/.local/share/example/releases/1/example-cli' : pid === 2 ? '/usr/bin/bun' : undefined;
+		const verify = (pid: number, databasePath?: string) => paradisVerifyOpenCodeCliOnThisHost({ pid, command: 'example-cli', ...(databasePath !== undefined ? { databasePath } : {}) }, {}, home, resolve);
+		assert.deepStrictEqual(await Promise.all([
+			verify(1, join(home, '.example', 'data', 'opencode-local.db')),
+			verify(1, join(home, '.example', 'data', 'linked.db')),
+			verify(1, join(home, '.example', 'data', 'missing.db')),
+			verify(2, join(home, '.example', 'data', 'opencode-local.db')),
+		]), [
+			{ executable: '/home/example/.local/share/example/releases/1/example-cli', databasePath: await fs.realpath(join(home, '.example', 'data', 'opencode-local.db')) },
+			{ executable: '/home/example/.local/share/example/releases/1/example-cli' },
+			{ executable: '/home/example/.local/share/example/releases/1/example-cli' },
+			undefined,
+		]);
 	});
 
 	test('ignores a damaged store', async () => {

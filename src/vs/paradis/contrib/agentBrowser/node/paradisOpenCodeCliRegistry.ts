@@ -21,7 +21,7 @@ import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpen
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 
 /** 覚えておく CLI の数と、1 つの CLI について覚える DB の数。 */
-const MAX_CLIS = 8;
+const MAX_CLIS = 16;
 const MAX_DATABASES_PER_CLI = 4;
 const MAX_PATH_LENGTH = 1024;
 /** 最後に名乗ってからこの時間がたった CLI は使わない（読み込みのときに捨てる）。 */
@@ -36,6 +36,11 @@ export interface IParadisOpenCodeCli {
 	/** 会話の DB（新しく見たものが先）。 */
 	readonly databases: readonly string[];
 	readonly seenAt: number;
+	/**
+	 * SSH などの接続先（remote authority を小文字にしたもの）で確かめた CLI なら、その接続先。手元なら undefined。
+	 * 実行ファイルと DB のパスは、その接続先のマシンのもの。
+	 */
+	readonly authority?: string;
 }
 
 /** 会話の DB と、その会話を再開するもの（覚えた実行ファイルの絶対パス）。 */
@@ -129,6 +134,45 @@ export async function paradisVerifyOpenCodeCliProcess(pid: number, command: stri
 	return executable;
 }
 
+/** 接続先の名前（remote authority）として受ける形。 */
+export function paradisNormalizeOpenCodeCliAuthority(authority: unknown): string | undefined {
+	return typeof authority === 'string' && /^[A-Za-z0-9._+@:%[\]-]{1,300}$/.test(authority) ? authority.toLowerCase() : undefined;
+}
+
+/**
+ * 接続先で確かめた DB のパスの形だけを見る（ホームの下か・実体はどこかは、接続先で確かめ済み）。正規化した POSIX の絶対パスで、
+ * 名前が `.db` で終わること。
+ */
+function plausibleRemoteDatabasePath(path: unknown): string | undefined {
+	return typeof path === 'string' && path.length <= MAX_PATH_LENGTH && path.startsWith('/') && normalize(path) === path && /^[\w.-]+\.db$/.test(basename(path)) ? path : undefined;
+}
+
+/**
+ * このマシンで、互換 CLI の名乗りを確かめる（接続先では REH サーバーがこれを行う）。プロセスの実行ファイルを確かめ、DB の場所も
+ * このマシンのホームか XDG のデータの置き場の下にある `.db` のファイルで、実体のパスも同じ条件を満たすときだけ返す。
+ * 実行ファイルを確かめられなければ undefined（DB だけは返さない）。
+ */
+export async function paradisVerifyOpenCodeCliOnThisHost(input: { readonly pid: number; readonly command: string; readonly databasePath?: string },
+	env: NodeJS.ProcessEnv = process.env, home: string = homedir(), resolveExecutable: (pid: number) => Promise<string | undefined> = paradisResolveProcessExecutable): Promise<{ readonly executable: string; readonly databasePath?: string } | undefined> {
+	const executable = await paradisVerifyOpenCodeCliProcess(input.pid, input.command, resolveExecutable);
+	if (executable === undefined) {
+		return undefined;
+	}
+	const declared = paradisValidateOpenCodeDatabasePath(input.databasePath, env, home);
+	let databasePath: string | undefined;
+	if (declared !== undefined) {
+		const real = await fs.realpath(declared).catch(() => undefined);
+		const realHome = await fs.realpath(home).catch(() => home);
+		const xdg = paradisOpenCodeXdgDataRoot(env);
+		const realXdg = xdg !== undefined ? await fs.realpath(xdg).catch(() => xdg) : undefined;
+		const isFile = real !== undefined && await fs.stat(real).then(stat => stat.isFile(), () => false);
+		if (isFile && paradisValidateOpenCodeDatabasePath(real, realXdg !== undefined ? { XDG_DATA_HOME: realXdg } : {}, realHome) !== undefined) {
+			databasePath = real;
+		}
+	}
+	return { executable, ...(databasePath !== undefined ? { databasePath } : {}) };
+}
+
 function parseCli(value: unknown, now: number): IParadisOpenCodeCli | undefined {
 	const raw = value as Partial<Record<keyof IParadisOpenCodeCli, unknown>> | null;
 	if (raw === null || typeof raw !== 'object' || !paradisIsOpenCodeCompatibleCommand(raw.command) || !paradisIsOpenCodeCliExecutable(raw.executable)
@@ -136,8 +180,17 @@ function parseCli(value: unknown, now: number): IParadisOpenCodeCli | undefined 
 		return undefined;
 	}
 	const label = paradisNormalizeOpenCodeCliLabel(raw.label);
-	const databases = Array.isArray(raw.databases) ? [...new Set(raw.databases.map(path => paradisValidateOpenCodeDatabasePath(path)).filter((path): path is string => path !== undefined))].slice(0, MAX_DATABASES_PER_CLI) : [];
-	return { command: raw.command, executable: raw.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: raw.seenAt };
+	const authority = raw.authority === undefined ? undefined : paradisNormalizeOpenCodeCliAuthority(raw.authority);
+	if (raw.authority !== undefined && authority === undefined) {
+		return undefined;
+	}
+	const validate = authority !== undefined ? plausibleRemoteDatabasePath : (path: unknown) => paradisValidateOpenCodeDatabasePath(path);
+	const databases = Array.isArray(raw.databases) ? [...new Set(raw.databases.map(validate).filter((path): path is string => path !== undefined))].slice(0, MAX_DATABASES_PER_CLI) : [];
+	return { command: raw.command, executable: raw.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: raw.seenAt, ...(authority !== undefined ? { authority } : {}) };
+}
+
+function cliKey(command: string, authority: string | undefined): string {
+	return `${authority ?? ''}\0${command}`;
 }
 
 export class ParadisOpenCodeCliRegistry {
@@ -150,7 +203,7 @@ export class ParadisOpenCodeCliRegistry {
 
 	constructor(private readonly now: () => number = Date.now) { }
 
-	/** 保存先を決めて読み込む（shared process で 1 回。接続先のサーバーでは呼ばないので、覚えた CLI は無い）。 */
+	/** 保存先を決めて読み込む（shared process で 1 回。接続先で確かめた CLI も、接続先ごとに手元のここへ覚える）。 */
 	initialize(storePath: string): Promise<void> {
 		if (this.storePath === storePath && this.loading !== undefined) {
 			return this.loading;
@@ -162,7 +215,7 @@ export class ParadisOpenCodeCliRegistry {
 				const now = this.now();
 				const clis = Array.isArray(parsed.clis) ? parsed.clis.map(cli => parseCli(cli, now)).filter((cli): cli is IParadisOpenCodeCli => cli !== undefined) : [];
 				const seen = new Set<string>();
-				this.clis = clis.filter(cli => !seen.has(cli.command) && seen.add(cli.command)).slice(0, MAX_CLIS);
+				this.clis = clis.filter(cli => !seen.has(cliKey(cli.command, cli.authority)) && seen.add(cliKey(cli.command, cli.authority))).slice(0, MAX_CLIS);
 			} catch {
 				this.clis = [];
 			}
@@ -171,25 +224,37 @@ export class ParadisOpenCodeCliRegistry {
 		return this.loading;
 	}
 
-	/** 覚えた CLI（期限の切れていないもの。新しく見たものが先）。 */
-	list(): readonly IParadisOpenCodeCli[] {
-		const now = this.now();
-		return this.clis.filter(cli => now - cli.seenAt < PARADIS_OPENCODE_CLI_TTL_MS);
+	/** 読み込みが終わるまで待つ。 */
+	async ready(): Promise<void> {
+		await this.loading;
 	}
 
-	/** タブ名の判定などに配るコマンド名（覚えたものだけ。確認中のものは入れない）。 */
+	/** 覚えた CLI のうち、そのマシン（`authority`。手元なら undefined）のもの（期限の切れていないもの。新しく見たものが先）。 */
+	list(authority?: string): readonly IParadisOpenCodeCli[] {
+		const now = this.now();
+		const key = authority?.toLowerCase();
+		return this.clis.filter(cli => cli.authority === key && now - cli.seenAt < PARADIS_OPENCODE_CLI_TTL_MS);
+	}
+
+	/** 手元のマシンで覚えたコマンド名（プロセスの判定に使う。確認中のものは入れない）。 */
 	commands(): readonly string[] {
 		return this.list().map(cli => cli.command);
 	}
 
-	/** 覚えた実行ファイル（再開に使う）。無ければ undefined。 */
-	executableOf(command: string): string | undefined {
-		return this.list().find(cli => cli.command === command)?.executable;
+	/** どのマシンかを問わず、覚えたコマンド名（タブ名の判定に配る。どのウィンドウのタイトルかは問わないので全部）。 */
+	allCommands(): readonly string[] {
+		const now = this.now();
+		return [...new Set(this.clis.filter(cli => now - cli.seenAt < PARADIS_OPENCODE_CLI_TTL_MS).map(cli => cli.command))];
 	}
 
-	/** 覚えた DB と、その会話を再開する実行ファイル。 */
-	databases(): readonly IParadisOpenCodeCliDatabase[] {
-		return this.list().flatMap(cli => cli.databases.map(path => ({ path, cli: cli.executable, ...(cli.label !== undefined ? { label: cli.label } : {}) })));
+	/** そのマシンで覚えた実行ファイル（再開に使う）。無ければ undefined。 */
+	executableOf(command: string, authority?: string): string | undefined {
+		return this.list(authority).find(cli => cli.command === command)?.executable;
+	}
+
+	/** そのマシンで覚えた DB と、その会話を再開する実行ファイル。 */
+	databases(authority?: string): readonly IParadisOpenCodeCliDatabase[] {
+		return this.list(authority).flatMap(cli => cli.databases.map(path => ({ path, cli: cli.executable, ...(cli.label !== undefined ? { label: cli.label } : {}) })));
 	}
 
 	/**
@@ -222,23 +287,26 @@ export class ParadisOpenCodeCliRegistry {
 	 * 持ち主の確認と実行ファイルの確認が済んだ CLI を覚える。名前・実行ファイルが使えなければ何もしない。DB は確かめて
 	 * 通ったものだけを足す。
 	 */
-	async remember(input: { readonly command: string; readonly executable: string; readonly label?: string; readonly databasePath?: string }): Promise<void> {
+	async remember(input: { readonly command: string; readonly executable: string; readonly label?: string; readonly databasePath?: string; readonly authority?: string }): Promise<void> {
 		await this.loading;
-		if (!paradisIsOpenCodeCompatibleCommand(input.command) || input.command === PARADIS_OPENCODE_COMMAND || !paradisIsOpenCodeCliExecutable(input.executable) || basename(input.executable) !== input.command) {
+		const authority = input.authority === undefined ? undefined : paradisNormalizeOpenCodeCliAuthority(input.authority);
+		if (!paradisIsOpenCodeCompatibleCommand(input.command) || input.command === PARADIS_OPENCODE_COMMAND || !paradisIsOpenCodeCliExecutable(input.executable) || basename(input.executable) !== input.command
+			|| (input.authority !== undefined && authority === undefined)) {
 			return;
 		}
 		const now = this.now();
-		const previous = this.list().find(cli => cli.command === input.command);
+		const previous = this.list(authority).find(cli => cli.command === input.command);
 		const label = paradisNormalizeOpenCodeCliLabel(input.label) ?? previous?.label;
-		const database = paradisValidateOpenCodeDatabasePath(input.databasePath);
+		// 接続先の DB は接続先で確かめ済み（ここではそのマシンのホームを知らないので、形だけ見る）
+		const database = authority !== undefined ? plausibleRemoteDatabasePath(input.databasePath) : paradisValidateOpenCodeDatabasePath(input.databasePath);
 		const databases = [...new Set([...(database !== undefined ? [database] : []), ...(previous?.databases ?? [])])].slice(0, MAX_DATABASES_PER_CLI);
-		const next: IParadisOpenCodeCli = { command: input.command, executable: input.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: now };
+		const next: IParadisOpenCodeCli = { command: input.command, executable: input.executable, ...(label !== undefined ? { label } : {}), databases, seenAt: now, ...(authority !== undefined ? { authority } : {}) };
 		const unchanged = previous !== undefined && previous.executable === next.executable && previous.label === next.label && previous.databases.length === next.databases.length
 			&& previous.databases.every((path, index) => path === next.databases[index]) && now - previous.seenAt < 24 * 60 * 60 * 1000;
 		if (unchanged) {
 			return;
 		}
-		this.clis = [next, ...this.clis.filter(cli => cli.command !== input.command)].slice(0, MAX_CLIS);
+		this.clis = [next, ...this.clis.filter(cli => cliKey(cli.command, cli.authority) !== cliKey(input.command, authority))].slice(0, MAX_CLIS);
 		this.publish();
 		await this.persist();
 	}

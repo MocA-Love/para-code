@@ -176,6 +176,7 @@ function createFixture(): {
 		_unconfirmableTokens: new Set<string>(),
 		_callerClassifications: new WeakMap<object, Map<string, string>>(),
 		_callerClassificationsInFlight: new WeakMap(),
+		_remoteOpenCodeVerifications: new Map(),
 		_browserObserver: new ParadisBrowserObserver(),
 		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
 		_hookOwnership: new ParadisAgentHookOwnership({ snapshot: async () => undefined }),
@@ -396,6 +397,41 @@ suite('ParadisAgentBrowser authority integration', () => {
 				input: { origin: 'https://intranet.example.com', username: 'u', password: '[hidden]' }, leaked: false,
 			});
 		} finally { listener.dispose(); paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('an OpenCode-compatible CLI on an SSH host is verified by a window connected to that host and then becomes resumable', async () => {
+		const fixture = await openCodeFixture('ssh-remote+trusted');
+		try {
+			assert.strictEqual((await fixture.start({ transcript_path: '/home/remote/.example/data/opencode-local.db' })).statusCode, 200);
+			const before = Reflect.get(fixture.service, '_paneSessions').get('opencode-test');
+			const otherHost = await fixture.service.takeOpenCodeCliVerifications('ssh-remote+other');
+			const requests = await fixture.service.takeOpenCodeCliVerifications('SSH-REMOTE+TRUSTED');
+			const again = await fixture.service.takeOpenCodeCliVerifications('ssh-remote+trusted');
+			await fixture.service.reportOpenCodeCliVerification('unknown-id', { executable: '/home/remote/.local/bin/example-cli' });
+			await fixture.service.reportOpenCodeCliVerification(requests[0]?.id ?? '', { executable: '/home/remote/.local/bin/example-cli', databasePath: '/home/remote/.example/data/opencode-local.db' });
+			const after = Reflect.get(fixture.service, '_paneSessions').get('opencode-test');
+			assert.deepStrictEqual({
+				before: [before?.cli, before?.resumable], otherHost, requests: requests.map(request => [request.pid, request.command, request.databasePath]), again,
+				after: [after?.cli, after?.resumable], localCommands: paradisOpenCodeCliRegistry.commands(),
+				databases: await fixture.service.listOpenCodeCompatibleDatabases('ssh-remote+trusted'),
+				registration: paradisOpenCodeBridge.getRegistration('opencode-test')?.cli,
+			}, {
+				before: [undefined, false], otherHost: [], requests: [[200, 'example-cli', '/home/remote/.example/data/opencode-local.db']], again: [],
+				after: ['/home/remote/.local/bin/example-cli', undefined], localCommands: [],
+				databases: [{ path: '/home/remote/.example/data/opencode-local.db', cli: '/home/remote/.local/bin/example-cli', label: 'Example CLI' }],
+				registration: '/home/remote/.local/bin/example-cli',
+			});
+		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
+	});
+
+	test('a remote verification with a different executable name is not remembered', async () => {
+		const fixture = await openCodeFixture('ssh-remote+trusted');
+		try {
+			await fixture.start();
+			const [request] = await fixture.service.takeOpenCodeCliVerifications('ssh-remote+trusted');
+			await fixture.service.reportOpenCodeCliVerification(request.id, { executable: '/usr/bin/bash' });
+			assert.deepStrictEqual({ remembered: paradisOpenCodeCliRegistry.list('ssh-remote+trusted'), session: Reflect.get(fixture.service, '_paneSessions').get('opencode-test')?.resumable }, { remembered: [], session: false });
+		} finally { paradisOpenCodeBridge.unregister('opencode-test'); paradisOpenCodeCliRegistry.clear(); }
 	});
 
 	test('OpenCode SSH identity comes from the registered pane, never the caller host query', async () => {
