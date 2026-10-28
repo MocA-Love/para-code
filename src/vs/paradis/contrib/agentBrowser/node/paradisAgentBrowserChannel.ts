@@ -171,6 +171,20 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 			case 'forgetOpenCodeCompatibleClis':
 				requireArgs(arg, 0);
 				return this.service.forgetOpenCodeCompatibleClis() as Promise<T>;
+			// SSH のウィンドウのセッション履歴が、接続先で覚えた互換 CLI の DB を REH へ渡すために聞く
+			// SSH のウィンドウが、接続先で確かめる OpenCode 互換 CLI の名乗りを取りに来て、REH で確かめた結果を返す
+			case 'takeOpenCodeCliVerifications': {
+				const args = requireArgs(arg, 1);
+				return this.service.takeOpenCodeCliVerifications(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			}
+			case 'reportOpenCodeCliVerification': {
+				const args = requireArgs(arg, 2);
+				return this.service.reportOpenCodeCliVerification(typeof args[0] === 'string' ? args[0] : '', args[1]) as Promise<T>;
+			}
+			case 'listOpenCodeCompatibleDatabases': {
+				const args = requireArgs(arg, 1);
+				return this.service.listOpenCodeCompatibleDatabases(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			}
 			case 'getVoiceIngressToken':
 				requireArgs(arg, 0);
 				return this.service.getVoiceIngressToken() as Promise<T>;

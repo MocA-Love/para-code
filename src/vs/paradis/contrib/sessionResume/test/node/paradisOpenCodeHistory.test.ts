@@ -153,6 +153,28 @@ suite('ParadisOpenCodeHistory', () => {
 		assert.deepStrictEqual(sessions.map(session => [session.id, session.cli, session.updatedAt]).sort(), [['ses_one', '/opt/example/bin/example-cli', 30], ['ses_two', 'opencode', 99]]);
 	});
 
+	test('lists the databases a request names for this machine (an SSH host gets them from the PC) and drops malformed entries', async () => {
+		populate();
+		let received: unknown;
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
+			openCodeDatabases: async requested => { received = requested; return requested.map(database => ({ path: database.path, cli: database.cli, ...(database.label !== undefined ? { label: database.label } : {}) })); },
+		}, new NullLogService());
+		const sessions = await service.list({
+			spaces: [{ stateKey: 'project', name: 'Project', cwd: '/project', current: true }],
+			openCodeDatabases: [
+				{ path: dbPath, cli: '/opt/example/bin/example-cli', label: 'Example CLI' },
+				{ path: dbPath, cli: 'rm -rf /' },
+				{ path: 'relative.db', cli: '/opt/example/bin/example-cli' },
+				{ path: dbPath, cli: '/opt/example/bin/example-cli', label: 'bad\u0007' },
+			],
+		});
+		assert.deepStrictEqual({ received, clis: [...new Set(sessions.map(session => [session.cli, session.cliLabel].join(' ')))] }, {
+			received: [{ path: dbPath, cli: '/opt/example/bin/example-cli', label: 'Example CLI' }],
+			clis: ['/opt/example/bin/example-cli Example CLI'],
+		});
+	});
+
 	test('desktop catalog keeps sessions in one database distinct and supports preview/search/resume details', async () => {
 		populate();
 		const service = new ParadisSessionResumeService({

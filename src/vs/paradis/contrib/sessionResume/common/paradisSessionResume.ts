@@ -37,6 +37,18 @@ export interface IParadisResumeSpace<TPath extends string = ParadisHostPath> {
 export interface IParadisResumeListRequest<TPath extends string = ParadisHostPath> {
 	readonly spaces: readonly IParadisResumeSpace<TPath>[];
 	readonly includeArchived?: boolean;
+	/**
+	 * そのマシンで確かめて覚えた OpenCode 互換 CLI の DB（覚えているのは手元の Para Code なので、接続先へはここで渡す）。
+	 * 受けた側は、自分のマシンでホームの下か・実体はどこかを確かめ直してから読む。
+	 */
+	readonly openCodeDatabases?: readonly IParadisResumeOpenCodeDatabase[];
+}
+
+/** {@link IParadisResumeListRequest.openCodeDatabases} の 1 件。`cli` は再開に使う実行ファイルの絶対パス。 */
+export interface IParadisResumeOpenCodeDatabase {
+	readonly path: string;
+	readonly cli: string;
+	readonly label?: string;
 }
 
 /**

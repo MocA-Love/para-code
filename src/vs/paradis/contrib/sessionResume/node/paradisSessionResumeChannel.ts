@@ -9,6 +9,7 @@
 import { createHash } from 'crypto';
 import { constants as fsConstants, promises as fs, type Dirent, type Stats } from 'fs';
 import type { FileHandle } from 'fs/promises';
+import { homedir } from 'os';
 import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
@@ -24,6 +25,8 @@ import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrow
 import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisOpenCodeCliRegistry, paradisVerifyOpenCodeCliOnThisHost } from '../../agentBrowser/node/paradisOpenCodeCliRegistry.js';
+import { paradisIsOpenCodeResumeCli, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, paradisWithOpenCodeDatabase, readOpenCodeMessages, readOpenCodeMessagesIn } from './paradisOpenCodeHistory.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
@@ -39,6 +42,7 @@ import {
 	IParadisResumeLatestMessage,
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
+	IParadisResumeOpenCodeDatabase,
 	IParadisResumePreview,
 	IParadisResumeSearchResult,
 	IParadisResumeSession,
@@ -310,7 +314,7 @@ export class ParadisSessionResumeService {
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
 	private readonly resolveAgentHomes: typeof paradisResolveAgentHomes;
-	private readonly openCodeDatabases: () => Promise<readonly IParadisOpenCodeDatabase[]>;
+	private readonly openCodeDatabases: (requested: readonly IParadisResumeOpenCodeDatabase[]) => Promise<readonly IParadisOpenCodeDatabase[]>;
 	private readonly readBoundedFile: typeof readBoundedFile;
 	private readonly beforeSummaryRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
@@ -318,7 +322,7 @@ export class ParadisSessionResumeService {
 	constructor(
 		dependencies: {
 			readonly resolveAgentHomes?: typeof paradisResolveAgentHomes;
-			readonly openCodeDatabases?: () => Promise<readonly IParadisOpenCodeDatabase[]>;
+			readonly openCodeDatabases?: (requested: readonly IParadisResumeOpenCodeDatabase[]) => Promise<readonly IParadisOpenCodeDatabase[]>;
 			readonly readBoundedFile?: typeof readBoundedFile;
 			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
 			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
@@ -327,7 +331,8 @@ export class ParadisSessionResumeService {
 		@ILogService private readonly logService: ILogService,
 	) {
 		this.resolveAgentHomes = dependencies?.resolveAgentHomes ?? paradisResolveAgentHomes;
-		this.openCodeDatabases = dependencies?.openCodeDatabases ?? (() => paradisOpenCodeDatabasePaths());
+		// 頼まれた DB（接続先で確かめて覚えたもの）と、このマシンで覚えた DB。どちらもこのマシンで確かめ直してから読む
+		this.openCodeDatabases = dependencies?.openCodeDatabases ?? (requested => paradisOpenCodeDatabasePaths(process.env, homedir(), [...requested.map(database => ({ path: database.path, cli: database.cli, ...(database.label !== undefined ? { label: database.label } : {}) })), ...paradisOpenCodeCliRegistry.databases()]));
 		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
@@ -374,12 +379,18 @@ export class ParadisSessionResumeService {
 			cwd: space.cwd,
 			current: space.current,
 		})) : [];
-		return { spaces, includeArchived: request.includeArchived === true };
+		const openCodeDatabases = Array.isArray(request?.openCodeDatabases) ? request.openCodeDatabases.filter(database =>
+			typeof database?.path === 'string' && database.path.length <= 1024 && isAbsolute(database.path) && paradisIsOpenCodeResumeCli(database.cli)
+			&& (database.label === undefined || paradisNormalizeOpenCodeCliLabel(database.label) === database.label)).slice(0, 64).map(database => ({
+				path: database.path, cli: database.cli, ...(database.label !== undefined ? { label: database.label } : {}),
+			})) : [];
+		return { spaces, includeArchived: request.includeArchived === true, ...(openCodeDatabases.length > 0 ? { openCodeDatabases } : {}) };
 	}
 
 	private createListRequestKey(request: INormalizedParadisResumeListRequest): string {
 		return JSON.stringify({
 			includeArchived: request.includeArchived,
+			openCodeDatabases: request.openCodeDatabases ?? [],
 			spaces: request.spaces.map(space => ({
 				stateKey: space.stateKey,
 				name: space.name,
@@ -394,7 +405,7 @@ export class ParadisSessionResumeService {
 		// 同じ会話が複数の DB に写っていることがある（互換 CLI が本家の DB から写したものなど）。session id で 1 件にまとめ、
 		// 後から更新された方を採る。同じなら先に挙げた DB（覚えた互換 CLI の DB が先）を採る
 		const openCodeSessions = new Map<string, { readonly database: IParadisOpenCodeDatabase; readonly saved: IParadisOpenCodeSession }>();
-		for (const database of await this.openCodeDatabases()) {
+		for (const database of await this.openCodeDatabases(request.openCodeDatabases ?? [])) {
 			try {
 				for (const saved of await listOpenCodeSessions(database.path, request.spaces.map(space => space.cwd), request.includeArchived, undefined, database.cli)) {
 					const previous = openCodeSessions.get(saved.id);
@@ -1004,6 +1015,14 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
+			// ブリッジ対応の OpenCode 互換 CLI の名乗りを、このマシン（SSH の接続先なら REH サーバー）で確かめる
+			case 'verifyOpenCodeCli': {
+				const input = args[0] as { pid?: unknown; command?: unknown; databasePath?: unknown } | undefined;
+				if (!input || typeof input.pid !== 'number' || !Number.isSafeInteger(input.pid) || typeof input.command !== 'string' || (input.databasePath !== undefined && typeof input.databasePath !== 'string')) {
+					return Promise.resolve(undefined as T);
+				}
+				return paradisVerifyOpenCodeCliOnThisHost({ pid: input.pid, command: input.command, ...(typeof input.databasePath === 'string' ? { databasePath: input.databasePath } : {}) }) as Promise<T>;
+			}
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}
