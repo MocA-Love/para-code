@@ -7,9 +7,13 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+
+/** 止まっている間に、前面に戻ったかを確かめ直す間隔。確かめるのは IPC 1 回で、git は投げない。 */
+const RECHECK_INTERVAL_MS = 10_000;
 
 type ParadisWindowActivityHost = Pick<IHostService, 'hasFocus' | 'onDidChangeFocus' | 'hadLastFocus'>;
 
@@ -25,6 +29,9 @@ export interface IParadisWindowVisibility {
  * `IHostService.hasFocus` だけで決めると、内蔵ブラウザ（別の WebContents）にフォーカスがある間は、表にいても
  * false になる。そこで hasFocus が false のときは `hadLastFocus()`（OS が見ている前面のウィンドウがこれか）で
  * 確かめ直す。Web では hadLastFocus が常に true なので、見えている間は止めない。
+ *
+ * `onDidChangeFocus` は同じ値が続くと鳴らない。ほかのアプリから内蔵ブラウザを直接クリックして戻ると hasFocus は
+ * false のままで知らせが来ないので、止まっている間（最小化を除く）は {@link RECHECK_INTERVAL_MS} ごとに確かめ直す。
  */
 export class ParadisWorkspacesWindowActivity extends Disposable {
 	private readonly _onDidChange = this._register(new Emitter<void>());
@@ -32,6 +39,7 @@ export class ParadisWorkspacesWindowActivity extends Disposable {
 
 	private active: boolean;
 	private sequence = 0;
+	private readonly recheck = this._register(new RunOnceScheduler(() => this.update(), RECHECK_INTERVAL_MS));
 
 	constructor(
 		private readonly hostService: ParadisWindowActivityHost,
@@ -72,6 +80,11 @@ export class ParadisWorkspacesWindowActivity extends Disposable {
 	}
 
 	private set(active: boolean): void {
+		if (!active && !this.visibility.hidden) {
+			this.recheck.schedule();
+		} else {
+			this.recheck.cancel();
+		}
 		if (this.active !== active) {
 			this.active = active;
 			this._onDidChange.fire();
