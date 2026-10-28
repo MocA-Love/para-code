@@ -225,6 +225,8 @@ interface IReplacedState {
 	readonly reason: ParadisDevtoolsReplacedReason;
 	/** 次に記録を読むツールの結果へ、記録が消えた旨を 1 行添える。 */
 	recordsNote: boolean;
+	/** 止めた子が、始めたまま止めていない performance trace を持っていたか（注記に trace の文を足す）。 */
+	readonly hadTrace: boolean;
 }
 
 class StaleParadisDevtoolsGenerationError extends Error {
@@ -587,8 +589,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return;
 		}
 		if (name === 'performance_start_trace') {
-			// autoStop の trace は呼び出しの中で終わる
-			entry.tracing = !(this._isRecord(toolArgs) && toolArgs.autoStop === true);
+			// autoStop の trace は呼び出しの中で終わる（既定は autoStop: true）
+			entry.tracing = this._isRecord(toolArgs) && toolArgs.autoStop === false;
 		} else if (name === 'performance_stop_trace') {
 			entry.tracing = false;
 		} else if (name === 'emulate') {
@@ -606,7 +608,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return undefined;
 		}
 		state.recordsNote = false;
-		return paradisDevtoolsRecordsResetNote(state.reason);
+		return paradisDevtoolsRecordsResetNote(state.reason, state.hadTrace);
 	}
 
 	/** 入れ替えの後、最初に記録を読むツールの結果へ、入れ替えの前の記録が無いことを 1 回だけ添える。 */
@@ -615,7 +617,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (state === undefined || !state.recordsNote || !paradisDevtoolsReadsRecords(name) || !this._isRecord(returned) || !Array.isArray(returned.content)) {
 			return;
 		}
-		returned.content.push({ type: 'text', text: paradisDevtoolsRecordsResetNote(state.reason) });
+		returned.content.push({ type: 'text', text: paradisDevtoolsRecordsResetNote(state.reason, state.hadTrace) });
 		this._replaced.delete(token);
 	}
 
@@ -656,7 +658,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (this._children.get(token) !== entry) {
 			return;
 		}
-		this._replaced.set(token, { reason, recordsNote: true });
+		this._replaced.set(token, { reason, recordsNote: true, hadTrace: entry.tracing });
 		this._snapshots.forget(token);
 		this._snapshotBaselines.forget(token);
 	}

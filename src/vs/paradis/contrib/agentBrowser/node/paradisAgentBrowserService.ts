@@ -5116,9 +5116,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (argumentRefusal !== undefined) {
 				return argumentRefusal;
 			}
+			// 注記を付けるタブは呼び出しの前に決める（open_browser_tab などで current が動いても、呼んだタブに付ける）
+			const evictionNoteKey = nested ? undefined : this._evictionNoteKey(ingressLease, params?.arguments);
 			const result = await this._callToolRouted(ingressLease, name, params, signal, socket, nested);
 			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
-			return nested ? result : this._withEvictionNote(ingressLease, params?.arguments, await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params)));
+			return nested ? result : this._withEvictionNote(evictionNoteKey, await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params)));
 		} finally {
 			pacing.dispose();
 		}
@@ -5128,18 +5130,33 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 呼び出したタブの内蔵 DevTools の子プロセスを、子の上限で止めていたら（paradisDevtoolsMcpProxy.ts の `_evictIdleChild`）、
 	 * そのことを結果の末尾に 1 回だけ添える。どの道具の呼び出しでも伝える（emulate の設定や実行中の trace が消えているため）。
 	 */
-	private _withEvictionNote(ingressLease: IParadisAgentBrowserIngressLease, args: unknown, result: unknown): unknown {
-		if (typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
+	private _withEvictionNote(key: string | undefined, result: unknown): unknown {
+		if (key === undefined || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
 			return result;
 		}
-		const token = ingressLease.token;
-		const tabId = paradisTakeTabIdArgument(args).tabId ?? this._defaultTabId(token);
-		const note = this._devtoolsProxy.takeEvictionNote?.(tabId !== undefined ? paradisAgentTabScopeKey(token, tabId) : token);
+		const note = this._devtoolsProxy.takeEvictionNote?.(key);
 		if (note === undefined) {
 			return result;
 		}
 		const typed = result as { content: unknown[] };
 		return { ...typed, content: [...typed.content, { type: 'text', text: note }] };
+	}
+
+	/**
+	 * 呼び出しが使うタブのスコープのキー（{@link _scopeToolCall} の pageKey と同じ決め方。台帳には触らない）。
+	 * tab_id が正しくない・使えないタブなら undefined（その呼び出しは断られる）。
+	 */
+	private _evictionNoteKey(ingressLease: IParadisAgentBrowserIngressLease, args: unknown): string | undefined {
+		const taken = paradisTakeTabIdArgument(args);
+		if (taken.invalid) {
+			return undefined;
+		}
+		const token = ingressLease.token;
+		const tabId = taken.tabId ?? this._defaultTabId(token);
+		if (tabId === undefined) {
+			return token;
+		}
+		return this._scopeBinding(token, tabId) !== undefined ? paradisAgentTabScopeKey(token, tabId) : undefined;
 	}
 
 	/** {@link _callTool} の続き（サイトメモ・手順・観測を添えるかを決めて道具を呼ぶ）。 */
