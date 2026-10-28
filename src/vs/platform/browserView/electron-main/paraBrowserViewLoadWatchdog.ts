@@ -118,6 +118,37 @@ export function paraSetBrowserViewAgentTab(viewId: string, agentTab: boolean): v
 		agentTabs.delete(viewId);
 	}
 }
+
+/** The view each child view was opened from (target=_blank, window.open, middle click), as recorded by the CDP target service. */
+const openerViewIds = new Map<string, string>();
+
+/**
+ * Records the view a child view was opened from (or forgets it). A child of an agent tab is treated
+ * as an agent tab too: it carries the same `user` owner, so neither the ledger nor the owner can tell
+ * it apart, and nobody is watching it either. The mark follows the opener: it is gone once the
+ * opener leaves the ledger or the child closes.
+ */
+export function paraSetBrowserViewOpener(viewId: string, openerViewId: string | undefined): void {
+	if (openerViewId === undefined || openerViewId === viewId) {
+		openerViewIds.delete(viewId);
+	} else {
+		openerViewIds.set(viewId, openerViewId);
+	}
+}
+
+/** Whether the view, or a view it was (transitively) opened from, is marked as an agent tab. */
+function paraIsAgentTabOrChild(viewId: string): boolean {
+	const visited = new Set<string>();
+	let current: string | undefined = viewId;
+	while (current !== undefined && !visited.has(current)) {
+		if (agentTabs.has(current)) {
+			return true;
+		}
+		visited.add(current);
+		current = openerViewIds.get(current);
+	}
+	return false;
+}
 const onDidChangeStallEmitter = new Emitter<{ readonly viewId: string; readonly stall: IParaBrowserViewLoadStall | undefined }>();
 
 /** Fires when a view starts or stops asking whether to keep waiting. */
@@ -230,6 +261,7 @@ export function paraInstallBrowserViewLoadWatchdog(
 		onStall({
 			url,
 			errorCode: PARA_ERR_TIMED_OUT,
+			// allow-any-unicode-next-line
 			errorDescription: localize('paraBrowserView.loadTimedOut', "Para Code が {0} 秒待ってもサーバーから応答が無かったため、読み込みを止めました", Math.round(elapsedMs / 1000)),
 		});
 		webContents.stop();
@@ -264,7 +296,7 @@ export function paraInstallBrowserViewLoadWatchdog(
 					episode.sample = {};
 				}
 			}
-			const agentTab = agentTabs.has(viewId) || agentOwner;
+			const agentTab = paraIsAgentTabOrChild(viewId) || agentOwner;
 			episode.context = { ...episode.context, agentTab };
 			if (agentTab) {
 				stop('agent-stopped');
@@ -367,6 +399,7 @@ export function paraInstallBrowserViewLoadWatchdog(
 		if (controllers.get(viewId) === controller) {
 			controllers.delete(viewId);
 			agentTabs.delete(viewId);
+			openerViewIds.delete(viewId);
 		}
 		if (webContents.isDestroyed()) {
 			return;

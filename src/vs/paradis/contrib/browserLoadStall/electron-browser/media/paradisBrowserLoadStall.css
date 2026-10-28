@@ -14,7 +14,7 @@
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border, transparent));
 	background-color: var(--vscode-editorWidget-background);
 	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
-	font-size: var(--vscode-font-size, 13px);
+	font-size: var(--vscode-fontSize-body1);
 }
 
 .paradis-browser-load-stall[hidden] {

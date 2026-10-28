@@ -4792,7 +4792,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (agentKind === 'opencode' && eventType === 'SessionStart' && sessionId && transcriptPath && cwd) {
 					const pane = this._paneShells.get(token);
 					const pidValue = Number(url.searchParams.get('pid'));
-					paradisOpenCodeBridge.register(token, { sessionId, dbPath: transcriptPath, cwd, ...(resumeCli() !== undefined ? { cli: resumeCli() } : {}),
+					paradisOpenCodeBridge.register(token, {
+						sessionId, dbPath: transcriptPath, cwd, ...(resumeCli() !== undefined ? { cli: resumeCli() } : {}),
 						...(Number.isSafeInteger(pidValue) && pidValue > 1 ? { pid: pidValue } : {}),
 						...(pane?.remoteAuthority !== undefined ? { authority: pane.remoteAuthority } : {}),
 					});

@@ -279,11 +279,13 @@ suite('ParadisAgentBrowser authority integration', () => {
 		Reflect.set(fixture.service, '_classifyCaller', async () => remoteAuthority ? 'tunnel' : 'pane');
 		// The process 200 really runs the compatible CLI's executable (a fake process table; nothing is executed)
 		Reflect.set(fixture.service, '_resolveProcessExecutable', async (pid: number) => pid === 200 ? '/opt/example/bin/example-cli' : pid === 210 ? '/usr/bin/bun' : undefined);
-		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({ snapshot: async () => new Map([
-			[100, { pid: 100, ppid: 1, command: 'zsh', startKey: 'shell' }],
-			[200, { pid: 200, ppid: 100, command: 'example-cli', startKey: 'owner' }],
-			[210, { pid: 210, ppid: 200, command: 'opencode', startKey: 'child' }],
-		]) }));
+		Reflect.set(fixture.service, '_hookOwnership', new ParadisAgentHookOwnership({
+			snapshot: async () => new Map([
+				[100, { pid: 100, ppid: 1, command: 'zsh', startKey: 'shell' }],
+				[200, { pid: 200, ppid: 100, command: 'example-cli', startKey: 'owner' }],
+				[210, { pid: 210, ppid: 200, command: 'opencode', startKey: 'child' }],
+			])
+		}));
 		const request = async (url: string, body?: Readonly<Record<string, unknown>>, method = 'POST') => {
 			const req = new TestRequest(method, url, JSON.stringify(body ?? {}));
 			const response = new TestResponse();

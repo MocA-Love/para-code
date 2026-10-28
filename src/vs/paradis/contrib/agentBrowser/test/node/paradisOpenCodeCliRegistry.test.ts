@@ -156,12 +156,14 @@ suite('ParadisOpenCodeCliRegistry', () => {
 
 	test('ignores a damaged store', async () => {
 		const storePath = join(root, 'clis.json');
-		await fs.writeFile(storePath, JSON.stringify({ clis: [
-			{ command: 'sh', executable: '/bin/sh', seenAt: 1 },
-			{ command: 'example-cli', executable: '/opt/example-cli', seenAt: 'x' },
-			{ command: 'ok-cli', executable: '/opt/bin/ok-cli', seenAt: 2, databases: ['/etc/x.db'] },
-			{ command: 'no-exe', seenAt: 2 },
-		] }));
+		await fs.writeFile(storePath, JSON.stringify({
+			clis: [
+				{ command: 'sh', executable: '/bin/sh', seenAt: 1 },
+				{ command: 'example-cli', executable: '/opt/example-cli', seenAt: 'x' },
+				{ command: 'ok-cli', executable: '/opt/bin/ok-cli', seenAt: 2, databases: ['/etc/x.db'] },
+				{ command: 'no-exe', seenAt: 2 },
+			]
+		}));
 		const registry = new ParadisOpenCodeCliRegistry(() => 3);
 		await registry.initialize(storePath);
 		assert.deepStrictEqual(registry.list(), [{ command: 'ok-cli', executable: '/opt/bin/ok-cli', databases: [], seenAt: 2 }]);
