@@ -10,7 +10,7 @@ import { timeout } from '../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { IBrowserViewLoadError } from '../../common/browserView.js';
-import { IParaBrowserViewLoadStallReport, PARA_BROWSER_VIEW_LOAD_MAX_WAITS, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraInstallBrowserViewLoadWatchdog, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraSetBrowserViewAgentTab, paraSetBrowserViewLoadStallReporter } from '../../electron-main/paraBrowserViewLoadWatchdog.js';
+import { IParaBrowserViewLoadStallReport, PARA_BROWSER_VIEW_LOAD_MAX_WAITS, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraInstallBrowserViewLoadWatchdog, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraSetBrowserViewAgentTab, paraSetBrowserViewLoadStallReporter, paraSetBrowserViewOpener } from '../../electron-main/paraBrowserViewLoadWatchdog.js';
 
 const TIMEOUT_MS = 20;
 
@@ -192,6 +192,50 @@ suite('paraBrowserViewLoadWatchdog', () => {
 		await timeout(TIMEOUT_MS * 3);
 
 		assert.deepStrictEqual({ asked: paraGetBrowserViewLoadStall('view-6')?.waits, stops: webContents.stops, errors }, { asked: 0, stops: 0, errors: [] });
+	});
+
+	test('treats the tabs an agent tab opens (and the tabs those open) as agent tabs, but not the tabs a person\'s tab opens', async () => {
+		install('tree-agent');
+		paraSetBrowserViewAgentTab('tree-agent', true);
+		install('tree-human');
+		install('tree-unmarked');
+		paraSetBrowserViewAgentTab('tree-unmarked', true);
+		// A child keeps its own record until it closes; closing forgets it, so a new view with the same id asks.
+		const closed = paraInstallBrowserViewLoadWatchdog(new FakeWebContents() as unknown as ParaBrowserViewLoadWatchdogWebContents, new NullLogService(), () => { }, { viewId: 'tree-closed', timeoutMs: TIMEOUT_MS, context: () => ({ remoteAuthority: undefined, tunnelProxy: false, agentOwner: false }) });
+		paraSetBrowserViewOpener('tree-closed', 'tree-agent');
+		closed.dispose();
+		const children: Record<string, string | undefined> = {
+			'tree-child': 'tree-agent',
+			'tree-grandchild': 'tree-child',
+			'tree-human-child': 'tree-human',
+			'tree-unmarked-child': 'tree-unmarked',
+			'tree-closed': undefined,
+			'tree-loop-a': 'tree-loop-b',
+			'tree-loop-b': 'tree-loop-a',
+		};
+		const views = Object.entries(children).map(([viewId, opener]) => {
+			const webContents = install(viewId);
+			if (opener !== undefined) {
+				paraSetBrowserViewOpener(viewId, opener);
+			}
+			return { viewId, webContents };
+		});
+		// The mark follows the opener: taking it back after the child opened makes the child ask.
+		paraSetBrowserViewAgentTab('tree-unmarked', false);
+		for (const { webContents } of views) {
+			webContents.navigate('https://example.com/');
+		}
+		await timeout(TIMEOUT_MS * 3);
+
+		assert.deepStrictEqual(Object.fromEntries(views.map(({ viewId, webContents }) => [viewId, webContents.stops === 1 ? 'stopped' : paraGetBrowserViewLoadStall(viewId) ? 'asked' : 'nothing'])), {
+			'tree-child': 'stopped',
+			'tree-grandchild': 'stopped',
+			'tree-human-child': 'asked',
+			'tree-unmarked-child': 'asked',
+			'tree-closed': 'asked',
+			'tree-loop-a': 'asked',
+			'tree-loop-b': 'asked',
+		});
 	});
 
 	test('closing the tab while asking clears the question without stopping', async () => {

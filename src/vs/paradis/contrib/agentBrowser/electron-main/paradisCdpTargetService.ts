@@ -22,6 +22,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
 import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisParseTouchEmulation, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
+import { paraSetBrowserViewOpener } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/browserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
@@ -335,9 +336,12 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return;
 		}
 		this.openerViewIds.set(childViewId, parentViewId);
+		// エージェントのタブから開いた子タブも、読み込みの見張りでエージェントのタブとして扱う（誰も見ていない）
+		paraSetBrowserViewOpener(childViewId, parentViewId);
 		const closeListener = child.onDidClose(() => {
 			closeListener.dispose();
 			this.openerViewIds.delete(childViewId);
+			paraSetBrowserViewOpener(childViewId, undefined);
 		});
 	}
 
