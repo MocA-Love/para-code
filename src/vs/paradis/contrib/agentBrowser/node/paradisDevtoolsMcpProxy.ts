@@ -274,7 +274,7 @@ function classifyToolErrorText(text: string): 'unresponsive' | 'target-closed' |
 	// The page did not answer within Para Code's deadline (PARA_BROWSER_PAGE_UNRESPONSIVE, and the 3 s bound of the
 	// observation, whose text says a dialog "may" have opened). Checked before 'dialog': these were counted as dialogs
 	// (Sentry PARA-CODE-DESKTOP-MW) or 'other' (HP) although no dialog was confirmed.
-	if (/PARA_BROWSER_PAGE_UNRESPONSIVE|\bpage did not answer\b/i.test(text)) {
+	if (/PARA_BROWSER_PAGE_UNRESPONSIVE|PARA_BROWSER_DIALOG_OPEN: the page did not answer/.test(text)) {
 		return 'unresponsive';
 	}
 	if (/Target closed|Session closed|frame was detached/i.test(text)) {
