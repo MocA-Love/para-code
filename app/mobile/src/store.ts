@@ -4500,6 +4500,14 @@ export class MobileController {
 	}
 
 	/** 一覧にある、そのエージェントの完了・エラーの通知 ID（トークを開いたときに見たことにする）。 */
+	/** そのエージェントの、これらの ID（`interactionId`）を持つ質問の通知（Codex の非同期の質問を閉じたときに片付ける）。 */
+	notificationIdsForInteractions(terminalKey: string, agentToken: string | undefined, interactionIds: ReadonlySet<string>): string[] {
+		return this.state.notifications
+			.filter(n => n.kind === 'agent-question' && n.interactionId !== undefined && interactionIds.has(n.interactionId)
+				&& (n.terminalKey === terminalKey || (agentToken !== undefined && n.agentToken === agentToken)))
+			.map(n => n.id);
+	}
+
 	settledNotificationIdsFor(terminalKey: string, agentToken: string | undefined): string[] {
 		return this.state.notifications
 			.filter(n => (n.kind === 'agent-done' || n.kind === 'agent-error')
