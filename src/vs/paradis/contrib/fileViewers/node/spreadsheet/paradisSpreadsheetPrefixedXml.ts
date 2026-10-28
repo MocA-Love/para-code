@@ -64,17 +64,29 @@ async function findPrefixedSpreadsheetMlParts(buffer: Buffer): Promise<string[] 
 			if (entry.directory || !/\.xml$/i.test(entry.name)) {
 				continue;
 			}
-			// Read the head once (up to the limit or the end of the part) and scan it once.
+			// Scan the first chunk, where the root start tag almost always is, and stop reading once it is
+			// found. Otherwise read on up to the limit (or the end of the part) and scan that once more.
 			const chunks: Uint8Array[] = [];
 			let length = 0;
+			let verdict: boolean | undefined;
+			let scannedChunks = 0;
+			const scan = () => {
+				scannedChunks = chunks.length;
+				return rootBindsSpreadsheetMlPrefix(Buffer.concat(chunks).toString('utf8'));
+			};
 			for await (const chunk of archive.read(entry)) {
 				chunks.push(chunk.slice(0, Math.min(chunk.byteLength, MAX_HEAD_BYTES - length)));
 				length += chunk.byteLength;
-				if (length >= MAX_HEAD_BYTES) {
-					break;
+				if (chunks.length === 1 || length >= MAX_HEAD_BYTES) {
+					verdict = scan();
+					if (verdict !== undefined || length >= MAX_HEAD_BYTES) {
+						break;
+					}
 				}
 			}
-			const verdict = rootBindsSpreadsheetMlPrefix(Buffer.concat(chunks).toString('utf8'));
+			if (verdict === undefined && scannedChunks !== chunks.length) {
+				verdict = scan();
+			}
 			// A root start tag that does not end within a cut head is left to the full rewrite to decide.
 			if (verdict ?? length >= MAX_HEAD_BYTES) {
 				names.push(entry.name);
@@ -274,8 +286,8 @@ function scanXmlTags(xml: string, visit: (tag: XmlTag) => boolean): XmlScanOutco
 interface IElementFrame {
 	readonly name: string;
 	readonly outputName: string;
-	/** Prefix (`''` for the default namespace) → namespace URI, as declared in the input. */
-	readonly scope: ReadonlyMap<string, string>;
+	/** The prefixes (`''` for the default namespace) this element declares, to take off the table when it ends. */
+	readonly declared: readonly string[] | undefined;
 	/** The default namespace in scope in the output. */
 	readonly outputDefault: string;
 }
@@ -294,8 +306,20 @@ interface IElementFrame {
  * that does not close, unbalanced tags), so the caller keeps the part as it was.
  */
 export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
-	const root: IElementFrame = { name: '', outputName: '', scope: new Map([['', '']]), outputDefault: '' };
+	const root: IElementFrame = { name: '', outputName: '', declared: undefined, outputDefault: '' };
 	const stack: IElementFrame[] = [];
+	// Prefix (`''` for the default namespace) → the namespace URIs declared for it by the open elements,
+	// innermost last. Entering and leaving an element costs one push or pop per declaration.
+	const bindings = new Map<string, string[]>([['', ['']]]);
+	const lookup = (prefix: string): string | undefined => {
+		const uris = bindings.get(prefix);
+		return uris?.length ? uris[uris.length - 1] : undefined;
+	};
+	const undeclare = (declared: readonly string[] | undefined) => {
+		for (const prefix of declared ?? []) {
+			bindings.get(prefix)!.pop();
+		}
+	};
 	const output: string[] = [];
 	let copied = 0;
 	let unbalanced = false;
@@ -310,6 +334,7 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 				unbalanced = true;
 				return false;
 			}
+			undeclare(frame.declared);
 			if (frame.outputName !== frame.name) {
 				replace(tag.start, tag.end, `</${frame.outputName}>`);
 			}
@@ -319,30 +344,34 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 		const { name, attributes } = tag;
 
 		// Namespace declarations of this element.
-		let declared: Map<string, string> | undefined;
+		let declared: string[] | undefined;
 		let ownDefault: string | undefined;
 		for (const attribute of attributes) {
 			if (attribute.name === 'xmlns' || attribute.name.startsWith('xmlns:')) {
-				declared ??= new Map(parent.scope);
 				const prefix = attribute.name === 'xmlns' ? '' : attribute.name.slice(6);
 				const uri = attributeText(attribute.value);
-				declared.set(prefix, uri);
+				let uris = bindings.get(prefix);
+				if (!uris) {
+					uris = [];
+					bindings.set(prefix, uris);
+				}
+				uris.push(uri);
+				(declared ??= []).push(prefix);
 				if (prefix === '') {
 					ownDefault = uri;
 				}
 			}
 		}
-		const scope = declared ?? parent.scope;
 
 		const colon = name.indexOf(':');
-		const strip = colon >= 0 && scope.get(name.slice(0, colon)) === SPREADSHEETML_MAIN;
+		const strip = colon >= 0 && lookup(name.slice(0, colon)) === SPREADSHEETML_MAIN;
 		const outputName = strip ? name.slice(colon + 1) : name;
 
 		// The default namespace this element needs in the output, and whether a declaration must change.
 		let outputDefault = ownDefault ?? parent.outputDefault;
 		let setDefault: string | undefined;
 		if (!outputName.includes(':')) {
-			const needed = strip ? SPREADSHEETML_MAIN : scope.get('') ?? '';
+			const needed = strip ? SPREADSHEETML_MAIN : lookup('') ?? '';
 			if (outputDefault !== needed) {
 				setDefault = needed;
 				outputDefault = needed;
@@ -354,7 +383,7 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 		let taken: Set<string> | undefined;
 		for (const attribute of attributes) {
 			const attributeColon = attribute.name.indexOf(':');
-			if (attributeColon < 0 || attribute.name.startsWith('xmlns:') || scope.get(attribute.name.slice(0, attributeColon)) !== SPREADSHEETML_MAIN) {
+			if (attributeColon < 0 || attribute.name.startsWith('xmlns:') || lookup(attribute.name.slice(0, attributeColon)) !== SPREADSHEETML_MAIN) {
 				continue;
 			}
 			taken ??= new Set(attributes.map(candidate => candidate.name));
@@ -366,8 +395,10 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 			}
 		}
 
-		if (!tag.empty) {
-			stack.push({ name, outputName, scope, outputDefault });
+		if (tag.empty) {
+			undeclare(declared);
+		} else {
+			stack.push({ name, outputName, declared, outputDefault });
 		}
 		if (!strip && !attributesChanged) {
 			return true;
