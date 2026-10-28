@@ -15,6 +15,8 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentAwaitingUser, onParadisAgentTurnEnded, registerParadisAgentPaneActivityGuard } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisMobileAgentChat } from '../../../mobileRelay/node/paradisMobileAgentChat.js';
 import { IParadisAgentChatView } from '../../common/paradisAgentChat.js';
+import { paradisBuildCodexAsyncReply, paradisCodexAsyncQuestionItemId } from '../../../mobileRelay/common/paradisCodexAsyncQuestions.js';
+import { CODEX_ASYNC_PARTIAL_CALL, CODEX_ASYNC_QUESTION_ROLLOUT } from '../common/paradisCodexAsyncQuestionFixture.js';
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, message: string): Promise<void> {
 	const deadline = Date.now() + 3_000;
@@ -518,6 +520,57 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			}
 		}));
 	}
+
+	test('keeps the unanswered Codex async questions from the rollout apart from the interaction, takes hook questions early, and drops them when the reply is submitted', () => withCodexHome(async codexHome => {
+		const token = 'pane-desktop-codex-async';
+		const rolloutPath = join(codexHome, 'sessions', '2026', '09', '27', 'rollout-2026-10-28T22-56-49-thread-async.jsonl');
+		// 実物（codex-cli 0.165.0）の行: 2 問とも答えた呼び出しと、1 問目だけ答えた呼び出し
+		await writeFile(rolloutPath, line({ timestamp: '2026-10-28T13:56:49.000Z', type: 'session_meta', payload: { id: 'thread-async', cwd: '/workspace/app', originator: 'codex-tui' } })
+			+ CODEX_ASYNC_QUESTION_ROLLOUT.map(text => `${text}\n`).join(''));
+		const notified: string[] = [];
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, info => notified.push(info.text), new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		const settled = async () => {
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			await access.tailers.get(token)?.enqueue(async () => { });
+		};
+		const hook = (event: string, extra: Record<string, unknown> = {}) => fireParadisAgentHookEvent({ token, event, sessionId: 'thread-async', transcriptPath: rolloutPath, cwd: '/workspace/app', at: Date.now(), ...extra });
+		const pendingIds = async () => (await chat.getDesktopChat(token, undefined))?.asyncQuestions?.map(question => question.id);
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			hook('SessionStart');
+			await settled();
+			chat.watchDesktopChat('window-1', [token], [token]);
+			await waitFor(async () => (await pendingIds()) !== undefined, 'the rollout was not read');
+			const restored = { pending: await pendingIds(), interaction: (await chat.getDesktopChat(token, undefined))?.interaction ?? null, notified: notified.length };
+
+			// 作業中に hook で先に知る（rollout に書かれる前）。知らせは 1 回だけ
+			const questions = { questions: [{ title: '進め方は？', options: ['A', 'B'] }] };
+			hook('PreToolUse', { toolName: 'request_user_input_async', toolUseId: 'call_hook', toolInput: questions });
+			await settled();
+			const hookId = paradisCodexAsyncQuestionItemId('call_hook', 0);
+			const fromHook = await pendingIds();
+			await appendFile(rolloutPath, line({ timestamp: '2026-10-28T14:01:00.000Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'call_hook', content: [{ type: 'Text', text: '進め方は？\n- A\n- B' }], phase: 'final_answer', delivery: 'async', questions } } }));
+			await settled();
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			const notifiedAfterRollout = [...notified];
+
+			// 返信を送った: UserPromptSubmit の prompt で、rollout を待たずに外す
+			const reply = paradisBuildCodexAsyncReply([{ question: { id: hookId, title: '進め方は？' }, answer: 'A' }])!;
+			hook('UserPromptSubmit', { payload: { prompt: reply } });
+			await settled();
+			const afterReply = await pendingIds();
+
+			assert.deepStrictEqual({ restored, fromHook, notifiedAfterRollout, afterReply }, {
+				restored: { pending: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1)], interaction: null, notified: 0 },
+				fromHook: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1), hookId],
+				notifiedAfterRollout: ['進め方は？'],
+				afterReply: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1)],
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
 
 	test('settles only the approvals the screen showed and then saw leave, keeping one that has not been drawn yet', () => withClaudeHome(async claudeHome => {
 		const token = 'pane-desktop-off-screen';

@@ -113,5 +113,5 @@ function sameState(a: IParadisAgentChatState | undefined, b: IParadisAgentChatSt
 	if (a.epoch !== b.epoch || a.rev !== b.rev || a.messages.length !== b.messages.length || a.busy !== b.busy || a.agent !== b.agent || a.agentExited !== b.agentExited) {
 		return false;
 	}
-	return JSON.stringify([a.live, a.interaction, a.info, a.pendingQuestions, a.truncated]) === JSON.stringify([b.live, b.interaction, b.info, b.pendingQuestions, b.truncated]);
+	return JSON.stringify([a.live, a.interaction, a.info, a.pendingQuestions, a.asyncQuestions, a.truncated]) === JSON.stringify([b.live, b.interaction, b.info, b.pendingQuestions, b.asyncQuestions, b.truncated]);
 }

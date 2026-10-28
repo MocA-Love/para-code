@@ -632,7 +632,7 @@ function AskOptions({ message, isSelected, focusIndex, disabled, onPick, other, 
 	);
 }
 
-function OptionButton({ label, description, selected, multiSelect = false, disabled, hint, onPress }: {
+export function OptionButton({ label, description, selected, multiSelect = false, disabled, hint, onPress }: {
 	label: string;
 	description?: string;
 	selected: boolean;

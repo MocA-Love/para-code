@@ -14,6 +14,7 @@ import { runningCompactionSince } from './compaction.js';
 import { alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
 import { BottomDrawer, DrawerCaption, DrawerTitle, Icon, iconSize } from '../../ui/index.js';
 import { advisorLiveLabel, isAdvisorLive } from './advisor.js';
+import { displaySentText } from '../../asyncQuestions.js';
 
 /** 行の中の小さな操作（見た目 28）。当たり判定は 44 に広げる。 */
 const SMALL_SLOP = hitSlopToMinimum(28);
@@ -159,7 +160,7 @@ export function PendingMessagesDrawer({ visible, messages, onClose }: {
 				{messages.map((message, index) => (
 					<View key={message.id} style={styles.pendingRow}>
 						<Text style={styles.pendingNumber}>{index + 1}</Text>
-						<Text style={styles.pendingBody} selectable>{message.text}</Text>
+						<Text style={styles.pendingBody} selectable>{displaySentText(message.text)}</Text>
 					</View>
 				))}
 			</View>
