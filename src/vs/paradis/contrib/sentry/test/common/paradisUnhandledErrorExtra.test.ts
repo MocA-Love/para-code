@@ -10,7 +10,7 @@ import { transformErrorFromSerialization } from '../../../../../base/common/erro
 import { ListenerLeakError, ListenerRefusalError } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisSafeErrorExtra } from '../../common/paradisSentryDiagnostics.js';
-import { paradisErrorStack, paradisExtensionIdFromStack, paradisIsExtensionHostRelay, paradisUnhandledErrorSafeExtra } from '../../common/paradisUnhandledErrorExtra.js';
+import { paradisErrorStack, paradisExtensionIdFromProposalError, paradisExtensionIdFromStack, paradisIsExtensionHostRelay, paradisRelayedExtensionId, paradisUnhandledErrorSafeExtra } from '../../common/paradisUnhandledErrorExtra.js';
 
 suite('paradisUnhandledErrorSafeExtra', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -85,5 +85,31 @@ suite('paradisUnhandledErrorSafeExtra', () => {
 		const relayed = transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'x', stack: 'Error: x\n\tat a (/Users/example/.para-code/extensions/pub.name-1.0.0/a.js:1:1)', noTelemetry: false });
 		const throwing = Object.defineProperty({}, 'stack', { get() { throw new Error('no'); } });
 		assert.deepStrictEqual([paradisExtensionIdFromStack(paradisErrorStack(relayed)), paradisErrorStack(throwing), paradisErrorStack('text')], ['pub.name', undefined, undefined]);
+	});
+
+	test('takes the extension of a proposed API error from its message, before the stack, and only in the upstream shape', () => {
+		const proposal = (id: string, stack?: string) => transformErrorFromSerialization({ $isError: true, name: 'Error', message: `Extension '${id}' CANNOT use API proposal: commentsDraftState.\nIts package.json#enabledApiProposals-property declares: authIssuers but NOT commentsDraftState.`, stack: stack ?? 'Error: x\n\tat listOnTimeout (node:internal/timers:685:17)', noTelemetry: false });
+		const activation = new Error(`Activating extension 'GitHub.vscode-pull-request-github' failed: Extension 'GitHub.vscode-pull-request-github' CANNOT use API proposal: diffCommand.`);
+		assert.deepStrictEqual({
+			timer: paradisRelayedExtensionId(proposal('GitHub.vscode-pull-request-github')),
+			activation: paradisExtensionIdFromProposalError(activation),
+			messageBeforeStack: paradisRelayedExtensionId(proposal('pub.owner', 'Error: x\n\tat a (/Users/example/.para-code/extensions/other.name-1.0.0/a.js:1:1)')),
+			stackFallback: paradisRelayedExtensionId(transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'x', stack: 'Error: x\n\tat a (/Users/example/.para-code/extensions/pub.name-1.0.0/a.js:1:1)', noTelemetry: false })),
+			notAnIdentifier: paradisExtensionIdFromProposalError(proposal('/Users/example/secret')),
+			otherText: paradisExtensionIdFromProposalError(new Error(`Extension 'pub.name' failed`)),
+			pastMessageLimit: paradisExtensionIdFromProposalError(new Error(`${'a '.repeat(500)}Extension 'pub.name' CANNOT use API proposal: x`)),
+			throwing: paradisExtensionIdFromProposalError(Object.defineProperty({}, 'message', { get() { throw new Error('no'); } })),
+			primitive: paradisExtensionIdFromProposalError('text'),
+		}, {
+			timer: 'github.vscode-pull-request-github',
+			activation: 'github.vscode-pull-request-github',
+			messageBeforeStack: 'pub.owner',
+			stackFallback: 'pub.name',
+			notAnIdentifier: undefined,
+			otherText: undefined,
+			pastMessageLimit: undefined,
+			throwing: undefined,
+			primitive: undefined,
+		});
 	});
 });

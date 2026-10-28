@@ -10,7 +10,7 @@ import { errorHandler, setUnexpectedErrorHandler } from '../../../../base/common
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { markParadisErrorOrigin, reportParadisDiagnosticError } from '../common/paradisSentryDiagnostics.js';
-import { paradisErrorStack, paradisExtensionIdFromStack, paradisIsExtensionHostRelay, paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
+import { paradisIsExtensionHostRelay, paradisRelayedExtensionId, paradisUnhandledErrorSafeExtra } from '../common/paradisUnhandledErrorExtra.js';
 
 /**
  * upstream の `Workbench`（`workbench/browser/workbench.ts`）は起動時に `setUnexpectedErrorHandler`
@@ -38,7 +38,7 @@ class ParadisUnhandledErrorReporterContribution extends Disposable implements IW
 				// 拡張ホストから届いた例外には印を付け、Para Code 自身の例外と別の issue にする。
 				if (paradisIsExtensionHostRelay(new Error().stack)) {
 					// どの拡張の例外かは識別子だけを送る（パスは送らない）。
-					markParadisErrorOrigin(error, 'extension-host', paradisExtensionIdFromStack(paradisErrorStack(error)));
+					markParadisErrorOrigin(error, 'extension-host', paradisRelayedExtensionId(error));
 				}
 				reportParadisDiagnosticError('patched', 'unhandled-error', 'on-unexpected-error', error, paradisUnhandledErrorSafeExtra(error));
 			} catch {
