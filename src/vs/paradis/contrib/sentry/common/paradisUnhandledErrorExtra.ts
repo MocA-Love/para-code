@@ -119,7 +119,8 @@ const MAX_MESSAGE_LENGTH = 1_000;
  * 識別子は拡張の `package.json` の `publisher` と `name`（パスではない）。識別子の形をしたものだけを返す。
  *
  * 拡張のコードがスタックに残らない例外（タイマーの中で拡張ホストが投げたもの。Sentry の PARA-CODE-DESKTOP-MK）
- * にも付くよう、スタックより先に見る。文は送らない。
+ * のために使う。文は拡張が真似て投げられるので、スタックから取れないときだけ使う（`paradisRelayedExtensionId`）。
+ * 文は送らない。
  */
 export function paradisExtensionIdFromProposalError(error: unknown): string | undefined {
 	try {
@@ -133,7 +134,22 @@ export function paradisExtensionIdFromProposalError(error: unknown): string | un
 	}
 }
 
-/** 拡張ホストから届いた例外の持ち主の拡張。提案 API の例外の文、スタックの順に見る。 */
-export function paradisRelayedExtensionId(error: unknown): string | undefined {
-	return paradisExtensionIdFromProposalError(error) ?? paradisExtensionIdFromStack(paradisErrorStack(error));
+/**
+ * 拡張ホストから届いた例外の持ち主の拡張。スタック、提案 API の例外の文の順に見る。
+ *
+ * スタックを先にするのは、文はどの拡張でも真似て投げられ、別の拡張のせいにできるため。
+ * 文から取った識別子は、`isInstalled` が真のときだけ返す。開発中の拡張（`--extensionDevelopmentPath`）の
+ * 識別子は利用者のものなので送らない（スタックの側がフォルダーの形で線を引いているのと同じ扱い）。
+ */
+export function paradisRelayedExtensionId(error: unknown, isInstalled: (extensionId: string) => boolean): string | undefined {
+	const fromStack = paradisExtensionIdFromStack(paradisErrorStack(error));
+	if (fromStack !== undefined) {
+		return fromStack;
+	}
+	const fromMessage = paradisExtensionIdFromProposalError(error);
+	try {
+		return fromMessage !== undefined && isInstalled(fromMessage) ? fromMessage : undefined;
+	} catch {
+		return undefined;
+	}
 }
