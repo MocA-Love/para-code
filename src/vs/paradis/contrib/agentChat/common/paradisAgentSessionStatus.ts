@@ -24,7 +24,7 @@ const MISS_MIN_DROP_TOKENS = 2_000;
 const MISS_READ_RATIO = 0.95;
 const TTL_5M_MS = 5 * 60 * 1000;
 const TTL_1H_MS = 60 * 60 * 1000;
-/** Claude のコンテキストの大きさ（1M を使っていると分からないとき）。 */
+/** 4.x 以前の Claude のコンテキストの大きさ（1M を使っていると分からないとき）。 */
 const CLAUDE_CONTEXT_WINDOW = 200_000;
 const CLAUDE_CONTEXT_WINDOW_1M = 1_000_000;
 /** Codex の TUI がコンテキストの残りを出すときに差し引く固定の分（codex-rs の `BASELINE_TOKENS`）。 */
@@ -237,11 +237,22 @@ export function paradisReadCompactionNotice(line: Readonly<Record<string, unknow
 }
 
 /**
- * Claude のコンテキストの大きさ。transcript のモデル名には 1M の印が無いことが多いので、名前に `[1m]` があるか、
- * 入力が 200K を超えていたら 1M とみなす（Claude Mod の `session.measure` があるときはそちらを使う）。
+ * 4.x 以前の Claude のモデル名（`claude-sonnet-4-5`・`claude-3-5-sonnet`・`us.anthropic.claude-opus-4@…` など）。
+ * 系統の名前の後ろか `claude-` の直後の数を版とみなす。5.x 以降と、版の読めない名前（別名・独自の名前）は含めない。
+ */
+const CLAUDE_PRE_5_MODEL = /claude-(?:[a-z]+-)?[0-4](?![0-9])/i;
+
+/**
+ * Claude のコンテキストの大きさ。Claude Code は 5.x 以降のモデル（Opus・Sonnet・Haiku 5.5、Fable 5.1）を `[1m]` が
+ * 無くても 1M と数える（2.1.312 の statusline の `context_window_size` で実測）ので、既定は 1M とし、4.x 以前の
+ * モデル名だけ 200K とする。4.x 以前でも名前に `[1m]` があるか、入力が 200K を超えていたら 1M とみなす
+ * （Claude Mod の `session.measure` があるときはそちらを使う）。
  */
 export function paradisClaudeContextWindow(model: string | undefined, tokens: number): number {
-	return (model !== undefined && /\[1m\]/i.test(model)) || tokens > CLAUDE_CONTEXT_WINDOW ? CLAUDE_CONTEXT_WINDOW_1M : CLAUDE_CONTEXT_WINDOW;
+	if ((model !== undefined && /\[1m\]/i.test(model)) || tokens > CLAUDE_CONTEXT_WINDOW) {
+		return CLAUDE_CONTEXT_WINDOW_1M;
+	}
+	return model !== undefined && CLAUDE_PRE_5_MODEL.test(model) ? CLAUDE_CONTEXT_WINDOW : CLAUDE_CONTEXT_WINDOW_1M;
 }
 
 /** Codex の TUI と同じ使用率（固定の {@link CODEX_CONTEXT_BASELINE_TOKENS} を窓と使用量の両方から引く）。 */
