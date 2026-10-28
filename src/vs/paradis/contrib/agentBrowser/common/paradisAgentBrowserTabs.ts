@@ -33,8 +33,11 @@ export const ParadisAgentTabMethod = {
 	NoteHumanCheck: 'noteHumanCheck',
 } as const;
 
-/** 1ペインのエージェントが同時に開いておけるタブの上限。 */
-export const PARADIS_AGENT_TAB_LIMIT = 5;
+/**
+ * 1ペインのエージェントが同時に開いておけるタブの上限。どのタブも裏で描画を止めず（背景の描画止めを外す）、
+ * tab_id で使うたびに chrome-devtools-mcp の子プロセスを 1 つ起こしうるので、無制限にはしない。
+ */
+export const PARADIS_AGENT_TAB_LIMIT = 50;
 
 /**
  * 1ペインへユーザーが同時に共有しておけるページの上限（current の 1 枚を含む）。エージェントが自分で開くタブ
@@ -49,12 +52,65 @@ export const PARADIS_USER_SHARED_PAGE_LIMIT = 10;
  * 数える。エージェントが自分で開くタブ（{@link PARADIS_AGENT_TAB_LIMIT}）とも、ユーザーが共有するページ
  * （{@link PARADIS_USER_SHARED_PAGE_LIMIT}）とも別枠。超えたぶんは共有しない（list_browser_tabs で知らせる）。
  */
-export const PARADIS_OPENED_TAB_LIMIT = 10;
+export const PARADIS_OPENED_TAB_LIMIT = 50;
+
+/**
+ * 開いたタブの自動の共有を、1 ペインあたり {@link PARADIS_OPENED_TAB_BURST_WINDOW_MS} の間に許す数。
+ * window.open を繰り返すページ（広告など）が、短い間に {@link PARADIS_OPENED_TAB_LIMIT} の枠を埋めないようにする。
+ * 超えたぶんは上限に達したときと同じく共有しない（list_browser_tabs で知らせる）。
+ */
+export const PARADIS_OPENED_TAB_BURST_LIMIT = 10;
+/** {@link PARADIS_OPENED_TAB_BURST_LIMIT} を数える時間（ms）。 */
+export const PARADIS_OPENED_TAB_BURST_WINDOW_MS = 10_000;
+
+/**
+ * 開いたタブの自動の共有の、短い間の連続を数える（純粋なデータ構造。shared process の ParadisAgentBrowserService が持つ）。
+ * 共有した時刻だけを覚え、{@link PARADIS_OPENED_TAB_BURST_WINDOW_MS} より古いものは捨てる。
+ */
+export class ParadisOpenedTabBurstGuard {
+
+	/** token → 共有した時刻（古い順）。 */
+	private readonly _grantedAt = new Map<string, number[]>();
+
+	constructor(
+		private readonly _now: () => number = Date.now,
+		private readonly _limit: number = PARADIS_OPENED_TAB_BURST_LIMIT,
+		private readonly _windowMs: number = PARADIS_OPENED_TAB_BURST_WINDOW_MS,
+	) { }
+
+	/** そのペインが今、短い間に共有しすぎているか。 */
+	isBursting(token: string): boolean {
+		return this._recent(token).length >= this._limit;
+	}
+
+	/** そのペインへ開いたタブを 1 つ共有した。 */
+	record(token: string): void {
+		const recent = this._recent(token);
+		recent.push(this._now());
+		this._grantedAt.set(token, recent);
+	}
+
+	/** ペインが片付いた。 */
+	forget(token: string): void {
+		this._grantedAt.delete(token);
+	}
+
+	private _recent(token: string): number[] {
+		const since = this._now() - this._windowMs;
+		const recent = (this._grantedAt.get(token) ?? []).filter(at => at > since);
+		if (recent.length === 0) {
+			this._grantedAt.delete(token);
+		} else {
+			this._grantedAt.set(token, recent);
+		}
+		return recent;
+	}
+}
 
 /** 開いたタブの自動の共有（grantOpenedTab）の結果。 */
 export type ParadisOpenedTabGrantResult =
 	| 'granted'
-	/** そのペインの {@link PARADIS_OPENED_TAB_LIMIT} に達していた。 */
+	/** そのペインの {@link PARADIS_OPENED_TAB_LIMIT} に達していた、または短い間に共有しすぎた（{@link PARADIS_OPENED_TAB_BURST_LIMIT}）。 */
 	| 'limitReached'
 	/** 開いた元のタブがそのペインで使えない、スペースが違う、ペインやタブが確かめられないなど。 */
 	| 'notEligible';

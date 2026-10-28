@@ -13,7 +13,7 @@ import {
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
-import { PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface IPreparedDescriptor {
@@ -58,6 +58,8 @@ function createFixture(): {
 	readonly gatewayCalls: { readonly command: string; readonly token: string }[];
 	/** main が覚えている「開いたタブ → 開いた元のタブ」。 */
 	readonly openers: Map<string, string>;
+	/** 開いたタブの短い間の連続を数える時計（ms）。 */
+	readonly clock: { now: number };
 	setResolveExact(operation: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null>): void;
 	setThrottlingOperation(operation: (descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean) => Promise<boolean>): void;
 } {
@@ -76,6 +78,7 @@ function createFixture(): {
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const gatewayCalls: { command: string; token: string }[] = [];
 	const openers = new Map<string, string>();
+	const clock = { now: 0 };
 	let resolveExact: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
@@ -83,6 +86,7 @@ function createFixture(): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabBursts: new ParadisOpenedTabBurstGuard(() => clock.now),
 		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
@@ -160,6 +164,7 @@ function createFixture(): {
 		mainCalls,
 		gatewayCalls,
 		openers,
+		clock,
 		setResolveExact: operation => resolveExact = operation,
 		setThrottlingOperation: operation => throttlingOperation = operation,
 	};
@@ -790,6 +795,8 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		await share('view-a');
 		const results: string[] = [];
 		for (let index = 0; index <= PARADIS_OPENED_TAB_LIMIT; index++) {
+			// 短い間の連続の上限には当たらない間隔で開く
+			fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
 			fixture.openers.set(`opened-${index}`, 'view-a');
 			results.push(await fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`)));
 		}
@@ -807,6 +814,35 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			agentTab: true,
 			skipped: [`opened-${PARADIS_OPENED_TAB_LIMIT}`],
 			overLimitUsable: false,
+		});
+	});
+
+	test('a page that opens many tabs at once gets only some of them shared, and more after a while', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		const grant = async (index: number) => {
+			fixture.openers.set(`opened-${index}`, 'view-a');
+			return fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`));
+		};
+		const burst: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			burst.push(await grant(index));
+		}
+		fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
+		const later = await grant(PARADIS_OPENED_TAB_BURST_LIMIT + 1);
+		const skipped = (Reflect.get(fixture.service, '_skippedOpenedTabIds') as (token: string) => string[]).call(fixture.service, 'token');
+		assert.deepStrictEqual({
+			granted: burst.filter(result => result === 'granted').length,
+			last: burst[PARADIS_OPENED_TAB_BURST_LIMIT],
+			later,
+			skipped,
+			overBurstUsable: usable(`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`),
+		}, {
+			granted: PARADIS_OPENED_TAB_BURST_LIMIT,
+			last: 'limitReached',
+			later: 'granted',
+			skipped: [`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`],
+			overBurstUsable: false,
 		});
 	});
 });
