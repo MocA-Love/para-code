@@ -238,7 +238,7 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 	test('change notifications are coalesced into one diff after a short delay', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(true);
-		harness.clock.advance(0);
+		harness.clock.advance(30_000);
 
 		harness.lifecycle.requestDiffStatsRefreshForChange();
 		harness.clock.advance(1_000);
@@ -255,16 +255,29 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
-	test('a change during an in-flight diff runs right after it completes', () => {
+	// ビルドやウォッチが書き続けても、以前の 10 秒ごとより多くは取りに行かない
+	test('a change right after a diff, or during one, waits 10 seconds from its completion', () => {
 		const harness = store.add(new PollingHarness(false));
 		harness.lifecycle.start(true);
 		harness.clock.advance(0);
 
 		harness.lifecycle.requestDiffStatsRefreshForChange();
 		harness.completeInFlight();
-		harness.clock.advance(0);
+		const afterInFlight = harness.clock.pendingDelays().diff;
+		harness.clock.advance(9_999);
+		const beforeInterval = harness.counts().commands.diff;
+		harness.clock.advance(1);
+		const afterInterval = harness.counts().commands.diff;
+		harness.completeInFlight();
+		harness.clock.advance(2_000);
+		harness.lifecycle.requestDiffStatsRefreshForChange();
 
-		assert.deepStrictEqual(harness.counts().commands, { diff: 2, pr: 1 });
+		assert.deepStrictEqual({ afterInFlight, beforeInterval, afterInterval, afterQuickChange: harness.clock.pendingDelays().diff }, {
+			afterInFlight: 10_000,
+			beforeInterval: 1,
+			afterInterval: 2,
+			afterQuickChange: 8_000,
+		});
 	});
 
 	test('a change waiting for its delay is kept when the view hides and runs once on return', () => {

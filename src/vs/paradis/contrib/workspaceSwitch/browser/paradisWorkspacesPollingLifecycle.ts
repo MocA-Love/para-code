@@ -18,6 +18,11 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 const DIFF_STATS_POLL_INTERVAL_MS = 60_000;
 /** 変更の知らせから取り直すまでの待ち。保存の連続やビルドの書き込みを 1 回にまとめる。 */
 const DIFF_STATS_CHANGE_DELAY_MS = 1_500;
+/**
+ * 変更の知らせから取り直すときの、前回の完了からの最短の間隔。ビルドやウォッチが開いているフォルダーへ書き続けても、
+ * 以前の 10 秒ごとより多くは投げない。
+ */
+const DIFF_STATS_MIN_CHANGE_INTERVAL_MS = 10_000;
 const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 const ISSUE_STATUS_POLL_INTERVAL_MS = 300_000;
 
@@ -67,6 +72,8 @@ interface IParadisWorkspacesPollState {
 	active: boolean;
 	/** 変更の知らせによる短い待ちを予約済みか（予約を後ろへずらし続けないため）。 */
 	changePending: boolean;
+	/** 実行中に変更の知らせが来た。終わったら最短の間隔を空けて取り直す。 */
+	changeAfterFlight: boolean;
 	inFlight: boolean;
 	pendingImmediate: boolean;
 	invalidated: boolean;
@@ -105,6 +112,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			gate,
 			active: false,
 			changePending: false,
+			changeAfterFlight: false,
 			inFlight: false,
 			pendingImmediate: false,
 			invalidated: false,
@@ -160,14 +168,19 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			return;
 		}
 		if (state.inFlight) {
-			state.pendingImmediate = true;
+			state.changeAfterFlight = true;
 			return;
 		}
 		if (state.changePending) {
 			return;
 		}
 		state.changePending = true;
-		state.scheduler.schedule(DIFF_STATS_CHANGE_DELAY_MS);
+		state.scheduler.schedule(this.changeDelay(state));
+	}
+
+	private changeDelay(state: IParadisWorkspacesPollState): number {
+		const sinceLast = state.lastCompletedAt === undefined ? Number.POSITIVE_INFINITY : this.now() - state.lastCompletedAt;
+		return Math.max(DIFF_STATS_CHANGE_DELAY_MS, DIFF_STATS_MIN_CHANGE_INTERVAL_MS - sinceLast);
 	}
 
 	/** diff コマンドを開始できるときだけ in-flight にする。 */
@@ -219,6 +232,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		for (const state of this.allStates()) {
 			state.active = false;
 			state.changePending = false;
+			state.changeAfterFlight = false;
 			state.inFlight = false;
 			state.pendingImmediate = false;
 			state.invalidated = false;
@@ -315,6 +329,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		state.inFlight = true;
 		state.pendingImmediate = false;
 		state.changePending = false;
+		state.changeAfterFlight = false;
 		return true;
 	}
 
@@ -330,7 +345,14 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		if (state.pendingImmediate || state.invalidated) {
 			state.pendingImmediate = false;
 			state.invalidated = false;
+			state.changeAfterFlight = false;
 			state.scheduler.schedule(0);
+			return;
+		}
+		if (state.changeAfterFlight) {
+			state.changeAfterFlight = false;
+			state.changePending = true;
+			state.scheduler.schedule(this.changeDelay(state));
 			return;
 		}
 		state.scheduler.schedule(state.interval);
@@ -338,11 +360,12 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 
 	private cancelPending(state: IParadisWorkspacesPollState): void {
 		state.scheduler.cancel();
-		if (state.changePending) {
+		if (state.changePending || state.changeAfterFlight) {
 			// 待っていた変更は、表に戻ったときに取り直す
 			state.invalidated = true;
 		}
 		state.changePending = false;
+		state.changeAfterFlight = false;
 		state.pendingImmediate = false;
 	}
 
