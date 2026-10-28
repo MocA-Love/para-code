@@ -11,9 +11,9 @@ import {
 	IParadisPrepareBindRequest,
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
-import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
+import { PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
-import { PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
 
 interface IPreparedDescriptor {
@@ -58,6 +58,8 @@ function createFixture(): {
 	readonly gatewayCalls: { readonly command: string; readonly token: string }[];
 	/** main が覚えている「開いたタブ → 開いた元のタブ」。 */
 	readonly openers: Map<string, string>;
+	/** 開いたタブの短い間の連続を数える時計（ms）。 */
+	readonly clock: { now: number };
 	setResolveExact(operation: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null>): void;
 	setThrottlingOperation(operation: (descriptor: IParadisExactBrowserViewDescriptor, enabled: boolean) => Promise<boolean>): void;
 } {
@@ -76,6 +78,7 @@ function createFixture(): {
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const gatewayCalls: { command: string; token: string }[] = [];
 	const openers = new Map<string, string>();
+	const clock = { now: 0 };
 	let resolveExact: (args: readonly unknown[]) => Promise<IParadisExactBrowserViewDescriptor | null> = async () => exactView;
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
@@ -83,6 +86,7 @@ function createFixture(): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabBursts: new ParadisOpenedTabBurstGuard(() => clock.now),
 		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
@@ -160,6 +164,7 @@ function createFixture(): {
 		mainCalls,
 		gatewayCalls,
 		openers,
+		clock,
 		setResolveExact: operation => resolveExact = operation,
 		setThrottlingOperation: operation => throttlingOperation = operation,
 	};
@@ -477,7 +482,7 @@ suite('Paradis binding transaction service', () => {
 suite('Paradis binding transaction service: several pages shared with one pane', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
+	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', ...Array.from({ length: PARADIS_USER_SHARED_PAGE_LIMIT }, (_, index) => `shared-${index}`), 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
 	const viewOf = (viewId: string) => Object.freeze({ windowId: 1, viewId, targetId: `target-${viewId}`, viewLease: `lease-${viewId}` });
 
 	async function setup() {
@@ -772,6 +777,57 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('when the share mark ledger of the window is full, the opened tab is not left usable without its mark', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-0', 'view-a');
+		fixture.openers.set('opened-1', 'opened-0');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), 'granted');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')), 'granted');
+		const marks = Reflect.get(fixture.service, '_openedTabShareMarks') as Map<string, Set<string>>;
+		marks.set('window:1', new Set(Array.from({ length: PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS }, (_, index) => `marked-${index}`)));
+		assert.deepStrictEqual({
+			marked: await fixture.service.markOpenedTabShared(connection, 'opened-0'),
+			usable: [usable('view-a'), usable('opened-0'), usable('opened-1')],
+			grants: (await fixture.service.listAgentTabGrants(connection)).map(grant => grant.pageId),
+		}, {
+			marked: false,
+			// 孫（opened-0 から開いた opened-1）も一緒に外れる
+			usable: [true, false, false],
+			grants: [],
+		});
+	});
+
+	test('the note about a stopped DevTools child goes on the result of the tab chosen before the call, once', async () => {
+		const { fixture, connection, share, defaultTab } = await setup();
+		await share('view-a');
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		const notes = new Map([[paradisAgentTabScopeKey('token', 'view-a'), 'Note: stopped']]);
+		Reflect.set(fixture.service, '_devtoolsProxy', { retire: () => undefined, takeEvictionNote: (key: string) => { const note = notes.get(key); notes.delete(key); return note; } });
+		const lease = { token: 'token' };
+		const keyOf = (args: unknown) => (Reflect.get(fixture.service, '_evictionNoteKey') as (lease: object, args: unknown) => string | undefined).call(fixture.service, lease, args);
+		const withNote = (key: string | undefined, result: unknown) => (Reflect.get(fixture.service, '_withEvictionNote') as (key: string | undefined, result: unknown) => unknown).call(fixture.service, key, result);
+		// Decided before the call: the current tab (view-a) moves to agent-tab during the call
+		const before = keyOf({});
+		Reflect.get(fixture.service, '_selectedTabs').set('token', 'agent-tab');
+		const result = { content: [{ type: 'text', text: 'ok' }] };
+		assert.deepStrictEqual({
+			before,
+			current: defaultTab(),
+			first: withNote(before, result),
+			again: withNote(before, result),
+			otherTab: keyOf({ tab_id: 'agent-tab' }),
+			unknownTab: keyOf({ tab_id: 'not-mine' }),
+		}, {
+			before: paradisAgentTabScopeKey('token', 'view-a'),
+			current: 'agent-tab',
+			first: { content: [{ type: 'text', text: 'ok' }, { type: 'text', text: 'Note: stopped' }] },
+			again: result,
+			otherTab: paradisAgentTabScopeKey('token', 'agent-tab'),
+			unknownTab: undefined,
+		});
+	});
+
 	test('a tab is not shared when its opener is unknown or not usable by the pane', async () => {
 		const { fixture, connection, share } = await setup();
 		await share('view-a');
@@ -790,6 +846,8 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		await share('view-a');
 		const results: string[] = [];
 		for (let index = 0; index <= PARADIS_OPENED_TAB_LIMIT; index++) {
+			// 短い間の連続の上限には当たらない間隔で開く
+			fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
 			fixture.openers.set(`opened-${index}`, 'view-a');
 			results.push(await fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`)));
 		}
@@ -807,6 +865,51 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			agentTab: true,
 			skipped: [`opened-${PARADIS_OPENED_TAB_LIMIT}`],
 			overLimitUsable: false,
+		});
+	});
+
+	test('granting an opened tab again for a new view of the same tab does not count toward the burst limit', async () => {
+		const { fixture, connection, share } = await setup();
+		await share('view-a');
+		let lease = 0;
+		fixture.setResolveExact(async args => args[1] === 'opened-0'
+			? Object.freeze({ windowId: 1, viewId: 'opened-0', targetId: 'target-opened-0', viewLease: `lease-opened-0-${lease++}` })
+			: viewOf(args[1] as string));
+		fixture.openers.set('opened-0', 'view-a');
+		const again: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			again.push(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')));
+		}
+		fixture.openers.set('opened-1', 'view-a');
+		assert.deepStrictEqual({ again: again.every(result => result === 'granted'), another: await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')) }, { again: true, another: 'granted' });
+	});
+
+	test('a page that opens many tabs at once gets only some of them shared, and more after a while', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		const grant = async (index: number) => {
+			fixture.openers.set(`opened-${index}`, 'view-a');
+			return fixture.service.grantOpenedTab(connection, openedRequest(`opened-${index}`));
+		};
+		const burst: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			burst.push(await grant(index));
+		}
+		fixture.clock.now += PARADIS_OPENED_TAB_BURST_WINDOW_MS;
+		const later = await grant(PARADIS_OPENED_TAB_BURST_LIMIT + 1);
+		const skipped = (Reflect.get(fixture.service, '_skippedOpenedTabIds') as (token: string) => string[]).call(fixture.service, 'token');
+		assert.deepStrictEqual({
+			granted: burst.filter(result => result === 'granted').length,
+			last: burst[PARADIS_OPENED_TAB_BURST_LIMIT],
+			later,
+			skipped,
+			overBurstUsable: usable(`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`),
+		}, {
+			granted: PARADIS_OPENED_TAB_BURST_LIMIT,
+			last: 'burstLimited',
+			later: 'granted',
+			skipped: [`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`],
+			overBurstUsable: false,
 		});
 	});
 });

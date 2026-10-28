@@ -906,7 +906,32 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		}, { retryable: true, recoveredText: 'ok', killCount: 0 });
 	});
 
-	test('rejects a new token at the global child cap without evicting existing children', async () => {
+	test('at the global child cap, stops the least recently used idle child and admits the new token on retry', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+			spawnChild: fixture.spawn,
+			maxChildren: 2,
+			recycleQuietMs: 0,
+		}));
+		await proxy.listTools('token-a', 1, 'ws://a');
+		await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {});
+
+		const capped = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		const killCounts = fixture.children.map(child => child.killCount);
+		await Promise.resolve();
+		const admitted = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		const kept = await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		assert.deepStrictEqual({
+			retryable: capped.content?.[0]?.text?.includes('PARA_BROWSER_RETRYABLE'),
+			killCounts,
+			admittedText: admitted.content?.[0]?.text,
+			keptText: kept.content?.[0]?.text,
+			childCount: fixture.children.length,
+		}, { retryable: true, killCounts: [1, 0], admittedText: 'ok', keptText: 'ok', childCount: 3 });
+	});
+
+	test('rejects a new token at the global child cap without evicting children used just now', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
 			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
@@ -1417,6 +1442,103 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				consoleAgain: ['ok'],
 				recycled: [{ duration_ms: 'number', safe_recycle_reason: 'memory', safe_calls: 2, safe_rss_mib: 2048 }],
 			});
+		});
+
+		test('at the child cap, does not stop a child that is still answering a call', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools });
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				maxChildren: 2,
+				recycleQuietMs: 0,
+			}));
+			await proxy.tryCallTool('token-a', 1, 'ws://a', 'take_snapshot', {});
+			await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {});
+			fixture.hangNextToolCalls(1);
+			// token-a is older but still waiting for its answer
+			const waiting = proxy.tryCallTool('token-a', 1, 'ws://a', 'click', { uid: 'x' });
+			await fixture.waitForHungToolCalls(1);
+			const capped = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			assert.deepStrictEqual({
+				capped: textOf(capped).some(text => text.includes('PARA_BROWSER_RETRYABLE')),
+				killCounts: fixture.children.map(child => child.killCount),
+			}, { capped: true, killCounts: [0, 1] });
+			proxy.forget('token-a');
+			await waiting;
+		});
+
+		test('at the child cap, stops one child at a time and leaves a child with a running trace or emulation for last', async () => {
+			const toolsList = { tools: [...tools.tools, { name: 'emulate' }, { name: 'performance_start_trace' }] };
+			const create = (fixture: ReturnType<typeof createFakeDevtoolsChildren>) => disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				maxChildren: 2,
+				recycleQuietMs: 0,
+			}));
+			// token-a is the oldest, but has a trace running; token-b has nothing to lose
+			const first = createFakeDevtoolsChildren({ toolsListResult: toolsList, ignoreKillExit: true });
+			const proxy = create(first);
+			await proxy.tryCallTool('token-a', 1, 'ws://a', 'performance_start_trace', { reload: false, autoStop: false });
+			await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {});
+			await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			const afterFirst = first.children.map(child => child.killCount);
+			// token-b has not exited yet, so its slot is still taken: nothing else is stopped
+			const whileStopping = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			const killCountsWhileStopping = first.children.map(child => child.killCount);
+
+			// When every child keeps something, the one used least recently goes
+			const second = createFakeDevtoolsChildren({ toolsListResult: toolsList });
+			const other = create(second);
+			await other.tryCallTool('token-a', 1, 'ws://a', 'performance_start_trace', { reload: false, autoStop: false });
+			await other.tryCallTool('token-b', 1, 'ws://b', 'emulate', { networkConditions: 'Slow 3G' });
+			await other.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			const traceNote = other.takeEvictionNote('token-a');
+
+			// performance_start_trace stops by itself unless autoStop is false, so it keeps nothing
+			const third = createFakeDevtoolsChildren({ toolsListResult: toolsList });
+			const defaults = create(third);
+			await defaults.tryCallTool('token-a', 1, 'ws://a', 'performance_start_trace', { reload: false });
+			await defaults.tryCallTool('token-b', 1, 'ws://b', 'emulate', { networkConditions: 'Slow 3G' });
+			await defaults.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			assert.deepStrictEqual({
+				afterFirst,
+				whileStopping: textOf(whileStopping).some(text => text.includes('PARA_BROWSER_RETRYABLE')),
+				killCountsWhileStopping,
+				allKeep: second.children.map(child => child.killCount),
+				traceNote: traceNote?.includes('performance trace'),
+				autoStopByDefault: third.children.map(child => child.killCount),
+			}, {
+				afterFirst: [0, 1],
+				whileStopping: true,
+				killCountsWhileStopping: [0, 1],
+				allKeep: [1, 0],
+				traceNote: true,
+				autoStopByDefault: [1, 0],
+			});
+		});
+
+		test('tells the pane of a stopped child that its uids are stale, and adds the note to its next call once', async () => {
+			const snapshot = (uid: string) => ({ content: [{ type: 'text', text: `## Latest page snapshot\nuid=${uid} button "Pay"` }] });
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools, toolCallResults: [snapshot('1_4')] });
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				maxChildren: 1,
+				recycleQuietMs: 0,
+			}));
+			const oldUid = /uid=(?<uid>\S+)/.exec(textOf(await proxy.tryCallTool('token-a', 1, 'ws://a', 'take_snapshot', {}))[0])?.groups?.uid ?? '';
+			await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {});
+			await Promise.resolve();
+			const stale = await proxy.tryCallTool('token-a', 1, 'ws://a', 'click', { uid: oldUid });
+			const note = proxy.takeEvictionNote('token-a');
+			assert.deepStrictEqual({
+				killCount: fixture.children[0].killCount,
+				stale: textOf(stale)[0].startsWith('PARA_BROWSER_STALE_UID: Para Code stopped the embedded DevTools bridge of this tab while it was unused, to make room for other tabs'),
+				// this child had no trace running, so the note does not mention one
+				note: note?.startsWith('Note: Para Code stopped the embedded DevTools bridge of this tab') && !note.includes('performance trace'),
+				noteAgain: proxy.takeEvictionNote('token-a'),
+				otherPane: proxy.takeEvictionNote('token-b'),
+			}, { killCount: 1, stale: true, note: true, noteAgain: undefined, otherPane: undefined });
 		});
 
 		test('gives the uids of a new snapshot the new child\'s mark, so an old uid never reaches an element of the new child', async () => {

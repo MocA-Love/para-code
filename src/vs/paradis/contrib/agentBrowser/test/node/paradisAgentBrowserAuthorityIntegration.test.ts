@@ -14,6 +14,8 @@ import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/pa
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
+import { PARADIS_AGENT_TAB_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_MCP_MAX_INFLIGHT_REQUESTS } from '../../node/paradisBrowserMcpShimCore.js';
 import { ParadisCursorPacingLedger } from '../../node/paradisCursorPacing.js';
 import { ParadisToolCallLanes } from '../../common/paradisToolCallLanes.js';
 import { ParadisSubagentToolUses } from '../../common/paradisSubagentToolCalls.js';
@@ -133,6 +135,7 @@ function createFixture(): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabBursts: new ParadisOpenedTabBurstGuard(),
 		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
@@ -1450,7 +1453,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		fixture.service.registerRendererConnection('window:1', connection);
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
-		const stalled = Array.from({ length: 8 }, () => {
+		const stalled = Array.from({ length: PARADIS_MCP_MAX_INFLIGHT_REQUESTS }, () => {
 			const request = new TestRequest('POST', '/?pane=token');
 			const response = new TestResponse();
 			return { request, response, pending: handleRequest(request, response) };
@@ -2286,6 +2289,9 @@ suite('ParadisAgentBrowser authority integration', () => {
 	});
 
 	suite('agent tab grants (tab_id)', () => {
+		/** 上限を数えるテストで使う、tab-a の後に開くタブ。 */
+		const moreTabs = Array.from({ length: PARADIS_AGENT_TAB_LIMIT }, (_, index) => `tab-${index}`);
+
 		async function grantFixture() {
 			const fixture = createFixture();
 			Reflect.set(fixture.service, '_pendingBindPreparations', 0);
@@ -2302,7 +2308,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			});
 			const connection = {};
 			fixture.service.registerRendererConnection('window:1', connection);
-			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-a', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']));
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-a', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f', ...moreTabs]));
 			const grant = (viewId: string, token = 'token', revision = 1) => fixture.service.grantAgentTab(connection, { revision, token, viewId, pageInfo: { url: `https://${viewId}.test`, title: viewId } });
 			const bindingForKey = (key: string) => (Reflect.get(fixture.service, '_bindingForKey') as (key: string) => ITestBinding | undefined).call(fixture.service, key);
 			const scopeToolCall = (args: unknown) => (Reflect.get(fixture.service, '_scopeToolCall') as (lease: unknown, args: unknown) => { lease?: { token: string; pageKey?: string }; args?: unknown; ok: boolean; error?: { content: { text: string }[] } })
@@ -2382,7 +2388,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		test('caps grants per pane, refuses a foreign pane, and drops grants when the tab leaves the window', async () => {
 			const { fixture, connection, grant, bindingForKey } = await grantFixture();
 			const results = [];
-			for (const viewId of ['tab-a', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']) {
+			const tabs = ['tab-a', ...moreTabs];
+			for (const viewId of tabs) {
 				results.push(await grant(viewId));
 			}
 			const otherConnection = {};
@@ -2390,16 +2397,16 @@ suite('ParadisAgentBrowser authority integration', () => {
 			await fixture.service.syncBindingAuthority(otherConnection, authorityManifest(1, true, [{ token: 'foreign' }]));
 			const foreign = await fixture.service.grantAgentTab(otherConnection, { revision: 1, token: 'foreign', viewId: 'tab-a', pageInfo: { url: 'https://x.test', title: 'x' } });
 
-			await fixture.service.syncBindingAuthority(connection, authorityManifest(2, true, [{ token: 'token' }, { token: 'other' }], ['page-user', 'tab-b', 'tab-c', 'tab-d', 'tab-e', 'tab-f']));
+			await fixture.service.syncBindingAuthority(connection, authorityManifest(2, true, [{ token: 'token' }, { token: 'other' }], ['page-user', ...moreTabs]));
 			assert.deepStrictEqual({
 				results,
 				foreign,
 				listed: (await fixture.service.listAgentTabGrants(connection)).map(entry => entry.pageId),
 				retiredTab: bindingForKey(paradisAgentTabScopeKey('token', 'tab-a')),
 			}, {
-				results: [true, true, true, true, true, false],
+				results: [...Array.from({ length: PARADIS_AGENT_TAB_LIMIT }, () => true), false],
 				foreign: false,
-				listed: ['tab-b', 'tab-c', 'tab-d', 'tab-e'],
+				listed: moreTabs.slice(0, PARADIS_AGENT_TAB_LIMIT - 1),
 				retiredTab: undefined,
 			});
 		});

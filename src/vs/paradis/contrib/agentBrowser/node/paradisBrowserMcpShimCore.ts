@@ -22,8 +22,9 @@ export const PARADIS_MCP_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 export const PARADIS_MCP_MAX_RESPONSE_BYTES = 48 * 1024 * 1024;
 export const PARADIS_MCP_MAX_PORT_FILE_BYTES = 16 * 1024;
 // One standalone shim owns exactly one pane token. Match the server's per-token ingress cap so
-// the shim applies flow control before the ninth request would be rejected with HTTP 429.
-export const PARADIS_MCP_MAX_INFLIGHT_REQUESTS = 8;
+// the shim applies flow control before one more request would be rejected with HTTP 429. 32 lets
+// one subagent per tab work in parallel (calls on the same tab still run one at a time).
+export const PARADIS_MCP_MAX_INFLIGHT_REQUESTS = 32;
 export const PARADIS_MCP_MAX_STDIN_FRAGMENTS = 4_096;
 // Preserve two maximum-size responses plus bounded serialization overhead. Exceeding this cap is
 // terminal for new input, while already accepted stdout writes are still flushed in order.
@@ -161,7 +162,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_profile',
-		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles created from this terminal pane with create_browser_profile open right away. Any other profile (the user\'s, or one created from another terminal pane; list_browser_profiles does not show their names) opens only after the user approves a dialog in Para Code, so the call can wait up to about 50 seconds. If the profile has never been logged in, the page opens logged out. The tab counts as one of your own tabs (at most 5 per terminal pane; close it with close_browser_tab).',
+		description: 'Open a Para Code browser page using a named, persistent browser profile (its cookies and localStorage survive restarts, so a login done once stays), and share that page with this terminal pane so the chrome-devtools tools can drive it. Profiles created from this terminal pane with create_browser_profile open right away. Any other profile (the user\'s, or one created from another terminal pane; list_browser_profiles does not show their names) opens only after the user approves a dialog in Para Code, so the call can wait up to about 50 seconds. If the profile has never been logged in, the page opens logged out. The tab counts as one of your own tabs (at most 50 per terminal pane; close it with close_browser_tab).',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -216,7 +217,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'open_browser_tab',
-		description: 'Open a new Para Code browser tab for your own work. It returns the tab\'s tabId and becomes this pane\'s current tab, so the browser tools (take_snapshot, click, navigate_page, wait_until, ...) act on it when you omit tab_id; pass tab_id to act on a specific tab. The pages the user shared with this pane stay shared and usable by their tab_id. To split browser work across subagents, open one tab per subagent and give each its tabId; each subagent passes it as tab_id on every browser tool call, and calls on different tabs run in parallel. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 5 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
+		description: 'Open a new Para Code browser tab for your own work. It returns the tab\'s tabId and becomes this pane\'s current tab, so the browser tools (take_snapshot, click, navigate_page, wait_until, ...) act on it when you omit tab_id; pass tab_id to act on a specific tab. The pages the user shared with this pane stay shared and usable by their tab_id. To split browser work across subagents, open one tab per subagent and give each its tabId; each subagent passes it as tab_id on every browser tool call, and calls on different tabs run in parallel. The tab uses a separate agent-only browser session (none of the user\'s logins or cookies) and the agent network restrictions apply. You can have at most 50 tabs of your own open per terminal pane; close the ones you no longer need with close_browser_tab. Use this instead of new_page, which is not supported.',
 		inputSchema: {
 			type: 'object',
 			properties: {
