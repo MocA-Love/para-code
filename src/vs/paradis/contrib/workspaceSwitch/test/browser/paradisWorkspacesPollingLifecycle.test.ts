@@ -110,20 +110,20 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		harness.clock.advance(0);
 
 		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
-		assert.deepStrictEqual(harness.clock.pendingDelays(), { diff: 9_000, pr: 299_000 });
+		assert.deepStrictEqual(harness.clock.pendingDelays(), { diff: 59_000, pr: 299_000 });
 	});
 
-	test('visible completion preserves the 10 second diff and 5 minute PR intervals', () => {
+	test('visible completion keeps the 1 minute diff check and 5 minute PR intervals', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(true);
 		harness.clock.advance(0);
 
-		harness.clock.advance(9_999);
+		harness.clock.advance(59_999);
 		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
 		harness.clock.advance(1);
 		assert.deepStrictEqual(harness.counts().commands, { diff: 2, pr: 1 });
-		harness.clock.advance(290_000);
-		assert.deepStrictEqual(harness.counts().commands, { diff: 31, pr: 2 });
+		harness.clock.advance(240_000);
+		assert.deepStrictEqual(harness.counts().commands, { diff: 6, pr: 2 });
 	});
 
 	test('repository and worktree changes request visible refreshes through the production seam', () => {
@@ -199,6 +199,113 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
+	// Q471 A: ウィンドウが裏・非フォーカス・最小化の間は差分を取りに行かない。PR・Issue の周期は変えない
+	test('an inactive window runs no diff for six minutes and refreshes once when it returns', () => {
+		const harness = store.add(new PollingHarness(true, false, true));
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.fireWindowActive(false);
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.clock.advance(360_000);
+		const whileInactive = harness.counts().commands;
+		harness.fireWindowActive(true);
+		harness.fireWindowActive(true);
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual({ whileInactive, afterReturn: harness.counts().commands, pending: harness.clock.pendingDelays() }, {
+			whileInactive: { diff: 1, pr: 2 },
+			afterReturn: { diff: 2, pr: 2 },
+			pending: { diff: 60_000, pr: 240_000 },
+		});
+	});
+
+	test('a window that starts inactive takes its first diff when it becomes active', () => {
+		const harness = store.add(new PollingHarness(true, false, true, false));
+		harness.lifecycle.start(true);
+		harness.clock.advance(120_000);
+		const beforeActive = harness.counts().commands;
+		harness.fireWindowActive(true);
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual({ beforeActive, afterActive: harness.counts().commands }, {
+			beforeActive: { diff: 0, pr: 1 },
+			afterActive: { diff: 1, pr: 1 },
+		});
+	});
+
+	// Q471 B: 変更の知らせは短く待ってから 1 回にまとめる
+	test('change notifications are coalesced into one diff after a short delay', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(30_000);
+
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.clock.advance(1_000);
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.clock.advance(499);
+		const beforeDelay = harness.counts().commands.diff;
+		harness.clock.advance(1);
+
+		assert.deepStrictEqual({ beforeDelay, afterDelay: harness.counts().commands.diff, pending: harness.clock.pendingDelays().diff }, {
+			beforeDelay: 1,
+			afterDelay: 2,
+			pending: 60_000,
+		});
+	});
+
+	// ビルドやウォッチが書き続けても、以前の 10 秒ごとより多くは取りに行かない
+	test('a change right after a diff, or during one, waits 10 seconds from its completion', () => {
+		const harness = store.add(new PollingHarness(false));
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.completeInFlight();
+		const afterInFlight = harness.clock.pendingDelays().diff;
+		harness.clock.advance(9_999);
+		const beforeInterval = harness.counts().commands.diff;
+		harness.clock.advance(1);
+		const afterInterval = harness.counts().commands.diff;
+		harness.completeInFlight();
+		harness.clock.advance(2_000);
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+
+		assert.deepStrictEqual({ afterInFlight, beforeInterval, afterInterval, afterQuickChange: harness.clock.pendingDelays().diff }, {
+			afterInFlight: 10_000,
+			beforeInterval: 1,
+			afterInterval: 2,
+			afterQuickChange: 8_000,
+		});
+	});
+
+	test('a change notification does not push back an immediate refresh that is already scheduled', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.worktrees.fire();
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+
+		assert.deepStrictEqual(harness.clock.pendingDelays().diff, 0);
+	});
+
+	test('a change waiting for its delay is kept when the view hides and runs once on return', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+		harness.fireVisibility(false, false);
+		harness.clock.advance(10_000);
+		const whileHidden = harness.counts().commands.diff;
+		harness.fireVisibility(true, true);
+		harness.clock.advance(0);
+
+		assert.deepStrictEqual({ whileHidden, afterReturn: harness.counts().commands.diff }, { whileHidden: 1, afterReturn: 2 });
+	});
+
 	test('show during in-flight work reuses its completion and resumes normal cadence', () => {
 		const harness = store.add(new PollingHarness(false));
 		harness.lifecycle.start(true);
@@ -210,7 +317,7 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
 
 		harness.completeInFlight();
-		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0, 10_000], pr: [0, 300_000] });
+		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0, 60_000], pr: [0, 300_000] });
 		harness.clock.advance(0);
 		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
 	});
@@ -265,16 +372,14 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 		assert.deepStrictEqual(harness.refreshCounts, { diff: 3, pr: 3 });
 	});
 
-	test('visible empty-path refreshes resume after 10 seconds and 5 minutes', async () => {
+	test('visible empty-path refreshes resume after 1 minute and 5 minutes', async () => {
 		const harness = store.add(new PollingControllerHarness(true));
 		harness.clock.advance(0);
 		await settlePolling();
 
-		harness.clock.advance(10_000);
-		await settlePolling();
-		await advancePolling(harness.clock, 29, 10_000);
+		await advancePolling(harness.clock, 5, 60_000);
 
-		assert.deepStrictEqual(harness.refreshCounts, { diff: 31, pr: 2 });
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 6, pr: 2 });
 	});
 
 	test('command rejection still resumes visible polling', async () => {
@@ -286,9 +391,9 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 
 		harness.behaviors.diff = 'resolve';
 		harness.behaviors.pr = 'resolve';
-		await advancePolling(harness.clock, 30, 10_000);
+		await advancePolling(harness.clock, 5, 60_000);
 
-		assert.deepStrictEqual(harness.refreshCounts, { diff: 31, pr: 2 });
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 6, pr: 2 });
 	});
 
 	test('in-flight hide suppresses completion rescheduling', async () => {
@@ -420,9 +525,10 @@ class PollingHarness implements IDisposable {
 	readonly lifecycle: ParadisWorkspacesPollingLifecycle;
 
 	private readonly commandCounts: Record<PollKind, number> = { diff: 0, pr: 0 };
+	readonly windowActive = this.disposables.add(new Emitter<void>());
 	private actualBodyVisible = false;
 
-	constructor(private readonly completeAutomatically = true, followGithubTargets = false) {
+	constructor(private readonly completeAutomatically = true, followGithubTargets = false, followWindowActive = false, private actualWindowActive = true) {
 		this.lifecycle = this.disposables.add(new ParadisWorkspacesPollingLifecycle(
 			{
 				isBodyVisible: () => this.actualBodyVisible,
@@ -430,6 +536,7 @@ class PollingHarness implements IDisposable {
 				onDidChangeRepositories: this.repositories.event,
 				onDidChangeWorktrees: this.worktrees.event,
 				...(followGithubTargets ? { onDidChangeGithubTargets: this.githubTargets.event } : {}),
+				...(followWindowActive ? { isWindowActive: () => this.actualWindowActive, onDidChangeWindowActive: this.windowActive.event } : {}),
 			},
 			() => this.refreshDiff(),
 			() => this.refreshPr(),
@@ -441,6 +548,11 @@ class PollingHarness implements IDisposable {
 	fireVisibility(payload: boolean, actualBodyVisible: boolean): void {
 		this.actualBodyVisible = actualBodyVisible;
 		this.visibility.fire(payload);
+	}
+
+	fireWindowActive(active: boolean): void {
+		this.actualWindowActive = active;
+		this.windowActive.fire();
 	}
 
 	counts(): { callbacks: Record<PollKind, number>; commands: Record<PollKind, number> } {
@@ -534,7 +646,7 @@ class FakeClock {
 
 	get time(): number { return this.now; }
 
-	private get diff(): FakeScheduler { return this.schedulerWithDefaultDelay(10_000); }
+	private get diff(): FakeScheduler { return this.schedulerWithDefaultDelay(60_000); }
 	private get pr(): FakeScheduler { return this.schedulerWithDefaultDelay(300_000); }
 
 	private schedulerWithDefaultDelay(defaultDelay: number): FakeScheduler {

@@ -531,7 +531,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						// HEAD 未書込みは branch なしで続行
 					}
 
-					result.push({ repositoryId: repository.id, name: basename(uri), branch, uri });
+					result.push({ repositoryId: repository.id, name: basename(uri), branch, uri, gitDir: child.resource });
 				} catch (error) {
 					// worktree 作成直後で gitdir 未書込み等はスキップ (upstream 同様)。
 					// 「無い」以外の理由で読めなかったなら、この回の結果は当てにしない

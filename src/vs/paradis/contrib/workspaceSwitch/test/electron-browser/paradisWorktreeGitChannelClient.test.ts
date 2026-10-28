@@ -7,12 +7,15 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { paradisHostPathFor } from '../../../../common/paradisHostPath.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisChannelHostResolver, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, paradisChannelHostResolver, paradisCollectPerWorktree, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
 
 const CHANNEL_NAME = 'testChannel';
 const REMOTE_AUTHORITY = 'ssh-remote+host';
@@ -94,5 +97,65 @@ suite('paradisChannelHostResolver', () => {
 		assert.strictEqual(resolve(URI.parse('vscode-remote://ssh-remote+other/repo')), undefined);
 		assert.strictEqual(resolve(URI.parse(`vscode-remote://${REMOTE_AUTHORITY}/repo`))?.channel, remoteChannel);
 		assert.strictEqual(resolve(URI.file('/repo'))?.channel, localChannel);
+	});
+});
+
+suite('paradisCollectPerWorktree', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	// Q471: 54 か所を一度に投げず、同時に走る git を上限までに抑える
+	test('runs at most the given number of calls at once and still returns every result', async () => {
+		let running = 0;
+		let maxRunning = 0;
+		const gates: DeferredPromise<void>[] = [];
+		const channel = {
+			call: async <T>(_command: string, args?: unknown): Promise<T> => {
+				running++;
+				maxRunning = Math.max(maxRunning, running);
+				const gate = new DeferredPromise<void>();
+				gates.push(gate);
+				await gate.p;
+				running--;
+				return { path: (args as unknown[])[0] } as T;
+			},
+			listen: () => { throw new Error('not used'); },
+		} as unknown as IChannel;
+		const host: IParadisWorktreeGitHost = { channel, path: resource => paradisHostPathFor(resource, 'local') };
+		const resources = Array.from({ length: 10 }, (_, index) => URI.file(`/repo-${index}`));
+
+		const collecting = paradisCollectPerWorktree<{ path: string }>(resources, () => host, 'getDiffStat', undefined, 4);
+		await timeout(0);
+		const startedFirst = gates.length;
+		for (let index = 0; index < resources.length; index++) {
+			gates[index].complete();
+			await timeout(0);
+		}
+		const result = await collecting;
+
+		assert.deepStrictEqual({ startedFirst, maxRunning, count: Object.keys(result).length }, { startedFirst: 4, maxRunning: 4, count: 10 });
+	});
+
+	// SSH の再接続中などでチャネルが例外を投げた対象は、値の無い対象と見分けられるようにする
+	test('a call that throws is returned as the failed value when one is given', async () => {
+		const channel = {
+			call: async <T>(_command: string, args?: unknown): Promise<T> => {
+				if ((args as string[])[0] === '/down') {
+					throw new Error('Connection got disposed.');
+				}
+				return { insertions: 1, deletions: 0 } as T;
+			},
+			listen: () => { throw new Error('not used'); },
+		} as unknown as IChannel;
+		const host: IParadisWorktreeGitHost = { channel, path: resource => paradisHostPathFor(resource, 'local') };
+		const resources = [URI.file('/up'), URI.file('/down')];
+		const failed = { insertions: 0, deletions: 0, failed: true as const };
+
+		assert.deepStrictEqual({
+			withFailedValue: await paradisCollectPerWorktree(resources, () => host, 'getDiffStat', undefined, 4, failed),
+			withoutFailedValue: await paradisCollectPerWorktree(resources, () => host, 'getDiffStat'),
+		}, {
+			withFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 }, [URI.file('/down').fsPath]: failed },
+			withoutFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 } },
+		});
 	});
 });

@@ -12,6 +12,7 @@
 // `cannot change to '<相手側のパス>': No such file or directory` で必ず失敗する。振り分けを
 // ここ1箇所に集めてあるので、新しい呼び出しもこのファイル経由にすること。
 
+import { Limiter } from '../../../../base/common/async.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -52,6 +53,37 @@ export function paradisWorktreeGitHostResolver(accessor: ServicesAccessor): (res
 	const resolve = paradisChannelHostResolver(accessor, PARADIS_WORKTREE_GIT_CHANNEL, 'local');
 	// unresolved: 'local' を指定しているので、この resolve は常に値を返す（undefined にならない）。
 	return resource => resolve(resource)!;
+}
+
+/**
+ * 各 URI について、そのリポジトリがあるマシンで worktree git チャネルの `command` を呼び、`fsPath` をキーにまとめて返す。
+ * 個々の失敗（worktree が消えた等）は飛ばし、ほかの結果は返す。`failedValue` を渡すと、呼び出しが例外になった
+ * （接続先との通信が切れている間など）対象にはその値を入れて返し、「値が無い」と見分けられるようにする。
+ * `maxConcurrency` を渡すと、同時に投げる数をその本数までに抑える（省略時は全部を一度に投げる）。
+ */
+export async function paradisCollectPerWorktree<T>(resources: readonly URI[], resolveGitHost: (resource: URI) => IParadisWorktreeGitHost, command: string, extraArgs: (resource: URI) => readonly unknown[] = () => [], maxConcurrency?: number, failedValue?: T): Promise<Record<string, T>> {
+	const result: Record<string, T> = {};
+	const collectOne = async (resource: URI) => {
+		const host = resolveGitHost(resource);
+		try {
+			const value = await host.channel.call<T | undefined>(command, [host.path(resource), ...extraArgs(resource)]);
+			if (value !== undefined) {
+				result[resource.fsPath] = value;
+			}
+		} catch {
+			// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
+			if (failedValue !== undefined) {
+				result[resource.fsPath] = failedValue;
+			}
+		}
+	};
+	const limiter = maxConcurrency !== undefined ? new Limiter<void>(maxConcurrency) : undefined;
+	try {
+		await Promise.all(resources.map(resource => limiter !== undefined ? limiter.queue(() => collectOne(resource)) : collectOne(resource)));
+	} finally {
+		limiter?.dispose();
+	}
+	return result;
 }
 
 /**
