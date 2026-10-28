@@ -396,7 +396,7 @@ export interface NotifyPayload {
 	 */
 	readonly category?: 'done' | 'approval' | 'question' | 'error';
 	/** 送り主のエージェント（副題と、iOS の Communication Notification の送り主のアイコン）。 */
-	readonly agent?: 'claude' | 'codex';
+	readonly agent?: 'claude' | 'codex' | 'opencode';
 	/** タブ名（エージェントの印を外したもの。副題に使う）。 */
 	readonly tab?: string;
 	/** 長押しの画面に出す Markdown の原文（「通知に内容を含める」がオンのときだけ）。 */

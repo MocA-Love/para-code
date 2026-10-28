@@ -25,7 +25,7 @@ export const PARADIS_AGENT_RESUME_CAPABILITY = 'agent.resume.v1';
 export const PARADIS_AGENT_SESSION_KEY_PATTERN = /^[0-9a-f]{40}$/;
 
 /** エージェントの種類とセッション ID から、会話の指紋を作る。 */
-export function paradisAgentSessionKey(agent: 'claude' | 'codex', sessionId: string): string {
+export function paradisAgentSessionKey(agent: 'claude' | 'codex' | 'opencode', sessionId: string): string {
 	const sha = new StringSHA1();
 	sha.update(`para.agent-session\n${agent}\n${sessionId}`);
 	return sha.digest();
@@ -56,7 +56,7 @@ export interface IParadisResumeLedgerEntry {
 /** スマホへ返す過去の会話 1 件。 */
 export interface IParadisMobileAgentSession {
 	readonly key: string;
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	readonly title: string;
 	readonly preview?: string;
 	readonly previewRole?: 'user' | 'assistant';
@@ -137,7 +137,7 @@ export function paradisRecordResumeRequest(ledger: readonly IParadisResumeLedger
  * ターミナルで実行中のコマンドが、既存の会話を続ける `claude --resume <id>` / `codex resume <id>` なら、その会話を返す
  * （「PC で今開いている会話」を hook が届く前でも見分けるため。レビュー M6）。複製して始める（fork）ものは別の会話なので返さない。
  */
-export function paradisResumedSessionOfCommand(commandLine: string): { readonly agent: 'claude' | 'codex'; readonly sessionId: string } | undefined {
+export function paradisResumedSessionOfCommand(commandLine: string): { readonly agent: 'claude' | 'codex' | 'opencode'; readonly sessionId: string } | undefined {
 	const command = paradisInteractiveAgentCommand(commandLine);
 	if (command === undefined || command.mode !== 'resume') {
 		return undefined;
