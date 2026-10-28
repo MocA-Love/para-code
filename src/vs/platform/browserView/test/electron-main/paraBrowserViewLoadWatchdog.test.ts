@@ -89,12 +89,12 @@ suite('paraBrowserViewLoadWatchdog', () => {
 
 	teardown(() => paraSetBrowserViewLoadStallReporter(undefined));
 
-	function install(viewId: string): FakeWebContents {
+	function install(viewId: string, agentOwner = false): FakeWebContents {
 		const webContents = new FakeWebContents();
 		store.add(paraInstallBrowserViewLoadWatchdog(webContents as unknown as ParaBrowserViewLoadWatchdogWebContents, new NullLogService(), error => errors.push({ url: error.url, errorCode: error.errorCode }), {
 			viewId,
 			timeoutMs: TIMEOUT_MS,
-			context: () => ({ remoteAuthority: 'ssh-remote+example', tunnelProxy: true }),
+			context: () => ({ remoteAuthority: 'ssh-remote+example', tunnelProxy: true, agentOwner }),
 		}));
 		return webContents;
 	}
@@ -168,6 +168,19 @@ suite('paraBrowserViewLoadWatchdog', () => {
 		await timeout(TIMEOUT_MS * 3);
 
 		assert.deepStrictEqual({ changes, stops: webContents.stops, errors, reports }, { changes: [], stops: 0, errors: [], reports: [] });
+	});
+
+	test('stops a tab owned by an agent without asking, though the ledger never saw it (upstream open_browser and its child tabs)', async () => {
+		const webContents = install('view-11', true);
+		webContents.navigate('https://example.com/');
+		await timeout(TIMEOUT_MS * 3);
+
+		assert.deepStrictEqual({ changes, stops: webContents.stops, errors, outcomes: reports.map(report => `${report.outcome}:${report.agentTab}`) }, {
+			changes: [],
+			stops: 1,
+			errors: [{ url: 'https://example.com/', errorCode: -7 }],
+			outcomes: ['agent-stopped:true'],
+		});
 	});
 
 	test('asks in a tab no agent opened, even after the mark is taken back (an "Open and Share" copy)', async () => {

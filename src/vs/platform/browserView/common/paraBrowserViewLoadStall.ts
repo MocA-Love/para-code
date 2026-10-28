@@ -12,6 +12,8 @@
 export interface IParaBrowserViewLoadStall {
 	/** From the navigation starting to the moment the question was asked. */
 	readonly elapsedMs: number;
+	/** When the question was asked (`Date.now()` in main), so a view shown later can keep counting from it. */
+	readonly askedAt: number;
 	/** How many times the person already chose to keep waiting for this load. */
 	readonly waits: number;
 }

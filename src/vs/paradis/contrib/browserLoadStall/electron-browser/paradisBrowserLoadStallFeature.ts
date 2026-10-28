@@ -26,7 +26,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
-import { IParadisBrowserLoadStallChange, PARADIS_BROWSER_LOAD_STALL_CHANNEL } from '../common/paradisBrowserLoadStall.js';
+import { IParadisBrowserLoadStallChange, PARADIS_BROWSER_LOAD_STALL_CHANNEL, paradisBrowserLoadStallElapsed } from '../common/paradisBrowserLoadStall.js';
 
 /** 帯の文言。`elapsedMs` は読み込みを始めてから今までの時間。 */
 export function paradisBrowserLoadStallMessage(elapsedMs: number): string {
@@ -73,6 +73,8 @@ export class ParadisBrowserLoadStallFeature extends BrowserEditorContribution {
 				e.stopPropagation();
 				this._dismissed = this._stall;
 				this._render(this._stall);
+				// 隠れた帯にフォーカスを残さない。ページ（無ければアドレスバー）へ戻す。
+				this.editor.focus();
 			}
 		}));
 
@@ -108,14 +110,14 @@ export class ParadisBrowserLoadStallFeature extends BrowserEditorContribution {
 	private _render(stall: IParaBrowserViewLoadStall | undefined): void {
 		this._stall = stall;
 		// IPC を通るたびに別のオブジェクトになるので、値で比べる。
-		const shown = !!stall && !(this._dismissed && this._dismissed.elapsedMs === stall.elapsedMs && this._dismissed.waits === stall.waits);
+		const shown = !!stall && !(this._dismissed && this._dismissed.askedAt === stall.askedAt && this._dismissed.waits === stall.waits);
 		if (!shown) {
 			this._ticker.clear();
 		} else if (stall) {
-			// 経過秒は main が質問を出した時点の値に、受け取ってからの時間を足して進める。
-			const receivedAt = Date.now();
+			// 経過秒は、main が質問を出した時刻からの経過で進める（受け取った時刻から数えると、タブを
+			// 切り替えて戻ったときに減って見える）。main と同じ機械の時計なので比べてよい。
 			const update = () => {
-				this._message.textContent = paradisBrowserLoadStallMessage(stall.elapsedMs + Date.now() - receivedAt);
+				this._message.textContent = paradisBrowserLoadStallMessage(paradisBrowserLoadStallElapsed(stall, Date.now()));
 			};
 			update();
 			this._ticker.value = disposableWindowInterval(getWindow(this._element), update, 1000);
@@ -126,7 +128,7 @@ export class ParadisBrowserLoadStallFeature extends BrowserEditorContribution {
 		this._shown = shown;
 		this._element.hidden = !shown;
 		if (shown && stall) {
-			ariaAlert(paradisBrowserLoadStallMessage(stall.elapsedMs));
+			ariaAlert(paradisBrowserLoadStallMessage(paradisBrowserLoadStallElapsed(stall, Date.now())));
 		}
 		// 帯の高さの分だけページの枠が動くので、ネイティブのビューの位置を合わせ直す。
 		this.editor.layoutBrowserContainer();
