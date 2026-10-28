@@ -889,7 +889,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 					pageInfo: { url: model.url, title: model.title },
 				};
 				const answer = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call<unknown>(method, [request]);
-				const result: ParadisOpenedTabGrantResult = answer === true || answer === 'granted' ? 'granted' : answer === 'limitReached' ? 'limitReached' : 'notEligible';
+				const result: ParadisOpenedTabGrantResult = answer === true || answer === 'granted' ? 'granted' : answer === 'limitReached' || answer === 'burstLimited' ? answer : 'notEligible';
 				if (result === 'granted') {
 					// 開いたタブは複数のペインへ許可しうる。ペインごとの一覧は shared process から取った控え（_agentTabOwnersByPage）で見る
 					if (method === 'grantAgentTab') {

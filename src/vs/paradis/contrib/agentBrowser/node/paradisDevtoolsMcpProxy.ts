@@ -200,6 +200,12 @@ interface IChildEntry {
 	lastActivityAt: number;
 	/** 今受けているツールの名前（Sentry に載せる固定の名前。落ちたときに応答待ちだったもの）。 */
 	readonly activeTools: string[];
+	/**
+	 * 止めると消える状態を持っているか（performance_start_trace で始めたまま止めていない trace、emulate の設定）。
+	 * 上限で子を止めるとき後回しにする（{@link ParadisDevtoolsMcpProxy._evictIdleChild}）。
+	 */
+	tracing: boolean;
+	emulated: boolean;
 	/** 最後に測った RSS と、その最大（MiB）。 */
 	rssMib: number | undefined;
 	peakRssMib: number | undefined;
@@ -557,6 +563,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		entry.activeTools.push(safeToolName);
 		try {
 			const raw = await this._request(token, entry, 'tools/call', { name, arguments: untagged.value }, timeoutMs, signal);
+			this._noteChildState(entry, name, untagged.value, raw);
 			if (UNTAGGED_RESULT_TOOLS.has(name)) {
 				return raw;
 			}
@@ -572,6 +579,34 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			entry.lastActivityAt = this._now();
 		}
+	}
+
+	/** 止めると消える状態（実行中の trace・emulate の設定）を子プロセスに控える。 */
+	private _noteChildState(entry: IChildEntry, name: string, toolArgs: unknown, raw: unknown): void {
+		if (this._isRecord(raw) && raw.isError === true) {
+			return;
+		}
+		if (name === 'performance_start_trace') {
+			// autoStop の trace は呼び出しの中で終わる
+			entry.tracing = !(this._isRecord(toolArgs) && toolArgs.autoStop === true);
+		} else if (name === 'performance_stop_trace') {
+			entry.tracing = false;
+		} else if (name === 'emulate') {
+			entry.emulated = true;
+		}
+	}
+
+	/**
+	 * 子の上限で止めた（{@link _evictIdleChild}）ことを、そのキーの次の呼び出しへ 1 回だけ伝える文を取り出す。どの道具の
+	 * 呼び出しでも伝えるよう、サービスがエージェントへ返す結果に添える（記録を読む道具の注記と重ねない）。
+	 */
+	takeEvictionNote(token: string): string | undefined {
+		const state = this._replaced.get(token);
+		if (state === undefined || state.reason !== 'evicted' || !state.recordsNote) {
+			return undefined;
+		}
+		state.recordsNote = false;
+		return paradisDevtoolsRecordsResetNote(state.reason);
 	}
 
 	/** 入れ替えの後、最初に記録を読むツールの結果へ、入れ替えの前の記録が無いことを 1 回だけ添える。 */
@@ -968,6 +1003,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			killed: false,
 			bornAt: this._now(),
 			calls: 0,
+			tracing: false,
+			emulated: false,
 			lastActivityAt: this._now(),
 			activeTools: [],
 			rssMib: undefined,
@@ -1350,7 +1387,8 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 
 	/**
 	 * 子プロセスの数が上限のとき、使っていない（応答待ちが無く、{@link PARADIS_DEVTOOLS_RECYCLE_QUIET_MS} 以上呼ばれていない）
-	 * 子のうち最後に使ったのが一番古いものを止める。止めている途中の子がもうあれば、それが終わるのを待つ（続けて止めない）。
+	 * 子のうち最後に使ったのが一番古いものを止める。止めると消える状態（実行中の trace・emulate の設定）を持つ子は、
+	 * 持たない子が無いときだけ止める。止めている途中の子がもうあれば、それが終わるのを待つ（続けて止めない）。
 	 */
 	private _evictIdleChild(): void {
 		if ([...this._childSlots].some(entry => entry.killed)) {
@@ -1364,14 +1402,16 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				|| now - entry.lastActivityAt < quietMs) {
 				continue;
 			}
-			if (oldest === undefined || entry.lastActivityAt < oldest[1].lastActivityAt) {
+			const keeps = entry.tracing || entry.emulated;
+			const oldestKeeps = oldest !== undefined && (oldest[1].tracing || oldest[1].emulated);
+			if (oldest === undefined || (oldestKeeps && !keeps) || (oldestKeeps === keeps && entry.lastActivityAt < oldest[1].lastActivityAt)) {
 				oldest = [token, entry];
 			}
 		}
 		if (oldest !== undefined) {
 			const [token, entry] = oldest;
 			this._debug(`[ParadisDevtoolsProxy] Stopping the least recently used chrome-devtools-mcp for pane ${entry.tokenFingerprint} to make room`);
-			this._markReplaced(token, entry, 'idle');
+			this._markReplaced(token, entry, 'evicted');
 			this._killChild(token, entry, 'evicted at the child cap');
 		}
 	}
