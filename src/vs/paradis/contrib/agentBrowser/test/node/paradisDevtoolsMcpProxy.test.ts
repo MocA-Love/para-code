@@ -906,7 +906,32 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		}, { retryable: true, recoveredText: 'ok', killCount: 0 });
 	});
 
-	test('rejects a new token at the global child cap without evicting existing children', async () => {
+	test('at the global child cap, stops the least recently used idle child and admits the new token on retry', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+			spawnChild: fixture.spawn,
+			maxChildren: 2,
+			recycleQuietMs: 0,
+		}));
+		await proxy.listTools('token-a', 1, 'ws://a');
+		await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {});
+
+		const capped = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		const killCounts = fixture.children.map(child => child.killCount);
+		await Promise.resolve();
+		const admitted = await proxy.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		const kept = await proxy.tryCallTool('token-b', 1, 'ws://b', 'take_snapshot', {}) as { content?: { text?: string }[]; isError?: boolean };
+		assert.deepStrictEqual({
+			retryable: capped.content?.[0]?.text?.includes('PARA_BROWSER_RETRYABLE'),
+			killCounts,
+			admittedText: admitted.content?.[0]?.text,
+			keptText: kept.content?.[0]?.text,
+			childCount: fixture.children.length,
+		}, { retryable: true, killCounts: [1, 0], admittedText: 'ok', keptText: 'ok', childCount: 3 });
+	});
+
+	test('rejects a new token at the global child cap without evicting children used just now', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
 			temporaryDirectory: TEST_TEMPORARY_DIRECTORY,

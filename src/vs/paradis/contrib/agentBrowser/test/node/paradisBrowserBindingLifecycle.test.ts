@@ -14,6 +14,7 @@ import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler, pa
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserService.js';
+import { ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
 
 function binding(token: string, pageId: string, generation: number = 1, boundAt: number = 1): IParadisPaneBinding {
 	return {
@@ -726,6 +727,7 @@ function createServiceFixture(generation: number): {
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
+		_openedTabBursts: new ParadisOpenedTabBurstGuard(),
 		_openedTabShareMarks: new Map(),
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
