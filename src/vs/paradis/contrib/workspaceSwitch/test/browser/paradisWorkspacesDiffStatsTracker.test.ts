@@ -121,6 +121,32 @@ suite('ParadisWorkspacesDiffStatsTracker', () => {
 		});
 	});
 
+	// コミットの無いリポジトリや git 管理外のフォルダーは毎回失敗する。見回りのたびに git を投げず、5 分の保険へ回す
+	test('a target that keeps failing moves to the fallback interval after three failures, and a success resets it', () => {
+		const harness = store.add(new TrackerHarness());
+		harness.tracker.setTargets([{ uri: REPO, gitDir: joinPath(REPO, '.git') }]);
+		const stats = new Map<string, IParadisDiffStat>();
+		const fail = { [REPO.fsPath]: { insertions: 0, deletions: 0, failed: true as const } };
+
+		const dueAfterFailures: string[][] = [];
+		for (let index = 0; index < 3; index++) {
+			harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), fail, stats);
+			dueAfterFailures.push(harness.tracker.takeDueTargets().map(uri => uri.path));
+			harness.tracker.restoreDirty(dueAfterFailures[index].length > 0 ? [REPO] : []);
+		}
+		harness.time = PARADIS_DIFF_STATS_FALLBACK_MS;
+		const atFallback = harness.takeDue();
+		harness.tracker.applyRefreshResult([REPO], { [REPO.fsPath]: { insertions: 1, deletions: 0 } }, stats);
+		harness.tracker.markDirty(REPO);
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), fail, stats);
+
+		assert.deepStrictEqual({ dueAfterFailures, atFallback, afterSuccessThenFailure: harness.takeDue() }, {
+			dueAfterFailures: [[REPO.path], [REPO.path], []],
+			atFallback: [REPO.path],
+			afterSuccessThenFailure: [REPO.path],
+		});
+	});
+
 	test('a failed refresh stays due, and removed targets lose their watcher', () => {
 		const harness = store.add(new TrackerHarness());
 		harness.setDefaultTargets();

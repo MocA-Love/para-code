@@ -20,6 +20,13 @@ import { IParadisDiffStat } from '../common/paradisWorktreeCreate.js';
 export const PARADIS_DIFF_STATS_FALLBACK_MS = 300_000;
 
 /**
+ * 続けてこの回数失敗した対象は、次の見回りではなく保険の時間（5分）のほうへ回す。コミットの無いリポジトリや git 管理外の
+ * フォルダーは毎回失敗するので、見回りのたびに git を投げないため。SSH の再接続のような一時的な失敗は、それまでの
+ * 見回りで取り直せる。
+ */
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+/**
  * git のメタデータの直下で、差分の数字が変わりうるときに書かれるファイル。
  * stage・commit・checkout・reset は `index` を、commit は `COMMIT_EDITMSG` を、checkout は `HEAD` を、
  * `git reset --soft` は `ORIG_HEAD` を書く（`index` は書かない）。worktree ではどれも `.git/worktrees/<name>/` の直下。
@@ -53,6 +60,7 @@ export class ParadisWorkspacesDiffStatsTracker extends Disposable {
 	private readonly dirty = new ResourceMap<true>();
 	private readonly lastFetchedAt = new ResourceMap<number>();
 	private readonly fingerprints = new ResourceMap<string>();
+	private readonly consecutiveFailures = new ResourceMap<number>();
 
 	constructor(
 		private readonly fileService: ParadisDiffStatsFileService,
@@ -77,6 +85,7 @@ export class ParadisWorkspacesDiffStatsTracker extends Disposable {
 				this.dirty.delete(uri);
 				this.lastFetchedAt.delete(uri);
 				this.fingerprints.delete(uri);
+				this.consecutiveFailures.delete(uri);
 			}
 		}
 		let added = false;
@@ -145,7 +154,8 @@ export class ParadisWorkspacesDiffStatsTracker extends Disposable {
 
 	/**
 	 * 取り直しの結果を `stats`（`fsPath` → 差分）へ反映する。数えられた対象だけ上書きして取れたと記録し、
-	 * 失敗した対象（`failed`）は前の値を残して印を付け直す。値が返らなかった対象は消す。
+	 * 失敗した対象（`failed`）は前の値を残して印を付け直す。ただし続けて {@link MAX_CONSECUTIVE_FAILURES} 回失敗した
+	 * 対象は、印を付けずに保険の時間のほうへ回す。値が返らなかった対象は消す。
 	 * 一覧から消えた対象の値も捨てる。`result` が無い（コマンド自体が失敗した）ときは全部を失敗として扱う。
 	 */
 	applyRefreshResult(targets: readonly URI[], result: Record<string, IParadisDiffStat> | undefined, stats: Map<string, IParadisDiffStat>): void {
@@ -154,9 +164,20 @@ export class ParadisWorkspacesDiffStatsTracker extends Disposable {
 		for (const target of targets) {
 			const stat = result?.[target.fsPath];
 			if (result === undefined || stat?.failed) {
-				failed.push(target);
+				if (!this.targets.has(target)) {
+					continue;
+				}
+				const failures = (this.consecutiveFailures.get(target) ?? 0) + 1;
+				this.consecutiveFailures.set(target, failures);
+				if (failures >= MAX_CONSECUTIVE_FAILURES) {
+					// 取れたとは言えないが、取り直すのは保険の時間が来てから（値は前のまま）
+					this.lastFetchedAt.set(target, this.now());
+				} else {
+					failed.push(target);
+				}
 				continue;
 			}
+			this.consecutiveFailures.delete(target);
 			fetched.push(target);
 			if (stat !== undefined) {
 				stats.set(target.fsPath, stat);
