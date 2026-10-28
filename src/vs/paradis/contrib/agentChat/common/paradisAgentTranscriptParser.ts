@@ -472,6 +472,11 @@ export interface IParseSignals {
 	readonly codexAsyncQuestions: IParadisCodexAsyncQuestion[];
 	/** 返信の発言で答えた Codex の非同期の質問の `questionItemId`（出現順）。 */
 	readonly codexAsyncAnswered: string[];
+	/**
+	 * 最後に読んだ利用者の発言（返信の形のものは数えない）より前に出た非同期の質問の数（{@link codexAsyncQuestions} の添字）。
+	 * 会話を開き直したときに戻すのは、直近のターン（最後の発言より後）に出た質問だけにするため。発言が無ければ undefined。
+	 */
+	codexAsyncStaleBefore?: number;
 }
 
 /**
@@ -1711,10 +1716,16 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 				return out;
 			}
 			out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, imageData: images });
+			if (role === 'user') {
+				signals.codexAsyncStaleBefore = signals.codexAsyncQuestions.length;
+			}
 			return out;
 		}
 		if (trimmedText.length === 0) {
 			return [];
+		}
+		if (role === 'user') {
+			signals.codexAsyncStaleBefore = signals.codexAsyncQuestions.length;
 		}
 		out.push({ role, kind: 'text', text: truncateText(role === 'assistant' ? paradisRewriteCodexVisualizations(text) : text, TEXT_LIMIT), ts });
 	} else if (ptype === 'agent_message') {

@@ -68,6 +68,19 @@ suite('ParadisNotifyDismissLedger (W2-27)', () => {
 		});
 	});
 
+	test('keeps the notification of a Codex async question across the end of the turn and the next message, and settles it when answered', () => {
+		const ledger = new ParadisNotifyDismissLedger();
+		ledger.record('q1', 'tok-a', 'agent-question', 100, 'codex-async:call_1');
+		ledger.record('q2', 'tok-a', 'agent-question', 110, 'codex-async:call_2');
+		ledger.record('a1', 'tok-a', 'agent-question', 120, 'tool-1');
+		// Codex が呼び出しの直後に書く PostToolUse（tool_use_id は call_id）では片付かない
+		const byPostToolUse = ledger.markAnswered('tok-a', 'call_1', 150);
+		const byTurnEnd = ledger.markAnswered('tok-a', undefined, 200);
+		const byAnswer = ledger.markAnswered('tok-a', 'codex-async:call_1', 300);
+		const bySessionEnd = ledger.markAnswered('tok-a', undefined, 400, undefined, true);
+		assert.deepStrictEqual({ byPostToolUse, byTurnEnd, byAnswer, bySessionEnd }, { byPostToolUse: [], byTurnEnd: ['a1'], byAnswer: ['q1'], bySessionEnd: ['q2'] });
+	});
+
 	test('the end of a turn settles only the prompts of the conversation whose turn ended', () => {
 		const ledger = new ParadisNotifyDismissLedger();
 		const main = { sessionId: 'sess-main' };

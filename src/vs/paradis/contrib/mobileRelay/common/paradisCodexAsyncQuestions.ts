@@ -64,6 +64,19 @@ export interface IParadisCodexAsyncReply {
 	readonly index?: number;
 }
 
+/**
+ * 質問の通知に付ける ID の頭。通知の片付けの台帳（paradisNotifyDismissLedger.ts）はこの ID の通知を、答えたときだけ片付け、
+ * ターンの終わり・次の発言では片付けない。call_id をそのまま使わないのは、Codex がすぐ書く PostToolUse の `tool_use_id`
+ * （= call_id）で片付いてしまうため。
+ */
+export const PARADIS_CODEX_ASYNC_NOTIFY_PREFIX = 'codex-async:';
+
+/** 1 回の呼び出しの質問の通知に付ける ID（長すぎて通知に載らない call_id なら undefined）。 */
+export function paradisCodexAsyncNotifyInteractionId(callId: string): string | undefined {
+	const id = `${PARADIS_CODEX_ASYNC_NOTIFY_PREFIX}${callId}`;
+	return id.length <= 200 ? id : undefined;
+}
+
 /** 返信の `questionItemId` を作る（Codex の TUI と同じ）。 */
 export function paradisCodexAsyncQuestionItemId(callId: string, index: number): string {
 	return JSON.stringify([PARADIS_CODEX_ASYNC_QUESTION_TOOL, callId, index]);

@@ -95,9 +95,13 @@ export class ParadisCodexAsyncQuestionLedger {
 		return added;
 	}
 
-	/** 返信の発言で答えた質問（`questionItemId`）を外す。変わったら true。 */
-	answer(itemIds: readonly string[]): boolean {
+	/**
+	 * 返信の発言で答えた質問（`questionItemId`）を外す。これで全部の問いに答え終えた呼び出しの call_id を返す（質問の通知を
+	 * 片付けるため）。変わったかは {@link revision} で見る。
+	 */
+	answer(itemIds: readonly string[]): string[] {
 		let changed = false;
+		const settled: string[] = [];
 		for (const itemId of itemIds) {
 			const id = paradisParseCodexAsyncQuestionItemId(itemId);
 			if (id === undefined) {
@@ -117,12 +121,15 @@ export class ParadisCodexAsyncQuestionLedger {
 			if (!entry.answered.has(id.index) && entry.questions.some(question => question.index === id.index)) {
 				entry.answered.add(id.index);
 				changed = true;
+				if (entry.questions.every(question => entry.answered.has(question.index))) {
+					settled.push(id.callId);
+				}
 			}
 		}
 		if (changed) {
 			this._revision++;
 		}
-		return changed;
+		return settled;
 	}
 
 	/** hook で仮に足した呼び出しが失敗した（PostToolUseFailure）。rollout で確かめていなければ外す。変わったら true。 */

@@ -528,7 +528,10 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 		await writeFile(rolloutPath, line({ timestamp: '2026-10-28T13:56:49.000Z', type: 'session_meta', payload: { id: 'thread-async', cwd: '/workspace/app', originator: 'codex-tui' } })
 			+ CODEX_ASYNC_QUESTION_ROLLOUT.map(text => `${text}\n`).join(''));
 		const notified: string[] = [];
-		const chat = new ParadisMobileAgentChat(() => { }, () => { }, info => notified.push(info.text), new NullLogService());
+		const notifiedIds: (string | undefined)[] = [];
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, info => { notified.push(info.text); notifiedIds.push(info.interactionId); }, new NullLogService());
+		const answered: string[] = [];
+		const answeredListener = chat.onDidAnswerAsyncQuestions(event => answered.push(...event.interactionIds));
 		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
 		const settled = async () => {
 			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
@@ -561,12 +564,43 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 			await settled();
 			const afterReply = await pendingIds();
 
-			assert.deepStrictEqual({ restored, fromHook, notifiedAfterRollout, afterReply }, {
+			assert.deepStrictEqual({ restored, fromHook, notifiedAfterRollout, notifiedIds, afterReply, answered }, {
 				restored: { pending: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1)], interaction: null, notified: 0 },
 				fromHook: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1), hookId],
 				notifiedAfterRollout: ['進め方は？'],
+				// 質問の通知は呼び出しごとの ID を持ち、全部答えたらその ID で片付ける
+				notifiedIds: ['codex-async:call_hook'],
 				afterReply: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1)],
+				answered: ['codex-async:call_hook'],
 			});
+		} finally {
+			answeredListener.dispose();
+			chat.dispose();
+		}
+	}));
+
+	test('restores only the async questions of the latest turn when a Codex conversation is opened again', () => withCodexHome(async codexHome => {
+		const token = 'pane-desktop-codex-async-stale';
+		const rolloutPath = join(codexHome, 'sessions', '2026', '09', '27', 'rollout-2026-10-28T22-56-49-thread-stale.jsonl');
+		const question = (callId: string, at: string) => line({ timestamp: at, type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: callId, content: [{ type: 'Text', text: 'Q' }], phase: 'final_answer', delivery: 'async', questions: [{ title: `${callId}?`, options: null }] } } });
+		const user = (text: string, at: string) => line({ timestamp: at, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { content_item_kinds: ['user.text'] } } });
+		const partialReply = paradisBuildCodexAsyncReply([{ question: { id: paradisCodexAsyncQuestionItemId('call_new', 0), title: 'call_new?' }, answer: 'a' }])!;
+		// 前のターンの答えていない質問 → 普通の発言 → 今のターンの 2 問（1 問目だけ返信で答えた）
+		await writeFile(rolloutPath, line({ timestamp: '2026-10-28T13:00:00.000Z', type: 'session_meta', payload: { id: 'thread-stale', cwd: '/workspace/app', originator: 'codex-tui' } })
+			+ question('call_old', '2026-10-28T13:00:01.000Z')
+			+ user('別の作業をして', '2026-10-28T13:00:02.000Z')
+			+ line({ timestamp: '2026-10-28T13:00:03.000Z', type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'call_new', content: [{ type: 'Text', text: 'Q' }], phase: 'final_answer', delivery: 'async', questions: [{ title: 'call_new?' }, { title: 'call_new 2?' }] } } })
+			+ user(partialReply, '2026-10-28T13:00:04.000Z'));
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, Promise<void>>; tailers: Map<string, { enqueue(work: () => Promise<void>): Promise<void> }> };
+		try {
+			chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: 'thread-stale', transcriptPath: rolloutPath, cwd: '/workspace/app', at: Date.now() });
+			await waitFor(() => !access.hookProcessing.has(token), 'hook was not processed');
+			chat.watchDesktopChat('window-1', [token], [token]);
+			await waitFor(async () => (await chat.getDesktopChat(token, undefined))?.asyncQuestions !== undefined, 'the rollout was not read');
+			// 返信の発言は「利用者の発言」に数えない（同じターンの残りの問いは戻す）
+			assert.deepStrictEqual((await chat.getDesktopChat(token, undefined))?.asyncQuestions?.map(item => item.id), [paradisCodexAsyncQuestionItemId('call_new', 1)]);
 		} finally {
 			chat.dispose();
 		}

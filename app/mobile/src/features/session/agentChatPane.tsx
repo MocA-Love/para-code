@@ -11,7 +11,7 @@ import { useAppLocked } from '../../appLock.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
 import { AGENT_QUESTION_CHAT_CAPABILITY, AGENT_QUESTION_NOTES_CAPABILITY, askQuestionFeatures, questionHasPreview } from '../../agentQuestionMod.js';
 import { agentSendIds } from '../../agentSendIds.js';
-import { enqueueAgentSend, useAgentSendLive } from '../../agentSendQueue.js';
+import { enqueueAgentSend, useAgentSendLive, useAgentSendQueue } from '../../agentSendQueue.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
 import { PcCapability } from '../../pcCompat.js';
 import { findLatestApprovalRequest } from '../../components/attentionStack.js';
@@ -30,7 +30,8 @@ import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js'
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
 import { ASYNC_FREE_TEXT_PREFIX, AsyncQuestionCard } from './asyncQuestionCard.js';
-import { groupAsyncQuestions, isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestions.js';
+import { groupAsyncQuestions } from '../../asyncQuestions.js';
+import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
 import { ChatChromeRow, CompactingRow, PendingMessagesDrawer, QuickReplies } from './chatChrome.js';
@@ -220,7 +221,20 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const asyncSupported = usePcCapability(PcCapability.AgentAsyncQuestions);
 	const asyncQuestions = asyncSupported && chatReady ? chat?.asyncQuestions : undefined;
 	const asyncHidden = useAsyncQuestionDrafts(useShallow(s => ({ sent: s.sent, dismissed: s.dismissed })));
-	const pruneAsyncDrafts = useAsyncQuestionDrafts(s => s.prune);
+	const { prune: pruneAsyncDrafts, load: loadAsyncDismissed, settleQueued: settleQueuedAsync } = useAsyncQuestionDrafts(useShallow(s => ({ prune: s.prune, load: s.load, settleQueued: s.settleQueued })));
+	// この端末で閉じた問い（端末に保存してある）を読む
+	useEffect(() => {
+		if (asyncSupported) {
+			loadAsyncDismissed();
+		}
+	}, [asyncSupported, loadAsyncDismissed]);
+	// PC に届くまで預けた返信は、預かりの一覧から無くなったら（届いた・消した）通常の「送った」の扱いへ移す
+	const queuedTextsKey = useAgentSendQueue(s => s.items.map(item => item.text).join('\u0000'));
+	useEffect(() => {
+		const texts = new Set(useAgentSendQueue.getState().items.map(item => item.text));
+		settleQueuedAsync(texts, Date.now());
+		// 印を付けた直後にも見る（預けたつもりが、つながっていてそのまま届いた送信を、預かりの印のまま残さない）
+	}, [queuedTextsKey, asyncHidden.sent, settleQueuedAsync]);
 	const asyncIdsKey = (asyncQuestions ?? []).map(question => question.id).join('\n');
 	useEffect(() => {
 		if (asyncQuestions !== undefined) {
@@ -347,6 +361,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			key={asyncGroup[0]?.callId}
 			questions={asyncGroup}
 			working={working}
+			queueing={!live && canQueue && activePcId !== undefined}
 			onSend={sendText}
 			onRequestFreeText={requestFreeText}
 			freeTextActiveId={activeAnswerRequest?.id}

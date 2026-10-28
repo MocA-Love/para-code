@@ -8,10 +8,9 @@
  * PC と同じ関数（`paradisCodexAsyncQuestions.ts`）を使う。
  *
  * 一部の問いだけ答えて送ってもよい。送った問いは PC の一覧から消えるまで「送った」として隠し、残りの問いの書きかけは
- * この端末に持っておく（{@link useAsyncQuestionDrafts}）。
+ * この端末に持っておく（`asyncQuestionDrafts.ts`）。
  */
 
-import { create } from 'zustand';
 import {
 	paradisBuildCodexAsyncReply,
 	paradisParseCodexAsyncQuestionItemId,
@@ -126,56 +125,6 @@ export function questionRepliesOf(message: { readonly role: string; readonly kin
 	}
 	const parsed = paradisParseCodexAsyncReply(message.text);
 	return parsed?.map(reply => ({ question: reply.question, answer: reply.answer }));
-}
-
-/** 送ってからこの時間のうちに PC の一覧から消えなければ、「送った」の印を外してもう一度答えられるようにする。 */
-const SENT_HOLD_MS = 60_000;
-
-interface AsyncQuestionDraftStore {
-	/** questionItemId → 書きかけ。 */
-	readonly drafts: Readonly<Record<string, AsyncAnswerDraft>>;
-	/** questionItemId → 送った時刻（PC の一覧から消えるまで、もう一度は送らせない）。 */
-	readonly sent: Readonly<Record<string, number>>;
-	/** この端末で「答えずに閉じる」を押した問い（PC には知らせない）。 */
-	readonly dismissed: Readonly<Record<string, true>>;
-	setDraft(id: string, draft: AsyncAnswerDraft | undefined): void;
-	markSent(ids: readonly string[]): void;
-	dismiss(ids: readonly string[]): void;
-	/** PC の一覧に無くなった問いの書きかけ・印を捨てる（`known` は今の一覧の問い）。 */
-	prune(known: readonly string[]): void;
-}
-
-export const useAsyncQuestionDrafts = create<AsyncQuestionDraftStore>((set, get) => ({
-	drafts: {},
-	sent: {},
-	dismissed: {},
-	setDraft(id, draft) {
-		const { [id]: _previous, ...rest } = get().drafts;
-		set({ drafts: draft === undefined ? rest : { ...rest, [id]: draft } });
-	},
-	markSent(ids) {
-		const now = Date.now();
-		set({ sent: { ...get().sent, ...Object.fromEntries(ids.map(id => [id, now])) } });
-	},
-	dismiss(ids) {
-		set({ dismissed: { ...get().dismissed, ...Object.fromEntries(ids.map(id => [id, true as const])) } });
-	},
-	prune(known) {
-		const keep = new Set(known);
-		const pick = <T,>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.entries(record).filter(([id]) => keep.has(id)));
-		const state = get();
-		const drafts = pick(state.drafts);
-		const sent = pick(state.sent);
-		if (Object.keys(drafts).length !== Object.keys(state.drafts).length || Object.keys(sent).length !== Object.keys(state.sent).length) {
-			set({ drafts, sent });
-		}
-	},
-}));
-
-/** その問いを今カードに出さないか（送ってから間もない、またはこの端末で閉じた）。 */
-export function isAsyncQuestionHidden(state: Pick<AsyncQuestionDraftStore, 'sent' | 'dismissed'>, id: string, now: number): boolean {
-	const sentAt = state.sent[id];
-	return state.dismissed[id] === true || (sentAt !== undefined && now - sentAt < SENT_HOLD_MS);
 }
 
 /** 送った発言の控え（作業中に送った・預かった発言の一覧）に出す文。返信の形なら「回答: 質問 → 答え」の行にする。 */
