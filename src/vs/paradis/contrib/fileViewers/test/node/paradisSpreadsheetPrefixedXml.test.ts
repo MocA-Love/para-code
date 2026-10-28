@@ -148,6 +148,19 @@ suite('ParadisSpreadsheetPrefixedXml', () => {
 		ok(scanned < 1000 && opened < 3000, `scanned in ${scanned}ms, opened in ${opened}ms`);
 	});
 
+	test('stays linear when the root declares many namespaces and has many children', () => {
+		const declarations = Array.from({ length: 4000 }, (_, index) => ` xmlns:n${index}="urn:n${index}"`).join('');
+		const xml = `<x:worksheet xmlns:x="${MAIN}"${declarations}>${'<x:c xmlns:y="urn:y"/>'.repeat(50_000)}</x:worksheet>`;
+
+		const started = Date.now();
+		const result = unprefixSpreadsheetMlXml(xml);
+		const elapsed = Date.now() - started;
+
+		strictEqual(result, `<worksheet xmlns="${MAIN}" xmlns:x="${MAIN}"${declarations}>${'<c xmlns:y="urn:y"/>'.repeat(50_000)}</worksheet>`);
+		// Copying the declarations into each child's table took 20.8 seconds.
+		ok(elapsed < 1000, `took ${elapsed}ms`);
+	});
+
 	test('opens a workbook with x: prefixes the same as the one without, including what the viewer reads itself', async () => {
 		const original = await inventedWorkbook();
 		const { bytes, parts } = await prefixed(original);
