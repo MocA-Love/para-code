@@ -22,8 +22,9 @@ export const PARADIS_MCP_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 export const PARADIS_MCP_MAX_RESPONSE_BYTES = 48 * 1024 * 1024;
 export const PARADIS_MCP_MAX_PORT_FILE_BYTES = 16 * 1024;
 // One standalone shim owns exactly one pane token. Match the server's per-token ingress cap so
-// the shim applies flow control before the ninth request would be rejected with HTTP 429.
-export const PARADIS_MCP_MAX_INFLIGHT_REQUESTS = 8;
+// the shim applies flow control before one more request would be rejected with HTTP 429. 32 lets
+// one subagent per tab work in parallel (calls on the same tab still run one at a time).
+export const PARADIS_MCP_MAX_INFLIGHT_REQUESTS = 32;
 export const PARADIS_MCP_MAX_STDIN_FRAGMENTS = 4_096;
 // Preserve two maximum-size responses plus bounded serialization overhead. Exceeding this cap is
 // terminal for new input, while already accepted stdout writes are still flushed in order.

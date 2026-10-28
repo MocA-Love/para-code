@@ -838,6 +838,22 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('granting an opened tab again for a new view of the same tab does not count toward the burst limit', async () => {
+		const { fixture, connection, share } = await setup();
+		await share('view-a');
+		let lease = 0;
+		fixture.setResolveExact(async args => args[1] === 'opened-0'
+			? Object.freeze({ windowId: 1, viewId: 'opened-0', targetId: 'target-opened-0', viewLease: `lease-opened-0-${lease++}` })
+			: viewOf(args[1] as string));
+		fixture.openers.set('opened-0', 'view-a');
+		const again: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			again.push(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')));
+		}
+		fixture.openers.set('opened-1', 'view-a');
+		assert.deepStrictEqual({ again: again.every(result => result === 'granted'), another: await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')) }, { again: true, another: 'granted' });
+	});
+
 	test('a page that opens many tabs at once gets only some of them shared, and more after a while', async () => {
 		const { fixture, connection, share, usable } = await setup();
 		await share('view-a');
@@ -860,7 +876,7 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			overBurstUsable: usable(`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`),
 		}, {
 			granted: PARADIS_OPENED_TAB_BURST_LIMIT,
-			last: 'limitReached',
+			last: 'burstLimited',
 			later: 'granted',
 			skipped: [`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`],
 			overBurstUsable: false,

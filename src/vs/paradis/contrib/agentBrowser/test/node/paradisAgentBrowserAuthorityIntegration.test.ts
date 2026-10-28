@@ -15,6 +15,7 @@ import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChanne
 import { ParadisBrowserObserver } from '../../node/paradisBrowserObserve.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { PARADIS_AGENT_TAB_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
+import { PARADIS_MCP_MAX_INFLIGHT_REQUESTS } from '../../node/paradisBrowserMcpShimCore.js';
 import { ParadisCursorPacingLedger } from '../../node/paradisCursorPacing.js';
 import { ParadisToolCallLanes } from '../../common/paradisToolCallLanes.js';
 import { ParadisSubagentToolUses } from '../../common/paradisSubagentToolCalls.js';
@@ -1270,7 +1271,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		fixture.service.registerRendererConnection('window:1', connection);
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
-		const stalled = Array.from({ length: 8 }, () => {
+		const stalled = Array.from({ length: PARADIS_MCP_MAX_INFLIGHT_REQUESTS }, () => {
 			const request = new TestRequest('POST', '/?pane=token');
 			const response = new TestResponse();
 			return { request, response, pending: handleRequest(request, response) };

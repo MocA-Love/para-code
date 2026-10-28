@@ -42,6 +42,10 @@ const SETTLE_MAX_MS = 10_000;
 const POLL_MS = 100;
 /** 返す行の上限。 */
 const MAX_LINES = 30;
+/** [Browser state] に並べるタブの数の上限（超えた分は数だけ伝え、list_browser_tabs に任せる）。 */
+const MAX_STATE_TABS = 10;
+/** [Browser state] のタブの URL の長さの上限。 */
+const MAX_STATE_URL_LENGTH = 200;
 /** 待たない評価の答えをこれだけ待つ（vendored の `paraCodeObserve`、script.js の PARA-PATCH と同じ値）。 */
 const UNRESPONSIVE_MS = 3000;
 
@@ -333,7 +337,7 @@ export class ParadisBrowserObserver {
 		const tabs = await host.tabs().catch(() => undefined);
 		const downloadsAfter = await host.downloads().catch(() => undefined);
 		const lines: string[] = [];
-		const tabLine = (tab: NonNullable<typeof tabs>[number]) => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url}`;
+		const tabLine = (tab: NonNullable<typeof tabs>[number]) => `${tab.tabId}${tab.current ? ' (current)' : ''}${tab.shared ? ' (shared by the user)' : ''} ${JSON.stringify(tab.title.slice(0, 80))} ${tab.url.length > MAX_STATE_URL_LENGTH ? `${tab.url.slice(0, MAX_STATE_URL_LENGTH)}...` : tab.url}`;
 		const tabKey = (tab: NonNullable<typeof tabs>[number]) => JSON.stringify([tab.url, tab.title, tab.current, tab.shared]);
 		const previousTabs = this._lastTabs.get(stateKey);
 		if (tabs !== undefined) {
@@ -345,10 +349,13 @@ export class ParadisBrowserObserver {
 		// 前回あって今は無いタブ（閉じたタブ）も、変わったタブとして伝える
 		const closedTabIds = ownTab !== undefined && tabs !== undefined && previousTabs !== undefined ? [...previousTabs.keys()].filter(tabId => !tabs.some(tab => tab.tabId === tabId)) : [];
 		if (tabs && shownTabs && shownTabs.length > 0) {
-			const others = tabs.length - shownTabs.length;
 			const changed = shownTabs.length > 1 || closedTabIds.length > 0;
 			const label = ownTab !== undefined ? (changed ? 'Your tab and tabs that changed' : 'Your tab') : 'Your tabs';
-			const entries = [...shownTabs.map(tabLine), ...closedTabIds.map(tabId => `${tabId} (closed)`)];
+			// 1 ペインのタブは 150 枚になりうるので、行を {@link MAX_STATE_TABS} 枚までにする。自分のタブと current を先に出す
+			const listedTabs = shownTabs.length <= MAX_STATE_TABS ? shownTabs : [...shownTabs.filter(tab => tab === ownTab || tab.current), ...shownTabs.filter(tab => tab !== ownTab && !tab.current)].slice(0, MAX_STATE_TABS);
+			const listedClosed = closedTabIds.slice(0, Math.max(0, MAX_STATE_TABS - listedTabs.length));
+			const others = tabs.length - listedTabs.length + closedTabIds.length - listedClosed.length;
+			const entries = [...listedTabs.map(tabLine), ...listedClosed.map(tabId => `${tabId} (closed)`)];
 			lines.push(`${label}: ${entries.join('; ')}${others > 0 ? ` (${others} other ${others === 1 ? 'tab' : 'tabs'} not shown; list_browser_tabs lists all)` : ''}`);
 		}
 		const beforeIndexes = new Set((before.pages?.pages ?? []).map(page => page.index));
