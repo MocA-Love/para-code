@@ -2539,7 +2539,8 @@ class TranscriptTailer {
 				this.backgroundTaskKinds.clear();
 				this.backgroundWorkflowRuns.clear();
 				this.pendingQuestions.clear();
-				// 読み直しで今の rollout から作り直す（送るのは onEpochReset の snapshot）
+				// 読み直しで今の rollout から作り直す（送るのは onEpochReset の snapshot）。台帳から離れた呼び出しの判定は読み終えてから
+				this.asyncQuestions.beginReread();
 				this.asyncQuestions.clear();
 				// 会話が替わったので Monitor の一覧も空にする（読み直しで今の transcript から作り直す）。
 				this.monitorWatch.clear();
@@ -2558,7 +2559,13 @@ class TranscriptTailer {
 				// cliVersion は据え置く。次の行で必ず上書きされるうえ、消すとその間の計測から
 				// 版が欠ける（モバイルへ出す情報ではないので古い値が残っても表示に影響しない）。
 				await handle.close().catch(() => { /* ignore */ });
-				await this.initialLoad();
+				try {
+					await this.initialLoad();
+				} finally {
+					// 読み直しで戻らなかった呼び出しだけを、離れたものとして知らせる
+					this.asyncQuestions.endReread();
+					this.emitAsyncQuestions(this.asyncQuestions.revision, []);
+				}
 				// initialLoad が読み直した後の状態で購読者・状態レジストリを同期し直す
 				// （新ファイルにタスク・質問が無い場合も「無し」を確実に反映する）。
 				this.delegate.onEpochReset();

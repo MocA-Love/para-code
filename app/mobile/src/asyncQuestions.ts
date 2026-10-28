@@ -84,6 +84,18 @@ export function groupAsyncQuestions(questions: readonly AsyncQuestion[]): AsyncQ
 	return [...groups.values()];
 }
 
+/**
+ * 開いておく組（呼び出しの call_id）を決める。今開いている組が残っていればそのまま（新しい組が出ても勝手に替えない。
+ * 「その他」で答えを入力している途中に替わると、入力した文が普通の発言として送られてしまう）。無くなった・まだ決めて
+ * いなければ一番新しい組。`groups` は新しい順。
+ */
+export function pickExpandedAsyncCall(groups: readonly (readonly AsyncQuestion[])[], current: string | undefined): string | undefined {
+	if (current !== undefined && groups.some(group => group[0]?.callId === current)) {
+		return current;
+	}
+	return groups[0]?.[0]?.callId;
+}
+
 /** カードに出す問い（送った問いと、この端末で閉じた問いを除く）。 */
 export function visibleAsyncQuestions(questions: readonly AsyncQuestion[], hidden: (id: string) => boolean): AsyncQuestion[] {
 	return questions.filter(question => !hidden(question.id));

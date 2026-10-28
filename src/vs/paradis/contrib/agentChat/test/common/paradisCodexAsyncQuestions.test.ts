@@ -113,6 +113,20 @@ suite('Codex async questions (request_user_input_async)', () => {
 		});
 	});
 
+	test('the ledger reports calls that left only after a re-read finishes, leaving out the ones the re-read brought back', () => {
+		const ledger = new ParadisCodexAsyncQuestionLedger();
+		const kept = paradisCodexAsyncQuestionsFromArguments('call-kept', { questions: [{ title: 'k' }] }, 1)!;
+		ledger.addConfirmed(kept);
+		ledger.addConfirmed(paradisCodexAsyncQuestionsFromArguments('call-lost', { questions: [{ title: 'l' }] }, 2)!);
+		ledger.beginReread();
+		ledger.clear();
+		// 読み直しの途中に hook が来ても、まだ判定しない
+		const duringReread = ledger.takeGoneCalls();
+		ledger.addConfirmed(kept);
+		ledger.endReread();
+		assert.deepStrictEqual({ duringReread, afterReread: ledger.takeGoneCalls() }, { duringReread: [], afterReread: ['call-lost'] });
+	});
+
 	test('builds a reply that stays valid JSON without raw tags or control characters, and reads it back', () => {
 		const id = paradisCodexAsyncQuestionItemId('call_x', 1);
 		const longTitle = `${'質'.repeat(200)}\n2行目`;
