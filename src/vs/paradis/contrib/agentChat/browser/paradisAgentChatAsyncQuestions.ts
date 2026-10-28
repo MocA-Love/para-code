@@ -83,7 +83,8 @@ export function paradisAsyncQuestionsSignature(questions: readonly IParadisCodex
 		[...drafts.steps], [...drafts.sent],
 		questions.map(question => {
 			const draft = drafts.answers.get(question.id);
-			return draft === undefined ? '' : `${draft.option ?? ''}:${draft.other.trim().length > 0 ? 't' : ''}`;
+			// 空の書きかけ（描いたときに作ったもの）は、書きかけが無いのと同じ（作り直して入力欄のフォーカスを外さない）
+			return draft === undefined || (draft.option === undefined && draft.other.trim().length === 0) ? '' : `${draft.option ?? ''}:${draft.other.trim().length > 0 ? 't' : ''}`;
 		}),
 	]);
 }
