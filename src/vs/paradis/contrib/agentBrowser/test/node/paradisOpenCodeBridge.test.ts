@@ -29,7 +29,10 @@ suite('ParadisOpenCodeBridge', () => {
 	teardown(async () => {
 		bridge.unregister('pane-a');
 		bridge.unregister('pane-b');
-		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		// fetch keeps connections alive; close them so the server does not wait for them
+		const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		server.closeAllConnections();
+		await closed;
 	});
 	async function post(path: string, body: unknown, token = 'pane-a') {
 		return fetch(base + path, {
