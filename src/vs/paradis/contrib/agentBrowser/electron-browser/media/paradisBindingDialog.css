@@ -806,18 +806,25 @@
  *
  * paradisBindingDialog.ts puts `paradis-pvh-glow` on <body> while a pane row is hovered/focused,
  * and paradisPaneIndicator.ts marks the matching cell with `.paradis-pvh-target`. Selectors below
- * are prefixed with `body.paradis-pvh-glow` so they win over sessionTerminalGrid.css's base rule.
+ * are prefixed with `body.paradis-pvh-glow` so they only apply while the dialog points at a pane.
+ *
+ * The frame is drawn by an `::after` overlay *inside* the cell, not by an outline/box-shadow on the
+ * cell itself. An outline/box-shadow on the cell is painted below the cell's own positioned
+ * children (the xterm viewport, z-index 30, has an opaque background starting at left: 0 and
+ * bottom-aligned), and its outer part is clipped by the ancestors' `overflow: hidden` (editor
+ * part, split views), so the left and bottom edges went missing. The overlay sits above the xterm
+ * viewport/screen (30/31), the agent chat view (34), the drop overlay (34) and the pane indicator
+ * (35), and never takes pointer events, so clicks, selection and scrolling still reach the
+ * terminal. Both containers are `position: relative`, which the `inset: 0` relies on.
  */
 
-.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell,
-.monaco-workbench .terminal-overflow-guard.terminal-editor {
-	transition: outline-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-body.paradis-pvh-glow .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target,
-body.paradis-pvh-glow .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-pvh-target {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-	box-shadow: 0 0 0 1.5px var(--vscode-focusBorder), 0 0 18px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
-	z-index: 2;
+body.paradis-pvh-glow .monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell.paradis-pvh-target::after,
+body.paradis-pvh-glow .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-pvh-target::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border: 2px solid var(--vscode-focusBorder);
+	box-shadow: inset 0 0 16px color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+	pointer-events: none;
+	z-index: 36;
 }
