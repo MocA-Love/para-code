@@ -280,6 +280,17 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
+	test('a change notification does not push back an immediate refresh that is already scheduled', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(true);
+		harness.clock.advance(0);
+
+		harness.worktrees.fire();
+		harness.lifecycle.requestDiffStatsRefreshForChange();
+
+		assert.deepStrictEqual(harness.clock.pendingDelays().diff, 0);
+	});
+
 	test('a change waiting for its delay is kept when the view hides and runs once on return', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(true);

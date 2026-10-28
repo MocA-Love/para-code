@@ -12,6 +12,7 @@ import { ResourceMap } from '../../../../base/common/map.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { FileChangesEvent, IFileService } from '../../../../platform/files/common/files.js';
+import { IParadisDiffStat } from '../common/paradisWorktreeCreate.js';
 
 /**
  * 変更を検知できなかったときの保険。最後に取ってからこれより経った対象は、変更の知らせが無くても取り直す。
@@ -20,10 +21,11 @@ export const PARADIS_DIFF_STATS_FALLBACK_MS = 300_000;
 
 /**
  * git のメタデータの直下で、差分の数字が変わりうるときに書かれるファイル。
- * stage・commit・checkout・reset は `index` を、commit は `COMMIT_EDITMSG` を、checkout は `HEAD` を書く
- * （worktree ではどれも `.git/worktrees/<name>/` の直下）。`FETCH_HEAD` や `index.lock` などでは取り直さない。
+ * stage・commit・checkout・reset は `index` を、commit は `COMMIT_EDITMSG` を、checkout は `HEAD` を、
+ * `git reset --soft` は `ORIG_HEAD` を書く（`index` は書かない）。worktree ではどれも `.git/worktrees/<name>/` の直下。
+ * `FETCH_HEAD` や `index.lock` などでは取り直さない。
  */
-const GIT_METADATA_FILES = new Set(['index', 'HEAD', 'COMMIT_EDITMSG']);
+const GIT_METADATA_FILES = new Set(['index', 'HEAD', 'COMMIT_EDITMSG', 'ORIG_HEAD']);
 
 /** 差分を集計する対象 1 か所（リポジトリ本体か worktree）。 */
 export interface IParadisDiffStatsTarget {
@@ -137,6 +139,37 @@ export class ParadisWorkspacesDiffStatsTracker extends Disposable {
 		for (const uri of uris) {
 			if (this.targets.has(uri)) {
 				this.lastFetchedAt.set(uri, now);
+			}
+		}
+	}
+
+	/**
+	 * 取り直しの結果を `stats`（`fsPath` → 差分）へ反映する。数えられた対象だけ上書きして取れたと記録し、
+	 * 失敗した対象（`failed`）は前の値を残して印を付け直す。値が返らなかった対象は消す。
+	 * 一覧から消えた対象の値も捨てる。`result` が無い（コマンド自体が失敗した）ときは全部を失敗として扱う。
+	 */
+	applyRefreshResult(targets: readonly URI[], result: Record<string, IParadisDiffStat> | undefined, stats: Map<string, IParadisDiffStat>): void {
+		const fetched: URI[] = [];
+		const failed: URI[] = [];
+		for (const target of targets) {
+			const stat = result?.[target.fsPath];
+			if (result === undefined || stat?.failed) {
+				failed.push(target);
+				continue;
+			}
+			fetched.push(target);
+			if (stat !== undefined) {
+				stats.set(target.fsPath, stat);
+			} else {
+				stats.delete(target.fsPath);
+			}
+		}
+		this.markFetched(fetched);
+		this.restoreDirty(failed);
+		const alive = new Set([...this.targets.keys()].map(uri => uri.fsPath));
+		for (const path of [...stats.keys()]) {
+			if (!alive.has(path)) {
+				stats.delete(path);
 			}
 		}
 	}

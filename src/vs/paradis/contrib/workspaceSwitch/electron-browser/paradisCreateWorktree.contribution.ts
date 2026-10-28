@@ -527,8 +527,8 @@ const DIFF_STATS_MAX_CONCURRENCY = 4;
  * パス文字列だけを受け取って接続の有無で送り先を決めると、手元と接続先に同じ絶対パスがある構成で
  * 別マシンの値を拾って平然と表示してしまう。どのマシンのものかは URI にしか書かれていない。
  */
-function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string, extraArgs?: (resource: URI) => readonly unknown[], maxConcurrency?: number): Promise<Record<string, T>> {
-	return paradisCollectPerWorktree<T>(resources.map(component => URI.revive(component)), paradisWorktreeGitHostResolver(accessor), command, extraArgs, maxConcurrency);
+function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string, extraArgs?: (resource: URI) => readonly unknown[], maxConcurrency?: number, failedValue?: T): Promise<Record<string, T>> {
+	return paradisCollectPerWorktree<T>(resources.map(component => URI.revive(component)), paradisWorktreeGitHostResolver(accessor), command, extraArgs, maxConcurrency, failedValue);
 }
 
 /**
@@ -550,7 +550,8 @@ class ParadisGetDiffStatsAction extends Action2 {
 		if (!Array.isArray(resources) || resources.length === 0) {
 			return {};
 		}
-		return collectPerWorktree<IParadisDiffStat>(accessor, resources, 'getDiffStat', undefined, DIFF_STATS_MAX_CONCURRENCY);
+		// 接続先との通信の失敗（SSH の再接続中など）は「差分なし」と見分け、ビューが前の値を残せるようにする
+		return collectPerWorktree<IParadisDiffStat>(accessor, resources, 'getDiffStat', undefined, DIFF_STATS_MAX_CONCURRENCY, { insertions: 0, deletions: 0, failed: true });
 	}
 }
 
