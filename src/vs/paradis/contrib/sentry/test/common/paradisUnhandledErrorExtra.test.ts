@@ -87,14 +87,18 @@ suite('paradisUnhandledErrorSafeExtra', () => {
 		assert.deepStrictEqual([paradisExtensionIdFromStack(paradisErrorStack(relayed)), paradisErrorStack(throwing), paradisErrorStack('text')], ['pub.name', undefined, undefined]);
 	});
 
-	test('takes the extension of a proposed API error from its message, before the stack, and only in the upstream shape', () => {
+	test('takes the extension of a proposed API error from its message only when the stack has none, the extension is installed and the text has the upstream shape', () => {
 		const proposal = (id: string, stack?: string) => transformErrorFromSerialization({ $isError: true, name: 'Error', message: `Extension '${id}' CANNOT use API proposal: commentsDraftState.\nIts package.json#enabledApiProposals-property declares: authIssuers but NOT commentsDraftState.`, stack: stack ?? 'Error: x\n\tat listOnTimeout (node:internal/timers:685:17)', noTelemetry: false });
 		const activation = new Error(`Activating extension 'GitHub.vscode-pull-request-github' failed: Extension 'GitHub.vscode-pull-request-github' CANNOT use API proposal: diffCommand.`);
+		const installed = (id: string) => id === 'github.vscode-pull-request-github' || id === 'pub.owner';
 		assert.deepStrictEqual({
-			timer: paradisRelayedExtensionId(proposal('GitHub.vscode-pull-request-github')),
+			timer: paradisRelayedExtensionId(proposal('GitHub.vscode-pull-request-github'), installed),
+			underDevelopment: paradisRelayedExtensionId(proposal('example.my-private-extension'), installed),
+			throwingLookup: paradisRelayedExtensionId(proposal('pub.owner'), () => { throw new Error('no'); }),
 			activation: paradisExtensionIdFromProposalError(activation),
-			messageBeforeStack: paradisRelayedExtensionId(proposal('pub.owner', 'Error: x\n\tat a (/Users/example/.para-code/extensions/other.name-1.0.0/a.js:1:1)')),
-			stackFallback: paradisRelayedExtensionId(transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'x', stack: 'Error: x\n\tat a (/Users/example/.para-code/extensions/pub.name-1.0.0/a.js:1:1)', noTelemetry: false })),
+			// 拡張が文を真似ても、スタックに出る拡張のせいになる
+			stackBeforeMessage: paradisRelayedExtensionId(proposal('pub.owner', 'Error: x\n\tat a (/Users/example/.para-code/extensions/other.name-1.0.0/a.js:1:1)'), installed),
+			stackOnly: paradisRelayedExtensionId(transformErrorFromSerialization({ $isError: true, name: 'Error', message: 'x', stack: 'Error: x\n\tat a (/Users/example/.para-code/extensions/pub.name-1.0.0/a.js:1:1)', noTelemetry: false }), installed),
 			notAnIdentifier: paradisExtensionIdFromProposalError(proposal('/Users/example/secret')),
 			otherText: paradisExtensionIdFromProposalError(new Error(`Extension 'pub.name' failed`)),
 			pastMessageLimit: paradisExtensionIdFromProposalError(new Error(`${'a '.repeat(500)}Extension 'pub.name' CANNOT use API proposal: x`)),
@@ -102,9 +106,11 @@ suite('paradisUnhandledErrorSafeExtra', () => {
 			primitive: paradisExtensionIdFromProposalError('text'),
 		}, {
 			timer: 'github.vscode-pull-request-github',
+			underDevelopment: undefined,
+			throwingLookup: undefined,
 			activation: 'github.vscode-pull-request-github',
-			messageBeforeStack: 'pub.owner',
-			stackFallback: 'pub.name',
+			stackBeforeMessage: 'other.name',
+			stackOnly: 'pub.name',
 			notAnIdentifier: undefined,
 			otherText: undefined,
 			pastMessageLimit: undefined,
