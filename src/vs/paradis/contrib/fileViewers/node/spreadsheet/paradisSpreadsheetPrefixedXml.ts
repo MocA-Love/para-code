@@ -15,14 +15,6 @@ const SPREADSHEETML_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006
 const MAX_HEAD_BYTES = 64 * 1024;
 
 /**
- * One XML token. Comments, CDATA sections, processing instructions and declarations are matched only so
- * that their contents are skipped; end tags and start tags are rewritten.
- */
-const TOKEN = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!(?:[^>"'[]|"[^"]*"|'[^']*'|\[[^\]]*\])*>|<\/(?<end>[^\s>]+)\s*>|<(?<start>[^\s/>!?]+)(?<attributes>(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)(?<trailing>\s*)(?<empty>\/?)>/g;
-
-const ATTRIBUTE = /(?<space>\s+)(?<name>[^\s=/>]+)(?<equals>\s*=\s*)(?<value>"[^"]*"|'[^']*')/g;
-
-/**
  * Rewrites a workbook package so that SpreadsheetML elements and attributes have no namespace prefix,
  * only when some part uses one.
  *
@@ -72,18 +64,18 @@ async function findPrefixedSpreadsheetMlParts(buffer: Buffer): Promise<string[] 
 			if (entry.directory || !/\.xml$/i.test(entry.name)) {
 				continue;
 			}
+			// Read the head once (up to the limit or the end of the part) and scan it once.
 			const chunks: Uint8Array[] = [];
 			let length = 0;
-			let verdict: boolean | undefined;
 			for await (const chunk of archive.read(entry)) {
-				chunks.push(chunk.slice());
+				chunks.push(chunk.slice(0, Math.min(chunk.byteLength, MAX_HEAD_BYTES - length)));
 				length += chunk.byteLength;
-				verdict = rootBindsSpreadsheetMlPrefix(Buffer.concat(chunks).toString('utf8'));
-				if (verdict !== undefined || length >= MAX_HEAD_BYTES) {
+				if (length >= MAX_HEAD_BYTES) {
 					break;
 				}
 			}
-			// A root start tag that does not end within the head is left to the full rewrite to decide.
+			const verdict = rootBindsSpreadsheetMlPrefix(Buffer.concat(chunks).toString('utf8'));
+			// A root start tag that does not end within a cut head is left to the full rewrite to decide.
 			if (verdict ?? length >= MAX_HEAD_BYTES) {
 				names.push(entry.name);
 			}
@@ -98,38 +90,185 @@ async function findPrefixedSpreadsheetMlParts(buffer: Buffer): Promise<string[] 
 
 /**
  * Whether the root start tag in `head` binds a prefix to SpreadsheetML; `undefined` when `head` ends
- * before the root start tag does.
+ * before the root start tag does. Markup that cannot be read counts as `false` (the part is left alone).
  */
 export function rootBindsSpreadsheetMlPrefix(head: string): boolean | undefined {
-	for (const match of head.matchAll(TOKEN)) {
-		const groups = match.groups!;
-		if (groups.start !== undefined) {
-			for (const attribute of (groups.attributes ?? '').matchAll(ATTRIBUTE)) {
-				if (attribute.groups!.name.startsWith('xmlns:') && attributeText(attribute.groups!.value) === SPREADSHEETML_MAIN) {
-					return true;
-				}
-			}
-			return false;
-		}
-		if (groups.end !== undefined) {
-			return false;
-		}
-	}
-	return undefined;
+	let verdict: boolean | undefined;
+	const outcome = scanXmlTags(head, tag => {
+		verdict = tag.kind === 'start' && tag.attributes.some(attribute => attribute.name.startsWith('xmlns:') && attributeText(attribute.value) === SPREADSHEETML_MAIN);
+		return false;
+	});
+	return outcome === 'truncated' ? undefined : outcome === 'malformed' ? false : verdict ?? undefined;
 }
 
 interface IAttribute {
+	/** The whitespace before the name. */
 	readonly space: string;
 	name: string;
+	/** `=` with the whitespace around it. */
 	readonly equals: string;
+	/** The value with its quotes. */
 	readonly value: string;
 }
 
-function parseAttributes(text: string): IAttribute[] {
-	return [...text.matchAll(ATTRIBUTE)].map(match => {
-		const { space, name, equals, value } = match.groups!;
-		return { space, name, equals, value };
-	});
+type XmlTag =
+	| { readonly kind: 'start'; readonly start: number; readonly end: number; readonly name: string; readonly attributes: IAttribute[]; readonly trailing: string; readonly empty: boolean }
+	| { readonly kind: 'end'; readonly start: number; readonly end: number; readonly name: string };
+
+type XmlScanOutcome = 'done' | 'stopped' | 'truncated' | 'malformed';
+
+function isXmlSpace(code: number): boolean {
+	return code === 0x20 || code === 0x09 || code === 0x0A || code === 0x0D;
+}
+
+/** Characters that end a tag or attribute name: whitespace, `/`, `>`, `<`, `=`, quotes. */
+function endsName(code: number): boolean {
+	return isXmlSpace(code) || code === 0x2F || code === 0x3E || code === 0x3C || code === 0x3D || code === 0x22 || code === 0x27;
+}
+
+/**
+ * Visits each start and end tag of `xml` in one forward pass (linear in its length). Comments, CDATA
+ * sections and processing instructions are skipped. Stops at the first markup that does not close
+ * (`truncated`) or cannot be read (`malformed`, including any `<!DOCTYPE`, which OOXML does not allow);
+ * `visit` returns `false` to stop (`stopped`).
+ */
+function scanXmlTags(xml: string, visit: (tag: XmlTag) => boolean): XmlScanOutcome {
+	const length = xml.length;
+	let index = 0;
+	while (true) {
+		const open = xml.indexOf('<', index);
+		if (open < 0) {
+			return 'done';
+		}
+		if (open + 1 >= length) {
+			return 'truncated';
+		}
+		const next = xml.charCodeAt(open + 1);
+		if (next === 0x21 /* ! */) {
+			let close: string;
+			if (xml.startsWith('<!--', open)) {
+				close = '-->';
+			} else if (xml.startsWith('<![CDATA[', open)) {
+				close = ']]>';
+			} else {
+				return length - open < 9 ? 'truncated' : 'malformed';
+			}
+			const end = xml.indexOf(close, open + 2);
+			if (end < 0) {
+				return 'truncated';
+			}
+			index = end + close.length;
+			continue;
+		}
+		if (next === 0x3F /* ? */) {
+			const end = xml.indexOf('?>', open + 2);
+			if (end < 0) {
+				return 'truncated';
+			}
+			index = end + 2;
+			continue;
+		}
+		let cursor = open + (next === 0x2F /* / */ ? 2 : 1);
+		const nameStart = cursor;
+		while (cursor < length && !endsName(xml.charCodeAt(cursor))) {
+			cursor++;
+		}
+		if (cursor >= length) {
+			return 'truncated';
+		}
+		if (cursor === nameStart) {
+			return 'malformed';
+		}
+		const name = xml.slice(nameStart, cursor);
+		if (next === 0x2F) {
+			while (cursor < length && isXmlSpace(xml.charCodeAt(cursor))) {
+				cursor++;
+			}
+			if (cursor >= length) {
+				return 'truncated';
+			}
+			if (xml.charCodeAt(cursor) !== 0x3E) {
+				return 'malformed';
+			}
+			if (!visit({ kind: 'end', start: open, end: cursor + 1, name })) {
+				return 'stopped';
+			}
+			index = cursor + 1;
+			continue;
+		}
+		const attributes: IAttribute[] = [];
+		let tag: XmlTag | undefined;
+		while (!tag) {
+			const spaceStart = cursor;
+			while (cursor < length && isXmlSpace(xml.charCodeAt(cursor))) {
+				cursor++;
+			}
+			if (cursor >= length) {
+				return 'truncated';
+			}
+			const code = xml.charCodeAt(cursor);
+			if (code === 0x3E || code === 0x2F) {
+				if (code === 0x2F) {
+					if (cursor + 1 >= length) {
+						return 'truncated';
+					}
+					if (xml.charCodeAt(cursor + 1) !== 0x3E) {
+						return 'malformed';
+					}
+				}
+				tag = { kind: 'start', start: open, end: cursor + (code === 0x2F ? 2 : 1), name, attributes, trailing: xml.slice(spaceStart, cursor), empty: code === 0x2F };
+				break;
+			}
+			if (cursor === spaceStart) {
+				return 'malformed';
+			}
+			const attributeStart = cursor;
+			while (cursor < length && !endsName(xml.charCodeAt(cursor))) {
+				cursor++;
+			}
+			if (cursor === attributeStart) {
+				return 'malformed';
+			}
+			const equalsStart = cursor;
+			while (cursor < length && isXmlSpace(xml.charCodeAt(cursor))) {
+				cursor++;
+			}
+			if (cursor < length && xml.charCodeAt(cursor) !== 0x3D) {
+				return 'malformed';
+			}
+			cursor++;
+			while (cursor < length && isXmlSpace(xml.charCodeAt(cursor))) {
+				cursor++;
+			}
+			if (cursor >= length) {
+				return 'truncated';
+			}
+			const quote = xml.charCodeAt(cursor);
+			if (quote !== 0x22 && quote !== 0x27) {
+				return 'malformed';
+			}
+			const valueStart = cursor++;
+			while (cursor < length) {
+				const valueCode = xml.charCodeAt(cursor);
+				if (valueCode === quote) {
+					break;
+				}
+				if (valueCode === 0x3C) {
+					return 'malformed';
+				}
+				cursor++;
+			}
+			if (cursor >= length) {
+				return 'truncated';
+			}
+			cursor++;
+			attributes.push({ space: xml.slice(spaceStart, attributeStart), name: xml.slice(attributeStart, equalsStart), equals: xml.slice(equalsStart, valueStart), value: xml.slice(valueStart, cursor) });
+		}
+		if (!visit(tag)) {
+			return 'stopped';
+		}
+		index = tag.end;
+	}
 }
 
 interface IElementFrame {
@@ -151,58 +290,52 @@ interface IElementFrame {
  * declarations stay (other attribute values may name them). A prefixed attribute keeps its prefix when the
  * element already has an attribute of that local name.
  *
- * Returns `undefined` when the XML is not well-formed enough to follow (unbalanced tags), so the caller
- * keeps the part as it was.
+ * Runs in one forward pass. Returns `undefined` when the XML is not well-formed enough to follow (markup
+ * that does not close, unbalanced tags), so the caller keeps the part as it was.
  */
 export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 	const root: IElementFrame = { name: '', outputName: '', scope: new Map([['', '']]), outputDefault: '' };
 	const stack: IElementFrame[] = [];
-	let failed = false;
-	let changed = false;
-	const result = xml.replace(TOKEN, (token: string, ...args: unknown[]) => {
-		if (failed) {
-			return token;
-		}
-		const groups = args[args.length - 1] as { end?: string; start?: string; attributes?: string; trailing?: string; empty?: string };
-		if (groups.end !== undefined) {
+	const output: string[] = [];
+	let copied = 0;
+	let unbalanced = false;
+	const replace = (start: number, end: number, text: string) => {
+		output.push(xml.slice(copied, start), text);
+		copied = end;
+	};
+	const outcome = scanXmlTags(xml, tag => {
+		if (tag.kind === 'end') {
 			const frame = stack.pop();
-			if (!frame || frame.name !== groups.end) {
-				failed = true;
-				return token;
+			if (!frame || frame.name !== tag.name) {
+				unbalanced = true;
+				return false;
 			}
-			return frame.outputName === frame.name ? token : `</${frame.outputName}>`;
-		}
-		if (groups.start === undefined) {
-			return token;
+			if (frame.outputName !== frame.name) {
+				replace(tag.start, tag.end, `</${frame.outputName}>`);
+			}
+			return true;
 		}
 		const parent = stack.length ? stack[stack.length - 1] : root;
-		const name = groups.start;
-		const attributesText = groups.attributes ?? '';
-		const plain = !attributesText.includes(':') && !attributesText.includes('xmlns');
+		const { name, attributes } = tag;
 
 		// Namespace declarations of this element.
-		let scope = parent.scope;
+		let declared: Map<string, string> | undefined;
 		let ownDefault: string | undefined;
-		let attributes: IAttribute[] | undefined;
-		if (!plain) {
-			attributes = parseAttributes(attributesText);
-			let declared: Map<string, string> | undefined;
-			for (const { name: attributeName, value } of attributes) {
-				if (attributeName === 'xmlns' || attributeName.startsWith('xmlns:')) {
-					declared ??= new Map(parent.scope);
-					const prefix = attributeName === 'xmlns' ? '' : attributeName.slice(6);
-					declared.set(prefix, attributeText(value));
-					if (prefix === '') {
-						ownDefault = attributeText(value);
-					}
+		for (const attribute of attributes) {
+			if (attribute.name === 'xmlns' || attribute.name.startsWith('xmlns:')) {
+				declared ??= new Map(parent.scope);
+				const prefix = attribute.name === 'xmlns' ? '' : attribute.name.slice(6);
+				const uri = attributeText(attribute.value);
+				declared.set(prefix, uri);
+				if (prefix === '') {
+					ownDefault = uri;
 				}
 			}
-			scope = declared ?? scope;
 		}
+		const scope = declared ?? parent.scope;
 
 		const colon = name.indexOf(':');
-		const prefix = colon < 0 ? undefined : name.slice(0, colon);
-		const strip = prefix !== undefined && scope.get(prefix) === SPREADSHEETML_MAIN;
+		const strip = colon >= 0 && scope.get(name.slice(0, colon)) === SPREADSHEETML_MAIN;
 		const outputName = strip ? name.slice(colon + 1) : name;
 
 		// The default namespace this element needs in the output, and whether a declaration must change.
@@ -218,49 +351,49 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 
 		// Attributes bound to SpreadsheetML lose their prefix unless that name is taken.
 		let attributesChanged = setDefault !== undefined;
-		if (attributes) {
-			const taken = new Set(attributes.map(attribute => attribute.name));
-			for (const attribute of attributes) {
-				const attributeColon = attribute.name.indexOf(':');
-				if (attributeColon < 0 || attribute.name.startsWith('xmlns:')) {
-					continue;
-				}
-				const local = attribute.name.slice(attributeColon + 1);
-				if (scope.get(attribute.name.slice(0, attributeColon)) === SPREADSHEETML_MAIN && !taken.has(local)) {
-					taken.add(local);
-					attribute.name = local;
-					attributesChanged = true;
-				}
+		let taken: Set<string> | undefined;
+		for (const attribute of attributes) {
+			const attributeColon = attribute.name.indexOf(':');
+			if (attributeColon < 0 || attribute.name.startsWith('xmlns:') || scope.get(attribute.name.slice(0, attributeColon)) !== SPREADSHEETML_MAIN) {
+				continue;
+			}
+			taken ??= new Set(attributes.map(candidate => candidate.name));
+			const local = attribute.name.slice(attributeColon + 1);
+			if (!taken.has(local)) {
+				taken.add(local);
+				attribute.name = local;
+				attributesChanged = true;
 			}
 		}
 
-		if (groups.empty !== '/') {
+		if (!tag.empty) {
 			stack.push({ name, outputName, scope, outputDefault });
 		}
 		if (!strip && !attributesChanged) {
-			return token;
+			return true;
 		}
-		changed = true;
-		let rebuiltAttributes = attributesText;
-		if (attributesChanged) {
-			const parts = attributes ?? parseAttributes(attributesText);
-			if (setDefault !== undefined) {
-				const value = `"${escapeAttribute(setDefault)}"`;
-				const existing = parts.findIndex(attribute => attribute.name === 'xmlns');
-				if (existing >= 0) {
-					parts[existing] = { ...parts[existing], equals: '=', value };
-				} else {
-					parts.unshift({ space: ' ', name: 'xmlns', equals: '=', value });
-				}
+		const parts = [...attributes];
+		if (setDefault !== undefined) {
+			const value = `"${escapeAttribute(setDefault)}"`;
+			const existing = parts.findIndex(attribute => attribute.name === 'xmlns');
+			if (existing >= 0) {
+				parts[existing] = { ...parts[existing], equals: '=', value };
+			} else {
+				parts.unshift({ space: ' ', name: 'xmlns', equals: '=', value });
 			}
-			rebuiltAttributes = parts.map(attribute => `${attribute.space}${attribute.name}${attribute.equals}${attribute.value}`).join('');
 		}
-		return `<${outputName}${rebuiltAttributes}${groups.trailing ?? ''}${groups.empty ?? ''}>`;
+		const rebuilt = parts.map(attribute => `${attribute.space}${attribute.name}${attribute.equals}${attribute.value}`).join('');
+		replace(tag.start, tag.end, `<${outputName}${rebuilt}${tag.trailing}${tag.empty ? '/' : ''}>`);
+		return true;
 	});
-	if (failed || stack.length) {
+	if (outcome !== 'done' || unbalanced || stack.length) {
 		return undefined;
 	}
-	return changed ? result : xml;
+	if (!output.length) {
+		return xml;
+	}
+	output.push(xml.slice(copied));
+	return output.join('');
 }
 
 /** The value of a quoted attribute, with the predefined and character references resolved. */
