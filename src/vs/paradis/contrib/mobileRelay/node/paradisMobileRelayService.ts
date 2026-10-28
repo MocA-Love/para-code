@@ -1094,6 +1094,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			undefined,
 			this.remoteShellOutputs,
 		));
+		// Codex の非同期の質問に全部答えた: その質問の通知を片付ける（ほかの端末とロック画面からも消す）
+		this._register(this.agentChat.onDidAnswerAsyncQuestions(({ token, interactionIds }) => this.dismissStore.markAnswered(token, interactionIds)));
 		// PC の入力欄の書きかけ（agent.pc-draft.v1）は、広告したアプリへだけ送る
 		this.agentChat.setMobileCapabilityCheck(async (mobileId, name) => paradisHasMobileCapability(await this.getMobileCapabilities(mobileId), name));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
@@ -1776,7 +1778,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
-	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex' | 'opencode'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex' | 'opencode'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner; interactionId?: string }): void {
 		// 本文には質問文の原文を入れ、`category: 'question'` を付けて出口へ渡す。種類の言葉・Markdown の除去・
 		// 伏せ字・長さの調整は出口（composeNotifyVariants）がまとめて行う（プッシュの 3800B に収まるまで削るのも出口）。
 		const body = info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS);
@@ -1798,6 +1800,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
 			agentToken: info.agentToken,
 			...(terminal?.ws !== undefined ? { ws: terminal.ws } : {}),
+			// Codex の非同期の質問だけが付ける（答えたらこの ID で片付ける）
+			...(info.interactionId !== undefined ? { interactionId: info.interactionId } : {}),
 			at: Date.now(),
 		};
 		this.dispatchNotify(encodeNotify(payload), info.owner);

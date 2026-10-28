@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { PARADIS_CODEX_ASYNC_NOTIFY_PREFIX } from './paradisCodexAsyncQuestions.js';
+
 // 片付いた通知を、次に届くプッシュでロック画面から消してもらう（W2-27、Q119 A）。
 //
 // PC で確認済みにした・別のスマホで開いた通知は、オンラインのスマホにしか知らせていない
@@ -171,8 +173,11 @@ export class ParadisNotifyDismissLedger {
 	markAnswered(agentToken: string, interactionId: string | undefined, at: number, origin?: IParadisNotifyPromptOrigin, wholeSession = false): string[] {
 		const key = this.tokenKey(agentToken);
 		const scope = normalizeOrigin(origin);
+		// Codex の非同期の質問はターンの終わり・次の発言でも残る（答えるまで待てる）ので、その ID で答えたときと、
+		// 会話が終わったとき（wholeSession）だけ片付ける
 		return this.settleWhere(at, entry => entry.tokenKey === key && entry.kind === 'agent-question'
-			&& (interactionId !== undefined ? entry.interactionId === interactionId : entry.at < at && sameConversation(entry.origin, scope, wholeSession)));
+			&& (interactionId !== undefined ? entry.interactionId === interactionId
+				: entry.at < at && sameConversation(entry.origin, scope, wholeSession) && (wholeSession || !entry.interactionId?.startsWith(PARADIS_CODEX_ASYNC_NOTIFY_PREFIX))));
 	}
 
 	/** その通知がもう片付いたか（裏に回ったときのプッシュし直しで、片付いたものを送らないため）。 */

@@ -130,6 +130,16 @@ export class ParadisNotifyDismissStore extends Disposable {
 		return this.saving;
 	}
 
+	/** その ID の質問に答えが届いた（Codex の非同期の質問。会話の記録で返信を読んだ）。片付いた通知があれば知らせる。 */
+	markAnswered(token: string, interactionIds: readonly string[]): void {
+		const now = this.now();
+		const settled = interactionIds.flatMap(interactionId => this.ledger.markAnswered(token, interactionId, now));
+		if (settled.length > 0) {
+			this.changed();
+			this._onDidAnswer.fire(settled);
+		}
+	}
+
 	/** hook の出来事で、そのエージェントの許可・質問の回答が成立したなら片付ける。 */
 	handleHookEvent(event: Pick<IParadisAgentHookEvent, 'token' | 'event' | 'toolUseId' | 'payload' | 'ownerUnverified'> & { readonly sessionId?: string; readonly at?: number }): void {
 		const answer = paradisNotifyAnswerFromHook(event.event, event.toolUseId, { ownerUnverified: event.ownerUnverified === true, payload: event.payload, sessionId: event.sessionId });

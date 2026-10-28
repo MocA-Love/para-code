@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { ChevronDown, ChevronRight, CircleHelp, FoldVertical, Globe, Info, ScrollText, SquareChevronRight, Users } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, CircleHelp, CornerDownRight, FoldVertical, Globe, Info, ScrollText, SquareChevronRight, Users } from 'lucide-react-native';
 import { buildTimelineSteps, describeStep, formatToolName, type AgentTimelineStep } from '../../agentToolMeta.js';
 import { attachmentImagesDuplicate, attachmentImagesMatch } from '../../attachments/attachmentFetchPolicy.js';
 import { useAttachmentSizes } from '../../attachments/attachmentImages.js';
@@ -14,6 +14,7 @@ import { MarkdownText } from '../../components/markdownText.js';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { useAppStore } from '../../appState.js';
+import { questionRepliesOf, type QuestionReply } from '../../asyncQuestions.js';
 import type { AgentChatMessage } from '../../store.js';
 import { alpha, colors, radius, space, squircle, tint, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
@@ -92,6 +93,11 @@ function MessageRow({ message, terminalKey }: { message: AgentChatMessage; termi
 		return <NoticeRow text={message.text} source={message.noticeSource} />;
 	}
 	if (message.role === 'user') {
+		// Codex の非同期の質問への返信は、決まった形の生の文字列ではなく「回答: 質問 → 答え」の行で出す
+		const replies = questionRepliesOf(message);
+		if (replies !== undefined) {
+			return <QuestionReplyRows replies={replies} />;
+		}
 		return <UserMessageRow message={message} terminalKey={terminalKey} />;
 	}
 	return (
@@ -361,6 +367,25 @@ function CompactSummarySheet({ visible, message, terminalKey, onClose }: { visib
 	);
 }
 
+/** Codex の非同期の質問への返信（1 件ずつ、質問の行と同じ小さな灰色の行）。 */
+function QuestionReplyRows({ replies }: { replies: readonly QuestionReply[] }) {
+	const styles = useChatStyles(baseStyles);
+	const iconSize = useChatIconSize(12);
+	return (
+		<View>
+			{replies.map((reply, index) => (
+				<View key={index} style={styles.sysline} accessible accessibilityRole="text" accessibilityLabel={`質問への回答: ${reply.question}、${reply.answer}`}>
+					<Icon icon={CornerDownRight} size={iconSize} color={colors.textMuted} />
+					<Text style={styles.syslineText} selectable>
+						{`回答: ${reply.question} → `}
+						<Text style={styles.replyAnswer}>{reply.answer}</Text>
+					</Text>
+				</View>
+			))}
+		</View>
+	);
+}
+
 /**
  * 会話に残る質問（回答済み、または PC がもう待っていないもの）。いま待っている質問は
  * コンポーザーの上のカードに出すので、ここは履歴として1行で示すだけ。
@@ -515,6 +540,9 @@ const baseStyles = StyleSheet.create({
 	},
 	syslineNote: {
 		color: colors.textMuted,
+	},
+	replyAnswer: {
+		color: colors.text,
 	},
 	compactRow: {
 		flexDirection: 'row',

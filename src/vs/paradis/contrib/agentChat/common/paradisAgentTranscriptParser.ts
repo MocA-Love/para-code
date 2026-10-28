@@ -14,7 +14,8 @@
 // 中継の TranscriptTailer に残し、ここは Node の API を使わない。**正規化の結果はそのままモバイルへ
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
-import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentCompactionInfo, IParadisAgentQuestionOption, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
+import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentCompactionInfo, IParadisAgentQuestionOption, IParadisAgentQuestionReply, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
+import { IParadisCodexAsyncQuestion, paradisCodexAsyncQuestionsFromItem, paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
 import { paradisRedactMobileCommandOutput } from '../../mobileRelay/common/paradisMobileOutputRedaction.js';
@@ -69,6 +70,9 @@ export function toDetailMessage(message: IRawMessage): IParadisAgentActivityDeta
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
 export const TEXT_LIMIT = 6000;
 export const TOOL_TEXT_LIMIT = 1500;
+/** 非同期の質問への返信 1 件の中身を持つ件数と、質問文の長さの上限。 */
+const QUESTION_REPLY_LIMIT = 20;
+const QUESTION_REPLY_TEXT_LIMIT = 600;
 /**
  * 'tool-full'（モバイルの展開時オンデマンド取得）で返せる全文の1件あたり上限。
  * 転送とPCメモリの両方を有界にするため、これを超える出力はここで打ち切る。
@@ -137,6 +141,8 @@ export interface IRawMessage {
 	readonly noticeSource?: 'command' | 'compaction' | 'compact-summary';
 	/** {@link IParadisAgentChatMessage.compaction} */
 	readonly compaction?: IParadisAgentCompactionInfo;
+	/** {@link IParadisAgentChatMessage.questionReplies} */
+	readonly questionReplies?: readonly IParadisAgentQuestionReply[];
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
 	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
@@ -462,6 +468,15 @@ export interface IParseSignals {
 	 * `newClaudeQueuedPromptState()` を1つ作って `newParseSignals` へ渡し続ける。
 	 */
 	readonly claudeQueuedPrompts: IClaudeQueuedPromptState;
+	/** Codex の非同期の質問（`item_completed` の `AgentMessage`、`delivery: "async"`）。出現順。 */
+	readonly codexAsyncQuestions: IParadisCodexAsyncQuestion[];
+	/** 返信の発言で答えた Codex の非同期の質問の `questionItemId`（出現順）。 */
+	readonly codexAsyncAnswered: string[];
+	/**
+	 * 最後に読んだ利用者の発言（返信の形のものは数えない）より前に出た非同期の質問の数（{@link codexAsyncQuestions} の添字）。
+	 * 会話を開き直したときに戻すのは、直近のターン（最後の発言より後）に出た質問だけにするため。発言が無ければ undefined。
+	 */
+	codexAsyncStaleBefore?: number;
 }
 
 /**
@@ -529,7 +544,7 @@ export function paradisBackgroundTaskLaunch(text: string, toolUseResult: Record<
 export type ParadisBackgroundTaskKind = 'agent' | 'workflow' | 'shell';
 
 export function newParseSignals(claudeQueuedPrompts: IClaudeQueuedPromptState = newClaudeQueuedPromptState()): IParseSignals {
-	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], workflowSignals: [], teamSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts };
+	return { openedTasks: new Map(), openedTaskKinds: new Map(), openedWorkflowRuns: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], codexSpawnMessages: new Map(), codexCallTools: new Map(), monitorSignals: [], shellSignals: [], workflowSignals: [], teamSignals: [], userText: false, turnEnded: undefined, claudeQueuedPrompts, codexAsyncQuestions: [], codexAsyncAnswered: [] };
 }
 
 export function decodeXmlAttribute(value: string): string {
@@ -1596,6 +1611,11 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 			if (str(item?.type) === 'SubAgentActivity') {
 				pushCodexSubagentActivity(signals, str(item?.agent_thread_id), str(item?.agent_path), str(item?.kind), num(eventPayload?.completed_at_ms) ?? lineAt, str(item?.id));
 			}
+			// 非同期の質問（request_user_input_async）。質問の本文はこの行にだけ書かれる（response_item の message には無い）
+			const asyncQuestions = paradisCodexAsyncQuestionsFromItem(item, num(eventPayload?.completed_at_ms) ?? (Number.isFinite(lineAt) ? lineAt : undefined));
+			if (asyncQuestions !== undefined) {
+				signals.codexAsyncQuestions.push(...asyncQuestions);
+			}
 		}
 		if (eventType === 'thread_goal_updated') {
 			const goal = paradisCodexGoalFromEvent(eventPayload);
@@ -1657,6 +1677,17 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 				signals.pendingCodexImageCallId = undefined;
 				return [{ role: 'user', kind: 'text', text: truncateText(rawText, TEXT_LIMIT), ts }];
 			}
+			// 非同期の質問への返信（PC の TUI の質問欄・Para Code のどちらから送っても同じ形）。発言は元のまま残し、
+			// 読みやすく出すための中身と、答えた質問の ID を添える。同じ発言を書く event_msg の UserMessage は読まない
+			const replies = paradisParseCodexAsyncReply(rawText);
+			if (replies !== undefined) {
+				signals.pendingCodexImageCallId = undefined;
+				signals.codexAsyncAnswered.push(...replies.filter(reply => reply.callId !== undefined).map(reply => reply.itemId));
+				return [{
+					role: 'user', kind: 'text', text: truncateText(rawText, TEXT_LIMIT), ts,
+					questionReplies: replies.slice(0, QUESTION_REPLY_LIMIT).map(reply => ({ question: truncateText(reply.question, QUESTION_REPLY_TEXT_LIMIT), answer: truncateText(reply.answer, TEXT_LIMIT) })),
+				}];
+			}
 		}
 		// Codex は AGENTS.md・環境情報・plugin の案内・中断の知らせなどを user のメッセージとして差し込む。
 		// ユーザーが書いた content だけを残す（判定は paradisCodexInjectedContext に一本化）。
@@ -1685,10 +1716,16 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 				return out;
 			}
 			out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, imageData: images });
+			if (role === 'user') {
+				signals.codexAsyncStaleBefore = signals.codexAsyncQuestions.length;
+			}
 			return out;
 		}
 		if (trimmedText.length === 0) {
 			return [];
+		}
+		if (role === 'user') {
+			signals.codexAsyncStaleBefore = signals.codexAsyncQuestions.length;
 		}
 		out.push({ role, kind: 'text', text: truncateText(role === 'assistant' ? paradisRewriteCodexVisualizations(text) : text, TEXT_LIMIT), ts });
 	} else if (ptype === 'agent_message') {

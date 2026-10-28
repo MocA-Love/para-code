@@ -24,6 +24,7 @@ import type { BrowserInput } from './browserKeys.js';
 import { localizeAgentMonitors, parseAgentMonitors, type AgentMonitor } from './agentMonitors.js';
 import { localizeAgentWorkflows, parseAgentWorkflows, type AgentWorkflow } from './agentWorkflows.js';
 import { localizeAgentTeams, parseAgentTeams, type AgentTeam } from './agentTeams.js';
+import { parseAsyncQuestions, type AsyncQuestion } from './asyncQuestions.js';
 import { localizeAgentSessionStatus, parseAgentSessionStatus, type AgentSessionStatus } from './agentSessionStatus.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
@@ -1029,6 +1030,11 @@ export interface AgentChatMessage {
 	detailTruncated?: boolean;
 	/** kind==='tool_result': 結果に含まれていた画像のメタ情報。実体は requestAgentToolImage で取り寄せる。 */
 	images?: AgentChatImage[];
+	/**
+	 * role==='user': Codex の非同期の質問への返信の発言を PC が読んだもの（agent.async-questions.v1）。`text` は元の発言のまま。
+	 * 届いたまま検証せずに入るので、使うときは `questionRepliesOf()`（asyncQuestions.ts）を通す。
+	 */
+	questionReplies?: readonly { readonly question: string; readonly answer: string }[];
 }
 
 /** コンテキストの圧縮の中身（PC の `IParadisAgentCompactionInfo`）。取れた項目だけ。 */
@@ -1540,6 +1546,8 @@ export interface AgentChatState {
 	teams?: AgentTeam[];
 	/** 会話のキャッシュの hit / miss と残り時間の期限、コンテキストの使用率（PC が送るときだけ。agent.session-status.v1）。 */
 	sessionStatus?: AgentSessionStatus;
+	/** Codex の非同期の質問のうち、まだ答えていないもの（PC が送るときだけ。agent.async-questions.v1）。 */
+	asyncQuestions?: AsyncQuestion[];
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
@@ -4491,6 +4499,14 @@ export class MobileController {
 		}
 	}
 
+	/** そのエージェントの、これらの ID（`interactionId`）を持つ質問の通知（Codex の非同期の質問を閉じたときに片付ける）。 */
+	notificationIdsForInteractions(terminalKey: string, agentToken: string | undefined, interactionIds: ReadonlySet<string>): string[] {
+		return this.state.notifications
+			.filter(n => n.kind === 'agent-question' && n.interactionId !== undefined && interactionIds.has(n.interactionId)
+				&& (n.terminalKey === terminalKey || (agentToken !== undefined && n.agentToken === agentToken)))
+			.map(n => n.id);
+	}
+
 	/** 一覧にある、そのエージェントの完了・エラーの通知 ID（トークを開いたときに見たことにする）。 */
 	settledNotificationIdsFor(terminalKey: string, agentToken: string | undefined): string[] {
 		return this.state.notifications
@@ -5525,6 +5541,8 @@ export class MobileController {
 			// 会話の状態（agent.session-status.v1）も届いたときだけ置き換える（PC は snapshot では必ず、それ以外は変わったときだけ載せる）
 			const rawSessionStatus = parseAgentSessionStatus((msg as { sessionStatus?: unknown }).sessionStatus);
 			const parsedSessionStatus = rawSessionStatus !== undefined ? localizeAgentSessionStatus(rawSessionStatus, (msg as { sessionStatusAt?: unknown }).sessionStatusAt, Date.now()) : undefined;
+			// Codex の非同期の質問（agent.async-questions.v1）も届いたときだけ丸ごと置き換える（全部答えたら空の配列が届く）
+			const parsedAsyncQuestions = parseAsyncQuestions((msg as { asyncQuestions?: unknown }).asyncQuestions);
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
 				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.activityId !== msg.activityId) { return; }
@@ -5613,6 +5631,7 @@ export class MobileController {
 					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
 					...(parsedTeams !== undefined ? { teams: parsedTeams } : {}),
 					...(parsedSessionStatus !== undefined ? { sessionStatus: parsedSessionStatus } : {}),
+					...(parsedAsyncQuestions !== undefined ? { asyncQuestions: parsedAsyncQuestions } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
@@ -5698,6 +5717,7 @@ export class MobileController {
 					...(parsedWorkflows !== undefined ? { workflows: parsedWorkflows } : {}),
 					...(parsedTeams !== undefined ? { teams: parsedTeams } : {}),
 					...(parsedSessionStatus !== undefined ? { sessionStatus: parsedSessionStatus } : {}),
+					...(parsedAsyncQuestions !== undefined ? { asyncQuestions: parsedAsyncQuestions } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(parsedPanel !== undefined && parsedPanel !== null ? { panel: parsedPanel } : {}),
