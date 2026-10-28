@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Check, CircleHelp } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { asyncAnswerText, buildAsyncReply, type AsyncQuestion } from '../../asyncQuestions.js';
+import { asyncAnswerText, buildAsyncReply, type AsyncAnswerDraft, type AsyncQuestion } from '../../asyncQuestions.js';
 import { useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
@@ -18,6 +18,8 @@ import { OptionButton } from './askCard.js';
 /** 「その他（入力して回答）」の依頼の ID の頭（ほかの質問の依頼と分ける。agentChatPane が見る）。 */
 export const ASYNC_FREE_TEXT_PREFIX = 'async:';
 
+const NO_DRAFTS: Readonly<Record<string, AsyncAnswerDraft>> = {};
+
 /** 丸いタブの当たり判定（askCard と同じ）。 */
 const STEP_SLOP = { top: 4, bottom: 4, left: 0, right: 0 };
 
@@ -29,7 +31,9 @@ const STEP_SLOP = { top: 4, bottom: 4, left: 0, right: 0 };
  * 送るのは答えた問いだけで、残りの問いはこのカードに残る（書きかけはこの端末の `useAsyncQuestionDrafts` に持つ）。
  * 答えは Codex が決めた返信の形の発言に組み立てて、普通の発言と同じ `onSend` で送る。
  */
-export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequestFreeText, freeTextActiveId }: {
+export function AsyncQuestionCard({ pane, questions, working, queueing, onSend, onRequestFreeText, freeTextActiveId, onDismiss }: {
+	/** 書きかけ・送った印を分けて持つペイン（terminalKey）。 */
+	pane: string;
 	/** 1 回の呼び出しのうち、まだ答えていない問い（番号順）。 */
 	questions: readonly AsyncQuestion[];
 	/** エージェントが作業中か（送るとその作業に割り込む）。 */
@@ -40,13 +44,17 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 	onRequestFreeText: (request: QuestionFreeTextRequest | undefined) => void;
 	/** 下の入力欄が答えの入力になっている問い（{@link ASYNC_FREE_TEXT_PREFIX} 付きの ID）。 */
 	freeTextActiveId: string | undefined;
+	/** 「答えずに閉じる」を押した（その質問の通知も片付ける）。 */
+	onDismiss: (questions: readonly AsyncQuestion[]) => void;
 }) {
 	const theme = useThemeColors();
 	const cardStyles = useChatStyles(baseCardStyles);
 	const styles = useChatStyles(baseStyles);
 	const headIconSize = useChatIconSize(15);
 	const checkIconSize = useChatIconSize(iconSize.xs);
-	const { drafts, setDraft, markSent, dismiss } = useAsyncQuestionDrafts(useShallow(s => ({ drafts: s.drafts, setDraft: s.setDraft, markSent: s.markSent, dismiss: s.dismiss })));
+	const { paneDrafts, setPaneDraft, markSent, dismiss } = useAsyncQuestionDrafts(useShallow(s => ({ paneDrafts: s.drafts[pane], setPaneDraft: s.setDraft, markSent: s.markSent, dismiss: s.dismiss })));
+	const drafts = paneDrafts ?? NO_DRAFTS;
+	const setDraft = (id: string, draft: AsyncAnswerDraft | undefined) => setPaneDraft(pane, id, draft);
 	const [step, setStep] = useState(0);
 	const [sending, setSending] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
@@ -70,7 +78,7 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 	const advance = (fromId: string) => {
 		// 描いた時点ではなく今の書きかけで見る（選んだ直後・入力欄から控えた直後に呼ぶため）
 		const list = latestRef.current.questions;
-		const latest = useAsyncQuestionDrafts.getState().drafts;
+		const latest = useAsyncQuestionDrafts.getState().drafts[pane] ?? NO_DRAFTS;
 		const from = list.findIndex(question => question.id === fromId);
 		for (let i = 1; i <= list.length; i++) {
 			const candidate = (from + i) % list.length;
@@ -108,7 +116,7 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 			prompt: current.title,
 			// ここでは送らない。この問いの答えとして控え、「回答を送信」でまとめて送る
 			submit: text => {
-				useAsyncQuestionDrafts.getState().setDraft(id, { text: text.trim() });
+				useAsyncQuestionDrafts.getState().setDraft(pane, id, { text: text.trim() });
 				advance(id);
 				return Promise.resolve({ status: 'accepted' });
 			},
@@ -116,7 +124,7 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 	};
 	const send = () => {
 		const latest = latestRef.current;
-		const reply = buildAsyncReply(latest.questions, useAsyncQuestionDrafts.getState().drafts);
+		const reply = buildAsyncReply(latest.questions, useAsyncQuestionDrafts.getState().drafts[pane] ?? NO_DRAFTS);
 		if (reply === undefined || sending) {
 			return;
 		}
@@ -131,7 +139,7 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 				return;
 			}
 			// 送った問いは PC の一覧から消えるまで隠す（同じ問いを二度送らない）。残りの問いはこのカードに残る
-			markSent(reply.ids, queued ? reply.text : undefined);
+			markSent(pane, reply.ids, queued ? reply.text : undefined);
 			if (freeTextActiveId !== undefined && reply.ids.some(id => `${ASYNC_FREE_TEXT_PREFIX}${id}` === freeTextActiveId)) {
 				onRequestFreeText(undefined);
 			}
@@ -145,7 +153,8 @@ export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequ
 		if (otherSelected) {
 			onRequestFreeText(undefined);
 		}
-		dismiss(questions.map(question => question.id));
+		dismiss(questions);
+		onDismiss(questions);
 	};
 	return (
 		<View style={cardStyles.card}>
@@ -236,5 +245,41 @@ const baseStyles = StyleSheet.create({
 	},
 	stepTextOn: {
 		color: colors.text,
+	},
+});
+
+/**
+ * 後ろに並ぶ質問の組を 1 行にたたんだもの（組が多いときに場所を取りすぎないため）。押すと開く。
+ */
+export function AsyncQuestionCollapsedRow({ questions, onExpand }: { questions: readonly AsyncQuestion[]; onExpand: () => void }) {
+	const theme = useThemeColors();
+	const cardStyles = useChatStyles(baseCardStyles);
+	const iconSizeHead = useChatIconSize(13);
+	const first = questions[0];
+	if (first === undefined) {
+		return null;
+	}
+	return (
+		<Pressable
+			onPress={() => { haptic('tick'); onExpand(); }}
+			style={({ pressed }) => [cardStyles.option, collapsedStyles.row, pressed ? cardStyles.optionPressed : undefined]}
+			accessibilityRole="button"
+			accessibilityHint="この質問を開いて答えます"
+		>
+			<Icon icon={CircleHelp} size={iconSizeHead} color={theme.accent} />
+			<Text style={[cardStyles.optionLabel, collapsedStyles.text]} numberOfLines={1}>{questions.length > 1 ? `${questions.length}つの質問: ${first.title}` : first.title}</Text>
+		</Pressable>
+	);
+}
+
+const collapsedStyles = StyleSheet.create({
+	row: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+	},
+	text: {
+		flex: 1,
+		minWidth: 0,
 	},
 });

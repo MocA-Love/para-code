@@ -146,7 +146,7 @@ export function paradisCodexAsyncQuestionsFromItem(item: unknown, at?: number): 
 }
 
 /**
- * 答え・質問文から、エージェントへ渡してはいけない文字を落とす。制御文字（改行とタブは残す）、ゼロ幅の文字・向きの制御、
+ * 答え・質問文から、エージェントへ渡してはいけない文字を落とす。制御文字（改行とタブは残す）、ゼロ幅の文字（ZWJ は残す）・向きの制御、
  * BOM、対になっていないサロゲート（JSON としては書けても Codex の serde_json が読めない）。
  */
 export function paradisSanitizeCodexAsyncText(text: string): string {
@@ -171,8 +171,9 @@ export function paradisSanitizeCodexAsyncText(text: string): string {
 			}
 			continue;
 		}
+		// ZWJ（U+200D）は絵文字の結合に使うので残す
 		if ((code < 0x20 && code !== 0x09 && code !== 0x0A) || (code >= 0x7F && code <= 0x9F)
-			|| (code >= 0x200B && code <= 0x200F) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x206F)
+			|| (code >= 0x200B && code <= 0x200F && code !== 0x200D) || (code >= 0x2028 && code <= 0x202E) || (code >= 0x2060 && code <= 0x206F)
 			|| code === 0xFEFF || (code >= 0xFFF9 && code <= 0xFFFB)) {
 			continue;
 		}
@@ -208,7 +209,8 @@ export function paradisBuildCodexAsyncReply(answers: readonly { readonly questio
 	const seen = new Set<string>();
 	const replies: { answer: string; question: string; questionItemId: string }[] = [];
 	for (const { question, answer } of answers) {
-		const text = paradisSanitizeCodexAsyncText(answer).trim().slice(0, PARADIS_CODEX_ASYNC_ANSWER_LIMIT);
+		// 切ってから掃除する（切り口で割れたサロゲートの片方は掃除で落ちる）
+		const text = paradisSanitizeCodexAsyncText(answer.slice(0, PARADIS_CODEX_ASYNC_ANSWER_LIMIT)).trim();
 		if (text.length === 0 || seen.has(question.id) || paradisParseCodexAsyncQuestionItemId(question.id) === undefined) {
 			continue;
 		}

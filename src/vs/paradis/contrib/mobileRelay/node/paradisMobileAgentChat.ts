@@ -1911,7 +1911,7 @@ interface ITailerDelegate {
 	 * Codex の非同期の質問の台帳が変わった（足された・答えた・読み直した）。`added` はライブで初めて知った質問（通知に使う。
 	 * 初回読み込み・読み直しでは空）。
 	 */
-	onAsyncQuestions?(added: readonly IParadisCodexAsyncQuestion[], settledCalls: readonly string[]): void;
+	onAsyncQuestions?(added: readonly IParadisCodexAsyncQuestion[], goneCalls: readonly string[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
@@ -3702,16 +3702,24 @@ class TranscriptTailer {
 		if (signals.turnEnded !== undefined) {
 			this.approvalDeniedInTurn = false;
 		}
-		if (this.agent === 'codex' && (signals.codexAsyncQuestions.length > 0 || signals.codexAsyncAnswered.length > 0)) {
+		if (this.agent === 'codex') {
 			const before = this.asyncQuestions.revision;
 			// 会話を開き直した（初回読み込み・読み直し）ときは、直近のターン（最後の利用者の発言より後）に出た質問だけを戻す。
-			// それより前の答えていない質問は、もう答えるつもりの無いものとしてカードにしない。ライブで読んだ分は残す
-			const asked = live ? signals.codexAsyncQuestions : signals.codexAsyncQuestions.slice(signals.codexAsyncStaleBefore ?? 0);
+			// それより前の答えていない質問は、もう答えるつもりの無いものとしてカードにしない（その通知も片付ける）。ライブで読んだ分は残す
+			const staleBefore = live ? 0 : signals.codexAsyncStaleBefore ?? 0;
+			const asked = signals.codexAsyncQuestions.slice(staleBefore);
 			const added = this.asyncQuestions.addConfirmed(asked);
-			const settled = this.asyncQuestions.answer(signals.codexAsyncAnswered);
-			if (this.asyncQuestions.revision !== before) {
-				this.delegate.onAsyncQuestions?.(live ? added : [], settled);
-			}
+			this.asyncQuestions.answer(signals.codexAsyncAnswered);
+			this.asyncQuestions.noteGone(new Set(signals.codexAsyncQuestions.slice(0, staleBefore).map(question => question.callId)));
+			this.emitAsyncQuestions(before, live ? added : []);
+		}
+	}
+
+	/** 台帳が変わった、または台帳から離れた呼び出しがあれば知らせる（離れた呼び出しは、その質問の通知を片付ける）。 */
+	private emitAsyncQuestions(revisionBefore: number, added: readonly IParadisCodexAsyncQuestion[]): void {
+		const gone = this.asyncQuestions.takeGoneCalls();
+		if (this.asyncQuestions.revision !== revisionBefore || gone.length > 0) {
+			this.delegate.onAsyncQuestions?.(added, gone);
 		}
 	}
 
@@ -3723,16 +3731,14 @@ class TranscriptTailer {
 		}
 		const before = this.asyncQuestions.revision;
 		const added = this.asyncQuestions.addProvisional(questions);
-		if (this.asyncQuestions.revision !== before) {
-			this.delegate.onAsyncQuestions?.(added, []);
-		}
+		this.emitAsyncQuestions(before, added);
 	}
 
 	/** 非同期の質問の呼び出しが失敗した（PostToolUseFailure）。rollout で確かめていない仮の質問を外す。 */
 	dropAsyncQuestionsFromHook(toolUseId: string): void {
-		if (this.asyncQuestions.dropProvisional(toolUseId)) {
-			this.delegate.onAsyncQuestions?.([], []);
-		}
+		const before = this.asyncQuestions.revision;
+		this.asyncQuestions.dropProvisional(toolUseId);
+		this.emitAsyncQuestions(before, []);
 	}
 
 	/** UserPromptSubmit hook の発言が返信の形なら、答えた質問を外す（rollout を待たずに消すため）。 */
@@ -3742,10 +3748,8 @@ class TranscriptTailer {
 			return;
 		}
 		const before = this.asyncQuestions.revision;
-		const settled = this.asyncQuestions.answer(replies.filter(reply => reply.callId !== undefined).map(reply => reply.itemId));
-		if (this.asyncQuestions.revision !== before) {
-			this.delegate.onAsyncQuestions?.([], settled);
-		}
+		this.asyncQuestions.answer(replies.filter(reply => reply.callId !== undefined).map(reply => reply.itemId));
+		this.emitAsyncQuestions(before, []);
 	}
 }
 
@@ -3976,7 +3980,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** 最後に送ったチームの一覧の印（epoch・版・許可待ち・ペインの停止。変わったときだけ delta に載せる）。 */
 	private readonly teamsSent = new Map<string, string>();
 	private readonly _onDidAnswerAsyncQuestions = this._register(new Emitter<{ readonly token: string; readonly interactionIds: readonly string[] }>());
-	/** Codex の非同期の質問の呼び出しに、全部の問いの答えが届いた（その質問の通知を片付けるため）。 */
+	/** Codex の非同期の質問の呼び出しが台帳から離れた（全部答えた・答えずに消えた。その質問の通知を片付けるため）。 */
 	readonly onDidAnswerAsyncQuestions = this._onDidAnswerAsyncQuestions.event;
 	/** 最後に送った非同期の質問の一覧の印（epoch・台帳の版。変わったときだけ delta に載せる）。 */
 	private readonly asyncQuestionsSent = new Map<string, string>();
@@ -7877,6 +7881,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.sessionStatusSent.delete(token);
 			}
 		}
+		for (const token of [...this.asyncQuestionsSent.keys()]) {
+			if (!live.has(token)) {
+				this.asyncQuestionsSent.delete(token);
+			}
+		}
 		let changed = false;
 		const seen = new Set<string>();
 		for (const insight of this.getDesktopPaneInsights([...this.paneSessions.keys()])) {
@@ -9864,7 +9873,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (added.length > 0) {
 					this.notifyAsyncQuestions(token, tailer, added);
 				}
-				// 全部の問いに答え終えた呼び出しの質問の通知を片付ける（PC の TUI・ほかの端末から答えた分も）
+				// 台帳から離れた呼び出し（全部答えた・hook の失敗・読み直し・古いターン・上限）の質問の通知を片付ける
 				const interactionIds = settledCalls.map(paradisCodexAsyncNotifyInteractionId).filter((id): id is string => id !== undefined);
 				if (interactionIds.length > 0) {
 					this._onDidAnswerAsyncQuestions.fire({ token, interactionIds });

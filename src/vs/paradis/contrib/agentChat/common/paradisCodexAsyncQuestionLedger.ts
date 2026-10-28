@@ -32,6 +32,11 @@ export class ParadisCodexAsyncQuestionLedger {
 	private readonly calls = new Map<string, ICallEntry>();
 	/** 質問より先に読んだ答えの ID（呼び出しを足すときに当てる）。 */
 	private readonly earlyAnswers = new Set<string>();
+	/**
+	 * 台帳から離れた呼び出し（全部の問いに答えた・hook の失敗で外した・上限で捨てた・読み直しで空にした・古いターンとして
+	 * 戻さなかった）。その質問の通知を片付けるため、{@link takeGoneCalls} で受け取る。
+	 */
+	private readonly gone = new Set<string>();
 	private _revision = 0;
 
 	/** 変わるたびに進む番号（送ったものと比べて、変わったときだけ送るため）。 */
@@ -41,7 +46,7 @@ export class ParadisCodexAsyncQuestionLedger {
 
 	/**
 	 * rollout で読んだ質問を足す。初めて知った呼び出しの質問を返す（知らせを出すのはこれだけ。hook で先に足した呼び出しは
-	 * 返さない）。
+	 * 返さない）。hook で仮に足した呼び出しは、rollout の中身で置き換える（rollout を正とする）。
 	 */
 	addConfirmed(questions: readonly IParadisCodexAsyncQuestion[]): IParadisCodexAsyncQuestion[] {
 		return this.add(questions, true);
@@ -68,7 +73,11 @@ export class ParadisCodexAsyncQuestionLedger {
 			const existing = this.calls.get(callId);
 			if (existing !== undefined) {
 				if (confirmed && !existing.confirmed) {
-					existing.confirmed = true;
+					// hook の中身を rollout の中身で置き換える。答えた番号は、置き換えた後にもある問いの分だけ持ち越す
+					const indices = new Set(list.map(question => question.index));
+					const answered = new Set([...existing.answered].filter(index => indices.has(index)));
+					this.calls.set(callId, { questions: list, answered, confirmed: true });
+					changed = changed || JSON.stringify(existing.questions) !== JSON.stringify(list);
 				}
 				continue;
 			}
@@ -79,6 +88,7 @@ export class ParadisCodexAsyncQuestionLedger {
 				}
 			}
 			this.calls.set(callId, { questions: list, answered, confirmed });
+			this.gone.delete(callId);
 			changed = true;
 			added.push(...list.filter(question => !answered.has(question.index)));
 		}
@@ -88,6 +98,7 @@ export class ParadisCodexAsyncQuestionLedger {
 				break;
 			}
 			this.calls.delete(oldest);
+			this.gone.add(oldest);
 		}
 		if (changed) {
 			this._revision++;
@@ -96,12 +107,11 @@ export class ParadisCodexAsyncQuestionLedger {
 	}
 
 	/**
-	 * 返信の発言で答えた質問（`questionItemId`）を外す。これで全部の問いに答え終えた呼び出しの call_id を返す（質問の通知を
-	 * 片付けるため）。変わったかは {@link revision} で見る。
+	 * 返信の発言で答えた質問（`questionItemId`）を外す。全部の問いに答え終えた呼び出しは {@link takeGoneCalls} に入る。
+	 * 変わったかは {@link revision} で見る。
 	 */
-	answer(itemIds: readonly string[]): string[] {
+	answer(itemIds: readonly string[]): void {
 		let changed = false;
-		const settled: string[] = [];
 		for (const itemId of itemIds) {
 			const id = paradisParseCodexAsyncQuestionItemId(itemId);
 			if (id === undefined) {
@@ -122,14 +132,13 @@ export class ParadisCodexAsyncQuestionLedger {
 				entry.answered.add(id.index);
 				changed = true;
 				if (entry.questions.every(question => entry.answered.has(question.index))) {
-					settled.push(id.callId);
+					this.gone.add(id.callId);
 				}
 			}
 		}
 		if (changed) {
 			this._revision++;
 		}
-		return settled;
 	}
 
 	/** hook で仮に足した呼び出しが失敗した（PostToolUseFailure）。rollout で確かめていなければ外す。変わったら true。 */
@@ -139,8 +148,18 @@ export class ParadisCodexAsyncQuestionLedger {
 			return false;
 		}
 		this.calls.delete(callId);
+		this.gone.add(callId);
 		this._revision++;
 		return true;
+	}
+
+	/** 台帳に入れなかった呼び出し（古いターンとして戻さなかった）を、離れたものとして知らせる。 */
+	noteGone(callIds: Iterable<string>): void {
+		for (const callId of callIds) {
+			if (!this.calls.has(callId)) {
+				this.gone.add(callId);
+			}
+		}
 	}
 
 	/** 会話を読み直すときに空にする。変わったら true。 */
@@ -149,9 +168,28 @@ export class ParadisCodexAsyncQuestionLedger {
 		if (this.calls.size === 0) {
 			return false;
 		}
+		for (const callId of this.calls.keys()) {
+			this.gone.add(callId);
+		}
 		this.calls.clear();
 		this._revision++;
 		return true;
+	}
+
+	/** まだ答えていない問いが残っている呼び出しか。 */
+	isPending(callId: string): boolean {
+		const entry = this.calls.get(callId);
+		return entry !== undefined && entry.questions.some(question => !entry.answered.has(question.index));
+	}
+
+	/**
+	 * 台帳から離れた呼び出しを受け取る（受け取ると空になる）。読み直しで戻った呼び出しのように、今もまだ答えていない問いが
+	 * 残っているものは除く。
+	 */
+	takeGoneCalls(): string[] {
+		const result = [...this.gone].filter(callId => !this.isPending(callId));
+		this.gone.clear();
+		return result;
 	}
 
 	/** まだ答えていない質問（出た順、呼び出しの中は番号順）。 */

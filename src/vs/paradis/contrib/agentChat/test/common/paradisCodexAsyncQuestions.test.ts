@@ -90,6 +90,29 @@ suite('Codex async questions (request_user_input_async)', () => {
 		});
 	});
 
+	test('the ledger replaces hook questions with the rollout ones and reports the calls that left without being answered', () => {
+		const ledger = new ParadisCodexAsyncQuestionLedger();
+		ledger.addProvisional(paradisCodexAsyncQuestionsFromArguments('call-1', { questions: [{ title: 'hook?' }] }, 1)!);
+		ledger.addConfirmed(paradisCodexAsyncQuestionsFromArguments('call-1', { questions: [{ title: 'rollout?' }, { title: 'second?' }] }, 1)!);
+		const replaced = ledger.pending().map(question => question.title);
+		ledger.addProvisional(paradisCodexAsyncQuestionsFromArguments('call-failed', { questions: [{ title: 'x' }] }, 2)!);
+		ledger.dropProvisional('call-failed');
+		ledger.answer([paradisCodexAsyncQuestionItemId('call-1', 0)]);
+		const afterPartial = ledger.takeGoneCalls();
+		ledger.answer([paradisCodexAsyncQuestionItemId('call-1', 1)]);
+		const afterAll = ledger.takeGoneCalls();
+		for (let index = 0; index < 51; index++) {
+			ledger.addConfirmed(paradisCodexAsyncQuestionsFromArguments(`call-many-${index}`, { questions: [{ title: 'm' }] }, 3)!);
+		}
+		const evicted = ledger.takeGoneCalls();
+		ledger.noteGone(['call-stale']);
+		ledger.clear();
+		const cleared = ledger.takeGoneCalls().length;
+		assert.deepStrictEqual({ replaced, afterPartial, afterAll, evicted, cleared }, {
+			replaced: ['rollout?', 'second?'], afterPartial: ['call-failed'], afterAll: ['call-1'], evicted: ['call-1', 'call-many-0'], cleared: 51,
+		});
+	});
+
 	test('builds a reply that stays valid JSON without raw tags or control characters, and reads it back', () => {
 		const id = paradisCodexAsyncQuestionItemId('call_x', 1);
 		const longTitle = `${'質'.repeat(200)}\n2行目`;
@@ -130,6 +153,10 @@ suite('Codex async questions (request_user_input_async)', () => {
 			paradisParseCodexAsyncReply('<send_user_message_question_reply>[]</send_user_message_question_reply>'),
 			paradisParseCodexAsyncQuestionItemId('["request_user_input_async","c",-1]'),
 			paradisSanitizeCodexAsyncText('a\r\nb\rc\u0000'),
-		], [1, undefined, undefined, undefined, undefined, 'a\nb\nc']);
+			// ZWJ は絵文字の結合に使うので残す
+			paradisSanitizeCodexAsyncText('\u{1F468}\u200d\u{1F469}'),
+			// 上限で切ったところで割れたサロゲートの片方は落とす
+			paradisParseCodexAsyncReply(paradisBuildCodexAsyncReply([{ question: { id, title: 'q' }, answer: `${'x'.repeat(9_999)}\u{1F600}` }])!)?.[0].answer.length,
+		], [1, undefined, undefined, undefined, undefined, 'a\nb\nc', '\u{1F468}\u200d\u{1F469}', 9_999]);
 	});
 });

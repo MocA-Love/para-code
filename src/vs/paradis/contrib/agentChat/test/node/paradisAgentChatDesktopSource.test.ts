@@ -16,7 +16,7 @@ import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAge
 import { ParadisMobileAgentChat } from '../../../mobileRelay/node/paradisMobileAgentChat.js';
 import { IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { paradisBuildCodexAsyncReply, paradisCodexAsyncQuestionItemId } from '../../../mobileRelay/common/paradisCodexAsyncQuestions.js';
-import { CODEX_ASYNC_PARTIAL_CALL, CODEX_ASYNC_QUESTION_ROLLOUT } from '../common/paradisCodexAsyncQuestionFixture.js';
+import { CODEX_ASYNC_ANSWERED_CALL, CODEX_ASYNC_PARTIAL_CALL, CODEX_ASYNC_QUESTION_ROLLOUT } from '../common/paradisCodexAsyncQuestionFixture.js';
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, message: string): Promise<void> {
 	const deadline = Date.now() + 3_000;
@@ -571,7 +571,8 @@ suite('ParadisMobileAgentChat desktop chat source', () => {
 				// 質問の通知は呼び出しごとの ID を持ち、全部答えたらその ID で片付ける
 				notifiedIds: ['codex-async:call_hook'],
 				afterReply: [paradisCodexAsyncQuestionItemId(CODEX_ASYNC_PARTIAL_CALL, 1)],
-				answered: ['codex-async:call_hook'],
+				// 読み込みで全部答え終えていた呼び出し（記録の 1 回目）と、返信で答えた呼び出し。どちらもその通知を片付ける
+				answered: [`codex-async:${CODEX_ASYNC_ANSWERED_CALL}`, 'codex-async:call_hook'],
 			});
 		} finally {
 			answeredListener.dispose();

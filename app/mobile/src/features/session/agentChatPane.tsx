@@ -29,8 +29,9 @@ import { EmptyState } from '../../ui/index.js';
 import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js';
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
-import { ASYNC_FREE_TEXT_PREFIX, AsyncQuestionCard } from './asyncQuestionCard.js';
-import { groupAsyncQuestions } from '../../asyncQuestions.js';
+import { ASYNC_FREE_TEXT_PREFIX, AsyncQuestionCard, AsyncQuestionCollapsedRow } from './asyncQuestionCard.js';
+import { groupAsyncQuestions, type AsyncQuestion } from '../../asyncQuestions.js';
+import { paradisCodexAsyncNotifyInteractionId } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
 import { withQuestionOutcomes } from './questionOutcomes.js';
@@ -216,11 +217,12 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	);
 	const pinnedId = pinned !== undefined ? questionRowId(pinned) : undefined;
 	const questionWithoutRow = interactionKind === 'question' && pinned === undefined;
-	// Codex の非同期の質問（agent.async-questions.v1）。承認・質問の枠とは別に、答えるか閉じるまで残る。出すのは最初の呼び出しの
-	// まだ送っていない問いだけ（承認・質問のカードがあればそちらを先に出す）
+	// Codex の非同期の質問（agent.async-questions.v1）。承認・質問の枠とは別に、答えるか閉じるまで残る。呼び出しごとの組を新しい順に
+	// 並べ、開くのは 1 組だけ（既定は一番新しい組。ほかは 1 行にたたむ）。承認・質問のカードがあればそちらを先に出す
 	const asyncSupported = usePcCapability(PcCapability.AgentAsyncQuestions);
 	const asyncQuestions = asyncSupported && chatReady ? chat?.asyncQuestions : undefined;
-	const asyncHidden = useAsyncQuestionDrafts(useShallow(s => ({ sent: s.sent, dismissed: s.dismissed })));
+	const asyncHidden = useAsyncQuestionDrafts(useShallow(s => ({ sent: s.sent[terminalKey], dismissed: s.dismissed })));
+	const allAsyncSent = useAsyncQuestionDrafts(s => s.sent);
 	const { prune: pruneAsyncDrafts, load: loadAsyncDismissed, settleQueued: settleQueuedAsync } = useAsyncQuestionDrafts(useShallow(s => ({ prune: s.prune, load: s.load, settleQueued: s.settleQueued })));
 	// この端末で閉じた問い（端末に保存してある）を読む
 	useEffect(() => {
@@ -234,18 +236,26 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		const texts = new Set(useAgentSendQueue.getState().items.map(item => item.text));
 		settleQueuedAsync(texts, Date.now());
 		// 印を付けた直後にも見る（預けたつもりが、つながっていてそのまま届いた送信を、預かりの印のまま残さない）
-	}, [queuedTextsKey, asyncHidden.sent, settleQueuedAsync]);
+	}, [queuedTextsKey, allAsyncSent, settleQueuedAsync]);
 	const asyncIdsKey = (asyncQuestions ?? []).map(question => question.id).join('\n');
 	useEffect(() => {
 		if (asyncQuestions !== undefined) {
-			pruneAsyncDrafts(asyncQuestions.map(question => question.id));
+			// このペインの分だけを掃除する（ほかのペインの書きかけと「送った」の印は残す）
+			pruneAsyncDrafts(terminalKey, asyncQuestions.map(question => question.id));
 		}
-	}, [asyncIdsKey, pruneAsyncDrafts]);
-	const asyncGroup = useMemo(() => {
+	}, [asyncIdsKey, terminalKey, pruneAsyncDrafts]);
+	const asyncGroups = useMemo(() => {
 		const now = Date.now();
-		return groupAsyncQuestions((asyncQuestions ?? []).filter(question => !isAsyncQuestionHidden(asyncHidden, question.id, now)))[0];
+		return groupAsyncQuestions((asyncQuestions ?? []).filter(question => !isAsyncQuestionHidden(asyncHidden, question, now))).reverse();
 	}, [asyncQuestions, asyncHidden]);
+	const [expandedAsyncCall, setExpandedAsyncCall] = useState<string | undefined>(undefined);
+	const asyncGroup = asyncGroups.find(group => group[0]?.callId === expandedAsyncCall) ?? asyncGroups[0];
 	const asyncVisibleIds = useMemo(() => new Set((asyncGroup ?? []).map(question => question.id)), [asyncGroup]);
+	const markAsyncNotificationsSeen = useAppStore(s => s.markAsyncQuestionNotificationsSeen);
+	const dismissAsyncNotifications = useCallback((questions: readonly AsyncQuestion[]) => {
+		const ids = [...new Set(questions.map(question => paradisCodexAsyncNotifyInteractionId(question.callId)).filter((id): id is string => id !== undefined))];
+		markAsyncNotificationsSeen(terminalKey, ids);
+	}, [markAsyncNotificationsSeen, terminalKey]);
 
 	// 「その他（入力して回答）」でコンポーザーを回答入力に切り替える依頼。固定している質問のときだけ有効。
 	const composerRef = useRef<SessionComposerHandle>(null);
@@ -357,15 +367,23 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	) : undefined;
 	// 承認・質問のカードが無いときだけ、非同期の質問のカードを同じ場所に出す
 	const asyncCard = card === undefined && asyncGroup !== undefined ? (
-		<AsyncQuestionCard
-			key={asyncGroup[0]?.callId}
-			questions={asyncGroup}
-			working={working}
-			queueing={!live && canQueue && activePcId !== undefined}
-			onSend={sendText}
-			onRequestFreeText={requestFreeText}
-			freeTextActiveId={activeAnswerRequest?.id}
-		/>
+		<View style={styles.asyncGroups}>
+			{asyncGroups.map(group => group === asyncGroup ? (
+				<AsyncQuestionCard
+					key={group[0]?.callId}
+					pane={terminalKey}
+					questions={group}
+					working={working}
+					queueing={!live && canQueue && activePcId !== undefined}
+					onSend={sendText}
+					onRequestFreeText={requestFreeText}
+					freeTextActiveId={activeAnswerRequest?.id}
+					onDismiss={dismissAsyncNotifications}
+				/>
+			) : (
+				<AsyncQuestionCollapsedRow key={group[0]?.callId} questions={group} onExpand={() => setExpandedAsyncCall(group[0]?.callId)} />
+			))}
+		</View>
 	) : undefined;
 	const showQuickReplies = shouldShowQuickReplies({
 		agentStatus: terminal.agentStatus,
@@ -507,5 +525,8 @@ const styles = StyleSheet.create({
 	cardContent: {
 		paddingHorizontal: space.lg,
 		paddingVertical: space.sm,
+	},
+	asyncGroups: {
+		gap: space.sm,
 	},
 });
