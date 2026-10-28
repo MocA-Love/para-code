@@ -78,7 +78,7 @@ import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentCha
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
-import { IParadisAgentSessionStatus, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
+import { IParadisAgentSessionStatus, paradisClaudeTranscriptModel, ParadisAgentSessionStatusTracker } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { IParadisWorkflowRunReadState, paradisNewWorkflowRunReadState, paradisReadClaudeWorkflowRun } from './paradisClaudeWorkflowFiles.js';
 import { IParadisAgentTeam, ParadisAgentTeamTracker, ParadisTeamApprovals, paradisTeamActivityText, paradisTeamsForStoppedPane } from '../../agentChat/common/paradisAgentTeams.js';
 import { IParadisTeamConfigReadState, IParadisTeamMemberReadState, paradisNewTeamMemberReadState, paradisReadClaudeTeamConfig, paradisReadClaudeTeamMember } from './paradisClaudeTeamFiles.js';
@@ -2915,8 +2915,8 @@ class TranscriptTailer {
 		if (version !== undefined) {
 			signals.cliVersion = version;
 		}
-		const model = str(rec(obj.message)?.model);
-		if (model !== undefined && model.length > 0) {
+		const model = paradisClaudeTranscriptModel(str(rec(obj.message)?.model));
+		if (model !== undefined) {
 			signals.model = model;
 		}
 		return true;
