@@ -270,7 +270,13 @@ const vendoredToolName = /^[a-z][a-z0-9_]{0,63}$/;
  * at `result.isError`, so a page whose every call answered `Protocol error: Target closed`
  * left no trace here (the agent saw the text, Sentry saw nothing).
  */
-function classifyToolErrorText(text: string): 'target-closed' | 'protocol-error' | 'timeout' | 'dialog' | 'navigation' | 'other' {
+function classifyToolErrorText(text: string): 'unresponsive' | 'target-closed' | 'protocol-error' | 'timeout' | 'dialog' | 'navigation' | 'other' {
+	// The page did not answer within Para Code's deadline (PARA_BROWSER_PAGE_UNRESPONSIVE, and the 3 s bound of the
+	// observation, whose text says a dialog "may" have opened). Checked before 'dialog': these were counted as dialogs
+	// (Sentry PARA-CODE-DESKTOP-MW) or 'other' (HP) although no dialog was confirmed.
+	if (/PARA_BROWSER_PAGE_UNRESPONSIVE|\bpage did not answer\b/i.test(text)) {
+		return 'unresponsive';
+	}
 	if (/Target closed|Session closed|frame was detached/i.test(text)) {
 		return 'target-closed';
 	}
