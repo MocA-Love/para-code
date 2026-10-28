@@ -58,7 +58,7 @@ export interface IParadisNotifyHookQuestion {
 
 /** tailer から引けるペインの様子（`ParadisMobileAgentChat.notifyPaneContent`）。 */
 export interface IParadisNotifyPaneContent {
-	readonly agent?: 'claude' | 'codex';
+	readonly agent?: 'claude' | 'codex' | 'opencode';
 	/** 最後のエージェントの発言（思考は除く）。 */
 	readonly lastAssistant?: { readonly text: string; readonly isError: boolean; readonly at?: number };
 	/** transcript で見たターンの終わり（Codex の usage limit などは hook が無く、ここだけが知っている）。 */

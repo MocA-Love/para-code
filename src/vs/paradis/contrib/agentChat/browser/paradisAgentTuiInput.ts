@@ -280,7 +280,7 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
  * ハイライト中の選択肢を確定してしまうのを防ぐため。`agent` が `'claude'` のときは、会話を開き直した直後の Claude Code の確認
  * （{@link paradisClaudeResumeScreenPrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
  */
-export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex'): boolean {
+export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex' | 'opencode'): boolean {
 	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen)
 		|| (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen));
 }

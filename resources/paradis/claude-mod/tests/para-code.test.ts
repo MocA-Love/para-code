@@ -184,7 +184,8 @@ describe('para-code mod', () => {
 	test('an ask only the terminal dialog can allow, and a read-only call, are told to Para Code with the approval', async ($, on) => {
 		const recorded: IRecorded[] = [];
 		fakeParaCode(on, { permission: () => ({ id: 'p5', wait: false }) }, recorded);
-		// Claude Code 2.1.304: another plugin answers ask with decider person; the engine marks a read-only call
+		// Claude Code 2.1.304: another plugin answers ask with decider person; the engine marks a read-only call.
+		// 2.1.304 to 2.1.306 hand `decider` to the mod's `next`, 2.1.307 and later `plugin: ''`: the mod reads both
 		on('tool.check', () => ({ decision: 'ask', decider: 'person' }));
 		on('classic.PermissionRequest', () => ({}));
 		await startSession($);

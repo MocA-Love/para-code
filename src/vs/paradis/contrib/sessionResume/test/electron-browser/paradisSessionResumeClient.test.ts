@@ -33,7 +33,15 @@ suite('ParadisSessionResumeClient', () => {
 			return deferred;
 		}
 
+		/** What the shared process answers for the OpenCode-compatible CLI databases of an SSH host (not recorded as a list call). */
+		openCodeDatabases: unknown = [];
+		readonly openCodeDatabaseQueries: unknown[] = [];
+
 		call<T>(command: string, arg?: unknown): Promise<T> {
+			if (command === 'listOpenCodeCompatibleDatabases') {
+				this.openCodeDatabaseQueries.push(arg);
+				return Promise.resolve(this.openCodeDatabases as T);
+			}
 			this.calls.push({ command, args: arg });
 			const deferred = this.pending.shift();
 			if (deferred) {
@@ -84,6 +92,20 @@ suite('ParadisSessionResumeClient', () => {
 		const [request] = local.calls[0].args as [{ spaces: { cwd: string }[] }];
 		// remoteSpace は問い合わせ先が無いので、手元へ落とさずそのままスキップする
 		assert.deepStrictEqual(request.spaces.map(space => space.cwd), [URI.file('/home/local/a').fsPath]);
+	});
+
+	test('hands the SSH host the OpenCode-compatible CLI databases remembered for it, and only to that host', async () => {
+		const local = new RecordingChannel();
+		const remote = new RecordingChannel();
+		local.openCodeDatabases = [{ path: '/home/remote/.example/data/opencode-local.db', cli: '/home/remote/.local/bin/example-cli' }];
+		const connection = { remoteAuthority: 'SSH-Remote+Host', getChannel: () => remote } as unknown as IRemoteAgentConnection;
+		const client = createClient(local, connection);
+		await client.list({ spaces: [localSpace('a'), remoteSpace('b', 'ssh-remote+host')] });
+		assert.deepStrictEqual({
+			queries: local.openCodeDatabaseQueries,
+			local: (local.calls[0].args as [{ openCodeDatabases?: unknown }])[0].openCodeDatabases,
+			remote: (remote.calls[0].args as [{ openCodeDatabases?: unknown }])[0].openCodeDatabases,
+		}, { queries: [['ssh-remote+host']], local: undefined, remote: local.openCodeDatabases });
 	});
 
 	test('splits spaces between local and remote channels by scheme and authority, using OS-correct cwd', async () => {

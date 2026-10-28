@@ -15,6 +15,11 @@ describe('approvalOptions (W2-21)', () => {
 		}).toEqual({ hook: true, noChoices: true, codexDaemon: false, codexStatus: false, question: false, none: false });
 	});
 
+	it('keeps OpenCode API choices and never reads a terminal approval screen', () => {
+		const interaction = { kind: 'approval' as const, id: 'opencode:per_example', choices: [{ id: 'always', label: 'Always', tone: 'neutral' as const }] };
+		expect([shouldRequestApprovalOptions(interaction), shouldRequestApprovalWarningOnly(interaction)]).toEqual([false, false]);
+	});
+
 	it('accepts only a complete 1..n list from the reply', () => {
 		expect({
 			ok: parseApprovalOptionsReply({ options: [{ n: 1, label: 'Yes' }, { n: 2, label: 'No' }], promptHash: 'cccccccccccccccccccccccccccccccccccccccc' }),

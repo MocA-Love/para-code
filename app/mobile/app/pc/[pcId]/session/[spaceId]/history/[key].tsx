@@ -137,7 +137,7 @@ export default function AgentHistorySessionScreen() {
 				{preview.truncated ? <Text style={textStyles.truncated}>古い発言は省略しています</Text> : null}
 				{preview.messages.map((message, index) => (
 					<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
-						<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session?.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
+						<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session?.agent === 'opencode' ? 'OpenCode' : session?.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
 						{message.role === 'assistant' ? <MarkdownText text={message.text} /> : <Text style={textStyles.text} selectable>{message.text}</Text>}
 					</View>
 				))}
@@ -150,7 +150,7 @@ export default function AgentHistorySessionScreen() {
 			<Screen>
 				<ScreenHeader
 					title={session?.title ?? '過去の会話'}
-					subtitle={[session !== undefined ? (session.agent === 'codex' ? 'Codex' : 'Claude Code') : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
+					subtitle={[session !== undefined ? (session.agent === 'opencode' ? 'OpenCode' : session.agent === 'codex' ? 'Codex' : 'Claude Code') : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
 					backLabel="過去の会話へ戻る"
 				/>
 				<QueuedSendsBanner pcId={pcId} ws={sourceId} />

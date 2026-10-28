@@ -23,11 +23,11 @@ import { IParadisCursorOwner } from '../common/paradisCursorOverlay.js';
 import { PARADIS_CURSOR_LABEL_RATE_LIMIT, PARADIS_CURSOR_LABEL_RATE_WINDOW_MS, ParadisCursorLabelResult, paradisNormalizeCursorLabel } from '../common/paradisCursorLabel.js';
 
 /** ペインで動いている CLI。分からなければ undefined（名前は「エージェント」相当の既定）。 */
-export type ParadisCursorCli = 'claude' | 'codex';
+export type ParadisCursorCli = 'claude' | 'codex' | 'opencode';
 
-const CLI_NAME: Readonly<Record<ParadisCursorCli, string>> = { claude: 'Claude', codex: 'Codex' };
-const CLI_MARK: Readonly<Record<ParadisCursorCli, string>> = { claude: 'C', codex: 'X' };
-const CLI_COLOR: Readonly<Record<ParadisCursorCli, string>> = { claude: '#d97757', codex: '#10a37f' };
+const CLI_NAME: Readonly<Record<ParadisCursorCli, string>> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
+const CLI_MARK: Readonly<Record<ParadisCursorCli, string>> = { claude: 'C', codex: 'X', opencode: 'O' };
+const CLI_COLOR: Readonly<Record<ParadisCursorCli, string>> = { claude: '#d97757', codex: '#10a37f', opencode: '#5b8cff' };
 /** CLI の分からない持ち主の 1 つ目の色（ワークベンチのアクセント）。 */
 const UNKNOWN_COLOR = '#5b8cff';
 /** 2 つ目以降の持ち主の色（紫・桃・青）。 */

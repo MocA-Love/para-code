@@ -105,7 +105,7 @@ function AgentTabGlyph({ terminalKey, agentStatus }: { terminalKey: string; agen
 	const agent = useAppStore(s => s.agentChats.get(terminalKey)?.agent);
 	return (
 		<>
-			{agent === 'claude' || agent === 'codex'
+			{agent === 'claude' || agent === 'codex' || agent === 'opencode'
 				? <ProviderLogo provider={agent} size={LOGO_SIZE} />
 				: <Icon icon={Sparkles} size={LOGO_SIZE} color={colors.textDim} />}
 			<AgentStateDot kind={agentKindFromStatus(agentStatus)} />

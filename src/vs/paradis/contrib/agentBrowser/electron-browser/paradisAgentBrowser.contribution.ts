@@ -38,7 +38,8 @@ import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../wor
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
 import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisPaneBinding, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
+import { IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { IParadisAgentBrowserTabsService } from './paradisAgentBrowserTabsService.js';
@@ -163,6 +164,26 @@ class ParadisOpenMobileDeviceDialogAction extends Action2 {
 
 	run(accessor: ServicesAccessor): void {
 		openMobileDeviceDialog(accessor);
+	}
+}
+
+/** 覚えた OpenCode 互換 CLI（コマンド名・実行ファイル・会話の DB の場所）を忘れる。 */
+class ParadisForgetOpenCodeCompatibleClisAction extends Action2 {
+	static readonly ID = 'paradis.openCode.forgetCompatibleClis';
+
+	constructor() {
+		super({
+			id: ParadisForgetOpenCodeCompatibleClisAction.ID,
+			title: localize2('paradis.openCode.forgetCompatibleClis', "Forget Remembered OpenCode-Compatible CLIs"),
+			category: CATEGORY,
+			f1: true,
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const notificationService = accessor.get(INotificationService);
+		await accessor.get(ISharedProcessService).getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call('forgetOpenCodeCompatibleClis');
+		notificationService.info(localize('paradis.openCode.forgotCompatibleClis', "覚えていた OpenCode 互換 CLI を忘れました。次にブリッジへ登録したときに、もう一度確かめて覚えます。"));
 	}
 }
 
@@ -574,6 +595,7 @@ class ParadisAgentBrowserAuthoritySyncContribution implements IWorkbenchContribu
 }
 
 registerAction2(ParadisOpenBindingDialogAction);
+registerAction2(ParadisForgetOpenCodeCompatibleClisAction);
 registerAction2(ParadisOpenMobileDeviceDialogAction);
 registerAction2(ParadisShareBrowserPageWithTerminalPaneAction);
 registerAction2(ParadisUnshareBrowserPageAction);

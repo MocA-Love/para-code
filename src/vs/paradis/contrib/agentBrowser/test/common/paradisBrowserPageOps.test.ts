@@ -226,12 +226,19 @@ suite('paradisBrowserPageOps', () => {
 			paradisRedactToolInputSecrets('mcp__para-browser__set_extra_http_headers', input),
 			paradisRedactToolArgumentsText('mcp__para-browser__set_http_credentials', JSON.stringify(input)),
 			paradisRedactToolArgumentsText('mcp__para-browser__set_http_credentials', '{broken secret'),
+			// OpenCode joins the MCP server and tool names with a single underscore
+			paradisRedactToolInputSecrets('para-browser_set_http_credentials', input),
+			paradisRedactToolArgumentsText('para-browser_set_http_credentials', JSON.stringify(input)),
+			paradisRedactToolInputSecrets('para-browser_reset_http_credentials_hint', input),
 		], [
 			{ origin: 'https://example.com', username: 'u', password: '[hidden]' },
 			{ origin: 'https://example.com', username: 'u', password: '[hidden]' },
 			input,
 			'{"origin":"https://example.com","username":"u","password":"[hidden]"}',
 			'[hidden]',
+			{ origin: 'https://example.com', username: 'u', password: '[hidden]' },
+			'{"origin":"https://example.com","username":"u","password":"[hidden]"}',
+			input,
 		]);
 	});
 });

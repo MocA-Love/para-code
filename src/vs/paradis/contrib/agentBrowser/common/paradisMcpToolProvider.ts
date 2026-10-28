@@ -163,7 +163,7 @@ export interface IParadisMcpPaneTab {
 
 /** ペインのエージェントのカーソルの名前の元。 */
 export interface IParadisMcpCursorIdentity {
-	readonly cli?: 'claude' | 'codex';
+	readonly cli?: 'claude' | 'codex' | 'opencode';
 	readonly label?: string;
 }
 

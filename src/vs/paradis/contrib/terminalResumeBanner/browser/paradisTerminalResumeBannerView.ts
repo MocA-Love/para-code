@@ -63,7 +63,8 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		const header = dom.append(element, $('.paradis-terminal-resume-banner-header'));
 		dom.append(header, $('span.paradis-terminal-resume-banner-heading')).textContent = offer.agent === 'claude'
 			? localize('paradis.resumeBanner.headingClaude', "前回の Claude Code のセッションがあります")
-			: localize('paradis.resumeBanner.headingCodex', "前回の Codex のセッションがあります");
+			: offer.agent === 'codex' ? localize('paradis.resumeBanner.headingCodex', "前回の Codex のセッションがあります")
+				: localize('paradis.resumeBanner.headingOpenCode', "前回の OpenCode のセッションがあります");
 		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
 		close.type = 'button';
 		close.setAttribute('aria-label', localize('paradis.resumeBanner.dismiss', "閉じる（このタブでは再び表示しません）"));
@@ -104,6 +105,7 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		resume.label = localize('paradis.resumeBanner.resume', "このタブで再開");
 		// setTitle はホバーだけを変え、読み上げ名は upstream の "More Actions..." のまま残るので、両方に入れる
 		const moreResume = localize('paradis.resumeBanner.moreResume', "権限確認なしで再開・分岐する");
+		resume.dropdownButton.element.hidden = offer.agent === 'opencode';
 		resume.dropdownButton.setTitle(moreResume);
 		resume.dropdownButton.setAriaLabel(moreResume);
 		store.add(resume.onDidClick(() => host.resume(target)));
