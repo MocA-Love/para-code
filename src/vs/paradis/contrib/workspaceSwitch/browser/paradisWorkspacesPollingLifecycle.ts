@@ -11,7 +11,18 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 
-const DIFF_STATS_POLL_INTERVAL_MS = 10_000;
+/**
+ * 差分の定期の見回り。見回りで git を投げるのは、変更の印が付いた対象と、保険の時間（5分）を過ぎた対象だけ
+ * （選ぶのは呼び出し側。paradisWorkspacesDiffStatsTracker.ts）。何も変わっていなければ git は投げない。
+ */
+const DIFF_STATS_POLL_INTERVAL_MS = 60_000;
+/** 変更の知らせから取り直すまでの待ち。保存の連続やビルドの書き込みを 1 回にまとめる。 */
+const DIFF_STATS_CHANGE_DELAY_MS = 1_500;
+/**
+ * 変更の知らせから取り直すときの、前回の完了からの最短の間隔。ビルドやウォッチが開いているフォルダーへ書き続けても、
+ * 以前の 10 秒ごとより多くは投げない。
+ */
+const DIFF_STATS_MIN_CHANGE_INTERVAL_MS = 10_000;
 const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 const ISSUE_STATUS_POLL_INTERVAL_MS = 300_000;
 
@@ -42,12 +53,29 @@ export interface IParadisWorkspacesPollingSignals {
 	 * リポジトリ・worktree の通知（中身が変わっていなくても来る）では取り直さず、これでだけ取り直す。
 	 */
 	readonly onDidChangeGithubTargets?: Event<void>;
+	/**
+	 * ウィンドウが表に出ているか（フォーカスがあり、最小化されていない）。渡すと、差分の取り直しは表に出ている
+	 * ときだけ行い、裏に回っている間の変更は表に戻ったときに 1 回だけ取り直す。PR・Issue には掛けない。
+	 */
+	readonly isWindowActive?: () => boolean;
+	readonly onDidChangeWindowActive?: Event<unknown>;
 }
 
 type SchedulerFactory = (runner: () => void, defaultDelay: number) => IParadisWorkspacesPollingScheduler;
 
 interface IParadisWorkspacesPollState {
 	readonly scheduler: IParadisWorkspacesPollingScheduler;
+	readonly interval: number;
+	/** この種類のポーリングを動かしてよいか（ビューが見えているか、差分ならウィンドウが表に出ているかも）。 */
+	readonly gate: () => boolean;
+	/** 最後に反映した gate の値。変わったときだけ止める・再開する。 */
+	active: boolean;
+	/** 変更の知らせによる短い待ちを予約済みか（予約を後ろへずらし続けないため）。 */
+	changePending: boolean;
+	/** 実行中に変更の知らせが来た。終わったら最短の間隔を空けて取り直す。 */
+	changeAfterFlight: boolean;
+	/** 予約している次の実行の時刻。予約が無ければ undefined。 */
+	dueAt: number | undefined;
 	inFlight: boolean;
 	pendingImmediate: boolean;
 	invalidated: boolean;
@@ -69,6 +97,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	private readonly issueStatus: IParadisWorkspacesPollState | undefined;
 	private started = false;
 	private visible = false;
+	private windowActive = true;
 
 	constructor(
 		signals: IParadisWorkspacesPollingSignals,
@@ -79,29 +108,31 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		refreshIssueStatus?: () => void,
 	) {
 		super();
-		this.diffStats = {
-			scheduler: this._register(schedulerFactory(refreshDiffStats, DIFF_STATS_POLL_INTERVAL_MS)),
+		const createState = (runner: () => void, interval: number, gate: () => boolean): IParadisWorkspacesPollState => ({
+			scheduler: this._register(schedulerFactory(runner, interval)),
+			interval,
+			gate,
+			active: false,
+			changePending: false,
+			changeAfterFlight: false,
+			dueAt: undefined,
 			inFlight: false,
 			pendingImmediate: false,
 			invalidated: false,
 			lastCompletedAt: undefined,
-		};
-		this.prStatus = {
-			scheduler: this._register(schedulerFactory(refreshPrStatus, PR_STATUS_POLL_INTERVAL_MS)),
-			inFlight: false,
-			pendingImmediate: false,
-			invalidated: false,
-			lastCompletedAt: undefined,
-		};
-		this.issueStatus = refreshIssueStatus !== undefined ? {
-			scheduler: this._register(schedulerFactory(refreshIssueStatus, ISSUE_STATUS_POLL_INTERVAL_MS)),
-			inFlight: false,
-			pendingImmediate: false,
-			invalidated: false,
-			lastCompletedAt: undefined,
-		} : undefined;
+		});
+		const isWindowActive = signals.isWindowActive;
+		this.diffStats = createState(refreshDiffStats, DIFF_STATS_POLL_INTERVAL_MS, () => this.visible && this.windowActive);
+		this.prStatus = createState(refreshPrStatus, PR_STATUS_POLL_INTERVAL_MS, () => this.visible);
+		this.issueStatus = refreshIssueStatus !== undefined ? createState(refreshIssueStatus, ISSUE_STATUS_POLL_INTERVAL_MS, () => this.visible) : undefined;
 
 		this._register(signals.onDidChangeVisibility(() => this.setVisible(signals.isBodyVisible())));
+		if (isWindowActive !== undefined) {
+			this.windowActive = isWindowActive();
+			if (signals.onDidChangeWindowActive !== undefined) {
+				this._register(signals.onDidChangeWindowActive(() => this.setWindowActive(isWindowActive())));
+			}
+		}
 		const githubFollowsTargets = signals.onDidChangeGithubTargets !== undefined;
 		this._register(signals.onDidChangeRepositories(() => this.requestRefresh(true, !githubFollowsTargets)));
 		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh(true, !githubFollowsTargets)));
@@ -117,9 +148,49 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		}
 		this.started = true;
 		this.visible = visible;
-		if (visible) {
-			this.requestRefresh();
+		for (const state of this.allStates()) {
+			state.active = state.gate();
+			// 止まった状態で始まったものは、動き出したときに resume が最初の 1 回を取る
+			if (state.active) {
+				this.requestImmediate(state);
+			}
 		}
+	}
+
+	/**
+	 * 差分の対象に変更の印が付いた。少し待ってから取り直す（待っている間の知らせはまとめる）。
+	 * 止まっている間は、表に出たときに 1 回だけ取り直す。
+	 */
+	requestDiffStatsRefreshForChange(): void {
+		if (!this.started) {
+			return;
+		}
+		const state = this.diffStats;
+		if (!state.active) {
+			state.invalidated = true;
+			return;
+		}
+		if (state.inFlight) {
+			state.changeAfterFlight = true;
+			return;
+		}
+		const delay = this.changeDelay(state);
+		if (state.dueAt !== undefined && state.dueAt <= this.now() + delay) {
+			// 先に予約した実行（すぐの取り直しや、まとめ待ち）の方が早い。後ろへずらさない
+			return;
+		}
+		state.changePending = true;
+		this.schedule(state, delay);
+	}
+
+	private schedule(state: IParadisWorkspacesPollState, delay: number): void {
+		state.dueAt = this.now() + delay;
+		state.scheduler.schedule(delay);
+	}
+
+	private changeDelay(state: IParadisWorkspacesPollState): number {
+		const sinceLast = state.lastCompletedAt === undefined ? Number.POSITIVE_INFINITY : this.now() - state.lastCompletedAt;
+		return Math.max(DIFF_STATS_CHANGE_DELAY_MS, DIFF_STATS_MIN_CHANGE_INTERVAL_MS - sinceLast);
 	}
 
 	/** diff コマンドを開始できるときだけ in-flight にする。 */
@@ -129,7 +200,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 
 	/** diff コマンド完了後、可視状態に応じて次回実行を決める。 */
 	completeDiffStatsRefresh(): void {
-		this.complete(this.diffStats, DIFF_STATS_POLL_INTERVAL_MS);
+		this.complete(this.diffStats);
 	}
 
 	/** PR コマンドを開始できるときだけ in-flight にする。 */
@@ -139,7 +210,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 
 	/** PR コマンド完了後、可視状態に応じて次回実行を決める。 */
 	completePrStatusRefresh(): void {
-		this.complete(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
+		this.complete(this.prStatus);
 	}
 
 	/** Issue コマンドを開始できるときだけ in-flight にする。refreshIssueStatus 未指定なら常に false。 */
@@ -150,7 +221,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	/** Issue コマンド完了後、可視状態に応じて次回実行を決める。 */
 	completeIssueStatusRefresh(): void {
 		if (this.issueStatus !== undefined) {
-			this.complete(this.issueStatus, ISSUE_STATUS_POLL_INTERVAL_MS);
+			this.complete(this.issueStatus);
 		}
 	}
 
@@ -160,7 +231,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	 * requestRefresh (private) とは別に公開する。
 	 */
 	requestImmediateIssueStatusRefresh(): void {
-		if (this.issueStatus !== undefined && this.started && this.visible) {
+		if (this.issueStatus !== undefined && this.started && this.issueStatus.active) {
 			this.requestImmediate(this.issueStatus);
 		}
 	}
@@ -168,16 +239,13 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	override dispose(): void {
 		this.started = false;
 		this.visible = false;
-		this.diffStats.inFlight = false;
-		this.diffStats.pendingImmediate = false;
-		this.diffStats.invalidated = false;
-		this.prStatus.inFlight = false;
-		this.prStatus.pendingImmediate = false;
-		this.prStatus.invalidated = false;
-		if (this.issueStatus !== undefined) {
-			this.issueStatus.inFlight = false;
-			this.issueStatus.pendingImmediate = false;
-			this.issueStatus.invalidated = false;
+		for (const state of this.allStates()) {
+			state.active = false;
+			state.changePending = false;
+			state.changeAfterFlight = false;
+			state.inFlight = false;
+			state.pendingImmediate = false;
+			state.invalidated = false;
 		}
 		super.dispose();
 	}
@@ -187,21 +255,33 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			return;
 		}
 		this.visible = visible;
+		this.applyGates();
+	}
+
+	private setWindowActive(windowActive: boolean): void {
+		if (this.windowActive === windowActive) {
+			return;
+		}
+		this.windowActive = windowActive;
+		this.applyGates();
+	}
+
+	/** 各種類の gate を読み直し、変わったものだけ止める・再開する。 */
+	private applyGates(): void {
 		if (!this.started) {
 			return;
 		}
-		if (!visible) {
-			this.cancelPending(this.diffStats);
-			this.cancelPending(this.prStatus);
-			if (this.issueStatus !== undefined) {
-				this.cancelPending(this.issueStatus);
+		for (const state of this.allStates()) {
+			const active = state.gate();
+			if (active === state.active) {
+				continue;
 			}
-			return;
-		}
-		this.resume(this.diffStats, DIFF_STATS_POLL_INTERVAL_MS);
-		this.resume(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
-		if (this.issueStatus !== undefined) {
-			this.resume(this.issueStatus, ISSUE_STATUS_POLL_INTERVAL_MS);
+			state.active = active;
+			if (active) {
+				this.resume(state);
+			} else {
+				this.cancelPending(state);
+			}
 		}
 	}
 
@@ -211,16 +291,12 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			return;
 		}
 		const states = includeGithub ? this.allStates() : [this.diffStats];
-		if (!this.visible) {
-			if (markInvalidated) {
-				for (const state of states) {
-					state.invalidated = true;
-				}
-			}
-			return;
-		}
 		for (const state of states) {
-			this.requestImmediate(state);
+			if (state.active) {
+				this.requestImmediate(state);
+			} else if (markInvalidated) {
+				state.invalidated = true;
+			}
 		}
 	}
 
@@ -231,7 +307,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		}
 		const states = this.issueStatus !== undefined ? [this.prStatus, this.issueStatus] : [this.prStatus];
 		for (const state of states) {
-			if (this.visible) {
+			if (state.active) {
 				this.requestImmediate(state);
 			} else {
 				state.invalidated = true;
@@ -248,11 +324,13 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			state.pendingImmediate = true;
 			return;
 		}
-		state.scheduler.schedule(0);
+		state.changePending = false;
+		this.schedule(state, 0);
 	}
 
 	private begin(state: IParadisWorkspacesPollState): boolean {
-		if (!this.started || !this.visible) {
+		state.dueAt = undefined;
+		if (!this.started || !state.active) {
 			return false;
 		}
 		if (state.inFlight) {
@@ -261,43 +339,60 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		}
 		state.inFlight = true;
 		state.pendingImmediate = false;
+		state.changePending = false;
+		state.changeAfterFlight = false;
 		return true;
 	}
 
-	private complete(state: IParadisWorkspacesPollState, interval: number): void {
+	private complete(state: IParadisWorkspacesPollState): void {
 		if (!state.inFlight) {
 			return;
 		}
 		state.inFlight = false;
 		state.lastCompletedAt = this.now();
-		if (!this.visible) {
+		if (!state.active) {
 			return;
 		}
 		if (state.pendingImmediate || state.invalidated) {
 			state.pendingImmediate = false;
 			state.invalidated = false;
-			state.scheduler.schedule(0);
+			state.changeAfterFlight = false;
+			this.schedule(state, 0);
 			return;
 		}
-		state.scheduler.schedule(interval);
+		if (state.changeAfterFlight) {
+			state.changeAfterFlight = false;
+			state.changePending = true;
+			this.schedule(state, this.changeDelay(state));
+			return;
+		}
+		this.schedule(state, state.interval);
 	}
 
 	private cancelPending(state: IParadisWorkspacesPollState): void {
 		state.scheduler.cancel();
+		state.dueAt = undefined;
+		if (state.changePending || state.changeAfterFlight) {
+			// 待っていた変更は、表に戻ったときに取り直す
+			state.invalidated = true;
+		}
+		state.changePending = false;
+		state.changeAfterFlight = false;
 		state.pendingImmediate = false;
 	}
 
-	private resume(state: IParadisWorkspacesPollState, interval: number): void {
+	private resume(state: IParadisWorkspacesPollState): void {
 		if (state.inFlight) {
 			return;
 		}
+		const interval = state.interval;
 		const elapsed = state.lastCompletedAt === undefined ? interval : this.now() - state.lastCompletedAt;
 		if (state.invalidated || elapsed >= interval) {
 			state.invalidated = false;
-			state.scheduler.schedule(0);
+			this.schedule(state, 0);
 			return;
 		}
-		state.scheduler.schedule(Math.max(0, interval - elapsed));
+		this.schedule(state, Math.max(0, interval - elapsed));
 	}
 }
 
@@ -370,5 +465,10 @@ export class ParadisWorkspacesPollingController extends Disposable {
 	/** 新規 Issue URL の検出時に、通常の300秒周期を待たず次のIssue解決を即時実行させる。 */
 	requestImmediateIssueStatusRefresh(): void {
 		this.lifecycle.requestImmediateIssueStatusRefresh();
+	}
+
+	/** 差分の対象に変更の印が付いたとき。少し待ってから取り直す。 */
+	requestDiffStatsRefreshForChange(): void {
+		this.lifecycle.requestDiffStatsRefreshForChange();
 	}
 }

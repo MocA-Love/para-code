@@ -75,6 +75,11 @@ export interface IParadisWorktree {
 	/** 作業ツリーのディレクトリが見つからない (自動削除OFFで残っている) */
 	readonly missing?: boolean;
 	/**
+	 * git のメタデータのディレクトリ (`<repo>/.git/worktrees/<name>`)。ディスクから検出できたときだけ入る。
+	 * Workspaces ビューが stage・commit・checkout を知るための非再帰の監視に使う。
+	 */
+	readonly gitDir?: URI;
+	/**
 	 * true の場合、この行は実際の git worktree ではなくリポジトリ本体 (main checkout) を
 	 * 表す合成エントリ (Workspaces ビューがリポジトリ行を純粋なグルーピング見出しにするため、
 	 * main checkout もリスト内の1行として子要素に混ぜ込む)。切り替え/状態キーは

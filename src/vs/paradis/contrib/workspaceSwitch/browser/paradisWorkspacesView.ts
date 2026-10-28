@@ -16,7 +16,7 @@ import { IObjectTreeElement, ITreeDragAndDrop, ITreeDragOverReaction, ITreeNode,
 import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { createMarkdownLink, escapeMarkdownSyntaxTokens, MarkdownString } from '../../../../base/common/htmlContent.js';
@@ -26,13 +26,14 @@ import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ResourceMap } from '../../../../base/common/map.js';
-import { isEqual } from '../../../../base/common/resources.js';
+import { isEqual, joinPath } from '../../../../base/common/resources.js';
 import { URI, UriComponents } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -53,6 +54,8 @@ import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/p
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
+import { IParadisDiffStatsTarget, ParadisWorkspacesDiffStatsTracker } from './paradisWorkspacesDiffStatsTracker.js';
+import { IParadisWorkspacesWindowActivity } from './paradisWorkspacesWindowActivity.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
@@ -999,7 +1002,7 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 export class ParadisWorkspacesView extends ViewPane {
 
 	private tree: WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore> | undefined;
-	/** worktree の uri.fsPath → 未コミット差分統計。ポーリングでのみ更新する (refreshDiffStats 参照) */
+	/** worktree の uri.fsPath → 未コミット差分統計。取り直した対象の分だけ上書きする (refreshDiffStats 参照) */
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
@@ -1028,6 +1031,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	 */
 	private readonly _issueLookupRequested = new Set<string>();
 	private readonly _pollingController: ParadisWorkspacesPollingController;
+	/** 差分を取り直す対象（変更の印が付いたもの・保険の時間を過ぎたもの）を選ぶ台帳 */
+	private readonly _diffStatsTracker: ParadisWorkspacesDiffStatsTracker;
 	/** PR・Issue の問い合わせ対象（worktree・ブランチ・今いるスペース）が実際に変わったときだけ鳴る。 */
 	private readonly _onDidChangeGithubTargets = this._register(new Emitter<void>());
 	private _githubTargetsFingerprint: string | undefined;
@@ -1068,6 +1073,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisAgentInsightsService private readonly agentInsightsService: IParadisAgentInsightsService,
+		@IFileService fileService: IFileService,
+		@IParadisWorkspacesWindowActivity windowActivity: IParadisWorkspacesWindowActivity,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -1078,6 +1085,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				onDidChangeRepositories: this.workspaceSwitchService.onDidChangeRepositories,
 				onDidChangeWorktrees: this.worktreeService.onDidChangeWorktrees,
 				onDidChangeGithubTargets: this._onDidChangeGithubTargets.event,
+				// ほかのアプリへフォーカスが移る・最小化すると止まる（デスクトップはネイティブのウィンドウのフォーカスで決める）
+				isWindowActive: () => windowActivity.isActive,
+				onDidChangeWindowActive: windowActivity.onDidChange,
 			},
 			() => this.refreshDiffStats(),
 			() => this.refreshPrStatuses(),
@@ -1097,6 +1107,13 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(checkGithubTargets));
 		this._register(this.worktreeService.onDidChangeWorktrees(checkGithubTargets));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(checkGithubTargets));
+		this._diffStatsTracker = this._register(new ParadisWorkspacesDiffStatsTracker(fileService, () => this._pollingController.requestDiffStatsRefreshForChange()));
+		const updateDiffStatsTargets = () => {
+			this._diffStatsTracker.setTargets(this.diffStatsTargets());
+			this.noteAgentStatusesForDiffStats();
+		};
+		updateDiffStatsTargets();
+		this._register(Event.any(this.workspaceSwitchService.onDidChangeRepositories, this.worktreeService.onDidChangeWorktrees)(updateDiffStatsTargets));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
 
@@ -1112,6 +1129,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => {
 			this.updateTree();
+			this.noteAgentStatusesForDiffStats();
 			// 新規に検出された (まだ番号・タイトルを解決していない) Issue があれば、通常の300秒
 			// 周期を待たずに解決を前倒しする。件数バッジ自体は即座に出せるが、ホバー内容が
 			// 長時間「#…」のままだと検出が効いているのか分かりにくいため。
@@ -1330,6 +1348,37 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	/**
+	 * 差分を集計する対象と、その git のメタデータのディレクトリ（変更の監視に使う）。対象は pollTargets と同じ。
+	 */
+	private diffStatsTargets(): IParadisDiffStatsTarget[] {
+		const targets = new ResourceMap<IParadisDiffStatsTarget>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			targets.set(repository.uri, { uri: repository.uri, gitDir: joinPath(repository.uri, '.git') });
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && !targets.has(worktree.uri)) {
+					targets.set(worktree.uri, { uri: worktree.uri, gitDir: worktree.isMainCheckout ? joinPath(worktree.uri, '.git') : worktree.gitDir });
+				}
+			}
+		}
+		return [...targets.values()];
+	}
+
+	/**
+	 * エージェントの状態が変わったスペースの差分を取り直させる。エージェントが開いていないスペースで編集しても、
+	 * ウィンドウの監視には映らないため（stage していなければ git のメタデータも書かれない）。
+	 */
+	private noteAgentStatusesForDiffStats(): void {
+		for (const repository of this.workspaceSwitchService.repositories) {
+			this._diffStatsTracker.markDirtyWhenChanged(repository.uri, this.agentStatusStore.getScopeBreakdown(repository.id).join(','));
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && !worktree.isMainCheckout) {
+					this._diffStatsTracker.markDirtyWhenChanged(worktree.uri, this.agentStatusStore.getScopeBreakdown(worktreeStateKeyFor(worktree)).join(','));
+				}
+			}
+		}
+	}
+
+	/**
 	 * 今いるスペース（このウィンドウで開いているリポジトリ・worktree）の URI。PR・Issue の取得では、これだけを
 	 * 5分ごとに、ほかは15分ごとに取り直させる（使い回しは git チャネル側。paradisGithubLookupCache.ts）。
 	 */
@@ -1365,20 +1414,25 @@ export class ParadisWorkspacesView extends ViewPane {
 		return paradisGithubTargetsFingerprint(targets, this.activePollTarget()?.toString());
 	}
 
-	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
+	/**
+	 * diff 統計 (+N/-N) を取り直す。取り直すのは変更の印が付いた対象と、保険の時間を過ぎた対象だけで、
+	 * どれも無ければ git を投げない。非表示中・ウィンドウが裏にいる間の実行・再スケジュールは lifecycle が抑止する。
+	 */
 	private async refreshDiffStats(): Promise<void> {
-		const targets = this.pollTargets();
+		const targets = this._diffStatsTracker.takeDueTargets();
 		if (targets.length === 0) {
 			return;
 		}
-		const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, targets);
-		if (result) {
-			this._diffStats.clear();
-			for (const [path, stat] of Object.entries(result)) {
-				this._diffStats.set(path, stat);
-			}
-			this.updateTree();
+		let result: Record<string, IParadisDiffStat> | undefined;
+		try {
+			result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, targets);
+		} catch (error) {
+			this._diffStatsTracker.restoreDirty(targets);
+			throw error;
 		}
+		// 取り直した対象だけを上書きする。数えられなかった対象（SSH の再接続中など）は前の値を残し、次の機会に取り直す
+		this._diffStatsTracker.applyRefreshResult(targets, result ?? undefined, this._diffStats);
+		this.updateTree();
 	}
 
 	/** 各 worktree の現在ブランチに紐づく PR 状態をポーリングで取得する。仕組みは refreshDiffStats と同じ。 */
