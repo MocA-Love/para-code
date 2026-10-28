@@ -449,11 +449,11 @@ export class BrowserView extends Disposable {
 			}
 		});
 		webContents.on('did-finish-load', () => fireLoadingEvent(false));
-		// PARA-PATCH: a server (or a wedged remote agent tunnel) that accepts the connection and then never responds makes Chromium wait forever without emitting `did-fail-load`, leaving the view spinning with no error. Fail such loads into the normal error path instead (Para Code)
+		// PARA-PATCH: a server (or a wedged remote agent tunnel) that accepts the connection and then never responds makes Chromium wait forever without emitting `did-fail-load`, leaving the view spinning with no error. Ask whether to keep waiting, and fail stopped loads into the normal error path (Para Code)
 		this._register(paraInstallBrowserViewLoadWatchdog(webContents, this.logService, error => {
 			this._lastError = error;
 			fireLoadingEvent(false);
-		}));
+		}, { viewId: this.id, context: () => ({ remoteAuthority: this._ownerWindow.remoteAuthority, tunnelProxy: this.session.remote.isRemote, storageScope: this.session.storageScope }) }));
 		// PARA-PATCH: navigation discards the preload's isolated state, so clear any pending automation key expectations; same-document navigations keep it (Para Browser MCP automation input isolation)
 		webContents.on('did-start-navigation', details => {
 			if (browserViewAutomationNavigationDiscardsPreloadState(details)) {
