@@ -107,3 +107,49 @@ export function paradisExtensionIdFromStack(stack: string | undefined): string |
 	}
 	return undefined;
 }
+
+/** upstream の `checkProposedApiEnabled`（`extensions.ts`）が投げる文の頭。引用の中は拡張の識別子（`<publisher>.<name>`）。 */
+const proposalErrorExtension = /\bExtension '(?<id>[a-z0-9][a-z0-9-]{0,63}\.[a-z0-9][a-z0-9-]{0,127})' CANNOT use API proposal: /i;
+
+/** 文を読む長さの上限（`paradisErrorMessageHash` と同じ値）。 */
+const MAX_MESSAGE_LENGTH = 1_000;
+
+/**
+ * 提案 API が許されていないときの例外の文から、拡張の識別子を取り出す。文は upstream の固定の形で、
+ * 識別子は拡張の `package.json` の `publisher` と `name`（パスではない）。識別子の形をしたものだけを返す。
+ *
+ * 拡張のコードがスタックに残らない例外（タイマーの中で拡張ホストが投げたもの。Sentry の PARA-CODE-DESKTOP-MK）
+ * のために使う。文は拡張が真似て投げられるので、スタックから取れないときだけ使う（`paradisRelayedExtensionId`）。
+ * 文は送らない。
+ */
+export function paradisExtensionIdFromProposalError(error: unknown): string | undefined {
+	try {
+		const message = typeof error === 'object' && error !== null ? (error as { message?: unknown }).message : undefined;
+		if (typeof message !== 'string') {
+			return undefined;
+		}
+		return proposalErrorExtension.exec(message.slice(0, MAX_MESSAGE_LENGTH))?.groups?.id?.toLowerCase();
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * 拡張ホストから届いた例外の持ち主の拡張。スタック、提案 API の例外の文の順に見る。
+ *
+ * スタックを先にするのは、文はどの拡張でも真似て投げられ、別の拡張のせいにできるため。
+ * 文から取った識別子は、`isInstalled` が真のときだけ返す。開発中の拡張（`--extensionDevelopmentPath`）の
+ * 識別子は利用者のものなので送らない（スタックの側がフォルダーの形で線を引いているのと同じ扱い）。
+ */
+export function paradisRelayedExtensionId(error: unknown, isInstalled: (extensionId: string) => boolean): string | undefined {
+	const fromStack = paradisExtensionIdFromStack(paradisErrorStack(error));
+	if (fromStack !== undefined) {
+		return fromStack;
+	}
+	const fromMessage = paradisExtensionIdFromProposalError(error);
+	try {
+		return fromMessage !== undefined && isInstalled(fromMessage) ? fromMessage : undefined;
+	} catch {
+		return undefined;
+	}
+}
