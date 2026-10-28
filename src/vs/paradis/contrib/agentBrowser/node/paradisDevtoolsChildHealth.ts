@@ -208,7 +208,7 @@ export function paradisUntagUids(value: unknown, tag: string | undefined, issued
 }
 
 /** 子プロセスを入れ替えた理由（エージェントへの案内の言い方を変える）。 */
-export type ParadisDevtoolsReplacedReason = 'recycled' | 'exited' | 'idle';
+export type ParadisDevtoolsReplacedReason = 'recycled' | 'exited' | 'idle' | 'evicted';
 
 function describeReplacement(reason: ParadisDevtoolsReplacedReason | undefined): string {
 	switch (reason) {
@@ -216,6 +216,7 @@ function describeReplacement(reason: ParadisDevtoolsReplacedReason | undefined):
 		case 'recycled': return 'Para Code restarted its embedded DevTools bridge to free memory';
 		case 'exited': return 'Para Code\'s embedded DevTools bridge stopped and was started again';
 		case 'idle': return 'Para Code\'s embedded DevTools bridge was stopped while unused and started again';
+		case 'evicted': return 'Para Code stopped the embedded DevTools bridge of this tab while it was unused, to make room for other tabs, and started it again';
 	}
 }
 
@@ -232,9 +233,12 @@ export function paradisDevtoolsReadsRecords(name: string): boolean {
 	return RECORD_TOOLS.has(name);
 }
 
-/** 入れ替えの後、最初に記録を読んだ結果へ 1 行添える文。 */
-export function paradisDevtoolsRecordsResetNote(reason: ParadisDevtoolsReplacedReason): string {
-	return `Note: ${describeReplacement(reason)}; console messages and network requests from before that are no longer listed, and settings made with emulate are reset. The page itself is unchanged.`;
+/**
+ * 入れ替えの後、最初に記録を読んだ結果へ 1 行添える文。
+ * @param hadTrace 止めた子が、始めたまま止めていない performance trace を持っていたか。
+ */
+export function paradisDevtoolsRecordsResetNote(reason: ParadisDevtoolsReplacedReason, hadTrace: boolean = false): string {
+	return `Note: ${describeReplacement(reason)}; console messages and network requests from before that are no longer listed, and settings made with emulate are reset${hadTrace ? ', and the performance trace you started and did not stop has ended (start it again if you need it)' : ''}. The page itself is unchanged.`;
 }
 
 /** RSS を読むときの待ち時間の上限。 */

@@ -381,7 +381,7 @@ suite('ParadisBrowserMcpShimCore', () => {
 		finishSecond();
 		await tracker.waitForSettled();
 		assert.strictEqual(tracker.size, 0);
-		assert.strictEqual(PARADIS_MCP_MAX_INFLIGHT_REQUESTS, 8);
+		assert.strictEqual(PARADIS_MCP_MAX_INFLIGHT_REQUESTS, 32);
 	});
 
 	test('serializes stdout writes and retains inflight backpressure until callback and drain', async () => {
