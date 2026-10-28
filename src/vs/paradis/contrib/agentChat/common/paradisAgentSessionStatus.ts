@@ -27,6 +27,8 @@ const TTL_1H_MS = 60 * 60 * 1000;
 /** 4.x 以前の Claude のコンテキストの大きさ（1M を使っていると分からないとき）。 */
 const CLAUDE_CONTEXT_WINDOW = 200_000;
 const CLAUDE_CONTEXT_WINDOW_1M = 1_000_000;
+/** 中断・API エラーのときに Claude Code が assistant の行へ書くモデル名（API を呼んでいない）。 */
+const CLAUDE_SYNTHETIC_MODEL = '<synthetic>';
 /** Codex の TUI がコンテキストの残りを出すときに差し引く固定の分（codex-rs の `BASELINE_TOKENS`）。 */
 const CODEX_CONTEXT_BASELINE_TOKENS = 12_000;
 /** 覚えておくセッションの開き直し（resume）の時刻の数。 */
@@ -190,7 +192,7 @@ export function paradisReadClaudeCacheRequest(line: Readonly<Record<string, unkn
 	const usage = rec(message?.usage);
 	const at = lineTime(line);
 	// 中断・エラーで Claude Code が作る行（`<synthetic>`）は API のリクエストではない
-	if (usage === undefined || at === undefined || message?.model === '<synthetic>') {
+	if (usage === undefined || at === undefined || message?.model === CLAUDE_SYNTHETIC_MODEL) {
 		return undefined;
 	}
 	const request = { at, inputTokens: count(usage.input_tokens), cacheReadTokens: count(usage.cache_read_input_tokens), cacheCreationTokens: count(usage.cache_creation_input_tokens), ttl: paradisClaudeCacheTtl(usage) };
@@ -234,6 +236,14 @@ export function paradisReadCompactionNotice(line: Readonly<Record<string, unknow
 		|| line.type === 'compacted'
 		|| (line.type === 'event_msg' && payload?.type === 'context_compacted');
 	return isNotice ? lineTime(line) : undefined;
+}
+
+/**
+ * transcript の assistant の行のモデル名のうち、会話のモデルとして使えるもの。空と `<synthetic>` は undefined
+ * （`<synthetic>` を覚えると、窓が既定の 1M になり、4.x の会話で使用率が 1/5 に出る）。
+ */
+export function paradisClaudeTranscriptModel(model: string | undefined): string | undefined {
+	return model !== undefined && model.length > 0 && model !== CLAUDE_SYNTHETIC_MODEL ? model : undefined;
 }
 
 /**
