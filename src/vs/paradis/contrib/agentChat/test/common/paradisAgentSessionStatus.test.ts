@@ -16,6 +16,7 @@ import {
 	paradisClaudeContextWindow,
 	paradisCodexContextPercent,
 } from '../../common/paradisAgentSessionStatus.js';
+import { newParseSignals, parseClaudeLine } from '../../common/paradisAgentTranscriptParser.js';
 
 const T0 = Date.parse('2026-10-06T10:00:00.000Z');
 
@@ -136,7 +137,7 @@ suite('ParadisAgentSessionStatus', () => {
 		const oneMillion = tracker.snapshot({ model: 'claude-opus-4-7[1m]' }).context;
 		const changed = tracker.applyMeasure({ tokens: 142_800, window: 1_000_000, percent: 14 });
 		const unchanged = tracker.applyMeasure({ tokens: 142_800, window: 1_000_000, percent: 14 });
-		assert.deepStrictEqual({ empty, fromTranscript, oneMillion, changed, unchanged, fromMod: tracker.snapshot().context, windows: [paradisClaudeContextWindow(undefined, 150_000), paradisClaudeContextWindow(undefined, 250_000)] }, {
+		assert.deepStrictEqual({ empty, fromTranscript, oneMillion, changed, unchanged, fromMod: tracker.snapshot().context, windows: [paradisClaudeContextWindow('claude-sonnet-4-5', 150_000), paradisClaudeContextWindow('claude-sonnet-4-5', 250_000)] }, {
 			empty: { agent: 'claude' },
 			fromTranscript: { tokens: 140_010, window: 200_000, percent: 70, source: 'transcript' },
 			oneMillion: { tokens: 140_010, window: 1_000_000, percent: 14, source: 'transcript' },
@@ -145,6 +146,27 @@ suite('ParadisAgentSessionStatus', () => {
 			fromMod: { tokens: 142_800, window: 1_000_000, percent: 14, source: 'mod' },
 			windows: [200_000, 1_000_000],
 		});
+	});
+
+	test('an interrupted or failed reply (model <synthetic>) does not replace the model the window is read from', () => {
+		const signals = newParseSignals();
+		const assistant = (uuid: string, model: string) => ({ type: 'assistant', uuid, timestamp: at(0), message: { role: 'assistant', model, content: [{ type: 'text', text: 'hi' }] } });
+		parseClaudeLine(assistant('a1', 'claude-opus-4-7'), signals);
+		parseClaudeLine(assistant('a2', '<synthetic>'), signals);
+		assert.deepStrictEqual([signals.model, paradisClaudeContextWindow(signals.model, 140_000)], ['claude-opus-4-7', 200_000]);
+	});
+
+	test('the Claude window is 1M by default and 200K only for model names before 5.x', () => {
+		const names = [
+			'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'opus', undefined, 'my-gateway-deployment',
+			'claude-opus-4-7', 'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-20241022', 'claude-3-opus', 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'claude-opus-4@20250514', 'claude-2.1',
+			'claude-sonnet-4-5[1m]',
+		];
+		assert.deepStrictEqual(names.map(name => [name, paradisClaudeContextWindow(name, 150_000)]), [
+			['claude-opus-5-5', 1_000_000], ['claude-sonnet-5-5', 1_000_000], ['claude-haiku-5-5', 1_000_000], ['claude-fable-5-1', 1_000_000], ['opus', 1_000_000], [undefined, 1_000_000], ['my-gateway-deployment', 1_000_000],
+			['claude-opus-4-7', 200_000], ['claude-haiku-4-5-20251001', 200_000], ['claude-3-5-sonnet-20241022', 200_000], ['claude-3-opus', 200_000], ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 200_000], ['claude-opus-4@20250514', 200_000], ['claude-2.1', 200_000],
+			['claude-sonnet-4-5[1m]', 1_000_000],
+		]);
 	});
 
 	test('reads Codex token_count: repeated counts once, the TUI context percent, no cache expiry, compaction expected at any time', () => {
