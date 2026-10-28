@@ -23,9 +23,10 @@ export type ParaBrowserViewLoadStallResponse = 'wait' | 'stop';
  * How a stalled load ended. Sent to Sentry as a fixed value, so none of these may contain a word
  * Sentry scrubs (see `isParadisSentryScrubbedWord`).
  * - `stopped`: the person chose to stop it.
- * - `agent-stopped`: an agent-only tab, stopped without asking.
+ * - `agent-stopped`: a tab an agent opened, stopped without asking.
+ * - `wait-limit`: stopped after the person chose to wait the maximum number of times.
  * - `responded`: the server answered after all (the page committed or redirected).
  * - `failed`: Chromium failed the load itself (connection reset, DNS, ...).
  * - `abandoned`: stopped from the toolbar, replaced by another navigation, closed, or crashed.
  */
-export type ParaBrowserViewLoadStallOutcome = 'stopped' | 'agent-stopped' | 'responded' | 'failed' | 'abandoned';
+export type ParaBrowserViewLoadStallOutcome = 'stopped' | 'agent-stopped' | 'wait-limit' | 'responded' | 'failed' | 'abandoned';

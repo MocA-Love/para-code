@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 内蔵ブラウザの「まだ応答がありません」の main 側の窓口（app.ts に登録を1行足す方式）。
-// renderer へは、質問の出し入れのイベントと、今の質問の取得・答えの3つだけを見せる。
+// renderer へは、質問の出し入れのイベントと、今の質問の取得・答え、エージェントのタブの印だけを見せる。
 // 見張りが止まった回を終わったときに Sentry へ1件送る配線もここに置く（platform から vs/paradis を
 // import しないよう、見張りには送り先を差し込むだけにしてある）。
 
@@ -16,7 +16,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ParaBrowserViewLoadStallResponse } from '../../../../platform/browserView/common/paraBrowserViewLoadStall.js';
-import { IParaBrowserViewLoadStallReporter, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraSetBrowserViewLoadStallReporter } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
+import { IParaBrowserViewLoadStallReporter, ParaBrowserViewLoadWatchdogWebContents, paraGetBrowserViewLoadStall, paraOnDidChangeBrowserViewLoadStall, paraRespondToBrowserViewLoadStall, paraSetBrowserViewAgentTab, paraSetBrowserViewLoadStallReporter } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { captureParadisDiagnosticMessage } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisBrowserLoadStallChange, PARADIS_BROWSER_LOAD_STALL_CHANNEL, paradisBuildBrowserLoadStallEvent } from '../common/paradisBrowserLoadStall.js';
 
@@ -63,7 +63,11 @@ const sentryReporter: IParaBrowserViewLoadStallReporter = {
 	},
 };
 
-/** renderer に見せるチャネル。受け付けるのは `onDidChange` の購読と `get` / `respond` だけ。 */
+/**
+ * renderer に見せるチャネル。受け付けるのは `onDidChange` の購読と `get` / `respond` / `setAgentTab` だけ。
+ * `setAgentTab` はエージェントのタブの台帳（paradisAgentBrowserTabsService）が、エージェントが開いたタブを
+ * 知らせる（見張りはそのタブでは人に聞かずに止める）。
+ */
 export class ParadisBrowserLoadStallChannel implements IServerChannel<string> {
 
 	listen<T>(_ctx: string, event: string): Event<T> {
@@ -88,6 +92,14 @@ export class ParadisBrowserLoadStallChannel implements IServerChannel<string> {
 					throw new Error('Unknown response.');
 				}
 				return paraRespondToBrowserViewLoadStall(viewId, response satisfies ParaBrowserViewLoadStallResponse) as T;
+			}
+			case 'setAgentTab': {
+				const agentTab = args[1];
+				if (typeof agentTab !== 'boolean') {
+					throw new Error('A boolean is required.');
+				}
+				paraSetBrowserViewAgentTab(viewId, agentTab);
+				return undefined as T;
 			}
 		}
 		throw new Error(`Call not found: ${command}`);

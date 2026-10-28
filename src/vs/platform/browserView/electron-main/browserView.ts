@@ -453,7 +453,7 @@ export class BrowserView extends Disposable {
 		this._register(paraInstallBrowserViewLoadWatchdog(webContents, this.logService, error => {
 			this._lastError = error;
 			fireLoadingEvent(false);
-		}, { viewId: this.id, context: () => ({ remoteAuthority: this._ownerWindow.remoteAuthority, tunnelProxy: this.session.remote.isRemote, storageScope: this.session.storageScope }) }));
+		}, { viewId: this.id, context: () => ({ remoteAuthority: this._ownerWindow.remoteAuthority, tunnelProxy: this.session.remote.isRemote }) }));
 		// PARA-PATCH: navigation discards the preload's isolated state, so clear any pending automation key expectations; same-document navigations keep it (Para Browser MCP automation input isolation)
 		webContents.on('did-start-navigation', details => {
 			if (browserViewAutomationNavigationDiscardsPreloadState(details)) {

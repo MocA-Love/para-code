@@ -21,6 +21,9 @@ suite('paradisBrowserLoadStall', () => {
 			'http://app.localhost/',
 			'http://127.0.0.2:8080/',
 			'http://[::1]:5173/',
+			'http://[::ffff:127.0.0.1]/',
+			'http://[::ffff:192.168.0.1]/',
+			'http://[::ffff:8.8.8.8]/',
 			'http://0.0.0.0:3000/',
 			'http://192.168.1.10/',
 			'http://10.0.0.5/',
@@ -43,6 +46,9 @@ suite('paradisBrowserLoadStall', () => {
 			'http/loopback',
 			'http/loopback',
 			'http/loopback',
+			'http/loopback',
+			'http/private-network',
+			'http/public',
 			'http/loopback',
 			'http/private-network',
 			'http/private-network',
@@ -101,7 +107,7 @@ suite('paradisBrowserLoadStall', () => {
 		// The context survives the client-side sanitizer as sent.
 		assert.deepStrictEqual(paradisSanitizeSentryEvent({ contexts: { 'para.browser_load': { ...event.data } } }).contexts, { 'para.browser_load': event.data });
 
-		const outcomes: ParaBrowserViewLoadStallOutcome[] = ['stopped', 'agent-stopped', 'responded', 'failed', 'abandoned'];
+		const outcomes: ParaBrowserViewLoadStallOutcome[] = ['stopped', 'agent-stopped', 'wait-limit', 'responded', 'failed', 'abandoned'];
 		const words = new Set<string>(['browser-load', 'para.browser_load', 'safe_page_memory_mb', 'safe_app_memory_mb', 'safe_system_total_mb', 'private-network', 'public', 'loopback', 'none', 'other', 'https', 'tunnel', 'codespaces', 'attached-container', 'k8s-container']);
 		for (const outcome of outcomes) {
 			const built = paradisBuildBrowserLoadStallEvent({ outcome, url: 'https://example.com/', elapsedMs: 1, waits: 0, remoteAuthority: undefined, tunnelProxy: false, agentTab: false, sample: {} });
