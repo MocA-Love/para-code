@@ -73,7 +73,7 @@ suite('ParadisEnsurePtyHost', () => {
 			}
 		};
 		try {
-			await paradisSpawnDaemon({
+			const daemon = await paradisSpawnDaemon({
 				paths: { socketPath: join(dir, 'pty.sock'), ledgerDir: dir, ledgerFile: join(dir, 'ledger.json'), socketPathTooLong: false },
 				launch: { execPath: join(dir, 'missing-executable'), args: [], env: {} },
 				logService,
@@ -82,7 +82,25 @@ suite('ParadisEnsurePtyHost', () => {
 			for (let i = 0; i < 100 && errors.length === 0; i++) {
 				await timeout(10);
 			}
-			assert.deepStrictEqual(errors, ['[ParadisPtyHost] failed to spawn the daemon process']);
+			assert.deepStrictEqual({ errors, state: daemon?.state() }, { errors: ['[ParadisPtyHost] failed to spawn the daemon process'], state: { state: 'spawn-failed' } });
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('起きなかったときの報告のために、常駐のプロセスが途中で終わったかと終了コードを返す', async () => {
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-ensure-pty-host-'));
+		try {
+			const daemon = await paradisSpawnDaemon({
+				paths: { socketPath: join(dir, 'pty.sock'), ledgerDir: dir, ledgerFile: join(dir, 'ledger.json'), socketPathTooLong: false },
+				// Electron の中では ELECTRON_RUN_AS_NODE が付くので、どちらでも node として動く
+				launch: { execPath: process.execPath, args: ['-e', 'process.exit(3)'], env: {} },
+				logService: new NullLogService(),
+			});
+			for (let i = 0; i < 300 && daemon?.state().state === 'running'; i++) {
+				await timeout(10);
+			}
+			assert.deepStrictEqual(daemon?.state(), { state: 'exited', exitCode: 3 });
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });
 		}

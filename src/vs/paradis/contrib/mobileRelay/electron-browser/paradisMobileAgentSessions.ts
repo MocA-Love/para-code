@@ -21,6 +21,10 @@
  * 届かない間の送信を最大 24 時間預かって送り直すため）。
  */
 
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import type { IParadisAgentChatSource } from '../../agentChat/common/paradisAgentChat.js';
+import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { toAction } from '../../../../base/common/actions.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
@@ -51,6 +55,11 @@ const RESUME_LEDGER_KEY = 'paradis.mobile.agentResumeRequests';
 /** 再開したエージェントの準備ができるのを待つ上限。 */
 const RESUME_READY_TIMEOUT_MS = 60_000;
 const RESUME_READY_POLL_MS = 500;
+/**
+ * OpenCode の連携（ブリッジ対応の OpenCode 互換 CLI）が名乗り出るまで待つ上限。連携の無い OpenCode（本家の版）は名乗り出ないので、
+ * 60 秒待たずに「対応していない」と返す。
+ */
+const RESUME_OPENCODE_BRIDGE_GRACE_MS = 20_000;
 const PREVIEW_MESSAGE_LIMIT = 4_000;
 const PREVIEW_MESSAGES = 200;
 
@@ -110,6 +119,7 @@ interface IAgentSessionTools {
 	readonly worktreeService: IParadisWorktreeService;
 	readonly notificationService: INotificationService;
 	readonly storageService: IStorageService;
+	readonly agentChatSource: IParadisAgentChatSource;
 }
 
 function collectTools(accessor: ServicesAccessor): IAgentSessionTools {
@@ -124,6 +134,7 @@ function collectTools(accessor: ServicesAccessor): IAgentSessionTools {
 		worktreeService: accessor.get(IParadisWorktreeService),
 		notificationService: accessor.get(INotificationService),
 		storageService: accessor.get(IStorageService),
+		agentChatSource: ProxyChannel.toService<IParadisAgentChatSource>(accessor.get(ISharedProcessService).getChannel(PARADIS_MOBILE_RELAY_CHANNEL)),
 	};
 }
 
@@ -192,9 +203,13 @@ function requireString(value: unknown, name: string, limit: number): string {
 	return value;
 }
 
-/** 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、開き直した直後の確認で止まっていればその種類、待ちきれなければ 'timeout'。 */
-async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex'): Promise<'ready' | 'trust' | { readonly resumePrompt: ParadisClaudeResumeScreenPrompt } | 'timeout' | 'gone'> {
-	const deadline = Date.now() + RESUME_READY_TIMEOUT_MS;
+/**
+ * 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、開き直した直後の確認で止まっていればその種類、待ちきれなければ 'timeout'。
+ * OpenCode は画面ではなく連携の登録で決める（`openCodeReady`）。連携が名乗り出ないまま猶予が過ぎたら 'unsupported'。
+ */
+async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex' | 'opencode', openCodeReady?: () => Promise<'ready' | 'pending' | 'unregistered'>): Promise<'ready' | 'trust' | { readonly resumePrompt: ParadisClaudeResumeScreenPrompt } | 'timeout' | 'gone' | 'unsupported'> {
+	const startedAt = Date.now();
+	const deadline = startedAt + RESUME_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
 		if (instance.isDisposed) {
 			return 'gone';
@@ -209,7 +224,15 @@ async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 
 		if (resumePrompt !== undefined) {
 			return { resumePrompt };
 		}
-		if (state === 'ready') {
+		if (openCodeReady !== undefined) {
+			const openCode = await openCodeReady();
+			if (openCode === 'ready') {
+				return 'ready';
+			}
+			if (openCode === 'unregistered' && Date.now() - startedAt >= RESUME_OPENCODE_BRIDGE_GRACE_MS) {
+				return 'unsupported';
+			}
+		} else if (state === 'ready') {
 			return 'ready';
 		}
 		await new Promise<void>(resolve => setTimeout(resolve, RESUME_READY_POLL_MS));
@@ -367,21 +390,34 @@ async function resumeFromMobile(
 			// スマホからは権限の省略を決して付けない（PC の既定の権限モードで起動する。Q121）。
 			dangerouslyBypassPermissions: false,
 			preserveFocus: true,
+			...(session.agent === 'opencode' && session.cli !== undefined ? { cli: session.cli } : {}),
 			...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),
 		});
 		recentResumes.set(key, { instanceId: launched.instanceId, at: Date.now() });
 		const instance = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).find(candidate => candidate.instanceId === launched.instanceId);
 		terminalKey = tools.identityService.getTerminalKey(launched.instanceId);
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started', ...(terminalKey !== undefined ? { terminalKey } : {}) });
-		const readiness = instance !== undefined ? await waitForAgentReady(instance, session.agent) : 'gone';
+		const openCodeToken = session.agent === 'opencode' ? launched.paneToken : undefined;
+		const readiness = instance !== undefined ? await waitForAgentReady(instance, session.agent, session.agent === 'opencode' ? async () => {
+			if (openCodeToken === undefined) { return 'unregistered'; }
+			// 500ms ごとに聞くので、会話の全量ではなく準備の状態だけを聞く
+			return await tools.agentChatSource.getOpenCodeReadiness?.(openCodeToken, key) ?? 'unregistered';
+		} : undefined) : 'gone';
 		// 通知は準備の結果が分かってから出す（L6。開いたタブがまだ空のシェルのうちに「表示」を押させない）。
 		notifyResumed(tools, space, session, instance);
 		let delivered = false;
-		if (readiness === 'ready' && instance !== undefined) {
+		/** OpenCode が依頼を受け取ったのに結果が返らなかった（届いたかもしれない）。 */
+		let unconfirmed = false;
+		if (readiness === 'ready' && instance !== undefined && session.agent === 'opencode' && openCodeToken !== undefined) {
+			const result = await tools.agentChatSource.sendOpenCodeAgentMessage?.(openCodeToken, session.id, prompt) ?? false;
+			delivered = result === true;
+			unconfirmed = result === 'unconfirmed';
+		} else if (readiness === 'ready' && instance !== undefined && session.agent !== 'opencode') {
+			const tuiAgent = session.agent;
 			const outcome = await paradisSendAgentMessageToTui(
 				prompt,
 				(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
-				async () => canDeliverPrompt(instance, prompt, session.agent),
+				async () => canDeliverPrompt(instance, prompt, tuiAgent),
 			);
 			delivered = outcome.executed;
 		}
@@ -390,13 +426,17 @@ async function resumeFromMobile(
 			reply({ status: 'needs-trust', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'PC でフォルダを信頼するかの確認が出ています。PC で答えてから送ってください' });
 			return;
 		}
+		if (readiness === 'unsupported') {
+			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'PC で開いた OpenCode は Para Code との連携に対応していないため、依頼を渡せませんでした。PC のターミナルで送ってください' });
+			return;
+		}
 		if (typeof readiness === 'object') {
 			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: `PC の Claude Code で${PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES[readiness.resumePrompt]}が出ています。PC で選んでから、会話の画面から送ってください` });
 			return;
 		}
 		reply({
 			status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered,
-			...(delivered ? {} : { message: '会話は再開しましたが、依頼を渡せませんでした。会話の画面から送ってください' }),
+			...(delivered ? {} : { message: unconfirmed ? '会話は再開して依頼を渡しましたが、届いたかを確かめられませんでした。送り直す前に会話の画面で確かめてください' : '会話は再開しましたが、依頼を渡せませんでした。会話の画面から送ってください' }),
 		});
 	} catch (error) {
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'failed', ...(terminalKey !== undefined ? { terminalKey } : {}) });

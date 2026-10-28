@@ -43,6 +43,21 @@ suite('ParadisSessionResumeDialog', () => {
 		sessionId: 'session-123',
 	};
 
+	test('lists OpenCode separately and hides unsupported permission bypass actions', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [{ ...testSession('ses_saved', 'Saved OpenCode', 'opencode'), cli: '/opt/example/bin/example-cli', cliLabel: 'Example CLI' }];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const filter = fixture.root.querySelector<HTMLButtonElement>('button[data-agent-filter="opencode"]')!;
+			filter.click();
+			await flushMicrotasks();
+			assert.strictEqual(fixture.root.querySelector('.detail-meta')?.textContent?.includes('OpenCode (Example CLI)'), true);
+			assert.strictEqual(fixture.root.querySelector<HTMLButtonElement>('button.danger')?.hidden, true);
+			assert.strictEqual(fixture.root.querySelector('.row-title')?.textContent, 'Saved OpenCode');
+		} finally { fixture.dispose(); }
+	});
+
 	test('starts the initial load while being constructed', async () => {
 		const list = new DeferredPromise<readonly IParadisResumeSession[]>();
 		const client = new TestResumeClient();
@@ -535,7 +550,7 @@ function createRefreshFixture(client: TestResumeClient, indexSearch?: (query: st
 	};
 }
 
-function testSession(id: string, title: string, agent: 'claude' | 'codex' = 'claude'): IParadisResumeSession {
+function testSession(id: string, title: string, agent: 'claude' | 'codex' | 'opencode' = 'claude'): IParadisResumeSession {
 	return {
 		catalogId: `catalog-${id}`,
 		id,
@@ -641,6 +656,13 @@ suite('paradisResumeAgentInWorkspace', () => {
 	}
 
 	// 既定以外のホームで見つかった Codex の会話は、そのホームで再開する（選んでいるアカウントのホームには無いことがある）。
+	test('resumes an OpenCode conversation with its original CLI in the selected working directory', async () => {
+		const fixture = createFixture();
+		fixture.ready.complete();
+		await paradisResumeAgentInWorkspace(fixture.accessor, { ...request('claude'), agent: 'opencode', cli: '/opt/example/bin/example-cli', sessionId: 'ses_saved' });
+		assert.strictEqual(fixture.events.at(-1), 'send:/opt/example/bin/example-cli --session ses_saved:true');
+	});
+
 	test('resumes a Codex conversation in the home it was found in', async () => {
 		const fixture = createFixture();
 		fixture.ready.complete();

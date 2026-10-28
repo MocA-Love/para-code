@@ -24,6 +24,7 @@ import { IParadisWorkflowSignal, paradisWorkflowLaunchSignal, paradisWorkflowScr
 import { IParadisTeamSignal, paradisParseTeammateTags, paradisTeamCallSignal, paradisTeamReceivedSignals, paradisTeamSpawnSignal } from './paradisAgentTeams.js';
 import { paradisCodexUserAuthoredContent, paradisIsCodexEncryptedPayload, paradisMaskCodexEncryptedPayloads } from './paradisCodexInjectedContext.js';
 import { PARADIS_COMPACT_SUMMARY_PREVIEW_LIMIT, paradisClaudeCompactionInfo, paradisCompactionNoticeText, paradisCompactSummaryBody } from './paradisAgentCompaction.js';
+import { paradisClaudeTranscriptModel } from './paradisAgentSessionStatus.js';
 
 export { paradisQuestionReadyMarker } from './paradisAgentQuestionMarker.js';
 
@@ -1307,8 +1308,8 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 	}
 
 	// assistant
-	const model = str(message.model);
-	if (model !== undefined && model.length > 0) {
+	const model = paradisClaudeTranscriptModel(str(message.model));
+	if (model !== undefined) {
 		signals.model = model;
 	}
 	if (Array.isArray(content)) {

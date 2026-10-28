@@ -57,6 +57,7 @@ suite('ParadisSessionResume', () => {
 		searchCacheMaxBytes?: number,
 	): ParadisSessionResumeService {
 		const dependencies: IParadisSessionResumeServiceDependencies = {
+			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
 			readBoundedFile,
 			beforeSummaryRead,
@@ -537,6 +538,7 @@ suite('ParadisSessionResume', () => {
 		let resolveHomesCount = 0;
 		let summaryReadCount = 0;
 		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => {
 				resolveHomesCount++;
 				if (resolveHomesCount === 1) {
@@ -1206,6 +1208,7 @@ suite('ParadisSessionResume', () => {
 		]);
 		await fs.link(codexPath, join(secondSessions, 'rollout-codex-session.jsonl'));
 		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
 
@@ -1223,6 +1226,7 @@ suite('ParadisSessionResume', () => {
 			codexMessage('user', 'Codex fixture prompt'),
 		]);
 		const service = new ParadisSessionResumeService({
+			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
 

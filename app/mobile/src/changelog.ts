@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.17',
+		date: '2026-10-27',
+		items: [
+			{
+				icon: 'chatbubbles-outline',
+				title: 'OpenCode の会話をモバイルで確認・操作できるようになりました',
+				body: 'Para Code との連携に対応した OpenCode を PC で動かしているときは、会話の確認、発言の送信、許可や質問への回答、停止ができます。連携に対応していない OpenCode でも、過去の会話の一覧と再開は使えます。',
+			},
+		],
+	},
+	{
 		version: '0.12.16',
 		date: '2026-10-26',
 		items: [

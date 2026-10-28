@@ -67,7 +67,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			aliases: option.id === option.model ? [] : [option.id],
 			efforts: option.efforts.map(item => item.value),
 		}))
-		: claudeCatalog.options;
+		: agent === 'opencode' ? [] : claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);
@@ -84,7 +84,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const modelName = currentModel?.label ?? (agent === 'claude' && model !== undefined ? claudeModelDisplayName(model) : undefined) ?? model;
 	// effort 非対応のモデル（Haiku）では、前のモデルの effort が残っていても出さない
 	const shownEffort = currentModel !== undefined && currentModel.efforts.length === 0 ? undefined : effort;
-	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || 'model / effort';
+	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || (agent === 'opencode' ? 'OpenCode' : 'model / effort');
 
 	const applyModel = (id: string) => {
 		haptic('tick');
@@ -169,9 +169,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				// 見た目はコンポーザーの行に収まる高さのまま、当たり判定だけ 44pt へ広げる。
 				hitSlop={PILL_HIT_SLOP}
 				onPress={openSheet}
-				disabled={modelControl?.status === 'updating' || submitting}
+				disabled={agent === 'opencode' || modelControl?.status === 'updating' || submitting}
 				accessibilityRole="button"
-				accessibilityState={{ disabled: modelControl?.status === 'updating' || submitting }}
+				accessibilityState={{ disabled: agent === 'opencode' || modelControl?.status === 'updating' || submitting }}
 				accessibilityLabel="モデルとeffortを変更"
 			>
 				<Ionicons name="hardware-chip-outline" size={12} color={colors.textDim} />

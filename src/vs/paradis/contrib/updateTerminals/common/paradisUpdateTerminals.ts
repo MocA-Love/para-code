@@ -36,7 +36,7 @@ export const PARADIS_UPDATE_MAX_ROWS = 5;
 /** 「この PC の常駐」を表す枠の鍵。接続先は remote authority をそのまま使う。 */
 export const PARADIS_UPDATE_LOCAL_HOST_KEY = 'local';
 
-export type ParadisUpdateTerminalAgent = 'claude' | 'codex';
+export type ParadisUpdateTerminalAgent = 'claude' | 'codex' | 'opencode';
 export type ParadisUpdateTerminalAgentState = 'working' | 'permission' | 'question' | 'review';
 
 /**
@@ -188,7 +188,8 @@ export function paradisWorkingAgentKinds(summary: IParadisUpdateTerminalSummary)
 	return {
 		claude: working.some(terminal => terminal.agent === 'claude'),
 		codex: working.some(terminal => terminal.agent === 'codex'),
-		unknown: working.some(terminal => terminal.agent === undefined),
+		// OpenCode は再開のコマンドの案内を持たないので、種類の分からないものと同じ案内にする
+		unknown: working.some(terminal => terminal.agent === undefined || terminal.agent === 'opencode'),
 	};
 }
 
@@ -356,7 +357,7 @@ export function paradisUpdateHostRows(group: IParadisUpdateHostGroup, maxRows: n
 }
 
 function paradisAgentName(agent: ParadisUpdateTerminalAgent): string {
-	return agent === 'claude' ? 'Claude' : 'Codex';
+	return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : 'OpenCode';
 }
 
 /** 行に出す名前。エージェントなら「Claude · <題名>」。 */

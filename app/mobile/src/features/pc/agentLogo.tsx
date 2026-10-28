@@ -11,7 +11,7 @@ import type { AgentLogoKind } from './agentRowLine.js';
  * `ProviderLogo`）、それ以外のエージェントは星、ターミナルは端末のアイコン。
  */
 export function AgentLogo({ kind, size }: { kind: AgentLogoKind; size: number }) {
-	if (kind === 'claude' || kind === 'codex') {
+	if (kind === 'claude' || kind === 'codex' || kind === 'opencode') {
 		return <ProviderLogo provider={kind} size={size} />;
 	}
 	return <Icon icon={kind === 'terminal' ? SquareTerminal : Sparkles} size={size} color={colors.textDim} />;
