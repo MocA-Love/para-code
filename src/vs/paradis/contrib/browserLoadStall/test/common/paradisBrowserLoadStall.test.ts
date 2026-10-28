@@ -8,6 +8,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParaBrowserViewLoadStallOutcome } from '../../../../../platform/browserView/common/paraBrowserViewLoadStall.js';
+import { paradisSanitizeSentryEvent } from '../../../sentry/common/paradisSentryCommon.js';
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisBrowserRemoteKind, paradisBuildBrowserLoadStallEvent, paradisClassifyBrowserUrl } from '../../common/paradisBrowserLoadStall.js';
 
@@ -96,6 +97,9 @@ suite('paradisBrowserLoadStall', () => {
 				safe_system_free_mb: 2048,
 			},
 		});
+
+		// The context survives the client-side sanitizer as sent.
+		assert.deepStrictEqual(paradisSanitizeSentryEvent({ contexts: { 'para.browser_load': { ...event.data } } }).contexts, { 'para.browser_load': event.data });
 
 		const outcomes: ParaBrowserViewLoadStallOutcome[] = ['stopped', 'agent-stopped', 'responded', 'failed', 'abandoned'];
 		const words = new Set<string>(['browser-load', 'para.browser_load', 'safe_page_memory_mb', 'safe_app_memory_mb', 'safe_system_total_mb', 'private-network', 'public', 'loopback', 'none', 'other', 'https', 'tunnel', 'codespaces', 'attached-container', 'k8s-container']);
