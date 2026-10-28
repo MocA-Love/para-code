@@ -44,11 +44,13 @@ suite('ParadisOpenCodeHistory', () => {
 			database.exec('CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)');
 			const message = database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)');
 			message.run('msg_user', 'ses_one', 'user', 1, 11, JSON.stringify({ text: 'Original request' }));
-			message.run('msg_answer', 'ses_one', 'assistant', 2, 12, JSON.stringify({ content: [
-				{ type: 'reasoning', text: 'Plan the change' },
-				{ type: 'tool', id: 'call_read', name: 'read', state: { status: 'completed', input: { path: 'file.ts' }, content: [{ type: 'text', text: 'File contents' }] } },
-				{ type: 'text', text: 'Completed answer' },
-			] }));
+			message.run('msg_answer', 'ses_one', 'assistant', 2, 12, JSON.stringify({
+				content: [
+					{ type: 'reasoning', text: 'Plan the change' },
+					{ type: 'tool', id: 'call_read', name: 'read', state: { status: 'completed', input: { path: 'file.ts' }, content: [{ type: 'text', text: 'File contents' }] } },
+					{ type: 'text', text: 'Completed answer' },
+				]
+			}));
 			message.run('msg_other', 'ses_other', 'user', 1, 13, JSON.stringify({ text: 'Unrelated request' }));
 		} finally { database.close(); }
 	}

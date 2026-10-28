@@ -82,19 +82,23 @@ suite('ParadisOpenCodeBridge', () => {
 		const commands = bridge.listCommands('pane-a', 'ses_a');
 		const { requests } = await (await post('/opencode-bridge/poll', { session_id: 'ses_a' })).json();
 		const conflicting = await post('/opencode-bridge/result', { id: requests[0].id, session_id: 'ses_a', sessionId: 'ses_b', ok: true, value: [] });
-		await post('/opencode-bridge/result', { id: requests[0].id, session_id: 'ses_a', ok: true, value: [
-			{ id: 'm1', role: 'user', kind: 'message', text: 'Hello', ts: 1, extra: 'dropped' },
-			{ id: 'm2', role: 'system', kind: 'message', text: 'bad role' },
-			{ id: 't1', role: 'assistant', kind: 'tool', text: '', tool: { name: 'read', input: '{"path":"a"}', output: 'ok', status: 'completed', secret: 'dropped' } },
-			{ id: 't2', role: 'assistant', kind: 'tool', text: '', tool: { input: 'no name' } },
-			{ id: 't3', role: 'assistant', kind: 'tool', text: '', tool: { name: 'para-browser_set_http_credentials', input: { origin: 'https://intranet.example.com', password: 'fixture-private-value' }, status: 'completed' } },
-			'not a row',
-		] });
-		await post('/opencode-bridge/result', { id: requests[1].id, sessionId: 'ses_a', ok: true, value: [
-			{ name: 'review', description: 'Review', source: 'built-in', run: 'dropped' },
-			{ name: 'bad name with spaces', description: '', source: 'user' },
-			{ name: 'x', description: '', source: 'unknown' },
-		] });
+		await post('/opencode-bridge/result', {
+			id: requests[0].id, session_id: 'ses_a', ok: true, value: [
+				{ id: 'm1', role: 'user', kind: 'message', text: 'Hello', ts: 1, extra: 'dropped' },
+				{ id: 'm2', role: 'system', kind: 'message', text: 'bad role' },
+				{ id: 't1', role: 'assistant', kind: 'tool', text: '', tool: { name: 'read', input: '{"path":"a"}', output: 'ok', status: 'completed', secret: 'dropped' } },
+				{ id: 't2', role: 'assistant', kind: 'tool', text: '', tool: { input: 'no name' } },
+				{ id: 't3', role: 'assistant', kind: 'tool', text: '', tool: { name: 'para-browser_set_http_credentials', input: { origin: 'https://intranet.example.com', password: 'fixture-private-value' }, status: 'completed' } },
+				'not a row',
+			]
+		});
+		await post('/opencode-bridge/result', {
+			id: requests[1].id, sessionId: 'ses_a', ok: true, value: [
+				{ name: 'review', description: 'Review', source: 'built-in', run: 'dropped' },
+				{ name: 'bad name with spaces', description: '', source: 'user' },
+				{ name: 'x', description: '', source: 'unknown' },
+			]
+		});
 		assert.deepStrictEqual({ conflicting: conflicting.status, history: await history, commands: await commands }, {
 			conflicting: 409,
 			history: [

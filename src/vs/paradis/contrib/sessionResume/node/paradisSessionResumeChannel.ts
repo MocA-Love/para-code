@@ -434,7 +434,8 @@ export class ParadisSessionResumeService {
 					const space = request.spaces.find(space => normalizePath(space.cwd) === normalizePath(saved.cwd));
 					if (!space || messages === undefined) { return; }
 					const latest = [...messages].reverse().find(message => message.kind === 'message');
-					this.addSession({ id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
+					this.addSession({
+						id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
 						preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
 						currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
 					}, dbPath, dirname(dbPath), sessions);
@@ -530,7 +531,7 @@ export class ParadisSessionResumeService {
 				return message ? { role: message.role, text: clipped(message.text, LAST_MESSAGE_CHARS) } : null;
 			})
 			: readFileTail(entry.transcriptPath, entry.allowedRoot, LAST_MESSAGE_TAIL_BYTES, this.beforeSummaryRead)
-			.then(tail => extractLatestMessage(tail, entry.session.agent) ?? null))
+				.then(tail => extractLatestMessage(tail, entry.session.agent) ?? null))
 			.then(message => {
 				this.rememberLatestMessage(catalogId, revision, message);
 				return message;
