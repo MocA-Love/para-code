@@ -4,9 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Check, CircleHelp } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import {
-	asyncAnswerText, buildAsyncReply, useAsyncQuestionDrafts, type AsyncQuestion,
-} from '../../asyncQuestions.js';
+import { asyncAnswerText, buildAsyncReply, type AsyncQuestion } from '../../asyncQuestions.js';
+import { useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import type { QuestionFreeTextRequest } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import type { AgentMessageSendResult } from '../../store.js';
@@ -30,11 +29,13 @@ const STEP_SLOP = { top: 4, bottom: 4, left: 0, right: 0 };
  * 送るのは答えた問いだけで、残りの問いはこのカードに残る（書きかけはこの端末の `useAsyncQuestionDrafts` に持つ）。
  * 答えは Codex が決めた返信の形の発言に組み立てて、普通の発言と同じ `onSend` で送る。
  */
-export function AsyncQuestionCard({ questions, working, onSend, onRequestFreeText, freeTextActiveId }: {
+export function AsyncQuestionCard({ questions, working, queueing, onSend, onRequestFreeText, freeTextActiveId }: {
 	/** 1 回の呼び出しのうち、まだ答えていない問い（番号順）。 */
 	questions: readonly AsyncQuestion[];
 	/** エージェントが作業中か（送るとその作業に割り込む）。 */
 	working: boolean;
+	/** PC につながっていないので、送ると端末に預ける（届くまで「送った」のまま隠す）。 */
+	queueing: boolean;
 	onSend: (text: string) => Promise<AgentMessageSendResult>;
 	onRequestFreeText: (request: QuestionFreeTextRequest | undefined) => void;
 	/** 下の入力欄が答えの入力になっている問い（{@link ASYNC_FREE_TEXT_PREFIX} 付きの ID）。 */
@@ -54,8 +55,8 @@ export function AsyncQuestionCard({ questions, working, onSend, onRequestFreeTex
 	}, [questions.length]);
 	const current = questions[Math.min(step, questions.length - 1)];
 	const answeredCount = questions.filter(question => asyncAnswerText(question, drafts[question.id]) !== undefined).length;
-	const latestRef = useRef({ questions, drafts, onSend });
-	latestRef.current = { questions, drafts, onSend };
+	const latestRef = useRef({ questions, drafts, onSend, queueing });
+	latestRef.current = { questions, drafts, onSend, queueing };
 	if (current === undefined) {
 		return null;
 	}
@@ -122,6 +123,7 @@ export function AsyncQuestionCard({ questions, working, onSend, onRequestFreeTex
 		haptic('commit');
 		setSending(true);
 		setError(undefined);
+		const queued = latest.queueing;
 		latest.onSend(reply.text).then(result => {
 			setSending(false);
 			if (result.status === 'rejected') {
@@ -129,7 +131,7 @@ export function AsyncQuestionCard({ questions, working, onSend, onRequestFreeTex
 				return;
 			}
 			// 送った問いは PC の一覧から消えるまで隠す（同じ問いを二度送らない）。残りの問いはこのカードに残る
-			markSent(reply.ids);
+			markSent(reply.ids, queued ? reply.text : undefined);
 			if (freeTextActiveId !== undefined && reply.ids.some(id => `${ASYNC_FREE_TEXT_PREFIX}${id}` === freeTextActiveId)) {
 				onRequestFreeText(undefined);
 			}

@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { asyncAnswerText, buildAsyncReply, displaySentText, groupAsyncQuestions, isAsyncQuestionHidden, parseAsyncQuestions, questionRepliesOf } from './asyncQuestions.js';
+import { asyncAnswerText, buildAsyncReply, displaySentText, groupAsyncQuestions, parseAsyncQuestions, questionRepliesOf } from './asyncQuestions.js';
 
 const id = (callId: string, index: number) => JSON.stringify(['request_user_input_async', callId, index]);
 
@@ -49,9 +49,4 @@ describe('asyncQuestions', () => {
 		});
 	});
 
-	test('hides a sent question for a while and a dismissed one until the PC drops it', () => {
-		const state = { sent: { a: 1_000 }, dismissed: { b: true as const } };
-		expect([isAsyncQuestionHidden(state, 'a', 30_000), isAsyncQuestionHidden(state, 'a', 70_000), isAsyncQuestionHidden(state, 'b', 0), isAsyncQuestionHidden(state, 'c', 0)])
-			.toEqual([true, false, true, false]);
-	});
 });
