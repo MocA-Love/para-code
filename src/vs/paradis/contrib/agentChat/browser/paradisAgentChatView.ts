@@ -481,7 +481,7 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	private renderHeader(state: IParadisAgentChatState | undefined): void {
-		this.headerAgent.textContent = state === undefined ? '' : state.agent === 'codex' ? 'Codex' : 'Claude Code';
+		this.headerAgent.textContent = state === undefined ? '' : state.agent === 'opencode' ? 'OpenCode' : state.agent === 'codex' ? 'Codex' : 'Claude Code';
 		const model = [state?.info?.model, state?.info?.effort].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 		this.headerModel.textContent = model;
 		this.headerModel.style.display = model.length > 0 ? '' : 'none';

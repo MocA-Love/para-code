@@ -1063,7 +1063,11 @@ export interface IParadisAgentPaneStatus {
  */
 export interface IParadisAgentPaneSession {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
+	/** OpenCode の会話を再開するもの（`opencode` か、確かめて覚えた互換 CLI の実行ファイルの絶対パス）。 */
+	readonly cli?: string;
+	/** OpenCode の会話を再開できない（確かめられなかった互換 CLI の会話）。再開の案内も操作も出さない。 */
+	readonly resumable?: false;
 	readonly sessionId: string;
 	/** hook が最後に報告した作業ディレクトリ。 */
 	readonly cwd?: string;
@@ -1079,6 +1083,8 @@ export interface IParadisAgentStatusSnapshot {
 	readonly agentHookTokens: readonly string[];
 	/** 各ペインで動いている会話。古い shared process は送らないので省略可能にしてある。 */
 	readonly paneSessions?: readonly IParadisAgentPaneSession[];
+	/** Para Code が覚えた OpenCode 互換 CLI のコマンド（タブ名の判定に使う）。無ければ `opencode` だけ。 */
+	readonly openCodeCommands?: readonly string[];
 	/**
 	 * hook実績のあるペイン、および (Codex 等 hook を送らないエージェントでも) paneStatuses に
 	 * 現れたペインぶんの、検出済み Issue URL。ペインが終了するまで消えない (paneStatuses と違い

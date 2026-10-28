@@ -720,7 +720,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						model={model}
 						effort={effort}
 						modelControl={modelControl}
-						readOnly={modelLocked === true}
+						readOnly={modelLocked === true || agent === 'opencode'}
 						onClaudeSetting={updateClaudeSetting}
 						onRequestCodexCatalog={() => { if (terminalKey !== undefined) { requestAgentModelCatalog(terminalKey); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (terminalKey !== undefined) { updateAgentSettings(terminalKey, nextModel, nextEffort); } }}

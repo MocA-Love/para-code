@@ -49,7 +49,7 @@ export interface AgentContextStatus {
 }
 
 export interface AgentSessionStatus {
-	agent: 'claude' | 'codex';
+	agent: 'claude' | 'codex' | 'opencode';
 	cache?: AgentCacheStatus;
 	context?: AgentContextStatus;
 }
@@ -100,7 +100,7 @@ function parseContext(value: unknown): AgentContextStatus | undefined {
 /** PC から届いた `sessionStatus` を読む。形が違えば undefined（届かなかったのと同じ）。 */
 export function parseAgentSessionStatus(value: unknown): AgentSessionStatus | undefined {
 	const raw = value as { agent?: unknown; cache?: unknown; context?: unknown } | null | undefined;
-	if (raw === null || typeof raw !== 'object' || (raw.agent !== 'claude' && raw.agent !== 'codex')) {
+	if (raw === null || typeof raw !== 'object' || (raw.agent !== 'claude' && raw.agent !== 'codex' && raw.agent !== 'opencode')) {
 		return undefined;
 	}
 	const cache = parseCache(raw.cache);
