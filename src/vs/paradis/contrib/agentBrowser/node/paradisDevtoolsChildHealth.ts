@@ -233,9 +233,12 @@ export function paradisDevtoolsReadsRecords(name: string): boolean {
 	return RECORD_TOOLS.has(name);
 }
 
-/** 入れ替えの後、最初に記録を読んだ結果へ 1 行添える文。 */
-export function paradisDevtoolsRecordsResetNote(reason: ParadisDevtoolsReplacedReason): string {
-	return `Note: ${describeReplacement(reason)}; console messages and network requests from before that are no longer listed, and settings made with emulate are reset${reason === 'evicted' ? ', and a performance trace you started and did not stop has ended (start it again if you need it)' : ''}. The page itself is unchanged.`;
+/**
+ * 入れ替えの後、最初に記録を読んだ結果へ 1 行添える文。
+ * @param hadTrace 止めた子が、始めたまま止めていない performance trace を持っていたか。
+ */
+export function paradisDevtoolsRecordsResetNote(reason: ParadisDevtoolsReplacedReason, hadTrace: boolean = false): string {
+	return `Note: ${describeReplacement(reason)}; console messages and network requests from before that are no longer listed, and settings made with emulate are reset${hadTrace ? ', and the performance trace you started and did not stop has ended (start it again if you need it)' : ''}. The page itself is unchanged.`;
 }
 
 /** RSS を読むときの待ち時間の上限。 */

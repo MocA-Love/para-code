@@ -798,6 +798,36 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('the note about a stopped DevTools child goes on the result of the tab chosen before the call, once', async () => {
+		const { fixture, connection, share, defaultTab } = await setup();
+		await share('view-a');
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		const notes = new Map([[paradisAgentTabScopeKey('token', 'view-a'), 'Note: stopped']]);
+		Reflect.set(fixture.service, '_devtoolsProxy', { retire: () => undefined, takeEvictionNote: (key: string) => { const note = notes.get(key); notes.delete(key); return note; } });
+		const lease = { token: 'token' };
+		const keyOf = (args: unknown) => (Reflect.get(fixture.service, '_evictionNoteKey') as (lease: object, args: unknown) => string | undefined).call(fixture.service, lease, args);
+		const withNote = (key: string | undefined, result: unknown) => (Reflect.get(fixture.service, '_withEvictionNote') as (key: string | undefined, result: unknown) => unknown).call(fixture.service, key, result);
+		// Decided before the call: the current tab (view-a) moves to agent-tab during the call
+		const before = keyOf({});
+		Reflect.get(fixture.service, '_selectedTabs').set('token', 'agent-tab');
+		const result = { content: [{ type: 'text', text: 'ok' }] };
+		assert.deepStrictEqual({
+			before,
+			current: defaultTab(),
+			first: withNote(before, result),
+			again: withNote(before, result),
+			otherTab: keyOf({ tab_id: 'agent-tab' }),
+			unknownTab: keyOf({ tab_id: 'not-mine' }),
+		}, {
+			before: paradisAgentTabScopeKey('token', 'view-a'),
+			current: 'agent-tab',
+			first: { content: [{ type: 'text', text: 'ok' }, { type: 'text', text: 'Note: stopped' }] },
+			again: result,
+			otherTab: paradisAgentTabScopeKey('token', 'agent-tab'),
+			unknownTab: undefined,
+		});
+	});
+
 	test('a tab is not shared when its opener is unknown or not usable by the pane', async () => {
 		const { fixture, connection, share } = await setup();
 		await share('view-a');

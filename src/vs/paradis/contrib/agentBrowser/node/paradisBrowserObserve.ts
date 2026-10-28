@@ -351,11 +351,17 @@ export class ParadisBrowserObserver {
 		if (tabs && shownTabs && shownTabs.length > 0) {
 			const changed = shownTabs.length > 1 || closedTabIds.length > 0;
 			const label = ownTab !== undefined ? (changed ? 'Your tab and tabs that changed' : 'Your tab') : 'Your tabs';
-			// 1 ペインのタブは 150 枚になりうるので、行を {@link MAX_STATE_TABS} 枚までにする。自分のタブと current を先に出す
-			const listedTabs = shownTabs.length <= MAX_STATE_TABS ? shownTabs : [...shownTabs.filter(tab => tab === ownTab || tab.current), ...shownTabs.filter(tab => tab !== ownTab && !tab.current)].slice(0, MAX_STATE_TABS);
-			const listedClosed = closedTabIds.slice(0, Math.max(0, MAX_STATE_TABS - listedTabs.length));
-			const others = tabs.length - listedTabs.length + closedTabIds.length - listedClosed.length;
-			const entries = [...listedTabs.map(tabLine), ...listedClosed.map(tabId => `${tabId} (closed)`)];
+			// 1 ペインのタブは 150 枚になりうるので、行を {@link MAX_STATE_TABS} 枚までにする。溢れるときは自分のタブと current、
+			// 閉じたタブ、残りの順に出す（閉じたタブは list_browser_tabs に出ないので落とさない）
+			const closedEntries = closedTabIds.map(tabId => `${tabId} (closed)`);
+			const entries = shownTabs.length + closedEntries.length <= MAX_STATE_TABS
+				? [...shownTabs.map(tabLine), ...closedEntries]
+				: [
+					...shownTabs.filter(tab => tab === ownTab || tab.current).map(tabLine),
+					...closedEntries,
+					...shownTabs.filter(tab => tab !== ownTab && !tab.current).map(tabLine),
+				].slice(0, MAX_STATE_TABS);
+			const others = tabs.length + closedEntries.length - entries.length;
 			lines.push(`${label}: ${entries.join('; ')}${others > 0 ? ` (${others} other ${others === 1 ? 'tab' : 'tabs'} not shown; list_browser_tabs lists all)` : ''}`);
 		}
 		const beforeIndexes = new Set((before.pages?.pages ?? []).map(page => page.index));

@@ -1492,16 +1492,28 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			await other.tryCallTool('token-a', 1, 'ws://a', 'performance_start_trace', { reload: false, autoStop: false });
 			await other.tryCallTool('token-b', 1, 'ws://b', 'emulate', { networkConditions: 'Slow 3G' });
 			await other.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
+			const traceNote = other.takeEvictionNote('token-a');
+
+			// performance_start_trace stops by itself unless autoStop is false, so it keeps nothing
+			const third = createFakeDevtoolsChildren({ toolsListResult: toolsList });
+			const defaults = create(third);
+			await defaults.tryCallTool('token-a', 1, 'ws://a', 'performance_start_trace', { reload: false });
+			await defaults.tryCallTool('token-b', 1, 'ws://b', 'emulate', { networkConditions: 'Slow 3G' });
+			await defaults.tryCallTool('token-c', 1, 'ws://c', 'take_snapshot', {});
 			assert.deepStrictEqual({
 				afterFirst,
 				whileStopping: textOf(whileStopping).some(text => text.includes('PARA_BROWSER_RETRYABLE')),
 				killCountsWhileStopping,
 				allKeep: second.children.map(child => child.killCount),
+				traceNote: traceNote?.includes('performance trace'),
+				autoStopByDefault: third.children.map(child => child.killCount),
 			}, {
 				afterFirst: [0, 1],
 				whileStopping: true,
 				killCountsWhileStopping: [0, 1],
 				allKeep: [1, 0],
+				traceNote: true,
+				autoStopByDefault: [1, 0],
 			});
 		});
 
@@ -1522,7 +1534,8 @@ suite('ParadisDevtoolsMcpProxy', () => {
 			assert.deepStrictEqual({
 				killCount: fixture.children[0].killCount,
 				stale: textOf(stale)[0].startsWith('PARA_BROWSER_STALE_UID: Para Code stopped the embedded DevTools bridge of this tab while it was unused, to make room for other tabs'),
-				note: note?.startsWith('Note: Para Code stopped the embedded DevTools bridge of this tab') && note.includes('performance trace'),
+				// this child had no trace running, so the note does not mention one
+				note: note?.startsWith('Note: Para Code stopped the embedded DevTools bridge of this tab') && !note.includes('performance trace'),
 				noteAgain: proxy.takeEvictionNote('token-a'),
 				otherPane: proxy.takeEvictionNote('token-b'),
 			}, { killCount: 1, stale: true, note: true, noteAgain: undefined, otherPane: undefined });

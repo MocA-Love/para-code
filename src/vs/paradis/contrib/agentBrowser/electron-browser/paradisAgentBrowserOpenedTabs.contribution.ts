@@ -43,7 +43,7 @@ interface IOpenedTabShareMark {
 	readonly inUse: boolean;
 }
 
-class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisAgentBrowserOpenedTabs';
 
 	/** 見たことのあるタブ（新しく開いたタブだけを扱う）。 */
@@ -53,6 +53,8 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 	private readonly _watchers = this._register(new DisposableMap<string, DisposableStore>());
 	/** 連続の上限で断られたタブ → 頼み直しの時計（タブが閉じたら止める）。 */
 	private readonly _retries = this._register(new DisposableMap<string>());
+	/** ユーザーが共有の印を外したタブ。もう自動では共有しない（頼み直しでも共有を戻さない）。 */
+	private readonly _unsharedByUser = new Set<string>();
 	/** {@link _reconcile} の実行中か、実行中にもう一度頼まれたか。 */
 	private _reconciling: Promise<void> | undefined;
 	private _reconcileAgain = false;
@@ -88,6 +90,7 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 				this._seen.delete(id);
 				this._watchers.deleteAndDispose(id);
 				this._retries.deleteAndDispose(id);
+				this._unsharedByUser.delete(id);
 			}
 		}
 		for (const [id, input] of known) {
@@ -105,7 +108,7 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 	private async _shareOpenedTab(input: BrowserEditorInput, retry?: { readonly tokens: readonly string[]; readonly attempt: number }): Promise<void> {
 		const openerPanes = await this._bindingModel.openerPanesOf(input.id);
 		const tokens = retry === undefined ? openerPanes : retry.tokens.filter(token => openerPanes.includes(token));
-		if (tokens.length === 0 || !this._seen.has(input.id)) {
+		if (tokens.length === 0 || !this._seen.has(input.id) || this._unsharedByUser.has(input.id)) {
 			return;
 		}
 		const model = await input.resolve();
@@ -113,6 +116,9 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 		let granted = false;
 		const bursting: string[] = [];
 		for (const token of tokens) {
+			if (this._unsharedByUser.has(input.id)) {
+				return;
+			}
 			const result = await this._tabs.shareOpenedTab(token, input);
 			granted = granted || result === 'granted';
 			if (result === 'limitReached') {
@@ -122,7 +128,7 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 			}
 		}
 		const attempt = (retry?.attempt ?? 0) + 1;
-		if (bursting.length > 0 && attempt <= PARADIS_OPENED_TAB_BURST_RETRIES && this._seen.has(input.id) && !this._store.isDisposed) {
+		if (bursting.length > 0 && attempt <= PARADIS_OPENED_TAB_BURST_RETRIES && this._seen.has(input.id) && !this._unsharedByUser.has(input.id) && !this._store.isDisposed) {
 			// 短い間に開きすぎた。窓が空いたら頼み直す
 			this._retries.set(input.id, disposableTimeout(() => {
 				this._retries.deleteAndDispose(input.id);
@@ -146,6 +152,9 @@ class ParadisAgentBrowserOpenedTabsContribution extends Disposable implements IW
 		store.add(model.onDidChangeSharingState(state => {
 			if (paradisIsShareMarkRemoved(state) && this._watchers.has(viewId)) {
 				this._watchers.deleteAndDispose(viewId);
+				// 連続の上限で待っているペインへの頼み直しで、外した共有を戻さない
+				this._retries.deleteAndDispose(viewId);
+				this._unsharedByUser.add(viewId);
 				for (const token of this._bindingModel.getAgentTabOwnersForPage(viewId)) {
 					void this._bindingModel.revokeAgentTab(token, viewId);
 				}
