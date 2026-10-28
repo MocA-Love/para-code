@@ -1384,16 +1384,19 @@ export class ParadisAgentChatView extends Disposable {
 	private renderAsyncQuestions(state: IParadisAgentChatState | undefined): void {
 		const questions = state?.asyncQuestions ?? [];
 		const drafts = this.asyncDrafts;
-		// 中継の台帳から消えた問いの書きかけと「送った」の印は捨てる
-		const ids = new Set(questions.map(question => question.id));
-		for (const id of [...drafts.sent]) {
-			if (!ids.has(id)) {
-				drafts.sent.delete(id);
+		// 中継の台帳から消えた問いの書きかけと「送った」の印は捨てる（会話を取り直している間は捨てない。消えたように
+		// 見えている間に「送った」を捨てると、返信を読む前に同じ問いをもう一度送れてしまう）
+		if (state !== undefined) {
+			const ids = new Set(questions.map(question => question.id));
+			for (const id of [...drafts.sent]) {
+				if (!ids.has(id)) {
+					drafts.sent.delete(id);
+				}
 			}
-		}
-		for (const id of [...drafts.answers.keys()]) {
-			if (!ids.has(id)) {
-				drafts.answers.delete(id);
+			for (const id of [...drafts.answers.keys()]) {
+				if (!ids.has(id)) {
+					drafts.answers.delete(id);
+				}
 			}
 		}
 		const busy = state?.busy === true;
