@@ -62,6 +62,11 @@ export const PARADIS_OPENED_TAB_LIMIT = 50;
 export const PARADIS_OPENED_TAB_BURST_LIMIT = 10;
 /** {@link PARADIS_OPENED_TAB_BURST_LIMIT} を数える時間（ms）。 */
 export const PARADIS_OPENED_TAB_BURST_WINDOW_MS = 10_000;
+/**
+ * 連続の上限で共有しなかったタブを、{@link PARADIS_OPENED_TAB_BURST_WINDOW_MS} ごとに頼み直す回数。window.open を
+ * 繰り返すページが開き続けても、頼み直しが続かないように回数を決めておく。
+ */
+export const PARADIS_OPENED_TAB_BURST_RETRIES = 3;
 
 /**
  * 開いたタブの自動の共有の、短い間の連続を数える（純粋なデータ構造。shared process の ParadisAgentBrowserService が持つ）。
@@ -110,8 +115,10 @@ export class ParadisOpenedTabBurstGuard {
 /** 開いたタブの自動の共有（grantOpenedTab）の結果。 */
 export type ParadisOpenedTabGrantResult =
 	| 'granted'
-	/** そのペインの {@link PARADIS_OPENED_TAB_LIMIT} に達していた、または短い間に共有しすぎた（{@link PARADIS_OPENED_TAB_BURST_LIMIT}）。 */
+	/** そのペインの {@link PARADIS_OPENED_TAB_LIMIT} に達していた。 */
 	| 'limitReached'
+	/** 短い間に共有しすぎた（{@link PARADIS_OPENED_TAB_BURST_LIMIT}）。窓が空いたら renderer が頼み直す（{@link PARADIS_OPENED_TAB_BURST_RETRIES}）。 */
+	| 'burstLimited'
 	/** 開いた元のタブがそのペインで使えない、スペースが違う、ペインやタブが確かめられないなど。 */
 	| 'notEligible';
 

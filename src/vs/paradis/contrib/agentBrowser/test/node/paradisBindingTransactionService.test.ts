@@ -798,6 +798,36 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('the note about a stopped DevTools child goes on the result of the tab chosen before the call, once', async () => {
+		const { fixture, connection, share, defaultTab } = await setup();
+		await share('view-a');
+		assert.strictEqual(await fixture.service.grantAgentTab(connection, { revision: 1, token: 'token', viewId: 'agent-tab', pageInfo: { url: 'https://agent.test', title: 'agent' } }), true);
+		const notes = new Map([[paradisAgentTabScopeKey('token', 'view-a'), 'Note: stopped']]);
+		Reflect.set(fixture.service, '_devtoolsProxy', { retire: () => undefined, takeEvictionNote: (key: string) => { const note = notes.get(key); notes.delete(key); return note; } });
+		const lease = { token: 'token' };
+		const keyOf = (args: unknown) => (Reflect.get(fixture.service, '_evictionNoteKey') as (lease: object, args: unknown) => string | undefined).call(fixture.service, lease, args);
+		const withNote = (key: string | undefined, result: unknown) => (Reflect.get(fixture.service, '_withEvictionNote') as (key: string | undefined, result: unknown) => unknown).call(fixture.service, key, result);
+		// Decided before the call: the current tab (view-a) moves to agent-tab during the call
+		const before = keyOf({});
+		Reflect.get(fixture.service, '_selectedTabs').set('token', 'agent-tab');
+		const result = { content: [{ type: 'text', text: 'ok' }] };
+		assert.deepStrictEqual({
+			before,
+			current: defaultTab(),
+			first: withNote(before, result),
+			again: withNote(before, result),
+			otherTab: keyOf({ tab_id: 'agent-tab' }),
+			unknownTab: keyOf({ tab_id: 'not-mine' }),
+		}, {
+			before: paradisAgentTabScopeKey('token', 'view-a'),
+			current: 'agent-tab',
+			first: { content: [{ type: 'text', text: 'ok' }, { type: 'text', text: 'Note: stopped' }] },
+			again: result,
+			otherTab: paradisAgentTabScopeKey('token', 'agent-tab'),
+			unknownTab: undefined,
+		});
+	});
+
 	test('a tab is not shared when its opener is unknown or not usable by the pane', async () => {
 		const { fixture, connection, share } = await setup();
 		await share('view-a');
@@ -838,6 +868,22 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 		});
 	});
 
+	test('granting an opened tab again for a new view of the same tab does not count toward the burst limit', async () => {
+		const { fixture, connection, share } = await setup();
+		await share('view-a');
+		let lease = 0;
+		fixture.setResolveExact(async args => args[1] === 'opened-0'
+			? Object.freeze({ windowId: 1, viewId: 'opened-0', targetId: 'target-opened-0', viewLease: `lease-opened-0-${lease++}` })
+			: viewOf(args[1] as string));
+		fixture.openers.set('opened-0', 'view-a');
+		const again: string[] = [];
+		for (let index = 0; index <= PARADIS_OPENED_TAB_BURST_LIMIT; index++) {
+			again.push(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')));
+		}
+		fixture.openers.set('opened-1', 'view-a');
+		assert.deepStrictEqual({ again: again.every(result => result === 'granted'), another: await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')) }, { again: true, another: 'granted' });
+	});
+
 	test('a page that opens many tabs at once gets only some of them shared, and more after a while', async () => {
 		const { fixture, connection, share, usable } = await setup();
 		await share('view-a');
@@ -860,7 +906,7 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			overBurstUsable: usable(`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`),
 		}, {
 			granted: PARADIS_OPENED_TAB_BURST_LIMIT,
-			last: 'limitReached',
+			last: 'burstLimited',
 			later: 'granted',
 			skipped: [`opened-${PARADIS_OPENED_TAB_BURST_LIMIT}`],
 			overBurstUsable: false,
