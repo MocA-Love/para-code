@@ -33,7 +33,7 @@ import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisIsLifecycleScriptApproved, paradisPrefersTeardown, paradisReadWorkspaceLifecycleConfig, paradisRememberTeardownChoice, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, paradisCollectPerWorktree, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
@@ -517,6 +517,9 @@ class ParadisRemoveWorktreeAction extends Action2 {
 
 registerAction2(ParadisRemoveWorktreeAction);
 
+/** 差分の集計で同時に走らせる git の数。54 か所を一度に投げると、そのマシンの CPU を一時に食い尽くすため。 */
+const DIFF_STATS_MAX_CONCURRENCY = 4;
+
 /**
  * ビューから渡された URI 群に対し、それぞれのリポジトリがあるマシンで `command` を実行する。
  * 結果は URI ではなく `fsPath` をキーに返す（ビュー側が fsPath で引くため）。
@@ -524,22 +527,8 @@ registerAction2(ParadisRemoveWorktreeAction);
  * パス文字列だけを受け取って接続の有無で送り先を決めると、手元と接続先に同じ絶対パスがある構成で
  * 別マシンの値を拾って平然と表示してしまう。どのマシンのものかは URI にしか書かれていない。
  */
-async function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string, extraArgs: (resource: URI) => readonly unknown[] = () => []): Promise<Record<string, T>> {
-	const resolveGitHost = paradisWorktreeGitHostResolver(accessor);
-	const result: Record<string, T> = {};
-	await Promise.all(resources.map(async component => {
-		const resource = URI.revive(component);
-		const host = resolveGitHost(resource);
-		try {
-			const value = await host.channel.call<T | undefined>(command, [host.path(resource), ...extraArgs(resource)]);
-			if (value !== undefined) {
-				result[resource.fsPath] = value;
-			}
-		} catch {
-			// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
-		}
-	}));
-	return result;
+function collectPerWorktree<T>(accessor: ServicesAccessor, resources: UriComponents[], command: string, extraArgs?: (resource: URI) => readonly unknown[], maxConcurrency?: number): Promise<Record<string, T>> {
+	return paradisCollectPerWorktree<T>(resources.map(component => URI.revive(component)), paradisWorktreeGitHostResolver(accessor), command, extraArgs, maxConcurrency);
 }
 
 /**
@@ -561,7 +550,7 @@ class ParadisGetDiffStatsAction extends Action2 {
 		if (!Array.isArray(resources) || resources.length === 0) {
 			return {};
 		}
-		return collectPerWorktree<IParadisDiffStat>(accessor, resources, 'getDiffStat');
+		return collectPerWorktree<IParadisDiffStat>(accessor, resources, 'getDiffStat', undefined, DIFF_STATS_MAX_CONCURRENCY);
 	}
 }
 
