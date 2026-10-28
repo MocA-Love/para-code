@@ -715,7 +715,7 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean): string {
-		// エージェントが自分で開いて tab_id で使っているタブ（共有とは別に、ペインごとに最大 5 枚）
+		// エージェントが自分で開いて tab_id で使っているタブ（共有とは別に、ペインごとに最大 PARADIS_AGENT_TAB_LIMIT 枚）
 		// 共有中のページと同じタブは数えない（同じタブが共有と許可の両方に載ることがある）
 		const sharedPageIds = new Set(this.bindingModel.getBindingsForToken(pane.token).map(binding => binding.pageId));
 		const agentTabs = this.bindingModel.getAgentTabsForToken(pane.token).filter(pageId => !sharedPageIds.has(pageId));

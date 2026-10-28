@@ -67,7 +67,10 @@ const MAX_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 256;
 /** 1子プロセスのstdinに滞留できる最大byte数。 */
 const MAX_STDIN_QUEUED_BYTES = 1024 * 1024;
-/** サービス全体で同時に保持できる子プロセス数（1 ペインで共有のページと自分のタブ 5 枚ぶんまで起こしうる）。 */
+/**
+ * サービス全体で同時に保持できる子プロセス数。tab_id で使うタブごとに 1 つ起こすので、1 ペインで共有のページ・自分のタブ
+ * （PARADIS_AGENT_TAB_LIMIT）・開いたタブ（PARADIS_OPENED_TAB_LIMIT）のぶんまで起こしうる。全ペインでこの数を分け合う。
+ */
 const MAX_CHILDREN = 64;
 /** generation高水位を保持できるtoken数。 */
 const MAX_GENERATION_HIGH_WATERMARKS = 4096;
