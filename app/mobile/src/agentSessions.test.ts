@@ -32,6 +32,10 @@ describe('agentSessions (W2-29)', () => {
 		});
 	});
 
+	it('accepts OpenCode history for the existing resume flow', () => {
+		expect(parseAgentPastSessionPage({ sessions: [{ key: KEY, agent: 'opencode', title: 'OpenCode session', updatedAt: 2 }] }).sessions.map(session => session.agent)).toEqual(['opencode']);
+	});
+
 	it('reads the preview and the resume result', () => {
 		expect(parseAgentPastSessionPreview({
 			session: { key: KEY, agent: 'codex', title: 't', updatedAt: 1 },

@@ -16,7 +16,7 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
  */
 export interface IParadisPersistedAgentSession {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	readonly transcriptPath: string;
 	readonly sessionId?: string;
 	/** 保存時刻（ms）。TTL失効の判定に使う。 */
@@ -62,7 +62,7 @@ export class ParadisAgentSessionStore {
 				}
 				const entry = candidate as Record<string, unknown>;
 				if (typeof entry.token !== 'string' || entry.token.length === 0 || entry.token.length > 200
-					|| (entry.agent !== 'claude' && entry.agent !== 'codex')
+					|| (entry.agent !== 'claude' && entry.agent !== 'codex' && entry.agent !== 'opencode')
 					|| typeof entry.transcriptPath !== 'string' || entry.transcriptPath.length === 0 || entry.transcriptPath.length > 4096
 					|| (entry.sessionId !== undefined && (typeof entry.sessionId !== 'string' || entry.sessionId.length > 500))
 					|| typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt)) {

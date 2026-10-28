@@ -308,7 +308,7 @@ export interface IParadisAgentContextStatus {
 
 /** snapshot / delta の任意項目 `sessionStatus` の中身。 */
 export interface IParadisAgentSessionStatus {
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	/** リクエストがまだ 1 回も無ければ省く。 */
 	readonly cache?: IParadisAgentCacheStatus;
 	readonly context?: IParadisAgentContextStatus;
@@ -340,7 +340,7 @@ export class ParadisAgentSessionStatusTracker {
 	private measure: IParadisAgentContextMeasure | undefined;
 	private readonly restartMarks: number[] = [];
 
-	constructor(readonly agent: 'claude' | 'codex') {
+	constructor(readonly agent: 'claude' | 'codex' | 'opencode') {
 		this.ledger = new ParadisPromptCacheLedger(agent === 'codex');
 	}
 

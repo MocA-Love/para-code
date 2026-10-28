@@ -110,7 +110,7 @@ export default function AgentHistoryScreen() {
 					<View style={styles.row}>
 						<ListRow
 							label={item.title}
-							hint={[item.agent === 'codex' ? 'Codex' : 'Claude Code', formatRelativeTime(item.updatedAt, now), item.terminalKey !== undefined ? 'PC で開いています' : undefined, item.preview].filter(part => part !== undefined).join(' · ')}
+							hint={[item.agent === 'opencode' ? 'OpenCode' : item.agent === 'codex' ? 'Codex' : 'Claude Code', formatRelativeTime(item.updatedAt, now), item.terminalKey !== undefined ? 'PC で開いています' : undefined, item.preview].filter(part => part !== undefined).join(' · ')}
 							onPress={() => open(item)}
 						/>
 					</View>

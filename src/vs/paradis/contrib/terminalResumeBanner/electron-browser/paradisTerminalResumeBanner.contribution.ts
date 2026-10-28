@@ -125,11 +125,23 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		for (const session of snapshot.paneSessions ?? []) {
 			const instance = this.findInstanceByToken(session.token);
 			const key = paradisResumeLedgerKey(session.token);
+			// 再開できない会話（確かめられなかった OpenCode 互換 CLI）は案内しない。そのタブの前の会話も、もう最後の会話ではない
+			if (session.resumable === false) {
+				if (this._ledger.delete(key)) {
+					this._dirtyTokens.add(key);
+					this._persistScheduler.schedule();
+				}
+				if (instance !== undefined) {
+					this.withdrawOffer(instance.instanceId);
+				}
+				continue;
+			}
 			const previous = this._ledger.get(key);
 			const title = (instance === undefined ? undefined : paradisResumeTitleFromTab(instance.title))
 				?? (previous?.sessionId === session.sessionId ? previous.title : undefined);
 			this.upsert(key, {
 				agent: session.agent,
+				...(session.cli !== undefined ? { cli: session.cli } : {}),
 				sessionId: session.sessionId,
 				at: session.at,
 				...(session.cwd !== undefined ? { cwd: session.cwd } : previous?.cwd !== undefined && previous.sessionId === session.sessionId ? { cwd: previous.cwd } : {}),
@@ -310,7 +322,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	private async resumeInConversationFolder(instanceId: number, dangerouslyBypassPermissions: boolean): Promise<void> {
 		const offer = this._offers.get(instanceId);
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
-		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions);
+		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions, offer.entry.cli);
 		if (offer === undefined || instance === undefined || command === undefined) {
 			return;
 		}
@@ -403,7 +415,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 
 	fork(instanceId: number, dangerouslyBypassPermissions?: boolean): void {
 		const offer = this._offers.get(instanceId);
-		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'fork', dangerouslyBypassPermissions === true);
+		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'fork', dangerouslyBypassPermissions === true, offer.entry.cli);
 		if (offer === undefined || command === undefined) {
 			return;
 		}
