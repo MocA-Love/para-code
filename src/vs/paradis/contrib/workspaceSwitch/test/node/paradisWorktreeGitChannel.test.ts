@@ -335,7 +335,7 @@ suite('ParadisWorktreeGitService', () => {
 			callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
 		});
 
-		assert.deepStrictEqual(await service.getDiffStat('/gone'), { insertions: 0, deletions: 0 });
+		assert.deepStrictEqual(await service.getDiffStat('/gone'), { insertions: 0, deletions: 0, failed: true });
 	});
 
 	test('runs lifecycle script in worktree with project root environment and a hang-protection timeout', async () => {

@@ -53,6 +53,11 @@ export interface IParadisAddWorktreeRequest<TPath extends string = ParadisHostPa
 export interface IParadisDiffStat {
 	readonly insertions: number;
 	readonly deletions: number;
+	/**
+	 * 数えられなかった（git の失敗、接続先との通信の失敗）。数字は 0 だが当てにしない。Workspaces ビューは
+	 * 前の値を残し、次の機会に取り直す。
+	 */
+	readonly failed?: true;
 }
 
 /** 許可リストに載ったサブコマンドの、任意 git 実行の生の結果。呼び出し側が exit code で成否を判定する。 */

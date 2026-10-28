@@ -134,4 +134,28 @@ suite('paradisCollectPerWorktree', () => {
 
 		assert.deepStrictEqual({ startedFirst, maxRunning, count: Object.keys(result).length }, { startedFirst: 4, maxRunning: 4, count: 10 });
 	});
+
+	// SSH の再接続中などでチャネルが例外を投げた対象は、値の無い対象と見分けられるようにする
+	test('a call that throws is returned as the failed value when one is given', async () => {
+		const channel = {
+			call: async <T>(_command: string, args?: unknown): Promise<T> => {
+				if ((args as string[])[0] === '/down') {
+					throw new Error('Connection got disposed.');
+				}
+				return { insertions: 1, deletions: 0 } as T;
+			},
+			listen: () => { throw new Error('not used'); },
+		} as unknown as IChannel;
+		const host: IParadisWorktreeGitHost = { channel, path: resource => paradisHostPathFor(resource, 'local') };
+		const resources = [URI.file('/up'), URI.file('/down')];
+		const failed = { insertions: 0, deletions: 0, failed: true as const };
+
+		assert.deepStrictEqual({
+			withFailedValue: await paradisCollectPerWorktree(resources, () => host, 'getDiffStat', undefined, 4, failed),
+			withoutFailedValue: await paradisCollectPerWorktree(resources, () => host, 'getDiffStat'),
+		}, {
+			withFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 }, [URI.file('/down').fsPath]: failed },
+			withoutFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 } },
+		});
+	});
 });

@@ -8,8 +8,6 @@
 
 import './media/paradisWorkspaceSwitch.css';
 import * as DOM from '../../../../base/browser/dom.js';
-import { DomEmitter } from '../../../../base/browser/event.js';
-import { mainWindow } from '../../../../base/browser/window.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { IListVirtualDelegate, ListDragOverEffectPosition, ListDragOverEffectType } from '../../../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData, ListViewTargetSector } from '../../../../base/browser/ui/list/listView.js';
@@ -50,7 +48,6 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisAggregateAgentStatus, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
@@ -58,7 +55,7 @@ import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRep
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { paradisGithubTargetsFingerprint, ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { IParadisDiffStatsTarget, ParadisWorkspacesDiffStatsTracker } from './paradisWorkspacesDiffStatsTracker.js';
-import { ParadisWorkspacesWindowActivity } from './paradisWorkspacesWindowActivity.js';
+import { IParadisWorkspacesWindowActivity } from './paradisWorkspacesWindowActivity.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisSelectIssueLookupBatch, ParadisIssueState } from '../../../common/paradisIssueDetection.js';
@@ -1077,15 +1074,10 @@ export class ParadisWorkspacesView extends ViewPane {
 		@ILogService private readonly logService: ILogService,
 		@IParadisAgentInsightsService private readonly agentInsightsService: IParadisAgentInsightsService,
 		@IFileService fileService: IFileService,
-		@IHostService hostService: IHostService,
+		@IParadisWorkspacesWindowActivity windowActivity: IParadisWorkspacesWindowActivity,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		const visibilityChange = this._register(new DomEmitter(mainWindow.document, 'visibilitychange'));
-		const windowActivity = this._register(new ParadisWorkspacesWindowActivity(hostService, {
-			get hidden() { return mainWindow.document.hidden; },
-			onDidChange: visibilityChange.event,
-		}));
 		this._pollingController = this._register(new ParadisWorkspacesPollingController(
 			{
 				isBodyVisible: () => this.isBodyVisible(),
@@ -1093,7 +1085,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				onDidChangeRepositories: this.workspaceSwitchService.onDidChangeRepositories,
 				onDidChangeWorktrees: this.worktreeService.onDidChangeWorktrees,
 				onDidChangeGithubTargets: this._onDidChangeGithubTargets.event,
-				// ほかのアプリへフォーカスが移る・最小化すると止まる（内蔵ブラウザにフォーカスがあるときは止めない）
+				// ほかのアプリへフォーカスが移る・最小化すると止まる（デスクトップはネイティブのウィンドウのフォーカスで決める）
 				isWindowActive: () => windowActivity.isActive,
 				onDidChangeWindowActive: windowActivity.onDidChange,
 			},
@@ -1438,26 +1430,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			this._diffStatsTracker.restoreDirty(targets);
 			throw error;
 		}
-		if (!result) {
-			this._diffStatsTracker.restoreDirty(targets);
-			return;
-		}
-		this._diffStatsTracker.markFetched(targets);
-		// 取り直した対象だけを上書きし、一覧から消えた対象の値は捨てる
-		for (const target of targets) {
-			const stat = result[target.fsPath];
-			if (stat !== undefined) {
-				this._diffStats.set(target.fsPath, stat);
-			} else {
-				this._diffStats.delete(target.fsPath);
-			}
-		}
-		const alive = new Set(this.pollTargets().map(target => target.fsPath));
-		for (const path of [...this._diffStats.keys()]) {
-			if (!alive.has(path)) {
-				this._diffStats.delete(path);
-			}
-		}
+		// 取り直した対象だけを上書きする。数えられなかった対象（SSH の再接続中など）は前の値を残し、次の機会に取り直す
+		this._diffStatsTracker.applyRefreshResult(targets, result ?? undefined, this._diffStats);
 		this.updateTree();
 	}
 

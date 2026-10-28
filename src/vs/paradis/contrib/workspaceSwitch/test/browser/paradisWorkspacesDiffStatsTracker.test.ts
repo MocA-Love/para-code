@@ -15,6 +15,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileChangesEvent, FileChangeType, IFileSystemWatcher } from '../../../../../platform/files/common/files.js';
 import { PARADIS_DIFF_STATS_FALLBACK_MS, ParadisWorkspacesDiffStatsTracker } from '../../browser/paradisWorkspacesDiffStatsTracker.js';
+import { IParadisDiffStat } from '../../common/paradisWorktreeCreate.js';
 
 const REPO = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/work/repo' });
 const WORKTREE = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/work/repo-wt' });
@@ -41,13 +42,13 @@ suite('ParadisWorkspacesDiffStatsTracker', () => {
 		});
 	});
 
-	test('a write to the index, HEAD or COMMIT_EDITMSG marks only that target; other git files do not', () => {
+	test('a write to the index, HEAD, COMMIT_EDITMSG or ORIG_HEAD marks only that target; other git files do not', () => {
 		const harness = store.add(new TrackerHarness());
 		harness.setDefaultTargets();
 		harness.fetchAll();
 
 		const results: Record<string, string[]> = {};
-		for (const name of ['index', 'HEAD', 'COMMIT_EDITMSG', 'FETCH_HEAD', 'index.lock']) {
+		for (const name of ['index', 'HEAD', 'COMMIT_EDITMSG', 'ORIG_HEAD', 'FETCH_HEAD', 'index.lock']) {
 			harness.watcher(WORKTREE_GIT_DIR).fire(new FileChangesEvent([{ resource: joinPath(WORKTREE_GIT_DIR, name), type: FileChangeType.UPDATED }], false));
 			results[name] = harness.takeDue();
 			harness.tracker.markFetched([REPO, WORKTREE]);
@@ -57,6 +58,7 @@ suite('ParadisWorkspacesDiffStatsTracker', () => {
 			'index': [WORKTREE.path],
 			'HEAD': [WORKTREE.path],
 			'COMMIT_EDITMSG': [WORKTREE.path],
+			'ORIG_HEAD': [WORKTREE.path],
 			'FETCH_HEAD': [],
 			'index.lock': [],
 		});
@@ -90,6 +92,33 @@ suite('ParadisWorkspacesDiffStatsTracker', () => {
 		harness.tracker.markDirtyWhenChanged(WORKTREE, 'review');
 
 		assert.deepStrictEqual({ first, same, changed: harness.takeDue() }, { first: [], same: [], changed: [WORKTREE.path] });
+	});
+
+	// Q471: SSH の再接続中など、数えられなかった対象を「取れた（差分なし）」として 5 分残さない
+	test('while the remote reconnects, failed targets keep their previous numbers and stay due until a refresh succeeds', () => {
+		const harness = store.add(new TrackerHarness());
+		harness.setDefaultTargets();
+		const stats = new Map<string, IParadisDiffStat>();
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), { [REPO.fsPath]: { insertions: 2, deletions: 1 }, [WORKTREE.fsPath]: { insertions: 5, deletions: 0 } }, stats);
+		harness.tracker.markDirty(REPO);
+		harness.tracker.markDirty(WORKTREE);
+
+		// 接続が切れている: チャネルの例外は failed、コマンド自体の失敗は結果なし
+		harness.tracker.applyRefreshResult(harness.tracker.takeDueTargets(), { [REPO.fsPath]: { insertions: 0, deletions: 0, failed: true }, [WORKTREE.fsPath]: { insertions: 0, deletions: 0, failed: true } }, stats);
+		const whileReconnecting = { stats: Object.fromEntries(stats), due: harness.tracker.takeDueTargets().map(uri => uri.path) };
+		harness.tracker.applyRefreshResult([REPO, WORKTREE], undefined, stats);
+		const afterCommandFailure = harness.takeDue();
+		harness.tracker.applyRefreshResult([REPO, WORKTREE], { [REPO.fsPath]: { insertions: 3, deletions: 1 }, [WORKTREE.fsPath]: { insertions: 0, deletions: 0 } }, stats);
+
+		assert.deepStrictEqual({ whileReconnecting, afterCommandFailure, afterReconnect: Object.fromEntries(stats), dueAfterReconnect: harness.takeDue() }, {
+			whileReconnecting: {
+				stats: { [REPO.fsPath]: { insertions: 2, deletions: 1 }, [WORKTREE.fsPath]: { insertions: 5, deletions: 0 } },
+				due: [REPO.path, WORKTREE.path],
+			},
+			afterCommandFailure: [REPO.path, WORKTREE.path],
+			afterReconnect: { [REPO.fsPath]: { insertions: 3, deletions: 1 }, [WORKTREE.fsPath]: { insertions: 0, deletions: 0 } },
+			dueAfterReconnect: [],
+		});
 	});
 
 	test('a failed refresh stays due, and removed targets lose their watcher', () => {

@@ -74,6 +74,8 @@ interface IParadisWorkspacesPollState {
 	changePending: boolean;
 	/** 実行中に変更の知らせが来た。終わったら最短の間隔を空けて取り直す。 */
 	changeAfterFlight: boolean;
+	/** 予約している次の実行の時刻。予約が無ければ undefined。 */
+	dueAt: number | undefined;
 	inFlight: boolean;
 	pendingImmediate: boolean;
 	invalidated: boolean;
@@ -113,6 +115,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			active: false,
 			changePending: false,
 			changeAfterFlight: false,
+			dueAt: undefined,
 			inFlight: false,
 			pendingImmediate: false,
 			invalidated: false,
@@ -171,11 +174,18 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			state.changeAfterFlight = true;
 			return;
 		}
-		if (state.changePending) {
+		const delay = this.changeDelay(state);
+		if (state.dueAt !== undefined && state.dueAt <= this.now() + delay) {
+			// 先に予約した実行（すぐの取り直しや、まとめ待ち）の方が早い。後ろへずらさない
 			return;
 		}
 		state.changePending = true;
-		state.scheduler.schedule(this.changeDelay(state));
+		this.schedule(state, delay);
+	}
+
+	private schedule(state: IParadisWorkspacesPollState, delay: number): void {
+		state.dueAt = this.now() + delay;
+		state.scheduler.schedule(delay);
 	}
 
 	private changeDelay(state: IParadisWorkspacesPollState): number {
@@ -315,10 +325,11 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			return;
 		}
 		state.changePending = false;
-		state.scheduler.schedule(0);
+		this.schedule(state, 0);
 	}
 
 	private begin(state: IParadisWorkspacesPollState): boolean {
+		state.dueAt = undefined;
 		if (!this.started || !state.active) {
 			return false;
 		}
@@ -346,20 +357,21 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			state.pendingImmediate = false;
 			state.invalidated = false;
 			state.changeAfterFlight = false;
-			state.scheduler.schedule(0);
+			this.schedule(state, 0);
 			return;
 		}
 		if (state.changeAfterFlight) {
 			state.changeAfterFlight = false;
 			state.changePending = true;
-			state.scheduler.schedule(this.changeDelay(state));
+			this.schedule(state, this.changeDelay(state));
 			return;
 		}
-		state.scheduler.schedule(state.interval);
+		this.schedule(state, state.interval);
 	}
 
 	private cancelPending(state: IParadisWorkspacesPollState): void {
 		state.scheduler.cancel();
+		state.dueAt = undefined;
 		if (state.changePending || state.changeAfterFlight) {
 			// 待っていた変更は、表に戻ったときに取り直す
 			state.invalidated = true;
@@ -377,10 +389,10 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		const elapsed = state.lastCompletedAt === undefined ? interval : this.now() - state.lastCompletedAt;
 		if (state.invalidated || elapsed >= interval) {
 			state.invalidated = false;
-			state.scheduler.schedule(0);
+			this.schedule(state, 0);
 			return;
 		}
-		state.scheduler.schedule(Math.max(0, interval - elapsed));
+		this.schedule(state, Math.max(0, interval - elapsed));
 	}
 }
 

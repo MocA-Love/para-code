@@ -57,10 +57,11 @@ export function paradisWorktreeGitHostResolver(accessor: ServicesAccessor): (res
 
 /**
  * 各 URI について、そのリポジトリがあるマシンで worktree git チャネルの `command` を呼び、`fsPath` をキーにまとめて返す。
- * 個々の失敗（worktree が消えた等）は飛ばし、ほかの結果は返す。`maxConcurrency` を渡すと、同時に投げる数を
- * その本数までに抑える（省略時は全部を一度に投げる）。
+ * 個々の失敗（worktree が消えた等）は飛ばし、ほかの結果は返す。`failedValue` を渡すと、呼び出しが例外になった
+ * （接続先との通信が切れている間など）対象にはその値を入れて返し、「値が無い」と見分けられるようにする。
+ * `maxConcurrency` を渡すと、同時に投げる数をその本数までに抑える（省略時は全部を一度に投げる）。
  */
-export async function paradisCollectPerWorktree<T>(resources: readonly URI[], resolveGitHost: (resource: URI) => IParadisWorktreeGitHost, command: string, extraArgs: (resource: URI) => readonly unknown[] = () => [], maxConcurrency?: number): Promise<Record<string, T>> {
+export async function paradisCollectPerWorktree<T>(resources: readonly URI[], resolveGitHost: (resource: URI) => IParadisWorktreeGitHost, command: string, extraArgs: (resource: URI) => readonly unknown[] = () => [], maxConcurrency?: number, failedValue?: T): Promise<Record<string, T>> {
 	const result: Record<string, T> = {};
 	const collectOne = async (resource: URI) => {
 		const host = resolveGitHost(resource);
@@ -71,6 +72,9 @@ export async function paradisCollectPerWorktree<T>(resources: readonly URI[], re
 			}
 		} catch {
 			// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
+			if (failedValue !== undefined) {
+				result[resource.fsPath] = failedValue;
+			}
 		}
 	};
 	const limiter = maxConcurrency !== undefined ? new Limiter<void>(maxConcurrency) : undefined;
