@@ -17,6 +17,7 @@
 import { Event } from '../../../../base/common/event.js';
 import type { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import type { IParadisAgentApprovalRequest, ParadisAgentApprovalSuggestionScope } from '../../mobileRelay/common/paradisAgentApprovalRequest.js';
+import type { IParadisCodexAsyncQuestion } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 
 /** デスクトップのチャット表示（エディタエリアのターミナルタブを ⌘⇧J でチャットに切り替える）を使うか。 */
 export const PARADIS_AGENT_CHAT_ENABLED_SETTING = 'paradis.agentChat.enabled';
@@ -158,6 +159,17 @@ export interface IParadisAgentChatMessage {
 	 * 実体は 'tool-image' で別途取り寄せる。
 	 */
 	readonly images?: readonly IParadisAgentChatImage[];
+	/**
+	 * role==='user' のとき: Codex の非同期の質問への返信（`<send_user_message_question_reply>` で包んだ発言）を読んだもの。
+	 * `text` は元の発言のまま（送った発言との突き合わせに使うため）。古いアプリは知らない項目として無視し、元の発言を出す。
+	 */
+	readonly questionReplies?: readonly IParadisAgentQuestionReply[];
+}
+
+/** Codex の非同期の質問への返信 1 件（答えた質問と答え）。 */
+export interface IParadisAgentQuestionReply {
+	readonly question: string;
+	readonly answer: string;
 }
 
 /**
@@ -328,6 +340,11 @@ export interface IParadisAgentChatView {
 	readonly interaction: IParadisAgentInteraction | null;
 	/** interaction が質問のとき、その質問群（TUI の質問順）。 */
 	readonly pendingQuestions?: readonly IParadisAgentChatMessage[];
+	/**
+	 * Codex の非同期の質問（`request_user_input_async`）のうち、まだ答えていないもの（出た順）。`interaction` とは別に持ち、
+	 * ターンが終わっても残る。返信の発言を記録で読んだら消える。Codex のペインでなければ無い。
+	 */
+	readonly asyncQuestions?: readonly IParadisCodexAsyncQuestion[];
 	/** エージェントがターンを処理している（入力待ちではない）。 */
 	readonly busy: boolean;
 	/** SessionEnd を受けた（エージェントが終わった）。次の hook が来るまで立つ。 */

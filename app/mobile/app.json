@@ -3,7 +3,7 @@
 		"name": "Para Code",
 		"slug": "para-code-mobile",
 		"scheme": "paracode-mobile",
-		"version": "0.12.17",
+		"version": "0.12.18",
 		"icon": "./assets/icon.png",
 		"orientation": "portrait",
 		"userInterfaceStyle": "dark",

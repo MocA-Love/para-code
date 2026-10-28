@@ -37,6 +37,7 @@ import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdow
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
+import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 
 /** チャット表示が呼び出し側（electron-browser の contribution）へ求めるもの。 */
@@ -105,6 +106,8 @@ export interface IParadisAgentChatCardStates {
 	scroll?: { readonly top: number; readonly stick: boolean };
 	/** 開いているツールのまとまり（`<epoch>:<まとまりの鍵>`）。既定は畳む。 */
 	readonly openGroups: Set<string>;
+	/** Codex の非同期の質問のカードの状態（初めて使うときに作る）。 */
+	asyncQuestions?: IParadisAgentChatAsyncDrafts;
 }
 
 export class ParadisAgentChatView extends Disposable {
@@ -122,6 +125,8 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly notice: HTMLElement;
 	private readonly liveElement: HTMLElement;
 	private readonly fallbackCard: HTMLElement;
+	/** Codex の非同期の質問のカード（承認・質問の枠とは別に、答えるまで残る）。 */
+	private readonly asyncCard: HTMLElement;
 	private readonly jumpButton: HTMLButtonElement;
 	private readonly composer: ParadisAgentChatComposer;
 
@@ -150,6 +155,7 @@ export class ParadisAgentChatView extends Disposable {
 	private liveClock: HTMLElement | undefined;
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
+	private readonly asyncStore = this._register(new DisposableStore());
 	private lastLiveSignature = '';
 	private renderedEpoch: string | undefined;
 	/** 送れなかった理由を出したときの会話の状態。状態が変わったら理由を消す。 */
@@ -221,6 +227,7 @@ export class ParadisAgentChatView extends Disposable {
 		this.list.setAttribute('aria-live', 'polite');
 		this.notice = append(this.list, $('.paradis-agent-chat-notice'));
 		this.fallbackCard = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-fallback'));
+		this.asyncCard = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-async'));
 		this.liveElement = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-live-holder'));
 		this.jumpButton = append(body, $('button.paradis-agent-chat-jump')) as HTMLButtonElement;
 		this.jumpButton.type = 'button';
@@ -265,6 +272,12 @@ export class ParadisAgentChatView extends Disposable {
 
 	private get approvalStates(): Map<string, IParadisAgentChatApprovalCardState> {
 		return this.token !== undefined ? this.host.cardStates(this.token).approvals : this.emptyCardStates.approvals;
+	}
+
+	private get asyncDrafts(): IParadisAgentChatAsyncDrafts {
+		const states = this.token !== undefined ? this.host.cardStates(this.token) : this.emptyCardStates;
+		states.asyncQuestions ??= paradisNewAgentChatAsyncDrafts();
+		return states.asyncQuestions;
 	}
 
 	private get openGroups(): Set<string> {
@@ -416,6 +429,9 @@ export class ParadisAgentChatView extends Disposable {
 		clearNode(this.liveElement);
 		this.fallbackStore.clear();
 		clearNode(this.fallbackCard);
+		this.asyncStore.clear();
+		clearNode(this.asyncCard);
+		this.asyncCard.dataset.signature = '';
 	}
 
 	private isAtBottom(): boolean {
@@ -444,6 +460,7 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		this.renderLive(state);
 		this.renderFallbackApproval(state);
+		this.renderAsyncQuestions(state);
 		this.composer.setBusy(state?.busy === true);
 		// この画面から答え終えた質問・承認は、中継が消すのを待たずに送れるようにする
 		// （tool_use_id の無い承認は、ターンが終わるまで中継に残るため）。
@@ -623,7 +640,10 @@ export class ParadisAgentChatView extends Disposable {
 			case 'user': {
 				const element = $('.paradis-agent-chat-message.user');
 				const bubble = append(element, $('.paradis-agent-chat-bubble'));
-				if (item.message.text.length > 0) {
+				if (item.message.questionReplies !== undefined && item.message.questionReplies.length > 0) {
+					// Codex の非同期の質問への返信は、決まった形の生の文字列ではなく質問と答えで出す
+					paradisRenderQuestionReplies(bubble, item.message.questionReplies);
+				} else if (item.message.text.length > 0) {
 					append(bubble, $('.paradis-agent-chat-plain')).textContent = item.message.text;
 				}
 				this.appendImages(bubble, item.message, state, store);
@@ -1358,6 +1378,73 @@ export class ParadisAgentChatView extends Disposable {
 		if (interaction?.kind === 'approval' && !hasCard) {
 			this.fallbackCard.appendChild(this.renderApprovalCard(interaction, paradisIsCodexDaemonApprovalInteraction(interaction.id) ? interaction.detail : undefined, this.fallbackStore));
 		}
+	}
+
+	/** Codex の非同期の質問のカード（まだ答えていない問い。呼び出しごとに 1 枚）。 */
+	private renderAsyncQuestions(state: IParadisAgentChatState | undefined): void {
+		const questions = state?.asyncQuestions ?? [];
+		const drafts = this.asyncDrafts;
+		// 中継の台帳から消えた問いの書きかけと「送った」の印は捨てる（会話を取り直している間は捨てない。消えたように
+		// 見えている間に「送った」を捨てると、返信を読む前に同じ問いをもう一度送れてしまう）
+		if (state !== undefined) {
+			const ids = new Set(questions.map(question => question.id));
+			for (const id of [...drafts.sent]) {
+				if (!ids.has(id)) {
+					drafts.sent.delete(id);
+				}
+			}
+			for (const id of [...drafts.answers.keys()]) {
+				if (!ids.has(id)) {
+					drafts.answers.delete(id);
+				}
+			}
+		}
+		const busy = state?.busy === true;
+		const signature = paradisAsyncQuestionsSignature(questions, drafts, busy);
+		if (this.asyncCard.dataset.signature === signature) {
+			return;
+		}
+		this.asyncCard.dataset.signature = signature;
+		this.asyncStore.clear();
+		clearNode(this.asyncCard);
+		for (const group of paradisGroupAsyncQuestions(questions)) {
+			// 送り終えた問いは、台帳から消えるまでカードに出さない（同じ問いを二度送らせない）
+			const unsent = group.filter(question => !drafts.sent.has(question.id));
+			if (unsent.length > 0) {
+				this.asyncCard.appendChild(paradisRenderAsyncQuestionCard(unsent, drafts, busy, this.asyncStore, {
+					rerender: () => this.rerenderQuestionCard(),
+					submit: callId => this.submitAsyncQuestions(callId),
+				}));
+			}
+		}
+	}
+
+	private submitAsyncQuestions(callId: string): void {
+		const instanceId = this.instanceId;
+		const token = this.token;
+		const drafts = this.asyncDrafts;
+		const questions = (this.session?.state?.asyncQuestions ?? []).filter(question => question.callId === callId);
+		const reply = paradisBuildAsyncReplyFromDrafts(questions, drafts);
+		if (instanceId === undefined || token === undefined || drafts.sending !== undefined || reply === undefined) {
+			return;
+		}
+		drafts.sending = callId;
+		drafts.error = undefined;
+		this.rerenderQuestionCard();
+		this.host.sendMessage(instanceId, token, reply.text).then(error => {
+			drafts.sending = undefined;
+			if (error !== undefined) {
+				drafts.error = { callId, message: error };
+			} else {
+				for (const id of reply.ids) {
+					drafts.sent.add(id);
+				}
+			}
+			if (this.token === token && !this._store.isDisposed) {
+				this.rerenderQuestionCard();
+				void this.session?.refresh();
+			}
+		});
 	}
 
 	// ---- 生成中・実行中の様子 ----------------------------------------------------------------------

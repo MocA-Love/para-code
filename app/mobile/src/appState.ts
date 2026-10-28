@@ -314,6 +314,11 @@ interface AppState extends StoreState {
 	markNotificationSeen(pcId: string | undefined, id: string): void;
 	/** いま見ている PC のそのエージェントのトークを開いた。完了・エラーの通知を見たことにする（Q241 A）。 */
 	markAgentNotificationsSeen(terminalKey: string): void;
+	/**
+	 * Codex の非同期の質問を「答えずに閉じる」で閉じた: その質問の通知（`interactionIds`）を見たことにし、ほかの端末と
+	 * この端末の通知センターからも消す。
+	 */
+	markAsyncQuestionNotificationsSeen(terminalKey: string, interactionIds: readonly string[]): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。成立したPCへ切り替わる。 */
@@ -2349,6 +2354,35 @@ export const useAppStore = create<AppState>(set => ({
 	markNotificationSeen(pcId: string | undefined, id: string) {
 		const target = pcId === undefined || pcId === activePcId ? controller : runtimes.get(pcId)?.controller;
 		target?.markNotificationSeen(id);
+	},
+
+	markAsyncQuestionNotificationsSeen(terminalKey: string, interactionIds: readonly string[]) {
+		const pcId = activePcId;
+		const target = controller;
+		if (pcId === undefined || target === undefined || interactionIds.length === 0) {
+			return;
+		}
+		const wanted = new Set(interactionIds);
+		const agentToken = useAppStore.getState().workspace?.terminals.find(terminal => terminal.terminalKey === terminalKey)?.agentToken;
+		for (const id of target.notificationIdsForInteractions(terminalKey, agentToken, wanted)) {
+			target.markNotificationSeen(id);
+		}
+		void listPresentedNotifications().then(async presented => {
+			const matching = presented.filter(notification => {
+				const data = notification.data;
+				const interactionId = data?.['interactionId'];
+				return (data?.['pcId'] === undefined || data['pcId'] === pcId) && typeof interactionId === 'string' && wanted.has(interactionId);
+			});
+			for (const notification of matching) {
+				const notifyId = notification.data?.['notifyId'];
+				if (typeof notifyId === 'string' && notifyId.length > 0) {
+					target.markNotificationSeen(notifyId);
+				}
+			}
+			if (matching.length > 0) {
+				await dismissPresentedNotifications(matching.map(notification => notification.identifier));
+			}
+		}).catch(err => console.warn('[appState] failed to clear the notifications of closed questions', err));
 	},
 
 	markAgentNotificationsSeen(terminalKey: string) {
