@@ -10,7 +10,7 @@ import { Emitter, Event } from '../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { localize } from '../../../nls.js';
 import { ILogService } from '../../log/common/log.js';
-import { BrowserViewStorageScope, IBrowserViewLoadError } from '../common/browserView.js';
+import { IBrowserViewLoadError } from '../common/browserView.js';
 import { IParaBrowserViewLoadStall, ParaBrowserViewLoadStallOutcome, ParaBrowserViewLoadStallResponse } from '../common/paraBrowserViewLoadStall.js';
 
 /**
@@ -30,6 +30,13 @@ import { IParaBrowserViewLoadStall, ParaBrowserViewLoadStallOutcome, ParaBrowser
  * nobody can answer for is stopped outright.
  */
 export const PARA_BROWSER_VIEW_LOAD_TIMEOUT = 60_000;
+
+/**
+ * How many times a person may choose to keep waiting for one load. Past this the load is stopped
+ * like an unanswered agent tab: ten more minutes without a single response header is not a cold
+ * compile any more.
+ */
+export const PARA_BROWSER_VIEW_LOAD_MAX_WAITS = 10;
 
 /**
  * Chromium's `net::ERR_TIMED_OUT`. We report the stall using Chromium's own
@@ -59,7 +66,7 @@ export interface IParaBrowserViewLoadStallContext {
 	readonly remoteAuthority: string | undefined;
 	/** Whether the view's requests go through the remote tunnel proxy. */
 	readonly tunnelProxy: boolean;
-	/** Whether the tab lives in the agent-only browser storage (opened by an agent; nobody may be watching). */
+	/** Whether an agent opened the tab (see {@link paraSetBrowserViewAgentTab}); nobody may be watching it. */
 	readonly agentTab: boolean;
 }
 
@@ -96,6 +103,21 @@ interface IParaLoadStallController {
 }
 
 const controllers = new Map<string, IParaLoadStallController>();
+/** Views an agent opened for itself, as told by the workbench's agent tab ledger. */
+const agentTabs = new Set<string>();
+
+/**
+ * Marks a view as opened by an agent (or no longer), so a stall in it is stopped instead of asking a
+ * person. Told by the workbench: the storage scope cannot tell, since agents also open named
+ * profile tabs and a person's "Open and Share" copy lives in the agent storage.
+ */
+export function paraSetBrowserViewAgentTab(viewId: string, agentTab: boolean): void {
+	if (agentTab) {
+		agentTabs.add(viewId);
+	} else {
+		agentTabs.delete(viewId);
+	}
+}
 const onDidChangeStallEmitter = new Emitter<{ readonly viewId: string; readonly stall: IParaBrowserViewLoadStall | undefined }>();
 
 /** Fires when a view starts or stops asking whether to keep waiting. */
@@ -114,7 +136,7 @@ export function paraRespondToBrowserViewLoadStall(viewId: string, response: Para
 export interface IParaBrowserViewLoadWatchdogOptions {
 	/** The id the renderer knows the view by; the question is looked up by it. */
 	readonly viewId: string;
-	readonly context: () => Omit<IParaBrowserViewLoadStallContext, 'agentTab'> & { readonly storageScope: BrowserViewStorageScope };
+	readonly context: () => Omit<IParaBrowserViewLoadStallContext, 'agentTab'>;
 	readonly timeoutMs?: number;
 	readonly now?: () => number;
 }
@@ -224,8 +246,8 @@ export function paraInstallBrowserViewLoadWatchdog(
 			}
 			if (!episode.sample) {
 				try {
-					const { remoteAuthority, tunnelProxy, storageScope } = options.context();
-					episode.context = { remoteAuthority, tunnelProxy, agentTab: storageScope === BrowserViewStorageScope.Agent };
+					const { remoteAuthority, tunnelProxy } = options.context();
+					episode.context = { remoteAuthority, tunnelProxy, agentTab: false };
 				} catch {
 					episode.context = { remoteAuthority: undefined, tunnelProxy: false, agentTab: false };
 				}
@@ -235,8 +257,17 @@ export function paraInstallBrowserViewLoadWatchdog(
 					episode.sample = {};
 				}
 			}
-			if (episode.context?.agentTab) {
+			// Read on every expiry: the ledger may mark the tab after the load started.
+			const agentTab = agentTabs.has(viewId);
+			if (episode.context) {
+				episode.context = { ...episode.context, agentTab };
+			}
+			if (agentTab) {
 				stop('agent-stopped');
+				return;
+			}
+			if (episode.waits >= PARA_BROWSER_VIEW_LOAD_MAX_WAITS) {
+				stop('wait-limit');
 				return;
 			}
 			logService.info(`[ParaBrowserView] ${paraLoggableURL(episode.url)} has not committed after ${now() - episode.startedAt}ms; asking whether to keep waiting.`);
@@ -330,6 +361,7 @@ export function paraInstallBrowserViewLoadWatchdog(
 		finish('abandoned');
 		if (controllers.get(viewId) === controller) {
 			controllers.delete(viewId);
+			agentTabs.delete(viewId);
 		}
 		if (webContents.isDestroyed()) {
 			return;

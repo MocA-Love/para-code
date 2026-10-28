@@ -64,8 +64,16 @@ function paradisClassifyHost(host: string): ParadisBrowserUrlHostKind {
 		if (/^f[cd][0-9a-f]{0,2}:/.test(host) || /^fe[89ab][0-9a-f]?:/.test(host)) {
 			return 'private-network';
 		}
-		if (host.startsWith('::ffff:127.')) {
-			return 'loopback';
+		// IPv4 を写した IPv6（::ffff:127.0.0.1）。URL は ::ffff:7f00:1 の形に直すので、両方を IPv4 に戻して判定する。
+		const mapped = /^::ffff:(?:(?<dotted>\d{1,3}(?:\.\d{1,3}){3})|(?<hi>[0-9a-f]{1,4}):(?<lo>[0-9a-f]{1,4}))$/.exec(host);
+		if (mapped?.groups) {
+			const { dotted, hi, lo } = mapped.groups;
+			if (dotted) {
+				return paradisClassifyHost(dotted);
+			}
+			const high = parseInt(hi, 16);
+			const low = parseInt(lo, 16);
+			return paradisClassifyHost(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
 		}
 		return 'public';
 	}
