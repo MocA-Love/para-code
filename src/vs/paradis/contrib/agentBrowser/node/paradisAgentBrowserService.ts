@@ -184,7 +184,7 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 /** 1 ペインへの共有が上限（{@link PARADIS_USER_SHARED_PAGE_LIMIT}）に達したときのエラー。renderer は先頭の印（`paradisIsSharedPageLimitError`）で見分ける。 */
 const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR = `${PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK}: this terminal pane already has the maximum number of shared pages`;
 /** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. For example, wait_until takes timeout_seconds (in seconds), not timeout or timeout_ms. Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share several) plus up to ' + PARADIS_AGENT_TAB_LIMIT + ' tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to ' + PARADIS_OPENED_TAB_LIMIT + '); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time. Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
+const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. For example, wait_until takes timeout_seconds (in seconds), not timeout or timeout_ms. Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share up to ' + PARADIS_USER_SHARED_PAGE_LIMIT + ') plus up to ' + PARADIS_AGENT_TAB_LIMIT + ' tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to ' + PARADIS_OPENED_TAB_LIMIT + '); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time. Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_ms to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF (you may also read the saved file with your own tools). Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead.';
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
 /** tools/list で返す道具の、引数の突き合わせに使う部分。 */
 interface IParadisListedTool {
@@ -394,8 +394,11 @@ const PARADIS_DESKTOP_CURSOR_VIEW = 'desktop';
 const MAX_PANE_CURSOR_LABEL_KEYS = 256;
 /** 上限で共有しなかった開いたタブを、ペインごとに覚えておく数（list_browser_tabs で知らせる分）。 */
 const MAX_SKIPPED_OPENED_TABS = 20;
-/** 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。 */
-const MAX_OPENED_TAB_SHARE_MARKS = 256;
+/**
+ * 開いたタブへ付けた共有の印を、ウィンドウごとに覚えておく数。許可の総数の上限（{@link MAX_EXTERNAL_BINDINGS}）に揃え、
+ * ペインの数 × {@link PARADIS_OPENED_TAB_LIMIT} では溢れないようにする。溢れたら許可も外す（{@link markOpenedTabShared}）。
+ */
+const MAX_OPENED_TAB_SHARE_MARKS = MAX_EXTERNAL_BINDINGS;
 /** 使えるタブが無いまま（共有も open_browser_tab もせずに）ブラウザのツールを呼んだときの答え。次の一手だけを短く書く。 */
 const NOT_BOUND_MESSAGE = 'This terminal pane has no browser tab to use (or the tab_id you passed is not one of its tabs; see list_browser_tabs). Call open_browser_tab first (no approval needed), then call this tool again. To use one of the user\'s tabs (for example a logged-in page), call request_browser_page instead. After Para Code restarts, it asks the user whether to share the pages that were shared before; until they answer, call request_browser_page or open_browser_tab.';
 
@@ -2722,10 +2725,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			this._openedTabShareMarks.set(windowCtx, marks);
 		}
 		if (!marks.has(viewId) && marks.size >= MAX_OPENED_TAB_SHARE_MARKS) {
+			// 印を覚えられないので renderer は印を下ろす。画面で共有していないタブを使い続けさせないよう、許可も外す
+			this._revokeOpenedTabGrants(windowCtx, viewId);
 			return false;
 		}
 		marks.add(viewId);
 		return true;
+	}
+
+	/** そのウィンドウのどのペインからも、開いたタブ（ユーザーが共有したものは除く）の許可を外す。孫も外れる。 */
+	private _revokeOpenedTabGrants(windowCtx: string, viewId: string): void {
+		for (const [token, grants] of [...this._agentTabGrants]) {
+			const grant = grants.get(viewId);
+			if (grant !== undefined && grant.windowCtx === windowCtx && grant.openedFrom !== undefined && !grant.userShared && this._deleteAgentTabGrant(token, viewId)) {
+				this._reconcileTabScopes(token);
+			}
+		}
 	}
 
 	/** renderer から: 印を付けたタブと、そのタブを今どれかのペインが使っているか（許可か共有）。 */

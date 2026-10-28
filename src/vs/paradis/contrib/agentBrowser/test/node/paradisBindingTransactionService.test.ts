@@ -11,7 +11,7 @@ import {
 	IParadisPrepareBindRequest,
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
-import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
+import { PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, ParadisOpenedTabBurstGuard } from '../../common/paradisAgentBrowserTabs.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
@@ -482,7 +482,7 @@ suite('Paradis binding transaction service', () => {
 suite('Paradis binding transaction service: several pages shared with one pane', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
+	const views = ['view-a', 'view-b', 'view-c', 'view-d', 'view-e', 'view-f', 'view-g', 'view-h', 'view-i', 'view-j', 'view-k', ...Array.from({ length: PARADIS_USER_SHARED_PAGE_LIMIT }, (_, index) => `shared-${index}`), 'agent-tab', ...Array.from({ length: PARADIS_OPENED_TAB_LIMIT + 1 }, (_, index) => `opened-${index}`)];
 	const viewOf = (viewId: string) => Object.freeze({ windowId: 1, viewId, targetId: `target-${viewId}`, viewLease: `lease-${viewId}` });
 
 	async function setup() {
@@ -774,6 +774,27 @@ suite('Paradis binding transaction service: several pages shared with one pane',
 			afterUnshare: [{ viewId: 'opened-0', inUse: false }],
 			afterReload: [{ viewId: 'opened-0', inUse: false }],
 			forgotten: [],
+		});
+	});
+
+	test('when the share mark ledger of the window is full, the opened tab is not left usable without its mark', async () => {
+		const { fixture, connection, share, usable } = await setup();
+		await share('view-a');
+		fixture.openers.set('opened-0', 'view-a');
+		fixture.openers.set('opened-1', 'opened-0');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-0')), 'granted');
+		assert.strictEqual(await fixture.service.grantOpenedTab(connection, openedRequest('opened-1')), 'granted');
+		const marks = Reflect.get(fixture.service, '_openedTabShareMarks') as Map<string, Set<string>>;
+		marks.set('window:1', new Set(Array.from({ length: PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS }, (_, index) => `marked-${index}`)));
+		assert.deepStrictEqual({
+			marked: await fixture.service.markOpenedTabShared(connection, 'opened-0'),
+			usable: [usable('view-a'), usable('opened-0'), usable('opened-1')],
+			grants: (await fixture.service.listAgentTabGrants(connection)).map(grant => grant.pageId),
+		}, {
+			marked: false,
+			// 孫（opened-0 から開いた opened-1）も一緒に外れる
+			usable: [true, false, false],
+			grants: [],
 		});
 	});
 

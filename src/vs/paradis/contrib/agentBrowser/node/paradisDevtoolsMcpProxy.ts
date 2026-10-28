@@ -68,8 +68,9 @@ const MAX_PENDING_REQUESTS = 256;
 /** 1子プロセスのstdinに滞留できる最大byte数。 */
 const MAX_STDIN_QUEUED_BYTES = 1024 * 1024;
 /**
- * サービス全体で同時に保持できる子プロセス数。tab_id で使うタブごとに 1 つ起こすので、1 ペインで共有のページ・自分のタブ
- * （PARADIS_AGENT_TAB_LIMIT）・開いたタブ（PARADIS_OPENED_TAB_LIMIT）のぶんまで起こしうる。全ペインでこの数を分け合う。
+ * サービス全体で同時に保持できる子プロセス数。tab_id で使うタブごとに 1 つ起こすので、1 ペインで共有のページ
+ * （PARADIS_USER_SHARED_PAGE_LIMIT）・自分のタブ（PARADIS_AGENT_TAB_LIMIT）・開いたタブ（PARADIS_OPENED_TAB_LIMIT）のぶんまで
+ * 起こしうる。全ペインでこの数を分け合い、達したら使っていない一番古い子を止める（{@link ParadisDevtoolsMcpProxy._evictIdleChild}）。
  */
 const MAX_CHILDREN = 64;
 /** generation高水位を保持できるtoken数。 */
@@ -894,6 +895,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._killChild(token, existing, 'binding generation changed');
 		}
 		if (this._childSlots.size >= this._limit(this.options.maxChildren, MAX_CHILDREN)) {
+			// 使っていない一番古い子を止めて席を空ける。席が空くのは止めた子が終わってからなので、この呼び出しは
+			// 再試行を頼み、次の呼び出しで起こす
+			this._evictIdleChild();
 			throw new ParadisDevtoolsResourceLimitError();
 		}
 
@@ -1341,6 +1345,34 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._warn(`[ParadisDevtoolsProxy] Failed to write to chrome-devtools-mcp stdin for pane ${entry.tokenFingerprint} generation=${entry.generation}`);
 			this._killChild(token, entry, 'stdin write failed', new ParadisDevtoolsResourceLimitError());
 			return false;
+		}
+	}
+
+	/**
+	 * 子プロセスの数が上限のとき、使っていない（応答待ちが無く、{@link PARADIS_DEVTOOLS_RECYCLE_QUIET_MS} 以上呼ばれていない）
+	 * 子のうち最後に使ったのが一番古いものを止める。止めている途中の子がもうあれば、それが終わるのを待つ（続けて止めない）。
+	 */
+	private _evictIdleChild(): void {
+		if ([...this._childSlots].some(entry => entry.killed)) {
+			return;
+		}
+		const now = this._now();
+		const quietMs = this.options.recycleQuietMs ?? PARADIS_DEVTOOLS_RECYCLE_QUIET_MS;
+		let oldest: [string, IChildEntry] | undefined;
+		for (const [token, entry] of this._children) {
+			if (entry.killed || entry.pending.size > 0 || entry.activeTools.length > 0 || (this._inFlight.get(token) ?? 0) > 0
+				|| now - entry.lastActivityAt < quietMs) {
+				continue;
+			}
+			if (oldest === undefined || entry.lastActivityAt < oldest[1].lastActivityAt) {
+				oldest = [token, entry];
+			}
+		}
+		if (oldest !== undefined) {
+			const [token, entry] = oldest;
+			this._debug(`[ParadisDevtoolsProxy] Stopping the least recently used chrome-devtools-mcp for pane ${entry.tokenFingerprint} to make room`);
+			this._markReplaced(token, entry, 'idle');
+			this._killChild(token, entry, 'evicted at the child cap');
 		}
 	}
 
