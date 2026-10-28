@@ -55,7 +55,7 @@ export interface IParadisAgentPromptCache {
 /** ペイン1つ分の様子。 */
 export interface IParadisAgentPaneInsight {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex';
+	readonly agent: 'claude' | 'codex' | 'opencode';
 	/** 動いているもの → 最近終わったもの の順。 */
 	readonly subagents: readonly IParadisAgentPaneSubagent[];
 	/** 最後のアシスタント発言（1行に畳んだもの）。 */

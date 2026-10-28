@@ -130,7 +130,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 			efforts: option.efforts.map(item => item.value),
 			isDefault: option.isDefault,
 		}))
-		: claudeCatalog.options;
+		: agent === 'opencode' ? [] : claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);
@@ -151,7 +151,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 	const modelName = currentModel?.label ?? (agent === 'claude' && model !== undefined ? claudeModelDisplayName(model) : undefined) ?? model;
 	// effort 非対応のモデル（Haiku）では、前のモデルの effort が残っていても出さない
 	const shownEffort = currentModel !== undefined && currentModel.efforts.length === 0 ? undefined : effort;
-	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || 'モデル';
+	const label = [modelName, shownEffort].filter(Boolean).join(' · ') || (agent === 'opencode' ? 'OpenCode' : 'モデル');
 	const isCodexBusy = agent === 'codex' && modelControl?.status !== 'ready';
 	const locked = isCodexBusy || submitting;
 
@@ -253,7 +253,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 				onPress={openDrawer}
 				disabled={readOnly || modelControl?.status === 'updating' || submitting}
 				accessibilityRole={readOnly ? 'text' : 'button'}
-				accessibilityLabel={readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
+				accessibilityLabel={agent === 'opencode' ? 'OpenCode のモデルは PC で変更します' : readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
 			>
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
 				{readOnly ? null : <Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />}

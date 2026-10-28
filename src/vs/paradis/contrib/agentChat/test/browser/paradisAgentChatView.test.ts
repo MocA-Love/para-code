@@ -99,6 +99,11 @@ suite('ParadisAgentChatView', () => {
 		return { view, host, container, disposables, session };
 	}
 
+	test('shows the OpenCode identity in its own conversation header', async () => {
+		const { container } = await createView([{ token: 'pane', agent: 'opencode', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		assert.strictEqual(container.querySelector('.paradis-agent-chat-header-agent')?.textContent, 'OpenCode');
+	});
+
 	test('renders the conversation, a tool row with its diff card and the pending question, and answers through the host', async () => {
 		const { host, container } = await createView([{
 			token: 'pane', agent: 'claude', epoch: 'e', rev: 6, reset: true, busy: false, live: null,

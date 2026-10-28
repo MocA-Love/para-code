@@ -685,8 +685,11 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		return this.watched.get(terminal);
 	}
 
-	/** 文を送ってはいけない理由（送る直前と、貼り付けてから Enter までの間に確かめる）。 */
-	private sendBlock(terminal: string, text: string): Result<never> | undefined {
+	/**
+	 * 文を送ってはいけない理由（送る直前と、貼り付けてから Enter までの間に確かめる）。
+	 * `viaApi` は OpenCode へ連携の API で送るとき（画面の確認と貼り付けの囲みは打鍵のためのものなので見ない）。
+	 */
+	private sendBlock(terminal: string, text: string, viaApi = false): Result<never> | undefined {
 		const watched = this.watchedOf(terminal);
 		const resolved = this.resolve(terminal);
 		if (!watched || !resolved || resolved.instance.isDisposed) {
@@ -698,6 +701,9 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		const block = paradisTaskBoardSendBlock(computed.status, computed.shellBack);
 		if (block !== undefined) {
 			return paradisTaskBoardFail(block, this.blockMessage(block));
+		}
+		if (viaApi) {
+			return undefined;
 		}
 		const chat = chatTerminalFor(resolved.instance);
 		if (paradisScreenShowsAgentPrompt(chat.readScreen(), this.session(resolved.token).state?.agent)) {
@@ -730,6 +736,25 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		if (text === undefined) {
 			// allow-any-unicode-next-line
 			return paradisTaskBoardFail('invalid', localize('paradis.taskBoard.empty', "送る文がありません"));
+		}
+		// OpenCode の入力欄へは打鍵しない。送るのは連携の API だけ（チャット表示の送信と同じ経路で、会話の ID を確かめて渡す）
+		const pane = this.resolve(request.terminal);
+		const session = pane !== undefined ? this.session(pane.token) : undefined;
+		if (session !== undefined && (session.state === undefined || session.state.agent === 'opencode')) {
+			await session.refresh();
+		}
+		if (pane !== undefined && session?.state?.agent === 'opencode') {
+			const blockedApi = this.sendBlock(request.terminal, text, true);
+			if (blockedApi) {
+				return blockedApi;
+			}
+			if (!request.submit) {
+				// allow-any-unicode-next-line
+				return paradisTaskBoardFail('invalid', localize('paradis.taskBoard.openCodeDraft', "OpenCode の入力欄へは書きかけを置けません。送信として送ってください"));
+			}
+			const error = await this.input.sendMessage(pane.instance.instanceId, pane.token, text);
+			this.poll();
+			return error === undefined ? success(true) : paradisTaskBoardFail('rejected', error);
 		}
 		const blocked = this.sendBlock(request.terminal, text);
 		if (blocked) {

@@ -33,7 +33,7 @@ import { ParadisSessionIndexController } from '../../agentActivity/electron-brow
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent } from '../common/paradisSessionResume.js';
+import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent, paradisResumeAgentLabel } from '../common/paradisSessionResume.js';
 import {
 	IParadisResumeListOptions,
 	PARADIS_RESUME_LIST_OPTIONS_STORAGE_KEY,
@@ -266,6 +266,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
 			['claude', 'Claude Code'],
 			['codex', 'Codex'],
+			['opencode', 'OpenCode'],
 		] as const) {
 			const entry = this.createNavItem(agentGroup, label, button => {
 				if (value !== 'all') {
@@ -749,7 +750,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.updateRailSelection(filtered.length);
 		if (filtered.length === 0) {
 			this.renderState(this.list, Codicon.search, this.sessions.length === 0
-				? localize('paradis.sessionResume.noSessions', "登録されたスペースにClaude CodeまたはCodexのセッションが見つかりません。")
+				? localize('paradis.sessionResume.noSessions', "登録されたスペースにエージェントのセッションが見つかりません。")
 				: localize('paradis.sessionResume.noMatches', "条件に一致するセッションがありません。"));
 		} else if (this.listOptions.group !== 'space') {
 			for (const group of paradisGroupResumeSessions(filtered, this.listOptions.group)) {
@@ -786,9 +787,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	private renderAgentIcon(parent: HTMLElement, agent: ParadisResumeAgent): HTMLElement {
-		const icon = agent === 'claude' ? Codicon.claude : Codicon.openai;
+		const icon = agent === 'claude' ? Codicon.claude : agent === 'codex' ? Codicon.openai : Codicon.terminal;
 		const badge = dom.append(parent, $(`span.agent-badge.${agent}${ThemeIcon.asCSSSelector(icon)}`));
-		const label = agent === 'claude' ? 'Claude Code' : 'Codex';
+		const label = paradisResumeAgentLabel(agent);
 		badge.title = label;
 		badge.setAttribute('role', 'img');
 		badge.setAttribute('aria-label', label);
@@ -797,7 +798,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/** transcript 中の発話者の表示名。一覧プレビューと詳細の両方で使う。 */
 	private speakerName(session: IParadisResumeSession, role: 'user' | 'assistant'): string {
-		return role === 'user' ? localize('paradis.sessionResume.you', "あなた") : (session.agent === 'claude' ? 'Claude' : 'Codex');
+		return role === 'user' ? localize('paradis.sessionResume.you', "あなた") : paradisResumeAgentLabel(session.agent);
 	}
 
 	private searchTerms(): readonly string[] {
@@ -952,7 +953,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.renderAgentIcon(heading, session.agent);
 		dom.append(heading, $('h2')).textContent = session.title;
 		const meta = dom.append(header, $('.detail-meta'));
-		dom.append(meta, $('span')).textContent = session.agent === 'claude' ? 'Claude Code' : 'Codex';
+		dom.append(meta, $('span')).textContent = session.cliLabel !== undefined ? `${paradisResumeAgentLabel(session.agent)} (${session.cliLabel})` : paradisResumeAgentLabel(session.agent);
 		dom.append(meta, $('span')).textContent = session.spaceName;
 		dom.append(meta, $('span')).textContent = session.cwd;
 		dom.append(meta, $('span.monospace')).textContent = session.id;
@@ -1038,6 +1039,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			? '--dangerously-skip-permissions'
 			: '--dangerously-bypass-approvals-and-sandbox';
 		const dangerous = dom.append(actions, $('button.danger')) as HTMLButtonElement;
+		dangerous.hidden = session.agent === 'opencode';
 		dangerous.disabled = this.resumingCatalogIds.has(session.catalogId);
 		dangerous.textContent = session.currentSpace
 			? localize('paradis.sessionResume.resumeDangerously', "権限確認なしで再開")
@@ -1155,6 +1157,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				rootUri: space.uri,
 				stateKey: space.stateKey,
 				agent: session.agent,
+				...(session.cli !== undefined ? { cli: session.cli } : {}),
 				sessionId: session.id,
 				currentSpace: session.currentSpace,
 				...(session.agent === 'codex' && session.codexHome !== undefined ? { codexHome: session.codexHome } : {}),

@@ -78,26 +78,75 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 	}
 
 	const existing = await paradisConnect(paths);
-	if (existing) {
+	if (existing.ok) {
 		logService.info(`[ParadisPtyHost] joined the daemon already serving ${paths.socketPath}`);
-		return existing;
+		return existing.connection;
 	}
 
-	await paradisSpawnDaemon(options);
+	const daemon = await paradisSpawnDaemon(options);
 
 	const deadline = Date.now() + STARTUP_TIMEOUT;
+	let last: ParadisPtyHostConnectFailure = existing.failure;
+	let lastErrno = existing.errno;
+	let attempts = 0;
 	while (Date.now() < deadline) {
 		await timeout(RETRY_INTERVAL);
-		const connection = await paradisConnect(paths);
-		if (connection) {
+		attempts++;
+		const attempt = await paradisConnect(paths);
+		if (attempt.ok) {
 			logService.info(`[ParadisPtyHost] started a daemon at ${paths.socketPath}`);
-			return connection;
+			return attempt.connection;
 		}
+		last = attempt.failure;
+		lastErrno = attempt.errno;
 	}
 
-	logService.error(`[ParadisPtyHost] the daemon did not come up at ${paths.socketPath}; terminals will run in this process`);
-	reportParadisDiagnosticError('owned', 'pty-daemon', 'not-up', new Error('the daemon did not come up'), undefined, 'warning');
+	const child = daemon.state();
+	logService.error(`[ParadisPtyHost] the daemon did not come up at ${paths.socketPath}; terminals will run in this process (before spawn: ${existing.failure}, last try: ${last}, tries: ${attempts}, daemon process: ${child.state}${child.exitCode !== undefined ? ` code ${child.exitCode}` : ''}${child.signal !== undefined ? ` ${child.signal}` : ''})`);
+	// 原因の区別は operation に入れる。pty host の報告は窓へ件数だけで中継され、extra は届かない
+	// （`paradisRelayedDiagnostics.ts`）。どちらも決まった語だけ（Sentry の PARA-CODE-DESKTOP-MR）
+	// errno は例外の code に載せる。中継の側も code から safe_errno を拾う（`paradisSafeErrorExtra`）
+	const notUp: Error & { code?: string } = new Error('the daemon did not come up');
+	if (lastErrno !== undefined) {
+		notUp.code = lastErrno;
+	}
+	reportParadisDiagnosticError('owned', 'pty-daemon', `not-up:${child.state}:${last}`, notUp, {
+		safe_before_spawn: existing.failure,
+		safe_last_try: last,
+		safe_tries: attempts,
+		safe_daemon_state: child.state,
+		...(lastErrno !== undefined ? { safe_errno: lastErrno } : {}),
+		...(child.exitCode !== undefined ? { safe_exit_code: child.exitCode } : {}),
+		...(child.signal !== undefined ? { safe_exit_signal: child.signal } : {}),
+	}, 'warning');
 	return undefined;
+}
+
+/**
+ * 常駐に繋げなかった理由。どれも決まった語（Sentry の operation に入る）。
+ * - `no-socket`: ソケットのファイルが無い（常駐がまだ bind していない、または居ない）
+ * - `refused`: ファイルはあるが誰も受けていない（前の常駐が消えて残ったソケット）
+ * - `timeout`: 繋ぐのに 2 秒以上かかった
+ * - `error`: そのほかの接続のエラー
+ * - `no-record`: 繋がったが台帳にこのソケットの記録が無い（起こした直後、または台帳を書けていない）
+ * - `refused-identity`: 合言葉で名乗れなかった
+ * - `hello-failed`: 名乗った後の最初の問い合わせが失敗した
+ * - `protocol-mismatch`: protocol の版が違った
+ */
+type ParadisPtyHostConnectFailure = 'no-socket' | 'refused' | 'timeout' | 'error' | 'no-record' | 'refused-identity' | 'hello-failed' | 'protocol-mismatch';
+
+/** 起こした常駐のプロセスの今の様子。 */
+export interface IParadisSpawnedDaemonState {
+	/** `running`: まだ終わっていない。`exited`: 終了コードで終わった。`signaled`: シグナルで終わった。`spawn-failed`: 起こせなかった。 */
+	readonly state: 'running' | 'exited' | 'signaled' | 'spawn-failed';
+	readonly exitCode?: number;
+	/** `SIGKILL` などの名前（Node の決まった名前だけ）。 */
+	readonly signal?: string;
+}
+
+/** 起こした常駐のプロセス。様子は呼んだ時点のもの。 */
+export interface IParadisSpawnedDaemon {
+	state(): IParadisSpawnedDaemonState;
 }
 
 /**
@@ -107,18 +156,19 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
  * 繋げた時点でそのユーザーとして任意コード実行になる。置き場所の 0700 だけを頼りにせず、
  * 台帳にしか書かれていない合言葉で確かめる（旧い常駐と同じ扱い。**片方だけ薄くしない**）。
  */
-async function paradisConnect(paths: IParadisPtyHostPaths): Promise<IParadisPtyHostConnection | undefined> {
-	const socket = await paradisOpenSocket(paths.socketPath);
-	if (!socket) {
-		return undefined;
+async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure; readonly errno?: string }> {
+	const opened = await paradisOpenSocket(paths.socketPath);
+	if (!opened.ok) {
+		return opened;
 	}
+	const socket = opened.socket;
 	const viewer = paradisPtyHostClientId();
 	const client = SocketClient.fromSocket(socket, viewer);
 	const record = (await paradisReadDaemonRecords(paths.ledgerDir)).find(entry => entry.socketPath === paths.socketPath);
 	if (!record || !await paradisAuthenticateDaemon(client, record.token)) {
 		// 台帳がまだ無い（起こした直後）か、名乗れない相手。どちらも繋がない。
 		client.dispose();
-		return undefined;
+		return { ok: false, failure: record ? 'refused-identity' : 'no-record' };
 	}
 	const host = ProxyChannel.toService<IParadisPtyHost>(client.getChannel(PARADIS_PTY_HOST_CHANNEL));
 	try {
@@ -127,36 +177,43 @@ async function paradisConnect(paths: IParadisPtyHostPaths): Promise<IParadisPtyH
 			// 名前で分けているので本来ここへは来ない。来たなら名前の付け方が壊れているので、
 			// **話を合わせようとせずに離れる**。
 			client.dispose();
-			return undefined;
+			return { ok: false, failure: 'protocol-mismatch' };
 		}
 	} catch {
 		client.dispose();
-		return undefined;
+		return { ok: false, failure: 'hello-failed' };
 	}
 	// **入れ物に入れて返す。** `IParadisPtyHost` は `ProxyChannel` の `Proxy` で、`then` にも
 	// 関数を返すため、`Promise` の解決値にすると thenable と見なされて永久に返らなくなる
 	// (`paradisPtyDaemonControlClient.ts` の冒頭に経緯がある)。
-	return { host, client, viewer };
+	return { ok: true, connection: { host, client, viewer } };
 }
 
-function paradisOpenSocket(socketPath: string): Promise<NodeSocket | undefined> {
-	return new Promise<NodeSocket | undefined>(resolve => {
+type ParadisOpenedSocket = { readonly ok: true; readonly socket: NodeSocket } | { readonly ok: false; readonly failure: 'no-socket' | 'refused' | 'timeout' | 'error'; readonly errno?: string };
+
+function paradisOpenSocket(socketPath: string): Promise<ParadisOpenedSocket> {
+	return new Promise(resolve => {
 		let settled = false;
-		const done = (result: NodeSocket | undefined) => {
+		const done = (result: ParadisOpenedSocket) => {
 			if (settled) {
 				return;
 			}
 			settled = true;
 			clearTimeout(timer);
-			if (!result) {
+			if (!result.ok) {
 				socket.destroy();
 			}
 			resolve(result);
 		};
 		const socket = createConnection({ path: socketPath });
-		const timer = setTimeout(() => done(undefined), CONNECT_TIMEOUT);
-		socket.once('connect', () => done(new NodeSocket(socket, 'paradis-pty-host')));
-		socket.once('error', () => done(undefined));
+		const timer = setTimeout(() => done({ ok: false, failure: 'timeout' }), CONNECT_TIMEOUT);
+		socket.once('connect', () => done({ ok: true, socket: new NodeSocket(socket, 'paradis-pty-host') }));
+		socket.once('error', (error: NodeJS.ErrnoException) => done(error.code === 'ENOENT' ? { ok: false, failure: 'no-socket' } : error.code === 'ECONNREFUSED' ? { ok: false, failure: 'refused' } : {
+			ok: false,
+			failure: 'error',
+			// Node の決まった名前（`EACCES` など）だけ。`error` だけでは区別できないので残す
+			...(typeof error.code === 'string' && /^E[A-Z0-9]{1,20}$/.test(error.code) ? { errno: error.code } : {}),
+		}));
 	});
 }
 
@@ -229,7 +286,7 @@ function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
  *
  * export しているのは、起動に失敗してもプロセスが落ちないことをテストで確かめるため。
  */
-export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<void> {
+export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<IParadisSpawnedDaemon> {
 	const { paths, launch, logService } = options;
 	let stdio: 'ignore' | number = 'ignore';
 	try {
@@ -258,12 +315,25 @@ export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions):
 	});
 	// 起動の失敗（実行ファイルが無い等）は次のティックの 'error' で届く。受け手が無いとこのプロセスごと落ちるので、
 	// 閉じるのを待つより前に付ける。落とさずに記録し、呼び出し側の接続待ちが時間切れになってアプリの中の pty へ落ちる。
+	let state: IParadisSpawnedDaemonState = { state: 'running' };
 	child.on('error', error => {
+		state = { state: 'spawn-failed' };
 		logService.error('[ParadisPtyHost] failed to spawn the daemon process', error);
 		reportParadisDiagnosticError('owned', 'pty-daemon', 'spawn-failed', error, undefined, 'warning');
+	});
+	// 起きなかったときの報告に、常駐のプロセスが途中で終わったかを載せる（Sentry の PARA-CODE-DESKTOP-MR）。
+	// 常駐は切り離してあるので、ふつうはこの通知は来ない
+	child.once('exit', (code, signal) => {
+		if (state.state === 'spawn-failed') {
+			return;
+		}
+		state = signal !== null
+			? { state: 'signaled', ...(/^SIG[A-Z0-9]{1,12}$/.test(signal) ? { signal } : {}) }
+			: { state: 'exited', ...(code !== null ? { exitCode: code } : {}) };
 	});
 	child.unref();
 	if (typeof stdio === 'number') {
 		await Promises.close(stdio);
 	}
+	return { state: () => state };
 }
