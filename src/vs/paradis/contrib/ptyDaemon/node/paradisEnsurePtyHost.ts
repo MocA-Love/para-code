@@ -87,6 +87,7 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 
 	const deadline = Date.now() + STARTUP_TIMEOUT;
 	let last: ParadisPtyHostConnectFailure = existing.failure;
+	let lastErrno = existing.errno;
 	let attempts = 0;
 	while (Date.now() < deadline) {
 		await timeout(RETRY_INTERVAL);
@@ -97,17 +98,24 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 			return attempt.connection;
 		}
 		last = attempt.failure;
+		lastErrno = attempt.errno;
 	}
 
-	const child = daemon?.state() ?? { state: 'spawn-failed' as const };
+	const child = daemon.state();
 	logService.error(`[ParadisPtyHost] the daemon did not come up at ${paths.socketPath}; terminals will run in this process (before spawn: ${existing.failure}, last try: ${last}, tries: ${attempts}, daemon process: ${child.state}${child.exitCode !== undefined ? ` code ${child.exitCode}` : ''}${child.signal !== undefined ? ` ${child.signal}` : ''})`);
 	// 原因の区別は operation に入れる。pty host の報告は窓へ件数だけで中継され、extra は届かない
 	// （`paradisRelayedDiagnostics.ts`）。どちらも決まった語だけ（Sentry の PARA-CODE-DESKTOP-MR）
-	reportParadisDiagnosticError('owned', 'pty-daemon', `not-up:${child.state}:${last}`, new Error('the daemon did not come up'), {
+	// errno は例外の code に載せる。中継の側も code から safe_errno を拾う（`paradisSafeErrorExtra`）
+	const notUp: Error & { code?: string } = new Error('the daemon did not come up');
+	if (lastErrno !== undefined) {
+		notUp.code = lastErrno;
+	}
+	reportParadisDiagnosticError('owned', 'pty-daemon', `not-up:${child.state}:${last}`, notUp, {
 		safe_before_spawn: existing.failure,
 		safe_last_try: last,
 		safe_tries: attempts,
 		safe_daemon_state: child.state,
+		...(lastErrno !== undefined ? { safe_errno: lastErrno } : {}),
 		...(child.exitCode !== undefined ? { safe_exit_code: child.exitCode } : {}),
 		...(child.signal !== undefined ? { safe_exit_signal: child.signal } : {}),
 	}, 'warning');
@@ -148,7 +156,7 @@ export interface IParadisSpawnedDaemon {
  * 繋げた時点でそのユーザーとして任意コード実行になる。置き場所の 0700 だけを頼りにせず、
  * 台帳にしか書かれていない合言葉で確かめる（旧い常駐と同じ扱い。**片方だけ薄くしない**）。
  */
-async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure }> {
+async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly ok: true; readonly connection: IParadisPtyHostConnection } | { readonly ok: false; readonly failure: ParadisPtyHostConnectFailure; readonly errno?: string }> {
 	const opened = await paradisOpenSocket(paths.socketPath);
 	if (!opened.ok) {
 		return opened;
@@ -181,7 +189,7 @@ async function paradisConnect(paths: IParadisPtyHostPaths): Promise<{ readonly o
 	return { ok: true, connection: { host, client, viewer } };
 }
 
-type ParadisOpenedSocket = { readonly ok: true; readonly socket: NodeSocket } | { readonly ok: false; readonly failure: 'no-socket' | 'refused' | 'timeout' | 'error' };
+type ParadisOpenedSocket = { readonly ok: true; readonly socket: NodeSocket } | { readonly ok: false; readonly failure: 'no-socket' | 'refused' | 'timeout' | 'error'; readonly errno?: string };
 
 function paradisOpenSocket(socketPath: string): Promise<ParadisOpenedSocket> {
 	return new Promise(resolve => {
@@ -200,7 +208,12 @@ function paradisOpenSocket(socketPath: string): Promise<ParadisOpenedSocket> {
 		const socket = createConnection({ path: socketPath });
 		const timer = setTimeout(() => done({ ok: false, failure: 'timeout' }), CONNECT_TIMEOUT);
 		socket.once('connect', () => done({ ok: true, socket: new NodeSocket(socket, 'paradis-pty-host') }));
-		socket.once('error', (error: NodeJS.ErrnoException) => done({ ok: false, failure: error.code === 'ENOENT' ? 'no-socket' : error.code === 'ECONNREFUSED' ? 'refused' : 'error' }));
+		socket.once('error', (error: NodeJS.ErrnoException) => done(error.code === 'ENOENT' ? { ok: false, failure: 'no-socket' } : error.code === 'ECONNREFUSED' ? { ok: false, failure: 'refused' } : {
+			ok: false,
+			failure: 'error',
+			// Node の決まった名前（`EACCES` など）だけ。`error` だけでは区別できないので残す
+			...(typeof error.code === 'string' && /^E[A-Z0-9]{1,20}$/.test(error.code) ? { errno: error.code } : {}),
+		}));
 	});
 }
 
@@ -273,7 +286,7 @@ function paradisUndoSnapEnv(env: { [key: string]: string | undefined }): void {
  *
  * export しているのは、起動に失敗してもプロセスが落ちないことをテストで確かめるため。
  */
-export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<IParadisSpawnedDaemon | undefined> {
+export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions): Promise<IParadisSpawnedDaemon> {
 	const { paths, launch, logService } = options;
 	let stdio: 'ignore' | number = 'ignore';
 	try {
