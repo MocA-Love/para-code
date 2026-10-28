@@ -30,7 +30,7 @@ import { ChatTextScaleProvider, useChatStyles } from '../../ui/chatTextScale.js'
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { AskCard, AskGroupCard } from './askCard.js';
 import { ASYNC_FREE_TEXT_PREFIX, AsyncQuestionCard, AsyncQuestionCollapsedRow } from './asyncQuestionCard.js';
-import { groupAsyncQuestions, type AsyncQuestion } from '../../asyncQuestions.js';
+import { groupAsyncQuestions, pickExpandedAsyncCall, type AsyncQuestion } from '../../asyncQuestions.js';
 import { paradisCodexAsyncNotifyInteractionId } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { isAsyncQuestionHidden, useAsyncQuestionDrafts } from '../../asyncQuestionDrafts.js';
 import { pinnedCardMaxHeight, PinnedCardScrollContext, type PinnedCardScroll } from './pinnedCard.js';
@@ -248,8 +248,15 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		const now = Date.now();
 		return groupAsyncQuestions((asyncQuestions ?? []).filter(question => !isAsyncQuestionHidden(asyncHidden, question, now))).reverse();
 	}, [asyncQuestions, asyncHidden]);
+	// 開いている組は、組が出たときに覚えて勝手に替えない（新しい組が出ても、開いている組が残っている間はそのまま）
 	const [expandedAsyncCall, setExpandedAsyncCall] = useState<string | undefined>(undefined);
-	const asyncGroup = asyncGroups.find(group => group[0]?.callId === expandedAsyncCall) ?? asyncGroups[0];
+	const pinnedAsyncCall = pickExpandedAsyncCall(asyncGroups, expandedAsyncCall);
+	useEffect(() => {
+		if (pinnedAsyncCall !== expandedAsyncCall) {
+			setExpandedAsyncCall(pinnedAsyncCall);
+		}
+	}, [pinnedAsyncCall, expandedAsyncCall]);
+	const asyncGroup = asyncGroups.find(group => group[0]?.callId === pinnedAsyncCall);
 	const asyncVisibleIds = useMemo(() => new Set((asyncGroup ?? []).map(question => question.id)), [asyncGroup]);
 	const markAsyncNotificationsSeen = useAppStore(s => s.markAsyncQuestionNotificationsSeen);
 	const dismissAsyncNotifications = useCallback((questions: readonly AsyncQuestion[]) => {

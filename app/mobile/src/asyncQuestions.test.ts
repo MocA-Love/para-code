@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { asyncAnswerText, buildAsyncReply, displaySentText, groupAsyncQuestions, parseAsyncQuestions, questionRepliesOf } from './asyncQuestions.js';
+import { asyncAnswerText, buildAsyncReply, displaySentText, groupAsyncQuestions, parseAsyncQuestions, pickExpandedAsyncCall, questionRepliesOf } from './asyncQuestions.js';
 
 const id = (callId: string, index: number) => JSON.stringify(['request_user_input_async', callId, index]);
 
@@ -49,4 +49,12 @@ describe('asyncQuestions', () => {
 		});
 	});
 
+	test('keeps the open group when Codex asks a newer one, and opens the newest when the open one is gone', () => {
+		const groups = (calls: readonly string[]) => calls.map(callId => parseAsyncQuestions([{ id: id(callId, 0), callId, index: 0, count: 1, title: callId }])!);
+		const first = pickExpandedAsyncCall(groups(['call_a']), undefined);
+		// 組 A の「その他」を入力している途中に組 B が出た（新しい順なので B が先頭）
+		const afterNewer = pickExpandedAsyncCall(groups(['call_b', 'call_a']), first);
+		const afterAnswered = pickExpandedAsyncCall(groups(['call_b']), afterNewer);
+		expect({ first, afterNewer, afterAnswered, none: pickExpandedAsyncCall([], 'call_a') }).toEqual({ first: 'call_a', afterNewer: 'call_a', afterAnswered: 'call_b', none: undefined });
+	});
 });

@@ -37,6 +37,8 @@ export class ParadisCodexAsyncQuestionLedger {
 	 * 戻さなかった）。その質問の通知を片付けるため、{@link takeGoneCalls} で受け取る。
 	 */
 	private readonly gone = new Set<string>();
+	/** 会話を読み直している間（空にしてから読み終えるまで）。離れたかの判定は読み終えてからにする。 */
+	private rereading = false;
 	private _revision = 0;
 
 	/** 変わるたびに進む番号（送ったものと比べて、変わったときだけ送るため）。 */
@@ -162,6 +164,18 @@ export class ParadisCodexAsyncQuestionLedger {
 		}
 	}
 
+	/**
+	 * 会話を読み直し始める（空にしてから読み終えるまで、{@link takeGoneCalls} は何も返さない。読み直しで戻る質問の通知を、
+	 * 途中に届いた hook の時点で消さないため）。読み終えたら {@link endReread}。
+	 */
+	beginReread(): void {
+		this.rereading = true;
+	}
+
+	endReread(): void {
+		this.rereading = false;
+	}
+
 	/** 会話を読み直すときに空にする。変わったら true。 */
 	clear(): boolean {
 		this.earlyAnswers.clear();
@@ -187,6 +201,9 @@ export class ParadisCodexAsyncQuestionLedger {
 	 * 残っているものは除く。
 	 */
 	takeGoneCalls(): string[] {
+		if (this.rereading) {
+			return [];
+		}
 		const result = [...this.gone].filter(callId => !this.isPending(callId));
 		this.gone.clear();
 		return result;
