@@ -81,7 +81,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 <tr><th>拡張機能</th><th>起きていたこと</th><th>直し方</th></tr>
 <tr><td>Angular DevTools</td><td>chrome.debugger が無く、worker が起動のときに落ちていました</td><td>chrome.debugger を足しました。接続（attach）は「拡張機能にはデバッガーをつながせない」で断ります</td></tr>
 <tr><td>Google Keep</td><td>chrome.identity が無く、worker が起動のときに落ちていました</td><td>chrome.identity を足しました。Google へのサインイン（getAuthToken）とウェブの認証の窓は断ります</td></tr>
-<tr><td>1Password・Bitwarden・Dashlane・NordPass・AdGuard・Privacy Badger</td><td>chrome.privacy がありませんでした（Chrome のパスワードの保存を切る、など）</td><td>chrome.privacy の設定を足しました。Para Code には同じ設定が無いので、値は覚えるだけです</td></tr>
+<tr><td>1Password・Bitwarden・Dashlane・NordPass・AdGuard・Privacy Badger</td><td>chrome.privacy がありませんでした（Chrome のパスワードの保存を切る、WebRTC で IP を漏らさない、など）</td><td>chrome.privacy を足しました。network.webRTCIPHandlingPolicy は、その場所の利用者のタブへ本当に効かせます。Para Code に同じものが無いほかの設定は「変えられない」と答え、変えようとすると断ります</td></tr>
 <tr><td>Dark Reader</td><td>chrome.extension.isAllowedFileSchemeAccess が無く、エラーが出ていました</td><td>isAllowedFileSchemeAccess・isAllowedIncognitoAccess を足しました（どちらも false）</td></tr>
 <tr><td>Keeper</td><td>入れるときに大きすぎると断っていました（フォルダから入れるときの 200 MB の上限）</td><td>ストアから入れるときは、展開のときと同じ 512 MB までにしました</td></tr>
 <tr><td>1Password・NordPass</td><td>ポップアップが &lt;meta&gt; の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました</td><td>ページの &lt;meta&gt; の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）</td></tr>

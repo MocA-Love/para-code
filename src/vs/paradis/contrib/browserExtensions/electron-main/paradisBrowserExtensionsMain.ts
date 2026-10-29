@@ -69,6 +69,7 @@ import {
 import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
+import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -385,6 +386,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _permissions: ParadisBrowserExtensionPermissions | undefined;
 	/** notifications・cookies・downloads・management（P5c）。 */
 	private readonly _services: ParadisBrowserExtensionServices | undefined;
+	/** chrome.privacy の webRTCIPHandlingPolicy（P8）。タブの口があるときだけ（効かせる先のタブを引くため）。 */
+	private readonly _privacy: ParadisBrowserExtensionPrivacy | undefined;
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -454,6 +457,21 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			confirmRemove: name => webStoreOptions?.askRemove?.(name) ?? Promise.resolve(false),
 		}) : undefined;
 		this._webStoreBridge?.listen();
+		const privacyEnvironment = tabsOptions?.environment;
+		this._privacy = this.active && privacyEnvironment ? new ParadisBrowserExtensionPrivacy(this._apiHost, join(_root, 'privacy-settings.json'), _logService, {
+			// その場所の利用者のタブ（エージェントのタブ・SSH 先のページのためにトンネルを通しているセッションは含めない）
+			userTabsIn: place => paradisPrivacyUserTabs(privacyEnvironment.listViews(), session => this._placeOfSession(session), place),
+			isEnabledIn: (place, id) => (this._ledger.enabled[place] ?? []).includes(id),
+		}) : undefined;
+		if (this._privacy && privacyEnvironment) {
+			const privacy = this._privacy;
+			this._disposables.add(privacyEnvironment.onDidCreateView(({ view }) => {
+				const place = this._placeOfSession(view.webContents.session);
+				if (place !== undefined && !view.isAgentTab()) {
+					privacy.applyTo(view.webContents, place);
+				}
+			}));
+		}
 		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
 		const tabs = this._tabs;
 		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
@@ -625,6 +643,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._runtimeState.load();
 		await this._menus?.load();
 		await this._permissions?.load();
+		await this._privacy?.load();
 		// 削除の途中に落ちて残った storage.sync の中身を片付ける
 		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
@@ -1438,6 +1457,12 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		return { ok: true, extension };
 	}
 
+	/** そのセッションの場所（拡張機能を入れるセッションで、SSH 先のトンネルを通していないもの）。 */
+	private _placeOfSession(session: unknown): string | undefined {
+		const entry = [...this._sessions].find(candidate => candidate.session === session);
+		return entry && !entry.isRemote() ? entry.profile : undefined;
+	}
+
 	/** 今の台帳のとおりに、各セッションへ読み込む・外す。 */
 	private async _applyEnablement(id: string, kind: ParadisExtensionLoadKind): Promise<void> {
 		const extension = this._ledger.extensions.find(candidate => candidate.id === id);
@@ -1448,6 +1473,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			} else {
 				this._unload(entry, id);
 			}
+		}
+		// 有効・無効が変わると、その場所で効く chrome.privacy の値も変わりうる
+		for (const place of new Set([...this._sessions].map(entry => entry.profile))) {
+			this._privacy?.apply(place);
 		}
 	}
 
@@ -1490,6 +1519,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._syncStore.forgetExtension(id);
 		await this._menus?.forgetExtension(id);
 		await this._permissions?.forgetExtension(id);
+		await this._privacy?.forgetExtension(id);
 		await this._runtimeState.forgetExtension(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも

@@ -40,8 +40,6 @@ export const unicodeFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/**',
 	// PARA-PATCH: third-party xterm source diff (Orca, MIT) keeps its own characters, see build/npm/paradisXtermImePatch.ts
 	'!build/npm/paradisXtermIme/**',
-	// PARA-PATCH: Japanese compatibility table of the browser extensions (generated, see src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/)
-	'!browser-extensions-compat.html',
 
 	'!**/ThirdPartyNotices.txt',
 	'!**/ThirdPartyNotices.cli.txt',

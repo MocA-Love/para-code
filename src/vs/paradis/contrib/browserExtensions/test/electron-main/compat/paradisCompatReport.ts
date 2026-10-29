@@ -112,7 +112,7 @@ function classify(result: IParadisCompatResult): { status: Status; reasons: stri
 const FIXED = [
 	['Angular DevTools', 'chrome.debugger が無く、worker が起動のときに落ちていました', 'chrome.debugger を足しました。接続（attach）は「拡張機能にはデバッガーをつながせない」で断ります'],
 	['Google Keep', 'chrome.identity が無く、worker が起動のときに落ちていました', 'chrome.identity を足しました。Google へのサインイン（getAuthToken）とウェブの認証の窓は断ります'],
-	['1Password・Bitwarden・Dashlane・NordPass・AdGuard・Privacy Badger', 'chrome.privacy がありませんでした（Chrome のパスワードの保存を切る、など）', 'chrome.privacy の設定を足しました。Para Code には同じ設定が無いので、値は覚えるだけです'],
+	['1Password・Bitwarden・Dashlane・NordPass・AdGuard・Privacy Badger', 'chrome.privacy がありませんでした（Chrome のパスワードの保存を切る、WebRTC で IP を漏らさない、など）', 'chrome.privacy を足しました。network.webRTCIPHandlingPolicy は、その場所の利用者のタブへ本当に効かせます。Para Code に同じものが無いほかの設定は「変えられない」と答え、変えようとすると断ります'],
 	['Dark Reader', 'chrome.extension.isAllowedFileSchemeAccess が無く、エラーが出ていました', 'isAllowedFileSchemeAccess・isAllowedIncognitoAccess を足しました（どちらも false）'],
 	['Keeper', '入れるときに大きすぎると断っていました（フォルダから入れるときの 200 MB の上限）', 'ストアから入れるときは、展開のときと同じ 512 MB までにしました'],
 	['1Password・NordPass', 'ポップアップが <meta> の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました', 'ページの <meta> の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）'],
