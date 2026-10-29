@@ -88,6 +88,12 @@ export const PARADIS_SHIM_SURFACE: ParadisShimSurface = {
 	cookies: { permission: 'cookies', methods: ['get', 'getAll', 'set', 'remove', 'getAllCookieStores'], events: ['onChanged'] },
 	downloads: { permission: 'downloads', methods: ['download'], events: ['onCreated', 'onChanged'] },
 	management: { permission: 'management', methods: ['getAll', 'get', 'setEnabled'], events: [] },
+	// P9a。呼び出し元のセッションのウェブのデータだけを消す（main の paradisBrowserExtensionBrowsingData.ts）
+	browsingData: {
+		permission: 'browsingData',
+		methods: ['remove', 'settings', 'removeAppcache', 'removeCache', 'removeCacheStorage', 'removeCookies', 'removeDownloads', 'removeFileSystems', 'removeFormData', 'removeHistory', 'removeIndexedDB', 'removeLocalStorage', 'removePasswords', 'removePluginData', 'removeServiceWorkers', 'removeWebSQL'],
+		events: [],
+	},
 };
 
 type ApiObject = Record<string, unknown>;
@@ -1216,6 +1222,136 @@ export function paradisContentScriptMain(options: IParadisContentScriptOptions):
 	}
 }
 
+/** main だけが使う、chrome.tts の名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_TTS_NAMESPACE = 'paradisTts';
+
+/**
+ * chrome.tts（P9a）。manifest に tts がある拡張機能だけ。読み上げは main が OS の読み上げで行い、出来事（start・word・end など）を
+ * この文脈へ返す。speak の options.onEvent（関数）はここに残し、main には読み上げの id だけを渡す。
+ */
+export function paradisInstallTts(bridge: IParadisShimBridge, namespace: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	if (!declared.includes('tts')) {
+		return;
+	}
+	const settle = (callback: unknown, reply: Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }>): unknown => {
+		if (isCallable(callback)) {
+			void reply.then(result => {
+				let defined = false;
+				if (!result.ok) {
+					try {
+						Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message: result.error }) });
+						defined = true;
+					} catch {
+						// 置き換えられない lastError
+					}
+				}
+				try {
+					if (result.ok && result.value !== undefined) {
+						callback(result.value);
+					} else {
+						callback();
+					}
+				} finally {
+					if (defined) {
+						try {
+							delete runtime.lastError;
+						} catch {
+							// 消せない
+						}
+					}
+				}
+			});
+			return undefined;
+		}
+		return reply.then(result => {
+			if (!result.ok) {
+				throw new Error(result.error);
+			}
+			return result.value;
+		});
+	};
+	const handlers = new Map<string, Callable>();
+	let listening = false;
+	let counter = 0;
+	bridge.onEvent((eventNamespace, event, args) => {
+		if (eventNamespace !== namespace || event !== 'onUtteranceEvent' || typeof args[0] !== 'string' || !isObject(args[1])) {
+			return;
+		}
+		const handler = handlers.get(args[0]);
+		const type = args[1].type;
+		if (type === 'end' || type === 'interrupted' || type === 'cancelled' || type === 'error') {
+			handlers.delete(args[0]);
+		}
+		try {
+			handler?.(args[1]);
+		} catch (error) {
+			console.error(error);
+		}
+	});
+	const call = (method: string, args: unknown[]) => bridge.call(namespace, method, args);
+	const last = (input: unknown[]) => input.length > 0 && isCallable(input[input.length - 1]) ? input[input.length - 1] : undefined;
+	const tts: ApiObject = {
+		speak: (utterance: unknown, ...rest: unknown[]) => {
+			const callback = last(rest);
+			const options = isObject(rest[0]) ? rest[0] : {};
+			counter += 1;
+			const requestId = `${Date.now().toString(36)}-${counter}-${Math.random().toString(36).slice(2)}`;
+			if (isCallable(options.onEvent)) {
+				handlers.set(requestId, options.onEvent);
+				if (!listening) {
+					listening = true;
+					bridge.listen(namespace, 'onUtteranceEvent', true);
+				}
+			}
+			const plain: ApiObject = {};
+			for (const key of ['enqueue', 'lang', 'rate', 'pitch', 'volume', 'voiceName']) {
+				if (options[key] !== undefined) {
+					plain[key] = options[key];
+				}
+			}
+			return settle(callback, call('speak', [requestId, typeof utterance === 'string' ? utterance : String(utterance), plain]));
+		},
+		stop: () => {
+			void call('stop', []);
+		},
+		pause: () => {
+			void call('pause', []);
+		},
+		resume: () => {
+			void call('resume', []);
+		},
+		isSpeaking: (...input: unknown[]) => settle(last(input), call('isSpeaking', [])),
+		getVoices: (...input: unknown[]) => settle(last(input), call('getVoices', [])),
+		onVoicesChanged: { addListener: () => { }, removeListener: () => { }, hasListener: () => false, hasListeners: () => false },
+		EventType: { START: 'start', END: 'end', WORD: 'word', SENTENCE: 'sentence', MARKER: 'marker', INTERRUPTED: 'interrupted', CANCELLED: 'cancelled', ERROR: 'error', PAUSE: 'pause', RESUME: 'resume' },
+		VoiceGender: { MALE: 'male', FEMALE: 'female' },
+	};
+	for (const target of isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi]) {
+		try {
+			Object.defineProperty(target, 'tts', { value: tts, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った物は触らない
+		}
+	}
+}
+
 /** main だけが使う、chrome.privacy の名前空間（chrome には出さない）。main の登録と同じ名前。 */
 export const PARADIS_SHIM_PRIVACY_NAMESPACE = 'paradisPrivacy';
 
@@ -1601,6 +1737,8 @@ export interface IParadisShimOptions {
 	readonly nativeMessagingNamespace: string;
 	readonly installPrivacy: typeof paradisInstallPrivacy;
 	readonly privacyNamespace: string;
+	readonly installTts: typeof paradisInstallTts;
+	readonly ttsNamespace: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -1749,6 +1887,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installInertApis(isWorker ? 'worker' : 'page');
 	options.installNativeMessaging(bridge, options.nativeMessagingNamespace);
 	options.installPrivacy(bridge, options.privacyNamespace);
+	options.installTts(bridge, options.ttsNamespace);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない

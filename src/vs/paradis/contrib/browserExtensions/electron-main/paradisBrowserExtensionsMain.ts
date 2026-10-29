@@ -28,6 +28,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
+import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -70,6 +71,8 @@ import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrows
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
 import { ParadisBrowserExtensionPrivacy, paradisPrivacyUserTabs } from './paradisBrowserExtensionPrivacy.js';
+import { paradisRegisterBrowsingDataApis } from './paradisBrowserExtensionBrowsingData.js';
+import { ParadisBrowserExtensionTts } from './paradisBrowserExtensionTts.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IParadisHeldUpdate, IParadisWebStoreUpdate, PARADIS_WEB_STORE_UPDATE_URL, ParadisWebStoreUpdateSchedule, paradisAddedAccess, paradisBuildUpdateRequest, paradisCompareExtensionVersions, paradisHasAddedAccess, paradisParseUpdateResponse } from './paradisBrowserExtensionWebStoreUpdates.js';
 import { IParadisInstallPrompt, ParadisWebStoreFetcher, ParadisWebStoreUpdateRequester, paradisCreateWebStoreUpdateRequester, paradisCreateWebStoreFetcher, paradisDownloadWebStoreCrx, paradisExtractCrxArchive } from './paradisBrowserExtensionWebStore.js';
@@ -388,6 +391,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _services: ParadisBrowserExtensionServices | undefined;
 	/** chrome.privacy の webRTCIPHandlingPolicy（P8）。タブの口があるときだけ（効かせる先のタブを引くため）。 */
 	private readonly _privacy: ParadisBrowserExtensionPrivacy | undefined;
+	/** chrome.tts（P9a）。 */
+	private readonly _tts: ParadisBrowserExtensionTts | undefined;
 	/** ネイティブメッセージング（P6）。 */
 	private readonly _nativeMessaging: ParadisNativeMessaging | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
@@ -457,6 +462,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			confirmRemove: name => webStoreOptions?.askRemove?.(name) ?? Promise.resolve(false),
 		}) : undefined;
 		this._webStoreBridge?.listen();
+		this._tts = this.active ? new ParadisBrowserExtensionTts(this._apiHost) : undefined;
+		// browsingData で消さない拡張機能の origin: 入れてある拡張機能すべて（今無効のものも、データはセッションに残っている）、
+		// 外してデータの片付けを待っているもの、今読み込まれているもの
+		paradisRegisterBrowsingDataApis(this._apiHost, caller => [...new Set([
+			...this._ledger.extensions.map(extension => extension.id),
+			...this._ledger.removed.map(({ id }) => id),
+			...(caller.session as unknown as ParadisExtensionSession).extensions.getAllExtensions().map(extension => extension.id),
+		])].map(id => `chrome-extension://${id}`));
 		const privacyEnvironment = tabsOptions?.environment;
 		this._privacy = this.active && privacyEnvironment ? new ParadisBrowserExtensionPrivacy(this._apiHost, join(_root, 'privacy-settings.json'), _logService, {
 			// その場所の利用者のタブ（エージェントのタブ・SSH 先のページのためにトンネルを通しているセッションは含めない）
@@ -547,12 +560,18 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._ready = this.active ? this._loadLedger() : Promise.resolve();
 	}
 
+	/** Para Code を終えるとき: 読み上げの面など、終わるのを妨げうるものを先に閉じる。 */
+	closeForShutdown(): void {
+		this._tts?.dispose();
+	}
+
 	dispose(): void {
 		this._disposables.dispose();
 		this._webStoreBridge?.dispose();
 		this._updateSchedule?.dispose();
 		this._actions?.dispose();
 		this._nativeMessaging?.dispose();
+		this._tts?.dispose();
 		this._menus?.dispose();
 		this._tabs?.dispose();
 		this._apiHost.dispose();
@@ -1585,6 +1604,8 @@ export function paradisRegisterBrowserExtensions(
 		);
 	});
 	disposables.add(created);
+	// 読み上げの面は will-quit を待たずに、終わり始めたところで閉じる
+	disposables.add(instantiationService.invokeFunction(accessor => accessor.get(ILifecycleMainService)).onWillShutdown(() => created.closeForShutdown()));
 	manager = created;
 	for (const { session, owner } of pendingSessions.splice(0)) {
 		void created.attach(session, owner);
