@@ -24,6 +24,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { ParadisProfileModal } from '../../browserProfiles/electron-browser/paradisBrowserProfileDialogs.js';
+import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import {
 	IParadisAddExtensionResult,
@@ -37,6 +38,7 @@ import {
 	PARADIS_MAX_EXTENSION_FILES,
 	paradisNamedExtensionProfile,
 } from '../common/paradisBrowserExtensions.js';
+import { paradisEnabledWhileSharedWarning, paradisSharedPageTitlesInPlace } from './paradisBrowserExtensionsService.js';
 
 const $ = dom.$;
 
@@ -97,6 +99,7 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ILayoutService layoutService: ILayoutService,
+		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 	) {
 		super(localize('paradis.browserExtensions.title', "ブラウザの拡張機能（試験的）"), Codicon.extensions, layoutService);
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
@@ -229,7 +232,24 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		toggle.disabled = !active || this._busy;
 		toggle.setAttribute('aria-label', localize('paradis.browserExtensions.toggle', "「{0}」をこの場所で有効にする", extension.name));
 		this.contentFocusables.push(toggle);
-		this._renderStore.add(dom.addDisposableListener(toggle, 'change', () => void this._run(() => this._mainService.setEnabled(extension.id, this._profile, toggle.checked))));
+		this._renderStore.add(dom.addDisposableListener(toggle, 'change', () => {
+			const enabling = toggle.checked;
+			const place = this._profile;
+			void this._run(async () => {
+				await this._mainService.setEnabled(extension.id, place, enabling);
+				// 共有した後に有効にしたタブは共有の確認を通らないので、ここで知らせる（D4）
+				if (enabling && extension.touchesPages) {
+					const titles = paradisSharedPageTitlesInPlace(
+						this.bindingModel.bindings.map(binding => ({ pageId: binding.pageId, title: binding.pageInfo.title || binding.pageInfo.url })),
+						place,
+						pageId => this.profilesService.getViewSession(pageId),
+					);
+					if (titles.length > 0) {
+						this._showMessage(paradisEnabledWhileSharedWarning(extension.name, titles), true);
+					}
+				}
+			});
+		}));
 
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
