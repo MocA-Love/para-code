@@ -102,4 +102,64 @@ suite('ParadisCdpIsolatedWorldFilter', () => {
 			script: 'drop',
 		});
 	});
+	test('keeps an extension world hidden after the client creates one in an extension frame, whichever arrives first', () => {
+		const extension = 'chrome-extension://nlbcfljciijdbmfmbiaoelpjlhdgfhee';
+		const world = (id: number) => ({ context: { id, uniqueId: `u${id}`, name: 'mine', origin: extension, auxData: { isDefault: false, type: 'isolated', frameId: 'EXT' } } });
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.checkClientCommand('s1', 1, 'Page.createIsolatedWorld', { frameId: 'EXT', worldName: 'mine' });
+		const eventFirst = filter.filterEvent('s1', 'Runtime.executionContextCreated', world(7));
+		filter.observeResponse('s1', 1, { executionContextId: 7 });
+		filter.checkClientCommand('s1', 2, 'Page.createIsolatedWorld', { frameId: 'EXT', worldName: 'mine' });
+		filter.observeResponse('s1', 2, { executionContextId: 8 });
+		const responseFirst = filter.filterEvent('s1', 'Runtime.executionContextCreated', world(8));
+		assert.deepStrictEqual({
+			events: [eventFirst, responseFirst],
+			evaluate: [
+				typeof filter.checkClientCommand('s1', 3, 'Runtime.evaluate', { expression: '1', contextId: 7 }),
+				typeof filter.checkClientCommand('s1', 4, 'Runtime.evaluate', { expression: '1', contextId: 8 }),
+				typeof filter.checkClientCommand('s1', 5, 'Runtime.evaluate', { expression: '1', uniqueContextId: 'u8' }),
+			],
+		}, { events: ['drop', 'drop'], evaluate: ['string', 'string', 'string'] });
+	});
+
+	test('knows a session whose own document is an extension page, until that document goes away', () => {
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		const main = (id: number, origin: string) => ({ context: { id, uniqueId: `m${id}`, name: '', origin, auxData: { isDefault: true, type: 'default', frameId: 'F1' } } });
+		const states: boolean[] = [filter.isOnExtensionPage('s1')];
+		filter.filterEvent('s1', 'Runtime.executionContextCreated', main(1, 'https://example.test'));
+		states.push(filter.isOnExtensionPage('s1'));
+		filter.filterEvent('s1', 'Runtime.executionContextCreated', main(2, 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa'));
+		states.push(filter.isOnExtensionPage('s1'), filter.isOnExtensionPage('s2'));
+		filter.filterEvent('s1', 'Runtime.executionContextDestroyed', { executionContextId: 2, executionContextUniqueId: 'm2' });
+		states.push(filter.isOnExtensionPage('s1'));
+		filter.filterEvent('s1', 'Runtime.executionContextCreated', main(3, 'chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa'));
+		filter.filterEvent('s1', 'Runtime.executionContextsCleared', {});
+		states.push(filter.isOnExtensionPage('s1'));
+		assert.deepStrictEqual(states, [false, false, true, false, false, false]);
+	});
+
+	test('refuses to evaluate on any paused call frame that belongs to a hidden world, not only the top one', () => {
+		// As Electron 43.7.7 reports it: a page listener called synchronously by a content script's dispatchEvent.
+		const filter = new ParadisCdpIsolatedWorldFilter();
+		filter.filterEvent('', 'Runtime.executionContextCreated', { context: { id: 1, uniqueId: 'main', name: '', origin: 'http://127.0.0.1:45843', auxData: { isDefault: true, frameId: 'F1' } } });
+		filter.filterEvent('', 'Runtime.executionContextCreated', { context: { id: 3, uniqueId: 'cs', name: 'Probe Two', origin: 'chrome-extension://peccpbngleohlifalhmmbmopmkilinpj', auxData: { isDefault: false, frameId: 'F1' } } });
+		filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: '40', url: 'chrome-extension://peccpbngleohlifalhmmbmopmkilinpj/cs.js', executionContextId: 3, executionContextAuxData: { isDefault: false } });
+		filter.filterEvent('', 'Debugger.scriptParsed', { scriptId: '41', url: '', executionContextId: 1, executionContextAuxData: { isDefault: true } });
+		const paused = filter.filterEvent('', 'Debugger.paused', {
+			reason: 'other',
+			callFrames: [
+				{ callFrameId: '7791486334757065779.1.0', functionName: '', location: { scriptId: '41', lineNumber: 0 } },
+				{ callFrameId: '7791486334757065779.3.1', functionName: '', location: { scriptId: '40', lineNumber: 2 } },
+			],
+		});
+		const whilePaused = [
+			filter.checkClientCommand('', 1, 'Debugger.evaluateOnCallFrame', { callFrameId: '7791486334757065779.1.0', expression: '1' }),
+			typeof filter.checkClientCommand('', 2, 'Debugger.evaluateOnCallFrame', { callFrameId: '7791486334757065779.3.1', expression: 'window.__csSecret' }),
+			typeof filter.checkClientCommand('', 3, 'Debugger.setVariableValue', { callFrameId: '7791486334757065779.3.1', scopeNumber: 0, variableName: 'x', newValue: { value: 1 } }),
+		];
+		filter.filterEvent('', 'Debugger.resumed', {});
+		// A frame id the filter never saw still names the hidden context it came from.
+		const afterResume = typeof filter.checkClientCommand('', 4, 'Debugger.evaluateOnCallFrame', { callFrameId: '123.3.0', expression: '1' });
+		assert.deepStrictEqual({ paused, whilePaused, afterResume }, { paused: 'forward', whilePaused: [undefined, 'string', 'string'], afterResume: 'string' });
+	});
 });
