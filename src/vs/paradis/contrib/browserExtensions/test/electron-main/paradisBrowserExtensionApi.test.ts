@@ -181,6 +181,35 @@ suite('ParadisBrowserExtensionApi', () => {
 		], ['<meta charset="utf-8"><p>ok</p>', undefined, undefined]);
 	});
 
+	test('injects the shim into XHTML and scripted SVG pages, and reports pages it cannot change', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-extension-xml-'));
+		try {
+			const copy = join(root, 'v3');
+			await fs.mkdir(copy);
+			await fs.writeFile(join(copy, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'X', version: '1' }));
+			await fs.writeFile(join(copy, 'page.xhtml'), '<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><script src="p.js"/></head></html>');
+			await fs.writeFile(join(copy, 'app.svg'), '<svg xmlns="http://www.w3.org/2000/svg" data-x="a>b"><script href="s.js"/></svg>');
+			await fs.writeFile(join(copy, 'icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+			await fs.writeFile(join(copy, 'feed.xml'), '<root><script xmlns="http://www.w3.org/1999/xhtml">x()</script></root>');
+			await fs.writeFile(join(copy, 'legacy.xhtml'), '<?xml version="1.0" encoding="Shift_JIS"?><html/>');
+			const prepared = await paradisPrepareExtensionCopy(copy, 'token', '// shim');
+			const read = (name: string) => fs.readFile(join(copy, name), 'utf8');
+			assert.deepStrictEqual({
+				xhtml: await read('page.xhtml'),
+				svg: await read('app.svg'),
+				icon: await read('icon.svg'),
+				skipped: [...prepared.skippedPages].sort(),
+			}, {
+				xhtml: '<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><script src="/paracode-extension-api.js" data-paracode-extension-api="1"></script><script src="p.js"/></head></html>',
+				svg: '<svg xmlns="http://www.w3.org/2000/svg" data-x="a>b"><script href="/paracode-extension-api.js" data-paracode-extension-api="1"></script><script href="s.js"/></svg>',
+				icon: '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
+				skipped: ['feed.xml', 'legacy.xhtml'],
+			});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test('prepares a copy from its original manifest every run, and leaves Manifest V2 alone', async () => {
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-extension-copy-'));
 		try {
