@@ -60,7 +60,7 @@ import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIM
 import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisParseApprovalOptionChoice } from '../common/paradisAgentApprovalOptions.js';
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { PARADIS_CODEX_APPROVAL_HOLD_MS } from '../common/paradisCodexApprovalHold.js';
-import { PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
+import { PARADIS_CODEX_AUTO_CONTINUE_PHASES, PARADIS_CODEX_OVERLOAD_ERROR_CODE, PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
 import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisIsCodexNonUserSource, paradisIsCodexRootSource } from '../../sessionResume/common/paradisSessionTranscript.js';
@@ -1920,7 +1920,11 @@ interface ITailerDelegate {
 	 */
 	onAsyncQuestions?(added: readonly IParadisCodexAsyncQuestion[], goneCalls: readonly string[]): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
-	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string): void;
+	/**
+	 * `startedAfter`: 同じ読み込みの中で、このターンの終わりより後に次のターンが始まっている（時系列で後ろの turnStart）。
+	 * そのときペインは作業中なので、終わりとしては扱わない。
+	 */
+	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted', errorCode?: string, startedAfter?: boolean): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
 	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[]): void;
 	/**
@@ -3139,6 +3143,11 @@ class TranscriptTailer {
 		}
 	}
 
+	/** 出すのを待っている承認が列にあるか（{@link IParadisApprovalEntry.held}）。 */
+	hasHeldApproval(): boolean {
+		return this.approvalQueue.some(entry => entry.held !== undefined);
+	}
+
 	/** 出すのを待っていた承認が、`since` より後に出す前に決着したか（その承認の通知を捨ててよいか）。 */
 	heldApprovalSettledSince(since: number): boolean {
 		return this.heldApprovalSettledAt !== undefined && this.heldApprovalSettledAt >= since;
@@ -3759,7 +3768,17 @@ class TranscriptTailer {
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
-			this.delegate.onTurnEnded(signals.turnEnded, signals.turnErrorCode);
+			// 時系列で、最後のターンの終わりより後にターンが始まっているか（終わりと次の始まりが 1 回の読み込みに入った）
+			const timeline = signals.codexActivityTimeline;
+			let lastEnd = -1;
+			for (let index = timeline.length - 1; index >= 0; index--) {
+				if (timeline[index].type === 'turnEnd') {
+					lastEnd = index;
+					break;
+				}
+			}
+			const startedAfter = lastEnd >= 0 && timeline.slice(lastEnd + 1).some(event => event.type === 'turnStart');
+			this.delegate.onTurnEnded(signals.turnEnded, signals.turnErrorCode, startedAfter);
 		}
 		if (signals.turnEnded !== undefined) {
 			this.approvalDeniedInTurn = false;
@@ -3998,13 +4017,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	private codexAutoContinueEnabled: () => boolean = () => true;
 	/** 自動の continue を送れずにやめたことの通知の出し方（{@link setCodexAutoContinueStoppedNotifier}）。 */
 	private codexAutoContinueStopped: ((token: string, terminalId: number, owner: IParadisMobilePaneOwner) => void) | undefined;
-	/** Codex のモデルが混み合って止まったターンを、少し待って自動で続ける（paradisCodexOverloadContinue.ts）。 */
 	/** 自動の continue を送るまで待つ時間（テストは短くする）。 */
 	private codexOverloadRetryDelaysMs: readonly number[] = PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS;
 	/** Codex の承認のカードを出すまで待つ時間（テストは短くする）。 */
 	private codexApprovalHoldMs = PARADIS_CODEX_APPROVAL_HOLD_MS;
 	/** Codex の承認のカードを待たせ始めた時刻（ペイン → 時刻。通知も同じだけ待たせる）。 */
 	private readonly codexApprovalHolds = new Map<string, number>();
+	/** Codex のモデルが混み合って止まったターンを、少し待って自動で続ける（paradisCodexOverloadContinue.ts）。 */
 	private readonly overloadContinue = new ParadisCodexOverloadContinue({
 		isEnabled: () => this.codexAutoContinueEnabled(),
 		retryDelaysMs: () => this.codexOverloadRetryDelaysMs,
@@ -4261,6 +4280,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { since, waitMs };
 	}
 
+	/** 出すのを待たせている Codex の承認が、このペインの列にあるか。 */
+	hasHeldCodexApproval(token: string): boolean {
+		return this.tailers.get(token)?.hasHeldApproval() === true;
+	}
+
 	/** 待たせていた Codex の承認が、`since` より後に出す前に決着したか（通知を捨ててよいか）。 */
 	codexHeldApprovalSettledSince(token: string, since: number): boolean {
 		return this.tailers.get(token)?.heldApprovalSettledSince(since) === true;
@@ -4278,7 +4302,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	reportCodexAutoContinue(token: string, requestId: string, phase: ParadisCodexAutoContinuePhase, windowId: number, windowSession: string): boolean {
 		const terminalId = this.terminalIdForToken(token);
 		const owner = terminalId !== undefined ? this.ownerForPane(terminalId, token) : undefined;
-		if (owner === undefined || owner.windowId !== windowId || owner.windowSession !== windowSession || this.paneSessions.get(token)?.agent !== 'codex') {
+		if (owner === undefined || owner.windowId !== windowId || owner.windowSession !== windowSession || this.paneSessions.get(token)?.agent !== 'codex'
+			|| !PARADIS_CODEX_AUTO_CONTINUE_PHASES.has(phase)) {
+			return false;
+		}
+		// 送る直前に、記録でも確かめる: ターンが動いていない、最後のターンの終わりが混み合いの失敗。違えば取りやめる
+		const lastEnd = this.notifyTurnEnds.get(token);
+		if (phase === 'claim' && (this.activeTurnTokens.has(token) || lastEnd?.reason !== 'failed' || lastEnd.errorCode !== PARADIS_CODEX_OVERLOAD_ERROR_CODE)) {
+			this.overloadContinue.report(token, requestId, 'typed');
 			return false;
 		}
 		return this.overloadContinue.report(token, requestId, phase);
@@ -10092,7 +10123,16 @@ export class ParadisMobileAgentChat extends Disposable {
 			},
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
-			onTurnEnded: (reason, errorCode) => {
+			onTurnEnded: (reason, errorCode, startedAfter) => {
+				// 同じ読み込みの中で次のターンがもう始まっている。ペインは作業中なので、終わりとして状態を動かさない
+				// （ターンの始まり・終わりの合図は時系列の順に onCodexActivityTimeline が出し済み）。自動の continue も送らない
+				if (startedAfter === true) {
+					this.overloadContinue.forget(token);
+					if (reason === 'interrupted' && tailer.stoppedOnApproval()) {
+						tailer.clearApprovalRequest(undefined, true, true);
+					}
+					return;
+				}
 				// Codex のモデルが混み合って止まったなら、少し待って自動で続ける。待つ間は失敗の通知を出さないので、
 				// ペインの状態を動かす（通知が出る）より先に決める
 				if (session.agent === 'codex') {

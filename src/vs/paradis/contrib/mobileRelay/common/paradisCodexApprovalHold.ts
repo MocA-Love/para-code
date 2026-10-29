@@ -20,9 +20,17 @@ export const PARADIS_CODEX_APPROVAL_HOLD_MS = 8_000;
 export const PARADIS_CODEX_APPROVAL_NOTIFY_SLACK_MS = 300;
 
 /**
- * 待たせた承認の通知を、待ち終えた後に出すか。カードが出ていれば出す。出す前に承認が決着した（自動の審査が許可・拒否した、
- * ターンが終わった）なら捨てる。どちらでもない（カードを作らなかった承認など）は今までどおり出す。
+ * 待たせた承認の通知を、待ち終えた後にどうするか。
+ * - `send`: 答えを待つカードが出ている（後から来た承認のカードも含む）、またはカードを作らなかった承認（今までどおり出す）
+ * - `wait`: まだ出すのを待っている承認が列にある（承認が重なった。そのカードが出るか決着するまで待ち直す）
+ * - `drop`: 待っていた承認が出す前に決着し（自動の審査が許可・拒否した、ターンが終わった）、ほかに待つものも無い
  */
-export function paradisShouldSendHeldApprovalNotify(state: { readonly cardShown: boolean; readonly settledWhileHeld: boolean }): boolean {
-	return state.cardShown || !state.settledWhileHeld;
+export function paradisHeldApprovalNotifyAction(state: { readonly cardShown: boolean; readonly stillHeld: boolean; readonly settledWhileHeld: boolean }): 'send' | 'wait' | 'drop' {
+	if (state.cardShown) {
+		return 'send';
+	}
+	if (state.stillHeld) {
+		return 'wait';
+	}
+	return state.settledWhileHeld ? 'drop' : 'send';
 }
