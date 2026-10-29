@@ -981,6 +981,28 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		key: 'paradis.browser.extensions.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserExtensions', "（試験的）内蔵ブラウザで Chrome 拡張機能を使う"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserExtensionsDesc', "展開済みの拡張機能のフォルダを読み込めるようにします。エージェントのタブ・使い捨てのタブ・SSH 先のページには入りません。変更は再起動の後に効きます。"),
+		keywords: 'browser chrome extensions experimental 1password unpacked',
+	},
+	{
+		sectionId: 'psd-sec-browser',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.browserExtensionsManage', "ブラウザの拡張機能"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.browserExtensionsManageDesc', "入れた拡張機能の一覧です。プロファイルごとに有効にする・読み込み直す・削除する、ができます。"),
+		keywords: 'browser chrome extensions manage list remove profile',
+		action: {
+			// allow-any-unicode-next-line
+			label: localize('paradis.settings.browserExtensionsManageAction', "拡張機能を管理…"),
+			commandId: 'paradis.browserExtensions.manage',
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		key: 'paradis.browser.userAgent.includeParaCodeToken',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.userAgentParaCodeToken', "サイトに Para Code だと名乗る"),
