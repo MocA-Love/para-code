@@ -36,6 +36,7 @@ import {
 	IParadisBrowserExtensionsMainService,
 	IParadisBrowserExtensionsState,
 	IParadisInstalledBrowserExtension,
+	IParadisShareExtensions,
 	IParadisViewBrowserExtension,
 	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
@@ -443,16 +444,19 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		}
 	}
 
-	async getExtensionsInView(viewId: string): Promise<readonly IParadisViewBrowserExtension[]> {
+	async getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions> {
 		await this._ready;
-		const session = this.active && typeof viewId === 'string' ? this._sessionForView(viewId) : undefined;
-		if (!session) {
-			return [];
+		if (!this.active) {
+			return { active: false, extensions: [] };
 		}
-		// 同梱の React DevTools など、台帳に無いものは数えない
-		return this._ledger.extensions
-			.filter(extension => session.extensions.getExtension(extension.id))
-			.map(({ id, name, touchesPages }) => ({ id, name, touchesPages }));
+		const describe = ({ id, name, touchesPages }: IParadisInstalledBrowserExtension): IParadisViewBrowserExtension => ({ id, name, touchesPages });
+		const session = typeof viewId === 'string' ? this._sessionForView(viewId) : undefined;
+		if (session) {
+			// 開いているページ: そのセッションに今入っているもの（同梱の React DevTools など、台帳に無いものは数えない）
+			return { active: true, extensions: this._ledger.extensions.filter(extension => session.extensions.getExtension(extension.id)).map(describe) };
+		}
+		// まだ開いていないページ・これから開くプロファイル: 有効にしてあるもの
+		return { active: true, extensions: paradisIsExtensionProfileKey(fallbackProfile) ? paradisEnabledExtensions(this._ledger, fallbackProfile).map(describe) : [] };
 	}
 
 	async getState(): Promise<IParadisBrowserExtensionsState> {
@@ -692,7 +696,7 @@ export function paradisRegisterBrowserExtensions(
 		reloadUnpacked: id => created.reloadUnpacked(id),
 		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
 		remove: id => created.remove(id),
-		getExtensionsInView: viewId => created.getExtensionsInView(viewId),
+		getShareExtensions: (viewId, fallbackProfile) => created.getShareExtensions(viewId, fallbackProfile),
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

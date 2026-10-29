@@ -87,9 +87,13 @@ suite('ParadisBrowserExtensions common', () => {
 			activeTab: touches({ permissions: ['activeTab'] }),
 			storageOnly: touches({ permissions: ['storage'] }),
 			hostsOnly: touches({ host_permissions: ['https://example.com/*'] }),
+			debuggerPermission: touches({ permissions: ['debugger'] }),
+			userScripts: touches({ permissions: ['userScripts'] }),
+			optionalScripting: touches({ optional_permissions: ['scripting'], optional_host_permissions: ['<all_urls>'] }),
+			optionalNative: touches({ optional_permissions: ['nativeMessaging'] }),
 			// P3 の版で足した行（touchesPages が無い）は、知らせ損ねないよう読み書きできる側に倒す
 			oldLedgerRow: paradisParseExtensionsLedger({ version: 1, extensions: [{ ...extension(A), touchesPages: undefined }], enabled: {}, removed: [] }).extensions[0].touchesPages,
-		}, { contentScripts: true, nativeMessaging: true, scriptingWithHosts: true, activeTab: true, storageOnly: false, hostsOnly: false, oldLedgerRow: true });
+		}, { contentScripts: true, nativeMessaging: true, scriptingWithHosts: true, activeTab: true, storageOnly: false, hostsOnly: false, debuggerPermission: true, userScripts: true, optionalScripting: true, optionalNative: true, oldLedgerRow: true });
 	});
 
 	test('reads manifests', () => {

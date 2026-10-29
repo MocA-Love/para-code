@@ -9,25 +9,50 @@
 // 内蔵ブラウザの Chrome 拡張機能（試験的）の renderer 側の窓口。共有の確認（D4）で、そのページに
 // ページの中身を読み書きできる拡張機能が入っていれば知らせる文を作る。
 
+import { raceTimeout } from '../../../../base/common/async.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
-import { IParadisBrowserExtensionsMainService, IParadisViewBrowserExtension, PARADIS_BROWSER_EXTENSIONS_CHANNEL } from '../common/paradisBrowserExtensions.js';
+import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
+import {
+	IParadisBrowserExtensionsMainService,
+	IParadisShareExtensions,
+	IParadisViewBrowserExtension,
+	PARADIS_BROWSER_EXTENSIONS_CHANNEL,
+	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
+	PARADIS_DEFAULT_EXTENSION_PROFILE,
+	paradisNamedExtensionProfile,
+} from '../common/paradisBrowserExtensions.js';
 
 export const IParadisBrowserExtensionsService = createDecorator<IParadisBrowserExtensionsService>('paradisBrowserExtensionsService');
+
+/** 共有するもの。開いているタブ（`viewId`）か、これから開く名前付きプロファイル（`profileId`）。 */
+export type ParadisShareTarget = { readonly kind: 'view'; readonly viewId: string } | { readonly kind: 'profile'; readonly profileId: string };
 
 export interface IParadisBrowserExtensionsService {
 	readonly _serviceBrand: undefined;
 	/**
-	 * 共有の確認に出す知らせ。そのページ（ビュー）のセッションに、ページの中身を読み書きできる拡張機能が
-	 * 今入っていれば文を返し、無ければ（設定がオフ・エージェントのタブ・SSH 先のページを含む）undefined。
+	 * 共有の確認に出す知らせ（D4）。共有のどの経路もこれを通す。ページの中身を読み書きできる拡張機能が
+	 * 入っていれば（入りうるなら）文を返し、無ければ undefined。確かめられなかった（時間切れ・失敗）ときは、
+	 * 設定がオンなら「確かめられなかった」という知らせを返す（知らせ損ねない側に倒す）。
 	 */
-	getShareWarning(viewId: string): Promise<string | undefined>;
+	getShareWarning(target: ParadisShareTarget): Promise<string | undefined>;
+	/**
+	 * 確認の画面を持たない共有の経路（コマンドなど）で使う。知らせが要るときは確かめの画面を出し、
+	 * 共有してよければ true。
+	 */
+	confirmShare(target: ParadisShareTarget): Promise<boolean>;
 }
 
 /** 名前を並べる数（多いときは「ほか」でまとめる）。 */
 const MAX_NAMES = 3;
+
+/** main への問い合わせを待つ長さ。過ぎたら「確かめられなかった」として知らせる。 */
+const QUERY_TIMEOUT_MS = 1_000;
 
 /** 拡張機能の一覧から、共有の確認に出す文を作る。 */
 export function paradisShareWarningFor(extensions: readonly IParadisViewBrowserExtension[]): string | undefined {
@@ -41,21 +66,69 @@ export function paradisShareWarningFor(extensions: readonly IParadisViewBrowserE
 	return localize('paradis.browserExtensions.share.warning', "このタブでは拡張機能（{0}）が動いています。拡張機能が入力した値（パスワードなど）はページの中に入るので、共有するとエージェントからも読めます。エージェントは拡張機能の画面を操作できません。", shown);
 }
 
+/** 確かめられなかったときの知らせ。 */
+export function paradisShareWarningUnknown(): string {
+	return localize('paradis.browserExtensions.share.unknown', "このタブに拡張機能が入っているか確かめられませんでした。入っている場合、拡張機能が入力した値（パスワードなど）は、共有するとエージェントからも読めます。");
+}
+
+/**
+ * まだ開いていないタブで、有効にしてある拡張機能を見るプロファイル。エージェントのタブ・使い捨てのタブには
+ * 入らないので undefined。分からないときは「既定」として扱う（知らせ損ねない側）。
+ */
+export function paradisShareFallbackProfile(session: { readonly scope: string; readonly profileId?: string } | undefined): string | undefined {
+	switch (session?.scope) {
+		case BrowserViewStorageScope.Agent:
+		case BrowserViewStorageScope.Ephemeral:
+			return undefined;
+		case BrowserViewStorageScope.Profile:
+			return session.profileId !== undefined ? paradisNamedExtensionProfile(session.profileId) : PARADIS_DEFAULT_EXTENSION_PROFILE;
+		default:
+			return PARADIS_DEFAULT_EXTENSION_PROFILE;
+	}
+}
+
 export class ParadisBrowserExtensionsService implements IParadisBrowserExtensionsService {
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _mainService: IParadisBrowserExtensionsMainService;
 
-	constructor(@IMainProcessService mainProcessService: IMainProcessService) {
+	constructor(
+		@IMainProcessService mainProcessService: IMainProcessService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IParadisBrowserProfilesService private readonly _profilesService: IParadisBrowserProfilesService,
+		@IDialogService private readonly _dialogService: IDialogService,
+	) {
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
 	}
 
-	async getShareWarning(viewId: string): Promise<string | undefined> {
+	async getShareWarning(target: ParadisShareTarget): Promise<string | undefined> {
+		const query = target.kind === 'view'
+			? this._mainService.getShareExtensions(target.viewId, paradisShareFallbackProfile(this._profilesService.getViewSession(target.viewId)))
+			: this._mainService.getShareExtensions(undefined, paradisNamedExtensionProfile(target.profileId));
+		let answer: IParadisShareExtensions | undefined;
 		try {
-			return paradisShareWarningFor(await this._mainService.getExtensionsInView(viewId));
+			answer = await raceTimeout(query, QUERY_TIMEOUT_MS);
 		} catch {
-			// 知らせを出せないだけで、共有そのものは止めない
-			return undefined;
+			answer = undefined;
 		}
+		if (answer === undefined) {
+			// 確かめられなかった。設定がオンなら（再起動待ちを含む）、入っているかもしれないと知らせる
+			return this._configurationService.getValue<boolean>(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING) === true ? paradisShareWarningUnknown() : undefined;
+		}
+		return answer.active ? paradisShareWarningFor(answer.extensions) : undefined;
+	}
+
+	async confirmShare(target: ParadisShareTarget): Promise<boolean> {
+		const warning = await this.getShareWarning(target);
+		if (warning === undefined) {
+			return true;
+		}
+		const { confirmed } = await this._dialogService.confirm({
+			type: 'warning',
+			message: localize('paradis.browserExtensions.share.confirmMessage', "拡張機能が入ったタブを共有しますか？"),
+			detail: warning,
+			primaryButton: localize('paradis.browserExtensions.share.confirmShare', "共有する"),
+		});
+		return confirmed;
 	}
 }

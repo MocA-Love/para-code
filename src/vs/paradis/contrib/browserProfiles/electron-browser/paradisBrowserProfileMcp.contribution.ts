@@ -57,6 +57,7 @@ import {
 } from '../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS, paradisIsDuplicateProfileName, paradisNormalizeProfileName } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 /**
  * 作ったペインの印。ペイントークンそのものは保存しない（台帳はアプリの保存領域に平文で残るため）。
@@ -89,6 +90,7 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		private readonly logService: ILogService,
 		private readonly agentTabsService: IParadisAgentBrowserTabsService,
 		private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		private readonly browserExtensionsService: Pick<IParadisBrowserExtensionsService, 'getShareWarning'>,
 	) {
 		super();
 	}
@@ -219,7 +221,10 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	 * ダイアログには名前と、開く先のサイト（origin）を出す（何を渡すのかが分かるように）。
 	 */
 	private async _approveUserProfile(token: string, profile: IParadisBrowserProfile, deadline: ParadisApprovalDeadline, url: string | undefined): Promise<ParadisProfileApproval> {
-		if (isOwnProfile(profile, token)) {
+		// 拡張機能を有効にしたプロファイルなら、承認の本文で知らせる（D4）。このペインのプロファイルでも、
+		// 知らせが要るときは承認を挟む（利用者が拡張機能を有効にしたのはエージェントの知らないこと）
+		const extensionWarning = await this.browserExtensionsService.getShareWarning({ kind: 'profile', profileId: profile.id });
+		if (isOwnProfile(profile, token) && extensionWarning === undefined) {
 			return 'approved';
 		}
 		const origin = paradisUrlOrigin(url);
@@ -231,6 +236,7 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 					: localize('paradis.browserProfiles.mcp.approval.noSite', "開くサイト: 空のページ（その後エージェントが移動できます）"),
 				localize('paradis.browserProfiles.mcp.approval.detail', "許可すると、エージェントはこのプロファイルに保存されたログイン状態（Cookie など）のままページを開き、操作できます。"),
 				localize('paradis.browserProfiles.mcp.approval.detail2', "エージェントが開いたタブは、エージェントのタブとして一覧に載ります。共有を止めるか閉じれば使えなくなります。"),
+				...(extensionWarning !== undefined ? [extensionWarning] : []),
 			],
 			approveLabel: localize('paradis.browserProfiles.mcp.approval.allow', "このプロファイルを使わせる"),
 		}, deadline.token);
@@ -430,6 +436,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 		@ILogService logService: ILogService,
 		@IParadisAgentBrowserTabsService agentTabsService: IParadisAgentBrowserTabsService,
 		@IBrowserViewWorkbenchService browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		@IParadisBrowserExtensionsService browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
 		sharedProcessService.registerChannel(PARADIS_BROWSER_PROFILE_MCP_CHANNEL, this._register(new ParadisBrowserProfileMcpChannel(
@@ -440,6 +447,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 			logService,
 			agentTabsService,
 			browserViewWorkbenchService,
+			browserExtensionsService,
 		)));
 	}
 }

@@ -255,6 +255,9 @@ export class ParadisBindingDialog extends Disposable {
 
 	/** 共有の確認に出す、拡張機能についての知らせ（無ければ undefined）。 */
 	private _extensionWarning: string | undefined;
+	/** 知らせの答えが返ったか（返るまで共有のスイッチを押せない）。 */
+	private _extensionWarningResolved = false;
+	private readonly _extensionWarningReady: Promise<void>;
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
 	readonly onDidDispose = this._onDidDispose.event;
@@ -277,14 +280,17 @@ export class ParadisBindingDialog extends Disposable {
 		super();
 
 		// このページに、ページの中身を読み書きできる拡張機能が入っていれば共有の前に知らせる（D4）
-		if (pageModel) {
-			void browserExtensionsService.getShareWarning(pageModel.id).then(warning => {
-				if (warning !== undefined && !this._store.isDisposed) {
-					this._extensionWarning = warning;
+		// 答えが返るまでは共有のスイッチを押せない（知らせを見ないまま共有させない）。問い合わせは 1 秒で
+		// 諦め、確かめられなければ「確かめられなかった」と知らせる
+		this._extensionWarningReady = pageModel
+			? browserExtensionsService.getShareWarning({ kind: 'view', viewId: pageModel.id }).then(warning => {
+				this._extensionWarning = warning;
+				this._extensionWarningResolved = true;
+				if (!this._store.isDisposed) {
 					this._render();
 				}
-			});
-		}
+			})
+			: Promise.resolve();
 
 		this._tabController = this._register(new ParadisBindingDialogTabController(
 			() => this.mobileCanvasModel.beginPolling(),
@@ -699,7 +705,8 @@ export class ParadisBindingDialog extends Disposable {
 		switchEl.type = 'checkbox';
 		switchEl.setAttribute('role', 'switch');
 		switchEl.checked = isUnshareVerb;
-		switchEl.disabled = action === 'disabled';
+		// 共有する向きのスイッチは、拡張機能の知らせの答えが返るまで押せない
+		switchEl.disabled = action === 'disabled' || (!isUnshareVerb && !this._extensionWarningResolved);
 		switchEl.setAttribute('aria-label', isUnshareVerb ? STR_SWITCH_UNSHARE_ARIA : STR_SWITCH_SHARE_ARIA);
 		if (action !== 'disabled') {
 			this._paneListResources.add(dom.addDisposableListener(switchEl, 'change', () => {
@@ -1089,6 +1096,17 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private async _bindPane(token: string): Promise<void> {
+		if (!this._extensionWarningResolved) {
+			// 知らせを見る前に押された（キー操作など）。答えを待ち、知らせがあれば今回は共有せず見せるだけにする
+			await this._extensionWarningReady;
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (this._extensionWarning !== undefined) {
+				this._render();
+				return;
+			}
+		}
 		const bound = await paradisRunDialogBind(
 			() => this.bindingModel.bindPageToPane(this._page, token),
 			error => this._bindError = paradisIsSharedPageLimitError(error) ? strSharedPageLimit(PARADIS_USER_SHARED_PAGE_LIMIT) : paradisGetBindingErrorMessage(error, {

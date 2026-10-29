@@ -217,15 +217,24 @@ export interface IParadisExtensionManifestSummary {
 
 /**
  * manifest から、ページの中身を読み書きできる拡張機能かを決める。content script を持つ、nativeMessaging
- * （パスワード管理のアプリとの連携など）を持つ、scripting とサイトへの権限を併せ持つ、のどれか。
+ * （パスワード管理のアプリとの連携など）・debugger・userScripts を持つ、scripting などとサイトへの権限を
+ * 併せ持つ、のどれか。後から求める権限（optional_permissions・optional_host_permissions）も数える。
  */
 function touchesPages(manifest: Record<string, unknown>): boolean {
 	const list = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
-	const permissions = list(manifest.permissions);
-	const hostPermissions = [...list(manifest.host_permissions), ...permissions.filter(permission => permission.includes('://') || permission === '<all_urls>')];
+	// 後から求める権限（optional_*）も、求められたら持つので数える
+	const permissions = [...list(manifest.permissions), ...list(manifest.optional_permissions)];
+	const hostPermissions = [
+		...list(manifest.host_permissions),
+		...list(manifest.optional_host_permissions),
+		...permissions.filter(permission => permission.includes('://') || permission === '<all_urls>'),
+	];
 	const contentScripts = Array.isArray(manifest.content_scripts) && manifest.content_scripts.length > 0;
 	return contentScripts
 		|| permissions.includes('nativeMessaging')
+		// debugger（CDP でページを操作できる）と userScripts（任意のスクリプトをページへ入れられる）はそれだけで足りる
+		|| permissions.includes('debugger')
+		|| permissions.includes('userScripts')
 		|| ((permissions.includes('scripting') || permissions.includes('tabs') || permissions.includes('activeTab')) && (hostPermissions.length > 0 || permissions.includes('activeTab')));
 }
 
@@ -286,6 +295,13 @@ export interface IParadisViewBrowserExtension {
 	readonly touchesPages: boolean;
 }
 
+/** {@link IParadisBrowserExtensionsMainService.getShareExtensions} の答え。 */
+export interface IParadisShareExtensions {
+	/** 試験的な設定が今の起動で効いているか（効いていなければ拡張機能は入らない）。 */
+	readonly active: boolean;
+	readonly extensions: readonly IParadisViewBrowserExtension[];
+}
+
 /** 管理画面に出す状態。 */
 export interface IParadisBrowserExtensionsState {
 	/** 試験的な設定が今の起動で効いているか（切り替えは再起動で効く）。 */
@@ -309,6 +325,10 @@ export interface IParadisBrowserExtensionsMainService {
 	reloadUnpacked(id: string): Promise<IParadisAddExtensionResult>;
 	setEnabled(id: string, profile: string, enabled: boolean): Promise<void>;
 	remove(id: string): Promise<void>;
-	/** そのページ（内蔵ブラウザのビュー）のセッションに今入っている拡張機能（共有の確認に使う）。 */
-	getExtensionsInView(viewId: string): Promise<readonly IParadisViewBrowserExtension[]>;
+	/**
+	 * 共有の確認に使う、そのページに入っている（入りうる）拡張機能。`viewId` のビューが main にあれば、その
+	 * セッションに今入っているもの。無い（まだ開いていないタブ・これから開くプロファイル）ときは、
+	 * `fallbackProfile` で有効にしてあるもの。
+	 */
+	getShareExtensions(viewId: string | undefined, fallbackProfile: string | undefined): Promise<IParadisShareExtensions>;
 }

@@ -398,13 +398,19 @@ suite('ParadisBrowserExtensionsMain', () => {
 		const theme = await manager.addUnpacked(join(root, 'theme'), `profile:${PROFILE_ID}`);
 		assert.ok(filler.ok && theme.ok);
 		assert.deepStrictEqual({
-			view: await manager.getExtensionsInView('view-1'),
-			unknownView: await manager.getExtensionsInView('view-2'),
+			view: await manager.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE),
+			// main にまだ無いビューは、そのタブのプロファイルで有効にしてあるもので答える
+			notOpenYet: await manager.getShareExtensions('view-2', `profile:${PROFILE_ID}`),
+			agentTab: await manager.getShareExtensions('view-2', undefined),
 		}, {
-			view: [{ id: filler.extension.id, name: 'Filler', touchesPages: true }],
-			unknownView: [],
+			view: { active: true, extensions: [{ id: filler.extension.id, name: 'Filler', touchesPages: true }] },
+			notOpenYet: { active: true, extensions: [{ id: theme.extension.id, name: 'Theme', touchesPages: false }] },
+			agentTab: { active: true, extensions: [] },
 		});
 		manager.dispose();
+		const inactive = new ParadisBrowserExtensionsManager(root, () => false, silentLog, () => session);
+		assert.deepStrictEqual(await inactive.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE), { active: false, extensions: [] });
+		inactive.dispose();
 	});
 
 	test('refuses hard links and names that would collide on a case-insensitive disk', async () => {
