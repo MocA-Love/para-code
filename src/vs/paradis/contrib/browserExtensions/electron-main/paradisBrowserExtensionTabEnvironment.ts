@@ -10,7 +10,12 @@
 // プロファイルの main（paradisRegisterBrowserProfiles）から呼ぶ。browserViewMainService などは型だけを読む
 // （値を読むと browserSession.ts → 拡張機能の main → ここ、と読み込みが輪になるため）。
 
-import { app, BrowserWindow, screen, type Session } from 'electron';
+import { app, BrowserWindow, Notification, nativeImage, screen, type Session, type WebContents } from 'electron';
+import { localize } from '../../../../nls.js';
+import { join } from '../../../../base/common/path.js';
+import type { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
+import type { IParadisPermissionPrompt } from './paradisBrowserExtensionPermissions.js';
+import type { IParadisExtensionNotification, IParadisExtensionNotificationOptions } from './paradisBrowserExtensionServices.js';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
 import { paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -171,4 +176,87 @@ export function paradisCreateBrowserExtensionActionPopup(parent: BrowserWindow, 
 /** 画面の座標の四角がある画面の作業領域。 */
 export function paradisWorkAreaFor(rect: IParadisRect): IParadisRect {
 	return screen.getDisplayMatching(rect).workArea;
+}
+
+/** 権限の名前の、利用者に見せる言い方（知らないものは名前のまま）。 */
+function permissionLabel(permission: string): string {
+	switch (permission) {
+		case 'cookies': return localize('paradis.browserExtensions.permission.cookies', "サイトの cookie の読み取りと変更");
+		case 'downloads': return localize('paradis.browserExtensions.permission.downloads', "ファイルのダウンロード");
+		case 'notifications': return localize('paradis.browserExtensions.permission.notifications', "通知の表示");
+		case 'management': return localize('paradis.browserExtensions.permission.management', "ほかの拡張機能の有効・無効の切り替え");
+		case 'tabs': return localize('paradis.browserExtensions.permission.tabs', "タブの URL とタイトルの読み取り");
+		case 'contextMenus': return localize('paradis.browserExtensions.permission.contextMenus', "右クリックのメニューへの項目の追加");
+		case 'clipboardRead': return localize('paradis.browserExtensions.permission.clipboardRead', "クリップボードの読み取り");
+		case 'clipboardWrite': return localize('paradis.browserExtensions.permission.clipboardWrite', "クリップボードへの書き込み");
+		case 'webNavigation': return localize('paradis.browserExtensions.permission.webNavigation', "ページの移動の読み取り");
+		default: return permission;
+	}
+}
+
+/** サイトの権限の、利用者に見せる言い方。 */
+function originLabel(origin: string): string {
+	return origin === '<all_urls>' || origin === '*://*/*'
+		? localize('paradis.browserExtensions.permission.allSites', "すべてのサイトのデータの読み取りと変更")
+		: localize('paradis.browserExtensions.permission.site', "{0} のデータの読み取りと変更", origin);
+}
+
+/** permissions.request の確認のダイアログ（Para Code の今のウィンドウの上。ウィンドウが無ければ断る）。 */
+export function paradisCreateBrowserExtensionPermissionPrompt(dialogMainService: IDialogMainService, lastActiveWindow: () => BrowserWindow | undefined): (prompt: IParadisPermissionPrompt) => Promise<boolean> {
+	return async prompt => {
+		const window = lastActiveWindow();
+		if (!window || window.isDestroyed()) {
+			return false;
+		}
+		const items = [...prompt.add.permissions.map(permissionLabel), ...prompt.add.origins.map(originLabel)].slice(0, 20);
+		const { response } = await dialogMainService.showMessageBox({
+			type: 'question',
+			message: localize('paradis.browserExtensions.permission.message', "「{0}」に次の権限を許しますか？", prompt.extensionName),
+			detail: `${items.map(item => `・${item}`).join('\n')}\n\n${localize('paradis.browserExtensions.permission.detail', "このプロファイルのタブで使います。管理画面から拡張機能を削除すると、許した権限も消えます。")}`,
+			buttons: [localize('paradis.browserExtensions.permission.allow', "許可"), localize('paradis.browserExtensions.permission.deny', "許可しない")],
+			defaultId: 1,
+			cancelId: 1,
+			noLink: true,
+		}, window);
+		return response === 0;
+	};
+}
+
+/** 拡張機能の通知（OS の通知）。通知が使えない環境では undefined。 */
+export function paradisCreateBrowserExtensionNotification(options: IParadisExtensionNotificationOptions): IParadisExtensionNotification | undefined {
+	if (!Notification.isSupported()) {
+		return undefined;
+	}
+	const icon = options.iconPath ? nativeImage.createFromPath(options.iconPath) : undefined;
+	const notification = new Notification({
+		title: options.title,
+		body: options.body,
+		silent: options.silent,
+		timeoutType: options.requireInteraction ? 'never' : 'default',
+		...(icon && !icon.isEmpty() ? { icon } : {}),
+		// 通知のボタンは macOS だけ（ほかでは本文を押すと拡張機能へ届く）
+		...(process.platform === 'darwin' && options.buttons.length > 0 ? { actions: options.buttons.map(text => ({ type: 'button' as const, text })) } : {}),
+	});
+	return {
+		on: ((event: 'click' | 'close' | 'failed' | 'action', listener: (index: number) => void) => {
+			if (event === 'action') {
+				notification.on('action', (_event, index) => listener(index));
+			} else {
+				notification.on(event as 'click', () => (listener as () => void)());
+			}
+		}) as IParadisExtensionNotification['on'],
+		show: () => notification.show(),
+		close: () => notification.close(),
+		removeAllListeners: () => notification.removeAllListeners(),
+	};
+}
+
+/** downloads.download の saveAs: 保存のダイアログ（そのタブのウィンドウの上）。 */
+export function paradisCreateBrowserExtensionSavePathChooser(dialogMainService: IDialogMainService): (owner: WebContents, defaultName: string) => Promise<string | undefined> {
+	return async (owner, defaultName) => {
+		const window = BrowserWindow.fromWebContents(owner.hostWebContents ?? owner) ?? undefined;
+		const name = defaultName.replace(/[\\/:*?"<>|\0]/g, '_').slice(0, 200) || 'download';
+		const result = await dialogMainService.showSaveDialog({ defaultPath: join(app.getPath('downloads'), name) }, window);
+		return result.canceled || !result.filePath ? undefined : result.filePath;
+	};
 }

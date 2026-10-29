@@ -159,6 +159,7 @@ function parseRequest(value: unknown): ParsedRequest | undefined {
 		return undefined;
 	}
 	if (value.type === 'call' && typeof value.method === 'string' && Array.isArray(value.args)) {
+		// 本文の userGesture などは読まない（利用者の操作かは main が入力の記録で決める。拡張機能は本文を自由に書ける）
 		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args };
 	}
 	if (value.type === 'listen' && typeof value.event === 'string' && typeof value.active === 'boolean') {
@@ -186,12 +187,13 @@ function refuse(status: number): Response {
 	return new Response(null, { status });
 }
 
-function hasPermission(extension: IParadisApiExtension, permission: string | readonly string[] | undefined): boolean {
+function hasPermission(extension: IParadisApiExtension, permission: string | readonly string[] | undefined, granted: readonly string[]): boolean {
 	if (permission === undefined) {
 		return true;
 	}
 	const declared = extension.manifest.permissions;
-	return Array.isArray(declared) && [permission].flat().some(name => declared.includes(name));
+	// manifest の権限と、後から許した権限（permissions.request、場所ごと）
+	return [permission].flat().some(name => (Array.isArray(declared) && declared.includes(name)) || granted.includes(name));
 }
 
 export class ParadisExtensionApiHost implements IDisposable {
@@ -199,6 +201,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 	private readonly _namespaces = new Map<string, IParadisExtensionApiNamespace>();
 	private readonly _tokens = new Map<string, string>();
 	private readonly _states = new Map<ParadisApiSession, ISessionState>();
+	private _grantedPermissions: (extensionId: string, place: string) => readonly string[] = () => [];
 
 	constructor(private readonly _logService: { warn(message: string, ...args: unknown[]): void }) { }
 
@@ -207,6 +210,11 @@ export class ParadisExtensionApiHost implements IDisposable {
 			this._forgetSession(state);
 		}
 		this._states.clear();
+	}
+
+	/** 後から許した権限の引き方（permissions.request、場所ごと）。名前空間の権限の確かめに使う。 */
+	setGrantedPermissionsLookup(lookup: (extensionId: string, place: string) => readonly string[]): void {
+		this._grantedPermissions = lookup;
 	}
 
 	/** 名前空間を登録する（詰め物の一覧 PARADIS_SHIM_SURFACE と揃える）。 */
@@ -574,7 +582,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			if (!namespace) {
 				throw new ParadisExtensionApiError(`chrome.${request.namespace} is not available`);
 			}
-			if (!hasPermission(caller.extension, namespace.permission)) {
+			if (!hasPermission(caller.extension, namespace.permission, this._grantedPermissions(caller.extension.id, caller.place))) {
 				throw new ParadisExtensionApiError(`This API requires the "${[namespace.permission].flat()[0]}" permission`);
 			}
 			if (request.type === 'listen') {
