@@ -23,7 +23,7 @@ import {
 import { PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY, PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../../common/paradisBrowserExtensionShim.js';
 import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../../common/paradisBrowserExtensionShimSource.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
-import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisWithContentScriptShim, paradisWithStaticWebAccessibleResources, paradisReadableHtml, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
+import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisWithContentScriptShim, paradisWithStaticWebAccessibleResources, paradisReadableHtml, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithApiConnectSourceInHtml, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
 import { paradisDecideRuntimeLifecycleEvents } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { paradisPlanExtensionCopy } from '../../electron-main/paradisBrowserExtensionsMain.js';
@@ -224,6 +224,27 @@ suite('ParadisBrowserExtensionApi', () => {
 			// 二重・三重の % でも外し、残すものは元の書き方のまま残す
 			web_accessible_resources: [{ resources: ['bg.js', 'page.html'], matches: ['<all_urls>'] }, { resources: ['page.html', 'p%61ge.html'], matches: ['<all_urls>'] }, 'legacy.js'],
 		});
+	});
+
+	test('lets the shim through a page\'s own Content-Security-Policy meta tag', () => {
+		// 1Password・NordPass のポップアップは、manifest とは別に <meta> で connect-src を絞っている
+		assert.deepStrictEqual([
+			paradisWithApiConnectSourceInHtml('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'self\';">'),
+			paradisWithApiConnectSourceInHtml('<META content="connect-src https://a.example" HTTP-EQUIV="content-security-policy">'),
+			paradisWithApiConnectSourceInHtml(`<meta http-equiv='Content-Security-Policy' content='connect-src https://a.example'>`),
+			paradisWithApiConnectSourceInHtml('<meta name="viewport" content="width=device-width">'),
+			// 前の版で詰め物を入れた写しでも、CSP だけは直す
+			paradisInjectShimIntoHtml('<meta http-equiv="Content-Security-Policy" content="connect-src https://a.example"><script src="/paracode-extension-api.js" data-paracode-extension-api></script>'),
+			// NordPass は ' を文字の参照で書く（; を含むので、解いてから分ける）
+			paradisWithApiConnectSourceInHtml('<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; connect-src &#39;self&#39; data: https://a.example?x=1&amp;y=2">'),
+		], [
+			'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'self\'; connect-src \'self\' paracode-extension-api:">',
+			'<META content="connect-src https://a.example \'self\' paracode-extension-api:" HTTP-EQUIV="content-security-policy">',
+			`<meta http-equiv='Content-Security-Policy' content='connect-src https://a.example &#39;self&#39; paracode-extension-api:'>`,
+			'<meta name="viewport" content="width=device-width">',
+			'<meta http-equiv="Content-Security-Policy" content="connect-src https://a.example \'self\' paracode-extension-api:"><script src="/paracode-extension-api.js" data-paracode-extension-api></script>',
+			'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; connect-src \'self\' data: https://a.example?x=1&amp;y=2 paracode-extension-api:">',
+		]);
 	});
 
 	test('injects the shim before the first script of an extension page, once', () => {

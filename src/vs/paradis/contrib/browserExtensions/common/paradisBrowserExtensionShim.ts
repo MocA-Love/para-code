@@ -866,6 +866,9 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 		// ほかの拡張機能のページの window は渡せない
 		install('extension', { getViews: () => [] });
 	}
+	// ファイルの URL とシークレットのウィンドウへの許可（Para Code はどちらも出さない。allowFileAccess: false で読み込み、シークレットの
+	// ウィンドウは無い）。Electron 43 には無く、Dark Reader などが呼んで落ちる（互換性の確かめで見つけた）
+	install('extension', { isAllowedFileSchemeAccess: answer(() => false), isAllowedIncognitoAccess: answer(() => false) });
 	install('runtime', { onPerformanceWarning: inertEvent() });
 	install('permissions', { addHostAccessRequest: answer(() => undefined), removeHostAccessRequest: answer(() => undefined) });
 	if (manifest.omnibox !== undefined) {
@@ -877,6 +880,65 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 			onInputCancelled: inertEvent(),
 			onDeleteSuggestion: inertEvent(),
 			OnInputEnteredDisposition: { CURRENT_TAB: 'currentTab', NEW_FOREGROUND_TAB: 'newForegroundTab', NEW_BACKGROUND_TAB: 'newBackgroundTab' },
+		});
+	}
+	// 断る答え（Chrome の形: コールバックなら runtime.lastError を立てて呼び、無ければ拒む Promise）
+	const refuse = (message: string) => (...args: unknown[]): unknown => {
+		const last = [...args].reverse().find(arg => arg !== undefined);
+		if (isCallable(last)) {
+			const runtime = chromeApi.runtime;
+			void Promise.resolve().then(() => {
+				let defined = false;
+				if (isObject(runtime)) {
+					try {
+						Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message }) });
+						defined = true;
+					} catch {
+						// 置き換えられない lastError
+					}
+				}
+				try {
+					last();
+				} finally {
+					if (defined && isObject(runtime)) {
+						try {
+							delete runtime.lastError;
+						} catch {
+							// 消せない
+						}
+					}
+				}
+			});
+			return undefined;
+		}
+		return Promise.reject(new Error(message));
+	};
+	// 以下は Electron 43 に無く、在ることを前提に起動のときから読む拡張機能があるもの（互換性の確かめで、worker が落ちるのを見つけた）。
+	// どれも Para Code では働かない形で足す（できたふりはしない）
+	if (permissions.includes('identity')) {
+		// Google へのサインイン（getAuthToken）とウェブの認証の窓（launchWebAuthFlow）は Para Code に無い
+		const runtimeId = isObject(chromeApi.runtime) && typeof chromeApi.runtime.id === 'string' ? chromeApi.runtime.id : '';
+		install('identity', {
+			getAuthToken: refuse('Para Code does not support signing in to Google from browser extensions'),
+			launchWebAuthFlow: refuse('Para Code does not support chrome.identity.launchWebAuthFlow'),
+			getProfileUserInfo: answer(() => ({ email: '', id: '' })),
+			getAccounts: answer(() => []),
+			removeCachedAuthToken: answer(() => undefined),
+			clearAllCachedAuthTokens: answer(() => undefined),
+			getRedirectURL: (path?: unknown) => `https://${runtimeId}.chromiumapp.org/${typeof path === 'string' ? path.replace(/^\/+/, '') : ''}`,
+			onSignInChanged: inertEvent(),
+			AccountStatus: { SYNC: 'SYNC', ANY: 'ANY' },
+		});
+	}
+	if (permissions.includes('debugger')) {
+		// ページへのデバッガーの接続は渡さない（CDP の力はエージェントと拡張機能を分ける守りに関わる）
+		install('debugger', {
+			attach: refuse('Para Code does not let browser extensions attach a debugger'),
+			detach: refuse('Debugger is not attached'),
+			sendCommand: refuse('Debugger is not attached'),
+			getTargets: answer(() => []),
+			onEvent: inertEvent(),
+			onDetach: inertEvent(),
 		});
 	}
 	if (permissions.includes('fontSettings')) {
@@ -1154,6 +1216,143 @@ export function paradisContentScriptMain(options: IParadisContentScriptOptions):
 	}
 }
 
+/** main だけが使う、chrome.privacy の名前空間（chrome には出さない）。main の登録と同じ名前。 */
+export const PARADIS_SHIM_PRIVACY_NAMESPACE = 'paradisPrivacy';
+
+/**
+ * chrome.privacy（P8）。manifest に privacy（後から許されるものも）がある拡張機能だけ。Para Code が本当に効かせられるのは
+ * `network.webRTCIPHandlingPolicy` だけで、main がその場所の利用者のタブへ webContents.setWebRTCIPHandlingPolicy で効かせる。
+ * ほかの設定は Para Code に同じものが無いので、`not_controllable` と答え、set・clear は断る（守れたと思わせない）。
+ */
+export function paradisInstallPrivacy(bridge: IParadisShimBridge, namespace: string): void {
+	type ApiObject = Record<string, unknown>;
+	type Callable = (...args: unknown[]) => unknown;
+	const isObject = (value: unknown): value is ApiObject => value !== null && typeof value === 'object';
+	const isCallable = (value: unknown): value is Callable => typeof value === 'function';
+	const root = globalThis as { chrome?: unknown; browser?: unknown };
+	const chromeApi = root.chrome;
+	const runtime = isObject(chromeApi) && isObject(chromeApi.runtime) ? chromeApi.runtime : undefined;
+	if (!isObject(chromeApi) || !runtime) {
+		return;
+	}
+	let manifest: unknown;
+	try {
+		manifest = isCallable(runtime.getManifest) ? runtime.getManifest.call(runtime) : undefined;
+	} catch {
+		manifest = undefined;
+	}
+	const declared = isObject(manifest) ? [manifest.permissions, manifest.optional_permissions].flatMap(list => Array.isArray(list) ? list : []) : [];
+	if (!declared.includes('privacy')) {
+		return;
+	}
+	// コールバックなら runtime.lastError を立てて呼び、無ければ Promise
+	const settle = (input: unknown[], reply: Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string }>): unknown => {
+		const last = input[input.length - 1];
+		if (isCallable(last)) {
+			void reply.then(result => {
+				let defined = false;
+				if (!result.ok) {
+					try {
+						Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message: result.error }) });
+						defined = true;
+					} catch {
+						// 置き換えられない lastError
+					}
+				}
+				try {
+					if (result.ok && result.value !== undefined) {
+						last(result.value);
+					} else {
+						last();
+					}
+				} finally {
+					if (defined) {
+						try {
+							delete runtime.lastError;
+						} catch {
+							// 消せない
+						}
+					}
+				}
+			});
+			return undefined;
+		}
+		return reply.then(result => {
+			if (!result.ok) {
+				throw new Error(result.error);
+			}
+			return result.value;
+		});
+	};
+	const listeners = new Set<Callable>();
+	const event = (shared: boolean): ApiObject => {
+		const own = shared ? listeners : new Set<Callable>();
+		return {
+			addListener: (callback: unknown) => { if (isCallable(callback)) { own.add(callback); } },
+			removeListener: (callback: unknown) => { if (isCallable(callback)) { own.delete(callback); } },
+			hasListener: (callback: unknown) => isCallable(callback) && own.has(callback),
+			hasListeners: () => own.size > 0,
+		};
+	};
+	let listening = false;
+	const controlled = (): ApiObject => ({
+		get: (...input: unknown[]) => settle(input, bridge.call(namespace, 'get', [])),
+		set: (details: unknown, ...rest: unknown[]) => settle(rest, bridge.call(namespace, 'set', [details])),
+		clear: (details: unknown, ...rest: unknown[]) => settle(rest, bridge.call(namespace, 'clear', [details])),
+		onChange: (() => {
+			const api = event(true);
+			const add = api.addListener as Callable;
+			api.addListener = (callback: unknown) => {
+				if (!listening) {
+					listening = true;
+					bridge.listen(namespace, 'onChange', true);
+				}
+				add(callback);
+			};
+			return api;
+		})(),
+	});
+	const refused = 'Para Code does not have this setting, so browser extensions cannot control it';
+	const fixed = (value: unknown): ApiObject => ({
+		get: (...input: unknown[]) => settle(input, Promise.resolve({ ok: true as const, value: { value, levelOfControl: 'not_controllable' } })),
+		set: (_details: unknown, ...rest: unknown[]) => settle(rest, Promise.resolve({ ok: false as const, error: refused })),
+		clear: (_details: unknown, ...rest: unknown[]) => settle(rest, Promise.resolve({ ok: false as const, error: refused })),
+		onChange: event(false),
+	});
+	bridge.onEvent((eventNamespace, name, args) => {
+		if (eventNamespace === namespace && name === 'onChange') {
+			for (const listener of listeners) {
+				try {
+					listener(...args);
+				} catch (error) {
+					console.error(error);
+				}
+			}
+		}
+	});
+	const privacy: ApiObject = {
+		network: { webRTCIPHandlingPolicy: controlled(), networkPredictionEnabled: fixed(false) },
+		// Para Code には Chrome のパスワードの保存・自動入力などが無い（無効のまま変えられない）
+		services: {
+			passwordSavingEnabled: fixed(false), autofillEnabled: fixed(false), autofillAddressEnabled: fixed(false), autofillCreditCardEnabled: fixed(false),
+			alternateErrorPagesEnabled: fixed(false), safeBrowsingEnabled: fixed(false), safeBrowsingExtendedReportingEnabled: fixed(false),
+			searchSuggestEnabled: fixed(false), spellingServiceEnabled: fixed(false), translationServiceEnabled: fixed(false),
+		},
+		websites: {
+			hyperlinkAuditingEnabled: fixed(true), referrersEnabled: fixed(true), doNotTrackEnabled: fixed(false), protectedContentEnabled: fixed(true),
+			thirdPartyCookiesAllowed: fixed(true), topicsEnabled: fixed(false), fledgeEnabled: fixed(false), adMeasurementEnabled: fixed(false), relatedWebsiteSetsEnabled: fixed(false),
+		},
+		IPHandlingPolicy: { DEFAULT: 'default', DEFAULT_PUBLIC_AND_PRIVATE_INTERFACES: 'default_public_and_private_interfaces', DEFAULT_PUBLIC_INTERFACE_ONLY: 'default_public_interface_only', DISABLE_NON_PROXIED_UDP: 'disable_non_proxied_udp' },
+	};
+	for (const target of isObject(root.browser) && root.browser !== chromeApi ? [chromeApi, root.browser] : [chromeApi]) {
+		try {
+			Object.defineProperty(target, 'privacy', { value: privacy, configurable: true, enumerable: true, writable: true });
+		} catch {
+			// 凍った物は触らない
+		}
+	}
+}
+
 /** {@link paradisExtensionShimMain} に渡すもの（main が文字列にして埋め込む）。 */
 /** main だけが使う、ネイティブメッセージングの名前空間（chrome には出さない）。main の登録と同じ名前。 */
 export const PARADIS_SHIM_NATIVE_MESSAGING_NAMESPACE = 'paradisNativeMessaging';
@@ -1400,6 +1599,8 @@ export interface IParadisShimOptions {
 	readonly installContentScriptRelayHub: typeof paradisInstallContentScriptRelayHub;
 	readonly installNativeMessaging: typeof paradisInstallNativeMessaging;
 	readonly nativeMessagingNamespace: string;
+	readonly installPrivacy: typeof paradisInstallPrivacy;
+	readonly privacyNamespace: string;
 	readonly relayKey: string;
 	/** 再接続までの待ち（ミリ秒）。 */
 	readonly reconnectDelayMs: number;
@@ -1547,6 +1748,7 @@ export function paradisExtensionShimMain(options: IParadisShimOptions): void {
 	options.installApis(bridge, options.surface);
 	options.installInertApis(isWorker ? 'worker' : 'page');
 	options.installNativeMessaging(bridge, options.nativeMessagingNamespace);
+	options.installPrivacy(bridge, options.privacyNamespace);
 	const deliverFromContentScript = options.installStorageRelay(bridge, isWorker ? 'worker' : 'page', options.relayNamespace);
 	if (!isWorker) {
 		// ページは中継に答えないが、中継のポートを拡張機能の onConnect に見せない

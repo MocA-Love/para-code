@@ -28,6 +28,8 @@ import {
 	paradisInstallExtensionApis,
 	paradisInstallInertApis,
 	paradisInstallNativeMessaging,
+	paradisInstallPrivacy,
+	PARADIS_SHIM_PRIVACY_NAMESPACE,
 	PARADIS_SHIM_NATIVE_MESSAGING_NAMESPACE,
 	paradisInstallStorageRelay,
 	paradisInstallStorageSync,
@@ -49,6 +51,7 @@ export function paradisBrowserExtensionShimSource(): string {
 		reconnectDelayMs: RECONNECT_DELAY_MS,
 		relayKey: PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY,
 		nativeMessagingNamespace: PARADIS_SHIM_NATIVE_MESSAGING_NAMESPACE,
+		privacyNamespace: PARADIS_SHIM_PRIVACY_NAMESPACE,
 	};
 	return [
 		'// Written by Para Code: chrome.* APIs Electron lacks, for this extension\'s worker and pages.',
@@ -60,7 +63,8 @@ export function paradisBrowserExtensionShimSource(): string {
 		`const installInertApis = ${paradisInstallInertApis.toString()};`,
 		`const installContentScriptRelayHub = ${paradisInstallContentScriptRelayHub.toString()};`,
 		`const installNativeMessaging = ${paradisInstallNativeMessaging.toString()};`,
-		`(${paradisExtensionShimMain.toString()})({ ...${JSON.stringify(options)}, installApis, installStorageRelay, installStorageSync, installInertApis, installContentScriptRelayHub, installNativeMessaging });`,
+		`const installPrivacy = ${paradisInstallPrivacy.toString()};`,
+		`(${paradisExtensionShimMain.toString()})({ ...${JSON.stringify(options)}, installApis, installStorageRelay, installStorageSync, installInertApis, installContentScriptRelayHub, installNativeMessaging, installPrivacy });`,
 		'})();',
 		'',
 	].join('\n');
