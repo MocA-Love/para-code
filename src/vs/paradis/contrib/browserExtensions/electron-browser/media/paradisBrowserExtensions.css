@@ -81,3 +81,9 @@
 	opacity: 0.4;
 	cursor: default;
 }
+
+.paradis-browser-profile-modal .pbe-row-note {
+	margin-top: 2px;
+	color: var(--vscode-editorWarning-foreground);
+	font-size: 11px;
+}

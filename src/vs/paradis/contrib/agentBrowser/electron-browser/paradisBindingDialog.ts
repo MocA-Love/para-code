@@ -28,6 +28,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 import { IParadisMobileAttachment } from '../../mobileCanvas/common/paradisMobileCanvas.js';
 import { IParadisMobileCanvasModel } from '../../mobileCanvas/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -252,6 +253,8 @@ export class ParadisBindingDialog extends Disposable {
 	/** 「アタッチ」を押して渡し先ペインの一覧を開いている端末（開いていなければ undefined）。 */
 	private _attachTargetDeviceId: string | undefined;
 
+	/** 共有の確認に出す、拡張機能についての知らせ（無ければ undefined）。 */
+	private _extensionWarning: string | undefined;
 	private readonly _onDidDispose = this._register(new Emitter<void>());
 	/** 閉じた（破棄された）ことを、開いた側が参照を手放すために知らせる。 */
 	readonly onDidDispose = this._onDidDispose.event;
@@ -269,8 +272,19 @@ export class ParadisBindingDialog extends Disposable {
 		@IParadisMobileCanvasModel private readonly mobileCanvasModel: IParadisMobileCanvasModel,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisAgentBrowserTabsService private readonly agentTabsService: IParadisAgentBrowserTabsService,
+		@IParadisBrowserExtensionsService browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
+
+		// このページに、ページの中身を読み書きできる拡張機能が入っていれば共有の前に知らせる（D4）
+		if (pageModel) {
+			void browserExtensionsService.getShareWarning(pageModel.id).then(warning => {
+				if (warning !== undefined && !this._store.isDisposed) {
+					this._extensionWarning = warning;
+					this._render();
+				}
+			});
+		}
 
 		this._tabController = this._register(new ParadisBindingDialogTabController(
 			() => this.mobileCanvasModel.beginPolling(),
@@ -623,6 +637,12 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPanesTab(): void {
+		if (this._extensionWarning) {
+			const warning = dom.append(this._body, $('.pbd-extension-warning'));
+			warning.setAttribute('role', 'note');
+			warning.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+			dom.append(warning, $('span')).textContent = this._extensionWarning;
+		}
 		const search = dom.append(this._body, $('.pbd-list-search'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		const input = dom.append(search, $('input')) as HTMLInputElement;

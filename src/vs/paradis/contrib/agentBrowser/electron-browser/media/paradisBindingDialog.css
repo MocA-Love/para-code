@@ -508,6 +508,26 @@
 	line-height: 1.5;
 }
 
+/* 拡張機能が入ったページを共有するときの知らせ（試験的なブラウザ拡張機能） */
+.paradis-binding-dialog .pbd-extension-warning {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin: 12px 14px 0;
+	padding: 8px 12px;
+	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+	border-radius: 6px;
+	background-color: var(--vscode-inputValidation-warningBackground, transparent);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.paradis-binding-dialog .pbd-extension-warning .codicon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--vscode-editorWarning-foreground);
+}
+
 /* ---------- MCP接続設定 tab ---------- */
 
 .paradis-binding-dialog .pbd-mcp {

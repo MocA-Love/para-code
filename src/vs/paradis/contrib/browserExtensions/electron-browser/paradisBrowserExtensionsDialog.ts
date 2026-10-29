@@ -61,6 +61,12 @@ export function paradisDescribeAddExtensionFailure(result: Extract<IParadisAddEx
 				: localize('paradis.browserExtensions.error.tooLarge', "フォルダが大きすぎます（上限 {0} MB）。ビルドした拡張機能のフォルダ（manifest.json がある階層）を選んでください。", PARADIS_MAX_EXTENSION_BYTES / (1024 * 1024));
 		case 'restartNeeded':
 			return localize('paradis.browserExtensions.error.restartNeeded', "この拡張機能は削除したばかりです。前に保存したデータを消しきるため、再起動の後に入れ直してください。");
+		case 'hardLink':
+			return localize('paradis.browserExtensions.error.hardLink', "フォルダの中の「{0}」は、ほかの場所と中身を共有するファイル（ハードリンク）です。外のファイルを読めないようにするため、このフォルダは読み込めません。ふつうのファイルとして写してから選んでください。", result.detail ?? '');
+		case 'nameClash':
+			return localize('paradis.browserExtensions.error.nameClash', "フォルダの中に、大文字と小文字などだけが違う同じ名前（「{0}」）があります。写すと上書きされるため、読み込めません。", result.detail ?? '');
+		case 'changed':
+			return localize('paradis.browserExtensions.error.changed', "写している間にフォルダの中身（「{0}」）が変わりました。もう一度読み込んでください。", result.detail ?? '');
 		case 'tooMany':
 			return localize('paradis.browserExtensions.error.tooMany', "これ以上の拡張機能は足せません。使っていないものを削除してください。");
 		default:
@@ -228,6 +234,10 @@ class ParadisBrowserExtensionsDialog extends ParadisProfileModal {
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = extension.name;
 		dom.append(info, $('.pbpm-meta')).textContent = localize('paradis.browserExtensions.meta', "バージョン {0} ・ Manifest V{1} ・ {2}", extension.version, extension.manifestVersion, extension.sourcePath);
+		if (extension.touchesPages) {
+			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
+			dom.append(info, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
+		}
 		if (extension.loadError) {
 			dom.append(info, $('.pbe-row-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
 		}

@@ -91,6 +91,7 @@ import {
 } from '../common/paradisAgentBrowserTabs.js';
 import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisPredictSplitWidth } from '../common/paradisAgentTabPlacement.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 import { paradisIsShareMarkRemoved } from './paradisBrowserShareMark.js';
 import { ParadisNativeWindowFocus } from './paradisNativeWindowFocus.js';
 
@@ -355,6 +356,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IParadisBrowserExtensionsService private readonly _browserExtensionsService: IParadisBrowserExtensionsService,
 	) {
 		super();
 		this._windowFocus = this._register(new ParadisNativeWindowFocus(_nativeHostService.onDidFocusMainOrAuxiliaryWindow, _nativeHostService.onDidBlurMainOrAuxiliaryWindow));
@@ -1214,10 +1216,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 
 	/** 選ばれたタブ、または承認されなかった理由を返す。 */
 	private async _askForPage(token: string, reason: string | undefined, primary: BrowserEditorInput, candidates: readonly BrowserEditorInput[], cancellation: CancellationToken): Promise<BrowserEditorInput | Exclude<ParadisAgentApprovalOutcome, ParadisAgentApprovalChoice>> {
+		// ページの中身を読み書きできる拡張機能が入っていれば知らせる（D4）。main への問い合わせが遅くても
+		// 承認を待たせすぎないよう、1 秒で諦める
+		const extensionWarning = await raceTimeout(this._browserExtensionsService.getShareWarning(primary.id), 1_000);
 		const detail = [
 			reason ? localize('paradis.agentTabs.request.reason', "エージェントが書いた理由: {0}", reason) : undefined,
 			localize('paradis.agentTabs.request.page', "共有するページ: {0}", this._pageLabel(primary)),
 			localize('paradis.agentTabs.request.effect', "共有すると、このターミナルのエージェントはページを読んだり操作したりできます。共有はブラウザの共有ボタンからいつでも止められ、エージェントが別のタブへ移った時点でも終わります。"),
+			extensionWarning,
 		].filter((line): line is string => line !== undefined);
 		const choice = await this.askApproval(token, {
 			messageTemplate: pane => localize('paradis.agentTabs.request.message', "{0} のエージェントが、ブラウザのページを使いたいと求めています", pane),
