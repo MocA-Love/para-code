@@ -375,6 +375,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			this.isEnabled(),
 		);
 		this.provider = rendererLifecycle.provider;
+		// Codex の自動の continue（モデルが混み合って止まったターン）の引き受けと断りを、このウィンドウの lease を添えて伝える
+		this.provider.setCodexAutoContinueReporter((token, requestId, phase) => withWindowLease(lease => this.service.reportCodexAutoContinue(token, requestId, phase, lease)));
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。
 		this.provider.pushState(true);

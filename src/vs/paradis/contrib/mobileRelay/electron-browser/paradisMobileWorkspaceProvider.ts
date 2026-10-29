@@ -77,6 +77,8 @@ import { type IParadisMobileRequestHost, paradisDispatchMobileRequest } from './
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { ParadisMobileFileTiming } from '../common/paradisMobileFileTiming.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import type { ParadisCodexAutoContinuePhase } from '../common/paradisCodexOverloadContinue.js';
+import { ParadisCodexAutoContinueWindow, paradisReadCodexAutoContinueRequest } from './paradisCodexAutoContinueWindow.js';
 import { PARADIS_CLAUDE_SETTING_VALUE_PATTERN, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeConfigModelCommand, paradisClaudeModelAlias, PARADIS_SLASH_REJECTION_POLL_MS, PARADIS_SLASH_LEFT_IN_COMPOSER, PARADIS_SLASH_REJECTION_WAIT_MS, paradisCodexComposerHoldsCommand, paradisReadSlashCheck, paradisSlashCommandRejected, paradisSlashRejectionMessage } from '../common/paradisAgentSlashCommand.js';
 
 import { paradisMobileNoteGet, paradisMobileNoteSet } from '../common/paradisMobileSpaceNoteSet.js';
@@ -845,6 +847,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
 		this._register(this.terminalService.onDidDisposeInstance(instance => this.codexComposerResidue.delete(instance)));
+		this.codexAutoContinue = this._register(new ParadisCodexAutoContinueWindow(this.terminalService, (instanceId, token) => this.findAuthoritativePaneInstance(instanceId, token),
+			(token, requestId, phase) => this.codexAutoContinueReport?.(token, requestId, phase) ?? Promise.resolve(false)));
 		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
 		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
 		// 他のペアリング端末・他ウィンドウへも伝播する。
@@ -1557,6 +1561,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	private async handleAgentAction(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		if (mobileId === undefined) {
+			// モバイルを介さない shared process 自身の頼み（今は Codex の自動の continue だけ）
+			let request: unknown;
+			try {
+				request = JSON.parse(payload.toString());
+			} catch {
+				return;
+			}
+			const autoContinue = paradisReadCodexAutoContinueRequest(request);
+			if (autoContinue !== undefined) {
+				await this.codexAutoContinue.handle(autoContinue);
+			}
 			return;
 		}
 		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown; interaction?: unknown; interactionId?: unknown; agent?: unknown; expectOption?: unknown; expectPromptHash?: unknown; approvalPiece?: unknown; slashCheck?: unknown; questionChecks?: unknown };
@@ -1843,6 +1858,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 閉じたとき・{@link CODEX_COMPOSER_RESIDUE_MAX_MS} を過ぎたときに外す。
 	 */
 	private readonly codexComposerResidue = new Map<ITerminalInstance, { readonly command: string; readonly at: number }>();
+	/** Codex のモデルが混み合って止まったターンの、自動の continue を打つ（shared process から頼まれる）。 */
+	private readonly codexAutoContinue: ParadisCodexAutoContinueWindow;
+	private codexAutoContinueReport: ((token: string, requestId: string, phase: ParadisCodexAutoContinuePhase) => Promise<boolean>) | undefined;
+
+	/** 自動の continue の引き受け・断りを shared process へ知らせる口（contribution がウィンドウの lease を添えて渡す）。 */
+	setCodexAutoContinueReporter(report: (token: string, requestId: string, phase: ParadisCodexAutoContinuePhase) => Promise<boolean>): void {
+		this.codexAutoContinueReport = report;
+	}
 
 	private async slashCommandRejected(instance: ITerminalInstance, check: { readonly agent: 'claude' | 'codex'; readonly command: string }, screenBefore: string): Promise<'no' | 'rejected' | 'left-in-composer'> {
 		const deadline = Date.now() + PARADIS_SLASH_REJECTION_WAIT_MS;
