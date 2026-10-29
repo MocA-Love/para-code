@@ -292,7 +292,8 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		try {
 			await fs.rm(copy, { recursive: true, force: true });
 			await fs.mkdir(dirname(copy), { recursive: true });
-			await fs.cp(real, copy, { recursive: true, dereference: false, errorOnExist: false });
+			// .git は読み込みに要らず大きくなりやすいので写さない
+			await fs.cp(real, copy, { recursive: true, dereference: false, errorOnExist: false, filter: source => !/[\\/]\.git$/.test(source) });
 		} catch (error) {
 			return { ok: false, reason: 'failed', detail: error instanceof Error ? error.message : String(error) };
 		}
@@ -434,6 +435,14 @@ export function paradisRegisterBrowserExtensions(
 	for (const { session, owner } of pendingSessions.splice(0)) {
 		void created.attach(session, owner);
 	}
-	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(created, disposables));
+	// renderer に見せるのは管理画面の 5 つだけ（attach・dispose は main の中からだけ呼ぶ）
+	const exposed: IParadisBrowserExtensionsMainService = {
+		getState: () => created.getState(),
+		addUnpacked: (folder, profile) => created.addUnpacked(folder, profile),
+		reloadUnpacked: id => created.reloadUnpacked(id),
+		setEnabled: (id, profile, enabled) => created.setEnabled(id, profile, enabled),
+		remove: id => created.remove(id),
+	};
+	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;
 }
