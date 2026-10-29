@@ -61,7 +61,7 @@ import { paradisIsPrivateExtensionFile, paradisPrepareExtensionCopy } from './pa
 import { ParadisApiSession, ParadisExtensionApiHost } from './paradisBrowserExtensionApiHost.js';
 import { ParadisBrowserExtensionRuntimeState, ParadisExtensionLoadKind, paradisDecideRuntimeLifecycleEvents, paradisRegisterRuntimeApis } from './paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './paradisBrowserExtensionStorageApis.js';
-import { paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
+import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
@@ -453,7 +453,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private _prepare(extension: IParadisInstalledBrowserExtension): Promise<string | undefined> {
 		let preparing = this._prepared.get(extension.path);
 		if (!preparing) {
-			preparing = paradisPrepareExtensionCopy(extension.path, this._apiHost.tokenFor(extension.id), paradisBrowserExtensionShimSource())
+			preparing = paradisPrepareExtensionCopy(extension.path, this._apiHost.tokenFor(extension.id), paradisBrowserExtensionShimSource(), paradisBrowserExtensionContentScriptSource())
 				.then(prepared => {
 					if (prepared.skippedPages.length > 0) {
 						this._notes.set(extension.id, prepared.skippedPages);

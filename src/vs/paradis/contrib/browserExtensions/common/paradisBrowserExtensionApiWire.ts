@@ -28,6 +28,8 @@ export const PARADIS_EXTENSION_SHIM_FILE = 'paracode-extension-api.js';
 export const PARADIS_EXTENSION_WORKER_WRAPPER_FILE = 'paracode-background.js';
 /** 起動ごとのトークン。 */
 export const PARADIS_EXTENSION_TOKEN_FILE = 'paracode-extension-api-token.json';
+/** content script の詰め物（manifest の各 content script の先頭に入れる）。 */
+export const PARADIS_EXTENSION_CONTENT_SCRIPT_FILE = 'paracode-content-script-api.js';
 /** 拡張機能そのままの manifest（書き換えを何度でも元からやり直せるように）。 */
 export const PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE = 'paracode-original-manifest.json';
 
@@ -37,6 +39,7 @@ export const PARADIS_EXTENSION_PRIVATE_FILES: readonly string[] = [
 	PARADIS_EXTENSION_WORKER_WRAPPER_FILE,
 	PARADIS_EXTENSION_TOKEN_FILE,
 	PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE,
+	PARADIS_EXTENSION_CONTENT_SCRIPT_FILE,
 ];
 
 /** 呼び出しの種類。 */

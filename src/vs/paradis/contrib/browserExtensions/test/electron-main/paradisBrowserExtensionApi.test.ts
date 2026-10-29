@@ -20,10 +20,10 @@ import {
 	paradisEncodeExtensionWire,
 	paradisExtensionApiUrl,
 } from '../../common/paradisBrowserExtensionApiWire.js';
-import { PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../../common/paradisBrowserExtensionShim.js';
-import { paradisBrowserExtensionShimSource } from '../../common/paradisBrowserExtensionShimSource.js';
+import { PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY, PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, PARADIS_SHIM_STORAGE_SYNC_NAMESPACE } from '../../common/paradisBrowserExtensionShim.js';
+import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../../common/paradisBrowserExtensionShimSource.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
-import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisReadableHtml, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
+import { paradisInjectShimIntoHtml, paradisPrepareExtensionCopy, paradisWithContentScriptShim, paradisWithStaticWebAccessibleResources, paradisReadableHtml, paradisRewriteManifestForShim, paradisWithApiConnectSource, paradisWithPrivateFilesHidden } from '../../electron-main/paradisBrowserExtensionCopyRewrite.js';
 import { paradisDecideRuntimeLifecycleEvents } from '../../electron-main/paradisBrowserExtensionRuntime.js';
 import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from '../../electron-main/paradisBrowserExtensionStorageApis.js';
 import { paradisPlanExtensionCopy } from '../../electron-main/paradisBrowserExtensionsMain.js';
@@ -127,6 +127,65 @@ suite('ParadisBrowserExtensionApi', () => {
 			onInstalled: 'function',
 			value: { a: 1 },
 			call: { url: paradisExtensionApiUrl(PARADIS_EXTENSION_API_CALL_URL, 'secret', 'worker'), body: { request: { type: 'call', namespace: PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, method: 'get', args: ['a'] } } },
+		});
+	});
+
+	test('relays a content script\'s storage calls through the worker, and hides the relay from onMessage', async () => {
+		// content script: storage.sync と storage.local の書き込みの知らせは、runtime のメッセージで worker へ
+		const sent: unknown[] = [];
+		const nativeListeners: ((...args: unknown[]) => unknown)[] = [];
+		const area = () => {
+			const data: Record<string, unknown> = {};
+			return {
+				get: (_keys: unknown, callback: (value: unknown) => void) => callback({ ...data }),
+				set: (items: Record<string, unknown>, callback?: () => void) => { Object.assign(data, items); callback?.(); },
+				remove: (_keys: unknown, callback?: () => void) => callback?.(),
+				clear: (callback?: () => void) => callback?.(),
+			};
+		};
+		const chrome = {
+			runtime: {
+				id: 'abcdefghijklmnopabcdefghijklmnop',
+				getManifest: () => ({ background: { service_worker: 'bg.js' }, permissions: ['storage'] }),
+				sendMessage: async (message: Record<string, unknown>) => {
+					sent.push(message);
+					return { ok: true, value: { a: 1 } };
+				},
+				onMessage: { addListener: (listener: (...args: unknown[]) => unknown) => nativeListeners.push(listener), removeListener: () => { } },
+			},
+			storage: { local: area(), session: area(), onChanged: { addListener() { }, removeListener() { } } } as Record<string, unknown>,
+		};
+		const context: Record<string, unknown> = { chrome, console, setTimeout };
+		new Function('globalThis', paradisBrowserExtensionContentScriptSource())(context);
+		const value = await (chrome.storage.sync as { get(key: string): Promise<unknown> }).get('a');
+		await (chrome.storage.local as { set(items: object): Promise<void> }).set({ b: 2 });
+		const seenByExtension: unknown[] = [];
+		(chrome.runtime.onMessage as unknown as { addListener(listener: (message: unknown) => void): void }).addListener(message => seenByExtension.push(message));
+		for (const listener of nativeListeners) {
+			listener({ [PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY]: { changes: {} } }, { id: chrome.runtime.id });
+			listener({ hello: 1 }, { id: chrome.runtime.id });
+		}
+		const strip = (message: unknown) => {
+			const relayed = (message as Record<string, { namespace: string; method: string; args: unknown[] }>)[PARADIS_SHIM_CONTENT_SCRIPT_RELAY_KEY];
+			return [relayed.namespace, relayed.method, relayed.args];
+		};
+		assert.deepStrictEqual({ value, sent: sent.map(strip), seenByExtension }, {
+			value: { a: 1 },
+			sent: [
+				[PARADIS_SHIM_STORAGE_SYNC_NAMESPACE, 'get', ['a']],
+				[PARADIS_SHIM_STORAGE_RELAY_NAMESPACE, 'report', ['local', { b: { newValue: 2 } }]],
+			],
+			seenByExtension: [{ hello: 1 }],
+		});
+	});
+
+	test('puts the content-script shim first in isolated-world content scripts and turns off dynamic resource URLs', () => {
+		assert.deepStrictEqual(paradisWithStaticWebAccessibleResources(paradisWithContentScriptShim({
+			content_scripts: [{ matches: ['<all_urls>'], js: ['a.js'] }, { matches: ['<all_urls>'], js: ['main.js'], world: 'MAIN' }, { matches: ['<all_urls>'], css: ['x.css'] }],
+			web_accessible_resources: [{ resources: ['menu.html'], matches: ['<all_urls>'], use_dynamic_url: true }, { resources: ['b.png'], matches: ['<all_urls>'] }],
+		})), {
+			content_scripts: [{ matches: ['<all_urls>'], js: ['paracode-content-script-api.js', 'a.js'] }, { matches: ['<all_urls>'], js: ['main.js'], world: 'MAIN' }, { matches: ['<all_urls>'], css: ['x.css'] }],
+			web_accessible_resources: [{ resources: ['menu.html'], matches: ['<all_urls>'], use_dynamic_url: false }, { resources: ['b.png'], matches: ['<all_urls>'] }],
 		});
 	});
 
