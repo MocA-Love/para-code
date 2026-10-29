@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Para Code 内蔵ブラウザの Chrome 拡張機能 互換性の表（P8、2026-10-29）</title>
+<style>
+body { background: #ffffff; color: #1f2328; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 32px; line-height: 1.6; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+h2 { font-size: 17px; margin: 28px 0 8px; }
+p, li { font-size: 14px; }
+.muted { color: #656d76; }
+.panel { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 16px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0 16px; }
+th, td { border: 1px solid #d0d7de; padding: 6px 8px; vertical-align: top; text-align: left; }
+th { background: #f6f8fa; }
+.ok { color: #1a7f37; font-weight: 600; }
+.partial { color: #9a6700; font-weight: 600; }
+.ng { color: #cf222e; font-weight: 600; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 0 3px; }
+.summary td { text-align: center; font-size: 15px; }
+</style>
+</head>
+<body>
+<h1>31 個中、動く 16・一部動く 11・動かない 4</h1>
+<p class="muted">Electron 43.7.7（Chromium 150.0.7871.250）、Linux の Xvfb で 2026-10-29T22:28:16.307Z に自動で確かめた結果です。拡張機能は Chrome ウェブストアから、Para Code と同じ道（署名の確かめを含む）で入れました。</p>
+
+<table class="summary"><tr><th>動く</th><th>一部動く</th><th>動かない</th></tr>
+<tr><td class="ok">16</td><td class="partial">11</td><td class="ng">4</td></tr></table>
+
+<h2>自動で見たことと、見ていないこと</h2>
+<div class="panel">
+<p>拡張機能ごとに、次の 5 つを記録しました。<strong>サインインが要る働き（パスワード管理の解錠・自動入力、翻訳のアカウントなど）と DevTools のパネルは、自動では見ていません</strong>。それらは Mac での手の確認（Q479・Q484〜Q486）で見ます。</p>
+<ul>
+<li>ストアから入れられるか、Electron に読み込めるか</li>
+<li>service worker が動き出すか、worker の console のエラー</li>
+<li>手元の試験用のページ（ログインの欄・文章を含む）で content script の文脈ができるか</li>
+<li>ポップアップとオプションのページが開くか、そこでのエラー</li>
+<li>宣言した権限の <code>chrome.*</code> が、ポップアップかオプションのページにあるか</li>
+</ul>
+<p>広告ブロッカー（<code>declarativeNetRequest</code>）は D7 で後回しにしたので、ここでは「入るがブロックしない」かを記録しただけです。</p>
+</div>
+
+<h2>拡張機能ごとの結果</h2>
+<table>
+<tr><th>区分</th><th>拡張機能</th><th>結果</th><th>理由</th><th>版</th><th>worker</th><th>content script</th><th>ポップアップ</th></tr>
+<tr><td>パスワード管理</td><td>1Password – Password Manager<br><span class="muted"><code>aeblfdkhhhdcdjpifhhbdiojplfjncoa</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>8.12.42.36</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>パスワード管理</td><td>Bitwarden Password Manager<br><span class="muted"><code>nngceckbapebfimnlniiiahkandclblb</code></span></td><td class="partial">一部動く</td><td>使えない API: sidePanel</td><td>2026.10.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>パスワード管理</td><td>Dashlane — Password Manager<br><span class="muted"><code>fdjamakpfbbddfjaooikfcpapjohcfmg</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>6.2644.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>パスワード管理</td><td>Keeper® Password Manager &amp; Digital Vault<br><span class="muted"><code>bfogiafebfohielmmehodmfbbebbbpei</code></span></td><td class="ok">動く</td><td>無い API（任意の権限など。主な働きには関わらない見込みです）: browsingData</td><td>18.2.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>パスワード管理</td><td>NordPass® Password Manager &amp; Digital Vault<br><span class="muted"><code>eiaeiblijfjekdanodkjadfinkhbfgcd</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>【要確認】ポップアップは開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）</td><td>7.12.15</td><td>running</td><td>ran</td><td>unreadable</td></tr>
+<tr><td>パスワード管理</td><td>Proton Pass: Free Password Manager<br><span class="muted"><code>ghmbeldphafepmbegfdlkpapadhbakde</code></span></td><td class="ok">動く</td><td>推測: ポップアップが chrome を置き換えているため、API があるかは自動では確かめられません</td><td>1.43.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>React Developer Tools<br><span class="muted"><code>fmkadmapgofadopljbjfkapdkoienihi</code></span></td><td class="ok">動く</td><td>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>8.0.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>Redux DevTools<br><span class="muted"><code>lmhkpmbekcpmknklioeibfkpmmfibljd</code></span></td><td class="ok">動く</td><td>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>3.2.12</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>Vue.js devtools<br><span class="muted"><code>nhdogjmejiglipccpnnnanhbledajbpd</code></span></td><td class="ok">動く</td><td>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>7.7.7</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>Angular DevTools<br><span class="muted"><code>ienfalfjdbdpebioblfackkekamfmbnh</code></span></td><td class="partial">一部動く</td><td>ページへのデバッガーの接続（chrome.debugger.attach）は断る形で足したので、それを使う働きは動きません<br>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>1.22.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>Svelte DevTools<br><span class="muted"><code>kfidecgcdjjfpeckbblhmfkhmlgecoff</code></span></td><td class="ok">動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>2.2.2</td><td>running</td><td>none</td><td>none</td></tr>
+<tr><td>開発</td><td>Lighthouse<br><span class="muted"><code>blipmdconlkpinefehnmjammfjpmpbjk</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>100.0.0.5</td><td>none</td><td>none</td><td>rendered</td></tr>
+<tr><td>開発</td><td>Wappalyzer - Technology profiler<br><span class="muted"><code>gppongmhjkpfnbhagpmjfkannfbllamg</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>6.12.8</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>開発</td><td>JSON Formatter<br><span class="muted"><code>bcjindcccaagfpapjjmafapmmgkkhgoa</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>0.10.2</td><td>none</td><td>ran</td><td>none</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Dark Reader<br><span class="muted"><code>eimadpbcbfnmbkopoojfekhnkhdbieeh</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>4.9.134</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Stylus<br><span class="muted"><code>clngdbkpkpeebahjckkjfobafhncgmne</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: sidePanel</td><td>2.4.17</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Refined GitHub<br><span class="muted"><code>hlepfoohegkhhmjieoechaddaejaokhf</code></span></td><td class="ok">動く</td><td>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>26.10.26</td><td>running</td><td>did not run</td><td>none</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Octotree - GitHub code tree<br><span class="muted"><code>bkhaagjahfmjljalopjnoealnfndnagc</code></span></td><td class="ok">動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>content script は決まったサイト（GitHub など）だけのものなので、試験用のページでは動かないのが正しいです（そのサイトでは手で確かめます）</td><td>9.3.2</td><td>running</td><td>did not run</td><td>none</td></tr>
+<tr><td>見た目・読みやすさ</td><td>Mercury Reader<br><span class="muted"><code>oknpjjbmpnndlpmnhmekjpocelpnlfdi</code></span></td><td class="ng">動かない</td><td>Chrome ウェブストアにありません（公開が終わっています）</td><td>-</td><td>-</td><td>-</td><td>-</td></tr>
+<tr><td>翻訳・文章</td><td>Google Translate<br><span class="muted"><code>aapbdbdomjkkjkaonfhkkikfgjllcleb</code></span></td><td class="ok">動く</td><td>読み込み・worker・content script・ポップアップのどれも問題ありませんでした</td><td>2.0.18</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>翻訳・文章</td><td>DeepL: translate and write with AI<br><span class="muted"><code>cofdbpoegempjloogbagkncekinflcnj</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: tts、sidePanel</td><td>1.105.1</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>翻訳・文章</td><td>Grammarly: AI Writing Assistant and Grammar Checker App<br><span class="muted"><code>kbfnbcaeplbcioakkpcpgfkobkghlhen</code></span></td><td class="partial">一部動く</td><td>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません<br>使えない API: sidePanel</td><td>14.1343.0</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>翻訳・文章</td><td>AI Grammar Checker &amp; Paraphraser – LanguageTool<br><span class="muted"><code>oldceeleldhonbafppcapldpdifcinji</code></span></td><td class="partial">一部動く</td><td>【要確認】ポップアップは開きましたが、自動の確かめの前に閉じたか、読めませんでした（手で確かめます）</td><td>11.5.0</td><td>running</td><td>ran</td><td>unreadable</td></tr>
+<tr><td>広告・プライバシー</td><td>uBlock Origin Lite<br><span class="muted"><code>ddkjiahejlhfcafbddmgiahcphecmpfh</code></span></td><td class="partial">一部動く</td><td>使えない API: userScripts<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>2026.1026.1812</td><td>running</td><td>none</td><td>rendered</td></tr>
+<tr><td>広告・プライバシー</td><td>AdGuard AdBlocker<br><span class="muted"><code>bgnkhhnnamicmpeenaelnjfhikgbkllg</code></span></td><td class="partial">一部動く</td><td>使えない API: userScripts<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません<br>DevTools のパネルは自動では見ていません（手で確かめます）</td><td>5.5.3.28</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>広告・プライバシー</td><td>Privacy Badger<br><span class="muted"><code>pkehgijcmpdhfbdbbnkijodmdjhbjlgp</code></span></td><td class="ok">動く</td><td>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>2026.9.15.2</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>広告・プライバシー</td><td>Ghostery AdBlocker for Privacy<br><span class="muted"><code>mlomiejdfkolichcflejclcbmpeaniij</code></span></td><td class="partial">一部動く</td><td>使えない API: userScripts<br>無い API（任意の権限など。主な働きには関わらない見込みです）: browsingData<br>広告のブロック（declarativeNetRequest）は D7 で後回しにしました。ブロックするかは見ていません</td><td>10.6.10</td><td>running</td><td>ran</td><td>rendered</td></tr>
+<tr><td>Orca で不可だったもの</td><td>Tampermonkey<br><span class="muted"><code>dhdgffkkebhmkfjojejmpbldmpobfkfo</code></span></td><td class="ng">動かない</td><td>ユーザースクリプトを動かす chrome.userScripts がありません。拡張機能の主な働きがこれです</td><td>5.5.1</td><td>running</td><td>none</td><td>rendered</td></tr>
+<tr><td>Orca で不可だったもの</td><td>Loom – Screen Recorder &amp; Screen Capture<br><span class="muted"><code>liecbddmkiiihnedobmlmillhodjkdmb</code></span></td><td class="ng">動かない</td><td>画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）がありません。拡張機能の主な働きがこれです</td><td>5.5.214</td><td>running</td><td>ran</td><td>unreadable</td></tr>
+<tr><td>Orca で不可だったもの</td><td>Momentum<br><span class="muted"><code>laookkfknpbbblfpciffpaejjkokdgca</code></span></td><td class="ng">動かない</td><td>新しいタブなどの置き換え（chrome_url_overrides: newtab）に対応していません。拡張機能の主な働きがこれです</td><td>2.27.9</td><td>running</td><td>did not run</td><td>none</td></tr>
+<tr><td>その他</td><td>Google Keep Chrome Extension<br><span class="muted"><code>lpcaedmchfhocbbapmcbpinfpgnhiddi</code></span></td><td class="partial">一部動く</td><td>ポップアップとオプションのページを読めなかったので、API は拡張機能の manifest.json の文書で、Electron が元から持つものだけを見ました<br>Google へのサインイン（chrome.identity.getAuthToken）は断る形で足したので、それを使う働きは動きません</td><td>4.26431.540.1</td><td>running</td><td>none</td><td>none</td></tr>
+</table>
+
+<h2>この確かめで見つけて直したもの</h2>
+<table>
+<tr><th>拡張機能</th><th>起きていたこと</th><th>直し方</th></tr>
+<tr><td>Angular DevTools</td><td>chrome.debugger が無く、worker が起動のときに落ちていました</td><td>chrome.debugger を足しました。接続（attach）は「拡張機能にはデバッガーをつながせない」で断ります</td></tr>
+<tr><td>Google Keep</td><td>chrome.identity が無く、worker が起動のときに落ちていました</td><td>chrome.identity を足しました。Google へのサインイン（getAuthToken）とウェブの認証の窓は断ります</td></tr>
+<tr><td>1Password・Bitwarden・Dashlane・NordPass・AdGuard・Privacy Badger</td><td>chrome.privacy がありませんでした（Chrome のパスワードの保存を切る、など）</td><td>chrome.privacy の設定を足しました。Para Code には同じ設定が無いので、値は覚えるだけです</td></tr>
+<tr><td>Dark Reader</td><td>chrome.extension.isAllowedFileSchemeAccess が無く、エラーが出ていました</td><td>isAllowedFileSchemeAccess・isAllowedIncognitoAccess を足しました（どちらも false）</td></tr>
+<tr><td>Keeper</td><td>入れるときに大きすぎると断っていました（フォルダから入れるときの 200 MB の上限）</td><td>ストアから入れるときは、展開のときと同じ 512 MB までにしました</td></tr>
+<tr><td>1Password・NordPass</td><td>ポップアップが &lt;meta&gt; の Content-Security-Policy で接続先を絞っていて、Para Code が足した API の呼び出しが止まっていました</td><td>ページの &lt;meta&gt; の connect-src にも、Para Code の私用スキームを足すようにしました（manifest の方針には前から足していました）</td></tr>
+</table>
+
+<h2>直していないもの（大きいので別にします）</h2>
+<table>
+<tr><th>足りないもの</th><th>当たる拡張機能</th><th>理由</th></tr>
+<tr><td>サイドパネル（chrome.sidePanel）</td><td>Bitwarden・Stylus・DeepL・Grammarly</td><td>Para Code にサイドパネルの置き場がありません。ポップアップなどほかの入り口は動きます</td></tr>
+<tr><td>ユーザースクリプト（chrome.userScripts）</td><td>Tampermonkey・uBlock Origin Lite・AdGuard・Ghostery</td><td>Electron 43 にありません。Tampermonkey は主な働きがこれです</td></tr>
+<tr><td>新しいタブの置き換え（chrome_url_overrides）</td><td>Momentum</td><td>Para Code の新しいタブは内蔵ブラウザのページではありません</td></tr>
+<tr><td>画面とタブの録画（chrome.desktopCapture・chrome.tabCapture）</td><td>Loom</td><td>Electron 43 にありません</td></tr>
+<tr><td>読み上げ（chrome.tts）・閲覧データの消去（chrome.browsingData）</td><td>DeepL・Keeper・Ghostery</td><td>Electron 43 にありません。主な働きには関わりません</td></tr>
+<tr><td>広告のブロック（declarativeNetRequest）</td><td>広告・プライバシーの 4 つ</td><td>D7 で後回しにしました</td></tr>
+</table>
+
+<h2>作り方</h2>
+<p>互換性の確かめは <code>src/vs/paradis/contrib/browserExtensions/test/electron-main/compat/paradisCompatProbe.ts</code>（Electron の main として動かします）で行い、この表は <code>paradisCompatReport.ts</code> で作ります。手順は両方のファイルの冒頭にあります。</p>
+</body>
+</html>

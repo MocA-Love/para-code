@@ -866,6 +866,9 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 		// ほかの拡張機能のページの window は渡せない
 		install('extension', { getViews: () => [] });
 	}
+	// ファイルの URL とシークレットのウィンドウへの許可（Para Code はどちらも出さない。allowFileAccess: false で読み込み、シークレットの
+	// ウィンドウは無い）。Electron 43 には無く、Dark Reader などが呼んで落ちる（互換性の確かめで見つけた）
+	install('extension', { isAllowedFileSchemeAccess: answer(() => false), isAllowedIncognitoAccess: answer(() => false) });
 	install('runtime', { onPerformanceWarning: inertEvent() });
 	install('permissions', { addHostAccessRequest: answer(() => undefined), removeHostAccessRequest: answer(() => undefined) });
 	if (manifest.omnibox !== undefined) {
@@ -878,6 +881,96 @@ export function paradisInstallInertApis(context: 'page' | 'worker' | 'content-sc
 			onDeleteSuggestion: inertEvent(),
 			OnInputEnteredDisposition: { CURRENT_TAB: 'currentTab', NEW_FOREGROUND_TAB: 'newForegroundTab', NEW_BACKGROUND_TAB: 'newBackgroundTab' },
 		});
+	}
+	// 断る答え（Chrome の形: コールバックなら runtime.lastError を立てて呼び、無ければ拒む Promise）
+	const refuse = (message: string) => (...args: unknown[]): unknown => {
+		const last = [...args].reverse().find(arg => arg !== undefined);
+		if (isCallable(last)) {
+			const runtime = chromeApi.runtime;
+			void Promise.resolve().then(() => {
+				let defined = false;
+				if (isObject(runtime)) {
+					try {
+						Object.defineProperty(runtime, 'lastError', { configurable: true, enumerable: true, get: () => ({ message }) });
+						defined = true;
+					} catch {
+						// 置き換えられない lastError
+					}
+				}
+				try {
+					last();
+				} finally {
+					if (defined && isObject(runtime)) {
+						try {
+							delete runtime.lastError;
+						} catch {
+							// 消せない
+						}
+					}
+				}
+			});
+			return undefined;
+		}
+		return Promise.reject(new Error(message));
+	};
+	// 以下は Electron 43 に無く、在ることを前提に起動のときから読む拡張機能があるもの（互換性の確かめで、worker が落ちるのを見つけた）。
+	// どれも Para Code では働かない形で足す（できたふりはしない）
+	if (permissions.includes('identity')) {
+		// Google へのサインイン（getAuthToken）とウェブの認証の窓（launchWebAuthFlow）は Para Code に無い
+		const runtimeId = isObject(chromeApi.runtime) && typeof chromeApi.runtime.id === 'string' ? chromeApi.runtime.id : '';
+		install('identity', {
+			getAuthToken: refuse('Para Code does not support signing in to Google from browser extensions'),
+			launchWebAuthFlow: refuse('Para Code does not support chrome.identity.launchWebAuthFlow'),
+			getProfileUserInfo: answer(() => ({ email: '', id: '' })),
+			getAccounts: answer(() => []),
+			removeCachedAuthToken: answer(() => undefined),
+			clearAllCachedAuthTokens: answer(() => undefined),
+			getRedirectURL: (path?: unknown) => `https://${runtimeId}.chromiumapp.org/${typeof path === 'string' ? path.replace(/^\/+/, '') : ''}`,
+			onSignInChanged: inertEvent(),
+			AccountStatus: { SYNC: 'SYNC', ANY: 'ANY' },
+		});
+	}
+	if (permissions.includes('debugger')) {
+		// ページへのデバッガーの接続は渡さない（CDP の力はエージェントと拡張機能を分ける守りに関わる）
+		install('debugger', {
+			attach: refuse('Para Code does not let browser extensions attach a debugger'),
+			detach: refuse('Debugger is not attached'),
+			sendCommand: refuse('Debugger is not attached'),
+			getTargets: answer(() => []),
+			onEvent: inertEvent(),
+			onDetach: inertEvent(),
+		});
+	}
+	if (permissions.includes('privacy')) {
+		// Chrome の設定（パスワードの保存・自動入力など）。Para Code には同じ設定が無いので、値はこの文脈の中で覚えるだけ
+		const setting = (initial: unknown): ApiObject => {
+			let value = initial;
+			return {
+				get: answer(() => ({ value, levelOfControl: 'controllable_by_this_extension' })),
+				set: (details: unknown, ...rest: unknown[]) => {
+					if (isObject(details) && Object.prototype.hasOwnProperty.call(details, 'value')) {
+						value = details.value;
+					}
+					return answer(() => undefined)(...rest);
+				},
+				clear: answer(() => {
+					value = initial;
+					return undefined;
+				}),
+				onChange: inertEvent(),
+			};
+		};
+		install('privacy.services', {
+			passwordSavingEnabled: setting(false), autofillEnabled: setting(false), autofillAddressEnabled: setting(false), autofillCreditCardEnabled: setting(false),
+			alternateErrorPagesEnabled: setting(false), safeBrowsingEnabled: setting(true), safeBrowsingExtendedReportingEnabled: setting(false),
+			searchSuggestEnabled: setting(false), spellingServiceEnabled: setting(false), translationServiceEnabled: setting(false),
+		});
+		install('privacy.network', { networkPredictionEnabled: setting(false), webRTCIPHandlingPolicy: setting('default') });
+		install('privacy.websites', {
+			hyperlinkAuditingEnabled: setting(true), referrersEnabled: setting(true), doNotTrackEnabled: setting(false), protectedContentEnabled: setting(true),
+			thirdPartyCookiesAllowed: setting(true), topicsEnabled: setting(false), fledgeEnabled: setting(false), adMeasurementEnabled: setting(false), relatedWebsiteSetsEnabled: setting(false),
+		});
+		install('privacy', { IPHandlingPolicy: { DEFAULT: 'default', DEFAULT_PUBLIC_AND_PRIVATE_INTERFACES: 'default_public_and_private_interfaces', DEFAULT_PUBLIC_INTERFACE_ONLY: 'default_public_interface_only', DISABLE_NON_PROXIED_UDP: 'disable_non_proxied_udp' } });
 	}
 	if (permissions.includes('fontSettings')) {
 		const generic = ['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui'];
