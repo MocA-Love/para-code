@@ -48,6 +48,11 @@ export interface IParadisExtensionApiCaller {
 	/** 文脈の名前（worker は 'worker'）。 */
 	readonly connection: string;
 	readonly fromWorker: boolean;
+	/**
+	 * 拡張機能のページで、利用者の操作の中（transient activation）から呼んだか。詰め物が navigator.userActivation を
+	 * 付けて送る。worker からの呼び出しには付けない（worker には操作が無い）。
+	 */
+	readonly userGesture?: boolean;
 }
 
 /** 関数が投げると、その文が拡張機能へ（失敗・runtime.lastError として）届く。 */
@@ -146,7 +151,7 @@ const QUEUED_EVENT_TTL_MS = 30_000;
 const MAX_PAGE_CONNECTIONS = 200;
 
 type ParsedRequest =
-	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[] }
+	| { readonly type: 'call'; readonly namespace: string; readonly method: string; readonly args: readonly unknown[]; readonly userGesture: boolean }
 	| { readonly type: 'listen'; readonly namespace: string; readonly event: string; readonly active: boolean };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -159,7 +164,7 @@ function parseRequest(value: unknown): ParsedRequest | undefined {
 		return undefined;
 	}
 	if (value.type === 'call' && typeof value.method === 'string' && Array.isArray(value.args)) {
-		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args };
+		return { type: 'call', namespace: value.namespace, method: value.method, args: value.args, userGesture: value.userGesture === true };
 	}
 	if (value.type === 'listen' && typeof value.event === 'string' && typeof value.active === 'boolean') {
 		return { type: 'listen', namespace: value.namespace, event: value.event, active: value.active };
@@ -186,12 +191,13 @@ function refuse(status: number): Response {
 	return new Response(null, { status });
 }
 
-function hasPermission(extension: IParadisApiExtension, permission: string | readonly string[] | undefined): boolean {
+function hasPermission(extension: IParadisApiExtension, permission: string | readonly string[] | undefined, granted: readonly string[]): boolean {
 	if (permission === undefined) {
 		return true;
 	}
 	const declared = extension.manifest.permissions;
-	return Array.isArray(declared) && [permission].flat().some(name => declared.includes(name));
+	// manifest の権限と、後から許した権限（permissions.request、場所ごと）
+	return [permission].flat().some(name => (Array.isArray(declared) && declared.includes(name)) || granted.includes(name));
 }
 
 export class ParadisExtensionApiHost implements IDisposable {
@@ -199,6 +205,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 	private readonly _namespaces = new Map<string, IParadisExtensionApiNamespace>();
 	private readonly _tokens = new Map<string, string>();
 	private readonly _states = new Map<ParadisApiSession, ISessionState>();
+	private _grantedPermissions: (extensionId: string, place: string) => readonly string[] = () => [];
 
 	constructor(private readonly _logService: { warn(message: string, ...args: unknown[]): void }) { }
 
@@ -207,6 +214,11 @@ export class ParadisExtensionApiHost implements IDisposable {
 			this._forgetSession(state);
 		}
 		this._states.clear();
+	}
+
+	/** 後から許した権限の引き方（permissions.request、場所ごと）。名前空間の権限の確かめに使う。 */
+	setGrantedPermissionsLookup(lookup: (extensionId: string, place: string) => readonly string[]): void {
+		this._grantedPermissions = lookup;
 	}
 
 	/** 名前空間を登録する（詰め物の一覧 PARADIS_SHIM_SURFACE と揃える）。 */
@@ -574,7 +586,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 			if (!namespace) {
 				throw new ParadisExtensionApiError(`chrome.${request.namespace} is not available`);
 			}
-			if (!hasPermission(caller.extension, namespace.permission)) {
+			if (!hasPermission(caller.extension, namespace.permission, this._grantedPermissions(caller.extension.id, caller.place))) {
 				throw new ParadisExtensionApiError(`This API requires the "${[namespace.permission].flat()[0]}" permission`);
 			}
 			if (request.type === 'listen') {
@@ -605,7 +617,8 @@ export class ParadisExtensionApiHost implements IDisposable {
 			if (!method) {
 				throw new ParadisExtensionApiError(`chrome.${request.namespace}.${request.method} is not available`);
 			}
-			return { ok: true, value: await method.invoke(caller, request.args) };
+			// 利用者の操作の印は、拡張機能のページからの呼び出しだけが付けられる
+			return { ok: true, value: await method.invoke(caller.fromWorker || !request.userGesture ? caller : { ...caller, userGesture: true }, request.args) };
 		} catch (error) {
 			if (!(error instanceof ParadisExtensionApiError)) {
 				this._logService.warn('[paradis] a browser extension API call failed', error);

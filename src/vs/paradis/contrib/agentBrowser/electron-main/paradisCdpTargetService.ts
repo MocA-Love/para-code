@@ -55,7 +55,7 @@ import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, p
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
 import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
 import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
-import { IParadisUpstreamInputMarker, paradisGuardExtensionInput, paradisInputGuardTab } from './paradisExtensionInputGuard.js';
+import { IParadisUpstreamInputMarker, paradisGuardExtensionInput, paradisInputGuardTab, paradisMarkDoneWithDeadline } from './paradisExtensionInputGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -191,6 +191,9 @@ function paradisReportAutomationKeyFailure(phase: 'register' | 'activate', reaso
 
 /** At most one input-time frame nudge per view in this window (a click is three mouse events). */
 const PARADIS_INPUT_FRAME_NUDGE_INTERVAL_MS = 500;
+
+/** upstream の Agent ツールのキーの印を、送った命令の答えを待たずに閉じるまでの期限（ミリ秒）。 */
+export const PARADIS_UPSTREAM_KEY_MARK_DEADLINE_MS = 10_000;
 
 export class ParadisCdpTargetService implements IParadisCdpExactViewService, IParadisCdpPageOpsService {
 	/** エージェントが CDP の命令で付けた大きさ（切断時に戻すため）。 */
@@ -347,7 +350,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 					registration.cancel();
 					throw new Error(`PARA_BROWSER_RETRYABLE: automation key suppression could not be activated (${describeAutomationKeyFailure(failure, failureDetail)})`);
 				}
-				return { done: () => registration.complete() };
+				return paradisMarkDoneWithDeadline(() => registration.complete(), PARADIS_UPSTREAM_KEY_MARK_DEADLINE_MS);
 			},
 		};
 	}

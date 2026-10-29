@@ -59,6 +59,8 @@ export interface IParadisMenusEnvironment {
 	/** 拡張機能を読み込んだすべてのセッションの拡張機能（ショートカットの一覧に使う）。 */
 	allLoaded(): readonly IParadisLoadedExtension[];
 	nameOf(extension: IParadisLoadedExtension): string;
+	/** 利用者の操作をその拡張機能へ渡した（P5c、permissions）。 */
+	noteUserGesture?(session: ParadisApiSession, extensionId: string): void;
 	/** その WebContents がエージェントのタブか（タブでない・分からなければ false）。 */
 	isAgentTab?(contents: WebContents): boolean;
 }
@@ -294,6 +296,8 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 		if (!item || !item.enabled || item.type === 'separator' || !paradisVisibleMenuTree(items, snapshot.target, paradisMatchesUrlPattern, item.parentId).some(entry => entry.key === key)) {
 			return false;
 		}
+		// 利用者の操作（permissions.request などを、この後の少しの間だけ許す）
+		this._environment.noteUserGesture?.(snapshot.session, extensionId);
 		const click = paradisApplyMenuClick(items, item);
 		if (click.items !== items) {
 			this._setItems(snapshot.session, extensionId, click.items);
@@ -377,6 +381,7 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 		}
 		const tabId = view.webContents.id;
 		this._tabs.grantActiveTab(extension, tabId);
+		this._environment.noteUserGesture?.(info.session, extensionId);
 		const tab = this._tabs.describeTab(extension, view.webContents.session, tabId);
 		this._host.emit({ session: info.session, extensionId }, 'commands', 'onCommand', tab ? [name, tab] : [name]);
 		return { ok: true };

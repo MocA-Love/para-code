@@ -73,6 +73,8 @@ import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShim
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions } from './paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js';
+import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
+import { IParadisServicesEnvironment, ParadisBrowserExtensionServices } from './paradisBrowserExtensionServices.js';
 import { paradisSetBrowserExtensionMenuProvider } from './paradisBrowserExtensionMenuRegistry.js';
 
 /** タブ・ウィンドウの API に要る main のもの（無ければ tabs・windows・webNavigation は使えない）。 */
@@ -82,6 +84,14 @@ export interface IParadisBrowserExtensionTabsOptions {
 	/** ツールバーのボタンのポップアップの窓（無ければポップアップは出ない）。 */
 	readonly createActionPopup?: IParadisActionsEnvironment['createPopupWindow'];
 	readonly workAreaFor?: IParadisActionsEnvironment['workAreaFor'];
+	/** permissions.request の確認のダイアログ（無ければ断る）。 */
+	readonly askPermissions?: (prompt: IParadisPermissionPrompt) => Promise<boolean>;
+	/** OS の通知（無ければ出さない）。 */
+	readonly createNotification?: IParadisServicesEnvironment['createNotification'];
+	/** downloads.download の saveAs の保存のダイアログ（無ければ取り消し）。 */
+	readonly chooseSavePath?: IParadisServicesEnvironment['chooseSavePath'];
+	/** downloads.download の filename（無ければ名前は替えない）。 */
+	readonly renameDownload?: IParadisServicesEnvironment['renameDownload'];
 }
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 
@@ -315,6 +325,10 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private readonly _actions: ParadisBrowserExtensionActions | undefined;
 	/** 右クリックの項目とショートカット（P5b、chrome.contextMenus・chrome.commands）。 */
 	private readonly _menus: ParadisBrowserExtensionMenus | undefined;
+	/** 後から許した権限と利用者の操作（P5c、chrome.permissions）。 */
+	private readonly _permissions: ParadisBrowserExtensionPermissions | undefined;
+	/** notifications・cookies・downloads・management（P5c）。 */
+	private readonly _services: ParadisBrowserExtensionServices | undefined;
 	private readonly _syncStore: ParadisBrowserExtensionSyncStore;
 	private readonly _runtimeState: ParadisBrowserExtensionRuntimeState;
 	/** この起動で詰め物を書き込んだ写し（写しのパス → 失敗の文。成功なら undefined）。 */
@@ -338,6 +352,38 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._tabs = tabsOptions && this.active ? new ParadisBrowserExtensionTabs(this._apiHost, tabsOptions.environment, _logService, tabsOptions.createPopout) : undefined;
 		const tabs = this._tabs;
 		paradisRegisterRuntimeApis(this._apiHost, tabs ? caller => tabs.openOptionsPage(caller) : undefined);
+		const nameOfExtension = (extension: { readonly id: string; readonly name?: string; readonly manifest: Record<string, unknown> }) => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name ?? (typeof extension.manifest.name === 'string' ? extension.manifest.name : extension.id);
+		this._permissions = tabs && tabsOptions ? new ParadisBrowserExtensionPermissions(this._apiHost, join(_root, 'permission-grants.json'), _logService, prompt => tabsOptions.askPermissions?.(prompt) ?? Promise.resolve(false), nameOfExtension) : undefined;
+		const permissions = this._permissions;
+		if (tabs && permissions) {
+			tabs.setGrantedOriginsLookup((extension, session) => {
+				const place = [...this._sessions].find(entry => entry.session === (session as unknown))?.profile;
+				return place !== undefined ? permissions.granted(extension.id, place).origins : [];
+			});
+		}
+		this._services = tabs && tabsOptions && permissions ? new ParadisBrowserExtensionServices(this._apiHost, tabs, permissions, {
+			createNotification: options => tabsOptions.createNotification?.(options),
+			chooseSavePath: (owner, name) => tabsOptions.chooseSavePath?.(owner, name) ?? Promise.resolve(undefined),
+			renameDownload: (item, directory, filename) => tabsOptions.renameDownload?.(item, directory, filename),
+			listInstalled: place => {
+				const enabled = new Set(this._ledger.enabled[place] ?? []);
+				return this._ledger.extensions.map(installed => {
+					const manifest = [...this._sessions].map(entry => entry.session.extensions.getExtension(installed.id)?.manifest).find(value => value !== undefined) as Record<string, unknown> | undefined;
+					const list = (value: unknown) => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+					const declared = list(manifest?.permissions);
+					return {
+						id: installed.id, name: installed.name, version: installed.version, source: installed.source, enabled: enabled.has(installed.id),
+						permissions: declared.filter(permission => !permission.includes('://') && permission !== '<all_urls>'),
+						hostPermissions: [...list(manifest?.host_permissions), ...declared.filter(permission => permission.includes('://') || permission === '<all_urls>')],
+					};
+				});
+			},
+			setEnabled: (id, place, enabled) => this.setEnabled(id, place, enabled),
+			loadedIn: (session, id) => {
+				const loaded = session.extensions.getExtension(id);
+				return loaded ? { id: loaded.id, version: loaded.version, manifest: loaded.manifest as Record<string, unknown>, name: loaded.name, path: loaded.path } : undefined;
+			},
+		}) : undefined;
 		this._actions = tabs && tabsOptions ? new ParadisBrowserExtensionActions(this._apiHost, tabs, {
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
 			sessionOf: contents => this._actionSessionOf(contents.session),
@@ -352,6 +398,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				return tabsOptions.createActionPopup(parent, bounds, session);
 			},
 			workAreaFor: rect => tabsOptions.workAreaFor?.(rect) ?? rect,
+			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
 		}, _logService) : undefined;
 		this._menus = tabs && tabsOptions ? new ParadisBrowserExtensionMenus(this._apiHost, tabs, {
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
@@ -359,6 +406,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			allLoaded: () => [...this._sessions].flatMap(entry => this._actionSessionOf(entry.session)?.extensions ?? []),
 			isAgentTab: contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() === true,
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
+			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
 		}, join(_root, 'context-menus.json'), _logService) : undefined;
 		const menus = this._menus;
 		if (menus) {
@@ -455,6 +503,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await fs.mkdir(this._root, { recursive: true }).catch(() => { /* reported when saving */ });
 		await this._runtimeState.load();
 		await this._menus?.load();
+		await this._permissions?.load();
 		// 削除の途中に落ちて残った storage.sync の中身を片付ける
 		await this._syncStore.forgetExtensionsExcept(new Set(this._ledger.extensions.map(extension => extension.id)));
 		// 前の起動で写している途中に落ちて残ったフォルダを片付ける
@@ -641,6 +690,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private _unload(entry: ISessionEntry, id: string): void {
 		this._tabs?.closePopoutsOf(entry.session as unknown as Session, id);
 		this._actions?.forgetExtension(entry.session, id, entry.session.extensions.getExtension(id)?.path);
+		this._services?.forgetExtension(entry.session, id);
 		try {
 			if (entry.session.extensions.getExtension(id)) {
 				entry.session.extensions.removeExtension(id);
@@ -900,6 +950,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		// storage.sync（main が持つ）と、最後に読み込んだ版（入れ直したら install から出す）、右クリックの項目も消す
 		await this._syncStore.forgetExtension(id);
 		await this._menus?.forgetExtension(id);
+		await this._permissions?.forgetExtension(id);
 		await this._runtimeState.forgetExtension(id);
 		// IndexedDB・Local Storage・CacheStorage は今あるセッションからすぐ消す。chrome.storage は Chromium が
 		// 終了まで開いたままで、ファイルを消しても中身が残る（Electron 43 で実測）ので、どのセッションも
@@ -956,6 +1007,10 @@ export function paradisRegisterBrowserExtensions(
 				createPopout: tabs.createPopout,
 				createActionPopup: tabs.createActionPopup,
 				workAreaFor: tabs.workAreaFor,
+				askPermissions: tabs.askPermissions,
+				createNotification: tabs.createNotification,
+				chooseSavePath: tabs.chooseSavePath,
+				renameDownload: tabs.renameDownload,
 			} : undefined,
 		);
 	});

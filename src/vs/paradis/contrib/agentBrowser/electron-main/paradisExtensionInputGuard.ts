@@ -526,6 +526,24 @@ export interface IParadisUpstreamInputMarker {
 	beforeSend(method: string, params: Readonly<Record<string, unknown>>): Promise<{ done(): void } | undefined>;
 }
 
+/**
+ * 印を閉じる done を作る。送った命令が答えを返さなくても印が残り続けないよう、期限が来たら閉じる（閉じると、印は短い猶予の後に
+ * 消える。期限より後に届いたキーは利用者のものと見分けられないが、印を持ち続けて同じ形の利用者のキーを飲み込むよりよい）。
+ * done と期限のどちらが先でも、閉じるのは 1 回だけ。
+ */
+export function paradisMarkDoneWithDeadline(complete: () => void, deadlineMs: number): { done(): void } {
+	let closed = false;
+	const close = () => {
+		if (!closed) {
+			closed = true;
+			clearTimeout(timer);
+			complete();
+		}
+	};
+	const timer = setTimeout(close, deadlineMs);
+	return { done: close };
+}
+
 /** ビューごとの見張り（ビューと同じだけ生きる）。 */
 const guards = new WeakMap<object, IParadisInputGuardTab>();
 
@@ -617,10 +635,16 @@ export function paradisInputGuardTab(view: IParadisInputGuardView, marker?: IPar
  */
 export function paradisInterceptUpstreamCommand(tab: IParadisInputGuardTab, tracker: ParadisFrameTargetTracker, upstreamDebugger: IParadisUpstreamDebugger, method: string, params: unknown, session: unknown, pending?: ParadisPendingCommands, marker?: IParadisUpstreamInputMarker): Promise<unknown> | undefined {
 	const connection = session as { readonly sessionId?: unknown; readonly targetId?: unknown } | undefined;
+	// セッションの無い命令は、upstream の通常の経路のまま通す（判定も印も付けない）。upstream の Agent ツール（Playwright）は
+	// ページへ flatten で attach したセッション越しにしか送らず、セッションの無い送り口は upstream の中の命令（エミュレーション
+	// など）と、Para Code 自身の入力（sendCommandRaw。こちらは送る前に同じ判定と印を付ける）だけが使う
 	if (connection === undefined) {
 		return undefined;
 	}
 	const sessionId = typeof connection.sessionId === 'string' ? connection.sessionId : undefined;
+	// iframe（別プロセスのフレーム）のセッションへの命令には、自動入力の印を付けない。Playwright はキーとマウスをページの
+	// セッションへ送り、Chromium がフォーカスのあるフレームへ配る（iframe のセッションへ Input.* を送らない）。拡張機能のページの
+	// iframe のセッションへの命令は、この下で断る
 	if (connection.targetId !== upstreamDebugger.targetId) {
 		const frameUrl = sessionId !== undefined ? tracker.urlOfSession(sessionId) : undefined;
 		const knownUrl = typeof connection.targetId === 'string' ? upstreamDebugger.knownTargets?.get(connection.targetId)?.url : undefined;
