@@ -452,8 +452,13 @@ export class ParadisBrowserExtensionsManager implements IParadisBrowserExtension
 		const describe = ({ id, name, touchesPages }: IParadisInstalledBrowserExtension): IParadisViewBrowserExtension => ({ id, name, touchesPages });
 		const session = typeof viewId === 'string' ? this._sessionForView(viewId) : undefined;
 		if (session) {
-			// 開いているページ: そのセッションに今入っているもの（同梱の React DevTools など、台帳に無いものは数えない）
-			return { active: true, extensions: this._ledger.extensions.filter(extension => session.extensions.getExtension(extension.id)).map(describe) };
+			// 開いているページ: そのセッションに今入っているものに、そのセッションの場所で有効にしてあるものを足す。
+			// 開いたばかりのタブ（再起動の後の共有の戻しなど）では読み込みが終わる前に聞かれるので、入っている
+			// ものだけでは知らせ損ねる。SSH 先のページのためにトンネルを通している間は入らないので足さない（D8）。
+			// 同梱の React DevTools など、台帳に無いものは数えない
+			const entry = [...this._sessions].find(candidate => candidate.session === session);
+			const enabled = entry && !entry.isRemote() ? new Set(this._ledger.enabled[entry.profile] ?? []) : new Set<string>();
+			return { active: true, extensions: this._ledger.extensions.filter(extension => enabled.has(extension.id) || session.extensions.getExtension(extension.id)).map(describe) };
 		}
 		// まだ開いていないページ・これから開くプロファイル: 有効にしてあるもの
 		return { active: true, extensions: paradisIsExtensionProfileKey(fallbackProfile) ? paradisEnabledExtensions(this._ledger, fallbackProfile).map(describe) : [] };

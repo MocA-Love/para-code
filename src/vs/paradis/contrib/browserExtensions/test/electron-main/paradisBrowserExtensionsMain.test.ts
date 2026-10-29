@@ -42,7 +42,7 @@ class FakeSession implements ParadisExtensionSession {
 			throw new Error('clear failed');
 		}
 	};
-	readonly extensions: ParadisExtensionSession['extensions'] = {
+	extensions: ParadisExtensionSession['extensions'] = {
 		loadExtension: async (path: string) => {
 			const id = this.idOverride ?? paradisPredictExtensionId(path, undefined);
 			this.loaded.set(id, path);
@@ -411,6 +411,39 @@ suite('ParadisBrowserExtensionsMain', () => {
 		const inactive = new ParadisBrowserExtensionsManager(root, () => false, silentLog, () => session);
 		assert.deepStrictEqual(await inactive.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE), { active: false, extensions: [] });
 		inactive.dispose();
+	});
+
+	test('counts the extensions enabled for an open tab even before they finish loading', async () => {
+		await writeExtension(join(root, 'filler'), { manifest_version: 3, name: 'Filler', version: '1.0', content_scripts: [{ matches: ['<all_urls>'], js: ['content.js'] }] });
+		const first = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const added = await first.addUnpacked(join(root, 'filler'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(added.ok);
+		first.dispose();
+
+		// 再起動の後: タブを開いた直後で、読み込みがまだ終わっていない
+		const slow = new FakeSession(join(root, 'default'));
+		let finishLoading: () => void = () => { };
+		const load = slow.extensions.loadExtension;
+		slow.extensions = { ...slow.extensions, loadExtension: async (path, options) => { await new Promise<void>(resolve => finishLoading = resolve); return load(path, options); } };
+		const remoteStarted = new Emitter<void>();
+		const remoteStopped = new Emitter<void>();
+		const remote = { isRemote: true, onDidStart: remoteStarted.event, onDidStop: remoteStopped.event };
+		const tunneled = new FakeSession(join(root, 'workspace'));
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog, viewId => viewId === 'view-1' ? slow : viewId === 'view-ssh' ? tunneled : undefined);
+		const attaching = manager.attach(slow, owner(BrowserViewStorageScope.Global));
+		await manager.attach(tunneled, owner(BrowserViewStorageScope.Workspace, 'workspace:1', remote));
+		const duringLoad = await manager.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE);
+		finishLoading();
+		await attaching;
+		assert.deepStrictEqual({
+			duringLoad: duringLoad.extensions.map(extension => extension.name),
+			afterLoad: (await manager.getShareExtensions('view-1', PARADIS_DEFAULT_EXTENSION_PROFILE)).extensions.map(extension => extension.name),
+			// SSH 先のページのためにトンネルを通している間は入らないので数えない（D8）
+			tunneled: (await manager.getShareExtensions('view-ssh', PARADIS_DEFAULT_EXTENSION_PROFILE)).extensions.map(extension => extension.name),
+		}, { duringLoad: ['Filler'], afterLoad: ['Filler'], tunneled: [] });
+		remoteStarted.dispose();
+		remoteStopped.dispose();
+		manager.dispose();
 	});
 
 	test('refuses hard links and names that would collide on a case-insensitive disk', async () => {

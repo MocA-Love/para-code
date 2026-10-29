@@ -91,6 +91,8 @@ const STR_SWITCH_SHARE_ARIA = localize('paradis.bindingDialog.switchShareAria', 
 // allow-any-unicode-next-line
 const STR_SWITCH_UNSHARE_ARIA = localize('paradis.bindingDialog.switchUnshareAria', "共有を解除する");
 // allow-any-unicode-next-line
+const STR_EXTENSIONS_CHECKING = localize('paradis.bindingDialog.extensionsChecking', "このタブに拡張機能が入っているか確かめています…");
+// allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したページだけを読み取り・操作できます");
 // allow-any-unicode-next-line
 const STR_BTN_CLOSE = localize('paradis.bindingDialog.btnClose', "閉じる");
@@ -282,6 +284,7 @@ export class ParadisBindingDialog extends Disposable {
 		// このページに、ページの中身を読み書きできる拡張機能が入っていれば共有の前に知らせる（D4）
 		// 答えが返るまでは共有のスイッチを押せない（知らせを見ないまま共有させない）。問い合わせは 1 秒で
 		// 諦め、確かめられなければ「確かめられなかった」と知らせる
+		this._extensionWarningResolved = pageModel === undefined;
 		this._extensionWarningReady = pageModel
 			? browserExtensionsService.getShareWarning({ kind: 'view', viewId: pageModel.id }).then(warning => {
 				this._extensionWarning = warning;
@@ -464,6 +467,7 @@ export class ParadisBindingDialog extends Disposable {
 			this._renderPageBar();
 		}
 		dom.clearNode(this._body);
+		this._body.removeAttribute('aria-busy');
 		if (this._activeTab === 'panes') {
 			this._renderPanesTab();
 		} else if (this._activeTab === 'devices') {
@@ -643,6 +647,13 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _renderPanesTab(): void {
+		this._body.setAttribute('aria-busy', String(!this._extensionWarningResolved));
+		if (!this._extensionWarningResolved) {
+			// 答えが返るまで共有のスイッチは押せない。その理由をここに出す
+			const checking = dom.append(this._body, $('.pbd-extension-checking'));
+			checking.setAttribute('role', 'status');
+			checking.textContent = STR_EXTENSIONS_CHECKING;
+		}
 		if (this._extensionWarning) {
 			const warning = dom.append(this._body, $('.pbd-extension-warning'));
 			warning.setAttribute('role', 'note');
