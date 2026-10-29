@@ -53,6 +53,8 @@ import { IParadisCursorOwner, paradisCursorCaptureRange, paradisCursorStatusForM
 import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 import { ParadisBrowserFocusDiagnosticsMain, paradisBrowserViewDiagnosticHost, paradisCreateBrowserFocusDiagnostics } from './paradisBrowserFocusDiagnosticsMain.js';
 import { paradisParseBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosticNote.js';
+import { PARADIS_EXTENSION_PAGE_DENIED_MESSAGE } from '../common/paradisCdpExtensionScope.js';
+import { paradisGuardChildWebContents, paradisSetExtensionNavigationGuard, paradisShowsExtensionPage } from './paradisExtensionNavigationGuard.js';
 import {
 	IParadisAgentDownloadResult,
 	IParadisCdpPageOpsService,
@@ -252,9 +254,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	/** ページ操作の相手（BrowserView）の viewId。スクリプトの本数をワークベンチへ流すときに使う。 */
 	private readonly pageOpsViewIds = new WeakMap<IParadisPageOpsTarget, string>();
 	private readonly _onDidChangeInitScripts = new Emitter<IParadisAgentPageScriptsChange>();
+	private readonly _onDidBlockExtensionNavigation = new Emitter<string>();
 	/** {@link PARADIS_AGENT_PAGE_SCRIPTS_CHANNEL} で renderer へ出す面。 */
 	readonly pageScriptsSurface: IParadisAgentPageScriptsSurface = {
 		onDidChangeInitScripts: this._onDidChangeInitScripts.event,
+		onDidBlockExtensionNavigation: this._onDidBlockExtensionNavigation.event,
 		getInitScriptCounts: async () => this.pageOps.initScriptCounts().flatMap(([target, count]) => {
 			const viewId = this.pageOpsViewIds.get(target);
 			return viewId !== undefined ? [{ viewId, count }] : [];
@@ -323,6 +327,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			const child = this.browserViewMainService.tryGetBrowserView(childViewId);
 			const parent = this.browserViewMainService.tryGetBrowserView(parentViewId);
 			if (child && parent && !child.webContents.isDestroyed() && !parent.webContents.isDestroyed()) {
+				// エージェントが手にしているタブから開いた子タブは、作られた時から拡張のページへの移動を止める
+				paradisGuardChildWebContents(child.webContents, parent.webContents, { onBlocked: () => this._onDidBlockExtensionNavigation.fire(childViewId) });
 				paradisRecordChildWebContents(child.webContents, parent.webContents);
 				this.recordOpener(child, childViewId, parentViewId);
 			}
@@ -734,6 +740,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!descriptor || !view) {
 			return null;
 		}
+		if (paradisShowsExtensionPage(view.webContents)) {
+			return null;
+		}
 		const observation = await paradisDetectHumanCheck(view.webContents, alreadyReported === true);
 		return this.resolveExistingExactView(descriptor) === view ? observation : null;
 	}
@@ -746,7 +755,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return null;
 		}
 		const view = this.resolveExistingExactView(descriptor);
-		if (!view) {
+		// 拡張のページは撮らない（エージェントへ中身を見せない）
+		if (!view || paradisShowsExtensionPage(view.webContents)) {
 			return null;
 		}
 		// カーソル演出は撮影結果に写さない（既定）。撮影経路は非表示ビューも一時的に可視化して
@@ -811,7 +821,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		}
 		const descriptor = paradisParseExactBrowserViewDescriptor(descriptorValue);
 		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
-		if (!view) {
+		if (!view || paradisShowsExtensionPage(view.webContents)) {
 			return null;
 		}
 		const key = JSON.stringify(descriptor);
@@ -1059,6 +1069,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		// 同じ合図が「エージェントがこのタブを手にした・手放した」を意味する。手にしている間のダウンロードは
 		// エージェント由来として扱い、手放したらタブへ掛けた上書き（ヘッダ・認証・ルール）とハイライトを外す。
 		paradisSetWebContentsHeldByAgent(view.webContents, !enabledValue);
+		// 手にしている間は、拡張のページ（chrome-extension://）へ移る移動を取り消す
+		paradisSetExtensionNavigationGuard(view.webContents, !enabledValue, { onBlocked: () => this._onDidBlockExtensionNavigation.fire(descriptor.viewId) });
 		if (enabledValue) {
 			this.pageOps.releaseTarget(view as unknown as IParadisPageOpsTarget);
 		}
@@ -1193,6 +1205,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const view = this.resolveExistingExactView(descriptor);
 		if (!view) {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView authority changed before input dispatch' };
+		}
+		// ブラウザ拡張のページ（オプション・拡張が開いたタブ）には、エージェントのクリックやキーを届けない。
+		// CDP ゲートウェイもイベントで追った URL で断るが、ここはタブの今の URL で確かめる最後の砦
+		if (paradisShowsExtensionPage(view.webContents)) {
+			return { status: 'retryable', message: PARADIS_EXTENSION_PAGE_DENIED_MESSAGE };
 		}
 		try {
 			if (view.webContents.isFocused()) {
@@ -1442,6 +1459,11 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (!request.ok) {
 			return { ok: false, reason: 'invalid', message: request.error };
 		}
+		// 今すぐ走らせるスクリプトは、拡張のページでは走らせない（置いたスクリプトは、拡張の文書では走らないよう
+		// 包んで登録する。paradisBrowserPageOpsController.ts）
+		if (request.value.runNow && paradisShowsExtensionPage(target.webContents)) {
+			return { ok: false, reason: 'failed', message: PARADIS_EXTENSION_PAGE_DENIED_MESSAGE };
+		}
 		return this.pageOps.addInitScript(target, ownerKeyValue, generationValue, request.value, paradisParsePageScriptOwner(ownerValue));
 	}
 
@@ -1471,6 +1493,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const view = descriptor ? this.resolveExistingExactView(descriptor) : undefined;
 		if (!descriptor || !view) {
 			return { ok: false, reason: 'unavailable' };
+		}
+		if (paradisShowsExtensionPage(view.webContents)) {
+			return { ok: false, reason: 'failed', message: PARADIS_EXTENSION_PAGE_DENIED_MESSAGE };
 		}
 		let raw: unknown;
 		try {
@@ -1563,7 +1588,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			return false;
 		}
 		const rect = rectValue === null ? undefined : paradisParseHighlightRect(rectValue);
-		if (rectValue !== null && !rect) {
+		if ((rectValue !== null && !rect) || paradisShowsExtensionPage(target.webContents)) {
 			return false;
 		}
 		try {
@@ -1708,7 +1733,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	 */
 	async captureScreenshot(viewId: string, options: IParadisCdpScreenshotOptions): Promise<string | null> {
 		const view = this.browserViewMainService.tryGetBrowserView(viewId);
-		if (!view || view.webContents.isDestroyed()) {
+		if (!view || view.webContents.isDestroyed() || paradisShowsExtensionPage(view.webContents)) {
 			return null;
 		}
 		const buffer = await view.captureScreenshot({

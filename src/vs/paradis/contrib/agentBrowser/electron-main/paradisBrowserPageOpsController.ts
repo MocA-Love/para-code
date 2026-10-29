@@ -31,6 +31,7 @@
 //   置ける（q.html Q240）が、持ち主の共有が入れ替わる・エージェントがタブを手放す・タブが閉じる、の
 //   どれでも外す。複数のペインが同じタブに置ける（一覧と削除は自分の分だけ）。
 
+import { paradisGuardNewDocumentScriptParams } from '../common/paradisCdpExtensionScope.js';
 import { raceTimeout } from '../../../../base/common/async.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -483,7 +484,7 @@ export class ParadisBrowserPageOpsController {
 				entry.pageEnabled = true;
 				await entry.session.sendCommand('Page.enable');
 			}
-			const response = await entry.session.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: request.source, ...(request.runNow ? { runImmediately: true } : {}) }) as { identifier?: unknown } | undefined;
+			const response = await entry.session.sendCommand('Page.addScriptToEvaluateOnNewDocument', paradisGuardNewDocumentScriptParams('Page.addScriptToEvaluateOnNewDocument', { source: request.source, ...(request.runNow ? { runImmediately: true } : {}) })) as { identifier?: unknown } | undefined;
 			identifier = response?.identifier;
 		} catch (error) {
 			return { ok: false, reason: 'failed', message: error instanceof Error ? error.message.slice(0, 300) : undefined };
