@@ -9,6 +9,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Event } from '../../../../../base/common/event.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { BrowserViewStorageScope } from '../../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -82,4 +83,36 @@ suite('ParadisBrowserExtensionsService share warning', () => {
 			confirmedWithoutWarning: true,
 		});
 	});
+
+	// 再起動の後の共有の戻し（paradisAgentBrowserBindingRestore）は、この答えが undefined のときだけ戻す。
+	// 場合分けごとに、戻すか（undefined）戻さないか（文）を固める
+	test('answers the restore of a share after restart for each case', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const filler = { id: 'a'.repeat(32), name: 'Filler', touchesPages: true };
+		const theme = { id: 'b'.repeat(32), name: 'Theme', touchesPages: false };
+		const create = (answer: () => Promise<IParadisShareExtensions>, setting: boolean) => new ParadisBrowserExtensionsService(
+			{ getChannel: () => ({ call: answer, listen: () => Event.None }) } as unknown as IMainProcessService,
+			{ getValue: () => setting } as unknown as IConfigurationService,
+			{ getViewSession: () => undefined } as unknown as IParadisBrowserProfilesService,
+			{} as IDialogService,
+		);
+		const ask = (service: ParadisBrowserExtensionsService) => service.getShareWarning({ kind: 'view', viewId: 'view-1' });
+		assert.deepStrictEqual({
+			settingOff: await ask(create(async () => ({ active: false, extensions: [] }), false)),
+			nothingEnabled: await ask(create(async () => ({ active: true, extensions: [] }), true)),
+			onlyHarmless: await ask(create(async () => ({ active: true, extensions: [theme] }), true)),
+			cannotCheckTimeout: await ask(create(() => new Promise<never>(() => { }), true)),
+			cannotCheckFailure: await ask(create(async () => { throw new Error('gone'); }, true)),
+			// 再起動待ち（今の起動では効いていない）で、main に聞けないときは知らせない
+			cannotCheckSettingOff: await ask(create(() => new Promise<never>(() => { }), false)),
+			needsWarning: (await ask(create(async () => ({ active: true, extensions: [filler, theme] }), true)))?.includes('Filler'),
+		}, {
+			settingOff: undefined,
+			nothingEnabled: undefined,
+			onlyHarmless: undefined,
+			cannotCheckTimeout: paradisShareWarningUnknown(),
+			cannotCheckFailure: paradisShareWarningUnknown(),
+			cannotCheckSettingOff: undefined,
+			needsWarning: true,
+		});
+	}));
 });

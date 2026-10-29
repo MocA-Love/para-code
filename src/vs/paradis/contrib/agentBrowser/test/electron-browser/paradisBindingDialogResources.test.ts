@@ -320,6 +320,7 @@ suite('ParadisBindingDialog browser extension warning', () => {
 		try {
 			const before = root.querySelector<HTMLInputElement>('.pbd-switch')!;
 			const disabledBefore = before.disabled;
+			const checkingBefore = { shown: root.querySelector('.pbd-extension-checking') !== null, busy: root.querySelector('.pbd-body')?.getAttribute('aria-busy') };
 			// キー操作などで押されたことにする: 答えを待ち、知らせがあるので今回は共有しない
 			before.checked = true;
 			before.dispatchEvent(new Event('change'));
@@ -328,10 +329,12 @@ suite('ParadisBindingDialog browser extension warning', () => {
 			const after = root.querySelector<HTMLInputElement>('.pbd-switch')!;
 			assert.deepStrictEqual({
 				disabledBefore,
+				checkingBefore,
+				checkingAfter: { shown: root.querySelector('.pbd-extension-checking') !== null, busy: root.querySelector('.pbd-body')?.getAttribute('aria-busy') },
 				disabledAfter: after.disabled,
 				warning: root.querySelector('.pbd-extension-warning')?.textContent,
 				calls,
-			}, { disabledBefore: true, disabledAfter: false, warning: 'extension warning', calls: [] });
+			}, { disabledBefore: true, checkingBefore: { shown: true, busy: 'true' }, checkingAfter: { shown: false, busy: 'false' }, disabledAfter: false, warning: 'extension warning', calls: [] });
 		} finally {
 			dialog.dispose();
 			root.remove();
